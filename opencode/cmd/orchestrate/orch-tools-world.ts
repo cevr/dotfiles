@@ -94,6 +94,9 @@ export const requestHeadFor = (unit: string, round: number): string => shaFor(`r
  * the run's files hold it when the land ran; the landing's push answers the push's last merge. A unit in `fastForward`
  * lands as a land fast-forwards: its branch's commits go onto the line, its request head last, and no merge.
  */
+/** The head every Rift of this world holds (MemoryRifts.clean's), which a land's merge takes in. */
+const LANE_HEAD = MemoryRifts.clean("/lane", void 0).head
+
 const mainLineOf = (landing: MemoryLanding.World, files: MemoryRunFiles.Files, earlier: number, fastForward: ReadonlyArray<string>) => {
   const line: Array<MemoryMainLine.Entry> = [{ sha: shaFor("root"), subject: "root", merged: [] }]
   // The merges main held before the run: no unit of the run is in them.
@@ -115,7 +118,13 @@ const mainLineOf = (landing: MemoryLanding.World, files: MemoryRunFiles.Files, e
           const heads = headOf(branch)
           const fast = fastForward.includes(branch.split("/").at(-1) ?? branch) && heads.length > 0
           if (fast) line.push({ sha: shaFor(`commit ${line.length} ${branch}`), subject: `feat: ${branch}`, merged: [] }, ...heads.map((sha) => ({ sha, subject: `test: ${branch}`, merged: [] })))
-          else line.push({ sha: shaFor(`merge ${line.length} ${branch}`), subject: `Merge branch '${branch}'`, merged: Arr.match(heads, { onEmpty: () => [shaFor(`tip ${branch} ${line.length}`)], onNonEmpty: (each) => each }) })
+          // A merge takes in the lane's head too, as git's does the branch it merges: every Rift here holds MemoryRifts.clean's.
+          else
+            line.push({
+              sha: shaFor(`merge ${line.length} ${branch}`),
+              subject: `Merge branch '${branch}'`,
+              merged: [...Arr.match(heads, { onEmpty: () => [shaFor(`tip ${branch} ${line.length}`)], onNonEmpty: (each) => each }), LANE_HEAD],
+            })
         }
         pushes.push(line.at(-1)?.sha ?? "")
         read.pending = []
