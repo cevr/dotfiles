@@ -10,6 +10,7 @@ import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { gitClone, gitInit, withProcessEnv } from "../tests/git-repo.ts"
 import {
+  type Case,
   casesOf,
   checkFork,
   declaredList,
@@ -31,6 +32,8 @@ import {
   reportLines,
   type Ran,
   type Run,
+  type Skip,
+  type Status,
   RunLock,
   TestRunner,
   type Verdict,
@@ -84,9 +87,9 @@ describe("the declared list", () => {
   it.effect("names a package with no command, a twice-listed id and an expectation on an unlisted file", () =>
     Effect.sync(() => {
       const feature = { id: "x", feature: "x", package: "packages/none", files: ["test/a.test.ts"] as const, proved: "here" }
-      const bad: List = { ...list(), features: [feature, { ...feature, package: "packages/core" }], expectations: [{ package: "packages/core", file: "test/b.test.ts", test: "t", host: { bash: "3.2.57" }, reason: "r" }] }
+      const bad: List = { ...list(), skips: [], features: [feature, { ...feature, package: "packages/core" }], expectations: [{ package: "packages/core", file: "test/b.test.ts", test: "t", host: { bash: "3.2.57" }, reason: "r" }] }
       expect(listProblems(bad)).toEqual(["x: package packages/none has no command", "x: the id is listed twice", 'expectation "t": packages/core/test/b.test.ts is in no feature'])
-      const short: List = { ...list(), features: [{ ...feature, package: "packages/core", since: "5d44dfd789" }], expectations: [] }
+      const short: List = { ...list(), skips: [], features: [{ ...feature, package: "packages/core", since: "5d44dfd789" }], expectations: [] }
       expect(listProblems(short)).toEqual(['x: since "5d44dfd789" is not a full commit sha'])
     }),
   )
@@ -120,13 +123,29 @@ describe("the fork a run checks", () => {
   )
 })
 
+/** A case in a report the tests build. */
+const caseOf = (file: string, test: string, status: Status = "passed"): Case => ({ file, test, status })
+
+/** What bun writes inside a testcase for each status (failed for `true`, passed for `false`). */
+const INSIDE: Readonly<Record<Status, string>> = {
+  passed: "",
+  failed: '<failure type="AssertionError" message="no"/>',
+  skipped: "<skipped />",
+  todo: '<skipped message="TODO" />',
+}
+const statusOf = (given: boolean | Status): Status => {
+  if (given === true) return "failed"
+  if (given === false) return "passed"
+  return given
+}
+
 /** A JUnit report as bun writes it: a file's suite, a describe block in it, and its tests. */
-const junit = (file: string, tests: ReadonlyArray<readonly [describe: string, name: string, failed: boolean]>) =>
+const junit = (file: string, tests: ReadonlyArray<readonly [describe: string, name: string, status: boolean | Status]>) =>
   [
     `<testsuites><testsuite name="${file}" file="${file}">`,
-    ...tests.map(([block, name, failed]) => {
+    ...tests.map(([block, name, status]) => {
       const escaped = name.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("'", "&apos;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
-      const body = `<testcase name="${escaped}" file="${file}">${Arr.filter(['<failure type="AssertionError" message="no"/>'], () => failed).join("")}</testcase>`
+      const body = `<testcase name="${escaped}" file="${file}">${INSIDE[statusOf(status)]}</testcase>`
       if (block === "") return body
       return `<testsuite name="${block}" file="${file}" line="2">${body}</testsuite>`
     }),
@@ -139,8 +158,8 @@ describe("reading a report", () => {
   it.effect("gives each test its describe blocks, its file and whether it failed", () =>
     Effect.sync(() => {
       expect(casesOf(junit("test/a.test.ts", [["real-shell compound syntax", COMPOUND_NAME, true], ["", "top", false]]))).toEqual([
-        { file: "test/a.test.ts", test: COMPOUND, failed: true },
-        { file: "test/a.test.ts", test: "top", failed: false },
+        { file: "test/a.test.ts", test: COMPOUND, status: "failed" },
+        { file: "test/a.test.ts", test: "top", status: "passed" },
       ])
     }),
   )
@@ -148,10 +167,11 @@ describe("reading a report", () => {
 
 describe("an expectation", () => {
   const compound = Arr.head(list().expectations)
-  const empty: Plan = { package: "", files: [], expected: [] }
-  const plan = (bash: string): Plan => Option.getOrElse(Arr.findFirst(plansOf(list(), Option.some(bash)), (each) => each.package === "packages/core"), () => empty)
+  const empty: Plan = { package: "", files: [], expected: [], skips: [] }
+  // The declared skips judged elsewhere ("skipped and todo cases"); here only the expectation.
+  const plan = (bash: string): Plan => Option.getOrElse(Arr.findFirst(plansOf({ ...list(), skips: [] }, Option.some(bash)), (each) => each.package === "packages/core"), () => empty)
   const file = "test/shell-scan/compound-parity.test.ts"
-  const others = (each: Plan) => each.files.filter((name) => name !== file).map((name) => ({ file: name, test: "passes", failed: false }))
+  const others = (each: Plan) => each.files.filter((name) => name !== file).map((name) => (caseOf(name, "passes")))
   const run = (each: Plan, failed: boolean) => [...others(each), ...casesOf(junit(file, [["real-shell compound syntax", COMPOUND_NAME, failed]]))]
 
   it.effect("on the declared bash (3.2.57), its test failing is a note, not a red", () =>
@@ -180,7 +200,7 @@ describe("an expectation", () => {
 
   it.effect("its test gone from the run on the declared bash is red", () =>
     Effect.sync(() => {
-      expect(judge(plan("3.2.57"), 0, [...others(plan("3.2.57")), { file, test: "another", failed: false }]).reds).toEqual([
+      expect(judge(plan("3.2.57"), 0, [...others(plan("3.2.57")), caseOf(file, "another")]).reds).toEqual([
         { package: "packages/core", file, test: COMPOUND, why: "declared red on bash 3.2.57 but it did not run: the expectation names a test that is gone" },
       ])
     }),
@@ -188,17 +208,110 @@ describe("an expectation", () => {
 })
 
 describe("judging a run", () => {
-  const plan: Plan = { package: "packages/x", files: ["test/a.test.ts", "test/b.test.ts"], expected: [] }
+  const plan: Plan = { package: "packages/x", files: ["test/a.test.ts", "test/b.test.ts"], expected: [], skips: [] }
   it.effect("a listed file absent from the report ran no test, and is red", () =>
     Effect.sync(() => {
-      expect(judge(plan, 1, [{ file: "test/a.test.ts", test: "t", failed: false }]).reds).toEqual([{ package: "packages/x", file: "test/b.test.ts", test: "", why: "the file ran no test (it did not load, or holds none)" }])
+      expect(judge(plan, 1, [caseOf("test/a.test.ts", "t")]).reds).toEqual([{ package: "packages/x", file: "test/b.test.ts", test: "", why: "the file ran no test (the runner did not run it: it did not load, holds none, or was filtered out)" }])
     }),
   )
   it.effect("a red exit with every test green is red", () =>
     Effect.sync(() => {
-      const cases = plan.files.map((file) => ({ file, test: "t", failed: false }))
+      const cases = plan.files.map((file) => caseOf(file, "t"))
       expect(judge(plan, 0, cases).reds).toEqual([])
       expect(judge(plan, 1, cases).reds).toEqual([{ package: "packages/x", file: "(the run)", test: "", why: "bun test exited 1 with no failed test" }])
+    }),
+  )
+})
+
+describe("skipped and todo cases", () => {
+  const plan: Plan = { package: "packages/x", files: ["test/a.test.ts"], expected: [], skips: [] }
+  const declared: Skip = { package: "packages/x", file: "test/a.test.ts", test: "needs a tty", reason: "no terminal in CI" }
+  const red = (test: string, why: string) => ({ package: "packages/x", file: "test/a.test.ts", test, why })
+
+  it.effect("bun's own report: skip, todo, skipIf, if(false) and describe.skip are not executed; test.failing is", () =>
+    Effect.sync(() => {
+      // bun 1.4.4's JUnit for a file of each kind (probe/kinds.test.ts in the unit's run dir).
+      const real = [
+        '<testsuites><testsuite name="a.test.ts" file="a.test.ts" tests="7">',
+        '<testcase name="runs" classname="" time="0.000019" file="a.test.ts" line="3" assertions="1" />',
+        '<testcase name="skipped one" file="a.test.ts" assertions="0">\n<skipped />\n</testcase>',
+        '<testcase name="todo one" file="a.test.ts" assertions="0">\n<skipped message="TODO" />\n</testcase>',
+        '<testcase name="skipIf true" file="a.test.ts" assertions="0">\n<skipped />\n</testcase>',
+        '<testsuite name="skipped block" file="a.test.ts" line="8"><testcase name="inside" classname="skipped block" file="a.test.ts" assertions="0">\n<skipped />\n</testcase></testsuite>',
+        '<testcase name="failing one" file="a.test.ts" line="11" assertions="1" />',
+        "</testsuite></testsuites>",
+      ].join("\n")
+      expect(casesOf(real).map((found) => [found.test, found.status])).toEqual([
+        ["runs", "passed"],
+        ["skipped one", "skipped"],
+        ["todo one", "todo"],
+        ["skipIf true", "skipped"],
+        ["skipped block > inside", "skipped"],
+        ["failing one", "passed"],
+      ])
+    }),
+  )
+
+  it.effect("a listed file whose every case is skipped or todo ran no test, and is red", () =>
+    Effect.sync(() => {
+      const cases = [caseOf("test/a.test.ts", "one", "skipped"), caseOf("test/a.test.ts", "two", "todo")]
+      expect(judge({ ...plan, skips: [{ ...declared, test: "one" }, { ...declared, test: "two" }] }, 0, cases).reds).toEqual([
+        red("", "the file ran no test: its 2 cases were all skipped or todo"),
+      ])
+    }),
+  )
+
+  it.effect("an undeclared skip or todo beside a running test is red", () =>
+    Effect.sync(() => {
+      const cases = [caseOf("test/a.test.ts", "runs"), caseOf("test/a.test.ts", "needs a tty", "skipped"), caseOf("test/a.test.ts", "later", "todo")]
+      expect(judge(plan, 0, cases).reds).toEqual([
+        red("needs a tty", "skipped, and fork-checks.json declares no skip for it: declare it with its reason, or let it run"),
+        red("later", "todo, and fork-checks.json declares no skip for it: declare it with its reason, or let it run"),
+      ])
+    }),
+  )
+
+  it.effect("a declared skip that skipped is a note; one that ran, or is gone, is red", () =>
+    Effect.sync(() => {
+      const skipping = judge({ ...plan, skips: [declared] }, 0, [caseOf("test/a.test.ts", "runs"), caseOf("test/a.test.ts", "needs a tty", "skipped")])
+      expect(skipping).toEqual({ reds: [], notes: ["skipped as declared: packages/x/test/a.test.ts > needs a tty; why: no terminal in CI"] })
+      expect(judge({ ...plan, skips: [declared] }, 0, [caseOf("test/a.test.ts", "runs"), caseOf("test/a.test.ts", "needs a tty")]).reds).toEqual([
+        red("needs a tty", "declared skipped but it ran: remove the skip"),
+      ])
+      expect(judge({ ...plan, skips: [declared] }, 0, [caseOf("test/a.test.ts", "runs")]).reds).toEqual([
+        red("needs a tty", "declared skipped but it is gone: the skip names a test the file does not hold"),
+      ])
+    }),
+  )
+
+  it.effect("a host-dependent skip holds only on its bash; elsewhere the same skip is undeclared and red", () =>
+    Effect.sync(() => {
+      const onBash: List = {
+        about: "",
+        packages: { "packages/x": ["bun", "test"] },
+        features: [{ id: "x", feature: "x", package: "packages/x", files: ["test/a.test.ts"], proved: "here" }],
+        expectations: [],
+        skips: [{ ...declared, host: { bash: "3.2.57" } }],
+      }
+      const cases = [caseOf("test/a.test.ts", "runs"), caseOf("test/a.test.ts", "needs a tty", "skipped")]
+      const at = (bash: string) => judge(Option.getOrElse(Arr.head(plansOf(onBash, Option.some(bash))), () => plan), 0, cases)
+      expect(at("3.2.57")).toEqual({ reds: [], notes: ["skipped as declared on bash 3.2.57: packages/x/test/a.test.ts > needs a tty; why: no terminal in CI"] })
+      expect(at("5.2.37").reds).toEqual([red("needs a tty", "skipped, and fork-checks.json declares no skip for it: declare it with its reason, or let it run")])
+    }),
+  )
+
+  it.effect("an expected-red test that skipped did not run, and is red", () =>
+    Effect.sync(() => {
+      const expectation = { package: "packages/x", file: "test/a.test.ts", test: "bash 3", host: { bash: "3.2.57" }, reason: "r" }
+      const judged = judge({ ...plan, expected: [expectation], skips: [{ ...declared, test: "bash 3" }] }, 0, [caseOf("test/a.test.ts", "runs"), caseOf("test/a.test.ts", "bash 3", "skipped")])
+      expect(judged.reds).toEqual([red("bash 3", "declared red on bash 3.2.57 but it was skipped: it did not run")])
+    }),
+  )
+
+  it.effect("the list names a skip on an unlisted file, or one with no reason", () =>
+    Effect.sync(() => {
+      const bad: List = { ...list(), skips: [{ ...declared, file: "test/nowhere.test.ts" }, { ...declared, package: "packages/core", file: "test/tool-shell.test.ts", reason: " " }] }
+      expect(listProblems(bad)).toEqual(['skip "needs a tty": packages/x/test/nowhere.test.ts is in no feature', 'skip "needs a tty": no reason'])
     }),
   )
 })
@@ -220,6 +333,8 @@ interface Fakes {
   readonly freeBytes?: number
   /** Whether the lock is free. */
   readonly free?: boolean
+  /** The commands on PATH. */
+  readonly present?: ReadonlyArray<string>
 }
 
 /** What the fake services answer now, and what they were asked. */
@@ -239,6 +354,7 @@ const fakesOf = (scene: Scene) => ({
   floored: Option.getOrElse(Option.fromUndefinedOr(scene.fakes.floored), () => true),
   freeBytes: Option.getOrElse(Option.fromUndefinedOr(scene.fakes.freeBytes), () => 100 * 2 ** 30),
   free: Option.getOrElse(Option.fromUndefinedOr(scene.fakes.free), () => true),
+  present: Option.getOrElse(Option.fromUndefinedOr(scene.fakes.present), (): ReadonlyArray<string> => []),
 })
 
 /** The runner, gauge and lock over the script. */
@@ -260,6 +376,7 @@ const fakeServices = Layer.effectContext(
           floored: Effect.map(scene, (now) => fakesOf(now).floored),
           load,
           freeBytes: () => Effect.map(scene, (now) => fakesOf(now).freeBytes),
+          has: (command) => Effect.map(scene, (now) => fakesOf(now).present.includes(command)),
         }),
       ),
       Context.add(
@@ -381,6 +498,26 @@ describe("a run of the checks", () => {
       expect(Arr.map(timedOut.runs, (run) => run.timeoutMs)).toEqual([LIMITS.timeBoundMs])
       const silent = yield* checkWith(input, { answers: [() => ({ kind: "exited", code: 1, log: "error: no node_modules", junit: Option.none() })] })
       expect(silent.verdict).toMatchObject({ kind: "could-not-run", reason: expect.stringContaining("wrote no report") })
+    }),
+  )
+
+  test("red: the runner exits 0 and writes no report, so no listed file is proven to have run", () =>
+    Effect.gen(function* () {
+      const { input } = yield* fakeFork(["test/a.test.ts"])
+      const none = yield* checkWith(input, { answers: [() => ({ kind: "exited", code: 0, log: "", junit: Option.none() })] })
+      expect(none.verdict).toMatchObject({ kind: "red", reds: [{ package: "packages/x", file: "test/a.test.ts", why: "the runner exited 0 and wrote no report: the file is not proven to have run" }] })
+    }),
+  )
+
+  test("a skip declared for a host without a command holds only where none of those commands is on PATH", () =>
+    Effect.gen(function* () {
+      const { input } = yield* fakeFork(["test/a.test.ts"])
+      const list: List = { ...input.list, skips: [{ package: "packages/x", file: "test/a.test.ts", test: "pwsh case", host: { missing: ["pwsh", "powershell"] }, reason: "no PowerShell" }] }
+      const answer = (): Ran => ({ kind: "exited", code: 0, log: "", junit: Option.some(junit("test/a.test.ts", [["", "runs", "passed"], ["", "pwsh case", "skipped"]])) })
+      const without = yield* checkWith({ ...input, list }, { answers: [answer] })
+      expect(without.verdict).toEqual({ kind: "green", notes: ["skipped as declared without pwsh or powershell on PATH: packages/x/test/a.test.ts > pwsh case; why: no PowerShell"] })
+      const withIt = yield* checkWith({ ...input, list }, { answers: [answer], present: ["powershell"] })
+      expect(withIt.verdict).toMatchObject({ kind: "red", reds: [{ test: "pwsh case", why: expect.stringContaining("skipped, and fork-checks.json declares no skip for it") }] })
     }),
   )
 })
@@ -524,11 +661,17 @@ describe("the merge range a report names", () => {
   )
 })
 
+/** What a merge fixture adds: files the upstream commit writes, and the list's declared skips. */
+interface Fixture {
+  readonly incoming?: ReadonlyArray<readonly [string, string]>
+  readonly skips?: ReadonlyArray<Skip>
+}
+
 describe("the daily's merge check step (mergeChecks) with the real feature step", () => {
   const FEATURES = "fork feature checks (scripts/fork-checks.ts)"
 
   /** A fake fork (origin and upstream bare, the fork cloned with prime-look), a package of real tests, upstream one commit ahead. */
-  const fixture = (command: readonly [string, ...Array<string>], files: readonly [string, ...Array<string>]) =>
+  const fixture = (command: readonly [string, ...Array<string>], files: readonly [string, ...Array<string>], more: Fixture = {}) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const path = yield* Path.Path
@@ -553,21 +696,32 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
       yield* commit(seed, "ours.txt", "fork change")
       yield* git(seed, "push", "--quiet", origin, "ours:prime-look")
       yield* git(seed, "checkout", "--quiet", "dev")
+      // The upstream commit the merge brings, with any test file it changes (a listed test it turns skipped).
+      yield* writeAll(seed, Option.getOrElse(Option.fromUndefinedOr(more.incoming), () => []))
       yield* commit(seed, "upstream.txt", "upstream change")
       yield* git(seed, "push", "--quiet", upstream, "dev")
       const fork = path.join(root, "fork")
       yield* Effect.sync(() => gitClone(origin, fork, ["--quiet", "--branch", "prime-look"], GIT_ENV))
       yield* git(fork, "remote", "add", "upstream", upstream)
       const listFile = path.join(root, "list.json")
-      const listed: List = { about: "test", packages: { "packages/x": command }, features: [{ id: "x", feature: "the fork feature", package: "packages/x", files, proved: "here" }], expectations: [] }
+      const listed: List = {
+        about: "test",
+        packages: { "packages/x": command },
+        features: [{ id: "x", feature: "the fork feature", package: "packages/x", files, proved: "here" }],
+        expectations: [],
+        skips: Option.getOrElse(Option.fromUndefinedOr(more.skips), () => []),
+      }
       yield* fs.writeFileString(listFile, encodeListText(listed))
       const passed = (): Effect.Effect<StepRun> => Effect.succeed({ code: 0, log: "" })
+      const said = yield* Ref.make("")
+      const real = featureStep(ROOT, ["--list", listFile, "--max-load", "1000", "--lock", path.join(root, "fork-checks.flock")])
       // The daily's own check step: fakes for the install, `bun run check` and the acceptance links (each needs a real
       // fork), the real feature step, the CLI over the merge, with a test list and lock.
       const checks = mergeChecks({
         install: passed,
         check: passed,
-        features: featureStep(ROOT, ["--list", listFile, "--max-load", "1000", "--lock", path.join(root, "fork-checks.flock")]),
+        // The real step, its output kept so a test reads the summary of a green run (which writes no report).
+        features: (dir) => Effect.tap(real(dir), (ran) => Ref.set(said, ran.log)),
         accept: () => Effect.succeed({ ok: true }),
       })
       const report = path.join(root, "state/upstream-conflict.md")
@@ -575,8 +729,22 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
         mergeUpstream({ fork, host: "Cristians-MacBook-Pro.local", skip: false, dryRun: false, checks, landing: unlocked, worktree: path.join(root, "state/upstream-merge"), report, log: () => {}, env: GIT_ENV }),
       )
       const head = (repo: string) => git(repo, "rev-parse", "prime-look")
-      return { fork, origin, report, merge, before: yield* head(origin), head }
+      return { fork, origin, report, merge, before: yield* head(origin), head, said: Ref.get(said) }
     })
+
+  /** Whether the merge held: red, origin's ref where it was, and the report written; the report's text. */
+  const held = (f: Effect.Success<ReturnType<typeof fixture>>) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      expect(yield* f.merge).toMatchObject({ kind: "red", check: FEATURES })
+      expect(yield* f.head(f.origin)).toBe(f.before)
+      return yield* fs.readFileString(f.report)
+    })
+
+  const SKIPPED_ONLY = 'import { expect, test } from "bun:test"\ntest.skip("the fork feature", () => expect(1).toBe(1))\n'
+  const PARTIAL = 'import { expect, test } from "bun:test"\ntest("passes", () => expect(1).toBe(1))\ntest.skip("the fork feature", () => expect(1).toBe(1))\n'
+  const BOTH_RUN = 'import { expect, test } from "bun:test"\ntest("passes", () => expect(1).toBe(1))\ntest("the fork feature", () => expect(1).toBe(1))\n'
+  const DECLARED: ReadonlyArray<Skip> = [{ package: "packages/x", file: "test/green.test.ts", test: "the fork feature", reason: "the probe needs a real terminal" }]
 
   const test = it.live.layer(BunServices.layer)
 
@@ -626,6 +794,49 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
       expect(yield* f.head(f.origin)).toBe(f.before)
       expect(yield* fs.readFileString(f.report)).toContain("fork-checks: COULD NOT RUN")
       expect(yield* fs.exists(path.join(f.fork, "upstream.txt"))).toBe(false)
+    }).pipe(Effect.scoped),
+  )
+
+  // Skips, through bun's own JUnit reporter: the merge brings an upstream commit that changes the listed test.
+  test("a listed file the merge turns skipped-only holds the push and writes the report: it ran no test", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture(["bun", "test"], ["test/green.test.ts"], { incoming: [["packages/x/test/green.test.ts", SKIPPED_ONLY]] })
+      const text = yield* held(f)
+      expect(text).toContain("packages/x/test/green.test.ts [x]: the file ran no test: its 1 cases were all skipped or todo")
+      expect(text).toContain("fork-checks: ran packages/x/test/green.test.ts: 0 executed (0 failed), 1 skipped, 0 todo")
+    }).pipe(Effect.scoped),
+  )
+
+  test("an undeclared skip beside a running test holds the push", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture(["bun", "test"], ["test/green.test.ts"], { incoming: [["packages/x/test/green.test.ts", PARTIAL]] })
+      expect(yield* held(f)).toContain("packages/x/test/green.test.ts > the fork feature [x]: skipped, and fork-checks.json declares no skip for it")
+    }).pipe(Effect.scoped),
+  )
+
+  test("a declared skip goes to origin, named in the summary", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture(["bun", "test"], ["test/green.test.ts"], { incoming: [["packages/x/test/green.test.ts", PARTIAL]], skips: DECLARED })
+      expect(yield* f.merge).toMatchObject({ kind: "merged" })
+      expect(yield* f.head(f.origin)).not.toBe(f.before)
+      const said = yield* f.said
+      expect(said).toContain("skipped as declared: packages/x/test/green.test.ts > the fork feature; why: the probe needs a real terminal")
+      expect(said).toContain("fork-checks: green over upstream")
+      expect(said).toMatch(/1 features; 1 skipped as declared: packages\/x\/test\/green\.test\.ts > the fork feature$/m)
+    }).pipe(Effect.scoped),
+  )
+
+  test("a declared skip that ran (a stale declaration) holds the push", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture(["bun", "test"], ["test/green.test.ts"], { incoming: [["packages/x/test/green.test.ts", BOTH_RUN]], skips: DECLARED })
+      expect(yield* held(f)).toContain("packages/x/test/green.test.ts > the fork feature [x]: declared skipped but it ran: remove the skip")
+    }).pipe(Effect.scoped),
+  )
+
+  test("a runner that exits 0 and writes no JUnit report holds the push", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture(["true"], ["test/green.test.ts"])
+      expect(yield* held(f)).toContain("packages/x/test/green.test.ts [x]: the runner exited 0 and wrote no report: the file is not proven to have run")
     }).pipe(Effect.scoped),
   )
 })
