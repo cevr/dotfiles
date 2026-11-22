@@ -42,14 +42,27 @@ const Expectation = Schema.Struct({
   host: Schema.Struct({ bash: Schema.String }),
   reason: Schema.String,
 })
+/**
+ * One test a listed file skips (or marks todo) on purpose: its title, why, and the host condition when the skip
+ * depends on the host (as an expectation's). Every other skip in a listed file is red, and a declared skip that ran is red.
+ */
+const Skip = Schema.Struct({
+  package: Schema.String,
+  file: Schema.String,
+  test: Schema.String,
+  host: Schema.optionalKey(Schema.Struct({ bash: Schema.String })),
+  reason: Schema.String,
+})
 const List = Schema.Struct({
   about: Schema.String,
   packages: Schema.Record(Schema.String, Schema.NonEmptyArray(Schema.String)),
   features: Schema.NonEmptyArray(Feature),
   expectations: Schema.Array(Expectation),
+  skips: Schema.optionalKey(Schema.Array(Skip)),
 })
 export type List = typeof List.Type
 export type Expectation = typeof Expectation.Type
+export type Skip = typeof Skip.Type
 export type Feature = typeof Feature.Type
 
 /** Decodes a list already read as data. */
@@ -72,8 +85,13 @@ export const listProblems = (list: List): ReadonlyArray<string> => {
       Option.toArray(Option.map(Option.filter(Option.fromUndefinedOr(feature.since), (since) => !/^[0-9a-f]{40}$/.test(since)), (since) => `${feature.id}: since "${since}" is not a full commit sha`)),
     ),
     ...list.expectations.flatMap((each) => Arr.filter([`expectation "${each.test}": ${each.package}/${each.file} is in no feature`], () => !listed.has(`${each.package}/${each.file}`))),
+    ...skipsOf(list).flatMap((each) => Arr.filter([`skip "${each.test}": ${each.package}/${each.file} is in no feature`], () => !listed.has(`${each.package}/${each.file}`))),
+    ...skipsOf(list).flatMap((each) => Arr.filter([`skip "${each.test}": no reason`], () => each.reason.trim() === "")),
   ]
 }
+
+/** The list's declared skips (none when it declares none). */
+export const skipsOf = (list: List): ReadonlyArray<Skip> => Option.getOrElse(Option.fromUndefinedOr(list.skips), () => [])
 
 /** One test that holds a merge: where it is, its full name (describe blocks joined by " > ") and why. */
 export interface Red {
@@ -88,12 +106,18 @@ export type Verdict =
   | { readonly kind: "red"; readonly reds: ReadonlyArray<Red>; readonly notes: ReadonlyArray<string> }
   | { readonly kind: "could-not-run"; readonly reason: string; readonly notes: ReadonlyArray<string> }
 
-/** One test in a JUnit report: its file (relative to the package), its full name, and whether it failed. */
+/** What a test in a report did: ran and passed, ran and failed, or did not run (skipped, or a todo). */
+export type Status = "passed" | "failed" | "skipped" | "todo"
+
+/** One test in a JUnit report: its file (relative to the package), its full name, and what it did. */
 export interface Case {
   readonly file: string
   readonly test: string
-  readonly failed: boolean
+  readonly status: Status
 }
+
+/** Whether a case's body ran. */
+export const executed = (found: Case) => found.status === "passed" || found.status === "failed"
 
 const ENTITIES = new Map([
   ["&lt;", "<"],
@@ -106,21 +130,35 @@ const unescape = (text: string) => text.replace(/&(?:lt|gt|quot|apos|amp);|&#(\d
 const attribute = (tag: string, name: string): string => Option.getOrElse(Option.map(Option.fromNullishOr(new RegExp(`\\b${name}="([^"]*)"`).exec(tag)), (match) => unescape(String(match[1]))), () => "")
 const relative = (file: string) => file.replace(/^\.\//, "")
 
-/** The tests in bun's JUnit report, each with the names of the describe blocks around it (the file's own suite left out). */
+const PASSED: Status = "passed"
+
+/** A case's status once its report shows `tag` inside it. */
+const statusAfter = (tag: string, status: Status): Status => {
+  if (tag === "<failure" || tag === "<error") return "failed"
+  if (!tag.startsWith("<skipped")) return status
+  if (attribute(tag, "message") === "TODO") return "todo"
+  return "skipped"
+}
+
+/**
+ * The tests in bun's JUnit report, each with the names of the describe blocks around it (the file's own suite left
+ * out) and its status: `<failure>` or `<error>` failed, `<skipped message="TODO">` a todo, any other `<skipped>`
+ * skipped (`test.skip`, `describe.skip`, a true `skipIf`, a false `if`), none passed.
+ */
 export const casesOf = (junit: string): ReadonlyArray<Case> => {
   const cases: Array<Case> = []
   const suites: Array<string> = []
-  let open = Option.none<{ readonly file: string; readonly test: string; failed: boolean }>()
-  for (const match of junit.matchAll(/<testsuite\b[^>]*?(\/?)>|<\/testsuite>|<testcase\b[^>]*?(\/?)>|<\/testcase>|<failure\b|<error\b/g)) {
+  let open = Option.none<{ readonly file: string; readonly test: string; status: Status }>()
+  for (const match of junit.matchAll(/<testsuite\b[^>]*?(\/?)>|<\/testsuite>|<testcase\b[^>]*?(\/?)>|<\/testcase>|<failure\b|<error\b|<skipped\b[^>]*>/g)) {
     const tag = match[0]
     if (tag.startsWith("<testsuite") && match[1] !== "/") suites.push(attribute(tag, "name"))
     if (tag === "</testsuite>") suites.pop()
     if (tag.startsWith("<testcase")) {
-      const found = { file: relative(attribute(tag, "file")), test: [...suites.slice(1), attribute(tag, "name")].join(" > "), failed: false }
+      const found = { file: relative(attribute(tag, "file")), test: [...suites.slice(1), attribute(tag, "name")].join(" > "), status: PASSED }
       if (match[2] === "/") cases.push(found)
       else open = Option.some(found)
     }
-    if (tag === "<failure" || tag === "<error") Option.map(open, (current) => (current.failed = true))
+    Option.map(open, (current) => (current.status = statusAfter(tag, current.status)))
     if (tag === "</testcase>") {
       Option.map(open, (current) => cases.push({ ...current }))
       open = Option.none()
@@ -134,37 +172,77 @@ export interface Plan {
   readonly package: string
   readonly files: ReadonlyArray<string>
   readonly expected: ReadonlyArray<Expectation>
+  /** Its declared skips that hold on this host. */
+  readonly skips: ReadonlyArray<Skip>
 }
 
 /** The expectations whose host condition holds here: the first bash on PATH is the declared version. */
 export const activeExpectations = (list: List, bash: Option.Option<string>): ReadonlyArray<Expectation> =>
   list.expectations.filter((each) => Option.exists(bash, (version) => version === each.host.bash))
 
+/** The declared skips that hold here: one with no host condition everywhere, one with a bash version where it is that bash. */
+export const activeSkips = (list: List, bash: Option.Option<string>): ReadonlyArray<Skip> =>
+  skipsOf(list).filter((each) =>
+    Option.match(Option.fromUndefinedOr(each.host), { onNone: () => true, onSome: (host) => Option.exists(bash, (version) => version === host.bash) }),
+  )
+
+/** How a note names a test skipped as the list declares. */
+const SKIPPED = "skipped as declared"
+const hostOf = (skip: Skip) => Option.getOrElse(Option.map(Option.fromUndefinedOr(skip.host), (host) => ` on bash ${host.bash}`), () => "")
+
 export interface Judged {
   readonly reds: ReadonlyArray<Red>
   readonly notes: ReadonlyArray<string>
 }
 
-/** Judges one run of `plan` by its exit and its report's tests: the reds, and a note per expectation that held. */
+/**
+ * Judges one run of `plan` by its exit and its report's tests: the reds, and a note per expectation and declared skip
+ * that held. Only an executed case (passed or failed) proves its file ran: a listed file with none is red, however many
+ * skipped or todo cases it reports. A skipped or todo case is red unless the list declares it, and a declared skip that
+ * ran, or is gone, is red.
+ */
 export const judge = (plan: Plan, code: number, cases: ReadonlyArray<Case>): Judged => {
+  const listed = cases.filter((found) => plan.files.includes(found.file))
   const expected = plan.expected.filter((each) => each.package === plan.package && plan.files.includes(each.file))
-  const isExpected = (found: Case) => expected.some((each) => each.file === found.file && each.test === found.test)
-  const seen = new Set(cases.map((found) => found.file))
+  const skips = plan.skips.filter((each) => each.package === plan.package && plan.files.includes(each.file))
+  const same = (found: Case) => (each: { readonly file: string; readonly test: string }) => each.file === found.file && each.test === found.test
   const red = (file: string, test: string, why: string): Red => ({ package: plan.package, file, test, why })
-  const silent = plan.files.flatMap((file) => Arr.filter([red(file, "", "the file ran no test (it did not load, or holds none)")], () => !seen.has(file)))
-  const failed = cases.flatMap((found) => Arr.filter([red(found.file, found.test, "failed")], () => found.failed && !isExpected(found)))
+  const silent = plan.files.flatMap((file) => {
+    const mine = listed.filter((found) => found.file === file)
+    if (mine.length === 0) return [red(file, "", "the file ran no test (the runner did not run it: it did not load, holds none, or was filtered out)")]
+    if (!mine.some(executed)) return [red(file, "", `the file ran no test: its ${mine.length} cases were all skipped or todo`)]
+    return []
+  })
+  const failed = listed.flatMap((found) => Arr.filter([red(found.file, found.test, "failed")], () => found.status === "failed" && !expected.some(same(found))))
+  const undeclared = listed.flatMap((found) =>
+    Arr.filter([red(found.file, found.test, `${found.status}, and fork-checks.json declares no skip for it: declare it with its reason, or let it run`)], () => !executed(found) && !skips.some(same(found))),
+  )
   const stale = expected.flatMap((each) => {
     const ran = cases.filter((found) => found.file === each.file && found.test === each.test)
     if (ran.length === 0) return [red(each.file, each.test, `declared red on bash ${each.host.bash} but it did not run: the expectation names a test that is gone`)]
-    if (ran.some((found) => !found.failed)) return [red(each.file, each.test, `declared red on bash ${each.host.bash} but it passed: remove the expectation`)]
+    if (!ran.some(executed)) return [red(each.file, each.test, `declared red on bash ${each.host.bash} but it was ${Arr.map(ran, (found) => found.status).join(", ")}: it did not run`)]
+    if (ran.some((found) => found.status === "passed")) return [red(each.file, each.test, `declared red on bash ${each.host.bash} but it passed: remove the expectation`)]
     return []
   })
-  const notes = expected.flatMap((each) =>
-    Arr.filter([`expected red on bash ${each.host.bash}: ${plan.package}/${each.file} > ${each.test} (${each.reason})`], () =>
-      cases.some((found) => found.failed && found.file === each.file && found.test === each.test),
+  const staleSkips = skips.flatMap((each) => {
+    const ran = cases.filter((found) => found.file === each.file && found.test === each.test)
+    if (ran.length === 0) return [red(each.file, each.test, `declared skipped${hostOf(each)} but it is gone: the skip names a test the file does not hold`)]
+    if (ran.some(executed)) return [red(each.file, each.test, `declared skipped${hostOf(each)} but it ran: remove the skip`)]
+    return []
+  })
+  const notes = [
+    ...expected.flatMap((each) =>
+      Arr.filter([`expected red on bash ${each.host.bash}: ${plan.package}/${each.file} > ${each.test} (${each.reason})`], () =>
+        cases.some((found) => found.status === "failed" && found.file === each.file && found.test === each.test),
+      ),
     ),
-  )
-  const reds = [...silent, ...failed, ...stale]
+    ...skips.flatMap((each) =>
+      Arr.filter([`${SKIPPED}${hostOf(each)}: ${plan.package}/${each.file} > ${each.test} (${each.reason})`], () =>
+        cases.some((found) => !executed(found) && found.file === each.file && found.test === each.test),
+      ),
+    ),
+  ]
+  const reds = [...silent, ...failed, ...undeclared, ...stale, ...staleSkips]
   const unexplained = code !== 0 && reds.length === 0 && notes.length === 0
   return { reds: [...reds, ...Arr.filter([red("(the run)", "", `bun test exited ${code} with no failed test`)], () => unexplained)], notes }
 }
@@ -230,6 +308,7 @@ export const plansOf = (list: List, bash: Option.Option<string>): ReadonlyArray<
     package: pkg,
     files: Arr.dedupe(list.features.filter((feature) => feature.package === pkg).flatMap((feature) => feature.files)),
     expected: activeExpectations(list, bash).filter((each) => each.package === pkg),
+    skips: activeSkips(list, bash).filter((each) => each.package === pkg),
   }))
 
 const couldNot = (reason: string, notes: ReadonlyArray<string> = []): Verdict => ({ kind: "could-not-run", reason, notes })
@@ -283,14 +362,22 @@ const runOnce = Effect.fn("ForkChecks.runOnce")(function* (input: Input, plan: P
   yield* Effect.forEach(Option.toArray(report), (cases) =>
     Effect.forEach(plan.files, (file) => {
       const mine = cases.filter((found) => found.file === file)
-      return Console.log(`fork-checks: ran ${plan.package}/${file}: ${mine.length} tests, ${mine.filter((found) => found.failed).length} failed`)
+      const count = (status: Status) => mine.filter((found) => found.status === status).length
+      return Console.log(
+        `fork-checks: ran ${plan.package}/${file}: ${mine.filter(executed).length} executed (${count("failed")} failed), ${count("skipped")} skipped, ${count("todo")} todo`,
+      )
     }),
   )
   return Match.value(ran).pipe(
     Match.when({ kind: "timed-out" }, (out): Verdict => couldNot(`${plan.package} ran past the time bound (${minutes(input.limits.timeBoundMs)}), its process group ended:\n${tail(out.log)}`)),
     Match.when({ kind: "exited" }, (out): Verdict =>
       Option.match(out.junit, {
-        onNone: () => couldNot(`bun test in ${plan.package} exited ${out.code} and wrote no report:\n${tail(out.log)}`),
+        onNone: (): Verdict => {
+          // A run that exits 0 with no report proved nothing ran: each listed file is red. A red exit with none could not run.
+          if (out.code !== 0) return couldNot(`bun test in ${plan.package} exited ${out.code} and wrote no report:\n${tail(out.log)}`)
+          const reds = plan.files.map((file) => ({ package: plan.package, file, test: "", why: "the runner exited 0 and wrote no report: the file is not proven to have run" }))
+          return { kind: "red", reds, notes: [`${plan.package} log:\n${tail(out.log)}`] }
+        },
         onSome: (junit) => {
           const judged = judge(plan, out.code, casesOf(junit))
           if (judged.reds.length === 0) return { kind: "green", notes: judged.notes }
@@ -404,7 +491,9 @@ export const reportLines = (list: List, verdict: Verdict, range: Option.Option<s
     Match.when({ kind: "green" }, (green) => {
       const pending = green.notes.filter((note) => note.startsWith(NOT_YET)).length
       const held = Arr.filter([` (${pending} not yet in this checkout)`], () => pending > 0).join("")
-      return [...green.notes, `fork-checks: green${over}, ${list.features.length - pending} features${held}`]
+      const skipped = green.notes.filter((note) => note.startsWith(SKIPPED)).map((note) => note.replace(/ \([^)]*\)$/, "").replace(/^[^:]*: /, ""))
+      const named = Arr.filter([`; ${skipped.length} skipped as declared: ${skipped.join("; ")}`], () => skipped.length > 0).join("")
+      return [...green.notes, `fork-checks: green${over}, ${list.features.length - pending} features${held}${named}`]
     }),
     Match.when({ kind: "red" }, (red) => [
       ...red.notes,
