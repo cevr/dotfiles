@@ -21,8 +21,12 @@
  * - `tailnetWrite` (digest.tailnetWrite): who marks and answers on the tailnet without pairing: `"paired"` (default),
  *   `"member"` (his own devices) or `"member-except-hosts"` (his own devices except this host and the agent hosts,
  *   which still need pairing, as loopback does for an answer).
- * - `agentHosts` (digest.agentHosts): the agent machines beside this one, each a Tailscale address or a name
- *   Tailscale's status gives; a name it does not resolve closes `"member-except-hosts"` to `"paired"`.
+ * - `agentHosts` (digest.agentHosts): the agent machines beside this one, each one of HIS devices by its MagicDNS
+ *   name (or first label) or one of its addresses, never a HostName; it only narrows writes, never admits a device,
+ *   and an entry none of his devices answers to closes `"member-except-hosts"` to `"paired"`.
+ * - `excludedDevices` (digest.excludedDevices): his devices that count as nobody's, reading and writing nothing
+ *   unpaired, each `{name, id}`: its MagicDNS name and its stable node ID (`ID` in the status); a device either
+ *   matches is excluded, so a rename keeps it out, and an ID no device of his has shows in health (loopback).
  *   (members.ts: who his devices are, read again with the tailnet every RECHECK.)
  *
  * `GET /health` answers the health line (`@dotfiles/opencode-digest/health`), which the installer logs.
@@ -56,13 +60,15 @@ export const Options = Schema.Struct({
   tailnetRead: Schema.optionalKey(Schema.Literals(["paired", "member"])),
   tailnetWrite: Schema.optionalKey(Schema.Literals(TAILNET_WRITES)),
   agentHosts: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
+  excludedDevices: Schema.optionalKey(Schema.Array(Schema.Struct({ name: Schema.NonEmptyString, id: Schema.optionalKey(Schema.NonEmptyString) }))),
 })
 export type Options = typeof Options.Type
 
-/** `digest.tailnetWrite` and `digest.agentHosts`, each at its default when absent. */
+/** `digest.tailnetWrite`, `digest.agentHosts` and `digest.excludedDevices`, each at its default when absent. */
 export const writeConfigOf = (options: Options): WriteConfig => ({
   tailnetWrite: Option.getOrElse(Option.fromUndefinedOr(options.tailnetWrite), (): TailnetWrite => "paired"),
   agentHosts: Option.getOrElse(Option.fromUndefinedOr(options.agentHosts), (): ReadonlyArray<string> => []),
+  excluded: Option.getOrElse(Option.fromUndefinedOr(options.excludedDevices), () => []).map((each) => ({ name: each.name, id: Option.fromUndefinedOr(each.id) })),
 })
 
 /** His devices before the first tailnet read: none, so every tailnet source needs pairing. */

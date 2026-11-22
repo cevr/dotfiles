@@ -9,7 +9,7 @@ import { hostname, networkInterfaces } from "node:os"
 import { file, readableStreamToText, spawn } from "bun"
 import { Duration, Effect, Option, Schema } from "effect"
 import { type InterfaceAddress, StatusRead, type Tailnet, type TailscaleStatus, tailnetOf } from "../bind.ts"
-import { agentHostsFrom } from "../members.ts"
+import { exclusionsFrom } from "../members.ts"
 
 /**
  * Where the Tailscale CLI is, in order: the Mac app's, Homebrew's (Apple silicon, then Intel), then the Linux
@@ -29,6 +29,7 @@ export const STATUS_TIMEOUT = Duration.seconds(5)
 
 const Node = Schema.Struct({
   DNSName: Schema.optionalKey(Schema.String),
+  ID: Schema.optionalKey(Schema.String),
   HostName: Schema.optionalKey(Schema.String),
   TailscaleIPs: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.String))),
   UserID: Schema.optionalKey(Schema.Number),
@@ -66,6 +67,7 @@ export const statusOf = (text: string): Option.Option<TailscaleStatus> =>
       tagged: listOf(Option.flatMap(self, (each) => Option.fromNullishOr(each.Tags))).length > 0,
       peers: Object.values(Option.getOrElse(Option.fromNullishOr(status.Peer), () => ({}))).map((peer) => ({
         dnsName: dnsNameOf(Option.some(peer)),
+        stableId: Option.filter(Option.fromUndefinedOr(peer.ID), (id) => id !== ""),
         hostName: Option.getOrElse(Option.fromUndefinedOr(peer.HostName), () => ""),
         ips: listOf(Option.fromNullishOr(peer.TailscaleIPs)),
         userId: Option.fromUndefinedOr(peer.UserID),
@@ -118,18 +120,19 @@ export const statusFrom = (clis: ReadonlyArray<string> = CLIS, timeout: Duration
     }),
   )
 
+/**
+ * `digest.excludedDevices` for the installer: each of `names` with its device's stable ID among his own devices, as
+ * Tailscale's status says now (members.ts `exclusionsFrom`). A promise of plain data, so a script on another Effect
+ * runtime can call it.
+ */
+export const readExclusions = (names: ReadonlyArray<string>, clis: ReadonlyArray<string> = CLIS): Promise<ReadonlyArray<{ readonly name: string; readonly id?: string }>> =>
+  Effect.runPromise(Effect.map(statusFrom(clis), (read) => exclusionsFrom(names, read)))
+
 /** The host's interface addresses. */
 const interfaces = Effect.sync((): ReadonlyArray<InterfaceAddress> => Object.values(networkInterfaces()).flatMap((each) => Option.getOrElse(Option.fromUndefinedOr(each), () => [])))
 
 /** This host's name, as the health line gives it: its first label. */
 export const hostName: Effect.Effect<string> = Effect.sync(() => hostname().split(".")[0] ?? hostname())
-
-/**
- * `digest.agentHosts` for the installer: each of `names` as Tailscale's status resolves it now (members.ts
- * `agentHostsFrom`). A promise of plain strings, so a script on another Effect runtime can call it.
- */
-export const readAgentHosts = (names: ReadonlyArray<string>, clis: ReadonlyArray<string> = CLIS): Promise<ReadonlyArray<string>> =>
-  Effect.runPromise(Effect.map(statusFrom(clis), (read) => agentHostsFrom(names, read)))
 
 /** This host on the tailnet, and the status it was read from (members.ts reads his devices from it). */
 export interface Probed {

@@ -38,9 +38,9 @@ describe("Tailscale's status", () => {
         userId: Option.some(7),
         tagged: false,
         peers: [
-          { dnsName: Option.some("skiff.example-tailnet.ts.net"), hostName: "Skiff", ips: ["100.101.102.104", "fd7a:115c:a1e0::44"], userId: Option.some(7), tagged: false, shared: false },
-          { dnsName: Option.some("ferry.example-tailnet.ts.net"), hostName: "ferry", ips: ["100.101.102.105"], userId: Option.some(9), tagged: true, shared: false },
-          { dnsName: Option.none(), hostName: "guest", ips: [], userId: Option.some(7), tagged: false, shared: true },
+          { dnsName: Option.some("skiff.example-tailnet.ts.net"), stableId: Option.none(), hostName: "Skiff", ips: ["100.101.102.104", "fd7a:115c:a1e0::44"], userId: Option.some(7), tagged: false, shared: false },
+          { dnsName: Option.some("ferry.example-tailnet.ts.net"), stableId: Option.none(), hostName: "ferry", ips: ["100.101.102.105"], userId: Option.some(9), tagged: true, shared: false },
+          { dnsName: Option.none(), stableId: Option.none(), hostName: "guest", ips: [], userId: Option.some(7), tagged: false, shared: true },
         ],
       }),
     )

@@ -160,15 +160,15 @@ const TAILNET = StatusRead.Read({
     userId: Option.some(7),
     tagged: false,
     peers: [
-      { dnsName: Option.some("phone.example-tailnet.ts.net"), hostName: "localhost", ips: ["100.101.102.110"], userId: Option.some(7), tagged: false, shared: false },
-      { dnsName: Option.some("laptop.example-tailnet.ts.net"), hostName: "laptop", ips: ["100.101.102.120"], userId: Option.some(9), tagged: false, shared: false },
+      { dnsName: Option.some("phone.example-tailnet.ts.net"), stableId: Option.none(), hostName: "localhost", ips: ["100.101.102.110"], userId: Option.some(7), tagged: false, shared: false },
+      { dnsName: Option.some("laptop.example-tailnet.ts.net"), stableId: Option.none(), hostName: "laptop", ips: ["100.101.102.120"], userId: Option.some(9), tagged: false, shared: false },
     ],
   },
 })
 const FROM: Readonly<Record<string, string>> = { phone: "100.101.102.110", agent: "100.101.102.103", colleague: "100.101.102.120" }
 const from = FROM[values.from ?? "colleague"] ?? "100.101.102.120"
 const write = Schema.decodeUnknownSync(Schema.Literals(TAILNET_WRITES))(values.write ?? "paired")
-const members = Effect.sync(() => membersOf({ tailnetWrite: write, agentHosts: [] }, TAILNET, Date.now()))
+const members = Effect.sync(() => membersOf({ tailnetWrite: write, agentHosts: [], excluded: [] }, TAILNET, Date.now()))
 const tailnet = values.as === "tailnet"
 await Effect.runPromise(
   Effect.scoped(

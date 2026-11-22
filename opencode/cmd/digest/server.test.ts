@@ -69,8 +69,16 @@ describe("the digest plugin", () => {
 
   test("digest.tailnetWrite and digest.agentHosts: paired and none by default, the three values only, and his devices kept from each tailnet read", async () => {
     const decode = Schema.decodeUnknownExit(Options)
-    expect(writeConfigOf({})).toEqual({ tailnetWrite: "paired", agentHosts: [] })
-    expect(writeConfigOf({ tailnetWrite: "member-except-hosts", agentHosts: ["skiff", "100.101.102.104"] })).toEqual({ tailnetWrite: "member-except-hosts", agentHosts: ["skiff", "100.101.102.104"] })
+    expect(writeConfigOf({})).toEqual({ tailnetWrite: "paired", agentHosts: [], excluded: [] })
+    expect(writeConfigOf({ tailnetWrite: "member-except-hosts", agentHosts: ["skiff", "100.101.102.104"], excludedDevices: [{ name: "dinghy", id: "nDinghy1CNTRL" }, { name: "raft" }] })).toEqual({
+      tailnetWrite: "member-except-hosts",
+      agentHosts: ["skiff", "100.101.102.104"],
+      excluded: [
+        { name: "dinghy", id: Option.some("nDinghy1CNTRL") },
+        { name: "raft", id: Option.none() },
+      ],
+    })
+    expect([Exit.isSuccess(decode({ excludedDevices: [{ name: "" }] })), Exit.isSuccess(decode({ excludedDevices: [{ name: "dinghy", id: "" }] })), Exit.isSuccess(decode({ excludedDevices: ["dinghy"] }))]).toEqual([false, false, false])
     expect(["paired", "member", "member-except-hosts", "everyone", ""].map((tailnetWrite) => Exit.isSuccess(decode({ tailnetWrite })))).toEqual([true, true, true, false, false])
     expect([Exit.isSuccess(decode({ agentHosts: [""] })), Exit.isSuccess(decode({ agentHosts: "skiff" }))]).toEqual([false, false])
     // Each probe sets his devices from the same status read; a read that fails closes them.
@@ -80,9 +88,9 @@ describe("the digest plugin", () => {
       ips: ["100.101.102.103"],
       userId: Option.some(7),
       tagged: false,
-      peers: [{ dnsName: Option.some("skiff.example-tailnet.ts.net"), hostName: "skiff", ips: ["100.101.102.104"], userId: Option.some(7), tagged: false, shared: false }],
+      peers: [{ dnsName: Option.some("skiff.example-tailnet.ts.net"), stableId: Option.none(), hostName: "skiff", ips: ["100.101.102.104"], userId: Option.some(7), tagged: false, shared: false }],
     }
-    const config = { tailnetWrite: "member-except-hosts", agentHosts: ["skiff"] } as const
+    const config = { tailnetWrite: "member-except-hosts", agentHosts: ["skiff"], excluded: [] } as const
     const kept = await Effect.runPromise(
       Effect.gen(function* () {
         const members = yield* Ref.make(STARTING)

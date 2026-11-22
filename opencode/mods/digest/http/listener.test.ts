@@ -19,7 +19,7 @@ import * as FilePairing from "../filestore/pairing.ts"
 import type { TailnetState } from "../health.ts"
 import type { MarkLine } from "../marks.ts"
 import { CODE_TTL_MS, OLD_COOKIE, type Pairing, SOURCE_FAILURES, TOKEN_HEADER } from "../pairing.ts"
-import { closed, type Members, membersOf } from "../members.ts"
+import { closed, type Exclusion, exclusionsFrom, type Members, membersOf, sourceOf, type WriteConfig } from "../members.ts"
 import { ACCESS, type Listener, type TailnetWrite } from "../policy.ts"
 import { type Handlers, HOSTNAME, kindOf, listen, PAGE_HEADER, type PeerOf, type Place, serveTailnet, socketPeer } from "./listener.ts"
 
@@ -129,7 +129,7 @@ describe("the page's listener", () => {
       const view = await fetch(`${base}/view.json`)
       expect([view.status, view.headers.get("content-type"), view.headers.get("cache-control"), await view.text()]).toEqual([200, "application/json", "no-store", '{"v":1}'])
       // On loopback the health line is whole, unauthenticated, with the write switch in force and his devices' count.
-      expect(await (await fetch(`${base}/health`)).text()).toBe("digest ok dev host=harbor events=3 last=none peers=none tailnet=no writes=paired:none members=0")
+      expect(await (await fetch(`${base}/health`)).text()).toBe("digest ok dev host=harbor events=3 last=none peers=none tailnet=no writes=paired:none members=0 writers=0 excluded=0")
     })
   })
 
@@ -611,15 +611,15 @@ const HIS_TAILNET = StatusRead.Read({
     userId: Option.some(7),
     tagged: false,
     peers: [
-      { dnsName: Option.some("skiff.example-tailnet.ts.net"), hostName: "skiff", ips: ["100.101.102.104", "fd7a:115c:a1e0::44"], userId: Option.some(7), tagged: false, shared: false },
-      { dnsName: Option.some("phone.example-tailnet.ts.net"), hostName: "localhost", ips: ["100.101.102.110", "fd7a:115c:a1e0::110"], userId: Option.some(7), tagged: false, shared: false },
-      { dnsName: Option.some("laptop.example-tailnet.ts.net"), hostName: "laptop", ips: ["100.101.102.120"], userId: Option.some(9), tagged: false, shared: false },
+      { dnsName: Option.some("skiff.example-tailnet.ts.net"), stableId: Option.none(), hostName: "skiff", ips: ["100.101.102.104", "fd7a:115c:a1e0::44"], userId: Option.some(7), tagged: false, shared: false },
+      { dnsName: Option.some("phone.example-tailnet.ts.net"), stableId: Option.none(), hostName: "localhost", ips: ["100.101.102.110", "fd7a:115c:a1e0::110"], userId: Option.some(7), tagged: false, shared: false },
+      { dnsName: Option.some("laptop.example-tailnet.ts.net"), stableId: Option.none(), hostName: "laptop", ips: ["100.101.102.120"], userId: Option.some(9), tagged: false, shared: false },
     ],
   },
 })
 const PEER_HEADER = "x-test-peer"
 const fromHeader: PeerOf = (request) => Option.getOrElse(Option.fromNullishOr(request.headers.get(PEER_HEADER)), () => ANOTHER_USERS)
-const his = (tailnetWrite: TailnetWrite, agentHosts: ReadonlyArray<string> = ["skiff"]): Members => membersOf({ tailnetWrite, agentHosts }, HIS_TAILNET, NOW)
+const his = (tailnetWrite: TailnetWrite, agentHosts: ReadonlyArray<string> = ["skiff"]): Members => membersOf({ tailnetWrite, agentHosts, excluded: [] }, HIS_TAILNET, NOW)
 const PHONE = ["100.101.102.110", "::ffff:100.101.102.110", "fd7a:115c:a1e0::110", "FD7A:115C:A1E0:0:0:0:0:110"]
 const AGENTS = ["100.101.102.103", "::ffff:100.101.102.103", "fd7a:115c:a1e0::42", "100.101.102.104", "::ffff:100.101.102.104", "fd7a:115c:a1e0:0:0:0:0:44"]
 
@@ -761,7 +761,7 @@ describe("his devices write without pairing; agent machines and everyone else do
       expect((await post(`${base}/api/mark`, { id: "m1", mark: "read" }, own(base))).status).toBe(204)
       expect((await post(`${base}/api/answer`, ANSWER, own(base))).status).toBe(401)
       expect(await (await fetch(`${base}/paired.json`)).json()).toEqual({ paired: false, answers: false })
-      expect(await (await fetch(`${base}/health`)).text()).toEndWith(" tailnet=no writes=member-except-hosts members=2")
+      expect(await (await fetch(`${base}/health`)).text()).toEndWith(" tailnet=no writes=member-except-hosts members=2 writers=1 excluded=0")
     }, member("member-except-hosts"))
     await withListener(dist, async (base, _written, _hostname, rig) => {
       const token = await paired(base, rig)
@@ -771,3 +771,177 @@ describe("his devices write without pairing; agent machines and everyone else do
   })
 })
 
+
+// ── The verifier's four cases (round 1, B1), through the real listener ──
+
+// This host harbor (user 7); his workbox "skiff" (user 7); a colleague's devbox (user 9) that calls itself "skiff"
+// (Tailscale gives it the MagicDNS name skiff-1; its HostName is what the device says).
+const colleagueTailnet = (colleagueHostName: string, withOwnSkiff = true) =>
+  StatusRead.Read({
+    status: {
+      backendState: "Running",
+      dnsName: Option.some("harbor.example-tailnet.ts.net"),
+      ips: ["100.101.102.103"],
+      userId: Option.some(7),
+      tagged: false,
+      peers: [
+        ...[{ dnsName: Option.some("skiff.example-tailnet.ts.net"), stableId: Option.none(), hostName: "skiff", ips: ["100.101.102.104"], userId: Option.some(7), tagged: false, shared: false }].filter(() => withOwnSkiff),
+        { dnsName: Option.some("skiff-1.example-tailnet.ts.net"), stableId: Option.none(), hostName: colleagueHostName, ips: ["100.101.102.120"], userId: Option.some(9), tagged: false, shared: false },
+      ],
+    },
+  })
+const COLLEAGUE = "100.101.102.120"
+
+/** A served page: its base URL, how many marks and answers reached the handlers, and a paired token. */
+interface Served {
+  readonly base: string
+  readonly written: () => Promise<number>
+  readonly pair: () => Promise<string>
+}
+
+/** The real listener on a scratch loopback port, the source injected at its `peerOf` seam. */
+const serveAs = async (setup: { readonly config: WriteConfig; readonly status: StatusRead; readonly peer: string; readonly listener: "tailnet" | "loopback" }, body: (served: Served) => Promise<void>) => {
+  using held = scratch("digest-agenthost-")
+  return await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const written = yield* Ref.make<ReadonlyArray<MarkLine>>([])
+        const answered = yield* Ref.make<ReadonlyArray<PageAnswer>>([])
+        const pairing = FilePairing.make(join(held.path, "pairing"))
+        const handlers: Handlers = {
+          view: Effect.succeed('{"secret":"his digest"}'),
+          write: (line) => Ref.update(written, (all) => [...all, line]),
+          now: Effect.succeed(NOW),
+          zone: "America/Montreal",
+          answer: (input) => Ref.update(answered, (all) => [...all, input]).pipe(Effect.as(AnswerOutcome.Answered({ replaced: Option.none() }))),
+          pairing,
+          health: Effect.succeed("digest ok dev host=harbor events=3 last=none peers=none tailnet=yes"),
+          tailnetRead: "member",
+          members: Effect.succeed(membersOf(setup.config, setup.status, NOW)),
+        }
+        const peer: PeerOf = () => setup.peer
+        const bound = yield* listen({ address: HOSTNAME, port: 0, listener: setup.listener, names: ["harbor"] }, handlers, join(held.path, "dist"), peer)
+        const base = `http://${HOSTNAME}:${bound.port}`
+        const count = async () => (await Effect.runPromise(Ref.get(written))).length + (await Effect.runPromise(Ref.get(answered))).length
+        const pair = async () => {
+          const code = await Effect.runPromise(pairing.issue(NOW))
+          const answer = await fetch(`${base}/api/pair`, { method: "POST", body: JSON.stringify({ code }), headers: { origin: base, [PAGE_HEADER]: "1", "content-type": "application/json" } })
+          const got: { readonly token: string } = await answer.json()
+          return got.token
+        }
+        return yield* Effect.promise(() => body({ base, written: count, pair }))
+      }),
+    ),
+  )
+}
+
+const runAs = (tailnetWrite: TailnetWrite, agentHosts: ReadonlyArray<string>, status: StatusRead, body: (base: string, written: () => Promise<number>) => Promise<void>) =>
+  serveAs({ config: { tailnetWrite, agentHosts, excluded: [] }, status, peer: COLLEAGUE, listener: "tailnet" }, (served) => body(served.base, served.written))
+
+const markFrom = (base: string) => fetch(`${base}/api/mark`, { method: "POST", body: JSON.stringify({ id: "m1", mark: "read" }), headers: { origin: base, [PAGE_HEADER]: "1", "content-type": "application/json" } })
+
+describe("a colleague's device that calls itself like an agent host (round 1, B1)", () => {
+  test("(a) as an address the installer could have shipped while the colleague answered to the name, it opens nothing after the rename", async () => {
+    // An address entry of another user's device is no agent host of his.
+    await runAs("member-except-hosts", ["100.101.102.104", COLLEAGUE], colleagueTailnet("devbox"), async (base) => {
+      expect((await fetch(`${base}/view.json`)).status).toBe(401)
+    })
+  })
+
+  test("(b) by name, the shipped switches: it reads nothing with no token", async () => {
+    await runAs("member-except-hosts", ["skiff"], colleagueTailnet("skiff"), async (base) => {
+      const view = await fetch(`${base}/view.json`)
+      expect([view.status, (await view.text()).includes("his digest")]).toEqual([401, false])
+    })
+    expect(Match.value(sourceOf(COLLEAGUE, membersOf({ tailnetWrite: "member-except-hosts", agentHosts: ["skiff"], excluded: [] }, colleagueTailnet("skiff"), NOW))).pipe(Match.orElse((each) => each))).toBe("other")
+  })
+
+  test("(c) under tailnetWrite member: its mark is refused and nothing is stored", async () => {
+    await runAs("member", ["skiff"], colleagueTailnet("skiff"), async (base, written) => {
+      expect([(await markFrom(base)).status, await written()]).toEqual([401, 0])
+    })
+  })
+
+  test("(d) his own workbox missing from the status: the writes close as unresolved, whatever the colleague's device is called", () => {
+    const members = membersOf({ tailnetWrite: "member-except-hosts", agentHosts: ["skiff"], excluded: [] }, colleagueTailnet("skiff", false), NOW)
+    expect([members.write, members.why, sourceOf(COLLEAGUE, members)]).toEqual(["paired", "unresolved:skiff", "other"])
+  })
+})
+
+// ── An excluded device of his (digest.excludedDevices), through the real listener ──
+
+// This host harbor; his phone; his workbox skiff (an agent host); his spare laptop dinghy, excluded by its stable ID.
+const DINGHY = "100.101.102.130"
+const OWN_PHONE = "100.101.102.110"
+const EXCLUDED: ReadonlyArray<Exclusion> = [{ name: "dinghy", id: Option.some("nDinghy1CNTRL") }]
+const withDinghy = (dinghy: { readonly dnsName: string; readonly id: string }) =>
+  StatusRead.Read({
+    status: {
+      backendState: "Running",
+      dnsName: Option.some("harbor.example-tailnet.ts.net"),
+      ips: ["100.101.102.103"],
+      userId: Option.some(7),
+      tagged: false,
+      peers: [
+        { dnsName: Option.some("phone.example-tailnet.ts.net"), stableId: Option.some("nPhone1CNTRL"), hostName: "localhost", ips: [OWN_PHONE], userId: Option.some(7), tagged: false, shared: false },
+        { dnsName: Option.some("skiff.example-tailnet.ts.net"), stableId: Option.some("nSkiff1CNTRL"), hostName: "skiff", ips: ["100.101.102.104"], userId: Option.some(7), tagged: false, shared: false },
+        { dnsName: Option.some(`${dinghy.dnsName}.example-tailnet.ts.net`), stableId: Option.some(dinghy.id), hostName: dinghy.dnsName, ips: [DINGHY], userId: Option.some(7), tagged: false, shared: false },
+      ],
+    },
+  })
+const AS_SHIPPED = { tailnetWrite: "member-except-hosts", agentHosts: ["skiff"], excluded: EXCLUDED } as const
+const AN_ANSWER = { id: "question:s:q1", option: "Keep it" }
+const send = (served: Served, path: string, body: Readonly<Record<string, string>>, token = "") =>
+  fetch(`${served.base}${path}`, { method: "POST", body: JSON.stringify(body), headers: { origin: served.base, [PAGE_HEADER]: "1", "content-type": "application/json", ...Object.fromEntries([[TOKEN_HEADER, token]].filter(() => token !== "")) } })
+
+describe("an excluded device of his gets nothing unpaired, as another user's device", () => {
+  test("with no token it reads 401, marks 401 and answers 401, and nothing is stored; paired, it reads, marks and answers", async () => {
+    await serveAs({ config: AS_SHIPPED, status: withDinghy({ dnsName: "dinghy", id: "nDinghy1CNTRL" }), peer: DINGHY, listener: "tailnet" }, async (served) => {
+      const view = await fetch(`${served.base}/view.json`)
+      expect([view.status, (await view.text()).includes("his digest")]).toEqual([401, false])
+      expect([(await send(served, "/api/mark", { id: "m1", mark: "read" })).status, (await send(served, "/api/answer", AN_ANSWER)).status, await served.written()]).toEqual([401, 401, 0])
+      expect(await (await fetch(`${served.base}/paired.json`)).json()).toEqual({ paired: false, answers: false })
+      const token = await served.pair()
+      expect([(await fetch(`${served.base}/view.json`, { headers: { [TOKEN_HEADER]: token } })).status, (await send(served, "/api/mark", { id: "m1", mark: "read" }, token)).status, (await send(served, "/api/answer", AN_ANSWER, token)).status, await served.written()]).toEqual([200, 204, 200, 2])
+    })
+  })
+
+  test("renamed (a new MagicDNS name, the same stable ID), it stays out; his phone still marks unpaired", async () => {
+    await serveAs({ config: AS_SHIPPED, status: withDinghy({ dnsName: "lifeboat", id: "nDinghy1CNTRL" }), peer: DINGHY, listener: "tailnet" }, async (served) => {
+      expect([(await fetch(`${served.base}/view.json`)).status, (await send(served, "/api/mark", { id: "m1", mark: "read" })).status]).toEqual([401, 401])
+    })
+    await serveAs({ config: AS_SHIPPED, status: withDinghy({ dnsName: "lifeboat", id: "nDinghy1CNTRL" }), peer: OWN_PHONE, listener: "tailnet" }, async (served) => {
+      expect([(await fetch(`${served.base}/view.json`)).status, (await send(served, "/api/mark", { id: "m1", mark: "read" })).status]).toEqual([200, 204])
+    })
+  })
+
+  test("re-keyed (a new stable ID, the same name), it stays out by name, and health says its ID matches no device of his", async () => {
+    await serveAs({ config: AS_SHIPPED, status: withDinghy({ dnsName: "dinghy", id: "nDinghy2CNTRL" }), peer: DINGHY, listener: "tailnet" }, async (served) => {
+      expect((await fetch(`${served.base}/view.json`)).status).toBe(401)
+    })
+    expect(membersOf(AS_SHIPPED, withDinghy({ dnsName: "dinghy", id: "nDinghy2CNTRL" }), NOW).excluded).toBe("1:unmatched:dinghy")
+  })
+
+  test("on loopback health counts his devices without it, and those that write as him unpaired (the phone alone); an exclusion that finds nothing is named", async () => {
+    await serveAs({ config: AS_SHIPPED, status: withDinghy({ dnsName: "dinghy", id: "nDinghy1CNTRL" }), peer: "127.0.0.1", listener: "loopback" }, async (served) => {
+      expect(await (await fetch(`${served.base}/health`)).text()).toEndWith(" writes=member-except-hosts members=2 writers=1 excluded=1")
+    })
+    // Renamed and re-keyed both, nothing finds it: it counts as his again, and health says so instead of hiding it.
+    await serveAs({ config: AS_SHIPPED, status: withDinghy({ dnsName: "lifeboat", id: "nDinghy2CNTRL" }), peer: "127.0.0.1", listener: "loopback" }, async (served) => {
+      expect(await (await fetch(`${served.base}/health`)).text()).toEndWith(" writes=member-except-hosts members=3 writers=2 excluded=0:unmatched:dinghy")
+    })
+    // Shipped without an ID (the installer could not read one): kept out by name, and health says it is unkeyed.
+    expect(membersOf({ ...AS_SHIPPED, excluded: [{ name: "dinghy", id: Option.none() }] }, withDinghy({ dnsName: "dinghy", id: "nDinghy1CNTRL" }), NOW).excluded).toBe("1:unkeyed:dinghy")
+  })
+
+  test("the installer's exclusions: the ID of the device of his that carries the name, never another user's; none when no device of his does", () => {
+    // Only a colleague's device answers to "dinghy" (its HostName; Tailscale named it dinghy-1), and also one named dinghy outright.
+    const theirs = (dnsName: string) => ({ dnsName: Option.some(`${dnsName}.example-tailnet.ts.net`), stableId: Option.some("nTheirs1CNTRL"), hostName: "dinghy", ips: [COLLEAGUE], userId: Option.some(9), tagged: false, shared: false })
+    const colleague = StatusRead.Read({
+      status: { backendState: "Running", dnsName: Option.some("harbor.example-tailnet.ts.net"), ips: ["100.101.102.103"], userId: Option.some(7), tagged: false, peers: [theirs("dinghy-1"), theirs("dinghy")] },
+    })
+    expect(exclusionsFrom(["dinghy"], withDinghy({ dnsName: "dinghy", id: "nDinghy1CNTRL" }))).toEqual([{ name: "dinghy", id: "nDinghy1CNTRL" }])
+    expect(exclusionsFrom(["dinghy"], colleague)).toEqual([{ name: "dinghy" }])
+    expect(exclusionsFrom(["dinghy"], StatusRead.Unread({ why: "no-cli" }))).toEqual([{ name: "dinghy" }])
+  })
+})

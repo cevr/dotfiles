@@ -101,7 +101,9 @@ export interface TailscaleStatus {
 export interface PeerStatus {
   /** Its MagicDNS name, without the trailing dot; none when MagicDNS is off. */
   readonly dnsName: Option.Option<string>
-  /** `HostName`: the name the device gives itself. */
+  /** `ID`: its stable node ID, which the coordination server assigns and the device cannot change. */
+  readonly stableId: Option.Option<string>
+  /** `HostName`: the name the device gives itself, any name it likes; never an identity (members.ts never reads it). */
   readonly hostName: string
   /** `TailscaleIPs`. */
   readonly ips: ReadonlyArray<string>

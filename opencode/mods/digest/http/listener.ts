@@ -254,7 +254,7 @@ interface Asked {
 const wholeHealth = (handlers: Handlers, asked: Asked) =>
   Effect.map(handlers.health, (line) =>
     Option.getOrElse(
-      Option.map(Option.liftPredicate(line, (each) => asked.listener === "loopback" && isWell(each)), (each) => `${each} ${localPart(writesWord(asked.members), asked.members.devices)}`),
+      Option.map(Option.liftPredicate(line, (each) => asked.listener === "loopback" && isWell(each)), (each) => `${each} ${localPart(writesWord(asked.members), asked.members.devices, asked.members.writers, asked.members.excluded)}`),
       () => line,
     ),
   )

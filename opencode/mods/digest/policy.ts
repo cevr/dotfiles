@@ -64,7 +64,8 @@ export const PAIRED: Policy = { tailnetRead: "paired", tailnetWrite: "paired" }
 /**
  * Who sent a request, by its socket's peer address:
  * - `local`: it came in on the loopback listener;
- * - `agent`: this host's own Tailscale address, or an agent host's (`digest.agentHosts`);
+ * - `agent`: one of HIS devices that runs agents: this host, or one `digest.agentHosts` names (members.ts). It is
+ *   `own` with less: it may read like `own`, but never writes more, so naming an agent host only restricts;
  * - `own`: another device of this host's Tailscale user;
  * - `other`: any other tailnet address (another user's device, a shared-in or tagged one, one the status lacks);
  * - `outside`: not in Tailscale's ranges.

@@ -327,24 +327,26 @@ describe("the pool's fleet", () => {
   })
 
   test("on his hosts the digest's morning is his zone (the workbox is UTC), his own devices read, mark and answer unpaired but for the agent machines, each host naming the other; elsewhere the host's zone and the plugin's paired defaults", () => {
-    const his = (agents: ReadonlyArray<string>) => ({ package: `${MODS}/digest`, options: { timezone: "America/Montreal", tailnetRead: "member", tailnetWrite: "member-except-hosts", agentHosts: agents } })
-    expect(digestEntry(`${MODS}/digest`, { host: "bite-cristian", agents: ["100.64.0.3"] })).toEqual(his(["100.64.0.3"]))
-    expect(digestEntry(`${MODS}/digest`, { host: "Cristians-MacBook-Pro.local", agents: ["bite-cristian"] })).toEqual(his(["bite-cristian"]))
-    expect(digestEntry(`${MODS}/digest`, { host: "ci-runner", agents: [] })).toBe(`${MODS}/digest`)
+    const excluded = [{ name: "lenovo-rescue", id: "nInvented1CNTRL" }]
+    const his = (agents: ReadonlyArray<string>) => ({ package: `${MODS}/digest`, options: { timezone: "America/Montreal", tailnetRead: "member", tailnetWrite: "member-except-hosts", agentHosts: [...agents, "cristians-macbook-pro-rex"], excludedDevices: excluded } })
+    // By name, never by address: the plugin resolves each among his own devices' MagicDNS names at every status read.
+    expect(digestEntry(`${MODS}/digest`, { host: "bite-cristian", excluded })).toEqual(his(["cristians-macbook-pro"]))
+    expect(digestEntry(`${MODS}/digest`, { host: "Cristians-MacBook-Pro.local", excluded })).toEqual(his(["bite-cristian"]))
+    expect(digestEntry(`${MODS}/digest`, { host: "ci-runner", excluded })).toBe(`${MODS}/digest`)
   })
 
-  test("each host's agent hosts are the other fleet host, by its Tailscale name (agentHostsOf resolves them through the digest's status reader: mods/digest/policy.test.ts)", () => {
+  test("each host's agent hosts are the other fleet host, by its MagicDNS first label (resolved by the plugin: mods/digest/agenthost.test.ts)", () => {
     expect(fleetOthersOf("Cristians-MacBook-Pro.local")).toEqual(["bite-cristian"])
     expect(fleetOthersOf("bite-cristian")).toEqual(["cristians-macbook-pro"])
     expect(fleetOthersOf("ci-runner")).toEqual([])
   })
 
   test("a tree's overlay replaces an earlier build's digest entry whole: its plugin list comes whole from the host's facts", () => {
-    const facts = { host: "bite-cristian", tailscale: Option.some("100.64.0.2"), digestAgents: ["100.64.0.4"], fleet: CHECKOUTS, catalog: CATALOG, store: Option.none(), settings: settingsFor({ host: "bite-cristian", home: "/h", state: "/s", checkout: "/repo", fork: "/fork", bun: "/bun", resident: "/r", launcher: "/l" }) }
+    const facts = { host: "bite-cristian", tailscale: Option.some("100.64.0.2"), digestExcluded: [{ name: "lenovo-rescue", id: "nInvented1CNTRL" }], fleet: CHECKOUTS, catalog: CATALOG, store: Option.none(), settings: settingsFor({ host: "bite-cristian", home: "/h", state: "/s", checkout: "/repo", fork: "/fork", bun: "/bun", resident: "/r", launcher: "/l" }) }
     // The overlay's plugins are serverEntries' list, written whole (writeTree's writeJson); an earlier build's entry does not survive.
     const earlier = { package: "/t/digest", options: { timezone: "America/Montreal", tailnetRead: "paired" } }
     const plugins = serverEntries(facts, (name) => `/t/${name}`)
-    expect(plugins).toContainEqual({ package: "/t/digest", options: { timezone: "America/Montreal", tailnetRead: "member", tailnetWrite: "member-except-hosts", agentHosts: ["100.64.0.4"] } })
+    expect(plugins).toContainEqual({ package: "/t/digest", options: { timezone: "America/Montreal", tailnetRead: "member", tailnetWrite: "member-except-hosts", agentHosts: ["cristians-macbook-pro", "cristians-macbook-pro-rex"], excludedDevices: [{ name: "lenovo-rescue", id: "nInvented1CNTRL" }] } })
     expect(plugins).not.toContainEqual(earlier)
   })
 

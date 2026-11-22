@@ -8,7 +8,7 @@
 import { describe, expect, test } from "bun:test"
 import { Duration, Match, Option } from "effect"
 import { StatusRead, type TailscaleStatus } from "./bind.ts"
-import { agentHostsFrom, closed, current, MEMBERS_TTL, membersOf, sourceOf, writesWord } from "./members.ts"
+import { closed, current, MEMBERS_TTL, membersOf, sourceOf, writesWord } from "./members.ts"
 import { ACCESS, type Decision, decide, type Facts, type Listener, mayAnswer, type Policy, ROUTE_KINDS, type RouteKind, type Source, SOURCES, TAILNET_WRITES, WRITES } from "./policy.ts"
 
 const LOOPBACK_HOSTS = ["127.0.0.1:8240", "localhost:8240"]
@@ -142,11 +142,11 @@ const STATUS: TailscaleStatus = {
   userId: Option.some(7),
   tagged: false,
   peers: [
-    { dnsName: Option.some("skiff.example-tailnet.ts.net"), hostName: "skiff", ips: ["100.101.102.104", "fd7a:115c:a1e0::44"], userId: Option.some(7), tagged: false, shared: false },
-    { dnsName: Option.some("phone.example-tailnet.ts.net"), hostName: "localhost", ips: ["100.101.102.110", "fd7a:115c:a1e0::110"], userId: Option.some(7), tagged: false, shared: false },
-    { dnsName: Option.some("laptop.example-tailnet.ts.net"), hostName: "Colleague's MacBook", ips: ["100.101.102.120", "fd7a:115c:a1e0::120"], userId: Option.some(9), tagged: false, shared: false },
-    { dnsName: Option.some("server.example-tailnet.ts.net"), hostName: "server", ips: ["100.101.102.121"], userId: Option.some(7), tagged: true, shared: false },
-    { dnsName: Option.some("guest.example-tailnet.ts.net"), hostName: "guest", ips: ["100.101.102.122"], userId: Option.some(7), tagged: false, shared: true },
+    { dnsName: Option.some("skiff.example-tailnet.ts.net"), stableId: Option.none(), hostName: "skiff", ips: ["100.101.102.104", "fd7a:115c:a1e0::44"], userId: Option.some(7), tagged: false, shared: false },
+    { dnsName: Option.some("phone.example-tailnet.ts.net"), stableId: Option.none(), hostName: "localhost", ips: ["100.101.102.110", "fd7a:115c:a1e0::110"], userId: Option.some(7), tagged: false, shared: false },
+    { dnsName: Option.some("laptop.example-tailnet.ts.net"), stableId: Option.none(), hostName: "Colleague's MacBook", ips: ["100.101.102.120", "fd7a:115c:a1e0::120"], userId: Option.some(9), tagged: false, shared: false },
+    { dnsName: Option.some("server.example-tailnet.ts.net"), stableId: Option.none(), hostName: "server", ips: ["100.101.102.121"], userId: Option.some(7), tagged: true, shared: false },
+    { dnsName: Option.some("guest.example-tailnet.ts.net"), stableId: Option.none(), hostName: "guest", ips: ["100.101.102.122"], userId: Option.some(7), tagged: false, shared: true },
   ],
 }
 
@@ -164,7 +164,7 @@ const ADDRESSES: ReadonlyArray<readonly [string, Source]> = [
 ]
 
 const NOW = 1_795_204_800_000
-const membersAt = (tailnetWrite: Policy["tailnetWrite"], agentHosts: ReadonlyArray<string> = ["skiff"]) => membersOf({ tailnetWrite, agentHosts }, StatusRead.Read({ status: STATUS }), NOW)
+const membersAt = (tailnetWrite: Policy["tailnetWrite"], agentHosts: ReadonlyArray<string> = ["skiff"]) => membersOf({ tailnetWrite, agentHosts, excluded: [] }, StatusRead.Read({ status: STATUS }), NOW)
 
 describe("who a source address is, from Tailscale's status", () => {
   test("this host and the agent host are agents, his phone his own, everyone else other or outside, in every spelling", () => {
@@ -173,7 +173,7 @@ describe("who a source address is, from Tailscale's status", () => {
     expect([members.write, members.why, members.devices]).toEqual(["member-except-hosts", "", 2])
   })
 
-  test("an agent host is resolved by its MagicDNS name, its first label, its HostName or its address; never by DNS", () => {
+  test("an agent host is resolved among his devices by its MagicDNS name, its first label or its address; never by HostName or DNS", () => {
     for (const entry of ["skiff", "SKIFF", "skiff.example-tailnet.ts.net", "skiff.example-tailnet.ts.net.", "100.101.102.104", "::ffff:100.101.102.104"]) expect([entry, sourceOf("100.101.102.104", membersAt("member-except-hosts", [entry]))]).toEqual([entry, "agent"])
     // A name only DNS knows, or an address outside the ranges, resolves to nothing: the writes close to paired, and health says which.
     for (const entry of ["skiff.example.com", "dinghy", "192.168.1.9"]) {
@@ -184,20 +184,22 @@ describe("who a source address is, from Tailscale's status", () => {
     expect(membersAt("member", ["dinghy"]).write).toBe("member")
   })
 
-  test("the installer's agent hosts: each name's addresses from the status, or the name when it does not resolve (not running, no status, no such device)", () => {
-    expect(agentHostsFrom(["skiff"], StatusRead.Read({ status: STATUS }))).toEqual(["100.101.102.104", "fd7a:115c:a1e0:0:0:0:0:44"])
-    expect(agentHostsFrom(["skiff", "dinghy"], StatusRead.Read({ status: STATUS }))).toEqual(["100.101.102.104", "fd7a:115c:a1e0:0:0:0:0:44", "dinghy"])
-    expect(agentHostsFrom(["skiff"], StatusRead.Read({ status: { ...STATUS, backendState: "Stopped" } }))).toEqual(["skiff"])
-    expect(agentHostsFrom(["skiff"], StatusRead.Unread({ why: "no-cli" }))).toEqual(["skiff"])
+  test("a HostName, a colleague's MagicDNS name or address, a tagged or shared-in device's name: none is an agent host of his, and the writes close", () => {
+    // "localhost" is his phone's HostName; laptop, server and guest are not his devices.
+    const entries = [["localhost", "localhost"], ["Colleague's MacBook", "ColleaguesMacBook"], ["laptop", "laptop"], ["100.101.102.120", "100.101.102.120"], ["server", "server"], ["guest.example-tailnet.ts.net", "guest.example-tailnet.ts.net"]] as const
+    for (const [entry, said] of entries) {
+      const members = membersAt("member-except-hosts", [entry])
+      expect([entry, writesWord(members), members.agents.length]).toEqual([entry, `paired:unresolved:${said}`, 2])
+    }
   })
 
   test("no status, Tailscale not running, a tagged host, or members past their lifetime: no device is his", () => {
     for (const read of [StatusRead.Unread({ why: "cli-timeout" }), StatusRead.Read({ status: { ...STATUS, backendState: "Stopped" } })]) {
-      const members = membersOf({ tailnetWrite: "member", agentHosts: ["skiff"] }, read, NOW)
+      const members = membersOf({ tailnetWrite: "member", agentHosts: ["skiff"], excluded: [] }, read, NOW)
       expect(ADDRESSES.flatMap(([address]) => [sourceOf(address, members)].filter((each) => each !== "other" && each !== "outside"))).toEqual([])
       expect(members.write).toBe("paired")
     }
-    expect(sourceOf("100.101.102.110", membersOf({ tailnetWrite: "member", agentHosts: [] }, StatusRead.Read({ status: { ...STATUS, tagged: true } }), NOW))).toBe("other")
+    expect(sourceOf("100.101.102.110", membersOf({ tailnetWrite: "member", agentHosts: [], excluded: [] }, StatusRead.Read({ status: { ...STATUS, tagged: true } }), NOW))).toBe("other")
     const members = membersAt("member")
     expect(sourceOf("100.101.102.110", current(members, NOW + Duration.toMillis(MEMBERS_TTL)))).toBe("own")
     expect(sourceOf("100.101.102.110", current(members, NOW + Duration.toMillis(MEMBERS_TTL) + 1))).toBe("other")

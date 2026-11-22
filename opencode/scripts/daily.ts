@@ -50,7 +50,7 @@ import { type Catalog, DEFAULT_FORK, loadCatalog, loginStoreDir, newestRelease }
 import { BUILTIN_AUTOMATION_OFF, BUILTIN_BTW_OFF, SERVER_OFF, SERVER_PLUGINS, serverEntry, serverEntryDir, TUI_OFF, tuiPluginsOf } from "../mods/update/trees.ts"
 import type { Settings } from "../mods/update/settings.ts"
 import type { TailnetRead, TailnetWrite } from "../mods/digest/policy.ts"
-import { readAgentHosts } from "../mods/digest/process/tailnet.ts"
+import { readExclusions } from "../mods/digest/process/tailnet.ts"
 import { readyFork } from "./fork.ts"
 import { upstreamFile } from "../mods/prime/update.ts"
 import { hostLocks } from "../mods/work/process/landing.ts"
@@ -205,33 +205,45 @@ export const OWNER_TIMEZONE = "America/Montreal"
  * - `digest.tailnetRead` is `"member"`: his own devices (this host's Tailscale user's; never another user's on his
  *   shared tailnet) read the page unpaired (owner, 2026-11-22: "Tailnet can read");
  * - `digest.tailnetWrite` is `"member-except-hosts"`: those devices also mark and answer unpaired, except the agent
- *   machines, this host and `agents` (his other hosts, where agents run), which pair as before (owner, 2026-11-22:
+ *   machines, this host and the other fleet hosts (where agents run), which pair as before (owner, 2026-11-22:
  *   "the tailnet is the authentication");
- * - `digest.agentHosts` is `agents`: the other hosts' Tailscale addresses, read from Tailscale's status when the tree
- *   is configured (`agentHostsOf`); one it could not resolve stays a name, which the plugin resolves at each tailnet
- *   read, closing the writes to `"paired"` (and saying so in its health line) while it cannot.
+ * - `digest.agentHosts` names the other fleet hosts by their MagicDNS first label (`fleetOthersOf`), never by
+ *   address: the plugin resolves each name among his own devices at every status read, so a renamed or re-keyed
+ *   device leaves no stale address behind, and a name none of his devices carries closes the writes to `"paired"`
+ *   (and its health line says so); his other agent machines (`OWNER_AGENT_DEVICES`) are named beside them;
+ * - `digest.excludedDevices` is `excluded`: his devices that get nothing unpaired, reads included
+ *   (`OWNER_EXCLUDED_DEVICES`), each with the stable node ID Tailscale's status gave it when the tree was configured
+ *   (`exclusionsOf`), so a rename keeps it out.
  * Set `tailnetWrite` to `"paired"` here to make marks and answers need pairing again, or `"member"` to let the agent
  * machines write too.
  *
  * Elsewhere the bare plugin: the host's zone, and the plugin's defaults, `"paired"` for both.
  */
-export const digestEntry = (digest: string, fleet: { readonly host: string; readonly agents: ReadonlyArray<string> }): PluginEntry => {
+export const digestEntry = (digest: string, fleet: { readonly host: string; readonly excluded: ReadonlyArray<{ readonly name: string; readonly id?: string }> }): PluginEntry => {
   if (peersOf(fleet.host).length === 0) return digest
   return {
     package: digest,
-    options: { timezone: OWNER_TIMEZONE, tailnetRead: "member" satisfies TailnetRead, tailnetWrite: "member-except-hosts" satisfies TailnetWrite, agentHosts: fleet.agents },
+    options: {
+      timezone: OWNER_TIMEZONE,
+      tailnetRead: "member" satisfies TailnetRead,
+      tailnetWrite: "member-except-hosts" satisfies TailnetWrite,
+      agentHosts: [...fleetOthersOf(fleet.host), ...OWNER_AGENT_DEVICES],
+      excludedDevices: fleet.excluded,
+    },
   }
 }
 
+/** His devices beyond the fleet that run agents (owner, 2026-11-22): they read on the tailnet, and pair to write. */
+export const OWNER_AGENT_DEVICES: ReadonlyArray<string> = ["cristians-macbook-pro-rex"]
+
+/** His devices that get nothing unpaired on the tailnet, as if another user's (owner, 2026-11-22: "remove the lenovo-rescue"). */
+export const OWNER_EXCLUDED_DEVICES: ReadonlyArray<string> = ["lenovo-rescue"]
+
+/** `digest.excludedDevices` on `host`: his excluded devices, each keyed by its stable ID from Tailscale's status now. */
+export const exclusionsOf = (host: string): Promise<ReadonlyArray<{ readonly name: string; readonly id?: string }>> => readExclusions(OWNER_EXCLUDED_DEVICES.filter(() => peersOf(host).length > 0))
+
 /** The fleet's other hosts by their Tailscale names (each host's `FLEET` name is its MagicDNS first label); none off the fleet. */
 export const fleetOthersOf = (host: string): ReadonlyArray<string> => Object.keys(FLEET).filter((name) => peersOf(host).length > 0 && name !== host.toLowerCase().replace(/\.local$/, ""))
-
-/**
- * The digest's agent hosts for `host`: each other fleet host's Tailscale addresses as Tailscale's status names them
- * (the digest's own reader, `readAgentHosts`), never DNS; a host it does not name stays its name, for the plugin to
- * resolve or to fail closed on.
- */
-export const agentHostsOf = (host: string): Promise<ReadonlyArray<string>> => readAgentHosts(fleetOthersOf(host))
 
 /** This machine's Tailscale IPv4 address, from the `tailscale` CLI (on PATH, or the Mac app's), or undefined. */
 export const tailscaleAddress = async (): Promise<string | undefined> => {
@@ -423,8 +435,8 @@ export interface HostFacts {
   /** The host's name (`FLEET`). */
   readonly host: string
   readonly tailscale: Option.Option<string>
-  /** The digest's agent hosts: the other fleet hosts' Tailscale addresses (`agentHostsOf`). */
-  readonly digestAgents: ReadonlyArray<string>
+  /** The digest's excluded devices, each keyed by its stable ID (`exclusionsOf`). */
+  readonly digestExcluded: ReadonlyArray<{ readonly name: string; readonly id?: string }>
   /** The fork checkout, and the dotfiles checkout an accepted verdict records the verified target from. */
   readonly fleet: { readonly dotfiles: string; readonly fork: string }
   readonly catalog: Catalog
@@ -440,7 +452,7 @@ const hostFacts = (home: string, fork: string, where: Where = HERE) =>
     return {
       host: where.host,
       tailscale: Option.fromNullishOr(yield* Effect.promise(tailscaleAddress)),
-      digestAgents: yield* Effect.promise(() => agentHostsOf(where.host)),
+      digestExcluded: yield* Effect.promise(() => exclusionsOf(where.host)),
       fleet: { dotfiles: where.checkout, fork },
       catalog: yield* Effect.promise(() => loadCatalog(fork)),
       store: Option.liftPredicate(loginStoreDir(home), existsSync),
@@ -452,7 +464,7 @@ const hostFacts = (home: string, fork: string, where: Where = HERE) =>
 const OPTIONED = new Map<string, (dir: string, facts: HostFacts) => PluginEntry>([
   ["pool", (dir, facts) => poolEntry(dir, Option.getOrUndefined(facts.store), { host: facts.host })],
   ["orchestrate", (dir, facts) => orchestrateEntry(dir, facts.fleet, plannerModel(facts.catalog))],
-  ["digest", (dir, facts) => digestEntry(dir, { host: facts.host, agents: facts.digestAgents })],
+  ["digest", (dir, facts) => digestEntry(dir, { host: facts.host, excluded: facts.digestExcluded })],
   ["mail", (dir, facts) => mailEntry(dir, { host: facts.host, tailscale: Option.getOrUndefined(facts.tailscale) })],
   ["update", (dir, facts) => updateEntry(dir, facts.settings)],
 ])

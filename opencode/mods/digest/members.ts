@@ -1,14 +1,25 @@
-// His devices on the tailnet, as the page's policy needs them: which addresses are his own devices, and which are
-// agent machines, read from Tailscale's status (`tailscale status --json`, process/tailnet.ts) and never from DNS
-// or a request's headers.
+// His devices on the tailnet, as the page's policy needs them: which addresses are his own devices, and which of
+// those are agent machines, read from Tailscale's status (`tailscale status --json`, process/tailnet.ts) and never
+// from DNS or a request's headers.
 //
-// - Own (`own`): a device whose `UserID` is this host's own. His tailnet holds other people's devices too (a work
-//   tailnet), so being on the tailnet is never enough. A tagged device (its UserID names no person), a device shared
-//   in from another tailnet, and every device when this host is itself tagged or has no UserID, are not his own.
-// - Agents (`agent`): this host's own Tailscale addresses, and those of `digest.agentHosts`, each an address or a
-//   name the status gives (a MagicDNS name, its first label, or the device's HostName). Under
-//   `digest.tailnetWrite: "member-except-hosts"` a name the status does not resolve closes the writes to "paired"
-//   (fail closed), and the health line says which name.
+// - His (`own`): this host and each device whose `UserID` is this host's own. His tailnet holds other people's
+//   devices too (a work tailnet), so being on the tailnet is never enough. A tagged device (its UserID names no
+//   person), a device shared in from another tailnet, and every device when this host is itself tagged or has no
+//   UserID, are not his. An address that another device lists too is not his either.
+// - Agents (`agent`): this host, and those of HIS devices that `digest.agentHosts` names, each by its MagicDNS name
+//   (the coordination server assigns it and keeps it unique in the tailnet), that name's first label, or one of its
+//   addresses. Never by HostName, which a device chooses for itself, and never among other users' devices. Being an
+//   agent host only ever restricts: an agent is one of his devices that may read (under tailnetRead "member") but
+//   not write without a token (under tailnetWrite "member-except-hosts"). It never admits a device that is not his.
+// - Excluded (`digest.excludedDevices`): his devices that count as nobody's, reading and writing nothing unpaired,
+//   as another user's device. Each exclusion carries the device's MagicDNS name and its stable node ID (the status's
+//   `ID`: the coordination server assigns it, and a rename or a new HostName does not change it); a device either
+//   matches is excluded, so taking out more only restricts. An exclusion keyed by an ID none of his devices has (a
+//   re-keyed or removed device), or shipped with no ID, is named in health (`unmatched:` / `unkeyed:`), since a
+//   missed exclusion fails open: the device would count as his again.
+// - Under `digest.tailnetWrite: "member-except-hosts"`, an entry none of his devices answers to closes the writes to
+//   "paired" (fail closed), and the health line says which name, whatever other users' devices call themselves.
+// - The entries are resolved at each status read, so a renamed or re-keyed device leaves no stale address behind.
 // - Freshness: the status is read again every RECHECK (30 s); a read that fails, or Tailscale not running, closes
 //   everything to "paired" at once; members older than MEMBERS_TTL are treated as closed too, so a device removed
 //   from his account stops being his within a recheck, and never later than MEMBERS_TTL.
@@ -19,10 +30,20 @@ import type { Source, TailnetWrite } from "./policy.ts"
 /** How old the members may be before they count for nothing. */
 export const MEMBERS_TTL = Duration.seconds(75)
 
-/** `digest.tailnetWrite` and `digest.agentHosts`, as configured. */
+/**
+ * One of his devices to treat as nobody's (`digest.excludedDevices`): its MagicDNS name, and its Tailscale stable node
+ * ID (`ID` in the status), which the device cannot change, resolved among his devices when the tree is configured.
+ */
+export interface Exclusion {
+  readonly name: string
+  readonly id: Option.Option<string>
+}
+
+/** `digest.tailnetWrite`, `digest.agentHosts` and `digest.excludedDevices`, as configured. */
 export interface WriteConfig {
   readonly tailnetWrite: TailnetWrite
   readonly agentHosts: ReadonlyArray<string>
+  readonly excluded: ReadonlyArray<Exclusion>
 }
 
 /** His devices now, with the write switch as in force. */
@@ -31,18 +52,26 @@ export interface Members {
   readonly write: TailnetWrite
   /** Why it closed to "paired" (`unresolved:<name>`, `status:<why>`, `not-running`, `stale`); empty when it did not. */
   readonly why: string
-  /** This host's and the agent hosts' addresses, each in one spelling (bind.ts `canonicalOf`). */
+  /** The agent machines' addresses (this host's and the named agent hosts'), each in one spelling; all his. */
   readonly agents: ReadonlyArray<string>
   /** His other devices' addresses, each in one spelling. */
   readonly own: ReadonlyArray<string>
   /** How many of his other devices the status names (health's `members=`, on loopback only). */
   readonly devices: number
+  /** How many of those are no agent host, so may write as him without a token (health's `writers=`). */
+  readonly writers: number
+  /**
+   * The exclusions as health names them (`excluded=`): how many of his devices are excluded, then
+   * `:unmatched:<name>` for an exclusion whose ID none of his devices has (its name matched, or nothing did), or
+   * `:unkeyed:<name>` for one shipped without an ID.
+   */
+  readonly excluded: string
   /** When the status was read. */
   readonly at: number
 }
 
 /** No devices at all, for `why`: every tailnet source needs the token. */
-export const closed = (why: string, at = 0): Members => ({ write: "paired", why, agents: [], own: [], devices: 0, at })
+export const closed = (why: string, at = 0): Members => ({ write: "paired", why, agents: [], own: [], devices: 0, writers: 0, excluded: "0", at })
 
 /** A word for a reason: letters, digits, dots and dashes only. */
 const word = (text: string) => text.replace(/[^A-Za-z0-9.-]/g, "").slice(0, 60)
@@ -50,34 +79,45 @@ const word = (text: string) => text.replace(/[^A-Za-z0-9.-]/g, "").slice(0, 60)
 /** The addresses, each in one spelling, those in Tailscale's ranges only. */
 const spelled = (ips: ReadonlyArray<string>): ReadonlyArray<string> => ips.flatMap((ip) => Option.toArray(Option.filter(canonicalOf(ip), isTailnet)))
 
-/** Whether `node` answers to `name`: its MagicDNS name, that name's first label, or its HostName, in any case. */
-const answersTo = (name: string, node: { readonly dnsName: Option.Option<string>; readonly hostName: string }): boolean => {
-  const wanted = name.toLowerCase().replace(/\.$/, "")
-  const dns = Option.getOrElse(Option.map(node.dnsName, (each) => each.toLowerCase()), () => "")
-  return wanted !== "" && (wanted === dns || wanted === (dns.split(".")[0] ?? "") || wanted === node.hostName.toLowerCase())
+/** One device as membership reads it: its MagicDNS name and its addresses in one spelling. */
+interface Node {
+  readonly dnsName: Option.Option<string>
+  readonly ips: ReadonlyArray<string>
 }
 
-/** The Tailscale addresses an agent host entry names: itself if an address in the ranges, else the devices of that name. */
-export const resolveHost = (entry: string, status: TailscaleStatus): ReadonlyArray<string> =>
+/** Whether `node` answers to the agent-host entry: its MagicDNS name, that name's first label, or one of its addresses. */
+const answersTo = (entry: string, node: Node): boolean =>
   Option.match(canonicalOf(entry), {
-    onSome: (address) => Option.toArray(Option.liftPredicate(address, isTailnet)),
-    onNone: () => spelled([{ dnsName: status.dnsName, hostName: "", ips: status.ips }, ...status.peers].filter((node) => answersTo(entry, node)).flatMap((node) => node.ips)),
+    onSome: (address) => node.ips.includes(address),
+    onNone: () => {
+      const wanted = entry.toLowerCase().replace(/\.$/, "")
+      const dns = Option.getOrElse(Option.map(node.dnsName, (each) => each.toLowerCase()), () => "")
+      return wanted !== "" && dns !== "" && (wanted === dns || wanted === (dns.split(".")[0] ?? ""))
+    },
   })
 
-/**
- * Agent hosts as the installer writes them into `digest.agentHosts`: each of `names` as the Tailscale addresses
- * `read` gives it, or the name itself when the status does not resolve it (no status, not running, no such device),
- * for the plugin to resolve at each tailnet read or to close the writes on.
- */
-export const agentHostsFrom = (names: ReadonlyArray<string>, read: StatusRead): ReadonlyArray<string> =>
-  names.flatMap((name) => {
-    const ips = Match.valueTags(read, { Read: ({ status }) => resolveHost(name, status).filter(() => status.backendState === "Running"), Unread: (): ReadonlyArray<string> => [] })
-    return [...ips, ...[name].filter(() => ips.length === 0)]
-  })
+/** Whether this host is a person's: it has a UserID and no tags. */
+const selfIsHis = (status: TailscaleStatus): boolean => !status.tagged && Option.isSome(status.userId)
 
 /** Whether a peer is a device of this host's own user: same UserID, not tagged, not shared in. */
 const isOwn = (status: TailscaleStatus, peer: PeerStatus): boolean =>
-  !status.tagged && !peer.tagged && !peer.shared && Option.getOrElse(Option.zipWith(status.userId, peer.userId, (mine, theirs) => mine === theirs), () => false)
+  selfIsHis(status) && !peer.tagged && !peer.shared && Option.getOrElse(Option.zipWith(status.userId, peer.userId, (mine, theirs) => mine === theirs), () => false)
+
+/** Whether an exclusion takes `peer`: by its stable ID, or by its MagicDNS name (either: excluding more only restricts). */
+const excludes = (exclusion: Exclusion, peer: PeerStatus): boolean =>
+  Option.getOrElse(Option.zipWith(exclusion.id, peer.stableId, (id, theirs) => id === theirs), () => false) || answersTo(exclusion.name, { dnsName: peer.dnsName, ips: [] })
+
+/** Health's `excluded=` word: the count, and each exclusion its ID does not find (or that has none). */
+const exclusionsWord = (exclusions: ReadonlyArray<Exclusion>, his: ReadonlyArray<PeerStatus>, count: number): string =>
+  [
+    `${count}`,
+    ...exclusions.flatMap((exclusion) =>
+      Option.match(exclusion.id, {
+        onNone: () => [`unkeyed:${word(exclusion.name)}`],
+        onSome: (id) => [`unmatched:${word(exclusion.name)}`].filter(() => !his.some((peer) => Option.contains(peer.stableId, id))),
+      }),
+    ),
+  ].join(":")
 
 /** His devices from a status read at `at`, under `config`. */
 export const membersOf = (config: WriteConfig, read: StatusRead, at: number): Members =>
@@ -85,17 +125,41 @@ export const membersOf = (config: WriteConfig, read: StatusRead, at: number): Me
     Unread: ({ why }) => closed(`status:${word(why)}`, at),
     Read: ({ status }) => {
       if (status.backendState !== "Running") return closed("not-running", at)
-      const resolved = config.agentHosts.map((entry) => ({ entry, ips: resolveHost(entry, status) }))
-      const agents = [...new Set([...spelled(status.ips), ...resolved.flatMap((each) => each.ips)])]
-      const mine = status.peers.filter((peer) => isOwn(status, peer))
-      const own = [...new Set(spelled(mine.flatMap((peer) => peer.ips)))].filter((ip) => !agents.includes(ip))
-      const unresolved = Option.fromUndefinedOr(resolved.find((each) => each.ips.length === 0))
-      const found = { agents, own, devices: mine.length, at }
+      // An excluded device of his is nobody's, like another user's: its addresses count as theirs.
+      const ownPeers = status.peers.filter((peer) => isOwn(status, peer))
+      const isExcluded = (peer: PeerStatus) => config.excluded.some((exclusion) => excludes(exclusion, peer))
+      const counted = ownPeers.filter((peer) => !isExcluded(peer))
+      // An address another device lists too is contested: nobody's.
+      const theirs = new Set(spelled(status.peers.filter((peer) => !counted.includes(peer)).flatMap((peer) => peer.ips)))
+      const mine = (ips: ReadonlyArray<string>) => spelled(ips).filter((ip) => !theirs.has(ip))
+      const self: Node = { dnsName: status.dnsName, ips: mine(status.ips).filter(() => selfIsHis(status)) }
+      const peers = counted.map((peer): Node => ({ dnsName: peer.dnsName, ips: mine(peer.ips) }))
+      const named = (node: Node) => config.agentHosts.some((entry) => answersTo(entry, node))
+      const agents = [...new Set([...self.ips, ...peers.filter(named).flatMap((node) => node.ips)])]
+      const own = [...new Set(peers.flatMap((node) => node.ips))].filter((ip) => !agents.includes(ip))
+      // Resolved among his devices only: this host when it is his, and his peers.
+      const his = [...[self].filter(() => selfIsHis(status)), ...peers]
+      const unresolved = Option.fromUndefinedOr(config.agentHosts.find((entry) => !his.some((node) => answersTo(entry, node))))
+      const found = { agents, own, devices: peers.length, excluded: exclusionsWord(config.excluded, ownPeers, ownPeers.length - counted.length), at }
+      // Who writes as him with no token under each switch: nobody, all his other devices, or those no agent host.
+      const writers = { paired: 0, member: peers.length, "member-except-hosts": peers.filter((node) => !named(node)).length } satisfies Record<TailnetWrite, number>
       return Option.match(Option.filter(unresolved, () => config.tailnetWrite === "member-except-hosts"), {
-        onSome: (missing): Members => ({ ...found, write: "paired", why: `unresolved:${word(missing.entry)}` }),
-        onNone: (): Members => ({ ...found, write: config.tailnetWrite, why: "" }),
+        onSome: (missing): Members => ({ ...found, writers: 0, write: "paired", why: `unresolved:${word(missing)}` }),
+        onNone: (): Members => ({ ...found, writers: writers[config.tailnetWrite], write: config.tailnetWrite, why: "" }),
       })
     },
+  })
+
+/**
+ * `digest.excludedDevices` for the installer: each name with the stable ID of the device of HIS that carries it as its
+ * MagicDNS name (or first label), read now; a name none of his devices carries (or no status) has no ID, which health
+ * then names as `unkeyed`.
+ */
+export const exclusionsFrom = (names: ReadonlyArray<string>, read: StatusRead): ReadonlyArray<{ readonly name: string; readonly id?: string }> =>
+  names.map((name) => {
+    const his = Match.valueTags(read, { Read: ({ status }) => status.peers.filter((peer) => status.backendState === "Running" && isOwn(status, peer)), Unread: (): ReadonlyArray<PeerStatus> => [] })
+    const id = Option.flatMap(Option.fromUndefinedOr(his.find((peer) => answersTo(name, { dnsName: peer.dnsName, ips: [] }))), (peer) => peer.stableId)
+    return Option.match(id, { onNone: () => ({ name }), onSome: (each) => ({ name, id: each }) })
   })
 
 /** The members as they count at `now`: closed once older than MEMBERS_TTL. */

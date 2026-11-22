@@ -13,7 +13,7 @@ describe("the health line", () => {
     )
     expect(isWell(healthLine(facts))).toBe(true)
     // What loopback's line adds: the write switch in force (with why it closed) and his devices' count.
-    expect([localPart("member-except-hosts", 3), localPart("paired:unresolved:skiff", 0)]).toEqual(["writes=member-except-hosts members=3", "writes=paired:unresolved:skiff members=0"])
+    expect([localPart("member-except-hosts", 3, 2, "1"), localPart("paired:unresolved:skiff", 0, 0, "0:unmatched:dinghy")]).toEqual(["writes=member-except-hosts members=3 writers=2 excluded=1", "writes=paired:unresolved:skiff members=0 writers=0 excluded=0:unmatched:dinghy"])
   })
 
   test("a sick line is one line, and not well", () => {
