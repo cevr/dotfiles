@@ -235,6 +235,30 @@ describe("answering", () => {
       }),
     ))
 
+  test("a form submitted after some of its questions closed elsewhere answers the open ones alone; one whose questions all closed sends nothing", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start()
+        yield* plugin.call({ questions: [port, { question: "Keep the --legacy flag?", assume: "yes" }, { question: "Which test runner?", assume: "bun test" }] })
+        // While the form shows: q1 is answered on the digest page, q2 withdrawn by the agent.
+        yield* plugin.reply("answer", { sessionID: "ses_root", answers: [{ id: "q1", answer: "3000" }] })
+        yield* plugin.call({ withdraw: ["q2"] })
+        yield* plugin.submit("ses_root", { "ask_user_async:q1": "8080", "ask_user_async:q2": "no", "ask_user_async:q3": "vitest" })
+        yield* plugin.received("ses_root", 2)
+        const [, letter, ...more] = plugin.inbox("ses_root")
+        expect(more).toEqual([])
+        expect(letter?.text.split("\n")[0]).toMatch(/^Answer to your background question q3 /)
+        expect(letter?.text).toContain("A: vitest")
+        expect(yield* plugin.open("ses_root")).toEqual([])
+        // A stale form of the same questions, submitted again: nothing more reaches the session.
+        yield* plugin.submit("ses_root", { "ask_user_async:q3": "jest" })
+        yield* plugin.call({ questions: [{ question: "Fifth?", assume: "no" }] })
+        yield* plugin.submit("ses_root", { "ask_user_async:q4": "yes" })
+        yield* plugin.received("ses_root", 3)
+        expect(plugin.inbox("ses_root").map((sent) => sent.text).filter((text) => text.includes("jest"))).toEqual([])
+      }),
+    ))
+
   test("the form's dismiss (ctrl+x) alone closes the question and sends nothing; the assumed choice with a note sends the note on it", () =>
     scenario(
       Effect.gen(function* () {

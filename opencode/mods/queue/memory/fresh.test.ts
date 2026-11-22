@@ -8,7 +8,7 @@ import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { Freshness, layer as freshness, PER_PASS } from "../fresh.ts"
 import type { ItemInput } from "../item.ts"
 import { layer as queues, QueueModel } from "../model.ts"
-import { NoteRefused, QueueHost, type Root } from "../service.ts"
+import { type Lost, NoteRefused, QueueHost, type Root } from "../service.ts"
 import type { Linked } from "../stale.ts"
 import * as MemoryDigest from "@dotfiles/opencode-digest/memory/log"
 import * as MemoryStore from "./store.ts"
@@ -32,9 +32,13 @@ interface World {
   questions: Option.Option<ReadonlyMap<string, number>>
   refuse: boolean
   readonly notes: Array<Noted>
+  /** What orchestrate answers of lost work for a session and the commits its queue names; none without orchestrate. */
+  lost: (sessionID: string, hashes: ReadonlyArray<string>) => Option.Option<Lost>
+  /** Each ask of orchestrate, in order. */
+  readonly asked: Array<readonly [string, ReadonlyArray<string>]>
 }
 
-const worldOf = (): World => ({ roots: [], linked: new Map(), wakes: Option.some(new Map()), questions: Option.some(new Map()), refuse: false, notes: [] })
+const worldOf = (): World => ({ roots: [], linked: new Map(), wakes: Option.some(new Map()), questions: Option.some(new Map()), refuse: false, notes: [], lost: () => Option.none(), asked: [] })
 
 const hostOf = (world: World) =>
   Layer.succeed(
@@ -44,6 +48,11 @@ const hostOf = (world: World) =>
       linked: (sessionID) => Effect.sync(() => Option.fromNullishOr(world.linked.get(sessionID))),
       wakes: () => Effect.sync(() => world.wakes),
       questions: () => Effect.sync(() => world.questions),
+      lost: (sessionID, hashes) =>
+        Effect.sync(() => {
+          world.asked.push([sessionID, hashes])
+          return world.lost(sessionID, hashes)
+        }),
       note: (sessionID, text, description, wake) =>
         Effect.suspend(() => {
           if (world.refuse) return Effect.fail(new NoteRefused({ sessionID, message: "the host said no" }))
@@ -191,5 +200,59 @@ describe("the sweep", () => {
         expect((yield* sweep).map((noted) => noted.sessionID)).toEqual(["ses_4"])
         expect(yield* sweep).toEqual([])
       }),
+  )
+})
+
+describe("work not on the default branch, from orchestrate", () => {
+  const WHY = "not on main: 2 commits not there, committed 9 h ago; land it, or mark it superseded or dropped"
+  const ORPHAN = "/code/.work/app/orphan"
+  const LINES = ["orchestrate: committed work not on main, nobody on it (1, oldest first):", `- ${ORPHAN} · 2 d · 2 commits · orphan work · no session known`, "Land each (orchestrate land), or end it …"]
+  const answering = (world: World) => {
+    world.lost = (_sessionID, hashes) => Option.some({ lines: LINES, keys: [ORPHAN], hashes: new Map(hashes.filter((hash) => hash === "c0ffee1").map((hash) => [hash, WHY])) })
+  }
+
+  sweepTest(
+    "the note lists the item naming an unlanded commit and status's lanes nobody is on; restated, the item drops out; the same lanes are not asked again within six hours",
+    (world) =>
+      Effect.gen(function* () {
+        answering(world)
+        yield* write("ses_root", [
+          { id: "land", text: "land c0ffee1 after review", state: "next" },
+          { id: "ok", text: "watch abc1234 deploy", state: "waiting", owner: "other" },
+        ])
+        yield* active(world, ["ses_root"])
+        expect(yield* sweep).toEqual([{ sessionID: "ses_root", stale: ["land"], open: 2, woke: true }])
+        expect(world.asked).toEqual([["ses_root", ["c0ffee1", "abc1234"]]])
+        expect(world.notes.map((note) => note.description)).toEqual(["Queue check: 1 stale of 2 open, 1 not on main"])
+        expect(texts(world).split("\n").slice(1, 6)).toEqual(["This item looks stale:", `- land [next]: land c0ffee1 after review (it names commit c0ffee1, ${WHY})`, ...LINES])
+        // Within the hour nothing is asked, of the queue or of orchestrate.
+        yield* later(HOUR - 1)
+        expect(yield* sweep).toEqual([])
+        expect(world.asked).toHaveLength(1)
+        // The orchestrator restates the item: it is not named again; the lanes are, as their own ask, once.
+        yield* write("ses_root", [{ id: "land", state: "next" }])
+        yield* later(1)
+        yield* active(world, ["ses_root"])
+        expect(yield* sweep).toEqual([{ sessionID: "ses_root", stale: [], open: 2, woke: true }])
+        expect(world.notes.at(-1)?.text).not.toContain("- land [next]")
+        expect(world.notes.at(-1)?.text).toContain(LINES[1])
+        yield* later(HOUR)
+        yield* active(world, ["ses_root"])
+        expect(yield* sweep).toEqual([])
+        // Three hours on (before the items are six hours untouched): still no repeat of the same lanes.
+        yield* later(3 * HOUR)
+        yield* active(world, ["ses_root"])
+        expect(yield* sweep).toEqual([])
+        expect(world.notes).toHaveLength(2)
+      }),
+  )
+
+  sweepTest("without orchestrate's answer the sweep is as before: an item naming a commit is not stale for it", (world) =>
+    Effect.gen(function* () {
+      yield* write("ses_root", [{ id: "land", text: "land c0ffee1", state: "next" }])
+      yield* active(world, ["ses_root"])
+      expect(yield* sweep).toEqual([])
+      expect(world.asked).toEqual([["ses_root", ["c0ffee1"]]])
+    }),
   )
 })

@@ -60,5 +60,6 @@ export const layer = (files: Files) =>
         }),
       unit: (unitDir) => Effect.sync(() => unitFilesOf(files, unitDir)),
       write: (path, text) => Effect.map(Clock.currentTimeMillis, (at) => void files.set(path, { text, at })),
+      writtenAt: (path) => Effect.sync(() => Option.map(fileAt(files, path), (found) => found.at)),
     }),
   )
