@@ -80,7 +80,7 @@ export const layer = (checkout: Checkout) => {
   const scripts = Effect.gen(function* () {
     if (Option.isNone(checkout.bin)) return
     const bin = checkout.bin.value
-    const root = bin.from === "tree" ? checkout.tree : checkout.root
+    const root = { tree: checkout.tree, checkout: checkout.root }[bin.from]
     const script = `${root}/${bin.path}`
     const exists = yield* Effect.tryPromise({ try: () => file(script).exists(), catch: (cause) => new UpdateFailed({ step: "find the host's commands script", message: String(cause) }) })
     if (!exists && bin.from === "tree") return yield* new UpdateFailed({ step: "find the host's commands script", message: `${script} is not in the installed tree` })

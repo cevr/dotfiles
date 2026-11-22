@@ -113,12 +113,12 @@ describe("the host's commands, over the checkout as it stands", () => {
    * A scratch live checkout and an installed tree, each with its own `workbox/install-bin.sh` that writes
    * where it ran into `ran` under HOME: the checkout's is the stale one a lagging checkout holds.
    */
-  const placesOfWorkbox = (withTreeScript: boolean) =>
+  const marker = (from: string) => `#!/bin/sh\nprintf '%s %s\\n' ${from} "$*" >>"$HOME/ran"\n`
+  const placesOfWorkbox = (treeFiles: ReadonlyArray<readonly [string, string]>) =>
     Effect.gen(function* () {
       const dir = sh(".", ["mktemp", "-d", "-t", "update-source-workbox"]).out
-      const marker = (from: string) => `#!/bin/sh\nprintf '%s %s\\n' ${from} "$*" >>"$HOME/ran"\n`
       yield* files(`${dir}/checkout`, [["workbox/install-bin.sh", marker("checkout")]])
-      yield* files(`${dir}/tree`, withTreeScript ? [["workbox/install-bin.sh", marker("tree")]] : [["opencode/package.json", "{}\n"]])
+      yield* files(`${dir}/tree`, treeFiles)
       sh(dir, ["mkdir", "-p", "home"])
       return { dir, checkout: `${dir}/checkout`, tree: `${dir}/tree`, home: `${dir}/home` }
     })
@@ -134,7 +134,7 @@ describe("the host's commands, over the checkout as it stands", () => {
   test("on the workbox the commands come from the installed tree, never from the live checkout as it stands", () =>
     Effect.runPromise(
       Effect.gen(function* () {
-        const places = yield* placesOfWorkbox(true)
+        const places = yield* placesOfWorkbox([["workbox/install-bin.sh", marker("tree")]])
         expect(Exit.isSuccess(yield* workboxCommands(places))).toBe(true)
         expect(sh(places.home, ["cat", "ran"]).out).toBe("tree --apply")
         spawnSync(["rm", "-rf", places.dir])
@@ -144,7 +144,7 @@ describe("the host's commands, over the checkout as it stands", () => {
   test("an installed tree with no workbox/ (a build from before it held one) fails the commands loudly, naming the tree, and runs the checkout's neither", () =>
     Effect.runPromise(
       Effect.gen(function* () {
-        const places = yield* placesOfWorkbox(false)
+        const places = yield* placesOfWorkbox([["opencode/package.json", "{}\n"]])
         const failure = Exit.findErrorOption(yield* workboxCommands(places))
         expect(Option.map(failure, (failed) => failed.message)).toEqual(Option.some(`${places.tree}/workbox/install-bin.sh is not in the installed tree`))
         expect(sh(places.home, ["test", "-e", "ran"]).code).not.toBe(0)

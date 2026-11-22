@@ -225,11 +225,10 @@ export const steps = (options: Options, place: Place, commit: string) => {
       run: Effect.gen(function* () {
         yield* run("make the tree's directory", ["mkdir", "-p", place.making], options.share, options.env)
         // `workbox/` too, when the commit has it: the workbox's commands and shell files install from here (`git/source.ts` `WORKBOX_BIN`).
-        const hasWorkbox = yield* run("look for the commit's workbox/", ["git", "-C", options.checkout, "cat-file", "-e", `${commit}:workbox`], place.making, options.env).pipe(
-          Effect.as(true),
-          Effect.orElseSucceed(() => false),
+        const paths = yield* run("look for the commit's workbox/", ["git", "-C", options.checkout, "cat-file", "-e", `${commit}:workbox`], place.making, options.env).pipe(
+          Effect.as(["opencode", "workbox"]),
+          Effect.orElseSucceed(() => ["opencode"]),
         )
-        const paths = hasWorkbox ? ["opencode", "workbox"] : ["opencode"]
         yield* run("archive the commit", ["git", "-C", options.checkout, "archive", "--format=tar", `--output=${archive}`, commit, ...paths], place.making, options.env)
         yield* run("unpack the commit", ["tar", "-xf", archive, "-C", place.making], place.making, options.env)
         yield* Effect.tryPromise({ try: () => fileAt(archive).delete(), catch: failed("unpack the commit") })
