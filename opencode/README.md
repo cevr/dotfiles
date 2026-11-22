@@ -2910,53 +2910,78 @@ Being an agent machine only ever takes a permission away. It never makes a
 device his: a device of another Tailscale user stays a stranger whatever it
 calls itself.
 
-Each entry of `digest.agentHosts` names one of his own devices by its
-MagicDNS name or that name's first label, or by one of its Tailscale
-addresses. The coordination server assigns MagicDNS names and keeps them
-unique in the tailnet. The device's own HostName is never used, since any
-device can pick any HostName, and DNS is never asked. The plugin resolves the
-entries again at each status read, so a renamed or re-keyed device leaves no
-stale address behind. When none of his devices answers to an entry,
-`"member-except-hosts"` closes to `"paired"` until one does, whatever other
-users' devices are called.
+`digest.agentHosts` and `digest.excludedDevices` are lists of MagicDNS
+names, and nothing more: the config never holds an address or an ID. Each
+host keeps a **device store** that keys every one of those names by its
+Tailscale stable node ID (`ID` in `tailscale status --json`). A device
+cannot change its ID, so renaming it changes nothing.
 
-`digest.excludedDevices` takes some of his own devices out altogether: they
-read, mark and answer nothing unpaired, like another user's device. Each
-entry is `{name, ids}`: the device's MagicDNS name and every Tailscale stable
-node ID it has had (`ID` in `tailscale status --json`). The device cannot
-change its ID, so renaming it does not let it back in. A device that matches
-the name or any of the IDs is excluded.
+An ID enters the store only by hand, with one command, run on each host:
 
-The installer keeps the IDs in its own state,
-`~/.local/state/opencode-daily/digest-exclusions.json`, and never drops one.
-At each configure it adds the ID of the device of his that carries the name
-then, so a re-registered device under the same name is added too. Another
-user's device taking the name is never added.
+```sh
+bun ~/Developer/personal/dotfiles/opencode/cmd/digest/devices.ts exclude lenovo-rescue
+bun ~/Developer/personal/dotfiles/opencode/cmd/digest/devices.ts agent cristians-macbook-pro-rex
+bun ~/Developer/personal/dotfiles/opencode/cmd/digest/devices.ts list
+```
 
-An exclusion with no ID yet (`ids: []`, for example on a first configure
-while Tailscale's status cannot be read) cannot be applied. So it closes the
-tailnet for every device, reads and writes, to pairing only, until a
-configure finds the device. Health says `writes=paired:unkeyed:<name>`.
+- `exclude <name>` and `agent <name>` look the name up once, among this
+  host's own Tailscale user's devices only (never another user's), by
+  MagicDNS name or its first label (never HostName). They print the device
+  they found (name, OS, last seen, ID) so you can confirm it is the right
+  one, and write its ID. With no device or several, nothing is written.
+- `--id <ID>` adds an ID directly, with no lookup.
+- `forget exclude|agent <name>` removes a name and all its IDs.
+- `list` shows both copies' condition and which device each ID is now.
 
-An exclusion whose IDs and name match no device of his means the device is
-gone, for example removed from his tailnet. That is harmless: access stays
-as it is, and health notes `excluded=<n>:unmatched:<name>`. Removing
-lenovo-rescue from the tailnet is fine.
+The installer and the plugin never look a name up. A configure ships the
+names, and the plugin reads the store at each status read. So a rename, a
+re-registered device, another of his devices taking the name, or a lost
+store never changes which device a name keys.
+
+The store has two copies, each written whole and atomically (a temporary
+file fsynced and renamed over, under a lock, so two commands at once both
+land): `~/.local/state/opencode-digest/devices.json` and
+`~/.config/opencode-digest/devices.json`. The plugin uses the IDs of both
+copies together.
+
+- An excluded name that no readable copy keys closes the tailnet for every
+  device, reads and writes, to pairing only. That covers a store absent,
+  emptied, truncated, garbled, of another version or shape, unreadable
+  (mode 000, a folder in its place), and a name never keyed. Health says
+  `writes=paired:unkeyed:<name>:store-<copy 1>/<copy 2>`.
+- An agent name that no copy keys closes the writes the same way
+  (`writes=paired:agent-unkeyed:<name>:store-...`).
+- When one copy is lost or the copies differ, the other still keys, and
+  health notes it: `excluded=<n>:store-absent/ok` or
+  `excluded=<n>:store-copies-differ`. Run the command again (any `--id`
+  already there) to write both copies afresh.
+- A store neither copy reads is never written over: the command refuses,
+  and you move the bad file aside.
+
+So a host's first install is closed to pairing until the command has been
+run there. That is intended: run `exclude` and `agent` on each host after
+the install, and confirm each printed device is the right one.
+
+A keyed device is excluded, or an agent host, by any of its IDs or by its
+MagicDNS name: matching more only restricts. An exclusion whose IDs and name
+match no device of his means the device is gone, for example removed from
+his tailnet. That is harmless: access stays as it is, and health notes
+`excluded=<n>:unmatched:<name>`. An agent name that matches none of his
+devices closes the writes (`paired:unresolved:<name>`).
 
 The installer (`scripts/daily.ts` `digestEntry`) ships `tailnetRead: "member"`
 and `tailnetWrite: "member-except-hosts"` on his two hosts. Each host's
 `agentHosts` is the other host's name (`bite-cristian` or
 `cristians-macbook-pro`) and his rex Mac (`cristians-macbook-pro-rex`).
-`excludedDevices` is `lenovo-rescue`, with every ID the status has given it
-at a configure. To go back, set `tailnetWrite` to `"paired"` there;
-`"member"` lets the agent machines write too.
+`excludedDevices` is `lenovo-rescue`. To go back, set `tailnetWrite` to
+`"paired"` there; `"member"` lets the agent machines write too.
 
 So his phone marks and answers with no pairing prompt. A browser on the Mac
 or the workbox pairs as before. A colleague's device reads nothing.
 
 **Health.** Health on the tailnet answers an unpaired request `ok` alone. On
 loopback the line ends with
-`writes=<switch> members=<n> writers=<n> excluded=<n>[:unmatched:<name>]`.
+`writes=<switch> members=<n> writers=<n> excluded=<n>[:unmatched:<name>][:store-...]`.
 In order: the write switch in force; his other devices' count, excluded ones
 left out; how many of those mark and answer as him with no token right now
 (those that are not agent machines); and how many devices the exclusions
@@ -2964,7 +2989,8 @@ keep out. If one of the writers runs agents too, name it in
 `digest.agentHosts`.
 A closed switch reads
 `writes=paired:<why>`, for example `paired:unresolved:<name>`,
-`paired:unkeyed:<name>`, `paired:status:<why>`, `paired:stale` or
+`paired:unkeyed:<name>:store-...`, `paired:agent-unkeyed:<name>:store-...`,
+`paired:status:<why>`, `paired:stale` or
 `paired:starting`.
 
 To pair a phone:
