@@ -56,7 +56,22 @@ export type Question = typeof Question.Type
  * the first answer wins. `dismissed`: the user dismissed the question beside
  * other answers, so the message names it as dismissed and `answer` is the assumption.
  */
-export const Answer = Schema.Struct({ answer: Schema.String, delivery: Schema.String, dismissed: Schema.optional(Schema.Literal(true)) })
+/** Where the owner answered: the TUI's tray and /answer form, or the digest page. */
+export const Via = Schema.Literals(["tray", "page"])
+export type Via = typeof Via.Type
+
+/**
+ * A recorded answer and the id of the message that carries it, and (recorded since the digest page answers too) where
+ * it was given and when, so a second answer from the other place is told who closed it.
+ */
+export const Answer = Schema.Struct({
+  answer: Schema.String,
+  delivery: Schema.String,
+  dismissed: Schema.optional(Schema.Literal(true)),
+  via: Schema.optional(Via),
+  /** Epoch ms. */
+  at: Schema.optional(Schema.Number),
+})
 export type Answer = typeof Answer.Type
 
 /**
@@ -71,8 +86,12 @@ export type Letter = typeof Letter.Type
 export const Row = Schema.Struct({ ...Question.fields, answered: Schema.optional(Answer), letter: Schema.optional(Letter) })
 export type Row = typeof Row.Type
 
-/** One session's questions, oldest first, and the number the next one takes. */
-export const Sheet = Schema.Struct({ next: Schema.Number, rows: Schema.Array(Row) })
+/**
+ * One session's questions, oldest first, and the number the next one takes. `rev` counts the writes of a stored sheet
+ * (a sheet stored before it counts as 0; one not stored has none): the store writes a sheet only over the rev it was
+ * read at, so two writers (the tray's copy and the page's, or two servers) never both close a question.
+ */
+export const Sheet = Schema.Struct({ next: Schema.Number, rows: Schema.Array(Row), rev: Schema.optional(Schema.Number) })
 export type Sheet = typeof Sheet.Type
 
 export const EMPTY: Sheet = { next: 1, rows: [] }
@@ -209,6 +228,8 @@ export const AnswerQuestions = Schema.TaggedStruct("AnswerQuestions", {
   delivery: Schema.String,
   /** The session that answers, when one does in the owner's place: only questions put to it. None: the owner, who may answer any. */
   by: Schema.optional(Schema.String),
+  /** Where the owner gave them; none for a session answering in his place. */
+  via: Schema.optional(Via),
 })
 export interface AnswerQuestions extends Schema.Schema.Type<typeof AnswerQuestions> {}
 
@@ -268,6 +289,9 @@ export const QuestionAnswered = Schema.TaggedStruct("QuestionAnswered", {
   delivery: Schema.String,
   /** Dismissed beside other answers: the message names it, and it closes as dismissed. */
   dismissed: Schema.optional(Schema.Literal(true)),
+  via: Schema.optional(Via),
+  /** Epoch ms. */
+  at: Schema.optional(Schema.Number),
 })
 export interface QuestionAnswered extends Schema.Schema.Type<typeof QuestionAnswered> {}
 
@@ -386,7 +410,8 @@ const unheld = (state: Sheet, command: AnswerQuestions): Option.Option<NotHeld> 
  * message goes; beside answers it is recorded under the same message id, so
  * the message names it. A question both answered and dismissed is answered.
  */
-export const decideAnswers = (state: Sheet, command: AnswerQuestions): Effect.Effect<ReadonlyArray<Event>, ReplyRejection> => {
+export const decideAnswers = (state: Sheet, command: AnswerQuestions, now: number): Effect.Effect<ReadonlyArray<Event>, ReplyRejection> => {
+  const recorded = { delivery: command.delivery, at: now, ...Option.getOrElse(Option.map(Option.fromUndefinedOr(command.via), (via) => ({ via })), () => ({})) }
   const empty = command.answers.find((given) => given.answer.trim() === "")
   if (empty !== undefined) return Effect.fail(new EmptyAnswer({ id: empty.id }))
   const refused = unheld(state, command)
@@ -405,9 +430,9 @@ export const decideAnswers = (state: Sheet, command: AnswerQuestions): Effect.Ef
       const given = givenOf(row)
       if (given !== undefined) {
         const answer = given.keep === true ? `${row.assume} (note: ${given.answer.trim()})` : given.answer.trim()
-        return [QuestionAnswered.make({ id: row.id, answer, delivery: command.delivery })]
+        return [QuestionAnswered.make({ id: row.id, answer, ...recorded })]
       }
-      return isDismissed(row) ? [QuestionAnswered.make({ id: row.id, answer: row.assume, delivery: command.delivery, dismissed: true })] : []
+      return isDismissed(row) ? [QuestionAnswered.make({ id: row.id, answer: row.assume, ...recorded, dismissed: true })] : []
     }),
   )
 }
@@ -460,6 +485,12 @@ const sentOf = (row: Row, delivery: string): Row =>
 const rowOf = (event: QuestionOpened): Row =>
   Option.match(Option.fromNullishOr(event.letter), { onNone: () => event.question, onSome: (letter) => ({ ...event.question, letter }) })
 
+/** The answer a row keeps of `event`: what, under which message, and where and when when the event says. */
+const answerOf = (event: QuestionAnswered): Answer => {
+  const { _tag, id: _id, ...answer } = event
+  return answer
+}
+
 export const Questions: Decider<Sheet, Command, Event, Rejection> = {
   initial: EMPTY,
   decide: (state, command, now) => {
@@ -467,7 +498,7 @@ export const Questions: Decider<Sheet, Command, Event, Rejection> = {
       case "Ask":
         return decideAsk(state, command, now)
       case "AnswerQuestions":
-        return decideAnswers(state, command)
+        return decideAnswers(state, command, now)
       case "Dismiss":
         return decideDismiss(state, command)
       case "Delivered":
@@ -493,7 +524,7 @@ export const Questions: Decider<Sheet, Command, Event, Rejection> = {
           ...state,
           rows: state.rows.map((row) =>
             row.id === event.id
-              ? { ...row, answered: { answer: event.answer, delivery: event.delivery, ...(event.dismissed === true ? { dismissed: true as const } : {}) } }
+              ? { ...row, answered: answerOf(event) }
               : row,
           ),
         }
@@ -554,7 +585,10 @@ export const QUESTIONS = {
     withdrawFor: { input: object({ plugin: text, key: text }, ["plugin", "key"]), output: { type: "object" } },
     open: { input: object({ sessionIDs: { type: "array", items: text } }, ["sessionIDs"]), output: { type: "object" } },
     answer: {
-      input: object({ sessionID: text, answers: { type: "array", items: object({ id: text, answer: text }, ["id", "answer"]) } }, ["sessionID", "answers"]),
+      input: object(
+        { sessionID: text, answers: { type: "array", items: object({ id: text, answer: text }, ["id", "answer"]) }, via: { type: "string", enum: ["tray", "page"] } },
+        ["sessionID", "answers"],
+      ),
       output: { type: "object" },
     },
     dismiss: { input: object({ sessionID: text, id: text }, ["sessionID", "id"]), output: { type: "object" } },
@@ -611,8 +645,8 @@ export type PluginQuestion = typeof PluginQuestion.Type
 export const PluginAsked = Schema.Struct({ questions: Schema.Array(PluginQuestion) })
 export type PluginAsked = typeof PluginAsked.Type
 
-/** What `answer` and `dismiss` answer: done, or why not. */
-export const Reply = Schema.Struct({ ok: Schema.Boolean, message: Schema.optional(Schema.String) })
+/** What `answer` and `dismiss` answer: done, or why not; `closed`: refused because none of them was open any more. */
+export const Reply = Schema.Struct({ ok: Schema.Boolean, message: Schema.optional(Schema.String), closed: Schema.optional(Schema.Literal(true)) })
 export type Reply = typeof Reply.Type
 
 /** The event the server publishes on every change: its full type, as the TUI's event stream carries it. */

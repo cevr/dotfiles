@@ -3,14 +3,17 @@
 // generates; how a sheet stored before `to` existed reads; and the question
 // letter under faults over the memory doubles (the courier refuses once, or
 // the write that marks the letter sent fails once): after `resend` the
-// session it is put to holds exactly one letter, under the id recorded first.
+// session it is put to holds exactly one letter, under the id recorded first;
+// and an owner's answer whose process is killed at its letter or at its close,
+// delivered exactly once after the restart.
 import * as MemoryDigest from "@dotfiles/opencode-digest/memory/log"
-import { Effect, Exit, Layer, Option, Random, Schema } from "effect"
+import { Effect, Exit, Layer, Option, Random, Ref, Schema } from "effect"
 import * as MemoryCourier from "@dotfiles/opencode-questions/memory/courier"
 import * as MemoryStore from "@dotfiles/opencode-questions/memory/store"
 import * as Model from "@dotfiles/opencode-questions/model"
 import { AnswerQuestions, decideAnswers, heldOf, ownersOf, type Row, Sheet } from "@dotfiles/opencode-questions/question"
-import { Changes, QuestionStore } from "@dotfiles/opencode-questions/service"
+import type { Letter } from "@dotfiles/opencode-questions/reply"
+import { Changes, Courier, QuestionStore } from "@dotfiles/opencode-questions/service"
 import * as Seed from "../../sim/seed.ts"
 
 const { seeded } = Seed.runner("cmd/questions/questions-held.sim.test.ts")
@@ -56,7 +59,7 @@ seeded("a question put to a session is answered only by that session or by the o
     const outcomes = yield* Effect.forEach(Array.from({ length: CASES }), () =>
       Effect.gen(function* () {
         const { sheet, ids, by } = yield* caseOf
-        const refused = notHeld(yield* Effect.exit(decideAnswers(sheet, commandOf(ids, by))))
+        const refused = notHeld(yield* Effect.exit(decideAnswers(sheet, commandOf(ids, by), 0)))
         // The session may answer exactly the open questions put to it; the owner (no `by`) is never refused as not holding.
         const held = (session: string) => sheet.rows.filter((row) => row.to === session && !("answered" in row)).map((row) => row.id)
         const want = Option.match(by, { onNone: () => false, onSome: (session) => ids.some((id) => !held(session).includes(id)) })
@@ -81,8 +84,8 @@ seeded("a sheet stored before `to` existed decodes, every question on it is the 
     const sheet = yield* Schema.decodeUnknownEffect(Sheet)(stored)
     expect(ownersOf(sheet.rows).map((row) => row.id)).toEqual(["q1", "q2"])
     expect(heldOf(sheet.rows)).toEqual([])
-    expect(notHeld(yield* Effect.exit(decideAnswers(sheet, commandOf(["q1"], Option.none()))))).toBe(false)
-    expect(notHeld(yield* Effect.exit(decideAnswers(sheet, commandOf(["q1"], Option.some("ses_parent")))))).toBe(true)
+    expect(notHeld(yield* Effect.exit(decideAnswers(sheet, commandOf(["q1"], Option.none()), 0)))).toBe(false)
+    expect(notHeld(yield* Effect.exit(decideAnswers(sheet, commandOf(["q1"], Option.some("ses_parent")), 0)))).toBe(true)
   }),
 )
 
@@ -106,13 +109,13 @@ const rig = (failMark: boolean) => {
       const inner = yield* QuestionStore
       return QuestionStore.of({
         ...inner,
-        write: (sessionID, sheet) =>
+        writeIf: (sessionID, sheet, rev) =>
           Effect.suspend(() => {
             if (failing.left > 0 && marksSent(sheet)) {
               failing.left -= 1
               return Effect.die("the store would not take the write")
             }
-            return inner.write(sessionID, sheet)
+            return inner.writeIf(sessionID, sheet, rev)
           }),
       })
     }),
@@ -153,3 +156,78 @@ seeded("a question letter whose mark-sent write fails once went, and resend send
     expect(letters().map((message) => message.id)).toEqual(first)
   }).pipe(Effect.provide(layer))
 })
+
+const ROOT = "ses_root"
+
+/**
+ * The owner's answer from the page, with the process killed at one point of it, then started again: the sheets, the
+ * sessions and the digest outlive it, the model does not. `crash` is where it dies: in the letter's delivery (the
+ * answer stored, no letter yet), or in the write that closes the question (the letter gone, the sheet not told).
+ */
+const crashRig = (crash: "letter" | "close") => {
+  const sheets = MemoryStore.empty()
+  const sessions = MemoryCourier.empty(ROOT)
+  const digest = MemoryDigest.empty()
+  const armed = { left: 1 }
+  /** Once: the process dies here. */
+  const dies = <A, E>(here: boolean, otherwise: Effect.Effect<A, E>) =>
+    Effect.suspend(() => {
+      if (!here || armed.left === 0) return otherwise
+      armed.left -= 1
+      return Effect.die("the process was killed here")
+    })
+  const store = Layer.effect(
+    QuestionStore,
+    Effect.gen(function* () {
+      const inner = yield* QuestionStore
+      // The close is the one write with q1 gone from the sheet.
+      return QuestionStore.of({ ...inner, writeIf: (sessionID, sheet, rev) => dies(crash === "close" && !sheet.rows.some((row) => row.id === "q1"), inner.writeIf(sessionID, sheet, rev)) })
+    }),
+  ).pipe(Layer.provide(MemoryStore.layer(sheets)))
+  const courier = Layer.effect(
+    Courier,
+    Effect.gen(function* () {
+      const inner = yield* Courier
+      return Courier.of({ ...inner, deliver: (sessionID: string, delivery: string, letter: Letter) => dies(crash === "letter", inner.deliver(sessionID, delivery, letter)) })
+    }),
+  ).pipe(Layer.provide(MemoryCourier.layer(sessions)))
+  /** One run of the plugin: a fresh model over what outlives it. */
+  const run = Model.layer.pipe(
+    Layer.provide(MemoryDigest.writer(digest)),
+    Layer.provide(store),
+    Layer.provide(Layer.merge(MemoryCourier.layer(sessions), courier)),
+    Layer.provide(Layer.succeed(Changes, Changes.of({ changed: () => Effect.void }))),
+  )
+  const letters = () => sessions.inboxes.get(ROOT) ?? []
+  const answeredLines = Effect.map(Ref.get(digest.lines), (lines) => lines.filter((line) => line.includes('"_tag":"Answered"')))
+  return { run, letters, answeredLines, sheets }
+}
+
+for (const crash of ["letter", "close"] as const)
+  seeded(`an answer whose process is killed at its ${crash} is delivered exactly once after the restart, and its digest line written once`, ({ expect }) => {
+    const { run, letters, answeredLines, sheets } = crashRig(crash)
+    /** The first life: the question asked, then answered from the page, until the kill. */
+    const killed = Effect.exit(
+      Effect.gen(function* () {
+        const model = yield* Model.QuestionsModel
+        yield* model.ask(ROOT, { questions: [QUESTION] })
+        yield* model.answer(ROOT, [{ id: "q1", answer: "3000" }], [], Option.none(), "page")
+      }).pipe(Effect.provide(run)),
+    )
+    /** The second life: the server's start resends what its sheets hold undelivered (cmd/questions/server.ts), twice to be sure. */
+    const restarted = Effect.gen(function* () {
+      const model = yield* Model.QuestionsModel
+      yield* model.resend
+      yield* model.resend
+    }).pipe(Effect.provide(run))
+    return Effect.gen(function* () {
+      expect(Exit.isFailure(yield* killed)).toBe(true)
+      // Killed at the letter: none went. Killed at the close: it went, and the sheet still holds the answer.
+      expect(letters()).toHaveLength(Number(crash === "close"))
+      expect(sheets.sheets.get(ROOT)?.rows.map((row) => row.answered?.answer)).toEqual(["3000"])
+      yield* restarted
+      expect(letters().map((message) => message.letter.text.includes("3000"))).toEqual([true])
+      expect(sheets.sheets.get(ROOT)?.rows).toEqual([])
+      expect((yield* answeredLines).map((line) => line.includes('"via":"page"'))).toEqual([true])
+    })
+  })

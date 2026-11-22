@@ -48,14 +48,20 @@ export const DigestEvent = Schema.TaggedUnion({
   Land: { v: Version, t: Time, root: text, units: Schema.Array(text), pushed: maybe(text) },
   /** A land's check after the push (the accept check, the post-land step): passed or failed, in its own words. */
   Check: { v: Version, t: Time, root: text, ok: Schema.Boolean, text },
-  /** A queue item as it now stands. */
-  Item: { v: Version, t: Time, root: text, id: text, text, state: text, owner: text, who: maybe(text), level: maybe(Level), unit: maybe(text) },
+  /**
+   * A queue item as it now stands: the answers its form offers (`choices`: the agent's, else the queue's own), and
+   * the owner's answer once he gave one (redacted, mods/digest/redact.ts).
+   */
+  Item: { v: Version, t: Time, root: text, id: text, text, state: text, owner: text, who: maybe(text), level: maybe(Level), unit: maybe(text), choices: maybe(Schema.Array(text)), answer: maybe(text) },
   /** A queue item removed. */
   ItemGone: { v: Version, t: Time, root: text, id: text },
   /** A question asked of the owner. */
   Asked: { v: Version, t: Time, root: text, session: text, id: text, question: text, header: maybe(text), options: Schema.Array(text), assume: text },
-  /** The owner's answer, and whether it is what the agent assumed. */
-  Answered: { v: Version, t: Time, root: text, session: text, id: text, answer: text, matches: Schema.Boolean, question: maybe(text), assume: maybe(text) },
+  /**
+   * The owner's answer (redacted, mods/digest/redact.ts), whether it is what the agent assumed, and where he gave it:
+   * `tray` (the TUI) or `page` (the digest page). The log's record of who closed the question, and when.
+   */
+  Answered: { v: Version, t: Time, root: text, session: text, id: text, answer: text, matches: Schema.Boolean, question: maybe(text), assume: maybe(text), via: maybe(text) },
   /** A question closed unanswered: withdrawn, replaced, dropped or dismissed. */
   Closed: { v: Version, t: Time, root: text, session: text, id: text, reason: text },
   /** An install's outcome on a host. */

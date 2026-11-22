@@ -158,6 +158,7 @@ const checkOf = (run: RunStores, message: InboxMessage): ReadonlyArray<DigestEve
 const answersOf = (run: RunStores, message: InboxMessage): ReadonlyArray<DigestEvent> =>
   (message.metadata?.answers ?? []).map((answer) =>
     DigestEvent.cases.Answered.make({
+      via: Option.none(),
       v: VERSION,
       t: message.t,
       root: run.session,
@@ -218,6 +219,8 @@ const itemsOf = (run: RunStores, units: ReadonlySet<string>): ReadonlyArray<Dige
       return Arr.filter(
         [
           DigestEvent.cases.Item.make({
+            answer: Option.none(),
+            choices: Option.none(),
             v: VERSION,
             t,
             root: run.session,

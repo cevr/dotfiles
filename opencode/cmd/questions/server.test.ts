@@ -7,10 +7,11 @@
 // tests/questions.test.ts runs it in OpenCode.
 import { describe, expect, test } from "bun:test"
 import type { Tool } from "@opencode/plugin/effect"
-import { Effect, Layer, Queue, Schedule, Schema, type Scope, Stream } from "effect"
+import { Cause, Effect, Exit, Layer, Logger, Option, Queue, References, Schedule, Schema, type Scope, Stream } from "effect"
 import type { AskInput } from "@dotfiles/opencode-questions/ask"
 import * as MemoryCourier from "@dotfiles/opencode-questions/memory/courier"
 import * as MemoryStore from "@dotfiles/opencode-questions/memory/store"
+import * as OpenCodeStore from "@dotfiles/opencode-questions/opencode/store"
 import { Open, QUESTIONS, Reply } from "@dotfiles/opencode-questions/question"
 import QuestionsPlugin, { make } from "./server.ts"
 
@@ -27,8 +28,11 @@ interface Added {
 
 const scenario = <A, E>(body: Effect.Effect<A, E, Scope.Scope>) => Effect.runPromise(Effect.scoped(body))
 
-/** The plugin started on a stand-in host over `sheets` and `sessions`. */
-const start = (sheets = MemoryStore.empty(), sessions = MemoryCourier.empty("ses_root", "ses_child")) =>
+/**
+ * The plugin started on a stand-in host over `sheets` and `sessions`; with `storage`, its sheets are the host's
+ * storage, read through the plugin's own OpenCode store instead.
+ */
+const start = (sheets = MemoryStore.empty(), sessions = MemoryCourier.empty("ses_root", "ses_child"), storage = Option.none<ReturnType<typeof storageOf>>()) =>
   Effect.gen(function* () {
     const rpc: Record<string, Record<string, Handler>> = {}
     const emitted: Array<readonly [string, unknown]> = []
@@ -37,6 +41,7 @@ const start = (sheets = MemoryStore.empty(), sessions = MemoryCourier.empty("ses
     let added: Added | undefined
     const host = {
       options: {},
+      storage: Option.getOrUndefined(storage),
       tool: {
         transform: (callback: (editor: { add: (tool: Added) => void }) => void) =>
           Effect.sync(() => {
@@ -58,7 +63,7 @@ const start = (sheets = MemoryStore.empty(), sessions = MemoryCourier.empty("ses
           }),
       },
     } as unknown as Host
-    yield* make(() => Layer.merge(MemoryStore.layer(sheets), MemoryCourier.layer(sessions))).effect(host)
+    yield* make((ctx) => Layer.merge(Option.match(storage, { onNone: () => MemoryStore.layer(sheets), onSome: () => OpenCodeStore.fromContext(ctx) }), MemoryCourier.layer(sessions))).effect(host)
     const tool = added
     if (tool === undefined) return yield* Effect.die(new Error("the tool was not added"))
     const handlers = rpc[QUESTIONS.id]
@@ -154,6 +159,7 @@ describe("answering", () => {
         expect(yield* plugin.reply("answer", { sessionID: "ses_root", answers: [{ id: "q1", answer: "3000" }] })).toEqual({
           ok: false,
           message: "Question q1 is not open.",
+          closed: true,
         })
       }),
     ))
@@ -179,6 +185,31 @@ describe("answering", () => {
         expect((yield* plugin.open("ses_root")).map((question) => question.id)).toEqual(["q4"])
       }),
     ))
+
+  test("a submit whose questions all closed elsewhere first (the digest page) is a quiet refusal per question, no warning, and sends nothing", () => {
+    const logged: Array<readonly [string, string]> = []
+    const logger = Logger.make(({ logLevel, message }) => void logged.push([logLevel, String(message)]))
+    return scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start()
+        yield* plugin.call({ questions: [port, { question: "Keep the --legacy flag?", assume: "yes" }] })
+        yield* plugin.reply("answer", { sessionID: "ses_root", answers: [{ id: "q1", answer: "3000" }, { id: "q2", answer: "no" }], via: "page" })
+        yield* plugin.received("ses_root", 1)
+        // The tray's form, open from before, is submitted after the page answered both.
+        yield* plugin.submit("ses_root", { "ask_user_async:q1": "8080", "ask_user_async:q2": "yes" })
+        // A later question's submit goes after it, so once that one lands the stale one was handled.
+        yield* plugin.call({ questions: [{ question: "Which test runner?", assume: "bun test" }] })
+        yield* plugin.submit("ses_root", { "ask_user_async:q3": "vitest" })
+        yield* plugin.received("ses_root", 2)
+        expect(plugin.inbox("ses_root")).toHaveLength(2)
+        expect(logged.filter(([level]) => level === "Warn" || level === "Error")).toEqual([])
+        expect(logged.filter(([, message]) => message.includes("was not open when the form was submitted"))).toEqual([
+          ["Debug", "questions: ses_root:q1 was not open when the form was submitted; nothing sent"],
+          ["Debug", "questions: ses_root:q2 was not open when the form was submitted; nothing sent"],
+        ])
+      }).pipe(Effect.provide(Logger.layer([logger])), Effect.provideService(References.MinimumLogLevel, "Debug")),
+    )
+  })
 
   test("two sessions' forms are two messages, each in the session that asked; a subagent's question shows with its parent's", () =>
     scenario(
@@ -371,6 +402,38 @@ describe("answering", () => {
         )
         expect(yield* plugin.open("ses_root", "ses_child")).toEqual([])
         expect(plugin.emitted.at(-1)).toEqual(["changed", { sessionID: "ses_child" }])
+      }),
+    ))
+})
+
+/** The plugin's storage over `entries`, as the fork's is (setIf over the stored rev), or as an older fork's: no setIf. */
+const storageOf = (entries: Map<string, Schema.Json>, conditional: boolean) => {
+  const plain = {
+    get: (key: string) => Effect.sync(() => entries.get(key)),
+    set: (key: string, value: Schema.Json) => Effect.sync(() => void entries.set(key, value)),
+    remove: (key: string) => Effect.sync(() => void entries.delete(key)),
+    scan: () => Effect.succeed({ entries: [] }),
+  }
+  const setIf = (key: string, value: Schema.Json) => Effect.sync(() => (entries.set(key, value), true))
+  return Option.getOrElse(Option.as(Option.liftPredicate(plain, () => conditional), { ...plain, setIf }), () => plain)
+}
+
+describe("a fork without storage.setIf (older than this plugin)", () => {
+  // The fork's loader runs each plugin's start under Effect.exit and logs "failed to load plugin" for one that fails,
+  // then goes on to the next (packages/core/src/plugin.ts `load`; its packages/core/test/plugin-failure.test.ts keeps
+  // the healthy plugins beside a failed one). So the questions plugin's start failing is the whole of it.
+  test("the questions plugin's start fails and says why, and writes nothing; on a fork with setIf it starts", () =>
+    scenario(
+      Effect.gen(function* () {
+        const sessions = MemoryCourier.empty("ses_root")
+        const entries = new Map<string, Schema.Json>()
+        const over = (conditional: boolean) => Option.some(storageOf(entries, conditional))
+        const old = yield* Effect.exit(start(MemoryStore.empty(), sessions, over(false)))
+        expect(Exit.isFailure(old)).toBe(true)
+        expect(Exit.match(old, { onSuccess: () => "", onFailure: Cause.pretty })).toContain("this OpenCode build has no storage.setIf, so an answer cannot close its question once")
+        expect(entries.size).toBe(0)
+        const plugin = yield* start(MemoryStore.empty(), sessions, over(true))
+        expect(yield* plugin.call({ questions: [port] })).toContain("q1")
       }),
     ))
 })

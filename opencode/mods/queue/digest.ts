@@ -2,6 +2,8 @@
 // An item the change left as it was writes nothing.
 import { Array as Arr, Option, Schema } from "effect"
 import { DigestEvent, VERSION } from "@dotfiles/opencode-digest/event"
+import { redact } from "@dotfiles/opencode-digest/redact"
+import { offered } from "./answer.ts"
 import { Item } from "./item.ts"
 
 const itemText = Schema.encodeSync(Schema.fromJsonString(Item))
@@ -27,6 +29,9 @@ export const changesOf = (root: string, before: ReadonlyArray<Item>, after: Read
         who: Option.fromUndefinedOr(item.who),
         level: Option.fromUndefinedOr(item.level),
         unit: Option.fromUndefinedOr(item.unit),
+        choices: Option.some(offered(item).map((choice) => choice.label)),
+        // The agent gets the answer as typed; the log keeps it with any secret shape replaced.
+        answer: Option.map(Option.fromUndefinedOr(item.answered), (answered) => redact(answered.answer)),
       }),
     ),
     ...before.flatMap((item) => Arr.filter([item], (each) => !now.has(each.id))).map((item) => DigestEvent.cases.ItemGone.make({ v: VERSION, t, root, id: item.id })),

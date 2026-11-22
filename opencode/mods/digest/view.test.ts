@@ -80,7 +80,7 @@ describe("the project's messages", () => {
 
   test("a message with no level is never red; red comes from `level: red`, whatever the words", () => {
     const item = (id: string, t: number, text: string, level: Option.Option<"red">) =>
-      E.cases.Item.make({ v: VERSION, t, root: "r", id, text, state: "running", owner: "mine", who: Option.none(), level, unit: Option.none() })
+      E.cases.Item.make({ answer: Option.none(), choices: Option.none(), v: VERSION, t, root: "r", id, text, state: "running", owner: "mine", who: Option.none(), level, unit: Option.none() })
     const events = [
       E.cases.Run.make({ v: VERSION, t: 1, root: "r", host: "mac", repo: "harbor", dir: Option.none(), name: Option.some("harbor") }),
       item("a", NOW - HOUR, "Everything FAILED, blocked and urgent.", Option.none()),

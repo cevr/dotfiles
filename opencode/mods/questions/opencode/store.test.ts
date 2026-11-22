@@ -1,14 +1,23 @@
 // The OpenCode QuestionStore over a stand-in storage: a sorted map that pages
 // its scans one key at a time, as the host's key-value table pages by `next`.
 import { expect, test } from "bun:test"
-import { Effect, type Schema } from "effect"
+import { Effect, Equal, Option, Schema } from "effect"
 import { storeLaws } from "../laws.ts"
 import { QuestionStore } from "../service.ts"
 import { keyOf, layer, type Storage } from "./store.ts"
 
+const decodeRev = Schema.decodeUnknownOption(Schema.Struct({ rev: Schema.Number }))
+
 const storage = (entries: Map<string, Schema.Json>): Storage => ({
   get: (key) => Effect.sync(() => entries.get(key)),
-  set: (key, value) => Effect.sync(() => void entries.set(key, value)),
+  setIf: (key, value, rev) =>
+    Effect.sync(() => {
+      // As the fork's KV.setIf: over the stored `rev` (none counts as 0), or with no rev only into an absent key.
+      const storedRev = Option.map(Option.fromUndefinedOr(entries.get(key)), (stored) => Option.getOrElse(Option.map(decodeRev(stored), (each) => each.rev), () => 0))
+      if (!Equal.equals(storedRev, Option.fromUndefinedOr(rev))) return false
+      entries.set(key, value)
+      return true
+    }),
   remove: (key) => Effect.sync(() => void entries.delete(key)),
   scan: ({ prefix, after, limit }) =>
     Effect.sync(() => {
@@ -42,17 +51,17 @@ test("a sheet is stored as plain JSON, with no undefined fields", async () => {
   const entries = new Map<string, Schema.Json>()
   await Effect.runPromise(
     QuestionStore.use((store) =>
-      store.write("ses_a", { next: 2, rows: [{ id: "q1", sessionID: "ses_a", question: "Port?", header: undefined, options: [{ label: "a", description: undefined }], assume: "a", askedAt: 1 }] }),
+      store.writeIf("ses_a", { next: 2, rows: [{ id: "q1", sessionID: "ses_a", question: "Port?", header: undefined, options: [{ label: "a", description: undefined }], assume: "a", askedAt: 1 }] }, Option.none()),
     ).pipe(Effect.provide(layer(storage(entries)))),
   )
-  expect(JSON.stringify(entries.get(keyOf("ses_a")))).toBe('{"next":2,"rows":[{"id":"q1","sessionID":"ses_a","question":"Port?","assume":"a","askedAt":1,"options":[{"label":"a"}]}]}')
+  expect(JSON.stringify(entries.get(keyOf("ses_a")))).toBe('{"next":2,"rows":[{"id":"q1","sessionID":"ses_a","question":"Port?","assume":"a","askedAt":1,"options":[{"label":"a"}]}],"rev":1}')
 })
 
 test("a plugin's question keeps who asked it, and under which key, across a read", async () => {
   const entries = new Map<string, Schema.Json>()
   const row = { id: "q1", sessionID: "ses_a", question: "Claim it?", assume: "no", askedAt: 1, from: { plugin: "dotfiles-opencode.pool", key: "hold-1" } }
   const read = await Effect.runPromise(
-    QuestionStore.use((store) => store.write("ses_a", { next: 2, rows: [row] }).pipe(Effect.andThen(store.read("ses_a")))).pipe(Effect.provide(layer(storage(entries)))),
+    QuestionStore.use((store) => store.writeIf("ses_a", { next: 2, rows: [row] }, Option.none()).pipe(Effect.andThen(store.read("ses_a")))).pipe(Effect.provide(layer(storage(entries)))),
   )
   expect(read.rows).toEqual([row])
 })
