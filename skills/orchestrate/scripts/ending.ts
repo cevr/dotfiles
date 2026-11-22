@@ -1,19 +1,105 @@
 // How a step ends, as two independent total functions (batch 22t: "the stopping event and each outstanding
-// item's status are distinct facts"):
-//   F1  label(role, state)          each item of the work is in exactly one state, decided by its own history, and
-//                                   that state alone gives its label, whatever stopped the step;
-//   F2  outcome(role, stop, states) the stop event and the multiset of item states give the verdict word, by a stated
-//                                   precedence over the states present, and the files written.
-// An input no step can produce (a refusal that refused nothing, a runnable item when nothing runnable is left, a limit
-// with no runnable item, a state or stop the role does not have) is rejected as ill-formed by `classify`, never answered.
+// item's status are distinct facts"), over one explicit item model (batch 22u: the states are predicates over an
+// item's facts, proven a partition by enumeration):
+//   model   an Item is a record of facts decided by the item's own history (ITEM_FACTS); `validity` rejects a record no
+//           history produces, each rule stated (VALIDITY);
+//   states  each state is a conjunction of facts (PREDICATE), and its row in the prompt is generated from those facts,
+//           so the words cannot drift from the predicate; `stateOf` gives the one state an item is in;
+//   F1  label(role, state)          that state alone gives the item's label, whatever stopped the step;
+//   F2  outcome(role, stop, states) the multiset of the REQUIRED items' states (an optional probe's state never
+//                                   changes it) gives the verdict, by a stated precedence, and the files; the stop
+//                                   event gives the evidence they hold.
+// An input no step can produce is rejected as ill-formed, never answered.
 // agents.ts renders a role's two tables into its prompt between BEGIN and END, every role's into end-of-step.md.
 // Edit here, then run agents.ts (and opencode's `bun run agents`).
 
 export const ROLES = ['planner', 'implementor', 'verifier', 'worker'] as const;
 export type Role = (typeof ROLES)[number];
 
+// ---- the item model ------------------------------------------------------------------------------------------------
+
+/** The facts of one item, each decided by the item's own history before it is classified. */
+export interface Item {
+  /** Part of the role's assignment: the spec items (planner, implementor, verifier) or the first message's task (lean worker). */
+  readonly assigned: boolean;
+  /** Required by the assignment, or an optional wider probe; decided before classification. */
+  readonly required: boolean;
+  /** Worked on at least once; no state depends on it (A1: an attempted item that can still advance is runnable). */
+  readonly attempted: boolean;
+  /** Its acceptance holds (for a verifier's check: it ran and passed). */
+  readonly holds: boolean;
+  /** A verifier's check ran and proves a Blocker or Major. */
+  readonly fails: boolean;
+  /** A verifier's check ran, and its result settles neither pass nor fail. */
+  readonly unclear: boolean;
+  /** It can still advance in this lane, attempted or not. */
+  readonly advance: boolean;
+  /** It has a live wait on an id: an open unit, question, commitment, or two spec lines that contradict. */
+  readonly wait: boolean;
+  /** A refusal stopped it. */
+  readonly refused: boolean;
+  /** This host cannot run it (its check or tool is absent or will not start), with no refusal. */
+  readonly hostCannot: boolean;
+  /** For a finding a verifier made outside its assignment: `unit` if the unit's change introduced it, `base` if the base head shows it too. */
+  readonly provenance: 'none' | 'unit' | 'base';
+}
+export type Fact = Exclude<keyof Item, 'provenance'>;
+export const FACTS: ReadonlyArray<Fact> = ['assigned', 'required', 'attempted', 'holds', 'fails', 'unclear', 'advance', 'wait', 'refused', 'hostCannot'];
+export const PROVENANCES: ReadonlyArray<Item['provenance']> = ['none', 'unit', 'base'];
+
+/** What each role is assigned: discovery is relative to it (A3). */
+export const ASSIGNMENT: Record<Role, string> = {
+  planner: 'the spec items',
+  implementor: 'the spec items',
+  verifier: 'the checks of step 1, which are required, and the wider probes you run, which are optional',
+  worker: 'the task in your first message',
+};
+
+/** The model's validity rules, each with its reason: a record that breaks one is no item's history. */
+export const VALIDITY: ReadonlyArray<{ readonly rule: string; readonly breaks: (role: Role, item: Item) => boolean }> = [
+  {
+    rule: 'a provenance belongs only to a verifier\'s finding outside its assignment, and every such finding has one',
+    breaks: (role, item) => (role === 'verifier' && !item.assigned) !== (item.provenance !== 'none'),
+  },
+  {
+    rule: 'work outside the assignment is a finding, not work this role runs: it carries no other fact',
+    breaks: (_, item) => !item.assigned && FACTS.some((fact) => fact !== 'assigned' && item[fact]),
+  },
+  {
+    rule: 'only a verifier has optional work (a wider probe); every item of a spec or task is required',
+    breaks: (role, item) => item.assigned && !item.required && role !== 'verifier',
+  },
+  {
+    rule: "only a verifier's check ends in a finding or an unclear result; another role's unsettled run is work whose acceptance does not hold yet",
+    breaks: (role, item) => role !== 'verifier' && (item.fails || item.unclear),
+  },
+  {
+    rule: 'a run has at most one result (holds, fails or unclear), and only an attempted item has one',
+    breaks: (_, item) => [item.holds, item.fails, item.unclear].filter(Boolean).length > 1 || ((item.holds || item.fails || item.unclear) && !item.attempted),
+  },
+  {
+    rule: 'an obstacle (a wait, a refusal, a host that cannot run it) stops the item, so it meets no second one',
+    breaks: (_, item) => [item.wait, item.refused, item.hostCannot].filter(Boolean).length > 1,
+  },
+  {
+    rule: 'a refused item was attempted: the refusal answered the attempt',
+    breaks: (_, item) => item.refused && !item.attempted,
+  },
+  {
+    rule: "a result is final for the step and an obstacle stops the item: neither can still advance, and a result meets no obstacle",
+    breaks: (_, item) => (item.holds || item.fails || item.unclear) && (item.advance || item.wait || item.refused || item.hostCannot) || ((item.wait || item.refused || item.hostCannot) && item.advance),
+  },
+  {
+    rule: 'what keeps an assigned item without a result from advancing is an obstacle: with none, it can still advance',
+    breaks: (_, item) => item.assigned && !(item.holds || item.fails || item.unclear) && !(item.wait || item.refused || item.hostCannot) && !item.advance,
+  },
+];
+
+/** The first validity rule an item breaks for this role, or undefined when some history produces it. */
+export const validity = (role: Role, item: Item, rules = VALIDITY): string | undefined => rules.find((one) => one.breaks(role, item))?.rule;
+
 /** Every state an item can be in, across roles; STATES_OF says which a role has. */
-export const ALL_STATES = ['done', 'proven', 'runnable', 'waits', 'refused', 'cannot', 'unclear', 'discovery', 'unitFinding', 'baseFinding'] as const;
+export const ALL_STATES = ['done', 'proven', 'runnable', 'waits', 'refused', 'cannot', 'unclear', 'unproven', 'discovery', 'unitFinding', 'baseFinding'] as const;
 export type State = (typeof ALL_STATES)[number];
 
 /** Every stop event, across roles; STOPS_OF says which a role has. */
@@ -23,7 +109,7 @@ export type Stop = (typeof ALL_STOPS)[number];
 export const STATES_OF: Record<Role, ReadonlyArray<State>> = {
   planner: ['done', 'runnable', 'waits', 'refused', 'cannot', 'discovery'],
   implementor: ['done', 'runnable', 'waits', 'refused', 'cannot', 'discovery'],
-  verifier: ['done', 'proven', 'runnable', 'waits', 'refused', 'cannot', 'unclear', 'unitFinding', 'baseFinding'],
+  verifier: ['done', 'proven', 'runnable', 'waits', 'refused', 'cannot', 'unclear', 'unproven', 'unitFinding', 'baseFinding'],
   worker: ['done', 'runnable', 'waits', 'refused', 'cannot', 'discovery'],
 };
 export const STOPS_OF: Record<Role, ReadonlyArray<Stop>> = {
@@ -32,10 +118,51 @@ export const STOPS_OF: Record<Role, ReadonlyArray<Stop>> = {
   verifier: ['refusalForm', 'refusalNone', 'idle'],
   worker: ['refusalForm', 'refusalNone', 'idle'],
 };
-/** The states that are not work the role was given: they never hold a step back. */
-export const OUTSIDE: ReadonlyArray<State> = ['discovery', 'unitFinding', 'baseFinding'];
 
-/** Each state's name, as the tables and the verdict line say it. */
+/** A predicate's one condition: a fact with the value it must have, or the provenance it must be. */
+export type Condition = readonly [Fact, boolean] | readonly ['provenance', Item['provenance']];
+/** Each state as a conjunction of conditions over the item's facts. */
+export type Predicates = Record<State, ReadonlyArray<Condition>>;
+export const PREDICATE: Predicates = {
+  done: [['assigned', true], ['holds', true]],
+  proven: [['assigned', true], ['fails', true]],
+  runnable: [['assigned', true], ['required', true], ['advance', true]],
+  waits: [['assigned', true], ['required', true], ['wait', true]],
+  refused: [['assigned', true], ['required', true], ['refused', true]],
+  cannot: [['assigned', true], ['required', true], ['hostCannot', true]],
+  unclear: [['assigned', true], ['required', true], ['unclear', true]],
+  unproven: [['assigned', true], ['required', false], ['holds', false], ['fails', false]],
+  discovery: [['assigned', false]],
+  unitFinding: [['assigned', false], ['provenance', 'unit']],
+  baseFinding: [['assigned', false], ['provenance', 'base']],
+};
+
+export const holdsFor = (item: Item, conditions: ReadonlyArray<Condition>) => conditions.every(([fact, value]) => item[fact] === value);
+
+/** Every state of the role whose predicate the item meets: exactly one for a valid item. */
+export const matching = (role: Role, item: Item, predicates: Predicates = PREDICATE): State[] => STATES_OF[role].filter((state) => holdsFor(item, predicates[state]));
+
+/** The one state of a valid item; throws on an invalid item, or on none or several (a predicate fault). */
+export function stateOf(role: Role, item: Item, predicates: Predicates = PREDICATE): State {
+  const bad = validity(role, item);
+  if (bad !== undefined) throw new Error(`ill-formed item: ${bad}`);
+  const found = matching(role, item, predicates);
+  if (found.length !== 1) throw new Error(`${role} item in ${found.length} states: ${found.join(', ')}`);
+  return found[0] as State;
+}
+
+/** Every record of facts, valid or not, for the enumeration. */
+export function allItems(): Item[] {
+  const out: Item[] = [];
+  for (let bits = 0; bits < 1 << FACTS.length; bits++)
+    for (const provenance of PROVENANCES) {
+      const facts = Object.fromEntries(FACTS.map((fact, index) => [fact, (bits & (1 << index)) !== 0])) as Record<Fact, boolean>;
+      out.push({ ...facts, provenance });
+    }
+  return out;
+}
+
+/** Each state's name, as the tables and the verdict rules say it. */
 export const STATE_NAME: Record<State, string> = {
   done: 'done',
   proven: 'proven',
@@ -44,24 +171,47 @@ export const STATE_NAME: Record<State, string> = {
   refused: 'refused',
   cannot: 'cannot run',
   unclear: 'ran unclear',
+  unproven: 'unproven',
   discovery: 'a discovery',
   unitFinding: 'a unit finding',
   baseFinding: 'a base finding',
 };
 
-/** What each state means, as a reader decides it from the item's own history. */
-export const STATE_TEXT: Record<State, string> = {
-  done: 'done; for a check, ran and passed',
-  proven: 'a check that ran and proves a Blocker or Major',
-  runnable: 'runnable, not yet run',
-  waits: 'waiting on an open unit, question, commitment or two contradicting spec lines',
-  refused: 'the item the refusal stopped',
-  cannot: 'unable to run on this host: its check or tool is absent or will not start, with no refusal',
-  unclear: 'a required check that ran, but whose result cannot establish pass or fail',
-  discovery: 'work no spec item asks for',
-  unitFinding: "a weak test, narrowed acceptance or written-rule break with no failing run that the unit's change introduced, shown by measured attribution (whether or not a spec item names it)",
-  baseFinding: 'such a finding the base head shows too',
-};
+/** How a condition reads in a prompt row; the row is these phrases, one per condition of the state's predicate. */
+export function phrase(role: Role, [fact, value]: Condition): string {
+  const check = role === 'verifier';
+  switch (fact) {
+    case 'assigned':
+      return value ? 'assigned' : 'not assigned';
+    case 'required':
+      return value ? 'required' : 'optional (a wider probe)';
+    case 'holds':
+      return value ? (check ? 'ran and passed' : 'its acceptance holds') : 'not passed';
+    case 'fails':
+      return value ? 'ran and proves a Blocker or Major' : 'proving nothing';
+    case 'unclear':
+      return 'ran, with a result that settles neither pass nor fail';
+    case 'advance':
+      return role === 'worker' ? 'can still advance, attempted or not' : 'can still advance in this lane, attempted or not';
+    case 'wait':
+      return 'waits on an open unit, question, commitment or two contradicting spec lines';
+    case 'refused':
+      return 'a refusal stopped it';
+    case 'hostCannot':
+      return 'this host cannot run it (its check or tool is absent or will not start), with no refusal';
+    case 'attempted':
+      return value ? 'attempted' : 'not attempted';
+    case 'provenance':
+      return value === 'unit'
+        ? "the unit's change introduced it, shown by measured attribution (whether or not a spec item names it)"
+        : value === 'base'
+          ? 'shown on the base head too'
+          : 'with no provenance';
+  }
+}
+
+/** A state's row text: its predicate's conditions, in words. */
+export const stateWords = (role: Role, state: State, predicates: Predicates = PREDICATE): string => predicates[state].map((condition) => phrase(role, condition)).join(', ');
 
 // ---- F1: state → label ---------------------------------------------------------------------------------------------
 
@@ -77,11 +227,12 @@ export const LABEL: Record<Role, Partial<Record<State, string | null>>> = {
   verifier: {
     done: null,
     proven: 'a Blocker or Major, filed with its proof',
-    runnable: '`not run`, named under Check',
+    runnable: '`not run`: no result yet, named under Check',
     waits: WAITS,
     refused: REFUSED.replace("this unit's work, never a follow-up, ", ''),
     cannot: CANNOT,
     unclear: '`ran unclear: <check>`, with its command and the output that settles nothing',
+    unproven: "`unproven: <probe>`, under Unproven with the probe that would settle it; it never changes the verdict",
     unitFinding: "marked `unit`: the same lane closes it in its next round",
     baseFinding: 'marked `base`: a follow-up unit',
   },
@@ -152,8 +303,8 @@ export const FILES: Record<Role, Record<string, string>> = {
   },
   verifier: {
     stuck: "each unit's `round-N-findings.md` and the batch's findings file; under Check, <evidence>, and <items>",
-    changes: "each unit's `round-N-findings.md` and the batch's findings file, with <items>",
-    accepted: "each unit's `round-N-findings.md` and the batch's findings file, with <items>",
+    changes: "each unit's `round-N-findings.md` and the batch's findings file; under Check, <evidence>, and <items>",
+    accepted: "each unit's `round-N-findings.md` and the batch's findings file; under Check, <evidence>, and <items>",
   },
   worker: { none: 'your result as text, with <evidence> and <items>' },
 };
@@ -175,7 +326,8 @@ export function illFormed(role: Role, stop: Stop, states: ReadonlyArray<State>):
   if (foreign !== undefined) return `a ${role} has no ${foreign} state`;
   const refused = states.filter((state) => state === 'refused').length;
   const refusal = stop === 'refusalForm' || stop === 'refusalNone';
-  if (refusal && refused !== 1) return 'a refusal stops the step at the one item it refused';
+  if (refusal && refused > 1) return 'a refusal stops the step at the one item it refused';
+  if (refusal && refused === 0 && !states.includes('unproven')) return 'a refusal stops the step at the one item it refused (a refused optional probe is unproven)';
   if (!refusal && refused > 0) return 'a refusal stops the step at once, so a refused item means the step stopped on it';
   if (stop === 'idle' && states.includes('runnable')) return 'the step goes on while a runnable item is left';
   if (stop === 'limit' && !states.includes('runnable')) return 'with no runnable item left the step had already stopped, before the limit passed';
@@ -233,14 +385,15 @@ export function render(role: Role): string {
   const limit = STOPS_OF[role].includes('limit');
   const intro = [
     `**How your step ends.** It stops the moment a refusal comes${role === 'worker' ? '' : ' (the Refusals paragraph)'}${limit ? " or the round's limit passes" : ''}; else it goes on until no runnable item is left.`,
-    'Each item is in one state, decided by its own history, and that state alone gives its label, whatever stopped the step (first table).',
-    'The states present give your verdict and its files (second table), and why the step stopped gives the evidence they hold. Effort is no state and no label.',
+    'Each item is in exactly one state, the one whose facts it has (first table; each fact is decided by the item\'s own history), and that state alone gives its label, whatever stopped the step.',
+    `The states present give your verdict and its files (second table${role === 'verifier' ? '; an optional probe is only ever done, proven or unproven, and unproven never changes it' : ''}), and why the step stopped gives the evidence they hold. Effort is no state and no label.`,
+    `Assigned work is ${ASSIGNMENT[role]}; whatever else you find is not assigned.`,
     REQUIRED[role],
   ].join(' ');
   const f1 = [
     '| State | An item that is | Its label |',
     '| --- | --- | --- |',
-    ...STATES_OF[role].map((state) => `| ${STATE_NAME[state]} | ${STATE_TEXT[state]} | ${label(role, state) ?? 'none: it is no item left'} |`),
+    ...STATES_OF[role].map((state) => `| ${STATE_NAME[state]} | ${stateWords(role, state)} | ${label(role, state) ?? 'none: it is no item left'} |`),
   ];
   const f2 = [
     '| Verdict, the first that holds | When | You write |',
