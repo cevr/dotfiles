@@ -25,7 +25,7 @@ Difficulty is never a reason. Effort does not defer a unit, split the real desig
 - **Equal but for effort: build the better one.** Two options that differ only in effort are no choice; take the better one without a question.
 - **Owner's choice: outcomes, not effort.** When the owner must choose, describe both outcomes and their tradeoffs, and recommend neither for its effort.
 - **"Not asked" is a close, not a deferral.** Nothing-is-hard does not put everything in scope ([subtract-before-you-add](../principle-subtract-before-you-add/SKILL.md)). Work no owner sentence asks for is closed by the orchestrator with the ask as referent; a worker never closes a spec item as "not asked".
-- **A refusal is authority, not difficulty.** A guard, a permission or a classifier refusal is the owner's rule. When it names the accepted form ("commit first", "use a script file"), follow that form. Otherwise stop that action, report it, and go on with the rest of the work; never rephrase until a scanner passes.
+- **A refusal is authority, not difficulty.** A guard, a permission or a classifier refusal is the owner's rule; never rephrase until a scanner passes. When it names the accepted form ("commit first", "use a script file"), follow that form. Otherwise your role's own rule decides what stops (a worker's: the worker protocol's Refusals section); this principle changes nothing there.
 
 **Examples:**
 
