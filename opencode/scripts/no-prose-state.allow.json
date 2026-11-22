@@ -1,0 +1,1178 @@
+[
+  {
+    "file": "opencode/mods/orchestrate/described.ts",
+    "source": "/^r\\d+$/",
+    "why": "reads role, unit and round from a call's description: replaced by `orchestrate` action `step`, deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "opencode/mods/orchestrate/described.ts",
+    "source": "/^([a-z0-9#][a-z0-9._#/-]*)((?: r\\d+)?) (planner|implementor|verifier)((?: r\\d+)?)((?: \\([^()]*\\))?)$/",
+    "why": "reads role, unit and round from a call's description: replaced by `orchestrate` action `step`, deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "opencode/mods/orchestrate/described.ts",
+    "source": "/\\s+/g",
+    "why": "reads role, unit and round from a call's description: replaced by `orchestrate` action `step`, deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "opencode/mods/orchestrate/digest.ts",
+    "source": "/\\/+$/",
+    "why": "trims a path's trailing slash: a path field, not run state",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/digest.ts",
+    "source": "/^(planner|implementor|verifier) ([a-z0-9][a-z0-9._-]*) r(\\d+)\\b/",
+    "why": "reads descriptions, findings tables and post-land lines; becomes the rows, post-land's outcome from `accept.ts --json`",
+    "until": "verdict-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/digest.ts",
+    "source": "/^[`*\\s]*\\w+ [a-z0-9][a-z0-9._-]* r(\\d+)/i",
+    "why": "reads descriptions, findings tables and post-land lines; becomes the rows, post-land's outcome from `accept.ts --json`",
+    "until": "verdict-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/digest.ts",
+    "source": "/^\\|\\s*`?([a-z0-9][a-z0-9._-]*)`?[^|]*\\|\\s*r?(\\d+)\\s*\\|\\s*[*_`]*(accepted|changes|stuck)\\b/i",
+    "why": "reads descriptions, findings tables and post-land lines; becomes the rows, post-land's outcome from `accept.ts --json`",
+    "until": "verdict-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/digest.ts",
+    "source": "/the accept check for .* (passed|FAILED)\\b/",
+    "why": "reads descriptions, findings tables and post-land lines; becomes the rows, post-land's outcome from `accept.ts --json`",
+    "until": "verdict-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/digest.ts",
+    "source": "/\\bFAILED\\b/",
+    "why": "reads descriptions, findings tables and post-land lines; becomes the rows, post-land's outcome from `accept.ts --json`",
+    "until": "verdict-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/digest.ts",
+    "source": "/^(?:rift|lane) land: /",
+    "why": "reads descriptions, findings tables and post-land lines; becomes the rows, post-land's outcome from `accept.ts --json`",
+    "until": "verdict-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/documents.ts",
+    "source": "/\\/+$/",
+    "why": "trims a path's trailing slash: a path field, not run state",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/filestore/principles.ts",
+    "source": "/\\/+$/",
+    "why": "trims a path's trailing slash: a path field, not run state",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/filestore/run-files.ts",
+    "source": "/\\/+$/",
+    "why": "trims a path's trailing slash: a path field, not run state",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/fleet.ts",
+    "source": "/^Heads: dotfiles=([0-9a-f]{40}) fork=([0-9a-f]{40})$/",
+    "why": "reads the batch file's `Heads:` line and findings paths; becomes `batch.dotfiles_head`, `batch.fork_head`, written by `orchestrate verify`",
+    "until": "verdict-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/fleet.ts",
+    "source": "/^\\W*heads:/i",
+    "why": "reads the batch file's `Heads:` line and findings paths; becomes `batch.dotfiles_head`, `batch.fork_head`, written by `orchestrate verify`",
+    "until": "verdict-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/fleet.ts",
+    "source": "/\\r$/",
+    "why": "reads the batch file's `Heads:` line and findings paths; becomes `batch.dotfiles_head`, `batch.fork_head`, written by `orchestrate verify`",
+    "until": "verdict-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/fleet.ts",
+    "source": "/\\/[^\\s`'\"()<>[\\]]*-findings\\.md/g",
+    "why": "reads the batch file's `Heads:` line and findings paths; becomes `batch.dotfiles_head`, `batch.fork_head`, written by `orchestrate verify`",
+    "until": "verdict-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/git/fleet.ts",
+    "source": "/^\\s*origin\\//m",
+    "why": "reads git's own output (refs, remotes, full hashes): a field from git, not prose",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/git/fleet.ts",
+    "source": "/\\/+$/",
+    "why": "trims a path's trailing slash: a path field, not run state",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/git/fleet.ts",
+    "source": "/\\.git$/i",
+    "why": "reads git's own output (refs, remotes, full hashes): a field from git, not prose",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/git/fleet.ts",
+    "source": "/[/:]/",
+    "why": "reads git's own output (refs, remotes, full hashes): a field from git, not prose",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/git/main-line.ts",
+    "source": "/^[0-9a-f]{40}$/",
+    "why": "reads git's own output (refs, remotes, full hashes): a field from git, not prose",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/git/main-line.ts",
+    "source": "/^refs\\/remotes\\/origin\\//",
+    "why": "reads git's own output (refs, remotes, full hashes): a field from git, not prose",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/git/work-git.ts",
+    "source": "/\\/+$/",
+    "why": "trims a path's trailing slash: a path field, not run state",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/idle.ts",
+    "source": "/\\s+/",
+    "why": "the first word of a slash command's arguments: tool input, not run state",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/ledger.ts",
+    "source": "/^merged\\b/",
+    "why": "a state string such as `merged <hash>`; becomes a typed `unit.state`",
+    "until": "hand-back-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/ledger.ts",
+    "source": "/\\.\\d{3}Z$/",
+    "why": "trims a timestamp's milliseconds for display: a field's format",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/lost-now.ts",
+    "source": "/^(verify|waiting|blocked)/",
+    "why": "a unit's state string from the run tables; becomes a typed `unit.state`",
+    "until": "hand-back-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/lost-now.ts",
+    "source": "/^(waiting|needs-you)/",
+    "why": "a queue item's state word in its text; becomes the item's `commitment` link",
+    "until": "triggers-wake"
+  },
+  {
+    "file": "opencode/mods/orchestrate/lost-now.ts",
+    "source": "/\\/+$/",
+    "why": "trims a path's trailing slash: a path field, not run state",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/lost-now.ts",
+    "source": "/^(ready|verify)\\b/",
+    "why": "a unit's state string from the run tables; becomes a typed `unit.state`",
+    "until": "hand-back-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/lost-now.ts",
+    "source": "/^verify\\b/",
+    "why": "a unit's state string from the run tables; becomes a typed `unit.state`",
+    "until": "hand-back-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/lost.ts",
+    "source": "/^changes\\b/",
+    "why": "a state string from the run tables; becomes a typed `unit.state`",
+    "until": "hand-back-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/memory/run-files.ts",
+    "source": "/\\/+$/",
+    "why": "trims a path's trailing slash: a path field, not run state",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/memory/run-files.ts",
+    "source": "/\\/(?:log|round-\\d+-request)\\.md$/",
+    "why": "the run files' memory double finds logs and requests by name; goes with the reads of those files",
+    "until": "hand-back-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/pace.ts",
+    "source": "/; opens about (\\d{4}-\\d\\d-\\d\\d) (\\d\\d:\\d\\d)Z$/",
+    "why": "the pool's `opens about` line: not run state; a follow-up for the pool's contract to give the time as a field",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/principles.ts",
+    "source": "/^---\\n([\\s\\S]*?)\\n---\\n?/",
+    "why": "reads a principle skill's front matter: reading a document as a document",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/principles.ts",
+    "source": "new RegExp(`^${key}:\\\\s*(.*)$`, \"m\")",
+    "why": "reads a principle skill's front matter: reading a document as a document",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/principles.ts",
+    "source": "/[^a-z0-9]+/",
+    "why": "reads a principle skill's front matter: reading a document as a document",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/record.ts",
+    "source": "/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/",
+    "why": "validates a field of a record call (a slug, a pointer, one line): validating a field",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/record.ts",
+    "source": "/^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,119}$/",
+    "why": "validates a field of a record call (a slug, a pointer, one line): validating a field",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/record.ts",
+    "source": "/^[^\\n\\r]*$/",
+    "why": "validates a field of a record call (a slug, a pointer, one line): validating a field",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/repo-key.ts",
+    "source": "/^[a-z][a-z0-9+.-]*:\\/\\//",
+    "why": "normalizes a git origin URL into the record's file key: a field from git, not prose",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/repo-key.ts",
+    "source": "/^[^@/]*@/",
+    "why": "normalizes a git origin URL into the record's file key: a field from git, not prose",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/repo-key.ts",
+    "source": "/^([^/:]+):\\d+(\\/|$)/",
+    "why": "normalizes a git origin URL into the record's file key: a field from git, not prose",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/repo-key.ts",
+    "source": "/[^a-z0-9._-]+/g",
+    "why": "normalizes a git origin URL into the record's file key: a field from git, not prose",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/repo-key.ts",
+    "source": "/^-+|-+$/g",
+    "why": "normalizes a git origin URL into the record's file key: a field from git, not prose",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/repo-key.ts",
+    "source": "/\\/+$/",
+    "why": "trims a path's trailing slash: a path field, not run state",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/repo-key.ts",
+    "source": "/\\.git$/",
+    "why": "normalizes a git origin URL into the record's file key: a field from git, not prose",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/role.ts",
+    "source": "/^status:/",
+    "why": "a model id or the `(mechanical)` note the orchestrator writes in a call's own description: validating a field",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/role.ts",
+    "source": "/\\(mechanical\\)\\s*$/i",
+    "why": "a model id or the `(mechanical)` note the orchestrator writes in a call's own description: validating a field",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/role.ts",
+    "source": "/^gpt-/i",
+    "why": "a model id or the `(mechanical)` note the orchestrator writes in a call's own description: validating a field",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/tools.ts",
+    "source": "/^[a-z0-9][a-z0-9._-]*$/",
+    "why": "validates or shapes a field of tool input (a unit slug, a lane name, the `orchestrate:` prefix of the tool's own words): validating a field",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/tools.ts",
+    "source": "/\\/+$/",
+    "why": "trims a path's trailing slash: a path field, not run state",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/tools.ts",
+    "source": "/[/\\s]/g",
+    "why": "validates or shapes a field of tool input (a unit slug, a lane name, the `orchestrate:` prefix of the tool's own words): validating a field",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/tools.ts",
+    "source": "/[^A-Za-z0-9._-]/g",
+    "why": "validates or shapes a field of tool input (a unit slug, a lane name, the `orchestrate:` prefix of the tool's own words): validating a field",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/tools.ts",
+    "source": "/^-+|-+$/g",
+    "why": "validates or shapes a field of tool input (a unit slug, a lane name, the `orchestrate:` prefix of the tool's own words): validating a field",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/tools.ts",
+    "source": "/^(?:verify-.+|integrate|post-land|land-accept)(?:-[2-9])?$/",
+    "why": "validates or shapes a field of tool input (a unit slug, a lane name, the `orchestrate:` prefix of the tool's own words): validating a field",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/tools.ts",
+    "source": "/-[2-9]$/",
+    "why": "validates or shapes a field of tool input (a unit slug, a lane name, the `orchestrate:` prefix of the tool's own words): validating a field",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/tools.ts",
+    "source": "/^orchestrate: /",
+    "why": "validates or shapes a field of tool input (a unit slug, a lane name, the `orchestrate:` prefix of the tool's own words): validating a field",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/tools.ts",
+    "source": "/^(merged|dropped|done)\\b/",
+    "why": "a state string such as `merged <hash>`; becomes a typed `unit.state`",
+    "until": "hand-back-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/tools.ts",
+    "source": "/[-_./]+/",
+    "why": "validates or shapes a field of tool input (a unit slug, a lane name, the `orchestrate:` prefix of the tool's own words): validating a field",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/tools.ts",
+    "source": "/^(.+)[-_.]r\\d+$/",
+    "why": "validates or shapes a field of tool input (a unit slug, a lane name, the `orchestrate:` prefix of the tool's own words): validating a field",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/tools.ts",
+    "source": "/[a-z]{4,}/",
+    "why": "validates or shapes a field of tool input (a unit slug, a lane name, the `orchestrate:` prefix of the tool's own words): validating a field",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/tools.ts",
+    "source": "/\\((?:lane|rift): ([^)]+)\\)/",
+    "why": "lanePathOf: `(lane: …)` in a description; becomes `unit.lane`",
+    "until": "hand-back-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/tools.ts",
+    "source": "/^Landed \\d+ (?:workspace|Rift)\\(s\\) as one push: ([0-9a-f]{7,40})\\b/m",
+    "why": "pushedOf: the pushed commit in `work land`'s text; read from git after the land (`MainLine.tip`)",
+    "until": "verdict-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/tools.ts",
+    "source": "/\\bhead\\b[^\\n]*?\\b([0-9a-f]{7,40})\\b/i",
+    "why": "headOf: the head in a request; becomes `hand_back.head`",
+    "until": "hand-back-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/tools.ts",
+    "source": "/\\b[0-9a-f]{7,40}\\.\\.([0-9a-f]{7,40})\\b/",
+    "why": "headOf: a `base..head` range in a request; becomes `hand_back.head`",
+    "until": "hand-back-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/tools.ts",
+    "source": "/\\b(accepted|changes|stuck)\\b/i",
+    "why": "a verdict in findings and batch files; becomes the `batch` and `unit_verdict` rows",
+    "until": "verdict-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/tools.ts",
+    "source": "/^[\\s>*#`_-]*(?:verifier\\s+\\S+\\s+r\\d+:\\s*|verdict:\\s*)?[*`_]*(accepted|changes|stuck)\\b/im",
+    "why": "a verdict in findings and batch files; becomes the `batch` and `unit_verdict` rows",
+    "until": "verdict-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/tools.ts",
+    "source": "/\\bHead: ([0-9a-f]{7,40})\\b/",
+    "why": "`Head:` in findings; becomes the `unit_verdict` row's head",
+    "until": "verdict-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/tools.ts",
+    "source": "new RegExp(`^round-(\\\\d+)-${kind}\\\\.md$`)",
+    "why": "the newest round file of a unit dir; becomes `hand_back.head` and the step rows",
+    "until": "hand-back-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/tools.ts",
+    "source": "/^batch-.+\\.md$/",
+    "why": "finds batch files by name; becomes the `batch` rows",
+    "until": "verdict-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/tools.ts",
+    "source": "/\\.md$/",
+    "why": "finds a run's findings and batch files by name; becomes the `batch` rows",
+    "until": "verdict-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/tools.ts",
+    "source": "/^batch-/",
+    "why": "finds batch files by name; becomes the `batch` rows",
+    "until": "verdict-tools"
+  },
+  {
+    "file": "opencode/mods/orchestrate/unit-log.ts",
+    "source": "/^[a-z0-9][a-z0-9._-]*$/",
+    "why": "unit-log.ts parses a hand-back's first line, a call's description and unit dirs from prose: replaced by the hand_back, step and unit rows, deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "opencode/mods/orchestrate/unit-log.ts",
+    "source": "/^r(\\d+)$/i",
+    "why": "unit-log.ts parses a hand-back's first line, a call's description and unit dirs from prose: replaced by the hand_back, step and unit rows, deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "opencode/mods/orchestrate/unit-log.ts",
+    "source": "/^[`*\\s]*(planner|implementor|verifier) ([a-z0-9][a-z0-9._-]*) r(\\d+):\\s*(ready|blocked|accepted|changes|stuck)\\b[`*]*\\s*([^\\s`*]*)/i",
+    "why": "unit-log.ts parses a hand-back's first line, a call's description and unit dirs from prose: replaced by the hand_back, step and unit rows, deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "opencode/mods/orchestrate/unit-log.ts",
+    "source": "/(?:^|[\\s`'\"(<[])([^\\s`'\"()<>[\\]]*\\/[^\\s`'\"()<>[\\]]*)/g",
+    "why": "unit-log.ts parses a hand-back's first line, a call's description and unit dirs from prose: replaced by the hand_back, step and unit rows, deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "opencode/mods/orchestrate/unit-log.ts",
+    "source": "/[.,:;]+$/",
+    "why": "unit-log.ts parses a hand-back's first line, a call's description and unit dirs from prose: replaced by the hand_back, step and unit rows, deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "opencode/mods/queue/stale.ts",
+    "source": "/[^A-Za-z0-9]+/",
+    "why": "names and hashes in queue text (wakeReason, commitsOf); becomes the item's `commitment` link",
+    "until": "triggers-wake"
+  },
+  {
+    "file": "opencode/mods/queue/stale.ts",
+    "source": "/\\b[0-9a-f]{7,40}\\b/g",
+    "why": "names and hashes in queue text (wakeReason, commitsOf); becomes the item's `commitment` link",
+    "until": "triggers-wake"
+  },
+  {
+    "file": "opencode/mods/queue/stale.ts",
+    "source": "/\\d/",
+    "why": "names and hashes in queue text (wakeReason, commitsOf); becomes the item's `commitment` link",
+    "until": "triggers-wake"
+  },
+  {
+    "file": "opencode/mods/queue/stale.ts",
+    "source": "/[a-f]/",
+    "why": "names and hashes in queue text (wakeReason, commitsOf); becomes the item's `commitment` link",
+    "until": "triggers-wake"
+  },
+  {
+    "file": "opencode/mods/status/agent-calls.ts",
+    "source": "/^(?:planner|implementor|verifier) (\\S+)/",
+    "why": "a unit from a call's description; becomes the `step` and `unit` rows",
+    "until": "hand-back-tools"
+  },
+  {
+    "file": "opencode/mods/status/agent-calls.ts",
+    "source": "/^([a-z0-9#][a-z0-9._#/-]*)(?: r\\d+)? (?:planner|implementor|verifier)(?: r\\d+)?(?: \\([^()]*\\))?$/",
+    "why": "a unit from a call's description; becomes the `step` and `unit` rows",
+    "until": "hand-back-tools"
+  },
+  {
+    "file": "opencode/mods/status/agent-calls.ts",
+    "source": "/^r\\d+$/",
+    "why": "a unit from a call's description; becomes the `step` and `unit` rows",
+    "until": "hand-back-tools"
+  },
+  {
+    "file": "opencode/mods/status/agent-calls.ts",
+    "source": "/\\s+/g",
+    "why": "a unit from a call's description; becomes the `step` and `unit` rows",
+    "until": "hand-back-tools"
+  },
+  {
+    "file": "skills/orchestrate/scripts/agent-cost.ts",
+    "source": "/sleep [0-9]|until |while true|gh run watch/",
+    "why": "scans transcripts' shell commands for waiting loops to price an agent: not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/agent-cost.ts",
+    "source": "/\\btools\\.shell\\(\\s*\\{[^}]*?\\bcommand\\s*:\\s*([\"'`])([\\s\\S]*?)\\1/g",
+    "why": "scans transcripts' shell commands for waiting loops to price an agent: not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/agents.ts",
+    "source": "/^## /m",
+    "why": "reads the agent definitions' own files to build agents.json: reading a document as a document",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/agents.ts",
+    "source": "/^[a-z-]+\\.(md|toml)$/",
+    "why": "reads the agent definitions' own files to build agents.json: reading a document as a document",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget.ts",
+    "source": "/[\\s,]+/",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget.ts",
+    "source": "/[^\\w.-]/g",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget/burn.ts",
+    "source": "/\\/tmp\\/orchestrate\\/([^/]+)/",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget/burn.ts",
+    "source": "/\\/(?:\\.work|\\.rifts)\\/([^/]+)/",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget/burn.ts",
+    "source": "/\\/Developer\\/(?:personal|work)\\/([^/.][^/]*)/",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget/burn.ts",
+    "source": "/\\/workspaces\\/([^/]+)/",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget/burn.ts",
+    "source": "/^status:/",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget/burn.ts",
+    "source": "/\\b(planner|implementor|reviewer|verifier)\\b/i",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget/burn.ts",
+    "source": "/\\.jsonl$/",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget/burn.ts",
+    "source": "/(^|:)(orchestrate-)?worker$/",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget/burn.ts",
+    "source": "/\\s+/g",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget/burn.ts",
+    "source": "/\\b(?:cat|sed -n '[^']*'|head(?: -\\S+)*|tail(?: -\\S+)*)\\s+(\\S+)/",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget/burn.ts",
+    "source": "/\"type\":\"(assistant|user|attachment)\"|\"compact_boundary\"/",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget/burn.ts",
+    "source": "/\\|/g",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget/codex-host.ts",
+    "source": "/^gpt-[\\d.]+-(\\w+)$/",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget/host.ts",
+    "source": "/\\/tmp\\/orchestrate\\/([^/]+)/",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget/host.ts",
+    "source": "/\\/(?:\\.work|\\.rifts)\\/([^/]+)/",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget/host.ts",
+    "source": "/\\/Developer\\/(?:personal|work)\\/([^/.][^/]*)/",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget/host.ts",
+    "source": "/\\/workspaces\\/([^/]+)/",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget/host.ts",
+    "source": "/review|counsel|audit|verif|prove|probe|e2e|smoke/i",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget/host.ts",
+    "source": "/plan|design|spec/i",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget/host.ts",
+    "source": "/explore|search|find|survey|read|research/i",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget/host.ts",
+    "source": "/implement|build|fix|write|add|split|port|refactor|migrat/i",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget/host.ts",
+    "source": "/^(?:orchestrate-)?(planner|implementor|reviewer|verifier)$/",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget/host.ts",
+    "source": "/^status:/",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget/host.ts",
+    "source": "/^orchestrate-worker:/",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget/host.ts",
+    "source": "/:review$/",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget/host.ts",
+    "source": "/\\.jsonl$/",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/budget/host.ts",
+    "source": "/\"cwd\":\"([^\"]+)\"/",
+    "why": "reads a provider's or a host tool's own output (usage, limits, costs): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/log.ts",
+    "source": "/^r(\\d+)$/",
+    "why": "the writer of `log.md`; replaced by the events, deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "skills/orchestrate/scripts/log.ts",
+    "source": "/^[0-9a-f]{7,40}\\b/",
+    "why": "the writer of `log.md`; replaced by the events, deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "skills/orchestrate/scripts/log.ts",
+    "source": "/[\\r\\n]/",
+    "why": "the writer of `log.md`; replaced by the events, deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/experiment.ts",
+    "source": "/\\s+/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/experiment.ts",
+    "source": "/^r\\d+$/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/experiment.ts",
+    "source": "/^[\\w-]+\\//",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/limits.ts",
+    "source": "/^claude-([a-z]+)/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/limits.ts",
+    "source": "/^gpt-[\\d.]+-(.+)$/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/limits.ts",
+    "source": "/^[\\w-]+\\//",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/limits.ts",
+    "source": "/[#@]/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/limits.ts",
+    "source": "/^(opus|fable|sonnet|haiku)-/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/opencode.ts",
+    "source": "/^(?:planner|implementor|reviewer|verifier)\\s+(\\S+)\\s+r(\\d+)\\b/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/opencode.ts",
+    "source": "/^claude-/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/opencode.ts",
+    "source": "/^[\\w-]+\\//",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/outcomes.ts",
+    "source": "/^(?:round-\\d+-verify|verify-\\d+)\\.md$/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/outcomes.ts",
+    "source": "/\\b(planner|implementor|reviewer|verifier) \\S+ r(\\d+): ([a-z()]+) (\\S+\\.md)/g",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/outcomes.ts",
+    "source": "/((?:~|\\/)[^\\s'\"`()<>\\[\\]]*?)\\/(?:spec|state|blocked|round-(\\d+)-(?:request|findings|verify))\\.md/g",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/outcomes.ts",
+    "source": "/^~(?=\\/)/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/outcomes.ts",
+    "source": "/^(accept(ed)?|approved?)\\b/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/outcomes.ts",
+    "source": "/^(changes|revise|request(ed)? changes|fixups)\\b/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/outcomes.ts",
+    "source": "/^(stuck|pass|fail)\\b/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/outcomes.ts",
+    "source": "/^[#*\\s]+/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/outcomes.ts",
+    "source": "/^verdict:?[*\\s]*/i",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/outcomes.ts",
+    "source": "/→\\s*(?:merged|done)\\b|\\bmerged [0-9a-f]{7}/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/outcomes.ts",
+    "source": "/→\\s*dropped\\b/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/outcomes.ts",
+    "source": "/round-(\\d+)-/g",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/outcomes.ts",
+    "source": "/\\bround[ -]?(\\d+)\\b/gi",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/outcomes.ts",
+    "source": "/\\bunit dir(?:ectory)? is `?((?:~|\\/)[^\\s`'\"]+?)\\/?\\.?(?=[\\s`'\"]|$)/i",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/outcomes.ts",
+    "source": "/^batch-(\\d+)(?:-findings)?\\.md$/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/outcomes.ts",
+    "source": "/((?:~|\\/)[^\\s'\"`()<>\\[\\]]*?)\\/batch-(\\d+)(?:-findings)?\\.md/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/outcomes.ts",
+    "source": "/((?:~|\\/)?[^\\s'\"`()<>\\[\\]|*]*?)round-(\\d+)-(findings|request)\\.md/g",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/outcomes.ts",
+    "source": "/^[~/]/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/outcomes.ts",
+    "source": "/\\/$/",
+    "why": "trims a path's trailing slash: a path field, not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/outcomes.ts",
+    "source": "new RegExp(`→\\\\s*verify r(\\\\d+)\\\\b.*\\\\bbatch-${k}\\\\.md`, 'g')",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/outcomes.ts",
+    "source": "/^batch-(\\d+)$/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/sources.ts",
+    "source": "/^(?:status:)?(?:orchestrate-)?(planner|implementor|reviewer|verifier)$/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/sources.ts",
+    "source": "/^(planner|implementor|reviewer|verifier)\\b/i",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/sources.ts",
+    "source": "/\\b(planner|implementor|reviewer|verifier)\\b/i",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/sources.ts",
+    "source": "/\\breview|counsel|findings|\\bverif/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/sources.ts",
+    "source": "/\\bplanner|\\bplan\\b|write spec/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/sources.ts",
+    "source": "/implement/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/sources.ts",
+    "source": "/implement|round[- ]?\\d|\\bfix|\\bbuild|spec\\.md/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/sources.ts",
+    "source": "/explore|search|research|read-only|investigat/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/sources.ts",
+    "source": "/compact/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/sources.ts",
+    "source": "/counsel/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/sources.ts",
+    "source": "/^\\s*(# AGENTS\\.md|<environment_context>|<user_instructions>|<permissions)/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/sources.ts",
+    "source": "/^You are the (planner|implementor|reviewer|verifier) of one orchestrate unit\\./",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/sources.ts",
+    "source": "/\\.jsonl$/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/sources.ts",
+    "source": "/^(?:planner|implementor|reviewer|verifier)\\s+(\\S+)\\s+r(\\d+)\\b/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/sources.ts",
+    "source": "/^rollout-.*\\.jsonl$/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/models/sources.ts",
+    "source": "/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?=\\.jsonl$)/",
+    "why": "reads a provider's or a host tool's own output (models, limits, outcomes): not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/request.ts",
+    "source": "/[.*+?^${}()|[\\]\\\\]/g",
+    "why": "findings headings and ids, the head and the digest line from prose; become `hand_back` fields (`head`, `digest`, `fixes`), deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "skills/orchestrate/scripts/request.ts",
+    "source": "/^#{1,6}\\s*\\**\\s*(blockers?|majors?|minor|optional|test strength|unproven|on base|rejected|receipts)\\b/i",
+    "why": "findings headings and ids, the head and the digest line from prose; become `hand_back` fields (`head`, `digest`, `fixes`), deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "skills/orchestrate/scripts/request.ts",
+    "source": "/^(blocker|major)/i",
+    "why": "findings headings and ids, the head and the digest line from prose; become `hand_back` fields (`head`, `digest`, `fixes`), deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "skills/orchestrate/scripts/request.ts",
+    "source": "/repeat of r\\d+/i",
+    "why": "findings headings and ids, the head and the digest line from prose; become `hand_back` fields (`head`, `digest`, `fixes`), deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "skills/orchestrate/scripts/request.ts",
+    "source": "/\\b([A-Z]{1,2}\\d+)\\b/",
+    "why": "findings headings and ids, the head and the digest line from prose; become `hand_back` fields (`head`, `digest`, `fixes`), deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "skills/orchestrate/scripts/request.ts",
+    "source": "/\\bhead\\b[^\\n]*?\\b([0-9a-f]{7,40})\\b/i",
+    "why": "findings headings and ids, the head and the digest line from prose; become `hand_back` fields (`head`, `digest`, `fixes`), deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "skills/orchestrate/scripts/request.ts",
+    "source": "/\\b[0-9a-f]{7,40}\\.\\.([0-9a-f]{7,40})\\b/",
+    "why": "findings headings and ids, the head and the digest line from prose; become `hand_back` fields (`head`, `digest`, `fixes`), deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "skills/orchestrate/scripts/request.ts",
+    "source": "/^[\\s>*_`]*digest:[*_`]*\\s*(.*?)\\s*$/i",
+    "why": "findings headings and ids, the head and the digest line from prose; become `hand_back` fields (`head`, `digest`, `fixes`), deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "skills/orchestrate/scripts/request.ts",
+    "source": "/\\bhead\\b[^\\n]*\\b[0-9a-f]{7,40}\\b|\\b[0-9a-f]{7,40}\\.\\.[0-9a-f]{7,40}\\b/i",
+    "why": "findings headings and ids, the head and the digest line from prose; become `hand_back` fields (`head`, `digest`, `fixes`), deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "skills/orchestrate/scripts/request.ts",
+    "source": "new RegExp(String.raw`^[\\s>*-]*repeat\\s+${escape(id)}\\**:\\s*\\S.*?\\bred at\\s+\\`?([0-9a-f]{7,40})\\b`, 'im')",
+    "why": "findings headings and ids, the head and the digest line from prose; become `hand_back` fields (`head`, `digest`, `fixes`), deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "skills/orchestrate/scripts/request.ts",
+    "source": "/^\\d+$/",
+    "why": "findings headings and ids, the head and the digest line from prose; become `hand_back` fields (`head`, `digest`, `fixes`), deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "skills/orchestrate/scripts/runs.ts",
+    "source": "/^(?:log|timing|runs|request|agents)-/",
+    "why": "run dirs found by walking; replaced by `record.ts list`, deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "skills/orchestrate/scripts/runs.ts",
+    "source": "/\\/$/",
+    "why": "trims a path's trailing slash: a path field, not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/status.ts",
+    "source": "new RegExp(String.raw`(\\S+)\\s*(?:→|->)\\s*(${STATE})`)",
+    "why": "`log.md` lines and findings verdicts; replaced by `record.ts list`, deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "skills/orchestrate/scripts/status.ts",
+    "source": "/\\b(?:r|round )(\\d+)\\b/",
+    "why": "`log.md` lines and findings verdicts; replaced by `record.ts list`, deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "skills/orchestrate/scripts/status.ts",
+    "source": "/\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}Z?/",
+    "why": "`log.md` lines and findings verdicts; replaced by `record.ts list`, deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "skills/orchestrate/scripts/status.ts",
+    "source": "/\\S+\\.(?:md|log)\\b/g",
+    "why": "`log.md` lines and findings verdicts; replaced by `record.ts list`, deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "skills/orchestrate/scripts/status.ts",
+    "source": "new RegExp(`^round-(\\\\d+)-${kind}\\\\.md$`)",
+    "why": "`log.md` lines and findings verdicts; replaced by `record.ts list`, deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "skills/orchestrate/scripts/status.ts",
+    "source": "/\\b(accepted|changes|stuck)\\b/i",
+    "why": "`log.md` lines and findings verdicts; replaced by `record.ts list`, deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "skills/orchestrate/scripts/status.ts",
+    "source": "/^[0-9a-f]{40}$/",
+    "why": "`log.md` lines and findings verdicts; replaced by `record.ts list`, deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "skills/orchestrate/scripts/status.ts",
+    "source": "/^merged\\b/",
+    "why": "`log.md` lines and findings verdicts; replaced by `record.ts list`, deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "skills/orchestrate/scripts/timing.ts",
+    "source": "/\\/$/",
+    "why": "trims a path's trailing slash: a path field, not run state",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/transition.ts",
+    "source": "/^(\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\dZ?)\\S*\\s+(\\S+)\\s*(?:→|->)\\s*(([a-z]+(?:-[a-z]+)*)(?:\\([a-z]+\\))?)/",
+    "why": "a `log.md` transition line; replaced by the events, deleted with the file",
+    "until": "parsers-out"
+  },
+  {
+    "file": "skills/orchestrate/scripts/transition.ts",
+    "source": "/\\sr(\\d+)\\b/i",
+    "why": "a `log.md` transition line; replaced by the events, deleted with the file",
+    "until": "parsers-out"
+  }
+]

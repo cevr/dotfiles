@@ -1036,6 +1036,15 @@
       "rules": {
         "effect/noNodeBuiltinImport": "off"
       }
+    },
+    {
+      "files": [
+        "scripts/no-prose-state.test.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
     }
   ]
 }
