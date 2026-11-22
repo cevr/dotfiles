@@ -160,6 +160,13 @@
       "package": "packages/cli",
       "files": ["test/service.test.ts", "test/service-lifecycle.test.ts", "test/service-shell-restart.test.ts"],
       "proved": "shell-restart-notice r1 (fork 9273b5c682): test/service* 44 pass; service-shell-restart.test.ts 5 pass"
+    },
+    {
+      "id": "shell-restart-wake",
+      "feature": "A session whose background shell a restart killed is woken with the notice (the owner's q162, diverging from upstream 664c8f0990)",
+      "package": "packages/cli",
+      "files": ["test/service-shell-restart.test.ts"],
+      "proved": "arrives with unit shell-restart-wake's fork commit"
     }
   ],
   "expectations": [
