@@ -145,6 +145,7 @@ const Goal = Schema.Struct({ output: Schema.Null })
 const FormMade = Schema.Struct({ data: Schema.Struct({ id: Schema.String, sessionID: Schema.String }) })
 const FormCreated = Schema.Struct({ type: Schema.Literal("form.created"), data: Schema.Struct({ form: Schema.Struct({ id: Schema.String, sessionID: Schema.String }) }) })
 const FamilyForms = Schema.Struct({ data: Schema.Struct({ forms: Schema.Array(Schema.Struct({ id: Schema.String })) }) })
+const SessionForms = Schema.Struct({ data: Schema.Array(Schema.Struct({ id: Schema.String })) })
 
 /** The ids of the session's messages of `type`. */
 const messagesOf = (server: LawServer, sessionID: string, type: string) =>
@@ -504,8 +505,8 @@ export const LAWS: ReadonlyArray<Law> = [
       ),
   },
   {
-    name: "a form made in a session is answered with its id, announced form.created, and listed with the session's family requests",
-    routes: ["session.form.create"],
+    name: "a form made in a session is answered with its id, announced form.created, and listed with the session's family requests and its pending forms",
+    routes: ["session.form.create", "session.form.list"],
     kinds: ["form.created"],
     run: (server) =>
       Effect.gen(function* () {
@@ -519,6 +520,8 @@ export const LAWS: ReadonlyArray<Law> = [
         if (announced.length !== 1 || announced[0]?.data.form.sessionID !== sessionID) failures.push(`${announced.length} form.created for ${formID}`)
         const requests = yield* server.call(get(`/api/session/${sessionID}/family/request`))
         if (!Option.exists(read(FamilyForms, requests), (found) => found.data.forms.some((form) => form.id === formID))) failures.push(`family requests: ${shown(requests)}`)
+        const pending = yield* server.call(get(`/api/session/${sessionID}/form`))
+        if (!Option.exists(read(SessionForms, pending), (found) => found.data.some((form) => form.id === formID))) failures.push(`pending forms: ${shown(pending)}`)
         return failures
       }),
   },
