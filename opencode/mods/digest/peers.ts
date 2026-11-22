@@ -85,6 +85,7 @@ export const Reading = Data.taggedEnum<Reading>()
 export const readingOf = (status: number, body: string): Reading =>
   Match.value(status).pipe(
     Match.when(404, () => Reading.Update({ reason: "peer needs update (it serves no peer view)" })),
+    Match.when(401, () => Reading.Down({ reason: "it needs pairing to be read (its digest.tailnetRead is paired)" })),
     Match.when(200, () =>
       Option.match(decodeWire(body), {
         onNone: () => Reading.Down({ reason: "it answered something unreadable" }),

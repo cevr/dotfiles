@@ -27,7 +27,8 @@ describe("a peer's answer", () => {
     expect(readingOf(200, "<html>a captive portal</html>")).toEqual(UNREADABLE)
     expect(readingOf(200, ENVELOPE.slice(0, -20))).toEqual(UNREADABLE)
     expect(readingOf(200, `{"wire":${WIRE},"host":"workbox","view":{"projects":"elsewhere"}}`)).toEqual(UNREADABLE)
-    expect(readingOf(401, "pair first")).toEqual(Reading.Down({ reason: "it answered 401" }))
+    expect(readingOf(401, "pair first")).toEqual(Reading.Down({ reason: "it needs pairing to be read (its digest.tailnetRead is paired)" }))
+    expect(readingOf(503, "restarting")).toEqual(Reading.Down({ reason: "it answered 503" }))
   })
 
   test("a newer peer's message of a kind this build does not know is left out alone; the rest of its view shows", () => {
