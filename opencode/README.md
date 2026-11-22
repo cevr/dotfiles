@@ -2915,7 +2915,14 @@ select-left: with text in the composer the key stays the composer's and
 selects (the hotkey's layer sits above the textarea's and hands the key on);
 with no question open it does nothing, as a click does. A click takes no key
 from the composer, so it opens the form whatever the composer holds. A session that already has its form
-pending gets no second.
+pending gets no second, and opening is idempotent: while a form is being made
+(a slow server) or shows, another click, `/answer` or shift+← does nothing
+more. The form holds the questions open at that moment, read from the server
+then, not the tray's last reading: a question answered meanwhile (in the last
+form, on the digest page, in another TUI) never shows again, an open that
+finds none says `Already answered`, and a form of ours whose questions all
+closed is cancelled at the next open rather than shown. A submit answers the
+questions still open; one closed meanwhile is left out, not a failed submit.
 
 ```
 Background questions
