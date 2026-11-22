@@ -176,6 +176,14 @@
       "files": ["test/shell-restart-wake.test.ts"],
       "proved": "unit shell-restart-wake, on origin prime-look as 6de99923b1 and 5d44dfd789 (test/shell-restart-wake.test.ts)",
       "since": "5d44dfd789942b8c5e430ec70810765803a7ef1a"
+    },
+    {
+      "id": "shell-restart-wake-schedule",
+      "feature": "The restart wake's schedule: a busy owner's wake coalesces, an owed wake follows its owner to idle and never past an archive or a stop, over every ordering of a boot's events (one session, owner changes, two sessions)",
+      "package": "packages/core",
+      "files": ["test/session-execution.test.ts", "test/restart-wake-schedule.test.ts", "test/restart-wake-schedule-owner.test.ts", "test/restart-wake-schedule-sessions.test.ts"],
+      "proved": "unit shell-restart-wake round 3, on origin prime-look as a07b45b22d, 6c842e9557, 28cd613f90 and 031c85db38 (its request's \"Test files that prove the feature\")",
+      "since": "031c85db38090adac72f24660817b12f80e68c64"
     }
   ],
   "expectations": [
