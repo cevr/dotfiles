@@ -9,7 +9,7 @@ import { join } from "node:path"
 import { Effect, Layer, Option } from "effect"
 import { commitmentRecordLaws } from "../laws.ts"
 import { type Actor, Command, EMPTY, fold } from "../record.ts"
-import { BACKUPS_KEPT, connectSync, layer, pathOf, stateDir, VERSION } from "./record.ts"
+import { BACKUPS_KEPT, connectSync, layer, MIGRATIONS, pathOf, stateDir, VERSION } from "./record.ts"
 
 const T0 = 1_800_000_000_000
 const DAY = 86_400_000
@@ -94,6 +94,32 @@ test("a file of a newer version than this code reads, and refuses every write wi
       expect(refused.message).toContain(`version ${VERSION + 1}; this code writes version ${VERSION}`)
       expect([...(yield* newer.store.read).commitments.keys()]).toEqual(["kept-1"])
       newer.close()
+    }),
+  ))
+
+test("a version 1 file migrates to this version on open: its rows kept, a lane made before start heads has none, a lane made after keeps its start", () =>
+  inScratch((dir) =>
+    Effect.gen(function* () {
+      const path = join(dir, "repo.db")
+      // A file as version 1 code left it: its statements alone, one lane's commitment, user_version 1.
+      const raw = new Database(path, { create: true, strict: true })
+      for (const statement of MIGRATIONS[0] ?? []) raw.run(statement)
+      raw.run("PRAGMA user_version = 1")
+      raw.run(
+        "INSERT INTO commitment (id, run, title, source_kind, source_ref, owner_lane, state, started_at, review_by, created_at, updated_at) VALUES ('old-unit', 'r1', 'land unit old-unit', 'assignment', 'orchestrate lane old-unit', 'old-unit', 'open', '2027-01-15T08:00:00.000Z', '2027-01-22T08:00:00.000Z', '2027-01-15T08:00:00.000Z', '2027-01-15T08:00:00.000Z')",
+      )
+      raw.close()
+      const opened = connectSync(path, { readonly: false, now: T0 })
+      yield* opened.store.run(Command.cases.lane.make({ run: "r1", unit: "new-unit", startHead: Option.some("a".repeat(40)) }), { actor: ROOT, now: T0 })
+      opened.close()
+      const check = new Database(path, { readonly: true })
+      const version = check.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version
+      check.close()
+      expect([VERSION, version]).toEqual([MIGRATIONS.length, MIGRATIONS.length])
+      const again = connectSync(path, { readonly: false, now: T0 })
+      const rows = (yield* again.store.read).commitments
+      expect([rows.get("old-unit")?.state, rows.get("old-unit")?.startHead, rows.get("new-unit")?.startHead]).toEqual(["open", Option.none(), Option.some("a".repeat(40))])
+      again.close()
     }),
   ))
 

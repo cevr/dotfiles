@@ -1186,13 +1186,14 @@ export const make = (
               onSome: (text) => describeRift({ sessionID, path: found.path, purpose: text }).pipe(Effect.map((answer) => answer.rift)),
             })
             yield* noteLane(sessionID, unit, lane)
-            return Tools.laneAnswer(unit, lane, false, [...warnings, ...Tools.laneWarnings(unit, lane, listed.workrift)])
+            return { answer: Tools.laneAnswer(unit, lane, false, [...warnings, ...Tools.laneWarnings(unit, lane, listed.workrift)]), start: Option.none<string>() }
           }
           // `mark`: the lane is marked as made here, on its branch, so a later switch to another branch is refused.
           const ask = { sessionID, branch, name: decided.make, mark: true, ...Option.match(purpose, { onNone: () => ({}), onSome: (text) => ({ purpose: text }) }) }
           const created = yield* createRift(Option.match(source, { onNone: () => ask, onSome: (directory) => ({ ...ask, source: directory }) }))
           yield* noteLane(sessionID, unit, created.rift)
-          return Tools.laneAnswer(unit, created.rift, true, warnings)
+          // The head a lane made now is at is the commit it started at: the record keeps it, so a read claims only work past it.
+          return { answer: Tools.laneAnswer(unit, created.rift, true, warnings), start: Option.some(created.rift.head) }
         })
 
       /** A verify's clean checkout: the workspace `verify-<batch>` detached at `at`, answered when it exists, else made. */
@@ -1289,7 +1290,7 @@ export const make = (
           yield* claimRecorded(
             sessionID,
             "land",
-            rifts.flatMap((rift) => Option.toArray(Option.map(Arr.findFirst(listed.rifts, (lane) => lane.path === rift.path), (lane) => ({ unit: rift.unit, head: lane.head })))),
+            rifts.flatMap((rift) => Option.toArray(Option.map(Arr.findFirst(listed.rifts, (lane) => lane.path === rift.path), (lane) => ({ unit: rift.unit, head: lane.head, path: lane.path })))),
           )
           const section = yield* recordSection(sessionID)
           return [Tools.landAnswer([...due, ...Tools.changesWarnings(files), ...resolved.warnings], landed.text), ...section.lines].join("\n")
@@ -1309,11 +1310,11 @@ export const make = (
         register: ErgoRegister.registerReads,
       })
       /** The lane hook: the unit's commitment got or made, owned by the unit and started; its open ones named after the lane's answer. */
-      const laneRecorded = (input: Tools.OrchestrateInput, sessionID: string, answer: string) =>
+      const laneRecorded = (input: Tools.OrchestrateInput, sessionID: string, answer: string, startHead: Option.Option<string>) =>
         Effect.gen(function* () {
           const unit = input.unit ?? ""
           const now = yield* Clock.currentTimeMillis
-          const done = yield* commitments.run(RecordCommand.cases.lane.make({ run: input.run ?? Commitments.DEFAULT_RUN, unit }), { actor: { id: sessionID, role: "root" }, now })
+          const done = yield* commitments.run(RecordCommand.cases.lane.make({ run: input.run ?? Commitments.DEFAULT_RUN, unit, startHead }), { actor: { id: sessionID, role: "root" }, now })
           return Commitments.beforeStart(answer, Commitments.laneLine(unit, openOf(done.snapshot, unit)))
         }).pipe(Effect.catch((failed) => Effect.succeed(Commitments.beforeStart(answer, `${Commitments.whyOf(failed)}: the unit's commitment was not recorded.`))))
 
@@ -1325,12 +1326,12 @@ export const make = (
        * now, so a lane landed by the work tool alone lands its unit once a read saw its work. A unit with no commitment
        * (a lane made before the record) records nothing; a record that refuses is logged and fails no land or read.
        */
-      const claimRecorded = (sessionID: string, by: "land" | "status", lanes: ReadonlyArray<Commitments.LaneHead>) =>
+      const claimRecorded = (sessionID: string, by: "land" | "read", lanes: ReadonlyArray<Commitments.LaneHead>) =>
         Effect.gen(function* () {
           const actor: Actor = { id: `orchestrate ${by}`, role: "plugin" }
           const now = yield* Clock.currentTimeMillis
           const before = yield* commitments.read
-          const claims = Commitments.claimsOf(before, lanes, yield* Commitments.onMainAmong(mainLine, checkout, lanes.map((lane) => lane.head)))
+          const claims = Commitments.claimsOf(before, lanes, yield* Commitments.laneFactsOf(mainLine, checkout, before, lanes), by)
           for (const claim of claims) {
             const handed = yield* commitments.run(
               RecordCommand.cases.hand_back.make({ run: claim.run, ownerLane: claim.unit, role: by, session: sessionID, verdict: "done", head: Option.some(claim.head), claims: [claim.unit] }),
@@ -1351,11 +1352,11 @@ export const make = (
           const listed = yield* lanesNow(sessionID)
           const snapshot = yield* Effect.orElseSucceed(commitments.read, () => EMPTY_RECORD)
           const lanes = [...snapshot.commitments.values()].flatMap((row) =>
-            Option.toArray(Option.filter(Arr.head(Tools.lanesOf(row.id, listed.rifts, listed.workrift)), () => row.state === "open" && Option.contains(row.ownerLane, row.id))).map((lane) => ({ unit: row.id, head: lane.head })),
+            Option.toArray(Option.filter(Arr.head(Tools.lanesOf(row.id, listed.rifts, listed.workrift)), () => row.state === "open" && Option.contains(row.ownerLane, row.id))).map((lane) => ({ unit: row.id, head: lane.head, path: lane.path })),
           )
           // The pass runs with no new claim too: a head claimed at an earlier read may be on main now, its lane gone.
           const claimed = [...snapshot.commitments.values()].some((row) => row.state === "open" && Option.isSome(row.head))
-          if (lanes.length > 0 || claimed) yield* claimRecorded(sessionID, "status", lanes)
+          if (lanes.length > 0 || claimed) yield* claimRecorded(sessionID, "read", lanes)
         })
 
       // The `commitments` tool (mods/orchestrate/commitments-tool.ts): the root's reads and writes of the record. A
@@ -1405,7 +1406,7 @@ export const make = (
               if (Option.isSome(refused)) return yield* failWith(refused.value)
               const text = yield* Match.value(input.action).pipe(
                 Match.when("status", () => status(context.sessionID)),
-                Match.when("lane", () => lane(input, context.sessionID).pipe(Effect.flatMap((answer) => laneRecorded(input, context.sessionID, answer)))),
+                Match.when("lane", () => lane(input, context.sessionID).pipe(Effect.flatMap((made) => laneRecorded(input, context.sessionID, made.answer, made.start)))),
                 Match.when("verify", () => verify(input, context.sessionID)),
                 Match.when("land", () => land(input, context.sessionID)),
                 Match.exhaustive,

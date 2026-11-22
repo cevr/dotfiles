@@ -71,11 +71,17 @@ export interface Commitment {
   readonly startedAt: Option.Option<string>
   readonly reviewBy: Option.Option<string>
   readonly wokeAt: Option.Option<string>
+  /** The commit its lane started at, as `orchestrate lane` made the lane: a read claims only work past it. */
+  readonly startHead: Option.Option<string>
   readonly head: Option.Option<string>
   readonly requestPath: Option.Option<string>
   readonly landedCommit: Option.Option<string>
   readonly decidedWhy: Option.Option<string>
   readonly noticeUntil: Option.Option<string>
+  /** Who closed it with a notice (the deciding session), while the notice stands. */
+  readonly noticeBy: Option.Option<string>
+  /** The closing session had no earlier event in its run: listed first, named so to the owner. */
+  readonly noticeOutsideRun: boolean
   readonly createdAt: string
   readonly updatedAt: string
   readonly after: ReadonlyArray<Prerequisite>
@@ -110,9 +116,13 @@ export interface Snapshot {
   readonly handBacks: ReadonlyMap<number, HandBack>
   /** By `wordKey(run, word)`. */
   readonly words: ReadonlyMap<string, Word>
+  /** Each actor and run it has an event in, by `actedKey(actor, run)`: who has acted in which run, folded from the history. */
+  readonly acted: ReadonlySet<string>
 }
 
-export const EMPTY: Snapshot = { commitments: new Map(), handBacks: new Map(), words: new Map() }
+export const EMPTY: Snapshot = { commitments: new Map(), handBacks: new Map(), words: new Map(), acted: new Set() }
+
+export const actedKey = (actor: string, run: string): string => `${actor}\n${run}`
 
 export const wordKey = (run: string, word: string): string => `${run}\n${word}`
 
@@ -163,10 +173,11 @@ export const Happening = Schema.TaggedUnion({
   assigned: { ownerLane: Schema.String, ownerSession: Opt(Schema.String), after: Schema.Array(AfterItem), reviewBy: Schema.String },
   ordered: {},
   released: {},
+  laned: { startHead: Schema.String },
   claimed: { head: Schema.String, handBack: Schema.Int },
   landed: { commit: Schema.String },
-  decided: { why: Schema.String, notice: Schema.Boolean },
-  reopened: {},
+  decided: { why: Schema.String, notice: Schema.Boolean, outsideRun: Opt(Schema.Boolean) },
+  reopened: { outsideRun: Opt(Schema.Boolean) },
   woke: { root: Schema.String },
   seen: {},
   word_given: {},
@@ -220,6 +231,7 @@ interface Draft {
   commitments: Map<string, Commitment>
   handBacks: Map<number, HandBack>
   words: Map<string, Word>
+  acted: Set<string>
 }
 
 const touched = (row: Commitment, at: string, change: Partial<Commitment>): Commitment => ({ ...row, ...change, updatedAt: at })
@@ -247,10 +259,13 @@ const promisedRow = (event: RecordEvent, happened: Extract<Happening, { _tag: "p
   ...UNOWNED,
   state: "open",
   head: Option.none(),
+  startHead: Option.none(),
   requestPath: Option.none(),
   landedCommit: Option.none(),
   decidedWhy: Option.none(),
   noticeUntil: Option.none(),
+  noticeBy: Option.none(),
+  noticeOutsideRun: false,
   createdAt: event.at,
   updatedAt: event.at,
 })
@@ -259,8 +274,11 @@ const importedRow = (event: RecordEvent, row: ImportedRow): Commitment => ({
   ...row,
   id: event.subjectId,
   run: event.run,
+  startHead: Option.none(),
   wokeAt: Option.none(),
   noticeUntil: Option.none(),
+  noticeBy: Option.none(),
+  noticeOutsideRun: false,
   after: row.after.map((item) => ({ kind: item.kind, ref: item.ref, metAt: Option.none() })),
 })
 
@@ -282,6 +300,7 @@ const commitmentChange = (event: RecordEvent, draft: Draft) => (row: Commitment)
         }),
       ordered: () => touched(row, event.at, { startedAt: Option.some(event.at) }),
       released: () => touched(row, event.at, UNOWNED),
+      laned: (happened) => touched(row, event.at, { startHead: Option.some(happened.startHead) }),
       claimed: (happened) => touched(row, event.at, { head: Option.some(happened.head) }),
       landed: (happened) => touched(row, event.at, { state: "landed", landedCommit: Option.some(happened.commit) }),
       decided: (happened) =>
@@ -289,11 +308,13 @@ const commitmentChange = (event: RecordEvent, draft: Draft) => (row: Commitment)
           state: "decided",
           decidedWhy: Option.some(happened.why),
           noticeUntil: Option.map(Option.liftPredicate(event.at, () => happened.notice), (at) => isoOf(msOf(at) + NOTICE_MS)),
+          noticeBy: Option.as(Option.liftPredicate(event.at, () => happened.notice), event.actor.id),
+          noticeOutsideRun: happened.notice && Option.contains(happened.outsideRun, true),
         }),
       reopened: () =>
-        touched(row, event.at, { ...UNOWNED, state: "open", head: Option.none(), landedCommit: Option.none(), decidedWhy: Option.none(), noticeUntil: Option.none() }),
+        touched(row, event.at, { ...UNOWNED, state: "open", head: Option.none(), landedCommit: Option.none(), decidedWhy: Option.none(), noticeUntil: Option.none(), noticeBy: Option.none(), noticeOutsideRun: false }),
       woke: () => touched(row, event.at, { wokeAt: Option.some(event.at) }),
-      seen: () => touched(row, event.at, { noticeUntil: Option.none() }),
+      seen: () => touched(row, event.at, { noticeUntil: Option.none(), noticeBy: Option.none(), noticeOutsideRun: false }),
       word_given: () => row,
       handed_back: () => row,
       routed: () => row,
@@ -343,7 +364,8 @@ const applyHandBack = (draft: Draft, event: RecordEvent): void => {
   )
 }
 
-const apply = (draft: Draft, event: RecordEvent): void =>
+const apply = (draft: Draft, event: RecordEvent): void => {
+  draft.acted.add(actedKey(event.actor.id, event.run))
   Match.value(event.subjectKind).pipe(
     Match.when("commitment", () => applyCommitment(draft, event)),
     Match.when("notice", () => applyCommitment(draft, event)),
@@ -351,10 +373,11 @@ const apply = (draft: Draft, event: RecordEvent): void =>
     Match.when("hand_back", () => applyHandBack(draft, event)),
     Match.orElse(() => {}),
   )
+}
 
 /** The rows `events` fold `snapshot` into: total, it never fails, and an event about nothing known changes nothing. */
 export const fold = (snapshot: Snapshot, events: Iterable<RecordEvent>): Snapshot => {
-  const draft: Draft = { commitments: new Map(snapshot.commitments), handBacks: new Map(snapshot.handBacks), words: new Map(snapshot.words) }
+  const draft: Draft = { commitments: new Map(snapshot.commitments), handBacks: new Map(snapshot.handBacks), words: new Map(snapshot.words), acted: new Set(snapshot.acted) }
   for (const event of events) apply(draft, event)
   return draft
 }
@@ -406,7 +429,7 @@ export const Command = Schema.TaggedUnion({
     claims: Schema.Array(Schema.String),
   },
   route: { handBack: Schema.Int, as: Schema.Literals(["routed", "rejected"]) },
-  lane: { run: Schema.String, unit: Schema.String, session: Opt(Schema.String) },
+  lane: { run: Schema.String, unit: Schema.String, session: Opt(Schema.String), startHead: Opt(Schema.String) },
   pass: { onMain: Schema.Array(Schema.String), gone: Schema.Array(Schema.String), root: Opt(Schema.String) },
   import: { run: Schema.String, rows: Schema.Array(ImportRow) },
 })
@@ -584,6 +607,13 @@ const decideRelease = (snapshot: Snapshot, command: Extract<Command, { _tag: "re
 
 // ── decide, reopen, seen, word ──
 
+/**
+ * Whether the deciding or reopening session has no earlier event in the commitment's run. Unit 1 refuses nothing for
+ * it (no durable session-to-run binding exists before unit 3's step rows): the history and the owner's notice carry it,
+ * and the notices list such closes first.
+ */
+const outsideRunOf = (snapshot: Snapshot, row: Commitment, context: Context): boolean => !snapshot.acted.has(actedKey(context.actor.id, row.run))
+
 const decideDecide = (snapshot: Snapshot, command: Extract<Command, { _tag: "decide" }>, context: Context): Decided => {
   const row = openRow(snapshot, command.id)
   if (Option.isNone(row)) return refuse(`${command.id} is not an open commitment`)
@@ -595,14 +625,15 @@ const decideDecide = (snapshot: Snapshot, command: Extract<Command, { _tag: "dec
   ])
   if (Option.isSome(refused)) return refuse(refused.value)
   const why = kept(command.why)
-  return decided([onCommitment(context, row.value, Happening.cases.decided.make({ why, notice: ownerSourced }), Option.some("decided"), why)])
+  const outsideRun = Option.some(outsideRunOf(snapshot, row.value, context))
+  return decided([onCommitment(context, row.value, Happening.cases.decided.make({ why, notice: ownerSourced, outsideRun }), Option.some("decided"), why)])
 }
 
 const decideReopen = (snapshot: Snapshot, command: Extract<Command, { _tag: "reopen" }>, context: Context): Decided => {
   const row = Option.filter(Option.fromUndefinedOr(snapshot.commitments.get(command.id)), (each) => each.state === "decided")
   const refused = firstOf([rootOnly(context, "reopening a decision"), when(Option.isNone(row), `${command.id} is not a decided commitment`)])
   if (Option.isSome(refused) || Option.isNone(row)) return refuse(Option.getOrElse(refused, () => ""))
-  return decided([onCommitment(context, row.value, Happening.cases.reopened.make({}), Option.some("open"))])
+  return decided([onCommitment(context, row.value, Happening.cases.reopened.make({ outsideRun: Option.some(outsideRunOf(snapshot, row.value, context)) }), Option.some("open"))])
 }
 
 const decideSeen = (snapshot: Snapshot, command: Extract<Command, { _tag: "seen" }>, context: Context): Decided => {
@@ -680,7 +711,9 @@ const decideLane = (snapshot: Snapshot, command: Extract<Command, { _tag: "lane"
   const assigned = Arr.filter([assignedEvent(context, row, { ownerLane: command.unit, ownerSession: command.session, after: [], reviewBy: isoOf(context.now + REVIEW_MS) })], () => !owned)
   const ownedRow = fold(snapshot, [...promised, ...assigned]).commitments.get(command.unit)
   const ordered = Arr.filter(Option.toArray(Option.fromUndefinedOr(ownedRow)), (each) => Option.isNone(each.startedAt)).map((each) => onCommitment(context, each, Happening.cases.ordered.make({})))
-  return decided([...promised, ...assigned, ...ordered])
+  // A lane made now records the commit it started at; a lane found, or made again at the same commit, records nothing.
+  const laned = Option.toArray(Option.filter(command.startHead, (head) => !Option.contains(row.startHead, head))).map((startHead) => onCommitment(context, row, Happening.cases.laned.make({ startHead })))
+  return decided([...promised, ...assigned, ...ordered, ...laned])
 }
 
 // ── import ──

@@ -31,14 +31,13 @@ import {
   SUBJECT_KINDS,
   VERDICTS,
   type Word,
+  actedKey,
   wordKey,
 } from "../record.ts"
 import { localKey, keyOfOrigin } from "../repo-key.ts"
 import { CommitmentRecord, RecordFailed } from "../service.ts"
 import { decideCommand } from "../standing.ts"
 
-/** The schema version this code writes. */
-export const VERSION = 1
 /** How many daily backups are kept. */
 export const BACKUPS_KEPT = 7
 
@@ -125,8 +124,21 @@ const V1 = [
   "CREATE INDEX hand_back_routing ON hand_back (routing, at)",
 ]
 
+/**
+ * Version 2, additive: the commit a lane started at (`start_head`: a read claims only work past it), and who closed an
+ * owner-sourced commitment and whether from outside every run it had acted in (`notice_by`, `notice_outside_run`).
+ */
+const V2 = [
+  "ALTER TABLE commitment ADD COLUMN start_head TEXT",
+  "ALTER TABLE commitment ADD COLUMN notice_by TEXT",
+  "ALTER TABLE commitment ADD COLUMN notice_outside_run INTEGER NOT NULL DEFAULT 0 CHECK (notice_outside_run IN (0, 1))",
+]
+
 /** Each version's statements, in order: forward-only and additive (a non-additive change is the owner's). */
-export const MIGRATIONS: ReadonlyArray<ReadonlyArray<string>> = [V1]
+export const MIGRATIONS: ReadonlyArray<ReadonlyArray<string>> = [V1, V2]
+
+/** The schema version this code writes: one per migration, so the two cannot disagree. */
+export const VERSION = MIGRATIONS.length
 
 // ── Where the file is ──
 
@@ -191,6 +203,9 @@ const commitmentOf = (row: Raw, after: ReadonlyArray<Prerequisite>): Commitment 
   landedCommit: textOf(row, "landed_commit"),
   decidedWhy: textOf(row, "decided_why"),
   noticeUntil: textOf(row, "notice_until"),
+  startHead: textOf(row, "start_head"),
+  noticeBy: textOf(row, "notice_by"),
+  noticeOutsideRun: Option.contains(intOf(row, "notice_outside_run"), 1),
   createdAt: textIn(row, "created_at"),
   updatedAt: textIn(row, "updated_at"),
   after,
@@ -224,7 +239,8 @@ const snapshotOf = (db: Database): Snapshot => {
   const commitments = new Map(db.query<Raw, []>("SELECT * FROM commitment").all().map((row) => [textIn(row, "id"), commitmentOf(row, after.get(textIn(row, "id")) ?? [])] as const))
   const handBacks = new Map(db.query<Raw, []>("SELECT * FROM hand_back").all().map((row) => [Option.getOrElse(intOf(row, "id"), () => 0), handBackOf(row)] as const))
   const words = new Map(db.query<Raw, []>("SELECT * FROM word").all().map((row) => [wordKey(textIn(row, "run"), textIn(row, "word")), wordOf(row)] as const))
-  return { commitments, handBacks, words }
+  const acted = new Set(db.query<Raw, []>("SELECT DISTINCT actor, run FROM event").all().map((row) => actedKey(textIn(row, "actor"), textIn(row, "run"))))
+  return { commitments, handBacks, words, acted }
 }
 
 const DataCodec = Schema.fromJsonString(Happening)
@@ -236,6 +252,7 @@ const nullable = <A>(value: Option.Option<A>) => Option.getOrNull(value)
 const COMMITMENT_COLUMNS = [
   "id", "run", "title", "source_kind", "source_ref", "quote", "plan", "part", "rank", "owner_lane", "owner_session", "state", "started_at",
   "review_by", "woke_at", "head", "request_path", "landed_commit", "decided_why", "notice_until", "created_at", "updated_at",
+  "start_head", "notice_by", "notice_outside_run",
 ]
 
 const UPSERT_COMMITMENT = `INSERT INTO commitment (${COMMITMENT_COLUMNS.join(", ")}) VALUES (${COMMITMENT_COLUMNS.map(() => "?").join(", ")})
@@ -245,6 +262,7 @@ const commitmentValues = (row: Commitment): ReadonlyArray<SQLQueryBindings> => [
   row.id, row.run, row.title, row.sourceKind, row.sourceRef, nullable(row.quote), nullable(row.plan), nullable(row.part), nullable(row.rank),
   nullable(row.ownerLane), nullable(row.ownerSession), row.state, nullable(row.startedAt), nullable(row.reviewBy), nullable(row.wokeAt),
   nullable(row.head), nullable(row.requestPath), nullable(row.landedCommit), nullable(row.decidedWhy), nullable(row.noticeUntil), row.createdAt, row.updatedAt,
+  nullable(row.startHead), nullable(row.noticeBy), Number(row.noticeOutsideRun),
 ]
 
 const writeCommitment = (db: Database, row: Commitment): void => {

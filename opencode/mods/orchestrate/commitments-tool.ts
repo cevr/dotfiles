@@ -258,25 +258,69 @@ export const onMainAmong = (mainLine: MainLine["Service"], checkout: string, com
     return new Set(onMain)
   })
 
-/** A unit's lane as a read-claim takes it: the unit, and the head its lane is at now. */
+/** A unit's lane as a claim takes it: the unit, the head its lane is at now, and its checkout (where git reads its own commits). */
 export interface LaneHead {
   readonly unit: string
   readonly head: string
+  readonly path: string
 }
+
+/** What git says of the lanes a claim weighs: the commits on the default branch, and the units whose head descends from their start in their lane. */
+export interface LaneFacts {
+  readonly onMain: ReadonlySet<string>
+  readonly descends: ReadonlySet<string>
+}
+
+/** Whether `ancestor` is an ancestor of `head` (or is it) in the checkout `path`: both known there, and nothing of `ancestor` missing from `head`. */
+const isAncestorIn = (mainLine: MainLine["Service"], path: string, ancestor: string, head: string) =>
+  Effect.gen(function* () {
+    const known = yield* Effect.all([mainLine.commitOf(path, ancestor), mainLine.commitOf(path, head)])
+    if (!known.every(Option.isSome)) return false
+    return (yield* mainLine.between(path, head, ancestor)).length === 0
+  })
+
+/**
+ * The git facts `claimsOf` needs for `lanes`: which of their heads and start heads are on the default branch of
+ * `checkout`, and, for each lane whose start is not on it, whether its head descends from its start in its own checkout.
+ */
+export const laneFactsOf = (mainLine: MainLine["Service"], checkout: string, snapshot: Snapshot, lanes: ReadonlyArray<LaneHead>) =>
+  Effect.gen(function* () {
+    const startOf = (lane: LaneHead) => Option.flatMap(Option.fromUndefinedOr(snapshot.commitments.get(lane.unit)), (row) => row.startHead)
+    const onMain = yield* onMainAmong(mainLine, checkout, Arr.dedupe(lanes.flatMap((lane) => [lane.head, ...Option.toArray(startOf(lane))])))
+    const off = lanes.flatMap((lane) => Option.toArray(Option.filter(startOf(lane), (start) => !onMain.has(start) && start !== lane.head)).map((start) => ({ lane, start })))
+    const descending = yield* Effect.filter(off, (each) => isAncestorIn(mainLine, each.lane.path, each.start, each.lane.head), { concurrency: 4 })
+    return { onMain, descends: new Set(descending.map((each) => each.lane.unit)) } satisfies LaneFacts
+  })
+
+/**
+ * Whether the lane holds work of the unit's own past the commit it started at, `start`:
+ * - at its start, nothing (a fresh lane, one reset to its start);
+ * - started at a commit on the default branch (cut from main), any head main lacks is its own: no other unit's work
+ *   was in it, and a rebase onto a newer main keeps only its own commits off main;
+ * - started off the default branch (stacked on a parent's lane, or a base holding an unpushed commit), only a head
+ *   that descends from its start in its own checkout: the commits past the start are its own. A lane rebased away
+ *   from such a start (a restacked child) is not claimed by a read: whose its commits are, git cannot say.
+ */
+const ownWork = (lane: LaneHead, start: string, facts: LaneFacts): boolean => lane.head !== start && (facts.onMain.has(start) || facts.descends.has(lane.unit))
 
 /**
  * The heads a read or a land claims for the units' own commitments: each open commitment owned by its own unit whose
- * lane (in `lanes`) is at a commit git does not have on the default branch yet (`onMain`), the lane's own work, and
- * that its last claim did not already name. A lane at a commit main has (a fresh lane, or one only moved to a newer
- * main) claims nothing, so nothing lands for it; a head claimed while its lane stood lands once it is on main, by a
- * merge or a fast-forward, whether or not the lane is still there.
+ * lane (in `lanes`) is at a commit main does not have yet, that its last claim did not already name, and that is the
+ * unit's own work past the commit its lane started at (`ownWork`). A commitment with no start head (its lane made
+ * before the record kept one) is claimed only by an explicit land (`land`), never by a read. A head claimed while its
+ * lane stood lands once it is on main, by a merge or a fast-forward, whether or not the lane is still there.
  */
-export const claimsOf = (snapshot: Snapshot, lanes: ReadonlyArray<LaneHead>, onMain: ReadonlySet<string>): ReadonlyArray<LaneHead & { readonly run: string }> =>
+export const claimsOf = (snapshot: Snapshot, lanes: ReadonlyArray<LaneHead>, facts: LaneFacts, by: "land" | "read"): ReadonlyArray<LaneHead & { readonly run: string }> =>
   lanes.flatMap((lane) =>
     Option.toArray(
       Option.filter(
         Option.fromUndefinedOr(snapshot.commitments.get(lane.unit)),
-        (row) => row.state === "open" && Option.contains(row.ownerLane, lane.unit) && !onMain.has(lane.head) && !Option.contains(row.head, lane.head),
+        (row) =>
+          row.state === "open" &&
+          Option.contains(row.ownerLane, lane.unit) &&
+          !facts.onMain.has(lane.head) &&
+          !Option.contains(row.head, lane.head) &&
+          Option.match(row.startHead, { onNone: () => by === "land", onSome: (start) => ownWork(lane, start, facts) }),
       ),
     ).map((row) => ({ ...lane, run: row.run })),
   )
