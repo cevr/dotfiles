@@ -366,12 +366,27 @@ const cleanTools = (made: Bench) => {
   /** Whether `file` reads the same in both checkouts: missing in both, or the same bytes (f957c17e's land rule, `same`). */
   const sameIn = (left: string, right: string, file: string) =>
     code("/", "sh", "-c", 'if [ -e "$1" ] || [ -e "$2" ]; then cmp -s "$1" "$2"; else exit 0; fi', "same", `${left}/${file}`, `${right}/${file}`).pipe(Effect.map((exit) => exit === 0))
-  /** Whether the base's `file` on disk is HEAD's (bytes and mode). */
-  const baseAtHead = (file: string) => code(made.base, "git", "diff", "--quiet", "HEAD", "--", file).pipe(Effect.map((exit) => exit === 0))
-  /** The base's copy of `file` put on `lane`'s disk, mode and bytes, or removed where the base has none. */
-  const baseCopy = (lane: string, file: string) =>
-    made.sh("/", "sh", "-c", 'if [ -e "$1" ]; then cp -p "$1" "$2"; else rm -f "$2"; fi', "copy", `${made.base}/${file}`, `${lane}/${file}`).pipe(Effect.asVoid)
-  return { code, status, sameIn, baseAtHead, baseCopy }
+  /**
+   * Where the base's `file` on disk is HEAD's (bytes and mode), `text` written to `lane`'s; else the base's copy put
+   * there, mode and bytes, or removed where the base has none.
+   */
+  const baseCopyOr = (lane: string, file: string, text: string) =>
+    made
+      .sh(
+        "/",
+        "sh",
+        "-c",
+        'if git -C "$1" diff --quiet HEAD -- "$3"; then printf "%s" "$4" > "$2/$3"; elif [ -e "$1/$3" ]; then cp -p "$1/$3" "$2/$3"; else rm -f "$2/$3"; fi',
+        "copy",
+        made.base,
+        lane,
+        file,
+        text,
+      )
+      .pipe(Effect.asVoid)
+  /** `file` under `root` made executable when it is not, and not when it is. */
+  const toggleMode = (root: string, file: string) => made.sh(root, "sh", "-c", 'if [ -x "$1" ]; then chmod 644 "$1"; else chmod 755 "$1"; fi', "toggle", file).pipe(Effect.asVoid)
+  return { code, status, sameIn, baseCopyOr, toggleMode }
 }
 
 /** Lays out the clean-start files in the base's HEAD: six texts and an executable script. */
@@ -384,7 +399,7 @@ const cleanFiles = (made: Bench) =>
   })
 
 /** One kind of the base's uncommitted work on `file`, case `n`. */
-const dirtBase = (made: Bench, kind: (typeof BASE_DIRT)[number], file: string, n: number) => {
+const dirtBase = (made: Bench, tools: ReturnType<typeof cleanTools>, kind: (typeof BASE_DIRT)[number], file: string, n: number) => {
   const at = (name: string) => `${made.base}/${name}`
   const git = (...args: ReadonlyArray<string>) => made.sh(made.base, "git", ...args)
   switch (kind) {
@@ -397,7 +412,7 @@ const dirtBase = (made: Bench, kind: (typeof BASE_DIRT)[number], file: string, n
     case "MD":
       return made.write(at(file), `base ${n} staged\n`).pipe(Effect.andThen(git("add", file)), Effect.andThen(made.sh(made.base, "rm", file)))
     case "mode":
-      return made.sh(made.base, "chmod", file === "run.sh" ? "644" : "755", file)
+      return tools.toggleMode(made.base, file)
     case "delete":
       return made.sh(made.base, "rm", file)
     case "stagedDelete":
@@ -416,17 +431,16 @@ const changeLane = (made: Bench, tools: ReturnType<typeof cleanTools>, lane: str
   const at = (name: string) => `${lane}/${name}`
   const git = (...args: ReadonlyArray<string>) => made.sh(lane, "git", ...args)
   const own = `lane ${n} ${file}\n`
-  /** The base's copy back on disk; HEAD's text where the base holds HEAD's (the lane's change then lives in its index alone). */
-  const baseOrHead = Effect.flatMap(tools.baseAtHead(file), (atHead) => (atHead ? made.write(at(file), `${file} at HEAD\n`) : tools.baseCopy(lane, file)))
   switch (kind) {
     case "edit":
       return made.write(at(file), own)
     case "stagedOnly":
       return made.write(at(file), own).pipe(Effect.andThen(git("add", file)))
     case "stageKeepBase":
-      return made.write(at(file), own).pipe(Effect.andThen(git("add", file)), Effect.andThen(baseOrHead))
+      // The base's copy back on disk; HEAD's text where the base holds HEAD's (the lane's change then lives in its index alone).
+      return made.write(at(file), own).pipe(Effect.andThen(git("add", file)), Effect.andThen(tools.baseCopyOr(lane, file, `${file} at HEAD\n`)))
     case "mode":
-      return made.sh(lane, "chmod", file === "run.sh" ? "644" : "755", file)
+      return tools.toggleMode(lane, file)
     case "delete":
       return made.sh(lane, "rm", file)
     case "stagedDelete":
@@ -437,7 +451,7 @@ const changeLane = (made: Bench, tools: ReturnType<typeof cleanTools>, lane: str
       return made.write(at(`lane-${n}/new.txt`), own)
     case "baseCopy":
       // The base's copy put back: the change the earlier rule took for the base's. Where the base holds HEAD's, an edit.
-      return Effect.flatMap(tools.baseAtHead(file), (atHead) => (atHead ? made.write(at(file), own) : tools.baseCopy(lane, file)))
+      return tools.baseCopyOr(lane, file, own)
     case "commitThenRevert":
       return made.write(at(file), own).pipe(
         Effect.andThen(git("commit", "-q", "-m", `lane ${n}`, "--", file)),
@@ -455,7 +469,7 @@ const changeLane = (made: Bench, tools: ReturnType<typeof cleanTools>, lane: str
 /** `count` of `pool`'s items, drawn without repeats. */
 const drawSome = <A>(random: () => number, pool: ReadonlyArray<A>, count: number): ReadonlyArray<A> => {
   const left = [...pool]
-  return Array.from({ length: Math.min(count, left.length) }, () => left.splice(Math.floor(random() * left.length), 1)[0] as A)
+  return Array.from({ length: Math.min(count, left.length) }, () => left.splice(Math.floor(random() * left.length), 1)).flat()
 }
 
 /**
@@ -478,7 +492,7 @@ const cleanStartProperty = (seed: number, cases: number) =>
         yield* made.sh(made.base, "git", "reset", "-q", "--hard", "HEAD")
         yield* made.sh(made.base, "git", "clean", "-q", "-fd")
         const dirt = drawSome(random, CLEAN_FILES, 1 + Math.floor(random() * 4)).map((file) => ({ file, kind: BASE_DIRT[Math.floor(random() * BASE_DIRT.length)] ?? "edit" }))
-        for (const each of dirt) yield* dirtBase(made, each.kind, each.file, n)
+        for (const each of dirt) yield* dirtBase(made, tools, each.kind, each.file, n)
         const before = yield* tools.status(made.base)
         const lane = yield* rifts.create({ source: made.base, from: made.base, name: `p${seed}-${n}`, branch: `p/${seed}-${n}` })
         const label = { seed, n, dirt }

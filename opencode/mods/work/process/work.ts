@@ -378,9 +378,9 @@ export const layer = (options: Options) => {
    */
   const cleanStart = (base: string, made: { readonly name: string; readonly id: string; readonly path: string }) =>
     Effect.gen(function* () {
-      const record = (yield* live(base)).find((each) => each.name === made.name)
+      const record = Option.fromUndefinedOr((yield* live(base)).find((each) => each.name === made.name))
       const isBase = (yield* bases).includes(made.path)
-      const fresh = record !== undefined && record.id === made.id && record.path === made.path && !isCreating(record) && !isBase
+      const fresh = !isBase && Option.exists(record, (found) => found.id === made.id && found.path === made.path && !isCreating(found))
       if (!fresh) return yield* Effect.logWarning(`work: ${made.path} was not reset to its HEAD: the base's record of ${made.name} is not the one its work new made`)
       yield* git(made.path, "reset", "--quiet", "--hard", "HEAD")
     }).pipe(Effect.catch((failure: RiftFailed) => Effect.logWarning(`work: ${made.path} was not reset to its HEAD`, failure)))
