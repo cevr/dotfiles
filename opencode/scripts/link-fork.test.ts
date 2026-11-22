@@ -207,6 +207,36 @@ describe("link-fork", () => {
   })
 })
 
+describe("link-fork, the fork's Node platform", () => {
+  const PLATFORM = ["platform-node", "platform-node-shared"]
+  /** The fork's platform packages, and the plugin package and the record CLI's package that may want them. */
+  const platformed = () => {
+    for (const name of PLATFORM) file(join(fork, "packages/util/node_modules/@effect", name, "package.json"))
+    for (const dir of ["mods/orchestrate", "cmd/orchestrate"]) file(join(workspace, dir, "package.json"))
+    return { plugin: join(workspace, "mods/orchestrate/node_modules/@effect"), cli: join(workspace, "cmd/orchestrate/node_modules/@effect") }
+  }
+  const present = (scope: string) => PLATFORM.map((name) => existsSync(join(scope, name, "package.json")))
+
+  test("is linked into the record CLI's package alone: a plugin takes files, paths and processes from its host", () => {
+    const { plugin, cli } = platformed()
+    expect(run(fork)).toMatchObject({ code: 0 })
+    expect({ cli: present(cli), plugin: present(plugin), other: present(join(workspace, "mods/a/node_modules/@effect")) }).toEqual({ cli: [true, true], plugin: [false, false], other: [false, false] })
+    expect(realpathSync(join(cli, "platform-node"))).toBe(realpathSync(join(fork, "packages/util/node_modules/@effect/platform-node")))
+  })
+
+  test("a link of ours an older run made into a plugin's package is removed; one Bun installed there is left", () => {
+    const { plugin } = platformed()
+    expect(run(fork)).toMatchObject({ code: 0 })
+    // As the older run linked it: through the anchor, into the plugin's package.
+    const anchorText = readlinkSync(join(workspace, "cmd/orchestrate/node_modules/@effect/platform-node"))
+    mkdirSync(plugin, { recursive: true })
+    symlinkSync(anchorText, join(plugin, "platform-node"))
+    file(join(plugin, "platform-node-shared/package.json"))
+    expect(run(fork)).toMatchObject({ code: 0 })
+    expect([existsSync(join(plugin, "platform-node")), lstatSync(join(plugin, "platform-node-shared")).isDirectory()]).toEqual([false, true])
+  })
+})
+
 /** Every entry under `dir`, one level into scopes, with its link text: a fork's modules as a run found or left them. */
 const listing = (dir: string): ReadonlyArray<string> =>
   readdirSync(dir).flatMap((name) => {
