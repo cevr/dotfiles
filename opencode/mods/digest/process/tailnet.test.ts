@@ -14,9 +14,9 @@ const RUNNING = '{"BackendState":"Running","Self":{"DNSName":"harbor.example-tai
 
 describe("Tailscale's status", () => {
   test("running, with its MagicDNS name and its own addresses; stopped; no Self; not JSON", () => {
-    expect(statusOf(RUNNING)).toEqual(Option.some({ backendState: "Running", dnsName: Option.some("harbor.example-tailnet.ts.net"), ips: ["100.101.102.103", "fd7a:115c:a1e0::42"] }))
-    expect(statusOf('{"BackendState":"Stopped","Self":{"DNSName":""}}')).toEqual(Option.some({ backendState: "Stopped", dnsName: Option.none(), ips: [] }))
-    expect(statusOf('{"BackendState":"NeedsLogin"}')).toEqual(Option.some({ backendState: "NeedsLogin", dnsName: Option.none(), ips: [] }))
+    expect(statusOf(RUNNING)).toEqual(Option.some({ backendState: "Running", dnsName: Option.some("harbor.example-tailnet.ts.net"), ips: ["100.101.102.103", "fd7a:115c:a1e0::42"], peers: [] }))
+    expect(statusOf('{"BackendState":"Stopped","Self":{"DNSName":""}}')).toEqual(Option.some({ backendState: "Stopped", dnsName: Option.none(), ips: [], peers: [] }))
+    expect(statusOf('{"BackendState":"NeedsLogin"}')).toEqual(Option.some({ backendState: "NeedsLogin", dnsName: Option.none(), ips: [], peers: [] }))
     expect(statusOf("tailscale: command not found")).toEqual(Option.none())
   })
 })
@@ -40,7 +40,7 @@ describe("the Tailscale CLI", () => {
     const nonsense = fake("nonsense", "echo 'Warning: client version differs'")
     const missing = join(held.path, "missing")
     const read = (clis: ReadonlyArray<string>) => Effect.runPromise(statusFrom(clis, Duration.millis(300)))
-    expect(await read([missing, good])).toEqual(StatusRead.Read({ status: { backendState: "Running", dnsName: Option.some("harbor.example-tailnet.ts.net"), ips: ["100.101.102.103", "fd7a:115c:a1e0::42"] } }))
+    expect(await read([missing, good])).toEqual(StatusRead.Read({ status: { backendState: "Running", dnsName: Option.some("harbor.example-tailnet.ts.net"), ips: ["100.101.102.103", "fd7a:115c:a1e0::42"], peers: [] } }))
     expect(await read([missing])).toEqual(StatusRead.Unread({ why: "no-cli" }))
     // The first that exists is the CLI: a failing one is not passed over for another.
     expect(await read([failing, good])).toEqual(StatusRead.Unread({ why: "cli-failed" }))

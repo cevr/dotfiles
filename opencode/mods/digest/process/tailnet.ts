@@ -8,7 +8,7 @@
 import { hostname, networkInterfaces } from "node:os"
 import { file, readableStreamToText, spawn } from "bun"
 import { Duration, Effect, Option, Schema } from "effect"
-import { type InterfaceAddress, StatusRead, type Tailnet, type TailscaleStatus, tailnetOf } from "../bind.ts"
+import { type InterfaceAddress, type PeerHost, peerHostsOf, StatusRead, type Tailnet, type TailscaleStatus, tailnetOf } from "../bind.ts"
 
 /**
  * Where the Tailscale CLI is, in order: the Mac app's, Homebrew's (Apple silicon, then Intel), then the Linux
@@ -29,6 +29,7 @@ export const STATUS_TIMEOUT = Duration.seconds(5)
 const Status = Schema.Struct({
   BackendState: Schema.String,
   Self: Schema.optionalKey(Schema.Struct({ DNSName: Schema.optionalKey(Schema.String), TailscaleIPs: Schema.optionalKey(Schema.Array(Schema.String)) })),
+  Peer: Schema.optionalKey(Schema.Record(Schema.String, Schema.Struct({ DNSName: Schema.optionalKey(Schema.String), TailscaleIPs: Schema.optionalKey(Schema.Array(Schema.String)) }))),
 })
 const decodeStatus = Schema.decodeUnknownOption(Schema.fromJsonString(Status))
 
@@ -43,6 +44,10 @@ export const statusOf = (text: string): Option.Option<TailscaleStatus> =>
         (name) => name !== "",
       ),
       ips: Option.getOrElse(Option.flatMap(self, (each) => Option.fromUndefinedOr(each.TailscaleIPs)), () => []),
+      peers: Object.values(Option.getOrElse(Option.fromUndefinedOr(status.Peer), () => ({}))).map((peer) => ({
+        dnsName: Option.getOrElse(Option.fromUndefinedOr(peer.DNSName), () => ""),
+        ips: Option.getOrElse(Option.fromUndefinedOr(peer.TailscaleIPs), () => []),
+      })),
     }
   })
 
@@ -97,3 +102,6 @@ export const hostName: Effect.Effect<string> = Effect.sync(() => hostname().spli
 
 /** This host on the tailnet now. */
 export const probe: Effect.Effect<Tailnet> = Effect.map(Effect.all([interfaces, statusFrom()]), ([listed, read]) => tailnetOf(listed, read))
+
+/** The other devices on the tailnet now, as Tailscale's status lists them (bind.ts `peerHostsOf`). */
+export const peerHosts: Effect.Effect<ReadonlyArray<PeerHost>> = Effect.map(statusFrom(), peerHostsOf)

@@ -89,6 +89,24 @@ export interface TailscaleStatus {
   readonly dnsName: Option.Option<string>
   /** `Self.TailscaleIPs`: the only addresses that are this host's on the tailnet. */
   readonly ips: ReadonlyArray<string>
+  /** The other devices on the tailnet (`Peer`): each one's MagicDNS name and Tailscale addresses. */
+  readonly peers: ReadonlyArray<StatusPeer>
+}
+
+/** Another device on the tailnet, as Tailscale's status lists it. */
+export interface StatusPeer {
+  /** `host.tailnet.ts.net`, without the trailing dot. */
+  readonly dnsName: string
+  readonly ips: ReadonlyArray<string>
+}
+
+/** A device on the tailnet the digest may name as a peer: its short name, its MagicDNS name, its addresses there. */
+export interface PeerHost {
+  /** The MagicDNS name's first label, lower case: what the config names it by. */
+  readonly host: string
+  readonly dnsName: string
+  /** Its Tailscale addresses in the tailnet's ranges, IPv4 first. */
+  readonly ips: ReadonlyArray<string>
 }
 
 /** The CLI's status, or why there is none: `no-cli`, `cli-failed`, `cli-timeout`, `unparseable`. */
@@ -137,6 +155,24 @@ export const tailnetOf = (interfaces: ReadonlyArray<InterfaceAddress>, read: Sta
       const names = Option.match(status.dnsName, { onNone: () => [], onSome: (name) => [...new Set([name, name.split(".")[0] ?? name])] })
       return { addresses, names, why: "" }
     },
+  })
+
+/**
+ * The other devices Tailscale's status lists, by short name: only when it is Running, only their addresses in the
+ * tailnet's ranges, and only those with one. A peer the digest names is looked up here, never through DNS.
+ */
+export const peerHostsOf = (read: StatusRead): ReadonlyArray<PeerHost> =>
+  Match.valueTags(read, {
+    Unread: () => [],
+    Read: ({ status }) =>
+      status.peers.filter(() => status.backendState === "Running").flatMap((peer) => {
+            const dnsName = peer.dnsName.replace(/\.$/, "").toLowerCase()
+            const ips = Arr.sort(
+              peer.ips.filter((ip) => isTailnet(ip)),
+              ADDRESS_ORDER,
+            )
+            return Option.toArray(Option.liftPredicate({ host: dnsName.split(".")[0] ?? dnsName, dnsName, ips }, (each) => each.host !== "" && each.ips.length > 0))
+          }),
   })
 
 /** An address as a URL's or a Host header's host: an IPv6 one in brackets. */

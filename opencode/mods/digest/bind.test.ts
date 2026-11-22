@@ -45,7 +45,7 @@ describe("bindable", () => {
 })
 
 const nic = (address: string, internal = false): InterfaceAddress => ({ address, family: String(["IPv4", "IPv6"][Number(address.includes(":"))]), internal })
-const status = (ips: ReadonlyArray<string>, backendState = "Running"): StatusRead => StatusRead.Read({ status: { backendState, dnsName: Option.some("harbor.example-tailnet.ts.net"), ips } satisfies TailscaleStatus })
+const status = (ips: ReadonlyArray<string>, backendState = "Running"): StatusRead => StatusRead.Read({ status: { backendState, dnsName: Option.some("harbor.example-tailnet.ts.net"), ips, peers: [] } satisfies TailscaleStatus })
 
 describe("the host on the tailnet", () => {
   // His Tailscale addresses, and beside them a WARP-like interface and a carrier hotspot's en0, both in 100.64.0.0/10.
