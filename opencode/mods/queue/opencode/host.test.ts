@@ -42,6 +42,7 @@ const host = (overrides: Partial<Host> = {}): Host =>
           ],
         }),
       open: () => Effect.succeed({ questions: [{ sessionID: "ses_busy" }, { sessionID: "ses_busy" }, { sessionID: "ses_other" }] }),
+      lost: () => Effect.fail(new Down({ message: "no such rpc" })),
       synthetic: () => Effect.void,
     },
     overrides,
@@ -95,6 +96,27 @@ describe("the host as the sweep reads it", () => {
   )
 
   effectTest(
+    "orchestrate's lost work is read for the session and the commits asked; an answer that does not read, or no orchestrate, is none",
+    Effect.gen(function* () {
+      const asked: Array<unknown> = []
+      const answering = host({
+        lost: (input) =>
+          Effect.sync(() => {
+            asked.push(input)
+            return { lines: ["orchestrate: …"], keys: ["/code/.work/app/orphan"], hashes: [{ hash: "c0ffee1", why: "not on main" }] }
+          }),
+      })
+      expect(yield* use(answering, (service) => service.lost("ses_busy", ["c0ffee1"]))).toEqual(
+        Option.some({ lines: ["orchestrate: …"], keys: ["/code/.work/app/orphan"], hashes: new Map([["c0ffee1", "not on main"]]) }),
+      )
+      expect(asked).toEqual([{ sessionID: "ses_busy", hashes: ["c0ffee1"] }])
+      expect(yield* use(host({ lost: () => Effect.succeed({ nonsense: true }) }), (service) => service.lost("ses_busy", []))).toEqual(Option.none())
+      expect(yield* use(host(), (service) => service.lost("ses_busy", []))).toEqual(Option.none())
+    }),
+    TIMEOUT_MS,
+  )
+
+  effectTest(
     "the note goes as the host's synthetic message, waking or not; a refusal says why",
     Effect.gen(function* () {
       const sent: Array<unknown> = []
@@ -114,12 +136,13 @@ describe("the host as the sweep reads it", () => {
   effectTest(
     "a call the host never answers is cut off and counts as failed, so it holds up no pass",
     Effect.gen(function* () {
-      const hung = host({ sessions: Effect.never, get: () => Effect.never, pending: () => Effect.never, open: () => Effect.never, synthetic: () => Effect.never })
+      const hung = host({ sessions: Effect.never, get: () => Effect.never, pending: () => Effect.never, open: () => Effect.never, lost: () => Effect.never, synthetic: () => Effect.never })
       const cut = <A, E>(body: (service: QueueHost["Service"]) => Effect.Effect<A, E>) => QueueHost.use(body).pipe(Effect.provide(layer(hung, "20 millis")))
       expect(yield* cut((service) => service.roots)).toEqual([])
       expect(yield* cut((service) => service.linked("ses_busy"))).toEqual(Option.none())
       expect(yield* cut((service) => service.wakes(["ses_busy"]))).toEqual(Option.none())
       expect(yield* cut((service) => service.questions(["ses_busy"]))).toEqual(Option.none())
+      expect(yield* cut((service) => service.lost("ses_busy", []))).toEqual(Option.none())
       const late = yield* cut((service) => Effect.flip(service.note("ses_idle", "check", "Queue check", true, "staleness")))
       expect([late._tag, late.message]).toEqual(["NoteRefused", "the host did not answer in time"])
     }),

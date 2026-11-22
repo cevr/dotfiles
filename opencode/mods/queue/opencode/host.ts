@@ -10,6 +10,8 @@
 //   `time.idle` the end of the last completed one (schema session.ts:44-55);
 //   it runs while busy is later than idle. `outcome` is the last run's.
 // - gone: `session.get` fails with `Session.NotFoundError`.
+// - lost work: the orchestrate plugin's `lost({ sessionID, hashes })` RPC
+//   (mods/orchestrate/lost-now.ts `lostAnswer`, cmd/orchestrate `LOST`).
 // - wakes and questions: the wakes plugin's `pending({ sessionIDs })` RPC
 //   (mods/wake/wake.ts `WAKES`, entries of kind alarm, monitor or latch) and
 //   the questions plugin's `open({ sessionIDs })` (mods/questions/question.ts
@@ -51,6 +53,8 @@ export interface Host {
   readonly pending: (sessionIDs: ReadonlyArray<string>) => Effect.Effect<unknown, unknown>
   /** The questions plugin's `open({ sessionIDs })` answer, undecoded. */
   readonly open: (sessionIDs: ReadonlyArray<string>) => Effect.Effect<unknown, unknown>
+  /** The orchestrate plugin's `lost({ sessionID, hashes })` answer, undecoded. */
+  readonly lost: (input: { readonly sessionID: string; readonly hashes: ReadonlyArray<string> }) => Effect.Effect<unknown, unknown>
   readonly synthetic: (input: {
     readonly sessionID: string
     readonly text: string
@@ -62,9 +66,19 @@ export interface Host {
 
 const BY_SESSIONS = { type: "object", properties: { sessionIDs: { type: "array", items: { type: "string" } } }, required: ["sessionIDs"] } as const
 
-/** The one method of each neighbour's RPC the sweep calls, as it defines it (ids kept in step with `WAKES` and `QUESTIONS`). */
+/** The one method of each neighbour's RPC the sweep calls, as it defines it (ids kept in step with `WAKES`, `QUESTIONS` and orchestrate's `LOST`). */
 export const WAKES_PENDING = { id: "dotfiles-opencode.wake", methods: { pending: { input: BY_SESSIONS, output: { type: "object" } } }, events: {} } as const
 export const QUESTIONS_OPEN = { id: "dotfiles-opencode.questions", methods: { open: { input: BY_SESSIONS, output: { type: "object" } } }, events: {} } as const
+export const ORCHESTRATE_LOST = {
+  id: "dotfiles-opencode.orchestrate.lost",
+  methods: {
+    lost: {
+      input: { type: "object", properties: { sessionID: { type: "string" }, hashes: { type: "array", items: { type: "string" } } }, required: ["sessionID", "hashes"] },
+      output: { type: "object" },
+    },
+  },
+  events: {},
+} as const
 
 /** How many of the location's newest root sessions a pass looks at, out of how many sessions read. */
 export const ROOTS = 40
@@ -72,6 +86,7 @@ export const READ = 400
 
 const Pending = Schema.Struct({ entries: Schema.Array(Schema.Struct({ id: Schema.String, kind: Schema.String, sessionID: Schema.String })) })
 const Open = Schema.Struct({ questions: Schema.Array(Schema.Struct({ sessionID: Schema.String })) })
+const LostAnswer = Schema.Struct({ lines: Schema.Array(Schema.String), keys: Schema.Array(Schema.String), hashes: Schema.Array(Schema.Struct({ hash: Schema.String, why: Schema.String })) })
 const NotFound = Schema.Struct({ _tag: Schema.Literal("Session.NotFoundError") })
 const Said = Schema.Struct({ message: Schema.String })
 
@@ -149,6 +164,12 @@ export const layer = (host: Host, callTimeout: Duration.Input = CALL_TIMEOUT) =>
           ),
           Effect.option,
         ),
+      lost: (sessionID, hashes) =>
+        cut(host.lost({ sessionID, hashes })).pipe(
+          Effect.flatMap(Schema.decodeUnknownEffect(LostAnswer)),
+          Effect.map((answer) => ({ lines: answer.lines, keys: answer.keys, hashes: new Map(answer.hashes.map((each) => [each.hash, each.why] as const)) })),
+          Effect.option,
+        ),
       note: (sessionID, text, description, wake, kind) =>
         cut(host.synthetic({ sessionID, text, description, resume: wake, kind })).pipe(
           Effect.asVoid,
@@ -167,6 +188,7 @@ export const fromContext = (ctx: Plugin.Context) =>
     get: (sessionID) => Effect.suspend(() => ctx.session.get({ sessionID: sessionIDOf(sessionID) })),
     pending: (ids) => Effect.suspend(() => ctx.rpc(WAKES_PENDING).pending({ sessionIDs: [...ids] })),
     open: (ids) => Effect.suspend(() => ctx.rpc(QUESTIONS_OPEN).open({ sessionIDs: [...ids] })),
+    lost: (input) => Effect.suspend(() => ctx.rpc(ORCHESTRATE_LOST).lost({ sessionID: input.sessionID, hashes: [...input.hashes] })),
     synthetic: (input) =>
       Effect.suspend(() =>
         ctx.session.synthetic({
