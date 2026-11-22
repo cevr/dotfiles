@@ -82,14 +82,31 @@ check_sysctl() {
   done
 }
 
+# Fails, naming the file, unless ~/.zshenv and ~/.zshrc are links to their installed copies
+# (install-bin.sh) and, once the installed OpenCode build's tree holds workbox/, those copies are
+# that tree's: a delivery that did not happen (a failed or skipped install-bin) shows here.
+check_shell_files() {
+  shell_dir="$HOME/.local/share/workbox"
+  tree_box="$HOME/.local/share/opencode-prime/current.plugins/workbox"
+  for name in zshenv zshrc; do
+    if [ "$(readlink "$HOME/.$name" 2>/dev/null || true)" != "$shell_dir/$name" ]; then
+      printf 'workbox bootstrap: ~/.%s does not link to %s (install-bin.sh installs it)\n' "$name" "$shell_dir/$name" >&2
+      return 1
+    fi
+    if [ -f "$tree_box/$name" ] && ! cmp -s "$tree_box/$name" "$shell_dir/$name"; then
+      printf 'workbox bootstrap: %s is not the installed build'"'"'s %s (install-bin.sh from the tree did not run)\n' "$shell_dir/$name" "$tree_box/$name" >&2
+      return 1
+    fi
+  done
+}
+
 check_mode() {
   for command in btrfs bun curl git hc hunk jq mongosh node redis-cli sideshow sqlite3 syncthing tailscale work workbox-rift-storage workrift zsh; do
     check_command "$command"
   done
 
   check_hc
-  test -L "$HOME/.zshenv"
-  test -L "$HOME/.zshrc"
+  check_shell_files
   systemctl --user is-active --quiet sideshow.service
   systemctl --user is-enabled --quiet opencode.service
   for timer in $user_timers; do
@@ -155,8 +172,7 @@ sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
 mkdir -p "$local_bin_dir" "$user_unit_dir" "$HOME/.agents"
 mkdir -p "$HOME/.config/bite-workbox" "$HOME/.config/hunk" "$HOME/.config/orchestrate"
 
-ln -sfn "$workbox_dir/zshenv" "$HOME/.zshenv"
-ln -sfn "$workbox_dir/zshrc" "$HOME/.zshrc"
+# ~/.zshenv and ~/.zshrc: install-bin.sh below installs them (from the tree the update runs it from).
 ln -sfn "$workbox_dir/../AGENTS.md" "$HOME/.agents/AGENTS.md"
 ln -sfn "$workbox_dir/../skills" "$HOME/.agents/skills"
 mkdir -p "$HOME/.claude"

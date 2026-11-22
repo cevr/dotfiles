@@ -216,7 +216,7 @@ esac`
 // shares with the Mac.
 const quietCommands = [
   "btrfs", "bun", "curl", "git", "hunk", "mongosh", "node", "redis-cli", "sideshow", "sqlite3",
-  "syncthing", "tailscale", "work", "workbox-rift-storage", "workrift", "zsh", "install-node", "loginctl", "cmp",
+  "syncthing", "tailscale", "work", "workbox-rift-storage", "workrift", "zsh", "install-node", "loginctl",
 ]
 
 /** The host's commands, made once for each {herdr present, hc present}. */
@@ -231,6 +231,8 @@ const hostBin = (herdrPresent: boolean, hcPresent = true) => {
   if (hcPresent) stub(dir, "hc", null, hcBody)
   stub(dir, "ps", null, psBody)
   stub(dir, "sysctl", null, sysctlBody)
+  // The real cmp for the home's files (the shell-file check); /etc's resolved config reads as current.
+  stub(dir, "cmp", null, `case "$3" in "$HOME"/*) exec /usr/bin/cmp "$@" ;; esac`)
   stub(dir, "df", null, "printf 'Use%%\\n 50%%\\n'")
   stub(dir, "swapon", null, "echo /swapfile")
   stub(dir, "findmnt", null, "echo rw,nosuid,nodev,size=8388608k")
@@ -283,11 +285,29 @@ const today: Host = {
 }
 const saturday: Host = { ...today, herdrActive: false, herdrPresent: false }
 
-const bootstrapCheck = async (host: Host) => {
+/**
+ * How the home's shell files stand: `installed` (links to install-bin.sh's copies, which equal the
+ * installed build's tree's), `checkout` (links into the live checkout, as bootstrap made them before),
+ * or `behind` (installed copies that differ from the tree's: the delivery did not run).
+ */
+type Shell = "installed" | "checkout" | "behind"
+
+const placeShellFiles = (home: string, shell: Shell) => {
+  const installed = join(home, ".local", "share", "workbox")
+  const tree = join(home, ".local", "share", "opencode-prime", "current.plugins", "workbox")
+  mkdirSync(installed, { recursive: true })
+  mkdirSync(tree, { recursive: true })
+  for (const name of ["zshenv", "zshrc"]) {
+    writeFileSync(join(tree, name), `# the tree's ${name}\n`)
+    writeFileSync(join(installed, name), shell === "behind" ? `# an older ${name}\n` : `# the tree's ${name}\n`)
+    symlinkSync(shell === "checkout" ? join(workbox, name) : join(installed, name), join(home, `.${name}`))
+  }
+}
+
+const bootstrapCheck = async (host: Host, shell: Shell = "installed") => {
   const home = hostHome("check", host)
   const log = join(home, "calls.log")
-  symlinkSync(join(workbox, "zshenv"), join(home, ".zshenv"))
-  symlinkSync(join(workbox, "zshrc"), join(home, ".zshrc"))
+  placeShellFiles(home, shell)
   const result = await run(["/bin/sh", join(workbox, "bootstrap.sh"), "--check"], {
     HOME: home,
     PATH: `${join(home, ".local", "bin")}:/usr/bin:/bin`,
@@ -361,6 +381,14 @@ describe("bootstrap", () => {
   test("--check fails when a user timer is active with no next run (2026-11-13: OnUnitActiveSec after a user manager restart)", async () => {
     const checked = await bootstrapCheck({ ...today, timersArmed: false })
     expect({ code: checked.code === 0 ? 0 : "failed", passed: checked.stdout.includes("checks passed") }).toEqual({ code: "failed", passed: false })
+  }, 30_000)
+
+  test("--check fails, naming the file, when ~/.zshenv links into the live checkout or its installed copy is not the installed build's (2026-11-22: two days behind)", async () => {
+    const [checkout, behind] = await Promise.all([bootstrapCheck(today, "checkout"), bootstrapCheck(today, "behind")])
+    expect({ code: checkout.code === 0 ? 0 : "failed", passed: checkout.stdout.includes("checks passed") }).toEqual({ code: "failed", passed: false })
+    expect(checkout.stderr).toContain("~/.zshenv does not link to")
+    expect({ code: behind.code === 0 ? 0 : "failed", passed: behind.stdout.includes("checks passed") }).toEqual({ code: "failed", passed: false })
+    expect(behind.stderr).toMatch(/\.local\/share\/workbox\/zshenv is not the installed build's .*current\.plugins\/workbox\/zshenv/)
   }, 30_000)
 
   test("--check warns, and still passes, when a live inotify limit is below sysctl.d/90-inotify.conf's", async () => {
