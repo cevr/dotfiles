@@ -198,6 +198,14 @@ It then makes the workspace with `work new`, a copy-on-write clone with
 dependencies and compiled outputs, and creates or selects the requested Git branch, and runs the
 install only when the branch's lock file differs from the last install. When the
 command runs from a matching stacked checkout, it also imports `.git/gh-stack`.
+On a base whose workspaces are file copies, a create's clone and a remove's
+delete take one turn each, one at a time per base, first come first served
+across both: on the workbox's loaded Btrfs, clones and `rm -rf` side by side
+took minutes where one alone took seconds. A waiter's line names who is ahead
+and for what (`clone <name>` or `delete <name>`); a holder that dies frees its
+turn. The fetch, install and warm of a create, and a remove's checks, run
+beside each other as before. A base that is a Btrfs subvolume (its workspaces
+are snapshots) takes no turn.
 `init`, `create`, `refresh` and `deps` run themselves at nice 10, and in the
 idle I/O class (`ionice -c3`) where `ionice` is, so their clones, fetches,
 checkouts and installs yield to the OpenCode service.
