@@ -2,7 +2,7 @@
 // the project entered, the message open, the rows shown past "earlier", the span the timeline points at.
 import { createSignal } from "solid-js"
 import * as Api from "./api.ts"
-import { isPeer, type Message, type Project, type View } from "./types.ts"
+import { isPeer, type Message, ownId, type Project, type View } from "./types.ts"
 
 /** How often the page asks again while it is visible; a write or a return to the tab asks at once. */
 const REFRESH_MS = 20_000
@@ -108,28 +108,58 @@ const act = (write: Promise<void>) =>
     setProblem(failure.message)
   })
 
+// ── A peer's items: written straight to their own host ──
+
+/**
+ * The peers' pages this browser cannot write to from here, by origin: `pair`, the peer needs this browser paired on
+ * its own page (an agent machine's browser); `unreachable`, the peer is down or does not let this page write.
+ */
+export const [peerLocked, setPeerLocked] = createSignal<ReadonlyMap<string, "pair" | "unreachable">>(new Map())
+
+/** The peer's page (its origin) that owns the project or message `id`; none for this host's own. */
+export const peerOrigin = (id: string): string | undefined =>
+  isPeer(id) ? view()?.projects.find((each) => each.id === id || each.inbox.some((one) => one.id === id) || each.later.some((one) => one.id === id))?.origin : undefined
+
+/** Whether this browser may mark, set aside, rename or answer `id` from this page. */
+export const mayAct = (id: string): boolean => {
+  if (!isPeer(id)) return !marksLocked()
+  const at = peerOrigin(id)
+  return at !== undefined && !peerLocked().has(at)
+}
+
+/** A write to the item `id`: to this host, or to the peer that owns it (its id as that host knows it). */
+const write = (id: string, toHost: (id: string) => Promise<void>, toPeer: (id: string, at: string) => Promise<void>) => {
+  const at = peerOrigin(id)
+  if (!isPeer(id)) return void act(toHost(id))
+  if (at === undefined || peerLocked().has(at)) return
+  void toPeer(ownId(id), at)
+    .then(refresh)
+    .catch((failure: Error) => {
+      if (failure instanceof Api.PeerRefused) return void setPeerLocked((all) => new Map([...all, [at, failure.why]]))
+      setProblem(failure.message)
+    })
+}
+
 /** Open a message in place (marking it read, when this browser may mark), or close the one open. */
 export const toggleOpen = (message: Message) => {
   if (openId() === message.id) return setOpenId(undefined)
   setOpenId(message.id)
-  if (message.unread && !marksLocked() && !isPeer(message.id)) void act(Api.markRead(message.id, true))
+  if (message.unread && mayAct(message.id)) write(message.id, (id) => Api.markRead(id, true), (id, at) => Api.markRead(id, true, at))
 }
 
-// A peer's message is marked, set aside and answered on its own host's page, never here.
-export const toggleRead = (message: Message) => {
-  if (!isPeer(message.id)) void act(Api.markRead(message.id, message.unread))
-}
+export const toggleRead = (message: Message) => write(message.id, (id) => Api.markRead(id, message.unread), (id, at) => Api.markRead(id, message.unread, at))
 
 /** Set a message aside until the morning, or bring one back to the inbox (unread). */
 export const toggleLater = (message: Message) => {
-  if (isPeer(message.id)) return
   if (openId() === message.id) setOpenId(undefined)
-  void act(message.returnsAt === undefined ? Api.setLater(message.id) : Api.markRead(message.id, false))
+  write(
+    message.id,
+    (id) => (message.returnsAt === undefined ? Api.setLater(id) : Api.markRead(id, false)),
+    (id, at) => (message.returnsAt === undefined ? Api.setLater(id, at) : Api.markRead(id, false, at)),
+  )
 }
 
-export const renameProject = (id: string, name: string) => {
-  if (!isPeer(id)) void act(Api.rename(id, name))
-}
+export const renameProject = (id: string, name: string) => write(id, (own) => Api.rename(own, name), (own, at) => Api.rename(own, name, at))
 
 // ── Answers ──
 
@@ -161,18 +191,23 @@ export const pairWith = (code: string) =>
 
 /** His answer to `message`: sent once (a second press while it goes does nothing), then the view again. */
 export const answerMessage = (message: Message, given: { readonly option: string } | { readonly text: string }) => {
-  if (sending().has(message.id) || isPeer(message.id)) return
+  const at = peerOrigin(message.id)
+  if (sending().has(message.id) || (isPeer(message.id) && !mayAct(message.id))) return
   setSending((all) => new Set([...all, message.id]))
-  void Api.answer(message.id, given)
+  void Api.answer(ownId(message.id), given, at)
     .then((outcome) => {
       setOutcomes((all) => new Map([...all, [message.id, outcome]]))
       // A token the server no longer knows (revoked, or the pairing file deleted): forget it, and pair again.
-      if (outcome.tag === "refused" && outcome.status === 401) {
+      if (outcome.tag === "refused" && outcome.status === 401 && at === undefined) {
         Api.keepToken("")
         setAnswers(false)
       }
     })
-    .catch((failure: Error) => void setOutcomes((all) => new Map([...all, [message.id, { tag: "refused", status: 0, reason: failure.message }]])))
+    .catch((failure: Error) => {
+      // A peer that needs this browser paired, or cannot be written from here: the message says where to act.
+      if (failure instanceof Api.PeerRefused && at !== undefined) return void setPeerLocked((all) => new Map([...all, [at, failure.why]]))
+      setOutcomes((all) => new Map([...all, [message.id, { tag: "refused", status: 0, reason: failure.message }]]))
+    })
     .finally(() => {
       setSending((all) => new Set([...all].filter((id) => id !== message.id)))
       void refresh()

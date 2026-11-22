@@ -13,7 +13,8 @@
 // host), or another user's laptop.
 //
 // `--name` and `--peers` make it one host of several (peers.ts): each peer is another demo on 127.0.0.1 at its port,
-// read every 2 s through its `/peer/view.json`; a port where no demo runs is a host that is down.
+// read every 2 s through its `/peer/view.json`; a port where no demo runs is a host that is down. Each peer's page
+// (`http://127.0.0.1:<its port>`) may write here cross-origin, under this demo's policy (`--as tailnet --from`).
 //
 // `full` holds three projects: Harbor (a red message, two open questions pinned, a decision, units with rounds, one
 // message set aside for Later), Lantern (500 messages over 30 days) and Quarry (one message). `xss` holds one project
@@ -192,7 +193,7 @@ await Effect.runPromise(
     Effect.gen(function* () {
       const named = (values.peers ?? "").split(",").filter((each) => each.includes("=")).map((each) => ({ name: each.split("=")[0] ?? "", host: each.split("=")[0] ?? "", port: Number(each.split("=")[1]) }))
       const located = new Map(named.map((each) => [each.name, { name: each.name, base: `http://127.0.0.1:${each.port}` }] as const))
-      const peers = named.length === 0 ? noPeers([]) : yield* peerSide(named, Effect.succeed(located), LivePeers.get, Effect.sync(() => Date.now()))
+      const peers = named.length === 0 ? noPeers([]) : yield* peerSide(named, Effect.succeed(located), LivePeers.get, Effect.sync(() => Date.now()), Effect.succeed(named.map((each) => `http://127.0.0.1:${each.port}`)))
       yield* Effect.forkScoped(servePeers(peers.pull, Duration.seconds(2)))
       const options = { dir, timezone: zone, ...(values.read === "member" ? { tailnetRead: "member" as const } : {}), ...(values.name === undefined ? {} : { name: values.name, peers: named.map(({ name, host }) => ({ name, host })) }) }
       const handlers = handlersOf(options, log, answerers, Effect.succeed("no:starting"), members, peers)

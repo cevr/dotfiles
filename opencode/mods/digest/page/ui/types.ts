@@ -112,8 +112,11 @@ export interface PeerStatus {
   readonly origin?: string
 }
 
-/** Whether a message or project id is a peer's (peers.ts `peerId`): read here, marked and answered on its host. */
+/** Whether a message or project id is a peer's (peers.ts `peerId`): kept on its host, which every write goes to. */
 export const isPeer = (id: string): boolean => id.startsWith("peer:")
+
+/** An id as its own host knows it: a peer's (`peer:<name>/<id>`) without its qualifier; this host's as it is. */
+export const ownId = (id: string): string => (isPeer(id) ? id.slice(id.indexOf("/") + 1) : id)
 
 /** Whether `t` falls in `span` (the last span holds its end, now). */
 export const inSpan = (span: Span, t: number, last: boolean): boolean => t >= span.start && (t < span.end || (last && t <= span.end))

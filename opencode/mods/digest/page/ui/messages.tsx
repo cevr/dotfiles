@@ -6,7 +6,7 @@ import { createSignal, For, Match, Show, Switch } from "solid-js"
 import { Accordion, AccordionHeader, AccordionItem, AccordionPanel, AccordionTrigger } from "@ui-sdk/solid/accordion"
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "@ui-sdk/solid/collapsible"
 import type { Outcome } from "./api.ts"
-import { answerMessage, answers, editing, enter, hot, marksLocked, openId, outcomes, pairProblem, pairWith, project, renameProject, sending, setEditing, showAll, shownAll, toggleLater, toggleOpen, toggleRead, view, wide } from "./state.ts"
+import { answerMessage, answers, editing, enter, hot, marksLocked, mayAct, openId, outcomes, pairProblem, pairWith, peerLocked, peerOrigin, project, renameProject, sending, setEditing, showAll, shownAll, toggleLater, toggleOpen, toggleRead, view, wide } from "./state.ts"
 import { type Ask, inSpan, isPeer, type Message, type Project, type Unit } from "./types.ts"
 
 /** How far a row must travel before its swipe acts, in px. */
@@ -186,7 +186,8 @@ export function PairPrompt(props: { readonly need: "read" | "mark" | "answer" })
 function AskBlock(props: { readonly message: Message; readonly ask: Ask }) {
   let field: HTMLTextAreaElement | undefined
   const busy = () => sending().has(props.message.id)
-  const can = () => answers() === true && props.message.open && !busy()
+  // A peer's message is answered on its host, which judges this browser itself: try it, unless it said no already.
+  const can = () => (isPeer(props.message.id) ? mayAct(props.message.id) : answers() === true) && props.message.open && !busy()
   const submit = (event: SubmitEvent) => {
     event.preventDefault()
     const text = field?.value.trim() ?? ""
@@ -212,16 +213,25 @@ function AskBlock(props: { readonly message: Message; readonly ask: Ask }) {
         </button>
       </form>
       <p class="assume">{props.ask.assume === undefined ? "If you do nothing, the run waits for you: it has no assumption for this one." : `If you do nothing, the run goes on assuming: ${props.ask.assume}`}</p>
-      <Show when={answers() === false && !marksLocked()}>
+      <Show when={answers() === false && !marksLocked() && !isPeer(props.message.id)}>
         <PairPrompt need="answer" />
       </Show>
     </div>
   )
 }
 
-/** A peer's message: what it asks, and where to answer it or mark it (that host's own page). */
+/**
+ * A peer's message this browser cannot act on from here: what it asks, why not, and the way to that host's own page,
+ * where it pairs (its token stays there) and acts. Its codes and tokens never pass through this page.
+ */
 function OnHost(props: { readonly message: Message }) {
   const host = () => project()?.host ?? "its host"
+  const at = () => peerOrigin(props.message.id)
+  const why = () => {
+    const origin = at()
+    return origin === undefined ? undefined : peerLocked().get(origin)
+  }
+  const doing = () => (props.message.open && props.message.ask !== undefined ? "answer it" : "mark it")
   return (
     <div class="onhost">
       <Show when={props.message.ask}>
@@ -231,15 +241,18 @@ function OnHost(props: { readonly message: Message }) {
           </Show>
         )}
       </Show>
-      <p class="assume">
-        This is on {host()}.{" "}
-        <Show when={project()?.origin} fallback="Answer or mark it on that host's page.">
+      <p class="assume" role="status">
+        <Switch fallback={<>This is on {host()}. </>}>
+          <Match when={why() === "pair"}>{host()} needs this browser paired before it takes a mark or an answer from it. </Match>
+          <Match when={why() === "unreachable"}>This page cannot write to {host()} right now. </Match>
+        </Switch>
+        <Show when={at()} fallback="Answer or mark it on that host's page.">
           {(origin) => (
             <>
               <a href={origin()} target="_blank" rel="noreferrer">
                 Open {host()}'s page
-              </a>{" "}
-              to {props.message.open && props.message.ask !== undefined ? "answer it" : "mark it"}.
+              </a>
+              {why() === "pair" ? `, pair this browser there, and ${doing()} there.` : ` to ${doing()}.`}
             </>
           )}
         </Show>
@@ -258,7 +271,7 @@ function Detail(props: { readonly message: Message }) {
       <Show when={props.message.body !== ""}>
         <p class="body">{props.message.body}</p>
       </Show>
-      <Show when={!isPeer(props.message.id)} fallback={<OnHost message={props.message} />}>
+      <Show when={!isPeer(props.message.id) || mayAct(props.message.id)} fallback={<OnHost message={props.message} />}>
         <Show when={props.message.ask}>{(ask) => <AskBlock message={props.message} ask={ask()} />}</Show>
       </Show>
       <Show when={outcomes().get(props.message.id)}>{(outcome) => <OutcomeLine outcome={outcome()} />}</Show>
@@ -292,7 +305,7 @@ function Detail(props: { readonly message: Message }) {
           </Collapsible>
         </div>
       </Show>
-      <Show when={!isPeer(props.message.id)}>
+      <Show when={!isPeer(props.message.id) || mayAct(props.message.id)}>
         <div class="acts">
           <button type="button" onClick={() => toggleRead(props.message)}>
             {props.message.unread ? "Mark read" : "Mark unread"}
@@ -328,7 +341,7 @@ function Row(props: { readonly message: Message }) {
             data-t={String(props.message.t)}
             aria-keyshortcuts="U L"
             onPointerDown={(event: PointerEvent) => {
-              if (!isPeer(props.message.id)) startSwipe(event, props.message)
+              if (!isPeer(props.message.id) || mayAct(props.message.id)) startSwipe(event, props.message)
             }}
             onKeyDown={onKey}
           >
@@ -445,7 +458,7 @@ export function Messages(props: { readonly project: Project }) {
         </button>
       </Show>
       <h1>
-        <Show when={!isPeer(props.project.id)} fallback={props.project.name}>
+        <Show when={!isPeer(props.project.id) || mayAct(props.project.id)} fallback={props.project.name}>
           <Name project={props.project} />
         </Show>
       </h1>
