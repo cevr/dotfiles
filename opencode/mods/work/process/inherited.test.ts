@@ -212,8 +212,13 @@ const check = (each: Case) =>
         const atReceipt = treeOf(model)
         beforeLand(paths, each, model)
         expect(ALL.map((file) => read(paths.lane, file))).toEqual(ALL.map((file) => contentIn(model.lane, file)))
+        // A script run from a folder inside the lane (scripts/receipt.ts in its cwd) reads the lane as a whole.
+        const inside = join(paths.lane, "deep", "er")
+        mkdirSync(inside, { recursive: true })
+        expect((yield* kit.snapshot(inside)).tree).toBe((yield* kit.snapshot(paths.lane)).tree)
         const landing = yield* Landing
         const own = yield* landing.ownChanges(paths.lane, paths.base)
+        expect(yield* landing.ownChanges(inside, paths.base)).toEqual(own)
         const standing = yield* landing.standing(paths.lane)
         // What the land refuses (and a removal and the lost-lane list count) is the lane's own work, and only that.
         expect({ seed: each.seed, own: own.map((line) => line.slice(3)).sort() }).toEqual({ seed: each.seed, own: [...ownOf(model)] })

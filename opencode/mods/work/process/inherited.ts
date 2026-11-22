@@ -87,51 +87,65 @@ export const inheritance = (env: Readonly<Record<string, string>> = {}) => {
   const { run, spawn } = commands(env)
   const git = (path: string, ...args: ReadonlyArray<string>) => run(["git", "-C", path, ...args], path, LITERAL)
 
-  /** The workspace's status entries, untracked files one by one, `.rift` left out. */
-  const status = (path: string) =>
-    Effect.map(git(path, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ".", ":(exclude).rift"), statusEntries)
-
   /**
-   * The checkout `path` was copied from: the one its create recorded (`rift.copiedFrom`), else, for a workspace
-   * made before the record, `base` when the caller knows it, else the base beside its folder (`hintedBase`);
-   * none for a base, or when none of them is a checkout other than `path`.
+   * The checkout `path` is in, by its top level: every step below reads and names files from there (status
+   * names them from the top level, a pathspec from the directory it runs in), so a folder inside it (a script's
+   * cwd) reads as the checkout itself.
    */
-  const copiedFrom = (path: string, base?: string) =>
-    spawn(["git", "-C", path, "config", "--local", "--get", COPIED_FROM], path).pipe(
+  const top = (path: string) => Effect.map(git(path, "rev-parse", "--show-toplevel"), (out) => out.trim())
+
+  /** The checkout's status entries, from its top level `root`, untracked files one by one, `.rift` left out. */
+  const statusAt = (root: string) => Effect.map(git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ".", ":(exclude).rift"), statusEntries)
+
+  /** The checkout `root` (a top level) was copied from (`copiedFrom`). */
+  const copiedFromAt = (root: string, base: Option.Option<string>) =>
+    spawn(["git", "-C", root, "config", "--local", "--get", COPIED_FROM], root).pipe(
       Effect.map((ran) =>
         Option.liftPredicate(ran.stdout.trim(), (named) => ran.code === 0 && named !== "").pipe(
-          Option.orElse(() => Option.fromUndefinedOr(base)),
-          Option.orElse(() => hintedBase(path)),
-          Option.flatMap((at) => otherCheckout(path, at)),
+          Option.orElse(() => base),
+          Option.orElse(() => hintedBase(root)),
+          Option.flatMap((at) => otherCheckout(root, at)),
         ),
       ),
     )
 
-  /** The workspace's own status lines (`ownEntries`), against the checkout it was copied from (`copiedFrom`). */
+  /** The status entries of the checkout `path` is in, its files named from its top level. */
+  const status = (path: string) => Effect.flatMap(top(path), statusAt)
+
+  /**
+   * The checkout `path` is in was copied from: the one its create recorded (`rift.copiedFrom`), else, for a
+   * workspace made before the record, `base` when the caller knows it, else the base beside its folder
+   * (`hintedBase`); none for a base, or when none of them is a checkout other than it.
+   */
+  const copiedFrom = (path: string, base?: string) => Effect.flatMap(top(path), (root) => copiedFromAt(root, Option.fromUndefinedOr(base)))
+
+  /** The checkout's own status lines (`ownEntries`), against the checkout it was copied from (`copiedFrom`). */
   const ownLines = (path: string, base?: string) =>
     Effect.gen(function* () {
-      return ownEntries(path, yield* copiedFrom(path, base), yield* status(path)).map((entry) => entry.line)
+      const root = yield* top(path)
+      return ownEntries(root, yield* copiedFromAt(root, Option.fromUndefinedOr(base)), yield* statusAt(root)).map((entry) => entry.line)
     })
 
   /**
-   * The tree a receipt names for the checkout at `path`: its tracked files as they are on disk, each one
+   * The tree a receipt names for the checkout `path` is in: its tracked files as they are on disk, each one
    * inherited from the checkout it was copied from at its HEAD version; built in a scratch copy of its index,
    * so its own index is untouched.
    */
   const unitTree = Effect.fn("Inherited.unitTree")(function* (path: string) {
-    const index = (yield* git(path, "rev-parse", "--path-format=absolute", "--git-path", "index")).trim()
+    const root = yield* top(path)
+    const index = (yield* git(root, "rev-parse", "--path-format=absolute", "--git-path", "index")).trim()
     const scratch = `${index}.rift-receipt`
     const at = { ...LITERAL, GIT_INDEX_FILE: scratch }
-    const files = yield* Option.match(yield* copiedFrom(path), {
+    const files = yield* Option.match(yield* copiedFromAt(root, Option.none()), {
       onNone: () => Effect.succeed<ReadonlyArray<string>>([]),
-      onSome: (source) => Effect.map(status(path), (entries) => inheritedTracked(path, source, entries)),
+      onSome: (source) => Effect.map(statusAt(root), (entries) => inheritedTracked(root, source, entries)),
     })
     return yield* Effect.acquireUseRelease(
       Effect.try({ try: () => copyFileSync(index, scratch), catch: (cause) => new RiftFailed({ operation: "copy index", message: String(cause) }) }),
       () =>
-        run(["git", "-C", path, "add", "-u"], path, at).pipe(
-          Effect.andThen(Effect.when(run(["git", "-C", path, "reset", "-q", "HEAD", "--", ...files], path, at), Effect.succeed(files.length > 0))),
-          Effect.andThen(run(["git", "-C", path, "write-tree"], path, at)),
+        run(["git", "-C", root, "add", "-u"], root, at).pipe(
+          Effect.andThen(Effect.when(run(["git", "-C", root, "reset", "-q", "HEAD", "--", ...files], root, at), Effect.succeed(files.length > 0))),
+          Effect.andThen(run(["git", "-C", root, "write-tree"], root, at)),
           Effect.map((out) => out.trim()),
         ),
       () => Effect.sync(() => rmSync(scratch, { force: true })),
@@ -141,14 +155,15 @@ export const inheritance = (env: Readonly<Record<string, string>> = {}) => {
   /**
    * A new workspace's first step, before any agent runs in it: records `from`, the checkout it was copied from
    * (`rift.copiedFrom`), and restores to HEAD each tracked file it inherited from there (same bytes now);
-   * answers those files. Untracked files stay. A `path` that is `from` itself (a base) is left untouched.
+   * answers those files. Untracked files stay. A workspace that is `from` itself (a base) is left untouched.
    */
   const settle = Effect.fn("Inherited.settle")(function* (path: string, from: string) {
-    const source = otherCheckout(path, from)
+    const root = yield* top(path)
+    const source = otherCheckout(root, from)
     if (Option.isNone(source)) return []
-    yield* git(path, "config", "--local", COPIED_FROM, source.value)
-    const files = inheritedTracked(path, source.value, yield* status(path))
-    if (files.length > 0) yield* git(path, "restore", "--source=HEAD", "--staged", "--worktree", "--", ...files)
+    yield* git(root, "config", "--local", COPIED_FROM, source.value)
+    const files = inheritedTracked(root, source.value, yield* statusAt(root))
+    if (files.length > 0) yield* git(root, "restore", "--source=HEAD", "--staged", "--worktree", "--", ...files)
     return files
   })
 
