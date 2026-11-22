@@ -55,7 +55,7 @@ describe("the digest plugin", () => {
     expect(await unread()).toEqual([0])
     // The health line counts the log's events and gives the newest one's time, and what the tailnet listener does.
     expect(await Effect.runPromise(healthOf(log, Effect.succeed("held")))).toMatch(/^digest ok \S+ host=\S+ events=2 last=2026-11-20T12:00:00\.000Z peers=none tailnet=held$/)
-    expect(await Effect.runPromise(handlers.health)).toMatch(/ events=2 .* tailnet=no$/)
+    expect(await Effect.runPromise(handlers.health)).toMatch(/ events=2 .* tailnet=no:starting$/)
   })
 
   test("a log that does not read is a sick health line, never a failure; digest.tailnetRead is paired by default, member when set", async () => {

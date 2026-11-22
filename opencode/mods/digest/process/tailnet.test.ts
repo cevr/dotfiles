@@ -1,14 +1,50 @@
-// Tailscale's status, as `tailscale status --json` prints it (invented hosts): running or not, and the MagicDNS name
-// without its trailing dot.
+// Tailscale's status, as `tailscale status --json` prints it (invented hosts), and the CLI that prints it:
+// - it is found only at absolute paths, never through PATH;
+// - no CLI, a failing one, a hanging one or one that prints nonsense gives no status, and says which (fake CLIs in a
+//   scratch folder, each a small shell script).
 import { describe, expect, test } from "bun:test"
-import { Option } from "effect"
-import { statusOf } from "./tailnet.ts"
+import { chmodSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
+import { Duration, Effect, Option } from "effect"
+import { scratch } from "../../../tests/scratch.ts"
+import { StatusRead } from "../bind.ts"
+import { CLIS, statusFrom, statusOf } from "./tailnet.ts"
+
+const RUNNING = '{"BackendState":"Running","Self":{"DNSName":"harbor.example-tailnet.ts.net.","TailscaleIPs":["100.101.102.103","fd7a:115c:a1e0::42"]}}'
 
 describe("Tailscale's status", () => {
-  test("running, with its MagicDNS name; stopped; no name; not JSON", () => {
-    expect(statusOf('{"BackendState":"Running","Self":{"DNSName":"harbor.example-tailnet.ts.net."}}')).toEqual(Option.some({ running: true, dnsName: Option.some("harbor.example-tailnet.ts.net") }))
-    expect(statusOf('{"BackendState":"Stopped","Self":{"DNSName":""}}')).toEqual(Option.some({ running: false, dnsName: Option.none() }))
-    expect(statusOf('{"BackendState":"NeedsLogin"}')).toEqual(Option.some({ running: false, dnsName: Option.none() }))
+  test("running, with its MagicDNS name and its own addresses; stopped; no Self; not JSON", () => {
+    expect(statusOf(RUNNING)).toEqual(Option.some({ backendState: "Running", dnsName: Option.some("harbor.example-tailnet.ts.net"), ips: ["100.101.102.103", "fd7a:115c:a1e0::42"] }))
+    expect(statusOf('{"BackendState":"Stopped","Self":{"DNSName":""}}')).toEqual(Option.some({ backendState: "Stopped", dnsName: Option.none(), ips: [] }))
+    expect(statusOf('{"BackendState":"NeedsLogin"}')).toEqual(Option.some({ backendState: "NeedsLogin", dnsName: Option.none(), ips: [] }))
     expect(statusOf("tailscale: command not found")).toEqual(Option.none())
+  })
+})
+
+describe("the Tailscale CLI", () => {
+  test("is looked for at absolute paths only, never through PATH", () => {
+    expect(CLIS.filter((each) => !each.startsWith("/"))).toEqual([])
+  })
+
+  test("the first that exists answers; none, a failing, a hanging or a nonsense one is no status, with its reason", async () => {
+    using held = scratch("digest-cli-")
+    const fake = (name: string, body: string) => {
+      const path = join(held.path, name)
+      writeFileSync(path, `#!/bin/sh\n${body}\n`)
+      chmodSync(path, 0o700)
+      return path
+    }
+    const good = fake("good", `printf '%s' '${RUNNING}'`)
+    const failing = fake("failing", `printf '%s' '${RUNNING}'; exit 1`)
+    const hanging = fake("hanging", "exec sleep 5")
+    const nonsense = fake("nonsense", "echo 'Warning: client version differs'")
+    const missing = join(held.path, "missing")
+    const read = (clis: ReadonlyArray<string>) => Effect.runPromise(statusFrom(clis, Duration.millis(300)))
+    expect(await read([missing, good])).toEqual(StatusRead.Read({ status: { backendState: "Running", dnsName: Option.some("harbor.example-tailnet.ts.net"), ips: ["100.101.102.103", "fd7a:115c:a1e0::42"] } }))
+    expect(await read([missing])).toEqual(StatusRead.Unread({ why: "no-cli" }))
+    // The first that exists is the CLI: a failing one is not passed over for another.
+    expect(await read([failing, good])).toEqual(StatusRead.Unread({ why: "cli-failed" }))
+    expect(await read([hanging])).toEqual(StatusRead.Unread({ why: "cli-timeout" }))
+    expect(await read([nonsense])).toEqual(StatusRead.Unread({ why: "unparseable" }))
   })
 })

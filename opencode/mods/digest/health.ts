@@ -1,21 +1,24 @@
 // The digest's health line, as `GET /health` answers it and the installer's health step logs it:
 //
-//   digest ok <build> host=<h> events=<n> last=<iso> peers=<name>:<age>,… tailnet=yes|no|held
+//   digest ok <build> host=<h> events=<n> last=<iso> peers=<name>:<age>,… tailnet=yes|partial|held|no:<why>
 //
 // - `build`: the installed build the plugin runs from (its tree's name), `dev` from a checkout.
 // - `events`: the log's lines that read; `last` the newest one's time, `none` for an empty log.
 // - `peers`: none until the peers unit.
 // - `tailnet`:
-//   - `yes`: this instance serves the tailnet address;
-//   - `held`: the host has one, and another server instance holds its port;
-//   - `no`: the host has no tailnet address, so the page is on loopback only.
+//   - `yes`: this instance serves every tailnet address the host has;
+//   - `partial`: it serves some, and another server instance holds the others' port (a restart's handover);
+//   - `held`: another server instance holds them all;
+//   - `no:<why>`: the host has no tailnet address, so the page is on loopback only. `why` is `no-cli`,
+//     `cli-failed`, `cli-timeout`, `unparseable`, `not-running:<state>`, `no-address` (Tailscale names none on an
+//     interface), `probe-failed`, or `starting` before the first read.
 // - A log that cannot be read is `digest sick <build> host=<h> <why>`. The installer warns on it and never rolls a
 //   build back for it.
 // - On the tailnet an unpaired request reads `ok` alone (BRIEF): no counts, no names.
 import { Array as Arr, DateTime, Option } from "effect"
 
 /** What the tailnet listener is doing, as health reports it. */
-export type TailnetState = "yes" | "no" | "held"
+export type TailnetState = "yes" | "partial" | "held" | `no:${string}`
 
 /** The health line's facts. */
 export interface HealthFacts {

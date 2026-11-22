@@ -270,7 +270,8 @@
     {
       "files": [
         "cmd/digest/export.test.ts",
-        "cmd/digest/pair.test.ts"
+        "cmd/digest/pair.test.ts",
+        "mods/digest/process/tailnet.test.ts"
       ],
       "rules": {
         "effect/noAsyncFunction": "off",

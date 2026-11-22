@@ -17,7 +17,7 @@ import { parseArgs } from "node:util"
 import { Array as Arr, Clock, Console, DateTime, Effect, Match, Option, Schema } from "effect"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import * as FilePairing from "@dotfiles/opencode-digest/filestore/pairing"
-import { hostOf, NO_TAILNET, type Tailnet } from "@dotfiles/opencode-digest/bind"
+import { hostOf, noTailnet, type Tailnet } from "@dotfiles/opencode-digest/bind"
 import { HOSTNAME, PORT } from "@dotfiles/opencode-digest/http/listener"
 import { CODE_TTL_MS, MAX_PAIRED, type Paired, showCode } from "@dotfiles/opencode-digest/pairing"
 import { probe } from "@dotfiles/opencode-digest/process/tailnet"
@@ -47,10 +47,10 @@ export const targetOf = (args: ReadonlyArray<string>): Option.Option<Target> => 
  * What the owner reads after an issue: the link to open on this host, the code to type instead, and the page's
  * addresses on the tailnet (names first) where a phone types it. Each address is its own origin, so pairs on its own.
  */
-export const said = (code: string, port: number, tailnet: Tailnet = NO_TAILNET): string => {
+export const said = (code: string, port: number, tailnet: Tailnet = noTailnet("none")): string => {
   const urls = [...tailnet.names, ...tailnet.addresses].map((each) => `  http://${hostOf(each)}:${port}/`)
   const remote = Arr.match(urls, {
-    onEmpty: () => ["Tailscale is not running here, so the page is on this host only."],
+    onEmpty: () => [`The page has no tailnet address here (${tailnet.why}), so it is on this host only.`],
     onNonEmpty: (all) => [
       "On a phone or another device on your tailnet, open one of these and type the code:",
       ...all,

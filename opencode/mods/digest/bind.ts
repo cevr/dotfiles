@@ -3,12 +3,15 @@
 //
 // - Loopback: 127.0.0.0/8 and ::1.
 // - The tailnet: Tailscale's ranges, 100.64.0.0/10 (IPv4, shared CGNAT space) and fd7a:115c:a1e0::/48 (IPv6).
-// - The host's tailnet addresses are those of its interfaces inside those ranges (`tailnetOf`), read at the
-//   plugin's start and again every recheck, so a Tailscale that goes down, comes up or moves is followed. No such
-//   address (Tailscale absent or down): loopback only.
-// - The listener's own names (`namesOf`): each address, and the MagicDNS name and short host name when Tailscale's
-//   status gives them. A request naming any other host is refused (DNS rebinding), on every route.
-import { Array as Arr, Data, Option, Order } from "effect"
+// - The host's tailnet addresses (`tailnetOf`) are those Tailscale's own status names (`Self.TailscaleIPs`) that are
+//   also on one of the host's interfaces and inside those ranges: all three. 100.64.0.0/10 is shared CGNAT space
+//   (Cloudflare WARP, a carrier hotspot, a corporate VPN number interfaces in it too), so being in the range is never
+//   enough. No status (no CLI, a failed or timed-out one, output that does not parse) or Tailscale not Running: no
+//   tailnet, loopback only, with the reason (health's `tailnet=no:<why>`). Read at the plugin's start and again every
+//   recheck, so a Tailscale that goes down, comes up or moves is followed.
+// - The listener's own names: each address, and the MagicDNS name and short host name from the same status. A
+//   request naming any other host is refused (DNS rebinding), on every route.
+import { Array as Arr, Data, Match, Option, Order } from "effect"
 
 /** Why an address may not be bound. */
 export class BindRefused extends Data.TaggedError("BindRefused")<{ readonly address: string; readonly message: string }> {}
@@ -78,38 +81,63 @@ export interface InterfaceAddress {
   readonly internal: boolean
 }
 
-/** What Tailscale says of this host, when its CLI answers: whether it runs, and its MagicDNS name. */
+/** What Tailscale's status says of this host: its backend state, its MagicDNS name, and its own addresses. */
 export interface TailscaleStatus {
-  readonly running: boolean
+  /** `Running` when it serves; anything else (`Stopped`, `NeedsLogin`, `Starting`) is no tailnet. */
+  readonly backendState: string
   /** `host.tailnet.ts.net`, without the trailing dot; none when MagicDNS is off. */
   readonly dnsName: Option.Option<string>
+  /** `Self.TailscaleIPs`: the only addresses that are this host's on the tailnet. */
+  readonly ips: ReadonlyArray<string>
 }
 
-/** This host on the tailnet, as the page's second listener needs it: its addresses there, and its names. */
+/** The CLI's status, or why there is none: `no-cli`, `cli-failed`, `cli-timeout`, `unparseable`. */
+export type StatusRead = Data.TaggedEnum<{
+  Read: { readonly status: TailscaleStatus }
+  Unread: { readonly why: string }
+}>
+export const StatusRead = Data.taggedEnum<StatusRead>()
+
+/** This host on the tailnet, as the page's second listener needs it: its addresses there, its names, and why none. */
 export interface Tailnet {
   readonly addresses: ReadonlyArray<string>
   readonly names: ReadonlyArray<string>
+  /** Why there is no tailnet address (health's `tailnet=no:<why>`); empty when there is one. */
+  readonly why: string
 }
 
-export const NO_TAILNET: Tailnet = { addresses: [], names: [] }
+/** No tailnet, for `why`. */
+export const noTailnet = (why: string): Tailnet => ({ addresses: [], names: [], why })
 
 /** Addresses as the listeners are made: IPv4 before IPv6, then by code units. */
 const ADDRESS_ORDER: Order.Order<string> = Order.combine(Order.mapInput(Order.Number, (address: string) => Number(address.includes(":"))), Order.String)
 
+/** Whether two addresses are one, however each is written (an IPv6 one compressed or not, upper or lower case). */
+const sameAddress = (a: string, b: string): boolean =>
+  a === b || Option.getOrElse(Option.zipWith(groupsOf(a), groupsOf(b), (x, y) => x.every((each, index) => each === y[index])), () => false)
+
+/** A backend state as a reason's word: letters, digits and dashes only. */
+const word = (text: string) => text.replace(/[^A-Za-z0-9-]/g, "").slice(0, 40)
+
 /**
- * The host on the tailnet, from its interfaces and Tailscale's status: the interface addresses in the tailnet's
- * ranges (IPv4 first), none when the status says Tailscale is not running. The names are the MagicDNS name and its
- * first label. No status (no CLI): the addresses alone.
+ * The host on the tailnet: each non-internal interface address that Tailscale's status names in `Self.TailscaleIPs`
+ * and that is in the tailnet's ranges (IPv4 first, as the interface writes it). Its names are the MagicDNS name and
+ * its first label. No status, a status that is not Running, or no such address: no tailnet, with the reason.
  */
-export const tailnetOf = (interfaces: ReadonlyArray<InterfaceAddress>, status: Option.Option<TailscaleStatus>): Tailnet => {
-  if (Option.exists(status, (each) => !each.running)) return NO_TAILNET
-  const found = interfaces.flatMap((each) => Option.toArray(Option.liftPredicate(each.address, (address) => !each.internal && isTailnet(address))))
-  const addresses = Arr.sort([...new Set(found)], ADDRESS_ORDER)
-  if (addresses.length === 0) return NO_TAILNET
-  const dns = Option.flatMap(status, (each) => each.dnsName)
-  const names = Option.match(dns, { onNone: () => [], onSome: (name) => [...new Set([name, name.split(".")[0] ?? name])] })
-  return { addresses, names }
-}
+export const tailnetOf = (interfaces: ReadonlyArray<InterfaceAddress>, read: StatusRead): Tailnet =>
+  Match.valueTags(read, {
+    Unread: ({ why }) => noTailnet(why),
+    Read: ({ status }) => {
+      if (status.backendState !== "Running") return noTailnet(`not-running:${word(status.backendState)}`)
+      const found = interfaces.flatMap((each) =>
+        Option.toArray(Option.liftPredicate(each.address, (address) => !each.internal && isTailnet(address) && status.ips.some((ip) => isTailnet(ip) && sameAddress(ip, address)))),
+      )
+      const addresses = Arr.sort([...new Set(found)], ADDRESS_ORDER)
+      if (addresses.length === 0) return noTailnet("no-address")
+      const names = Option.match(status.dnsName, { onNone: () => [], onSome: (name) => [...new Set([name, name.split(".")[0] ?? name])] })
+      return { addresses, names, why: "" }
+    },
+  })
 
 /** An address as a URL's or a Host header's host: an IPv6 one in brackets. */
 export const hostOf = (address: string): string => Option.match(Option.liftPredicate(address, (each) => each.includes(":")), { onNone: () => address, onSome: (v6) => `[${v6}]` })

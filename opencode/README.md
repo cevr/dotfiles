@@ -2848,10 +2848,17 @@ projects and messages on port 8240. It listens in two places:
 It never listens anywhere else. `mods/digest/bind.ts` refuses, in code, any
 address that is not loopback or in Tailscale's ranges (`100.64.0.0/10`,
 `fd7a:115c:a1e0::/48`), a wildcard included. It uses no Funnel and no share.
-The plugin reads the tailnet addresses from the interfaces and
-`tailscale status --json` when it starts, and again every 30 s. When
-Tailscale goes down, the tailnet listener stops, and the page is on loopback
-only until Tailscale comes back.
+
+The tailnet addresses are the ones Tailscale itself names
+(`Self.TailscaleIPs` in `tailscale status --json`) that are also on one of
+the host's interfaces and in those ranges. Being in `100.64.0.0/10` is never
+enough: that is shared CGNAT space, which Cloudflare WARP, carrier hotspots
+and some VPNs also use. The plugin runs the CLI from fixed paths only (the
+Mac app's, Homebrew's, `/usr/bin`, `/usr/sbin`), never through `PATH`. It
+reads the status when it starts and again every 30 s. With no CLI, a CLI that
+fails or hangs, output that does not parse, or Tailscale not running, the
+tailnet listener stops and the page is on loopback only until Tailscale
+comes back.
 
 **Plain HTTP on the tailnet.** The page uses no TLS there. Tailscale's
 WireGuard encrypts every packet between his devices, so a request never
@@ -2898,10 +2905,13 @@ could read the pairing file anyway.
 **Health.** `GET /health` answers one line:
 
 ```
-digest ok <build> host=<h> events=<n> last=<iso> peers=none tailnet=yes|no|held
+digest ok <build> host=<h> events=<n> last=<iso> peers=none tailnet=yes|partial|held|no:<why>
 ```
 
-`tailnet=held` means another server instance holds the tailnet port. A log
+`tailnet=held` means another server instance holds the tailnet port, and
+`partial` that it holds one of the two addresses (during a restart). `no`
+says why, for example `no:no-cli`, `no:not-running:Stopped` or
+`no:no-address`. A log
 that does not read gives `digest sick …`. On loopback the line is open. On
 the tailnet an unpaired request gets only `ok`. After each restart, the
 update's handoff logs the line (`handoff (first): digest ok …`). A sick or

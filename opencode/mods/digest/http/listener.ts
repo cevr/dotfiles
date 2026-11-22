@@ -27,7 +27,7 @@ import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { Duration, Effect, Exit, Match, Option, Ref, Schedule, Schema, Scope } from "effect"
 import { type AnswerOutcome, PageAnswer } from "../answers.ts"
-import { bindable, BindRefused, hostOf, hostsOf, NO_TAILNET, type Tailnet } from "../bind.ts"
+import { bindable, BindRefused, hostOf, hostsOf, noTailnet, type Tailnet } from "../bind.ts"
 import { BRIEF, type TailnetState } from "../health.ts"
 import { type MarkLine, markOf, nameOf, sinceOf } from "../marks.ts"
 import { type Pairing, TOKEN_HEADER } from "../pairing.ts"
@@ -378,8 +378,9 @@ const keyOf = (place: Place) => `${place.address} ${place.names.join(",")}`
 /**
  * The tailnet's listeners, kept to what `probe` finds, read again every `every`. For each tailnet address it finds,
  * it listens on `port` (another instance holding it: tried again next time). A listener whose address is gone, or
- * whose names changed, is closed. No address (Tailscale absent or down) is loopback only, and `state` says `no`. A
- * probe that fails is no tailnet. `state` is what health reports.
+ * whose names changed, is closed. No address (Tailscale absent or down) is loopback only, and `state` says `no:<why>`.
+ * A probe that fails is no tailnet. `state` is what health reports: `yes` when it holds every address found,
+ * `partial` when some, `held` when none (another instance holds them).
  */
 export const serveTailnet = (
   port: number,
@@ -397,7 +398,7 @@ export const serveTailnet = (
       )
     yield* Effect.addFinalizer(() => Effect.forEach([...held.entries()], ([key, each]) => close(key, each), { discard: true }))
     const round = Effect.gen(function* () {
-      const tailnet = yield* probe.pipe(Effect.orElseSucceed(() => NO_TAILNET))
+      const tailnet = yield* probe.pipe(Effect.orElseSucceed(() => noTailnet("probe-failed")))
       const wanted = new Map(tailnet.addresses.map((address): readonly [string, Place] => {
         const place: Place = { address, port, listener: "tailnet", names: tailnet.names }
         return [keyOf(place), place]
@@ -418,10 +419,12 @@ export const serveTailnet = (
           }),
         { discard: true },
       )
-      const served = Match.value({ found: wanted.size > 0, mine: held.size > 0 }).pipe(
-        Match.when({ mine: true }, (): TailnetState => "yes"),
-        Match.when({ found: true }, (): TailnetState => "held"),
-        Match.orElse((): TailnetState => "no"),
+      const mine = [...wanted.keys()].filter((key) => held.has(key)).length
+      const served = Match.value({ found: wanted.size, mine }).pipe(
+        Match.when({ found: 0 }, (): TailnetState => `no:${tailnet.why}`),
+        Match.when({ mine: 0 }, (): TailnetState => "held"),
+        Match.when(({ found }) => mine === found, (): TailnetState => "yes"),
+        Match.orElse((): TailnetState => "partial"),
       )
       yield* Ref.set(state, served)
     })

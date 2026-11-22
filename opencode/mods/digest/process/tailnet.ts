@@ -1,49 +1,93 @@
 // This host on the tailnet, read from the system: its interfaces (node:os) and Tailscale's status
-// (`tailscale status --json`, the CLI on PATH or the Mac app's). bind.ts's `tailnetOf` decides from them.
-// - No CLI, or a CLI that fails or times out: the interfaces alone decide (a Linux host without the CLI on PATH
-//   still serves its tailnet address, with no MagicDNS name).
-// - The CLI says Tailscale is not running: no tailnet, whatever an interface still lists.
+// (`tailscale status --json`). bind.ts's `tailnetOf` decides from them: an address must be in the status's
+// `Self.TailscaleIPs` and on an interface.
+// - The CLI is the first of CLIS that exists, each an absolute path, never looked up through PATH: a `tailscale`
+//   earlier on PATH cannot name addresses or Host names.
+// - No CLI, a non-zero exit, past STATUS_TIMEOUT, or output that does not parse: no status, so no tailnet, with the
+//   reason (`no-cli`, `cli-failed`, `cli-timeout`, `unparseable`).
 import { hostname, networkInterfaces } from "node:os"
-import { readableStreamToText, spawn } from "bun"
+import { file, readableStreamToText, spawn } from "bun"
 import { Duration, Effect, Option, Schema } from "effect"
-import { type InterfaceAddress, type Tailnet, type TailscaleStatus, tailnetOf } from "../bind.ts"
+import { type InterfaceAddress, StatusRead, type Tailnet, type TailscaleStatus, tailnetOf } from "../bind.ts"
 
-/** Where the Tailscale CLI is looked for, in order. */
-export const CLIS: ReadonlyArray<string> = ["tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"]
+/**
+ * Where the Tailscale CLI is, in order: the Mac app's, Homebrew's (Apple silicon, then Intel), then the Linux
+ * packages' (/usr/bin on Debian and Ubuntu, /usr/sbin on some others). The owner's Mac has Homebrew's, the workbox
+ * /usr/bin's.
+ */
+export const CLIS: ReadonlyArray<string> = [
+  "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+  "/opt/homebrew/bin/tailscale",
+  "/usr/local/bin/tailscale",
+  "/usr/bin/tailscale",
+  "/usr/sbin/tailscale",
+]
+
+/** How long the CLI has to answer. */
+export const STATUS_TIMEOUT = Duration.seconds(5)
 
 const Status = Schema.Struct({
   BackendState: Schema.String,
-  Self: Schema.optionalKey(Schema.Struct({ DNSName: Schema.optionalKey(Schema.String) })),
+  Self: Schema.optionalKey(Schema.Struct({ DNSName: Schema.optionalKey(Schema.String), TailscaleIPs: Schema.optionalKey(Schema.Array(Schema.String)) })),
 })
 const decodeStatus = Schema.decodeUnknownOption(Schema.fromJsonString(Status))
 
 /** Tailscale's status as `tailscale status --json` prints it; none for anything else. */
 export const statusOf = (text: string): Option.Option<TailscaleStatus> =>
-  Option.map(decodeStatus(text), (status) => ({
-    running: status.BackendState === "Running",
-    dnsName: Option.filter(
-      Option.map(Option.fromUndefinedOr(status.Self?.DNSName), (name) => name.replace(/\.$/, "")),
-      (name) => name !== "",
-    ),
-  }))
+  Option.map(decodeStatus(text), (status) => {
+    const self = Option.fromUndefinedOr(status.Self)
+    return {
+      backendState: status.BackendState,
+      dnsName: Option.filter(
+        Option.map(Option.flatMap(self, (each) => Option.fromUndefinedOr(each.DNSName)), (name) => name.replace(/\.$/, "")),
+        (name) => name !== "",
+      ),
+      ips: Option.getOrElse(Option.flatMap(self, (each) => Option.fromUndefinedOr(each.TailscaleIPs)), () => []),
+    }
+  })
 
-/** One CLI's status, or none: not there, failed, or past five seconds. */
-const statusFrom = (cli: string): Effect.Effect<Option.Option<TailscaleStatus>> =>
+/** The first of `clis` that exists. */
+const cliOf = (clis: ReadonlyArray<string>): Effect.Effect<Option.Option<string>> =>
+  Effect.reduce(clis, () => Option.none<string>(), (found, cli) =>
+    Option.match(found, {
+      onSome: () => Effect.succeed(found),
+      onNone: () => Effect.map(Effect.orElseSucceed(Effect.tryPromise(() => file(cli).exists()), () => false), (exists) => Option.liftPredicate(cli, () => exists)),
+    }),
+  )
+
+/** What `cli status --json` answered: its exit code and output, or a timeout. */
+const ran = (cli: string, timeout: Duration.Duration) =>
   Effect.try(() => spawn([cli, "status", "--json"], { stdin: "ignore", stdout: "pipe", stderr: "ignore" })).pipe(
     Effect.flatMap((child) =>
       Effect.all([Effect.tryPromise(() => child.exited), Effect.tryPromise(() => readableStreamToText(child.stdout))], { concurrency: 2 }).pipe(
-        Effect.map(([code, text]) => Option.flatMap(Option.liftPredicate(text, () => code === 0), statusOf)),
-        Effect.timeout(Duration.seconds(5)),
+        Effect.timeoutOption(timeout),
         Effect.onExit(() => Effect.sync(() => void child.kill())),
       ),
     ),
-    Effect.orElseSucceed(() => Option.none<TailscaleStatus>()),
   )
 
-/** The first CLI that answers. */
-const status: Effect.Effect<Option.Option<TailscaleStatus>> = Effect.reduce(CLIS, () => Option.none<TailscaleStatus>(), (found, cli) =>
-  Option.match(found, { onSome: () => Effect.succeed(found), onNone: () => statusFrom(cli) }),
-)
+/** Tailscale's status from the first of `clis` that exists, or why there is none. */
+export const statusFrom = (clis: ReadonlyArray<string> = CLIS, timeout: Duration.Duration = STATUS_TIMEOUT): Effect.Effect<StatusRead> =>
+  Effect.flatMap(cliOf(clis), (cli) =>
+    Option.match(cli, {
+      onNone: () => Effect.succeed(StatusRead.Unread({ why: "no-cli" })),
+      onSome: (path) =>
+        ran(path, timeout).pipe(
+          Effect.map((answered) =>
+            Option.match(answered, {
+              onNone: () => StatusRead.Unread({ why: "cli-timeout" }),
+              onSome: ([code, text]) =>
+                Option.match(Option.liftPredicate(text, () => code === 0), {
+                  onNone: () => StatusRead.Unread({ why: "cli-failed" }),
+                  onSome: (output) =>
+                    Option.match(statusOf(output), { onNone: () => StatusRead.Unread({ why: "unparseable" }), onSome: (status) => StatusRead.Read({ status }) }),
+                }),
+            }),
+          ),
+          Effect.orElseSucceed(() => StatusRead.Unread({ why: "cli-failed" })),
+        ),
+    }),
+  )
 
 /** The host's interface addresses. */
 const interfaces = Effect.sync((): ReadonlyArray<InterfaceAddress> => Object.values(networkInterfaces()).flatMap((each) => Option.getOrElse(Option.fromUndefinedOr(each), () => [])))
@@ -52,4 +96,4 @@ const interfaces = Effect.sync((): ReadonlyArray<InterfaceAddress> => Object.val
 export const hostName: Effect.Effect<string> = Effect.sync(() => hostname().split(".")[0] ?? hostname())
 
 /** This host on the tailnet now. */
-export const probe: Effect.Effect<Tailnet> = Effect.map(Effect.all([interfaces, status]), ([listed, found]) => tailnetOf(listed, found))
+export const probe: Effect.Effect<Tailnet> = Effect.map(Effect.all([interfaces, statusFrom()]), ([listed, read]) => tailnetOf(listed, read))

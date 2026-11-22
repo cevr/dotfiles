@@ -9,11 +9,11 @@ import { existsSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { Clock, Effect, Exit, Option, Ref } from "effect"
 import { scratch } from "../../tests/scratch.ts"
-import { NO_TAILNET, type Tailnet } from "@dotfiles/opencode-digest/bind"
+import { noTailnet, type Tailnet } from "@dotfiles/opencode-digest/bind"
 import * as FilePairing from "@dotfiles/opencode-digest/filestore/pairing"
 import { main } from "./pair.ts"
 
-const said = async (args: ReadonlyArray<string>, tailnet: Tailnet = NO_TAILNET) => {
+const said = async (args: ReadonlyArray<string>, tailnet: Tailnet = noTailnet("none")) => {
   const printed = Effect.runSync(Ref.make<ReadonlyArray<string>>([]))
   const code = await Effect.runPromise(main(args, (text) => Ref.update(printed, (all) => [...all, text]), Effect.succeed(tailnet)))
   return { code, text: Effect.runSync(Ref.get(printed)).join("\n") }
@@ -36,12 +36,12 @@ describe("digest pair", () => {
     const again = await pairWith(dir, text)
     expect([Exit.isSuccess(first), Exit.isSuccess(again)]).toEqual([true, false])
     expect(statSync(join(dir, FilePairing.FILE)).mode & 0o777).toBe(0o600)
-    expect(text).toContain("Tailscale is not running here")
+    expect(text).toContain("The page has no tailnet address here (none), so it is on this host only.")
   })
 
   test("with Tailscale up, it names the page's tailnet addresses, names first, and says each pairs on its own", async () => {
     using held = scratch("digest-pair-")
-    const tailnet = { addresses: ["100.101.102.103", "fd7a:115c:a1e0::42"], names: ["harbor.example-tailnet.ts.net", "harbor"] }
+    const tailnet = { addresses: ["100.101.102.103", "fd7a:115c:a1e0::42"], names: ["harbor.example-tailnet.ts.net", "harbor"], why: "" }
     const { text } = await said(["--dir", join(held.path, "digest")], tailnet)
     expect(text.split("\n").slice(3)).toEqual([
       "On a phone or another device on your tailnet, open one of these and type the code:",

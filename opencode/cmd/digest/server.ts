@@ -82,7 +82,7 @@ export const healthOf = (lines: DigestLines["Service"], tailnet: Effect.Effect<T
   })
 
 /** The page's handlers over the log `lines`, the marks and the pairing beside it, and the plugins that take answers. */
-export const handlersOf = (options: Options, lines: DigestLines["Service"], answerers: Answerers, tailnet: Effect.Effect<TailnetState> = Effect.succeed("no")): Listener.Handlers => {
+export const handlersOf = (options: Options, lines: DigestLines["Service"], answerers: Answerers, tailnet: Effect.Effect<TailnetState> = Effect.succeed("no:starting")): Listener.Handlers => {
   const marks = FileMarks.make(dirOf(options))
   const zone = zoneOf(options)
   const state = Effect.map(lines.read, (log) => fold(EMPTY, decodeLines(log).events))
@@ -178,7 +178,7 @@ export const make = (externals: (options: Options) => Layer.Layer<DigestLines>, 
             }),
         })
         .pipe(Effect.orDie)
-      const tailnet = yield* Ref.make<TailnetState>("no")
+      const tailnet = yield* Ref.make<TailnetState>("no:starting")
       yield* Effect.forkScoped(page(options, handlersOf(options, lines, answerersOf(ctx), Ref.get(tailnet)), tailnet))
     }),
   })

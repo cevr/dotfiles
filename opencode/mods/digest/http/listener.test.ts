@@ -14,7 +14,7 @@ import { join } from "node:path"
 import { Duration, Effect, Option, Ref, Schedule, Scope } from "effect"
 import { scratch } from "../../../tests/scratch.ts"
 import { AnswerOutcome, type PageAnswer } from "../answers.ts"
-import { NO_TAILNET, type Tailnet } from "../bind.ts"
+import { noTailnet, type Tailnet } from "../bind.ts"
 import * as FilePairing from "../filestore/pairing.ts"
 import type { TailnetState } from "../health.ts"
 import type { MarkLine } from "../marks.ts"
@@ -496,41 +496,46 @@ describe("the tailnet listener", () => {
     )
   })
 
-  test("it follows the tailnet: listens when an address appears, stops when it goes, waits while another instance holds it, and takes it over", async () => {
+  test("it follows the tailnet: listens when an address appears, stops when it goes (saying why), waits while another instance holds it (all: held, some: partial), and takes it over", async () => {
     using held = scratch("digest-http-")
     const dist = builtPage(held.path)
     // A free scratch port, on 127.0.0.1 standing in for the tailnet address.
     const free = Bun.serve({ hostname: HOSTNAME, port: 0, fetch: () => new Response("") })
     const port = Number(free.port)
     free.stop(true)
-    const tailnet: Tailnet = { addresses: [HOSTNAME], names: ["harbor"] }
+    const tailnet: Tailnet = { addresses: [HOSTNAME], names: ["harbor"], why: "" }
+    // Two addresses (::1 standing in for the IPv6 one), for a partial hold.
+    const both: Tailnet = { ...tailnet, addresses: [HOSTNAME, "::1"] }
     const reach = () =>
       Effect.runPromise(Effect.match(Effect.tryPromise(() => fetch(`http://${HOSTNAME}:${port}/`, { headers: { host: `harbor:${port}` } })), { onSuccess: (answer) => answer.status, onFailure: () => 0 }))
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
           const rig = yield* rigOf(join(dist, "..", "pairing"))
-          const found = yield* Ref.make(NO_TAILNET)
+          const found = yield* Ref.make(noTailnet("no-address"))
           // Not what a first round finds, so its first answer shows.
           const state = yield* Ref.make<TailnetState>("held")
           const until = (wanted: TailnetState) => Ref.get(state).pipe(Effect.repeat({ until: (now) => now === wanted, schedule: Schedule.spaced(Duration.millis(10)) }), Effect.timeout(Duration.seconds(5)))
           yield* Effect.forkScoped(serveTailnet(port, handlers(rig), dist, Ref.get(found), state, Duration.millis(30)))
-          // No tailnet: loopback only, nothing on the port.
-          yield* until("no")
+          // No tailnet: loopback only, nothing on the port, and health says why.
+          yield* until("no:no-address")
           expect(yield* Effect.promise(reach)).toBe(0)
           // Tailscale comes up.
           yield* Ref.set(found, tailnet)
           yield* until("yes")
           expect(yield* Effect.promise(reach)).toBe(200)
           // It goes down: the listener stops.
-          yield* Ref.set(found, NO_TAILNET)
-          yield* until("no")
+          yield* Ref.set(found, noTailnet("not-running:Stopped"))
+          yield* until("no:not-running:Stopped")
           expect(yield* Effect.promise(reach)).toBe(0)
           // Another instance holds the port when it comes back: this one waits, and health says so.
           const other = Bun.serve({ hostname: HOSTNAME, port, reusePort: false, fetch: () => new Response("the other instance") })
           yield* Ref.set(found, tailnet)
           yield* until("held")
           expect(yield* Effect.promise(async () => (await fetch(`http://${HOSTNAME}:${port}/`)).text())).toBe("the other instance")
+          // Both addresses found, and the other instance holds one: this one serves the other, and health says partial.
+          yield* Ref.set(found, both)
+          yield* until("partial")
           // The other one stops (a restart's handover): this one takes the port.
           other.stop(true)
           yield* until("yes")
