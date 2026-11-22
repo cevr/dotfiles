@@ -1,13 +1,14 @@
 # Nothing is hard, in the role prompts
 
-The owner's standing rule, "nothing is hard", reaches every orchestrate role agent (planner, implementor, verifier) and the lean worker in its prompt. A planner's or implementor's step is `ready` only when every item of its spec is done; difficulty is never a reason; each thing not done is named one of three ways (`waits on <dependency>`, `continues next round` when the timebox's clock or the failure cap's count ended the round, or `finding outside the unit`); a compaction or a long context does not end the step. A question's options state outcomes with effort on its own `measured` or `guess` line, and its assumption cites its principle by name and is never the lesser option for effort. A weak test, narrowed acceptance or written-rule break goes by where it came from: one the unit's change introduced to the same lane's next round, one the base head shows too to a follow-up unit; none fails a round. The refusal paragraph is word for word what it was, plus "A refusal is authority, not difficulty."; the principle defers to it for what stops.
+The owner's standing rule, "nothing is hard", reaches every orchestrate role agent (planner, implementor, verifier) and the lean worker in its prompt. Each role is done by its own measure: a planner when every section of its spec is filled and its acceptance check runs red (it never implements), an implementor when every item of its spec is done, a verifier when every required check ran; difficulty is never a reason; each thing not done is named one of three ways (`waits on <dependency>`, `continues next round` when the timebox's clock or the failure cap's count ended the round, or `finding outside the unit`); a compaction or a long context does not end the step. A question's options state outcomes with effort on its own `measured` or `guess` line, and its assumption cites its principle by name and is never the lesser option for effort. A weak test, narrowed acceptance or written-rule break goes by where it came from: one the unit's change introduced to the same lane's next round, one the base head shows too to a follow-up unit; none fails a round. The refusal paragraph is word for word what it was, plus "A refusal is authority, not difficulty."; the principle leaves every refusal, with or without a named accepted form, to the role's rule. A follow-up is work no spec item asks for, even inside a file the unit owns. The lean worker is told a refusal is the host's rule and outranks effort, with no bound-step instruction.
 
 ## Sub-features
 
 - `NIH1` each role's prompt carries the rule, the hand-back rule and the question form (`skills/orchestrate/protocol.md`, generated into `mods/orchestrate/agents.json`).
 - `NIH2` the refusal rule is unchanged but for its one added sentence.
 - `NIH3` findings route by provenance: the unit's own to its lane's next round, the base's to a follow-up unit.
-- `NIH4` the worker's prompt carries the rule and goes on past a compaction or a long context.
+- `NIH4` the worker's prompt carries the rule and the refusal-authority reminder, and goes on past a compaction or a long context.
+- `NIH6` the prompts reach the agents: a root offered `subagent` and `principles` starts one child of each role, each child's model request carries its role's prompt, its Ending sentence and the principle's name, and `principles` list and search answer principle-nothing-is-hard.
 - `NIH5` the generated prompts match their source: deleting one role's emitted line makes `--check` red.
 
 ## How to get to it (user POV)
@@ -19,13 +20,14 @@ The owner's standing rule, "nothing is hard", reaches every orchestrate role age
 
 - **Preconditions:** none.
 - **States:** default only; the rest are `n/a` (a prompt has no loading, empty, refused or error state).
-- **World suites:** `cmd/orchestrate/orchestrator.sim.test.ts`, `cmd/orchestrate/orchestrate.sim.test.ts`
+- **World suites:** `cmd/orchestrate/nothing-is-hard.sim.test.ts` (NIH6), `cmd/orchestrate/orchestrator.sim.test.ts`, `cmd/orchestrate/orchestrate.sim.test.ts`
 - **Code:** `mods/orchestrate/agents.json`, `scripts/agents.ts`
-- **Regression:** `scripts/agents.test.ts` (`--check` red on an unregenerated source), `mods/orchestrate/role.test.ts` (each role and the worker go on after a compaction), and from the dotfiles root `skills/orchestrate/scripts/agents.test.ts` (NIH1 to NIH3 per role, the refusal paragraph word for word) and `skills/orchestrate/scripts/skill.test.ts` (each prompt smaller than at its base).
+- **Regression:** `scripts/agents.test.ts` (`--check` red on an unregenerated source), `mods/orchestrate/role.test.ts` (each role and the worker go on after a compaction), and from the dotfiles root `skills/orchestrate/scripts/agents.test.ts` (NIH1 to NIH3 per role, the refusal paragraph word for word), `skills/orchestrate/scripts/scenarios.test.ts` (the scenario table: each case's one disposition in every generated prompt format and the principle, each row with a mutant shown red) and `skills/orchestrate/scripts/skill.test.ts` (each prompt within its byte bound).
 
-1. **NIH1, NIH4.** `orchestrator.sim.test.ts`: each role and the worker is defined with `agents.json`'s `system`, word for word.
-2. **NIH1, NIH4.** `orchestrate.sim.test.ts`: the untyped call's requests carry the worker's prompt, the review call's the verifier's.
-3. **NIH5.** `bun scripts/agents.ts --check` exits 0; remove the `Difficulty is never a reason` sentence from `agents.json` and it exits 1 with `stale:`; `bun run agents` restores it.
+1. **NIH6.** `nothing-is-hard.sim.test.ts`: the default root is offered `subagent` and `principles`; both lookups answer the principle; the planner, implementor and verifier children's requests carry their prompts, Ending sentences and the principle's name.
+2. **NIH1, NIH4.** `orchestrator.sim.test.ts`: each role and the worker is defined with `agents.json`'s `system`, word for word.
+3. **NIH1, NIH4.** `orchestrate.sim.test.ts`: the untyped call's requests carry the worker's prompt, the review call's the verifier's.
+4. **NIH5.** `bun scripts/agents.ts --check` exits 0; remove the `Difficulty is never a reason` sentence from `agents.json` and it exits 1 with `stale:`; `bun run agents` restores it.
 
 `bun run verify:drive --feature nothing-is-hard-rule` runs those suites.
 
@@ -39,4 +41,5 @@ The owner's standing rule, "nothing is hard", reaches every orchestrate role age
 ## Gotchas
 
 - The text's source is outside `opencode/`: the orchestrate skill's `protocol.md` and `SKILL.md` and the dotfiles' `agents/worker.md`. A change there shows here only once `bun run agents` rewrites `agents.json`, which is this feature's Code.
+- On the installed host the kernel plugin runs with `codeOnly` (its default): a model is offered `kernel` and the memory tools alone, and `subagent` and `principles` are lines in the kernel's description, called from a cell (`cmd/kernel/server.ts` line 145; the fork's `packages/core/src/tool.ts` `runtimeSnapshot`). A scripted model that looks for `subagent` or `principles` among a request's offered tools finds neither there; the world, which hosts no kernel (`kernel.md`), offers them directly.
 - This is a prompt rule, not a check: nothing here bounces a hand-back or a question. The structured checks are later units (spec items, hand-back tools, question reasons).
