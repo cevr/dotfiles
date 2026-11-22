@@ -21,9 +21,10 @@ const core = `${skill}\n${protocol}`;
 const MODES = ['single fix', 'lane', 'batch', 'deep', 'long run'];
 const plain = (cell: string) => cell.replace(/[*`]/g, '').trim();
 
+// The caps grew by what nothing-is-hard needs (owner's orchestrator, round 2): a rule is never cut to fit a cap.
 test('the core files fit their byte caps', () => {
   const bytes = (text: string) => Buffer.byteLength(text, 'utf8');
-  expect({ skill: bytes(skill) <= 12_000, protocol: bytes(protocol) <= 12_000, template: bytes(template) <= 2_500 }).toEqual({
+  expect({ skill: bytes(skill) <= 12_500, protocol: bytes(protocol) <= 13_000, template: bytes(template) <= 2_500 }).toEqual({
     skill: true,
     protocol: true,
     template: true,
@@ -57,6 +58,12 @@ describe('the modes', () => {
     for (const mode of MODES) expect([mode, rules(mode).length > 0 && rules(mode).length <= 6]).toEqual([mode, true]);
   });
 
+  // Rules a shortening once dropped (nothing-is-hard r1): each pinned in the mode a root reads for it.
+  test("lane keeps one land and one full gate per host, and long run keeps the patch-id rule", () => {
+    expect(rules('lane').join('\n')).toContain("One land and one full gate per host at a time: the land's merge check runs before its push.");
+    for (const mode of ['batch', 'long run']) expect([mode, rules(mode).join('\n')]).toEqual([mode, expect.stringContaining('the same `git patch-id` keeps its verdict')]);
+  });
+
   test('the mode rules link the review pages and the decision trail', () => {
     const modeText = MODES.flatMap(rules).join('\n');
     for (const page of ['../code-review/references/interrogate.md', '../code-review/references/blast-radius.md', 'references/trail.md'])
@@ -78,6 +85,7 @@ describe('the kept rules', () => {
     ['a force-push to a shared branch is reserved', /reserved[^\n]*force-push to a shared branch/i],
     ['non-additive format changes are reserved', /reserved[^\n]*non-additive/i],
     ['a dead worker gives no verdict', /dead worker gives no verdict/i],
+    ['a dead verifier never counts as accepted', /A dead verifier never counts as `accepted`/],
     ['the third failed round', /third failed round/i],
     ['owner questions never wait in a dialog', /never wait in a dialog/i],
     ['scope never grows inside a running unit', /Scope never grows inside a running unit/i],

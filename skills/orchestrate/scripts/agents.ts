@@ -48,7 +48,7 @@ export function instructions(role: Role, protocol: string, safety: string): stri
   const rules = safety.slice(safety.indexOf('SAFETY (mandatory')).trim();
   const own = s[role[0].toUpperCase() + role.slice(1)];
   if (!s['Ending a step'] || !s.Rounds || !own || !rules.startsWith('SAFETY')) throw new Error(`protocol.md or safety.md lost a section ${role} needs`);
-  return `You are the ${role} of ${SUBJECT[role]} This prompt carries \`protocol.md\` and \`safety.md\`: do not read them.
+  return `You are the ${role} of ${SUBJECT[role]} This prompt carries the worker protocol and the safety rules, so do not read \`protocol.md\` or \`safety.md\`.
 
 # Safety
 

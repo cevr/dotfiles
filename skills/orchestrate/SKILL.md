@@ -26,7 +26,8 @@ Pick a mode by the table. Workers follow [`protocol.md`](protocol.md), carried i
 ### lane
 
 - Per unit: `orchestrate({ action: "lane", unit: "<unit>", purpose: "<outcome>" })` → its implementor → the focused round gate as the receipt (`bun ~/Developer/personal/dotfiles/opencode/scripts/receipt.ts -- '<commands>'`, with `gate.ts --merge <base>` where the repo has it) → `orchestrate({ action: "land", units: ["<unit>"] })` at once.
-- When a `land` or `status` answer starts `orchestrate: <N> lands on <branch> since the last verify`, call `orchestrate({ action: "verify" })` and start the subagent call it answers. Each finding is its lane's next round.
+- One land and one full gate per host at a time: the land's merge check runs before its push.
+- When a `land` or `status` answer starts `orchestrate: <N> lands on <branch> since the last verify`, call `orchestrate({ action: "verify" })` and start the subagent call it answers. Each finding in a unit is its lane's next round; a defect the base has becomes a fix unit.
 - Nothing waits for a verdict: the next green unit lands.
 
 ### batch
@@ -45,11 +46,11 @@ Pick a mode by the table. Workers follow [`protocol.md`](protocol.md), carried i
 
 - Overnight, or a program of PRs. One owner agent per PR from build to merge, a fresh one at each hand-back briefed from `log.md` and the branch.
 - Keep the [decision trail](references/trail.md): a replacement root reads it first.
-- A verifier once, at the code-ready head.
+- A verifier once, at the code-ready head; a rebase with the same `git patch-id` keeps its verdict.
 
 ## The run's state
 
-The run dir is scratch: `tmp/orchestrate/<run>/` in the main checkout (git-ignored), one folder per unit holding `spec.md` (from [`spec-template.md`](spec-template.md): you write it when there is no planner), `log.md`, `state.md` (the implementor's), `round-N-request.md` and `round-N-findings.md`. These files and git are the run's whole state: `orchestrate({ action: "status" })`, or `scripts/status.ts <run dir>` on another host, derives each unit's state from them, and a unit whose request's head is on the default branch is merged. Each move is one line by `scripts/log.ts <unit dir> <from> <to> r<N> <cause>`, its only writer (on OpenCode the plugin logs a role's start and hand-back).
+The run dir is scratch: `tmp/orchestrate/<run>/` in the main checkout (git-ignored), one folder per unit holding `spec.md` (from [`spec-template.md`](spec-template.md): you write it when there is no planner), `log.md`, `state.md` (the implementor's), `round-N-request.md` and `round-N-findings.md`. These files and git are the run's whole state: `orchestrate({ action: "status" })`, or `scripts/status.ts <run dir>` on another host, derives each unit's state from them, and a unit whose request's head is on the default branch is merged. A restart or a new root loses nothing. Each move is one line by `scripts/log.ts <unit dir> <from> <to> r<N> <cause>`, its only writer (on OpenCode the plugin logs a role's start and hand-back).
 
 The plan is a docs file in the project (`plans/<run>-run.md`), linked as `<run dir>/plan.md`: its first line the user's goal word for word, then a unit table (Unit, Depends on, Workspace, Agents, Result), Decisions, Owner questions and Follow-ups.
 
@@ -60,7 +61,7 @@ The plan is a docs file in the project (`plans/<run>-run.md`), linked as `<run d
 - **Shape first**: a bulk code edit is a codemod; bulk model work is a script on the Batch API; a new core seam follows two blind sketches judged against `NORTH_STAR.md`; a `to-tickets` ticket is a unit, its blocking edges the dependencies. A carried tooling unit that pays back inside the run takes the next free slot.
 - **One workspace per unit**, from the base as `AGENTS.md` says. The implementor's message names its spec, role, round and thread share; its description is `implementor <unit> r<N> — <purpose> (lane: <path>)`. At its hand-back, `scripts/request.ts <unit dir> <N>`; a refusal goes back to it and is not a round.
 - **Pace, not a count**: the account pools set how many agents run ([pace](references/pace.md)), and a heavy agent starts only while the load is under the core count. All heavy checks together use at most the core count in threads: name each worker's share (4 threads or more) in its start message, as its tools' flags.
-- **Focused checks**, each leg under a minute: a unit's round gate is `protocol.md`'s (Rounds). The full gate is the land's merge check; a slower leg is a tooling unit.
+- **Focused checks**: a unit's round gate is its changed packages' tests and typecheck, lint of its changed files and its acceptance test, each leg under a minute (`protocol.md`, Rounds). The full gate is the land's merge check; a leg slower than a minute is a tooling unit.
 - **Stateful units start from a model**: a unit that changes behavior over time gets a model-based test as its acceptance check from round 1. A Blocker that repeats an earlier round's class makes a property over that class the next round's first deliverable.
 - **Scope never grows inside a running unit**: new work is a new unit. A rule change reaches a running unit only at its next round boundary, in one message.
 - **Decide small, reversible points** yourself by the `principle-*` skills, each in Decisions. Difficulty is never a reason (`principle-nothing-is-hard`): to options that differ only in effort, "leave it as a follow-up" is no answer; the better one is built. A follow-up is outside the unit, with a trigger. **Owner questions never wait in a dialog**: write it with your recommendation in Owner questions, ask in one short message, keep the other units running.
@@ -76,7 +77,7 @@ The plan is a docs file in the project (`plans/<run>-run.md`), linked as `<run d
 
 - A round is one request and its verdict; it fails on `changes`, a proven Blocker or Major. Its next round goes to the same implementor (from main's head once it landed); from round 3, a fresh one ([hosts](references/hosts.md)).
 - At the third failed round, the unit goes to decide: [rewrite](references/rewrite.md), re-plan (sharpen the spec, split it, narrow it to the owner's ask) or drop. `stuck` (no round can help) goes to re-plan.
-- A dead worker gives no verdict: it ended on a limit or without its hand-back line. Rerun its step with a fresh agent (after a limit, once `budget.ts --resume-at` has passed); the same failure twice is `stuck`. An implementor that needs a third message inside one round is `stuck(size)`: split the unit.
+- A dead worker gives no verdict: it ended on a limit or without its hand-back line. Rerun its step with a fresh agent (after a limit, once `budget.ts --resume-at` has passed); the same failure twice is `stuck`. A dead verifier never counts as `accepted`. An implementor that needs a third message inside one round is `stuck(size)`: split the unit.
 - A red merge check, acceptance run or CI on main becomes a fix unit, fixed forward, never reverted; until main's CI is green, only fix units land.
 - **Close a unit**: `merged <hash>` in its row, its and its findings' follow-ups in the plan; stop its agents and remove its workspace. End an abandoned one by `log.ts --current <unit dir> dropped r<N> superseded-by <hash>` (or a reason), or status lists it.
 

@@ -74,7 +74,9 @@ test('the verifier blocks only on a shown failure', () => {
   expect(strength.some((p) => p.includes('acceptance narrower than the spec'))).toBe(true);
   expect(strength.some((p) => p.includes('become follow-up units'))).toBe(false);
   // Rounds sends what does not fail a round to the same lane's next round, never to a follow-up.
-  expect(text).toContain('never fails a round; the same lane closes it next round, before another unit.');
+  expect(text).toContain('never fails a round: the same lane closes it in its next round, before that lane takes another unit.');
+  // A defect only the base has still becomes a unit of its own.
+  expect(text).toContain('a defect the base has becomes a follow-up unit');
   for (const p of strength) if (/round \d/.test(p)) expect(p).toContain('from round 1');
 
   for (const banned of [/From round 3/, /in rounds 1 and 2/, /A rule violation is a Major/]) expect(text).not.toMatch(banned);
