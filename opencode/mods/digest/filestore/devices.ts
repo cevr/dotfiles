@@ -11,7 +11,8 @@ import { randomBytes } from "node:crypto"
 import { mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { Clock, Data, Effect, Option, Predicate, Schedule, Schema } from "effect"
-import { Copy, copyOfText, type Store, Store as StoreSchema, storeToEdit } from "../devices.ts"
+import type { StatusRead } from "../bind.ts"
+import { addedTo, Copy, copyOfText, refusalOf, type Store, Store as StoreSchema, storeToEdit } from "../devices.ts"
 
 /** The store's file name in each tree. */
 export const FILE = "devices.json"
@@ -25,9 +26,17 @@ export const pathsOf = (dir: string, config: string): readonly [string, string] 
 
 const codeOf = (cause: unknown): string => String(Predicate.hasProperty(cause, "code") && cause.code)
 
-/** One copy as it reads now; never fails. */
+/**
+ * One copy as it reads now; never fails, never waits on a writer: anything but a regular file there (a folder, a FIFO,
+ * a socket, a device) is unreadable at once (`EISDIR`, `ENOTREG`), never opened.
+ */
 export const readCopy = (path: string): Effect.Effect<Copy> =>
-  Effect.tryPromise({ try: () => readFile(path, "utf8"), catch: codeOf }).pipe(
+  Effect.tryPromise({ try: () => stat(path), catch: codeOf }).pipe(
+    Effect.filterOrFail(
+      (info) => info.isFile(),
+      (info) => Option.getOrElse(Option.liftPredicate("EISDIR", () => info.isDirectory()), () => "ENOTREG"),
+    ),
+    Effect.andThen(Effect.tryPromise({ try: () => readFile(path, "utf8"), catch: codeOf })),
     Effect.map(copyOfText),
     Effect.catch((code) => Effect.succeed(Option.getOrElse(Option.liftPredicate(Copy.Absent(), () => code === "ENOENT" || code === "ENOTDIR"), () => Copy.Unreadable({ why: code })))),
   )
@@ -82,10 +91,13 @@ const takeLock = (lock: string): Effect.Effect<void, StoreRefused> => {
 }
 
 /**
- * One explicit change of the store, under the lock: the copies are read again, `step` applied to their union, and
- * both copies written whole. Refused when a copy exists but neither reads (both are left as they are, for the owner).
+ * One explicit change of the store, under the lock: the copies are read again, `step` applied to their union, the
+ * store's invariant checked (devices.ts refusalOf: every ID it adds is, in `status` read now, a device of his), and
+ * both copies written whole. Every write goes through here, so no caller adds an ID that is not his. Refused, with
+ * nothing written, when an added ID is not his or the status does not read, when `step` refuses, and when a copy
+ * exists but neither reads (both are left as they are, for the owner).
  */
-export const change = (paths: readonly [string, string], step: (store: Store) => Store): Effect.Effect<Store, StoreRefused> => {
+export const change = (paths: readonly [string, string], status: Effect.Effect<StatusRead>, step: (store: Store) => Effect.Effect<Store, StoreRefused>): Effect.Effect<Store, StoreRefused> => {
   const lock = join(dirname(paths[0]), LOCK)
   return Effect.acquireUseRelease(
     takeLock(lock),
@@ -93,11 +105,19 @@ export const change = (paths: readonly [string, string], step: (store: Store) =>
       Effect.flatMap(readCopies(paths), ([primary, secondary]) =>
         Option.match(storeToEdit(primary, secondary), {
           onNone: () => Effect.fail(new StoreRefused({ message: `neither copy reads (${paths.join(", ")}): move the bad one aside to start again; nothing was written` })),
-          onSome: (store) => {
-            const next = step(store)
-            const text = `${encode(next)}\n`
-            return Effect.as(Effect.forEach(paths, (path) => replaceWhole(path, text), { discard: true }), next)
-          },
+          onSome: (store) =>
+            Effect.gen(function* () {
+              const next = yield* step(store)
+              const added = addedTo(store, next)
+              // Read only when the write adds an ID: a removal or a rerun needs no status.
+              if (added.length > 0) {
+                const refusal = refusalOf(added, yield* status)
+                if (Option.isSome(refusal)) return yield* Effect.fail(new StoreRefused({ message: refusal.value }))
+              }
+              const text = `${encode(next)}\n`
+              yield* Effect.forEach(paths, (path) => replaceWhole(path, text), { discard: true })
+              return next
+            }),
         }),
       ),
     () => Effect.promise(() => unlink(lock).then(() => true, () => false)),

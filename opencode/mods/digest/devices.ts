@@ -16,7 +16,7 @@
 //   - it never looks a name up, never fails, never writes.
 import { Data, Match, Option, Predicate, Schema } from "effect"
 import type { StatusRead } from "./bind.ts"
-import { type AgentKey, closed, type Exclusion, type Members, membersOf } from "./members.ts"
+import { type AgentKey, closed, type Exclusion, hisDevices, type Members, membersOf } from "./members.ts"
 import type { TailnetWrite } from "./policy.ts"
 
 /** The store's version: a copy of another is never read as keys, and never written over. */
@@ -93,15 +93,21 @@ const word = (text: string) => text.replace(/[^A-Za-z0-9.-]/g, "").slice(0, 60)
 /** The stores the readable copies hold. */
 const readable = (copies: ReadonlyArray<Copy>): ReadonlyArray<Store> => copies.flatMap((copy) => Match.valueTags(copy, { Read: ({ store }) => [store], Absent: () => [], Unreadable: () => [], Invalid: () => [] }))
 
+/**
+ * A name as the store keys it: its first label, lower case, so `lenovo-rescue.example.ts.net.` and `Lenovo-Rescue`
+ * key the entry the installer ships as `lenovo-rescue` (a MagicDNS first label is unique in the tailnet).
+ */
+export const nameKey = (name: string): string => Option.getOrElse(Option.fromUndefinedOr(name.toLowerCase().split(".")[0]), () => "")
+
 /** Every ID `stores` hold for `name` in `kind`, once each, in order. */
 const idsOf = (stores: ReadonlyArray<Store>, kind: "agents" | "excluded", name: string): ReadonlyArray<string> => [
-  ...new Set(stores.flatMap((store) => store[kind].filter((entry) => entry.name.toLowerCase() === name.toLowerCase()).flatMap((entry) => entry.ids))),
+  ...new Set(stores.flatMap((store) => store[kind].filter((entry) => nameKey(entry.name) === nameKey(name)).flatMap((entry) => entry.ids))),
 ]
 
 /** A store's IDs per (kind, name), as one comparable text. */
 const fingerprint = (store: Store): string =>
   (["agents", "excluded"] as const)
-    .flatMap((kind) => store[kind].flatMap((entry) => entry.ids.map((id) => `${kind}/${entry.name.toLowerCase()}/${id}`)))
+    .flatMap((kind) => store[kind].flatMap((entry) => entry.ids.map((id) => `${kind}/${nameKey(entry.name)}/${id}`)))
     .toSorted()
     .join("\n")
 
@@ -114,14 +120,17 @@ export const keysOf = (named: Named, primary: Copy, secondary: Copy): Keys => {
   const condition = `store-${copyWord(primary)}/${copyWord(secondary)}`
   const excluded = named.excluded.map((name): Exclusion => ({ name, ids: idsOf(stores, "excluded", name) }))
   const agents = named.agentHosts.map((name): AgentKey => ({ name, ids: idsOf(stores, "agents", name) }))
-  const unkeyed = Option.fromUndefinedOr(excluded.find((each) => each.ids.length === 0))
-  const agentUnkeyed = Option.fromUndefinedOr(agents.find((each) => each.ids.length === 0))
+  // Every name nothing keys, so health shows the whole delivery left to do at once.
+  const unkeyedOf = (entries: ReadonlyArray<{ readonly name: string; readonly ids: ReadonlyArray<string> }>, label: string) =>
+    Option.map(Option.liftPredicate(entries.filter((each) => each.ids.length === 0), (each) => each.length > 0), (each) => `${label}:${each.map((entry) => word(entry.name)).join(",")}`)
+  const unkeyed = unkeyedOf(excluded, "unkeyed")
+  const agentUnkeyed = unkeyedOf(agents, "agent-unkeyed")
   const differ = stores.length === 2 && new Set(stores.map(fingerprint)).size > 1
   return {
     agents,
     excluded,
-    closeAll: Option.map(unkeyed, (each) => `unkeyed:${word(each.name)}:${condition}`),
-    closeWrites: Option.map(agentUnkeyed, (each) => `agent-unkeyed:${word(each.name)}:${condition}`),
+    closeAll: Option.map(unkeyed, (each) => [each, ...Option.toArray(agentUnkeyed), condition].join(":")),
+    closeWrites: Option.map(agentUnkeyed, (each) => `${each}:${condition}`),
     note: Option.orElse(Option.liftPredicate(condition, (each) => each !== "store-ok/ok"), () => Option.liftPredicate("store-copies-differ", () => differ)),
   }
 }
@@ -158,16 +167,42 @@ export const storeToEdit = (primary: Copy, secondary: Copy): Option.Option<Store
 /** The readable copies as one store: each name once (lower case), with every ID either copy holds for it. */
 export const unionOf = (copies: ReadonlyArray<Copy>): Store => {
   const stores = readable(copies)
-  const union = (kind: "agents" | "excluded") => [...new Set(stores.flatMap((store) => store[kind].map((entry) => entry.name.toLowerCase())))].map((name) => ({ name, ids: idsOf(stores, kind, name) }))
+  const union = (kind: "agents" | "excluded") => [...new Set(stores.flatMap((store) => store[kind].map((entry) => nameKey(entry.name))))].map((name) => ({ name, ids: idsOf(stores, kind, name) }))
   return { v: STORE_VERSION, agents: union("agents"), excluded: union("excluded") }
 }
 
 /** `store` with `id` added to `name` in `kind` (the entry made when it is new); an ID is never removed this way. */
 export const withId = (store: Store, kind: "agents" | "excluded", name: string, id: string): Store => {
-  const key = name.toLowerCase()
-  const others = store[kind].filter((entry) => entry.name.toLowerCase() !== key)
+  const key = nameKey(name)
+  const others = store[kind].filter((entry) => nameKey(entry.name) !== key)
   return { ...store, [kind]: [...others, { name: key, ids: [...new Set([...idsOf([store], kind, key), id])] }] }
 }
 
+/** Each (kind, name, ID) `next` holds that `before` does not: what a write would add. */
+export const addedTo = (before: Store, next: Store): ReadonlyArray<{ readonly kind: "agents" | "excluded"; readonly name: string; readonly id: string }> =>
+  (["agents", "excluded"] as const).flatMap((kind) =>
+    next[kind].flatMap((entry) => entry.ids.flatMap((id) => [{ kind, name: nameKey(entry.name), id }].filter(() => !idsOf([before], kind, entry.name).includes(id)))),
+  )
+
+/**
+ * THE STORE'S INVARIANT, checked on every write (filestore/devices.ts `change` runs it under the lock, whatever the
+ * caller): the store only ever gains an ID that belongs, in a status read just now, to a device of this host's own
+ * Tailscale user (not tagged, not shared in). Why a write that adds something is refused (none: it may be written):
+ * the status did not read or Tailscale is not running, or an added ID is no device of his now (a typo, a colleague's,
+ * a device gone). A write that adds nothing (a removal, a rerun) needs no status.
+ */
+export const refusalOf = (added: ReadonlyArray<{ readonly id: string }>, read: StatusRead): Option.Option<string> => {
+  if (added.length === 0) return Option.none()
+  return Match.valueTags(read, {
+    Unread: ({ why }) => Option.some(`Tailscale's status cannot be read now (${why}), so no ID can be checked; nothing written`),
+    Read: ({ status }) => {
+      if (status.backendState !== "Running") return Option.some(`Tailscale is not running (${status.backendState}), so no ID can be checked; nothing written`)
+      const his = new Set(hisDevices(status).flatMap((peer) => Option.toArray(peer.stableId)))
+      const strangers = added.filter((each) => !his.has(each.id))
+      return Option.map(Option.liftPredicate(strangers, (each) => each.length > 0), (each) => `${each.map((entry) => entry.id).join(", ")}: no device of yours has this ID now; nothing written`)
+    },
+  })
+}
+
 /** `store` without `name` in `kind`: the explicit removal. */
-export const withoutName = (store: Store, kind: "agents" | "excluded", name: string): Store => ({ ...store, [kind]: store[kind].filter((entry) => entry.name.toLowerCase() !== name.toLowerCase()) })
+export const withoutName = (store: Store, kind: "agents" | "excluded", name: string): Store => ({ ...store, [kind]: store[kind].filter((entry) => nameKey(entry.name) !== nameKey(name)) })

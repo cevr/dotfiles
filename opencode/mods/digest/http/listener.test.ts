@@ -980,7 +980,7 @@ describe("a lost device store closes, it never re-keys by name", () => {
   }
   const keyed = (dir: string) => {
     const paths = [join(dir, "state/devices.json"), join(dir, "config/opencode-digest/devices.json")] as const
-    return Effect.runPromise(Effect.as(FileDevices.change(paths, (store) => ({ ...store, excluded: [{ name: "dinghy", ids: ["nDinghy1CNTRL"] }] })), paths))
+    return Effect.runPromise(Effect.as(FileDevices.change(paths, Effect.succeed(withDinghy({ dnsName: "dinghy", id: "nDinghy1CNTRL" })), (store) => Effect.succeed({ ...store, excluded: [{ name: "dinghy", ids: ["nDinghy1CNTRL"] }] })), paths))
   }
   const membersAt = async (paths: readonly [string, string], cli: string) => {
     const [primary, secondary] = await Effect.runPromise(FileDevices.readCopies(paths))

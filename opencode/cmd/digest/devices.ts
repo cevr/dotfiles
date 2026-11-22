@@ -5,8 +5,8 @@
  *
  *   bun cmd/digest/devices.ts exclude <magicdns-name>          key a device of his to exclude (reads nothing unpaired)
  *   bun cmd/digest/devices.ts agent <magicdns-name>            key one of his agent machines (reads; pairs to write)
- *   bun cmd/digest/devices.ts exclude|agent <name> --id <ID>   add an ID directly, no lookup
- *   bun cmd/digest/devices.ts forget exclude|agent <name>      remove the name and all its IDs
+ *   bun cmd/digest/devices.ts exclude|agent <name> --id <ID>   add an ID with no name lookup (still one of his devices)
+ *   bun cmd/digest/devices.ts forget exclude|agent <name>      remove the name and all its IDs (exit 1 if not there)
  *   bun cmd/digest/devices.ts list                             both copies, and which device each ID is now
  *   options: --dir <digest dir> (default the plugin's), --config <config home> (default $XDG_CONFIG_HOME),
  *            --cli <tailscale> (default the usual paths)
@@ -14,12 +14,17 @@
  * - The lookup runs once, here: among the devices of this host's own Tailscale user only (never another user's, a
  *   tagged or a shared-in one), by MagicDNS name or its first label (never HostName). It prints the device (name,
  *   OS, last seen, ID) so a human confirms it is the right one, and writes its ID. None or several: nothing written.
+ * - Every write (by name or by --id) is checked under the store's lock against a status read then (filestore/devices.ts
+ *   change, devices.ts refusalOf): an added ID must be a device of his own user now. A typo, a colleague's ID, a device
+ *   gone, or a status that does not read: exit 1, nothing written. A rerun or a removal adds nothing and needs no status.
+ * - A name is keyed as the installer ships it: its first label, lower case (`lenovo-rescue.<tailnet>.ts.net.` keys
+ *   `lenovo-rescue`), said when it differs.
  * - Run it on each host: each host's digest reads its own store. Loopback only: it writes local files, no route.
  */
 import { parseArgs } from "node:util"
 import { Array as Arr, Console, Effect, Match, Option, Schema } from "effect"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
-import { type Copy, copyWord, unionOf, withId, withoutName } from "@dotfiles/opencode-digest/devices"
+import { type Copy, copyWord, nameKey, unionOf, withId, withoutName } from "@dotfiles/opencode-digest/devices"
 import type { PeerStatus, StatusRead } from "@dotfiles/opencode-digest/bind"
 import * as FileDevices from "@dotfiles/opencode-digest/filestore/devices"
 import { carriesName, hisDevices } from "@dotfiles/opencode-digest/members"
@@ -98,17 +103,29 @@ export const main = (args: ReadonlyArray<string>, print: (text: string) => Effec
       Effect.gen(function* () {
         const his = hisIn(yield* statusFrom(place.clis))
         if (target.kind === "list") return [listOf(yield* FileDevices.readCopies(place.paths), place.paths, his), 0] as const
+        // Every write checks its added IDs against a status read again under the store's lock (FileDevices.change).
+        const fresh = statusFrom(place.clis)
+        const name = nameKey(target.name)
+        const as = Option.getOrElse(Option.liftPredicate(` (as ${name}, the form the installer ships)`, () => name !== target.name), () => "")
         if (target.kind === "forget") {
-          yield* FileDevices.change(place.paths, (store) => withoutName(store, target.list, target.name))
-          return [`Forgot ${target.name} (${target.list}) in both copies.`, 0] as const
+          yield* FileDevices.change(place.paths, fresh, (store) =>
+            Effect.as(
+              Effect.filterOrFail(Effect.succeed(store), (each) => each[target.list].some((entry) => nameKey(entry.name) === name), () => new FileDevices.StoreRefused({ message: `${name} is not in the store (${target.list}); nothing written` })),
+              withoutName(store, target.list, name),
+            ),
+          )
+          return [`Forgot ${name} (${target.list}) in both copies.`, 0] as const
         }
         const [id, said] = Option.match(target.id, {
-          onSome: (given) => [Option.some(given), `Keying ID ${given} with no lookup; it is now ${Option.match(Option.fromUndefinedOr(his.find((peer) => Option.contains(peer.stableId, given))), { onNone: () => "no device of yours", onSome: deviceLine })}.`] as const,
+          onSome: (given) => [Option.some(given), `Keying ID ${given} with no lookup: ${Option.match(Option.fromUndefinedOr(his.find((peer) => Option.contains(peer.stableId, given))), { onNone: () => "no device of yours has it now (refused below)", onSome: deviceLine })}.`] as const,
           onNone: () => lookedUp(target.name, his),
         })
         return yield* Option.match(id, {
           onNone: () => Effect.succeed([said, 1] as const),
-          onSome: (key) => Effect.as(FileDevices.change(place.paths, (store) => withId(store, target.list, target.name, key)), [`${said}\nKeyed ${target.name} (${target.list}) as ${key} in both copies.`, 0] as const),
+          onSome: (key) =>
+            Effect.as(FileDevices.change(place.paths, fresh, (store) => Effect.succeed(withId(store, target.list, name, key))), [`${said}\nKeyed ${name}${as} (${target.list}) as ${key} in both copies.`, 0] as const).pipe(
+              Effect.tapError(() => print(said)),
+            ),
         })
       }),
     ),

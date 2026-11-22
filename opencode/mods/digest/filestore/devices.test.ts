@@ -8,12 +8,13 @@
 //   byte as they were;
 // - every step kind runs at least MIN_EACH times, so the property cannot pass on sequences that never reach one.
 import { describe, expect, test } from "bun:test"
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { execFileSync } from "node:child_process"
+import { chmodSync, closeSync, constants, existsSync, openSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { Effect, Exit, Match, Option } from "effect"
 import { scratch } from "../../../tests/scratch.ts"
 import { type PeerStatus, StatusRead, type TailscaleStatus } from "../bind.ts"
-import { type Copy, copyOfText, copyWord, keysOf, membersWith, type Store, withId } from "../devices.ts"
+import { Copy, copyOfText, copyWord, keysOf, membersWith, type Store, withId } from "../devices.ts"
 import { type Members, sourceOf } from "../members.ts"
 import { decide, ROUTE_KINDS, type RouteKind } from "../policy.ts"
 import { change, readCopies, readCopy } from "./devices.ts"
@@ -76,7 +77,7 @@ type Damage = (typeof DAMAGES)[number]
 const TARGETS = { "1": [0], "2": [1], both: [0, 1] } as const
 
 /** A step: a change of the world, the store damaged, the owner's command, or a configure or request (no change). */
-type Step = { readonly kind: "world"; readonly name: string; readonly change: (world: World, n: number, pick: Pick) => World } | { readonly kind: "damage"; readonly name: string; readonly damage: Damage; readonly copies: ReadonlyArray<0 | 1> } | { readonly kind: "owner" | "configure" | "configure-unread" | "request"; readonly name: string }
+type Step = { readonly kind: "world"; readonly name: string; readonly change: (world: World, n: number, pick: Pick) => World } | { readonly kind: "damage"; readonly name: string; readonly damage: Damage; readonly copies: ReadonlyArray<0 | 1> } | { readonly kind: "owner" | "owner-any" | "configure" | "configure-unread" | "request"; readonly name: string }
 
 const renamed = (device: Device, pick: Pick): Device => ({ ...device, name: pick(["lifeboat", "raft", `${device.name}-2`, "tender"]) })
 const world = (name: string, change: (world: World, n: number, pick: Pick) => World): Step => ({ kind: "world", name, change })
@@ -96,6 +97,7 @@ const STEPS: ReadonlyArray<Step> = [
   { kind: "configure-unread", name: "configure-unread" },
   { kind: "request", name: "request" },
   { kind: "owner", name: "owner-rekeys" },
+  { kind: "owner-any", name: "owner-keys-any-id" },
   ...DAMAGES.flatMap((damage) => Object.entries(TARGETS).map(([which, copies]): Step => ({ kind: "damage", name: `${damage}:${which}`, damage, copies }))),
 ]
 const MIN_EACH = 60
@@ -137,17 +139,50 @@ const served = (kind: RouteKind, members: Members, address: string) =>
   decide({ listener: "tailnet", kind, source: sourceOf(address, members), host: "harbor:8240", hosts: ["harbor:8240"], origin: "http://harbor:8240", pageHeader: true, json: true, paired: false }, { tailnetRead: "member", tailnetWrite: members.write })._tag === "Serve"
 const admitted = (device: Device, kinds: ReadonlyArray<RouteKind>, members: Members) => device.present && ROUTE_KINDS.some((kind) => kinds.includes(kind) && served(kind, members, device.ip))
 
-/** The owner's command: dinghy's and skiff's IDs now, keyed by hand (`--id`); refused when neither copy reads. */
-const keyNow = (paths: readonly [string, string], now: World) => change(paths, (store) => withId(withId(store, "excluded", "dinghy", now.dinghy.id), "agents", "skiff", now.skiff.id))
+/** The status the command reads under the lock: the world now. */
+const statusNow = (now: World) => Effect.succeed(StatusRead.Read({ status: statusOf(now) }))
 
-/** The IDs the owner has ever keyed, by kind. */
+/** The owner's command: dinghy's and skiff's IDs now, keyed by hand (`--id`); refused when neither copy reads. */
+const keyNow = (paths: readonly [string, string], now: World) => change(paths, statusNow(now), (store) => Effect.succeed(withId(withId(store, "excluded", "dinghy", now.dinghy.id), "agents", "skiff", now.skiff.id)))
+
+/** The IDs the owner has keyed (by kind), and every ID that was a device of his when a write put it in the store. */
 interface Ever {
-  readonly excluded: Set<string>
-  readonly agents: Set<string>
+  excluded: Set<string>
+  agents: Set<string>
+  readonly valid: Set<string>
+}
+
+/** Every ID the readable copies hold for `kind`. */
+const storedIds = (copies: ReadonlyArray<Copy>, kind: "agents" | "excluded") => copies.flatMap((copy) => Match.valueTags(copy, { Read: ({ store }) => store[kind].flatMap((entry) => entry.ids), Absent: () => [], Unreadable: () => [], Invalid: () => [] }))
+
+/**
+ * The command run with an arbitrary `--id` (his device's, a colleague's, a random one) for dinghy or skiff. It must
+ * write only an ID of a device of his now, and a refusal writes nothing. When it writes, the owner has chosen that
+ * key (a wrong device of his included: a choice no code can check), so what the store keys now is what he keyed.
+ */
+const keyAny = async (paths: readonly [string, string], now: World, ever: Ever, at: { readonly n: number; readonly pick: Pick }, wrong: Array<unknown>) => {
+  const kind = at.pick(["excluded", "agents"] as const)
+  const name = { excluded: "dinghy", agents: "skiff" }[kind]
+  const id = at.pick([now.dinghy.id, now.skiff.id, now.laptop.id, now.phone.id, now.colleague.id, `nRandom${at.n}`])
+  const his = [now.dinghy, now.skiff, now.laptop, now.phone].some((device) => device.present && device.id === id)
+  for (const path of paths) reopened(path)
+  const before = paths.map(snapshot)
+  // Already keyed there: the write adds nothing, so it needs no check (a rerun).
+  const there = storedIds(await Effect.runPromise(readCopies(paths)), kind).includes(id)
+  const done = await Effect.runPromise(Effect.exit(change(paths, statusNow(now), (store) => Effect.succeed(withId(store, kind, name, id)))))
+  if (Exit.isSuccess(done) && !his && !there) wrong.push({ step: "owner-keys-any-id", keyed: id, kind, now })
+  if (Exit.isFailure(done) && !Bun.deepEquals(before, paths.map(snapshot))) wrong.push({ step: "owner-keys-any-id", refusedButWrote: id })
+  if (Exit.isFailure(done)) return
+  ever.valid.add(id)
+  ever[kind] = new Set(storedIds(await Effect.runPromise(readCopies(paths)), kind))
 }
 
 /** `step` done: the world changed, the store damaged, or the owner's command run (its IDs then ever keyed). */
-const stepped = async (step: Step, paths: readonly [string, string], now: World, ever: Ever, at: { readonly n: number; readonly pick: Pick }): Promise<World> => {
+const stepped = async (step: Step, paths: readonly [string, string], now: World, ever: Ever, at: { readonly n: number; readonly pick: Pick }, wrong: Array<unknown>): Promise<World> => {
+  if (step.kind === "owner-any") {
+    await keyAny(paths, now, ever, at, wrong)
+    return now
+  }
   if (step.kind === "world") return step.change(now, at.n, at.pick)
   if (step.kind === "damage") for (const each of step.copies) damaged(paths[each], step.damage)
   if (step.kind !== "owner") return now
@@ -155,6 +190,7 @@ const stepped = async (step: Step, paths: readonly [string, string], now: World,
   if (Exit.isSuccess(await Effect.runPromise(Effect.exit(keyNow(paths, now))))) {
     ever.excluded.add(now.dinghy.id)
     ever.agents.add(now.skiff.id)
+    ever.valid.add(now.dinghy.id).add(now.skiff.id)
   }
   return now
 }
@@ -165,10 +201,10 @@ const runOnce = async (root: string, steps: ReadonlyArray<Step>, pick: Pick, run
   let now = START
   // The delivery step: the owner keys dinghy and skiff once, by the command.
   await Effect.runPromise(keyNow(paths, now))
-  const ever: Ever = { excluded: new Set([now.dinghy.id]), agents: new Set([now.skiff.id]) }
+  const ever: Ever = { excluded: new Set([now.dinghy.id]), agents: new Set([now.skiff.id]), valid: new Set([now.dinghy.id, now.skiff.id]) }
   const wrong: Array<unknown> = []
   for (const [n, step] of steps.entries()) {
-    now = await stepped(step, paths, now, ever, { n: run * 100 + n + 1, pick })
+    now = await stepped(step, paths, now, ever, { n: run * 100 + n + 1, pick }, wrong)
     // Then a request, as after every step: a configure ships names only and reads no store, a request reads both
     // copies, and neither writes a byte.
     const before = paths.map(snapshot)
@@ -183,6 +219,9 @@ const runOnce = async (root: string, steps: ReadonlyArray<Step>, pick: Pick, run
     if (ever.excluded.has(now.dinghy.id) && admitted(now.dinghy, ["read", "mark", "answer"], members)) wrong.push({ ...seen, let: "dinghy" })
     if (ever.agents.has(now.skiff.id) && admitted(now.skiff, ["mark", "answer"], members)) wrong.push({ ...seen, let: "skiff" })
     if (admitted(now.colleague, ["read", "mark", "answer"], members)) wrong.push({ ...seen, let: "colleague" })
+    // The store's invariant after every step: it holds no ID that was not a device of his when it was written.
+    const strangers = [...storedIds(copies, "excluded"), ...storedIds(copies, "agents")].filter((id) => !ever.valid.has(id))
+    if (strangers.length > 0) wrong.push({ ...seen, strangers })
   }
   for (const path of paths) reopened(path)
   return wrong
@@ -203,6 +242,9 @@ describe("the device store over time, on disk", () => {
 
 // ── The files themselves ──
 
+/** A status in which nDinghy1 and nDinghy2 are devices of his. */
+const DINGHIES = statusNow({ ...START, dinghy: { ...START.dinghy, id: "nDinghy1" }, laptop: { ...START.laptop, id: "nDinghy2" } })
+
 const storeAt = (path: string): Option.Option<Store> => Match.valueTags(copyOfText(readFileSync(path, "utf8")), { Read: ({ store }) => Option.some(store), Absent: () => Option.none(), Unreadable: () => Option.none(), Invalid: () => Option.none() })
 const said = (copy: Copy) => copyWord(copy)
 
@@ -210,7 +252,7 @@ describe("the store's files", () => {
   test("a write replaces both copies whole, 0600, and leaves no temporary file or lock behind", async () => {
     using held = scratch("digest-devices-write-")
     const paths = [join(held.path, "state/devices.json"), join(held.path, "config/opencode-digest/devices.json")] as const
-    await Effect.runPromise(change(paths, (store) => withId(store, "excluded", "dinghy", "nDinghy1")))
+    await Effect.runPromise(change(paths, DINGHIES, (store) => Effect.succeed(withId(store, "excluded", "dinghy", "nDinghy1"))))
     expect(paths.map(storeAt)).toEqual(paths.map(() => Option.some({ v: 1, agents: [], excluded: [{ name: "dinghy", ids: ["nDinghy1"] }] })))
     expect(paths.map((path) => statSync(path).mode & 0o777)).toEqual([0o600, 0o600])
     expect([readdirSync(join(held.path, "state")), readdirSync(join(held.path, "config/opencode-digest"))]).toEqual([["devices.json"], ["devices.json"]])
@@ -229,16 +271,28 @@ describe("the store's files", () => {
     expect(conditions).toEqual(["absent", "absent", "unparsable", "unparsable", "unparsable", "unreadable-EACCES", "unreadable-EISDIR"])
   })
 
+  test("a FIFO (or any non-regular file) in place of a copy is unreadable at once, never waited on: the store closes with the reason", async () => {
+    using held = scratch("digest-devices-fifo-")
+    const path = join(held.path, "devices.json")
+    execFileSync("mkfifo", [path])
+    // Within 2 s or not at all; then a writer is opened and closed, so a reader left waiting (a build that opens it) ends.
+    const copy = await Effect.runPromise(Effect.timeoutOption(readCopy(path), "2 seconds"))
+    const release = Effect.try(() => closeSync(openSync(path, constants.O_WRONLY | constants.O_NONBLOCK)))
+    await Effect.runPromise(Effect.ignore(release))
+    expect(Option.map(copy, said)).toEqual(Option.some("unreadable-ENOTREG"))
+    expect(keysOf(NAMED, Option.getOrElse(copy, () => Copy.Absent()), Copy.Absent()).closeAll).toEqual(Option.some("unkeyed:dinghy:agent-unkeyed:skiff:store-unreadable-ENOTREG/absent"))
+  }, 10_000)
+
   test("a store neither copy reads is refused and left as it is; one copy readable is the start of the next write", async () => {
     using held = scratch("digest-devices-refuse-")
     const paths = [join(held.path, "a/devices.json"), join(held.path, "b/devices.json")] as const
-    await Effect.runPromise(change(paths, (store) => withId(store, "excluded", "dinghy", "nDinghy1")))
+    await Effect.runPromise(change(paths, DINGHIES, (store) => Effect.succeed(withId(store, "excluded", "dinghy", "nDinghy1"))))
     damaged(paths[0], "garbage")
     damaged(paths[1], "truncate")
-    expect(Exit.isFailure(await Effect.runPromise(Effect.exit(change(paths, (store) => withId(store, "excluded", "dinghy", "nDinghy2")))))).toBe(true)
+    expect(Exit.isFailure(await Effect.runPromise(Effect.exit(change(paths, DINGHIES, (store) => Effect.succeed(withId(store, "excluded", "dinghy", "nDinghy2"))))))).toBe(true)
     expect(readFileSync(paths[0], "utf8")).toBe("\u0000\u00ff{garbage")
     writeFileSync(paths[1], '{"v":1,"agents":[],"excluded":[{"name":"dinghy","ids":["nDinghy1"]}]}')
-    await Effect.runPromise(change(paths, (store) => withId(store, "excluded", "dinghy", "nDinghy2")))
+    await Effect.runPromise(change(paths, DINGHIES, (store) => Effect.succeed(withId(store, "excluded", "dinghy", "nDinghy2"))))
     expect(paths.map((path) => Option.map(storeAt(path), (store) => store.excluded))).toEqual(paths.map(() => Option.some([{ name: "dinghy", ids: ["nDinghy1", "nDinghy2"] }])))
   })
 })
