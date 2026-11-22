@@ -12,6 +12,7 @@ import type { Relation } from "./skill-drift.ts"
 import type { Hold } from "./tool-call.ts"
 import type { HeadSeen, LaneStatus } from "./lost.ts"
 import type { Merge, UnitFiles, Verified } from "./tools.ts"
+import type { Command, Context as RecordContext, RecordEvent, RecordRefused, Snapshot, StoredEvent, SubjectKind } from "./record.ts"
 import type { Transition } from "./unit-log.ts"
 
 /** Where the call log's lines go, in order. Appending never fails: a lost line costs the pane a row, not the call. */
@@ -404,6 +405,41 @@ export class HeavyHost extends Context.Service<
     readonly read: (except: Option.Option<string>) => Effect.Effect<HeavyReading, HostUnread>
   }
 >()("dotfiles-opencode/orchestrate/HeavyHost") {}
+
+// ── The commitment record (record.ts, standing.ts) ──
+
+/**
+ * The record's store could not do what was asked: busy past its timeout (another writer held it), a file it cannot
+ * open, or a file of a newer version than this code writes (it then reads, and refuses every write). The caller sees
+ * it; nothing is lost silently.
+ */
+export class RecordFailed extends Schema.TaggedError<RecordFailed>()("RecordFailed", { message: Schema.String }) {}
+
+/**
+ * The commitment record of one repository on this host: what its runs owe, and the history of every change.
+ * - `run`: one command decided against the record as it stands, in one immediate transaction: its events appended and
+ *   the rows they fold to written together, or nothing written (a refusal, a failure). Answers the events and the
+ *   rows after them.
+ * - `read`: the rows as they stand.
+ * - `history`: the events about one subject, oldest first; `events`: every event, oldest first (the replay law, export).
+ */
+export class CommitmentRecord extends Context.Service<
+  CommitmentRecord,
+  {
+    readonly run: (command: Command, context: RecordContext) => Effect.Effect<{ readonly events: ReadonlyArray<RecordEvent>; readonly snapshot: Snapshot }, RecordRefused | RecordFailed>
+    readonly read: Effect.Effect<Snapshot, RecordFailed>
+    readonly history: (subjectKind: SubjectKind, subjectId: string) => Effect.Effect<ReadonlyArray<StoredEvent>, RecordFailed>
+    readonly events: Effect.Effect<ReadonlyArray<StoredEvent>, RecordFailed>
+  }
+>()("dotfiles-opencode/orchestrate/CommitmentRecord") {}
+
+/**
+ * Which owners of commitments are gone: a unit whose lane was removed. `root` never is. Never fails: when the lanes
+ * cannot be read, none is gone (an unread list orphans nothing).
+ */
+export class Owners extends Context.Service<Owners, { readonly gone: (owners: ReadonlyArray<string>) => Effect.Effect<ReadonlySet<string>> }>()(
+  "dotfiles-opencode/orchestrate/Owners",
+) {}
 
 /** Steers a session with one note, marked `DRIFT_MARK`, which wakes it if idle. */
 export class Tell extends Context.Service<
