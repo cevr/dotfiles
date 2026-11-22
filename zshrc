@@ -22,7 +22,7 @@ export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
 [ -s "/Users/cvr/.bun/_bun" ] && source "/Users/cvr/.bun/_bun"
 
-# Turborepo (shared local cache for Rift workspaces)
+# Turborepo (one local cache shared by every workspace)
 export TURBO_CACHE=local:rw
 export TURBO_CACHE_DIR="$HOME/.cache/turbo"
 # Turbo 2.10+ evicts the oldest entries at the start of a run once the cache passes this size.
