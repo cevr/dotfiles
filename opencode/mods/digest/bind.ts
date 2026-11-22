@@ -199,5 +199,5 @@ export const hostOf = (address: string): string => Option.match(Option.liftPredi
 export const hostWithPort = (addressOrName: string, port: number): string =>
   Option.getOrElse(Option.map(Option.fromNullishOr(URL.parse(`http://${hostOf(addressOrName)}:${port}`)), (url) => url.host), () => `${hostOf(addressOrName)}:${port}`)
 
-/** The `Host` values for each of `addressesAndNames` on `port`, as a browser writes them (`hostWithPort`). */
-export const hostsOf = (port: number, addressesAndNames: ReadonlyArray<string>): ReadonlyArray<string> => addressesAndNames.map((each) => hostWithPort(each, port))
+/** The `Host` values loopback answers to: each name with `:port`, always (main's construction, kept as it was; the tailnet uses `hostWithPort`). */
+export const hostsOf = (port: number, addressesAndNames: ReadonlyArray<string>): ReadonlyArray<string> => addressesAndNames.map((each) => `${hostOf(each)}:${port}`)

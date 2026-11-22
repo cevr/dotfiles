@@ -32,9 +32,9 @@ const status = (decision: Decision): number | string => Match.valueTags(decision
 
 /**
  * The reference: what each request gets, written as plainly as possible and apart from policy.ts.
- * - Host first (421: neither a host it serves under nor one of its names), then a tailnet request from outside the
- *   tailnet (403), then a name: GET / redirects, anything else 421; then on the tailnet an Origin that is sent and
- *   is not the page's own (403); then a write's origin, header, JSON.
+ * - The authority first: a tailnet name redirects GET / and is refused (421) otherwise; then a Host the listener
+ *   does not serve under (421), then a tailnet request from outside the tailnet (403), then on the tailnet an Origin
+ *   that is sent and is not the page's own (403); then a write's origin, header, JSON.
  * - Loopback: everything open but an answer, which needs pairing.
  * - Tailnet: the shell, status and pairing open; health `ok` alone unless paired; a read open to his devices
  *   (own, agent) under read "member"; a mark or answer open to his devices under write "member", to his devices but
@@ -45,9 +45,10 @@ const reference = (facts: Facts, policy: Policy): number | string => Option.getO
 /** The reference's answers before what a route needs: Host, a tailnet request from outside, a name, the origin, a write's header, JSON. */
 const refusalOf = (facts: Facts): Option.Option<number | string> => {
   const named = facts.names.includes(facts.host)
-  if (!named && !facts.hosts.includes(facts.host)) return Option.some(421)
-  if (facts.listener === "tailnet" && (facts.source === "outside" || facts.source === "local")) return Option.some(403)
+  // The tailnet reads the authority before anything else: a name redirects a GET of `/`, and is refused otherwise.
   if (named) return Option.some([421, "Redirect"][Number(facts.kind === "shell" && facts.root)] ?? 421)
+  if (!facts.hosts.includes(facts.host)) return Option.some(421)
+  if (facts.listener === "tailnet" && (facts.source === "outside" || facts.source === "local")) return Option.some(403)
   if (facts.listener === "tailnet" && facts.origin !== "" && facts.origin !== `http://${facts.host}`) return Option.some(403)
   if (facts.kind !== "mark" && facts.kind !== "answer" && facts.kind !== "pair") return Option.none()
   if (facts.origin !== `http://${facts.host}` || !facts.pageHeader) return Option.some(403)
@@ -125,8 +126,8 @@ describe("the page's policy, at every combination", () => {
     expect(served).toEqual([])
   })
 
-  test("on the tailnet, nothing from outside Tailscale's ranges is served, on any route", () => {
-    expect(all.filter(({ facts, policy }) => facts.listener === "tailnet" && facts.source === "outside" && decide(facts, policy)._tag !== "Refuse")).toEqual([])
+  test("on the tailnet, nothing from outside Tailscale's ranges is served, on any route (a name's redirect serves nothing)", () => {
+    expect(all.filter(({ facts, policy }) => facts.listener === "tailnet" && facts.source === "outside" && decide(facts, policy)._tag !== "Refuse" && decide(facts, policy)._tag !== "Redirect")).toEqual([])
   })
 
   test("on the tailnet, unpaired, another user's device (or any address not his) gets no data from any route, whatever the switches", () => {

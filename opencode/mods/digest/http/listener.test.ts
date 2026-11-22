@@ -14,7 +14,7 @@ import { join } from "node:path"
 import { Duration, Effect, Match, Option, Ref, Schedule, Scope } from "effect"
 import { scratch } from "../../../tests/scratch.ts"
 import { AnswerOutcome, type PageAnswer } from "../answers.ts"
-import { noTailnet, StatusRead, type Tailnet } from "../bind.ts"
+import { hostOf, noTailnet, StatusRead, type Tailnet } from "../bind.ts"
 import * as FilePairing from "../filestore/pairing.ts"
 import type { TailnetState } from "../health.ts"
 import type { MarkLine } from "../marks.ts"
@@ -22,9 +22,9 @@ import { CODE_TTL_MS, OLD_COOKIE, type Pairing, SOURCE_FAILURES, TOKEN_HEADER } 
 import { keysOf, membersWith } from "../devices.ts"
 import * as FileDevices from "../filestore/devices.ts"
 import { closed, type Exclusion, type Members, membersOf, sourceOf, type WriteConfig } from "../members.ts"
-import { ACCESS, type Listener, type TailnetWrite } from "../policy.ts"
+import { ACCESS, ADDRESS_ONLY, type Decision, type Listener, PAIR_FIRST, type Policy, type TailnetWrite } from "../policy.ts"
 import { statusFrom } from "../process/tailnet.ts"
-import { type Handlers, HOSTNAME, kindOf, listen, PAGE_HEADER, type PeerOf, type Place, serveTailnet, socketPeer } from "./listener.ts"
+import { answerOf, type Asking, type Handlers, HOSTNAME, kindOf, listen, loopbackSite, PAGE_HEADER, type PeerOf, type Place, screen, serveTailnet, siteOf, type Site, socketPeer } from "./listener.ts"
 
 const NOW = 1_795_204_800_000
 
@@ -1183,5 +1183,187 @@ describe("on the tailnet the page answers at its own address only", () => {
       expect(wrong.slice(0, 5)).toEqual([])
       expect([index > 2000, await storedCount(stored)]).toEqual([true, accepted])
     })
+  })
+})
+
+
+// ── The order: the tailnet's authority before its method (round 1, B1), and loopback as main had it (round 1, M2) ──
+
+/** A decision as the cases compare it: its status (Serve, Brief, Redirect by name) and its reason. */
+const verdict = (decision: Decision): string =>
+  Match.valueTags(decision, { Refuse: (refused) => `${refused.status} ${refused.reason}`, Serve: () => "Serve", Brief: () => "Brief", Redirect: () => "Redirect" })
+
+/** One request as `screen` reads it; `host` "null" is none, as the header reads. */
+const askingOf = (method: string, url: string, host: string, extra: Partial<Asking> = {}): Asking => ({ method, url, host, origin: "", pageHeader: true, json: true, paired: false, source: "own", ...extra })
+
+const MEMBER_POLICY: Policy = { tailnetRead: "member", tailnetWrite: "member-except-hosts" }
+
+/** Methods a request may carry (Bun hands each to the listener; its fetch would rewrite unknown ones to GET). */
+const METHODS = ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "TRACE", "CONNECT", "PROPFIND", "FOO", "get"]
+/** Targets: the page, its data and its writes, an asset, a route that is none, an encoded or doubled path. */
+const TARGETS = ["/", "/?p=harbor", "/health", "/view.json", "/paired.json", "/api/mark", "/api/answer", "/api/pair", "/assets/index-abc.js", "/anything", "//evil.example/", "/%2e%2e/secret.txt"]
+
+describe("the order: on the tailnet the authority comes first, whatever the method, path or target", () => {
+  test("over methods × targets × Host forms on the tailnet listener (8240, 80, 443; IPv4 and IPv6): not its address is 421, but a GET or HEAD of / by name, which is 308", () => {
+    const sites = [8240, 80, 443].flatMap((port) => ["100.101.102.103", "fd7a:115c:a1e0::42"].map((address) => ({ port, site: siteOf({ address, port, listener: "tailnet", names: ["harbor.example-tailnet.ts.net", "harbor"] }, port) })))
+    const hostsAt = (port: number, own: string, site: Site) =>
+      [...new Set([own, ...site.names, "HARBOR", "harbor.", "phone.example-tailnet.ts.net", "evil.example", "localhost", "127.0.0.1", "100.101.102.110", "[::ffff:100.101.102.103]"].flatMap((each) => [each, `${each}:${port}`, `${each}:1`]).concat(["", "null", "[fd7a:115c:a1e0:0:0:0:0:42]:8240"]))]
+    const cases = sites.flatMap(({ port, site }) => hostsAt(port, site.hosts[0] ?? "", site).flatMap((host) => METHODS.flatMap((method) => [...TARGETS, "*", "harbor:443"].map((target) => ({ site, host, method, target })))))
+    /** What the authority alone says: the redirect, a 421, or nothing (the Host is the address: what follows decides). */
+    const expectedOf = (site: Site, host: string, method: string, target: string) => {
+      // The root as the listener reads it: the path of the URL Bun builds (an odd target may parse to `/`; the redirect still names only the address).
+      const rootRead = (method === "GET" || method === "HEAD") && Option.exists(Option.fromNullishOr(URL.parse(`http://${host}${target}`)), (url) => url.pathname === "/")
+      return Match.value({ own: host === site.hosts[0], named: site.names.includes(host), rootRead }).pipe(
+        Match.when({ own: true }, () => "not the authority's"),
+        Match.when({ named: true, rootRead: true }, () => "Redirect"),
+        Match.orElse(() => "421"),
+      )
+    }
+    const fits = (expected: string, got: string) =>
+      Match.value(expected).pipe(
+        Match.when("not the authority's", () => got !== "Redirect" && got !== `421 ${ADDRESS_ONLY}` && got !== "421 this page answers on its own names only"),
+        Match.when("Redirect", () => got === "Redirect"),
+        Match.orElse(() => got.startsWith("421 ")),
+      )
+    const wrong = cases.flatMap(({ site, host, method, target }) => {
+      const got = verdict(screen(site, MEMBER_POLICY, askingOf(method, `http://${host}${target}`, host)).decision)
+      const expected = expectedOf(site, host, method, target)
+      return [`${site.home} ${method} ${target} Host=${host}: ${got} (expected ${expected})`].filter(() => !fits(expected, got))
+    })
+    expect(wrong.slice(0, 5)).toEqual([])
+    expect(cases.length > 10_000).toBe(true)
+  })
+
+  test("over the real socket, any method and target under a name or another host: 421 (GET or HEAD of / by name: 308), never a CORS grant; Bun refuses what it cannot parse itself", async () => {
+    using held = scratch("digest-http-")
+    await withListener(
+      builtPage(held.path),
+      async (base) => {
+        const port = Number(new URL(base).port)
+        const raw = (text: string) =>
+          Effect.runPromise(
+            Effect.callback<string>((resume) => {
+              let got = ""
+              void Bun.connect({ hostname: HOSTNAME, port, socket: { open: (socket) => void socket.write(text), data: (_socket, data) => void (got += data.toString()), close: () => resume(Effect.succeed(got)), error: () => resume(Effect.succeed(got)) } })
+            }),
+          )
+        const statusOf = (response: string) => response.split("\r\n")[0] ?? ""
+        const wrong: Array<string> = []
+        for (const host of [`harbor:${port}`, `harbor.example-tailnet.ts.net:${port}`, `evil.example:${port}`, `localhost:${port}`, `127.0.0.1:${port + 1}`])
+          for (const method of ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "TRACE", "CONNECT", "PROPFIND"])
+            for (const target of ["/", "/?p=harbor", "/health", "/view.json", "/api/mark", "/assets/index-abc.js", "http://evil.example/", ...["harbor:443"].filter(() => method === "CONNECT")]) {
+              const response = await raw(`${method} ${target} HTTP/1.1\r\nHost: ${host}\r\nOrigin: http://evil.example\r\nAccess-Control-Request-Method: POST\r\nConnection: close\r\n\r\n`)
+              const redirect = (method === "GET" || method === "HEAD") && ["/", "/?p=harbor", "http://evil.example/"].includes(target) && host.startsWith("harbor")
+              const expected = [`HTTP/1.1 421 Misdirected Request`, `HTTP/1.1 308 Permanent Redirect`][Number(redirect)]
+              const granted = /\r\naccess-control-|\r\nset-cookie:/i.test(response)
+              if (statusOf(response) !== expected || granted) wrong.push(`${method} ${target} Host=${host}: ${statusOf(response)}${["", " with a CORS grant or cookie"][Number(granted)]}`)
+            }
+        expect(wrong.slice(0, 5)).toEqual([])
+        // The round's probe as named: OPTIONS of / and of /health by name (405 before this round).
+        expect([statusOf(await raw(`OPTIONS / HTTP/1.1\r\nHost: harbor:${port}\r\nConnection: close\r\n\r\n`)), statusOf(await raw(`OPTIONS /health HTTP/1.1\r\nHost: harbor:${port}\r\nConnection: close\r\n\r\n`))]).toEqual(["HTTP/1.1 421 Misdirected Request", "HTTP/1.1 421 Misdirected Request"])
+        // Under its address the method is read after the authority, as before: OPTIONS is 405 there, with no CORS grant.
+        const preflight = await raw(`OPTIONS /api/mark HTTP/1.1\r\nHost: ${HOSTNAME}:${port}\r\nOrigin: http://evil.example\r\nConnection: close\r\n\r\n`)
+        expect([statusOf(preflight), /\r\naccess-control-/i.test(preflight)]).toEqual(["HTTP/1.1 405 Method Not Allowed", false])
+        // What Bun cannot parse never reaches the listener: Bun answers 400 or closes, with none of the page's content.
+        for (const line of [`OPTIONS * HTTP/1.1`, `FOO / HTTP/1.1`]) {
+          const response = await raw(`${line}\r\nHost: harbor:${port}\r\nConnection: close\r\n\r\n`)
+          expect([line, ["", "HTTP/1.1 400 Bad Request"].includes(statusOf(response)), response.includes("Digest")]).toEqual([line, true, false])
+        }
+      },
+      (rig) => ({ ...handlers(rig), tailnetRead: "member", members: Effect.succeed(his("member-except-hosts")) }),
+      "tailnet",
+      () => OWN_PHONE,
+    )
+  })
+})
+
+// Main's loopback order (4afe1fda), vendored as the oracle: listener.ts `routed` up to the decision (a URL that does
+// not parse: the defect's 500; a method no route takes: 405), its `kindOf`, its loopback hosts (bind.ts `hostsOf`:
+// each name with `:port`, always), and policy.ts `decide` with `ACCESS.loopback`. The routes after the decision are
+// the same code at both commits, so the same decision is the same answer.
+const MAIN_PAIR_FIRST = "pair this browser first: run bun cmd/digest/pair.ts on the host and type the code it prints here"
+const mainKindOf = (method: string, path: string): Option.Option<string> =>
+  Match.value({ method, path }).pipe(
+    Match.when({ method: "POST", path: "/api/answer" }, () => Option.some("answer")),
+    Match.when({ method: "POST", path: "/api/pair" }, () => Option.some("pair")),
+    Match.when({ method: "POST" }, () => Option.some("mark")),
+    Match.when({ method: (each) => each !== "GET" && each !== "HEAD" }, () => Option.none<string>()),
+    Match.when({ path: (each) => each === "/" || each.startsWith("/assets/") }, () => Option.some("shell")),
+    Match.when({ path: "/paired.json" }, () => Option.some("status")),
+    Match.when({ path: "/health" }, () => Option.some("health")),
+    Match.orElse(() => Option.some("read")),
+  )
+const mainWriteRefusal = (asking: Asking): Option.Option<string> => {
+  if (asking.origin !== `http://${asking.host}`) return Option.some("403 a write must come from the page's own origin")
+  if (!asking.pageHeader) return Option.some("403 a write must carry the page's header")
+  return Option.liftPredicate("415 a write is JSON", () => !asking.json)
+}
+const mainDecide = (kind: string, asking: Asking, port: number): string => {
+  if (![`127.0.0.1:${port}`, `localhost:${port}`].includes(asking.host)) return "421 this page answers on its own names only"
+  const refused = Option.filter(Option.some(kind), (each) => ["mark", "answer", "pair"].includes(each)).pipe(Option.flatMap(() => mainWriteRefusal(asking)))
+  if (Option.isSome(refused)) return refused.value
+  return ["Serve", `401 ${MAIN_PAIR_FIRST}`][Number(kind === "answer" && !asking.paired)] ?? ""
+}
+const mainLoopback = (asking: Asking, port: number): string =>
+  Option.match(Option.fromNullishOr(URL.parse(asking.url)), {
+    onNone: () => "500 the digest failed this request",
+    onSome: (url) => Option.match(mainKindOf(asking.method, url.pathname), { onNone: () => "405 GET or POST only", onSome: (kind) => mainDecide(kind, asking, port) }),
+  })
+
+describe("loopback is main's, unchanged (round 1, M2)", () => {
+  test("a differential over generated requests (ports 80, 443, 8240 and others; Host forms, methods, targets, Origins, headers, token): this head's loopback decision is main's for every one", () => {
+    const random = (() => {
+      let state = 20_261_122
+      return () => {
+        state = (state * 1_103_515_245 + 12_345) % 2_147_483_648
+        return state
+      }
+    })()
+    const ports = [80, 443, 8240, 1, 65_535, ...Array.from({ length: 3 }, () => 1024 + (random() % 60_000))]
+    const hostsAt = (port: number) => ["localhost", "127.0.0.1", "[::1]", "LOCALHOST", "localhost.", "127.0.0.2", "evil.example", "100.101.102.103"].flatMap((each) => [each, `${each}:${port}`, `${each}:80`, `${each}:${port + 1}`]).concat(["", "null"])
+    const headersOf = (host: string, port: number) =>
+      ["", `http://${host}`, `http://localhost:${port}`, "null"].flatMap((origin) => ([[true, true], [false, true], [true, false]] as const).flatMap(([pageHeader, json]) => [false, true].map((paired) => ({ origin, pageHeader, json, paired, source: "local" as const }))))
+    const cases = ports.flatMap((port) =>
+      hostsAt(port).flatMap((host) =>
+        ["GET", "HEAD", "POST", "PUT", "OPTIONS", "TRACE", "FOO", "CONNECT"].flatMap((method) =>
+          ["/", "/?p=x", "/assets/index-abc.js", "/view.json", "/health", "/paired.json", "/api/mark", "/api/answer", "/api/pair", "/x"].flatMap((target) => headersOf(host, port).map((extra) => ({ port, asking: askingOf(method, `http://${host}${target}`, host, extra) }))),
+        ),
+      ),
+    )
+    const wrong = cases.flatMap(({ port, asking }) => {
+      const got = verdict(screen(loopbackSite(port), MEMBER_POLICY, asking).decision)
+      const expected = mainLoopback(asking, port)
+      return [`${port} ${asking.method} ${asking.url} Host=${asking.host} Origin=${asking.origin} header=${asking.pageHeader} json=${asking.json} paired=${asking.paired}: ${got} (main: ${expected})`].filter(() => got !== expected)
+    })
+    expect(wrong.slice(0, 5)).toEqual([])
+    expect(cases.length > 100_000).toBe(true)
+    expect(MAIN_PAIR_FIRST).toBe(PAIR_FIRST)
+  })
+
+  test("the round's probe: on digest.port 80, Host localhost:80 and 127.0.0.1:80 read health, a bare localhost is refused, as on main", async () => {
+    using held = scratch("digest-http-")
+    const dist = builtPage(held.path)
+    const rig = await Effect.runPromise(rigOf(join(dist, "..", "pairing")))
+    const statuses: Array<number> = []
+    for (const host of ["localhost:80", "127.0.0.1:80", "localhost", "127.0.0.1"])
+      statuses.push((await Effect.runPromise(answerOf(handlers(rig), dist, new Request(`http://${host}/health`, { headers: { host } }), loopbackSite(80)))).status)
+    expect(statuses).toEqual([200, 200, 421, 421])
+  })
+})
+
+describe("the tailnet on a default port: exactly what a browser sends", () => {
+  test("on port 80 a browser sends Host and Origin without the port, and only that is the page's; on 443 (not http's default) with it", () => {
+    for (const address of ["100.101.102.103", "fd7a:115c:a1e0::42"]) {
+      const written = hostOf(address)
+      // What a browser writes (WHATWG URL): http's default port is left out of the host and the origin.
+      expect([new URL(`http://${written}:80/`).host, new URL(`http://${written}:80/`).origin, new URL(`http://${written}:443/`).host]).toEqual([written, `http://${written}`, `${written}:443`])
+      for (const [port, browser, refused] of [[80, written, [`${written}:80`]], [443, `${written}:443`, [written, `${written}:80`]], [8240, `${written}:8240`, [written]]] as const) {
+        const site = siteOf({ address, port, listener: "tailnet", names: ["harbor"] }, port)
+        const mark = (host: string, origin: string) => verdict(screen(site, MEMBER_POLICY, askingOf("POST", `http://${host}/api/mark`, host, { origin })).decision)
+        expect([port, site.hosts, site.home, mark(browser, `http://${browser}`), verdict(screen(site, MEMBER_POLICY, askingOf("GET", `http://${browser}/view.json`, browser)).decision)]).toEqual([port, [browser], `http://${browser}/`, "Serve", "Serve"])
+        for (const other of refused) expect([port, other, mark(other, `http://${other}`).slice(0, 3), mark(browser, `http://${other}`).slice(0, 3)]).toEqual([port, other, "421", "403"])
+        expect(verdict(screen(site, MEMBER_POLICY, askingOf("GET", `http://harbor${["", `:${port}`][Number(port !== 80)]}/`, `harbor${["", `:${port}`][Number(port !== 80)]}`)).decision)).toBe("Redirect")
+      }
+    }
   })
 })

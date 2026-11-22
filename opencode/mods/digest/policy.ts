@@ -32,7 +32,7 @@
 //     (an agent there must not act as him). The default is "paired".
 //   - Another user's device, a shared-in or tagged one, or an address the status does not name (`other`) always
 //     needs the token.
-import { Data, Match } from "effect"
+import { Data, Match, Option } from "effect"
 
 /** The listener a request came in on. */
 export type Listener = "loopback" | "tailnet"
@@ -148,16 +148,43 @@ export const PAIR_FIRST = "pair this browser first: run bun cmd/digest/pair.ts o
 /** What a request under one of the tailnet listener's names is told: its page is at its address. */
 export const ADDRESS_ONLY = "on the tailnet this page answers at its address only (http://100.x.y.z:8240, as bun cmd/digest/pair.ts prints it): open it there"
 
+const FOREIGN = "this page answers on its own names only"
+
+/** Who a request's authority names, as the tailnet's first step reads it. */
+export interface Authority {
+  readonly listener: Listener
+  /** The `Host` it named; "" for none. */
+  readonly host: string
+  readonly hosts: ReadonlyArray<string>
+  readonly names: ReadonlyArray<string>
+  /** Whether it is a GET or HEAD of `/` (any query). */
+  readonly rootRead: boolean
+}
+
 /**
- * The one decision: by host, then the source, then a name's redirect, then the origin (a write's always, any other
- * tailnet request's when it sends one) and a write's headers, then what the route needs.
+ * The tailnet's first step, before its method, path or anything else is read: a Host that is not the listener's
+ * own address is refused (421), except a GET or HEAD of `/` under one of its names, which is sent on to the address.
+ * None when the Host is the address, and always none on loopback, whose Host is checked as before (in `decide`,
+ * after the method).
+ */
+export const authorityOf = (authority: Authority): Option.Option<Decision> => {
+  if (authority.listener !== "tailnet" || authority.hosts.includes(authority.host)) return Option.none()
+  const named = authority.names.includes(authority.host)
+  if (named && authority.rootRead) return Option.some(Decision.Redirect())
+  if (named) return Option.some(Decision.Refuse({ status: 421, reason: ADDRESS_ONLY }))
+  return Option.some(Decision.Refuse({ status: 421, reason: FOREIGN }))
+}
+
+/**
+ * The one decision: on the tailnet by its authority first (`authorityOf`), on loopback by its host; then the source,
+ * then the origin (a write's always, any other tailnet request's when it sends one) and a write's headers, then what
+ * the route needs.
  */
 export const decide = (facts: Facts, policy: Policy = PAIRED): Decision => {
-  const named = facts.names.includes(facts.host)
-  if (!named && !facts.hosts.includes(facts.host)) return Decision.Refuse({ status: 421, reason: "this page answers on its own names only" })
+  const first = authorityOf({ listener: facts.listener, host: facts.host, hosts: facts.hosts, names: facts.names, rootRead: facts.kind === "shell" && facts.root })
+  if (Option.isSome(first)) return first.value
+  if (!facts.hosts.includes(facts.host)) return Decision.Refuse({ status: 421, reason: FOREIGN })
   if (facts.listener === "tailnet" && (facts.source === "outside" || facts.source === "local")) return Decision.Refuse({ status: 403, reason: "this listener answers the tailnet only" })
-  if (named && facts.kind === "shell" && facts.root) return Decision.Redirect()
-  if (named) return Decision.Refuse({ status: 421, reason: ADDRESS_ONLY })
   if (facts.listener === "tailnet" && facts.origin !== "" && facts.origin !== `http://${facts.host}`) return Decision.Refuse({ status: 403, reason: "a request must come from the page's own origin" })
   if (WRITES.includes(facts.kind)) {
     if (facts.origin !== `http://${facts.host}`) return Decision.Refuse({ status: 403, reason: "a write must come from the page's own origin" })

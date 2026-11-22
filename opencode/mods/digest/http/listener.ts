@@ -39,7 +39,7 @@ import { BRIEF, isWell, localPart, type TailnetState } from "../health.ts"
 import { type MarkLine, markOf, nameOf, sinceOf } from "../marks.ts"
 import { type Pairing, TOKEN_HEADER } from "../pairing.ts"
 import { current, type Members, sourceOf, writesWord } from "../members.ts"
-import { decide, type Listener, mayAnswer, type Policy, type RouteKind, type Source, type TailnetRead } from "../policy.ts"
+import { authorityOf, Decision, decide, type Listener, mayAnswer, type Policy, type RouteKind, type Source, type TailnetRead } from "../policy.ts"
 import { nextMorning } from "../zone.ts"
 
 /** The loopback listener's address. */
@@ -89,7 +89,7 @@ export interface Site {
 }
 
 /** The loopback site on `port`. */
-export const loopbackSite = (port: number): Site => ({ listener: "loopback", hosts: hostsOf(port, LOOPBACK_NAMES), names: [], home: `http://${hostWithPort(HOSTNAME, port)}/` })
+export const loopbackSite = (port: number): Site => ({ listener: "loopback", hosts: hostsOf(port, LOOPBACK_NAMES), names: [], home: `http://${HOSTNAME}:${port}/` })
 
 /** An answer: status, headers, body. */
 interface Answer {
@@ -313,56 +313,94 @@ export const answerOf = (handlers: Handlers, dist: string, request: Request, sit
     Effect.catchCause((cause) => Effect.as(Effect.logWarning("digest page: a request failed", { cause }), reason(500, "the digest failed this request"))),
   )
 
-/** A request whose URL does not parse (Bun builds it from the `Host`, so a Host no browser sends): refused as one. */
-const routed = (handlers: Handlers, dist: string, request: Request, site: Site, address: string): Effect.Effect<Answer> =>
-  Option.match(Option.fromNullishOr(URL.parse(request.url)), {
-    onNone: () => Effect.succeed(reason(421, "this page answers on its own names only")),
-    onSome: (url) => routedAt(handlers, dist, request, site, address, url.pathname),
-  })
+/** One request as the order reads it: its method, URL and headers, its token's verdict and its source. */
+export interface Asking {
+  readonly method: string
+  /** The URL as Bun built it (from the `Host`); it may not parse. */
+  readonly url: string
+  /** The `Host` it named; "null" for none, as the header reads. */
+  readonly host: string
+  /** Its `Origin`; "" for none. */
+  readonly origin: string
+  readonly pageHeader: boolean
+  readonly json: boolean
+  readonly paired: boolean
+  readonly source: Source
+}
 
-const routedAt = (handlers: Handlers, dist: string, request: Request, site: Site, address: string, path: string): Effect.Effect<Answer> => {
-  const body = Effect.promise(() => request.text())
-  return Option.match(kindOf(request.method, path), {
-    onNone: () => Effect.succeed(reason(405, "GET or POST only")),
-    onSome: (kind) =>
-      Effect.gen(function* () {
-        const paired = yield* isPaired(handlers, request)
-        const members = current(yield* handlers.members, yield* handlers.now)
-        const source = Match.value(site.listener).pipe(
-          Match.when("loopback", (): Source => "local"),
-          Match.orElse(() => sourceOf(address, members)),
-        )
-        const policy: Policy = { tailnetRead: handlers.tailnetRead, tailnetWrite: members.write }
-        const facts = {
-          listener: site.listener,
-          kind,
-          source,
-          host: String(request.headers.get("host")),
-          hosts: site.hosts,
-          names: site.names,
-          root: path === "/",
-          origin: String(request.headers.get("origin") ?? ""),
-          pageHeader: request.headers.get(PAGE_HEADER) === "1",
-          json: String(request.headers.get("content-type")).startsWith("application/json"),
-          paired,
-        }
-        const asked: Asked = { path, listener: site.listener, source, policy, members, paired }
-        return yield* Match.valueTags(decide(facts, policy), {
-          Refuse: ({ status, reason: why }) => Effect.succeed(reason(status, why)),
-          Brief: () => read(handlers, dist, asked, true),
-          // To the page at the listener's own address; nothing of the request goes into the Location.
-          Redirect: () => Effect.succeed(answer(308, "", { location: site.home, ...NO_STORE })),
-          Serve: () =>
-            Match.value(kind).pipe(
-              Match.when("pair", () => Effect.flatMap(body, (given) => pair(handlers, given, String(request.headers.get("user-agent")), address))),
-              Match.when("answer", () => Effect.flatMap(body, (given) => answerRoute(handlers, given))),
-              Match.when("mark", () => Effect.flatMap(body, (given) => mark(handlers, path, given))),
-              Match.orElse(() => read(handlers, dist, asked, false)),
-            ),
-        })
-      }),
+/** What the order comes to: the decision, and for a request it got that far, its route; the path. */
+export interface Screened {
+  readonly decision: Decision
+  readonly kind: Option.Option<RouteKind>
+  readonly path: string
+}
+
+/** Main's answer to a URL Bun could not build, kept on loopback as it was: the defect's 500. */
+const UNPARSED = "the digest failed this request"
+
+/**
+ * The order every request takes before any route runs, in one place:
+ * 1. On the tailnet, its authority, whatever its method, path or target (policy.ts `authorityOf`): a Host that is
+ *    not the listener's address is refused (421), a GET or HEAD of `/` under one of its names sent on (308).
+ * 2. A URL that does not parse (Bun builds it from the Host): on loopback the 500 main gave, on the tailnet 421.
+ * 3. A method no route takes: 405.
+ * 4. The policy's decision (`decide`): loopback's Host, the source, the origin and headers, what the route needs.
+ * Loopback's steps 2 to 4 are main's (4afe1fda), unchanged.
+ */
+export const screen = (site: Site, policy: Policy, asking: Asking): Screened => {
+  const url = Option.fromNullishOr(URL.parse(asking.url))
+  const path = Option.match(url, { onNone: () => "", onSome: (each) => each.pathname })
+  const stopped = (decision: Decision): Screened => ({ decision, kind: Option.none(), path })
+  const rootRead = (asking.method === "GET" || asking.method === "HEAD") && path === "/"
+  const first = authorityOf({ listener: site.listener, host: asking.host, hosts: site.hosts, names: site.names, rootRead })
+  if (Option.isSome(first)) return stopped(first.value)
+  if (Option.isNone(url)) return stopped(Decision.Refuse(Match.value(site.listener).pipe(Match.when("loopback", () => ({ status: 500, reason: UNPARSED })), Match.orElse(() => ({ status: 421, reason: "this page reads no such target" })))))
+  return Option.match(kindOf(asking.method, path), {
+    onNone: () => stopped(Decision.Refuse({ status: 405, reason: "GET or POST only" })),
+    onSome: (kind) => ({
+      decision: decide({ listener: site.listener, kind, source: asking.source, host: asking.host, hosts: site.hosts, names: site.names, root: path === "/", origin: asking.origin, pageHeader: asking.pageHeader, json: asking.json, paired: asking.paired }, policy),
+      kind: Option.some(kind),
+      path,
+    }),
   })
 }
+
+const routed = (handlers: Handlers, dist: string, request: Request, site: Site, address: string): Effect.Effect<Answer> =>
+  Effect.gen(function* () {
+    const body = Effect.promise(() => request.text())
+    const paired = yield* isPaired(handlers, request)
+    const members = current(yield* handlers.members, yield* handlers.now)
+    const source = Match.value(site.listener).pipe(
+      Match.when("loopback", (): Source => "local"),
+      Match.orElse(() => sourceOf(address, members)),
+    )
+    const policy: Policy = { tailnetRead: handlers.tailnetRead, tailnetWrite: members.write }
+    const screened = screen(site, policy, {
+      method: request.method,
+      url: request.url,
+      host: String(request.headers.get("host")),
+      origin: String(request.headers.get("origin") ?? ""),
+      pageHeader: request.headers.get(PAGE_HEADER) === "1",
+      json: String(request.headers.get("content-type")).startsWith("application/json"),
+      paired,
+      source,
+    })
+    const path = screened.path
+    const asked: Asked = { path, listener: site.listener, source, policy, members, paired }
+    return yield* Match.valueTags(screened.decision, {
+      Refuse: ({ status, reason: why }) => Effect.succeed(reason(status, why)),
+      Brief: () => read(handlers, dist, asked, true),
+      // To the page at the listener's own address; nothing of the request goes into the Location.
+      Redirect: () => Effect.succeed(answer(308, "", { location: site.home, ...NO_STORE })),
+      Serve: () =>
+        Match.value(Option.getOrElse(screened.kind, (): RouteKind => "read")).pipe(
+          Match.when("pair", () => Effect.flatMap(body, (given) => pair(handlers, given, String(request.headers.get("user-agent")), address))),
+          Match.when("answer", () => Effect.flatMap(body, (given) => answerRoute(handlers, given))),
+          Match.when("mark", () => Effect.flatMap(body, (given) => mark(handlers, path, given))),
+          Match.orElse(() => read(handlers, dist, asked, false)),
+        ),
+    })
+  })
 
 /** The port could not be bound (another instance holds it, or the address is gone). */
 export class NotBound extends Schema.TaggedError<NotBound>()("NotBound", { message: Schema.String }) {}
@@ -385,7 +423,7 @@ export const siteOf = (place: Place, port: number): Site =>
     Match.when("loopback", () => loopbackSite(port)),
     Match.orElse((): Site => {
       const address = hostWithPort(place.address, port)
-      return { listener: place.listener, hosts: [address], names: hostsOf(port, place.names), home: `http://${address}/` }
+      return { listener: place.listener, hosts: [address], names: place.names.map((name) => hostWithPort(name, port)), home: `http://${address}/` }
     }),
   )
 
