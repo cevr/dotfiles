@@ -113,8 +113,7 @@ noncurrent snapshot objects after 14 days.
   `work gc -id <id>`, and only once each trash folder is checked to sit beside
   that workspace; otherwise, or if that gc fails, it names the trash and exits
   1. `--dry-run` prints the folders it would delete. Off Linux (or with
-  `WORKRIFT_PURGE=0`) the workspace stays in work's trash; the Rift backend
-  (`.rifts/`, rollback only) still trashes with `rift remove`. A commit
+  `WORKRIFT_PURGE=0`) the workspace stays in work's trash. A commit
   counts as unpushed only after a fetch of origin (a land pushes main from
   another workspace), and a clean merge of pushed parents counts as none.
   A half-made workspace (a create cut mid-way: a folder in `.work/<repo>/` with
@@ -130,7 +129,9 @@ noncurrent snapshot objects after 14 days.
   when `work --json list` (or `work --json bases`) fails, is missing, or
   answers anything but a list of records each with a name, id, path, state
   and since, remove refuses, quotes what came back, and deletes nothing.
-- `workrift prune [--dry-run]` archives and removes workspaces idle for two days.
+- `workrift prune [--dry-run]` lists the workspaces idle for two days; once
+  work's gc is cleared (`work_gc_safe` in the script) it removes them with
+  `work gc -idle -archive`, which keeps each one's work in its base.
 - In OpenCode, the `work` tool runs these for an agent: `create`, `list`,
   `remove` and `land` on any host, and `init`, `refresh`, `deps`, `check`,
   `sources`, `prune` (only `--dry-run`) and `storage` here. It answers to
@@ -163,11 +164,12 @@ noncurrent snapshot objects after 14 days.
 
 ## Workspaces
 
-`workrift` makes workspaces with Rift or with Ergo's `work`: the file
-`~/.config/workrift/backend` holds `rift` or `work` (absent: `rift`). The
-workbox runs `work`: a warm source is a work base, and its workspaces go to
-`.work/<source>/<branch>` next to it; the Rift details below hold for the older
-workspaces under `.rifts/`.
+`workrift` makes workspaces with Ergo's `work`: a warm source is a work base,
+and its workspaces go to `.work/<source>/<branch>` next to it. The Rift
+backend is gone. The file `~/.config/workrift/backend` is optional; when it
+exists it must say `work`: any other word (`rift`, the old default) stops every
+command before it does anything, with one line that says to write `work` into
+the file.
 
 On the exe.dev VM the root file system stays on ext4 and the workspace file
 system uses Btrfs inside `/var/lib/bite-workspaces.btrfs`, mounted through
@@ -185,15 +187,15 @@ unallocated space that metadata can grow into.
 
 Each repository has one clean warm source, such as `/workspaces/bite`. Do not
 use a warm source for feature work. `workrift` finds the source from the current
-directory: the Rift root of a workspace, or the source with the same `origin` as
+directory: the base of a workspace (or the base itself), or the source with the same `origin` as
 a normal checkout. Set `WORKRIFT_SOURCE` to choose one explicitly.
 
 `workrift create` first fast-forwards the source to the fetched default branch
 and warms it, so the snapshot holds today's tree and the branch switch rewrites
 only the branch's own changes; unchanged files keep sharing blocks with the
 source. A lock on the source's Git directory serializes `create` and `refresh`.
-It then takes a writable Btrfs snapshot with dependencies and compiled
-outputs, and creates or selects the requested Git branch, and runs the
+It then makes the workspace with `work new`, a copy-on-write clone with
+dependencies and compiled outputs, and creates or selects the requested Git branch, and runs the
 install only when the branch's lock file differs from the last install. When the
 command runs from a matching stacked checkout, it also imports `.git/gh-stack`.
 `init`, `create`, `refresh` and `deps` run themselves at nice 10, and in the
@@ -204,7 +206,7 @@ Run `gh stack checkout <PR>` in the workspace when imported metadata needs a ref
 A branch change inside a workspace can also change the lock file. For a
 repository with `lefthook.yml`, `workrift` writes an untracked
 `lefthook-local.yml` in the source that runs `workrift deps` after checkout,
-merge and rewrite. `.git/info/exclude` hides the file, and `--copy-all` copies
+merge and rewrite. `.git/info/exclude` hides the file, and the copy carries
 it into every workspace. The same moves make the build output stale, so
 `workrift deps` also runs the warm step when HEAD's tree differs from the tree
 the last warm step built. The warm runs in the foreground: it prints one line
@@ -233,12 +235,11 @@ host settings from the table in workrift's `base_settings` (for Bite: the warm s
 `bun run compile` and the `.env` link); `workrift settings` sets them on a base made
 before, as bootstrap does, and keeps a value already set to something else. With no
 warm step and no warmed tree, `refresh` and `create` say its workspaces start cold.
-Per-repository create and remove hooks
-belong in Rift's own `.rift.toml` in the source.
+Per-repository install and hook commands belong in the base's `work.toml`.
 
 `workrift prune` keeps pinned, in-use and recently modified workspaces and every
-ancestor of a kept workspace, and archives the rest to `~/rift-archive/<date>`
-for 30 days before it removes them. Pin a workspace by adding its path to
+ancestor of a kept workspace, and lists the rest. A base that holds a pinned path
+is left out whole. Pin a workspace by adding its path to
 `~/.config/workrift/keep`. No timer runs it.
 
 All workspaces share the local cache at `/workspaces/.cache/turbo`. When the base

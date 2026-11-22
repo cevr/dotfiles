@@ -2,8 +2,8 @@
 # Moves files to the home trash, including files on other volumes.
 #
 # trash-put follows the freedesktop Trash spec: a file on another volume goes to
-# `<volume top>/.Trash-<uid>`. Every Rift is its own btrfs subvolume, so a delete
-# inside a Rift left `.Trash-1000/` in the repository root, where Git sees it.
+# `<volume top>/.Trash-<uid>`. A workspace can be its own btrfs subvolume, so a
+# delete inside one left `.Trash-1000/` in the repository root, where Git sees it.
 # trash-put refuses to cross volumes even with --trash-dir, so this script moves
 # such files into the home trash itself. It writes the same `.trashinfo` records,
 # so trash-list, trash-restore, and trash-empty still work.
