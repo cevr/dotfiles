@@ -21,7 +21,12 @@ and, when origin's `prime-look` lacks some of its commits, merges it
 `prime-look` with commits origin lacks is not merged (the merge would publish
 them). A clean merge must then install as its lockfile says, pass the fork's
 `bun run check` (lint and typecheck, what its pre-push hook runs, so the push
-skips the hook), and pass the acceptance tests most exposed to host changes
+skips the hook), pass the fork's feature checks (`bun scripts/fork-checks.ts
+--fork <merge>`: the fork package tests of each feature the owner keeps,
+listed once in `scripts/fork-checks.json`; a red test, a listed file the merge
+lost, or a run that could not finish under its load wait, lock, 6 GiB disk
+floor or time bound holds the merge, the report naming the test and the
+upstream commits), and pass the acceptance tests most exposed to host changes
 (`tests/prime-*`, `tui-cpu`, `mail`, `orchestrate`) with `OPENCODE_DEV` at the
 merge, niced and without `ANTHROPIC_BASE_URL`. Green, the merge goes to origin
 first, and only once origin holds it does `prime-look` fast-forward to it (its
@@ -2854,7 +2859,9 @@ projects and messages on port 8240. It listens in two places:
 
 - `http://127.0.0.1:8240`, for this host's browser.
 - Each of the host's tailnet addresses (its `100.x.y.z` and its `fd7a:…`
-  address), for his phone and other devices on his tailnet.
+  address), for his phone and other devices on his tailnet. Open it by
+  address (`http://100.x.y.z:8240`): under its MagicDNS name it only sends
+  you on to the address (see "The address only" below).
 
 It never listens anywhere else. `mods/digest/bind.ts` refuses, in code, any
 address that is not loopback or in Tailscale's ranges (`100.64.0.0/10`,
@@ -2877,21 +2884,134 @@ crosses a network in clear. The page sends the same headers on both
 listeners (a strict CSP, `no-store` on data). Its token never goes in a URL.
 
 **Pairing.** On loopback, the page and its marks are open, and only an
-answer needs a paired browser. On the tailnet, who reads is
-`digest.tailnetRead` (a plugin option):
+answer needs a paired browser. On the tailnet, two plugin options decide who
+needs one. Both default to `"paired"`: everything needs a paired browser
+except the shell page itself, and an unpaired phone sees only how to pair.
 
-- `"member"`: any device on the tailnet reads the page unpaired. Marks
-  (read, Later, a name) and answers still need a paired browser; an
-  unpaired phone shows the digest, and the first mark it tries asks it to
-  pair.
-- `"paired"`, the plugin's default, and what the installer ships on his
-  hosts too (`scripts/daily.ts` `digestEntry`): everything needs a paired
-  browser except the shell page itself. An unpaired phone sees only how to
-  pair and a code field: no data, no project names. (2026-11-22: back to
-  `"paired"` as a stopgap, since his tailnet holds other Tailscale users'
-  devices; `"member"` returns once it means his own Tailscale user.)
+**His devices.** His tailnet is shared: it holds other Tailscale users'
+devices too (colleagues' laptops, servers). So `"member"` never means "any
+device on the tailnet". It means one of his own devices: a device whose
+Tailscale user (`UserID` in `tailscale status --json`) is this host's own.
 
-Health on the tailnet answers an unpaired request `ok` alone either way.
+- A tagged device or one shared in from another tailnet is not his.
+- Neither is an address the status does not name.
+- The request's source is the socket's peer address. A header such as
+  `X-Forwarded-For` is never read.
+- The status is read again every 30 s. A read that fails, or Tailscale not
+  running, makes every source "not his" at once. A list older than 75 s
+  counts for nothing. So a device removed from his account stops being his
+  within a recheck.
+
+The two options:
+
+- `digest.tailnetRead: "member"`: his devices read the page unpaired.
+- `digest.tailnetWrite`:
+  - `"member"`: his devices also mark (read, Later, a name) and answer
+    unpaired.
+  - `"member-except-hosts"`: as `"member"`, except the agent machines, which
+    still need a paired browser, as loopback does for an answer. The agent
+    machines are this host and the hosts named in `digest.agentHosts`.
+    An agent running there must not act as him.
+
+Being an agent machine only ever takes a permission away. It never makes a
+device his: a device of another Tailscale user stays a stranger whatever it
+calls itself.
+
+`digest.agentHosts` and `digest.excludedDevices` are lists of MagicDNS
+names, and nothing more: the config never holds an address or an ID. Each
+host keeps a **device store** that keys every one of those names by its
+Tailscale stable node ID (`ID` in `tailscale status --json`). A device
+cannot change its ID, so renaming it changes nothing.
+
+An ID enters the store only by hand, with one command, run on each host:
+
+```sh
+bun ~/Developer/personal/dotfiles/opencode/cmd/digest/devices.ts exclude lenovo-rescue
+bun ~/Developer/personal/dotfiles/opencode/cmd/digest/devices.ts agent cristians-macbook-pro-rex
+bun ~/Developer/personal/dotfiles/opencode/cmd/digest/devices.ts list
+```
+
+- `exclude <name>` and `agent <name>` look the name up once, among this
+  host's own Tailscale user's devices only (never another user's), by
+  MagicDNS name or its first label (never HostName). They print the device
+  they found (name, OS, last seen, ID) so you can confirm it is the right
+  one, and write its ID. With no device or several, nothing is written.
+- `--id <ID>` adds an ID with no name lookup. It must still be the ID of
+  one of his own devices now.
+- Every write, by name or by `--id`, checks each ID it adds against
+  Tailscale's status, read again under the store's lock. A typo, a
+  colleague's ID, a device no longer on his tailnet, or a status that does
+  not read (Tailscale stopped): exit 1, nothing written. So the store only
+  ever holds IDs that were his devices when written; one that later matches
+  nothing is a device gone (`unmatched`, harmless).
+- A full MagicDNS name (`lenovo-rescue.<tailnet>.ts.net`) keys the name the
+  installer ships, its first label (`lenovo-rescue`).
+- `forget exclude|agent <name>` removes a name and all its IDs; a name not
+  in the store exits 1.
+- `list` shows both copies' condition and which device each ID is now.
+
+The installer and the plugin never look a name up. A configure ships the
+names, and the plugin reads the store at each status read. So a rename, a
+re-registered device, another of his devices taking the name, or a lost
+store never changes which device a name keys.
+
+The store has two copies, each written whole and atomically (a temporary
+file fsynced and renamed over, under a lock, so two commands at once both
+land): `~/.local/state/opencode-digest/devices.json` and
+`~/.config/opencode-digest/devices.json`. The plugin uses the IDs of both
+copies together.
+
+- An excluded name that no readable copy keys closes the tailnet for every
+  device, reads and writes, to pairing only. That covers a store absent,
+  emptied, truncated, garbled, of another version or shape, unreadable
+  (mode 000, a folder in its place), and a name never keyed. Health says
+  `writes=paired:unkeyed:<names>[:agent-unkeyed:<names>]:store-<copy 1>/<copy 2>`,
+  naming every name still to key at once. A copy that is not a regular
+  file (a folder, a FIFO) is unreadable at once, never waited on.
+- An agent name that no copy keys closes the writes the same way
+  (`writes=paired:agent-unkeyed:<name>:store-...`).
+- When one copy is lost or the copies differ, the other still keys, and
+  health notes it: `excluded=<n>:store-absent/ok` or
+  `excluded=<n>:store-copies-differ`. Run the command again (any `--id`
+  already there) to write both copies afresh.
+- A store neither copy reads is never written over: the command refuses,
+  and you move the bad file aside.
+
+So a host's first install is closed to pairing until the command has been
+run there. That is intended: run `exclude` and `agent` on each host after
+the install, and confirm each printed device is the right one.
+
+A keyed device is excluded, or an agent host, by any of its IDs or by its
+MagicDNS name: matching more only restricts. An exclusion whose IDs and name
+match no device of his means the device is gone, for example removed from
+his tailnet. That is harmless: access stays as it is, and health notes
+`excluded=<n>:unmatched:<name>`. An agent name that matches none of his
+devices closes the writes (`paired:unresolved:<name>`).
+
+The installer (`scripts/daily.ts` `digestEntry`) ships `tailnetRead: "member"`
+and `tailnetWrite: "member-except-hosts"` on his two hosts. Each host's
+`agentHosts` is the other host's name (`bite-cristian` or
+`cristians-macbook-pro`) and his rex Mac (`cristians-macbook-pro-rex`).
+`excludedDevices` is `lenovo-rescue`. To go back, set `tailnetWrite` to
+`"paired"` there; `"member"` lets the agent machines write too.
+
+So his phone marks and answers with no pairing prompt. A browser on the Mac
+or the workbox pairs as before. A colleague's device reads nothing.
+
+**Health.** Health on the tailnet answers an unpaired request `ok` alone. On
+loopback the line ends with
+`writes=<switch> members=<n> writers=<n> excluded=<n>[:unmatched:<name>][:store-...]`.
+In order: the write switch in force; his other devices' count, excluded ones
+left out; how many of those mark and answer as him with no token right now
+(those that are not agent machines); and how many devices the exclusions
+keep out. If one of the writers runs agents too, name it in
+`digest.agentHosts`.
+A closed switch reads
+`writes=paired:<why>`, for example `paired:unresolved:<name>`,
+`paired:unkeyed:<name>:store-...`, `paired:agent-unkeyed:<name>:store-...`,
+`paired:status:<why>`, `paired:stale` or
+`paired:starting`.
+
 To pair a phone:
 
 ```sh
@@ -2899,19 +3019,39 @@ bun ~/Developer/personal/dotfiles/opencode/cmd/digest/pair.ts
 ```
 
 The command prints a one-use code (good for five minutes) and the page's
-tailnet URLs: the MagicDNS name, the short name, and the IP. Open one of
-them on the phone and type the code. The token is kept in that origin's
-`localStorage`, so each URL pairs on its own. A phone paired at
-`http://100.x.y.z:8240` and then opened at `http://<host>.<tailnet>.ts.net:8240`
-asks to pair again: run `pair.ts` once more and type the new code there.
-Keep using one URL to avoid this. `pair.ts --list` shows the paired browsers
-and `--revoke <id>|all` unpairs them.
+tailnet URLs: its addresses, `http://100.x.y.z:8240` and
+`http://[fd7a:…]:8240`. Open one of them on the phone and type the code. The
+token is kept in that origin's `localStorage`, so each address pairs on its
+own. Keep using one URL (bookmark the `100.x.y.z` one).
+`pair.ts --list` shows the paired browsers and `--revoke <id>|all` unpairs
+them.
 
-**Refusals.** A request whose `Host` is not one of the listener's own names
-(its addresses, the MagicDNS name, the short name) is refused on every route.
-So a hostile name pointed at the address (DNS rebinding) reads nothing. A
-write must come from the origin of the `Host` it names, with the page's
-header, as JSON. Pairing tries are limited by source address:
+**The address only.** On the tailnet the page answers at its address alone,
+never under a name. `http://<host>.<tailnet>.ts.net:8240/` and
+`http://<host>:8240/` only send the browser on to the address (a 308 built
+from the listener's own address); every other request under a name is
+refused (421), with a token or without. The reason: his phone reads and
+writes with no token, so its place on the tailnet is the credential, shared
+by every page open in its browser. Which server a name reaches is up to the
+browser's resolver, not Tailscale: a hostile Wi-Fi's search domain, or a
+name rebound to the host after an attacker's page loaded under it, puts a
+stranger's page in that name's origin, where it could read the view and mark
+or answer as him. No resolver decides where an address goes. A token kept
+under a name's origin is no safer (a page in that origin reads its
+`localStorage`), so a browser paired under a name before 2026-11-22 pairs
+again at the address.
+
+Loopback is unchanged: `127.0.0.1` and `localhost`. The browser and the hosts
+file keep `localhost` on this machine, never DNS, and the loopback page is
+open to programs on this host by design.
+
+**Refusals.** A request whose `Host` is not one the listener serves under
+(on loopback `127.0.0.1` and `localhost`, on the tailnet its address as a
+browser writes it) or one of its names is refused on every route. So a
+hostile name pointed at the address (DNS rebinding) reads nothing. A write
+must come from the origin of the `Host` it names, with the page's header, as
+JSON; on the tailnet any other request that sends an Origin must send that
+one too. Pairing tries are limited by source address:
 
 - each address may fail 5 times a minute;
 - past 30 failures a minute from all addresses together, an address that has

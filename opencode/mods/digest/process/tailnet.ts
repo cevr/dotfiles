@@ -26,11 +26,35 @@ export const CLIS: ReadonlyArray<string> = [
 /** How long the CLI has to answer. */
 export const STATUS_TIMEOUT = Duration.seconds(5)
 
+const Node = Schema.Struct({
+  DNSName: Schema.optionalKey(Schema.String),
+  ID: Schema.optionalKey(Schema.String),
+  HostName: Schema.optionalKey(Schema.String),
+  OS: Schema.optionalKey(Schema.String),
+  LastSeen: Schema.optionalKey(Schema.String),
+  TailscaleIPs: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.String))),
+  UserID: Schema.optionalKey(Schema.Number),
+  Tags: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.String))),
+  ShareeNode: Schema.optionalKey(Schema.Boolean),
+})
 const Status = Schema.Struct({
   BackendState: Schema.String,
-  Self: Schema.optionalKey(Schema.Struct({ DNSName: Schema.optionalKey(Schema.String), TailscaleIPs: Schema.optionalKey(Schema.Array(Schema.String)) })),
+  Self: Schema.optionalKey(Node),
+  Peer: Schema.optionalKey(Schema.NullOr(Schema.Record(Schema.String, Node))),
 })
 const decodeStatus = Schema.decodeUnknownOption(Schema.fromJsonString(Status))
+
+type NodeStatus = typeof Node.Type
+
+/** A node's MagicDNS name, without its trailing dot; none for none or an empty one. */
+const dnsNameOf = (node: Option.Option<NodeStatus>) =>
+  Option.filter(
+    Option.map(Option.flatMap(node, (each) => Option.fromUndefinedOr(each.DNSName)), (name) => name.replace(/\.$/, "")),
+    (name) => name !== "",
+  )
+
+/** A list the status may leave out or give as null: empty then. */
+const listOf = (list: Option.Option<ReadonlyArray<string>>): ReadonlyArray<string> => Option.getOrElse(list, () => [])
 
 /** Tailscale's status as `tailscale status --json` prints it; none for anything else. */
 export const statusOf = (text: string): Option.Option<TailscaleStatus> =>
@@ -38,11 +62,21 @@ export const statusOf = (text: string): Option.Option<TailscaleStatus> =>
     const self = Option.fromUndefinedOr(status.Self)
     return {
       backendState: status.BackendState,
-      dnsName: Option.filter(
-        Option.map(Option.flatMap(self, (each) => Option.fromUndefinedOr(each.DNSName)), (name) => name.replace(/\.$/, "")),
-        (name) => name !== "",
-      ),
-      ips: Option.getOrElse(Option.flatMap(self, (each) => Option.fromUndefinedOr(each.TailscaleIPs)), () => []),
+      dnsName: dnsNameOf(self),
+      ips: listOf(Option.flatMap(self, (each) => Option.fromNullishOr(each.TailscaleIPs))),
+      userId: Option.flatMap(self, (each) => Option.fromUndefinedOr(each.UserID)),
+      tagged: listOf(Option.flatMap(self, (each) => Option.fromNullishOr(each.Tags))).length > 0,
+      peers: Object.values(Option.getOrElse(Option.fromNullishOr(status.Peer), () => ({}))).map((peer) => ({
+        dnsName: dnsNameOf(Option.some(peer)),
+        stableId: Option.filter(Option.fromUndefinedOr(peer.ID), (id) => id !== ""),
+        hostName: Option.getOrElse(Option.fromUndefinedOr(peer.HostName), () => ""),
+        os: Option.getOrElse(Option.fromUndefinedOr(peer.OS), () => ""),
+        lastSeen: Option.filter(Option.fromUndefinedOr(peer.LastSeen), (seen) => seen !== "" && !seen.startsWith("0001-")),
+        ips: listOf(Option.fromNullishOr(peer.TailscaleIPs)),
+        userId: Option.fromUndefinedOr(peer.UserID),
+        tagged: listOf(Option.fromNullishOr(peer.Tags)).length > 0,
+        shared: peer.ShareeNode === true,
+      })),
     }
   })
 
@@ -95,5 +129,14 @@ const interfaces = Effect.sync((): ReadonlyArray<InterfaceAddress> => Object.val
 /** This host's name, as the health line gives it: its first label. */
 export const hostName: Effect.Effect<string> = Effect.sync(() => hostname().split(".")[0] ?? hostname())
 
+/** This host on the tailnet, and the status it was read from (members.ts reads his devices from it). */
+export interface Probed {
+  readonly tailnet: Tailnet
+  readonly status: StatusRead
+}
+
+/** This host on the tailnet now, and the status it was read from. */
+export const probeWithStatus: Effect.Effect<Probed> = Effect.map(Effect.all([interfaces, statusFrom()]), ([listed, read]) => ({ tailnet: tailnetOf(listed, read), status: read }))
+
 /** This host on the tailnet now. */
-export const probe: Effect.Effect<Tailnet> = Effect.map(Effect.all([interfaces, statusFrom()]), ([listed, read]) => tailnetOf(listed, read))
+export const probe: Effect.Effect<Tailnet> = Effect.map(probeWithStatus, (read) => read.tailnet)

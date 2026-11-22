@@ -1,6 +1,8 @@
 /**
- * `digest pair`: pair a browser with the digest page so it may answer there, and on the tailnet mark messages (and
- * read them, where `digest.tailnetRead` is "paired"); list and unpair them.
+ * `digest pair`: pair a browser with the digest page so it may answer there, and on the tailnet mark messages and
+ * read them; list and unpair them. On his hosts his own devices (his Tailscale user's) read, mark and answer on the
+ * tailnet unpaired (`digest.tailnetRead`, `digest.tailnetWrite`), so pairing is for the agent machines' browsers
+ * (this host and `digest.agentHosts`), for loopback answers, and for any device where a switch is "paired".
  *
  *   bun cmd/digest/pair.ts [--dir <digest dir>] [--port <port>]     a one-use code, and the page's link with it
  *   bun cmd/digest/pair.ts --list [--dir <digest dir>]                the browsers paired now: id, when, which browser
@@ -18,7 +20,7 @@ import { parseArgs } from "node:util"
 import { Array as Arr, Clock, Console, DateTime, Effect, Match, Option, Schema } from "effect"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import * as FilePairing from "@dotfiles/opencode-digest/filestore/pairing"
-import { hostOf, noTailnet, type Tailnet } from "@dotfiles/opencode-digest/bind"
+import { hostWithPort, noTailnet, type Tailnet } from "@dotfiles/opencode-digest/bind"
 import { HOSTNAME, PORT } from "@dotfiles/opencode-digest/http/listener"
 import { CODE_TTL_MS, MAX_PAIRED, type Paired, showCode } from "@dotfiles/opencode-digest/pairing"
 import { probe } from "@dotfiles/opencode-digest/process/tailnet"
@@ -46,10 +48,11 @@ export const targetOf = (args: ReadonlyArray<string>): Option.Option<Target> => 
 
 /**
  * What the owner reads after an issue: the link to open on this host, the code to type instead, and the page's
- * addresses on the tailnet (names first) where a phone types it. Each address is its own origin, so pairs on its own.
+ * addresses on the tailnet where a phone types it. Only its addresses: under a name the tailnet page only sends a
+ * browser on to its address (policy.ts). Each address is its own origin, so pairs on its own.
  */
 export const said = (code: string, port: number, tailnet: Tailnet = noTailnet("none")): string => {
-  const urls = [...tailnet.names, ...tailnet.addresses].map((each) => `  http://${hostOf(each)}:${port}/`)
+  const urls = tailnet.addresses.map((each) => `  http://${hostWithPort(each, port)}/`)
   const remote = Arr.match(urls, {
     onEmpty: () => [`The page has no tailnet address here (${tailnet.why}), so it is on this host only.`],
     onNonEmpty: (all) => [

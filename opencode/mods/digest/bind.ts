@@ -9,8 +9,9 @@
 //   enough. No status (no CLI, a failed or timed-out one, output that does not parse) or Tailscale not Running: no
 //   tailnet, loopback only, with the reason (health's `tailnet=no:<why>`). Read at the plugin's start and again every
 //   recheck, so a Tailscale that goes down, comes up or moves is followed.
-// - The listener's own names: each address, and the MagicDNS name and short host name from the same status. A
-//   request naming any other host is refused (DNS rebinding), on every route.
+// - The listener's names: the MagicDNS name and short host name from the same status. The tailnet listener serves
+//   under its address alone; a name only sends `GET /` on to it (policy.ts). A request naming any other host is
+//   refused (DNS rebinding), on every route.
 import { Array as Arr, Data, Match, Option, Order } from "effect"
 
 /** Why an address may not be bound. */
@@ -89,6 +90,33 @@ export interface TailscaleStatus {
   readonly dnsName: Option.Option<string>
   /** `Self.TailscaleIPs`: the only addresses that are this host's on the tailnet. */
   readonly ips: ReadonlyArray<string>
+  /** `Self.UserID`: the Tailscale user this host belongs to; none when the status has none. */
+  readonly userId: Option.Option<number>
+  /** Whether this host is a tagged device (`Self.Tags`): its UserID then names no person. */
+  readonly tagged: boolean
+  /** The other devices the status lists (`Peer`). */
+  readonly peers: ReadonlyArray<PeerStatus>
+}
+
+/** Another device on the tailnet, as Tailscale's status lists it. */
+export interface PeerStatus {
+  /** Its MagicDNS name, without the trailing dot; none when MagicDNS is off. */
+  readonly dnsName: Option.Option<string>
+  /** `ID`: its stable node ID, which the coordination server assigns and the device cannot change. */
+  readonly stableId: Option.Option<string>
+  /** `HostName`: the name the device gives itself, any name it likes; never an identity (members.ts never reads it). */
+  readonly hostName: string
+  /** `OS`, and `LastSeen` (none while online or unknown): for the device command to show a human which device it is. */
+  readonly os: string
+  readonly lastSeen: Option.Option<string>
+  /** `TailscaleIPs`. */
+  readonly ips: ReadonlyArray<string>
+  /** `UserID`: the Tailscale user it belongs to. */
+  readonly userId: Option.Option<number>
+  /** Whether it is a tagged device (`Tags`): its UserID then names no person. */
+  readonly tagged: boolean
+  /** Whether it is shared in from another tailnet (`ShareeNode`). */
+  readonly shared: boolean
 }
 
 /** The CLI's status, or why there is none: `no-cli`, `cli-failed`, `cli-timeout`, `unparseable`. */
@@ -116,6 +144,26 @@ const ADDRESS_ORDER: Order.Order<string> = Order.combine(Order.mapInput(Order.Nu
 const sameAddress = (a: string, b: string): boolean =>
   a === b || Option.getOrElse(Option.zipWith(groupsOf(a), groupsOf(b), (x, y) => x.every((each, index) => each === y[index])), () => false)
 
+/**
+ * An address in one spelling, so two spellings of one address compare equal: IPv4 as dotted octets, an IPv4-mapped
+ * IPv6 one (`::ffff:100.64.0.1`, `::ffff:6440:1`) as its IPv4 address, any other IPv6 one as eight lower-case groups
+ * in full. None for anything that is not an address plainly (a name, a zoned address, brackets).
+ */
+export const canonicalOf = (address: string): Option.Option<string> =>
+  Option.match(octetsOf(address), {
+    onSome: (octets) => Option.some(octets.join(".")),
+    onNone: () =>
+      Option.map(groupsOf(address), (groups) =>
+        Option.match(
+          Option.liftPredicate(groups, (each) => each.slice(0, 5).every((group) => group === 0) && each[5] === 0xffff),
+          {
+            onSome: (mapped) => [(mapped[6] ?? 0) >> 8, (mapped[6] ?? 0) & 0xff, (mapped[7] ?? 0) >> 8, (mapped[7] ?? 0) & 0xff].join("."),
+            onNone: () => groups.map((group) => group.toString(16)).join(":"),
+          },
+        ),
+      ),
+  })
+
 /** A backend state as a reason's word: letters, digits and dashes only. */
 const word = (text: string) => text.replace(/[^A-Za-z0-9-]/g, "").slice(0, 40)
 
@@ -142,5 +190,14 @@ export const tailnetOf = (interfaces: ReadonlyArray<InterfaceAddress>, read: Sta
 /** An address as a URL's or a Host header's host: an IPv6 one in brackets. */
 export const hostOf = (address: string): string => Option.match(Option.liftPredicate(address, (each) => each.includes(":")), { onNone: () => address, onSome: (v6) => `[${v6}]` })
 
-/** The `Host` values a listener on `port` answers to: each of its addresses and names, with the port. */
+/**
+ * An address or a name with `port` as a browser writes it in `Host` and `Origin`: the WHATWG URL serialization (an
+ * IPv6 address in brackets, lower case, its longest run of zero groups compressed; a name lower case; the scheme's
+ * default port left out). So a listener compares the header with one exact string, and two spellings of one
+ * address are never two hosts.
+ */
+export const hostWithPort = (addressOrName: string, port: number): string =>
+  Option.getOrElse(Option.map(Option.fromNullishOr(URL.parse(`http://${hostOf(addressOrName)}:${port}`)), (url) => url.host), () => `${hostOf(addressOrName)}:${port}`)
+
+/** The `Host` values loopback answers to: each name with `:port`, always (main's construction, kept as it was; the tailnet uses `hostWithPort`). */
 export const hostsOf = (port: number, addressesAndNames: ReadonlyArray<string>): ReadonlyArray<string> => addressesAndNames.map((each) => `${hostOf(each)}:${port}`)

@@ -3,7 +3,7 @@
 // range-edge values).
 import { describe, expect, test } from "bun:test"
 import { Match, Option } from "effect"
-import { type InterfaceAddress, bindable, groupsOf, hostsOf, isLoopback, isTailnet, StatusRead, type TailscaleStatus, tailnetOf } from "./bind.ts"
+import { type InterfaceAddress, bindable, canonicalOf, groupsOf, hostsOf, isLoopback, isTailnet, StatusRead, type TailscaleStatus, tailnetOf } from "./bind.ts"
 
 describe("bindable", () => {
   test("loopback and the tailnet's ranges may be bound, at their edges too", () => {
@@ -42,10 +42,16 @@ describe("bindable", () => {
     expect([groupsOf("1:2:3:4:5:6:7"), groupsOf("1::2::3"), groupsOf("1:2:3:4:5:6:7:8:9")]).toEqual([Option.none(), Option.none(), Option.none()])
     expect([isLoopback("::1"), isTailnet("FD7A:115C:A1E0::abcd")]).toEqual([true, true])
   })
+
+  test("one spelling per address: IPv4 as is, IPv4-mapped IPv6 as its IPv4, other IPv6 in full lower case; a name or a zone is none", () => {
+    expect(["100.64.0.1", "::ffff:100.64.0.1", "::FFFF:6440:1", "0:0:0:0:0:ffff:100.64.0.1"].map((each) => canonicalOf(each))).toEqual(Array.from({ length: 4 }, () => Option.some("100.64.0.1")))
+    expect(["fd7a:115c:a1e0::42", "FD7A:115C:A1E0:0:0:0:0:42", "fd7a:115c:a1e0:0000::0042"].map((each) => canonicalOf(each))).toEqual(Array.from({ length: 3 }, () => Option.some("fd7a:115c:a1e0:0:0:0:0:42")))
+    expect(["harbor", "fe80::1%en0", "[fd7a:115c:a1e0::42]", "", "100.64.0.256"].map((each) => canonicalOf(each))).toEqual(Array.from({ length: 5 }, () => Option.none()))
+  })
 })
 
 const nic = (address: string, internal = false): InterfaceAddress => ({ address, family: String(["IPv4", "IPv6"][Number(address.includes(":"))]), internal })
-const status = (ips: ReadonlyArray<string>, backendState = "Running"): StatusRead => StatusRead.Read({ status: { backendState, dnsName: Option.some("harbor.example-tailnet.ts.net"), ips } satisfies TailscaleStatus })
+const status = (ips: ReadonlyArray<string>, backendState = "Running"): StatusRead => StatusRead.Read({ status: { backendState, dnsName: Option.some("harbor.example-tailnet.ts.net"), ips, userId: Option.none(), tagged: false, peers: [] } satisfies TailscaleStatus })
 
 describe("the host on the tailnet", () => {
   // His Tailscale addresses, and beside them a WARP-like interface and a carrier hotspot's en0, both in 100.64.0.0/10.

@@ -27,7 +27,7 @@ Pick a mode by the table. Workers follow [`protocol.md`](protocol.md), carried i
 
 - Per unit: `orchestrate({ action: "lane", unit: "<unit>", purpose: "<outcome>" })` → its implementor → the focused round gate as the receipt (`bun ~/Developer/personal/dotfiles/opencode/scripts/receipt.ts -- '<commands>'`, with `gate.ts --merge <base>` where the repo has it) → `orchestrate({ action: "land", units: ["<unit>"] })` at once.
 - One land and one full gate per host at a time: the land's merge check runs before its push.
-- When a `land` or `status` answer starts `orchestrate: <N> lands on <branch> since the last verify`, call `orchestrate({ action: "verify" })` and start the subagent call it answers. Each finding becomes a fix unit.
+- When a `land` or `status` answer starts `orchestrate: <N> lands on <branch> since the last verify`, call `orchestrate({ action: "verify" })` and start the subagent call it answers. Each finding goes by where it came from (`protocol.md`, Rounds): one the unit's change introduced is its lane's next round; one the base head shows too becomes a follow-up unit.
 - Nothing waits for a verdict: the next green unit lands.
 
 ### batch
@@ -64,12 +64,12 @@ The plan is a docs file in the project (`plans/<run>-run.md`), linked as `<run d
 - **Focused checks**: a unit's round gate is its changed packages' tests and typecheck, lint of its changed files and its acceptance test, each leg under a minute (`protocol.md`, Rounds). The full gate is the land's merge check; a leg slower than a minute is a tooling unit.
 - **Stateful units start from a model**: a unit that changes behavior over time gets a model-based test as its acceptance check from round 1. A Blocker that repeats an earlier round's class makes a property over that class the next round's first deliverable.
 - **Scope never grows inside a running unit**: new work is a new unit. A rule change reaches a running unit only at its next round boundary, in one message.
-- **Decide small, reversible points** yourself by the `principle-*` skills, each in Decisions. **Owner questions never wait in a dialog**: write it with your recommendation in Owner questions, ask in one short message, keep the other units running.
+- **Decide small, reversible points** yourself by the `principle-*` skills, each in Decisions. Difficulty is never a reason (`principle-nothing-is-hard`): to options that differ only in effort, "leave it as a follow-up" is no answer; the better one is built. A follow-up is work no spec item asks for, with a trigger; a spec item never is one. **Owner questions never wait in a dialog**: write it with your recommendation in Owner questions, ask in one short message, keep the other units running.
 - **A run's rules file** (`<run dir>/common.md`) holds project facts only ([run-rules](references/run-rules.md)).
 
 ## What blocks, and what is refused
 
-- **Every verify is a fresh verifier in a clean checkout** of the head it judges. **The verifier blocks only on a shown failure**, the bar in [`protocol.md`](protocol.md) (Verifier, Proof). Everything else it proves becomes a follow-up unit, each `guard:` line a tooling unit.
+- **Every verify is a fresh verifier in a clean checkout** of the head it judges. **The verifier blocks only on a shown failure**, the bar in [`protocol.md`](protocol.md) (Verifier, Proof). Everything else it proves (a weak test, narrowed acceptance, a written-rule break) fails no round and goes by where it came from: one the unit's change introduced, the same lane closes in its next round, before that lane takes another unit; one the base head shows too becomes a follow-up unit; each `guard:` line a tooling unit.
 - **Refused**, the harm rules only: a red merge check never pushes; one land and one full gate per host at a time; the reserved actions; a subagent never lands; the Sabbath.
 - **Reserved for the user**: deploy, publish, paid runs, force-push to a shared branch, non-additive changes to stored or wire formats, anything irreversible. Push is not reserved: a green land pushes.
 

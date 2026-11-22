@@ -3,15 +3,20 @@
 // built files (page/dist, committed) and the view as JSON, and taking the owner's marks and answers.
 //
 // - Plain HTTP on the tailnet: Tailscale's WireGuard encrypts it between his devices. The token never goes in a URL.
-// - What each request may do is policy.ts's one decision, by listener, route, paired, origin and Host.
-// - GET `/health`: the health line (health.ts); on the tailnet, unpaired, `ok` alone.
+// - What each request may do is policy.ts's one decision, by listener, route, source, paired, origin and Host. The
+//   source is the socket's peer address (`socketPeer`), looked up among his devices (members.ts); a header such as
+//   X-Forwarded-For is never read.
+// - GET `/health`: the health line (health.ts); on the tailnet, unpaired, `ok` alone; on loopback with the write
+//   switch in force and his devices' count.
 //
 // - GET `/` and `/assets/<name>`: the built files, by exact name inside `dist`; no other path reads the disk.
 // - GET `/view.json`: the view (view.ts), fresh from the log and the marks at each request.
 // - POST `/api/mark` {id, mark: read | unread}, `/api/later` {id}, `/api/name` {project, name}, `/api/since` {}:
 //   one marks line each (marks.ts). A write is a POST of JSON whose Origin is the page's own and which carries
 //   PAGE_HEADER; anything else is refused and writes nothing. No GET changes state.
-// - GET `/paired.json`: `{paired}`, whether the request's TOKEN_HEADER is a paired browser's token.
+// - GET `/paired.json`: `{paired, answers}`: whether the request's TOKEN_HEADER is a paired browser's token, and
+//   whether it may answer now (paired, or from a device `digest.tailnetWrite` opens). It tells no more than an answer
+//   sent from there would, and no other site's page can read it (no CORS, CORP same-origin).
 // - POST `/api/pair` {code}: a one-use code from `bun cmd/digest/pair.ts`, for a token in the body (pairing.ts),
 //   which the page keeps in its origin's localStorage. No cookie is set or read: a cookie would reach every other
 //   server on 127.0.0.1. Past RATE_FAILURES failed tries in a minute every try is refused (429), nothing compared.
@@ -19,6 +24,8 @@
 // - POST `/api/answer` {id, option | text}: the owner's answer to an open question or needs-you item (answers.ts):
 //   200 when it went, 409 with the first answer when another closed it, 4xx when refused. Only from a paired browser.
 // - Every request must name one of its listener's own hosts (`Host`), so a name rebound to its address reads nothing.
+//   On the tailnet that is its bound address alone: under its MagicDNS or short name, `GET /` is sent on to the
+//   address (308) and every other route is refused (421), token or not (policy.ts says why).
 //
 // OpenCode serves a plugin once per directory it serves, and only one instance can bind a port on an address (the
 // socket is never made with SO_REUSEPORT, so Linux refuses a second one as macOS does): the others try again every
@@ -27,11 +34,12 @@ import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { Duration, Effect, Exit, Match, Option, Ref, Schedule, Schema, Scope } from "effect"
 import { type AnswerOutcome, PageAnswer } from "../answers.ts"
-import { bindable, BindRefused, hostOf, hostsOf, noTailnet, type Tailnet } from "../bind.ts"
-import { BRIEF, type TailnetState } from "../health.ts"
+import { bindable, BindRefused, hostOf, hostsOf, hostWithPort, noTailnet, type Tailnet } from "../bind.ts"
+import { BRIEF, isWell, localPart, type TailnetState } from "../health.ts"
 import { type MarkLine, markOf, nameOf, sinceOf } from "../marks.ts"
 import { type Pairing, TOKEN_HEADER } from "../pairing.ts"
-import { decide, type Listener, type RouteKind, type TailnetRead } from "../policy.ts"
+import { current, type Members, sourceOf, writesWord } from "../members.ts"
+import { authorityOf, Decision, decide, type Listener, mayAnswer, type Policy, type RouteKind, type Source, type TailnetRead } from "../policy.ts"
 import { nextMorning } from "../zone.ts"
 
 /** The loopback listener's address. */
@@ -65,16 +73,23 @@ export interface Handlers {
   readonly health: Effect.Effect<string>
   /** `digest.tailnetRead`: who reads the page on the tailnet. */
   readonly tailnetRead: TailnetRead
+  /** His devices now, and `digest.tailnetWrite` in force (members.ts), read again at each tailnet recheck. */
+  readonly members: Effect.Effect<Members>
 }
 
-/** A listener as a request reaches it: which one, and the hosts it answers to. */
+/**
+ * A listener as a request reaches it: which one, the hosts it serves under, the names that only send `GET /` on to
+ * its address, and that address's page (`home`, the redirect's Location, from the bound address alone).
+ */
 export interface Site {
   readonly listener: Listener
   readonly hosts: ReadonlyArray<string>
+  readonly names: ReadonlyArray<string>
+  readonly home: string
 }
 
 /** The loopback site on `port`. */
-export const loopbackSite = (port: number): Site => ({ listener: "loopback", hosts: hostsOf(port, LOOPBACK_NAMES) })
+export const loopbackSite = (port: number): Site => ({ listener: "loopback", hosts: hostsOf(port, LOOPBACK_NAMES), names: [], home: `http://${HOSTNAME}:${port}/` })
 
 /** An answer: status, headers, body. */
 interface Answer {
@@ -227,23 +242,44 @@ const isPaired = (handlers: Handlers, request: Request): Effect.Effect<boolean> 
     onSome: (token) => Effect.map(handlers.pairing.verify(token), Option.isSome),
   })
 
-const encodePaired = Schema.encodeSync(Schema.fromJsonString(Schema.Struct({ paired: Schema.Boolean })))
+const encodePaired = Schema.encodeSync(Schema.fromJsonString(Schema.Struct({ paired: Schema.Boolean, answers: Schema.Boolean })))
 
 const NO_STORE = { "cache-control": "no-store" }
 const text = (status: number, body: string): Answer => answer(status, body, { "content-type": "text/plain; charset=utf-8", ...NO_STORE })
 
+/** One request as the routes after the decision read it. */
+interface Asked {
+  readonly path: string
+  readonly listener: Listener
+  readonly source: Source
+  readonly policy: Policy
+  readonly members: Members
+  readonly paired: boolean
+}
+
+/** The health line whole: on loopback with the write switch and his devices' count, elsewhere without them. */
+const wholeHealth = (handlers: Handlers, asked: Asked) =>
+  Effect.map(handlers.health, (line) =>
+    Option.getOrElse(
+      Option.map(Option.liftPredicate(line, (each) => asked.listener === "loopback" && isWell(each)), (each) => `${each} ${localPart(writesWord(asked.members), asked.members.devices, asked.members.writers, asked.members.excluded)}`),
+      () => line,
+    ),
+  )
+
 /** A GET route's answer, once the policy served it; `brief`, the health line's `ok` alone. */
-const read = (handlers: Handlers, dist: string, path: string, paired: boolean, brief: boolean) =>
-  Match.value(path).pipe(
+const read = (handlers: Handlers, dist: string, asked: Asked, brief: boolean) =>
+  Match.value(asked.path).pipe(
     Match.when("/", () => builtFile(dist, ".", "index.html", "no-store")),
-    Match.when("/health", () => Effect.map(Option.match(Option.liftPredicate(brief, Boolean), { onSome: () => Effect.succeed(BRIEF), onNone: () => handlers.health }), (line) => text(200, line))),
+    Match.when("/health", () => Effect.map(Option.match(Option.liftPredicate(brief, Boolean), { onSome: () => Effect.succeed(BRIEF), onNone: () => wholeHealth(handlers, asked) }), (line) => text(200, line))),
     Match.when("/view.json", () =>
       handlers.view.pipe(
         Effect.map((json) => answer(200, json, { "content-type": "application/json", ...NO_STORE })),
         Effect.catch((failure) => Effect.succeed(reason(500, failure.message))),
       ),
     ),
-    Match.when("/paired.json", () => Effect.succeed(answer(200, encodePaired({ paired }), { "content-type": "application/json", ...NO_STORE }))),
+    Match.when("/paired.json", () =>
+      Effect.succeed(answer(200, encodePaired({ paired: asked.paired, answers: mayAnswer(asked.listener, asked.policy, asked.source, asked.paired) }), { "content-type": "application/json", ...NO_STORE })),
+    ),
     Match.when(
       (each) => each.startsWith("/api/"),
       () => Effect.succeed(reason(405, "a write is a POST")),
@@ -269,45 +305,103 @@ export const kindOf = (method: string, path: string): Option.Option<RouteKind> =
   )
 
 /**
- * The listener's answer to one request on `site`, from the address `source`; a defect is a 500 with the same headers,
- * never a bare one.
+ * The listener's answer to one request on `site`, from the socket peer address `address` (never a header); a defect
+ * is a 500 with the same headers, never a bare one.
  */
-export const answerOf = (handlers: Handlers, dist: string, request: Request, site: Site, source = "local"): Effect.Effect<Answer> =>
-  Effect.suspend(() => routed(handlers, dist, request, site, source)).pipe(
+export const answerOf = (handlers: Handlers, dist: string, request: Request, site: Site, address = "unknown"): Effect.Effect<Answer> =>
+  Effect.suspend(() => routed(handlers, dist, request, site, address)).pipe(
     Effect.catchCause((cause) => Effect.as(Effect.logWarning("digest page: a request failed", { cause }), reason(500, "the digest failed this request"))),
   )
 
-const routed = (handlers: Handlers, dist: string, request: Request, site: Site, source: string): Effect.Effect<Answer> => {
-  const path = new URL(request.url).pathname
-  const body = Effect.promise(() => request.text())
-  return Option.match(kindOf(request.method, path), {
-    onNone: () => Effect.succeed(reason(405, "GET or POST only")),
-    onSome: (kind) =>
-      Effect.flatMap(isPaired(handlers, request), (paired) => {
-        const facts = {
-          listener: site.listener,
-          kind,
-          host: String(request.headers.get("host")),
-          hosts: site.hosts,
-          origin: String(request.headers.get("origin") ?? ""),
-          pageHeader: request.headers.get(PAGE_HEADER) === "1",
-          json: String(request.headers.get("content-type")).startsWith("application/json"),
-          paired,
-        }
-        return Match.valueTags(decide(facts, handlers.tailnetRead), {
-          Refuse: ({ status, reason: why }) => Effect.succeed(reason(status, why)),
-          Brief: () => read(handlers, dist, path, paired, true),
-          Serve: () =>
-            Match.value(kind).pipe(
-              Match.when("pair", () => Effect.flatMap(body, (given) => pair(handlers, given, String(request.headers.get("user-agent")), source))),
-              Match.when("answer", () => Effect.flatMap(body, (given) => answerRoute(handlers, given))),
-              Match.when("mark", () => Effect.flatMap(body, (given) => mark(handlers, path, given))),
-              Match.orElse(() => read(handlers, dist, path, paired, false)),
-            ),
-        })
-      }),
+/** One request as the order reads it: its method, URL and headers, its token's verdict and its source. */
+export interface Asking {
+  readonly method: string
+  /** The URL as Bun built it (from the `Host`); it may not parse. */
+  readonly url: string
+  /** The `Host` it named, as sent; none when the header is absent (never a truthiness test: "" is one sent). */
+  readonly host: Option.Option<string>
+  /** Its `Origin`, as sent; none when the header is absent. "", " ", `null` and two joined by Bun are each sent. */
+  readonly origin: Option.Option<string>
+  readonly pageHeader: boolean
+  readonly json: boolean
+  readonly paired: boolean
+  readonly source: Source
+}
+
+/** What the order comes to: the decision, and for a request it got that far, its route; the path. */
+export interface Screened {
+  readonly decision: Decision
+  readonly kind: Option.Option<RouteKind>
+  readonly path: string
+}
+
+/** Main's answer to a URL Bun could not build, kept on loopback as it was: the defect's 500. */
+const UNPARSED = "the digest failed this request"
+
+/**
+ * The order every request takes before any route runs, in one place:
+ * 1. On the tailnet, its authority, whatever its method, path or target (policy.ts `authorityOf`): a Host that is
+ *    not the listener's address is refused (421), a GET or HEAD of `/` under one of its names sent on (308).
+ * 2. A URL that does not parse (Bun builds it from the Host): on loopback the 500 main gave, on the tailnet 421.
+ * 3. A method no route takes: 405.
+ * 4. The policy's decision (`decide`): loopback's Host, the source, the origin and headers, what the route needs.
+ * Loopback's steps 2 to 4 are main's (4afe1fda), unchanged.
+ */
+export const screen = (site: Site, policy: Policy, asking: Asking): Screened => {
+  const url = Option.fromNullishOr(URL.parse(asking.url))
+  const path = Option.match(url, { onNone: () => "", onSome: (each) => each.pathname })
+  const stopped = (decision: Decision): Screened => ({ decision, kind: Option.none(), path })
+  const rootRead = (asking.method === "GET" || asking.method === "HEAD") && path === "/"
+  const first = authorityOf({ listener: site.listener, host: asking.host, hosts: site.hosts, names: site.names, rootRead })
+  if (Option.isSome(first)) return stopped(first.value)
+  if (Option.isNone(url)) return stopped(Decision.Refuse(Match.value(site.listener).pipe(Match.when("loopback", () => ({ status: 500, reason: UNPARSED })), Match.orElse(() => ({ status: 421, reason: "this page reads no such target" })))))
+  return Option.match(kindOf(asking.method, path), {
+    onNone: () => stopped(Decision.Refuse({ status: 405, reason: "GET or POST only" })),
+    onSome: (kind) => ({
+      decision: decide({ listener: site.listener, kind, source: asking.source, host: asking.host, hosts: site.hosts, names: site.names, root: path === "/", origin: asking.origin, pageHeader: asking.pageHeader, json: asking.json, paired: asking.paired }, policy),
+      kind: Option.some(kind),
+      path,
+    }),
   })
 }
+
+const routed = (handlers: Handlers, dist: string, request: Request, site: Site, address: string): Effect.Effect<Answer> =>
+  Effect.gen(function* () {
+    const body = Effect.promise(() => request.text())
+    const paired = yield* isPaired(handlers, request)
+    const members = current(yield* handlers.members, yield* handlers.now)
+    const source = Match.value(site.listener).pipe(
+      Match.when("loopback", (): Source => "local"),
+      Match.orElse(() => sourceOf(address, members)),
+    )
+    const policy: Policy = { tailnetRead: handlers.tailnetRead, tailnetWrite: members.write }
+    const screened = screen(site, policy, {
+      method: request.method,
+      url: request.url,
+      // Presence by the header's absence alone (`get` answers null only then), never by its value.
+      host: Option.fromNullishOr(request.headers.get("host")),
+      origin: Option.fromNullishOr(request.headers.get("origin")),
+      pageHeader: request.headers.get(PAGE_HEADER) === "1",
+      json: String(request.headers.get("content-type")).startsWith("application/json"),
+      paired,
+      source,
+    })
+    const path = screened.path
+    const asked: Asked = { path, listener: site.listener, source, policy, members, paired }
+    return yield* Match.valueTags(screened.decision, {
+      Refuse: ({ status, reason: why }) => Effect.succeed(reason(status, why)),
+      Brief: () => read(handlers, dist, asked, true),
+      // To the page at the listener's own address; nothing of the request goes into the Location.
+      Redirect: () => Effect.succeed(answer(308, "", { location: site.home, ...NO_STORE })),
+      Serve: () =>
+        Match.value(Option.getOrElse(screened.kind, (): RouteKind => "read")).pipe(
+          Match.when("pair", () => Effect.flatMap(body, (given) => pair(handlers, given, String(request.headers.get("user-agent")), address))),
+          Match.when("answer", () => Effect.flatMap(body, (given) => answerRoute(handlers, given))),
+          Match.when("mark", () => Effect.flatMap(body, (given) => mark(handlers, path, given))),
+          Match.orElse(() => read(handlers, dist, asked, false)),
+        ),
+    })
+  })
 
 /** The port could not be bound (another instance holds it, or the address is gone). */
 export class NotBound extends Schema.TaggedError<NotBound>()("NotBound", { message: Schema.String }) {}
@@ -317,22 +411,35 @@ export interface Place {
   readonly address: string
   readonly port: number
   readonly listener: Listener
-  /** Its names beside its address (the tailnet's MagicDNS name and short name); loopback's are LOOPBACK_NAMES. */
+  /** The tailnet's MagicDNS name and short name, which only send `GET /` on to the address; loopback's are LOOPBACK_NAMES. */
   readonly names: ReadonlyArray<string>
 }
 
-/** The site a place serves once bound on `port`: its address and names, with the port. */
+/**
+ * The site a place serves once bound on `port`. The tailnet listener serves under its bound address alone, as a
+ * browser writes it; its names only send `GET /` on to that address (policy.ts).
+ */
 export const siteOf = (place: Place, port: number): Site =>
   Match.value(place.listener).pipe(
     Match.when("loopback", () => loopbackSite(port)),
-    Match.orElse(() => ({ listener: place.listener, hosts: hostsOf(port, [place.address, ...place.names]) })),
+    Match.orElse((): Site => {
+      const address = hostWithPort(place.address, port)
+      return { listener: place.listener, hosts: [address], names: place.names.map((name) => hostWithPort(name, port)), home: `http://${address}/` }
+    }),
   )
+
+/** Where a request came from: its socket's peer address, as the server saw it; never a header. */
+export type PeerOf = (request: Request, server: Bun.Server<unknown>) => string
+
+/** The socket's peer address (Bun's `requestIP`); `unknown` when it has none, which no rule admits. */
+export const socketPeer: PeerOf = (request, server) => Option.getOrElse(Option.map(Option.fromNullishOr(server.requestIP(request)), (each) => each.address), () => "unknown")
 
 /**
  * Listen at `place` until the scope closes; the address and port bound. An address that is not loopback or the
- * tailnet's is refused before any socket is made (bind.ts), whatever asked for it.
+ * tailnet's is refused before any socket is made (bind.ts), whatever asked for it. `peerOf` is the socket's peer
+ * address; a test, which binds loopback only, stands a tailnet address in for it here.
  */
-export const listen = (place: Place, handlers: Handlers, dist: string): Effect.Effect<{ readonly hostname: string; readonly port: number }, NotBound | BindRefused, Scope.Scope> =>
+export const listen = (place: Place, handlers: Handlers, dist: string, peerOf: PeerOf = socketPeer): Effect.Effect<{ readonly hostname: string; readonly port: number }, NotBound | BindRefused, Scope.Scope> =>
   Effect.gen(function* () {
     const refused = bindable(place.address)
     if (Option.isSome(refused)) return yield* refused.value
@@ -340,7 +447,7 @@ export const listen = (place: Place, handlers: Handlers, dist: string): Effect.E
     const sites = { current: siteOf(place, place.port) }
     const respond = (request: Request, server: Bun.Server<unknown>) =>
       Effect.runPromiseWith(context)(
-        Effect.map(answerOf(handlers, dist, request, sites.current, Option.getOrElse(Option.map(Option.fromNullishOr(server.requestIP(request)), (each) => each.address), () => "unknown")), (each) => new Response(each.body, { status: each.status, headers: each.headers })),
+        Effect.map(answerOf(handlers, dist, request, sites.current, peerOf(request, server)), (each) => new Response(each.body, { status: each.status, headers: each.headers })),
       )
     const server = yield* Effect.acquireRelease(
       Effect.try({
@@ -389,6 +496,7 @@ export const serveTailnet = (
   probe: Effect.Effect<Tailnet>,
   state: Ref.Ref<TailnetState>,
   every: Duration.Duration = RECHECK,
+  peerOf: PeerOf = socketPeer,
 ): Effect.Effect<never, never, Scope.Scope> =>
   Effect.gen(function* () {
     const held = new Map<string, Held>()
@@ -409,7 +517,7 @@ export const serveTailnet = (
         ([key, place]) =>
           Effect.gen(function* () {
             const scope = yield* Scope.make()
-            const exit = yield* Effect.exit(Scope.provide(scope)(listen(place, handlers, dist)))
+            const exit = yield* Effect.exit(Scope.provide(scope)(listen(place, handlers, dist, peerOf)))
             if (Exit.isSuccess(exit)) {
               held.set(key, { place, scope })
               return yield* Effect.logInfo(`digest page: listening on http://${hostOf(place.address)}:${port}`)

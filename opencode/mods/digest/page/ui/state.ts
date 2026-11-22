@@ -21,15 +21,17 @@ export const [editing, setEditing] = createSignal(false)
 /** The page on the tailnet, not paired: it shows only how to pair, and no data. */
 export const [locked, setLocked] = createSignal(false)
 /**
- * The page on the tailnet with reading open to every member (digest.tailnetRead "member"), not paired: a mark was
- * refused, so it shows the digest, opens messages without marking them, and offers pairing to mark and answer.
+ * The page on the tailnet with reading open (digest.tailnetRead "member") but marking not (an agent machine, or
+ * tailnetWrite "paired"), not paired: a mark was refused, so it shows the digest, opens messages without marking
+ * them, and offers pairing to mark and answer. On one of his devices with writes open, no mark is refused, so this
+ * never shows.
  */
 export const [marksLocked, setMarksLocked] = createSignal(false)
 
 /** A mark refused for want of pairing: a token it kept is no longer known (or there is none), so it is forgotten. */
 const markRefused = () => {
   Api.keepToken("")
-  setPaired(false)
+  setAnswers(false)
   setMarksLocked(true)
 }
 
@@ -86,7 +88,7 @@ export const refresh = (): Promise<void> => {
       if (failure instanceof Api.Unpaired) {
         Api.keepToken("")
         setView(undefined)
-        setPaired(false)
+        setAnswers(false)
         setProblem(undefined)
         return void setLocked(true)
       }
@@ -125,8 +127,11 @@ export const renameProject = (id: string, name: string) => void act(Api.rename(i
 
 // ── Answers ──
 
-/** Whether this browser is paired (may answer); unknown until /paired.json answers. */
-export const [paired, setPaired] = createSignal<boolean | undefined>(undefined)
+/**
+ * Whether this browser may answer: paired, or one of his own devices where the tailnet's writes are open; unknown
+ * until /paired.json answers. No: the page offers pairing where an answer would go.
+ */
+export const [answers, setAnswers] = createSignal<boolean | undefined>(undefined)
 /** The last pairing try's refusal, shown under the code field. */
 export const [pairProblem, setPairProblem] = createSignal<string | undefined>(undefined)
 /** What became of each answer sent from this page, by message id. */
@@ -139,13 +144,13 @@ export const pairWith = (code: string) =>
   Api.pair(code.trim())
     .then(() => {
       setPairProblem(undefined)
-      setPaired(true)
+      setAnswers(true)
       setMarksLocked(false)
       return refresh()
     })
     .catch((failure: Error) => {
       setPairProblem(failure.message)
-      return Api.fetchPaired().then(setPaired).catch(() => void setPaired(false))
+      return Api.fetchAnswers().then(setAnswers).catch(() => void setAnswers(false))
     })
 
 /** His answer to `message`: sent once (a second press while it goes does nothing), then the view again. */
@@ -158,7 +163,7 @@ export const answerMessage = (message: Message, given: { readonly option: string
       // A token the server no longer knows (revoked, or the pairing file deleted): forget it, and pair again.
       if (outcome.tag === "refused" && outcome.status === 401) {
         Api.keepToken("")
-        setPaired(false)
+        setAnswers(false)
       }
     })
     .catch((failure: Error) => void setOutcomes((all) => new Map([...all, [message.id, { tag: "refused", status: 0, reason: failure.message }]])))
@@ -171,7 +176,7 @@ export const answerMessage = (message: Message, given: { readonly option: string
 /** The link's `#pair=<code>`, taken once and cleared from the address bar so a reload never replays it. */
 const pairFromLink = () => {
   const code = new URLSearchParams(location.hash.slice(1)).get("pair")
-  if (code === null) return Api.fetchPaired().then(setPaired).catch(() => void setPaired(false))
+  if (code === null) return Api.fetchAnswers().then(setAnswers).catch(() => void setAnswers(false))
   history.replaceState(null, "", `${location.pathname}${location.search}`)
   return pairWith(code)
 }

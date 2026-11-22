@@ -46,10 +46,10 @@ import { Effect, Option, Schema } from "effect"
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, hostname } from "node:os"
 import { dirname, join, resolve } from "node:path"
-import { type Catalog, DEFAULT_FORK, loadCatalog, loginStoreDir, newestRelease } from "../testbeds/gamut/gamut.ts"
+import { type Catalog, loadCatalog, loginStoreDir, newestRelease } from "../testbeds/gamut/gamut.ts"
 import { BUILTIN_AUTOMATION_OFF, BUILTIN_BTW_OFF, SERVER_OFF, SERVER_PLUGINS, serverEntry, serverEntryDir, TUI_OFF, tuiPluginsOf } from "../mods/update/trees.ts"
 import type { Settings } from "../mods/update/settings.ts"
-import type { TailnetRead } from "../mods/digest/policy.ts"
+import type { TailnetRead, TailnetWrite } from "../mods/digest/policy.ts"
 import { readyFork } from "./fork.ts"
 import { upstreamFile } from "../mods/prime/update.ts"
 import { hostLocks } from "../mods/work/process/landing.ts"
@@ -201,16 +201,43 @@ export const OWNER_TIMEZONE = "America/Montreal"
 /**
  * The digest's plugin entry. On one of the owner's hosts (`FLEET`):
  * - `digest.timezone` is his;
- * - `digest.tailnetRead` is `"paired"`, named outright so the tree's overlay, written whole each update, replaces
- *   an earlier build's `"member"`: reading on the tailnet needs a paired browser. A stopgap (2026-11-22): his
- *   tailnet holds other Tailscale users' devices, and `"member"` returns once it means his own Tailscale user.
+ * - `digest.tailnetRead` is `"member"`: his own devices (this host's Tailscale user's; never another user's on his
+ *   shared tailnet) read the page unpaired (owner, 2026-11-22: "Tailnet can read");
+ * - `digest.tailnetWrite` is `"member-except-hosts"`: those devices also mark and answer unpaired, except the agent
+ *   machines, this host and the other fleet hosts (where agents run), which pair as before (owner, 2026-11-22:
+ *   "the tailnet is the authentication");
+ * - `digest.agentHosts` names the other fleet hosts by their MagicDNS first label (`fleetOthersOf`) and his other
+ *   agent machines (`OWNER_AGENT_DEVICES`); `digest.excludedDevices` names his devices that get nothing unpaired,
+ *   reads included (`OWNER_EXCLUDED_DEVICES`). Names only: the installer never looks a device up. Each host's device
+ *   store keys them by stable node ID, once, by hand (`bun cmd/digest/devices.ts agent|exclude <name>`); until it
+ *   does, an unkeyed exclusion closes the tailnet to "paired" and an unkeyed agent host closes its writes.
+ * Set `tailnetWrite` to `"paired"` here to make marks and answers need pairing again, or `"member"` to let the agent
+ * machines write too.
  *
- * Elsewhere the bare plugin: the host's zone, and the plugin's default `"paired"`.
+ * Elsewhere the bare plugin: the host's zone, and the plugin's defaults, `"paired"` for both.
  */
 export const digestEntry = (digest: string, fleet: { readonly host: string }): PluginEntry => {
   if (peersOf(fleet.host).length === 0) return digest
-  return { package: digest, options: { timezone: OWNER_TIMEZONE, tailnetRead: "paired" satisfies TailnetRead } }
+  return {
+    package: digest,
+    options: {
+      timezone: OWNER_TIMEZONE,
+      tailnetRead: "member" satisfies TailnetRead,
+      tailnetWrite: "member-except-hosts" satisfies TailnetWrite,
+      agentHosts: [...fleetOthersOf(fleet.host), ...OWNER_AGENT_DEVICES],
+      excludedDevices: OWNER_EXCLUDED_DEVICES,
+    },
+  }
 }
+
+/** His devices beyond the fleet that run agents (owner, 2026-11-22): they read on the tailnet, and pair to write. */
+export const OWNER_AGENT_DEVICES: ReadonlyArray<string> = ["cristians-macbook-pro-rex"]
+
+/** His devices that get nothing unpaired on the tailnet, as if another user's (owner, 2026-11-22: "remove the lenovo-rescue"). */
+export const OWNER_EXCLUDED_DEVICES: ReadonlyArray<string> = ["lenovo-rescue"]
+
+/** The fleet's other hosts by their Tailscale names (each host's `FLEET` name is its MagicDNS first label); none off the fleet. */
+export const fleetOthersOf = (host: string): ReadonlyArray<string> => Object.keys(FLEET).filter((name) => peersOf(host).length > 0 && name !== host.toLowerCase().replace(/\.local$/, ""))
 
 /** This machine's Tailscale IPv4 address, from the `tailscale` CLI (on PATH, or the Mac app's), or undefined. */
 export const tailscaleAddress = async (): Promise<string | undefined> => {
@@ -509,9 +536,9 @@ const writeTree = (home: string, fork: string, tree: { readonly dir: string; rea
     writeJson(join(tree.dir, "config/cli.json"), { plugins: tuiEntries(opencode, (name) => pluginDirIn(name, opencode, join(tree.at, "opencode"))) })
   })
 
-/** The fork checkout daily builds and configures from: `OPENCODE_DEV`, else the default, checked. */
-const forkOf = (env: NodeJS.ProcessEnv): string => {
-  const checked = readyFork(env.OPENCODE_DEV || DEFAULT_FORK)
+/** The fork checkout daily builds and configures from: `OPENCODE_DEV`, checked (`readyFork`); unset, it throws `NO_FORK`, with no guessed default. */
+export const forkOf = (env: NodeJS.ProcessEnv): string => {
+  const checked = readyFork(env.OPENCODE_DEV)
   if ("problem" in checked) throw new Error(checked.problem)
   if (!existsSync(join(checked.fork, "packages/cli/script/build.ts"))) throw new Error(`no OpenCode checkout at ${checked.fork}: expected packages/cli/script/build.ts; set OPENCODE_DEV`)
   return checked.fork
