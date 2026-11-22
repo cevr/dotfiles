@@ -374,7 +374,20 @@ export interface OpenOptions {
   readonly now: number
 }
 
-const PRAGMAS = ["PRAGMA busy_timeout = 5000", "PRAGMA foreign_keys = ON"]
+/** How long a writer waits on another's lock, ms: SQLite's busy timeout, and the open's own retries. */
+const BUSY_MS = 5000
+const PRAGMAS = [`PRAGMA busy_timeout = ${BUSY_MS}`, "PRAGMA foreign_keys = ON"]
+
+const isBusy = (cause: unknown): boolean => cause instanceof Error && "code" in cause && cause.code === "SQLITE_BUSY"
+
+/** `work`, retried every 20 ms while SQLite answers SQLITE_BUSY until `deadline`; its last try's outcome, thrown as it throws. */
+const settled = <A>(work: () => A, deadline: number): A => {
+  const done = Result.try({ try: work, catch: (cause) => cause })
+  if (Result.isSuccess(done)) return done.success
+  if (!isBusy(done.failure) || Date.now() >= deadline) return work()
+  Bun.sleepSync(20)
+  return settled(work, deadline)
+}
 
 /** An open database, and why its writes are refused when they are. */
 interface Connected {
@@ -392,11 +405,14 @@ const connect = (path: string, options: OpenOptions): Connected => {
   mkdirSync(dirname(path), { recursive: true })
   const db = new Database(path, { create: true, strict: true })
   for (const pragma of PRAGMAS) db.run(pragma)
-  db.run("PRAGMA journal_mode = WAL")
+  // Two writers opening a new file at once (two server locations, the CLI) race for the switch to WAL, which SQLite
+  // answers SQLITE_BUSY at once, past the busy timeout: retried for as long as the timeout.
+  const deadline = Date.now() + BUSY_MS
+  settled(() => db.run("PRAGMA journal_mode = WAL"), deadline)
   db.run("PRAGMA synchronous = NORMAL")
-  const version = versionOf(db)
+  const version = settled(() => versionOf(db), deadline)
   if (version > VERSION) return { db, refusal: Option.some(`record: ${path} is version ${version}; this code writes version ${VERSION}: update it to write`) }
-  migrate(db)
+  settled(() => migrate(db), deadline)
   backup(db, path, options.now)
   return { db, refusal: Option.none() }
 }
