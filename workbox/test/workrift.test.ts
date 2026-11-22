@@ -2195,6 +2195,35 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
   )
 
   test(
+    "a running refresh holds the base's lock under its own name: its ticket is a writer's, names its pid and purpose, says it holds, and a create waiting behind it names it",
+    async () => {
+      const { w } = loaded("refresh-holds")
+      const gate = join(w.dir, "gate")
+      sh(w.app, w.env, "git", "config", "workrift.install", `until [ -e '${gate}' ]; do sleep 0.05; done`)
+      w.push("main", { "bun.lock": "main-1\n" })
+      const refresh = Bun.spawn([SCRIPT, "refresh"], { cwd: w.app, env: w.env, stdout: "ignore", stderr: "pipe" })
+      const queue = join(stateOf(w.app), "base")
+      const writers = () => (existsSync(queue) ? readdirSync(queue).filter((name) => name.endsWith(".w")) : [])
+      while (!writers().some((name) => existsSync(join(queue, `${name}.in`)))) await Bun.sleep(20)
+      const [ticket] = writers()
+      const record = lines(readFileSync(join(queue, ticket!), "utf8"))
+      // The refresh re-runs itself under nice: the holder is the process that runs now, a descendant of the one spawned.
+      expect(record[3]).toBe("refresh")
+      expect(sh(w.app, w.env, "ps", "-o", "lstart=", "-p", record[0]!).trim()).toBe(record[1])
+      expect(existsSync(join(queue, `${ticket}.in`))).toBe(true)
+      const create = Bun.spawn([SCRIPT, "create", "feat/behind"], { cwd: w.app, env: w.env, stdout: "pipe", stderr: "pipe" })
+      while (readdirSync(queue).filter((name) => /\.[rw]$/.test(name)).length < 2) await Bun.sleep(20)
+      writeFileSync(gate, "")
+      expect(await refresh.exited).toBe(0)
+      expect(await create.exited).toBe(0)
+      const err = await new Response(create.stderr).text()
+      expect(err).toMatch(new RegExp(`waiting for the lock of ${w.app}: behind 1; the first pid ${record[0]} \\(refresh\\), holding since`))
+      expect(readdirSync(queue)).toEqual([])
+    },
+    60_000,
+  )
+
+  test(
     "red on main: twelve refreshes against a slow one are served in the order they came",
     async () => {
       const { w } = loaded("fifo")
