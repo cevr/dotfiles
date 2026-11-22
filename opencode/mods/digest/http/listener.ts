@@ -7,9 +7,11 @@
 // - POST `/api/mark` {id, mark: read | unread}, `/api/later` {id}, `/api/name` {project, name}, `/api/since` {}:
 //   one marks line each (marks.ts). A write is a POST of JSON whose Origin is the page's own and which carries
 //   PAGE_HEADER; anything else is refused and writes nothing. No GET changes state.
-// - GET `/paired.json`: `{paired}`, whether this browser's cookie is one the digest signed.
-// - POST `/api/pair` {code}: a one-use code from `bun cmd/digest/pair.ts`, for the pairing cookie (pairing.ts); past
-//   RATE_FAILURES failures in a minute every try is refused (429) until the minute moves on.
+// - GET `/paired.json`: `{paired}`, whether the request's TOKEN_HEADER is a paired browser's token.
+// - POST `/api/pair` {code}: a one-use code from `bun cmd/digest/pair.ts`, for a token in the body (pairing.ts),
+//   which the page keeps in its origin's localStorage. No cookie is set or read: a cookie would reach every other
+//   server on 127.0.0.1. Past RATE_FAILURES failed tries in a minute every try is refused (429), nothing compared.
+// - Every answer, an error too, carries SECURITY (a CSP with script-src 'self' and no inline script).
 // - POST `/api/answer` {id, option | text}: the owner's answer to an open question or needs-you item (answers.ts):
 //   200 when it went, 409 with the first answer when another closed it, 4xx when refused. Only from a paired browser.
 // - Every request must name a loopback host (`Host`), so a name rebound to 127.0.0.1 reads nothing. What each route
@@ -19,10 +21,10 @@
 // again every RETRY (`serve`), so one listens while any instance runs, and a restart hands the port over.
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
-import { Duration, Effect, Match, Option, Ref, Schedule, Schema, type Scope } from "effect"
+import { Duration, Effect, Match, Option, Schedule, Schema, type Scope } from "effect"
 import { type AnswerOutcome, PageAnswer } from "../answers.ts"
 import { type MarkLine, markOf, nameOf, sinceOf } from "../marks.ts"
-import { cookieOf, failuresIn, type Listener, mayTry, needOf, type Pairing, type RouteKind, setCookie } from "../pairing.ts"
+import { type Listener, needOf, type Pairing, type RouteKind, TOKEN_HEADER } from "../pairing.ts"
 import { nextMorning } from "../zone.ts"
 
 /** The only address this unit binds. */
@@ -50,8 +52,6 @@ export interface Handlers {
   /** Send the owner's answer through the plugin that owns its message. */
   readonly answer: (input: PageAnswer) => Effect.Effect<AnswerOutcome>
   readonly pairing: Pairing
-  /** The failed pairings of the last minute, for the rate limit: this listener's own. */
-  readonly failures: Ref.Ref<ReadonlyArray<number>>
 }
 
 /** An answer: status, headers, body. */
@@ -153,22 +153,27 @@ const PairInput = Schema.Struct({ code: Schema.String.check(Schema.isMaxLength(6
 const decodePair = Schema.decodeUnknownOption(Schema.fromJsonString(PairInput))
 const decodeAnswer = Schema.decodeUnknownOption(Schema.fromJsonString(PageAnswer))
 
-/** `/api/pair`: a code for the cookie (204), unless the minute's failures are spent (429); a failed try counts. */
-const pair = (handlers: Handlers, body: string) =>
+const encodePairedBody = Schema.encodeSync(Schema.fromJsonString(Schema.Struct({ id: Schema.String, token: Schema.String })))
+
+/**
+ * `/api/pair`: a code for a token, in the body (200), never in a header the browser keeps by itself. The pairing
+ * counts a failed try, and past the minute's failures it refuses before comparing (429).
+ */
+const pair = (handlers: Handlers, body: string, label: string) =>
   Effect.gen(function* () {
     const now = yield* handlers.now
-    const recent = failuresIn(yield* Ref.get(handlers.failures), now)
-    if (!mayTry(recent, now)) return reason(429, "too many pairing tries: wait a minute, then make a new code")
     const input = decodePair(body)
     if (Option.isNone(input)) return reason(400, "not a /api/pair request")
-    const failed = (status: number, text: string) => Ref.set(handlers.failures, [...recent, now]).pipe(Effect.as(reason(status, text)))
-    return yield* handlers.pairing.exchange(input.value.code, now).pipe(
-      Effect.map((cookie) => answer(204, "", { "set-cookie": setCookie(cookie), "cache-control": "no-store" })),
+    return yield* handlers.pairing.exchange(input.value.code, now, label).pipe(
+      Effect.map((paired) => answer(200, encodePairedBody(paired), { "content-type": "application/json", "cache-control": "no-store" })),
       Effect.catchTags({
         PairRefused: (refused) =>
-          Match.value(refused.reason).pipe(
-            Match.when("expired", () => failed(410, "that code is out of time: make another with bun cmd/digest/pair.ts")),
-            Match.orElse(() => failed(403, "that code is not one, or was used already")),
+          Effect.succeed(
+            Match.value(refused.reason).pipe(
+              Match.when("expired", () => reason(410, "that code is out of time: make another with bun cmd/digest/pair.ts")),
+              Match.when("limited", () => reason(429, "too many pairing tries: wait a minute, then make a new code")),
+              Match.orElse(() => reason(403, "that code is not one, or was used already")),
+            ),
           ),
         PairingUnavailable: (failure) => Effect.succeed(reason(500, failure.message)),
       }),
@@ -205,11 +210,11 @@ const answerRoute = (handlers: Handlers, body: string) =>
     onSome: (input) => Effect.map(handlers.answer(input), outcomeAnswer),
   })
 
-/** Whether the request carries a cookie this digest signed. */
+/** Whether the request carries a paired browser's token in TOKEN_HEADER: the only credential read, never a cookie. */
 const isPaired = (handlers: Handlers, request: Request): Effect.Effect<boolean> =>
-  Option.match(Option.flatMap(Option.fromNullishOr(request.headers.get("cookie")), cookieOf), {
+  Option.match(Option.fromNullishOr(request.headers.get(TOKEN_HEADER)), {
     onNone: () => Effect.succeed(false),
-    onSome: handlers.pairing.verify,
+    onSome: (token) => Effect.map(handlers.pairing.verify(token), Option.isSome),
   })
 
 const encodePaired = Schema.encodeSync(Schema.fromJsonString(Schema.Struct({ paired: Schema.Boolean })))
@@ -257,8 +262,13 @@ const admitted = (handlers: Handlers, request: Request, host: string, listener: 
     return Option.some(reason(401, "pair this browser first: run bun cmd/digest/pair.ts and open the link it prints"))
   })
 
-/** The listener's answer to one request, on `listener` (this unit serves loopback only). */
-export const answerOf = (handlers: Handlers, dist: string, request: Request, listener: Listener = "loopback"): Effect.Effect<Answer> => {
+/** The listener's answer to one request, on `listener`; a defect is a 500 with the same headers, never a bare one. */
+export const answerOf = (handlers: Handlers, dist: string, request: Request, listener: Listener = "loopback"): Effect.Effect<Answer> =>
+  Effect.suspend(() => routed(handlers, dist, request, listener)).pipe(
+    Effect.catchCause((cause) => Effect.as(Effect.logWarning("digest page: a request failed", { cause }), reason(500, "the digest failed this request"))),
+  )
+
+const routed = (handlers: Handlers, dist: string, request: Request, listener: Listener): Effect.Effect<Answer> => {
   const host = String(request.headers.get("host"))
   if (!LOOPBACK_HOST.test(host)) return Effect.succeed(reason(421, "this page answers on its loopback name only"))
   const path = new URL(request.url).pathname
@@ -272,7 +282,7 @@ export const answerOf = (handlers: Handlers, dist: string, request: Request, lis
           onNone: () =>
             Match.value(kind).pipe(
               Match.when("read", () => read(handlers, dist, path, request)),
-              Match.when("pair", () => Effect.flatMap(body, (text) => pair(handlers, text))),
+              Match.when("pair", () => Effect.flatMap(body, (text) => pair(handlers, text, String(request.headers.get("user-agent"))))),
               Match.when("answer", () => Effect.flatMap(body, (text) => answerRoute(handlers, text))),
               Match.when("mark", () => Effect.flatMap(body, (text) => mark(handlers, path, text))),
               Match.exhaustive,

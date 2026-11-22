@@ -1,37 +1,47 @@
 /**
- * `digest pair`: a one-use code that pairs one browser with the digest page, so it may answer there.
+ * `digest pair`: pair a browser with the digest page so it may answer there; list and unpair them.
  *
- *   bun cmd/digest/pair.ts [--dir <digest dir>] [--port <port>]
+ *   bun cmd/digest/pair.ts [--dir <digest dir>] [--port <port>]     a one-use code, and the page's link with it
+ *   bun cmd/digest/pair.ts --list [--dir <digest dir>]                the browsers paired now: id, when, which browser
+ *   bun cmd/digest/pair.ts --revoke <id>|all [--dir <digest dir>]     unpair one browser, or every one
  *
- * It prints the page's link with the code in it (`http://127.0.0.1:8240/#pair=<code>`) and the code alone, to type
- * on the page instead. The code is good once, for five minutes; only its hash is kept, in the pairing file beside
- * the log (`--dir`, default `$XDG_STATE_HOME/opencode-digest`, the digest plugin's). Run it again for another
- * browser; deleting `pairing.json` unpairs every browser.
+ * - The code is good once, for five minutes. The page exchanges it for a token, which it keeps in its own origin's
+ *   storage.
+ * - Only hashes are kept, in the pairing file beside the log (`--dir`, default `$XDG_STATE_HOME/opencode-digest`,
+ *   the digest plugin's).
+ * - Up to MAX_PAIRED browsers are paired at once (his Mac's, his phone's, a few more). One more unpairs the oldest.
+ * - A revoked browser's next answer is refused, and its page asks to pair again.
+ * - The link carries the one-use code, never a token; nothing printed here pairs once the code is used or out of time.
  */
 import { parseArgs } from "node:util"
-import { Clock, Console, Effect, Option, Schema } from "effect"
+import { Array as Arr, Clock, Console, DateTime, Effect, Match, Option, Schema } from "effect"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import * as FilePairing from "@dotfiles/opencode-digest/filestore/pairing"
 import { HOSTNAME, PORT } from "@dotfiles/opencode-digest/http/listener"
-import { CODE_TTL_MS, showCode } from "@dotfiles/opencode-digest/pairing"
+import { CODE_TTL_MS, MAX_PAIRED, type Paired, showCode } from "@dotfiles/opencode-digest/pairing"
 
-/** What one pairing writes to, and the page it links to. */
-export interface Target {
-  readonly dir: string
-  readonly port: number
-}
+/** What the command does, and where. */
+export type Target =
+  | { readonly kind: "issue"; readonly dir: string; readonly port: number }
+  | { readonly kind: "list"; readonly dir: string }
+  | { readonly kind: "revoke"; readonly dir: string; readonly which: { readonly id: string } | "all" }
 
 /** The target the arguments name; none for a port that is not one. */
 export const targetOf = (args: ReadonlyArray<string>): Option.Option<Target> => {
-  const { values } = parseArgs({ args: [...args], options: { dir: { type: "string" }, port: { type: "string" } }, strict: true })
+  const { values } = parseArgs({ args: [...args], options: { dir: { type: "string" }, port: { type: "string" }, list: { type: "boolean" }, revoke: { type: "string" } }, strict: true })
+  const dir = Option.getOrElse(Option.fromUndefinedOr(values.dir), () => `${TuiDirs.dirs().state}/opencode-digest`)
   const port = Option.getOrElse(Option.map(Option.fromUndefinedOr(values.port), Number), () => PORT)
-  return Option.map(
-    Option.liftPredicate(port, (each) => Number.isInteger(each) && each > 0 && each < 65_536),
-    (valid) => ({ dir: Option.getOrElse(Option.fromUndefinedOr(values.dir), () => `${TuiDirs.dirs().state}/opencode-digest`), port: valid }),
-  )
+  return Option.match(Option.fromUndefinedOr(values.revoke), {
+    onSome: (revoke) => Option.some<Target>({ kind: "revoke", dir, which: Option.getOrElse(Option.as(Option.liftPredicate(revoke, (each) => each === "all"), "all" as const), () => ({ id: revoke })) }),
+    onNone: () =>
+      Option.match(Option.liftPredicate(values.list, (each) => each === true), {
+        onSome: () => Option.some<Target>({ kind: "list", dir }),
+        onNone: () => Option.map(Option.liftPredicate(port, (each) => Number.isInteger(each) && each > 0 && each < 65_536), (valid): Target => ({ kind: "issue", dir, port: valid })),
+      }),
+  })
 }
 
-/** What the owner reads: the link to open, and the code to type instead. */
+/** What the owner reads after an issue: the link to open, and the code to type instead. */
 export const said = (code: string, port: number): string =>
   [
     `Open this in the browser to pair it (good once, for ${CODE_TTL_MS / 60_000} minutes):`,
@@ -39,15 +49,38 @@ export const said = (code: string, port: number): string =>
     `or type the code on the page: ${showCode(code)}`,
   ].join("\n")
 
+/** The paired browsers, one line each. */
+export const listed = (paired: ReadonlyArray<Paired>): string =>
+  Option.match(Arr.match(paired, { onEmpty: () => Option.none<string>(), onNonEmpty: () => Option.some("") }), {
+    onNone: () => "No browser is paired.",
+    onSome: () =>
+      [
+        `${paired.length} of at most ${MAX_PAIRED} browsers paired (unpair one with --revoke <id>, or all with --revoke all):`,
+        ...paired.map((each) => `  ${each.id}  paired ${DateTime.formatIso(DateTime.makeUnsafe(each.created))}  ${each.label}`),
+      ].join("\n"),
+  })
+
 /** Arguments that name no target. */
 class Usage extends Schema.TaggedError<Usage>()("Usage", { message: Schema.String }) {}
 
-/** A new code in the target's pairing file, said; the exit code, 0 once written. */
+const USAGE = "usage: bun cmd/digest/pair.ts [--dir <digest dir>] [--port <port>] | --list | --revoke <id>|all"
+
+/** The target's work, said; the exit code, 0 once done (a revoke of no such browser is 1). */
 export const main = (args: ReadonlyArray<string>, print: (text: string) => Effect.Effect<void>) =>
   Effect.try({ try: () => targetOf(args), catch: (cause) => new Usage({ message: String(cause) }) }).pipe(
-    Effect.flatMap((target) => Effect.mapError(Effect.fromOption(target), () => new Usage({ message: "usage: bun cmd/digest/pair.ts [--dir <digest dir>] [--port <port>]" }))),
-    Effect.flatMap((target) => Effect.flatMap(Clock.currentTimeMillis, (now) => Effect.map(FilePairing.make(target.dir).issue(now), (code) => said(code, target.port)))),
-    Effect.flatMap((text) => Effect.as(print(text), 0)),
+    Effect.flatMap((target) => Effect.mapError(Effect.fromOption(target), () => new Usage({ message: USAGE }))),
+    Effect.flatMap((target) => {
+      const pairing = FilePairing.make(target.dir)
+      return Match.value(target).pipe(
+        Match.when({ kind: "issue" }, (issue) => Effect.flatMap(Clock.currentTimeMillis, (now) => Effect.map(pairing.issue(now), (code) => [said(code, issue.port), 0] as const))),
+        Match.when({ kind: "list" }, () => Effect.map(pairing.list, (paired) => [listed(paired), 0] as const)),
+        Match.when({ kind: "revoke" }, (revoke) =>
+          Effect.map(pairing.revoke(revoke.which), (count) => [`Unpaired ${count} browser${"s".repeat(Number(count !== 1))}.`, Number(count === 0)] as const),
+        ),
+        Match.exhaustive,
+      )
+    }),
+    Effect.flatMap(([text, code]) => Effect.as(print(text), code)),
     Effect.catch((error) => Effect.as(Effect.logError(`digest pair: ${error.message}`), 1)),
   )
 

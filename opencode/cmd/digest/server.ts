@@ -17,7 +17,7 @@
  */
 import { Plugin } from "@opencode/plugin/effect"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
-import { Cause, Clock, Context, Effect, Layer, Option, Path, Ref, Schema, type Scope } from "effect"
+import { Cause, Clock, Context, Effect, Layer, Option, Path, Schema, type Scope } from "effect"
 import { answer, AnswerOutcome, type Answerers, ItemReply, QuestionReply } from "@dotfiles/opencode-digest/answers"
 import { AppendInput, byteLength, decodeLine, decodeLines, DIGEST, MAX_LINE } from "@dotfiles/opencode-digest/event"
 import * as FileLog from "@dotfiles/opencode-digest/filestore/log"
@@ -69,7 +69,6 @@ export const handlersOf = (options: Options, lines: DigestLines["Service"], answ
     answer: (input) =>
       answer(Effect.orDie(state), answerers, input).pipe(Effect.catchDefect((defect) => Effect.succeed(AnswerOutcome.Refused({ status: 500, reason: String(defect) })))),
     pairing: FilePairing.make(dirOf(options)),
-    failures: Ref.makeUnsafe<ReadonlyArray<number>>([]),
   }
 }
 
