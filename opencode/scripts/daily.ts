@@ -49,6 +49,7 @@ import { dirname, join, resolve } from "node:path"
 import { type Catalog, DEFAULT_FORK, loadCatalog, loginStoreDir, newestRelease } from "../testbeds/gamut/gamut.ts"
 import { BUILTIN_AUTOMATION_OFF, BUILTIN_BTW_OFF, SERVER_OFF, SERVER_PLUGINS, serverEntry, serverEntryDir, TUI_OFF, tuiPluginsOf } from "../mods/update/trees.ts"
 import type { Settings } from "../mods/update/settings.ts"
+import type { TailnetRead } from "../mods/digest/policy.ts"
 import { readyFork } from "./fork.ts"
 import { upstreamFile } from "../mods/prime/update.ts"
 import { hostLocks } from "../mods/work/process/landing.ts"
@@ -197,10 +198,18 @@ export const mailEntry = (mail: string, fleet: { readonly host: string; readonly
 /** The owner's zone: the morning a digest message set aside for Later returns in, on each of his hosts (the workbox runs on UTC). */
 export const OWNER_TIMEZONE = "America/Montreal"
 
-/** The digest's plugin entry: on one of the owner's hosts (`FLEET`), `digest.timezone` is his; elsewhere the bare plugin (the host's zone). */
+/**
+ * The digest's plugin entry. On one of the owner's hosts (`FLEET`):
+ * - `digest.timezone` is his;
+ * - `digest.tailnetRead` is `"member"`: any device on his tailnet reads the page unpaired, and marks, answers and
+ *   pairing still need a paired browser (owner, 2026-11-22: "Tailnet can read"). Set it to `"paired"` here to make
+ *   reading need pairing again.
+ *
+ * Elsewhere the bare plugin: the host's zone, and the plugin's default `"paired"`.
+ */
 export const digestEntry = (digest: string, fleet: { readonly host: string }): PluginEntry => {
   if (peersOf(fleet.host).length === 0) return digest
-  return { package: digest, options: { timezone: OWNER_TIMEZONE } }
+  return { package: digest, options: { timezone: OWNER_TIMEZONE, tailnetRead: "member" satisfies TailnetRead } }
 }
 
 /** This machine's Tailscale IPv4 address, from the `tailscale` CLI (on PATH, or the Mac app's), or undefined. */
