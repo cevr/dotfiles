@@ -27,7 +27,7 @@ Pick a mode by the table. Workers follow [`protocol.md`](protocol.md), carried i
 
 - Per unit: `orchestrate({ action: "lane", unit: "<unit>", purpose: "<outcome>" })` → its implementor → the focused round gate as the receipt (`bun ~/Developer/personal/dotfiles/opencode/scripts/receipt.ts -- '<commands>'`, with `gate.ts --merge <base>` where the repo has it) → `orchestrate({ action: "land", units: ["<unit>"] })` at once.
 - One land and one full gate per host at a time: the land's merge check runs before its push.
-- When a `land` or `status` answer starts `orchestrate: <N> lands on <branch> since the last verify`, call `orchestrate({ action: "verify" })` and start the subagent call it answers. Each finding in a unit is its lane's next round; a defect the base has becomes a fix unit.
+- When a `land` or `status` answer starts `orchestrate: <N> lands on <branch> since the last verify`, call `orchestrate({ action: "verify" })` and start the subagent call it answers. Each finding goes by where it came from (`protocol.md`, Rounds): one the unit's change introduced is its lane's next round; one the base head shows too becomes a follow-up unit.
 - Nothing waits for a verdict: the next green unit lands.
 
 ### batch
@@ -69,7 +69,7 @@ The plan is a docs file in the project (`plans/<run>-run.md`), linked as `<run d
 
 ## What blocks, and what is refused
 
-- **Every verify is a fresh verifier in a clean checkout** of the head it judges. **The verifier blocks only on a shown failure**, the bar in [`protocol.md`](protocol.md) (Verifier, Proof). Everything else it proves in a unit (a weak test, narrowed acceptance) the same lane closes next round, before another unit; a base defect is a follow-up unit, each `guard:` line a tooling unit.
+- **Every verify is a fresh verifier in a clean checkout** of the head it judges. **The verifier blocks only on a shown failure**, the bar in [`protocol.md`](protocol.md) (Verifier, Proof). Everything else it proves (a weak test, narrowed acceptance, a written-rule break) fails no round and goes by where it came from: one the unit's change introduced, the same lane closes in its next round, before that lane takes another unit; one the base head shows too becomes a follow-up unit; each `guard:` line a tooling unit.
 - **Refused**, the harm rules only: a red merge check never pushes; one land and one full gate per host at a time; the reserved actions; a subagent never lands; the Sabbath.
 - **Reserved for the user**: deploy, publish, paid runs, force-push to a shared branch, non-additive changes to stored or wire formats, anything irreversible. Push is not reserved: a green land pushes.
 

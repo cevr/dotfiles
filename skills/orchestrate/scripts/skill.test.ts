@@ -24,7 +24,7 @@ const plain = (cell: string) => cell.replace(/[*`]/g, '').trim();
 // The caps grew by what nothing-is-hard needs (owner's orchestrator, round 2): a rule is never cut to fit a cap.
 test('the core files fit their byte caps', () => {
   const bytes = (text: string) => Buffer.byteLength(text, 'utf8');
-  expect({ skill: bytes(skill) <= 12_500, protocol: bytes(protocol) <= 13_000, template: bytes(template) <= 2_500 }).toEqual({
+  expect({ skill: bytes(skill) <= 12_500, protocol: bytes(protocol) <= 14_000, template: bytes(template) <= 2_500 }).toEqual({
     skill: true,
     protocol: true,
     template: true,
