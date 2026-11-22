@@ -190,6 +190,8 @@ const cpuMs = Effect.sync(() => {
 export interface Spent {
   cpu: number
   wall: number
+  /** How many seed runs it holds. */
+  seeds?: number
   unjudged?: boolean
 }
 
@@ -218,6 +220,7 @@ export const once = <E>(
     const exit = yield* Effect.exit(body({ seed, expect: counting(count) }))
     spent.cpu += (yield* cpuMs) - cpuBegan
     spent.wall += (yield* Clock.currentTimeMillis) - began
+    spent.seeds = (spent.seeds ?? 0) + 1
     if (Exit.isFailure(exit))
       return yield* Effect.fail(new SeedFailed({ message: `SIM_SEED=${seed} bun test ${file}: ${name}\n${Cause.pretty(exit.cause)}` }))
     if (spent.cpu > budgetMs && !spent.unjudged) {
@@ -256,8 +259,11 @@ export const runner = (file: string, options: { readonly past?: ReadonlyArray<nu
             onSome: (each) => swarmed(file, spent, name, each.first, share(each), body),
             onNone: () =>
               Effect.gen(function* () {
+                const before = { cpu: spent.cpu, seeds: spent.seeds ?? 0 }
                 const calls = yield* Effect.forEach(yield* runSeeds, (seed) => once(file, spent, name, seed, body))
                 if (Option.isSome(yield* Config.option(Config.String("SIM_EXPECTS")))) yield* Console.log(`${EXPECTS} ${file} ${name} ${Math.max(0, ...calls)}`)
+                if (Option.isSome(yield* Config.option(Config.String("SIM_CPU"))))
+                  yield* Console.log(`${CPU_LINE} ${file} ${name}: ${(spent.seeds ?? 0) - before.seeds} seeds, cpu ${Math.round(spent.cpu - before.cpu)} ms; the file so far: ${budgetOf(spent, BUDGET_MS)}`)
               }),
           }),
         ),
@@ -266,6 +272,13 @@ export const runner = (file: string, options: { readonly past?: ReadonlyArray<nu
   }
   return { seeded }
 }
+
+/** The prefix of each test's line under `SIM_CPU=1`: its seeds' CPU, and the file's so far against its budget. */
+export const CPU_LINE = "sim-seeds"
+
+/** `<n> seed runs, cpu <c> ms of its <b> ms (<p>%), wall <w> ms`: what a file's seeds spent so far against its budget. */
+export const budgetOf = (spent: Spent, budgetMs: number) =>
+  `${spent.seeds ?? 0} seed runs, cpu ${Math.round(spent.cpu)} ms of its ${budgetMs} ms (${Math.round((spent.cpu / budgetMs) * 100)}%), wall ${Math.round(spent.wall)} ms`
 
 /**
  * A swarm's test: the seeds from `first` on, one after another, until `shareMs` of wall time has passed (at least
