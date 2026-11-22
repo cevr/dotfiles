@@ -208,6 +208,8 @@ export const activeSkips = (list: List, facts: HostFacts): ReadonlyArray<Skip> =
 
 /** How a note names a test skipped as the list declares. */
 const SKIPPED = "skipped as declared"
+/** What parts a declared skip's note from its reason. */
+const WHY = "; why: "
 const hostOf = (skip: Skip) =>
   Option.getOrElse(
     Option.map(Option.fromUndefinedOr(skip.host), (host) =>
@@ -266,7 +268,7 @@ export const judge = (plan: Plan, code: number, cases: ReadonlyArray<Case>): Jud
       ),
     ),
     ...skips.flatMap((each) =>
-      Arr.filter([`${SKIPPED}${hostOf(each)}: ${plan.package}/${each.file} > ${each.test} (${each.reason})`], () =>
+      Arr.filter([`${SKIPPED}${hostOf(each)}: ${plan.package}/${each.file} > ${each.test}${WHY}${each.reason}`], () =>
         cases.some((found) => !executed(found) && found.file === each.file && found.test === each.test),
       ),
     ),
@@ -526,7 +528,7 @@ export const reportLines = (list: List, verdict: Verdict, range: Option.Option<s
     Match.when({ kind: "green" }, (green) => {
       const pending = green.notes.filter((note) => note.startsWith(NOT_YET)).length
       const held = Arr.filter([` (${pending} not yet in this checkout)`], () => pending > 0).join("")
-      const skipped = green.notes.filter((note) => note.startsWith(SKIPPED)).map((note) => note.replace(/ \([^)]*\)$/, "").replace(/^[^:]*: /, ""))
+      const skipped = green.notes.filter((note) => note.startsWith(SKIPPED)).map((note) => note.slice(note.indexOf(": ") + 2, note.lastIndexOf(WHY)))
       const named = Arr.filter([`; ${skipped.length} skipped as declared: ${skipped.join("; ")}`], () => skipped.length > 0).join("")
       return [...green.notes, `fork-checks: green${over}, ${list.features.length - pending} features${held}${named}`]
     }),

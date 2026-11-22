@@ -274,7 +274,7 @@ describe("skipped and todo cases", () => {
   it.effect("a declared skip that skipped is a note; one that ran, or is gone, is red", () =>
     Effect.sync(() => {
       const skipping = judge({ ...plan, skips: [declared] }, 0, [caseOf("test/a.test.ts", "runs"), caseOf("test/a.test.ts", "needs a tty", "skipped")])
-      expect(skipping).toEqual({ reds: [], notes: ["skipped as declared: packages/x/test/a.test.ts > needs a tty (no terminal in CI)"] })
+      expect(skipping).toEqual({ reds: [], notes: ["skipped as declared: packages/x/test/a.test.ts > needs a tty; why: no terminal in CI"] })
       expect(judge({ ...plan, skips: [declared] }, 0, [caseOf("test/a.test.ts", "runs"), caseOf("test/a.test.ts", "needs a tty")]).reds).toEqual([
         red("needs a tty", "declared skipped but it ran: remove the skip"),
       ])
@@ -295,7 +295,7 @@ describe("skipped and todo cases", () => {
       }
       const cases = [caseOf("test/a.test.ts", "runs"), caseOf("test/a.test.ts", "needs a tty", "skipped")]
       const at = (bash: string) => judge(Option.getOrElse(Arr.head(plansOf(onBash, Option.some(bash))), () => plan), 0, cases)
-      expect(at("3.2.57")).toEqual({ reds: [], notes: ["skipped as declared on bash 3.2.57: packages/x/test/a.test.ts > needs a tty (no terminal in CI)"] })
+      expect(at("3.2.57")).toEqual({ reds: [], notes: ["skipped as declared on bash 3.2.57: packages/x/test/a.test.ts > needs a tty; why: no terminal in CI"] })
       expect(at("5.2.37").reds).toEqual([red("needs a tty", "skipped, and fork-checks.json declares no skip for it: declare it with its reason, or let it run")])
     }),
   )
@@ -515,7 +515,7 @@ describe("a run of the checks", () => {
       const list: List = { ...input.list, skips: [{ package: "packages/x", file: "test/a.test.ts", test: "pwsh case", host: { missing: ["pwsh", "powershell"] }, reason: "no PowerShell" }] }
       const answer = (): Ran => ({ kind: "exited", code: 0, log: "", junit: Option.some(junit("test/a.test.ts", [["", "runs", "passed"], ["", "pwsh case", "skipped"]])) })
       const without = yield* checkWith({ ...input, list }, { answers: [answer] })
-      expect(without.verdict).toEqual({ kind: "green", notes: ["skipped as declared without pwsh or powershell on PATH: packages/x/test/a.test.ts > pwsh case (no PowerShell)"] })
+      expect(without.verdict).toEqual({ kind: "green", notes: ["skipped as declared without pwsh or powershell on PATH: packages/x/test/a.test.ts > pwsh case; why: no PowerShell"] })
       const withIt = yield* checkWith({ ...input, list }, { answers: [answer], present: ["powershell"] })
       expect(withIt.verdict).toMatchObject({ kind: "red", reds: [{ test: "pwsh case", why: expect.stringContaining("skipped, and fork-checks.json declares no skip for it") }] })
     }),
@@ -820,9 +820,9 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
       expect(yield* f.merge).toMatchObject({ kind: "merged" })
       expect(yield* f.head(f.origin)).not.toBe(f.before)
       const said = yield* f.said
-      expect(said).toContain("skipped as declared: packages/x/test/green.test.ts > the fork feature (the probe needs a real terminal)")
+      expect(said).toContain("skipped as declared: packages/x/test/green.test.ts > the fork feature; why: the probe needs a real terminal")
       expect(said).toContain("fork-checks: green over upstream")
-      expect(said).toContain("1 features; 1 skipped as declared: packages/x/test/green.test.ts > the fork feature")
+      expect(said).toMatch(/1 features; 1 skipped as declared: packages\/x\/test\/green\.test\.ts > the fork feature$/m)
     }).pipe(Effect.scoped),
   )
 
