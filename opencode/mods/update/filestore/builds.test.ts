@@ -357,7 +357,9 @@ const repoFiles = (extra: string): ReadonlyArray<readonly [string, string]> => [
   ["opencode/cmd/a/package.json", `{ "name": "@dotfiles/opencode-cmd-a", "private": true, "exports": { "./server": "./server.ts" }, "dependencies": { "@dotfiles/opencode-a": "workspace:*" } }\n`],
   ["opencode/cmd/a/server.ts", `import { x } from "@dotfiles/opencode-a/x"\nimport { Effect } from "effect"\n${extra}export default Effect.succeed(x)\n`],
   ["opencode/scripts/daily.ts", STAND_IN_DAILY],
-  ["README.md", "outside opencode/, so never in a tree\n"],
+  ["workbox/zshenv", "export SCRATCH=1\n"],
+  ["workbox/bin/workrift", "#!/bin/sh\n"],
+  ["README.md", "outside opencode/ and workbox/, so never in a tree\n"],
 ]
 
 /** A scratch host for a make: a git repository with one commit of `repoFiles(extra)`, its lockfile made, an empty share directory, and the make's options. */
@@ -411,7 +413,11 @@ describe("making a build's plugin tree (scratch repositories)", () => {
           .sort()
         expect(sourcesUnder(`${tree}/opencode`)).toEqual(committed)
         for (const path of committed) expect(ran(["cat", `${tree}/opencode/${path}`], tree)).toBe(ran(["git", "show", `HEAD:opencode/${path}`], host.repo))
-        expect(sourcesUnder(tree).filter((path) => !path.startsWith("opencode/"))).toEqual(["config/cli.json", "config/opencode.json", "entries/server/a/package.json", "entries/server/a/server.ts"])
+        // The commit's workbox/ too: the workbox's commands and shell files arrive from the build the host runs.
+        const workbox = linesOf(ran(["git", "ls-tree", "-r", "--name-only", "HEAD", "workbox"], host.repo)).sort()
+        expect(workbox).toEqual(["workbox/bin/workrift", "workbox/zshenv"])
+        for (const path of workbox) expect(ran(["cat", `${tree}/${path}`], tree)).toBe(ran(["git", "show", `HEAD:${path}`], host.repo))
+        expect(sourcesUnder(tree).filter((path) => !path.startsWith("opencode/"))).toEqual(["config/cli.json", "config/opencode.json", "entries/server/a/package.json", "entries/server/a/server.ts", ...workbox])
         expect(ran(["cat", `${tree}/config/opencode.json`], tree)).toBe(`{"plugins":["${tree}/entries/server/a"]}`)
 
         // Every link resolves inside the tree, or into Bun's cache.

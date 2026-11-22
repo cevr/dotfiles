@@ -14,6 +14,9 @@ import { Array as Arr, Option, Schema } from "effect"
  *   `./rpc` where the plugin has one), which re-exports the plugin's own `server.ts`. The server lists
  *   these, so no plugin it lists has a TUI part: a TUI of another build never imports this build's.
  * - `config/opencode.json` (the server's plugin entries) and `config/cli.json` (the TUI's).
+ * - `workbox/`: the dotfiles commit's `workbox/` directory, when it has one, as it is: the workbox's
+ *   commands and shell files install from it once the build is proven (`git/source.ts` `WORKBOX_BIN`),
+ *   so they are the verified commit's, never the live checkout's.
  */
 export const TREE_SUFFIX = ".plugins"
 

@@ -23,9 +23,9 @@ export class Source extends Context.Service<
     /** Brings `commit` into the checkout's object store, when it lacks it; never moves the checkout. */
     readonly fetch: (commit: string) => Effect.Effect<void, UpdateFailed>
     /**
-     * Runs the host's commands script of the checkout as it stands (`git/source.ts` `binScript`), with no
-     * move: a handoff runs it once proven, and the script links what is in a plugin tree through
-     * `current.plugins`. None when the host has no script.
+     * Runs the host's commands script (`git/source.ts` `binScript`), with no move: the workbox's from the
+     * installed build's tree (`current.plugins/workbox/`, failing when the tree has none), the Mac's from
+     * the checkout as it stands. A handoff runs it once proven. None when the host has no script.
      */
     readonly commands: Effect.Effect<void, UpdateFailed>
   }

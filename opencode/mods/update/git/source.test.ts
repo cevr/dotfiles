@@ -38,7 +38,7 @@ const scratch = Effect.gen(function* () {
 const macCommands = (root: string, env: Record<string, string>) =>
   Effect.gen(function* () {
     return yield* (yield* Source).commands
-  }).pipe(Effect.provide(SourceLive.layer({ root, env, bin: Option.some(SourceLive.MAC_BIN) })), Effect.exit)
+  }).pipe(Effect.provide(SourceLive.layer({ root, env, bin: Option.some(SourceLive.MAC_BIN), tree: "/nonexistent/loop-probe-x/current.plugins" })), Effect.exit)
 
 describe("the host's commands, over the checkout as it stands", () => {
   test("M1: each host runs its own commands script: the workbox's on Linux, the Mac's on macOS, none elsewhere", () => {
@@ -109,10 +109,53 @@ describe("the host's commands, over the checkout as it stands", () => {
         }),
       ))
 
+  /**
+   * A scratch live checkout and an installed tree, each with its own `workbox/install-bin.sh` that writes
+   * where it ran into `ran` under HOME: the checkout's is the stale one a lagging checkout holds.
+   */
+  const placesOfWorkbox = (withTreeScript: boolean) =>
+    Effect.gen(function* () {
+      const dir = sh(".", ["mktemp", "-d", "-t", "update-source-workbox"]).out
+      const marker = (from: string) => `#!/bin/sh\nprintf '%s %s\\n' ${from} "$*" >>"$HOME/ran"\n`
+      yield* files(`${dir}/checkout`, [["workbox/install-bin.sh", marker("checkout")]])
+      yield* files(`${dir}/tree`, withTreeScript ? [["workbox/install-bin.sh", marker("tree")]] : [["opencode/package.json", "{}\n"]])
+      sh(dir, ["mkdir", "-p", "home"])
+      return { dir, checkout: `${dir}/checkout`, tree: `${dir}/tree`, home: `${dir}/home` }
+    })
+
+  const workboxCommands = (places: { readonly checkout: string; readonly tree: string; readonly home: string }) =>
+    Effect.gen(function* () {
+      return yield* (yield* Source).commands
+    }).pipe(
+      Effect.provide(SourceLive.layer({ root: places.checkout, tree: places.tree, env: { ...GIT_ENV, HOME: places.home, PATH: hostEnv.PATH ?? "" }, bin: Option.some(SourceLive.WORKBOX_BIN) })),
+      Effect.exit,
+    )
+
+  test("on the workbox the commands come from the installed tree, never from the live checkout as it stands", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const places = yield* placesOfWorkbox(true)
+        expect(Exit.isSuccess(yield* workboxCommands(places))).toBe(true)
+        expect(sh(places.home, ["cat", "ran"]).out).toBe("tree --apply")
+        spawnSync(["rm", "-rf", places.dir])
+      }),
+    ))
+
+  test("an installed tree with no workbox/ (a build from before it held one) fails the commands loudly, naming the tree, and runs the checkout's neither", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const places = yield* placesOfWorkbox(false)
+        const failure = Exit.findErrorOption(yield* workboxCommands(places))
+        expect(Option.map(failure, (failed) => failed.message)).toEqual(Option.some(`${places.tree}/workbox/install-bin.sh is not in the installed tree`))
+        expect(sh(places.home, ["test", "-e", "ran"]).code).not.toBe(0)
+        spawnSync(["rm", "-rf", places.dir])
+      }),
+    ))
+
   test("a host with no script runs nothing", () =>
     Effect.runPromise(
       Effect.gen(function* () {
         return yield* (yield* Source).commands
-      }).pipe(Effect.provide(SourceLive.layer({ root: "/nonexistent/loop-probe-x", env: { PATH: hostEnv.PATH ?? "" }, bin: Option.none() })), Effect.exit, Effect.map((exit) => expect(Exit.isSuccess(exit)).toBe(true))),
+      }).pipe(Effect.provide(SourceLive.layer({ root: "/nonexistent/loop-probe-x", env: { PATH: hostEnv.PATH ?? "" }, bin: Option.none(), tree: "/nonexistent/loop-probe-x/current.plugins" })), Effect.exit, Effect.map((exit) => expect(Exit.isSuccess(exit)).toBe(true))),
     ))
 })

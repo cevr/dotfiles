@@ -17,7 +17,7 @@ import * as Resident from "@dotfiles/opencode-update/process/resident"
 import * as ServiceProcess from "@dotfiles/opencode-update/process/service"
 import { Heartbeat as HeartbeatService, Placer } from "@dotfiles/opencode-update/service"
 import { UPDATE } from "@dotfiles/opencode-update/rpc"
-import { every, files, Options, stepEnv } from "@dotfiles/opencode-update/settings"
+import { every, files, Options, shareDir, stepEnv } from "@dotfiles/opencode-update/settings"
 import { configPaths, treeOptions } from "@dotfiles/opencode-update/process/install"
 import { type Status, status, watchdog } from "@dotfiles/opencode-update/watch"
 import { Clock, Config, Context, Effect, Layer, Schema, type Scope } from "effect"
@@ -28,7 +28,7 @@ export const canonical = (directory: string): string => directory.replace(/(.)\/
 /** Every implementation the updater runs on, for these options and step variables, in the home `home`. */
 export const live = (options: Options, env: Readonly<globalThis.Record<string, string>>, home: string) =>
   Layer.mergeAll(
-    Source.layer({ root: options.checkout, env, bin: Source.binScript(process.platform) }),
+    Source.layer({ root: options.checkout, env, bin: Source.binScript(process.platform), tree: `${shareDir(home)}/${Stage.CURRENT_TREE}` }),
     Builder.layer(options, env),
     Stage.treesLayer(treeOptions(options, env, home, process.pid)),
     Handoff.layer(options, env),
