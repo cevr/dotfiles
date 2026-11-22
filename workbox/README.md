@@ -217,7 +217,10 @@ All workspaces share the local cache at `/workspaces/.cache/turbo`. When the bas
 checkout's `/workspaces/bite/Dockerfile` carries an `ENV TURBO_TOKEN` line (or the
 environment already holds `TURBO_TOKEN`), `zshenv` exports that token and
 `TURBO_CACHE=local:rw,remote:rw`, so turbo also reads and writes the Bite repo's remote
-cache that its `turbo.jsonc` names. Without a token it stays `local:rw`. Turbo 2.10 and later
+cache that its `turbo.jsonc` names. That holds only in a shell that starts in the Bite
+tree: `/workspaces/bite` and its workspaces under `/workspaces/.work/bite` (or the older
+`/workspaces/.rifts/bite`). Anywhere else `zshenv` unsets `TURBO_TOKEN`, an inherited one
+too, so no other repository's cache server receives it. Without a token it stays `local:rw`. Turbo 2.10 and later
 evicts the oldest entries at the start of a run once the cache passes
 `TURBO_CACHE_MAX_SIZE` (20 GB). A process started before a change to these values
 keeps the old ones until it restarts, and an old cap trims the shared store. Turbo uses two
