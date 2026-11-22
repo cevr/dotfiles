@@ -23,7 +23,7 @@ export const Receipt = Schema.Struct({
   /** The checkout the run ran in. */
   repo: Schema.String,
   head: Schema.String,
-  /** The tree the run checked: the tracked files as they were on disk when it started, each one the checkout inherited from the one it was copied from at its HEAD version (process/inherited.ts). */
+  /** The tree the run checked: the tracked files as they were on disk when it started. */
   tree: Schema.String,
   kind: ReceiptKind,
   checks: Schema.Array(ReceiptCheck),
@@ -34,7 +34,7 @@ export type Receipt = typeof Receipt.Type
 
 export const ReceiptJson = Schema.fromJsonString(Receipt)
 
-/** Where a checkout stands: its head and the tree of its own tracked files as they are on disk (`Receipt.tree`). */
+/** Where a checkout stands: its head and the tree of its tracked files as they are on disk. */
 export interface Snapshot {
   readonly head: string
   readonly tree: string

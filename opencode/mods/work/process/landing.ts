@@ -10,7 +10,7 @@
 // batch's merges, and what it rewrote is committed. Receipts (`receipts`) are read and written here: a
 // checkout's in its Git dir, every one in the host's receipts folder beside the logs; `scriptReceipt` and
 // `scriptReceipts` give them to scripts outside Effect (scripts/gate.ts, post-land.ts, receipt.ts).
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { availableParallelism, loadavg } from "node:os"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { basename, dirname, join } from "node:path"
@@ -21,7 +21,6 @@ import { receiptCommand } from "../owed.ts"
 import { type LandRecord, LandRecordJson, type Receipt, ReceiptJson, type Snapshot, standing as standingOf } from "../receipt.ts"
 import { Landing, RiftFailed } from "../service.ts"
 import { commands, lines } from "./command.ts"
-import { inheritance, statusEntries } from "./inherited.ts"
 import { exclusively, exclusivelySync, holding, type LockMode, oneGate } from "./flock.ts"
 
 export interface Options {
@@ -154,14 +153,37 @@ export const INSTALLS: Readonly<Record<string, readonly [string, string]>> = {
 
 const isLock = (file: string): boolean => Object.hasOwn(INSTALLS, basename(file))
 
+/** The entries of `git status --porcelain=v1 -z`: `XY path`, a rename's old path dropped. */
+export const statusEntries = (output: string): ReadonlyArray<{ readonly line: string; readonly file: string }> => {
+  const fields = output.split("\0").filter((field) => field !== "")
+  const entries: Array<{ line: string; file: string }> = []
+  for (let index = 0; index < fields.length; index++) {
+    const field = fields[index]!
+    const file = field.slice(3)
+    entries.push({ line: field, file })
+    if (field[0] === "R" || field[0] === "C") index++
+  }
+  return entries
+}
+
+/** Whether `file` reads the same under both roots: missing in both, or the same bytes. */
+const same = (left: string, right: string): boolean => {
+  const [a, b] = [existsSync(left), existsSync(right)]
+  if (!a || !b) return a === b
+  try {
+    return readFileSync(left).equals(readFileSync(right))
+  } catch {
+    return false
+  }
+}
+
 /** The receipt file a kind of run writes for `head` in the host's receipts folder. */
 const hostReceipt = (logs: string, receipt: Receipt): string => join(receiptsDir(logs), `${receipt.head}.${receipt.kind}.json`)
 
 /**
  * Receipts on disk (receipt.ts), for the land and for a script that writes one (scripts/gate.ts,
  * scripts/post-land.ts): `snapshot` reads a checkout's head and the tree of its tracked files as they are on
- * disk, each one inherited from the checkout it was copied from at its HEAD version (inherited.ts `unitTree`,
- * through a scratch copy of its index, so its own index is untouched); `write` keeps a receipt in the
+ * disk (through a scratch copy of its index, so its own index is untouched); `write` keeps a receipt in the
  * host's receipts folder under `logs` by head and kind, and a `round` one in its checkout too (its Git dir's
  * `rift-receipt.json`), where `newest` reads it back.
  */
@@ -174,7 +196,18 @@ export const receipts = (logs: string, env: Readonly<Record<string, string>> = {
 
   const snapshot = Effect.fn("Receipts.snapshot")(function* (path: string) {
     const head = yield* trimmed(path, "rev-parse", "HEAD")
-    return { head, tree: yield* inheritance(env).unitTree(path) } satisfies Snapshot
+    const index = yield* gitPath(path, "index")
+    const scratch = `${index}.rift-receipt`
+    const tree = yield* Effect.acquireUseRelease(
+      io("copy index", () => copyFileSync(index, scratch)),
+      () =>
+        run(["git", "-C", path, "add", "-u"], path, { GIT_INDEX_FILE: scratch }).pipe(
+          Effect.andThen(run(["git", "-C", path, "write-tree"], path, { GIT_INDEX_FILE: scratch })),
+          Effect.map((out) => out.trim()),
+        ),
+      () => Effect.sync(() => rmSync(scratch, { force: true })),
+    )
+    return { head, tree } satisfies Snapshot
   })
 
   const write = Effect.fn("Receipts.write")(function* (receipt: Receipt) {
@@ -285,7 +318,6 @@ export const scriptReceipt = <A>(logs: string, path: string, kind: Receipt["kind
 export const layer = (options: Options) => {
   const { spawn, run } = commands(options.env)
   const kept = receipts(options.logs, options.env)
-  const inherited = inheritance(options.env)
   /** Whether a systemd scope is available: on Linux, the probe exits 0; asked once, at the first check. */
   let scoped: boolean | undefined
   const scope = Effect.suspend(() =>
@@ -334,7 +366,10 @@ export const layer = (options: Options) => {
   })
 
   const ownChanges = Effect.fn("Landing.ownChanges")(function* (path: string, source: string) {
-    return yield* inherited.ownLines(path, source)
+    const status = yield* git(path, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ".", ":(exclude).rift")
+    return statusEntries(status)
+      .filter((entry) => !same(join(path, entry.file), join(source, entry.file)))
+      .map((entry) => entry.line)
   })
 
   const start = Effect.fn("Landing.start")(function* (integration: string, main: string) {

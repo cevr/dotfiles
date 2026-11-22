@@ -4,8 +4,8 @@
 // writes a registry names its base with WORK_BASE: inside an adopted copy `work` would otherwise
 // take the copy for a base and read an empty registry. With `workrift: true` (the workbox) a
 // workspace is made and removed by `workrift`; the rest asks `work`.
-// A fresh workspace (made by `work new` or `workrift create`, never one a create adopts) restores the
-// copies of its source's uncommitted work first, and its uncommitted work is only its own (inherited.ts).
+// A workspace a create's `work new` made is reset to its HEAD at once (`cleanStart`): a copy carries its
+// source's uncommitted edits. After that, every uncommitted change of a workspace is its own.
 // Unsaved work is read with Git (unpushed.ts). A removal is
 // `work rm -abandon -expect <id>`: the tool's removal rule (workspace.ts) has judged it already,
 // and the id is the one the caller's inspect saw, so a workspace replaced since is refused.
@@ -13,7 +13,6 @@ import { Effect, Layer, Option, Schedule, Schema } from "effect"
 import { RiftFailed, Rifts, type CreateRequest } from "../service.ts"
 import { holds, ownStashes, type Workspace } from "../workspace.ts"
 import { commands, lines, type Ran } from "./command.ts"
-import { inheritance } from "./inherited.ts"
 import { describeBranch, madeOnField, madeOnOf, markBranch, purposeField, purposeOf } from "./purpose.ts"
 import { unpushed as unpushedOf } from "./unpushed.ts"
 
@@ -124,7 +123,6 @@ const above = (records: ReadonlyArray<Rec>, base: string, record: Rec): Readonly
 
 export const layer = (options: Options) => {
   const { spawn, run } = commands(options.env)
-  const copies = inheritance(options.env)
   const bin = options.work ?? "work"
   /** The id each workspace path had when last read: what `rm -expect` names. */
   const seen = new Map<string, Known>()
@@ -228,12 +226,7 @@ export const layer = (options: Options) => {
       Effect.map((out) => out.trim()),
       Effect.orElseSucceed(() => "(no commits)"),
     )
-    // A workspace's own changes only: a copy of the uncommitted work of the checkout it was copied from is that checkout's (inherited.ts).
-    // A base's are all its own.
-    const uncommitted = yield* Option.match(place.record, {
-      onNone: () => Effect.map(copies.status(path), (entries) => entries.map((entry) => entry.line)),
-      onSome: (record) => copies.ownLines(path, record.parent),
-    })
+    const uncommitted = lines(yield* git(path, "status", "--porcelain", "--", ".", ":(exclude).rift"))
     // Commits found only here: on no remote, and in no branch of the base it was cloned from.
     const root = Option.fromUndefinedOr(chain.at(-1))
     const sourceTips = yield* Option.match(root, {
@@ -375,11 +368,22 @@ export const layer = (options: Options) => {
   })
 
   /**
-   * A fresh workspace's first step (inherited.ts `settle`): the copies of `from`'s uncommitted work go back to HEAD.
-   * One that fails leaves them, which a land and a removal still tell from the workspace's own work: it is logged, never fatal.
+   * A workspace this create's `work new` just made, reset to its HEAD before anything else runs in it: its tracked
+   * files and its index, so the copies of its source's staged and unstaged edits go; untracked and ignored files
+   * stay. At that moment every difference from HEAD is the source's (the bytes live on there), so nothing is
+   * compared. Brand new is proven, not guessed: `work new` makes the folder (it refuses one that exists,
+   * work.Exists), and the base's record of the name is still the one that call answered (its id and path, made).
+   * Anything else, or any failure, resets nothing and is logged: in doubt the copies stay, and count as the
+   * workspace's own. Never on a workspace a create adopts (`madeMeanwhile`), a base, or the workbox's `workrift`.
    */
-  const settled = (path: string, from: string) =>
-    copies.settle(path, from).pipe(Effect.catch((failure: RiftFailed) => Effect.logWarning("work: the copies a new workspace inherited were not restored", failure)))
+  const cleanStart = (base: string, made: { readonly name: string; readonly id: string; readonly path: string }) =>
+    Effect.gen(function* () {
+      const record = (yield* live(base)).find((each) => each.name === made.name)
+      const isBase = (yield* bases).includes(made.path)
+      const fresh = record !== undefined && record.id === made.id && record.path === made.path && !isCreating(record) && !isBase
+      if (!fresh) return yield* Effect.logWarning(`work: ${made.path} was not reset to its HEAD: the base's record of ${made.name} is not the one its work new made`)
+      yield* git(made.path, "reset", "--quiet", "--hard", "HEAD")
+    }).pipe(Effect.catch((failure: RiftFailed) => Effect.logWarning(`work: ${made.path} was not reset to its HEAD`, failure)))
 
   const create = Effect.fn("WorkRifts.create")(function* (request: CreateRequest) {
     if (options.workrift) {
@@ -390,7 +394,6 @@ export const layer = (options: Options) => {
         onSome: Effect.succeed,
       })
       yield* Option.match(Option.fromUndefinedOr(request.at), { onNone: () => Effect.void, onSome: (at) => detach(path, at, Option.none()) })
-      yield* settled(path, request.source)
       return path
     }
     const parent = yield* placeOf(request.source)
@@ -403,10 +406,9 @@ export const layer = (options: Options) => {
     const made = yield* call(Created, Option.some(parent.base), ["new", "-branch", request.branch, ...on, ...start.args, request.name])
     const known = { base: parent.base, name: made.name, id: made.id }
     seen.set(made.path, known)
+    yield* cleanStart(parent.base, made)
     const tracked = Effect.when(git(made.path, "branch", "--quiet", `--set-upstream-to=origin/${request.branch}`, request.branch), Effect.succeed(start.track))
     yield* Option.match(Option.fromUndefinedOr(request.at), { onNone: () => Effect.asVoid(tracked), onSome: (at) => detach(made.path, at, Option.some(known)) })
-    // Fresh, before any agent runs in it: the copies of the uncommitted work it was copied with go back to HEAD.
-    yield* settled(made.path, request.source)
     return made.path
   })
 

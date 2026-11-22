@@ -4,7 +4,7 @@
 // `rift.mergeCheck`, `rift.focus` and `rift.gate` each leave a mark naming the checkout they ran in, so the
 // test reads which ran where. The other locks are held by this process meanwhile, as a full gate by hand,
 // an accept check or a post-land step would hold them.
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { availableParallelism, tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, test } from "bun:test"
@@ -149,46 +149,6 @@ describe("a land by receipts, on real Git", () => {
         expect(readdirSync(join(made.logs, "receipts")).sort()).toEqual([`${pushed}.land.json`, `${pushed}.merge.json`, `${x}.round.json`, `${y}.round.json`].sort())
         // The whole land of two receipted Rifts, Git included, on this host: the Done line's bound.
         expect(seconds).toBeLessThan(60)
-      }),
-    )
-  })
-
-  test("a Rift that holds copies of its base's uncommitted work lands on its receipt, the copies restored by hand after it or not; a change of its own still refuses", () => {
-    const made = bench()
-    return made.run(
-      Effect.gen(function* () {
-        // Copied with the base's uncommitted work, as a lane made before its create restored anything was.
-        const source = join(made.scratch, "app")
-        for (const root of [source, made.x]) writeFileSync(join(root, "README.md"), "app, rewritten by a tool in the base\n")
-        writeFileSync(join(made.y, "README.md"), "app, rewritten by a tool in the base\n")
-        yield* made.receipt(made.x)
-        yield* made.receipt(made.y)
-        // One owner restores the copy by hand after the receipt: the receipt still covers it.
-        sh(made.x, "git", "checkout", "-q", "--", "README.md")
-        // The base rewrites its file again: the other's copy no longer reads as the base's, so it is that Rift's own
-        // change, which refuses the land as it always did; once it reads as the base's again, it is not.
-        writeFileSync(join(source, "README.md"), "app, rewritten again\n")
-        expect(yield* made.land(["feat-x", "feat-y"])).toBe(`refused: Did not land anything: ${made.y} holds uncommitted changes; commit them first:\n   M README.md`)
-        writeFileSync(join(made.y, "README.md"), "app, rewritten again\n")
-        const answer = yield* made.land(["feat-x", "feat-y"])
-        expect(answer.split("\n")[0]).toMatch(/^Landed 2 workspace\(s\) as one push: .*by their receipts, no full gate\)\.$/)
-        // Neither receipt was redone: the land ran its merge check alone.
-        expect(made.marked()).toEqual([`merge-check ${made.integrate}`])
-      }),
-    )
-  })
-
-  test("a land refuses a Rift whose own change reads the same as its clean base: deleting a file it committed, a mode-only change", () => {
-    const made = bench()
-    return made.run(
-      Effect.gen(function* () {
-        yield* made.receipt(made.x)
-        yield* made.receipt(made.y)
-        rmSync(join(made.x, "x.txt"))
-        chmodSync(join(made.y, "README.md"), 0o755)
-        expect(yield* made.land(["feat-x"])).toBe(`refused: Did not land anything: ${made.x} holds uncommitted changes; commit them first:\n   D x.txt`)
-        expect(yield* made.land(["feat-y"])).toBe(`refused: Did not land anything: ${made.y} holds uncommitted changes; commit them first:\n   M README.md`)
-        expect(made.marked()).toEqual([])
       }),
     )
   })

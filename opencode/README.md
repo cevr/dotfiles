@@ -2276,22 +2276,17 @@ later than 2026-12-06 (`RIFT_ALIAS_REMOVAL`). One input, with an `action`:
   directory with `WORKRIFT_SOURCE` set, which refreshes the source, imports
   gh stack metadata and names the workspace itself. A copy carries the
   source's uncommitted work (on the Mac, the files tools rewrite in the base:
-  `claude/settings.json`, `codex/config.toml`, `skills/.system/**`): before
-  any agent runs in a fresh workspace, the create restores to HEAD each tracked
-  change it inherited (the rule below), keeps untracked files, and
-  records the source as `rift.copiedFrom` in the workspace's Git config
-  (`mods/work/process/inherited.ts`). A workspace a create adopts (one an
-  earlier, cut-off create left) is not touched.
+  `claude/settings.json`, `codex/config.toml`, `skills/.system/**`). On the
+  Mac, a workspace this create's `work new` made (its record the one that call
+  answered, its folder new) is reset to its HEAD at once, before anything else
+  runs in it: tracked files and index, so the source's staged and unstaged
+  edits go and its untracked files stay (`mods/work/process/work.ts`
+  `cleanStart`). At that moment every difference from HEAD is the source's.
+  Nothing else is ever reset: not a workspace a create adopts (one an earlier,
+  cut-off create left), not a base, not the workbox's `workrift create`, and
+  after the create every uncommitted change is the workspace's own.
 - `{ action: "list" }` lists the source's workspaces with their branch and their
-  unsaved work (`clean`, or `2 uncommitted, 1 unpushed, 1 stashed`). An
-  uncommitted change counts unless it is inherited: the checkout it was copied
-  from lists the same path with the same status code in its own `git status`
-  (read now), both HEADs hold the path alike, and the file is the same on disk
-  in both (type, executable bit and bytes, or missing in both). Anything else
-  (a change to a file the source has clean, a deletion or mode change of the
-  workspace's own, a source that cannot be read or is not known) is the
-  workspace's own. The land, a removal, the orchestrate lost-work list and a
-  receipt's tree read the same rule.
+  unsaved work (`clean`, or `2 uncommitted, 1 unpushed, 1 stashed`).
 - `{ action: "remove", name | path, force? }` moves a workspace to the trash
   (`work rm`; `workrift remove` on the workbox). It refuses a workspace that
   holds work found nowhere else, and names it: uncommitted changes (untracked
@@ -2378,8 +2373,7 @@ never runs `rift.gate` on the batch:
 1. Before any merge, each workspace's receipt is read (`mods/work/receipt.ts`):
    the newest one in its Git dir (`rift-receipt.json`). It is current when it
    names the workspace's head and the tree of its tracked files as they are on
-   disk, each copy inherited from its source at its HEAD version (so restoring
-   one leaves the receipt current), and every check in it exited 0. A workspace without a current one (none,
+   disk, and every check in it exited 0. A workspace without a current one (none,
    red, or its head or files moved since) runs `rift.focus` in its own workspace,
    and a green run is its receipt; with no `rift.focus`, or a red run, a
    pushed land stops before any merge and a checked one reds that workspace alone.

@@ -10,7 +10,7 @@ import { check, riftsLaws, savedWorkCase } from "../laws.ts"
 import * as MemoryRifts from "../memory/rifts.ts"
 import { Landing, RiftFailed, Rifts } from "../service.ts"
 import { removal, type Workspace } from "../workspace.ts"
-import { commands } from "./command.ts"
+import { commands, lines } from "./command.ts"
 import * as ProcessLanding from "./landing.ts"
 import * as ProcessWork from "./work.ts"
 
@@ -334,6 +334,188 @@ echo "$* source=$WORKRIFT_SOURCE" >> "$HOME/workrift.log"
 if [ "$1" = "create" ]; then cat "$HOME/workrift.answer"; fi
 `
 
+// A clean start. A create resets the workspace its `work new` made to its HEAD (tracked files and index); after
+// that, every uncommitted change is the workspace's own. The property draws a dirty base (unstaged, staged, MM,
+// MD, mode, delete, staged delete, rename, staged addition, untracked) and then changes of the lane's own of
+// every kind (edit, staged only, staged with the base's text left on disk, mode, delete, staged delete, rename,
+// untracked, the base's own copy put back, main's text back over a commit, a committed file deleted).
+
+/** The files of HEAD the clean-start cases change: six texts and a script. */
+const CLEAN_FILES = ["f1.txt", "f2.txt", "f3.txt", "f4.txt", "f5.txt", "f6.txt", "run.sh"] as const
+
+const BASE_DIRT = ["edit", "stage", "MM", "MD", "mode", "delete", "stagedDelete", "rename", "add", "untracked"] as const
+const LANE_CHANGES = ["edit", "stagedOnly", "stageKeepBase", "mode", "delete", "stagedDelete", "rename", "untracked", "baseCopy", "commitThenRevert", "commitThenDelete"] as const
+
+/** The entries of `git status --porcelain=v1 -z`: `XY path`, a rename's old path dropped. */
+const zEntries = (output: string): ReadonlyArray<{ readonly line: string; readonly file: string }> => {
+  const fields = output.split("\0").filter((field) => field !== "")
+  const entries: Array<{ line: string; file: string }> = []
+  for (let index = 0; index < fields.length; index++) {
+    const field = fields[index] ?? ""
+    entries.push({ line: field, file: field.slice(3) })
+    if (field[0] === "R" || field[0] === "C") index++
+  }
+  return entries
+}
+
+/** One clean-start case's tools over a bench. */
+const cleanTools = (made: Bench) => {
+  const { spawn } = commands(made.env)
+  const code = (cwd: string, ...argv: ReadonlyArray<string>) => spawn(argv, cwd).pipe(Effect.orDie, Effect.map((ran) => ran.code))
+  const status = (path: string) => made.sh(path, "git", "status", "--porcelain=v1", "-z", "--untracked-files=all")
+  /** Whether `file` reads the same in both checkouts: missing in both, or the same bytes (f957c17e's land rule, `same`). */
+  const sameIn = (left: string, right: string, file: string) =>
+    code("/", "sh", "-c", 'if [ -e "$1" ] || [ -e "$2" ]; then cmp -s "$1" "$2"; else exit 0; fi', "same", `${left}/${file}`, `${right}/${file}`).pipe(Effect.map((exit) => exit === 0))
+  /** Whether the base's `file` on disk is HEAD's (bytes and mode). */
+  const baseAtHead = (file: string) => code(made.base, "git", "diff", "--quiet", "HEAD", "--", file).pipe(Effect.map((exit) => exit === 0))
+  /** The base's copy of `file` put on `lane`'s disk, mode and bytes, or removed where the base has none. */
+  const baseCopy = (lane: string, file: string) =>
+    made.sh("/", "sh", "-c", 'if [ -e "$1" ]; then cp -p "$1" "$2"; else rm -f "$2"; fi', "copy", `${made.base}/${file}`, `${lane}/${file}`).pipe(Effect.asVoid)
+  return { code, status, sameIn, baseAtHead, baseCopy }
+}
+
+/** Lays out the clean-start files in the base's HEAD: six texts and an executable script. */
+const cleanFiles = (made: Bench) =>
+  Effect.gen(function* () {
+    for (const file of CLEAN_FILES) yield* made.write(`${made.base}/${file}`, `${file} at HEAD\n`)
+    yield* made.sh(made.base, "chmod", "755", "run.sh")
+    yield* made.sh(made.base, "git", "add", ...CLEAN_FILES)
+    yield* made.sh(made.base, "git", "commit", "-q", "-m", "clean-start files")
+  })
+
+/** One kind of the base's uncommitted work on `file`, case `n`. */
+const dirtBase = (made: Bench, kind: (typeof BASE_DIRT)[number], file: string, n: number) => {
+  const at = (name: string) => `${made.base}/${name}`
+  const git = (...args: ReadonlyArray<string>) => made.sh(made.base, "git", ...args)
+  switch (kind) {
+    case "edit":
+      return made.write(at(file), `base ${n} edit\n`)
+    case "stage":
+      return made.write(at(file), `base ${n} staged\n`).pipe(Effect.andThen(git("add", file)))
+    case "MM":
+      return made.write(at(file), `base ${n} staged\n`).pipe(Effect.andThen(git("add", file)), Effect.andThen(made.write(at(file), `base ${n} on disk\n`)))
+    case "MD":
+      return made.write(at(file), `base ${n} staged\n`).pipe(Effect.andThen(git("add", file)), Effect.andThen(made.sh(made.base, "rm", file)))
+    case "mode":
+      return made.sh(made.base, "chmod", file === "run.sh" ? "644" : "755", file)
+    case "delete":
+      return made.sh(made.base, "rm", file)
+    case "stagedDelete":
+      return git("rm", "-q", file)
+    case "rename":
+      return git("mv", file, `${file}.moved`)
+    case "add":
+      return made.write(at(`added-${n}.txt`), `base ${n} added\n`).pipe(Effect.andThen(git("add", `added-${n}.txt`)))
+    case "untracked":
+      return made.write(at(`notes/u-${n}.md`), `base ${n} notes\n`)
+  }
+}
+
+/** One kind of the lane's own change on `file`, case `n`. */
+const changeLane = (made: Bench, tools: ReturnType<typeof cleanTools>, lane: string, kind: (typeof LANE_CHANGES)[number], file: string, n: number) => {
+  const at = (name: string) => `${lane}/${name}`
+  const git = (...args: ReadonlyArray<string>) => made.sh(lane, "git", ...args)
+  const own = `lane ${n} ${file}\n`
+  /** The base's copy back on disk; HEAD's text where the base holds HEAD's (the lane's change then lives in its index alone). */
+  const baseOrHead = Effect.flatMap(tools.baseAtHead(file), (atHead) => (atHead ? made.write(at(file), `${file} at HEAD\n`) : tools.baseCopy(lane, file)))
+  switch (kind) {
+    case "edit":
+      return made.write(at(file), own)
+    case "stagedOnly":
+      return made.write(at(file), own).pipe(Effect.andThen(git("add", file)))
+    case "stageKeepBase":
+      return made.write(at(file), own).pipe(Effect.andThen(git("add", file)), Effect.andThen(baseOrHead))
+    case "mode":
+      return made.sh(lane, "chmod", file === "run.sh" ? "644" : "755", file)
+    case "delete":
+      return made.sh(lane, "rm", file)
+    case "stagedDelete":
+      return git("rm", "-q", file)
+    case "rename":
+      return git("mv", file, `${file}.lane`)
+    case "untracked":
+      return made.write(at(`lane-${n}/new.txt`), own)
+    case "baseCopy":
+      // The base's copy put back: the change the earlier rule took for the base's. Where the base holds HEAD's, an edit.
+      return Effect.flatMap(tools.baseAtHead(file), (atHead) => (atHead ? made.write(at(file), own) : tools.baseCopy(lane, file)))
+    case "commitThenRevert":
+      return made.write(at(file), own).pipe(
+        Effect.andThen(git("commit", "-q", "-m", `lane ${n}`, "--", file)),
+        Effect.andThen(made.write(at(file), `${file} at HEAD\n`)),
+      )
+    case "commitThenDelete":
+      return made.write(at(`committed-${n}.txt`), own).pipe(
+        Effect.andThen(git("add", `committed-${n}.txt`)),
+        Effect.andThen(git("commit", "-q", "-m", `lane ${n} adds`, "--", `committed-${n}.txt`)),
+        Effect.andThen(made.sh(lane, "rm", `committed-${n}.txt`)),
+      )
+  }
+}
+
+/** `count` of `pool`'s items, drawn without repeats. */
+const drawSome = <A>(random: () => number, pool: ReadonlyArray<A>, count: number): ReadonlyArray<A> => {
+  const left = [...pool]
+  return Array.from({ length: Math.min(count, left.length) }, () => left.splice(Math.floor(random() * left.length), 1)[0] as A)
+}
+
+/**
+ * The clean-start property, `cases` cases from `seed` on one bench: each puts the base back at its HEAD, dirties it,
+ * makes a lane and checks it starts clean for its tracked files and its index, its untracked copies kept and the base
+ * untouched; then changes the lane and checks no change is hidden: inspect lists exactly `git status`, a removal
+ * refuses, and the land's refusal (`ownChanges`) reads f957c17e's rule, unchanged (see OB1 in the unit's request).
+ */
+const cleanStartProperty = (seed: number, cases: number) =>
+  check(plain, (made) =>
+    Effect.gen(function* () {
+      const rifts = yield* Rifts
+      const landing = Context.get(yield* Effect.scoped(Layer.build(ProcessLanding.layer({ logs: `${made.root}/logs`, env: made.env }))), Landing)
+      const tools = cleanTools(made)
+      const random = seeded(seed)
+      yield* cleanFiles(made)
+      const drawn = new Set<string>()
+      for (let n = 0; n < cases; n++) {
+        // The base back at its HEAD, then dirtied.
+        yield* made.sh(made.base, "git", "reset", "-q", "--hard", "HEAD")
+        yield* made.sh(made.base, "git", "clean", "-q", "-fd")
+        const dirt = drawSome(random, CLEAN_FILES, 1 + Math.floor(random() * 4)).map((file) => ({ file, kind: BASE_DIRT[Math.floor(random() * BASE_DIRT.length)] ?? "edit" }))
+        for (const each of dirt) yield* dirtBase(made, each.kind, each.file, n)
+        const before = yield* tools.status(made.base)
+        const lane = yield* rifts.create({ source: made.base, from: made.base, name: `p${seed}-${n}`, branch: `p/${seed}-${n}` })
+        const label = { seed, n, dirt }
+        // A fresh lane: tracked files and index at HEAD; the base's untracked files kept, the same bytes; the base untouched.
+        expect({ ...label, base: yield* tools.status(made.base) }).toEqual({ ...label, base: before })
+        const fresh = zEntries(yield* tools.status(lane))
+        const theirs = zEntries(before).filter((entry) => entry.line.startsWith("?? ")).map((entry) => entry.line)
+        expect({ ...label, tracked: fresh.filter((entry) => !entry.line.startsWith("?? ")).map((entry) => entry.line) }).toEqual({ ...label, tracked: [] })
+        expect({ ...label, index: yield* tools.code(lane, "git", "diff", "--cached", "--quiet", "HEAD") }).toEqual({ ...label, index: 0 })
+        for (const entry of fresh) {
+          expect({ ...label, untracked: entry.line, theirs: theirs.includes(entry.line) }).toEqual({ ...label, untracked: entry.line, theirs: true })
+          expect({ ...label, untracked: entry.file, same: yield* tools.sameIn(lane, made.base, entry.file) }).toEqual({ ...label, untracked: entry.file, same: true })
+        }
+        const freshLines = (yield* rifts.inspect(lane)).uncommitted
+        // The lane's own changes, on files the base's dirt may also name.
+        const changes = drawSome(random, CLEAN_FILES, 1 + Math.floor(random() * 3)).map((file) => ({ file, kind: LANE_CHANGES[Math.floor(random() * LANE_CHANGES.length)] ?? "edit" }))
+        for (const each of changes) yield* changeLane(made, tools, lane, each.kind, each.file, n)
+        const told = { ...label, changes }
+        const workspace = yield* rifts.inspect(lane)
+        const plainStatus = lines(yield* made.sh(lane, "git", "status", "--porcelain"))
+        // Every change shows in git status, and inspect hides none of it.
+        expect({ ...told, changed: [...plainStatus].sort().join("\n") !== [...freshLines].sort().join("\n") }).toEqual({ ...told, changed: true })
+        expect({ ...told, uncommitted: workspace.uncommitted }).toEqual({ ...told, uncommitted: plainStatus })
+        const refused = yield* Effect.flip(removal(workspace, { force: false, sessionDirectory: made.root }))
+        expect({ ...told, refused: refused._tag }).toEqual({ ...told, refused: "WorkUnsaved" })
+        // The land's refusal: each entry whose file reads otherwise than the base's (f957c17e's rule, OB1 unchanged).
+        const differ: Array<string> = []
+        for (const entry of zEntries(yield* tools.status(lane))) if (!(yield* tools.sameIn(lane, made.base, entry.file))) differ.push(entry.line)
+        expect({ ...told, own: [...(yield* landing.ownChanges(lane, made.base))].sort() }).toEqual({ ...told, own: differ.sort() })
+        for (const each of dirt) drawn.add(`base ${each.kind}`)
+        for (const each of changes) drawn.add(`lane ${each.kind}`)
+      }
+      // The seed reaches every kind of the base's dirt and of the lane's change.
+      expect([...drawn].sort()).toEqual([...BASE_DIRT.map((kind) => `base ${kind}`), ...LANE_CHANGES.map((kind) => `lane ${kind}`)].sort())
+    }),
+  )
+
 test("a failed work call says its tag and JSON (status 1) or that it was a usage error (status 2), never a parse error", () => {
   expect(ProcessWork.failureOf({ code: 1, stdout: '{"_tag":"NameTaken","name":"twice"}\n', stderr: "work: failed; the JSON on standard output says why\n" })).toBe(
     'NameTaken: {"_tag":"NameTaken","name":"twice"}',
@@ -495,34 +677,44 @@ if (runnable) {
       TIMEOUT,
     )
 
+    for (const seed of [11, 4_242])
+      test(
+        `clean start (seed ${seed}): over a base dirtied every way, a fresh lane is at HEAD in its files and index with the base's untracked files kept and the base untouched; then no change of the lane's own is hidden from inspect or a removal, and the land reads f957c17e's rule`,
+        () => cleanStartProperty(seed, 40),
+        240_000,
+      )
+
     test(
-      "create restores the copies of the base's uncommitted tracked work and keeps its untracked files; inspect counts only the workspace's own changes; the base keeps its own",
+      "create resets the workspace its work new made to HEAD: the base's unstaged, staged, MM and MD edits leave its files and its index, its untracked files stay; the base keeps all of it",
       () =>
         check(plain, (made) =>
           Effect.gen(function* () {
             const rifts = yield* Rifts
-            yield* made.write(`${made.base}/README.md`, "rewritten by a tool in the base\n")
-            yield* made.sh(made.base, "git", "rm", "-q", "--cached", "src/index.ts")
+            yield* made.write(`${made.base}/README.md`, "staged by a tool in the base\n")
+            yield* made.sh(made.base, "git", "add", "README.md")
+            yield* made.write(`${made.base}/README.md`, "rewritten on disk by a tool in the base\n")
+            yield* made.write(`${made.base}/src/index.ts`, "export const staged = 1\n")
+            yield* made.sh(made.base, "git", "add", "src/index.ts")
+            yield* made.sh(made.base, "rm", "src/index.ts")
             yield* made.write(`${made.base}/notes/untracked.md`, "the base's notes\n")
             const before = yield* out(made, made.base, "git", "status", "--porcelain")
+            expect(before.split("\n").sort()).toEqual(["?? notes/", "MD src/index.ts", "MM README.md"])
             const lane = yield* rifts.create({ source: made.base, from: made.base, name: "clean-start", branch: "clean-start" })
-            // Its tracked files are HEAD's; the untracked copy stays, and is the base's, not the lane's.
             expect(yield* out(made, lane, "git", "status", "--porcelain")).toBe("?? notes/")
-            expect(yield* out(made, lane, "git", "config", "--local", "--get", "rift.copiedFrom")).toBe(made.base)
-            expect(yield* rifts.inspect(lane)).toMatchObject({ uncommitted: [], unpushed: [] })
+            expect(yield* out(made, lane, "cat", "README.md")).toBe("app")
+            expect(yield* out(made, lane, "git", "show", ":src/index.ts")).toBe("export {}")
+            expect(yield* out(made, lane, "cat", "notes/untracked.md")).toBe("the base's notes")
             expect(yield* out(made, made.base, "git", "status", "--porcelain")).toBe(before)
-            expect([...(yield* rifts.inspect(made.base)).uncommitted].sort()).toEqual([" M README.md", "?? notes/untracked.md", "?? src/index.ts", "D  src/index.ts"])
-            // The lane's own change is counted; a copy that no longer reads as the base's is the lane's.
-            yield* made.write(`${lane}/src/index.ts`, "export const mine = 1\n")
-            yield* made.write(`${made.base}/notes/untracked.md`, "the base's notes, rewritten\n")
-            expect([...(yield* rifts.inspect(lane)).uncommitted].sort()).toEqual([" M src/index.ts", "?? notes/untracked.md"])
+            expect(yield* out(made, made.base, "git", "show", ":README.md")).toBe("staged by a tool in the base")
+            // After the create every change is the lane's own, the base's untracked copy too, as at f957c17e.
+            expect(yield* rifts.inspect(lane)).toMatchObject({ uncommitted: ["?? notes/"], unpushed: [] })
           }),
         ),
       TIMEOUT,
     )
 
     test(
-      "a lane's own change that reads the same as its clean base is still its own: a mode-only change, deleting a file it committed, main's text put back over its commit; inspect lists each and a removal refuses",
+      "a lane's own change that reads the same as its clean base is still its own (round 1's probes): a mode-only change, deleting a file it committed, main's text put back over its commit; inspect lists each and a removal refuses",
       () =>
         check(plain, (made) =>
           Effect.gen(function* () {
@@ -557,6 +749,77 @@ if (runnable) {
               const refused = yield* Effect.flip(removal(workspace, { force: false, sessionDirectory: made.root }))
               expect(refused._tag).toBe("WorkUnsaved")
             }
+          }),
+        ),
+      TIMEOUT,
+    )
+
+    test(
+      "a lane's own staged work behind the base's MM or MD entry, the base's text left on disk (round 2's k1 and k2), is listed by inspect and refuses a removal",
+      () =>
+        check(plain, (made) =>
+          Effect.gen(function* () {
+            const rifts = yield* Rifts
+            const probes = [
+              { name: "k1", disk: (lane: string) => made.write(`${lane}/README.md`, "C\n"), base: () => made.write(`${made.base}/README.md`, "C\n"), expected: ["MM README.md"] },
+              { name: "k2", disk: (lane: string) => made.sh(lane, "rm", "README.md"), base: () => made.sh(made.base, "rm", "README.md"), expected: ["MD README.md"] },
+            ]
+            for (const probe of probes) {
+              yield* made.sh(made.base, "git", "reset", "-q", "--hard", "HEAD")
+              yield* made.write(`${made.base}/README.md`, "A\n")
+              yield* made.sh(made.base, "git", "add", "README.md")
+              yield* probe.base()
+              const lane = yield* rifts.create({ source: made.base, from: made.base, name: probe.name, branch: probe.name })
+              yield* made.write(`${lane}/README.md`, "the lane's own staged work\n")
+              yield* made.sh(lane, "git", "add", "README.md")
+              yield* probe.disk(lane)
+              const workspace = yield* rifts.inspect(lane)
+              expect({ probe: probe.name, uncommitted: workspace.uncommitted }).toEqual({ probe: probe.name, uncommitted: probe.expected })
+              const refused = yield* Effect.flip(removal(workspace, { force: false, sessionDirectory: made.root }))
+              expect({ probe: probe.name, refused: refused._tag }).toEqual({ probe: probe.name, refused: "WorkUnsaved" })
+            }
+          }),
+        ),
+      TIMEOUT,
+    )
+
+    test(
+      "a lane made on a lane is reset to its own HEAD; the parent keeps its own changes",
+      () =>
+        check(plain, (made) =>
+          Effect.gen(function* () {
+            const rifts = yield* Rifts
+            const parent = yield* rifts.create({ source: made.base, from: made.base, name: "parent", branch: "parent" })
+            yield* made.write(`${parent}/README.md`, "the parent's own edit\n")
+            yield* made.write(`${parent}/src/index.ts`, "export const staged = 1\n")
+            yield* made.sh(parent, "git", "add", "src/index.ts")
+            const before = lines(yield* made.sh(parent, "git", "status", "--porcelain"))
+            expect(before).toEqual([" M README.md", "M  src/index.ts"])
+            const child = yield* rifts.create({ source: parent, from: parent, name: "child", branch: "child" })
+            expect(yield* out(made, child, "git", "status", "--porcelain")).toBe("")
+            expect(lines(yield* made.sh(parent, "git", "status", "--porcelain"))).toEqual(before)
+            expect((yield* rifts.inspect(parent)).uncommitted).toEqual(before)
+          }),
+        ),
+      TIMEOUT,
+    )
+
+    test(
+      "a create resets nothing it did not make: a folder already at the workspace's path keeps its changes",
+      () =>
+        check(plain, (made) =>
+          Effect.gen(function* () {
+            const rifts = yield* Rifts
+            const taken = `${made.root}/code/.work/app/taken`
+            yield* Effect.sync(() => gitClone(made.base, taken, ["-q"], withProcessEnv(made.env)))
+            yield* made.write(`${taken}/README.md`, "work in a folder no create made\n")
+            yield* made.write(`${taken}/src/index.ts`, "export const staged = 1\n")
+            yield* made.sh(taken, "git", "add", "src/index.ts")
+            const before = yield* out(made, taken, "git", "status", "--porcelain")
+            // work new refuses a folder that exists (work.Exists), so the create never reaches the reset.
+            expect(yield* failureWords(rifts.create({ source: made.base, from: made.base, name: "taken", branch: "taken" }))).toContain("Exists")
+            expect(yield* out(made, taken, "git", "status", "--porcelain")).toBe(before)
+            expect(yield* out(made, taken, "cat", "README.md")).toBe("work in a folder no create made")
           }),
         ),
       TIMEOUT,
@@ -737,6 +1000,31 @@ if (runnable) {
     )
 
     test(
+      "a create that adopts a workspace an interrupted create left (madeMeanwhile) resets nothing: the copies of the base's edits stay",
+      () =>
+        check(bench({ ...PLAIN, stubs: [["cp", SLOW_CP]] }), (made) =>
+          Effect.gen(function* () {
+            const rifts = yield* Rifts
+            yield* made.write(`${made.base}/README.md`, "the base's edit\n")
+            yield* made.write(`${made.base}/src/index.ts`, "export const staged = 1\n")
+            yield* made.sh(made.base, "git", "add", "src/index.ts")
+            const before = lines(yield* made.sh(made.base, "git", "status", "--porcelain"))
+            expect(before).toEqual([" M README.md", "M  src/index.ts"])
+            const request = { source: made.base, from: made.base, name: "cut", branch: "cut" }
+            const making = yield* Effect.forkChild(rifts.create(request))
+            yield* made.sh(made.root, "test", "-e", `${made.env.HOME}/clone.started`).pipe(Effect.sandbox, Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 400 }))
+            yield* Fiber.interrupt(making)
+            const again = yield* Effect.forkChild(rifts.create(request))
+            yield* made.sh(made.root, "touch", `${made.env.HOME}/clone.go`)
+            const path = yield* Fiber.join(again)
+            expect(lines(yield* made.sh(path, "git", "status", "--porcelain"))).toEqual(before)
+            expect((yield* rifts.inspect(path)).uncommitted).toEqual(before)
+          }),
+        ),
+      TIMEOUT,
+    )
+
+    test(
       "a create of a name whose work new was killed mid-clone (a reboot, a crash) fails at once naming `work rm <name>`, and keeps the folder; once it is removed, the name is made",
       () =>
         check(bench({ ...PLAIN, stubs: [["cp", SLOW_CP]], makingWaitMs: 50_000 }), (made) =>
@@ -827,14 +1115,16 @@ if (runnable) {
     )
 
     test(
-      "with workrift: true create and remove go through workrift, named the source; source, list and inspect ask work",
+      "with workrift: true create and remove go through workrift, named the source, and the create resets nothing; source, list and inspect ask work",
       () =>
         check(bench({ ...PLAIN, workrift: true, stubs: [["workrift", LOGGING_WORKRIFT]] }), (made) =>
           Effect.gen(function* () {
             const rifts = yield* Rifts
+            yield* made.write(`${made.base}/README.md`, "the base's edit\n")
             const created = yield* made.work("new", "-branch", "feat/x", "feat-x").pipe(Effect.flatMap(Schema.decodeUnknownEffect(CREATED)), Effect.orDie)
             yield* made.write(`${made.env.HOME}/workrift.answer`, `${created.path}\n`)
             expect(yield* rifts.create({ source: made.base, from: made.inside, name: "feat-x", branch: "feat/x" })).toBe(created.path)
+            expect(yield* out(made, created.path, "git", "status", "--porcelain")).toBe("M README.md")
             expect(yield* rifts.source(created.path)).toBe(made.base)
             expect(yield* rifts.list(made.base)).toEqual([created.path])
             expect((yield* rifts.inspect(created.path)).branch).toBe("feat/x")
