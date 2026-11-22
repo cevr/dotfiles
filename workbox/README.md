@@ -97,7 +97,12 @@ noncurrent snapshot objects after 14 days.
   source. It checks out the remote branch when one exists, and otherwise starts
   a new branch from the freshly fetched remote default branch.
 - `workrift deps` installs dependencies in the current checkout when its lock
-  file or a dependency patch in `patches/` changed since the last install.
+  file or a dependency patch in `patches/` changed since the last install. In a
+  base it waits in line for the base's exclusive lock, unless a command it runs
+  under (a hook of a `git switch` or merge) holds the base: then a holder that
+  installs itself (a create, advance or refresh, the older workrift's too) is
+  left to it, an exclusive `workrift hold` covers it, and a `hold --shared`
+  gets a note to run `workrift deps` once it ends.
 - `workrift refresh` updates and warms the source from its default branch.
 - `workrift list` lists the source's workspaces; `workrift sources` lists sources.
 - `workrift remove [--dry-run] [--with-children] [path]` deletes a workspace for
