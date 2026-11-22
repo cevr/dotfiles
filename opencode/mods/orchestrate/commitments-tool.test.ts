@@ -18,7 +18,7 @@ import {
   sectionKeys,
   sectionOf,
 } from "./commitments-tool.ts"
-import { type Actor, type Command, EMPTY, fold, type RecordEvent, type Snapshot, type StoredEvent } from "./record.ts"
+import { type Actor, Command, EMPTY, fold, type RecordEvent, type Snapshot, type StoredEvent } from "./record.ts"
 import { decideCommand, type Facts } from "./standing.ts"
 
 const T0 = Date.parse("2026-11-22T10:00:00.000Z")
@@ -150,6 +150,25 @@ describe("the section", () => {
         .map((id) => `${id} (run default, by ses_root)`)
         .join(", ")}, and 15 more: commitments({ action: "list", all: true })`,
     )
+  })
+
+  test("at 5,000 commitments, unrouted hand-backs and unseen notices among them, the section stays a few short lines", () => {
+    const total = 5000
+    const ids = Arr.makeBy(total, (at) => `c${at}`)
+    const plugin: Actor = { id: "orchestrate status", role: "plugin" }
+    const steps: ReadonlyArray<readonly [Command, Actor]> = [
+      ...Arr.chunksOf(ids, 50).map((chunk, at): readonly [Command, Actor] => [add(chunk, Match.value(at % 2).pipe(Match.when(0, () => "owner-answer" as const), Match.orElse(() => "plan-part" as const))), ROOT]),
+      ...ids.filter((_, at) => at % 3 === 0).map((id, at): readonly [Command, Actor] => [assign(id, `L${at % 7}`), ROOT]),
+      ...Arr.makeBy(40, (at): readonly [Command, Actor] => [
+        Command.cases.hand_back.make({ run: "default", ownerLane: `L${at % 7}`, role: "implementor", session: "ses_worker", verdict: "ready", claims: [] }),
+        plugin,
+      ]),
+      ...ids.filter((_, at) => at % 100 === 1).map((id): readonly [Command, Actor] => [commandIn({ action: "decide", id, why: "not needed" }), ROOT]),
+    ]
+    const after = steps.reduce((held, [command, actor], at) => fold(held, Result.getOrThrow(decideCommand(held, command, { actor, now: T0 + at }))), EMPTY)
+    const lines = sectionOf(listedOf(after, { ...facts, gone: new Set(["L1", "L2"]) }))
+    expect(lines.length).toBeLessThanOrEqual(8)
+    expect(lines.filter((line) => line.length > 800)).toEqual([])
   })
 
   test("its keys change only when its set of ids changes", () => {

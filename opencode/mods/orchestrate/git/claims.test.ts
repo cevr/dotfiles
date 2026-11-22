@@ -305,3 +305,26 @@ inRepository("a lane made before start heads were kept is claimed by no read, on
     expect(where(after, "u1", ["u1"])).toEqual(Option.some("landed"))
   }),
 )
+
+inRepository("claimed work landed under another hash (a squash, a rebase on main) stays open, orphaned once its lane is gone", (repo) =>
+  Effect.gen(function* () {
+    const [u4, u5] = [repo.lane("u4"), repo.lane("u5")]
+    const start = laned(laned(EMPTY, "u4", Option.some(u4.head())), "u5", Option.some(u5.head()))
+    u4.work("u4's work")
+    u5.work("u5's work")
+    const seen = yield* read(repo.path, start, [u4.now(), u5.now()], [], T0 + 1000)
+    const squashed = repo.commit([repo.root], "u4's work, squashed")
+    repo.main(repo.commit([squashed], "u5's work, rebased"))
+    const after = yield* read(repo.path, seen, [], ["u4", "u5"], T0 + 2000)
+    expect([where(after, "u4", ["u4", "u5"]), where(after, "u5", ["u4", "u5"])]).toEqual([Option.some("orphaned"), Option.some("orphaned")])
+  }),
+)
+
+inRepository("a lane of a unit with no commitment claims nothing and records nothing", (repo) =>
+  Effect.gen(function* () {
+    const old = repo.lane("old")
+    old.work("old work")
+    const after = yield* read(repo.path, EMPTY, [old.now()], [], T0 + 1000)
+    expect([after.commitments.size, after.handBacks.size]).toEqual([0, 0])
+  }),
+)
