@@ -1,5 +1,5 @@
 // The automation tools in real OpenCode, with OpenCode's automations turned on
-// (`experimental.automations`), the built-in automation plugin off as daily
+// (the top-level `automations` key, on by default since upstream cb82da7cde), the built-in automation plugin off as daily
 // writes it (`-opencode.tool.automation`) and the wake plugin, which also takes
 // the automation tools away, on a scripted model:
 // - step-tools: the model is asked once, so its request (the tools it was
@@ -35,7 +35,7 @@ export default OpenCodeDriver.use(
     config: {
       autoupdate: false,
       username: "Demo",
-      experimental: { automations: true },
+      automations: true,
       // As `bun run daily` writes the server config: the wake plugin, and the built-in automation plugin off.
       plugins: [{ package: `${root}/cmd/wake`, options: { backstop: "off" } }, BUILTIN_AUTOMATION_OFF],
     },
