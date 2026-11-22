@@ -1,41 +1,54 @@
-// The `commitments` and `follow_up` tools' handlers over the memory record: what each call answers and refuses, and
-// the record's section (counts, at most ten ids a standing, owner-sourced first, the call that lists the rest), said
-// again only when its ids change.
+// The `commitments` and `follow_up` tools' pure parts: which fields each action takes, each call's command, the words
+// of the answers, and the record's section (counts, at most ten ids a standing, owner-sourced first, the call that
+// lists the rest), said again only when its ids change. The handlers over a store, refusals included, run on the
+// simulated host (cmd/orchestrate/commitments.sim.test.ts).
 import { describe, expect, test } from "bun:test"
-import { Array as Arr, Effect, Option, Result } from "effect"
-import * as Seed from "../../sim/seed.ts"
+import { Array as Arr, Option, Result } from "effect"
 import {
-  answerOf,
   beforeStart,
   type CommitmentsInput,
-  followUpOf,
+  commandOf,
+  doneAnswer,
+  followUpCommandOf,
+  historyAnswer,
   inputRefusal,
   laneLine,
+  listAnswer,
   listedOf,
-  type Reads,
   sectionKeys,
   sectionOf,
 } from "./commitments-tool.ts"
-import * as MemoryRecord from "./memory/record.ts"
-import type { Actor } from "./record.ts"
-import { CommitmentRecord } from "./service.ts"
-import type { Facts } from "./standing.ts"
+import { type Actor, type Command, EMPTY, fold, type RecordEvent, type Snapshot, type StoredEvent } from "./record.ts"
+import { decideCommand, type Facts } from "./standing.ts"
 
 const T0 = Date.parse("2026-11-22T10:00:00.000Z")
 const ROOT: Actor = { id: "ses_root", role: "root" }
 const WORKER: Actor = { id: "ses_worker", role: "worker" }
-const facts = (now = T0): Facts => ({ now, onMain: new Set(), gone: new Set() })
-const READS: Reads = { facts: () => Effect.succeed(facts()), register: () => Effect.fail("no register in this test") }
+const facts: Facts = { now: T0, onMain: new Set(), gone: new Set() }
 
-const call = (input: CommitmentsInput, actor: Actor = ROOT, now = T0) => Effect.result(answerOf(input, actor, now, READS))
-const said = (input: CommitmentsInput, actor: Actor = ROOT, now = T0) => Effect.orDie(answerOf(input, actor, now, READS))
-const section = Effect.gen(function* () {
-  const listed = listedOf(yield* (yield* CommitmentRecord).read, facts())
-  return { lines: sectionOf(listed), keys: sectionKeys(listed) }
-})
+type Writing = Parameters<typeof commandOf>[1]
+/** The command a call makes; a test's call always makes one. */
+const commandIn = (input: CommitmentsInput & { readonly action: Writing }): Command => Result.getOrThrow(commandOf(input, input.action))
+
+interface Played {
+  readonly snapshot: Snapshot
+  readonly events: ReadonlyArray<RecordEvent>
+}
+/** The record after `commands`, each by `actor` at `T0` plus its index in seconds; every one is taken. */
+const played = (commands: ReadonlyArray<Command>, actor: Actor = ROOT): Played =>
+  commands.reduce(
+    (held: Played, command, at) => {
+      const events = Result.getOrThrow(decideCommand(held.snapshot, command, { actor, now: T0 + at * 1000 }))
+      return { snapshot: fold(held.snapshot, events), events: [...held.events, ...events] }
+    },
+    { snapshot: EMPTY, events: [] },
+  )
+const stored = (events: ReadonlyArray<RecordEvent>): ReadonlyArray<StoredEvent> => events.map((event, at) => ({ ...event, seq: at + 1 }))
+
 const parts = (ids: ReadonlyArray<string>) => ids.map((id) => ({ id, title: `the ${id} part` }))
-const add = (ids: ReadonlyArray<string>, source_kind: "plan-part" | "owner-answer" = "plan-part"): CommitmentsInput => ({ action: "add", source_kind, source_ref: "plan.md:1", parts: parts(ids) })
-const recorded = <A, E>(name: string, body: Effect.Effect<A, E, CommitmentRecord>) => Seed.effect(name, Effect.provide(body, MemoryRecord.layer))
+const add = (ids: ReadonlyArray<string>, source_kind: "plan-part" | "owner-answer" = "plan-part") =>
+  commandIn({ action: "add", source_kind, source_ref: "plan.md:1", parts: parts(ids) })
+const assign = (id: string, owner_lane: string, after: CommitmentsInput["after"] = []) => commandIn({ action: "assign", id, owner_lane, after })
 
 describe("inputRefusal", () => {
   test("a field the action does not take is refused by name, then a field it needs", () => {
@@ -45,102 +58,69 @@ describe("inputRefusal", () => {
   })
 })
 
-describe("answerOf", () => {
-  recorded(
-    "add with three parts makes three open, unowned commitments, and list shows them",
-    Effect.gen(function* () {
-      expect(yield* said(add(["p1", "p2", "p3"]))).toBe("commitments: added p1, p2, p3. Unowned until assigned: p1, p2, p3.")
-      const listed = yield* said({ action: "list" })
-      expect(listed.split("\n")).toEqual(["commitments: 3", ...["p1", "p2", "p3"].map((id) => `${id} [unowned] -: the ${id} part (plan-part plan.md:1; default)`)])
-      expect(yield* said({ action: "list", standing: "held" })).toBe("commitments: none match.")
-    }),
-  )
+describe("commandOf", () => {
+  test("a review_by that is not an ISO time makes no command, and says which", () => {
+    const refused = commandOf({ action: "assign", id: "p1", owner_lane: "u1", review_by: "next week" }, "assign")
+    expect(Result.match(refused, { onFailure: (why) => why, onSuccess: () => "made" })).toBe('commitments: the review_by "next week" is not an ISO time')
+  })
 
-  recorded(
-    "a review_by that is not an ISO time is refused, and nothing is written",
-    Effect.gen(function* () {
-      yield* said(add(["p1"]))
-      const refused = yield* call({ action: "assign", id: "p1", owner_lane: "u1", review_by: "next week" })
-      expect(Result.match(refused, { onFailure: (why) => why, onSuccess: () => "answered" })).toBe('commitments: the review_by "next week" is not an ISO time')
-      expect(yield* said({ action: "list", owner: "u1" })).toBe("commitments: none match.")
-    }),
-  )
-
-  recorded(
-    "an order starts the named ones and answers every open commitment of its owner",
-    Effect.gen(function* () {
-      yield* said(add(["p1", "p2", "p3"]))
-      for (const id of ["p1", "p2"]) yield* said({ action: "assign", id, owner_lane: "u1" })
-      expect(yield* said({ action: "order", owner_lane: "u1", ids: ["p1"] })).toBe("commitments: started p1. u1's open commitments, each placed by this order: p1, p2.")
-    }),
-  )
-
-  recorded(
-    "a worker cannot close what the owner approved; a root can, and the answer says the owner is told",
-    Effect.gen(function* () {
-      yield* said(add(["o1"], "owner-answer"))
-      const refused = yield* call({ action: "decide", id: "o1", why: "not needed" }, WORKER)
-      expect(refused._tag).toBe("Failure")
-      expect(yield* said({ action: "decide", id: "o1", why: "not needed" })).toBe("commitments: o1 closed by decision. The owner approved it: they are told, and can have it reopened.")
-      const history = (yield* said({ action: "history", id: "o1" })).split("\n")
-      expect(history.slice(1).map((line) => line.split(" ")[2])).toEqual(["promised", "decided"])
-    }),
-  )
-
-  recorded(
-    "history of an id never promised says so",
-    Effect.gen(function* () {
-      expect(yield* said({ action: "history", id: "nope" })).toBe("commitments: nope has no history: no such commitment.")
-    }),
-  )
+  test("a worker's follow-up is one unowned follow-up commitment, sourced to its call, with the owner it suggests", () => {
+    const command = followUpCommandOf({ id: "f1", title: "a missing test", suggest_owner: "u2" }, "ses_worker", "call_9")
+    const { snapshot, events } = played([command], WORKER)
+    const row = Option.fromUndefinedOr(snapshot.commitments.get("f1"))
+    expect(Option.map(row, (each) => [each.sourceKind, each.sourceRef, each.ownerLane, each.state])).toEqual(Option.some(["follow-up", "ses_worker:call_9", Option.none(), "open"]))
+    // The suggestion is the promise's own field: the event keeps it; the row (Ergo's columns) has none.
+    expect(Arr.map(events, (event) => event.happening)).toEqual([expect.objectContaining({ suggestOwner: Option.some("u2") })])
+  })
 })
 
-describe("followUpOf", () => {
-  recorded(
-    "a worker's follow-up is one unowned follow-up commitment, sourced to its call, with the owner it suggests",
-    Effect.gen(function* () {
-      expect(yield* Effect.orDie(followUpOf({ id: "f1", title: "a missing test", suggest_owner: "u2" }, WORKER, "call_9", T0))).toBe("follow_up: filed f1, unowned; the root owns or decides it.")
-      const record = yield* CommitmentRecord
-      const row = Option.fromUndefinedOr((yield* record.read).commitments.get("f1"))
-      expect(Option.map(row, (each) => [each.sourceKind, each.sourceRef, each.ownerLane])).toEqual(Option.some(["follow-up", "ses_worker:call_9", Option.none()]))
-      // The suggestion is the promise's own field: the event keeps it, the row (Ergo's columns) has none.
-      const promised = Arr.findFirst(yield* record.history("commitment", "f1"), (event) => event.happening._tag === "promised")
-      expect(Option.map(promised, (event) => event.happening)).toEqual(Option.some(expect.objectContaining({ suggestOwner: Option.some("u2") })))
-      const again = yield* Effect.result(followUpOf({ id: "f1", title: "the same id" }, WORKER, "call_10", T0))
-      expect(again._tag).toBe("Failure")
-    }),
-  )
+describe("the answers", () => {
+  test("add with three parts answers their ids, unowned; list shows each with its standing", () => {
+    const command = add(["p1", "p2", "p3"])
+    const { snapshot, events } = played([command])
+    expect(doneAnswer(command, events, snapshot)).toBe("commitments: added p1, p2, p3. Unowned until assigned: p1, p2, p3.")
+    expect(listAnswer({ action: "list" }, snapshot, facts).split("\n")).toEqual([
+      "commitments: 3",
+      ...["p1", "p2", "p3"].map((id) => `${id} [unowned] -: the ${id} part (plan-part plan.md:1; default)`),
+    ])
+    expect(listAnswer({ action: "list", standing: "held" }, snapshot, facts)).toBe("commitments: none match.")
+  })
+
+  test("an order answers every open commitment of its owner, started or not", () => {
+    const order = commandIn({ action: "order", owner_lane: "u1", ids: ["p1"] })
+    const before = played([add(["p1", "p2", "p3"]), assign("p1", "u1"), assign("p2", "u1")])
+    const events = Result.getOrThrow(decideCommand(before.snapshot, order, { actor: ROOT, now: T0 + 9000 }))
+    expect(doneAnswer(order, events, fold(before.snapshot, events))).toBe("commitments: started p1. u1's open commitments, each placed by this order: p1, p2.")
+  })
+
+  test("a root's decision on what the owner approved says the owner is told; history lists each event", () => {
+    const decide = commandIn({ action: "decide", id: "o1", why: "not needed" })
+    const { snapshot, events } = played([add(["o1"], "owner-answer"), decide])
+    expect(doneAnswer(decide, events.slice(1), snapshot)).toBe("commitments: o1 closed by decision. The owner approved it: they are told, and can have it reopened.")
+    const history = historyAnswer("o1", stored(events)).split("\n")
+    expect(history.slice(1).map((line) => line.split(" ").slice(2, 7).join(" "))).toEqual(["promised by root ses_root", "decided open → decided by"])
+    expect(historyAnswer("nope", [])).toBe("commitments: nope has no history: no such commitment.")
+  })
 })
 
 describe("the section", () => {
-  recorded(
-    "counts by standing, ten ids a standing with owner-sourced first, the rest by the list call; quiet when only held",
-    Effect.gen(function* () {
-      const plan = Arr.makeBy(11, (at) => `p${String(at + 1).padStart(2, "0")}`)
-      yield* said(add(plan))
-      yield* said(add(["o1"], "owner-answer"), ROOT, T0 + 1000)
-      const { lines } = yield* section
-      expect(lines).toEqual([
-        'Commitments: 12 open (12 unowned, 0 orphaned, 0 overdue, 0 due, 0 held). Only held is quiet: own (commitments({ action: "assign" })), order or decide each listed one.',
-        '- unowned: o1, p01, p02, p03, p04, p05, p06, p07, p08, p09, and 2 more: commitments({ action: "list", standing: "unowned" })',
-      ])
-      for (const id of [...plan, "o1"]) yield* said({ action: "assign", id, owner_lane: "root", after: [{ kind: "manual", ref: "later" }] })
-      expect((yield* section).lines).toEqual([])
-    }),
-  )
+  test("counts by standing, ten ids a standing with owner-sourced first, the rest by the list call; quiet when only held", () => {
+    const plan = Arr.makeBy(11, (at) => `p${String(at + 1).padStart(2, "0")}`)
+    const listed = played([add(plan), add(["o1"], "owner-answer")])
+    expect(sectionOf(listedOf(listed.snapshot, facts))).toEqual([
+      'Commitments: 12 open (12 unowned, 0 orphaned, 0 overdue, 0 due, 0 held). Only held is quiet: own (commitments({ action: "assign" })), order or decide each listed one.',
+      '- unowned: o1, p01, p02, p03, p04, p05, p06, p07, p08, p09, and 2 more: commitments({ action: "list", standing: "unowned" })',
+    ])
+    const held = played([add(plan), add(["o1"], "owner-answer"), ...[...plan, "o1"].map((id) => assign(id, "root", [{ kind: "manual", ref: "later" }]))])
+    expect(sectionOf(listedOf(held.snapshot, facts))).toEqual([])
+  })
 
-  recorded(
-    "its keys change only when its set of ids changes",
-    Effect.gen(function* () {
-      yield* said(add(["a", "b"]))
-      const first = (yield* section).keys
-      yield* said({ action: "assign", id: "a", owner_lane: "root", review_by: "2026-11-30T00:00:00.000Z" })
-      const second = (yield* section).keys
-      expect(first).toEqual(["commitment:unowned:a", "commitment:unowned:b"])
-      expect(second).toEqual(["commitment:unowned:b", "commitment:due:a"])
-      expect((yield* section).keys).toEqual(second)
-    }),
-  )
+  test("its keys change only when its set of ids changes", () => {
+    const first = sectionKeys(listedOf(played([add(["a", "b"])]).snapshot, facts))
+    const second = sectionKeys(listedOf(played([add(["a", "b"]), assign("a", "root")]).snapshot, facts))
+    expect(first).toEqual(["commitment:unowned:a", "commitment:unowned:b"])
+    expect(second).toEqual(["commitment:unowned:b", "commitment:due:a"])
+  })
 })
 
 describe("the lane's answer", () => {
