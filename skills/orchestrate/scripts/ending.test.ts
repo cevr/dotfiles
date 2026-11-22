@@ -7,12 +7,28 @@
 //   (iii) the prompts: one block each, its role's two tables; every paragraph outside it is in the approved inventory
 //         (inventory.ts), so any appended or edited sentence is red until the inventory is rewritten on purpose;
 //   (iv)  every case found so far, N1 to N8 of 22t included, as a named row with its one disposition;
-//   (v)   a changed label, a changed verdict rule, a deleted label or rule and dropped files are each red.
+//   (v)   a changed label, a changed verdict rule, a deleted label or rule and dropped files are each red;
+//   (vi)  the item model: every record of facts per role is either rejected by one stated validity rule or meets
+//         exactly one state's predicate; each state's prompt row is its predicate's conditions in words; histories
+//         A1 to A3 of 22u; overlapping two predicates, dropping required/optional and ignoring assignment are red.
 import { describe, expect, test } from 'bun:test';
 
 import {
   ALL_STATES,
   ALL_STOPS,
+  allItems,
+  ASSIGNMENT,
+  type Condition,
+  type Item,
+  matching,
+  phrase,
+  PREDICATE,
+  type Predicates,
+  STATE_NAME,
+  stateOf,
+  stateWords,
+  validity,
+  VALIDITY,
   BEGIN,
   BLOCK,
   batchVerdict,
@@ -104,7 +120,8 @@ export function invariants(data: Data = DATA): string[] {
           if (!held && (verdict === 'changes') !== states.includes('proven')) out.push(`${at}: changes exactly when a Blocker or Major is proven`);
           if (files.includes('blocked.md')) out.push(`${at}: a verifier writes no blocked.md`);
         }
-        if ((stop === 'refusalForm' || stop === 'refusalNone') && ['ready', 'accepted', 'changes'].includes(verdict)) out.push(`${at}: a refusal never ends a step done`);
+        if (states.includes('refused') && ['ready', 'accepted', 'changes'].includes(verdict)) out.push(`${at}: a refused required item never ends a step done`);
+        if (role === 'verifier' && !files.includes(evidence(role, stop))) out.push(`${at}: a verifier's findings hold the stop's evidence`);
         if (verdict !== 'ready' && verdict !== 'accepted' && verdict !== 'changes' && !files.includes(evidence(role, stop))) out.push(`${at}: the stop's evidence is not written`);
       }
   return out;
@@ -121,7 +138,7 @@ describe('(i) both functions are total', () => {
   test('the enumeration crosses every pair of states, mixed and repeated, under every stop', () => {
     const all = multisets(ALL_STATES, SIZE).map((states) => states.join());
     for (const a of ALL_STATES) for (const b of ALL_STATES) expect(all.includes([a, b].sort((x, y) => ALL_STATES.indexOf(x) - ALL_STATES.indexOf(y)).join())).toBe(true);
-    expect(all.length).toBe(286);
+    expect(all.length).toBe(364);
   });
   test('each stop a role has leaves some well-formed input, and every verdict a role has is reached', () => {
     for (const role of ROLES) {
@@ -143,7 +160,7 @@ describe('(i) both functions are total', () => {
       ['worker', 'limit', ['runnable'], 'a worker has no limit stop'],
       ['planner', 'idle', ['unclear'], 'a planner has no unclear state'],
       ['verifier', 'idle', ['discovery'], 'a verifier has no discovery state'],
-      ['implementor', 'refusalNone', ['runnable'], 'a refusal stops the step at the one item it refused'],
+      ['implementor', 'refusalNone', ['runnable'], 'a refusal stops the step at the one item it refused (a refused optional probe is unproven)'],
       ['implementor', 'refusalForm', ['refused', 'refused'], 'a refusal stops the step at the one item it refused'],
       ['implementor', 'idle', ['refused'], 'a refusal stops the step at once, so a refused item means the step stopped on it'],
       ['verifier', 'idle', ['runnable', 'done'], 'the step goes on while a runnable item is left'],
@@ -327,7 +344,7 @@ export const CASES: ReadonlyArray<Case> = [
   { name: 'N5 verifier: a required check ran, its result settles nothing', role: 'verifier', stop: 'idle', items: { check: 'unclear' }, verdict: 'stuck', labels: { check: '`ran unclear: <check>`' } },
   { name: 'N5 control: the required executable is absent', role: 'verifier', stop: 'idle', items: { check: 'cannot' }, verdict: 'stuck', labels: { check: CANNOT } },
   { name: 'N5 control: the required check is conclusively red', role: 'verifier', stop: 'idle', items: { check: 'proven' }, verdict: 'changes', labels: { check: 'a Blocker or Major' } },
-  { name: 'N5 control: only a wider probe ran unclear (Unproven, no required item)', role: 'verifier', stop: 'idle', items: { check: 'done' }, verdict: 'accepted', labels: {} },
+  { name: 'N5 control (22u T1): every required check passed, an optional wider probe ran unclear: Unproven, verdict unaffected', role: 'verifier', stop: 'idle', items: { check: 'done', probe: 'unproven' }, verdict: 'accepted', labels: { probe: '`unproven: <probe>`, under Unproven with the probe that would settle it' } },
   { name: 'N6 implementor: the timebox passes after uncommitted progress and a new wait', role: 'implementor', stop: 'limit', items: { progress: 'runnable', wait: 'waits' }, verdict: 'blocked', labels: { progress: CONTINUES, wait: WAITS }, files: [STATE_MD, 'the clock (the timebox)'] },
   { name: 'N7 planner: waits on a prerequisite and finds unrelated work', role: 'planner', stop: 'idle', items: { prerequisite: 'waits', found: 'discovery' }, verdict: 'blocked', labels: { prerequisite: WAITS, found: OUTSIDE }, files: ['blocked.md'] },
   { name: 'N8 lean worker: refused with no form, unrelated work left', role: 'worker', stop: 'refusalNone', items: { it: 'refused', other: 'runnable' }, verdict: 'none', labels: { it: 'never tried another way', other: '`left`' }, files: ['what was refused, as the refusal said it'] },
@@ -429,5 +446,133 @@ describe('(v) a changed label, verdict rule or files, and a deleted label or rul
     expect(totality({ ...DATA, labels: { ...LABEL, verifier: rest } })).toEqual(['F1 verifier × unitFinding: Error: no label for verifier × unitFinding']);
     const rules = { ...VERDICT, planner: VERDICT.planner.filter((rule) => rule.verdict !== 'blocked') };
     expect(totality({ ...DATA, rules }).length).toBeGreaterThan(0);
+  });
+});
+
+// ---- (vi) the item model: the states partition every valid item --------------------------------------------------
+
+/** Every valid record a role's states do not partition: no state, or more than one. */
+export function partition(predicates: Predicates = PREDICATE): string[] {
+  const out: string[] = [];
+  for (const role of ROLES)
+    for (const item of allItems()) {
+      if (validity(role, item) !== undefined) continue;
+      const found = matching(role, item, predicates);
+      if (found.length !== 1) out.push(`${role} ${JSON.stringify(item)}: ${found.length ? found.join(' and ') : 'no state'}`);
+    }
+  return out;
+}
+
+const fresh: Item = { assigned: false, required: false, attempted: false, holds: false, fails: false, unclear: false, advance: false, wait: false, refused: false, hostCannot: false, provenance: 'none' };
+const item = (facts: Partial<Item>): Item => ({ ...fresh, ...facts });
+const work = (facts: Partial<Item>): Item => item({ assigned: true, required: true, ...facts });
+
+describe('(vi) the item model: every valid item is in exactly one state, and the prompt rows say each predicate', () => {
+  const counts = ROLES.map((role) => {
+    const valid = allItems().filter((one) => validity(role, one) === undefined);
+    return { role, records: allItems().length, valid: valid.length, byState: Object.fromEntries(STATES_OF[role].map((state) => [state, valid.filter((one) => matching(role, one)[0] === state).length])) };
+  });
+  test('the enumeration: 2^10 fact values × 3 provenances per role; the valid ones meet exactly one state', () => {
+    expect(allItems().length).toBe(3072);
+    expect(partition()).toEqual([]);
+    console.log(JSON.stringify(counts));
+  });
+  test('every state of every role is met by some valid item (no dead predicate)', () => {
+    for (const { role, byState } of counts) for (const [state, n] of Object.entries(byState)) expect([role, state, n > 0]).toEqual([role, state, true]);
+  });
+  test('every validity rule rejects some record no other rule before it rejects (none is vacuous)', () => {
+    for (const role of ROLES) {
+      const used = new Set(allItems().map((one) => validity(role, one)).filter((rule) => rule !== undefined));
+      for (const { rule } of VALIDITY) if (!(role === 'verifier' && rule.startsWith('only a verifier'))) expect([role, rule, used.has(rule)]).toEqual([role, rule, true]);
+    }
+  });
+  test('stateOf refuses an invalid record with its rule', () => {
+    expect(() => stateOf('implementor', item({ assigned: true, required: false, advance: true }))).toThrow('only a verifier has optional work');
+    expect(() => stateOf('verifier', work({ attempted: true, holds: true, advance: true }))).toThrow('a result is final for the step');
+    expect(() => stateOf('planner', work({}))).toThrow('what keeps an assigned item without a result from advancing is an obstacle');
+  });
+  test('each state\'s row in every prompt is its predicate\'s conditions, one phrase each, and the phrases are one-to-one', () => {
+    for (const role of ROLES) {
+      const conditions: Condition[] = STATES_OF[role].flatMap((state) => [...PREDICATE[state]]);
+      const byPhrase = new Map<string, string>();
+      for (const condition of conditions) {
+        const words = phrase(role, condition);
+        const key = condition.join('=');
+        expect([role, words, byPhrase.get(words) ?? key]).toEqual([role, words, key]);
+        byPhrase.set(words, key);
+      }
+      for (const state of STATES_OF[role]) {
+        const row = `| ${STATE_NAME[state]} | ${stateWords(role, state)} |`;
+        expect(render(role)).toContain(row);
+        for (const condition of PREDICATE[state]) expect(stateWords(role, state)).toContain(phrase(role, condition));
+      }
+      expect(render(role)).toContain(`Assigned work is ${ASSIGNMENT[role]}`);
+    }
+  });
+});
+
+/** A history: one item's facts, the state they put it in, and words its label must hold. */
+const HISTORIES: ReadonlyArray<{ name: string; role: Role; item: Item; state: State; label: string }> = [
+  { name: 'A1 the only gate ran red, is repairable, and the timebox arrives', role: 'implementor', item: work({ attempted: true, advance: true }), state: 'runnable', label: '`continues next round`' },
+  { name: 'A1 control: the gate never ran', role: 'implementor', item: work({ advance: true }), state: 'runnable', label: '`continues next round`' },
+  { name: 'A2 an optional wider probe the host cannot run, no refusal', role: 'verifier', item: work({ required: false, attempted: true, hostCannot: true }), state: 'unproven', label: '`unproven: <probe>`' },
+  { name: 'A2 control: the same host failure on a required check', role: 'verifier', item: work({ attempted: true, hostCannot: true }), state: 'cannot', label: '`cannot run here:' },
+  { name: 'A2 control: an optional probe that proves a Blocker', role: 'verifier', item: work({ required: false, attempted: true, fails: true }), state: 'proven', label: 'a Blocker or Major' },
+  { name: 'A2 control: an optional probe not run when the step ends', role: 'verifier', item: work({ required: false, advance: true }), state: 'unproven', label: '`unproven: <probe>`' },
+  { name: 'A3 the lean worker\'s first-message task ("summarize README.md"), not yet started', role: 'worker', item: work({ advance: true }), state: 'runnable', label: '`left`' },
+  { name: 'A3 control: an unrelated defect the worker notices', role: 'worker', item: item({}), state: 'discovery', label: '`outside the task`' },
+  { name: 'N3 history: required check A, host cannot run it', role: 'implementor', item: work({ attempted: true, hostCannot: true }), state: 'cannot', label: '`cannot run here:' },
+  { name: 'N4 history: a written-rule break the unit introduced', role: 'verifier', item: item({ provenance: 'unit' }), state: 'unitFinding', label: 'marked `unit`' },
+  { name: 'N5 history: a required check ran, its result settles nothing', role: 'verifier', item: work({ attempted: true, unclear: true }), state: 'unclear', label: '`ran unclear:' },
+  { name: 'N5 control (T1): an optional probe ran unclear', role: 'verifier', item: work({ required: false, attempted: true, unclear: true }), state: 'unproven', label: 'it never changes the verdict' },
+  { name: '22s-1 history: the planner\'s spec work refused', role: 'planner', item: work({ attempted: true, refused: true }), state: 'refused', label: '`refused: <what>`' },
+];
+
+describe('(vi) histories: each item\'s facts put it in one state, and the step ends as its states say', () => {
+  for (const one of HISTORIES)
+    test(one.name, () => {
+      expect(stateOf(one.role, one.item)).toBe(one.state);
+      expect(label(one.role, one.state) ?? '').toContain(one.label);
+    });
+  test('A1 at the timebox: `blocked`, state.md current and blocked.md with the clock', () => {
+    const got = classify('implementor', 'limit', [stateOf('implementor', work({ attempted: true, advance: true }))]);
+    expect(got).toEqual({ outcome: { verdict: 'blocked', files: expect.stringContaining(STATE_MD) } });
+    expect('outcome' in got && got.outcome.files).toContain('the clock (the timebox)');
+  });
+  test('A2 and T1: every required check passed and an optional probe cannot run (or ran unclear): `accepted`, the probe under Unproven', () => {
+    for (const probe of [work({ required: false, attempted: true, hostCannot: true }), work({ required: false, attempted: true, unclear: true })]) {
+      const states = [stateOf('verifier', work({ attempted: true, holds: true })), stateOf('verifier', probe)];
+      expect(states).toEqual(['done', 'unproven']);
+      expect(classify('verifier', 'idle', states)).toMatchObject({ outcome: { verdict: 'accepted' } });
+    }
+    expect(classify('verifier', 'idle', [stateOf('verifier', work({ attempted: true, hostCannot: true }))])).toMatchObject({ outcome: { verdict: 'stuck' } });
+  });
+  test('an optional probe refused: the refusal stops the step, the probe is unproven, and the verdict is the required checks\'', () => {
+    const probe = stateOf('verifier', work({ required: false, attempted: true, refused: true }));
+    expect(probe).toBe('unproven');
+    expect(classify('verifier', 'refusalNone', ['done', probe])).toMatchObject({ outcome: { verdict: 'accepted' } });
+    expect(classify('verifier', 'refusalNone', ['runnable', probe])).toMatchObject({ outcome: { verdict: 'stuck' } });
+  });
+  test('A3: the lean worker\'s task is runnable while it can advance, never `outside the task`', () => {
+    expect(matching('worker', work({ advance: true }))).toEqual(['runnable']);
+  });
+});
+
+describe('(vi) a predicate fault is red: two predicates overlapping, required/optional dropped, discovery ignoring assignment', () => {
+  test('overlapping two predicates (runnable without `required`) is red', () => {
+    const predicates = { ...PREDICATE, runnable: PREDICATE.runnable.filter(([fact]) => fact !== 'required') };
+    expect(partition(predicates).some((line) => line.includes('runnable and unproven'))).toBe(true);
+  });
+  test('dropping the required/optional attribute from every predicate is red', () => {
+    const predicates = Object.fromEntries(Object.entries(PREDICATE).map(([state, conditions]) => [state, conditions.filter(([fact]) => fact !== 'required')])) as Predicates;
+    expect(partition(predicates).length).toBeGreaterThan(0);
+  });
+  test('a discovery that ignores assignment (22u A3) is red', () => {
+    const predicates = { ...PREDICATE, discovery: PREDICATE.discovery.filter(([fact]) => fact !== 'assigned') };
+    expect(partition(predicates).some((line) => line.startsWith('worker') && line.includes('runnable and discovery'))).toBe(true);
+  });
+  test('a hole (runnable only when never attempted, as 22u A1 found) is red', () => {
+    const predicates: Predicates = { ...PREDICATE, runnable: [...PREDICATE.runnable, ['attempted', false]] };
+    expect(partition(predicates).some((line) => line.startsWith('implementor') && line.endsWith('no state'))).toBe(true);
   });
 });
