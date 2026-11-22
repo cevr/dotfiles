@@ -37,6 +37,10 @@ export interface Facts {
   readonly openQuestions: Option.Option<number>
   /** Wake and monitor ids this session had pending earlier that are pending no more. */
   readonly endedWakes: ReadonlySet<string>
+  /** The commits the queue names that are not on the default branch past the threshold, each with why (orchestrate's answer); none without it. */
+  readonly unlanded: ReadonlyMap<string, string>
+  /** The items the last note named that were restated after it: an ask they answered. */
+  readonly acknowledged: ReadonlySet<string>
 }
 
 /** One item that looks stale, and why. */
@@ -82,6 +86,11 @@ const wakeReason = (item: Item, facts: Facts): Option.Option<string> =>
     (gone) => `the wake or monitor ${gone} it names is no longer pending`,
   )
 
+const unlandedReason = (item: Item, facts: Facts): Option.Option<string> => {
+  if (facts.acknowledged.has(item.id)) return Option.none()
+  return Arr.findFirst(commitsOf(item), (hash) => Option.map(Option.fromNullishOr(facts.unlanded.get(hash)), (why) => `it names commit ${hash}, ${why}`))
+}
+
 const needsYouReason = (item: Item, facts: Facts): Option.Option<string> => {
   if (item.state !== "needs-you" || !Option.contains(facts.openQuestions, 0)) return Option.none()
   const fresh = Option.exists(Rec.get(facts.touched, item.id), (touched) => facts.now - touched < GRACE_MS)
@@ -111,18 +120,40 @@ export const staleOf = (items: ReadonlyArray<Item>, facts: Facts): ReadonlyArray
     if (item.state === "done") return []
     return Option.toArray(
       Option.map(
-        Arr.findFirst([linkedReason, wakeReason, needsYouReason, untouchedReason], (rule) => rule(item, facts)),
+        Arr.findFirst([linkedReason, wakeReason, unlandedReason, needsYouReason, untouchedReason], (rule) => rule(item, facts)),
         (reason) => ({ id: item.id, state: item.state, text: item.text, reason }),
       ),
     )
   })
 
+/** A word that names a commit: 7 to 40 hex, with a digit and a letter (so neither a hex word nor a number). */
+const COMMIT = /\b[0-9a-f]{7,40}\b/g
+const isCommit = (word: string): boolean => /\d/.test(word) && /[a-f]/.test(word)
+
+/** An item's words: its text and its detail. */
+const wordsOf = (item: Item): string => `${item.text} ${Option.getOrElse(Option.fromNullishOr(item.detail), () => "")}`
+
+/** The commits an item names, in order. */
+const commitsOf = (item: Item): ReadonlyArray<string> => Arr.filter([...wordsOf(item).matchAll(COMMIT)].map((match) => match[0]), isCommit)
+
+/** The commits the open items name, once each, in the queue's order: what the sweep asks orchestrate about. */
+export const hashesOf = (items: ReadonlyArray<Item>): ReadonlyArray<string> => Arr.dedupe(items.filter((item) => item.state !== "done").flatMap(commitsOf))
+
+/** The items the last note named (its key) that were restated after it was sent. */
+export const acknowledgedOf = (sent: Option.Option<Sent>, touched: Readonly<Record<string, number>>): ReadonlySet<string> =>
+  new Set(
+    Option.match(sent, {
+      onNone: () => [],
+      onSome: (last) => last.key.split(" ").filter((id) => Option.exists(Rec.get(touched, id), (at) => at > last.at)),
+    }),
+  )
+
 /** The items not done. */
 export const openOf = (items: ReadonlyArray<Item>): number => items.filter((item) => item.state !== "done").length
 
 /** What a note is about: the stale ids and whether the queue is over the cap. Two notes with one key ask the same. */
-export const keyOf = (stale: ReadonlyArray<Stale>, open: number): string =>
-  [...Arr.sort(stale.map((each) => each.id), Order.String), ...Arr.filter(["+cap"], () => open > CAP)].join(" ")
+export const keyOf = (stale: ReadonlyArray<Stale>, open: number, lost: ReadonlyArray<string> = []): string =>
+  [...Arr.sort(stale.map((each) => each.id), Order.String), ...lost, ...Arr.filter(["+cap"], () => open > CAP)].join(" ")
 
 /** The last note a session got: when, and what it asked. */
 export interface Sent {
@@ -139,7 +170,7 @@ export const due = (key: string, last: Option.Option<Sent>, now: number): boolea
   })
 
 /** The note the session reads: the stale items with why, the cap when passed, and what to do. */
-export const noteOf = (stale: ReadonlyArray<Stale>, open: number): string => {
+export const noteOf = (stale: ReadonlyArray<Stale>, open: number, lost: ReadonlyArray<string> = []): string => {
   const listed = stale.slice(0, LISTED).map((each) => `- ${each.id} [${each.state}]: ${each.text} (${each.reason})`)
   const more = Arr.filter([`- and ${stale.length - LISTED} more`], () => stale.length > LISTED)
   const heading = Arr.match(stale, {
@@ -155,6 +186,7 @@ export const noteOf = (stale: ReadonlyArray<Stale>, open: number): string => {
     ...heading,
     ...listed,
     ...more,
+    ...lost,
     ...cap,
     "Check each against reality, then set it done, remove it, or restate it with an upsert if it still holds (that marks it checked). For a needs-you item, re-ask with ask_user_async or withdraw the question and update the item.",
   ].join("\n")

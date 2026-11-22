@@ -1,6 +1,6 @@
 // OpenCode's automation tools, by their registry ids. The wake tools replace
 // them (cmd/wake/server.ts takes them out of the registry); the sim offers
-// them under `experimental.automations` (sim/host.ts) and the host laws match
+// them under `automations` (sim/host.ts) and the host laws match
 // one (sim/host-laws.ts).
 //
 // A registry id is the tool's namespace, dots as `_`, then `_` and its name

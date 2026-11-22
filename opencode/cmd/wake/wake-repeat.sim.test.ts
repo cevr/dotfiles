@@ -3,7 +3,7 @@
 // requests and the transcript, moved off real OpenCode (it waited out a
 // one-second monitor and two status changes in real time). The plugin is
 // `cmd/wake/server.ts`'s `make` on the world's context (sim/plugins.ts), the
-// host with `experimental.automations` on, so the automation tools are built in
+// host with `automations` on, so the automation tools are built in
 // (the law "a tool a transform adds is offered, and a built-in tool it removes
 // is not"); the model answers by the rules scenarios/wake-repeat.ts had
 // before its monitor moved here (3d449520). The status

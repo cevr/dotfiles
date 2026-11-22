@@ -187,7 +187,7 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
       yield* ctx.tool.transform((editor) => {
         // The wake tools replace OpenCode's automation tools: an automation fires by prompting its session with its
         // whole action, a real user message each time; a wake or a monitor fires as a short synthetic notice. They are
-        // offered only under `experimental.automations`, and removed here for every agent either way, by every id a
+        // offered while the `automations` config key is on (the default), and removed here for every agent either way, by every id a
         // fork gives them (removing an id the registry lacks does nothing).
         for (const id of AUTOMATION_IDS) editor.remove(id)
         // Direct tools beside the others, so they are offered without code mode and reached from a kernel cell.

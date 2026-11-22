@@ -331,8 +331,9 @@ const run = Effect.gen(function* () {
       },
     },
     plugins: [{ package: probe, options: PROBE_OPTIONS }],
-    // As the world's law run: OpenCode's automation tools built in, for the tool law to remove one.
-    experimental: { automations: true },
+    // As the world's law run: OpenCode's automation tools built in, for the tool law to remove one. Upstream
+    // cb82da7cde made this the top-level `automations` key (on by default); `experimental.automations` now only warns.
+    automations: true,
   }
 
   const sdk: Partial<Sdk> = yield* Effect.tryPromise({
