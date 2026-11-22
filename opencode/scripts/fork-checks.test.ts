@@ -21,6 +21,7 @@ import {
   LIMITS,
   type List,
   listProblems,
+  lockedBy,
   missingFiles,
   type Plan,
   plansOf,
@@ -243,6 +244,17 @@ describe("a run of the checks", () => {
     const verdict = await check(inputOf(dir.path, ["test/a.test.ts"], { runner: fake.runner, lock: () => Effect.succeed(Option.none()) }))
     expect(verdict).toMatchObject({ kind: "could-not-run", reason: expect.stringContaining("held the host's lock") })
     expect(fake.runs).toEqual([])
+  })
+
+  test("the host lock: a second holder gets none while the first runs, and the lock frees after", async () => {
+    using dir = scratch("fork-checks-flock-")
+    const file = join(dir.path, "fork-checks.flock")
+    const green: Verdict = { kind: "green", notes: [] }
+    const inner: Array<Option.Option<Verdict>> = []
+    const outer = await Effect.runPromise(lockedBy(file)(Effect.map(lockedBy(file)(Effect.succeed(green)), (got) => (inner.push(got), green))))
+    expect(outer).toEqual(Option.some(green))
+    expect(inner).toEqual([Option.none()])
+    expect(await Effect.runPromise(lockedBy(file)(Effect.succeed(green)))).toEqual(Option.some(green))
   })
 
   test("could not run: the run passes the time bound, or writes no report", async () => {

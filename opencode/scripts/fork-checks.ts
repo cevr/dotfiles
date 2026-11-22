@@ -18,11 +18,11 @@
 //
 // Usage: bun scripts/fork-checks.ts [--fork <checkout>] [--list <file>] [--time-bound-ms N] [--max-load N] [--lock <file>]
 //        (--fork defaults to OPENCODE_DEV; --list, --max-load and --lock are for tests)
-import { existsSync, mkdtempSync, readFileSync, rmSync, statfsSync } from "node:fs"
+import { dlopen, FFIType } from "bun:ffi"
+import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync, statfsSync } from "node:fs"
 import { loadavg, tmpdir } from "node:os"
 import { join } from "node:path"
 import { Array as Arr, Duration, Effect, Match, Option, Result, Schema } from "effect"
-import { holdingIfFree } from "../mods/work/process/flock.ts"
 import declared from "./fork-checks.json" with { type: "json" }
 
 const Feature = Schema.Struct({
@@ -399,6 +399,34 @@ export const bunRunner =
       })
     })
 
+/** libc's `flock(2)` (macOS's libSystem, glibc's libc.so.6), opened at the first lock. */
+const libcFlock = () =>
+  dlopen(
+    Match.value(process.platform).pipe(
+      Match.when("darwin", () => "/usr/lib/libSystem.B.dylib"),
+      Match.orElse(() => "libc.so.6"),
+    ),
+    { flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 } },
+  ).symbols.flock
+
+/**
+ * Runs `run` holding an exclusive `flock` on `file`, or answers none at once while another process holds it. The
+ * kernel owns the lock: it ends with its holder, so no lock goes stale. (mods/work's flock helpers are built on that
+ * package's own copy of Effect, whose types this script's Effect does not take.)
+ */
+export const lockedBy =
+  (file: string) =>
+  (run: Effect.Effect<Verdict>): Effect.Effect<Option.Option<Verdict>> =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => openSync(file, "a+")),
+      (descriptor) =>
+        Effect.suspend(() => {
+          if (libcFlock()(descriptor, 2 | 4) !== 0) return Effect.succeed(Option.none<Verdict>())
+          return Effect.map(run, Option.some)
+        }),
+      (descriptor) => Effect.sync(() => closeSync(descriptor)),
+    )
+
 /** The argument after `name`, when `name` is there. */
 const flag = (argv: ReadonlyArray<string>, name: string): Option.Option<string> => Option.flatMap(Option.liftPredicate(argv.indexOf(name), (at) => at >= 0), (at) => Arr.get(argv, at + 1))
 
@@ -435,7 +463,7 @@ if (import.meta.main) {
     fork,
     host: realHost(Option.getOrElse(Option.fromNullishOr(env.PATH), () => "")),
     runner: bunRunner(env),
-    lock: (run) => holdingIfFree(lockFile, run).pipe(Effect.orElseSucceed(() => Option.none<Verdict>())),
+    lock: lockedBy(lockFile),
     limits,
     say: (line) => console.log(line),
   }
