@@ -275,6 +275,17 @@ const runOnce = Effect.fn("ForkChecks.runOnce")(function* (input: Input, plan: P
   const runner = yield* TestRunner
   const command = Option.getOrElse(Option.fromNullishOr(input.list.packages[plan.package]), () => ["bun", "test"])
   const ran = yield* runner.run({ cwd: path.join(input.fork, plan.package), command, files: plan.files, threads: input.limits.threads, timeoutMs: left })
+  // Each file's line: what its report says ran, so a log shows every listed file was run.
+  const report = Match.value(ran).pipe(
+    Match.when({ kind: "exited" }, (out) => Option.map(out.junit, casesOf)),
+    Match.orElse(() => Option.none<ReadonlyArray<Case>>()),
+  )
+  yield* Effect.forEach(Option.toArray(report), (cases) =>
+    Effect.forEach(plan.files, (file) => {
+      const mine = cases.filter((found) => found.file === file)
+      return Console.log(`fork-checks: ran ${plan.package}/${file}: ${mine.length} tests, ${mine.filter((found) => found.failed).length} failed`)
+    }),
+  )
   return Match.value(ran).pipe(
     Match.when({ kind: "timed-out" }, (out): Verdict => couldNot(`${plan.package} ran past the time bound (${minutes(input.limits.timeBoundMs)}), its process group ended:\n${tail(out.log)}`)),
     Match.when({ kind: "exited" }, (out): Verdict =>
