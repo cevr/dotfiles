@@ -98,7 +98,7 @@ export const [outcomes, setOutcomes] = createSignal<ReadonlyMap<string, Api.Outc
 /** The messages whose answer is on its way. */
 export const [sending, setSending] = createSignal<ReadonlySet<string>>(new Set())
 
-/** A code (typed, or from the link's `#pair=`) exchanged for this browser's cookie. */
+/** A code (typed, or from the link's `#pair=`) exchanged for this browser's token. */
 export const pairWith = (code: string) =>
   Api.pair(code.trim())
     .then(() => {
@@ -117,8 +117,11 @@ export const answerMessage = (message: Message, given: { readonly option: string
   void Api.answer(message.id, given)
     .then((outcome) => {
       setOutcomes((all) => new Map([...all, [message.id, outcome]]))
-      // A cookie the server no longer knows (the pairing file deleted): pair again.
-      if (outcome.tag === "refused" && outcome.status === 401) setPaired(false)
+      // A token the server no longer knows (revoked, or the pairing file deleted): forget it, and pair again.
+      if (outcome.tag === "refused" && outcome.status === 401) {
+        Api.keepToken("")
+        setPaired(false)
+      }
     })
     .catch((failure: Error) => void setOutcomes((all) => new Map([...all, [message.id, { tag: "refused", status: 0, reason: failure.message }]])))
     .finally(() => {

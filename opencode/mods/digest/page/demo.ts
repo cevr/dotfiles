@@ -2,10 +2,11 @@
 // serves the built page over it on 127.0.0.1, exactly as the digest plugin does (cmd/digest/server.ts handlersOf).
 // Nothing here is real: names, texts and times are invented, relative to now.
 //
-//   bun mods/digest/page/demo.ts --dir <scratch folder> [--port 8291] [--seed full|empty|one]
+//   bun mods/digest/page/demo.ts --dir <scratch folder> [--port 8291] [--seed full|empty|one|xss]
 //
 // `full` holds three projects: Harbor (a red message, two open questions pinned, a decision, units with rounds, one
-// message set aside for Later), Lantern (500 messages over 30 days) and Quarry (one message).
+// message set aside for Later), Lantern (500 messages over 30 days) and Quarry (one message). `xss` holds one project
+// whose every shown text is script-shaped, for the check that the page renders it as text and runs none of it.
 import { parseArgs } from "node:util"
 import { Effect, Option } from "effect"
 import { handlersOf } from "../../../cmd/digest/server.ts"
@@ -20,7 +21,7 @@ import { nextMorning } from "../zone.ts"
 
 const { values } = parseArgs({ args: Bun.argv.slice(2), options: { dir: { type: "string" }, port: { type: "string" }, seed: { type: "string" }, zone: { type: "string" } } })
 const dir = values.dir ?? ""
-if (dir === "") throw new Error("usage: bun mods/digest/page/demo.ts --dir <scratch folder> [--port 8291] [--seed full|empty|one] [--zone America/Montreal]")
+if (dir === "") throw new Error("usage: bun mods/digest/page/demo.ts --dir <scratch folder> [--port 8291] [--seed full|empty|one|xss] [--zone America/Montreal]")
 const zone = values.zone ?? "America/Montreal"
 const NOW = Date.now()
 const H = 3_600_000
@@ -86,8 +87,24 @@ const quarry = (): ReadonlyArray<E> => {
   return [run(r, "quarry", NOW - 4 * H), item(r, "setup", "The quarry map loads offline. The first survey is imported.", NOW - 2 * H, { state: "done" })]
 }
 
+/** Script-shaped text: were any of it run, it would set `window.pwned` and write `pwned` to localStorage. */
+const X = `<img src=x onerror="window.pwned=1;localStorage.setItem('pwned','1')"><script>window.pwned=1</script>`
+
+/** `xss`: one project whose every shown text is script-shaped: its name, a lane's path, a question and its options, an answer, an item. */
+const xss = (): ReadonlyArray<E> => {
+  const r = "r-xss"
+  return [
+    E.cases.Run.make({ v, t: NOW - 4 * H, root: r, host: "mac", repo: `repo ${X}`, dir: Option.some(`/tmp/${X}`), name: Option.some(`Project ${X}`) }),
+    E.cases.Lane.make({ v, t: NOW - 4 * H, root: r, unit: "inject", purpose: Option.some(`Purpose ${X}`), branch: Option.some(`feat/${X}`), path: Option.some(`/work/${X}`) }),
+    back(r, "inject", 1, NOW - 3 * H, `Hand-back ${X}`),
+    ask(r, "q9", `Question ${X}`, [`Option ${X}`, "Plain"], `Assume ${X}`, NOW - 2 * H),
+    E.cases.Answered.make({ via: Option.some("tray"), v, t: NOW - 1.5 * H, root: r, session: "s-ask-q8", id: "q8", answer: `Answer ${X}`, matches: false, question: Option.some(`Asked ${X}`), assume: Option.some("Plain") }),
+    item(r, "inject-item", `Item ${X}`, NOW - H, { state: "needs-you" }),
+  ]
+}
+
 const seed = values.seed ?? "full"
-const events: ReadonlyArray<E> = seed === "empty" ? [] : seed === "one" ? quarry() : [...harbor(), ...lantern(), ...quarry()]
+const events: ReadonlyArray<E> = seed === "empty" ? [] : seed === "one" ? quarry() : seed === "xss" ? xss() : [...harbor(), ...lantern(), ...quarry()]
 const log = FileLog.make(dir)
 const marks = FileMarks.make(dir)
 await Effect.runPromise(Effect.forEach(events, (event) => log.append(encodeLine(event), event.t), { discard: true }))
