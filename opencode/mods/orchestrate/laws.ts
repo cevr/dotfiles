@@ -761,6 +761,25 @@ export const mainLineLaws = (name: string, make: Effect.Effect<MainLineProbe, ne
           expect([yield* main.tip(plain, Option.none()), yield* main.merges(plain, "HEAD", Option.none(), 5), yield* main.between(plain, "a", "b")]).toEqual([Option.none(), [], []])
         }),
       ))
+
+    test("a commit is on the default branch as git's ancestry says: a merged tip and a first-parent commit are; one past origin's head is not", () =>
+      scenario(make, (probe) => probe.layer, (probe) =>
+        Effect.gen(function* () {
+          const main = yield* MainLine
+          const { checkout, line, tips } = yield* probe.repository("ancestry", "main", 6)
+          // What the commitment record asks (commitments-tool.ts `factsOf`): the commit resolves and nothing of it is outside the tip.
+          const onMain = (commit: string) =>
+            Effect.gen(function* () {
+              const tip = Option.map(yield* main.tip(checkout, Option.none()), (each) => each.head)
+              const known = yield* main.commitOf(checkout, commit)
+              if (Option.isNone(tip) || Option.isNone(known)) return false
+              return (yield* main.between(checkout, tip.value, known.value)).length === 0
+            })
+          expect(yield* Effect.forEach([at(tips, 2), at(line, 4), at(tips, 5), at(line, 6)], onMain)).toEqual([true, true, true, true])
+          yield* probe.origin(checkout, at(line, 3))
+          expect(yield* Effect.forEach([at(tips, 1), at(line, 3), at(tips, 4), at(line, 6)], onMain)).toEqual([true, true, false, false])
+        }),
+      ))
   })
 
 // ── RunFiles ──

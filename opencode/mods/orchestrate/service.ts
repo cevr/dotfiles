@@ -433,14 +433,6 @@ export class CommitmentRecord extends Context.Service<
   }
 >()("dotfiles-opencode/orchestrate/CommitmentRecord") {}
 
-/**
- * Which owners of commitments are gone: a unit whose lane was removed. `root` never is. Never fails: when the lanes
- * cannot be read, none is gone (an unread list orphans nothing).
- */
-export class Owners extends Context.Service<Owners, { readonly gone: (owners: ReadonlyArray<string>) => Effect.Effect<ReadonlySet<string>> }>()(
-  "dotfiles-opencode/orchestrate/Owners",
-) {}
-
 /** Steers a session with one note, marked `DRIFT_MARK`, which wakes it if idle. */
 export class Tell extends Context.Service<
   Tell,

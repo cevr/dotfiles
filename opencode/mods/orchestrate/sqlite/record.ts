@@ -9,7 +9,7 @@ import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, readdirSync, realpathSync, renameSync, unlinkSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
-import { Array as Arr, Effect, Layer, Option, Order, Predicate, Result, Schema } from "effect"
+import { Array as Arr, Clock, Effect, Layer, Option, Order, Predicate, Result, Schema } from "effect"
 import {
   ACTOR_ROLES,
   type Commitment,
@@ -410,6 +410,20 @@ export const open = (path: string, options: OpenOptions) =>
 
 /** The record at `path` as the layer's store. A file that cannot be opened is a defect at setup, naming why. */
 export const layer = (path: string, options: OpenOptions) => Layer.effect(CommitmentRecord, Effect.map(open(path, options), (opened) => make(opened.db, opened.refusal)))
+
+/** A store that refuses every call with `failed`: the record whose file did not open, so its callers say why and go on. */
+export const failedStore = (failed: RecordFailed): CommitmentRecord["Service"] =>
+  CommitmentRecord.of({ run: () => Effect.fail(failed), read: Effect.fail(failed), history: () => Effect.fail(failed), events: Effect.fail(failed) })
+
+/** The record at `path`, opened at the layer's build with now's backup; a file that does not open gives `failedStore`, never a dead plugin. */
+export const layerOrFailed = (path: string) =>
+  Layer.effect(
+    CommitmentRecord,
+    Effect.flatMap(Clock.currentTimeMillis, (now) => open(path, { readonly: false, now })).pipe(
+      Effect.map((opened) => make(opened.db, opened.refusal)),
+      Effect.catch((failed) => Effect.succeed(failedStore(failed))),
+    ),
+  )
 
 /** The store on the file at `path` outside a scope, for a script that runs commands one after another (the CLI, a writer test); `close` ends it. */
 export const connectSync = (path: string, options: OpenOptions) => {

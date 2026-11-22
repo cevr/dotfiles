@@ -130,7 +130,7 @@
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { dirname, join } from "node:path"
 import { Agent, Plugin, Tool } from "@opencode/plugin/effect"
-import { Array as Arr, Clock, Context, Effect, Layer, Match, Option, Predicate, Schema, SchemaGetter, Stream } from "effect"
+import { Array as Arr, Clock, Context, Effect, Layer, Match, Option, Predicate, Result, Schema, SchemaGetter, Stream } from "effect"
 import { DIGEST, DigestLog } from "@dotfiles/opencode-digest/event"
 import * as Relay from "@dotfiles/opencode-digest/relay"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
@@ -151,7 +151,7 @@ import * as RunRecordsLive from "@dotfiles/opencode-orchestrate/filestore/run-re
 import * as GitFleet from "@dotfiles/opencode-orchestrate/git/fleet"
 import * as GitMainLine from "@dotfiles/opencode-orchestrate/git/main-line"
 import * as GitWorkGit from "@dotfiles/opencode-orchestrate/git/work-git"
-import { type Listed as Listing, LOST, LostAsk, lostAnswer, lostNow, NOTHING } from "@dotfiles/opencode-orchestrate/lost-now"
+import { type Listed as Listing, LOST, LostAsk, lostAnswer, lostNow, NOTHING, withRecordSection } from "@dotfiles/opencode-orchestrate/lost-now"
 import * as RunFilesLive from "@dotfiles/opencode-orchestrate/filestore/run-files"
 import * as PrincipleFiles from "@dotfiles/opencode-orchestrate/filestore/principles"
 import * as Principles from "@dotfiles/opencode-orchestrate/principles"
@@ -170,6 +170,11 @@ import * as SessionsLive from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import * as SteerLive from "@dotfiles/opencode-orchestrate/opencode/steer"
 import type { PaceHeld } from "@dotfiles/opencode-orchestrate/pace"
 import * as Tools from "@dotfiles/opencode-orchestrate/tools"
+import * as Commitments from "@dotfiles/opencode-orchestrate/commitments-tool"
+import * as MemoryRecord from "@dotfiles/opencode-orchestrate/memory/record"
+import { type Actor, Command as RecordCommand, openOf, type Snapshot } from "@dotfiles/opencode-orchestrate/record"
+import * as ErgoRegister from "@dotfiles/opencode-orchestrate/sqlite/ergo-register"
+import * as SqliteRecord from "@dotfiles/opencode-orchestrate/sqlite/record"
 import { Subagents } from "@dotfiles/opencode-orchestrate/asking"
 import * as Asking from "@dotfiles/opencode-orchestrate/opencode/asking"
 import * as DocumentsLive from "@dotfiles/opencode-orchestrate/node/documents"
@@ -180,6 +185,7 @@ import { heldUntil } from "@dotfiles/opencode-orchestrate/restart-hold"
 import { KNOWLTON, local, Place, rest, type SabbathRest } from "@dotfiles/opencode-orchestrate/sabbath"
 import {
   type CallLog,
+  CommitmentRecord,
   type CodexAdmission,
   HeavyHost,
   type Latches,
@@ -264,8 +270,25 @@ export const Options = Schema.Struct({
   fleet: Schema.optional(Schema.Struct({ dotfiles: Schema.String, fork: Schema.String })),
   /** Who a subagent's question goes to: its orchestrator (`ask_orchestrator`, mods/orchestrate/asking.ts), or `owner` as before. */
   subagents: Subagents.pipe(withDefault<Subagents>(SUBAGENTS)),
+  /** The commitment record's SQLite file; default `$XDG_STATE_HOME/opencode-orchestrate/<repo key>.db` of this location's checkout. */
+  record: Schema.optional(Schema.String),
 })
 export type Options = typeof Options.Type
+
+/** The commitment record a plugin keeps its runs' commitments in. */
+export type RecordLayer = (ctx: Plugin.Context, options: Options) => Layer.Layer<CommitmentRecord>
+
+/**
+ * The record on this host's file for the checkout's repository (`options.record`, else the repository's key under the
+ * state dir). A file that does not open gives a record that refuses every call with why: the plugin still starts.
+ */
+export const liveRecord: RecordLayer = (ctx, options) =>
+  SqliteRecord.layerOrFailed(
+    options.record ?? SqliteRecord.pathOf(Option.some(TuiDirs.dirs().state), SqliteRecord.keyOfCheckout(ctx.location.directory)),
+  )
+
+/** A record in memory, one per plugin start: what a host with no record file (a test's) keeps. */
+export const memoryRecord: RecordLayer = () => MemoryRecord.layer
 
 /** The outside systems the model runs on. */
 export type Externals =
@@ -549,6 +572,7 @@ const decodePrompted = Schema.decodeUnknownOption(Schema.Struct({ prompt: Schema
 export const make = (
   externals: (ctx: Plugin.Context, options: Options, start: LatchesLive.Start, background: Background) => Layer.Layer<Externals>,
   heavy?: (ctx: Plugin.Context, options: Options, background: Background) => Layer.Layer<HeavyHost>,
+  record: RecordLayer = memoryRecord,
 ) =>
   Plugin.define({
     id: "dotfiles-opencode.orchestrate",
@@ -695,6 +719,31 @@ export const make = (
       const runFiles = Context.get(services, RunFiles)
       const unitLogs = Context.get(services, UnitLogs)
       const checkout = ctx.location.directory
+      // The commitment record (mods/orchestrate/record.ts): this repository's file on this host, opened for the
+      // plugin's life; every read and write is a call's own, and nothing of it is kept here.
+      const commitments = Context.get(yield* Layer.build(record(ctx, options)), CommitmentRecord)
+      /** The facts a standing needs, read now: the default branch's commits, and the owners whose lane is gone. */
+      const factsNow = (sessionID: string, snapshot: Snapshot) =>
+        Effect.gen(function* () {
+          const listed = yield* lanesNow(sessionID)
+          const lanes = Option.as(listed.source, { rifts: listed.rifts, workrift: listed.workrift })
+          const now = yield* Clock.currentTimeMillis
+          return yield* Commitments.factsOf(mainLine, checkout, (owners) => Effect.succeed(Commitments.goneOf(owners, lanes)), snapshot, now)
+        })
+      /** The record's section and its keys, read for `sessionID`; a record that does not read says so. */
+      const recordSection = (sessionID: string) =>
+        Effect.gen(function* () {
+          const snapshot = yield* commitments.read
+          const listed = Commitments.listedOf(snapshot, yield* factsNow(sessionID, snapshot))
+          return { lines: Commitments.sectionOf(listed), keys: Commitments.sectionKeys(listed) }
+        }).pipe(
+          Effect.catch((failed) =>
+            Effect.logWarning("orchestrate: the commitment record did not read").pipe(
+              Effect.annotateLogs({ sessionID, message: failed.message }),
+              Effect.as({ lines: [`Commitments: the record did not read: ${failed.message}`], keys: ["record-unread"] }),
+            ),
+          ),
+        )
       // The run's facts go to the digest through its RPC, held while the digest plugin is not up (cmd/orchestrate/digest.ts).
       const digest = Digest.make(Context.get(yield* Layer.build(Relay.layer((line) => ctx.rpc(DIGEST).append({ line }))), DigestLog), checkout)
       /** The run dirs the run tables name, once each. */
@@ -769,7 +818,13 @@ export const make = (
             Match.when(true, () => lanesNow(ask.sessionID)),
             Match.orElse(() => Effect.succeed<Listing>({ source: Option.none(), rifts: [], workrift: false })),
           )
-          const answer = yield* lostAnswer(ask.sessionID, checkout, tables, listed, started, ask.hashes).pipe(Effect.provideContext(services))
+          const lost = yield* lostAnswer(ask.sessionID, checkout, tables, listed, started, ask.hashes).pipe(Effect.provideContext(services))
+          // The record's section, to a root that runs units or has written to the record.
+          const writes = yield* Effect.map(Effect.orElseSucceed(commitments.events, () => []), (events) => events.some((event) => event.actor.id === ask.sessionID))
+          const answer = yield* Match.value(orchestrates || writes).pipe(
+            Match.when(true, () => Effect.map(recordSection(ask.sessionID), (section) => withRecordSection(lost, section))),
+            Match.orElse(() => Effect.succeed(lost)),
+          )
           const ms = (yield* Clock.currentTimeMillis) - started
           yield* Effect.logInfo("orchestrate: read lost work for the queue check").pipe(
             Effect.annotateLogs({ sessionID: ask.sessionID, lanes: listed.rifts.length, hashes: ask.hashes.length, lines: answer.lines.length, ms }),
@@ -788,7 +843,8 @@ export const make = (
             Match.when(true, () => Tools.statusAnswer(tables, listed.rifts, listed.workrift, since, now)),
             Match.orElse(() => Tools.statusAnswer([], [], false, since, now)),
           )
-          return [...lost, answer].join("\n")
+          const section = yield* recordSection(sessionID)
+          return [...lost, answer, ...section.lines].join("\n")
         })
 
       // A root that compacted is told its status, its ledger and the re-read, once per compaction, by this location's
@@ -1225,8 +1281,108 @@ export const make = (
               { discard: true },
             ).pipe(Effect.andThen(digest.landed(sessionID, rifts.map((rift) => rift.unit), pushed))),
           { discard: true })
-          return Tools.landAnswer([...due, ...Tools.changesWarnings(files), ...resolved.warnings], landed.text)
+          yield* landRecorded(
+            sessionID,
+            rifts.flatMap((rift) => Option.toArray(Option.map(Arr.findFirst(listed.rifts, (lane) => lane.path === rift.path), (lane) => ({ unit: rift.unit, head: lane.head })))),
+          )
+          const section = yield* recordSection(sessionID)
+          return [Tools.landAnswer([...due, ...Tools.changesWarnings(files), ...resolved.warnings], landed.text), ...section.lines].join("\n")
         })
+
+      /** Who calls the record: the root, or a subagent's session as a worker. */
+      const actorOf = (sessionID: string) => Effect.map(isChild(sessionID), (child): Actor => ({ id: sessionID, role: Match.value(child).pipe(Match.when(true, () => "worker" as const), Match.orElse(() => "root" as const)) }))
+      /** A record call's answer as the tool gives it, the root's own record provided. */
+      const recordCall = <E>(work: Effect.Effect<string, E, CommitmentRecord>, why: (failed: E) => string) =>
+        work.pipe(
+          Effect.provideService(CommitmentRecord, commitments),
+          Effect.mapError((failed) => new Tool.Error({ message: why(failed) })),
+        )
+      /** The record's reads: the standing's facts for the session, and an import's register from a copy of its file. */
+      const readsOf = (sessionID: string): Commitments.Reads => ({
+        facts: (snapshot) => factsNow(sessionID, snapshot),
+        register: (from, run, now) =>
+          ErgoRegister.readRegister(from).pipe(
+            Effect.mapError((failed) => failed.message),
+            Effect.flatMap((register) =>
+              Result.match(ErgoRegister.mapRegister(register, now), {
+                onFailure: (why) => Effect.fail(`${ErgoRegister.ERGO_REGISTER}: ${why}`),
+                onSuccess: (mapped) => Effect.succeed({ command: ErgoRegister.importCommandOf(run, mapped.rows), counts: ErgoRegister.countsLine(mapped.counts) }),
+              }),
+            ),
+          ),
+      })
+      /** The lane hook: the unit's commitment got or made, owned by the unit and started; its open ones named after the lane's answer. */
+      const laneRecorded = (input: Tools.OrchestrateInput, sessionID: string, answer: string) =>
+        Effect.gen(function* () {
+          const unit = input.unit ?? ""
+          const now = yield* Clock.currentTimeMillis
+          const done = yield* commitments.run(RecordCommand.cases.lane.make({ run: input.run ?? Commitments.DEFAULT_RUN, unit }), { actor: { id: sessionID, role: "root" }, now })
+          return Commitments.beforeStart(answer, Commitments.laneLine(unit, openOf(done.snapshot, unit)))
+        }).pipe(Effect.catch((failed) => Effect.succeed(Commitments.beforeStart(answer, `${Commitments.whyOf(failed)}: the unit's commitment was not recorded.`))))
+
+      /**
+       * What a land records (taken from unit 2's "pass after a land"): for each unit pushed whose own commitment is open
+       * and owned by it, a claim of the lane's head (from the rift list, before the land) as the land's hand-back,
+       * routed at once; then one pass, where git's ancestry alone decides landed. A unit with no commitment (a lane made
+       * before the record) records nothing; a record that refuses is logged and fails no land.
+       */
+      const landRecorded = (sessionID: string, landed: ReadonlyArray<{ readonly unit: string; readonly head: string }>) =>
+        Effect.gen(function* () {
+          const actor: Actor = { id: "orchestrate land", role: "plugin" }
+          const now = yield* Clock.currentTimeMillis
+          const before = yield* commitments.read
+          const claims = landed.flatMap((each) =>
+            Option.toArray(Option.filter(Option.fromUndefinedOr(before.commitments.get(each.unit)), (row) => row.state === "open" && Option.contains(row.ownerLane, each.unit))).map((row) => ({ ...each, run: row.run })),
+          )
+          if (claims.length === 0) return
+          for (const claim of claims) {
+            const handed = yield* commitments.run(
+              RecordCommand.cases.hand_back.make({ run: claim.run, ownerLane: claim.unit, role: "land", session: sessionID, verdict: "done", head: Option.some(claim.head), claims: [claim.unit] }),
+              { actor, now },
+            )
+            const ids = handed.events.flatMap((event) => Arr.filter([Number(event.subjectId)], () => event.subjectKind === "hand_back"))
+            yield* Effect.forEach(ids, (handBack) => commitments.run(RecordCommand.cases.route.make({ handBack, as: "routed" }), { actor, now }), { discard: true })
+          }
+          const claimed = yield* commitments.read
+          const facts = yield* factsNow(sessionID, claimed)
+          yield* commitments.run(RecordCommand.cases.pass.make({ onMain: [...facts.onMain], gone: [...facts.gone], root: Option.none() }), { actor, now })
+        }).pipe(
+          Effect.catch((failed) => Effect.logWarning("orchestrate: the land's claims were not recorded").pipe(Effect.annotateLogs({ sessionID, message: Commitments.whyOf(failed) }))),
+        )
+
+      // The `commitments` tool (mods/orchestrate/commitments-tool.ts): the root's reads and writes of the record. A
+      // subagent's call is refused, as its lane, land or verify is.
+      yield* ctx.tool.transform((editor) =>
+        editor.add({
+          name: Commitments.COMMITMENTS,
+          description: Commitments.COMMITMENTS_DESCRIPTION,
+          input: Commitments.CommitmentsInput,
+          options: { codemode: false },
+          execute: (input, context) =>
+            Effect.gen(function* () {
+              if (yield* isChild(context.sessionID)) return yield* failWith(Commitments.PARENT_REFUSAL)
+              const now = yield* Clock.currentTimeMillis
+              const text = yield* recordCall(Commitments.answerOf(input, { id: context.sessionID, role: "root" }, now, readsOf(context.sessionID)), (why) => why)
+              return { content: [{ type: "text" as const, text }], metadata: { action: input.action } }
+            }),
+        }),
+      )
+      // The `follow_up` tool: a worker files one unowned commitment; it closes, owns or re-owns nothing.
+      yield* ctx.tool.transform((editor) =>
+        editor.add({
+          name: Commitments.FOLLOW_UP,
+          description: Commitments.FOLLOW_UP_DESCRIPTION,
+          input: Commitments.FollowUpInput,
+          options: { codemode: false },
+          execute: (input, context) =>
+            Effect.gen(function* () {
+              const actor = yield* actorOf(context.sessionID)
+              const now = yield* Clock.currentTimeMillis
+              const text = yield* recordCall(Commitments.followUpOf(input, actor, context.id, now), (why) => why)
+              return { content: [{ type: "text" as const, text }], metadata: { id: input.id } }
+            }),
+        }),
+      )
 
       yield* ctx.tool.transform((editor) =>
         editor.add({
@@ -1241,7 +1397,7 @@ export const make = (
               if (Option.isSome(refused)) return yield* failWith(refused.value)
               const text = yield* Match.value(input.action).pipe(
                 Match.when("status", () => status(context.sessionID)),
-                Match.when("lane", () => lane(input, context.sessionID)),
+                Match.when("lane", () => lane(input, context.sessionID).pipe(Effect.flatMap((answer) => laneRecorded(input, context.sessionID, answer)))),
                 Match.when("verify", () => verify(input, context.sessionID)),
                 Match.when("land", () => land(input, context.sessionID)),
                 Match.exhaustive,
@@ -1387,4 +1543,4 @@ export const make = (
     }),
   })
 
-export default make(live, liveHeavy)
+export default make(live, liveHeavy, liveRecord)

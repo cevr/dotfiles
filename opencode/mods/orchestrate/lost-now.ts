@@ -200,6 +200,13 @@ export interface LostAnswer {
 
 export const NOTHING: LostAnswer = { lines: [], keys: [], hashes: [] }
 
+/** The answer with the commitment record's section after its lists (commitments-tool.ts `sectionOf`), its keys with theirs. */
+export const withRecordSection = (answer: LostAnswer, section: { readonly lines: ReadonlyArray<string>; readonly keys: ReadonlyArray<string> }): LostAnswer => ({
+  ...answer,
+  lines: [...answer.lines, ...section.lines],
+  keys: [...answer.keys, ...section.keys],
+})
+
 /** What the queue check asks: for the root `sessionID`, and the commits its open items name. */
 export const LostAsk = Schema.Struct({ sessionID: Schema.String, hashes: Schema.Array(Schema.String) })
 export type LostAsk = typeof LostAsk.Type
