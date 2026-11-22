@@ -5,13 +5,14 @@
 // under 40 lines.
 import { Database } from "bun:sqlite"
 import { expect } from "bun:test"
-import { spawnSync } from "bun"
+import { spawnSync, write } from "bun"
 import { Array as Arr, Effect, Layer, Option, Schema } from "effect"
 import { listedOf, sectionOf } from "@dotfiles/opencode-orchestrate/commitments-tool"
 import { platform as ownPlatform } from "@dotfiles/opencode-orchestrate/node/platform"
 import { hostServices } from "../../sim/host-services.ts"
 import * as SqliteRecord from "@dotfiles/opencode-orchestrate/sqlite/record"
 import * as Seed from "../../sim/seed.ts"
+import { gitInit, withProcessEnv } from "../../tests/git-repo.ts"
 import { scratch } from "../../tests/scratch.ts"
 import { main } from "./record.ts"
 
@@ -118,6 +119,9 @@ Seed.effect(
           "c-ready [due] u2:",
           "c-started [held] u1:",
         ])
+        // An imported close has no reason this code checked: it reads historical, unclassified (round 4's incompatibility
+        // with the older record, which listed it bare).
+        expect(listed.out.split("\n").filter((line) => line.includes("[decided]")).map((line) => line.includes("historical, unclassified"))).toEqual([true, true])
         const history = yield* cli(held.path, "history", "--json", fieldsJson({ id: "c-started" }))
         expect(history.out.split("\n").slice(1).map((line) => line.split(" ").slice(2).join(" "))).toEqual([
           "imported_history by import ORCH (filed)",
@@ -142,6 +146,53 @@ Seed.effect(
         register(`${held.path}/register.db`, [...ROWS, { id: "c-bad", state: "landed", owner: "u4" }], EVENTS)
         expect(yield* imported(held.path)).toEqual({ out: "", err: "commitments: ergo-register: row c-bad, column landed_commit: a landed row needs the commit on the default branch", code: 1 })
         expect((yield* cli(held.path, "list")).out).toBe("commitments: none match.")
+      }),
+    (held) => Effect.sync(() => held[Symbol.dispose]()),
+  ),
+)
+
+const gitEnv = withProcessEnv({ GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t.invalid", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t.invalid" })
+
+Seed.effect(
+  "the CLI takes reasons as the tools do: an invariant from a committed document, a guarantee closes, a receipt orders, no reason refused",
+  Effect.acquireUseRelease(
+    Effect.sync(() => scratch("record-cli-")),
+    (held) =>
+      Effect.gen(function* () {
+        // A checkout with a committed document and one receipt envelope in its evidence root.
+        const checkout = `${held.path}/repo`
+        yield* Effect.promise(() => write(`${checkout}/docs/record.md`, "# One writer\n"))
+        const envelope = { receipt: 1, command: "bun test mods/orchestrate", exit: 1, output: { value: "1 fail" }, run: "r1", checkout: "a".repeat(40) }
+        yield* Effect.promise(() => write(`${checkout}/tmp/orchestrate/r1/red.json`, JSON.stringify(envelope)))
+        gitInit(checkout, ["-q", "-b", "main"], gitEnv)
+        for (const args of [["add", "docs/record.md"], ["commit", "-q", "-m", "docs"]]) spawnSync(["git", "-C", checkout, ...args], { env: gitEnv, stdout: "ignore", stderr: "ignore" })
+        const run = (action: string, fields: Record<string, unknown>, ...rest: ReadonlyArray<string>) =>
+          Effect.map(main([action, "--json", fieldsJson(fields), "--file", `${held.path}/record.db`, "--checkout", checkout, ...rest], checkout), (ran) => [ran.code, ran.code === 0 ? ran.out : ran.err] as const)
+        const receipt = { reason_class: "measured", referent: { kind: "receipt", path: "tmp/orchestrate/r1/red.json" } }
+        const outcomes = [
+          yield* run("add", { source_kind: "plan-part", source_ref: "plan.md:1", parts: [{ id: "a1", title: "one" }, { id: "a2", title: "two" }] }),
+          yield* run("decide", { id: "a1", why: "the record has one writer" }),
+          yield* run("follow_up", { id: "f1", title: "a flake" }),
+          yield* run("invariant", { id: "one-writer", doc_path: "docs/record.md", anchor: "one-writer" }),
+          yield* run("decide", { id: "a1", why: "the record has one writer", reason_class: "guarantee", referent: { kind: "invariant", id: "one-writer" } }),
+          yield* run("decide", { id: "a2", why: "red", ...receipt }),
+          yield* run("defer", { id: "a2", ...receipt }),
+          yield* run("follow_up", { id: "f1", title: "a flake", ...receipt }, "--actor", "worker-1"),
+          yield* run("follow_up", { id: "f2", title: "a flake", reason_class: "measured", referent: { kind: "receipt", path: "tmp/orchestrate/r1/none.json" } }),
+        ]
+        expect(outcomes).toEqual([
+          [0, "commitments: added a1, a2. Unowned until assigned: a1, a2."],
+          [1, "commitments: decide needs reason_class."],
+          [1, expect.stringContaining("reason_class")],
+          [0, expect.stringMatching(/^commitments: invariant one-writer declared: docs\/record\.md#one-writer at [0-9a-f]{12}; /)],
+          [0, "commitments: a1 closed by decision, guarantee invariant/one-writer."],
+          [1, "commitments: a measurement orders work, it never closes it: decide takes a guarantee; defer takes a measurement"],
+          [0, "commitments: a2 stays open, waiting on measured receipt/tmp/orchestrate/r1/red.json."],
+          [0, "follow_up: filed f1, unowned, waiting on measured receipt/tmp/orchestrate/r1/red.json; the root owns or decides it."],
+          [1, "follow_up: the receipt does not exist"],
+        ])
+        expect((yield* run("history", { id: "a1" }))[1]).toContain("guarantee invariant/one-writer")
+        expect((yield* run("list", { all: true }))[1]).toContain("a2")
       }),
     (held) => Effect.sync(() => held[Symbol.dispose]()),
   ),

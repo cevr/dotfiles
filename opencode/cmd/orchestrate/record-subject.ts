@@ -105,7 +105,7 @@ const storeSubject = (store: CommitmentRecord["Service"], world: World): Subject
     cache.snapshot = Option.none()
     cache.events = Option.none()
     const done = Effect.runSync(Effect.result(store.run(command, { actor, now: world.now })))
-    return Result.mapBoth(done, { onFailure: (failed) => failed._tag, onSuccess: (each) => each.events })
+    return Result.mapBoth(done, { onFailure: (failed) => (failed._tag === "RecordRefused" ? failed.reason : failed._tag), onSuccess: (each) => each.events })
   }
   /** The root's words the record does not hold yet, given: the world's words are the root's. */
   const syncWords = () => {

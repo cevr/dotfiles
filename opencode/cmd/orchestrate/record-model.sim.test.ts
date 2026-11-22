@@ -18,7 +18,8 @@
 //      SIM_SEED=<n> replays one seed.
 // Moved from the planner's acceptance/record-model.test.ts: the generator rewritten within the effect-debt rules on the
 // seed runner's generator, the assertions the same.
-import { Array as Arr, Config, Effect, Layer, Option, type Random } from "effect"
+import { expect } from "bun:test"
+import { Array as Arr, Config, Effect, Layer, Match, Option, type Random } from "effect"
 import { below, generator } from "../../sim/runtime.ts"
 import * as Seed from "../../sim/seed.ts"
 import { platform as ownPlatform } from "@dotfiles/opencode-orchestrate/node/platform"
@@ -143,7 +144,9 @@ const reasonOf = (run: Run): Reason => {
   const kind = pick(run, ["guarantee", "guarantee", "dependency", "dependency", "measured", "unshipped"] as const)
   if (kind === "guarantee") return { class: "guarantee", ref: `invariant/${pick(run, INVARIANTS)}` }
   if (kind === "unshipped") return { class: pick(run, ["guarantee", "dependency"] as const), ref: pick(run, ["spec-item/s1", "unit/u1", "owner-question/q1"] as const) }
-  if (kind === "dependency") return { class: "dependency", ref: `commitment/${Arr.isReadonlyArrayNonEmpty(run.books.promised) && next(run) < 0.9 ? pick(run, run.books.promised) : "ghost"}` }
+  // Mostly an open commitment (a dependency that may hold), else any promised one (perhaps closed) or a ghost.
+  const open = openIds(run)
+  if (kind === "dependency") return { class: "dependency", ref: `commitment/${Arr.isReadonlyArrayNonEmpty(open) && next(run) < 0.7 ? pick(run, open) : Arr.isReadonlyArrayNonEmpty(run.books.promised) && next(run) < 0.8 ? pick(run, run.books.promised) : "ghost"}` }
   const known = run.books.receipts
   return { class: "measured", ref: `receipt/${Arr.isReadonlyArrayNonEmpty(known) && next(run) < 0.8 ? pick(run, known) : "tmp/orchestrate/r1/never.json"}` }
 }
@@ -370,10 +373,12 @@ const compared = (run: Run) => {
 }
 
 const runSeed = (seed: number, expect: Seed.Seeded["expect"], open: (world: World) => Opened) => {
-  const world: World = { now: 1_000_000, main: new Set(), alive: new Set(LANES), root: Option.some("root-1"), words: new Set(), documents: new Map([["i1", "1".repeat(40)]]), receipts: new Set() }
+  const world = freshWorld()
   const opened = open(world)
   const books: Books = { promised: [], claimed: new Map(), decided: new Set(), epoch: new Map(), woken: new Set(), commits: [], handBacks: [], receipts: [], keys: [], counts: { roots: 1, minted: 0, step: 0, reasoned: 0 } }
   const run: Run = { world, random: generator(seed), expect, opened, held: { subject: opened.subject }, reference: makeModel(world), books }
+  // The root declares the invariant whose document the world starts with, so a guarantee can hold from the first step.
+  same(run, opened.subject.declare({ id: "i1", by: "root-1", role: "root" }), run.reference.declare({ id: "i1", by: "root-1", role: "root" }), "declare i1")
   for (books.counts.step = 0; books.counts.step < STEPS; books.counts.step += 1) {
     commandOf(run)(run)
     ticked(run)
@@ -386,17 +391,110 @@ const runSeed = (seed: number, expect: Seed.Seeded["expect"], open: (world: Worl
   expect(books.counts.reasoned).toBeGreaterThan(0)
 }
 
-seeded("no commitment disappears: every open one is held or listed, through restarts, re-orders, hand-backs and triggers", ({ seed, expect }) =>
+// ── The reasons' cross product: caller × operation × state × reason class × pointer kind × existence ──
+
+const CALLERS = ["root", "worker"] as const
+const OPERATIONS = ["followUp", "defer", "decide"] as const
+const STATES = ["open", "decided", "absent"] as const
+const CLASSES = ["guarantee", "dependency", "measured"] as const
+const KINDS = ["invariant", "commitment", "receipt", "spec-item", "unit", "owner-question"] as const
+/** held: the thing exists and holds now; missing: never there; stale: there once (a dependency closed, a receipt lost, a document edited since its declaration). */
+const EXISTENCE = ["held", "missing", "stale"] as const
+type Case = readonly [(typeof CALLERS)[number], (typeof OPERATIONS)[number], (typeof STATES)[number], (typeof CLASSES)[number], (typeof KINDS)[number], (typeof EXISTENCE)[number]]
+
+const RECEIPT = { held: "tmp/orchestrate/r1/held.json", missing: "tmp/orchestrate/r1/never.json", stale: "tmp/orchestrate/r1/lost.json" } as const
+const INVARIANT = { held: "i1", missing: "ghost", stale: "i2" } as const
+
+/**
+ * Each case on its own ids in one record: the subject and the reference answer the same, and the case's commitment has
+ * the same state, reason, close kind and history after it, after every case's decided one is reopened, and after a
+ * restart. Answers how many of each operation each side took and refused (the enumeration reaches both).
+ */
+const crossProduct = (opened: Opened, world: World): Map<string, number> => {
+  const model = makeModel(world)
+  const held = { subject: opened.subject }
+  const both = <A>(call: (subject: Subject) => Answer<A>, what: string): Answer<A> => {
+    const [got, want] = [call(held.subject), call(model)]
+    expect({ what, ok: okOf(got), refused: "refused" in got, why: "refused" in got ? got.refused : "" }).toEqual({ what, ok: okOf(want), refused: "refused" in want, why: expect.any(String) })
+    return got
+  }
+  const byRoot = { by: "root-1", role: "root" as const }
+  const holds = { class: "guarantee" as const, ref: `invariant/${INVARIANT.held}` }
+  // The world before the cases: two documents committed and declared, one edited since; a receipt found, one lost.
+  for (const [n, id] of [INVARIANT.held, INVARIANT.stale].entries()) world.documents.set(id, String(n + 1).repeat(40))
+  for (const id of [INVARIANT.held, INVARIANT.stale]) both((subject) => subject.declare({ id, ...byRoot }), `declare ${id}`)
+  world.documents.set(INVARIANT.stale, "e".repeat(40))
+  world.receipts.add(RECEIPT.held)
+  const counts = new Map<string, number>()
+  const cases: ReadonlyArray<Case> = CALLERS.flatMap((caller) =>
+    OPERATIONS.flatMap((operation) => STATES.flatMap((state) => CLASSES.flatMap((klass) => KINDS.flatMap((kind) => EXISTENCE.map((existence): Case => [caller, operation, state, klass, kind, existence]))))),
+  )
+  cases.forEach(([caller, operation, state, klass, kind, existence], n) => {
+    const what = `${caller} ${operation} on ${state}, ${klass} ${kind} ${existence}`
+    const [target, dependency] = [`t${n}`, `d${n}`]
+    const add = (id: string) => both((subject) => subject.add({ source: "plan:p1", fromOwner: n % 2 === 0, parts: [{ id, text: "a part" }], by: "root-1" }), `${what}: add ${id}`)
+    add(dependency)
+    if (kind === "commitment" && existence === "stale") both((subject) => subject.decide({ id: dependency, why: "done", ...byRoot, reason: holds }), `${what}: close ${dependency}`)
+    if (state !== "absent") add(target)
+    if (state === "decided") both((subject) => subject.decide({ id: target, why: "done", ...byRoot, reason: holds }), `${what}: close ${target}`)
+    if (kind === "receipt" && existence === "stale") {
+      world.receipts.add(RECEIPT.stale)
+      world.receipts.delete(RECEIPT.stale)
+    }
+    const ref = Match.value(kind).pipe(
+      Match.when("invariant", () => `invariant/${INVARIANT[existence]}`),
+      Match.when("commitment", () => `commitment/${existence === "missing" ? "ghost" : dependency}`),
+      Match.when("receipt", () => `receipt/${RECEIPT[existence]}`),
+      Match.orElse(() => `${kind}/x1`),
+    )
+    const reason: Reason = { class: klass, ref }
+    const got = Match.value(operation).pipe(
+      Match.when("followUp", () => okOf(both((subject) => subject.followUp({ id: state === "absent" ? `f${n}` : target, key: `k${n}`, by: "worker-1", reason }), what))),
+      Match.when("defer", () => okOf(both((subject) => subject.defer({ id: target, by: "root-1", reason }), what))),
+      Match.when("decide", () => okOf(both((subject) => subject.decide({ id: target, why: "a reason", by: `${caller}-1`, role: caller, reason }), what))),
+      Match.exhaustive,
+    )
+    const key = `${operation} ${Option.isSome(got) ? "took" : "refused"}`
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+    const mine = (subject: Subject) => [target, dependency, `f${n}`].map((id) => ({ id, state: subject.state(id), reason: subject.reason(id), closeKind: subject.closeKind(id), history: subject.history(id) }))
+    expect({ what, after: mine(held.subject) }).toEqual({ what, after: mine(model) })
+  })
+  // A reopen clears each decided row's reason and keeps the history's; a restart replays the same rows.
+  for (const id of held.subject.ids().filter((id) => Option.contains(held.subject.state(id), "decided"))) both((subject) => subject.reopen({ id, by: "root-1" }), `reopen ${id}`)
+  expect(reasonsOf(held.subject)).toEqual(reasonsOf(model))
+  held.subject = opened.reopen()
+  expect(reasonsOf(held.subject)).toEqual(reasonsOf(model))
+  opened.close()
+  return counts
+}
+
+/** `body` on the `SUBJECT` subject over a fresh scratch file, made and migrated as the plugin's start makes it; the built subject attaches to it, a restart attaches again. */
+const onSubject = <A>(body: (open: (world: World) => Opened) => A) =>
   Effect.gen(function* () {
     const name = yield* subjectName
     const make = yield* Effect.fromOption(Option.fromUndefinedOr(SUBJECTS.get(name))).pipe(
       Effect.mapError(() => new Seed.SeedFailed({ message: `SUBJECT=${name}: not a subject; record-subject.ts names them` })),
     )
-    yield* Effect.acquireUseRelease(
-      // The file made and migrated as the plugin's start makes it; the built subject attaches to it, a restart attaches again.
+    return yield* Effect.acquireUseRelease(
       Effect.tap(Effect.sync(() => scratch("record-model-")), (dir) => Effect.scoped(SqliteRecord.open(`${dir.path}/record.db`, { readonly: false, now: 1_000_000 })).pipe(Effect.orDie)),
-      (dir) => Effect.sync(() => runSeed(seed, expect, (world) => make(`${dir.path}/record.db`, world))),
+      (dir) => Effect.sync(() => body((world) => make(`${dir.path}/record.db`, world))),
       (dir) => Effect.sync(() => dir[Symbol.dispose]()),
     )
-  }).pipe(Effect.provide(Layer.mergeAll(hostServices, ownPlatform))),
+  }).pipe(Effect.provide(Layer.mergeAll(hostServices, ownPlatform)))
+
+const freshWorld = (): World => ({ now: 1_000_000, main: new Set(), alive: new Set(LANES), root: Option.some("root-1"), words: new Set(), documents: new Map([["i1", "1".repeat(40)]]), receipts: new Set() })
+
+seeded("no commitment disappears: every open one is held or listed, through restarts, re-orders, hand-backs and triggers", ({ seed, expect }) =>
+  onSubject((open) => runSeed(seed, expect, open)),
+)
+
+Seed.effect(
+  "every caller × operation × state × reason class × pointer kind × existence answers as the reference, through a reopen and a restart",
+  onSubject((open) => {
+    const world = freshWorld()
+    const counts = crossProduct(open(world), world)
+    // The enumeration reaches both answers of every operation: each took some cases and refused others.
+    expect(OPERATIONS.flatMap((operation) => [`${operation} took`, `${operation} refused`]).filter((key) => (counts.get(key) ?? 0) === 0)).toEqual([])
+    expect([...counts.values()].reduce((sum, each) => sum + each, 0)).toBe(CALLERS.length * OPERATIONS.length * STATES.length * CLASSES.length * KINDS.length * EXISTENCE.length)
+  }),
 )

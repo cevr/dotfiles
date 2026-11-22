@@ -104,10 +104,10 @@ const reader = Effect.acquireUseRelease(
       const receipt = (path: string) =>
         Effect.match(evidence.receipt(checkout, path), { onFailure: (refused) => refused.reason, onSuccess: (seen) => `${seen.exit} ${seen.run} ${seen.receiptSha.length}/${seen.outputSha.length}` })
       const receipts = yield* Effect.forEach(
-        ["value", "file", "linked-value", "outside-out", "escape-out", "missing-out", "validated", "prose", "blank-command", "blank-output", "bad-run", "bad-checkout", "large", "escape", "dir", "nope"],
+        ["value", "file", "linked-value", "outside-out", "escape-out", "missing-out", "validated", "prose", "blank-command", "blank-output", "bad-run", "bad-checkout", "large", "escape", "dir", "nope", "not-under"],
         (name) =>
           Effect.map(
-            receipt(name === "linked-value" ? `${EVIDENCE_ROOT}/linked/value.json` : name === "dir" ? `${EVIDENCE_ROOT}/r1` : `${EVIDENCE_ROOT}/r1/${name}.json`),
+            receipt(name === "not-under" ? "outside.json" : name === "linked-value" ? `${EVIDENCE_ROOT}/linked/value.json` : name === "dir" ? `${EVIDENCE_ROOT}/r1` : `${EVIDENCE_ROOT}/r1/${name}.json`),
             (outcome) => [name, outcome] as const,
           ),
       )
@@ -142,6 +142,8 @@ Seed.effect(
       ["escape", "the receipt resolves outside its root"],
       ["dir", "the receipt is not a regular file"],
       ["nope", "the receipt does not exist"],
+      // The reader is a port of its own: a path a caller did not check first is refused by its place, not read.
+      ["not-under", "the receipt is not under tmp/orchestrate/"],
     ])
     expect(seen.outputSha).toBe(seen.expectedSha)
     expect(seen.documents).toEqual([
