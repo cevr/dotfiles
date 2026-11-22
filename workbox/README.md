@@ -219,6 +219,9 @@ as one writable snapshot and `work rm` deletes it with one
 folder, work copies it file by file. `workrift init` and
 `workbox-rift-storage --apply` make new bases as subvolumes on btrfs.
 `workrift check` warns about a base on btrfs that is a plain folder.
+A create deletes from its new workspace, and names, any Git lock or
+temporary pack that the copy carried from the base, where a Git process
+outside the line held it at that instant. It never touches the base.
 
 `workrift subvolume --apply` converts a live base and leaves every workspace
 as it is: work removes each record by the cloner that made it. The command
@@ -241,13 +244,22 @@ runs these steps:
    wait behind it and none fails. It waits at most
    `WORKRIFT_SUBVOLUME_TURN_WAIT` seconds (default 1800) and otherwise exits
    1 with nothing changed.
-3. It reflink-copies the base into `<parent>/.subvolume-move/<name>.new`,
-   refreshes the index of the copy, and checks the HEAD, refs, status and
-   lock files of the copy against the base.
+3. It reflink-copies the base into `<parent>/.subvolume-move/<name>.new`
+   and refreshes the index of the copy. It then checks the copy against the
+   base:
+   - HEAD, refs, status and lock files are equal;
+   - the object store's listing is the same at the copy's start, at its end
+     and in the copy;
+   - every ref tip and its tree are present;
+   - no Git lock or temporary pack is in the copy.
+
+   Git processes outside workrift's line (a plain `git fetch` and the auto gc
+   it starts) can change the base while the copy walks it. If any check fails,
+   the command copies `.git` again, at most twice, and otherwise rolls back.
 4. It swaps the copy and the base in one `renameat2(RENAME_EXCHANGE)` and
    parks the old tree at `<name>.old`.
 5. It waits for processes to leave the old tree, carries in the refs the old
-   tree gained, runs `work refresh`, and makes and removes a smoke snapshot
+   tree gained (each with its objects, by a fetch from the old tree), runs `work refresh`, and makes and removes a smoke snapshot
    workspace.
 
 A failure under the hold rolls the switch back. If the command is cut
