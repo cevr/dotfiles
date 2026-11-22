@@ -2153,10 +2153,11 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       expect(failures).toEqual([])
       expect(w.active(w.app)).toHaveLength(60)
       // workrift keeps no file of its own in the base's Git directory beyond what a copy carries on purpose: the
-      // install fingerprint, the warm marker and the warm's log (and the stamp stampAdvance plants for main's script).
+      // install fingerprint, the warm marker and the warm's log (and the stamp stampAdvance plants for main's script),
+      // and the older workrift's empty lock file, made once by a writer before any copy relies on it (legacy_take).
       const own = readdirSync(join(w.app, ".git")).filter((name) => name.startsWith("workrift") && name !== "workrift-advanced-at")
       expect(own.sort()).toEqual(
-        ["workrift-installed-locks", "workrift-warm.log", "workrift-warmed-tree"].filter((name) => existsSync(join(w.app, ".git", name))),
+        ["workrift-installed-locks", "workrift-warm.log", "workrift-warmed-tree", "workrift.lock"].filter((name) => existsSync(join(w.app, ".git", name))),
       )
     },
     600_000,
@@ -2700,28 +2701,34 @@ const until = async (what: string, ok: () => boolean, ms = 60_000) => {
   }
 }
 
+/** The script before the ticket queue (a5821de8): an exclusive flock on .git/workrift.lock and holder files in .git. */
+let oldScript = ""
+const OLD_WORKRIFT = () => {
+  if (!oldScript) {
+    oldScript = join(scratchRoot, "workrift-a5821de8")
+    writeFileSync(oldScript, sh(repo, process.env as Env, "git", "show", "a5821de8:workbox/bin/workrift"))
+    chmodSync(oldScript, 0o755)
+  }
+  return oldScript
+}
+
+/** A refreshed base with the util-linux flock, the interval probe on PATH and a no-op install. */
+const probeBench = (label: string, work: string) => {
+  const w = workBench(label, work)
+  realFlock(w.bin)
+  exe(join(w.bin, "probe"), PROBE)
+  const log = join(w.dir, "probe.log")
+  sh(w.app, w.env, "git", "config", "workrift.install", "true")
+  w.push("main", { "bun.lock": "main-1\n" })
+  const refreshed = w.wr(w.app, "refresh")
+  expect(refreshed.code, refreshed.err).toBe(0)
+  return { w, log, ivs: () => intervals(log) }
+}
+
 describeWork("workrift beside the older workrift, and its line's owners whatever the environment (create-fair round 2)", () => {
   const work = WORK_BIN ?? "work"
-  /** The script before the ticket queue: an exclusive flock on .git/workrift.lock and holder files in .git. */
-  const OLD = (() => {
-    const path = join(scratchRoot, "workrift-a5821de8")
-    if (!existsSync(path)) {
-      writeFileSync(path, sh(repo, process.env as Env, "git", "show", "a5821de8:workbox/bin/workrift"))
-      chmodSync(path, 0o755)
-    }
-    return path
-  })()
-  const bench = (label: string) => {
-    const w = workBench(label, work)
-    realFlock(w.bin)
-    exe(join(w.bin, "probe"), PROBE)
-    const log = join(w.dir, "probe.log")
-    sh(w.app, w.env, "git", "config", "workrift.install", "true")
-    w.push("main", { "bun.lock": "main-1\n" })
-    const refreshed = w.wr(w.app, "refresh")
-    expect(refreshed.code, refreshed.err).toBe(0)
-    return { w, log, ivs: () => intervals(log) }
-  }
+  const OLD = OLD_WORKRIFT()
+  const bench = (label: string) => probeBench(label, work)
   const hold = (w: ReturnType<typeof bench>["w"], env: Env, log: string, id: string, seconds: number, file: string) =>
     start(w.app, env, [SCRIPT, "hold", "--", "probe", log, id, "w", String(seconds)], join(w.dir, file))
 
@@ -2957,5 +2964,192 @@ describeWork("workrift beside the older workrift, and its line's owners whatever
     const got = ivs()
     expect(got.map((each) => each.id).sort()).toEqual(["deps-install", "reader"])
     expect(overlaps(got)).toEqual([])
+  }, 60_000)
+})
+
+// ---------------------------------------------------------------------------
+// Round 3 of create-fair (2026-11-22): `workrift deps` fired by a hook of a command that holds the base (B2), the older
+// workrift's lock file made before a copy relies on it (F1), and a holder whose ticket file went (T1).
+
+interface Grouped extends Started {
+  /** Kills its whole process group (it runs in its own). */
+  readonly kill: () => void
+}
+
+/** Starts argv in a process group of its own, so a test that finds it hung can end everything it started. */
+const startGroup = (cwd: string, env: Env, argv: ReadonlyArray<string>, errFile: string): Grouped => {
+  writeFileSync(errFile, "")
+  const child = Bun.spawn([...argv], { cwd, env, stdout: "pipe", stderr: Bun.file(errFile), detached: true })
+  const err = () => readFileSync(errFile, "utf8")
+  const done = (async () => {
+    const out = await new Response(child.stdout).text()
+    const code = await child.exited
+    return { code, out, err: err() }
+  })()
+  const kill = () => {
+    try {
+      process.kill(-child.pid, "SIGKILL")
+    } catch {
+      // already gone
+    }
+  }
+  return { pid: child.pid, err, done, kill }
+}
+
+/** Its result once it ends within ms, else undefined, its group killed. */
+const within = async (run: Grouped, ms: number) => {
+  const ran = await Promise.race([run.done, Bun.sleep(ms).then(() => undefined)])
+  if (ran === undefined) {
+    run.kill()
+    await run.done
+  }
+  return ran
+}
+
+describeWork("workrift deps fired inside a command that holds the base, and the older lock file (create-fair round 3)", () => {
+  const work = WORK_BIN ?? "work"
+  const OLD = OLD_WORKRIFT()
+  /**
+   * A probe bench whose base runs `workrift deps` from its Git hooks, as Bite's lefthook-local.yml has it
+   * (post-checkout, post-merge, post-rewrite with its argument), the installed workrift being this script; its
+   * install in the base is a probe interval `install-<pid>`, and origin's main has moved its lock file.
+   */
+  const hooked = (label: string) => {
+    const b = probeBench(label, work)
+    const { w, log } = b
+    symlinkSync(SCRIPT, join(w.bin, "workrift"))
+    for (const hook of ["post-checkout", "post-merge"]) exe(join(w.app, ".git/hooks", hook), "#!/bin/sh\nworkrift deps\n")
+    exe(join(w.app, ".git/hooks/post-rewrite"), '#!/bin/sh\nworkrift deps "$1"\n')
+    sh(w.app, w.env, "git", "config", "workrift.install", `if [ "$(pwd -P)" = '${w.app}' ]; then probe '${log}' install-$$ w 0.3; fi`)
+    w.push("main", { "bun.lock": "main-2\n", "two.txt": "2\n" })
+    sh(w.app, w.env, "git", "fetch", "-q", "origin")
+    return b
+  }
+  /** The install's fingerprint made stale, so the next `deps` in the base installs. */
+  const staleInstall = (app: string) => writeFileSync(join(app, ".git/workrift-installed-locks"), "bun.lock stale\n")
+  const installs = (ivs: ReadonlyArray<Interval>) => ivs.filter((each) => each.id.startsWith("install-"))
+
+  test("red on round 2: an older workrift's refresh, whose switch and fast-forward fire the base's hooks, ends: the hooks' deps see it holds the base and leave the install to it", async () => {
+    const { w, ivs } = hooked("old-refresh")
+    const refresh = startGroup(w.app, w.env, [OLD, "refresh"], join(w.dir, "refresh.err"))
+    const ran = await within(refresh, 60_000)
+    expect(ran?.code, refresh.err()).toBe(0)
+    expect(refresh.err()).toContain("an older workrift this hook runs under; it installs the base itself")
+    expect(sh(w.app, w.env, "git", "rev-parse", "HEAD").trim()).toBe(sh(w.app, w.env, "git", "rev-parse", "origin/main").trim())
+    // The refresh's own install, once; none from the hooks.
+    expect(installs(ivs())).toHaveLength(1)
+    expect(readdirSync(join(stateOf(w.app), "base")).filter((name) => /\.[rw]$/.test(name))).toEqual([])
+  }, 120_000)
+
+  test("red on round 2: `hold -- git …` in a base fires the hooks: their deps install under the hold's exclusive lock and the hold ends", async () => {
+    const { w, ivs } = hooked("hold-w")
+    staleInstall(w.app)
+    const held = startGroup(w.app, w.env, [SCRIPT, "hold", "--", "sh", "-c", "git checkout -q -b side && git checkout -q main && git merge -q --ff-only origin/main"], join(w.dir, "hold.err"))
+    const ran = await within(held, 60_000)
+    expect(ran?.code, held.err()).toBe(0)
+    expect(installs(ivs()).length).toBeGreaterThanOrEqual(1)
+    expect(overlaps(ivs())).toEqual([])
+  }, 120_000)
+
+  test("red on round 2: `hold --shared -- git …` in a base fires the hooks: their deps change nothing beside copies, say so, and the hold ends", async () => {
+    const { w, ivs } = hooked("hold-r")
+    staleInstall(w.app)
+    const held = startGroup(w.app, w.env, [SCRIPT, "hold", "--shared", "--", "sh", "-c", "git checkout -q -b side && git checkout -q main"], join(w.dir, "hold.err"))
+    const ran = await within(held, 60_000)
+    expect(ran?.code, held.err()).toBe(0)
+    expect(held.err()).toContain("which this hook runs under: no install beside copies; run `workrift deps`")
+    expect(installs(ivs())).toEqual([])
+  }, 120_000)
+
+  test("the hooks fired inside an older create's advance, this script's refresh, advance and create (in the workspace) never wait for their own holder", async () => {
+    const { w, ivs } = hooked("self-installing")
+    const runs: Array<readonly [string, ReadonlyArray<string>, () => void]> = [
+      ["old create advancing", [OLD, "create", "old/one"], () => stampAdvance(w.app, `${Math.floor(Date.now() / 1000) - 601}\n`)],
+      ["refresh", [SCRIPT, "refresh"], () => w.push("main", { "bun.lock": "main-3\n" })],
+      [
+        "advance",
+        [SCRIPT, "advance"],
+        () => {
+          w.push("main", { "bun.lock": "main-4\n" })
+          sh(w.app, w.env, "git", "fetch", "-q", "origin")
+          stampAdvance(w.app, `${Math.floor(Date.now() / 1000) - 601}\n`)
+        },
+      ],
+      ["create", [SCRIPT, "create", "feat/hooked"], () => {}],
+    ]
+    for (const [label, argv, before] of runs) {
+      before()
+      const run = startGroup(w.app, w.env, argv, join(w.dir, `${label.replace(/ /g, "-")}.err`))
+      const ran = await within(run, 90_000)
+      expect({ label, code: ran?.code }, run.err()).toEqual({ label, code: 0 })
+    }
+    expect(overlaps(ivs())).toEqual([])
+  }, 400_000)
+
+  test("a `workrift deps` by hand in a base, beside an older create that is not its ancestor and holds the base mid-copy, waits for it, then installs", async () => {
+    const { w, log, ivs } = hooked("unrelated-old")
+    // Advanced just now: the old create only copies, holding the base whole.
+    stampAdvance(w.app, `${Math.floor(Date.now() / 1000)}\n`)
+    const copies = slowCopy(w.bin, 2)
+    const old = startGroup(w.app, w.env, [OLD, "create", "old/copying"], join(w.dir, "old.err"))
+    await until("the old copy", () => existsSync(join(w.bin, "..", "copies.begun")))
+    staleInstall(w.app)
+    const deps = startGroup(w.app, w.env, [SCRIPT, "deps"], join(w.dir, "deps.err"))
+    const ran = await Promise.all([within(old, 90_000), within(deps, 90_000)])
+    for (const each of ran) expect(each?.code).toBe(0)
+    expect(deps.err()).not.toContain("this hook runs under")
+    const copied = copies().map((c): Interval => ({ id: "old-copy", kind: "w", t0: c.start, t1: c.end }))
+    expect(copied).toHaveLength(1)
+    expect(installs(ivs())).toHaveLength(1)
+    expect(overlaps([...intervals(log), ...copied])).toEqual([])
+  }, 120_000)
+
+  test("red on round 2: a base with no lock file of the older workrift gets one from the first copy, alone, so an older create that comes during the copy waits for it", async () => {
+    const { w, log } = probeBench("no-legacy-file", work)
+    const legacy = join(w.app, ".git/workrift.lock")
+    rmSync(legacy, { force: true })
+    writeFileSync(join(w.app, ".git/info/exclude"), "node_modules/\n", { flag: "a" })
+    sh(w.app, w.env, "git", "config", "workrift.install", `if [ "$(pwd -P)" = '${w.app}' ]; then probe '${log}' "install-$WR_WHO" w 1; fi`)
+    w.push("main", { "bun.lock": "main-2\n" })
+    stampAdvance(w.app, `${Math.floor(Date.now() / 1000) - 601}\n`)
+    const copies = slowCopy(w.bin, 3)
+    const fresh = startGroup(w.app, { ...w.env, WR_WHO: "new" }, [SCRIPT, "create", "new/a"], join(w.dir, "new.err"))
+    await until("the new copy", () => existsSync(join(w.bin, "..", "copies.begun")))
+    const madeBeforeTheCopy = existsSync(legacy)
+    const old = startGroup(w.app, { ...w.env, WR_WHO: "old" }, [OLD, "create", "old/a"], join(w.dir, "old.err"))
+    const ran = await Promise.all([within(fresh, 90_000), within(old, 90_000)])
+    expect(ran.map((each) => each?.code), `${fresh.err()}\n${old.err()}`).toEqual([0, 0])
+    for (const pid of ran.flatMap((each) => advancePids(each?.err ?? ""))) await until(`advance ${pid}`, () => !alive(pid), 60_000)
+    const copied = copies().map((c): Interval => ({ id: `copy ${basename(c.to)}`, kind: "r", t0: c.start, t1: c.end }))
+    expect(copied).toHaveLength(2)
+    expect(overlaps([...intervals(log), ...copied])).toEqual([])
+    expect(madeBeforeTheCopy).toBe(true)
+    expect(readFileSync(legacy, "utf8")).toBe("")
+  }, 180_000)
+
+  test("red on round 2: a queue folder removed while a ticket holds: the next writer and the next copy wait for the holder all the same (it holds the older lock file too)", async () => {
+    const { w, log, ivs } = probeBench("vanished-holder", work)
+    const copies = slowCopy(w.bin, 0)
+    const holder = start(w.app, w.env, [SCRIPT, "hold", "--", "probe", log, "holder", "w", "3"], join(w.dir, "holder.err"))
+    await until("holder in", () => ivs().some((each) => each.id === "holder"))
+    rmSync(join(stateOf(w.app), "base"), { recursive: true, force: true })
+    const writer = start(w.app, w.env, [SCRIPT, "hold", "--", "probe", log, "writer", "w", "0.2"], join(w.dir, "writer.err"))
+    const reader = start(w.app, w.env, [SCRIPT, "create", "feat/after"], join(w.dir, "reader.err"))
+    const ran = await Promise.all([holder.done, writer.done, reader.done])
+    for (const each of ran) expect(each.code, each.err).toBe(0)
+    const copied = copies().map((c): Interval => ({ id: "copy", kind: "r", t0: c.start, t1: c.end }))
+    expect(overlaps([...ivs(), ...copied])).toEqual([])
+    expect(writer.err()).toContain("a workrift whose ticket went")
+  }, 60_000)
+
+  test("a waiter's once-a-minute line ends quietly: the shell prints no report of its end (bash, macOS's sh)", async () => {
+    const { w, log, ivs } = probeBench("quiet", work)
+    const holder = start(w.app, w.env, [SCRIPT, "hold", "--", "probe", log, "holder", "w", "1.5"], join(w.dir, "holder.err"))
+    await until("holder in", () => ivs().some((each) => each.id === "holder"))
+    const waiter = start(w.app, w.env, [SCRIPT, "hold", "--", "true"], join(w.dir, "waiter.err"))
+    const ran = await Promise.all([holder.done, waiter.done])
+    for (const each of ran) expect(each.code, each.err).toBe(0)
+    expect(waiter.err()).toContain("waiting for the lock")
+    expect(waiter.err()).not.toContain("sleep 60")
   }, 60_000)
 })

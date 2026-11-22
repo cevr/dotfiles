@@ -723,6 +723,49 @@ ticket_live() {
   ! ticket_owner_gone "$1"
 }
 
+# The parent of the process $1 (empty when it is gone): field 4 of
+# /proc/<pid>/stat on Linux (after the command name), `ps -o ppid` elsewhere.
+process_parent() {
+  case "$1" in '' | *[!0-9]*) return 0 ;; esac
+  if [ -r "$identity_proc/self/stat" ]; then
+    p_stat=$(cat "$identity_proc/$1/stat" 2>/dev/null) || return 0
+    printf '%s\n' "${p_stat##*) }" | awk '{ print $2 }'
+  else
+    ps -o ppid= -p "$1" 2>/dev/null | tr -d ' ' || true
+  fi
+}
+
+# What a process this one descends from holds of the base $1, as `<kind>
+# <pid> <purpose>`: kind old (the older workrift's lock: a holder file of its
+# names the ancestor, and that lock is held), w or r (a live ticket of this
+# script, in, whose owner is the ancestor); nothing when no ancestor holds it.
+# A Git hook (`workrift deps` from lefthook-local.yml) is a child of the Git
+# command a holder runs in the base: it must never wait in line behind the
+# holder it runs inside, which waits for it (B2, 2026-11-22: an older refresh's
+# `git switch` fired the new deps, which waited for that refresh's lock).
+ancestor_hold() {
+  a_git=$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null) || return 0
+  state_dir "$1"
+  a_pid=$$
+  a_n=0
+  while a_pid=$(process_parent "$a_pid") && [ -n "$a_pid" ] && [ "$a_pid" -gt 1 ] && [ "$a_n" -lt 64 ]; do
+    a_n=$((a_n + 1))
+    if [ -f "$a_git/workrift-lock-holders/$a_pid" ] && [ -f "$a_git/workrift.lock" ] &&
+      ! flock -n -s "$a_git/workrift.lock" true 3>&- 6>&- 7>&- 8>&- 9>&-; then
+      # The file reads `<since> <purpose>`.
+      a_what=$(cat "$a_git/workrift-lock-holders/$a_pid" 2>/dev/null || true)
+      printf 'old %s %s\n' "$a_pid" "${a_what#* }"
+      return 0
+    fi
+    for a_ticket in "$state_value"/base/*.[rw]; do
+      [ -e "$a_ticket.in" ] && [ "$(sed -n 1p "$a_ticket" 2>/dev/null)" = "$a_pid" ] || continue
+      ticket_live "$a_ticket" || continue
+      printf '%s %s %s\n' "${a_ticket##*.}" "$a_pid" "$(sed -n 4p "$a_ticket")"
+      return 0
+    done
+  done
+}
+
 # Under queue.lock: drops the queue's tickets that are not live.
 queue_sweep() {
   for q_old in "$1"/*.[rw]; do
@@ -861,6 +904,12 @@ queue_enter() {
     [ "$q_has" -le "$q_n" ] || q_n=$q_has
   done
   q_n=$((q_n + 1))
+  # A base with no lock file of the older workrift yet gets it from a writer
+  # (legacy_take), so a copy that finds none goes in as a writer, alone: once
+  # per base, and the file is never made while a copy runs.
+  if [ "$2" = base ] && [ "$q_kind" = r ] && [ ! -f "$(legacy_path "$q_base")" ]; then
+    q_kind=w
+  fi
   printf '%s\n' "$q_n" >"${q_dir%/*}/next"
   queue_ticket=$q_dir/$q_n.$q_kind
   eval "exec $q_fd>\"\$queue_ticket\""
@@ -882,7 +931,11 @@ queue_enter() {
     printf '%s\n' "$q_ahead" | while IFS= read -r q_in; do
       ticket_wait "$q_in" ''
     done
-    kill "$q_talker" 2>/dev/null || true
+    # KILL, which no inherited ignore stops (the talker holds nothing), then
+    # reaped here, quietly: bash (macOS's sh) otherwise reports the killed
+    # job, its whole source, on stderr.
+    kill -KILL "$q_talker" 2>/dev/null || true
+    wait "$q_talker" 2>/dev/null || true
   fi
   # A ticket whose file went while it waited (its queue folder removed) is no
   # place in line any more: those who came after could not see it. Fail closed.
@@ -909,11 +962,19 @@ queue_enter() {
 # base move beside a new copy, nor a new move beside an old create, while new
 # copies still run beside each other.
 #
-# The file is opened read-only, never created or emptied: it exists on every
-# base an old workrift ever locked. Where it does not, no old workrift ever ran
-# on this base, and none can start now (only processes started before the
-# install run the old script, and the base they resolved had locked it), so
-# there is nothing to exclude.
+# The file is never emptied or removed. A reader opens it read-only. A writer
+# opens it to append (writing nothing), which makes it where it is missing:
+# an old create started before the install makes it only at its own lock,
+# after its fetch, so a base with none could have an old create move it
+# beside a new copy that took no lock on it (F1, 2026-11-22). A copy that
+# finds no file therefore goes in as a writer (queue_enter): the file is made
+# under the exclusive ticket, when no copy of this script runs and no old
+# workrift holds it (an old holder has made it), before any copy relies on it.
+#
+# Every hold of this script so takes this flock beside its ticket: a second
+# sign of a holder, independent of the queue's files. A holder whose ticket
+# file is gone (its queue folder removed by hand) still holds it, and the next
+# one in waits here for it.
 #
 # An old waiter loops on `flock -w 60`, and Linux grants a shared flock beside
 # a waiting exclusive one, so a stream of new copies could hold it off without
@@ -930,10 +991,21 @@ queue_enter() {
 # host runs this script and no older workrift runs: after 2026-12-06 (two weeks
 # of daily installs), on the check `pgrep -f workrift` naming no process older
 # than the install. Follow-up in the unit create-fair.
+legacy_path() {
+  l_git=$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null) && [ -n "$l_git" ] || return 1
+  printf '%s/workrift.lock\n' "$l_git"
+}
+
 legacy_take() {
-  legacy_file=$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null)/workrift.lock
-  [ -f "$legacy_file" ] || return 0
-  exec 7<"$legacy_file"
+  legacy_file=$(legacy_path "$1") || return 0
+  if [ "$2" = w ]; then
+    exec 7>>"$legacy_file"
+  else
+    # Made by the writer before it (queue_enter); gone only if a person
+    # removed it, and then there is nothing to take.
+    [ -f "$legacy_file" ] || return 0
+    exec 7<"$legacy_file"
+  fi
   case "$2:$3" in
     w:try)
       flock -n -x 7 3>&- 6>&- 8>&- 9>&- || {
@@ -949,7 +1021,7 @@ legacy_take() {
     *) l_mode=-x ;;
   esac
   if ! flock -n "$l_mode" 7 3>&- 6>&- 8>&- 9>&-; then
-    printf 'workrift: waiting for the lock an older workrift holds on %s (%s)\n' "$1" "$legacy_file" >&2
+    printf 'workrift: waiting for %s of %s: an older workrift holds it, or a workrift whose ticket went\n' "$legacy_file" "$1" >&2
     flock "$l_mode" 7 3>&- 6>&- 8>&- 9>&- || fail "flock of $legacy_file failed"
   fi
 }
@@ -2421,9 +2493,35 @@ case "$command" in
     # (The Rift backend, on its way out, keeps its calls as they were.)
     d_source=
     [ "$backend" != work ] || d_source=$(resolve_source 2>/dev/null || true)
+    # Run by a hook of a command that holds the base (an ancestor of this
+    # process: ancestor_hold), it never waits in line behind that holder:
+    #   an older workrift's create or refresh: it installs, and its refresh
+    #     warms, once its switch or fast-forward is done, so nothing to do;
+    #   this script's exclusive ticket (a hold, settings): the base is this
+    #     process's already, so it installs under that hold;
+    #   this script's shared ticket (a hold --shared): a change of the base
+    #     beside copies is never right, and waiting is waiting for itself, so
+    #     it says so and leaves the install to a `workrift deps` after it.
+    # (This script's create, advance and refresh say so by WORKRIFT_CREATING.)
     if [ -n "$d_source" ] && [ "$(cd "$d_source" && pwd -P)" = "$(cd "$top" && pwd -P)" ]; then
-      lock_purpose=deps
-      lock_source "$top"
+      d_held=$(ancestor_hold "$top")
+      case "$d_held" in
+        old\ *)
+          d_held=${d_held#old }
+          printf 'workrift: deps: %s is held by pid %s (%s), an older workrift this hook runs under; it installs the base itself\n' "$top" "${d_held%% *}" "${d_held#* }" >&2
+          exit 0
+          ;;
+        r\ *)
+          d_held=${d_held#r }
+          printf 'workrift: deps: %s is held shared by pid %s (%s), which this hook runs under: no install beside copies; run `workrift deps` in %s once it ends\n' "$top" "${d_held%% *}" "${d_held#* }" "$top" >&2
+          exit 0
+          ;;
+        w\ *) ;;
+        *)
+          lock_purpose=deps
+          lock_source "$top"
+          ;;
+      esac
     fi
     if [ "$backend" = work ]; then
       work_deps "$top"
