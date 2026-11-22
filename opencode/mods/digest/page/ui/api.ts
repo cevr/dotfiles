@@ -1,7 +1,8 @@
 // The page's one connection to its server: the view, whether this browser is paired, and the writes. Every write is
 // a JSON POST with the page's header, from the page's own origin (the listener refuses anything else). An answer
-// needs this browser paired, and on the tailnet so does every read: the token `/api/pair` answered, kept in this origin's localStorage (scheme, host and
-// port: no other server on 127.0.0.1 reads it, as it would a cookie) and sent as TOKEN_HEADER. It never goes in a URL.
+// needs this browser paired; on the tailnet so does every mark, and every read unless digest.tailnetRead is "member".
+// Paired means the token `/api/pair` answered, kept in this origin's localStorage (scheme, host and port: no other
+// server on 127.0.0.1 reads it, as it would a cookie) and sent as TOKEN_HEADER. It never goes in a URL.
 import type { View } from "./types.ts"
 
 const PAGE_HEADER = "x-digest-page"
@@ -47,8 +48,12 @@ export const fetchView = async (): Promise<View> => {
 const send = (path: string, body: Record<string, string>): Promise<Response> =>
   fetch(path, { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json", [PAGE_HEADER]: "1", ...paired() } })
 
+/** A mark is not this browser's to write until it pairs (the page on the tailnet, read open to every member). */
+export class MarkUnpaired extends Error {}
+
 const post = async (path: string, body: Record<string, string>): Promise<void> => {
   const answer = await send(path, body)
+  if (answer.status === 401) throw new MarkUnpaired("pair this browser to mark messages here")
   if (!answer.ok) throw new Error(`the server refused it (${answer.status})`)
 }
 

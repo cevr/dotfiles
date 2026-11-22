@@ -40,6 +40,8 @@ code { font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
 .locked { max-width: 460px; margin: 0 auto; padding: 40px 20px; }
 .locked h1 { font-size: 22px; }
 .locked .pair { border-top: 0; }
+.marking { max-width: 640px; margin: 0 auto; padding: 4px 20px 12px; border-bottom: 1px solid var(--line); }
+.marking .pair { border-top: 0; }
 
 /* ---- wide: projects | messages | timeline ---- */
 .shell { display: grid; grid-template-columns: 270px minmax(0, 640px) 168px; gap: 0 36px; justify-content: center; align-items: start; padding: 24px 20px 40px; }

@@ -2,11 +2,11 @@
 // one's detail indented under it: body, the answer's place when it needs him, then units, a unit's rounds and their
 // evidence files, each one level deeper. Phone: swipe right reads or unreads a row, swipe left sets it aside for
 // Later; on any width U and L do the same on a focused row, and the opened message has both as buttons.
-import { createSignal, For, Show } from "solid-js"
+import { createSignal, For, Match, Show, Switch } from "solid-js"
 import { Accordion, AccordionHeader, AccordionItem, AccordionPanel, AccordionTrigger } from "@ui-sdk/solid/accordion"
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "@ui-sdk/solid/collapsible"
 import type { Outcome } from "./api.ts"
-import { answerMessage, editing, enter, hot, openId, outcomes, paired, pairProblem, pairWith, renameProject, sending, setEditing, showAll, shownAll, toggleLater, toggleOpen, toggleRead, view, wide } from "./state.ts"
+import { answerMessage, editing, enter, hot, marksLocked, openId, outcomes, paired, pairProblem, pairWith, renameProject, sending, setEditing, showAll, shownAll, toggleLater, toggleOpen, toggleRead, view, wide } from "./state.ts"
 import { type Ask, inSpan, type Message, type Project, type Unit } from "./types.ts"
 
 /** How far a row must travel before its swipe acts, in px. */
@@ -142,10 +142,12 @@ function OutcomeLine(props: { readonly outcome: Outcome }) {
 }
 
 /**
- * How to pair this browser: the command, and a field for the code it prints. `read`: the page on the tailnet, which
- * shows nothing until this browser pairs; else to answer.
+ * How to pair this browser, for what it needs pairing to do: the command, and a field for the code it prints.
+ * - `read`: the page on the tailnet, which shows nothing until this browser pairs;
+ * - `mark`: the page on the tailnet with reading open to every member, which marks nothing until it pairs;
+ * - `answer`: an open question.
  */
-export function PairPrompt(props: { readonly read?: boolean }) {
+export function PairPrompt(props: { readonly need: "read" | "mark" | "answer" }) {
   let field: HTMLInputElement | undefined
   const submit = (event: SubmitEvent) => {
     event.preventDefault()
@@ -153,18 +155,23 @@ export function PairPrompt(props: { readonly read?: boolean }) {
   }
   return (
     <form class="pair" onSubmit={submit}>
-      <Show
-        when={props.read}
-        fallback={
+      <Switch>
+        <Match when={props.need === "read"}>
+          <p>
+            Pair this browser to read the digest: on the host, run <code>bun cmd/digest/pair.ts</code> and type the code it prints here. Each address of the page (its name, its IP) pairs on its own.
+          </p>
+        </Match>
+        <Match when={props.need === "mark"}>
+          <p>
+            Anyone on your tailnet reads this page. To mark messages read, set them aside or answer, pair this browser: on the host, run <code>bun cmd/digest/pair.ts</code> and type the code it prints here.
+          </p>
+        </Match>
+        <Match when={props.need === "answer"}>
           <p>
             Pair this browser to answer: run <code>bun cmd/digest/pair.ts</code> and open the link it prints, or type its code here.
           </p>
-        }
-      >
-        <p>
-          Pair this browser to read the digest: on the host, run <code>bun cmd/digest/pair.ts</code> and type the code it prints here. Each address of the page (its name, its IP) pairs on its own.
-        </p>
-      </Show>
+        </Match>
+      </Switch>
       <div class="pairrow">
         <input ref={(input: HTMLInputElement) => (field = input)} aria-label="Pairing code" placeholder="ABCDE-FGHJK" autocomplete="one-time-code" maxlength={16} />
         <button type="submit">Pair</button>
@@ -204,8 +211,8 @@ function AskBlock(props: { readonly message: Message; readonly ask: Ask }) {
         </button>
       </form>
       <p class="assume">{props.ask.assume === undefined ? "If you do nothing, the run waits for you: it has no assumption for this one." : `If you do nothing, the run goes on assuming: ${props.ask.assume}`}</p>
-      <Show when={paired() === false}>
-        <PairPrompt />
+      <Show when={paired() === false && !marksLocked()}>
+        <PairPrompt need="answer" />
       </Show>
     </div>
   )

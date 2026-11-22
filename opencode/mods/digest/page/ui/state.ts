@@ -20,6 +20,18 @@ export const [hot, setHot] = createSignal<number | undefined>(undefined)
 export const [editing, setEditing] = createSignal(false)
 /** The page on the tailnet, not paired: it shows only how to pair, and no data. */
 export const [locked, setLocked] = createSignal(false)
+/**
+ * The page on the tailnet with reading open to every member (digest.tailnetRead "member"), not paired: a mark was
+ * refused, so it shows the digest, opens messages without marking them, and offers pairing to mark and answer.
+ */
+export const [marksLocked, setMarksLocked] = createSignal(false)
+
+/** A mark refused for want of pairing: a token it kept is no longer known (or there is none), so it is forgotten. */
+const markRefused = () => {
+  Api.keepToken("")
+  setPaired(false)
+  setMarksLocked(true)
+}
 
 const wideQuery = matchMedia("(min-width: 900px)")
 export const [wide, setWide] = createSignal(wideQuery.matches)
@@ -55,10 +67,18 @@ export const refresh = (): Promise<void> => {
       setView(next)
       setLocked(false)
       setProblem(undefined)
-      // His first visit: everything older reads as read from now on. Only the first-ever load writes it.
-      if (next.since === undefined) {
-        await Api.firstVisit()
-        setView(await Api.fetchView())
+      // His first visit: everything older reads as read from now on. Only the first-ever load writes it, and only a
+      // browser that may mark: an unpaired reader on the tailnet leaves it for one that may.
+      if (next.since === undefined && !marksLocked()) {
+        const wrote = await Api.firstVisit().then(
+          () => true,
+          (failure: Error) => {
+            if (!(failure instanceof Api.MarkUnpaired)) throw failure
+            markRefused()
+            return false
+          },
+        )
+        if (wrote) setView(await Api.fetchView())
       }
     })
     .catch((failure: Error) => {
@@ -79,15 +99,18 @@ export const refresh = (): Promise<void> => {
   return ask
 }
 
-/** A write, then the view again; a refused write shows as the problem. */
+/** A write, then the view again; a write refused for want of pairing offers pairing, any other shows as the problem. */
 const act = (write: Promise<void>) =>
-  write.then(refresh).catch((failure: Error) => void setProblem(failure.message))
+  write.then(refresh).catch((failure: Error) => {
+    if (failure instanceof Api.MarkUnpaired) return markRefused()
+    setProblem(failure.message)
+  })
 
-/** Open a message in place (marking it read), or close the one open. */
+/** Open a message in place (marking it read, when this browser may mark), or close the one open. */
 export const toggleOpen = (message: Message) => {
   if (openId() === message.id) return setOpenId(undefined)
   setOpenId(message.id)
-  if (message.unread) void act(Api.markRead(message.id, true))
+  if (message.unread && !marksLocked()) void act(Api.markRead(message.id, true))
 }
 
 export const toggleRead = (message: Message) => void act(Api.markRead(message.id, message.unread))
@@ -117,6 +140,7 @@ export const pairWith = (code: string) =>
     .then(() => {
       setPairProblem(undefined)
       setPaired(true)
+      setMarksLocked(false)
       return refresh()
     })
     .catch((failure: Error) => {

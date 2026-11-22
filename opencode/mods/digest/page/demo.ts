@@ -2,10 +2,11 @@
 // serves the built page over it on 127.0.0.1, exactly as the digest plugin does (cmd/digest/server.ts handlersOf).
 // Nothing here is real: names, texts and times are invented, relative to now.
 //
-//   bun mods/digest/page/demo.ts --dir <scratch folder> [--port 8291] [--seed full|empty|one|xss] [--as tailnet]
+//   bun mods/digest/page/demo.ts --dir <scratch folder> [--port 8291] [--seed full|empty|one|xss] [--as tailnet [--read member]]
 //
 // `--as tailnet` serves 127.0.0.1 as the tailnet listener does (its policy: nothing but pairing until paired), for
-// a look at the unpaired page without binding the tailnet.
+// a look at the unpaired page without binding the tailnet. `--read member` serves it with digest.tailnetRead
+// "member", as his hosts ship it: the digest for every member, marks and answers once paired.
 //
 // `full` holds three projects: Harbor (a red message, two open questions pinned, a decision, units with rounds, one
 // message set aside for Later), Lantern (500 messages over 30 days) and Quarry (one message). `xss` holds one project
@@ -22,7 +23,7 @@ import { listen } from "../http/listener.ts"
 import { markOf, sinceOf } from "../marks.ts"
 import { nextMorning } from "../zone.ts"
 
-const { values } = parseArgs({ args: Bun.argv.slice(2), options: { dir: { type: "string" }, port: { type: "string" }, seed: { type: "string" }, zone: { type: "string" }, as: { type: "string" } } })
+const { values } = parseArgs({ args: Bun.argv.slice(2), options: { dir: { type: "string" }, port: { type: "string" }, seed: { type: "string" }, zone: { type: "string" }, as: { type: "string" }, read: { type: "string" } } })
 const dir = values.dir ?? ""
 if (dir === "") throw new Error("usage: bun mods/digest/page/demo.ts --dir <scratch folder> [--port 8291] [--seed full|empty|one|xss] [--zone America/Montreal]")
 const zone = values.zone ?? "America/Montreal"
@@ -144,7 +145,7 @@ const code = await Effect.runPromise(FilePairing.make(dir).issue(Date.now()))
 await Effect.runPromise(
   Effect.scoped(
     Effect.gen(function* () {
-      const bound = yield* listen({ address: "127.0.0.1", port, listener: values.as === "tailnet" ? "tailnet" : "loopback", names: [] }, handlersOf({ dir, timezone: zone }, log, answerers), dist)
+      const bound = yield* listen({ address: "127.0.0.1", port, listener: values.as === "tailnet" ? "tailnet" : "loopback", names: [] }, handlersOf({ dir, timezone: zone, ...(values.read === "member" ? { tailnetRead: "member" as const } : {}) }, log, answerers), dist)
       console.log(`digest demo (${seed}): http://${bound.hostname}:${bound.port}/#pair=${code}`)
       yield* Effect.never
     }),
