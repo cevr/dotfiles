@@ -1,10 +1,8 @@
-// The host's platform for the orchestrate plugin's adapters: files, paths and processes (the fork's
-// @effect/platform-node, built on the same `effect` the plugin runs on, linked by scripts/link-fork.ts) and SHA
-// digests on WebCrypto. Provided once at a composition root (the plugin's server, the record CLI, a test's boundary);
-// the adapters ask for the services, never for node builtins.
-import * as NodeServices from "@effect/platform-node/NodeServices"
-import { Layer } from "effect"
+// What the orchestrate plugin provides itself at its composition root (cmd/orchestrate/server.ts): SHA digests on
+// WebCrypto, from `effect` alone. Files, paths and processes are the host's: the fork's plugin host gives a server
+// plugin FileSystem, Path and ChildProcessSpawner (`@opencode/plugin/effect` `Plugin.Environment`), so the plugin
+// imports no platform implementation and the record's layer carries those three in its requirements.
 import { Digest } from "effect/crypto"
 
-/** Every platform service an orchestrate adapter may ask for. */
-export const platform = Layer.mergeAll(NodeServices.layer, Digest.layerWebCrypto)
+/** The one platform service the plugin provides itself. */
+export const platform = Digest.layerWebCrypto

@@ -3,14 +3,19 @@
 // answer or refusal repeats one, no TEXT column of the live schema holds one, and the status section shows none.
 import { Database } from "bun:sqlite"
 import { expect } from "bun:test"
-import { Effect, Option, Schema } from "effect"
+import { Effect, Layer, Option, Schema } from "effect"
 import * as Seed from "../../../sim/seed.ts"
 import { scratch } from "../../../tests/scratch.ts"
 import * as Tool from "../commitments-tool.ts"
 import { type Actor, Command } from "../record.ts"
-import { CommitmentRecord } from "../service.ts"
-import { platform } from "../node/platform.ts"
+import { CommitmentRecord, Evidence } from "../service.ts"
+import { evidenceOf } from "../reasons.ts"
+import { hostServices } from "../../../sim/host-services.ts"
+import { platform as ownPlatform } from "../node/platform.ts"
 import { connected, textColumnsOf } from "./record.ts"
+
+/** The host's files, paths and processes (the fork gives a plugin these), and the plugin's own digest. */
+const platform = Layer.mergeAll(hostServices, ownPlatform)
 
 const TOKENS = {
   gh: ["gh", "p_", "Zq8xW2mN4vB7cR1tY6uI9oP3aS5dF0gH2jK4"].join(""),
@@ -25,16 +30,23 @@ const T = Date.parse("2026-11-22T10:00:00.000Z")
 const ROOT: Actor = { id: "ses_rootA", role: "root" }
 const WORKER: Actor = { id: "ses_child", role: "worker" }
 const PLUGIN: Actor = { id: "orchestrate-land", role: "plugin" }
-const READS: Tool.Reads = { facts: () => Effect.succeed({ now: T, onMain: new Set(), gone: new Set() }), register: () => Effect.fail("none") }
+const READS: Tool.Reads = { facts: () => Effect.succeed({ now: T, onMain: new Set(), gone: new Set() }), register: () => Effect.fail("none"), checkout: "/nonexistent/redact-checkout" }
+/** What the evidence reader finds: one committed document; no receipt (a token-shaped path is never one). */
+const EVIDENCE = evidenceOf(new Map(), new Map([["docs/record.md", { path: "docs/record.md", blob: "b".repeat(40), commit: "c".repeat(40) }]]))
+const GUARANTEED = { reason_class: "guarantee", referent: { kind: "invariant", id: "one-writer" } } as const
 
 /** Every path's answer or refusal, as text, by the path's name. */
 const paths = (store: CommitmentRecord["Service"]) =>
   Effect.gen(function* () {
     const said: Array<readonly [string, string]> = []
-    const outcome = <A, E>(path: string, effect: Effect.Effect<A, E, CommitmentRecord>) =>
-      Effect.map(Effect.result(Effect.provideService(effect, CommitmentRecord, store)), (done) => void said.push([path, jsonOf(done)]))
+    const outcome = <A, E>(path: string, effect: Effect.Effect<A, E, CommitmentRecord | Evidence>) =>
+      Effect.map(Effect.result(effect.pipe(Effect.provideService(CommitmentRecord, store), Effect.provideService(Evidence, EVIDENCE))), (done) => void said.push([path, jsonOf(done)]))
     const tool = (path: string, input: Tool.CommitmentsInput) => outcome(path, Tool.answerOf(input, ROOT, T, READS))
-    const followUp = (path: string, input: Tool.FollowUpInput) => outcome(path, Tool.followUpOf(input, WORKER, `c-${said.length}`, T))
+    const followUp = (path: string, input: Omit<Tool.FollowUpInput, "reason_class" | "referent"> & Partial<Pick<Tool.FollowUpInput, "reason_class" | "referent">>) =>
+      outcome(path, Tool.followUpOf({ reason_class: "dependency", referent: { kind: "commitment", id: waited }, ...input }, WORKER, `c-${said.length}`, T, READS.checkout))
+    const waited = "waited-on"
+    yield* tool("add (waited on)", { action: "add", source_kind: "plan-part", source_ref: "plan:w", parts: [{ id: waited, title: "t" }] })
+    yield* tool("invariant (declared)", { action: "invariant", id: "one-writer", doc_path: "docs/record.md", anchor: "one-writer" })
     const command = (path: string, sent: Command, actor: Actor) => outcome(path, store.run(sent, { actor, now: T }))
     const counter = { n: 0 }
     for (const [kind, token] of Object.entries(TOKENS)) {
@@ -56,8 +68,14 @@ const paths = (store: CommitmentRecord["Service"]) =>
       yield* tool(`${kind} assign.after.ref`, { action: "assign", id: target, owner_lane: "lane-x", after: [{ kind: "commit-on-main", ref: token }] })
       yield* tool(`${kind} word.word`, { action: "word", word: token })
       yield* tool(`${kind} order.owner_lane`, { action: "order", owner_lane: token, ids: [target] })
-      yield* tool(`${kind} decide.why`, { action: "decide", id: target, why: `because ${token}` })
-      yield* tool(`${kind} decide.id`, { action: "decide", id: token, why: "x" })
+      yield* tool(`${kind} decide.why`, { action: "decide", id: target, why: `because ${token}`, ...GUARANTEED })
+      yield* tool(`${kind} decide.id`, { action: "decide", id: token, why: "x", ...GUARANTEED })
+      yield* tool(`${kind} decide.referent.id`, { action: "decide", id: id(), why: "x", reason_class: "guarantee", referent: { kind: "invariant", id: token } })
+      yield* tool(`${kind} defer.referent.id`, { action: "defer", id: waited, reason_class: "dependency", referent: { kind: "commitment", id: token } })
+      yield* tool(`${kind} defer.referent.path`, { action: "defer", id: waited, reason_class: "measured", referent: { kind: "receipt", path: `tmp/orchestrate/${token}.json` } })
+      yield* tool(`${kind} invariant.id`, { action: "invariant", id: token, doc_path: "docs/record.md", anchor: "a" })
+      yield* tool(`${kind} invariant.doc_path`, { action: "invariant", id: id(), doc_path: `docs/${token}.md`, anchor: "a" })
+      yield* tool(`${kind} invariant.anchor`, { action: "invariant", id: id(), doc_path: "docs/record.md", anchor: token })
       yield* tool(`${kind} landed.head`, { action: "landed", id: target, head: token })
       yield* tool(`${kind} list.owner`, { action: "list", owner: token })
       yield* tool(`${kind} history.id`, { action: "history", id: token })
@@ -66,6 +84,9 @@ const paths = (store: CommitmentRecord["Service"]) =>
       yield* followUp(`${kind} follow_up.suggest_owner`, { id: id(), title: "t", suggest_owner: token })
       yield* followUp(`${kind} follow_up.suggest_owner (prose)`, { id: id(), title: "t", suggest_owner: `lane ${token}` })
       yield* followUp(`${kind} follow_up.run`, { id: id(), title: "t", run: token })
+      yield* followUp(`${kind} follow_up.referent.id`, { id: id(), title: "t", referent: { kind: "commitment", id: token } })
+      yield* followUp(`${kind} follow_up.referent.path`, { id: id(), title: "t", reason_class: "measured", referent: { kind: "receipt", path: `tmp/orchestrate/${token}.json` } })
+      yield* followUp(`${kind} follow_up.key`, { id: id(), title: "t", key: token })
       yield* command(`${kind} lane.unit`, Command.cases.lane.make({ run: "default", unit: token }), ROOT)
       yield* command(`${kind} lane.startHead`, Command.cases.lane.make({ run: "default", unit: id(), startHead: Option.some(token) }), ROOT)
       yield* command(`${kind} lane.path`, Command.cases.lane.make({ run: "default", unit: id(), path: Option.some(`/w/${token}`) }), ROOT)
@@ -89,7 +110,9 @@ Seed.effect(
         const opened = yield* connected(file, { readonly: false, now: T })
         const said = yield* paths(opened.store)
         opened.close()
-        expect(said.length).toBe(3 * 34)
+        expect(said.length).toBe(2 + 3 * 43)
+        // The paths a guarantee and a dependency need are taken, so each token path is refused for its token alone.
+        expect(said.slice(0, 2).map(([path, text]) => [path, JSON.parse(text)._tag])).toEqual([["add (waited on)", "Success"], ["invariant (declared)", "Success"]])
         expect(said.filter(([, text]) => leaks(text) > 0).map(([path]) => path)).toEqual([])
         const db = new Database(file, { readonly: true })
         const leaked = textColumnsOf(db).filter((column) => {

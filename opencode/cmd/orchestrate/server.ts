@@ -130,7 +130,8 @@
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { dirname, join } from "node:path"
 import { Agent, Plugin, Tool } from "@opencode/plugin/effect"
-import { Array as Arr, Clock, Context, Effect, Layer, Match, Option, Predicate, Schema, SchemaGetter, Stream } from "effect"
+import { Array as Arr, Clock, Context, Effect, FileSystem, Layer, Match, Option, Path, Predicate, Schema, SchemaGetter, Stream } from "effect"
+import type { ChildProcessSpawner } from "effect/process"
 import { DIGEST, DigestLog } from "@dotfiles/opencode-digest/event"
 import * as Relay from "@dotfiles/opencode-digest/relay"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
@@ -176,6 +177,7 @@ import { type Actor, Command as RecordCommand, openOf, type Snapshot } from "@do
 import * as ErgoRegister from "@dotfiles/opencode-orchestrate/sqlite/ergo-register"
 import { platform } from "@dotfiles/opencode-orchestrate/node/platform"
 import * as SqliteRecord from "@dotfiles/opencode-orchestrate/sqlite/record"
+import * as Reasons from "@dotfiles/opencode-orchestrate/reasons"
 import { Subagents } from "@dotfiles/opencode-orchestrate/asking"
 import * as Asking from "@dotfiles/opencode-orchestrate/opencode/asking"
 import * as DocumentsLive from "@dotfiles/opencode-orchestrate/node/documents"
@@ -187,6 +189,7 @@ import { KNOWLTON, local, Place, rest, type SabbathRest } from "@dotfiles/openco
 import {
   type CallLog,
   CommitmentRecord,
+  Evidence,
   type CodexAdmission,
   HeavyHost,
   type Latches,
@@ -276,27 +279,37 @@ export const Options = Schema.Struct({
 })
 export type Options = typeof Options.Type
 
-/** The commitment record a plugin keeps its runs' commitments in. */
-export type RecordLayer = (ctx: Plugin.Context, options: Options) => Layer.Layer<CommitmentRecord>
+/**
+ * The commitment record a plugin keeps its runs' commitments in, with the reader of the evidence its reasons point at
+ * (reasons.ts), on what it needs of the host: `R`, the host's files, paths and processes for the live record (the
+ * fork's plugin host gives them), nothing for a stand-in.
+ */
+export type RecordLayer<R = never> = (ctx: Plugin.Context, options: Options) => Layer.Layer<CommitmentRecord | Evidence, never, R>
+
+/** What the live record needs of the host: its files, paths and processes, as the fork's plugin host provides them. */
+export type HostServices = FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
 
 /**
  * The record on this host's file for the checkout's repository (`options.record`, else the repository's key under the
  * state dir). A file that does not open gives a record that refuses every call with why: the plugin still starts.
  */
-export const liveRecord: RecordLayer = (ctx, options) =>
-  SqliteRecord.layerOrFailed(
+export const liveRecord: RecordLayer<HostServices> = (ctx, options) =>
+  Layer.merge(
+    SqliteRecord.layerOrFailed(
     Option.match(Option.fromUndefinedOr(options.record), {
       onSome: Effect.succeed,
       onNone: () => Effect.flatMap(SqliteRecord.keyOfCheckout(ctx.location.directory), (key) => SqliteRecord.pathOf(Option.some(TuiDirs.dirs().state), key)),
     }),
+    ),
+    Reasons.evidenceLayer,
   ).pipe(Layer.provide(platform))
 
 /** A record in memory, one per plugin start: what a host with no record file (a test's) keeps. */
-export const memoryRecord: RecordLayer = () => MemoryRecord.layer
+export const memoryRecord: RecordLayer = () => Layer.merge(MemoryRecord.layer, Reasons.noEvidence)
 
 /** The file `options.record` names when it names one (a test's scratch file, kept across a restart), else memory. */
 export const namedRecord: RecordLayer = (ctx, options) =>
-  Option.match(Option.fromUndefinedOr(options.record), { onNone: () => memoryRecord(ctx, options), onSome: (record) => SqliteRecord.layerScratch(record) })
+  Option.match(Option.fromUndefinedOr(options.record), { onNone: () => memoryRecord(ctx, options), onSome: (record) => Layer.merge(SqliteRecord.layerScratch(record), Reasons.noEvidence) })
 
 /** The outside systems the model runs on. */
 export type Externals =
@@ -584,10 +597,10 @@ const WORK_TOOLS: ReadonlyArray<string> = ["work", "rift"]
  * heavy-check footer reads; the plugin OpenCode loads always has it (`liveHeavy`), and only the seam tests written
  * before the footer leave it out.
  */
-export const make = (
+export const make = <R = never>(
   externals: (ctx: Plugin.Context, options: Options, start: LatchesLive.Start, background: Background) => Layer.Layer<Externals>,
   heavy?: (ctx: Plugin.Context, options: Options, background: Background) => Layer.Layer<HeavyHost>,
-  record: RecordLayer = namedRecord,
+  record: RecordLayer<R> = namedRecord,
 ) =>
   Plugin.define({
     id: "dotfiles-opencode.orchestrate",
@@ -736,7 +749,10 @@ export const make = (
       const checkout = ctx.location.directory
       // The commitment record (mods/orchestrate/record.ts): this repository's file on this host, opened for the
       // plugin's life; every read and write is a call's own, and nothing of it is kept here.
-      const commitments = Context.get(yield* Layer.build(record(ctx, options)), CommitmentRecord)
+      const recordServices = yield* Layer.build(record(ctx, options))
+      const commitments = Context.get(recordServices, CommitmentRecord)
+      // What the host's files say of a reason's referent: a receipt, a declared invariant's document (reasons.ts).
+      const evidence = Context.get(recordServices, Evidence)
       /** The facts a standing needs, read now: the default branch's commits, and the owners whose lane is gone. */
       const factsNow = (sessionID: string, snapshot: Snapshot) =>
         Effect.gen(function* () {
@@ -1312,15 +1328,17 @@ export const make = (
       /** Who calls the record: the root, or a subagent's session as a worker. */
       const actorOf = (sessionID: string) => Effect.map(isChild(sessionID), (child): Actor => ({ id: sessionID, role: Match.value(child).pipe(Match.when(true, () => "worker" as const), Match.orElse(() => "root" as const)) }))
       /** A record call's answer as the tool gives it, the root's own record provided. */
-      const recordCall = <E>(work: Effect.Effect<string, E, CommitmentRecord>, why: (failed: E) => string) =>
+      const recordCall = <E>(work: Effect.Effect<string, E, CommitmentRecord | Evidence>, why: (failed: E) => string) =>
         work.pipe(
           Effect.provideService(CommitmentRecord, commitments),
+          Effect.provideService(Evidence, evidence),
           Effect.mapError((failed) => new Tool.Error({ message: why(failed) })),
         )
       /** The record's reads: the standing's facts for the session, and an import's register from a copy of its file. */
       const readsOf = (sessionID: string): Commitments.Reads => ({
         facts: (snapshot) => factsNow(sessionID, snapshot),
         register: ErgoRegister.registerReads,
+        checkout,
       })
       /** The lane hook: the unit's commitment got or made, owned by the unit and started; its open ones named after the lane's answer. */
       const laneRecorded = (input: Tools.OrchestrateInput, sessionID: string, made: { readonly answer: string; readonly start: Option.Option<string>; readonly path: string }) =>
@@ -1394,7 +1412,7 @@ export const make = (
             Effect.gen(function* () {
               const actor = yield* actorOf(context.sessionID)
               const now = yield* Clock.currentTimeMillis
-              const text = yield* recordCall(Commitments.followUpOf(input, actor, context.id, now), (why) => why)
+              const text = yield* recordCall(Commitments.followUpOf(input, actor, context.id, now, checkout), (why) => why)
               return { content: [{ type: "text" as const, text }], metadata: { id: input.id } }
             }),
         }),

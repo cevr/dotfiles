@@ -6,14 +6,15 @@
 // default branch. Where a lane's head happens to be when someone reads claims nothing: ancestry is not authorship.
 import { env as processEnv, spawnSync } from "bun"
 import { expect } from "bun:test"
-import { Effect, Option } from "effect"
+import { Effect, Layer, Option } from "effect"
 import { gitClone, gitInit } from "../../../tests/git-repo.ts"
 import { scratch } from "../../../tests/scratch.ts"
 import * as Seed from "../../../sim/seed.ts"
 import { answerOf, claimsRecorded, factsOf, landClaimsOf, passed } from "../commitments-tool.ts"
 import * as MemoryRecord from "../memory/record.ts"
 import { type Actor, Command, PartInput, type Snapshot } from "../record.ts"
-import { CommitmentRecord, MainLine } from "../service.ts"
+import { CommitmentRecord, type Evidence, MainLine } from "../service.ts"
+import { noEvidence } from "../reasons.ts"
 import { standingOf } from "../standing.ts"
 import * as GitMainLine from "./main-line.ts"
 
@@ -102,7 +103,7 @@ const recordOf = (repo: Repository) => {
     status: (gone: ReadonlyArray<string> = []) => passed({ id: "orchestrate-pass", role: "plugin" }, T0 + 2000, facts(gone)),
     /** The root's `landed`, as the commitments tool answers it. */
     explicitly: (id: string, head: string, gone: ReadonlyArray<string> = []) =>
-      answerOf({ action: "landed", id, head }, ROOT, T0 + 3000, { facts: facts(gone), register: () => Effect.fail("no register") }),
+      answerOf({ action: "landed", id, head }, ROOT, T0 + 3000, { facts: facts(gone), register: () => Effect.fail("no register"), checkout: repo.path }),
     history: (id: string) =>
       Effect.gen(function* () {
         return yield* (yield* CommitmentRecord).history("commitment", id)
@@ -127,14 +128,14 @@ const headOf = (snapshot: Snapshot, unit: string) => Option.flatMap(Option.fromU
 /** A lane as a land event names it: its workspace and its head now. */
 const at = (lane: Lane) => ({ path: lane.path, head: lane.head() })
 
-const inRepository = <A, E>(name: string, body: (repo: Repository, record: ReturnType<typeof recordOf>) => Effect.Effect<A, E, CommitmentRecord>) =>
+const inRepository = <A, E>(name: string, body: (repo: Repository, record: ReturnType<typeof recordOf>) => Effect.Effect<A, E, CommitmentRecord | Evidence>) =>
   Seed.effect(
     name,
     Effect.acquireUseRelease(
       Effect.sync(() => scratch("record-claims-")),
       (held) => {
         const repo = repository(held.path)
-        return body(repo, recordOf(repo)).pipe(Effect.provide(MemoryRecord.layer))
+        return body(repo, recordOf(repo)).pipe(Effect.provide(Layer.merge(MemoryRecord.layer, noEvidence)))
       },
       (held) => Effect.sync(() => held[Symbol.dispose]()),
     ),

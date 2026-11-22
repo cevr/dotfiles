@@ -13,6 +13,7 @@ import type { Hold } from "./tool-call.ts"
 import type { HeadSeen, LaneStatus } from "./lost.ts"
 import type { Merge, UnitFiles, Verified } from "./tools.ts"
 import type { Command, Context as RecordContext, RecordEvent, RecordRefused, Snapshot, StoredEvent, SubjectKind } from "./record.ts"
+import type { DocumentSeen, ReceiptSeen } from "./reasons.ts"
 import type { Transition } from "./unit-log.ts"
 
 /** Where the call log's lines go, in order. Appending never fails: a lost line costs the pane a row, not the call. */
@@ -432,6 +433,22 @@ export class CommitmentRecord extends Context.Service<
     readonly events: Effect.Effect<ReadonlyArray<StoredEvent>, RecordFailed>
   }
 >()("dotfiles-opencode/orchestrate/CommitmentRecord") {}
+
+/** Why the host's files do not back a reason's referent, in words that name no value. */
+export class EvidenceRefused extends Schema.TaggedError<EvidenceRefused>()("EvidenceRefused", { reason: Schema.String }) {}
+
+/**
+ * What the host's files say of a reason's referent (reasons.ts): a receipt under the checkout's evidence root, read
+ * and hashed, or a declared invariant's document as git holds it at HEAD. An observation of a real port, never a
+ * caller's word: the record takes what this answers, and no tool input carries it.
+ */
+export class Evidence extends Context.Service<
+  Evidence,
+  {
+    readonly receipt: (checkout: string, path: string) => Effect.Effect<ReceiptSeen, EvidenceRefused>
+    readonly document: (checkout: string, path: string) => Effect.Effect<DocumentSeen, EvidenceRefused>
+  }
+>()("dotfiles-opencode/orchestrate/Evidence") {}
 
 /** Steers a session with one note, marked `DRIFT_MARK`, which wakes it if idle. */
 export class Tell extends Context.Service<

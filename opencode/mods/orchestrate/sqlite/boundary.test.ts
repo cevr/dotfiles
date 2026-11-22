@@ -6,18 +6,25 @@
 // driver, or this test stays red.
 import { Database } from "bun:sqlite"
 import { expect } from "bun:test"
-import { Array as Arr, Effect, Match, Option, Result, Schema } from "effect"
+import { Array as Arr, Effect, Layer, Match, Option, Result, Schema } from "effect"
 import * as Seed from "../../../sim/seed.ts"
 import { scratch } from "../../../tests/scratch.ts"
 import { DEFAULT_RUN, followUpOf } from "../commitments-tool.ts"
 import { type Actor, Command, decodeCommand, PartInput } from "../record.ts"
-import { CommitmentRecord } from "../service.ts"
-import { platform } from "../node/platform.ts"
+import { CommitmentRecord, Evidence } from "../service.ts"
+import { evidenceOf } from "../reasons.ts"
+import { hostServices } from "../../../sim/host-services.ts"
+import { platform as ownPlatform } from "../node/platform.ts"
 import { connected, textColumnsOf } from "./record.ts"
 
 const T0 = Date.parse("2027-01-15T08:00:00.000Z")
+/** A reader that finds no receipt and no document: the follow-ups here name a dependency. */
+const NO_EVIDENCE = evidenceOf(new Map(), new Map())
 const ROOT: Actor = { id: "ses_root", role: "root" }
 const IMPORT: Actor = { id: "ergo-register", role: "import" }
+/** The host's files, paths and processes (the fork gives a plugin these), and the plugin's own digest. */
+const platform = Layer.mergeAll(hostServices, ownPlatform)
+
 const AT = "2027-01-15T08:00:00.000Z"
 /** A token-shaped secret (a GitHub token's form, invented): a slug by its characters, so only the secret check refuses it there. */
 const SECRET = ["ghp", "0123456789abcdefghijABCDEFGHIJ0123"].join("_")
@@ -36,6 +43,7 @@ type Driver =
   | { readonly kind: "literal"; readonly encoded: string }
   /** A column no code writes: it stays empty. */
   | { readonly kind: "unwritten" }
+  | { readonly kind: "derived" }
 
 const by = (command: Command, actor: Actor = ROOT): Sent => ({ command, actor })
 const part = (id: string, fields: Partial<{ title: string; part: string }> = {}) => PartInput.make({ id, title: fields.title ?? `the ${id} part`, part: Option.fromUndefinedOr(fields.part) })
@@ -112,8 +120,16 @@ const redacted = (sent: Sent, setup: ReadonlyArray<Sent> = []): Driver => ({ kin
 /** A command as JSON a caller sends, decoded only by the command's schema. */
 const literal = (encoded: string): Driver => ({ kind: "literal", encoded })
 const UNWRITTEN: Driver = { kind: "unwritten" }
+/** A column the fold derives from an event's kind alone (a close with no reason: `placed`, `historical`), no command field: its CHECK holds it to them. */
+const DERIVED: Driver = { kind: "derived" }
 const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Any))
 const OWNED = [by(add(["c1"]))]
+/** The invariant a guarantee names, declared by the root as the evidence reader would have found its document. */
+const DOCUMENT = { path: "docs/record.md", blob: "b".repeat(40), commit: "c".repeat(40) }
+const declare = (fields: Partial<{ id: string; anchor: string; path: string; blob: string; commit: string }> = {}) =>
+  Command.cases.invariant.make({ id: fields.id ?? "one-writer", anchor: fields.anchor ?? "one-writer", observed: { path: fields.path ?? DOCUMENT.path, blob: fields.blob ?? DOCUMENT.blob, commit: fields.commit ?? DOCUMENT.commit } })
+const GUARANTEE = { reasonClass: "guarantee" as const, referent: "invariant/one-writer" }
+const DECLARED = [...OWNED, by(declare())]
 /** An import's history event carries `at` (every derived time column is a fold of an event's time) and its states. */
 const historyAt = refused("event.at", by(imported("i1", {}, { at: S }), IMPORT))
 
@@ -137,13 +153,23 @@ const DRIVERS = new Map<string, Driver>([
   ["commitment.head", refused("commitment.head", by(imported("i1", { head: S }), IMPORT))],
   ["commitment.request_path", redacted(by(imported("i1", { requestPath: `requests/${S}.md` }), IMPORT))],
   ["commitment.landed_commit", refused("commitment.landed_commit", by(imported("i1", { state: "landed", landedCommit: S }), IMPORT))],
-  ["commitment.decided_why", redacted(by(Command.cases.decide.make({ id: "c1", why: `because ${S}` })), OWNED)],
+  ["commitment.decided_why", redacted(by(Command.cases.decide.make({ id: "c1", why: `because ${S}`, reason: GUARANTEE })), DECLARED)],
   ["commitment.notice_until", historyAt],
   ["commitment.created_at", refused("commitment.created_at", by(imported("i1", { createdAt: S }), IMPORT))],
   ["commitment.updated_at", refused("commitment.updated_at", by(imported("i1", { updatedAt: S }), IMPORT))],
   ["commitment.start_head", refused("commitment.start_head", by(Command.cases.lane.make({ run: DEFAULT_RUN, unit: "u1", startHead: Option.some(S) })))],
   ["commitment.notice_by", refused("event.actor", by(add(["c1"]), { id: S, role: "root" }))],
   ["commitment.lane_path", refused("commitment.lane_path", by(Command.cases.lane.make({ run: DEFAULT_RUN, unit: "u1", path: Option.some(`/work/${S}`) })))],
+  ["commitment.reason_class", literal(`{ "_tag": "defer", "id": "c1", "reason": { "reasonClass": "${S}", "referent": "commitment/c2" } }`)],
+  ["commitment.referent", refused("commitment.referent", by(Command.cases.defer.make({ id: "c1", reason: { reasonClass: "dependency", referent: `commitment/${S}` } })), OWNED)],
+  ["commitment.unreasoned_close", DERIVED],
+  ["invariant.id", refused("event.subject_id", by(declare({ id: S })))],
+  ["invariant.doc_path", refused("invariant.doc_path", by(declare({ path: `docs/${S}.md` })))],
+  ["invariant.anchor", refused("invariant.anchor", by(declare({ anchor: S })))],
+  ["invariant.blob", refused("invariant.blob", by(declare({ blob: S })))],
+  ["invariant.commit_sha", refused("invariant.commit_sha", by(declare({ commit: S })))],
+  ["invariant.declared_at", historyAt],
+  ["invariant.declared_by", refused("event.actor", by(declare(), { id: S, role: "root" }))],
   ["prerequisite.commitment_id", refused("event.subject_id", by(add([S])))],
   ["prerequisite.kind", literal(`{ "_tag": "assign", "id": "c1", "ownerLane": "u1", "after": [{ "kind": "${S}", "ref": "x" }] }`)],
   ["prerequisite.ref", refused("prerequisite.ref", by(assign("c1", { manual: S })), OWNED)],
@@ -226,6 +252,7 @@ const outcomeOf = (dir: string, column: string, at: number, driver: Driver) =>
   Match.value(driver).pipe(
     Match.when({ kind: "literal" }, (each) => Effect.succeed(Result.match(Result.try(() => decodeCommand(decodeJson(each.encoded))), { onFailure: () => "literal", onSuccess: (decoded) => Result.match(decoded, { onFailure: () => "literal", onSuccess: () => "decoded" }) }))),
     Match.when({ kind: "unwritten" }, () => Effect.succeed("unwritten")),
+    Match.when({ kind: "derived" }, () => Effect.succeed("derived")),
     Match.orElse((each) =>
       Effect.gen(function* () {
         const path = `${dir}/c${at}.db`
@@ -269,12 +296,14 @@ Seed.effect(
         const path = `${dir.path}/repo.db`
         const opened = yield* connected(path, { readonly: false, now: T0 })
         const worker: Actor = { id: "ses_worker", role: "worker" }
-        const record = Effect.provideService(CommitmentRecord, opened.store)
-        const byId = yield* Effect.flip(record(followUpOf({ id: S, title: "a missing test" }, worker, "call_1", T0)))
-        const byRun = yield* Effect.flip(record(followUpOf({ id: "f1", title: "a missing test", run: S }, worker, "call_2", T0)))
+        yield* opened.store.run(add(["p1"]), { actor: ROOT, now: T0 })
+        const record = <A, E>(work: Effect.Effect<A, E, CommitmentRecord | Evidence>) => work.pipe(Effect.provideService(CommitmentRecord, opened.store), Effect.provideService(Evidence, NO_EVIDENCE))
+        const waits = { reason_class: "dependency", referent: { kind: "commitment", id: "p1" } } as const
+        const byId = yield* Effect.flip(record(followUpOf({ id: S, title: "a missing test", ...waits }, worker, "call_1", T0, dir.path)))
+        const byRun = yield* Effect.flip(record(followUpOf({ id: "f1", title: "a missing test", run: S, ...waits }, worker, "call_2", T0, dir.path)))
         opened.close()
         expect([byId.includes("column event.subject_id "), byRun.includes("column event.run "), byId.includes(SECRET), byRun.includes(SECRET)]).toEqual([true, true, false, false])
-        expect(storedIn(path).filter(([column]) => column.startsWith("commitment.") || column.startsWith("event."))).toEqual([])
+        expect(storedIn(path).filter(([column, value]) => (column.startsWith("commitment.") || column.startsWith("event.")) && value.includes("f1"))).toEqual([])
       }),
     (dir) => Effect.sync(() => dir[Symbol.dispose]()),
   ).pipe(Effect.provide(platform)),

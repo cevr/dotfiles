@@ -4,19 +4,24 @@
 import { Database } from "bun:sqlite"
 import { expect } from "bun:test"
 import { fileURLToPath, Glob, resolveSync, spawn, spawnSync, write } from "bun"
-import { Context, Effect, Layer, Option, type Scope } from "effect"
+import { Array as Arr, Context, Effect, Layer, Option, Result, type Scope } from "effect"
 import { Digest } from "effect/crypto"
 import * as Seed from "../../../sim/seed.ts"
-import { platform } from "../node/platform.ts"
+import { hostServices } from "../../../sim/host-services.ts"
+import { platform as ownPlatform } from "../node/platform.ts"
 import { gitInit, withProcessEnv } from "../../../tests/git-repo.ts"
 import { scratch as scratchDir } from "../../../tests/scratch.ts"
-import { commitmentRecordLaws } from "../laws.ts"
+import { commitmentRecordLaws, RECORD_SCRIPT } from "../laws.ts"
+import * as MemoryRecord from "../memory/record.ts"
 import { type Actor, COLUMNS, Command, EMPTY, fold } from "../record.ts"
 import { CommitmentRecord } from "../service.ts"
 import type * as SqliteRecord from "./record.ts"
 import { BACKUPS_KEPT, connected, keyOfCheckout, layer, layerOrFailed, MIGRATIONS, pathOf, stateDir, textColumnsOf, VERSION } from "./record.ts"
 
 const T0 = 1_800_000_000_000
+/** The host's files, paths and processes (the fork gives a plugin these), and the plugin's own digest. */
+const platform = Layer.mergeAll(hostServices, ownPlatform)
+
 const DAY = 86_400_000
 
 const scratch = Effect.map(
@@ -39,8 +44,8 @@ const add = (id: string) => Command.cases.add.make({ run: "r1", sourceKind: "pla
 const ROOT: Actor = { id: "ses_root", role: "root" }
 /** This folder's store module, as a writer process imports it. */
 const STORE = fileURLToPath(import.meta.resolve("./record.ts"))
-/** The platform the writer provides its open. */
-const PLATFORM = fileURLToPath(import.meta.resolve("../node/platform.ts"))
+/** The host services the writer provides its open, as the fork's plugin host would. */
+const HOST = fileURLToPath(import.meta.resolve("../../../sim/host-services.ts"))
 
 Seed.effect(
   "the file is under XDG_STATE_HOME, else ~/.local/state",
@@ -51,17 +56,26 @@ Seed.effect(
   }).pipe(Effect.provide(platform)),
 )
 
-/** A writer process: opens its own connection and adds `count` commitments named `<name>-<i>`, one transaction each. */
+/**
+ * A writer process: opens its own connection, declares the invariant (the second writer's declaration is the same, so
+ * nothing), and adds `count` commitments named `<name>-<i>`, one transaction each; each odd one deferred on the one
+ * before (a dependency), and every tenth decides the one before it on the invariant (a guarantee).
+ */
 const writer = `import { connected } from "${STORE}"
-import { platform } from "${PLATFORM}"
+import { hostServices } from "${HOST}"
 import { Command } from "${STORE.replace(/sqlite\/record\.ts$/, "record.ts")}"
 import { Effect, Exit } from "${resolveSync("effect", STORE)}"
 const [path, name, count] = process.argv.slice(2)
-const opened = await Effect.runPromise(connected(path, { readonly: false, now: ${T0} }).pipe(Effect.provide(platform)))
-for (let at = 0; at < Number(count); at++) {
-  const command = Command.cases.add.make({ run: "r1", sourceKind: "plan-part", sourceRef: "plan.md:1", parts: [{ id: name + "-" + at, title: "part" }] })
+const opened = await Effect.runPromise(connected(path, { readonly: false, now: ${T0} }).pipe(Effect.provide(hostServices)))
+const run = (command, at) => {
   const exit = Effect.runSyncExit(opened.store.run(command, { actor: { id: name, role: "root" }, now: ${T0} + at }))
   if (Exit.isFailure(exit)) { console.error(String(exit.cause)); process.exit(1) }
+}
+run(Command.cases.invariant.make({ id: "one-writer", anchor: "one-writer", observed: { path: "docs/record.md", blob: "b".repeat(40), commit: "c".repeat(40) } }), 0)
+for (let at = 0; at < Number(count); at++) {
+  run(Command.cases.add.make({ run: "r1", sourceKind: "plan-part", sourceRef: "plan.md:1", parts: [{ id: name + "-" + at, title: "part" }] }), at)
+  if (at % 2 === 1) run(Command.cases.defer.make({ id: name + "-" + at, reason: { reasonClass: "dependency", referent: "commitment/" + name + "-" + (at - 1) } }), at)
+  if (at % 10 === 9) run(Command.cases.decide.make({ id: name + "-" + (at - 1), why: "covered", reason: { reasonClass: "guarantee", referent: "invariant/one-writer" } }), at)
 }
 opened.close()
 `
@@ -73,7 +87,7 @@ const started = (script: string, path: string, name: string) => spawn(["bun", sc
 const ended = (run: ReturnType<typeof started>) =>
   Effect.all({ code: Effect.promise(() => run.exited), errors: Effect.promise(() => new Response(run.stderr).text()) }, { concurrency: 2 })
 
-Seed.effect("two processes writing 200 interleaved commands to one file lose none, and the replay law holds after",
+Seed.effect("two processes writing 321 interleaved commands to one file, reasons included, lose none, and the replay law holds after",
   inScratch((dir) =>
     Effect.gen(function* () {
       const path = `${dir}/repo.db`
@@ -90,7 +104,10 @@ Seed.effect("two processes writing 200 interleaved commands to one file lose non
       const events = yield* opened.store.events
       opened.close()
       expect(snapshot.commitments.size).toBe(200)
-      expect(events.length).toBe(200)
+      // 200 adds, 100 deferrals, 20 decisions and one declaration: the second writer's was the same, so nothing.
+      expect(events.length).toBe(321)
+      expect([...snapshot.commitments.values()].filter((row) => row.state === "decided" && Option.contains(Option.map(row.reason, (reason) => reason.reasonClass), "guarantee")).length).toBe(20)
+      expect([...snapshot.commitments.values()].filter((row) => row.state === "open" && Option.isSome(row.reason)).length).toBe(100)
       expect(fold(EMPTY, events)).toEqual(snapshot)
     }),
   ))
@@ -114,36 +131,191 @@ Seed.effect("a file of a newer version than this code reads, and refuses every w
     }),
   ))
 
-for (const from of [1, 2])
-  Seed.effect(`a version ${from} file migrates to this version on open: its rows kept, a lane made before has no lane path or start, a lane made after keeps both`,
+/** A table's columns as `PRAGMA table_xinfo` gives them: name, type, NOT NULL, default, primary key, hidden (2: generated). */
+const shapeOf = (db: Database, table: string) =>
+  db
+    .query<{ name: string; type: string; notnull: number; dflt_value: string | null; pk: number; hidden: number }, []>(`SELECT name, type, "notnull", dflt_value, pk, hidden FROM pragma_table_xinfo('${table}')`)
+    .all()
+    .map((each) => [each.name, each.type, each.notnull, each.dflt_value, each.pk, each.hidden])
+
+Seed.effect("version 1 is the only version: its commitment and invariant tables have exactly this shape, reason pair and generated close kind included",
   inScratch((dir) =>
     Effect.gen(function* () {
-      const path = `${dir}/repo.db`
-      // A file as version `from` code left it: its statements alone, one lane's commitment, its user_version.
-      const raw = new Database(path, { create: true, strict: true })
-      for (const statement of MIGRATIONS.slice(0, from).flat()) raw.run(statement)
-      raw.run(`PRAGMA user_version = ${from}`)
-      raw.run(
-        "INSERT INTO commitment (id, run, title, source_kind, source_ref, owner_lane, state, started_at, review_by, created_at, updated_at) VALUES ('old-unit', 'r1', 'land unit old-unit', 'assignment', 'orchestrate lane old-unit', 'old-unit', 'open', '2027-01-15T08:00:00.000Z', '2027-01-22T08:00:00.000Z', '2027-01-15T08:00:00.000Z', '2027-01-15T08:00:00.000Z')",
+      const made = yield* connected(`${dir}/repo.db`, { readonly: false, now: T0 })
+      made.close()
+      const db = new Database(`${dir}/repo.db`, { readonly: true })
+      const shape = { version: db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version, commitment: shapeOf(db, "commitment"), invariant: shapeOf(db, "invariant") }
+      const visible = db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('commitment')").all().map((each) => each.name)
+      db.close()
+      const text = (name: string, notnull = 0, pk = 0) => [name, "TEXT", notnull, null, pk, 0]
+      expect([VERSION, MIGRATIONS.length]).toEqual([1, 1])
+      expect(shape).toEqual({
+        version: 1,
+        commitment: [
+          text("id", 1, 1), text("run", 1), text("title", 1), text("source_kind", 1), text("source_ref", 1), text("quote"), text("plan"), text("part"), text("rank"),
+          text("owner_lane"), text("owner_session"), text("state", 1), text("started_at"), text("review_by"), text("woke_at"), text("head"), text("request_path"),
+          text("landed_commit"), text("decided_why"), text("notice_until"), text("created_at", 1), text("updated_at", 1), text("start_head"), text("notice_by"),
+          ["notice_outside_run", "INTEGER", 1, "0", 0, 0], text("lane_path"), text("reason_class"), text("referent"), text("unreasoned_close"),
+          ["close_kind", "TEXT", 0, null, 0, 2],
+        ],
+        invariant: [text("id", 1, 1), text("doc_path", 1), text("anchor", 1), text("blob", 1), text("commit_sha", 1), text("declared_at", 1), text("declared_by", 1)],
+      })
+      // The brief's two columns at `PRAGMA table_info`; the derived kind is generated, hidden there.
+      expect(visible.slice(-3)).toEqual(["reason_class", "referent", "unreasoned_close"])
+    }),
+  ))
+
+/** One row's reason fields, as a direct INSERT or UPDATE sets them. */
+interface Cell {
+  readonly state: "open" | "landed" | "decided"
+  readonly reasonClass: string | null
+  readonly referent: string | null
+  readonly unreasoned: string | null
+}
+const STATES_ = ["open", "landed", "decided"] as const
+const CLASSES_ = [null, "guarantee", "dependency", "measured", "effort"] as const
+const REFERENTS_ = [null, "", " invariant/x", "invariant/root-owns", "commitment/a", "ask/", "ask/q1", "r".repeat(513)] as const
+const UNREASONED_ = [null, "placed", "historical", "guessed"] as const
+const MATRIX: ReadonlyArray<Cell> = STATES_.flatMap((state) =>
+  CLASSES_.flatMap((reasonClass) => REFERENTS_.flatMap((referent) => UNREASONED_.map((unreasoned) => ({ state, reasonClass, referent, unreasoned })))),
+)
+
+/**
+ * The oracle, the owner's rule in one line: a decided row has exactly one close kind and no other row has one, each
+ * kind bound to its pair (guarantee ⇔ a guarantee with its referent; not-asked ⇔ no class and an `ask/<id>`; placed and
+ * historical ⇔ the null pair), and every row's pair is well-formed (both or neither, a known class, a trimmed referent of
+ * 1 to 512 characters). Answers the row's kind (null for an open or landed row), or "refused".
+ */
+const oracle = ({ state, reasonClass: c, referent: r, unreasoned: u }: Cell): string | null | "refused" => {
+  const formed = (c === null || ["guarantee", "dependency", "measured"].includes(c)) && (r === null || (r.length >= 1 && r.length <= 512 && r.trim() === r)) && (u === null || u === "placed" || u === "historical")
+  // An unreasoned close names the kind of a null pair alone; a reasoned pair names its own kind and no unreasoned close.
+  const paired = c === "guarantee" && r !== null ? "guarantee" : c === null && r !== null && r.startsWith("ask/") && r.length > 4 ? "not-asked" : null
+  const kind = c === null && r === null ? u : u === null ? paired : null
+  if (!formed) return "refused"
+  if (state === "decided") return kind ?? "refused"
+  return u === null && (c === null) === (r === null) ? null : "refused"
+}
+
+const INSERT_CELL = `INSERT INTO commitment (id, run, title, source_kind, source_ref, state, landed_commit, decided_why, reason_class, referent, unreasoned_close, created_at, updated_at)
+  VALUES (?, 'r1', 't', 'plan-part', 'p', ?, ?, ?, ?, ?, ?, 't', 't')`
+const UPDATE_CELL = "UPDATE commitment SET state = ?, landed_commit = ?, decided_why = ?, reason_class = ?, referent = ?, unreasoned_close = ? WHERE id = ?"
+const bindings = (cell: Cell) => [cell.state, cell.state === "landed" ? "1234567" : null, cell.state === "decided" ? "why" : null, cell.reasonClass, cell.referent, cell.unreasoned] as const
+/** What the file did with `put`: the row's stored close kind, or "refused" when a CHECK refused it. */
+const outcome = (db: Database, id: string, put: () => void): string | null | "refused" => {
+  if (Result.isFailure(Result.try(put))) return "refused"
+  return db.query<{ close_kind: string | null }, [string]>("SELECT close_kind FROM commitment WHERE id = ?").get(id)?.close_kind ?? null
+}
+
+Seed.effect(`the close kind over (state × reason class × referent form × unreasoned close), ${MATRIX.length} cells, by direct INSERT and UPDATE on a scratch file, agrees with the one-line oracle`,
+  inScratch((dir) =>
+    Effect.gen(function* () {
+      const made = yield* connected(`${dir}/matrix.db`, { readonly: false, now: T0 })
+      made.close()
+      const db = new Database(`${dir}/matrix.db`, { strict: true })
+      const inserted = MATRIX.map((cell, at) => outcome(db, `i${at}`, () => db.run(INSERT_CELL, [`i${at}`, ...bindings(cell)])))
+      // Each UPDATE starts from a valid row of its own (an open row with no reason) and moves it to the cell.
+      const updated = MATRIX.map((cell, at) => {
+        db.run(INSERT_CELL, [`u${at}`, "open", null, null, null, null, null])
+        return outcome(db, `u${at}`, () => db.run(UPDATE_CELL, [...bindings(cell), `u${at}`]))
+      })
+      // A decided row cannot be moved off its kind: back to open with its unreasoned close, or to no kind at all.
+      db.run(INSERT_CELL, ["h", "decided", null, "why", null, null, "historical"])
+      const reopenedKeepingClose = outcome(db, "h", () => db.run("UPDATE commitment SET state = 'open', decided_why = NULL WHERE id = 'h'"))
+      const writtenKind = outcome(db, "h", () => db.run("UPDATE commitment SET close_kind = 'guarantee' WHERE id = 'h'"))
+      db.close()
+      const expected = MATRIX.map(oracle)
+      expect(inserted).toEqual(expected)
+      expect(updated).toEqual(expected)
+      expect([reopenedKeepingClose, writtenKind]).toEqual(["refused", "refused"])
+      // Every kind is reachable, and each only from its pair.
+      expect([...new Set(expected)].toSorted()).toEqual(["guarantee", "historical", "not-asked", "placed", "refused", null].toSorted())
+    }),
+  ))
+
+Seed.effect("which close kind each writer makes: decide a guarantee, the plugin's placeholder close placed, an import historical; open and landed rows none",
+  inScratch((dir) =>
+    Effect.gen(function* () {
+      const path = `${dir}/writers.db`
+      const opened = yield* connected(path, { readonly: false, now: T0 })
+      const run = (command: Command, actor: Actor = ROOT) => opened.store.run(command, { actor, now: T0 })
+      yield* run(Command.cases.invariant.make({ id: "one-writer", anchor: "one-writer", observed: { path: "docs/record.md", blob: "b".repeat(40), commit: "c".repeat(40) } }))
+      yield* run(add("by-decide"))
+      yield* run(Command.cases.decide.make({ id: "by-decide", why: "covered", reason: { reasonClass: "guarantee", referent: "invariant/one-writer" } }))
+      yield* run(Command.cases.add.make({ run: "r1", sourceKind: "owner-answer", sourceRef: "ses_root:q1", parts: [{ id: "placeholder", title: "their answer" }] }))
+      yield* run(Command.cases.add.make({ run: "r1", sourceKind: "plan-part", sourceRef: "plan.md:2", plan: Option.some("placeholder"), parts: [{ id: "split-a", title: "a part" }] }))
+      const row = (id: string, state: "open" | "decided") => ({
+        id,
+        row: {
+          title: `row ${id}`, sourceKind: "plan-part" as const, sourceRef: "register", quote: Option.none(), plan: Option.none(), part: Option.none(), rank: Option.none(),
+          ownerLane: Option.none(), ownerSession: Option.none(), state, startedAt: Option.none(), reviewBy: Option.none(), head: Option.none(), requestPath: Option.none(),
+          landedCommit: Option.none(), decidedWhy: state === "decided" ? Option.some("dropped") : Option.none(), createdAt: "2026-11-01T00:00:00.000Z", updatedAt: "2026-11-01T00:00:00.000Z", after: [],
+        },
+        history: [],
+      })
+      yield* run(Command.cases.import.make({ run: "wf1", rows: [row("by-import", "decided"), row("by-import-open", "open")] }), { id: "ergo-register", role: "import" })
+      opened.close()
+      const db = new Database(path, { readonly: true })
+      const kinds = db.query<{ id: string; close_kind: string | null; actor_role: string | null }, []>(
+        "SELECT c.id, c.close_kind, (SELECT e.actor_role FROM event e WHERE e.subject_id = c.id AND e.to_state = 'decided') AS actor_role FROM commitment c ORDER BY c.id",
+      ).all()
+      db.close()
+      expect(kinds).toEqual([
+        { id: "by-decide", close_kind: "guarantee", actor_role: "root" },
+        { id: "by-import", close_kind: "historical", actor_role: "import" },
+        { id: "by-import-open", close_kind: null, actor_role: null },
+        { id: "placeholder", close_kind: "placed", actor_role: "plugin" },
+        { id: "split-a", close_kind: null, actor_role: null },
+      ])
+    }),
+  ))
+
+Seed.effect("the file and the memory record agree on every kind of command, reasons included; reopened, the file's rows are its events' fold; an import again is nothing",
+  inScratch((dir) =>
+    Effect.gen(function* () {
+      const path = `${dir}/agree.db`
+      const file = yield* connected(path, { readonly: false, now: T0 })
+      const memory = MemoryRecord.make(yield* MemoryRecord.empty)
+      const both = (command: Command, actor: Actor, now: number) =>
+        Effect.all([Effect.result(file.store.run(command, { actor, now })), Effect.result(memory.run(command, { actor, now }))]).pipe(
+          Effect.map(([inFile, inMemory]) => [inFile._tag, inMemory._tag, Result.isSuccess(inFile) && Result.isSuccess(inMemory) ? inFile.success.events.length === inMemory.success.events.length : true]),
+        )
+      const outcomes = yield* Effect.forEach(RECORD_SCRIPT, ([command, actor, now]) => both(command, actor, now))
+      expect(outcomes).toEqual(RECORD_SCRIPT.map(() => ["Success", "Success", true]))
+      const imported = Arr.findLast(RECORD_SCRIPT, ([command]) => command._tag === "import")
+      const again = yield* Effect.forEach(Option.toArray(imported), ([command, actor, now]) => Effect.all([file.store.run(command, { actor, now: now + 1 }), memory.run(command, { actor, now: now + 1 })]))
+      expect(again.map(([inFile, inMemory]) => [inFile.events.length, inMemory.events.length])).toEqual([[0, 0]])
+      file.close()
+      const reopened = yield* connected(path, { readonly: true, now: T0 })
+      const [rows, events] = [yield* reopened.store.read, yield* reopened.store.events]
+      reopened.close()
+      expect(rows).toEqual(yield* memory.read)
+      expect(events).toEqual(yield* memory.events)
+      expect(fold(EMPTY, events)).toEqual(rows)
+      // The reasons the script gave survive the file: a decided guarantee, a deferral's dependency, a reopen's clear.
+      expect([...rows.commitments.values()].map((row) => [row.id, row.state, Option.map(row.reason, (reason) => reason.referent), row.unreasonedClose])).toEqual(
+        [...(yield* memory.read).commitments.values()].map((row) => [row.id, row.state, Option.map(row.reason, (reason) => reason.referent), row.unreasonedClose]),
       )
+    }),
+  ))
+
+Seed.effect("a not-asked row (unit C's) is a legal row this code does not read: its read and every write fail whole, naming the row, never guessing",
+  inScratch((dir) =>
+    Effect.gen(function* () {
+      const path = `${dir}/c.db`
+      const made = yield* connected(path, { readonly: false, now: T0 })
+      yield* made.store.run(add("kept"), { actor: ROOT, now: T0 })
+      made.close()
+      const raw = new Database(path, { strict: true })
+      raw.run(INSERT_CELL, ["asked", "decided", null, "why", null, "ask/q1", null])
       raw.close()
       const opened = yield* connected(path, { readonly: false, now: T0 })
-      yield* opened.store.run(Command.cases.lane.make({ run: "r1", unit: "new-unit", startHead: Option.some("a".repeat(40)), path: Option.some("/w/new-unit") }), { actor: ROOT, now: T0 })
+      const read = yield* Effect.flip(opened.store.read)
+      const write = yield* Effect.flip(opened.store.run(add("more"), { actor: ROOT, now: T0 }))
       opened.close()
-      const check = new Database(path, { readonly: true })
-      const version = check.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version
-      check.close()
-      expect([VERSION, version]).toEqual([MIGRATIONS.length, MIGRATIONS.length])
-      const again = yield* connected(path, { readonly: false, now: T0 })
-      const rows = (yield* again.store.read).commitments
-      expect([rows.get("old-unit")?.state, rows.get("old-unit")?.startHead, rows.get("old-unit")?.lanePath, rows.get("new-unit")?.startHead, rows.get("new-unit")?.lanePath]).toEqual([
-        "open",
-        Option.none(),
-        Option.none(),
-        Option.some("a".repeat(40)),
-        Option.some("/w/new-unit"),
+      expect([read.message, write._tag === "RecordFailed" ? write.message : write.reason]).toEqual([
+        "record read: commitment asked: its reason is not one this code reads (a class and a canonical referent)",
+        "record add: commitment asked: its reason is not one this code reads (a class and a canonical referent)",
       ])
-      again.close()
     }),
   ))
 

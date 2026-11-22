@@ -94,11 +94,66 @@ seeded("a subagent's commitments call is refused, and its follow_up makes one un
       const child = yield* run.world.session(WORK, { parentID: root })
       const refused = yield* run.probe(child, COMMITMENTS, three)
       expect([refused.error, refused.text]).toEqual([true, expect.stringContaining(PARENT_REFUSAL)])
-      const filed = yield* run.probe(child, FOLLOW_UP, { id: "f1", title: "a missing test", suggest_owner: "a" })
-      expect([filed.error, filed.text]).toEqual([false, "follow_up: filed f1, unowned; the root owns or decides it."])
+      yield* run.probe(root, COMMITMENTS, { action: "add", source_kind: "plan-part", source_ref: "plan.md:1", parts: [{ id: "base", title: "the base part" }] })
+      const waits = { reason_class: "dependency", referent: { kind: "commitment", id: "base" } }
+      const filed = yield* run.probe(child, FOLLOW_UP, { id: "f1", title: "a missing test", suggest_owner: "a", ...waits })
+      expect([filed.error, filed.text]).toEqual([false, "follow_up: filed f1, unowned, waiting on dependency commitment/base; the root owns or decides it."])
+      // A retry with the same key files nothing again; its key on another finding is refused.
+      const keyed = { title: "a missing test", key: "finding-1", ...waits }
+      const once = yield* run.probe(child, FOLLOW_UP, { id: "f2", ...keyed })
+      const again = yield* run.probe(child, FOLLOW_UP, { id: "f2", ...keyed })
+      const other = yield* run.probe(child, FOLLOW_UP, { id: "f3", ...keyed })
+      expect([once.error, again.text, other.error, other.text]).toEqual([false, "follow_up: f2 is filed already by this key; nothing filed again.", true, expect.stringContaining("this idempotency key filed another follow-up already")])
       const status = yield* run.probe(root, ORCHESTRATE, { action: "status" })
-      expect(sectionIn(status.text)).toContain("- unowned: f1")
-      expect(sectionIn(status.text)).not.toContain("- unowned: p1, p2, p3")
+      expect(sectionIn(status.text)).toContain("- unowned: base, f1, f2")
+    }),
+  ),
+)
+
+// The reasons at the plugin's tools (moved from the planner's public-red probes): no reason, no filing and no close; a
+// reason the plugin cannot check is refused by name. This host's evidence reader reads nothing (the simulated record),
+// so a receipt and a declaration are refused here; record-cli.test.ts proves them on real files.
+seeded("a worker cannot file a follow-up without a checked reason, nor the root close by prose alone", ({ seed, expect }) =>
+  onRecord(seed, (run) =>
+    Effect.gen(function* () {
+      const root = yield* run.world.session(WORK)
+      const child = yield* run.world.session(WORK, { parentID: root })
+      const bare = yield* run.probe(child, FOLLOW_UP, { id: "spare", title: "Retain status" })
+      expect([bare.error, bare.text.includes("reason")]).toEqual([true, true])
+      expect((yield* run.probe(root, COMMITMENTS, { action: "add", source_kind: "plan-part", source_ref: "plan-a", parts: [{ id: "delayed-piece", title: "Retain a result for retry", rank: "D" }] })).error).toBe(false)
+      const prose = yield* run.probe(root, COMMITMENTS, { action: "decide", id: "delayed-piece", why: "skip a check" })
+      expect([prose.error, prose.text.replace(/^Error: /, "")]).toEqual([true, "commitments: decide needs reason_class."])
+      const outcomes = yield* Effect.forEach(
+        [
+          [child, FOLLOW_UP, { id: "s1", title: "t", reason_class: "dependency", referent: { kind: "unit", id: "u1" } }],
+          [child, FOLLOW_UP, { id: "s2", title: "t", reason_class: "dependency", referent: { kind: "commitment", id: "nothing" } }],
+          [child, FOLLOW_UP, { id: "s3", title: "t", reason_class: "measured", referent: { kind: "receipt", path: "tmp/orchestrate/r1/x.json" } }],
+          [child, FOLLOW_UP, { id: "s4", title: "t", reason_class: "dependency", referent: { kind: "commitment", id: "delayed-piece" }, validated: true }],
+          [root, COMMITMENTS, { action: "decide", id: "delayed-piece", why: "x", reason_class: "measured", referent: { kind: "receipt", path: "tmp/orchestrate/r1/x.json" } }],
+          [root, COMMITMENTS, { action: "decide", id: "delayed-piece", why: "x", reason_class: "guarantee", referent: { kind: "invariant", id: "never-declared" } }],
+          [root, COMMITMENTS, { action: "decide", id: "delayed-piece", why: "x", reason_class: "guarantee", referent: { kind: "spec-item", id: "s1" } }],
+          [root, COMMITMENTS, { action: "defer", id: "delayed-piece", reason_class: "dependency", referent: { kind: "commitment", id: "delayed-piece" } }],
+          [root, COMMITMENTS, { action: "invariant", id: "one-writer", doc_path: "docs/record.md", anchor: "one-writer" }],
+          [child, COMMITMENTS, { action: "decide", id: "delayed-piece", why: "x", reason_class: "guarantee", referent: { kind: "invariant", id: "one-writer" } }],
+        ] as const,
+        ([session, tool, input]) => Effect.map(run.probe(session, tool, input), (probe) => [probe.error, probe.text.replace(/^Error: /, "")] as const),
+      )
+      expect(outcomes).toEqual([
+        [true, "follow_up: a unit referent is not available yet: it ships with hand-back-tools (unit D)"],
+        [true, 'commitments: the dependency "nothing" is no commitment of this repository\'s record'],
+        [true, "follow_up: this host reads no receipts"],
+        [true, expect.stringContaining("validated")],
+        [true, "commitments: a measurement orders work, it never closes it: decide takes a guarantee; defer takes a measurement"],
+        [true, expect.stringContaining("the invariant never-declared is not declared")],
+        [true, "commitments: a spec-item referent is not available yet: it ships with spec-items (unit C)"],
+        [true, "commitments: delayed-piece cannot wait on itself"],
+        [true, "commitments: this host reads no documents"],
+        [true, expect.stringContaining(PARENT_REFUSAL)],
+      ])
+      // Nothing of it was written: the row is open with no reason.
+      const listed = yield* run.probe(root, COMMITMENTS, { action: "list" })
+      expect(listed.text).toContain("delayed-piece [unowned] -: Retain a result for retry (plan-part plan-a; default)")
+      expect(listed.text).not.toContain("waits on")
     }),
   ),
 )

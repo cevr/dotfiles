@@ -3,7 +3,7 @@
 // `orchestrate status`, every land and the queue check say of the record). The plugin (cmd/orchestrate/server.ts) runs
 // the commands on the CommitmentRecord and reads the facts a standing needs (`factsOf`) at each call; nothing of a run
 // is kept between calls. Nothing here reads prose: every field is the call's own.
-import { Array as Arr, Effect, flow, Match, Option, Order, Predicate, Result, Schema } from "effect"
+import { Array as Arr, Effect, flow, Match, Option, Order, Predicate, Result, Schema, SchemaParser, SchemaTransformation } from "effect"
 import { toolInput } from "@dotfiles/decider/tool-input"
 import { redact } from "@dotfiles/opencode-digest/redact"
 import {
@@ -25,7 +25,8 @@ import {
   SOURCE_KINDS,
   type StoredEvent,
 } from "./record.ts"
-import { CommitmentRecord, type MainLine, type RecordFailed } from "./service.ts"
+import { CommitmentRecord, Evidence, type EvidenceRefused, type MainLine, type RecordFailed } from "./service.ts"
+import { dataOf, EVIDENCE_ROOT, lineOf, type Reason, REASON_CLASSES, type ReasonClass, type ReasonData, type ReceiptSeen, ReferentInput, reasonFrom } from "./reasons.ts"
 import { type Lane, lanesOf } from "./tools.ts"
 import { asked, type Facts, LISTED, ownersOf, type Standing, STANDINGS, standingOf, standingsOf, unroutedOf } from "./standing.ts"
 
@@ -36,7 +37,7 @@ export const DEFAULT_RUN = "default"
 /** The ids the section names of each standing, at most. */
 export const SECTION_IDS = 10
 
-export const ACTIONS = ["add", "assign", "order", "release", "decide", "reopen", "word", "route", "landed", "list", "history", "import"] as const
+export const ACTIONS = ["add", "assign", "order", "release", "decide", "defer", "reopen", "word", "route", "landed", "invariant", "list", "history", "import"] as const
 export type Action = (typeof ACTIONS)[number]
 
 const Part = Schema.Struct({
@@ -49,11 +50,27 @@ const Part = Schema.Struct({
   review_by: Schema.optional(Schema.String),
 })
 
-export const CommitmentsInput = toolInput(
+/**
+ * A tool input that refuses a key its struct does not take, where a plain one drops it: a caller's `validated: true` or
+ * any word of its own beside a reason is refused, never read as part of one (reasons.ts). Its JSON Schema is the struct's.
+ */
+const exactInput = <S extends Schema.Struct<Schema.Struct.Fields>>(struct: S) =>
+  Schema.declareConstructor<S["Type"], S["Encoded"]>()(
+    [toolInput(struct)],
+    ([codec]) =>
+      (input, _ast, options) =>
+        SchemaParser.decodeUnknownEffect(codec)(input, { ...options, onExcessProperty: "error" }),
+    {
+      expected: "object",
+      toCodecJson: () => Schema.link<S["Type"]>()(struct, SchemaTransformation.passthrough({ strict: false })),
+    },
+  )
+
+export const CommitmentsInput = exactInput(
   Schema.Struct({
     action: Schema.Literals(ACTIONS).annotate({
       description:
-        "add: N commitments from an approval or a plan, one per part (the call that records an owner's approval). assign: own or re-own one, with its waits and review-by time. order: start an owner's commitments; answers all its open ones. release: give one up. decide: close one by decision, with why. reopen: undo a decision. word: give a manual wait's word. route: answer a hand-back. landed: the commit on the default branch that holds one's work, when no land recorded it (a land by hand, another tool's). list, history: read. import: an Ergo register, table to table.",
+        "add: N commitments from an approval or a plan, one per part (the call that records an owner's approval). assign: own or re-own one, with its waits and review-by time. order: start an owner's commitments; answers all its open ones. release: give one up. decide: close one by decision, with why and a guarantee (reason_class guarantee, referent an invariant). defer: keep one open with why it waits (a dependency or a measurement); it closes nothing. reopen: undo a decision; its reason is cleared, its history kept. invariant: declare a named invariant of this repository (id, doc_path of a committed document, anchor), which a guarantee then names. word: give a manual wait's word. route: answer a hand-back. landed: the commit on the default branch that holds one's work, when no land recorded it (a land by hand, another tool's). list, history: read. import: an Ergo register, table to table.",
     }),
     run: Schema.optional(Schema.String).annotate({ description: `add, word, list: the run (default "${DEFAULT_RUN}").` }),
     source_kind: Schema.optional(Schema.Literals(SOURCE_KINDS)).annotate({ description: "add: where the commitments come from. owner-answer and owner-ask are the owner's: closing one by decision tells the owner." }),
@@ -73,6 +90,14 @@ export const CommitmentsInput = toolInput(
     review_by: Schema.optional(Schema.String).annotate({ description: "assign: when it is overdue if still open (ISO time; default 7 days)." }),
     ids: Schema.optional(Schema.Array(Schema.String)).annotate({ description: "order: the commitments to start." }),
     why: Schema.optional(Schema.String).annotate({ description: "decide: the reason, one line." }),
+    reason_class: Schema.optional(Schema.Literals(REASON_CLASSES)).annotate({
+      description: "decide, defer: guarantee (decide: a declared invariant the close rests on), dependency (defer: an open commitment it waits on), measured (defer: a receipt that orders it; never closes).",
+    }),
+    referent: Schema.optional(ReferentInput).annotate({
+      description: `decide, defer: what the reason points at, checked by the plugin: { kind: "invariant", id } | { kind: "commitment", id } | { kind: "receipt", path } (a receipt envelope under ${EVIDENCE_ROOT}/ of this checkout). spec-item, unit and owner-question are refused until their units ship.`,
+    }),
+    doc_path: Schema.optional(Schema.String).annotate({ description: "invariant: the document that states it, a path in this checkout committed at HEAD." }),
+    anchor: Schema.optional(Schema.String).annotate({ description: "invariant: its heading's anchor in that document (a slug)." }),
     word: Schema.optional(Schema.String).annotate({ description: "word: the word a manual wait names." }),
     hand_back: Schema.optional(Schema.Int).annotate({ description: "route: the hand-back's number." }),
     as: Schema.optional(Schema.Literals(["routed", "rejected"])).annotate({ description: "route: routed (acted on) or rejected." }),
@@ -93,11 +118,13 @@ export const FIELDS = {
   assign: ["id", "owner_lane", "owner_session", "after", "review_by"],
   order: ["owner_lane", "ids"],
   release: ["id"],
-  decide: ["id", "why"],
+  decide: ["id", "why", "reason_class", "referent"],
+  defer: ["id", "reason_class", "referent"],
   reopen: ["id"],
   word: ["run", "word"],
   route: ["hand_back", "as"],
   landed: ["id", "head"],
+  invariant: ["id", "doc_path", "anchor"],
   list: ["owner", "standing", "run", "age", "all"],
   history: ["id"],
   import: ["run", "from", "map"],
@@ -107,11 +134,13 @@ export const REQUIRED = {
   assign: ["id", "owner_lane"],
   order: ["owner_lane", "ids"],
   release: ["id"],
-  decide: ["id", "why"],
+  decide: ["id", "why", "reason_class", "referent"],
+  defer: ["id", "reason_class", "referent"],
   reopen: ["id"],
   word: ["word"],
   route: ["hand_back", "as"],
   landed: ["id", "head"],
+  invariant: ["id", "doc_path", "anchor"],
   list: [],
   history: ["id"],
   import: ["from", "map"],
@@ -134,12 +163,19 @@ export const COMMITMENTS_DESCRIPTION = [
   "The root's tool: a subagent files what it finds with follow_up instead.",
 ].join("\n")
 
-export const FollowUpInput = toolInput(
+export const FollowUpInput = exactInput(
   Schema.Struct({
     id: Schema.String.annotate({ description: "A slug for it, unique in the repository: letters, digits, ., _ and -." }),
     title: Schema.String.annotate({ description: "What is owed, one line of at most 200 characters." }),
     rank: Schema.optional(Schema.Literals(RANKS)).annotate({ description: "A (most) to D, only to sort." }),
+    reason_class: Schema.Literals(["dependency", "measured"]).annotate({
+      description: "Why it is not done now: dependency (it waits on an open commitment) or measured (a receipt orders it). Difficulty, effort and size are not reasons.",
+    }),
+    referent: ReferentInput.annotate({
+      description: `What the reason points at, checked by the plugin: { kind: "commitment", id } for a dependency, { kind: "receipt", path } (a receipt envelope under ${EVIDENCE_ROOT}/) for a measurement.`,
+    }),
     suggest_owner: Schema.optional(Schema.String).annotate({ description: "The lane you think should own it; the root decides." }),
+    key: Schema.optional(Schema.String).annotate({ description: "An idempotency key of your own for this filing (a slug): a retry with the same key files nothing again. Default: the call's id." }),
     run: Schema.optional(Schema.String).annotate({ description: `The run (default "${DEFAULT_RUN}").` }),
   }),
 )
@@ -204,14 +240,14 @@ const assignOf = (input: CommitmentsInput): Result.Result<Command, string> =>
   )
 
 /** A writing action's command for the record, or why the input does not make one; the record refuses what it does not take. */
-export const commandOf = (input: CommitmentsInput, action: Exclude<Action, "list" | "history" | "import" | "landed">): Result.Result<Command, string> => {
+export const commandOf = (input: CommitmentsInput, action: Exclude<Action, "list" | "history" | "import" | "landed" | "defer" | "invariant">): Result.Result<Command, string> => {
   const id = input.id ?? ""
   return Match.value(action).pipe(
     Match.when("add", () => addOf(input)),
     Match.when("assign", () => assignOf(input)),
     Match.when("order", () => Result.succeed(Command.cases.order.make({ ownerLane: input.owner_lane ?? "", ids: input.ids ?? [] }))),
     Match.when("release", () => Result.succeed(Command.cases.release.make({ id }))),
-    Match.when("decide", () => Result.succeed(Command.cases.decide.make({ id, why: input.why ?? "" }))),
+    Match.when("decide", () => Result.map(reasonOfInput(COMMITMENTS, input), (reason) => Command.cases.decide.make({ id, why: input.why ?? "", reason: dataOf(reason) }))),
     Match.when("reopen", () => Result.succeed(Command.cases.reopen.make({ id }))),
     Match.when("word", () => Result.succeed(Command.cases.word.make({ run: input.run ?? DEFAULT_RUN, word: input.word ?? "" }))),
     Match.when("route", () => Result.succeed(Command.cases.route.make({ handBack: input.hand_back ?? 0, as: input.as ?? "routed" }))),
@@ -219,14 +255,49 @@ export const commandOf = (input: CommitmentsInput, action: Exclude<Action, "list
   )
 }
 
+/** A call's `{ reason_class, referent }`, checked and canonicalised (reasons.ts `reasonFrom`), or why not; a call with neither has none. */
+const reasonOfInput = (tool: string, input: { readonly reason_class?: ReasonClass | undefined; readonly referent?: ReferentInput | undefined }): Result.Result<Reason, string> =>
+  Result.mapError(
+    Result.flatMap(
+      Result.fromOption(Option.all([Option.fromUndefinedOr(input.reason_class), Option.fromUndefinedOr(input.referent)]), () => "a reason names both reason_class and referent"),
+      ([reasonClass, referent]) => reasonFrom(reasonClass, referent),
+    ),
+    (why) => `${tool}: ${why}`,
+  )
+
+/** A reason the record keeps, and the receipt the evidence reader read when it is a measurement: never a caller's word. */
+export const observedReason = (tool: string, reason: Reason, checkout: string) =>
+  Effect.gen(function* () {
+    const referent = reason.referent
+    if (referent.kind !== "receipt") return { reason: dataOf(reason), observed: Option.none<ReceiptSeen>() } satisfies Observed
+    const evidence = yield* Evidence
+    const seen = yield* Effect.mapError(evidence.receipt(checkout, referent.path), (refused: EvidenceRefused) => `${tool}: ${refused.reason}`)
+    return { reason: dataOf(reason), observed: Option.some(seen) } satisfies Observed
+  })
+
+/** An idempotency key: a slug. */
+const KEY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/
+
 /** A worker's follow-up as the record's `add`: one unowned `follow-up` commitment, its source the call. */
-export const followUpCommandOf = (input: FollowUpInput, sessionID: string, callID: string): Command =>
+/** A reason as the record takes it: its data, and the receipt the evidence reader read for a measurement. */
+export interface Observed {
+  readonly reason: ReasonData
+  readonly observed: Option.Option<ReceiptSeen>
+}
+
+/**
+ * A worker's follow-up as the record's `add`: one unowned `follow-up` commitment, its source the session and the call's
+ * idempotency key (its `key`, else the call's id), so a retry with the same key files nothing again.
+ */
+export const followUpCommandOf = (input: FollowUpInput, sessionID: string, callID: string, reason: Observed): Command =>
   Command.cases.add.make({
     run: input.run ?? DEFAULT_RUN,
     sourceKind: "follow-up",
-    sourceRef: `${sessionID}:${callID}`,
+    sourceRef: `${sessionID}:${input.key ?? callID}`,
     suggestOwner: Option.fromUndefinedOr(input.suggest_owner),
     parts: [PartInput.make({ id: input.id, title: input.title, rank: Option.fromUndefinedOr(input.rank) })],
+    reason: Option.some(reason.reason),
+    observed: reason.observed,
   })
 
 // ── Facts ──
@@ -460,8 +531,22 @@ const rowLine = (snapshot: Snapshot, facts: Facts) => (row: Commitment): string 
     ...Option.toArray(Option.map(row.head, (head) => `claims ${head}`)),
   ]
   const known = Arr.match(lastKnown, { onEmpty: () => "", onNonEmpty: (each) => `; ${each.join(", ")}` })
-  return `${row.id} [${where}] ${owner}: ${row.title} (${row.sourceKind} ${row.sourceRef}; ${row.run})${review}${known}`
+  return `${row.id} [${where}] ${owner}: ${row.title} (${row.sourceKind} ${row.sourceRef}; ${row.run})${review}${known}${reasonPart(row)}`
 }
+
+/** A row's reason, or how a reasonless close was made: an import's is printed "historical, unclassified". */
+const reasonPart = (row: Commitment): string =>
+  Option.match(row.reason, {
+    onSome: (reason) => Match.value(row.state).pipe(
+      Match.when("decided", () => `; closed on ${lineOf(reason)}`),
+      Match.orElse(() => `; waits on ${lineOf(reason)}`),
+    ),
+    onNone: () =>
+      Option.match(row.unreasonedClose, {
+        onNone: () => "",
+        onSome: (close) => Match.value(close).pipe(Match.when("historical", () => "; historical, unclassified"), Match.orElse(() => "; placed in its parts")),
+      }),
+  })
 
 /** A row the list's filters keep. */
 const kept = (input: CommitmentsInput, snapshot: Snapshot, facts: Facts) => (row: Commitment): boolean =>
@@ -483,7 +568,16 @@ export const listAnswer = (input: CommitmentsInput, snapshot: Snapshot, facts: F
 const eventLine = (event: StoredEvent): string => {
   const states = Option.match(Option.all([event.fromState, event.toState]), { onNone: () => "", onSome: ([from, to]) => ` ${from} → ${to}` })
   const note = Arr.filter([` (${event.note})`], () => event.note !== "")
-  return `${event.seq} ${event.at} ${event.happening._tag}${states} by ${event.actor.role} ${event.actor.id}${note.join("")}`
+  // The reason the event carried: history keeps it after a reopen clears the row's.
+  const happened = event.happening
+  const reason = Match.value(happened).pipe(
+    Match.tag("decided", "deferred", (each) => Option.some(each.reason)),
+    Match.tag("promised", (each) => each.reason),
+    Match.tag("imported", (each) => Option.as(Option.liftPredicate(each.row.state, (state) => state === "decided"), "historical, unclassified")),
+    Match.orElse(() => Option.none<ReasonData | string>()),
+  )
+  const why = Option.match(reason, { onNone: () => "", onSome: (each) => (Predicate.isString(each) ? `; ${each}` : `; ${lineOf(each)}`) })
+  return `${event.seq} ${event.at} ${event.happening._tag}${states} by ${event.actor.role} ${event.actor.id}${note.join("")}${why}`
 }
 
 /** The history action's answer: every event of the commitment, oldest first. */
@@ -500,7 +594,8 @@ export const doneAnswer = (command: Command, events: ReadonlyArray<RecordEvent>,
   Match.value(command).pipe(
     Match.tag("add", (add) => {
       const unowned = add.parts.filter((part) => Option.isNone(part.ownerLane)).map((part) => part.id)
-      return `${COMMITMENTS}: added ${namesOf(add.parts.map((part) => part.id))}. Unowned until assigned: ${namesOf(unowned)}.`
+      const placed = idsOf(events, "placed").map((id) => ` ${id} is placed in them: closed, its parts carry it.`)
+      return `${COMMITMENTS}: added ${namesOf(add.parts.map((part) => part.id))}. Unowned until assigned: ${namesOf(unowned)}.${placed.join("")}`
     }),
     Match.tag("assign", (assign) =>
       Option.match(Option.fromUndefinedOr(snapshot.commitments.get(assign.id)), {
@@ -515,8 +610,16 @@ export const doneAnswer = (command: Command, events: ReadonlyArray<RecordEvent>,
     Match.tag("decide", (decide) => {
       const noticed = Option.exists(Option.fromUndefinedOr(snapshot.commitments.get(decide.id)), (row) => Option.isSome(row.noticeUntil))
       const told = Arr.filter([" The owner approved it: they are told, and can have it reopened."], () => noticed)
-      return `${COMMITMENTS}: ${decide.id} closed by decision.${told.join("")}`
+      return `${COMMITMENTS}: ${decide.id} closed by decision, ${lineOf(decide.reason)}.${told.join("")}`
     }),
+    Match.tag("defer", (defer) => `${COMMITMENTS}: ${defer.id} stays open, waiting on ${lineOf(defer.reason)}.`),
+    Match.tag("invariant", (invariant) =>
+      Option.match(Option.fromUndefinedOr(snapshot.invariants.get(invariant.id)), {
+        onNone: () => `${COMMITMENTS}: invariant ${invariant.id} not found.`,
+        onSome: (held) => `${COMMITMENTS}: invariant ${held.id} declared: ${held.docPath}#${held.anchor} at ${held.commit.slice(0, 12)}; a guarantee names it as { kind: "invariant", id: "${held.id}" }.`,
+      }),
+    ),
+    Match.tag("reopen", (reopen) => `${COMMITMENTS}: ${reopen.id} is open again and unowned; its reason is cleared, its history kept.`),
     Match.tag("word", (word) => `${COMMITMENTS}: word ${word.word} given in ${word.run}.`),
     Match.tag("route", (route) => `${COMMITMENTS}: hand-back ${route.handBack} ${route.as}.`),
     Match.orElse((other) => `${COMMITMENTS}: ${other._tag} done (changes: ${events.length}).`),
@@ -528,6 +631,8 @@ export const doneAnswer = (command: Command, events: ReadonlyArray<RecordEvent>,
 export interface Reads {
   readonly facts: (snapshot: Snapshot) => Effect.Effect<Facts>
   readonly register: (from: string, run: string, now: number) => Effect.Effect<{ readonly command: Command; readonly counts: string }, string>
+  /** The checkout the call runs in: where the evidence reader looks for a receipt or a declared document. */
+  readonly checkout: string
 }
 
 /** Why a record call failed, in its words. */
@@ -566,17 +671,37 @@ export const answerOf = (input: CommitmentsInput, actor: Actor, now: number, rea
       const done = yield* record.run(mapped.command, { actor: { id: map, role: "import" }, now })
       return `${COMMITMENTS}: imported ${imported(done.events)} rows into ${run}; the rest were held already. Counts out from in: ${mapped.counts}.`
     }
+    if (action === "defer") {
+      // The receipt a measurement names is read here, before the record's transaction; the record checks the rest inside it.
+      const reason = yield* Result.match(reasonOfInput(COMMITMENTS, input), { onFailure: (why) => Effect.fail(why), onSuccess: (each) => Effect.succeed(each) })
+      const seen = yield* observedReason(COMMITMENTS, reason, reads.checkout)
+      const command = Command.cases.defer.make({ id, reason: seen.reason, observed: seen.observed })
+      const done = yield* record.run(command, { actor, now })
+      return doneAnswer(command, done.events, done.snapshot)
+    }
+    if (action === "invariant") {
+      if (actor.role !== ROOT) return yield* Effect.fail(`${COMMITMENTS}: only the root declares an invariant`)
+      const evidence = yield* Evidence
+      const observed = yield* Effect.mapError(evidence.document(reads.checkout, input.doc_path ?? ""), (refused: EvidenceRefused) => `${COMMITMENTS}: ${refused.reason}`)
+      const command = Command.cases.invariant.make({ id, anchor: input.anchor ?? "", observed })
+      const done = yield* record.run(command, { actor, now })
+      return doneAnswer(command, done.events, done.snapshot)
+    }
     const command = yield* Result.match(commandOf(input, action), { onFailure: (why) => Effect.fail(why), onSuccess: (each) => Effect.succeed(each) })
     const done = yield* record.run(command, { actor, now })
     return doneAnswer(command, done.events, done.snapshot)
   }).pipe(Effect.map(redact), Effect.mapError((failed) => redact(whyOf(failed))))
 
 /** A `follow_up` call: one unowned follow-up commitment, by the calling session. */
-export const followUpOf = (input: FollowUpInput, actor: Actor, callID: string, now: number) =>
+export const followUpOf = (input: FollowUpInput, actor: Actor, callID: string, now: number, checkout: string) =>
   Effect.gen(function* () {
     const record = yield* CommitmentRecord
-    yield* record.run(followUpCommandOf(input, actor.id, callID), { actor, now })
-    return `${FOLLOW_UP}: filed ${input.id}, unowned; the root owns or decides it.`
+    if (Predicate.isNotUndefined(input.key) && !KEY.test(input.key)) return yield* Effect.fail(`${FOLLOW_UP}: the key is not a slug (letters, digits, ., _ and -, at most 80); the value is not repeated`)
+    const reason = yield* Result.match(reasonOfInput(FOLLOW_UP, input), { onFailure: (why) => Effect.fail(why), onSuccess: (each) => Effect.succeed(each) })
+    const seen = yield* observedReason(FOLLOW_UP, reason, checkout)
+    const done = yield* record.run(followUpCommandOf(input, actor.id, callID, seen), { actor, now })
+    if (done.events.length === 0) return `${FOLLOW_UP}: ${input.id} is filed already by this key; nothing filed again.`
+    return `${FOLLOW_UP}: filed ${input.id}, unowned, waiting on ${lineOf(seen.reason)}; the root owns or decides it.`
   }).pipe(Effect.map(redact), Effect.mapError((failed) => redact(whyOf(failed))))
 
 /** A lane's answer with `line` before its implementor's start, whose call and lane stay its last lines. */

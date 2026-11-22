@@ -4,7 +4,7 @@
  *
  *   bun cmd/orchestrate/record.ts <action> [--json '<fields>'] [--file <db>] [--checkout <dir>] [--actor <id>]
  *
- * `<action>` is a `commitments` action (add, assign, order, release, decide, reopen, word, route, list, history,
+ * `<action>` is a `commitments` action (add, assign, order, release, decide, defer, reopen, word, route, landed, invariant, list, history,
  * import), `follow_up` (a worker's: one unowned commitment), or `export` (every event, one JSON line each). `--json`
  * holds the action's fields as the tool takes them. `--file` is the record (default: this checkout's, under
  * `$XDG_STATE_HOME/opencode-orchestrate/`); list, history and export open it read-only. `--checkout` is the
@@ -14,6 +14,7 @@
  * With no lanes list here, no owner reads as gone: `orphaned` is the plugin's word (status, land, the queue check).
  */
 import { parseArgs } from "node:util"
+import * as NodeServices from "@effect/platform-node/NodeServices"
 import { Clock, Console, Effect, Layer, Match, Option, Schema } from "effect"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import * as Commitments from "@dotfiles/opencode-orchestrate/commitments-tool"
@@ -22,6 +23,7 @@ import type { Actor } from "@dotfiles/opencode-orchestrate/record"
 import { CommitmentRecord, MainLine } from "@dotfiles/opencode-orchestrate/service"
 import * as ErgoRegister from "@dotfiles/opencode-orchestrate/sqlite/ergo-register"
 import { platform } from "@dotfiles/opencode-orchestrate/node/platform"
+import * as Reasons from "@dotfiles/opencode-orchestrate/reasons"
 import * as SqliteRecord from "@dotfiles/opencode-orchestrate/sqlite/record"
 
 const USAGE = "usage: bun cmd/orchestrate/record.ts <action> [--json '<fields>'] [--file <db>] [--checkout <dir>] [--actor <id>]"
@@ -71,6 +73,7 @@ const readsOf = (checkout: string): Commitments.Reads => ({
       return yield* Commitments.factsOf(yield* MainLine, checkout, () => Effect.succeed(new Set<string>()), snapshot, now)
     }).pipe(Effect.provide(GitMainLine.layer)),
   register: ErgoRegister.registerReads,
+  checkout,
 })
 
 /** A `commitments` action by the root. */
@@ -87,7 +90,7 @@ const followUpCall = (call: Call) =>
   Effect.gen(function* () {
     const input = yield* Effect.mapError(decodeFollowUp(yield* fieldsOf(call)), (error) => new Refused({ message: `record: ${error.message}` }))
     const now = yield* Clock.currentTimeMillis
-    return yield* Effect.mapError(Commitments.followUpOf(input, { id: call.actor, role: "worker" }, `cli-${now}`, now), (message) => new Refused({ message }))
+    return yield* Effect.mapError(Commitments.followUpOf(input, { id: call.actor, role: "worker" }, `cli-${now}`, now, call.checkout), (message) => new Refused({ message }))
   })
 
 /** Every event, oldest first, one JSON line each. */
@@ -111,6 +114,12 @@ const fileOf = (call: Call) =>
     onNone: () => Effect.flatMap(SqliteRecord.keyOfCheckout(call.checkout), (key) => SqliteRecord.pathOf(Option.some(TuiDirs.dirs().state), key)),
   })
 
+/**
+ * The host this CLI runs on: its files, paths and processes (a process outside the plugin host composes them itself),
+ * and the plugin's digest. The CLI's platform alone: the server's graph never reaches it (server.test.ts).
+ */
+const HOST = Layer.mergeAll(NodeServices.layer, platform)
+
 /** The record `call` runs on: read-only for a read. */
 const recordOf = (call: Call) =>
   Layer.effect(
@@ -123,7 +132,7 @@ const recordOf = (call: Call) =>
       Effect.map((opened) => SqliteRecord.make(opened.db, opened.refusal)),
       Effect.mapError((failed) => new Refused({ message: failed.message })),
     ),
-  ).pipe(Layer.provide(platform))
+  ).pipe(Layer.merge(Reasons.evidenceLayer), Layer.provide(HOST))
 
 /** The output of one run, and its exit code. */
 export interface Ran {

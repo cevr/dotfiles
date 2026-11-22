@@ -5,6 +5,7 @@
 // the same rows (laws.ts). Nothing here reads a document: every field comes from a tool call's input.
 import { Array as Arr, DateTime, Effect, Match, Option, Order, Predicate, Result, Schema } from "effect"
 import { redact } from "@dotfiles/opencode-digest/redact"
+import { DocumentSeen, KINDS_OF, REASON_CLASSES, ReasonData, ReceiptSeen, referentOf, UNAVAILABLE } from "./reasons.ts"
 
 export const SOURCE_KINDS = ["owner-answer", "owner-ask", "assignment", "follow-up", "bug", "plan-part"] as const
 export type SourceKind = (typeof SOURCE_KINDS)[number]
@@ -24,8 +25,19 @@ export const VERDICTS = ["ready", "blocked", "accepted", "changes", "stuck", "do
 export type Verdict = (typeof VERDICTS)[number]
 export const ROUTINGS = ["unrouted", "routed", "rejected"] as const
 export type Routing = (typeof ROUTINGS)[number]
-export const SUBJECT_KINDS = ["commitment", "hand_back", "unit", "batch", "word", "notice"] as const
+export const SUBJECT_KINDS = ["commitment", "hand_back", "unit", "batch", "word", "notice", "invariant"] as const
 export type SubjectKind = (typeof SUBJECT_KINDS)[number]
+/**
+ * How a decided commitment was closed, one per decided row and none otherwise: `guarantee` (the root's decision with
+ * its checked reason), `not-asked` (unit C: the root's close of what no owner sentence asked, its referent `ask/<id>`),
+ * `placed` (the plugin's close of an owner-answer placeholder its parts cover) or `historical` (an import's close,
+ * unclassified). The SQLite file derives it from the row (its generated `close_kind`); `closeKindOf` is the same rule.
+ */
+export const CLOSE_KINDS = ["guarantee", "not-asked", "placed", "historical"] as const
+export type CloseKind = (typeof CLOSE_KINDS)[number]
+/** The closes with no reason: what the row keeps (`unreasoned_close`) to tell them apart. */
+export const UNREASONED_CLOSES = ["placed", "historical"] as const
+export type UnreasonedClose = (typeof UNREASONED_CLOSES)[number]
 
 /** A title, a quote and a pointer are one line of at most this many characters. */
 export const TEXT_MAX = 200
@@ -38,6 +50,8 @@ export const REVIEW_MS = 7 * DAY_MS
 export const NOTICE_MS = 7 * DAY_MS
 /** The owner of a commitment the root holds itself. */
 export const ROOT = "root"
+/** The run of a repository-wide event (an invariant's declaration): no run's, so it marks no session as acting in one. */
+export const REPOSITORY_RUN = "repository"
 
 /** An id: a slug, unique in the repository (`VET-ONE`, `digest-events.t4`). */
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/
@@ -84,6 +98,10 @@ export interface Commitment {
   readonly noticeBy: Option.Option<string>
   /** The closing session had no earlier event in its run: listed first, named so to the owner. */
   readonly noticeOutsideRun: boolean
+  /** Why it is not done now (a deferral, a follow-up's filing) or why it was closed: its checked reason, current; none for an ordinary open row and a reasonless close. */
+  readonly reason: Option.Option<ReasonData>
+  /** A close with no reason: the plugin's placeholder close or an import's historical one; none otherwise. */
+  readonly unreasonedClose: Option.Option<UnreasonedClose>
   readonly createdAt: string
   readonly updatedAt: string
   readonly after: ReadonlyArray<Prerequisite>
@@ -105,6 +123,17 @@ export interface HandBack {
   readonly routedBy: Option.Option<string>
 }
 
+/** An invariant the root declared: a named entry of the repository, its document as git held it at HEAD then. */
+export interface Invariant {
+  readonly id: string
+  readonly docPath: string
+  readonly anchor: string
+  readonly blob: string
+  readonly commit: string
+  readonly declaredAt: string
+  readonly declaredBy: string
+}
+
 /** A word the root gave in a run: it meets every manual wait of that run on it, then and later. */
 export interface Word {
   readonly run: string
@@ -120,9 +149,20 @@ export interface Snapshot {
   readonly words: ReadonlyMap<string, Word>
   /** Each actor and run it has an event in, by `actedKey(actor, run)`: who has acted in which run, folded from the history. */
   readonly acted: ReadonlySet<string>
+  /** The declared invariants, by id. */
+  readonly invariants: ReadonlyMap<string, Invariant>
 }
 
-export const EMPTY: Snapshot = { commitments: new Map(), handBacks: new Map(), words: new Map(), acted: new Set() }
+export const EMPTY: Snapshot = { commitments: new Map(), handBacks: new Map(), words: new Map(), acted: new Set(), invariants: new Map() }
+
+/** How a row was closed (`CLOSE_KINDS`), by the rule the file's generated `close_kind` column applies; none unless decided. */
+export const closeKindOf = (row: Pick<Commitment, "state" | "reason" | "unreasonedClose">): Option.Option<CloseKind> => {
+  if (row.state !== "decided") return Option.none()
+  return Option.match(row.reason, {
+    onSome: (reason) => Option.as(Option.liftPredicate(reason, (each) => each.reasonClass === "guarantee"), "guarantee" as const),
+    onNone: () => row.unreasonedClose,
+  })
+}
 
 export const actedKey = (actor: string, run: string): string => `${actor}\n${run}`
 
@@ -160,6 +200,16 @@ export const ImportedRow = Schema.Struct({
 })
 export interface ImportedRow extends Schema.Schema.Type<typeof ImportedRow> {}
 
+/**
+ * What a reason's referent was checked against, kept in the event (never a column): a receipt's hashes, exit, run and
+ * commit as the reader found them, or a declared invariant's document blob and the commit it was declared at.
+ */
+export const EvidenceData = Schema.TaggedUnion({
+  receipt: { receiptSha: Schema.String, outputSha: Schema.String, exit: Schema.Int, run: Schema.String, checkout: Schema.String },
+  invariant: { blob: Schema.String, commit: Schema.String },
+})
+export type EvidenceData = typeof EvidenceData.Type
+
 /** What happened, by its type (the event table's `type`), with the fields the fold copies (its `data`). */
 export const Happening = Schema.TaggedUnion({
   promised: {
@@ -171,15 +221,20 @@ export const Happening = Schema.TaggedUnion({
     part: Opt(Schema.String),
     rank: Opt(Schema.Literals(RANKS)),
     suggestOwner: Opt(Schema.String),
+    reason: Opt(ReasonData),
+    evidence: Opt(EvidenceData),
   },
+  deferred: { reason: ReasonData, evidence: Opt(EvidenceData) },
   assigned: { ownerLane: Schema.String, ownerSession: Opt(Schema.String), after: Schema.Array(AfterItem), reviewBy: Schema.String },
   ordered: {},
   released: {},
   laned: { startHead: Opt(Schema.String), path: Opt(Schema.String) },
   claimed: { head: Schema.String, handBack: Schema.Int },
   landed: { commit: Schema.String },
-  decided: { why: Schema.String, notice: Schema.Boolean, outsideRun: Opt(Schema.Boolean) },
+  decided: { why: Schema.String, notice: Schema.Boolean, outsideRun: Opt(Schema.Boolean), reason: ReasonData, evidence: Opt(EvidenceData) },
   reopened: { outsideRun: Opt(Schema.Boolean) },
+  /** An owner-answer placeholder closed by the plugin in the add that splits it into parts (its `plan`): `placed`. */
+  placed: { parts: Schema.Array(Schema.String) },
   woke: { root: Schema.String },
   seen: {},
   word_given: {},
@@ -196,6 +251,7 @@ export const Happening = Schema.TaggedUnion({
   rejected: {},
   imported: { row: ImportedRow },
   imported_history: {},
+  invariant_declared: { docPath: Schema.String, anchor: Schema.String, blob: Schema.String, commit: Schema.String },
 })
 export type Happening = typeof Happening.Type
 export type EventType = Happening["_tag"]
@@ -234,6 +290,7 @@ interface Draft {
   handBacks: Map<number, HandBack>
   words: Map<string, Word>
   acted: Set<string>
+  invariants: Map<string, Invariant>
 }
 
 const touched = (row: Commitment, at: string, change: Partial<Commitment>): Commitment => ({ ...row, ...change, updatedAt: at })
@@ -269,6 +326,8 @@ const promisedRow = (event: RecordEvent, happened: Extract<Happening, { _tag: "p
   noticeUntil: Option.none(),
   noticeBy: Option.none(),
   noticeOutsideRun: false,
+  reason: happened.reason,
+  unreasonedClose: Option.none(),
   createdAt: event.at,
   updatedAt: event.at,
 })
@@ -283,6 +342,9 @@ const importedRow = (event: RecordEvent, row: ImportedRow): Commitment => ({
   noticeUntil: Option.none(),
   noticeBy: Option.none(),
   noticeOutsideRun: false,
+  // An import's close is historical, unclassified: no reason is guessed from its notes.
+  reason: Option.none(),
+  unreasonedClose: Option.as(Option.liftPredicate(row.state, (state) => state === "decided"), "historical" as const),
   after: row.after.map((item) => ({ kind: item.kind, ref: item.ref, metAt: Option.none() })),
 })
 
@@ -293,6 +355,9 @@ const commitmentChange = (event: RecordEvent, draft: Draft) => (row: Commitment)
       promised: () => row,
       imported: () => row,
       imported_history: () => row,
+      invariant_declared: () => row,
+      deferred: (happened) => touched(row, event.at, { reason: Option.some(happened.reason) }),
+      placed: (happened) => touched(row, event.at, { state: "decided", decidedWhy: Option.some(`placed in its parts: ${happened.parts.join(", ")}`), reason: Option.none(), unreasonedClose: Option.some("placed" as const) }),
       assigned: (happened) =>
         touched(row, event.at, {
           ownerLane: Option.some(happened.ownerLane),
@@ -314,9 +379,11 @@ const commitmentChange = (event: RecordEvent, draft: Draft) => (row: Commitment)
           noticeUntil: Option.map(Option.liftPredicate(event.at, () => happened.notice), (at) => isoOf(msOf(at) + NOTICE_MS)),
           noticeBy: Option.as(Option.liftPredicate(event.at, () => happened.notice), event.actor.id),
           noticeOutsideRun: happened.notice && Option.contains(happened.outsideRun, true),
+          reason: Option.some(happened.reason),
+          unreasonedClose: Option.none(),
         }),
       reopened: () =>
-        touched(row, event.at, { ...UNOWNED, state: "open", head: Option.none(), landedCommit: Option.none(), decidedWhy: Option.none(), noticeUntil: Option.none(), noticeBy: Option.none(), noticeOutsideRun: false }),
+        touched(row, event.at, { ...UNOWNED, state: "open", head: Option.none(), landedCommit: Option.none(), decidedWhy: Option.none(), noticeUntil: Option.none(), noticeBy: Option.none(), noticeOutsideRun: false, reason: Option.none(), unreasonedClose: Option.none() }),
       woke: () => touched(row, event.at, { wokeAt: Option.some(event.at) }),
       seen: () => touched(row, event.at, { noticeUntil: Option.none(), noticeBy: Option.none(), noticeOutsideRun: false }),
       word_given: () => row,
@@ -368,9 +435,17 @@ const applyHandBack = (draft: Draft, event: RecordEvent): void => {
   )
 }
 
+/** A declared invariant: its entry, once (a declaration of an id held already changes nothing). */
+const applyInvariant = (draft: Draft, event: RecordEvent): void => {
+  const happened = event.happening
+  if (happened._tag !== "invariant_declared" || draft.invariants.has(event.subjectId)) return
+  draft.invariants.set(event.subjectId, { id: event.subjectId, docPath: happened.docPath, anchor: happened.anchor, blob: happened.blob, commit: happened.commit, declaredAt: event.at, declaredBy: event.actor.id })
+}
+
 const apply = (draft: Draft, event: RecordEvent): void => {
   draft.acted.add(actedKey(event.actor.id, event.run))
   Match.value(event.subjectKind).pipe(
+    Match.when("invariant", () => applyInvariant(draft, event)),
     Match.when("commitment", () => applyCommitment(draft, event)),
     Match.when("notice", () => applyCommitment(draft, event)),
     Match.when("word", () => applyWord(draft, event)),
@@ -381,7 +456,7 @@ const apply = (draft: Draft, event: RecordEvent): void => {
 
 /** The rows `events` fold `snapshot` into: total, it never fails, and an event about nothing known changes nothing. */
 export const fold = (snapshot: Snapshot, events: Iterable<RecordEvent>): Snapshot => {
-  const draft: Draft = { commitments: new Map(snapshot.commitments), handBacks: new Map(snapshot.handBacks), words: new Map(snapshot.words), acted: new Set(snapshot.acted) }
+  const draft: Draft = { commitments: new Map(snapshot.commitments), handBacks: new Map(snapshot.handBacks), words: new Map(snapshot.words), acted: new Set(snapshot.acted), invariants: new Map(snapshot.invariants) }
   for (const event of events) apply(draft, event)
   return draft
 }
@@ -413,11 +488,19 @@ export const Command = Schema.TaggedUnion({
     plan: Opt(Schema.String),
     suggestOwner: Opt(Schema.String),
     parts: Schema.Array(PartInput),
+    /** Why it is not done now: a worker's follow-up names one; a root's add may not. */
+    reason: Opt(ReasonData),
+    /** The receipt a measured reason names, as the evidence reader found it: never a caller's input. */
+    observed: Opt(ReceiptSeen),
   },
+  /** Keep an open commitment open, with why it waits: changes its standing's reason, never closes it. */
+  defer: { id: Schema.String, reason: ReasonData, observed: Opt(ReceiptSeen) },
   assign: { id: Schema.String, ownerLane: Schema.String, ownerSession: Opt(Schema.String), after: Schema.Array(AfterItem), reviewBy: Opt(Ms) },
   order: { ownerLane: Schema.String, ids: Schema.Array(Schema.String) },
   release: { id: Schema.String },
-  decide: { id: Schema.String, why: Schema.String },
+  decide: { id: Schema.String, why: Schema.String, reason: ReasonData },
+  /** A repository-local invariant the root declares, its document as the evidence reader found it in git. */
+  invariant: { id: Schema.String, anchor: Schema.String, observed: DocumentSeen },
   reopen: { id: Schema.String },
   word: { run: Schema.String, word: Schema.String },
   seen: { id: Schema.String },
@@ -495,9 +578,11 @@ type Held<A> = Result.Result<A, RecordRefused>
  * - `path`: one line of at most PATH_MAX holding no secret's shape; else refused.
  * - `literal`: one of the values its CHECK (or the event types) allows; else refused.
  * - `ref`: a wait's ref, by its kind: a head (commit-on-main), a slug (commitment-closed, manual) or a time (date).
+ * - `pointer`: a reason's referent, a canonical pointer (reasons.ts) holding no secret's shape; else refused.
+ * - `digest`: a SHA-256, 64 lowercase hex digits; else refused.
  * - `data`: the event's fields, each held by the column it folds to (or, kept only there, the kind it would take).
  */
-export const COLUMN_KINDS = ["free", "why", "note", "slug", "head", "time", "path", "literal", "ref", "data"] as const
+export const COLUMN_KINDS = ["free", "why", "note", "slug", "head", "time", "path", "literal", "ref", "data", "pointer", "digest"] as const
 export type ColumnKind = (typeof COLUMN_KINDS)[number]
 
 /**
@@ -531,6 +616,9 @@ export const COLUMNS = {
   "commitment.start_head": "head",
   "commitment.notice_by": "slug",
   "commitment.lane_path": "path",
+  "commitment.reason_class": "literal",
+  "commitment.referent": "pointer",
+  "commitment.unreasoned_close": "literal",
   "prerequisite.commitment_id": "slug",
   "prerequisite.kind": "literal",
   "prerequisite.ref": "ref",
@@ -563,11 +651,28 @@ export const COLUMNS = {
   "word.word": "slug",
   "word.given_at": "time",
   "word.given_by": "slug",
+  "invariant.id": "slug",
+  "invariant.doc_path": "path",
+  "invariant.anchor": "slug",
+  "invariant.blob": "head",
+  "invariant.commit_sha": "head",
+  "invariant.declared_at": "time",
+  "invariant.declared_by": "slug",
 } as const satisfies Record<string, ColumnKind>
 export type Column = keyof typeof COLUMNS
 
 /** A field kept only in an event's data (no column of its own), with the kind it is held to. */
-const DATA_ONLY = { "suggest_owner": "slug", "woke.root": "slug" } as const satisfies Record<string, ColumnKind>
+const DATA_ONLY = {
+  "suggest_owner": "slug",
+  "woke.root": "slug",
+  "evidence.receipt_sha": "digest",
+  "evidence.output_sha": "digest",
+  "evidence.run": "slug",
+  "evidence.checkout": "head",
+  "evidence.blob": "head",
+  "evidence.commit": "head",
+  "observed.path": "path",
+} as const satisfies Record<string, ColumnKind>
 type DataOnly = keyof typeof DATA_ONLY
 
 /** Each column's and data-only field's kind, by name. */
@@ -584,12 +689,15 @@ const LITERALS = new Map<string, ReadonlyArray<string>>([
   ["event.actor_role", ACTOR_ROLES],
   ["hand_back.verdict", VERDICTS],
   ["hand_back.routing", ROUTINGS],
+  ["commitment.reason_class", REASON_CLASSES],
+  ["commitment.unreasoned_close", UNREASONED_CLOSES],
 ])
 
 const SLUG_RULE = 'is not a slug (letters, digits, ".", "_", "-", at most 80, starting with a letter or digit)'
 const HEAD = /^[0-9a-f]{7,40}$/
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/
 const PATH = /^[^\n\r\0]+$/
+const DIGEST = /^[0-9a-f]{64}$/
 
 /** Whether `value` holds a secret's shape: the digest's redaction would change it. */
 const holdsSecret = (value: string): boolean => redact(value) !== value
@@ -600,6 +708,8 @@ const wordRefusal = (kind: ColumnKind, column: string, value: string): Option.Op
     Match.when("slug", () => firstOf([when(!ID.test(value), SLUG_RULE), when(holdsSecret(value), "holds a secret's shape")])),
     Match.when("head", () => when(!HEAD.test(value), "is not a commit (7 to 40 lowercase hex digits)")),
     Match.when("time", () => when(!ISO.test(value) || Number.isNaN(msOf(value)), "is not an ISO time")),
+    Match.when("pointer", () => firstOf([when(Option.isNone(referentOf(value)), "is not a canonical referent (invariant/<id>, commitment/<id>, receipt/<path>, …)"), when(holdsSecret(value), "holds a secret's shape")])),
+    Match.when("digest", () => when(!DIGEST.test(value), "is not a SHA-256 (64 lowercase hex digits)")),
     Match.when("path", () => firstOf([when(!PATH.test(value) || value.length > PATH_MAX, `is not one line of at most ${PATH_MAX} characters`), when(holdsSecret(value), "holds a secret's shape")])),
     Match.when("literal", () => {
       const values = Option.getOrElse(Option.fromUndefinedOr(LITERALS.get(column)), (): ReadonlyArray<string> => [])
@@ -676,6 +786,30 @@ const heldRow = (where: Where, row: ImportedRow): Held<ImportedRow> =>
     (fields) => ImportedRow.make({ ...row, title: fields.title, sourceRef: fields.sourceRef, quote: fields.quote, plan: fields.plan, part: fields.part, requestPath: fields.requestPath, decidedWhy: fields.decidedWhy }),
   )
 
+/** A reason, held as the row keeps it: its class a literal, its referent a canonical pointer. */
+const heldReason = (where: Where, reason: ReasonData): Held<ReasonData> =>
+  Result.map(Result.all([held(where, "commitment.reason_class", reason.reasonClass), held(where, "commitment.referent", reason.referent)]), () => reason)
+
+const heldReasonOpt = (where: Where, reason: Option.Option<ReasonData>): Held<Option.Option<ReasonData>> =>
+  Option.match(reason, { onNone: () => Result.succeed(Option.none()), onSome: (each) => Result.map(heldReason(where, each), Option.some) })
+
+/** What a referent was checked against, each field held by the kind it would take (data only). */
+const heldEvidence = (where: Where, evidence: Option.Option<EvidenceData>): Held<Option.Option<EvidenceData>> =>
+  Option.match(evidence, {
+    onNone: () => Result.succeed(Option.none()),
+    onSome: (each) =>
+      Result.map(
+        Match.value(each).pipe(
+          Match.tagsExhaustive({
+            receipt: (seen) =>
+              Result.all([held(where, "evidence.receipt_sha", seen.receiptSha), held(where, "evidence.output_sha", seen.outputSha), held(where, "evidence.run", seen.run), held(where, "evidence.checkout", seen.checkout)]),
+            invariant: (seen) => Result.all([held(where, "evidence.blob", seen.blob), held(where, "evidence.commit", seen.commit)]),
+          }),
+        ),
+        () => evidence,
+      ),
+  })
+
 /** Every field of what happened, each held by the column it folds to (`COLUMNS`), its free text redacted. */
 const heldHappening = (where: Where, happening: Happening): Held<Happening> =>
   Match.value(happening).pipe(
@@ -691,6 +825,8 @@ const heldHappening = (where: Where, happening: Happening): Held<Happening> =>
             part: heldOpt(where, "commitment.part", happened.part),
             rank: heldOpt(where, "commitment.rank", happened.rank),
             suggestOwner: heldOpt(where, "suggest_owner", happened.suggestOwner),
+            reason: heldReasonOpt(where, happened.reason),
+            evidence: heldEvidence(where, happened.evidence),
           }),
           (fields): Happening => Happening.cases.promised.make({ ...happened, title: fields.title, sourceRef: fields.sourceRef, quote: fields.quote, plan: fields.plan, part: fields.part }),
         ),
@@ -704,12 +840,20 @@ const heldHappening = (where: Where, happening: Happening): Held<Happening> =>
           ]),
           () => happening,
         ),
+      deferred: (happened) => Result.map(Result.all([heldReason(where, happened.reason), heldEvidence(where, happened.evidence)]), () => happening),
+      invariant_declared: (happened) =>
+        Result.map(
+          Result.all([held(where, "invariant.doc_path", happened.docPath), held(where, "invariant.anchor", happened.anchor), held(where, "invariant.blob", happened.blob), held(where, "invariant.commit_sha", happened.commit)]),
+          () => happening,
+        ),
+      placed: (happened) => Result.map(Result.all(happened.parts.map((part) => held(where, "commitment.id", part))), () => happening),
       ordered: () => Result.succeed(happening),
       released: () => Result.succeed(happening),
       laned: (happened) => Result.map(Result.all([heldOpt(where, "commitment.start_head", happened.startHead), heldOpt(where, "commitment.lane_path", happened.path)]), () => happening),
       claimed: (happened) => Result.map(held(where, "commitment.head", happened.head), () => happening),
       landed: (happened) => Result.map(held(where, "commitment.landed_commit", happened.commit), () => happening),
-      decided: (happened) => Result.map(held(where, "commitment.decided_why", happened.why), (why): Happening => Happening.cases.decided.make({ ...happened, why })),
+      decided: (happened) =>
+        Result.map(Result.all([held(where, "commitment.decided_why", happened.why), heldReason(where, happened.reason), heldEvidence(where, happened.evidence)]), ([why]): Happening => Happening.cases.decided.make({ ...happened, why })),
       reopened: () => Result.succeed(happening),
       woke: (happened) => Result.map(held(where, "woke.root", happened.root), () => happening),
       seen: () => Result.succeed(happening),
@@ -789,6 +933,9 @@ const event = (context: Context, run: string, subjectKind: SubjectKind, subjectI
 const onCommitment = (context: Context, row: Commitment, happening: Happening, to: Option.Option<State> = Option.none(), note = ""): RecordEvent =>
   event(context, row.run, "commitment", row.id, happening, [Option.some(row.state), Option.orElse(to, () => Option.some(row.state))], note)
 
+/** The plugin, as the actor of a placeholder's close: a lifecycle event with its own authority, never a caller's. */
+export const PLACER: Actor = { id: "orchestrate", role: "plugin" }
+
 const rootOnly = (context: Context, what: string): Option.Option<string> =>
   when(context.actor.role !== "root" && context.actor.role !== "plugin", `${what} is the root's: a ${context.actor.role} cannot`)
 
@@ -818,6 +965,76 @@ const reviewOf = (context: Context, reviewBy: Option.Option<number>): Result.Res
 const assignedEvent = (context: Context, row: Commitment, input: { readonly ownerLane: string; readonly ownerSession: Option.Option<string>; readonly after: ReadonlyArray<AfterItem>; readonly reviewBy: string }): RecordEvent =>
   onCommitment(context, row, Happening.cases.assigned.make({ ownerLane: input.ownerLane, ownerSession: input.ownerSession, after: uniqueAfter(input.after), reviewBy: input.reviewBy }))
 
+// ── reasons ──
+
+/** What a reason's check found: its evidence when its referent has any (an invariant's document, a receipt's hashes). */
+type Checked = Result.Result<Option.Option<EvidenceData>, string>
+
+/**
+ * Why `target` is no dependency of `self`: not an open commitment, `self` itself, or a chain (each open commitment
+ * waiting on the next by a dependency reason) that reaches a closed one or comes back to itself. Read on the snapshot
+ * the command is decided against, so inside the store's immediate transaction.
+ */
+const dependencyRefusal = (snapshot: Snapshot, self: Option.Option<string>, target: string): Option.Option<string> => {
+  if (Option.contains(self, target)) return Option.some(`${target} cannot wait on itself`)
+  const seen = new Set<string>(Option.toArray(self))
+  let at = target
+  for (;;) {
+    const row = snapshot.commitments.get(at)
+    if (Predicate.isUndefined(row)) return Option.some(`the dependency ${named(at)} is no commitment of this repository's record`)
+    if (row.state !== "open")
+      return Option.some(at === target ? `the dependency ${at} is ${row.state}, not open: a dependency names work still owed` : `the dependency ${target} waits through ${at}, which is ${row.state}: no path around a closed prerequisite`)
+    if (seen.has(at)) return Option.some(`the dependency ${target} waits on ${at} again: a cycle`)
+    seen.add(at)
+    const next = Option.flatMap(row.reason, (reason) => Option.filter(referentOf(reason.referent), (each) => reason.reasonClass === "dependency" && each.kind === "commitment"))
+    if (Option.isNone(next) || next.value.kind === "receipt") return Option.none()
+    if (Option.contains(self, next.value.id)) return Option.some(`the dependency ${target} waits on ${next.value.id}, the commitment itself: a cycle`)
+    at = next.value.id
+  }
+}
+
+/**
+ * A reason checked for `self` (the commitment it is given to; none for one an add makes): its pointer decodes, its class
+ * takes its kind, its kind has shipped, and what it points at holds now: a declared invariant, a dependency
+ * (`dependencyRefusal`), or the receipt the evidence reader read (`observed`, never a caller's word). Answers the
+ * evidence the event keeps, or why not.
+ */
+const reasonChecked = (snapshot: Snapshot, self: Option.Option<string>, reason: ReasonData, observed: Option.Option<ReceiptSeen>): Checked => {
+  // Its pointer at the boundary first: a secret's shape is refused naming the column, before any lookup names the value.
+  const bounded = heldReason("", reason)
+  if (Result.isFailure(bounded)) return Result.fail(bounded.failure.reason)
+  const referent = referentOf(reason.referent)
+  if (Option.isNone(referent)) return Result.fail("the referent is not a canonical pointer")
+  const kind = referent.value.kind
+  if (!KINDS_OF[reason.reasonClass].includes(kind)) return Result.fail(`a ${reason.reasonClass} reason takes a referent of kind ${KINDS_OF[reason.reasonClass].join(" or ")}; ${kind} is not one`)
+  const ships = UNAVAILABLE.get(kind)
+  if (Predicate.isNotUndefined(ships)) return Result.fail(`a ${kind} referent is not available yet: it ships with ${ships}`)
+  const pointed = referent.value
+  if (pointed.kind === "receipt")
+    return Option.match(
+      Option.filter(observed, (seen) => seen.path === pointed.path),
+      {
+        onNone: () => Result.fail("the receipt was not read by the evidence reader: a measured reason names a receipt the plugin reads"),
+        onSome: (seen) => Result.succeed(Option.some(EvidenceData.cases.receipt.make({ receiptSha: seen.receiptSha, outputSha: seen.outputSha, exit: seen.exit, run: seen.run, checkout: seen.checkout }))),
+      },
+    )
+  if (pointed.kind === "invariant")
+    return Option.match(Option.fromUndefinedOr(snapshot.invariants.get(pointed.id)), {
+      onNone: () => Result.fail(`the invariant ${pointed.id} is not declared: the root declares it first with commitments({ action: "invariant", id, doc_path, anchor })`),
+      onSome: (declared) => Result.succeed(Option.some(EvidenceData.cases.invariant.make({ blob: declared.blob, commit: declared.commit }))),
+    })
+  return Option.match(dependencyRefusal(snapshot, self, pointed.id), { onSome: (why) => Result.fail(why), onNone: () => Result.succeed(Option.none()) })
+}
+
+/**
+ * A follow-up whose part is held already, filed by the same session and idempotency key (its source): a retry, which
+ * records nothing again. Its title is not the key: two findings may share one.
+ */
+const isRetry = (snapshot: Snapshot, command: Extract<Command, { _tag: "add" }>): boolean =>
+  command.sourceKind === "follow-up" &&
+  command.parts.length > 0 &&
+  command.parts.every((part) => Option.exists(Option.fromUndefinedOr(snapshot.commitments.get(part.id)), (row) => row.sourceKind === command.sourceKind && row.sourceRef === command.sourceRef))
+
 const addRefusal = (snapshot: Snapshot, command: Extract<Command, { _tag: "add" }>, context: Context): Option.Option<string> => {
   const ids = command.parts.map((part) => part.id)
   const worker = context.actor.role === "worker"
@@ -825,6 +1042,13 @@ const addRefusal = (snapshot: Snapshot, command: Extract<Command, { _tag: "add" 
     when(command.parts.length === 0, "an add names at least one part"),
     tokenRefusal("the run", command.run),
     when(worker && !WORKER_KINDS.includes(command.sourceKind), `a worker files only ${WORKER_KINDS.join(" or ")}; ${command.sourceKind} is the root's`),
+    when(worker && Option.isNone(command.reason), "a follow-up names its reason: reason_class (dependency or measured) and its referent; difficulty is not one"),
+    when(
+      command.sourceKind === "follow-up" && [...snapshot.commitments.values()].some((row) => row.sourceKind === "follow-up" && row.sourceRef === command.sourceRef),
+      "this idempotency key filed another follow-up already: a new finding takes a new key",
+    ),
+    when(Option.exists(command.reason, (reason) => reason.reasonClass === "guarantee"), "a guarantee is a close's reason, not a filing's: file with a dependency or a measurement"),
+    Option.flatMap(command.reason, (reason) => Result.match(reasonChecked(snapshot, Option.none(), reason, command.observed), { onFailure: Option.some, onSuccess: () => Option.none() })),
     when(worker && command.parts.some((part) => Option.isSome(part.ownerLane)), "a worker files a follow-up unowned; suggest an owner instead"),
     when(Option.isSome(command.quote) && !OWNER_KINDS.includes(command.sourceKind), "a quote is the owner's words: only an owner-answer or owner-ask carries one"),
     firstOf(ids.map(idRefusal)),
@@ -835,7 +1059,7 @@ const addRefusal = (snapshot: Snapshot, command: Extract<Command, { _tag: "add" 
   ])
 }
 
-const promisedOf = (command: Extract<Command, { _tag: "add" }>, part: PartInput) =>
+const promisedOf = (command: Extract<Command, { _tag: "add" }>, part: PartInput, evidence: Option.Option<EvidenceData>) =>
   Happening.cases.promised.make({
     title: part.title,
     sourceKind: command.sourceKind,
@@ -845,14 +1069,21 @@ const promisedOf = (command: Extract<Command, { _tag: "add" }>, part: PartInput)
     part: part.part,
     rank: part.rank,
     suggestOwner: command.suggestOwner,
+    reason: command.reason,
+    evidence,
   })
 
 const decideAdd = (snapshot: Snapshot, command: Extract<Command, { _tag: "add" }>, context: Context): Decided => {
+  if (isRetry(snapshot, command)) return decided([])
   const refused = addRefusal(snapshot, command, context)
   if (Option.isSome(refused)) return refuse(refused.value)
+  const evidence = Option.getOrElse(
+    Option.flatMap(command.reason, (reason) => Result.getSuccess(reasonChecked(snapshot, Option.none(), reason, command.observed))),
+    () => Option.none<EvidenceData>(),
+  )
   const events: Array<RecordEvent> = []
   for (const part of command.parts) {
-    const promised = event(context, command.run, "commitment", part.id, promisedOf(command, part), [Option.none(), Option.some("open")])
+    const promised = event(context, command.run, "commitment", part.id, promisedOf(command, part, evidence), [Option.none(), Option.some("open")])
     events.push(promised)
     if (Option.isNone(part.ownerLane)) continue
     const review = reviewOf(context, part.reviewBy)
@@ -861,6 +1092,9 @@ const decideAdd = (snapshot: Snapshot, command: Extract<Command, { _tag: "add" }
     const row = Option.fromUndefinedOr(fold(snapshot, events).commitments.get(part.id))
     events.push(...Option.toArray(row).map((each) => assignedEvent(context, each, { ownerLane: lane, ownerSession: Option.none(), after: Option.getOrElse(part.after, () => []), reviewBy: review.success })))
   }
+  // The placeholder its parts split, closed by the plugin in this same transaction: `placed`, no notice, no reason.
+  const placeholder = Option.flatMap(command.plan, (plan) => Option.filter(openRow(snapshot, plan), (row) => row.sourceKind === "owner-answer"))
+  events.push(...Option.toArray(placeholder).map((row) => onCommitment({ ...context, actor: PLACER }, row, Happening.cases.placed.make({ parts: command.parts.map((part) => part.id) }), Option.some("decided"))))
   return decided(events)
 }
 
@@ -913,14 +1147,39 @@ const decideDecide = (snapshot: Snapshot, command: Extract<Command, { _tag: "dec
   const row = openRow(snapshot, command.id)
   if (Option.isNone(row)) return refuse(`${command.id} is not an open commitment`)
   const ownerSourced = isOwnerSourced(row.value)
+  // A close is the root's alone, with a guarantee: a measurement orders and a dependency waits, neither closes.
   const refused = firstOf([
-    when(ownerSourced && context.actor.role === "worker", "only the root closes what the owner approved"),
-    when(context.actor.role === "import" || context.actor.role === "owner", `a ${context.actor.role} does not decide`),
+    when(context.actor.role !== "root", `a close by decision is the root's: a ${context.actor.role} cannot decide`),
+    when(command.reason.reasonClass === "measured", "a measurement orders work, it never closes it: decide takes a guarantee; defer takes a measurement"),
+    when(command.reason.reasonClass === "dependency", "a dependency is work still owed: it never closes a commitment; defer it on the dependency instead"),
   ])
   if (Option.isSome(refused)) return refuse(refused.value)
+  const checked = reasonChecked(snapshot, Option.some(row.value.id), command.reason, Option.none())
+  if (Result.isFailure(checked)) return refuse(checked.failure)
   const why = command.why
   const outsideRun = Option.some(outsideRunOf(snapshot, row.value, context))
-  return decided([onCommitment(context, row.value, Happening.cases.decided.make({ why, notice: ownerSourced, outsideRun }), Option.some("decided"), why)])
+  return decided([onCommitment(context, row.value, Happening.cases.decided.make({ why, notice: ownerSourced, outsideRun, reason: command.reason, evidence: checked.success }), Option.some("decided"), why)])
+}
+
+/** `defer`: an open commitment kept open with why it waits (a dependency, a measurement, a guarantee it rests on). */
+const decideDefer = (snapshot: Snapshot, command: Extract<Command, { _tag: "defer" }>, context: Context): Decided => {
+  const row = openRow(snapshot, command.id)
+  const refused = firstOf([rootOnly(context, "deferring a commitment"), when(Option.isNone(row), `${command.id} is not an open commitment`)])
+  if (Option.isSome(refused) || Option.isNone(row)) return refuse(Option.getOrElse(refused, () => ""))
+  const checked = reasonChecked(snapshot, Option.some(row.value.id), command.reason, command.observed)
+  if (Result.isFailure(checked)) return refuse(checked.failure)
+  return decided([onCommitment(context, row.value, Happening.cases.deferred.make({ reason: command.reason, evidence: checked.success }))])
+}
+
+/** `invariant`: the root declares a named invariant, its document as git held it; an id names one document for good. */
+const decideInvariant = (snapshot: Snapshot, command: Extract<Command, { _tag: "invariant" }>, context: Context): Decided => {
+  const refused = firstOf([when(context.actor.role !== "root", `declaring an invariant is the root's: a ${context.actor.role} cannot`), idRefusal(command.id), idRefusal(command.anchor)])
+  if (Option.isSome(refused)) return refuse(refused.value)
+  const found = Option.fromUndefinedOr(snapshot.invariants.get(command.id))
+  const seen = command.observed
+  if (Option.exists(found, (held) => held.docPath === seen.path && held.anchor === command.anchor && held.blob === seen.blob)) return decided([])
+  if (Option.isSome(found)) return refuse(`the invariant ${command.id} is declared already, for another document or revision: a changed invariant takes a new id`)
+  return decided([event(context, REPOSITORY_RUN, "invariant", command.id, Happening.cases.invariant_declared.make({ docPath: seen.path, anchor: command.anchor, blob: seen.blob, commit: seen.commit }))])
 }
 
 const decideReopen = (snapshot: Snapshot, command: Extract<Command, { _tag: "reopen" }>, context: Context): Decided => {
@@ -1048,6 +1307,8 @@ export const decide = (snapshot: Snapshot, command: Exclude<Command, { _tag: "pa
       order: (each) => decideOrder(snapshot, each, context),
       release: (each) => decideRelease(snapshot, each, context),
       decide: (each) => decideDecide(snapshot, each, context),
+      defer: (each) => decideDefer(snapshot, each, context),
+      invariant: (each) => decideInvariant(snapshot, each, context),
       reopen: (each) => decideReopen(snapshot, each, context),
       seen: (each) => decideSeen(snapshot, each, context),
       word: (each) => decideWord(snapshot, each, context),

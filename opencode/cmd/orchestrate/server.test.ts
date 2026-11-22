@@ -5,9 +5,9 @@
 // windows. tests/orchestrate.test.ts and tests/prime-latch.test.ts run it in
 // OpenCode.
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { Clock, Effect, Fiber, Layer, Option, Queue, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { RESTART_NOTICE } from "@dotfiles/opencode-orchestrate/restart-hold"
@@ -2242,5 +2242,35 @@ describe("the options", () => {
       expect(message).toStartWith("dotfiles-opencode.orchestrate: invalid options: ")
       expect(message).toContain(`at ${path}`)
     }
+  })
+})
+
+describe("the server's runtime graph", () => {
+  const ROOT = join(import.meta.dir, "../..")
+  const scanners = { ts: new Bun.Transpiler({ loader: "ts" }), tsx: new Bun.Transpiler({ loader: "tsx" }) }
+  /** Every module `seed` reaches at runtime (type-only imports left out), through the workspace, by its path or package specifier. */
+  const reachOf = (seed: string): ReadonlySet<string> => {
+    const reached = new Set<string>()
+    const pending = [seed]
+    for (const file of pending)
+      for (const each of scanners[file.endsWith(".tsx") ? "tsx" : "ts"].scanImports(readFileSync(file, "utf8").replace(/^#!.*\n/, "\n"))) {
+        const target = each.path.startsWith(".") || each.path.startsWith("@dotfiles/") ? realpathSync(Bun.resolveSync(each.path, dirname(file))) : each.path
+        if (reached.has(target)) continue
+        reached.add(target)
+        if (target.startsWith("/") && !target.includes("/node_modules/") && /\.(ts|tsx)$/.test(target)) pending.push(target)
+      }
+    return reached
+  }
+
+  test("reaches no platform implementation and not the record CLI's composition: the host gives the plugin its files, paths and processes", () => {
+    const reached = reachOf(join(import.meta.dir, "server.ts"))
+    const forbidden = [...reached].filter((each) => each.startsWith("@effect/platform") || each === realpathSync(join(import.meta.dir, "record.ts")) || each === realpathSync(join(ROOT, "sim/host-services.ts")))
+    expect(forbidden).toEqual([])
+    // The walk is real: it reaches the record's store and its evidence reader.
+    expect([realpathSync(join(ROOT, "mods/orchestrate/sqlite/record.ts")), realpathSync(join(ROOT, "mods/orchestrate/reasons.ts"))].filter((each) => !reached.has(each))).toEqual([])
+  })
+
+  test("the record CLI composes that platform itself, so the walk would see one", () => {
+    expect([...reachOf(join(import.meta.dir, "record.ts"))].filter((each) => each.startsWith("@effect/platform-node"))).toEqual(["@effect/platform-node/NodeServices"])
   })
 })

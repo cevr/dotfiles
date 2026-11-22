@@ -1,7 +1,9 @@
 // The acceptance check of the commitment record, model-based: seeded sequences of approvals with N parts, reports'
 // follow-ups, assignments, re-owning, orders to an owner, hand-backs with and without a root, restarts, compactions
 // (the checkpoint read), triggers turning true (a commit on the default branch, another commitment closing, a date, the
-// root's word), lanes ending, decisions and reopenings, against the reference model (record-model.ts) and against the
+// root's word), lanes ending, decisions and reopenings, follow-ups, deferrals and invariants with their reasons (a
+// dependency held, closed or a ghost, a receipt found or lost, a document committed, edited or never there, a kind not
+// shipped), against the reference model (record-model.ts) and against the
 // test's own bookkeeping of the invariant:
 //
 //   Every open commitment is at all times in exactly one standing: held (owned by a living owner, with a start
@@ -12,26 +14,28 @@
 //
 // Run: bun test cmd/orchestrate/record-model.sim.test.ts                  (the built record: SQLite on a scratch file)
 //      SUBJECT=model bun test …         (the test checking itself: green)
-//      SUBJECT=wakes-twice bun test …   (a mutant: red; record-subject.ts names the five)
+//      SUBJECT=wakes-twice bun test …   (a mutant: red; record-subject.ts names the nine)
 //      SIM_SEED=<n> replays one seed.
 // Moved from the planner's acceptance/record-model.test.ts: the generator rewritten within the effect-debt rules on the
 // seed runner's generator, the assertions the same.
-import { Array as Arr, Config, Effect, Option, type Random } from "effect"
+import { Array as Arr, Config, Effect, Layer, Option, type Random } from "effect"
 import { below, generator } from "../../sim/runtime.ts"
 import * as Seed from "../../sim/seed.ts"
-import { platform } from "@dotfiles/opencode-orchestrate/node/platform"
+import { platform as ownPlatform } from "@dotfiles/opencode-orchestrate/node/platform"
+import { hostServices } from "../../sim/host-services.ts"
 import * as SqliteRecord from "@dotfiles/opencode-orchestrate/sqlite/record"
 import { scratch } from "../../tests/scratch.ts"
-import { type Answer, type Happened, makeModel, okOf, type State, type Subject, type Trigger, type World } from "./record-model.ts"
+import { type Answer, type Happened, makeModel, okOf, type Reason, type State, type Subject, type Trigger, type World } from "./record-model.ts"
 import { type Opened, SUBJECTS } from "./record-subject.ts"
 
 const FILE = "cmd/orchestrate/record-model.sim.test.ts"
 const { seeded } = Seed.runner(FILE)
 
-const STEPS = 90
+const STEPS = 120
 const OWNERS: Arr.NonEmptyReadonlyArray<string> = ["L1", "L2", "L3", "root"]
 const LANES: Arr.NonEmptyReadonlyArray<string> = ["L1", "L2", "L3"]
 const WORDS: Arr.NonEmptyReadonlyArray<string> = ["w1", "w2"]
+const INVARIANTS: Arr.NonEmptyReadonlyArray<string> = ["i1", "i2", "i3"]
 const DAY = 86_400_000
 
 /** `SUBJECT`: the subject the run drives; the built record when unset. */
@@ -48,7 +52,10 @@ interface Books {
   readonly woken: Set<string>
   readonly commits: Array<string>
   readonly handBacks: Array<string>
-  readonly counts: { roots: number; minted: number; step: number }
+  /** Every receipt path made, found or lost since; every follow-up key used. */
+  readonly receipts: Array<string>
+  readonly keys: Array<string>
+  readonly counts: { roots: number; minted: number; step: number; reasoned: number }
 }
 
 interface Run {
@@ -131,6 +138,16 @@ const release = (run: Run) =>
     if ("ok" in got) bump(run, id)
   })
 
+/** A reason as a caller gives one: of every class and kind, its target held, closed, lost, stale or never there. */
+const reasonOf = (run: Run): Reason => {
+  const kind = pick(run, ["guarantee", "guarantee", "dependency", "dependency", "measured", "unshipped"] as const)
+  if (kind === "guarantee") return { class: "guarantee", ref: `invariant/${pick(run, INVARIANTS)}` }
+  if (kind === "unshipped") return { class: pick(run, ["guarantee", "dependency"] as const), ref: pick(run, ["spec-item/s1", "unit/u1", "owner-question/q1"] as const) }
+  if (kind === "dependency") return { class: "dependency", ref: `commitment/${Arr.isReadonlyArrayNonEmpty(run.books.promised) && next(run) < 0.9 ? pick(run, run.books.promised) : "ghost"}` }
+  const known = run.books.receipts
+  return { class: "measured", ref: `receipt/${Arr.isReadonlyArrayNonEmpty(known) && next(run) < 0.8 ? pick(run, known) : "tmp/orchestrate/r1/never.json"}` }
+}
+
 const whyOf = (run: Run) => {
   if (next(run) < 0.15) return " "
   return "superseded"
@@ -138,11 +155,52 @@ const whyOf = (run: Run) => {
 
 const decide = (run: Run) =>
   withPick(run, run.books.promised, (id) => {
-    const input = { id, why: whyOf(run), by: "someone", role: pick(run, ["root", "root", "worker"] as const) }
+    const input = { id, why: whyOf(run), by: "someone", role: pick(run, ["root", "root", "worker"] as const), reason: reasonOf(run) }
     const got = subjectOf(run).decide(input)
     same(run, got, run.reference.decide(input), "decide")
-    if ("ok" in got) run.books.decided.add(id)
+    if (!("ok" in got)) return
+    run.books.decided.add(id)
+    run.books.counts.reasoned += 1
   })
+
+/** The root (or, refused, a worker) declares an invariant: committed or not, at the revision it was declared or edited since. */
+const declare = (run: Run) => {
+  const input = { id: pick(run, INVARIANTS), by: "root-1", role: pick(run, ["root", "root", "root", "worker"] as const) }
+  same(run, subjectOf(run).declare(input), run.reference.declare(input), "declare")
+}
+
+/** A worker files a follow-up: a new finding, a retry of its last (same key, same id), or its key on another id. */
+const followUp = (run: Run) => {
+  const retry = Arr.isReadonlyArrayNonEmpty(run.books.keys) && next(run) < 0.25
+  const key = retry ? pick(run, run.books.keys) : `k${run.books.keys.length + 1}`
+  // A key files `f-<key>`: a retry names it again, or (refused) names another id.
+  const id = !retry || next(run) < 0.6 ? `f-${key}` : `f${++run.books.counts.minted}`
+  const input = { id, key, by: "worker-1", reason: reasonOf(run) }
+  const got = subjectOf(run).followUp(input)
+  same(run, got, run.reference.followUp(input), "followUp")
+  if (!retry) run.books.keys.push(key)
+  if (!("ok" in got) || run.books.promised.includes(input.id)) return
+  run.books.promised.push(input.id)
+  run.books.counts.reasoned += 1
+}
+
+/** The root keeps an open (or, refused, a closed) commitment waiting on a reason. */
+const defer = (run: Run) =>
+  withPick(run, run.books.promised, (id) => {
+    const input = { id, by: "root-1", reason: reasonOf(run) }
+    const got = subjectOf(run).defer(input)
+    same(run, got, run.reference.defer(input), "defer")
+    if ("ok" in got) run.books.counts.reasoned += 1
+  })
+
+// The world's evidence moves: an invariant's document committed or edited, a receipt written or lost.
+const commitDocument = (run: Run) => void run.world.documents.set(pick(run, INVARIANTS), (++run.books.counts.minted).toString(16).padStart(40, "0"))
+const receiptMade = (run: Run) => {
+  const path = `tmp/orchestrate/r1/r${run.books.receipts.length + 1}.json`
+  run.books.receipts.push(path)
+  run.world.receipts.add(path)
+}
+const receiptLost = (run: Run) => withPick(run, [...run.world.receipts], (path) => void run.world.receipts.delete(path))
 
 const reopen = (run: Run) =>
   withPick(run, [...run.books.decided], (id) => {
@@ -195,7 +253,10 @@ const rootMoves = (run: Run) => {
   else run.world.root = newRoot(run)
 }
 
-const observed = (subject: Subject) => ({ check: subject.check(), checkpoint: subject.checkpoint(), notices: subject.notices() })
+/** Each commitment's reason, close kind and history (with each event's reason), by id. */
+const reasonsOf = (subject: Subject) => subject.ids().map((id) => ({ id, reason: subject.reason(id), closeKind: subject.closeKind(id), history: subject.history(id) }))
+
+const observed = (subject: Subject) => ({ check: subject.check(), checkpoint: subject.checkpoint(), notices: subject.notices(), reasons: reasonsOf(subject) })
 
 /** A server or kernel restart: nothing carried in memory. */
 const restart = (run: Run) => {
@@ -227,6 +288,12 @@ const COMMANDS: Arr.NonEmptyReadonlyArray<readonly [number, (run: Run) => void]>
   [4, rootMoves],
   [6, restart],
   [3, seen],
+  [4, declare],
+  [6, followUp],
+  [5, defer],
+  [2, commitDocument],
+  [3, receiptMade],
+  [1, receiptLost],
 ]
 const TOTAL = COMMANDS.reduce((sum, [weight]) => sum + weight, 0)
 
@@ -286,6 +353,8 @@ const compared = (run: Run) => {
   run.expect({ step, check }).toEqual({ step, check: run.reference.check() })
   run.expect({ step, checkpoint: subject.checkpoint() }).toEqual({ step, checkpoint: run.reference.checkpoint() })
   run.expect({ step, notices: subject.notices() }).toEqual({ step, notices: run.reference.notices() })
+  // Every reason, close kind and history the same, each event's reason kept after a reopen clears the row's.
+  run.expect({ step, reasons: reasonsOf(subject) }).toEqual({ step, reasons: reasonsOf(run.reference) })
   const kept = "nothing promised disappears"
   run.expect({ step, what: kept, ids: subject.ids() }).toEqual({ step, what: kept, ids: [...run.books.promised].sort() })
   const one = "each open commitment has exactly one standing"
@@ -301,9 +370,9 @@ const compared = (run: Run) => {
 }
 
 const runSeed = (seed: number, expect: Seed.Seeded["expect"], open: (world: World) => Opened) => {
-  const world: World = { now: 1_000_000, main: new Set(), alive: new Set(LANES), root: Option.some("root-1"), words: new Set() }
+  const world: World = { now: 1_000_000, main: new Set(), alive: new Set(LANES), root: Option.some("root-1"), words: new Set(), documents: new Map([["i1", "1".repeat(40)]]), receipts: new Set() }
   const opened = open(world)
-  const books: Books = { promised: [], claimed: new Map(), decided: new Set(), epoch: new Map(), woken: new Set(), commits: [], handBacks: [], counts: { roots: 1, minted: 0, step: 0 } }
+  const books: Books = { promised: [], claimed: new Map(), decided: new Set(), epoch: new Map(), woken: new Set(), commits: [], handBacks: [], receipts: [], keys: [], counts: { roots: 1, minted: 0, step: 0, reasoned: 0 } }
   const run: Run = { world, random: generator(seed), expect, opened, held: { subject: opened.subject }, reference: makeModel(world), books }
   for (books.counts.step = 0; books.counts.step < STEPS; books.counts.step += 1) {
     commandOf(run)(run)
@@ -313,6 +382,8 @@ const runSeed = (seed: number, expect: Seed.Seeded["expect"], open: (world: Worl
   opened.close()
   // The generator did generate: a run that promises nothing proves nothing.
   expect(books.promised.length).toBeGreaterThan(5)
+  // And it gave reasons that held: a follow-up filed, a deferral or a decision taken.
+  expect(books.counts.reasoned).toBeGreaterThan(0)
 }
 
 seeded("no commitment disappears: every open one is held or listed, through restarts, re-orders, hand-backs and triggers", ({ seed, expect }) =>
@@ -327,5 +398,5 @@ seeded("no commitment disappears: every open one is held or listed, through rest
       (dir) => Effect.sync(() => runSeed(seed, expect, (world) => make(`${dir.path}/record.db`, world))),
       (dir) => Effect.sync(() => dir[Symbol.dispose]()),
     )
-  }).pipe(Effect.provide(platform)),
+  }).pipe(Effect.provide(Layer.mergeAll(hostServices, ownPlatform))),
 )

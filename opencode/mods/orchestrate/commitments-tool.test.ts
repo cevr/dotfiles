@@ -27,6 +27,9 @@ const T0 = Date.parse("2026-11-22T10:00:00.000Z")
 const ROOT: Actor = { id: "ses_root", role: "root" }
 const WORKER: Actor = { id: "ses_worker", role: "worker" }
 const facts: Facts = { now: T0, onMain: new Set(), gone: new Set() }
+/** The record with the invariant its decisions rest on declared, and a decision's guarantee on it. */
+const DECLARED = fold(EMPTY, Result.getOrThrow(decideCommand(EMPTY, Command.cases.invariant.make({ id: "one-writer", anchor: "one-writer", observed: { path: "docs/record.md", blob: "b".repeat(40), commit: "c".repeat(40) } }), { actor: ROOT, now: T0 })))
+const GUARANTEED = { reason_class: "guarantee", referent: { kind: "invariant", id: "one-writer" } } as const
 
 type Writing = Parameters<typeof commandOf>[1]
 /** The command a call makes; a test's call always makes one. */
@@ -43,7 +46,7 @@ const played = (commands: ReadonlyArray<Command>, actor: Actor = ROOT): Played =
       const events = Result.getOrThrow(decideCommand(held.snapshot, command, { actor, now: T0 + at * 1000 }))
       return { snapshot: fold(held.snapshot, events), events: [...held.events, ...events] }
     },
-    { snapshot: EMPTY, events: [] },
+    { snapshot: DECLARED, events: [] },
   )
 const stored = (events: ReadonlyArray<RecordEvent>): ReadonlyArray<StoredEvent> => events.map((event, at) => ({ ...event, seq: at + 1 }))
 
@@ -67,8 +70,11 @@ describe("commandOf", () => {
   })
 
   test("a worker's follow-up is one unowned follow-up commitment, sourced to its call, with the owner it suggests", () => {
-    const command = followUpCommandOf({ id: "f1", title: "a missing test", suggest_owner: "u2" }, "ses_worker", "call_9")
-    const { snapshot, events } = played([command], WORKER)
+    const input = { id: "f1", title: "a missing test", suggest_owner: "u2", reason_class: "dependency", referent: { kind: "commitment", id: "p1" } } as const
+    const command = followUpCommandOf(input, "ses_worker", "call_9", { reason: { reasonClass: "dependency", referent: "commitment/p1" }, observed: Option.none() })
+    const before = played([add(["p1"])])
+    const events = Result.getOrThrow(decideCommand(before.snapshot, command, { actor: WORKER, now: T0 }))
+    const snapshot = fold(before.snapshot, events)
     const row = Option.fromUndefinedOr(snapshot.commitments.get("f1"))
     expect(Option.map(row, (each) => [each.sourceKind, each.sourceRef, each.ownerLane, each.state])).toEqual(Option.some(["follow-up", "ses_worker:call_9", Option.none(), "open"]))
     // The suggestion is the promise's own field: the event keeps it; the row (Ergo's columns) has none.
@@ -96,9 +102,9 @@ describe("the answers", () => {
   })
 
   test("a root's decision on what the owner approved says the owner is told; history lists each event", () => {
-    const decide = commandIn({ action: "decide", id: "o1", why: "not needed" })
+    const decide = commandIn({ action: "decide", id: "o1", why: "not needed", ...GUARANTEED })
     const { snapshot, events } = played([add(["o1"], "owner-answer"), decide])
-    expect(doneAnswer(decide, events.slice(1), snapshot)).toBe("commitments: o1 closed by decision. The owner approved it: they are told, and can have it reopened.")
+    expect(doneAnswer(decide, events.slice(1), snapshot)).toBe("commitments: o1 closed by decision, guarantee invariant/one-writer. The owner approved it: they are told, and can have it reopened.")
     const history = historyAnswer("o1", stored(events)).split("\n")
     expect(history.slice(1).map((line) => line.split(" ").slice(2, 7).join(" "))).toEqual(["promised by root ses_root", "decided open → decided by"])
     expect(historyAnswer("nope", [])).toBe("commitments: nope has no history: no such commitment.")
@@ -121,15 +127,15 @@ describe("the section", () => {
     const [rootA, otherC]: ReadonlyArray<Actor> = [{ id: "ses_a", role: "root" }, { id: "ses_c", role: "root" }]
     const steps: ReadonlyArray<readonly [Command, Actor]> = [
       [add(["own-1", "own-2"], "owner-answer"), rootA],
-      [commandIn({ action: "decide", id: "own-2", why: "done another way" }), otherC],
-      [commandIn({ action: "decide", id: "own-1", why: "folded into own-2" }), rootA],
+      [commandIn({ action: "decide", id: "own-2", why: "done another way", ...GUARANTEED }), otherC],
+      [commandIn({ action: "decide", id: "own-1", why: "folded into own-2", ...GUARANTEED }), rootA],
     ]
     const after = steps.reduce(
       (held: Played, [command, actor], at) => {
         const events = Result.getOrThrow(decideCommand(held.snapshot, command, { actor, now: T0 + at * 1000 }))
         return { snapshot: fold(held.snapshot, events), events: [...held.events, ...events] }
       },
-      { snapshot: EMPTY, events: [] },
+      { snapshot: DECLARED, events: [] },
     )
     const flags = after.events.flatMap((event) => Match.value(event.happening).pipe(Match.tag("decided", (happened) => [[event.subjectId, event.actor.id, happened.outsideRun]]), Match.orElse(() => [])))
     expect(flags).toEqual([
@@ -142,7 +148,7 @@ describe("the section", () => {
     expect(reopened.flatMap((event) => Match.value(event.happening).pipe(Match.tag("reopened", (happened) => [happened.outsideRun]), Match.orElse(() => [])))).toEqual([Option.some(false)])
     // History is append-only: C reopens own-2 and decides it again, unflagged now (it has acted in the run); the first,
     // flagged close stays in the history as written.
-    const again = [commandIn({ action: "reopen", id: "own-2" }), commandIn({ action: "decide", id: "own-2", why: "done another way, again" })].reduce(
+    const again = [commandIn({ action: "reopen", id: "own-2" }), commandIn({ action: "decide", id: "own-2", why: "done another way, again", ...GUARANTEED })].reduce(
       (held: Played, command, at) => {
         const events = Result.getOrThrow(decideCommand(held.snapshot, command, { actor: otherC, now: T0 + 10_000 + at * 1000 }))
         return { snapshot: fold(held.snapshot, events), events: [...held.events, ...events] }
@@ -160,7 +166,7 @@ describe("the section", () => {
 
   test("the notices line lists at most ten, then how many more and the call that lists them", () => {
     const ids = Arr.makeBy(25, (at) => `n${String(at + 1).padStart(2, "0")}`)
-    const closed = played([add(ids, "owner-answer"), ...ids.map((id) => commandIn({ action: "decide", id, why: "not needed" }))])
+    const closed = played([add(ids, "owner-answer"), ...ids.map((id) => commandIn({ action: "decide", id, why: "not needed", ...GUARANTEED }))])
     const lines = sectionOf(listedOf(closed.snapshot, facts))
     expect(lines.at(-1)).toBe(
       `- closed by decision, not yet seen by the owner: ${ids
@@ -181,9 +187,9 @@ describe("the section", () => {
         Command.cases.hand_back.make({ run: "default", ownerLane: `L${at % 7}`, role: "implementor", session: "ses_worker", verdict: "ready", claims: [] }),
         plugin,
       ]),
-      ...ids.filter((_, at) => at % 100 === 1).map((id): readonly [Command, Actor] => [commandIn({ action: "decide", id, why: "not needed" }), ROOT]),
+      ...ids.filter((_, at) => at % 100 === 1).map((id): readonly [Command, Actor] => [commandIn({ action: "decide", id, why: "not needed", ...GUARANTEED }), ROOT]),
     ]
-    const after = steps.reduce((held, [command, actor], at) => fold(held, Result.getOrThrow(decideCommand(held, command, { actor, now: T0 + at }))), EMPTY)
+    const after = steps.reduce((held, [command, actor], at) => fold(held, Result.getOrThrow(decideCommand(held, command, { actor, now: T0 + at }))), DECLARED)
     const lines = sectionOf(listedOf(after, { ...facts, gone: new Set(["L1", "L2"]) }))
     expect(lines.length).toBeLessThanOrEqual(8)
     expect(lines.filter((line) => line.length > 800)).toEqual([])

@@ -5,7 +5,8 @@
 // snapshot read once serves the call's reads, and any write drops it.
 //
 // `model` runs the reference model as the subject (the test's own check: green), and each mutant a broken one (each
-// must go red): forgets-on-restart, drops-reordered, wakes-twice, silent-orphan, closes-unlanded.
+// must go red): forgets-on-restart, drops-reordered, wakes-twice, silent-orphan, closes-unlanded, and r4's four on reasons:
+// accept-arbitrary-receipt, accept-measured-close, clear-historic-reason-on-reopen, accept-closed-dependency.
 import { Array as Arr, Effect, Match, Option, Order, Result } from "effect"
 import { factsOf } from "@dotfiles/opencode-orchestrate/commitments-tool"
 import * as MemoryMainLine from "@dotfiles/opencode-orchestrate/memory/main-line"
@@ -13,6 +14,7 @@ import {
   type Actor,
   type AfterItem,
   Command,
+  closeKindOf,
   isoOf,
   noticesOf,
   openOf,
@@ -22,10 +24,11 @@ import {
   type StoredEvent,
   wordKey,
 } from "@dotfiles/opencode-orchestrate/record"
+import type { ReasonData, ReceiptSeen } from "@dotfiles/opencode-orchestrate/reasons"
 import { type CommitmentRecord, MainLine } from "@dotfiles/opencode-orchestrate/service"
 import * as SqliteRecord from "@dotfiles/opencode-orchestrate/sqlite/record"
 import { checkOf, checkpointOf, type Facts, passedOf } from "@dotfiles/opencode-orchestrate/standing"
-import { type Answer, type Happened, type HappenedType, makeModel, okOf, refused, sorted, type Subject, type Trigger, type Woke, type World } from "./record-model.ts"
+import { type Answer, type Flaws, type Happened, type HappenedType, makeModel, okOf, type Reason, refused, sorted, type Subject, type Trigger, type Woke, type World } from "./record-model.ts"
 
 export interface Opened {
   readonly subject: Subject
@@ -57,10 +60,29 @@ const mainLineOf = (world: World) =>
     Option.some({ branch: "main", line: [ROOT_SHA, ...[...world.main].map(shaOf)].map((sha) => ({ sha, subject: sha, merged: [] })) }),
   )
 
-const HAPPENED: ReadonlyArray<HappenedType> = ["promised", "assigned", "ordered", "released", "claimed", "landed", "decided", "reopened", "woke"]
+const HAPPENED: ReadonlyArray<HappenedType> = ["promised", "assigned", "ordered", "released", "claimed", "landed", "decided", "deferred", "reopened", "woke"]
+
+/** The reason an event carried, as the model writes it: `<class> <pointer>`. */
+const reasonOfEvent = (event: StoredEvent): Option.Option<string> =>
+  Option.map(
+    Match.value(event.happening).pipe(
+      Match.tag("decided", "deferred", (each) => Option.some(each.reason)),
+      Match.tag("promised", (each) => each.reason),
+      Match.orElse(() => Option.none<ReasonData>()),
+    ),
+    (reason) => `${reason.reasonClass} ${reason.referent}`,
+  )
 
 const happenedOf = (event: StoredEvent): ReadonlyArray<Happened> =>
-  Option.toArray(Option.map(Arr.findFirst(HAPPENED, (type) => type === event.happening._tag), (type) => ({ type, by: event.actor.id })))
+  Option.toArray(Option.map(Arr.findFirst(HAPPENED, (type) => type === event.happening._tag), (type) => ({ type, by: event.actor.id, reason: reasonOfEvent(event) })))
+
+/** A model reason as the record takes it. */
+const reasonData = (reason: Reason): ReasonData => ({ reasonClass: reason.class, referent: reason.ref })
+/** What the evidence reader finds of a measured reason's receipt in the world: the observation, never the caller's word. */
+const observedOf = (world: World, reason: Reason): Option.Option<ReceiptSeen> =>
+  Option.flatMap(Option.liftPredicate(reason.ref, (ref) => ref.startsWith("receipt/")), (ref) =>
+    Option.as(Option.liftPredicate(ref.slice("receipt/".length), (path) => world.receipts.has(path)), { path: ref.slice("receipt/".length), receiptSha: "a".repeat(64), outputSha: "b".repeat(64), exit: 0, run: RUN, checkout: ROOT_SHA }),
+  )
 
 const handBackName = (id: number | string): string => `h${id}`
 
@@ -118,7 +140,28 @@ const storeSubject = (store: CommitmentRecord["Service"], world: World): Subject
       return answered(run(Command.cases.order.make({ ownerLane: input.owner, ids: input.ids }), root(input.by)), () => openOf(read(), input.owner))
     },
     release: (input) => answered(run(Command.cases.release.make({ id: input.id }), root(input.by)), () => true as const),
-    decide: (input) => answered(run(Command.cases.decide.make({ id: input.id, why: input.why }), { id: input.by, role: input.role }), () => true as const),
+    decide: (input) => answered(run(Command.cases.decide.make({ id: input.id, why: input.why, reason: reasonData(input.reason) }), { id: input.by, role: input.role }), () => true as const),
+    declare: (input) =>
+      // The tool reads the document through the evidence reader first: one the world has not committed is refused there.
+      Option.match(Option.fromUndefinedOr(world.documents.get(input.id)), {
+        onNone: () => refused("the document does not exist"),
+        onSome: (blob) =>
+          answered(run(Command.cases.invariant.make({ id: input.id, anchor: input.id, observed: { path: `docs/${input.id}.md`, blob, commit: ROOT_SHA } }), { id: input.by, role: input.role }), () => true as const),
+      }),
+    followUp: (input) => {
+      const command = Command.cases.add.make({
+        run: RUN,
+        sourceKind: "follow-up",
+        sourceRef: `${input.by}:${input.key}`,
+        parts: [PartInput.make({ id: input.id, title: "a finding" })],
+        reason: Option.some(reasonData(input.reason)),
+        observed: observedOf(world, input.reason),
+      })
+      return answered(run(command, { id: input.by, role: "worker" }), () => input.id)
+    },
+    defer: (input) => answered(run(Command.cases.defer.make({ id: input.id, reason: reasonData(input.reason), observed: observedOf(world, input.reason) }), root(input.by)), () => true as const),
+    reason: (id) => Option.flatMap(Option.fromUndefinedOr(read().commitments.get(id)), (row) => Option.map(row.reason, (each) => `${each.reasonClass} ${each.referent}`)),
+    closeKind: (id) => Option.flatMap(Option.fromUndefinedOr(read().commitments.get(id)), closeKindOf),
     reopen: (input) => answered(run(Command.cases.reopen.make({ id: input.id }), root(input.by)), () => true as const),
     notices: () => noticesOf(read()),
     seen: (id) => void run(Command.cases.seen.make({ id }), { id: "owner", role: "owner" }),
@@ -184,13 +227,13 @@ const kept = (subject: Subject): Opened => ({ subject, reopen: () => subject, cl
 
 /** An order to an owner silently drops that owner's other open commitments (the audit's cause 2). */
 const dropsReordered = (world: World): Opened => {
-  const subject = makeModel(world)
+  const subject = makeModel(world, { closeWithoutReason: true })
   return kept({
     ...subject,
     order: (input) => {
       const answer = subject.order(input)
       const dropped = Option.getOrElse(okOf(answer), (): ReadonlyArray<string> => [])
-      for (const id of dropped.filter((each) => !input.ids.includes(each))) subject.decide({ id, why: "superseded by the new order", by: "plugin", role: "root" })
+      for (const id of dropped.filter((each) => !input.ids.includes(each))) subject.decide({ id, why: "superseded by the new order", by: "plugin", role: "root", reason: { class: "guarantee", ref: "invariant/superseded" } })
       return answer
     },
   })
@@ -239,6 +282,14 @@ const closesUnlanded = (world: World): Opened => {
   })
 }
 
+/** The reason mutants: a receipt the reader does not find taken, a measured close, a reopen that erases the history's reasons, a dependency on a closed commitment. */
+const REASON_FLAWS: ReadonlyArray<readonly [string, Flaws]> = [
+  ["accept-arbitrary-receipt", { acceptArbitraryReceipt: true }],
+  ["accept-measured-close", { acceptMeasuredClose: true }],
+  ["clear-historic-reason-on-reopen", { clearHistoricReasonOnReopen: true }],
+  ["accept-closed-dependency", { acceptClosedDependency: true }],
+]
+
 export const SUBJECTS: ReadonlyMap<string, (path: string, world: World) => Opened> = new Map([
   ["", built],
   ["model", (_path: string, world: World) => model(world)],
@@ -247,4 +298,6 @@ export const SUBJECTS: ReadonlyMap<string, (path: string, world: World) => Opene
   ["wakes-twice", (_path: string, world: World) => wakesTwice(world)],
   ["silent-orphan", (_path: string, world: World) => silentOrphan(world)],
   ["closes-unlanded", (_path: string, world: World) => closesUnlanded(world)],
+  // r4's reasons: each a model with one flaw, which the reference refuses.
+  ...REASON_FLAWS.map(([name, flaws]) => [name, (_path: string, world: World) => kept(makeModel(world, flaws))] as const),
 ])

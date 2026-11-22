@@ -883,6 +883,9 @@ const T0 = 1_800_000_000_000
 const HOUR = 3_600_000
 const ROOT_ACTOR: Actor = { id: "ses_root", role: "root" }
 const WORKER_ACTOR: Actor = { id: "ses_worker", role: "worker" }
+/** The guarantee the script's decisions rest on: an invariant the root declares first, its document as git held it. */
+export const GUARANTEE = { reasonClass: "guarantee" as const, referent: "invariant/one-writer" }
+const DOCUMENT = { path: "docs/record.md", blob: "b".repeat(40), commit: "c".repeat(40) }
 
 /** Every kind of command once, in an order that moves each kind of row: what the replay law replays. */
 export const RECORD_SCRIPT: ReadonlyArray<readonly [Command, Actor, number]> = [
@@ -903,16 +906,24 @@ export const RECORD_SCRIPT: ReadonlyArray<readonly [Command, Actor, number]> = [
     T0,
   ],
   [Commands.cases.word.make({ run: "r1", word: "go" }), ROOT_ACTOR, T0 + HOUR],
+  [Commands.cases.invariant.make({ id: "one-writer", anchor: "one-writer", observed: DOCUMENT }), ROOT_ACTOR, T0 + HOUR],
   [Commands.cases.assign.make({ id: "part-b", ownerLane: "lane-b", ownerSession: Option.some("ses_b"), after: [{ kind: "commit-on-main", ref: "c1c1c1c" }], reviewBy: Option.some(T0 + 48 * HOUR ) }), ROOT_ACTOR, T0 + 2 * HOUR],
   [Commands.cases.order.make({ ownerLane: "lane-b", ids: ["part-b"] }), ROOT_ACTOR, T0 + 3 * HOUR],
   [Commands.cases.hand_back.make({ run: "r1", ownerLane: "lane-b", role: "implementor", round: Option.some(1), session: "ses_b", verdict: "ready", head: Option.some("c1c1c1c"), claims: ["part-b"] }), WORKER_ACTOR, T0 + 4 * HOUR],
   [Commands.cases.route.make({ handBack: 1, as: "routed" }), ROOT_ACTOR, T0 + 5 * HOUR],
   [Commands.cases.pass.make({ onMain: ["c1c1c1c"], gone: [], root: Option.some("ses_root") }), { id: "plugin", role: "plugin" }, T0 + 6 * HOUR],
-  [Commands.cases.decide.make({ id: "part-c", why: "folded into part B" }), ROOT_ACTOR, T0 + 7 * HOUR],
+  [Commands.cases.decide.make({ id: "part-c", why: "folded into part B", reason: GUARANTEE }), ROOT_ACTOR, T0 + 7 * HOUR],
   [Commands.cases.seen.make({ id: "part-c" }), { id: "owner", role: "owner" }, T0 + 8 * HOUR],
   [Commands.cases.reopen.make({ id: "part-c" }), ROOT_ACTOR, T0 + 9 * HOUR],
-  [Commands.cases.add.make({ run: "r1", sourceKind: "follow-up", sourceRef: "ses_worker:call-1", suggestOwner: Option.some("lane-a"), parts: [{ id: "follow-d", title: "A test for D" }] }), WORKER_ACTOR, T0 + 10 * HOUR],
-  [Commands.cases.decide.make({ id: "follow-d", why: "covered by part A" }), WORKER_ACTOR, T0 + 11 * HOUR],
+  [
+    Commands.cases.add.make({ run: "r1", sourceKind: "follow-up", sourceRef: "ses_worker:call-1", suggestOwner: Option.some("lane-a"), parts: [{ id: "follow-d", title: "A test for D" }], reason: Option.some({ reasonClass: "dependency", referent: "commitment/part-a" }) }),
+    WORKER_ACTOR,
+    T0 + 10 * HOUR,
+  ],
+  [Commands.cases.defer.make({ id: "part-c", reason: { reasonClass: "dependency", referent: "commitment/part-a" } }), ROOT_ACTOR, T0 + 10 * HOUR],
+  [Commands.cases.decide.make({ id: "follow-d", why: "covered by part A", reason: GUARANTEE }), ROOT_ACTOR, T0 + 11 * HOUR],
+  [Commands.cases.add.make({ run: "r1", sourceKind: "owner-answer", sourceRef: "ses_root:q3", parts: [{ id: "answer-q3", title: "Their answer to q3" }] }), ROOT_ACTOR, T0 + 11 * HOUR],
+  [Commands.cases.add.make({ run: "r1", sourceKind: "plan-part", sourceRef: "plan.md:3", plan: Option.some("answer-q3"), parts: [{ id: "q3-a", title: "Its part A" }] }), ROOT_ACTOR, T0 + 11 * HOUR],
   [Commands.cases.release.make({ id: "part-a" }), ROOT_ACTOR, T0 + 12 * HOUR],
   [Commands.cases.lane.make({ run: "r1", unit: "unit-e" }), ROOT_ACTOR, T0 + 13 * HOUR],
   [
@@ -987,8 +998,11 @@ export const commitmentRecordLaws = (name: string, make: Effect.Effect<Layer.Lay
           const before = (yield* record.events).length
           const refused = yield* play([
             [Commands.cases.add.make({ run: "r1", sourceKind: "plan-part", sourceRef: "plan.md", parts: [{ id: "part-a", title: "again" }] }), ROOT_ACTOR, T0],
-            [Commands.cases.decide.make({ id: "part-a", why: "not mine" }), WORKER_ACTOR, T0],
-            [Commands.cases.decide.make({ id: "part-b", why: " " }), ROOT_ACTOR, T0],
+            [Commands.cases.decide.make({ id: "part-a", why: "not mine", reason: GUARANTEE }), WORKER_ACTOR, T0],
+            [Commands.cases.decide.make({ id: "part-b", why: " ", reason: GUARANTEE }), ROOT_ACTOR, T0],
+            [Commands.cases.decide.make({ id: "part-b", why: "no invariant", reason: { reasonClass: "guarantee", referent: "invariant/never-declared" } }), ROOT_ACTOR, T0],
+            [Commands.cases.decide.make({ id: "part-b", why: "measured", reason: { reasonClass: "measured", referent: "receipt/tmp/orchestrate/r/x.json" } }), ROOT_ACTOR, T0],
+            [Commands.cases.add.make({ run: "r1", sourceKind: "follow-up", sourceRef: "x", parts: [{ id: "f-1", title: "t" }] }), WORKER_ACTOR, T0],
             [Commands.cases.assign.make({ id: "part-c", ownerLane: "lane-c", after: [], reviewBy: Option.some(T0 - 1) }), ROOT_ACTOR, T0],
             [Commands.cases.assign.make({ id: "part-c", ownerLane: "lane-c", after: [] }), WORKER_ACTOR, T0],
             [Commands.cases.add.make({ run: "r1", sourceKind: "plan-part", sourceRef: "x", parts: [{ id: "has space", title: "t" }] }), ROOT_ACTOR, T0],
@@ -1001,17 +1015,17 @@ export const commitmentRecordLaws = (name: string, make: Effect.Effect<Layer.Lay
         }),
       ))
 
-    test("a root's decision on an owner-sourced commitment leaves a notice until it is seen or reopened; a worker's on a follow-up leaves none", () =>
+    test("a root's decision on an owner-sourced commitment leaves a notice until it is seen or reopened; a root's on a follow-up leaves none", () =>
       scenario(make, (layer) => layer, () =>
         Effect.gen(function* () {
-          yield* play(RECORD_SCRIPT.slice(0, 1))
+          yield* play(RECORD_SCRIPT.slice(0, 3))
           const record = yield* CommitmentRecord
-          const decided = yield* record.run(Commands.cases.decide.make({ id: "part-c", why: "folded into part B" }), { actor: ROOT_ACTOR, now: T0 })
+          const decided = yield* record.run(Commands.cases.decide.make({ id: "part-c", why: "folded into part B", reason: GUARANTEE }), { actor: ROOT_ACTOR, now: T0 })
           expect(Option.flatMap(Option.fromUndefinedOr(decided.snapshot.commitments.get("part-c")), (row) => row.noticeUntil)).toEqual(Option.some("2027-01-22T08:00:00.000Z"))
           const seen = yield* record.run(Commands.cases.seen.make({ id: "part-c" }), { actor: { id: "owner", role: "owner" }, now: T0 + HOUR })
           expect(Option.flatMap(Option.fromUndefinedOr(seen.snapshot.commitments.get("part-c")), (row) => row.noticeUntil)).toEqual(Option.none())
-          yield* record.run(Commands.cases.add.make({ run: "r1", sourceKind: "follow-up", sourceRef: "ses_worker:call-2", parts: [{ id: "follow-e", title: "E" }] }), { actor: WORKER_ACTOR, now: T0 })
-          const closed = yield* record.run(Commands.cases.decide.make({ id: "follow-e", why: "done by C" }), { actor: WORKER_ACTOR, now: T0 })
+          yield* record.run(Commands.cases.add.make({ run: "r1", sourceKind: "follow-up", sourceRef: "ses_worker:call-2", parts: [{ id: "follow-e", title: "E" }], reason: Option.some({ reasonClass: "dependency", referent: "commitment/part-a" }) }), { actor: WORKER_ACTOR, now: T0 })
+          const closed = yield* record.run(Commands.cases.decide.make({ id: "follow-e", why: "done by C", reason: GUARANTEE }), { actor: ROOT_ACTOR, now: T0 })
           expect(Option.flatMap(Option.fromUndefinedOr(closed.snapshot.commitments.get("follow-e")), (row) => row.noticeUntil)).toEqual(Option.none())
         }),
       ))

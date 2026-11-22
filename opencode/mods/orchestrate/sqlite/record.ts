@@ -16,6 +16,7 @@ import {
   fold,
   type HandBack,
   Happening,
+  type Invariant,
   isoOf,
   PREREQUISITE_KINDS,
   type Prerequisite,
@@ -28,11 +29,13 @@ import {
   STATES,
   type StoredEvent,
   SUBJECT_KINDS,
+  UNREASONED_CLOSES,
   VERDICTS,
   type Word,
   actedKey,
   wordKey,
 } from "../record.ts"
+import { REASON_CLASSES, type ReasonData, referentOf } from "../reasons.ts"
 import { localKey, keyOfOrigin } from "../repo-key.ts"
 import { CommitmentRecord, RecordFailed } from "../service.ts"
 import { decideCommand } from "../standing.ts"
@@ -40,7 +43,18 @@ import { decideCommand } from "../standing.ts"
 /** How many daily backups are kept. */
 export const BACKUPS_KEPT = 7
 
-/** Version 1: the spec's DDL, with `word` and `notice` subjects and the `word` table (record.ts). */
+/**
+ * Version 1, the only one: the spec's DDL, with `word`, `notice` and `invariant` subjects, the `word` and `invariant`
+ * tables, and each commitment's reason (reasons.ts) and close kind (record.ts `CLOSE_KINDS`). The development versions
+ * before the first delivery (the lane's start head, the notice's closer, the lane's workspace) are folded in: no file
+ * of them was delivered.
+ *
+ * A reason is a pair: `reason_class` and its canonical `referent`, both or neither, except the root's `not-asked` close
+ * (unit C), whose referent is an `ask/<id>` with no class. A decided row's reason is a guarantee or none. `close_kind`
+ * is derived from the row, never written: `guarantee` from the reason, `not-asked` from the `ask/` referent, and a
+ * reasonless close from `unreasoned_close` (`placed` by the plugin, `historical` by an import). Every decided row has
+ * exactly one kind and no other row has one.
+ */
 const V1 = [
   `CREATE TABLE commitment (
     id            TEXT PRIMARY KEY,
@@ -65,11 +79,33 @@ const V1 = [
     notice_until  TEXT,
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL,
+    start_head    TEXT,
+    notice_by     TEXT,
+    notice_outside_run INTEGER NOT NULL DEFAULT 0 CHECK (notice_outside_run IN (0, 1)),
+    lane_path     TEXT,
+    reason_class TEXT CHECK (reason_class IN ('guarantee','dependency','measured')),
+    referent TEXT CHECK (referent IS NULL OR (length(referent) BETWEEN 1 AND 512 AND trim(referent) = referent)),
+    unreasoned_close TEXT CHECK (unreasoned_close IS NULL OR unreasoned_close IN ('placed','historical')),
+    close_kind TEXT GENERATED ALWAYS AS (CASE
+      WHEN state <> 'decided' THEN NULL
+      WHEN reason_class = 'guarantee' THEN 'guarantee'
+      WHEN reason_class IS NULL AND substr(referent,1,4) = 'ask/' THEN 'not-asked'
+      WHEN reason_class IS NULL AND referent IS NULL THEN unreasoned_close
+    END) VIRTUAL,
     CHECK (owner_session IS NULL OR owner_lane IS NOT NULL),
     CHECK (owner_lane IS NULL OR review_by IS NOT NULL OR state <> 'open'),
     CHECK ((state = 'landed') = (landed_commit IS NOT NULL)),
     CHECK ((state = 'decided') = (decided_why IS NOT NULL)),
-    CHECK (quote IS NULL OR source_kind IN ('owner-answer','owner-ask'))
+    CHECK (quote IS NULL OR source_kind IN ('owner-answer','owner-ask')),
+    CHECK (
+      (reason_class IS NULL AND referent IS NULL)
+      OR (reason_class IS NOT NULL AND referent IS NOT NULL)
+      OR (state = 'decided' AND reason_class IS NULL AND referent IS NOT NULL
+          AND substr(referent,1,4) = 'ask/' AND length(referent) > 4)
+    ),
+    CHECK (state <> 'decided' OR reason_class IS NULL OR reason_class = 'guarantee'),
+    CHECK ((state = 'decided') = (close_kind IS NOT NULL)),
+    CHECK (unreasoned_close IS NULL OR (state = 'decided' AND reason_class IS NULL AND referent IS NULL))
   ) STRICT`,
   `CREATE TABLE prerequisite (
     commitment_id TEXT NOT NULL REFERENCES commitment(id),
@@ -82,7 +118,7 @@ const V1 = [
     seq          INTEGER PRIMARY KEY,
     at           TEXT NOT NULL,
     run          TEXT NOT NULL,
-    subject_kind TEXT NOT NULL CHECK (subject_kind IN ('commitment','hand_back','unit','batch','word','notice')),
+    subject_kind TEXT NOT NULL CHECK (subject_kind IN ('commitment','hand_back','unit','batch','word','notice','invariant')),
     subject_id   TEXT NOT NULL,
     type         TEXT NOT NULL,
     actor        TEXT NOT NULL,
@@ -119,26 +155,21 @@ const V1 = [
     given_by TEXT NOT NULL,
     PRIMARY KEY (run, word)
   ) STRICT`,
+  `CREATE TABLE invariant (
+    id          TEXT PRIMARY KEY,
+    doc_path    TEXT NOT NULL,
+    anchor      TEXT NOT NULL,
+    blob        TEXT NOT NULL,
+    commit_sha  TEXT NOT NULL,
+    declared_at TEXT NOT NULL,
+    declared_by TEXT NOT NULL
+  ) STRICT`,
   "CREATE INDEX commitment_owner_state ON commitment (owner_lane, state)",
   "CREATE INDEX hand_back_routing ON hand_back (routing, at)",
 ]
 
-/**
- * Version 2, additive: the commit a lane started at (`start_head`, shown to the root, deciding nothing), and who
- * closed an owner-sourced commitment and whether that session had acted in its run before (`notice_by`,
- * `notice_outside_run`).
- */
-const V2 = [
-  "ALTER TABLE commitment ADD COLUMN start_head TEXT",
-  "ALTER TABLE commitment ADD COLUMN notice_by TEXT",
-  "ALTER TABLE commitment ADD COLUMN notice_outside_run INTEGER NOT NULL DEFAULT 0 CHECK (notice_outside_run IN (0, 1))",
-]
-
-/** Version 3, additive: the lane's workspace (`lane_path`), by which a land event of that workspace claims for it. */
-const V3 = ["ALTER TABLE commitment ADD COLUMN lane_path TEXT"]
-
 /** Each version's statements, in order: forward-only and additive (a non-additive change is the owner's). */
-export const MIGRATIONS: ReadonlyArray<ReadonlyArray<string>> = [V1, V2, V3]
+export const MIGRATIONS: ReadonlyArray<ReadonlyArray<string>> = [V1]
 
 /** The schema version this code writes: one per migration, so the two cannot disagree. */
 export const VERSION = MIGRATIONS.length
@@ -224,7 +255,21 @@ const optLiteral =
 
 const prerequisiteOf = (row: Raw): Prerequisite => ({ kind: literalOf(PREREQUISITE_KINDS, "manual")(row, "kind"), ref: textIn(row, "ref"), metAt: textOf(row, "met_at") })
 
-const commitmentOf = (row: Raw, after: ReadonlyArray<Prerequisite>): Commitment => ({
+/**
+ * A row's reason, decoded strictly: none for the null pair, the class and a canonical pointer for a full one, and why
+ * not for anything else (a referent the grammar does not take, a class with no referent; unit C's `ask/` close).
+ */
+const reasonRead = (row: Raw): Result.Result<Option.Option<ReasonData>, string> => {
+  const reasonClass = optLiteral(REASON_CLASSES)(row, "reason_class")
+  const referent = textOf(row, "referent")
+  if (Option.isNone(reasonClass) && Option.isNone(referent) && Option.isNone(textOf(row, "reason_class"))) return Result.succeed(Option.none())
+  return Option.match(Option.all([reasonClass, Option.filter(referent, (pointer) => Option.isSome(referentOf(pointer)))]), {
+    onNone: () => Result.fail(`commitment ${textIn(row, "id")}: its reason is not one this code reads (a class and a canonical referent)`),
+    onSome: ([each, pointer]) => Result.succeed(Option.some({ reasonClass: each, referent: pointer })),
+  })
+}
+
+const commitmentOf = (row: Raw, after: ReadonlyArray<Prerequisite>, reason: Option.Option<ReasonData>): Commitment => ({
   id: textIn(row, "id"),
   run: textIn(row, "run"),
   title: textIn(row, "title"),
@@ -249,6 +294,8 @@ const commitmentOf = (row: Raw, after: ReadonlyArray<Prerequisite>): Commitment 
   lanePath: textOf(row, "lane_path"),
   noticeBy: textOf(row, "notice_by"),
   noticeOutsideRun: Option.contains(intOf(row, "notice_outside_run"), 1),
+  reason,
+  unreasonedClose: optLiteral(UNREASONED_CLOSES)(row, "unreasoned_close"),
   createdAt: textIn(row, "created_at"),
   updatedAt: textIn(row, "updated_at"),
   after,
@@ -272,18 +319,29 @@ const handBackOf = (row: Raw): HandBack => ({
 
 const wordOf = (row: Raw): Word => ({ run: textIn(row, "run"), word: textIn(row, "word"), givenAt: textIn(row, "given_at"), givenBy: textIn(row, "given_by") })
 
-/** The rows as they stand. */
-const snapshotOf = (db: Database): Snapshot => {
+const invariantOf = (row: Raw): Invariant => ({
+  id: textIn(row, "id"),
+  docPath: textIn(row, "doc_path"),
+  anchor: textIn(row, "anchor"),
+  blob: textIn(row, "blob"),
+  commit: textIn(row, "commit_sha"),
+  declaredAt: textIn(row, "declared_at"),
+  declaredBy: textIn(row, "declared_by"),
+})
+
+/** The rows as they stand, or why a row does not read (a reason this code does not decode). */
+const snapshotOf = (db: Database): Result.Result<Snapshot, string> => {
   const after = new Map<string, Array<Prerequisite>>()
   for (const row of db.query<Raw, []>("SELECT * FROM prerequisite ORDER BY rowid").all()) {
     const id = textIn(row, "commitment_id")
     after.set(id, [...(after.get(id) ?? []), prerequisiteOf(row)])
   }
-  const commitments = new Map(db.query<Raw, []>("SELECT * FROM commitment").all().map((row) => [textIn(row, "id"), commitmentOf(row, after.get(textIn(row, "id")) ?? [])] as const))
+  const rows = Result.all(db.query<Raw, []>("SELECT * FROM commitment").all().map((row) => Result.map(reasonRead(row), (reason) => [textIn(row, "id"), commitmentOf(row, after.get(textIn(row, "id")) ?? [], reason)] as const)))
   const handBacks = new Map(db.query<Raw, []>("SELECT * FROM hand_back").all().map((row) => [Option.getOrElse(intOf(row, "id"), () => 0), handBackOf(row)] as const))
   const words = new Map(db.query<Raw, []>("SELECT * FROM word").all().map((row) => [wordKey(textIn(row, "run"), textIn(row, "word")), wordOf(row)] as const))
   const acted = new Set(db.query<Raw, []>("SELECT DISTINCT actor, run FROM event").all().map((row) => actedKey(textIn(row, "actor"), textIn(row, "run"))))
-  return { commitments, handBacks, words, acted }
+  const invariants = new Map(db.query<Raw, []>("SELECT * FROM invariant").all().map((row) => [textIn(row, "id"), invariantOf(row)] as const))
+  return Result.map(rows, (each): Snapshot => ({ commitments: new Map(each), handBacks, words, acted, invariants }))
 }
 
 const DataCodec = Schema.fromJsonString(Happening)
@@ -295,7 +353,7 @@ const nullable = <A>(value: Option.Option<A>) => Option.getOrNull(value)
 const COMMITMENT_COLUMNS = [
   "id", "run", "title", "source_kind", "source_ref", "quote", "plan", "part", "rank", "owner_lane", "owner_session", "state", "started_at",
   "review_by", "woke_at", "head", "request_path", "landed_commit", "decided_why", "notice_until", "created_at", "updated_at",
-  "start_head", "notice_by", "notice_outside_run", "lane_path",
+  "start_head", "notice_by", "notice_outside_run", "lane_path", "reason_class", "referent", "unreasoned_close",
 ]
 
 const UPSERT_COMMITMENT = `INSERT INTO commitment (${COMMITMENT_COLUMNS.join(", ")}) VALUES (${COMMITMENT_COLUMNS.map(() => "?").join(", ")})
@@ -306,6 +364,7 @@ const commitmentValues = (row: Commitment): ReadonlyArray<SQLQueryBindings> => [
   nullable(row.ownerLane), nullable(row.ownerSession), row.state, nullable(row.startedAt), nullable(row.reviewBy), nullable(row.wokeAt),
   nullable(row.head), nullable(row.requestPath), nullable(row.landedCommit), nullable(row.decidedWhy), nullable(row.noticeUntil), row.createdAt, row.updatedAt,
   nullable(row.startHead), nullable(row.noticeBy), Number(row.noticeOutsideRun), nullable(row.lanePath),
+  nullable(Option.map(row.reason, (each) => each.reasonClass)), nullable(Option.map(row.reason, (each) => each.referent)), nullable(row.unreasonedClose),
 ]
 
 const writeCommitment = (db: Database, row: Commitment): void => {
@@ -325,6 +384,12 @@ const writeWord = (db: Database, row: Word): void => {
   db.query<Raw, Array<SQLQueryBindings>>("INSERT OR IGNORE INTO word (run, word, given_at, given_by) VALUES (?, ?, ?, ?)").run(row.run, row.word, row.givenAt, row.givenBy)
 }
 
+const writeInvariant = (db: Database, row: Invariant): void => {
+  db.query<Raw, Array<SQLQueryBindings>>("INSERT OR IGNORE INTO invariant (id, doc_path, anchor, blob, commit_sha, declared_at, declared_by) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+    row.id, row.docPath, row.anchor, row.blob, row.commit, row.declaredAt, row.declaredBy,
+  )
+}
+
 const writeEvent = (db: Database, event: RecordEvent): void => {
   db.query<Raw, Array<SQLQueryBindings>>(
     "INSERT INTO event (at, run, subject_kind, subject_id, type, actor, actor_role, from_state, to_state, note, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -341,6 +406,7 @@ const write = (db: Database, before: Snapshot, events: ReadonlyArray<RecordEvent
   for (const row of changed(before.commitments, after.commitments)) writeCommitment(db, row)
   for (const row of changed(before.handBacks, after.handBacks)) writeHandBack(db, row)
   for (const row of changed(before.words, after.words)) writeWord(db, row)
+  for (const row of changed(before.invariants, after.invariants)) writeInvariant(db, row)
   return after
 }
 
@@ -381,13 +447,13 @@ export const make = (db: Database, refusal: Option.Option<string>): CommitmentRe
           attempt(command._tag, () =>
             db
               .transaction(() => {
-                const before = snapshotOf(db)
-                return Result.map(decideCommand(before, command, context), (events) => ({ events, snapshot: write(db, before, events) }))
+                // A file whose rows this code cannot read refuses the write; the commitments it holds stay as they are.
+                return Result.map(snapshotOf(db), (before) => Result.map(decideCommand(before, command, context), (events) => ({ events, snapshot: write(db, before, events) })))
               })
               .immediate(),
-          ).pipe(Effect.flatMap((result) => Result.match(result, { onFailure: (refused: RecordRefused) => Effect.fail(refused), onSuccess: (done) => Effect.succeed(done) }))),
+          ).pipe(Effect.flatMap((read) => decoded(command._tag, read)), Effect.flatMap((result) => Result.match(result, { onFailure: (refused: RecordRefused) => Effect.fail(refused), onSuccess: (done) => Effect.succeed(done) }))),
       }),
-    read: attempt("read", () => db.transaction(() => snapshotOf(db)).deferred()),
+    read: attempt("read", () => db.transaction(() => snapshotOf(db)).deferred()).pipe(Effect.flatMap((read) => decoded("read", read))),
     history: (subjectKind, subjectId) =>
       attempt("history", () => db.query<Raw, [string, string]>("SELECT * FROM event WHERE subject_kind = ? AND subject_id = ? ORDER BY seq").all(subjectKind, subjectId)).pipe(
         Effect.flatMap((rows) => decoded("history", eventsOf(rows))),

@@ -2,6 +2,8 @@
 // (record-model.sim.test.ts) drives a subject and this model with the same generated commands and compares what each
 // answers. It is also the vocabulary of the seam (`Subject`): record-subject.ts maps these calls onto the real store
 // (the SQLite file) and the plugin's handlers, with `World` standing in for git, the clock and the sessions.
+// Reasons (r4): a follow-up, a deferral and a decision each carry a class and a pointer, checked against the record (a
+// dependency's chain) and the world (the committed documents an invariant declares, the receipts the reader finds).
 // Moved from the planner's acceptance/model.ts and rewritten within the effect-debt rules (Option for a missing root,
 // owner or head; no class), its behaviour the same: a differential run compared the two on every observable.
 import { Array as Arr, Match, Option, Order } from "effect"
@@ -25,6 +27,29 @@ export interface World {
   root: Option.Option<string>
   /** The manual words the root has given. */
   readonly words: Set<string>
+  /** The invariants' documents committed at HEAD, by invariant id: the blob each holds now (an edit commits a new one). */
+  readonly documents: Map<string, string>
+  /** The receipts the evidence reader finds under the checkout's evidence root, by path. */
+  readonly receipts: Set<string>
+}
+
+/** Why a commitment is not done now, or why it was closed: a class and its canonical pointer (reasons.ts). */
+export type ReasonClass = "guarantee" | "dependency" | "measured"
+export interface Reason {
+  readonly class: ReasonClass
+  /** `invariant/<id>`, `commitment/<id>`, `receipt/<path>`, or a pointer of a kind not shipped (`spec-item/<id>`). */
+  readonly ref: string
+}
+export type CloseKind = "guarantee" | "not-asked" | "placed" | "historical"
+
+/** The flaws a mutant of the model has (record-subject.ts); none in the model itself. */
+export interface Flaws {
+  readonly acceptArbitraryReceipt?: boolean
+  readonly acceptMeasuredClose?: boolean
+  readonly clearHistoricReasonOnReopen?: boolean
+  readonly acceptClosedDependency?: boolean
+  /** An r3 mutant's own close (drops-reordered), which needs no reason. */
+  readonly closeWithoutReason?: boolean
 }
 
 export type State = "open" | "landed" | "decided"
@@ -49,11 +74,13 @@ export interface Checkpoint {
   readonly unrouted: ReadonlyArray<string>
 }
 
-export type HappenedType = "promised" | "assigned" | "ordered" | "released" | "claimed" | "landed" | "decided" | "reopened" | "woke"
+export type HappenedType = "promised" | "assigned" | "ordered" | "released" | "claimed" | "landed" | "decided" | "deferred" | "reopened" | "woke"
 
 export interface Happened {
   readonly type: HappenedType
   readonly by: string
+  /** The reason the event carried (`<class> <ref>`), kept in the history after a reopen clears the row's. */
+  readonly reason: Option.Option<string>
 }
 
 export type Answer<A> = { readonly ok: A } | { readonly refused: string }
@@ -71,8 +98,25 @@ export interface Subject {
   order(input: { readonly owner: string; readonly ids: ReadonlyArray<string>; readonly by: string }): Answer<ReadonlyArray<string>>
   /** Its owner gives it up: open and unowned again. */
   release(input: { readonly id: string; readonly by: string }): Answer<true>
-  /** A recorded decision closes it; `why` is required. A worker never closes an owner-sourced one; a root that does leaves a notice for the owner. */
-  decide(input: { readonly id: string; readonly why: string; readonly by: string; readonly role: "root" | "worker" }): Answer<true>
+  /**
+   * A recorded decision closes it: the root's alone, with why and a guarantee on a declared invariant; a measurement or a
+   * dependency never closes. A root that closes an owner-sourced one leaves a notice for the owner.
+   */
+  decide(input: { readonly id: string; readonly why: string; readonly by: string; readonly role: "root" | "worker"; readonly reason: Reason }): Answer<true>
+  /** The root declares an invariant whose document is committed; the same again is nothing, an edited document refused (a new id). */
+  declare(input: { readonly id: string; readonly by: string; readonly role: "root" | "worker" }): Answer<true>
+  /**
+   * A worker files a follow-up: unowned, open, with its reason (a dependency on an open commitment whose chain is open and
+   * acyclic, or a receipt the reader finds); a retry with the same key and id files nothing again, the key on another id is
+   * refused. Answers its id.
+   */
+  followUp(input: { readonly id: string; readonly key: string; readonly by: string; readonly reason: Reason }): Answer<string>
+  /** The root keeps an open commitment open with why it waits; it closes nothing. */
+  defer(input: { readonly id: string; readonly by: string; readonly reason: Reason }): Answer<true>
+  /** Its current reason (`<class> <ref>`), none for none. */
+  reason(id: string): Option.Option<string>
+  /** How it was closed, none unless decided. */
+  closeKind(id: string): Option.Option<CloseKind>
   /** Undo a decision: open and unowned again, its history kept. */
   reopen(input: { readonly id: string; readonly by: string }): Answer<true>
   /** The owner-sourced commitments a root closed by decision that the owner has not seen yet, sorted. */
@@ -102,6 +146,10 @@ interface Row {
   started: boolean
   woken: boolean
   head: Option.Option<string>
+  reason: Option.Option<Reason>
+  closeKind: Option.Option<CloseKind>
+  /** A follow-up's source: its session and idempotency key. */
+  readonly key: Option.Option<string>
   readonly history: Array<Happened>
 }
 
@@ -121,6 +169,9 @@ interface Held {
   readonly handBacks: Map<string, "unrouted" | "routed" | "rejected">
   readonly noticed: Set<string>
   readonly next: { handBack: number }
+  /** The declared invariants: the blob each was declared at. */
+  readonly invariants: Map<string, string>
+  readonly flaws: Flaws
 }
 
 const rowOf = (held: Held, id: string): Option.Option<Row> => Option.fromUndefinedOr(held.rows.get(id))
@@ -167,7 +218,10 @@ const add = (held: Held) => (input: Parameters<Subject["add"]>[0]): Answer<Reado
       started: false,
       woken: false,
       head: Option.none(),
-      history: [{ type: "promised", by: input.by }],
+      reason: Option.none(),
+      closeKind: Option.none(),
+      key: Option.none(),
+      history: [{ type: "promised", by: input.by, reason: Option.none() }],
     })
   return { ok: input.parts.map((part) => part.id) }
 }
@@ -178,7 +232,7 @@ const assign = (held: Held) => (input: Parameters<Subject["assign"]>[0]): Answer
   if (input.startOn.length === 0) return refused("no start condition")
   if (input.reviewBy <= held.world.now) return refused("review-by is not ahead")
   Object.assign(row.value, { owner: Option.some(input.owner), startOn: input.startOn, reviewBy: input.reviewBy, started: false, woken: false })
-  row.value.history.push({ type: "assigned", by: input.by })
+  row.value.history.push({ type: "assigned", by: input.by, reason: Option.none() })
   return { ok: true }
 }
 
@@ -187,7 +241,7 @@ const order = (held: Held) => (input: Parameters<Subject["order"]>[0]): Answer<R
   if (Option.isNone(rows)) return refused("not an open commitment of that owner")
   for (const row of rows.value.filter((each) => !each.started)) {
     row.started = true
-    row.history.push({ type: "ordered", by: input.by })
+    row.history.push({ type: "ordered", by: input.by, reason: Option.none() })
   }
   return { ok: openIdsOf(held, input.owner) }
 }
@@ -196,7 +250,7 @@ const release = (held: Held) => (input: Parameters<Subject["release"]>[0]): Answ
   const row = Option.filter(openRow(held, input.id), (each) => Option.isSome(each.owner))
   if (Option.isNone(row)) return refused("not an owned open commitment")
   Object.assign(row.value, { owner: Option.none(), startOn: [], started: false, woken: false })
-  row.value.history.push({ type: "released", by: input.by })
+  row.value.history.push({ type: "released", by: input.by, reason: Option.none() })
   return { ok: true }
 }
 
@@ -204,9 +258,11 @@ const decide = (held: Held) => (input: Parameters<Subject["decide"]>[0]): Answer
   const row = openRow(held, input.id)
   if (Option.isNone(row)) return refused("not open")
   if (input.why.trim() === "") return refused("a decision says why")
-  if (row.value.fromOwner && input.role === "worker") return refused("only the root closes what the owner approved")
-  row.value.state = "decided"
-  row.value.history.push({ type: "decided", by: input.by })
+  if (input.role !== "root") return refused("a close by decision is the root's")
+  const closes = input.reason.class === "guarantee" || (held.flaws.acceptMeasuredClose === true && input.reason.class === "measured")
+  if (held.flaws.closeWithoutReason !== true && (!closes || !holdsNow(held, Option.some(row.value.id), input.reason))) return refused("a close takes a guarantee that holds")
+  Object.assign(row.value, { state: "decided", reason: Option.some(input.reason), closeKind: Option.some("guarantee") })
+  row.value.history.push({ type: "decided", by: input.by, reason: Option.some(lineOf(input.reason)) })
   if (row.value.fromOwner) held.noticed.add(row.value.id)
   return { ok: true }
 }
@@ -214,9 +270,90 @@ const decide = (held: Held) => (input: Parameters<Subject["decide"]>[0]): Answer
 const reopen = (held: Held) => (input: Parameters<Subject["reopen"]>[0]): Answer<true> => {
   const row = Option.filter(rowOf(held, input.id), (each) => each.state === "decided")
   if (Option.isNone(row)) return refused("not a decided commitment")
-  Object.assign(row.value, { state: "open", owner: Option.none(), startOn: [], started: false, woken: false, head: Option.none() })
-  row.value.history.push({ type: "reopened", by: input.by })
+  Object.assign(row.value, { state: "open", owner: Option.none(), startOn: [], started: false, woken: false, head: Option.none(), reason: Option.none(), closeKind: Option.none() })
+  if (held.flaws.clearHistoricReasonOnReopen === true) row.value.history.splice(0, row.value.history.length, ...row.value.history.map((each) => ({ ...each, reason: Option.none<string>() })))
+  row.value.history.push({ type: "reopened", by: input.by, reason: Option.none() })
   held.noticed.delete(row.value.id)
+  return { ok: true }
+}
+
+// ── Reasons: what each class points at, checked against the record and the world ──
+
+const lineOf = (reason: Reason): string => `${reason.class} ${reason.ref}`
+/** A pointer's kind and its id or path. */
+const partsOf = (ref: string): readonly [string, string] => [ref.slice(0, Math.max(0, ref.indexOf("/"))), ref.slice(ref.indexOf("/") + 1)]
+
+/**
+ * Whether `target` is a dependency `self` may wait on: an open commitment, not `self`, whose chain of dependencies on
+ * commitments is open at every hop and never comes back to a commitment it passed.
+ */
+const dependencyHolds = (held: Held, self: Option.Option<string>, target: string): boolean => {
+  const passed = new Set<string>(Option.toArray(self))
+  const hop = { at: target }
+  for (;;) {
+    if (passed.has(hop.at)) return false
+    const row = rowOf(held, hop.at)
+    if (Option.isNone(row)) return false
+    if (row.value.state !== "open" && held.flaws.acceptClosedDependency !== true) return false
+    passed.add(hop.at)
+    const next = Option.filter(row.value.reason, (reason) => reason.class === "dependency" && partsOf(reason.ref)[0] === "commitment")
+    if (Option.isNone(next)) return true
+    hop.at = partsOf(next.value.ref)[1]
+  }
+}
+
+/** Whether `reason`, given to `self` (none for a new filing), points at something that holds now. */
+const holdsNow = (held: Held, self: Option.Option<string>, reason: Reason): boolean => {
+  const [kind, id] = partsOf(reason.ref)
+  return Match.value(reason.class).pipe(
+    Match.when("guarantee", () => kind === "invariant" && held.invariants.has(id)),
+    Match.when("dependency", () => kind === "commitment" && dependencyHolds(held, self, id)),
+    Match.when("measured", () => kind === "receipt" && (held.flaws.acceptArbitraryReceipt === true || held.world.receipts.has(id))),
+    Match.exhaustive,
+  )
+}
+
+const declare = (held: Held) => (input: Parameters<Subject["declare"]>[0]): Answer<true> => {
+  if (input.role !== "root") return refused("declaring an invariant is the root's")
+  const blob = Option.fromUndefinedOr(held.world.documents.get(input.id))
+  if (Option.isNone(blob)) return refused("the document is not committed")
+  const declared = Option.fromUndefinedOr(held.invariants.get(input.id))
+  if (Option.isSome(declared)) return declared.value === blob.value ? { ok: true } : refused("declared already at another revision: a new id")
+  held.invariants.set(input.id, blob.value)
+  return { ok: true }
+}
+
+const followUp = (held: Held) => (input: Parameters<Subject["followUp"]>[0]): Answer<string> => {
+  const key = `${input.by}:${input.key}`
+  const found = rowOf(held, input.id)
+  if (Option.exists(found, (row) => Option.contains(row.key, key))) return { ok: input.id }
+  if (Option.isSome(found)) return refused("the id is taken")
+  if ([...held.rows.values()].some((row) => Option.contains(row.key, key))) return refused("the key filed another follow-up")
+  if (input.reason.class === "guarantee" || !holdsNow(held, Option.none(), input.reason)) return refused("a follow-up names a dependency or a measurement that holds")
+  held.rows.set(input.id, {
+    id: input.id,
+    fromOwner: false,
+    state: "open",
+    owner: Option.none(),
+    startOn: [],
+    reviewBy: 0,
+    started: false,
+    woken: false,
+    head: Option.none(),
+    reason: Option.some(input.reason),
+    closeKind: Option.none(),
+    key: Option.some(key),
+    history: [{ type: "promised", by: input.by, reason: Option.some(lineOf(input.reason)) }],
+  })
+  return { ok: input.id }
+}
+
+const defer = (held: Held) => (input: Parameters<Subject["defer"]>[0]): Answer<true> => {
+  const row = openRow(held, input.id)
+  if (Option.isNone(row)) return refused("not open")
+  if (!holdsNow(held, Option.some(row.value.id), input.reason)) return refused("its reason does not hold")
+  row.value.reason = Option.some(input.reason)
+  row.value.history.push({ type: "deferred", by: input.by, reason: Option.some(lineOf(input.reason)) })
   return { ok: true }
 }
 
@@ -225,7 +362,7 @@ const handBack = (held: Held) => (input: Parameters<Subject["handBack"]>[0]): An
   if (Option.isNone(rows)) return refused("not an open commitment of that owner")
   for (const row of rows.value) {
     row.head = Option.some(input.head)
-    row.history.push({ type: "claimed", by: input.by })
+    row.history.push({ type: "claimed", by: input.by, reason: Option.none() })
   }
   const id = `h${held.next.handBack}`
   held.next.handBack += 1
@@ -243,7 +380,7 @@ const tick = (held: Held) => (): Woke => {
   for (const row of held.rows.values()) {
     if (!isOpen(row) || !Option.exists(row.head, (head) => held.world.main.has(head))) continue
     row.state = "landed"
-    row.history.push({ type: "landed", by: "plugin" })
+    row.history.push({ type: "landed", by: "plugin", reason: Option.none() })
   }
   return Option.match(held.world.root, {
     onNone: (): Woke => ({ woke: [] }),
@@ -251,7 +388,7 @@ const tick = (held: Held) => (): Woke => {
       const due = [...held.rows.values()].filter((row) => isOpen(row) && !row.woken && standingOf(held, row) === "due")
       for (const row of due) {
         row.woken = true
-        row.history.push({ type: "woke", by: "plugin" })
+        row.history.push({ type: "woke", by: "plugin", reason: Option.none() })
       }
       return { woke: Arr.match(due, { onEmpty: () => [], onNonEmpty: (each) => [{ root, ids: sorted(each.map((row) => row.id)) }] }) }
     },
@@ -276,9 +413,9 @@ const checkpoint = (held: Held) => (): Checkpoint => {
   return { byOwner, listed: sorted(STANDINGS.filter((each) => each !== "held").flatMap((each) => now[each])), unrouted: now.unrouted }
 }
 
-/** The reference model over `world`. */
-export const makeModel = (world: World): Subject => {
-  const held: Held = { world, rows: new Map(), handBacks: new Map(), noticed: new Set(), next: { handBack: 1 } }
+/** The reference model over `world`; a mutant passes its `flaws`. */
+export const makeModel = (world: World, flaws: Flaws = {}): Subject => {
+  const held: Held = { world, rows: new Map(), handBacks: new Map(), noticed: new Set(), next: { handBack: 1 }, invariants: new Map(), flaws }
   return {
     add: add(held),
     assign: assign(held),
@@ -286,6 +423,11 @@ export const makeModel = (world: World): Subject => {
     release: release(held),
     decide: decide(held),
     reopen: reopen(held),
+    declare: declare(held),
+    followUp: followUp(held),
+    defer: defer(held),
+    reason: (id) => Option.flatMap(rowOf(held, id), (row) => Option.map(row.reason, lineOf)),
+    closeKind: (id) => Option.flatMap(rowOf(held, id), (row) => row.closeKind),
     notices: () => sorted(held.noticed),
     seen: (id) => void held.noticed.delete(id),
     handBack: handBack(held),

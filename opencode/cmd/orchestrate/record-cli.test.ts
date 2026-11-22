@@ -6,9 +6,10 @@
 import { Database } from "bun:sqlite"
 import { expect } from "bun:test"
 import { spawnSync } from "bun"
-import { Array as Arr, Effect, Option, Schema } from "effect"
+import { Array as Arr, Effect, Layer, Option, Schema } from "effect"
 import { listedOf, sectionOf } from "@dotfiles/opencode-orchestrate/commitments-tool"
-import { platform } from "@dotfiles/opencode-orchestrate/node/platform"
+import { platform as ownPlatform } from "@dotfiles/opencode-orchestrate/node/platform"
+import { hostServices } from "../../sim/host-services.ts"
 import * as SqliteRecord from "@dotfiles/opencode-orchestrate/sqlite/record"
 import * as Seed from "../../sim/seed.ts"
 import { scratch } from "../../tests/scratch.ts"
@@ -218,5 +219,5 @@ Seed.effect(
         expect(Option.fromUndefinedOr(lines[0])).toEqual(Option.some(expect.stringContaining("Commitments: 116 open")))
       }),
     (held) => Effect.sync(() => held[Symbol.dispose]()),
-  ).pipe(Effect.provide(platform)),
+  ).pipe(Effect.provide(Layer.mergeAll(hostServices, ownPlatform))),
 )
