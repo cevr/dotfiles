@@ -40,12 +40,16 @@
     "oxlint": "1.89.0",
     "zigpty": "0.2.1"
   },
+  "overrides": {
+    "@effect/platform-node": "4.1.0",
+    "@effect/platform-node-shared": "4.1.0",
+    "effect": "4.1.0"
+  },
   "peerDependencies": {
     "typescript": "^7"
   },
   "dependencies": {
     "@effect/platform-bun": "4.1.0",
-    "@effect/platform-node-shared": "4.1.0",
     "@streamparser/json": "0.0.26",
     "effect": "4.1.0",
     "oxc-parser": "0.157.0"
