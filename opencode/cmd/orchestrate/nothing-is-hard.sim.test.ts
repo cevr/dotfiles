@@ -18,11 +18,11 @@ const WORK = "/scratch/nothing-is-hard"
 const PIN = "2026-11-04T15:00:00Z"
 const ROOT_TASK = "start each role"
 const NAME = "principle-nothing-is-hard"
-/** Each role's own Ending-a-step sentence: what makes its step done (skills/orchestrate/protocol.md). */
+/** Each role's own required-work line in its end-of-step rows (skills/orchestrate/scripts/ending.ts `REQUIRED`). */
 const ENDING = {
-  planner: "A planner's step is `ready` when every section of its spec is filled and its acceptance check runs and is red; a planner never implements",
-  implementor: "An implementor's step is `ready` only when every item of its spec is done.",
-  verifier: "A verifier's step ends when every required check of its step 1 ran",
+  planner: "Your required work: every section of the spec filled, and its acceptance check runnable and recorded red.",
+  implementor: "Your required work: every item of the spec, built, gated and requested.",
+  verifier: "Your required work: every check of step 1 ran, for every unit;",
 } as const
 const ROLES = ["planner", "implementor", "verifier"] as const
 

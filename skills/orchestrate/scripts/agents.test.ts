@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { agentFile, codexFile, instructions, retired, ROLES, stale, type Role } from './agents.ts';
+import { render } from './ending.ts';
 
 const protocol = `# Worker protocol
 
@@ -11,6 +12,9 @@ Intro for the orchestrator.
 ## Ending a step
 
 End with a hand-back line.
+
+<!-- end-of-step: fixture -->
+<!-- /end-of-step -->
 
 ## Rounds
 
@@ -36,6 +40,9 @@ describe('agentFile', () => {
     expect(text).toStartWith('---\nname: verifier\ndescription: ');
     for (const part of ['## Ending a step', '## Rounds', '## Verifier\n\nVerify it.', '- Write files with Write.']) expect(text).toContain(part);
     for (const part of ['## Planner', '## Implementor', 'Intro for the orchestrator', 'Every loop agent reads this']) expect(text).not.toContain(part);
+    // protocol.md's end-of-step block becomes this role's rows, and only its own.
+    expect(text).toContain(render('verifier'));
+    expect(text).not.toContain('<!-- end-of-step: fixture -->');
   });
 
   test('the Codex file carries the same instructions, with the role\'s effort and no pinned model', () => {
@@ -103,7 +110,6 @@ test('every role carries nothing-is-hard, and the whole refusal paragraph is the
     const text = instructions(role, realProtocol, realSafety);
     for (const part of [
       'Difficulty is never a reason (principle-nothing-is-hard)',
-      'step is `ready` only when every item of its spec is done',
       'nor does a long context',
       'the assumption cites its principle by name and is never the lesser option for effort',
     ])
@@ -116,23 +122,6 @@ test('every role carries nothing-is-hard, and the whole refusal paragraph is the
   const widened = realProtocol.replace(REFUSAL, `${REFUSAL}\nThen go on with the rest of the work.`);
   expect(widened).not.toBe(realProtocol);
   expect(paragraph(instructions('implementor', widened, realSafety), '**Refusals.**')).not.toBe(REFUSAL);
-});
-
-test('a thing not done has exactly three names, and the timebox uses one of them', () => {
-  const text = instructions('implementor', realProtocol, realSafety);
-  const ending = paragraph(text, "A verifier's line names its batch")!;
-  // The three cases a reader can tell apart: a named dependency, the round's own measured limit, or work outside the spec.
-  for (const name of ['`waits on <dependency>`', '`continues next round`', '`finding outside the unit`']) expect([name, ending.includes(name)]).toEqual([name, true]);
-  expect(ending).toContain('the timebox by the clock, or the run\'s failure cap by its count');
-  expect(ending).toContain('Effort is none of these.');
-  // Case: the timebox passes with one runnable item unfinished. Timebox says `blocked`, and names the item the way Ending allows.
-  expect(paragraph(text, '**Timebox.**')).toContain('hand back `blocked` with `state.md` current, each unfinished item `continues next round`, and `blocked.md` (as Questions says) quoting the clock');
-  // The verifier: a required check that could not run is `stuck`; only what lies beyond those checks is Unproven.
-  const verifier = instructions('verifier', realProtocol, realSafety);
-  expect(verifier).toContain('What this host cannot run, beyond the checks of step 1, goes under Unproven');
-  expect(verifier).toContain('a check of step 1 that could not run or ran unclear is `stuck`');
-  // A refused item waits on the allow rule the refusal named: the Refusals rule's own report.
-  expect(ending).toContain('the allow rule a refusal named');
 });
 
 test('a finding goes by where it came from, in one way in every prompt and the skill that route it', () => {

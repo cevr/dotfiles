@@ -5,6 +5,7 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { instructions, ROLES, type Role } from './agents.ts';
+import { render } from './ending.ts';
 
 const SKILL_DIR = resolve(import.meta.dir, '..');
 const REPO = resolve(SKILL_DIR, '..', '..');
@@ -147,13 +148,14 @@ describe('links and scripts resolve', () => {
     });
 });
 
-test('protocol.md still makes every role prompt, each smaller than at the base', () => {
-  // Bytes of each role's instructions generated at 2541c442, the base of unit skill-modes.
+test('protocol.md still makes every role prompt, each smaller than at the base plus its end-of-step rows', () => {
+  // Bytes of each role's instructions generated at 2541c442, the base of unit skill-modes. The decision table's rows
+  // (ending.ts) replaced the prose that said how a step ends, and a rule is never cut to fit: the bound grows by them.
   const BASE: Record<Role, number> = { planner: 9461, implementor: 11411, verifier: 17653 };
   const safety = read(join(REPO, 'skills', 'loop', 'safety.md'));
   for (const role of Object.keys(ROLES) as Role[]) {
     const text = instructions(role, protocol, safety);
     for (const part of [`## ${role[0]!.toUpperCase()}${role.slice(1)}`, '## Ending a step', 'SAFETY (mandatory']) expect(text).toContain(part);
-    expect([role, Buffer.byteLength(text, 'utf8') < BASE[role]]).toEqual([role, true]);
+    expect([role, Buffer.byteLength(text, 'utf8') < BASE[role] + Buffer.byteLength(render(role), 'utf8')]).toEqual([role, true]);
   }
 });

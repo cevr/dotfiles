@@ -1,9 +1,8 @@
-// The scenario table: each input case a reader of the role prompts can meet, and the one disposition it must get,
-// asserted against the clauses of the GENERATED prompts in every format they ship in (Claude Code's agents/*.md,
-// Codex's codex/agents/*.toml, OpenCode's mods/orchestrate/agents.json), the nothing-is-hard principle and the
-// orchestrator skill. It replaces reading for two-answer cases: batches 22q and 22r each found one by reading, and
-// each such case is a row here. Every row carries a mutant that brings its competing answer back (most of them the
-// exact text a verifier found), and the table proves each mutant turns its row red.
+// The scenario rows that are not about how a step ends (ending.test.ts's decision table holds those): the nothing-is-hard
+// principle's refusal and follow-up lines, the question form, provenance routing, the On base mark and the lean worker's
+// authority reminder. Each row is asserted against the clauses of the GENERATED prompts in every format they ship in
+// (Claude Code's agents/*.md, Codex's codex/agents/*.toml, OpenCode's mods/orchestrate/agents.json), the principle and
+// the orchestrator skill, and carries a mutant that brings its competing answer back; the table proves each mutant red.
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -75,43 +74,6 @@ const PRINCIPLE_REFUSAL = '- **A refusal is authority, not difficulty.**';
 
 export const TABLE: ReadonlyArray<Row> = [
   {
-    id: 'planner-ready',
-    input: 'a planner has filled every section of its spec and its acceptance check runs and is red; the product behavior its Done line names is not built (22r text-fix B1)',
-    expect: { planner: '`ready`: a planner never implements, so the product Done item stays undone' },
-    rules: [
-      { docs: ['planner'], clause: 'You run one step', has: "A planner's step is `ready` when every section of its spec is filled and its acceptance check runs and is red; a planner never implements" },
-      { docs: ['planner'], lacks: /planner's (or implementor's )?step is `ready` only when every item of its spec is done/ },
-      { docs: ['planner'], clause: "You write the unit's spec", has: 'change no product code' },
-    ],
-    mutant: {
-      docs: ['planner'],
-      from: "A planner's step is `ready` when every section of its spec is filled and its acceptance check runs and is red; a planner never implements, so the product behavior the spec's Done line names stays undone. An implementor's step",
-      to: "A planner's or implementor's step",
-    },
-  },
-  {
-    id: 'implementor-ready',
-    input: 'an implementor has one spec item undone that nothing blocks',
-    expect: { implementor: 'not `ready`: it builds the item; effort names nothing not done' },
-    rules: [
-      { docs: ['implementor'], clause: 'You run one step', has: "An implementor's step is `ready` only when every item of its spec is done" },
-      { docs: ['implementor'], clause: "A verifier's line names its batch", has: 'Effort is none of these.' },
-    ],
-    mutant: { docs: ['implementor'], from: 'only when every item of its spec is done', to: 'when its main items are done' },
-  },
-  {
-    id: 'required-check-could-not-run',
-    input: 'a verifier cannot run one of its step-1 checks (22q Unproven × stuck)',
-    expect: { verifier: '`stuck`, never Unproven and never `accepted`' },
-    rules: [
-      { docs: ['verifier'], clause: 'You run one step', has: "A verifier's step ends when every required check of its step 1 ran" },
-      { docs: ['verifier'], clause: '7. **Verdict.**', has: 'a check of step 1 that could not run or ran unclear is `stuck`' },
-      { docs: ['verifier'], clause: '3. **Proof.**', has: 'What this host cannot run, beyond the checks of step 1, goes under Unproven' },
-      { docs: ['verifier'], lacks: /What this host cannot run goes under Unproven/ },
-    ],
-    mutant: { docs: ['verifier'], from: 'What this host cannot run, beyond the checks of step 1, goes', to: 'What this host cannot run goes' },
-  },
-  {
     id: 'refusal-no-form',
     input: 'a permission refusal names no accepted form; one item is refused and another is runnable (22q principle B1)',
     expect: { planner: 'stop the step and report the allow rule', implementor: 'stop the step and report the allow rule', verifier: 'stop the step and report the allow rule', principle: 'none of its own: the role rule decides' },
@@ -137,37 +99,6 @@ export const TABLE: ReadonlyArray<Row> = [
       from: 'Whether or not it names an accepted form ("commit first", "use a script file"), your role\'s own rule decides what happens next',
       to: 'When it names the accepted form ("commit first", "use a script file"), follow that form. Otherwise your role\'s own rule decides what happens next',
     },
-  },
-  {
-    id: 'refusal-x-timebox',
-    input: 'a refusal stops one item and the timebox passes with another runnable item unfinished',
-    expect: { implementor: 'the refused item `waits on` the allow rule; the other `continues next round`; verdict `blocked`' },
-    rules: [
-      { docs: [...ROLES], clause: "A verifier's line names its batch", has: '`waits on <dependency>` (an open unit, owner question or commitment, or the allow rule a refusal named' },
-      { docs: ['implementor'], clause: '**Timebox.**', has: 'each unfinished item `continues next round`' },
-    ],
-    mutant: { docs: [...ROLES], from: ', or the allow rule a refusal named, by its id or command', to: '' },
-  },
-  {
-    id: 'blocked-x-waiting',
-    input: 'the timebox passes: which file says why the round stopped',
-    expect: { implementor: '`blocked`, with `blocked.md` quoting the clock, as Questions says for anything that blocks' },
-    rules: [
-      { docs: ['implementor'], clause: '**Timebox.**', has: 'and `blocked.md` (as Questions says) quoting the clock' },
-      { docs: ['implementor'], clause: '**Questions.**', has: 'write `<unit dir>/blocked.md`' },
-    ],
-    mutant: { docs: ['implementor'], from: ', and `blocked.md` (as Questions says) quoting the clock', to: '' },
-  },
-  {
-    id: 'follow-up-x-finding',
-    input: 'an implementor finds work no spec item asks for, and has an item the timebox cut short',
-    expect: { implementor: 'the finding goes under Follow-ups (`finding outside the unit`); the cut item `continues next round`, never a follow-up' },
-    rules: [
-      { docs: ['implementor'], clause: '**Timebox.**', has: 'A finding outside the spec goes in `state.md` under "Follow-ups"; a spec item never does.' },
-      { docs: [...ROLES], clause: "A verifier's line names its batch", has: '`finding outside the unit`, for work no spec item asks for' },
-      { docs: [...ROLES], clause: "A verifier's line names its batch", has: 'never a follow-up' },
-    ],
-    mutant: { docs: [...ROLES], from: 'after the failure cap), never a follow-up;', to: 'after the failure cap), or a follow-up;' },
   },
   {
     id: 'discovery-in-owned-file-x-unfinished-item',
@@ -196,16 +127,6 @@ export const TABLE: ReadonlyArray<Row> = [
       { docs: ['skill'], has: '"leave it as a follow-up" is no answer' },
     ],
     mutant: { docs: [...ROLES], from: ' (two that differ only in effort are no question: build the better one)', to: '' },
-  },
-  {
-    id: 'failure-cap-x-next-round',
-    input: "the unit's third round fails with an item unfinished: there is no next round of this spec",
-    expect: { implementor: 'the item stays this unit\'s work and continues in its rewrite' },
-    rules: [
-      { docs: [...ROLES], clause: "A verifier's line names its batch", has: "it stays this unit's work (its next round, or its rewrite after the failure cap)" },
-      { docs: [...ROLES], clause: 'A round is one request', has: 'At the third failed round, the orchestrator rewrites the unit on a new spec' },
-    ],
-    mutant: { docs: [...ROLES], from: ' (its next round, or its rewrite after the failure cap)', to: '' },
   },
   {
     id: 'provenance-unit-x-base',
@@ -238,15 +159,15 @@ export const TABLE: ReadonlyArray<Row> = [
   {
     id: 'lean-worker-refusal',
     input: 'the lean worker (no unit, no round) meets a guard refusal (22r On base R1)',
-    expect: { worker: "follow the host's refusal rule; authority outranks effort; no bound-step instruction" },
+    expect: { worker: "never rephrase or work around it; authority outranks effort; no bound-step instruction outside its end-of-step block" },
     rules: [
-      { docs: ['worker'], has: "A guard, permission or classifier refusal is the host's rule and outranks effort: follow the host's refusal rule" },
+      { docs: ['worker'], has: "A guard, permission or classifier refusal is the host's rule and outranks effort: never rephrase or work around it to get past." },
       { docs: ['worker'], has: 'principle-nothing-is-hard' },
       { docs: ['worker'], lacks: /round-N-request|hand back|`ready`|state\.md|ask_orchestrator|blocked\.md/ },
     ],
     mutant: {
       docs: ['worker'],
-      from: "A guard, permission or classifier refusal is the host's rule and outranks effort: follow the host's refusal rule, and never rephrase or work around it to get past.",
+      from: "A guard, permission or classifier refusal is the host's rule and outranks effort: never rephrase or work around it to get past.",
       to: 'If something refuses you, say so in your result and go on.',
     },
   },
@@ -283,14 +204,14 @@ function mutate(texts: Texts, mutant: Row['mutant']): Texts {
 
 describe('the scenario table', () => {
   const texts = load();
-  test('ids are unique, and every 22q, 22r and listed pair has its row', () => {
+  test('ids are unique, and each row is one the end-of-step table does not cover', () => {
     const ids = TABLE.map((row) => row.id);
     expect(new Set(ids).size).toBe(ids.length);
-    expect(ids).toEqual(expect.arrayContaining([
-      'planner-ready', 'implementor-ready', 'required-check-could-not-run', 'refusal-no-form', 'refusal-named-form',
-      'refusal-x-timebox', 'blocked-x-waiting', 'follow-up-x-finding', 'discovery-in-owned-file-x-unfinished-item',
-      'question-x-build-the-better-one', 'failure-cap-x-next-round', 'provenance-unit-x-base', 'on-base-meaning', 'lean-worker-refusal',
-    ]));
+    // The end-of-step cases live in ending.test.ts's table; these rows test what it does not: the principle, routing, questions, the worker's reminder.
+    expect(ids).toEqual([
+      'refusal-no-form', 'refusal-named-form', 'discovery-in-owned-file-x-unfinished-item', 'question-x-build-the-better-one',
+      'provenance-unit-x-base', 'on-base-meaning', 'lean-worker-refusal',
+    ]);
   });
   for (const row of TABLE) {
     test(`${row.id}: one disposition holds in every generated prompt`, () => {
