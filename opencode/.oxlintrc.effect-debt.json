@@ -822,26 +822,6 @@
     },
     {
       "files": [
-        "scripts/fork-checks.ts"
-      ],
-      "rules": {
-        "effect/noGlobals": "off",
-        "effect/noNodeBuiltinImport": "off"
-      }
-    },
-    {
-      "files": [
-        "scripts/fork-checks.test.ts"
-      ],
-      "rules": {
-        "effect/noAsyncFunction": "off",
-        "effect/noEffectRunInTests": "off",
-        "effect/noGlobals": "off",
-        "effect/noNodeBuiltinImport": "off"
-      }
-    },
-    {
-      "files": [
         "scripts/verify.ts"
       ],
       "rules": {

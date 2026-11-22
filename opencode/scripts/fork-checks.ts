@@ -1,7 +1,7 @@
 // `bun scripts/fork-checks.ts --fork <checkout>`: the fork's feature checks, the tests that hold each fork
 // feature the owner keeps, declared once in scripts/fork-checks.json (package, test files, the request that
 // last proved it). `bun run daily`'s upstream merge runs it on the merged tree before it pushes
-// (scripts/upstream.ts `forkChecks`), and a fork lane's round gate runs it on the lane; nothing else on the
+// (scripts/upstream.ts `mergeChecks`), and a fork lane's round gate runs it on the lane; nothing else on the
 // fork's own branch runs the fork's package tests (its CI runs on dev, beta and PRs only).
 //
 // One `bun test` per package, one at a time, niced, `--parallel=4`, in the package's own command (core's
@@ -14,15 +14,15 @@
 // most 30 minutes each), refuses to start under 6 GiB free on the Mac, and stops at its time bound: each is
 // "could not run", which holds a merge as a red does.
 //
-// Exit: 0 green, 1 red, 2 could not run or a list that does not parse. The last line is the summary.
+// Exit: 0 green, 1 red, 2 could not run, no fork named, or a list that does not parse. The last line is the summary.
 //
 // Usage: bun scripts/fork-checks.ts [--fork <checkout>] [--list <file>] [--time-bound-ms N] [--max-load N] [--lock <file>]
 //        (--fork defaults to OPENCODE_DEV; --list, --max-load and --lock are for tests)
-import { dlopen, FFIType } from "bun:ffi"
-import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync, statfsSync } from "node:fs"
-import { loadavg, tmpdir } from "node:os"
-import { join } from "node:path"
-import { Array as Arr, Duration, Effect, Match, Option, Result, Schema } from "effect"
+import * as BunRuntime from "@effect/platform-bun/BunRuntime"
+import * as BunServices from "@effect/platform-bun/BunServices"
+import { Array as Arr, Cause, Clock, Config, Console, Context, Data, Duration, Effect, Exit, FileSystem, Layer, Match, Option, Path, Result, Schema, Stream } from "effect"
+import { Command, Flag } from "effect/cli"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import declared from "./fork-checks.json" with { type: "json" }
 
 const Feature = Schema.Struct({
@@ -52,6 +52,8 @@ export type Expectation = typeof Expectation.Type
 export const decodeList = Schema.decodeUnknownResult(List)
 /** Decodes a list file's text. */
 export const decodeListText = Schema.decodeUnknownResult(Schema.fromJsonString(List))
+/** A list as a file's text (a test's `--list`). */
+export const encodeListText = Schema.encodeSync(Schema.fromJsonString(List))
 /** scripts/fork-checks.json, decoded. */
 export const declaredList = decodeList(declared)
 
@@ -60,11 +62,18 @@ export const listProblems = (list: List): ReadonlyArray<string> => {
   const listed = new Set(list.features.flatMap((feature) => feature.files.map((file) => `${feature.package}/${file}`)))
   const ids = list.features.map((feature) => feature.id)
   return [
-    ...list.features.filter((feature) => !Object.hasOwn(list.packages, feature.package)).map((feature) => `${feature.id}: package ${feature.package} has no command`),
-    ...ids.filter((id, at) => ids.indexOf(id) !== at).map((id) => `${id}: the id is listed twice`),
-    ...list.expectations.filter((each) => !listed.has(`${each.package}/${each.file}`)).map((each) => `expectation "${each.test}": ${each.package}/${each.file} is in no feature`),
+    ...list.features.flatMap((feature) => Arr.filter([`${feature.id}: package ${feature.package} has no command`], () => !Object.hasOwn(list.packages, feature.package))),
+    ...ids.flatMap((id, at) => Arr.filter([`${id}: the id is listed twice`], () => ids.indexOf(id) !== at)),
+    ...list.expectations.flatMap((each) => Arr.filter([`expectation "${each.test}": ${each.package}/${each.file} is in no feature`], () => !listed.has(`${each.package}/${each.file}`))),
   ]
 }
+
+/** The fork to check: `--fork`, else OPENCODE_DEV; with neither, the message that says how to name it. */
+export const forkOf = (flag: Option.Option<string>, dev: Option.Option<string>): Result.Result<string, string> =>
+  Result.fromOption(
+    Option.filter(Option.orElse(flag, () => dev), (fork) => fork !== ""),
+    () => "no fork checkout named: pass --fork <checkout> or set OPENCODE_DEV to the fork checkout (the gate sets it)",
+  )
 
 /** One test that holds a merge: where it is, its full name (describe blocks joined by " > ") and why. */
 export interface Red {
@@ -78,15 +87,6 @@ export type Verdict =
   | { readonly kind: "green"; readonly notes: ReadonlyArray<string> }
   | { readonly kind: "red"; readonly reds: ReadonlyArray<Red>; readonly notes: ReadonlyArray<string> }
   | { readonly kind: "could-not-run"; readonly reason: string; readonly notes: ReadonlyArray<string> }
-
-/** Each listed file that is not in the checkout `fork`, as a red. */
-export const missingFiles = (list: List, fork: string): ReadonlyArray<Red> =>
-  Arr.dedupeWith(
-    list.features.flatMap((feature) =>
-      feature.files.filter((file) => !existsSync(join(fork, feature.package, file))).map((file) => ({ package: feature.package, file, test: "", why: "the listed file is not in the fork" })),
-    ),
-    (one, two) => one.package === two.package && one.file === two.file,
-  )
 
 /** One test in a JUnit report: its file (relative to the package), its full name, and whether it failed. */
 export interface Case {
@@ -140,12 +140,12 @@ export interface Plan {
 export const activeExpectations = (list: List, bash: Option.Option<string>): ReadonlyArray<Expectation> =>
   list.expectations.filter((each) => Option.exists(bash, (version) => version === each.host.bash))
 
-/** Judges one run of `plan` by its exit and its report's tests: the reds, and a note per expectation that held. */
 export interface Judged {
   readonly reds: ReadonlyArray<Red>
   readonly notes: ReadonlyArray<string>
 }
 
+/** Judges one run of `plan` by its exit and its report's tests: the reds, and a note per expectation that held. */
 export const judge = (plan: Plan, code: number, cases: ReadonlyArray<Case>): Judged => {
   const expected = plan.expected.filter((each) => each.package === plan.package && plan.files.includes(each.file))
   const isExpected = (found: Case) => expected.some((each) => each.file === found.file && each.test === found.test)
@@ -178,19 +178,31 @@ export interface Run {
   readonly timeoutMs: number
 }
 export type Ran = { readonly kind: "exited"; readonly code: number; readonly log: string; readonly junit: Option.Option<string> } | { readonly kind: "timed-out"; readonly log: string }
-export type Runner = (run: Run) => Effect.Effect<Ran>
+
+/** Why the host could not be read, or a command could not start. */
+export class HostUnread extends Data.TaggedError("HostUnread")<{ readonly message: string }> {}
+
+/** Runs one package's tests. */
+export class TestRunner extends Context.Service<TestRunner, { readonly run: (run: Run) => Effect.Effect<Ran, HostUnread> }>()("dotfiles-opencode/fork-checks/TestRunner") {}
 
 /** What the checks read of the host. */
-export interface Host {
-  /** The version of the first bash on PATH (`$BASH_VERSION` up to its "("), none without one. */
-  readonly bash: Option.Option<string>
-  /** Whether the disk floor applies (the Mac). */
-  readonly floored: boolean
-  readonly load: () => number
-  readonly freeBytes: (dir: string) => number
-  readonly now: () => number
-  readonly sleep: (ms: number) => Effect.Effect<void>
-}
+export class HostGauge extends Context.Service<
+  HostGauge,
+  {
+    /** The version of the first bash on PATH (`$BASH_VERSION` up to its "("), none without one. */
+    readonly bash: Effect.Effect<Option.Option<string>>
+    /** Whether the disk floor applies (the Mac). */
+    readonly floored: Effect.Effect<boolean, HostUnread>
+    /** The 1-minute load average. */
+    readonly load: Effect.Effect<number, HostUnread>
+    readonly freeBytes: (dir: string) => Effect.Effect<number, HostUnread>
+  }
+>()("dotfiles-opencode/fork-checks/HostGauge") {}
+
+/** The host's fork-checks lock: runs the effect holding it, or answers none at once while another run holds it. */
+export class RunLock extends Context.Service<RunLock, { readonly holding: <R>(file: string, run: Effect.Effect<Verdict, HostUnread, R>) => Effect.Effect<Option.Option<Verdict>, HostUnread, R> }>()(
+  "dotfiles-opencode/fork-checks/RunLock",
+) {}
 
 export interface Limits {
   readonly maxLoad: number
@@ -207,12 +219,9 @@ export const LIMITS: Limits = { maxLoad: 24, waitMs: 30 * 60_000, everyMs: 15_00
 export interface Input {
   readonly list: List
   readonly fork: string
-  readonly host: Host
-  readonly runner: Runner
-  /** Runs the effect holding the host's fork-checks lock, or answers none at once while another run holds it. */
-  readonly lock: (run: Effect.Effect<Verdict>) => Effect.Effect<Option.Option<Verdict>>
   readonly limits: Limits
-  readonly say: (line: string) => void
+  /** The host lock's file. */
+  readonly lock: string
 }
 
 /** The runs: one per package, its files in list order, each once. */
@@ -225,33 +234,49 @@ export const plansOf = (list: List, bash: Option.Option<string>): ReadonlyArray<
 
 const couldNot = (reason: string, notes: ReadonlyArray<string> = []): Verdict => ({ kind: "could-not-run", reason, notes })
 const tail = (text: string, lines = 30) => text.trimEnd().split("\n").slice(-lines).join("\n")
+const minutes = (ms: number) => `${Number((ms / 60_000).toFixed(3))} min`
+
+/** Each listed file that is not in the checkout, as a red. */
+export const missingFiles = Effect.fn("ForkChecks.missingFiles")(function* (list: List, fork: string) {
+  const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
+  const listed = Arr.dedupeWith(
+    list.features.flatMap((feature) => feature.files.map((file) => ({ package: feature.package, file }))),
+    (one, two) => one.package === two.package && one.file === two.file,
+  )
+  const present = yield* Effect.forEach(listed, (each) => fs.exists(path.join(fork, each.package, each.file)).pipe(Effect.orElseSucceed(() => false)), { concurrency: 8 })
+  return listed.flatMap((each, at) => Arr.filter([{ ...each, test: "", why: "the listed file is not in the fork" }], () => !present[at]))
+})
 
 /** Polls `ready` until it answers some, at most `limits.waitMs`. */
-const patiently = Effect.fn("ForkChecks.patiently")(function* (input: Input, ready: Effect.Effect<Option.Option<Verdict>>) {
-  const start = input.host.now()
+const patiently = Effect.fn("ForkChecks.patiently")(function* <R>(limits: Limits, ready: Effect.Effect<Option.Option<Verdict>, HostUnread, R>) {
+  const deadline = (yield* Clock.currentTimeMillis) + limits.waitMs
   for (;;) {
     const got = yield* ready
-    if (Option.isSome(got) || input.host.now() - start >= input.limits.waitMs) return got
-    yield* input.host.sleep(input.limits.everyMs)
+    if (Option.isSome(got) || (yield* Clock.currentTimeMillis) >= deadline) return got
+    yield* Effect.sleep(Duration.millis(limits.everyMs))
   }
 })
 
 /** Waits for the load to drop to `limits.maxLoad`; answers whether it did. */
-const calm = Effect.fn("ForkChecks.calm")(function* (input: Input) {
-  const ready = Effect.sync(() => Option.map(Option.liftPredicate(input.host.load(), (load) => load <= input.limits.maxLoad), (): Verdict => ({ kind: "green", notes: [] })))
-  return Option.isSome(yield* patiently(input, ready))
+const calm = Effect.fn("ForkChecks.calm")(function* (limits: Limits) {
+  const gauge = yield* HostGauge
+  const ready = Effect.map(gauge.load, (load) => Option.map(Option.liftPredicate(load, (each) => each <= limits.maxLoad), (): Verdict => ({ kind: "green", notes: [] })))
+  return Option.isSome(yield* patiently(limits, ready))
 })
 
 /** One run of `plan`, judged; could not run when the host stays loaded, the time bound passes or bun writes no report. */
 const runOnce = Effect.fn("ForkChecks.runOnce")(function* (input: Input, plan: Plan, deadline: number) {
-  if (!(yield* calm(input))) return couldNot(`the 1-minute load stayed over ${input.limits.maxLoad} for ${Math.round(input.limits.waitMs / 60_000)} min before ${plan.package} ran`)
-  const left = deadline - input.host.now()
-  if (left <= 0) return couldNot(`the time bound (${Math.round(input.limits.timeBoundMs / 60_000)} min) passed before ${plan.package} ran`)
-  input.say(`fork-checks: ${plan.package}: ${plan.files.length} files`)
+  if (!(yield* calm(input.limits))) return couldNot(`the 1-minute load stayed over ${input.limits.maxLoad} for ${minutes(input.limits.waitMs)} before ${plan.package} ran`)
+  const left = deadline - (yield* Clock.currentTimeMillis)
+  if (left <= 0) return couldNot(`the time bound (${minutes(input.limits.timeBoundMs)}) passed before ${plan.package} ran`)
+  yield* Console.log(`fork-checks: ${plan.package}: ${plan.files.length} files`)
+  const path = yield* Path.Path
+  const runner = yield* TestRunner
   const command = Option.getOrElse(Option.fromNullishOr(input.list.packages[plan.package]), () => ["bun", "test"])
-  const ran = yield* input.runner({ cwd: join(input.fork, plan.package), command, files: plan.files, threads: input.limits.threads, timeoutMs: left })
+  const ran = yield* runner.run({ cwd: path.join(input.fork, plan.package), command, files: plan.files, threads: input.limits.threads, timeoutMs: left })
   return Match.value(ran).pipe(
-    Match.when({ kind: "timed-out" }, (out): Verdict => couldNot(`${plan.package} ran past the time bound (${Math.round(input.limits.timeBoundMs / 60_000)} min), its process group killed:\n${tail(out.log)}`)),
+    Match.when({ kind: "timed-out" }, (out): Verdict => couldNot(`${plan.package} ran past the time bound (${minutes(input.limits.timeBoundMs)}), its process group ended:\n${tail(out.log)}`)),
     Match.when({ kind: "exited" }, (out): Verdict =>
       Option.match(out.junit, {
         onNone: () => couldNot(`bun test in ${plan.package} exited ${out.code} and wrote no report:\n${tail(out.log)}`),
@@ -272,17 +297,19 @@ const runPlan = Effect.fn("ForkChecks.runPlan")(function* (input: Input, plan: P
   if (first.kind !== "red") return first
   const whole = first.reds.some((red) => red.file === "(the run)")
   const files = Arr.filter(plan.files, (file) => whole || first.reds.some((red) => red.file === file))
-  input.say(`fork-checks: ${plan.package}: ${files.length} red files; running them once more`)
+  yield* Console.log(`fork-checks: ${plan.package}: ${files.length} red files; running them once more`)
   const second = yield* runOnce(input, { ...plan, files }, deadline)
   if (second.kind !== "green") return second
   return { kind: "green", notes: [...second.notes, `flaky, green on the rerun: ${files.map((file) => `${plan.package}/${file}`).join(", ")}`] } satisfies Verdict
 })
 
-/** Every plan in turn under the lock: stops at the first that could not run, else gathers the reds and notes. */
+/** Every plan in turn: stops at the first that could not run, else gathers the reds and notes. */
 const runAll = Effect.fn("ForkChecks.runAll")(function* (input: Input, deadline: number) {
+  const gauge = yield* HostGauge
+  const bash = yield* gauge.bash
   const reds: Array<Red> = []
   const notes: Array<string> = []
-  for (const plan of plansOf(input.list, input.host.bash)) {
+  for (const plan of plansOf(input.list, bash)) {
     const verdict = yield* runPlan(input, plan, deadline)
     notes.push(...verdict.notes)
     if (verdict.kind === "could-not-run") return couldNot(verdict.reason, notes)
@@ -292,24 +319,29 @@ const runAll = Effect.fn("ForkChecks.runAll")(function* (input: Input, deadline:
   return { kind: "green", notes } satisfies Verdict
 })
 
-/** The checks over the checkout `fork`: missing files first, then the disk floor, the lock, and each package's run. */
+/** The checks over the checkout: missing files first, then the disk floor, the lock, and each package's run. A host that cannot be read could not run. */
 export const checkFork = Effect.fn("ForkChecks.check")(function* (input: Input) {
-  const missing = missingFiles(input.list, input.fork)
+  const missing = yield* missingFiles(input.list, input.fork)
   if (missing.length > 0) return { kind: "red", reds: missing, notes: [] } satisfies Verdict
-  const free = input.host.freeBytes(input.fork)
-  if (input.host.floored && free < input.limits.diskFloor)
-    return couldNot(`${(free / 2 ** 30).toFixed(1)} GiB free on ${input.fork}'s disk, under the ${(input.limits.diskFloor / 2 ** 30).toFixed(0)} GiB floor`)
-  const deadline = input.host.now() + input.limits.timeBoundMs
-  const verdict = yield* patiently(input, input.lock(runAll(input, deadline)))
-  return Option.getOrElse(verdict, () => couldNot(`another fork-checks run held the host's lock for ${Math.round(input.limits.waitMs / 60_000)} min`))
+  const gauge = yield* HostGauge
+  const lock = yield* RunLock
+  const checked = Effect.gen(function* () {
+    const free = yield* gauge.freeBytes(input.fork)
+    if ((yield* gauge.floored) && free < input.limits.diskFloor)
+      return couldNot(`${(free / 2 ** 30).toFixed(1)} GiB free on ${input.fork}'s disk, under the ${(input.limits.diskFloor / 2 ** 30).toFixed(0)} GiB floor`)
+    const deadline = (yield* Clock.currentTimeMillis) + input.limits.timeBoundMs
+    const verdict = yield* patiently(input.limits, lock.holding(input.lock, runAll(input, deadline)))
+    return Option.getOrElse(verdict, () => couldNot(`another fork-checks run held the host's lock for ${minutes(input.limits.waitMs)}`))
+  })
+  return yield* checked.pipe(Effect.catchTag("HostUnread", (error) => Effect.succeed(couldNot(`the host could not be read: ${error.message}`))))
 })
 
 /** The features that list `red`'s file. */
 const featuresOf = (list: List, red: Red) => list.features.filter((feature) => feature.package === red.package && feature.files.includes(red.file)).map((feature) => feature.id)
 
-/** The report's lines; the last is the summary, naming each red test, its features and the upstream range when the head is a merge. */
+/** The report's lines; the last is the summary, naming each red test, its features and the merge's range (`over …`) when the head is a merge. */
 export const reportLines = (list: List, verdict: Verdict, range: Option.Option<string>): ReadonlyArray<string> => {
-  const over = Option.getOrElse(Option.map(range, (each) => ` over merge ${each}`), () => "")
+  const over = Option.getOrElse(Option.map(range, (each) => ` over ${each}`), () => "")
   const name = (red: Red) => [`${red.package}/${red.file}`, ...Arr.filter([red.test], (test) => test !== "")].join(" > ")
   return Match.value(verdict).pipe(
     Match.when({ kind: "green" }, (green) => [...green.notes, `fork-checks: green${over}, ${list.features.length} features`]),
@@ -331,148 +363,174 @@ export const exitOf = (verdict: Verdict): number =>
     Match.orElse(() => 2),
   )
 
-/** The command a caller runs the checks with: the dotfiles' `opencode` dir, the checkout, and any flags (a test's `--list`). */
-export const featureCheckArgv = (opencode: string, fork: string, flags: ReadonlyArray<string> = []): ReadonlyArray<string> => ["bun", join(opencode, "scripts/fork-checks.ts"), "--fork", fork, ...flags]
-
-/** `HEAD^1..HEAD^2` of a merge at the checkout's head, short; none when the head is not a merge. */
-export const rangeOf = (fork: string): Option.Option<string> => {
-  const ran = Bun.spawnSync(["git", "-C", fork, "rev-parse", "HEAD^1", "HEAD^2"], { stdout: "pipe", stderr: "pipe" })
-  const shas = ran.stdout
-    .toString()
-    .trim()
-    .split("\n")
-    .map((sha) => sha.slice(0, 10))
-  return Option.map(Option.liftPredicate(shas, (each) => ran.exitCode === 0 && each.length === 2), (each) => each.join(".."))
-}
-
-/** The version of the first bash on `path`, up to its "(": "3.2.57" for macOS's /bin/bash. */
-export const bashVersion = (path: string): Option.Option<string> =>
-  Option.flatMap(Option.fromNullishOr(Bun.which("bash", { PATH: path })), (bash) => {
-    const ran = Bun.spawnSync([bash, "--noprofile", "--norc", "-c", 'printf %s "$BASH_VERSION"'], { stdout: "pipe", stderr: "pipe" })
-    return Option.filter(Arr.head(ran.stdout.toString().split("(")), (version) => ran.exitCode === 0 && version !== "")
-  })
-
-export const realHost = (path: string): Host => ({
-  bash: bashVersion(path),
-  floored: process.platform === "darwin",
-  load: () => Option.getOrElse(Arr.head(loadavg()), () => 0),
-  freeBytes: (dir) => {
-    const stat = statfsSync(dir)
-    return stat.bavail * stat.bsize
-  },
-  now: () => Date.now(),
-  sleep: (ms) => Effect.sleep(Duration.millis(ms)),
+/** A command's exit and its output (stdout and stderr together), killed with its process group at `timeoutMs`. */
+const runCommand = Effect.fn("ForkChecks.runCommand")(function* (command: string, args: ReadonlyArray<string>, cwd: string, timeoutMs: number) {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      const handle = yield* spawner.spawn(ChildProcess.make(command, [...args], { cwd, stdin: "ignore", forceKillAfter: "3 seconds" }))
+      const ran = yield* Effect.all([handle.all.pipe(Stream.decodeText(), Stream.mkString), handle.exitCode], { concurrency: 2 }).pipe(Effect.timeoutOption(Duration.millis(timeoutMs)))
+      return Option.map(ran, ([log, code]) => ({ log, code: Number(code) }))
+    }),
+  ).pipe(Effect.mapError((error) => new HostUnread({ message: `${command}: ${error.message}` })))
 })
 
-/** Signals the process group `pid` leads (the run's own, started detached); false once it is gone. */
-const signalGroup = (pid: number, signal: NodeJS.Signals | 0) => Result.isSuccess(Result.try(() => process.kill(-pid, signal)))
+/** A command's trimmed stdout when it exits 0, none otherwise (or when it cannot start). */
+const outputOf = (command: string, args: ReadonlyArray<string>, cwd = ".") =>
+  runCommand(command, args, cwd, 30_000).pipe(
+    Effect.map((ran) => Option.map(Option.filter(ran, (each) => each.code === 0), (each) => each.log.trim())),
+    Effect.orElseSucceed(() => Option.none<string>()),
+  )
 
-/** Ends the run's process group: TERM, then KILL after 3 s for whatever is left. */
-const endGroup = Effect.fn("ForkChecks.endGroup")(function* (pid: number) {
-  if (!signalGroup(pid, "SIGTERM")) return
-  yield* Effect.sleep(Duration.seconds(3))
-  signalGroup(pid, "SIGKILL")
+/** The merge at the checkout's head, labelled: `upstream a..b` when its second parent is upstream/dev (the daily's merge), else `merge parents a..b`; none when the head is not a merge. */
+export const rangeOf = Effect.fn("ForkChecks.rangeOf")(function* (fork: string) {
+  const parents = Option.filter(
+    Option.map(yield* outputOf("git", ["-C", fork, "rev-parse", "HEAD^1", "HEAD^2"]), (text) => text.split("\n")),
+    (shas) => shas.length === 2,
+  )
+  const upstream = yield* outputOf("git", ["-C", fork, "rev-parse", "--verify", "--quiet", "refs/remotes/upstream/dev"])
+  return Option.map(parents, (shas) => {
+    const span = shas.map((sha) => sha.slice(0, 10)).join("..")
+    if (Option.exists(upstream, (sha) => sha === shas[1])) return `upstream ${span}`
+    return `merge parents ${span}`
+  })
 })
 
 /** `bun test` niced in its own process group, its JUnit report in a scratch folder, the group ended when it exits or times out. */
-export const bunRunner =
-  (env: NodeJS.ProcessEnv): Runner =>
-  (run) =>
-    Effect.gen(function* () {
-      const dir = mkdtempSync(join(tmpdir(), "fork-checks-"))
-      const report = join(dir, "junit.xml")
-      const argv = ["nice", "-n", "10", ...run.command, `--parallel=${run.threads}`, "--reporter=junit", `--reporter-outfile=${report}`, ...run.files]
-      const child = Bun.spawn(argv, { cwd: run.cwd, env, stdout: "pipe", stderr: "pipe", detached: true })
-      const stdout = new Response(child.stdout).text()
-      const stderr = new Response(child.stderr).text()
-      const exited = yield* Effect.timeoutOption(
-        Effect.promise(() => child.exited),
-        Duration.millis(run.timeoutMs),
-      )
-      yield* endGroup(child.pid)
-      const log = `${yield* Effect.promise(() => stdout)}\n${yield* Effect.promise(() => stderr)}`
-      const junit = Option.map(Option.liftPredicate(report, existsSync), (file) => readFileSync(file, "utf8"))
-      rmSync(dir, { recursive: true, force: true })
-      return Option.match(exited, {
-        onNone: (): Ran => ({ kind: "timed-out", log }),
-        onSome: (code): Ran => ({ kind: "exited", code, log, junit }),
-      })
-    })
-
-/** libc's `flock(2)` (macOS's libSystem, glibc's libc.so.6), opened at the first lock. */
-const libcFlock = () =>
-  dlopen(
-    Match.value(process.platform).pipe(
-      Match.when("darwin", () => "/usr/lib/libSystem.B.dylib"),
-      Match.orElse(() => "libc.so.6"),
-    ),
-    { flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 } },
-  ).symbols.flock
-
-/**
- * Runs `run` holding an exclusive `flock` on `file`, or answers none at once while another process holds it. The
- * kernel owns the lock: it ends with its holder, so no lock goes stale. (mods/work's flock helpers are built on that
- * package's own copy of Effect, whose types this script's Effect does not take.)
- */
-export const lockedBy =
-  (file: string) =>
-  (run: Effect.Effect<Verdict>): Effect.Effect<Option.Option<Verdict>> =>
-    Effect.acquireUseRelease(
-      Effect.sync(() => openSync(file, "a+")),
-      (descriptor) =>
-        Effect.suspend(() => {
-          if (libcFlock()(descriptor, 2 | 4) !== 0) return Effect.succeed(Option.none<Verdict>())
-          return Effect.map(run, Option.some)
+export const bunRunner = Layer.effect(
+  TestRunner,
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+    const run = (each: Run) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const dir = yield* fs.makeTempDirectoryScoped({ prefix: "fork-checks-" })
+          const report = path.join(dir, "junit.xml")
+          const args = ["-n", "10", ...each.command, `--parallel=${each.threads}`, "--reporter=junit", `--reporter-outfile=${report}`, ...each.files]
+          const ran = yield* runCommand("nice", args, each.cwd, each.timeoutMs)
+          if (Option.isNone(ran)) return { kind: "timed-out", log: "" } satisfies Ran
+          const junit = yield* fs.readFileString(report).pipe(Effect.option)
+          return { kind: "exited", code: ran.value.code, log: ran.value.log, junit } satisfies Ran
         }),
-      (descriptor) => Effect.sync(() => closeSync(descriptor)),
-    )
+      ).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.mapError((error) => new HostUnread({ message: error.message })),
+      )
+    return TestRunner.of({ run })
+  }),
+)
 
-/** The argument after `name`, when `name` is there. */
-const flag = (argv: ReadonlyArray<string>, name: string): Option.Option<string> => Option.flatMap(Option.liftPredicate(argv.indexOf(name), (at) => at >= 0), (at) => Arr.get(argv, at + 1))
+/** The first number in `text`. */
+const firstNumber = (text: string) => Number(Option.getOrElse(Option.map(Option.fromNullishOr(/\d+(?:\.\d+)?/.exec(text)), (match) => match[0]), () => "NaN"))
 
-/** The list named by `--list`, else the declared one; the problems that stop a run, if any. */
-const listOf = (argv: ReadonlyArray<string>): Result.Result<List, string> => {
-  const decoded = Option.match(flag(argv, "--list"), { onNone: () => declaredList, onSome: (file) => decodeListText(readFileSync(file, "utf8")) })
+/** The host as commands and files read it: bash's version, `uname -s`, `/proc/loadavg` or `sysctl -n vm.loadavg`, `df -Pk`. */
+export const hostGauge = Layer.effect(
+  HostGauge,
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+    const read = (command: string, args: ReadonlyArray<string>) => outputOf(command, args).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
+    const must = (what: string, got: Option.Option<string>) => Effect.mapError(Effect.fromOption(got), () => new HostUnread({ message: `could not read ${what}` }))
+    const number = (what: string, text: string) => Effect.filterOrFail(Effect.succeed(firstNumber(text)), Number.isFinite, () => new HostUnread({ message: `${what} read "${text}"` }))
+    return HostGauge.of({
+      bash: Effect.map(read("bash", ["--noprofile", "--norc", "-c", 'printf %s "$BASH_VERSION"']), (version) => Option.flatMap(version, (text) => Option.filter(Arr.head(text.split("(")), (each) => each !== ""))),
+      floored: Effect.map(read("uname", ["-s"]), (system) => Option.exists(system, (name) => name === "Darwin")),
+      load: Effect.gen(function* () {
+        const proc = yield* fs.readFileString("/proc/loadavg").pipe(Effect.option)
+        const got = yield* Option.match(proc, { onSome: (text) => Effect.succeed(Option.some(text)), onNone: () => read("sysctl", ["-n", "vm.loadavg"]) })
+        return yield* number("the load", yield* must("the load", got))
+      }),
+      freeBytes: (dir: string) =>
+        Effect.gen(function* () {
+          const text = yield* must(`free space on ${dir}`, yield* read("df", ["-Pk", dir]))
+          const available = Option.getOrElse(Option.flatMap(Arr.get(text.split("\n"), 1), (line) => Arr.get(line.trim().split(/\s+/), 3)), () => "")
+          return (yield* number(`df -Pk ${dir}`, available)) * 1024
+        }),
+    })
+  }),
+)
+
+/** Holds `flock(2)` on the lock file in a child that keeps it until its scope ends (the kernel frees it with its holder). */
+const HOLDER = 'use Fcntl ":flock"; open(my $f, ">>", $ARGV[0]) or exit 2; flock($f, LOCK_EX | LOCK_NB) or exit 1; $| = 1; print "held\\n"; sleep;'
+
+/** The host's lock: a `perl` child holds an exclusive `flock` on the file for the run's length, on the Mac and Linux alike. */
+export const flockLock = Layer.effect(
+    RunLock,
+    Effect.gen(function* () {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+      const holding = <R>(file: string, run: Effect.Effect<Verdict, HostUnread, R>) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const holder = yield* spawner.spawn(ChildProcess.make("perl", ["-e", HOLDER, file], { stdin: "ignore", forceKillAfter: "1 second" }))
+            const said = yield* holder.stdout.pipe(Stream.decodeText(), Stream.splitLines, Stream.runHead)
+            if (!Option.exists(said, (line) => line === "held")) return Option.none<Verdict>()
+            return Option.some(yield* run)
+          }),
+        ).pipe(Effect.catchTag("PlatformError", (error) => Effect.fail(new HostUnread({ message: `the lock ${file}: ${error.message}` }))))
+      return RunLock.of({ holding })
+    }),
+  )
+
+/** The exit code the program fails with; 0 is a success. */
+class Exited extends Data.TaggedError("ForkChecksExit")<{ readonly code: number }> {}
+const decodeExited = Schema.decodeUnknownOption(Schema.Struct({ _tag: Schema.Literal("ForkChecksExit"), code: Schema.Number }))
+
+/** The list named by `--list`, else the declared one, with the problems that stop a run. */
+const listOf = Effect.fn("ForkChecks.listOf")(function* (file: Option.Option<string>) {
+  const fs = yield* FileSystem.FileSystem
+  const decoded = yield* Option.match(file, { onNone: () => Effect.succeed(declaredList), onSome: (each) => Effect.map(fs.readFileString(each), decodeListText) })
   return Result.flatMap(Result.mapError(decoded, String), (list) => {
     const problems = listProblems(list)
     if (problems.length > 0) return Result.fail(problems.join("\n"))
     return Result.succeed(list)
   })
-}
+})
 
-if (import.meta.main) {
-  const argv = process.argv.slice(2)
-  const env = { ...process.env }
-  delete env.ANTHROPIC_BASE_URL
-  const fork = Option.getOrElse(Option.orElse(flag(argv, "--fork"), () => Option.fromNullishOr(process.env.OPENCODE_DEV)), () => "")
-  const number = (name: string, fallback: number) => Option.getOrElse(Option.map(flag(argv, name), Number), () => fallback)
-  const limits: Limits = { ...LIMITS, timeBoundMs: number("--time-bound-ms", LIMITS.timeBoundMs), maxLoad: number("--max-load", LIMITS.maxLoad) }
-  const lockFile = Option.getOrElse(flag(argv, "--lock"), () => join(tmpdir(), "opencode-fork-checks.flock"))
-  const listed = listOf(argv)
-  if (fork === "" || !existsSync(fork)) {
-    console.log(`fork-checks: COULD NOT RUN: no fork checkout at "${fork}" (--fork <checkout>, or OPENCODE_DEV)`)
-    process.exit(2)
-  }
-  if (Result.isFailure(listed)) {
-    console.log(`fork-checks: COULD NOT RUN: the list does not parse:\n${listed.failure}`)
-    process.exit(2)
-  }
-  const list = listed.success
-  const input: Input = {
-    list,
-    fork,
-    host: realHost(Option.getOrElse(Option.fromNullishOr(env.PATH), () => "")),
-    runner: bunRunner(env),
-    lock: lockedBy(lockFile),
-    limits,
-    say: (line) => console.log(line),
-  }
-  Effect.runFork(
-    checkFork(input).pipe(
-      Effect.map((verdict) => {
-        for (const line of reportLines(list, verdict, rangeOf(fork))) console.log(line)
-        process.exit(exitOf(verdict))
-      }),
+const command = Command.make(
+  "fork-checks",
+  {
+    fork: Flag.String("fork").pipe(Flag.withDescription("The fork checkout (default OPENCODE_DEV)"), Flag.optional),
+    list: Flag.String("list").pipe(Flag.withDescription("A list other than scripts/fork-checks.json (tests)"), Flag.optional),
+    timeBoundMs: Flag.Int("time-bound-ms").pipe(Flag.withDescription("The whole run's time bound"), Flag.withDefault(LIMITS.timeBoundMs)),
+    maxLoad: Flag.Int("max-load").pipe(Flag.withDescription("The 1-minute load it waits under (tests)"), Flag.withDefault(LIMITS.maxLoad)),
+    lock: Flag.String("lock").pipe(Flag.withDescription("The host lock file (tests)"), Flag.optional),
+  },
+  Effect.fn("ForkChecks.main")(function* (flags) {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const dev = yield* Config.option(Config.String("OPENCODE_DEV"))
+    const fork = forkOf(flags.fork, dev)
+    if (Result.isFailure(fork)) return yield* Console.log(`fork-checks: COULD NOT RUN: ${fork.failure}`).pipe(Effect.andThen(new Exited({ code: 2 })))
+    if (!(yield* fs.exists(fork.success))) return yield* Console.log(`fork-checks: COULD NOT RUN: no fork checkout at ${fork.success}`).pipe(Effect.andThen(new Exited({ code: 2 })))
+    const listed = yield* listOf(flags.list)
+    if (Result.isFailure(listed)) return yield* Console.log(`fork-checks: COULD NOT RUN: the list does not parse:\n${listed.failure}`).pipe(Effect.andThen(new Exited({ code: 2 })))
+    const tmp = yield* Config.String("TMPDIR").pipe(Config.withDefault("/tmp"))
+    const lockFile = Option.getOrElse(flags.lock, () => path.join(tmp, "opencode-fork-checks.flock"))
+    const limits: Limits = { ...LIMITS, timeBoundMs: flags.timeBoundMs, maxLoad: flags.maxLoad }
+    const verdict = yield* checkFork({ list: listed.success, fork: fork.success, limits, lock: lockFile })
+    for (const line of reportLines(listed.success, verdict, yield* rangeOf(fork.success))) yield* Console.log(line)
+    const code = exitOf(verdict)
+    if (code !== 0) return yield* new Exited({ code })
+  }),
+)
+
+/** The checks' services on the host, over Bun's file system, path and process spawner. */
+export const live = Layer.provideMerge(Layer.mergeAll(bunRunner, hostGauge, flockLock), BunServices.layer)
+
+/** 0 for a success, the code an `Exited` failure carries, else 2 (a defect or an error the run printed). */
+const exitCodeOf = <E, A>(exit: Exit.Exit<A, E>): number =>
+  Exit.match(exit, {
+    onSuccess: () => 0,
+    onFailure: (cause) => Option.getOrElse(Option.map(Option.flatMap(Cause.findErrorOption(cause), decodeExited), (exited) => exited.code), () => 2),
+  })
+
+if (import.meta.main)
+  BunRuntime.runMain(
+    Command.run(command, { version: "1.0.0" }).pipe(
+      Effect.tapError((error) => Option.match(decodeExited(error), { onNone: () => Console.error(`fork-checks: ${String(error)}`), onSome: () => Effect.void })),
+      Effect.provide(live),
     ),
+    { disableErrorReporting: true, teardown: (exit, onExit) => onExit(exitCodeOf(exit)) },
   )
-}
