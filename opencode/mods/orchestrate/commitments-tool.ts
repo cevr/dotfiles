@@ -26,7 +26,7 @@ import {
   type StoredEvent,
 } from "./record.ts"
 import { CommitmentRecord, Evidence, type EvidenceRefused, type MainLine, type RecordFailed } from "./service.ts"
-import { dataOf, EVIDENCE_ROOT, lineOf, type Reason, REASON_CLASSES, type ReasonClass, type ReasonData, type ReceiptSeen, ReferentInput, reasonFrom } from "./reasons.ts"
+import { dataOf, EVIDENCE_ROOT, lineOf, type Reason, REASON_CLASSES, type ReasonData, type ReceiptSeen, ReferentInput, reasonFrom } from "./reasons.ts"
 import { type Lane, lanesOf } from "./tools.ts"
 import { asked, type Facts, LISTED, ownersOf, type Standing, STANDINGS, standingOf, standingsOf, unroutedOf } from "./standing.ts"
 
@@ -256,7 +256,7 @@ export const commandOf = (input: CommitmentsInput, action: Exclude<Action, "list
 }
 
 /** A call's `{ reason_class, referent }`, checked and canonicalised (reasons.ts `reasonFrom`), or why not; a call with neither has none. */
-const reasonOfInput = (tool: string, input: { readonly reason_class?: ReasonClass | undefined; readonly referent?: ReferentInput | undefined }): Result.Result<Reason, string> =>
+const reasonOfInput = (tool: string, input: Pick<CommitmentsInput, "reason_class" | "referent">): Result.Result<Reason, string> =>
   Result.mapError(
     Result.flatMap(
       Result.fromOption(Option.all([Option.fromUndefinedOr(input.reason_class), Option.fromUndefinedOr(input.referent)]), () => "a reason names both reason_class and referent"),
@@ -576,7 +576,7 @@ const eventLine = (event: StoredEvent): string => {
     Match.tag("imported", (each) => Option.as(Option.liftPredicate(each.row.state, (state) => state === "decided"), "historical, unclassified")),
     Match.orElse(() => Option.none<ReasonData | string>()),
   )
-  const why = Option.match(reason, { onNone: () => "", onSome: (each) => (Predicate.isString(each) ? `; ${each}` : `; ${lineOf(each)}`) })
+  const why = Option.match(reason, { onNone: () => "", onSome: (each) => `; ${Match.value(each).pipe(Match.when(Predicate.isString, (text) => text), Match.orElse(lineOf))}` })
   return `${event.seq} ${event.at} ${event.happening._tag}${states} by ${event.actor.role} ${event.actor.id}${note.join("")}${why}`
 }
 

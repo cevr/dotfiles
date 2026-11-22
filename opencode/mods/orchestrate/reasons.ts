@@ -22,7 +22,7 @@
 // Nothing else is accepted (no `validated` field, no extra key). The reader checks that the receipt and its output
 // file are regular files inside the root after every link is resolved, and bounded; it hashes both (SHA-256) and the
 // record keeps the hashes, the exit, the run and the commit: pointers and hashes, never the output or the command.
-import { Effect, Layer, Option, Predicate, Result, Schema, Stream } from "effect"
+import { Effect, Layer, Match, Option, Predicate, Result, Schema, Stream } from "effect"
 import { Digest } from "effect/crypto"
 import { FileSystem, Path } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
@@ -92,7 +92,11 @@ export const ReferentInput = Schema.Union([
 export type ReferentInput = typeof ReferentInput.Type
 
 /** The pointer of a referent: encoded once, here. */
-export const pointerOf = (referent: Referent): string => (referent.kind === "receipt" ? `receipt/${referent.path}` : `${referent.kind}/${referent.id}`)
+export const pointerOf = (referent: Referent): string =>
+  Match.value(referent).pipe(
+    Match.when({ kind: "receipt" }, (receipt) => `receipt/${receipt.path}`),
+    Match.orElse((named) => `${named.kind}/${named.id}`),
+  )
 
 /** A pointer decoded strictly: the referent it names, or none for anything the grammar does not take. */
 export const referentOf = (pointer: string): Option.Option<Referent> => {
@@ -179,10 +183,12 @@ const ONE_LINE = /^[^\n\r]+$/
 /** Why an envelope's fields do not make a receipt (said of `subject`, as "the receipt's"), else none. No field's value is repeated. */
 export const envelopeRefusal = (envelope: ReceiptEnvelope, subject: string): Option.Option<string> => {
   const output = envelope.output
-  const outputRefusal =
-    "value" in output
-      ? Option.liftPredicate(`${subject} output value is not one line of at most 200 characters that says something`, () => output.value.trim() === "" || !ONE_LINE.test(output.value) || output.value.length > 200)
-      : Option.orElse(pathRefusal(`${subject} output path`, output.path), () => Option.liftPredicate(`${subject} output path is not under ${EVIDENCE_ROOT}/`, () => !output.path.startsWith(`${EVIDENCE_ROOT}/`)))
+  const outputRefusal = Match.value(output).pipe(
+    Match.when({ value: Match.string }, (each) =>
+      Option.liftPredicate(`${subject} output value is not one line of at most 200 characters that says something`, () => each.value.trim() === "" || !ONE_LINE.test(each.value) || each.value.length > 200),
+    ),
+    Match.orElse((each) => Option.orElse(pathRefusal(`${subject} output path`, each.path), () => Option.liftPredicate(`${subject} output path is not under ${EVIDENCE_ROOT}/`, () => !each.path.startsWith(`${EVIDENCE_ROOT}/`)))),
+  )
   return Option.firstSomeOf([
     Option.liftPredicate(`${subject} command is not one line of at most 500 characters that says something`, () => envelope.command.trim() === "" || !ONE_LINE.test(envelope.command) || envelope.command.length > 500),
     Option.liftPredicate(`${subject} run is not a slug`, () => !SLUG_ONLY.test(envelope.run)),
@@ -246,11 +252,14 @@ export const evidenceLayer = Layer.effect(
           const why = envelopeRefusal(envelope, "the receipt's")
           if (Option.isSome(why)) return yield* Effect.fail(refused(why.value))
           const output = envelope.output
-          const outputBytes = yield* "path" in output
-            ? Effect.flatMap(regularIn(root, output.path.slice(EVIDENCE_ROOT.length + 1), "the receipt's output file", OUTPUT_MAX), (file) =>
+          const outputBytes = yield* Match.value(output).pipe(
+            Match.when({ path: Match.string }, (each) =>
+              Effect.flatMap(regularIn(root, each.path.slice(EVIDENCE_ROOT.length + 1), "the receipt's output file", OUTPUT_MAX), (file) =>
                 Effect.mapError(fs.readFile(file), () => refused("the receipt's output file cannot be read")),
-              )
-            : Effect.succeed(new TextEncoder().encode(output.value))
+              ),
+            ),
+            Match.orElse((each) => Effect.succeed(new TextEncoder().encode(each.value))),
+          )
           return { path, receiptSha: yield* shaOf(bytes), outputSha: yield* shaOf(outputBytes), exit: envelope.exit, run: envelope.run, checkout: envelope.checkout }
         }),
       document: (checkout, path) =>

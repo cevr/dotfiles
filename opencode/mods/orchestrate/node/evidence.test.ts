@@ -4,8 +4,7 @@
 // the orchestrate domain fence keeps node:*, bun and the test helpers out of the root's files and their tests.
 import { expect } from "bun:test"
 import { spawnSync, write } from "bun"
-import { symlinkSync } from "node:fs"
-import { Effect, Layer } from "effect"
+import { Effect, FileSystem, Layer, Match, Schema } from "effect"
 import { Digest } from "effect/crypto"
 import * as Seed from "../../../sim/seed.ts"
 import { hostServices } from "../../../sim/host-services.ts"
@@ -18,7 +17,9 @@ import { Evidence } from "../service.ts"
 const env = withProcessEnv({ GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t.invalid", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t.invalid" })
 const git = (dir: string, args: ReadonlyArray<string>) => spawnSync(["git", "-C", dir, ...args], { env, stdout: "pipe", stderr: "ignore" }).stdout.toString().trim()
 const HEAD = "a".repeat(40)
-const envelope = (fields: Record<string, unknown> = {}) => JSON.stringify({ receipt: 1, command: "bun test mods/orchestrate", exit: 0, output: { value: "12 pass, 0 fail" }, run: "r1", checkout: HEAD, ...fields })
+type Json = typeof Schema.Json.Type
+const jsonOf = Schema.encodeSync(Schema.fromJsonString(Schema.Json))
+const envelope = (fields: { readonly [field: string]: Json } = {}) => jsonOf({ receipt: 1, command: "bun test mods/orchestrate", exit: 0, output: { value: "12 pass, 0 fail" }, run: "r1", checkout: HEAD, ...fields })
 
 /** A checkout with a committed document and its evidence root, the reader over it; every case's outcome, in words. */
 const reader = Effect.acquireUseRelease(
@@ -27,7 +28,7 @@ const reader = Effect.acquireUseRelease(
     Effect.gen(function* () {
       const checkout = `${dir.path}/repo`
       const root = `${checkout}/${EVIDENCE_ROOT}`
-      const files: Record<string, string> = {
+      const files = {
         "docs/record.md": "# One writer\n",
         "docs/uncommitted.md": "later\n",
         [`${EVIDENCE_ROOT}/r1/value.json`]: envelope(),
@@ -37,7 +38,7 @@ const reader = Effect.acquireUseRelease(
         [`${EVIDENCE_ROOT}/r1/escape-out.json`]: envelope({ output: { path: `${EVIDENCE_ROOT}/r1/out-link.log` } }),
         [`${EVIDENCE_ROOT}/r1/missing-out.json`]: envelope({ output: { path: `${EVIDENCE_ROOT}/r1/nope.log` } }),
         [`${EVIDENCE_ROOT}/r1/validated.json`]: envelope({ validated: true }),
-        [`${EVIDENCE_ROOT}/r1/prose.json`]: JSON.stringify({ receipt: 1, note: "trust me, it passed" }),
+        [`${EVIDENCE_ROOT}/r1/prose.json`]: jsonOf({ receipt: 1, note: "trust me, it passed" }),
         [`${EVIDENCE_ROOT}/r1/blank-command.json`]: envelope({ command: "  " }),
         [`${EVIDENCE_ROOT}/r1/blank-output.json`]: envelope({ output: { value: "" } }),
         [`${EVIDENCE_ROOT}/r1/bad-run.json`]: envelope({ run: "has space" }),
@@ -49,9 +50,10 @@ const reader = Effect.acquireUseRelease(
       gitInit(checkout, ["-q", "-b", "main"], env)
       git(checkout, ["add", "docs/record.md"])
       git(checkout, ["commit", "-q", "-m", "docs"])
-      symlinkSync(`${checkout}/outside.json`, `${root}/r1/escape.json`)
-      symlinkSync(`${root}/r1`, `${root}/linked`)
-      symlinkSync(`${checkout}/docs/record.md`, `${root}/r1/out-link.log`)
+      const fs = yield* FileSystem.FileSystem
+      yield* fs.symlink(`${checkout}/outside.json`, `${root}/r1/escape.json`)
+      yield* fs.symlink(`${root}/r1`, `${root}/linked`)
+      yield* fs.symlink(`${checkout}/docs/record.md`, `${root}/r1/out-link.log`)
       const evidence = yield* Evidence
       const receipt = (path: string) =>
         Effect.match(evidence.receipt(checkout, path), { onFailure: (refused) => refused.reason, onSuccess: (seen) => `${seen.exit} ${seen.run} ${seen.receiptSha.length}/${seen.outputSha.length}` })
@@ -59,7 +61,14 @@ const reader = Effect.acquireUseRelease(
         ["value", "file", "linked-value", "outside-out", "escape-out", "missing-out", "validated", "prose", "blank-command", "blank-output", "bad-run", "bad-checkout", "large", "escape", "dir", "nope", "not-under"],
         (name) =>
           Effect.map(
-            receipt(name === "not-under" ? "outside.json" : name === "linked-value" ? `${EVIDENCE_ROOT}/linked/value.json` : name === "dir" ? `${EVIDENCE_ROOT}/r1` : `${EVIDENCE_ROOT}/r1/${name}.json`),
+            receipt(
+              Match.value(name).pipe(
+                Match.when("not-under", () => "outside.json"),
+                Match.when("linked-value", () => `${EVIDENCE_ROOT}/linked/value.json`),
+                Match.when("dir", () => `${EVIDENCE_ROOT}/r1`),
+                Match.orElse(() => `${EVIDENCE_ROOT}/r1/${name}.json`),
+              ),
+            ),
             (outcome) => [name, outcome] as const,
           ),
       )

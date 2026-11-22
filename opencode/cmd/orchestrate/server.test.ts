@@ -8,7 +8,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { Clock, Effect, Fiber, Layer, Option, Queue, Schema, Stream } from "effect"
+import { Clock, Effect, Fiber, Layer, Match, Option, Queue, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { RESTART_NOTICE } from "@dotfiles/opencode-orchestrate/restart-hold"
 import { type Latch, type LatchAsk, Opened } from "@dotfiles/opencode-wake/latch"
@@ -45,8 +45,11 @@ import { type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
 import { eventuallyPasses } from "../../tests/wait.ts"
 import Orchestrate, { CODEX_BUDGET, DEFAULT_LOG, make, Options, SKILL_DIR, SUBAGENTS, type StepHostSession, stepSessionOf, UNIT_LOG } from "./server.ts"
 
+/** This test file's folder. */
+const HERE = import.meta.dir
+
 /** The orchestrate skill's log.ts in this checkout: the units' logs are written for real, in scratch dirs. */
-const LOG_SCRIPT = join(import.meta.dir, "../../../skills/orchestrate/scripts/log.ts")
+const LOG_SCRIPT = join(HERE, "../../../skills/orchestrate/scripts/log.ts")
 
 /** Friday 30 October 2026, 19:00 in Knowlton (EDT): after sunset, in the Sabbath. */
 const FRIDAY_EVENING = "2026-10-30T23:00:00Z"
@@ -2246,15 +2249,16 @@ describe("the options", () => {
 })
 
 describe("the server's runtime graph", () => {
-  const ROOT = join(import.meta.dir, "../..")
+  const ROOT = join(HERE, "../..")
   const scanners = { ts: new Bun.Transpiler({ loader: "ts" }), tsx: new Bun.Transpiler({ loader: "tsx" }) }
   /** Every module `seed` reaches at runtime (type-only imports left out), through the workspace, by its path or package specifier. */
   const reachOf = (seed: string): ReadonlySet<string> => {
     const reached = new Set<string>()
     const pending = [seed]
     for (const file of pending)
-      for (const each of scanners[file.endsWith(".tsx") ? "tsx" : "ts"].scanImports(readFileSync(file, "utf8").replace(/^#!.*\n/, "\n"))) {
-        const target = each.path.startsWith(".") || each.path.startsWith("@dotfiles/") ? realpathSync(Bun.resolveSync(each.path, dirname(file))) : each.path
+      for (const each of Match.value(file.endsWith(".tsx")).pipe(Match.when(true, () => scanners.tsx), Match.orElse(() => scanners.ts)).scanImports(readFileSync(file, "utf8").replace(/^#!.*\n/, "\n"))) {
+        const local = each.path.startsWith(".") || each.path.startsWith("@dotfiles/")
+        const target = Match.value(local).pipe(Match.when(true, () => realpathSync(Bun.resolveSync(each.path, dirname(file)))), Match.orElse(() => each.path))
         if (reached.has(target)) continue
         reached.add(target)
         if (target.startsWith("/") && !target.includes("/node_modules/") && /\.(ts|tsx)$/.test(target)) pending.push(target)
@@ -2263,14 +2267,14 @@ describe("the server's runtime graph", () => {
   }
 
   test("reaches no platform implementation and not the record CLI's composition: the host gives the plugin its files, paths and processes", () => {
-    const reached = reachOf(join(import.meta.dir, "server.ts"))
-    const forbidden = [...reached].filter((each) => each.startsWith("@effect/platform") || each === realpathSync(join(import.meta.dir, "record.ts")) || each === realpathSync(join(ROOT, "sim/host-services.ts")))
+    const reached = reachOf(join(HERE, "server.ts"))
+    const forbidden = [...reached].filter((each) => each.startsWith("@effect/platform") || each === realpathSync(join(HERE, "record.ts")) || each === realpathSync(join(ROOT, "sim/host-services.ts")))
     expect(forbidden).toEqual([])
     // The walk is real: it reaches the record's store and its evidence reader.
     expect([realpathSync(join(ROOT, "mods/orchestrate/sqlite/record.ts")), realpathSync(join(ROOT, "mods/orchestrate/reasons.ts"))].filter((each) => !reached.has(each))).toEqual([])
   })
 
   test("the record CLI composes that platform itself, so the walk would see one", () => {
-    expect([...reachOf(join(import.meta.dir, "record.ts"))].filter((each) => each.startsWith("@effect/platform-node"))).toEqual(["@effect/platform-node/NodeServices"])
+    expect([...reachOf(join(HERE, "record.ts"))].filter((each) => each.startsWith("@effect/platform-node"))).toEqual(["@effect/platform-node/NodeServices"])
   })
 })

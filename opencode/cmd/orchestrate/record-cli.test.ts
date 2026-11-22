@@ -163,11 +163,11 @@ Seed.effect(
         const checkout = `${held.path}/repo`
         yield* Effect.promise(() => write(`${checkout}/docs/record.md`, "# One writer\n"))
         const envelope = { receipt: 1, command: "bun test mods/orchestrate", exit: 1, output: { value: "1 fail" }, run: "r1", checkout: "a".repeat(40) }
-        yield* Effect.promise(() => write(`${checkout}/tmp/orchestrate/r1/red.json`, JSON.stringify(envelope)))
+        yield* Effect.promise(() => write(`${checkout}/tmp/orchestrate/r1/red.json`, fieldsJson(envelope)))
         gitInit(checkout, ["-q", "-b", "main"], gitEnv)
         for (const args of [["add", "docs/record.md"], ["commit", "-q", "-m", "docs"]]) spawnSync(["git", "-C", checkout, ...args], { env: gitEnv, stdout: "ignore", stderr: "ignore" })
         const run = (action: string, fields: Parameters<typeof fieldsJson>[0], ...rest: ReadonlyArray<string>) =>
-          Effect.map(main([action, "--json", fieldsJson(fields), "--file", `${held.path}/record.db`, "--checkout", checkout, ...rest], checkout), (ran) => [ran.code, ran.code === 0 ? ran.out : ran.err] as const)
+          Effect.map(main([action, "--json", fieldsJson(fields), "--file", `${held.path}/record.db`, "--checkout", checkout, ...rest], checkout), (ran) => [ran.code, ran.out + ran.err] as const)
         const receipt = { reason_class: "measured", referent: { kind: "receipt", path: "tmp/orchestrate/r1/red.json" } }
         const outcomes = [
           yield* run("add", { source_kind: "plan-part", source_ref: "plan.md:1", parts: [{ id: "a1", title: "one" }, { id: "a2", title: "two" }] }),

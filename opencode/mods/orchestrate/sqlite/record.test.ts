@@ -4,7 +4,7 @@
 import { Database } from "bun:sqlite"
 import { expect } from "bun:test"
 import { fileURLToPath, Glob, resolveSync, spawn, spawnSync, write } from "bun"
-import { Array as Arr, Context, Effect, Layer, Option, Result, type Scope } from "effect"
+import { Array as Arr, Context, Effect, Layer, Match, Option, Result, type Scope } from "effect"
 import { Digest } from "effect/crypto"
 import * as Seed from "../../../sim/seed.ts"
 import { hostServices } from "../../../sim/host-services.ts"
@@ -131,12 +131,12 @@ Seed.effect("a file of a newer version than this code reads, and refuses every w
     }),
   ))
 
-/** A table's columns as `PRAGMA table_xinfo` gives them: name, type, NOT NULL, default, primary key, hidden (2: generated). */
-const shapeOf = (db: Database, table: string) =>
+/** A table's columns as `PRAGMA table_xinfo` gives them: name, type, NOT NULL, default ("-" for none), primary key, hidden (2: generated). */
+const columnsOf = (db: Database, table: string) =>
   db
-    .query<{ name: string; type: string; notnull: number; dflt_value: string | null; pk: number; hidden: number }, []>(`SELECT name, type, "notnull", dflt_value, pk, hidden FROM pragma_table_xinfo('${table}')`)
+    .query<{ name: string; type: string; notnull: number; dflt: string; pk: number; hidden: number }, []>(`SELECT name, type, "notnull", coalesce(dflt_value, '-') AS dflt, pk, hidden FROM pragma_table_xinfo('${table}')`)
     .all()
-    .map((each) => [each.name, each.type, each.notnull, each.dflt_value, each.pk, each.hidden])
+    .map((each) => [each.name, each.type, each.notnull, each.dflt, each.pk, each.hidden])
 
 Seed.effect("version 1 is the only version: its commitment and invariant tables have exactly this shape, reason pair and generated close kind included",
   inScratch((dir) =>
@@ -144,19 +144,23 @@ Seed.effect("version 1 is the only version: its commitment and invariant tables 
       const made = yield* connected(`${dir}/repo.db`, { readonly: false, now: T0 })
       made.close()
       const db = new Database(`${dir}/repo.db`, { readonly: true })
-      const shape = { version: db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version, commitment: shapeOf(db, "commitment"), invariant: shapeOf(db, "invariant") }
+      const tables = {
+        version: Option.map(Option.fromNullishOr(db.query<{ user_version: number }, []>("PRAGMA user_version").get()), (each) => each.user_version),
+        commitment: columnsOf(db, "commitment"),
+        invariant: columnsOf(db, "invariant"),
+      }
       const visible = db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('commitment')").all().map((each) => each.name)
       db.close()
-      const text = (name: string, notnull = 0, pk = 0) => [name, "TEXT", notnull, null, pk, 0]
+      const text = (name: string, notnull = 0, pk = 0) => [name, "TEXT", notnull, "-", pk, 0]
       expect([VERSION, MIGRATIONS.length]).toEqual([1, 1])
-      expect(shape).toEqual({
-        version: 1,
+      expect(tables).toEqual({
+        version: Option.some(1),
         commitment: [
           text("id", 1, 1), text("run", 1), text("title", 1), text("source_kind", 1), text("source_ref", 1), text("quote"), text("plan"), text("part"), text("rank"),
           text("owner_lane"), text("owner_session"), text("state", 1), text("started_at"), text("review_by"), text("woke_at"), text("head"), text("request_path"),
           text("landed_commit"), text("decided_why"), text("notice_until"), text("created_at", 1), text("updated_at", 1), text("start_head"), text("notice_by"),
           ["notice_outside_run", "INTEGER", 1, "0", 0, 0], text("lane_path"), text("reason_class"), text("referent"), text("unreasoned_close"),
-          ["close_kind", "TEXT", 0, null, 0, 2],
+          ["close_kind", "TEXT", 0, "-", 0, 2],
         ],
         invariant: [text("id", 1, 1), text("doc_path", 1), text("anchor", 1), text("blob", 1), text("commit_sha", 1), text("declared_at", 1), text("declared_by", 1)],
       })
@@ -168,42 +172,67 @@ Seed.effect("version 1 is the only version: its commitment and invariant tables 
 /** One row's reason fields, as a direct INSERT or UPDATE sets them. */
 interface Cell {
   readonly state: "open" | "landed" | "decided"
-  readonly reasonClass: string | null
-  readonly referent: string | null
-  readonly unreasoned: string | null
+  /** Each column's value, none for SQL NULL. */
+  readonly reasonClass: Option.Option<string>
+  readonly referent: Option.Option<string>
+  readonly unreasoned: Option.Option<string>
 }
+/** A column's values: NULL, then each of `values`. */
+const orNull = (values: ReadonlyArray<string>): ReadonlyArray<Option.Option<string>> => [Option.none(), ...values.map(Option.some)]
 const STATES_ = ["open", "landed", "decided"] as const
-const CLASSES_ = [null, "guarantee", "dependency", "measured", "effort"] as const
-const REFERENTS_ = [null, "", " invariant/x", "invariant/root-owns", "commitment/a", "ask/", "ask/q1", "r".repeat(513)] as const
-const UNREASONED_ = [null, "placed", "historical", "guessed"] as const
+const CLASSES_ = orNull(["guarantee", "dependency", "measured", "effort"])
+const REFERENTS_ = orNull(["", " invariant/x", "invariant/root-owns", "commitment/a", "ask/", "ask/q1", "r".repeat(513)])
+const UNREASONED_ = orNull(["placed", "historical", "guessed"])
 const MATRIX: ReadonlyArray<Cell> = STATES_.flatMap((state) =>
   CLASSES_.flatMap((reasonClass) => REFERENTS_.flatMap((referent) => UNREASONED_.map((unreasoned) => ({ state, reasonClass, referent, unreasoned })))),
 )
+/** A blank row of `state`: no reason, no unreasoned close. */
+const blank = (state: Cell["state"]): Cell => ({ state, reasonClass: Option.none(), referent: Option.none(), unreasoned: Option.none() })
+
+/** Whether a column's value, when it has one, passes `check`. */
+const nullOr = (value: Option.Option<string>, check: (each: string) => boolean) => Option.match(value, { onNone: () => true, onSome: check })
+/** The kind a reasoned pair names: a guarantee with its referent, or no class with an `ask/<id>`; none for any other. */
+const pairedOf = ({ reasonClass, referent }: Cell): Option.Option<string> => {
+  if (Option.contains(reasonClass, "guarantee") && Option.isSome(referent)) return Option.some("guarantee")
+  if (Option.isNone(reasonClass) && Option.exists(referent, (each) => each.startsWith("ask/") && each.length > 4)) return Option.some("not-asked")
+  return Option.none()
+}
+/** An unreasoned close names the kind of a null pair alone; a reasoned pair names its own kind and no unreasoned close. */
+const kindOf = (cell: Cell): Option.Option<string> => {
+  if (Option.isNone(cell.reasonClass) && Option.isNone(cell.referent)) return cell.unreasoned
+  if (Option.isNone(cell.unreasoned)) return pairedOf(cell)
+  return Option.none()
+}
 
 /**
  * The oracle, the owner's rule in one line: a decided row has exactly one close kind and no other row has one, each
  * kind bound to its pair (guarantee ⇔ a guarantee with its referent; not-asked ⇔ no class and an `ask/<id>`; placed and
  * historical ⇔ the null pair), and every row's pair is well-formed (both or neither, a known class, a trimmed referent of
- * 1 to 512 characters). Answers the row's kind (null for an open or landed row), or "refused".
+ * 1 to 512 characters). Answers the row's kind ("none" for an open or landed row), or "refused".
  */
-const oracle = ({ state, reasonClass: c, referent: r, unreasoned: u }: Cell): string | null | "refused" => {
-  const formed = (c === null || ["guarantee", "dependency", "measured"].includes(c)) && (r === null || (r.length >= 1 && r.length <= 512 && r.trim() === r)) && (u === null || u === "placed" || u === "historical")
-  // An unreasoned close names the kind of a null pair alone; a reasoned pair names its own kind and no unreasoned close.
-  const paired = c === "guarantee" && r !== null ? "guarantee" : c === null && r !== null && r.startsWith("ask/") && r.length > 4 ? "not-asked" : null
-  const kind = c === null && r === null ? u : u === null ? paired : null
+const oracle = (cell: Cell): string => {
+  const formed =
+    nullOr(cell.reasonClass, (each) => ["guarantee", "dependency", "measured"].includes(each)) &&
+    nullOr(cell.referent, (each) => each.length >= 1 && each.length <= 512 && each.trim() === each) &&
+    nullOr(cell.unreasoned, (each) => each === "placed" || each === "historical")
   if (!formed) return "refused"
-  if (state === "decided") return kind ?? "refused"
-  return u === null && (c === null) === (r === null) ? null : "refused"
+  if (cell.state === "decided") return Option.getOrElse(kindOf(cell), () => "refused")
+  if (Option.isNone(cell.unreasoned) && Option.isNone(cell.reasonClass) === Option.isNone(cell.referent)) return "none"
+  return "refused"
 }
 
 const INSERT_CELL = `INSERT INTO commitment (id, run, title, source_kind, source_ref, state, landed_commit, decided_why, reason_class, referent, unreasoned_close, created_at, updated_at)
   VALUES (?, 'r1', 't', 'plan-part', 'p', ?, ?, ?, ?, ?, ?, 't', 't')`
 const UPDATE_CELL = "UPDATE commitment SET state = ?, landed_commit = ?, decided_why = ?, reason_class = ?, referent = ?, unreasoned_close = ? WHERE id = ?"
-const bindings = (cell: Cell) => [cell.state, cell.state === "landed" ? "1234567" : null, cell.state === "decided" ? "why" : null, cell.reasonClass, cell.referent, cell.unreasoned] as const
-/** What the file did with `put`: the row's stored close kind, or "refused" when a CHECK refused it. */
-const outcome = (db: Database, id: string, put: () => void): string | null | "refused" => {
+/** `value` when `holds`, else SQL NULL. */
+const sqlIf = (holds: boolean, value: string) => Option.getOrNull(Option.liftPredicate(value, () => holds))
+const bindings = (cell: Cell) =>
+  [cell.state, sqlIf(cell.state === "landed", "1234567"), sqlIf(cell.state === "decided", "why"), Option.getOrNull(cell.reasonClass), Option.getOrNull(cell.referent), Option.getOrNull(cell.unreasoned)] as const
+/** What the file did with `put`: the row's stored close kind ("none" for none), or "refused" when a CHECK refused it. */
+const outcome = (db: Database, id: string, put: () => void): string => {
   if (Result.isFailure(Result.try(put))) return "refused"
-  return db.query<{ close_kind: string | null }, [string]>("SELECT close_kind FROM commitment WHERE id = ?").get(id)?.close_kind ?? null
+  const stored = Option.fromNullishOr(db.query<{ kind: string }, [string]>("SELECT coalesce(close_kind, 'none') AS kind FROM commitment WHERE id = ?").get(id))
+  return Option.getOrElse(Option.map(stored, (each) => each.kind), () => "no row")
 }
 
 Seed.effect(`the close kind over (state × reason class × referent form × unreasoned close), ${MATRIX.length} cells, by direct INSERT and UPDATE on a scratch file, agrees with the one-line oracle`,
@@ -215,11 +244,11 @@ Seed.effect(`the close kind over (state × reason class × referent form × unre
       const inserted = MATRIX.map((cell, at) => outcome(db, `i${at}`, () => db.run(INSERT_CELL, [`i${at}`, ...bindings(cell)])))
       // Each UPDATE starts from a valid row of its own (an open row with no reason) and moves it to the cell.
       const updated = MATRIX.map((cell, at) => {
-        db.run(INSERT_CELL, [`u${at}`, "open", null, null, null, null, null])
+        db.run(INSERT_CELL, [`u${at}`, ...bindings(blank("open"))])
         return outcome(db, `u${at}`, () => db.run(UPDATE_CELL, [...bindings(cell), `u${at}`]))
       })
       // A decided row cannot be moved off its kind: back to open with its unreasoned close, or to no kind at all.
-      db.run(INSERT_CELL, ["h", "decided", null, "why", null, null, "historical"])
+      db.run(INSERT_CELL, ["h", ...bindings({ ...blank("decided"), unreasoned: Option.some("historical") })])
       const reopenedKeepingClose = outcome(db, "h", () => db.run("UPDATE commitment SET state = 'open', decided_why = NULL WHERE id = 'h'"))
       const writtenKind = outcome(db, "h", () => db.run("UPDATE commitment SET close_kind = 'guarantee' WHERE id = 'h'"))
       db.close()
@@ -228,7 +257,7 @@ Seed.effect(`the close kind over (state × reason class × referent form × unre
       expect(updated).toEqual(expected)
       expect([reopenedKeepingClose, writtenKind]).toEqual(["refused", "refused"])
       // Every kind is reachable, and each only from its pair.
-      expect([...new Set(expected)].toSorted()).toEqual(["guarantee", "historical", "not-asked", "placed", "refused", null].toSorted())
+      expect([...new Set(expected)].toSorted()).toEqual(["guarantee", "historical", "not-asked", "placed", "refused", "none"].toSorted())
     }),
   ))
 
@@ -248,26 +277,32 @@ Seed.effect("which close kind each writer makes: decide a guarantee, the plugin'
         row: {
           title: `row ${id}`, sourceKind: "plan-part" as const, sourceRef: "register", quote: Option.none(), plan: Option.none(), part: Option.none(), rank: Option.none(),
           ownerLane: Option.none(), ownerSession: Option.none(), state, startedAt: Option.none(), reviewBy: Option.none(), head: Option.none(), requestPath: Option.none(),
-          landedCommit: Option.none(), decidedWhy: state === "decided" ? Option.some("dropped") : Option.none(), createdAt: "2026-11-01T00:00:00.000Z", updatedAt: "2026-11-01T00:00:00.000Z", after: [],
+          landedCommit: Option.none(), decidedWhy: Option.liftPredicate("dropped", () => state === "decided"), createdAt: "2026-11-01T00:00:00.000Z", updatedAt: "2026-11-01T00:00:00.000Z", after: [],
         },
         history: [],
       })
       yield* run(Command.cases.import.make({ run: "wf1", rows: [row("by-import", "decided"), row("by-import-open", "open")] }), { id: "ergo-register", role: "import" })
       opened.close()
       const db = new Database(path, { readonly: true })
-      const kinds = db.query<{ id: string; close_kind: string | null; actor_role: string | null }, []>(
-        "SELECT c.id, c.close_kind, (SELECT e.actor_role FROM event e WHERE e.subject_id = c.id AND e.to_state = 'decided') AS actor_role FROM commitment c ORDER BY c.id",
+      const kinds = db.query<{ id: string; close_kind: string; actor_role: string }, []>(
+        "SELECT c.id, coalesce(c.close_kind, 'none') AS close_kind, coalesce((SELECT e.actor_role FROM event e WHERE e.subject_id = c.id AND e.to_state = 'decided'), 'none') AS actor_role FROM commitment c ORDER BY c.id",
       ).all()
       db.close()
       expect(kinds).toEqual([
         { id: "by-decide", close_kind: "guarantee", actor_role: "root" },
         { id: "by-import", close_kind: "historical", actor_role: "import" },
-        { id: "by-import-open", close_kind: null, actor_role: null },
+        { id: "by-import-open", close_kind: "none", actor_role: "none" },
         { id: "placeholder", close_kind: "placed", actor_role: "plugin" },
-        { id: "split-a", close_kind: null, actor_role: null },
+        { id: "split-a", close_kind: "none", actor_role: "none" },
       ])
     }),
   ))
+
+/** Whether two writes that both took wrote as many events; true when either refused. */
+const sameCount = <E1, E2>(one: Result.Result<{ readonly events: ReadonlyArray<unknown> }, E1>, other: Result.Result<{ readonly events: ReadonlyArray<unknown> }, E2>): boolean => {
+  if (Result.isSuccess(one) && Result.isSuccess(other)) return one.success.events.length === other.success.events.length
+  return true
+}
 
 Seed.effect("the file and the memory record agree on every kind of command, reasons included; reopened, the file's rows are its events' fold; an import again is nothing",
   inScratch((dir) =>
@@ -277,7 +312,7 @@ Seed.effect("the file and the memory record agree on every kind of command, reas
       const memory = MemoryRecord.make(yield* MemoryRecord.empty)
       const both = (command: Command, actor: Actor, now: number) =>
         Effect.all([Effect.result(file.store.run(command, { actor, now })), Effect.result(memory.run(command, { actor, now }))]).pipe(
-          Effect.map(([inFile, inMemory]) => [inFile._tag, inMemory._tag, Result.isSuccess(inFile) && Result.isSuccess(inMemory) ? inFile.success.events.length === inMemory.success.events.length : true]),
+          Effect.map(([inFile, inMemory]) => [inFile._tag, inMemory._tag, sameCount(inFile, inMemory)]),
         )
       const outcomes = yield* Effect.forEach(RECORD_SCRIPT, ([command, actor, now]) => both(command, actor, now))
       expect(outcomes).toEqual(RECORD_SCRIPT.map(() => ["Success", "Success", true]))
@@ -306,13 +341,13 @@ Seed.effect("a not-asked row (unit C's) is a legal row this code does not read: 
       yield* made.store.run(add("kept"), { actor: ROOT, now: T0 })
       made.close()
       const raw = new Database(path, { strict: true })
-      raw.run(INSERT_CELL, ["asked", "decided", null, "why", null, "ask/q1", null])
+      raw.run(INSERT_CELL, ["asked", ...bindings({ ...blank("decided"), referent: Option.some("ask/q1") })])
       raw.close()
       const opened = yield* connected(path, { readonly: false, now: T0 })
       const read = yield* Effect.flip(opened.store.read)
       const write = yield* Effect.flip(opened.store.run(add("more"), { actor: ROOT, now: T0 }))
       opened.close()
-      expect([read.message, write._tag === "RecordFailed" ? write.message : write.reason]).toEqual([
+      expect([read.message, Match.value(write).pipe(Match.tag("RecordFailed", (failed) => failed.message), Match.orElse((refused) => refused.reason))]).toEqual([
         "record read: commitment asked: its reason is not one this code reads (a class and a canonical referent)",
         "record add: commitment asked: its reason is not one this code reads (a class and a canonical referent)",
       ])

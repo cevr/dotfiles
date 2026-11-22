@@ -26,6 +26,7 @@ const BODIES = Object.values(TOKENS).map((token) => token.slice(-14))
 const leaks = (text: string): number => BODIES.filter((body) => text.includes(body)).length
 /** Any value as the JSON a caller would read: an answer, a refusal, the events a command wrote. */
 const jsonOf = Schema.encodeSync(Schema.fromJsonString(Schema.Any))
+const parsedOf = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({ _tag: Schema.String })))
 const T = Date.parse("2026-11-22T10:00:00.000Z")
 const ROOT: Actor = { id: "ses_rootA", role: "root" }
 const WORKER: Actor = { id: "ses_child", role: "worker" }
@@ -112,7 +113,7 @@ Seed.effect(
         opened.close()
         expect(said.length).toBe(2 + 3 * 43)
         // The paths a guarantee and a dependency need are taken, so each token path is refused for its token alone.
-        expect(said.slice(0, 2).map(([path, text]) => [path, JSON.parse(text)._tag])).toEqual([["add (waited on)", "Success"], ["invariant (declared)", "Success"]])
+        expect(said.slice(0, 2).map(([path, text]) => [path, parsedOf(text)._tag])).toEqual([["add (waited on)", "Success"], ["invariant (declared)", "Success"]])
         expect(said.filter(([, text]) => leaks(text) > 0).map(([path]) => path)).toEqual([])
         const db = new Database(file, { readonly: true })
         const leaked = textColumnsOf(db).filter((column) => {

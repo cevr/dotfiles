@@ -982,8 +982,8 @@ const dependencyRefusal = (snapshot: Snapshot, self: Option.Option<string>, targ
   for (;;) {
     const row = snapshot.commitments.get(at)
     if (Predicate.isUndefined(row)) return Option.some(`the dependency ${named(at)} is no commitment of this repository's record`)
-    if (row.state !== "open")
-      return Option.some(at === target ? `the dependency ${at} is ${row.state}, not open: a dependency names work still owed` : `the dependency ${target} waits through ${at}, which is ${row.state}: no path around a closed prerequisite`)
+    if (row.state !== "open" && at === target) return Option.some(`the dependency ${at} is ${row.state}, not open: a dependency names work still owed`)
+    if (row.state !== "open") return Option.some(`the dependency ${target} waits through ${at}, which is ${row.state}: no path around a closed prerequisite`)
     if (seen.has(at)) return Option.some(`the dependency ${target} waits on ${at} again: a cycle`)
     seen.add(at)
     const next = Option.flatMap(row.reason, (reason) => Option.filter(referentOf(reason.referent), (each) => reason.reasonClass === "dependency" && each.kind === "commitment"))

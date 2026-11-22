@@ -32,7 +32,7 @@ const add = (ids: ReadonlyArray<string>, sourceKind: "owner-answer" | "plan-part
 const assign = (id: string, ownerLane: string, ownerSession: Option.Option<string> = Option.none()) => Commands.cases.assign.make({ id, ownerLane, ownerSession, after: [] })
 const row = (snapshot: Snapshot, id: string) => Option.fromUndefinedOr(snapshot.commitments.get(id))
 /** A row's state, current reason and close kind, plainly. */
-const closeOf = (each: Commitment) => ({ state: each.state, reason: Option.getOrNull(each.reason), kind: Option.getOrNull(closeKindOf(each)) })
+const closeOf = (each: Commitment) => ({ state: each.state, reason: each.reason, kind: closeKindOf(each) })
 /** The invariant the tests' decisions rest on, declared by the root; and that guarantee. */
 const DOCUMENT = { path: "docs/record.md", blob: "b".repeat(40), commit: "c".repeat(40) }
 const declare = (id = "one-writer", observed = DOCUMENT) => Commands.cases.invariant.make({ id, anchor: id, observed })
@@ -166,9 +166,9 @@ describe("import", () => {
     expect([...once.commitments.values()].map((each) => each.state)).toEqual(["open", "landed", "decided"])
     // A historical close, unclassified: no reason guessed from its note, and its own close kind.
     expect([...once.commitments.values()].map(closeOf)).toEqual([
-      { state: "open", reason: null, kind: null },
-      { state: "landed", reason: null, kind: null },
-      { state: "decided", reason: null, kind: "historical" },
+      { state: "open", reason: Option.none(), kind: Option.none() },
+      { state: "landed", reason: Option.none(), kind: Option.none() },
+      { state: "decided", reason: Option.none(), kind: Option.some("historical") },
     ])
   })
 })
@@ -213,14 +213,14 @@ describe("reasons", () => {
     expect(() => decideOn("a", "x", { reasonClass: "guarantee", referent: "ask/q1" })).toThrow("Schema validation failed")
     expect(reasonOf(snapshot, decideOn("a", "x"), { id: "plugin", role: "plugin" })).toBe("a close by decision is the root's: a plugin cannot decide")
     const closed = after([[declare()], [add(["a"])], [decideOn("a")]])
-    expect(Option.map(row(closed, "a"), closeOf)).toEqual(Option.some({ state: "decided", reason: GUARANTEE, kind: "guarantee" }))
+    expect(Option.map(row(closed, "a"), closeOf)).toEqual(Option.some({ state: "decided", reason: Option.some(GUARANTEE), kind: Option.some("guarantee") }))
   })
 
   test("defer keeps a commitment open with its reason; reopen clears a close's reason and history keeps it", () => {
     const deferred = after([[declare()], [add(["a", "b"])], [Commands.cases.defer.make({ id: "a", reason: onCommitment("b") })]])
     expect(Option.map(row(deferred, "a"), (each) => [each.state, each.reason])).toEqual(Option.some(["open", Option.some(onCommitment("b"))]))
     const reopened = after([[declare()], [add(["a"])], [decideOn("a")], [Commands.cases.reopen.make({ id: "a" })]])
-    expect(Option.map(row(reopened, "a"), closeOf)).toEqual(Option.some({ state: "open", reason: null, kind: null }))
+    expect(Option.map(row(reopened, "a"), closeOf)).toEqual(Option.some({ state: "open", reason: Option.none(), kind: Option.none() }))
     expect(reasonOf(reopened, decideOn("a", "again"), WORKER)).toBe("a close by decision is the root's: a worker cannot decide")
   })
 
@@ -244,7 +244,7 @@ describe("reasons", () => {
     const events = Result.getOrThrow(decideCommand(after([[answer]]), split, { actor: ROOT, now: T0 }))
     expect(events.map((each) => [each.happening._tag, each.actor.role])).toEqual([["promised", "root"], ["placed", "plugin"]])
     const placed = after([[answer], [split]])
-    expect(Option.map(row(placed, "q1"), closeOf)).toEqual(Option.some({ state: "decided", reason: null, kind: "placed" }))
+    expect(Option.map(row(placed, "q1"), closeOf)).toEqual(Option.some({ state: "decided", reason: Option.none(), kind: Option.some("placed") }))
     expect(Option.map(row(placed, "q1"), (each) => Option.isSome(each.noticeUntil))).toEqual(Option.some(false))
     // A plan that is no open owner-answer closes nothing.
     const plain = after([[add(["p"])], [Commands.cases.add.make({ ...split, plan: Option.some("p") })]])

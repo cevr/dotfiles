@@ -318,7 +318,7 @@ const declare = (held: Held) => (input: Parameters<Subject["declare"]>[0]): Answ
   const blob = Option.fromUndefinedOr(held.world.documents.get(input.id))
   if (Option.isNone(blob)) return refused("the document is not committed")
   const declared = Option.fromUndefinedOr(held.invariants.get(input.id))
-  if (Option.isSome(declared)) return declared.value === blob.value ? { ok: true } : refused("declared already at another revision: a new id")
+  if (Option.isSome(declared)) return Option.match(Option.liftPredicate(declared.value, (at) => at === blob.value), { onSome: (): Answer<true> => ({ ok: true }), onNone: () => refused("declared already at another revision: a new id") })
   held.invariants.set(input.id, blob.value)
   return { ok: true }
 }

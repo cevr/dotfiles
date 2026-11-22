@@ -139,6 +139,12 @@ const release = (run: Run) =>
     if ("ok" in got) bump(run, id)
   })
 
+/** One of `from` with probability `p` (never when `from` is empty), else `otherwise`. */
+const maybePick = (run: Run, from: ReadonlyArray<string>, p: number, otherwise: () => string): string => {
+  if (Arr.isReadonlyArrayNonEmpty(from) && next(run) < p) return pick(run, from)
+  return otherwise()
+}
+
 /** A reason as a caller gives one: of every class and kind, its target held, closed, lost, stale or never there. */
 const reasonOf = (run: Run): Reason => {
   const kind = pick(run, ["guarantee", "guarantee", "dependency", "dependency", "measured", "unshipped"] as const)
@@ -146,9 +152,8 @@ const reasonOf = (run: Run): Reason => {
   if (kind === "unshipped") return { class: pick(run, ["guarantee", "dependency"] as const), ref: pick(run, ["spec-item/s1", "unit/u1", "owner-question/q1"] as const) }
   // Mostly an open commitment (a dependency that may hold), else any promised one (perhaps closed) or a ghost.
   const open = openIds(run)
-  if (kind === "dependency") return { class: "dependency", ref: `commitment/${Arr.isReadonlyArrayNonEmpty(open) && next(run) < 0.7 ? pick(run, open) : Arr.isReadonlyArrayNonEmpty(run.books.promised) && next(run) < 0.8 ? pick(run, run.books.promised) : "ghost"}` }
-  const known = run.books.receipts
-  return { class: "measured", ref: `receipt/${Arr.isReadonlyArrayNonEmpty(known) && next(run) < 0.8 ? pick(run, known) : "tmp/orchestrate/r1/never.json"}` }
+  if (kind === "dependency") return { class: "dependency", ref: `commitment/${maybePick(run, open, 0.7, () => maybePick(run, run.books.promised, 0.8, () => "ghost"))}` }
+  return { class: "measured", ref: `receipt/${maybePick(run, run.books.receipts, 0.8, () => "tmp/orchestrate/r1/never.json")}` }
 }
 
 const whyOf = (run: Run) => {
@@ -172,12 +177,19 @@ const declare = (run: Run) => {
   same(run, subjectOf(run).declare(input), run.reference.declare(input), "declare")
 }
 
+/** The id a follow-up by `key` names: `f-<key>`, or on a retry sometimes (refused) another. */
+const filedId = (run: Run, key: string, retry: boolean): string => {
+  if (!retry || next(run) < 0.6) return `f-${key}`
+  return `f${++run.books.counts.minted}`
+}
+
 /** A worker files a follow-up: a new finding, a retry of its last (same key, same id), or its key on another id. */
 const followUp = (run: Run) => {
-  const retry = Arr.isReadonlyArrayNonEmpty(run.books.keys) && next(run) < 0.25
-  const key = retry ? pick(run, run.books.keys) : `k${run.books.keys.length + 1}`
+  const fresh = `k${run.books.keys.length + 1}`
+  const key = maybePick(run, run.books.keys, 0.25, () => fresh)
+  const retry = key !== fresh
   // A key files `f-<key>`: a retry names it again, or (refused) names another id.
-  const id = !retry || next(run) < 0.6 ? `f-${key}` : `f${++run.books.counts.minted}`
+  const id = filedId(run, key, retry)
   const input = { id, key, by: "worker-1", reason: reasonOf(run) }
   const got = subjectOf(run).followUp(input)
   same(run, got, run.reference.followUp(input), "followUp")
@@ -410,12 +422,18 @@ const INVARIANT = { held: "i1", missing: "ghost", stale: "i2" } as const
  * the same state, reason, close kind and history after it, after every case's decided one is reopened, and after a
  * restart. Answers how many of each operation each side took and refused (the enumeration reaches both).
  */
+/** Why an answer refused, "" when it took. */
+const refusalOf = <A>(answer: Answer<A>): string => {
+  if ("refused" in answer) return answer.refused
+  return ""
+}
+
 const crossProduct = (opened: Opened, world: World): Map<string, number> => {
   const model = makeModel(world)
   const held = { subject: opened.subject }
   const both = <A>(call: (subject: Subject) => Answer<A>, what: string): Answer<A> => {
     const [got, want] = [call(held.subject), call(model)]
-    expect({ what, ok: okOf(got), refused: "refused" in got, why: "refused" in got ? got.refused : "" }).toEqual({ what, ok: okOf(want), refused: "refused" in want, why: expect.any(String) })
+    expect({ what, ok: okOf(got), refused: "refused" in got, why: refusalOf(got) }).toEqual({ what, ok: okOf(want), refused: "refused" in want, why: expect.any(String) })
     return got
   }
   const byRoot = { by: "root-1", role: "root" as const }
@@ -443,18 +461,18 @@ const crossProduct = (opened: Opened, world: World): Map<string, number> => {
     }
     const ref = Match.value(kind).pipe(
       Match.when("invariant", () => `invariant/${INVARIANT[existence]}`),
-      Match.when("commitment", () => `commitment/${existence === "missing" ? "ghost" : dependency}`),
+      Match.when("commitment", () => `commitment/${Match.value(existence).pipe(Match.when("missing", () => "ghost"), Match.orElse(() => dependency))}`),
       Match.when("receipt", () => `receipt/${RECEIPT[existence]}`),
       Match.orElse(() => `${kind}/x1`),
     )
     const reason: Reason = { class: klass, ref }
     const got = Match.value(operation).pipe(
-      Match.when("followUp", () => okOf(both((subject) => subject.followUp({ id: state === "absent" ? `f${n}` : target, key: `k${n}`, by: "worker-1", reason }), what))),
+      Match.when("followUp", () => okOf(both((subject) => subject.followUp({ id: Match.value(state).pipe(Match.when("absent", () => `f${n}`), Match.orElse(() => target)), key: `k${n}`, by: "worker-1", reason }), what))),
       Match.when("defer", () => okOf(both((subject) => subject.defer({ id: target, by: "root-1", reason }), what))),
       Match.when("decide", () => okOf(both((subject) => subject.decide({ id: target, why: "a reason", by: `${caller}-1`, role: caller, reason }), what))),
       Match.exhaustive,
     )
-    const key = `${operation} ${Option.isSome(got) ? "took" : "refused"}`
+    const key = `${operation} ${Option.match(got, { onSome: () => "took", onNone: () => "refused" })}`
     counts.set(key, (counts.get(key) ?? 0) + 1)
     const mine = (subject: Subject) => [target, dependency, `f${n}`].map((id) => ({ id, state: subject.state(id), reason: subject.reason(id), closeKind: subject.closeKind(id), history: subject.history(id) }))
     expect({ what, after: mine(held.subject) }).toEqual({ what, after: mine(model) })
