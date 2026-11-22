@@ -26,7 +26,6 @@ import { exclusively, exclusivelySync } from "../mods/work/process/flock.ts"
 import { landLogs, scriptReceipt } from "../mods/work/process/landing.ts"
 import { readyFork } from "./fork.ts"
 import { type ForkWork, droppable, forkWork, forkWorkText, ghLookup, readAgents } from "./fork-work.ts"
-import { DEFAULT_FORK } from "../testbeds/gamut/gamut.ts"
 import { BRANCH, forkChecks, mergeUpstream, type Outcome, ownsFork, syncFork, UPSTREAM_BRANCH, UPSTREAM_REMOTE, upstreamReading, withUpstreamLock } from "./upstream.ts"
 
 /** What the step reaches, so a test runs it with no fork, no network and no push. */
@@ -217,13 +216,18 @@ const step = Effect.fn("PostLand.step")(function* (steps: Steps, load: Load) {
   return report([...block, merged.text, `accept deep after the merge, on the fork's new head ${short(steps.head())}:`, ...after], merged.todo || redOf(again.report))
 })
 
+/** The fork post-land works on: `OPENCODE_DEV`, checked (`readyFork`); unset, it throws `NO_FORK`, with no guessed default. */
+export const landFork = (env: NodeJS.ProcessEnv): string => {
+  const checked = readyFork(env.OPENCODE_DEV)
+  if ("problem" in checked) throw new Error(checked.problem)
+  return checked.fork
+}
+
 if (import.meta.main) {
   const home = homedir()
   const opencode = resolve(import.meta.dir, "..")
   const env = process.env
-  const checked = readyFork(env.OPENCODE_DEV || DEFAULT_FORK)
-  if ("problem" in checked) throw new Error(checked.problem)
-  const fork = checked.fork
+  const fork = landFork(env)
   const state = join(home, ".local/state/opencode-daily")
   const report = join(state, "upstream-conflict.md")
   /** A command run to its end, its output piped. */

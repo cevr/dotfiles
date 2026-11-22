@@ -1024,7 +1024,7 @@
     "scripts/daily.ts": {"effect/noAs":2,"effect/noAsyncFunction":7,"effect/noConditionalEmptyObjectSpread":3,"effect/noGlobals":8,"effect/noKnownValueWidening":4,"effect/noModulePathFacts":3,"effect/noNewError":3,"effect/noNodeBuiltinImport":2,"effect/noNullish":21,"effect/noRuntimeTypeof":1,"effect/noTernary":12,"effect/noThrowStatement":3,"effect/noUnknownParameters":1,"effect/noUnsafeDictionaryType":2},
     "scripts/fork-work.test.ts": {"effect/noAsyncFunction":8,"effect/noGlobals":2,"effect/noNewError":1,"effect/noNodeBuiltinImport":2,"effect/noNullish":3,"effect/noTernary":1,"effect/noTestLifecycleHooks":1,"effect/noThrowStatement":1},
     "scripts/fork-work.ts": {"effect/maxCognitiveComplexity":1,"effect/noAsyncFunction":6,"effect/noGlobals":3,"effect/noNewPromise":2,"effect/noNodeBuiltinImport":1,"effect/noNullish":17,"effect/noTernary":9},
-    "scripts/fork.ts": {"effect/noNodeBuiltinImport":2,"effect/noNullish":2,"effect/noTernary":3},
+    "scripts/fork.ts": {"effect/noNodeBuiltinImport":2,"effect/noNullish":1,"effect/noTernary":3},
     "scripts/gate.ts": {"effect/noAsyncFunction":8,"effect/noConditionalEmptyObjectSpread":1,"effect/noGlobals":13,"effect/noNewPromise":2,"effect/noNodeBuiltinImport":2,"effect/noNullish":3,"effect/noTernary":7},
     "scripts/layout.test.ts": {"effect/noModulePathFacts":1,"effect/noNodeBuiltinImport":2,"effect/noTernary":2},
     "scripts/leaks.test.ts": {"effect/noAsyncFunction":18,"effect/noFixedWaitInTests":2,"effect/noGlobals":5,"effect/noTryCatch":1},

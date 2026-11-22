@@ -46,7 +46,7 @@ import { Effect, Option, Schema } from "effect"
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, hostname } from "node:os"
 import { dirname, join, resolve } from "node:path"
-import { type Catalog, DEFAULT_FORK, loadCatalog, loginStoreDir, newestRelease } from "../testbeds/gamut/gamut.ts"
+import { type Catalog, loadCatalog, loginStoreDir, newestRelease } from "../testbeds/gamut/gamut.ts"
 import { BUILTIN_AUTOMATION_OFF, BUILTIN_BTW_OFF, SERVER_OFF, SERVER_PLUGINS, serverEntry, serverEntryDir, TUI_OFF, tuiPluginsOf } from "../mods/update/trees.ts"
 import type { Settings } from "../mods/update/settings.ts"
 import type { TailnetRead, TailnetWrite } from "../mods/digest/policy.ts"
@@ -536,9 +536,9 @@ const writeTree = (home: string, fork: string, tree: { readonly dir: string; rea
     writeJson(join(tree.dir, "config/cli.json"), { plugins: tuiEntries(opencode, (name) => pluginDirIn(name, opencode, join(tree.at, "opencode"))) })
   })
 
-/** The fork checkout daily builds and configures from: `OPENCODE_DEV`, else the default, checked. */
-const forkOf = (env: NodeJS.ProcessEnv): string => {
-  const checked = readyFork(env.OPENCODE_DEV || DEFAULT_FORK)
+/** The fork checkout daily builds and configures from: `OPENCODE_DEV`, checked (`readyFork`); unset, it throws `NO_FORK`, with no guessed default. */
+export const forkOf = (env: NodeJS.ProcessEnv): string => {
+  const checked = readyFork(env.OPENCODE_DEV)
   if ("problem" in checked) throw new Error(checked.problem)
   if (!existsSync(join(checked.fork, "packages/cli/script/build.ts"))) throw new Error(`no OpenCode checkout at ${checked.fork}: expected packages/cli/script/build.ts; set OPENCODE_DEV`)
   return checked.fork

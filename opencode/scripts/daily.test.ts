@@ -10,8 +10,9 @@ import { keptScratch, scratch as scratchDir } from "../tests/scratch.ts"
 import { hostLocks } from "../mods/work/process/landing.ts"
 import { SERVER_PLUGINS } from "../mods/update/trees.ts"
 import { settingsFor } from "../mods/update/process/install.ts"
-import { BUILTIN_BTW_OFF, BUILTIN_AUTOMATION_OFF, CLAUDE_CACHE_TTL, digestEntry, DOTFILES, fleetOthersOf, forkSteps, hostCli, hostServer, installDotfiles, installedFile, lacksCliDefault, mailEntry, moveFork, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleLines, roleModels, serverEntries, treeSettings, writeSettings } from "./daily.ts"
+import { BUILTIN_BTW_OFF, BUILTIN_AUTOMATION_OFF, CLAUDE_CACHE_TTL, digestEntry, DOTFILES, fleetOthersOf, forkOf, forkSteps, hostCli, hostServer, installDotfiles, installedFile, lacksCliDefault, mailEntry, moveFork, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleLines, roleModels, serverEntries, treeSettings, writeSettings } from "./daily.ts"
 import type { PluginEntry } from "./daily.ts"
+import { NO_FORK } from "./fork.ts"
 import { ATTEMPTS, type CheckResult, exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions, unlocked } from "./upstream.ts"
 
 const MODS = "/repo/opencode/mods"
@@ -97,6 +98,14 @@ const ownerCli = (next: () => number): Json => {
   const some = someOf(next)
   return some({ $schema: "https://opencode.ai/tui.json", theme: some({ mode: "dark", name: "opencode-classic" }), tabs: some({ layout: "vertical", scope: "cwd" }), session: { sidebar: "auto" }, plugin: ["x"] })
 }
+
+describe("the fork daily builds from", () => {
+  test("is OPENCODE_DEV only: unset or empty, daily stops naming the variable, and no guessed default checkout is used", () => {
+    expect(() => forkOf({})).toThrow(NO_FORK)
+    expect(() => forkOf({ OPENCODE_DEV: "" })).toThrow(NO_FORK)
+    expect(() => forkOf({ OPENCODE_DEV: "/nonexistent/loop-probe-x" })).toThrow("does not exist on this machine")
+  })
+})
 
 describe("the settings a build carries in its tree", () => {
   test("over generated owner configs, the tree's overlay folded over the owner's global config gives the build's value for each key it names and the owner's for every other", () => {
