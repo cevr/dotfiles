@@ -394,8 +394,12 @@ create_workspace() {
   done
   phase 'locked'
   base_wants "$source_path" "$main" "$remote_main"
+  # One clone or delete of a copy base at a time (lock_clone).
+  phase 'clone turn'
+  lock_clone "$source_path" "clone $name (create $branch)"
   phase "clone $name"
   made=$(work_new "$source_path" "$name" "$branch")
+  unlock_clone
   unlock_source
   work_deps_tag=${made%%	*}
   made=${made#*	}
@@ -973,13 +977,15 @@ queue_enter() {
   exec 3>&-
   q_ahead=$(ticket_ahead "$queue_ticket" "$q_kind")
   if [ -n "$q_ahead" ]; then
-    printf 'workrift: waiting for the lock of %s:%s\n' "$q_base" "$(ticket_ahead_words "$queue_ticket" "$q_kind")" >&2
+    q_what='the lock'
+    [ "$2" != clone ] || q_what='the clone turn'
+    printf 'workrift: waiting for %s of %s:%s\n' "$q_what" "$q_base" "$(ticket_ahead_words "$queue_ticket" "$q_kind")" >&2
     q_mine=$queue_ticket
     (
       while sleep 60 >/dev/null 2>&1; do
         [ -n "$(process_identity "$holder_pid")" ] || exit 0
-        printf 'workrift: still waiting for the lock of %s:%s; in line since %s\n' \
-          "$q_base" "$(ticket_ahead_words "$q_mine" "$q_kind")" "$(clock_time "$q_since")" >&2
+        printf 'workrift: still waiting for %s of %s:%s; in line since %s\n' \
+          "$q_what" "$q_base" "$(ticket_ahead_words "$q_mine" "$q_kind")" "$(clock_time "$q_since")" >&2
       done
     ) 3>&- 6>&- 7>&- 8>&- 9>&- &
     q_talker=$!
@@ -1119,7 +1125,7 @@ queue_leave() {
 
 # Removes this process's tickets at exit (their locks end with it anyway).
 tickets_at_exit() {
-  for t_mine in "${base_ticket:-}" "${advance_ticket:-}" "${hold_ticket:-}"; do
+  for t_mine in "${base_ticket:-}" "${advance_ticket:-}" "${hold_ticket:-}" "${clone_ticket:-}"; do
     [ -z "$t_mine" ] || rm -f "$t_mine" "$t_mine.in"
   done
 }
@@ -1153,6 +1159,64 @@ lock_advance() {
 unlock_advance() {
   queue_leave 6 "$advance_ticket"
   advance_ticket=
+}
+
+# The clone turn: a third queue, clone/, beside base/ and advance/. On a base
+# whose workspaces are file copies, a create's clone (`work new`) and a
+# remove's delete (`work rm`, and its purge) each take it, exclusively, so one
+# of them runs at a time per base, in arrival order across both kinds. On the
+# workbox's btrfs (2026-11-22, load 40-70, ~400k files a Bite tree) one reflink
+# copy of the base took 0-1 s alone and four started together 1,262-1,287 s
+# each; a copy beside one removal's rm -rf stalled 12-17 min and the removal
+# took 16-21 min instead of 23 s to 3 min: they contend on the file system's
+# tree locks, so side by side is slower than one after another. Agents could
+# not keep to one at a time by convention. Everything else of a create (its
+# fetch, install and warm) and of a remove (its checks) stays concurrent.
+#
+# A create takes it while it holds the base's shared ticket, never the other
+# way round, and a holder of the turn waits for nothing of the base: so no
+# wait goes round in a cycle (an advance waiting for that shared ticket waits
+# for the turns ahead of it in line, which end). A dead holder or waiter ends
+# its ticket as any other (the kernel drops its flock).
+#
+# A base whose workspaces are btrfs snapshots takes no turn: each is one
+# snapshot made and one subvolume deleted, side by side. That is a base that
+# is the root of a btrfs subvolume (inode 256 on btrfs) and whose work tries
+# its btrfs cloner first (`work --json doctor`'s cloners): work falls through
+# to a file copy only when the base is no subvolume (Ergo's btrfs.ergo). In
+# doubt (doctor fails or answers otherwise), it takes the turn: slower, never
+# worse.
+#
+# A workrift from before the turn (dotfiles 83b97f9e and earlier) takes none:
+# its clones and deletes run beside this one's, as they did beside each other,
+# until no such process runs. It never reads clone/ (its sweep and its waits
+# name base/ and advance/ only), and the shared counter `next` stays monotonic
+# under queue.lock for both.
+base_snapshots() {
+  [ "$(stat -f -c %T "$1" 2>/dev/null)" = btrfs ] && [ "$(stat -c %i "$1" 2>/dev/null)" = 256 ] || return 1
+  work_in "$1" --json doctor 2>/dev/null 3>&- 6>&- 7>&- 8>&- 9>&- |
+    jq -e '(.cloners // [])[0] == "btrfs"' >/dev/null 2>&1
+}
+
+# The clone turn of the base $1 for the purpose $2 (`clone NAME (create
+# BRANCH)`, `delete NAME (remove PATH)`: the line of whoever waits names it),
+# on descriptor 8; none on a snapshot base. clone_waited says whether anyone
+# was ahead.
+lock_clone() {
+  clone_waited=false
+  ! base_snapshots "$1" || return 0
+  c_purpose=$lock_purpose
+  lock_purpose=$2
+  queue_enter "$1" clone w 8 wait
+  lock_purpose=$c_purpose
+  clone_ticket=$queue_ticket
+  [ -z "$q_ahead" ] || clone_waited=true
+}
+
+unlock_clone() {
+  [ -n "${clone_ticket:-}" ] || return 0
+  queue_leave 8 "$clone_ticket"
+  clone_ticket=
 }
 
 # Written under the exclusive lock before the base moves (fast-forward,
@@ -1842,6 +1906,33 @@ work_remove() {
   # work rm refuses a workspace whose head no branch of its parent holds, even
   # when origin holds it; the rule above is the owner's, and -abandon follows it.
   w_doomed=$(printf '%s' "$w_json" | jq -r --arg p "$w_target" "$w_tree"' $p, below($p)')
+  work_remove_checks
+
+  w_verb=trash
+  [ "$purge_trash" = true ] && w_verb=delete
+  if [ "$3" = true ]; then
+    printf '%s\n' "$w_doomed" | sed "s/^/would $w_verb: /"
+    return 0
+  fi
+
+  # One clone or delete of a copy base at a time (lock_clone). After a wait
+  # in line the workspace may have changed (an agent wrote in it, a shell
+  # entered it): the checks again, under the turn, before anything goes.
+  lock_clone "$w_base" "delete $w_name (remove $w_target)"
+  [ "$clone_waited" = false ] || work_remove_checks
+  if [ "$w_with_children" = true ]; then
+    w_out=$(work_in "$w_base" --json rm -abandon -expect "$w_id" -tree "$w_name") || fail "work rm failed for $w_target: $w_out"
+  else
+    w_out=$(work_in "$w_base" --json rm -abandon -expect "$w_id" "$w_name") || fail "work rm failed for $w_target: $w_out"
+  fi
+  [ "$purge_trash" != true ] || work_purge "$w_base" "$w_json" "$w_doomed" "$w_out"
+  unlock_clone
+}
+
+# The removal rule over every workspace work_remove would remove (w_doomed, of
+# the list w_json, the base w_base): each held (work_require_held), and none a
+# process works in.
+work_remove_checks() {
   for w_path in $w_doomed; do
     w_above=$(printf '%s' "$w_json" | jq -r --arg p "$w_path" "$w_tree"' above($p)')
     w_inherited=$(for w_up in $w_above; do git -C "$w_up" stash list --format=%H; done)
@@ -1858,21 +1949,6 @@ work_remove() {
     fi
   done
   IFS=$w_old_ifs
-
-  w_verb=trash
-  [ "$purge_trash" = true ] && w_verb=delete
-  if [ "$3" = true ]; then
-    printf '%s\n' "$w_doomed" | sed "s/^/would $w_verb: /"
-    return 0
-  fi
-
-  if [ "$w_with_children" = true ]; then
-    w_out=$(work_in "$w_base" --json rm -abandon -expect "$w_id" -tree "$w_name") || fail "work rm failed for $w_target: $w_out"
-  else
-    w_out=$(work_in "$w_base" --json rm -abandon -expect "$w_id" "$w_name") || fail "work rm failed for $w_target: $w_out"
-  fi
-  [ "$purge_trash" = true ] || return 0
-  work_purge "$w_base" "$w_json" "$w_doomed" "$w_out"
 }
 
 # The records of every base whose path is $1 or a folder below it, one a

@@ -365,6 +365,14 @@ const exe = (path: string, body: string) => {
   chmodSync(path, 0o755)
 }
 const textLines = (text: string) => text.split("\n").filter((line) => line !== "")
+/** `read()`, or `otherwise` when the file went away meanwhile. */
+const readOr = <A>(read: () => A, otherwise: A): A => {
+  try {
+    return read()
+  } catch {
+    return otherwise
+  }
+}
 const sh = (cwd: string, env: Env, ...argv: ReadonlyArray<string>) => {
   const ran = Bun.spawnSync([...argv], { cwd, env, stdout: "pipe", stderr: "pipe" })
   if (ran.exitCode !== 0) throw new Error(`${argv.join(" ")} failed (${ran.exitCode}): ${ran.stderr.toString()}`)
@@ -439,8 +447,8 @@ const FAKE_WORK = [
 const FAKE_STAT = [
   "#!/bin/sh",
   'case "$*" in',
-  '  "-f -c %T "*) p=${*#-f -c %T }; k=fs ;;',
-  '  "-c %i "*) p=${*#-c %i }; k=ino ;;',
+  '  "-f -c %T "*) p=$4; k=fs ;;',
+  '  "-c %i "*) p=$3; k=ino ;;',
   '  *) exec /usr/bin/stat "$@" ;;',
   "esac",
   'case ":${FAKE_SUBVOLUMES:-}:" in',
@@ -511,8 +519,9 @@ const turnBench = (label: string, names: ReadonlyArray<string>) => {
   /** A workspace made by the stand-in directly (no workrift, no log), for a remove to take. */
   const premade = (baseName: string, name: string) =>
     (JSON.parse(sh(base(baseName), { ...env, WORK_BASE: base(baseName) }, join(bin, "work"), "--json", "new", "-branch", name, "-from", "HEAD", name)) as { path: string }).path
-  const turns = (baseName: string) => join(root, ".work", baseName, ".workrift", "clone")
-  return { dir, env, root, holds, log: join(dir, "phases.log"), base, premade, turns, names }
+  /** The base's workrift state folder, where its queues are. */
+  const state = (baseName: string) => join(root, ".work", baseName, ".workrift")
+  return { dir, env, root, holds, log: join(dir, "phases.log"), base, premade, state, names }
 }
 type TurnBench = ReturnType<typeof turnBench>
 
@@ -572,16 +581,21 @@ const runOps = async (b: TurnBench, ops: ReadonlyArray<Op>, snapshots: ReadonlyA
   const poll = (async () => {
     while (polling) {
       for (const name of b.names) {
-        const dir = b.turns(name)
-        if (!existsSync(dir)) continue
-        for (const file of readdirSync(dir)) {
-          const m = /^(\d+)\.[rw]$/.exec(file)
-          const key = `${name}/${file}`
-          if (!m || turns.has(key)) continue
-          const record = textLines(existsSync(join(dir, file)) ? readFileSync(join(dir, file), "utf8") : "")
-          if (record.length < 4) continue
-          const purpose = record[3] ?? ""
-          turns.set(key, { base: name, number: Number(m[1]), name: purpose.split(" ")[1] ?? "", purpose, seenAt: Date.now() / 1000 })
+        const state = b.state(name)
+        if (!existsSync(state)) continue
+        // Every queue whose name starts with clone: a split of the turn into queues of its own (a mutant) is seen too.
+        for (const queue of readdirSync(state).filter((each) => each.startsWith("clone"))) {
+          const dir = join(state, queue)
+          for (const file of readOr(() => readdirSync(dir), [])) {
+            const m = /^(\d+)\.[rw]$/.exec(file)
+            const key = `${name}/${queue}/${file}`
+            if (!m || turns.has(key)) continue
+            // A ticket may end between the listing and the read.
+            const record = textLines(readOr(() => readFileSync(join(dir, file), "utf8"), ""))
+            if (record.length < 4) continue
+            const purpose = record[3] ?? ""
+            turns.set(key, { base: name, number: Number(m[1]), name: purpose.split(" ")[1] ?? "", purpose, seenAt: Date.now() / 1000 })
+          }
         }
       }
       await Bun.sleep(5)
