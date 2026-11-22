@@ -4,7 +4,8 @@
 // The merge happens in a worktree of the fork of its own (detached, kept between runs so its
 // node_modules stay warm), never in the checkout `OPENCODE_DEV` builds, and starts from origin's
 // prime-look. A conflict is aborted; a clean merge must pass the fork's `bun run check` (lint and
-// typecheck, what its pre-push hook runs) and the dotfiles acceptance tests most exposed to host
+// typecheck, what its pre-push hook runs), the fork's feature checks (scripts/fork-checks.ts: the tests
+// of each fork feature, scripts/fork-checks.json) and the dotfiles acceptance tests most exposed to host
 // changes, run against the merged worktree with the mods linked to it, on a calm host, a failed file
 // rerun once (`acceptance`). Only then does the merge go to origin, and only once origin holds it does
 // `prime-look` fast-forward to it; when origin moved meanwhile, the merge starts over from its head. A
@@ -18,6 +19,7 @@ import { dlopen, FFIType } from "bun:ffi"
 import { closeSync, existsSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs"
 import { loadavg, tmpdir } from "node:os"
 import { dirname, join } from "node:path"
+import { Effect } from "effect"
 import type { UpstreamReading } from "../mods/prime/update.ts"
 
 /** The host that owns the fork, as `peersOf` names hosts (lower case, no `.local`). */
@@ -335,6 +337,8 @@ const judgeMerge = (options: Options, run: Runner, made: Made, result: CheckResu
   if (result.ok) return landMerge(options, run, made.start, made.merge, made.commits)
   options.log(`upstream: the merge is red (${result.check}); ${BRANCH} unchanged`)
   holdMerge(options, run, made.start, made.merge, `Upstream merge is red: ${result.check}`, [
+    `Upstream commits it brings: \`git log ${made.start.base.slice(0, 10)}..${made.start.upstream.slice(0, 10)}\` (${plural(made.commits, "commit")}).`,
+    "",
     "## Failing check",
     "",
     `\`${result.check}\`, run against the merged worktree ${options.worktree}:`,
@@ -580,31 +584,88 @@ export const acceptance = async (files: ReadonlyArray<string>, run: TestRun, hos
   return { ok: false, check: `${check} (red twice: ${twice.join(", ")})`, log: second.log }
 }
 
+/** One check's exit and the tail of its output. */
+export interface StepRun {
+  readonly code: number
+  readonly log: string
+}
+/** One check of a merge, over its worktree. */
+export type Step = (dir: string) => Effect.Effect<StepRun>
+
+/** The checks a merge passes, in order; `accept` last, a whole check of its own (it links the mods to the merge and back). */
+export interface MergeSteps {
+  readonly install: Step
+  readonly check: Step
+  readonly features: Step
+  readonly accept: (dir: string) => Effect.Effect<CheckResult>
+}
+
 /**
- * The real checks, each niced: the merged lockfile installs as committed, the fork's `bun run check`
- * (lint, and typecheck of every package) passes, and the exposed acceptance tests pass with `OPENCODE_DEV` at the merge,
- * without the caller's Anthropic routing (`acceptance`: on a calm host, a failed file rerun once).
+ * A merge's checks, each in turn, the first red one answering: the merged lockfile installs as committed, the
+ * fork's `bun run check` (lint and typecheck of every package, what its pre-push hook runs, so the push may skip
+ * the hook, `pushOrigin`), the fork's feature checks (scripts/fork-checks.ts over scripts/fork-checks.json: a red
+ * test, a listed file the merge lost, or a run that could not finish holds the merge), then the acceptance tests.
+ * `bun run daily` and post-land run it through `forkChecks`; a test hands fakes for the steps that need a real fork.
  */
-export const forkChecks =
-  (opencode: string, fork: string, host: Host = realHost, log: (line: string) => void = console.log): Checks =>
+export const mergeChecks =
+  (steps: MergeSteps): Checks =>
+  (dir) =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const named: ReadonlyArray<readonly [string, Step]> = [
+          ["bun install --frozen-lockfile", steps.install],
+          ["bun run check", steps.check],
+          ["fork feature checks (scripts/fork-checks.ts)", steps.features],
+        ]
+        for (const [check, step] of named) {
+          const ran = yield* step(dir)
+          if (ran.code !== 0) return { ok: false, check, log: ran.log } satisfies CheckResult
+        }
+        return yield* steps.accept(dir)
+      }),
+    )
+
+/** The env of a check of the merge `dir`: `OPENCODE_DEV` at it, without the caller's Anthropic routing. */
+const mergeEnv = (dir: string) => {
+  const { ANTHROPIC_BASE_URL: _routing, ...env } = process.env
+  return { ...env, OPENCODE_DEV: dir }
+}
+
+/** `command` niced in `cwd` with `env`: its exit and the tail of its output. */
+const niced = (cwd: string, command: ReadonlyArray<string>, env: NodeJS.ProcessEnv): Promise<StepRun> => {
+  const child = Bun.spawn(["nice", "-n", "10", ...command], { cwd, env, stdout: "pipe", stderr: "pipe" })
+  return Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]).then(([out, err, code]) => ({ code, log: tail(`${out}\n${err}`) }))
+}
+
+/** The command the fork's feature checks run by: the dotfiles' `opencode` dir, the checkout, and any flags (a test's `--list`). */
+export const featureCheckArgv = (opencode: string, fork: string, flags: ReadonlyArray<string> = []): ReadonlyArray<string> => ["bun", join(opencode, "scripts/fork-checks.ts"), "--fork", fork, ...flags]
+
+/**
+ * The fork's feature checks over the merge (`bun scripts/fork-checks.ts --fork <merge>`, which bounds its own time and
+ * waits), a process of its own so this module, which `bun run daily` loads, imports no platform layer; `flags` for a test's list.
+ */
+export const featureStep =
+  (opencode: string, flags: ReadonlyArray<string> = []): Step =>
+  (dir) =>
+    Effect.promise(() => niced(opencode, featureCheckArgv(opencode, dir, flags), mergeEnv(dir)))
+
+/**
+ * The real checks (`mergeChecks`), each niced, the acceptance tests with `OPENCODE_DEV` at the merge, without the
+ * caller's Anthropic routing (`acceptance`: on a calm host, a failed file rerun once).
+ */
+export const forkChecks = (opencode: string, fork: string, host: Host = realHost, log: (line: string) => void = console.log): Checks =>
+  mergeChecks({
+    install: (dir) => Effect.promise(() => niced(dir, ["bun", "install", "--frozen-lockfile"], mergeEnv(dir))),
+    check: (dir) => Effect.promise(() => niced(dir, ["bun", "run", "check"], mergeEnv(dir))),
+    features: featureStep(opencode),
+    accept: (dir) => Effect.promise(() => linkedAcceptance(opencode, fork, host, log)(dir)),
+  })
+
+/** The exposed acceptance tests run linked to the merge, the links put back to the fork whatever the result. */
+const linkedAcceptance =
+  (opencode: string, fork: string, host: Host, log: (line: string) => void): Checks =>
   async (dir) => {
-    const env: Record<string, string | undefined> = { ...process.env, OPENCODE_DEV: dir }
-    delete env.ANTHROPIC_BASE_URL
-    const spawn = async (cwd: string, command: ReadonlyArray<string>, extra: Record<string, string> = {}) => {
-      const child = Bun.spawn(["nice", "-n", "10", ...command], { cwd, env: { ...env, ...extra }, stdout: "pipe", stderr: "pipe" })
-      const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
-      return { code, log: tail(`${out}\n${err}`) }
-    }
-    // `bun run check` is the fork's lint and typecheck of every package, what its pre-push hook runs, so the
-    // push may skip the hook (`pushOrigin`).
-    const steps: ReadonlyArray<readonly [string, string, ReadonlyArray<string>]> = [
-      ["bun install --frozen-lockfile", dir, ["bun", "install", "--frozen-lockfile"]],
-      ["bun run check", dir, ["bun", "run", "check"]],
-    ]
-    for (const [check, cwd, command] of steps) {
-      const ran = await spawn(cwd, command)
-      if (ran.code !== 0) return { ok: false, check, log: ran.log }
-    }
+    const spawn = (cwd: string, command: ReadonlyArray<string>, extra: Readonly<Record<string, string>> = {}) => niced(cwd, command, { ...mergeEnv(dir), ...extra })
     const report = join(mkdtempSync(join(tmpdir(), "upstream-accept-")), "junit.xml")
     const run: TestRun = async (files) => {
       rmSync(report, { force: true })

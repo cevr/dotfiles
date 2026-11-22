@@ -21,7 +21,12 @@ and, when origin's `prime-look` lacks some of its commits, merges it
 `prime-look` with commits origin lacks is not merged (the merge would publish
 them). A clean merge must then install as its lockfile says, pass the fork's
 `bun run check` (lint and typecheck, what its pre-push hook runs, so the push
-skips the hook), and pass the acceptance tests most exposed to host changes
+skips the hook), pass the fork's feature checks (`bun scripts/fork-checks.ts
+--fork <merge>`: the fork package tests of each feature the owner keeps,
+listed once in `scripts/fork-checks.json`; a red test, a listed file the merge
+lost, or a run that could not finish under its load wait, lock, 6 GiB disk
+floor or time bound holds the merge, the report naming the test and the
+upstream commits), and pass the acceptance tests most exposed to host changes
 (`tests/prime-*`, `tui-cpu`, `mail`, `orchestrate`) with `OPENCODE_DEV` at the
 merge, niced and without `ANTHROPIC_BASE_URL`. Green, the merge goes to origin
 first, and only once origin holds it does `prime-look` fast-forward to it (its
@@ -2928,7 +2933,9 @@ projects and messages on port 8240. It listens in two places:
 
 - `http://127.0.0.1:8240`, for this host's browser.
 - Each of the host's tailnet addresses (its `100.x.y.z` and its `fd7a:…`
-  address), for his phone and other devices on his tailnet.
+  address), for his phone and other devices on his tailnet. Open it by
+  address (`http://100.x.y.z:8240`): under its MagicDNS name it only sends
+  you on to the address (see "The address only" below).
 
 It never listens anywhere else. `mods/digest/bind.ts` refuses, in code, any
 address that is not loopback or in Tailscale's ranges (`100.64.0.0/10`,
@@ -3086,19 +3093,39 @@ bun ~/Developer/personal/dotfiles/opencode/cmd/digest/pair.ts
 ```
 
 The command prints a one-use code (good for five minutes) and the page's
-tailnet URLs: the MagicDNS name, the short name, and the IP. Open one of
-them on the phone and type the code. The token is kept in that origin's
-`localStorage`, so each URL pairs on its own. A phone paired at
-`http://100.x.y.z:8240` and then opened at `http://<host>.<tailnet>.ts.net:8240`
-asks to pair again: run `pair.ts` once more and type the new code there.
-Keep using one URL to avoid this. `pair.ts --list` shows the paired browsers
-and `--revoke <id>|all` unpairs them.
+tailnet URLs: its addresses, `http://100.x.y.z:8240` and
+`http://[fd7a:…]:8240`. Open one of them on the phone and type the code. The
+token is kept in that origin's `localStorage`, so each address pairs on its
+own. Keep using one URL (bookmark the `100.x.y.z` one).
+`pair.ts --list` shows the paired browsers and `--revoke <id>|all` unpairs
+them.
 
-**Refusals.** A request whose `Host` is not one of the listener's own names
-(its addresses, the MagicDNS name, the short name) is refused on every route.
-So a hostile name pointed at the address (DNS rebinding) reads nothing. A
-write must come from the origin of the `Host` it names, with the page's
-header, as JSON. Pairing tries are limited by source address:
+**The address only.** On the tailnet the page answers at its address alone,
+never under a name. `http://<host>.<tailnet>.ts.net:8240/` and
+`http://<host>:8240/` only send the browser on to the address (a 308 built
+from the listener's own address); every other request under a name is
+refused (421), with a token or without. The reason: his phone reads and
+writes with no token, so its place on the tailnet is the credential, shared
+by every page open in its browser. Which server a name reaches is up to the
+browser's resolver, not Tailscale: a hostile Wi-Fi's search domain, or a
+name rebound to the host after an attacker's page loaded under it, puts a
+stranger's page in that name's origin, where it could read the view and mark
+or answer as him. No resolver decides where an address goes. A token kept
+under a name's origin is no safer (a page in that origin reads its
+`localStorage`), so a browser paired under a name before 2026-11-22 pairs
+again at the address.
+
+Loopback is unchanged: `127.0.0.1` and `localhost`. The browser and the hosts
+file keep `localhost` on this machine, never DNS, and the loopback page is
+open to programs on this host by design.
+
+**Refusals.** A request whose `Host` is not one the listener serves under
+(on loopback `127.0.0.1` and `localhost`, on the tailnet its address as a
+browser writes it) or one of its names is refused on every route. So a
+hostile name pointed at the address (DNS rebinding) reads nothing. A write
+must come from the origin of the `Host` it names, with the page's header, as
+JSON; on the tailnet any other request that sends an Origin must send that
+one too. Pairing tries are limited by source address:
 
 - each address may fail 5 times a minute;
 - past 30 failures a minute from all addresses together, an address that has

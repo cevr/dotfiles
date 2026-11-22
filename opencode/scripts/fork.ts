@@ -13,7 +13,7 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, rmSync } from "node:fs"
 import { hostname } from "node:os"
 import path from "node:path"
-import { Option, Schema } from "effect"
+import { Option, Result, Schema } from "effect"
 
 /** The TUI package's modules, relative to the fork: what link-fork links into every package. */
 export const FORK_MODULES = "packages/tui/node_modules"
@@ -46,11 +46,24 @@ const removeStray = (modules: string) => {
  * The fork in OPENCODE_DEV (`dev`), ready for a script to use: link-fork's own stray removed from it, then checked
  * (`checkFork`). link-fork, accept, daily and post-land all take the fork through it.
  */
-export const readyFork = (dev: string | undefined): Fork => {
-  if (dev === undefined || dev === "") return { problem: "OPENCODE_DEV is not set: point it at an OpenCode checkout, e.g. the prime-look Rift." }
-  removeStray(path.join(path.resolve(dev), FORK_MODULES))
-  return checkFork(dev)
-}
+export const readyFork = (dev: string | undefined): Fork =>
+  Result.match(forkNamed(Option.none(), Option.fromUndefinedOr(dev)), {
+    onFailure: (problem) => ({ problem }),
+    onSuccess: (named) => {
+      removeStray(path.join(path.resolve(named), FORK_MODULES))
+      return checkFork(named)
+    },
+  })
+
+/** What every script that takes the fork says when none is named; there is no guessed default. */
+export const NO_FORK = "OPENCODE_DEV is not set: point it at the fork checkout (the gate sets it), or pass --fork <checkout> to a command that takes one"
+
+/** The fork a script takes: its `--fork` flag where it has one, else OPENCODE_DEV (`dev`); with neither, or an empty one, `NO_FORK`. */
+export const forkNamed = (flag: Option.Option<string>, dev: Option.Option<string>): Result.Result<string, string> =>
+  Result.fromOption(
+    Option.filter(Option.orElse(flag, () => dev), (fork) => fork !== ""),
+    () => NO_FORK,
+  )
 
 export type Fork = { readonly fork: string; readonly modules: string } | { readonly problem: string }
 

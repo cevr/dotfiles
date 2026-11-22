@@ -20,7 +20,7 @@ import { parseArgs } from "node:util"
 import { Array as Arr, Clock, Console, DateTime, Effect, Match, Option, Schema } from "effect"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import * as FilePairing from "@dotfiles/opencode-digest/filestore/pairing"
-import { hostOf, noTailnet, type Tailnet } from "@dotfiles/opencode-digest/bind"
+import { hostWithPort, noTailnet, type Tailnet } from "@dotfiles/opencode-digest/bind"
 import { HOSTNAME, PORT } from "@dotfiles/opencode-digest/http/listener"
 import { CODE_TTL_MS, MAX_PAIRED, type Paired, showCode } from "@dotfiles/opencode-digest/pairing"
 import { probe } from "@dotfiles/opencode-digest/process/tailnet"
@@ -48,10 +48,11 @@ export const targetOf = (args: ReadonlyArray<string>): Option.Option<Target> => 
 
 /**
  * What the owner reads after an issue: the link to open on this host, the code to type instead, and the page's
- * addresses on the tailnet (names first) where a phone types it. Each address is its own origin, so pairs on its own.
+ * addresses on the tailnet where a phone types it. Only its addresses: under a name the tailnet page only sends a
+ * browser on to its address (policy.ts). Each address is its own origin, so pairs on its own.
  */
 export const said = (code: string, port: number, tailnet: Tailnet = noTailnet("none")): string => {
-  const urls = [...tailnet.names, ...tailnet.addresses].map((each) => `  http://${hostOf(each)}:${port}/`)
+  const urls = tailnet.addresses.map((each) => `  http://${hostWithPort(each, port)}/`)
   const remote = Arr.match(urls, {
     onEmpty: () => [`The page has no tailnet address here (${tailnet.why}), so it is on this host only.`],
     onNonEmpty: (all) => [

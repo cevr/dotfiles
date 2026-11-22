@@ -54,6 +54,13 @@ export const namedBy = (tree: string, command: string): boolean => new RegExp(`(
  * (`effect` and `@opencode/plugin`, each with its subpaths: the fork's `packages/plugin/src/runtime-modules.ts`),
  * the TUI (those, and Solid and OpenTUI: its `packages/tui/src/plugin/runtime-plugin-support.bun.ts`
  * `HOST_MODULES`), and plain `bun` (none).
+ *
+ * These are **imports** the host resolves, not the services it provides. Since the fork's platform floor
+ * (`process/pin.ts` `PLATFORM_FLOOR`) a server plugin's Effect may require `FileSystem.FileSystem`,
+ * `Path.Path` and `ChildProcessSpawner.ChildProcessSpawner`, whose tags it imports from `effect` and whose
+ * implementations the host supplies at activation; so a server plugin never imports an implementation
+ * (`@effect/platform-node`, `@effect/platform-bun`), and neither package belongs here
+ * (`scripts/runtime-imports.test.ts` holds this list to exactly these two).
  */
 export type Host = "server" | "tui" | "bun"
 

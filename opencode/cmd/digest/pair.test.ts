@@ -3,7 +3,8 @@
 // - The pairing file is the owner's alone (0600).
 // - `--list` names the paired browsers, and `--revoke` unpairs one by id, or all.
 // - A port that is not one is refused before anything is written.
-// - With Tailscale up it names the page's tailnet addresses (invented here), where a phone types the code.
+// - With Tailscale up it names the page's tailnet addresses (invented here), and only them, where a phone types the
+//   code, each as a browser writes it.
 import { describe, expect, test } from "bun:test"
 import { existsSync, statSync } from "node:fs"
 import { join } from "node:path"
@@ -39,14 +40,12 @@ describe("digest pair", () => {
     expect(text).toContain("The page has no tailnet address here (none), so it is on this host only.")
   })
 
-  test("with Tailscale up, it names the page's tailnet addresses, names first, and says each pairs on its own", async () => {
+  test("with Tailscale up, it names the page's tailnet addresses only (under a name the page only sends a browser on to its address), and says each pairs on its own", async () => {
     using held = scratch("digest-pair-")
-    const tailnet = { addresses: ["100.101.102.103", "fd7a:115c:a1e0::42"], names: ["harbor.example-tailnet.ts.net", "harbor"], why: "" }
+    const tailnet = { addresses: ["100.101.102.103", "fd7a:115c:a1e0:0:0:0:0:42"], names: ["harbor.example-tailnet.ts.net", "harbor"], why: "" }
     const { text } = await said(["--dir", join(held.path, "digest")], tailnet)
     expect(text.split("\n").slice(3)).toEqual([
       "On a phone or another device on your tailnet, open one of these and type the code:",
-      "  http://harbor.example-tailnet.ts.net:8240/",
-      "  http://harbor:8240/",
       "  http://100.101.102.103:8240/",
       "  http://[fd7a:115c:a1e0::42]:8240/",
       "Each address pairs on its own: a browser paired at one of them is asked to pair again at another.",
