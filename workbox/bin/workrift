@@ -202,7 +202,7 @@ install_dependencies() {
     fi
   fi
   # Close the source lock so a daemon the install starts cannot hold it.
-  (cd "$1" && sh -c "$command") 3>&- 6>&- 8>&- 9>&-
+  (cd "$1" && sh -c "$command") 3>&- 6>&- 7>&- 8>&- 9>&-
   lock_fingerprint "$1" >"$(installed_locks_file "$1")"
 }
 
@@ -226,7 +226,7 @@ warm_command() {
 
 run_warm() {
   # A build can leave a daemon running (turbo); it must not inherit the source lock.
-  (cd "$1" && sh -c "$2") 3>&- 6>&- 8>&- 9>&-
+  (cd "$1" && sh -c "$2") 3>&- 6>&- 7>&- 8>&- 9>&-
 }
 
 # The tree the last successful warm step built, kept in the Git directory beside
@@ -323,7 +323,7 @@ install_dependency_hooks() {
   mkdir -p "$(dirname "$exclude_file")"
   grep -qxF '/lefthook-local.yml' "$exclude_file" 2>/dev/null || printf '/lefthook-local.yml\n' >>"$exclude_file"
   if [ -x "$1/node_modules/.bin/lefthook" ]; then
-    (cd "$1" && node_modules/.bin/lefthook install >/dev/null) 3>&- 6>&- 8>&- 9>&-
+    (cd "$1" && node_modules/.bin/lefthook install >/dev/null) 3>&- 6>&- 7>&- 8>&- 9>&-
   fi
 }
 
@@ -616,7 +616,7 @@ note_cold() {
 # flock taken with `flock -w 60` in a loop, and three creates waited about
 # 78 minutes while eight that came later got the lock.
 #
-# A ticket records its owner (pid and start time, as ps has them), since when,
+# A ticket records its owner (pid and identity, process_identity), since when,
 # whether it waits or holds, and what for, so a waiter can say whom it waits
 # for. A ticket whose owner is gone (a child that inherited the descriptor
 # outlived it) is no longer waited for once a waiter sees the owner gone, within
@@ -676,30 +676,51 @@ state_dir() {
 base_git() {
   b_dir=$1
   shift
-  git -c gc.auto=0 -c maintenance.auto=false -C "$b_dir" "$@" 3>&- 6>&- 8>&- 9>&-
+  git -c gc.auto=0 -c maintenance.auto=false -C "$b_dir" "$@" 3>&- 6>&- 7>&- 8>&- 9>&-
 }
 
-# The start time of the process $1 as ps has it (empty when it is gone).
-process_start() {
-  ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//; s/ *$//' || true
+# The identity of the process $1, the same whoever reads it (empty when it is
+# gone): a pid's start, so a pid a new process reuses is another identity.
+# Read so that no environment changes it: `ps -o lstart` prints the start in
+# the caller's TZ and locale, and a waiter with another TZ or LANG took a live
+# holder for dead (two exclusive holders, 2026-11-22). On Linux it is the start
+# in clock ticks since boot (field 22 of /proc/<pid>/stat, after the command
+# name, which may hold spaces and parentheses) and the boot's id; elsewhere
+# (macOS) ps's lstart with the locale and the zone forced: LC_ALL=C TZ=UTC0.
+# Every write and every check of an identity is this function.
+# WORKRIFT_STAT_PROC stands for /proc, for tests only.
+identity_proc=${WORKRIFT_STAT_PROC:-/proc}
+process_identity() {
+  case "$1" in '' | *[!0-9]*) return 0 ;; esac
+  if [ -r "$identity_proc/self/stat" ]; then
+    i_stat=$(cat "$identity_proc/$1/stat" 2>/dev/null) || return 0
+    i_tick=$(printf '%s\n' "${i_stat##*) }" | awk '{ print $20 }')
+    case "$i_tick" in '' | *[!0-9]*) return 0 ;; esac
+    printf 'boot %s tick %s\n' "$(cat "$identity_proc/sys/kernel/random/boot_id" 2>/dev/null)" "$i_tick"
+  else
+    LC_ALL=C TZ=UTC0 ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//; s/ *$//' || true
+  fi
 }
 
-# Whether the owner a ticket file records still runs.
-ticket_owner_alive() {
+# Whether the owner a ticket file records is known to be gone: its pid no
+# longer has the identity recorded. A ticket whose record cannot be read (empty,
+# cut short) has no known owner, so it is never taken for gone: while its lock
+# is held it is live (fail closed: wait rather than grant twice).
+ticket_owner_gone() {
   t_pid=$(sed -n 1p "$1" 2>/dev/null) || return 1
-  [ -n "$t_pid" ] || return 1
+  case "$t_pid" in '' | *[!0-9]*) return 1 ;; esac
   t_start=$(sed -n 2p "$1" 2>/dev/null)
-  [ "$(process_start "$t_pid")" = "$t_start" ]
+  [ "$(process_identity "$t_pid")" != "$t_start" ]
 }
 
-# Whether a ticket is live: locked by its owner, and its owner runs. A ticket
-# being written under queue.lock is never looked at outside it.
+# Whether a ticket is live: locked, and its owner not known to be gone. A
+# ticket being written under queue.lock is never looked at outside it.
 ticket_live() {
   [ -f "$1" ] || return 1
-  if flock -n -x "$1" true 3>&- 6>&- 8>&- 9>&-; then
+  if flock -n -x "$1" true 3>&- 6>&- 7>&- 8>&- 9>&-; then
     return 1
   fi
-  ticket_owner_alive "$1"
+  ! ticket_owner_gone "$1"
 }
 
 # Under queue.lock: drops the queue's tickets that are not live.
@@ -739,7 +760,7 @@ ticket_ahead() {
     case "$2:$a_file" in r:*.r) continue ;; esac
     ticket_live "$a_file" || continue
     printf '%s %s\n' "$a_n" "$a_file"
-  done | sort -n | cut -d' ' -f2-
+  done | LC_ALL=C sort -n | cut -d' ' -f2-
 }
 
 # Words for the tickets ahead of $1 ($2: its kind): how many, and the oldest.
@@ -755,9 +776,17 @@ ticket_ahead_words() {
 }
 
 # One ticket in words: `pid P (what), holding since T` or `waiting since T`.
+# A ticket whose owner is stopped (SIGSTOP, a Ctrl-Z of a waiting create)
+# holds everyone behind it until it runs again; no waiter skips it (it would go
+# in beside a later writer once it runs), so the line names it for a person.
 ticket_words() {
   if [ -e "$1.in" ]; then t_state=holding; else t_state=waiting; fi
-  printf 'pid %s (%s), %s since %s' "$(sed -n 1p "$1")" "$(sed -n 4p "$1")" "$t_state" "$(clock_time "$(sed -n 3p "$1")")"
+  t_who=$(sed -n 1p "$1")
+  t_stopped=
+  case "$(LC_ALL=C ps -o stat= -p "$t_who" 2>/dev/null)" in
+    *T*) t_stopped="; it is stopped: kill -CONT $t_who to go on, or end it" ;;
+  esac
+  printf 'pid %s (%s), %s since %s%s' "$t_who" "$(sed -n 4p "$1")" "$t_state" "$(clock_time "$(sed -n 3p "$1")")" "$t_stopped"
 }
 
 # What holds or waits in a base's queue $2 (base or advance), in words.
@@ -776,7 +805,7 @@ queue_words() {
 # could be read empty, its owner taken for gone): owner, its start, since,
 # purpose. That it holds is a file beside it, <ticket>.in, made once it is in.
 ticket_record() {
-  holder_start=${holder_start:-$(process_start "$holder_pid")}
+  holder_start=${holder_start:-$(process_identity "$holder_pid")}
   printf '%s\n%s\n%s\n%s\n' "$holder_pid" "$holder_start" "$(date +%s)" "$lock_purpose" >"$1"
 }
 
@@ -821,8 +850,16 @@ queue_enter() {
       ticket_wait "$q_in" "$q_left"
     done
   done
+  # The next number is past both the counter and every ticket present: a
+  # counter deleted or garbled never numbers a ticket below a live one.
   q_n=$(cat "${q_dir%/*}/next" 2>/dev/null || true)
   case "$q_n" in '' | *[!0-9]*) q_n=0 ;; esac
+  for q_any in "$q_dir"/*.[rw]; do
+    [ -f "$q_any" ] || continue
+    q_has=$(ticket_number "$q_any")
+    case "$q_has" in '' | *[!0-9]*) continue ;; esac
+    [ "$q_has" -le "$q_n" ] || q_n=$q_has
+  done
   q_n=$((q_n + 1))
   printf '%s\n' "$q_n" >"${q_dir%/*}/next"
   queue_ticket=$q_dir/$q_n.$q_kind
@@ -836,18 +873,101 @@ queue_enter() {
     q_mine=$queue_ticket
     (
       while sleep 60 >/dev/null 2>&1; do
-        [ -n "$(process_start "$holder_pid")" ] || exit 0
+        [ -n "$(process_identity "$holder_pid")" ] || exit 0
         printf 'workrift: still waiting for the lock of %s:%s; in line since %s\n' \
           "$q_base" "$(ticket_ahead_words "$q_mine" "$q_kind")" "$(clock_time "$q_since")" >&2
       done
-    ) 3>&- 6>&- 8>&- 9>&- &
+    ) 3>&- 6>&- 7>&- 8>&- 9>&- &
     q_talker=$!
     printf '%s\n' "$q_ahead" | while IFS= read -r q_in; do
       ticket_wait "$q_in" ''
     done
     kill "$q_talker" 2>/dev/null || true
   fi
+  # A ticket whose file went while it waited (its queue folder removed) is no
+  # place in line any more: those who came after could not see it. Fail closed.
+  [ -f "$queue_ticket" ] || fail "the ticket $queue_ticket was removed while it waited: the line of $q_base cannot be trusted; nothing done"
+  if [ "$2" = base ]; then
+    legacy_take "$q_base" "$q_kind" "$q_mode" || {
+      queue_leave "$q_fd" "$queue_ticket"
+      return 1
+    }
+  fi
   : >"$queue_ticket.in"
+}
+
+# The lock the workrift before these tickets took (dotfiles a5821de8 and
+# earlier, until 2026-11-22): an flock held exclusively on <base>/.git/
+# workrift.lock for a whole create, its base advance and install included,
+# with holder files written under .git/workrift-lock-holders/ while it holds.
+# A script that is installed replaces the file, so creates already running on
+# the old one (queued for hours, 2026-11-22) go on beside new ones on the same
+# base. So every base ticket also takes that flock once in: shared for a
+# reader, exclusive for a writer, ticket first and then this lock, always in
+# that order (an old workrift holds no ticket, so no wait goes round in a
+# cycle). An old create and a new copy then never run together, nor an old
+# base move beside a new copy, nor a new move beside an old create, while new
+# copies still run beside each other.
+#
+# The file is opened read-only, never created or emptied: it exists on every
+# base an old workrift ever locked. Where it does not, no old workrift ever ran
+# on this base, and none can start now (only processes started before the
+# install run the old script, and the base they resolved had locked it), so
+# there is nothing to exclude.
+#
+# An old waiter loops on `flock -w 60`, and Linux grants a shared flock beside
+# a waiting exclusive one, so a stream of new copies could hold it off without
+# end. A reader therefore lets an old waiter go first: while /proc/locks shows
+# an exclusive flock blocked on this file's inode, it waits. Nothing new waits
+# exclusively on that file while a reader is in (a writer's ticket excludes it),
+# so such a waiter is an old workrift; an inode that matches another device's
+# file only delays. An old waiter so waits at most for the new copies already
+# in. macOS has no list of blocked flocks: there old waiters take their chance
+# (no host runs workrift there). New ones wait behind old ones no longer than
+# the old ones last: no old workrift starts after an install.
+#
+# Delete this (legacy_take, legacy_yield and the descriptor 7 closes) once every
+# host runs this script and no older workrift runs: after 2026-12-06 (two weeks
+# of daily installs), on the check `pgrep -f workrift` naming no process older
+# than the install. Follow-up in the unit create-fair.
+legacy_take() {
+  legacy_file=$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null)/workrift.lock
+  [ -f "$legacy_file" ] || return 0
+  exec 7<"$legacy_file"
+  case "$2:$3" in
+    w:try)
+      flock -n -x 7 3>&- 6>&- 8>&- 9>&- || {
+        exec 7<&-
+        return 1
+      }
+      return 0
+      ;;
+    r:*)
+      legacy_yield "$1" "$legacy_file"
+      l_mode=-s
+      ;;
+    *) l_mode=-x ;;
+  esac
+  if ! flock -n "$l_mode" 7 3>&- 6>&- 8>&- 9>&-; then
+    printf 'workrift: waiting for the lock an older workrift holds on %s (%s)\n' "$1" "$legacy_file" >&2
+    flock "$l_mode" 7 3>&- 6>&- 8>&- 9>&- || fail "flock of $legacy_file failed"
+  fi
+}
+
+# Waits while an exclusive flock is blocked on the file $2 (see legacy_take).
+legacy_yield() {
+  [ -r "$proc_root/locks" ] || return 0
+  y_ino=$(ls -di "$2" | awk '{ print $1 }')
+  y_said=
+  while awk -v ino="$y_ino" '
+      $2 == "->" && $3 == "FLOCK" && $5 == "WRITE" { n = split($7, p, ":"); if (p[n] == ino) found = 1 }
+      END { exit !found }' "$proc_root/locks"; do
+    if [ -z "$y_said" ]; then
+      printf 'workrift: an older workrift waits for the lock of %s: it goes first\n' "$1" >&2
+      y_said=true
+    fi
+    sleep 1
+  done
 }
 
 # Waits until the ticket $1 has ended: its lock free (a blocking flock that
@@ -858,8 +978,8 @@ ticket_wait() {
   w_until=
   [ -z "$2" ] || w_until=$(($(date +%s) + $2))
   while [ -f "$1" ]; do
-    ! flock -w 5 -s "$1" true 3>&- 6>&- 8>&- 9>&- || return 0
-    ticket_owner_alive "$1" || return 0
+    ! flock -w 5 -s "$1" true 3>&- 6>&- 7>&- 8>&- 9>&- || return 0
+    ! ticket_owner_gone "$1" || return 0
     [ -z "$w_until" ] || [ "$(date +%s)" -lt "$w_until" ] || return 0
   done
 }
@@ -886,6 +1006,8 @@ lock_source() {
 }
 
 unlock_source() {
+  # The older workrift's lock (legacy_take) first, then the ticket.
+  exec 7<&-
   queue_leave 9 "$base_ticket"
   base_ticket=
 }
@@ -1053,7 +1175,7 @@ start_advance() {
   a_launch=
   if command -v setsid >/dev/null 2>&1; then a_launch=setsid; fi
   # shellcheck disable=SC2086 # no launcher, or setsid
-  WORKRIFT_SOURCE=$1 $a_launch "$0" advance </dev/null >>"$a_log" 2>&1 3>&- 6>&- 8>&- 9>&- &
+  WORKRIFT_SOURCE=$1 $a_launch "$0" advance </dev/null >>"$a_log" 2>&1 3>&- 6>&- 7>&- 8>&- 9>&- &
   phase "base: advance in the background (pid $!, log $a_log)"
 }
 
@@ -1221,7 +1343,7 @@ hold_source() {
   lock_purpose="hold $*"
   lock_source "$source_path" "$h_mode"
   h_status=0
-  (cd "$source_path" && "$@") 3>&- 6>&- 8>&- 9>&- || h_status=$?
+  (cd "$source_path" && "$@") 3>&- 6>&- 7>&- 8>&- 9>&- || h_status=$?
   unlock_source
   return "$h_status"
 }
@@ -1408,7 +1530,7 @@ prune_workspaces() {
       )
       select id from up where id != $(sql_quote "$kept_id");
     "
-  done <"$work_dir/kept.txt" | sort -u >"$work_dir/protected.txt"
+  done <"$work_dir/kept.txt" | LC_ALL=C sort -u >"$work_dir/protected.txt"
 
   if [ "$dry_run" = false ]; then
     rift gc
@@ -1418,7 +1540,7 @@ prune_workspaces() {
 
   target="$archive_root/$(date -u +%Y-%m-%d)"
   failures=0
-  sort -t '	' -k3,3nr "$work_dir/stale.tsv" >"$work_dir/stale-sorted.tsv"
+  LC_ALL=C sort -t '	' -k3,3nr "$work_dir/stale.tsv" >"$work_dir/stale-sorted.tsv"
   while IFS='	' read -r id parent_id depth rift_path; do
     children=$(sql "select path from rift where parent_id = $(sql_quote "$id");" | tr '\n' ' ')
     if grep -qxF "$id" "$work_dir/protected.txt"; then
@@ -1603,7 +1725,7 @@ work_new() {
     w_from=$(git -C "$w_source" rev-parse HEAD)
   fi
   # An install or hook work runs must not inherit the source lock.
-  if ! w_made=$(work_in "$w_source" --json new -branch "$w_branch" ${w_from:+-from "$w_from"} "$w_free" 3>&- 6>&- 8>&- 9>&-); then
+  if ! w_made=$(work_in "$w_source" --json new -branch "$w_branch" ${w_from:+-from "$w_from"} "$w_free" 3>&- 6>&- 7>&- 8>&- 9>&-); then
     work_new_failed "$w_source" "$w_free"
     fail "work new failed for $w_branch in $w_source: $w_made"
   fi
@@ -2017,7 +2139,7 @@ work_purge() {
   p_left() { fail "$1; nothing deleted, the trash stays: $(printf '%s' "$p_trashes" | tr '\n' ' ')"; }
   [ -n "$p_rows" ] || p_left "work rm answered no removed workspace"
   p_ids=$(printf '%s\n' "$p_rows" | cut -d "$record_separator" -f1)
-  [ "$(printf '%s\n' "$p_ids" | sort -u | wc -l)" -eq "$(printf '%s\n' "$p_ids" | wc -l)" ] || p_left "work rm answered one id twice"
+  [ "$(printf '%s\n' "$p_ids" | LC_ALL=C sort -u | wc -l)" -eq "$(printf '%s\n' "$p_ids" | wc -l)" ] || p_left "work rm answered one id twice"
   p_kept=$(printf '%s\n' "$p_base"; printf '%s' "$p_list" | jq -r '.[] | select(.state._tag == "Active") | .path' | grep -vxF "$p_doomed" || true)
   p_plan=
   p_gone=
@@ -2294,6 +2416,13 @@ case "$command" in
       exit 0
     fi
     top=$(git rev-parse --show-toplevel 2>/dev/null) || fail 'run inside a Git checkout'
+    # Run by hand in a base itself, it installs and builds the base: a change
+    # of the base, so under its exclusive lock, in line, never beside a copy.
+    d_source=$(resolve_source 2>/dev/null || true)
+    if [ -n "$d_source" ] && [ "$(cd "$d_source" && pwd -P)" = "$(cd "$top" && pwd -P)" ]; then
+      lock_purpose=deps
+      lock_source "$top"
+    fi
     if [ "$backend" = work ]; then
       work_deps "$top"
     else
