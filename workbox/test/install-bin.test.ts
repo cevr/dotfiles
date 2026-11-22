@@ -1,7 +1,8 @@
 // workbox/install-bin.sh, as the fleet update runs it from the installed build's tree (`current.plugins/workbox/`)
 // once a build is proven: it installs that tree's commands and shell files, so the workbox's ~/.zshenv and
 // ~/.zshrc are the verified build's, whatever the live checkout holds. It runs here in a scratch HOME on a
-// copy of the script in a scratch tree; nothing touches the real host.
+// copy of the script in a scratch tree; nothing touches the real host. INSTALL_BIN_UNDER_TEST names another
+// copy of the script to run (an older one, to see these cases red against it).
 import { afterAll, describe, expect, test } from "bun:test"
 import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -10,33 +11,39 @@ import { join } from "node:path"
 const scratch = mkdtempSync(join(tmpdir(), "install-bin-test-"))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
+const underTest = process.env.INSTALL_BIN_UNDER_TEST ?? join(import.meta.dir, "..", "install-bin.sh")
+const workboxDir = join(import.meta.dir, "..")
+
 let n = 0
+/** A scratch tree's workbox/ holding the script and `files` (paths under workbox/), in a fresh root beside a scratch HOME. */
+const tree = (root: string, label: string, files: Record<string, string>) => {
+  const workbox = join(root, label, "workbox")
+  mkdirSync(join(workbox, "bin"), { recursive: true })
+  copyFileSync(underTest, join(workbox, "install-bin.sh"))
+  for (const [path, text] of Object.entries(files)) writeFileSync(join(workbox, path), text)
+  return workbox
+}
+
 /** A scratch tree's workbox/ (the script, a command, both shell files) and a scratch HOME. */
 const host = (zshenv = "export FROM=tree\n") => {
   const root = join(scratch, `host-${n++}`)
-  const workbox = join(root, "tree", "workbox")
   const home = join(root, "home")
-  mkdirSync(join(workbox, "bin"), { recursive: true })
   mkdirSync(home, { recursive: true })
-  copyFileSync(join(import.meta.dir, "..", "install-bin.sh"), join(workbox, "install-bin.sh"))
-  writeFileSync(join(workbox, "bin", "workrift"), "#!/bin/sh\necho tree\n")
-  writeFileSync(join(workbox, "zshenv"), zshenv)
-  writeFileSync(join(workbox, "zshrc"), "alias from=tree\n")
-  return { workbox, home, installed: join(home, ".local", "share", "workbox") }
+  const workbox = tree(root, "tree", { "bin/workrift": "#!/bin/sh\necho tree\n", zshenv, zshrc: "alias from=tree\n" })
+  return { root, workbox, home, installed: join(home, ".local", "share", "workbox") }
 }
 
+const env = (home: string) => ({ HOME: home, PATH: "/usr/bin:/bin", TMPDIR: home })
+
 const run = (workbox: string, home: string) => {
-  const done = Bun.spawnSync(["sh", join(workbox, "install-bin.sh")], {
-    cwd: home,
-    env: { HOME: home, PATH: "/usr/bin:/bin" },
-    stdout: "pipe",
-    stderr: "pipe",
-  })
+  const done = Bun.spawnSync(["sh", join(workbox, "install-bin.sh")], { cwd: home, env: env(home), stdout: "pipe", stderr: "pipe" })
   return { code: done.exitCode, stderr: done.stderr.toString() }
 }
 
 /** Where ~/<name> points, or "file" when it is no link. */
 const pointer = (home: string, name: string) => (lstatSync(join(home, name)).isSymbolicLink() ? readlinkSync(join(home, name)) : "file")
+
+const hash = (path: string) => Bun.hash(readFileSync(path)).toString()
 
 describe("install-bin.sh delivers the tree's shell files", () => {
   test("a ~/.zshenv linked into a stale checkout is pointed at the tree's copy, installed beside the commands; twice alike", () => {
@@ -73,13 +80,142 @@ describe("install-bin.sh delivers the tree's shell files", () => {
     expect(pointer(home, ".zshrc")).toBe(join(installed, "zshrc"))
   })
 
-  test("a real ~/.zshrc (no link) is left alone, and the script says so", () => {
+  test("a real ~/.zshrc (no link) is never overwritten: the script says what to do and exits 1, so the update logs it; the rest is installed", () => {
     const { workbox, home, installed } = host()
     writeFileSync(join(home, ".zshrc"), "# the owner's own\n")
     const done = run(workbox, home)
-    expect(done.code).toBe(0)
-    expect(done.stderr).toBe(`install-bin: ${home}/.zshrc is a file, not a link; left as it is (the installed copy is ${installed}/zshrc)\n`)
+    expect(done.code).toBe(1)
+    expect(done.stderr).toBe(
+      `install-bin: ${home}/.zshrc is a file of its own, not the link to ${installed}/zshrc, so new shells do not read the installed zshrc. It was left as it is. To fix: move what you want to keep from it into ~/.config/secrets.env (sourced by zshenv), then \`mv ${home}/.zshrc ${home}/.zshrc.mine\`; the next install links it.\n`,
+    )
     expect(readFileSync(join(home, ".zshrc"), "utf8")).toBe("# the owner's own\n")
     expect(pointer(home, ".zshenv")).toBe(join(installed, "zshenv"))
+    expect(readFileSync(join(home, ".local", "bin", "workrift"), "utf8")).toBe("#!/bin/sh\necho tree\n")
+  })
+})
+
+describe("install-bin.sh refuses a file that would not run, before it replaces any", () => {
+  /** Installs a good tree, then a tree with one bad file; answers what the second install said, and whether every installed file is still the first tree's. */
+  const refusedOver = (bad: Record<string, string>) => {
+    const { root, workbox, home, installed } = host()
+    expect(run(workbox, home)).toEqual({ code: 0, stderr: "" })
+    const watched = [join(home, ".local", "bin", "workrift"), join(installed, "zshenv"), join(installed, "zshrc")]
+    const before = watched.map(hash)
+    const next = tree(root, `bad-${n++}`, { "bin/workrift": "#!/bin/sh\necho next\n", zshenv: "export FROM=next\n", zshrc: "alias from=next\n", ...bad })
+    const done = run(next, home)
+    return { done, next, unchanged: watched.map(hash).every((each, at) => each === before[at]) }
+  }
+
+  test.each([
+    ["a zshenv that does not parse", { zshenv: "export A=1\nif [[ ;\n" }, "zshenv", "zsh -n fails"],
+    ["a zshrc that does not parse", { zshrc: "alias a=b\nif [[ ;\n" }, "zshrc", "zsh -n fails"],
+    ["an sh command that does not parse", { "bin/workrift": "#!/bin/sh\nif then fi\n" }, "bin/workrift", "sh -n fails"],
+    ["a bash command that does not parse", { "bin/trash": "#!/usr/bin/env bash\nif then fi\n" }, "bin/trash", "bash -n fails"],
+  ])("%s: named, nothing replaced, exit 1", (_, bad, file, why) => {
+    const { done, next, unchanged } = refusedOver(bad)
+    expect(done.code).toBe(1)
+    expect(done.stderr).toContain(`install-bin: refused ${next}/${file}: ${why}`)
+    expect(done.stderr).toContain("install-bin: nothing was installed; every file stays as it was")
+    expect(unchanged).toBe(true)
+  })
+
+  test("a zshenv that parses but makes every shell print (or fail) is refused the same way", () => {
+    const { done, next, unchanged } = refusedOver({ zshenv: "echo hello from zshenv\n" })
+    expect(done.code).toBe(1)
+    expect(done.stderr).toContain(`install-bin: refused ${next}/zshenv: a zsh that reads it exits 0 and prints: hello from zshenv`)
+    expect(unchanged).toBe(true)
+  })
+
+  test("the repository's own zshenv, zshrc and commands pass the checks", () => {
+    const { home } = host()
+    const done = Bun.spawnSync(["sh", join(workboxDir, "install-bin.sh")], { cwd: home, env: env(home), stdout: "pipe", stderr: "pipe" })
+    expect({ code: done.exitCode, stderr: done.stderr.toString() }).toEqual({ code: 0, stderr: "" })
+  })
+})
+
+// Every installed file is written beside its target and renamed over it. A poller reads each one while 20
+// installs alternate two trees of different, large files: it must never find one missing, empty, or other than
+// the old or the new file whole. (`install` alone unlinks the target, then writes it: on the workbox an agent
+// saw ~/.local/bin/workrift missing or empty 162 times in 20 installs, 2026-11-22.)
+describe("install-bin.sh replaces each file whole", () => {
+  test(
+    "across 20 installs every installed command and shell file is always the old or the new one, whole",
+    async () => {
+      const root = join(scratch, `atomic-${n++}`)
+      const home = join(root, "home")
+      mkdirSync(home, { recursive: true })
+      const names = Array.from({ length: 10 }, (_, at) => `cmd-${at}`)
+      const big = (label: string, name: string) => `#!/bin/sh\n${`# ${label} ${name} ${"x".repeat(100)}\n`.repeat(800)}echo ${label}\n`
+      const files = (label: string) => ({
+        ...Object.fromEntries(names.map((name) => [`bin/${name}`, big(label, name)])),
+        zshenv: `export FROM=${label}\n${`# ${"z".repeat(100)}\n`.repeat(800)}`,
+        zshrc: `alias from=${label}\n${`# ${"r".repeat(100)}\n`.repeat(800)}`,
+      })
+      const trees = [tree(root, "a", files("a")), tree(root, "b", files("b"))]
+      const watched = [...names.map((name) => join(home, ".local", "bin", name)), join(home, ".zshenv"), join(home, ".zshrc")]
+      const allowed = new Set<string>()
+      for (const workbox of trees) {
+        expect(run(workbox, home)).toEqual({ code: 0, stderr: "" })
+        for (const path of watched) allowed.add(hash(path))
+      }
+      // The `install` GNU coreutils has (the workbox's): it unlinks the target, then writes it. The Mac's BSD
+      // `install` writes a temporary file and renames it, so there the script's own care cannot show.
+      const gnu = join(root, "gnu-bin")
+      mkdirSync(gnu, { recursive: true })
+      writeFileSync(
+        join(gnu, "install"),
+        `#!/bin/sh\nmode=644\nif [ "$1" = -m ]; then mode=$2; shift 2; fi\nrm -f "$2"\ncat "$1" >"$2"\nchmod "$mode" "$2"\n`,
+        { mode: 0o755 },
+      )
+      const gnuEnv = { ...env(home), PATH: `${gnu}:/usr/bin:/bin` }
+      const seen = { reads: 0, missing: 0, empty: 0, partial: 0 }
+      for (let at = 0; at < 20; at++) {
+        const install = Bun.spawn(["sh", join(trees[at % 2]!, "install-bin.sh")], { cwd: home, env: gnuEnv, stdout: "ignore", stderr: "ignore" })
+        while (install.exitCode === null) {
+          for (const path of watched) {
+            seen.reads++
+            try {
+              const bytes = readFileSync(path)
+              if (bytes.length === 0) seen.empty++
+              else if (!allowed.has(Bun.hash(bytes).toString())) seen.partial++
+            } catch {
+              seen.missing++
+            }
+          }
+          await Bun.sleep(0)
+        }
+        expect(install.exitCode).toBe(0)
+      }
+      expect({ ...seen, reads: seen.reads > 20 * watched.length }).toEqual({ reads: true, missing: 0, empty: 0, partial: 0 })
+    },
+    120_000,
+  )
+})
+
+// The health check a person runs is the installed build's (`workbox-check`, installed by install-bin.sh),
+// never the live checkout's copy of bootstrap.sh, which mirrors the Mac's base and can lag.
+describe("workbox-check runs the installed tree's bootstrap.sh --check", () => {
+  const check = join(workboxDir, "bin", "workbox-check")
+
+  test("it runs the tree's copy with --check, and says so when the tree has none", () => {
+    const home = join(scratch, `check-${n++}`)
+    const box = join(home, ".local", "share", "opencode-prime", "current.plugins", "workbox")
+    mkdirSync(home, { recursive: true })
+    const none = Bun.spawnSync(["sh", check], { env: env(home), stdout: "pipe", stderr: "pipe" })
+    expect({ code: none.exitCode, stderr: none.stderr.toString() }).toEqual({
+      code: 1,
+      stderr: `workbox-check: ${box}/bootstrap.sh is not there: the installed build holds no workbox/ yet (the next install brings it)\n`,
+    })
+    mkdirSync(box, { recursive: true })
+    writeFileSync(join(box, "bootstrap.sh"), `printf 'tree bootstrap %s\\n' "$*"\n`)
+    const ran = Bun.spawnSync(["sh", check], { env: env(home), stdout: "pipe", stderr: "pipe" })
+    expect({ code: ran.exitCode, stdout: ran.stdout.toString() }).toEqual({ code: 0, stdout: "tree bootstrap --check\n" })
+  })
+
+  test("the README and the runbook name workbox-check, never the checkout's bootstrap.sh --check", () => {
+    for (const doc of [join(workboxDir, "README.md"), join(workboxDir, "..", "linux", "hetzner-workbox", "RUNBOOK.md")]) {
+      const text = readFileSync(doc, "utf8")
+      expect({ doc, mirror: /dotfiles\/workbox\/bootstrap\.sh --check/.test(text), check: text.includes("workbox-check") }).toEqual({ doc, mirror: false, check: true })
+    }
   })
 })
