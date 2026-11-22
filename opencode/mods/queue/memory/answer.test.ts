@@ -37,6 +37,7 @@ const hostOf = (world: World) =>
       linked: () => Effect.succeed(Option.none()),
       wakes: () => Effect.succeed(Option.none()),
       questions: () => Effect.succeed(Option.none()),
+      lost: () => Effect.succeed(Option.none()),
       note: (sessionID, text, description, wake, kind) =>
         Effect.suspend(() => {
           if (world.refuse) return Effect.fail(new NoteRefused({ sessionID, message: "the host said no" }))

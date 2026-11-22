@@ -439,6 +439,7 @@ export const SERVED = [
   "session.revert.stage",
   "session.family.request.list",
   "session.form.create",
+  "session.form.list",
   "rpc.call",
   "session.switchAgent",
   "session.switchModel",
@@ -1213,6 +1214,8 @@ export const make = (options: Options) => {
     },
     "session.family.request.list": ({ sessionID }) => Effect.succeed(json("session.family.request.list", { data: { sessions: family(sessionID), permissions: [], forms: family(sessionID).flatMap((member) => forms.get(member) ?? []) } })),
     "session.form.create": ({ sessionID, raw }) => Effect.succeed(createForm(sessionID, raw)),
+    // Every form the double made is pending: it serves no reply.
+    "session.form.list": ({ sessionID }) => Effect.succeed(withSession(sessionID, () => json("session.form.list", { data: forms.get(sessionID) ?? [] }))),
     "session.switchAgent": ({ sessionID, body }) => Effect.succeed(withSession(sessionID, (info) => switchTo("session.switchAgent", info, body))),
     "session.switchModel": ({ sessionID, body }) => Effect.succeed(withSession(sessionID, (info) => switchTo("session.switchModel", info, body))),
     "session.revert.commit": ({ sessionID }) =>

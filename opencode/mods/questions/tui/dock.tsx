@@ -3,7 +3,8 @@
 // subagents (tray.ts `under`) over the questions RPC, again on every `changed`
 // event and every 2 seconds, and keeps the last reading when a read fails.
 // /answer, shift+← and a click on the tray (cmd/questions/setup.ts) open the host's question form
-// for what it read, through `Questions` (questions.ts); the host draws that
+// for the questions open at that moment, read again from the server (the tray's
+// reading only decides whether a click opens anything); the host draws that
 // form in the composer's place, so the tray is hidden while it shows.
 // cmd/questions/setup.ts registers the dock on `session.composer.top`.
 import type { Plugin } from "@opencode/plugin/tui"

@@ -39,6 +39,17 @@ export type NoteKind = "staleness" | "answer"
 export class NoteRefused extends Schema.TaggedError<NoteRefused>()("NoteRefused", { sessionID: Schema.String, message: Schema.String }) {}
 
 /**
+ * What orchestrate says of lost work (its `lost` RPC): the lines `orchestrate status` starts with, for a root that runs
+ * units, with one stable key per loss; and why each commit the queue names is not on the default branch past the
+ * threshold, by commit.
+ */
+export interface Lost {
+  readonly lines: ReadonlyArray<string>
+  readonly keys: ReadonlyArray<string>
+  readonly hashes: ReadonlyMap<string, string>
+}
+
+/**
  * The host as the staleness sweep sees it. Every read answers what it can:
  * a host or plugin that does not answer is `Option.none()` (or no roots),
  * never a failure, so one silent neighbour costs only its own facts.
@@ -54,6 +65,8 @@ export class QueueHost extends Context.Service<
     readonly wakes: (sessionIDs: ReadonlyArray<string>) => Effect.Effect<Option.Option<ReadonlyMap<string, ReadonlyArray<string>>>>
     /** How many ask_user_async questions each session has open (the questions plugin's `open`). */
     readonly questions: (sessionIDs: ReadonlyArray<string>) => Effect.Effect<Option.Option<ReadonlyMap<string, number>>>
+    /** What orchestrate says of lost work for the session and of the commits `hashes` its queue names (the orchestrate plugin's `lost`); none without it. */
+    readonly lost: (sessionID: string, hashes: ReadonlyArray<string>) => Effect.Effect<Option.Option<Lost>>
     /** Put the note into the session: waking it when `wake`, else read at its next turn. `kind` says what it is: a staleness check or the owner's answer to an item. */
     readonly note: (sessionID: string, text: string, description: string, wake: boolean, kind: NoteKind) => Effect.Effect<void, NoteRefused>
   }

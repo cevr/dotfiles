@@ -150,6 +150,8 @@ import * as StepLogLive from "@dotfiles/opencode-orchestrate/filestore/step-log"
 import * as RunRecordsLive from "@dotfiles/opencode-orchestrate/filestore/run-records"
 import * as GitFleet from "@dotfiles/opencode-orchestrate/git/fleet"
 import * as GitMainLine from "@dotfiles/opencode-orchestrate/git/main-line"
+import * as GitWorkGit from "@dotfiles/opencode-orchestrate/git/work-git"
+import { type Listed as Listing, LOST, LostAsk, lostAnswer, lostNow, NOTHING } from "@dotfiles/opencode-orchestrate/lost-now"
 import * as RunFilesLive from "@dotfiles/opencode-orchestrate/filestore/run-files"
 import * as PrincipleFiles from "@dotfiles/opencode-orchestrate/filestore/principles"
 import * as Principles from "@dotfiles/opencode-orchestrate/principles"
@@ -197,6 +199,7 @@ import {
   StepLog,
   type Tell,
   UnitLogs,
+  type WorkGit,
 } from "@dotfiles/opencode-orchestrate/service"
 import type { CodexNeverImplements, Status, StillLatched } from "@dotfiles/opencode-orchestrate/tool-call"
 
@@ -284,11 +287,16 @@ export type Externals =
   | Fleet
   | MainLine
   | RunFiles
+  | WorkGit
 
 /** How much background work a session keeps of its own, as its last idle listed it. */
 export type Background = (sessionID: string) => number
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
+/** The sessions of one lane read for status: a lane holds a few, the newest first. */
+const SESSIONS_IN_LANE = 20
+/** A lane's path as the host's session list takes a directory, branded here: a value import of `@opencode/schema` stops the plugin loading in a copy of the tree (mods/queue/opencode/host.ts). */
+const LaneDirectory = Schema.String.check(Schema.isStartingWith("/")).pipe(Schema.brand("AbsolutePath"))
 type SyntheticInput = Parameters<Plugin.Context["session"]["synthetic"]>[0]
 type HostSession = Effect.Success<ReturnType<Plugin.Context["session"]["get"]>>
 /** What the guard reads of the host's session record. */
@@ -315,7 +323,7 @@ export const stepSessionOf = (session: StepHostSession): SessionsLive.Session =>
 })
 
 /** The outside systems the filesystem and processes provide: the files the plugin keeps, git, the scripts it runs. */
-export type Kept = CallLog | UnitLogs | CodexAdmission | StepLog | Skill | RunRecords | Fleet | MainLine | RunFiles
+export type Kept = CallLog | UnitLogs | CodexAdmission | StepLog | Skill | RunRecords | Fleet | MainLine | RunFiles | WorkGit
 
 /**
  * Whether a session works: it runs a turn (its newest start is after its last end) or keeps background work of its
@@ -357,6 +365,7 @@ export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.S
       GitFleet.layer(Option.fromNullishOr(options.fleet)),
       GitMainLine.layer,
       RunFilesLive.layer,
+      GitWorkGit.layer,
     ),
   )
 
@@ -371,6 +380,8 @@ export const hosted = (ctx: Plugin.Context, start: LatchesLive.Start, background
     SessionsLive.layer(
       (sessionID) => ctx.session.get({ sessionID: sessionID as SessionID }).pipe(Effect.map(stepSessionOf)),
       (sessionID) => ctx.session.context({ sessionID: sessionID as SessionID }),
+      (directory) =>
+        Effect.suspend(() => ctx.session.list({ directory: LaneDirectory.make(directory), order: "desc", limit: SESSIONS_IN_LANE })).pipe(Effect.map((page) => page.data.map((session) => session.id))),
     ),
     ModelsLive.layer({
       session: (sessionID) =>
@@ -672,9 +683,12 @@ export const make = (
           Effect.mapError(unanswered),
           Effect.flatMap(answeredOr),
         )
-      /** The Rifts as status reads them: none when the rift plugin does not answer, so status still answers the tables. */
-      const lanesNow = (sessionID: string): Effect.Effect<{ readonly rifts: ReadonlyArray<Tools.Lane>; readonly workrift: boolean }> =>
-        Effect.suspend(() => listLanes(sessionID, Option.none())).pipe(Effect.catchCause(() => Effect.succeed({ rifts: [], workrift: false })))
+      /** The Rifts as status reads them, with their base: none when the rift plugin does not answer, so status still answers the tables. */
+      const lanesNow = (sessionID: string): Effect.Effect<Listing> =>
+        Effect.suspend(() => listLanes(sessionID, Option.none())).pipe(
+          Effect.map((listed): Listing => ({ source: Option.some(listed.source), rifts: listed.rifts, workrift: listed.workrift })),
+          Effect.catchCause(() => Effect.succeed<Listing>({ source: Option.none(), rifts: [], workrift: false })),
+        )
       // The default branch and the runs' files (tools.ts `MainSince`, `UnitFiles`), read at each call in this
       // location's checkout: nothing of them is kept between calls.
       const mainLine = Context.get(services, MainLine)
@@ -733,15 +747,48 @@ export const make = (
       /** The unit's dir: the one a run dir of the tables holds, else the one the unit logs find under the checkout. */
       const unitDirOf = (unit: string, tables: ReadonlyArray<RunTable>) =>
         unitLogs.find({ unit, named: runDirsOf(tables).map((dir) => `${dir}/${unit}`), directory: checkout }).pipe(Effect.map(Option.fromUndefinedOr))
-      /** Status: the verify-due line, the run tables, each open unit's lane and the next call. */
+      /** Lost work (lost-now.ts): the lines status puts first, and how long their read took, logged. */
+      const lostOf = (sessionID: string, tables: ReadonlyArray<RunTable>, listed: Listing, now: number) =>
+        Effect.gen(function* () {
+          const started = yield* Clock.currentTimeMillis
+          const lines = yield* lostNow(sessionID, checkout, tables, listed, now).pipe(Effect.provideContext(services))
+          const ms = (yield* Clock.currentTimeMillis) - started
+          yield* Effect.logInfo("orchestrate: read lost work for status").pipe(Effect.annotateLogs({ sessionID, lanes: listed.rifts.length, lines: lines.length, ms }))
+          return lines
+        })
+      /**
+       * The queue check's ask (`LOST`): the same lists status starts with, for a root that started a unit's step (its
+       * lanes listed only then), and the commits its queue names that are due. Nothing when it cannot be read.
+       */
+      const lostAsked = (ask: LostAsk) =>
+        Effect.gen(function* () {
+          const started = yield* Clock.currentTimeMillis
+          const orchestrates = (yield* stepLog.units(ask.sessionID)).length > 0
+          const tables = yield* runs.list
+          const listed = yield* Match.value(orchestrates).pipe(
+            Match.when(true, () => lanesNow(ask.sessionID)),
+            Match.orElse(() => Effect.succeed<Listing>({ source: Option.none(), rifts: [], workrift: false })),
+          )
+          const answer = yield* lostAnswer(ask.sessionID, checkout, tables, listed, started, ask.hashes).pipe(Effect.provideContext(services))
+          const ms = (yield* Clock.currentTimeMillis) - started
+          yield* Effect.logInfo("orchestrate: read lost work for the queue check").pipe(
+            Effect.annotateLogs({ sessionID: ask.sessionID, lanes: listed.rifts.length, hashes: ask.hashes.length, lines: answer.lines.length, ms }),
+          )
+          return answer
+        })
+      /** Status: lost work first (lost-now.ts), then the verify-due line, the run tables, each open unit's lane and the next call. */
       const status = (sessionID: string) =>
         Effect.gen(function* () {
           const tables = yield* runs.list
           const since = yield* mainSince(tables, Option.none())
           const now = yield* Clock.currentTimeMillis
-          if (!tables.some((run) => run.units.length > 0)) return Tools.statusAnswer([], [], false, since, now)
           const listed = yield* lanesNow(sessionID)
-          return Tools.statusAnswer(tables, listed.rifts, listed.workrift, since, now)
+          const lost = yield* lostOf(sessionID, tables, listed, now)
+          const answer = Match.value(tables.some((run) => run.units.length > 0)).pipe(
+            Match.when(true, () => Tools.statusAnswer(tables, listed.rifts, listed.workrift, since, now)),
+            Match.orElse(() => Tools.statusAnswer([], [], false, since, now)),
+          )
+          return [...lost, answer].join("\n")
         })
 
       // A root that compacted is told its status, its ledger and the re-read, once per compaction, by this location's
@@ -795,7 +842,10 @@ export const make = (
         if (started.length === 0) return yield* skipped("it started no unit's step")
         const read = yield* runs.read
         // The runs that read give their status; a run that did not adds the error and the root's units before it.
-        const answer = yield* lanesNow(sessionID).pipe(Effect.map((listed) => Tools.statusAnswer(read.runs, listed.rifts, listed.workrift)))
+        const listed = yield* lanesNow(sessionID)
+        // Lost work first, as status says it: a compaction is when a ready hand-back is most easily forgotten.
+        const lost = yield* lostOf(sessionID, read.runs, listed, yield* Clock.currentTimeMillis)
+        const answer = [...lost, Tools.statusAnswer(read.runs, listed.rifts, listed.workrift)].join("\n")
         const status = yield* Option.match(read.error, {
           onSome: (error) =>
             Effect.logWarning("orchestrate: run tables did not read; the compaction note gives the error and the root's units").pipe(
@@ -855,6 +905,15 @@ export const make = (
               Effect.tap((draft) => background(draft.sessionID, idleRoots.draft(draft))),
               Effect.as({ ok: true }),
               Effect.orElseSucceed(() => ({ ok: false })),
+            ),
+        })
+        .pipe(Effect.orDie)
+      yield* ctx.rpc
+        .register(LOST, {
+          lost: (input) =>
+            Schema.decodeUnknownEffect(LostAsk)(input).pipe(
+              Effect.flatMap(lostAsked),
+              Effect.catchCause((cause) => Effect.logWarning("orchestrate: lost work could not be read for the queue check", { cause }).pipe(Effect.as(NOTHING))),
             ),
         })
         .pipe(Effect.orDie)
