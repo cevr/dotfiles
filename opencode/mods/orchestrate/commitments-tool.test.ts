@@ -3,11 +3,12 @@
 // lists the rest), said again only when its ids change. The handlers over a store, refusals included, run on the
 // simulated host (cmd/orchestrate/commitments.sim.test.ts).
 import { describe, expect, test } from "bun:test"
-import { Array as Arr, Match, Option, Result } from "effect"
+import { Array as Arr, Match, Option, Result, Schema } from "effect"
 import {
   beforeStart,
   type CommitmentsInput,
   commandOf,
+  CommitmentsInput as CommitmentsSchema,
   doneAnswer,
   followUpCommandOf,
   historyAnswer,
@@ -60,6 +61,21 @@ describe("inputRefusal", () => {
     expect(inputRefusal({ action: "release", id: "a", why: "x" })).toEqual(Option.some("commitments: release takes no why; it takes id."))
     expect(inputRefusal({ action: "decide", id: "a" })).toEqual(Option.some("commitments: decide needs why."))
     expect(inputRefusal({ action: "list" })).toEqual(Option.none())
+  })
+})
+
+describe("decodeRefusal", () => {
+  // A GitHub token's shape, from parts, its body invented.
+  const token = ["gh", "p_", "Cn4ry7Xq2Wv9Lm3Bt8Zs1Kd6Hf0Jp5Rg4Ty2"].join("")
+  const refusalOf = <A>(input: A) =>
+    Result.match(Schema.decodeUnknownResult(CommitmentsSchema)(input), { onFailure: (error) => error.message, onSuccess: () => "decoded" })
+  test("names a stray key by its position, a declared field by its name, and repeats no key or value the caller wrote", () => {
+    expect(refusalOf({ action: "release", id: "a", validated: true, [token]: 1 })).toBe("the call takes no key at position 3, 4 of its 4 (2 refused); a key's text is not repeated")
+    expect(refusalOf({ action: "add", source_kind: "plan-part", source_ref: "p", parts: [{ id: "x", [token]: 1 }] })).toBe(
+      "the call's parts[0] takes no key at position 2 of its 2 (1 refused); a key's text is not repeated; the call's parts[0].title is missing",
+    )
+    expect(refusalOf({ action: "list", standing: token })).toBe("the call's standing is not a value it takes; the value is not repeated")
+    expect(refusalOf({ action: token })).toBe("the call's action is not a value it takes; the value is not repeated")
   })
 })
 

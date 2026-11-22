@@ -17,6 +17,7 @@ import { parseArgs } from "node:util"
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import { Clock, Console, Effect, Layer, Match, Option, Schema } from "effect"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
+import { redact } from "@dotfiles/opencode-digest/redact"
 import * as Commitments from "@dotfiles/opencode-orchestrate/commitments-tool"
 import * as GitMainLine from "@dotfiles/opencode-orchestrate/git/main-line"
 import type { Actor } from "@dotfiles/opencode-orchestrate/record"
@@ -63,7 +64,7 @@ const decodeCommitments = Schema.decodeUnknownEffect(Commitments.CommitmentsInpu
 const decodeFollowUp = Schema.decodeUnknownEffect(Commitments.FollowUpInput)
 
 /** The fields of `--json`, as an object. */
-const fieldsOf = (call: Call) => Effect.mapError(decodeFields(call.json), (error) => new Refused({ message: `record: --json is not an object of fields: ${error.message}` }))
+const fieldsOf = (call: Call) => Effect.mapError(decodeFields(call.json), () => new Refused({ message: "record: --json is not a JSON object of fields; its text is not repeated" }))
 
 /** The reads a call makes outside the record: the checkout's default branch through git; no lanes list, so nobody is gone. */
 const readsOf = (checkout: string): Commitments.Reads => ({
@@ -143,12 +144,15 @@ export interface Ran {
 
 /** The CLI on `args` in `cwd`: its answer, or why not. */
 export const main = (args: ReadonlyArray<string>, cwd: string): Effect.Effect<Ran> =>
-  Effect.fromOption(callOf(args, cwd)).pipe(
-    Effect.mapError(() => new Refused({ message: USAGE })),
+  Effect.try({ try: () => callOf(args, cwd), catch: () => new Refused({ message: USAGE }) }).pipe(
+    // No action, or an argument parseArgs refuses (its text, an unknown flag's name, is not repeated): the usage.
+    Effect.flatMap((call) => Effect.mapError(Effect.fromOption(call), () => new Refused({ message: USAGE }))),
     Effect.flatMap((call) => Effect.scoped(Effect.provide(answer(call), recordOf(call)))),
     Effect.map((out): Ran => ({ out, err: "", code: 0 })),
     Effect.catch((refused) => Effect.succeed<Ran>({ out: "", err: refused.message, code: 1 })),
     Effect.catchDefect((defect) => Effect.succeed<Ran>({ out: "", err: `record: ${String(defect)}`, code: 1 })),
+    // The one boundary every output leaves through: a secret's shape in any of them, whatever wrote it, is not repeated.
+    Effect.map((ran): Ran => ({ ...ran, out: redact(ran.out), err: redact(ran.err) })),
   )
 
 if (import.meta.main)

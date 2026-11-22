@@ -14,6 +14,7 @@ import * as SqliteRecord from "@dotfiles/opencode-orchestrate/sqlite/record"
 import * as Seed from "../../sim/seed.ts"
 import { gitInit, withProcessEnv } from "../../tests/git-repo.ts"
 import { scratch } from "../../tests/scratch.ts"
+import { CANARY, COMMITMENT_CALLS, canariedFields, type Fields, FOLLOW_UP_CALLS, textsOf } from "../../sim/canary.ts"
 import { main } from "./record.ts"
 
 /** Ergo's register DDL, as its `register.sql` creates the tables the import reads. */
@@ -198,6 +199,63 @@ Seed.effect(
         expect(spawnSync(["mv", `${checkout}/tmp/orchestrate`, `${held.path}/moved`]).exitCode).toBe(0)
         expect(spawnSync(["ln", "-s", `${held.path}/outside`, `${checkout}/tmp/orchestrate`]).exitCode).toBe(0)
         expect(yield* run("defer", { id: "a2", ...receipt })).toEqual([1, "commitments: the checkout's tmp/orchestrate/ is reached through a link: it is not an approved root"])
+      }),
+    (held) => Effect.sync(() => held[Symbol.dispose]()),
+  ),
+)
+
+// No output repeats what the caller wrote: a token-shaped canary as each key, value, id, path and referent of every
+// action's `--json` (tests/canary.ts), as the actor, the file, the checkout, the action and an unknown flag, is in no
+// stdout, no stderr, no exported event and no byte of the record's file.
+Seed.effect(
+  "a token-shaped canary in any argument, key or value of a CLI call is in no output, exported event or record byte",
+  Effect.acquireUseRelease(
+    Effect.sync(() => scratch("record-cli-canary-")),
+    (held) =>
+      Effect.gen(function* () {
+        const checkout = `${held.path}/repo`
+        const db = `${held.path}/record.db`
+        yield* Effect.promise(() => write(`${checkout}/docs/record.md`, "# One writer\n"))
+        const envelope = { receipt: 1, command: "bun test mods/orchestrate", exit: 1, output: { value: "1 fail" }, run: "r1", checkout: "a".repeat(40) }
+        yield* Effect.promise(() => write(`${checkout}/tmp/orchestrate/r1/red.json`, fieldsJson(envelope)))
+        gitInit(checkout, ["-q", "-b", "main"], gitEnv)
+        for (const args of [["add", "docs/record.md"], ["commit", "-q", "-m", "docs"]]) spawnSync(["git", "-C", checkout, ...args], { env: gitEnv, stdout: "ignore", stderr: "ignore" })
+        const on = (...args: ReadonlyArray<string>) => main([...args, "--file", db, "--checkout", checkout], checkout)
+        expect((yield* on("add", "--json", fieldsJson({ source_kind: "plan-part", source_ref: "plan.md:1", parts: [{ id: "a1", title: "one" }, { id: "a2", title: "two" }] }))).code).toBe(0)
+        /** A call's `--json` and its action: the action key's value, else the canary's own action. */
+        const argsOf = (call: Fields, actor: ReadonlyArray<string>) => {
+          const { action = "follow_up", ...fields } = call
+          return [String(action), "--json", fieldsJson(fields), ...actor]
+        }
+        const calls: ReadonlyArray<ReadonlyArray<string>> = [
+          ...COMMITMENT_CALLS.flatMap((call) => canariedFields(call).map((input) => argsOf(input, []))),
+          ...FOLLOW_UP_CALLS.flatMap((call) => canariedFields(call).map((input) => argsOf(input, ["--actor", "worker-1"]))),
+          argsOf(FOLLOW_UP_CALLS[0], ["--actor", CANARY]),
+          argsOf(COMMITMENT_CALLS[4], ["--actor", CANARY]),
+          [CANARY],
+          ["list", `--${CANARY}`],
+          ["list", CANARY],
+        ]
+        const outputs = yield* Effect.forEach(calls, (args) => on(...args))
+        const elsewhere = yield* Effect.forEach(
+          [
+            ["list", "--file", `${held.path}/${CANARY}/record.db`, "--checkout", checkout],
+            ["add", "--file", db, "--checkout", `/nonexistent/loop-probe-x/${CANARY}`, "--json", fieldsJson({ source_kind: "plan-part", source_ref: "plan.md:2", parts: [{ id: "a3", title: "three" }] })],
+            ["defer", "--file", db, "--checkout", `/nonexistent/loop-probe-x/${CANARY}`, "--json", fieldsJson({ id: "a2", reason_class: "measured", referent: { kind: "receipt", path: "tmp/orchestrate/r1/red.json" } })],
+          ],
+          (args) => main(args, checkout),
+        )
+        const exported = yield* on("export")
+        const bytes = yield* textsOf([db, `${db}-wal`])
+        const leaked = [...outputs, ...elsewhere, exported].filter((ran) => ran.out.includes(CANARY) || ran.err.includes(CANARY))
+        expect({ calls: calls.length + elsewhere.length, silent: [...outputs, ...elsewhere].filter((ran) => ran.out === "" && ran.err === "").length, leaked, record: bytes.some((text) => text.includes(CANARY)) }).toEqual({
+          calls: 123,
+          silent: 0,
+          leaked: [],
+          record: false,
+        })
+        // The canary-free calls wrote: the record's bytes and its export were there to search.
+        expect([exported.code, exported.out.includes("plan.md:1")]).toEqual([0, true])
       }),
     (held) => Effect.sync(() => held[Symbol.dispose]()),
   ),

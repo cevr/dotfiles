@@ -3,7 +3,7 @@
 // `orchestrate status`, every land and the queue check say of the record). The plugin (cmd/orchestrate/server.ts) runs
 // the commands on the CommitmentRecord and reads the facts a standing needs (`factsOf`) at each call; nothing of a run
 // is kept between calls. Nothing here reads prose: every field is the call's own.
-import { Array as Arr, Effect, flow, Match, Option, Order, Predicate, Result, Schema, SchemaParser, SchemaTransformation } from "effect"
+import { Array as Arr, Effect, flow, Match, Option, Order, Predicate, Result, Schema, SchemaAST, SchemaIssue, SchemaParser, SchemaTransformation } from "effect"
 import { toolInput } from "@dotfiles/decider/tool-input"
 import { redact } from "@dotfiles/opencode-digest/redact"
 import {
@@ -50,16 +50,85 @@ const Part = Schema.Struct({
   review_by: Schema.optional(Schema.String),
 })
 
+/** The names a tool input's struct declares, at any depth: the only keys a refusal names. */
+const declaredNames = (ast: SchemaAST.AST): ReadonlyArray<string> =>
+  Match.value(ast).pipe(
+    Match.tag("Objects", (objects) => objects.propertySignatures.flatMap((each) => [String(each.name), ...declaredNames(each.type)])),
+    Match.tag("Union", (union) => union.types.flatMap(declaredNames)),
+    Match.tag("Arrays", (arrays) => [...arrays.elements, ...arrays.rest].flatMap(declaredNames)),
+    Match.tag("Declaration", (declaration) => declaration.typeParameters.flatMap(declaredNames)),
+    Match.orElse(() => []),
+  )
+
+/** One thing wrong with a call, where it is: a key it does not take, a key it lacks, or a value its field does not take. */
+interface Flaw {
+  readonly kind: "stray" | "missing" | "value"
+  readonly path: ReadonlyArray<PropertyKey>
+}
+
+/** The flaws an issue holds, by their places: what a union or a check wanted stays with the schema, never with the call. */
+const flawsOf = (issue: SchemaIssue.Issue, path: ReadonlyArray<PropertyKey>): ReadonlyArray<Flaw> =>
+  Match.value(issue).pipe(
+    Match.tag("Pointer", (pointer) => flawsOf(pointer.issue, [...path, ...pointer.path])),
+    Match.tag("Composite", (composite) => composite.issues.flatMap((each) => flawsOf(each, path))),
+    // A union none of whose forms took the value: the flaws inside the forms that came closest, else the value itself.
+    Match.tag("AnyOf", (any) => Arr.match(any.issues, { onEmpty: (): ReadonlyArray<Flaw> => [{ kind: "value", path }], onNonEmpty: (issues) => issues.flatMap((each) => flawsOf(each, path)) })),
+    Match.tag("UnexpectedKey", (): ReadonlyArray<Flaw> => [{ kind: "stray", path }]),
+    Match.tag("MissingKey", (): ReadonlyArray<Flaw> => [{ kind: "missing", path }]),
+    Match.orElse((): ReadonlyArray<Flaw> => [{ kind: "value", path }]),
+  )
+
+/**
+ * A call's refusal in words that repeat nothing the caller wrote: a declared field by its name, an element by its index,
+ * and a key the input does not take by its position among its object's keys, never by its text or its value.
+ */
+export const decodeRefusal = (issue: SchemaIssue.Issue, keysAt: (path: ReadonlyArray<PropertyKey>) => ReadonlyArray<string>, names: ReadonlySet<string>): string => {
+  const segment = (key: PropertyKey) =>
+    Match.value(key).pipe(
+      Match.when(Match.number, (index) => `[${index}]`),
+      Match.when((name: PropertyKey) => Predicate.isString(name) && names.has(name), (name) => `.${String(name)}`),
+      Match.orElse(() => ".<a key not repeated>"),
+    )
+  const where = (path: ReadonlyArray<PropertyKey>) => Arr.match(path, { onEmpty: () => "the call", onNonEmpty: (keys) => `the call's ${keys.map(segment).join("").slice(1)}` })
+  const flaws = flawsOf(issue, [])
+  const strays = Arr.groupBy(Arr.filter(flaws, (flaw) => flaw.kind === "stray"), (flaw) => flaw.path.slice(0, -1).map(String).join("\u0000"))
+  const stray = Object.values(strays).map((group) => {
+    const parent = group[0].path.slice(0, -1)
+    const keys = keysAt(parent)
+    const positions = group.map((flaw) => keys.indexOf(String(flaw.path.at(-1))) + 1)
+    return `${where(parent)} takes no key at position ${positions.join(", ")} of its ${keys.length} (${group.length} refused); a key's text is not repeated`
+  })
+  const rest = Arr.filter(flaws, (flaw) => flaw.kind !== "stray").map((flaw) =>
+    Match.value(flaw.kind).pipe(
+      Match.when("missing", () => `${where(flaw.path)} is missing`),
+      Match.orElse(() => `${where(flaw.path)} is not a value it takes; the value is not repeated`),
+    ),
+  )
+  return [...stray, ...rest].join("; ")
+}
+
 /**
  * A tool input that refuses a key its struct does not take, where a plain one drops it: a caller's `validated: true` or
  * any word of its own beside a reason is refused, never read as part of one (reasons.ts). Its JSON Schema is the struct's.
+ * Every refusal of its decode is `decodeRefusal`'s, on the tool and the CLI alike: no key or value the caller wrote.
  */
 const exactInput = <S extends Schema.Struct<Schema.Struct.Fields>>(struct: S) =>
   Schema.declareConstructor<S["Type"], S["Encoded"]>()(
     [toolInput(struct)],
-    ([codec]) =>
-      (input, _ast, options) =>
-        SchemaParser.decodeUnknownEffect(codec)(input, { ...options, onExcessProperty: "error" }),
+    ([codec]) => {
+      const names = new Set(declaredNames(struct.ast))
+      return (input, _ast, options) => {
+        const keysAt = (path: ReadonlyArray<PropertyKey>) =>
+          Arr.reduce(path, Option.some(input), (at, key) => Option.flatMap(at, (value) => Option.liftPredicate(Predicate.isObjectOrArray)(value).pipe(Option.flatMap((held) => Arr.findFirst(Object.entries(held), ([name]) => name === String(key))), Option.map(([, inner]) => inner)))).pipe(
+            Option.filter(Predicate.isObject),
+            Option.match({ onNone: () => [], onSome: (held) => Object.keys(held) }),
+          )
+        return Effect.mapError(
+          SchemaParser.decodeUnknownEffect(codec)(input, { ...options, onExcessProperty: "error", errors: "all" }),
+          (issue) => new SchemaIssue.InvalidValue({ message: decodeRefusal(issue, keysAt, names) }),
+        )
+      }
+    },
     {
       expected: "object",
       toCodecJson: () => Schema.link<S["Type"]>()(struct, SchemaTransformation.passthrough({ strict: false })),
