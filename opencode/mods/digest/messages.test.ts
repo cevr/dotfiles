@@ -11,6 +11,8 @@ const back = (unit: string, round: number, digest: Option.Option<string>, t = 10
   E.cases.HandBack.make({ v, t, root: "r", session: "s", role: "implementor", unit, round, verdict: "ready", file: Option.none(), digest })
 const item = (id: string, text: string, extra: Partial<{ state: string; level: "red" | "green"; unit: string; t: number }> = {}) =>
   E.cases.Item.make({
+    answer: Option.none(),
+    choices: Option.none(),
     v,
     t: extra.t ?? 20,
     root: "r",
@@ -56,10 +58,20 @@ describe("messages", () => {
     const asked = E.cases.Asked.make({ v, t: 5, root: "r", session: "s", id: "q1", question: "Keep the alias?", header: Option.none(), options: ["Keep", "Cut"], assume: "Keep" })
     const open = only([run("r", "demo"), asked])
     expect([open.level, open.messages[0]!.open, open.messages[0]!.kind]).toEqual(["need", true, "needs"])
-    const answered = E.cases.Answered.make({ v, t: 6, root: "r", session: "s", id: "q1", answer: "Cut", matches: false, question: Option.none(), assume: Option.none() })
+    const answered = E.cases.Answered.make({ via: Option.some("page"), v, t: 6, root: "r", session: "s", id: "q1", answer: "Cut", matches: false, question: Option.none(), assume: Option.none() })
     const done = only([run("r", "demo"), asked, answered])
     expect(done.level).toBe("none")
-    expect(done.messages.map((message) => [message.kind, Option.getOrNull(message.decided)])).toEqual([["decided", [{ q: "Keep the alias?", assumed: "Keep", said: "Cut", matches: false }]]])
+    expect(done.messages.map((message) => [message.kind, Option.getOrNull(message.decided)])).toEqual([["decided", [{ q: "Keep the alias?", assumed: "Keep", said: "Cut", matches: false, via: Option.some("page") }]]])
+  })
+
+  test("a needs-you item asks with what its form offers; once he answered it, it no longer needs him and shows his answer", () => {
+    const asking = { ...item("pay", "Pick the billing day.", { state: "needs-you" }), choices: Option.some(["Monday", "Friday"]) }
+    const open = only([run("r", "demo"), asking]).messages[0]!
+    expect([open.open, Option.getOrNull(Option.map(open.ask, (ask) => ask.options))]).toEqual([true, ["Monday", "Friday"]])
+    const answered = only([run("r", "demo"), { ...asking, t: 21, answer: Option.some("Friday") }])
+    expect(answered.level).toBe("none")
+    const message = answered.messages[0]!
+    expect([message.open, Option.isNone(message.ask), Option.getOrNull(Option.map(message.decided, (decided) => decided.map((each) => each.said)))]).toEqual([false, true, ["Friday"]])
   })
 
   test("a failed land check is red until a land follows it", () => {

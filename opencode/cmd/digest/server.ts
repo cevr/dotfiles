@@ -17,16 +17,20 @@
  */
 import { Plugin } from "@opencode/plugin/effect"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
-import { Clock, Context, Effect, Layer, Option, Path, Schema, type Scope } from "effect"
+import { Cause, Clock, Context, Effect, Layer, Option, Path, Schema, type Scope } from "effect"
+import { answer, AnswerOutcome, type Answerers, ItemReply, QuestionReply } from "@dotfiles/opencode-digest/answers"
 import { AppendInput, byteLength, decodeLine, decodeLines, DIGEST, MAX_LINE } from "@dotfiles/opencode-digest/event"
 import * as FileLog from "@dotfiles/opencode-digest/filestore/log"
 import * as FileMarks from "@dotfiles/opencode-digest/filestore/marks"
+import * as FilePairing from "@dotfiles/opencode-digest/filestore/pairing"
 import { EMPTY, fold } from "@dotfiles/opencode-digest/fold"
 import * as Listener from "@dotfiles/opencode-digest/http/listener"
 import { pageOf } from "@dotfiles/opencode-digest/messages"
 import { DigestLines, DigestUnwritable } from "@dotfiles/opencode-digest/service"
 import { encodeView, viewOf } from "@dotfiles/opencode-digest/view"
 import { hostZone, isZone } from "@dotfiles/opencode-digest/zone"
+import { QUESTIONS } from "@dotfiles/opencode-questions/question"
+import { QUEUE } from "@dotfiles/opencode-queue/queue"
 
 /** The options; `dir` falls back to the host's state directory, read when the plugin starts. */
 export const Options = Schema.Struct({
@@ -48,25 +52,42 @@ export const live = (options: Options): Layer.Layer<DigestLines> => FileLog.laye
 /** The built page, committed beside the digest mod (`mods/digest/page/dist`). */
 const DIST = Effect.flatMap(Path.Path, (path) => path.fromFileUrl(new URL("../../mods/digest/page/dist", import.meta.url))).pipe(Effect.provide(Path.layer), Effect.orDie)
 
-/** The page's handlers over the log `lines` and the marks beside it. */
-export const handlersOf = (options: Options, lines: DigestLines["Service"]): Listener.Handlers => {
+/** The page's handlers over the log `lines`, the marks and the pairing beside it, and the plugins that take answers. */
+export const handlersOf = (options: Options, lines: DigestLines["Service"], answerers: Answerers): Listener.Handlers => {
   const marks = FileMarks.make(dirOf(options))
   const zone = zoneOf(options)
+  const state = Effect.map(lines.read, (log) => fold(EMPTY, decodeLines(log).events))
   return {
     view: Effect.gen(function* () {
-      const log = decodeLines(yield* lines.read)
-      const page = pageOf(fold(EMPTY, log.events), { names: new Map() })
+      const page = pageOf(yield* state, { names: new Map() })
       return encodeView(viewOf(page, yield* marks.read, yield* Clock.currentTimeMillis, zone))
     }),
     write: marks.append,
     now: Clock.currentTimeMillis,
     zone,
+    // A log that cannot be read is no answer to check against: the page is told why.
+    answer: (input) =>
+      answer(Effect.orDie(state), answerers, input).pipe(Effect.catchDefect((defect) => Effect.succeed(AnswerOutcome.Refused({ status: 500, reason: String(defect) })))),
+    pairing: FilePairing.make(dirOf(options)),
   }
 }
 
-/** The live page: the listener on 127.0.0.1, retrying while another instance holds the port. */
-export const livePage = (options: Options, lines: DigestLines["Service"]): Effect.Effect<void, never, Scope.Scope> =>
-  Effect.flatMap(DIST, (dist) => Listener.serve(Option.getOrElse(Option.fromUndefinedOr(options.port), () => Listener.PORT), handlersOf(options, lines), dist))
+const decodeQuestionReply = Schema.decodeUnknownEffect(QuestionReply)
+const decodeItemReply = Schema.decodeUnknownEffect(ItemReply)
+
+/** What a plugin that takes answers answers when it is not there or answers nonsense. */
+const unreachable = (what: string) => (failure: Cause.Cause<unknown>) => Effect.succeed({ ok: false, message: `the ${what} plugin did not take it: ${Cause.pretty(failure)}` })
+
+/** The answers' owners over this host's RPC: the questions plugin (as from the page) and the queue. */
+export const answerersOf = (ctx: Plugin.Context): Answerers => ({
+  question: (session, id, given) =>
+    ctx.rpc(QUESTIONS).answer({ sessionID: session, answers: [{ id, answer: given }], via: "page" }).pipe(Effect.flatMap(decodeQuestionReply), Effect.catchCause(unreachable("questions"))),
+  item: (root, id, given) => ctx.rpc(QUEUE).answer({ sessionID: root, id, answer: given }).pipe(Effect.flatMap(decodeItemReply), Effect.catchCause(unreachable("queue"))),
+})
+
+/** The live page: the listener on 127.0.0.1 with `handlers`, retrying while another instance holds the port. */
+export const livePage = (options: Options, handlers: Listener.Handlers): Effect.Effect<void, never, Scope.Scope> =>
+  Effect.flatMap(DIST, (dist) => Listener.serve(Option.getOrElse(Option.fromUndefinedOr(options.port), () => Listener.PORT), handlers, dist))
 
 const decodeInput = Schema.decodeUnknownEffect(AppendInput)
 
@@ -118,7 +139,7 @@ export const make = (externals: (options: Options) => Layer.Layer<DigestLines>, 
             }),
         })
         .pipe(Effect.orDie)
-      yield* Effect.forkScoped(page(options, lines))
+      yield* Effect.forkScoped(page(options, handlersOf(options, lines, answerersOf(ctx))))
     }),
   })
 

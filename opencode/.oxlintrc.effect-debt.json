@@ -100,6 +100,44 @@
   "overrides": [
     {
       "files": [
+        "mods/digest/answers.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/digest/filestore/pairing.test.ts"
+      ],
+      "rules": {
+        "effect/noAsyncFunction": "off",
+        "effect/noEffectRunInTests": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/questions/opencode/crash.ts"
+      ],
+      "rules": {
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/questions/opencode/race.test.ts",
+        "mods/questions/opencode/crash.test.ts"
+      ],
+      "rules": {
+        "effect/noAsyncFunction": "off",
+        "effect/noEffectRunInTests": "off",
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
         "scripts/effect-debt.ts"
       ],
       "rules": {
@@ -221,7 +259,8 @@
     {
       "files": [
         "mods/digest/relay.test.ts",
-        "mods/questions/memory/digest.test.ts"
+        "mods/questions/memory/digest.test.ts",
+        "mods/questions/memory/contended.test.ts"
       ],
       "rules": {
         "effect/noAsyncFunction": "off",
@@ -230,7 +269,8 @@
     },
     {
       "files": [
-        "cmd/digest/export.test.ts"
+        "cmd/digest/export.test.ts",
+        "cmd/digest/pair.test.ts"
       ],
       "rules": {
         "effect/noAsyncFunction": "off",
@@ -259,7 +299,8 @@
     },
     {
       "files": [
-        "mods/digest/filestore/marks.ts"
+        "mods/digest/filestore/marks.ts",
+        "mods/digest/filestore/pairing.ts"
       ],
       "rules": {
         "effect/noNodeBuiltinImport": "off"

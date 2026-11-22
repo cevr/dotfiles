@@ -813,10 +813,11 @@
                   "!@dotfiles/decider/*",
                   "!@dotfiles/opencode-subagents/*",
                   "!@dotfiles/opencode-digest/event",
+                  "!@dotfiles/opencode-digest/redact",
                   "!./*.ts",
                   "!bun:test"
                 ],
-                "message": "The queue domain fence: the queue's domain files import effect, @dotfiles/decider/*, the shared subagent rows' root files (@dotfiles/opencode-subagents/*, not its opencode/ reader), the digest's event format (@dotfiles/opencode-digest/event), their own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders."
+                "message": "The queue domain fence: the queue's domain files import effect, @dotfiles/decider/*, the shared subagent rows' root files (@dotfiles/opencode-subagents/*, not its opencode/ reader), the digest's event format and its redaction (@dotfiles/opencode-digest/event, /redact), their own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders."
               }
             ]
           }
@@ -935,10 +936,11 @@
                   "*/**/effect",
                   "!@dotfiles/decider/*",
                   "!@dotfiles/opencode-digest/event",
+                  "!@dotfiles/opencode-digest/redact",
                   "!./*.ts",
                   "!bun:test"
                 ],
-                "message": "The questions domain fence: the questions' domain files import effect, @dotfiles/decider/*, the digest's event format (@dotfiles/opencode-digest/event), their own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders."
+                "message": "The questions domain fence: the questions' domain files import effect, @dotfiles/decider/*, the digest's event format and its redaction (@dotfiles/opencode-digest/event, /redact), their own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders."
               }
             ]
           }

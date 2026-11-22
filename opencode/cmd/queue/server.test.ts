@@ -92,7 +92,9 @@ const start = (options: Record<string, unknown> = {}, externals: Parameters<type
         Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 200 }),
         Effect.orDie,
       )
-    return { tool, call, fail, get, deleteSession, reply, sent }
+    /** The RPC's `answer`, as the digest page calls it. */
+    const answer = (input: Parameters<Handler>[0]) => Effect.suspend(() => Option.match(Option.fromUndefinedOr(rpc[QUEUE.id]?.answer), { onNone: () => Effect.die(new Error("no answer method")), onSome: (each) => each(input) }))
+    return { tool, call, fail, get, deleteSession, reply, sent, answer }
   })
 
 describe("the options", () => {
@@ -222,6 +224,19 @@ describe("the owner's answer to an item", () => {
           },
         ])
         expect((yield* plugin.get("ses_root")).items.map((item) => item.answered)).toEqual([{ answer: "Wait for Friday", at: expect.any(Number) }])
+      }),
+    ))
+
+  test("the RPC's answer sends as the form does, says what it replaced, and refuses an unknown item or a malformed call", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start()
+        yield* plugin.call({ set: [{ id: "pool", text: "Pool token", state: "needs-you", choices: [{ label: "Rotate it" }, { label: "Keep it" }] }] })
+        expect(yield* plugin.answer({ sessionID: "ses_root", id: "pool", answer: "Rotate it" })).toEqual({ ok: true })
+        expect(yield* plugin.answer({ sessionID: "ses_root", id: "pool", answer: "Keep it" })).toEqual({ ok: true, replaced: { answer: "Rotate it", at: expect.any(Number) } })
+        expect((yield* plugin.sent(2)).map((each) => each.text)).toEqual(["Owner on queue item pool (Pool token): Rotate it", "Owner on queue item pool (Pool token): Keep it"])
+        expect(yield* plugin.answer({ sessionID: "ses_root", id: "nope", answer: "x" })).toMatchObject({ ok: false })
+        expect(yield* plugin.answer({ sessionID: "ses_root" })).toMatchObject({ ok: false, message: expect.stringContaining("malformed") })
       }),
     ))
 })

@@ -153,8 +153,8 @@ describe("AnswerQuestions, Dismiss and Delivered", () => {
       story(
         Story.given<Event>(QuestionOpened.make({ question: port })),
         Story.when(answer("msg_1", ["q1", " 3000 "])),
-        Story.then<Event>(QuestionAnswered.make({ id: "q1", answer: "3000", delivery: "msg_1" })),
-        Story.state({ next: 2, rows: [{ ...port, answered: { answer: "3000", delivery: "msg_1" } }] }),
+        Story.then<Event>(QuestionAnswered.make({ id: "q1", answer: "3000", delivery: "msg_1", at: 0 })),
+        Story.state({ next: 2, rows: [{ ...port, answered: { answer: "3000", delivery: "msg_1", at: 0 } }] }),
         Story.when(answer("msg_2", ["q1", "8080"])),
         Story.rejected(new NotOpen({ id: "q1" })),
         Story.when(Delivered.make({ delivery: "msg_1" })),
@@ -182,8 +182,8 @@ describe("AnswerQuestions, Dismiss and Delivered", () => {
         Story.given<Event>(QuestionOpened.make({ question: port }), QuestionOpened.make({ question: flag }), QuestionOpened.make({ question: asked("q3", "Third?") })),
         Story.when(answer("msg_1", ["q3", "yes"], ["q1", "3000"], ["q1", "again"])),
         Story.then<Event>(
-          QuestionAnswered.make({ id: "q1", answer: "3000", delivery: "msg_1" }),
-          QuestionAnswered.make({ id: "q3", answer: "yes", delivery: "msg_1" }),
+          QuestionAnswered.make({ id: "q1", answer: "3000", delivery: "msg_1", at: 0 }),
+          QuestionAnswered.make({ id: "q3", answer: "yes", delivery: "msg_1", at: 0 }),
         ),
         Story.when(Delivered.make({ delivery: "msg_1" })),
         Story.then<Event>(QuestionClosed.make({ id: "q1", reason: "delivered" }), QuestionClosed.make({ id: "q3", reason: "delivered" })),
@@ -197,7 +197,7 @@ describe("AnswerQuestions, Dismiss and Delivered", () => {
       story(
         Story.given<Event>(QuestionOpened.make({ question: port }), QuestionOpened.make({ question: flag }), QuestionClosed.make({ id: "q2", reason: "withdrawn" })),
         Story.when(answer("msg_1", ["q2", "no"], ["q1", "3000"])),
-        Story.then<Event>(QuestionAnswered.make({ id: "q1", answer: "3000", delivery: "msg_1" })),
+        Story.then<Event>(QuestionAnswered.make({ id: "q1", answer: "3000", delivery: "msg_1", at: 0 })),
         Story.when(answer("msg_2", ["q2", "no"])),
         Story.rejected(new NotOpen({ id: "q2" })),
       ),
@@ -237,13 +237,13 @@ describe("AnswerQuestions, Dismiss and Delivered", () => {
         // q1 is both answered and dismissed: the answer wins.
         Story.when(AnswerQuestions.make({ answers: [{ id: "q1", answer: "3000" }], dismissed: ["q3", "q1"], delivery: "msg_1" })),
         Story.then<Event>(
-          QuestionAnswered.make({ id: "q1", answer: "3000", delivery: "msg_1" }),
-          QuestionAnswered.make({ id: "q3", answer: "no", delivery: "msg_1", dismissed: true }),
+          QuestionAnswered.make({ id: "q1", answer: "3000", delivery: "msg_1", at: 0 }),
+          QuestionAnswered.make({ id: "q3", answer: "no", delivery: "msg_1", at: 0, dismissed: true }),
         ),
         // Neither is open any more: the tray counts only q2.
         Story.state({
           next: 4,
-          rows: [{ ...port, answered: { answer: "3000", delivery: "msg_1" } }, flag, { ...asked("q3", "Third?"), answered: { answer: "no", delivery: "msg_1", dismissed: true } }],
+          rows: [{ ...port, answered: { answer: "3000", delivery: "msg_1", at: 0 } }, flag, { ...asked("q3", "Third?"), answered: { answer: "no", delivery: "msg_1", dismissed: true, at: 0 } }],
         }),
         Story.when(Delivered.make({ delivery: "msg_1" })),
         Story.then<Event>(QuestionClosed.make({ id: "q1", reason: "delivered" }), QuestionClosed.make({ id: "q3", reason: "dismissed" })),
@@ -256,7 +256,7 @@ describe("AnswerQuestions, Dismiss and Delivered", () => {
       story(
         Story.given<Event>(QuestionOpened.make({ question: port })),
         Story.when(AnswerQuestions.make({ answers: [{ id: "q1", answer: " fine, but free 3000 for the docs ", keep: true }], delivery: "msg_1" })),
-        Story.then<Event>(QuestionAnswered.make({ id: "q1", answer: "8080 (note: fine, but free 3000 for the docs)", delivery: "msg_1" })),
+        Story.then<Event>(QuestionAnswered.make({ id: "q1", answer: "8080 (note: fine, but free 3000 for the docs)", delivery: "msg_1", at: 0 })),
       ),
     ))
 
