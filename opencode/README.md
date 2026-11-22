@@ -273,6 +273,22 @@ only the resident location's copy acts, so a host runs one updater.
   process binds its build's tree at its start, so every start holds exactly
   its build's list (the model's I5, `mods/update/model.test.ts`
   `plugin trees`).
+- **Plain-Bun commands.** Each production file a tree runs as its own
+  process (`bun <file>`, not a plugin: the `cmd/` entries, `scripts/daily.ts`,
+  the kernel's worker) is declared in `mods/update/trees.ts` `COMMANDS` with
+  the packages it imports and a probe (arguments, exit code, output). The
+  root install owns their runtime: `effect` and `@effect/platform-bun` pinned
+  together, and a command's composition root provides `BunServices.layer`
+  (and `Digest.layerWebCrypto` where it hashes), so it needs no OpenCode
+  process (and, but for `daily.ts`, which builds the fork, no
+  `OPENCODE_DEV`). Run one from the
+  installed tree, `bun ~/.local/share/opencode-prime/current.plugins/opencode/cmd/<plugin>/<file>.ts`;
+  on another host, the same path over SSH (`ssh <host> bun …/current.plugins/opencode/cmd/…`),
+  never the synced checkout, whose fork links name a source checkout. A command
+  that reads a store reads a copy of it. `scripts/runtime-imports.test.ts` keeps
+  the list whole (every entry declared, each graph within its packages, one
+  `effect` release) and `tests/cli-tree.test.ts` runs each probe, on the
+  checkout or, with `TREE_OPENCODE=<tree>/opencode`, on a made tree.
 - **The TUI's plugins.** A tree's `config/cli.json` lists every plugin
   package that exports `./tui` (`cmd/*/package.json`): `trees.ts`
   `tuiPluginsOf`, derived, never a list kept by hand. Their order is the
