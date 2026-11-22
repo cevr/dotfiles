@@ -89,6 +89,10 @@ check_shell_files() {
   shell_dir="$HOME/.local/share/workbox"
   tree_box="$HOME/.local/share/opencode-prime/current.plugins/workbox"
   for name in zshenv zshrc; do
+    if [ -e "$HOME/.$name" ] && [ ! -L "$HOME/.$name" ]; then
+      printf 'workbox bootstrap: ~/.%s is a file of its own, not the link to %s: new shells do not read the installed one. Move what you want to keep from it into ~/.config/secrets.env, then `mv ~/.%s ~/.%s.mine`; the next install links it.\n' "$name" "$shell_dir/$name" "$name" "$name" >&2
+      return 1
+    fi
     if [ "$(readlink "$HOME/.$name" 2>/dev/null || true)" != "$shell_dir/$name" ]; then
       printf 'workbox bootstrap: ~/.%s does not link to %s (install-bin.sh installs it)\n' "$name" "$shell_dir/$name" >&2
       return 1

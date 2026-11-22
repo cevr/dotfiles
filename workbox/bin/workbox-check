@@ -1,0 +1,14 @@
+#!/bin/sh
+# The workbox's health check: `bootstrap.sh --check` as the installed build's tree holds it
+# (~/.local/share/opencode-prime/current.plugins/workbox/), the verified commit's checks. The live
+# checkout's copy is a Syncthing mirror of the Mac's base and can lag; never run that one.
+# install-bin.sh installs this command into ~/.local/bin.
+
+set -eu
+
+tree_box="$HOME/.local/share/opencode-prime/current.plugins/workbox"
+if [ ! -f "$tree_box/bootstrap.sh" ]; then
+  printf 'workbox-check: %s/bootstrap.sh is not there: the installed build holds no workbox/ yet (the next install brings it)\n' "$tree_box" >&2
+  exit 1
+fi
+exec sh "$tree_box/bootstrap.sh" --check
