@@ -141,6 +141,17 @@ describe("the host's commands, over the checkout as it stands", () => {
       }),
     ))
 
+  test("a commands script that refuses (a file it will not install, a ~/.zshenv of the owner's) fails the commands with what it said, which the handoff logs", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const said = "install-bin: refused /t/workbox/zshenv: zsh -n fails"
+        const places = yield* placesOfWorkbox([["workbox/install-bin.sh", `#!/bin/sh\nprintf '%s\\n' '${said}' >&2\nexit 1\n`]])
+        const failure = Exit.findErrorOption(yield* workboxCommands(places))
+        expect(Option.map(failure, (failed) => failed.message)).toEqual(Option.some(said))
+        spawnSync(["rm", "-rf", places.dir])
+      }),
+    ))
+
   test("an installed tree with no workbox/ (a build from before it held one) fails the commands loudly, naming the tree, and runs the checkout's neither", () =>
     Effect.runPromise(
       Effect.gen(function* () {

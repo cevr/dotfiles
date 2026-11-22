@@ -15,8 +15,14 @@ Run this command on the workbox:
 Run this command to verify the installed state:
 
 ```sh
-~/Developer/personal/dotfiles/workbox/bootstrap.sh --check
+workbox-check
 ```
+
+`workbox-check` (installed into `~/.local/bin` by `install-bin.sh`) runs
+`bootstrap.sh --check` from the installed build's tree
+(`~/.local/share/opencode-prime/current.plugins/workbox/`), the verified
+commit's checks. Do not run the checkout's `bootstrap.sh --check`: the checkout
+is a Syncthing copy of the Mac's base and can lag.
 
 The base box must already have Bun and the Bun CLIs in `~/.bun` (Sideshow,
 Hunk, Codex), Claude, MongoDB, Redis, Syncthing, Tailscale, and the Bite
@@ -136,8 +142,17 @@ noncurrent snapshot objects after 14 days.
   from the installed build's tree (`~/.local/share/opencode-prime/current.plugins/workbox/`),
   so these are the verified commit's files. The live checkout
   (`~/Developer/personal/dotfiles`) is a Syncthing copy of the Mac's base,
-  and no update moves it. `bootstrap.sh --check` fails when the shell files
-  are not the installed build's.
+  and no update moves it.
+  - It checks every file first (`sh -n`, `dash -n`, `bash -n` or `zsh -n` by
+    its first line, and a scratch `zsh -c true` that reads the new zshenv).
+    If any file fails, it names it, installs nothing and exits 1, and the
+    update log shows it.
+  - Each file is written beside its target and renamed over it, so a command
+    or shell started during an install sees the old file or the new one,
+    whole.
+  - A `~/.zshenv` or `~/.zshrc` that is a file of its own is never
+    overwritten. The script says what to do with it and exits 1.
+  - `workbox-check` fails when the shell files are not the installed build's.
 - `trash` moves files to the home trash, across Btrfs subvolumes.
 - `cleanup-mosh-servers` removes disconnected Mosh servers.
 

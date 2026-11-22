@@ -288,9 +288,10 @@ const saturday: Host = { ...today, herdrActive: false, herdrPresent: false }
 /**
  * How the home's shell files stand: `installed` (links to install-bin.sh's copies, which equal the
  * installed build's tree's), `checkout` (links into the live checkout, as bootstrap made them before),
- * or `behind` (installed copies that differ from the tree's: the delivery did not run).
+ * `behind` (installed copies that differ from the tree's: the delivery did not run), or `file` (a
+ * ~/.zshenv of the owner's own, no link).
  */
-type Shell = "installed" | "checkout" | "behind"
+type Shell = "installed" | "checkout" | "behind" | "file"
 
 const placeShellFiles = (home: string, shell: Shell) => {
   const installed = join(home, ".local", "share", "workbox")
@@ -301,6 +302,10 @@ const placeShellFiles = (home: string, shell: Shell) => {
     writeFileSync(join(tree, name), `# the tree's ${name}\n`)
     writeFileSync(join(installed, name), shell === "behind" ? `# an older ${name}\n` : `# the tree's ${name}\n`)
     symlinkSync(shell === "checkout" ? join(workbox, name) : join(installed, name), join(home, `.${name}`))
+  }
+  if (shell === "file") {
+    rmSync(join(home, ".zshenv"))
+    writeFileSync(join(home, ".zshenv"), "# the owner's own\n")
   }
 }
 
@@ -389,6 +394,12 @@ describe("bootstrap", () => {
     expect(checkout.stderr).toContain("~/.zshenv does not link to")
     expect({ code: behind.code === 0 ? 0 : "failed", passed: behind.stdout.includes("checks passed") }).toEqual({ code: "failed", passed: false })
     expect(behind.stderr).toMatch(/\.local\/share\/workbox\/zshenv is not the installed build's .*current\.plugins\/workbox\/zshenv/)
+  }, 30_000)
+
+  test("--check fails on a ~/.zshenv that is a file of its own, saying what the owner must do", async () => {
+    const owned = await bootstrapCheck(today, "file")
+    expect({ code: owned.code === 0 ? 0 : "failed", passed: owned.stdout.includes("checks passed") }).toEqual({ code: "failed", passed: false })
+    expect(owned.stderr).toMatch(/~\/\.zshenv is a file of its own, not the link to .*\.local\/share\/workbox\/zshenv: new shells do not read the installed one\. Move what you want to keep from it into ~\/\.config\/secrets\.env, then `mv ~\/\.zshenv ~\/\.zshenv\.mine`; the next install links it\./)
   }, 30_000)
 
   test("--check warns, and still passes, when a live inotify limit is below sysctl.d/90-inotify.conf's", async () => {

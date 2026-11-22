@@ -117,8 +117,9 @@ terminal that is about to stop.
 8. **Services**: `systemctl --user enable --now hc-core.service sideshow.service
    film-lab.service t3code.service teamclaude.service sh.executor.daemon.service`,
    `systemctl --user start opencode.service`, `sudo systemctl enable --now
-   syncthing@exedev`. `~/Developer/personal/dotfiles/workbox/bootstrap.sh --check`
-   must pass. OpenCode arrives on its proven tree build, with no install: `opencode --version` ends in `.tree` and `readlink ~/.local/share/opencode-prime/current.plugins` names that build's `.plugins` tree (a tree's `node_modules` hardlinks into `~/.bun/install/cache` survive `btrfs send` within `@home`; a broken one costs disk only).
+   syncthing@exedev`. `workbox-check` must pass. It runs `bootstrap.sh --check`
+   from the installed build's tree (`current.plugins/workbox/`), never the
+   checkout's copy, which mirrors the Mac's base and can lag. OpenCode arrives on its proven tree build, with no install: `opencode --version` ends in `.tree` and `readlink ~/.local/share/opencode-prime/current.plugins` names that build's `.plugins` tree (a tree's `node_modules` hardlinks into `~/.bun/install/cache` survive `btrfs send` within `@home`; a broken one costs disk only).
 9. **exe-only features** (README.md, last table): `tailscale serve --bg
    --https=8228 http://127.0.0.1:8228`, the same for 8229 and for 443 to 3773;
    in `~/.config/systemd/user/film-lab.service.d/` set `FILM_LAB_HOSTS` to the
