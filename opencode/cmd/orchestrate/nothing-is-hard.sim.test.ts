@@ -22,7 +22,7 @@ const NAME = "principle-nothing-is-hard"
 const ENDING = {
   planner: "Your required work: every section of the spec filled, and its acceptance check runnable and recorded red.",
   implementor: "Your required work: every item of the spec, built, gated and requested.",
-  verifier: "Your required work: every check of step 1 ran, for every unit;",
+  verifier: "Your required work: every check of step 1 ran to a result that settles pass or fail, for every unit;",
 } as const
 const ROLES = ["planner", "implementor", "verifier"] as const
 
