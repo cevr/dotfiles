@@ -129,6 +129,10 @@ noncurrent snapshot objects after 14 days.
   when `work --json list` (or `work --json bases`) fails, is missing, or
   answers anything but a list of records each with a name, id, path, state
   and since, remove refuses, quotes what came back, and deletes nothing.
+- `workrift subvolume [--back | --drop-old] [--apply]` switches the warm source
+  between a plain folder and a btrfs subvolume (see "A base that is a
+  subvolume" below). Without `--apply` it changes nothing: it prints its
+  preflight and every step with absolute paths.
 - `workrift prune [--dry-run]` lists the workspaces idle for two days; once
   work's gc is cleared (`work_gc_safe` in the script) it removes them with
   `work gc -idle -archive`, which keeps each one's work in its base.
@@ -206,6 +210,52 @@ and for what (`clone <name>` or `delete <name>`); a holder that dies frees its
 turn. The fetch, install and warm of a create, and a remove's checks, run
 beside each other as before. A base that is a Btrfs subvolume (its workspaces
 are snapshots) takes no turn.
+
+### A base that is a subvolume
+
+When a base is the root of a btrfs subvolume, `work new` makes each workspace
+as one writable snapshot and `work rm` deletes it with one
+`btrfs subvolume delete` (Ergo's btrfs cloner). When the base is a plain
+folder, work copies it file by file. `workrift init` and
+`workbox-rift-storage --apply` make new bases as subvolumes on btrfs.
+`workrift check` warns about a base on btrfs that is a plain folder.
+
+`workrift subvolume --apply` converts a live base and leaves every workspace
+as it is: work removes each record by the cloner that made it. The command
+runs these steps:
+
+1. It refuses to start while a removal runs, while an older workrift (one
+   that takes no place in the base's line) runs, while a process outside the
+   line works in the base, while a Git lock file is present, while quotas are
+   on, or while the mount lacks `user_subvol_rm_allowed`. It also refuses
+   when free space or metadata slack is below the gates
+   (`WORKRIFT_SUBVOLUME_MIN_*`).
+2. It takes the base's exclusive lock and its clone turn in line. Creates
+   wait behind it and none fails. It waits at most
+   `WORKRIFT_SUBVOLUME_TURN_WAIT` seconds (default 1800) and otherwise exits
+   1 with nothing changed.
+3. It reflink-copies the base into `<parent>/.subvolume-move/<name>.new`,
+   refreshes the index of the copy, and checks the HEAD, refs, status and
+   lock files of the copy against the base.
+4. It swaps the copy and the base in one `renameat2(RENAME_EXCHANGE)` and
+   parks the old tree at `<name>.old`.
+5. It waits for processes to leave the old tree, carries in the refs the old
+   tree gained, runs `work refresh`, and makes and removes a smoke snapshot
+   workspace.
+
+A failure under the hold rolls the switch back. If the command is cut
+(kill -9 too), the next `--apply` finishes the switch or rolls it back,
+working from its state file in the base's `.workrift/subvolume/`. The
+checked-out branch is never moved by the carry. When a ref changed on both
+sides, the command keeps the other value under `refs/subvolume-move/` and
+says so.
+
+The tree the base was stays at `<name>.old` until
+`workrift subvolume --drop-old --apply`, which deletes only the tree that the
+last switch recorded there (a subvolume's id or a folder's inode). Nothing
+goes to a trash. `--back` switches to the kept tree in the same way. With no
+kept tree, `--back` copies into a new folder.
+
 `init`, `create`, `refresh` and `deps` run themselves at nice 10, and in the
 idle I/O class (`ionice -c3`) where `ionice` is, so their clones, fetches,
 checkouts and installs yield to the OpenCode service.
