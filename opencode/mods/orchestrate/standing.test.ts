@@ -24,7 +24,7 @@ describe("standingOf", () => {
 
   test("each open commitment is in the first standing that applies", () => {
     const now = facts({ gone: new Set(["gone-lane"]) })
-    expect(["u", "o", "d", "h", "w"].map((id) => standing(snapshot, id, now))).toEqual(["unowned", "orphaned", "due", "held", "held"].map(Option.some))
+    expect(["u", "o", "d", "h", "w"].map((id) => standing(snapshot, id, now))).toEqual((["unowned", "orphaned", "due", "held", "held"] as const).map((each) => Option.some(each)))
   })
 
   test("past its review-by time an owned one is overdue, a wait included; the root's lane is never gone", () => {
