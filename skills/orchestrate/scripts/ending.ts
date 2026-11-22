@@ -1,231 +1,207 @@
-// How a step ends, as one decision table: role × why the step ended × the state of each item left. Every cell of
-// the cross-product holds exactly one outcome (the role's verdict word, the file it writes, the item's one label)
-// or names why it cannot occur. agents.ts renders a role's rows into its prompt between BEGIN and END, and every
-// role's rows into end-of-step.md; no other sentence of a prompt decides how a step ends (ending.test.ts lints it).
-// Edit the table here, then run agents.ts (and opencode's `bun run agents`).
+// How a step ends, as two independent total functions (batch 22t: "the stopping event and each outstanding
+// item's status are distinct facts"):
+//   F1  label(role, state)          each item of the work is in exactly one state, decided by its own history, and
+//                                   that state alone gives its label, whatever stopped the step;
+//   F2  outcome(role, stop, states) the stop event and the multiset of item states give the verdict word, by a stated
+//                                   precedence over the states present, and the files written.
+// An input no step can produce (a refusal that refused nothing, a runnable item when nothing runnable is left, a limit
+// with no runnable item, a state or stop the role does not have) is rejected as ill-formed by `classify`, never answered.
+// agents.ts renders a role's two tables into its prompt between BEGIN and END, every role's into end-of-step.md.
+// Edit here, then run agents.ts (and opencode's `bun run agents`).
 
 export const ROLES = ['planner', 'implementor', 'verifier', 'worker'] as const;
 export type Role = (typeof ROLES)[number];
 
-/** Why the step ended. */
-export const REASONS = ['refusal-form', 'refusal-none', 'limit', 'cannot-run', 'waiting', 'done'] as const;
-export type Reason = (typeof REASONS)[number];
+/** Every state an item can be in, across roles; STATES_OF says which a role has. */
+export const ALL_STATES = ['done', 'proven', 'runnable', 'waits', 'refused', 'cannot', 'unclear', 'discovery', 'unitFinding', 'baseFinding'] as const;
+export type State = (typeof ALL_STATES)[number];
 
-/**
- * Which reason a step ends on when more than one holds: a refusal or the round's limit ends it the moment it
- * happens (whichever comes first); else the step goes on while a runnable item is left, then ends on the first of
- * the rest that holds, in this order.
- */
-export const AT_ONCE: ReadonlyArray<Reason> = ['refusal-form', 'refusal-none', 'limit'];
-export const ONCE_NOTHING_RUNNABLE: ReadonlyArray<Reason> = ['cannot-run', 'waiting', 'done'];
+/** Every stop event, across roles; STOPS_OF says which a role has. */
+export const ALL_STOPS = ['refusalForm', 'refusalNone', 'limit', 'idle'] as const;
+export type Stop = (typeof ALL_STOPS)[number];
 
-/** The state of one item left, in precedence order: an item in more than one state takes the first. */
-export const STATES = ['stopped', 'waits', 'discovery', 'runnable'] as const;
-export type State = (typeof STATES)[number];
+export const STATES_OF: Record<Role, ReadonlyArray<State>> = {
+  planner: ['done', 'runnable', 'waits', 'refused', 'cannot', 'discovery'],
+  implementor: ['done', 'runnable', 'waits', 'refused', 'cannot', 'discovery'],
+  verifier: ['done', 'proven', 'runnable', 'waits', 'refused', 'cannot', 'unclear', 'unitFinding', 'baseFinding'],
+  worker: ['done', 'runnable', 'waits', 'refused', 'cannot', 'discovery'],
+};
+export const STOPS_OF: Record<Role, ReadonlyArray<Stop>> = {
+  planner: ['refusalForm', 'refusalNone', 'limit', 'idle'],
+  implementor: ['refusalForm', 'refusalNone', 'limit', 'idle'],
+  verifier: ['refusalForm', 'refusalNone', 'idle'],
+  worker: ['refusalForm', 'refusalNone', 'idle'],
+};
+/** The states that are not work the role was given: they never hold a step back. */
+export const OUTSIDE: ReadonlyArray<State> = ['discovery', 'unitFinding', 'baseFinding'];
 
-/** The labels an item carries: its words, then what they mean. */
-export const LABELS = {
-  continues: ['`continues next round`', "this unit's work, in its next round (or its rewrite after the failure cap); never a follow-up"],
-  waits: ['`waits on <id>`', 'the open unit, question, commitment or contradicting spec lines it waits on, by id; it keeps this label whatever ended the step'],
-  refusedForm: ['`refused: <what>; form: <the form it named>`', "this unit's work: never a follow-up, never tried another way"],
-  refused: ['`refused: <what>`', "this unit's work: never a follow-up, never tried another way"],
-  cannot: ['`cannot run here: <check or tool>`', 'with its command and output'],
-  outside: ['`finding outside the unit`', "listed under Follow-ups (an implementor's in `state.md`, a planner's in its file)"],
-  base: ['a `base` finding', 'On base: it goes to a follow-up unit, never this round'],
-  notRun: ['`not run`', 'named under Check, with the refusal'],
-  taskRefusedForm: ['`refused: <what>; form: <the form it named>`', 'never tried another way'],
-  taskRefused: ['`refused: <what>`', 'never tried another way'],
-  left: ['`left`', 'named in your result'],
-  outsideTask: ['`outside the task`', 'named in your result'],
-} as const satisfies Record<string, readonly [string, string]>;
-export type Label = keyof typeof LABELS;
-
-/** Why a cell cannot occur. */
-export const NEVER = {
-  noneLeft: 'done means no required item is left',
-  notStopped: 'only a refusal or a check that cannot run stops an item',
-  runnableFirst: 'this end comes only once no runnable item is left',
-  verifierWaits: 'a verifier waits only in a step that ends on waiting work',
-  verifierLimit: "a verifier's step has no timebox or failure cap",
-  workerLimit: 'a lean worker has no round, timebox or failure cap',
-} as const;
-export type Never = keyof typeof NEVER;
-
-export type Cell = { readonly label: Label } | { readonly never: Never };
-export type Row =
-  | { readonly role: Role; readonly reason: Reason; readonly verdict: string; readonly file: string; readonly items: Readonly<Record<State, Cell>> }
-  | { readonly role: Role; readonly reason: Reason; readonly never: Never };
-
-export const REASON_TEXT: Record<Reason, string> = {
-  'refusal-form': 'A refusal named an accepted form',
-  'refusal-none': 'A refusal named no accepted form',
-  limit: "The round's limit passed: the timebox by the clock, the failure cap by its count",
-  'cannot-run': 'A required check or tool cannot run on this host, with no refusal',
-  waiting: 'Only work that waits is left (an open unit, an owner commitment, an orchestrator question no stated assumption covers, two spec lines that contradict)',
-  done: 'All required work is done',
+/** Each state's name, as the tables and the verdict line say it. */
+export const STATE_NAME: Record<State, string> = {
+  done: 'done',
+  proven: 'proven',
+  runnable: 'runnable',
+  waits: 'waiting',
+  refused: 'refused',
+  cannot: 'cannot run',
+  unclear: 'ran unclear',
+  discovery: 'a discovery',
+  unitFinding: 'a unit finding',
+  baseFinding: 'a base finding',
 };
 
+/** What each state means, as a reader decides it from the item's own history. */
 export const STATE_TEXT: Record<State, string> = {
-  stopped: 'The item the end stopped',
-  waits: 'An item that waits',
-  discovery: 'Work no spec item asks for',
-  runnable: 'A runnable item',
+  done: 'done; for a check, ran and passed',
+  proven: 'a check that ran and proves a Blocker or Major',
+  runnable: 'runnable, not yet run',
+  waits: 'waiting on an open unit, question, commitment or two contradicting spec lines',
+  refused: 'the item the refusal stopped',
+  cannot: 'unable to run on this host: its check or tool is absent or will not start, with no refusal',
+  unclear: 'a required check that ran, but whose result cannot establish pass or fail',
+  discovery: 'work no spec item asks for',
+  unitFinding: "a weak test, narrowed acceptance or written-rule break with no failing run that the unit's change introduced, shown by measured attribution (whether or not a spec item names it)",
+  baseFinding: 'such a finding the base head shows too',
 };
 
-/** Each role's required work: `done` means all of it is done. */
+// ---- F1: state → label ---------------------------------------------------------------------------------------------
+
+const CONTINUES = "`continues next round`: this unit's work, in its next round (or its rewrite after the failure cap); never a follow-up";
+const WAITS = '`waits on <id>`';
+const REFUSED = "`refused: <what>`, adding `; form: <the form it named>` only when the refusal named one: this unit's work, never a follow-up, never tried another way";
+const CANNOT = '`cannot run here: <check or tool>`, with its command and output';
+
+/** F1. The label of each state, per role: null for `done`, which is no item left. */
+export const LABEL: Record<Role, Partial<Record<State, string | null>>> = {
+  planner: { done: null, runnable: CONTINUES, waits: WAITS, refused: REFUSED, cannot: CANNOT, discovery: '`finding outside the unit`, under Follow-ups in your file' },
+  implementor: { done: null, runnable: CONTINUES, waits: WAITS, refused: REFUSED, cannot: CANNOT, discovery: '`finding outside the unit`, in `state.md` under Follow-ups' },
+  verifier: {
+    done: null,
+    proven: 'a Blocker or Major, filed with its proof',
+    runnable: '`not run`, named under Check',
+    waits: WAITS,
+    refused: REFUSED.replace("this unit's work, never a follow-up, ", ''),
+    cannot: CANNOT,
+    unclear: '`ran unclear: <check>`, with its command and the output that settles nothing',
+    unitFinding: "marked `unit`: the same lane closes it in its next round",
+    baseFinding: 'marked `base`: a follow-up unit',
+  },
+  worker: {
+    done: null,
+    runnable: '`left`, named in your result',
+    waits: WAITS,
+    refused: '`refused: <what>`, adding `; form: <the form it named>` only when the refusal named one: never tried another way',
+    cannot: CANNOT,
+    discovery: '`outside the task`, named in your result',
+  },
+};
+
+/** F1 as a function: the one label of an item in `state`; throws for a state the role does not have. */
+export function label(role: Role, state: State, labels: typeof LABEL = LABEL): string | null {
+  if (!STATES_OF[role].includes(state)) throw new Error(`${role} has no state ${state}`);
+  const found = labels[role][state];
+  if (found === undefined) throw new Error(`no label for ${role} × ${state}`);
+  return found;
+}
+
+// ---- F2: (stop, states) → verdict and files ----------------------------------------------------------------------
+
+/** The verdict rules, first that holds: `any` of these states present, or `only` these states present, or `else`. */
+export type Rule = { readonly verdict: string } & ({ readonly any: ReadonlyArray<State> } | { readonly only: ReadonlyArray<State> } | { readonly else: true });
+export const VERDICT: Record<Role, ReadonlyArray<Rule>> = {
+  planner: [{ verdict: 'ready', only: ['done', 'discovery'] }, { verdict: 'blocked', else: true }],
+  implementor: [{ verdict: 'ready', only: ['done', 'discovery'] }, { verdict: 'blocked', else: true }],
+  verifier: [
+    { verdict: 'stuck', any: ['runnable', 'waits', 'refused', 'cannot', 'unclear'] },
+    { verdict: 'changes', any: ['proven'] },
+    { verdict: 'accepted', else: true },
+  ],
+  worker: [{ verdict: 'none', else: true }],
+};
+
+/** What a stop event's evidence is, written where the role's files say; a role may say it its own way. */
+const EVIDENCE: Record<Stop, string> = {
+  refusalForm: 'what was refused and the form it named (the exact `!` command or allow rule, as Refusals says)',
+  refusalNone: 'what was refused, as the refusal said it, and an allow rule only if one exists',
+  limit: 'the clock (the timebox) or the count (the failure cap)',
+  idle: 'what you tried for each item that holds the step back, the options and your pick',
+};
+const EVIDENCE_OF: Record<Role, Partial<Record<Stop, string>>> = {
+  planner: {},
+  implementor: {},
+  verifier: { idle: 'each check that holds the verdict back, with its command and exit code' },
+  worker: { refusalForm: 'what was refused and the form it named', refusalNone: 'what was refused, as the refusal said it', idle: 'what holds back each item left' },
+};
+export const evidence = (role: Role, stop: Stop): string => EVIDENCE_OF[role][stop] ?? EVIDENCE[stop];
+
+export const STOP_TEXT: Record<Stop, string> = {
+  refusalForm: 'a refusal named an accepted form',
+  refusalNone: 'a refusal named no accepted form',
+  limit: "the round's limit passed",
+  idle: 'no runnable item is left',
+};
+
+/** The files each verdict writes: `<evidence>` is the stop event's, `<items>` each item left with its label. */
+export const FILES: Record<Role, Record<string, string>> = {
+  planner: {
+    ready: '`<unit dir>/spec.md`',
+    blocked: '`<unit dir>/state.md` current (even with no commit since) and `<unit dir>/blocked.md`: <evidence>, and <items>',
+  },
+  implementor: {
+    ready: '`<unit dir>/round-N-request.md`, committed, once `request.ts` exits 0',
+    blocked: '`<unit dir>/state.md` current (even with no commit since) and `<unit dir>/blocked.md`: <evidence>, and <items>',
+  },
+  verifier: {
+    stuck: "each unit's `round-N-findings.md` and the batch's findings file; under Check, <evidence>, and <items>",
+    changes: "each unit's `round-N-findings.md` and the batch's findings file, with <items>",
+    accepted: "each unit's `round-N-findings.md` and the batch's findings file, with <items>",
+  },
+  worker: { none: 'your result as text, with <evidence> and <items>' },
+};
+
+/** The files a verdict writes after `stop`, as the role's prompt says them. */
+export function written(role: Role, stop: Stop, verdict: string, from: typeof FILES = FILES): string {
+  const files = from[role][verdict];
+  if (files === undefined) throw new Error(`no files for ${role} ${verdict}`);
+  return files.replace('<evidence>', evidence(role, stop)).replace('<items>', 'each item left with its label');
+}
+
+export type Outcome = { readonly verdict: string; readonly files: string };
+export type Classified = { readonly outcome: Outcome } | { readonly illFormed: string };
+
+/** Why an input is no step's end, or undefined when it is one. */
+export function illFormed(role: Role, stop: Stop, states: ReadonlyArray<State>): string | undefined {
+  if (!STOPS_OF[role].includes(stop)) return `a ${role} has no ${stop} stop`;
+  const foreign = states.find((state) => !STATES_OF[role].includes(state));
+  if (foreign !== undefined) return `a ${role} has no ${foreign} state`;
+  const refused = states.filter((state) => state === 'refused').length;
+  const refusal = stop === 'refusalForm' || stop === 'refusalNone';
+  if (refusal && refused !== 1) return 'a refusal stops the step at the one item it refused';
+  if (!refusal && refused > 0) return 'a refusal stops the step at once, so a refused item means the step stopped on it';
+  if (stop === 'idle' && states.includes('runnable')) return 'the step goes on while a runnable item is left';
+  if (stop === 'limit' && !states.includes('runnable')) return 'with no runnable item left the step had already stopped, before the limit passed';
+  return undefined;
+}
+
+/** F2. The verdict and files of a step that stopped on `stop` with items in `states`; ill-formed input is refused. */
+export function classify(role: Role, stop: Stop, states: ReadonlyArray<State>, rules: typeof VERDICT = VERDICT, files: typeof FILES = FILES): Classified {
+  const bad = illFormed(role, stop, states);
+  if (bad !== undefined) return { illFormed: bad };
+  const rule = rules[role].find((one) =>
+    'any' in one ? one.any.some((state) => states.includes(state)) : 'only' in one ? states.every((state) => one.only.includes(state)) : true,
+  );
+  if (rule === undefined) throw new Error(`no verdict rule holds for ${role}`);
+  return { outcome: { verdict: rule.verdict, files: written(role, stop, rule.verdict, files) } };
+}
+
+/** Each role's required work: `done` on every required item means all of it. */
 export const REQUIRED: Record<Role, string> = {
   planner:
     'Your required work: every section of the spec filled, and its acceptance check runnable and recorded red. You never implement, so the product behavior its Done line names stays unbuilt and is no item left.',
   implementor: 'Your required work: every item of the spec, built, gated and requested.',
   verifier:
-    'Your required work: every check of step 1 ran, for every unit; a check of step 1 that could not run or ran unclear is `stuck`, never `accepted`, and a wider probe this host cannot run goes under Unproven and does not stop `accepted`. Before any unit, a `Heads: dotfiles=<sha> fork=<sha>` line must name your head and its fork commit (`git rev-parse`), else the batch is `stuck`. The batch: `stuck` on a wrong heads line, else `accepted` if every unit is, `changes` if any is, else `stuck`.',
+    'Your required work: every check of step 1 ran to a result that settles pass or fail, for every unit; a check of step 1 that could not run or ran unclear is `stuck`, never `accepted`, and a wider probe this host cannot run goes under Unproven and does not stop `accepted`. Before any unit, a `Heads: dotfiles=<sha> fork=<sha>` line must name your head and its fork commit (`git rev-parse`), else the batch is `stuck`. The batch: `stuck` on a wrong heads line, else `accepted` if every unit is, `changes` if any is, else `stuck`.',
   worker: 'Your required work: the task in your first message.',
 };
-
-const L = (label: Label): Cell => ({ label });
-const N = (never: Never): Cell => ({ never });
-const BLOCKED = '`<unit dir>/blocked.md`';
-const FINDINGS = "each unit's `round-N-findings.md` and the batch's findings file";
-const RESULT = 'none: your result as text';
-
-/** A planner's or implementor's rows past `done`: the same verdict, file and labels. */
-const stopped = (role: 'planner' | 'implementor'): ReadonlyArray<Row> => [
-  {
-    role,
-    reason: 'refusal-form',
-    verdict: '`blocked`',
-    file: `${BLOCKED}: what was refused and the form it named (the exact \`!\` command or allow rule, as Refusals says)`,
-    items: { stopped: L('refusedForm'), waits: L('waits'), discovery: L('outside'), runnable: L('continues') },
-  },
-  {
-    role,
-    reason: 'refusal-none',
-    verdict: '`blocked`',
-    file: `${BLOCKED}: what was refused, as the refusal said it, and an allow rule only if one exists`,
-    items: { stopped: L('refused'), waits: L('waits'), discovery: L('outside'), runnable: L('continues') },
-  },
-  {
-    role,
-    reason: 'limit',
-    verdict: '`blocked`',
-    file: `${BLOCKED}, quoting the clock or the count`,
-    items: { stopped: N('notStopped'), waits: L('waits'), discovery: L('outside'), runnable: L('continues') },
-  },
-  {
-    role,
-    reason: 'cannot-run',
-    verdict: '`blocked`',
-    file: `${BLOCKED}: the check or tool, its command and output, and the probe that would settle it`,
-    items: { stopped: L('cannot'), waits: L('waits'), discovery: L('outside'), runnable: N('runnableFirst') },
-  },
-  {
-    role,
-    reason: 'waiting',
-    verdict: '`blocked`',
-    file: `${BLOCKED}: each wait by its id, what you tried, the options and your pick`,
-    items: { stopped: N('notStopped'), waits: L('waits'), discovery: L('outside'), runnable: N('runnableFirst') },
-  },
-];
-
-const DONE_ITEMS = (outside: Label) => ({ stopped: N('noneLeft'), waits: N('noneLeft'), discovery: L(outside), runnable: N('noneLeft') });
-
-export const TABLE: ReadonlyArray<Row> = [
-  ...stopped('planner'),
-  { role: 'planner', reason: 'done', verdict: '`ready`', file: '`<unit dir>/spec.md`', items: DONE_ITEMS('outside') },
-  ...stopped('implementor'),
-  { role: 'implementor', reason: 'done', verdict: '`ready`', file: '`<unit dir>/round-N-request.md`, committed, once `request.ts` exits 0', items: DONE_ITEMS('outside') },
-  {
-    role: 'verifier',
-    reason: 'refusal-form',
-    verdict: '`stuck`',
-    file: `${FINDINGS}, the refusal under Check: what was refused and the form it named`,
-    items: { stopped: L('refusedForm'), waits: N('verifierWaits'), discovery: L('base'), runnable: L('notRun') },
-  },
-  {
-    role: 'verifier',
-    reason: 'refusal-none',
-    verdict: '`stuck`',
-    file: `${FINDINGS}, the refusal under Check: what was refused, as it said it`,
-    items: { stopped: L('refused'), waits: N('verifierWaits'), discovery: L('base'), runnable: L('notRun') },
-  },
-  { role: 'verifier', reason: 'limit', never: 'verifierLimit' },
-  {
-    role: 'verifier',
-    reason: 'cannot-run',
-    verdict: '`stuck`',
-    file: `${FINDINGS}, the check under Check with its command and exit code`,
-    items: { stopped: L('cannot'), waits: N('verifierWaits'), discovery: L('base'), runnable: N('runnableFirst') },
-  },
-  {
-    role: 'verifier',
-    reason: 'waiting',
-    verdict: '`stuck`',
-    file: `${FINDINGS}, what each check waits on under Check`,
-    items: { stopped: N('notStopped'), waits: L('waits'), discovery: L('base'), runnable: N('runnableFirst') },
-  },
-  { role: 'verifier', reason: 'done', verdict: '`changes` if you proved a Blocker or Major, else `accepted`', file: FINDINGS, items: DONE_ITEMS('base') },
-  {
-    role: 'worker',
-    reason: 'refusal-form',
-    verdict: `${RESULT}, naming what was refused and the form it named`,
-    file: 'none',
-    items: { stopped: L('taskRefusedForm'), waits: L('waits'), discovery: L('outsideTask'), runnable: L('left') },
-  },
-  {
-    role: 'worker',
-    reason: 'refusal-none',
-    verdict: `${RESULT}, naming what was refused, as it said it`,
-    file: 'none',
-    items: { stopped: L('taskRefused'), waits: L('waits'), discovery: L('outsideTask'), runnable: L('left') },
-  },
-  { role: 'worker', reason: 'limit', never: 'workerLimit' },
-  {
-    role: 'worker',
-    reason: 'cannot-run',
-    verdict: `${RESULT}, naming the check or tool`,
-    file: 'none',
-    items: { stopped: L('cannot'), waits: L('waits'), discovery: L('outsideTask'), runnable: N('runnableFirst') },
-  },
-  {
-    role: 'worker',
-    reason: 'waiting',
-    verdict: `${RESULT}, naming each wait`,
-    file: 'none',
-    items: { stopped: N('notStopped'), waits: L('waits'), discovery: L('outsideTask'), runnable: N('runnableFirst') },
-  },
-  { role: 'worker', reason: 'done', verdict: RESULT, file: 'none', items: DONE_ITEMS('outsideTask') },
-];
-
-export type Outcome = { readonly verdict: string; readonly file: string; readonly label: Label } | { readonly never: Never };
-
-/** The rows of one role and reason: exactly one in a well-formed table. */
-const rowsOf = (table: ReadonlyArray<Row>, role: Role, reason: Reason) => table.filter((row) => row.role === role && row.reason === reason);
-
-/** The one outcome of a cell; throws when the table holds no row, or more than one, for it. */
-export function cell(role: Role, reason: Reason, state: State, table: ReadonlyArray<Row> = TABLE): Outcome {
-  const rows = rowsOf(table, role, reason);
-  if (rows.length !== 1) throw new Error(`${rows.length} rows for ${role} × ${reason}`);
-  const row = rows[0]!;
-  if ('never' in row) return { never: row.never };
-  const item = row.items[state];
-  if (item === undefined) throw new Error(`no cell for ${role} × ${reason} × ${state}`);
-  return 'never' in item ? item : { verdict: row.verdict, file: row.file, label: item.label };
-}
-
-/** The reason a step ends on: the first that happened of those that end it at once, else the first of the rest. */
-export function reasonOf(holding: ReadonlyArray<Reason>, firstAtOnce?: Reason): Reason {
-  if (firstAtOnce !== undefined && AT_ONCE.includes(firstAtOnce) && holding.includes(firstAtOnce)) return firstAtOnce;
-  const reason = AT_ONCE.find((one) => holding.includes(one)) ?? ONCE_NOTHING_RUNNABLE.find((one) => holding.includes(one));
-  if (reason === undefined) throw new Error('no reason holds: the step has not ended');
-  return reason;
-}
-
-/** The state an item takes: the first, in STATES order, of the states it is in. */
-export function stateOf(states: ReadonlyArray<State>): State {
-  const first = STATES.find((state) => states.includes(state));
-  if (first === undefined) throw new Error('an item with no state');
-  return first;
-}
 
 /** A batch's verdict from its heads line and its units' verdicts, as REQUIRED.verifier says it. */
 export function batchVerdict(headsMatch: boolean, units: ReadonlyArray<'accepted' | 'changes' | 'stuck'>): 'accepted' | 'changes' | 'stuck' {
@@ -235,60 +211,75 @@ export function batchVerdict(headsMatch: boolean, units: ReadonlyArray<'accepted
   return 'stuck';
 }
 
-export const BEGIN = '<!-- end-of-step: generated by skills/orchestrate/scripts/ending.ts from its table; edit that, then run agents.ts -->';
+// ---- rendering -----------------------------------------------------------------------------------------------------
+
+export const BEGIN = '<!-- end-of-step: generated by skills/orchestrate/scripts/ending.ts from its two functions; edit that, then run agents.ts -->';
 export const END = '<!-- /end-of-step -->';
 /** A rendered block, wherever it stands in a file. */
 export const BLOCK = /<!-- end-of-step: [^\n]*-->[\s\S]*?<!-- \/end-of-step -->/;
 
-const KEYS = 'abcdefghij';
-const cellText = (outcome: Outcome | Cell, keys: ReadonlyArray<Never>) =>
-  'never' in outcome ? `cannot occur (${KEYS[keys.indexOf(outcome.never)]})` : LABELS[outcome.label][0];
+const list = (items: ReadonlyArray<string>) => (items.length <= 1 ? (items[0] ?? '') : `${items.slice(0, -1).join(', ')} or ${items.at(-1)}`);
+const word = (verdict: string) => (verdict === 'none' ? 'no verdict word' : `\`${verdict}\``);
 
-/** One role's rows, as its prompt carries them: the order, the table, then what its labels and keys mean. */
-export function render(role: Role, table: ReadonlyArray<Row> = TABLE): string {
-  const rows = REASONS.map((reason) => {
-    const found = rowsOf(table, role, reason);
-    if (found.length !== 1) throw new Error(`${found.length} rows for ${role} × ${reason}`);
-    return [reason, found[0]!] as const;
-  });
-  const used = new Set<Label>();
-  const keys: Array<Never> = [];
-  const keep = (never: Never) => (keys.includes(never) ? undefined : keys.push(never));
-  for (const [, row] of rows) {
-    if ('never' in row) keep(row.never);
-    else for (const state of STATES) { const item = row.items[state]; if ('never' in item) keep(item.never); else used.add(item.label); }
-  }
-  const limit = rows.some(([reason, row]) => reason === 'limit' && !('never' in row));
-  const intro = [
-    `**How your step ends.** It ends the moment a refusal comes${role === 'worker' ? '' : ' (the Refusals paragraph)'}${limit ? " or the round's limit passes, whichever comes first" : ''}; else it goes on while a runnable item is left, then ends on the first of the last three rows that holds, in their order.`,
-    'That one row gives your verdict, the file you write and the one label of each item left; an item in more than one state takes the leftmost column that applies. Effort is no reason and no label.',
-    REQUIRED[role],
-  ].join(' ');
-  const header = `| Why the step ended | Verdict | You write | ${STATES.map((state) => STATE_TEXT[state]).join(' | ')} |`;
-  const lines = rows.map(([reason, row]) =>
-    'never' in row
-      ? `| ${REASON_TEXT[reason]} | cannot occur (${KEYS[keys.indexOf(row.never)]}) | | ${STATES.map(() => '').join(' | ')} |`
-      : `| ${REASON_TEXT[reason]} | ${row.verdict} | ${row.file === 'none' ? '' : row.file} | ${STATES.map((state) => cellText(row.items[state], keys)).join(' | ')} |`,
-  );
-  const meaning = [...used].map((label) => `${LABELS[label][0]}: ${LABELS[label][1]}`).join('; ');
-  const never = keys.map((key, index) => `(${KEYS[index]}) ${NEVER[key]}`).join('; ');
-  return [BEGIN, intro, '', header, `| --- | --- | --- | ${STATES.map(() => '---').join(' | ')} |`, ...lines, '', `Labels: ${meaning}. Cannot occur: ${never}.`, END].join('\n');
+/** A verdict rule's condition, in the states' names. */
+export function when(rule: Rule): string {
+  if ('any' in rule) return `any item is ${list(rule.any.map((state) => STATE_NAME[state]))}`;
+  if ('only' in rule) return `every item is ${list(rule.only.map((state) => STATE_NAME[state]))}`;
+  return 'otherwise';
 }
 
-/** protocol.md's block: where each role's rows go, and where all of them are. */
+/** One role's two tables, as its prompt carries them. */
+export function render(role: Role): string {
+  const limit = STOPS_OF[role].includes('limit');
+  const intro = [
+    `**How your step ends.** It stops the moment a refusal comes${role === 'worker' ? '' : ' (the Refusals paragraph)'}${limit ? " or the round's limit passes" : ''}; else it goes on until no runnable item is left.`,
+    'Each item is in one state, decided by its own history, and that state alone gives its label, whatever stopped the step (first table).',
+    'The states present give your verdict and its files (second table), and why the step stopped gives the evidence they hold. Effort is no state and no label.',
+    REQUIRED[role],
+  ].join(' ');
+  const f1 = [
+    '| State | An item that is | Its label |',
+    '| --- | --- | --- |',
+    ...STATES_OF[role].map((state) => `| ${STATE_NAME[state]} | ${STATE_TEXT[state]} | ${label(role, state) ?? 'none: it is no item left'} |`),
+  ];
+  const f2 = [
+    '| Verdict, the first that holds | When | You write |',
+    '| --- | --- | --- |',
+    ...VERDICT[role].map((rule) => `| ${word(rule.verdict)} | ${VERDICT[role].length === 1 ? 'always' : when(rule)} | ${FILES[role][rule.verdict]!.replace('<evidence>', "the stop's evidence").replace('<items>', 'each item left with its label')} |`),
+  ];
+  const stops = STOPS_OF[role].map((stop) => `${STOP_TEXT[stop]}: ${evidence(role, stop)}`);
+  return [BEGIN, intro, '', ...f1, '', ...f2, '', `The stop's evidence: ${stops.join('; ')}.`, END].join('\n');
+}
+
+/** Every multiset of the role's states up to `size` items. */
+export function multisets(states: ReadonlyArray<State>, size: number): State[][] {
+  const out: State[][] = [[]];
+  const grow = (prefix: State[], from: number) => {
+    if (prefix.length === size) return;
+    for (let index = from; index < states.length; index++) {
+      const next = [...prefix, states[index]!];
+      out.push(next);
+      grow(next, index);
+    }
+  };
+  grow([], 0);
+  return out;
+}
+
+/** protocol.md's block: where each role's tables go, and where all of them are. */
 export const PROTOCOL_BLOCK = [
   BEGIN,
-  "How a step ends is one table, by role, by why it ended and by the state of each item left: [`end-of-step.md`](end-of-step.md). Each role's prompt carries its own rows here.",
+  "How a step ends is two functions: an item's own state gives its label, and the item states present give the verdict and its files, with the evidence of why the step stopped: [`end-of-step.md`](end-of-step.md). Each role's prompt carries its own two tables here.",
   END,
 ].join('\n');
 
-/** Every role's rows, as end-of-step.md holds them. */
-export function document(table: ReadonlyArray<Row> = TABLE): string {
+/** Every role's tables, as end-of-step.md holds them. */
+export function document(): string {
   const parts = [
     '# How a step ends',
     '',
-    "Generated by `scripts/ending.ts` from its table: edit that, then run `scripts/agents.ts`. One row per role and why the step ended, one column per state of an item left; every cell holds one outcome or names why it cannot occur. Each role's prompt carries its own rows, as below.",
+    "Generated by `scripts/ending.ts` from its two functions: edit that, then run `scripts/agents.ts`. F1 gives each item's label from its own state; F2 gives the verdict and its files from the item states present, and the evidence from why the step stopped. Each role's prompt carries its own tables, as below.",
   ];
-  for (const role of ROLES) parts.push('', `## ${role}`, '', render(role, table).split('\n').slice(1, -1).join('\n'));
+  for (const role of ROLES) parts.push('', `## ${role}`, '', render(role).split('\n').slice(1, -1).join('\n'));
   return `${parts.join('\n')}\n`;
 }
