@@ -1,0 +1,5 @@
+interface:
+  display_name: "Principle: Nothing Is Hard"
+  short_description: "Nothing Is Hard"
+policy:
+  allow_implicit_invocation: false
