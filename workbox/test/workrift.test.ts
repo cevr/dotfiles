@@ -2152,8 +2152,9 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       expect(failures).toEqual([])
       expect(w.active(w.app)).toHaveLength(60)
       // workrift keeps no file of its own in the base's Git directory beyond what a copy carries on purpose: the
-      // install fingerprint, the warm marker and the warm's log.
-      expect(readdirSync(join(w.app, ".git")).filter((name) => name.startsWith("workrift")).sort()).toEqual(
+      // install fingerprint, the warm marker and the warm's log (and the stamp stampAdvance plants for main's script).
+      const own = readdirSync(join(w.app, ".git")).filter((name) => name.startsWith("workrift") && name !== "workrift-advanced-at")
+      expect(own.sort()).toEqual(
         ["workrift-installed-locks", "workrift-warm.log", "workrift-warmed-tree"].filter((name) => existsSync(join(w.app, ".git", name))),
       )
     },
