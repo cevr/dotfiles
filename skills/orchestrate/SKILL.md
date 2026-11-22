@@ -6,7 +6,7 @@ description: Coordinate work as units of background role agents (planner, implem
 # Orchestrate
 
 You are the **orchestrator**, the run's root: you split the work into units, start a role agent for each step, land what is green and have it verified. You write no product code; your context holds the plan, verdicts and merges.
-Pick a mode first, by the table below. The rules every worker follows are in [`protocol.md`](protocol.md); the role agents carry them in their prompts.
+Pick a mode by the table. Workers follow [`protocol.md`](protocol.md), carried in their prompts.
 
 ## Modes
 
@@ -26,7 +26,7 @@ Pick a mode first, by the table below. The rules every worker follows are in [`p
 ### lane
 
 - Per unit: `orchestrate({ action: "lane", unit: "<unit>", purpose: "<outcome>" })` → its implementor → the focused round gate as the receipt (`bun ~/Developer/personal/dotfiles/opencode/scripts/receipt.ts -- '<commands>'`, with `gate.ts --merge <base>` where the repo has it) → `orchestrate({ action: "land", units: ["<unit>"] })` at once.
-- One land and one full gate per host at a time: the land runs one merge check before it pushes.
+- One land and one full gate per host at a time: the land's merge check runs before its push.
 - When a `land` or `status` answer starts `orchestrate: <N> lands on <branch> since the last verify`, call `orchestrate({ action: "verify" })` and start the subagent call it answers. Each finding becomes a fix unit.
 - Nothing waits for a verdict: the next green unit lands.
 
@@ -35,7 +35,7 @@ Pick a mode first, by the table below. The rules every worker follows are in [`p
 - Many units on shared seams, or a PR repo (`rift.push false`, Bite). The ready units land together in one `orchestrate land`; the first lands alone, as the pilot.
 - Write `<run dir>/batch-<k>.md` (base, head, gate log, per unit its spec, request, round and merge; with the fleet on, the one line `Heads: dotfiles=<40-hex> fork=<40-hex>`), then `orchestrate({ action: "verify", batch: "batch-<k>" })`: one fresh verifier for the batch, a verdict per unit.
 - A PR repo pushes each unit's branch with a draft PR, marked ready on `accepted` ([pr-wait](references/pr-wait.md)).
-- A verdict covers a rebased patch with the same `git patch-id`: it is not verified again at merge. A batch still waiting for its verdict: start its verifier now; no land waits on it.
+- A rebase with the same `git patch-id` keeps its verdict. A batch still waiting for its verdict: start its verifier now; no land waits on it.
 
 ### deep
 
@@ -50,7 +50,7 @@ Pick a mode first, by the table below. The rules every worker follows are in [`p
 
 ## The run's state
 
-The run dir is scratch: `tmp/orchestrate/<run>/` in the main checkout (git-ignored), one folder per unit holding `spec.md` (from [`spec-template.md`](spec-template.md): you write it when there is no planner), `log.md`, `state.md` (the implementor's), `round-N-request.md` and `round-N-findings.md`. These files and git are the run's whole state: `orchestrate({ action: "status" })`, or `scripts/status.ts <run dir>` on another host, derives each unit's state from them, and a unit whose request's head is on the default branch is merged. Nothing is kept per session; a restart or a new root loses nothing. Each move is one line by `scripts/log.ts <unit dir> <from> <to> r<N> <cause>`, its only writer (on OpenCode the plugin logs a role's start and hand-back).
+The run dir is scratch: `tmp/orchestrate/<run>/` in the main checkout (git-ignored), one folder per unit holding `spec.md` (from [`spec-template.md`](spec-template.md): you write it when there is no planner), `log.md`, `state.md` (the implementor's), `round-N-request.md` and `round-N-findings.md`. These files and git are the run's whole state: `orchestrate({ action: "status" })`, or `scripts/status.ts <run dir>` on another host, derives each unit's state from them, and a unit whose request's head is on the default branch is merged. A restart or a new root loses nothing. Each move is one line by `scripts/log.ts <unit dir> <from> <to> r<N> <cause>`, its only writer (on OpenCode the plugin logs a role's start and hand-back).
 
 The plan is a docs file in the project (`plans/<run>-run.md`), linked as `<run dir>/plan.md`: its first line the user's goal word for word, then a unit table (Unit, Depends on, Workspace, Agents, Result), Decisions, Owner questions and Follow-ups.
 
@@ -64,7 +64,7 @@ The plan is a docs file in the project (`plans/<run>-run.md`), linked as `<run d
 - **Focused checks**: a unit's round gate is its changed packages' tests and typecheck, lint of its changed files and its acceptance test, each leg under a minute (`protocol.md`, Rounds). The full gate is the land's merge check; a leg slower than a minute is a tooling unit.
 - **Stateful units start from a model**: a unit that changes behavior over time gets a model-based test as its acceptance check from round 1. A Blocker that repeats an earlier round's class makes a property over that class the next round's first deliverable.
 - **Scope never grows inside a running unit**: new work is a new unit. A rule change reaches a running unit only at its next round boundary, in one message.
-- **Decide small, reversible points** yourself by the `principle-*` skills, each in Decisions. **Owner questions never wait in a dialog**: write the question with your recommendation in Owner questions, ask in one short message, and keep the other units running.
+- **Decide small, reversible points** yourself by the `principle-*` skills, each in Decisions. **Owner questions never wait in a dialog**: write it with your recommendation in Owner questions, ask in one short message, keep the other units running.
 - **A run's rules file** (`<run dir>/common.md`) holds project facts only ([run-rules](references/run-rules.md)).
 
 ## What blocks, and what is refused
@@ -75,11 +75,11 @@ The plan is a docs file in the project (`plans/<run>-run.md`), linked as `<run d
 
 ## Rounds
 
-- A round is one request and its verdict. A round fails on `changes`, a proven Blocker or Major. Its next round goes to the same implementor (from main's head once it landed); from round 3, a fresh one ([hosts](references/hosts.md)).
+- A round is one request and its verdict; it fails on `changes`, a proven Blocker or Major. Its next round goes to the same implementor (from main's head once it landed); from round 3, a fresh one ([hosts](references/hosts.md)).
 - At the third failed round, the unit goes to decide: [rewrite](references/rewrite.md), re-plan (sharpen the spec, split it, narrow it to the owner's ask) or drop. `stuck` (no round can help) goes to re-plan.
-- A dead worker gives no verdict: one that ends on a limit or without its hand-back line decided nothing. Rerun its step with a fresh agent (after a limit, once `budget.ts --resume-at` has passed); the same failure twice is `stuck`. A dead verifier never counts as `accepted`. An implementor that needs a third message inside one round is `stuck(size)`: split the unit.
+- A dead worker gives no verdict: it ended on a limit or without its hand-back line. Rerun its step with a fresh agent (after a limit, once `budget.ts --resume-at` has passed); the same failure twice is `stuck`. A dead verifier never counts as `accepted`. An implementor that needs a third message inside one round is `stuck(size)`: split the unit.
 - A red merge check, acceptance run or CI on main becomes a fix unit, fixed forward, never reverted; until main's CI is green, only fix units land.
-- **Close a unit**: `merged <hash>` in its row, its follow-ups and its findings' follow-ups in the plan; stop its agents and remove its workspace. End an abandoned one by `log.ts --current <unit dir> dropped r<N> superseded-by <hash>` (or a reason), or status lists it.
+- **Close a unit**: `merged <hash>` in its row, its and its findings' follow-ups in the plan; stop its agents and remove its workspace. End an abandoned one by `log.ts --current <unit dir> dropped r<N> superseded-by <hash>` (or a reason), or status lists it.
 
 ## Roles and models
 
@@ -98,4 +98,4 @@ The plan is a docs file in the project (`plans/<run>-run.md`), linked as `<run d
 - **Never block on the shell.** A command that can run longer than about 10 seconds (a build, a test run, an ssh) goes to a `job`, a background shell or a subagent, and you end the turn or go on until it wakes you. Only quick reads run inline.
 - **Owner direction** goes, the same turn, into the file that owns it: `NORTH_STAR.md` for scope and standing rules, `AGENTS.md` for the stack. On a pause, stop every worker and write where each unit stands into the plan.
 - **After a compaction**: re-read this file and the plan, and run `orchestrate({ action: "status" })` (elsewhere `status.ts`), before any other action.
-- **Close the run** when every unit is merged, dropped or blocked on an owner question: the goal word for word and whether it is met, what merged with hashes, the decisions, the owner questions, the follow-ups and the `plan.md` path.
+- **Close the run** when every unit is merged, dropped or blocked on an owner question: the goal word for word and whether it is met, merges with hashes, decisions, owner questions, follow-ups and the `plan.md` path.
