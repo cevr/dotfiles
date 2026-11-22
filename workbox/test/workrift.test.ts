@@ -1976,6 +1976,7 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
         "workrift: create feat/p: look up feat/p and main on origin",
         `workrift: create feat/p: lock ${w.app}`,
         "workrift: create feat/p: locked",
+        "workrift: create feat/p: clone turn",
         "workrift: create feat/p: clone feat-p",
         "workrift: create feat/p: fetch feat/p and main into the workspace",
         "workrift: create feat/p: workspace: install if its lock file changed",
@@ -2165,7 +2166,7 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
   )
 
   test(
-    "creates and exclusive holds in one line: the creates between two holds copy together, after the first and before the second",
+    "creates and exclusive holds in one line: the creates between two holds copy after the first and before the second, one at a time (the clone turn)",
     async () => {
       const { w } = loaded("batches")
       const copies = slowCopy(w.bin, 0.2)
@@ -2205,8 +2206,10 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       expect(of("b")).toHaveLength(4)
       for (const each of of("a")) expect({ to: each.to, afterH0: each.start >= at("h0 end"), beforeH1: each.end <= at("h1 start") }).toEqual({ to: each.to, afterH0: true, beforeH1: true })
       for (const each of of("b")) expect({ to: each.to, afterH1: each.start >= at("h1 end") }).toEqual({ to: each.to, afterH1: true })
-      // The creates between the holds went in together: every copy began before any ended.
-      expect(Math.max(...of("a").map((each) => each.start))).toBeLessThan(Math.min(...of("a").map((each) => each.end)))
+      // The creates between the holds held the base together, but on a base of file copies their clones took turns:
+      // no two overlap (clone-one-at-a-time, 2026-11-22; before it they copied side by side).
+      const a = [...of("a")].sort((x, y) => x.start - y.start)
+      for (let i = 1; i < a.length; i++) expect({ to: a[i]!.to, afterPrevious: a[i]!.start >= a[i - 1]!.end }).toEqual({ to: a[i]!.to, afterPrevious: true })
     },
     120_000,
   )
