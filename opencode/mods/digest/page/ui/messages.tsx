@@ -6,7 +6,7 @@ import { createSignal, For, Match, Show, Switch } from "solid-js"
 import { Accordion, AccordionHeader, AccordionItem, AccordionPanel, AccordionTrigger } from "@ui-sdk/solid/accordion"
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "@ui-sdk/solid/collapsible"
 import type { Outcome } from "./api.ts"
-import { answerMessage, editing, enter, hot, marksLocked, openId, outcomes, paired, pairProblem, pairWith, renameProject, sending, setEditing, showAll, shownAll, toggleLater, toggleOpen, toggleRead, view, wide } from "./state.ts"
+import { answerMessage, answers, editing, enter, hot, marksLocked, openId, outcomes, pairProblem, pairWith, renameProject, sending, setEditing, showAll, shownAll, toggleLater, toggleOpen, toggleRead, view, wide } from "./state.ts"
 import { type Ask, inSpan, type Message, type Project, type Unit } from "./types.ts"
 
 /** How far a row must travel before its swipe acts, in px. */
@@ -144,7 +144,8 @@ function OutcomeLine(props: { readonly outcome: Outcome }) {
 /**
  * How to pair this browser, for what it needs pairing to do: the command, and a field for the code it prints.
  * - `read`: the page on the tailnet, which shows nothing until this browser pairs;
- * - `mark`: the page on the tailnet with reading open to every member, which marks nothing until it pairs;
+ * - `mark`: the page on the tailnet with reading open to his devices but marking not (an agent machine, or writes at
+ *   "paired"), which marks nothing until it pairs;
  * - `answer`: an open question.
  */
 export function PairPrompt(props: { readonly need: "read" | "mark" | "answer" }) {
@@ -163,7 +164,7 @@ export function PairPrompt(props: { readonly need: "read" | "mark" | "answer" })
         </Match>
         <Match when={props.need === "mark"}>
           <p>
-            Anyone on your tailnet reads this page. To mark messages read, set them aside or answer, pair this browser: on the host, run <code>bun cmd/digest/pair.ts</code> and type the code it prints here.
+            Your devices read this page without pairing. To mark messages read, set them aside or answer from this one, pair this browser: on the host, run <code>bun cmd/digest/pair.ts</code> and type the code it prints here.
           </p>
         </Match>
         <Match when={props.need === "answer"}>
@@ -185,7 +186,7 @@ export function PairPrompt(props: { readonly need: "read" | "mark" | "answer" })
 function AskBlock(props: { readonly message: Message; readonly ask: Ask }) {
   let field: HTMLTextAreaElement | undefined
   const busy = () => sending().has(props.message.id)
-  const can = () => paired() === true && props.message.open && !busy()
+  const can = () => answers() === true && props.message.open && !busy()
   const submit = (event: SubmitEvent) => {
     event.preventDefault()
     const text = field?.value.trim() ?? ""
@@ -211,7 +212,7 @@ function AskBlock(props: { readonly message: Message; readonly ask: Ask }) {
         </button>
       </form>
       <p class="assume">{props.ask.assume === undefined ? "If you do nothing, the run waits for you: it has no assumption for this one." : `If you do nothing, the run goes on assuming: ${props.ask.assume}`}</p>
-      <Show when={paired() === false && !marksLocked()}>
+      <Show when={answers() === false && !marksLocked()}>
         <PairPrompt need="answer" />
       </Show>
     </div>

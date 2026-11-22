@@ -1,6 +1,8 @@
 // The page's one connection to its server: the view, whether this browser is paired, and the writes. Every write is
 // a JSON POST with the page's header, from the page's own origin (the listener refuses anything else). An answer
-// needs this browser paired; on the tailnet so does every mark, and every read unless digest.tailnetRead is "member".
+// needs this browser paired; on the tailnet so does every mark, and every read, unless the browser is on one of his
+// own devices and digest.tailnetRead or digest.tailnetWrite is "member" (or "member-except-hosts", where an agent
+// machine still pairs).
 // Paired means the token `/api/pair` answered, kept in this origin's localStorage (scheme, host and port: no other
 // server on 127.0.0.1 reads it, as it would a cookie) and sent as TOKEN_HEADER. It never goes in a URL.
 import type { View } from "./types.ts"
@@ -62,13 +64,15 @@ export const setLater = (id: string) => post("./api/later", { id })
 export const rename = (project: string, name: string) => post("./api/name", { project, name })
 export const firstVisit = () => post("./api/since", {})
 
-/** Whether this browser's token is one the digest knows (none kept: not paired, without asking). */
-export const fetchPaired = async (): Promise<boolean> => {
-  if (token() === "") return false
+/**
+ * Whether this browser may answer here: its token is one the digest knows, or it is one of his own devices on the
+ * tailnet (digest.tailnetWrite), which needs no pairing. The server says, for this browser alone.
+ */
+export const fetchAnswers = async (): Promise<boolean> => {
   const answer = await fetch("./paired.json", { cache: "no-store", headers: paired() })
   if (!answer.ok) return false
-  const said: { readonly paired?: boolean } = await answer.json()
-  return said.paired === true
+  const said: { readonly answers?: boolean } = await answer.json()
+  return said.answers === true
 }
 
 /** A pairing code exchanged for this browser's token, kept; a refusal says why (used, out of time, too many tries). */
