@@ -270,17 +270,24 @@ export class RunFiles extends Context.Service<
 /**
  * Committed work and who is on it, as git, the files and the processes say at the call (lost.ts reads it). Never
  * fails, never fetches, never writes in a lane: what cannot be read is none, or nothing.
- * - `heads`: each of `heads` against the default branch `main` (a ref or commit) of `repo`, read in `repo` with the
- *   objects of `lanes` borrowed read-only (`GIT_ALTERNATE_OBJECT_DIRECTORIES`), so a lane's commits are seen without a
- *   fetch: on it, patch-equivalent, absent (its own commits not there) or unknown; and its commit time.
+ * - `heads`: each wanted head against the default branch `main` (a ref or commit) of `repo`, read in `repo` with the
+ *   objects of the lanes that may hold it borrowed read-only (`GIT_ALTERNATE_OBJECT_DIRECTORIES`), so a lane's commits
+ *   are seen without a fetch: on it, patch-equivalent, absent (its own commits not there) or unknown; and its commit
+ *   time. Only the lanes named for a head are borrowed, so a base with hundreds of lanes costs each read one store.
  * - `touchedAt`: when the lane's HEAD last moved (its HEAD reflog's last write; epoch ms).
  * - `held`: the paths of `lanes` some process has its working directory in, now.
  * - `lands`: the commit times of `main`'s first-parent line in `repo` (epoch ms), newest first, at most `limit`.
  */
+/** A head to place, and the lanes whose objects may hold it (its own lane; none when it is gone). */
+export interface Wanted {
+  readonly head: string
+  readonly lanes: ReadonlyArray<string>
+}
+
 export class WorkGit extends Context.Service<
   WorkGit,
   {
-    readonly heads: (repo: string, main: string, lanes: ReadonlyArray<string>, heads: ReadonlyArray<string>) => Effect.Effect<ReadonlyMap<string, HeadSeen>>
+    readonly heads: (repo: string, main: string, wanted: ReadonlyArray<Wanted>) => Effect.Effect<ReadonlyMap<string, HeadSeen>>
     readonly touchedAt: (lane: string) => Effect.Effect<Option.Option<number>>
     readonly held: (lanes: ReadonlyArray<string>) => Effect.Effect<ReadonlySet<string>>
     readonly lands: (repo: string, main: string, limit: number) => Effect.Effect<ReadonlyArray<number>>

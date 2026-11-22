@@ -84,11 +84,14 @@ effectTest(
       yield* sh(base, "git", "merge", "-q", "--squash", "FETCH_HEAD")
       yield* sh(base, "git", "commit", "-q", "-m", "squashed as one")
       yield* sh(root, "rm", "-r", gone)
-      const lanes = [alpha, picked, merged, stacked, squashed, gone]
       const before = yield* sh(alpha, "git", "status", "--porcelain=v2", "--branch")
       const git = yield* WorkGit
-      const seen = yield* git.heads(base, "main", lanes, [alphaHead, pickedHead, mergedHead, goneHead, stackedHead, squashedHead])
-      const tags = [alphaHead, pickedHead, mergedHead, goneHead, stackedHead, squashedHead].map((head) => Option.fromUndefinedOr(seen.get(head)).pipe(Option.map((each): string => each.onMain._tag)))
+      const own = (head: string, lane: string) => ({ head, lanes: [lane] })
+      const tagOf = (seen: ReadonlyMap<string, { readonly onMain: OnMain }>, head: string) => Option.map(Option.fromUndefinedOr(seen.get(head)), (each): string => each.onMain._tag)
+      // Only the lanes named for a head are borrowed: the stacked head is in no other lane's objects (and, unknown, is not kept).
+      expect(tagOf(yield* git.heads(base, "main", [own(stackedHead, picked)]), stackedHead)).toEqual(Option.some("Unknown"))
+      const seen = yield* git.heads(base, "main", [own(alphaHead, alpha), own(pickedHead, picked), own(mergedHead, merged), own(goneHead, gone), own(stackedHead, stacked), own(squashedHead, squashed)])
+      const tags = [alphaHead, pickedHead, mergedHead, goneHead, stackedHead, squashedHead].map((head) => tagOf(seen, head))
       expect(tags).toEqual(["Absent", "Equivalent", "Landed", "Unknown", "Absent", "Equivalent"].map(Option.some))
       const absent = Option.liftPredicate(Option.getOrThrow(Option.fromUndefinedOr(seen.get(alphaHead))).onMain, OnMain.guards.Absent)
       expect(Option.map(absent, (each) => [each.missing.length, each.subject, each.missing[0]])).toEqual(Option.some([2, "alpha two", alphaHead]))
@@ -96,12 +99,16 @@ effectTest(
       expect(Option.map(stack, (each) => [each.missing.length, each.own.includes(alphaHead)])).toEqual(Option.some([3, true]))
       expect(Option.isSome(Option.getOrThrow(Option.fromUndefinedOr(seen.get(alphaHead))).at)).toBe(true)
       // A short name reads too; a read never writes in a lane.
-      expect(Option.map(Option.fromUndefinedOr((yield* git.heads(base, "main", lanes, [alphaHead.slice(0, 9)])).get(alphaHead.slice(0, 9))), (each) => each.onMain._tag)).toEqual(Option.some("Absent"))
+      expect(tagOf(yield* git.heads(base, "main", [own(alphaHead.slice(0, 9), alpha)]), alphaHead.slice(0, 9))).toEqual(Option.some("Absent"))
       expect(yield* sh(alpha, "git", "status", "--porcelain=v2", "--branch")).toBe(before)
       // The default branch's first-parent line: base, main moves, the pick, the merge, the squash.
       expect((yield* git.lands(base, "main", 10)).length).toBe(5)
       expect(Option.isSome(yield* git.touchedAt(alpha))).toBe(true)
       expect(yield* git.touchedAt(gone)).toEqual(Option.none())
+      // Alpha lands: read again at the new tip, it is on main (an absent head is kept per tip, never past a land).
+      yield* sh(base, "git", "fetch", "-q", alpha, "HEAD")
+      yield* sh(base, "git", "merge", "-q", "--no-edit", "FETCH_HEAD")
+      expect(tagOf(yield* git.heads(base, "main", [own(alphaHead, alpha)]), alphaHead)).toEqual(Option.some("Landed"))
     }),
   ).pipe(Effect.provide(Live.layer)),
   60_000,

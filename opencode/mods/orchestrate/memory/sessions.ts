@@ -2,7 +2,7 @@
 // lookup in a record, which fails for a session it does not hold, as the
 // host's `session.get` does. A session's `lastWords` are its one assistant
 // message's text.
-import { Effect } from "effect"
+import { Array as Arr, Effect } from "effect"
 import * as OpenCodeSessions from "../opencode/sessions.ts"
 
 /** A session the host knows, with the words its last answer wrote. */
@@ -22,6 +22,6 @@ export const layer = (sessions: Readonly<Record<string, Session>>) => {
       get(sessionID).pipe(
         Effect.map((session) => (session.lastWords === undefined ? [] : [{ type: "assistant", content: [{ type: "text", text: session.lastWords }] }])),
       ),
-    (directory) => Effect.succeed(Object.entries(sessions).flatMap(([id, session]) => (session.directory === directory ? [id] : []))),
+    (directory) => Effect.succeed(Object.entries(sessions).flatMap(([id, session]) => Arr.filter([id], () => session.directory === directory))),
   )
 }

@@ -8,6 +8,7 @@ import { Array as Arr, Effect, Layer, Option, Order, Schema } from "effect"
 import type { Asked } from "@dotfiles/opencode-orchestrate/memory/fleet"
 import type * as MemoryMainLine from "@dotfiles/opencode-orchestrate/memory/main-line"
 import type * as MemoryRunFiles from "@dotfiles/opencode-orchestrate/memory/run-files"
+import * as WorkGitTest from "@dotfiles/opencode-orchestrate/memory/work-git"
 import * as MemoryDebts from "@dotfiles/opencode-work/memory/debts"
 import * as MemoryLanding from "@dotfiles/opencode-work/memory/landing"
 import * as MemoryNotices from "@dotfiles/opencode-work/memory/notices"
@@ -201,6 +202,8 @@ export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchest
   // The runs' files (requests, findings, batch files), outside every plugin copy: a restart keeps them, as a disk does.
   const files: MemoryRunFiles.Files = new Map()
   const memory = riftWorldOf(files, options.merges ?? 0, options.fastForward ?? [])
+  // The lanes' heads against main, their activity and the processes in them: every head on main until a test places it.
+  const workGit = WorkGitTest.world()
   const calls = { count: 0 }
   /** The tool names the last request offered, as the registry listed them. */
   const offered: Array<string> = []
@@ -260,6 +263,7 @@ export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchest
   const plugin = Plugins.orchestrate({
     fleet,
     files,
+    workGit,
     mainLine: (checkout) => Option.liftPredicate({ branch: "main", line: memory.main.line() }, () => checkout === WORK),
     refs: (checkout, rev) =>
       Option.orElse(Option.liftPredicate(FORK_HEAD, () => checkout === FLEET.fork && rev === "HEAD"), () =>
@@ -289,7 +293,7 @@ export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchest
   })
   /** The children of a session, in the order made. */
   const children = (parent: string) => [...world.sessions.values()].filter((session) => Option.contains(session.parentID, parent))
-  return { world, offered, logs, fleet, files, memory, woken, probe, idle, settled, children }
+  return { world, offered, logs, fleet, files, memory, workGit, woken, probe, idle, settled, children }
 })
 
 export type Run = Effect.Success<ReturnType<typeof boot>>

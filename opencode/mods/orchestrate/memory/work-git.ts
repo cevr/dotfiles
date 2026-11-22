@@ -24,7 +24,7 @@ export const layer = (state: World) =>
   Layer.succeed(
     WorkGit,
     WorkGit.of({
-      heads: (_repo, _main, _lanes, heads) => Effect.sync(() => new Map(heads.map((head) => [head, Option.getOrElse(Option.fromUndefinedOr(state.heads.get(head)), () => LANDED)] as const))),
+      heads: (_repo, _main, wanted) => Effect.sync(() => new Map(wanted.map(({ head }) => [head, Option.getOrElse(Option.fromUndefinedOr(state.heads.get(head)), () => LANDED)] as const))),
       touchedAt: (lane) => Effect.sync(() => Option.fromUndefinedOr(state.touched.get(lane))),
       held: (lanes) => Effect.sync(() => new Set(lanes.filter((lane) => state.held.has(lane)))),
       lands: (_repo, _main, limit) => Effect.sync(() => state.lands.slice(0, limit)),
