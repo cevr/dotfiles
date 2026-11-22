@@ -2922,19 +2922,33 @@ users' devices are called.
 
 `digest.excludedDevices` takes some of his own devices out altogether: they
 read, mark and answer nothing unpaired, like another user's device. Each
-entry is `{name, id}`, the device's MagicDNS name and its Tailscale stable
-node ID (`ID` in `tailscale status --json`). The device cannot change its ID,
-so renaming it does not let it back in. A device that matches either the name
-or the ID is excluded. An exclusion fails open if it misses: the device
-would count as his again. So health names any exclusion whose ID none of his
-devices has (`unmatched:<name>`) or that came with no ID (`unkeyed:<name>`).
+entry is `{name, ids}`: the device's MagicDNS name and every Tailscale stable
+node ID it has had (`ID` in `tailscale status --json`). The device cannot
+change its ID, so renaming it does not let it back in. A device that matches
+the name or any of the IDs is excluded.
+
+The installer keeps the IDs in its own state,
+`~/.local/state/opencode-daily/digest-exclusions.json`, and never drops one.
+At each configure it adds the ID of the device of his that carries the name
+then, so a re-registered device under the same name is added too. Another
+user's device taking the name is never added.
+
+An exclusion with no ID yet (`ids: []`, for example on a first configure
+while Tailscale's status cannot be read) cannot be applied. So it closes the
+tailnet for every device, reads and writes, to pairing only, until a
+configure finds the device. Health says `writes=paired:unkeyed:<name>`.
+
+An exclusion whose IDs and name match no device of his means the device is
+gone, for example removed from his tailnet. That is harmless: access stays
+as it is, and health notes `excluded=<n>:unmatched:<name>`. Removing
+lenovo-rescue from the tailnet is fine.
 
 The installer (`scripts/daily.ts` `digestEntry`) ships `tailnetRead: "member"`
 and `tailnetWrite: "member-except-hosts"` on his two hosts. Each host's
 `agentHosts` is the other host's name (`bite-cristian` or
 `cristians-macbook-pro`) and his rex Mac (`cristians-macbook-pro-rex`).
-`excludedDevices` is `lenovo-rescue`, with the ID the status gives it when
-the tree is configured. To go back, set `tailnetWrite` to `"paired"` there;
+`excludedDevices` is `lenovo-rescue`, with every ID the status has given it
+at a configure. To go back, set `tailnetWrite` to `"paired"` there;
 `"member"` lets the agent machines write too.
 
 So his phone marks and answers with no pairing prompt. A browser on the Mac
@@ -2950,7 +2964,8 @@ keep out. If one of the writers runs agents too, name it in
 `digest.agentHosts`.
 A closed switch reads
 `writes=paired:<why>`, for example `paired:unresolved:<name>`,
-`paired:status:<why>`, `paired:stale` or `paired:starting`.
+`paired:unkeyed:<name>`, `paired:status:<why>`, `paired:stale` or
+`paired:starting`.
 
 To pair a phone:
 
