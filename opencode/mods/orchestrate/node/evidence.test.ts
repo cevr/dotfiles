@@ -116,3 +116,109 @@ Seed.effect(
     ])
   }).pipe(Effect.provide(evidenceLayer.pipe(Layer.provideMerge(Layer.mergeAll(hostServices, ownPlatform))))),
 )
+
+// ── Where a link may sit: the approved root is configured, never discovered through a link ──
+
+/**
+ * Each placement of a link, and where it points: inside the approved root, elsewhere inside the checkout, or out of it.
+ * `above` puts the link over the checkout itself (the caller names the checkout through it, as macOS's /var); `root`
+ * makes `tmp/orchestrate` the link; `tmp` makes its parent one; `below` a folder under the root; `file` the receipt; and
+ * `output` the receipt's output file.
+ */
+const PLACEMENTS = ["above", "root", "tmp", "below", "file", "output"] as const
+const TARGETS = ["in-root", "in-checkout", "outside"] as const
+type Placement = (typeof PLACEMENTS)[number]
+type Target = (typeof TARGETS)[number]
+
+/** The one rule: a link above the checkout is resolved once and fine; the root and its parents are never links; under the root a link may point only inside it. */
+const takenOf = (placement: Placement, target: Target): boolean =>
+  Match.value(placement).pipe(
+    Match.when("above", () => true),
+    Match.whenOr("root", "tmp", () => false),
+    Match.orElse(() => target === "in-root"),
+  )
+
+/**
+ * A fresh checkout with a link at `placement` pointing at `target` (each target holds the same valid files), and the
+ * reader's answer for `tmp/orchestrate/r1/proof.json`: "taken" or its refusal.
+ */
+const placed = (placement: Placement, target: Target) =>
+  Effect.acquireUseRelease(
+    Effect.sync(() => scratch("evidence-links-")),
+    (dir) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const real = `${dir.path}/real`
+        const checkout = `${real}/repo`
+        const elsewhere = Match.value(target).pipe(
+          Match.when("in-root", () => `${checkout}/${EVIDENCE_ROOT}/kept`),
+          Match.when("in-checkout", () => `${checkout}/docs/kept`),
+          Match.orElse(() => `${dir.path}/outside/kept`),
+        )
+        const proof = envelope({ output: { path: `${EVIDENCE_ROOT}/r1/out.log` } })
+        // The same valid files at the target, and (unless a link replaces it) in place.
+        for (const [path, text] of [["proof.json", proof], ["out.log", "all green\n"], ["r1/proof.json", proof], ["r1/out.log", "all green\n"], ["orchestrate/r1/proof.json", proof], ["orchestrate/r1/out.log", "all green\n"]] as const)
+          yield* Effect.promise(() => write(`${elsewhere}/${path}`, text))
+        yield* Effect.promise(() => write(`${checkout}/docs/record.md`, "# One writer\n"))
+        gitInit(checkout, ["-q", "-b", "main"], env)
+        const inRoot = `${checkout}/${EVIDENCE_ROOT}`
+        yield* Match.value(placement).pipe(
+          Match.when("root", () => fs.makeDirectory(`${checkout}/tmp`, { recursive: true }).pipe(Effect.andThen(fs.symlink(`${elsewhere}/orchestrate`, inRoot)))),
+          Match.when("tmp", () => fs.symlink(elsewhere, `${checkout}/tmp`)),
+          Match.when("below", () => fs.makeDirectory(inRoot, { recursive: true }).pipe(Effect.andThen(fs.symlink(`${elsewhere}/r1`, `${inRoot}/r1`)))),
+          Match.when("file", () =>
+            Effect.promise(() => write(`${inRoot}/r1/out.log`, "all green\n")).pipe(Effect.andThen(fs.symlink(`${elsewhere}/proof.json`, `${inRoot}/r1/proof.json`))),
+          ),
+          Match.when("output", () =>
+            Effect.promise(() => write(`${inRoot}/r1/proof.json`, proof)).pipe(Effect.andThen(fs.symlink(`${elsewhere}/out.log`, `${inRoot}/r1/out.log`))),
+          ),
+          Match.orElse(() =>
+            Effect.promise(() => write(`${inRoot}/r1/proof.json`, proof)).pipe(
+              Effect.andThen(Effect.promise(() => write(`${inRoot}/r1/out.log`, "all green\n"))),
+              Effect.andThen(fs.symlink(real, `${dir.path}/alias`)),
+            ),
+          ),
+        )
+        const named = Match.value(placement).pipe(Match.when("above", () => `${dir.path}/alias/repo`), Match.orElse(() => checkout))
+        const evidence = yield* Evidence
+        return yield* Effect.match(evidence.receipt(named, `${EVIDENCE_ROOT}/r1/proof.json`), { onFailure: (refused) => refused.reason, onSuccess: () => "taken" })
+      }),
+    (dir) => Effect.sync(() => dir[Symbol.dispose]()),
+  )
+
+Seed.effect(
+  "a receipt is read only inside the configured root: a link above the checkout is fine, the root or its parent as a link is refused, a link under it only inward",
+  Effect.gen(function* () {
+    // A link at the root or its parent pointing inside the root is no placement: the root would hold itself.
+    const cases = PLACEMENTS.flatMap((placement) => TARGETS.map((target) => [placement, target] as const)).filter(([placement, target]) => !((placement === "root" || placement === "tmp") && target === "in-root"))
+    const answers = yield* Effect.forEach(cases, ([placement, target]) => Effect.map(placed(placement, target), (answer) => [placement, target, answer] as const))
+    expect(answers.map(([placement, target, answer]) => [placement, target, answer === "taken"])).toEqual(cases.map(([placement, target]) => [placement, target, takenOf(placement, target)]))
+    // Each refusal names the rule it broke, never the place a link points.
+    expect([...new Set(answers.filter(([, , answer]) => answer !== "taken").map(([, , answer]) => answer))].toSorted()).toEqual([
+      "the checkout's tmp/orchestrate/ is reached through a link: it is not an approved root",
+      "the receipt resolves outside its root",
+      "the receipt's output file resolves outside its root",
+    ])
+  }).pipe(Effect.provide(evidenceLayer.pipe(Layer.provideMerge(Layer.mergeAll(hostServices, ownPlatform))))),
+)
+
+Seed.effect(
+  "the root swapped for a link after the reader was made, between two reads, is refused: the reader holds no resolved root",
+  Effect.acquireUseRelease(
+    Effect.sync(() => scratch("evidence-swap-")),
+    (dir) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const checkout = `${dir.path}/repo`
+        for (const base of [`${checkout}/${EVIDENCE_ROOT}`, `${dir.path}/outside/orchestrate`]) yield* Effect.promise(() => write(`${base}/r1/proof.json`, envelope()))
+        gitInit(checkout, ["-q", "-b", "main"], env)
+        const evidence = yield* Evidence
+        const read = Effect.match(evidence.receipt(checkout, `${EVIDENCE_ROOT}/r1/proof.json`), { onFailure: (refused) => refused.reason, onSuccess: () => "taken" })
+        const before = yield* read
+        yield* fs.remove(`${checkout}/${EVIDENCE_ROOT}`, { recursive: true })
+        yield* fs.symlink(`${dir.path}/outside/orchestrate`, `${checkout}/${EVIDENCE_ROOT}`)
+        expect([before, yield* read]).toEqual(["taken", "the checkout's tmp/orchestrate/ is reached through a link: it is not an approved root"])
+      }),
+    (dir) => Effect.sync(() => dir[Symbol.dispose]()),
+  ).pipe(Effect.provide(evidenceLayer.pipe(Layer.provideMerge(Layer.mergeAll(hostServices, ownPlatform))))),
+)

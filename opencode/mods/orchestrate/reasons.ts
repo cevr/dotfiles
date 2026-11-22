@@ -221,12 +221,30 @@ export const evidenceLayer = Layer.effect(
     const paths = yield* Path.Path
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const digest = yield* Digest.Digest
-    /** The checkout's top: git's, else the directory itself, its links resolved. */
+    /**
+     * The checkout's top, canonical: git's top, else the directory itself, every link in it resolved once. A link above
+     * the checkout (macOS's /var → /private/var) is resolved here and is legitimate; every root below is held to it.
+     */
     const topOf = (checkout: string) =>
       Effect.flatMap(Effect.map(gitOut(spawner, checkout, ["rev-parse", "--show-toplevel"]), Option.getOrElse(() => checkout)), (top) =>
         Effect.mapError(fs.realPath(top), () => refused("the checkout is not a directory this host reads")),
       )
-    /** `relative` under `root`, a regular file of at most `max` bytes inside `root` once its links are resolved; its real path. */
+    /**
+     * An approved root: `relative` under the canonical `top`, as the configuration names it, approved only when its own
+     * real path is that very path. A root that is a link, or sits under one, inside the checkout (`tmp/orchestrate`
+     * linked out of it) is refused, never followed: the root is configured, not discovered through a link.
+     */
+    const approvedRoot = (top: string, relative: string, what: string) =>
+      Effect.gen(function* () {
+        const root = paths.join(top, relative)
+        const real = yield* Effect.mapError(fs.realPath(root), () => refused(`${what} does not exist`))
+        if (real !== root) return yield* Effect.fail(refused(`${what} is reached through a link: it is not an approved root`))
+        return root
+      })
+    /**
+     * The one containment rule every reader of a referent's file uses: `relative` under the approved `root`, a regular
+     * file of at most `max` bytes whose real path is inside `root`; its real path.
+     */
     const regularIn = (root: string, relative: string, what: string, max: number) =>
       Effect.gen(function* () {
         const real = yield* Effect.mapError(fs.realPath(paths.join(root, relative)), () => refused(`${what} does not exist`))
@@ -236,15 +254,26 @@ export const evidenceLayer = Layer.effect(
         if (Number(info.size) > max) return yield* Effect.fail(refused(`${what} is larger than ${max} bytes`))
         return real
       })
+    /**
+     * `relative`'s bytes, read under the containment rule, and its real path the same after the read: a root or a folder
+     * swapped for a link between the check and the read is refused, not read through.
+     */
+    const readIn = (root: string, relative: string, what: string, max: number) =>
+      Effect.gen(function* () {
+        const real = yield* regularIn(root, relative, what, max)
+        const bytes = yield* Effect.mapError(fs.readFile(real), () => refused(`${what} cannot be read`))
+        const after = yield* regularIn(root, relative, what, max)
+        if (after !== real) return yield* Effect.fail(refused(`${what} moved while it was read`))
+        return bytes
+      })
     const shaOf = (bytes: Uint8Array) => digest.digestHex(Digest.sha256, bytes)
     return Evidence.of({
       receipt: (checkout, path) =>
         Effect.gen(function* () {
-          const top = yield* topOf(checkout)
-          const root = yield* Effect.mapError(fs.realPath(paths.join(top, EVIDENCE_ROOT)), () => refused(`the checkout has no ${EVIDENCE_ROOT}/`))
           if (!path.startsWith(`${EVIDENCE_ROOT}/`)) return yield* Effect.fail(refused(`the receipt is not under ${EVIDENCE_ROOT}/`))
-          const real = yield* regularIn(root, path.slice(EVIDENCE_ROOT.length + 1), "the receipt", RECEIPT_MAX)
-          const bytes = yield* Effect.mapError(fs.readFile(real), () => refused("the receipt cannot be read"))
+          const top = yield* topOf(checkout)
+          const root = yield* approvedRoot(top, EVIDENCE_ROOT, `the checkout's ${EVIDENCE_ROOT}/`)
+          const bytes = yield* readIn(root, path.slice(EVIDENCE_ROOT.length + 1), "the receipt", RECEIPT_MAX)
           const envelope = yield* Result.match(decodeEnvelope(new TextDecoder().decode(bytes), { onExcessProperty: "error" }), {
             onFailure: () => Effect.fail(refused("the receipt is not a version 1 receipt envelope (receipt, command, exit, output, run, checkout; nothing else)")),
             onSuccess: Effect.succeed,
@@ -253,11 +282,7 @@ export const evidenceLayer = Layer.effect(
           if (Option.isSome(why)) return yield* Effect.fail(refused(why.value))
           const output = envelope.output
           const outputBytes = yield* Match.value(output).pipe(
-            Match.when({ path: Match.string }, (each) =>
-              Effect.flatMap(regularIn(root, each.path.slice(EVIDENCE_ROOT.length + 1), "the receipt's output file", OUTPUT_MAX), (file) =>
-                Effect.mapError(fs.readFile(file), () => refused("the receipt's output file cannot be read")),
-              ),
-            ),
+            Match.when({ path: Match.string }, (each) => readIn(root, each.path.slice(EVIDENCE_ROOT.length + 1), "the receipt's output file", OUTPUT_MAX)),
             Match.orElse((each) => Effect.succeed(new TextEncoder().encode(each.value))),
           )
           return { path, receiptSha: yield* shaOf(bytes), outputSha: yield* shaOf(outputBytes), exit: envelope.exit, run: envelope.run, checkout: envelope.checkout }

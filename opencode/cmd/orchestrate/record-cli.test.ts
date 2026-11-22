@@ -193,6 +193,11 @@ Seed.effect(
         ])
         expect((yield* run("history", { id: "a1" }))[1]).toContain("guarantee invariant/one-writer")
         expect((yield* run("list", { all: true }))[1]).toContain("a2")
+        // tmp/orchestrate made a link out of the checkout, to the same valid envelope: no approved root, nothing read through it.
+        yield* Effect.promise(() => write(`${held.path}/outside/r1/red.json`, fieldsJson(envelope)))
+        expect(spawnSync(["mv", `${checkout}/tmp/orchestrate`, `${held.path}/moved`]).exitCode).toBe(0)
+        expect(spawnSync(["ln", "-s", `${held.path}/outside`, `${checkout}/tmp/orchestrate`]).exitCode).toBe(0)
+        expect(yield* run("defer", { id: "a2", ...receipt })).toEqual([1, "commitments: the checkout's tmp/orchestrate/ is reached through a link: it is not an approved root"])
       }),
     (held) => Effect.sync(() => held[Symbol.dispose]()),
   ),
