@@ -252,6 +252,24 @@
     "until": "stays"
   },
   {
+    "file": "opencode/mods/orchestrate/record.ts",
+    "source": "/^[0-9a-f]{7,40}$/",
+    "why": "validates a commit column at the record's boundary (7 to 40 lowercase hex): validating a field",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/record.ts",
+    "source": "/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?(Z|[+-]\\d{2}:\\d{2})$/",
+    "why": "validates a time column at the record's boundary (an ISO time): validating a field",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/record.ts",
+    "source": "/^[^\\n\\r\\0]+$/",
+    "why": "validates a path column at the record's boundary (one line, no NUL): validating a field",
+    "until": "stays"
+  },
+  {
     "file": "opencode/mods/orchestrate/repo-key.ts",
     "source": "/^[a-z][a-z0-9+.-]*:\\/\\//",
     "why": "normalizes a git origin URL into the record's file key: a field from git, not prose",
