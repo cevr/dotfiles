@@ -1,6 +1,8 @@
 /**
- * `digest pair`: pair a browser with the digest page so it may answer there, and on the tailnet mark messages (and
- * read them, where `digest.tailnetRead` is "paired"); list and unpair them.
+ * `digest pair`: pair a browser with the digest page so it may answer there, and on the tailnet mark messages and
+ * read them; list and unpair them. On his hosts his own devices (his Tailscale user's) read, mark and answer on the
+ * tailnet unpaired (`digest.tailnetRead`, `digest.tailnetWrite`), so pairing is for the agent machines' browsers
+ * (this host and `digest.agentHosts`), for loopback answers, and for any device where a switch is "paired".
  *
  *   bun cmd/digest/pair.ts [--dir <digest dir>] [--port <port>]     a one-use code, and the page's link with it
  *   bun cmd/digest/pair.ts --list [--dir <digest dir>]                the browsers paired now: id, when, which browser

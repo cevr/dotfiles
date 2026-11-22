@@ -2877,21 +2877,56 @@ crosses a network in clear. The page sends the same headers on both
 listeners (a strict CSP, `no-store` on data). Its token never goes in a URL.
 
 **Pairing.** On loopback, the page and its marks are open, and only an
-answer needs a paired browser. On the tailnet, who reads is
-`digest.tailnetRead` (a plugin option):
+answer needs a paired browser. On the tailnet, two plugin options decide who
+needs one. Both default to `"paired"`: everything needs a paired browser
+except the shell page itself, and an unpaired phone sees only how to pair.
 
-- `"member"`: any device on the tailnet reads the page unpaired. Marks
-  (read, Later, a name) and answers still need a paired browser; an
-  unpaired phone shows the digest, and the first mark it tries asks it to
-  pair.
-- `"paired"`, the plugin's default, and what the installer ships on his
-  hosts too (`scripts/daily.ts` `digestEntry`): everything needs a paired
-  browser except the shell page itself. An unpaired phone sees only how to
-  pair and a code field: no data, no project names. (2026-11-22: back to
-  `"paired"` as a stopgap, since his tailnet holds other Tailscale users'
-  devices; `"member"` returns once it means his own Tailscale user.)
+**His devices.** His tailnet is shared: it holds other Tailscale users'
+devices too (colleagues' laptops, servers). So `"member"` never means "any
+device on the tailnet". It means one of his own devices: a device whose
+Tailscale user (`UserID` in `tailscale status --json`) is this host's own.
 
-Health on the tailnet answers an unpaired request `ok` alone either way.
+- A tagged device or one shared in from another tailnet is not his.
+- Neither is an address the status does not name.
+- The request's source is the socket's peer address. A header such as
+  `X-Forwarded-For` is never read.
+- The status is read again every 30 s. A read that fails, or Tailscale not
+  running, makes every source "not his" at once. A list older than 75 s
+  counts for nothing. So a device removed from his account stops being his
+  within a recheck.
+
+The two options:
+
+- `digest.tailnetRead: "member"`: his devices read the page unpaired.
+- `digest.tailnetWrite`:
+  - `"member"`: his devices also mark (read, Later, a name) and answer
+    unpaired.
+  - `"member-except-hosts"`: as `"member"`, except the agent machines, which
+    still need a paired browser, as loopback does for an answer. The agent
+    machines are this host and the hosts named in `digest.agentHosts`.
+    An agent running there must not act as him.
+
+Each entry of `digest.agentHosts` is a Tailscale address or a name the
+status gives (the MagicDNS name, its first label, the device's HostName),
+never one looked up in DNS. A name the status cannot resolve closes
+`"member-except-hosts"` to `"paired"` until it can.
+
+The installer (`scripts/daily.ts` `digestEntry`) ships `tailnetRead: "member"`
+and `tailnetWrite: "member-except-hosts"` on his two hosts. Each host's
+`agentHosts` is the other host's Tailscale addresses, read from the status
+when the tree is configured; one it cannot read stays a name. To go back,
+set `tailnetWrite` to `"paired"` there; `"member"` lets the agent machines
+write too.
+
+So his phone marks and answers with no pairing prompt. A browser on the Mac
+or the workbox pairs as before. A colleague's device reads nothing.
+
+**Health.** Health on the tailnet answers an unpaired request `ok` alone. On
+loopback the line ends with `writes=<switch> members=<n>`: the write switch
+in force and his other devices' count. A closed switch reads
+`writes=paired:<why>`, for example `paired:unresolved:<name>`,
+`paired:status:<why>`, `paired:stale` or `paired:starting`.
+
 To pair a phone:
 
 ```sh
