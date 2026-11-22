@@ -17,8 +17,10 @@ import { parseArgs } from "node:util"
 import { Array as Arr, Clock, Console, DateTime, Effect, Match, Option, Schema } from "effect"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import * as FilePairing from "@dotfiles/opencode-digest/filestore/pairing"
+import { hostOf, NO_TAILNET, type Tailnet } from "@dotfiles/opencode-digest/bind"
 import { HOSTNAME, PORT } from "@dotfiles/opencode-digest/http/listener"
 import { CODE_TTL_MS, MAX_PAIRED, type Paired, showCode } from "@dotfiles/opencode-digest/pairing"
+import { probe } from "@dotfiles/opencode-digest/process/tailnet"
 
 /** What the command does, and where. */
 export type Target =
@@ -41,13 +43,27 @@ export const targetOf = (args: ReadonlyArray<string>): Option.Option<Target> => 
   })
 }
 
-/** What the owner reads after an issue: the link to open, and the code to type instead. */
-export const said = (code: string, port: number): string =>
-  [
-    `Open this in the browser to pair it (good once, for ${CODE_TTL_MS / 60_000} minutes):`,
+/**
+ * What the owner reads after an issue: the link to open on this host, the code to type instead, and the page's
+ * addresses on the tailnet (names first) where a phone types it. Each address is its own origin, so pairs on its own.
+ */
+export const said = (code: string, port: number, tailnet: Tailnet = NO_TAILNET): string => {
+  const urls = [...tailnet.names, ...tailnet.addresses].map((each) => `  http://${hostOf(each)}:${port}/`)
+  const remote = Arr.match(urls, {
+    onEmpty: () => ["Tailscale is not running here, so the page is on this host only."],
+    onNonEmpty: (all) => [
+      "On a phone or another device on your tailnet, open one of these and type the code:",
+      ...all,
+      "Each address pairs on its own: a browser paired at one of them is asked to pair again at another.",
+    ],
+  })
+  return [
+    `Open this in this host's browser to pair it (good once, for ${CODE_TTL_MS / 60_000} minutes):`,
     `  http://${HOSTNAME}:${port}/#pair=${code}`,
     `or type the code on the page: ${showCode(code)}`,
+    ...remote,
   ].join("\n")
+}
 
 /** The paired browsers, one line each. */
 export const listed = (paired: ReadonlyArray<Paired>): string =>
@@ -66,13 +82,13 @@ class Usage extends Schema.TaggedError<Usage>()("Usage", { message: Schema.Strin
 const USAGE = "usage: bun cmd/digest/pair.ts [--dir <digest dir>] [--port <port>] | --list | --revoke <id>|all"
 
 /** The target's work, said; the exit code, 0 once done (a revoke of no such browser is 1). */
-export const main = (args: ReadonlyArray<string>, print: (text: string) => Effect.Effect<void>) =>
+export const main = (args: ReadonlyArray<string>, print: (text: string) => Effect.Effect<void>, tailnet: Effect.Effect<Tailnet> = probe) =>
   Effect.try({ try: () => targetOf(args), catch: (cause) => new Usage({ message: String(cause) }) }).pipe(
     Effect.flatMap((target) => Effect.mapError(Effect.fromOption(target), () => new Usage({ message: USAGE }))),
     Effect.flatMap((target) => {
       const pairing = FilePairing.make(target.dir)
       return Match.value(target).pipe(
-        Match.when({ kind: "issue" }, (issue) => Effect.flatMap(Clock.currentTimeMillis, (now) => Effect.map(pairing.issue(now), (code) => [said(code, issue.port), 0] as const))),
+        Match.when({ kind: "issue" }, (issue) => Effect.flatMap(Clock.currentTimeMillis, (now) => Effect.flatMap(pairing.issue(now), (code) => Effect.map(tailnet, (found) => [said(code, issue.port, found), 0] as const)))),
         Match.when({ kind: "list" }, () => Effect.map(pairing.list, (paired) => [listed(paired), 0] as const)),
         Match.when({ kind: "revoke" }, (revoke) =>
           Effect.map(pairing.revoke(revoke.which), (count) => [`Unpaired ${count} browser${"s".repeat(Number(count !== 1))}.`, Number(count === 0)] as const),

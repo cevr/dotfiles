@@ -1,9 +1,11 @@
 // The digest's pairing on disk: `pairing.json` beside the log, 0600 in the 0700 folder, versioned:
-// `{"v":2,"codes":[{hash,expires}],"paired":[{id,hash,created,label}],"failures":[<epoch ms>]}`.
+// `{"v":2,"codes":[{hash,expires}],"paired":[{id,hash,created,label}],"failures":[<epoch ms>],"tries":[{t,source}]}`.
 // - A code and a token are kept only as their SHA-256 hashes, so reading the file gives nothing that pairs or answers.
 //   The token's hash is compared in constant time. A code is removed when it is tried (whether it matched or not)
 //   and when it is out of time.
-// - `failures` are the failed tries of the last RATE_WINDOW_MS, so the rate limit survives a restart.
+// - `tries` are the failed tries of the last RATE_WINDOW_MS with the address each came from, so the rate limit
+//   (per address, pairing.ts) survives a restart. `failures` keeps their times alone, for a build from before
+//   `tries`; a file with no `tries` reads its `failures` as from an unknown address.
 // - Each change (issue, exchange, revoke) runs under one lock: a semaphore for this process's fibers, and an
 //   exclusive lock file (`pairing.lock`, made with O_EXCL) for the pair command and the server at the same instant.
 //   So a code is exchanged once however many requests bring it, and a failed try is counted before the next one is
@@ -16,7 +18,7 @@ import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto
 import { chmod, mkdir, open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { Array as Arr, Clock, Effect, Option, Predicate, Schedule, Schema, Semaphore } from "effect"
-import { ALPHABET, CODE_LENGTH, CODE_TTL_MS, failuresIn, MAX_PAIRED, mayTry, normalizeCode, PairingUnavailable, PairRefused, type Pairing } from "../pairing.ts"
+import { ALPHABET, CODE_LENGTH, CODE_TTL_MS, type Failure, failuresIn, MAX_PAIRED, mayTry, normalizeCode, PairingUnavailable, PairRefused, type Pairing } from "../pairing.ts"
 
 export const FILE = "pairing.json"
 export const LOCK = "pairing.lock"
@@ -28,17 +30,32 @@ export const LABEL_MAX = 120
 
 const Code = Schema.Struct({ hash: Schema.String, expires: Schema.Number })
 const Browser = Schema.Struct({ id: Schema.String, hash: Schema.String, created: Schema.Number, label: Schema.String })
-const Stored = Schema.Struct({ v: Schema.Literal(VERSION), codes: Schema.Array(Code), paired: Schema.Array(Browser), failures: Schema.Array(Schema.Number) })
-type Stored = typeof Stored.Type
+const Try = Schema.Struct({ t: Schema.Number, source: Schema.String })
+const OnDisk = Schema.Struct({ v: Schema.Literal(VERSION), codes: Schema.Array(Code), paired: Schema.Array(Browser), failures: Schema.Array(Schema.Number), tries: Schema.optionalKey(Schema.Array(Try)) })
+/** The file as this build works on it: every failed try with its address. */
+interface Stored {
+  readonly codes: ReadonlyArray<typeof Code.Type>
+  readonly paired: ReadonlyArray<typeof Browser.Type>
+  readonly tries: ReadonlyArray<Failure>
+}
+/** An address unknown: a try a build from before `tries` counted. */
+const UNKNOWN = "unknown"
 const RoundOne = Schema.Struct({ v: Schema.Literal(1), codes: Schema.Array(Code) })
 const Versioned = Schema.Struct({ v: Schema.Number })
 
-const decodeStored = Schema.decodeUnknownOption(Schema.fromJsonString(Stored))
+const decodeOnDisk = Schema.decodeUnknownOption(Schema.fromJsonString(OnDisk))
+const decodeStored = (text: string): Option.Option<Stored> =>
+  Option.map(decodeOnDisk(text), (disk) => ({
+    codes: disk.codes,
+    paired: disk.paired,
+    tries: Option.getOrElse(Option.fromUndefinedOr(disk.tries), () => disk.failures.map((t) => ({ t, source: UNKNOWN }))),
+  }))
 const decodeRoundOne = Schema.decodeUnknownOption(Schema.fromJsonString(RoundOne))
 const decodeVersion = Schema.decodeUnknownOption(Schema.fromJsonString(Versioned))
-const encodeStored = Schema.encodeSync(Schema.fromJsonString(Stored))
+const encodeOnDisk = Schema.encodeSync(Schema.fromJsonString(OnDisk))
+const encodeStored = (stored: Stored): string => encodeOnDisk({ v: VERSION, codes: stored.codes, paired: stored.paired, failures: stored.tries.map((each) => each.t), tries: stored.tries })
 
-const EMPTY: Stored = { v: VERSION, codes: [], paired: [], failures: [] }
+const EMPTY: Stored = { codes: [], paired: [], tries: [] }
 
 const codeOf = (cause: unknown): string => String(Predicate.hasProperty(cause, "code") && cause.code)
 
@@ -135,7 +152,7 @@ export const make = (dir: string): Pairing => {
     })
 
   /** The file without what time has ended: codes out of time for a while (until then, a try says "expired"), failures out of the window. */
-  const live = (stored: Stored, now: number): Stored => ({ ...stored, codes: stored.codes.filter((code) => code.expires > now - CODE_TTL_MS), failures: failuresIn(stored.failures, now) })
+  const live = (stored: Stored, now: number): Stored => ({ ...stored, codes: stored.codes.filter((code) => code.expires > now - CODE_TTL_MS), tries: failuresIn(stored.tries, now) })
 
   /** One change of the file, under the lock: `change` answers the file to write and what to return. */
   const change = <A, E>(now: number, step: (stored: Stored) => Effect.Effect<readonly [Stored, A], E>) =>
@@ -153,19 +170,19 @@ export const make = (dir: string): Pairing => {
         const code = Array.from({ length: CODE_LENGTH }, () => ALPHABET[randomInt(ALPHABET.length)]).join("")
         return Effect.succeed([{ ...stored, codes: [...stored.codes, { hash: sha256(normalizeCode(code)).toString("hex"), expires: now + CODE_TTL_MS }] }, code] as const)
       }),
-    exchange: (code, now, label) =>
+    exchange: (code, now, label, source = "local") =>
       Effect.flatten(
         change(now, (stored): Effect.Effect<readonly [Stored, Effect.Effect<{ readonly id: string; readonly token: string }, PairRefused>]> => {
-          // Past the limit nothing is compared, and the try is not counted: the window ends RATE_WINDOW_MS after
-          // the last counted failure.
-          if (!mayTry(stored.failures, now)) return Effect.succeed([stored, Effect.fail(new PairRefused({ reason: "limited" }))] as const)
+          // Past the limit (this address's, or all addresses' for one that failed already) nothing is compared, and
+          // the try is not counted: the window ends RATE_WINDOW_MS after the last counted failure.
+          if (!mayTry(stored.tries, source, now)) return Effect.succeed([stored, Effect.fail(new PairRefused({ reason: "limited" }))] as const)
           const given = sha256(normalizeCode(code))
           // Every stored hash is compared, so how long it takes says nothing of which matched. The code is tried
           // once, whatever comes of it.
           const matched = Arr.head(stored.codes.filter((each) => same(Buffer.from(each.hash, "hex"), given)))
           const codes = stored.codes.filter((each) => Option.match(matched, { onNone: () => true, onSome: (found) => found !== each }))
           const refused = (reason: "unknown" | "expired") =>
-            Effect.succeed([{ ...stored, codes, failures: [...stored.failures, now] }, Effect.fail(new PairRefused({ reason }))] as const)
+            Effect.succeed([{ ...stored, codes, tries: [...stored.tries, { t: now, source }] }, Effect.fail(new PairRefused({ reason }))] as const)
           return Option.match(matched, {
             onNone: () => refused("unknown"),
             onSome: (found) => {

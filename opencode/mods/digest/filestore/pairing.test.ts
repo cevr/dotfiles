@@ -6,13 +6,14 @@
 // - A browser is revoked by its id, or all at once.
 // - The file is 0600 and versioned; a file of an unknown version is an error that leaves it as it is.
 // - Under concurrency: one code exchanged by many requests at once buys one token, and a burst of wrong codes is
-//   compared at most RATE_FAILURES times. The limit is in the file, so it holds after a restart.
+//   compared at most SOURCE_FAILURES times. The limit is per address with a global ceiling and a floor, and in the
+//   file, so it holds after a restart.
 import { describe, expect, test } from "bun:test"
 import { readFileSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { Array as Arr, Cause, Effect, Exit, Match, Option } from "effect"
 import { scratch } from "../../../tests/scratch.ts"
-import { CODE_TTL_MS, MAX_PAIRED, normalizeCode, PairingUnavailable, PairRefused, RATE_FAILURES, RATE_WINDOW_MS, showCode } from "../pairing.ts"
+import { CODE_TTL_MS, MAX_PAIRED, normalizeCode, PairingUnavailable, PairRefused, GLOBAL_FAILURES, RATE_WINDOW_MS, showCode, SOURCE_FAILURES } from "../pairing.ts"
 import { FILE, make } from "./pairing.ts"
 
 const T = Date.parse("2026-11-20T12:00:00Z")
@@ -103,16 +104,47 @@ describe("the pairing file", () => {
     expect(await run(pairing.list)).toHaveLength(1)
   })
 
-  test(`a burst of 200 wrong codes at once is compared ${RATE_FAILURES} times; the limit holds after a restart, until the window passes`, async () => {
+  test(`a burst of 200 wrong codes at once is compared ${SOURCE_FAILURES} times; the limit holds after a restart, until the window passes`, async () => {
     using held = scratch("digest-pair-")
     const pairing = make(held.path)
     const real = await run(pairing.issue(T))
     const reasons = await run(Effect.all(Array.from({ length: 200 }, (_, index) => Effect.promise(() => refusal(pairing.exchange(`WRONG${String(index).padStart(5, "2")}`, T + 1, UA)))), { concurrency: 200 }))
-    expect(reasons.filter((each) => each === "reason:unknown")).toHaveLength(RATE_FAILURES)
-    expect(reasons.filter((each) => each === "reason:limited")).toHaveLength(200 - RATE_FAILURES)
+    expect(reasons.filter((each) => each === "reason:unknown")).toHaveLength(SOURCE_FAILURES)
+    expect(reasons.filter((each) => each === "reason:limited")).toHaveLength(200 - SOURCE_FAILURES)
     // A restart (a new store over the same file) is still limited, even for the right code, which stays good.
     expect(await refusal(make(held.path).exchange(real, T + 2, UA))).toBe("reason:limited")
     expect(await refusal(make(held.path).exchange(real, T + 1 + RATE_WINDOW_MS, UA))).toBe("none")
+  })
+
+  test("one address spending its failures locks only itself: his phone, from its own address, still pairs (T4)", async () => {
+    using held = scratch("digest-pair-")
+    const pairing = make(held.path)
+    const guesser = "100.64.0.9"
+    const reasons = await run(Effect.forEach(Array.from({ length: 20 }), (_, index) => Effect.promise(() => refusal(pairing.exchange(`WRONG${String(index).padStart(5, "2")}`, T + 1, UA, guesser)))))
+    expect(reasons.filter((each) => each === "reason:unknown")).toHaveLength(SOURCE_FAILURES)
+    const code = await run(pairing.issue(T))
+    expect(await refusal(pairing.exchange(code, T + 2, UA, "100.64.0.10"))).toBe("none")
+    // The guesser is still out, after a restart too.
+    expect(await refusal(make(held.path).exchange(await run(pairing.issue(T)), T + 3, UA, guesser))).toBe("reason:limited")
+  })
+
+  test(`many addresses together: past ${GLOBAL_FAILURES} failures a minute only an address with none in the window tries, once (the floor)`, async () => {
+    using held = scratch("digest-pair-")
+    const pairing = make(held.path)
+    const wrong = (index: number, source: string) => Effect.promise(() => refusal(pairing.exchange(`WRONG${String(index).padStart(5, "2")}`, T + 1, UA, source)))
+    // 30 guessers, each failing until refused: GLOBAL_FAILURES are compared in all, then each gets only its floor.
+    const sources = Array.from({ length: GLOBAL_FAILURES }, (_, index) => `100.64.1.${index}`)
+    const reasons = await run(Effect.forEach(sources.flatMap((source) => Array.from({ length: SOURCE_FAILURES }, () => source)), (source, index) => wrong(index, source)))
+    // In turn: the first six spend five each (30), then each later one only its first try.
+    expect(reasons.filter((each) => each === "reason:unknown")).toHaveLength(GLOBAL_FAILURES + sources.length - GLOBAL_FAILURES / SOURCE_FAILURES)
+    // Every guesser has failed once at least: none may try again this minute.
+    expect(await run(Effect.forEach(sources, (source, index) => wrong(1_000 + index, source)))).toEqual(sources.map(() => "reason:limited"))
+    // A fresh address (his phone) gets its try, and its right code pairs.
+    expect(await refusal(pairing.exchange(await run(pairing.issue(T)), T + 2, UA, "100.64.2.1"))).toBe("none")
+    // A file from before `tries` (failure times alone) still counts them, as from one unknown address.
+    const text = readFileSync(join(held.path, FILE), "utf8").replace(/,"tries":\[[^\]]*\]/, "")
+    writeFileSync(join(held.path, FILE), text, { mode: 0o600 })
+    expect(await refusal(make(held.path).exchange("WRONGWRONG", T + 3, UA, "unknown"))).toBe("reason:limited")
   })
 
   test("a file of a version this build does not know fails issue and exchange, refuses every token, and is left as it is", async () => {

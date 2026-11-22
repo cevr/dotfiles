@@ -10,7 +10,8 @@ import { DigestEvent, encodeLine, VERSION } from "@dotfiles/opencode-digest/even
 import * as FileLog from "@dotfiles/opencode-digest/filestore/log"
 import { markOf } from "@dotfiles/opencode-digest/marks"
 import { scratch } from "../../tests/scratch.ts"
-import { dirOf, handlersOf, Options, zoneOf } from "./server.ts"
+import { DigestUnreadable } from "@dotfiles/opencode-digest/service"
+import { dirOf, handlersOf, healthOf, Options, zoneOf } from "./server.ts"
 
 /** sim/, from this file's URL (opencode/cmd/digest). */
 const SIM = Effect.runSync(Effect.flatMap(Path.Path, (path) => path.fromFileUrl(new URL("../../sim", import.meta.url))).pipe(Effect.provide(Path.layer), Effect.orDie))
@@ -52,6 +53,17 @@ describe("the digest plugin", () => {
     expect(await unread()).toEqual([1])
     await Effect.runPromise(handlers.write(markOf("item:r:a", t + 1, "read")))
     expect(await unread()).toEqual([0])
+    // The health line counts the log's events and gives the newest one's time, and what the tailnet listener does.
+    expect(await Effect.runPromise(healthOf(log, Effect.succeed("held")))).toMatch(/^digest ok \S+ host=\S+ events=2 last=2026-11-20T12:00:00\.000Z peers=none tailnet=held$/)
+    expect(await Effect.runPromise(handlers.health)).toMatch(/ events=2 .* tailnet=no$/)
+  })
+
+  test("a log that does not read is a sick health line, never a failure; digest.tailnetRead is paired by default, member when set", async () => {
+    const unreadable = { read: Effect.fail(new DigestUnreadable({ message: "EACCES: permission denied" })), append: () => Effect.void }
+    expect(await Effect.runPromise(healthOf(unreadable, Effect.succeed("yes")))).toMatch(/^digest sick \S+ host=\S+ EACCES: permission denied$/)
+    const answerers = { question: () => Effect.die("no answer here"), item: () => Effect.die("no answer here") }
+    expect([handlersOf({}, unreadable, answerers).tailnetRead, handlersOf({ tailnetRead: "member" }, unreadable, answerers).tailnetRead]).toEqual(["paired", "member"])
+    expect(Exit.isSuccess(Schema.decodeUnknownExit(Options)({ tailnetRead: "everyone" }))).toBe(false)
   })
 
   test("no simulation loads the file log: sim/ reaches the digest only through its memory log", () => {

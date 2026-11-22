@@ -11,13 +11,16 @@ import { describe, expect, test } from "bun:test"
 import { mkdirSync, writeFileSync } from "node:fs"
 import { networkInterfaces } from "node:os"
 import { join } from "node:path"
-import { Effect, Option, Ref, Scope } from "effect"
+import { Duration, Effect, Option, Ref, Schedule, Scope } from "effect"
 import { scratch } from "../../../tests/scratch.ts"
 import { AnswerOutcome, type PageAnswer } from "../answers.ts"
+import { NO_TAILNET, type Tailnet } from "../bind.ts"
 import * as FilePairing from "../filestore/pairing.ts"
+import type { TailnetState } from "../health.ts"
 import type { MarkLine } from "../marks.ts"
-import { ACCESS, CODE_TTL_MS, OLD_COOKIE, type Pairing, RATE_FAILURES, TOKEN_HEADER } from "../pairing.ts"
-import { type Handlers, HOSTNAME, kindOf, listen, PAGE_HEADER } from "./listener.ts"
+import { CODE_TTL_MS, OLD_COOKIE, type Pairing, SOURCE_FAILURES, TOKEN_HEADER } from "../pairing.ts"
+import { ACCESS, type Listener } from "../policy.ts"
+import { type Handlers, HOSTNAME, kindOf, listen, PAGE_HEADER, type Place, serveTailnet } from "./listener.ts"
 
 const NOW = 1_795_204_800_000
 
@@ -50,7 +53,13 @@ const handlers = (rig: Rig): Handlers => ({
   zone: "America/Montreal",
   answer: (input) => Ref.update(rig.answered, (all) => [...all, input]).pipe(Effect.andThen(Ref.get(rig.outcome))),
   pairing: rig.pairing,
+  health: Effect.succeed("digest ok dev host=harbor events=3 last=none peers=none tailnet=no"),
+  tailnetRead: "paired",
 })
+
+/** A place on loopback, on a free port: as `listener` (the tailnet listener bound to 127.0.0.1, with invented names). */
+const NAMES: Readonly<Record<Listener, ReadonlyArray<string>>> = { loopback: [], tailnet: ["harbor.example-tailnet.ts.net", "harbor"] }
+const placeOf = (listener: Listener = "loopback", port = 0): Place => ({ address: HOSTNAME, port, listener, names: NAMES[listener] })
 
 const rigOf = (dir: string) =>
   Effect.gen(function* () {
@@ -64,12 +73,12 @@ const rigOf = (dir: string) =>
   })
 
 /** The listener on a free port for `body`, closed after it; its pairing file beside the built page (`pairing/`). */
-const withListener = <A>(dist: string, body: (base: string, written: Ref.Ref<ReadonlyArray<MarkLine>>, hostname: string, rig: Rig) => Promise<A>, make: (rig: Rig) => Handlers = handlers) =>
+const withListener = <A>(dist: string, body: (base: string, written: Ref.Ref<ReadonlyArray<MarkLine>>, hostname: string, rig: Rig) => Promise<A>, make: (rig: Rig) => Handlers = handlers, listener: Listener = "loopback") =>
   Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
         const rig = yield* rigOf(join(dist, "..", "pairing"))
-        const bound = yield* listen(0, make(rig), dist)
+        const bound = yield* listen(placeOf(listener), make(rig), dist)
         return yield* Effect.promise(() => body(`http://${HOSTNAME}:${bound.port}`, rig.written, bound.hostname, rig))
       }),
     ),
@@ -104,6 +113,8 @@ describe("the page's listener", () => {
       expect((await fetch(`${base}/assets/index-abc.css`)).headers.get("content-type")).toBe("text/css; charset=utf-8")
       const view = await fetch(`${base}/view.json`)
       expect([view.status, view.headers.get("content-type"), view.headers.get("cache-control"), await view.text()]).toEqual([200, "application/json", "no-store", '{"v":1}'])
+      // On loopback the health line is whole, unauthenticated.
+      expect(await (await fetch(`${base}/health`)).text()).toBe("digest ok dev host=harbor events=3 last=none peers=none tailnet=no")
     })
   })
 
@@ -166,7 +177,7 @@ describe("the page's listener", () => {
     await withListener(dist, async (base) => {
       const port = Number(new URL(base).port)
       const second = await Effect.runPromiseExit(
-        Effect.scoped(Effect.flatMap(rigOf(join(dist, "..", "pairing")), (rig) => listen(port, handlers(rig), dist))).pipe(Effect.provideService(Scope.Scope, Scope.makeUnsafe())),
+        Effect.scoped(Effect.flatMap(rigOf(join(dist, "..", "pairing")), (rig) => listen(placeOf("loopback", port), handlers(rig), dist))).pipe(Effect.provideService(Scope.Scope, Scope.makeUnsafe())),
       )
       expect(second._tag).toBe("Failure")
     })
@@ -220,11 +231,12 @@ const paired = async (base: string, rig: Rig): Promise<string> => {
 }
 
 describe("who may do what", () => {
-  test("one table, by listener and route: on loopback only an answer needs a paired browser; elsewhere all but pairing does", () => {
+  test("one table, by listener and route: on loopback only an answer needs a paired browser; on the tailnet all but the shell, pairing and health's ok", () => {
     const routes: ReadonlyArray<readonly [string, string]> = [
       ["GET", "/"],
       ["GET", "/view.json"],
       ["GET", "/paired.json"],
+      ["GET", "/health"],
       ["GET", "/assets/index-abc.js"],
       ["POST", "/api/mark"],
       ["POST", "/api/later"],
@@ -234,12 +246,13 @@ describe("who may do what", () => {
       ["POST", "/api/pair"],
       ["PUT", "/api/answer"],
     ]
-    const table = routes.map(([method, path]) => [method, path, ...Option.match(kindOf(method, path), { onNone: () => ["refused", "refused"], onSome: (kind) => [ACCESS.loopback[kind], ACCESS.remote[kind]] })])
+    const table = routes.map(([method, path]) => [method, path, ...Option.match(kindOf(method, path), { onNone: () => ["refused", "refused"], onSome: (kind) => [ACCESS.loopback[kind], ACCESS.tailnet[kind]] })])
     expect(table).toEqual([
-      ["GET", "/", "open", "paired"],
+      ["GET", "/", "open", "open"],
       ["GET", "/view.json", "open", "paired"],
-      ["GET", "/paired.json", "open", "paired"],
-      ["GET", "/assets/index-abc.js", "open", "paired"],
+      ["GET", "/paired.json", "open", "open"],
+      ["GET", "/health", "open", "brief"],
+      ["GET", "/assets/index-abc.js", "open", "open"],
       ["POST", "/api/mark", "open", "paired"],
       ["POST", "/api/later", "open", "paired"],
       ["POST", "/api/name", "open", "paired"],
@@ -374,8 +387,8 @@ describe("pairing and answering", () => {
       expect((await post(`${base}/api/pair`, { code: late }, own(base))).status).toBe(410)
       // One failure so far this window (the late code; the replay was five minutes ago); a burst of 50 at once gets the rest, then 429s.
       const burst = await Effect.runPromise(Effect.all(Array.from({ length: 50 }, () => Effect.map(Effect.promise(() => post(`${base}/api/pair`, { code: "ABCDEFGHJK" }, own(base))), (answer) => answer.status)), { concurrency: 50 }))
-      expect(burst.filter((status) => status === 403)).toHaveLength(RATE_FAILURES - 1)
-      expect(burst.filter((status) => status === 429)).toHaveLength(50 - (RATE_FAILURES - 1))
+      expect(burst.filter((status) => status === 403)).toHaveLength(SOURCE_FAILURES - 1)
+      expect(burst.filter((status) => status === 429)).toHaveLength(50 - (SOURCE_FAILURES - 1))
       const good = await Effect.runPromise(rig.pairing.issue(NOW + CODE_TTL_MS))
       expect((await post(`${base}/api/pair`, { code: good }, own(base))).status).toBe(429)
       // A minute on, it may try again.
@@ -398,3 +411,135 @@ describe("pairing and answering", () => {
     })
   })
 })
+
+// The tailnet listener. A test never binds the host's real tailnet address: it binds 127.0.0.1 as the tailnet
+// listener (its policy and its names), on a free port, with invented names.
+describe("the tailnet listener", () => {
+  test("an address that is not loopback or the tailnet's is refused before any socket is made: a wildcard, a LAN, a public one", async () => {
+    using held = scratch("digest-http-")
+    const dist = builtPage(held.path)
+    const refused = await Effect.runPromise(
+      Effect.forEach(["0.0.0.0", "::", "", "192.168.1.20", "10.0.0.5", "8.8.8.8", "100.128.0.1", "fd7a:115c:a1e1::1", "localhost"], (address) =>
+        Effect.scoped(Effect.flatMap(rigOf(join(dist, "..", "pairing")), (rig) => listen({ ...placeOf("tailnet"), address }, handlers(rig), dist))).pipe(
+          Effect.match({ onSuccess: () => `${address}: bound`, onFailure: (failure) => `${address}: ${failure._tag}` }),
+        ),
+      ),
+    )
+    expect(refused).toEqual(["0.0.0.0", "::", "", "192.168.1.20", "10.0.0.5", "8.8.8.8", "100.128.0.1", "fd7a:115c:a1e1::1", "localhost"].map((address) => `${address}: BindRefused`))
+  })
+
+  test("unpaired, it serves the shell (no data), whether paired, the pairing and health's `ok`; the view, a mark and an answer need the token", async () => {
+    using held = scratch("digest-http-")
+    await withListener(
+      builtPage(held.path),
+      async (base, written, _hostname, rig) => {
+        const unpaired = [
+          await fetch(`${base}/`),
+          await fetch(`${base}/assets/index-abc.js`),
+          await fetch(`${base}/paired.json`),
+          await fetch(`${base}/view.json`),
+          await fetch(`${base}/anything`),
+          await post(`${base}/api/mark`, { id: "m1", mark: "read" }, own(base)),
+          await post(`${base}/api/answer`, { id: "question:s:q1", option: "Keep it" }, own(base)),
+        ]
+        expect(unpaired.map((each) => each.status)).toEqual([200, 200, 200, 401, 401, 401, 401])
+        const health = await fetch(`${base}/health`)
+        expect([health.status, await health.text(), health.headers.get("cache-control"), String(health.headers.get("content-security-policy")).includes("default-src 'self'")]).toEqual([200, "ok", "no-store", true])
+        const refusal = await (await fetch(`${base}/view.json`)).text()
+        expect([refusal.includes("pair.ts"), refusal.includes('"v"')]).toEqual([true, false])
+        // Paired: the view, the whole health line, a mark.
+        const token = await paired(base, rig)
+        expect(await (await fetch(`${base}/view.json`, { headers: { [TOKEN_HEADER]: token } })).text()).toBe('{"v":1}')
+        expect(await (await fetch(`${base}/health`, { headers: { [TOKEN_HEADER]: token } })).text()).toStartWith("digest ok dev host=harbor events=3")
+        expect((await post(`${base}/api/mark`, { id: "m1", mark: "read" }, own(base, token))).status).toBe(204)
+        expect((await Effect.runPromise(Ref.get(written))).length).toBe(1)
+      },
+      handlers,
+      "tailnet",
+    )
+  })
+
+  test("it answers its own names only (a loopback name and a rebound one are refused on every route), and each name is its own origin", async () => {
+    using held = scratch("digest-http-")
+    await withListener(
+      builtPage(held.path),
+      async (base, written, _hostname, rig) => {
+        const port = new URL(base).port
+        const statusAt = async (host: string, path: string) => (await fetch(`${base}${path}`, { headers: { host } })).status
+        for (const path of ["/", "/assets/index-abc.js", "/paired.json", "/health", "/view.json"]) {
+          expect([path, await statusAt(`localhost:${port}`, path), await statusAt(`evil.example:${port}`, path), await statusAt(`harbor:${port}`, path), await statusAt(`harbor.example-tailnet.ts.net:${port}`, path)]).toEqual([path, 421, 421, [200, 401][Number(path === "/view.json")], [200, 401][Number(path === "/view.json")]])
+        }
+        // A write naming one of its names must come from that name's origin: the page opened by IP is not the page opened by name.
+        const token = await paired(base, rig)
+        const byName = await post(`${base}/api/mark`, { id: "m1", mark: "read" }, { ...own(base, token), host: `harbor:${port}`, origin: `http://harbor:${port}` })
+        const crossed = await post(`${base}/api/mark`, { id: "m1", mark: "read" }, { ...own(base, token), origin: `http://harbor:${port}` })
+        expect([byName.status, crossed.status]).toEqual([204, 403])
+        expect((await Effect.runPromise(Ref.get(written))).length).toBe(1)
+      },
+      handlers,
+      "tailnet",
+    )
+  })
+
+  test(`digest.tailnetRead "member" opens the tailnet's reads to every member; marks and answers still need the token`, async () => {
+    using held = scratch("digest-http-")
+    await withListener(
+      builtPage(held.path),
+      async (base) => {
+        expect((await fetch(`${base}/view.json`)).status).toBe(200)
+        expect(await (await fetch(`${base}/health`)).text()).toBe("ok")
+        expect((await post(`${base}/api/mark`, { id: "m1", mark: "read" }, own(base))).status).toBe(401)
+        expect((await post(`${base}/api/answer`, { id: "question:s:q1", option: "Keep it" }, own(base))).status).toBe(401)
+      },
+      (rig) => ({ ...handlers(rig), tailnetRead: "member" }),
+      "tailnet",
+    )
+  })
+
+  test("it follows the tailnet: listens when an address appears, stops when it goes, waits while another instance holds it, and takes it over", async () => {
+    using held = scratch("digest-http-")
+    const dist = builtPage(held.path)
+    // A free scratch port, on 127.0.0.1 standing in for the tailnet address.
+    const free = Bun.serve({ hostname: HOSTNAME, port: 0, fetch: () => new Response("") })
+    const port = Number(free.port)
+    free.stop(true)
+    const tailnet: Tailnet = { addresses: [HOSTNAME], names: ["harbor"] }
+    const reach = () =>
+      Effect.runPromise(Effect.match(Effect.tryPromise(() => fetch(`http://${HOSTNAME}:${port}/`, { headers: { host: `harbor:${port}` } })), { onSuccess: (answer) => answer.status, onFailure: () => 0 }))
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const rig = yield* rigOf(join(dist, "..", "pairing"))
+          const found = yield* Ref.make(NO_TAILNET)
+          // Not what a first round finds, so its first answer shows.
+          const state = yield* Ref.make<TailnetState>("held")
+          const until = (wanted: TailnetState) => Ref.get(state).pipe(Effect.repeat({ until: (now) => now === wanted, schedule: Schedule.spaced(Duration.millis(10)) }), Effect.timeout(Duration.seconds(5)))
+          yield* Effect.forkScoped(serveTailnet(port, handlers(rig), dist, Ref.get(found), state, Duration.millis(30)))
+          // No tailnet: loopback only, nothing on the port.
+          yield* until("no")
+          expect(yield* Effect.promise(reach)).toBe(0)
+          // Tailscale comes up.
+          yield* Ref.set(found, tailnet)
+          yield* until("yes")
+          expect(yield* Effect.promise(reach)).toBe(200)
+          // It goes down: the listener stops.
+          yield* Ref.set(found, NO_TAILNET)
+          yield* until("no")
+          expect(yield* Effect.promise(reach)).toBe(0)
+          // Another instance holds the port when it comes back: this one waits, and health says so.
+          const other = Bun.serve({ hostname: HOSTNAME, port, reusePort: false, fetch: () => new Response("the other instance") })
+          yield* Ref.set(found, tailnet)
+          yield* until("held")
+          expect(yield* Effect.promise(async () => (await fetch(`http://${HOSTNAME}:${port}/`)).text())).toBe("the other instance")
+          // The other one stops (a restart's handover): this one takes the port.
+          other.stop(true)
+          yield* until("yes")
+          expect(yield* Effect.promise(reach)).toBe(200)
+        }),
+      ),
+    )
+    // Its scope closed: nothing listens.
+    expect(await reach()).toBe(0)
+  })
+})
+

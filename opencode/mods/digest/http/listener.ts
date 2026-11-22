@@ -1,6 +1,10 @@
-// The digest page's listener: a small HTTP server of the digest plugin's own on 127.0.0.1 (loopback only in this
-// unit; the tailnet address and its pairing are later units), serving the page's built files (page/dist, committed)
-// and the view as JSON, and taking the owner's marks.
+// The digest page's listeners: small HTTP servers of the digest plugin's own, one on 127.0.0.1 and one on each of the
+// host's tailnet addresses (bind.ts: never a wildcard, never another address, refused in code), serving the page's
+// built files (page/dist, committed) and the view as JSON, and taking the owner's marks and answers.
+//
+// - Plain HTTP on the tailnet: Tailscale's WireGuard encrypts it between his devices. The token never goes in a URL.
+// - What each request may do is policy.ts's one decision, by listener, route, paired, origin and Host.
+// - GET `/health`: the health line (health.ts); on the tailnet, unpaired, `ok` alone.
 //
 // - GET `/` and `/assets/<name>`: the built files, by exact name inside `dist`; no other path reads the disk.
 // - GET `/view.json`: the view (view.ts), fresh from the log and the marks at each request.
@@ -14,21 +18,26 @@
 // - Every answer, an error too, carries SECURITY (a CSP with script-src 'self' and no inline script).
 // - POST `/api/answer` {id, option | text}: the owner's answer to an open question or needs-you item (answers.ts):
 //   200 when it went, 409 with the first answer when another closed it, 4xx when refused. Only from a paired browser.
-// - Every request must name a loopback host (`Host`), so a name rebound to 127.0.0.1 reads nothing. What each route
-//   needs beyond that (nothing, or a paired browser) is `pairing.ts`'s ACCESS, by listener and route kind.
+// - Every request must name one of its listener's own hosts (`Host`), so a name rebound to its address reads nothing.
 //
-// OpenCode serves a plugin once per directory it serves, and only one instance can bind the port: the others try
-// again every RETRY (`serve`), so one listens while any instance runs, and a restart hands the port over.
+// OpenCode serves a plugin once per directory it serves, and only one instance can bind a port on an address (the
+// socket is never made with SO_REUSEPORT, so Linux refuses a second one as macOS does): the others try again every
+// RETRY, so one listens on each address while any instance runs, and a restart hands each over.
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
-import { Duration, Effect, Match, Option, Schedule, Schema, type Scope } from "effect"
+import { Duration, Effect, Exit, Match, Option, Ref, Schedule, Schema, Scope } from "effect"
 import { type AnswerOutcome, PageAnswer } from "../answers.ts"
+import { bindable, BindRefused, hostOf, hostsOf, NO_TAILNET, type Tailnet } from "../bind.ts"
+import { BRIEF, type TailnetState } from "../health.ts"
 import { type MarkLine, markOf, nameOf, sinceOf } from "../marks.ts"
-import { type Listener, needOf, type Pairing, type RouteKind, TOKEN_HEADER } from "../pairing.ts"
+import { type Pairing, TOKEN_HEADER } from "../pairing.ts"
+import { decide, type Listener, type RouteKind, type TailnetRead } from "../policy.ts"
 import { nextMorning } from "../zone.ts"
 
-/** The only address this unit binds. */
+/** The loopback listener's address. */
 export const HOSTNAME = "127.0.0.1"
+/** The loopback listener's names. */
+export const LOOPBACK_NAMES: ReadonlyArray<string> = [HOSTNAME, "localhost"]
 /** The page's port on every host. */
 export const PORT = 8240
 /** How long an instance waits before it tries the port again. */
@@ -52,7 +61,20 @@ export interface Handlers {
   /** Send the owner's answer through the plugin that owns its message. */
   readonly answer: (input: PageAnswer) => Effect.Effect<AnswerOutcome>
   readonly pairing: Pairing
+  /** The health line, whole (health.ts). */
+  readonly health: Effect.Effect<string>
+  /** `digest.tailnetRead`: who reads the page on the tailnet. */
+  readonly tailnetRead: TailnetRead
 }
+
+/** A listener as a request reaches it: which one, and the hosts it answers to. */
+export interface Site {
+  readonly listener: Listener
+  readonly hosts: ReadonlyArray<string>
+}
+
+/** The loopback site on `port`. */
+export const loopbackSite = (port: number): Site => ({ listener: "loopback", hosts: hostsOf(port, LOOPBACK_NAMES) })
 
 /** An answer: status, headers, body. */
 interface Answer {
@@ -99,9 +121,6 @@ const builtFile = (dist: string, folder: string, name: string, cache: string) =>
     },
   )
 
-/** A loopback host as a `Host` header names it, with or without a port. */
-const LOOPBACK_HOST = /^(127\.0\.0\.1|localhost)(:\d{1,5})?$/
-
 const MarkInput = Schema.Struct({ id: Schema.NonEmptyString, mark: Schema.Literals(["read", "unread"]) })
 const LaterInput = Schema.Struct({ id: Schema.NonEmptyString })
 const NameInput = Schema.Struct({ project: Schema.NonEmptyString, name: Schema.String.check(Schema.isMaxLength(NAME_MAX)) })
@@ -121,15 +140,6 @@ const lineOf = (path: string, body: string, now: number, zone: string): Option.O
     Match.when("/api/since", () => Option.some(Option.map(decodeSince(body), () => sinceOf(now)))),
     Match.orElse(() => Option.none()),
   )
-
-/** Why a write is refused, if it is: another origin, no page header, not JSON. */
-const writeRefusal = (request: Request, host: string): Option.Option<Answer> => {
-  const origin = request.headers.get("origin")
-  if (origin !== `http://${host}`) return Option.some(reason(403, "a write must come from the page's own origin"))
-  if (request.headers.get(PAGE_HEADER) !== "1") return Option.some(reason(403, `a write must carry ${PAGE_HEADER}`))
-  if (!String(request.headers.get("content-type")).startsWith("application/json")) return Option.some(reason(415, "a write is JSON"))
-  return Option.none()
-}
 
 /** A marks route's answer: the line kept (204), or why not. */
 const mark = (handlers: Handlers, path: string, body: string) =>
@@ -159,19 +169,19 @@ const encodePairedBody = Schema.encodeSync(Schema.fromJsonString(Schema.Struct({
  * `/api/pair`: a code for a token, in the body (200), never in a header the browser keeps by itself. The pairing
  * counts a failed try, and past the minute's failures it refuses before comparing (429).
  */
-const pair = (handlers: Handlers, body: string, label: string) =>
+const pair = (handlers: Handlers, body: string, label: string, source: string) =>
   Effect.gen(function* () {
     const now = yield* handlers.now
     const input = decodePair(body)
     if (Option.isNone(input)) return reason(400, "not a /api/pair request")
-    return yield* handlers.pairing.exchange(input.value.code, now, label).pipe(
+    return yield* handlers.pairing.exchange(input.value.code, now, label, source).pipe(
       Effect.map((paired) => answer(200, encodePairedBody(paired), { "content-type": "application/json", "cache-control": "no-store" })),
       Effect.catchTags({
         PairRefused: (refused) =>
           Effect.succeed(
             Match.value(refused.reason).pipe(
-              Match.when("expired", () => reason(410, "that code is out of time: make another with bun cmd/digest/pair.ts")),
-              Match.when("limited", () => reason(429, "too many pairing tries: wait a minute, then make a new code")),
+              Match.when("expired", () => reason(410, "that code is out of time: make another with bun cmd/digest/pair.ts on the host")),
+              Match.when("limited", () => reason(429, "too many pairing tries from here: wait a minute, then make a new code")),
               Match.orElse(() => reason(403, "that code is not one, or was used already")),
             ),
           ),
@@ -219,19 +229,21 @@ const isPaired = (handlers: Handlers, request: Request): Effect.Effect<boolean> 
 
 const encodePaired = Schema.encodeSync(Schema.fromJsonString(Schema.Struct({ paired: Schema.Boolean })))
 
-/** A read route's answer. */
-const read = (handlers: Handlers, dist: string, path: string, request: Request) =>
+const NO_STORE = { "cache-control": "no-store" }
+const text = (status: number, body: string): Answer => answer(status, body, { "content-type": "text/plain; charset=utf-8", ...NO_STORE })
+
+/** A GET route's answer, once the policy served it; `brief`, the health line's `ok` alone. */
+const read = (handlers: Handlers, dist: string, path: string, paired: boolean, brief: boolean) =>
   Match.value(path).pipe(
     Match.when("/", () => builtFile(dist, ".", "index.html", "no-store")),
+    Match.when("/health", () => Effect.map(Option.match(Option.liftPredicate(brief, Boolean), { onSome: () => Effect.succeed(BRIEF), onNone: () => handlers.health }), (line) => text(200, line))),
     Match.when("/view.json", () =>
       handlers.view.pipe(
-        Effect.map((json) => answer(200, json, { "content-type": "application/json", "cache-control": "no-store" })),
+        Effect.map((json) => answer(200, json, { "content-type": "application/json", ...NO_STORE })),
         Effect.catch((failure) => Effect.succeed(reason(500, failure.message))),
       ),
     ),
-    Match.when("/paired.json", () =>
-      Effect.map(isPaired(handlers, request), (paired) => answer(200, encodePaired({ paired }), { "content-type": "application/json", "cache-control": "no-store" })),
-    ),
+    Match.when("/paired.json", () => Effect.succeed(answer(200, encodePaired({ paired }), { "content-type": "application/json", ...NO_STORE }))),
     Match.when(
       (each) => each.startsWith("/api/"),
       () => Effect.succeed(reason(405, "a write is a POST")),
@@ -243,79 +255,175 @@ const read = (handlers: Handlers, dist: string, path: string, request: Request) 
     Match.orElse(() => Effect.succeed(reason(404, "no such page"))),
   )
 
-/** The kind of route a request is (pairing.ts's RouteKind); none for a method no route takes. */
+/** The kind of route a request is (policy.ts's RouteKind); none for a method no route takes. */
 export const kindOf = (method: string, path: string): Option.Option<RouteKind> =>
   Match.value({ method, path }).pipe(
     Match.when({ method: "POST", path: "/api/answer" }, () => Option.some<RouteKind>("answer")),
     Match.when({ method: "POST", path: "/api/pair" }, () => Option.some<RouteKind>("pair")),
     Match.when({ method: "POST" }, () => Option.some<RouteKind>("mark")),
-    Match.when({ method: (each) => each === "GET" || each === "HEAD" }, () => Option.some<RouteKind>("read")),
-    Match.orElse(() => Option.none<RouteKind>()),
+    Match.when({ method: (each) => each !== "GET" && each !== "HEAD" }, () => Option.none<RouteKind>()),
+    Match.when({ path: (each) => each === "/" || each.startsWith("/assets/") }, () => Option.some<RouteKind>("shell")),
+    Match.when({ path: "/paired.json" }, () => Option.some<RouteKind>("status")),
+    Match.when({ path: "/health" }, () => Option.some<RouteKind>("health")),
+    Match.orElse(() => Option.some<RouteKind>("read")),
   )
 
-/** A write's checks, then what its route needs on this listener (ACCESS): a paired browser, or nothing more. */
-const admitted = (handlers: Handlers, request: Request, host: string, listener: Listener, kind: RouteKind): Effect.Effect<Option.Option<Answer>> =>
-  Effect.gen(function* () {
-    const refused = Option.filter(writeRefusal(request, host), () => kind !== "read")
-    if (Option.isSome(refused)) return refused
-    if (needOf(listener, kind) === "open" || (yield* isPaired(handlers, request))) return Option.none()
-    return Option.some(reason(401, "pair this browser first: run bun cmd/digest/pair.ts and open the link it prints"))
-  })
-
-/** The listener's answer to one request, on `listener`; a defect is a 500 with the same headers, never a bare one. */
-export const answerOf = (handlers: Handlers, dist: string, request: Request, listener: Listener = "loopback"): Effect.Effect<Answer> =>
-  Effect.suspend(() => routed(handlers, dist, request, listener)).pipe(
+/**
+ * The listener's answer to one request on `site`, from the address `source`; a defect is a 500 with the same headers,
+ * never a bare one.
+ */
+export const answerOf = (handlers: Handlers, dist: string, request: Request, site: Site, source = "local"): Effect.Effect<Answer> =>
+  Effect.suspend(() => routed(handlers, dist, request, site, source)).pipe(
     Effect.catchCause((cause) => Effect.as(Effect.logWarning("digest page: a request failed", { cause }), reason(500, "the digest failed this request"))),
   )
 
-const routed = (handlers: Handlers, dist: string, request: Request, listener: Listener): Effect.Effect<Answer> => {
-  const host = String(request.headers.get("host"))
-  if (!LOOPBACK_HOST.test(host)) return Effect.succeed(reason(421, "this page answers on its loopback name only"))
+const routed = (handlers: Handlers, dist: string, request: Request, site: Site, source: string): Effect.Effect<Answer> => {
   const path = new URL(request.url).pathname
   const body = Effect.promise(() => request.text())
   return Option.match(kindOf(request.method, path), {
     onNone: () => Effect.succeed(reason(405, "GET or POST only")),
     onSome: (kind) =>
-      Effect.flatMap(admitted(handlers, request, host, listener, kind), (refused) =>
-        Option.match(refused, {
-          onSome: Effect.succeed,
-          onNone: () =>
+      Effect.flatMap(isPaired(handlers, request), (paired) => {
+        const facts = {
+          listener: site.listener,
+          kind,
+          host: String(request.headers.get("host")),
+          hosts: site.hosts,
+          origin: String(request.headers.get("origin") ?? ""),
+          pageHeader: request.headers.get(PAGE_HEADER) === "1",
+          json: String(request.headers.get("content-type")).startsWith("application/json"),
+          paired,
+        }
+        return Match.valueTags(decide(facts, handlers.tailnetRead), {
+          Refuse: ({ status, reason: why }) => Effect.succeed(reason(status, why)),
+          Brief: () => read(handlers, dist, path, paired, true),
+          Serve: () =>
             Match.value(kind).pipe(
-              Match.when("read", () => read(handlers, dist, path, request)),
-              Match.when("pair", () => Effect.flatMap(body, (text) => pair(handlers, text, String(request.headers.get("user-agent"))))),
-              Match.when("answer", () => Effect.flatMap(body, (text) => answerRoute(handlers, text))),
-              Match.when("mark", () => Effect.flatMap(body, (text) => mark(handlers, path, text))),
-              Match.exhaustive,
+              Match.when("pair", () => Effect.flatMap(body, (given) => pair(handlers, given, String(request.headers.get("user-agent")), source))),
+              Match.when("answer", () => Effect.flatMap(body, (given) => answerRoute(handlers, given))),
+              Match.when("mark", () => Effect.flatMap(body, (given) => mark(handlers, path, given))),
+              Match.orElse(() => read(handlers, dist, path, paired, false)),
             ),
-        }),
-      ),
+        })
+      }),
   })
 }
 
-/** The port could not be bound (another instance holds it). */
+/** The port could not be bound (another instance holds it, or the address is gone). */
 export class NotBound extends Schema.TaggedError<NotBound>()("NotBound", { message: Schema.String }) {}
 
-/** Listen on 127.0.0.1:`port` (0 for any free one) until the scope closes; the address bound. */
-export const listen = (port: number, handlers: Handlers, dist: string): Effect.Effect<{ readonly hostname: string; readonly port: number }, NotBound, Scope.Scope> =>
+/** Where one listener listens: its address (loopback, or a tailnet one), its port (0 for any free one), its site. */
+export interface Place {
+  readonly address: string
+  readonly port: number
+  readonly listener: Listener
+  /** Its names beside its address (the tailnet's MagicDNS name and short name); loopback's are LOOPBACK_NAMES. */
+  readonly names: ReadonlyArray<string>
+}
+
+/** The site a place serves once bound on `port`: its address and names, with the port. */
+export const siteOf = (place: Place, port: number): Site =>
+  Match.value(place.listener).pipe(
+    Match.when("loopback", () => loopbackSite(port)),
+    Match.orElse(() => ({ listener: place.listener, hosts: hostsOf(port, [place.address, ...place.names]) })),
+  )
+
+/**
+ * Listen at `place` until the scope closes; the address and port bound. An address that is not loopback or the
+ * tailnet's is refused before any socket is made (bind.ts), whatever asked for it.
+ */
+export const listen = (place: Place, handlers: Handlers, dist: string): Effect.Effect<{ readonly hostname: string; readonly port: number }, NotBound | BindRefused, Scope.Scope> =>
   Effect.gen(function* () {
+    const refused = bindable(place.address)
+    if (Option.isSome(refused)) return yield* refused.value
     const context = yield* Effect.context<never>()
-    const respond = (request: Request) =>
-      Effect.runPromiseWith(context)(Effect.map(answerOf(handlers, dist, request), (each) => new Response(each.body, { status: each.status, headers: each.headers })))
+    const sites = { current: siteOf(place, place.port) }
+    const respond = (request: Request, server: Bun.Server<unknown>) =>
+      Effect.runPromiseWith(context)(
+        Effect.map(answerOf(handlers, dist, request, sites.current, Option.getOrElse(Option.map(Option.fromNullishOr(server.requestIP(request)), (each) => each.address), () => "unknown")), (each) => new Response(each.body, { status: each.status, headers: each.headers })),
+      )
     const server = yield* Effect.acquireRelease(
       Effect.try({
-        try: () => Bun.serve({ hostname: HOSTNAME, port, fetch: respond }),
+        // Never SO_REUSEPORT: a second instance must fail to bind and wait, on Linux as on macOS.
+        try: () => Bun.serve({ hostname: place.address, port: place.port, reusePort: false, fetch: respond }),
         catch: (cause) => new NotBound({ message: String(cause) }),
       }),
       (bound) => Effect.sync(() => void bound.stop(true)),
     )
+    sites.current = siteOf(place, Number(server.port))
     return { hostname: String(server.hostname), port: Number(server.port) }
   })
 
 /** Listen on 127.0.0.1:`port` until the scope closes, binding as soon as the port is free. */
 export const serve = (port: number, handlers: Handlers, dist: string): Effect.Effect<void, never, Scope.Scope> =>
-  listen(port, handlers, dist).pipe(
+  listen({ address: HOSTNAME, port, listener: "loopback", names: [] }, handlers, dist).pipe(
     Effect.tapError((failure) => Effect.logDebug(`digest page: ${HOSTNAME}:${port} not bound (${failure.message}); trying again`)),
-    Effect.retry({ schedule: Schedule.spaced(RETRY), times: WAIT_TRIES }),
+    Effect.retry({ schedule: Schedule.spaced(RETRY), times: WAIT_TRIES, while: (failure) => failure._tag === "NotBound" }),
     Effect.flatMap((bound) => Effect.logInfo(`digest page: listening on http://${bound.hostname}:${bound.port}`)),
     Effect.catch((failure) => Effect.logError(`digest page: ${HOSTNAME}:${port} never came free (${failure.message}); this instance serves no page`)),
   )
+
+/** How often the tailnet is read again: Tailscale down or up, an address that moved. */
+export const RECHECK = Duration.seconds(30)
+
+/** One tailnet listener this instance holds: its place, and the scope that closes it. */
+interface Held {
+  readonly place: Place
+  readonly scope: Scope.Closeable
+}
+
+/** A place's key: the same address and names is the same listener. */
+const keyOf = (place: Place) => `${place.address} ${place.names.join(",")}`
+
+/**
+ * The tailnet's listeners, kept to what `probe` finds, read again every `every`. For each tailnet address it finds,
+ * it listens on `port` (another instance holding it: tried again next time). A listener whose address is gone, or
+ * whose names changed, is closed. No address (Tailscale absent or down) is loopback only, and `state` says `no`. A
+ * probe that fails is no tailnet. `state` is what health reports.
+ */
+export const serveTailnet = (
+  port: number,
+  handlers: Handlers,
+  dist: string,
+  probe: Effect.Effect<Tailnet>,
+  state: Ref.Ref<TailnetState>,
+  every: Duration.Duration = RECHECK,
+): Effect.Effect<never, never, Scope.Scope> =>
+  Effect.gen(function* () {
+    const held = new Map<string, Held>()
+    const close = (key: string, each: Held) =>
+      Effect.andThen(Scope.close(each.scope, Exit.void), Effect.sync(() => void held.delete(key))).pipe(
+        Effect.andThen(Effect.logInfo(`digest page: stopped listening on ${each.place.address}:${port}`)),
+      )
+    yield* Effect.addFinalizer(() => Effect.forEach([...held.entries()], ([key, each]) => close(key, each), { discard: true }))
+    const round = Effect.gen(function* () {
+      const tailnet = yield* probe.pipe(Effect.orElseSucceed(() => NO_TAILNET))
+      const wanted = new Map(tailnet.addresses.map((address): readonly [string, Place] => {
+        const place: Place = { address, port, listener: "tailnet", names: tailnet.names }
+        return [keyOf(place), place]
+      }))
+      yield* Effect.forEach([...held.entries()].filter(([key]) => !wanted.has(key)), ([key, each]) => close(key, each), { discard: true })
+      yield* Effect.forEach(
+        [...wanted.entries()].filter(([key]) => !held.has(key)),
+        ([key, place]) =>
+          Effect.gen(function* () {
+            const scope = yield* Scope.make()
+            const exit = yield* Effect.exit(Scope.provide(scope)(listen(place, handlers, dist)))
+            if (Exit.isSuccess(exit)) {
+              held.set(key, { place, scope })
+              return yield* Effect.logInfo(`digest page: listening on http://${hostOf(place.address)}:${port}`)
+            }
+            yield* Scope.close(scope, Exit.void)
+            yield* Effect.logDebug(`digest page: ${place.address}:${port} not bound; trying again`, { cause: exit.cause })
+          }),
+        { discard: true },
+      )
+      const served = Match.value({ found: wanted.size > 0, mine: held.size > 0 }).pipe(
+        Match.when({ mine: true }, (): TailnetState => "yes"),
+        Match.when({ found: true }, (): TailnetState => "held"),
+        Match.orElse((): TailnetState => "no"),
+      )
+      yield* Ref.set(state, served)
+    })
+    return yield* Effect.forever(Effect.andThen(round, Effect.sleep(every)))
+  })

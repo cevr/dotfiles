@@ -3,17 +3,19 @@
 // - The pairing file is the owner's alone (0600).
 // - `--list` names the paired browsers, and `--revoke` unpairs one by id, or all.
 // - A port that is not one is refused before anything is written.
+// - With Tailscale up it names the page's tailnet addresses (invented here), where a phone types the code.
 import { describe, expect, test } from "bun:test"
 import { existsSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { Clock, Effect, Exit, Option, Ref } from "effect"
 import { scratch } from "../../tests/scratch.ts"
+import { NO_TAILNET, type Tailnet } from "@dotfiles/opencode-digest/bind"
 import * as FilePairing from "@dotfiles/opencode-digest/filestore/pairing"
 import { main } from "./pair.ts"
 
-const said = async (args: ReadonlyArray<string>) => {
+const said = async (args: ReadonlyArray<string>, tailnet: Tailnet = NO_TAILNET) => {
   const printed = Effect.runSync(Ref.make<ReadonlyArray<string>>([]))
-  const code = await Effect.runPromise(main(args, (text) => Ref.update(printed, (all) => [...all, text])))
+  const code = await Effect.runPromise(main(args, (text) => Ref.update(printed, (all) => [...all, text]), Effect.succeed(tailnet)))
   return { code, text: Effect.runSync(Ref.get(printed)).join("\n") }
 }
 
@@ -34,6 +36,21 @@ describe("digest pair", () => {
     const again = await pairWith(dir, text)
     expect([Exit.isSuccess(first), Exit.isSuccess(again)]).toEqual([true, false])
     expect(statSync(join(dir, FilePairing.FILE)).mode & 0o777).toBe(0o600)
+    expect(text).toContain("Tailscale is not running here")
+  })
+
+  test("with Tailscale up, it names the page's tailnet addresses, names first, and says each pairs on its own", async () => {
+    using held = scratch("digest-pair-")
+    const tailnet = { addresses: ["100.101.102.103", "fd7a:115c:a1e0::42"], names: ["harbor.example-tailnet.ts.net", "harbor"] }
+    const { text } = await said(["--dir", join(held.path, "digest")], tailnet)
+    expect(text.split("\n").slice(3)).toEqual([
+      "On a phone or another device on your tailnet, open one of these and type the code:",
+      "  http://harbor.example-tailnet.ts.net:8240/",
+      "  http://harbor:8240/",
+      "  http://100.101.102.103:8240/",
+      "  http://[fd7a:115c:a1e0::42]:8240/",
+      "Each address pairs on its own: a browser paired at one of them is asked to pair again at another.",
+    ])
   })
 
   test("--list names each paired browser; --revoke unpairs one by its id, then all; an unknown id exits 1", async () => {

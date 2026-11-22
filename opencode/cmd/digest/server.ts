@@ -6,26 +6,34 @@
  * A line that does not decode as an event, or is over MAX_LINE bytes, is refused: the log holds only lines a
  * reader can fold.
  *
- * It also serves the digest's page on http://127.0.0.1:8240 (`@dotfiles/opencode-digest/http/listener`): the
+ * It also serves the digest's page on http://127.0.0.1:8240, and on the host's tailnet addresses on the same port
+ * while Tailscale runs (`@dotfiles/opencode-digest/http/listener`, re-read every RECHECK): the
  * built page, the view folded from the log and the owner's marks at each request (no model call, nothing
  * polled), and his marks (read, unread, Later, a project's name) kept beside the log (`filestore/marks`).
  *
  * Options (all optional; an absent one takes its default, a malformed one stops the plugin):
  * - `dir`: the log's directory, default `$XDG_STATE_HOME/opencode-digest` (`~/.local/state/opencode-digest`).
  * - `timezone` (digest.timezone): the zone Later's morning (6:00 AM) and the page's times are in, default the host's.
- * - `port`: the page's port on 127.0.0.1, default 8240.
+ * - `port`: the page's port, on 127.0.0.1 and the tailnet, default 8240.
+ * - `tailnetRead` (digest.tailnetRead): who reads the page on the tailnet, `"paired"` (default: a browser paired with
+ *   bun cmd/digest/pair.ts) or `"member"` (any device on his tailnet). Marks and answers there always need pairing.
+ *
+ * `GET /health` answers the health line (`@dotfiles/opencode-digest/health`), which the installer logs.
  */
 import { Plugin } from "@opencode/plugin/effect"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
-import { Cause, Clock, Context, Effect, Layer, Option, Path, Schema, type Scope } from "effect"
+import { Cause, Clock, Context, Effect, Layer, Option, Path, Ref, Schema, type Scope } from "effect"
 import { answer, AnswerOutcome, type Answerers, ItemReply, QuestionReply } from "@dotfiles/opencode-digest/answers"
 import { AppendInput, byteLength, decodeLine, decodeLines, DIGEST, MAX_LINE } from "@dotfiles/opencode-digest/event"
 import * as FileLog from "@dotfiles/opencode-digest/filestore/log"
 import * as FileMarks from "@dotfiles/opencode-digest/filestore/marks"
 import * as FilePairing from "@dotfiles/opencode-digest/filestore/pairing"
 import { EMPTY, fold } from "@dotfiles/opencode-digest/fold"
+import { buildOf, healthLine, sickLine, type TailnetState } from "@dotfiles/opencode-digest/health"
 import * as Listener from "@dotfiles/opencode-digest/http/listener"
 import { pageOf } from "@dotfiles/opencode-digest/messages"
+import type { TailnetRead } from "@dotfiles/opencode-digest/policy"
+import * as Tailnet from "@dotfiles/opencode-digest/process/tailnet"
 import { DigestLines, DigestUnwritable } from "@dotfiles/opencode-digest/service"
 import { encodeView, viewOf } from "@dotfiles/opencode-digest/view"
 import { hostZone, isZone } from "@dotfiles/opencode-digest/zone"
@@ -37,6 +45,7 @@ export const Options = Schema.Struct({
   dir: Schema.optionalKey(Schema.NonEmptyString),
   timezone: Schema.optionalKey(Schema.String.check(Schema.makeFilter((zone) => isZone(zone) || `"${zone}" is not a time zone`))),
   port: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 65_535 }))),
+  tailnetRead: Schema.optionalKey(Schema.Literals(["paired", "member"])),
 })
 export type Options = typeof Options.Type
 
@@ -52,12 +61,34 @@ export const live = (options: Options): Layer.Layer<DigestLines> => FileLog.laye
 /** The built page, committed beside the digest mod (`mods/digest/page/dist`). */
 const DIST = Effect.flatMap(Path.Path, (path) => path.fromFileUrl(new URL("../../mods/digest/page/dist", import.meta.url))).pipe(Effect.provide(Path.layer), Effect.orDie)
 
+/** The build this plugin runs from (its tree's name), `dev` from a checkout. */
+const BUILD = Effect.flatMap(Path.Path, (path) => path.fromFileUrl(new URL("./server.ts", import.meta.url))).pipe(Effect.map(buildOf), Effect.provide(Path.layer), Effect.orElseSucceed(() => "dev"))
+
+/** The health line over the log `lines`: its events and the newest one's time, and what the tailnet listener does. */
+export const healthOf = (lines: DigestLines["Service"], tailnet: Effect.Effect<TailnetState>): Effect.Effect<string> =>
+  Effect.gen(function* () {
+    const host = yield* Tailnet.hostName
+    const build = yield* BUILD
+    return yield* lines.read.pipe(
+      Effect.flatMap((log) =>
+        Effect.map(tailnet, (served) => {
+          const events = decodeLines(log).events
+          const last = Option.map(Option.fromUndefinedOr(events.at(-1)), (event) => event.t)
+          return healthLine({ build, host, events: events.length, last, peers: [], tailnet: served })
+        }),
+      ),
+      Effect.catch((failure) => Effect.succeed(sickLine(build, host, failure.message))),
+    )
+  })
+
 /** The page's handlers over the log `lines`, the marks and the pairing beside it, and the plugins that take answers. */
-export const handlersOf = (options: Options, lines: DigestLines["Service"], answerers: Answerers): Listener.Handlers => {
+export const handlersOf = (options: Options, lines: DigestLines["Service"], answerers: Answerers, tailnet: Effect.Effect<TailnetState> = Effect.succeed("no")): Listener.Handlers => {
   const marks = FileMarks.make(dirOf(options))
   const zone = zoneOf(options)
   const state = Effect.map(lines.read, (log) => fold(EMPTY, decodeLines(log).events))
   return {
+    health: healthOf(lines, tailnet),
+    tailnetRead: Option.getOrElse(Option.fromUndefinedOr(options.tailnetRead), (): TailnetRead => "paired"),
     view: Effect.gen(function* () {
       const page = pageOf(yield* state, { names: new Map() })
       return encodeView(viewOf(page, yield* marks.read, yield* Clock.currentTimeMillis, zone))
@@ -85,9 +116,17 @@ export const answerersOf = (ctx: Plugin.Context): Answerers => ({
   item: (root, id, given) => ctx.rpc(QUEUE).answer({ sessionID: root, id, answer: given }).pipe(Effect.flatMap(decodeItemReply), Effect.catchCause(unreachable("queue"))),
 })
 
-/** The live page: the listener on 127.0.0.1 with `handlers`, retrying while another instance holds the port. */
-export const livePage = (options: Options, handlers: Listener.Handlers): Effect.Effect<void, never, Scope.Scope> =>
-  Effect.flatMap(DIST, (dist) => Listener.serve(Option.getOrElse(Option.fromUndefinedOr(options.port), () => Listener.PORT), handlers, dist))
+/**
+ * The live page: the listener on 127.0.0.1 and those on the host's tailnet addresses, with `handlers`, each retrying
+ * while another instance holds it; `tailnet` is what the tailnet's listeners do, for the health line.
+ */
+export const livePage = (options: Options, handlers: Listener.Handlers, tailnet: Ref.Ref<TailnetState>): Effect.Effect<void, never, Scope.Scope> =>
+  Effect.gen(function* () {
+    const dist = yield* DIST
+    const port = Option.getOrElse(Option.fromUndefinedOr(options.port), () => Listener.PORT)
+    yield* Effect.forkScoped(Listener.serveTailnet(port, handlers, dist, Tailnet.probe, tailnet))
+    yield* Listener.serve(port, handlers, dist)
+  })
 
 const decodeInput = Schema.decodeUnknownEffect(AppendInput)
 
@@ -139,7 +178,8 @@ export const make = (externals: (options: Options) => Layer.Layer<DigestLines>, 
             }),
         })
         .pipe(Effect.orDie)
-      yield* Effect.forkScoped(page(options, handlersOf(options, lines, answerersOf(ctx))))
+      const tailnet = yield* Ref.make<TailnetState>("no")
+      yield* Effect.forkScoped(page(options, handlersOf(options, lines, answerersOf(ctx), Ref.get(tailnet)), tailnet))
     }),
   })
 

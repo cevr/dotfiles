@@ -6,8 +6,17 @@
 // keeps only each token's hash, beside the codes' hashes and the failed tries, in one file
 // (filestore/pairing.ts, 0600).
 //
-// Who may do what, by listener and route, is one table (`ACCESS`). On loopback a read or a mark needs no token and an
-// answer does. On any other listener (the tailnet, a later unit) everything needs one except the pairing itself.
+// Who may do what, by listener and route, is policy.ts's one decision.
+//
+// The rate limit is per source address, with a global ceiling and a floor:
+// - each address may fail SOURCE_FAILURES times in RATE_WINDOW_MS, then it alone is refused (429) before anything
+//   is compared;
+// - past GLOBAL_FAILURES failures in the window from all addresses together, an address that failed in the window is
+//   refused too;
+// - but an address that has not failed in the window always gets its try (the floor).
+// So no one address locks pairing for the others, and a guesser gets at most GLOBAL_FAILURES tries a minute, plus
+// one for each further address it has. On the tailnet that is one IPv4 and one IPv6 address for each device. A local
+// program shares 127.0.0.1 with the Mac's own browser; it runs as him and could rewrite the pairing file itself.
 import { Data, type Effect, type Option } from "effect"
 
 /** How long a code may be exchanged. */
@@ -20,8 +29,10 @@ export const OLD_COOKIE = "digest_pair"
 export const ALPHABET = "ABCDEFGHJKMNPQRSTVWXYZ23456789"
 /** A code's characters: 10 of 30, about 49 bits. */
 export const CODE_LENGTH = 10
-/** Failed exchanges allowed in one RATE_WINDOW_MS. Past them, every exchange is refused before any code is compared. */
-export const RATE_FAILURES = 5
+/** Failed exchanges one source address may make in one RATE_WINDOW_MS; past them, its tries are refused uncompared. */
+export const SOURCE_FAILURES = 5
+/** Failed exchanges from all addresses in one RATE_WINDOW_MS past which only an address with none in it may try. */
+export const GLOBAL_FAILURES = 30
 export const RATE_WINDOW_MS = 60_000
 /** Browsers paired at once (his Mac's and his phone's, and a few more); a pairing past them unpairs the oldest. */
 export const MAX_PAIRED = 8
@@ -56,7 +67,7 @@ export interface Pairing {
    * `code` used up for a new token, for the browser `label`. It is atomic across fibers and processes: a code is
    * exchanged once, and a failed try is counted before the next one is compared.
    */
-  readonly exchange: (code: string, now: number, label: string) => Effect.Effect<{ readonly id: string; readonly token: string }, PairRefused | PairingUnavailable>
+  readonly exchange: (code: string, now: number, label: string, source?: string) => Effect.Effect<{ readonly id: string; readonly token: string }, PairRefused | PairingUnavailable>
   /** The paired browser `token` is, if it is one. */
   readonly verify: (token: string) => Effect.Effect<Option.Option<string>>
   /** The browsers paired now, oldest first. */
@@ -65,27 +76,19 @@ export interface Pairing {
   readonly revoke: (which: { readonly id: string } | "all") => Effect.Effect<number, PairingUnavailable>
 }
 
-/** The failed tries kept for the rate limit: those in the window. */
-export const failuresIn = (failures: ReadonlyArray<number>, now: number): ReadonlyArray<number> => failures.filter((t) => now - t < RATE_WINDOW_MS)
-
-/** Whether another exchange may be tried now, given the failed tries kept. */
-export const mayTry = (failures: ReadonlyArray<number>, now: number): boolean => failuresIn(failures, now).length < RATE_FAILURES
-
-// ── Who may do what ──
-
-/** The listener a request came in on: loopback (this unit's only one) or another address (the tailnet). */
-export type Listener = "loopback" | "remote"
-
-/** A route's kind: a read (the page, the view, whether paired), a mark (read, Later, a name), an answer, the pairing. */
-export type RouteKind = "read" | "mark" | "answer" | "pair"
-
-/** What a route needs on a listener: nothing but the page's own origin, or a paired browser. */
-export type Need = "open" | "paired"
-
-export const ACCESS: Readonly<Record<Listener, Readonly<Record<RouteKind, Need>>>> = {
-  loopback: { read: "open", mark: "open", answer: "paired", pair: "open" },
-  remote: { read: "paired", mark: "paired", answer: "paired", pair: "open" },
+/** A failed exchange: when, and from which address. */
+export interface Failure {
+  readonly t: number
+  readonly source: string
 }
 
-/** What `kind` needs on `listener`. */
-export const needOf = (listener: Listener, kind: RouteKind): Need => ACCESS[listener][kind]
+/** The failed tries kept for the rate limit: those in the window. */
+export const failuresIn = (failures: ReadonlyArray<Failure>, now: number): ReadonlyArray<Failure> => failures.filter((each) => now - each.t < RATE_WINDOW_MS)
+
+/** Whether `source` may try an exchange now, given the failed tries kept (the rule above). */
+export const mayTry = (failures: ReadonlyArray<Failure>, source: string, now: number): boolean => {
+  const recent = failuresIn(failures, now)
+  const own = recent.filter((each) => each.source === source).length
+  return own === 0 || (own < SOURCE_FAILURES && recent.length < GLOBAL_FAILURES)
+}
+

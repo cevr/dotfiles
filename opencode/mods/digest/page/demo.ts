@@ -141,7 +141,7 @@ const code = await Effect.runPromise(FilePairing.make(dir).issue(Date.now()))
 await Effect.runPromise(
   Effect.scoped(
     Effect.gen(function* () {
-      const bound = yield* listen(port, handlersOf({ dir, timezone: zone }, log, answerers), dist)
+      const bound = yield* listen({ address: "127.0.0.1", port, listener: "loopback", names: [] }, handlersOf({ dir, timezone: zone }, log, answerers), dist)
       console.log(`digest demo (${seed}): http://${bound.hostname}:${bound.port}/#pair=${code}`)
       yield* Effect.never
     }),
