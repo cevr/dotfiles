@@ -118,7 +118,16 @@
     },
     {
       "files": [
-        "mods/questions/opencode/race.test.ts"
+        "mods/questions/opencode/crash.ts"
+      ],
+      "rules": {
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/questions/opencode/race.test.ts",
+        "mods/questions/opencode/crash.test.ts"
       ],
       "rules": {
         "effect/noAsyncFunction": "off",
