@@ -4,7 +4,8 @@
 // The merge happens in a worktree of the fork of its own (detached, kept between runs so its
 // node_modules stay warm), never in the checkout `OPENCODE_DEV` builds, and starts from origin's
 // prime-look. A conflict is aborted; a clean merge must pass the fork's `bun run check` (lint and
-// typecheck, what its pre-push hook runs) and the dotfiles acceptance tests most exposed to host
+// typecheck, what its pre-push hook runs), the fork's feature checks (scripts/fork-checks.ts: the tests
+// of each fork feature, scripts/fork-checks.json) and the dotfiles acceptance tests most exposed to host
 // changes, run against the merged worktree with the mods linked to it, on a calm host, a failed file
 // rerun once (`acceptance`). Only then does the merge go to origin, and only once origin holds it does
 // `prime-look` fast-forward to it; when origin moved meanwhile, the merge starts over from its head. A
@@ -19,6 +20,7 @@ import { closeSync, existsSync, ftruncateSync, mkdirSync, mkdtempSync, openSync,
 import { loadavg, tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import type { UpstreamReading } from "../mods/prime/update.ts"
+import { featureCheckArgv } from "./fork-checks.ts"
 
 /** The host that owns the fork, as `peersOf` names hosts (lower case, no `.local`). */
 export const FORK_OWNER = "cristians-macbook-pro"
@@ -335,6 +337,8 @@ const judgeMerge = (options: Options, run: Runner, made: Made, result: CheckResu
   if (result.ok) return landMerge(options, run, made.start, made.merge, made.commits)
   options.log(`upstream: the merge is red (${result.check}); ${BRANCH} unchanged`)
   holdMerge(options, run, made.start, made.merge, `Upstream merge is red: ${result.check}`, [
+    `Upstream commits it brings: \`git log ${made.start.base.slice(0, 10)}..${made.start.upstream.slice(0, 10)}\` (${plural(made.commits, "commit")}).`,
+    "",
     "## Failing check",
     "",
     `\`${result.check}\`, run against the merged worktree ${options.worktree}:`,
@@ -582,7 +586,8 @@ export const acceptance = async (files: ReadonlyArray<string>, run: TestRun, hos
 
 /**
  * The real checks, each niced: the merged lockfile installs as committed, the fork's `bun run check`
- * (lint, and typecheck of every package) passes, and the exposed acceptance tests pass with `OPENCODE_DEV` at the merge,
+ * (lint, and typecheck of every package) passes, the fork's feature checks pass on the merge (`bun
+ * scripts/fork-checks.ts --fork <merge>`, which bounds its own time and waits), and the exposed acceptance tests pass with `OPENCODE_DEV` at the merge,
  * without the caller's Anthropic routing (`acceptance`: on a calm host, a failed file rerun once).
  */
 export const forkChecks =
@@ -597,9 +602,12 @@ export const forkChecks =
     }
     // `bun run check` is the fork's lint and typecheck of every package, what its pre-push hook runs, so the
     // push may skip the hook (`pushOrigin`).
+    // Then the fork's feature checks (scripts/fork-checks.ts, its list scripts/fork-checks.json) on the merge: a red
+    // test, a listed file the merge lost, or a run that could not finish (load, lock, disk floor, time bound) holds it.
     const steps: ReadonlyArray<readonly [string, string, ReadonlyArray<string>]> = [
       ["bun install --frozen-lockfile", dir, ["bun", "install", "--frozen-lockfile"]],
       ["bun run check", dir, ["bun", "run", "check"]],
+      ["fork feature checks (scripts/fork-checks.ts)", opencode, featureCheckArgv(opencode, dir)],
     ]
     for (const [check, cwd, command] of steps) {
       const ran = await spawn(cwd, command)
