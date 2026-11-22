@@ -418,6 +418,7 @@ describe("a feature's since: required only in a checkout that contains the commi
       expect(runs.map((run) => run.files)).toEqual([["test/a.test.ts"]])
       const text = reportLines(f.input.list, verdict, Option.none()).join("\n")
       expect(text).toContain(`not yet in this checkout (since ${f.since})`)
+      expect(text).toContain("fork-checks: green, 1 features (1 not yet in this checkout)")
     }),
   )
 

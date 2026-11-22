@@ -344,6 +344,9 @@ const contains = Effect.fn("ForkChecks.contains")(function* (fork: string, commi
   )
 })
 
+/** How a note names a feature this checkout is not required to hold yet. */
+const NOT_YET = "not yet in this checkout"
+
 /**
  * The list as this checkout must hold it: a feature with a `since` the checkout does not contain is left out, each
  * named in a note ("not yet in this checkout"), never silently. One it contains is required like any other, so a
@@ -357,7 +360,7 @@ export const activeList = Effect.fn("ForkChecks.activeList")(function* (list: Li
     }),
   )
   const notes = judged.flatMap((each) =>
-    Option.toArray(Option.map(each.pending, (why) => `not yet in this checkout (${why}): ${each.feature.id}: ${each.feature.files.map((file) => `${each.feature.package}/${file}`).join(", ")}`)),
+    Option.toArray(Option.map(each.pending, (why) => `${NOT_YET} (${why}): ${each.feature.id}: ${each.feature.files.map((file) => `${each.feature.package}/${file}`).join(", ")}`)),
   )
   const features = judged.filter((each) => Option.isNone(each.pending)).map((each) => each.feature)
   return { features, notes }
@@ -398,7 +401,11 @@ export const reportLines = (list: List, verdict: Verdict, range: Option.Option<s
   const over = Option.getOrElse(Option.map(range, (each) => ` over ${each}`), () => "")
   const name = (red: Red) => [`${red.package}/${red.file}`, ...Arr.filter([red.test], (test) => test !== "")].join(" > ")
   return Match.value(verdict).pipe(
-    Match.when({ kind: "green" }, (green) => [...green.notes, `fork-checks: green${over}, ${list.features.length} features`]),
+    Match.when({ kind: "green" }, (green) => {
+      const pending = green.notes.filter((note) => note.startsWith(NOT_YET)).length
+      const held = Arr.filter([` (${pending} not yet in this checkout)`], () => pending > 0).join("")
+      return [...green.notes, `fork-checks: green${over}, ${list.features.length - pending} features${held}`]
+    }),
     Match.when({ kind: "red" }, (red) => [
       ...red.notes,
       ...red.reds.map((each) => `RED ${name(each)} [${featuresOf(list, each).join(", ")}]: ${each.why}`),
