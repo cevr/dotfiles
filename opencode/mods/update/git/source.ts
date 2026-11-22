@@ -12,27 +12,37 @@ export interface Checkout {
   readonly env: Readonly<globalThis.Record<string, string>>
   /** The script that puts this host's commands into `~/.local/bin` once a build is proven (`binScript`). */
   readonly bin: Option.Option<BinScript>
+  /** The installed build's plugin tree, `<share>/current.plugins` (`filestore/stage.ts` `CURRENT_TREE`). */
+  readonly tree: string
 }
 
-/** A script of the checkout, with its arguments, run through `sh`. */
+/** A script, with its arguments, run through `sh` from the root it lives in. */
 export interface BinScript {
-  /** Its path from the checkout's root. */
+  /** Its path from that root. */
   readonly path: string
   readonly args: ReadonlyArray<string>
+  /**
+   * Where it runs from: the installed build's tree (`tree`), which holds the verified commit's files, or
+   * the live checkout as it stands (`checkout`). A tree without the script fails the commands, so a
+   * missing delivery is logged; a checkout without it runs nothing.
+   */
+  readonly from: "tree" | "checkout"
 }
 
 /**
- * The workbox's script install, as bootstrap runs it, then the fresh `apply-agent-settings`. Without
- * it, `~/.local/bin` kept the copies bootstrap made, missing what the checkout added since (a link
- * apply-agent-settings had gained, 2026-11-15).
+ * The workbox's commands and shell files (`~/.zshenv`, `~/.zshrc`), as bootstrap installs them, then
+ * the fresh `apply-agent-settings`, from the installed tree's `workbox/`. Without it, `~/.local/bin`
+ * kept the copies bootstrap made (a link apply-agent-settings had gained, 2026-11-15); run from the
+ * live checkout, it installed whatever that checkout held, which Syncthing fills from the Mac's base
+ * and no update moves (`~/.zshenv` was two days behind the verified install, 2026-11-22).
  */
-export const WORKBOX_BIN: BinScript = { path: "workbox/install-bin.sh", args: ["--apply"] }
+export const WORKBOX_BIN: BinScript = { path: "workbox/install-bin.sh", args: ["--apply"], from: "tree" }
 
 /**
  * The Mac's command links, as install.sh makes them. Without it, a link added since the last
- * install.sh never came (rex-show, 2026-11-15).
+ * install.sh never came (rex-show, 2026-11-15). Its links point into the checkout, so it runs there.
  */
-export const MAC_BIN: BinScript = { path: "local-bin.sh", args: [] }
+export const MAC_BIN: BinScript = { path: "local-bin.sh", args: [], from: "checkout" }
 
 /** The script a host runs once a build is proven: the workbox's on Linux, the Mac's on macOS. A checkout without it runs nothing. */
 export const binScript = (platform: string): Option.Option<BinScript> => {
@@ -69,9 +79,12 @@ export const layer = (checkout: Checkout) => {
 
   const scripts = Effect.gen(function* () {
     if (Option.isNone(checkout.bin)) return
-    const script = `${checkout.root}/${checkout.bin.value.path}`
+    const bin = checkout.bin.value
+    const root = { tree: checkout.tree, checkout: checkout.root }[bin.from]
+    const script = `${root}/${bin.path}`
     const exists = yield* Effect.tryPromise({ try: () => file(script).exists(), catch: (cause) => new UpdateFailed({ step: "find the host's commands script", message: String(cause) }) })
-    if (exists) yield* run("install the host's commands", ["sh", script, ...checkout.bin.value.args], here)
+    if (!exists && bin.from === "tree") return yield* new UpdateFailed({ step: "find the host's commands script", message: `${script} is not in the installed tree` })
+    if (exists) yield* run("install the host's commands", ["sh", script, ...bin.args], { cwd: root, env: checkout.env })
   })
 
   return Layer.succeed(Source, Source.of({ verified, fetch, commands: scripts }))

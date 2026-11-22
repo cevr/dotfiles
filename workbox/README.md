@@ -130,6 +130,14 @@ noncurrent snapshot objects after 14 days.
 - `apply-agent-settings` links the shared Claude and Codex settings and
   installs the synced local ones; `bite-agent-settings.path` runs it when they
   change, and the fleet update runs it through `install-bin.sh --apply`.
+- `install-bin.sh` installs `bin/*` into `~/.local/bin` and the shell files
+  into `~/.local/share/workbox/` (renamed into place), with `~/.zshenv` and
+  `~/.zshrc` linking there. The fleet update runs it after each proven install
+  from the installed build's tree (`~/.local/share/opencode-prime/current.plugins/workbox/`),
+  so these are the verified commit's files. The live checkout
+  (`~/Developer/personal/dotfiles`) is a Syncthing copy of the Mac's base,
+  and no update moves it. `bootstrap.sh --check` fails when the shell files
+  are not the installed build's.
 - `trash` moves files to the home trash, across Btrfs subvolumes.
 - `cleanup-mosh-servers` removes disconnected Mosh servers.
 
