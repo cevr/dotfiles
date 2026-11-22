@@ -70,8 +70,11 @@ usage: workrift <command>
                               and run the warm step if HEAD's tree changed since the last warm
                               (post-rewrite passes its argument: rebase means a rebase has ended)
   refresh                     update the warm source from its default branch
-  advance                     bring the warm source up to date (when its window is due) without
-                              holding copies back; create starts it in the background
+  advance                     bring the warm source to its default branch (when its window is due):
+                              fetch, fast-forward, install, hooks; create starts it in the background
+  hold [--shared] -- <command...>
+                              run a command in the warm source with its lock held (exclusive
+                              unless --shared), in line with creates and advances
   list                        list the warm source's workspaces
   remove [--dry-run] [--with-children] [path | branch]
                               delete a workspace for good (under rift: move it to
@@ -79,7 +82,7 @@ usage: workrift <command>
                               delete and deletes nothing
   prune [--dry-run]           archive and remove workspaces idle for two days
   sources                     list warm sources
-  check                       check the warm source
+  check                       check the warm source, and warn when its build output is old
   settings                    give the warm source its host settings from workrift's
                               table (warm step, .env link); init does it too
 
@@ -199,7 +202,7 @@ install_dependencies() {
     fi
   fi
   # Close the source lock so a daemon the install starts cannot hold it.
-  (cd "$1" && sh -c "$command") 6>&- 7>&- 9>&-
+  (cd "$1" && sh -c "$command") 3>&- 6>&- 8>&- 9>&-
   lock_fingerprint "$1" >"$(installed_locks_file "$1")"
 }
 
@@ -223,7 +226,7 @@ warm_command() {
 
 run_warm() {
   # A build can leave a daemon running (turbo); it must not inherit the source lock.
-  (cd "$1" && sh -c "$2") 6>&- 7>&- 9>&-
+  (cd "$1" && sh -c "$2") 3>&- 6>&- 8>&- 9>&-
 }
 
 # The tree the last successful warm step built, kept in the Git directory beside
@@ -320,7 +323,7 @@ install_dependency_hooks() {
   mkdir -p "$(dirname "$exclude_file")"
   grep -qxF '/lefthook-local.yml' "$exclude_file" 2>/dev/null || printf '/lefthook-local.yml\n' >>"$exclude_file"
   if [ -x "$1/node_modules/.bin/lefthook" ]; then
-    (cd "$1" && node_modules/.bin/lefthook install >/dev/null)
+    (cd "$1" && node_modules/.bin/lefthook install >/dev/null) 3>&- 6>&- 8>&- 9>&-
   fi
 }
 
@@ -333,28 +336,39 @@ workspace_name() {
     sed 's/^-*//; s/-*$//'
 }
 
-# A fetch of one refspec into the base, outside any lock. Creates that start
-# together fetch origin's default branch together, and Git refuses the second
-# update of a ref the first one just moved ("cannot lock ref ... is at X but
-# expected Y"): that fetch is tried again, up to three times.
-fetch_ref() {
-  f_try=1
-  while ! git -C "$1" fetch --no-tags origin "$2"; do
-    [ "$f_try" -lt 3 ] || fail "fetch of $2 into $1 failed three times"
-    f_try=$((f_try + 1))
-    sleep 1
-  done
+# Where origin's default branch $2 and the branch $3 are, read from the base
+# $1 without writing it (ls-remote): remote_main and remote_branch (empty when
+# origin has no such branch). A create fetches into its workspace, never into
+# the base: a fetch writes the base's refs and objects through files it renames
+# into place, and a copy beside it would fail on the one that went away.
+remote_heads() {
+  r_heads=$(git -C "$1" ls-remote origin "refs/heads/$2" "refs/heads/$3")
+  remote_main=$(printf '%s\n' "$r_heads" | awk -v ref="refs/heads/$2" '$2 == ref { print $1 }')
+  remote_branch=$(printf '%s\n' "$r_heads" | awk -v ref="refs/heads/$3" '$2 == ref { print $1 }')
+  [ -n "$remote_main" ] || fail "origin has no branch $2 (git ls-remote in $1)"
 }
 
-fetch_branch() {
-  source_path=$1
-  branch=$2
-  if git -C "$source_path" ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null; then
-    fetch_ref "$source_path" "+refs/heads/$branch:refs/remotes/origin/$branch"
+# After the copy, outside any lock: the workspace $1 fetches origin's default
+# branch $3 and, when origin has it, the branch $2, and moves the branch it
+# was made on to where it starts: a branch the base had is fast-forwarded to
+# origin's, one origin has starts there and tracks it, a new one starts at
+# origin's default branch with no upstream (its first push sets its own). The
+# copy started at the base's HEAD, so only the files that differ are written.
+# $4 says the base had the branch. Git hooks print to stdout, and stdout
+# carries only the workspace path.
+workspace_start() {
+  if [ -n "$remote_branch" ]; then
+    git -C "$1" fetch --no-tags origin "+refs/heads/$3:refs/remotes/origin/$3" "+refs/heads/$2:refs/remotes/origin/$2" >&2
   else
-    status=$?
-    # ls-remote exits 2 when the branch does not exist; anything else is a real failure.
-    [ "$status" -eq 2 ] || exit "$status"
+    git -C "$1" fetch --no-tags origin "+refs/heads/$3:refs/remotes/origin/$3" >&2
+  fi
+  if [ "$4" = true ]; then
+    [ -z "$remote_branch" ] || git -C "$1" merge --ff-only "origin/$2" >&2
+  elif [ -n "$remote_branch" ]; then
+    git -C "$1" reset -q --keep "origin/$2" >&2
+    git -C "$1" branch --quiet --set-upstream-to "origin/$2" "$2" >&2
+  else
+    git -C "$1" reset -q --keep "origin/$3" >&2
   fi
 }
 
@@ -390,11 +404,8 @@ create_workspace() {
   phase_label="create $branch"
   create_started=$(date +%s)
   main=$(main_branch "$source_path")
-  phase "fetch $branch and $main from origin"
-  fetch_branch "$source_path" "$branch"
-  # The source's HEAD lags the default branch until the next refresh, so new
-  # branches start from a freshly fetched remote default branch instead.
-  fetch_ref "$source_path" "+refs/heads/$main:refs/remotes/origin/$main"
+  phase "look up $branch and $main on origin"
+  remote_heads "$source_path" "$main" "$branch"
 
   if gh_stack_metadata=$(find_gh_stack_metadata "$source_path" "$branch"); then
     :
@@ -423,32 +434,41 @@ create_workspace() {
     lock_source "$source_path" shared
   done
   phase 'locked'
-  base_wants "$source_path" "$main"
+  base_wants "$source_path" "$main" "$remote_main"
   phase "clone $name"
   work_deps_tag=
   if [ "$backend" = work ]; then
-    made=$(work_new "$source_path" "$name" "$branch" "$main")
+    made=$(work_new "$source_path" "$name" "$branch")
     unlock_source
-    unset WORKRIFT_CREATING
     work_deps_tag=${made%%	*}
+    made=${made#*	}
+    had_branch=${made%%	*}
     workspace=${made#*	}
+    phase "fetch $branch and $main into the workspace"
+    workspace_start "$workspace" "$branch" "$main" "$had_branch"
   else
     workspace=$(rift create "$source_path" --copy-all --name "$name")
     unlock_source
-    unset WORKRIFT_CREATING
+    phase "fetch $branch and $main into the workspace"
+    if [ -n "$remote_branch" ]; then
+      git -C "$workspace" fetch --no-tags origin "+refs/heads/$main:refs/remotes/origin/$main" "+refs/heads/$branch:refs/remotes/origin/$branch" >&2
+    else
+      git -C "$workspace" fetch --no-tags origin "+refs/heads/$main:refs/remotes/origin/$main" >&2
+    fi
     # Git hooks print to stdout, and stdout carries only the workspace path.
     if git -C "$workspace" show-ref --verify --quiet "refs/heads/$branch"; then
       git -C "$workspace" switch "$branch" >&2
-      if git -C "$workspace" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+      if [ -n "$remote_branch" ]; then
         git -C "$workspace" merge --ff-only "origin/$branch" >&2
       fi
-    elif git -C "$workspace" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+    elif [ -n "$remote_branch" ]; then
       git -C "$workspace" switch --track -c "$branch" "origin/$branch" >&2
     else
       # --no-track so the first push sets the branch's own upstream, not the default branch.
       git -C "$workspace" switch --no-track -c "$branch" "origin/$main" >&2
     fi
   fi
+  unset WORKRIFT_CREATING
 
   start_advance "$source_path" "$main"
 
@@ -469,11 +489,28 @@ create_workspace() {
   # Untrusted: work installed nothing (its work.toml's commands are not
   # trusted on this host), so workrift installs with its own fixed command,
   # as for NoDeps (trust_note).
+  # work new starts the workspace at the base's head, so its Unchanged is of
+  # the base's lock; the branch the workspace moved to after may carry another.
+  # Where work installs ([deps]), work deps (by its own record) installs that
+  # one, once, and the next `workrift deps` finds it installed.
+  # workspace_deps says itself when work did not trust the file.
+  w_noted=false
   case "$work_deps_tag" in
-    '' | NoDeps | Unchanged | Untrusted) sync_dependencies "$workspace" >&2 ;;
-    Installed) workspace_deps "$source_path" "$workspace" >&2 ;;
+    Unchanged)
+      if work_installs "$source_path"; then
+        workspace_deps "$source_path" "$workspace" >&2
+        w_noted=true
+      else
+        sync_dependencies "$workspace" >&2
+      fi
+      ;;
+    '' | NoDeps | Untrusted) sync_dependencies "$workspace" >&2 ;;
+    Installed)
+      workspace_deps "$source_path" "$workspace" >&2
+      w_noted=true
+      ;;
   esac
-  [ "$backend" != work ] || trust_note "$source_path" "$work_deps_tag"
+  [ "$backend" != work ] || [ "$w_noted" = true ] || trust_note "$source_path" "$work_deps_tag"
   # The copied build output matches the source's tree, not the branch's. A warm
   # step that shares its cache with the source rebuilds only what differs.
   note_cold "$source_path"
@@ -547,119 +584,333 @@ note_cold() {
   fi
 }
 
-# A base's locks, files in its Git directory, always taken in this order and
-# never one while waiting for an earlier one:
-#   workrift-advance.lock    one advance at a time (fast-forward, install,
-#                            hooks, warm), from its start to its end
-#   workrift-turnstile.lock  held by a writer while it waits for the base's
-#                            lock, and passed through by a reader, so a stream
-#                            of copies never keeps a writer out
-#   workrift.lock            the base's lock: shared while a copy reads the
-#                            base (`work new`, `rift create`), exclusive while
-#                            the base moves (fast-forward, install, hooks)
-# A copy never waits for a warm: an advance warms the base with only its own
-# lock held, and a copy taken meanwhile carries an empty warm marker, so its
-# workspace builds what differs itself. Fetches, the workspace's branch moves,
-# its install and its build take no lock. Before 2026-11-21 every create held
-# the one lock exclusively through the base's fast-forward, install and warm
-# and its own copy: seven creates in one minute queued for up to 1291 s
-# behind a 628 s warm and each other's 96-239 s copies.
+# A base's locks are queues of tickets, kept outside the base, in its state
+# folder (state_dir): a copy (`work new`, `rift create`) clones the whole base,
+# Git directory too, and a file a sibling adds or removes in it while the copy
+# runs fails that copy (cp: ...: No such file or directory; 2 of 60 creates
+# when the holder records were kept in .git, 2026-11-21). Nothing workrift
+# writes changes the base while a copy may read it: every write of the base (a
+# fetch, a fast-forward, an install, the managed hooks, a warm, a settings
+# change) is a writer's, under the exclusive lock.
 #
-# Each holder records itself in the Git directory's workrift-lock-holders/
-# (a file named by its pid: when, and what), so a create that waits can say
-# whom for. A wait says so at once and again each minute.
+# Two queues, always taken in this order and never one while waiting for the
+# other the wrong way round:
+#   advance/  one advance, refresh or repair at a time
+#   base/     the base's lock: shared (.r) while a copy reads the base,
+#             exclusive (.w) while the base changes
+# A ticket is a file named <number>.<r|w>, numbered in the order of arrival
+# (allocated under the state folder's queue.lock, held for milliseconds). Its
+# owner holds it locked (flock -x) from its allocation to its end, so it ends
+# when the owner closes it, exits or dies (kill -9 included: the kernel drops
+# the lock). A writer enters once every earlier ticket has ended; a reader once
+# every earlier writer has. So service is in arrival order across both kinds,
+# readers next to each other in line go in together, a writer is never
+# starved by a stream of readers (those behind it wait for it), and readers
+# never by writers (a reader waits only for the writers before it). A wait is
+# bounded by the holds before it in line. The background advance alone is
+# polite: it takes its place in line only once the line is empty, or after
+# advance_every seconds (queue_enter's polite mode), so creates rarely wait
+# behind it for the copies before it.
+#
+# Linux flock keeps no order among waiters: before 2026-11-22 the lock was one
+# flock taken with `flock -w 60` in a loop, and three creates waited about
+# 78 minutes while eight that came later got the lock.
+#
+# A ticket records its owner (pid and start time, as ps has them), since when,
+# whether it waits or holds, and what for, so a waiter can say whom it waits
+# for. A ticket whose owner is gone (a child that inherited the descriptor
+# outlived it) is no longer waited for once a waiter sees the owner gone, within
+# seconds; one whose lock is free is removed by the next allocation.
 git_path() {
   git -C "$1" rev-parse --path-format=absolute --git-path "$2"
 }
 
-# flock of the descriptor $1 in mode $2 (-s or -x), saying each minute whom
-# it waits for ($3 is the base).
-wait_flock() {
-  if ! flock -n "$2" "$1"; then
-    while :; do
-      printf 'workrift: waiting for the lock of %s:%s\n' "$3" "$(lock_holders_words "$3")" >&2
-      l_tried=$(date +%s)
-      ! flock -w 60 "$2" "$1" || break
-      # A wait that gave up early is no wait but a failing flock.
-      [ $(($(date +%s) - l_tried)) -ge 55 ] || fail "flock of $3's lock failed"
-    done
+# The folder of a base's workspaces, by work's own rule (Ergo's
+# modules/work/work/api.ergo Home): work.toml's [work] storage, relative to the
+# base, with <base> its folder's name; else <base's folder>/.work/<base's name>.
+base_home() {
+  h_storage=
+  if [ -f "$1/work.toml" ]; then
+    h_storage=$(awk '
+      /^[[:space:]]*\[/ { section = $0; gsub(/[[:space:]]/, "", section); next }
+      section == "[work]" && /^[[:space:]]*storage[[:space:]]*=/ {
+        line = $0
+        sub(/^[^=]*=[[:space:]]*"/, "", line)
+        sub(/".*$/, "", line)
+        print line
+        exit
+      }' "$1/work.toml")
+  fi
+  if [ -z "$h_storage" ]; then
+    printf '%s/.work/%s\n' "$(dirname "$1")" "$(basename "$1")"
+    return 0
+  fi
+  h_name=$(basename "$1")
+  h_storage=$(printf '%s' "$h_storage" | sed "s|<base>|$h_name|g")
+  case "$h_storage" in
+    /*) printf '%s\n' "$h_storage" ;;
+    *) printf '%s/%s\n' "$1" "$h_storage" ;;
+  esac
+}
+
+# The base's state folder, into state_value: <home>/.workrift beside its
+# workspaces, outside the base (a storage inside the base is refused: a copy
+# would read it).
+state_dir() {
+  if [ "${state_for:-}" != "$1" ]; then
+    s_dir=$(base_home "$1")/.workrift
+    mkdir -p "$s_dir"
+    s_dir=$(cd "$s_dir" && pwd -P)
+    s_base=$(cd "$1" && pwd -P)
+    case "$s_dir/" in
+      "$s_base/"*) fail "the state folder $s_dir is inside the base $1 (work.toml's storage): a copy of the base would read it" ;;
+    esac
+    state_for=$1
+    state_value=$s_dir
   fi
 }
 
-# The base's lock, shared ($2 = shared) or exclusive (the default). Release
-# with unlock_source, or at exit.
-lock_source() {
-  exec 7>"$(git_path "$1" workrift-turnstile.lock)"
-  wait_flock 7 -x "$1"
-  exec 9>"$(git_path "$1" workrift.lock)"
-  if [ "${2:-exclusive}" = shared ]; then
-    exec 7>&-
-    wait_flock 9 -s "$1"
-  else
-    wait_flock 9 -x "$1"
-    exec 7>&-
+# A Git command that changes the base, under its exclusive lock: no automatic
+# gc or maintenance (a detached gc would repack the base beside the next
+# copies) and no ticket descriptor for a child to keep.
+base_git() {
+  b_dir=$1
+  shift
+  git -c gc.auto=0 -c maintenance.auto=false -C "$b_dir" "$@" 3>&- 6>&- 8>&- 9>&-
+}
+
+# The start time of the process $1 as ps has it (empty when it is gone).
+process_start() {
+  ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//; s/ *$//' || true
+}
+
+# Whether the owner a ticket file records still runs.
+ticket_owner_alive() {
+  t_pid=$(sed -n 1p "$1" 2>/dev/null) || return 1
+  [ -n "$t_pid" ] || return 1
+  t_start=$(sed -n 2p "$1" 2>/dev/null)
+  [ "$(process_start "$t_pid")" = "$t_start" ]
+}
+
+# Whether a ticket is live: locked by its owner, and its owner runs. A ticket
+# being written under queue.lock is never looked at outside it.
+ticket_live() {
+  [ -f "$1" ] || return 1
+  if flock -n -x "$1" true 3>&- 6>&- 8>&- 9>&-; then
+    return 1
   fi
-  holder_file=$(lock_holders_dir "$1")/$holder_pid
-  mkdir -p "${holder_file%/*}"
-  printf '%s %s\n' "$(date +%s)" "$lock_purpose" >"$holder_file"
-  trap 'rm -f "$holder_file" "${advance_holder_file:-}"' EXIT
+  ticket_owner_alive "$1"
+}
+
+# Under queue.lock: drops the queue's tickets that are not live.
+queue_sweep() {
+  for q_old in "$1"/*.[rw]; do
+    [ -f "$q_old" ] || continue
+    ticket_live "$q_old" || rm -f "$q_old" "$q_old.in"
+  done
+  for q_old in "$1"/*.in; do
+    [ -e "$q_old" ] && [ ! -e "${q_old%.in}" ] || continue
+    rm -f "$q_old"
+  done
+}
+
+# Whether queue $1 (a folder) holds a live ticket.
+queue_busy() {
+  for q_any in "$1"/*.[rw]; do
+    ! ticket_live "$q_any" || return 0
+  done
+  return 1
+}
+
+# The number of a ticket file.
+ticket_number() {
+  t_n=${1##*/}
+  printf '%s\n' "${t_n%.*}"
+}
+
+# The live tickets the ticket $1 (of kind $2) waits for: every earlier one for
+# a writer, every earlier writer for a reader; one a line, earliest first.
+ticket_ahead() {
+  a_mine=$(ticket_number "$1")
+  for a_file in "${1%/*}"/*.[rw]; do
+    [ -f "$a_file" ] && [ "$a_file" != "$1" ] || continue
+    a_n=$(ticket_number "$a_file")
+    [ "$a_n" -lt "$a_mine" ] || continue
+    case "$2:$a_file" in r:*.r) continue ;; esac
+    ticket_live "$a_file" || continue
+    printf '%s %s\n' "$a_n" "$a_file"
+  done | sort -n | cut -d' ' -f2-
+}
+
+# Words for the tickets ahead of $1 ($2: its kind): how many, and the oldest.
+ticket_ahead_words() {
+  w_ahead=$(ticket_ahead "$1" "$2")
+  w_count=$(printf '%s' "$w_ahead" | grep -c . || true)
+  w_first=$(printf '%s\n' "$w_ahead" | head -n 1)
+  if [ -z "$w_first" ]; then
+    printf ' nothing ahead'
+    return 0
+  fi
+  printf ' behind %s; the first %s' "$w_count" "$(ticket_words "$w_first")"
+}
+
+# One ticket in words: `pid P (what), holding since T` or `waiting since T`.
+ticket_words() {
+  if [ -e "$1.in" ]; then t_state=holding; else t_state=waiting; fi
+  printf 'pid %s (%s), %s since %s' "$(sed -n 1p "$1")" "$(sed -n 4p "$1")" "$t_state" "$(clock_time "$(sed -n 3p "$1")")"
+}
+
+# What holds or waits in a base's queue $2 (base or advance), in words.
+queue_words() {
+  state_dir "$1"
+  qw_found=
+  for qw_each in "$state_value/$2"/*.[rw]; do
+    ticket_live "$qw_each" || continue
+    printf ' %s' "$(ticket_words "$qw_each")"
+    qw_found=true
+  done
+  [ -n "$qw_found" ] || printf ' none'
+}
+
+# Writes a ticket's record, once, under queue.lock (a record rewritten later
+# could be read empty, its owner taken for gone): owner, its start, since,
+# purpose. That it holds is a file beside it, <ticket>.in, made once it is in.
+ticket_record() {
+  holder_start=${holder_start:-$(process_start "$holder_pid")}
+  printf '%s\n%s\n%s\n%s\n' "$holder_pid" "$holder_start" "$(date +%s)" "$lock_purpose" >"$1"
+}
+
+# queue_enter BASE QUEUE KIND FD MODE: a ticket of KIND (r or w) in the base's
+# QUEUE, held on descriptor FD (6, 8 or 9), its path in queue_ticket. MODE:
+#   wait    take a place in line now and wait for the tickets ahead
+#   try     take it only when the queue holds no live ticket (else return 1)
+#   polite  take a place once the line is empty, or after advance_every
+#           seconds, whichever comes first, then wait
+# While it waits, a line says whom for, at once and each minute.
+queue_enter() {
+  q_base=$1
+  state_dir "$1"
+  q_dir=$state_value/$2
+  q_kind=$3
+  q_fd=$4
+  q_mode=$5
+  mkdir -p "$q_dir"
+  q_since=$(date +%s)
+  while :; do
+    exec 3>"${q_dir%/*}/queue.lock"
+    # A blocking flock ends only once it holds the lock, so a failure is an
+    # error (no flock, a file it cannot lock): never go on without the mutex.
+    flock -x 3 || fail "flock of ${q_dir%/*}/queue.lock failed"
+    queue_sweep "$q_dir"
+    if [ "$q_mode" = wait ] || ! queue_busy "$q_dir"; then
+      break
+    fi
+    if [ "$q_mode" = try ]; then
+      exec 3>&-
+      return 1
+    fi
+    q_left=$((q_since + advance_every - $(date +%s)))
+    [ "$q_left" -gt 0 ] || break
+    exec 3>&-
+    # Polite: wait for what is in line now to end (or the patience to run
+    # out), without a place, then look again.
+    for q_in in "$q_dir"/*.[rw]; do
+      [ -f "$q_in" ] || continue
+      q_left=$((q_since + advance_every - $(date +%s)))
+      [ "$q_left" -gt 0 ] || break
+      ticket_wait "$q_in" "$q_left"
+    done
+  done
+  q_n=$(cat "${q_dir%/*}/next" 2>/dev/null || true)
+  case "$q_n" in '' | *[!0-9]*) q_n=0 ;; esac
+  q_n=$((q_n + 1))
+  printf '%s\n' "$q_n" >"${q_dir%/*}/next"
+  queue_ticket=$q_dir/$q_n.$q_kind
+  eval "exec $q_fd>\"\$queue_ticket\""
+  flock -x "$q_fd" || fail "flock of $queue_ticket failed"
+  ticket_record "$queue_ticket"
+  exec 3>&-
+  q_ahead=$(ticket_ahead "$queue_ticket" "$q_kind")
+  if [ -n "$q_ahead" ]; then
+    printf 'workrift: waiting for the lock of %s:%s\n' "$q_base" "$(ticket_ahead_words "$queue_ticket" "$q_kind")" >&2
+    q_mine=$queue_ticket
+    (
+      while sleep 60 >/dev/null 2>&1; do
+        [ -n "$(process_start "$holder_pid")" ] || exit 0
+        printf 'workrift: still waiting for the lock of %s:%s; in line since %s\n' \
+          "$q_base" "$(ticket_ahead_words "$q_mine" "$q_kind")" "$(clock_time "$q_since")" >&2
+      done
+    ) 3>&- 6>&- 8>&- 9>&- &
+    q_talker=$!
+    printf '%s\n' "$q_ahead" | while IFS= read -r q_in; do
+      ticket_wait "$q_in" ''
+    done
+    kill "$q_talker" 2>/dev/null || true
+  fi
+  : >"$queue_ticket.in"
+}
+
+# Waits until the ticket $1 has ended: its lock free (a blocking flock that
+# takes nothing of anyone's) or its owner gone, at most $2 seconds when set.
+# The descriptors of this process's own tickets stay out of the flock child:
+# were this process killed while it waits, the child would keep them.
+ticket_wait() {
+  w_until=
+  [ -z "$2" ] || w_until=$(($(date +%s) + $2))
+  while [ -f "$1" ]; do
+    ! flock -w 5 -s "$1" true 3>&- 6>&- 8>&- 9>&- || return 0
+    ticket_owner_alive "$1" || return 0
+    [ -z "$w_until" ] || [ "$(date +%s)" -lt "$w_until" ] || return 0
+  done
+}
+
+# Gives a ticket back: its descriptor closed, then its file removed.
+queue_leave() {
+  eval "exec $1>&-"
+  rm -f "$2" "$2.in"
+}
+
+# Removes this process's tickets at exit (their locks end with it anyway).
+tickets_at_exit() {
+  for t_mine in "${base_ticket:-}" "${advance_ticket:-}" "${hold_ticket:-}"; do
+    [ -z "$t_mine" ] || rm -f "$t_mine" "$t_mine.in"
+  done
+}
+
+# The base's lock: shared ($2 = shared) or exclusive (the default), on
+# descriptor 9. Release with unlock_source, or at exit.
+lock_source() {
+  if [ "${2:-exclusive}" = shared ]; then l_kind=r; else l_kind=w; fi
+  queue_enter "$1" base "$l_kind" 9 "${3:-wait}" || return 1
+  base_ticket=$queue_ticket
 }
 
 unlock_source() {
-  rm -f "$holder_file"
-  exec 9>&-
+  queue_leave 9 "$base_ticket"
+  base_ticket=
 }
 
 # The base's advance lock, on descriptor 6: tried once ($2 = try; fails when
 # another advance runs) or waited for.
 lock_advance() {
-  exec 6>"$(git_path "$1" workrift-advance.lock)"
   if [ "${2:-}" = try ]; then
-    flock -n -x 6 || { exec 6>&-; return 1; }
+    queue_enter "$1" advance w 6 try || return 1
   else
-    wait_flock 6 -x "$1"
+    queue_enter "$1" advance w 6 wait
   fi
-  advance_holder_file=$(lock_holders_dir "$1")/$holder_pid.advance
-  mkdir -p "${advance_holder_file%/*}"
-  case "$lock_purpose" in
-    advance) a_purpose=advance ;;
-    *) a_purpose="advance ($lock_purpose)" ;;
-  esac
-  printf '%s %s\n' "$(date +%s)" "$a_purpose" >"$advance_holder_file"
-  trap 'rm -f "${holder_file:-}" "$advance_holder_file"' EXIT
+  advance_ticket=$queue_ticket
 }
 
 unlock_advance() {
-  rm -f "$advance_holder_file"
-  exec 6>&-
+  queue_leave 6 "$advance_ticket"
+  advance_ticket=
 }
 
 # Written under the exclusive lock before the base moves (fast-forward,
 # install), removed once it has: a copy never reads a base with it.
 moving_file() {
-  git_path "$1" workrift-moving
-}
-
-lock_holders_dir() {
-  git -C "$1" rev-parse --path-format=absolute --git-path workrift-lock-holders
-}
-
-# Who holds the base's lock, as recorded: ` held by pid P since T (what)` for
-# each holder whose process still runs (where the process table reads).
-lock_holders_words() {
-  l_found=
-  for l_file in "$(lock_holders_dir "$1")"/*; do
-    [ -f "$l_file" ] || continue
-    l_pid=${l_file##*/}
-    l_pid=${l_pid%%.*}
-    if [ -d "$proc_root" ] && [ ! -e "$proc_root/$l_pid" ]; then
-      continue
-    fi
-    read -r l_since l_what <"$l_file" || true
-    printf ' held by pid %s since %s (%s)' "$l_pid" "$(clock_time "${l_since:-0}")" "${l_what:-?}"
-    l_found=true
-  done
-  [ -n "$l_found" ] || printf ' held by no workrift that recorded itself (a create from before this version, or a half-made remove)'
+  state_dir "$1"
+  printf '%s/moving\n' "$state_value"
 }
 
 # Seconds since the epoch as a UTC time of day, on Linux and macOS.
@@ -674,27 +925,60 @@ phase() {
   printf 'workrift: %s: %s (%ss)\n' "$phase_label" "$1" "$(($(date +%s) - create_started))" >&2
 }
 
-# A create starts an advance of the base (fast-forward, install, warm) at most
-# once in this many seconds. With a score of agents landing, main moves every
-# few minutes, and an advance on each move would rebuild the base nearly all
-# the time. A lane never starts behind: its branch starts at origin's default
-# branch as just fetched; only the copied build output is for an older tree,
-# and the workspace's own install and warm step bring it up to date. Ten
-# minutes keeps the base at most ten minutes of landings behind, so that
-# rebuild stays small. WORKRIFT_ADVANCE_EVERY overrides it, for tests only.
+# A create starts an advance of the base (fetch, fast-forward, install, hooks)
+# at most once in this many seconds. With a score of agents landing, main moves
+# every few minutes. A lane never starts behind: its branch starts at origin's
+# default branch as fetched into the workspace; only the copied build output is
+# for an older tree, and the workspace's own install and warm step bring it up
+# to date. WORKRIFT_ADVANCE_EVERY overrides it, for tests only. It is also how
+# long the background advance defers to copies before it takes its place in
+# line (queue_enter's polite mode).
 advance_every=${WORKRIFT_ADVANCE_EVERY:-600}
 
-# When a create last advanced the base, in seconds since the epoch; written
-# only once an advance succeeded, so a failed one holds no window.
+# When an advance last moved the base, in seconds since the epoch; written only
+# once one succeeded, so a failed one holds no window.
 advanced_stamp_file() {
-  git -C "$1" rev-parse --path-format=absolute --git-path workrift-advanced-at
+  state_dir "$1"
+  printf '%s/advanced-at\n' "$state_value"
 }
 
 # The tree whose warm step last failed in the base: it is not tried again for
-# that tree (a failing build would hold the lock for every create); a new tree
-# (main moved) or a refresh tries again.
+# that tree; a new tree or a refresh tries again.
 warm_failed_file() {
-  git -C "$1" rev-parse --path-format=absolute --git-path workrift-warm-failed
+  state_dir "$1"
+  printf '%s/warm-failed\n' "$state_value"
+}
+
+# How far the base's build output lags its tree: `<moves> <warmed at>`, the
+# moves since the base's last warm and when that warm ended (0: never, or
+# before this record). An advance moves the base without warming it (warming
+# under the exclusive lock would keep every copy out for minutes; 628 s on the
+# workbox, 2026-11-20), so the base's output ages until a refresh warms it.
+staleness_file() {
+  state_dir "$1"
+  printf '%s/staleness\n' "$state_value"
+}
+
+# Reads staleness_file into stale_moves and stale_since.
+read_staleness() {
+  s_file=$(staleness_file "$1")
+  stale_moves=0
+  stale_since=0
+  [ ! -f "$s_file" ] || read -r stale_moves stale_since <"$s_file" || true
+  case "${stale_moves:-}" in '' | *[!0-9]*) stale_moves=0 ;; esac
+  case "${stale_since:-}" in '' | *[!0-9]*) stale_since=0 ;; esac
+}
+
+# A health check's threshold: the base's output is old past this many moves or
+# seconds since its warm.
+stale_moves_max=12
+stale_seconds_max=86400
+
+# Whether an advance warms the base too, under the exclusive lock (git config
+# workrift.advanceWarm true): copies then wait for the warm, and their
+# workspaces build nothing that was on main at the advance. Off by default.
+advance_warms() {
+  [ "$(git -C "$1" config --get --type=bool workrift.advanceWarm 2>/dev/null || true)" = true ]
 }
 
 # Whether the base's managed lefthook-local.yml is missing or out of date.
@@ -706,32 +990,40 @@ hooks_stale() {
 }
 
 # The workspace shares every unchanged block with the source, so a source behind
-# the default branch makes the workspace's branch switch rewrite each file changed
-# since, and those files stop being shared: the base is brought up to date, but
-# only what it lacks, by an advance (run_advance) after the copy, never in front
-# of it. Under the shared lock, a create reads what the base lacks into
-# advance_due (behind origin's default branch, and no advance within
-# advance_every), want_hooks (the managed hooks missing or old) and want_warm
-# (the last warm did not build HEAD's tree, and has not failed for it), and
-# says when it is behind inside the window or its warm failed. A base with
-# nothing to do costs a few reads; N creates on a fresh base start no advance.
+# the default branch makes the workspace's start rewrite each file changed since,
+# and those files stop being shared: the base is brought up to date, but only
+# what it lacks, by an advance (run_advance) after the copy, never in front of
+# it. Under the shared lock, a create reads, by reads alone, what the base lacks
+# into advance_due (its HEAD is not origin's default branch $3, as ls-remote
+# answered, and no advance within advance_every), want_hooks (the managed hooks
+# missing or old) and, where advances warm, want_warm; it says when the base
+# is behind inside the window, and how old its build output is.
 base_wants() {
   advance_due=false
   want_hooks=false
   want_warm=false
-  if [ "$(git -C "$1" rev-parse HEAD)" != "$(git -C "$1" rev-parse "origin/$2")" ]; then
+  if [ -n "$3" ] && [ "$(git -C "$1" rev-parse HEAD)" != "$3" ]; then
     last=$(cat "$(advanced_stamp_file "$1")" 2>/dev/null || true)
     case "$last" in '' | *[!0-9]*) last=0 ;; esac
     since=$(($(date +%s) - last))
     if [ "$since" -ge "$advance_every" ]; then
       advance_due=true
     else
-      printf 'workrift: %s is behind origin/%s; a create advanced it %ss ago, the next advance comes after %ss: this workspace starts at origin/%s and builds what differs itself\n' \
+      printf 'workrift: %s is behind origin/%s; an advance moved it %ss ago, the next comes after %ss: this workspace starts at origin/%s and builds what differs itself\n' \
         "$1" "$2" "$since" "$advance_every" "$2" >&2
     fi
   fi
   ! hooks_stale "$1" || want_hooks=true
-  if [ -n "$(warm_command "$1")" ] && [ "${WORKRIFT_WARM:-1}" != 0 ]; then
+  read_staleness "$1"
+  if [ "$stale_moves" -gt 0 ]; then
+    if [ "$stale_since" -gt 0 ]; then
+      s_when="its last warm ended $(age_words $(($(date +%s) - stale_since))) ago"
+    else
+      s_when='no warm recorded'
+    fi
+    phase "base: moved $stale_moves times since its build output was made ($s_when); this workspace builds what differs (workrift refresh warms the base)"
+  fi
+  if advance_warms "$1" && [ -n "$(warm_command "$1")" ] && [ "${WORKRIFT_WARM:-1}" != 0 ]; then
     tree=$(git -C "$1" rev-parse 'HEAD^{tree}')
     if [ "$(cat "$(warmed_tree_file "$1")" 2>/dev/null || true)" != "$tree" ]; then
       if [ "$(cat "$(warm_failed_file "$1")" 2>/dev/null || true)" = "$tree" ]; then
@@ -745,60 +1037,62 @@ base_wants() {
 }
 
 # After the copy, with no base lock held: an advance of the base in the
-# background (`workrift advance`, its output in the Git directory's
-# workrift-advance.log) when the base lacks anything, unless one already runs.
-# The create does not wait for it; a create that starts once it has ended
-# copies what it made. Out of the caller's session where setsid is (Linux),
-# so an interrupt of the create does not cut the base's warm.
+# background (`workrift advance`, its output in the state folder's
+# advance.log) when the base lacks anything, unless one already runs. The
+# create does not wait for it; a create that starts once it has ended copies
+# what it made. Out of the caller's session where setsid is (Linux), so an
+# interrupt of the create does not cut the base's move.
 start_advance() {
   [ "$advance_due" = true ] || [ "$want_hooks" = true ] || [ "$want_warm" = true ] || return 0
-  if ! flock -n "$(git_path "$1" workrift-advance.lock)" true; then
-    printf 'workrift: an advance of %s is under way:%s; this workspace builds what differs itself\n' "$1" "$(lock_holders_words "$1")" >&2
+  state_dir "$1"
+  if queue_busy "$state_value/advance"; then
+    printf 'workrift: an advance of %s is under way:%s; this workspace builds what differs itself\n' "$1" "$(queue_words "$1" advance)" >&2
     return 0
   fi
-  a_log=$(git_path "$1" workrift-advance.log)
+  a_log=$state_value/advance.log
   a_launch=
   if command -v setsid >/dev/null 2>&1; then a_launch=setsid; fi
   # shellcheck disable=SC2086 # no launcher, or setsid
-  WORKRIFT_SOURCE=$1 $a_launch "$0" advance </dev/null >>"$a_log" 2>&1 6>&- 7>&- 9>&- &
+  WORKRIFT_SOURCE=$1 $a_launch "$0" advance </dev/null >>"$a_log" 2>&1 3>&- 6>&- 8>&- 9>&- &
   phase "base: advance in the background (pid $!, log $a_log)"
 }
 
-# `workrift advance`: bring the base to origin's default branch (when due),
-# its install and managed hooks up to date, and its warm step built for HEAD's
-# tree. One at a time (the advance lock, tried once: another advance running
-# is this one's work). The fast-forward, install and hooks run under the
-# exclusive lock, with the moving marker, and the Git hooks they fire defer;
-# the warm runs with only the advance lock held, its marker empty meanwhile,
-# so copies made during it build what differs themselves. A kill anywhere
-# leaves every lock free (the kernel drops them) and the base either moving
-# (the next create repairs it before any copy) or with no warm marker (the
-# next advance warms it).
+# `workrift advance`: bring the base to origin's default branch (when due), and
+# its install and managed hooks up to date; where advances warm, its warm step
+# too. One at a time (the advance lock, tried once: another advance running is
+# this one's work). All of it runs under the exclusive lock, taken politely
+# (once no copy is in line, or after advance_every), with the moving marker,
+# and the Git hooks it fires defer. A kill anywhere leaves every lock free
+# (the kernel drops them) and the base either moving (the next create repairs
+# it before any copy) or with no warm marker (a refresh warms it).
 run_advance() {
   source_path=$(resolve_source)
   require_source "$source_path"
   main=$(main_branch "$source_path")
   phase_label="advance $source_path"
   create_started=$(date +%s)
-  lock_purpose="advance"
+  lock_purpose=advance
   if ! lock_advance "$source_path" try; then
     phase 'another advance runs: nothing to do'
     return 0
   fi
   phase "started by pid $holder_pid"
-  base_wants "$source_path" "$main"
+  WORKRIFT_CREATING=1
+  export WORKRIFT_CREATING
+  phase "lock $source_path"
+  lock_source "$source_path" exclusive polite
+  phase 'locked'
+  phase "base: fetch $main from origin"
+  base_git "$source_path" fetch --no-tags origin "+refs/heads/$main:refs/remotes/origin/$main" >&2
+  base_wants "$source_path" "$main" "$(git -C "$source_path" rev-parse "origin/$main")"
   moved=false
-  if [ "$advance_due" = true ] || [ "$want_hooks" = true ]; then
-    WORKRIFT_CREATING=1
-    export WORKRIFT_CREATING
-    phase "lock $source_path"
-    lock_source "$source_path"
-    phase 'locked'
-    base_move "$source_path" "$main"
-    unlock_source
-    unset WORKRIFT_CREATING
+  base_move "$source_path" "$main"
+  warm_ok=true
+  if advance_warms "$source_path"; then
+    base_warm "$source_path"
   fi
-  base_warm "$source_path"
+  unlock_source
+  unset WORKRIFT_CREATING
   if [ "$moved" = true ] && [ "$warm_ok" = true ]; then
     date +%s >"$(advanced_stamp_file "$source_path")"
   fi
@@ -813,13 +1107,15 @@ base_move() {
   : >"$(moving_file "$1")"
   if [ "$advance_due" = true ]; then
     if [ "$(git -C "$1" branch --show-current)" != "$2" ]; then
-      git -C "$1" switch "$2" >&2
+      base_git "$1" switch "$2" >&2
     fi
     phase "base: fast-forward to origin/$2"
-    git -C "$1" merge --ff-only "origin/$2" >&2
+    base_git "$1" merge --ff-only "origin/$2" >&2
     phase 'base: install if its lock file changed'
     sync_dependencies "$1" >&2
     moved=true
+    read_staleness "$1"
+    printf '%s %s\n' $((stale_moves + 1)) "$stale_since" >"$(staleness_file "$1")"
   fi
   if hooks_stale "$1"; then
     phase 'base: managed hooks'
@@ -828,7 +1124,7 @@ base_move() {
   rm -f "$(moving_file "$1")"
 }
 
-# The base's warm step, with no base lock held, unless the last one built
+# The base's warm step, under its exclusive lock, unless the last one built
 # HEAD's tree or failed for it. Sets warm_ok.
 base_warm() {
   warm_ok=true
@@ -844,6 +1140,7 @@ base_warm() {
   warm_build "$1" "$1" >&2
   if [ "$(cat "$(warmed_tree_file "$1")" 2>/dev/null || true)" = "$tree" ]; then
     rm -f "$failed_file"
+    printf '0 %s\n' "$(date +%s)" >"$(staleness_file "$1")"
   else
     printf '%s\n' "$tree" >"$failed_file"
     warm_ok=false
@@ -868,38 +1165,65 @@ repair_base() {
   unlock_advance
 }
 
+# `workrift refresh`: the base to origin's default branch, installed, its
+# hooks managed and its warm step built, all under the exclusive lock (copies
+# wait for it, in line).
 refresh_source() {
   source_path=${1:-$(resolve_source)}
   require_source "$source_path"
   lock_purpose=refresh
   lock_advance "$source_path"
   main=$(main_branch "$source_path")
-  git -C "$source_path" fetch --prune origin
   # The hooks the switch and the fast-forward fire defer: refresh installs and
-  # warms itself, the warm with the base's lock free.
+  # warms itself.
   WORKRIFT_CREATING=1
   export WORKRIFT_CREATING
   lock_source "$source_path"
+  base_git "$source_path" fetch --prune origin
   [ -z "$(git -C "$source_path" status --porcelain)" ] || fail "source has changes: $source_path"
   : >"$(moving_file "$source_path")"
-  git -C "$source_path" switch "$main"
-  git -C "$source_path" merge --ff-only "origin/$main"
+  base_git "$source_path" switch "$main"
+  base_git "$source_path" merge --ff-only "origin/$main"
   install_dependencies "$source_path"
   install_dependency_hooks "$source_path"
   rm -f "$(moving_file "$source_path")"
-  unlock_source
-  unset WORKRIFT_CREATING
   warm=$(warm_command "$source_path")
   if [ -n "$warm" ]; then
     : >"$(warmed_tree_file "$source_path")"
     run_warm "$source_path" "$warm"
     git -C "$source_path" rev-parse 'HEAD^{tree}' >"$(warmed_tree_file "$source_path")"
+    rm -f "$(warm_failed_file "$source_path")"
+    printf '0 %s\n' "$(date +%s)" >"$(staleness_file "$source_path")"
   else
     note_cold "$source_path"
   fi
+  unlock_source
+  unset WORKRIFT_CREATING
   unlock_advance
   trust_note "$source_path"
   printf 'Warm source is ready at %s.\n' "$source_path"
+}
+
+# `workrift hold [--shared] -- COMMAND...`: COMMAND run in the base with its
+# lock held, exclusive unless --shared, in line like any create or advance:
+# work on the base by hand (a gc, a repair) that no copy may read half done.
+hold_source() {
+  h_mode=exclusive
+  if [ "${1:-}" = --shared ]; then
+    h_mode=shared
+    shift
+  fi
+  [ "${1:-}" = -- ] || { usage >&2; exit 2; }
+  shift
+  [ "$#" -gt 0 ] || { usage >&2; exit 2; }
+  source_path=$(resolve_source)
+  require_source "$source_path"
+  lock_purpose="hold $*"
+  lock_source "$source_path" "$h_mode"
+  h_status=0
+  (cd "$source_path" && "$@") 3>&- 6>&- 8>&- 9>&- || h_status=$?
+  unlock_source
+  return "$h_status"
 }
 
 remove_workspace() {
@@ -1128,6 +1452,17 @@ check_source() {
   require_source "$source_path"
   test -w "$source_path"
   main_branch "$source_path" >/dev/null
+  # An advance moves the base without warming it: its build output ages until
+  # a refresh, and each new workspace builds more of what differs.
+  if [ -n "$(warm_command "$source_path")" ]; then
+    read_staleness "$source_path"
+    c_age=0
+    [ "$stale_since" -eq 0 ] || c_age=$(($(date +%s) - stale_since))
+    if [ "$stale_moves" -ge "$stale_moves_max" ] || [ "$c_age" -ge "$stale_seconds_max" ]; then
+      printf 'workrift: warning: the build output of %s is %s moves behind its tree (%s); its workspaces each build what differs: run workrift refresh at a quiet time\n' \
+        "$source_path" "$stale_moves" "$([ "$stale_since" -gt 0 ] && printf 'warmed %s ago' "$(age_words "$c_age")" || printf 'no warm recorded')" >&2
+    fi
+  fi
   printf 'Warm source checks passed: %s\n' "$source_path"
 }
 
@@ -1223,11 +1558,29 @@ work_init() {
 # Prints what work's install did (its deps tag), a tab, and the path.
 # The branch continues the base's branch of that name, else origin's
 # (tracking it), else starts at origin's default branch, as with Rift.
+# After a `work new` that failed: a failure work reports (CloneFailed and the
+# rest) leaves nothing, since work deletes the folder it made and drops its
+# reservation (modules/work/work/new.ergo Fill: Leave, unreserve). A work that
+# died on the way (a kill, a crash) leaves its Creating record and maybe a
+# folder; that one is handed to `work gc -id`, work's own command for it, which
+# deletes a clone it never marked and activates one it did (said here).
+work_new_failed() {
+  f_left=$(work_in "$1" --json list 2>/dev/null |
+    jq -r --arg n "$2" '.[] | select(.name == $n and .state._tag == "Creating") | .id' 2>/dev/null || true)
+  [ -n "$f_left" ] || return 0
+  printf 'workrift: work new left its Creating record %s (%s); work gc -id collects it\n' "$2" "$f_left" >&2
+  work_in "$1" gc -id "$f_left" >&2 || printf 'workrift: work gc -id %s failed; the record stays for work gc\n' "$f_left" >&2
+  f_now=$(work_in "$1" --json list 2>/dev/null |
+    jq -r --arg i "$f_left" '.[] | select(.id == $i) | "\(.state._tag) \(.path)"' 2>/dev/null || true)
+  if [ -n "$f_now" ]; then
+    printf 'workrift: after work gc, the record of %s is %s\n' "$2" "$f_now" >&2
+  fi
+}
+
 work_new() {
   w_source=$1
   w_name=$2
   w_branch=$3
-  w_main=$4
   w_json=$(work_in "$w_source" --json list) || fail "work list failed in $w_source: $w_json"
   w_free=$w_name
   w_n=2
@@ -1239,35 +1592,32 @@ work_new() {
     w_n=$((w_n + 1))
   done
 
-  w_track=false
+  # A branch the base has is checked out as it is; any other starts at the
+  # base's HEAD, so the copy's checkout writes nothing, and workspace_start
+  # moves it to where it starts once the base's lock is free.
+  w_had=false
   if git -C "$w_source" show-ref --verify --quiet "refs/heads/$w_branch"; then
     w_from=
-  elif git -C "$w_source" show-ref --verify --quiet "refs/remotes/origin/$w_branch"; then
-    w_from=origin/$w_branch
-    w_track=true
+    w_had=true
   else
-    w_from=origin/$w_main
+    w_from=$(git -C "$w_source" rev-parse HEAD)
   fi
   # An install or hook work runs must not inherit the source lock.
-  w_made=$(work_in "$w_source" --json new -branch "$w_branch" ${w_from:+-from "$w_from"} "$w_free" 6>&- 7>&- 9>&-) ||
+  if ! w_made=$(work_in "$w_source" --json new -branch "$w_branch" ${w_from:+-from "$w_from"} "$w_free" 3>&- 6>&- 8>&- 9>&-); then
+    work_new_failed "$w_source" "$w_free"
     fail "work new failed for $w_branch in $w_source: $w_made"
+  fi
   w_path=$(printf '%s' "$w_made" | jq -r '.path')
   [ -n "$w_path" ] && [ -d "$w_path/.git" ] || fail "work new made no workspace for $w_branch: $w_made"
   # Untrusted is said once by create's trust_note.
   printf '%s' "$w_made" | jq -r '[.deps._tag, .hooks._tag] | map(select(test("Fail"))) | .[] | "workrift: work new: \(.)"' >&2
 
-  # Git hooks print to stdout, and stdout carries only the workspace path.
-  if [ "$w_track" = true ]; then
-    git -C "$w_path" branch --quiet --set-upstream-to "origin/$w_branch" "$w_branch" >&2
-  elif [ -z "$w_from" ] && git -C "$w_path" show-ref --verify --quiet "refs/remotes/origin/$w_branch"; then
-    git -C "$w_path" merge --ff-only "origin/$w_branch" >&2
-  fi
   # work gives the clone's origin a push URL that refuses every push; a branch
   # made here is pushed for review, as one made in a Rift is.
   if [ "$(git -C "$w_path" config --get remote.origin.pushurl || true)" = no-push:workspaces-never-push-origin ]; then
     git -C "$w_path" config --unset remote.origin.pushurl
   fi
-  printf '%s\t%s\n' "$(printf '%s' "$w_made" | jq -r '.deps._tag')" "$w_path"
+  printf '%s\t%s\t%s\n' "$(printf '%s' "$w_made" | jq -r '.deps._tag')" "$w_had" "$w_path"
 }
 
 # The commits of the checkout $1 found nowhere else, newest first, one hash a
@@ -1532,9 +1882,12 @@ work_remove_half_made() {
   done
   IFS=$h_old_ifs
 
-  # No create or refresh of the base runs while this looks and deletes.
-  exec 8>"$(git -C "$h_base" rev-parse --path-format=absolute --git-path workrift.lock)"
-  flock -n 8 || h_no "a workrift create or refresh holds the lock of $h_base:$(lock_holders_words "$h_base"); try again once it ends"
+  # No create or refresh of the base runs while this looks and deletes (the
+  # base's lock, exclusive, on descriptor 8, taken only when nothing is in line).
+  lock_purpose="remove half-made $h_path"
+  queue_enter "$h_base" base w 8 try ||
+    h_no "a workrift create, advance or refresh is in line for the lock of $h_base:$(queue_words "$h_base" base); try again once it ends"
+  hold_ticket=$queue_ticket
 
   # No record names it or a folder below it, but one: a Creating record of
   # this very path in this base, with an id, which work gc -id takes.
@@ -1892,6 +2245,7 @@ trust_note() {
 
 lock_purpose=workrift
 holder_pid=$$
+trap tickets_at_exit EXIT
 
 backend=rift
 if [ -e "$backend_file" ]; then
@@ -1956,6 +2310,9 @@ case "$command" in
     [ "$#" -eq 0 ] || { usage >&2; exit 2; }
     run_advance
     ;;
+  hold)
+    hold_source "$@"
+    ;;
   list)
     [ "$#" -eq 0 ] || { usage >&2; exit 2; }
     if [ "$backend" = work ]; then
@@ -1990,7 +2347,10 @@ case "$command" in
     [ "$#" -eq 0 ] || { usage >&2; exit 2; }
     source_path=$(resolve_source)
     require_source "$source_path"
+    lock_purpose=settings
+    lock_source "$source_path"
     apply_base_settings "$source_path"
+    unlock_source
     ;;
   --help | -h)
     usage
