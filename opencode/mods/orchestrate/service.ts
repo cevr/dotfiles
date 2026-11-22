@@ -10,7 +10,7 @@ import type { Calls, Held } from "./ledger.ts"
 import type { ModelRef, PaceReply } from "./pace.ts"
 import type { Relation } from "./skill-drift.ts"
 import type { Hold } from "./tool-call.ts"
-import type { HeadSeen } from "./lost.ts"
+import type { HeadSeen, LaneStatus } from "./lost.ts"
 import type { Merge, UnitFiles, Verified } from "./tools.ts"
 import type { Transition } from "./unit-log.ts"
 
@@ -277,6 +277,8 @@ export class RunFiles extends Context.Service<
  * - `touchedAt`: when the lane's HEAD last moved (its HEAD reflog's last write; epoch ms).
  * - `held`: the paths of `lanes` some process has its working directory in, now.
  * - `lands`: the commit times of `main`'s first-parent line in `repo` (epoch ms), newest first, at most `limit`.
+ * - `statuses`: what Ergo's `work --json list -status` says of each lane of the base `repo`, by path; none when the
+ *   installed `work` does not give it (the plain list carries no status).
  */
 /** A head to place, and the lanes whose objects may hold it (its own lane; none when it is gone). */
 export interface Wanted {
@@ -291,6 +293,7 @@ export class WorkGit extends Context.Service<
     readonly touchedAt: (lane: string) => Effect.Effect<Option.Option<number>>
     readonly held: (lanes: ReadonlyArray<string>) => Effect.Effect<ReadonlySet<string>>
     readonly lands: (repo: string, main: string, limit: number) => Effect.Effect<ReadonlyArray<number>>
+    readonly statuses: (repo: string) => Effect.Effect<ReadonlyMap<string, LaneStatus>>
   }
 >()("dotfiles-opencode/orchestrate/WorkGit") {}
 

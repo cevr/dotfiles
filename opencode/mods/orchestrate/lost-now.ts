@@ -5,7 +5,7 @@
 import { Array as Arr, Effect, Option } from "effect"
 import type { Run } from "./idle.ts"
 import type { Held } from "./ledger.ts"
-import { type HeadSeen, IDLE_MS, type LaneSeen, lostText, OnMain, type SessionSeen, type UnitSeen, Verifier } from "./lost.ts"
+import { hashReasons, type HeadSeen, IDLE_MS, type LaneSeen, type LaneStatus, lostReport, lostText, OnMain, sameCommit, type SessionSeen, type UnitSeen, Verifier } from "./lost.ts"
 import { MainLine, RootHolds, RunFiles, Sessions, StepLog, WorkGit } from "./service.ts"
 import { isInternal, type Lane, lanesOf } from "./tools.ts"
 
@@ -105,28 +105,46 @@ const unitsSeen = (runs: ReadonlyArray<Run>, listed: Listed) =>
     ).pipe(Effect.map((all) => all.flatMap(Option.toArray)))
   })
 
-/**
- * What status says of lost work, for the root `sessionID` in `checkout`: the unit-first list, then the lane-first
- * lists, then what to do (lost.ts); nothing when nothing is lost or the default branch cannot be read.
- */
-export const lostNow = Effect.fn("Orchestrate.lostNow")(function* (sessionID: string, checkout: string, runs: ReadonlyArray<Run>, listed: Listed, now: number) {
+/** A lane's place as Ergo's list status says it, when it measured this head without error and found it on main. */
+const statusPlace = (lane: Lane, status: Option.Option<LaneStatus>): Option.Option<OnMain> =>
+  Option.map(
+    Option.filter(status, (each) => Option.isNone(each.error) && each.ahead === 0 && Option.match(each.head, { onNone: () => true, onSome: (head) => sameCommit(head, lane.head) })),
+    (each) => Option.match(Option.filter(each.by, (by) => by === "patch"), { onNone: () => OnMain.cases.Landed.make({}), onSome: () => OnMain.cases.Equivalent.make({}) }),
+  )
+
+/** A lane's last commit as Ergo's list status says it, for this head, without error. */
+const statusCommit = (lane: Lane, status: Option.Option<LaneStatus>): Option.Option<number> =>
+  Option.flatMap(
+    Option.filter(status, (each) => Option.isNone(each.error) && Option.match(each.head, { onNone: () => true, onSome: (head) => sameCommit(head, lane.head) })),
+    (each) => each.lastCommit,
+  )
+
+/** What the lists are read from, at one call: the units and lanes as seen, the default branch's lands, and the heads git placed. */
+const seenNow = Effect.fn("Orchestrate.seenNow")(function* (sessionID: string, checkout: string, runs: ReadonlyArray<Run>, listed: Listed, now: number, hashes: ReadonlyArray<string>) {
   const git = yield* WorkGit
   const tip = yield* (yield* MainLine).tip(checkout, Option.none())
-  if (Option.isNone(tip)) return []
+  if (Option.isNone(tip)) return Option.none()
   const repo = Option.getOrElse(listed.source, () => checkout)
   const main = tip.value.head
   const units = yield* unitsSeen(runs, listed)
   const lanes = listed.rifts.filter((lane) => !isInternal(lane))
-  // Each head borrows only the lanes that may hold it: its own; a unit's whose lane is gone, every lane (a stack may carry it).
+  // Ergo's own measure of each lane, when the installed `work` gives one: a lane it finds on main needs no git.
+  const statuses = yield* git.statuses(repo)
+  const statusOf = (lane: Lane) => Option.fromUndefinedOr(statuses.get(lane.path))
+  const placedByStatus = new Map(lanes.flatMap((lane) => Option.toArray(Option.map(statusPlace(lane, statusOf(lane)), (onMain) => [lane.head, onMain] as const))))
+  // Each head borrows only the lanes that may hold it: its own; a unit's whose lane is gone, and a commit a queue names, every lane (a stack may carry it).
+  const every = lanes.map((lane) => lane.path)
   const asked = [
-    ...lanes.map((lane) => ({ head: lane.head, lanes: [lane.path] })),
-    ...units.map((unit) => ({ head: unit.head, lanes: Option.match(unit.lane, { onNone: () => lanes.map((lane) => lane.path), onSome: (path) => [path] }) })),
+    ...lanes.filter((lane) => !placedByStatus.has(lane.head)).map((lane) => ({ head: lane.head, lanes: [lane.path] })),
+    ...units.map((unit) => ({ head: unit.head, lanes: Option.match(unit.lane, { onNone: () => every, onSome: (path) => [path] }) })),
+    ...hashes.map((hash) => ({ head: hash, lanes: every })),
   ]
-  const seen = yield* git.heads(
+  const read = yield* git.heads(
     repo,
     main,
     Arr.dedupe(asked.map((each) => each.head)).map((head) => ({ head, lanes: Arr.dedupe(asked.flatMap((each) => Arr.filter(each.lanes, () => each.head === head))) })),
   )
+  const seen = new Map([...read, ...[...placedByStatus].map(([head, onMain]) => [head, { onMain, at: Option.none<number>() }] as const)])
   const lands = yield* git.lands(repo, main, LANDS_READ)
   // A lane holds work when it has commits not on main, or uncommitted ones.
   const holdsWork = (lane: Lane) => lane.state !== "clean" || OnMain.guards.Absent(headOf(seen, lane.head).onMain)
@@ -136,7 +154,8 @@ export const lostNow = Effect.fn("Orchestrate.lostNow")(function* (sessionID: st
       const head = headOf(seen, lane.head)
       // A lane that holds no work is never listed: its activity is not read (now stands in), only its head (a stack's carrier).
       if (!holdsWork(lane)) return Effect.succeed({ lane, head, activeAt: now })
-      return Effect.map(git.touchedAt(lane.path), (touched) => ({ lane, head, activeAt: Math.max(Option.getOrElse(head.at, () => 0), Option.getOrElse(touched, () => 0)) }))
+      const committed = Math.max(Option.getOrElse(head.at, () => 0), Option.getOrElse(statusCommit(lane, statusOf(lane)), () => 0))
+      return Effect.map(git.touchedAt(lane.path), (touched) => ({ lane, head, activeAt: Math.max(committed, Option.getOrElse(touched, () => 0)) }))
     },
     { concurrency: 16 },
   )
@@ -160,5 +179,56 @@ export const lostNow = Effect.fn("Orchestrate.lostNow")(function* (sessionID: st
     { concurrency: 8 },
   )
   const unitsWithPlace: ReadonlyArray<UnitSeen> = units.map((unit) => ({ ...unit, onMain: headOf(seen, unit.head).onMain }))
-  return lostText(unitsWithPlace, lanesSeen, lands, now)
+  return Option.some({ units: unitsWithPlace, lanes: lanesSeen, lands, hashes: new Map(hashes.map((hash) => [hash, headOf(seen, hash)] as const)) })
+})
+
+/**
+ * What status says of lost work, for the root `sessionID` in `checkout`: the unit-first list, then the lane-first
+ * lists, then what to do (lost.ts); nothing when nothing is lost or the default branch cannot be read.
+ */
+export const lostNow = (sessionID: string, checkout: string, runs: ReadonlyArray<Run>, listed: Listed, now: number) =>
+  Effect.map(seenNow(sessionID, checkout, runs, listed, now, []), (seen) =>
+    Option.match(seen, { onNone: (): ReadonlyArray<string> => [], onSome: (each) => lostText(each.units, each.lanes, each.lands, now) }),
+  )
+
+/** The queue check's answer (`LOST_RPC`): status's lists with their keys, to a root that started a unit's step only, and the commits `hashes` that are due. */
+export interface LostAnswer {
+  readonly lines: ReadonlyArray<string>
+  readonly keys: ReadonlyArray<string>
+  readonly hashes: ReadonlyArray<{ readonly hash: string; readonly why: string }>
+}
+
+const NOTHING: LostAnswer = { lines: [], keys: [], hashes: [] }
+
+/**
+ * What the queue check tells the root `sessionID`: the same lists `orchestrate status` starts with (one source, two
+ * surfaces), when the root runs units (it started a step of one), and why each commit of `hashes` its queue names is
+ * due. A lane is only ever this repository's (the base the rift plugin lists for this location), and a commit of
+ * another repository is unknown here, so neither is named.
+ */
+export const lostAnswer = Effect.fn("Orchestrate.lostAnswer")(function* (
+  sessionID: string,
+  checkout: string,
+  runs: ReadonlyArray<Run>,
+  listed: Listed,
+  now: number,
+  hashes: ReadonlyArray<string>,
+) {
+  const orchestrates = (yield* (yield* StepLog).units(sessionID)).length > 0
+  // A root that runs no unit is told of no lane or unit: neither is read for it, only the commits its queue names.
+  const seen = yield* Option.match(Option.liftPredicate(listed, () => orchestrates), {
+    onNone: () => seenNow(sessionID, checkout, [], { ...listed, rifts: [] }, now, Arr.dedupe(hashes)),
+    onSome: (all) => seenNow(sessionID, checkout, runs, all, now, Arr.dedupe(hashes)),
+  })
+  return Option.match(seen, {
+    onNone: () => NOTHING,
+    onSome: (each): LostAnswer => {
+      const report = lostReport(each.units, each.lanes, each.lands, now)
+      return {
+        lines: Arr.match(report.keys, { onEmpty: () => [], onNonEmpty: () => report.lines }),
+        keys: report.keys,
+        hashes: [...hashReasons(each.hashes, each.lands, now)].map(([hash, why]) => ({ hash, why })),
+      }
+    },
+  })
 })

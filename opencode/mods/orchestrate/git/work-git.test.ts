@@ -3,7 +3,7 @@
 // objects borrowed: on main (merged), patch-equivalent (cherry-picked; rebased then squash-merged), absent (its own
 // commits nowhere on main, a stack above another lane's), unknown (its lane removed). The lanes are never written by
 // the read; a process working in a lane holds it.
-import { expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { env as processEnv, spawn, spawnSync } from "bun"
 import { Effect, Layer, Option } from "effect"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
@@ -138,3 +138,27 @@ effectTest(
   ).pipe(Effect.provide(Layer.fresh(Live.layer))),
   30_000,
 )
+
+describe("Ergo's `work --json list -status`, read when the installed `work` gives it", () => {
+  // Made-up records in the planned shape, as `work` prints them: status on Active records only; Go writes absent fields as null.
+  const listed = `[
+    {"name":"on-main","path":"/code/.work/app/on-main","state":{"_tag":"Active"},"status":{"default":"main","defaultCommit":"e0e0e0e","ahead":0,"behind":3,"by":"patch","head":"a1b2c3d","branch":"feat/on-main","lastCommit":1763700000,"dirty":false,"error":null}},
+    {"name":"ahead","path":"/code/.work/app/ahead","state":{"_tag":"Active"},"status":{"ahead":2,"behind":0,"by":"ancestry","head":"f00d123","lastCommit":"2026-11-21T10:00:00Z","dirty":3,"error":""}},
+    {"name":"broken","path":"/code/.work/app/broken","state":{"_tag":"Active"},"status":{"ahead":0,"by":null,"head":null,"lastCommit":null,"dirty":null,"error":"git: bad object"}},
+    {"name":"plain","path":"/code/.work/app/plain","state":{"_tag":"Active"}},
+    {"name":"gone","path":"/code/.work/app/gone","state":{"_tag":"Trashed"},"status":{"ahead":0}}
+  ]`
+
+  test("each Active record's status by path, its times in epoch ms; a record with none, or not Active, is left out", () => {
+    const seen = Live.statusesOf(listed)
+    expect([...seen.keys()]).toEqual(["/code/.work/app/on-main", "/code/.work/app/ahead", "/code/.work/app/broken"])
+    expect(seen.get("/code/.work/app/on-main")).toEqual({ ahead: 0, by: Option.some("patch"), head: Option.some("a1b2c3d"), lastCommit: Option.some(1_763_700_000_000), dirty: Option.some(false), error: Option.none() })
+    expect(seen.get("/code/.work/app/ahead")).toEqual({ ahead: 2, by: Option.some("ancestry"), head: Option.some("f00d123"), lastCommit: Option.some(Date.parse("2026-11-21T10:00:00Z")), dirty: Option.some(true), error: Option.none() })
+    expect(Option.fromUndefinedOr(seen.get("/code/.work/app/broken")).pipe(Option.flatMap((each) => each.error))).toEqual(Option.some("git: bad object"))
+  })
+
+  test("the plain list (today's `work`), or an answer that does not read, is no status at all", () => {
+    expect(Live.statusesOf(`[{"name":"plain","path":"/p","state":{"_tag":"Active"}}]`).size).toBe(0)
+    expect(Live.statusesOf("usage: work list").size).toBe(0)
+  })
+})

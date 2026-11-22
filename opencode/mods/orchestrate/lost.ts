@@ -43,6 +43,20 @@ export interface HeadSeen {
   readonly at: Option.Option<number>
 }
 
+/**
+ * What Ergo's `work --json list -status` says of a lane, when the installed `work` says it: how far its head is ahead of
+ * the default branch (`ahead` 0: on it, `by` ancestry or patch), the head it measured, its last commit's time (epoch
+ * ms), whether it is dirty, and the error that stopped the measure.
+ */
+export interface LaneStatus {
+  readonly ahead: number
+  readonly by: Option.Option<"patch" | "ancestry">
+  readonly head: Option.Option<string>
+  readonly lastCommit: Option.Option<number>
+  readonly dirty: Option.Option<boolean>
+  readonly error: Option.Option<string>
+}
+
 /** A session on a lane: its id, whether a turn runs now, and when its last turn ended. */
 export interface SessionSeen {
   readonly id: string
@@ -204,6 +218,46 @@ export const readyNotLanded = (units: ReadonlyArray<UnitSeen>, lanes: ReadonlyAr
 /** The lanes the unit-first list names: the lane-first list leaves them to it, so no lane is named twice. */
 export const lanesNamed = (units: ReadonlyArray<UnitSeen>, lanes: ReadonlyArray<LaneSeen>, lands: ReadonlyArray<number>, now: number): ReadonlySet<string> =>
   new Set(units.flatMap((seen) => Option.toArray(Option.filter(seen.lane, () => Option.isSome(unitLine(seen, lanes, lands, now))))))
+
+/** What the lists name, and its words: the lines as status prints them, and one stable key per loss (`unit <name>`, a lane's path). */
+export interface LostReport {
+  readonly lines: ReadonlyArray<string>
+  readonly keys: ReadonlyArray<string>
+}
+
+/**
+ * Both lists as `lostText` says them, with a key for each loss: the queue check repeats a note only when what it names
+ * changes, and the lines' ages change every minute. A unit with its verifier is named, but is no loss and has no key.
+ */
+export const lostReport = (units: ReadonlyArray<UnitSeen>, lanes: ReadonlyArray<LaneSeen>, lands: ReadonlyArray<number>, now: number): LostReport => {
+  const unitKeys = units.flatMap((seen) => Arr.filter([`unit ${seen.unit}`], () => Option.isSome(unitLine(seen, lanes, lands, now)) && !Verifier.guards.Pending(seen.verifier)))
+  const idle = idleLanes(lanes, now, lanesNamed(units, lanes, lands, now))
+  const committed = idle.filter((seen) => Option.isSome(absentOf(seen.head.onMain)))
+  const uncommitted = idle.filter((seen) => seen.lane.state !== "clean" && Option.isNone(absentOf(seen.head.onMain)))
+  return { lines: lostText(units, lanes, lands, now), keys: [...unitKeys, ...[...committed, ...uncommitted].map((seen) => seen.lane.path)] }
+}
+
+/** What to do with a commit a queue item names that is not on the default branch. */
+const HASH_FIX = "land it, or mark it superseded or dropped"
+
+/**
+ * The commits a queue names that are due: absent from the default branch (no patch-equivalent there) and past the
+ * threshold since they were committed, each with why and what to do. One on main, patch-equivalent there, unknown to
+ * this repository (another repository's, or no commit at all) or within the threshold is not.
+ */
+export const hashReasons = (seen: ReadonlyMap<string, HeadSeen>, lands: ReadonlyArray<number>, now: number): ReadonlyMap<string, string> =>
+  new Map(
+    [...seen].flatMap(([hash, head]) =>
+      Option.toArray(
+        Option.flatMap(absentOf(head.onMain), (absent) =>
+          Option.map(
+            Option.filter(head.at, (at) => now - at >= IDLE_MS || landsAfter(lands, at) >= LANDS_PAST),
+            (at) => [hash, `not on main: ${commitsText(absent.missing.length)} not there, committed ${ageOf(now - at)} ago; ${HASH_FIX}`] as const,
+          ),
+        ),
+      ),
+    ),
+  )
 
 /** What to do with a lost hand-back or lane: land it, or end it where status reads it. */
 export const LOST_FIX =

@@ -4,21 +4,73 @@
 // of the symmetric range, kept per (default tip, head): a status over hundreds of lanes reads only the heads that
 // moved. The working directories come from one process listing (`lsof` on macOS, `/proc` on Linux).
 import { file, readableStreamToText, spawn } from "bun"
-import { Array as Arr, Effect, Layer, Match, Option } from "effect"
-import { type HeadSeen, OnMain } from "../lost.ts"
+import { Array as Arr, Clock, Effect, Layer, Match, Option, Schema } from "effect"
+import { type HeadSeen, type LaneStatus, OnMain } from "../lost.ts"
 import { WorkGit, type Wanted } from "../service.ts"
 
 /** A finished command's exit code and output; none when it does not start. */
-const run = (argv: ReadonlyArray<string>): Effect.Effect<Option.Option<{ readonly code: number; readonly text: string }>> =>
-  Effect.try(() => spawn([...argv], { stdin: "ignore", stdout: "pipe", stderr: "ignore" })).pipe(
+const run = (argv: ReadonlyArray<string>, cwd = "/"): Effect.Effect<Option.Option<{ readonly code: number; readonly text: string }>> =>
+  Effect.try(() => spawn([...argv], { cwd, stdin: "ignore", stdout: "pipe", stderr: "ignore" })).pipe(
     Effect.flatMap((child) => Effect.all({ code: Effect.tryPromise(() => child.exited), text: Effect.tryPromise(() => readableStreamToText(child.stdout)) }, { concurrency: 2 })),
     Effect.map(Option.some),
     Effect.orElseSucceed(() => Option.none()),
   )
 
 /** A command's output when it exits 0. */
-const output = (argv: ReadonlyArray<string>) =>
-  run(argv).pipe(Effect.map((ran) => Option.map(Option.filter(ran, (each) => each.code === 0), (each) => each.text)))
+const output = (argv: ReadonlyArray<string>, cwd = "/") =>
+  run(argv, cwd).pipe(Effect.map((ran) => Option.map(Option.filter(ran, (each) => each.code === 0), (each) => each.text)))
+
+// ── Ergo's list status ──
+
+/** A record's status as `work --json list -status` plans it (Go writes an absent field as null); other fields are left out. */
+const ListStatus = Schema.Struct({
+  ahead: Schema.Number,
+  by: Schema.optionalKey(Schema.NullOr(Schema.Literals(["patch", "ancestry"]))),
+  head: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  lastCommit: Schema.optionalKey(Schema.NullOr(Schema.Union([Schema.Number, Schema.String]))),
+  dirty: Schema.optionalKey(Schema.NullOr(Schema.Union([Schema.Boolean, Schema.Number]))),
+  error: Schema.optionalKey(Schema.NullOr(Schema.String)),
+})
+const ListRecord = Schema.Struct({ path: Schema.String, state: Schema.Struct({ _tag: Schema.String }), status: Schema.optionalKey(Schema.NullOr(ListStatus)) })
+const Listing = Schema.fromJsonString(Schema.Array(ListRecord))
+
+/** A time as Ergo may write it: epoch seconds, epoch ms, or an ISO date; in epoch ms. */
+const msOf = (value: number | string): Option.Option<number> =>
+  Match.value(value).pipe(
+    Match.when(Match.number, (number) => Option.liftPredicate(Match.value(number < 1e12).pipe(Match.when(true, () => number * 1000), Match.orElse(() => number)), (ms) => ms > 0)),
+    Match.orElse((text) => Option.liftPredicate(Date.parse(text), Number.isFinite)),
+  )
+
+/** Each Active record's status by path, from `work --json list -status`'s answer; none for an answer that does not read. */
+export const statusesOf = (text: string): ReadonlyMap<string, LaneStatus> =>
+  Option.match(Schema.decodeUnknownOption(Listing)(text.trim()), {
+    onNone: () => new Map<string, LaneStatus>(),
+    onSome: (records) =>
+      new Map(
+        records
+          .filter((record) => record.state._tag === "Active")
+          .flatMap((record) =>
+            Option.toArray(
+              Option.map(Option.fromNullishOr(record.status), (status): readonly [string, LaneStatus] => [
+                record.path,
+                {
+                  ahead: status.ahead,
+                  by: Option.fromNullishOr(status.by),
+                  head: Option.filter(Option.fromNullishOr(status.head), (head) => head !== ""),
+                  lastCommit: Option.flatMap(Option.fromNullishOr(status.lastCommit), msOf),
+                  dirty: Option.map(Option.fromNullishOr(status.dirty), (dirty) => Match.value(dirty).pipe(Match.when(Match.number, (count) => count > 0), Match.orElse((flag) => flag === true))),
+                  error: Option.filter(Option.fromNullishOr(status.error), (error) => error !== ""),
+                },
+              ]),
+            ),
+          ),
+      ),
+  })
+
+/** How long one base's list status is kept: a status and a queue sweep close together share one `work` run. */
+const STATUS_KEPT_MS = 60_000
+/** After `work` gives no status (today's binary, or none installed), how long before it is asked again. */
+const STATUS_UNSUPPORTED_MS = 3_600_000
 
 /** A path's last write (epoch ms); none when it is not there. */
 const mtimeOf = (path: string): Effect.Effect<Option.Option<number>> =>
@@ -83,6 +135,7 @@ export const layer = Layer.sync(WorkGit, () => {
   // A head on main, or patch-equivalent there, stays so as main moves on: kept by the head alone. One whose own
   // commits are absent is kept per main tip, so a land reads it again.
   const kept = new Map<string, HeadSeen>()
+  const statusKept = new Map<string, { readonly at: number; readonly statuses: ReadonlyMap<string, LaneStatus> }>()
   const keyOf = (tip: string, head: string, seen: HeadSeen) => Match.value(OnMain.guards.Absent(seen.onMain)).pipe(
     Match.when(true, () => `${tip}\n${head}`),
     Match.orElse(() => head),
@@ -135,5 +188,17 @@ export const layer = Layer.sync(WorkGit, () => {
       Effect.map(output(["git", "-C", repo, "log", "--first-parent", `--max-count=${limit}`, "--format=%ct", main, "--"]), (listed) =>
         linesOf(listed, (line) => Option.map(Option.liftPredicate(Number(line.trim()), (seconds) => Number.isFinite(seconds) && seconds > 0), (seconds) => String(seconds * 1000))).map(Number),
       ),
+    // The base's own `work` registry, asked in the base; kept a minute, and not asked for an hour after it gave no status.
+    statuses: (repo) =>
+      Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis
+        const last = Option.fromUndefinedOr(statusKept.get(repo))
+        if (Option.exists(last, (each) => now - each.at < Match.value(each.statuses.size).pipe(Match.when(0, () => STATUS_UNSUPPORTED_MS), Match.orElse(() => STATUS_KEPT_MS))))
+          return Option.getOrThrow(last).statuses
+        const listed = yield* output(["env", `WORK_BASE=${repo}`, "work", "--json", "list", "-status"], repo)
+        const statuses = Option.match(listed, { onNone: () => new Map<string, LaneStatus>(), onSome: statusesOf })
+        statusKept.set(repo, { at: now, statuses })
+        return statuses
+      }),
   })
 })

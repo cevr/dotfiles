@@ -6,8 +6,8 @@ import { describe, expect } from "bun:test"
 import { Effect, Layer, Option } from "effect"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { type Held, NO_CALLS, NOTHING_HELD } from "../ledger.ts"
-import { lostNow } from "../lost-now.ts"
-import { OnMain } from "../lost.ts"
+import { lostAnswer, lostNow } from "../lost-now.ts"
+import { type LaneStatus, OnMain } from "../lost.ts"
 import * as MemoryMainLine from "./main-line.ts"
 import * as MemoryRunFiles from "./run-files.ts"
 import * as MemorySessions from "./sessions.ts"
@@ -33,13 +33,18 @@ interface Setup {
   readonly children?: ReadonlyArray<{ readonly child: string; readonly description: string }>
   readonly held?: Held
   readonly lanes?: ReadonlyArray<Lane>
+  /** The units the root started steps of: an orchestrator's (the queue check names lanes to it alone). */
+  readonly steps?: ReadonlyArray<string>
+  /** What `work --json list -status` says of each lane, when the installed `work` says it. */
+  readonly statuses?: ReadonlyMap<string, LaneStatus>
 }
 
-/** The lost lines for `setup`: a default branch at `main`, the orphan lane two days still with two commits not on it. */
-const lostFor = (setup: Setup) => {
+/** The services for `setup`: a default branch at `main`, the orphan lane two days still with two commits not on it. */
+const layerFor = (setup: Setup) => {
   const git = MemoryWorkGit.world()
   git.heads.set(ORPHAN_HEAD, { onMain: OnMain.cases.Absent.make({ missing: [ORPHAN_HEAD, "0fb"], own: [ORPHAN_HEAD, "0fb"], subject: "orphan work" }), at: Option.some(NOW - 48 * HOUR) })
   git.heads.set("a1a1a1a1a1", { onMain: OnMain.cases.Absent.make({ missing: ["a1a1a1a1a1"], own: ["a1a1a1a1a1"], subject: "alpha" }), at: Option.some(NOW - 48 * HOUR) })
+  for (const [path, status] of setup.statuses ?? new Map<string, LaneStatus>()) git.statuses.set(path, status)
   const calls = new Map([
     [
       ROOT,
@@ -49,17 +54,23 @@ const lostFor = (setup: Setup) => {
       },
     ],
   ])
-  const layer = Layer.mergeAll(
+  return Layer.mergeAll(
     MemoryMainLine.layer((checkout) => Option.liftPredicate({ branch: "main", line: [{ sha: "e0e0e0e0e0", subject: "root", merged: [] }] }, () => checkout === CHECKOUT)),
     MemoryRunFiles.layer(setup.files ?? new Map()),
     MemorySessions.layer(setup.sessions ?? {}),
-    MemoryStepLog.layer({}, calls),
+    MemoryStepLog.layer({ [ROOT]: setup.steps ?? [] }, calls),
     MemoryWorkGit.layer(git),
     Layer.succeed(RootHolds, RootHolds.of({ of: () => Effect.succeed(NO_HOLDS), held: () => Effect.succeed(setup.held ?? NOTHING_HELD) })),
   )
-  const lanes = setup.lanes ?? [{ path: ORPHAN, branch: "feat/orphan", head: ORPHAN_HEAD, state: "clean" }]
-  return lostNow(ROOT, CHECKOUT, setup.runs ?? [], { source: Option.some(CHECKOUT), rifts: lanes, workrift: false }, NOW).pipe(Effect.provide(layer))
 }
+
+const listedFor = (setup: Setup) => ({ source: Option.some(CHECKOUT), rifts: setup.lanes ?? [{ path: ORPHAN, branch: "feat/orphan", head: ORPHAN_HEAD, state: "clean" }], workrift: false })
+
+/** The lost lines status gives for `setup`. */
+const lostFor = (setup: Setup) => lostNow(ROOT, CHECKOUT, setup.runs ?? [], listedFor(setup), NOW).pipe(Effect.provide(layerFor(setup)))
+
+/** What the queue check gets for `setup` and the commits its queue names. */
+const answerFor = (setup: Setup, hashes: ReadonlyArray<string>) => lostAnswer(ROOT, CHECKOUT, setup.runs ?? [], listedFor(setup), NOW, hashes).pipe(Effect.provide(layerFor(setup)))
 
 const ORPHAN_LINE = `- ${ORPHAN} · 2 d · 2 commits · orphan work · no session known`
 
@@ -147,6 +158,47 @@ describe("who is on a lane, read from where it lives", () => {
       const item = (state: string) => ({ ...NOTHING_HELD, queue: [{ text: "orphan: owner picks the schema", state, detail: Option.none<string>() }] })
       expect(yield* lostFor({ held: item("needs-you") })).toEqual([])
       expect((yield* lostFor({ held: item("done") }))[1]).toBe(ORPHAN_LINE)
+    }),
+    MS,
+  )
+})
+
+const ALPHA_WHY = "not on main: 1 commit not there, committed 2 d ago; land it, or mark it superseded or dropped"
+
+describe("the queue check's answer: status's lists, to an orchestrator only, and the commits its queue names", () => {
+  effectTest(
+    "a root that started no unit's step hears of no lane, only of the commits its own queue names; main's own commit and an unknown one are not named",
+    Effect.map(answerFor({}, ["a1a1a1a1a1", "e0e0e0e0e0", "0ddba11"]), (answer) => expect(answer).toEqual({ lines: [], keys: [], hashes: [{ hash: "a1a1a1a1a1", why: ALPHA_WHY }] })),
+    MS,
+  )
+  effectTest(
+    "an orchestrator hears the same lines status prints, keyed by the lane",
+    Effect.gen(function* () {
+      const answer = yield* answerFor({ steps: ["alpha"] }, [])
+      expect(answer).toEqual({ lines: yield* lostFor({}), keys: [ORPHAN], hashes: [] })
+      expect(answer.lines[1]).toBe(ORPHAN_LINE)
+    }),
+    MS,
+  )
+})
+
+describe("Ergo's list status, read when `work` gives it", () => {
+  const status = (more: Partial<LaneStatus>): ReadonlyMap<string, LaneStatus> =>
+    new Map([[ORPHAN, { ahead: 2, by: Option.some("patch"), head: Option.some(ORPHAN_HEAD), lastCommit: Option.none(), dirty: Option.none(), error: Option.none(), ...more }]])
+  effectTest(
+    "ahead of the default branch by none (by patch or ancestry): on main, whatever git would say",
+    Effect.gen(function* () {
+      expect(yield* lostFor({ statuses: status({ ahead: 0 }) })).toEqual([])
+      expect(yield* lostFor({ statuses: status({ ahead: 0, by: Option.some("ancestry") }) })).toEqual([])
+    }),
+    MS,
+  )
+  effectTest(
+    "its last commit an hour ago keeps the lane off; an error, or a status of another head, is not read and git answers",
+    Effect.gen(function* () {
+      expect(yield* lostFor({ statuses: status({ lastCommit: Option.some(NOW - HOUR) }) })).toEqual([])
+      expect((yield* lostFor({ statuses: status({ ahead: 0, error: Option.some("git failed") }) }))[1]).toBe(ORPHAN_LINE)
+      expect((yield* lostFor({ statuses: status({ ahead: 0, head: Option.some("1234567abc") }) }))[1]).toBe(ORPHAN_LINE)
     }),
     MS,
   )

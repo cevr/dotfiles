@@ -4,7 +4,7 @@
 // activity, something waiting), each of which alone keeps a lane off the list.
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
-import { IDLE_MS, LANDS_PAST, LISTED, type LaneSeen, LOST_FIX, lostLanes, lostText, OnMain, readyNotLanded, type UnitSeen, Verifier } from "./lost.ts"
+import { hashReasons, IDLE_MS, LANDS_PAST, LISTED, type LaneSeen, LOST_FIX, lostLanes, lostReport, lostText, OnMain, readyNotLanded, type UnitSeen, Verifier } from "./lost.ts"
 
 const NOW = Date.UTC(2026, 10, 21, 12)
 const HOUR = 3_600_000
@@ -130,5 +130,33 @@ describe("the lane-first rule", () => {
     const alpha = unit("unit-alpha", "a1", absent(["a1"], "alpha"), 7 * DAY)
     const text = lostText([alpha], [lane("/code/.work/app/unit-alpha", "a1", absent(["a1"], "alpha"), 7 * DAY)], [], NOW)
     expect(text).toEqual(["orchestrate: ready, not landed (1, oldest first):", "- ready, not landed 7 d: unit-alpha a1 /code/.work/app/unit-alpha", LOST_FIX])
+  })
+})
+
+describe("the queue check's half: the same lists, keyed, and the commits a queue names", () => {
+  test("the report keys each lost unit and lane by name, the same an hour later while the lines' ages move; a unit with its verifier is no loss and no key", () => {
+    const alpha = unit("unit-alpha", "a1", absent(["a1"], "alpha"), 7 * DAY)
+    const deep = unit("deep", "a9", absent(["a9"], "deep"), 2 * DAY, { verifier: Verifier.cases.Pending.make({}) })
+    const orphan = lane("/code/.work/app/orphan", "o1", absent(["o1"], "orphan work"), 2 * DAY)
+    const dirty = { ...lane("/code/.work/app/dirty", "d1", OnMain.cases.Landed.make({}), 3 * DAY), lane: { path: "/code/.work/app/dirty", head: "d1", state: "1 uncommitted" } }
+    const now = lostReport([alpha, deep], [orphan, dirty], [], NOW)
+    expect(now.keys).toEqual(["unit unit-alpha", "/code/.work/app/orphan", "/code/.work/app/dirty"])
+    expect(now.lines).toEqual(lostText([alpha, deep], [orphan, dirty], [], NOW))
+    const later = lostReport([alpha, deep], [orphan, dirty], [], NOW + HOUR)
+    expect([later.keys, later.lines === now.lines]).toEqual([now.keys, false])
+    expect(lostReport([deep], [], [], NOW)).toEqual({ lines: lostText([deep], [], [], NOW), keys: [] })
+  })
+
+  test("a commit a queue names is due when it is absent from main past the threshold, with what to do; fresh, on main, patch-equivalent or unknown it is not", () => {
+    const seen = new Map([
+      ["c0ffee1", { onMain: absent(["c0ffee1", "c0ffee0"], "two"), at: Option.some(NOW - 9 * HOUR) }],
+      ["beef123", { onMain: absent(["beef123"], "fresh"), at: Option.some(NOW - HOUR) }],
+      ["abc1234", { onMain: OnMain.cases.Landed.make({}), at: Option.some(NOW - 9 * DAY) }],
+      ["def5678", { onMain: OnMain.cases.Equivalent.make({}), at: Option.some(NOW - 9 * DAY) }],
+      ["0ddba11", { onMain: OnMain.cases.Unknown.make({}), at: Option.none() }],
+    ])
+    expect([...hashReasons(seen, [], NOW)]).toEqual([["c0ffee1", "not on main: 2 commits not there, committed 9 h ago; land it, or mark it superseded or dropped"]])
+    // Two lands since its commit make the fresh one due too.
+    expect([...hashReasons(seen, [NOW - 10 * 60_000, NOW - 20 * 60_000], NOW).keys()]).toEqual(["c0ffee1", "beef123"])
   })
 })

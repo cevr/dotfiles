@@ -2,7 +2,7 @@
 // branch and commit time, each lane's last HEAD move, the lanes a process works in, and the default branch's land
 // times, in a world the test changes. A head it does not hold is on the default branch (a world with no lost work).
 import { Effect, Layer, Option } from "effect"
-import { type HeadSeen, OnMain } from "../lost.ts"
+import { type HeadSeen, type LaneStatus, OnMain } from "../lost.ts"
 import { WorkGit } from "../service.ts"
 
 export interface World {
@@ -14,9 +14,11 @@ export interface World {
   readonly held: Set<string>
   /** The default branch's first-parent commit times (epoch ms), newest first. */
   readonly lands: Array<number>
+  /** What `work --json list -status` says of each lane, by path; none when the installed `work` does not say it. */
+  readonly statuses: Map<string, LaneStatus>
 }
 
-export const world = (): World => ({ heads: new Map(), touched: new Map(), held: new Set(), lands: [] })
+export const world = (): World => ({ heads: new Map(), touched: new Map(), held: new Set(), lands: [], statuses: new Map() })
 
 const LANDED: HeadSeen = { onMain: OnMain.cases.Landed.make({}), at: Option.none() }
 
@@ -28,5 +30,6 @@ export const layer = (state: World) =>
       touchedAt: (lane) => Effect.sync(() => Option.fromUndefinedOr(state.touched.get(lane))),
       held: (lanes) => Effect.sync(() => new Set(lanes.filter((lane) => state.held.has(lane)))),
       lands: (_repo, _main, limit) => Effect.sync(() => state.lands.slice(0, limit)),
+      statuses: () => Effect.sync(() => new Map(state.statuses)),
     }),
   )
