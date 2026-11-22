@@ -2991,6 +2991,30 @@ and `tailnetWrite: "member-except-hosts"` on his two hosts. Each host's
 So his phone marks and answers with no pairing prompt. A browser on the Mac
 or the workbox pairs as before. A colleague's device reads nothing.
 
+**Every host on one page.** `digest.peers` names the other hosts
+(`[{ name, host }]`; the installer ships each fleet host's other hosts, which
+are also its agent hosts). Each host's page shows its own projects and its
+peers' side by side, each labeled with its host.
+
+- A peer is found only as the device this host's device store keys for its
+  name, by stable ID, never by a name lookup. A peer the store does not key,
+  that is not on the tailnet, or that runs a build this one cannot read shows
+  as a line ("workbox is unavailable, last seen …") and adds no project.
+- Each host reads `/peer/view.json` from each peer every 15 s, sending no
+  credential. The peer judges that read like any other: the reader is an
+  agent machine, so it reads where `tailnetRead` is `"member"` and its own
+  store is keyed.
+- An item's state lives only on the host that owns it. The page sends a
+  peer's item's mark, Later, name or answer straight to that host, with no
+  token. No host writes for another.
+- That host lets only its peers' pages write to it cross-origin, by CORS:
+  the exact origins of the device its store keys (each address, its MagicDNS
+  name and that name's first label, on the page's port), never a pattern,
+  on the tailnet listener only. It then applies its own policy to the
+  request's source. So his phone writes from either page. A browser on an
+  agent machine is refused, and the page links to that host's own page to
+  pair and act there. A token never leaves its own host's page.
+
 **Health.** Health on the tailnet answers an unpaired request `ok` alone. On
 loopback the line ends with
 `writes=<switch> members=<n> writers=<n> excluded=<n>[:unmatched:<name>][:store-...]`.
