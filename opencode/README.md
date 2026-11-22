@@ -2906,24 +2906,49 @@ The two options:
     machines are this host and the hosts named in `digest.agentHosts`.
     An agent running there must not act as him.
 
-Each entry of `digest.agentHosts` is a Tailscale address or a name the
-status gives (the MagicDNS name, its first label, the device's HostName),
-never one looked up in DNS. A name the status cannot resolve closes
-`"member-except-hosts"` to `"paired"` until it can.
+Being an agent machine only ever takes a permission away. It never makes a
+device his: a device of another Tailscale user stays a stranger whatever it
+calls itself.
+
+Each entry of `digest.agentHosts` names one of his own devices by its
+MagicDNS name or that name's first label, or by one of its Tailscale
+addresses. The coordination server assigns MagicDNS names and keeps them
+unique in the tailnet. The device's own HostName is never used, since any
+device can pick any HostName, and DNS is never asked. The plugin resolves the
+entries again at each status read, so a renamed or re-keyed device leaves no
+stale address behind. When none of his devices answers to an entry,
+`"member-except-hosts"` closes to `"paired"` until one does, whatever other
+users' devices are called.
+
+`digest.excludedDevices` takes some of his own devices out altogether: they
+read, mark and answer nothing unpaired, like another user's device. Each
+entry is `{name, id}`, the device's MagicDNS name and its Tailscale stable
+node ID (`ID` in `tailscale status --json`). The device cannot change its ID,
+so renaming it does not let it back in. A device that matches either the name
+or the ID is excluded. An exclusion fails open if it misses: the device
+would count as his again. So health names any exclusion whose ID none of his
+devices has (`unmatched:<name>`) or that came with no ID (`unkeyed:<name>`).
 
 The installer (`scripts/daily.ts` `digestEntry`) ships `tailnetRead: "member"`
 and `tailnetWrite: "member-except-hosts"` on his two hosts. Each host's
-`agentHosts` is the other host's Tailscale addresses, read from the status
-when the tree is configured; one it cannot read stays a name. To go back,
-set `tailnetWrite` to `"paired"` there; `"member"` lets the agent machines
-write too.
+`agentHosts` is the other host's name (`bite-cristian` or
+`cristians-macbook-pro`) and his rex Mac (`cristians-macbook-pro-rex`).
+`excludedDevices` is `lenovo-rescue`, with the ID the status gives it when
+the tree is configured. To go back, set `tailnetWrite` to `"paired"` there;
+`"member"` lets the agent machines write too.
 
 So his phone marks and answers with no pairing prompt. A browser on the Mac
 or the workbox pairs as before. A colleague's device reads nothing.
 
 **Health.** Health on the tailnet answers an unpaired request `ok` alone. On
-loopback the line ends with `writes=<switch> members=<n>`: the write switch
-in force and his other devices' count. A closed switch reads
+loopback the line ends with
+`writes=<switch> members=<n> writers=<n> excluded=<n>[:unmatched:<name>]`.
+In order: the write switch in force; his other devices' count, excluded ones
+left out; how many of those mark and answer as him with no token right now
+(those that are not agent machines); and how many devices the exclusions
+keep out. If one of the writers runs agents too, name it in
+`digest.agentHosts`.
+A closed switch reads
 `writes=paired:<why>`, for example `paired:unresolved:<name>`,
 `paired:status:<why>`, `paired:stale` or `paired:starting`.
 
