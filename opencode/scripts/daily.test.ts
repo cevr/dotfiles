@@ -325,10 +325,10 @@ describe("the pool's fleet", () => {
     expect(mailEntry(`${MODS}/mail`, { host: "ci-runner", tailscale: "100.64.0.9" })).toBe(`${MODS}/mail`)
   })
 
-  test("on his hosts the digest's morning is his zone (the workbox is UTC) and his tailnet reads it unpaired; elsewhere the host's zone and the plugin's paired default", () => {
+  test("on his hosts the digest's morning is his zone (the workbox is UTC), his tailnet reads it unpaired, and each names itself and the other as its peer; elsewhere the host's zone and the plugin's paired default", () => {
     const his = { package: `${MODS}/digest`, options: { timezone: "America/Montreal", tailnetRead: "member" } }
-    expect(digestEntry(`${MODS}/digest`, { host: "bite-cristian" })).toEqual(his)
-    expect(digestEntry(`${MODS}/digest`, { host: "Cristians-MacBook-Pro.local" })).toEqual(his)
+    expect(digestEntry(`${MODS}/digest`, { host: "bite-cristian" })).toEqual({ ...his, options: { ...his.options, name: "workbox", peers: [{ name: "macbook", host: "cristians-macbook-pro" }] } })
+    expect(digestEntry(`${MODS}/digest`, { host: "Cristians-MacBook-Pro.local" })).toEqual({ ...his, options: { ...his.options, name: "macbook", peers: [{ name: "workbox", host: "bite-cristian" }] } })
     expect(digestEntry(`${MODS}/digest`, { host: "ci-runner" })).toBe(`${MODS}/digest`)
   })
 

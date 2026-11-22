@@ -100,6 +100,24 @@
   "overrides": [
     {
       "files": [
+        "mods/digest/process/peers.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/digest/peers.test.ts"
+      ],
+      "rules": {
+        "effect/noAsyncFunction": "off",
+        "effect/noEffectRunInTests": "off",
+        "effect/noGlobals": "off"
+      }
+    },
+    {
+      "files": [
         "mods/digest/answers.test.ts"
       ],
       "rules": {
@@ -247,7 +265,8 @@
       "files": [
         "mods/digest/filestore/log.test.ts",
         "mods/digest/filestore/marks.test.ts",
-        "mods/digest/http/listener.test.ts"
+        "mods/digest/http/listener.test.ts",
+        "cmd/digest/peers.test.ts"
       ],
       "rules": {
         "effect/noAsyncFunction": "off",

@@ -17,6 +17,9 @@
  * - `port`: the page's port, on 127.0.0.1 and the tailnet, default 8240.
  * - `tailnetRead` (digest.tailnetRead): who reads the page on the tailnet, `"paired"` (default: a browser paired with
  *   bun cmd/digest/pair.ts) or `"member"` (any device on his tailnet). Marks and answers there always need pairing.
+ * - `name` (digest.name): this host as the page labels its projects, default `this host`.
+ * - `peers` (digest.peers): the other hosts whose projects the page shows beside its own, `[{ name, host }]`: `host`
+ *   is the Tailscale host name, looked up in Tailscale's status (peers.ts). Default none.
  *
  * `GET /health` answers the health line (`@dotfiles/opencode-digest/health`), which the installer logs.
  */
@@ -31,6 +34,9 @@ import * as FilePairing from "@dotfiles/opencode-digest/filestore/pairing"
 import { EMPTY, fold } from "@dotfiles/opencode-digest/fold"
 import { buildOf, healthLine, sickLine, type TailnetState } from "@dotfiles/opencode-digest/health"
 import * as Listener from "@dotfiles/opencode-digest/http/listener"
+import { pull, servePeers, unreadAll } from "@dotfiles/opencode-digest/http/peers"
+import { envelopeOf, mergeView, NamedPeer, type Peer, upCount } from "@dotfiles/opencode-digest/peers"
+import * as LivePeers from "@dotfiles/opencode-digest/process/peers"
 import { pageOf } from "@dotfiles/opencode-digest/messages"
 import type { TailnetRead } from "@dotfiles/opencode-digest/policy"
 import * as Tailnet from "@dotfiles/opencode-digest/process/tailnet"
@@ -46,6 +52,8 @@ export const Options = Schema.Struct({
   timezone: Schema.optionalKey(Schema.String.check(Schema.makeFilter((zone) => isZone(zone) || `"${zone}" is not a time zone`))),
   port: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 65_535 }))),
   tailnetRead: Schema.optionalKey(Schema.Literals(["paired", "member"])),
+  name: Schema.optionalKey(Schema.NonEmptyString),
+  peers: Schema.optionalKey(Schema.Array(NamedPeer)),
 })
 export type Options = typeof Options.Type
 
@@ -65,34 +73,51 @@ const DIST = Effect.flatMap(Path.Path, (path) => path.fromFileUrl(new URL("../..
 const BUILD = Effect.flatMap(Path.Path, (path) => path.fromFileUrl(new URL("./server.ts", import.meta.url))).pipe(Effect.map(buildOf), Effect.provide(Path.layer), Effect.orElseSucceed(() => "dev"))
 
 /** The health line over the log `lines`: its events and the newest one's time, and what the tailnet listener does. */
-export const healthOf = (lines: DigestLines["Service"], tailnet: Effect.Effect<TailnetState>): Effect.Effect<string> =>
+export const healthOf = (lines: DigestLines["Service"], tailnet: Effect.Effect<TailnetState>, peers: Effect.Effect<ReadonlyArray<Peer>> = Effect.succeed([])): Effect.Effect<string> =>
   Effect.gen(function* () {
     const host = yield* Tailnet.hostName
     const build = yield* BUILD
     return yield* lines.read.pipe(
       Effect.flatMap((log) =>
-        Effect.map(tailnet, (served) => {
+        Effect.map(Effect.all([tailnet, peers]), ([served, known]) => {
           const events = decodeLines(log).events
           const last = Option.map(Option.fromUndefinedOr(events.at(-1)), (event) => event.t)
-          return healthLine({ build, host, events: events.length, last, peers: [], tailnet: served })
+          return healthLine({ build, host, events: events.length, last, peers: { up: upCount(known), named: known.length }, tailnet: served })
         }),
       ),
       Effect.catch((failure) => Effect.succeed(sickLine(build, host, failure.message))),
     )
   })
 
-/** The page's handlers over the log `lines`, the marks and the pairing beside it, and the plugins that take answers. */
-export const handlersOf = (options: Options, lines: DigestLines["Service"], answerers: Answerers, tailnet: Effect.Effect<TailnetState> = Effect.succeed("no:starting")): Listener.Handlers => {
+/** `digest.name`: the option, else `this host`. */
+export const nameOf = (options: Options): string => Option.getOrElse(Option.fromUndefinedOr(options.name), () => "this host")
+
+/** `digest.peers`: the option, else none. */
+export const namedOf = (options: Options): ReadonlyArray<NamedPeer> => Option.getOrElse(Option.fromUndefinedOr(options.peers), () => [])
+
+/**
+ * The page's handlers over the log `lines`, the marks and the pairing beside it, and the plugins that take answers;
+ * `peers`, the named peers as last read (the page's view shows theirs beside this host's).
+ */
+export const handlersOf = (
+  options: Options,
+  lines: DigestLines["Service"],
+  answerers: Answerers,
+  tailnet: Effect.Effect<TailnetState> = Effect.succeed("no:starting"),
+  peers: Effect.Effect<ReadonlyArray<Peer>> = Effect.succeed(unreadAll(namedOf(options))),
+): Listener.Handlers => {
   const marks = FileMarks.make(dirOf(options))
   const zone = zoneOf(options)
   const state = Effect.map(lines.read, (log) => fold(EMPTY, decodeLines(log).events))
+  const local = Effect.gen(function* () {
+    const page = pageOf(yield* state, { names: new Map() })
+    return viewOf(page, yield* marks.read, yield* Clock.currentTimeMillis, zone)
+  })
   return {
-    health: healthOf(lines, tailnet),
+    health: healthOf(lines, tailnet, peers),
     tailnetRead: Option.getOrElse(Option.fromUndefinedOr(options.tailnetRead), (): TailnetRead => "paired"),
-    view: Effect.gen(function* () {
-      const page = pageOf(yield* state, { names: new Map() })
-      return encodeView(viewOf(page, yield* marks.read, yield* Clock.currentTimeMillis, zone))
-    }),
+    view: Effect.map(Effect.all([local, peers]), ([view, known]) => encodeView(mergeView(view, nameOf(options), known))),
+    peerView: Effect.map(local, (view) => envelopeOf(nameOf(options), view)),
     write: marks.append,
     now: Clock.currentTimeMillis,
     zone,
@@ -118,13 +143,16 @@ export const answerersOf = (ctx: Plugin.Context): Answerers => ({
 
 /**
  * The live page: the listener on 127.0.0.1 and those on the host's tailnet addresses, with `handlers`, each retrying
- * while another instance holds it; `tailnet` is what the tailnet's listeners do, for the health line.
+ * while another instance holds it; `tailnet` is what the tailnet's listeners do, for the health line; `peers`, the
+ * named peers, read every PULL_EVERY over their tailnet listeners (peers.ts).
  */
-export const livePage = (options: Options, handlers: Listener.Handlers, tailnet: Ref.Ref<TailnetState>): Effect.Effect<void, never, Scope.Scope> =>
+export const livePage = (options: Options, handlers: Listener.Handlers, tailnet: Ref.Ref<TailnetState>, peers: Ref.Ref<ReadonlyArray<Peer>>): Effect.Effect<void, never, Scope.Scope> =>
   Effect.gen(function* () {
     const dist = yield* DIST
     const port = Option.getOrElse(Option.fromUndefinedOr(options.port), () => Listener.PORT)
     yield* Effect.forkScoped(Listener.serveTailnet(port, handlers, dist, Tailnet.probe, tailnet))
+    const named = namedOf(options)
+    if (named.length > 0) yield* Effect.forkScoped(servePeers(pull(named, LivePeers.locate(named, port), LivePeers.get, peers, Clock.currentTimeMillis)))
     yield* Listener.serve(port, handlers, dist)
   })
 
@@ -179,7 +207,8 @@ export const make = (externals: (options: Options) => Layer.Layer<DigestLines>, 
         })
         .pipe(Effect.orDie)
       const tailnet = yield* Ref.make<TailnetState>("no:starting")
-      yield* Effect.forkScoped(page(options, handlersOf(options, lines, answerersOf(ctx), Ref.get(tailnet)), tailnet))
+      const peers = yield* Ref.make(unreadAll(namedOf(options)))
+      yield* Effect.forkScoped(page(options, handlersOf(options, lines, answerersOf(ctx), Ref.get(tailnet), Ref.get(peers)), tailnet, peers))
     }),
   })
 

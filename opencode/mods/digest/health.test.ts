@@ -6,10 +6,10 @@ import { buildOf, healthLine, isWell, sickLine } from "./health.ts"
 
 describe("the health line", () => {
   test("its fields; an empty log; peers when there are some", () => {
-    const facts = { build: "2.3.0-prime.aaaa.bbbb.tree", host: "harbor", events: 0, last: Option.none(), peers: [], tailnet: "no:no-cli" } as const
+    const facts = { build: "2.3.0-prime.aaaa.bbbb.tree", host: "harbor", events: 0, last: Option.none(), peers: { up: 0, named: 0 }, tailnet: "no:no-cli" } as const
     expect(healthLine(facts)).toBe("digest ok 2.3.0-prime.aaaa.bbbb.tree host=harbor events=0 last=none peers=none tailnet=no:no-cli")
-    expect(healthLine({ ...facts, events: 12, last: Option.some(Date.parse("2026-11-20T12:00:00Z")), peers: [{ name: "workbox", age: 40 }], tailnet: "yes" })).toBe(
-      "digest ok 2.3.0-prime.aaaa.bbbb.tree host=harbor events=12 last=2026-11-20T12:00:00.000Z peers=workbox:40s tailnet=yes",
+    expect(healthLine({ ...facts, events: 12, last: Option.some(Date.parse("2026-11-20T12:00:00Z")), peers: { up: 1, named: 2 }, tailnet: "yes" })).toBe(
+      "digest ok 2.3.0-prime.aaaa.bbbb.tree host=harbor events=12 last=2026-11-20T12:00:00.000Z peers=1/2 tailnet=yes",
     )
     expect(isWell(healthLine(facts))).toBe(true)
   })

@@ -57,6 +57,10 @@ export const ViewProject = Schema.Struct({
   later: Schema.Array(ViewMessage),
   /** Every message's mark, oldest first. */
   marks: Schema.Array(TimeMark),
+  /** The host the project lives on (peers.ts): its marks, names and answers are written there. */
+  host: maybe(Schema.String),
+  /** That host's page origin, for a project of a peer: where the page writes for it. Absent for this host's own. */
+  origin: maybe(Schema.String),
 })
 export type ViewProject = typeof ViewProject.Type
 
@@ -72,6 +76,19 @@ export const Span = Schema.Struct({
 })
 export type Span = typeof Span.Type
 
+/** A named peer as the page shows it: up (its projects are in), down, or on another wire version, and when last seen. */
+export const PeerStatus = Schema.Struct({
+  name: Schema.String,
+  state: Schema.Literals(["up", "down", "update"]),
+  /** Why it is not up, in words. */
+  reason: Schema.String,
+  lastSeen: maybe(Schema.Finite),
+  lastSeenLabel: maybe(Schema.String),
+  /** Its page origin, where the page writes for its projects. */
+  origin: maybe(Schema.String),
+})
+export type PeerStatus = typeof PeerStatus.Type
+
 export const View = Schema.Struct({
   v: Schema.Int,
   now: Schema.Finite,
@@ -83,6 +100,10 @@ export const View = Schema.Struct({
   since: maybe(Schema.Finite),
   projects: Schema.Array(ViewProject),
   spans: Schema.Array(Span),
+  /** The host serving the page, by the name his config gives it. */
+  host: maybe(Schema.String),
+  /** Each peer the config names, and whether its projects are in this view (peers.ts). */
+  peers: maybe(Schema.Array(PeerStatus)),
 })
 export type View = typeof View.Type
 
@@ -168,11 +189,13 @@ const projectOf = (project: Page["projects"][number], marks: Marks, now: number,
       placed.map((each) => ({ id: each.id, t: each.t, unread: each.unread, red: each.level === "red" })),
       oldestFirst,
     ),
+    host: Option.none(),
+    origin: Option.none(),
   }
 }
 
 /** Where the timeline starts: the oldest message (at most HISTORY_DAYS back), or today with none. */
-const historyFrom = (projects: ReadonlyArray<ViewProject>, now: number, zone: string): number => {
+export const historyFrom = (projects: ReadonlyArray<ViewProject>, now: number, zone: string): number => {
   const times = projects.flatMap((project) => project.marks.map((mark) => mark.t)).filter((t) => t <= now && t >= now - HISTORY_DAYS * DAY_MS)
   return Option.getOrElse(Option.map(Arr.head(times), () => Math.min(...times)), () => startOfDay(now, zone))
 }
@@ -191,5 +214,7 @@ export const viewOf = (page: Page, marks: Marks, now: number, zone: string): Vie
     since: marks.since,
     projects,
     spans: spansOf(historyFrom(projects, now, zone), now, zone),
+    host: Option.none(),
+    peers: Option.none(),
   }
 }

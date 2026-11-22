@@ -148,8 +148,20 @@ export const FLEET: Readonly<Record<string, ReadonlyArray<{ readonly name: strin
   "bite-cristian": [{ name: "macbook", ssh: "cvr@cristians-macbook-pro" }],
 }
 
+/** A host name as `FLEET` keys it: lower case, without `.local`. It is also the host's Tailscale host name. */
+export const fleetKey = (host: string): string => host.toLowerCase().replace(/\.local$/, "")
+
 /** A host's peers in `FLEET`; a host not listed has none. */
-export const peersOf = (host: string) => FLEET[host.toLowerCase().replace(/\.local$/, "")] ?? []
+export const peersOf = (host: string) => FLEET[fleetKey(host)] ?? []
+
+/** How the digest's page names each of the owner's hosts (`digest.name`, and its peers' `name`). */
+export const DIGEST_NAMES: ReadonlyMap<string, string> = new Map([
+  ["cristians-macbook-pro", "macbook"],
+  ["bite-cristian", "workbox"],
+])
+
+/** A `FLEET` host's name on the digest's page; its host name when `DIGEST_NAMES` has none. */
+export const digestName = (host: string): string => Option.getOrElse(Option.fromUndefinedOr(DIGEST_NAMES.get(host)), () => host)
 
 /**
  * The pool's plugin entry: Claude's cache lifetime, and the login store as a source of logins when
@@ -204,12 +216,26 @@ export const OWNER_TIMEZONE = "America/Montreal"
  * - `digest.tailnetRead` is `"member"`: any device on his tailnet reads the page unpaired, and marks, answers and
  *   pairing still need a paired browser (owner, 2026-11-22: "Tailnet can read"). Set it to `"paired"` here to make
  *   reading need pairing again.
+ * - `digest.name` is the host's `DIGEST_NAMES` name, and `digest.peers` the other `FLEET` hosts, each by its name
+ *   and its Tailscale host name (its `FLEET` key): the page shows their projects beside its own (owner, 2026-11-22:
+ *   "the digest is available over all environments").
  *
  * Elsewhere the bare plugin: the host's zone, and the plugin's default `"paired"`.
  */
 export const digestEntry = (digest: string, fleet: { readonly host: string }): PluginEntry => {
   if (peersOf(fleet.host).length === 0) return digest
-  return { package: digest, options: { timezone: OWNER_TIMEZONE, tailnetRead: "member" satisfies TailnetRead } }
+  const self = fleetKey(fleet.host)
+  return {
+    package: digest,
+    options: {
+      timezone: OWNER_TIMEZONE,
+      tailnetRead: "member" satisfies TailnetRead,
+      name: digestName(self),
+      peers: Object.keys(FLEET)
+        .filter((host) => host !== self)
+        .map((host) => ({ name: digestName(host), host })),
+    },
+  }
 }
 
 /** This machine's Tailscale IPv4 address, from the `tailscale` CLI (on PATH, or the Mac app's), or undefined. */

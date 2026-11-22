@@ -1,10 +1,11 @@
 // The digest's health line, as `GET /health` answers it and the installer's health step logs it:
 //
-//   digest ok <build> host=<h> events=<n> last=<iso> peers=<name>:<age>,… tailnet=yes|partial|held|no:<why>
+//   digest ok <build> host=<h> events=<n> last=<iso> peers=<up>/<named>|none tailnet=yes|partial|held|no:<why>
 //
 // - `build`: the installed build the plugin runs from (its tree's name), `dev` from a checkout.
 // - `events`: the log's lines that read; `last` the newest one's time, `none` for an empty log.
-// - `peers`: none until the peers unit.
+// - `peers`: `<up>/<named>`, how many of the peers the config names answered at their last read (peers.ts); `none`
+//   when it names none.
 // - `tailnet`:
 //   - `yes`: this instance serves every tailnet address the host has;
 //   - `partial`: it serves some, and another server instance holds the others' port (a restart's handover);
@@ -15,7 +16,7 @@
 // - A log that cannot be read is `digest sick <build> host=<h> <why>`. The installer warns on it and never rolls a
 //   build back for it.
 // - On the tailnet an unpaired request reads `ok` alone (BRIEF): no counts, no names.
-import { Array as Arr, DateTime, Option } from "effect"
+import { DateTime, Option } from "effect"
 
 /** What the tailnet listener is doing, as health reports it. */
 export type TailnetState = "yes" | "partial" | "held" | `no:${string}`
@@ -26,8 +27,8 @@ export interface HealthFacts {
   readonly host: string
   readonly events: number
   readonly last: Option.Option<number>
-  /** Each peer and how long since it was heard from, in seconds; none before the peers unit. */
-  readonly peers: ReadonlyArray<{ readonly name: string; readonly age: number }>
+  /** How many named peers are up, of how many are named. */
+  readonly peers: { readonly up: number; readonly named: number }
   readonly tailnet: TailnetState
 }
 
@@ -37,7 +38,7 @@ export const BRIEF = "ok"
 /** The line for a digest that reads. */
 export const healthLine = (facts: HealthFacts): string => {
   const last = Option.match(facts.last, { onNone: () => "none", onSome: (t) => DateTime.formatIso(DateTime.makeUnsafe(t)) })
-  const peers = Arr.match(facts.peers, { onEmpty: () => "none", onNonEmpty: (all) => all.map((peer) => `${peer.name}:${peer.age}s`).join(",") })
+  const peers = Option.getOrElse(Option.map(Option.liftPredicate(facts.peers, (each) => each.named > 0), (each) => `${each.up}/${each.named}`), () => "none")
   return `digest ok ${facts.build} host=${facts.host} events=${facts.events} last=${last} peers=${peers} tailnet=${facts.tailnet}`
 }
 

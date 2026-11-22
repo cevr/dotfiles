@@ -48,6 +48,7 @@ interface Rig {
 /** Handlers that keep each line written and each answer sent, and answer a fixed view, on the rig's clock. */
 const handlers = (rig: Rig): Handlers => ({
   view: Effect.succeed('{"v":1}'),
+  peerView: Effect.succeed('{"wire":1}'),
   write: (line) => Ref.update(rig.written, (lines) => [...lines, line]),
   now: Ref.get(rig.clock),
   zone: "America/Montreal",

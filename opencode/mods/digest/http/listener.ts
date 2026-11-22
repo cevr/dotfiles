@@ -8,6 +8,8 @@
 //
 // - GET `/` and `/assets/<name>`: the built files, by exact name inside `dist`; no other path reads the disk.
 // - GET `/view.json`: the view (view.ts), fresh from the log and the marks at each request.
+// - GET `/peer/view.json`: this host's own view in the wire envelope its named peers read (peers.ts); a read like
+//   `/view.json`, with the same policy: a tailnet member reads it where `tailnetRead` is `member`.
 // - POST `/api/mark` {id, mark: read | unread}, `/api/later` {id}, `/api/name` {project, name}, `/api/since` {}:
 //   one marks line each (marks.ts). A write is a POST of JSON whose Origin is the page's own and which carries
 //   PAGE_HEADER; anything else is refused and writes nothing. No GET changes state.
@@ -53,6 +55,8 @@ export const NAME_MAX = 80
 export interface Handlers {
   /** The view, as JSON; a failure is shown to the page as its message. */
   readonly view: Effect.Effect<string, { readonly message: string }>
+  /** This host's own view in the peers' wire envelope (peers.ts), never its peers': what `/peer/view.json` answers. */
+  readonly peerView: Effect.Effect<string, { readonly message: string }>
   /** Keep one marks line. */
   readonly write: (line: MarkLine) => Effect.Effect<void, { readonly message: string }>
   readonly now: Effect.Effect<number>
@@ -239,6 +243,12 @@ const read = (handlers: Handlers, dist: string, path: string, paired: boolean, b
     Match.when("/health", () => Effect.map(Option.match(Option.liftPredicate(brief, Boolean), { onSome: () => Effect.succeed(BRIEF), onNone: () => handlers.health }), (line) => text(200, line))),
     Match.when("/view.json", () =>
       handlers.view.pipe(
+        Effect.map((json) => answer(200, json, { "content-type": "application/json", ...NO_STORE })),
+        Effect.catch((failure) => Effect.succeed(reason(500, failure.message))),
+      ),
+    ),
+    Match.when("/peer/view.json", () =>
+      handlers.peerView.pipe(
         Effect.map((json) => answer(200, json, { "content-type": "application/json", ...NO_STORE })),
         Effect.catch((failure) => Effect.succeed(reason(500, failure.message))),
       ),
