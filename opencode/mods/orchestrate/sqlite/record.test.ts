@@ -3,13 +3,13 @@
 // and the daily backup is written once a day with the newest seven kept.
 import { Database } from "bun:sqlite"
 import { expect, test } from "bun:test"
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Array as Arr, Effect, Layer, Option } from "effect"
 import { commitmentRecordLaws } from "../laws.ts"
 import { type Actor, Command, EMPTY, FREE_TEXT_COLUMNS, fold } from "../record.ts"
-import { BACKUPS_KEPT, connectSync, layer, MIGRATIONS, pathOf, stateDir, VERSION } from "./record.ts"
+import { BACKUPS_KEPT, connectSync, keyOfCheckout, layer, MIGRATIONS, pathOf, stateDir, VERSION } from "./record.ts"
 
 const T0 = 1_800_000_000_000
 const DAY = 86_400_000
@@ -159,6 +159,29 @@ test("the daily backup is written at a day's first open only, and the eighth day
       const last = new Database(join(dir, "backup", "repo-2027-01-22.db"), { readonly: true })
       expect(last.query("SELECT count(*) AS n FROM commitment").get()).toEqual({ n: BACKUPS_KEPT })
       last.close()
+    }),
+  ))
+
+test("a repository with no origin: its workspace, a subfolder and the base share one key; another repository has its own", () =>
+  inScratch((dir) =>
+    Effect.sync(() => {
+      const env = { PATH: Bun.env["PATH"] ?? "/usr/bin:/bin", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t.invalid", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t.invalid" }
+      const init = (path: string) => {
+        mkdirSync(join(path, "sub"), { recursive: true })
+        writeFileSync(join(path, "sub", "f"), path)
+        for (const args of [["init", "-q", "-b", "main"], ["add", "-A"], ["commit", "-q", "-m", "root"]]) Bun.spawnSync(["git", "-C", path, ...args], { env, stdout: "ignore", stderr: "ignore" })
+      }
+      const base = join(dir, "repo")
+      init(base)
+      // A workspace as `work` makes one: a copy of the base, laid out beside it.
+      const workspace = join(dir, ".work", "repo", "lane-1")
+      cpSync(base, workspace, { recursive: true })
+      const other = join(dir, "other")
+      init(other)
+      const keys = [base, join(base, "sub"), workspace, join(workspace, "sub")].map(keyOfCheckout)
+      expect(new Set(keys).size).toBe(1)
+      expect(keys[0]).toStartWith("local-")
+      expect(keyOfCheckout(other)).not.toBe(keys[0])
     }),
   ))
 

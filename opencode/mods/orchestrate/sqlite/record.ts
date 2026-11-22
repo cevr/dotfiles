@@ -7,7 +7,7 @@
 import { Database, type SQLQueryBindings } from "bun:sqlite"
 import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, readdirSync, realpathSync, renameSync, unlinkSync } from "node:fs"
-import { basename, dirname, join } from "node:path"
+import { basename, dirname, join, sep } from "node:path"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { Array as Arr, Clock, Effect, Layer, Option, Order, Predicate, Result, Schema } from "effect"
 import {
@@ -154,11 +154,29 @@ const gitOut = (checkout: string, args: ReadonlyArray<string>): Option.Option<st
   return Option.filter(Option.some(ran.stdout.toString().trim()), (text) => ran.exitCode === 0 && text !== "")
 }
 
-/** The repository key of the checkout at `checkout`: its origin's (repo-key.ts), else `local-` and its top folder's real path hashed. */
+/**
+ * The checkout a workspace was made from, when `top` is laid out as `work` lays one (`<parent>/.work/<repo>/<name>`,
+ * or Rift's older `<parent>/.rifts/<repo>/<name>`) and `<parent>/<repo>` is a git checkout; else `top` itself.
+ */
+const baseOf = (top: string): string => {
+  const parts = top.split(sep)
+  const base = Option.filter(
+    Option.map(Option.liftPredicate(parts, (each) => each.length > 3 && [".work", ".rifts"].includes(each.at(-3) ?? "")), (each) => [...each.slice(0, -3), each.at(-2) ?? ""].join(sep)),
+    (path) => Option.isSome(gitOut(path, ["rev-parse", "--git-common-dir"])),
+  )
+  return Option.getOrElse(base, () => top)
+}
+
+/**
+ * The repository key of the checkout at `checkout`: its origin's (repo-key.ts); else `local-` and the real path of
+ * its repository's common git directory hashed, read from the checkout's base (`baseOf`) when it is a workspace, so
+ * a workspace, a worktree and their base share one record, and two repositories never do.
+ */
 export const keyOfCheckout = (checkout: string): string =>
   Option.getOrElse(Option.flatMap(gitOut(checkout, ["config", "--get", "remote.origin.url"]), keyOfOrigin), () => {
     const top = Option.getOrElse(gitOut(checkout, ["rev-parse", "--show-toplevel"]), () => checkout)
-    return localKey(createHash("sha256").update(realpathSync(top)).digest("hex"))
+    const common = Option.getOrElse(gitOut(baseOf(realpathSync(top)), ["rev-parse", "--path-format=absolute", "--git-common-dir"]), () => top)
+    return localKey(createHash("sha256").update(realpathSync(common)).digest("hex"))
   })
 
 // ── Rows ──
