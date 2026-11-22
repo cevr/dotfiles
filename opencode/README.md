@@ -1268,7 +1268,7 @@ What a run owes is one SQLite record per repository per host
 checkout's origin, else from its repository's common git dir, a workspace
 keyed as its base; `mods/orchestrate/record.ts`, `sqlite/record.ts`), never
 prose: one commitment per promised outcome, its events and its rows written in
-one transaction (`user_version` 2, a daily backup beside it, seven kept). A
+one transaction (`user_version` 1, a daily backup beside it, seven kept). A
 file of a newer version is read and never written. Every free-text field
 (titles, quotes, refs, plans, reasons, notes) passes one boundary that holds it
 to one bounded line and redacts secret shapes.
@@ -1279,11 +1279,23 @@ to one bounded line and redacts secret shapes.
   `assign` owns or re-owns one, with its waits (`after`: a commit on main,
   another commitment closed, a date, a manual word) and a review-by time (7
   days by default: every owned one has one); `order` starts an owner's and
-  answers all its open ones; `release`, `decide` (with why), `reopen`, `word`,
-  `route` (a hand-back), `list`, `history`, `import` (an Ergo register, table
-  to table).
+  answers all its open ones; `release`, `decide` (with why and a guarantee),
+  `defer` (keeps one open with why it waits), `reopen` (clears its reason, the
+  history keeps it), `invariant` (declares one from a committed document),
+  `word`, `route` (a hand-back), `list`, `history`, `import` (an Ergo
+  register, table to table; its closes read `historical, unclassified`).
 - **`follow_up`** (a worker's): one unowned commitment per finding, sourced to
-  the call, with the owner it suggests; it replaces a Follow-ups line.
+  the session and its idempotency key, with the owner it suggests and its
+  reason; it replaces a Follow-ups line.
+- **Reasons are data** (`mods/orchestrate/reasons.ts`): a class and a pointer
+  the plugin checks, never prose. A guarantee names an invariant the root
+  declared (bound to the document's blob at HEAD) and is the only close by
+  decision; a dependency names an open commitment whose chain is open and
+  acyclic (checked in the write's transaction); a measurement names a receipt
+  envelope under the checkout's `tmp/orchestrate/`, read through the host's
+  file system with its realpath contained and its bytes hashed into the event.
+  Each decided row has one close kind (guarantee, placed, historical; not-asked
+  is the spec-items unit's), bound to its state by the schema.
 - **Standings**, computed at each read and never stored: unowned, orphaned
   (its owner's lane is gone), overdue (past review-by), due (every wait met,
   not started) or held. Nobody says landed: a commitment lands only when the
@@ -1315,7 +1327,9 @@ to one bounded line and redacts secret shapes.
   '{"from":"<copy of register.db>","map":"ergo-register"}'` is idempotent).
 
 `cmd/orchestrate/record-model.sim.test.ts` holds the SQLite store to a
-reference model over generated runs with restarts (five broken stores go red),
+reference model over generated runs with restarts and over every caller,
+operation, state, reason class, pointer kind and existence (nine broken
+stores go red),
 `commitments.sim.test.ts` the tools through the plugin, and
 `scripts/no-prose-state.test.ts` keeps every regular expression in
 orchestrate, status and the skill's scripts on an allow list each unit of the

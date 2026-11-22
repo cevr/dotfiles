@@ -26,14 +26,14 @@ A root that runs the orchestrate skill starts role agents (planner, implementor,
 - `commitments-add`: the root's `commitments` tool. `add` with N parts makes N open, unowned commitments in one call (an owner's approval: `source_kind: "owner-answer"`), and `orchestrate status` ends with the record's section listing them unowned; `orchestrate lane` gets or makes the unit's commitment and its answer names the unit's open ones; a subagent's `commitments` call is refused.
 - `commitments-check`: the record's section in `status`, every `land` and the queue check: counts by standing (unowned, orphaned, overdue, due, held), at most ten ids a listed standing, owner-sourced first, `and N more` with the `list` call; quiet when only held; status, a land and the queue check claim a lane's head only when it is the unit's own work past the commit the lane started at, and land it once it is on the default branch (a stacked child or a lane at an unpushed base commit with no commit of its own never lands); every line, the notices and unrouted hand-backs too, at most ten, a close from outside its run flagged and listed first.
 - `commitments-restart`: the record is a SQLite file per repository per host (`options.record`, else `$XDG_STATE_HOME/opencode-orchestrate/<repo key>.db`): after a restart `status` answers the same section; `bun cmd/orchestrate/record.ts list` reads it read-only, and `import --map ergo-register` is idempotent.
-- `follow-up-tool`: a worker's `follow_up({ id, title, suggest_owner? })` makes one unowned `follow-up` commitment, sourced to its call, which the root's section lists until owned or decided.
+- `follow-up-tool`: a worker's `follow_up({ id, title, reason_class, referent, suggest_owner?, key? })` makes one unowned `follow-up` commitment, sourced to its session and key, which the root's section lists until owned or decided; its reason is checked data ([commitment-reasons.md](commitment-reasons.md)).
 
 ## How to get to it (user POV)
 
 - The root agent's `subagent` call with a role and a description in the skill's form.
 - The work tool's `{ "action": "land", "workspaces": [...] }` (on the owner's machines only).
 - The root's `orchestrate` tool: `{ "action": "lane", "unit": "billing" }`, `{ "action": "land" }`, `{ "action": "verify" }`, `{ "action": "verify", "batch": "batch-7" }`, `{ "action": "status" }`.
-- The root's `commitments` tool: `{ "action": "add", "source_kind": "owner-answer", "source_ref": "<session>:<q id>", "parts": [{ "id": "p1", "title": "…" }] }`, `{ "action": "list" }`; a worker's `follow_up`; `bun cmd/orchestrate/record.ts <action> --json '<fields>'` in a shell.
+- The root's `commitments` tool: `{ "action": "add", "source_kind": "owner-answer", "source_ref": "<session>:<q id>", "parts": [{ "id": "p1", "title": "…" }] }`, `{ "action": "list" }`; a worker's `follow_up` with its reason; `bun cmd/orchestrate/record.ts <action> --json '<fields>'` in a shell.
 - `bun ~/.claude/skills/orchestrate/scripts/status.ts <run dir> --repo <checkout> [--all]` in a shell.
 - A compaction of a root that runs units (the note).
 

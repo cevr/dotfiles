@@ -47,6 +47,7 @@ Name user paths, tool calls, keys, commands and observable words. Keep source se
 ## Features
 
 - [Orchestrate's machine and the land](orchestrate.md): role starts, the batch machine's refusals, the land of a batch.
+- [Commitment reasons](commitment-reasons.md): a follow-up's, a deferral's and a decision's reason as checked data: invariants, dependencies, receipts.
 - [Account pool](pool.md): the login each request goes out on, failover on a refused login, resets.
 - [Session mail](mail.md): `sessions` and `message`, a woken idle receiver, a steer into a running one, paired hosts.
 - [Wake latch](wake-latch.md): a subagent start held as a latch, `wake_list`, the reopen.
