@@ -1,6 +1,6 @@
 // The page's one connection to its server: the view, whether this browser is paired, and the writes. Every write is
 // a JSON POST with the page's header, from the page's own origin (the listener refuses anything else). An answer
-// needs this browser paired: the token `/api/pair` answered, kept in this origin's localStorage (scheme, host and
+// needs this browser paired, and on the tailnet so does every read: the token `/api/pair` answered, kept in this origin's localStorage (scheme, host and
 // port: no other server on 127.0.0.1 reads it, as it would a cookie) and sent as TOKEN_HEADER. It never goes in a URL.
 import type { View } from "./types.ts"
 
@@ -30,9 +30,13 @@ export const keepToken = (value: string) => {
 /** The token header, when this browser has one. */
 const paired = (): Record<string, string> => (token() === "" ? {} : { [TOKEN_HEADER]: token() })
 
-/** The view now; a failure says why (the server restarting, a marks file of a newer build). */
+/** The view is not this browser's to read until it pairs (the page on the tailnet). */
+export class Unpaired extends Error {}
+
+/** The view now; a failure says why (the server restarting, a marks file of a newer build, or Unpaired). */
 export const fetchView = async (): Promise<View> => {
-  const answer = await fetch("./view.json", { cache: "no-store" })
+  const answer = await fetch("./view.json", { cache: "no-store", headers: paired() })
+  if (answer.status === 401) throw new Unpaired("pair this browser to read the digest")
   if (!answer.ok) {
     const said = await answer.json().catch(() => ({ reason: `the server answered ${answer.status}` }))
     throw new Error(said.reason ?? `the server answered ${answer.status}`)

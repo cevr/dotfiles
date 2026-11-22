@@ -4,9 +4,9 @@
 import "./style.css"
 import { render } from "@solidjs/web"
 import { Match, Show, Switch } from "solid-js"
-import { Messages } from "./messages.tsx"
+import { Messages, PairPrompt } from "./messages.tsx"
 import { ProjectsHome, ProjectsSide } from "./projects.tsx"
-import { problem, project, start, view, wide } from "./state.ts"
+import { locked, problem, project, start, view, wide } from "./state.ts"
 import { Timeline } from "./timeline.tsx"
 
 function Banner() {
@@ -26,6 +26,12 @@ function App() {
     <>
       <Banner />
       <Switch>
+        <Match when={locked()}>
+          <section class="locked">
+            <h1>Digest</h1>
+            <PairPrompt read />
+          </section>
+        </Match>
         <Match when={view() === undefined && problem() === undefined}>
           <p class="loading" role="status">
             Loading the digest…

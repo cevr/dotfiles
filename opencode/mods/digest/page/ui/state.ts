@@ -18,6 +18,8 @@ export const [shownAll, setShownAll] = createSignal<ReadonlySet<string>>(new Set
 /** The timeline span pointed at (hovered, dragged or focused), by index. */
 export const [hot, setHot] = createSignal<number | undefined>(undefined)
 export const [editing, setEditing] = createSignal(false)
+/** The page on the tailnet, not paired: it shows only how to pair, and no data. */
+export const [locked, setLocked] = createSignal(false)
 
 const wideQuery = matchMedia("(min-width: 900px)")
 export const [wide, setWide] = createSignal(wideQuery.matches)
@@ -51,6 +53,7 @@ export const refresh = (): Promise<void> => {
   const ask: Promise<void> = Api.fetchView()
     .then(async (next) => {
       setView(next)
+      setLocked(false)
       setProblem(undefined)
       // His first visit: everything older reads as read from now on. Only the first-ever load writes it.
       if (next.since === undefined) {
@@ -58,7 +61,17 @@ export const refresh = (): Promise<void> => {
         setView(await Api.fetchView())
       }
     })
-    .catch((failure: Error) => void setProblem(failure.message))
+    .catch((failure: Error) => {
+      // Not paired here (its token revoked, or a new origin): nothing of the last view stays on screen.
+      if (failure instanceof Api.Unpaired) {
+        Api.keepToken("")
+        setView(undefined)
+        setPaired(false)
+        setProblem(undefined)
+        return void setLocked(true)
+      }
+      setProblem(failure.message)
+    })
     .finally(() => {
       asking = undefined
     })
@@ -104,6 +117,7 @@ export const pairWith = (code: string) =>
     .then(() => {
       setPairProblem(undefined)
       setPaired(true)
+      return refresh()
     })
     .catch((failure: Error) => {
       setPairProblem(failure.message)

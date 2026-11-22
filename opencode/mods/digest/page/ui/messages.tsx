@@ -141,8 +141,11 @@ function OutcomeLine(props: { readonly outcome: Outcome }) {
   )
 }
 
-/** How to pair this browser: the command, and a field for the code it prints. */
-function PairPrompt() {
+/**
+ * How to pair this browser: the command, and a field for the code it prints. `read`: the page on the tailnet, which
+ * shows nothing until this browser pairs; else to answer.
+ */
+export function PairPrompt(props: { readonly read?: boolean }) {
   let field: HTMLInputElement | undefined
   const submit = (event: SubmitEvent) => {
     event.preventDefault()
@@ -150,9 +153,18 @@ function PairPrompt() {
   }
   return (
     <form class="pair" onSubmit={submit}>
-      <p>
-        Pair this browser to answer: run <code>bun cmd/digest/pair.ts</code> and open the link it prints, or type its code here.
-      </p>
+      <Show
+        when={props.read}
+        fallback={
+          <p>
+            Pair this browser to answer: run <code>bun cmd/digest/pair.ts</code> and open the link it prints, or type its code here.
+          </p>
+        }
+      >
+        <p>
+          Pair this browser to read the digest: on the host, run <code>bun cmd/digest/pair.ts</code> and type the code it prints here. Each address of the page (its name, its IP) pairs on its own.
+        </p>
+      </Show>
       <div class="pairrow">
         <input ref={(input: HTMLInputElement) => (field = input)} aria-label="Pairing code" placeholder="ABCDE-FGHJK" autocomplete="one-time-code" maxlength={16} />
         <button type="submit">Pair</button>
