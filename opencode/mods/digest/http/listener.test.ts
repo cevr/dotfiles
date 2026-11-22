@@ -477,22 +477,27 @@ describe("the tailnet listener", () => {
     )
   })
 
-  test("it answers its own names only (a loopback name and a rebound one are refused on every route), and each name is its own origin", async () => {
+  test("it serves under its own address only: a loopback name and a rebound one are refused on every route; under its names GET / is sent on to the address, every other route refused, token or not", async () => {
     using held = scratch("digest-http-")
     await withListener(
       builtPage(held.path),
       async (base, written, _hostname, rig) => {
         const port = new URL(base).port
-        const statusAt = async (host: string, path: string) => (await fetch(`${base}${path}`, { headers: { host } })).status
-        for (const path of ["/", "/assets/index-abc.js", "/paired.json", "/health", "/view.json"]) {
-          expect([path, await statusAt(`localhost:${port}`, path), await statusAt(`evil.example:${port}`, path), await statusAt(`harbor:${port}`, path), await statusAt(`harbor.example-tailnet.ts.net:${port}`, path)]).toEqual([path, 421, 421, [200, 401][Number(path === "/view.json")], [200, 401][Number(path === "/view.json")]])
-        }
-        // A write naming one of its names must come from that name's origin: the page opened by IP is not the page opened by name.
         const token = await paired(base, rig)
+        const statusAt = async (host: string, path: string, headers: Record<string, string> = {}) => (await fetch(`${base}${path}`, { headers: { host, ...headers }, redirect: "manual" })).status
+        for (const path of ["/", "/assets/index-abc.js", "/paired.json", "/health", "/view.json"]) {
+          expect([path, await statusAt(`localhost:${port}`, path), await statusAt(`evil.example:${port}`, path)]).toEqual([path, 421, 421])
+          for (const name of [`harbor:${port}`, `harbor.example-tailnet.ts.net:${port}`]) {
+            const expected = [421, 308][Number(path === "/")]
+            expect([path, name, await statusAt(name, path), await statusAt(name, path, { [TOKEN_HEADER]: token })]).toEqual([path, name, expected, expected])
+          }
+        }
+        // A write under a name, from that name's origin, with the token: refused, nothing written; by the address it goes.
         const byName = await post(`${base}/api/mark`, { id: "m1", mark: "read" }, { ...own(base, token), host: `harbor:${port}`, origin: `http://harbor:${port}` })
         const crossed = await post(`${base}/api/mark`, { id: "m1", mark: "read" }, { ...own(base, token), origin: `http://harbor:${port}` })
-        expect([byName.status, crossed.status]).toEqual([204, 403])
-        expect((await Effect.runPromise(Ref.get(written))).length).toBe(1)
+        expect([byName.status, crossed.status]).toEqual([421, 403])
+        expect(await Effect.runPromise(Ref.get(written))).toEqual([])
+        expect((await post(`${base}/api/mark`, { id: "m1", mark: "read" }, own(base, token))).status).toBe(204)
       },
       handlers,
       "tailnet",
@@ -505,7 +510,7 @@ describe("the tailnet listener", () => {
       builtPage(held.path),
       async (base, written, _hostname, rig) => {
         const port = new URL(base).port
-        // Every read, with no token: the shell, whether paired, the view (by IP and by each name), and health's `ok`.
+        // Every read, with no token: the shell, whether paired, the view (by its address; never by a name), and health's `ok`.
         const reads = [
           await fetch(`${base}/`),
           await fetch(`${base}/assets/index-abc.js`),
@@ -514,7 +519,7 @@ describe("the tailnet listener", () => {
           await fetch(`${base}/view.json`, { headers: { host: `harbor:${port}` } }),
           await fetch(`${base}/view.json`, { headers: { host: `harbor.example-tailnet.ts.net:${port}` } }),
         ]
-        expect(reads.map((each) => each.status)).toEqual([200, 200, 200, 200, 200, 200])
+        expect(reads.map((each) => each.status)).toEqual([200, 200, 200, 200, 421, 421])
         expect(await (await fetch(`${base}/view.json`)).text()).toBe('{"v":1}')
         expect(await (await fetch(`${base}/paired.json`)).text()).toBe('{"paired":false,"answers":false}')
         expect(await (await fetch(`${base}/health`)).text()).toBe("ok")
@@ -561,7 +566,7 @@ describe("the tailnet listener", () => {
     // Two addresses (::1 standing in for the IPv6 one), for a partial hold.
     const both: Tailnet = { ...tailnet, addresses: [HOSTNAME, "::1"] }
     const reach = () =>
-      Effect.runPromise(Effect.match(Effect.tryPromise(() => fetch(`http://${HOSTNAME}:${port}/`, { headers: { host: `harbor:${port}` } })), { onSuccess: (answer) => answer.status, onFailure: () => 0 }))
+      Effect.runPromise(Effect.match(Effect.tryPromise(() => fetch(`http://${HOSTNAME}:${port}/`)), { onSuccess: (answer) => answer.status, onFailure: () => 0 }))
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
@@ -1038,4 +1043,145 @@ describe("a lost device store closes, it never re-keys by name", () => {
         expect(await (await fetch(`${served.base}/health`)).text()).toEndWith(` writes=member-except-hosts members=1 writers=1 excluded=2:${condition}`)
       })
     })
+})
+
+
+// ── The address only (digest-address-only), through the real listener ──
+//
+// His phone reads and writes with no token, so its network position is the credential, and every page in its
+// browser shares it. Which server a NAME reaches is decided by the browser's resolver (a hostile Wi-Fi's search
+// domain, a name rebound after the attacker's page loaded under it), so a page in a name's origin may be anyone's;
+// an address origin is one no resolver decides. Two tailnet listeners, bound on 127.0.0.1 and ::1 standing in for
+// the host's 100.x and fd7a: addresses, under the switches his hosts ship, each request from his phone (the test's
+// peer seam), with no token unless it says so.
+
+/** A tailnet listener as the cases reach it: its own address origin, as a browser writes it, and its port. */
+interface AtAddress {
+  readonly origin: string
+  readonly host: string
+  readonly port: number
+}
+
+/** What both listeners stored, and a paired browser's token for the token cases. */
+interface Stored {
+  readonly rig: Rig
+  readonly token: string
+}
+
+const PAGE_ROUTES = ["view", "mark", "later", "name", "since", "answer"] as const
+type PageRoute = (typeof PAGE_ROUTES)[number]
+const WRITE_ROUTES: ReadonlyArray<PageRoute> = PAGE_ROUTES.filter((route) => route !== "view")
+const BODIES: Readonly<Record<PageRoute, Readonly<Record<string, string>>>> = {
+  view: {},
+  mark: { id: "m1", mark: "read" },
+  later: { id: "m2" },
+  name: { project: "harbor", name: "Harbor Lights" },
+  since: {},
+  answer: { id: "question:s:q1", option: "Keep it" },
+}
+
+/** Both listeners on free ports, from his phone, under the shipped switches, sharing one rig. */
+const withAddresses = (dist: string, body: (v4: AtAddress, v6: AtAddress, stored: Stored) => Promise<void>) =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const rig = yield* rigOf(join(dist, "..", "pairing"))
+        const shipped: Handlers = { ...handlers(rig), tailnetRead: "member", members: Effect.succeed(his("member-except-hosts")) }
+        const atOf = (bound: { readonly port: number }, written: string): AtAddress => ({ origin: `http://${written}:${bound.port}`, host: `${written}:${bound.port}`, port: bound.port })
+        const v4 = atOf(yield* listen({ address: "127.0.0.1", port: 0, listener: "tailnet", names: NAMES.tailnet }, shipped, dist, () => OWN_PHONE), "127.0.0.1")
+        const v6 = atOf(yield* listen({ address: "::1", port: 0, listener: "tailnet", names: NAMES.tailnet }, shipped, dist, () => OWN_PHONE), "[::1]")
+        const token = (yield* rig.pairing.exchange(yield* rig.pairing.issue(NOW), NOW, "Invented Browser 1.0", OWN_PHONE)).token
+        yield* Effect.promise(() => body(v4, v6, { rig, token }))
+      }),
+    ),
+  )
+
+/** One request to `at` naming `host` and `origin` ("" sends none), with `token` ("" none): the view, or a write as the page sends it. */
+const ask = (at: AtAddress, route: PageRoute, host: string, origin: string, token = "") => {
+  const headers = new Headers({ host })
+  if (origin !== "") headers.set("origin", origin)
+  if (token !== "") headers.set(TOKEN_HEADER, token)
+  if (route === "view") return fetch(`${at.origin}/view.json`, { headers, redirect: "manual" })
+  headers.set("content-type", "application/json")
+  headers.set(PAGE_HEADER, "1")
+  return fetch(`${at.origin}/api/${route}`, { method: "POST", body: JSON.stringify(BODIES[route]), headers, redirect: "manual" })
+}
+
+const storedCount = async (stored: Stored) => (await Effect.runPromise(Ref.get(stored.rig.written))).length + (await Effect.runPromise(Ref.get(stored.rig.answered))).length
+
+/** Every spelling of the listener's names a request may carry as `Host`: as Tailscale names them, upper case, a trailing dot. */
+const nameForms = (port: number) => [...NAMES.tailnet, "HARBOR.EXAMPLE-TAILNET.TS.NET", "Harbor", "harbor.example-tailnet.ts.net.", "harbor."].map((name) => `${name}:${port}`)
+
+describe("on the tailnet the page answers at its own address only", () => {
+  test("under a name (full, first label, upper case, trailing dot), with or without a token: the view and every write refused, nothing stored", async () => {
+    using held = scratch("digest-http-")
+    await withAddresses(builtPage(held.path), async (v4, v6, stored) => {
+      for (const at of [v4, v6])
+        for (const host of nameForms(at.port))
+          for (const token of ["", stored.token]) {
+            const view = await ask(at, "view", host, "", token)
+            expect([host, token !== "", view.status, (await view.text()).includes('"v"')]).toEqual([host, token !== "", 421, false])
+            for (const route of WRITE_ROUTES) expect([host, route, token !== "", (await ask(at, route, host, `http://${host}`, token)).status]).toEqual([host, route, token !== "", 421])
+          }
+      expect(await storedCount(stored)).toBe(0)
+    })
+  })
+
+  test("under its address, from its own origin or (a GET) none, with no token: as before, his phone reads, marks and answers", async () => {
+    using held = scratch("digest-http-")
+    await withAddresses(builtPage(held.path), async (v4, v6, stored) => {
+      for (const at of [v4, v6]) {
+        const view = await ask(at, "view", at.host, "")
+        expect([at.host, view.status, await view.text(), (await ask(at, "view", at.host, at.origin)).status]).toEqual([at.host, 200, '{"v":1}', 200])
+        const statuses: Array<number> = []
+        for (const route of WRITE_ROUTES) statuses.push((await ask(at, route, at.host, at.origin)).status)
+        expect([at.host, statuses]).toEqual([at.host, [204, 204, 204, 204, 200]])
+      }
+      expect(await storedCount(stored)).toBe(10)
+    })
+  })
+
+  test("GET / (any query) and HEAD / under a name: 308 to the bound address's page whatever the request names, no body, no cookie, no CORS grant; every other path refused", async () => {
+    using held = scratch("digest-http-")
+    await withAddresses(builtPage(held.path), async (v4, v6) => {
+      for (const at of [v4, v6])
+        for (const host of NAMES.tailnet.map((name) => `${name}:${at.port}`)) {
+          for (const [method, path] of [["GET", "/"], ["HEAD", "/"], ["GET", "/?p=harbor"]] as const) {
+            const answer = await fetch(`${at.origin}${path}`, { method, headers: { host, "x-forwarded-host": "evil.example", forwarded: "host=evil.example", origin: "http://evil.example" }, redirect: "manual" })
+            const grants = [...answer.headers.keys()].filter((key) => key.startsWith("access-control-") || key === "set-cookie")
+            expect([host, method, path, answer.status, answer.headers.get("location"), await answer.text(), grants]).toEqual([host, method, path, 308, `${at.origin}/`, "", []])
+          }
+          for (const path of ["/assets/index-abc.js", "/paired.json", "/health", "/index.html", "/anything"]) expect([host, path, (await fetch(`${at.origin}${path}`, { headers: { host }, redirect: "manual" })).status]).toEqual([host, path, 421])
+        }
+    })
+  })
+
+  test("over every generated Host and Origin pair: a tokenless request is accepted iff the Host is this listener's address and the Origin its own, or absent on a GET", async () => {
+    using held = scratch("digest-http-")
+    await withAddresses(builtPage(held.path), async (v4, v6, stored) => {
+      const forms = (port: number) => [
+        // This device's names, another of his devices', a colleague's: bare, with the port.
+        ...["harbor.example-tailnet.ts.net", "harbor", "HARBOR", "harbor.", "phone.example-tailnet.ts.net", "phone", "skiff", "laptop.example-tailnet.ts.net", "laptop", "localhost", "evil.example"].flatMap((name) => [name, `${name}:${port}`]),
+        // Addresses: this listener's and the other's, other tailnet hosts', IPv4, IPv6, IPv4-mapped, spelled out; bare, with the port, another port.
+        ...["127.0.0.1", "[::1]", "[0:0:0:0:0:0:0:1]", "[::ffff:127.0.0.1]", "[::ffff:7f00:1]", "::1", "127.000.000.001", "100.101.102.103", "[fd7a:115c:a1e0::42]", "100.101.102.110", "[::ffff:100.101.102.103]"].flatMap((address) => [address, `${address}:${port}`, `${address}:${port + 1}`]),
+      ]
+      const wrong: Array<string> = []
+      let accepted = 0
+      let index = 0
+      for (const at of [v4, v6]) {
+        const hosts = forms(at.port)
+        for (const host of hosts)
+          for (const origin of ["", "null", ...hosts.map((each) => `http://${each}`), `https://${at.host}`, `${at.origin}/`]) {
+            const route = PAGE_ROUTES[index % PAGE_ROUTES.length] ?? "view"
+            index += 1
+            const status = (await ask(at, route, host, origin)).status
+            const expected = host === at.host && (origin === at.origin || (origin === "" && route === "view"))
+            accepted += Number(status < 300 && route !== "view")
+            if ((status < 300) !== expected) wrong.push(`${at.host} ${route} Host=${host} Origin=${origin}: ${status}`)
+          }
+      }
+      expect(wrong.slice(0, 5)).toEqual([])
+      expect([index > 2000, await storedCount(stored)]).toEqual([true, accepted])
+    })
+  })
 })

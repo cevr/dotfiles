@@ -12,20 +12,29 @@ import { closed, current, MEMBERS_TTL, membersOf, sourceOf, writesWord } from ".
 import { ACCESS, type Decision, decide, type Facts, type Listener, mayAnswer, type Policy, ROUTE_KINDS, type RouteKind, type Source, SOURCES, TAILNET_WRITES, WRITES } from "./policy.ts"
 
 const LOOPBACK_HOSTS = ["127.0.0.1:8240", "localhost:8240"]
-const TAILNET_HOSTS = ["100.101.102.103:8240", "[fd7a:115c:a1e0::42]:8240", "harbor.example-tailnet.ts.net:8240", "harbor:8240"]
+/** The tailnet listener bound on 100.101.102.103: it serves under that address alone; its names only redirect. */
+const TAILNET_HOSTS = ["100.101.102.103:8240"]
+const TAILNET_NAMES = ["harbor.example-tailnet.ts.net:8240", "harbor:8240"]
 const HOSTS_OF: Readonly<Record<Listener, ReadonlyArray<string>>> = { loopback: LOOPBACK_HOSTS, tailnet: TAILNET_HOSTS }
+const NAMES_OF: Readonly<Record<Listener, ReadonlyArray<string>>> = { loopback: [], tailnet: TAILNET_NAMES }
 
-/** The hosts a request may name: each of the listener's own, the other listener's, a rebound name, none. */
-const HOSTS = [...LOOPBACK_HOSTS, ...TAILNET_HOSTS, "evil.example:8240", "100.101.102.103:9999", ""]
+/**
+ * The hosts a request may name: each of the listener's own, its names, the other listener's (its IPv6 address),
+ * a name spelled as no browser sends it (upper case, a trailing dot), the address without its port or another port,
+ * a rebound name, none.
+ */
+const HOSTS = [...LOOPBACK_HOSTS, ...TAILNET_HOSTS, ...TAILNET_NAMES, "[fd7a:115c:a1e0::42]:8240", "HARBOR:8240", "harbor.example-tailnet.ts.net.:8240", "100.101.102.103", "evil.example:8240", "100.101.102.103:9999", ""]
 /** The kinds that answer with the page's data (the view, the marks it changes, an answer, the health line's counts). */
 const DATA: ReadonlyArray<RouteKind> = ["read", "mark", "answer", "health"]
 const POLICIES: ReadonlyArray<Policy> = (["paired", "member"] as const).flatMap((tailnetRead) => TAILNET_WRITES.map((tailnetWrite) => ({ tailnetRead, tailnetWrite })))
 
-const status = (decision: Decision): number | string => Match.valueTags(decision, { Refuse: (refused) => refused.status, Serve: () => "Serve", Brief: () => "Brief" })
+const status = (decision: Decision): number | string => Match.valueTags(decision, { Refuse: (refused) => refused.status, Serve: () => "Serve", Brief: () => "Brief", Redirect: () => "Redirect" })
 
 /**
  * The reference: what each request gets, written as plainly as possible and apart from policy.ts.
- * - Host first (421), then a tailnet request from outside the tailnet (403), then a write's origin, header, JSON.
+ * - Host first (421: neither a host it serves under nor one of its names), then a tailnet request from outside the
+ *   tailnet (403), then a name: GET / redirects, anything else 421; then on the tailnet an Origin that is sent and
+ *   is not the page's own (403); then a write's origin, header, JSON.
  * - Loopback: everything open but an answer, which needs pairing.
  * - Tailnet: the shell, status and pairing open; health `ok` alone unless paired; a read open to his devices
  *   (own, agent) under read "member"; a mark or answer open to his devices under write "member", to his devices but
@@ -33,10 +42,13 @@ const status = (decision: Decision): number | string => Match.valueTags(decision
  */
 const reference = (facts: Facts, policy: Policy): number | string => Option.getOrElse(refusalOf(facts), () => servedOf(facts, policy))
 
-/** The reference's refusals before what a route needs: Host, a tailnet request from outside, a write's origin, header, JSON. */
-const refusalOf = (facts: Facts): Option.Option<number> => {
-  if (!facts.hosts.includes(facts.host)) return Option.some(421)
+/** The reference's answers before what a route needs: Host, a tailnet request from outside, a name, the origin, a write's header, JSON. */
+const refusalOf = (facts: Facts): Option.Option<number | string> => {
+  const named = facts.names.includes(facts.host)
+  if (!named && !facts.hosts.includes(facts.host)) return Option.some(421)
   if (facts.listener === "tailnet" && (facts.source === "outside" || facts.source === "local")) return Option.some(403)
+  if (named) return Option.some([421, "Redirect"][Number(facts.kind === "shell" && facts.root)] ?? 421)
+  if (facts.listener === "tailnet" && facts.origin !== "" && facts.origin !== `http://${facts.host}`) return Option.some(403)
   if (facts.kind !== "mark" && facts.kind !== "answer" && facts.kind !== "pair") return Option.none()
   if (facts.origin !== `http://${facts.host}` || !facts.pageHeader) return Option.some(403)
   return Option.liftPredicate(415, () => !facts.json)
@@ -60,16 +72,21 @@ const openOnTailnet = (facts: Facts, policy: Policy): boolean => {
   return (policy.tailnetWrite === "member" && mine) || (policy.tailnetWrite === "member-except-hosts" && facts.source === "own")
 }
 
-/** Every combination, with the origin as the request's own, another of the listener's names, a foreign one, none, or `null`. */
+/**
+ * Every combination, with the origin as the request's own, another of the listener's hosts or names, a foreign one,
+ * none, or `null`, and the path `/` or another.
+ */
 const combinations = (): ReadonlyArray<{ readonly facts: Facts; readonly policy: Policy }> =>
   (["loopback", "tailnet"] as const).flatMap((listener) =>
     ROUTE_KINDS.flatMap((kind) =>
       HOSTS.flatMap((host) =>
-        [`http://${host}`, `http://${HOSTS_OF[listener].find((each) => each !== host) ?? ""}`, "http://evil.example", "", "null"].flatMap((origin) =>
+        [`http://${host}`, `http://${[...HOSTS_OF[listener], ...NAMES_OF[listener]].find((each) => each !== host) ?? ""}`, "http://evil.example", "", "null"].flatMap((origin) =>
           [true, false].flatMap((paired) =>
             [true, false].flatMap((pageHeader) =>
               [true, false].flatMap((json) =>
-                SOURCES.flatMap((source) => POLICIES.map((policy) => ({ facts: { listener, kind, source, host, hosts: HOSTS_OF[listener], origin, pageHeader, json, paired }, policy }))),
+                [true, false].flatMap((root) =>
+                  SOURCES.flatMap((source) => POLICIES.map((policy) => ({ facts: { listener, kind, source, host, hosts: HOSTS_OF[listener], names: NAMES_OF[listener], root, origin, pageHeader, json, paired }, policy }))),
+                ),
               ),
             ),
           ),
@@ -87,7 +104,20 @@ describe("the page's policy, at every combination", () => {
   })
 
   test("no route answers a Host that is not one of its listener's own", () => {
-    expect(all.filter(({ facts, policy }) => !facts.hosts.includes(facts.host) && status(decide(facts, policy)) !== 421)).toEqual([])
+    expect(all.filter(({ facts, policy }) => !facts.hosts.includes(facts.host) && !facts.names.includes(facts.host) && status(decide(facts, policy)) !== 421)).toEqual([])
+  })
+
+  test("on the tailnet nothing is served under a name, token or not: GET / is sent on to the address, every other route is refused", () => {
+    const named = all.filter(({ facts }) => facts.listener === "tailnet" && !facts.hosts.includes(facts.host))
+    expect(named.filter(({ facts, policy }) => decide(facts, policy)._tag === "Serve" || decide(facts, policy)._tag === "Brief")).toEqual([])
+    expect(named.filter(({ facts, policy }) => decide(facts, policy)._tag === "Redirect" && !(facts.kind === "shell" && facts.root && facts.names.includes(facts.host)))).toEqual([])
+    expect(named.some(({ facts, policy }) => facts.paired && decide(facts, policy)._tag === "Redirect")).toBe(true)
+  })
+
+  test("on the tailnet whatever is served is served under the listener's own address, from no Origin or its own", () => {
+    const served = all.filter(({ facts, policy }) => facts.listener === "tailnet" && decide(facts, policy)._tag !== "Refuse" && decide(facts, policy)._tag !== "Redirect")
+    expect(served.filter(({ facts }) => facts.host !== "100.101.102.103:8240" || (facts.origin !== "" && facts.origin !== "http://100.101.102.103:8240"))).toEqual([])
+    expect(served.length > 0).toBe(true)
   })
 
   test("no write is served from another origin than the Host it named (a foreign one, none, `null`), without the page's header, or not JSON, whatever the switches", () => {
@@ -112,7 +142,7 @@ describe("the page's policy, at every combination", () => {
   })
 
   test("loopback is as before, whoever and whatever the switches: reads and marks open, an answer paired", () => {
-    const base = { listener: "loopback", host: "127.0.0.1:8240", hosts: LOOPBACK_HOSTS, origin: "http://127.0.0.1:8240", pageHeader: true, json: true, paired: false } as const
+    const base = { listener: "loopback", host: "127.0.0.1:8240", hosts: LOOPBACK_HOSTS, names: [], root: false, origin: "http://127.0.0.1:8240", pageHeader: true, json: true, paired: false } as const
     for (const policy of POLICIES) for (const source of SOURCES) expect(ROUTE_KINDS.map((kind) => [kind, status(decide({ ...base, kind, source }, policy))])).toEqual(ROUTE_KINDS.map((kind) => [kind, ["Serve", 401][Number(ACCESS.loopback[kind] !== "open")]]))
   })
 
@@ -215,7 +245,7 @@ describe("who a source address is, from Tailscale's status", () => {
     const check = (listener: Listener, address: string, who: Source, policy: Policy, kind: RouteKind, paired: boolean, origin: string, pageHeader: boolean) => {
       const members = membersAt(policy.tailnetWrite)
       const host = HOSTS_OF[listener][0] ?? ""
-      const facts: Facts = { listener, kind, source: onListener(listener, sourceOf(address, members)), host, hosts: HOSTS_OF[listener], origin: origin.replace("<own>", `http://${host}`), pageHeader, json: true, paired }
+      const facts: Facts = { listener, kind, source: onListener(listener, sourceOf(address, members)), host, hosts: HOSTS_OF[listener], names: NAMES_OF[listener], root: false, origin: origin.replace("<own>", `http://${host}`), pageHeader, json: true, paired }
       const got = status(decide(facts, { tailnetRead: policy.tailnetRead, tailnetWrite: members.write }))
       const expected = reference({ ...facts, source: onListener(listener, who) }, policy)
       return Option.liftPredicate({ listener, address, kind, paired, origin, pageHeader, policy, got, expected }, () => got !== expected)

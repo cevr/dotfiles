@@ -136,7 +136,7 @@ const snapshot = (path: string): string =>
   )
 
 const served = (kind: RouteKind, members: Members, address: string) =>
-  decide({ listener: "tailnet", kind, source: sourceOf(address, members), host: "harbor:8240", hosts: ["harbor:8240"], origin: "http://harbor:8240", pageHeader: true, json: true, paired: false }, { tailnetRead: "member", tailnetWrite: members.write })._tag === "Serve"
+  decide({ listener: "tailnet", kind, source: sourceOf(address, members), host: "100.101.102.103:8240", hosts: ["100.101.102.103:8240"], names: ["harbor:8240"], root: false, origin: "http://100.101.102.103:8240", pageHeader: true, json: true, paired: false }, { tailnetRead: "member", tailnetWrite: members.write })._tag === "Serve"
 const admitted = (device: Device, kinds: ReadonlyArray<RouteKind>, members: Members) => device.present && ROUTE_KINDS.some((kind) => kinds.includes(kind) && served(kind, members, device.ip))
 
 /** The status the command reads under the lock: the world now. */

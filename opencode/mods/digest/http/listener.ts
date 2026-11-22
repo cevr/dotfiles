@@ -24,6 +24,8 @@
 // - POST `/api/answer` {id, option | text}: the owner's answer to an open question or needs-you item (answers.ts):
 //   200 when it went, 409 with the first answer when another closed it, 4xx when refused. Only from a paired browser.
 // - Every request must name one of its listener's own hosts (`Host`), so a name rebound to its address reads nothing.
+//   On the tailnet that is its bound address alone: under its MagicDNS or short name, `GET /` is sent on to the
+//   address (308) and every other route is refused (421), token or not (policy.ts says why).
 //
 // OpenCode serves a plugin once per directory it serves, and only one instance can bind a port on an address (the
 // socket is never made with SO_REUSEPORT, so Linux refuses a second one as macOS does): the others try again every
@@ -32,7 +34,7 @@ import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { Duration, Effect, Exit, Match, Option, Ref, Schedule, Schema, Scope } from "effect"
 import { type AnswerOutcome, PageAnswer } from "../answers.ts"
-import { bindable, BindRefused, hostOf, hostsOf, noTailnet, type Tailnet } from "../bind.ts"
+import { bindable, BindRefused, hostOf, hostsOf, hostWithPort, noTailnet, type Tailnet } from "../bind.ts"
 import { BRIEF, isWell, localPart, type TailnetState } from "../health.ts"
 import { type MarkLine, markOf, nameOf, sinceOf } from "../marks.ts"
 import { type Pairing, TOKEN_HEADER } from "../pairing.ts"
@@ -75,14 +77,19 @@ export interface Handlers {
   readonly members: Effect.Effect<Members>
 }
 
-/** A listener as a request reaches it: which one, and the hosts it answers to. */
+/**
+ * A listener as a request reaches it: which one, the hosts it serves under, the names that only send `GET /` on to
+ * its address, and that address's page (`home`, the redirect's Location, from the bound address alone).
+ */
 export interface Site {
   readonly listener: Listener
   readonly hosts: ReadonlyArray<string>
+  readonly names: ReadonlyArray<string>
+  readonly home: string
 }
 
 /** The loopback site on `port`. */
-export const loopbackSite = (port: number): Site => ({ listener: "loopback", hosts: hostsOf(port, LOOPBACK_NAMES) })
+export const loopbackSite = (port: number): Site => ({ listener: "loopback", hosts: hostsOf(port, LOOPBACK_NAMES), names: [], home: `http://${hostWithPort(HOSTNAME, port)}/` })
 
 /** An answer: status, headers, body. */
 interface Answer {
@@ -306,8 +313,14 @@ export const answerOf = (handlers: Handlers, dist: string, request: Request, sit
     Effect.catchCause((cause) => Effect.as(Effect.logWarning("digest page: a request failed", { cause }), reason(500, "the digest failed this request"))),
   )
 
-const routed = (handlers: Handlers, dist: string, request: Request, site: Site, address: string): Effect.Effect<Answer> => {
-  const path = new URL(request.url).pathname
+/** A request whose URL does not parse (Bun builds it from the `Host`, so a Host no browser sends): refused as one. */
+const routed = (handlers: Handlers, dist: string, request: Request, site: Site, address: string): Effect.Effect<Answer> =>
+  Option.match(Option.fromNullishOr(URL.parse(request.url)), {
+    onNone: () => Effect.succeed(reason(421, "this page answers on its own names only")),
+    onSome: (url) => routedAt(handlers, dist, request, site, address, url.pathname),
+  })
+
+const routedAt = (handlers: Handlers, dist: string, request: Request, site: Site, address: string, path: string): Effect.Effect<Answer> => {
   const body = Effect.promise(() => request.text())
   return Option.match(kindOf(request.method, path), {
     onNone: () => Effect.succeed(reason(405, "GET or POST only")),
@@ -326,6 +339,8 @@ const routed = (handlers: Handlers, dist: string, request: Request, site: Site, 
           source,
           host: String(request.headers.get("host")),
           hosts: site.hosts,
+          names: site.names,
+          root: path === "/",
           origin: String(request.headers.get("origin") ?? ""),
           pageHeader: request.headers.get(PAGE_HEADER) === "1",
           json: String(request.headers.get("content-type")).startsWith("application/json"),
@@ -335,6 +350,8 @@ const routed = (handlers: Handlers, dist: string, request: Request, site: Site, 
         return yield* Match.valueTags(decide(facts, policy), {
           Refuse: ({ status, reason: why }) => Effect.succeed(reason(status, why)),
           Brief: () => read(handlers, dist, asked, true),
+          // To the page at the listener's own address; nothing of the request goes into the Location.
+          Redirect: () => Effect.succeed(answer(308, "", { location: site.home, ...NO_STORE })),
           Serve: () =>
             Match.value(kind).pipe(
               Match.when("pair", () => Effect.flatMap(body, (given) => pair(handlers, given, String(request.headers.get("user-agent")), address))),
@@ -355,15 +372,21 @@ export interface Place {
   readonly address: string
   readonly port: number
   readonly listener: Listener
-  /** Its names beside its address (the tailnet's MagicDNS name and short name); loopback's are LOOPBACK_NAMES. */
+  /** The tailnet's MagicDNS name and short name, which only send `GET /` on to the address; loopback's are LOOPBACK_NAMES. */
   readonly names: ReadonlyArray<string>
 }
 
-/** The site a place serves once bound on `port`: its address and names, with the port. */
+/**
+ * The site a place serves once bound on `port`. The tailnet listener serves under its bound address alone, as a
+ * browser writes it; its names only send `GET /` on to that address (policy.ts).
+ */
 export const siteOf = (place: Place, port: number): Site =>
   Match.value(place.listener).pipe(
     Match.when("loopback", () => loopbackSite(port)),
-    Match.orElse(() => ({ listener: place.listener, hosts: hostsOf(port, [place.address, ...place.names]) })),
+    Match.orElse((): Site => {
+      const address = hostWithPort(place.address, port)
+      return { listener: place.listener, hosts: [address], names: hostsOf(port, place.names), home: `http://${address}/` }
+    }),
   )
 
 /** Where a request came from: its socket's peer address, as the server saw it; never a header. */
