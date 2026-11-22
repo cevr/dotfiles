@@ -107,8 +107,8 @@ export interface Subject {
   declare(input: { readonly id: string; readonly by: string; readonly role: "root" | "worker" }): Answer<true>
   /**
    * A worker files a follow-up: unowned, open, with its reason (a dependency on an open commitment whose chain is open and
-   * acyclic, or a receipt the reader finds); a retry with the same key and id files nothing again, the key on another id is
-   * refused. Answers its id.
+   * acyclic, or a receipt the reader finds); a retry with the same key, id and reason files nothing again; the key saying something
+   * else, or on another id, is refused. Answers its id.
    */
   followUp(input: { readonly id: string; readonly key: string; readonly by: string; readonly reason: Reason }): Answer<string>
   /** The root keeps an open commitment open with why it waits; it closes nothing. */
@@ -326,7 +326,11 @@ const declare = (held: Held) => (input: Parameters<Subject["declare"]>[0]): Answ
 const followUp = (held: Held) => (input: Parameters<Subject["followUp"]>[0]): Answer<string> => {
   const key = `${input.by}:${input.key}`
   const found = rowOf(held, input.id)
-  if (Option.exists(found, (row) => Option.contains(row.key, key))) return { ok: input.id }
+  // The same key on its own id: a retry when it says what the filing said (its reason), else refused.
+  if (Option.exists(found, (row) => Option.contains(row.key, key))) {
+    if (Option.exists(found, (row) => Option.contains(Option.flatMap(Option.fromUndefinedOr(row.history[0]), (filed) => filed.reason), lineOf(input.reason)))) return { ok: input.id }
+    return refused("the key filed it already, saying something else")
+  }
   if (Option.isSome(found)) return refused("the id is taken")
   if ([...held.rows.values()].some((row) => Option.contains(row.key, key))) return refused("the key filed another follow-up")
   if (input.reason.class === "guarantee" || !holdsNow(held, Option.none(), input.reason)) return refused("a follow-up names a dependency or a measurement that holds")

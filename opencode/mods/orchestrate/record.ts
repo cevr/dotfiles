@@ -151,9 +151,17 @@ export interface Snapshot {
   readonly acted: ReadonlySet<string>
   /** The declared invariants, by id. */
   readonly invariants: ReadonlyMap<string, Invariant>
+  /** Each follow-up as it was filed, by its id: its source (session and key) and what it said, folded from its promise. */
+  readonly filings: ReadonlyMap<string, Filing>
 }
 
-export const EMPTY: Snapshot = { commitments: new Map(), handBacks: new Map(), words: new Map(), acted: new Set(), invariants: new Map() }
+/** A follow-up's filing: the source a retry repeats, and what the filing said, which a retry repeats exactly. */
+export interface Filing {
+  readonly sourceRef: string
+  readonly said: string
+}
+
+export const EMPTY: Snapshot = { commitments: new Map(), handBacks: new Map(), words: new Map(), acted: new Set(), invariants: new Map(), filings: new Map() }
 
 /** How a row was closed (`CLOSE_KINDS`), by the rule the file's generated `close_kind` column applies; none unless decided. */
 export const closeKindOf = (row: Pick<Commitment, "state" | "reason" | "unreasonedClose">): Option.Option<CloseKind> => {
@@ -291,6 +299,7 @@ interface Draft {
   words: Map<string, Word>
   acted: Set<string>
   invariants: Map<string, Invariant>
+  filings: Map<string, Filing>
 }
 
 const touched = (row: Commitment, at: string, change: Partial<Commitment>): Commitment => ({ ...row, ...change, updatedAt: at })
@@ -393,10 +402,22 @@ const commitmentChange = (event: RecordEvent, draft: Draft) => (row: Commitment)
     }),
   )
 
+/**
+ * What a promise said, as one value a retry is compared by: its title as the record keeps it, part, rank, plan,
+ * suggested owner and reason. A retry of a follow-up repeats it exactly; anything else under its key is refused.
+ */
+export const saidOf = (happened: Extract<Happening, { _tag: "promised" }>): string =>
+  [
+    kept(happened.title),
+    ...[happened.part, happened.rank, happened.plan, happened.suggestOwner].map((each) => Option.match(each, { onNone: () => "-", onSome: (value) => `+${value}` })),
+    Option.match(happened.reason, { onNone: () => "-", onSome: (reason) => `+${reason.reasonClass} ${reason.referent}` }),
+  ].join("\u0000")
+
 const applyCommitment = (draft: Draft, event: RecordEvent): void => {
   const happened = event.happening
   if (happened._tag === "promised") {
     draft.commitments.set(event.subjectId, promisedRow(event, happened))
+    if (happened.sourceKind === "follow-up") draft.filings.set(event.subjectId, { sourceRef: happened.sourceRef, said: saidOf(happened) })
     return
   }
   if (happened._tag === "imported") {
@@ -456,7 +477,7 @@ const apply = (draft: Draft, event: RecordEvent): void => {
 
 /** The rows `events` fold `snapshot` into: total, it never fails, and an event about nothing known changes nothing. */
 export const fold = (snapshot: Snapshot, events: Iterable<RecordEvent>): Snapshot => {
-  const draft: Draft = { commitments: new Map(snapshot.commitments), handBacks: new Map(snapshot.handBacks), words: new Map(snapshot.words), acted: new Set(snapshot.acted), invariants: new Map(snapshot.invariants) }
+  const draft: Draft = { commitments: new Map(snapshot.commitments), handBacks: new Map(snapshot.handBacks), words: new Map(snapshot.words), acted: new Set(snapshot.acted), invariants: new Map(snapshot.invariants), filings: new Map(snapshot.filings) }
   for (const event of events) apply(draft, event)
   return draft
 }
@@ -1026,14 +1047,22 @@ const reasonChecked = (snapshot: Snapshot, self: Option.Option<string>, reason: 
   return Option.match(dependencyRefusal(snapshot, self, pointed.id), { onSome: (why) => Result.fail(why), onNone: () => Result.succeed(Option.none()) })
 }
 
+/** Each part of a follow-up `command` with its filing under the same source (session and key), if one is filed: whether it says the same. */
+const refiled = (snapshot: Snapshot, command: Extract<Command, { _tag: "add" }>): ReadonlyArray<Option.Option<boolean>> =>
+  command.parts.map((part) =>
+    Option.map(
+      Option.filter(Option.fromUndefinedOr(snapshot.filings.get(part.id)), (filing) => command.sourceKind === "follow-up" && filing.sourceRef === command.sourceRef),
+      (filing) => filing.said === saidOf(promisedOf(command, part, Option.none())),
+    ),
+  )
+
 /**
- * A follow-up whose part is held already, filed by the same session and idempotency key (its source): a retry, which
- * records nothing again. Its title is not the key: two findings may share one.
+ * A follow-up each of whose parts is filed already, by the same session and idempotency key (its source), saying the
+ * same: a retry, which records nothing again. Its title is not the key: two findings may share one. Another key on a
+ * filed id, or the same key saying something else, is no retry: refused (`addRefusal`).
  */
 const isRetry = (snapshot: Snapshot, command: Extract<Command, { _tag: "add" }>): boolean =>
-  command.sourceKind === "follow-up" &&
-  command.parts.length > 0 &&
-  command.parts.every((part) => Option.exists(Option.fromUndefinedOr(snapshot.commitments.get(part.id)), (row) => row.sourceKind === command.sourceKind && row.sourceRef === command.sourceRef))
+  command.parts.length > 0 && refiled(snapshot, command).every((same) => Option.contains(same, true))
 
 const addRefusal = (snapshot: Snapshot, command: Extract<Command, { _tag: "add" }>, context: Context): Option.Option<string> => {
   const ids = command.parts.map((part) => part.id)
@@ -1043,6 +1072,10 @@ const addRefusal = (snapshot: Snapshot, command: Extract<Command, { _tag: "add" 
     tokenRefusal("the run", command.run),
     when(worker && !WORKER_KINDS.includes(command.sourceKind), `a worker files only ${WORKER_KINDS.join(" or ")}; ${command.sourceKind} is the root's`),
     when(worker && Option.isNone(command.reason), "a follow-up names its reason: reason_class (dependency or measured) and its referent; difficulty is not one"),
+    when(
+      refiled(snapshot, command).some((same) => Option.contains(same, false)),
+      "this idempotency key filed this follow-up already, saying something else: a retry repeats its filing exactly; a new finding takes a new key",
+    ),
     when(
       command.sourceKind === "follow-up" && [...snapshot.commitments.values()].some((row) => row.sourceKind === "follow-up" && row.sourceRef === command.sourceRef),
       "this idempotency key filed another follow-up already: a new finding takes a new key",

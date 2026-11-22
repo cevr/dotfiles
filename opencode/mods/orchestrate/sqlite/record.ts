@@ -341,7 +341,9 @@ const snapshotOf = (db: Database): Result.Result<Snapshot, string> => {
   const words = new Map(db.query<Raw, []>("SELECT * FROM word").all().map((row) => [wordKey(textIn(row, "run"), textIn(row, "word")), wordOf(row)] as const))
   const acted = new Set(db.query<Raw, []>("SELECT DISTINCT actor, run FROM event").all().map((row) => actedKey(textIn(row, "actor"), textIn(row, "run"))))
   const invariants = new Map(db.query<Raw, []>("SELECT * FROM invariant").all().map((row) => [textIn(row, "id"), invariantOf(row)] as const))
-  return Result.map(rows, (each): Snapshot => ({ commitments: new Map(each), handBacks, words, acted, invariants }))
+  // The follow-ups as filed: their promises, folded as the memory record folds them (a retry is compared with these).
+  const promises = Result.all(db.query<Raw, []>("SELECT * FROM event WHERE subject_kind = 'commitment' AND type = 'promised' ORDER BY seq").all().map(eventOf))
+  return Result.map(Result.all([rows, promises]), ([each, promised]): Snapshot => ({ commitments: new Map(each), handBacks, words, acted, invariants, filings: fold(EMPTY, promised).filings }))
 }
 
 const DataCodec = Schema.fromJsonString(Happening)

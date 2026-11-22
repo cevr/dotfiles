@@ -104,6 +104,14 @@ seeded("a subagent's commitments call is refused, and its follow_up makes one un
       const once = yield* run.probe(child, FOLLOW_UP, { id: "f2", ...keyed })
       const again = yield* run.probe(child, FOLLOW_UP, { id: "f2", ...keyed })
       const other = yield* run.probe(child, FOLLOW_UP, { id: "f3", ...keyed })
+      const changed = yield* run.probe(child, FOLLOW_UP, { id: "f2", ...keyed, title: "another missing test" })
+      const otherKey = yield* run.probe(child, FOLLOW_UP, { id: "f2", ...keyed, key: "finding-2" })
+      expect([changed.error, changed.text.replace(/^Error: /, ""), otherKey.error, otherKey.text.replace(/^Error: /, "")]).toEqual([
+        true,
+        "commitments: this idempotency key filed this follow-up already, saying something else: a retry repeats its filing exactly; a new finding takes a new key",
+        true,
+        "commitments: the id f2 is taken",
+      ])
       expect([once.error, again.text, other.error, other.text]).toEqual([false, "follow_up: f2 is filed already by this key; nothing filed again.", true, expect.stringContaining("this idempotency key filed another follow-up already")])
       const status = yield* run.probe(root, ORCHESTRATE, { action: "status" })
       expect(sectionIn(status.text)).toContain("- unowned: base, f1, f2")

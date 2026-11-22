@@ -159,6 +159,14 @@ describe("import", () => {
     expect(reasonOf(EMPTY, Commands.cases.import.make({ run: "wf1", rows: [imported("L-1", "landed")] }), IMPORT)).toBe("row L-1, column landed_commit: a landed row needs the commit on the default branch")
   })
 
+  test("a landed commitment is no dependency: a dependency names work still owed, an open commitment", () => {
+    const rows = [imported("O-1", "open"), imported("O-2", "open"), imported("L-1", "landed", { landedCommit: Option.some("abc1234") })]
+    const snapshot = after([[Commands.cases.import.make({ run: "wf1", rows }), IMPORT]])
+    expect(reasonOf(snapshot, Commands.cases.defer.make({ id: "O-1", reason: onCommitment("L-1") }))).toBe("the dependency L-1 is landed, not open: a dependency names work still owed")
+    expect(reasonOf(snapshot, followUp("f", Option.some(onCommitment("L-1"))), WORKER)).toBe("the dependency L-1 is landed, not open: a dependency names work still owed")
+    expect(reasonOf(snapshot, Commands.cases.defer.make({ id: "O-1", reason: onCommitment("O-2") }))).toBe("taken")
+  })
+
   test("a second import of the same rows changes nothing", () => {
     const rows = [imported("O-1", "open"), imported("L-1", "landed", { landedCommit: Option.some("abc1234") }), imported("D-1", "decided", { decidedWhy: Option.some("dropped") })]
     const once = after([[Commands.cases.import.make({ run: "wf1", rows }), IMPORT]])
@@ -224,11 +232,32 @@ describe("reasons", () => {
     expect(reasonOf(reopened, decideOn("a", "again"), WORKER)).toBe("a close by decision is the root's: a worker cannot decide")
   })
 
+  test("a defer is the root's at the decider itself, whatever the tool let through", () => {
+    const snapshot = after([[add(["a", "b"])]])
+    const defer = Commands.cases.defer.make({ id: "a", reason: onCommitment("b") })
+    expect(reasonOf(snapshot, defer, WORKER)).toBe("deferring a commitment is the root's: a worker cannot")
+    expect(reasonOf(snapshot, defer, IMPORT)).toBe("deferring a commitment is the root's: a import cannot")
+    expect([reasonOf(snapshot, defer), reasonOf(snapshot, defer, { id: "plugin", role: "plugin" })]).toEqual(["taken", "taken"])
+  })
+
   test("a follow-up retried with its key files nothing again; the key on another finding is refused", () => {
     const once = after([[add(["b"])], [followUp("f", Option.some(onCommitment("b"))), WORKER]])
     expect(Result.getOrThrow(decideCommand(once, followUp("f", Option.some(onCommitment("b"))), { actor: WORKER, now: T0 }))).toEqual([])
     expect(reasonOf(once, followUp("g", Option.some(onCommitment("b"))), WORKER)).toBe("this idempotency key filed another follow-up already: a new finding takes a new key")
     expect(reasonOf(once, followUp("g", Option.some(onCommitment("b")), "call-2"), WORKER)).toBe("taken")
+    // Another key, or another session, filing f's id again is no retry of f: the id is taken (the brief: dedupe by idempotency key).
+    expect(reasonOf(once, followUp("f", Option.some(onCommitment("b")), "call-2"), WORKER)).toBe("the id f is taken")
+    const otherSession = Commands.cases.add.make({ ...followUp("f", Option.some(onCommitment("b"))), sourceRef: "ses_other:call-1" })
+    expect(reasonOf(once, otherSession, { id: "ses_other", role: "worker" })).toBe("the id f is taken")
+    // The same key saying something else of f is no retry either: a retry repeats its filing exactly.
+    const SAID_ELSE = "this idempotency key filed this follow-up already, saying something else: a retry repeats its filing exactly; a new finding takes a new key"
+    const retitled = Commands.cases.add.make({ ...followUp("f", Option.some(onCommitment("b"))), parts: [PartInput.make({ id: "f", title: "found something else" })] })
+    const rereasoned = after([[add(["b", "c"])], [followUp("f", Option.some(onCommitment("b"))), WORKER]])
+    const reranked = Commands.cases.add.make({ ...followUp("f", Option.some(onCommitment("b"))), parts: [PartInput.make({ id: "f", title: "found f", rank: Option.some("A") })] })
+    expect([reasonOf(once, retitled, WORKER), reasonOf(rereasoned, followUp("f", Option.some(onCommitment("c"))), WORKER), reasonOf(once, reranked, WORKER)]).toEqual([SAID_ELSE, SAID_ELSE, SAID_ELSE])
+    // An identical retry after the root deferred f is still a retry: it is compared with the filing, not the row.
+    const deferred = after([[add(["b", "c"])], [followUp("f", Option.some(onCommitment("b"))), WORKER], [Commands.cases.defer.make({ id: "f", reason: onCommitment("c") })]])
+    expect(Result.getOrThrow(decideCommand(deferred, followUp("f", Option.some(onCommitment("b"))), { actor: WORKER, now: T0 }))).toEqual([])
   })
 
   test("an invariant is the root's; the same declaration again is nothing, another document under its id is refused", () => {
