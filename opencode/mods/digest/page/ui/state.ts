@@ -2,7 +2,7 @@
 // the project entered, the message open, the rows shown past "earlier", the span the timeline points at.
 import { createSignal } from "solid-js"
 import * as Api from "./api.ts"
-import type { Message, Project, View } from "./types.ts"
+import { isPeer, type Message, type Project, type View } from "./types.ts"
 
 /** How often the page asks again while it is visible; a write or a return to the tab asks at once. */
 const REFRESH_MS = 20_000
@@ -110,18 +110,24 @@ const act = (write: Promise<void>) =>
 export const toggleOpen = (message: Message) => {
   if (openId() === message.id) return setOpenId(undefined)
   setOpenId(message.id)
-  if (message.unread && !marksLocked()) void act(Api.markRead(message.id, true))
+  if (message.unread && !marksLocked() && !isPeer(message.id)) void act(Api.markRead(message.id, true))
 }
 
-export const toggleRead = (message: Message) => void act(Api.markRead(message.id, message.unread))
+// A peer's message is marked, set aside and answered on its own host's page, never here.
+export const toggleRead = (message: Message) => {
+  if (!isPeer(message.id)) void act(Api.markRead(message.id, message.unread))
+}
 
 /** Set a message aside until the morning, or bring one back to the inbox (unread). */
 export const toggleLater = (message: Message) => {
+  if (isPeer(message.id)) return
   if (openId() === message.id) setOpenId(undefined)
   void act(message.returnsAt === undefined ? Api.setLater(message.id) : Api.markRead(message.id, false))
 }
 
-export const renameProject = (id: string, name: string) => void act(Api.rename(id, name))
+export const renameProject = (id: string, name: string) => {
+  if (!isPeer(id)) void act(Api.rename(id, name))
+}
 
 // ── Answers ──
 
@@ -150,7 +156,7 @@ export const pairWith = (code: string) =>
 
 /** His answer to `message`: sent once (a second press while it goes does nothing), then the view again. */
 export const answerMessage = (message: Message, given: { readonly option: string } | { readonly text: string }) => {
-  if (sending().has(message.id)) return
+  if (sending().has(message.id) || isPeer(message.id)) return
   setSending((all) => new Set([...all, message.id]))
   void Api.answer(message.id, given)
     .then((outcome) => {

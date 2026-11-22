@@ -6,8 +6,8 @@ import { createSignal, For, Match, Show, Switch } from "solid-js"
 import { Accordion, AccordionHeader, AccordionItem, AccordionPanel, AccordionTrigger } from "@ui-sdk/solid/accordion"
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "@ui-sdk/solid/collapsible"
 import type { Outcome } from "./api.ts"
-import { answerMessage, editing, enter, hot, marksLocked, openId, outcomes, paired, pairProblem, pairWith, renameProject, sending, setEditing, showAll, shownAll, toggleLater, toggleOpen, toggleRead, view, wide } from "./state.ts"
-import { type Ask, inSpan, type Message, type Project, type Unit } from "./types.ts"
+import { answerMessage, editing, enter, hot, marksLocked, openId, outcomes, paired, pairProblem, pairWith, project, renameProject, sending, setEditing, showAll, shownAll, toggleLater, toggleOpen, toggleRead, view, wide } from "./state.ts"
+import { type Ask, inSpan, isPeer, type Message, type Project, type Unit } from "./types.ts"
 
 /** How far a row must travel before its swipe acts, in px. */
 const SWIPE_AT = 88
@@ -218,6 +218,35 @@ function AskBlock(props: { readonly message: Message; readonly ask: Ask }) {
   )
 }
 
+/** A peer's message: what it asks, and where to answer it or mark it (that host's own page). */
+function OnHost(props: { readonly message: Message }) {
+  const host = () => project()?.host ?? "its host"
+  return (
+    <div class="onhost">
+      <Show when={props.message.ask}>
+        {(ask) => (
+          <Show when={ask().options.length > 0}>
+            <p class="assume">Its answers: {ask().options.join(" · ")}</p>
+          </Show>
+        )}
+      </Show>
+      <p class="assume">
+        This is on {host()}.{" "}
+        <Show when={project()?.origin} fallback="Answer or mark it on that host's page.">
+          {(origin) => (
+            <>
+              <a href={origin()} target="_blank" rel="noreferrer">
+                Open {host()}'s page
+              </a>{" "}
+              to {props.message.open && props.message.ask !== undefined ? "answer it" : "mark it"}.
+            </>
+          )}
+        </Show>
+      </p>
+    </div>
+  )
+}
+
 function Detail(props: { readonly message: Message }) {
   return (
     <div class="detail">
@@ -228,7 +257,9 @@ function Detail(props: { readonly message: Message }) {
       <Show when={props.message.body !== ""}>
         <p class="body">{props.message.body}</p>
       </Show>
-      <Show when={props.message.ask}>{(ask) => <AskBlock message={props.message} ask={ask()} />}</Show>
+      <Show when={!isPeer(props.message.id)} fallback={<OnHost message={props.message} />}>
+        <Show when={props.message.ask}>{(ask) => <AskBlock message={props.message} ask={ask()} />}</Show>
+      </Show>
       <Show when={outcomes().get(props.message.id)}>{(outcome) => <OutcomeLine outcome={outcome()} />}</Show>
       <Show when={props.message.decided}>
         {(decided) => (
@@ -260,14 +291,16 @@ function Detail(props: { readonly message: Message }) {
           </Collapsible>
         </div>
       </Show>
-      <div class="acts">
-        <button type="button" onClick={() => toggleRead(props.message)}>
-          {props.message.unread ? "Mark read" : "Mark unread"}
-        </button>
-        <button type="button" onClick={() => toggleLater(props.message)}>
-          {props.message.returnsAt === undefined ? "Later" : "Back to the inbox"}
-        </button>
-      </div>
+      <Show when={!isPeer(props.message.id)}>
+        <div class="acts">
+          <button type="button" onClick={() => toggleRead(props.message)}>
+            {props.message.unread ? "Mark read" : "Mark unread"}
+          </button>
+          <button type="button" onClick={() => toggleLater(props.message)}>
+            {props.message.returnsAt === undefined ? "Later" : "Back to the inbox"}
+          </button>
+        </div>
+      </Show>
     </div>
   )
 }
@@ -293,7 +326,9 @@ function Row(props: { readonly message: Message }) {
             id={`r-${props.message.id}`}
             data-t={String(props.message.t)}
             aria-keyshortcuts="U L"
-            onPointerDown={(event: PointerEvent) => startSwipe(event, props.message)}
+            onPointerDown={(event: PointerEvent) => {
+              if (!isPeer(props.message.id)) startSwipe(event, props.message)
+            }}
             onKeyDown={onKey}
           >
             <span class="dot" aria-label={props.message.unread ? "unread" : undefined} />
@@ -409,10 +444,13 @@ export function Messages(props: { readonly project: Project }) {
         </button>
       </Show>
       <h1>
-        <Name project={props.project} />
+        <Show when={!isPeer(props.project.id)} fallback={props.project.name}>
+          <Name project={props.project} />
+        </Show>
       </h1>
       <p class="sub">
-        {props.project.where} · {props.project.unread > 0 ? `${props.project.unread} unread` : "all read"}
+        {props.project.where}
+        <Show when={(view()?.peers?.length ?? 0) > 0 && props.project.host !== undefined}> · on {props.project.host}</Show> · {props.project.unread > 0 ? `${props.project.unread} unread` : "all read"}
       </p>
       <Show when={props.project.inbox.length > 0} fallback={<p class="none">Nothing here.</p>}>
         <Rows messages={props.project.inbox} cut={props.project.cut} key={`${props.project.id}|in`} label="Messages" />

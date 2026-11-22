@@ -72,6 +72,10 @@ export interface Project {
   readonly cut: number
   readonly later: ReadonlyArray<Message>
   readonly marks: ReadonlyArray<TimeMark>
+  /** The host it lives on, when the page shows more than one. */
+  readonly host?: string
+  /** A peer's project: that host's page, where it is marked and answered. */
+  readonly origin?: string
 }
 
 export interface Span {
@@ -92,7 +96,24 @@ export interface View {
   readonly since?: number
   readonly projects: ReadonlyArray<Project>
   readonly spans: ReadonlyArray<Span>
+  /** The host serving the page. */
+  readonly host?: string
+  /** The other hosts the page shows, and whether their projects are in. */
+  readonly peers?: ReadonlyArray<PeerStatus>
 }
+
+/** Another host: up (its projects are in), down, or on a build this page cannot read; when last read well. */
+export interface PeerStatus {
+  readonly name: string
+  readonly state: "up" | "down" | "update"
+  readonly reason: string
+  readonly lastSeen?: number
+  readonly lastSeenLabel?: string
+  readonly origin?: string
+}
+
+/** Whether a message or project id is a peer's (peers.ts `peerId`): read here, marked and answered on its host. */
+export const isPeer = (id: string): boolean => id.startsWith("peer:")
 
 /** Whether `t` falls in `span` (the last span holds its end, now). */
 export const inSpan = (span: Span, t: number, last: boolean): boolean => t >= span.start && (t < span.end || (last && t <= span.end))
