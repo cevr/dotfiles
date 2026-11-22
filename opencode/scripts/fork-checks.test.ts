@@ -5,7 +5,7 @@
 // a fake fork whose origin and upstream are local bare repositories: nothing is pushed anywhere else.
 // @reads scripts/fork-checks.json
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { Array as Arr, Config, Context, Effect, FileSystem, Layer, Option, Path, Ref, Result, Stream } from "effect"
+import { Array as Arr, Config, Console, Context, Effect, FileSystem, Layer, Option, Path, Ref, Result, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { gitClone, gitInit, withProcessEnv } from "../tests/git-repo.ts"
@@ -14,7 +14,7 @@ import {
   checkFork,
   declaredList,
   encodeListText,
-  forkOf,
+  activeList,
   HostGauge,
   hostGauge,
   type Input,
@@ -28,12 +28,14 @@ import {
   type Plan,
   plansOf,
   rangeOf,
+  reportLines,
   type Ran,
   type Run,
   RunLock,
   TestRunner,
   type Verdict,
 } from "./fork-checks.ts"
+import { forkNamed, NO_FORK } from "./fork.ts"
 import { ROOT } from "./reach.ts"
 import { featureStep, mergeChecks, mergeUpstream, type StepRun, unlocked } from "./upstream.ts"
 
@@ -58,8 +60,12 @@ describe("the declared list", () => {
       expect(listProblems(declared)).toEqual([])
       expect(declared.features.every((feature) => feature.proved.length > 0)).toBe(true)
       // No fallback path: the gate names the fork, and without it the test fails saying so.
-      const fork = yield* Effect.fromResult(forkOf(Option.none(), yield* Config.option(Config.String("OPENCODE_DEV"))))
-      expect(yield* missingFiles(declared, fork)).toEqual([])
+      const fork = yield* Effect.fromResult(forkNamed(Option.none(), yield* Config.option(Config.String("OPENCODE_DEV"))))
+      // A feature whose `since` this checkout does not contain is not required here, and says so in the output.
+      const active = yield* activeList(declared, fork)
+      yield* Effect.forEach(active.notes, (note) => Console.log(`fork-checks list at ${fork}: ${note}`))
+      expect(active.features.length + active.notes.length).toBe(declared.features.length)
+      expect(yield* missingFiles({ features: active.features }, fork)).toEqual([])
       // The bash 3.2 expectation names a test the list runs.
       expect(declared.expectations.map((each) => each.test)).toContain(COMPOUND)
     }),
@@ -80,6 +86,8 @@ describe("the declared list", () => {
       const feature = { id: "x", feature: "x", package: "packages/none", files: ["test/a.test.ts"] as const, proved: "here" }
       const bad: List = { ...list(), features: [feature, { ...feature, package: "packages/core" }], expectations: [{ package: "packages/core", file: "test/b.test.ts", test: "t", host: { bash: "3.2.57" }, reason: "r" }] }
       expect(listProblems(bad)).toEqual(["x: package packages/none has no command", "x: the id is listed twice", 'expectation "t": packages/core/test/b.test.ts is in no feature'])
+      const short: List = { ...list(), features: [{ ...feature, package: "packages/core", since: "5d44dfd789" }], expectations: [] }
+      expect(listProblems(short)).toEqual(['x: since "5d44dfd789" is not a full commit sha'])
     }),
   )
 })
@@ -87,11 +95,12 @@ describe("the declared list", () => {
 describe("the fork a run checks", () => {
   it.effect("is --fork, else OPENCODE_DEV; with neither (or an empty one) the run fails naming both", () =>
     Effect.sync(() => {
-      const none = Result.fail("no fork checkout named: pass --fork <checkout> or set OPENCODE_DEV to the fork checkout (the gate sets it)")
-      expect(forkOf(Option.some("/flag"), Option.some("/dev"))).toEqual(Result.succeed("/flag"))
-      expect(forkOf(Option.none(), Option.some("/dev"))).toEqual(Result.succeed("/dev"))
-      expect(forkOf(Option.none(), Option.none())).toEqual(none)
-      expect(forkOf(Option.none(), Option.some(""))).toEqual(none)
+      const none = Result.fail(NO_FORK)
+      expect(NO_FORK).toContain("OPENCODE_DEV is not set")
+      expect(forkNamed(Option.some("/flag"), Option.some("/dev"))).toEqual(Result.succeed("/flag"))
+      expect(forkNamed(Option.none(), Option.some("/dev"))).toEqual(Result.succeed("/dev"))
+      expect(forkNamed(Option.none(), Option.none())).toEqual(none)
+      expect(forkNamed(Option.none(), Option.some(""))).toEqual(none)
     }),
   )
 
@@ -106,7 +115,7 @@ describe("the fork a run checks", () => {
         }),
       )
       expect(Number(out.code)).toBe(2)
-      expect(out.said).toContain("COULD NOT RUN: no fork checkout named: pass --fork <checkout> or set OPENCODE_DEV")
+      expect(out.said).toContain(`fork-checks: COULD NOT RUN: ${NO_FORK}`)
     }),
   )
 })
@@ -372,6 +381,76 @@ describe("a run of the checks", () => {
       expect(Arr.map(timedOut.runs, (run) => run.timeoutMs)).toEqual([LIMITS.timeBoundMs])
       const silent = yield* checkWith(input, { answers: [() => ({ kind: "exited", code: 1, log: "error: no node_modules", junit: Option.none() })] })
       expect(silent.verdict).toMatchObject({ kind: "could-not-run", reason: expect.stringContaining("wrote no report") })
+    }),
+  )
+})
+
+describe("a feature's since: required only in a checkout that contains the commit", () => {
+  const test = it.scoped.layer(Layer.merge(fakeLayer, BunServices.layer))
+
+  /** A git fork: packages/x's test at its first commit, packages/y's new test at its second; the list's y feature since the second. */
+  const sinceFork = Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const dir = yield* fs.makeTempDirectoryScoped({ prefix: "fork-checks-since-" })
+    yield* Effect.sync(() => gitInit(dir, ["--quiet", "-b", "prime-look"], GIT_ENV))
+    yield* commit(dir, "packages/x/test/a.test.ts", "before")
+    const before = yield* git(dir, "rev-parse", "HEAD")
+    yield* commit(dir, "packages/y/test/new.test.ts", "the feature")
+    const since = yield* git(dir, "rev-parse", "HEAD")
+    const listed: List = {
+      about: "",
+      packages: { "packages/x": ["bun", "test"], "packages/y": ["bun", "test"] },
+      features: [
+        { id: "x", feature: "x", package: "packages/x", files: ["test/a.test.ts"], proved: "here" },
+        { id: "y", feature: "y", package: "packages/y", files: ["test/new.test.ts"], proved: "here", since },
+      ],
+      expectations: [],
+    }
+    return { dir, before, since, input: { list: listed, fork: dir, limits: LIMITS, lock: `${dir}/lock` } satisfies Input }
+  })
+
+  test("a checkout without the commit: the feature is skipped and reported, never silently", () =>
+    Effect.gen(function* () {
+      const f = yield* sinceFork
+      yield* git(f.dir, "checkout", "--quiet", "--detach", f.before)
+      const { verdict, runs } = yield* checkWith(f.input, {})
+      expect(verdict).toEqual({ kind: "green", notes: [`not yet in this checkout (since ${f.since}): y: packages/y/test/new.test.ts`] })
+      expect(runs.map((run) => run.files)).toEqual([["test/a.test.ts"]])
+      const text = reportLines(f.input.list, verdict, Option.none()).join("\n")
+      expect(text).toContain(`not yet in this checkout (since ${f.since})`)
+    }),
+  )
+
+  test("a checkout with the commit and the file: the file is required and runs", () =>
+    Effect.gen(function* () {
+      const f = yield* sinceFork
+      const { verdict, runs } = yield* checkWith(f.input, {})
+      expect(verdict).toEqual({ kind: "green", notes: [] })
+      expect(runs.map((run) => [run.cwd, run.files])).toEqual([
+        [`${f.dir}/packages/x`, ["test/a.test.ts"]],
+        [`${f.dir}/packages/y`, ["test/new.test.ts"]],
+      ])
+    }),
+  )
+
+  test("a checkout with the commit but not the file (a merge lost it) is red", () =>
+    Effect.gen(function* () {
+      const f = yield* sinceFork
+      yield* git(f.dir, "rm", "--quiet", "packages/y/test/new.test.ts")
+      yield* git(f.dir, "commit", "--quiet", "-m", "a merge that lost it")
+      const { verdict, runs } = yield* checkWith(f.input, {})
+      expect(verdict).toEqual({ kind: "red", reds: [{ package: "packages/y", file: "test/new.test.ts", test: "", why: "the listed file is not in the fork" }], notes: [] })
+      expect(runs).toEqual([])
+    }),
+  )
+
+  test("a commit the checkout does not have at all is skipped, saying so", () =>
+    Effect.gen(function* () {
+      const f = yield* sinceFork
+      const unknown = "0123456789abcdef0123456789abcdef01234567"
+      const list: List = { ...f.input.list, features: [f.input.list.features[0], { id: "y", feature: "y", package: "packages/y", files: ["test/new.test.ts"], proved: "here", since: unknown }] }
+      const { verdict } = yield* checkWith({ ...f.input, list }, {})
+      expect(verdict.notes).toEqual([`not yet in this checkout (since ${unknown}; the checkout does not have that commit, git merge-base exited 128): y: packages/y/test/new.test.ts`])
     }),
   )
 })

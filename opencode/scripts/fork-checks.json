@@ -166,7 +166,16 @@
       "feature": "A session whose background shell a restart killed is woken with the notice (the owner's q162, diverging from upstream 664c8f0990)",
       "package": "packages/cli",
       "files": ["test/service-shell-restart.test.ts"],
-      "proved": "unit shell-restart-wake, on origin prime-look as 6de99923b1, 22a14bd2ea and 5d44dfd789: a signal-begun restart wakes the cancelled shell's session once"
+      "proved": "unit shell-restart-wake, on origin prime-look as 6de99923b1, 22a14bd2ea and 5d44dfd789: a signal-begun restart wakes the cancelled shell's session once",
+      "since": "5d44dfd789942b8c5e430ec70810765803a7ef1a"
+    },
+    {
+      "id": "shell-restart-wake-core",
+      "feature": "The restart wake in core: a shell's idle owner is woken when a restart recovers its end notice, the notice and mark kept in the wake's fork file",
+      "package": "packages/core",
+      "files": ["test/shell-restart-wake.test.ts"],
+      "proved": "unit shell-restart-wake, on origin prime-look as 6de99923b1 and 5d44dfd789 (test/shell-restart-wake.test.ts)",
+      "since": "5d44dfd789942b8c5e430ec70810765803a7ef1a"
     }
   ],
   "expectations": [

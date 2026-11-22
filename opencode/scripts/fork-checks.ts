@@ -24,6 +24,7 @@ import { Array as Arr, Cause, Clock, Config, Console, Context, Data, Duration, E
 import { Command, Flag } from "effect/cli"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import declared from "./fork-checks.json" with { type: "json" }
+import { forkNamed } from "./fork.ts"
 
 const Feature = Schema.Struct({
   id: Schema.String,
@@ -31,6 +32,8 @@ const Feature = Schema.Struct({
   package: Schema.String,
   files: Schema.NonEmptyArray(Schema.String),
   proved: Schema.String,
+  /** The fork commit the feature arrived with: its files are required only in a checkout that contains it. */
+  since: Schema.optionalKey(Schema.String),
 })
 const Expectation = Schema.Struct({
   package: Schema.String,
@@ -47,6 +50,7 @@ const List = Schema.Struct({
 })
 export type List = typeof List.Type
 export type Expectation = typeof Expectation.Type
+export type Feature = typeof Feature.Type
 
 /** Decodes a list already read as data. */
 export const decodeList = Schema.decodeUnknownResult(List)
@@ -57,23 +61,19 @@ export const encodeListText = Schema.encodeSync(Schema.fromJsonString(List))
 /** scripts/fork-checks.json, decoded. */
 export const declaredList = decodeList(declared)
 
-/** What the schema cannot say: each feature's package has a command, ids are unique, each expectation names a listed file. */
+/** What the schema cannot say: each feature's package has a command, ids are unique, a `since` is a full commit, each expectation names a listed file. */
 export const listProblems = (list: List): ReadonlyArray<string> => {
   const listed = new Set(list.features.flatMap((feature) => feature.files.map((file) => `${feature.package}/${file}`)))
   const ids = list.features.map((feature) => feature.id)
   return [
     ...list.features.flatMap((feature) => Arr.filter([`${feature.id}: package ${feature.package} has no command`], () => !Object.hasOwn(list.packages, feature.package))),
     ...ids.flatMap((id, at) => Arr.filter([`${id}: the id is listed twice`], () => ids.indexOf(id) !== at)),
+    ...list.features.flatMap((feature) =>
+      Option.toArray(Option.map(Option.filter(Option.fromUndefinedOr(feature.since), (since) => !/^[0-9a-f]{40}$/.test(since)), (since) => `${feature.id}: since "${since}" is not a full commit sha`)),
+    ),
     ...list.expectations.flatMap((each) => Arr.filter([`expectation "${each.test}": ${each.package}/${each.file} is in no feature`], () => !listed.has(`${each.package}/${each.file}`))),
   ]
 }
-
-/** The fork to check: `--fork`, else OPENCODE_DEV; with neither, the message that says how to name it. */
-export const forkOf = (flag: Option.Option<string>, dev: Option.Option<string>): Result.Result<string, string> =>
-  Result.fromOption(
-    Option.filter(Option.orElse(flag, () => dev), (fork) => fork !== ""),
-    () => "no fork checkout named: pass --fork <checkout> or set OPENCODE_DEV to the fork checkout (the gate sets it)",
-  )
 
 /** One test that holds a merge: where it is, its full name (describe blocks joined by " > ") and why. */
 export interface Red {
@@ -237,7 +237,7 @@ const tail = (text: string, lines = 30) => text.trimEnd().split("\n").slice(-lin
 const minutes = (ms: number) => `${Number((ms / 60_000).toFixed(3))} min`
 
 /** Each listed file that is not in the checkout, as a red. */
-export const missingFiles = Effect.fn("ForkChecks.missingFiles")(function* (list: List, fork: string) {
+export const missingFiles = Effect.fn("ForkChecks.missingFiles")(function* (list: { readonly features: ReadonlyArray<Feature> }, fork: string) {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
   const listed = Arr.dedupeWith(
@@ -319,8 +319,51 @@ const runAll = Effect.fn("ForkChecks.runAll")(function* (input: Input, deadline:
   return { kind: "green", notes } satisfies Verdict
 })
 
-/** The checks over the checkout: missing files first, then the disk floor, the lock, and each package's run. A host that cannot be read could not run. */
+/** Whether the checkout at `fork` contains `commit` (`git merge-base --is-ancestor`); why not, when it does not. */
+const contains = Effect.fn("ForkChecks.contains")(function* (fork: string, commit: string) {
+  const ran = yield* runCommand("git", ["-C", fork, "merge-base", "--is-ancestor", commit, "HEAD"], ".", 30_000).pipe(Effect.option)
+  const code = Option.map(Option.flatten(ran), (each) => each.code)
+  if (Option.contains(code, 0)) return Option.none<string>()
+  if (Option.contains(code, 1)) return Option.some(`since ${commit}`)
+  return Option.some(
+    Option.match(code, {
+      onNone: () => `since ${commit}; git could not run in the checkout to tell`,
+      onSome: (exit) => `since ${commit}; the checkout does not have that commit, git merge-base exited ${exit}`,
+    }),
+  )
+})
+
+/**
+ * The list as this checkout must hold it: a feature with a `since` the checkout does not contain is left out, each
+ * named in a note ("not yet in this checkout"), never silently. One it contains is required like any other, so a
+ * merge that loses its file is red.
+ */
+export const activeList = Effect.fn("ForkChecks.activeList")(function* (list: List, fork: string) {
+  const judged = yield* Effect.forEach(list.features, (feature) =>
+    Option.match(Option.fromUndefinedOr(feature.since), {
+      onNone: () => Effect.succeed({ feature, pending: Option.none<string>() }),
+      onSome: (since) => Effect.map(contains(fork, since), (pending) => ({ feature, pending })),
+    }),
+  )
+  const notes = judged.flatMap((each) =>
+    Option.toArray(Option.map(each.pending, (why) => `not yet in this checkout (${why}): ${each.feature.id}: ${each.feature.files.map((file) => `${each.feature.package}/${file}`).join(", ")}`)),
+  )
+  const features = judged.filter((each) => Option.isNone(each.pending)).map((each) => each.feature)
+  return { features, notes }
+})
+
+/** The checks over the checkout: the features it holds (`activeList`), missing files first, then the disk floor, the lock, and each package's run. */
 export const checkFork = Effect.fn("ForkChecks.check")(function* (input: Input) {
+  const active = yield* activeList(input.list, input.fork)
+  const verdict = yield* Arr.match(active.features, {
+    onEmpty: () => Effect.succeed<Verdict>({ kind: "green", notes: [] }),
+    onNonEmpty: (features) => checkHeld({ ...input, list: { ...input.list, features } }),
+  })
+  return { ...verdict, notes: [...active.notes, ...verdict.notes] } satisfies Verdict
+})
+
+/** The checks over features the checkout holds. A host that cannot be read could not run. */
+const checkHeld = Effect.fn("ForkChecks.checkHeld")(function* (input: Input) {
   const missing = yield* missingFiles(input.list, input.fork)
   if (missing.length > 0) return { kind: "red", reds: missing, notes: [] } satisfies Verdict
   const gauge = yield* HostGauge
@@ -501,7 +544,7 @@ const command = Command.make(
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
     const dev = yield* Config.option(Config.String("OPENCODE_DEV"))
-    const fork = forkOf(flags.fork, dev)
+    const fork = forkNamed(flags.fork, dev)
     if (Result.isFailure(fork)) return yield* Console.log(`fork-checks: COULD NOT RUN: ${fork.failure}`).pipe(Effect.andThen(new Exited({ code: 2 })))
     if (!(yield* fs.exists(fork.success))) return yield* Console.log(`fork-checks: COULD NOT RUN: no fork checkout at ${fork.success}`).pipe(Effect.andThen(new Exited({ code: 2 })))
     const listed = yield* listOf(flags.list)
