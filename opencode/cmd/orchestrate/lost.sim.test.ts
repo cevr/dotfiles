@@ -4,8 +4,10 @@
 // once its log ends it (`dropped`); a lane holding commits not on main that nobody is on is named in the lane-first list
 // with its age, commits, subject and session, and leaves it while a process works in it.
 import { OnMain } from "@dotfiles/opencode-orchestrate/lost"
+import { LOST } from "@dotfiles/opencode-orchestrate/lost-now"
 import * as MemoryRifts from "@dotfiles/opencode-work/memory/rifts"
-import { Effect, Option } from "effect"
+import { Effect, Fiber, Option } from "effect"
+import * as Plugins from "../../sim/plugins.ts"
 import * as Seed from "../../sim/seed.ts"
 import { boot, HAND_BACK, RUN_DIR, requestHeadFor, WORK } from "./orch-tools-world.ts"
 
@@ -50,5 +52,56 @@ seeded("LOST1: a ready hand-back not on main is named first past the threshold a
     const after = yield* run.probe(root, ORCHESTRATE, { action: "status" })
     expect(after.text).not.toContain("not landed")
     expect(after.text).not.toContain("nobody on it")
+  }),
+)
+
+seeded("LOST2: the queue check's RPC answers an orchestrator status's own lost lines, keyed by lane, and any root the commits its queue names that are due", ({ expect, seed }) =>
+  Effect.gen(function* () {
+    const run = yield* boot(seed, true, { unitsAnswer: true })
+    const root = yield* run.world.session(WORK)
+    const other = yield* run.world.session(WORK)
+    const laned = yield* run.probe(root, ORCHESTRATE, { action: "lane", unit: "billing", purpose: "Bill each seat once" })
+    expect(laned.error).toBe(false)
+    yield* run.probe(root, "subagent", { agent: "implementor", description: `implementor billing r1 (lane: ${LANE})`, prompt: `${HAND_BACK} implementor billing r1: ready ${READY}`, background: true })
+    yield* run.world.until(run.settled, 60_000)
+    run.memory.rifts.rifts.set(ORPHAN, { ...MemoryRifts.clean(ORPHAN, "feat/orphan"), head: "0fa0fa0fa" })
+    run.workGit.heads.set("0fa0fa0fa", { onMain: OnMain.cases.Absent.make({ missing: ["0fa0fa0fa", "0fb"], own: ["0fa0fa0fa", "0fb"], subject: "orphan work" }), at: Option.some(run.world.now() - 48 * HOUR) })
+    const status = yield* run.probe(root, ORCHESTRATE, { action: "status" })
+    // The call as the queue plugin makes it, on a fiber of the world, run until it answers (the rift plugin answers it over its own RPC).
+    const lost = (sessionID: string) =>
+      Effect.gen(function* () {
+        const fiber = run.world.runtime.fork(run.world.clientRpc(LOST.id, "lost", { sessionID, hashes: ["0fa0fa0fa", "c0ffee1"] }))
+        yield* run.world.until(() => Option.isSome(Option.fromNullishOr(fiber.pollUnsafe())), 60_000)
+        return yield* Fiber.join(fiber)
+      })
+    const told = yield* lost(root)
+    const why = "not on main: 2 commits not there, committed 2 d ago; land it, or mark it superseded or dropped"
+    expect(told).toEqual({ lines: status.text.split("\n").slice(0, 3), keys: [ORPHAN], hashes: [{ hash: "0fa0fa0fa", why }] })
+    // A root that started no unit's step hears of no lane: only of the commits its own queue names.
+    expect(yield* lost(other)).toEqual({ lines: [], keys: [], hashes: [{ hash: "0fa0fa0fa", why }] })
+  }),
+)
+
+seeded("LOST3: the queue plugin's staleness check tells the orchestrator of the orphan lane and the item naming its commit, through orchestrate's RPC", ({ expect, seed }) =>
+  Effect.gen(function* () {
+    const run = yield* boot(seed, true, { unitsAnswer: true })
+    yield* run.world.load(Plugins.queue(), { directory: WORK })
+    const root = yield* run.world.session(WORK)
+    yield* run.probe(root, ORCHESTRATE, { action: "lane", unit: "billing", purpose: "Bill each seat once" })
+    yield* run.probe(root, "subagent", { agent: "implementor", description: `implementor billing r1 (lane: ${LANE})`, prompt: `${HAND_BACK} implementor billing r1: ready ${READY}`, background: true })
+    yield* run.world.until(run.settled, 60_000)
+    run.memory.rifts.rifts.set(ORPHAN, { ...MemoryRifts.clean(ORPHAN, "feat/orphan"), head: "0fa0fa0fa" })
+    run.workGit.heads.set("0fa0fa0fa", { onMain: OnMain.cases.Absent.make({ missing: ["0fa0fa0fa", "0fb"], own: ["0fa0fa0fa", "0fb"], subject: "orphan work" }), at: Option.some(run.world.now() - 48 * HOUR) })
+    yield* run.probe(root, "queue", { set: [{ id: "orphan", text: "land 0fa0fa0fa (orphan work)", state: "next" }] })
+    const noted = () =>
+      run.world
+        .messages(root)
+        .filter((message): message is Extract<typeof message, { readonly type: "synthetic" }> => message.type === "synthetic")
+        .map((message) => message.text)
+        .filter((text) => text.startsWith("Queue check"))
+    yield* run.world.until(() => noted().length > 0, HOUR)
+    const note = noted().join("\n")
+    expect(note).toContain("- orphan [next]: land 0fa0fa0fa (orphan work) (it names commit 0fa0fa0fa, not on main: 2 commits not there, committed 2 d ago")
+    expect(note).toContain(`orchestrate: committed work not on main, nobody on it (1, oldest first):\n- ${ORPHAN} · 2 d · 2 commits · orphan work · no session known`)
   }),
 )

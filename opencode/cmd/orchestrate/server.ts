@@ -151,7 +151,7 @@ import * as RunRecordsLive from "@dotfiles/opencode-orchestrate/filestore/run-re
 import * as GitFleet from "@dotfiles/opencode-orchestrate/git/fleet"
 import * as GitMainLine from "@dotfiles/opencode-orchestrate/git/main-line"
 import * as GitWorkGit from "@dotfiles/opencode-orchestrate/git/work-git"
-import { type Listed as Listing, lostNow } from "@dotfiles/opencode-orchestrate/lost-now"
+import { type Listed as Listing, LOST, LostAsk, lostAnswer, lostNow, NOTHING } from "@dotfiles/opencode-orchestrate/lost-now"
 import * as RunFilesLive from "@dotfiles/opencode-orchestrate/filestore/run-files"
 import * as PrincipleFiles from "@dotfiles/opencode-orchestrate/filestore/principles"
 import * as Principles from "@dotfiles/opencode-orchestrate/principles"
@@ -756,6 +756,26 @@ export const make = (
           yield* Effect.logInfo("orchestrate: read lost work for status").pipe(Effect.annotateLogs({ sessionID, lanes: listed.rifts.length, lines: lines.length, ms }))
           return lines
         })
+      /**
+       * The queue check's ask (`LOST`): the same lists status starts with, for a root that started a unit's step (its
+       * lanes listed only then), and the commits its queue names that are due. Nothing when it cannot be read.
+       */
+      const lostAsked = (ask: LostAsk) =>
+        Effect.gen(function* () {
+          const started = yield* Clock.currentTimeMillis
+          const orchestrates = (yield* stepLog.units(ask.sessionID)).length > 0
+          const tables = yield* runs.list
+          const listed = yield* Match.value(orchestrates).pipe(
+            Match.when(true, () => lanesNow(ask.sessionID)),
+            Match.orElse(() => Effect.succeed<Listing>({ source: Option.none(), rifts: [], workrift: false })),
+          )
+          const answer = yield* lostAnswer(ask.sessionID, checkout, tables, listed, started, ask.hashes).pipe(Effect.provideContext(services))
+          const ms = (yield* Clock.currentTimeMillis) - started
+          yield* Effect.logInfo("orchestrate: read lost work for the queue check").pipe(
+            Effect.annotateLogs({ sessionID: ask.sessionID, lanes: listed.rifts.length, hashes: ask.hashes.length, lines: answer.lines.length, ms }),
+          )
+          return answer
+        })
       /** Status: lost work first (lost-now.ts), then the verify-due line, the run tables, each open unit's lane and the next call. */
       const status = (sessionID: string) =>
         Effect.gen(function* () {
@@ -885,6 +905,15 @@ export const make = (
               Effect.tap((draft) => background(draft.sessionID, idleRoots.draft(draft))),
               Effect.as({ ok: true }),
               Effect.orElseSucceed(() => ({ ok: false })),
+            ),
+        })
+        .pipe(Effect.orDie)
+      yield* ctx.rpc
+        .register(LOST, {
+          lost: (input) =>
+            Schema.decodeUnknownEffect(LostAsk)(input).pipe(
+              Effect.flatMap(lostAsked),
+              Effect.catchCause((cause) => Effect.logWarning("orchestrate: lost work could not be read for the queue check", { cause }).pipe(Effect.as(NOTHING))),
             ),
         })
         .pipe(Effect.orDie)

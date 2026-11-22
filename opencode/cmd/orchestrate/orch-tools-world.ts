@@ -4,7 +4,7 @@
 // unit logs. The units' logs are the world's files: the orchestrate plugin writes a unit's moves there, as log.ts does,
 // and the status script prints them as its table, as status.ts does on disk. Each root turn is one `probe:` call; a
 // subagent's task that ends `handback: <line>` answers that line. orch-tools.sim.test.ts drives it.
-import { Array as Arr, Effect, Layer, Option, Order, Schema } from "effect"
+import { Array as Arr, Effect, Layer, Match, Option, Order, Schema } from "effect"
 import type { Asked } from "@dotfiles/opencode-orchestrate/memory/fleet"
 import type * as MemoryMainLine from "@dotfiles/opencode-orchestrate/memory/main-line"
 import type * as MemoryRunFiles from "@dotfiles/opencode-orchestrate/memory/run-files"
@@ -191,6 +191,11 @@ export interface BootOptions {
   readonly merges?: number
   /** The units whose land fast-forwards main (no merge commit); every other land merges. */
   readonly fastForward?: ReadonlyArray<string>
+  /**
+   * The copies load in the units' location last, so its copy answers each RPC: the simulated host keeps one handler per
+   * id, the last registered, where the fork keeps one per location (core rpc.ts). Off by default: the plain copy last.
+   */
+  readonly unitsAnswer?: boolean
 }
 
 /** The work plugin's copies and the orchestrate plugin's, loaded in each of the world's locations (`orchestrate` off: the work plugin alone). */
@@ -274,7 +279,7 @@ export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchest
       append: (dir, transition) => Effect.sync(() => void logs.set(dir.split("/").at(-1) ?? transition.unit, { state: transition.to, round: transition.round })),
     },
   })
-  for (const directory of [WORK, PLAIN]) {
+  for (const directory of Match.value(options.unitsAnswer === true).pipe(Match.when(true, () => [PLAIN, WORK]), Match.orElse(() => [WORK, PLAIN]))) {
     if (orchestrate) yield* world.load(plugin, { directory, options: { now: options.now ?? PIN, fleet: FLEET } })
     yield* world.load(work, { directory, options: { workrift: false } })
   }

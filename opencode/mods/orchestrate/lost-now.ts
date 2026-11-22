@@ -2,7 +2,7 @@
 // tables' ready units with their newest request and verdict, the base's lanes against the default branch, and, for the
 // few lanes that hold work and have been still past the threshold, who may still be on them. The cheap legs go first
 // (git per head, kept per main tip), so the sessions and the process listing are read for the candidates only.
-import { Array as Arr, Effect, Option } from "effect"
+import { Array as Arr, Effect, Option, Schema } from "effect"
 import type { Run } from "./idle.ts"
 import type { Held } from "./ledger.ts"
 import { hashReasons, type HeadSeen, IDLE_MS, type LaneSeen, type LaneStatus, lostReport, lostText, OnMain, sameCommit, type SessionSeen, type UnitSeen, Verifier } from "./lost.ts"
@@ -198,7 +198,26 @@ export interface LostAnswer {
   readonly hashes: ReadonlyArray<{ readonly hash: string; readonly why: string }>
 }
 
-const NOTHING: LostAnswer = { lines: [], keys: [], hashes: [] }
+export const NOTHING: LostAnswer = { lines: [], keys: [], hashes: [] }
+
+/** What the queue check asks: for the root `sessionID`, and the commits its open items name. */
+export const LostAsk = Schema.Struct({ sessionID: Schema.String, hashes: Schema.Array(Schema.String) })
+export type LostAsk = typeof LostAsk.Type
+
+/**
+ * Lost work's RPC, for the queue check (mods/queue/opencode/host.ts keeps its copy, `ORCHESTRATE_LOST`).
+ * - `lost({ sessionID, hashes })`: `lostAnswer` for that root; nothing when it cannot be read.
+ */
+export const LOST = {
+  id: "dotfiles-opencode.orchestrate.lost",
+  methods: {
+    lost: {
+      input: { type: "object", properties: { sessionID: { type: "string" }, hashes: { type: "array", items: { type: "string" } } }, required: ["sessionID", "hashes"] },
+      output: { type: "object" },
+    },
+  },
+  events: {},
+} as const
 
 /**
  * What the queue check tells the root `sessionID`: the same lists `orchestrate status` starts with (one source, two
