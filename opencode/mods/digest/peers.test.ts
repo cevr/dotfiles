@@ -2,12 +2,12 @@
 // peer's unknown message skipped alone, and a peer found only in Tailscale's own status.
 import { describe, expect, test } from "bun:test"
 import { Array as Arr, Option } from "effect"
-import { type PeerStatus, StatusRead } from "./bind.ts"
+import { canonicalOf, type PeerStatus, StatusRead } from "./bind.ts"
 import { DigestEvent, VERSION } from "./event.ts"
 import { EMPTY, fold } from "./fold.ts"
 import { NO_MARKS } from "./marks.ts"
 import { pageOf } from "./messages.ts"
-import { envelopeOf, keyedOf, locateIn, mergeView, NOT_ALLOWED, peerOriginsOf, Reading, readingOf, type Sighting, WIRE } from "./peers.ts"
+import { browserSpelling, envelopeOf, keyedOf, locateIn, mergeView, NOT_ALLOWED, peerOriginsOf, Reading, readingOf, selfPagesOf, type Sighting, WIRE } from "./peers.ts"
 import { viewOf } from "./view.ts"
 
 const T = Date.parse("2026-11-20T12:00:00Z")
@@ -65,10 +65,10 @@ const WORKBOX = device("Workbox", "nWORK", ["fd7a:115c:a1e0::9", "100.101.102.10
 
 describe("a peer on the tailnet", () => {
   test("is the one device of his the store keys for its name: by stable ID, at its tailnet addresses only (IPv4 first), whatever it is called now", () => {
-    expect(keyedOf("workbox", sightingOf([WORKBOX]), T)).toEqual(Option.some({ ips: ["100.101.102.104", "fd7a:115c:a1e0::9"], dnsName: Option.some("workbox.example-tailnet.ts.net") }))
+    expect(keyedOf("workbox", sightingOf([WORKBOX]), T)).toEqual(Option.some({ ips: ["100.101.102.104", "fd7a:115c:a1e0::9"] }))
     // Renamed: still that device, under its new name.
     expect(keyedOf("workbox", sightingOf([{ ...WORKBOX, dnsName: Option.some("spare.example-tailnet.ts.net") }]), T)).toEqual(
-      Option.some({ ips: ["100.101.102.104", "fd7a:115c:a1e0::9"], dnsName: Option.some("spare.example-tailnet.ts.net") }),
+      Option.some({ ips: ["100.101.102.104", "fd7a:115c:a1e0::9"] }),
     )
   })
 
@@ -169,6 +169,35 @@ describe("the origins a host lets write here cross-origin (round 2's B1)", () =>
       expect(new Set(allowed), `seed ${seed}`).toEqual(new Set(expected))
       for (const origin of [...formsOf(keyed), ...others.flatMap(formsOf)]) expect(allowed.includes(origin), `seed ${seed}: ${origin}`).toBe(expected.includes(origin))
       for (const origin of allowed) expect(new URL(origin).hostname, `seed ${seed}`).toMatch(/^(\d{1,3}\.){3}\d{1,3}$|^\[[0-9a-f:]+\]$/)
+    }
+  })
+
+  test("this host's own page by address: its Tailscale addresses on the port, none when the read is stale, stopped or unread", () => {
+    const self = (ips: ReadonlyArray<string>, backendState = "Running"): Sighting => ({
+      ...sightingOf([]),
+      read: StatusRead.Read({ status: { backendState, dnsName: Option.some("harbor.example-tailnet.ts.net"), ips, userId: Option.some(HIS), tagged: false, peers: [] } }),
+    })
+    expect(selfPagesOf(self(["fd7a:115c:a1e0:0:0:0:0:3", "100.101.102.103", "192.168.1.9"]), T, PORT)).toEqual(["http://100.101.102.103:8240", "http://[fd7a:115c:a1e0::3]:8240"])
+    expect(selfPagesOf(self(["100.101.102.103"], "Stopped"), T, PORT)).toEqual([])
+    expect(selfPagesOf(self(["100.101.102.103"]), T + 76_000, PORT)).toEqual([])
+    expect(selfPagesOf({ ...self(["100.101.102.103"]), read: StatusRead.Unread({ why: "no-cli" }) }, T, PORT)).toEqual([])
+  })
+
+  test("an address is spelled as a browser spells it in Origin (the WHATWG URL serializer), whatever form it came in", () => {
+    expect(["fd7a:115c:a1e0:0:0:0:0:9", "0:0:0:0:0:0:0:1", "0:0:0:0:0:0:0:0", "1:0:0:2:0:0:0:3", "1:0:2:3:4:5:6:7", "1:0:0:2:0:0:3:4", "100.101.102.104"].map(browserSpelling)).toEqual([
+      "fd7a:115c:a1e0::9",
+      "::1",
+      "::",
+      "1:0:0:2::3",
+      "1:0:2:3:4:5:6:7",
+      "1::2:0:0:3:4",
+      "100.101.102.104",
+    ])
+    const draw = drawer(7)
+    for (let n = 0; n < 2000; n++) {
+      const groups = Array.from({ length: 8 }, () => when(Math.floor(draw() * 3) === 0, "0", Math.floor(draw() * 0x10000).toString(16)))
+      const canonical = Option.getOrThrow(canonicalOf(groups.join(":")))
+      expect(`[${browserSpelling(canonical)}]`, canonical).toBe(new URL(`http://[${canonical}]/`).hostname)
     }
   })
 

@@ -206,6 +206,7 @@ const world = async (dir: string, count: number, reads: (name: string) => "paire
       known: Ref.get(peers),
       pull: Effect.void,
       origins: Effect.map(Ref.get(sighting), (seen) => peerOriginsOf(named, seen, Date.now(), 8240)),
+      pages: Effect.succeed([]),
     })
     // A host on another wire: its peer view says wire 2, with a view this build must not parse loosely.
     const newer = Effect.succeed(`{"wire":2,"host":"${name}","view":{"projects":"elsewhere"}}`)

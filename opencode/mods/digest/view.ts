@@ -104,6 +104,11 @@ export const View = Schema.Struct({
   host: maybe(Schema.String),
   /** Each peer the config names, and whether its projects are in this view (peers.ts). */
   peers: maybe(Schema.Array(PeerStatus)),
+  /**
+   * This host's page by its Tailscale addresses (`http://<address>:<port>`): the only origins its peers let write to
+   * them, so a page opened under a name links here to act on another host's items (peers.ts selfPagesOf).
+   */
+  pages: maybe(Schema.Array(Schema.String)),
 })
 export type View = typeof View.Type
 
@@ -216,5 +221,6 @@ export const viewOf = (page: Page, marks: Marks, now: number, zone: string): Vie
     spans: spansOf(historyFrom(projects, now, zone), now, zone),
     host: Option.none(),
     peers: Option.none(),
+    pages: Option.none(),
   }
 }

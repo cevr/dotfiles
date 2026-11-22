@@ -360,6 +360,9 @@ describe("the page writes to the host that owns an item, under that host's own p
     expect((await send(workbox, "mark", Option.some(`http://${one(V4.get("macbook"))}:${PORT}`), Option.none())).status).toBe(204)
     expect((await send(workbox, "mark", Option.some(`http://[${one(V6.get("macbook"))}]:${PORT}`), Option.none())).status).toBe(204)
     expect(await one(b).writes()).toBe(2)
+    // B's view gives its own page by address, where a page opened under a name sends him to act on other hosts' items.
+    const view: { readonly pages?: ReadonlyArray<string> } = await (await fetch(`${workbox}/view.json`)).json()
+    expect(view.pages).toEqual([`http://${one(V4.get("workbox"))}:${PORT}`, `http://[${one(V6.get("workbox"))}]:${PORT}`])
   }, 60_000)
 
   test("the cases by hand: the phone writes from the peer's page; an agent machine's browser is refused there, its token ignored, and told to pair on B", async () => {

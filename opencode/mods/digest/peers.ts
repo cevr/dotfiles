@@ -17,13 +17,15 @@
 //   `dotfiles` projects never meet.
 // - Write: an item's unread, Later, pin, name and answer live on the host that owns it, and only there. The page
 //   sends a peer's item's write straight to that host (its origin is in the view), tokenless; that host allows the
-//   peers' page origins it keys (`peerOriginsOf`, policy.ts isPeerWrite) and decides by its own policy. A browser
-//   that host needs a token from is told to pair on its own page. No host writes on another's behalf, and nothing
-//   here accepts a write for a peer.
+//   peers' page origins it keys (`peerOriginsOf`: the keyed device's Tailscale addresses alone, never a name, since
+//   a name is answered by whatever server the browser's resolver picks; policy.ts isPeerWrite) and decides by its
+//   own policy. A page opened under a name therefore links to the address pages (`selfPagesOf`) instead of writing
+//   for a peer. A browser that host needs a token from is told to pair on its own page. No host writes on
+//   another's behalf, and nothing here accepts a write for a peer.
 import { Array as Arr, Data, Duration, Match, Option, Order, Schema } from "effect"
 import { canonicalOf, hostOf, isTailnet, type PeerStatus as TailnetPeer, StatusRead } from "./bind.ts"
 import { nameKey } from "./devices.ts"
-import { type AgentKey, carriesName, type Exclusion, hisDevices, MEMBERS_TTL } from "./members.ts"
+import { type AgentKey, type Exclusion, hisDevices, MEMBERS_TTL } from "./members.ts"
 import { historyFrom, type PeerStatus, spansOf, View, ViewMessage, ViewProject } from "./view.ts"
 import { when } from "./zone.ts"
 
@@ -42,22 +44,45 @@ export interface Sighting {
 /** Nothing read yet: no peer is anywhere. */
 export const UNSEEN: Sighting = { read: StatusRead.Unread({ why: "starting" }), agents: [], excluded: [], at: 0 }
 
-/** A named peer's device now: its addresses in the tailnet's ranges (IPv4 first) and its MagicDNS name, if a plain one. */
+/**
+ * A named peer's device now: its addresses in the tailnet's ranges, IPv4 first, each spelled as a browser spells it
+ * in an origin (`browserSpelling`). Its addresses only: no name of it is ever kept, so none can reach a decision.
+ */
 export interface Keyed {
   readonly ips: ReadonlyArray<string>
-  readonly dnsName: Option.Option<string>
 }
 
 const IPV4_FIRST: Order.Order<string> = Order.combine(Order.mapInput(Order.Number, (address: string) => Number(address.includes(":"))), Order.String)
 
-/** A MagicDNS name as an origin may carry it: lower case labels of letters, digits and inner dashes, no trailing dot. */
-const PLAIN_NAME = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/
+/**
+ * An address in canonical form (bind.ts `canonicalOf`: dotted octets, or eight lower-case hex groups) spelled as the
+ * WHATWG URL standard serializes a host, which is what a browser puts in `Origin`: IPv4 as dotted decimal; IPv6
+ * with the first longest run of two or more zero groups as `::` and each group without leading zeros (RFC 5952).
+ * The origin decision compares the `Origin` header with these strings exactly, so every other spelling (upper
+ * case, expanded, `::ffff:`-mapped, octal) is refused.
+ */
+export const browserSpelling = (canonical: string): string => {
+  if (!canonical.includes(":")) return canonical
+  const groups = canonical.split(":")
+  // The first longest run of zero groups.
+  let best = { start: 0, length: 0 }
+  let at = 0
+  while (at < groups.length) {
+    let end = at
+    while (end < groups.length && groups[end] === "0") end++
+    if (end - at > best.length) best = { start: at, length: end - at }
+    at = Math.max(end, at + 1)
+  }
+  if (best.length < 2) return groups.join(":")
+  return `${groups.slice(0, best.start).join(":")}::${groups.slice(best.start + best.length).join(":")}`
+}
 
 /**
  * The device the store keys for the peer named `host`, as `sighting` saw it, if it is current at `now`. Never a name
  * lookup (owner via the orchestrator, 2026-11-22: a name resolved to a device for a security decision failed three
  * rounds running): the device is the one, and only, device of his (same UserID, untagged, not shared in) that carries
- * a stable ID the store holds for that name as an agent host, and no excluded one. None (closed) when the store keys
+ * a stable ID the store holds for that name as an agent host, and no ID the store excludes. No name of any device
+ * (MagicDNS name, its label, HostName) is read here: by IDs and addresses alone. None (closed) when the store keys
  * no ID for it, no device or two carry one, the status did not read, Tailscale is not running, or the read is older
  * than MEMBERS_TTL. Its addresses are those it alone lists: one another device lists too is nobody's.
  */
@@ -70,16 +95,14 @@ export const keyedOf = (host: string, sighting: Sighting, now: number): Option.O
     Read: ({ status }) => {
       if (!fresh || status.backendState !== "Running" || ids.length === 0) return Option.none()
       const carries = (peer: TailnetPeer) => Option.exists(peer.stableId, (id) => ids.includes(id) && !excludedIds.includes(id))
-      const excludedByName = (peer: TailnetPeer) => sighting.excluded.some((exclusion) => carriesName(exclusion.name, peer))
-      const found = hisDevices(status).filter((peer) => carries(peer) && !excludedByName(peer))
+      const found = hisDevices(status).filter(carries)
       return Option.flatMap(
         Option.filter(Arr.head(found), () => found.length === 1),
         (device) => {
           const elsewhere = new Set([...status.ips, ...status.peers.filter((peer) => peer !== device).flatMap((peer) => peer.ips)].flatMap((ip) => Option.toArray(canonicalOf(ip))))
-          // As Tailscale spells them (RFC 5952, as a browser spells an origin), compared in one spelling.
-          const ips = Arr.sort([...new Set(device.ips.map((ip) => ip.toLowerCase()).filter((ip) => Option.exists(canonicalOf(ip), (one) => isTailnet(one) && !elsewhere.has(one))))], IPV4_FIRST)
-          const dnsName = Option.filter(Option.map(device.dnsName, (name) => name.toLowerCase().replace(/\.$/, "")), (name) => PLAIN_NAME.test(name))
-          return Option.liftPredicate({ ips, dnsName }, (each) => each.ips.length > 0)
+          const mine = device.ips.flatMap((ip) => Option.toArray(Option.filter(canonicalOf(ip), (one) => isTailnet(one) && !elsewhere.has(one))))
+          const ips = Arr.sort([...new Set(mine.map(browserSpelling))], IPV4_FIRST)
+          return Option.liftPredicate({ ips }, (each) => each.ips.length > 0)
         },
       )
     },
@@ -88,18 +111,34 @@ export const keyedOf = (host: string, sighting: Sighting, now: number): Option.O
 
 /**
  * Every origin a page of the keyed device has on `port`, the only ones that may write here cross-origin: each of its
- * addresses, its MagicDNS name, and that name's first label, as a browser spells them (an IPv6 address bracketed).
- * Exact strings: never a pattern, never a suffix. An origin by name holds only while the keyed device carries it.
+ * Tailscale addresses, `http://<IPv4>:<port>` and `http://[<IPv6>]:<port>`, spelled as a browser spells them. Never
+ * a name (round 2's B1): which server answers a name is the browser's resolver's choice; an address is reached by
+ * Tailscale's routing, at the keyed device alone. Exact strings: never a pattern, never a suffix.
  */
-export const originsOf = (keyed: Keyed, port: number): ReadonlyArray<string> => [
-  ...keyed.ips.map((ip) => `http://${hostOf(ip)}:${port}`),
-  ...Option.toArray(keyed.dnsName).flatMap((name) => [...new Set([name, Option.getOrElse(Arr.head(name.split(".")), () => name)])].map((each) => `http://${each}:${port}`)),
-]
+export const originsOf = (keyed: Keyed, port: number): ReadonlyArray<string> => keyed.ips.map((ip) => `http://${hostOf(ip)}:${port}`)
 
 /** The named peers' pages' origins on `port`, as `sighting` keys them at `now`: all this host's CORS allows (policy.ts isPeerWrite). */
 export const peerOriginsOf = (named: ReadonlyArray<NamedPeer>, sighting: Sighting, now: number, port: number): ReadonlyArray<string> => [
   ...new Set(named.flatMap((each) => Option.toArray(keyedOf(each.host, sighting, now)).flatMap((keyed) => originsOf(keyed, port)))),
 ]
+
+/**
+ * This host's own page by its Tailscale addresses on `port`, as `sighting` saw them at `now` (none when stale, not
+ * running or unread): where a page opened under a name sends him to act on its peers' items, since a peer allows
+ * address origins alone.
+ */
+export const selfPagesOf = (sighting: Sighting, now: number, port: number): ReadonlyArray<string> =>
+  Match.valueTags(sighting.read, {
+    Unread: () => [],
+    Read: ({ status }) =>
+      Option.getOrElse(
+        Option.map(
+          Option.liftPredicate(status, (each) => each.backendState === "Running" && sighting.at > 0 && now - sighting.at <= Duration.toMillis(MEMBERS_TTL)),
+          (each) => originsOf({ ips: Arr.sort([...new Set(each.ips.flatMap((ip) => Option.toArray(Option.filter(canonicalOf(ip), isTailnet))).map(browserSpelling))], IPV4_FIRST) }, port),
+        ),
+        (): ReadonlyArray<string> => [],
+      ),
+  })
 
 /** Where each of `named` is read now, by name: its keyed device's first address on `port` (keyedOf). */
 export const locateIn = (named: ReadonlyArray<NamedPeer>, sighting: Sighting, now: number, port: number): ReadonlyMap<string, Target> =>
@@ -112,7 +151,7 @@ export const PEER_TIMEOUT = Duration.seconds(3)
 /** How often each peer is read. */
 export const PULL_EVERY = Duration.seconds(15)
 
-/** A peer as the config names it: how the page shows it, and its Tailscale host name (MagicDNS's first label). */
+/** A peer as the config names it: how the page shows it, and the agent-host name its device store keys it by (never looked up). */
 export const NamedPeer = Schema.Struct({ name: Schema.NonEmptyString, host: Schema.NonEmptyString })
 export type NamedPeer = typeof NamedPeer.Type
 

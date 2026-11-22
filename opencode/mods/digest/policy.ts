@@ -11,11 +11,11 @@
 //   by its IP and later by its MagicDNS name pairs once for each. With writes open to his devices (no token), these
 //   are what stop a page of another site, opened in his browser, from writing through it.
 // - The one exception (peers.ts, the write half): on the tailnet listener a mark or an answer may also come from a
-//   named peer's page, its origin exactly one of `peerOrigins` (the keyed device's addresses and names on the
-//   page's port, from this host's own status and device store). Such a write is tokenless by construction: its token
-//   header, if any, is never read (the preflight never allows it either), so it is served only where this host's
-//   policy serves the same request from its own page, tokenless, from that source. Nothing else is ever allowed
-//   cross-origin: no read, no pairing, nothing on loopback (`isPeerWrite`, `preflightOf`).
+//   named peer's page, its origin exactly one of `peerOrigins` (the keyed device's Tailscale addresses, never a
+//   name, on the page's port, from this host's own status and device store). Such a write is tokenless by
+//   construction: its token header, if any, is never read (the preflight never allows it either), so it is served
+//   only where this host's policy serves the same request from its own page, tokenless, from that source. Nothing
+//   else is ever allowed cross-origin: no read, no pairing, nothing on loopback (`isPeerWrite`, `preflightOf`).
 // - What a route needs then (ACCESS):
 //   - On loopback, a read or a mark needs nothing more, an answer a paired browser.
 //   - Off loopback (the tailnet) every route needs a paired browser except the page's shell (its static bundle,

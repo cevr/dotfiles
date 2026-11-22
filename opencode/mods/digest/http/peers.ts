@@ -58,20 +58,23 @@ export interface PeerSide {
   readonly known: Effect.Effect<ReadonlyArray<Peer>>
   readonly pull: Effect.Effect<void>
   readonly origins: Effect.Effect<ReadonlyArray<string>>
+  /** This host's own page by its addresses (peers.ts selfPagesOf): where to act on a peer's items from. */
+  readonly pages: Effect.Effect<ReadonlyArray<string>>
 }
 
 /** The peers of `named` never read, and no pull: a host with no peers, a test's, a simulation's. */
-export const noPeers = (named: ReadonlyArray<NamedPeer>): PeerSide => ({ known: Effect.succeed(unreadAll(named)), pull: Effect.void, origins: Effect.succeed([]) })
+export const noPeers = (named: ReadonlyArray<NamedPeer>): PeerSide => ({ known: Effect.succeed(unreadAll(named)), pull: Effect.void, origins: Effect.succeed([]), pages: Effect.succeed([]) })
 
-/** The peers of `named` read into a Ref of their own: `known` reads it, `pull` (the arguments of `pull`) fills it; `origins` as given. */
+/** The peers of `named` read into a Ref of their own: `known` reads it, `pull` (the arguments of `pull`) fills it; `origins` and `pages` as given. */
 export const peerSide = (
   named: ReadonlyArray<NamedPeer>,
   locate: Effect.Effect<ReadonlyMap<string, Target>>,
   get: (url: string) => Effect.Effect<Got, unknown>,
   now: Effect.Effect<number>,
   origins: Effect.Effect<ReadonlyArray<string>> = Effect.succeed([]),
+  pages: Effect.Effect<ReadonlyArray<string>> = Effect.succeed([]),
 ): Effect.Effect<PeerSide> =>
-  Effect.map(Ref.make(unreadAll(named)), (peers) => ({ known: Ref.get(peers), pull: pull(named, locate, get, peers, now), origins }))
+  Effect.map(Ref.make(unreadAll(named)), (peers) => ({ known: Ref.get(peers), pull: pull(named, locate, get, peers, now), origins, pages }))
 
 /** A pull every `every`, until the scope closes. */
 export const servePeers = (pullOnce: Effect.Effect<void>, every: Duration.Duration = PULL_EVERY): Effect.Effect<never> => Effect.forever(Effect.andThen(pullOnce, Effect.sleep(every)))

@@ -47,7 +47,7 @@ import { EMPTY, fold } from "@dotfiles/opencode-digest/fold"
 import { buildOf, healthLine, sickLine, type TailnetState } from "@dotfiles/opencode-digest/health"
 import * as Listener from "@dotfiles/opencode-digest/http/listener"
 import { noPeers, type PeerSide, peerSide, servePeers } from "@dotfiles/opencode-digest/http/peers"
-import { envelopeOf, locateIn, mergeView, NamedPeer, type Peer, peerOriginsOf, type Sighting, UNSEEN, upCount } from "@dotfiles/opencode-digest/peers"
+import { envelopeOf, locateIn, mergeView, NamedPeer, type Peer, peerOriginsOf, selfPagesOf, type Sighting, UNSEEN, upCount } from "@dotfiles/opencode-digest/peers"
 import * as LivePeers from "@dotfiles/opencode-digest/process/peers"
 import { pageOf } from "@dotfiles/opencode-digest/messages"
 import { type Copy, keysOf, membersWith, type Named } from "@dotfiles/opencode-digest/devices"
@@ -154,7 +154,7 @@ export const handlersOf = (
     health: healthOf(lines, tailnet, peers.known),
     tailnetRead: Option.getOrElse(Option.fromUndefinedOr(options.tailnetRead), (): TailnetRead => "paired"),
     members,
-    view: Effect.map(Effect.all([local, peers.known]), ([view, known]) => encodeView(mergeView(view, nameOf(options), known))),
+    view: Effect.map(Effect.all([local, peers.known, peers.pages]), ([view, known, pages]) => encodeView({ ...mergeView(view, nameOf(options), known), pages: Option.some(pages) })),
     peerView: Effect.map(local, (view) => envelopeOf(nameOf(options), view)),
     peerOrigins: peers.origins,
     peerPages: Effect.map(peers.known, (known) => known.flatMap((peer) => Option.toArray(peer.origin))),
@@ -214,6 +214,7 @@ export const livePeers = (options: Options, sighting: Ref.Ref<Sighting>): Effect
     LivePeers.get,
     Clock.currentTimeMillis,
     Effect.map(Effect.all([Ref.get(sighting), Clock.currentTimeMillis]), ([seen, now]) => peerOriginsOf(namedOf(options), seen, now, portOf(options))),
+    Effect.map(Effect.all([Ref.get(sighting), Clock.currentTimeMillis]), ([seen, now]) => selfPagesOf(seen, now, portOf(options))),
   )
 
 /**

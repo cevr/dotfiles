@@ -3008,12 +3008,17 @@ peers' side by side, each labeled with its host.
   peer's item's mark, Later, name or answer straight to that host, with no
   token. No host writes for another.
 - That host lets only its peers' pages write to it cross-origin, by CORS:
-  the exact origins of the device its store keys (each address, its MagicDNS
-  name and that name's first label, on the page's port), never a pattern,
-  on the tailnet listener only. It then applies its own policy to the
-  request's source. So his phone writes from either page. A browser on an
-  agent machine is refused, and the page links to that host's own page to
-  pair and act there. A token never leaves its own host's page.
+  the exact origins of the device its store keys, by its Tailscale
+  addresses alone (`http://<IPv4>:<port>`, `http://[<IPv6>]:<port>`, as a
+  browser spells them), never a name and never a pattern, on the tailnet
+  listener only. Which server answers a name is the browser's resolver's
+  choice; an address reaches the keyed device by Tailscale's routing. It
+  then applies its own policy to the request's source. So his phone writes
+  from either page opened by address. A page opened under a name shows
+  "open this digest by address to act on workbox's items", with the address
+  links, instead of writing. A browser on an agent machine is refused, and
+  the page links to that host's own page to pair and act there. A token
+  never leaves its own host's page.
 
 **Health.** Health on the tailnet answers an unpaired request `ok` alone. On
 loopback the line ends with
