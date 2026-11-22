@@ -170,6 +170,31 @@ export const decodeSwarmState = Schema.decodeUnknownOption(SwarmState)
 /** Whether the daily long swarm is due at `now`: it never ran, or last ran `LONG_SWARM_EVERY_MS` ago. */
 export const longSwarmDue = (lastAt: Option.Option<number>, now: number) => Option.match(lastAt, { onNone: () => true, onSome: (at) => now - at >= LONG_SWARM_EVERY_MS })
 
+/**
+ * The describe blocks of scripts/accept.test.ts whose real runs carry a clock bound: tests/accept-clock.test.ts runs
+ * them with ACCEPT_TIMED=1, filtered by `timedFilter`.
+ */
+export const TIMED_RUNS: ReadonlyArray<string> = ["a land run under its budget", "a deep run yields the lock to a land run", "a land run's swarm"]
+
+/** The `bun test -t` filter of the timed runs. */
+export const timedFilter = TIMED_RUNS.join("|")
+
+/**
+ * How many tests each of `names` holds in `text` (scripts/accept.test.ts): the `test(` calls at its top indent
+ * between `describe("<name>"` and the next top-level `describe(`; none for a describe the text lacks. Derived from
+ * the file, so a test added to a timed describe is counted the moment it lands, not in a hand-kept number a deep
+ * run alone checks (sim-load added one; TIMED_COUNT stayed 7 and the deep run went red).
+ */
+export const timedCounts = (text: string, names: ReadonlyArray<string> = TIMED_RUNS) =>
+  names.map((name) => {
+    const at = `\n${text}`.indexOf(`\ndescribe("${name}"`)
+    if (at < 0) return { name, tests: 0 }
+    const rest = text.slice(at)
+    const next = rest.indexOf("\ndescribe(")
+    const body = (next < 0 && rest) || rest.slice(0, next)
+    return { name, tests: body.split("\n").filter((line) => /^ {2}test\(/.test(line)).length }
+  })
+
 /** The line accept prints before a phase runs; the pool's names the host it was sized for. */
 export const heading = (phase: Phase, cores: number, load1: number) => {
   if (phase.name === "pool") return `accept: ${phase.files.length} files, ${phase.width} at a time (${cores} cores, 1-minute load ${load1.toFixed(1)})`
