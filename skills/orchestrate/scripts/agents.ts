@@ -8,12 +8,14 @@
 // Usage: bun agents.ts [--check]
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { BLOCK, document, PROTOCOL_BLOCK, render } from './ending.ts';
 
 const here = import.meta.dir;
 const PROTOCOL = join(here, '..', 'protocol.md');
 const SAFETY = join(here, '..', '..', 'loop', 'safety.md');
 export const AGENTS = join(here, '..', '..', '..', 'agents');
 export const CODEX_AGENTS = join(here, '..', '..', '..', 'codex', 'agents');
+const END_OF_STEP = join(here, '..', 'end-of-step.md');
 const TOOLS = 'Bash, Read, Edit, Write, Skill, Monitor, TaskStop, WebFetch, WebSearch';
 
 export const ROLES = {
@@ -48,6 +50,8 @@ export function instructions(role: Role, protocol: string, safety: string): stri
   const rules = safety.slice(safety.indexOf('SAFETY (mandatory')).trim();
   const own = s[role[0].toUpperCase() + role.slice(1)];
   if (!s['Ending a step'] || !s.Rounds || !own || !rules.startsWith('SAFETY')) throw new Error(`protocol.md or safety.md lost a section ${role} needs`);
+  if (!BLOCK.test(s['Ending a step'])) throw new Error("protocol.md's Ending a step lost its end-of-step block");
+  const ending = s['Ending a step'].replace(BLOCK, () => render(role));
   return `You are the ${role} of ${SUBJECT[role]} This prompt carries the worker protocol and the safety rules, so do not read \`protocol.md\` or \`safety.md\`.
 
 # Safety
@@ -56,7 +60,7 @@ ${rules}
 
 # Worker protocol
 
-${s['Ending a step']}
+${ending}
 
 ${s.Rounds}
 
@@ -86,13 +90,29 @@ ${text}'''
 `;
 }
 
+/** `text` with its end-of-step block rewritten as `block`; throws when it has none. */
+const withBlock = (path: string, text: string, block: string) => {
+  if (!BLOCK.test(text)) throw new Error(`${path} lost its end-of-step block`);
+  return text.replace(BLOCK, () => block);
+};
+
+/**
+ * Every file this script writes: protocol.md's and the lean worker's end-of-step blocks, end-of-step.md, and
+ * each role's agent files from the protocol as rewritten.
+ */
 const built = () => {
-  const protocol = readFileSync(PROTOCOL, 'utf8');
+  const protocol = withBlock(PROTOCOL, readFileSync(PROTOCOL, 'utf8'), PROTOCOL_BLOCK);
   const safety = readFileSync(SAFETY, 'utf8');
-  return (Object.keys(ROLES) as Role[]).flatMap((role) => [
-    [join(AGENTS, `${role}.md`), agentFile(role, protocol, safety)] as const,
-    [join(CODEX_AGENTS, `${role}.toml`), codexFile(role, protocol, safety)] as const,
-  ]);
+  const worker = join(AGENTS, 'worker.md');
+  return [
+    [PROTOCOL, protocol] as const,
+    [END_OF_STEP, document()] as const,
+    [worker, withBlock(worker, readFileSync(worker, 'utf8'), render('worker'))] as const,
+    ...(Object.keys(ROLES) as Role[]).flatMap((role) => [
+      [join(AGENTS, `${role}.md`), agentFile(role, protocol, safety)] as const,
+      [join(CODEX_AGENTS, `${role}.toml`), codexFile(role, protocol, safety)] as const,
+    ]),
+  ];
 };
 
 /** Agent files this script wrote for a role it no longer has, or under a role's former name (`orchestrate-<role>`). */
