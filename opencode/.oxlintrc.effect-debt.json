@@ -111,9 +111,16 @@
         "mods/digest/peers.test.ts"
       ],
       "rules": {
-        "effect/noAsyncFunction": "off",
-        "effect/noEffectRunInTests": "off",
         "effect/noGlobals": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/digest/http/peers.test.ts"
+      ],
+      "rules": {
+        "effect/noAsyncFunction": "off",
+        "effect/noEffectRunInTests": "off"
       }
     },
     {

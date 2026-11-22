@@ -16,7 +16,7 @@ import * as FileLog from "@dotfiles/opencode-digest/filestore/log"
 import * as Listener from "@dotfiles/opencode-digest/http/listener"
 import { pull, unreadAll } from "@dotfiles/opencode-digest/http/peers"
 import { markOf, nameOf } from "@dotfiles/opencode-digest/marks"
-import { type NamedPeer, type Peer, peerId, type Target } from "@dotfiles/opencode-digest/peers"
+import { type NamedPeer, NOT_ALLOWED, type Peer, peerId, type Target } from "@dotfiles/opencode-digest/peers"
 import * as LivePeers from "@dotfiles/opencode-digest/process/peers"
 import { scratch } from "../../tests/scratch.ts"
 import { handlersOf } from "./server.ts"
@@ -83,7 +83,7 @@ const byPlace = (a: Shown, b: Shown) => Number(`${a.host}/${a.defaultName}` > `$
 
 interface ViewJson {
   readonly projects: ReadonlyArray<{ host: string; name: string; defaultName: string; id: string; inbox: ReadonlyArray<{ id: string; unread: boolean }>; later: ReadonlyArray<{ id: string }> }>
-  readonly peers: ReadonlyArray<{ name: string; state: string; lastSeen?: number }>
+  readonly peers: ReadonlyArray<{ name: string; state: string; lastSeen?: number; reason: string }>
 }
 
 /** A merged view as compared: each project's host, names and messages; each peer's state and last seen. */
@@ -127,11 +127,11 @@ const expected = (model: Map<string, ModelHost>, viewer: string) => {
 }
 
 /** A world of `count` hosts, each naming the others as peers. */
-const world = async (dir: string, count: number): Promise<ReadonlyArray<Live>> => {
+const world = async (dir: string, count: number, reads: (name: string) => "paired" | "member" = () => "member"): Promise<ReadonlyArray<Live>> => {
   const lives: Array<Live> = []
   for (const name of NAMES.slice(0, count)) {
     const named = NAMES.slice(0, count).flatMap((other) => Option.toArray(Option.liftPredicate({ name: other, host: other }, () => other !== name)))
-    const options = { dir: join(dir, name), timezone: "UTC", tailnetRead: "member" as const, name, peers: named }
+    const options = { dir: join(dir, name), timezone: "UTC", tailnetRead: reads(name), name, peers: named }
     const log = FileLog.make(options.dir)
     const peers = Ref.makeUnsafe(unreadAll(named))
     const old = Ref.makeUnsafe(false)
@@ -265,6 +265,18 @@ const simulate = async (seed: number, count: number, steps: number) => {
 }
 
 describe("one page over every host", () => {
+  test("a host whose policy lets this one read it is read; one that needs pairing is unavailable, and the page says why", async () => {
+    using held = scratch("digest-peers-")
+    const lives = await world(held.path, 2, (name) => Option.getOrElse(Option.as(Option.liftPredicate(name, (each) => each === "workbox"), "paired" as const), () => "member" as const))
+    await using _closed = { [Symbol.asyncDispose]: () => run(Effect.forEach(lives, (live) => Scope.close(live.scope, Exit.void), { discard: true })) }
+    await run(pullAll(lives, 1))
+    const peersOf = async (live: Live) => (await pageView(live, false)).peers.map((peer) => ({ name: peer.name, state: peer.state, reason: peer.reason }))
+    // macbook reads the tailnet as a member may: workbox (paired) refuses it; workbox reads macbook (member). Each
+    // page is read from its handlers: workbox's own page needs pairing on its listener.
+    expect(await peersOf(one(lives[0]))).toEqual([{ name: "workbox", state: "down", reason: NOT_ALLOWED }])
+    expect(await peersOf(one(lives[1]))).toEqual([{ name: "macbook", state: "up", reason: "" }])
+  })
+
   test("two hosts: each page shows its own projects and the other's, as the model says, through every step", async () => {
     for (const seed of [1, 2, 3, 4, 5, 6]) await simulate(seed, 2, 30)
   }, 60_000)

@@ -1,14 +1,13 @@
 // The peers' wire and their place on the tailnet: what a peer's answer comes to (up, down, needs update), a newer
-// peer's unknown message skipped alone, a slow peer cut off, and a peer found only in Tailscale's own status.
+// peer's unknown message skipped alone, and a peer found only in Tailscale's own status.
 import { describe, expect, test } from "bun:test"
-import { Duration, Effect, Option } from "effect"
+import { Option } from "effect"
 import { peerHostsOf, StatusRead } from "./bind.ts"
 import { DigestEvent, VERSION } from "./event.ts"
 import { EMPTY, fold } from "./fold.ts"
-import { readOne } from "./http/peers.ts"
 import { NO_MARKS } from "./marks.ts"
 import { pageOf } from "./messages.ts"
-import { envelopeOf, Reading, readingOf, targetOf, WIRE } from "./peers.ts"
+import { envelopeOf, NOT_ALLOWED, Reading, readingOf, targetOf, WIRE } from "./peers.ts"
 import { viewOf } from "./view.ts"
 
 const T = Date.parse("2026-11-20T12:00:00Z")
@@ -27,7 +26,8 @@ describe("a peer's answer", () => {
     expect(readingOf(200, "<html>a captive portal</html>")).toEqual(UNREADABLE)
     expect(readingOf(200, ENVELOPE.slice(0, -20))).toEqual(UNREADABLE)
     expect(readingOf(200, `{"wire":${WIRE},"host":"workbox","view":{"projects":"elsewhere"}}`)).toEqual(UNREADABLE)
-    expect(readingOf(401, "pair first")).toEqual(Reading.Down({ reason: "it needs pairing to be read (its digest.tailnetRead is paired)" }))
+    expect(readingOf(401, "pair first")).toEqual(Reading.Down({ reason: NOT_ALLOWED }))
+    expect(readingOf(403, "not from here")).toEqual(Reading.Down({ reason: NOT_ALLOWED }))
     expect(readingOf(503, "restarting")).toEqual(Reading.Down({ reason: "it answered 503" }))
   })
 
@@ -38,12 +38,6 @@ describe("a peer's answer", () => {
     wire.view.projects[0].mood = "a field a later build added"
     const reading = readingOf(200, JSON.stringify(wire))
     expect(reading).toEqual(Reading.Up({ view: VIEW }))
-  })
-
-  test("a peer that never answers is down after the timeout, and one that cannot be reached is down at once", async () => {
-    const target = { name: "workbox", base: "http://127.0.0.1:9" }
-    expect(await Effect.runPromise(readOne(() => Effect.never, target, Duration.millis(20)))).toEqual(Reading.Down({ reason: "no answer in 0.02 s" }))
-    expect(await Effect.runPromise(readOne(() => Effect.fail("ECONNREFUSED"), target))).toEqual(Reading.Down({ reason: "unreachable" }))
   })
 })
 

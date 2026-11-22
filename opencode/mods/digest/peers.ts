@@ -81,11 +81,14 @@ export type Reading = Data.TaggedEnum<{
 }>
 export const Reading = Data.taggedEnum<Reading>()
 
+/** Why a peer that refuses the read is down: its policy does not let this host read it. */
+export const NOT_ALLOWED = "this host is not allowed to read that one: it needs pairing or to be the same Tailscale user"
+
 /** A peer's answer (`status`, `body`) as a reading: the envelope, a newer or older wire, or nothing usable. */
 export const readingOf = (status: number, body: string): Reading =>
   Match.value(status).pipe(
     Match.when(404, () => Reading.Update({ reason: "peer needs update (it serves no peer view)" })),
-    Match.when(401, () => Reading.Down({ reason: "it needs pairing to be read (its digest.tailnetRead is paired)" })),
+    Match.when((each) => each === 401 || each === 403, () => Reading.Down({ reason: NOT_ALLOWED })),
     Match.when(200, () =>
       Option.match(decodeWire(body), {
         onNone: () => Reading.Down({ reason: "it answered something unreadable" }),
