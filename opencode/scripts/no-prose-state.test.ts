@@ -1,6 +1,6 @@
 /**
  * The ratchet on parsing run state from prose (the commitments spec, "Parsers of run state"): every regular expression
- * (a literal or `new RegExp`) in a non-test source of orchestrate, status, the queue's stale check and the orchestrate
+ * (a literal, `RegExp(…)` with or without `new`, a string `.match`/`.matchAll`/`.search`, a `.split` on a marker line) in a non-test source of orchestrate, status, the queue's stale check and the orchestrate
  * skill's scripts is an entry of `no-prose-state.allow.json` ({ file, source, why, until }), and every entry is an
  * expression there. A new parser fails here until it is listed with why and until which unit; each unit of the
  * program shrinks the list, and the last ends with only `stays` entries.
@@ -11,7 +11,7 @@
 import { describe, expect, test } from "bun:test"
 import { readdirSync, readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
-import { Array as Arr, Option, Schema } from "effect"
+import { Array as Arr, Option, Predicate, Schema } from "effect"
 import { parseSync, Visitor } from "oxc-parser"
 
 /** The repository's root: the allow list's paths are relative to it. The suite runs from opencode/, as the gate runs it. */
@@ -45,15 +45,40 @@ const sourcesUnder = (path: string): ReadonlyArray<string> => {
     })
 }
 
-/** The regular expressions of one source, each by its text: a literal, or a `new RegExp(…)` call. */
+/** The string methods that take their string argument as a regular expression. */
+const MATCHING = ["match", "matchAll", "search"]
+
+/** A string argument's text: a plain string literal's value, or a template's raw text; none for anything else. */
+const stringOf = (node: { readonly type: string }): Option.Option<string> => {
+  if (node.type === "Literal" && "value" in node && Predicate.isString(node.value)) return Option.some(node.value)
+  if (node.type === "TemplateLiteral" && "quasis" in node && Array.isArray(node.quasis)) return Option.some(node.quasis.map((quasi: { value: { raw: string } }) => quasi.value.raw).join("${}"))
+  return Option.none()
+}
+
+/** A marker line: a split on text that holds a line break and something else (`"\n## Verdict\n"`), not on a bare line break. */
+const isMarker = (text: string): boolean => /[\n]|\\n/.test(text) && text.replace(/\\n|\n|\r|\\r/g, "").trim() !== ""
+
+/**
+ * The regular expressions of one source, each by its text: a literal, a `RegExp(…)` call with or without `new`, a
+ * string `.match`, `.matchAll` or `.search` (each makes its string a regular expression), and a `.split` on a marker line.
+ */
 const expressionsOf = (file: string, text: string): ReadonlyArray<string> => {
   const found = new Set<string>()
+  const isRegExp = (callee: { readonly type: string }) => callee.type === "Identifier" && "name" in callee && callee.name === "RegExp"
   new Visitor({
     Literal: (node) => {
       if ("regex" in node && node.regex) found.add(text.slice(node.start, node.end))
     },
     NewExpression: (node) => {
-      if (node.callee.type === "Identifier" && node.callee.name === "RegExp") found.add(text.slice(node.start, node.end))
+      if (isRegExp(node.callee)) found.add(text.slice(node.start, node.end))
+    },
+    CallExpression: (node) => {
+      if (isRegExp(node.callee)) found.add(text.slice(node.start, node.end))
+      if (node.callee.type !== "MemberExpression" || node.callee.computed || node.callee.property.type !== "Identifier") return
+      const method = node.callee.property.name
+      const first = Option.flatMap(Option.fromUndefinedOr(node.arguments[0]), stringOf)
+      if (MATCHING.includes(method) && Option.isSome(first)) found.add(text.slice(node.start, node.end))
+      if (method === "split" && Option.exists(first, isMarker)) found.add(text.slice(node.start, node.end))
     },
   }).visit(parseSync(file, text).program)
   return [...found]
@@ -92,6 +117,19 @@ describe("no run state parsed from prose", () => {
     const text = Option.getOrElse(Option.fromUndefinedOr(all.get(record)), () => "")
     const added = new Map([...all, [record, `${text}\nexport const verdictOf = (line: string) => /verdict: (\\w+)/.exec(line)\n`]])
     expect(ratchet(added, allow())).toEqual({ unlisted: [{ file: record, source: "/verdict: (\\w+)/" }], stale: [] })
+    // The other parsers a parser takes, each caught: a string match, a split on a marker line, RegExp called without new.
+    const parsers = [
+      'text.match("Verdict: ([A-Z]+)")',
+      'text.matchAll(`round-${n}-request`)',
+      'text.search("^Head: ")',
+      'text.split("\\n## Verdict\\n")',
+      'RegExp("^Verdict: (\\\\w+)", "m")',
+    ]
+    const parsed = new Map([...all, [record, `${text}\n${parsers.map((parser, at) => `export const parser${at} = (text: string, n: number) => ${parser}`).join("\n")}\n`]])
+    expect(ratchet(parsed, allow()).unlisted.map((each) => each.source)).toEqual(parsers)
+    // A bare line split, a plain replace and a string's own methods are no parsers of state.
+    const plain = new Map([...all, [record, `${text}\nexport const lines = (text: string) => [text.split("\\n"), text.replace("a", "b"), text.startsWith("x")]\n`]])
+    expect(ratchet(plain, allow()).unlisted).toEqual([])
     const gone = new Map([...all, [record, ""]])
     expect(ratchet(gone, allow()).stale.map((each) => each.file)).toEqual(expect.arrayContaining([record]))
   })
