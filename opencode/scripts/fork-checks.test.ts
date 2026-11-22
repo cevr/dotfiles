@@ -87,9 +87,9 @@ describe("the declared list", () => {
   it.effect("names a package with no command, a twice-listed id and an expectation on an unlisted file", () =>
     Effect.sync(() => {
       const feature = { id: "x", feature: "x", package: "packages/none", files: ["test/a.test.ts"] as const, proved: "here" }
-      const bad: List = { ...list(), features: [feature, { ...feature, package: "packages/core" }], expectations: [{ package: "packages/core", file: "test/b.test.ts", test: "t", host: { bash: "3.2.57" }, reason: "r" }] }
+      const bad: List = { ...list(), skips: [], features: [feature, { ...feature, package: "packages/core" }], expectations: [{ package: "packages/core", file: "test/b.test.ts", test: "t", host: { bash: "3.2.57" }, reason: "r" }] }
       expect(listProblems(bad)).toEqual(["x: package packages/none has no command", "x: the id is listed twice", 'expectation "t": packages/core/test/b.test.ts is in no feature'])
-      const short: List = { ...list(), features: [{ ...feature, package: "packages/core", since: "5d44dfd789" }], expectations: [] }
+      const short: List = { ...list(), skips: [], features: [{ ...feature, package: "packages/core", since: "5d44dfd789" }], expectations: [] }
       expect(listProblems(short)).toEqual(['x: since "5d44dfd789" is not a full commit sha'])
     }),
   )
@@ -168,7 +168,8 @@ describe("reading a report", () => {
 describe("an expectation", () => {
   const compound = Arr.head(list().expectations)
   const empty: Plan = { package: "", files: [], expected: [], skips: [] }
-  const plan = (bash: string): Plan => Option.getOrElse(Arr.findFirst(plansOf(list(), Option.some(bash)), (each) => each.package === "packages/core"), () => empty)
+  // The declared skips judged elsewhere ("skipped and todo cases"); here only the expectation.
+  const plan = (bash: string): Plan => Option.getOrElse(Arr.findFirst(plansOf({ ...list(), skips: [] }, Option.some(bash)), (each) => each.package === "packages/core"), () => empty)
   const file = "test/shell-scan/compound-parity.test.ts"
   const others = (each: Plan) => each.files.filter((name) => name !== file).map((name) => (caseOf(name, "passes")))
   const run = (each: Plan, failed: boolean) => [...others(each), ...casesOf(junit(file, [["real-shell compound syntax", COMPOUND_NAME, failed]]))]
@@ -332,6 +333,8 @@ interface Fakes {
   readonly freeBytes?: number
   /** Whether the lock is free. */
   readonly free?: boolean
+  /** The commands on PATH. */
+  readonly present?: ReadonlyArray<string>
 }
 
 /** What the fake services answer now, and what they were asked. */
@@ -351,6 +354,7 @@ const fakesOf = (scene: Scene) => ({
   floored: Option.getOrElse(Option.fromUndefinedOr(scene.fakes.floored), () => true),
   freeBytes: Option.getOrElse(Option.fromUndefinedOr(scene.fakes.freeBytes), () => 100 * 2 ** 30),
   free: Option.getOrElse(Option.fromUndefinedOr(scene.fakes.free), () => true),
+  present: Option.getOrElse(Option.fromUndefinedOr(scene.fakes.present), (): ReadonlyArray<string> => []),
 })
 
 /** The runner, gauge and lock over the script. */
@@ -372,6 +376,7 @@ const fakeServices = Layer.effectContext(
           floored: Effect.map(scene, (now) => fakesOf(now).floored),
           load,
           freeBytes: () => Effect.map(scene, (now) => fakesOf(now).freeBytes),
+          has: (command) => Effect.map(scene, (now) => fakesOf(now).present.includes(command)),
         }),
       ),
       Context.add(
@@ -501,6 +506,18 @@ describe("a run of the checks", () => {
       const { input } = yield* fakeFork(["test/a.test.ts"])
       const none = yield* checkWith(input, { answers: [() => ({ kind: "exited", code: 0, log: "", junit: Option.none() })] })
       expect(none.verdict).toMatchObject({ kind: "red", reds: [{ package: "packages/x", file: "test/a.test.ts", why: "the runner exited 0 and wrote no report: the file is not proven to have run" }] })
+    }),
+  )
+
+  test("a skip declared for a host without a command holds only where none of those commands is on PATH", () =>
+    Effect.gen(function* () {
+      const { input } = yield* fakeFork(["test/a.test.ts"])
+      const list: List = { ...input.list, skips: [{ package: "packages/x", file: "test/a.test.ts", test: "pwsh case", host: { missing: ["pwsh", "powershell"] }, reason: "no PowerShell" }] }
+      const answer = (): Ran => ({ kind: "exited", code: 0, log: "", junit: Option.some(junit("test/a.test.ts", [["", "runs", "passed"], ["", "pwsh case", "skipped"]])) })
+      const without = yield* checkWith({ ...input, list }, { answers: [answer] })
+      expect(without.verdict).toEqual({ kind: "green", notes: ["skipped as declared without pwsh or powershell on PATH: packages/x/test/a.test.ts > pwsh case (no PowerShell)"] })
+      const withIt = yield* checkWith({ ...input, list }, { answers: [answer], present: ["powershell"] })
+      expect(withIt.verdict).toMatchObject({ kind: "red", reds: [{ test: "pwsh case", why: expect.stringContaining("skipped, and fork-checks.json declares no skip for it") }] })
     }),
   )
 })

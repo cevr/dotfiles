@@ -186,5 +186,129 @@
       "host": { "bash": "3.2.57" },
       "reason": "bash 3.2.57 (macOS's /bin/bash, the first bash on the test's PATH) rejects a function whose body is a case statement inside a command substitution; upstream's own test, red there before and after each merge (upstream-merge-1122 r1, known gap 2; shell-restart-notice r1). Measured on the Mac with GNU bash 3.2.57(1)-release."
     }
+  ],
+  "skips": [
+    {
+      "package": "packages/core",
+      "file": "test/shell-scan/bash-syntax.test.ts",
+      "test": "ordinary Bash and Zsh syntax > bash accepts the source grammar: echo \"$(case x in @(a)) echo hi;; esac)\"",
+      "reason": "an extglob pattern, which bash parses only with extglob on: bash-syntax.test.ts skips it for bash on every host"
+    },
+    {
+      "package": "packages/core",
+      "file": "test/shell-scan/bash-syntax.test.ts",
+      "test": "ordinary Bash and Zsh syntax > zsh accepts the source grammar: printf '%s' $[1 + $(scan_probe)]",
+      "reason": "a Bash spelling zsh does not take as written ($\", $[ or {fd} as a statement): bash-syntax.test.ts skips it for zsh on every host"
+    },
+    {
+      "package": "packages/core",
+      "file": "test/shell-scan/bash-syntax.test.ts",
+      "test": "ordinary Bash and Zsh syntax > zsh accepts the source grammar: printf %s $\"$(scan_probe)\"",
+      "reason": "a Bash spelling zsh does not take as written ($\", $[ or {fd} as a statement): bash-syntax.test.ts skips it for zsh on every host"
+    },
+    {
+      "package": "packages/core",
+      "file": "test/shell-scan/bash-syntax.test.ts",
+      "test": "ordinary Bash and Zsh syntax > zsh accepts the source grammar: {fd}>/dev/null scan_probe",
+      "reason": "a Bash spelling zsh does not take as written ($\", $[ or {fd} as a statement): bash-syntax.test.ts skips it for zsh on every host"
+    },
+    {
+      "package": "packages/core",
+      "file": "test/shell-scan/powershell-runtime.test.ts",
+      "test": "successful PowerShell scans cover real parser boundaries and executed probe calls",
+      "host": { "missing": ["pwsh", "powershell"] },
+      "reason": "needs PowerShell: the test skips without pwsh or powershell on PATH (or SHELL_SCAN_PWSH); neither the Mac nor the workbox has one (measured 2026-11-22), so this PowerShell coverage runs on no host the gate runs on"
+    },
+    {
+      "package": "packages/core",
+      "file": "test/tool-shell.test.ts",
+      "test": "ShellTool conditional process substitution > conditional substitutions respect once",
+      "host": { "bash": "3.2.57" },
+      "reason": "`wait \"$!\"` on a process substitution needs bash 4.4 or later (tool-shell.test.ts `waits`, fork 20c90af2ce); the first bash on the Mac's PATH is 3.2.57"
+    },
+    {
+      "package": "packages/core",
+      "file": "test/tool-shell.test.ts",
+      "test": "ShellTool conditional process substitution > conditional substitutions respect always",
+      "host": { "bash": "3.2.57" },
+      "reason": "`wait \"$!\"` on a process substitution needs bash 4.4 or later (tool-shell.test.ts `waits`, fork 20c90af2ce); the first bash on the Mac's PATH is 3.2.57"
+    },
+    {
+      "package": "packages/core",
+      "file": "test/tool-shell.test.ts",
+      "test": "ShellTool ordinary shell syntax > PowerShell: ordinary syntax reuses approvals: Write-Output \"$(Write-Output hello)\"",
+      "host": { "missing": ["pwsh", "powershell"] },
+      "reason": "needs PowerShell: the test skips without pwsh or powershell on PATH (or SHELL_SCAN_PWSH); neither the Mac nor the workbox has one (measured 2026-11-22), so this PowerShell coverage runs on no host the gate runs on"
+    },
+    {
+      "package": "packages/core",
+      "file": "test/tool-shell.test.ts",
+      "test": "ShellTool ordinary shell syntax > PowerShell: ordinary syntax reuses approvals: $value = \"hello\"; Write-Output $value",
+      "host": { "missing": ["pwsh", "powershell"] },
+      "reason": "needs PowerShell: the test skips without pwsh or powershell on PATH (or SHELL_SCAN_PWSH); neither the Mac nor the workbox has one (measured 2026-11-22), so this PowerShell coverage runs on no host the gate runs on"
+    },
+    {
+      "package": "packages/core",
+      "file": "test/tool-shell.test.ts",
+      "test": "ShellTool ordinary shell syntax > PowerShell: ordinary syntax reuses approvals: if ($true) { Write-Output hello } else { Write-Output other }",
+      "host": { "missing": ["pwsh", "powershell"] },
+      "reason": "needs PowerShell: the test skips without pwsh or powershell on PATH (or SHELL_SCAN_PWSH); neither the Mac nor the workbox has one (measured 2026-11-22), so this PowerShell coverage runs on no host the gate runs on"
+    },
+    {
+      "package": "packages/core",
+      "file": "test/tool-shell.test.ts",
+      "test": "ShellTool ordinary shell syntax > PowerShell: ordinary syntax reuses approvals: foreach ($value in @('hello')) { Write-Output $value }",
+      "host": { "missing": ["pwsh", "powershell"] },
+      "reason": "needs PowerShell: the test skips without pwsh or powershell on PATH (or SHELL_SCAN_PWSH); neither the Mac nor the workbox has one (measured 2026-11-22), so this PowerShell coverage runs on no host the gate runs on"
+    },
+    {
+      "package": "packages/core",
+      "file": "test/tool-shell.test.ts",
+      "test": "ShellTool ordinary shell syntax > PowerShell: ordinary syntax reuses approvals: ForEach-Object { Write-Output hello }",
+      "host": { "missing": ["pwsh", "powershell"] },
+      "reason": "needs PowerShell: the test skips without pwsh or powershell on PATH (or SHELL_SCAN_PWSH); neither the Mac nor the workbox has one (measured 2026-11-22), so this PowerShell coverage runs on no host the gate runs on"
+    },
+    {
+      "package": "packages/core",
+      "file": "test/tool-shell.test.ts",
+      "test": "ShellTool ordinary shell syntax > PowerShell: ordinary syntax reuses approvals: function Show-Value { Write-Output hello }; Show-Value",
+      "host": { "missing": ["pwsh", "powershell"] },
+      "reason": "needs PowerShell: the test skips without pwsh or powershell on PATH (or SHELL_SCAN_PWSH); neither the Mac nor the workbox has one (measured 2026-11-22), so this PowerShell coverage runs on no host the gate runs on"
+    },
+    {
+      "package": "packages/core",
+      "file": "test/tool-shell.test.ts",
+      "test": "ShellTool ordinary shell syntax > PowerShell: ordinary syntax reuses approvals: Write-Output `\n  hello",
+      "host": { "missing": ["pwsh", "powershell"] },
+      "reason": "needs PowerShell: the test skips without pwsh or powershell on PATH (or SHELL_SCAN_PWSH); neither the Mac nor the workbox has one (measured 2026-11-22), so this PowerShell coverage runs on no host the gate runs on"
+    },
+    {
+      "package": "packages/core",
+      "file": "test/tool-shell.test.ts",
+      "test": "ShellTool ordinary shell syntax > PowerShell: ordinary syntax reuses approvals: Write-Output @'\nhello\n'@",
+      "host": { "missing": ["pwsh", "powershell"] },
+      "reason": "needs PowerShell: the test skips without pwsh or powershell on PATH (or SHELL_SCAN_PWSH); neither the Mac nor the workbox has one (measured 2026-11-22), so this PowerShell coverage runs on no host the gate runs on"
+    },
+    {
+      "package": "packages/core",
+      "file": "test/tool-shell.test.ts",
+      "test": "ShellTool ordinary shell syntax > PowerShell: always allow covers repeat execution and preserves exact deny: Write-Output\thello",
+      "host": { "missing": ["pwsh", "powershell"] },
+      "reason": "needs PowerShell: the test skips without pwsh or powershell on PATH (or SHELL_SCAN_PWSH); neither the Mac nor the workbox has one (measured 2026-11-22), so this PowerShell coverage runs on no host the gate runs on"
+    },
+    {
+      "package": "packages/core",
+      "file": "test/tool-shell.test.ts",
+      "test": "ShellTool ordinary shell syntax > PowerShell: always allow covers repeat execution and preserves exact deny: & 'Write-Output' hello",
+      "host": { "missing": ["pwsh", "powershell"] },
+      "reason": "needs PowerShell: the test skips without pwsh or powershell on PATH (or SHELL_SCAN_PWSH); neither the Mac nor the workbox has one (measured 2026-11-22), so this PowerShell coverage runs on no host the gate runs on"
+    },
+    {
+      "package": "packages/core",
+      "file": "test/tool-shell.test.ts",
+      "test": "ShellTool ordinary shell syntax > PowerShell: always allow covers repeat execution and preserves exact deny: Write-Output `\n  hello",
+      "host": { "missing": ["pwsh", "powershell"] },
+      "reason": "needs PowerShell: the test skips without pwsh or powershell on PATH (or SHELL_SCAN_PWSH); neither the Mac nor the workbox has one (measured 2026-11-22), so this PowerShell coverage runs on no host the gate runs on"
+    }
   ]
 }

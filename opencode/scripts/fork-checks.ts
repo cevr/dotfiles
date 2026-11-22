@@ -50,7 +50,11 @@ const Skip = Schema.Struct({
   package: Schema.String,
   file: Schema.String,
   test: Schema.String,
-  host: Schema.optionalKey(Schema.Struct({ bash: Schema.String })),
+  /**
+   * Where the skip holds, each part read at run time: `bash`, the version of the first bash on PATH; `missing`, the
+   * commands none of which is on PATH (the test's own `Bun.which` check). Without `host` it holds everywhere.
+   */
+  host: Schema.optionalKey(Schema.Struct({ bash: Schema.optionalKey(Schema.String), missing: Schema.optionalKey(Schema.NonEmptyArray(Schema.String)) })),
   reason: Schema.String,
 })
 const List = Schema.Struct({
@@ -180,15 +184,40 @@ export interface Plan {
 export const activeExpectations = (list: List, bash: Option.Option<string>): ReadonlyArray<Expectation> =>
   list.expectations.filter((each) => Option.exists(bash, (version) => version === each.host.bash))
 
-/** The declared skips that hold here: one with no host condition everywhere, one with a bash version where it is that bash. */
-export const activeSkips = (list: List, bash: Option.Option<string>): ReadonlyArray<Skip> =>
-  skipsOf(list).filter((each) =>
-    Option.match(Option.fromUndefinedOr(each.host), { onNone: () => true, onSome: (host) => Option.exists(bash, (version) => version === host.bash) }),
-  )
+/** What a skip's host condition reads of this host: the first bash's version, and which of the named commands are on PATH. */
+export interface HostFacts {
+  readonly bash: Option.Option<string>
+  readonly present: ReadonlySet<string>
+}
+
+/** The commands the list's skips name as missing, each once: the gauge reads only these. */
+export const commandsOf = (list: List): ReadonlyArray<string> =>
+  Arr.dedupe(skipsOf(list).flatMap((each) => Option.getOrElse(Option.flatMap(Option.fromUndefinedOr(each.host), (host) => Option.fromUndefinedOr(host.missing)), () => [])))
+
+/** Whether a skip's host condition holds here: its bash version (if named) is this bash, and none of its missing commands (if named) is on PATH. */
+const holdsHere = (skip: Skip, facts: HostFacts) =>
+  Option.match(Option.fromUndefinedOr(skip.host), {
+    onNone: () => true,
+    onSome: (host) =>
+      Option.match(Option.fromUndefinedOr(host.bash), { onNone: () => true, onSome: (wanted) => Option.contains(facts.bash, wanted) }) &&
+      Option.match(Option.fromUndefinedOr(host.missing), { onNone: () => true, onSome: (commands) => !commands.some((command) => facts.present.has(command)) }),
+  })
+
+/** The declared skips that hold here. */
+export const activeSkips = (list: List, facts: HostFacts): ReadonlyArray<Skip> => skipsOf(list).filter((each) => holdsHere(each, facts))
 
 /** How a note names a test skipped as the list declares. */
 const SKIPPED = "skipped as declared"
-const hostOf = (skip: Skip) => Option.getOrElse(Option.map(Option.fromUndefinedOr(skip.host), (host) => ` on bash ${host.bash}`), () => "")
+const hostOf = (skip: Skip) =>
+  Option.getOrElse(
+    Option.map(Option.fromUndefinedOr(skip.host), (host) =>
+      [
+        ...Option.toArray(Option.map(Option.fromUndefinedOr(host.bash), (version) => ` on bash ${version}`)),
+        ...Option.toArray(Option.map(Option.fromUndefinedOr(host.missing), (commands) => ` without ${commands.join(" or ")} on PATH`)),
+      ].join(""),
+    ),
+    () => "",
+  )
 
 export interface Judged {
   readonly reds: ReadonlyArray<Red>
@@ -274,6 +303,8 @@ export class HostGauge extends Context.Service<
     /** The 1-minute load average. */
     readonly load: Effect.Effect<number, HostUnread>
     readonly freeBytes: (dir: string) => Effect.Effect<number, HostUnread>
+    /** Whether `command` is on PATH (`command -v`), as a test's own `Bun.which` finds it. */
+    readonly has: (command: string) => Effect.Effect<boolean>
   }
 >()("dotfiles-opencode/fork-checks/HostGauge") {}
 
@@ -303,12 +334,12 @@ export interface Input {
 }
 
 /** The runs: one per package, its files in list order, each once. */
-export const plansOf = (list: List, bash: Option.Option<string>): ReadonlyArray<Plan> =>
+export const plansOf = (list: List, bash: Option.Option<string>, present: ReadonlySet<string> = new Set()): ReadonlyArray<Plan> =>
   Arr.dedupe(list.features.map((feature) => feature.package)).map((pkg) => ({
     package: pkg,
     files: Arr.dedupe(list.features.filter((feature) => feature.package === pkg).flatMap((feature) => feature.files)),
     expected: activeExpectations(list, bash).filter((each) => each.package === pkg),
-    skips: activeSkips(list, bash).filter((each) => each.package === pkg),
+    skips: activeSkips(list, { bash, present }).filter((each) => each.package === pkg),
   }))
 
 const couldNot = (reason: string, notes: ReadonlyArray<string> = []): Verdict => ({ kind: "could-not-run", reason, notes })
@@ -405,9 +436,13 @@ const runPlan = Effect.fn("ForkChecks.runPlan")(function* (input: Input, plan: P
 const runAll = Effect.fn("ForkChecks.runAll")(function* (input: Input, deadline: number) {
   const gauge = yield* HostGauge
   const bash = yield* gauge.bash
+  // Only the commands a declared skip names are looked up.
+  const commands = commandsOf(input.list)
+  const found = yield* Effect.forEach(commands, (command) => gauge.has(command))
+  const present = new Set(commands.filter((_, at) => found[at]))
   const reds: Array<Red> = []
   const notes: Array<string> = []
-  for (const plan of plansOf(input.list, bash)) {
+  for (const plan of plansOf(input.list, bash, present)) {
     const verdict = yield* runPlan(input, plan, deadline)
     notes.push(...verdict.notes)
     if (verdict.kind === "could-not-run") return couldNot(verdict.reason, notes)
@@ -587,6 +622,7 @@ export const hostGauge = Layer.effect(
     return HostGauge.of({
       bash: Effect.map(read("bash", ["--noprofile", "--norc", "-c", 'printf %s "$BASH_VERSION"']), (version) => Option.flatMap(version, (text) => Option.filter(Arr.head(text.split("(")), (each) => each !== ""))),
       floored: Effect.map(read("uname", ["-s"]), (system) => Option.exists(system, (name) => name === "Darwin")),
+      has: (command: string) => Effect.map(read("bash", ["--noprofile", "--norc", "-c", 'command -v -- "$1"', "has", command]), Option.isSome),
       load: Effect.gen(function* () {
         const proc = yield* fs.readFileString("/proc/loadavg").pipe(Effect.option)
         const got = yield* Option.match(proc, { onSome: (text) => Effect.succeed(Option.some(text)), onNone: () => read("sysctl", ["-n", "vm.loadavg"]) })
