@@ -3,7 +3,7 @@
 // lists the rest), said again only when its ids change. The handlers over a store, refusals included, run on the
 // simulated host (cmd/orchestrate/commitments.sim.test.ts).
 import { describe, expect, test } from "bun:test"
-import { Array as Arr, Option, Result } from "effect"
+import { Array as Arr, Match, Option, Result } from "effect"
 import {
   beforeStart,
   type CommitmentsInput,
@@ -113,6 +113,43 @@ describe("the section", () => {
     ])
     const held = played([add(plan), add(["o1"], "owner-answer"), ...[...plan, "o1"].map((id) => assign(id, "root", [{ kind: "manual", ref: "later" }]))])
     expect(sectionOf(listedOf(held.snapshot, facts))).toEqual([])
+  })
+
+  test("a close by a session with no earlier event in the run is allowed, flagged in its history and the notice, and listed first", () => {
+    const [rootA, otherC]: ReadonlyArray<Actor> = [{ id: "ses_a", role: "root" }, { id: "ses_c", role: "root" }]
+    const steps: ReadonlyArray<readonly [Command, Actor]> = [
+      [add(["own-1", "own-2"], "owner-answer"), rootA],
+      [commandIn({ action: "decide", id: "own-2", why: "done another way" }), otherC],
+      [commandIn({ action: "decide", id: "own-1", why: "folded into own-2" }), rootA],
+    ]
+    const after = steps.reduce(
+      (held: Played, [command, actor], at) => {
+        const events = Result.getOrThrow(decideCommand(held.snapshot, command, { actor, now: T0 + at * 1000 }))
+        return { snapshot: fold(held.snapshot, events), events: [...held.events, ...events] }
+      },
+      { snapshot: EMPTY, events: [] },
+    )
+    const flags = after.events.flatMap((event) => Match.value(event.happening).pipe(Match.tag("decided", (happened) => [[event.subjectId, event.actor.id, happened.outsideRun]]), Match.orElse(() => [])))
+    expect(flags).toEqual([
+      ["own-2", "ses_c", Option.some(true)],
+      ["own-1", "ses_a", Option.some(false)],
+    ])
+    expect(sectionOf(listedOf(after.snapshot, facts)).at(-1)).toBe("- closed by decision, not yet seen by the owner: own-2 (run default, by ses_c, outside its run), own-1 (run default, by ses_a)")
+    // C has acted in the run since (its close of own-2): its reopen is not flagged.
+    const reopened = Result.getOrThrow(decideCommand(after.snapshot, commandIn({ action: "reopen", id: "own-1" }), { actor: otherC, now: T0 + 9000 }))
+    expect(reopened.flatMap((event) => Match.value(event.happening).pipe(Match.tag("reopened", (happened) => [happened.outsideRun]), Match.orElse(() => [])))).toEqual([Option.some(false)])
+  })
+
+  test("the notices line lists at most ten, then how many more and the call that lists them", () => {
+    const ids = Arr.makeBy(25, (at) => `n${String(at + 1).padStart(2, "0")}`)
+    const closed = played([add(ids, "owner-answer"), ...ids.map((id) => commandIn({ action: "decide", id, why: "not needed" }))])
+    const lines = sectionOf(listedOf(closed.snapshot, facts))
+    expect(lines.at(-1)).toBe(
+      `- closed by decision, not yet seen by the owner: ${ids
+        .slice(0, 10)
+        .map((id) => `${id} (run default, by ses_root)`)
+        .join(", ")}, and 15 more: commitments({ action: "list", all: true })`,
+    )
   })
 
   test("its keys change only when its set of ids changes", () => {

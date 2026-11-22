@@ -358,10 +358,26 @@ const idsLine = (standing: Standing, rows: ReadonlyArray<Commitment>): string =>
 export interface Listed {
   readonly by: ReadonlyMap<Standing, ReadonlyArray<Commitment>>
   readonly unrouted: ReadonlyArray<number>
-  readonly notices: ReadonlyArray<string>
+  /** Outside-run closes first, then by id. */
+  readonly notices: ReadonlyArray<Commitment>
 }
 
-export const listedOf = (snapshot: Snapshot, facts: Facts): Listed => ({ by: standingsOf(snapshot, facts), unrouted: unroutedOf(snapshot), notices: noticesOf(snapshot) })
+export const listedOf = (snapshot: Snapshot, facts: Facts): Listed => ({ by: standingsOf(snapshot, facts), unrouted: unroutedOf(snapshot), notices: noticeRowsOf(snapshot) })
+
+/** The unseen notices' rows (`noticesOf`): those closed by a session with no earlier event in their run first, then by id. */
+export const noticeRowsOf = (snapshot: Snapshot): ReadonlyArray<Commitment> =>
+  Arr.sort(
+    noticesOf(snapshot).flatMap((id) => Option.toArray(Option.fromUndefinedOr(snapshot.commitments.get(id)))),
+    Order.combine(Order.mapInput(Order.Boolean, (row: Commitment) => !row.noticeOutsideRun), Order.mapInput(Order.String, (row: Commitment) => row.id)),
+  )
+
+/** A notice as the section names it: its id, run and closing session, and whether that session had acted in the run. */
+const noticeOf = (row: Commitment): string =>
+  `${row.id} (${[`run ${row.run}`, ...Option.toArray(Option.map(row.noticeBy, (by) => `by ${by}`)), ...Arr.filter(["outside its run"], () => row.noticeOutsideRun)].join(", ")})`
+
+/** At most `SECTION_IDS` of `items`, then how many more and the call that lists them. */
+const capped = (items: ReadonlyArray<string>, rest: string): string =>
+  [items.slice(0, SECTION_IDS).join(", "), ...Arr.filter([`and ${items.length - SECTION_IDS} more: ${rest}`], () => items.length > SECTION_IDS)].join(", ")
 
 const countOf = (listed: Listed, standing: Standing): number => (listed.by.get(standing) ?? []).length
 
@@ -379,8 +395,8 @@ export const sectionOf = (listed: Listed): ReadonlyArray<string> => {
   return [
     `Commitments: ${open} open (${counts}). Only held is quiet: own (${callOf("assign")}), order or decide each listed one.`,
     ...lines,
-    ...Arr.match(listed.unrouted, { onEmpty: () => [], onNonEmpty: (ids) => [`- unrouted hand-backs: ${ids.join(", ")}: ${callOf("route")}`] }),
-    ...Arr.match(listed.notices, { onEmpty: () => [], onNonEmpty: (ids) => [`- closed by decision, not yet seen by the owner: ${ids.join(", ")}`] }),
+    ...Arr.match(listed.unrouted, { onEmpty: () => [], onNonEmpty: (ids) => [`- unrouted hand-backs: ${capped(ids.map(String), "the oldest are named; routing them names the next")}: ${callOf("route")}`] }),
+    ...Arr.match(listed.notices, { onEmpty: () => [], onNonEmpty: (rows) => [`- closed by decision, not yet seen by the owner: ${capped(rows.map(noticeOf), callOf("list", [["all", "true"]]))}`] }),
   ]
 }
 
@@ -388,7 +404,7 @@ export const sectionOf = (listed: Listed): ReadonlyArray<string> => {
 export const sectionKeys = (listed: Listed): ReadonlyArray<string> => [
   ...LISTED.flatMap((standing) => (listed.by.get(standing) ?? []).map((row) => `commitment:${standing}:${row.id}`)),
   ...listed.unrouted.map((id) => `hand-back:${id}`),
-  ...listed.notices.map((id) => `notice:${id}`),
+  ...listed.notices.map((row) => `notice:${row.id}`),
 ]
 
 const DAY = 86_400_000
