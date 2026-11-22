@@ -4,13 +4,14 @@ Every reason in the commitment record is data the plugin checks, never prose. A 
 
 ## Sub-features
 
-- `follow-up-reason`: `follow_up` needs `reason_class` (`dependency` or `measured`) and `referent`; an idempotency `key` files once, and the same key on another id is refused.
+- `follow-up-reason`: `follow_up` needs `reason_class` (`dependency` or `measured`) and `referent`; an idempotency `key` files once: a retry repeats its filing exactly; the same key saying something else, the same key on another id, or another key on a filed id is refused.
 - `decide-guarantee`: `decide` is the root's, with `why` and `reason_class: "guarantee"` on a declared invariant; a measurement or a dependency never closes.
 - `defer`: `defer` keeps an open commitment open with a dependency or a measurement; it closes nothing.
 - `invariant`: `commitments invariant { id, doc_path, anchor }` declares an invariant bound to the document's blob at HEAD; the same again is nothing, an edited document takes a new id.
-- `receipt-evidence`: a measured reason's receipt is a JSON envelope (`receipt`, `command`, `exit`, `output`, `run`, `checkout`) inside the checkout's evidence root, its realpath contained, its bytes and output hashed into the event.
+- `receipt-evidence`: a measured reason's receipt is a JSON envelope (`receipt`, `command`, `exit`, `output`, `run`, `checkout`) inside the checkout's evidence root, its realpath contained, its bytes and output hashed into the event. The root is configured (`<checkout top>/tmp/orchestrate`, the top canonical once), never discovered: a root that is itself a link, or sits under one, is refused; a link above the checkout (macOS `/var`) is fine.
 - `close-kind`: each decided row has one close kind (guarantee, placed, historical; not-asked is unit C's), bound to its state in the schema.
 - `reopen-history`: a reopen clears the row's reason; `history` keeps every event's.
+- `no-echo`: no refusal, answer, log line or row repeats a key or value the caller wrote: a stray key is named by its position, a declared field by its name, and every tool and CLI output passes `redact`.
 
 ## How to get to it (user POV)
 
@@ -27,7 +28,7 @@ Every reason in the commitment record is data the plugin checks, never prose. A 
 
 1. **No reason.** The child calls `follow_up` with `{ "id": "spare", "title": "Retain status" }`. The answer is an error naming the reason it needs; nothing is filed.
 2. **A dependency.** The root adds `base`; the child calls `follow_up` with `{ "id": "f1", "title": "a missing test", "reason_class": "dependency", "referent": { "kind": "commitment", "id": "base" } }`. The answer reads `filed f1, unowned, waiting on dependency commitment/base`; `orchestrate status` lists `f1` unowned.
-3. **Once by key.** The child files `f2` with `"key": "finding-1"` twice: the second answers `f2 is filed already by this key`; the same key on `f3` is refused.
+3. **Once by key.** The child files `f2` with `"key": "finding-1"` twice: the second answers `f2 is filed already by this key`; the same key on `f3` is refused. The same key on `f2` with another title, and another key on `f2`, are refused too.
 4. **No close by prose.** The root calls `decide` with only `why`: refused, `decide needs reason_class`. A measured close, an undeclared invariant, a `spec-item` pointer and a self-dependency are each refused by name, and `list` shows the row open with no reason.
 5. **Against the model.** `record-model.sim.test.ts` drives seeded runs of follow-ups, deferrals, declarations, decisions, reopens and restarts against the reference model, and enumerates caller × operation × state × reason class × pointer kind × existence; four reason mutants (`SUBJECT=accept-arbitrary-receipt`, `accept-measured-close`, `clear-historic-reason-on-reopen`, `accept-closed-dependency`) each go red.
 
@@ -45,5 +46,5 @@ The CLI test runs `bun cmd/orchestrate/record.ts`'s `main` on a scratch git chec
 ## Gotchas
 
 - The world's host reads no files (its evidence reader is `noEvidence`): a receipt or a declaration there is refused, by design. Prove them on real files, never by a fake reader in the world.
-- A receipt lives under the checkout's `tmp/orchestrate/`; one elsewhere, or reached through a symlink out of it, is refused.
+- A receipt lives under the checkout's `tmp/orchestrate/`; one elsewhere, or reached through a symlink out of it, is refused. So is every receipt when `tmp/orchestrate` (or `tmp`) is itself a link.
 - An unreadable stored reason (unit C's `ask/<id>` pointer, before C ships) fails the whole read with a named error, so a record written by a later unit is never misread.
