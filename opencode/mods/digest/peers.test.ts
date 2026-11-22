@@ -82,6 +82,8 @@ describe("a peer on the tailnet", () => {
     expect(keyedOf("workbox", sightingOf([{ ...WORKBOX, tagged: true }]), T)).toEqual(Option.none())
     expect(keyedOf("workbox", sightingOf([{ ...WORKBOX, shared: true }]), T)).toEqual(Option.none())
     expect(keyedOf("workbox", sightingOf([WORKBOX], { excluded: [{ name: "lenovo-rescue", ids: ["nWORK"] }] }), T)).toEqual(Option.none())
+    // An exclusion's name only takes a device out (as members.ts reads it); it never puts one in.
+    expect(keyedOf("workbox", sightingOf([WORKBOX], { excluded: [{ name: "workbox", ids: [] }] }), T)).toEqual(Option.none())
     expect(keyedOf("workbox", sightingOf([WORKBOX, device("workbox2", "nWORK2", ["100.101.102.105"])], { agents: [{ name: "workbox", ids: ["nWORK", "nWORK2"] }] }), T)).toEqual(Option.none())
     // With the keyed device there, the others change nothing.
     expect(Option.map(keyedOf("workbox", sightingOf([colleague, another, WORKBOX]), T), (each) => each.ips)).toEqual(Option.some(["100.101.102.104", "fd7a:115c:a1e0::9"]))

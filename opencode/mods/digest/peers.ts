@@ -25,7 +25,7 @@
 import { Array as Arr, Data, Duration, Match, Option, Order, Schema } from "effect"
 import { canonicalOf, hostOf, isTailnet, type PeerStatus as TailnetPeer, StatusRead } from "./bind.ts"
 import { nameKey } from "./devices.ts"
-import { type AgentKey, type Exclusion, hisDevices, MEMBERS_TTL } from "./members.ts"
+import { type AgentKey, carriesName, type Exclusion, hisDevices, MEMBERS_TTL } from "./members.ts"
 import { historyFrom, type PeerStatus, spansOf, View, ViewMessage, ViewProject } from "./view.ts"
 import { when } from "./zone.ts"
 
@@ -81,9 +81,9 @@ export const browserSpelling = (canonical: string): string => {
  * The device the store keys for the peer named `host`, as `sighting` saw it, if it is current at `now`. Never a name
  * lookup (owner via the orchestrator, 2026-11-22: a name resolved to a device for a security decision failed three
  * rounds running): the device is the one, and only, device of his (same UserID, untagged, not shared in) that carries
- * a stable ID the store holds for that name as an agent host, and no ID the store excludes. No name of any device
- * (MagicDNS name, its label, HostName) is read here: by IDs and addresses alone. None (closed) when the store keys
- * no ID for it, no device or two carry one, the status did not read, Tailscale is not running, or the read is older
+ * a stable ID the store holds for that name as an agent host, and that no exclusion names or keys. A name never
+ * selects the device or reaches an origin (by IDs and addresses alone); an exclusion's name only takes one out. None
+ * (closed) when the store keys no ID for it, no device or two carry one, the status did not read, Tailscale is not running, or the read is older
  * than MEMBERS_TTL. Its addresses are those it alone lists: one another device lists too is nobody's.
  */
 export const keyedOf = (host: string, sighting: Sighting, now: number): Option.Option<Keyed> => {
@@ -95,7 +95,9 @@ export const keyedOf = (host: string, sighting: Sighting, now: number): Option.O
     Read: ({ status }) => {
       if (!fresh || status.backendState !== "Running" || ids.length === 0) return Option.none()
       const carries = (peer: TailnetPeer) => Option.exists(peer.stableId, (id) => ids.includes(id) && !excludedIds.includes(id))
-      const found = hisDevices(status).filter(carries)
+      // An exclusion's name may only take a device out, as members.ts reads it; no name ever puts one in.
+      const excludedByName = (peer: TailnetPeer) => sighting.excluded.some((exclusion) => carriesName(exclusion.name, peer))
+      const found = hisDevices(status).filter((peer) => carries(peer) && !excludedByName(peer))
       return Option.flatMap(
         Option.filter(Arr.head(found), () => found.length === 1),
         (device) => {
