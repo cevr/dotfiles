@@ -166,7 +166,7 @@ Seed.effect(
         yield* Effect.promise(() => write(`${checkout}/tmp/orchestrate/r1/red.json`, JSON.stringify(envelope)))
         gitInit(checkout, ["-q", "-b", "main"], gitEnv)
         for (const args of [["add", "docs/record.md"], ["commit", "-q", "-m", "docs"]]) spawnSync(["git", "-C", checkout, ...args], { env: gitEnv, stdout: "ignore", stderr: "ignore" })
-        const run = (action: string, fields: Record<string, unknown>, ...rest: ReadonlyArray<string>) =>
+        const run = (action: string, fields: Parameters<typeof fieldsJson>[0], ...rest: ReadonlyArray<string>) =>
           Effect.map(main([action, "--json", fieldsJson(fields), "--file", `${held.path}/record.db`, "--checkout", checkout, ...rest], checkout), (ran) => [ran.code, ran.code === 0 ? ran.out : ran.err] as const)
         const receipt = { reason_class: "measured", referent: { kind: "receipt", path: "tmp/orchestrate/r1/red.json" } }
         const outcomes = [

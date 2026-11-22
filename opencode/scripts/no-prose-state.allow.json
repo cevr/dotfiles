@@ -1192,5 +1192,47 @@
     "source": "/\\sr(\\d+)\\b/i",
     "why": "a `log.md` transition line; replaced by the events, deleted with the file",
     "until": "parsers-out"
+  },
+  {
+    "file": "opencode/mods/orchestrate/record.ts",
+    "source": "/^[0-9a-f]{64}$/",
+    "why": "validates a field of a record call (a slug, a pointer, one line): validating a field",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/commitments-tool.ts",
+    "source": "/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/",
+    "why": "validates a field of a tool call (an idempotency key, a slug): validating a field",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/reasons.ts",
+    "source": "new RegExp(`^(?!(?:${SEGMENT}/)*\\\\.{1,2}(?:/|$))${SEGMENT}(?:/${SEGMENT})*$`)",
+    "why": "validates a reason's pointer, a receipt envelope's fields and a git object id the evidence reader reads: validating a field, never run state",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/reasons.ts",
+    "source": "new RegExp(`^${SLUG}$`)",
+    "why": "validates a reason's pointer, a receipt envelope's fields and a git object id the evidence reader reads: validating a field, never run state",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/reasons.ts",
+    "source": "new RegExp(`^(?:(?:invariant|spec-item|commitment|unit|owner-question)/${SLUG}|receipt/${EVIDENCE_ROOT}/(?!(?:${SEGMENT}/)*\\\\.{1,2}(?:/|$))${SEGMENT}(?:/${SEGMENT})*)$`)",
+    "why": "validates a reason's pointer, a receipt envelope's fields and a git object id the evidence reader reads: validating a field, never run state",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/reasons.ts",
+    "source": "/^[0-9a-f]{7,40}$/",
+    "why": "validates a reason's pointer, a receipt envelope's fields and a git object id the evidence reader reads: validating a field, never run state",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/reasons.ts",
+    "source": "/^[^\\n\\r]+$/",
+    "why": "validates a reason's pointer, a receipt envelope's fields and a git object id the evidence reader reads: validating a field, never run state",
+    "until": "stays"
   }
 ]

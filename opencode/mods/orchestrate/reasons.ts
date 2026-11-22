@@ -176,17 +176,17 @@ const decodeEnvelope = Schema.decodeUnknownResult(Schema.fromJsonString(ReceiptE
 const HEAD = /^[0-9a-f]{7,40}$/
 const ONE_LINE = /^[^\n\r]+$/
 
-/** Why an envelope's fields do not make a receipt, else none. No field's value is repeated. */
-export const envelopeRefusal = (envelope: ReceiptEnvelope): Option.Option<string> => {
+/** Why an envelope's fields do not make a receipt (said of `subject`, as "the receipt's"), else none. No field's value is repeated. */
+export const envelopeRefusal = (envelope: ReceiptEnvelope, subject: string): Option.Option<string> => {
   const output = envelope.output
   const outputRefusal =
     "value" in output
-      ? Option.liftPredicate("its output value is not one line of at most 200 characters that says something", () => output.value.trim() === "" || !ONE_LINE.test(output.value) || output.value.length > 200)
-      : Option.orElse(pathRefusal("its output path", output.path), () => Option.liftPredicate(`its output path is not under ${EVIDENCE_ROOT}/`, () => !output.path.startsWith(`${EVIDENCE_ROOT}/`)))
+      ? Option.liftPredicate(`${subject} output value is not one line of at most 200 characters that says something`, () => output.value.trim() === "" || !ONE_LINE.test(output.value) || output.value.length > 200)
+      : Option.orElse(pathRefusal(`${subject} output path`, output.path), () => Option.liftPredicate(`${subject} output path is not under ${EVIDENCE_ROOT}/`, () => !output.path.startsWith(`${EVIDENCE_ROOT}/`)))
   return Option.firstSomeOf([
-    Option.liftPredicate("its command is not one line of at most 500 characters that says something", () => envelope.command.trim() === "" || !ONE_LINE.test(envelope.command) || envelope.command.length > 500),
-    Option.liftPredicate("its run is not a slug", () => !SLUG_ONLY.test(envelope.run)),
-    Option.liftPredicate("its checkout is not a commit (7 to 40 lowercase hex digits)", () => !HEAD.test(envelope.checkout)),
+    Option.liftPredicate(`${subject} command is not one line of at most 500 characters that says something`, () => envelope.command.trim() === "" || !ONE_LINE.test(envelope.command) || envelope.command.length > 500),
+    Option.liftPredicate(`${subject} run is not a slug`, () => !SLUG_ONLY.test(envelope.run)),
+    Option.liftPredicate(`${subject} checkout is not a commit (7 to 40 lowercase hex digits)`, () => !HEAD.test(envelope.checkout)),
     outputRefusal,
   ])
 }
@@ -243,8 +243,8 @@ export const evidenceLayer = Layer.effect(
             onFailure: () => Effect.fail(refused("the receipt is not a version 1 receipt envelope (receipt, command, exit, output, run, checkout; nothing else)")),
             onSuccess: Effect.succeed,
           })
-          const why = envelopeRefusal(envelope)
-          if (Option.isSome(why)) return yield* Effect.fail(refused(`the receipt's ${why.value.replace(/^its /, "")}`))
+          const why = envelopeRefusal(envelope, "the receipt's")
+          if (Option.isSome(why)) return yield* Effect.fail(refused(why.value))
           const output = envelope.output
           const outputBytes = yield* "path" in output
             ? Effect.flatMap(regularIn(root, output.path.slice(EVIDENCE_ROOT.length + 1), "the receipt's output file", OUTPUT_MAX), (file) =>
