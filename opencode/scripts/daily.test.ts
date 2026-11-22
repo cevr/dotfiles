@@ -10,7 +10,7 @@ import { keptScratch, scratch as scratchDir } from "../tests/scratch.ts"
 import { hostLocks } from "../mods/work/process/landing.ts"
 import { SERVER_PLUGINS } from "../mods/update/trees.ts"
 import { settingsFor } from "../mods/update/process/install.ts"
-import { BUILTIN_BTW_OFF, BUILTIN_AUTOMATION_OFF, CLAUDE_CACHE_TTL, digestEntry, DOTFILES, forkSteps, hostCli, hostServer, installDotfiles, installedFile, lacksCliDefault, mailEntry, moveFork, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleLines, roleModels, serverEntries, treeSettings, writeSettings } from "./daily.ts"
+import { BUILTIN_BTW_OFF, BUILTIN_AUTOMATION_OFF, CLAUDE_CACHE_TTL, digestEntry, DOTFILES, fleetOthersOf, forkSteps, hostCli, hostServer, installDotfiles, installedFile, lacksCliDefault, mailEntry, moveFork, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleLines, roleModels, serverEntries, treeSettings, writeSettings } from "./daily.ts"
 import type { PluginEntry } from "./daily.ts"
 import { ATTEMPTS, type CheckResult, exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions, unlocked } from "./upstream.ts"
 
@@ -326,19 +326,27 @@ describe("the pool's fleet", () => {
     expect(mailEntry(`${MODS}/mail`, { host: "ci-runner", tailscale: "100.64.0.9" })).toBe(`${MODS}/mail`)
   })
 
-  test("on his hosts the digest's morning is his zone (the workbox is UTC) and reading on the tailnet needs pairing, named outright; elsewhere the host's zone and the plugin's paired default", () => {
-    const his = { package: `${MODS}/digest`, options: { timezone: "America/Montreal", tailnetRead: "paired" } }
-    expect(digestEntry(`${MODS}/digest`, { host: "bite-cristian" })).toEqual(his)
-    expect(digestEntry(`${MODS}/digest`, { host: "Cristians-MacBook-Pro.local" })).toEqual(his)
+  test("on his hosts the digest's morning is his zone (the workbox is UTC), his own devices read, mark and answer unpaired but for the agent machines, each host naming the other; elsewhere the host's zone and the plugin's paired defaults", () => {
+    const his = (agents: ReadonlyArray<string>) => ({ package: `${MODS}/digest`, options: { timezone: "America/Montreal", tailnetRead: "member", tailnetWrite: "member-except-hosts", agentHosts: [...agents, "cristians-macbook-pro-rex"], excludedDevices: ["lenovo-rescue"] } })
+    // Names only, never an address or an ID: each host's device store keys them (cmd/digest/devices.ts), and the
+    // installer looks nothing up, so a configure with Tailscale up, down or lying ships the same entry.
+    expect(digestEntry(`${MODS}/digest`, { host: "bite-cristian" })).toEqual(his(["cristians-macbook-pro"]))
+    expect(digestEntry(`${MODS}/digest`, { host: "Cristians-MacBook-Pro.local" })).toEqual(his(["bite-cristian"]))
     expect(digestEntry(`${MODS}/digest`, { host: "ci-runner" })).toBe(`${MODS}/digest`)
   })
 
-  test("a tree's overlay replaces an earlier build's tailnetRead \"member\" with \"paired\": its plugin list comes whole from the host's facts", () => {
+  test("each host's agent hosts are the other fleet host, by its MagicDNS first label (resolved by the plugin: mods/digest/agenthost.test.ts)", () => {
+    expect(fleetOthersOf("Cristians-MacBook-Pro.local")).toEqual(["bite-cristian"])
+    expect(fleetOthersOf("bite-cristian")).toEqual(["cristians-macbook-pro"])
+    expect(fleetOthersOf("ci-runner")).toEqual([])
+  })
+
+  test("a tree's overlay replaces an earlier build's digest entry whole: its plugin list comes whole from the host's facts", () => {
     const facts = { host: "bite-cristian", tailscale: Option.some("100.64.0.2"), fleet: CHECKOUTS, catalog: CATALOG, store: Option.none(), settings: settingsFor({ host: "bite-cristian", home: "/h", state: "/s", checkout: "/repo", fork: "/fork", bun: "/bun", resident: "/r", launcher: "/l" }) }
     // The overlay's plugins are serverEntries' list, written whole (writeTree's writeJson); an earlier build's entry does not survive.
-    const earlier = { package: "/t/digest", options: { timezone: "America/Montreal", tailnetRead: "member" } }
+    const earlier = { package: "/t/digest", options: { timezone: "America/Montreal", tailnetRead: "paired" } }
     const plugins = serverEntries(facts, (name) => `/t/${name}`)
-    expect(plugins).toContainEqual({ package: "/t/digest", options: { timezone: "America/Montreal", tailnetRead: "paired" } })
+    expect(plugins).toContainEqual({ package: "/t/digest", options: { timezone: "America/Montreal", tailnetRead: "member", tailnetWrite: "member-except-hosts", agentHosts: ["cristians-macbook-pro", "cristians-macbook-pro-rex"], excludedDevices: ["lenovo-rescue"] } })
     expect(plugins).not.toContainEqual(earlier)
   })
 

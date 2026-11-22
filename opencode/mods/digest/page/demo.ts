@@ -2,28 +2,37 @@
 // serves the built page over it on 127.0.0.1, exactly as the digest plugin does (cmd/digest/server.ts handlersOf).
 // Nothing here is real: names, texts and times are invented, relative to now.
 //
-//   bun mods/digest/page/demo.ts --dir <scratch folder> [--port 8291] [--seed full|empty|one|xss] [--as tailnet [--read member]]
+//   bun mods/digest/page/demo.ts --dir <scratch folder> [--port 8291] [--seed full|empty|one|xss]
+//     [--as tailnet [--read member] [--write paired|member|member-except-hosts] [--from phone|agent|colleague]]
 //
 // `--as tailnet` serves 127.0.0.1 as the tailnet listener does (its policy: nothing but pairing until paired), for
 // a look at the unpaired page without binding the tailnet. `--read member` serves it with digest.tailnetRead
-// "member", as his hosts ship it: the digest for every member, marks and answers once paired.
+// "member" and `--write` with digest.tailnetWrite, as his hosts ship them. Every request is taken as coming from an
+// invented tailnet address (`--from`, default `colleague`): his phone (one of his devices), an agent machine (this
+// host), or another user's laptop.
 //
 // `full` holds three projects: Harbor (a red message, two open questions pinned, a decision, units with rounds, one
 // message set aside for Later), Lantern (500 messages over 30 days) and Quarry (one message). `xss` holds one project
 // whose every shown text is script-shaped, for the check that the page renders it as text and runs none of it.
 import { parseArgs } from "node:util"
-import { Effect, Option } from "effect"
+import { Effect, Option, Schema } from "effect"
 import { handlersOf } from "../../../cmd/digest/server.ts"
+import { StatusRead } from "../bind.ts"
+import { membersOf } from "../members.ts"
+import { TAILNET_WRITES } from "../policy.ts"
 import { DigestEvent as E, encodeLine, VERSION } from "../event.ts"
 import * as FileLog from "../filestore/log.ts"
 import * as FileMarks from "../filestore/marks.ts"
 import * as FilePairing from "../filestore/pairing.ts"
 import type { Answerers } from "../answers.ts"
-import { listen } from "../http/listener.ts"
+import { listen, socketPeer } from "../http/listener.ts"
 import { markOf, sinceOf } from "../marks.ts"
 import { nextMorning } from "../zone.ts"
 
-const { values } = parseArgs({ args: Bun.argv.slice(2), options: { dir: { type: "string" }, port: { type: "string" }, seed: { type: "string" }, zone: { type: "string" }, as: { type: "string" }, read: { type: "string" } } })
+const { values } = parseArgs({
+  args: Bun.argv.slice(2),
+  options: { dir: { type: "string" }, port: { type: "string" }, seed: { type: "string" }, zone: { type: "string" }, as: { type: "string" }, read: { type: "string" }, write: { type: "string" }, from: { type: "string" } },
+})
 const dir = values.dir ?? ""
 if (dir === "") throw new Error("usage: bun mods/digest/page/demo.ts --dir <scratch folder> [--port 8291] [--seed full|empty|one|xss] [--zone America/Montreal]")
 const zone = values.zone ?? "America/Montreal"
@@ -142,11 +151,31 @@ const answerers: Answerers = {
 }
 // One pairing code for the check: printed, never kept but as its hash.
 const code = await Effect.runPromise(FilePairing.make(dir).issue(Date.now()))
+// An invented tailnet: this host (an agent machine), his phone, and a colleague's laptop (another Tailscale user).
+const TAILNET = StatusRead.Read({
+  status: {
+    backendState: "Running",
+    dnsName: Option.some("harbor.example-tailnet.ts.net"),
+    ips: ["100.101.102.103"],
+    userId: Option.some(7),
+    tagged: false,
+    peers: [
+      { dnsName: Option.some("phone.example-tailnet.ts.net"), stableId: Option.none(), os: "", lastSeen: Option.none(), hostName: "localhost", ips: ["100.101.102.110"], userId: Option.some(7), tagged: false, shared: false },
+      { dnsName: Option.some("laptop.example-tailnet.ts.net"), stableId: Option.none(), os: "", lastSeen: Option.none(), hostName: "laptop", ips: ["100.101.102.120"], userId: Option.some(9), tagged: false, shared: false },
+    ],
+  },
+})
+const FROM: Readonly<Record<string, string>> = { phone: "100.101.102.110", agent: "100.101.102.103", colleague: "100.101.102.120" }
+const from = FROM[values.from ?? "colleague"] ?? "100.101.102.120"
+const write = Schema.decodeUnknownSync(Schema.Literals(TAILNET_WRITES))(values.write ?? "paired")
+const members = Effect.sync(() => membersOf({ tailnetWrite: write, agentHosts: [], excluded: [] }, TAILNET, Date.now()))
+const tailnet = values.as === "tailnet"
 await Effect.runPromise(
   Effect.scoped(
     Effect.gen(function* () {
-      const bound = yield* listen({ address: "127.0.0.1", port, listener: values.as === "tailnet" ? "tailnet" : "loopback", names: [] }, handlersOf({ dir, timezone: zone, ...(values.read === "member" ? { tailnetRead: "member" as const } : {}) }, log, answerers), dist)
-      console.log(`digest demo (${seed}): http://${bound.hostname}:${bound.port}/#pair=${code}`)
+      const handlers = handlersOf({ dir, timezone: zone, ...(values.read === "member" ? { tailnetRead: "member" as const } : {}) }, log, answerers, Effect.succeed("no:starting"), members)
+      const bound = yield* listen({ address: "127.0.0.1", port, listener: tailnet ? "tailnet" : "loopback", names: [] }, handlers, dist, tailnet ? () => from : socketPeer)
+      console.log(`digest demo (${seed}${tailnet ? `, tailnet from ${values.from ?? "colleague"}, writes ${write}` : ""}): http://${bound.hostname}:${bound.port}/#pair=${code}`)
       yield* Effect.never
     }),
   ),
