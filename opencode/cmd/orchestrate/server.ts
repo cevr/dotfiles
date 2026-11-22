@@ -172,7 +172,7 @@ import type { PaceHeld } from "@dotfiles/opencode-orchestrate/pace"
 import * as Tools from "@dotfiles/opencode-orchestrate/tools"
 import * as Commitments from "@dotfiles/opencode-orchestrate/commitments-tool"
 import * as MemoryRecord from "@dotfiles/opencode-orchestrate/memory/record"
-import { type Actor, Command as RecordCommand, openOf, type Snapshot } from "@dotfiles/opencode-orchestrate/record"
+import { type Actor, Command as RecordCommand, EMPTY as EMPTY_RECORD, openOf, type Snapshot } from "@dotfiles/opencode-orchestrate/record"
 import * as ErgoRegister from "@dotfiles/opencode-orchestrate/sqlite/ergo-register"
 import * as SqliteRecord from "@dotfiles/opencode-orchestrate/sqlite/record"
 import { Subagents } from "@dotfiles/opencode-orchestrate/asking"
@@ -737,6 +737,7 @@ export const make = (
       /** The record's section and its keys, read for `sessionID`; a record that does not read says so. */
       const recordSection = (sessionID: string) =>
         Effect.gen(function* () {
+          yield* readClaimed(sessionID)
           const snapshot = yield* commitments.read
           const listed = Commitments.listedOf(snapshot, yield* factsNow(sessionID, snapshot))
           return { lines: Commitments.sectionOf(listed), keys: Commitments.sectionKeys(listed) }
@@ -1285,8 +1286,9 @@ export const make = (
               { discard: true },
             ).pipe(Effect.andThen(digest.landed(sessionID, rifts.map((rift) => rift.unit), pushed))),
           { discard: true })
-          yield* landRecorded(
+          yield* claimRecorded(
             sessionID,
+            "land",
             rifts.flatMap((rift) => Option.toArray(Option.map(Arr.findFirst(listed.rifts, (lane) => lane.path === rift.path), (lane) => ({ unit: rift.unit, head: lane.head })))),
           )
           const section = yield* recordSection(sessionID)
@@ -1316,23 +1318,22 @@ export const make = (
         }).pipe(Effect.catch((failed) => Effect.succeed(Commitments.beforeStart(answer, `${Commitments.whyOf(failed)}: the unit's commitment was not recorded.`))))
 
       /**
-       * What a land records (taken from unit 2's "pass after a land"): for each unit pushed whose own commitment is open
-       * and owned by it, a claim of the lane's head (from the rift list, before the land) as the land's hand-back,
-       * routed at once; then one pass, where git's ancestry alone decides landed. A unit with no commitment (a lane made
-       * before the record) records nothing; a record that refuses is logged and fails no land.
+       * The claims a land or a read records (taken from unit 2's "pass after a land"): for each unit whose own
+       * commitment is open and whose lane holds work main does not have (`Commitments.claimsOf`), a claim of the lane's
+       * head as `by`'s hand-back, routed at once; then one pass, where git's ancestry alone decides landed. A land
+       * claims the heads its lanes had before it; a read (status, a land's answer, the queue check) the heads they have
+       * now, so a lane landed by the work tool alone lands its unit once a read saw its work. A unit with no commitment
+       * (a lane made before the record) records nothing; a record that refuses is logged and fails no land or read.
        */
-      const landRecorded = (sessionID: string, landed: ReadonlyArray<{ readonly unit: string; readonly head: string }>) =>
+      const claimRecorded = (sessionID: string, by: "land" | "status", lanes: ReadonlyArray<Commitments.LaneHead>) =>
         Effect.gen(function* () {
-          const actor: Actor = { id: "orchestrate land", role: "plugin" }
+          const actor: Actor = { id: `orchestrate ${by}`, role: "plugin" }
           const now = yield* Clock.currentTimeMillis
           const before = yield* commitments.read
-          const claims = landed.flatMap((each) =>
-            Option.toArray(Option.filter(Option.fromUndefinedOr(before.commitments.get(each.unit)), (row) => row.state === "open" && Option.contains(row.ownerLane, each.unit))).map((row) => ({ ...each, run: row.run })),
-          )
-          if (claims.length === 0) return
+          const claims = Commitments.claimsOf(before, lanes, yield* Commitments.onMainAmong(mainLine, checkout, lanes.map((lane) => lane.head)))
           for (const claim of claims) {
             const handed = yield* commitments.run(
-              RecordCommand.cases.hand_back.make({ run: claim.run, ownerLane: claim.unit, role: "land", session: sessionID, verdict: "done", head: Option.some(claim.head), claims: [claim.unit] }),
+              RecordCommand.cases.hand_back.make({ run: claim.run, ownerLane: claim.unit, role: by, session: sessionID, verdict: "done", head: Option.some(claim.head), claims: [claim.unit] }),
               { actor, now },
             )
             const ids = handed.events.flatMap((event) => Arr.filter([Number(event.subjectId)], () => event.subjectKind === "hand_back"))
@@ -1342,8 +1343,20 @@ export const make = (
           const facts = yield* factsNow(sessionID, claimed)
           yield* commitments.run(RecordCommand.cases.pass.make({ onMain: [...facts.onMain], gone: [...facts.gone], root: Option.none() }), { actor, now })
         }).pipe(
-          Effect.catch((failed) => Effect.logWarning("orchestrate: the land's claims were not recorded").pipe(Effect.annotateLogs({ sessionID, message: Commitments.whyOf(failed) }))),
+          Effect.catch((failed) => Effect.logWarning(`orchestrate: the ${by}'s claims were not recorded`).pipe(Effect.annotateLogs({ sessionID, message: Commitments.whyOf(failed) }))),
         )
+      /** A read's claims: each open unit commitment's lane, as the base's list holds it now. */
+      const readClaimed = (sessionID: string) =>
+        Effect.gen(function* () {
+          const listed = yield* lanesNow(sessionID)
+          const snapshot = yield* Effect.orElseSucceed(commitments.read, () => EMPTY_RECORD)
+          const lanes = [...snapshot.commitments.values()].flatMap((row) =>
+            Option.toArray(Option.filter(Arr.head(Tools.lanesOf(row.id, listed.rifts, listed.workrift)), () => row.state === "open" && Option.contains(row.ownerLane, row.id))).map((lane) => ({ unit: row.id, head: lane.head })),
+          )
+          // The pass runs with no new claim too: a head claimed at an earlier read may be on main now, its lane gone.
+          const claimed = [...snapshot.commitments.values()].some((row) => row.state === "open" && Option.isSome(row.head))
+          if (lanes.length > 0 || claimed) yield* claimRecorded(sessionID, "status", lanes)
+        })
 
       // The `commitments` tool (mods/orchestrate/commitments-tool.ts): the root's reads and writes of the record. A
       // subagent's call is refused, as its lane, land or verify is.

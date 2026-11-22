@@ -16,6 +16,7 @@ import * as MemoryNotices from "@dotfiles/opencode-work/memory/notices"
 import * as MemoryRifts from "@dotfiles/opencode-work/memory/rifts"
 import * as MemoryWorkbox from "@dotfiles/opencode-work/memory/workbox"
 import { SessionDirectories, SessionUnreadable } from "@dotfiles/opencode-work/service"
+import type { Workspace } from "@dotfiles/opencode-work/workspace"
 import * as Plugins from "../../sim/plugins.ts"
 import * as World from "../../sim/world.ts"
 import { make as makeWork } from "../work/server.ts"
@@ -92,10 +93,23 @@ export const requestHeadFor = (unit: string, round: number): string => shaFor(`r
  * The default branch of the run's warm source, as its lands made it (memory/main-line.ts): a root commit, then one
  * merge per branch each pushed land merged, oldest first. A merge takes in the head of its unit's newest request, as
  * the run's files hold it when the land ran; the landing's push answers the push's last merge. A unit in `fastForward`
- * lands as a land fast-forwards: its branch's commits go onto the line, its request head last, and no merge.
+ * lands as a land fast-forwards: its branch's commits go onto the line, its request head last, and no merge. A merge
+ * takes in the lane's head (`laneHeadOf`), as git's does the branch it merges.
  */
-/** The head every Rift of this world holds (MemoryRifts.clean's), which a land's merge takes in. */
-const LANE_HEAD = MemoryRifts.clean("/lane", void 0).head
+/** The head a test leaves a Rift at (MemoryRifts.clean's), which this world reads as the lane's own (`laneHeadOf`). */
+const CLEAN_HEAD = MemoryRifts.clean("/lane", void 0).head
+
+/** The newest request head of `unit` in the run's files, when it has one. */
+const requestHeadOf = (files: MemoryRunFiles.Files, unit: string): Option.Option<string> => {
+  const rounds = [...files.keys()].flatMap((path) => Option.toArray(Option.map(Option.fromNullishOr(new RegExp(`^${RUN_DIR}/${unit}/round-(\\d+)-request\\.md$`).exec(path)?.[1]), Number)))
+  return Option.map(Arr.last(rounds.toSorted((a, b) => a - b)), (round) => requestHeadFor(unit, round))
+}
+
+/**
+ * A lane's head as git would hold it: its newest request's head once one is written, else its own first commit, made
+ * as the lane was (so a lane is never at the default branch's tip, and only a land puts its head on main).
+ */
+export const laneHeadOf = (files: MemoryRunFiles.Files, unit: string): string => Option.getOrElse(requestHeadOf(files, unit), () => shaFor(`lane ${unit}`))
 
 const mainLineOf = (landing: MemoryLanding.World, files: MemoryRunFiles.Files, earlier: number, fastForward: ReadonlyArray<string>) => {
   const line: Array<MemoryMainLine.Entry> = [{ sha: shaFor("root"), subject: "root", merged: [] }]
@@ -104,11 +118,7 @@ const mainLineOf = (landing: MemoryLanding.World, files: MemoryRunFiles.Files, e
   const pushes: Array<string> = []
   const read = { steps: 0, pending: Arr.empty<string>() }
   /** The newest request head of the unit a branch is named for (its last segment). */
-  const headOf = (branch: string): ReadonlyArray<string> => {
-    const unit = branch.split("/").at(-1) ?? branch
-    const rounds = [...files.keys()].flatMap((path) => Option.toArray(Option.map(Option.fromNullishOr(new RegExp(`^${RUN_DIR}/${unit}/round-(\\d+)-request\\.md$`).exec(path)?.[1]), Number)))
-    return Option.toArray(Option.map(Arr.last(rounds.toSorted((a, b) => a - b)), (round) => requestHeadFor(unit, round)))
-  }
+  const headOf = (branch: string): ReadonlyArray<string> => Option.toArray(requestHeadOf(files, branch.split("/").at(-1) ?? branch))
   const sync = () => {
     for (const step of landing.steps.slice(read.steps)) {
       if (step.startsWith("start ")) read.pending = []
@@ -118,13 +128,8 @@ const mainLineOf = (landing: MemoryLanding.World, files: MemoryRunFiles.Files, e
           const heads = headOf(branch)
           const fast = fastForward.includes(branch.split("/").at(-1) ?? branch) && heads.length > 0
           if (fast) line.push({ sha: shaFor(`commit ${line.length} ${branch}`), subject: `feat: ${branch}`, merged: [] }, ...heads.map((sha) => ({ sha, subject: `test: ${branch}`, merged: [] })))
-          // A merge takes in the lane's head too, as git's does the branch it merges: every Rift here holds MemoryRifts.clean's.
-          else
-            line.push({
-              sha: shaFor(`merge ${line.length} ${branch}`),
-              subject: `Merge branch '${branch}'`,
-              merged: [...Arr.match(heads, { onEmpty: () => [shaFor(`tip ${branch} ${line.length}`)], onNonEmpty: (each) => each }), LANE_HEAD],
-            })
+          // A merge takes in the lane's head, as git's does the branch it merges.
+          else line.push({ sha: shaFor(`merge ${line.length} ${branch}`), subject: `Merge branch '${branch}'`, merged: [laneHeadOf(files, branch.split("/").at(-1) ?? branch)] })
         }
         pushes.push(line.at(-1)?.sha ?? "")
         read.pending = []
@@ -134,6 +139,20 @@ const mainLineOf = (landing: MemoryLanding.World, files: MemoryRunFiles.Files, e
     return line
   }
   return { line: sync, pushed: (push: number) => Option.getOrElse(Arr.get(pushes, push - 1), () => shaFor(`push ${push}`)) }
+}
+
+/**
+ * The Rifts as the work plugin reads them, each lane at its head as git would hold it (`laneHeadOf`, by the lane's
+ * name, its unit), unless a test placed it elsewhere: the map the memory world keeps, its reads re-headed.
+ */
+const headed = (lanes: Map<string, Workspace>, files: MemoryRunFiles.Files): Map<string, Workspace> => {
+  const read = (path: string, workspace: Workspace): Workspace =>
+    Match.value(workspace.head === CLEAN_HEAD && !workspace.source).pipe(
+      Match.when(true, () => ({ ...workspace, head: laneHeadOf(files, path.split("/").at(-1) ?? path) })),
+      Match.orElse(() => workspace),
+    )
+  const own = lanes.get.bind(lanes)
+  return Object.assign(lanes, { get: (path: string) => Option.getOrUndefined(Option.map(Option.fromUndefinedOr(own(path)), (workspace) => read(path, workspace))) })
 }
 
 /** The memory world under every work plugin copy: the two warm sources, their Rifts, the landing, the debts. */
@@ -152,6 +171,7 @@ const riftWorldOf = (files: MemoryRunFiles.Files, earlier: number, fastForward: 
   // `origin/HEAD` reads as the default branch's head, as `git rev-parse` reads it after a land; any other commit is itself.
   const rifts: MemoryRifts.World = {
     ...base,
+    rifts: headed(base.rifts, files),
     commitOf: (at) =>
       Option.some(
         Option.getOrElse(

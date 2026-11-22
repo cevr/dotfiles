@@ -241,16 +241,45 @@ const onMainOf = (mainLine: MainLine["Service"], checkout: string, tip: string) 
  */
 export const factsOf = (mainLine: MainLine["Service"], checkout: string, gone: (owners: ReadonlyArray<string>) => Effect.Effect<ReadonlySet<string>>, snapshot: Snapshot, now: number) =>
   Effect.gen(function* () {
+    const onMain = yield* onMainAmong(mainLine, checkout, asked(snapshot))
+    const owners = ownersOf(snapshot)
+    const away = yield* Arr.match(owners, { onEmpty: () => Effect.succeed<ReadonlySet<string>>(new Set()), onNonEmpty: gone })
+    return { now, onMain, gone: away } satisfies Facts
+  })
+
+/** Which of `commits` git has on the default branch of `checkout`; none when no default branch reads. */
+export const onMainAmong = (mainLine: MainLine["Service"], checkout: string, commits: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
     const tip = yield* mainLine.tip(checkout, Option.none())
-    const commits = asked(snapshot)
     const onMain = yield* Option.match(tip, {
       onNone: () => Effect.succeed<ReadonlyArray<string>>([]),
       onSome: (head) => Effect.filter(commits, onMainOf(mainLine, checkout, head.head), { concurrency: 4 }),
     })
-    const owners = ownersOf(snapshot)
-    const away = yield* Arr.match(owners, { onEmpty: () => Effect.succeed<ReadonlySet<string>>(new Set()), onNonEmpty: gone })
-    return { now, onMain: new Set(onMain), gone: away } satisfies Facts
+    return new Set(onMain)
   })
+
+/** A unit's lane as a read-claim takes it: the unit, and the head its lane is at now. */
+export interface LaneHead {
+  readonly unit: string
+  readonly head: string
+}
+
+/**
+ * The heads a read or a land claims for the units' own commitments: each open commitment owned by its own unit whose
+ * lane (in `lanes`) is at a commit git does not have on the default branch yet (`onMain`), the lane's own work, and
+ * that its last claim did not already name. A lane at a commit main has (a fresh lane, or one only moved to a newer
+ * main) claims nothing, so nothing lands for it; a head claimed while its lane stood lands once it is on main, by a
+ * merge or a fast-forward, whether or not the lane is still there.
+ */
+export const claimsOf = (snapshot: Snapshot, lanes: ReadonlyArray<LaneHead>, onMain: ReadonlySet<string>): ReadonlyArray<LaneHead & { readonly run: string }> =>
+  lanes.flatMap((lane) =>
+    Option.toArray(
+      Option.filter(
+        Option.fromUndefinedOr(snapshot.commitments.get(lane.unit)),
+        (row) => row.state === "open" && Option.contains(row.ownerLane, lane.unit) && !onMain.has(lane.head) && !Option.contains(row.head, lane.head),
+      ),
+    ).map((row) => ({ ...lane, run: row.run })),
+  )
 
 /**
  * Which of `owners` are gone: a unit with no lane in the base's list. `root` never is, and with no list (the work
