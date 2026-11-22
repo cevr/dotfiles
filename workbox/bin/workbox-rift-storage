@@ -220,8 +220,10 @@ sudo chown "$USER:$(id -gn)" "$mount_path"
 mkdir -p "$mount_path/.rifts" "$mount_path/.cache/turbo"
 chmod 0700 "$mount_path/.rifts" "$mount_path/.cache" "$mount_path/.cache/turbo"
 
+# The Bite base starts as a btrfs subvolume, so each workspace of it is one
+# snapshot (`workrift subvolume` converts one made as a folder before).
 if [ ! -d "$mount_path/bite" ]; then
-  mkdir "$mount_path/bite"
+  btrfs subvolume create "$mount_path/bite" >/dev/null
 fi
 
 check_state

@@ -92,6 +92,44 @@ describe("workbox-rift-storage --fstab", () => {
     )
   })
 
+  test("--apply on a mounted file system makes the Bite base a btrfs subvolume, not a folder, and leaves one that exists", () => {
+    const dir = join(scratchRoot, `apply-${count++}`)
+    const [bin, mount, etc, sys] = ["bin", "mount", "etc", "sys"].map((each) => join(dir, each)) as [string, string, string, string]
+    for (const each of [bin, mount, etc, sys]) mkdirSync(each, { recursive: true })
+    const image = join(dir, "image.btrfs")
+    writeFileSync(image, "")
+    const fstab = join(etc, "fstab")
+    writeFileSync(fstab, `${image} ${mount} btrfs loop,noatime,compress=zstd:3,space_cache=v2,discard=async,user_subvol_rm_allowed 0 0\n`)
+    const calls = join(dir, "btrfs-calls")
+    exe(join(bin, "uname"), "#!/bin/sh\necho Linux\n")
+    exe(join(bin, "sudo"), '#!/bin/sh\nexec "$@"\n')
+    exe(join(bin, "chown"), "#!/bin/sh\nexit 0\n")
+    exe(join(bin, "mkfs.btrfs"), "#!/bin/sh\nexit 1\n")
+    exe(join(bin, "btrfs"), `#!/bin/sh\necho "$*" >>'${calls}'\n[ "$1 $2" = "subvolume create" ] && mkdir "$3"\n`)
+    exe(
+      join(bin, "findmnt"),
+      [
+        "#!/bin/sh",
+        'case "$*" in',
+        "  *'-o FSTYPE'*) echo btrfs ;;",
+        "  *'-o OPTIONS'*) echo rw,compress=zstd:3,user_subvol_rm_allowed ;;",
+        "  *'-o SOURCE'*) echo '/dev/loop0[/@workspaces]' ;;",
+        "  *--mountpoint*) echo mounted ;;",
+        "esac",
+        "",
+      ].join("\n"),
+    )
+    const env = { PATH: `${bin}:/usr/bin:/bin`, HOME: dir, USER: process.env.USER ?? "user", WORKBOX_RIFT_FSTAB: fstab, WORKBOX_SYSFS_BTRFS: sys, WORKBOX_RIFT_MOUNT: mount, WORKBOX_RIFT_IMAGE: image }
+    const apply = () => Bun.spawnSync(["sh", SCRIPT, "--apply"], { cwd: dir, env, stdout: "pipe", stderr: "pipe" })
+    const ran = apply()
+    expect(ran.exitCode, ran.stderr.toString()).toBe(0)
+    expect(readFileSync(calls, "utf8")).toBe(`subvolume create ${mount}/bite\n`)
+    expect(existsSync(join(mount, "bite"))).toBe(true)
+    const again = apply()
+    expect(again.exitCode, again.stderr.toString()).toBe(0)
+    expect(readFileSync(calls, "utf8")).toBe(`subvolume create ${mount}/bite\n`)
+  })
+
   test("a box whose /workspaces is a subvolume of its own btrfs by UUID (the Hetzner box) changes nothing", () => {
     const native = `UUID=${UUID} /workspaces btrfs subvol=@workspaces,noatime 0 0\nUUID=${UUID} /home/exedev btrfs subvol=@home 0 0\n`
     const b = bench(native)
