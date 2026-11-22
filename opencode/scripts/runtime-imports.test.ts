@@ -202,22 +202,7 @@ describe("the plain-Bun commands a tree runs (mods/update/trees.ts COMMANDS)", (
 
   test("each command's graph is on one effect release, the root's pin, through every package it reaches (its platform layer's too)", () => {
     const pinned = rootPin("effect")
-    expect(pinned).toBe(rootPin("@effect/platform-bun"))
-    // The lock (parsed) resolves one effect and one of each platform package, all at the pin: an install that nests a
-    // second copy anywhere (a key `<dependent>/effect`) or moves one off the pin fails here (package.json `overrides`).
-    const lock = decodeLock(Bun.JSONC.parse(readFileSync(path.join(ROOT, "bun.lock"), "utf8")))
-    const copies = Arr.sort(
-      Object.entries(lock.packages)
-        .filter(([key]) => /(^|\/)(effect|@effect\/platform-[a-z-]+)$/.test(key))
-        .map(([key, entry]) => [key, String(entry[0])] as const),
-      Order.mapInput(Order.String, ([key]: readonly [string, string]) => key),
-    )
-    expect(copies).toEqual([
-      ["@effect/platform-bun", `@effect/platform-bun@${pinned}`],
-      ["@effect/platform-node", `@effect/platform-node@${pinned}`],
-      ["@effect/platform-node-shared", `@effect/platform-node-shared@${pinned}`],
-      ["effect", `effect@${pinned}`],
-    ])
+    expect(pinsAt(ROOT)).toEqual(expectedPins(pinned))
     const mixed = COMMANDS.flatMap(({ path: seed }) => {
       const versions = [...new Set(effectsOf(seed, ROOT).values())]
       return [`${seed}: effect ${versions.join(", ")}`].filter(() => versions.length !== 1 || versions[0] !== pinned)
@@ -229,7 +214,40 @@ describe("the plain-Bun commands a tree runs (mods/update/trees.ts COMMANDS)", (
 })
 
 /** The root `package.json`'s exact version of `name`. */
-const rootPin = (name: string) => manifestAt(ROOT).dependencies?.[name]
+const rootPin = (name: string) => pinIn(manifestAt(ROOT), name)
+
+/** A manifest's runtime pin of `name`, or "(unpinned)". */
+const pinIn = (manifest: { readonly dependencies?: Readonly<Record<string, string>> }, name: string) =>
+  Option.getOrElse(Option.fromNullishOr(manifest.dependencies?.[name]), () => "(unpinned)")
+
+/**
+ * The install's Effect at `root`: the runtime pins of `effect` and `@effect/platform-bun` in its `package.json`,
+ * and every copy of `effect` and of an `@effect/platform-*` package its `bun.lock` (parsed) resolves. An install that
+ * nests a second copy anywhere (a key `<dependent>/effect`) or moves one off the pin differs (package.json `overrides`).
+ */
+const pinsAt = (root: string) => {
+  const lock = decodeLock(Bun.JSONC.parse(readFileSync(path.join(root, "bun.lock"), "utf8")))
+  const copies = Arr.sort(
+    Object.entries(lock.packages)
+      .filter(([key]) => /(^|\/)(effect|@effect\/platform-[a-z-]+)$/.test(key))
+      .map(([key, entry]) => [key, String(entry[0])] as const),
+    Order.mapInput(Order.String, ([key]: readonly [string, string]) => key),
+  )
+  const manifest = manifestAt(root)
+  return { effect: pinIn(manifest, "effect"), platform: pinIn(manifest, "@effect/platform-bun"), copies }
+}
+
+/** `pinsAt` of an install on one Effect release, `pinned`: one copy of each, all at it. */
+const expectedPins = (pinned: string) => ({
+  effect: pinned,
+  platform: pinned,
+  copies: [
+    ["@effect/platform-bun", `@effect/platform-bun@${pinned}`] as const,
+    ["@effect/platform-node", `@effect/platform-node@${pinned}`] as const,
+    ["@effect/platform-node-shared", `@effect/platform-node-shared@${pinned}`] as const,
+    ["effect", `effect@${pinned}`] as const,
+  ],
+})
 
 /** What these checks read of a package's `package.json`. */
 const Manifest = Schema.Struct({
@@ -396,6 +414,8 @@ describe("what each host serves, generated over host × package × subpath", () 
     const servers = [...new Bun.Glob("cmd/*/server.ts").scanSync({ cwd: at })].sort()
     expect(servers).toContain("cmd/orchestrate/server.ts")
     expect(servers.flatMap((seed) => breaches(seed, PLATFORM_IMPL, at))).toEqual([])
+    // The tree installs the checkout's Effect: the same pins, one copy of each.
+    expect(pinsAt(at)).toEqual(expectedPins(rootPin("effect")))
     // Each plain-Bun command loads from the tree alone, and one copy of effect, its platform layer's included.
     const leaving = COMMANDS.flatMap(({ path: seed }) =>
       bareOf(seed, at)

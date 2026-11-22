@@ -96,6 +96,23 @@ describe("each plain-Bun command runs from the tree TREE_OPENCODE names (else th
     }),
   )
 
+  it.live.layer(BunServices.layer)("the install holds what a command's composition root provides: BunServices' layer and Digest.layerWebCrypto, on one effect", () =>
+    Effect.gen(function* () {
+      const { root } = yield* rootOf
+      const path = yield* Path.Path
+      const at = (specifier: string) => Bun.resolveSync(specifier, path.join(root, "cmd"))
+      const services = yield* Effect.promise(() => import(at("@effect/platform-bun/BunServices")))
+      const crypto = yield* Effect.promise(() => import(at("effect/crypto")))
+      const layers = yield* Effect.promise(() => import(at("effect/Layer")))
+      expect([layers.isLayer(services.layer), layers.isLayer(crypto.Digest?.layerWebCrypto)]).toEqual([true, true])
+      // One effect: the platform package's own `effect` is the root's.
+      const fs = yield* FileSystem.FileSystem
+      const effectDir = (from: string) => fs.realPath(path.dirname(Bun.resolveSync("effect/package.json", from)))
+      const platform = yield* fs.realPath(path.dirname(at("@effect/platform-bun/BunServices")))
+      expect(yield* effectDir(platform)).toBe(yield* effectDir(path.join(root, "cmd")))
+    }),
+  )
+
   for (const command of COMMANDS)
     it.live.layer(BunServices.layer)(
       `${command.path}: ${command.probes.length} probe(s)`,
