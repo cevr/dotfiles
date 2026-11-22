@@ -193,7 +193,7 @@ await Effect.runPromise(
     Effect.gen(function* () {
       const named = (values.peers ?? "").split(",").filter((each) => each.includes("=")).map((each) => ({ name: each.split("=")[0] ?? "", host: each.split("=")[0] ?? "", port: Number(each.split("=")[1]) }))
       const located = new Map(named.map((each) => [each.name, { name: each.name, base: `http://127.0.0.1:${each.port}` }] as const))
-      const peers = named.length === 0 ? noPeers([]) : yield* peerSide(named, Effect.succeed(located), LivePeers.get, Effect.sync(() => Date.now()), Effect.succeed(named.map((each) => `http://127.0.0.1:${each.port}`)))
+      const peers = named.length === 0 ? noPeers([]) : yield* peerSide(named, Effect.succeed(located), LivePeers.get, Effect.sync(() => Date.now()), Effect.succeed(named.map((each) => `http://127.0.0.1:${each.port}`)), Effect.succeed([`http://127.0.0.1:${port}`]))
       yield* Effect.forkScoped(servePeers(peers.pull, Duration.seconds(2)))
       const options = { dir, timezone: zone, ...(values.read === "member" ? { tailnetRead: "member" as const } : {}), ...(values.name === undefined ? {} : { name: values.name, peers: named.map(({ name, host }) => ({ name, host })) }) }
       const handlers = handlersOf(options, log, answerers, Effect.succeed("no:starting"), members, peers)

@@ -6,7 +6,7 @@ import { createSignal, For, Match, Show, Switch } from "solid-js"
 import { Accordion, AccordionHeader, AccordionItem, AccordionPanel, AccordionTrigger } from "@ui-sdk/solid/accordion"
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "@ui-sdk/solid/collapsible"
 import type { Outcome } from "./api.ts"
-import { answerMessage, answers, editing, enter, hot, marksLocked, mayAct, openId, outcomes, pairProblem, pairWith, peerLocked, peerOrigin, project, renameProject, sending, setEditing, showAll, shownAll, toggleLater, toggleOpen, toggleRead, view, wide } from "./state.ts"
+import { answerMessage, answers, editing, enter, hereByAddress, hot, marksLocked, mayAct, openId, openedByName, outcomes, pairProblem, pairWith, peerLocked, peerOrigin, project, renameProject, sending, setEditing, showAll, shownAll, toggleLater, toggleOpen, toggleRead, view, wide } from "./state.ts"
 import { type Ask, inSpan, isPeer, type Message, type Project, type Unit } from "./types.ts"
 
 /** How far a row must travel before its swipe acts, in px. */
@@ -224,6 +224,37 @@ function AskBlock(props: { readonly message: Message; readonly ask: Ask }) {
  * A peer's message this browser cannot act on from here: what it asks, why not, and the way to that host's own page,
  * where it pairs (its token stays there) and acts. Its codes and tokens never pass through this page.
  */
+/**
+ * This page was opened under a name, and `host` (a peer, or this host once it answers on addresses alone) takes a
+ * write only from a page by address: the way there, to this page by address and, for a peer, to its own page.
+ */
+export function ByAddress(props: { readonly host: string; readonly theirs?: string }) {
+  return (
+    <p class="assume" role="status">
+      Open this digest by address to act on {props.host}'s items
+      <Show when={hereByAddress()} fallback={props.theirs === undefined ? " (its Tailscale address, not its name)." : ": "}>
+        {(here) => (
+          <>
+            {": "}
+            <a href={here()}>this page by address</a>
+            {props.theirs === undefined ? "." : " or "}
+          </>
+        )}
+      </Show>
+      <Show when={props.theirs}>
+        {(theirs) => (
+          <>
+            <a href={theirs()} target="_blank" rel="noreferrer">
+              {props.host}'s page
+            </a>
+            .
+          </>
+        )}
+      </Show>
+    </p>
+  )
+}
+
 function OnHost(props: { readonly message: Message }) {
   const host = () => project()?.host ?? "its host"
   const at = () => peerOrigin(props.message.id)
@@ -241,22 +272,24 @@ function OnHost(props: { readonly message: Message }) {
           </Show>
         )}
       </Show>
-      <p class="assume" role="status">
-        <Switch fallback={<>This is on {host()}. </>}>
-          <Match when={why() === "pair"}>{host()} needs this browser paired before it takes a mark or an answer from it. </Match>
-          <Match when={why() === "unreachable"}>This page cannot write to {host()} right now. </Match>
-        </Switch>
-        <Show when={at()} fallback="Answer or mark it on that host's page.">
-          {(origin) => (
-            <>
-              <a href={origin()} target="_blank" rel="noreferrer">
-                Open {host()}'s page
-              </a>
-              {why() === "pair" ? `, pair this browser there, and ${doing()} there.` : ` to ${doing()}.`}
-            </>
-          )}
-        </Show>
-      </p>
+      <Show when={!openedByName()} fallback={<ByAddress host={host()} theirs={at()} />}>
+        <p class="assume" role="status">
+          <Switch fallback={<>This is on {host()}. </>}>
+            <Match when={why() === "pair"}>{host()} needs this browser paired before it takes a mark or an answer from it. </Match>
+            <Match when={why() === "unreachable"}>This page cannot write to {host()} right now. </Match>
+          </Switch>
+          <Show when={at()} fallback="Answer or mark it on that host's page.">
+            {(origin) => (
+              <>
+                <a href={origin()} target="_blank" rel="noreferrer">
+                  Open {host()}'s page
+                </a>
+                {why() === "pair" ? `, pair this browser there, and ${doing()} there.` : ` to ${doing()}.`}
+              </>
+            )}
+          </Show>
+        </p>
+      </Show>
     </div>
   )
 }

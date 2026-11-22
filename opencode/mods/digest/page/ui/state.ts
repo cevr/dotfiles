@@ -92,6 +92,8 @@ export const refresh = (): Promise<void> => {
         setProblem(undefined)
         return void setLocked(true)
       }
+      // This host answers on its addresses alone: the last view stays, and the banner links to this page by address.
+      if (failure instanceof Api.ByName) return void setAddressNeeded(true)
       setProblem(failure.message)
     })
     .finally(() => {
@@ -105,6 +107,7 @@ export const refresh = (): Promise<void> => {
 const act = (write: Promise<void>) =>
   write.then(refresh).catch((failure: Error) => {
     if (failure instanceof Api.MarkUnpaired) return markRefused()
+    if (failure instanceof Api.ByName) return void setAddressNeeded(true)
     setProblem(failure.message)
   })
 
@@ -120,11 +123,28 @@ export const [peerLocked, setPeerLocked] = createSignal<ReadonlyMap<string, "pai
 export const peerOrigin = (id: string): string | undefined =>
   isPeer(id) ? view()?.projects.find((each) => each.id === id || each.inbox.some((one) => one.id === id) || each.later.some((one) => one.id === id))?.origin : undefined
 
+/**
+ * Whether this page was opened under a name (`workbox:8240`, `workbox.<tailnet>.ts.net:8240`, `localhost`) rather
+ * than an address (`100.101.102.104:8240`, `[fd7a:…]:8240`). Another host lets a page write to it only from an
+ * address origin (peers.ts originsOf: which server answers a name is the resolver's choice), so a page by name never
+ * tries; it links to the pages by address instead.
+ */
+export const openedByName = (hostname: string = location.hostname): boolean => !/^(\d{1,3}\.){3}\d{1,3}$|^\[[0-9a-f:.]+\]$/i.test(hostname)
+
+/** This page by address: the first of the view's `pages`, at the same path and query; none until a view says. */
+export const hereByAddress = (): string | undefined => {
+  const page = view()?.pages?.[0]
+  return page === undefined ? undefined : `${page}${location.pathname}${location.search}`
+}
+
+/** This host refused this page under its name (421: it answers on its addresses alone); the banner links by address. */
+export const [addressNeeded, setAddressNeeded] = createSignal(false)
+
 /** Whether this browser may mark, set aside, rename or answer `id` from this page. */
 export const mayAct = (id: string): boolean => {
-  if (!isPeer(id)) return !marksLocked()
+  if (!isPeer(id)) return !marksLocked() && !addressNeeded()
   const at = peerOrigin(id)
-  return at !== undefined && !peerLocked().has(at)
+  return at !== undefined && !openedByName() && !peerLocked().has(at)
 }
 
 /** A write to the item `id`: to this host, or to the peer that owns it (its id as that host knows it). */
@@ -197,6 +217,7 @@ export const answerMessage = (message: Message, given: { readonly option: string
   void Api.answer(ownId(message.id), given, at)
     .then((outcome) => {
       setOutcomes((all) => new Map([...all, [message.id, outcome]]))
+      if (outcome.tag === "refused" && outcome.status === 421 && at === undefined) setAddressNeeded(true)
       // A token the server no longer knows (revoked, or the pairing file deleted): forget it, and pair again.
       if (outcome.tag === "refused" && outcome.status === 401 && at === undefined) {
         Api.keepToken("")

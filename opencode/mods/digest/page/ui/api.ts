@@ -34,6 +34,12 @@ export const keepToken = (value: string) => {
 /** The token header, when this browser has one. */
 const paired = (): Record<string, string> => (token() === "" ? {} : { [TOKEN_HEADER]: token() })
 
+/**
+ * This server would not answer this page under the name it was opened by (421): it answers on its addresses alone,
+ * so the page links to itself by address (`View.pages`).
+ */
+export class ByName extends Error {}
+
 /** The view is not this browser's to read until it pairs (the page on the tailnet). */
 export class Unpaired extends Error {}
 
@@ -41,6 +47,7 @@ export class Unpaired extends Error {}
 export const fetchView = async (): Promise<View> => {
   const answer = await fetch("./view.json", { cache: "no-store", headers: paired() })
   if (answer.status === 401) throw new Unpaired("pair this browser to read the digest")
+  if (answer.status === 421) throw new ByName("this host answers on its addresses only")
   if (!answer.ok) {
     const said = await answer.json().catch(() => ({ reason: `the server answered ${answer.status}` }))
     throw new Error(said.reason ?? `the server answered ${answer.status}`)
@@ -84,6 +91,7 @@ const post = async (path: string, body: Record<string, string>, at?: string): Pr
   const answer = await send(path, body, at)
   if (answer.status === 401 && at !== undefined) throw new PeerRefused("pair")
   if (answer.status === 401) throw new MarkUnpaired("pair this browser to mark messages here")
+  if (answer.status === 421 && at === undefined) throw new ByName("this host answers on its addresses only")
   if (!answer.ok) throw new Error(`the server refused it (${answer.status})`)
 }
 

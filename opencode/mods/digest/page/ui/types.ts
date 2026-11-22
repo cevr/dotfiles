@@ -100,6 +100,8 @@ export interface View {
   readonly host?: string
   /** The other hosts the page shows, and whether their projects are in. */
   readonly peers?: ReadonlyArray<PeerStatus>
+  /** This host's page by its Tailscale addresses (origins): where a page opened under a name sends him to act. */
+  readonly pages?: ReadonlyArray<string>
 }
 
 /** Another host: up (its projects are in), down, or on a build this page cannot read; when last read well. */
