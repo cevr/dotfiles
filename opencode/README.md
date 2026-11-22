@@ -2929,8 +2929,18 @@ bun ~/Developer/personal/dotfiles/opencode/cmd/digest/devices.ts list
   MagicDNS name or its first label (never HostName). They print the device
   they found (name, OS, last seen, ID) so you can confirm it is the right
   one, and write its ID. With no device or several, nothing is written.
-- `--id <ID>` adds an ID directly, with no lookup.
-- `forget exclude|agent <name>` removes a name and all its IDs.
+- `--id <ID>` adds an ID with no name lookup. It must still be the ID of
+  one of his own devices now.
+- Every write, by name or by `--id`, checks each ID it adds against
+  Tailscale's status, read again under the store's lock. A typo, a
+  colleague's ID, a device no longer on his tailnet, or a status that does
+  not read (Tailscale stopped): exit 1, nothing written. So the store only
+  ever holds IDs that were his devices when written; one that later matches
+  nothing is a device gone (`unmatched`, harmless).
+- A full MagicDNS name (`lenovo-rescue.<tailnet>.ts.net`) keys the name the
+  installer ships, its first label (`lenovo-rescue`).
+- `forget exclude|agent <name>` removes a name and all its IDs; a name not
+  in the store exits 1.
 - `list` shows both copies' condition and which device each ID is now.
 
 The installer and the plugin never look a name up. A configure ships the
@@ -2948,7 +2958,9 @@ copies together.
   device, reads and writes, to pairing only. That covers a store absent,
   emptied, truncated, garbled, of another version or shape, unreadable
   (mode 000, a folder in its place), and a name never keyed. Health says
-  `writes=paired:unkeyed:<name>:store-<copy 1>/<copy 2>`.
+  `writes=paired:unkeyed:<names>[:agent-unkeyed:<names>]:store-<copy 1>/<copy 2>`,
+  naming every name still to key at once. A copy that is not a regular
+  file (a folder, a FIFO) is unreadable at once, never waited on.
 - An agent name that no copy keys closes the writes the same way
   (`writes=paired:agent-unkeyed:<name>:store-...`).
 - When one copy is lost or the copies differ, the other still keys, and
