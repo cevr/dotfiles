@@ -150,7 +150,6 @@ import * as StepLogLive from "@dotfiles/opencode-orchestrate/filestore/step-log"
 import * as RunRecordsLive from "@dotfiles/opencode-orchestrate/filestore/run-records"
 import * as GitFleet from "@dotfiles/opencode-orchestrate/git/fleet"
 import * as GitMainLine from "@dotfiles/opencode-orchestrate/git/main-line"
-import { AbsolutePath } from "@opencode/schema/schema"
 import * as GitWorkGit from "@dotfiles/opencode-orchestrate/git/work-git"
 import { type Listed as Listing, lostNow } from "@dotfiles/opencode-orchestrate/lost-now"
 import * as RunFilesLive from "@dotfiles/opencode-orchestrate/filestore/run-files"
@@ -296,6 +295,8 @@ export type Background = (sessionID: string) => number
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
 /** The sessions of one lane read for status: a lane holds a few, the newest first. */
 const SESSIONS_IN_LANE = 20
+/** A lane's path as the host's session list takes a directory, branded here: a value import of `@opencode/schema` stops the plugin loading in a copy of the tree (mods/queue/opencode/host.ts). */
+const LaneDirectory = Schema.String.check(Schema.isStartingWith("/")).pipe(Schema.brand("AbsolutePath"))
 type SyntheticInput = Parameters<Plugin.Context["session"]["synthetic"]>[0]
 type HostSession = Effect.Success<ReturnType<Plugin.Context["session"]["get"]>>
 /** What the guard reads of the host's session record. */
@@ -380,7 +381,7 @@ export const hosted = (ctx: Plugin.Context, start: LatchesLive.Start, background
       (sessionID) => ctx.session.get({ sessionID: sessionID as SessionID }).pipe(Effect.map(stepSessionOf)),
       (sessionID) => ctx.session.context({ sessionID: sessionID as SessionID }),
       (directory) =>
-        Effect.suspend(() => ctx.session.list({ directory: AbsolutePath.make(directory), order: "desc", limit: SESSIONS_IN_LANE })).pipe(Effect.map((page) => page.data.map((session) => session.id))),
+        Effect.suspend(() => ctx.session.list({ directory: LaneDirectory.make(directory), order: "desc", limit: SESSIONS_IN_LANE })).pipe(Effect.map((page) => page.data.map((session) => session.id))),
     ),
     ModelsLive.layer({
       session: (sessionID) =>

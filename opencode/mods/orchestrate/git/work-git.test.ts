@@ -7,6 +7,7 @@ import { expect } from "bun:test"
 import { env as processEnv, spawn, spawnSync } from "bun"
 import { Effect, Layer, Option } from "effect"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
+import { gitInit } from "../../../tests/git-repo.ts"
 import { scratch } from "../../../tests/scratch.ts"
 import { OnMain } from "../lost.ts"
 import { WorkGit } from "../service.ts"
@@ -57,7 +58,7 @@ effectTest(
     Effect.gen(function* () {
       const root = yield* bench
       const base = `${root}/app`
-      yield* sh(root, "git", "init", "-q", "-b", "main", base)
+      yield* Effect.sync(() => gitInit(base, ["-q", "-b", "main"], ENV))
       yield* sh(base, "git", "config", "gc.auto", "0")
       yield* commit(base, "README", "base", "base")
       const alpha = yield* laneOf(base, `${root}/alpha`)
