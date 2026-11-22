@@ -1,10 +1,9 @@
 // workbox/bin/workrift, run for real in a scratch HOME with a bare origin, a
 // no-op `flock` (macOS has none) and WORKRIFT_ROOT inside the scratch folder.
-// With no backend file it must make the calls it made before the work backend
-// (the script at e722240e, run beside it under shims that record every `rift`,
-// `git` and `sqlite3` call). With the backend file saying `work` it runs over
-// the `work` binary WORK_BIN names, held to a reference model and to the
-// workflow the Rift backend gives: refresh first, track origin's branch,
+// It runs over the `work` binary WORK_BIN names (a backend file, when there is
+// one, must say `work`: any other word stops every command before it does
+// anything), held to a reference model and to the
+// workflow the Rift backend gave: refresh first, track origin's branch,
 // install once, gh stack metadata, the removal rule, a prune that spares kept
 // bases. Nothing here touches the real host: every path is under the scratch.
 import { afterAll, describe, expect, test } from "bun:test"
@@ -15,9 +14,7 @@ import { basename, dirname, join } from "node:path"
 const repo = join(import.meta.dir, "..", "..")
 // WORKRIFT_SCRIPT runs the suite against another script (an older one, for a test's red run).
 const SCRIPT = process.env.WORKRIFT_SCRIPT ?? join(repo, "workbox/bin/workrift")
-const OFF_BASE = "e722240e"
 const WORK_BIN = process.env.WORK_BIN ?? Bun.which("work") ?? undefined
-const REAL = { git: Bun.which("git"), rift: Bun.which("rift"), sqlite3: Bun.which("sqlite3") }
 
 const scratchRoot = realpathSync(mkdtempSync(join(tmpdir(), "workrift-test-")))
 afterAll(() => rmSync(scratchRoot, { recursive: true, force: true }))
@@ -98,7 +95,6 @@ const bench = (label: string) => {
     XDG_DATA_HOME: join(home, ".local/share"),
     XDG_CACHE_HOME: join(home, ".cache"),
     WORKRIFT_ROOT: root,
-    WORKRIFT_ARCHIVE: join(home, "rift-archive"),
     GIT_AUTHOR_NAME: "Workrift Test",
     GIT_AUTHOR_EMAIL: "workrift@example.invalid",
     GIT_COMMITTER_NAME: "Workrift Test",
@@ -150,148 +146,58 @@ type Bench = ReturnType<typeof bench>
 
 const workrift = (b: Bench, cwd: string, ...argv: ReadonlyArray<string>) => run(cwd, b.env, [SCRIPT, ...argv])
 
-/**
- * The sqlite3 shim's lines that point a call at a fresh copy of Rift's registry in journal_mode=delete, so the
- * script's `sqlite3 -readonly` reads it with any host sqlite3. Rift keeps its registry in WAL, and once Rift has
- * closed it (no -shm left) macOS's sqlite3 3.54 refuses to open it read-only (batch cy: the trace test red on the
- * Mac). The trace keeps the argument as the script gave it; only the call goes to the copy.
- */
-const registryCopy = (real: string, registry: string, copies: string) =>
-  [
-    `registry='${registry}'`,
-    `if [ -f "$registry" ]; then`,
-    `  dir=$(mktemp -d '${copies}/c.XXXXXX')`,
-    `  cp "$registry" "$dir/registry.sqlite"`,
-    `  if [ -f "$registry-wal" ]; then cp "$registry-wal" "$dir/registry.sqlite-wal"; fi`,
-    `  '${real}' "$dir/registry.sqlite" 'pragma journal_mode=delete;' >/dev/null`,
-    `  for a do shift; if [ "$a" = "$registry" ]; then set -- "$@" "$dir/registry.sqlite"; else set -- "$@" "$a"; fi; done`,
-    `fi`,
-    "",
-  ].join("\n")
+/** Every file and folder under `dir`, relative to it, sorted. */
+const filesUnder = (dir: string): ReadonlyArray<string> =>
+  readdirSync(dir, { recursive: true, encoding: "utf8" })
+    .map(String)
+    .sort()
 
-describe("workrift with no backend file", () => {
-  const ready = REAL.git !== null && REAL.rift !== null && REAL.sqlite3 !== null && process.platform === "darwin"
-
-  /**
-   * One run of `script` through the verbs, in a fresh bench whose `rift`, `git` and `sqlite3` are shims that
-   * append their argv to TRACE (when set) and run the real one. Each verb's trace, output and exit, with
-   * the scratch path, Rift's ids and the temp folder put as placeholders.
-   */
-  const traces = (script: string) => {
-    const b = bench("off")
-    // Rift's registry on macOS (the script's default is Linux's).
-    const registry = join(b.home, "Library/Application Support/rift/rift.sqlite")
-    const copies = join(b.dir, "sqlite-copies")
-    mkdirSync(copies)
-    for (const [name, real] of Object.entries(REAL)) {
-      exe(
-        join(b.bin, name),
-        `#!/bin/sh\nif [ -n "\${TRACE:-}" ]; then\n  { printf '%s' '${name}'; for a in "$@"; do printf ' [%s]' "$a"; done; printf '\\n'; } >>"$TRACE"\nfi\n${name === "sqlite3" ? registryCopy(real ?? "", registry, copies) : ""}exec '${real}' "$@"\n`,
-      )
-    }
-    const env: Env = { ...b.env, RIFT_REGISTRY: registry }
-    const source = b.clone("app")
-    sh(source, env, "rift", "init", "--here")
-    b.push("feat/remote", { "remote.txt": "remote\n" })
-    b.push("main", { "later.txt": "later\n" })
-    const trace = join(b.dir, "trace")
-    const normal = (text: string) =>
-      text
-        .replaceAll(b.dir, "<S>")
-        .replace(/\b[0-9A-HJKMNP-TV-Z]{26}\b/g, "<id>")
-        .replace(/\/(tmp|var\/folders)\/[^\s\]]*tmp\.[A-Za-z0-9]+/g, "<tmp>")
-    const verb = (cwd: string, ...argv: ReadonlyArray<string>) => {
-      writeFileSync(trace, "")
-      const ran = run(cwd, { ...env, TRACE: trace }, [script, ...argv])
-      return { argv: normal(argv.join(" ")), code: ran.code, out: normal(ran.out), err: normal(ran.err), calls: lines(normal(readFileSync(trace, "utf8"))) }
-    }
-    const steps = [verb(source, "check"), verb(source, "sources"), verb(source, "refresh"), verb(source, "create", "feat/one")]
-    const one = lines(steps.at(-1)?.out ?? "").at(-1) ?? ""
-    steps.push(verb(source, "create", "feat/remote"))
-    const remote = lines(steps.at(-1)?.out ?? "").at(-1) ?? ""
-    sh(source, env, "rift", "create", join(b.dir, remote.replace("<S>/", "")), "--copy-all", "--name", "nested")
-    const remotePath = remote.replace("<S>", b.dir)
-    const onePath = one.replace("<S>", b.dir)
-    steps.push(
-      verb(source, "list"),
-      verb(onePath, "deps"),
-      verb(source, "prune", "--dry-run"),
-      verb(source, "remove", onePath),
-      verb(source, "remove", remotePath),
-      verb(source, "remove", "--with-children", remotePath),
-      verb(source, "list"),
-    )
-    return steps
-  }
-
-  test.skipIf(!ready)(
-    "each verb calls rift, git and sqlite3 as the script before the work backend did, and prints the same",
-    () => {
-      const old = join(scratchRoot, "workrift-old")
-      writeFileSync(old, sh(repo, process.env as Env, "git", "show", `${OFF_BASE}:workbox/bin/workrift`))
-      chmodSync(old, 0o755)
-      const before = traces(old)
-      const after = traces(SCRIPT)
-      // The run did reach each verb's real work: a created path, a list of two, a trashed child.
-      expect(before.map((step) => step.code)).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0])
-      expect(before.find((step) => step.argv === "list")?.calls).toContainEqual(expect.stringMatching(/^rift \[list\]/))
-      // deps now also keeps the build output in step (stale dist, 2026-11-18): it reads the workspace's warm
-      // step once more, its last call, and with none set does nothing else. That call is the only difference.
-      const deps = after.find((step) => step.argv === "deps")
-      expect(deps?.calls.at(-1)).toMatch(/^git \[-C\] \[[^\]]+\] \[config\] \[--get\] \[workrift\.warm\]$/)
-      // refresh and create now say once when the source has no warm step and never warmed (Bite base re-created
-      // cold, 2026-11-19): that line, and the two reads it makes (the warm step, the marker's path), are theirs.
-      const note = "workrift: <S>/root/app has no warm step (git config workrift.warm) and was never warmed; its workspaces start cold\n"
-      const marker = "git [-C] [<S>/root/app] [rev-parse] [--path-format=absolute] [--git-path] [workrift-warmed-tree]"
-      const withoutNote = (step: (typeof after)[number]) => {
-        if (step.argv !== "refresh" && !step.argv.startsWith("create ")) return step
-        expect(step.err.split(note).length - 1, step.argv).toBe(1)
-        const at = step.calls.indexOf(marker)
-        expect(step.calls[at - 1], step.argv).toBe("git [-C] [<S>/root/app] [config] [--get] [workrift.warm]")
-        return { ...step, err: step.err.replace(note, ""), calls: step.calls.filter((_, i) => i !== at && i !== at - 1) }
-      }
-      // create now checks what the base lacks under the lock (its marker, its advance stamp, its hooks) and says
-      // its phases (a create waited 1059 s, 2026-11-20); the Rift backend is on its way out, so create's steps
-      // keep only their rift calls, exit, output and remaining stderr to compare. Every other verb stays exact.
-      // refresh too, since it takes the advance lock and warms with the base's lock free (seven creates queued behind
-      // a base's warm, 2026-11-21): its git calls are not compared; its rift calls, exit, output and stderr are.
-      const createRift = (step: (typeof after)[number]) =>
-        step.argv.startsWith("create ") || step.argv === "refresh"
-          ? {
-              ...step,
-              calls: step.calls.filter((call) => call.startsWith("rift ")),
-              err: step.err
-                .split("\n")
-                .filter((line) => !line.startsWith(`workrift: ${step.argv}: `))
-                .join("\n"),
-            }
-          : step
-      // check now also reads the warm step, its last call, to warn when the base's build output lags its tree (an
-      // advance no longer warms, 2026-11-22); with none set it warns of nothing.
-      const check = after.find((step) => step.argv === "check")
-      expect(check?.calls.at(-1)).toBe("git [-C] [<S>/root/app] [config] [--get] [workrift.warm]")
-      const lastDropped = (step: (typeof after)[number]) => ({ ...step, calls: step.calls.slice(0, -1) })
-      expect(after.map((step) => createRift(step === deps || step === check ? lastDropped(step) : withoutNote(step)))).toEqual(before.map(createRift))
-    },
-    60_000,
-  )
-
-  test("a backend file holding anything but rift or work fails, naming the file", () => {
-    const b = bench("bad-backend")
+describe("workrift's backend file", () => {
+  test("a backend file saying rift (the old default) or any word but work fails every command in one line naming the fix, and does nothing", () => {
+    const b = bench("rift-backend")
+    const app = b.clone("app")
+    // A `work` that records each call: none may reach it.
+    const calls = join(b.dir, "work-calls")
+    exe(join(b.bin, "work"), `#!/bin/sh\nprintf '%s\\n' "$*" >>'${calls}'\nexit 0\n`)
     const file = join(b.home, ".config/workrift/backend")
     mkdirSync(dirname(file), { recursive: true })
-    for (const word of ["Work", "rift work", ""]) {
-      writeFileSync(file, `${word}\n`)
-      const ran = workrift(b, b.dir, "sources")
-      expect(ran.code).toBe(1)
-      expect(ran.out).toBe("")
-      expect(ran.err).toContain(file)
+    const verbs: ReadonlyArray<ReadonlyArray<string>> = [
+      ["init", b.origin, join(b.root, "fresh")],
+      ["create", "feat/x"],
+      ["deps"],
+      ["refresh"],
+      ["advance"],
+      ["hold", "--", "touch", join(b.dir, "held")],
+      ["list"],
+      ["remove", "feat/x"],
+      ["prune"],
+      ["sources"],
+      ["check"],
+      ["settings"],
+      ["--help"],
+    ]
+    const cases: ReadonlyArray<readonly [string, string, Env]> = [
+      ["rift", file, b.env],
+      ...["Work", "rift work", ""].map((word): readonly [string, string, Env] => [word, file, b.env]),
+      ["zfs", join(b.dir, "elsewhere"), { ...b.env, WORKRIFT_BACKEND_FILE: join(b.dir, "elsewhere") }],
+    ]
+    for (const [word, at, env] of cases) {
+      writeFileSync(at, `${word}\n`)
+      const before = { root: filesUnder(b.root), home: filesUnder(b.home), dir: filesUnder(b.dir) }
+      for (const argv of verbs) {
+        const ran = run(app, { ...env, WORK: join(b.bin, "work") }, [SCRIPT, ...argv])
+        const said = { word, argv: argv.join(" "), code: ran.code, out: ran.out, err: ran.err }
+        expect(said).toEqual({
+          word,
+          argv: argv.join(" "),
+          code: 1,
+          out: "",
+          err: `workrift: ${at} says '${word.replace(/\s/g, "")}', but work is the only backend now (Rift is gone): write work into it (printf 'work\\n' >${at})\n`,
+        })
+      }
+      expect({ root: filesUnder(b.root), home: filesUnder(b.home), dir: filesUnder(b.dir) }).toEqual(before)
     }
-    const other = join(b.dir, "elsewhere")
-    writeFileSync(other, "zfs\n")
-    const ran = run(b.dir, { ...b.env, WORKRIFT_BACKEND_FILE: other }, [SCRIPT, "list"])
-    expect(ran.code).toBe(1)
-    expect(ran.err).toContain(other)
+    expect(existsSync(calls)).toBe(false)
   })
 })
 
@@ -332,6 +238,21 @@ describeWork("workrift with the work backend", () => {
 
   test("WORK_BIN is a work binary that answers", () => {
     expect(JSON.parse(sh(scratchRoot, { ...process.env, XDG_DATA_HOME: join(scratchRoot, "data") } as Env, work, "--json", "bases"))).toEqual([])
+  })
+
+  test("with no backend file it runs on work, as with one saying work (before the Rift backend went, no file meant Rift)", () => {
+    const w = workBench("absent", work)
+    rmSync(w.file)
+    const sources = w.wr(w.app, "sources")
+    expect(sources.code, sources.err).toBe(0)
+    expect(lines(sources.out)).toContain(w.app)
+    const path = w.create(w.app, "feat/absent")
+    expect(dirname(path)).toBe(join(w.root, ".work", "app"))
+    expect(sh(path, w.env, "git", "branch", "--show-current").trim()).toBe("feat/absent")
+    expect(lines(w.wr(w.app, "list").out)).toEqual([path])
+    const removed = w.wr(w.app, "remove", "feat/absent")
+    expect(removed.code, removed.err).toBe(0)
+    expect(existsSync(path)).toBe(false)
   })
 
   /** mulberry32: a small seeded generator, so a failing sequence can be run again from its seed. */
