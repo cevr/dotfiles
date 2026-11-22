@@ -5,6 +5,7 @@
 // is kept between calls. Nothing here reads prose: every field is the call's own.
 import { Array as Arr, Effect, Match, Option, Order, Predicate, Result, Schema } from "effect"
 import { toolInput } from "@dotfiles/decider/tool-input"
+import { redact } from "@dotfiles/opencode-digest/redact"
 import {
   AfterItem,
   Command,
@@ -568,7 +569,7 @@ export const answerOf = (input: CommitmentsInput, actor: Actor, now: number, rea
     const command = yield* Result.match(commandOf(input, action), { onFailure: (why) => Effect.fail(why), onSuccess: (each) => Effect.succeed(each) })
     const done = yield* record.run(command, { actor, now })
     return doneAnswer(command, done.events, done.snapshot)
-  }).pipe(Effect.mapError(whyOf))
+  }).pipe(Effect.map(redact), Effect.mapError((failed) => redact(whyOf(failed))))
 
 /** A `follow_up` call: one unowned follow-up commitment, by the calling session. */
 export const followUpOf = (input: FollowUpInput, actor: Actor, callID: string, now: number) =>
@@ -576,7 +577,7 @@ export const followUpOf = (input: FollowUpInput, actor: Actor, callID: string, n
     const record = yield* CommitmentRecord
     yield* record.run(followUpCommandOf(input, actor.id, callID), { actor, now })
     return `${FOLLOW_UP}: filed ${input.id}, unowned; the root owns or decides it.`
-  }).pipe(Effect.mapError(whyOf))
+  }).pipe(Effect.map(redact), Effect.mapError((failed) => redact(whyOf(failed))))
 
 /** A lane's answer with `line` before its implementor's start, whose call and lane stay its last lines. */
 export const beforeStart = (answer: string, line: string): string => {

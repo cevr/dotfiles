@@ -38,11 +38,13 @@ export interface Opened {
 const RUN = "r1"
 const CHECKOUT = "/world"
 const ROOT_SHA = "0".repeat(40)
+/** The model's commit name (`s1`, …) as a commit the record takes: its bytes in hex, one name one commit (the record holds a commit to 7–40 hex digits). */
+const shaOf = (name: string): string => Buffer.from(name).toString("hex").padEnd(40, "0")
 
 const afterOf = (trigger: Trigger): ReadonlyArray<AfterItem> =>
   Match.value(trigger).pipe(
     Match.when({ kind: "now" }, (): ReadonlyArray<AfterItem> => []),
-    Match.when({ kind: "main" }, (main) => [{ kind: "commit-on-main" as const, ref: main.commit }]),
+    Match.when({ kind: "main" }, (main) => [{ kind: "commit-on-main" as const, ref: shaOf(main.commit) }]),
     Match.when({ kind: "done" }, (done) => [{ kind: "commitment-closed" as const, ref: done.id }]),
     Match.when({ kind: "at" }, (at) => [{ kind: "date" as const, ref: isoOf(at.ms) }]),
     Match.when({ kind: "manual" }, (manual) => [{ kind: "manual" as const, ref: manual.word }]),
@@ -52,7 +54,7 @@ const afterOf = (trigger: Trigger): ReadonlyArray<AfterItem> =>
 /** The world's default branch as the memory MainLine holds it: a root, then each commit in the order it landed. */
 const mainLineOf = (world: World) =>
   MemoryMainLine.layer(() =>
-    Option.some({ branch: "main", line: [ROOT_SHA, ...world.main].map((sha) => ({ sha, subject: sha, merged: [] })) }),
+    Option.some({ branch: "main", line: [ROOT_SHA, ...[...world.main].map(shaOf)].map((sha) => ({ sha, subject: sha, merged: [] })) }),
   )
 
 const HAPPENED: ReadonlyArray<HappenedType> = ["promised", "assigned", "ordered", "released", "claimed", "landed", "decided", "reopened", "woke"]
@@ -121,7 +123,7 @@ const storeSubject = (store: ReturnType<typeof SqliteRecord.connectSync>["store"
     notices: () => noticesOf(read()),
     seen: (id) => void run(Command.cases.seen.make({ id }), { id: "owner", role: "owner" }),
     handBack: (input) => {
-      const command = Command.cases.hand_back.make({ run: RUN, ownerLane: input.owner, role: "implementor", session: input.by, verdict: "ready", head: Option.some(input.head), claims: input.ids })
+      const command = Command.cases.hand_back.make({ run: RUN, ownerLane: input.owner, role: "implementor", session: input.by, verdict: "ready", head: Option.some(shaOf(input.head)), claims: input.ids })
       return answered(run(command, { id: input.by, role: "worker" }), (each) =>
         Option.getOrElse(Option.map(Arr.findFirst(each, (event) => event.subjectKind === "hand_back"), (event) => handBackName(event.subjectId)), () => ""),
       )

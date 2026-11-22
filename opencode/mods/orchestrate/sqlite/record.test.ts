@@ -6,11 +6,11 @@ import { expect, test } from "bun:test"
 import { cpSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Array as Arr, Effect, Layer, Option } from "effect"
+import { Effect, Layer, Option } from "effect"
 import { gitInit } from "../../../tests/git-repo.ts"
 import { commitmentRecordLaws } from "../laws.ts"
-import { type Actor, Command, EMPTY, FREE_TEXT_COLUMNS, fold } from "../record.ts"
-import { BACKUPS_KEPT, connectSync, keyOfCheckout, layer, MIGRATIONS, pathOf, stateDir, VERSION } from "./record.ts"
+import { type Actor, COLUMNS, Command, EMPTY, fold } from "../record.ts"
+import { BACKUPS_KEPT, connectSync, keyOfCheckout, layer, MIGRATIONS, pathOf, stateDir, textColumnsOf, VERSION } from "./record.ts"
 
 const T0 = 1_800_000_000_000
 const DAY = 86_400_000
@@ -194,95 +194,24 @@ test("a repository with no origin: its workspace, a subfolder and the base share
     }),
   ))
 
-/**
- * The TEXT columns that hold no free text: ids and tokens (checked as one token where they are written), times, and
- * literals a CHECK holds. Every other TEXT column must be in FREE_TEXT_COLUMNS, which the one boundary bounds and
- * redacts; a new column fails the first test below until it is named in one of the two, and, when free, filled by
- * the second test's commands.
- */
-const NOT_FREE = [
-  "commitment.id", "commitment.run", "commitment.source_kind", "commitment.rank", "commitment.owner_lane", "commitment.owner_session", "commitment.state",
-  "commitment.started_at", "commitment.review_by", "commitment.woke_at", "commitment.head", "commitment.landed_commit", "commitment.notice_until",
-  "commitment.created_at", "commitment.updated_at", "commitment.start_head", "commitment.notice_by", "commitment.lane_path",
-  "prerequisite.commitment_id", "prerequisite.kind", "prerequisite.ref", "prerequisite.met_at",
-  "event.at", "event.run", "event.subject_kind", "event.subject_id", "event.type", "event.actor", "event.actor_role", "event.from_state", "event.to_state",
-  "hand_back.run", "hand_back.owner_lane", "hand_back.session", "hand_back.verdict", "hand_back.head", "hand_back.at", "hand_back.routing", "hand_back.routed_at", "hand_back.routed_by",
-  "lane_session.lane", "lane_session.session",
-  "word.run", "word.word", "word.given_at", "word.given_by",
-]
-
-/** Every TEXT column of the file's tables, as `<table>.<column>`. */
-const textColumnsOf = (db: Database): ReadonlyArray<string> =>
-  db
-    .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table'")
-    .all()
-    .flatMap((table) => db.query<{ name: string; type: string }, []>(`PRAGMA table_info(${table.name})`).all().flatMap((column) => Arr.filter([`${table.name}.${column.name}`], () => column.type === "TEXT")))
-
-const SECRET = "ghp_0123456789abcdefghijABCDEFGHIJ0123"
-
-test("every TEXT column is free text the boundary holds, or named as no free text", () =>
+test("the boundary's column map names exactly the file's TEXT columns: a new column fails here until it is given a kind", () =>
   inScratch((dir) =>
     Effect.sync(() => {
-      const opened = connectSync(join(dir, "repo.db"), { readonly: false, now: T0 })
-      opened.close()
+      connectSync(join(dir, "repo.db"), { readonly: false, now: T0 }).close()
       const db = new Database(join(dir, "repo.db"), { readonly: true })
       const columns = textColumnsOf(db)
       db.close()
-      expect(columns.filter((column) => !NOT_FREE.includes(column)).toSorted()).toEqual([...FREE_TEXT_COLUMNS].toSorted())
+      expect(columns.toSorted()).toEqual(Object.keys(COLUMNS).toSorted())
     }),
   ))
 
-test("a secret given in any free-text field is stored in no column, and a field past its bound is refused whole", () =>
+test("a free-text field past its bound is refused whole, naming the column", () =>
   inScratch((dir) =>
     Effect.gen(function* () {
-      const path = join(dir, "repo.db")
-      const opened = connectSync(path, { readonly: false, now: T0 })
-      const worker: Actor = { id: "ses_worker", role: "worker" }
-      const importer: Actor = { id: "ergo-register", role: "import" }
-      const secret = (what: string) => `${what} ${SECRET}`
-      yield* opened.store.run(
-        Command.cases.add.make({
-          run: "r1",
-          sourceKind: "owner-answer",
-          sourceRef: secret("ref"),
-          quote: Option.some(secret("quote")),
-          plan: Option.some(secret("plan")),
-          suggestOwner: Option.some(secret("owner")),
-          parts: [{ id: "s1", title: secret("title"), part: Option.some(secret("part")) }],
-        }),
-        { actor: ROOT, now: T0 },
-      )
-      yield* opened.store.run(Command.cases.decide.make({ id: "s1", why: secret("why") }), { actor: ROOT, now: T0 })
-      yield* opened.store.run(
-        Command.cases.hand_back.make({ run: "r1", ownerLane: "u1", role: secret("role"), session: "ses_worker", verdict: "done", file: Option.some(secret("file")), claims: [] }),
-        { actor: worker, now: T0 },
-      )
-      const row = {
-        title: secret("imported title"),
-        sourceKind: "plan-part" as const,
-        sourceRef: secret("imported ref"),
-        state: "decided" as const,
-        requestPath: Option.some(secret("request")),
-        decidedWhy: Option.some(secret("imported why")),
-        createdAt: "2027-01-15T08:00:00.000Z",
-        updatedAt: "2027-01-15T08:00:00.000Z",
-        after: [],
-      }
-      yield* opened.store.run(Command.cases.import.make({ run: "r1", rows: [{ id: "s2", row, history: [{ at: "2027-01-15T08:00:00.000Z", actor: "ORCH", note: secret("history note") }] }] }), {
-        actor: importer,
-        now: T0,
-      })
+      const opened = connectSync(join(dir, "repo.db"), { readonly: false, now: T0 })
       const long = yield* Effect.flip(opened.store.run(Command.cases.add.make({ run: "r1", sourceKind: "follow-up", sourceRef: "x", plan: Option.some("p".repeat(2_000_000)), parts: [{ id: "s3", title: "t" }] }), { actor: ROOT, now: T0 }))
-      expect(long).toMatchObject({ reason: "the plan is 2000000 characters, more than 200" })
+      const events = yield* opened.store.events
       opened.close()
-      const db = new Database(path, { readonly: true })
-      const stored = textColumnsOf(db).flatMap((column) => {
-        const [table, name] = column.split(".")
-        return db.query<{ value: string }, []>(`SELECT coalesce(${name}, '') AS value FROM ${table}`).all().map((each) => [column, each.value] as const)
-      })
-      db.close()
-      expect(stored.filter(([, value]) => value.includes(SECRET))).toEqual([])
-      // Each free column was filled, its secret replaced.
-      expect(FREE_TEXT_COLUMNS.filter((column) => !stored.some(([held, value]) => held === column && value.includes("[redacted]")))).toEqual([])
+      expect([long, events.length]).toMatchObject([{ reason: "column commitment.plan is 2000000 characters, more than 200" }, 0])
     }),
   ))

@@ -164,11 +164,29 @@ Seed.effect(
   ),
 )
 
+Seed.effect(
+  "an import with a token in one row's owner is refused whole in one transaction, naming the row and column, the token in no output and no row",
+  Effect.acquireUseRelease(
+    Effect.sync(() => scratch("record-cli-")),
+    (held) =>
+      Effect.gen(function* () {
+        // A GitHub token's shape, from parts, its body invented: a slug by its characters, refused only as a secret.
+        const token = ["gh", "p_", "Zq8xW2mN4vB7cR1tY6uI9oP3aS5dF0gH2jK4"].join("")
+        register(`${held.path}/register.db`, [...ROWS, { id: "c-leaky", state: "started", owner: token }], EVENTS)
+        const refused = yield* imported(held.path)
+        expect([refused.code, refused.out.includes(token) || refused.err.includes(token), refused.err.includes("row c-leaky, column commitment.owner_lane holds a secret's shape")]).toEqual([1, false, true])
+        const listed = yield* cli(held.path, "list", "--json", fieldsJson({ all: true }))
+        expect(listed.out).toBe("commitments: none match.")
+      }),
+    (held) => Effect.sync(() => held[Symbol.dispose]()),
+  ),
+)
+
 /** 295 invented rows in Ergo's mix: most closed or landed, the rest open across a few dozen lanes, some unowned. */
 const ERGO_LIKE: ReadonlyArray<Row> = Arr.makeBy(295, (at) => {
   const id = `r${String(at).padStart(3, "0")}`
   const pick = at % 10
-  if (pick < 4) return { id, state: "landed", owner: `u${at % 40}`, landed: `c${at}` }
+  if (pick < 4) return { id, state: "landed", owner: `u${at % 40}`, landed: `c${String(at).padStart(6, "0")}` }
   if (pick < 6) return { id, state: "closed" }
   if (pick < 7) return { id, state: "queued" }
   if (pick < 8) return { id, state: "started", owner: `u${at % 40}` }

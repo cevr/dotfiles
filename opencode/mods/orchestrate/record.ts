@@ -3,7 +3,7 @@
 // is a command decided here into events (`decide`); the folded rows are the events' fold (`fold`), so a store writes a
 // command's events and the rows they fold to in one transaction, and replaying the events into an empty store gives
 // the same rows (laws.ts). Nothing here reads a document: every field comes from a tool call's input.
-import { Array as Arr, DateTime, Effect, Match, Option, Order, Result, Schema } from "effect"
+import { Array as Arr, DateTime, Effect, Match, Option, Order, Predicate, Result, Schema } from "effect"
 import { redact } from "@dotfiles/opencode-digest/redact"
 
 export const SOURCE_KINDS = ["owner-answer", "owner-ask", "assignment", "follow-up", "bug", "plan-part"] as const
@@ -453,7 +453,7 @@ export interface Context {
 
 type Decided = Result.Result<ReadonlyArray<RecordEvent>, RecordRefused>
 
-const refuse = (reason: string): Decided => Result.fail(new RecordRefused({ reason }))
+const refuse = (reason: string): Decided => Result.fail(new RecordRefused({ reason: redact(reason) }))
 const decided = (events: ReadonlyArray<RecordEvent>): Decided => Result.succeed(events)
 
 /** The first refusal of `checks`, else none. */
@@ -461,10 +461,10 @@ const firstOf = (checks: ReadonlyArray<Option.Option<string>>): Option.Option<st
 
 const when = (refused: boolean, reason: string): Option.Option<string> => Option.liftPredicate(reason, () => refused)
 
-/** A slug id, or why not. */
-/** A value as a refusal names it: quoted, cut. */
-const named = (value: string, max = 80): string => `"${value.slice(0, max)}"`
+/** A value as a refusal names it: quoted, cut, each secret shape in it redacted (a refusal never repeats a secret). */
+const named = (value: string, max = 80): string => `"${redact(value.slice(0, max))}"`
 
+/** A slug id, or why not. */
 export const idRefusal = (id: string): Option.Option<string> => when(!ID.test(id), `the id ${named(id)} is not a slug (letters, digits, ".", "_", "-", at most 80, starting with a letter or digit)`)
 /** A one-token name (a lane, a session, a commit, a word), or why not. */
 export const tokenRefusal = (what: string, value: string): Option.Option<string> => when(!TOKEN.test(value), `${what} ${named(value)} is not one token of at most 120 characters`)
@@ -477,95 +477,297 @@ export const kept = (text: string): string => redact(text).trim()
 
 /** The longest note an event keeps: longer (an imported history's) is cut there. */
 export const NOTE_MAX = 1000
+/** The longest path (a lane's workspace) the record keeps. */
+export const PATH_MAX = 1024
 
 type Held<A> = Result.Result<A, RecordRefused>
+
+// ── The boundary: every TEXT column, by its kind ──
+
+/**
+ * How the record holds a TEXT column:
+ * - `free`, `why`: one line of at most TEXT_MAX (WHY_MAX), redacted (`kept`); else refused.
+ * - `note`: redacted and cut at NOTE_MAX.
+ * - `slug`: letters, digits, `.`, `_`, `-`, at most 80, first a letter or digit (an id, a run, an owner, a session, a
+ *   word, an actor, a role, a state an import names), holding no secret's shape; else refused.
+ * - `head`: a commit, 7 to 40 lowercase hex digits; else refused.
+ * - `time`: an ISO time; else refused.
+ * - `path`: one line of at most PATH_MAX holding no secret's shape; else refused.
+ * - `literal`: one of the values its CHECK (or the event types) allows; else refused.
+ * - `ref`: a wait's ref, by its kind: a head (commit-on-main), a slug (commitment-closed, manual) or a time (date).
+ * - `data`: the event's fields, each held by the column it folds to (or, kept only there, the kind it would take).
+ */
+export const COLUMN_KINDS = ["free", "why", "note", "slug", "head", "time", "path", "literal", "ref", "data"] as const
+export type ColumnKind = (typeof COLUMN_KINDS)[number]
+
+/**
+ * Every TEXT column of the record's tables, as `<table>.<column>`, with its kind. The one boundary (`bounded`) holds
+ * each field of every event by the column it is written to; a test lists the schema's TEXT columns, requires exactly
+ * these, and puts a secret into each through the commands that reach it, so no column skips the boundary.
+ */
+export const COLUMNS = {
+  "commitment.id": "slug",
+  "commitment.run": "slug",
+  "commitment.title": "free",
+  "commitment.source_kind": "literal",
+  "commitment.source_ref": "free",
+  "commitment.quote": "free",
+  "commitment.plan": "free",
+  "commitment.part": "free",
+  "commitment.rank": "literal",
+  "commitment.owner_lane": "slug",
+  "commitment.owner_session": "slug",
+  "commitment.state": "literal",
+  "commitment.started_at": "time",
+  "commitment.review_by": "time",
+  "commitment.woke_at": "time",
+  "commitment.head": "head",
+  "commitment.request_path": "free",
+  "commitment.landed_commit": "head",
+  "commitment.decided_why": "why",
+  "commitment.notice_until": "time",
+  "commitment.created_at": "time",
+  "commitment.updated_at": "time",
+  "commitment.start_head": "head",
+  "commitment.notice_by": "slug",
+  "commitment.lane_path": "path",
+  "prerequisite.commitment_id": "slug",
+  "prerequisite.kind": "literal",
+  "prerequisite.ref": "ref",
+  "prerequisite.met_at": "time",
+  "event.at": "time",
+  "event.run": "slug",
+  "event.subject_kind": "literal",
+  "event.subject_id": "slug",
+  "event.type": "literal",
+  "event.actor": "slug",
+  "event.actor_role": "literal",
+  "event.from_state": "slug",
+  "event.to_state": "slug",
+  "event.note": "note",
+  "event.data": "data",
+  "hand_back.run": "slug",
+  "hand_back.owner_lane": "slug",
+  "hand_back.role": "slug",
+  "hand_back.session": "slug",
+  "hand_back.verdict": "literal",
+  "hand_back.head": "head",
+  "hand_back.file": "free",
+  "hand_back.at": "time",
+  "hand_back.routing": "literal",
+  "hand_back.routed_at": "time",
+  "hand_back.routed_by": "slug",
+  "lane_session.lane": "slug",
+  "lane_session.session": "slug",
+  "word.run": "slug",
+  "word.word": "slug",
+  "word.given_at": "time",
+  "word.given_by": "slug",
+} as const satisfies Record<string, ColumnKind>
+export type Column = keyof typeof COLUMNS
+
+/** A field kept only in an event's data (no column of its own), with the kind it is held to. */
+const DATA_ONLY = { "suggest_owner": "slug", "woke.root": "slug" } as const satisfies Record<string, ColumnKind>
+type DataOnly = keyof typeof DATA_ONLY
+
+/** Each column's and data-only field's kind, by name. */
+const KINDS: Readonly<Record<string, ColumnKind>> = { ...COLUMNS, ...DATA_ONLY }
+
+/** The values a literal column takes. */
+const LITERALS: Readonly<Record<string, ReadonlyArray<string>>> = {
+  "commitment.source_kind": SOURCE_KINDS,
+  "commitment.rank": RANKS,
+  "commitment.state": STATES,
+  "prerequisite.kind": PREREQUISITE_KINDS,
+  "event.subject_kind": SUBJECT_KINDS,
+  "event.type": Object.keys(Happening.cases),
+  "event.actor_role": ACTOR_ROLES,
+  "hand_back.verdict": VERDICTS,
+  "hand_back.routing": ROUTINGS,
+}
+
+const SLUG_RULE = 'is not a slug (letters, digits, ".", "_", "-", at most 80, starting with a letter or digit)'
+const HEAD = /^[0-9a-f]{7,40}$/
+const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/
+const PATH = /^[^\n\r\0]+$/
+
+/** Whether `value` holds a secret's shape: the digest's redaction would change it. */
+const holdsSecret = (value: string): boolean => redact(value) !== value
+
+/** Why `value` does not fit a one-word kind, else none. The value is never repeated. */
+const wordRefusal = (kind: ColumnKind, column: string, value: string): Option.Option<string> =>
+  Match.value(kind).pipe(
+    Match.when("slug", () => firstOf([when(!ID.test(value), SLUG_RULE), when(holdsSecret(value), "holds a secret's shape")])),
+    Match.when("head", () => when(!HEAD.test(value), "is not a commit (7 to 40 lowercase hex digits)")),
+    Match.when("time", () => when(!ISO.test(value) || Number.isNaN(msOf(value)), "is not an ISO time")),
+    Match.when("path", () => firstOf([when(!PATH.test(value) || value.length > PATH_MAX, `is not one line of at most ${PATH_MAX} characters`), when(holdsSecret(value), "holds a secret's shape")])),
+    Match.when("literal", () => {
+      const values = LITERALS[column] ?? []
+      return when(!values.includes(value), `is not one of ${values.join(", ")}`)
+    }),
+    Match.orElse(() => Option.none()),
+  )
+
+/** Where a refusal is: an imported row's (`row <id>, `), else the command's. */
+type Where = string
+
+/**
+ * One value as the record holds it in `column` (or a data-only field): free text bounded and redacted, a note
+ * redacted and cut, a one-word value as given when it fits its grammar and holds no secret; else the whole command
+ * refused, naming the column and never the value.
+ */
+const held = (where: Where, column: Column | DataOnly, value: string, kind: ColumnKind = KINDS[column] ?? "slug"): Held<string> =>
+  Match.value(kind).pipe(
+    Match.when("free", () => freeText(`${where}column ${column}`, value)),
+    Match.when("why", () => freeText(`${where}column ${column}`, value, WHY_MAX)),
+    Match.when("note", () => Result.succeed(kept(value).slice(0, NOTE_MAX))),
+    Match.orElse(() =>
+      Option.match(wordRefusal(kind, column, value), {
+        onSome: (why) => Result.fail(new RecordRefused({ reason: `${where}column ${column} ${why}; the value is not repeated` })),
+        onNone: () => Result.succeed(value),
+      }),
+    ),
+  )
+
+const heldOpt = (where: Where, column: Column | DataOnly, value: Option.Option<string>): Held<Option.Option<string>> =>
+  Option.match(value, { onNone: () => Result.succeed(Option.none()), onSome: (text) => Result.map(held(where, column, text), Option.some) })
 
 /** One free-text field as the record holds it: one line of at most `max` that says something, redacted (`kept`); else refused. */
 const freeText = (what: string, value: string, max = TEXT_MAX): Held<string> =>
   Option.match(lineRefusal(what, value, max), { onSome: (reason) => Result.fail(new RecordRefused({ reason })), onNone: () => Result.succeed(kept(value)) })
 
-const freeTextOf = (what: string, value: Option.Option<string>, max = TEXT_MAX): Held<Option.Option<string>> =>
-  Option.match(value, { onNone: () => Result.succeed(Option.none()), onSome: (text) => Result.map(freeText(what, text, max), Option.some) })
+/** The kind a wait's ref takes, by the wait's kind. */
+const REF_KINDS: Record<PrerequisiteKind, ColumnKind> = { "commit-on-main": "head", "commitment-closed": "slug", date: "time", manual: "slug" }
 
-/** A one-token field (a lane, a session, a commit): kept as given, else refused. */
-const tokenOf = (what: string, value: Option.Option<string>): Held<Option.Option<string>> =>
-  Option.match(Option.flatMap(value, (text) => tokenRefusal(what, text)), { onSome: (reason) => Result.fail(new RecordRefused({ reason })), onNone: () => Result.succeed(value) })
+const heldAfter = (where: Where, after: ReadonlyArray<AfterItem>): Held<ReadonlyArray<AfterItem>> =>
+  Result.all(
+    after.map((item) =>
+      Result.map(
+        Result.all([held(where, "prerequisite.kind", item.kind), held(where, "prerequisite.ref", item.ref, REF_KINDS[item.kind])]),
+        () => item,
+      ),
+    ),
+  )
 
-/** An imported row's free text and tokens, each column as `row <id>, column <name>` names it. */
-const boundedRow = (id: string, row: ImportedRow): Held<ImportedRow> => {
-  const column = (name: string) => `row ${id}, column ${name}: ${name}`
-  return Result.map(
+/** An imported row, each column held as `row <id>, column <name>` names it. */
+const heldRow = (where: Where, row: ImportedRow): Held<ImportedRow> =>
+  Result.map(
     Result.all({
-      title: freeText(column("title"), row.title),
-      sourceRef: freeText(column("source_ref"), row.sourceRef),
-      quote: freeTextOf(column("quote"), row.quote),
-      plan: freeTextOf(column("plan"), row.plan),
-      part: freeTextOf(column("part"), row.part),
-      decidedWhy: freeTextOf(column("decided_why"), row.decidedWhy, WHY_MAX),
-      requestPath: freeTextOf(column("request_path"), row.requestPath),
-      ownerLane: tokenOf(column("owner_lane"), row.ownerLane),
-      ownerSession: tokenOf(column("owner_session"), row.ownerSession),
-      head: tokenOf(column("head"), row.head),
-      landedCommit: tokenOf(column("landed_commit"), row.landedCommit),
+      title: held(where, "commitment.title", row.title),
+      sourceKind: held(where, "commitment.source_kind", row.sourceKind),
+      sourceRef: held(where, "commitment.source_ref", row.sourceRef),
+      quote: heldOpt(where, "commitment.quote", row.quote),
+      plan: heldOpt(where, "commitment.plan", row.plan),
+      part: heldOpt(where, "commitment.part", row.part),
+      rank: heldOpt(where, "commitment.rank", row.rank),
+      ownerLane: heldOpt(where, "commitment.owner_lane", row.ownerLane),
+      ownerSession: heldOpt(where, "commitment.owner_session", row.ownerSession),
+      state: held(where, "commitment.state", row.state),
+      startedAt: heldOpt(where, "commitment.started_at", row.startedAt),
+      reviewBy: heldOpt(where, "commitment.review_by", row.reviewBy),
+      head: heldOpt(where, "commitment.head", row.head),
+      requestPath: heldOpt(where, "commitment.request_path", row.requestPath),
+      landedCommit: heldOpt(where, "commitment.landed_commit", row.landedCommit),
+      decidedWhy: heldOpt(where, "commitment.decided_why", row.decidedWhy),
+      createdAt: held(where, "commitment.created_at", row.createdAt),
+      updatedAt: held(where, "commitment.updated_at", row.updatedAt),
+      after: heldAfter(where, row.after),
     }),
-    (fields) => ImportedRow.make({ ...row, ...fields }),
+    (fields) => ImportedRow.make({ ...row, title: fields.title, sourceRef: fields.sourceRef, quote: fields.quote, plan: fields.plan, part: fields.part, requestPath: fields.requestPath, decidedWhy: fields.decidedWhy }),
   )
-}
 
-/**
- * What happened as the record keeps it: every free-text field (the columns `FREE_TEXT_COLUMNS` names, and the event
- * data and note they come from) one line, bounded and redacted, else the whole command refused. The one boundary
- * every command's events pass (standing.ts `decideCommand`), so no column holds a secret or an unbounded text.
- */
-const boundedHappening = (subject: string, happening: Happening): Held<Happening> =>
+/** Every field of what happened, each held by the column it folds to (`COLUMNS`), its free text redacted. */
+const heldHappening = (where: Where, happening: Happening): Held<Happening> =>
   Match.value(happening).pipe(
-    Match.tag("promised", (happened) =>
-      Result.map(
-        Result.all({
-          title: freeText(`the title of ${subject}`, happened.title),
-          sourceRef: freeText("the source_ref", happened.sourceRef),
-          quote: freeTextOf("the quote", happened.quote),
-          plan: freeTextOf("the plan", happened.plan),
-          part: freeTextOf(`the part of ${subject}`, happened.part),
-          suggestOwner: freeTextOf("the suggested owner", happened.suggestOwner),
-        }),
-        (fields): Happening => Happening.cases.promised.make({ ...happened, ...fields }),
-      ),
-    ),
-    Match.tag("decided", (happened) => Result.map(freeText("the reason (why)", happened.why, WHY_MAX), (why): Happening => Happening.cases.decided.make({ ...happened, why }))),
-    Match.tag("handed_back", (happened) =>
-      Result.map(
-        Result.all({ role: freeText("the role", happened.role), file: freeTextOf("the file", happened.file) }),
-        (fields): Happening => Happening.cases.handed_back.make({ ...happened, ...fields }),
-      ),
-    ),
-    Match.tag("laned", (happened) => Result.map(tokenOf("the start head", happened.startHead), () => happening)),
-    Match.tag("imported", (happened) => Result.map(boundedRow(subject, happened.row), (row): Happening => Happening.cases.imported.make({ row }))),
-    Match.orElse(() => Result.succeed(happening)),
+    Match.tagsExhaustive({
+      promised: (happened) =>
+        Result.map(
+          Result.all({
+            title: held(where, "commitment.title", happened.title),
+            sourceKind: held(where, "commitment.source_kind", happened.sourceKind),
+            sourceRef: held(where, "commitment.source_ref", happened.sourceRef),
+            quote: heldOpt(where, "commitment.quote", happened.quote),
+            plan: heldOpt(where, "commitment.plan", happened.plan),
+            part: heldOpt(where, "commitment.part", happened.part),
+            rank: heldOpt(where, "commitment.rank", happened.rank),
+            suggestOwner: heldOpt(where, "suggest_owner", happened.suggestOwner),
+          }),
+          (fields): Happening => Happening.cases.promised.make({ ...happened, title: fields.title, sourceRef: fields.sourceRef, quote: fields.quote, plan: fields.plan, part: fields.part }),
+        ),
+      assigned: (happened) =>
+        Result.map(
+          Result.all([
+            held(where, "commitment.owner_lane", happened.ownerLane),
+            heldOpt(where, "commitment.owner_session", happened.ownerSession),
+            heldAfter(where, happened.after),
+            held(where, "commitment.review_by", happened.reviewBy),
+          ]),
+          () => happening,
+        ),
+      ordered: () => Result.succeed(happening),
+      released: () => Result.succeed(happening),
+      laned: (happened) => Result.map(Result.all([heldOpt(where, "commitment.start_head", happened.startHead), heldOpt(where, "commitment.lane_path", happened.path)]), () => happening),
+      claimed: (happened) => Result.map(held(where, "commitment.head", happened.head), () => happening),
+      landed: (happened) => Result.map(held(where, "commitment.landed_commit", happened.commit), () => happening),
+      decided: (happened) => Result.map(held(where, "commitment.decided_why", happened.why), (why): Happening => Happening.cases.decided.make({ ...happened, why })),
+      reopened: () => Result.succeed(happening),
+      woke: (happened) => Result.map(held(where, "woke.root", happened.root), () => happening),
+      seen: () => Result.succeed(happening),
+      word_given: () => Result.succeed(happening),
+      handed_back: (happened) =>
+        Result.map(
+          Result.all({
+            ownerLane: held(where, "hand_back.owner_lane", happened.ownerLane),
+            role: held(where, "hand_back.role", happened.role),
+            session: held(where, "hand_back.session", happened.session),
+            verdict: held(where, "hand_back.verdict", happened.verdict),
+            head: heldOpt(where, "hand_back.head", happened.head),
+            file: heldOpt(where, "hand_back.file", happened.file),
+          }),
+          (fields): Happening => Happening.cases.handed_back.make({ ...happened, file: fields.file }),
+        ),
+      routed: () => Result.succeed(happening),
+      rejected: () => Result.succeed(happening),
+      imported: (happened) => Result.map(heldRow(where, happened.row), (row): Happening => Happening.cases.imported.make({ row })),
+      imported_history: () => Result.succeed(happening),
+    }),
   )
 
-/** Every event of a command through `boundedHappening`, its note redacted and cut at `NOTE_MAX`: the record's one text boundary. */
-export const bounded = (events: ReadonlyArray<RecordEvent>): Held<ReadonlyArray<RecordEvent>> =>
-  Result.all(events.map((each) => Result.map(boundedHappening(each.subjectId, each.happening), (happening): RecordEvent => ({ ...each, happening, note: kept(each.note).slice(0, NOTE_MAX) }))))
+/** An event's own columns (`event.*`), each held; its subject's columns follow from them (`commitment.id`, `word.word`). */
+const heldEnvelope = (where: Where, event: RecordEvent): Held<RecordEvent> =>
+  Result.map(
+    Result.all({
+      at: held(where, "event.at", event.at),
+      run: held(where, "event.run", event.run),
+      subjectKind: held(where, "event.subject_kind", event.subjectKind),
+      subjectId: held(where, "event.subject_id", event.subjectId),
+      type: held(where, "event.type", event.happening._tag),
+      actor: held(where, "event.actor", event.actor.id),
+      role: held(where, "event.actor_role", event.actor.role),
+      fromState: heldOpt(where, "event.from_state", event.fromState),
+      toState: heldOpt(where, "event.to_state", event.toState),
+      note: held(where, "event.note", event.note),
+    }),
+    (fields): RecordEvent => ({ ...event, note: fields.note }),
+  )
+
+/** Where an event's refusal is: an import's row by its id, else the command. */
+const isImport = Predicate.or(Predicate.isTagged("imported"), Predicate.isTagged("imported_history"))
+const whereOf = (event: RecordEvent): Where => (isImport(event.happening) ? `row ${redact(event.subjectId)}, ` : "")
 
 /**
- * Every free-text column of the record's tables, as `<table>.<column>`: what `bounded` redacts and bounds. A test
- * lists the tables' TEXT columns and requires each be here or a known token, time or literal column, so no new
- * column skips the boundary.
+ * The record's one boundary, which every command's events pass (standing.ts `decideCommand`) before any store writes
+ * them: every field of each event, envelope and data, held by the column it is written to (`COLUMNS`), free text
+ * bounded and redacted, one-word values to their grammar with no secret's shape; else the whole command is refused,
+ * naming the column. Every column of every table is folded from these fields, so no column holds a secret.
  */
-export const FREE_TEXT_COLUMNS: ReadonlyArray<string> = [
-  "commitment.title",
-  "commitment.source_ref",
-  "commitment.quote",
-  "commitment.plan",
-  "commitment.part",
-  "commitment.request_path",
-  "commitment.decided_why",
-  "hand_back.role",
-  "hand_back.file",
-  "event.note",
-  "event.data",
-]
+export const bounded = (events: ReadonlyArray<RecordEvent>): Held<ReadonlyArray<RecordEvent>> =>
+  Result.all(
+    events.map((each) => {
+      const where = whereOf(each)
+      return Result.flatMap(heldEnvelope(where, each), (enveloped) => Result.map(heldHappening(where, each.happening), (happening): RecordEvent => ({ ...enveloped, happening })))
+    }),
+  )
 
 const isOwnerSourced = (row: Commitment): boolean => OWNER_KINDS.includes(row.sourceKind)
 

@@ -482,6 +482,13 @@ export const layerOrFailed = (path: string) =>
     ),
   )
 
+/** Every TEXT column of the file's tables, as `<table>.<column>`: what the boundary's column map (record.ts `COLUMNS`) must name. */
+export const textColumnsOf = (db: Database): ReadonlyArray<string> =>
+  db
+    .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table'")
+    .all()
+    .flatMap((table) => db.query<{ name: string; type: string }, []>(`PRAGMA table_info(${table.name})`).all().flatMap((column) => (column.type === "TEXT" ? [`${table.name}.${column.name}`] : [])))
+
 /** The store on the file at `path` outside a scope, for a script that runs commands one after another (the CLI, a writer test); `close` ends it. */
 export const connectSync = (path: string, options: OpenOptions) => {
   const opened = connect(path, options)

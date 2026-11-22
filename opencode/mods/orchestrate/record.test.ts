@@ -53,7 +53,7 @@ describe("add", () => {
     expect(reasonOf(snapshot, add(["has space"]))).toContain("is not a slug")
     expect(reasonOf(snapshot, add([]))).toBe("an add names at least one part")
     const long = Commands.cases.add.make({ run: "r1", sourceKind: "plan-part", sourceRef: "p", parts: [PartInput.make({ id: "x", title: "t".repeat(201) })] })
-    expect(reasonOf(snapshot, long)).toBe("the title of x is 201 characters, more than 200")
+    expect(reasonOf(snapshot, long)).toBe("column commitment.title is 201 characters, more than 200")
     const quoted = Commands.cases.add.make({ run: "r1", sourceKind: "plan-part", sourceRef: "p", quote: Option.some("words"), parts: [PartInput.make({ id: "y", title: "t" })] })
     expect(reasonOf(snapshot, quoted)).toContain("a quote is the owner's words")
   })
@@ -77,7 +77,7 @@ describe("who moves what", () => {
   test("a worker never closes an owner-sourced commitment; a root does, with a reason, and leaves a notice", () => {
     const snapshot = after([[add(["a"], "owner-answer")]])
     expect(reasonOf(snapshot, Commands.cases.decide.make({ id: "a", why: "done elsewhere" }), WORKER)).toBe("only the root closes what the owner approved")
-    expect(reasonOf(snapshot, Commands.cases.decide.make({ id: "a", why: "  " }))).toBe("the reason (why) is empty")
+    expect(reasonOf(snapshot, Commands.cases.decide.make({ id: "a", why: "  " }))).toBe("column commitment.decided_why is empty")
     const closed = after([[add(["a"], "owner-answer")], [Commands.cases.decide.make({ id: "a", why: "done elsewhere" })]])
     expect(Option.map(row(closed, "a"), (each) => [each.state, each.decidedWhy, Option.isSome(each.noticeUntil)])).toEqual(Option.some(["decided", Option.some("done elsewhere"), true]))
   })
@@ -148,7 +148,7 @@ describe("import", () => {
   })
 
   test("a second import of the same rows changes nothing", () => {
-    const rows = [imported("O-1", "open"), imported("L-1", "landed", { landedCommit: Option.some("abc123") }), imported("D-1", "decided", { decidedWhy: Option.some("dropped") })]
+    const rows = [imported("O-1", "open"), imported("L-1", "landed", { landedCommit: Option.some("abc1234") }), imported("D-1", "decided", { decidedWhy: Option.some("dropped") })]
     const once = after([[Commands.cases.import.make({ run: "wf1", rows }), IMPORT]])
     expect(Result.getOrThrow(decideCommand(once, Commands.cases.import.make({ run: "wf1", rows }), { actor: IMPORT, now: T0 }))).toEqual([])
     expect([...once.commitments.values()].map((each) => each.state)).toEqual(["open", "landed", "decided"])
