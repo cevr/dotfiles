@@ -50,23 +50,28 @@ export const pull = (
     }
   })
 
-/** The named peers as the page sees them (`known`, as last read) and one pull of them all, which keeps what it reads. */
+/**
+ * The named peers as the page sees them (`known`, as last read), one pull of them all, which keeps what it reads, and
+ * their pages' origins as this host keys them now (`origins`, peers.ts peerOriginsOf): the only ones it lets write here.
+ */
 export interface PeerSide {
   readonly known: Effect.Effect<ReadonlyArray<Peer>>
   readonly pull: Effect.Effect<void>
+  readonly origins: Effect.Effect<ReadonlyArray<string>>
 }
 
 /** The peers of `named` never read, and no pull: a host with no peers, a test's, a simulation's. */
-export const noPeers = (named: ReadonlyArray<NamedPeer>): PeerSide => ({ known: Effect.succeed(unreadAll(named)), pull: Effect.void })
+export const noPeers = (named: ReadonlyArray<NamedPeer>): PeerSide => ({ known: Effect.succeed(unreadAll(named)), pull: Effect.void, origins: Effect.succeed([]) })
 
-/** The peers of `named` read into a Ref of their own: `known` reads it, `pull` (the arguments of `pull`) fills it. */
+/** The peers of `named` read into a Ref of their own: `known` reads it, `pull` (the arguments of `pull`) fills it; `origins` as given. */
 export const peerSide = (
   named: ReadonlyArray<NamedPeer>,
   locate: Effect.Effect<ReadonlyMap<string, Target>>,
   get: (url: string) => Effect.Effect<Got, unknown>,
   now: Effect.Effect<number>,
+  origins: Effect.Effect<ReadonlyArray<string>> = Effect.succeed([]),
 ): Effect.Effect<PeerSide> =>
-  Effect.map(Ref.make(unreadAll(named)), (peers) => ({ known: Ref.get(peers), pull: pull(named, locate, get, peers, now) }))
+  Effect.map(Ref.make(unreadAll(named)), (peers) => ({ known: Ref.get(peers), pull: pull(named, locate, get, peers, now), origins }))
 
 /** A pull every `every`, until the scope closes. */
 export const servePeers = (pullOnce: Effect.Effect<void>, every: Duration.Duration = PULL_EVERY): Effect.Effect<never> => Effect.forever(Effect.andThen(pullOnce, Effect.sleep(every)))

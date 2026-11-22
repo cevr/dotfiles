@@ -47,7 +47,7 @@ import { EMPTY, fold } from "@dotfiles/opencode-digest/fold"
 import { buildOf, healthLine, sickLine, type TailnetState } from "@dotfiles/opencode-digest/health"
 import * as Listener from "@dotfiles/opencode-digest/http/listener"
 import { noPeers, type PeerSide, peerSide, servePeers } from "@dotfiles/opencode-digest/http/peers"
-import { envelopeOf, locateIn, mergeView, NamedPeer, type Peer, type Sighting, UNSEEN, upCount } from "@dotfiles/opencode-digest/peers"
+import { envelopeOf, locateIn, mergeView, NamedPeer, type Peer, peerOriginsOf, type Sighting, UNSEEN, upCount } from "@dotfiles/opencode-digest/peers"
 import * as LivePeers from "@dotfiles/opencode-digest/process/peers"
 import { pageOf } from "@dotfiles/opencode-digest/messages"
 import { type Copy, keysOf, membersWith, type Named } from "@dotfiles/opencode-digest/devices"
@@ -156,6 +156,8 @@ export const handlersOf = (
     members,
     view: Effect.map(Effect.all([local, peers.known]), ([view, known]) => encodeView(mergeView(view, nameOf(options), known))),
     peerView: Effect.map(local, (view) => envelopeOf(nameOf(options), view)),
+    peerOrigins: peers.origins,
+    peerPages: Effect.map(peers.known, (known) => known.flatMap((peer) => Option.toArray(peer.origin))),
     write: marks.append,
     now: Clock.currentTimeMillis,
     zone,
@@ -204,13 +206,14 @@ export const probeKeeping = (
 /** The page's port: the option, else PORT. */
 export const portOf = (options: Options): number => Option.getOrElse(Option.fromUndefinedOr(options.port), () => Listener.PORT)
 
-/** The named peers, each found as `sighting` last keyed it (peers.ts locateIn) and read over the tailnet. */
+/** The named peers, each found as `sighting` last keyed it (peers.ts locateIn) and read over the tailnet; their pages' origins as it keys them. */
 export const livePeers = (options: Options, sighting: Ref.Ref<Sighting>): Effect.Effect<PeerSide> =>
   peerSide(
     namedOf(options),
     Effect.map(Effect.all([Ref.get(sighting), Clock.currentTimeMillis]), ([seen, now]) => locateIn(namedOf(options), seen, now, portOf(options))),
     LivePeers.get,
     Clock.currentTimeMillis,
+    Effect.map(Effect.all([Ref.get(sighting), Clock.currentTimeMillis]), ([seen, now]) => peerOriginsOf(namedOf(options), seen, now, portOf(options))),
   )
 
 /**

@@ -260,6 +260,8 @@ const property = async (seed: number, count: number, store: StoreState, draws: n
   const draw = drawer(seed)
   const pick = <A,>(all: ReadonlyArray<A>): A => Option.getOrThrow(Arr.get(all, Math.floor(draw() * all.length)))
   const own = `http://${Listener.HOSTNAME}:${b.tailnet}`
+  // How often each side of the property was reached: a draw set that never accepts, or never refuses an allowed origin, proves little.
+  const reached = { accepted: 0, refusedByPolicy: 0 }
   for (let n = 0; n < draws; n++) {
     const scene = pick(SCENES)
     await b.see(scene)
@@ -280,8 +282,10 @@ const property = async (seed: number, count: number, store: StoreState, draws: n
     const at = await b.writes()
     const cross = await send(own, route, Option.some(origin), token)
     const crossWrote = (await b.writes()) - at
-    // A read is served by source as ever (a browser cannot read it cross-origin: no Allow-Origin); a write only as above.
-    const expectServed = Option.getOrElse(Option.liftPredicate(isAllowed && ownAnswer.ok, () => isWrite), () => route === "view" && ownAnswer.ok)
+    // A read is served as to any client, by its source or B's token: a browser can neither read it cross-origin (no
+    // Allow-Origin) nor send the token header there (the preflight refuses it). A write only as the property says.
+    const readServed = route === "view" && (ownAnswer.ok || Option.contains(token, b.token))
+    const expectServed = Option.getOrElse(Option.liftPredicate(isAllowed && ownAnswer.ok, () => isWrite), () => readServed)
     expect({ ok: cross.ok, wrote: crossWrote > 0, allowOrigin: cross.headers.get("access-control-allow-origin"), varies: varies(cross) }, trace).toEqual({
       ok: expectServed,
       wrote: isWrite && expectServed && ownWrote > 0,
@@ -299,6 +303,8 @@ const property = async (seed: number, count: number, store: StoreState, draws: n
       ok: preOk,
       varies: true,
     })
+    reached.accepted += Number(isWrite && cross.ok)
+    reached.refusedByPolicy += Number(isWrite && isAllowed && !cross.ok)
     if (preOk) {
       expect(header(pre, "access-control-allow-methods").split(",").map((each) => each.trim()), trace).toEqual(["POST"])
       expect(header(pre, "access-control-allow-headers").toLowerCase(), trace).not.toContain("token")
@@ -310,19 +316,26 @@ const property = async (seed: number, count: number, store: StoreState, draws: n
     expect((await preflight(loop, route, origin, "content-type,x-digest-page")).headers.get("access-control-allow-origin"), `${trace}, loopback preflight`).toBeNull()
   }
   caller.address = PHONE
+  return reached
 }
 
 describe("the page writes to the host that owns an item, under that host's own policy", () => {
   test("two hosts: a cross-origin write succeeds only from the peer's page origin and only where the owner's policy would serve its own page", async () => {
-    for (const seed of [1, 2, 3]) await property(seed, 2, "keyed", 150)
+    for (const seed of [1, 2, 3]) {
+      const reached = await property(seed, 2, "keyed", 150)
+      expect(Math.min(reached.accepted, reached.refusedByPolicy), `seed ${seed}`).toBeGreaterThan(3)
+    }
   }, 120_000)
 
   test("three hosts: each peer's every origin, under renames and a name taken by another device, and nothing else", async () => {
-    for (const seed of [11, 12]) await property(seed, 3, "keyed", 200)
+    for (const seed of [11, 12]) {
+      const reached = await property(seed, 3, "keyed", 200)
+      expect(Math.min(reached.accepted, reached.refusedByPolicy), `seed ${seed}`).toBeGreaterThan(3)
+    }
   }, 120_000)
 
   test("a host whose device store keys nothing allows no peer origin at all", async () => {
-    await property(21, 3, "unkeyed", 120)
+    expect((await property(21, 3, "unkeyed", 120)).accepted).toBe(0)
   }, 120_000)
 
   test("the cases by hand: the phone writes from the peer's page; an agent machine's browser is refused there, its token ignored, and told to pair on B", async () => {

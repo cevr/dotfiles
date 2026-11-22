@@ -120,7 +120,8 @@
       ],
       "rules": {
         "effect/noAsyncFunction": "off",
-        "effect/noEffectRunInTests": "off"
+        "effect/noEffectRunInTests": "off",
+        "effect/noGlobals": "off"
       }
     },
     {

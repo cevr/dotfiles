@@ -18,7 +18,7 @@ import { pull, unreadAll } from "@dotfiles/opencode-digest/http/peers"
 import { markOf, nameOf } from "@dotfiles/opencode-digest/marks"
 import { noTailnet, type PeerStatus, StatusRead } from "@dotfiles/opencode-digest/bind"
 import * as FileDevices from "@dotfiles/opencode-digest/filestore/devices"
-import { type NamedPeer, NOT_ALLOWED, type Peer, peerId, locateIn, type Sighting, type Target, UNSEEN } from "@dotfiles/opencode-digest/peers"
+import { locateIn, type NamedPeer, NOT_ALLOWED, type Peer, peerId, peerOriginsOf, type Sighting, type Target, UNSEEN } from "@dotfiles/opencode-digest/peers"
 import * as LivePeers from "@dotfiles/opencode-digest/process/peers"
 import { scratch } from "../../tests/scratch.ts"
 import { handlersOf, probeKeeping, STARTING, writeConfigOf } from "./server.ts"
@@ -202,7 +202,11 @@ const world = async (dir: string, count: number, reads: (name: string) => "paire
     const sighting = Ref.makeUnsafe(UNSEEN)
     const probe = probeKeeping(writeConfigOf(options), Effect.succeed({ tailnet: noTailnet("test"), status: statusOf(name, hosts) }), members, FileDevices.readCopies(paths), (seen) => Ref.set(sighting, seen))
     const old = Ref.makeUnsafe(false)
-    const base = handlersOf(options, log, { question: () => Effect.die("no answer here"), item: () => Effect.die("no answer here") }, Effect.succeed("yes"), Ref.get(members), { known: Ref.get(peers), pull: Effect.void })
+    const base = handlersOf(options, log, { question: () => Effect.die("no answer here"), item: () => Effect.die("no answer here") }, Effect.succeed("yes"), Ref.get(members), {
+      known: Ref.get(peers),
+      pull: Effect.void,
+      origins: Effect.map(Ref.get(sighting), (seen) => peerOriginsOf(named, seen, Date.now(), 8240)),
+    })
     // A host on another wire: its peer view says wire 2, with a view this build must not parse loosely.
     const newer = Effect.succeed(`{"wire":2,"host":"${name}","view":{"projects":"elsewhere"}}`)
     const handlers: Listener.Handlers = { ...base, peerView: Effect.flatMap(Ref.get(old), (isOld) => Option.match(Option.liftPredicate(isOld, Boolean), { onSome: () => newer, onNone: () => base.peerView })) }

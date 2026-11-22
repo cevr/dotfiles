@@ -15,9 +15,11 @@
 //   read at a time: no retry storm.
 // - Ids: a peer's project, message and mark ids are qualified by the peer (`peer:<name>/<id>`), so two hosts'
 //   `dotfiles` projects never meet.
-// - Write: an item's unread, Later, pin, name and answer live on the host that owns it, and only there. A peer's
-//   project in this view is read only: the page links to the owning host's page (its origin is in the view), whose
-//   own policy decides the write. No host writes on another's behalf, and nothing here accepts a write for a peer.
+// - Write: an item's unread, Later, pin, name and answer live on the host that owns it, and only there. The page
+//   sends a peer's item's write straight to that host (its origin is in the view), tokenless; that host allows the
+//   peers' page origins it keys (`peerOriginsOf`, policy.ts isPeerWrite) and decides by its own policy. A browser
+//   that host needs a token from is told to pair on its own page. No host writes on another's behalf, and nothing
+//   here accepts a write for a peer.
 import { Array as Arr, Data, Duration, Match, Option, Order, Schema } from "effect"
 import { canonicalOf, hostOf, isTailnet, type PeerStatus as TailnetPeer, StatusRead } from "./bind.ts"
 import { nameKey } from "./devices.ts"
@@ -83,6 +85,21 @@ export const keyedOf = (host: string, sighting: Sighting, now: number): Option.O
     },
   })
 }
+
+/**
+ * Every origin a page of the keyed device has on `port`, the only ones that may write here cross-origin: each of its
+ * addresses, its MagicDNS name, and that name's first label, as a browser spells them (an IPv6 address bracketed).
+ * Exact strings: never a pattern, never a suffix. An origin by name holds only while the keyed device carries it.
+ */
+export const originsOf = (keyed: Keyed, port: number): ReadonlyArray<string> => [
+  ...keyed.ips.map((ip) => `http://${hostOf(ip)}:${port}`),
+  ...Option.toArray(keyed.dnsName).flatMap((name) => [...new Set([name, Option.getOrElse(Arr.head(name.split(".")), () => name)])].map((each) => `http://${each}:${port}`)),
+]
+
+/** The named peers' pages' origins on `port`, as `sighting` keys them at `now`: all this host's CORS allows (policy.ts isPeerWrite). */
+export const peerOriginsOf = (named: ReadonlyArray<NamedPeer>, sighting: Sighting, now: number, port: number): ReadonlyArray<string> => [
+  ...new Set(named.flatMap((each) => Option.toArray(keyedOf(each.host, sighting, now)).flatMap((keyed) => originsOf(keyed, port)))),
+]
 
 /** Where each of `named` is read now, by name: its keyed device's first address on `port` (keyedOf). */
 export const locateIn = (named: ReadonlyArray<NamedPeer>, sighting: Sighting, now: number, port: number): ReadonlyMap<string, Target> =>
