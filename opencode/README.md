@@ -2880,16 +2880,16 @@ listeners (a strict CSP, `no-store` on data). Its token never goes in a URL.
 answer needs a paired browser. On the tailnet, who reads is
 `digest.tailnetRead` (a plugin option):
 
-- `"member"`, as the installer ships it on his hosts (`scripts/daily.ts`
-  `digestEntry`; owner, 2026-11-22): any device on his tailnet reads the
-  page unpaired. Marks (read, Later, a name) and answers still need a
-  paired browser; an unpaired phone shows the digest, and the first mark it
-  tries asks it to pair.
-- `"paired"`, the plugin's default (a host outside the fleet): everything
-  needs a paired browser except the shell page itself. An unpaired phone
-  sees only how to pair and a code field: no data, no project names. To
-  make his hosts need pairing to read again, set `tailnetRead: "paired"` in
-  `digestEntry`.
+- `"member"`: any device on the tailnet reads the page unpaired. Marks
+  (read, Later, a name) and answers still need a paired browser; an
+  unpaired phone shows the digest, and the first mark it tries asks it to
+  pair.
+- `"paired"`, the plugin's default, and what the installer ships on his
+  hosts too (`scripts/daily.ts` `digestEntry`): everything needs a paired
+  browser except the shell page itself. An unpaired phone sees only how to
+  pair and a code field: no data, no project names. (2026-11-22: back to
+  `"paired"` as a stopgap, since his tailnet holds other Tailscale users'
+  devices; `"member"` returns once it means his own Tailscale user.)
 
 Health on the tailnet answers an unpaired request `ok` alone either way.
 To pair a phone:
