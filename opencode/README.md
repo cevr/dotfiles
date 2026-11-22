@@ -2878,9 +2878,22 @@ crosses a network in clear. The page sends the same headers on both
 listeners (a strict CSP, `no-store` on data). Its token never goes in a URL.
 
 **Pairing.** On loopback, the page and its marks are open, and only an
-answer needs a paired browser. On the tailnet, everything needs a paired
-browser except the shell page itself. An unpaired phone sees only how to
-pair and a code field: no data, no project names. To pair a phone:
+answer needs a paired browser. On the tailnet, who reads is
+`digest.tailnetRead` (a plugin option):
+
+- `"member"`, as the installer ships it on his hosts (`scripts/daily.ts`
+  `digestEntry`; owner, 2026-11-22): any device on his tailnet reads the
+  page unpaired. Marks (read, Later, a name) and answers still need a
+  paired browser; an unpaired phone shows the digest, and the first mark it
+  tries asks it to pair.
+- `"paired"`, the plugin's default (a host outside the fleet): everything
+  needs a paired browser except the shell page itself. An unpaired phone
+  sees only how to pair and a code field: no data, no project names. To
+  make his hosts need pairing to read again, set `tailnetRead: "paired"` in
+  `digestEntry`.
+
+Health on the tailnet answers an unpaired request `ok` alone either way.
+To pair a phone:
 
 ```sh
 bun ~/Developer/personal/dotfiles/opencode/cmd/digest/pair.ts
@@ -2894,10 +2907,6 @@ them on the phone and type the code. The token is kept in that origin's
 asks to pair again: run `pair.ts` once more and type the new code there.
 Keep using one URL to avoid this. `pair.ts --list` shows the paired browsers
 and `--revoke <id>|all` unpairs them.
-
-`digest.tailnetRead` (a plugin option) is `"paired"` by default. Set it to
-`"member"` to let any device on his tailnet read the page unpaired. Marks
-and answers still need pairing there.
 
 **Refusals.** A request whose `Host` is not one of the listener's own names
 (its addresses, the MagicDNS name, the short name) is refused on every route.

@@ -1,5 +1,6 @@
 /**
- * `digest pair`: pair a browser with the digest page so it may answer there; list and unpair them.
+ * `digest pair`: pair a browser with the digest page so it may answer there, and on the tailnet mark messages (and
+ * read them, where `digest.tailnetRead` is "paired"); list and unpair them.
  *
  *   bun cmd/digest/pair.ts [--dir <digest dir>] [--port <port>]     a one-use code, and the page's link with it
  *   bun cmd/digest/pair.ts --list [--dir <digest dir>]                the browsers paired now: id, when, which browser
