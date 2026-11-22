@@ -2836,6 +2836,83 @@ answer between two idle sessions, and a message steered into a running one.
 command and sends a message each way. `cmd/mail/pair.test.ts` covers the
 pairing and the refusals over real HTTP in one process.
 
+## The digest page
+
+The digest plugin (`cmd/digest/server.ts`) serves a page of the runs'
+projects and messages on port 8240. It listens in two places:
+
+- `http://127.0.0.1:8240`, for this host's browser.
+- Each of the host's tailnet addresses (its `100.x.y.z` and its `fd7a:…`
+  address), for his phone and other devices on his tailnet.
+
+It never listens anywhere else. `mods/digest/bind.ts` refuses, in code, any
+address that is not loopback or in Tailscale's ranges (`100.64.0.0/10`,
+`fd7a:115c:a1e0::/48`), a wildcard included. It uses no Funnel and no share.
+The plugin reads the tailnet addresses from the interfaces and
+`tailscale status --json` when it starts, and again every 30 s. When
+Tailscale goes down, the tailnet listener stops, and the page is on loopback
+only until Tailscale comes back.
+
+**Plain HTTP on the tailnet.** The page uses no TLS there. Tailscale's
+WireGuard encrypts every packet between his devices, so a request never
+crosses a network in clear. The page sends the same headers on both
+listeners (a strict CSP, `no-store` on data). Its token never goes in a URL.
+
+**Pairing.** On loopback, the page and its marks are open, and only an
+answer needs a paired browser. On the tailnet, everything needs a paired
+browser except the shell page itself. An unpaired phone sees only how to
+pair and a code field: no data, no project names. To pair a phone:
+
+```sh
+bun ~/Developer/personal/dotfiles/opencode/cmd/digest/pair.ts
+```
+
+The command prints a one-use code (good for five minutes) and the page's
+tailnet URLs: the MagicDNS name, the short name, and the IP. Open one of
+them on the phone and type the code. The token is kept in that origin's
+`localStorage`, so each URL pairs on its own. A phone paired at
+`http://100.x.y.z:8240` and then opened at `http://<host>.<tailnet>.ts.net:8240`
+asks to pair again: run `pair.ts` once more and type the new code there.
+Keep using one URL to avoid this. `pair.ts --list` shows the paired browsers
+and `--revoke <id>|all` unpairs them.
+
+`digest.tailnetRead` (a plugin option) is `"paired"` by default. Set it to
+`"member"` to let any device on his tailnet read the page unpaired. Marks
+and answers still need pairing there.
+
+**Refusals.** A request whose `Host` is not one of the listener's own names
+(its addresses, the MagicDNS name, the short name) is refused on every route.
+So a hostile name pointed at the address (DNS rebinding) reads nothing. A
+write must come from the origin of the `Host` it names, with the page's
+header, as JSON. Pairing tries are limited by source address:
+
+- each address may fail 5 times a minute;
+- past 30 failures a minute from all addresses together, an address that has
+  failed already waits;
+- an address with no failure in the minute always gets its try.
+
+So no device on the tailnet can lock pairing for the others. Programs on this
+host share one address, 127.0.0.1, with its browser; they run as him, and
+could read the pairing file anyway.
+
+**Health.** `GET /health` answers one line:
+
+```
+digest ok <build> host=<h> events=<n> last=<iso> peers=none tailnet=yes|no|held
+```
+
+`tailnet=held` means another server instance holds the tailnet port. A log
+that does not read gives `digest sick …`. On loopback the line is open. On
+the tailnet an unpaired request gets only `ok`. After each restart, the
+update's handoff logs the line (`handoff (first): digest ok …`). A sick or
+silent digest is logged as a warning and never rolls a build back.
+
+**Several servers.** OpenCode loads the plugin once per directory it serves.
+Only one instance holds each listener: the socket is made without
+`SO_REUSEPORT`, so a second bind of the same port fails, on Linux as on macOS
+(measured with Bun 1.4.4 on both). The other instances try again every 30 s,
+so a restart hands both listeners over.
+
 ## Background questions
 
 `mods/questions` lets an agent ask the owner something without stopping.
