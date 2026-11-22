@@ -23,6 +23,7 @@ import * as CodexAdmissionTest from "@dotfiles/opencode-orchestrate/memory/codex
 import * as FleetTest from "@dotfiles/opencode-orchestrate/memory/fleet"
 import * as MainLineTest from "@dotfiles/opencode-orchestrate/memory/main-line"
 import * as RunFilesTest from "@dotfiles/opencode-orchestrate/memory/run-files"
+import * as WorkGitTest from "@dotfiles/opencode-orchestrate/memory/work-git"
 import * as HeavyHostTest from "@dotfiles/opencode-orchestrate/memory/heavy-host"
 import * as ModelsTest from "@dotfiles/opencode-orchestrate/memory/models"
 import * as PoolPaceTest from "@dotfiles/opencode-orchestrate/memory/pool-pace"
@@ -162,6 +163,7 @@ const start = (world: World) =>
         FleetTest.layer([]),
         MainLineTest.layer(() => Option.none()),
         RunFilesTest.layer(new Map()),
+        WorkGitTest.layer(WorkGitTest.world()),
       )
     yield* make(
       (_ctx, _options, latchStart) => externals(latchStart),

@@ -29,6 +29,7 @@ import * as StepLogTest from "@dotfiles/opencode-orchestrate/memory/step-log"
 import * as FleetTest from "@dotfiles/opencode-orchestrate/memory/fleet"
 import * as MainLineTest from "@dotfiles/opencode-orchestrate/memory/main-line"
 import * as RunFilesTest from "@dotfiles/opencode-orchestrate/memory/run-files"
+import * as WorkGitTest from "@dotfiles/opencode-orchestrate/memory/work-git"
 import { FLEET_DESCRIPTION, FleetOutcome } from "@dotfiles/opencode-orchestrate/fleet"
 import { RECHECK_MS } from "@dotfiles/opencode-orchestrate/model"
 import * as OpenCodePoolPace from "@dotfiles/opencode-orchestrate/opencode/pool-pace"
@@ -200,6 +201,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
       FleetTest.layer(world.fleet ?? [], world.fleetOutcome, world.fleetCovers),
       MainLineTest.layer(() => Option.none()),
       RunFilesTest.layer(new Map()),
+      WorkGitTest.layer(WorkGitTest.world()),
     )
     const nudges: Array<OpenCodeSteer.Synthetic> = []
     const notes: Array<OpenCodeSteer.Synthetic> = []

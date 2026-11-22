@@ -143,6 +143,9 @@ describe("the merge check's tests", () => {
       for (const test of ["scripts/effect-domain-policy.test.ts", "scripts/effect-isolation.test.ts", "scripts/effect-process-policy.test.ts", "scripts/effect-small-rules.test.ts"])
         expect(tests("M\t.oxlintrc.json\n")).toContain(test)
       expect(tests("M\teffect-debt.json\n")).toContain("scripts/effect-domain-policy.test.ts")
+      // a5821de8 changed the three ignore lists alone; effect-debt.test copies them into its workspaces by path, and stayed unselected.
+      for (const file of ["effect-debt.json", ".oxlintrc.json", ".oxlintrc.effect-debt.json", "lint/package.json"])
+        expect(tests(`M\t${file}\n`)).toContain("scripts/effect-debt.test.ts")
       expect(tests("M\tsim/seed.ts\n")).toContain("scripts/accept.test.ts")
       // What no test reads selects none of them.
       expect(tests("M\tREADME.txt\n")).toEqual([])

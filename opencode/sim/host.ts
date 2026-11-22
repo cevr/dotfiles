@@ -479,7 +479,7 @@ export interface Options {
   readonly compactionReason?: boolean
   /** Background compaction: a session idle with a prompt at or past `trigger` and under `ceiling` gets a summary written ahead. */
   readonly backgroundCompaction?: { readonly trigger: number; readonly ceiling: number }
-  /** `experimental.automations` on: the automation tools are built in. */
+  /** `automations` on: the automation tools are built in. */
   readonly automations?: boolean
   readonly models?: ReadonlyArray<CatalogModel>
   /** The model sessions run on; default `sim/sim-model`, answered by `script`. */
@@ -963,7 +963,8 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     )
 
   /** The tools a request in `directory` offers: the built-ins, then each copy's transform there, in load order. */
-  // OpenCode's automation tools are built in only under `experimental.automations` (real OpenCode turns it on by default only in local and dev builds).
+  // OpenCode's automation tools are built in only under `automations` (real OpenCode's top-level `automations` key, on
+  // by default in every build since upstream cb82da7cde; the owner's hosts turn the plugin off, `-opencode.tool.automation`).
   const builtIn = [...BUILTIN, ...Arr.filter(AUTOMATION_TOOLS, () => options.automations === true)]
   const toolsOf = (directory: string) => {
     const offered = new Map<string, Option.Option<Tool.Info>>(builtIn.map((name) => [name, Option.none()]))

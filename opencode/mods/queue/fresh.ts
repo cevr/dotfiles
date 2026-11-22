@@ -6,8 +6,8 @@
 // SWEEP_EVERY; a session hears at most one note an hour (GAP_MS), the same
 // ask again only after REPEAT_MS, and one pass sends at most PER_PASS notes.
 import { Array as Arr, Clock, Context, Effect, Layer, Option, Ref } from "effect"
-import { type Linked, due, GAP_MS, keyOf, noteOf, openOf, type Sent, staleOf } from "./stale.ts"
-import { QueueHost, QueueStore, type Root } from "./service.ts"
+import { acknowledgedOf, due, GAP_MS, hashesOf, keyOf, type Linked, noteOf, openOf, type Sent, staleOf } from "./stale.ts"
+import { type Lost, QueueHost, QueueStore, type Root } from "./service.ts"
 
 /** How often the plugin sweeps, and how long after it starts the first pass runs. */
 export const SWEEP_EVERY = "10 minutes"
@@ -35,6 +35,9 @@ export class Freshness extends Context.Service<
   }
 >()("dotfiles-opencode/queue/Freshness") {}
 
+/** No lost work: orchestrate absent, or nothing to say. */
+const NO_LOSS: Lost = { lines: [], keys: [], hashes: new Map() }
+
 const distinct = <A>(values: ReadonlyArray<A>): ReadonlyArray<A> => [...new Set(values)]
 
 export const layer = Layer.effect(
@@ -46,6 +49,8 @@ export const layer = Layer.effect(
     const sent = yield* Ref.make(new Map<string, Sent>())
     /** Every wake id each session was seen to have pending: one seen and pending no more has ended. */
     const seen = yield* Ref.make(new Map<string, ReadonlySet<string>>())
+    /** The items each session restated after a note named them. */
+    const answered = new Map<string, ReadonlySet<string>>()
 
     /** The wake ids each session had pending before and has no more, remembering what is pending now. */
     const endedWakes = (sessionIDs: ReadonlyArray<string>) =>
@@ -90,7 +95,7 @@ export const layer = Layer.effect(
       const ended = yield* endedWakes(ids)
       const questions = yield* host.questions(ids)
       const last = yield* Ref.get(sent)
-      const wanted: Array<{ readonly root: Root; readonly key: string; readonly text: string; readonly noted: Noted }> = []
+      const wanted: Array<{ readonly root: Root; readonly key: string; readonly text: string; readonly lost: number; readonly noted: Noted }> = []
       for (const { root, snapshot } of queued) {
         if (wanted.length >= PER_PASS) break
         const previous = Option.fromNullishOr(last.get(root.id))
@@ -100,19 +105,27 @@ export const layer = Layer.effect(
         const sessions = distinct(
           Arr.flatMap(snapshot.items, (item) => Arr.filter(Option.toArray(Option.fromNullishOr(item.session)), () => item.state !== "done")),
         )
+        const touched = Option.getOrElse(Option.fromNullishOr(snapshot.touched), () => ({}))
+        // Orchestrate's lost work: asked only past the gap, so at most once an hour a session.
+        const lost = Option.getOrElse(yield* host.lost(root.id, hashesOf(snapshot.items)), () => NO_LOSS)
+        // An item a note named and the agent restated after it stays answered: a commit it names is not asked of again.
+        const acknowledged = new Set([...Option.getOrElse(Option.fromNullishOr(answered.get(root.id)), () => new Set<string>()), ...acknowledgedOf(previous, touched)])
+        answered.set(root.id, acknowledged)
         const stale = staleOf(snapshot.items, {
           now,
-          touched: Option.getOrElse(Option.fromNullishOr(snapshot.touched), () => ({})),
+          touched,
           linked: yield* linkedOf(sessions),
           openQuestions: Option.map(questions, (counts) => Option.getOrElse(Option.fromNullishOr(counts.get(root.id)), () => 0)),
           endedWakes: Option.getOrElse(Option.fromNullishOr(ended.get(root.id)), () => new Set<string>()),
+          unlanded: lost.hashes,
+          acknowledged,
         })
-        const key = keyOf(stale, open)
+        const key = keyOf(stale, open, lost.keys)
         if (!due(key, previous, now)) continue
-        wanted.push({ root, key, text: noteOf(stale, open), noted: { sessionID: root.id, stale: stale.map((each) => each.id), open, woke: !root.busy } })
+        wanted.push({ root, key, text: noteOf(stale, open, lost.lines), lost: lost.keys.length, noted: { sessionID: root.id, stale: stale.map((each) => each.id), open, woke: !root.busy } })
       }
-      return yield* Effect.forEach(wanted, ({ root, key, text, noted }) =>
-        host.note(root.id, text, `Queue check: ${noted.stale.length} stale of ${noted.open} open`, !root.busy, "staleness").pipe(
+      return yield* Effect.forEach(wanted, ({ root, key, text, lost, noted }) =>
+        host.note(root.id, text, `Queue check: ${noted.stale.length} stale of ${noted.open} open${Arr.match(Arr.filter([lost], (count) => count > 0), { onEmpty: () => "", onNonEmpty: ([count]) => `, ${count} not on main` })}`, !root.busy, "staleness").pipe(
           Effect.andThen(Ref.update(sent, (before) => new Map(before).set(root.id, { at: now, key }))),
           Effect.as([noted]),
           Effect.catchTag("NoteRefused", (refused) =>

@@ -4,7 +4,9 @@
  * OpenCode's TUI preloads one). It registers /answer, the shift+← hotkey and
  * the `session.composer.top` slot; `draw` renders the tray there. /answer, the
  * hotkey and a click on the tray (`open`) open the host's own question form for
- * the open questions (`@dotfiles/opencode-questions/opencode/form`).
+ * the questions open at that moment (`@dotfiles/opencode-questions/opencode/form`,
+ * `opener`): read from the server then, never the tray's last reading, and once
+ * per session while the form opens or shows, however many times they are used.
  *
  * shift+← is also the composer's `input.select.left` (the fork's
  * packages/tui/src/config/keybind.ts, bound by the managed textarea layer in
@@ -14,12 +16,13 @@
  * returns false, which hands the key on to the composer, which selects.
  */
 import { HOTKEY, opens } from "@dotfiles/opencode-questions/hotkey"
-import { type FormHost, fromContext, openForms } from "@dotfiles/opencode-questions/opencode/form"
+import { type FormHost, fromContext, opener } from "@dotfiles/opencode-questions/opencode/form"
 import { QUESTIONS } from "@dotfiles/opencode-questions/question"
 import { createQuestions, type Questions } from "@dotfiles/opencode-questions/tui/questions"
 import { COMMAND } from "@dotfiles/opencode-questions/tray"
 import type { Plugin } from "@opencode/plugin/tui"
 import type { JSX } from "@opentui/solid"
+import { Effect } from "effect"
 
 export type Draw = (input: {
   readonly sessionID: string
@@ -33,15 +36,25 @@ export const OPEN = `${QUESTIONS.id}.open`
 
 export const setup = (ctx: Plugin.Context, draw: Draw, host: FormHost = fromContext(ctx)): Questions => {
   const questions = createQuestions()
+  const forms = opener(host)
   const sessionOnScreen = () => {
     const route = ctx.ui.router.current()
     return route.type === "session" ? route.sessionID : undefined
   }
-  /** Open the forms of the questions the session's tray shows; say so when none opened. */
-  const answer = async (sessionID: string) => {
-    const done = await openForms(host, sessionID, questions.open(sessionID))
-    if (done.failed.length > 0) ctx.ui.toast.show({ message: `The questions of ${done.failed.join(", ")} did not open`, variant: "error" })
-  }
+  /**
+   * Open the form of the questions open in the session now (read from the server, not the tray's last reading);
+   * again while it opens or shows, nothing more. Say so when it could not open, or nothing was left to answer.
+   */
+  const answer = (sessionID: string) =>
+    Effect.runFork(
+      forms.open(sessionID).pipe(
+        Effect.map((done) => {
+          if (done === "failed") ctx.ui.toast.show({ message: "The questions did not open", variant: "error" })
+          if (done === "unread") ctx.ui.toast.show({ message: "The questions could not be read; try again", variant: "error" })
+          if (done === "none") ctx.ui.toast.show({ message: "Already answered", variant: "info" })
+        }),
+      ),
+    )
   ctx.keymap.layer(() => ({
     mode: "global",
     commands: [

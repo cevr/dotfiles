@@ -9,8 +9,10 @@
 // it in the real TUI).
 // tests/questions.test.ts runs it in OpenCode.
 import { expect, test } from "bun:test"
+import { Effect } from "effect"
 import type { FormInput } from "@dotfiles/opencode-questions/form"
 import type { Question } from "@dotfiles/opencode-questions/question"
+import type { Questions } from "@dotfiles/opencode-questions/tui/questions"
 import { ANSWER, OPEN, setup } from "./setup.ts"
 
 type Host = Parameters<typeof setup>[0]
@@ -50,14 +52,22 @@ const start = (route: { readonly type: string; readonly sessionID?: string }, co
   }
   const drawn: Array<string> = []
   const taps = new Map<string, () => void>()
-  const questions = setup(
+  // The server's open questions are the tray's reading here: setOpen stands for both.
+  const questions: Questions = setup(
     ctx as unknown as Host,
     (input) => {
       drawn.push(input.sessionID)
       taps.set(input.sessionID, input.open)
       return "dock"
     },
-    { pending: () => [], create: (sessionID, input) => Promise.resolve(void forms.push([sessionID, input])), asker: (sessionID) => sessionID },
+    {
+      pending: () => [],
+      read: (sessionID) => Effect.sync(() => questions.open(sessionID)),
+      create: (sessionID, input) => Effect.sync(() => void forms.push([sessionID, input])),
+      refresh: () => Effect.void,
+      cancel: () => Effect.void,
+      asker: (sessionID) => sessionID,
+    },
   )
   const layerOf = (id: string) => layers.find((layer) => layer.commands.some((command) => command.id === id))
   const command = (id: string) => layers.flatMap((layer) => layer.commands).find((candidate) => candidate.id === id)

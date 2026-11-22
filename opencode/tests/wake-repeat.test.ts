@@ -1,5 +1,5 @@
 // accept: deep (18.7 s alone on a quiet host: measured before the monitor moved to the simulated host, 1-minute load 45.1–62.5 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
-// Public seam: real OpenCode with `experimental.automations` on, the real wake
+// Public seam: real OpenCode with `automations` on, the real wake
 // server plugin, the built-in automation plugin off as daily writes it, and a
 // scripted model. scenarios/wake-repeat.ts asks the model once, keeping the
 // tools it was offered. The automation tools must be gone from the request

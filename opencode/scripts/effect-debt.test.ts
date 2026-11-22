@@ -3,6 +3,11 @@
  * counts, the `scripts/effect-debt.ts` command over real temporary workspaces (real oxlint and
  * plugin, or a stand-in linter that fails), and `.oxlintrc.json`'s hard rules over generated
  * forbidden and accepted fixtures in every path class.
+ *
+ * It copies the real policy, configs and manifests into its workspaces by path, so a change of one of them alone
+ * reaches it through no import: the merge check runs it on these (a5821de8 changed only the ignore lists, and
+ * main went red here unseen).
+ * @reads effect-debt.json .oxlintrc.json .oxlintrc.effect-debt.json package.json lint/** .gitattributes
  */
 import { describe, expect, test } from "bun:test"
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
@@ -376,6 +381,13 @@ const SOURCES = Arr.map(["mods/demo/model.ts", "cmd/demo/server.ts", "decider/de
 
 const hardConfigText = () => readReal(HARD_CONFIG).replace('"./lint/test-env.ts"', `"${path.join(REAL, "lint/test-env.ts")}"`)
 
+/** A config's text with its whole `ignorePatterns` list written as `patterns`, in their order. */
+const ignoring = (text: string, patterns: ReadonlyArray<string>) => {
+  const list = /"ignorePatterns": \[[^\]]*\]/
+  expect(text).toMatch(list)
+  return text.replace(list, `"ignorePatterns": [\n${patterns.map((pattern) => `    "${pattern}"`).join(",\n")}\n  ]`)
+}
+
 const git = (root: string, ...argv: ReadonlyArray<string>) =>
   spawn(["git", "-c", "user.email=effect-debt@example.com", "-c", "user.name=effect-debt", ...argv], root, CLI_TIMEOUT).pipe(
     Effect.tap((answer) => Effect.sync(() => expect({ argv, code: answer.code, stderr: answer.stderr }).toEqual({ argv, code: 0, stderr: answer.stderr }))),
@@ -522,10 +534,12 @@ describe("effect-debt --check over a real workspace", () => {
     "fails when the policy ignores a budgeted file: its debt is not re-spent",
     () =>
       failsAfter((root, budgets) => {
+        // One list in all three places, in one order: the check compares them in order, so the configs get the
+        // policy's list whole, never a pattern inserted beside one the real list may move (a5821de8 added one).
         const ignorePatterns = [...realPolicy.ignorePatterns, "mods/demo/**"]
         writePolicy(root, budgets, { ignorePatterns })
-        put(root, DEBT_CONFIG, readReal(DEBT_CONFIG).replace('"media/**"', '"media/**",\n    "mods/demo/**"'))
-        put(root, HARD_CONFIG, hardConfigText().replace('"media/**"', '"media/**",\n    "mods/demo/**"'))
+        put(root, DEBT_CONFIG, ignoring(readReal(DEBT_CONFIG), ignorePatterns))
+        put(root, HARD_CONFIG, ignoring(hardConfigText(), ignorePatterns))
         return []
       }, "lower: mods/demo/model.ts effect/noTryCatch has 0, budget 1"),
     TEST_TIMEOUT,

@@ -393,7 +393,7 @@ export const LAWS: ReadonlyArray<Law> = [
       }),
   },
   {
-    // Both hosts run with `experimental.automations` on, so the automation tools are built in.
+    // Both hosts run with `automations` on, so the automation tools are built in.
     name: LAW.tools,
     operations: ["tool.transform", "tool.list"],
     check: (ctx) =>

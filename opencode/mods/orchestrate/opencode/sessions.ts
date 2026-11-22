@@ -40,6 +40,9 @@ export type Get = (sessionID: string) => Effect.Effect<Session, unknown>
 /** OpenCode's session context: its messages, oldest first, as the host's `session.context` answers. */
 export type Messages = (sessionID: string) => Effect.Effect<ReadonlyArray<unknown>, unknown>
 
+/** OpenCode's sessions of a directory, by id, as the host's `session.list({ directory })` answers. */
+export type InDirectory = (directory: string) => Effect.Effect<ReadonlyArray<string>, unknown>
+
 const orNone = Effect.catchCause(() => Effect.succeed(undefined))
 const markOf = Schema.decodeUnknownOption(Mark)
 
@@ -54,7 +57,7 @@ export const lastWords = (messages: ReadonlyArray<unknown>): string | undefined 
 
 const isText = (part: unknown): part is { readonly text: string } => isObject(part) && part.type === "text" && typeof part.text === "string" && part.text.trim() !== ""
 
-export const layer = (get: Get, messages: Messages) =>
+export const layer = (get: Get, messages: Messages, inDirectory: InDirectory = () => Effect.succeed([])) =>
   Layer.succeed(Sessions, {
     parentOf: Effect.fn("Sessions.parentOf")(function* (sessionID: string) {
       return (yield* get(sessionID)).parentID || undefined
@@ -82,4 +85,5 @@ export const layer = (get: Get, messages: Messages) =>
     idleSinceOf: Effect.fn("Sessions.idleSinceOf")(function* (sessionID: string) {
       return Option.fromUndefinedOr((yield* get(sessionID)).idleSince)
     }, Effect.catchCause(() => Effect.succeed(Option.none<number>()))),
+    inDirectory: (directory: string) => inDirectory(directory).pipe(Effect.catchCause(() => Effect.succeed<ReadonlyArray<string>>([]))),
   })

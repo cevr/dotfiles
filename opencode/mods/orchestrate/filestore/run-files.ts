@@ -66,5 +66,6 @@ export const layer = Layer.succeed(
         try: () => write(path, text, { createPath: true }),
         catch: (cause) => new RunFileUnwritten({ path, message: String(cause) }),
       }),
+    writtenAt: (path) => Effect.map(statOf(path), Option.map((stat) => stat.mtimeMs)),
   }),
 )

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { DateTime, Option } from "effect"
 import type { Item } from "./item.ts"
-import { CAP, due, type Facts, GAP_MS, GRACE_MS, keyOf, type Linked, noteOf, REPEAT_MS, staleOf, UNTOUCHED_MS } from "./stale.ts"
+import { acknowledgedOf, CAP, due, type Facts, GAP_MS, GRACE_MS, hashesOf, keyOf, type Linked, noteOf, REPEAT_MS, staleOf, UNTOUCHED_MS } from "./stale.ts"
 
 const NOW = Date.parse("2026-11-18T12:00:00Z")
 const HOUR = 60 * 60_000
@@ -9,7 +9,7 @@ const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms))
 
 const item = (id: string, state: Item["state"], extra: Partial<Item> = {}): Item => ({ id, text: `the ${id}`, state, owner: "mine", ...extra })
 
-const facts = (extra: Partial<Facts> = {}): Facts => ({ now: NOW, touched: {}, linked: new Map(), openQuestions: Option.some(1), endedWakes: new Set(), ...extra })
+const facts = (extra: Partial<Facts> = {}): Facts => ({ now: NOW, touched: {}, linked: new Map(), openQuestions: Option.some(1), endedWakes: new Set(), unlanded: new Map(), acknowledged: new Set(), ...extra })
 
 const reasons = (items: ReadonlyArray<Item>, given: Partial<Facts>) => staleOf(items, facts(given)).map((each) => [each.id, each.reason])
 
@@ -109,5 +109,43 @@ describe("noteOf", () => {
     const note = noteOf(staleOf(many, facts()), 40)
     expect(note).toContain("- and 25 more")
     expect(note).toContain(`Your queue holds 40 open items, more than ${CAP}: collapse them`)
+  })
+})
+
+describe("work not on the default branch", () => {
+  const WHY = "not on main: 2 commits not there, committed 9 h ago; land it, or mark it superseded or dropped"
+
+  test("the commits an open item names: 7 to 40 hex with a digit and a letter, from its text and detail, once each; a done item's, a word or a number are not", () => {
+    const items = [
+      item("land", "next", { text: "land c0ffee1 then abc1234def", detail: "from c0ffee1; see PR 1234567" }),
+      item("word", "waiting", { text: "deadbeef cafebabe" }),
+      item("old", "done", { text: "beef123 landed" }),
+      item("full", "running", { detail: "head 0123456789abcdef0123456789abcdef01234567" }),
+    ]
+    expect(hashesOf(items)).toEqual(["c0ffee1", "abc1234def", "0123456789abcdef0123456789abcdef01234567"])
+  })
+
+  test("an item naming a commit that is not on main past the threshold is stale, with why and what to do; once restated after a note it is not again", () => {
+    const items = [item("land", "next", { text: "land c0ffee1" }), item("other", "next", { text: "unrelated" })]
+    const touched = { land: NOW - HOUR, other: NOW - HOUR }
+    expect(reasons(items, { touched, unlanded: new Map([["c0ffee1", WHY]]) })).toEqual([["land", `it names commit c0ffee1, ${WHY}`]])
+    expect(reasons(items, { touched, unlanded: new Map([["c0ffee1", WHY]]), acknowledged: new Set(["land"]) })).toEqual([])
+  })
+
+  test("an item is acknowledged when the last note named it and it was restated after that note", () => {
+    const sent = Option.some({ at: NOW - 2 * HOUR, key: "land other /code/.work/app/orphan" })
+    expect([...acknowledgedOf(sent, { land: NOW - HOUR, other: NOW - 3 * HOUR, fresh: NOW })]).toEqual(["land"])
+    expect([...acknowledgedOf(Option.none(), { land: NOW })]).toEqual([])
+  })
+
+  test("the lanes and units status lists are part of the ask and of the note, after the stale items", () => {
+    const lost = { lines: ["orchestrate: committed work not on main, nobody on it (1, oldest first):", "- /code/.work/app/orphan · 2 d · 2 commits · orphan work · no session known", "Land each …"], keys: ["/code/.work/app/orphan"] }
+    expect(keyOf([], 1, lost.keys)).toBe("/code/.work/app/orphan")
+    const stale = staleOf([item("old", "next")], facts({ touched: { old: NOW - 7 * HOUR } }))
+    expect(keyOf(stale, 1, lost.keys)).toBe("old /code/.work/app/orphan")
+    const note = noteOf(stale, 1, lost.lines).split("\n")
+    expect(note.slice(1, 3)).toEqual(["This item looks stale:", "- old [next]: the old (untouched for 7 h)"])
+    expect(note.slice(3, 6)).toEqual(lost.lines)
+    expect(noteOf([], 1, lost.lines).split("\n").slice(0, 2)).toEqual(["Queue check: your queue may be out of date. Nothing was changed for you.", lost.lines[0]])
   })
 })

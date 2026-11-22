@@ -2915,7 +2915,14 @@ select-left: with text in the composer the key stays the composer's and
 selects (the hotkey's layer sits above the textarea's and hands the key on);
 with no question open it does nothing, as a click does. A click takes no key
 from the composer, so it opens the form whatever the composer holds. A session that already has its form
-pending gets no second.
+pending gets no second, and opening is idempotent: while a form is being made
+(a slow server) or shows, another click, `/answer` or shift+← does nothing
+more. The form holds the questions open at that moment, read from the server
+then, not the tray's last reading: a question answered meanwhile (in the last
+form, on the digest page, in another TUI) never shows again, an open that
+finds none says `Already answered`, and a form of ours whose questions all
+closed is cancelled at the next open rather than shown. A submit answers the
+questions still open; one closed meanwhile is left out, not a failed submit.
 
 ```
 Background questions
@@ -3258,9 +3265,10 @@ schedule` is no longer needed for that.
 ### OpenCode's automations are off
 
 OpenCode's own automation tools (`automation_create`, `_list`, `_pause`,
-`_resume`, `_delete`, offered under `experimental.automations`, which upstream
-renamed from `experimental.schedules` and its schedule tools on 2026-11-16 and
-still reads under the old key) fire an automation by prompting its session
+`_resume`, `_delete`, offered under the top-level `automations` config key, on
+by default since upstream cb82da7cde (2026-11-20; before it the
+`experimental.automations` flag, renamed from `experimental.schedules` and its
+schedule tools on 2026-11-16; the old keys now only warn)) fire an automation by prompting its session
 with its whole action: a real user message each
 time, kilobytes for a watch that fires on every change. The wake plugin takes
 them out of the registry for every agent (`AUTOMATION_IDS` in
@@ -3289,7 +3297,7 @@ the schedule; what has no equivalent (cron, a Code Mode check, remaining
 runs) is skipped and named. `--rows <file>` reads another machine's rows
 (the script's `QUERY` through `sqlite3 -readonly -json`).
 `tests/wake-repeat.test.ts` runs `scenarios/wake-repeat.ts` in real OpenCode
-with `experimental.automations` on and the built-in automation plugin off: no
+with `automations` on and the built-in automation plugin off: no
 request offers an automation tool, the server lists no `/automation`, and a
 `repeat: "change"` monitor wakes the session once per change of a file.
 
