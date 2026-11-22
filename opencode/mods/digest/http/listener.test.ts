@@ -21,6 +21,7 @@ import type { MarkLine } from "../marks.ts"
 import { CODE_TTL_MS, OLD_COOKIE, type Pairing, SOURCE_FAILURES, TOKEN_HEADER } from "../pairing.ts"
 import { closed, type Exclusion, exclusionsFrom, type Members, membersOf, sourceOf, type WriteConfig } from "../members.ts"
 import { ACCESS, type Listener, type TailnetWrite } from "../policy.ts"
+import { readExclusions, statusFrom } from "../process/tailnet.ts"
 import { type Handlers, HOSTNAME, kindOf, listen, PAGE_HEADER, type PeerOf, type Place, serveTailnet, socketPeer } from "./listener.ts"
 
 const NOW = 1_795_204_800_000
@@ -873,7 +874,7 @@ describe("a colleague's device that calls itself like an agent host (round 1, B1
 // This host harbor; his phone; his workbox skiff (an agent host); his spare laptop dinghy, excluded by its stable ID.
 const DINGHY = "100.101.102.130"
 const OWN_PHONE = "100.101.102.110"
-const EXCLUDED: ReadonlyArray<Exclusion> = [{ name: "dinghy", id: Option.some("nDinghy1CNTRL") }]
+const EXCLUDED: ReadonlyArray<Exclusion> = [{ name: "dinghy", ids: ["nDinghy1CNTRL"] }]
 const withDinghy = (dinghy: { readonly dnsName: string; readonly id: string }) =>
   StatusRead.Read({
     status: {
@@ -926,22 +927,64 @@ describe("an excluded device of his gets nothing unpaired, as another user's dev
     await serveAs({ config: AS_SHIPPED, status: withDinghy({ dnsName: "dinghy", id: "nDinghy1CNTRL" }), peer: "127.0.0.1", listener: "loopback" }, async (served) => {
       expect(await (await fetch(`${served.base}/health`)).text()).toEndWith(" writes=member-except-hosts members=2 writers=1 excluded=1")
     })
-    // Renamed and re-keyed both, nothing finds it: it counts as his again, and health says so instead of hiding it.
+    // Renamed and re-registered (a new node: new name, new ID), nothing finds the old one: the device is gone as far as
+    // Tailscale says (as when he removes it from his tailnet), so access is as it was, and health notes it.
     await serveAs({ config: AS_SHIPPED, status: withDinghy({ dnsName: "lifeboat", id: "nDinghy2CNTRL" }), peer: "127.0.0.1", listener: "loopback" }, async (served) => {
       expect(await (await fetch(`${served.base}/health`)).text()).toEndWith(" writes=member-except-hosts members=3 writers=2 excluded=0:unmatched:dinghy")
     })
-    // Shipped without an ID (the installer could not read one): kept out by name, and health says it is unkeyed.
-    expect(membersOf({ ...AS_SHIPPED, excluded: [{ name: "dinghy", id: Option.none() }] }, withDinghy({ dnsName: "dinghy", id: "nDinghy1CNTRL" }), NOW).excluded).toBe("1:unkeyed:dinghy")
   })
 
-  test("the installer's exclusions: the ID of the device of his that carries the name, never another user's; none when no device of his does", () => {
+  test("an exclusion with no ID yet (unkeyed) closes every tailnet source, his phone too, reads and writes, and health says why", async () => {
+    const unkeyed = { ...AS_SHIPPED, excluded: [{ name: "dinghy", ids: [] }] }
+    for (const peer of [OWN_PHONE, DINGHY, "100.101.102.104"])
+      await serveAs({ config: unkeyed, status: withDinghy({ dnsName: "dinghy", id: "nDinghy1CNTRL" }), peer, listener: "tailnet" }, async (served) => {
+        expect([peer, (await fetch(`${served.base}/view.json`)).status, (await send(served, "/api/mark", { id: "m1", mark: "read" })).status, await served.written()]).toEqual([peer, 401, 401, 0])
+        // Pairing still works.
+        expect((await fetch(`${served.base}/view.json`, { headers: { [TOKEN_HEADER]: await served.pair() } })).status).toBe(200)
+      })
+    await serveAs({ config: unkeyed, status: withDinghy({ dnsName: "dinghy", id: "nDinghy1CNTRL" }), peer: "127.0.0.1", listener: "loopback" }, async (served) => {
+      expect(await (await fetch(`${served.base}/health`)).text()).toEndWith(" writes=paired:unkeyed:dinghy members=0 writers=0 excluded=0")
+    })
+  })
+
+  test("the installer's exclusions: every ID the name ever had, plus the ID of the device of his carrying it now, never another user's", () => {
     // Only a colleague's device answers to "dinghy" (its HostName; Tailscale named it dinghy-1), and also one named dinghy outright.
     const theirs = (dnsName: string) => ({ dnsName: Option.some(`${dnsName}.example-tailnet.ts.net`), stableId: Option.some("nTheirs1CNTRL"), hostName: "dinghy", ips: [COLLEAGUE], userId: Option.some(9), tagged: false, shared: false })
     const colleague = StatusRead.Read({
       status: { backendState: "Running", dnsName: Option.some("harbor.example-tailnet.ts.net"), ips: ["100.101.102.103"], userId: Option.some(7), tagged: false, peers: [theirs("dinghy-1"), theirs("dinghy")] },
     })
-    expect(exclusionsFrom(["dinghy"], withDinghy({ dnsName: "dinghy", id: "nDinghy1CNTRL" }))).toEqual([{ name: "dinghy", id: "nDinghy1CNTRL" }])
-    expect(exclusionsFrom(["dinghy"], colleague)).toEqual([{ name: "dinghy" }])
-    expect(exclusionsFrom(["dinghy"], StatusRead.Unread({ why: "no-cli" }))).toEqual([{ name: "dinghy" }])
+    const keyed = [{ name: "dinghy", ids: ["nDinghy1CNTRL"] }]
+    expect(exclusionsFrom([], ["dinghy"], withDinghy({ dnsName: "dinghy", id: "nDinghy1CNTRL" }))).toEqual(keyed)
+    // A first configure with no device of his by the name, or no status: unkeyed (which closes until a configure finds it).
+    expect([exclusionsFrom([], ["dinghy"], colleague), exclusionsFrom([], ["dinghy"], StatusRead.Unread({ why: "no-cli" }))]).toEqual([[{ name: "dinghy", ids: [] }], [{ name: "dinghy", ids: [] }]])
+    // Once keyed, nothing drops the ID: renamed, no status, a colleague's device taking the name.
+    expect(exclusionsFrom(keyed, ["dinghy"], withDinghy({ dnsName: "lifeboat", id: "nDinghy1CNTRL" }))).toEqual(keyed)
+    expect(exclusionsFrom(keyed, ["dinghy"], StatusRead.Unread({ why: "cli-timeout" }))).toEqual(keyed)
+    expect(exclusionsFrom(keyed, ["dinghy"], colleague)).toEqual(keyed)
+    // Re-keyed under the same name: the new ID is added, the old one kept.
+    expect(exclusionsFrom(keyed, ["dinghy"], withDinghy({ dnsName: "dinghy", id: "nDinghy2CNTRL" }))).toEqual([{ name: "dinghy", ids: ["nDinghy1CNTRL", "nDinghy2CNTRL"] }])
+  })
+
+  // The verifier's round-2 probe (verify-exclusion-rename-r2.test.ts), adopted: the device renamed, then the installer
+  // configures again through its own reader and a fake CLI; the shipped exclusion keeps the ID, and the device stays out.
+  test("renamed excluded device, after the next configure: the installer keeps its ID and the device reads and marks nothing unpaired", async () => {
+    using held = scratch("digest-rename-")
+    const cli = join(held.path, "tailscale")
+    writeFileSync(
+      cli,
+      [
+        "#!/bin/sh",
+        "# harbor (user 7), his phone, his dinghy RENAMED to lifeboat (same stable ID).",
+        `echo '{"BackendState":"Running","Self":{"DNSName":"harbor.example-tailnet.ts.net.","ID":"nHarbor","TailscaleIPs":["100.101.102.103"],"UserID":7},"Peer":{"k1":{"DNSName":"phone.example-tailnet.ts.net.","ID":"nPhone","TailscaleIPs":["${OWN_PHONE}"],"UserID":7},"k2":{"DNSName":"lifeboat.example-tailnet.ts.net.","ID":"nDinghy1CNTRL","HostName":"lifeboat","TailscaleIPs":["${DINGHY}"],"UserID":7}}}'`,
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    )
+    const shipped = await readExclusions(EXCLUDED, ["dinghy"], [cli])
+    expect(shipped).toEqual(EXCLUDED)
+    const status = await Effect.runPromise(statusFrom([cli]))
+    await serveAs({ config: { tailnetWrite: "member-except-hosts", agentHosts: [], excluded: shipped }, status, peer: DINGHY, listener: "tailnet" }, async (served) => {
+      expect([(await fetch(`${served.base}/view.json`)).status, (await send(served, "/api/mark", { id: "m1", mark: "read" })).status, await served.written()]).toEqual([401, 401, 0])
+    })
   })
 })

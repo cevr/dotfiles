@@ -15,7 +15,7 @@
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
 import { canonicalOf, type PeerStatus, StatusRead, type TailscaleStatus } from "./bind.ts"
-import { type Exclusion, type Members, membersOf, sourceOf } from "./members.ts"
+import { type Exclusion, exclusionsFrom, type Members, membersOf, sourceOf } from "./members.ts"
 import { decide, type Facts, type Policy, ROUTE_KINDS, TAILNET_WRITES } from "./policy.ts"
 
 const NOW = 1_795_204_800_000
@@ -72,9 +72,11 @@ const reference = (status: TailscaleStatus, excluded: ReadonlyArray<Exclusion>) 
   const selfHis = !status.tagged && Option.isSome(status.userId)
   const sameUser = (peer: PeerStatus) => selfHis && !peer.tagged && !peer.shared && Option.isSome(peer.userId) && Option.getOrUndefined(peer.userId) === Option.getOrUndefined(status.userId)
   const isExcluded = (peer: PeerStatus) =>
-    excluded.some((each) => (Option.isSome(each.id) && Option.getOrUndefined(each.id) === Option.getOrUndefined(peer.stableId)) || dnsSpellings(peer.dnsName).includes(each.name.toLowerCase()))
-  const peerHis = (peer: PeerStatus) => sameUser(peer) && !isExcluded(peer)
-  const his = [...status.ips.filter(() => selfHis), ...status.peers.filter(peerHis).flatMap((peer) => peer.ips)].map(spelling)
+    excluded.some((each) => each.ids.some((id) => Option.contains(peer.stableId, id)) || dnsSpellings(peer.dnsName).includes(each.name.toLowerCase()))
+  // An unkeyed exclusion cannot be applied: nothing is his until it has an ID.
+  const keyed = excluded.every((each) => each.ids.length > 0)
+  const peerHis = (peer: PeerStatus) => keyed && sameUser(peer) && !isExcluded(peer)
+  const his = [...status.ips.filter(() => selfHis && keyed), ...status.peers.filter(peerHis).flatMap((peer) => peer.ips)].map(spelling)
   const theirs = new Set(status.peers.filter((peer) => !peerHis(peer)).flatMap((peer) => peer.ips).map(spelling))
   return {
     addresses: new Set(his.filter((each) => !theirs.has(each))),
@@ -85,7 +87,7 @@ const reference = (status: TailscaleStatus, excluded: ReadonlyArray<Exclusion>) 
 
 const served = (facts: Facts, policy: Policy) => decide(facts, policy)._tag === "Serve"
 
-const exclusionOf = (random: Random): Exclusion => ({ name: random.pick(NAMES.filter((each) => each !== "")), id: Option.filter(Option.some(random.pick([...IDS, "nGone1CNTRL"])), () => random.chance(0.8)) })
+const exclusionOf = (random: Random): Exclusion => ({ name: random.pick(NAMES.filter((each) => each !== "")), ids: random.some([...IDS, "nGone1CNTRL"]) })
 
 describe("an agent host or an exclusion only restricts, over generated tailnets", () => {
   const random = generator(20_261_122)
@@ -135,19 +137,99 @@ describe("an agent host or an exclusion only restricts, over generated tailnets"
       const members = membersOf({ tailnetWrite: "member-except-hosts", agentHosts, excluded }, StatusRead.Read({ status }), NOW)
       const his = reference(status, excluded)
       const missing = agentHosts.filter((entry) => Option.match(canonicalOf(entry), { onSome: (address) => !his.addresses.has(address), onNone: () => !his.names.has(entry.toLowerCase()) }))
-      return [{ agentHosts, missing, write: members.write, why: members.why }].filter((each) => each.missing.length > 0 && (each.write !== "paired" || !each.why.startsWith("unresolved:")))
+      return [{ agentHosts, missing, write: members.write, why: members.why }].filter((each) => each.missing.length > 0 && (each.write !== "paired" || !/^(unresolved|unkeyed):/.test(each.why)))
     })
     expect(wrong.slice(0, 3)).toEqual([])
   })
 
-  test("an exclusion whose ID none of his devices has, or with no ID, is named in health", () => {
+  test("an unkeyed exclusion closes every switch (health names it); a keyed one none of whose IDs his devices have is named unmatched", () => {
     const wrong = cases.flatMap(({ status, excluded }) => {
       const members = membersOf({ tailnetWrite: "member", agentHosts: [], excluded }, StatusRead.Read({ status }), NOW)
       const ids = reference(status, excluded).ids
-      const named = excluded.flatMap((each) => Option.match(each.id, { onNone: () => [`unkeyed:${each.name}`], onSome: (id) => [`unmatched:${each.name}`].filter(() => !ids.has(id)) }))
-      return [{ excluded, word: members.excluded, named }].filter((each) => !each.named.every((part) => each.word.includes(part)) || (each.named.length === 0 && each.word.includes(":")))
+      const unkeyed = excluded.filter((each) => each.ids.length === 0)
+      const named = excluded.flatMap((each) => [`unmatched:${each.name}`].filter(() => !each.ids.some((id) => ids.has(id))))
+      const closedRight = unkeyed.length === 0 || (members.write === "paired" && members.why === `unkeyed:${unkeyed[0]?.name ?? ""}` && members.own.length + members.agents.length === 0)
+      const namedRight = unkeyed.length > 0 || (named.every((part) => members.excluded.includes(part)) && (named.length > 0 || !members.excluded.includes(":")))
+      return [{ excluded, word: members.excluded, why: members.why, named }].filter(() => !closedRight || !namedRight)
     })
     expect(wrong.slice(0, 3)).toEqual([])
   })
 })
 
+
+// ── Exclusions over time (round 2's B1): renames, re-keys, removals, another user's device taking the name, configures ──
+
+/** One of his devices that is excluded by name ("dinghy"), as it changes; a colleague's device that may take the name. */
+interface World {
+  readonly dinghy: { readonly present: boolean; readonly name: string; readonly id: string }
+  readonly colleague: Option.Option<string>
+}
+const DINGHY_IP = "100.101.102.130"
+
+const worldStatus = (world: World): TailscaleStatus => ({
+  backendState: "Running",
+  dnsName: Option.some("harbor.example-tailnet.ts.net"),
+  ips: ["100.101.102.103"],
+  userId: Option.some(HIS),
+  tagged: false,
+  peers: [
+    { dnsName: Option.some("phone.example-tailnet.ts.net"), stableId: Option.some("nPhone"), hostName: "localhost", ips: ["100.101.102.110"], userId: Option.some(HIS), tagged: false, shared: false },
+    ...[{ dnsName: Option.some(`${world.dinghy.name}.example-tailnet.ts.net`), stableId: Option.some(world.dinghy.id), hostName: world.dinghy.name, ips: [DINGHY_IP], userId: Option.some(HIS), tagged: false, shared: false }].filter(() => world.dinghy.present),
+    ...Option.toArray(world.colleague).map((name) => ({ dnsName: Option.some(`${name}.example-tailnet.ts.net`), stableId: Option.some("nTheirs"), hostName: name, ips: ["100.101.102.120"], userId: Option.some(9), tagged: false, shared: false })),
+  ],
+})
+
+type Step = "rename" | "rekey" | "remove" | "readd" | "colleague" | "configure" | "configure-unread" | "request"
+const STEPS: ReadonlyArray<Step> = ["rename", "rekey", "remove", "readd", "colleague", "configure", "configure", "configure-unread", "request", "request"]
+
+/** The world after `step`; the n-th re-key gives the device a new stable ID. */
+const changed = (world: World, step: Step, random: Random, n: number): World =>
+  ({
+    rename: { ...world, dinghy: { ...world.dinghy, name: random.pick(["lifeboat", "raft", "dinghy-2", "dinghy"]) } },
+    rekey: { ...world, dinghy: { ...world.dinghy, id: `nDinghy${n}` } },
+    remove: { ...world, dinghy: { ...world.dinghy, present: false } },
+    readd: { ...world, dinghy: { ...world.dinghy, present: true } },
+    colleague: { ...world, colleague: Option.some(random.pick(["dinghy", "dinghy-1", "lifeboat"])) },
+    configure: world,
+    "configure-unread": world,
+    request: world,
+  })[step]
+
+describe("an exclusion over time: renames, re-keys, removals, another user's device taking its name, configures", () => {
+  test("a device ever keyed as excluded is never admitted unpaired, no configure unkeys an exclusion or drops an ID, and no other user's ID is ever shipped", () => {
+    const random = generator(20_261_123)
+    const wrong: Array<unknown> = []
+    for (const run of Array.from({ length: 400 }, (_, index) => index)) {
+      let world: World = { dinghy: { present: true, name: "dinghy", id: "nDinghy0" }, colleague: Option.none() }
+      // Nothing shipped yet (no state file): the first configure may well have no status.
+      let shipped: Option.Option<ReadonlyArray<Exclusion>> = Option.none()
+      const everKeyed = new Set<string>()
+      const steps = Array.from({ length: 12 }, () => random.pick(STEPS))
+      steps.forEach((step, n) => {
+        world = changed(world, step, random, n + 1)
+        const status = StatusRead.Read({ status: worldStatus(world) })
+        if (step === "configure" || step === "configure-unread") {
+          const before = Option.getOrElse(shipped, () => [])
+          const read = { configure: status, "configure-unread": StatusRead.Unread({ why: "cli-failed" }) }[step]
+          const next = exclusionsFrom(before, ["dinghy"], read)
+          const lost = before.flatMap((each) => each.ids).filter((id) => !next.some((entry) => entry.ids.includes(id)))
+          if (lost.length > 0) wrong.push({ run, steps, n, lost })
+          if (next.some((entry) => entry.ids.includes("nTheirs"))) wrong.push({ run, steps, n, theirs: next })
+          next.forEach((entry) => entry.ids.forEach((id) => everKeyed.add(id)))
+          shipped = Option.some(next)
+        }
+        // Once a configure shipped it, every request is checked: the device keyed (or still named) never gets in unpaired.
+        Option.map(shipped, (excluded) => {
+          const members = membersOf({ tailnetWrite: "member", agentHosts: [], excluded }, status, NOW)
+          const keyedNow = world.dinghy.present && (everKeyed.has(world.dinghy.id) || world.dinghy.name === "dinghy")
+          const admitted = ROUTE_KINDS.filter((kind) =>
+            served({ listener: "tailnet", kind, source: sourceOf(DINGHY_IP, members), host: "harbor:8240", hosts: ["harbor:8240"], origin: "http://harbor:8240", pageHeader: true, json: true, paired: false }, { tailnetRead: "member", tailnetWrite: members.write }),
+          ).filter((kind) => ["read", "mark", "answer"].includes(kind))
+          if (keyedNow && admitted.length > 0) wrong.push({ run, steps, n, world, excluded, admitted })
+          return members
+        })
+      })
+    }
+    expect(wrong.slice(0, 3)).toEqual([])
+  })
+})

@@ -14,9 +14,10 @@
 // - Excluded (`digest.excludedDevices`): his devices that count as nobody's, reading and writing nothing unpaired,
 //   as another user's device. Each exclusion carries the device's MagicDNS name and its stable node ID (the status's
 //   `ID`: the coordination server assigns it, and a rename or a new HostName does not change it); a device either
-//   matches is excluded, so taking out more only restricts. An exclusion keyed by an ID none of his devices has (a
-//   re-keyed or removed device), or shipped with no ID, is named in health (`unmatched:` / `unkeyed:`), since a
-//   missed exclusion fails open: the device would count as his again.
+//   matches is excluded, so taking out more only restricts. The installer keeps every ID it shipped, so a rename never
+//   unkeys one (`exclusionsFrom`). An exclusion with no ID (unkeyed) cannot be applied, so it closes every tailnet
+//   source to "paired", reads and writes, until it has one (health: `paired:unkeyed:<name>`). One whose IDs no device
+//   of his has is a device gone (removed from his tailnet): harmless, access unchanged, health notes `unmatched:`.
 // - Under `digest.tailnetWrite: "member-except-hosts"`, an entry none of his devices answers to closes the writes to
 //   "paired" (fail closed), and the health line says which name, whatever other users' devices call themselves.
 // - The entries are resolved at each status read, so a renamed or re-keyed device leaves no stale address behind.
@@ -31,12 +32,13 @@ import type { Source, TailnetWrite } from "./policy.ts"
 export const MEMBERS_TTL = Duration.seconds(75)
 
 /**
- * One of his devices to treat as nobody's (`digest.excludedDevices`): its MagicDNS name, and its Tailscale stable node
- * ID (`ID` in the status), which the device cannot change, resolved among his devices when the tree is configured.
+ * One of his devices to treat as nobody's (`digest.excludedDevices`): its MagicDNS name, and every Tailscale stable
+ * node ID (`ID` in the status) it has had, which the device cannot change, resolved among his devices when the tree
+ * is configured and kept from one configure to the next (`exclusionsFrom`). With no ID yet it is unkeyed.
  */
 export interface Exclusion {
   readonly name: string
-  readonly id: Option.Option<string>
+  readonly ids: ReadonlyArray<string>
 }
 
 /** `digest.tailnetWrite`, `digest.agentHosts` and `digest.excludedDevices`, as configured. */
@@ -62,8 +64,7 @@ export interface Members {
   readonly writers: number
   /**
    * The exclusions as health names them (`excluded=`): how many of his devices are excluded, then
-   * `:unmatched:<name>` for an exclusion whose ID none of his devices has (its name matched, or nothing did), or
-   * `:unkeyed:<name>` for one shipped without an ID.
+   * `:unmatched:<name>` for an exclusion none of whose IDs a device of his has (an unkeyed one closes instead).
    */
   readonly excluded: string
   /** When the status was read. */
@@ -103,21 +104,15 @@ const selfIsHis = (status: TailscaleStatus): boolean => !status.tagged && Option
 const isOwn = (status: TailscaleStatus, peer: PeerStatus): boolean =>
   selfIsHis(status) && !peer.tagged && !peer.shared && Option.getOrElse(Option.zipWith(status.userId, peer.userId, (mine, theirs) => mine === theirs), () => false)
 
-/** Whether an exclusion takes `peer`: by its stable ID, or by its MagicDNS name (either: excluding more only restricts). */
-const excludes = (exclusion: Exclusion, peer: PeerStatus): boolean =>
-  Option.getOrElse(Option.zipWith(exclusion.id, peer.stableId, (id, theirs) => id === theirs), () => false) || answersTo(exclusion.name, { dnsName: peer.dnsName, ips: [] })
+/** Whether `peer` carries one of the exclusion's stable IDs. */
+const keyedTo = (exclusion: Exclusion, peer: PeerStatus): boolean => exclusion.ids.some((id) => Option.contains(peer.stableId, id))
 
-/** Health's `excluded=` word: the count, and each exclusion its ID does not find (or that has none). */
+/** Whether an exclusion takes `peer`: by one of its stable IDs, or by its MagicDNS name (either: excluding more only restricts). */
+const excludes = (exclusion: Exclusion, peer: PeerStatus): boolean => keyedTo(exclusion, peer) || answersTo(exclusion.name, { dnsName: peer.dnsName, ips: [] })
+
+/** Health's `excluded=` word: the count, and each exclusion none of whose IDs a device of his has (a device gone: harmless). */
 const exclusionsWord = (exclusions: ReadonlyArray<Exclusion>, his: ReadonlyArray<PeerStatus>, count: number): string =>
-  [
-    `${count}`,
-    ...exclusions.flatMap((exclusion) =>
-      Option.match(exclusion.id, {
-        onNone: () => [`unkeyed:${word(exclusion.name)}`],
-        onSome: (id) => [`unmatched:${word(exclusion.name)}`].filter(() => !his.some((peer) => Option.contains(peer.stableId, id))),
-      }),
-    ),
-  ].join(":")
+  [`${count}`, ...exclusions.flatMap((exclusion) => [`unmatched:${word(exclusion.name)}`].filter(() => !his.some((peer) => keyedTo(exclusion, peer))))].join(":")
 
 /** His devices from a status read at `at`, under `config`. */
 export const membersOf = (config: WriteConfig, read: StatusRead, at: number): Members =>
@@ -125,6 +120,9 @@ export const membersOf = (config: WriteConfig, read: StatusRead, at: number): Me
     Unread: ({ why }) => closed(`status:${word(why)}`, at),
     Read: ({ status }) => {
       if (status.backendState !== "Running") return closed("not-running", at)
+      // An exclusion with no stable ID cannot be applied whatever the device is called: everything closes until it has one.
+      const unkeyed = Option.fromUndefinedOr(config.excluded.find((exclusion) => exclusion.ids.length === 0))
+      if (Option.isSome(unkeyed)) return closed(`unkeyed:${word(unkeyed.value.name)}`, at)
       // An excluded device of his is nobody's, like another user's: its addresses count as theirs.
       const ownPeers = status.peers.filter((peer) => isOwn(status, peer))
       const isExcluded = (peer: PeerStatus) => config.excluded.some((exclusion) => excludes(exclusion, peer))
@@ -151,15 +149,18 @@ export const membersOf = (config: WriteConfig, read: StatusRead, at: number): Me
   })
 
 /**
- * `digest.excludedDevices` for the installer: each name with the stable ID of the device of HIS that carries it as its
- * MagicDNS name (or first label), read now; a name none of his devices carries (or no status) has no ID, which health
- * then names as `unkeyed`.
+ * `digest.excludedDevices` for the installer, from what it shipped before (`previous`) and the status now: each name
+ * keeps every stable ID it ever had, and adds the ID of the device of HIS that carries the name as its MagicDNS name
+ * (or first label) now. An ID is never dropped, so a rename, a status that cannot be read, or another user's device
+ * taking the name never unkeys an exclusion; a name with no ID yet (first configure, no status) ships unkeyed, which
+ * closes the tailnet to "paired" until it has one.
  */
-export const exclusionsFrom = (names: ReadonlyArray<string>, read: StatusRead): ReadonlyArray<{ readonly name: string; readonly id?: string }> =>
+export const exclusionsFrom = (previous: ReadonlyArray<Exclusion>, names: ReadonlyArray<string>, read: StatusRead): ReadonlyArray<Exclusion> =>
   names.map((name) => {
     const his = Match.valueTags(read, { Read: ({ status }) => status.peers.filter((peer) => status.backendState === "Running" && isOwn(status, peer)), Unread: (): ReadonlyArray<PeerStatus> => [] })
-    const id = Option.flatMap(Option.fromUndefinedOr(his.find((peer) => answersTo(name, { dnsName: peer.dnsName, ips: [] }))), (peer) => peer.stableId)
-    return Option.match(id, { onNone: () => ({ name }), onSome: (each) => ({ name, id: each }) })
+    const now = his.filter((peer) => answersTo(name, { dnsName: peer.dnsName, ips: [] })).flatMap((peer) => Option.toArray(peer.stableId))
+    const before = previous.filter((each) => each.name === name).flatMap((each) => each.ids)
+    return { name, ids: [...new Set([...before, ...now])] }
   })
 
 /** The members as they count at `now`: closed once older than MEMBERS_TTL. */

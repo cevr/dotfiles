@@ -9,7 +9,7 @@ import { hostname, networkInterfaces } from "node:os"
 import { file, readableStreamToText, spawn } from "bun"
 import { Duration, Effect, Option, Schema } from "effect"
 import { type InterfaceAddress, StatusRead, type Tailnet, type TailscaleStatus, tailnetOf } from "../bind.ts"
-import { exclusionsFrom } from "../members.ts"
+import { type Exclusion, exclusionsFrom } from "../members.ts"
 
 /**
  * Where the Tailscale CLI is, in order: the Mac app's, Homebrew's (Apple silicon, then Intel), then the Linux
@@ -121,12 +121,12 @@ export const statusFrom = (clis: ReadonlyArray<string> = CLIS, timeout: Duration
   )
 
 /**
- * `digest.excludedDevices` for the installer: each of `names` with its device's stable ID among his own devices, as
- * Tailscale's status says now (members.ts `exclusionsFrom`). A promise of plain data, so a script on another Effect
+ * `digest.excludedDevices` for the installer: each of `names` with every stable ID it had in `previous`, plus that of
+ * the device of his carrying the name in Tailscale's status now (members.ts `exclusionsFrom`). A promise of plain data, so a script on another Effect
  * runtime can call it.
  */
-export const readExclusions = (names: ReadonlyArray<string>, clis: ReadonlyArray<string> = CLIS): Promise<ReadonlyArray<{ readonly name: string; readonly id?: string }>> =>
-  Effect.runPromise(Effect.map(statusFrom(clis), (read) => exclusionsFrom(names, read)))
+export const readExclusions = (previous: ReadonlyArray<Exclusion>, names: ReadonlyArray<string>, clis: ReadonlyArray<string> = CLIS): Promise<ReadonlyArray<Exclusion>> =>
+  Effect.runPromise(Effect.map(statusFrom(clis), (read) => exclusionsFrom(previous, names, read)))
 
 /** The host's interface addresses. */
 const interfaces = Effect.sync((): ReadonlyArray<InterfaceAddress> => Object.values(networkInterfaces()).flatMap((each) => Option.getOrElse(Option.fromUndefinedOr(each), () => [])))

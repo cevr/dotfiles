@@ -50,7 +50,8 @@ import { type Catalog, DEFAULT_FORK, loadCatalog, loginStoreDir, newestRelease }
 import { BUILTIN_AUTOMATION_OFF, BUILTIN_BTW_OFF, SERVER_OFF, SERVER_PLUGINS, serverEntry, serverEntryDir, TUI_OFF, tuiPluginsOf } from "../mods/update/trees.ts"
 import type { Settings } from "../mods/update/settings.ts"
 import type { TailnetRead, TailnetWrite } from "../mods/digest/policy.ts"
-import { readExclusions } from "../mods/digest/process/tailnet.ts"
+import type { Exclusion } from "../mods/digest/members.ts"
+import { CLIS, readExclusions } from "../mods/digest/process/tailnet.ts"
 import { readyFork } from "./fork.ts"
 import { upstreamFile } from "../mods/prime/update.ts"
 import { hostLocks } from "../mods/work/process/landing.ts"
@@ -212,14 +213,15 @@ export const OWNER_TIMEZONE = "America/Montreal"
  *   device leaves no stale address behind, and a name none of his devices carries closes the writes to `"paired"`
  *   (and its health line says so); his other agent machines (`OWNER_AGENT_DEVICES`) are named beside them;
  * - `digest.excludedDevices` is `excluded`: his devices that get nothing unpaired, reads included
- *   (`OWNER_EXCLUDED_DEVICES`), each with the stable node ID Tailscale's status gave it when the tree was configured
- *   (`exclusionsOf`), so a rename keeps it out.
+ *   (`OWNER_EXCLUDED_DEVICES`), each with every stable node ID Tailscale's status has given it at any configure,
+ *   kept in the installer's state (`exclusionsOf`, `exclusionsFile`), so a rename keeps it out; one with no ID yet
+ *   closes the tailnet to "paired" until a configure finds it.
  * Set `tailnetWrite` to `"paired"` here to make marks and answers need pairing again, or `"member"` to let the agent
  * machines write too.
  *
  * Elsewhere the bare plugin: the host's zone, and the plugin's defaults, `"paired"` for both.
  */
-export const digestEntry = (digest: string, fleet: { readonly host: string; readonly excluded: ReadonlyArray<{ readonly name: string; readonly id?: string }> }): PluginEntry => {
+export const digestEntry = (digest: string, fleet: { readonly host: string; readonly excluded: ReadonlyArray<Exclusion> }): PluginEntry => {
   if (peersOf(fleet.host).length === 0) return digest
   return {
     package: digest,
@@ -239,8 +241,31 @@ export const OWNER_AGENT_DEVICES: ReadonlyArray<string> = ["cristians-macbook-pr
 /** His devices that get nothing unpaired on the tailnet, as if another user's (owner, 2026-11-22: "remove the lenovo-rescue"). */
 export const OWNER_EXCLUDED_DEVICES: ReadonlyArray<string> = ["lenovo-rescue"]
 
-/** `digest.excludedDevices` on `host`: his excluded devices, each keyed by its stable ID from Tailscale's status now. */
-export const exclusionsOf = (host: string): Promise<ReadonlyArray<{ readonly name: string; readonly id?: string }>> => readExclusions(OWNER_EXCLUDED_DEVICES.filter(() => peersOf(host).length > 0))
+/**
+ * Where the installer keeps the exclusions it shipped (its own state dir): each install rewrites the tree's
+ * opencode.json whole, so the IDs live here between configures.
+ */
+export const exclusionsFile = (home: string): string => join(home, ".local/state/opencode-daily/digest-exclusions.json")
+
+const Shipped = Schema.Array(Schema.Struct({ name: Schema.String, ids: Schema.Array(Schema.String) }))
+const decodeShipped = Schema.decodeUnknownOption(Schema.fromJsonString(Shipped))
+const encodeShipped = Schema.encodeSync(Schema.fromJsonString(Shipped))
+
+/** The exclusions shipped before, from `file`; none when it is missing or unreadable (each name then keys anew, or ships unkeyed and closes). */
+const shippedBefore = (file: string): ReadonlyArray<Exclusion> => Option.getOrElse(Option.flatMap(Option.liftPredicate(file, existsSync), (path) => decodeShipped(readFileSync(path, "utf8"))), () => [])
+
+/**
+ * `digest.excludedDevices` on `host`: his excluded devices, each with every stable ID it was ever shipped with (from
+ * `file`) and the ID Tailscale's status gives the device of his carrying the name now (members.ts `exclusionsFrom`).
+ * An ID once known is never dropped, so renaming the device, an unreadable status, or another user's device taking
+ * the name never unkeys it. The result is written back to `file` before it ships.
+ */
+export const exclusionsOf = (host: string, file: string, clis: ReadonlyArray<string> = CLIS) =>
+  Effect.gen(function* () {
+    const next = yield* Effect.promise(() => readExclusions(shippedBefore(file), OWNER_EXCLUDED_DEVICES.filter(() => peersOf(host).length > 0), clis))
+    writeChanged(file, `${encodeShipped(next)}\n`)
+    return next
+  })
 
 /** The fleet's other hosts by their Tailscale names (each host's `FLEET` name is its MagicDNS first label); none off the fleet. */
 export const fleetOthersOf = (host: string): ReadonlyArray<string> => Object.keys(FLEET).filter((name) => peersOf(host).length > 0 && name !== host.toLowerCase().replace(/\.local$/, ""))
@@ -436,7 +461,7 @@ export interface HostFacts {
   readonly host: string
   readonly tailscale: Option.Option<string>
   /** The digest's excluded devices, each keyed by its stable ID (`exclusionsOf`). */
-  readonly digestExcluded: ReadonlyArray<{ readonly name: string; readonly id?: string }>
+  readonly digestExcluded: ReadonlyArray<Exclusion>
   /** The fork checkout, and the dotfiles checkout an accepted verdict records the verified target from. */
   readonly fleet: { readonly dotfiles: string; readonly fork: string }
   readonly catalog: Catalog
@@ -452,7 +477,7 @@ const hostFacts = (home: string, fork: string, where: Where = HERE) =>
     return {
       host: where.host,
       tailscale: Option.fromNullishOr(yield* Effect.promise(tailscaleAddress)),
-      digestExcluded: yield* Effect.promise(() => exclusionsOf(where.host)),
+      digestExcluded: yield* exclusionsOf(where.host, exclusionsFile(home)),
       fleet: { dotfiles: where.checkout, fork },
       catalog: yield* Effect.promise(() => loadCatalog(fork)),
       store: Option.liftPredicate(loginStoreDir(home), existsSync),

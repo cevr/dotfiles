@@ -25,8 +25,9 @@
  *   name (or first label) or one of its addresses, never a HostName; it only narrows writes, never admits a device,
  *   and an entry none of his devices answers to closes `"member-except-hosts"` to `"paired"`.
  * - `excludedDevices` (digest.excludedDevices): his devices that count as nobody's, reading and writing nothing
- *   unpaired, each `{name, id}`: its MagicDNS name and its stable node ID (`ID` in the status); a device either
- *   matches is excluded, so a rename keeps it out, and an ID no device of his has shows in health (loopback).
+ *   unpaired, each `{name, ids}`: its MagicDNS name and every stable node ID it has had (`ID` in the status); a
+ *   device either matches is excluded, so a rename keeps it out. One with no ID (`ids: []`) closes every tailnet
+ *   source to "paired" until it has one; one whose IDs no device of his has (a device gone) shows in health.
  *   (members.ts: who his devices are, read again with the tailnet every RECHECK.)
  *
  * `GET /health` answers the health line (`@dotfiles/opencode-digest/health`), which the installer logs.
@@ -60,7 +61,7 @@ export const Options = Schema.Struct({
   tailnetRead: Schema.optionalKey(Schema.Literals(["paired", "member"])),
   tailnetWrite: Schema.optionalKey(Schema.Literals(TAILNET_WRITES)),
   agentHosts: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
-  excludedDevices: Schema.optionalKey(Schema.Array(Schema.Struct({ name: Schema.NonEmptyString, id: Schema.optionalKey(Schema.NonEmptyString) }))),
+  excludedDevices: Schema.optionalKey(Schema.Array(Schema.Struct({ name: Schema.NonEmptyString, ids: Schema.Array(Schema.NonEmptyString) }))),
 })
 export type Options = typeof Options.Type
 
@@ -68,7 +69,7 @@ export type Options = typeof Options.Type
 export const writeConfigOf = (options: Options): WriteConfig => ({
   tailnetWrite: Option.getOrElse(Option.fromUndefinedOr(options.tailnetWrite), (): TailnetWrite => "paired"),
   agentHosts: Option.getOrElse(Option.fromUndefinedOr(options.agentHosts), (): ReadonlyArray<string> => []),
-  excluded: Option.getOrElse(Option.fromUndefinedOr(options.excludedDevices), () => []).map((each) => ({ name: each.name, id: Option.fromUndefinedOr(each.id) })),
+  excluded: Option.getOrElse(Option.fromUndefinedOr(options.excludedDevices), (): WriteConfig["excluded"] => []),
 })
 
 /** His devices before the first tailnet read: none, so every tailnet source needs pairing. */
