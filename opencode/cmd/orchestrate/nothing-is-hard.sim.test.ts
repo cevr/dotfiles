@@ -6,7 +6,7 @@
 // the principle's name; both lookups answer principle-nothing-is-hard.
 import { definitions } from "@dotfiles/opencode-orchestrate/role"
 import { fileURLToPath } from "bun"
-import { Effect } from "effect"
+import { Array as Arr, Effect, Option } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Seed from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
@@ -53,11 +53,14 @@ const boot = (seed: number) =>
       seen.push({ sessionID: request.sessionID, system: request.system, tools: request.tools, text: request.text })
       if (!request.text.includes(`user: ${ROOT_TASK}`)) return World.say("child: done")
       if (!request.tools.includes("subagent") || !request.tools.includes("principles")) return World.say("root: not offered")
-      const step = asked.get(request.sessionID) ?? 0
-      const next = STEPS[step]
-      if (next === undefined) return World.say("root: done")
-      asked.set(request.sessionID, step + 1)
-      return World.call(`call_${step}`, next[0], { ...next[1] })
+      const step = Option.getOrElse(Option.fromUndefinedOr(asked.get(request.sessionID)), () => 0)
+      return Option.match(Option.fromUndefinedOr(STEPS[step]), {
+        onNone: () => World.say("root: done"),
+        onSome: ([tool, input]) => {
+          asked.set(request.sessionID, step + 1)
+          return World.call(`call_${step}`, tool, { ...input })
+        },
+      })
     }
     const world = World.make({ seed, start: Date.parse(PIN), script })
     yield* world.load(Plugins.orchestrate(), { directory: WORK, options: { now: PIN, skill: `${skills}/orchestrate` } })
@@ -85,12 +88,15 @@ seeded("the root is offered subagent and principles; each role's child runs on i
     const children = [...world.sessions.values()].filter((session) => session.parentID._tag === "Some" && session.parentID.value === root)
     expect(children.map((child) => child.agent).toSorted()).toEqual(["implementor", "planner", "verifier"])
     for (const role of ROLES) {
-      const child = children.find((session) => session.agent === role)!
-      const request = seen.find((one) => one.sessionID === child.id)
-      expect([role, request !== undefined]).toEqual([role, true])
-      const system = request!.system
-      expect([role, system.includes(definitions[role].system)]).toEqual([role, true])
-      expect([role, system.includes(ENDING[role]), system.includes(NAME)]).toEqual([role, true, true])
+      // The child's first request, as the scripted model received it; an empty system when none reached it.
+      const system = Option.getOrElse(
+        Option.map(
+          Arr.findFirst(seen, (one) => children.some((session) => session.agent === role && session.id === one.sessionID)),
+          (one) => one.system,
+        ),
+        () => "",
+      )
+      expect([role, system.includes(definitions[role].system), system.includes(ENDING[role]), system.includes(NAME)]).toEqual([role, true, true, true])
     }
   }),
 )
