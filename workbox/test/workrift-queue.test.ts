@@ -15,7 +15,10 @@
 // Policies for the base's warm under tickets: "B" (an advance only moves the base; refresh warms) and "A" (an advance
 // warms too, under the exclusive lock). The schedule of 2026-11-22 00:00Z on the workbox (11 creates waiting, master
 // moving every ten minutes, 96-239 s clones, a 628 s warm) shows the wait each gives.
-import { describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test } from "bun:test"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { basename, join } from "node:path"
 
 type Kind = "r" | "w"
 type Protocol = "flock" | "tickets"
@@ -332,4 +335,491 @@ describe("the base's lock as a ticket queue (a model on a manual clock)", () => 
     // The readers that queued behind it go in together.
     expect(new Set(after.filter((t) => t.spec.arrive < 180).map((t) => t.enteredAt))).toEqual(new Set([180]))
   })
+})
+
+// ---------------------------------------------------------------------------
+// The clone turn (clone-one-at-a-time, 2026-11-22). On the workbox's btrfs (16 cores, load 40-70, ~400k files a
+// Bite tree) one `cp -a --reflink=always` of the base takes 0-1 s alone, four started together took 1,262-1,287 s
+// each, and a clone beside a removal's `rm -rf` stalls 12-17 min while the removal takes 16-21 min. So on a base whose
+// workspaces are file copies, a create's clone phase and a remove's delete phase take one turn each, one at a time per
+// base, in arrival order across both kinds; a base whose workspaces are btrfs snapshots keeps them side by side.
+//
+// The real script runs here in a scratch HOME over a stand-in `work` whose `new` (the clone) and `rm` (the delete)
+// log when they begin and end and sleep for a set time between; a stand-in `stat` names which bases are btrfs
+// subvolumes; the util-linux `flock` is a Perl stand-in (macOS has none). Generated schedules of creates and removes
+// on two bases, some killed (their whole process group, kill -9) while they wait or hold, are judged against a
+// reference model: one first-come-first-served server per copy base, whose arrivals are the turn tickets as they
+// appear in the base's state folder.
+
+const turnRepo = join(import.meta.dir, "..", "..")
+// WORKRIFT_SCRIPT runs this against another script (main's, for the red run; a mutant).
+const TURN_SCRIPT = process.env.WORKRIFT_SCRIPT ?? join(turnRepo, "workbox/bin/workrift")
+const turnScratch = realpathSync(mkdtempSync(join(tmpdir(), "workrift-turn-")))
+afterAll(() => rmSync(turnScratch, { recursive: true, force: true }))
+let turnBenches = 0
+
+type Env = Record<string, string>
+
+const exe = (path: string, body: string) => {
+  writeFileSync(path, body)
+  chmodSync(path, 0o755)
+}
+const textLines = (text: string) => text.split("\n").filter((line) => line !== "")
+/** `read()`, or `otherwise` when the file went away meanwhile. */
+const readOr = <A>(read: () => A, otherwise: A): A => {
+  try {
+    return read()
+  } catch {
+    return otherwise
+  }
+}
+const sh = (cwd: string, env: Env, ...argv: ReadonlyArray<string>) => {
+  const ran = Bun.spawnSync([...argv], { cwd, env, stdout: "pipe", stderr: "pipe" })
+  if (ran.exitCode !== 0) throw new Error(`${argv.join(" ")} failed (${ran.exitCode}): ${ran.stderr.toString()}`)
+  return ran.stdout.toString()
+}
+
+/** util-linux flock's forms workrift uses, over Perl's flock(2) (as workrift.test.ts's realFlock). */
+const FLOCK = [
+  "#!/usr/bin/perl",
+  "use strict; use Fcntl qw(:flock); use Time::HiRes qw(sleep time);",
+  "my ($nb, $sh, $w) = (0, 0, undef);",
+  "while (@ARGV && $ARGV[0] =~ /^-/) { my $o = shift; if ($o eq '-n') { $nb = 1 } elsif ($o eq '-s') { $sh = 1 } elsif ($o eq '-w') { $w = shift } elsif ($o eq '-x') {} }",
+  "my $t = shift; my $fh;",
+  "if ($t =~ /^\\d+$/ && !@ARGV) { open($fh, '>>&=', $t) or open($fh, '<&=', $t) or exit 64 } else { open($fh, '>>', $t) or exit 64 }",
+  "my $deadline = defined $w ? time + $w : undef;",
+  "until (flock($fh, ($sh ? LOCK_SH : LOCK_EX) | LOCK_NB)) { exit 1 if $nb || (defined $deadline && time >= $deadline); sleep 0.05 }",
+  "if (@ARGV) { exit(system(@ARGV) >> 8) }",
+  "exit 0;",
+  "",
+].join("\n")
+
+/**
+ * A stand-in `work`: bases from FAKE_WORK_BASES, one record a file under <base's folder>/.work/<base>/.fake-registry.
+ * `new` is the clone and `rm` the delete: each logs `in` and `out` lines (`in clone NAME BASE TIME PID`) to FAKE_LOG
+ * around a sleep of FAKE_HOLDS/NAME seconds; `rm` answers as a base with `trash = false` does (deleted in the rm).
+ */
+const FAKE_WORK = [
+  "#!/usr/bin/perl",
+  "use strict; use warnings; use JSON::PP; use File::Path qw(remove_tree make_path); use Time::HiRes qw(time sleep); use Cwd qw(getcwd);",
+  "my $json = JSON::PP->new->canonical;",
+  "my @a = @ARGV; shift @a if @a && $a[0] eq '--json';",
+  "my $cmd = shift(@a) // '';",
+  "sub slurp { my ($f) = @_; open(my $h, '<', $f) or return undef; local $/; my $t = <$h>; close $h; return $t }",
+  "sub spew { my ($f, $t) = @_; open(my $h, '>', \"$f.$$\") or die \"$f: $!\"; print $h $t; close $h; rename(\"$f.$$\", $f) or die }",
+  "if ($cmd eq 'bases') { print $json->encode([grep { length } split /\\n/, (slurp($ENV{FAKE_WORK_BASES}) // '')]), \"\\n\"; exit 0 }",
+  "my $base = $ENV{WORK_BASE} // getcwd();",
+  "my ($bdir, $bname) = $base =~ m{^(.*)/([^/]+)$};",
+  "my $home = \"$bdir/.work/$bname\"; my $reg = \"$home/.fake-registry\"; make_path($reg);",
+  "sub records { my @r; opendir(my $d, $reg) or return (); for my $f (sort readdir $d) { next unless $f =~ /\\.json$/; my $t = slurp(\"$reg/$f\"); push @r, $json->decode($t) if defined $t && length $t } closedir $d; return @r }",
+  "sub note { my ($what, $kind, $name) = @_; my $log = $ENV{FAKE_LOG} or return; open(my $h, '>>', $log) or die; printf $h \"%s %s %s %s %.3f %d\\n\", $what, $kind, $name, $base, time, $$; close $h }",
+  "sub hold { my $s = slurp(($ENV{FAKE_HOLDS} // '/nonexistent') . \"/$_[0]\"); $s = 0 unless defined $s; chomp $s; sleep($s) if $s > 0 }",
+  "if ($cmd eq 'list') { print $json->encode([records()]), \"\\n\"; exit 0 }",
+  "if ($cmd eq 'doctor') { print $json->encode({ trusted => JSON::PP::true, cloners => [qw(btrfs reflink clonefile copy)] }), \"\\n\"; exit 0 }",
+  "if ($cmd eq 'new') {",
+  "  my ($branch, $from);",
+  "  while (@a && $a[0] =~ /^-/) { my $o = shift @a; if ($o eq '-branch') { $branch = shift @a } elsif ($o eq '-from') { $from = shift @a } else { die \"fake work new: $o\\n\" } }",
+  "  my $name = shift @a; my $path = \"$home/$name\"; my $id = sprintf('%d%d', time * 1000, $$);",
+  "  note('in', 'clone', $name); hold($name);",
+  "  system('/bin/cp', '-pPR', $base, $path) == 0 or die \"fake work new: cp failed\\n\";",
+  "  note('out', 'clone', $name);",
+  "  system('git', '-C', $path, 'checkout', '-q', '-B', $branch, (defined $from ? ($from) : ())) == 0 or die \"fake work new: checkout\\n\";",
+  "  spew(\"$reg/$id.json\", $json->encode({ name => $name, id => $id, path => $path, parent => $base, branch => $branch, since => int(time), state => { _tag => 'Active' } }));",
+  "  print $json->encode({ path => $path, deps => { _tag => 'NoDeps' }, hooks => { _tag => 'NoHooks' } }), \"\\n\"; exit 0;",
+  "}",
+  "if ($cmd eq 'rm') {",
+  "  my $expect;",
+  "  while (@a && $a[0] =~ /^-/) { my $o = shift @a; if ($o eq '-expect') { $expect = shift @a } elsif ($o eq '-abandon' || $o eq '-tree') {} else { die \"fake work rm: $o\\n\" } }",
+  "  my $name = shift @a;",
+  "  my ($rec) = grep { $_->{name} eq $name && $_->{state}{_tag} eq 'Active' } records();",
+  "  $rec or do { print STDERR \"fake work rm: no workspace $name\\n\"; exit 1 };",
+  "  !defined $expect || $rec->{id} eq $expect or do { print STDERR \"fake work rm: $name is not $expect\\n\"; exit 1 };",
+  "  note('in', 'delete', $name); hold($name);",
+  "  remove_tree($rec->{path}); unlink(\"$reg/$rec->{id}.json\");",
+  "  note('out', 'delete', $name);",
+  "  print $json->encode([{ id => $rec->{id}, trash => '', name => $name }]), \"\\n\"; exit 0;",
+  "}",
+  "die \"fake work: $cmd\\n\";",
+  "",
+].join("\n")
+
+/** A stand-in `stat`: a path in FAKE_SUBVOLUMES (colon-separated) is the root of a btrfs subvolume; any other is not. */
+const FAKE_STAT = [
+  "#!/bin/sh",
+  'case "$*" in',
+  '  "-f -c %T "*) p=$4; k=fs ;;',
+  '  "-c %i "*) p=$3; k=ino ;;',
+  '  *) exec /usr/bin/stat "$@" ;;',
+  "esac",
+  'case ":${FAKE_SUBVOLUMES:-}:" in',
+  '  *":$p:"*) if [ "$k" = fs ]; then echo btrfs; else echo 256; fi; exit 0 ;;',
+  "esac",
+  'if [ "$k" = fs ]; then echo apfs; else echo 1000; fi',
+  "",
+].join("\n")
+
+/** A scratch HOME and bin (flock, work, stat), a bare origin, and a work base per name in `root`. */
+const turnBench = (label: string, names: ReadonlyArray<string>) => {
+  const dir = join(turnScratch, `${label}-${turnBenches++}`)
+  const [home, bin, root, holds, proc] = ["home", "bin", "root", "holds", "proc"].map((each) => join(dir, each)) as [string, string, string, string, string]
+  for (const each of [home, bin, root, holds, proc]) mkdirSync(each, { recursive: true })
+  exe(join(bin, "flock"), FLOCK)
+  exe(join(bin, "work"), FAKE_WORK)
+  exe(join(bin, "stat"), FAKE_STAT)
+  const basesFile = join(dir, "bases")
+  const inherited = Object.fromEntries(
+    Object.entries(process.env).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined && !/^(WORKRIFT_|RIFT_|WORK_|WORK$|XDG_|GIT_|FAKE_)/.test(entry[0]),
+    ),
+  )
+  const env: Env = {
+    ...inherited,
+    HOME: home,
+    PATH: `${bin}:${process.env.PATH ?? ""}`,
+    XDG_CONFIG_HOME: join(home, ".config"),
+    XDG_DATA_HOME: join(home, ".local/share"),
+    XDG_CACHE_HOME: join(home, ".cache"),
+    WORKRIFT_ROOT: root,
+    WORKRIFT_PROC: proc,
+    WORKRIFT_PURGE: "1",
+    WORK: join(bin, "work"),
+    FAKE_WORK_BASES: basesFile,
+    FAKE_HOLDS: holds,
+    GIT_AUTHOR_NAME: "Workrift Test",
+    GIT_AUTHOR_EMAIL: "workrift@example.invalid",
+    GIT_COMMITTER_NAME: "Workrift Test",
+    GIT_COMMITTER_EMAIL: "workrift@example.invalid",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_COUNT: "2",
+    GIT_CONFIG_KEY_0: "gc.auto",
+    GIT_CONFIG_VALUE_0: "0",
+    GIT_CONFIG_KEY_1: "maintenance.auto",
+    GIT_CONFIG_VALUE_1: "false",
+  }
+  const origin = join(dir, "origin.git")
+  sh(dir, env, "git", "init", "-q", "--bare", "-b", "main", origin)
+  const seed = join(dir, "seed")
+  sh(dir, env, "git", "clone", "-q", origin, seed)
+  sh(seed, env, "git", "switch", "-q", "-c", "main")
+  writeFileSync(join(seed, "README.md"), "app\n")
+  sh(seed, env, "git", "add", "README.md")
+  sh(seed, env, "git", "commit", "-q", "-m", "init")
+  sh(seed, env, "git", "push", "-q", "-u", "origin", "main")
+  const bases = new Map<string, string>()
+  for (const name of names) {
+    const path = join(root, name)
+    sh(dir, env, "git", "clone", "-q", origin, path)
+    sh(path, env, "git", "remote", "set-head", "origin", "--auto")
+    writeFileSync(join(path, ".git/info/exclude"), "work.toml\n", { flag: "a" })
+    writeFileSync(join(path, "work.toml"), "")
+    writeFileSync(basesFile, `${path}\n`, { flag: "a" })
+    bases.set(name, path)
+  }
+  const base = (name: string) => bases.get(name) ?? ""
+  /** A workspace made by the stand-in directly (no workrift, no log), for a remove to take. */
+  const premade = (baseName: string, name: string) =>
+    (JSON.parse(sh(base(baseName), { ...env, WORK_BASE: base(baseName) }, join(bin, "work"), "--json", "new", "-branch", name, "-from", "HEAD", name)) as { path: string }).path
+  /** The base's workrift state folder, where its queues are. */
+  const state = (baseName: string) => join(root, ".work", baseName, ".workrift")
+  return { dir, env, root, holds, log: join(dir, "phases.log"), base, premade, state, names }
+}
+type TurnBench = ReturnType<typeof turnBench>
+
+interface Op {
+  readonly kind: "create" | "remove"
+  readonly base: string
+  /** The workspace's name (a create's branch is the same word). */
+  readonly name: string
+  /** When it starts, in ms after the schedule's start. */
+  readonly at: number
+  /** How long its clone or delete takes, in seconds. */
+  readonly hold: number
+  /** Its whole process group is killed (kill -9) this many ms after it starts. */
+  readonly killAfter?: number
+  /** Another script (the older workrift) runs it. */
+  readonly script?: string
+}
+
+interface Phase {
+  readonly kind: string
+  readonly name: string
+  readonly base: string
+  readonly t0: number
+  /** Its end; for a phase whose op was killed in it, the kill. */
+  readonly t1: number
+  readonly open: boolean
+}
+
+interface Turn {
+  readonly base: string
+  readonly number: number
+  readonly name: string
+  readonly purpose: string
+  readonly seenAt: number
+}
+
+interface Outcome {
+  readonly op: Op
+  readonly code: number | null
+  readonly killedAt?: number
+  readonly err: string
+}
+
+/**
+ * Runs `ops` against the real script (each in a process group of its own, killed at the end whatever happens) while
+ * a poller notes each turn ticket the moment it appears in a base's state folder, with its number and purpose.
+ */
+const runOps = async (b: TurnBench, ops: ReadonlyArray<Op>, snapshots: ReadonlyArray<string> = []) => {
+  const env: Env = { ...b.env, FAKE_LOG: b.log, FAKE_SUBVOLUMES: snapshots.map(b.base).join(":") }
+  const targets = new Map<string, string>()
+  for (const op of ops) {
+    writeFileSync(join(b.holds, op.name), `${op.hold}\n`)
+    if (op.kind === "remove") targets.set(op.name, b.premade(op.base, op.name))
+  }
+  const turns = new Map<string, Turn>()
+  let polling = true
+  const poll = (async () => {
+    while (polling) {
+      for (const name of b.names) {
+        const state = b.state(name)
+        if (!existsSync(state)) continue
+        // Every queue whose name starts with clone: a split of the turn into queues of its own (a mutant) is seen too.
+        for (const queue of readdirSync(state).filter((each) => each.startsWith("clone"))) {
+          const dir = join(state, queue)
+          for (const file of readOr(() => readdirSync(dir), [])) {
+            const m = /^(\d+)\.[rw]$/.exec(file)
+            const key = `${name}/${queue}/${file}`
+            if (!m || turns.has(key)) continue
+            // A ticket may end between the listing and the read.
+            const record = textLines(readOr(() => readFileSync(join(dir, file), "utf8"), ""))
+            if (record.length < 4) continue
+            const purpose = record[3] ?? ""
+            turns.set(key, { base: name, number: Number(m[1]), name: purpose.split(" ")[1] ?? "", purpose, seenAt: Date.now() / 1000 })
+          }
+        }
+      }
+      await Bun.sleep(5)
+    }
+  })()
+  const groups: Array<number> = []
+  const started = Date.now()
+  const outcomes = await Promise.all(
+    ops.map(async (op): Promise<Outcome> => {
+      await Bun.sleep(Math.max(0, started + op.at - Date.now()))
+      const script = op.script ?? TURN_SCRIPT
+      const argv = op.kind === "create" ? [script, "create", op.name] : [script, "remove", targets.get(op.name) ?? ""]
+      const errFile = join(b.dir, `${op.name}.err`)
+      const child = Bun.spawn(argv, {
+        cwd: op.kind === "create" ? b.base(op.base) : b.root,
+        env: op.kind === "create" ? { ...env, WORKRIFT_SOURCE: b.base(op.base) } : env,
+        stdout: "ignore",
+        stderr: Bun.file(errFile),
+        detached: true,
+      })
+      groups.push(child.pid)
+      let killedAt: number | undefined
+      const timer =
+        op.killAfter === undefined
+          ? undefined
+          : setTimeout(() => {
+              killedAt = Date.now() / 1000
+              try {
+                process.kill(-child.pid, "SIGKILL")
+              } catch {
+                // it had ended
+              }
+            }, op.killAfter)
+      const code = await Promise.race([child.exited, Bun.sleep(45_000).then(() => null)])
+      if (timer) clearTimeout(timer)
+      return { op, code, ...(killedAt === undefined ? {} : { killedAt }), err: readFileSync(errFile, "utf8") }
+    }),
+  ).finally(() => {
+    polling = false
+    for (const pid of groups)
+      try {
+        process.kill(-pid, "SIGKILL")
+      } catch {
+        // ended
+      }
+  })
+  await poll
+  const kills = new Map(outcomes.filter((o) => o.killedAt !== undefined).map((o) => [o.op.name, o.killedAt!]))
+  const open = new Map<string, { kind: string; base: string; t0: number }>()
+  const phases: Array<Phase> = []
+  for (const line of textLines(existsSync(b.log) ? readFileSync(b.log, "utf8") : "")) {
+    const [what = "", kind = "", name = "", base = "", t = "0"] = line.split(" ")
+    if (what === "in") open.set(name, { kind, base, t0: Number(t) })
+    else {
+      const o = open.get(name)
+      if (o) phases.push({ ...o, name, base: basename(o.base), t1: Number(t), open: false })
+      open.delete(name)
+    }
+  }
+  for (const [name, o] of open) phases.push({ ...o, name, base: basename(o.base), t1: kills.get(name) ?? Infinity, open: true })
+  return { outcomes, phases, turns: [...turns.values()] }
+}
+
+/** Pairs of phases (of one base, or any two when `across`) whose times overlap. */
+const overlapping = (phases: ReadonlyArray<Phase>) => {
+  const found: Array<string> = []
+  for (let i = 0; i < phases.length; i++)
+    for (let j = i + 1; j < phases.length; j++) {
+      const a = phases[i]!
+      const c = phases[j]!
+      if (a.base === c.base && a.t0 < c.t1 && c.t0 < a.t1) found.push(`${a.kind} ${a.name} x ${c.kind} ${c.name} (${a.base})`)
+    }
+  return found
+}
+
+/** How late a turn may start after the model says it is free: the script's own steps between the grant and the clone. */
+const SLACK = 3
+
+/**
+ * The reference model: on a copy base, one server, first come first served. Every clone and delete takes a turn;
+ * no two of one base overlap; they run in the order of their tickets' numbers (the order of arrival, numbered under
+ * queue.lock); and each starts within SLACK of when the model frees it (its ticket seen and every earlier one ended,
+ * a killed one at its kill), so a dead holder or waiter keeps nobody waiting. A snapshot base takes no turn at all.
+ * Every op not killed ends 0.
+ */
+const judge = (run: Awaited<ReturnType<typeof runOps>>, bases: ReadonlyArray<string>, snapshots: ReadonlyArray<string> = []) => {
+  const bad: Array<string> = []
+  for (const o of run.outcomes)
+    if (o.killedAt === undefined && o.code !== 0) bad.push(`${o.op.kind} ${o.op.name} ended ${o.code}: ${textLines(o.err).slice(-3).join(" | ")}`)
+  for (const p of run.phases) if (p.open && p.t1 === Infinity) bad.push(`${p.kind} ${p.name} never ended and was not killed`)
+  for (const base of bases) {
+    const phases = run.phases.filter((p) => p.base === base)
+    const tickets = run.turns.filter((t) => t.base === base).sort((a, c) => a.number - c.number)
+    if (snapshots.includes(base)) {
+      if (tickets.length > 0) bad.push(`${base} is a snapshot base, yet ${tickets.map((t) => t.purpose).join(", ")} took a turn`)
+      continue
+    }
+    bad.push(...overlapping(phases))
+    for (const p of phases) if (!tickets.some((t) => t.name === p.name)) bad.push(`${p.kind} ${p.name} ran with no turn (${base})`)
+    const byStart = [...phases].sort((a, c) => a.t0 - c.t0).map((p) => p.name)
+    const byTicket = tickets.map((t) => t.name).filter((name) => phases.some((p) => p.name === name))
+    if (byStart.join(" ") !== byTicket.join(" ")) bad.push(`${base}: phases ran ${byStart.join(" ")}, but arrived ${byTicket.join(" ")}`)
+    let free = 0
+    for (const t of tickets) {
+      const p = phases.find((each) => each.name === t.name)
+      const killed = run.outcomes.find((o) => o.op.name === t.name)?.killedAt
+      if (p === undefined) {
+        free = Math.max(free, killed ?? free)
+        continue
+      }
+      const ready = Math.max(t.seenAt, free)
+      if (p.t0 > ready + SLACK) bad.push(`${p.kind} ${p.name} started ${(p.t0 - ready).toFixed(2)} s after its turn was free (${base})`)
+      free = Math.max(free, p.t1)
+    }
+  }
+  return bad
+}
+
+/** A generated schedule of creates and removes on bases A and B, some killed while they wait or hold. */
+const turnSchedule = (seed: number): ReadonlyArray<Op> => {
+  const next = random(seed)
+  const n = 4 + Math.floor(next() * 4)
+  return Array.from({ length: n }, (_, i): Op => {
+    const kind = next() < 0.55 ? "create" : "remove"
+    const base = next() < 0.65 ? "A" : "B"
+    const at = Math.floor(next() * 1200)
+    const hold = 0.2 + Math.floor(next() * 5) / 10
+    const killAfter = next() < 0.18 ? 200 + Math.floor(next() * 1500) : undefined
+    return { kind, base, name: `${kind === "create" ? "c" : "r"}${seed}x${i}`, at, hold, ...(killAfter === undefined ? {} : { killAfter }) }
+  })
+}
+
+describe("the clone turn: one clone or delete at a time per copy base, in arrival order (the real script on stand-ins)", () => {
+  test(
+    "property: generated creates and removes on two bases, some killed waiting or holding, run as the reference model's one server per base",
+    async () => {
+      let killed = 0
+      let both = 0
+      for (let seed = 1; seed <= 6; seed++) {
+        const b = turnBench(`gen${seed}`, ["A", "B"])
+        const ops = turnSchedule(seed)
+        const run = await runOps(b, ops)
+        killed += run.outcomes.filter((o) => o.killedAt !== undefined).length
+        both += run.phases.some((p) => p.kind === "clone") && run.phases.some((p) => p.kind === "delete") ? 1 : 0
+        expect({ seed, bad: judge(run, ["A", "B"]) }).toEqual({ seed, bad: [] })
+      }
+      // The schedules exercise what they claim: kills, and creates beside removes.
+      expect(killed).toBeGreaterThan(0)
+      expect(both).toBeGreaterThan(2)
+    },
+    240_000,
+  )
+
+  test("a clone never overlaps a delete of its base, removes go one at a time, and a later create waits behind an earlier remove", async () => {
+    const b = turnBench("kinds", ["A"])
+    const ops: ReadonlyArray<Op> = [
+      { kind: "remove", base: "A", name: "r1", at: 0, hold: 1 },
+      { kind: "remove", base: "A", name: "r2", at: 150, hold: 0.5 },
+      { kind: "create", base: "A", name: "c1", at: 300, hold: 0.5 },
+      { kind: "create", base: "A", name: "c2", at: 450, hold: 0.5 },
+    ]
+    const run = await runOps(b, ops)
+    expect(judge(run, ["A"])).toEqual([])
+    expect(run.phases.map((p) => p.name).sort()).toEqual(["c1", "c2", "r1", "r2"])
+  }, 60_000)
+
+  test("two bases do not wait for each other: a long clone of A and a long delete of B run together", async () => {
+    const b = turnBench("two", ["A", "B"])
+    const run = await runOps(b, [
+      { kind: "create", base: "A", name: "ca", at: 0, hold: 1.5 },
+      { kind: "remove", base: "B", name: "rb", at: 0, hold: 1.5 },
+    ])
+    expect(judge(run, ["A", "B"])).toEqual([])
+    const [ca, rb] = ["ca", "rb"].map((name) => run.phases.find((p) => p.name === name)!)
+    expect(ca!.t0 < rb!.t1 && rb!.t0 < ca!.t1).toBe(true)
+  }, 60_000)
+
+  test("a holder killed in its clone frees the turn at once: the next starts well before the dead clone would have ended", async () => {
+    const b = turnBench("killed", ["A"])
+    const run = await runOps(b, [
+      { kind: "create", base: "A", name: "c0", at: 0, hold: 6, killAfter: 1500 },
+      { kind: "remove", base: "A", name: "r1", at: 300, hold: 0.3 },
+    ])
+    expect(judge(run, ["A"])).toEqual([])
+    const c0 = run.phases.find((p) => p.name === "c0")!
+    const r1 = run.phases.find((p) => p.name === "r1")!
+    expect(c0.open).toBe(true)
+    expect(r1.t0).toBeGreaterThanOrEqual(c0.t1)
+    expect(r1.t0 - c0.t1).toBeLessThan(SLACK)
+  }, 60_000)
+
+  test("a snapshot base (a btrfs subvolume whose work clones by btrfs) takes no turn: its clones and deletes run side by side, while a copy base beside it still takes turns", async () => {
+    const b = turnBench("snap", ["S", "A"])
+    const run = await runOps(
+      b,
+      [
+        ...["s1", "s2", "s3"].map((name, i): Op => ({ kind: "create", base: "S", name, at: i * 50, hold: 1.2 })),
+        { kind: "remove", base: "S", name: "sr", at: 100, hold: 1.2 },
+        { kind: "create", base: "A", name: "a1", at: 0, hold: 0.6 },
+        { kind: "remove", base: "A", name: "ar", at: 50, hold: 0.6 },
+      ],
+      ["S"],
+    )
+    expect(judge(run, ["S", "A"], ["S"])).toEqual([])
+    expect(overlapping(run.phases.filter((p) => p.base === "S")).length).toBeGreaterThan(0)
+  }, 60_000)
+
+  test("beside the script before the turn (83b97f9e) installed by rename: old creates and removes take no turn and are not starved; nothing deadlocks; the new ones still take turns among themselves", async () => {
+    const b = turnBench("old", ["A"])
+    const old = join(b.dir, "workrift-83b97f9e")
+    writeFileSync(old, sh(turnRepo, b.env, "git", "show", "83b97f9e:workbox/bin/workrift"))
+    chmodSync(old, 0o755)
+    const run = await runOps(b, [
+      { kind: "create", base: "A", name: "n1", at: 0, hold: 0.8 },
+      { kind: "create", base: "A", name: "o1", at: 50, hold: 0.8, script: old },
+      { kind: "remove", base: "A", name: "nr", at: 100, hold: 0.8 },
+      { kind: "remove", base: "A", name: "or", at: 150, hold: 0.8, script: old },
+      { kind: "create", base: "A", name: "n2", at: 200, hold: 0.8 },
+    ])
+    const failed = run.outcomes.filter((o) => o.code !== 0).map((o) => `${o.op.name} ${o.code}: ${textLines(o.err).slice(-2).join(" | ")}`)
+    expect(failed).toEqual([])
+    const fresh = run.phases.filter((p) => !p.name.startsWith("o"))
+    expect(fresh).toHaveLength(3)
+    expect(overlapping(fresh)).toEqual([])
+    expect(run.turns.map((t) => t.name).sort()).toEqual(["n1", "n2", "nr"])
+  }, 60_000)
 })
