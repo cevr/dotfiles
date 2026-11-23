@@ -1,5 +1,3 @@
-// @reads all
-// @reads-reason computed read at tests/pool-store.test.ts: expect(statSync(join(ours.dir, ".slots/anthropic/alpha")).mode & 0o777).toBe(0o600)
 // accept: one at a time (it bounds how far apart two refreshes begin).
 // The pool's login store source over a store in its slot-file format: the
 // fixtures are slot files in temporary directories, another process's
@@ -10,15 +8,16 @@
 // disk or on two real processes as well (tests/parity.json says which).
 import { afterAll, afterEach, describe, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs"
-import { readScratchDirectorySync as readdirSync } from "./read-path.ts"
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { readScratchDirectorySync as readdirSync, scratchInput } from "./read-path.ts"
 import { join } from "node:path"
-import { Clock, Effect, Option } from "effect"
+import { Clock, Effect, Option, Schema } from "effect"
 import { it } from "effect-bun-test"
-import { decodeStoredOAuth, STORE_PREFIX, StoreCredentialError, StoreSource, storeProcess } from "../mods/pool/store/store.ts"
+import { decodeStoredOAuth, STORE_PREFIX, StoreCredentialError, SlotStoreSource as StoreSource, storeProcess } from "../mods/pool/store/store.ts"
 import { fakeAccount, startFakeAnthropic, type FakeAccount, type FakeAnthropic, type FakeTokenAnswer } from "./fake-anthropic.ts"
-import { openSlotStore, type SlotStore } from "./store/store.ts"
-import { owned } from "./owned.ts"
+import { openSlotStore, scratchSlotFiles, type SlotStore } from "./store/store.ts"
+import { ownedCheckoutBun } from "./owned.ts"
+import { RefreshRequest } from "./store/refresh-request.ts"
 import { scratch } from "./scratch.ts"
 
 const HOUR = 3_600_000
@@ -69,9 +68,9 @@ const bench = async (
     store,
     fake,
     tokenURL,
-    source: new StoreSource({ dir, tokenURL }),
+    source: new StoreSource({ dir, tokenURL, files: scratchSlotFiles }),
     trades: () => fake.received.filter((request) => request.path === "/v1/oauth/token").length,
-    file: (label) => readFileSync(join(dir, ".slots/anthropic", label), "utf8"),
+    file: (label) => readFileSync(scratchInput(join(dir, ".slots/anthropic", label)), "utf8"),
   }
 }
 
@@ -107,7 +106,7 @@ describe("the pool's source over a login store", () => {
     expect(ours.file("alpha")).toBe(
       `{"_tag":"Oauth","type":"oauth","access":"${rotated.access}","refresh":"${rotated.refresh}","expires":${resolved.expires},"accountId":null,"metadata":{"owner":"store"},"signedInAt":1700000000000}`,
     )
-    expect(statSync(join(ours.dir, ".slots/anthropic/alpha")).mode & 0o777).toBe(0o600)
+    expect(statSync(scratchInput(join(ours.dir, ".slots/anthropic/alpha"))).mode & 0o777).toBe(0o600)
     expect(readdirSync(join(ours.dir, ".slots/anthropic"))).toEqual(["alpha"])
 
     // It decodes back, its sign-in stamp and owner kept.
@@ -130,9 +129,13 @@ describe("the pool's source over a login store", () => {
       { alpha: fakeAccount() },
       { expires: Date.now() - 1000, token: () => ({ kind: "rotate", delayMs: 1500 }) },
     )
-    const worker = join(import.meta.dir, "store/refresh-worker.ts")
-    const spawn = () =>
-      owned([process.execPath, worker, dir, tokenURL, `${STORE_PREFIX}alpha`], { stdout: "pipe", stderr: "pipe" })
+    const request = join(dir, "request.json")
+    writeFileSync(request, Schema.encodeSync(RefreshRequest)({ dir, tokenURL, credentialID: `${STORE_PREFIX}alpha` }))
+    const spawn = () => ownedCheckoutBun("tests/store/refresh-worker.ts", {
+      scratchArgs: [request],
+      scratch: { HOME: dir, TMPDIR: dir, XDG_CONFIG_HOME: dir, XDG_CACHE_HOME: dir, XDG_DATA_HOME: dir, XDG_STATE_HOME: dir },
+      external: {}, values: {},
+    })
     const runs = [spawn(), spawn()]
     const outputs = await Promise.all(
       runs.map(async (run) => {
@@ -195,7 +198,7 @@ describe("the pool's source over a login store", () => {
       const { dir, fake, source, tokenURL, trades, file } = yield* Effect.promise(() => bench({ alpha: fakeAccount() }, { expires: now - 1000 }))
       const slots = join(dir, ".slots/anthropic")
       const alpha = `${STORE_PREFIX}alpha`
-      const theirs = new StoreSource({ dir, tokenURL, process: storeProcess(), lockPolls: 5 })
+      const theirs = new StoreSource({ dir, tokenURL, process: storeProcess(), lockPolls: 5, files: scratchSlotFiles })
       const { served, busy } = yield* readOnly(
         slots,
         Effect.all({

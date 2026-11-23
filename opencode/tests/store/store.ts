@@ -5,11 +5,17 @@
 // through the pool's code, so a suite proves the pool honours the lock as the
 // file defines it. Every token is a fake the test drew.
 import { Database } from "bun:sqlite"
-import { mkdirSync, renameSync, writeFileSync } from "node:fs"
-import { readScratchFileSync, scratchInput } from "../read-path.ts"
+import { mkdirSync, promises, realpathSync, renameSync, writeFileSync } from "node:fs"
+import { readScratchDirectorySync, readScratchFileSync, scratchInput } from "../read-path.ts"
 import { join } from "node:path"
 import { Effect, Option, Schedule } from "effect"
-import { decodeStoredOAuth, encodeRefresh, type StoredOAuth } from "../../mods/pool/store/store.ts"
+import { decodeStoredOAuth, encodeRefresh, slotFiles, type StoredOAuth } from "../../mods/pool/store/store.ts"
+
+export const scratchSlotFiles = slotFiles({
+  names: readScratchDirectorySync, read: (file) => readScratchFileSync(file, "utf8"),
+  canonical: (file) => realpathSync(scratchInput(file)),
+  openStaging: (file) => promises.open(scratchInput(file), "wx", 0o600), lockPath: scratchInput,
+})
 
 export interface Tokens {
   readonly access: string
