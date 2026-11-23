@@ -1,3 +1,4 @@
+/** @reads cmd/kernel/fixtures/settle-child-pace/** cmd/kernel/server.ts cmd/orchestrate/server.ts cmd/wake/server.ts */
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import * as BunServices from "@effect/platform-bun/BunServices"
@@ -7,7 +8,8 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { describe, expect, it } from "effect-bun-test"
 import { Answer, chatEvents } from "../sim/verify-model.ts"
 import { message, read, sessionOf, shellsBySession, type SessionInfo, type ShellInfo } from "../mods/subagents/opencode/view.ts"
-import { decodeShellFact, shellExits } from "../mods/subagents/opencode/shell-exits.ts"
+import { shellExits } from "../mods/subagents/opencode/shell-exits.ts"
+import { decodeShellEvent, shellEventOf } from "../mods/subagents/solid/shell-events.ts"
 import { subagents, visible } from "../mods/subagents/subagent-row.ts"
 import { Diagnostic, Phase, Undetermined } from "../mods/kernel/child-lifecycle.ts"
 import { owned, released } from "./owned.ts"
@@ -38,7 +40,11 @@ interface Embedded {
     readonly list: (input: { parentID: string }) => Promise<{ data: ReadonlyArray<SessionInfo> }>
     readonly get: (input: { sessionID: string }) => Promise<SessionInfo>
     readonly context: (input: { sessionID: string }) => Promise<ReadonlyArray<Schema.Json>>
-    readonly inbox: { readonly list: (input: { sessionID: string }) => Promise<ReadonlyArray<{ type: string; payload: object }>> }
+    readonly inbox: {
+      readonly list: (input: { sessionID: string }) => Promise<ReadonlyArray<{ type: string; payload: object }>>
+      readonly cancel: (input: { sessionID: string; inboxID: string }) => Promise<void>
+    }
+    readonly synthetic: (input: { sessionID: string; text: string; metadata: Schema.JsonObject; resume: false }) => Promise<{ id: string }>
   }
   readonly experimental: { readonly session: {
     readonly wait: (input: { sessionID: string }) => PromiseLike<object>
@@ -151,10 +157,10 @@ const modelFor = (gate: string) => Effect.gen(function* () {
       status: 429, contentType: "application/json", headers: { "retry-after-ms": "100" },
     })
     if (retry) yield* Deferred.await(finishRetry)
-    if (silent) yield* Deferred.await(failSilent)
+    if (silent && shellAnswered) yield* Deferred.await(failSilent)
     if (earlier) yield* Deferred.await(affirmExit)
     let events = chatEvents(answer, "sim-model", id)
-    if (filter || earlier || silent) events = chatEvents(Answer.Text({ text: "" }), "sim-model", id).map((event) =>
+    if (filter || earlier || (silent && shellAnswered)) events = chatEvents(Answer.Text({ text: "" }), "sim-model", id).map((event) =>
       event.replace('"finish_reason":"stop"', '"finish_reason":"content_filter"'),
     )
     return HttpServerResponse.text(events.join(""), { contentType: "text/event-stream" })
@@ -173,7 +179,7 @@ const VerifyCall = Schema.Struct({ tool: Schema.String, input: Schema.JsonObject
 const decodeCall = Schema.decodeUnknownOption(Schema.fromJsonString(VerifyCall))
 const fixtureAnswer = (prompt: string, title: boolean, answered: boolean, gate: string) => {
   if (title) return Answer.Text({ text: "Fixture title" })
-  if (hasInput(prompt, denied) && !answered)
+  if ((hasInput(prompt, denied) || hasInput(prompt, silentChild)) && !answered)
     return Answer.Call({ id: "fixture_shell", tool: "shell", input: { command: `cat '${gate}'`, background: true } })
   const line = prompt.split("\n").find((item) => item.startsWith("fixture-call "))
   if (!answered && line) {
@@ -207,11 +213,9 @@ const observeUntil = Effect.fn("LifecycleFixture.observeUntil")(function* (event
 const loadSdk = (file: string) => import(file)
 
 const pluginConfig = (cmd: string, base: string, join: Path.Path["join"], opensAt: number): ReadonlyArray<Schema.JsonObject> => [
-  { package: join(cmd, "kernel"), options: { direct: ["subagents", "shell"] } },
+  { package: join(cmd, "kernel"), options: { direct: ["subagents", "shell", "fixture_shell_suppress"] } },
   { package: join(cmd, "wake"), options: { backstop: "off" } },
-  // A working-day policy clock behind Wake makes the short hold hit the
-  // native floor without depending on SDK/HTTP latency.
-  { package: join(cmd, "orchestrate"), options: { codex: false, log: join(base, "calls.jsonl"), now: "2026-11-04T15:00:00Z" } },
+  { package: join(cmd, "orchestrate"), options: { codex: false, log: join(base, "calls.jsonl") } },
   { package: join(cmd, "kernel", "fixtures", "settle-child-pace"), options: { opensAt } },
 ]
 
@@ -326,30 +330,40 @@ const nativeShell = (instance: Embedded, base: string, gate: string, child: stri
     command: `cat '${gate}'`, location: { directory: base }, metadata: { sessionID: child, background: true },
   })).pipe(Effect.map(({ data }) => data))
 
-/** This real shell registry entry has no ShellTool watcher. At exit its public
- * shell shape is the same as one whose notifying watcher has not run yet. */
+/** The native kill action marks the result answered. Invoke it without a
+ * new child execution so no newer execution fact masks the silent gap. */
 const silentExit = Effect.fn("LifecycleFixture.silentExit")(function* (
-  instance: Embedded, base: string, gate: string, failChild: Effect.Effect<boolean>,
+  instance: Embedded, base: string, failChild: Effect.Effect<boolean>,
 ) {
   const events = yield* eventStream(instance)
   const { id: root } = yield* promised("silent-shell parent was not created", () => instance.sessions.create({ location: { directory: base } }))
   const launch = yield* ask(instance, root, fixtureCall("kernel", { code: launchChild("Fixture silent shell", silentChild) }))
   const { id: child } = yield* childOf(instance, root, launch)
-  const shell = yield* nativeShell(instance, base, gate, child)
-  const created = yield* nextEvent(events, "silent shell created", (event) => event.type === "shell.created" && event.data?.info?.id === shell.id)
+  const created = yield* nextEvent(events, "silent shell created", (event) => event.type === "shell.created" && event.data?.info?.metadata.sessionID === child)
+  const shell = yield* Effect.fromOption(Option.fromUndefinedOr(created.data?.info)).pipe(Effect.mapError(() => fault("no native silent shell")))
   yield* failChild
   const terminal = yield* nextEvent(events, "silent shell's execution failed", childEvent("session.execution.failed", child))
   const snapshot = yield* promised("silent child snapshot lost", () => instance.sessions.get({ sessionID: child }))
-  yield* releaseShell(gate)
+  const killed = yield* ask(instance, root, fixtureCall("fixture_shell_suppress", { child, shellID: shell.id }))
   const exit = yield* nextEvent(events, "silent shell exited", (event) => event.type === "shell.exited" && event.data?.id === shell.id)
   const rebuilt = yield* ask(instance, root, handle(child))
   const direct = yield* ask(instance, root, fixtureCall("subagents", { action: "get", sessionID: child }))
   const rows = replayRows(snapshot, root, shell, [created, terminal, exit])
   const pending = yield* promised("silent child inbox lost", () => instance.sessions.inbox.list({ sessionID: child }))
+  // A separate controlled admission uses the same native inbox producer,
+  // without waking immediately, so the public tool can sample the gap.
+  const admitted = yield* promised("native inbox admission failed", () => instance.sessions.synthetic({
+    sessionID: child, text: "Fixture shell result", metadata: { source: "shell", shellID: shell.id }, resume: false,
+  }))
+  const gap = yield* ask(instance, root, handle(child))
+  const gapRows = yield* realRows(instance, root, child, gap, Option.none(), Number(exit.created) + 1)
+  yield* promised("native inbox cancellation failed", () => instance.sessions.inbox.cancel({ sessionID: child, inboxID: admitted.id }))
+  const cancelled = yield* ask(instance, root, handle(child))
   return {
     child, shellID: shell.id, exit: { id: exit.id || "", at: Number(exit.created) },
     observation: takeAnswer(rebuilt, "kernel"), direct: takeAnswer(direct, "subagents"),
-    pending: pending.length, rows,
+    pending: pending.length, rows, killed: takeAnswer(killed, "fixture_shell_suppress"),
+    gap: takeAnswer(gap, "kernel"), gapRows: gapRows.visible, cancelled: takeAnswer(cancelled, "kernel"),
   }
 })
 
@@ -367,7 +381,7 @@ const replayRows = (failed: SessionInfo, root: string, shell: ShellInfo, events:
     message: { list: () => [] }, permission: { list: () => [] }, form: { list: () => [] },
   } }
   return events.flatMap((event) => {
-    Option.map(decodeShellFact(event), exits.ingest)
+    Option.map(shellEventOf(decodeShellEvent(event)), exits.ingest)
     if (event.type === "shell.created") return []
     if (event.type === "shell.exited") shells = []
     if (event.type === "session.execution.started") running = true
@@ -496,7 +510,7 @@ const fixture = Effect.gen(function* () {
     const clamp = yield* timedHold(opened, base)
     const earlier = yield* earlierFailure(opened, base, gate, model.affirmExit)
     const retry = yield* observedRetry(opened, base, model.finishRetry)
-    const silent = yield* silentExit(opened, base, gate, model.failSilent)
+    const silent = yield* silentExit(opened, base, model.failSilent)
     return { ...observed, latch, clamp, earlier, retry, silent, opensAt }
   })))
   // Commit a later busy period while the production observer is absent. A
@@ -541,6 +555,8 @@ const report = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({
   silent: Schema.Struct({
     child: Schema.String, shellID: Schema.String, exit: Schema.Struct({ id: Schema.String, at: Schema.Number }),
     observation: Schema.String, direct: Schema.String, pending: Schema.Number, rows: Schema.Array(Schema.String),
+    killed: Schema.String,
+    gap: Schema.String, gapRows: Schema.Array(Schema.String), cancelled: Schema.String,
   }),
   opensAt: Schema.Number,
 })))
@@ -584,7 +600,7 @@ const verifyLife = Effect.fn("LifecycleFixture.verifyLife")(function* (result: E
   })
   expect(result.shown).toEqual(["waiting"])
   expect(result.traceRows).toEqual(["waiting", "undetermined", "waiting", "working", "working"])
-  expect(result.earlier.exit).toBeLessThanOrEqual(result.earlier.terminal.at)
+  expect(result.earlier.exit <= result.earlier.terminal.at).toBe(true)
   expect(result.earlier.row).toBe("failed")
   expect(result.earlier.shown).toEqual(["failed"])
   expect(result.earlier.ended).toBe(result.earlier.terminal.at)
@@ -602,8 +618,14 @@ const verifyLife = Effect.fn("LifecycleFixture.verifyLife")(function* (result: E
     phase: Phase.cases.Unknown.make({ reason: Undetermined.make({ shellID: result.silent.shellID, exit: result.silent.exit }) }),
   })
   expect(result.silent.pending).toBe(0)
+  expect(result.silent.killed).toContain(result.silent.shellID)
   expect(result.silent.direct).toContain("undetermined (background command ended")
   expect(result.silent.rows).toEqual(["waiting", "undetermined"])
+  const gap = yield* parse(lastLine(result.silent.gap))
+  expect(gap).toHaveProperty("phase", Phase.cases.Continuing.make({ on: "Wake" }))
+  expect(result.silent.gapRows).toEqual(["waiting"])
+  const cancelled = yield* parse(lastLine(result.silent.cancelled))
+  expect(cancelled).toMatchObject({ phase: { ...Phase.cases.Settled.make({ outcome: "failed", cause: "PolicyDenied" }) } })
 })
 
 if (import.meta.main && parentEnv.LIFECYCLE_FIXTURE_HOME) {

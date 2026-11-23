@@ -5,7 +5,6 @@
 // tools its cell called), and the stop notices its background subagents and
 // shell commands sent it. Read inside a Solid computation, every read here is
 // reactive.
-import { Option } from "effect"
 import type { Call, Family, Latch, Message, Part, Session, Shell } from "../family.ts"
 import { envelopes } from "../envelope.ts"
 import { noShellExit, type ShellExitRead } from "./shell-exits.ts"
@@ -37,7 +36,7 @@ export type ShellInfo = {
  * host's location reference, which the shell registry is kept per.
  */
 export interface Reads<Location = unknown> {
-  readonly listen?: (handler: (event: { readonly details: unknown }) => void) => () => void
+  readonly listen?: (handler: (event: { readonly details: object }) => void) => () => void
   readonly session: {
     get(sessionID: string): SessionInfo | undefined
     root(sessionID: string): string
@@ -218,10 +217,13 @@ export const transcript = (items: ReadonlyArray<unknown>, convert: Convert): Tra
   return { messages: items.flatMap((item) => convert(item) ?? []), ...(model ? { model } : {}) }
 }
 
-const failureFields = ({ failureAt, undeterminedAt }: ShellExitRead) => ({
-  ...Option.match(failureAt, { onNone: () => ({}), onSome: (orderedFailureAt) => ({ orderedFailureAt }) }),
-  ...Option.match(undeterminedAt, { onNone: () => ({}), onSome: (shellResultUndeterminedAt) => ({ shellResultUndeterminedAt }) }),
-})
+type FailureFields = Pick<Session, "orderedFailureAt" | "shellResultUndeterminedAt">
+const failureFields = ({ failureAt, undeterminedAt }: ShellExitRead): FailureFields => {
+  const result: FailureFields = {}
+  if (Number.isFinite(failureAt) && Number.isFinite(undeterminedAt)) return { orderedFailureAt: failureAt, shellResultUndeterminedAt: undeterminedAt }
+  if (Number.isFinite(failureAt)) return { orderedFailureAt: failureAt }
+  return result
+}
 
 /**
  * Session `id` from the host's reads, its messages and step model given as

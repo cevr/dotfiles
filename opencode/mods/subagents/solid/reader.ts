@@ -18,7 +18,8 @@ import type { Family, Latch, Message, Session, Shell } from "../family.ts"
 import { familyOf, message, read, sessionOf, shellsBySession, transcript, type Reads, type Transcript } from "../opencode/view.ts"
 import { fields, is, list } from "../same.ts"
 import { keptMemo } from "./kept.ts"
-import { decodeShellFact, shellExits } from "../opencode/shell-exits.ts"
+import { shellExits } from "../opencode/shell-exits.ts"
+import { decodeShellEvent, shellEventOf } from "./shell-events.ts"
 
 /**
  * `convert` kept per item: each object item gets one memo, which reads it
@@ -102,7 +103,7 @@ function keepFamily(reads: Reads<unknown>, root: string, location: unknown, conv
     const exits = shellExits((id) => id !== root && reads.session.root(id) === root)
     const [revision, update] = createSignal(0)
     const unlisten = reads.listen?.(({ details }) => {
-      if (Option.exists(decodeShellFact(details), exits.ingest)) update((n) => n + 1)
+      if (Option.exists(shellEventOf(decodeShellEvent(details)), exits.ingest)) update((n) => n + 1)
     })
     const sessions = new Map<string, Kept<Session>>()
     const value = createMemo((): Family => {

@@ -171,11 +171,6 @@ const sameLocation = (actual: { readonly directory: string; readonly workspaceID
 
 type Background = { readonly owner: string; readonly kind: "Shell" | "Child"; readonly running: boolean; readonly at: number; readonly backgrounded?: boolean; readonly native?: boolean }
 type Inbox = { readonly child: string; readonly seq: number; readonly pending: boolean; readonly shellID?: string }
-type Uncertain = { readonly child: string; readonly failed: number; readonly reason: Undetermined }
-const snapshotWithExit = (snapshot: Snapshot, exit?: Uncertain): Snapshot => {
-  if (exit) return { ...snapshot, undetermined: exit.reason }
-  return snapshot
-}
 
 /** One location-bound subscriber and persisted projection; neither schedules work nor sends notices. */
 export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Context, subscribe: Subscribe) {
@@ -186,7 +181,6 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
   const parents = new Map<string, string>()
   const background = new Map<string, Background>()
   const inbox = new Map<string, Inbox>()
-  const exits = new Map<string, Uncertain>()
   const stopping = new Map<string, number>()
   const { directory, workspaceID } = ctx.location
   const workspace = Option.getOrElse(Option.map(Option.fromUndefinedOr(workspaceID), String), () => "")
@@ -251,14 +245,19 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
   const shellExit = Effect.fn("ChildLifecycle.shellExit")(function* (shellID: string, id: string, at: number) {
     const shell = background.get(shellID)
     releaseShell(shellID)
-    if (!shell?.backgrounded || exits.has(shellID)) return
+    if (!shell?.backgrounded) return
+    if (shell.native && !shell.running) return
     const child = shell.owner
     if (!current.has(child) || inbox.values().some((item) => item.child === child && item.shellID === shellID)) return
     const parent = parents.get(child)
     if (!parent) return
-    const { segment } = yield* load(child, parent)
+    const state = yield* load(child, parent)
+    const { segment } = state
     if (segment?.terminal?._tag !== "Ended" || segment.terminal.outcome !== "failed") return
-    exits.set(shellID, { child, failed: segment.point.seq, reason: Undetermined.make({ shellID, exit: { id, at } }) })
+    const exits = state.exits ?? []
+    if (exits.some((item) => item.shellID === shellID)) return
+    const reason = Undetermined.make({ shellID, exit: { id, at } })
+    yield* save(state, { ...state, rev: state.rev + 1, exits: [...exits, reason] })
   })
 
   const registerWork = Effect.fn("ChildLifecycle.registerWork")(function* (id: string, work: Background) {
@@ -274,7 +273,6 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
     stopping.delete(child)
     for (const [id, item] of background) if (item.owner === child) background.delete(id)
     for (const [id, item] of inbox) if (item.child === child) inbox.delete(id)
-    for (const [id, item] of exits) if (item.child === child) exits.delete(id)
     yield* ctx.storage.remove(keyOf(child))
   })
 
@@ -294,11 +292,14 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
     const existing = inbox.get(inboxID)
     if (existing && (existing.child !== child || existing.seq >= seq)) return
     const found = yield* infoOf(child).pipe(Effect.option)
-    if (!Option.exists(found, (info) => Boolean(info.parentID))) return
+    if (Option.isNone(found) || !found.value.parentID) return
     const pending = event.type === "session.inbox.enqueued"
     if (event.type === "session.inbox.enqueued") {
       const { shellID } = event.data.item.payload.metadata
-      if (exits.get(shellID)?.child === child) exits.delete(shellID)
+      const state = yield* load(child, found.value.parentID)
+      if (state.exits?.some((item) => item.shellID === shellID)) {
+        yield* save(state, { ...state, rev: state.rev + 1, exits: state.exits.filter((item) => item.shellID !== shellID) })
+      }
       inbox.set(inboxID, { child, seq, pending, shellID })
     } else {
       inbox.set(inboxID, { ...existing, child, seq, pending })
@@ -348,7 +349,6 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
     if (!written) return
     if (next.start && next.start !== state.start) starts.set(child, next.start.seq)
     if (next.segment === state.segment) return
-    for (const [id, item] of exits) if (item.child === child && item.failed < (next.segment?.point.seq ?? -1)) exits.delete(id)
     // Seeing a late diagnostic after activation does not validate a stored terminal.
     current.add(child)
     if (next.segment?.terminal) active.delete(child)
@@ -366,7 +366,7 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
   const stream = subscribe(ctx).pipe(
     Stream.filterMap(decodeEvent),
     Stream.runForEach((event) => lock.withPermits(1)(fold(event))),
-    Effect.ensuring(Effect.sync(() => { current.clear(); starts.clear(); background.clear(); inbox.clear(); exits.clear(); active.clear() })),
+    Effect.ensuring(Effect.sync(() => { current.clear(); starts.clear(); background.clear(); inbox.clear(); active.clear() })),
     Effect.catchCause(() => Effect.logWarning("subagents: lifecycle subscriber stopped; using coarse session snapshots")),
   )
   yield* Effect.forkScoped(stream, { startImmediately: true })
@@ -387,9 +387,7 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
       const info = yield* infoOf(child)
       if (!info.parentID) return { info, observation: Option.none() }
       const state = yield* load(child, info.parentID)
-      const snapshot = snapshotWithExit(snapshotOf(info, liveWork(child), false), exits.values().find((item) =>
-        item.child === child && item.failed === state.segment?.point.seq,
-      ))
+      const snapshot = snapshotOf(info, liveWork(child), false)
       // A terminal observed after restart cannot use an older saved start as
       // its identity. The pinned host tells us only the terminal's own seq.
       const fresh = current.has(child) && Boolean(state.start && starts.get(child) === state.start.seq)

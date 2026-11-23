@@ -75,6 +75,8 @@ export const Projection = Schema.Struct({
   rev: Schema.Int,
   start: Schema.optionalKey(Point),
   segment: Schema.optionalKey(Segment),
+  /** An observed shell exit is evidence of uncertainty, not of pending work. */
+  exits: Schema.optionalKey(Schema.Array(Undetermined)),
   noted: Schema.optionalKey(Noted),
   sampled: Schema.optionalKey(Schema.String),
 })
@@ -98,7 +100,10 @@ const withExecution = (state: Projection, fact: typeof Fact.cases.Execution.Type
   if (!newest && !newestStart) return state
   const next = { ...state, rev: state.rev + 1 }
   if (newestStart) next.start = point
-  if (newest) next.segment = fact.segment
+  if (newest) {
+    next.segment = fact.segment
+    delete next.exits
+  }
   return next
 }
 
@@ -120,7 +125,6 @@ export interface Snapshot {
   readonly busyAt?: number
   readonly idleAt?: number
   readonly background?: "Shell" | "Child" | "Wake"
-  readonly undetermined?: Undetermined
   readonly latch?: Extract<Phase, { readonly _tag: "Latched" }>
   readonly latchCancelled?: boolean
   readonly stopUncertain?: boolean
@@ -167,22 +171,24 @@ const incomparableOutcome = (terminal: Option.Option<Terminal>, snapshot: Snapsh
 
 const phaseOf = (state: Projection, snapshot: Snapshot, current: boolean, applicable: boolean): Phase => {
   if (snapshot.stopUncertain) return Phase.cases.Unknown.make({})
-  if (applicable && state.segment) return orderedPhase(snapshot, state.segment)
+  const exit = state.exits?.[0]
+  if (applicable && state.segment) return orderedPhase(snapshot, state.segment, exit)
   if (snapshot.running) return Phase.cases.Running.make({})
   if (snapshot.background && snapshot.outcome !== "interrupted") return Phase.cases.Continuing.make({ on: snapshot.background })
   if (snapshot.latch) return snapshot.latch
   if (snapshot.latchCancelled) return Phase.cases.Settled.make({ outcome: "interrupted", cause: "UserStop" })
+  if (exit) return Phase.cases.Unknown.make({ reason: exit })
   if (current) return Phase.cases.Unknown.make({})
   if (state.segment?.terminal?._tag === "Shutdown") return Phase.cases.Recovering.make({})
   if (snapshot.outcome) return Phase.cases.Settled.make({ outcome: snapshot.outcome, cause: "Unknown" })
   return Phase.cases.Unknown.make({})
 }
 
-const orderedPhase = (snapshot: Snapshot, segment: typeof Segment.Type): Phase => {
+const orderedPhase = (snapshot: Snapshot, segment: typeof Segment.Type, exit?: Undetermined): Phase => {
   const { terminal, point } = segment
   if (!terminal) return Phase.cases.Running.make({})
   if (terminal._tag === "Shutdown") return Phase.cases.Recovering.make({})
   if (snapshot.background && terminal.outcome !== "interrupted") return Phase.cases.Continuing.make({ on: snapshot.background })
-  if (snapshot.undetermined && terminal.outcome === "failed") return Phase.cases.Unknown.make({ reason: snapshot.undetermined })
+  if (exit && terminal.outcome === "failed") return Phase.cases.Unknown.make({ reason: exit })
   return Phase.cases.Settled.make({ outcome: terminal.outcome, cause: terminal.cause, terminal: point })
 }

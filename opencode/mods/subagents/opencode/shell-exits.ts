@@ -1,89 +1,70 @@
-import { Option, Schema } from "effect"
-
-const Ref = { sessionID: Schema.String }
-const ShellID = { shellID: Schema.String }
-const Execution = Schema.Literals(["session.execution.started", "session.execution.failed", "session.execution.succeeded", "session.execution.interrupted"])
-const HostFact = Schema.Union([
-  Schema.Struct({ type: Execution, created: Schema.Finite, durable: Schema.Struct({ aggregateID: Schema.String, seq: Schema.Int }), data: Schema.Struct(Ref) }),
-  Schema.Struct({ type: Schema.Literal("shell.created"), data: Schema.Struct({ info: Schema.Struct({
-    id: Schema.String, metadata: Schema.Struct({ ...Ref, background: Schema.Literal(true) }),
-  }) }) }),
-  Schema.Struct({ type: Schema.Literal("experimental.job.updated"), data: Schema.Struct({ info: Schema.Struct({
-    ...Ref, ...ShellID, kind: Schema.Literal("shell"),
-  }) }) }),
-  Schema.Struct({ type: Schema.Literal("shell.exited"), created: Schema.Finite, data: Schema.Struct({ id: Schema.String }) }),
-  Schema.Struct({ type: Schema.Literal("session.inbox.enqueued"), data: Schema.Struct({ ...Ref, item: Schema.Struct({
-    type: Schema.Literal("synthetic"), payload: Schema.Struct({ metadata: Schema.Struct({ ...ShellID, source: Schema.Literal("shell") }) }),
-  }) }) }),
-  Schema.Struct({ type: Schema.Literal("session.deleted"), data: Schema.Struct(Ref) }),
-])
-export const decodeShellFact = Schema.decodeUnknownOption(HostFact)
+export type ShellFact =
+  | { type: "registered"; owner: string; shellID: string }
+  | { type: "exit"; shellID: string; at: number }
+  | { type: "admitted"; owner: string; shellID: string }
+  | { type: "deleted"; owner: string }
+  | { type: "execution"; owner: string; seq: number; at: number; failed: boolean }
 
 export interface ShellExitRead {
-  readonly failureAt: Option.Option<number>
-  readonly undeterminedAt: Option.Option<number>
+  readonly failureAt: number
+  readonly undeterminedAt: number
 }
-export const noShellExit: ShellExitRead = { failureAt: Option.none(), undeterminedAt: Option.none() }
+export const noShellExit: ShellExitRead = { failureAt: NaN, undeterminedAt: NaN }
 
 /** A live, ordered read for the TUI. Neither an empty inbox nor transcript history resolves an exit. */
 export const shellExits = (owns: (id: string) => boolean) => {
   const owners = new Map<string, string>()
-  const execution = new Map<string, { seq: number; failedAt?: number }>()
+  const closed = new Set<string>()
+  const execution = new Map<string, { seq: number; failureAt: number }>()
   const exits = new Map<string, { owner: string; at: number }>()
   const clear = (owner: string) => {
     for (const [id, exit] of exits) if (exit.owner === owner) exits.delete(id)
   }
-  const register = (id: string, owner: string) => {
-    if (owns(owner)) owners.set(id, owner)
-  }
   const exitShell = (id: string, at: number) => {
-    const owner = Option.fromUndefinedOr(owners.get(id))
+    const owner = owners.get(id)
+    if (!owner) return false
     owners.delete(id)
-    if (Option.isNone(owner)) return false
-    const failure = Option.fromUndefinedOr(execution.get(owner.value)?.failedAt)
-    if (Option.isNone(failure)) return false
-    exits.set(id, { owner: owner.value, at })
+    closed.add(id)
+    if (closed.size > 512) {
+      const oldest = closed.values().next()
+      if (!oldest.done) closed.delete(oldest.value)
+    }
+    if (!Number.isFinite(execution.get(owner)?.failureAt) || !Number.isFinite(at)) return false
+    exits.set(id, { owner, at })
     return true
   }
-  const ingest = (value: typeof HostFact.Type): boolean => {
+  const ordered = (value: Extract<ShellFact, { type: "execution" }>) => {
+    if (!owns(value.owner)) return false
+    if (value.seq <= Number(execution.get(value.owner)?.seq)) return false
+    clear(value.owner)
+    if (value.failed) execution.set(value.owner, { seq: value.seq, failureAt: value.at })
+    else execution.set(value.owner, { seq: value.seq, failureAt: NaN })
+    return true
+  }
+  const ingest = (value: ShellFact): boolean => {
     switch (value.type) {
-      case "shell.created":
-        register(value.data.info.id, value.data.info.metadata.sessionID)
+      case "registered":
+        if (!closed.has(value.shellID) && owns(value.owner)) owners.set(value.shellID, value.owner)
         return false
-      case "experimental.job.updated":
-        register(value.data.info.shellID, value.data.info.sessionID)
-        return false
-      case "shell.exited":
-        return exitShell(value.data.id, value.created)
-      case "session.inbox.enqueued": {
-        const id = value.data.item.payload.metadata.shellID
-        if (owners.get(id) === value.data.sessionID) owners.delete(id)
-        if (exits.get(id)?.owner !== value.data.sessionID) return false
-        return exits.delete(id)
-      }
-      case "session.deleted": {
-        execution.delete(value.data.sessionID)
-        clear(value.data.sessionID)
-        for (const [id, owner] of owners) if (owner === value.data.sessionID) owners.delete(id)
+      case "exit":
+        return exitShell(value.shellID, value.at)
+      case "admitted":
+        if (owners.get(value.shellID) === value.owner) owners.delete(value.shellID)
+        if (exits.get(value.shellID)?.owner !== value.owner) return false
+        return exits.delete(value.shellID)
+      case "deleted":
+        execution.delete(value.owner)
+        clear(value.owner)
+        for (const [id, owner] of owners) if (owner === value.owner) owners.delete(id)
         return true
-      }
-      default: {
-        const owner = value.data.sessionID
-        const { aggregateID, seq } = value.durable
-        if (aggregateID !== owner || !owns(owner)) return false
-        const previous = execution.get(owner)
-        if (previous && previous.seq >= seq) return false
-        clear(owner)
-        if (value.type === "session.execution.failed") execution.set(owner, { seq, failedAt: value.created })
-        else execution.set(owner, { seq })
-        return true
-      }
+      case "execution":
+        return ordered(value)
     }
   }
   const read = (id: string): ShellExitRead => {
-    const failureAt = execution.get(id)?.failedAt
+    const failureAt = Number(execution.get(id)?.failureAt)
     const exit = exits.values().find((entry) => entry.owner === id)
-    return { failureAt: Option.fromUndefinedOr(failureAt), undeterminedAt: Option.fromUndefinedOr(exit?.at) }
+    return { failureAt, undeterminedAt: Number(exit?.at) }
   }
   return { ingest, read }
 }

@@ -36,7 +36,6 @@
 //   failed one failed.
 // The time is how long it has been in that state, not since it started.
 import { described as stepOf } from "@dotfiles/opencode-orchestrate/described"
-import { Option } from "effect"
 import { canonical, firstSentence, lastHeard, lastSentence, liveCall, once, running, runningUpdate, sayings, waiting, waits } from "./activity.ts"
 import { unwrap } from "./envelope.ts"
 import type { Call, Family, Latch, Message, Session } from "./family.ts"
@@ -233,8 +232,7 @@ const when = (at: number | undefined) => (at === undefined ? {} : { at })
 
 /** Only the host session's outcome can supply a coarse end, never a notice or a launch tool reply. */
 function ending(session: Session, found: ReturnType<typeof launch>): Ending {
-  const ordered = Option.fromUndefinedOr(session.orderedFailureAt)
-  if (Option.isSome(ordered)) return { state: "failed", at: ordered.value }
+  if (Number.isFinite(session.orderedFailureAt)) return { state: "failed", at: Number(session.orderedFailureAt) }
   if (session.outcome === "succeeded") return { state: "done", ...when(session.time.idle) }
   if (session.outcome === "failed") return { state: "failed", ...when(session.time.idle) }
   if (session.outcome === "interrupted") return { state: "cancelled", ...when(session.time.idle) }
@@ -398,16 +396,15 @@ function rowsOf(family: Family, rootSessionID: string, options: ReadOptions): Re
       return {
         ...base,
         state: "waiting",
-        update: continuationUpdate(update, session.outcome === "failed" || Option.isSome(Option.fromUndefinedOr(session.orderedFailureAt))),
+        update: continuationUpdate(update, session.outcome === "failed" || Number.isFinite(session.orderedFailureAt)),
         ...timed(since),
       }
     }
-    const uncertain = Option.fromUndefinedOr(session.shellResultUndeterminedAt)
-    if (Option.isSome(uncertain)) {
+    if (Number.isFinite(session.shellResultUndeterminedAt)) {
       return {
         ...base, state: "waiting",
         update: "Undetermined: a step failed; its background command ended; the host does not say whether a result is still to be delivered",
-        ...timed(uncertain.value),
+        ...timed(Number(session.shellResultUndeterminedAt)),
       }
     }
     const end = ending(session, found)
