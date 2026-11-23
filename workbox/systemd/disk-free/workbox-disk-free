@@ -1,0 +1,50 @@
+#!/bin/sh
+# Publishes how much the btrfs under /workspaces can still take, for tools to read without root: the
+# work tool and the host arbiter read /run/workbox/disk-free (key=value lines, bytes). It enforces
+# nothing. workbox-disk-free.timer runs it every minute (as root: btrfs filesystem usage reads the
+# chunk tree, which needs CAP_SYS_ADMIN).
+#
+# The figures are btrfs filesystem usage's, not df's: df cannot see raid1 or the space held in
+# allocated chunks. free_estimated is btrfs's "Free (estimated)": free space inside data chunks plus
+# unallocated space at the data profile's ratio (half, on raid1); free_min its pessimistic bound;
+# unallocated what no chunk holds yet (metadata grows into it: at 0 every write waits, wb-stalls
+# 2026-11-19).
+#
+#   mount=/workspaces
+#   device_size=<bytes>
+#   unallocated=<bytes>
+#   free_estimated=<bytes>
+#   free_min=<bytes>
+#   updated=<unix seconds>
+#
+# Usage: workbox-disk-free [mount]   (default /workspaces)
+# Env: WORKBOX_DISK_FREE_OUT (default /run/workbox/disk-free).
+set -eu
+mount_path=${1:-/workspaces}
+out=${WORKBOX_DISK_FREE_OUT:-/run/workbox/disk-free}
+
+usage=$(btrfs filesystem usage -b "$mount_path") || {
+  printf 'workbox-disk-free: btrfs filesystem usage %s failed\n' "$mount_path" >&2
+  exit 1
+}
+figures=$(printf '%s\n' "$usage" | awk '
+  /^[[:space:]]*Device size:/ { size = $3 }
+  /^[[:space:]]*Device unallocated:/ { unalloc = $3 }
+  /^[[:space:]]*Free \(estimated\):/ { free = $3; min = $5; sub(/\)$/, "", min) }
+  END {
+    if (size == "" || unalloc == "" || free == "" || min == "") exit 1
+    printf "device_size=%s\nunallocated=%s\nfree_estimated=%s\nfree_min=%s\n", size, unalloc, free, min
+  }') || {
+  printf 'workbox-disk-free: btrfs filesystem usage %s printed no free estimate\n' "$mount_path" >&2
+  exit 1
+}
+
+dir=$(dirname "$out")
+mkdir -p "$dir"
+chmod 0755 "$dir"
+tmp=$(mktemp "$out.XXXXXX")
+trap 'rm -f "$tmp"' EXIT
+printf 'mount=%s\n%s\nupdated=%s\n' "$mount_path" "$figures" "$(date +%s)" > "$tmp"
+chmod 0644 "$tmp"
+# One rename: a reader sees the last whole file or this one.
+mv "$tmp" "$out"

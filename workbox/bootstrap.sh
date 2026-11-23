@@ -4,6 +4,9 @@ set -eu
 umask 077
 
 workbox_dir=$(CDPATH='' cd -- "$(dirname "$0")" && pwd)
+# shellcheck source-path=SCRIPTDIR source=host-identity.sh
+. "$workbox_dir/host-identity.sh"
+[ "${1:-}" = --check ] || workbox_require_host
 system_dir="$workbox_dir/systemd/system"
 resolved_config="$workbox_dir/systemd/resolved.conf.d/workbox.conf"
 # The kernel limits the workbox needs above the defaults; provision.sh installs
@@ -14,7 +17,7 @@ user_unit_dir="$HOME/.config/systemd/user"
 workspaces_dir=${WORKBOX_WORKSPACES_DIR:-/workspaces}
 bite_source="$workspaces_dir/bite"
 local_bin_dir="$HOME/.local/bin"
-user_timers="claude-daily.timer cleanup-mosh-servers.timer cull-transcript-images.timer transcript-archive.timer workbox-backup.timer"
+user_timers="claude-daily.timer cleanup-mosh-servers.timer cull-transcript-images.timer transcript-archive.timer workbox-backup.timer workbox-pressure.timer"
 
 if [ "$(uname -s)" = Linux ] && [ -S "/run/user/$(id -u)/bus" ]; then
   XDG_RUNTIME_DIR="/run/user/$(id -u)"
@@ -49,20 +52,21 @@ check_timer() {
   systemctl --user show "$1" -p NextElapseUSecRealtime -p NextElapseUSecMonotonic --value | grep -q '[1-9]'
 }
 
-# herdr-core (hc) holds the terminals. `hc server status` starts the core when
-# none runs, in its own transient unit.
+# Inspect the existing core without `hc server status`, which auto-starts it.
 check_hc() {
-  hc_status=$(hc server status --json)
-  printf '%s' "$hc_status" | jq -e '.pid | type == "number"' >/dev/null
-  printf '%s' "$hc_status" |
-    jq -e '(.version // "" | split("-")[0] | split(".") | map(tonumber? // 0)) >= [0, 1, 21]' >/dev/null
-  printf '%s' "$hc_status" | jq -e '.keeps_running_after_logout == true' >/dev/null
-  systemctl --user is-enabled --quiet hc-core.service
-  hc_unit=$(ps -o uunit= -p "$(printf '%s' "$hc_status" | jq -er .pid)" | tr -d '[:space:]')
+  hc_unit=$(systemctl --user list-units --type=service --state=running --no-legend --plain 'hc-serve-*.service' | awk 'NR == 1 { print $1 }')
   case "$hc_unit" in
     hc-serve-*.service) ;;
     *) return 1 ;;
   esac
+  hc_pid=$(systemctl --user show "$hc_unit" -p MainPID --value)
+  case "$hc_pid" in ''|0|*[!0-9]*) return 1 ;; esac
+  hc_exe=$(readlink "/proc/$hc_pid/exe")
+  hc_release=$("$hc_exe" --version)
+  printf '%s' "${hc_release##* }" |
+    jq -eRs '(split("-")[0] | split(".") | map(tonumber? // 0)) >= [0, 1, 21]' >/dev/null
+  test "$(loginctl show-user "$(id -u)" -p Linger --value)" = yes
+  systemctl --user is-enabled --quiet hc-core.service
   test "$(systemctl --user show "$hc_unit" -p OOMPolicy --value)" = continue
 }
 
@@ -79,6 +83,17 @@ check_sysctl() {
       printf 'workbox bootstrap: warning: %s is %s, below %s in %s (sudo sysctl -p /etc/sysctl.d/%s)\n' \
         "$key" "$live" "$value" "$sysctl_config" "$(basename "$sysctl_config")" >&2
     fi
+  done
+}
+
+# Warns, without failing, when a family slice of the user's own (~/.config/systemd/user/<family>.slice)
+# shadows the installed one: systemd reads the user's file instead of /etc/systemd/user/'s, whole, so
+# slices.conf's values (a CPU cap scaled to this host's threads) do not apply to that family.
+check_family_shadow() {
+  for family in opencode ergo bite-work personal; do
+    own=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$family.slice
+    [ -e "$own" ] || continue
+    printf 'workbox bootstrap: warning: %s shadows /etc/systemd/user/%s.slice (slices.conf): move it aside once the installed one has its values\n' "$own" "$family" >&2
   done
 }
 
@@ -112,7 +127,10 @@ check_mode() {
   check_hc
   check_shell_files
   systemctl --user is-active --quiet sideshow.service
-  systemctl --user is-enabled --quiet opencode.service
+  # On a new box the protected system unit is activated with shell-cgroup-cap.
+  if [ ! -e /etc/hetzner-workbox/host-identity.env ]; then
+    systemctl --user is-enabled --quiet opencode.service
+  fi
   for timer in $user_timers; do
     check_timer "$timer"
   done
@@ -123,8 +141,10 @@ check_mode() {
   test "$(systemctl show bite.slice -p MemoryMin --value)" -eq 268435456
   test "$(systemctl show bite.slice -p MemoryLow --value)" -eq 536870912
   test "$(systemctl show bite.slice -p MemorySwapMax --value)" -eq 0
-  test "$(systemctl show "user-$(id -u).slice" -p MemoryMax --value)" -eq 55834574848
-  test "$(systemctl show "user-$(id -u).slice" -p MemorySwapMax --value)" -eq 1073741824
+  test "$(systemctl show bite.slice -p CPUWeight --value)" -eq 1000
+  "$workbox_dir/system-tools.sh" --check
+  check_family_shadow
+  test "$(systemctl show "user-$(id -u).slice" -p MemorySwapMax --value)" -eq 0
   systemctl is-active --quiet workbox-shm-limit.service
   systemctl is-active --quiet workbox-btrfs-reclaim.service
   findmnt -no OPTIONS /dev/shm | grep -q 'size=8388608k'
@@ -165,8 +185,12 @@ for command in curl git jq syncthing tailscale; do
   check_command "$command"
 done
 
-sudo apt-get update
-sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+apt_bounds="-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3"
+# shellcheck disable=SC2086 # a word list
+sudo apt-get $apt_bounds update
+# NEEDRESTART_SUSPEND keeps Ubuntu's needrestart hook from restarting services.
+# shellcheck disable=SC2086 # a word list
+sudo env NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive apt-get $apt_bounds install -y \
   btrfs-progs \
   sqlite3 \
   systemd-resolved \
@@ -196,7 +220,7 @@ install -m 600 "$workbox_dir/backup.env" "$HOME/.config/bite-workbox/backup.env"
 # and herdr-core in ~/.local/bin. It runs only when hc is missing, so a running
 # core is never touched; `hc update` updates it in place.
 if [ ! -x "$local_bin_dir/hc" ] && ! command -v hc >/dev/null 2>&1; then
-  curl -fsSL https://releases.herdr.dev/core/install.sh | sh
+  curl -fsSL --connect-timeout 20 --max-time 300 --retry 3 https://releases.herdr.dev/core/install.sh | sh
 fi
 
 # `workrift init <repository> /workspaces/bite` creates the Bite base and gives it
@@ -217,10 +241,6 @@ sudo install -m 0644 "$system_dir/bite.slice" /etc/systemd/system/
 sudo install -m 0644 "$system_dir/workbox-shm-limit.service" /etc/systemd/system/
 sudo install -m 0644 "$system_dir/workbox-btrfs-reclaim.service" /etc/systemd/system/
 sudo install -m 0755 "$system_dir/workbox-btrfs-reclaim" /usr/local/sbin/workbox-btrfs-reclaim
-sudo install -d -m 0755 /etc/systemd/system/user-.slice.d
-sudo install -m 0644 \
-  "$system_dir/user-.slice.d/20-workbox-memory-limit.conf" \
-  /etc/systemd/system/user-.slice.d/20-workbox-memory-limit.conf
 sudo install -m 0644 "$system_dir/20auto-upgrades" /etc/apt/apt.conf.d/20auto-upgrades
 sudo install -d -m 0755 /etc/systemd/system/tailscaled.service.d
 sudo install -m 0644 \
@@ -235,6 +255,9 @@ sudo install -m 0644 "$resolved_config" /etc/systemd/resolved.conf.d/workbox.con
 sudo install -d -m 0755 /etc/sysctl.d
 sudo install -m 0644 "$sysctl_config" /etc/sysctl.d/90-inotify.conf
 sudo sysctl -p /etc/sysctl.d/90-inotify.conf
+# The pinned tools (pins.conf: Go, PowerShell, the shells, qemu-user-static and its binfmt entry) and
+# the OpenCode service's memory floor: the same script the Hetzner box's provision.sh runs.
+sudo env WORKBOX_EXPECT_MACHINE_ID="$WORKBOX_EXPECT_MACHINE_ID" "$workbox_dir/system-tools.sh"
 
 tailscale_ipv4=$(tailscale ip -4 | head -1)
 sshd_config_file=$(mktemp)
@@ -299,7 +322,9 @@ systemctl --user enable --now sideshow.service $user_timers
 # running core alone (`hc server start` keeps its pid). The OpenCode unit only
 # needs to be enabled: the service may already run, started by hand or by daily.
 systemctl --user enable --now hc-core.service
-systemctl --user enable opencode.service
+if [ ! -e /etc/hetzner-workbox/host-identity.env ]; then
+  systemctl --user enable opencode.service
+fi
 systemctl --user restart sideshow.service
 
 if [ -d "$HOME/.config/bite-workbox/settings-source" ]; then

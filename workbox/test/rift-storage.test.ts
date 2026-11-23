@@ -4,14 +4,15 @@
 // (systemd-udevd is masked there, so /dev/disk/by-uuid never appears). Nothing here touches the real host.
 import { afterAll, describe, expect, test } from "bun:test"
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
-import { readScratchDirectorySync as readdirSync, readScratchFileSync as readFileSync, scratchExistsSync } from "../../opencode/tests/read-path.ts"
-import { spawnCheckoutShellSync } from "../../opencode/tests/scratch-child.ts"
+import { readInputText, readScratchDirectorySync as readdirSync, readScratchFileSync as readFileSync, scratchExistsSync } from "../../opencode/tests/read-path.ts"
+import { fixtureHostIdentity, spawnScratchShellFileSync, writeScratchScript } from "../../opencode/tests/scratch-child.ts"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-const SCRIPT = "../workbox/bin/workbox-rift-storage"
 const scratchRoot = realpathSync(mkdtempSync(join(tmpdir(), "rift-storage-test-")))
 afterAll(() => rmSync(scratchRoot, { recursive: true, force: true }))
+const hostIdentityScript = readInputText("../workbox/host-identity.sh")
+const identity = fixtureHostIdentity(scratchRoot, hostIdentityScript)
 let count = 0
 
 const UUID = "170ee675-18a3-48e1-931d-f0a84a51df83"
@@ -52,8 +53,15 @@ const bench = (fstabText: string) => {
   exe(join(bin, "findmnt"), `#!/bin/sh\ncase "$*" in *--mountpoint*) echo '/dev/loop0[/@workspaces]' ;; esac\n`)
   exe(join(bin, "sudo"), '#!/bin/sh\nexec "$@"\n')
   exe(join(bin, "systemctl"), `#!/bin/sh\necho "$*" >>'${calls}'\n`)
+  const staging = join(dir, "workbox")
+  mkdirSync(join(staging, "bin"), { recursive: true })
+  writeScratchScript(join(staging, "host-identity.sh"), hostIdentityScript)
+  const script = writeScratchScript(join(staging, "bin/workbox-rift-storage"), readInputText("../workbox/bin/workbox-rift-storage"))
   const run = () => {
-    const ran = spawnCheckoutShellSync(dir, SCRIPT, ["--fstab"], { tools: bin, paths: { WORKBOX_RIFT_FSTAB: fstab, WORKBOX_SYSFS_BTRFS: sys } })
+    const ran = spawnScratchShellFileSync(script, ["--fstab"], {
+      cwd: dir, tools: bin, paths: { WORKBOX_RIFT_FSTAB: fstab, WORKBOX_SYSFS_BTRFS: sys },
+      values: { WORKBOX_EXPECT_MACHINE_ID: identity },
+    })
     return { code: ran.exitCode, out: ran.stdout.toString(), err: ran.stderr.toString() }
   }
   const reloads = () => (scratchExistsSync(calls) ? readFileSync(calls, "utf8") : "").split("\n").filter((line) => line !== "")

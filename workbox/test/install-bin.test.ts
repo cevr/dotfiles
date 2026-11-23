@@ -7,7 +7,7 @@
 import { afterAll, describe, expect, test } from "bun:test"
 import { closeSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync as readCheckoutFileSync, readSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { externalInput, matchingInput, readScratchFileSync as readFileSync, readScratchLinkSync as readlinkSync, scratchInput } from "../../opencode/tests/read-path.ts"
-import { spawnScratchShellFile, spawnScratchShellFileSync, writeScratchScript } from "../../opencode/tests/scratch-child.ts"
+import { fixtureHostIdentity, spawnScratchShellFile, spawnScratchShellFileSync, writeScratchScript } from "../../opencode/tests/scratch-child.ts"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -16,6 +16,8 @@ afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
 const underTest = process.env.INSTALL_BIN_UNDER_TEST
 const installer = () => readCheckoutFileSync(underTest === undefined ? matchingInput("../workbox/install-bin.sh") : externalInput(underTest), "utf8")
+const hostIdentityScript = readCheckoutFileSync(matchingInput("../workbox/host-identity.sh"), "utf8")
+const identity = fixtureHostIdentity(scratch, hostIdentityScript)
 
 let n = 0
 /** A scratch tree's workbox/ holding the script and `files` (paths under workbox/), in a fresh root beside a scratch HOME. */
@@ -23,6 +25,7 @@ const tree = (root: string, label: string, files: Record<string, string>, script
   const workbox = join(root, label, "workbox")
   mkdirSync(join(workbox, "bin"), { recursive: true })
   writeScratchScript(join(workbox, "install-bin.sh"), script)
+  writeScratchScript(join(workbox, "host-identity.sh"), hostIdentityScript)
   for (const [path, text] of Object.entries(files)) writeScratchScript(join(workbox, path), text)
   return workbox
 }
@@ -38,7 +41,7 @@ const host = (zshenv = "export FROM=tree\n") => {
 
 const input = (home: string, tools = join(home, "tools")) => {
   mkdirSync(tools, { recursive: true })
-  return { cwd: home, tools, paths: {}, values: {} }
+  return { cwd: home, tools, paths: {}, values: { WORKBOX_EXPECT_MACHINE_ID: identity } }
 }
 
 const run = (workbox: string, home: string) => {

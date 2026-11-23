@@ -507,13 +507,20 @@ const programPaths = new Set([
   "HOME", "TMPDIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME",
   "WORKRIFT_ROOT", "WORKRIFT_PROC", "WORKRIFT_SOURCE", "WORK", "WORK_BASE", "FAKE_WORK_BASES", "FAKE_HOLDS", "FAKE_LOG",
   "XDG_RUNTIME_DIR", "WORKBOX_WORKSPACES_DIR", "WORKBOX_BACKUP_CONFIG",
+  "WORKBOX_RIFT_FSTAB", "WORKBOX_SYSFS_BTRFS",
 ])
 
 const programValues = new Set([
   "WORKRIFT_PURGE", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
   "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1",
-  "USER",
+  "USER", "WORKBOX_EXPECT_MACHINE_ID", "HB_EXPECT",
 ])
+
+const machineId = (value: string) => /^[0-9a-f]{32}$/.test(value) && value !== "0".repeat(32)
+const programValue = (key: string, value: string) => {
+  if (key === "WORKBOX_EXPECT_MACHINE_ID") return machineId(value)
+  return programValues.has(key) && /^[\w @.-]*$/.test(value)
+}
 
 const checkScript = (file: string) => {
   const at = scratchInput(file)
@@ -550,7 +557,7 @@ const scratchProgram = (
   for (const arg of args) {
     if (containsCheckout(arg)) return reject("checkout path in fixture argv")
     if (localTestPaths.isAbsolute(arg)) scratchInput(arg)
-    else if (!/^-{0,2}[\w.-]+$/.test(arg) || arg === "..") return reject(`unmodeled fixture argument: ${arg}`)
+    else if (!/^-{0,2}[\w.-]+(?: [\w.-]+)*$/.test(arg) || arg === "..") return reject(`unmodeled fixture argument: ${arg}`)
   }
   const env = new Map<string, string>()
   const put = (key: string, value: string) => {
@@ -562,7 +569,7 @@ const scratchProgram = (
     put(key, scratchInput(value))
   }
   for (const [key, value] of Object.entries(input.values)) {
-    if (!programValues.has(key) || !/^[\w @.-]*$/.test(value)) return reject(`unsupported literal program environment: ${key}`)
+    if (!programValue(key, value)) return reject(`unsupported literal program environment: ${key}`)
     put(key, value)
   }
   for (const [key, value] of Object.entries(input.pathLists || {})) {
@@ -590,6 +597,15 @@ export const runScratchTool = (script: string, args: ReadonlyArray<string>, inpu
 export const spawnScratchShellFileSync = (script: string, args: ReadonlyArray<string>, input: ProgramInputs) => {
   const { argv, ...options } = scratchProgram("sh", script, args, input)
   return spawnSync(argv, { ...options, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+}
+
+/** Ask the staged host-pin helper for the local platform's read-only identity. */
+export const fixtureHostIdentity = (cwd: string, source: string) => {
+  const script = writeScratchScript(resolve(cwd, ".fixture-host-id.sh"), `${source}\nworkbox_host_identity\n`)
+  const ran = spawnScratchShellFileSync(script, [], { cwd, tools: [], paths: {}, values: {}, systemTools: true })
+  const value = ran.stdout.toString().trim()
+  if (!ran.success || !machineId(value)) return reject("the host pin fixture did not return a machine ID")
+  return value
 }
 
 export const spawnScratchShellFile = (script: string, args: ReadonlyArray<string>, input: ProgramInputs) => {
