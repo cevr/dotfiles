@@ -365,7 +365,8 @@ const psQuery = (args: ReadonlyArray<Node>) => {
 }
 
 const noFileOperands = (command: string, args: ReadonlyArray<Node>) =>
-  command === "sleep" || (command === "ps" && psQuery(args))
+  command === "sleep" || (command === "ps" && psQuery(args)) ||
+  (command === "uname" && args.length === 1 && literal(args[0]) === "-s")
 
 const childDirectory = (command: string, dashC: number, args: ReadonlyArray<Node>, directory: MaybeNode, evaluate: Evaluation) => {
   const override = (command === "git" && dashC >= 0 && args[dashC + 1]) || directory
