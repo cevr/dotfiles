@@ -173,6 +173,8 @@ case "$*" in
   *".timer -p NextElapseUSecRealtime -p NextElapseUSecMonotonic --value") printf '%s\\n%s\\n' "$TIMER_NEXT" 0 ;;
   "show bite.slice -p MemoryMin --value") echo 268435456 ;;
   "show bite.slice -p MemoryLow --value") echo 536870912 ;;
+  "show bite.slice -p CPUWeight --value"|"show bite.slice -p IOWeight --value") echo 1000 ;;
+  "show user.slice -p MemoryLow --value"|"show user@"*" -p MemoryLow --value"|"--user show app.slice -p MemoryLow --value") echo 4294967296 ;;
   "show user-"*" -p MemoryMax --value") echo 55834574848 ;;
   "show user-"*" -p MemorySwapMax --value") echo 1073741824 ;;
   *" -p MemorySwapMax --value") echo 0 ;;
@@ -309,15 +311,25 @@ const placeShellFiles = (home: string, shell: Shell) => {
   }
 }
 
-const bootstrapCheck = async (host: Host, shell: Shell = "installed") => {
+// A /sys whose disk weighs IO by cgroup (io.cost on), so --check has no IOWeight warning to give.
+const sysDir = (() => {
+  const dir = scratch("sys")
+  mkdirSync(join(dir, "fs", "cgroup"), { recursive: true })
+  writeFileSync(join(dir, "fs", "cgroup", "io.cost.qos"), "259:0 enable=1 ctrl=auto\n")
+  return dir
+})()
+
+const bootstrapCheck = async (host: Host, shell: Shell = "installed", sys = sysDir) => {
   const home = hostHome("check", host)
   const log = join(home, "calls.log")
   placeShellFiles(home, shell)
-  const result = await run(["/bin/sh", join(workbox, "bootstrap.sh"), "--check"], {
+  const box = bootstrapTree(scratch("check-tree"), log)
+  const result = await run(["/bin/sh", join(box, "bootstrap.sh"), "--check"], {
     HOME: home,
     PATH: `${join(home, ".local", "bin")}:/usr/bin:/bin`,
     TMPDIR: home,
     WORKBOX_WORKSPACES_DIR: join(home, "workspaces"),
+    WORKBOX_SYS_DIR: sys,
   })
   return { ...result, calls: calls(log) }
 }
@@ -335,6 +347,9 @@ const bootstrapTree = (root: string, log: string) => {
   stub(join(tree, "claude", "mods", "fx-ui"), "install.sh", log)
   // The real install-bin.sh: it installs the stubbed bin/ into ~/.local/bin, as bootstrap did itself before.
   cpSync(join(workbox, "install-bin.sh"), join(box, "install-bin.sh"))
+  // system-tools.sh (root: the pinned tools, the reserve, the slices) has its own tests (system-tools.test.ts);
+  // here it is a stub, which --check finds in place.
+  stub(box, "system-tools.sh", log)
   return box
 }
 
@@ -356,7 +371,7 @@ esac`)
   const installer = join(root, "hc-installer")
   writeFileSync(installer, `mkdir -p "$HOME/.local/bin" && cp '${join(hostBin(true), "hc")}' "$HOME/.local/bin/hc"\n`)
   stub(stubs, "curl", log, `case "$*" in
-  "-fsSL https://releases.herdr.dev/core/install.sh") cat '${installer}' ;;
+  "-fsSL "*" https://releases.herdr.dev/core/install.sh") cat '${installer}' ;;
 esac`)
   // The Bite base, which bootstrap asks workrift (a stub here) to give its .env link and warm step.
   const workspaces = join(root, "workspaces")
@@ -367,6 +382,7 @@ esac`)
     PATH: `${stubs}:${hostBin(host.herdrPresent, hcInstalled)}:${join(home, ".local", "bin")}:/usr/bin:/bin`,
     TMPDIR: root,
     WORKBOX_WORKSPACES_DIR: workspaces,
+    WORKBOX_SYS_DIR: sysDir,
   })
   return { ...result, home, workspaces, calls: calls(log) }
 }
@@ -400,6 +416,14 @@ describe("bootstrap", () => {
     const owned = await bootstrapCheck(today, "file")
     expect({ code: owned.code === 0 ? 0 : "failed", passed: owned.stdout.includes("checks passed") }).toEqual({ code: "failed", passed: false })
     expect(owned.stderr).toMatch(/~\/\.zshenv is a file of its own, not the link to .*\.local\/share\/workbox\/zshenv: new shells do not read the installed one\. Move what you want to keep from it into ~\/\.config\/secrets\.env, then `mv ~\/\.zshenv ~\/\.zshenv\.mine`; the next install links it\./)
+  }, 30_000)
+
+  test("--check warns, and still passes, when no disk weighs IO by cgroup (no io.cost, no BFQ)", async () => {
+    const none = await bootstrapCheck(today, "installed", scratch("sys-none"))
+    expect({ code: none.code, passed: none.stdout.includes("checks passed") }).toEqual({ code: 0, passed: true })
+    expect(none.stderr.trim().split("\n")).toEqual([
+      "workbox bootstrap: warning: no disk weighs IO by cgroup (no io.cost, no BFQ): IOWeight has no effect here",
+    ])
   }, 30_000)
 
   test("--check warns, and still passes, when a live inotify limit is below sysctl.d/90-inotify.conf's", async () => {
@@ -469,8 +493,11 @@ describe("bootstrap", () => {
         expect.stringMatching(/^sudo install -m 0644 .*\/workbox\/systemd\/sysctl\.d\/90-inotify\.conf \/etc\/sysctl\.d\/90-inotify\.conf$/),
         "sudo sysctl -p /etc/sysctl.d/90-inotify.conf",
       ])
+      // The system layer (pinned tools, reserve, slices, /tmp, free space) once, as root, every step; then its check.
+      expect(result.calls.filter((c) => c.includes("system-tools.sh"))).toEqual([expect.stringMatching(/^sudo .*\/workbox\/system-tools\.sh$/), "system-tools.sh --check"])
       const installs = result.calls.filter((c) => c.includes("releases.herdr.dev/core/install.sh"))
-      expect(installs).toEqual(hcInstalled ? [] : ["curl -fsSL https://releases.herdr.dev/core/install.sh"])
+      // Bounded in time, as every provisioning download.
+      expect(installs).toEqual(hcInstalled ? [] : ["curl -fsSL --connect-timeout 20 --max-time 300 --retry 3 https://releases.herdr.dev/core/install.sh"])
       expect(existsSync(join(result.home, ".config", "systemd", "user", "hc-core.service"))).toBe(true)
       expect(existsSync(join(result.home, ".config", "systemd", "user", "opencode.service"))).toBe(true)
       // hc holds the terminals: no herdr server unit is installed.

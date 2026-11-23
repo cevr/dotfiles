@@ -85,8 +85,9 @@ check_sysctl() {
 # Warns, without failing, when no disk weighs IO by cgroup (io.cost enabled, or the BFQ scheduler):
 # then bite.slice's and the OpenCode service's IOWeight have no effect; their CPU weight still does.
 check_io_weight() {
-  if grep -q 'enable=1' /sys/fs/cgroup/io.cost.qos 2>/dev/null; then return; fi
-  if grep -qs '\[bfq\]' /sys/block/*/queue/scheduler; then return; fi
+  sys=${WORKBOX_SYS_DIR:-/sys} # a test's fixture in its place
+  if grep -q 'enable=1' "$sys/fs/cgroup/io.cost.qos" 2>/dev/null; then return; fi
+  if grep -qs '\[bfq\]' "$sys"/block/*/queue/scheduler; then return; fi
   printf 'workbox bootstrap: warning: no disk weighs IO by cgroup (no io.cost, no BFQ): IOWeight has no effect here\n' >&2
 }
 
