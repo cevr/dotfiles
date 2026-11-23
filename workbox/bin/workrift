@@ -97,6 +97,7 @@ EOF
 }
 
 fail() {
+  fail_said=1
   printf 'workrift: %s\n' "$*" >&2
   exit 1
 }
@@ -1158,6 +1159,13 @@ queue_leave() {
 
 # Removes this process's tickets at exit (their locks end with it anyway).
 tickets_at_exit() {
+  t_rc=$?
+  # A command that failed under set -e ends the script with no word of why: say
+  # where it stopped, so a failure seen once (a busy host) can be read after.
+  # (workrift subvolume only: sv_at is its step, set once its arguments read.)
+  if [ "$t_rc" -ne 0 ] && [ -z "${fail_said:-}" ] && [ -n "${sv_at:-}" ]; then
+    printf 'workrift: subvolume stopped with status %s and no message (a command failed under set -e) at the step %s\n' "$t_rc" "$sv_at" >&2
+  fi
   for t_mine in "${base_ticket:-}" "${advance_ticket:-}" "${hold_ticket:-}" "${clone_ticket:-}" "${move_ticket:-}"; do
     [ -z "$t_mine" ] || rm -f "$t_mine" "$t_mine.in"
   done
@@ -2652,6 +2660,7 @@ sv_phase_write() {
 # itself), for tests only: a cut at every step must leave a whole base.
 sv_step() {
   phase "$1: $2"
+  sv_at=$1
   mkdir -p "$sv_state"
   printf '%s %s: %s\n' "$(date -u +%FT%TZ)" "$1" "$2" >>"$sv_state/log"
   # Tests only: a writer that lands at this step (WORKRIFT_SUBVOLUME_HOOK_AT,
@@ -3688,6 +3697,7 @@ subvolume_command() {
     esac
     shift
   done
+  sv_at=start
   a_source=$(resolve_source)
   case "$a_source" in
     /*) ;;

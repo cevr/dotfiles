@@ -14,7 +14,8 @@ const repo = join(import.meta.dir, "..", "..")
 const SCRIPT = process.env.WORKRIFT_SCRIPT ?? join(repo, "workbox/bin/workrift")
 const PYTHON = Bun.which("python3") ?? "/usr/bin/python3"
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "workrift-subvolume-")))
-afterAll(() => rmSync(scratch, { recursive: true, force: true }))
+// WORKRIFT_TEST_KEEP=1 keeps every bench (its state, journal and trees) for a failure to be read after.
+afterAll(() => (process.env.WORKRIFT_TEST_KEEP ? console.log(`benches kept in ${scratch}`) : rmSync(scratch, { recursive: true, force: true })))
 let benches = 0
 
 type Env = Record<string, string>
@@ -356,7 +357,11 @@ const pool = async (tasks: ReadonlyArray<() => Promise<void>>, width = 4) => {
     Array.from({ length: width }, async () => {
       while (next < tasks.length) {
         const task = tasks[next++]!
-        await task().catch((error: unknown) => failures.push(error))
+        await task().catch((error: unknown) => {
+          failures.push(error)
+          // A loop that hunts a rare failure keeps every one, not only the first.
+          if (process.env.WORKRIFT_TEST_KEEP) console.error(`POOL FAILURE ${failures.length}:`, error)
+        })
       }
     }),
   )
@@ -387,6 +392,15 @@ describe("workrift subvolume: dry run and refusals", () => {
     expect(b.btrfsCalls()).toEqual([])
     expect({ root: filesUnder(b.root), dir: filesUnder(b.dir).filter((f) => !f.startsWith("work-calls")) }).toEqual(before)
   }, 120_000)
+
+  test("a run that stops on a failed command with no message of its own (set -e) still says so and names its step", () => {
+    const b = bench("silent")
+    // The journal a directory: the first step's append to it fails.
+    mkdirSync(join(b.state, "subvolume/log"), { recursive: true })
+    const ran = b.wr(["subvolume", "--apply"])
+    expect(ran.code, said(ran)).not.toBe(0)
+    expect(ran.err).toMatch(/workrift: subvolume stopped with status \d+ and no message \(a command failed under set -e\) at the step [a-z-]+/)
+  })
 
   test("a path that is not a work base is refused; a base already a subvolume is a no-op that says so", () => {
     const b = bench("notbase")
@@ -928,6 +942,9 @@ describe("workrift subvolume: failure and kill at every step", () => {
   }, 400_000)
 })
 
+/** Every step name of the command (sv_step), for a hook at each. */
+const SEQ_STEPS = ["carry", "carry-in", "carry-wait", "copy", "copy-git", "copy-make", "drop", "drop-copy", "dropped", "prove", "refresh", "rollback", "rolled-back", "smoke", "smoke-rm", "swap", "swapped", "switched", "verify", "work-refresh"]
+
 describe("workrift subvolume --back and --drop-old", () => {
   /** forward, back (exchange), forward (exchange), drop the folder, back (copy into a folder), drop the subvolume. */
   const sequence = async (b: Bench, die: { readonly at: number; readonly step: string } | undefined) => {
@@ -948,14 +965,41 @@ describe("workrift subvolume --back and --drop-old", () => {
       { base: "F", new: "-", back: "-", old: "S" },
       { base: "F", new: "-", back: "-", old: "-" },
     ]
+    // SEQ_JITTER_SEED=<n>: a seeded delay (0-1.5 s) at every step boundary of every run, so a schedule replays.
+    // SEQ_EXTKILL=1: the cut is a kill -9 of the command's own pid alone (its children run on) at a seeded instant
+    // of its run, instead of at a step.
+    const seed = process.env.SEQ_JITTER_SEED
+    const rand = seed === undefined ? undefined : prng(Number(seed) * 7919 + b.dir.length * 31 + (die?.at ?? 0) * 131 + [...(die?.step ?? "")].reduce((a, c) => a + c.charCodeAt(0), 0))
+    const jitter = (): Env =>
+      rand === undefined
+        ? {}
+        : {
+            WORKRIFT_SUBVOLUME_HOOK_AT: SEQ_STEPS.join(" "),
+            WORKRIFT_SUBVOLUME_HOOK: `for kv in ${SEQ_STEPS.map((s) => `${s}=${(rand() * 1.5).toFixed(2)}`).join(" ")}; do case "$kv" in "$1="*) sleep "\${kv#*=}" ;; esac; done`,
+          }
     for (const [i, argv] of argvs.entries()) {
       if (die?.at === i) {
-        const cut = await b.wrAsync(argv, { WORKRIFT_SUBVOLUME_DIE_AT: die.step })
-        expect(cut.signal, `${argv.join(" ")} cut at ${die.step}: ${said(cut)}`).toBe("SIGKILL")
+        if (process.env.SEQ_EXTKILL && rand !== undefined) {
+          const child = Bun.spawn([SCRIPT, ...argv], { cwd: b.dir, env: b.envFor(jitter()), stdout: "pipe", stderr: "pipe" })
+          const after = Math.floor(rand() * 8000)
+          const timer = setTimeout(() => {
+            try {
+              process.kill(child.pid, "SIGKILL")
+            } catch {
+              // ended first
+            }
+          }, after)
+          await child.exited
+          clearTimeout(timer)
+          await Bun.sleep(200)
+        } else {
+          const cut = await b.wrAsync(argv, { WORKRIFT_SUBVOLUME_DIE_AT: die.step, ...jitter() })
+          expect(cut.signal, `${argv.join(" ")} cut at ${die.step}: ${said(cut)}`).toBe("SIGKILL")
+        }
         expect(["F", "S"]).toContain(b.kind(b.base))
         whole(b)
       }
-      const ran = await b.wrAsync(argv)
+      const ran = await b.wrAsync(argv, jitter())
       expect(ran.code, `${argv.join(" ")} (cut at ${JSON.stringify(die)}): ${said(ran)}`).toBe(0)
       expect(b.layout(), `${argv.join(" ")}`).toEqual(expected[i])
       whole(b)
@@ -989,9 +1033,14 @@ describe("workrift subvolume --back and --drop-old", () => {
     expect(perCommand[1]).toEqual(expect.arrayContaining(["carry-in", "swap", "carry", "switched"]))
     expect(perCommand[3]).toEqual(["drop", "dropped"])
     const cuts = perCommand.flatMap((steps, at) => (at === 0 ? [] : steps.map((step) => ({ at, step }))))
-    await pool(cuts.map((die) => () => sequence(bench(`seq-${die.at}-${die.step}`), die)))
+    // SEQ_ONLY=<at>:<step>,... runs only those cuts (a loop that hunts one).
+    const only = process.env.SEQ_ONLY?.split(",")
+    // SEQ_REPEAT=<n> runs each chosen cut n times.
+    const chosen = cuts.filter((die) => !only || only.includes(`${die.at}:${die.step}`))
+    const repeat = Number(process.env.SEQ_REPEAT ?? 1)
+    await pool(Array.from({ length: repeat }, () => chosen).flat().map((die, n) => () => sequence(bench(`seq-${die.at}-${die.step}-${n}`), die)))
     expect(cuts.length).toBeGreaterThan(25)
-  }, 900_000)
+  }, 900_000 * Number(process.env.SEQ_REPEAT ?? 1))
 
   test("--drop-old deletes only the tree the last switch kept, by its identity; a dry run says its path and kind; anything else at that path is refused", () => {
     const b = bench("drop")
