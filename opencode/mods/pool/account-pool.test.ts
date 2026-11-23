@@ -30,6 +30,7 @@ import {
   type LedgerState,
 } from "./account-pool.ts"
 import { CACHE_LIFE_MS, DEFAULT_HOLD_MS, DEFAULT_RULES, PIN_IDLE_MS, WINDOW_MS, type RequestKind } from "./accounts.ts"
+import { dispatchPace } from "./pace.ts"
 import type { QuotaReading } from "./quota.ts"
 
 const MINUTE = 60_000
@@ -520,7 +521,10 @@ describe("an account is held", () => {
       resets,
     })
     // The unified headers of a response carry the 5-hour and 7-day windows only.
-    const headers: QuotaReading = { at: T0 + 2 * HOUR, status: "allowed", windows: [{ name: "7d", utilization: 0.6, resetAt: T0 + 10 * HOUR }] }
+    const headers: QuotaReading = { at: T0 + 2 * HOUR, status: "allowed", windows: [
+      { name: "7d", utilization: 0.6, resetAt: T0 + 10 * HOUR },
+      { name: "5h", utilization: 0.1, resetAt: T0 + 4 * HOUR },
+    ] }
     const rolled = { at: usage.at, name: "7d:Gone", utilization: 0.9, resetAt: T0 + HOUR }
     const carried: QuotaReading = {
       ...headers,
@@ -531,6 +535,9 @@ describe("an account is held", () => {
     }
     // A reading replaces only the models and resets it actually reads.
     const fresh = reading({ at: T0 + 3 * HOUR, windows: [{ name: "7d", utilization: 0.7 }], resets: { available: 0, credits: [] } })
+    const dispatch = dispatchPace([{ credentialID: "a", live: 0, load: 0, noRoom: false, reading: carried }], headers.at, {}, 0.04, "claude-gone")
+    expect(dispatch).toMatchObject({ ok: false, reasonCode: "usage-unread", eligible: [] })
+    expect(dispatch.reason).toContain("its 7d:Gone window was read more than 30 min ago")
     return run(
       accounts("a"),
       Story.clock(T0),

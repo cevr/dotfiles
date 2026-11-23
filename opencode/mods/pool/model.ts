@@ -28,7 +28,7 @@ import {
 import { answeredOn, held, lastPlacedAt, placedOn, sessionAccount, status, type RequestKind, type Rules } from "./accounts.ts"
 import * as Burn from "./burn.ts"
 import * as FleetModel from "./fleet.ts"
-import { dispatchPace, evidenceGap, nextRetryAt, poolPace, RequestHeld, requiredScopes, UNPOOLED, UNREAD_RETRY_MS, type DispatchPolicy, type Pace } from "./pace.ts"
+import { dispatchPace, evidenceGap, nextRetryAt, poolPace, refreshEvidence, RequestHeld, requiredScopes, UNPOOLED, UNREAD_RETRY_MS, type DispatchPolicy, type Pace } from "./pace.ts"
 import { limitsLine, weeklyRatios, type Tally, type Tokens } from "./limits.ts"
 import type { AccountStatus } from "./status.ts"
 import type { ClaimAnswer, QuotaReading, QuotaWindow } from "./quota.ts"
@@ -377,7 +377,7 @@ export const layer = (config: Config) =>
         // Held, it goes out on no login; the review has heard of the held work.
         const auxiliary = Option.filter(Option.some(input.kind), (kind) => kind !== "primary" && kind !== "compaction")
         const policy = Option.match(auxiliary, { onNone: () => ({}), onSome: (kind) => ({ auxiliary: kind }) })
-        const asked = yield* Effect.option(pace(input.providerID, input.model, input.sessionID, true, policy))
+        const asked = yield* Effect.option(pace(input.providerID, input.model, input.sessionID, true, policy, "existing-request"))
         const now = yield* Clock.currentTimeMillis
         const accounts = status(yield* SynchronizedRef.get(where.pool), now, rules)
         // Every account refused (a hold of the provider's or a sign-in): placement's own refusal names it, as before.
@@ -395,10 +395,11 @@ export const layer = (config: Config) =>
           return yield* new RequestHeld({
             sessionID: input.sessionID,
             reason: "the pool's logins could not be listed",
+            reasonCode: "logins-unavailable",
             retryAt: now + UNREAD_RETRY_MS,
           })
         const answer = asked.value
-        if (!answer.ok) return yield* new RequestHeld({ sessionID: input.sessionID, reason: answer.reason, retryAt: nextRetryAt(now, [answer.retryAt]) })
+        if (!answer.ok) return yield* new RequestHeld({ sessionID: input.sessionID, reason: answer.reason, reasonCode: answer.reasonCode, retryAt: nextRetryAt(now, [answer.retryAt]) })
         const command = PlaceRequest.make({
           sessionID: input.sessionID,
           kind: input.kind,
@@ -421,6 +422,7 @@ export const layer = (config: Config) =>
         if (Option.isNone(placed)) return yield* new RequestHeld({
           sessionID: input.sessionID,
           reason: "no login that passed the dispatch check is still available",
+          reasonCode: "placement-changed",
           retryAt: now + UNREAD_RETRY_MS,
         })
         if (answer.admission === "backed") yield* reserve(where, placed.value.credentialID, input.sessionID)
@@ -437,7 +439,7 @@ export const layer = (config: Config) =>
         Effect.gen(function* () {
           const now = yield* Clock.currentTimeMillis
           const before = yield* resetsStore.read
-          const refuse = (reason: string) => new RequestHeld({ sessionID, reason, retryAt: now + UNREAD_RETRY_MS })
+          const refuse = (reason: string) => new RequestHeld({ sessionID, reason, reasonCode: "reset-room", retryAt: now + UNREAD_RETRY_MS })
           // The login's account and its pool's reset provider, and the claim whose room the request is admitted on.
           const found = Option.all([
             Option.fromUndefinedOr(config.resets?.[where.id]),
@@ -1155,17 +1157,21 @@ export const layer = (config: Config) =>
       }
 
       const liftPace = Effect.fn("Pool.liftPace")(function* (
-        providerID: string, model: string | undefined, dispatch: boolean | undefined, policy: DispatchPolicy, push: PushModel.Push, answer: Pace,
+        providerID: string, model: string | undefined, dispatch: boolean | undefined, policy: DispatchPolicy, push: PushModel.Push,
+        answer: Pace, work: "new-work" | "existing-request",
       ) {
         const reason = `the push "${push.goal}" lifts the spend-evenly hold until ${new Date(push.endsAt).toISOString()} (${answer.reason})`
         if (dispatch !== true) return { ok: true, measured: true, reason } satisfies Pace
-        const lifted = yield* paceOf(providerID, model, true, { ...policy, liftEvenLine: true })
+        const lifted = yield* paceOf(providerID, model, true, { ...policy, liftEvenLine: true }, work)
         if (!lifted.ok) return lifted
         return { ...lifted, reason } satisfies Pace
       })
 
-      const pace = Effect.fn("Pool.pace")(function* (providerID: string, model?: string, sessionID?: string, dispatch?: boolean, policy: DispatchPolicy = {}) {
-        const paced = yield* paceOf(providerID, model, dispatch, policy)
+      const pace = Effect.fn("Pool.pace")(function* (
+        providerID: string, model?: string, sessionID?: string, dispatch?: boolean, policy: DispatchPolicy = {},
+        work: "new-work" | "existing-request" = "new-work",
+      ) {
+        const paced = yield* paceOf(providerID, model, dispatch, policy, work)
         const id = Option.fromUndefinedOr(measuredBy(config, providerID))
         const session = Option.fromUndefinedOr(sessionID)
         // A title or other auxiliary request waits for ordinary room; it does not ask for another reset.
@@ -1187,7 +1193,7 @@ export const layer = (config: Config) =>
         // The spend-evenly target alone does not hold a start a push covers: the accounts have quota, and the push spends
         // them to 100% and claims its resets. Once its approved resets are spent, the pace holds again from the last claim's line.
         const approved = Option.filter(push, (activePush) => activePush.allowance.max === 0 || used < activePush.allowance.max)
-        if (answer.soft === true && Option.isSome(approved)) return yield* liftPace(providerID, model, dispatch, policy, approved.value, answer)
+        if (answer.soft === true && Option.isSome(approved)) return yield* liftPace(providerID, model, dispatch, policy, approved.value, answer, work)
         // A start held by a measured pace waits: the resets are reviewed for it, without holding up the answer.
         if (Option.isNone(resetting)) return answer
         const hard = answer.soft !== true
@@ -1214,10 +1220,13 @@ export const layer = (config: Config) =>
       })
 
       /**
-       * The pace on the readings now. A start's counts the fleet's starts not yet in a reading; a request's dispatch
-       * (`dispatch`) does not: its own start was charged when it was admitted, and its spend shows in the readings.
+       * The pace on the readings now. Both ways of quoting new work count the same fleet starts not yet in the readings.
+       * Placement of an existing request does not charge its launch again: it was charged when it was admitted.
        */
-      const paceOf = Effect.fn("Pool.paceOf")(function* (providerID: string, model?: string, dispatch?: boolean, policy?: DispatchPolicy) {
+      const paceOf = Effect.fn("Pool.paceOf")(function* (
+        providerID: string, model?: string, dispatch?: boolean, policy: DispatchPolicy = {},
+        work: "new-work" | "existing-request" = "new-work",
+      ) {
         const paced = poolOf(measuredBy(config, providerID))
         if (paced === undefined) return UNPOOLED
         yield* refresh(paced, false)
@@ -1225,24 +1234,28 @@ export const layer = (config: Config) =>
         // A peer's newer readings of the same logins count here too, whichever instance on the host read the peer.
         yield* mergeReports(fleet)
         for (const credentialID of (yield* SynchronizedRef.get(paced.pool)).credentials) yield* pull(paced, credentialID)
-        if (dispatch === true) {
+        if (dispatch === true || Option.isSome(Option.fromUndefinedOr(model))) {
           const before = yield* Clock.currentTimeMillis
           const listed = status(yield* SynchronizedRef.get(paced.pool), before, rules)
           const required = requiredScopes(listed, model)
-          for (const account of listed)
-            if (Option.isNone(Option.fromUndefinedOr(account.hold)) && Option.exists(evidenceGap(account, before, required), (gap) => gap.stale))
-              yield* quota.usage(paced.id, account.credentialID).pipe(Effect.flatMap((reading) => take(paced, account.credentialID, reading)))
+          const unread = listed.filter((account) =>
+            Option.isNone(Option.fromUndefinedOr(account.hold)) && Option.exists(evidenceGap(account, before, required), (gap) => refreshEvidence(gap, before)),
+          )
+          // A slow usage endpoint must return a held pace, not outlive the orchestrator's 8-second RPC deadline.
+          if (unread.length > 0) yield* Effect.forEach(unread, (account) => quota.usage(paced.id, account.credentialID).pipe(
+            Effect.flatMap((reading) => take(paced, account.credentialID, reading)),
+          ), { discard: true }).pipe(Effect.timeoutOption("2 seconds"))
         }
         const now = yield* Clock.currentTimeMillis
         const accounts = status(yield* SynchronizedRef.get(paced.pool), now, rules)
         const plans = yield* plansOf(paced.id, accounts, now)
-        // A dispatch is held on stale or missing readings, and past the even line goes out only on its own account's claimed room.
-        if (dispatch === true) return dispatchPace(accounts, now, plans, fleetConfig.startCost, model, policy)
         // Every start in the fleet on a provider this pool paces counts, whichever host admitted it.
         const starts = FleetModel.inflight(fleet, now, fleetConfig.settleMs)
-          .filter((start) => measuredBy(config, start.providerID) === paced.id)
+          .filter((start) => work === "new-work" && measuredBy(config, start.providerID) === paced.id)
           .map((start) => start.at)
-        return poolPace(accounts, now, { starts, cost: fleetConfig.startCost, settleMs: fleetConfig.settleMs }, model, plans)
+        const inflight = { starts, cost: fleetConfig.startCost, settleMs: fleetConfig.settleMs }
+        if (dispatch === true) return dispatchPace(accounts, now, plans, fleetConfig.startCost, model, { ...policy, inflight })
+        return poolPace(accounts, now, inflight, model, plans, policy)
       })
 
       const started = (providerID: string) => sendFleet(FleetModel.RecordStart.make({ providerID })).pipe(Effect.asVoid)

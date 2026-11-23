@@ -18,10 +18,12 @@ test("a dispatch needs the model's defined and learned windows through generated
   const present = { event: "present", use: Option.some(0.1) }
   const events = [present, { event: "absent", use: Option.none() }, { event: "failed", use: Option.none() }, { event: "spent", use: Option.some(1) }]
   const histories = Arr.cartesianWith(Arr.cartesian(events, events), events, ([a, b], c) => [a, b, c, present])
+  const start = { ...NO_INFLIGHT, cost: 0.04 }
   for (const [{ model, window, defined }, history] of Arr.cartesian(scopes, histories)) {
     let reading = Option.none<QuotaReading>()
     let observed = Option.none<{ readonly at: number; readonly resetAt: number; readonly utilization: number }>()
-    for (const [index, { use }] of history.entries()) {
+    let usageReads = 0
+    for (const [index, { event, use }] of history.entries()) {
       const at = now + index * 20 * minute
       const resetAt = at + 25 * minute
       if (Option.isSome(use)) observed = Option.some({ at, resetAt, utilization: use.value })
@@ -29,8 +31,12 @@ test("a dispatch needs the model's defined and learned windows through generated
       const short = { name: "5h", utilization: 0.1, resetAt: at + hour }
       const weekly = { name: "7d", utilization: 0.2, resetAt: now + 3 * day }
       const scoped = Option.toArray(Option.map(use, (utilization) => ({ name: window, utilization, resetAt })))
-      const next = carryOver(Option.getOrUndefined(reading), { at, windows: [weekly, short, ...scoped] })
-      const backed = carryOver(Option.getOrUndefined(reading), { at, windows: [{ ...weekly, utilization: 0.66 }, short, ...scoped] })
+      const source: QuotaReading = { at, windows: [weekly, short, ...scoped] }
+      const sample = Option.filter(Option.some({ at, samples: 1 as const }), () => event !== "failed")
+      if (Option.isSome(sample)) usageReads += 1
+      const incoming = Option.match(sample, { onNone: () => source, onSome: (usage) => ({ ...source, usage }) })
+      const next = carryOver(Option.getOrUndefined(reading), incoming)
+      const backed = carryOver(Option.getOrUndefined(reading), { ...incoming, windows: [{ ...weekly, utilization: 0.66 }, short, ...scoped] })
       reading = Option.some(next)
       const accounts = [{ ...account(0.2), reading: next }]
       const maySend = Option.match(observed, {
@@ -38,9 +44,26 @@ test("a dispatch needs the model's defined and learned windows through generated
         onSome: (last) => at < last.resetAt && at - last.at <= 30 * minute && last.utilization < 1,
       })
       const context = `${model}: ${history.map((step) => step.event).join(", ")}, step ${index}`
-      expect(dispatchPace(accounts, at, {}, 0.04, model).ok, context).toBe(maySend)
+      const outcome = dispatchPace(accounts, at, {}, 0.04, model)
+      expect(outcome.ok, context).toBe(maySend)
+      expect(poolPace(accounts, at, start, model), context).toEqual(outcome)
+      const charged = { ...start, starts: [at - 1], settleMs: minute }
+      expect(poolPace(accounts, at, charged, model), context).toEqual(dispatchPace(accounts, at, {}, 0.04, model, { inflight: charged }))
       const plans = { a: { rebase: { at: now - minute, from: 0.66, key: "owned" } } }
-      expect(dispatchPace([{ ...account(0.66), reading: backed }], at, plans, 0.04, model).ok, context).toBe(maySend)
+      const resetAccounts = [{ ...account(0.66), reading: backed }]
+      const resetOutcome = dispatchPace(resetAccounts, at, plans, 0.04, model)
+      expect(resetOutcome.ok, context).toBe(maySend)
+      expect(poolPace(resetAccounts, at, start, model, plans), context).toEqual(resetOutcome)
+      if (!outcome.ok) {
+        const unsupported = defined && Option.isNone(observed) && usageReads >= 2
+        if (unsupported) {
+          expect(outcome).toMatchObject({ reasonCode: "model-unreported" })
+          expect(outcome.reason).toContain("Use another model or login; time alone will not clear this hold")
+        } else {
+          expect(outcome.reasonCode).toBeOneOf(["usage-unread", "model-limit"])
+          expect(outcome.retryAt).toBeGreaterThan(at)
+        }
+      }
       expect(dispatchPace(accounts, at, {}, 0.04, "claude-opus-5-5")).toMatchObject({ ok: true, eligible: ["a"] })
     }
   }
@@ -97,7 +120,7 @@ test("a title waits for ordinary room, and its hold names that catch-up time", (
   if (title.ok) return
   const catchUp = now + Math.ceil((0.7 - 0.545) * 7 * day / 0.99) + 1
   expect(title.retryAt).toBe(catchUp)
-  expect(requestHeldMessage(new RequestHeld({ sessionID: "title-fixture", reason: title.reason, retryAt: title.retryAt })))
+  expect(requestHeldMessage(new RequestHeld({ sessionID: "title-fixture", reason: title.reason, reasonCode: title.reasonCode, retryAt: title.retryAt })))
     .toContain(`a title request does not spend the room a claimed reset gave back; it may go again at ${DateTime.formatIso(DateTime.makeUnsafe(catchUp))}`)
 })
 
@@ -134,14 +157,14 @@ test("it pools accounts, honors short-window holds and never treats a reset read
   expect(poolPace([], now)).toMatchObject({ ok: true, measured: false })
 })
 test("a model's own weekly window holds only that model's starts; the main windows hold every start", () => {
-  const fable = (used: number, scoped: number, five = 0.1): AccountStatus => ({
+  const fable = (used: number, scoped: number, five = 0.1, observed = now): AccountStatus => ({
     ...account(used),
     reading: {
-      at: now,
+      at: observed,
       windows: [
         { name: "7d", utilization: used, resetAt: now + 3.5 * day },
-        { name: "5h", utilization: five, resetAt: now + 3600000 },
-        { name: "7d:Fable", utilization: scoped, resetAt: now + 2 * day },
+        { name: "5h", utilization: five, resetAt: observed + hour },
+        { name: "7d:Fable", utilization: scoped, resetAt: observed + 2 * day },
       ],
     },
   })
@@ -156,8 +179,9 @@ test("a model's own weekly window holds only that model's starts; the main windo
   expect(poolPace([fable(0.3, 0.2, 0.95)], now, undefined, "claude-fable-5-2")).toMatchObject({ ok: false, retryAt: now + 3600000 })
   const held = { ...fable(0.3, 0.2), hold: { kind: "rate-limit" as const, at: now, until: now + 10000 } }
   expect(poolPace([held], now, undefined, "claude-fable-5-2")).toMatchObject({ ok: false, retryAt: now + 10000 })
-  // A Fable window that has reset holds nothing.
-  expect(poolPace([fable(0.3, 1)], now + 2 * day, undefined, "claude-fable-5-2").ok).toBe(true)
+  // Rollover without fresh evidence cannot start the model, just as it cannot send a request.
+  expect(poolPace([fable(0.3, 1)], now + 2 * day, NO_INFLIGHT, "claude-fable-5-2")).toMatchObject({ ok: false, reasonCode: "usage-unread" })
+  expect(poolPace([fable(0.3, 0.1, 0.1, now + 2 * day)], now + 2 * day, undefined, "claude-fable-5-2").ok).toBe(true)
 })
 test("agents started in the fleet count until they settle, so a wave holds the next start before the readings show it", () => {
   const minute = 60000
@@ -203,16 +227,17 @@ test("admission, as a property over boundary partitions of 5h, week and a model'
         windows: [{ name: "5h", utilization: five, resetAt: now + 3600000 }, { name: "7d", utilization: week, resetAt: now + 3.5 * day }, scoped.window],
       },
     }
-    // The oracle, written from the rule's words, not its code: a window of the model's own at 100% with a
-    // known reset holds that model; 5h at 90% or the week at 99% holds every model; past the even line holds softly.
+    // A model's unknown reset is not evidence. Else its own 100% holds that model,
+    // the 5h at 90% or the week at 99% holds every model, and past the even line holds softly.
+    const unread = model === "claude-fable-5-2" && scoped.label === "unknown"
     const ownHolds = model === "claude-fable-5-2" && own >= 1 && scoped.label === "known"
     const hard = ownHolds || five >= 0.9 || week >= 0.99
-    const soft = !hard && week > LINE + 1e-9
+    const soft = !unread && !hard && week > LINE + 1e-9
     const pace = poolPace([read], now, NO_INFLIGHT, model)
     expect(
       { ok: pace.ok, measured: pace.measured, soft: pace.soft === true, held: pace.admission === "held", opens: pace.ok || pace.retryAt! > now, eligible: eligibleFor([read], now, model).length },
       `5h ${five}, week ${week}, Fable ${own} (reset ${scoped.label}), ${model}`,
-    ).toEqual({ ok: !hard && !soft, measured: true, soft, held: hard || soft, opens: true, eligible: Number(!hard) })
+    ).toEqual({ ok: !unread && !hard && !soft, measured: !unread, soft, held: unread || hard || soft, opens: true, eligible: Number(!hard) })
     expect(pace.admission).toBeOneOf(["held", "ordinary"])
   }
   expect(cases).toHaveLength(fives.length * weeks.length * owns.length * models.length * 2)

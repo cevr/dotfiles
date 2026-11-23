@@ -749,7 +749,7 @@
     "mods/pool/placement.ts": {"effect/noNullish":5,"effect/noTernary":6},
     "mods/pool/push.test.ts": {"effect/noEffectRunInTests":1,"effect/noNullish":1,"effect/noTernary":3,"effect/preferTaggedConstructors":2},
     "mods/pool/push.ts": {"effect/maxCognitiveComplexity":1,"effect/noConditionalEmptyObjectSpread":11,"effect/noNullish":38,"effect/noTernary":36,"effect/preferMatchTagsExhaustive":2},
-    "mods/pool/quota.ts": {"effect/maxCognitiveComplexity":1,"effect/noConditionalEmptyObjectSpread":17,"effect/noNullish":14,"effect/noRuntimeTypeof":10,"effect/noTernary":23,"effect/noUnknownParameters":2,"effect/noUnsafeDictionaryType":1},
+    "mods/pool/quota.ts": {"effect/maxCognitiveComplexity":1,"effect/noConditionalEmptyObjectSpread":17,"effect/noNullish":12,"effect/noRuntimeTypeof":10,"effect/noTernary":21,"effect/noUnknownParameters":2,"effect/noUnsafeDictionaryType":1},
     "mods/pool/reset-safety.test.ts": {"effect/maxCognitiveComplexity":3,"effect/noAs":1,"effect/noConditionalEmptyObjectSpread":3,"effect/noEffectRunInTests":1,"effect/noGlobals":5,"effect/noKnownValueWidening":1,"effect/noNullish":9,"effect/noTernary":12,"effect/preferTaggedConstructors":1},
     "mods/pool/reset-use.test.ts": {"effect/noConditionalEmptyObjectSpread":1,"effect/noEffectRunInTests":1,"effect/noNewError":1,"effect/noNullish":4,"effect/noTernary":3,"effect/noThrowStatement":1,"effect/preferTaggedConstructors":2},
     "mods/pool/resets.test.ts": {"effect/noEffectRunInTests":2,"effect/noNewError":2,"effect/noNullish":2,"effect/noPromiseChainsInTests":1,"effect/noTernary":3,"effect/noThrowStatement":2,"effect/preferTaggedConstructors":2},

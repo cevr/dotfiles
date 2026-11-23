@@ -313,7 +313,7 @@ seeded("B3: a managed login with no usage read, or one read 31 minutes ago, send
     missing.unavailable = true
     const cold = yield* fleet(missing)
     const first = yield* cold.session("missing")
-    expect(yield* cold.pace(first)).toMatchObject({ ok: true, measured: false })
+    expect(yield* cold.pace(first)).toMatchObject({ ok: false, measured: false, reasonCode: "usage-unread" })
     yield* cold.world.prompt(first, "unmeasured")
     yield* cold.world.advance(10_000)
     expect(cold.primary()).toHaveLength(0)

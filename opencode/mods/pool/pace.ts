@@ -12,7 +12,7 @@
 // next start on any host before the readings show it.
 import { Array as Arr, DateTime, Match, Option, Schema } from "effect"
 import type { RequestKind } from "./accounts.ts"
-import { DEFINED_MODEL_WINDOWS, limitsModel, scopeOf } from "./quota.ts"
+import { DEFINED_MODEL_WINDOWS, limitsModel, SCOPE_REPORT_SAMPLES, scopeOf } from "./quota.ts"
 import type { AccountStatus } from "./status.ts"
 import { byCount, holdsAt, iso, tryAgainAt, used } from "./usage-text.ts"
 
@@ -50,6 +50,13 @@ const weekOf = (account: AccountStatus) => windowOf(account, "7d")
 export const Admission = Schema.Literals(["ordinary", "backed", "held"])
 export type Admission = typeof Admission.Type
 
+/** Every held answer identifies the condition that has to change. Only an unreported model needs a different model or login. */
+export const HoldReason = Schema.Literals([
+  "account-held", "model-limit", "quota-limit", "even-line", "usage-unread", "model-unreported",
+  "reset-room", "auxiliary", "logins-unavailable", "placement-changed",
+])
+export type HoldReason = typeof HoldReason.Type
+
 /** The pace method's answer: whether a new agent may start now, and if not, when to ask again. */
 const paceFields = {
   measured: Schema.Boolean,
@@ -66,7 +73,7 @@ const paceFields = {
 }
 export const Pace = Schema.Union([
   Schema.Struct({ ...paceFields, ok: Schema.Literal(true), retryAt: Schema.optionalKey(Schema.Never) }),
-  Schema.Struct({ ...paceFields, ok: Schema.Literal(false), retryAt: Schema.Finite }),
+  Schema.Struct({ ...paceFields, ok: Schema.Literal(false), retryAt: Schema.Finite, reasonCode: HoldReason }),
 ])
 export type Pace = typeof Pace.Type
 
@@ -79,12 +86,16 @@ export type Pace = typeof Pace.Type
 export class RequestHeld extends Schema.TaggedError<RequestHeld>()("RequestHeld", {
   sessionID: Schema.String,
   reason: Schema.String,
+  reasonCode: HoldReason,
   retryAt: Schema.Finite,
 }) {}
 
 /** The turn's end a held request names: the pace's words, and when it asks again. */
-export const requestHeldMessage = (held: RequestHeld): string =>
-  `dotfiles-opencode.pool: the request is held: ${held.reason}; ${tryAgainAt(held.retryAt)}`
+export const requestHeldMessage = (held: RequestHeld): string => {
+  const prefix = `dotfiles-opencode.pool: the request is held: ${held.reason}`
+  if (held.reasonCode === "model-unreported") return `${prefix} After switching, ${tryAgainAt(held.retryAt)} (next usage refresh).`
+  return `${prefix}; ${tryAgainAt(held.retryAt)}`
+}
 
 /** The answer for a provider the pool does not hold. */
 export const UNPOOLED: Pace = { ok: true, measured: false, reason: "provider is not pooled" }
@@ -197,7 +208,7 @@ const shortUntil = (account: AccountStatus, now: number): Option.Option<number> 
  * account's 5-hour and weekly windows hold every start, since every model's
  * requests spend them. `plans` moves an account's line by its resets.
  */
-export function poolPace(
+function budgetPace(
   accounts: ReadonlyArray<AccountStatus>,
   now: number,
   inflight: Inflight = NO_INFLIGHT,
@@ -221,6 +232,7 @@ export function poolPace(
         ? `every pool account is held or has ${model}'s own weekly window (${names.join(", ")}) at ${used(1)}: a ${model} start ${holdsAt(1)} there; the first resets ${iso(retryAt)}`
         : "all pool accounts are held",
       retryAt,
+      reasonCode: Match.value(scoped).pipe(Match.when(true, () => "model-limit" as const), Match.orElse(() => "account-held" as const)),
       admission: "held",
     }
   }
@@ -237,6 +249,7 @@ export function poolPace(
       measured: true,
       reason: `every pool account is at a hold line: its 5-hour window at ${used(SHORT_5H)} or more, or its week at ${used(TARGET)} or more; the first resets ${iso(retryAt)}`,
       retryAt,
+      reasonCode: "quota-limit",
       admission: "held",
     }
   }
@@ -271,6 +284,7 @@ export function poolPace(
       `the pool's weekly pace is over: its ${n} ${byCount(n, "account's week is", "accounts' weeks are")} at ${tenth(read / n)} used of 100%${byCount(n, "", " on average")}${starting}; ` +
       `the spend-evenly line ${byCount(n, "is", "averages")} ${tenth(allowance / n)} used of 100% now, and the start holds past it`,
     retryAt: nextRetryAt(now, [Math.ceil(catchesUp) + 1, ...settles, ...known.map((a) => a.resetAt)]),
+    reasonCode: "even-line",
     admission: "held",
   }
 }
@@ -283,6 +297,21 @@ export function poolPace(
 export const STALE_AFTER_MS = 30 * 60_000
 /** When a request held for want of a fresh reading asks again: the next sweep's reading may be in. */
 export const UNREAD_RETRY_MS = 60_000
+
+/** An unnamed pace is an advisory weekly reading; a start with a model uses exactly the request's admission rule. */
+export function poolPace(
+  accounts: ReadonlyArray<AccountStatus>,
+  now: number,
+  inflight: Inflight = NO_INFLIGHT,
+  model?: string,
+  plans: Readonly<Record<string, PacePlan>> = {},
+  policy: DispatchPolicy = {},
+): Pace {
+  return Option.match(Option.fromUndefinedOr(model), {
+    onNone: () => budgetPace(accounts, now, inflight, model, plans),
+    onSome: (id) => dispatchPace(accounts, now, plans, inflight.cost, id, { ...policy, inflight }),
+  })
+}
 
 /** The first future event worth rechecking; absent usable events, ask for a new reading. */
 export const nextRetryAt = (now: number, candidates: ReadonlyArray<number>): number => {
@@ -338,14 +367,23 @@ export const evidenceGap = (
   now: number,
   required: ReadonlyArray<string> = [],
 ): Option.Option<Gap> => {
-  if (Option.isNone(Option.fromUndefinedOr(account.reading))) return Option.some({ why: "no reading", stale: true })
+  const known = Option.fromUndefinedOr(account.reading)
+  if (Option.isNone(known)) return Option.some(Unread.make({ why: "no reading", stale: true }))
   const gapOf = (name: string): Option.Option<Gap> =>
     Option.match(windowOf(account, name), {
-      onNone: () => Option.some({ why: `no ${name} window in its reading`, stale: name === "7d" || name === "5h" }),
+      onNone: () => {
+        const model = Option.fromUndefinedOr(scopeOf(name))
+        const usage = Option.fromUndefinedOr(known.value.usage)
+        const refreshAt = Option.getOrElse(Option.map(usage, (sample) => sample.at + UNREAD_RETRY_MS), () => now)
+        if (Option.isSome(model) && Option.exists(usage, (sample) => sample.samples >= SCOPE_REPORT_SAMPLES)) {
+          return Option.some(Unreported.make({ scope: model.value, refreshAt }))
+        }
+        return Option.some(Unread.make({ why: `no ${name} window in its reading`, stale: Option.isNone(model) || refreshAt <= now }))
+      },
       onSome: (w) => {
         const seen = readAt(account, w)
         if (now - seen > STALE_AFTER_MS)
-          return Option.some({ why: `its ${name} window was read more than ${Math.round(STALE_AFTER_MS / 60_000)} min ago`, stale: true })
+          return Option.some(Unread.make({ why: `its ${name} window was read more than ${Math.round(STALE_AFTER_MS / 60_000)} min ago`, stale: true }))
         const short = name === "5h" || name.startsWith("5h:")
         const { duration, span } = Match.value(short).pipe(
           Match.when(true, () => ({ duration: FIVE_HOURS, span: "5 hours" })),
@@ -358,21 +396,33 @@ export const evidenceGap = (
         const rolled = !Option.exists(at, (time) => time > Math.max(now, seen))
         if (!rolled && Option.exists(at, (time) => time <= now + duration + RESET_SLACK_MS)) return Option.none()
         const named = Option.getOrElse(Option.map(at, iso), () => "unread")
-        return Option.some({ why: `its ${name} window's reset (${named}) is not within the next ${span}`, stale: rolled })
+        return Option.some(Unread.make({ why: `its ${name} window's reset (${named}) is not within the next ${span}`, stale: rolled }))
       },
     })
   return Arr.findFirst(["7d", "5h", ...required], gapOf)
 }
 
 /** Why a reading is no evidence of room, and whether reading the login again may mend it (`evidenceGap`). */
-export interface Gap {
-  readonly why: string
-  readonly stale: boolean
-}
+const Unread = Schema.TaggedStruct("Unread", { why: Schema.String, stale: Schema.Boolean })
+const Unreported = Schema.TaggedStruct("Unreported", { scope: Schema.String, refreshAt: Schema.Finite })
+const Gap = Schema.Union([Unread, Unreported])
+export type Gap = typeof Gap.Type
+
+export const refreshEvidence = (gap: Gap, now: number): boolean =>
+  Match.value(gap).pipe(Match.tagsExhaustive({ Unread: (missing) => missing.stale, Unreported: (missing) => missing.refreshAt <= now }))
+
+const gapText = (gap: Gap) => Match.value(gap).pipe(Match.tagsExhaustive({
+  Unread: (missing) => missing.why,
+  Unreported: (missing) => `no ${missing.scope} window reported by this login after ${SCOPE_REPORT_SAMPLES} successful usage reads`,
+}))
+
+const alternate = "Use another model or login; time alone will not clear this hold. The retry time is the next usage refresh, not an opening time."
 
 export interface DispatchPolicy {
   readonly auxiliary?: Exclude<RequestKind, "primary" | "compaction">
   readonly liftEvenLine?: boolean
+  /** Fleet starts not yet visible in the readings, when quoting a new start; an existing request already counted its launch. */
+  readonly inflight?: Inflight
 }
 
 /** What room an account has on its claim's room for one more request of `cost`: its rebased line less its use (`usedOf`), when it has one. */
@@ -413,26 +463,36 @@ export function dispatchPace(
 ): Pace {
   const required = requiredScopes(accounts, model)
   const fresh: Array<AccountStatus> = []
-  const gaps: Array<string> = []
+  const gaps: Array<Gap> = []
   for (const account of accounts) {
     const gap = evidenceGap(account, now, required)
-    if (Option.isSome(gap)) gaps.push(gap.value.why)
+    if (Option.isSome(gap)) gaps.push(gap.value)
     else fresh.push(account)
   }
   const scoped = Arr.match(required, { onEmpty: () => "", onNonEmpty: (names) => `, and ${names.join(", ")} read as freshly` })
   const needs = `its weekly and 5-hour windows read in the last ${Math.round(STALE_AFTER_MS / 60_000)} min with valid resets${scoped}`
-  const lacking = [...new Set(gaps)].join("; ")
+  const lacking = [...new Set(gaps.map(gapText))].join("; ")
+  const unavailable = gaps.length > 0 && gaps.every((gap) => gap._tag === "Unreported")
+  const evidenceTime = gaps.map((gap) => Match.value(gap).pipe(Match.tagsExhaustive({
+    Unread: () => now + UNREAD_RETRY_MS,
+    Unreported: ({ refreshAt }) => nextRetryAt(now, [refreshAt]),
+  })))
   const of = Option.match(Option.fromUndefinedOr(model), { onNone: () => "", onSome: (id) => ` of ${id}` })
-  if (accounts.length > 0 && fresh.length === 0)
+  if (accounts.length > 0 && fresh.length === 0) {
+    const reason: string[] = [`no account of the pool has a reading a request${of} of a managed pool goes out on (${needs}): ${lacking}`]
+    if (unavailable) reason.push(alternate)
     return {
       ok: false,
       measured: false,
-      reason: `no account of the pool has a reading a request${of} of a managed pool goes out on (${needs}): ${lacking}`,
-      retryAt: now + UNREAD_RETRY_MS,
+      reason: reason.join(". "),
+      reasonCode: Match.value(unavailable).pipe(Match.when(true, () => "model-unreported" as const), Match.orElse(() => "usage-unread" as const)),
+      retryAt: nextRetryAt(now, evidenceTime),
       admission: "held",
       eligible: [],
     }
-  const answer = poolPace(fresh, now, NO_INFLIGHT, model, plans)
+  }
+  const inflight = Option.getOrElse(Option.fromUndefinedOr(policy.inflight), () => NO_INFLIGHT)
+  const answer = budgetPace(fresh, now, inflight, model, plans)
   const open = eligibleFor(fresh, now, model)
   const eligible = open.map((a) => a.credentialID)
   // A push can lift the even line, not the minimum evidence or any hard limit.
@@ -446,17 +506,16 @@ export function dispatchPace(
       ...spentOwn(a, now, model).map((w) => w.resetAt),
       ...windowsOf(a).filter(atHoldLine).flatMap((w) => Option.toArray(Option.fromUndefinedOr(w.resetAt))),
     ])
-    if (gaps.length > 0) windows.push(now + UNREAD_RETRY_MS)
-    return nextRetryAt(now, [...times, ...windows])
+    return nextRetryAt(now, [...times, ...windows, ...evidenceTime])
   }
   const reasonWithGaps = (reason: string) => {
     if (gaps.length === 0) return reason
     return `${reason}; ${gaps.length} ${byCount(gaps.length, "account", "accounts")} more ${byCount(gaps.length, "has", "have")} no reading it may go out on (${needs}): ${lacking}`
   }
-  const ordinaryCatchUp = () => Option.toArray(Option.fromUndefinedOr(poolPace(fresh, now, NO_INFLIGHT, model).retryAt))
+  const ordinaryCatchUp = () => Option.toArray(Option.fromUndefinedOr(budgetPace(fresh, now, inflight, model).retryAt))
   if (!answer.ok) return { ...answer, reason: reasonWithGaps(answer.reason), retryAt: retry([answer.retryAt, ...ordinaryCatchUp()]), eligible: [] }
   // An unmeasured pace is no evidence of room at a dispatch: held, and asked again by the next sweep.
-  if (!answer.measured) return { ...answer, ok: false, admission: "held", retryAt: now + UNREAD_RETRY_MS, eligible: [] }
+  if (!answer.measured) return { ...answer, ok: false, admission: "held", reasonCode: "usage-unread", retryAt: now + UNREAD_RETRY_MS, eligible: [] }
   if (answer.admission !== "backed") return { ...answer, eligible }
   // Only primary work can spend a claim's room. Auxiliary work waits for ordinary room.
   const auxiliary = Option.fromUndefinedOr(policy.auxiliary)
@@ -465,6 +524,7 @@ export function dispatchPace(
       ok: false,
       measured: true,
       reason: reasonWithGaps(`the pool is past its spend-evenly line, and a ${auxiliary.value} request does not spend the room a claimed reset gave back`),
+      reasonCode: "auxiliary",
       retryAt: retry(ordinaryCatchUp()),
       admission: "held",
       eligible: [],
@@ -478,6 +538,7 @@ export function dispatchPace(
     ok: false,
     measured: true,
     soft: true,
+    reasonCode: "reset-room",
     reason: reasonWithGaps(`the pool is past its spend-evenly line, and ${Arr.match(increases, {
       onEmpty: () => "no account with room from a claimed reset can take this model now",
       onNonEmpty: () => `no open account's room from a claimed reset holds one more request (${tenth(cost)} of its week)`,
