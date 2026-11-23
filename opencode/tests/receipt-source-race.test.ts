@@ -231,14 +231,15 @@ const componentBarriers = Effect.gen(function* () {
   const leaf = `${head}.round.json`
   const good = receiptText(root, goodTree, 0)
   const outside = receiptText(root, outsideTree, 1)
-  const cases = ["before-setup", "before-open", "after-open"] as const
-  const kinds = ["link", "directory", "fifo"] as const
   // Directory swaps are only meaningful after authority is bound. The pre-setup threats are paths
   // that are not directory identities at all (a symlink to a sibling, or a FIFO).
+  const cases = [
+    { phase: "before-setup", kinds: ["link", "fifo"] },
+    { phase: "before-open", kinds: ["link", "directory", "fifo"] },
+    { phase: "after-open", kinds: ["link", "directory", "fifo"] },
+  ] as const
   yield* Effect.forEach(["top", "inner", "receipts"].flatMap((_, depth) =>
-    cases.flatMap((phase) => Arr.filterMap(kinds, (kind) =>
-      Result.liftPredicate(kind, (each) => phase !== "before-setup" || each !== "directory").pipe(Result.map((kind) => ({ depth, phase, kind }))),
-    )),
+    cases.flatMap(({ phase, kinds }) => kinds.map((kind) => ({ depth, phase, kind }))),
   ), ({ depth, phase, kind }) =>
     Effect.gen(function* () {
       const dir = path.join(root, `${depth}-${phase}-${kind}`)
