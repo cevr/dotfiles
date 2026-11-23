@@ -1,11 +1,14 @@
 #!/bin/sh
-# The workbox's pinned system tools and its CPU, IO and memory reserve, as root. bootstrap.sh runs it
+# The system layer both workboxes share (pinned tools, the CPU, IO and memory reserve, the run
+# families' slices, /tmp's rules, the free-space figures), as root. bootstrap.sh runs it
 # (sudo) on the exe.dev workbox and provision.sh's `tools` and `reserve` phases on the Hetzner box, so
 # both paths install the same things from one place; the pins are in pins.conf beside it.
 #
 # Usage: sudo system-tools.sh [step...]   (default: every step, in this order)
 #        system-tools.sh --check [step...]  (no root; fails, naming the step, unless installed)
 # Steps:
+#   btrfs   btrfs-progs with simple quotas (BTRFS_PROGS_MIN): the distribution's when it is new enough,
+#           else the pinned package, its sha256 checked before it is installed. Refused on another arch.
 #   shells  fish, ksh and mksh from the distribution (SHELL_PACKAGES)
 #   qemu    qemu-user-static (qemu-user-binfmt from Ubuntu 26.04), and its binfmt_misc entry for the other architecture (aarch64 on
 #           amd64, x86_64 on arm64) registered now with the F flag, from the package's binfmt.d file
@@ -18,6 +21,13 @@
 #   reserve the systemd drop-ins that give the OpenCode service a memory floor (systemd/reserve/),
 #           then `systemctl daemon-reload`, which applies them to running units without a restart.
 #           bite.slice's CPU and IO weights are in bite.slice itself (bootstrap and provision install it).
+#   slices  the run families' slices of the user manager from slices.conf (/etc/systemd/user/<name>.slice),
+#           the system slices' weights from it (drop-ins), and cpu, io and memory delegated to each user
+#           manager (systemd/slices/), then `systemctl daemon-reload`. A user manager takes the delegation
+#           when it next starts (a boot); its slices with its own daemon-reload.
+#   tmp     /tmp's rules (systemd/tmp/tmpfiles.d/tmp.conf as /etc/tmpfiles.d/tmp.conf: emptied at boot,
+#           aged daily) and the daily clean through workbox-tmp-clean, which keeps what a process holds
+#   diskfree  workbox-disk-free and its timer: the btrfs free-space figures in /run/workbox/disk-free
 #
 # Idempotent: a step that finds its state prints `ok: ...`; one that changes something prints
 # `==> installed ...`. A refusal changes nothing and exits 1.
@@ -33,7 +43,9 @@ pins=${WORKBOX_PINS:-$here/pins.conf}
 root=${WORKBOX_TOOLS_ROOT:-}
 proc=${WORKBOX_TOOLS_PROC:-/proc}
 reserve_dir=$here/systemd/reserve
-all_steps="shells qemu go pwsh reserve"
+slices_dir=$here/systemd/slices
+slices_conf=${WORKBOX_SLICES:-$here/slices.conf}
+all_steps="btrfs shells qemu go pwsh reserve slices tmp diskfree"
 
 say() { printf '==> %s\n' "$*"; }
 ok() { printf 'ok: %s\n' "$*"; }
@@ -108,6 +120,41 @@ apt_ensure() {
   for package in $missing; do
     installed "$package" || die "apt-get did not install $package"
   done
+}
+
+# ---------------------------------------------------------------- btrfs
+# The installed btrfs-progs version ("6.6.3"), or nothing.
+btrfs_version() { btrfs --version 2>/dev/null | awk '{ sub(/^v/, "", $2); print $2; exit }'; }
+version_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n 1)" = "$2" ]; }
+btrfs_new_enough() {
+  have=$(btrfs_version)
+  [ -n "$have" ] && version_ge "$have" "$BTRFS_PROGS_MIN"
+}
+
+step_btrfs() {
+  if btrfs_new_enough; then
+    ok "btrfs-progs $have (simple quotas)"
+    return
+  fi
+  arch=$(host_arch)
+  [ "$arch" = "$BTRFS_PROGS_ARCH" ] ||
+    die "btrfs: btrfs-progs ${have:-(none)} is older than $BTRFS_PROGS_MIN and the pinned package is for $BTRFS_PROGS_ARCH only; this host is $arch: refusing"
+  deb=$scratch/${BTRFS_PROGS_DEB_URL##*/}
+  fetch "$BTRFS_PROGS_DEB_URL" "$deb"
+  got=$(sha256_of "$deb")
+  [ "$got" = "$BTRFS_PROGS_SHA256" ] ||
+    die "btrfs: ${deb##*/} has sha256 $got, not the pinned $BTRFS_PROGS_SHA256: refusing it; nothing was installed"
+  # apt reads a local package as its _apt user: the scratch directory is root's 0700 otherwise.
+  chmod 0755 "$scratch"
+  say "installing ${deb##*/} (btrfs-progs ${have:-none} is older than $BTRFS_PROGS_MIN)"
+  # shellcheck disable=SC2086 # a word list
+  NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive apt-get $apt_bounds install -y -q "$deb" >/dev/null
+  btrfs_new_enough || die "btrfs: btrfs-progs is ${have:-missing} after installing ${deb##*/}"
+  say "installed btrfs-progs $have"
+}
+
+check_btrfs() {
+  btrfs_new_enough || die "check btrfs: btrfs-progs ${have:-(none)} is older than $BTRFS_PROGS_MIN (no simple quotas)"
 }
 
 # ---------------------------------------------------------------- shells
@@ -335,6 +382,136 @@ check_reserve() {
   for file in $(reserve_files); do
     cmp -s "$reserve_dir/$file" "$root/etc/systemd/$file" || die "check reserve: $root/etc/systemd/$file is not $reserve_dir/$file"
   done
+}
+
+# ---------------------------------------------------------------- slices
+# slices.conf's lines, comments and blank lines dropped: "<unit> <manager> <Setting=value>...".
+slice_lines() { sed -e 's/#.*//' -e 's/[[:space:]]*$//' "$slices_conf" | grep . > "$scratch/slices"; }
+
+# What slices.conf makes for one line, written to $1: a whole slice unit for the user manager (the
+# run families), a drop-in for the system manager's own slices.
+slice_text() { # file line
+  out=$1
+  # shellcheck disable=SC2086 # the line's words
+  set -- $2
+  unit=$1 manager=$2
+  shift 2
+  {
+    printf '# Made by workbox/system-tools.sh from workbox/slices.conf: change it there.\n'
+    if [ "$manager" = user ]; then
+      printf '[Unit]\nDescription=Workbox run family %s (workbox/slices.conf)\n\n' "${unit%.slice}"
+    fi
+    printf '[Slice]\n'
+    printf '%s\n' "$@"
+  } > "$out"
+}
+
+slice_dest() { # unit manager
+  case $2 in
+    user) echo "$root/etc/systemd/user/$1" ;;
+    system) echo "$root/etc/systemd/system/$1.d/40-workbox-slices.conf" ;;
+  esac
+}
+
+slices_files() { (cd "$slices_dir" && find . -type f -name '*.conf' | sed 's|^\./||' | sort); }
+
+step_slices() {
+  changed=0
+  for file in $(slices_files); do
+    if put 0644 "$slices_dir/$file" "$root/etc/systemd/$file"; then changed=1; fi
+  done
+  made=$(mktemp "$scratch/slice.XXXXXX")
+  slice_lines
+  while IFS= read -r line; do
+    # shellcheck disable=SC2086 # the line's first two words
+    set -- $line
+    case $1 in *.slice) ;; *) die "slices: $1 is not a slice name" ;; esac
+    case $2 in user | system) ;; *) die "slices: $slices_conf names manager $2 for $1 (user or system)" ;; esac
+    slice_text "$made" "$line"
+    if put 0644 "$made" "$(slice_dest "$1" "$2")"; then changed=1; fi
+  done < "$scratch/slices"
+  if [ "$changed" = 1 ]; then
+    systemctl daemon-reload
+  else
+    ok "slices from $slices_conf"
+  fi
+}
+
+check_slices() {
+  for file in $(slices_files); do
+    cmp -s "$slices_dir/$file" "$root/etc/systemd/$file" || die "check slices: $root/etc/systemd/$file is not $slices_dir/$file"
+  done
+  made=$(mktemp "$scratch/slice.XXXXXX")
+  slice_lines
+  while IFS= read -r line; do
+    # shellcheck disable=SC2086 # the line's first two words
+    set -- $line
+    slice_text "$made" "$line"
+    cmp -s "$made" "$(slice_dest "$1" "$2")" || die "check slices: $(slice_dest "$1" "$2") is not what slices.conf makes"
+  done < "$scratch/slices"
+}
+
+# ---------------------------------------------------------------- tmp
+tmp_dir=$here/systemd/tmp
+tmp_files() { # src dest mode, one per line
+  printf '%s %s %s\n' \
+    "$tmp_dir/tmpfiles.d/tmp.conf" "$root/etc/tmpfiles.d/tmp.conf" 0644 \
+    "$tmp_dir/system/systemd-tmpfiles-clean.service.d/30-workbox-held.conf" "$root/etc/systemd/system/systemd-tmpfiles-clean.service.d/30-workbox-held.conf" 0644 \
+    "$tmp_dir/workbox-tmp-clean" "$root/usr/local/sbin/workbox-tmp-clean" 0755
+}
+
+step_tmp() {
+  changed=0
+  tmp_files > "$scratch/tmp-files"
+  while read -r src dest mode; do
+    if put "$mode" "$src" "$dest"; then changed=1; fi
+  done < "$scratch/tmp-files"
+  if [ "$changed" = 1 ]; then
+    systemctl daemon-reload
+  else
+    ok "tmp rules and the held-file guard"
+  fi
+}
+
+check_tmp() {
+  tmp_files > "$scratch/tmp-files"
+  while read -r src dest mode; do
+    cmp -s "$src" "$dest" || die "check tmp: $dest is not $src"
+  done < "$scratch/tmp-files"
+}
+
+# ---------------------------------------------------------------- diskfree
+disk_dir=$here/systemd/disk-free
+disk_files() {
+  printf '%s %s %s\n' \
+    "$disk_dir/workbox-disk-free" "$root/usr/local/sbin/workbox-disk-free" 0755 \
+    "$disk_dir/workbox-disk-free.service" "$root/etc/systemd/system/workbox-disk-free.service" 0644 \
+    "$disk_dir/workbox-disk-free.timer" "$root/etc/systemd/system/workbox-disk-free.timer" 0644
+}
+
+step_diskfree() {
+  changed=0
+  disk_files > "$scratch/disk-files"
+  while read -r src dest mode; do
+    if put "$mode" "$src" "$dest"; then changed=1; fi
+  done < "$scratch/disk-files"
+  if [ "$changed" = 1 ]; then
+    systemctl daemon-reload
+    # A new timer starts; no running service is restarted.
+    systemctl enable --now workbox-disk-free.timer
+  elif ! systemctl is-enabled --quiet workbox-disk-free.timer 2>/dev/null; then
+    systemctl enable --now workbox-disk-free.timer
+    say "enabled workbox-disk-free.timer"
+  else
+    ok "workbox-disk-free.timer"
+  fi
+}
+
+check_diskfree() {
+  disk_files > "$scratch/disk-files"
+  while read -r src dest mode; do
+    cmp -s "$src" "$dest" || die "check diskfree: $dest is not $src"
+  done < "$scratch/disk-files"
 }
 
 # ---------------------------------------------------------------- main

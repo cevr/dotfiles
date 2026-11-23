@@ -1,0 +1,67 @@
+#!/usr/bin/perl
+# systemd-tmpfiles --clean, minus what a running process holds. The daily systemd-tmpfiles-clean.service
+# runs this instead of tmpfiles itself (systemd/system/systemd-tmpfiles-clean.service.d).
+#
+# tmpfiles decides by age alone: an entry goes when its access, birth, change and modification times
+# are all older than its line's age (tmpfiles.d(5), "Age"); our btrfs mounts with noatime, so reading
+# a file does not keep it. It does not look at open files. What it does honour is a BSD lock: "If the
+# aging algorithm finds a lock (shared or exclusive) is already taken on some directory/file, it (and
+# everything below it) is skipped." So this takes a shared flock(2) on every path under the cleaned
+# roots that a process holds open (an open file, a working directory, a mapped file, from
+# /proc/<pid>/fd, cwd and maps), runs tmpfiles while it holds them, and lets them go when tmpfiles
+# ends. A held directory keeps all of its tree; a held file keeps itself (its directory is then not
+# empty, so it stays too). A path opened after the scan is not covered: the window is the scan's
+# length, well under a second.
+#
+# Usage: workbox-tmp-clean [tmpfiles config...]   (as root; the configs go to systemd-tmpfiles)
+# Env: WORKBOX_TMP_ROOTS (default "/tmp /var/tmp"): the cleaned trees whose held paths are locked.
+use strict;
+use warnings;
+use Fcntl qw(:flock O_RDONLY O_NOFOLLOW O_NONBLOCK);
+
+my @roots = split ' ', ($ENV{WORKBOX_TMP_ROOTS} // '/tmp /var/tmp');
+s{/+$}{} for @roots;
+my $under = sub {
+    my ($path) = @_;
+    for my $root (@roots) {
+        return 1 if index($path, "$root/") == 0;
+    }
+    return 0;
+};
+
+my %held;
+opendir(my $proc, '/proc') or die "workbox-tmp-clean: /proc: $!\n";
+for my $pid (grep { /^\d+$/ } readdir $proc) {
+    next if $pid == $$;
+    my @paths;
+    if (opendir(my $fds, "/proc/$pid/fd")) {
+        push @paths, map { readlink "/proc/$pid/fd/$_" } grep { /^\d+$/ } readdir $fds;
+        closedir $fds;
+    }
+    push @paths, readlink "/proc/$pid/cwd";
+    if (open(my $maps, '<', "/proc/$pid/maps")) {
+        while (my $line = <$maps>) {
+            push @paths, $1 if $line =~ m{\s(/\S.*?)\s*$};
+        }
+        close $maps;
+    }
+    for my $path (@paths) {
+        next unless defined $path;
+        $path =~ s/ \(deleted\)$//;
+        $held{$path} = 1 if $under->($path);
+    }
+}
+closedir $proc;
+
+my @locks;
+for my $path (sort keys %held) {
+    # O_NOFOLLOW and O_NONBLOCK: a symlink or a FIFO in a world-writable tree takes no lock and
+    # blocks nothing.
+    sysopen(my $fh, $path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK) or next;
+    flock($fh, LOCK_SH | LOCK_NB) and push @locks, $fh;
+}
+printf "workbox-tmp-clean: %d held paths locked under %s\n", scalar @locks, join(' ', @roots);
+
+my $tmpfiles = $ENV{WORKBOX_TMPFILES} // 'systemd-tmpfiles';
+my $status = system($tmpfiles, '--clean', @ARGV);
+exit($status == -1 ? 1 : $status >> 8);

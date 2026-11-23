@@ -48,6 +48,8 @@ set -- $words
 for p; do
   case $p in
     -*|install) ;;
+    */btrfs-progs_*.deb)
+      basename "$p" | sed -e "s/^btrfs-progs_//" -e "s/[-_].*//" > "$FAKE_STATE/btrfs-version" ;;
     *)
       touch "$FAKE_STATE/$p"
       case $p in
@@ -71,7 +73,8 @@ echo "$*" >> "$FAKE_LOG.curl-args"
 cp "$FAKE_DOWNLOADS/$(basename "$last")" "$out" 2>/dev/null || exit 22
 `,
   "apt-cache": `#!/bin/sh\nfor last; do :; done\ncase " $FAKE_NO_CANDIDATE " in *" $last "*) echo "  Candidate: (none)" ;; *) echo "  Candidate: 1:1.0" ;; esac\n`,
-  systemctl: `#!/bin/sh\necho "systemctl $*" >> "$FAKE_LOG"\n`,
+  btrfs: `#!/bin/sh\n[ "$1" = --version ] && [ -s "$FAKE_STATE/btrfs-version" ] && echo "btrfs-progs v$(cat "$FAKE_STATE/btrfs-version")"\n`,
+  systemctl: `#!/bin/sh\ncase $1 in is-*) exit 0 ;; esac\necho "systemctl $*" >> "$FAKE_LOG"\n`,
   "systemd-binfmt": `#!/bin/sh
 echo "systemd-binfmt $*" >> "$FAKE_LOG"
 name=$(grep -v '^#' "$1" | head -n 1 | cut -d: -f2)
@@ -82,13 +85,15 @@ printf 'enabled\\ninterpreter /usr/libexec/qemu-binfmt/x\\nflags: %s\\n' "$flags
 
 let n = 0
 /** A scratch host: the script (and the files it reads beside it) in a tree, a root, a /proc, fakes and served files. */
-const host = (opts: { arch?: string; pins?: Record<string, string>; noCandidate?: string } = {}) => {
+const host = (opts: { arch?: string; pins?: Record<string, string>; noCandidate?: string; btrfs?: string } = {}) => {
   const dir = join(scratch, `host-${n++}`)
   const workbox = join(dir, "tree", "workbox")
   mkdirSync(join(workbox, "systemd"), { recursive: true })
   cpSync(underTest, join(workbox, "system-tools.sh"))
   chmodSync(join(workbox, "system-tools.sh"), 0o755)
   cpSync(join(workboxDir, "systemd", "reserve"), join(workbox, "systemd", "reserve"), { recursive: true })
+  for (const dir of ["slices", "tmp", "disk-free"]) cpSync(join(workboxDir, "systemd", dir), join(workbox, "systemd", dir), { recursive: true })
+  cpSync(join(workboxDir, "slices.conf"), join(workbox, "slices.conf"))
   const pins = Object.entries(opts.pins ?? {}).reduce(
     (text, [name, value]) => text.replace(new RegExp(`^${name}=.*$`, "m"), `${name}=${value}`),
     pinsText,
@@ -102,6 +107,8 @@ const host = (opts: { arch?: string; pins?: Record<string, string>; noCandidate?
   for (const path of [join(root, "etc", "apt", "sources.list.d"), join(proc, "sys", "fs", "binfmt_misc"), bin, state, downloads]) mkdirSync(path, { recursive: true })
   writeFileSync(join(proc, "sys", "fs", "binfmt_misc", "register"), "")
   writeFileSync(join(root, "etc", "os-release"), 'ID=ubuntu\nVERSION_ID="24.04"\nVERSION_CODENAME=noble\n')
+  // The installed btrfs-progs: new enough by default, so the other cases download no package.
+  if ((opts.btrfs ?? "6.17.1") !== "") writeFileSync(join(state, "btrfs-version"), `${opts.btrfs ?? "6.17.1"}\n`)
   for (const [name, text] of Object.entries(fakes)) {
     writeFileSync(join(bin, name), text)
     chmodSync(join(bin, name), 0o755)
@@ -132,7 +139,7 @@ const host = (opts: { arch?: string; pins?: Record<string, string>; noCandidate?
   // What the script left in TMPDIR (its scratch dir, a key, a list): nothing, on every exit path.
   const leftovers = () => readdirSync(dir).filter((name) => name.startsWith("tmp."))
   const logLines = () => readFileSync(log, "utf8").split("\n").filter(Boolean)
-  return { dir, root, proc, downloads, run, logLines, leftovers, local: join(root, "usr", "local") }
+  return { dir, root, proc, downloads, run, logLines, leftovers, local: join(root, "usr", "local"), tree: workbox }
 }
 
 /** A Go tarball as go.dev lays it out (go/VERSION, go/bin/go, go/bin/gofmt), holding `version`. */
@@ -206,7 +213,27 @@ describe("system-tools.sh installs the pinned tools, once", () => {
       expect(readFileSync(join(h.root, "etc", "systemd", file), "utf8")).toBe(readFileSync(join(workboxDir, "systemd", "reserve", file), "utf8"))
     const installs = h.logLines().filter((line) => line.startsWith("apt-get install"))
     expect(installs.map((line) => line.split(" ").filter((word) => !word.startsWith("-")).slice(2))).toEqual([["fish", "ksh", "mksh"], ["qemu-user-static"], ["powershell"]])
-    expect(h.logLines().filter((line) => line.startsWith("systemctl"))).toEqual(["systemctl daemon-reload"])
+    // The run families: a slice unit each for the user manager, a drop-in each for the system's slices.
+    expect(readFileSync(join(h.root, "etc", "systemd", "user", "ergo.slice"), "utf8")).toContain("[Slice]\nCPUWeight=20\nCPUQuota=1000%\nIOWeight=20\nMemoryHigh=80%\n")
+    expect(readFileSync(join(h.root, "etc", "systemd", "system", "user.slice.d", "40-workbox-slices.conf"), "utf8")).toContain("[Slice]\nCPUWeight=100\nIOWeight=100\n")
+    expect(readFileSync(join(h.root, "etc", "systemd", "system", "user@.service.d", "40-workbox-delegate.conf"), "utf8")).toContain("Delegate=cpu io memory pids")
+    // /tmp's rules and the guard; the free-space script, its unit and timer.
+    for (const [src, dest] of [
+      ["tmp/tmpfiles.d/tmp.conf", "etc/tmpfiles.d/tmp.conf"],
+      ["tmp/system/systemd-tmpfiles-clean.service.d/30-workbox-held.conf", "etc/systemd/system/systemd-tmpfiles-clean.service.d/30-workbox-held.conf"],
+      ["tmp/workbox-tmp-clean", "usr/local/sbin/workbox-tmp-clean"],
+      ["disk-free/workbox-disk-free", "usr/local/sbin/workbox-disk-free"],
+      ["disk-free/workbox-disk-free.timer", "etc/systemd/system/workbox-disk-free.timer"],
+    ])
+      expect(readFileSync(join(h.root, dest), "utf8")).toBe(readFileSync(join(workboxDir, "systemd", src), "utf8"))
+    // A daemon-reload for each step that installed units; the new timer started; no restart.
+    expect(h.logLines().filter((line) => line.startsWith("systemctl"))).toEqual([
+      "systemctl daemon-reload",
+      "systemctl daemon-reload",
+      "systemctl daemon-reload",
+      "systemctl daemon-reload",
+      "systemctl enable --now workbox-disk-free.timer",
+    ])
     expect(h.logLines().filter((line) => line.startsWith("curl"))).toEqual([`curl https://go.dev/dl/${tarballName}`, "curl https://packages.microsoft.com/keys/microsoft.asc"])
     // Every download is bounded in time, so a stalled one fails instead of hanging the provisioning.
     for (const args of readFileSync(join(h.dir, "log.curl-args"), "utf8").split("\n").filter(Boolean)) expect(args).toMatch(/--connect-timeout \d+ --max-time \d+ --retry \d/)
@@ -264,7 +291,102 @@ describe("system-tools.sh installs the pinned tools, once", () => {
   })
 })
 
+const btrfsDeb = pin("BTRFS_PROGS_DEB_URL").split("/").at(-1) ?? ""
+/** A host with btrfs-progs `version` installed, served a package (its sha the pin unless `servedSha` differs). */
+const btrfsHost = (version: string, opts: { arch?: string; tampered?: boolean } = {}) => {
+  const probe = join(scratch, `deb-${n++}`)
+  mkdirSync(probe)
+  writeFileSync(join(probe, btrfsDeb), "a btrfs-progs package\n")
+  const h = host({ arch: opts.arch, btrfs: version, pins: { BTRFS_PROGS_SHA256: sha256(join(probe, btrfsDeb)) } })
+  writeFileSync(join(h.downloads, btrfsDeb), opts.tampered === true ? "another package\n" : "a btrfs-progs package\n")
+  return h
+}
+
+describe("system-tools.sh btrfs: btrfs-progs with simple quotas", () => {
+  test("an older btrfs-progs (Ubuntu 24.04's) gets the pinned package, checked; the rerun changes nothing", () => {
+    const h = btrfsHost("6.6.3")
+    const first = h.run("btrfs")
+    expect(first).toMatchObject({ code: 0, stderr: "" })
+    expect(first.stdout).toContain("installed btrfs-progs 6.16")
+    expect(h.logLines().filter((line) => line.startsWith("curl"))).toEqual([`curl ${pin("BTRFS_PROGS_DEB_URL")}`])
+    const installs = h.logLines().filter((line) => line.startsWith("apt-get install"))
+    expect(installs).toHaveLength(1)
+    expect(installs[0]).toEndWith(`/${btrfsDeb}`)
+    const logged = h.logLines().length
+    expect(h.run("btrfs").stdout).not.toContain("==>")
+    expect(h.logLines().slice(logged)).toEqual([])
+    expect(h.run("--check", "btrfs").code).toBe(0)
+    expect(h.leftovers()).toEqual([])
+  })
+
+  test("a new enough btrfs-progs (or a newer release's) is left as it is: no download", () => {
+    const h = btrfsHost("6.7")
+    expect(h.run("btrfs")).toMatchObject({ code: 0, stdout: "ok: btrfs-progs 6.7 (simple quotas)\n" })
+    expect(h.logLines()).toEqual([])
+  })
+
+  test("the --check of an older one fails, naming it", () => {
+    const h = btrfsHost("6.6.3")
+    const done = h.run("--check", "btrfs")
+    expect(done.code).toBe(1)
+    expect(done.stderr).toContain("6.6.3 is older than 6.7")
+  })
+})
+
+describe("system-tools.sh slices: the run families from slices.conf", () => {
+  test("each line makes its unit or drop-in; a changed value is rewritten; --check sees a hand edit", () => {
+    const h = host()
+    expect(h.run("slices")).toMatchObject({ code: 0, stderr: "" })
+    const conf = readFileSync(join(workboxDir, "slices.conf"), "utf8")
+    const lines = conf.split("\n").map((line) => line.replace(/#.*/, "").trim()).filter(Boolean)
+    expect(lines.length).toBeGreaterThan(0)
+    for (const line of lines) {
+      const [unit, manager, ...settings] = line.split(/\s+/)
+      const path = manager === "user" ? join(h.root, "etc", "systemd", "user", unit) : join(h.root, "etc", "systemd", "system", `${unit}.d`, "40-workbox-slices.conf")
+      expect(readFileSync(path, "utf8")).toEndWith(`[Slice]\n${settings.join("\n")}\n`)
+    }
+    expect(h.logLines()).toEqual(["systemctl daemon-reload"])
+    expect(h.run("slices").stdout).toBe(`ok: slices from ${join(h.tree, "slices.conf")}\n`)
+    expect(h.run("--check", "slices").code).toBe(0)
+    // A hand edit of an installed slice: --check names it; the step puts slices.conf's back.
+    const ergo = join(h.root, "etc", "systemd", "user", "ergo.slice")
+    writeFileSync(ergo, readFileSync(ergo, "utf8").replace("CPUWeight=20", "CPUWeight=90"))
+    expect(h.run("--check", "slices")).toMatchObject({ code: 1, stderr: expect.stringContaining("ergo.slice is not what slices.conf makes") })
+    expect(h.run("slices").stdout).toContain(`installed ${ergo}`)
+    expect(readFileSync(ergo, "utf8")).toContain("CPUWeight=20\n")
+    expect(h.leftovers()).toEqual([])
+  })
+
+  test("a line that is not a slice, or names another manager, is refused", () => {
+    const h = host()
+    writeFileSync(join(h.tree, "slices.conf"), "ergo.service user CPUWeight=1\n")
+    expect(h.run("slices")).toMatchObject({ code: 1, stderr: expect.stringContaining("ergo.service is not a slice name") })
+    writeFileSync(join(h.tree, "slices.conf"), "ergo.slice root CPUWeight=1\n")
+    expect(h.run("slices")).toMatchObject({ code: 1, stderr: expect.stringContaining("names manager root") })
+  })
+})
+
 describe("system-tools.sh refuses, and changes nothing", () => {
+  test("a btrfs-progs package whose sha256 is not the pin: refused before it is installed", () => {
+    const h = btrfsHost("6.6.3", { tampered: true })
+    const before = snapshot(h.root)
+    const done = h.run("btrfs")
+    expect(done.code).toBe(1)
+    expect(done.stderr).toContain("not the pinned")
+    expect(done.stderr).toContain("nothing was installed")
+    expect(h.logLines().filter((line) => line.startsWith("apt-get"))).toEqual([])
+    expect(snapshot(h.root)).toEqual(before)
+    expect(h.leftovers()).toEqual([])
+  })
+
+  test("an older btrfs-progs on another architecture: refused before any download", () => {
+    const h = btrfsHost("6.6.3", { arch: "arm64" })
+    const done = h.run("btrfs")
+    expect(done.code).toBe(1)
+    expect(done.stderr).toContain("this host is arm64")
+    expect(h.logLines()).toEqual([])
+  })
+
   test("a tarball whose sha256 is not the pin: refused before unpacking; nothing installed, an older Go untouched", () => {
     const h = goHost()
     // The pin is the good tarball's; go.dev now serves another one.
@@ -324,11 +446,12 @@ describe("pins.conf is the one place the pins are typed", () => {
     expect(goVersion).toMatch(/^\d+\.\d+\.\d+$/)
     expect(goSha).toMatch(/^[0-9a-f]{64}$/)
     expect(keyFingerprint).toMatch(/^[0-9A-F]{40}$/)
+    expect(pin("BTRFS_PROGS_SHA256")).toMatch(/^[0-9a-f]{64}$/)
   })
 
-  test("no other file in the repository holds the Go sha, the key fingerprint or the Go version", () => {
+  test("no other file in the repository holds the Go sha, the key fingerprint, the Go version or the btrfs-progs package and sha", () => {
     const spaced = keyFingerprint.match(/.{4}/g)?.join(" ") ?? keyFingerprint
-    const needles = [goSha, keyFingerprint, spaced, `go${goVersion}`, `go-${goVersion}`, `Go ${goVersion}`, `GO_VERSION=${goVersion}`]
+    const needles = [goSha, keyFingerprint, spaced, pin("BTRFS_PROGS_SHA256"), btrfsDeb, `go${goVersion}`, `go-${goVersion}`, `Go ${goVersion}`, `GO_VERSION=${goVersion}`]
     // Tracked and untracked (not ignored) files: a pin typed into a new file counts too. Exit 1: none.
     const found = Bun.spawnSync(
       ["git", "grep", "--untracked", "-I", "-n", "-F", ...needles.flatMap((needle) => ["-e", needle]), "--", ".", ":(exclude)workbox/pins.conf"],
