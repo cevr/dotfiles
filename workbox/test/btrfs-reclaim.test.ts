@@ -1,11 +1,13 @@
 // workbox/systemd/system/workbox-btrfs-reclaim, which workbox-btrfs-reclaim.service runs at boot, on a scratch
 // /sys/fs/btrfs with a findmnt shim. Nothing here touches the real host.
 import { afterAll, describe, expect, test } from "bun:test"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+// @reads ../workbox/systemd/system/workbox-btrfs-reclaim
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { matchingInput, readScratchFileSync as readFileSync } from "../../opencode/tests/read-path.ts"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-const SCRIPT = join(import.meta.dir, "..", "systemd", "system", "workbox-btrfs-reclaim")
+const SCRIPT = matchingInput("../workbox/systemd/system/workbox-btrfs-reclaim")
 const scratchRoot = realpathSync(mkdtempSync(join(tmpdir(), "btrfs-reclaim-test-")))
 afterAll(() => rmSync(scratchRoot, { recursive: true, force: true }))
 let count = 0

@@ -16,7 +16,9 @@
 // warms too, under the exclusive lock). The schedule of 2026-11-22 00:00Z on the workbox (11 creates waiting, master
 // moving every ten minutes, 96-239 s clones, a 628 s warm) shows the wait each gives.
 import { afterAll, describe, expect, test } from "bun:test"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+// @reads ../workbox/bin/workrift
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { matchingInput, readScratchDirectorySync as readdirSync, readScratchFileSync as readFileSync, scratchInput } from "../../opencode/tests/read-path.ts"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
 
@@ -353,7 +355,7 @@ describe("the base's lock as a ticket queue (a model on a manual clock)", () => 
 
 const turnRepo = join(import.meta.dir, "..", "..")
 // WORKRIFT_SCRIPT runs this against another script (main's, for the red run; a mutant).
-const TURN_SCRIPT = process.env.WORKRIFT_SCRIPT ?? join(turnRepo, "workbox/bin/workrift")
+const TURN_SCRIPT = process.env.WORKRIFT_SCRIPT ?? matchingInput("../workbox/bin/workrift")
 const turnScratch = realpathSync(mkdtempSync(join(tmpdir(), "workrift-turn-")))
 afterAll(() => rmSync(turnScratch, { recursive: true, force: true }))
 let turnBenches = 0
@@ -609,11 +611,12 @@ const runOps = async (b: TurnBench, ops: ReadonlyArray<Op>, snapshots: ReadonlyA
       const script = op.script ?? TURN_SCRIPT
       const argv = op.kind === "create" ? [script, "create", op.name] : [script, "remove", targets.get(op.name) ?? ""]
       const errFile = join(b.dir, `${op.name}.err`)
+      writeFileSync(errFile, "")
       const child = Bun.spawn(argv, {
         cwd: op.kind === "create" ? b.base(op.base) : b.root,
         env: op.kind === "create" ? { ...env, WORKRIFT_SOURCE: b.base(op.base) } : env,
         stdout: "ignore",
-        stderr: Bun.file(errFile),
+        stderr: Bun.file(scratchInput(errFile)),
         detached: true,
       })
       groups.push(child.pid)

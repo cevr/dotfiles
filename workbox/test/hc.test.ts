@@ -5,6 +5,7 @@
 // under the scratch folder, and `run` refuses to start a script otherwise.
 // 2026-11-18: bootstrap's hard-coded /workspaces/bite let each run repoint the
 // real Bite base's .env at a scratch HOME this file then deleted.
+// @reads ../workbox/bootstrap.sh ../workbox/systemd/** ../workbox/bin/** ../workbox/install-bin.sh ../workbox/{hunk-config.toml,backup.env,zshenv,zshrc,herdr-config.toml}
 import { afterAll, describe, expect, test } from "bun:test"
 import {
   chmodSync,
@@ -14,12 +15,12 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  readlinkSync,
   realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs"
+import { matchingInput, readScratchDirectorySync, readScratchFileSync, readScratchLinkSync } from "../../opencode/tests/read-path.ts"
 import { homedir, tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 
@@ -37,7 +38,7 @@ const resolved = (path: string): string => {
 }
 const linkTarget = (path: string) => {
   try {
-    return readlinkSync(path)
+    return readScratchLinkSync(path)
   } catch {
     return null
   }
@@ -106,7 +107,7 @@ const run = async (cmd: string[], env: Record<string, string>, cwd = scratchRoot
   return { stdout, stderr, code }
 }
 
-const calls = (log: string) => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : [])
+const calls = (log: string) => (existsSync(log) ? readScratchFileSync(log, "utf8").split("\n").filter(Boolean) : [])
 
 // ---------------------------------------------------------------- host fixture
 
@@ -330,7 +331,7 @@ const bootstrapTree = (root: string, log: string) => {
   cpSync(join(workbox, "bootstrap.sh"), join(box, "bootstrap.sh"))
   cpSync(join(workbox, "systemd"), join(box, "systemd"), { recursive: true })
   for (const file of ["hunk-config.toml", "backup.env", "zshenv", "zshrc", "herdr-config.toml"])
-    cpSync(join(workbox, file), join(box, file))
+    cpSync(matchingInput("../workbox/{hunk-config.toml,backup.env,zshenv,zshrc,herdr-config.toml}", `../workbox/${file}`), join(box, file))
   for (const name of readdirSync(join(workbox, "bin"))) stub(join(box, "bin"), name, log)
   stub(join(tree, "claude", "mods", "fx-ui"), "install.sh", log)
   // The real install-bin.sh: it installs the stubbed bin/ into ~/.local/bin, as bootstrap did itself before.
@@ -537,7 +538,7 @@ esac`)
   let archives: string[] = []
   if (existsSync(uploaded)) {
     await run(["tar", "-xzf", uploaded, "-C", out], { PATH: "/usr/bin:/bin" })
-    archives = readdirSync(join(out, "snapshot", "archives")).sort()
+    archives = readScratchDirectorySync(join(out, "snapshot", "archives")).sort()
   }
   return { ...result, archives, list: (name: string) => list(join(out, "snapshot", "archives", name)) }
 }

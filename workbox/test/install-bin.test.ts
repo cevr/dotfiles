@@ -3,15 +3,17 @@
 // ~/.zshrc are the verified build's, whatever the live checkout holds. It runs here in a scratch HOME on a
 // copy of the script in a scratch tree; nothing touches the real host. INSTALL_BIN_UNDER_TEST names another
 // copy of the script to run (an older one, to see these cases red against it).
+// @reads ../workbox/install-bin.sh ../workbox/bin/workbox-check {../workbox/README.md,../linux/hetzner-workbox/RUNBOOK.md}
 import { afterAll, describe, expect, test } from "bun:test"
-import { closeSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, readSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
+import { closeSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync as readCheckoutFileSync, readSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
+import { externalInput, matchingInput, readScratchFileSync as readFileSync, readScratchLinkSync as readlinkSync, scratchInput } from "../../opencode/tests/read-path.ts"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 const scratch = mkdtempSync(join(tmpdir(), "install-bin-test-"))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
-const underTest = process.env.INSTALL_BIN_UNDER_TEST ?? join(import.meta.dir, "..", "install-bin.sh")
+const underTest = process.env.INSTALL_BIN_UNDER_TEST
 const workboxDir = join(import.meta.dir, "..")
 
 let n = 0
@@ -19,7 +21,8 @@ let n = 0
 const tree = (root: string, label: string, files: Record<string, string>) => {
   const workbox = join(root, label, "workbox")
   mkdirSync(join(workbox, "bin"), { recursive: true })
-  copyFileSync(underTest, join(workbox, "install-bin.sh"))
+  if (underTest === undefined) copyFileSync(join(workboxDir, "install-bin.sh"), join(workbox, "install-bin.sh"))
+  else copyFileSync(externalInput(underTest), join(workbox, "install-bin.sh"))
   for (const [path, text] of Object.entries(files)) writeFileSync(join(workbox, path), text)
   return workbox
 }
@@ -82,7 +85,7 @@ describe("install-bin.sh delivers the tree's shell files", () => {
     const old = `#!/bin/sh\n${"echo old\n".repeat(200)}`
     writeFileSync(installed, old)
     const before = statSync(installed).ino
-    const fd = openSync(installed, "r")
+    const fd = openSync(scratchInput(installed), "r")
     readSync(fd, Buffer.alloc(16), 0, 16, 0)
     expect(run(workbox, home).code).toBe(0)
     const rest = Buffer.alloc(old.length)
@@ -216,7 +219,7 @@ describe("install-bin.sh replaces each file whole", () => {
 // The health check a person runs is the installed build's (`workbox-check`, installed by install-bin.sh),
 // never the live checkout's copy of bootstrap.sh, which mirrors the Mac's base and can lag.
 describe("workbox-check runs the installed tree's bootstrap.sh --check", () => {
-  const check = join(workboxDir, "bin", "workbox-check")
+  const check = matchingInput("../workbox/bin/workbox-check")
 
   test("it runs the tree's copy with --check, and says so when the tree has none", () => {
     const home = join(scratch, `check-${n++}`)
@@ -234,8 +237,8 @@ describe("workbox-check runs the installed tree's bootstrap.sh --check", () => {
   })
 
   test("the README and the runbook name workbox-check, never the checkout's bootstrap.sh --check", () => {
-    for (const doc of [join(workboxDir, "README.md"), join(workboxDir, "..", "linux", "hetzner-workbox", "RUNBOOK.md")]) {
-      const text = readFileSync(doc, "utf8")
+    for (const doc of ["../workbox/README.md", "../linux/hetzner-workbox/RUNBOOK.md"]) {
+      const text = readCheckoutFileSync(matchingInput("{../workbox/README.md,../linux/hetzner-workbox/RUNBOOK.md}", doc), "utf8")
       expect({ doc, mirror: /dotfiles\/workbox\/bootstrap\.sh --check/.test(text), check: text.includes("workbox-check") }).toEqual({ doc, mirror: false, check: true })
     }
   })

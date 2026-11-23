@@ -3,11 +3,13 @@
 // /sys/fs/btrfs. The fstab is the workbox's own of 2026-11-19, whose UUID= lines for @home and @tmp failed the boot
 // (systemd-udevd is masked there, so /dev/disk/by-uuid never appears). Nothing here touches the real host.
 import { afterAll, describe, expect, test } from "bun:test"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+// @reads ../workbox/bin/workbox-rift-storage
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { matchingInput, readScratchDirectorySync as readdirSync, readScratchFileSync as readFileSync } from "../../opencode/tests/read-path.ts"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-const SCRIPT = join(import.meta.dir, "..", "bin", "workbox-rift-storage")
+const SCRIPT = matchingInput("../workbox/bin/workbox-rift-storage")
 const scratchRoot = realpathSync(mkdtempSync(join(tmpdir(), "rift-storage-test-")))
 afterAll(() => rmSync(scratchRoot, { recursive: true, force: true }))
 let count = 0

@@ -1,12 +1,14 @@
 // claude/bin/claude-daily-install, run each day by workbox/systemd/user/claude-daily.timer and on the Mac by
 // mac/launchd/com.cvr.claude-daily.plist. It runs here against a stand-in `claude` in a scratch HOME; nothing
 // touches the real host's Claude Code.
+// @reads ../claude/bin/claude-daily-install
 import { afterAll, describe, expect, test } from "bun:test"
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { matchingInput } from "../../opencode/tests/read-path.ts"
 
-const script = join(import.meta.dir, "..", "..", "claude", "bin", "claude-daily-install")
+const script = matchingInput("../claude/bin/claude-daily-install")
 const root = mkdtempSync(join(tmpdir(), "claude-daily-test-"))
 afterAll(() => rmSync(root, { recursive: true, force: true }))
 
