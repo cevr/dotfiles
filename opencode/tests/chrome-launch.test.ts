@@ -4,82 +4,94 @@
 // a scratch profile under a scratch run directory, never the owner's Chrome: on any free port (Chrome writes
 // DevToolsActivePort) and on a fixed port (Chrome writes none) the launch prints the endpoint of its own browser,
 // which answers there, and `stop` ends it; on a port another process holds the launch fails at once, naming it, and
-// that process keeps serving. Every browser is stopped by the pid the launch printed.
-import { afterAll, describe, expect, test } from "bun:test"
-import { readdirSync } from "node:fs"
-import { join } from "node:path"
-import { parentEnv, scratch } from "./scratch.ts"
+// that process keeps serving. Every browser a launch prints is stopped by its pid when its scope ends, whatever
+// failed. With no Playwright Chrome on the host the launch fails, saying so (`bunx playwright install chromium`).
+import * as BunServices from "@effect/platform-bun/BunServices"
+import { serve, spawnSync } from "bun"
+import { Effect, FileSystem, Path, Schema, Stream } from "effect"
+import { describe, expect, it } from "effect-bun-test"
+import { FetchHttpClient, HttpClient } from "effect/http"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { Launched } from "../scripts/chrome.ts"
 
-const SCRIPT = join(import.meta.dir, "../scripts/chrome.ts")
-const HOME = parentEnv.HOME ?? ""
-const CACHE = parentEnv.PLAYWRIGHT_BROWSERS_PATH ?? (process.platform === "darwin" ? `${HOME}/Library/Caches/ms-playwright` : `${HOME}/.cache/ms-playwright`)
-const installed = readdirSync(CACHE, { withFileTypes: true }).some((entry) => /^chromium[-_]/.test(entry.name))
-if (!installed) console.warn(`tests/chrome-launch.test.ts: skipped. No Playwright Chrome in ${CACHE}.`)
+const decodeLaunched = Schema.decodeUnknownSync(Schema.fromJsonString(Launched))
+const decodeVersion = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({ webSocketDebuggerUrl: Schema.String })))
 
-/** Pids a launch printed and no stop has ended yet: stopped by `stop` after the file, whatever failed. */
-const started = new Set<number>()
+const text = (stream: Stream.Stream<Uint8Array, unknown>) => stream.pipe(Stream.decodeText(), Stream.mkString)
 
-const cli = (args: ReadonlyArray<string>) => {
-  const run = Bun.spawnSync([process.execPath, SCRIPT, ...args], { env: { ...parentEnv, PLAYWRIGHT_BROWSERS_PATH: CACHE }, stdin: "ignore", timeout: 40_000 })
-  return { code: run.exitCode, stdout: run.stdout.toString(), stderr: run.stderr.toString() }
-}
+/** scripts/chrome.ts run with `args`, its exit code and output. */
+const cli = (args: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path
+    const script = yield* path.fromFileUrl(new URL("../scripts/chrome.ts", import.meta.url))
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+    const child = yield* spawner.spawn(ChildProcess.make("bun", [script, ...args], { extendEnv: true, stdin: "ignore", forceKillAfter: "5 seconds" }))
+    const [stdout, stderr] = yield* Effect.all([text(child.stdout), text(child.stderr)], { concurrency: 2 })
+    return { code: Number(yield* child.exitCode), stdout, stderr }
+  }).pipe(Effect.scoped)
 
-const Launched = (stdout: string) => JSON.parse(stdout) as { endpoint: string; port: number; pid: number; folder: string; binary: string }
+/** A launch that succeeded, stopped by its pid when the scope ends unless the test stopped it first. */
+const launched = (args: ReadonlyArray<string>) =>
+  Effect.acquireRelease(
+    Effect.gen(function* () {
+      const run = yield* cli(["launch", ...args])
+      expect([run.code, run.stderr]).toEqual([0, ""])
+      return decodeLaunched(run.stdout.trim())
+    }),
+    (record) => Effect.ignore(Effect.when(cli(["stop", String(record.pid)]), Effect.sync(() => running(record.pid)))),
+  )
 
-const stop = (pid: number) => {
-  const ended = cli(["stop", String(pid)])
-  if (ended.code === 0) started.delete(pid)
-  return ended
-}
+/** Whether `pid` runs, by ps; its command line. */
+const commandOf = (pid: number) => spawnSync(["ps", "-ww", "-o", "command=", "-p", String(pid)], { stdout: "pipe", stderr: "ignore" }).stdout.toString().trim()
+const running = (pid: number) => commandOf(pid) !== ""
 
-afterAll(() => {
-  for (const pid of started) stop(pid)
+/** What answers on loopback `port` at `route`, as text. */
+const get = (port: number, route: string) =>
+  Effect.gen(function* () {
+    const client = yield* HttpClient.HttpClient
+    return yield* (yield* client.get(`http://127.0.0.1:${port}${route}`)).text
+  }).pipe(Effect.provide(FetchHttpClient.layer))
+
+/** A free loopback port: one the system hands out, released again. */
+const freePort = Effect.gen(function* () {
+  const server = serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") })
+  const port = Number(server.port)
+  yield* Effect.promise(() => server.stop(true))
+  return port
 })
 
-/** What the browser at `port` answers on `/json/version`, and the argv `ps` reads of `pid`. */
-const check = async (port: number, pid: number) => {
-  const version = (await (await fetch(`http://127.0.0.1:${port}/json/version`)).json()) as { webSocketDebuggerUrl: string }
-  const argv = Bun.spawnSync(["ps", "-ww", "-o", "command=", "-p", String(pid)]).stdout.toString()
-  return { url: version.webSocketDebuggerUrl, argv }
-}
+describe("a real Chrome through scripts/chrome.ts", () => {
+  it.scopedLive.layer(BunServices.layer)("on any free port and on a fixed one, it prints its own browser's endpoint, keychain flags on, and stop ends it", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "chrome-launch-" })
+      for (const asked of [0, yield* freePort]) {
+        const record = yield* launched(["--dir", dir, "--port", String(asked), "--", "--disable-background-networking"])
+        if (asked > 0) expect(record.port).toBe(asked)
+        expect(record.folder.startsWith(`${dir}/chrome-`)).toBe(true)
+        expect(decodeVersion(yield* get(record.port, "/json/version")).webSocketDebuggerUrl).toBe(record.endpoint)
+        expect(commandOf(record.pid)).toContain(`--user-data-dir=${record.folder}/profile --remote-debugging-port=${asked} --use-mock-keychain --password-store=basic`)
+        expect((yield* cli(["stop", String(record.pid)])).code).toBe(0)
+        expect(running(record.pid)).toBe(false)
+      }
+      expect(yield* fs.readDirectory(dir)).toEqual([])
+    }),
+  )
 
-const freePort = async () => {
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null) })
-  const port = Number(server.port)
-  await server.stop(true)
-  return port
-}
-
-describe.skipIf(!installed)("a real Chrome through scripts/chrome.ts", () => {
-  test("on any free port and on a fixed one, it prints its own browser's endpoint, keychain flags on, and stop ends it", async () => {
-    using dir = scratch("chrome-launch-")
-    for (const asked of [0, await freePort()]) {
-      const launched = cli(["launch", "--dir", dir.path, "--port", String(asked), "--", "--disable-background-networking"])
-      expect([asked, launched.code, launched.stderr]).toEqual([asked, 0, ""])
-      const record = Launched(launched.stdout)
-      started.add(record.pid)
-      if (asked > 0) expect(record.port).toBe(asked)
-      expect(record.folder.startsWith(`${dir.path}/chrome-`)).toBe(true)
-      const seen = await check(record.port, record.pid)
-      expect(seen.url).toBe(record.endpoint)
-      expect(seen.argv).toContain(`--user-data-dir=${record.folder}/profile --remote-debugging-port=${asked} --use-mock-keychain --password-store=basic`)
-      expect(stop(record.pid).code).toBe(0)
-      expect(Bun.spawnSync(["ps", "-p", String(record.pid)]).exitCode).not.toBe(0)
-    }
-    expect(readdirSync(dir.path)).toEqual([])
-  }, 90_000)
-
-  test("on a port another process holds, it fails at once naming that process, starts no browser, and the holder keeps serving", async () => {
-    using dir = scratch("chrome-held-")
-    const holder = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("holder") })
-    try {
-      const refused = cli(["launch", "--dir", dir.path, "--port", String(holder.port)])
+  it.scopedLive.layer(BunServices.layer)("on a port another process holds, it fails at once naming that process, starts no browser, and the holder keeps serving", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "chrome-held-" })
+      const holder = yield* Effect.acquireRelease(
+        Effect.sync(() => serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("holder") })),
+        (server) => Effect.promise(() => server.stop(true)),
+      )
+      const port = Number(holder.port)
+      const refused = yield* cli(["launch", "--dir", dir, "--port", String(port)])
       expect(refused.code).toBe(1)
-      expect(refused.stderr).toContain(`port ${holder.port} is in use by pid ${process.pid}`)
-      expect(readdirSync(dir.path)).toEqual([])
-      expect(await (await fetch(`http://127.0.0.1:${holder.port}/`)).text()).toBe("holder")
-    } finally {
-      await holder.stop(true)
-    }
-  }, 30_000)
+      expect(refused.stderr).toContain(`port ${port} is in use by pid ${process.pid}`)
+      expect(yield* fs.readDirectory(dir)).toEqual([])
+      expect(yield* get(port, "/")).toBe("holder")
+    }),
+  )
 })
