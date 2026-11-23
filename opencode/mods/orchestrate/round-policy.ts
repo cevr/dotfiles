@@ -963,10 +963,14 @@ export const due = (policy: Policy, record: ItemRecord): Decoded<Due> => {
   const faults = recordFaults(record)
   if (faults.length > 0) return fail(`${record.id}: ${faults.join("; ")}`)
   const named = policy.fields.map((field) => field.id)
-  const rows = decide(policy, truths([record.facts]))
-  if (rows.length === 0) return fail(`${record.id}: no row is true`)
-  const [row] = rows
-  return ok({ item: record.id, rule: row.id, state: row.state, label: row.label, fields: record.fields.filter((field) => named.includes(field.field)) })
+  const rows = decide(policy, truths([record.facts])).map((row) => ({ item: record.id, rule: row.id, state: row.state, label: row.label, fields: record.fields.filter((field) => named.includes(field.field)) }))
+  return firstFound(rows, `${record.id}: no row is true`)
+}
+
+/** The first of `items`, or `why` when there is none. */
+const firstFound = <A>(items: ReadonlyArray<A>, why: string): Decoded<A> => {
+  for (const one of items) return ok(one)
+  return fail(why)
 }
 
 const HAND_BACK_KEYS: ReadonlyArray<string> = ["item", "rule", "label", "fields"]
@@ -1029,10 +1033,8 @@ export const outcome = (policy: Policy, stop: Stop, states: ReadonlyArray<State>
   const bad = illFormed(policy.role, stop, states)
   if (bad.length > 0) return fail(bad.join(""))
   const fields = policy.stops.filter((one) => one.stop === stop).flatMap((one) => one.fields.map((field) => field.id))
-  const rules = firstOf(policy.verdicts, (one) => holdsFor(one.when, states))
-  if (rules.length === 0) return fail(`no verdict rule holds for ${policy.role}`)
-  const [rule] = rules
-  return ok({ verdict: rule.verdict, rule: rule.id, writes: rule.writes, fields })
+  const rules = firstOf(policy.verdicts, (one) => holdsFor(one.when, states)).map((rule) => ({ verdict: rule.verdict, rule: rule.id, writes: rule.writes, fields }))
+  return firstFound(rules, `no verdict rule holds for ${policy.role}`)
 }
 
 /** A stop evidence field's recorded value. */
