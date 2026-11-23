@@ -6,6 +6,7 @@ import { AdmissionUnavailable } from "@dotfiles/opencode-guard/admission"
 import { Counter, OpaqueId, Purpose, Request } from "@dotfiles/opencode-guard/admission-wire"
 import { argvWidth, joinWidth, readWidth } from "@dotfiles/opencode-guard/check-demand"
 import { Holder } from "@dotfiles/opencode-guard/host-resources"
+import { argvPurpose } from "@dotfiles/opencode-guard/launcher"
 import * as Admission from "./admission.ts"
 
 const help = `host-admit v1
@@ -124,7 +125,8 @@ const check = Effect.fn("HostAdmit.check")(function* (host: Host, args: Readonly
   const delimiter = rest.indexOf("--")
   const payload = rest.slice(delimiter + 1)
   if (action !== "run" || delimiter < 0 || payload.length === 0 || delimiter % 2 !== 0) return yield* bad()
-  let purpose = purposeOf("check")
+  const inferred = argvPurpose(payload)
+  let purpose = purposeOf(inferred)
   let width = argvWidth(payload, env.GOMAXPROCS)
   const seen = new Set<string>()
   for (let i = 0; i < delimiter; i += 2) {
@@ -140,6 +142,7 @@ const check = Effect.fn("HostAdmit.check")(function* (host: Host, args: Readonly
     } else return yield* bad()
   }
   if (Option.isNone(purpose)) return yield* bad()
+  if (inferred !== "check" && purpose.value !== inferred) return yield* bad()
   return yield* host.run({ purpose: purpose.value, width }, payload)
 })
 

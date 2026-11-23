@@ -69,9 +69,9 @@ export const encodeProgram = Schema.encodeSync(Schema.fromJsonString(Schema.Stru
  * An allowed call must launch once; denying every request cannot pass. */
 export const shellLaunchLaws = (driver: ShellLaunchDriver, equal: (actual: ReadonlyArray<string>, expected: ReadonlyArray<string>) => void) =>
   Effect.gen(function* () {
-    const first = { id: "shell-a", owner: "session-a", attempt: 1 }
-    const second = { id: "shell-b", owner: "session-b", attempt: 2 }
-    const denied = { id: "shell-rejected", owner: "session-a", attempt: 3 }
+    const first = { id: "shell-a", owner: "session-a", ownerEpoch: 1, attempt: 21 }
+    const second = { id: "shell-b", owner: "session-b", ownerEpoch: 2, attempt: 21 }
+    const denied = { id: "shell-rejected", owner: "session-a", ownerEpoch: 1, attempt: 23 }
     yield* driver.permission(denied, "pending", "model")
     yield* driver.permission(denied, "denied", "model")
     yield* driver.bind(denied, "rejected")
@@ -104,11 +104,11 @@ export const shellLaunchLaws = (driver: ShellLaunchDriver, equal: (actual: Reado
       "shell-b:stdout:literal input: two words", "shell-b:exit:SIGINT",
     ])
     yield* driver.finish(second, "scope-b", "gone")
-    const cancelled = { id: "shell-c", owner: "session-c", attempt: 4 }
-    const uncertain = { id: "shell-d", owner: "session-d", attempt: 5 }
-    const next = { id: "shell-e", owner: uncertain.owner, attempt: 6 }
-    const missing = { id: "shell-lost", owner: "session-c", attempt: 7 }
-    const rejected = { id: "shell-placement", owner: "session-placement", attempt: 8 }
+    const cancelled = { id: "shell-c", owner: "session-c", ownerEpoch: 4, attempt: 1 }
+    const uncertain = { id: "shell-d", owner: "session-d", ownerEpoch: 5, attempt: 1 }
+    const next = { id: "shell-e", owner: uncertain.owner, ownerEpoch: 6, attempt: 1 }
+    const missing = { id: "shell-lost", owner: "session-c", ownerEpoch: 4, attempt: 2 }
+    const rejected = { id: "shell-placement", owner: "session-placement", ownerEpoch: 8, attempt: 1 }
     const base = yield* driver.snapshot()
     equal(base.shells, ["shell-a", "shell-b"])
     yield* driver.permission(cancelled, "allowed", "model")
@@ -150,7 +150,7 @@ export const shellLaunchLaws = (driver: ShellLaunchDriver, equal: (actual: Reado
       "shell-d:owner:unknown", "shell-d:owner:handoff", "shell-d:owner:terminal", "shell-e:authorized",
       "shell-d:ended:17", "shell-d:drained", "shell-e:bound", "shell-e:ended:0", "shell-e:drained",
     ])
-    const interrupted = { id: "shell-interrupted", owner: "session-interrupted", attempt: 9 }
+    const interrupted = { id: "shell-interrupted", owner: "session-interrupted", ownerEpoch: 9, attempt: 1 }
     yield* driver.permission(interrupted, "allowed", "native")
     yield* driver.bind(interrupted, "scope-interrupted")
     const interruptedPin = yield* driver.snapshot()

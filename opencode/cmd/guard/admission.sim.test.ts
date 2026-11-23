@@ -50,7 +50,8 @@ seeded("the shell launch contract permits only one bound spawn past permission, 
     const offline = new Set<string>()
     const deferredWake = new Map<string, string>()
     const record = (shell: ShellFact["shell"], event: string) => { journal.push(`${shell.id}:${event}`) }
-    const incarnation = (shell: ShellFact["shell"]) => `${shell.owner}:${shell.attempt}`
+    const incarnation = (shell: ShellFact["shell"]) => `${shell.owner}:${shell.ownerEpoch}`
+    const intent = (shell: ShellFact["shell"]) => `${incarnation(shell)}:${shell.attempt}`
     const execute = (shell: ShellFact["shell"], program: typeof shellProgram) => {
       bound.add(shell.id)
       launched.push(shell.id)
@@ -63,7 +64,7 @@ seeded("the shell launch contract permits only one bound spawn past permission, 
       const { shell } = fact
       const affected = next.changes.find((row) => row.request.requestId === shell.id)
       if (fact.kind === "authorized" && affected && !known.has(shell.id)) {
-        known.set(shell.id, incarnation(shell))
+        known.set(shell.id, intent(shell))
         record(shell, "authorized")
       }
       if (fact.kind === "bound" && affected?.state === "running" && !bound.has(shell.id)) {
@@ -75,8 +76,8 @@ seeded("the shell launch contract permits only one bound spawn past permission, 
     })
     const cancel = (shell: ShellFact["shell"]) => Effect.sync(() => {
       const row = Object.values(state.leases).find(({ request }) => request.requestId === shell.id)
-      if (!row || known.get(shell.id) !== incarnation(shell)) return
-      state = transition(state, { op: "cancel", id: row.id, owner: shell.owner }, supply({ cores: 3 })).state
+      if (!row || known.get(shell.id) !== intent(shell)) return
+      state = transition(state, { op: "cancel", id: row.id, owner: row.owner }, supply({ cores: 3 })).state
       record(shell, "cancelled")
     })
     const driver: ShellLaunchDriver = {
@@ -87,7 +88,7 @@ seeded("the shell launch contract permits only one bound spawn past permission, 
       bind: (shell, binding) => apply({ kind: "bound", shell, binding }),
       owner: (shell, state) => {
         const observed = Effect.sync(() => {
-          if (known.get(shell.id) !== incarnation(shell)) return
+          if (known.get(shell.id) !== intent(shell)) return
           record(shell, `owner:${state}`)
           if (state === "terminal") retired.add(incarnation(shell))
         })
@@ -118,7 +119,7 @@ seeded("the shell launch contract permits only one bound spawn past permission, 
         else if (bound.has(shell.id)) offline.add(shell.id)
       }),
       complete: (shell, exit) => Effect.sync(() => {
-        if (!bound.has(shell.id) || ended.has(shell.id) || known.get(shell.id) !== incarnation(shell)) return
+        if (!bound.has(shell.id) || ended.has(shell.id) || known.get(shell.id) !== intent(shell)) return
         ended.add(shell.id)
         const result = outcome(exit)
         record(shell, `ended:${result}`)

@@ -158,6 +158,15 @@ it.scopedLive("the standalone API binds request identity to the caller, not the 
     const replay = yield* invoke(watch)
     expect(replay).toEqual(cancel)
     expect(yield* invoke(watch)).toEqual(replay)
+    const { width: _width, ...legacyDemand } = draft.demand
+    const legacy = { ...draft, requestId: "legacy-width", demand: legacyDemand }
+    const held = yield* decode(Reply)((yield* invoke(req, json(legacy))).out)
+    expect(held.state).toBe("queued")
+    expect(held.id).not.toBeNull()
+    const noWidth = yield* invoke(["lease", "run", "--id", held.id ?? "missing", "--", "/bin/echo", "must-not-exec"])
+    expect(noWidth.code).toBe(2)
+    expect(noWidth.out).toContain(`"reason":"unqualified"`)
+    expect(noWidth.out).not.toContain("must-not-exec")
   }).pipe(Effect.provide(BunServices.layer)),
 )
 

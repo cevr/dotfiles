@@ -76,6 +76,7 @@ export interface ShellIdentity {
   readonly id: string
   readonly attempt: number
   readonly owner: string
+  readonly ownerEpoch: number
 }
 
 export type ShellFact =
@@ -87,17 +88,18 @@ export type ShellFact =
 
 export const shellFact = (state: Admission, fact: ShellFact): Option.Option<Input> => {
   const { shell } = fact
+  const owner = `${shell.owner}:${shell.ownerEpoch}:${shell.attempt}`
   if (fact.kind === "authorized") return Option.some({
-    op: "request", owner: shell.owner,
-    request: { ...fact.request, requestId: shell.id, principal: { kind: "native-shell", scopeId: shell.owner, epoch: shell.attempt } },
+    op: "request", owner,
+    request: { ...fact.request, requestId: shell.id, principal: { kind: "native-shell", scopeId: shell.owner, epoch: shell.ownerEpoch } },
   })
   const row = Object.values(state.leases).find((row) =>
-    row.owner === shell.owner && row.request.requestId === shell.id &&
-    row.request.principal.kind === "native-shell" && row.request.principal.epoch === shell.attempt)
+    row.owner === owner && row.request.requestId === shell.id &&
+    row.request.principal.kind === "native-shell" && row.request.principal.epoch === shell.ownerEpoch)
   if (!row) return Option.none()
-  if (fact.kind === "bound") return Option.some({ op: "claim", id: row.id, owner: row.owner, generation: row.generation, binding: fact.binding })
+  if (fact.kind === "bound") return Option.some({ op: "claim", id: row.id, owner, generation: row.generation, binding: fact.binding })
   if (fact.kind === "terminal-owner") return Option.some({
-    op: "observe", id: row.id, owner: row.owner, generation: row.generation, liveness: "gone", evidence: fact.evidence,
+    op: "observe", id: row.id, owner, generation: row.generation, liveness: "gone", evidence: fact.evidence,
   })
   if (fact.kind === "ended" && fact.scope === "gone") return Option.some({
     op: "drain", id: row.id, generation: row.generation, binding: fact.binding, evidence: fact.evidence,

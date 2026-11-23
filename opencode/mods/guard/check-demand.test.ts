@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { argvWidth, demandOnVolume } from "./check-demand.ts"
-import { admissionLauncher, shellCheck } from "./launcher.ts"
+import { admissionLauncher, argvPurpose, shellCheck } from "./launcher.ts"
 
 test("one table reads literal widths, leaves payload untouched, and holds unrecognized or unbounded options", () => {
   const cases = [
@@ -38,4 +38,6 @@ test("classes carry their typed width and canonical memory, trace and VM budgets
   expect(demandOnVolume(shellCheck("limactl shell demo"), volume)).toMatchObject({ memoryBytes: 8 * 2 ** 30, keys: ["vm"] })
   expect(demandOnVolume(shellCheck("du -hs ."), volume)).toMatchObject({ memoryBytes: 2 * 2 ** 30, keys: ["trace"] })
   expect(shellCheck("bun scripts/receipt.ts").purpose).toBe("exclusive-check")
+  expect(argvPurpose(["/usr/bin/du", "-hs", "path with a space"])).toBe("inventory")
+  expect(argvPurpose(["/bin/sh", "-c", "bun scripts/accept.ts"])).toBe("land-check")
 })
