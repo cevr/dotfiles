@@ -9,20 +9,17 @@
 // subagents, deepest first, then on it, each waited on to settle: it ends the
 // session's turn, the background work it owns (its shells) and its queued
 // input, and keeps it from waking on a notice until it is given a new task.
-// The host settles a running subagent as cancelled: its parent hears it once,
-// in a subagent notice whose state is `cancelled`, and never that it finished,
-// even when it is woken later. A second stop changes nothing.
+// The host owns cancellation and report delivery. An unconfirmed stop is
+// not an observed exit, and stopping a local child cannot stop remote work.
 //
-// State, from the host's session: `running` while its newest execution has
-// not ended (or before its first one), else by that execution's outcome:
-// `done` (succeeded), `failed`, or `stopped` (interrupted).
+// The typed observation preserves phases the historical state enum cannot
+// express. Its compatibility projection never makes a live phase terminal.
 import { Duration, Effect, Option, Schema } from "effect"
+import { Observation, Phase, type Outcome } from "./child-lifecycle.ts"
+export type { Outcome } from "./child-lifecycle.ts"
 
 export const State = Schema.Literals(["running", "done", "stopped", "failed"])
 export type State = typeof State.Type
-
-/** A session's last execution's outcome, as the host records it. */
-export type Outcome = "succeeded" | "failed" | "interrupted"
 
 /** A session as the subagents tool reads it. Times are epoch ms. */
 export interface Session {
@@ -33,6 +30,7 @@ export interface Session {
   readonly outcome: Option.Option<Outcome>
   readonly busy: Option.Option<number>
   readonly idle: Option.Option<number>
+  readonly observation?: Observation
 }
 
 /** The host's sessions: read one, list one's children, stop one, its last words. */
@@ -40,8 +38,9 @@ export interface Host {
   readonly get: (sessionID: string) => Effect.Effect<Option.Option<Session>>
   readonly children: (sessionID: string) => Effect.Effect<ReadonlyArray<Session>>
   /** Ends the session's turn, its background work and queued input, and resolves once it settled; whether a turn ran. */
-  readonly stop: (sessionID: string) => Effect.Effect<boolean>
+  readonly stop: (sessionID: string) => Effect.Effect<Option.Option<boolean>>
   readonly lastWords: (sessionID: string) => Effect.Effect<string>
+  readonly stopUncertain?: (sessionID: string, observed: Option.Option<Observation>) => Effect.Effect<void>
 }
 
 /** One subagent as the tool answers it; `note` says what the call did when it did something worth saying, else "". */
@@ -52,6 +51,7 @@ export const View = Schema.Struct({
   state: State,
   message: Schema.String,
   note: Schema.String,
+  observation: Schema.optionalKey(Observation),
 })
 export interface View extends Schema.Schema.Type<typeof View> {}
 
@@ -77,19 +77,28 @@ const busy = (session: Session) => Option.exists(session.busy, (busyAt) => Optio
 
 /** A session's state: running, else what its last execution came to; one that never ran yet is about to. */
 export const stateOf = (session: Session): State => {
+  const phase = session.observation?.phase
+  if (phase) {
+    if (phase._tag === "Settled") return OUTCOMES[phase.outcome]
+    return "running"
+  }
   if (busy(session)) return "running"
   return Option.match(session.outcome, { onNone: (): State => "running", onSome: (outcome) => OUTCOMES[outcome] })
 }
 
 /** The words of a view of `session` with its last words and a note. */
-const viewOf = (session: Session, message: string, note: string): View => ({
-  sessionID: session.id,
-  description: session.description,
-  agent: session.agent,
-  state: stateOf(session),
-  message: message.slice(-MAX_MESSAGE_CHARS),
-  note,
-})
+const viewOf = (session: Session, message: string, note: string): View => {
+  const view = {
+    sessionID: session.id,
+    description: session.description,
+    agent: session.agent,
+    state: stateOf(session),
+    message: message.slice(-MAX_MESSAGE_CHARS),
+    note,
+  }
+  if (session.observation) return { ...view, observation: session.observation }
+  return view
+}
 
 /** The subagents tool's reads and its stop, over the host's sessions. */
 export const make = (host: Host) => {
@@ -106,9 +115,10 @@ export const make = (host: Host) => {
   })
 
   /** The session as it stands now, else as it was read. */
-  const fresh = (session: Session) => Effect.map(host.get(session.id), Option.getOrElse(() => session))
-
-  const view = (session: Session, note: string) => Effect.map(host.lastWords(session.id), (words) => viewOf(session, words, note))
+  const unobserved = (session: Session): Session => ({
+    ...session,
+    observation: { version: 1, child: session.id, phase: Phase.cases.Unknown.make({}) },
+  })
 
   /** Every descendant of `root`, breadth first, up to `MAX_TREE`. */
   const below = Effect.fn("Subagents.below")(function* (root: string) {
@@ -124,12 +134,17 @@ export const make = (host: Host) => {
     return found.slice(0, MAX_TREE)
   })
 
-  /** Stops the session, whether or not its turn runs (its shells may), up to SETTLE; whether a turn ran (or still settles). */
-  const halt = (session: Session) =>
-    host.stop(session.id).pipe(
-      Effect.timeoutOption(SETTLE),
-      Effect.map(Option.getOrElse(() => true)),
-    )
+  /** Stops the session even if only its background work currently runs. */
+  const halt = Effect.fn("Subagents.halt")(function* (caller: string, target: string) {
+    const inScope = yield* Effect.option(own(caller, target))
+    if (Option.isNone(inScope)) return "unknown"
+    const session = inScope.value
+    const stopped = yield* host.stop(session.id).pipe(Effect.timeoutOption(SETTLE), Effect.map(Option.flatten))
+    if (Option.contains(stopped, true)) return "stopped"
+    if (Option.contains(stopped, false)) return "idle"
+    if (host.stopUncertain) yield* host.stopUncertain(session.id, Option.fromUndefinedOr(session.observation))
+    return "unknown"
+  })
 
   return {
     /** The caller's own subagents, newest first. */
@@ -140,7 +155,9 @@ export const make = (host: Host) => {
 
     /** One of the caller's subagents, with its last words. */
     get: Effect.fn("Subagents.get")(function* (caller: string, target: string) {
-      return yield* view(yield* own(caller, target), "")
+      yield* own(caller, target)
+      const words = yield* host.lastWords(target)
+      return viewOf(yield* own(caller, target), words, "")
     }),
 
     /**
@@ -150,14 +167,20 @@ export const make = (host: Host) => {
     stop: Effect.fn("Subagents.stop")(function* (caller: string, target: string) {
       const session = yield* own(caller, target)
       const tree = yield* below(session.id)
-      const nested = (yield* Effect.forEach(tree.toReversed(), halt)).filter(Boolean).length
-      const ran = yield* halt(session)
-      const now = yield* fresh(session)
+      const nested = (yield* Effect.forEach(tree.toReversed(), (each) => halt(caller, each.id))).filter((result) => result === "stopped").length
+      const ran = yield* halt(caller, target)
+      const stillOwned = yield* Effect.option(own(caller, target))
+      const words = yield* Option.match(stillOwned, { onNone: () => Effect.succeed(""), onSome: () => host.lastWords(target) })
+      const verified = yield* Effect.option(own(caller, target))
+      let now = Option.getOrElse(verified, () => unobserved(session))
+      if (ran === "unknown" && !host.stopUncertain) now = unobserved(now)
       const notes: Array<string> = []
-      if (ran) notes.push("stopped")
+      if (ran === "stopped") notes.push("stopped")
+      else if (ran === "unknown") notes.push("stop not confirmed")
+      else if (now.observation?.phase._tag === "Latched") notes.push("still latched; cancel with wake_cancel")
       else notes.push(`it was not running (${stateOf(now)})`)
       if (nested > 0) notes.push(`stopped ${nested} of its own subagents too`)
-      return yield* view(now, notes.join("; "))
+      return viewOf(now, Option.getOrElse(Option.as(verified, words), () => ""), notes.join("; "))
     }),
   }
 }

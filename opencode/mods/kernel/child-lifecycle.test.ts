@@ -73,3 +73,14 @@ test("persisted points cannot authenticate a terminal across an unobserved inter
   expect(observe(seed, snap({ running: true }), false).phase._tag).toBe("Running")
   expect(observe(seed, snap(), false).phase._tag).toBe("Unknown")
 })
+
+test("a monotone unread marker does not outrank a durable point; a different snapshot start invalidates it", () => {
+  const seed = evolve(evolve(initial(child, parent), start(1)), end(2, "failed"))
+  const agreed = observe(seed, snap({ busyAt: 100, idleAt: 105, outcome: "failed" }), true)
+  expect(agreed.phase).toMatchObject({ terminal: point(2) })
+  const newer = observe(seed, snap({ busyAt: 101, idleAt: 105, outcome: "failed", running: true }), true)
+  expect(newer.phase._tag).toBe("Running")
+  expect(newer).not.toHaveProperty("started")
+  const disputed = observe(seed, snap({ busyAt: 100, idleAt: 105, outcome: "succeeded" }), true)
+  expect(disputed.phase._tag).toBe("Unknown")
+})

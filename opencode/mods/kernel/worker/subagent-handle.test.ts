@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Deferred, Effect, Schema } from "effect"
+import { Phase } from "../child-lifecycle.ts"
 import type { Json } from "../frame.ts"
 import { Workers, type Cell } from "../service.ts"
 import { KernelSessionId } from "../session.ts"
@@ -75,6 +76,34 @@ for (const order of orders) {
     })),
   )
 }
+
+test("a later-issued read cannot displace a newer revision of a live handle", () =>
+  Effect.runPromise(Effect.gen(function* () {
+    const olderReply = yield* Deferred.make<Json>()
+    const newerReply = yield* Deferred.make<Json>()
+    const replies = [newerReply, olderReply].values()
+    const live = yield* Effect.promise(() => runSubagent(ask, (tool) => {
+      if (tool === "subagent") return Effect.runPromise(Effect.succeed({ sessionID: "ses_c", status: "running" }))
+      const reply = replies.next()
+      if (!reply.done) return Effect.runPromise(Deferred.await(reply.value))
+      return Effect.runPromise(Effect.fail("unexpected extra read"))
+    }))
+    const refresh = live.refresh()
+    const read = live.read()
+    yield* Deferred.succeed(newerReply, { subagents: [{
+      ...view("running", "", "current work"),
+      observation: { version: 1, child: "ses_c", revision: 5, phase: Phase.cases.Continuing.make({ on: "Shell" }) },
+    }] })
+    yield* Effect.promise(() => refresh)
+    yield* Deferred.succeed(olderReply, { subagents: [{
+      ...view("failed", "", "old words"),
+      observation: { version: 1, child: "ses_c", revision: 4, phase: Phase.cases.Settled.make({ outcome: "failed", cause: "PolicyDenied" }) },
+    }] })
+    expect(yield* Effect.promise(() => read)).toBe(live)
+    expect([live.state, live.message, live.observation?.revision]).toEqual(["running", "current work", 5])
+    expect(live.observation?.phase._tag).toBe("Continuing")
+  })),
+)
 
 describe("a cell's subagent handle", () => {
   test("starts a subagent as a live handle whose methods call the subagents tool with its sessionID; a restart keeps its data and handle() rebuilds it", () =>

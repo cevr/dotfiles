@@ -129,7 +129,7 @@ export const observe = (state: Projection, snapshot: Snapshot, current: boolean)
     phase: phaseOf(state, snapshot, current, applicable),
   }
   if (!applicable) return base
-  const inRun = noted && noted.point.seq > pointSeq(start)
+  const inRun = noted && noted.point.seq > pointSeq(start) && base.phase._tag !== "Settled"
   return { ...base, ...startFields(start), ...diagnosticFields(noted, inRun) }
 }
 
@@ -142,13 +142,20 @@ const diagnosticFields = (noted?: typeof Noted.Type, inRun?: boolean) => {
   return {}
 }
 
-// Snapshot time can disprove freshness. It cannot manufacture a point or
-// order two durable facts that have the same time.
+// The host's busy time uses the start's clock; idle is a monotone unread
+// marker and can advance past the terminal event within the same millisecond.
+// It cannot order equal-time events or mint a receipt.
 const snapshotIsNewer = (state: Projection, snapshot: Snapshot) =>
-  Option.exists(Option.fromUndefinedOr(state.segment), ({ point }) =>
-    Option.exists(Option.fromUndefinedOr(snapshot.busyAt), (time) => time > point.at) ||
-    Option.exists(Option.fromUndefinedOr(snapshot.idleAt), (time) => time > point.at),
+  Option.exists(Option.fromUndefinedOr(state.segment), ({ point, terminal }) =>
+    Option.exists(Option.fromUndefinedOr(snapshot.busyAt), (time) => time > point.at || Boolean(state.start && time !== state.start.at)) ||
+    incomparableOutcome(Option.fromUndefinedOr(terminal), snapshot, point.at),
   )
+
+const incomparableOutcome = (terminal: Option.Option<Terminal>, snapshot: Snapshot, at: number) => {
+  if (Option.isNone(terminal) || terminal.value._tag === "Shutdown") return false
+  if (!snapshot.outcome || snapshot.outcome === terminal.value.outcome) return false
+  return Option.exists(Option.fromUndefinedOr(snapshot.idleAt), (idle) => idle >= at)
+}
 
 const phaseOf = (state: Projection, snapshot: Snapshot, current: boolean, applicable: boolean): Phase => {
   if (snapshot.stopUncertain) return Phase.cases.Unknown.make({})
