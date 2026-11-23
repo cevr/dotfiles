@@ -1730,7 +1730,7 @@ const stampAdvance = (base: string, text: string) => {
  * (`cp: <path>: No such file or directory`) as a real cp's late read of it does. Any other cp is the real one. It
  * logs each clone (target, start, end); the reader returns them.
  */
-const slowCopy = (bin: string, delay: number) => {
+const slowCopy = (bin: string, delay: number, gate?: string) => {
   const log = join(bin, "..", "copies")
   exe(
     join(bin, "cp"),
@@ -1747,6 +1747,7 @@ const slowCopy = (bin: string, delay: number) => {
       "my @paths;",
       "File::Find::find({ no_chdir => 1, wanted => sub { push @paths, $File::Find::name } }, $from);",
       `sleep(${delay});`,
+      gate === undefined ? "" : `sleep(0.05) until -e '${gate}';`,
       "for my $p (@paths) {",
       "  my $dst = $to . substr($p, length $from);",
       "  my @st = lstat($p) or do { print STDERR \"cp: $p: No such file or directory\\n\"; exit 1 };",
@@ -1791,7 +1792,7 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
     const w = workBench(label, work)
     realFlock(w.bin)
     const warmed = join(w.dir, "warmed")
-    sh(w.app, w.env, "git", "config", "workrift.warm", `sleep 0.2; ${heldTest(w.app)}; printf '%s %s\\n' "$(pwd -P)" "$s" >>'${warmed}'`)
+    sh(w.app, w.env, "git", "config", "workrift.warm", `${heldTest(w.app)}; printf '%s %s\\n' "$(pwd -P)" "$s" >>'${warmed}'`)
     const warms = () => lines(existsSync(warmed) ? readFileSync(warmed, "utf8") : "")
     const head = (path: string) => sh(path, w.env, "git", "rev-parse", "HEAD").trim()
     return { w, warms, head }
@@ -1812,13 +1813,13 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
   const nowLine = `perl -MTime::HiRes=time -e 'printf "%.3f\\n", time'`
 
   test(
-    "seven creates at once after main's lock changed: each is in within seconds; one advance moves and installs the base after the copies, in the background, and warms nothing; every workspace ends installed for its own lock",
+    "seven creates at once after main's lock changed: each takes the base's lock while the first is still in its copy; one advance moves and installs the base after the copies, in the background, and warms nothing; every workspace ends installed for its own lock",
     async () => {
       const { w, head } = loaded("seven")
       const installs = join(w.dir, "installs")
       const baseWarms = join(w.dir, "base-warms")
-      sh(w.app, w.env, "git", "config", "workrift.install", `sleep 1; cat bun.lock >"$(git rev-parse --absolute-git-dir)/installed-lock"; pwd -P >>'${installs}'`)
-      sh(w.app, w.env, "git", "config", "workrift.warm", `sleep 3; pwd -P >>'${baseWarms}'`)
+      sh(w.app, w.env, "git", "config", "workrift.install", `cat bun.lock >"$(git rev-parse --absolute-git-dir)/installed-lock"; pwd -P >>'${installs}'`)
+      sh(w.app, w.env, "git", "config", "workrift.warm", `pwd -P >>'${baseWarms}'`)
       const read = (file: string) => lines(existsSync(file) ? readFileSync(file, "utf8") : "")
       w.push("main", { "bun.lock": "main-1\n" })
       expect(w.wr(w.app, "refresh").code).toBe(0)
@@ -1827,16 +1828,51 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       // The last advance is older than the window: the next create advances the base.
       stampAdvance(w.app, `${Math.floor(Date.now() / 1000) - 601}\n`)
       const branches = Array.from({ length: 7 }, (_, i) => `feat/p${i}`)
-      const ran = await spawnAll(w.app, w.env, branches.map((branch) => [SCRIPT, "create", branch]))
+      // Hold the first create inside work new while it still owns the base's shared lock.
+      // Every other create must reach "locked" without waiting for that copy to finish.
+      // A separate clone lock may serialize the actual file-copy step.
+      const inClone = join(w.dir, "first-in-clone")
+      const release = join(w.dir, "release-first-clone")
+      const wrap = join(w.bin, "work-ordered")
+      exe(wrap, [
+        "#!/bin/sh",
+        'case " $* " in',
+        '  *" new "*" feat-p0 "*)',
+        "    : >'" + inClone + "'",
+        "    until [ -e '" + release + "' ]; do sleep 0.05; done ;;",
+        "esac",
+        "exec '" + work + "' \"$@\"",
+        "",
+      ].join("\n"))
+      const children: Array<Grouped> = []
+      const create = (branch: string, i: number) => startGroup(
+        w.app, { ...w.env, WORK: wrap }, [SCRIPT, "create", branch], join(w.dir, "create-" + i + ".err"),
+      )
+      const results = async () => {
+        try {
+          children.push(create(branches[0]!, 0))
+          await until("the first create at work new under the shared base lock", () => existsSync(inClone), 120_000)
+          for (const [i, branch] of branches.entries()) if (i > 0) children.push(create(branch, i))
+          const locked = (i: number) => new RegExp("^workrift: create " + branches[i] + ": locked \\(\\d+s\\)$", "m").test(children[i]!.err())
+          await until("all seven creates holding the shared base lock before the first copy ended", () => children.every((_, i) => locked(i)), 120_000)
+          expect(children.map((_, i) => locked(i))).toEqual(branches.map(() => true))
+          expect(head(w.app)).not.toBe(landed)
+          writeFileSync(release, "")
+          return await Promise.all(children.map(async (child) => {
+            const ran = await within(child, 120_000)
+            if (!ran) throw new Error("create did not finish after release: " + child.err())
+            return ran
+          }))
+        } finally {
+          writeFileSync(release, "")
+          for (const child of children) if (alive(child.pid)) child.kill()
+        }
+      }
+      const ran = await results()
       const paths = ran.map((each) => lines(each.out).at(-1) ?? "")
       for (const [i, each] of ran.entries()) {
         expect(each.code, each.err).toBe(0)
         expect(lines(each.out)).toEqual([paths[i]])
-        // The wait for the base's lock (its 'lock' line to its 'locked' line) is at most an advance's move (its
-        // install: sleep 1), never a warm (sleep 3) nor a queue of copies.
-        const asked = Number(each.err.match(/: lock \/\S+ \((\d+)s\)/)?.[1])
-        const locked = Number(each.err.match(/: locked \((\d+)s\)/)?.[1])
-        expect({ branch: branches[i], waited: locked - asked <= 2 }, each.err).toEqual({ branch: branches[i], waited: true })
       }
       const pids = await settle(...ran.map((each) => each.err))
       expect(pids.length).toBeGreaterThanOrEqual(1)
@@ -1864,7 +1900,8 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       const afterPath = lines(after.out).at(-1) ?? ""
       expect(read(installs)).not.toContain(afterPath)
     },
-    90_000,
+    // Hang guard for reaching the two gates, then completing the creates.
+    420_000,
   )
 
   test(
@@ -1959,17 +1996,36 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
     async () => {
       const { w } = loaded("phases")
       expect(w.wr(w.app, "refresh").code).toBe(0)
-      // A hold of the base's lock for two seconds, in line before the create.
-      const holder = Bun.spawn([SCRIPT, "hold", "--", "sleep", "2"], { cwd: w.app, env: w.env, stdout: "ignore", stderr: "ignore" })
-      while (!readdirSync(join(stateOf(w.app), "base")).some((name) => name.endsWith(".w"))) await Bun.sleep(20)
-      const [ran] = await spawnAll(w.app, w.env, [[SCRIPT, "create", "feat/p"]])
-      expect(await holder.exited).toBe(0)
+      // A hold of the base's lock, in line before the create, until the test opens its gate.
+      const ready = join(w.dir, "held-ready")
+      const release = join(w.dir, "held-release")
+      exe(join(w.bin, "held"), `#!/bin/sh\n: >'${ready}'\nuntil [ -e '${release}' ]; do sleep 0.05; done\n`)
+      const holder = startGroup(w.app, w.env, [SCRIPT, "hold", "--", "held"], join(w.dir, "holder.err"))
+      const groups: Array<Grouped> = [holder]
+      const waited = async () => {
+        try {
+          await until("the hold holds the base", () => existsSync(ready), 120_000)
+          const create = startGroup(w.app, w.env, [SCRIPT, "create", "feat/p"], join(w.dir, "create.err"))
+          groups.push(create)
+          await until("the create waits behind the hold", () => create.err().includes("workrift: waiting for the lock"), 120_000)
+          // In line, not in: the lock is the hold's until its gate opens.
+          expect(create.err()).not.toContain(": locked")
+          writeFileSync(release, "")
+          const held = await within(holder, 120_000)
+          expect(held?.code, held?.err).toBe(0)
+          return await within(create, 120_000)
+        } finally {
+          writeFileSync(release, "")
+          for (const each of groups) if (alive(each.pid)) each.kill()
+        }
+      }
+      const ran = await waited()
       expect(ran?.code, ran?.err).toBe(0)
       const path = join(w.root, ".work/app/feat-p")
       expect(ran?.out).toBe(`${path}\n`)
       const said = lines(ran?.err ?? "")
       expect(said.filter((line) => line.startsWith("workrift: waiting"))).toEqual([
-        expect.stringMatching(new RegExp(`^workrift: waiting for the lock of ${w.app}: behind 1; the first pid ${holder.pid} \\(hold sleep 2\\), holding since \\d\\d:\\d\\d:\\d\\dZ$`)),
+        expect.stringMatching(new RegExp(`^workrift: waiting for the lock of ${w.app}: behind 1; the first pid ${holder.pid} \\(hold held\\), holding since \\d\\d:\\d\\d:\\d\\dZ$`)),
       ])
       const steps = said.filter((line) => line.startsWith("workrift: create feat/p: ")).map((line) => line.replace(/ \(\d+s\)$/, ""))
       expect(steps).toEqual([
@@ -1984,11 +2040,12 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
         `workrift: create feat/p: done: ${path}`,
       ])
       for (const line of said.filter((line) => line.startsWith("workrift: create feat/p: "))) expect(line).toMatch(/ \(\d+s\)$/)
-      // The lock waited about as long as the holder held it, and no ticket is left.
-      expect(Number(said.find((line) => line.includes(": locked"))?.match(/\((\d+)s\)$/)?.[1])).toBeGreaterThanOrEqual(1)
+      // It went in after the hold, and no ticket is left.
+      expect(said.some((line) => line.startsWith("workrift: create feat/p: locked"))).toBe(true)
       expect(readdirSync(join(stateOf(w.app), "base"))).toEqual([])
     },
-    60_000,
+    // Hang guard: three event waits and two ends of 2 minutes each.
+    600_000,
   )
 
   test(
@@ -2121,27 +2178,39 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       const gate = join(w.dir, "gate")
       sh(w.app, w.env, "git", "config", "workrift.install", `until [ -e '${gate}' ]; do sleep 0.05; done`)
       w.push("main", { "bun.lock": "main-1\n" })
-      const refresh = Bun.spawn([SCRIPT, "refresh"], { cwd: w.app, env: w.env, stdout: "ignore", stderr: "pipe" })
+      const refresh = startGroup(w.app, w.env, [SCRIPT, "refresh"], join(w.dir, "refresh.err"))
+      const groups: Array<Grouped> = [refresh]
       const queue = join(stateOf(w.app), "base")
       const writers = () => (existsSync(queue) ? readdirSync(queue).filter((name) => name.endsWith(".w")) : [])
-      while (!writers().some((name) => existsSync(join(queue, `${name}.in`)))) await Bun.sleep(20)
-      const [ticket] = writers()
-      const record = lines(readFileSync(join(queue, ticket!), "utf8"))
-      // The refresh re-runs itself under nice: the holder is the process that runs now, a descendant of the one spawned.
-      expect(record[3]).toBe("refresh")
-      // Its identity as process_identity has it on macOS: the start under LC_ALL=C and TZ=UTC0, whoever reads it.
-      expect(sh(w.app, { ...w.env, LC_ALL: "C", TZ: "UTC0" }, "ps", "-o", "lstart=", "-p", record[0]!).trim()).toBe(record[1])
-      expect(existsSync(join(queue, `${ticket}.in`))).toBe(true)
-      const create = Bun.spawn([SCRIPT, "create", "feat/behind"], { cwd: w.app, env: w.env, stdout: "pipe", stderr: "pipe" })
-      while (readdirSync(queue).filter((name) => /\.[rw]$/.test(name)).length < 2) await Bun.sleep(20)
-      writeFileSync(gate, "")
-      expect(await refresh.exited).toBe(0)
-      expect(await create.exited).toBe(0)
-      const err = await new Response(create.stderr).text()
+      const ended = async () => {
+        try {
+          await until("the refresh has a writer's ticket that says it holds", () => writers().some((name) => existsSync(join(queue, `${name}.in`))), 120_000)
+          const [ticket] = writers()
+          const record = lines(readFileSync(join(queue, ticket!), "utf8"))
+          // The refresh re-runs itself under nice: the holder is the process that runs now, a descendant of the one spawned.
+          expect(record[3]).toBe("refresh")
+          // Its identity as process_identity has it on macOS: the start under LC_ALL=C and TZ=UTC0, whoever reads it.
+          expect(sh(w.app, { ...w.env, LC_ALL: "C", TZ: "UTC0" }, "ps", "-o", "lstart=", "-p", record[0]!).trim()).toBe(record[1])
+          expect(existsSync(join(queue, `${ticket}.in`))).toBe(true)
+          const create = startGroup(w.app, w.env, [SCRIPT, "create", "feat/behind"], join(w.dir, "create.err"))
+          groups.push(create)
+          await until("the create in line behind the refresh", () => readdirSync(queue).filter((name) => /\.[rw]$/.test(name)).length >= 2, 120_000)
+          writeFileSync(gate, "")
+          const [refreshed, created] = [await within(refresh, 120_000), await within(create, 120_000)]
+          expect(refreshed?.code, refreshed?.err).toBe(0)
+          expect(created?.code, created?.err).toBe(0)
+          return { record, err: created?.err ?? "" }
+        } finally {
+          writeFileSync(gate, "")
+          for (const each of groups) if (alive(each.pid)) each.kill()
+        }
+      }
+      const { record, err } = await ended()
       expect(err).toMatch(new RegExp(`waiting for the lock of ${w.app}: behind 1; the first pid ${record[0]} \\(refresh\\), holding since`))
       expect(readdirSync(queue)).toEqual([])
     },
-    60_000,
+    // Hang guard: two event waits and two ends of 2 minutes each.
+    540_000,
   )
 
   test(
@@ -2152,7 +2221,7 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       // The first holds the base until every other one is in line behind it (the gate file).
       const gate = join(w.dir, "gate")
       sh(w.app, w.env, "git", "config", "workrift.warm", "true")
-      sh(w.app, w.env, "git", "config", "workrift.install", `if [ "$LABEL" = first ]; then i=0; until [ -e '${gate}' ] || [ "$i" -ge 2400 ]; do sleep 0.05; i=$((i + 1)); done; else sleep 0.2; fi; printf '%s\\n' "$LABEL" >>'${order}'`)
+      sh(w.app, w.env, "git", "config", "workrift.install", `if [ "$LABEL" = first ]; then i=0; until [ -e '${gate}' ] || [ "$i" -ge 2400 ]; do sleep 0.05; i=$((i + 1)); done; fi; printf '%s\\n' "$LABEL" >>'${order}'`)
       expect(w.wr(w.app, "refresh").code).toBe(0)
       writeFileSync(order, "")
       const spawned: Array<ReturnType<typeof Bun.spawn>> = []
@@ -2201,33 +2270,50 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       const copies = slowCopy(w.bin, 0.2)
       const holds = join(w.dir, "holds")
       expect(w.wr(w.app, "refresh").code).toBe(0)
-      const hold = (label: string, seconds: number) =>
-        Bun.spawn([SCRIPT, "hold", "--", "sh", "-c", `printf '${label} start %s\\n' "$(${nowLine})" >>'${holds}'; sleep ${seconds}; printf '${label} end %s\\n' "$(${nowLine})" >>'${holds}'`], {
-          cwd: w.app,
-          env: w.env,
-          stdout: "ignore",
-          stderr: "ignore",
-        })
-      const creates: Array<Promise<Spawned>> = []
-      const create = (branch: string) => {
-        creates.push(spawnAll(w.app, w.env, [[SCRIPT, "create", branch]]).then((ran) => ran[0]!))
+      // A hold logs its start, holds until the test opens its gate (<label>.release), then logs its end.
+      const hold = (label: string) =>
+        startGroup(
+          w.app,
+          w.env,
+          [SCRIPT, "hold", "--", "sh", "-c", `printf '${label} start %s\\n' "$(${nowLine})" >>'${holds}'; until [ -e '${join(w.dir, label)}.release' ]; do sleep 0.05; done; printf '${label} end %s\\n' "$(${nowLine})" >>'${holds}'`],
+          join(w.dir, `${label}.err`),
+        )
+      const said = (what: string) => existsSync(holds) && lines(readFileSync(holds, "utf8")).some((line) => line.startsWith(`${what} `))
+      const queue = join(stateOf(w.app), "base")
+      const tickets = (end: string) => (existsSync(queue) ? readdirSync(queue).filter((name) => name.endsWith(end)).length : 0)
+      const groups: Array<Grouped> = []
+      const go = (label: string, argv: ReadonlyArray<string>) => {
+        const each = startGroup(w.app, w.env, argv, join(w.dir, `${label}.err`))
+        groups.push(each)
+        return each
       }
-      const h0 = hold("h0", 6)
-      await Bun.sleep(500)
-      for (const i of [0, 1, 2, 3]) {
-        create(`feat/a${i}`)
-        await Bun.sleep(300)
+      const open = (label: string) => writeFileSync(join(w.dir, `${label}.release`), "")
+      const all = async () => {
+        try {
+          groups.push(hold("h0"))
+          await until("h0 holds the base", () => said("h0 start"), 120_000)
+          for (const i of [0, 1, 2, 3]) go(`a${i}`, [SCRIPT, "create", `feat/a${i}`])
+          await until("the four creates of batch A in line", () => tickets(".r") >= 4, 120_000)
+          groups.push(hold("h1"))
+          await until("h1 in line behind batch A", () => tickets(".w") >= 2, 120_000)
+          for (const i of [0, 1, 2, 3]) go(`b${i}`, [SCRIPT, "create", `feat/b${i}`])
+          await until("the four creates of batch B in line behind h1", () => tickets(".r") >= 8, 120_000)
+          open("h0")
+          // h1 goes in only once batch A has ended (it came after it).
+          await until("h1 holds the base", () => said("h1 start"), 120_000)
+          open("h1")
+          return await Promise.all(groups.map(async (each) => {
+            const ran = await within(each, 120_000)
+            if (!ran) throw new Error(`a hold or create did not end: ${each.err()}`)
+            return ran
+          }))
+        } finally {
+          open("h0")
+          open("h1")
+          for (const each of groups) if (alive(each.pid)) each.kill()
+        }
       }
-      await Bun.sleep(1000)
-      const h1 = hold("h1", 1)
-      await Bun.sleep(1000)
-      for (const i of [0, 1, 2, 3]) {
-        create(`feat/b${i}`)
-        await Bun.sleep(300)
-      }
-      expect(await h0.exited).toBe(0)
-      expect(await h1.exited).toBe(0)
-      for (const ran of await Promise.all(creates)) expect(ran.code, ran.err).toBe(0)
+      for (const ran of await all()) expect(ran.code, ran.err).toBe(0)
       const at = (what: string) => Number(lines(readFileSync(holds, "utf8")).find((line) => line.startsWith(`${what} `))?.split(" ")[2])
       const copy = copies()
       const of = (prefix: string) => copy.filter((each) => each.to.includes(`/feat-${prefix}`))
@@ -2240,52 +2326,87 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       const a = [...of("a")].sort((x, y) => x.start - y.start)
       for (let i = 1; i < a.length; i++) expect({ to: a[i]!.to, afterPrevious: a[i]!.start >= a[i - 1]!.end }).toEqual({ to: a[i]!.to, afterPrevious: true })
     },
-    120_000,
+    // Hang guard: five event waits and ten ends of 2 minutes each, at most.
+    1_800_000,
   )
 
   test(
-    "kill -9 of a create waiting in line, and of a hold holding the lock: the line goes on within seconds and no ticket is left",
+    "kill -9 of a create waiting in line, and of a hold holding the lock: the line goes on while the hold's command still runs, and no ticket is left",
     async () => {
       const { w } = loaded("killed")
       expect(w.wr(w.app, "refresh").code).toBe(0)
       const queue = join(stateOf(w.app), "base")
       const tickets = () => (existsSync(queue) ? readdirSync(queue) : [])
-      const pidFile = join(w.dir, "sleeper")
-      // A hold whose command we can find: it records its pid, then sleeps.
-      const holder = Bun.spawn([SCRIPT, "hold", "--", "sh", "-c", `echo $$ >'${pidFile}'; exec sleep 30`], { cwd: w.app, env: w.env, stdout: "ignore", stderr: "ignore" })
-      while (!existsSync(pidFile)) await Bun.sleep(20)
-      // A create waits behind it; it is killed while it waits.
-      const waiter = Bun.spawn([SCRIPT, "create", "feat/killed"], { cwd: w.app, env: w.env, stdout: "ignore", stderr: "ignore" })
-      while (tickets().length < 2) await Bun.sleep(20)
-      waiter.kill("SIGKILL")
-      await waiter.exited
-      // The holder is killed while it holds: its command lives on, but holds no ticket of its.
-      holder.kill("SIGKILL")
-      await holder.exited
-      const started = Date.now()
-      const ran = w.wr(w.app, "create", "feat/after")
-      expect(ran.code, ran.err).toBe(0)
-      expect(Date.now() - started).toBeLessThan(15_000)
+      const pidFile = join(w.dir, "held-pid")
+      const release = join(w.dir, "held-release")
+      // A hold whose command we can find: it records its pid, then waits for the test's gate (its own process group,
+      // so the kill of the hold below leaves it running).
+      // The two killed here run with their stdout ignored: a pipe the hold's command inherits would never end.
+      const killable = (argv: ReadonlyArray<string>, name: string) =>
+        Bun.spawn([...argv], { cwd: w.app, env: w.env, stdout: "ignore", stderr: Bun.file(join(w.dir, name)), detached: true })
+      const command = killable([SCRIPT, "hold", "--", "sh", "-c", `echo $$ >'${pidFile}'; until [ -e '${release}' ]; do sleep 0.05; done`], "holder.err")
+      const killed: Array<ReturnType<typeof killable>> = [command]
+      const groups: Array<Grouped> = []
+      const after = async () => {
+        try {
+          await until("the hold's command runs", () => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "", 120_000)
+          const commandPid = Number(readFileSync(pidFile, "utf8").trim())
+          // A create waits behind it; it is killed while it waits.
+          const waiter = killable([SCRIPT, "create", "feat/killed"], "waiter.err")
+          killed.push(waiter)
+          await until("the create in line behind the hold", () => tickets().filter((name) => /\.[rw]$/.test(name)).length >= 2, 120_000)
+          waiter.kill("SIGKILL")
+          await waiter.exited
+          // The hold is killed while it holds: its command lives on (it inherited the lock's descriptor), but holds no
+          // ticket of the line's.
+          command.kill("SIGKILL")
+          await command.exited
+          expect(alive(commandPid)).toBe(true)
+          const next = startGroup(w.app, w.env, [SCRIPT, "create", "feat/after"], join(w.dir, "after.err"))
+          groups.push(next)
+          const ran = await within(next, 120_000)
+          expect(ran?.code, ran?.err).toBe(0)
+          // It went in while the old command still ran: the line never waits on a process that is not in it.
+          expect(alive(commandPid)).toBe(true)
+          return commandPid
+        } finally {
+          writeFileSync(release, "")
+          for (const each of groups) if (alive(each.pid)) each.kill()
+          for (const each of killed) {
+            try {
+              process.kill(-each.pid, "SIGKILL")
+            } catch {
+              // the group has ended
+            }
+          }
+        }
+      }
+      const commandPid = await after()
       expect(tickets()).toEqual([])
       expect(w.active(w.app).map((each) => each.name)).toEqual(["feat-after"])
-      process.kill(Number(readFileSync(pidFile, "utf8").trim()), "SIGKILL")
+      await until("the hold's command ends once its gate opens", () => !alive(commandPid), 120_000)
     },
-    60_000,
+    // Hang guard: two event waits, the create's end and the command's end, of 2 minutes each.
+    540_000,
   )
 
   test(
     "a work new that dies mid-copy leaves a Creating record: the create hands it to work gc -id and fails, leaving no record and no folder",
     () => {
       const { w } = loaded("died")
-      slowCopy(w.bin, 1)
+      // The clone waits at this gate after it has begun, so the kill below lands mid-copy at any load; the test
+      // opens it after, so no copy outlives the test.
+      const copyGate = join(w.dir, "copy-gate")
+      slowCopy(w.bin, 0, copyGate)
       expect(w.wr(w.app, "refresh").code).toBe(0)
       // A work that is killed once its clone has begun (as a host's OOM killer would).
       const dying = join(w.bin, "dying-work")
       exe(
         dying,
-        `#!/bin/sh\ncase " $* " in\n  *" new "*) ;;\n  *) exec '${work}' "$@" ;;\nesac\n'${work}' "$@" &\nchild=$!\nuntil grep -q feat-died '${join(w.bin, "..", "copies.begun")}' 2>/dev/null; do sleep 0.05; done\nsleep 0.2\npkill -9 -P "$child"\nkill -9 "$child"\nwait "$child"\nexit 137\n`,
+        `#!/bin/sh\ncase " $* " in\n  *" new "*) ;;\n  *) exec '${work}' "$@" ;;\nesac\n'${work}' "$@" &\nchild=$!\nuntil grep -q feat-died '${join(w.bin, "..", "copies.begun")}' 2>/dev/null; do sleep 0.05; done\npkill -9 -P "$child"\nkill -9 "$child"\nwait "$child"\nexit 137\n`,
       )
       const ran = run(w.app, { ...w.env, WORK: dying }, [SCRIPT, "create", "feat/died"])
+      writeFileSync(copyGate, "")
       expect(ran.code).toBe(1)
       expect(ran.err).toContain("work new left its Creating record feat-died")
       expect(ran.err).toContain("work new failed for feat/died")
@@ -2580,7 +2701,7 @@ const PROBE = [
   "use strict; use Time::HiRes qw(time sleep);",
   "my ($log, $id, $kind, $s) = @ARGV;",
   `open(my $f, '>>', $log) or die; printf $f "in %s %s %.3f\\n", $id, $kind, time; close $f;`,
-  "sleep($s);",
+  "if ($s =~ m{^/}) { sleep(0.05) until -e $s } else { sleep($s) }",
   `open($f, '>>', $log) or die; printf $f "out %s %s %.3f\\n", $id, $kind, time; close $f;`,
   "",
 ].join("\n")
@@ -2703,11 +2824,38 @@ describeWork("workrift beside the older workrift, and its line's owners whatever
         all.push({ who: `old${i}`, run })
         await until(`old/c${i} at its lock`, () => run.err().includes(`create old/c${i}: lock `))
       }
+      // Each new one is started once the one before says it is at its lock (or waits in a line), so the order is
+      // the order started at any load; the refresh and the hold likewise.
+      const atLock = (run: Started) => () => /: lock \/|waiting for the lock|an older workrift/.test(run.err())
+      // A refresh says no step: it is placed once a line (the advance's or the base's) holds its ticket, or it ended.
+      const inLine = (purpose: string) =>
+        ["advance", "base"].some((name) => {
+          const dir = join(stateOf(w.app), name)
+          return existsSync(dir) && readdirSync(dir).some((each) => /\.[rw]$/.test(each) && (lines(readFileSync(join(dir, each), "utf8"))[3] ?? "").startsWith(purpose))
+        })
+      const ended = (run: Started) => {
+        let over = false
+        void run.done.then(() => {
+          over = true
+        })
+        return () => over
+      }
       for (let i = 0; i < 10; i++) {
-        all.push({ who: `new${i}`, run: start(w.app, w.env, [SCRIPT, "create", `new/c${i}`], join(w.dir, `new-${i}.err`)) })
-        await Bun.sleep(150)
-        if (i === 4) all.push({ who: "refresh", run: start(w.app, w.env, [SCRIPT, "refresh"], join(w.dir, "refresh.err")) })
-        if (i === 6) all.push({ who: "hold", run: hold(w, w.env, log, "hold", 1, "hold.err") })
+        const run = start(w.app, w.env, [SCRIPT, "create", `new/c${i}`], join(w.dir, `new-${i}.err`))
+        all.push({ who: `new${i}`, run })
+        await until(`new/c${i} at its lock`, atLock(run), 120_000)
+        if (i === 4) {
+          const refresh = start(w.app, w.env, [SCRIPT, "refresh"], join(w.dir, "refresh.err"))
+          all.push({ who: "refresh", run: refresh })
+          const over = ended(refresh)
+          await until("the refresh in a line", () => inLine("refresh") || over(), 120_000)
+        }
+        if (i === 6) {
+          const held = hold(w, w.env, log, "hold", 1, "hold.err")
+          all.push({ who: "hold", run: held })
+          const over = ended(held)
+          await until("the hold in the base's line", () => inLine("hold") || over(), 120_000)
+        }
       }
       const ran = await Promise.all(all.map(async (each) => ({ who: each.who, ...(await each.run.done) })))
       const failed = ran.filter((each) => each.code !== 0).map((each) => `${each.who}: ${each.err.split("\n").filter((l) => /fail|error|fatal/i.test(l)).join(" | ").slice(-300)}`)
@@ -2723,7 +2871,8 @@ describeWork("workrift beside the older workrift, and its line's owners whatever
       expect(all2.filter((each) => each.kind === "w").length).toBeGreaterThanOrEqual(3)
       expect(overlaps(all2, oldBesideNew)).toEqual([])
     },
-    300_000,
+    // Hang guard: twenty-two placements of 2 minutes each at most, then the runs.
+    3_600_000,
   )
 
   test("on Linux a reader lets an older workrift's blocked exclusive flock go first (it reads /proc/locks), then goes in", async () => {
@@ -2735,18 +2884,27 @@ describeWork("workrift beside the older workrift, and its line's owners whatever
     mkdirSync(proc, { recursive: true })
     // An old create blocked on it, as /proc/locks lists a blocked flock; and another file's lock, held.
     writeFileSync(join(proc, "locks"), `1: FLOCK  ADVISORY  WRITE 4242 00:2d:${ino + 1} 0 EOF\n1: -> FLOCK  ADVISORY  WRITE 4343 00:2d:${ino} 0 EOF\n`)
-    const t0 = Date.now()
-    const create = start(w.app, { ...w.env, WORKRIFT_PROC: proc }, [SCRIPT, "create", "feat/yield"], join(w.dir, "yield.err"))
-    await until("the yield", () => create.err().includes("an older workrift waits for the lock"))
-    await Bun.sleep(1500)
+    // A sleep that logs each call: the yield's loop sleeps once per look at /proc/locks.
+    const sleeps = join(w.dir, "sleeps")
+    const shims = join(w.dir, "sleep-bin")
+    mkdirSync(shims, { recursive: true })
+    exe(join(shims, "sleep"), `#!/bin/sh\necho "$*" >>'${sleeps}'\nexec /bin/sleep "$@"\n`)
+    const looked = () => (existsSync(sleeps) ? lines(readFileSync(sleeps, "utf8")).length : 0)
+    const env = { ...w.env, WORKRIFT_PROC: proc, PATH: `${shims}:${w.env.PATH}` }
+    const create = start(w.app, env, [SCRIPT, "create", "feat/yield"], join(w.dir, "yield.err"))
+    await until("the yield", () => create.err().includes("an older workrift waits for the lock"), 120_000)
+    // Two more looks with the blocked writer still listed: it stays out of the lock.
+    const seen = looked()
+    await until("two more looks at /proc/locks", () => looked() >= seen + 2, 120_000)
+    expect(create.err()).not.toContain(": locked")
     writeFileSync(join(proc, "locks"), `1: FLOCK  ADVISORY  WRITE 4242 00:2d:${ino + 1} 0 EOF\n`)
     const ran = await create.done
     expect(ran.code, ran.err).toBe(0)
-    expect(Date.now() - t0).toBeGreaterThan(1500)
+    expect(ran.err).toContain(": locked")
     // The file is the old script's: read, never written, never removed.
     expect(readFileSync(legacy, "utf8")).toBe("")
     expect(lstatSync(legacy).ino).toBe(ino)
-  }, 60_000)
+  }, 300_000)
 
   // TZ and locale pairs: zones east and west and half-hour, locales whose dates read in other words and orders.
   const ENVS: ReadonlyArray<Record<string, string>> = [
@@ -2778,14 +2936,23 @@ describeWork("workrift beside the older workrift, and its line's owners whatever
       if (a !== b) pairs.push([a, b])
     }
     for (const [i, [a, b]] of pairs.entries()) {
-      const holder = hold(w, withEnv(w.env, ENVS[a]!), log, `holder${i}`, 6, `holder-${i}.err`)
-      await until(`holder${i} in`, () => ivs().some((each) => each.id === `holder${i}`))
-      const waiter = hold(w, withEnv(w.env, ENVS[b]!), log, `waiter${i}`, 0.1, `waiter-${i}.err`)
-      const ran = await Promise.all([holder.done, waiter.done])
-      for (const each of ran) expect(each.code, each.err).toBe(0)
+      const gate = join(w.dir, `holder-${i}.release`)
+      const holder = start(w.app, withEnv(w.env, ENVS[a]!), [SCRIPT, "hold", "--", "probe", log, `holder${i}`, "w", gate], join(w.dir, `holder-${i}.err`))
+      try {
+        await until(`holder${i} in`, () => ivs().some((each) => each.id === `holder${i}`), 120_000)
+        const waiter = hold(w, withEnv(w.env, ENVS[b]!), log, `waiter${i}`, 0.1, `waiter-${i}.err`)
+        // Read in its own environment, the live holder is still the holder: the waiter waits behind it.
+        await until(`waiter${i} waits behind holder${i}`, () => waiter.err().includes(`the first pid `), 120_000)
+        expect(ivs().some((each) => each.id === `waiter${i}`)).toBe(false)
+        writeFileSync(gate, "")
+        const ran = await Promise.all([holder.done, waiter.done])
+        for (const each of ran) expect(each.code, each.err).toBe(0)
+      } finally {
+        writeFileSync(gate, "")
+      }
       expect({ pair: [ENVS[a], ENVS[b]], overlaps: overlaps(ivs()) }).toEqual({ pair: [ENVS[a], ENVS[b]], overlaps: [] })
     }
-  }, 180_000)
+  }, 1_800_000)
 
   test("a ticket whose owner is gone is skipped, its lock held all the same (a child kept the descriptor): a dead pid, and a pid reused by another process", async () => {
     const { w } = bench("gone")
@@ -2794,7 +2961,9 @@ describeWork("workrift beside the older workrift, and its line's owners whatever
     // The process that holds both tickets' locks, as a child that inherited them would.
     const exited = Bun.spawnSync(["true"])
     const dead = exited.pid
-    const keeper = Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" })
+    const release = join(w.dir, "release")
+    const gated = ["sh", "-c", `until [ -e '${release}' ]; do sleep 0.05; done`]
+    const keeper = Bun.spawn(gated, { stdout: "ignore", stderr: "ignore" })
     for (const [n, pid, identity] of [
       [1, dead, "Sat Nov 21 21:24:11 2026"],
       // The keeper runs, but its start is not the recorded one: its pid was another process's.
@@ -2804,14 +2973,21 @@ describeWork("workrift beside the older workrift, and its line's owners whatever
       writeFileSync(file, `${pid}\n${identity}\n${Math.floor(Date.now() / 1000)}\ncreate feat/gone${n}\n`)
     }
     // Lock both, held by a background flock of the bench's shim for as long as the keeper sleeps.
-    const holders = [1, 2].map((n) => Bun.spawn([join(w.bin, "flock"), join(queue, `${n}.w`), "sleep", "30"], { stdout: "ignore", stderr: "ignore" }))
-    await until("both locked", () => [1, 2].every((n) => Bun.spawnSync([join(w.bin, "flock"), "-n", join(queue, `${n}.w`), "true"]).exitCode === 1))
-    const t0 = Date.now()
-    const ran = w.wr(w.app, "hold", "--", "true")
-    expect(ran.code, ran.err).toBe(0)
-    expect(Date.now() - t0).toBeLessThan(15_000)
-    for (const each of [...holders, keeper]) each.kill("SIGKILL")
-  }, 60_000)
+    const holders = [1, 2].map((n) => Bun.spawn([join(w.bin, "flock"), join(queue, `${n}.w`), ...gated], { stdout: "ignore", stderr: "ignore" }))
+    const locked = () => [1, 2].every((n) => Bun.spawnSync([join(w.bin, "flock"), "-n", join(queue, `${n}.w`), "true"]).exitCode === 1)
+    try {
+      await until("both locked", locked, 120_000)
+      const holding = startGroup(w.app, w.env, [SCRIPT, "hold", "--", "true"], join(w.dir, "hold.err"))
+      const ran = await within(holding, 120_000)
+      expect(ran?.code, ran?.err).toBe(0)
+      // Both holders of the locks still run, gated, after the hold went in and ended: it skipped their tickets, it
+      // never waited them out.
+      expect(holders.map((each) => each.exitCode)).toEqual([null, null])
+    } finally {
+      writeFileSync(release, "")
+      for (const each of [...holders, keeper]) each.kill("SIGKILL")
+    }
+  }, 300_000)
 
   test("on Linux the identity is /proc/<pid>/stat's start in ticks (after a command name with spaces and parentheses) and the boot's id: the same tick is live, another is gone", async () => {
     const { w, log, ivs } = bench("stat")
@@ -2829,23 +3005,29 @@ describeWork("workrift beside the older workrift, and its line's owners whatever
     writeFileSync(join(proc, String(pid), "stat"), stat(777))
     const file = join(queue, "1.w")
     writeFileSync(file, `${pid}\nboot b00t-1d tick 777\n${Math.floor(Date.now() / 1000)}\nhold the line\n`)
-    const lockHolder = Bun.spawn([join(w.bin, "flock"), file, "sleep", "30"], { stdout: "ignore", stderr: "ignore" })
-    await until("locked", () => Bun.spawnSync([join(w.bin, "flock"), "-n", file, "true"]).exitCode === 1)
+    const release = join(w.dir, "release")
+    const lockHolder = Bun.spawn([join(w.bin, "flock"), file, "sh", "-c", `until [ -e '${release}' ]; do sleep 0.05; done`], { stdout: "ignore", stderr: "ignore" })
+    const locked = () => Bun.spawnSync([join(w.bin, "flock"), "-n", file, "true"]).exitCode === 1
+    await until("locked", locked, 120_000)
     const env = { ...w.env, WORKRIFT_STAT_PROC: proc }
     // The waiter's own stat in the fake /proc (its pid is the shell's, which execs it): a workrift whose own identity
     // does not read takes no place in line.
     const own = `mkdir -p '${proc}'/$$ && printf '%s\\n' "$$ (w) ${stat(999).split(") ").slice(2).join(") ").replace(/\n$/, "")}" >'${proc}'/$$/stat && exec "$@"`
     const waiter = start(w.app, env, ["/bin/sh", "-c", own, "sh", SCRIPT, "hold", "--", "probe", log, "waiter", "w", "0.1"], join(w.dir, "waiter.err"))
-    await Bun.sleep(7000)
-    // The same tick: live, so the waiter still waits; then the pid's start changes (reused): gone.
-    expect(ivs()).toEqual([])
-    expect(waiter.err()).toContain(`behind 1; the first pid ${pid} (hold the line)`)
-    writeFileSync(join(proc, String(pid), "stat"), stat(778))
-    const ran = await waiter.done
-    expect(ran.code, ran.err).toBe(0)
-    expect(ivs().map((each) => each.id)).toEqual(["waiter"])
-    lockHolder.kill("SIGKILL")
-  }, 60_000)
+    try {
+      // The same tick: live, so the waiter waits behind it; then the pid's start changes (reused): gone.
+      await until("the waiter names the live pid", () => waiter.err().includes(`behind 1; the first pid ${pid} (hold the line)`), 120_000)
+      expect(ivs()).toEqual([])
+      expect(locked()).toBe(true)
+      writeFileSync(join(proc, String(pid), "stat"), stat(778))
+      const ran = await waiter.done
+      expect(ran.code, ran.err).toBe(0)
+      expect(ivs().map((each) => each.id)).toEqual(["waiter"])
+    } finally {
+      writeFileSync(release, "")
+      lockHolder.kill("SIGKILL")
+    }
+  }, 300_000)
 
   test("the queue's own files tampered with while a writer holds: a counter deleted or garbled, a holder's record emptied; no second holder goes in", async () => {
     const { w, log, ivs } = bench("tamper")
