@@ -287,8 +287,14 @@ only the resident location's copy acts, so a host runs one updater.
   never the synced checkout, whose fork links name a source checkout. A command
   that reads a store reads a copy of it. `scripts/runtime-imports.test.ts` keeps
   the list whole (every entry declared, each graph within its packages, one
-  `effect` release) and `tests/cli-tree.test.ts` runs each probe, on the
-  checkout or, with `TREE_OPENCODE=<tree>/opencode`, on a made tree.
+  `effect` release, and the tree's Bun seeds exactly the probed commands);
+  `tests/cli-tree.test.ts` runs each probe on the checkout, and
+  `tests/cli-tree-installed.test.ts` on the made tree
+  `TREE_OPENCODE=<tree>/opencode` names (its probes, its import graph exactly
+  resolved, its servers' platform imports and its Effect pins), which it
+  requires (unset, it fails
+  `no installed tree given`; the acceptance runner owes it `off until
+  enabled`, by name, in a run that has no tree).
 - **The TUI's plugins.** A tree's `config/cli.json` lists every plugin
   package that exports `./tui` (`cmd/*/package.json`): `trees.ts`
   `tuiPluginsOf`, derived, never a list kept by hand. Their order is the
