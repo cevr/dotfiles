@@ -322,16 +322,13 @@ export const receipts = (logs: string, env: Readonly<Record<string, string>> = {
   const write = Effect.fn("Receipts.write")(function* (receipt: Receipt) {
     const text = yield* encode(receipt)
     const file = hostReceipt(logs, receipt)
-    const operation = "write receipt"
-    if (receipt.kind !== "round") {
-      yield* publishReviewInput(operation, file, reviewInputLock(logs), "owner-only", `${text}\n`)
-      return file
-    }
-    const kept = yield* mirror(receipt.repo)
+    const mirrorPath = yield* Effect.when(mirror(receipt.repo), Effect.succeed(receipt.kind === "round"))
     // Reject an already-unsafe mirror before writing or taking the host receipt lock.
-    yield* checkReviewInput(operation, kept)
-    yield* publishReviewInput(operation, file, reviewInputLock(logs), "owner-only", `${text}\n`)
-    yield* publishReviewInput(operation, kept, join(dirname(kept), "rift-receipt.lock"), "owner-only", `${text}\n`)
+    if (Option.isSome(mirrorPath)) yield* checkReviewInput("write receipt", mirrorPath.value)
+    yield* publishReviewInput("write receipt", file, reviewInputLock(logs), "owner-only", `${text}\n`)
+    if (Option.isNone(mirrorPath)) return file
+    const kept = mirrorPath.value
+    yield* publishReviewInput("write receipt", kept, join(dirname(kept), "rift-receipt.lock"), "owner-only", `${text}\n`)
     return file
   })
 
