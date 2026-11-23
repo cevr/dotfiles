@@ -11,11 +11,13 @@
 // a red file is run once more, and a file green on that rerun is a named flake. An expectation declares one
 // test red on a host by a condition read at run time (the version of the first bash on PATH) with its reason:
 // the test still runs, its failure there is a note, and its passing there (or its absence) is red, so a stale
-// expectation cannot stay. It waits while the 1-minute load is over 24 and for the host's fork-checks lock (at
-// most 30 minutes each), refuses to start under 6 GiB free on the Mac, and stops at its time bound: each is
-// "could not run", which holds a merge as a red does. Each package prints its verdict and time as it ends; a run
-// past its bound, or stopped by a SIGTERM or SIGINT (a caller's own bound), prints a partial report: each package
-// finished, running or not started, with its time.
+// expectation cannot stay. It waits for the host's fork-checks lock (at most 30 minutes) and while the 1-minute
+// load is over 24 (at most 30 minutes, every such wait together), refuses to start under 6 GiB free on the Mac,
+// and stops when the package runs have taken 40 minutes (their own time only, no wait): three budgets apart, so
+// no wait shortens the runs. Each is "could not run", which holds a merge as a red does, naming the budget.
+// Each package prints its verdict and time as it ends; a run past a budget, or stopped by a SIGTERM or SIGINT (a
+// caller's own bound), prints a partial report: each package finished, running or not started, with its time, and
+// each budget's time spent.
 //
 // Exit: 0 green, 1 red, 2 could not run, no fork named, or a list that does not parse. The last line is the summary.
 //
@@ -353,14 +355,18 @@ export class RunLock extends Context.Service<RunLock, { readonly holding: <R>(fi
 
 export interface Limits {
   readonly maxLoad: number
-  /** How long it waits for a calm host, and for the lock, before it could not run. */
+  /**
+   * Two wait budgets of this size, apart: the wait for the host's lock, and the waits for a calm host, all of them
+   * together (one before each package and each rerun). Each is charged only its own waiting (`Budgets`).
+   */
   readonly waitMs: number
   readonly everyMs: number
   /**
-   * How long the package runs may take once the lock is held, all of them together. The daily's merge step puts no
-   * bound of its own around the CLI (`featureStep` waits for it), so this is the daily's bound: 40 minutes, against
-   * the real list's 2.7 minutes on a quiet Mac and about 4 loaded (each run niced, at width 4). Only a hung run
-   * reaches it, and an unattended daily that holds a merge for a slow host loses a day, so the bound is wide.
+   * The package runs' budget: their measured run times together, reruns included, and nothing else (no wait). The
+   * daily's merge step puts no bound of its own around the CLI (`featureStep` waits for it), so the daily's bound is
+   * this plus the two waits, at most 30 + 30 + 40 = 100 minutes. 40 minutes, against the real list's 2.2 to 3.8
+   * minutes of runs on the Mac (each niced, at width 4): only a hung run reaches it, and an unattended daily that
+   * holds a merge for a slow host loses a day, so it is wide.
    */
   readonly timeBoundMs: number
   readonly diskFloor: number
@@ -404,21 +410,87 @@ export const missingFiles = Effect.fn("ForkChecks.missingFiles")(function* (list
   return listed.flatMap((each, at) => Arr.filter([{ ...each, test: "", why: "the listed file is not in the fork" }], () => !present[at]))
 })
 
-/** Polls `ready` until it answers some, at most `limits.waitMs`. */
-const patiently = Effect.fn("ForkChecks.patiently")(function* <R>(limits: Limits, ready: Effect.Effect<Option.Option<Verdict>, HostUnread, R>) {
-  const deadline = (yield* Clock.currentTimeMillis) + limits.waitMs
+/**
+ * What a run spends time on, each against its own budget: the wait for the host's lock, the waits for a calm host
+ * (all of them together, before each package and each rerun), and the package runs themselves (each run measured,
+ * reruns included). No budget is charged another's time, so a wait that ends within its allowance never shortens
+ * the runs.
+ */
+export type BudgetKind = "lock wait" | "calm-host wait" | "package runs"
+
+/** Time measured against one budget: a `Spent<"lock wait">` cannot be charged to the run budget. */
+export interface Spent<K extends BudgetKind> {
+  readonly budget: K
+  readonly ms: number
+}
+
+/** One budget: its allowance and what was charged to it. */
+export interface Budget<K extends BudgetKind> {
+  readonly kind: K
+  readonly allowanceMs: number
+  readonly spent: Ref.Ref<ReadonlyArray<Spent<K>>>
+}
+
+/** A run's three budgets. */
+export interface Budgets {
+  readonly lock: Budget<"lock wait">
+  readonly calm: Budget<"calm-host wait">
+  readonly runs: Budget<"package runs">
+}
+
+const budgetOf = <K extends BudgetKind>(kind: K, allowanceMs: number) => Effect.map(Ref.make<ReadonlyArray<Spent<K>>>([]), (spent): Budget<K> => ({ kind, allowanceMs, spent }))
+
+/** The budgets `limits` allow: `waitMs` for the lock, `waitMs` for every calm-host wait together, `timeBoundMs` for the package runs. */
+export const budgetsOf = (limits: Limits): Effect.Effect<Budgets> =>
+  Effect.all({ lock: budgetOf("lock wait", limits.waitMs), calm: budgetOf("calm-host wait", limits.waitMs), runs: budgetOf("package runs", limits.timeBoundMs) })
+
+const spentOf = <K extends BudgetKind>(budget: Budget<K>) => Effect.map(Ref.get(budget.spent), (all) => all.reduce((sum, each) => sum + each.ms, 0))
+/** What is left of `budget`. */
+const leftOf = <K extends BudgetKind>(budget: Budget<K>) => Effect.map(spentOf(budget), (spent) => budget.allowanceMs - spent)
+/** Charges `ms` to `budget` alone. */
+const charge = <K extends BudgetKind>(budget: Budget<K>, ms: number) => Ref.update(budget.spent, (all) => [...all, { budget: budget.kind, ms }])
+
+/** Runs `effect`, measuring it and charging the time to `budget`. */
+const charging = <K extends BudgetKind, A, E, R>(budget: Budget<K>, effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const start = yield* Clock.currentTimeMillis
+    const out = yield* effect
+    yield* charge(budget, (yield* Clock.currentTimeMillis) - start)
+    return out
+  })
+
+/** Each budget's time spent of its allowance, one line (in a report that could not run). */
+export const budgetLine = (budgets: Budgets) => {
+  const part = <K extends BudgetKind>(budget: Budget<K>) => Effect.map(spentOf(budget), (spent) => `${budget.kind} ${seconds(spent)} of ${minutes(budget.allowanceMs)}`)
+  return Effect.map(Effect.all([part(budgets.lock), part(budgets.calm), part(budgets.runs)]), (parts) => `budgets: ${parts.join("; ")}`)
+}
+
+/**
+ * Polls `ready` every `everyMs` until it answers some, while `budget` lasts. Only the waiting is charged: each poll
+ * that answers none and each sleep; a poll that answers some (the lock's holder runs the whole check) is not.
+ */
+const patiently = Effect.fn("ForkChecks.patiently")(function* <K extends BudgetKind, R>(budget: Budget<K>, everyMs: number, ready: Effect.Effect<Option.Option<Verdict>, HostUnread, R>) {
   for (;;) {
+    const start = yield* Clock.currentTimeMillis
     const got = yield* ready
-    if (Option.isSome(got) || (yield* Clock.currentTimeMillis) >= deadline) return got
-    yield* Effect.sleep(Duration.millis(limits.everyMs))
+    if (Option.isSome(got)) return got
+    yield* charge(budget, (yield* Clock.currentTimeMillis) - start)
+    const left = yield* leftOf(budget)
+    if (left <= 0) return got
+    yield* charging(budget, Effect.sleep(Duration.millis(Math.min(everyMs, left))))
   }
 })
 
-/** Waits for the load to drop to `limits.maxLoad` before `pkg` runs, saying so once when it must wait (a package's time counts the wait); answers whether it did. */
-const calm = Effect.fn("ForkChecks.calm")(function* (limits: Limits, pkg: string) {
+/**
+ * Waits for the load to drop to `limits.maxLoad` before `pkg` runs, charging the wait to the calm-host budget (all such
+ * waits together), saying so once when it must wait; answers whether it did.
+ */
+const calm = Effect.fn("ForkChecks.calm")(function* (limits: Limits, budget: Budget<"calm-host wait">, pkg: string) {
   const gauge = yield* HostGauge
   const told = yield* Ref.make(false)
-  const say = (load: number) => Console.log(`fork-checks: ${pkg}: the 1-minute load is ${load.toFixed(1)}, over ${limits.maxLoad}: waiting for it to drop (at most ${minutes(limits.waitMs)})`)
+  const left = yield* leftOf(budget)
+  const say = (load: number) =>
+    Console.log(`fork-checks: ${pkg}: the 1-minute load is ${load.toFixed(1)}, over ${limits.maxLoad}: waiting for it to drop (at most ${minutes(Math.max(0, left))} of the calm-host wait left)`)
   // Said once: at the first read over the limit.
   const tell = (load: number) =>
     Effect.when(
@@ -430,21 +502,25 @@ const calm = Effect.fn("ForkChecks.calm")(function* (limits: Limits, pkg: string
     Effect.map((load) => Option.map(Option.liftPredicate(load, (each) => each <= limits.maxLoad), (): Verdict => ({ kind: "green", notes: [] }))),
   )
   const start = yield* Clock.currentTimeMillis
-  const calmed = Option.isSome(yield* patiently(limits, ready))
+  const calmed = Option.isSome(yield* patiently(budget, limits.everyMs, ready))
   const waited = (yield* Clock.currentTimeMillis) - start
   yield* Effect.when(Console.log(`fork-checks: ${pkg}: the load dropped to ${limits.maxLoad} or under after ${seconds(waited)}`), Effect.map(Ref.get(told), (said) => said && calmed))
   return calmed
 })
 
-/** One run of `plan`, judged; could not run when the host stays loaded, the time bound passes or bun writes no report. */
-const runOnce = Effect.fn("ForkChecks.runOnce")(function* (input: Input, plan: Plan, deadline: number) {
-  if (!(yield* calm(input.limits, plan.package))) return couldNot(`the 1-minute load stayed over ${input.limits.maxLoad} for ${minutes(input.limits.waitMs)} before ${plan.package} ran`)
-  const left = deadline - (yield* Clock.currentTimeMillis)
-  if (left <= 0) return couldNot(`the time bound (${minutes(input.limits.timeBoundMs)}) passed before ${plan.package} ran`)
+/**
+ * One run of `plan`, judged; could not run when the calm-host wait or the run budget is spent, or bun writes no
+ * report. The run alone is charged to the run budget, and it may take what is left of it.
+ */
+const runOnce = Effect.fn("ForkChecks.runOnce")(function* (input: Input, plan: Plan, budgets: Budgets) {
+  if (!(yield* calm(input.limits, budgets.calm, plan.package)))
+    return couldNot(`the calm-host wait (${minutes(budgets.calm.allowanceMs)}, every wait together) was spent before ${plan.package} ran: the 1-minute load stayed over ${input.limits.maxLoad}`)
+  const left = yield* leftOf(budgets.runs)
+  if (left <= 0) return couldNot(`the package runs' budget (${minutes(budgets.runs.allowanceMs)}) was spent before ${plan.package} ran`)
   yield* Console.log(`fork-checks: ${plan.package}: ${plan.files.length} files`)
   const path = yield* Path.Path
   const runner = yield* TestRunner
-  const ran = yield* runner.run({ cwd: path.join(input.fork, plan.package), command: plan.command, files: plan.files, threads: input.limits.threads, timeoutMs: left })
+  const ran = yield* charging(budgets.runs, runner.run({ cwd: path.join(input.fork, plan.package), command: plan.command, files: plan.files, threads: input.limits.threads, timeoutMs: left }))
   // Each file's line: what its whole report says ran, so a log shows every listed file was run.
   const report = Match.value(ran).pipe(
     Match.when({ kind: "exited" }, (out) => Option.map(Option.filter(out.junit, whole), casesOf)),
@@ -460,7 +536,7 @@ const runOnce = Effect.fn("ForkChecks.runOnce")(function* (input: Input, plan: P
     }),
   )
   return Match.value(ran).pipe(
-    Match.when({ kind: "timed-out" }, (out): Verdict => couldNot(`${plan.package} ran past the time bound (${minutes(input.limits.timeBoundMs)}), its process group ended:\n${tail(out.log)}`)),
+    Match.when({ kind: "timed-out" }, (out): Verdict => couldNot(`${plan.package} ran past the package runs' budget (${minutes(budgets.runs.allowanceMs)}), its process group ended:\n${tail(out.log)}`)),
     Match.when({ kind: "exited" }, (out) => exitedVerdict(plan, out)),
     Match.exhaustive,
   )
@@ -492,13 +568,13 @@ const exitedVerdict = (plan: Plan, out: Extract<Ran, { readonly kind: "exited" }
 }
 
 /** `plan`'s run, and once more for its red files: a file green on the rerun is a named flake, a file red twice stays red. */
-const runPlan = Effect.fn("ForkChecks.runPlan")(function* (input: Input, plan: Plan, deadline: number) {
-  const first = yield* runOnce(input, plan, deadline)
+const runPlan = Effect.fn("ForkChecks.runPlan")(function* (input: Input, plan: Plan, budgets: Budgets) {
+  const first = yield* runOnce(input, plan, budgets)
   if (first.kind !== "red") return first
   const whole = first.reds.some((red) => red.file === THE_RUN)
   const files = Arr.filter(plan.files, (file) => whole || first.reds.some((red) => red.file === file))
   yield* Console.log(`fork-checks: ${plan.package}: ${files.length} red files; running them once more`)
-  const second = yield* runOnce(input, { ...plan, files }, deadline)
+  const second = yield* runOnce(input, { ...plan, files }, budgets)
   if (second.kind !== "green") return second
   return { kind: "green", notes: [...second.notes, `flaky, green on the rerun: ${files.map((file) => `${plan.package}/${file}`).join(", ")}`] } satisfies Verdict
 })
@@ -531,7 +607,7 @@ export const progressOf = (stages: ReadonlyArray<Stage>, now: number): string =>
 const PROGRESS = "progress"
 
 /** Every plan in turn, each one's stage kept in `stages`: stops at the first that could not run, else gathers the reds and notes. */
-const runAll = Effect.fn("ForkChecks.runAll")(function* (input: Input, deadline: number, stages: Ref.Ref<ReadonlyArray<Stage>>) {
+const runAll = Effect.fn("ForkChecks.runAll")(function* (input: Input, budgets: Budgets, stages: Ref.Ref<ReadonlyArray<Stage>>) {
   const gauge = yield* HostGauge
   const bash = yield* gauge.bash
   // Only the commands a declared skip names are looked up.
@@ -547,12 +623,12 @@ const runAll = Effect.fn("ForkChecks.runAll")(function* (input: Input, deadline:
   for (const plan of plans) {
     const start = yield* Clock.currentTimeMillis
     yield* mark(plan.package, (stage) => ({ ...stage, started: Option.some(start) }))
-    const verdict = yield* runPlan(input, plan, deadline)
+    const verdict = yield* runPlan(input, plan, budgets)
     const end = yield* Clock.currentTimeMillis
     yield* mark(plan.package, (stage) => ({ ...stage, ended: Option.some({ at: end, kind: verdict.kind }) }))
     yield* Console.log(`fork-checks: ${plan.package}: ${verdict.kind} in ${seconds(end - start)}`)
     notes.push(...verdict.notes)
-    if (verdict.kind === "could-not-run") return couldNot(verdict.reason, [...notes, `${PROGRESS}: ${progressOf(yield* Ref.get(stages), end)}`])
+    if (verdict.kind === "could-not-run") return couldNot(verdict.reason, [...notes, `${PROGRESS}: ${progressOf(yield* Ref.get(stages), end)}`, yield* budgetLine(budgets)])
     if (verdict.kind === "red") reds.push(...verdict.reds)
   }
   if (reds.length > 0) return { kind: "red", reds, notes } satisfies Verdict
@@ -599,7 +675,7 @@ export const activeList = Effect.fn("ForkChecks.activeList")(function* (list: Li
 export const STOPPED = "stopped by a signal (the caller's own bound, or a kill) before it finished"
 
 /** The partial report of a run stopped from outside: each package finished, running or not started, with its time; the last line could not run. */
-const stoppedReport = (notes: ReadonlyArray<string>, began: number, stages: Ref.Ref<ReadonlyArray<Stage>>) =>
+const stoppedReport = (notes: ReadonlyArray<string>, began: number, stages: Ref.Ref<ReadonlyArray<Stage>>, budgets: Budgets) =>
   Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis
     const progress = Arr.match(yield* Ref.get(stages), {
@@ -607,6 +683,7 @@ const stoppedReport = (notes: ReadonlyArray<string>, began: number, stages: Ref.
       onNonEmpty: (all) => progressOf(all, now),
     })
     for (const note of notes) yield* Console.log(note)
+    yield* Console.log(yield* budgetLine(budgets))
     yield* Console.log(`fork-checks: COULD NOT RUN: ${STOPPED}, after ${seconds(now - began)}; ${PROGRESS}: ${progress}`)
   })
 
@@ -619,15 +696,19 @@ export const checkFork = Effect.fn("ForkChecks.check")(function* (input: Input) 
   const began = yield* Clock.currentTimeMillis
   const active = yield* activeList(input.list, input.fork)
   const stages = yield* Ref.make<ReadonlyArray<Stage>>([])
+  const budgets = yield* budgetsOf(input.limits)
   const verdict = yield* Arr.match(active.features, {
     onEmpty: () => Effect.succeed<Verdict>({ kind: "green", notes: [] }),
-    onNonEmpty: (features) => checkHeld({ ...input, list: { ...input.list, features } }, stages),
-  }).pipe(Effect.onInterrupt(() => stoppedReport(active.notes, began, stages)))
+    onNonEmpty: (features) => checkHeld({ ...input, list: { ...input.list, features } }, stages, budgets),
+  }).pipe(Effect.onInterrupt(() => stoppedReport(active.notes, began, stages, budgets)))
   return { ...verdict, notes: [...active.notes, ...verdict.notes] } satisfies Verdict
 })
 
-/** The checks over features the checkout holds, each package's stage kept in `stages`. A host that cannot be read could not run. */
-const checkHeld = Effect.fn("ForkChecks.checkHeld")(function* (input: Input, stages: Ref.Ref<ReadonlyArray<Stage>>) {
+/**
+ * The checks over features the checkout holds, each package's stage kept in `stages`, each wait and run charged to its
+ * budget in `budgets`. A host that cannot be read could not run.
+ */
+const checkHeld = Effect.fn("ForkChecks.checkHeld")(function* (input: Input, stages: Ref.Ref<ReadonlyArray<Stage>>, budgets: Budgets) {
   const missing = yield* missingFiles(input.list, input.fork)
   if (missing.length > 0) return { kind: "red", reds: missing, notes: [] } satisfies Verdict
   const gauge = yield* HostGauge
@@ -636,9 +717,9 @@ const checkHeld = Effect.fn("ForkChecks.checkHeld")(function* (input: Input, sta
     const free = yield* gauge.freeBytes(input.fork)
     if ((yield* gauge.floored) && free < input.limits.diskFloor)
       return couldNot(`${(free / 2 ** 30).toFixed(1)} GiB free on ${input.fork}'s disk, under the ${(input.limits.diskFloor / 2 ** 30).toFixed(0)} GiB floor`)
-    const deadline = (yield* Clock.currentTimeMillis) + input.limits.timeBoundMs
-    const verdict = yield* patiently(input.limits, lock.holding(input.lock, runAll(input, deadline, stages)))
-    return Option.getOrElse(verdict, () => couldNot(`another fork-checks run held the host's lock for ${minutes(input.limits.waitMs)}`))
+    const verdict = yield* patiently(budgets.lock, input.limits.everyMs, lock.holding(input.lock, runAll(input, budgets, stages)))
+    if (Option.isSome(verdict)) return verdict.value
+    return couldNot(`the lock wait (${minutes(budgets.lock.allowanceMs)}) was spent: another fork-checks run held the host's lock`, [yield* budgetLine(budgets)])
   })
   return yield* checked.pipe(Effect.catchTag("HostUnread", (error) => Effect.succeed(couldNot(`the host could not be read: ${error.message}`))))
 })
@@ -807,7 +888,7 @@ const command = Command.make(
   {
     fork: Flag.String("fork").pipe(Flag.withDescription("The fork checkout (default OPENCODE_DEV)"), Flag.optional),
     list: Flag.String("list").pipe(Flag.withDescription("A list other than scripts/fork-checks.json (tests)"), Flag.optional),
-    timeBoundMs: Flag.Int("time-bound-ms").pipe(Flag.withDescription("The whole run's time bound"), Flag.withDefault(LIMITS.timeBoundMs)),
+    timeBoundMs: Flag.Int("time-bound-ms").pipe(Flag.withDescription("The package runs' budget (their run times only, no wait)"), Flag.withDefault(LIMITS.timeBoundMs)),
     maxLoad: Flag.Int("max-load").pipe(Flag.withDescription("The 1-minute load it waits under (tests)"), Flag.withDefault(LIMITS.maxLoad)),
     lock: Flag.String("lock").pipe(Flag.withDescription("The host lock file (tests)"), Flag.optional),
   },
