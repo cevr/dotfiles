@@ -14,6 +14,9 @@ HB_TARGET=${HB_TARGET:-}
 HB_FSTAB=${HB_FSTAB:-$HB_TARGET/etc/fstab}
 HB_HOME=${HB_HOME:-$HB_TARGET/home/$HB_USER}
 HB_WORKSPACES=${HB_WORKSPACES:-$HB_TARGET/workspaces}
+hb_docker_packages='docker.io docker-compose-v2 docker-buildx'
+hb_docker_services=(containerd.service docker.service)
+hb_jobs_cgroup=/user.slice/user-jobs.slice
 
 hb_require_host() {
     local identity=$hb_dir/host-identity.sh
@@ -35,6 +38,13 @@ die() { printf '%s: %s\n' "${0##*/}" "$*" >&2; exit 1; }
 need() { local c; for c; do command -v "$c" >/dev/null 2>&1 || die "missing command: $c"; done; }
 need_root() { [[ $(id -u) == 0 ]] || die "run as root (sudo $0 $*)"; }
 gb() { awk -v b="$1" 'BEGIN { printf "%.2f GB", b / 1e9 }'; }
+
+hb_unit_cgroup() {
+    local pid
+    pid=$(systemctl show "$1" -p MainPID --value) || return 1
+    [[ $pid =~ ^[1-9][0-9]*$ && -r /proc/$pid/cgroup ]] || return 1
+    awk -F: '$1 == 0 { print $3 }' "/proc/$pid/cgroup"
+}
 
 # The device that holds a mount point (findmnt prints [/subvol] after a btrfs
 # device; drop it).

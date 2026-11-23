@@ -23,8 +23,8 @@ def touch_pages(mib):
     return pages
 
 
-def grow(keep, pause=0):
-    while len(keep) < 256:  # fails the test without consuming the whole VM if limits were absent
+def grow(keep, pause=0, chunks=256):
+    while len(keep) < chunks:  # fail without consuming the whole VM if limits were absent
         keep.append(touch_pages(4))
         if pause:
             time.sleep(pause)
@@ -40,7 +40,10 @@ def hog(family):
     publish(family + ".ready", f"{os.getpid()} {sibling}\n")
     for _ in range(6500):
         if (ROOT / "hog-go").exists():
-            grow(data, 0.03 if family == "unnamed" else 0)
+            if family == "docker":
+                grow(data, pause=0.003, chunks=384)
+            else:
+                grow(data, pause=0.03 if family == "unnamed" else 0)
         time.sleep(0.02)
     raise SystemExit("hog start was not released")
 

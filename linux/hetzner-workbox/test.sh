@@ -77,8 +77,9 @@ tools_files=(
     /etc/systemd/system/user-.slice.d/20-workbox-memory-limit.conf
     /etc/systemd/system/{user.slice.d,system.slice.d}/40-workbox-slices.conf
     /etc/systemd/system/user@.service.d/40-workbox-delegate.conf
-    /etc/systemd/system/{workboxprotected.slice,workbox-opencode@.service,user-jobs.slice}
-    /etc/systemd/system/{cron,atd}.service.d/40-workbox-workload.conf
+    /etc/systemd/system/{workboxprotected.slice,workbox-opencode@.service}
+    /etc/systemd/system/user-jobs.slice.d/20-workbox-memory-limit.conf
+    /etc/systemd/system/{cron,atd,docker,containerd}.service.d/40-workbox-workload.conf
     /usr/local/libexec/workbox-opencode-server /etc/hetzner-workbox/host-identity.env
     /etc/tmpfiles.d/tmp.conf /usr/local/sbin/workbox-tmp-clean
     /etc/systemd/system/systemd-tmpfiles-clean.service.d/30-workbox-held.conf

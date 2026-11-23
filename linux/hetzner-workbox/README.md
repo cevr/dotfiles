@@ -146,8 +146,14 @@ Systemd resolves the shares against physical RAM. The 73% aggregate workload
 cap covers accounts and jobs together; each account's whole logind subtree
 is capped at 72%, including SSH, tmux, linger, user timers and arbitrary user
 units and slices. The four families and `app.slice` total 71%. If present,
-cron, at and default Docker containers share `user-jobs.slice` (36%, within
-the 73%, not another reservation). Workload and server do not swap.
+cron and at share `user-jobs.slice` with Docker's daemon, containerd, its
+shims, and default containers (36%, within the 73%, not another reservation).
+The packages phase configures Docker's systemd driver and workload parent
+before the package can start the engine; reserve also reconciles an installed
+engine. `check.sh docker` checks the configured parent, running driver, and
+actual Docker/containerd process cgroups. An explicit Docker `--cgroup-parent`
+override can choose another branch and is outside the guarantee. Workload
+and server do not swap.
 
 The root-managed `workbox-opencode@exedev.service` stays in the separate
 9% branch, with `MemoryMin=2%`, `MemoryLow=7%`, and `ManagedOOMPreference=omit`.

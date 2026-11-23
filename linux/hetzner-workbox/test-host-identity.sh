@@ -72,6 +72,7 @@ for mode in none wrong; do
         unchanged_refusal "$mode" bash "$here/sync.sh" $action
     done
     unchanged_refusal "$mode" bash "$here/check.sh"
+    unchanged_refusal "$mode" bash "$here/check.sh" docker
     unchanged_refusal "$mode" bash "$here/installimage-check.sh" "$root/fixture"
 done
 

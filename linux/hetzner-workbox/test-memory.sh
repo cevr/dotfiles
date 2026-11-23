@@ -28,8 +28,7 @@ until_file() {
 cleanup() {
     systemctl stop "$server_unit" >/dev/null 2>&1 || true
     rm -f -- "/run/systemd/system.control/$server_unit.d/50-MemoryMax.conf" \
-        "/run/systemd/system.control/user-$uid.slice.d/50-MemoryMax.conf" \
-        /run/systemd/system.control/user-jobs.slice.d/50-MemoryMax.conf
+        "/run/systemd/system.control/user-$uid.slice.d/50-MemoryMax.conf"
     systemctl daemon-reload
     uctl systemctl --user stop hbt-memory-survivor.scope hbt-unnamed.scope hbt-transient.service hbt-linger.service hbt-inventory.timer >/dev/null 2>&1 || true
     if [[ -n ${container_image:-} ]]; then docker rm -f hbt-docker >/dev/null 2>&1 || true; docker rmi "$container_image" >/dev/null 2>&1 || true; fi
@@ -81,7 +80,9 @@ reservation=$(cat "$protected/memory.max")
 ((total < parent && parent <= aggregate && aggregate + reservation + system_reserve <= physical)) ||
     die "caps=$total parent=$parent aggregate=$aggregate server=$reservation reserve=$system_reserve physical=$physical"
 echo "ok: installed kernel budgets: family+default $total < account $parent <= workload $aggregate; + server $reservation + system reserve $system_reserve <= physical $physical bytes"
-inventory() { python3 "$here/test-cgroup-inventory.py" "$uid" "$server" "$@"; }
+inventory_flags=()
+if [[ -n ${HB_TEST_SCRATCH:-} ]] && command -v dockerd >/dev/null; then inventory_flags+=(--docker); fi
+inventory() { python3 "$here/test-cgroup-inventory.py" "$uid" "$server" "${inventory_flags[@]}" "$@"; }
 inventory
 server_mem=$(cat "$server_cg/memory.current")
 server_kills=$(ectl "$server_cg/memory.events" oom_kill)
@@ -147,16 +148,28 @@ if [[ -n ${HB_TEST_SSH_KEY:-} ]]; then
     if [[ -n $tmux_start ]]; then until_file "$work/tmux.pid"; pids+=("$(cat "$work/tmux.pid")"); fi
 fi
 if [[ -n ${HB_TEST_SCRATCH:-} ]]; then
+    jobs_cg=$rootcg/user-jobs.slice
+    jobs_pid() {
+        local label=$1 pid=$2 path
+        [[ $pid =~ ^[1-9][0-9]*$ ]] && live "$pid" || die "$label did not start"
+        path=$(cg "$pid")
+        printf 'jobs inventory: %s (PID %s) %s; child cap=%s bytes\n' "$label" "$pid" "$path" "$(cat "$jobs_cg/memory.max")"
+        [[ $path == "$jobs_cg/"* ]] || die "$label is outside user-jobs.slice: $path"
+        pids+=("$pid")
+    }
+    if [[ ${HB_TEST_REQUIRE_JOBS:-} == with-jobs* ]]; then
+        for kind in cron at dockerd; do command -v "$kind" >/dev/null || die "fixture requires $kind"; done
+    fi
     for kind in cron at; do
         if ! command -v "$kind" >/dev/null; then echo "unproven: command -v $kind returned 1 (not installed)"; continue; fi
-        printf '#!/bin/sh\necho $$ > "%s/%s.pid"\nexec sleep 120\n' "$work" "$kind" > "$work/job-$kind"
+        printf '#!/bin/sh\necho $$ > "%s/%s.pid"\nexec sleep 180\n' "$work" "$kind" > "$work/job-$kind"
         chmod 755 "$work/job-$kind"
         if [[ $kind == cron ]]; then
-            systemctl restart cron.service
-            printf '* * * * * %s\n' "$work/job-$kind" | crontab -u "$user" -
+            printf '* * * * * %s\n' "$work/job-$kind" | uctl crontab -
         else
-            systemctl restart atd.service
-            job=$(printf '%s\n' "$work/job-$kind" | uctl env SHELL=/bin/sh at now 2>&1)
+            # at replays its submission cwd; use the readable guest fixture,
+            # not the caller's macOS checkout path.
+            job=$(cd "$work"; printf '%s\n' "$work/job-$kind" | uctl env SHELL=/bin/sh at now 2>&1)
             sed -nE 's/^job ([0-9]+).*/\1/p' <<<"$job" > "$HB_TEST_SCRATCH/at-job"
         fi
     done
@@ -164,25 +177,42 @@ if [[ -n ${HB_TEST_SCRATCH:-} ]]; then
         [[ -e $work/job-$kind ]] || continue
         for _ in {1..80}; do [[ -s $work/$kind.pid ]] && break; sleep 1; done
         until_file "$work/$kind.pid"
-        pids+=("$(cat "$work/$kind.pid")")
+        jobs_pid "$kind job" "$(cat "$work/$kind.pid")"
     done
+    [[ ! -e $work/job-cron ]] || uctl crontab -r
     if command -v dockerd >/dev/null; then
-        systemctl restart docker.service
+        # Launch Docker via the ordinary account's Docker group, not sudo.
+        driver=$(uctl docker info --format '{{.CgroupDriver}}/{{.CgroupVersion}}')
+        [[ $driver == systemd/2 ]] || die "expected Docker systemd/cgroup v2, got $driver"
+        printf 'Docker: cgroup driver/version = %s\n' "$driver"
+        jobs_pid dockerd "$(systemctl show docker.service -p MainPID --value)"
+        jobs_pid containerd "$(systemctl show containerd.service -p MainPID --value)"
         install -d "$work/container"
         for part in bin lib lib64 sbin; do
             [[ ! -L /$part ]] || ln -s "$(readlink "/$part")" "$work/container/$part"
         done
-        container_image=$(tar -C "$work/container" -c . | docker import -)
-        docker run --name=hbt-docker --network=none --volume=/usr:/usr:ro --volume="$work:$work" \
+        container_image=$(tar -C "$work/container" -c . | uctl docker import -)
+        uctl docker run --name=hbt-docker --network=none --volume=/usr:/usr:ro --volume="$work:$work" \
             --volume="$home:$home:ro" --env="HOME=$home" "$container_image" \
             /usr/bin/python3 "$home/.local/bin/opencode" hog docker &
         docker_job=$!
         until_file "$work/docker.ready"
-        docker_pid=$(docker inspect --format '{{.State.Pid}}' hbt-docker)
+        docker_pid=$(uctl docker inspect --format '{{.State.Pid}}' hbt-docker)
+        jobs_pid 'default container' "$docker_pid"
         docker_cg=$(cg "$docker_pid")
-        [[ $docker_cg == "$rootcg/user-jobs.slice/"* ]] || die "Docker bypasses the workload parent: $docker_cg"
-        systemctl set-property --runtime user-jobs.slice MemoryMax=64M
-        pids+=("$docker_pid")
+        container_id=$(uctl docker inspect --format '{{.Id}}' hbt-docker)
+        shims=$(ps -eo pid=,comm=,args= | awk -v id="$container_id" '$2 ~ /^containerd-shim/ && index($0, " -id " id) { print $1 }')
+        [[ -n $shims ]] || die "cannot find live shim for $container_id"
+        for shim in $shims; do jobs_pid 'containerd-shim' "$shim"; done
+        jobs_cap=$(cat "$jobs_cg/memory.max")
+        expected_cap=$((physical * 36 / 100))
+        [[ $(cat "$jobs_cg/memory.swap.max") == 0 && $(cat "$docker_cg/memory.max") == max ]] &&
+            ((jobs_cap <= expected_cap && jobs_cap >= expected_cap - 1048576 && jobs_cap < 1400 * 1048576)) ||
+            die "container is not exercising the installed, unswappable 36% cap on this bounded guest"
+        jobs_oom=$(ectl "$jobs_cg/memory.events.local" oom)
+        jobs_kills=$(ectl "$jobs_cg/memory.events" oom_kill)
+        workload_oom=$(ectl "$rootcg/memory.events.local" oom)
+        printf 'Docker: container limit is inherited from %s (%s bytes, 36%%); workload cap %s bytes\n' "$jobs_cg" "$jobs_cap" "$aggregate"
     else
         echo 'unproven: command -v dockerd returned 1 (Docker not installed)'
     fi
@@ -244,8 +274,14 @@ code=0; wait "$unnamed_job" || code=$?
 if live "$unnamed" || live "$unnamed_child"; then die "unnamed scope was not killed as a group"; fi
 if [[ -n ${docker_job:-} ]]; then
     code=0; wait "$docker_job" || code=$?
-    ((code == 137)) && [[ $(ectl "$rootcg/user-jobs.slice/memory.events.local" oom) -gt 0 ]] ||
-        die "Docker did not hit the jobs backstop (exit $code)"
+    jobs_oom_after=$(ectl "$jobs_cg/memory.events.local" oom)
+    jobs_kills_after=$(ectl "$jobs_cg/memory.events" oom_kill)
+    workload_oom_after=$(ectl "$rootcg/memory.events.local" oom)
+    ((code == 137 && jobs_oom_after > jobs_oom && jobs_kills_after > jobs_kills && workload_oom_after == workload_oom)) ||
+        die "Docker did not hit only the jobs backstop (exit $code, jobs OOM $jobs_oom->$jobs_oom_after, kills $jobs_kills->$jobs_kills_after, parent OOM $workload_oom->$workload_oom_after)"
+    printf 'Docker: exit=%s, 36%%-child local oom %s→%s, subtree oom_kill %s→%s, workload parent local oom %s→%s; State.OOMKilled=%s\n' \
+        "$code" "$jobs_oom" "$jobs_oom_after" "$jobs_kills" "$jobs_kills_after" "$workload_oom" "$workload_oom_after" \
+        "$(uctl docker inspect --format '{{.State.OOMKilled}}' hbt-docker)"
 fi
 live "$survivor" && live "$server" && [[ $(ectl "$server_cg/memory.events" oom_kill) == "$server_kills" ]] ||
     die "an unnamed or container kill escaped its workload branch"

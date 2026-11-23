@@ -58,10 +58,12 @@ after reboot. A hostname does not establish identity.
    `tools` installs the pinned tools; `storage` makes the limited subvolumes of
    `storage.conf` (README.md, Layout) and enables the unit that applies them at
    each boot; `reserve` installs the memory floor and the run families. Each
-   phase is idempotent: a rerun prints no install changes. Reboot before
-   opening the box to jobs, so Docker (if installed), cron and at (if
-   present) take their new placement. Activate the protected server only
-   with the `shell-cgroup-cap` launcher integration.
+   phase is idempotent: a rerun prints no install changes. `packages`
+   places Docker under the workload cap before starting it, even if `reserve`
+   ran earlier; `check.sh docker` checks its installed and running setup.
+   Reboot before opening the box to jobs so user managers get their installed
+   controller delegation. Activate the protected server only with the
+   `shell-cgroup-cap` launcher integration.
 
    It joins the tailnet as `bite-cristian-hel` (the exe node keeps
    `bite-cristian` until the cutover) and prints `NEWTS`.

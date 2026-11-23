@@ -44,7 +44,7 @@ HB_SSH_LISTEN=${HB_SSH_LISTEN:-}
 HB_SSH_PORT=${HB_SSH_PORT:-2222}
 HB_PACKAGES=${HB_PACKAGES:-"btrfs-progs btrbk mdadm rsync mbuffer zstd pv sshfs jq curl git zsh mosh tmux \
 ripgrep fd-find htop btop ncdu lsof unzip build-essential ffmpeg ghostscript sqlite3 nftables \
-redis-server syncthing docker.io docker-compose-v2 docker-buildx nodejs python3-pip nginx \
+redis-server syncthing $hb_docker_packages nodejs python3-pip nginx \
 unattended-upgrades systemd-resolved mongodb-org gh tailscale"}
 system_dir=$hb_dotfiles/workbox/systemd/system
 etc=${HB_ETC:-/etc}
@@ -135,6 +135,14 @@ phase_packages() {
                 "$arch" > /etc/apt/sources.list.d/github-cli.list
         fi
     fi
+    local docker_restart=0 docker_required=0
+    if [[ " $HB_PACKAGES " == *" docker.io "* ]] || command -v dockerd >/dev/null; then
+        # Install placement before apt: package postinst can start the engine
+        # even when reserve is not among the phases, or has already run.
+        docker_required=1
+        "$hb_dotfiles/workbox/system-tools.sh" slices
+        configure_docker
+    fi
     # shellcheck disable=SC2086 # a word list
     local missing
     missing=$(dpkg-query -W -f='${Package} ${db:Status-Abbrev}\n' $HB_PACKAGES 2>/dev/null | awk '$2 != "ii" { print $1 }' || true)
@@ -150,6 +158,7 @@ phase_packages() {
         say "ok: packages"
     fi
     getent group docker >/dev/null && id "$HB_USER" >/dev/null 2>&1 && usermod -a -G docker "$HB_USER"
+    if ((docker_required)); then activate_docker; fi
     if systemctl list-unit-files mongod.service >/dev/null 2>&1; then systemctl enable --now mongod.service >/dev/null 2>&1 || true; fi
     if systemctl list-unit-files syncthing@.service >/dev/null 2>&1 && id "$HB_USER" >/dev/null 2>&1; then
         systemctl enable "syncthing@$HB_USER.service" >/dev/null 2>&1 || true
@@ -255,27 +264,54 @@ phase_storage() {
     systemd-tmpfiles --create ${HB_TARGET:+"--root=$HB_TARGET"} - < "$etc/tmpfiles.d/hetzner-runs.conf"
 }
 
+configure_docker() {
+    local config=$etc/docker/daemon.json candidate
+    candidate=$(mktemp)
+    if ! python3 -c '
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+config = json.loads(path.read_text()) if path.exists() else {}
+config["cgroup-parent"] = "user-jobs.slice"
+options = config.get("exec-opts", [])
+if not isinstance(options, list):
+    raise ValueError("exec-opts must be a list")
+config["exec-opts"] = [x for x in options if not x.startswith("native.cgroupdriver=")] + ["native.cgroupdriver=systemd"]
+print(json.dumps(config, indent=2))
+' "$config" > "$candidate" || { command -v dockerd >/dev/null && ! dockerd --validate --config-file "$candidate"; }; then
+        rm -f "$candidate"
+        die "Docker workload configuration is invalid"
+    fi
+    if put 0644 "$candidate" "$config" && systemctl is-active --quiet docker.service; then docker_restart=1; fi
+    rm -f "$candidate"
+}
+
+activate_docker() {
+    local service
+    dockerd --validate --config-file "$etc/docker/daemon.json"
+    for service in "${hb_docker_services[@]}"; do
+        if systemctl is-active --quiet "$service" && [[ $(hb_unit_cgroup "$service") != "$hb_jobs_cgroup/$service" ]]; then
+            # Move a preexisting runtime as one group; on a fresh install apt
+            # has already started it with the installed placement.
+            systemctl stop docker.service docker.socket containerd.service
+            break
+        fi
+    done
+    if ((docker_restart)) && systemctl is-active --quiet docker.service; then systemctl restart docker.service; fi
+    systemctl start "${hb_docker_services[@]}"
+}
+
 phase_reserve() {
     "$hb_dotfiles/workbox/system-tools.sh" reserve slices
-    # Docker uses systemd cgroups on Noble. Keep daemon-launched containers inside
-    # the same workload budget as login sessions; do not replace unrelated settings.
+    local docker_restart=0 service
     if command -v dockerd >/dev/null; then
-        local config=$etc/docker/daemon.json candidate
-        candidate=$(mktemp)
-        if [[ -e $config ]]; then
-            jq -e 'if type != "object" then error("expected object")
-                else .["cgroup-parent"] = "user-jobs.slice"
-                | .["exec-opts"] = (((.["exec-opts"] // []) | map(select(startswith("native.cgroupdriver=") | not))) + ["native.cgroupdriver=systemd"]) end' \
-                "$config" > "$candidate"
-        else
-            printf '%s\n' '{"cgroup-parent":"user-jobs.slice","exec-opts":["native.cgroupdriver=systemd"]}' > "$candidate"
-        fi
-        dockerd --validate --config-file "$candidate" || die "Docker workload configuration is invalid"
-        if put 0644 "$candidate" "$config"; then
-            say "Docker's workload parent applies at its next start; reboot before opening the new box to jobs"
-        fi
-        rm -f "$candidate"
+        configure_docker
+        activate_docker
     fi
+    for service in cron.service atd.service; do
+        if systemctl is-active --quiet "$service" && [[ $(hb_unit_cgroup "$service") != "$hb_jobs_cgroup/$service" ]]; then
+            systemctl restart "$service"
+        fi
+    done
 }
 
 phase_upgrades() {
