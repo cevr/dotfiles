@@ -121,19 +121,53 @@ export const NODE_DISK: Disk = {
   list: (dir) => Option.getOrElse(Option.liftThrowable(() => readdirSync(dir))(), (): ReadonlyArray<string> => []),
 }
 
-/** Make `dir` and every missing parent, each name synced into its parent before the next: a power loss leaves no file in a directory that is not there. */
-export const makeDir = (dir: string, disk: Disk = NODE_DISK): void => {
+/** A process's own synced directory names. The job store does not rename or remove directories. */
+const sealed = new WeakMap<Disk, Set<string>>()
+
+/** Establish every name from the filesystem root down, including names first seen from a peer. */
+const sealPath = (dir: string, disk: Disk, synced: Set<string>, create: boolean): boolean => {
+  if (synced.has(dir)) return true
   const parent = path.dirname(dir)
-  if (parent === dir || disk.list(parent).includes(path.basename(dir))) return
-  makeDir(parent, disk)
-  disk.mkdir(dir)
+  if (parent === dir) return true
+  if (!sealPath(parent, disk, synced, create)) return false
+  if (!disk.list(parent).includes(path.basename(dir))) {
+    if (!create) return false
+    disk.mkdir(dir)
+  }
   disk.syncDir(parent)
+  synced.add(dir)
+  return true
+}
+
+const directoriesOf = (disk: Disk) => {
+  const seen = Option.fromUndefinedOr(sealed.get(disk))
+  if (Option.isSome(seen)) return seen.value
+  const synced = new Set<string>()
+  sealed.set(disk, synced)
+  return synced
+}
+
+/** Open a directory by a path this process has made durable, without creating a missing name. */
+export const openDir = (dir: string, disk: Disk = NODE_DISK): boolean => sealPath(path.resolve(dir), disk, directoriesOf(disk), false)
+
+/** Make or open a directory by a path this process has made durable. */
+const makeDir = (dir: string, disk: Disk): void => {
+  sealPath(path.resolve(dir), disk, directoriesOf(disk), true)
+}
+
+/** Stabilize a reader's visible names before depending on them, even when their writer has not synced them yet. */
+export const sealDirectory = (dir: string, disk: Disk): boolean => {
+  if (!openDir(dir, disk)) return false
+  disk.syncDir(dir)
+  return true
 }
 
 /** Remove `file` and sync its directory, so the name stays gone after a power loss. */
 export const removeDurable = (file: string, disk: Disk = NODE_DISK): void => {
+  const dir = path.dirname(file)
+  if (!openDir(dir, disk)) return
   disk.unlink(file)
-  disk.syncDir(path.dirname(file))
+  disk.syncDir(dir)
 }
 
 /** This process's pid. */
@@ -144,13 +178,16 @@ const made = { count: 0 }
 
 /**
  * Write `value` as JSON to `file` so a reader, a crash or a power loss never leaves half of it: a temporary file of
- * its own, written and synced; then the name (a link when exclusive, else a rename); then the directory synced. A
+ * its own, written and synced, in a directory already reachable from the root; then the name (a link when exclusive,
+ * else a rename); then the directory synced. A
  * writer acts on what it wrote only once this returns. At each barrier a loss leaves: before the name, the file as it
  * was (a stray `*.tmp`, which nothing reads); after it, the new file whole, or (a power loss before the directory's
  * sync) the old one, as if the write never was. Whether it took the name (an exclusive write finds it taken: false).
  */
 export const writeDurable = <A>(file: string, value: A, options: Durable = {}): boolean => {
   const disk = options.disk ?? NODE_DISK
+  const dir = path.dirname(file)
+  makeDir(dir, disk)
   made.count += 1
   // A stray one of a dead process under the same pid is overwritten: that process links nothing any more.
   const temporary = `${file}.${SELF}.${made.count}.tmp`
@@ -172,7 +209,7 @@ export const writeDurable = <A>(file: string, value: A, options: Durable = {}): 
     disk.unlink(temporary)
   }
   options.barrier?.("named")
-  disk.syncDir(path.dirname(file))
+  disk.syncDir(dir)
   return true
 }
 
@@ -270,6 +307,7 @@ export const supervise = async (
   grace = KILL_GRACE_MS,
   write: (file: string, value: JobExit) => void = writeAtomic,
 ): Promise<Option.Option<JobExit>> => {
+  if (!openDir(dir)) return Option.none()
   const job = JSON.parse(readFileSync(path.join(dir, FILES.job), "utf8")) as JobFile
   const startedAt = Date.now()
 

@@ -191,6 +191,8 @@ export class Runner extends Context.Service<
     readonly advance: (id: string, version: number, next: Delivery) => Effect.Effect<boolean>
     /** Flush a delivery slot read from another writer before acting on it. A name is visible before that writer's sync. */
     readonly stabilize: (id: string) => Effect.Effect<void>
+    /** Before removing an entry with a held delivery, make its record durably discoverable without that entry. */
+    readonly retain: (id: string) => Effect.Effect<void>
     /** Managed jobs whose delivery is not yet final, optionally restricted by home directory and/or owner. */
     readonly owed: (query?: { readonly directory?: string; readonly sessionID?: string }) => Effect.Effect<ReadonlyArray<string>>
   }

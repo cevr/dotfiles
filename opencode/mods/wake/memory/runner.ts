@@ -210,6 +210,7 @@ const serviceOf = (memory: MemoryRunner, mine: Map<string, () => void>): Runner[
         return true
       }),
     stabilize: () => Effect.void,
+    retain: () => Effect.void,
     owed: ({ directory, sessionID } = {}) =>
       Effect.sync(() =>
         [...memory.jobs.values()].flatMap((job) =>

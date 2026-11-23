@@ -25,7 +25,7 @@ import { JobExit, type JobRecord, JobSpec, type Launched, NEVER_STARTED, type Ru
 import { type Exec } from "../cron/backstop.ts"
 import { JobRefused, Runner } from "../service.ts"
 import { Delivery, isJobID, LaunchClaim, type Retired, RunnerClaim, type Slot } from "../job-event.ts"
-import { type Barrier, type Disk, FILES, type JobFile, makeDir, NODE_DISK, processStart, removeDurable, SELF, writeAtomic, writeDurable } from "./supervise.ts"
+import { type Barrier, type Disk, FILES, type JobFile, NODE_DISK, openDir, processStart, removeDurable, sealDirectory, SELF, writeAtomic, writeDurable } from "./supervise.ts"
 
 export interface Config {
   /** Where each job's directory is kept. */
@@ -135,13 +135,12 @@ const OWED = ".owed"
 
 /** Retire the job in `dir` (made if it is not there yet, so a launch still to come is fenced too): whether its launch slot was free. */
 export const retireIn = (dir: string, at: number, barrier: (at: Barrier) => void = () => {}, disk: Disk = NODE_DISK): boolean => {
-  makeDir(dir, disk)
   return writeDurable(path.join(dir, FILES.runner), { retiredAt: at } satisfies Retired, { exclusive: true, barrier, disk })
 }
 
 /** Write slot `version + 1` of the delivery record in `dir`, only if no writer took it: whether this one did. Slots are taken in order, so it is taken only while `version` is the newest. */
 export const advanceIn = (dir: string, version: number, next: Delivery, barrier: (at: Barrier) => void = () => {}, disk: Disk = NODE_DISK): boolean =>
-  disk.list(path.dirname(dir)).includes(path.basename(dir)) && writeDurable(path.join(dir, `delivery.${version + 1}.json`), next, { exclusive: true, barrier, disk })
+  openDir(dir, disk) && writeDurable(path.join(dir, `delivery.${version + 1}.json`), next, { exclusive: true, barrier, disk })
 
 /** The launch slot of the job in `dir`: its runner's claim or the wakes' retirement; none while neither took it. */
 export const launchOf = (dir: string, disk: Disk = NODE_DISK): Option.Option<LaunchClaim> => readJson(LaunchClaim, path.join(dir, FILES.runner), disk)
@@ -152,13 +151,9 @@ export const launchOf = (dir: string, disk: Disk = NODE_DISK): Option.Option<Lau
  */
 export const writeLaunch = (root: string, spec: JobSpec, file: JobFile, env: Readonly<Record<string, string>>, disk: Disk = NODE_DISK): void => {
   const dir = path.join(root, spec.id)
-  makeDir(dir, disk)
   writeAtomic(path.join(dir, FILES.job), file, 0o600, disk)
   writeAtomic(path.join(dir, FILES.env), env, 0o600, disk)
-  if (Option.isSome(Option.fromNullishOr(spec.generation))) {
-    makeDir(path.join(root, OWED), disk)
-    writeAtomic(path.join(root, OWED, spec.id), {}, 0o600, disk)
-  }
+  if (Option.isSome(Option.fromNullishOr(spec.generation))) writeAtomic(path.join(root, OWED, spec.id), {}, 0o600, disk)
 }
 
 /** The bytes of `file` from `from` to its end, or none. */
@@ -189,6 +184,11 @@ export const layer = (config: Config) => {
   const disk = config.disk ?? NODE_DISK
   const written = (id: string, what: string, write: () => boolean) =>
     Effect.try({ try: write, catch: (cause) => new RecordUnwritten({ id, what, cause: String(cause) }) }).pipe(Effect.orDie)
+  const required = (id: string, what: string, write: () => boolean) =>
+    written(id, what, write).pipe(
+      Effect.flatMap((ok) => Effect.when(Effect.die(new RecordUnwritten({ id, what, cause: "missing record directory" })), Effect.succeed(!ok))),
+      Effect.asVoid,
+    )
 
   /** Each watched job's watch: one per live job, on its own directory alone. */
   const watches = new Map<string, FSWatcher>()
@@ -244,14 +244,25 @@ export const layer = (config: Config) => {
         if (took && next.state === "delivered") removeDurable(path.join(config.root, OWED, id), disk)
         return took
       }),
-    stabilize: (id) => Effect.sync(() => disk.syncDir(dirOf(id))),
+    stabilize: (id) => required(id, "stabilize", () => sealDirectory(dirOf(id), disk)),
+    retain: (id) =>
+      required(id, "retain", () => {
+        if (!openDir(dirOf(id), disk)) return false
+        const marker = path.join(config.root, OWED, id)
+        // An older run may have lost the marker, or a peer may not have flushed its rename yet.
+        if (Option.isNone(disk.read(marker))) writeAtomic(marker, {}, 0o600, disk)
+        else return sealDirectory(path.dirname(marker), disk)
+        return true
+      }),
     owed: ({ directory, sessionID } = {}) =>
       Effect.sync(() => {
-        const listed = disk.list(path.join(config.root, OWED))
-        return listed.filter(isJobID).filter((id) => {
+        const index = path.join(config.root, OWED)
+        if (!openDir(index, disk)) return []
+        return disk.list(index).filter(isJobID).filter((id) => {
           const dir = dirOf(id)
+          if (!openDir(dir, disk)) return false
           if (Option.exists(slotOf(dir, disk), (slot) => slot.delivery.state === "delivered")) {
-            removeDurable(path.join(config.root, OWED, id), disk)
+            if (sealDirectory(dir, disk)) removeDurable(path.join(index, id), disk)
             return false
           }
           return Option.exists(readJson(Spec, path.join(dir, FILES.job), disk), ({ spec }) =>
@@ -290,7 +301,8 @@ export const layer = (config: Config) => {
     read: (id) =>
       Effect.sync(() => {
         const dir = dirOf(id)
-        const record = Option.map(readJson(Spec, path.join(dir, FILES.job), disk), (job): JobRecord => ({
+        const spec = Option.flatMap(Option.liftPredicate(dir, (entry) => openDir(entry, disk)), (entry) => readJson(Spec, path.join(entry, FILES.job), disk))
+        const record = Option.map(spec, (job): JobRecord => ({
           spec: job.spec,
           run: runOf(dir, disk),
           log: path.join(dir, FILES.log),
@@ -320,7 +332,7 @@ export const layer = (config: Config) => {
     kill: (id) =>
       Effect.sync(() => {
         const dir = dirOf(id)
-        if (Option.isNone(disk.read(path.join(dir, FILES.job)))) return false
+        if (!openDir(dir, disk) || Option.isNone(disk.read(path.join(dir, FILES.job)))) return false
         const run = runOf(dir, disk)
         if (run.state === "starting") {
           writeFileSync(path.join(dir, FILES.stop), "")

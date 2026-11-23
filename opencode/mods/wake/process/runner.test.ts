@@ -17,9 +17,9 @@ import * as MemoryCourier from "../memory/courier.ts"
 import * as MemoryOpener from "../memory/opener.ts"
 import * as MemoryStore from "../memory/store.ts"
 import * as Model from "../model.ts"
-import { type CallAnswer, Changes, Runner } from "../service.ts"
+import { type CallAnswer, Changes, Runner, WakeStore } from "../service.ts"
 import * as ProcessRunner from "./runner.ts"
-import { argvOf, claim, type Disk, FILES, hostOf, processStart, ranOf, scopeAvailable, writeAtomic, writeExit } from "./supervise.ts"
+import { argvOf, claim, type Disk, FILES, hostOf, processStart, ranOf, removeDurable, scopeAvailable, writeAtomic, writeDurable, writeExit } from "./supervise.ts"
 import type { Ran } from "../cron/backstop.ts"
 import { bounded, notYet, type Observation, type Policy, ready, type TestBounds, testLimitMs, waitFor } from "./readiness.ts"
 
@@ -420,19 +420,19 @@ describe("the runner's claim and its exit", () => {
     "an exit write that fails is tried again; one that never goes through says so",
     Effect.gen(function* () {
       const dir = yield* scratchDir("opencode-job-exit-")
-      // Its directory appears only at the second try: the first write fails as a transient error would.
+      // Inject a one-time failure at the writer port, not a missing directory (the writer now creates it).
       const late = path.join(dir, "late")
       const tries = { count: 0 }
       const transient = (file: string, value: JobExit) => {
         tries.count += 1
-        if (tries.count === 2) mkdirSync(late)
+        if (tries.count === 1) lost()
         writeAtomic(file, value)
       }
       const exit: JobExit = { exitCode: 0, startedAt: 1, endedAt: 2, timedOut: false, killed: false, disposition: "succeeded", generation: 1, sequence: 1 }
       expect(yield* writeExit(late, exit, transient)).toBe(true)
       expect(tries.count).toBe(2)
       expect(Schema.decodeUnknownSync(Schema.fromJsonString(JobExit))(readFileSync(path.join(late, FILES.exit), "utf8"))).toEqual(exit)
-      expect(yield* writeExit(path.join(dir, "missing", "dir"), exit)).toBe(false)
+      expect(yield* writeExit(late, exit, () => lost())).toBe(false)
     }),
   )
 })
@@ -704,6 +704,7 @@ const CRASH_ROOT = "/r/jobs"
 const CRASH_DIRS = new Set(["/", "/r", CRASH_ROOT])
 const CRASH_OWNER = "ses_crash"
 const CRASH_HOME = "/work/crash"
+const CRASH_DESTINATION = "/work/moved"
 
 /** What the actors outside the disk did: they survive a power loss of the disk. */
 interface Acted {
@@ -718,10 +719,18 @@ interface Acted {
 }
 
 /** A server of the wakes over `disk`: the process runner (its launch goes through a systemd stand-in, so no process starts) and the model. */
-const crashServer = (disk: Disk, store: MemoryStore.MemoryWakes, inbox: MemoryCourier.MemorySessions, acted: Acted) =>
+const crashServer = (
+  disk: Disk, store: MemoryStore.MemoryWakes, inbox: MemoryCourier.MemorySessions, acted: Acted,
+  options: {
+    readonly root?: string
+    readonly directory?: string
+    readonly beforeLaunch?: (job: JobSpec) => Effect.Effect<void>
+    readonly afterDrop?: (id: string) => void
+  } = {},
+) =>
   Effect.gen(function* () {
     const runner = ProcessRunner.layer({
-      root: CRASH_ROOT,
+      root: options.root ?? CRASH_ROOT,
       bun: "/nonexistent/loop-probe-bun",
       script: "/nonexistent/loop-probe-script",
       platform: "linux",
@@ -730,12 +739,28 @@ const crashServer = (disk: Disk, store: MemoryStore.MemoryWakes, inbox: MemoryCo
       watch: () => Option.getOrThrowWith(Option.none<never>(), () => ({ code: "ENOSPC" })),
       disk,
     })
+    const beforeLaunch = Option.fromUndefinedOr(options.beforeLaunch)
+    const hooked = Option.match(beforeLaunch, {
+      onNone: () => runner,
+      onSome: (onLaunch) => Layer.effect(Runner, Effect.gen(function* () {
+        const inner = yield* Runner
+        return Runner.of({ ...inner, launch: (spec) => onLaunch(spec).pipe(Effect.andThen(inner.launch(spec))) })
+      })).pipe(Layer.provide(runner)),
+    })
+    const storeLayer = MemoryStore.layer(store)
+    const withDrop = Option.match(Option.fromUndefinedOr(options.afterDrop), {
+      onNone: () => storeLayer,
+      onSome: (drop) => Layer.effect(WakeStore, Effect.gen(function* () {
+        const inner = yield* WakeStore
+        return WakeStore.of({ ...inner, remove: (id) => inner.remove(id).pipe(Effect.tap(() => Effect.sync(() => drop(id)))) })
+      })).pipe(Layer.provide(storeLayer)),
+    })
     const answered = (_sessionID: string, call: string) =>
       Effect.succeed(
         Option.getOrElse(Option.fromNullishOr(acted.calls.get(call)), (): CallAnswer => "failed"),
       )
-    const layer = Model.layer({ directory: CRASH_HOME, recoverMs: 60_000, answered }).pipe(
-      Layer.provide(Layer.mergeAll(runner, MemoryStore.layer(store), MemoryCourier.layer(inbox), MemoryChecks.layer(MemoryChecks.empty()), MemoryBackstop.layer(MemoryBackstop.empty()), MemoryOpener.layer(MemoryOpener.empty()))),
+    const layer = Model.layer({ directory: options.directory ?? CRASH_HOME, ownerHere: () => Effect.succeed(true), recoverMs: 60_000, answered }).pipe(
+      Layer.provide(Layer.mergeAll(hooked, withDrop, MemoryCourier.layer(inbox), MemoryChecks.layer(MemoryChecks.empty()), MemoryBackstop.layer(MemoryBackstop.empty()), MemoryOpener.layer(MemoryOpener.empty()))),
       Layer.provide(Layer.succeed(Changes, Changes.of({ changed: () => Effect.void }))),
     )
     return Context.get(yield* Layer.build(layer), Model.WakesModel)
@@ -959,3 +984,191 @@ limitedTest("a second location makes a visible but unsynced letter slot durable 
     expect(received()).toEqual([delivery])
   }).pipe(Effect.provide(TestClock.layer()), Effect.provide(Logger.layer([]))),
 )
+
+/** A stopped peer really enters the production disk adapter, but dies after the chosen name becomes visible. */
+const stoppedPeer = (disk: Disk, stopAfter: { readonly operation: "mkdir" | "rename" | "link"; readonly name: string }, write: (peer: Disk) => void) =>
+  Effect.exit(Effect.sync(() => {
+    const stop = (operation: typeof stopAfter.operation, name: string) => {
+      if (stopAfter.operation === operation && stopAfter.name === name) lost()
+    }
+    write({
+      ...disk,
+      mkdir: (dir) => {
+        disk.mkdir(dir)
+        stop("mkdir", dir)
+      },
+      rename: (from, to) => {
+        disk.rename(from, to)
+        stop("rename", to)
+      },
+      link: (from, to) => {
+        const took = disk.link(from, to)
+        if (took) stop("link", to)
+        return took
+      },
+    })
+  }))
+
+const peerCases = ["ancestor", "inside", "root", "job-dir", "index", "spec", "env", "exit", "marker", "held"] as const
+type PeerCase = typeof peerCases[number]
+const DEEP_ROOT = "/r/shared/instance/jobs"
+const markerAt = (root: string, id: string) => path.join(root, ".owed", id)
+
+/** The original delivery ID must survive loss of either actor, and home or the moved destination can recover alone. */
+const reopenAt = (disks: () => Iterable<Crash>, store: MemoryStore.MemoryWakes, acted: Acted, id: string, delivery: string) =>
+  Effect.gen(function* () {
+    let reopenedCount = 0
+    // Enumerate fresh disks for each location so recovery in one never repairs the other's disk.
+    for (const location of [CRASH_HOME, CRASH_DESTINATION]) {
+      for (const { disk } of disks()) {
+        const kept: MemoryStore.MemoryWakes = { entries: new Map(store.entries), notices: new Map(store.notices), broken: new Set(store.broken) }
+        const inbox = MemoryCourier.empty(CRASH_OWNER)
+        // Reopening must use the recorded id, not coincidentally mint the same first id in a fresh courier.
+        inbox.minted = 1000
+        yield* Effect.scoped(Effect.gen(function* () {
+          const model = yield* crashServer(disk, kept, inbox, acted, { root: DEEP_ROOT, directory: location })
+          yield* model.start
+          yield* yieldAll
+          for (const _ of [1, 2, 3]) {
+            yield* TestClock.adjust("61 seconds")
+            yield* yieldAll
+          }
+        }))
+        expect((inbox.inboxes.get(CRASH_OWNER) ?? []).map(({ id: message }) => message)).toEqual([delivery])
+        expect(endsIn(inbox, id)).toEqual(["succeeded"])
+        const final = ProcessRunner.slotOf(path.join(DEEP_ROOT, id), disk)
+        expect(Option.map(final, (slot) => slot.delivery.state)).toEqual(Option.some("delivered"))
+        expect(Option.map(final, (slot) => slot.delivery.delivery)).toEqual(Option.some(delivery))
+        expect(claim(path.join(DEEP_ROOT, id), 3, NO_PROCESS, () => {}, { ...disk })).toBe(false)
+        expect(acted.ran).toBe(1)
+        reopenedCount += 1
+      }
+    }
+    return reopenedCount
+  })
+
+const pauseAtDirectory = (which: PeerCase, id: string) => Match.value(which).pipe(
+  Match.when("ancestor", () => Option.some("/r/shared")),
+  Match.when("inside", () => Option.some("/r/shared/instance")),
+  Match.when("root", () => Option.some(DEEP_ROOT)),
+  Match.when("job-dir", () => Option.some(path.join(DEEP_ROOT, id))),
+  Match.when("index", () => Option.some(path.join(DEEP_ROOT, ".owed"))),
+  Match.orElse(() => Option.none<string>()),
+)
+
+const pauseAtLaunch = (which: PeerCase, id: string) => Match.value(which).pipe(
+  Match.when("spec", () => Option.some(path.join(DEEP_ROOT, id, FILES.job))),
+  Match.when("env", () => Option.some(path.join(DEEP_ROOT, id, FILES.env))),
+  Match.orElse(() => Option.none<string>()),
+)
+
+/** Before the dependent writer runs, check that the exact name, not just some unrelated name, can be lost. */
+const uncommitted = (crash: Crash, parent: string, name: string) => {
+  const survived = new Set<boolean>()
+  for (const { disk } of crash.outcomes()) {
+    survived.add(disk.list(parent).includes(name))
+    if (survived.size === 2) break
+  }
+  expect(survived).toEqual(new Set([false, true]))
+}
+
+limitedTest("a peer paused at mkdir, rename or link cannot strand a dependent write; each location recovers the original delivery after power loss",
+  Effect.gen(function* () {
+    let checked = 0
+    for (const which of peerCases) {
+      const crash = crashDisk(Number.POSITIVE_INFINITY, new Map(), new Set(["/", "/r"]))
+      const { disk } = crash
+      const store = MemoryStore.empty()
+      const acted: Acted = { ran: 0, exited: false, calls: new Map(), answers: [] }
+      const before = MemoryCourier.empty(CRASH_OWNER)
+      const atDrop: Array<ReadonlyArray<Crash>> = []
+      const { id, delivery } = yield* Effect.scoped(Effect.gen(function* () {
+        const model = yield* crashServer(disk, store, before, acted, {
+          root: DEEP_ROOT,
+          afterDrop: () => {
+            atDrop.push([...crash.outcomes()], [...crash.outcomes()])
+          },
+          beforeLaunch: (spec) => Effect.gen(function* () {
+            // Ensure that creating .owed later cannot incidentally flush the job's parent directory.
+            if (which === "job-dir") writeAtomic(path.join(DEEP_ROOT, ".owed", "peer.json"), {}, 0o600, { ...disk })
+            const launch = (peer: Disk) => ProcessRunner.writeLaunch(DEEP_ROOT, spec, { spec }, {}, peer)
+            for (const name of Option.toArray(pauseAtDirectory(which, spec.id))) {
+              const result = yield* stoppedPeer(disk, { operation: "mkdir", name }, launch)
+              expect(Exit.isFailure(result)).toBe(true)
+              uncommitted(crash, path.dirname(name), path.basename(name))
+            }
+            for (const name of Option.toArray(pauseAtLaunch(which, spec.id))) {
+              const result = yield* stoppedPeer(disk, { operation: "rename", name }, launch)
+              expect(Exit.isFailure(result)).toBe(true)
+              uncommitted(crash, path.dirname(name), path.basename(name))
+            }
+          }),
+        })
+        const { job: { id } } = yield* model.job(CRASH_OWNER, { command: "true", note: "two disk writers" })
+        yield* yieldAll
+        const dir = path.join(DEEP_ROOT, id)
+        const supervisor = { ...disk }
+        expect(claim(dir, 1, NO_PROCESS, () => {}, supervisor)).toBe(true)
+        expect(claim(dir, 1, NO_PROCESS, () => {}, { ...disk })).toBe(false)
+        acted.ran += 1
+        const exitPath = path.join(dir, FILES.exit)
+        const writeEnd = (writer: Disk) =>
+          writeAtomic(exitPath, { exitCode: 0, startedAt: 1, endedAt: 2, timedOut: false, killed: false, disposition: "succeeded", generation: 1, sequence: 1 }, 0o600, writer)
+        if (which === "exit") {
+          const result = yield* stoppedPeer(disk, { operation: "rename", name: exitPath }, writeEnd)
+          expect(Exit.isFailure(result)).toBe(true)
+          uncommitted(crash, dir, FILES.exit)
+        } else writeEnd(supervisor)
+        const marker = markerAt(DEEP_ROOT, id)
+        if (which === "marker") {
+          // A r4-era obstacle left no durable index, and a competing writer has only renamed its replacement.
+          removeDurable(marker, disk)
+          const result = yield* stoppedPeer(disk, { operation: "rename", name: marker }, (peer) => writeAtomic(marker, {}, 0o600, peer))
+          expect(Exit.isFailure(result)).toBe(true)
+          uncommitted(crash, path.dirname(marker), id)
+        }
+        if (which === "held") {
+          const found = "msg_peer_letter"
+          const name = path.join(dir, "delivery.1.json")
+          const result = yield* stoppedPeer(disk, { operation: "link", name }, (peer) => {
+            writeDurable(name, { state: "delivering", delivery: found, attempt: "msg_peer_attempt", holder: { kind: "answer", sessionID: CRASH_OWNER, call: "call_a", message: "msg_a" } }, { exclusive: true, disk: peer })
+          })
+          expect(Exit.isFailure(result)).toBe(true)
+          uncommitted(crash, dir, path.basename(name))
+          // Persist a follow-up write in the exit's directory while the peer has not returned.
+          writeAtomic(path.join(dir, FILES.launch), { how: "systemd" }, 0o600, { ...disk })
+          return { id, delivery: found }
+        }
+        expect((yield* model.wait(CRASH_OWNER, id, 0, { id: "call_test", message: "msg_test" })).delivered).toBe(true)
+        expect(store.entries.has(id)).toBe(false)
+        const slot = Option.getOrThrow(ProcessRunner.slotOf(dir, disk))
+        return { id, delivery: slot.delivery.delivery }
+      }))
+      if (which === "held") {
+        checked += yield* reopenAt(crash.outcomes, store, acted, id, delivery)
+      } else {
+        expect(atDrop).toHaveLength(2)
+        checked += yield* reopenAt(() => got(atDrop.shift()), store, acted, id, delivery)
+      }
+    }
+    expect(checked).toBeGreaterThanOrEqual(peerCases.length * 2)
+    yield* Console.log(`peer power loss: ${peerCases.length} name pauses, ${checked} independently reopened locations`)
+  }).pipe(Effect.provide(TestClock.layer()), Effect.provide(Logger.layer([]))),
+)
+
+test("each writer seals an existing path once, but flushes the containing directory for every write", () => {
+  const { disk } = crashDisk(Number.POSITIVE_INFINITY, new Map(), new Set(["/", "/r", "/r/cache", "/r/cache/job"]))
+  const writer = () => {
+    const flushed: Array<string> = []
+    const port: Disk = { ...disk, syncDir: (dir) => {
+      disk.syncDir(dir)
+      flushed.push(dir)
+    } }
+    writeAtomic("/r/cache/job/first.json", {}, 0o600, port)
+    writeAtomic("/r/cache/job/second.json", {}, 0o600, port)
+    return flushed
+  }
+  const expected = ["/", "/r", "/r/cache", "/r/cache/job", "/r/cache/job"]
+  expect(writer()).toEqual(expected)
+  expect(writer()).toEqual(expected)
+})

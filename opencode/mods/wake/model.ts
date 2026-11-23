@@ -736,6 +736,7 @@ export const layer = (config: Config) =>
           }
           const held = slot.value.delivery
           if (held.state === "delivered") {
+            yield* runner.stabilize(job.id)
             yield* tidy(job.id)
             return "gone" as const
           }
@@ -937,13 +938,17 @@ export const layer = (config: Config) =>
       })
 
       /** The job's home and the moved owner's destination can resume a recorded delivery at startup. */
-      const resumeOwed = (own: ReadonlyArray<Entry>) =>
+      const resumeOwed = (entries: ReadonlyArray<Entry>, own: ReadonlyArray<Entry>) =>
         Effect.gen(function* () {
           const owed = yield* runner.owed({ directory: config.directory })
           for (const id of owed) if (!own.some((entry) => entry.id === id)) yield* again(id, 0)
           for (const ownerHere of Option.toArray(Option.fromUndefinedOr(config.ownerHere))) {
             const local = new Set(owed)
-            for (const id of yield* runner.owed()) {
+            const candidates = new Set(yield* runner.owed())
+            for (const entry of entries) {
+              if (entry.kind === "job" && (yield* ownerHere(entry.sessionID))) candidates.add(entry.id)
+            }
+            for (const id of candidates) {
               if (local.has(id)) continue
               const record = Option.filter(Option.fromUndefinedOr(yield* runner.read(id)), isDelivering)
               if (Option.isSome(record) && (yield* ownerHere(record.value.spec.sessionID))) yield* again(id, 0)
@@ -1058,6 +1063,7 @@ export const layer = (config: Config) =>
               if (over(read.view.run)) {
                 held = yield* claim(sessionID, read.view, call)
                 if (held && managed(read.view.spec)) {
+                  yield* runner.retain(id)
                   yield* tidy(id)
                   yield* returned(id)
                 }
@@ -1528,9 +1534,10 @@ export const layer = (config: Config) =>
             Effect.catchTag("BackstopRefused", (refused) => Effect.logWarning("wake: the OS jobs could not be listed", { message: refused.message }).pipe(Effect.as(undefined))),
           )
           const ids = yield* store.ids
-          const own = (yield* store.entries).filter((entry) => entry.directory === config.directory)
+          const entries = yield* store.entries
+          const own = entries.filter((entry) => entry.directory === config.directory)
           for (const entry of own) yield* (entry.kind === "job" ? follow(entry.id) : arm(entry))
-          yield* resumeOwed(own)
+          yield* resumeOwed(entries, own)
           if (titles === undefined) return
           for (const title of titles) {
             const id = idOfTitle(title)

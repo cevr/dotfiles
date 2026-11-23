@@ -10,7 +10,9 @@
 import { describe, expect, test } from "bun:test"
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem"
 import * as NodePath from "@effect/platform-node/NodePath"
-import { Effect, FileSystem, Layer, Path, PlatformError } from "effect"
+import * as NodeChildProcessSpawner from "@effect/platform-node/NodeChildProcessSpawner"
+import { Effect, FileSystem, Layer, Option, Path, PlatformError } from "effect"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import * as Seed from "./seed.ts"
 
 /** opencode/: the tests run from it. */
@@ -21,7 +23,8 @@ const WALL = [/\bBun\.sleep\b/, /\bsetTimeout\b/, /\bsetInterval\b/, /\bDate\.no
 /** The world's own files: what a simulated test reaches in sim/, the runner aside. */
 const WORLD = ["context.ts", "host.ts", "host-laws.ts", "hosts.ts", "http.ts", "law-names.ts", "plugins.ts", "provider.ts", "provider-laws.ts", "readings.ts", "runtime.ts", "server.ts", "system.ts", "world.ts"]
 
-const Platform = Layer.merge(NodeFileSystem.layer, NodePath.layer)
+const Files = Layer.merge(NodeFileSystem.layer, NodePath.layer)
+const Platform = NodeChildProcessSpawner.layer.pipe(Layer.provideMerge(Files))
 
 /** Each line of `text` that names a wall-time source, as `<line>: <text>`. */
 export const wallTime = (text: string) =>
@@ -87,6 +90,78 @@ describe("no wall time in a simulated file", () => {
 
 /** The test driver is not an OpenCode plugin capability. Only the fork-checked `session.context` crosses it. */
 const driverAccess = /(?:from\s*|import\s*\(?\s*|require\s*\(\s*)["'](?:@dotfiles\/opencode-sim(?:\/|["'])|(?:\.\.\/)+sim\/)|\bworld\s*(?:\.\s*messages\b|\[\s*["']messages["']\s*\])/
+const code = /\.(?:[cm]?[jt]s|[jt]sx)$/
+const testFile = /\.(?:test|spec|bench)\.(?:[cm]?[jt]s|[jt]sx)$/
+const product = /^(?:cmd|mods)\//
+const adapter = "sim/context.ts"
+
+const git = (root: string, ...args: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+    return yield* spawner.string(ChildProcess.make("git", args, { cwd: root, stdin: "ignore", forceKillAfter: "1 second" }))
+  })
+
+const names = (root: string) => git(root, "ls-files", "-z", "--", ".").pipe(Effect.map((output) => output.split("\0").filter((file) => code.test(file))))
+
+const ts = new Bun.Transpiler({ loader: "ts" })
+const tsx = new Bun.Transpiler({ loader: "tsx" })
+
+/** Source-level imports; `scanImports` omits type-only edges, which still matter when a product depends on a shape. */
+const dependencies = (file: string, source: string) => [
+  ...((file.endsWith("x") && tsx) || ts).scanImports(source.replace(/^#!.*/, "")).map((found) => found.path),
+  ...[...source.matchAll(/(?:import|export)\s+type\b[^;"'`]*?\bfrom\s*["']([^"']+)["']/g)].map((match) => String(match[1])),
+  ...[...source.matchAll(/\bimport\s*\(\s*["']([^"']+)["']\s*\)/g)].map((match) => String(match[1])),
+]
+
+const leaksIn = (root: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const files = yield* names(root)
+    const content = yield* Effect.forEach(files, (file) => fs.readFileString(path.join(root, file)).pipe(Effect.map((text) => [file, text] as const)))
+    const tracked = new Set(files)
+    const importers = new Map<string, Set<string>>()
+    const imports = new Map<string, Set<string>>()
+    const extensions = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]
+    const resolve = (file: string, target: string) => {
+      const workspace = Option.fromNullishOr(/^@dotfiles\/opencode-(cmd-)?([^/]+)(?:\/(.+))?$/.exec(target))
+      const base = Option.match(workspace, {
+        onSome: ([, command, name, subpath]) => path.join((command && "cmd") || "mods", String(name), subpath || "index"),
+        onNone: () => path.join(path.dirname(file), target),
+      })
+      return [base, ...extensions.flatMap((ext) => [`${base}${ext}`, `${base}/index${ext}`])].find((candidate) => tracked.has(candidate))
+    }
+    for (const [file, text] of content) {
+      for (const target of dependencies(file, text)) {
+        if (!target.startsWith(".") && !target.startsWith("@dotfiles/opencode-")) continue
+        const imported = resolve(file, target)
+        if (!imported) continue
+        const from = importers.get(imported) || new Set<string>()
+        from.add(file)
+        importers.set(imported, from)
+        const to = imports.get(file) || new Set<string>()
+        to.add(imported)
+        imports.set(file, to)
+      }
+    }
+    const testDeps = new Set(files.filter((file) => testFile.test(file)))
+    for (const file of testDeps) for (const each of imports.get(file) || []) testDeps.add(each)
+
+    // A fixture may have fixture callers, but a non-test root (including a detached cycle) is not test support.
+    const testOnly = (file: string): boolean => {
+      const seen = new Set([file])
+      for (const source of seen) {
+        if (source === adapter || !testDeps.has(source)) return false
+        const from = importers.get(source)
+        if (!from || from.size === 0) return false
+        for (const each of from) if (!testFile.test(each)) seen.add(each)
+      }
+      return true
+    }
+    return content
+      .filter(([file, text]) => (file === adapter || (product.test(file) && !testFile.test(file))) && driverAccess.test(text) && !testOnly(file))
+      .map(([file]) => file)
+  })
 
 test("the plugin cannot import or expose the simulated driver's raw transcript", () => {
   expect(driverAccess.test('import { make } from "../../../sim/world.ts"')).toBe(true)
@@ -94,19 +169,40 @@ test("the plugin cannot import or expose the simulated driver's raw transcript",
   expect(driverAccess.test('yield* ctx.session.context({ sessionID })')).toBe(false)
 })
 
-Seed.effect("production mods and composition roots cannot see the simulated driver's raw transcript",
+// @reads **/*.ts **/*.tsx **/*.mts **/*.cts **/*.js **/*.jsx **/*.mjs **/*.cjs
+Seed.effect("tracked production sources cannot see the simulated driver's raw transcript",
+  leaksIn(ROOT).pipe(Effect.map((leaks) => expect(leaks).toEqual([])), Effect.provide(Platform)),
+)
+
+// @reads cmd/** mods/** sim/context.ts
+Seed.effect("the git-listed guard catches an arbitrary production helper, but allows a fixture reached only from tests",
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
-    const isProduction = (file: string) => /\.tsx?$/.test(file) && !/\.(?:test|bench)\.tsx?$/.test(file)
-    const files = [
-      ...yield* sources("mods", isProduction),
-      ...yield* sources("cmd", (file) => file === "server.ts" || file === "tui.tsx"),
-    ]
-    const leaks = yield* Effect.forEach([...files, "sim/context.ts"], (file) =>
-      fs.readFileString(path.join(ROOT, file)).pipe(Effect.map((text) => [file].filter(() => driverAccess.test(text)))),
-    )
-    expect(files.length).toBeGreaterThan(100)
-    expect(leaks.flat()).toEqual([])
-  }).pipe(Effect.provide(Platform)),
+    const candidates = (yield* names(ROOT)).filter((file) => file.startsWith("cmd/") && !testFile.test(file) && !/(?:^|\/)(?:server\.ts|tui\.tsx)$/.test(file))
+    expect(candidates.length).toBeGreaterThan(10)
+    const file = candidates[Math.floor(candidates.length / 2)]
+    if (!file) return yield* Effect.die("no tracked production helper")
+    const scratch = yield* fs.makeTempDirectoryScoped({ prefix: "sim-driver-guard-" })
+    yield* git(scratch, "init", "-q")
+    const folder = path.dirname(file)
+    yield* fs.makeDirectory(path.join(scratch, folder), { recursive: true })
+    const original = yield* fs.readFileString(path.join(ROOT, file))
+    const target = path.join(scratch, file)
+    yield* fs.writeFileString(target, original)
+    yield* git(scratch, "add", "--", file)
+    expect(yield* leaksIn(scratch)).toEqual([])
+    yield* fs.writeFileString(target, `${original}\nimport type { Message } from "@dotfiles/opencode-sim/world"\n`)
+    expect(yield* leaksIn(scratch)).toEqual([file])
+    const probe = path.join(folder, "driver-control.test.ts")
+    const reexport = path.join(folder, "fixture-adapter.ts")
+    const caller = path.join(folder, "a-production-consumer.ts")
+    yield* fs.writeFileString(path.join(scratch, reexport), `export * from "./${path.basename(file)}"\n`)
+    yield* fs.writeFileString(path.join(scratch, probe), 'import "./fixture-adapter.ts"\n')
+    yield* git(scratch, "add", "--", reexport, probe)
+    expect(yield* leaksIn(scratch)).toEqual([])
+    yield* fs.writeFileString(path.join(scratch, caller), 'import type { Fixture } from "./fixture-adapter.ts"\n')
+    yield* git(scratch, "add", "--", caller)
+    expect(yield* leaksIn(scratch)).toEqual([file])
+  }).pipe(Effect.scoped, Effect.provide(Platform)),
 )
