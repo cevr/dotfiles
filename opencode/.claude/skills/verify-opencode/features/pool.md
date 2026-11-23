@@ -15,7 +15,7 @@ The pool chooses the login each request of a pooled provider (Claude) goes out o
 
 Limits belong to the model and account, not to the last response: both the provider's defined scoped windows and any it has shown remain required through omissions, outages and rollovers. A past reset (including a 5-hour reset) calls for a new reading, not an assumption of zero use. Any directory instance can record a pending claim's recovery on the shared host ledger. Every held dispatch, including a title, names a future time to try again and is decided afresh then. The first relevant blocking reset, an ordinary catch-up, or a weekly rollover may change the answer; without fresh evidence it checks again in a minute.
 
-A named start and a dispatch use the same rule on the same readings and launch reservations. After two distinct successful usage responses omit a required window the login has never reported, the pool says to use another model or login; the retry time is an on-demand usage refresh, not a promise the login will open. Orchestrate uses the start hold to fall back before starting an agent on the unsupported login.
+A named start and a dispatch use the same rule on the same readings and launch reservations. After two distinct successful usage responses omit a required window the login has never reported, the pool calls out the missing data as an anomaly and says to use another model or login; the retry time is an on-demand usage refresh, not a promise the login will open. Orchestrate uses the hold to fall back before starting an agent on evidence that cannot support that model.
 
 ## How to get to it (user POV)
 

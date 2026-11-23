@@ -413,7 +413,7 @@ export const refreshEvidence = (gap: Gap, now: number): boolean =>
 
 const gapText = (gap: Gap) => Match.value(gap).pipe(Match.tagsExhaustive({
   Unread: (missing) => missing.why,
-  Unreported: (missing) => `no ${missing.scope} window reported by this login after ${SCOPE_REPORT_SAMPLES} successful usage reads`,
+  Unreported: ({ scope }) => `no ${scope} window reported by this login after ${SCOPE_REPORT_SAMPLES} successful usage reads (an incomplete or changed usage report: pooled logins are expected to report their required windows)`,
 }))
 
 const alternate = "Use another model or login; time alone will not clear this hold. The retry time is the next usage refresh, not an opening time."

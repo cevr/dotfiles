@@ -217,14 +217,20 @@ seeded("a planner whose login never reports its Fable window starts on its fallb
     const dispatch = decode(yield* world.rpc(POOL_STATUS.id, "pace", { ...query, dispatch: true }))
     expect(started).toMatchObject({ ok: false, reasonCode: "model-unreported" })
     expect(started.reason).toContain("no Fable window reported by this login")
+    expect(started.reason).toContain("pooled logins are expected to report their required windows")
     expect(started.reason).toContain("Use another model or login; time alone will not clear this hold")
-    expect({ ok: started.ok, retry: started.retryAt, reason: started.reason }).toEqual({ ok: dispatch.ok, retry: dispatch.retryAt, reason: dispatch.reason })
+    expect(started).toEqual(dispatch)
     yield* world.prompt(root, ASK)
     yield* world.until(() => seen.some((turn) => turn.agent === "planner"), 60_000)
     expect(calls[0]).toMatchObject({ first: { model: `anthropic/${fable.id}`, fellBack: expect.stringContaining("no Fable window reported by this login") } })
     const plannerModels: Array<World.ModelRef> = []
     for (const turn of seen) if (turn.agent === "planner") plannerModels.push(turn.model)
     expect(plannerModels).toEqual([expect.objectContaining(rootModel)])
+    const childModels: Array<World.ModelRef> = []
+    for (const child of world.sessions.values()) {
+      if (Option.contains(child.parentID, root) && child.agent === "planner") childModels.push(...Option.toArray(child.model))
+    }
+    expect(childModels).toEqual([expect.objectContaining(rootModel)])
     expect(world.provider().received().filter((request) => request.path === "/v1/messages")).toHaveLength(0)
   }),
 )

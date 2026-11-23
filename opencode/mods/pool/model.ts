@@ -1161,7 +1161,7 @@ export const layer = (config: Config) =>
         answer: Pace, work: "new-work" | "existing-request",
       ) {
         const reason = `the push "${push.goal}" lifts the spend-evenly hold until ${new Date(push.endsAt).toISOString()} (${answer.reason})`
-        if (dispatch !== true) return { ok: true, measured: true, reason } satisfies Pace
+        if (dispatch !== true && Option.isNone(Option.fromUndefinedOr(model))) return { ok: true, measured: true, reason } satisfies Pace
         const lifted = yield* paceOf(providerID, model, true, { ...policy, liftEvenLine: true }, work)
         if (!lifted.ok) return lifted
         return { ...lifted, reason } satisfies Pace
@@ -1254,7 +1254,7 @@ export const layer = (config: Config) =>
           .filter((start) => work === "new-work" && measuredBy(config, start.providerID) === paced.id)
           .map((start) => start.at)
         const inflight = { starts, cost: fleetConfig.startCost, settleMs: fleetConfig.settleMs }
-        if (dispatch === true) return dispatchPace(accounts, now, plans, fleetConfig.startCost, model, { ...policy, inflight })
+        if (dispatch === true && Option.isNone(Option.fromUndefinedOr(model))) return dispatchPace(accounts, now, plans, fleetConfig.startCost, model, { ...policy, inflight })
         return poolPace(accounts, now, inflight, model, plans, policy)
       })
 

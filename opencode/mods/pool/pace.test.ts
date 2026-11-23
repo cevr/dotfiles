@@ -1,7 +1,7 @@
 // The pool's pace: whether a new agent may start now, from its accounts' readings.
 import { expect, test } from "bun:test"
 import { Array as Arr, DateTime, Option } from "effect"
-import { dispatchPace, eligibleFor, NO_INFLIGHT, poolPace, RequestHeld, requestHeldMessage } from "./pace.ts"
+import { dispatchPace, eligibleFor, type HoldReason, NO_INFLIGHT, poolPace, RequestHeld, requestHeldMessage } from "./pace.ts"
 import { carryOver, type QuotaReading } from "./quota.ts"
 import type { AccountStatus } from "./status.ts"
 const now = Date.parse("2026-11-04T15:00:00Z")
@@ -79,6 +79,76 @@ test("a past 5-hour reset needs a new reading, even with a fresh weekly window",
   }
   expect(dispatchPace([read(now + 60_000, now + 30_000, 1)], now, {}, 0.04)).toMatchObject({ ok: false, eligible: [], retryAt: now + 60_000 })
   expect(dispatchPace([read(now, now + 60_000, 0)], now, {}, 0.04)).toMatchObject({ ok: true, eligible: ["a"] })
+})
+
+test("the closed set of pace holds names what must change, and opens when it does", () => {
+  const opus = "claude-opus-5-5"
+  const fable = "claude-fable-5-2"
+  const start = { ...NO_INFLIGHT, cost: 0.04 }
+  const waysBack = {
+    "account-held": "all pool accounts are held",
+    "model-limit": "the first resets",
+    "quota-limit": "the first resets",
+    "even-line": "spend-evenly line",
+    "usage-unread": "no reading",
+    "model-unreported": "Use another model or login; time alone will not clear this hold",
+    "reset-room": "room from a claimed reset",
+    "auxiliary": "does not spend the room a claimed reset gave back",
+  } satisfies Record<Exclude<HoldReason, "logins-unavailable" | "placement-changed">, string>
+  const observed = new Set<string>()
+  for (const [offset, span] of Arr.cartesian([0, minute, 5 * minute], [15 * minute, hour, 2 * hour])) {
+    const at = now + offset
+    const shortReset = at + span
+    const weekReset = at + 3.5 * day
+    const read = (time: number, week: number, short: number, scoped: ReadonlyArray<number> = []): AccountStatus => ({
+      ...account(week),
+      reading: {
+        at: time,
+        usage: { at: time, samples: 2 },
+        windows: [
+          { name: "7d", utilization: week, resetAt: weekReset },
+          { name: "5h", utilization: short, resetAt: time + span },
+          ...scoped.map((utilization) => ({ name: "7d:Fable", utilization, resetAt: time + day })),
+        ],
+      },
+    })
+    const check = (
+      state: AccountStatus, code: keyof typeof waysBack, model: string,
+      plans: Parameters<typeof poolPace>[4] = {},
+      policy: Parameters<typeof dispatchPace>[5] = {},
+    ) => {
+      const held = dispatchPace([state], at, plans, start.cost, model, policy)
+      expect(poolPace([state], at, start, model, plans, policy)).toEqual(held)
+      expect(held).toMatchObject({ ok: false, reasonCode: code, eligible: [] })
+      if (held.ok) return at
+      observed.add(held.reasonCode)
+      expect(held.reason).toContain(waysBack[code])
+      expect(held.retryAt).toBeGreaterThan(at)
+      return held.retryAt
+    }
+    const hold = { kind: "rate-limit" as const, at, until: shortReset }
+    expect(check({ ...read(at, 0.2, 0.2), hold }, "account-held", opus)).toBe(shortReset)
+    expect(check(read(at, 0.2, 1), "quota-limit", opus)).toBe(shortReset)
+    expect(dispatchPace([read(shortReset, 0.2, 0)], shortReset, {}, start.cost, opus).ok).toBe(true)
+    const modelReset = check(read(at, 0.2, 0.2, [1]), "model-limit", fable)
+    expect(dispatchPace([read(modelReset, 0.2, 0.2, [0])], modelReset, {}, start.cost, fable).ok).toBe(true)
+    const refresh = check({ credentialID: "a", live: 0, load: 0, noRoom: false }, "usage-unread", opus)
+    expect(dispatchPace([read(refresh, 0.2, 0.2)], refresh, {}, start.cost, opus).ok).toBe(true)
+    const unreported = check(read(at, 0.2, 0.2), "model-unreported", fable)
+    expect(unreported).toBe(at + minute)
+    expect(dispatchPace([read(unreported, 0.2, 0.2)], unreported, {}, start.cost, fable)).toMatchObject({ ok: false, reasonCode: "model-unreported" })
+    expect(dispatchPace([read(at, 0.2, 0.2)], at, {}, start.cost, opus).ok).toBe(true)
+    expect(dispatchPace([read(unreported, 0.2, 0.2, [0.1])], unreported, {}, start.cost, fable).ok).toBe(true)
+    const ordinary = check(read(at, 0.7, 0.2), "even-line", opus)
+    expect(dispatchPace([read(ordinary, 0.7, 0.2)], ordinary, {}, start.cost, opus).admission).toBe("ordinary")
+    const plans = { a: { rebase: { at, from: 0.68, key: "owned" } } }
+    const backing = check(read(at, 0.7, 0.2), "reset-room", opus, plans)
+    expect(dispatchPace([read(backing, 0.7, 0.2)], backing, plans, start.cost, opus).admission).toBe("backed")
+    const auxiliary = { auxiliary: "title" as const }
+    const title = check(read(at, 0.7, 0.2), "auxiliary", opus, plans, auxiliary)
+    expect(dispatchPace([read(title, 0.7, 0.2)], title, plans, start.cost, opus, auxiliary).admission).toBe("ordinary")
+  }
+  expect(observed).toEqual(new Set(Object.keys(waysBack)))
 })
 
 test("each held dispatch in a generated history states a future time, and re-evaluates at it", () => {
