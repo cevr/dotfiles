@@ -9,7 +9,7 @@ import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { buildOf, goodOf, parseRecord } from "@dotfiles/opencode-update/record"
 import { Effect, FileSystem, Layer, Option, Path, type PlatformError } from "effect"
-import { type BuildFacts, type InstalledFacts, isObjectName, ReceiptSource, SourceRead, SourceRef, sourceKey, SourceUnreadable } from "../batch-input.ts"
+import { type BuildFacts, type InstalledFacts, isObjectName, objectName, ReceiptSource, SourceRead, SourceRef, sourceKey, SourceUnreadable } from "../batch-input.ts"
 import { RunRecords } from "../service.ts"
 import { departuresOf, SEEN_FILE } from "../skill-drift.ts"
 
@@ -78,19 +78,30 @@ export interface ReceiptPlaces {
   readonly maxBytes: number
 }
 
-const buildFacts = (build: BuildFacts): BuildFacts => ({ version: build.version, dotfiles: build.dotfiles, fork: build.fork })
+/** A build the record names, its two commits full object names (each repository's own format); none when either is not. */
+const buildFacts = (build: { readonly version: string; readonly dotfiles: string; readonly fork: string }): Option.Option<BuildFacts> =>
+  Option.map(Option.all({ dotfiles: objectName(build.dotfiles), fork: objectName(build.fork) }), ({ dotfiles, fork }) => ({ version: build.version, dotfiles, fork }))
 
-/** The updater's record in a file's text, through its own `parseRecord`, `buildOf` and `goodOf`; none for text that is not one. */
-export const installedFacts = (text: string): Option.Option<InstalledFacts> =>
-  Option.map(parseRecord(text), (record) => ({ installed: Option.map(buildOf(record), buildFacts), good: Option.map(goodOf(record), buildFacts) }))
-
-const utf8 = new TextDecoder("utf-8", { fatal: true })
+/** A named build that names a commit by anything but its full name makes the whole record corrupt. */
+const named = <A>(build: Option.Option<A>, facts: (build: A) => Option.Option<BuildFacts>): Option.Option<Option.Option<BuildFacts>> =>
+  Option.match(build, { onNone: () => Option.some(Option.none()), onSome: (each) => Option.map(facts(each), Option.some) })
 
 /**
- * The receipt source over the host's files: a reference names one allowlisted file (a head must be a full commit
- * name, so it names no path), read whole through a handle opened without following a link, only when the directory
- * it sits in is the configured one (no linked directory leads out), it is a regular file and no larger than
- * `maxBytes`. A missing file or directory is absent; any other failure is unreadable, never absent.
+ * The updater's record in a file's text, through its own `parseRecord`, `buildOf` and `goodOf`; none for text that is
+ * not one, or whose installed or good build names a commit by anything but its full object name.
+ */
+export const installedFacts = (text: string): Option.Option<InstalledFacts> =>
+  Option.flatMap(parseRecord(text), (record) => Option.all({ installed: named(buildOf(record), buildFacts), good: named(goodOf(record), buildFacts) }))
+
+/** Strict UTF-8 that keeps a byte-order mark as text, so the text's UTF-8 encoding is the file's bytes exactly. */
+const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
+
+/**
+ * The receipt source over the host's files: a reference names one allowlisted file (a head must be a full object
+ * name, so it names no path), read whole, as its exact bytes, through a handle opened without following a link, only
+ * when it is a regular file no larger than `maxBytes` and strict UTF-8. The configured folders are the composition
+ * root's to trust (a link among their parents is followed); the files in them are not. A missing file or folder is
+ * absent; any other failure is unreadable, never absent.
  */
 export const receiptSource = (places: ReceiptPlaces) =>
   Layer.effect(
@@ -108,32 +119,36 @@ export const receiptSource = (places: ReceiptPlaces) =>
         })
       const unreadable = (ref: SourceRef) => (error: PlatformError.PlatformError) => new SourceUnreadable({ source: sourceKey(ref), message: error.message })
       const notFound = (error: PlatformError.PlatformError) => error.reason._tag === "NotFound"
-      const whole = (file: string, ref: SourceRef) =>
-        Effect.scoped(
-          Effect.gen(function* () {
-            const handle = yield* fs.open(file, { flag: "r", noFollow: true })
-            const info = yield* handle.stat
-            if (info.type !== "File") return SourceRead.Refused({ reason: "not a regular file" })
-            const bytes = yield* handle.readAlloc(places.maxBytes + 1)
-            const read = Option.getOrElse(bytes, () => new Uint8Array())
-            if (read.byteLength > places.maxBytes) return SourceRead.Refused({ reason: "too large" })
-            return yield* Effect.try({ try: () => SourceRead.Present({ text: utf8.decode(read) }), catch: () => "not text" }).pipe(
-              Effect.orElseSucceed(() => SourceRead.Refused({ reason: "not text" })),
-            )
-          }),
-        ).pipe(Effect.catchTag("PlatformError", (error) => failed(file, ref, error)))
-      /** An open or read that failed: absent when there is no such file, refused when it is a link, else unreadable. */
-      const failed = Effect.fn("ReceiptSource.failed")(function* (file: string, ref: SourceRef, error: PlatformError.PlatformError) {
-        if (notFound(error)) return SourceRead.Absent()
-        return yield* fs.readLink(file).pipe(
-          Effect.as(SourceRead.Refused({ reason: "a link" })),
-          Effect.catchTag("PlatformError", () => Effect.fail(unreadable(ref)(error))),
-        )
-      })
+      // The entry itself (lstat: a link is not followed) is a regular file before it is opened, so a link, a folder or a
+      // FIFO (whose open would wait for a writer) is refused unopened; the opened handle is checked again, and an
+      // entry swapped between the two (a link now: the open refuses it) fails the read: read again.
+      const whole = (file: string) =>
+        Effect.gen(function* () {
+          const entry = yield* fs.lstat(file)
+          if (entry.type === "SymbolicLink") return SourceRead.Refused({ reason: "a link" })
+          if (entry.type !== "File") return SourceRead.Refused({ reason: "not a regular file" })
+          return yield* Effect.scoped(
+            Effect.gen(function* () {
+              const handle = yield* fs.open(file, { flag: "r", noFollow: true })
+              const info = yield* handle.stat
+              if (info.type !== "File") return SourceRead.Refused({ reason: "not a regular file" })
+              const bytes = yield* handle.readAlloc(places.maxBytes + 1)
+              const read = Option.getOrElse(bytes, () => new Uint8Array())
+              if (read.byteLength > places.maxBytes) return SourceRead.Refused({ reason: "too large" })
+              return yield* Effect.try({ try: () => SourceRead.Present({ text: utf8.decode(read) }), catch: () => "not text" }).pipe(
+                Effect.orElseSucceed(() => SourceRead.Refused({ reason: "not text" })),
+              )
+            }),
+          )
+        })
       const read = Effect.fn("ReceiptSource.read")(function* (ref: SourceRef) {
         const file = fileOf(ref)
         if (Option.isNone(file)) return SourceRead.Refused({ reason: "not a commit name" })
-        return yield* whole(file.value, ref)
+        // A failed look or read: absent when there is no such file, else unreadable (never absent).
+        return yield* whole(file.value).pipe(
+          Effect.catchIf(notFound, () => Effect.succeed(SourceRead.Absent())),
+          Effect.mapError(unreadable(ref)),
+        )
       })
       return ReceiptSource.of({
         host: places.host,

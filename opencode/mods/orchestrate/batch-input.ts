@@ -9,11 +9,26 @@
 // The source (ReceiptSource) is a port: the filestore reads only its allowlisted files, by typed reference and
 // never by a caller's path. The formats (ReceiptFormats) are the producers' own schemas (Work's receipts and land
 // records, the updater's record), bound at the composition root.
-import { Array as Arr, Context, Data, Effect, Option, Order, Result, Schema } from "effect"
+import { Array as Arr, Context, Data, Effect, Equal, Option, Order, Result, Schema } from "effect"
 import { Digest } from "effect/crypto"
 
-/** A full commit or tree name: 40 lower-case hex digits. */
-export const isObjectName = (text: string): boolean => /^[0-9a-f]{40}$/.test(text)
+/**
+ * A full Git object name (a commit or a tree), lower-case hex: 40 digits in a SHA-1 repository, 64 in a SHA-256 one.
+ * Every head, tree and base a snapshot projects has this type, decoded at the producer's boundary: a record naming
+ * anything else (an abbreviation, upper case, a ref name) is refused whole, and nothing here resolves an
+ * abbreviation. One record may not mix the two lengths: a repository has one object format.
+ */
+export const ObjectName = Schema.String.check(Schema.isPattern(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/)).pipe(Schema.brand("ObjectName"))
+export type ObjectName = typeof ObjectName.Type
+
+/** Whether `text` is a full object name. */
+export const isObjectName = Schema.is(ObjectName)
+
+/** `text` as a full object name; none for anything else. */
+export const objectName = Schema.decodeUnknownOption(ObjectName)
+
+/** Whether the names all have one length (one object format). */
+export const oneFormat = (names: ReadonlyArray<ObjectName>): boolean => Arr.dedupe(names.map((name) => name.length)).length <= 1
 
 /** The kinds of run a receipt records (Work's `ReceiptKind`). */
 export const EvidenceKind = Schema.Literals(["round", "merge", "accept", "deep"])
@@ -37,7 +52,12 @@ export const sourceKey = (ref: SourceRef): string =>
     Handoff: () => "handoff",
   })
 
-/** One read: no such file, the whole file's text, or a file the source will not read (a link, not a regular file, too large, out of its roots). */
+/**
+ * One read: no such file, the whole file, or a file the source will not read (a link, not a regular file, too large,
+ * not UTF-8), with why. `Present.text` is the file's exact bytes as strict UTF-8 with any byte-order mark kept, so
+ * its UTF-8 encoding is the file byte for byte: a digest of it is the digest of the file. Two reads are the same
+ * observation only when every field is equal, the refusal's reason included.
+ */
 export type SourceRead = Data.TaggedEnum<{
   Absent: {}
   Present: { readonly text: string }
@@ -50,7 +70,10 @@ export class SourceUnreadable extends Schema.TaggedError<SourceUnreadable>()("So
 
 /**
  * Where a review's inputs are read: one host's receipts folder and installed record for one repository.
- * - `host`, `repository`: the scope every input read here is stamped with.
+ * - `host`: the host this source OBSERVES the files on (its configuration). Work's receipts and land records and
+ *   the updater's record name no producing host, so a snapshot's `observedOn` proves only where the bytes were
+ *   read, never where they were made: bytes copied from another host's folder read as this host's.
+ * - `repository`: the repository key every input read here is stamped with.
  * - `repositoryOf`: the repository a checkout path (a receipt's `repo`) belongs to; none outside this repository's checkouts.
  * - `read`: one whole read of the file a reference names, or why there is none.
  */
@@ -70,30 +93,30 @@ export interface CheckFacts {
   readonly code: number
 }
 
-/** A receipt as Work's `Receipt` schema decodes it. */
+/** A receipt as Work's `Receipt` schema decodes it, its head and tree full object names of one format. */
 export interface ReceiptFacts {
   readonly repo: string
-  readonly head: string
-  readonly tree: string
+  readonly head: ObjectName
+  readonly tree: ObjectName
   readonly kind: EvidenceKind
   readonly checks: ReadonlyArray<CheckFacts>
   readonly at: string
 }
 
-/** A land record as Work's `LandRecord` schema decodes it (a unit's checkout path left out). */
+/** A land record as Work's `LandRecord` schema decodes it (a unit's checkout path left out), every name in it full and of one format. */
 export interface LandFacts {
-  readonly head: string
-  readonly base: string
+  readonly head: ObjectName
+  readonly base: ObjectName
   readonly units: ReadonlyArray<{ readonly branch: string; readonly by: string; readonly receipt: ReceiptFacts }>
   readonly merge: Option.Option<ReceiptFacts>
   readonly at: string
 }
 
-/** A build as the updater's record names it. */
+/** A build as the updater's record names it, its two commits full object names. */
 export interface BuildFacts {
   readonly version: string
-  readonly dotfiles: string
-  readonly fork: string
+  readonly dotfiles: ObjectName
+  readonly fork: ObjectName
 }
 
 /** The updater's record, through its own `buildOf` (installed, when it names its commits) and `goodOf` (last health-proven). */
@@ -115,15 +138,15 @@ export class ReceiptFormats extends Context.Service<
 /** A check as a snapshot shows it: the digest of its command (the command itself stays in the restricted artifact) and its exit. */
 export const CheckInput = Schema.Struct({ id: Schema.String, code: Schema.Number })
 
-/** A receipt's canonical projection: what it proves, of which repository, head and tree, on which host. */
+/** A receipt's canonical projection: what it proves, of which repository, head and tree, and the host it was read on (`observedOn`: where the bytes were observed, not who produced them). */
 export const ReceiptInput = Schema.Struct({
   schema: Schema.Literal("receipt-input/v1"),
   producer: Schema.Literal("work"),
   kind: EvidenceKind,
   repository: Schema.String,
-  host: Schema.String,
-  head: Schema.String,
-  tree: Schema.String,
+  observedOn: Schema.String,
+  head: ObjectName,
+  tree: ObjectName,
   checks: Schema.Array(CheckInput),
   at: Schema.String,
 })
@@ -137,9 +160,9 @@ export interface FrozenReceipt extends Schema.Schema.Type<typeof FrozenReceipt> 
 export const LandInput = Schema.Struct({
   schema: Schema.Literal("land-input/v1"),
   repository: Schema.String,
-  host: Schema.String,
-  head: Schema.String,
-  base: Schema.String,
+  observedOn: Schema.String,
+  head: ObjectName,
+  base: ObjectName,
   units: Schema.Array(Schema.Struct({ branch: Schema.String, by: Schema.String, receipt: Schema.String })),
   merge: Schema.NullOr(Schema.String),
   at: Schema.String,
@@ -150,13 +173,13 @@ export interface LandInput extends Schema.Schema.Type<typeof LandInput> {}
 export const FrozenLand = Schema.Struct({ id: Schema.String, input: LandInput })
 export interface FrozenLand extends Schema.Schema.Type<typeof FrozenLand> {}
 
-/** The immutable install receipt a review uses: one host's proven installed pair, and the digest of the record that proved it. */
+/** The immutable install receipt a review uses: the proven installed pair in the record read on `host` (the observing source's host; the record names none), and the digest of the record's exact bytes. */
 export const InstallReceipt = Schema.Struct({
   schema: Schema.Literal("install-receipt/v1"),
   host: Schema.String,
   buildId: Schema.String,
-  dotfiles: Schema.String,
-  fork: Schema.String,
+  dotfiles: ObjectName,
+  fork: ObjectName,
   proven: Schema.String,
 })
 export interface InstallReceipt extends Schema.Schema.Type<typeof InstallReceipt> {}
@@ -175,7 +198,11 @@ export type InstallState = typeof InstallState.Type
 /** An input the source would not give, or gave in a form that proves nothing: by its source key, with why. */
 export const RefusedInput = Schema.Struct({ source: Schema.String, reason: Schema.String })
 
-/** The bytes a snapshot read, by digest: restricted (they may hold commands and paths), never shown by `publicView`. */
+/**
+ * The bytes a snapshot read, by digest: restricted (they may hold commands and paths), never shown by `publicView`.
+ * `text` is the file exactly as read (CRLF, padding and key order as written: only the projections are canonical);
+ * its UTF-8 encoding is the file's bytes and `digest` their SHA-256.
+ */
 export const Artifact = Schema.Struct({ digest: Schema.String, text: Schema.String })
 
 /**
@@ -235,21 +262,16 @@ const encoder = new TextEncoder()
 /** The SHA-256 of `text`'s UTF-8 bytes, lower-case hex. */
 const digestOf = (text: string) => Effect.flatMap(Digest.Digest, (digest) => digest.digestHex(Digest.sha256, encoder.encode(text)))
 
-/** One source read twice: the same answer both times, else unsettled. */
+/** One source read twice: the same observation both times (every field, a refusal's reason too), else unsettled. */
 const stableRead = Effect.fn("BatchInput.stableRead")(function* (ref: SourceRef) {
   const source = yield* ReceiptSource
   const key = sourceKey(ref)
   const read = source.read(ref).pipe(Effect.mapError(() => new InputUnsettled({ source: key, reason: "unreadable" })))
   const first = yield* read
   const second = yield* read
-  if (!sameRead(first, second)) return yield* new InputUnsettled({ source: key, reason: "changed" })
+  if (!Equal.equals(first, second)) return yield* new InputUnsettled({ source: key, reason: "changed" })
   return first
 })
-
-const textOf = (read: SourceRead): Option.Option<string> => Option.map(Option.liftPredicate(read, SourceRead.$is("Present")), (present) => present.text)
-
-const sameRead = (first: SourceRead, second: SourceRead): boolean =>
-  first._tag === second._tag && Option.getOrElse(textOf(first), () => "") === Option.getOrElse(textOf(second), () => "")
 
 /** What freezing gathers before it is canonical. */
 interface Gathered {
@@ -276,7 +298,7 @@ const refusal = (source: string, reason: string): Gathered => ({ ...EMPTY, refus
 const receiptFault = (facts: ReceiptFacts, head: string, kind: EvidenceKind, repository: Option.Option<string>): Option.Option<string> => {
   if (facts.head !== head) return Option.some("names another head")
   if (facts.kind !== kind) return Option.some("names another kind")
-  if (!isObjectName(facts.tree)) return Option.some("names no tree")
+  if (!oneFormat([facts.head, facts.tree])) return Option.some("mixes object formats")
   if (Option.isNone(repository)) return Option.some("outside the repository")
   return Option.none()
 }
@@ -290,7 +312,7 @@ const project = Effect.fn("BatchInput.project")(function* (facts: ReceiptFacts) 
     producer: "work",
     kind: facts.kind,
     repository: source.repository,
-    host: source.host,
+    observedOn: source.host,
     head: facts.head,
     tree: facts.tree,
     checks,
@@ -317,10 +339,17 @@ const freezeReceipt = Effect.fn("BatchInput.freezeReceipt")(function* (head: str
   return { ...EMPTY, receipts: [{ ...frozen, source: key }], artifacts: [{ digest: yield* digestOf(read.text), text: read.text }] }
 })
 
+/** Every object name a land record carries: its head and base, each unit receipt's and the merge check's head and tree. */
+const namesOf = (facts: LandFacts): ReadonlyArray<ObjectName> => [
+  facts.head,
+  facts.base,
+  ...[...facts.units.map((unit) => unit.receipt), ...Option.toArray(facts.merge)].flatMap((receipt) => [receipt.head, receipt.tree]),
+]
+
 /** Why a land record cannot stand for `head` in this repository, if it cannot: each unit's round receipt and the merge check must be this repository's, of their own head. */
 const landFault = (facts: LandFacts, head: string, repositoryOf: (checkout: string) => Option.Option<string>): Option.Option<string> => {
   if (facts.head !== head) return Option.some("names another head")
-  if (!isObjectName(facts.base)) return Option.some("names no base")
+  if (!oneFormat(namesOf(facts))) return Option.some("mixes object formats")
   const unit = Arr.findFirst(facts.units, (each) => Option.isSome(receiptFault(each.receipt, each.receipt.head, "round", repositoryOf(each.receipt.repo))))
   if (Option.isSome(unit)) return Option.some(`unit ${unit.value.branch}: not a round receipt of this repository`)
   return Option.flatMap(facts.merge, (merge) =>
@@ -349,7 +378,7 @@ const freezeLand = Effect.fn("BatchInput.freezeLand")(function* (head: string) {
   const input: LandInput = {
     schema: "land-input/v1",
     repository: source.repository,
-    host: source.host,
+    observedOn: source.host,
     head: facts.head,
     base: facts.base,
     units: units.map(({ unit, frozen }) => ({ branch: unit.branch, by: unit.by, receipt: frozen.id })),
@@ -367,7 +396,6 @@ const sameBuild = (a: BuildFacts, b: BuildFacts): boolean => a.version === b.ver
 const provenOf = (facts: InstalledFacts): Result.Result<BuildFacts, Unproven> => {
   if (Option.isNone(facts.installed)) return Result.fail("unnamed")
   const build = facts.installed.value
-  if (!isObjectName(build.dotfiles) || !isObjectName(build.fork)) return Result.fail("corrupt")
   if (!Option.exists(facts.good, (good) => sameBuild(good, build))) return Result.fail("unproven")
   return Result.succeed(build)
 }
