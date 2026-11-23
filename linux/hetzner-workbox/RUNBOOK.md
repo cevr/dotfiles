@@ -8,6 +8,8 @@ measured; the exe box held about 430 GB on 2026-11-14 (plan.md, measured).
 
 ## Host identity
 
+Run these examples in a fresh login shell of the named account.
+
 The following are inputs to the approved deployment, not commands to run by
 hand on a real host. Open the operator's deployment records at order time.
 During enrollment, use each provider's trusted console for the specific

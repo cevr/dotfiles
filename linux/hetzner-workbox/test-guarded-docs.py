@@ -33,6 +33,31 @@ VAR = re.compile(r"\$(?:([A-Za-z_][A-Za-z_0-9]*)|\{([A-Za-z_][A-Za-z_0-9]*)\})")
 PATH = re.compile(r"[A-Za-z0-9_.~/+-]+")
 LITERAL_PINS = {LOCAL, SOURCE_MACHINE, DESTINATION}
 CONNECTORS = {"&&", "||", "|"}
+DATA_NAMES = {
+    "BACKUP_COPY": "data",
+    "BACKUP_HOST_LABEL": "data",
+    "HB_BACKUP_DIR": "data",
+    "HB_BACKUP_MONTH": "data",
+    "HB_BACKUP_NAME": "data",
+    "HB_CHECK_SKIP": "data",
+    "HB_EXTRA_KEYS": "data",
+    "HB_RUNS_INCLUDE": "data",
+    "HB_STORAGEBOX_HOST": "data",
+    "HB_STORAGEBOX_USER": "data",
+    "HB_TO": "data",
+    "NEW": "data",
+    "NEWTS": "data",
+    "RESTORE_DIR": "data",
+    "RESTORE_MONTH": "data",
+    "STORAGEBOX_HOST": "data",
+    "STORAGEBOX_USER": "data",
+    "TS_AUTHKEY": "data",
+    "d": "data",
+}
+CHECKOUT_PREFIXES = (
+    "~/Developer/personal/dotfiles/",
+    "/root/dotfiles/",
+)
 
 
 def contract(path, source):
@@ -274,9 +299,15 @@ def assignment_prefix(words):
 
 
 @dataclass(frozen=True)
+class Script:
+    suffix: str
+    words: list[Word]
+
+
+@dataclass(frozen=True)
 class Arguments:
     guarded: bool = False
-    script: list[Word] | None = None
+    script: Script | None = None
     text: Word | None = None
 
 
@@ -336,8 +367,13 @@ def brew_arguments(words):
 
 
 def cd_arguments(words):
-    if len(words) != 1 or literal(words, "cd directory")[0].startswith("-"):
-        raise ValueError("cd production takes one literal directory")
+    # A relative interpreter path is read from the checkout, not a directory
+    # that an earlier statement may have switched to.
+    if len(words) != 1 or words[0].refs or not any(
+        words[0].value == prefix.rstrip("/") and (not prefix.startswith("~") or words[0].raw.startswith("~/"))
+        for prefix in CHECKOUT_PREFIXES
+    ):
+        raise ValueError("cd production takes a literal documented checkout directory")
     return Arguments()
 
 
@@ -368,23 +404,30 @@ def claude_arguments(words):
 
 
 def python_arguments(words):
-    literal(words, "Python script path and options")
-    if not words or not words[0].value.endswith(".py"):
-        raise ValueError("python needs a literal .py script path, not source text")
+    return script_arguments("python", ".py", words)
+
+
+def script_arguments(interpreter, suffix, words):
+    if not words or words[0].value.startswith("-"):
+        option = f" (got {words[0].value!r})" if words else ""
+        raise ValueError(
+            f"{interpreter} needs a literal tracked {suffix} script path; "
+            f"interpreter options are not allowed in this production{option}"
+        )
+    literal(words[:1], f"{interpreter} script path")
     command_name(words[0])
-    return Arguments()
+    if not words[0].value.endswith(suffix):
+        raise ValueError(f"{interpreter} needs a literal tracked {suffix} script path")
+    return Arguments(script=Script(suffix, words))
 
 
-def shell_arguments(words):
+def shell_arguments(interpreter, words):
     if starts(words, "-c"):
         if len(words) != 2:
             raise ValueError("shell -c takes one literal command string")
         literal(words[1:], "shell text")
         return Arguments(text=words[1])
-    if not words:
-        raise ValueError("shell requires -c with literal text or a literal script path")
-    command_name(words[0])
-    return Arguments(script=words)
+    return script_arguments(interpreter, ".sh", words)
 
 
 def ssh_arguments(words):
@@ -406,22 +449,53 @@ COMMANDS = {
     "layout.sh": Command("guarded; literal arguments", guarded_arguments),
     "provision.sh": Command("guarded; literal arguments", guarded_arguments),
     "sync.sh": Command("guarded; literal arguments", guarded_arguments),
-    "bash": Command("literal script path or runs shell text", shell_arguments),
-    "sh": Command("literal script path or runs shell text", shell_arguments),
+    "bash": Command("tracked shell script path or runs shell text", lambda words: shell_arguments("bash", words)),
+    "sh": Command("tracked shell script path or runs shell text", lambda words: shell_arguments("sh", words)),
     "ssh": Command("runs shell text", ssh_arguments),
     "git": Command("external; clone production", git_arguments),
     "brew": Command("external; bundle/install productions", brew_arguments),
-    "cd": Command("directory change; one literal directory", cd_arguments),
+    "cd": Command("directory change; one literal checkout directory", cd_arguments),
     "mkdir": Command("external; -p with one literal directory", mkdir_arguments),
     "ln": Command("external; -sf -- and two data slots", link_arguments),
     "workbox-check": Command("read-only external; no arguments", no_arguments),
     "true": Command("success probe; no arguments", no_arguments),
     "claude": Command("external; plugin validate/test productions", claude_arguments),
-    "python": Command("external; literal .py script and operands", python_arguments),
+    "python": Command("tracked Python script path and literal operands", python_arguments),
 }
 
 
-def program(lines, start, guards, inherited_note="", depth=0):
+@dataclass(frozen=True)
+class Grammar:
+    guards: dict
+    roles: dict
+    tracked: set[Path]
+    directory: Path
+
+    def script_path(self, word):
+        """Match a literal checkout prefix or a path from the root/doc directory."""
+        operand = word.value
+        for prefix in CHECKOUT_PREFIXES:
+            if operand.startswith(prefix):
+                if prefix.startswith("~") and not word.raw.startswith("~/"):
+                    raise ValueError("a checkout path beginning with ~/ must leave the tilde unquoted")
+                candidates = {Path(operand[len(prefix):])}
+                break
+        else:
+            path = Path(operand)
+            if path.is_absolute() or operand.startswith("~") or ".." in path.parts or "/" not in operand:
+                raise ValueError(f"script path {operand!r} must be checkout-relative or use a documented checkout prefix")
+            candidates = {path, self.directory / path}
+        matches = {
+            path for path in candidates & self.tracked
+            if (ROOT / path).is_file() and (ROOT / path).resolve() == ROOT / path
+        }
+        if len(matches) != 1:
+            why = "ambiguous" if matches else "not a tracked repository file"
+            raise ValueError(f"interpreter script path {operand!r} is {why}; name a tracked file in the checkout")
+        return matches.pop()
+
+
+def program(lines, start, grammar, inherited_note="", depth=0):
     """Parse the language, then return the flattened statements of one fence."""
     if depth > 64:
         raise ValueError("shell text is nested too deeply")
@@ -456,29 +530,30 @@ def program(lines, start, guards, inherited_note="", depth=0):
         rule = COMMANDS.get(name)
         if not rule:
             raise ValueError(f"unknown command {name!r}: add it to the table with its role, or rewrite the example")
+        if name not in grammar.guards and rest[0].value != name:
+            raise ValueError(f"use the bare allow-listed command {name!r}, not an executable path")
         result = rule.arguments(args)
-        if result.script:                                 # sh/bash literal script path
-            script, *args = result.script
-            name = command_name(script)
-            if name in guards:
+        if result.script:                                 # named tracked script production
+            script, *args = result.script.words
+            tracked = grammar.script_path(script)
+            name = tracked.name
+            if result.script.suffix == ".sh" and name in grammar.guards:
                 rule = COMMANDS.get(name)
                 if not rule:
                     raise ValueError(f"unknown guarded script {name!r}: add it to the table with its role, or rewrite the example")
                 result = rule.arguments(args)
                 if not result.guarded:
                     raise ValueError(f"{name!r} needs a guarded role in the table")
-            elif script.value.endswith(".sh"):
-                literal(args, "script arguments")
             else:
-                raise ValueError("shell script operands must be literal .sh paths or allow-listed guarded entry points")
+                literal(args, "script arguments")
         guard = None
         if result.guarded:
-            if name not in guards:
+            if name not in grammar.guards:
                 raise ValueError(f"guarded command {name!r} has no source contract")
             guard = (name, args[0].value if args else "")
         yield Statement(words, prefix, note, guard)
         if result.text is not None:                        # same grammar on literal shell text
-            yield from program(result.text.value.split("\n"), result.text.line, guards, note, depth + 1)
+            yield from program(result.text.value.split("\n"), result.text.line, grammar, note, depth + 1)
 
 
 def pin_value(word):
@@ -531,9 +606,21 @@ def pin_problems(statements, guards, all_pins, content):
         yield statements[0].words[0].line, f"{pin} was not assigned in this fence"
 
 
-def violations(path, content, commands, strict):
-    all_pins = {pin for pins, _ in commands.values() for pin in pins}
-    registered = all_pins | commands.keys()
+def check_names(statements, roles):
+    for statement in statements:
+        for word in statement.assignments:
+            name = ASSIGNMENT.fullmatch(word.raw)[1]
+            if name not in roles:
+                raise ValueError(
+                    f"assignment to {name!r} is outside the interpreter environment restriction: "
+                    "only pin and data names are assignable; add the name to the table with its role, "
+                    "or rewrite the example"
+                )
+
+
+def violations(path, content, grammar, strict):
+    all_pins = {name for name, role in grammar.roles.items() if role == "pin"}
+    registered = all_pins | grammar.guards.keys()
     for start, tag, lines, closed in blocks(content):
         raw = "\n".join(lines)
         if strict:
@@ -548,13 +635,14 @@ def violations(path, content, commands, strict):
         try:
             if not closed:
                 raise ValueError("unclosed fenced block")
-            statements = list(program(lines, start, commands))
+            statements = list(program(lines, start, grammar))
+            check_names(statements, grammar.roles)
         except ValueError as error:
             tag_fix = f"; {TAG}" if not tag else ""
             pin_fix = f"; {REMEDY}" if any(name in raw for name in registered) else ""
             yield f"{path}:{start}: {error}; {LANGUAGE}{tag_fix}{pin_fix}{outside}"
             continue
-        for line, problem in pin_problems(statements, commands, all_pins, content):
+        for line, problem in pin_problems(statements, grammar.guards, all_pins, content):
             yield f"{path}:{line}: {problem}; {REMEDY}{outside}"
 
 
@@ -573,8 +661,16 @@ def strict_path(path):
     return path == Path("README.md") or path.is_relative_to("workbox") or path.is_relative_to("linux/hetzner-workbox")
 
 
-def controls():
+def controls(roles):
     """Exercise the public scanner on whole scratch Markdown files, never execute the examples."""
+    # A tripwire on the positive table, never the implementation's acceptance rule.
+    interpreter_env = re.compile(
+        r"(BASH_ENV|ENV|PATH|IFS|PS4|PROMPT_COMMAND|SHELLOPTS|BASHOPTS|CDPATH|GLOBIGNORE|"
+        r"LD_.*|DYLD_.*|PYTHON.*|NODE_OPTIONS|BUN_.*|GIT_.*)"
+    )
+    hooks = [name for name in roles if interpreter_env.fullmatch(name)]
+    if hooks:
+        raise AssertionError(f"assignable-name table includes interpreter environment selectors: {hooks}")
     note = "# Pin source: recovery deployment record; see [Host identity](#host-identity)."
     no_pin = "# No pin needed: read-only."
     local = "WORKBOX_EXPECT_MACHINE_ID='<machine-id-from-deployment-record>'"
@@ -582,6 +678,10 @@ def controls():
     call = f"sudo env {local} {backup}"
     read_id = 'WORKBOX_EXPECT_MACHINE_ID="$(cat /etc/machine-id)"'
     nested = f"sudo -n sh -c {shlex.quote(call)}"
+    startup = (
+        'BASH_ENV=./startup-fixture.sh bash -c '
+        f'"{local} ./backup.sh list"'
+    )
     cases = {
         "r4-missing": (False, f"sudo env {backup}"),
         "r4-inline": (False, f"sudo env {read_id} {backup}"),
@@ -589,6 +689,7 @@ def controls():
         "r4-inline-flow": (False, f'RESTORE_MACHINE_ID="$(cat /etc/machine-id)"; sudo env WORKBOX_EXPECT_MACHINE_ID="$RESTORE_MACHINE_ID" {backup}'),
         "r5-ansi-quote": (False, f"sudo env {read_id} " + r"$'./back\x75p.sh' list"),
         "r5-env": (False, "env WORKBOX_EXPECT_MACHINE_ID='22222222222222222222222222222222' \\\n  bash ./backup.sh list"),
+        "r5-env-tracked": (False, "env WORKBOX_EXPECT_MACHINE_ID='22222222222222222222222222222222' \\\n  bash linux/hetzner-workbox/backup.sh list"),
         "r5-export": (False, f'''export RESTORE_PIN='22222222222222222222222222222222'
 {note}
 sudo env WORKBOX_EXPECT_MACHINE_ID="$RESTORE_PIN" ./backup.sh list'''),
@@ -603,6 +704,26 @@ sudo env WORKBOX_EXPECT_MACHINE_ID="${{RECOVERY_PIN}}" ./backup.sh list'''),
         "r6-diagram": (False, "start --> done"),
         "r6-here-string": (False, "read -r DATA <<< 'ordinary text'"),
         "r6-parameter": (False, 'echo "${VALUE:=ordinary text}"'),
+        "r7-startup": (False, startup),
+        "unknown-assignment": (False, "EXAMPLE_UNKNOWN=value"),
+        "unknown-env": (False, "env EXAMPLE_UNKNOWN=value true"),
+        "nested-export-env": (False, "sh -c 'export ENV=./startup-fixture.sh; true'"),
+        "path-sudo-env": (False, "sudo env PATH=/unknown true"),
+        "untracked-script": (False, "bash ./untracked-script.sh"),
+        "same-basename-outside": (False, "bash /different/checkout/backup.sh list"),
+        "off-checkout-cwd": (False, "cd /tmp; bash linux/hetzner-workbox/backup.sh list"),
+        "quoted-home-script": (False, "bash '~/Developer/personal/dotfiles/linux/hetzner-workbox/backup.sh' list"),
+        "bash-rcfile": (False, "bash --rcfile linux/hetzner-workbox/backup.sh -c 'true'"),
+        "bash-init-file": (False, "bash --init-file linux/hetzner-workbox/backup.sh -c 'true'"),
+        "bash-login": (False, "bash -l linux/hetzner-workbox/backup.sh"),
+        "bash-interactive": (False, "bash -i linux/hetzner-workbox/backup.sh"),
+        "bash-shell-option": (False, "bash -O extglob -c 'true'"),
+        "sh-stdin": (False, "sh -s < input.sh"),
+        "sh-pipe-stdin": (False, "true | sh -s"),
+        "python-inline": (False, "python -c 'print(1)'"),
+        "python-module": (False, "python -m code"),
+        "python-untracked": (False, "python ./not-tracked.py"),
+        "fake-interpreter": (False, "/other/bash -c 'true'"),
         "duplicate-literal": (False, f"sudo env {local} {local} {backup}"),
         "env-splitting": (False, f"sudo env {local} HB_TO=$EXTRA {backup}"),
         "env-quoted-many": (False, f'sudo env {local} HB_TO="$@" {backup}'),
@@ -642,6 +763,9 @@ sudo env WORKBOX_EXPECT_MACHINE_ID="${{RECOVERY_PIN}}" ./backup.sh list'''),
         "valid-restore-value": (True, f'{local} ./backup.sh restore runs "$RESTORE_DIR"'),
         "valid-export": (True, f"export {local}\n{note}\n{backup}"),
         "valid-continuation": (True, f"sudo -n env {local} \\\n   bash {backup}"),
+        "valid-checkout-prefix": (True, f"sudo -n env {local} bash ~/Developer/personal/dotfiles/{backup}"),
+        "valid-root-prefix": (True, f"sudo -n env {local} sh /root/dotfiles/{backup}"),
+        "valid-python-script": (True, "python skills/ios-simulator-skill/scripts/app_launcher.py --launch com.example"),
         "valid-quoted-operators": (True, f"sudo env {local} HB_TO='x;&&y|z' {backup}"),
         "valid-compound": (True, f"true | true; true || true &\\\n&\n{note}\n{call};"),
         "valid-concat-target": (True, f"sudo env {local} ./b'ac'k\"up\".sh list"),
@@ -653,7 +777,7 @@ sudo env WORKBOX_EXPECT_MACHINE_ID="${{RECOVERY_PIN}}" ./backup.sh list'''),
         "pin-only-export": (False, "export WORKBOX_EXPECT_MACHINE_ID=unrecorded"),
         "pin-only-env": (False, "env HB_TARGET_MACHINE_ID=unrecorded true"),
         "pin-only-indirect": (False, "A=other\nB=\"$A\"\nWORKBOX_EXPECT_MACHINE_ID=\"$B\""),
-        "pin-read-unassigned": (False, 'A="$WORKBOX_EXPE\\\nCT_MACHINE_ID"'),
+        "pin-read-unassigned": (False, 'BACKUP_COPY="$WORKBOX_EXPE\\\nCT_MACHINE_ID"'),
     }
     read_only = ["./layout.sh --dry-run", "./bootstrap.sh --check"]
     cases.update({f"no-pin-{i}": (True, command) for i, command in enumerate(read_only)})
@@ -694,6 +818,16 @@ sudo env WORKBOX_EXPECT_MACHINE_ID="${{RECOVERY_PIN}}" ./backup.sh list'''),
         "partial-option": "option words must be fully literal",
         "text-from-reference": "shell text must be fully literal",
         "text-unknown": "unknown command 'eval'",
+        "r7-startup": "assignment to 'BASH_ENV' is outside the interpreter environment restriction",
+        "unknown-assignment": "add the name to the table with its role",
+        "unknown-env": "add the name to the table with its role",
+        "nested-export-env": "assignment to 'ENV' is outside the interpreter environment restriction",
+        "path-sudo-env": "assignment to 'PATH' is outside the interpreter environment restriction",
+        "untracked-script": "not a tracked repository file",
+        "bash-rcfile": "interpreter options are not allowed",
+        "sh-stdin": "redirection is not allowed",
+        "sh-pipe-stdin": "interpreter options are not allowed",
+        "python-inline": "interpreter options are not allowed",
     })
 
     # Exhaust the cross-product independently for both transfer roles. Each
@@ -714,10 +848,15 @@ sudo env WORKBOX_EXPECT_MACHINE_ID="${{RECOVERY_PIN}}" ./backup.sh list'''),
         (True, lambda pins: "sudo -n bash -c " + shlex.quote(f"env {pins} ./sync.sh rest")),
         (True, lambda pins: "ssh host " + shlex.quote(f"{pins} ./sync.sh pass 2")),
         (True, lambda pins: f"export {pins}\n{note}\n./sync.sh pass 2"),
+        (True, lambda pins: f'HB_TO="$NEWTS" sudo env {pins} bash linux/hetzner-workbox/sync.sh rest'),
         (False, lambda pins: f"OPTION=-v; printf \"$OPTION\" PIN '%s' bad;\n{note}\nenv {pins} ./sync.sh rest"),
         (False, lambda pins: f"sudo env {pins} ./sync.sh rest |"),
         (False, lambda pins: "bash -c " + shlex.quote(f'{pins} "$d/sync.sh" rest')),
         (False, lambda pins: "ssh host " + shlex.quote(f"{pins} ./sync.sh rest; true >output")),
+        (False, lambda pins: f"BASH_ENV=./startup-fixture.sh bash -c {shlex.quote(f'{pins} ./sync.sh rest')}"),
+        (False, lambda pins: "sh -c " + shlex.quote(f"export EXAMPLE_UNKNOWN=value; env {pins} ./sync.sh rest")),
+        (False, lambda pins: f"sudo env {pins} bash ./untracked-script.sh"),
+        (False, lambda pins: f"sudo env {pins} bash --rcfile ./startup-fixture.sh -c 'true'"),
     ]
     for i, ((grammar_ok, render), (source_ok, a), (dest_ok, b)) in enumerate(
         product(productions, choices(source, dest), choices(dest, source))
@@ -758,6 +897,11 @@ sudo env WORKBOX_EXPECT_MACHINE_ID="${{RECOVERY_PIN}}" ./backup.sh list'''),
             expected = diagnostics_expected.get(Path(file).stem)
             if expected and not any(expected in message and LANGUAGE in message for message in messages):
                 raise AssertionError(f"{file} did not name the unsupported language: {messages}")
+            if Path(file).stem == "r5-env-tracked" and not any(
+                "assign WORKBOX_EXPECT_MACHINE_ID a deployment-record placeholder literally" in message
+                for message in messages
+            ):
+                raise AssertionError(f"{file} did not check the pin with a tracked script operand: {messages}")
         census_control(Path(scratch) / "census")
 
 
@@ -772,6 +916,9 @@ def census_control(scratch):
         "workbox/diagram.md": "~~~text\nstart --> done\n~~~\n",
         "workbox/untagged-diagram.md": "~~~\nstart --> done\n~~~\n",
         "workbox/new-entry.md": "~~~sh\n./workbox/bin/fresh-probe\n~~~\n",
+        "linux/hetzner-workbox/relative-ok.md": "~~~sh\n# No pin needed: read-only.\nsh ./layout.sh --dry-run\n~~~\n",
+        "linux/hetzner-workbox/untracked.md": "~~~sh\nbash ./untracked.sh\n~~~\n",
+        "linux/hetzner-workbox/symlink.md": "~~~sh\nbash ./indexed-link.sh\n~~~\n",
         "skills/elsewhere/unrelated.md": "~~~sh\nstart --> done\n~~~\n",
         "skills/elsewhere/new-guard.md": "~~~text\n./workbox/bin/fresh-probe\n~~~\n",
         "skills/elsewhere/mentioned.md": "~~~text\nbackup.sh <diagram>\n~~~\n",
@@ -779,22 +926,27 @@ def census_control(scratch):
         "skills/elsewhere/pin-substring.md": "~~~text\nenv NOT_A_WORKBOX_EXPECT_MACHINE_ID=something <diagram>\n~~~\n",
     }
     scratch.mkdir()
-    for path in [scanner, guard]:
+    layout = Path("linux/hetzner-workbox/layout.sh")
+    for path in [scanner, guard, layout]:
         target = scratch / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes((ROOT / path).read_bytes())
     fresh = "workbox/bin/fresh-probe"
     (scratch / fresh).parent.mkdir(parents=True)
     (scratch / fresh).write_text("#!/bin/sh\nworkbox_require_host\n")
+    untracked = "linux/hetzner-workbox/untracked.sh"
+    link = "linux/hetzner-workbox/indexed-link.sh"
+    (scratch / untracked).write_text("#!/bin/sh\ntrue\n")
+    (scratch / link).symlink_to("untracked.sh")
     for path, text in plants.items():
         target = scratch / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text)
     subprocess.run(["git", "init", "-q"], cwd=scratch, check=True)
-    subprocess.run(["git", "add", "--", str(scanner), str(guard), fresh, *plants], cwd=scratch, check=True)
+    subprocess.run(["git", "add", "--", str(scanner), str(guard), str(layout), fresh, link, *plants], cwd=scratch, check=True)
     run = [sys.executable, str(scanner)]
     census = subprocess.run(run, cwd=scratch, capture_output=True, text=True)
-    expected = {path for path in plants if path not in {"workbox/diagram.md", "skills/elsewhere/unrelated.md"}}
+    expected = set(plants) - {"workbox/diagram.md", "skills/elsewhere/unrelated.md", "linux/hetzner-workbox/relative-ok.md"}
     diagnosed = {line.split(":", 1)[0] for line in census.stderr.splitlines()}
     if census.returncode != 1 or diagnosed != expected:
         raise AssertionError(f"wrong tracked document census: {census}")
@@ -804,19 +956,28 @@ def census_control(scratch):
         raise AssertionError(f"new shell guard did not require a table entry: {census}")
     if not any("workbox/untagged-diagram.md:" in line and TAG in line for line in census.stderr.splitlines()):
         raise AssertionError(f"untagged diagram did not explain how to opt out: {census}")
+    for case in ("untracked", "symlink"):
+        if not any(f"linux/hetzner-workbox/{case}.md:" in line and "not a tracked repository file" in line
+                   for line in census.stderr.splitlines()):
+            raise AssertionError(f"{case} was not rejected by the indexed-file check: {census}")
     explicit = subprocess.run([*run, "skills/elsewhere/unrelated.md"], cwd=scratch, capture_output=True, text=True)
     if explicit.returncode != 1 or "redirection" not in explicit.stderr:
         raise AssertionError(f"explicit files were not checked strictly: {explicit}")
 
 
 def main():
-    raw = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT, env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"})
-    paths = sorted({Path(os.fsdecode(part)) for part in raw.split(b"\0") if part})
-    commands = dict(entries(paths))
+    raw = subprocess.check_output(["git", "ls-files", "--stage", "-z"], cwd=ROOT,
+                                  env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"})
+    index = [(metadata.split(), Path(os.fsdecode(file))) for part in raw.split(b"\0") if part
+             for metadata, file in [part.split(b"\t", 1)]]
+    paths = sorted({path for _, path in index})
+    tracked = {path for (mode, _, stage), path in index if mode in {b"100644", b"100755"} and stage == b"0"}
+    commands = dict(entries(sorted(tracked)))
     if not commands:
         raise ValueError("no guarded scripts found")
+    roles = {**DATA_NAMES, **{pin: "pin" for pins, _ in commands.values() for pin in pins}}
     if sys.argv[1:] == ["--controls"]:
-        controls()
+        controls(roles)
         print("guarded docs controls OK")
         return 0
     docs = [path for path in paths if path.suffix in DOC_SUFFIXES or (strict_path(path) and path.suffix == ".txt")]
@@ -826,13 +987,21 @@ def main():
         docs = [Path(path).resolve() for path in sys.argv[1:]]
     failures = [
         problem for path in docs
-        for problem in violations(path, (ROOT / path).read_text(), commands, explicit or strict_path(path))
+        for problem in violations(
+            path, (ROOT / path).read_text(),
+            Grammar(commands, roles, tracked, path.parent if not explicit else explicit_directory(path)),
+            explicit or strict_path(path),
+        )
     ]
     if failures:
         print("\n".join(failures), file=sys.stderr)
         return 1
     print("guarded docs OK")
     return 0
+
+
+def explicit_directory(path):
+    return path.parent.relative_to(ROOT) if path.is_relative_to(ROOT) else Path()
 
 
 if __name__ == "__main__":

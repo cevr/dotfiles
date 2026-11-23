@@ -169,6 +169,8 @@ branch while that integration is pending.
 
 ### Host identity
 
+Run these examples in a fresh login shell of the named account.
+
 Use the operator's deployment record, opened at order time. Record the
 installed machine's ID via its trusted provider console during enrollment,
 before selecting a host for deployment or recovery.

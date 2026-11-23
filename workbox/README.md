@@ -10,6 +10,8 @@ Use this command in the approved deployment, as the workbox user.
 
 ### Host identity
 
+Run these examples in a fresh login shell of the named account.
+
 Replace the literal `<machine-id-from-deployment-record>` with the intended
 workbox ID from the operator's deployment record opened at order time and
 confirmed via the provider console.
