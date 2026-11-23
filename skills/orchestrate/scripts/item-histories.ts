@@ -254,9 +254,12 @@ export function step(role: Role, at: Snapshot, event: TraceEvent): Snapshot {
       return { ...at, pending: { ...at.pending, status: 'interrupted' } };
     case 'deny':
       if (at.facts.refused) return at;
-      if (!(at.pending?.status === 'started' && at.pending.rev === event.rev) && !(at.pending?.status !== 'started' && event.rev > Math.max(latest(at.runs)?.rev ?? 0, at.pending?.rev ?? 0))) return at;
-      // A refusal beside the running attempt leaves it as it is, partial output and all; else it denies a call that never began.
-      if (at.pending?.status === 'started') return { ...at, refusal: { rev: event.rev, form: event.form }, facts: { ...at.facts, refused: true } };
+      // A refusal doesn't supplant an unfinished attempt. It either stands beside it or denies a never-started call.
+      if (at.pending && at.pending.status !== 'denied') {
+        if (event.rev !== at.pending.rev) return at;
+        return { ...at, refusal: { rev: event.rev, form: event.form }, facts: { ...at.facts, refused: true } };
+      }
+      if (event.rev <= Math.max(latest(at.runs)?.rev ?? 0, at.pending?.rev ?? 0)) return at;
       return { ...at, pending: { rev: event.rev, status: 'denied', observed: false }, refusal: { rev: event.rev, form: event.form }, facts: { ...at.facts, refused: true, attempt: at.runs.length === 0 ? 'started' : at.facts.attempt } };
     case 'lift':
       if (!at.facts.refused) return at;
@@ -332,7 +335,7 @@ function concreteOf(id: string, at: Snapshot, next: Snapshot, event: TraceEvent)
       return [{ kind: 'interrupt', attempt: attemptId(id, event.rev), output: pendingOutput(id, pending) }];
     }
     case 'deny':
-      if (at.pending?.status === 'started') return [{ kind: 'refuse', attempt: attemptId(id, event.rev), refusal: refusalOf(id, event.rev, event.form) }];
+      if (at.pending && at.pending.status !== 'denied') return [{ kind: 'refuse', attempt: attemptId(id, event.rev), refusal: refusalOf(id, event.rev, event.form) }];
       return [{ kind: 'deny', attempt: attemptId(id, event.rev), command: `cmd:${id}`, refusal: refusalOf(id, event.rev, event.form) }];
     case 'lift':
       return [{ kind: 'lift' }];

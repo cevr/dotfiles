@@ -1,6 +1,6 @@
 // The round policy: how an orchestrate role's step ends, as one versioned contract every host's prompt is
-// generated from and decoded back into. IO-free and free of the Effect runtime (it uses only Effect's Schema, a pure
-// decoder), so the installed plugin (role.ts), the skill's generator (skills/orchestrate/scripts/round-policy.ts) and
+// generated from and decoded back into. IO-free and free of the Effect runtime (it uses pure Effect data and Schema
+// utilities), so the installed plugin (role.ts), the skill's generator (skills/orchestrate/scripts/round-policy.ts) and
 // the tests read the same source.
 //
 //   vocabulary  roles, item states, stop events, the atoms a row's condition is written in, the item evidence
@@ -17,13 +17,13 @@
 //               item's history event by event and derives the step's stop: a typed rejection naming the path or the
 //               event, or an opaque `Checked` step that owns deep-frozen copies of everything. Nothing else takes a
 //               record, a trace, a stop record or an evidence value from a caller;
-//   admission   `owed(policy, checked)` is the one claim true of the step, every value derived from the history it
-//               is about; `admit(policy, checked)(claim)` decodes a claim from anywhere and names every way it
+//   admission   `owed(checked)` is the one claim true of the step, every value derived from the history it
+//               is about; `admit(checked)(claim)` decodes a claim from anywhere and names every way it
 //               differs from that, member by member; `outcome(policy, stop, states)` the verdict, artifacts and stop
 //               fields of a set of states.
 // A Policy is data: the tests mutate it to show each mutation is caught by the test meant to catch it.
 
-import { flow, Result, Schema } from "effect"
+import { Array as Arr, flow, Option, Result, Schema } from "effect"
 
 export const VERSION = 1
 
@@ -174,7 +174,7 @@ const ATOM_WORDS = {
   notAssigned: "not assigned",
   required: "required",
   optional: "optional (a wider probe)",
-  refused: "a refusal stopped it (or your own file's write: then your final message gives it after the verdict line)",
+  refused: "a refusal stopped it or your file write (report a denied write in your final message)",
   hostCannot: "this host cannot run it (its check or tool is absent or will not start)",
   wait: "waits on an open unit, question, commitment or two contradicting spec lines",
   pass: "its acceptance holds",
@@ -195,7 +195,7 @@ export const atomWords = (role: Role, atom: Atom): string => {
 }
 
 /** What a reader can take each atom to say of an item: true wherever its words could be read as true. */
-export const READS = {
+export const READS = Object.freeze({
   assigned: (facts: Facts) => facts.assigned,
   notAssigned: (facts: Facts) => !facts.assigned,
   required: (facts: Facts) => facts.assigned && facts.required,
@@ -211,7 +211,7 @@ export const READS = {
   advance: (facts: Facts) => !facts.settled,
   unit: (facts: Facts) => facts.provenance === "unit",
   base: (facts: Facts) => facts.provenance === "base",
-} as const satisfies { readonly [A in Atom]: (facts: Facts) => boolean }
+} as const satisfies { readonly [A in Atom]: (facts: Facts) => boolean })
 
 /** Every atom true of an item holding all of `facts` (two records: two facts at once). */
 export const truths = (facts: ReadonlyArray<Facts>): ReadonlySet<Atom> => new Set(ATOMS.filter((atom) => facts.some((one) => READS[atom](one))))
@@ -426,7 +426,7 @@ const stopAuthored = (role: Role, stop: Stop): ReadonlyArray<StopField> => {
 }
 
 export const FIELD_TEXT = {
-  completed: "the last attempt that finished: its id, the command it ran, its output's digest, its exit code, its receipt, the head it ran at and its result",
+  completed: "the last attempt that finished: its id, command, output digest or why none, exit code, receipt, head and result",
   current: "an attempt newer than that, with no result: its id, its command, its status (started, interrupted or denied) and its partial output's digest or why it has none",
   refused: "what was refused, as the refusal said it, its scope, where its safe report is, and the `!` command or allow rule it printed, or none",
   cannot: "the check or tool, with the probe that found it absent: its command and output",
@@ -480,7 +480,7 @@ const intro = (role: Role): string =>
   ].join(" ")
 
 /** One role's policy, from the source data. */
-export const project = (role: Role): Policy => ({
+const policyOf = (role: Role): Policy => ({
   version: VERSION,
   role,
   intro: intro(role),
@@ -489,6 +489,7 @@ export const project = (role: Role): Policy => ({
   verdicts: VERDICTS_AUTHORED[role].map((rule, index) => ({ ...rule, priority: index + 1 })),
   stops: STOPS_OF[role].map((stop) => ({ stop, fields: stopAuthored(role, stop) })),
 })
+export const project = (role: Role): Policy => POLICIES[role]
 
 // ---- the notation --------------------------------------------------------------------------------------------------
 
@@ -501,7 +502,7 @@ export const BLOCK = /<!-- round-policy v\d+ [a-z]+: [^\n]*-->[\s\S]*?<!-- \/rou
 const HEADER = /^<!-- round-policy v(\d+) ([a-z]+): generated by opencode\/mods\/orchestrate\/round-policy\.ts; edit that, then run skills\/orchestrate\/scripts\/agents\.ts -->$/
 
 export const FIELDS_LEAD =
-  "Each item's hand-back gives its rule, its label and each of these fields its record holds, with the exact values recorded; a field the record lacks is left out, never filled in or asserted, and a label wins only the presentation, never dropping another field:"
+  "Give each item's rule, label and all these fields exactly as recorded. Omit absent fields; the label never drops evidence:"
 export const FIRST_ROW = "Take the first row that is true of the item; stop there."
 export const FIRST_VERDICT = "Take the first row that holds for the step; stop there."
 export const STOPS_LEAD = "Why the step stopped gives the evidence fields you write:"
@@ -1007,7 +1008,7 @@ const AbsentSchema = Schema.Struct({ tool: Text, probe: Text, output: OutputSche
  * One event of an item's history, each about the attempt it names or an obstacle. An attempt begins (`begin`), may have
  * partial output observed (`observe`), and ends completed (`finish`) or interrupted (`interrupt`). A refusal is either
  * `deny`, of a call that never began (a fresh attempt: its command is the refused call, read or git or check), or
- * `refuse`, of another action while an attempt runs: that attempt keeps its status and its output. A refusal lifts
+ * `refuse`, of another action beside a running or interrupted attempt: that attempt keeps its status and output. A refusal lifts
  * (`lift`); the host loses and regains the check's tool (`hostLost`, `hostBack`); a wait opens and closes (`waitOpen`,
  * `waitClose`); a verifier's unclear result stays unclear once no retry can settle it (`settle`).
  */
@@ -1078,7 +1079,11 @@ const runningAny = (at: Folding): boolean => at.pending.some((one) => one.status
 const free = (at: Folding): boolean => at.refusal.length === 0 && at.absent.length === 0 && at.waits.length === 0
 const fresh = (at: Folding, attempt: string): boolean => filled(attempt) && !at.attempts.includes(attempt)
 const settles = (role: Role, result: Result): boolean => result === "pass" || (role === "verifier" && result === "fail")
-const commandOf = (at: Folding, attempt: string): string => at.pending.flatMap((one) => [one.command].filter(() => one.id === attempt)).join("")
+/** Missing new output never replaces known output of the same attempt. A new log or partial digest can supersede it. */
+const keepOutput = (prior: Output, next: Output): Output => {
+  if (next.kind === "missing" && prior.kind !== "missing") return prior
+  return next
+}
 
 const refusalOk = (refusal: Refusal): boolean =>
   filled(refusal.what, refusal.scope, refusal.report) && (refusal.form.kind === "none" || (refusal.form.kind === "named" && filled(refusal.form.form)) || (refusal.form.kind === "allow" && filled(refusal.form.allow)))
@@ -1102,7 +1107,7 @@ const attemptStep = (role: Role, at: Folding, event: TraceEvent): Next => {
   }
   if (event.kind === "finish") return finishStep(role, at, event)
   if (event.kind === "interrupt") {
-    const pending = at.pending.map((one): Pending => ({ ...one, status: "interrupted", output: event.output }))
+    const pending = at.pending.map((one): Pending => ({ ...one, status: "interrupted", output: keepOutput(one.output, event.output) }))
     return iffOk(running(at, event.attempt) && interruptedOutput(event.output), { ...at, pending }, "only the running attempt is interrupted, with its partial output or the word that it was interrupted")
   }
   return refusalStep(at, event)
@@ -1110,9 +1115,10 @@ const attemptStep = (role: Role, at: Folding, event: TraceEvent): Next => {
 
 const finishStep = (role: Role, at: Folding, event: TraceEvent): Next => {
   if (event.kind !== "finish") return fail("no such event")
-  const good = at.refusal.length === 0 && finishable(at, event.attempt) && finishedOutput(event.output) && filled(event.receipt, event.head)
-  if (!good) return fail("only the current attempt, running or interrupted, finishes, once no refusal holds it, with its result, exit, output (a log, or no authenticated evidence), receipt and head")
-  const run: Run = { id: event.attempt, command: commandOf(at, event.attempt), output: event.output, exit: event.exit, receipt: event.receipt, head: event.head, result: event.result }
+  const prior = Arr.findFirst(at.pending, (one) => one.id === event.attempt && one.status !== "denied")
+  if (Option.isNone(prior) || at.refusal.length > 0 || !finishedOutput(event.output) || !filled(event.receipt, event.head))
+    return fail("only the current attempt, running or interrupted, finishes, once no refusal holds it, with its result, exit, output (a log, or no authenticated evidence), receipt and head")
+  const run: Run = { id: event.attempt, command: prior.value.command, output: keepOutput(prior.value.output, event.output), exit: event.exit, receipt: event.receipt, head: event.head, result: event.result }
   const settled = settles(role, event.result)
   // A result that settles the item leaves nothing for a host loss or a wait opened during the run to hold back.
   const cleared = { absent: at.absent.filter(() => !settled), waits: at.waits.filter(() => !settled) }
@@ -1121,19 +1127,19 @@ const finishStep = (role: Role, at: Folding, event: TraceEvent): Next => {
 
 /**
  * A refusal: `deny` of a call that never began (a fresh attempt, never started, with no output), or `refuse` of
- * another action while an attempt runs, which leaves that attempt as it is, output and all. Never a denial of an
+ * another action beside an unfinished attempt, which leaves that attempt as it is, output and all. Never a denial of an
  * attempt that began: what it already printed stays in every later label.
  */
 const refusalStep = (at: Folding, event: TraceEvent): Next => {
   if (event.kind === "deny") {
     const pending: Pending = { id: event.attempt, command: event.command, status: "denied", output: { kind: "missing", why: "not-started" } }
-    const good = at.refusal.length === 0 && !runningAny(at) && fresh(at, event.attempt) && filled(event.command) && refusalOk(event.refusal)
-    const why = "a denied call never began: a new attempt, while no attempt runs and no refusal holds the item, with what, scope, report and remedy"
+    const good = at.refusal.length === 0 && at.pending.every((one) => one.status === "denied") && fresh(at, event.attempt) && filled(event.command) && refusalOk(event.refusal)
+    const why = "a denied call never began: a new attempt, with no begun attempt unfinished and no refusal holding the item, with what, scope, report and remedy"
     return iffOk(good, { ...at, pending: [pending], refusal: [event.refusal], attempts: [...at.attempts, event.attempt] }, why)
   }
   if (event.kind === "refuse") {
-    const good = at.refusal.length === 0 && running(at, event.attempt) && refusalOk(event.refusal)
-    return iffOk(good, { ...at, refusal: [event.refusal] }, "a refusal beside an attempt is of another action while that attempt runs, while no refusal holds the item")
+    const good = at.refusal.length === 0 && finishable(at, event.attempt) && refusalOk(event.refusal)
+    return iffOk(good, { ...at, refusal: [event.refusal] }, "a refusal beside an attempt is of another action while that attempt is unfinished, while no refusal holds the item")
   }
   return fail("no such event")
 }
@@ -1233,7 +1239,7 @@ const stopOf = (ending: Ending): Stop => {
 
 /**
  * A step decoded from its persisted envelope and checked: every item's history folded, and the stop derived. Only
- * `decode` makes one (the class is not exported and its private member makes the type nominal), and it owns
+ * `decode` issues one (its private member makes the type nominal, and admissions check the issuance map), and it owns
  * deep-frozen copies of everything, so nothing it returns shares a reference with what the caller handed in.
  */
 class CheckedStep {
@@ -1249,12 +1255,20 @@ class CheckedStep {
   }
 }
 export type Checked = CheckedStep
+const issued = new WeakMap<Checked, Owed>()
+Object.freeze(CheckedStep.prototype)
 
 /** A value and everything inside it, frozen: what the contract returns can never be changed by whoever holds it. */
 const frozen = <A>(value: A): A => {
   for (const inner of Object.values(Object(value))) if (inner === Object(inner)) frozen(inner)
   return Object.freeze(value)
 }
+const POLICIES = frozen({
+  planner: policyOf("planner"),
+  implementor: policyOf("implementor"),
+  verifier: policyOf("verifier"),
+  worker: policyOf("worker"),
+})
 
 const refusalsOf = (record: ItemRecord): ReadonlyArray<Refusal> =>
   record.fields.flatMap((field) => {
@@ -1264,6 +1278,13 @@ const refusalsOf = (record: ItemRecord): ReadonlyArray<Refusal> =>
 
 /** The role's artifacts: what any of its verdicts writes. */
 const artifactsOf = (role: Role): ReadonlyArray<Artifact> => project(role).verdicts.flatMap((rule) => rule.writes.artifacts)
+
+/** A positive length in a clock unit, retaining exactly the space (if any) that was recorded. */
+const timeboxLength = /^[1-9][0-9]* ?(?:ms|s|m|h|d)(?![\s\S])/
+const observedLimit = (limit: Limit): boolean => {
+  if (limit.kind === "timebox") return timeboxLength.test(limit.length)
+  return Number.isSafeInteger(limit.count) && limit.count > 0
+}
 
 const endingOf = (role: Role, records: ReadonlyArray<ItemRecord>, step: ReadonlyArray<StepEvent>): Decoded<Ending> => {
   const endings: ReadonlyArray<Ending> = [
@@ -1276,7 +1297,9 @@ const endingOf = (role: Role, records: ReadonlyArray<ItemRecord>, step: Readonly
   const wrong = [
     ...iff(endings.length > 1, "the step stopped once: a refusal or the limit, never two"),
     ...step.flatMap((event) => {
-      if (event.kind === "limit") return [...iff(!hasStop(role, "limit"), `a ${role} has no round limit`), ...iff(event.limit.kind === "timebox" && !filled(event.limit.length), "a time box has its length")]
+      if (event.kind === "limit") {
+        return [...iff(!hasStop(role, "limit"), `a ${role} has no round limit`), ...iff(!observedLimit(event.limit), "a limit has a positive clock length or failure count")]
+      }
       return [...iff(!artifactsOf(role).includes(event.artifact), `a ${role} writes no ${event.artifact}`), ...iff(!refusalOk(event.refusal), "a refused write has what, scope, report and remedy")]
     }),
   ]
@@ -1306,21 +1329,28 @@ const checkStep = (envelope: Envelope): Decoded<Checked> => {
   if (!records.ok) return fail(records.error)
   const ending = endingOf(role, records.value, envelope.step)
   if (!ending.ok) return fail(ending.error)
-  const rows = allOk(records.value.map((record) => rowOf(project(role), record)))
-  if (!rows.ok) return fail(rows.error)
-  const bad = illFormed(role, stopOf(ending.value), statesOf(ending.value, rows.value))
-  if (bad.length > 0) return fail(`step: ${bad.join("")}`)
-  return ok(new CheckedStep(role, frozen(records.value), frozen(ending.value), frozen(envelope)))
+  const policy = project(role)
+  const reads = allOk(records.value.map((record) => readOf(policy, record)))
+  if (!reads.ok) return fail(reads.error)
+  const due = deriveOwed(policy, ending.value, reads.value)
+  if (!due.ok) return fail(due.error)
+  const checked = Object.freeze(new CheckedStep(role, frozen(records.value), frozen(ending.value), frozen(envelope)))
+  issued.set(checked, due.value)
+  return ok(checked)
 }
 
 const rejected = (error: Schema.SchemaError): Decoded<Checked> => fail(`envelope: ${error.message.replaceAll("\n", " ")}`)
+
+/** An unknown JS value can also be unreadable (a throwing getter or proxy), independently of the schema. */
+const readUnknown = <Input, A>(read: (input: Input) => A, unreadable: () => A) =>
+  (input: Input): A => Result.match(Result.try(() => read(input)), { onFailure: unreadable, onSuccess: (value) => value })
 
 /**
  * The one way in: a step's persisted envelope, from anywhere (a store, a file, a test's raw JSON), decoded by its schema
  * (exact tags, primitives, array elements and members, each rejection naming its path), then each item's history
  * folded event by event and the step's stop derived. Never throws: a typed rejection, or the checked step.
  */
-export const decode = flow(decodeEnvelope, Result.match({ onFailure: rejected, onSuccess: checkStep }))
+export const decode = readUnknown(flow(decodeEnvelope, Result.match({ onFailure: rejected, onSuccess: checkStep })), () => fail("envelope: could not read the value"))
 
 // ---- what a step owes, derived ----------------------------------------------------------------------------------------
 
@@ -1448,29 +1478,25 @@ const stopValuesOf = (ending: Ending, records: ReadonlyArray<ItemRecord>, held: 
     .flatMap((record) => heldEvidence(record).map((evidence): StopValue => ({ id: "held", item: record.id, value: heldText(evidence) })))
 }
 
-/** The one claim true of a checked step under a policy, every value derived from its histories, and each item's state. */
-export const owed = (policy: Policy, checked: Checked): Decoded<Owed> => {
-  if (!(checked instanceof CheckedStep)) return fail("a step is checked only by decode, from its envelope")
-  if (policy.role !== checked.role) return fail(`a ${checked.role}'s step judged by a ${policy.role}'s policy`)
-  const read = allOk(checked.records.map((record) => readOf(policy, record)))
-  if (!read.ok) return fail(read.error)
-  const result = outcome(
-    policy,
-    stopOf(checked.ending),
-    statesOf(
-      checked.ending,
-      read.value.map((one) => one.row),
-    ),
-  )
+/** The one claim true of the step, using only the role policy and evidence folded from its own envelope. */
+const deriveOwed = (policy: Policy, ending: Ending, reads: ReadonlyArray<Read>): Decoded<Owed> => {
+  const result = outcome(policy, stopOf(ending), statesOf(ending, reads.map((one) => one.row)))
   if (!result.ok) return fail(`step: ${result.error}`)
   const named = policy.fields.map((field) => field.id)
-  const items = read.value.map(({ record, row }): HandBack => ({ item: record.id, rule: row.id, label: row.label, fields: record.fields.filter((field) => named.includes(field.field)) }))
+  const items = reads.map(({ record, row }): HandBack => ({ item: record.id, rule: row.id, label: row.label, fields: record.fields.filter((field) => named.includes(field.field)) }))
   const holding = heldStates(policy.role)
-  const held = read.value.filter(({ row }) => holding.includes(row.state)).map(({ record }) => record.id)
-  const claim: Claim = { verdict: result.value.verdict, writes: result.value.writes.artifacts, stop: stopValuesOf(checked.ending, checked.records, held), items }
-  const states = read.value.map(({ record, row }): ItemState => ({ item: record.id, rule: row.id, state: row.state, facts: record.facts }))
+  const held = reads.flatMap(({ row, record }) => iff(holding.includes(row.state), record.id))
+  const claim: Claim = { verdict: result.value.verdict, writes: result.value.writes.artifacts, stop: stopValuesOf(ending, reads.map(({ record }) => record), held), items }
+  const states = reads.map(({ record, row }): ItemState => ({ item: record.id, rule: row.id, state: row.state, facts: record.facts }))
   return ok(frozen({ claim, states }))
 }
+
+/** What this exact issued step owes, with no way to substitute a policy, a record, or different evidence. */
+export const owed = (checked: Checked): Decoded<Owed> =>
+  Option.match(Option.fromUndefinedOr(issued.get(checked)), {
+    onNone: () => fail("a step is checked only by decode, from its envelope"),
+    onSome: ok,
+  })
 
 /** An item's record with the row a policy gives it. */
 interface Read {
@@ -1553,8 +1579,8 @@ const itemFaults = (owed: ReadonlyArray<HandBack>, given: ReadonlyArray<HandBack
 ]
 
 /** Every way a decoded claim differs from the claim the step owes. */
-const claimFaults = (policy: Policy, checked: Checked, claim: Claim): ReadonlyArray<string> => {
-  const due = owed(policy, checked)
+const claimFaults = (checked: Checked, claim: Claim): ReadonlyArray<string> => {
+  const due = owed(checked)
   if (!due.ok) return [`ill-formed: ${due.error}`]
   const want = due.value.claim
   return [
@@ -1569,13 +1595,13 @@ const unreadClaim = (error: Schema.SchemaError): ReadonlyArray<string> => [`clai
 
 /**
  * Every reason a claim (from anywhere: decoded by its schema, unknown members rejected) does not match what the checked
- * step owes under a policy: none means it is admitted. Every value is compared with the one derived from the step's
+ * step owes: none means it is admitted. Every value is compared with the one derived from the step's
  * own histories, never with an echo of itself.
  */
-export const admit = (policy: Policy, checked: Checked) =>
-  flow(
-    decodeClaim,
-    Result.match({ onFailure: unreadClaim, onSuccess: (claim: Claim) => claimFaults(policy, checked, claim) }),
+export const admit = (checked: Checked) =>
+  readUnknown(
+    flow(decodeClaim, Result.match({ onFailure: unreadClaim, onSuccess: (claim: Claim) => claimFaults(checked, claim) })),
+    () => ["claim: could not read the value"],
   )
 
 // ---- the step: verdict, artifacts and stop evidence -----------------------------------------------------------------

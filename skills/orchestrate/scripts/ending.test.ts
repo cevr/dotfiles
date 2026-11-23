@@ -683,10 +683,13 @@ export function historyFaults(policy: Policy, histories = LIST_HISTORIES): strin
       if (reached === undefined) return [`${one.name}: no history reaches its facts`];
       const checked = decode(stepEnvelope(reached));
       if (!checked.ok) return [`${one.name}: ${checked.error}`];
-      const due = owed(policy, checked.value);
+      const due = owed(checked.value);
       if (!due.ok) return [`${one.name}: ${due.error}`];
-      const { label, fields } = due.value.claim.items[0]!;
-      const handBack = handBackOf(due.value.states[0]!.state, label, fields);
+      const { fields } = due.value.claim.items[0]!;
+      const row = decide(policy, truths([due.value.states[0]!.facts]))[0];
+      if (!row) return [`${one.name}: no shown row`];
+      const shown = fields.filter((field) => policy.fields.some((entry) => entry.id === field.field));
+      const handBack = handBackOf(row.state, row.label, shown);
       const out: string[] = [];
       // Exact: the history's label is the due label or its word (wordOf), never a shorter prefix or a blank.
       if (handBack.state !== one.state || (one.label !== handBack.label && one.label !== wordOf(handBack.label))) out.push(`${one.name}: ${STATE_NAME[handBack.state]} (${handBack.label})`);
@@ -818,7 +821,7 @@ describe('(vii) the hand-back is decoded by its exact Schema, then compared type
     if (reached === undefined) throw new Error(`${one.name}: no history reaches it`);
     const checked = decode(stepEnvelope(reached));
     if (!checked.ok) throw new Error(checked.error);
-    const due = owed(POLICIES[one.role], checked.value);
+    const due = owed(checked.value);
     if (!due.ok) throw new Error(due.error);
     const item = due.value.claim.items[0]!;
     return handBackOf(due.value.states[0]!.state, item.label, item.fields);
