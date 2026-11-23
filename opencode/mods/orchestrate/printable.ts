@@ -3,7 +3,7 @@
 // it does not compile. `printable` replaces every secret shape in the WHOLE text, and nothing before it cuts a text
 // (mods/orchestrate/printable.test.ts holds the record's modules to that), so no cut can leave a fragment of a token
 // too short to be known as one.
-import { Array as Arr, Brand, Match, Schema } from "effect"
+import { Array as Arr, Brand, Match, Option, Schema } from "effect"
 import { isRandom, KNOWN, redact, REDACTED, RUN } from "@dotfiles/opencode-digest/redact"
 
 /** A text safe to print: every secret shape in it replaced, whole, before any cut. Only `printable` makes one. */
@@ -15,8 +15,32 @@ const make = Brand.nominal<Printable>()
 /** The width of a window a key of no known form fills: the redactor's shortest random run. */
 const WINDOW = 32
 
-/** Some window of `run` reads as random: a key glued to other text, which the redactor reads as one run that is not. */
-const holdsKey = (run: string): boolean => Arr.some(Arr.range(0, run.length - WINDOW), (at) => isRandom(run.slice(at, at + WINDOW)))
+/** `c log2 c`: a character's share of a window's entropy sum. */
+const weight = (count: number): number => Math.max(0, count * Math.log2(Math.max(1, count)))
+
+/**
+ * Each window of WINDOW characters of `run`, as the entropy the redactor's `isRandom` reads (bits a character), slid
+ * one character at a time: `log2(n) - Σ c log2 c / n`, the sum kept as characters enter and leave.
+ */
+const windowEntropies = (run: string): ReadonlyArray<number> => {
+  const counts = new Map<string, number>()
+  const add = (char: string, by: number, sum: number) => {
+    const before = Option.getOrElse(Option.fromUndefinedOr(counts.get(char)), () => 0)
+    counts.set(char, before + by)
+    return sum - weight(before) + weight(before + by)
+  }
+  const first = Arr.reduce(Arr.range(0, WINDOW - 1), 0, (sum, at) => add(run[at], 1, sum))
+  return Arr.scan(Arr.range(WINDOW, Math.max(WINDOW, run.length - 1)), first, (sum, at) => add(run[at - WINDOW], -1, add(run[at], 1, sum))).map(
+    (sum) => Math.log2(WINDOW) - sum / WINDOW,
+  )
+}
+
+/**
+ * Some window of `run` reads as random: a key glued to other text, which the redactor reads as one run that is not.
+ * Its windows are read by entropy, slid, and the dense ones by `isRandom` itself, so the rule stays the redactor's.
+ */
+const holdsKey = (run: string): boolean =>
+  Arr.some(windowEntropies(run), (bits, at) => bits >= 4.2 && at + WINDOW <= run.length && isRandom(run.slice(at, at + WINDOW)))
 
 /** The digest's known forms wherever they start: glued to a word (`xghp_…`), where its word boundary does not hold. */
 const GLUED = KNOWN.map((form) => new RegExp(form.source.replaceAll("\\b", ""), form.flags))

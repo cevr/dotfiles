@@ -1,7 +1,8 @@
 // A token-shaped canary and every way to put it in a call: the probe of the record's one rule that no refusal, answer,
 // row or log repeats a caller's string it did not validate first (commitments.sim.test.ts, record-cli.test.ts).
-import { Effect, FileSystem, Predicate, Schema } from "effect"
+import { Effect, FileSystem, Match, Predicate, type Random, Schema } from "effect"
 import { hostServices } from "./host-services.ts"
+import { type Placed, placedAt } from "./tokens.ts"
 
 /** A GitHub token's shape, from parts, its body invented: what no answer, row or log may repeat. */
 export const CANARY = ["gh", "p_", "Cn4ry7Xq2Wv9Lm3Bt8Zs1Kd6Hf0Jp5Rg4Ty2"].join("")
@@ -30,6 +31,40 @@ export const canariedFields = (call: Fields): ReadonlyArray<Fields> => [
   { ...call, [CANARY]: 1 },
   ...Object.entries(call).flatMap(([key, value]) => canaried(value).map((each) => ({ ...call, [key]: each }))),
 ]
+
+/** `call` with every key and leaf that is the canary replaced by `value`. */
+const swapped = (call: Json, value: string): Json => {
+  if (isList(call)) return call.map((item) => swapped(item, value))
+  if (isFields(call)) return swappedFields(call, value)
+  return Match.value(call).pipe(
+    Match.when(CANARY, () => value),
+    Match.orElse(() => call),
+  )
+}
+
+/** `swapped` of an object: its keys and its values. */
+const swappedFields = (call: Fields, value: string): Fields =>
+  Object.fromEntries(
+    Object.entries(call).map(([key, item]) => [
+      Match.value(key).pipe(
+        Match.when(CANARY, () => value),
+        Match.orElse(() => key),
+      ),
+      swapped(item, value),
+    ]),
+  )
+
+/**
+ * Each way to put a secret in `calls` (`canariedFields`'s), each with its own: the `at`-th way gets the `at`-th
+ * placement of `placedAt` (sim/tokens.ts), so a run covers every kind and placement and a seed moves which goes where.
+ */
+export const placedCalls = (calls: ReadonlyArray<Fields>, random: Random.Random, from = 0): ReadonlyArray<readonly [Fields, string, Placed]> =>
+  calls
+    .flatMap((call) => canariedFields(call))
+    .map((input, at) => {
+      const [name, placed] = placedAt(random, from + at)
+      return [swappedFields(input, placed.value), name, placed] as const
+    })
 
 const jsonOf = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
 

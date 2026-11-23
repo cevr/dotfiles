@@ -14,7 +14,9 @@ import * as SqliteRecord from "@dotfiles/opencode-orchestrate/sqlite/record"
 import * as Seed from "../../sim/seed.ts"
 import { gitInit, withProcessEnv } from "../../tests/git-repo.ts"
 import { scratch } from "../../tests/scratch.ts"
-import { CANARY, COMMITMENT_CALLS, canariedFields, type Fields, FOLLOW_UP_CALLS, textsOf } from "../../sim/canary.ts"
+import { CANARY, COMMITMENT_CALLS, canariedFields, type Fields, FOLLOW_UP_CALLS, placedCalls, textsOf } from "../../sim/canary.ts"
+import { generator } from "../../sim/runtime.ts"
+import { leaked, leakedFrom, type Placed, placedAt, windowsOf } from "../../sim/tokens.ts"
 import { main as printed } from "./record.ts"
 
 /** The CLI on `args`, its printable output read as the text it prints. */
@@ -258,6 +260,50 @@ Seed.effect(
           record: false,
         })
         // The canary-free calls wrote: the record's bytes and its export were there to search.
+        expect([exported.code, exported.out.includes("plan.md:1")]).toEqual([0, true])
+      }),
+    (held) => Effect.sync(() => held[Symbol.dispose]()),
+  ),
+)
+
+// The acceptance of the one output boundary on the CLI: each way into a call the canary above takes, and the actor,
+// the file and the checkout, carries a secret of every kind the redactor knows at any place in its value
+// (sim/tokens.ts), one placement each. No stdout, stderr, exported event or record byte holds a fragment of LEAK_MIN
+// characters of its secret.
+Seed.effect(
+  "a secret of any kind at any place in any argument, key or value leaves no fragment in an output, an export or the record",
+  Effect.acquireUseRelease(
+    Effect.sync(() => scratch("record-cli-placed-")),
+    (held) =>
+      Effect.gen(function* () {
+        const checkout = `${held.path}/repo`
+        const db = `${held.path}/record.db`
+        yield* Effect.promise(() => write(`${checkout}/docs/record.md`, "# One writer\n"))
+        gitInit(checkout, ["-q", "-b", "main"], gitEnv)
+        for (const args of [["add", "docs/record.md"], ["commit", "-q", "-m", "docs"]]) spawnSync(["git", "-C", checkout, ...args], { env: gitEnv, stdout: "ignore", stderr: "ignore" })
+        const on = (...args: ReadonlyArray<string>) => main([...args, "--file", db, "--checkout", checkout], checkout)
+        expect((yield* on("add", "--json", fieldsJson({ source_kind: "plan-part", source_ref: "plan.md:1", parts: [{ id: "a1", title: "one" }, { id: "a2", title: "two" }] }))).code).toBe(0)
+        const argsOf = (call: Fields, actor: ReadonlyArray<string>) => {
+          const { action = "follow_up", ...fields } = call
+          return [String(action), "--json", fieldsJson(fields), ...actor]
+        }
+        const random = generator("record-cli-placed")
+        const placedIn = (at: number) => placedAt(random, 2000 + at)
+        const [actor, file, path] = [placedIn(0), placedIn(1), placedIn(2)]
+        const calls: ReadonlyArray<readonly [ReadonlyArray<string>, string, Placed]> = [
+          ...placedCalls(COMMITMENT_CALLS, random).map(([input, name, placed]) => [["--file", db, "--checkout", checkout, ...argsOf(input, [])], name, placed] as const),
+          ...placedCalls(FOLLOW_UP_CALLS, random, 1000).map(([input, name, placed]) => [["--file", db, "--checkout", checkout, ...argsOf(input, ["--actor", "worker-1"])], name, placed] as const),
+          [["--file", db, "--checkout", checkout, ...argsOf(COMMITMENT_CALLS[4], ["--actor", actor[1].value])], `actor ${actor[0]}`, actor[1]],
+          [["list", "--file", `${held.path}/${file[1].value}/record.db`, "--checkout", checkout], `file ${file[0]}`, file[1]],
+          [["defer", "--file", db, "--checkout", `/nonexistent/loop-probe-x/${path[1].value}`, "--json", fieldsJson({ id: "a2", reason_class: "measured", referent: { kind: "receipt", path: "tmp/orchestrate/r1/red.json" } })], `checkout ${path[0]}`, path[1]],
+        ]
+        const outputs = yield* Effect.forEach(calls, ([args]) => main(args, checkout))
+        const exported = yield* on("export")
+        const written = windowsOf(`${exported.out}\n${exported.err}\n${(yield* textsOf([db, `${db}-wal`])).join("")}`)
+        const leaks = calls.flatMap(([, name, placed], at) =>
+          [...leaked(`${outputs[at].out}\n${outputs[at].err}`, placed).map((fragment) => `output (${name}): ${fragment}`), ...leakedFrom(written, placed).map((fragment) => `export or record (${name}): ${fragment}`)].slice(0, 1),
+        )
+        expect({ calls: calls.length, silent: outputs.filter((ran) => ran.out === "" && ran.err === "").length, leaks }).toEqual({ calls: 118, silent: 0, leaks: [] })
         expect([exported.code, exported.out.includes("plan.md:1")]).toEqual([0, true])
       }),
     (held) => Effect.sync(() => held[Symbol.dispose]()),

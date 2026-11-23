@@ -97,6 +97,12 @@ const fragmentsOf = (secret: string): ReadonlyArray<string> => Arr.makeBy(Math.m
 /** The fragments of `placed`'s secrets that `text` holds: none, when nothing leaked. */
 export const leaked = (text: string, placed: Placed): ReadonlyArray<string> => Arr.filter(placed.secrets.flatMap(fragmentsOf), (fragment) => text.includes(fragment))
 
+/** Every LEAK_MIN-character window of `text`: a large text (a record's bytes) searched once for many secrets. */
+export const windowsOf = (text: string): ReadonlySet<string> => new Set(fragmentsOf(text))
+
+/** The fragments of `placed`'s secrets among `windows`. */
+export const leakedFrom = (windows: ReadonlySet<string>, placed: Placed): ReadonlyArray<string> => Arr.filter(placed.secrets.flatMap(fragmentsOf), (fragment) => windows.has(fragment))
+
 /** The `at`-th placement of a token, cycling shapes and placements so a run covers each, a seed's draw moving both. */
 export const placedAt = (random: Random.Random, at: number): readonly [string, Placed] => {
   const [kind, draw] = KINDS[(at + below(random, KINDS.length)) % KINDS.length]
