@@ -3007,8 +3007,10 @@ peers' side by side, each labeled with its host.
 
 - A peer is found only as the device this host's device store keys for its
   name, by stable ID, never by a name lookup. A peer the store does not key,
-  that is not on the tailnet, or that runs a build this one cannot read shows
-  as a line ("workbox is unavailable, last seen …") and adds no project.
+  or that is not on the tailnet now, shows as a line ("workbox is
+  unavailable, last seen …") and adds no project. One that runs a build this
+  one cannot read shows as "workbox runs a build this page cannot read" until
+  both hosts are updated.
 - Each host reads `/peer/view.json` from each peer every 15 s, at the
   peer's address and sending no credential and no Origin. The peer judges
   that read like any other: the reader is an agent machine, so it reads
@@ -3017,20 +3019,34 @@ peers' side by side, each labeled with its host.
   peer's item's mark, Later, name or answer straight to that host, with no
   token. No host writes for another.
 - That host lets only its peers' pages write to it cross-origin, by CORS:
-  a mark or an answer sent to its tailnet address (never under a name)
-  whose Origin is exactly one of the origins of the device its store keys,
-  by its Tailscale addresses alone (`http://<IPv4>:<port>`,
-  `http://[<IPv6>]:<port>`, as a browser spells them), never a name and
-  never a pattern. Its preflight is answered only for such a write, by
-  POST, with the page's header and JSON's type (never the token's header).
+  a POST to one of the write routes (`/api/mark`, `/api/later`,
+  `/api/name`, `/api/since`, `/api/answer`) sent to its tailnet address
+  (never under a name) whose Origin is exactly one of the origins of the
+  device its store keys, by its Tailscale addresses alone
+  (`http://<IPv4>:<port>`, `http://[<IPv6>]:<port>`, as a browser spells
+  them), never a name and never a pattern. Its preflight is answered (204)
+  only for such a write, from a source on the tailnet, with the page's
+  header and JSON's type (never the token's header); a preflight for any
+  other path, pairing included, gets the same 405 as with no peer named.
   Which server answers a name is the browser's resolver's choice; an
-  address reaches the keyed device by Tailscale's routing. It then applies
-  its own policy to the request's source. So his phone writes from either
-  page. A browser on an agent machine is refused (401), and the page links
-  to that host's own page to pair and act there. A token never leaves its
-  own host's page.
-- Nothing else crosses origins: on the tailnet a read or a pairing that
-  sends a peer's Origin is refused (403), and so is any write on loopback.
+  address reaches the keyed device by Tailscale's routing.
+- It then applies its own policy to the request's source, with no token
+  (one that comes along is not read), as it would to its own page's
+  tokenless request:
+  - Under the shipped `tailnetWrite: "member-except-hosts"`, his phone
+    writes from either page; a browser on an agent machine is refused
+    (401).
+  - Under `"member"`, an agent machine's browser writes there too.
+  - Under `"paired"`, or with the switch closed (`writes=paired:<why>`),
+    every peer write is refused (401).
+  - Another user's device, or one in `excludedDevices`, is refused (401)
+    under every switch, and an address outside the tailnet gets 403.
+
+  On a 401 the page links to that host's own page, to pair and act there.
+  A token never leaves its own host's page.
+- Nothing else crosses origins: on the tailnet a read, a pairing or a POST
+  to any other path that sends a peer's Origin is refused (403), and so is
+  any write on loopback.
   No answer but a peer write's carries `Access-Control-Allow-Origin`, so a
   peer's page reads nothing of another host's.
 - On the tailnet no page is open under a name (see "The address only"):
@@ -3041,7 +3057,9 @@ peers' side by side, each labeled with its host.
   On loopback, `localhost` is a name too: that page acts on its own host's
   items as before, and for a peer's items it shows "Open this digest by
   address to act on workbox's items", with the address links, instead of
-  writing, since a peer allows address origins alone.
+  writing, since a peer allows its peers' tailnet address origins alone.
+  The `127.0.0.1` page does try; the peer refuses that origin, and the
+  page says it cannot write to that host and links to that host's page.
 
 **Health.** Health on the tailnet answers an unpaired request `ok` alone. On
 loopback the line ends with
@@ -3114,8 +3132,14 @@ could read the pairing file anyway.
 **Health.** `GET /health` answers one line:
 
 ```
-digest ok <build> host=<h> events=<n> last=<iso> peers=none tailnet=yes|partial|held|no:<why>
+digest ok <build> host=<h> events=<n> last=<iso> peers=<up>/<named>|none tailnet=yes|partial|held|no:<why>
 ```
+
+`peers=<up>/<named>` counts the peers `digest.peers` names and how many of
+them answered at their last read (every 15 s); `none` means it names none.
+The installer names each host's other fleet host, so a healthy host reads
+`peers=1/1`; `peers=0/1` means the peer is down, not keyed, or on a build this
+one cannot read.
 
 `tailnet=held` means another server instance holds the tailnet port, and
 `partial` that it holds one of the two addresses (during a restart). `no`
