@@ -8,7 +8,7 @@ import { readdir, readFile, writeFile } from "node:fs/promises"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { buildOf, goodOf, parseRecord } from "@dotfiles/opencode-update/record"
-import { Effect, FileSystem, Layer, Option, Path, type PlatformError } from "effect"
+import { ByteSize, Effect, Equal, FileSystem, Layer, Option, Path, type PlatformError } from "effect"
 import { type BuildFacts, type InstalledFacts, isObjectName, objectName, ReceiptSource, SourceRead, SourceRef, sourceKey, SourceUnreadable } from "../batch-input.ts"
 import { RunRecords } from "../service.ts"
 import { departuresOf, SEEN_FILE } from "../skill-drift.ts"
@@ -98,10 +98,9 @@ const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
 
 /**
  * The receipt source over the host's files: a reference names one allowlisted file (a head must be a full object
- * name, so it names no path), read whole, as its exact bytes, through a handle opened without following a link, only
- * when it is a regular file no larger than `maxBytes` and strict UTF-8. The configured folders are the composition
- * root's to trust (a link among their parents is followed); the files in them are not. A missing file or folder is
- * absent; any other failure is unreadable, never absent.
+ * name, so it names no path), read whole, as its exact bytes, from one opened handle (`whole`), only when it is a
+ * regular file with one name, no larger than `maxBytes`, and strict UTF-8. A missing file or folder is absent; any
+ * other failure, a file moved while it was read included, is unreadable (read again), never absent.
  */
 export const receiptSource = (places: ReceiptPlaces) =>
   Layer.effect(
@@ -110,20 +109,34 @@ export const receiptSource = (places: ReceiptPlaces) =>
       const fs = yield* FileSystem.FileSystem
       const path = yield* Path.Path
       const roots = places.repository.checkouts.map((root) => path.resolve(root))
-      const fileOf = (ref: SourceRef): Option.Option<string> =>
+      /** The allowlisted folder and file name a reference names; none for a head that is not a full object name. */
+      const placeOf = (ref: SourceRef): Option.Option<{ readonly folder: string; readonly name: string }> =>
         SourceRef.$match(ref, {
-          Receipt: (each) => Option.map(Option.liftPredicate(each.head, isObjectName), (head) => path.join(places.receipts, `${head}.${each.kind}.json`)),
-          Land: (each) => Option.map(Option.liftPredicate(each.head, isObjectName), (head) => path.join(places.receipts, `${head}.land.json`)),
-          Installed: () => Option.some(places.installed),
-          Handoff: () => Option.some(places.handoff),
+          Receipt: (each) => Option.map(Option.liftPredicate(each.head, isObjectName), (head) => ({ folder: places.receipts, name: `${head}.${each.kind}.json` })),
+          Land: (each) => Option.map(Option.liftPredicate(each.head, isObjectName), (head) => ({ folder: places.receipts, name: `${head}.land.json` })),
+          Installed: () => Option.some({ folder: path.dirname(places.installed), name: path.basename(places.installed) }),
+          Handoff: () => Option.some({ folder: path.dirname(places.handoff), name: path.basename(places.handoff) }),
         })
       const unreadable = (ref: SourceRef) => (error: PlatformError.PlatformError) => new SourceUnreadable({ source: sourceKey(ref), message: error.message })
-      const notFound = (error: PlatformError.PlatformError) => error.reason._tag === "NotFound"
-      // The entry itself (lstat: a link is not followed) is a regular file before it is opened, so a link, a folder or a
-      // FIFO (whose open would wait for a writer) is refused unopened; the opened handle is checked again, and an
-      // entry swapped between the two (a link now: the open refuses it) fails the read: read again.
-      const whole = (file: string) =>
+      const notFound = (error: PlatformError.PlatformError | SourceUnreadable) => error._tag === "PlatformError" && error.reason._tag === "NotFound"
+      const tooLarge = (size: bigint) => size > BigInt(places.maxBytes)
+      /**
+       * One allowlisted file, read whole from one opened handle. The folder is resolved to its real path once for the
+       * read (a link among its parents is followed here, before anything is opened) and the file is opened by its
+       * name in that real folder with O_NOFOLLOW, so a link swapped in at the file fails the open and is never
+       * followed. The `lstat` before is an early refusal only (a link, a folder, a FIFO whose open would wait for a
+       * writer). Every fact the read rests on comes from the opened handle (fstat): a regular file, its size, its names (a
+       * hard link to a file elsewhere is refused; none means it was removed while open: the check below fails it), its
+       * device and inode; the bytes come from that handle only.
+       * Last, the folder must still resolve to the same real path and its entry by that name must still be the opened
+       * file (device and inode): a parent swapped for a link, or the file replaced, while it was opened fails the read
+       * (read again). Node and Bun give no openat, so the leaf cannot be opened relative to a folder handle: the
+       * identity check after the open stands in for it.
+       */
+      const whole = (ref: SourceRef, place: { readonly folder: string; readonly name: string }) =>
         Effect.gen(function* () {
+          const folder = yield* fs.realPath(place.folder)
+          const file = path.join(folder, place.name)
           const entry = yield* fs.lstat(file)
           if (entry.type === "SymbolicLink") return SourceRead.Refused({ reason: "a link" })
           if (entry.type !== "File") return SourceRead.Refused({ reason: "not a regular file" })
@@ -132,22 +145,28 @@ export const receiptSource = (places: ReceiptPlaces) =>
               const handle = yield* fs.open(file, { flag: "r", noFollow: true })
               const info = yield* handle.stat
               if (info.type !== "File") return SourceRead.Refused({ reason: "not a regular file" })
-              const bytes = yield* handle.readAlloc(places.maxBytes + 1)
-              const read = Option.getOrElse(bytes, () => new Uint8Array())
-              if (read.byteLength > places.maxBytes) return SourceRead.Refused({ reason: "too large" })
-              return yield* Effect.try({ try: () => SourceRead.Present({ text: utf8.decode(read) }), catch: () => "not text" }).pipe(
+              if (tooLarge(ByteSize.toBigInt(info.size))) return SourceRead.Refused({ reason: "too large" })
+              if (Option.exists(info.nlink, (names) => names > 1n)) return SourceRead.Refused({ reason: "a hard link" })
+              const bytes = Option.getOrElse(yield* handle.readAlloc(places.maxBytes + 1), () => new Uint8Array())
+              if (tooLarge(BigInt(bytes.byteLength))) return SourceRead.Refused({ reason: "too large" })
+              const still = yield* fs.realPath(place.folder)
+              const now = yield* fs.lstat(file)
+              if (still !== folder || now.dev !== info.dev || !Equal.equals(now.ino, info.ino)) {
+                return yield* new SourceUnreadable({ source: sourceKey(ref), message: "the file moved while it was read" })
+              }
+              return yield* Effect.try({ try: () => SourceRead.Present({ text: utf8.decode(bytes) }), catch: () => "not text" }).pipe(
                 Effect.orElseSucceed(() => SourceRead.Refused({ reason: "not text" })),
               )
             }),
           )
         })
       const read = Effect.fn("ReceiptSource.read")(function* (ref: SourceRef) {
-        const file = fileOf(ref)
-        if (Option.isNone(file)) return SourceRead.Refused({ reason: "not a commit name" })
-        // A failed look or read: absent when there is no such file, else unreadable (never absent).
-        return yield* whole(file.value).pipe(
+        const place = placeOf(ref)
+        if (Option.isNone(place)) return SourceRead.Refused({ reason: "not a commit name" })
+        // A failed look or read: absent when there is no such file or folder, else unreadable (never absent).
+        return yield* whole(ref, place.value).pipe(
           Effect.catchIf(notFound, () => Effect.succeed(SourceRead.Absent())),
-          Effect.mapError(unreadable(ref)),
+          Effect.catchTag("PlatformError", (error) => Effect.fail(unreadable(ref)(error))),
         )
       })
       return ReceiptSource.of({
