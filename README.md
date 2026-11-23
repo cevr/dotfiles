@@ -28,14 +28,14 @@ git clone git@github.com:cevr/dotfiles.git ~/Developer/personal/dotfiles
 cd ~/Developer/personal/dotfiles
 
 # Symlink (run install.sh or manually)
-ln -sf "$PWD/zshenv" ~/.zshenv
-ln -sf "$PWD/zshrc" ~/.zshrc
-ln -sf "$PWD/gitconfig" ~/.gitconfig
-ln -sf "$PWD/gitignore_global" ~/.gitignore_global
-ln -sf "$PWD/ghostty/config" "$HOME/Library/Application Support/com.mitchellh.ghostty/config"
-ln -sf "$PWD/atuin.toml" ~/.config/atuin/config.toml
+ln -sf -- "$PWD/zshenv" ~/.zshenv
+ln -sf -- "$PWD/zshrc" ~/.zshrc
+ln -sf -- "$PWD/gitconfig" ~/.gitconfig
+ln -sf -- "$PWD/gitignore_global" ~/.gitignore_global
+ln -sf -- "$PWD/ghostty/config" "$HOME/Library/Application Support/com.mitchellh.ghostty/config"
+ln -sf -- "$PWD/atuin.toml" ~/.config/atuin/config.toml
 mkdir -p ~/.local/bin
-ln -sf "$PWD/skills/track-work-hours/scripts/hours" ~/.local/bin/hours
+ln -sf -- "$PWD/skills/track-work-hours/scripts/hours" ~/.local/bin/hours
 ```
 
 ### Bite workbox

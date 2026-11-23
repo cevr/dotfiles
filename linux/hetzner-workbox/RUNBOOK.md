@@ -70,8 +70,11 @@ From that same trusted channel, pin the destination's SSH host key in
 1. On the exe box, a key for the copy: `ssh bite-workbox 'test -f ~/.ssh/hetzner-sync || ssh-keygen -q -t ed25519 -N "" -C hetzner-sync -f ~/.ssh/hetzner-sync'`.
 2. On the new box as root:
 
+   At the Bash prompt, type `read -rs TS_AUTHKEY`, press Enter, paste the key
+   from step 0.3 (it will not echo), and press Enter again.
+
    ```sh
-   read -rs TS_AUTHKEY && export TS_AUTHKEY      # paste the key from 0.3
+   export TS_AUTHKEY="$TS_AUTHKEY"
    export HB_EXTRA_KEYS='<the line of ssh bite-workbox cat .ssh/hetzner-sync.pub>'
    ```
 
@@ -81,11 +84,8 @@ From that same trusted channel, pin the destination's SSH host key in
      /root/dotfiles/linux/hetzner-workbox/provision.sh host user keys packages tools storage firewall rootssh tailscale sshd reserve upgrades
    ```
 
-   Clear the key from the root shell afterward:
-
-   ```sh
-   unset TS_AUTHKEY
-   ```
+   At the same root prompt, type `unset TS_AUTHKEY` and press Enter to clear
+   the key.
 
    `tools` installs the pinned tools; `storage` makes the limited subvolumes of
    `storage.conf` (README.md, Layout) and enables the unit that applies them at
@@ -128,19 +128,19 @@ From an hc terminal on the exe box (the copy outlives an ssh session there):
 ```sh
 # Pin source: exe and new host deployment records; see [Host identity](#host-identity).
 sudo env WORKBOX_EXPECT_MACHINE_ID='<source-machine-id-from-deployment-record>' HB_TARGET_MACHINE_ID='<destination-machine-id-from-deployment-record>' \
-  HB_TO="exedev@$NEWTS" "$d/sync.sh" --dry-run pass 1
+  HB_TO="exedev@$NEWTS" ~/Developer/personal/dotfiles/linux/hetzner-workbox/sync.sh --dry-run pass 1
 ```
 
 ```sh
 # Pin source: exe and new host deployment records; see [Host identity](#host-identity).
 sudo env WORKBOX_EXPECT_MACHINE_ID='<source-machine-id-from-deployment-record>' HB_TARGET_MACHINE_ID='<destination-machine-id-from-deployment-record>' \
-  HB_TO="exedev@$NEWTS" "$d/sync.sh" pass 1
+  HB_TO="exedev@$NEWTS" ~/Developer/personal/dotfiles/linux/hetzner-workbox/sync.sh pass 1
 ```
 
 ```sh
 # Pin source: exe and new host deployment records; see [Host identity](#host-identity).
 sudo env WORKBOX_EXPECT_MACHINE_ID='<source-machine-id-from-deployment-record>' HB_TARGET_MACHINE_ID='<destination-machine-id-from-deployment-record>' \
-  HB_TO="exedev@$NEWTS" "$d/sync.sh" rest
+  HB_TO="exedev@$NEWTS" ~/Developer/personal/dotfiles/linux/hetzner-workbox/sync.sh rest
 ```
 
 The dry-run transfer reads metadata; pass accounting also creates and removes
@@ -152,7 +152,7 @@ pass (plan.md). Preview the final pass once more shortly before the window:
 ```sh
 # Pin source: exe and new host deployment records; see [Host identity](#host-identity).
 sudo env WORKBOX_EXPECT_MACHINE_ID='<source-machine-id-from-deployment-record>' HB_TARGET_MACHINE_ID='<destination-machine-id-from-deployment-record>' \
-  HB_TO="exedev@$NEWTS" "$d/sync.sh" --dry-run pass 2
+  HB_TO="exedev@$NEWTS" ~/Developer/personal/dotfiles/linux/hetzner-workbox/sync.sh --dry-run pass 2
 ```
 
 ## 4. The window (about an hour)
@@ -175,19 +175,19 @@ terminal that is about to stop.
    ```sh
    # Pin source: exe and new host deployment records; see [Host identity](#host-identity).
    sudo env WORKBOX_EXPECT_MACHINE_ID='<source-machine-id-from-deployment-record>' HB_TARGET_MACHINE_ID='<destination-machine-id-from-deployment-record>' \
-     HB_TO="exedev@$NEWTS" "$d/sync.sh" pass 2
+     HB_TO="exedev@$NEWTS" ~/Developer/personal/dotfiles/linux/hetzner-workbox/sync.sh pass 2
    ```
 
    ```sh
    # Pin source: exe and new host deployment records; see [Host identity](#host-identity).
    sudo env WORKBOX_EXPECT_MACHINE_ID='<source-machine-id-from-deployment-record>' HB_TARGET_MACHINE_ID='<destination-machine-id-from-deployment-record>' \
-     HB_TO="exedev@$NEWTS" "$d/sync.sh" rest
+     HB_TO="exedev@$NEWTS" ~/Developer/personal/dotfiles/linux/hetzner-workbox/sync.sh rest
    ```
 
    ```sh
    # Pin source: exe and new host deployment records; see [Host identity](#host-identity).
    sudo env WORKBOX_EXPECT_MACHINE_ID='<source-machine-id-from-deployment-record>' HB_TARGET_MACHINE_ID='<destination-machine-id-from-deployment-record>' \
-     HB_TO="exedev@$NEWTS" "$d/sync.sh" activate 2
+     HB_TO="exedev@$NEWTS" ~/Developer/personal/dotfiles/linux/hetzner-workbox/sync.sh activate 2
    ```
 
    `activate` prints one `activated` line for `@home` and one for `@workspaces`.
@@ -199,7 +199,7 @@ terminal that is about to stop.
    ```sh
    # Pin source: exe and new host deployment records; see [Host identity](#host-identity).
    sudo env WORKBOX_EXPECT_MACHINE_ID='<source-machine-id-from-deployment-record>' HB_TARGET_MACHINE_ID='<destination-machine-id-from-deployment-record>' \
-     HB_TO="exedev@$NEWTS" "$d/sync.sh" --dry-run runs
+     HB_TO="exedev@$NEWTS" ~/Developer/personal/dotfiles/linux/hetzner-workbox/sync.sh --dry-run runs
    ```
 
    It prints `runs: /tmp/vperf2 -> /runs/vperf2: <bytes> bytes (<GB>) to send`
@@ -215,7 +215,7 @@ terminal that is about to stop.
    ```sh
    # Pin source: exe and new host deployment records; see [Host identity](#host-identity).
    sudo env WORKBOX_EXPECT_MACHINE_ID='<source-machine-id-from-deployment-record>' HB_TARGET_MACHINE_ID='<destination-machine-id-from-deployment-record>' \
-     HB_TO="exedev@$NEWTS" "$d/sync.sh" runs --yes
+     HB_TO="exedev@$NEWTS" ~/Developer/personal/dotfiles/linux/hetzner-workbox/sync.sh runs --yes
    ```
 
    It copies, then compares every file by checksum and ends with `runs:
@@ -242,16 +242,17 @@ terminal that is about to stop.
       key warning (the key came along).
    If the console refuses the address, set `HostName NEWTS` for `bite-workbox`
    in `~/.ssh/config` instead, and the phone's Herdr host likewise.
-7. **Bootstrap**: on the new box after the address moves (alias `bite-workbox`):
+7. **Bootstrap**: on the new box after the address moves, from the `exedev`
+   login (alias `bite-workbox`) and the checkout in the transferred home:
 
    ```sh
    # Pin source: new host's deployment record; see [Host identity](#host-identity).
-   sudo env WORKBOX_EXPECT_MACHINE_ID='<machine-id-from-deployment-record>' "$d/provision.sh" sshd bootstrap
+   sudo env WORKBOX_EXPECT_MACHINE_ID='<machine-id-from-deployment-record>' ~/Developer/personal/dotfiles/linux/hetzner-workbox/provision.sh sshd bootstrap
    ```
 
    ```sh
    # Pin source: new host's deployment record; see [Host identity](#host-identity).
-   sudo env WORKBOX_EXPECT_MACHINE_ID='<machine-id-from-deployment-record>' "$d/check.sh"
+   sudo env WORKBOX_EXPECT_MACHINE_ID='<machine-id-from-deployment-record>' ~/Developer/personal/dotfiles/linux/hetzner-workbox/check.sh
    ```
 
    The sshd phase picks up the new Tailscale address; bootstrap installs the
@@ -302,12 +303,12 @@ terminal that is about to stop.
   delete `.hetzner-sync/old-*` (the provisioned home) and the received
   snapshots in `.hetzner-sync/<pass>`, `sudo umount /mnt`. On the exe box,
   `/tmp/.hetzner-sync` holds the sent snapshots until it goes.
-- The first nightly backup is a full one (hours). List it on the new box
-  the next morning; expect one `.info` per subvolume:
+- The first nightly backup is a full one (hours). List it from the `exedev`
+  login on the new box the next morning; expect one `.info` per subvolume:
 
   ```sh
   # Pin source: new host's deployment record; see [Host identity](#host-identity).
-  sudo env WORKBOX_EXPECT_MACHINE_ID='<machine-id-from-deployment-record>' "$d/backup.sh" list
+  sudo env WORKBOX_EXPECT_MACHINE_ID='<machine-id-from-deployment-record>' ~/Developer/personal/dotfiles/linux/hetzner-workbox/backup.sh list
   ```
 
 ## Rollback during the window
