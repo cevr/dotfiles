@@ -24,7 +24,7 @@ export const layer = (path: string, pid: number) => {
   return Layer.succeed(
     HandoffMark,
     HandoffMark.of({
-      hold: Clock.currentTimeMillis.pipe(Effect.flatMap((at) => publishText("mark the running handoff", path, encode({ pid, at }))), Effect.ignore),
+      hold: Clock.currentTimeMillis.pipe(Effect.flatMap((at) => publishText("mark the running handoff", path, "owner-only", encode({ pid, at }))), Effect.ignore),
       release: read.pipe(Effect.flatMap((mark) => Effect.when(remove(path), Effect.succeed(Option.exists(mark, (each) => each.pid === pid)))), Effect.asVoid),
       read,
       alive,

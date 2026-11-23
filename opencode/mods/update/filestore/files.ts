@@ -1,4 +1,4 @@
-import { publishReviewInput } from "@dotfiles/opencode-work/process/landing"
+import { publishReviewInput, type ReviewInputAccess } from "@dotfiles/opencode-work/process/landing"
 import { file, write } from "bun"
 import { Effect, Option } from "effect"
 import { UpdateFailed } from "../service.ts"
@@ -15,8 +15,8 @@ export const writeText = (step: string, path: string, text: string): Effect.Effe
   Effect.tryPromise({ try: () => write(path, text, { createPath: true }), catch: (cause) => new UpdateFailed({ step, message: String(cause) }) }).pipe(Effect.asVoid)
 
 /** Publish update facts consumed by review. An already published version is never written again. */
-export const publishText = (step: string, path: string, text: string): Effect.Effect<void, UpdateFailed> =>
-  publishReviewInput(step, path, text).pipe(Effect.mapError((cause) => new UpdateFailed({ step, message: cause.message })))
+export const publishText = (step: string, path: string, access: ReviewInputAccess, text: string): Effect.Effect<void, UpdateFailed> =>
+  publishReviewInput(step, path, access, text).pipe(Effect.mapError((cause) => new UpdateFailed({ step, message: cause.message })))
 
 /** Deletes `path`; a file already gone is fine. */
 export const remove = (path: string): Effect.Effect<void> =>

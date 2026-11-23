@@ -17,7 +17,7 @@ export const layer = (settings: Pick<Settings, "record" | "launcher" | "resident
     Records.of({
       read: readText(settings.record).pipe(Effect.map((text) => Option.flatMap(text, parseRecord))),
       write: (record) =>
-        publishText("write the installed record", settings.record, recordText(record)).pipe(
+        publishText("write the installed record", settings.record, { preserve: { whenAbsent: 0o600, ceiling: 0o640 } }, recordText(record)).pipe(
           Effect.andThen(
             Effect.try({
               try: () => writeLauncher(settings.launcher, settings.resident, record, pid),

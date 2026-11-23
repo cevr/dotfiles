@@ -105,7 +105,7 @@ export const stageBuild = (stage: Stage, flock?: (descriptor: number, operation:
       ),
     )
     const record = stagedRecord(parseRecord(last), { version: stage.version, command: [binary], dotfiles: stage.dotfiles, fork: stage.fork }, readdirSync(stage.share))
-    Effect.runSync(publishReviewInput("stage the installed record", stage.record, recordText(record)))
+    Effect.runSync(publishReviewInput("stage the installed record", stage.record, { preserve: { whenAbsent: 0o600, ceiling: 0o640 } }, recordText(record)))
     writeLauncher(stage.launcher, stage.resident, record, stage.pid)
   })
   return binary

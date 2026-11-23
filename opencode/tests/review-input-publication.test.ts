@@ -3,11 +3,41 @@ import { Effect, FileSystem, Path, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { describe, expect, it } from "effect-bun-test"
 
-// The writer and descriptor observer are in one fixture process. The old descriptor is held across
-// publication, so an in-place write fails deterministically without depending on a racing poll.
-const OBSERVER = `
-import { openSync, closeSync, fstatSync, statSync, readFileSync, writeFileSync } from "node:fs";
-const [root, code] = process.argv.slice(2);
+// Both observers exercise the public producers, including the second sink of a round receipt.
+const WRITERS = `
+import { chmodSync, closeSync, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { strict as assert } from "node:assert";
+const [rootArg, code, role, nameArg, maskArg] = process.argv.slice(2);
+const root = realpathSync(rootArg);
+if (role === "writer") {
+  // Instrument the actual adapter at its filesystem boundary, only in this child. The creating open
+  // and rename are still the real OS calls. A one-byte release from the observer permits the rename.
+  Bun.plugin({ name: "review publication barrier", setup(builder) {
+    builder.onLoad({ filter: /\\/work\\/process\\/landing\\.ts$/ }, async ({ path }) => {
+      const source = await Bun.file(path).text();
+      const before = "yield* io(() => renameSync(temp, file))";
+      const open = /openSync\\(temp, "wx"[^\\n]*?\\)(?=\\))/;
+      if (source.split(before).length !== 2 || !open.test(source)) throw new Error("lost publication barrier");
+      const hook = \`
+import { fstatSync as fixtureStat, readSync as release, writeSync as report } from "node:fs";
+const signal = (value) => report(1, JSON.stringify(value) + "\\\\n");
+const opened = (fd, temp, file) => {
+  if (file === globalThis.__observedPublication) signal({ created: fixtureStat(fd).mode & 0o777, temp });
+  return fd;
+};
+const beforeRename = (temp, file) => {
+  if (file !== globalThis.__observedPublication) return;
+  signal({ ready: temp });
+  if (release(0, Buffer.alloc(1), 0, 1, null) !== 1) throw new Error("observer closed the barrier");
+};
+\`;
+      return { loader: "ts", contents: hook + source
+        .replace(open, (call) => "opened(" + call + ", temp, file)")
+        .replace(before, "yield* io(() => beforeRename(temp, file)); " + before) };
+    });
+  } });
+}
 const { Effect, Option } = await import(code + "/node_modules/effect/dist/index.js");
 const work = await import(code + "/mods/work/process/landing.ts");
 const { Landing } = await import(code + "/mods/work/service.ts");
@@ -16,31 +46,51 @@ const marks = await import(code + "/mods/update/process/mark.ts");
 const { stageBuild } = await import(code + "/mods/update/filestore/stage.ts");
 const { Records, HandoffMark } = await import(code + "/mods/update/service.ts");
 const run = Effect.runPromise;
-const logs = root + "/receipts-test";
-const record = root + "/state/installed.json";
-const mark = root + "/state/handoff.json";
-const git = Bun.spawnSync(["git", "init", "--quiet", root]);
-if (git.exitCode !== 0) throw new Error(git.stderr.toString());
-const options = { record, launcher: root + "/bin/oc", resident: root };
 const sha = (digit) => digit.repeat(40);
-const first = { head: sha("2"), tree: sha("5"), kind: "round", repo: root, at: "2026-11-23T01:00:00.000Z", checks: [{ command: "true", code: 0, seconds: 1 }] };
-const second = { ...first, checks: [{ command: "false", code: 1, seconds: 1 }] };
-const build = (n) => ({ ...options, built: root + "/build", share: root + "/share", version: "2.2.7-prime." + n + n, pid: 1000 + n,
-  lock: root + "/state/builds.lock", dotfiles: sha(String(n)), fork: sha(String(n)) });
-writeFileSync(root + "/build", "fixture");
-const cases = [
-  ["receipt", () => run(work.receipts(logs).write(first)), () => run(work.receipts(logs).write(second)), logs + "/receipts/" + first.head + ".round.json"],
-  ["git-mirror", () => run(work.receipts(logs).write(first)), () => run(work.receipts(logs).write(second)), root + "/.git/rift-receipt.json"],
-  ["land", () => run(Landing.use((x) => x.record({ head: first.head, base: sha("1"), units: [], merge: firstMerge(first), at: first.at })).pipe(Effect.provide(work.layer({ logs })))),
-    () => run(Landing.use((x) => x.record({ head: first.head, base: sha("1"), units: [], merge: firstMerge(second), at: first.at })).pipe(Effect.provide(work.layer({ logs })))),
-    logs + "/receipts/" + first.head + ".land.json"],
-  ["stage", () => stageBuild(build(1)), () => stageBuild(build(2)), record],
-  ["install", () => install(1), () => install(2), record],
-  ["handoff", () => marker(1001), () => marker(1002), mark],
-];
-const firstMerge = (receipt) => Option.some({ ...receipt, kind: "merge" });
-const install = (n) => run(Records.use((store) => store.write({ version: String(n), command: ["/fixture/oc"], dotfiles: sha(String(n)), fork: sha(String(n)), superseded: [] })).pipe(Effect.provide(records.layer(options, 2000 + n))));
-const marker = (pid) => run(HandoffMark.use((x) => x.hold).pipe(Effect.provide(marks.layer(mark, pid))));
+const sites = ["receipt", "git-mirror", "land", "stage", "install", "handoff"];
+function layout(root) {
+  const logs = join(root, "logs");
+  const receipts = join(logs, "receipts");
+  const record = join(root, "state", "installed.json");
+  const mark = join(root, "state", "handoff.json");
+  const options = { record, launcher: join(root, "bin", "oc"), resident: root };
+  const head = sha("2");
+  const receipt = (n) => ({ head, tree: sha("5"), kind: "round", repo: root, at: "2026-11-23T01:00:00.000Z", checks: [{ command: "fixture " + n, code: n, seconds: 1 }] });
+  const build = (n) => ({ ...options, built: join(root, "build"), share: join(root, "share"), version: "2.2.7-prime." + n + n, pid: 1000 + n,
+    lock: join(root, "state", "builds.lock"), dotfiles: sha(String(n)), fork: sha(String(n)) });
+  const keep = (n) => run(work.receipts(logs).write(receipt(n)));
+  const land = (n) => run(Landing.use((x) => x.record({ head, base: sha("1"), units: [], merge: Option.some({ ...receipt(n), kind: "merge" }), at: receipt(n).at })).pipe(Effect.provide(work.layer({ logs }))));
+  const install = (n) => run(Records.use((store) => store.write({ version: String(n), command: ["/fixture/oc"], dotfiles: sha(String(n)), fork: sha(String(n)), superseded: [] })).pipe(Effect.provide(records.layer(options, 2000 + n))));
+  const marker = (n) => run(HandoffMark.use((x) => x.hold).pipe(Effect.provide(marks.layer(mark, 1000 + n))));
+  const names = { receipt: [join(receipts, head + ".round.json"), keep], "git-mirror": [join(root, ".git", "rift-receipt.json"), keep],
+    land: [join(receipts, head + ".land.json"), land], stage: [record, (n) => stageBuild(build(n))], install: [record, install], handoff: [mark, marker] };
+  return { logs, receipts, record, mark, head, names };
+}
+function prepare(root, file) {
+  if (!existsSync(join(root, ".git"))) {
+    const git = Bun.spawnSync(["git", "init", "--quiet", root]);
+    if (git.exitCode !== 0) throw new Error(git.stderr.toString());
+  }
+  writeFileSync(join(root, "build"), "fixture");
+  if (file) mkdirSync(dirname(file), { recursive: true });
+}
+if (role === "writer") {
+  const [file, put] = layout(root).names[nameArg];
+  globalThis.__observedPublication = file;
+  process.umask(Number(maskArg));
+  await put(2);
+  process.exit(0);
+}
+`
+
+// Hold the old fd across publication, so in-place writes fail without a racing poll.
+const OBSERVER = WRITERS + `
+const { names } = layout(root);
+prepare(root);
+const cases = sites.map((name) => {
+  const [file, put] = names[name];
+  return [name, () => put(1), () => put(2), file];
+});
 for (const [name, putOld, putNew, path] of cases) {
   await putOld();
   const old = readFileSync(path, "utf8");
@@ -58,25 +108,135 @@ for (const [name, putOld, putNew, path] of cases) {
 }
 `
 
+const MATRIX = WRITERS + `
+const { ReceiptSource, SourceRef } = await import(code + "/mods/orchestrate/batch-input.ts");
+const { receiptSource } = await import(code + "/mods/orchestrate/filestore/receipt-source.ts");
+const BunServices = await import(code + "/node_modules/@effect/platform-bun/dist/BunServices.js");
+const maybeText = (path) => existsSync(path) ? readFileSync(path, "utf8") : undefined;
+const modeOf = (path) => statSync(path).mode & 0o777;
+async function readPublished(root, layout, name, expected) {
+  if (name === "git-mirror") {
+    const read = await run(work.receipts(layout.logs).newest(root));
+    if (expected === undefined) assert.equal(read._tag, "None");
+    else {
+      assert.equal(read._tag, "Some");
+      assert.deepEqual(read.value, JSON.parse(expected));
+    }
+    return;
+  }
+  const ref = name === "receipt" ? SourceRef.Receipt({ head: layout.head, kind: "round" })
+    : name === "land" ? SourceRef.Land({ head: layout.head })
+    : name === "handoff" ? SourceRef.Handoff() : SourceRef.Installed();
+  const source = receiptSource({ host: "fixture", repository: { key: "fixture", checkouts: [root] }, receipts: layout.receipts,
+    installed: layout.record, handoff: layout.mark, maxBytes: 65536, readWithin: "1 second" });
+  const read = await run(ReceiptSource.use((files) => files.read(ref)).pipe(Effect.provide(source), Effect.provide(BunServices.layer)));
+  if (expected === undefined) assert.equal(read._tag, "Absent");
+  else assert.deepEqual({ tag: read._tag, text: read.text }, { tag: "Present", text: expected });
+}
+async function check(name, umask, existing, crash) {
+  const fixture = mkdtempSync(join(root, name + "-"));
+  const paths = layout(fixture);
+  const [file, put] = paths.names[name];
+  prepare(fixture, file);
+  if (existing !== undefined) {
+    await put(1);
+    chmodSync(file, existing);
+  }
+  const old = maybeText(file);
+  const ceiling = name === "stage" || name === "install" ? 0o640 : 0o600;
+  const allowed = (existing ?? 0o600) & ceiling & ~umask;
+  const child = Bun.spawn([process.execPath, import.meta.path, fixture, code, "writer", name, String(umask)], {
+    stdin: "pipe", stdout: "pipe", stderr: "inherit",
+  });
+  const out = child.stdout.getReader();
+  let buffered = "";
+  async function line() {
+    while (!buffered.includes("\\n")) {
+      const { done, value } = await out.read();
+      if (done) throw new Error("writer did not reach its barrier: " + name);
+      buffered += new TextDecoder().decode(value);
+    }
+    const index = buffered.indexOf("\\n");
+    const item = buffered.slice(0, index);
+    buffered = buffered.slice(index + 1);
+    return JSON.parse(item);
+  }
+  try {
+    const atOpen = await line();
+    const { ready: temp } = await line();
+    assert.equal(temp, atOpen.temp);
+    assert.equal(dirname(temp), dirname(file));
+    assert.ok(basename(temp).startsWith(".review-input-"));
+    const mode = modeOf(temp);
+    const label = [name, umask.toString(8), existing?.toString(8) ?? "absent", mode.toString(8)].join("/");
+    assert.equal(atOpen.created & ~allowed, 0, "widened at creation: " + label);
+    assert.equal(mode & ~allowed, 0, "widened before rename: " + label);
+    assert.equal(maybeText(file), old, "the final name changed before rename: " + label);
+    const next = readFileSync(temp, "utf8");
+    assert.notEqual(next, old);
+    JSON.parse(next);
+    if (crash) {
+      child.kill("SIGKILL");
+      assert.equal(await child.exited, 137);
+      assert.equal(maybeText(file), old);
+      if (old !== undefined) JSON.parse(old);
+      assert.equal(readFileSync(temp, "utf8"), next, "crash must leave the controlled stray temp");
+      await readPublished(fixture, paths, name, old);
+      await put(3);
+      const recovered = readFileSync(file, "utf8");
+      assert.notEqual(recovered, old);
+      assert.notEqual(recovered, next);
+      await readPublished(fixture, paths, name, recovered);
+      assert.equal(readFileSync(temp, "utf8"), next);
+      assert.deepEqual(readdirSync(dirname(file)).filter((part) => part.startsWith(".review-input-")), [basename(temp)]);
+    } else {
+      child.stdin.write("!");
+      child.stdin.end();
+      assert.equal(await child.exited, 0);
+      assert.equal(modeOf(file), mode, "the renamed inode kept its own mode");
+      assert.equal(readFileSync(file, "utf8"), next, "complete version changed at publication");
+      assert.equal(existsSync(temp), false);
+    }
+  } finally {
+    if (child.exitCode === null) child.kill("SIGKILL");
+    await child.exited;
+  }
+}
+for (const name of sites) {
+  if (role === "crash") {
+    for (const existing of [undefined, 0o600]) await check(name, 0o022, existing, true);
+    console.log(name + ":killed-before-rename:absent+existing:recovered");
+  } else {
+    for (const umask of [0o000, 0o022, 0o077])
+      for (const existing of [undefined, 0o600, 0o640, 0o644]) await check(name, umask, existing, false);
+    console.log(name + ":12/12");
+  }
+}
+`
+
+const observe = (programText: string, phase: string, expected: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const processes = yield* ChildProcessSpawner.ChildProcessSpawner
+    const fixture = yield* fs.makeTempDirectoryScoped({ prefix: "review-publication-" })
+    const root = yield* path.fromFileUrl(new URL("../", import.meta.url))
+    const program = path.join(fixture, "observe.ts")
+    yield* fs.writeFileString(program, programText)
+    const child = yield* processes.spawn(ChildProcess.make("bun", [program, fixture, root, phase], { detached: true, stdin: "ignore", forceKillAfter: "100 millis" }))
+    const [out, error] = yield* Effect.all([Stream.mkString(Stream.decodeText(child.stdout)), Stream.mkString(Stream.decodeText(child.stderr))], { concurrency: 2 })
+    expect({ exit: Number(yield* child.exitCode), error, rows: out.trim().split("\n") }).toEqual({ exit: 0, error: "", rows: [...expected] })
+  }).pipe(Effect.scoped, Effect.timeout("55 seconds"))
+
+const sites = ["receipt", "git-mirror", "land", "stage", "install", "handoff"]
+
 describe("review-input publication", () => {
-  it.live.layer(BunServices.layer)("each producer replaces its inode; a reader of the old inode still sees the complete old version", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem
-      const path = yield* Path.Path
-      const processes = yield* ChildProcessSpawner.ChildProcessSpawner
-      const fixture = yield* fs.makeTempDirectoryScoped({ prefix: "review-publication-" })
-      const root = yield* path.fromFileUrl(new URL("../", import.meta.url))
-      const program = path.join(fixture, "observe.ts")
-      yield* fs.writeFileString(program, OBSERVER)
-      const child = yield* processes.spawn(ChildProcess.make("bun", [program, fixture, root], { detached: true, stdin: "ignore", forceKillAfter: "100 millis" }))
-      const [out, error] = yield* Effect.all([Stream.mkString(Stream.decodeText(child.stdout)), Stream.mkString(Stream.decodeText(child.stderr))], { concurrency: 2 })
-      expect({ exit: Number(yield* child.exitCode), error, rows: out.trim().split("\n") }).toEqual({
-        exit: 0,
-        error: "",
-        rows: ["receipt", "git-mirror", "land", "stage", "install", "handoff"].map((name) => `${name}:true:true:true`),
-      })
-    }).pipe(Effect.scoped, Effect.timeout("10 seconds")),
-  )
+  it.live.layer(BunServices.layer)("each producer replaces its inode; a reader of the old inode still sees the complete old version",
+    () => observe(OBSERVER, "descriptor", sites.map((name) => `${name}:true:true:true`)), 60_000)
+  it.live.layer(BunServices.layer)("permission matrix: each sink respects policy at the creating open and after replacement",
+    () => observe(MATRIX, "mode", sites.map((name) => `${name}:12/12`)), 60_000)
+  it.live.layer(BunServices.layer)("crash recovery: kill each fixture writer before rename; read old or absent and publish again with its stray temp still present",
+    () => observe(MATRIX, "crash", sites.map((name) => `${name}:killed-before-rename:absent+existing:recovered`)), 60_000)
 
   it.live.layer(BunServices.layer)("each review input sink uses its atomic writer, never the general text writer", () =>
     Effect.gen(function* () {
@@ -91,8 +251,8 @@ describe("review-input publication", () => {
       const mark = yield* read("mods/update/process/mark.ts")
       expect(landing.match(/yield\* publishReviewInput\("(?:write receipt|land record)", (?:file|kept),/g)).toHaveLength(3)
       expect(landing.match(/writeFileSync\([^,\n]+,/g)).toEqual(["writeFileSync(fd,"])
-      expect(landing).toMatch(/openSync\(temp, "wx"\)[\s\S]*?writeFileSync\(fd, text\)[\s\S]*?fsyncSync\(fd\)[\s\S]*?renameSync\(temp, file\)[\s\S]*?fsyncSync\(parent\)/)
-      expect(update).toMatch(/publishReviewInput\(step, path, text\)/)
+      expect(landing).toMatch(/openSync\(temp, "wx", allowed\)[\s\S]*?writeFileSync\(fd, text\)[\s\S]*?fsyncSync\(fd\)[\s\S]*?renameSync\(temp, file\)[\s\S]*?fsyncSync\(parent\)/)
+      expect(update).toMatch(/publishReviewInput\(step, path, access, text\)/)
       expect(record).toMatch(/publishText\("write the installed record", settings\.record,/)
       expect(mark).toMatch(/publishText\("mark the running handoff", path,/)
       expect(stage).toMatch(/publishReviewInput\("stage the installed record", stage\.record,/)

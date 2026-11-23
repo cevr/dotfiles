@@ -10,10 +10,11 @@
 // batch's merges, and what it rewrote is committed. Receipts (`receipts`) are read and written here: a
 // checkout's in its Git dir, every one in the host's receipts folder beside the logs; `scriptReceipt` and
 // `scriptReceipts` give them to scripts outside Effect (scripts/gate.ts, post-land.ts, receipt.ts).
-import { closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { closeSync, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { availableParallelism, loadavg } from "node:os"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { basename, dirname, join } from "node:path"
+import { getegid, geteuid } from "node:process"
 import { DEFAULT_LIMITS, heavyArgv, type Host, ioniceAvailable, SCOPE_PROBE } from "@dotfiles/opencode-guard/launcher"
 import { Clock, Console, DateTime, Effect, Layer, Match, Option, Predicate, Random, Result, Schema } from "effect"
 import { type HostLoad, type LandConfig, type Merged, type PostLanded, type Ran, type Started, type Unit } from "../land.ts"
@@ -180,28 +181,50 @@ const same = (left: string, right: string): boolean => {
 /** The receipt file a kind of run writes for `head` in the host's receipts folder. */
 const hostReceipt = (logs: string, receipt: Receipt): string => join(receiptsDir(logs), `${receipt.head}.${receipt.kind}.json`)
 
+/** The sink chooses its initial mode and how much of an existing mode a replacement may retain. */
+export type ReviewInputAccess = "owner-only" | { readonly preserve: { readonly whenAbsent: number; readonly ceiling: number } }
+
 /**
  * Publish one complete version. Never open the published inode for writing: review readers depend on replacement
- * only. Sync the new file before the rename, then the directory entry. Callers are host adapters, never policy.
+ * only. Serialize competing publishers from the mode observation through rename (a stricter umask in another
+ * process must not make this writer restore access). Set the mode in the creating open, then sync file and directory.
  */
-export const publishReviewInput = Effect.fn("ReviewInput.publish")(function* (operation: string, file: string, text: string) {
+export const publishReviewInput = Effect.fn("ReviewInput.publish")(function* (operation: string, file: string, access: ReviewInputAccess, text: string) {
   const directory = dirname(file)
   const nonce = yield* Random.nextInt
   const temp = join(directory, `.review-input-${nonce}`)
   const io = <A>(step: () => A) => Effect.try({ try: step, catch: (cause) => new RiftFailed({ operation, message: String(cause) }) })
   const close = (fd: number) => io(() => closeSync(fd))
-  yield* io(() => mkdirSync(directory, { recursive: true }))
-  yield* Effect.acquireUseRelease(
-    io(() => openSync(temp, "wx")),
-    (fd) =>
-      Effect.gen(function* () {
-        yield* io(() => writeFileSync(fd, text))
-        yield* io(() => fsyncSync(fd))
-        yield* io(() => renameSync(temp, file))
-        yield* Effect.acquireUseRelease(io(() => openSync(directory, "r")), (parent) => io(() => fsyncSync(parent)), close)
-      }),
-    (fd) => close(fd).pipe(Effect.ensuring(io(() => rmSync(temp, { force: true })).pipe(Effect.ignore))),
-  )
+  const publish = Effect.gen(function* () {
+    const previous = yield* io(() => lstatSync(file, { throwIfNoEntry: false }))
+    if (previous && (!previous.isFile() || previous.uid !== geteuid?.()))
+      return yield* new RiftFailed({ operation, message: "the published name is not an owner-owned regular file" })
+    const { ceiling, whenAbsent: fresh } = Match.value(access).pipe(
+      Match.when("owner-only", () => ({ ceiling: 0o600, whenAbsent: 0o600 })),
+      Match.orElse(({ preserve }) => preserve),
+    )
+    const mode = (previous?.mode ?? fresh) & ceiling & 0o777
+    // A setgid parent can choose the new inode's group. Retain group bits only if both possible creation
+    // groups match the prior file, rather than giving the same bits to a different group.
+    const allowed = yield* io(() => {
+      if (!previous || (mode & 0o070) === 0) return mode
+      if (previous.gid === getegid?.() && previous.gid === statSync(directory).gid) return mode
+      return mode & 0o707
+    })
+    yield* Effect.acquireUseRelease(
+      io(() => openSync(temp, "wx", allowed)),
+      (fd) =>
+        Effect.gen(function* () {
+          yield* io(() => writeFileSync(fd, text))
+          yield* io(() => fsyncSync(fd))
+          yield* io(() => renameSync(temp, file))
+          yield* Effect.acquireUseRelease(io(() => openSync(directory, "r")), (parent) => io(() => fsyncSync(parent)), close)
+        }),
+      (fd) => close(fd).pipe(Effect.ensuring(io(() => rmSync(temp, { force: true })).pipe(Effect.ignore))),
+    )
+  })
+  const result = yield* io(() => exclusivelySync(join(directory, ".review-input.lock"))(() => Effect.runSyncExit(publish)))
+  yield* result
 })
 
 /**
@@ -237,10 +260,10 @@ export const receipts = (logs: string, env: Readonly<Record<string, string>> = {
   const write = Effect.fn("Receipts.write")(function* (receipt: Receipt) {
     const text = yield* encode(receipt)
     const file = hostReceipt(logs, receipt)
-    yield* publishReviewInput("write receipt", file, `${text}\n`)
+    yield* publishReviewInput("write receipt", file, "owner-only", `${text}\n`)
     if (receipt.kind !== "round") return file
     const kept = yield* gitPath(receipt.repo, "rift-receipt.json")
-    yield* publishReviewInput("write receipt", kept, `${text}\n`)
+    yield* publishReviewInput("write receipt", kept, "owner-only", `${text}\n`)
     return file
   })
 
@@ -512,7 +535,7 @@ export const layer = (options: Options) => {
   const record = Effect.fn("Landing.record")(function* (landed: LandRecord) {
     const text = yield* Schema.encodeEffect(LandRecordJson)(landed).pipe(Effect.mapError((error) => new RiftFailed({ operation: "land record", message: error.message })))
     const file = join(receiptsDir(options.logs), `${landed.head}.land.json`)
-    yield* publishReviewInput("land record", file, `${text}\n`)
+    yield* publishReviewInput("land record", file, "owner-only", `${text}\n`)
     return file
   })
 
