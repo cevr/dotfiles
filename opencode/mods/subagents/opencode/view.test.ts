@@ -1,6 +1,6 @@
 // Reading the family from the TUI's data, as `context.data` answers.
 import { describe, expect, test } from "bun:test"
-import { read, type Reads, type SessionInfo, type ShellInfo } from "./view.ts"
+import { message, read, type Reads, type SessionInfo, type ShellInfo } from "./view.ts"
 
 interface Fixture {
   readonly info: SessionInfo
@@ -56,6 +56,16 @@ describe("read", () => {
     },
   })
   const family = read(world, "a")
+
+  test("a legacy synthetic notice remains display data, and an assistant quoting it is just words", () => {
+    const text = '<subagent sessionID="a" state="error">\nFixture error\n</subagent>'
+    expect(message({ type: "synthetic", text, time: { created: 10 } })).toEqual({
+      type: "notice", childID: "a", state: "error", at: 10, text,
+    })
+    expect(message({ type: "assistant", content: [{ type: "text", text }] })).toEqual({
+      type: "assistant", parts: [{ type: "words", text }],
+    })
+  })
 
   test("reads from the root of the session, whichever session of the family the route shows", () => {
     expect(family.root).toBe("root")

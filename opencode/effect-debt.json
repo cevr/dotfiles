@@ -907,7 +907,7 @@
     "mods/subagents/solid/reader.test.ts": {"effect/noAsyncFunction":7,"effect/noDynamicImports":2,"effect/noModuleMocks":2,"effect/noNewPromise":1,"effect/noNullish":3,"effect/noReflectGet":1,"effect/noTernary":4},
     "mods/subagents/solid/reader.ts": {"effect/noGlobals":2,"effect/noNullish":11,"effect/noRuntimeTypeof":1,"effect/noTernary":1,"effect/noUnknownParameters":5},
     "mods/subagents/subagent-row.test.ts": {"effect/noConditionalEmptyObjectSpread":1,"effect/noNullish":9,"effect/noTernary":4,"effect/noUnsafeDictionaryType":3},
-    "mods/subagents/subagent-row.ts": {"complexity":1,"effect/maxCognitiveComplexity":2,"effect/noArrayFilterMap":1,"effect/noConditionalEmptyObjectSpread":9,"effect/noKnownValueWidening":2,"effect/noNullish":42,"effect/noRuntimeTypeof":7,"effect/noTernary":29,"effect/noUnknownParameters":1},
+    "mods/subagents/subagent-row.ts": {"complexity":1,"effect/maxCognitiveComplexity":2,"effect/noArrayFilterMap":1,"effect/noConditionalEmptyObjectSpread":9,"effect/noKnownValueWidening":2,"effect/noNullish":42,"effect/noRuntimeTypeof":7,"effect/noTernary":28,"effect/noUnknownParameters":1},
     "mods/subagents/works.test.ts": {"effect/noNullish":6},
     "mods/subagents/works.ts": {"effect/noNullish":16,"effect/noTernary":4},
     "mods/tool-names/near-miss.ts": {"effect/noNullish":7,"effect/noTernary":5},

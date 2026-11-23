@@ -157,9 +157,6 @@ function reason(text: string): string {
   return firstSentence(body.split("\n")[0] ?? "").replace(/^Subagent failed( \(sessionID: [^)]*\))?:?\s*/, "")
 }
 
-/** A subagent call that does not hold its turn: a background one, or a latched one, which answers at once. */
-const backgrounded = (call: Call) => call.input.background === true || call.metadata.status === "latched"
-
 const firstLine = (value: unknown) => (typeof value === "string" ? value.split("\n")[0]?.trim() || undefined : undefined)
 
 /** One piece of background work a session still waits on: what it is, and the step's call that started it (a kernel cell for its own calls). */
@@ -233,24 +230,40 @@ type Ending = { readonly state: State; readonly at?: number; readonly why?: stri
 
 const when = (at: number | undefined) => (at === undefined ? {} : { at })
 
-/** How a stopped subagent ended: its notice's verdict, else its foreground call's, else its session's outcome. */
+/** Only the host session's outcome can supply a coarse end, never a notice or a launch tool reply. */
 function ending(session: Session, found: ReturnType<typeof launch>): Ending {
-  const { call, notice } = found
-  if (notice) {
-    if (notice.state === "completed") return { state: "done", at: notice.at }
-    if (notice.state === "error") return { state: "failed", at: notice.at, why: reason(notice.text) }
-    return { state: "cancelled", at: notice.at }
-  }
-  if (call && !backgrounded(call) && !running(call)) {
-    if (call.status === "completed") return { state: "done", ...when(call.completed) }
-    const message = call.error ?? ""
-    if (message.startsWith("Subagent cancelled")) return { state: "cancelled", ...when(call.completed) }
-    return { state: "failed", ...when(call.completed), why: reason(message) }
-  }
   if (session.outcome === "succeeded") return { state: "done", ...when(session.time.idle) }
-  if (session.outcome === "failed") return { state: "failed", ...when(session.time.idle) }
+  if (session.outcome === "failed") {
+    // The shell may have exited but its same-child wake has not started yet.
+    // A recorded shell launch proves neither current liveness nor settlement.
+    if (mayContinueAfterFailure(session)) return { state: "idle", ...when(session.time.updated), why: diagnosis(found) || "No current settlement" }
+    return { state: "failed", ...when(session.time.idle) }
+  }
   if (session.outcome === "interrupted") return { state: "cancelled", ...when(session.time.idle) }
-  return { state: "idle", ...when(session.time.updated) }
+  return { state: "idle", ...when(session.time.updated), why: diagnosis(found) }
+}
+
+const diagnosis = ({ call, notice }: Launch): string => {
+  if (notice?.state === "error") return reason(notice.text)
+  if (call?.status === "error" && call.error) return reason(call.error)
+  return ""
+}
+
+const mayContinueAfterFailure = (session: Session) => backgroundCalls(session.messages).some(({ call, by }) =>
+  canonical(call.tool) === "shell" && (call.input.background === true || call.metadata.status === "running") &&
+  !callBefore(by, session.time.busy),
+)
+
+const callBefore = (call: Call, busy?: number): boolean => {
+  if (!Number.isFinite(busy)) return false
+  // A nested call has no time of its own; use the containing step call's time.
+  return [call.started, call.completed].some((at) => Number.isFinite(at) && Number(at) < Number(busy))
+}
+
+const continuationUpdate = (update: string, failed: boolean): string => {
+  if (!failed) return update
+  if (update === "") return "Step ended in error; work continues"
+  return `Step ended in error; work continues: ${update}`
 }
 
 /** When a running turn last started working: its start, or the end of the latest wait call it ran since. */
@@ -389,13 +402,21 @@ function rowsOf(family: Family, rootSessionID: string, options: ReadOptions): Re
       const pendings = pendingWork(session, children.get(session.id) ?? [], now)
       const idle = session.time.idle
       const since = idle !== undefined && idle >= busy ? idle : (heard ?? busy)
-      return { ...base, state: "waiting", update: waitingUpdate(session.messages, pendings), ...timed(since) }
+      const update = waitingUpdate(session.messages, pendings)
+      return {
+        ...base,
+        state: "waiting",
+        update: continuationUpdate(update, session.outcome === "failed"),
+        ...timed(since),
+      }
     }
     const end = ending(session, found)
     const steps = stepCount(session.messages)
     // The symbol says how it ended (line.ts); the words say only what more there is.
-    const update = end.state === "done" ? plural(steps, "step") : end.state === "failed" ? (end.why ?? "") : ""
-    return { ...base, state: end.state, update, ...(end.at === undefined ? {} : { ended: end.at }) }
+    const update = end.state === "done" ? plural(steps, "step") : (end.why || "")
+    const row = { ...base, state: end.state, update, ...(end.at === undefined ? {} : { ended: end.at }) }
+    if (end.state === "idle" && found.notice) return { ...row, heard: found.notice.at }
+    return row
   })
 }
 
@@ -424,7 +445,9 @@ export function visible(
           ...(row.heard === undefined ? {} : { quiet: Math.max(0, now - row.heard) }),
         },
       ]
-    if (row.id === options.current || (row.ended !== undefined && now - row.ended < linger)) return [row]
+    if (row.id === options.current) return [row]
+    if (row.ended !== undefined && now - row.ended < linger) return [row]
+    if (row.state === "idle" && Number.isFinite(row.heard) && now - Number(row.heard) < linger) return [row]
     return []
   })
 }

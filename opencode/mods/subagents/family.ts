@@ -18,7 +18,7 @@ export type Session = {
   readonly agent?: string
   /** The model it runs on, by id as its latest step says, else as the session says (`claude-opus-5-5`). */
   readonly model?: string
-  /** How its last run ended, when the session says: `succeeded`, `failed` or `interrupted`. */
+  /** The host's coarse outcome of its last execution segment, not a transcript notice. */
   readonly outcome?: string
   readonly time: {
     readonly created: number
@@ -79,7 +79,7 @@ export type Message =
   | { readonly type: "assistant"; readonly agent?: string; readonly parts: ReadonlyArray<Part> }
   | {
       readonly type: "notice"
-      /** The subagent session that stopped. */
+      /** The child named by this display-only notice; it may still have work. */
       readonly childID: string
       /** As the host says it: `completed`, `error` or `cancelled`. */
       readonly state: string

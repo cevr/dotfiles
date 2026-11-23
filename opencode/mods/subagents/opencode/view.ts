@@ -6,6 +6,7 @@
 // shell commands sent it. Read inside a Solid computation, every read here is
 // reactive.
 import type { Call, Family, Latch, Message, Part, Session, Shell } from "../family.ts"
+import { envelopes } from "../envelope.ts"
 
 /** A session as `context.data.session.get` returns it, narrowed to what a row reads. */
 export type SessionInfo = {
@@ -130,12 +131,20 @@ export function message(value: unknown): Message | undefined {
   const metadata = record(fields.metadata)
   const state = string(metadata.state)
   const at = number(record(fields.time).created) ?? 0
-  if (state === undefined) return undefined
+  const text = string(fields.text) || ""
   const shellID = string(metadata.shellID)
-  if (metadata.source === "shell" && shellID !== undefined) return { type: "shell", shellID, state, at }
+  if (metadata.source === "shell" && shellID !== undefined && state !== undefined) return { type: "shell", shellID, state, at }
   const childID = string(metadata.childID)
-  if (metadata.source !== "subagent" || childID === undefined) return undefined
-  return { type: "notice", childID, state, at, text: string(fields.text) ?? "" }
+  if (metadata.source === "subagent" && childID !== undefined && state !== undefined) return { type: "notice", childID, state, at, text }
+  if (!metadata.source) return legacyNotice(text, at)
+}
+
+const legacyNotice = (text: string, at: number): Message | undefined => {
+  // Only synthetic messages reach this legacy display fallback. Neither shape creates an outcome.
+  const old = envelopes(text).find((item) => item.start === 0 && item.kind === "subagent")
+  const oldChild = old?.attributes.sessionID
+  const oldState = old?.attributes.state
+  if (oldChild && oldState) return { type: "notice", childID: oldChild, state: oldState, at, text }
 }
 
 /** A latched child's mark (the wakes' `latch` metadata, mods/wake latch.ts); undefined when it carries none. */
