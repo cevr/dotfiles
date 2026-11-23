@@ -1,0 +1,8 @@
+#!/bin/sh
+# The integration activates this unit only once all managed clients use it.
+# Run the foreground server from the verified local launcher, not service start.
+set -eu
+export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"
+XDG_RUNTIME_DIR="/run/user/$(id -u)"
+export XDG_RUNTIME_DIR
+exec "$HOME/.local/bin/opencode" serve --service

@@ -4,6 +4,9 @@ set -eu
 umask 077
 
 workbox_dir=$(CDPATH='' cd -- "$(dirname "$0")" && pwd)
+# shellcheck source-path=SCRIPTDIR source=host-identity.sh
+. "$workbox_dir/host-identity.sh"
+[ "${1:-}" = --check ] || workbox_require_host
 system_dir="$workbox_dir/systemd/system"
 resolved_config="$workbox_dir/systemd/resolved.conf.d/workbox.conf"
 # The kernel limits the workbox needs above the defaults; provision.sh installs
@@ -49,20 +52,21 @@ check_timer() {
   systemctl --user show "$1" -p NextElapseUSecRealtime -p NextElapseUSecMonotonic --value | grep -q '[1-9]'
 }
 
-# herdr-core (hc) holds the terminals. `hc server status` starts the core when
-# none runs, in its own transient unit.
+# Inspect the existing core without `hc server status`, which auto-starts it.
 check_hc() {
-  hc_status=$(hc server status --json)
-  printf '%s' "$hc_status" | jq -e '.pid | type == "number"' >/dev/null
-  printf '%s' "$hc_status" |
-    jq -e '(.version // "" | split("-")[0] | split(".") | map(tonumber? // 0)) >= [0, 1, 21]' >/dev/null
-  printf '%s' "$hc_status" | jq -e '.keeps_running_after_logout == true' >/dev/null
-  systemctl --user is-enabled --quiet hc-core.service
-  hc_unit=$(ps -o uunit= -p "$(printf '%s' "$hc_status" | jq -er .pid)" | tr -d '[:space:]')
+  hc_unit=$(systemctl --user list-units --type=service --state=running --no-legend --plain 'hc-serve-*.service' | awk 'NR == 1 { print $1 }')
   case "$hc_unit" in
     hc-serve-*.service) ;;
     *) return 1 ;;
   esac
+  hc_pid=$(systemctl --user show "$hc_unit" -p MainPID --value)
+  case "$hc_pid" in ''|0|*[!0-9]*) return 1 ;; esac
+  hc_exe=$(readlink "/proc/$hc_pid/exe")
+  hc_release=$("$hc_exe" --version)
+  printf '%s' "${hc_release##* }" |
+    jq -eRs '(split("-")[0] | split(".") | map(tonumber? // 0)) >= [0, 1, 21]' >/dev/null
+  test "$(loginctl show-user "$(id -u)" -p Linger --value)" = yes
+  systemctl --user is-enabled --quiet hc-core.service
   test "$(systemctl --user show "$hc_unit" -p OOMPolicy --value)" = continue
 }
 
@@ -123,7 +127,10 @@ check_mode() {
   check_hc
   check_shell_files
   systemctl --user is-active --quiet sideshow.service
-  systemctl --user is-enabled --quiet opencode.service
+  # On a new box the protected system unit is activated with shell-cgroup-cap.
+  if [ ! -e /etc/hetzner-workbox/host-identity.env ]; then
+    systemctl --user is-enabled --quiet opencode.service
+  fi
   for timer in $user_timers; do
     check_timer "$timer"
   done
@@ -137,7 +144,7 @@ check_mode() {
   test "$(systemctl show bite.slice -p CPUWeight --value)" -eq 1000
   "$workbox_dir/system-tools.sh" --check
   check_family_shadow
-  test "$(systemctl show "user-$(id -u).slice" -p MemorySwapMax --value)" -eq 1073741824
+  test "$(systemctl show "user-$(id -u).slice" -p MemorySwapMax --value)" -eq 0
   systemctl is-active --quiet workbox-shm-limit.service
   systemctl is-active --quiet workbox-btrfs-reclaim.service
   findmnt -no OPTIONS /dev/shm | grep -q 'size=8388608k'
@@ -250,7 +257,7 @@ sudo install -m 0644 "$sysctl_config" /etc/sysctl.d/90-inotify.conf
 sudo sysctl -p /etc/sysctl.d/90-inotify.conf
 # The pinned tools (pins.conf: Go, PowerShell, the shells, qemu-user-static and its binfmt entry) and
 # the OpenCode service's memory floor: the same script the Hetzner box's provision.sh runs.
-sudo "$workbox_dir/system-tools.sh"
+sudo env WORKBOX_EXPECT_MACHINE_ID="$WORKBOX_EXPECT_MACHINE_ID" "$workbox_dir/system-tools.sh"
 
 tailscale_ipv4=$(tailscale ip -4 | head -1)
 sshd_config_file=$(mktemp)
@@ -315,7 +322,9 @@ systemctl --user enable --now sideshow.service $user_timers
 # running core alone (`hc server start` keeps its pid). The OpenCode unit only
 # needs to be enabled: the service may already run, started by hand or by daily.
 systemctl --user enable --now hc-core.service
-systemctl --user enable opencode.service
+if [ ! -e /etc/hetzner-workbox/host-identity.env ]; then
+  systemctl --user enable opencode.service
+fi
 systemctl --user restart sideshow.service
 
 if [ -d "$HOME/.config/bite-workbox/settings-source" ]; then

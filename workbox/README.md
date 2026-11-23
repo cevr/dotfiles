@@ -32,13 +32,15 @@ Sideshow, agent settings, S3 backups, security updates, the Tailscale SSH
 service, and swap protection. It configures `systemd-resolved` with public
 fallback servers. It protects Tailscale, the DNS resolver, and the Tailscale SSH
 service from workload memory pressure. It caps user sessions, which hold the
-terminals and every agent, at 82% of physical memory and 1 GiB of swap. It caps
+terminals and every agent, under a 73% aggregate workload budget without swap. It caps
 `/dev/shm` at 8 GB because no process owns its files and the kernel cannot
 reclaim them. It raises the inotify limits to 4194304 watches and 1024
 instances (`systemd/sysctl.d/90-inotify.conf`, which the Hetzner box's
 `provision.sh sysctl` installs too): the Bite lab's standby keepers watch each
 file, about 286,000 each. `--check` warns when a live value is below the
-file's. It starts the herdr-core core and the OpenCode service at boot. It
+file's. It starts the herdr-core core at boot. The legacy box still uses the
+OpenCode user service; the new box uses the protected system unit after the
+client integration is active. It
 uses `/workspaces/.cache/turbo` as a local Turbo cache.
 
 ## Pinned tools and the reserve: system-tools.sh
@@ -56,7 +58,7 @@ fails when one is typed into another file). Steps, each idempotent:
 | `qemu` | `qemu-user-static`, and the binfmt_misc entry for the other architecture (`qemu-aarch64` on amd64, for Ergo's arm64 receipts) registered now from the package's `binfmt.d` file with the F flag; `systemd-binfmt` registers the rest at boot |
 | `go` | Go from go.dev for the pinned architecture only (another is refused): the tarball's sha256 is checked before it is unpacked; the tree goes to `/usr/local/go-<version>`, `/usr/local/go` is a link to it swapped by one rename, and `/usr/local/bin/go` and `gofmt` link to it. A hand-installed `/usr/local/go` directory is replaced once (two renames apart) |
 | `pwsh` | PowerShell from `packages.microsoft.com/ubuntu/<release>/prod`; the downloaded key is refused unless its fingerprint is the pin (`/usr/share/keyrings/microsoft-prod.gpg`, `microsoft-prod.list`, the same paths as Microsoft's own setup package). amd64 only: Microsoft publishes no arm64 package there |
-| `reserve` | the OpenCode service's memory floor (`systemd/reserve/`), then `systemctl daemon-reload`, which applies it to running units: no restart |
+| `reserve` | the separate protected server slice and system unit (`systemd/reserve/`), then `systemctl daemon-reload`; client integration activates this service |
 | `slices` | the run families from `slices.conf`: `/etc/systemd/user/<family>.slice` for each user line, a drop-in for each system line, and cpu, io and memory delegated to the user manager (`systemd/slices/`); then `daemon-reload`, no restart. A CPU cap written as a share of the threads (`CPUQuota=62.5%threads`) becomes a percentage of this host's `nproc` (16 threads: 1000%). A running user manager takes the io delegation at its next start (a boot), not at a reload. A run joins a family with `systemd-run --user --scope --slice=<family>.slice -- <command>` (linux/hetzner-workbox/README.md, Layout) |
 | `tmp` | `/tmp`'s rules (`systemd/tmp/tmpfiles.d/tmp.conf`: emptied at boot, aged at 7 days, `/tmp/opencode` at 14, the families' `/tmp/ergo`, `/tmp/bite-work`, `/tmp/personal` at 7 on lines of their own, `/tmp/vperf2` never aged on the exe box) and the daily clean through `workbox-tmp-clean`, which preserves run trees with holders |
 | `diskfree` | `workbox-disk-free.timer`: every minute, `/run/workbox/disk-free` gets the btrfs's free space from `btrfs filesystem usage` (not df), for the work tool and the host arbiter to read; it enforces nothing |
@@ -64,20 +66,19 @@ fails when one is typed into another file). Steps, each idempotent:
 `system-tools.sh --check` (run by `bootstrap.sh --check`) fails, naming the
 step, unless each is in place.
 
-**The reserve.** `bite.slice` holds the way in (the Tailscale SSH service,
+**Guarantee: containment is for accidents, not work done through `sudo` or
+deliberate use of root.** `bite.slice` holds the way in (the Tailscale SSH service,
 tailscaled, systemd-resolved) beside `user.slice`, which holds every agent. It
 runs at `CPUWeight=1000` against `user.slice`'s default
 100, so under agent load the way in gets the CPU the moment it asks
 (2026-11-22: sshd and tailscaled starved for 15 minutes); its memory floor is
 unchanged (`MemoryMin` 256M, `MemoryLow` 512M, each service its own). The
-OpenCode service places itself in `opencode-service-<pid>.scope`. The
-root-installed prefix drop-in gives it its own `opencodeserver.slice`,
-separate from `app.slice` (the default workload slice) and the four named
-families. Its 9% cap and 2%/7% memory floor scale to the host and the floor
-extends through its ancestors. While `opencode.service` is active, the
-user watchdog re-ensures the server if it exceeds its own cap and exits.
-The named family caps, default and server total 80% of RAM, below the 82%
-aggregate backstop. The run families track I/O with `IOAccounting`, but do not set I/O
+protected `workbox-opencode@<user>.service` has a 9% maximum and a 2%/7%
+memory floor in `workboxprotected.slice`, outside the 73% workload cap.
+SSH sessions, the user manager and unclassified user units all inherit the
+workload cap; cron, at and default Docker containers bill their jobs child.
+Systemd restarts the protected unit after an OOM unless it is explicitly stopped.
+The run families track I/O with `IOAccounting`, but do not set I/O
 weights (linux/hetzner-workbox/README.md, Run families, says why). `--check`
 warns when a user's own `~/.config/systemd/user/<family>.slice` shadows an
 installed one.

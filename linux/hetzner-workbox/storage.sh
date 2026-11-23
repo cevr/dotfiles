@@ -19,6 +19,7 @@
 set -euo pipefail
 # shellcheck source=common.sh
 . "$(dirname "$0")/common.sh"
+[[ ${1:-} == check ]] || hb_require_host
 HB_STORAGE_CONF=${HB_STORAGE_CONF:-$hb_dir/storage.conf}
 sysfs=/sys/fs/btrfs
 

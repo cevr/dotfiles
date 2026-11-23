@@ -5,6 +5,7 @@
 set -euo pipefail
 # shellcheck source=common.sh
 . "$(dirname "$0")/common.sh"
+hb_require_host
 
 HB_CHECK_SKIP=${HB_CHECK_SKIP:-}
 root=${HB_TARGET:-/}

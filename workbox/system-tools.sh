@@ -38,6 +38,9 @@
 set -eu
 
 here=$(CDPATH='' cd -- "$(dirname "$0")" && pwd)
+# shellcheck source-path=SCRIPTDIR source=host-identity.sh
+. "$here/host-identity.sh"
+[ "${1:-}" = --check ] || workbox_require_host
 pins=${WORKBOX_PINS:-$here/pins.conf}
 # shellcheck source-path=SCRIPTDIR source=pins.conf
 . "$pins"
@@ -371,13 +374,14 @@ check_pwsh() {
 
 # ---------------------------------------------------------------- reserve
 # Each file under systemd/reserve/<manager>/<dir>/ goes to /etc/systemd/<manager>/<dir>/.
-reserve_files() { (cd "$reserve_dir" && find . -type f -name '*.conf' | sed 's|^\./||' | sort); }
+reserve_files() { (cd "$reserve_dir" && find system user -type f | sort); }
 
 step_reserve() {
   changed=0
   for file in $(reserve_files); do
     if put 0644 "$reserve_dir/$file" "$root/etc/systemd/$file"; then changed=1; fi
   done
+  if put 0755 "$reserve_dir/workbox-opencode-server" "$root/usr/local/libexec/workbox-opencode-server"; then changed=1; fi
   if [ "$changed" = 1 ]; then
     systemctl daemon-reload
   else
@@ -389,6 +393,8 @@ check_reserve() {
   for file in $(reserve_files); do
     cmp -s "$reserve_dir/$file" "$root/etc/systemd/$file" || die "check reserve: $root/etc/systemd/$file is not $reserve_dir/$file"
   done
+  cmp -s "$reserve_dir/workbox-opencode-server" "$root/usr/local/libexec/workbox-opencode-server" ||
+    die "check reserve: protected server launcher missing or stale"
 }
 
 # ---------------------------------------------------------------- slices
@@ -433,7 +439,7 @@ slice_dest() { # unit manager
   esac
 }
 
-slices_files() { (cd "$slices_dir" && find . -type f -name '*.conf' | sed 's|^\./||' | sort); }
+slices_files() { (cd "$slices_dir" && find system -type f | sort); }
 
 step_slices() {
   changed=0

@@ -16,6 +16,7 @@
 set -euo pipefail
 # shellcheck source=common.sh
 . "$(dirname "$0")/common.sh"
+[[ ${1:-} == subvolumes ]] || hb_require_host
 
 etc=${HB_ETC:-/etc}
 conf_dir=$etc/btrbk
@@ -42,6 +43,7 @@ do_install() {
     need btrbk sshfs openssl zstd
     install -d -m 700 "$conf_dir" "$conf_dir/ssh"
     install -d -m 755 "$etc/hetzner-workbox" "$snap_dir" "$mnt"
+    printf 'WORKBOX_EXPECT_MACHINE_ID=%s\n' "$WORKBOX_EXPECT_MACHINE_ID" > "$etc/hetzner-workbox/host-identity.env"
     if [[ ! -s $key ]]; then
         # 256-bit key in hex, as btrbk's openssl_keyfile wants it.
         (umask 077; openssl rand -hex 32 > "$key")

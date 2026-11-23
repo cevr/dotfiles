@@ -36,6 +36,7 @@
 set -euo pipefail
 # shellcheck source=common.sh
 . "$(dirname "$0")/common.sh"
+hb_require_host
 
 HB_TS_NAME=${HB_TS_NAME:-bite-cristian-hel}
 HB_APT_REPOS=${HB_APT_REPOS:-1}
@@ -234,6 +235,12 @@ phase_storage() {
     for f in common.sh storage.sh storage.conf; do
         if put "$([[ $f == *.sh ]] && echo 0755 || echo 0644)" "$hb_dir/$f" "$lib/$f"; then changed=1; fi
     done
+    put 0644 "$hb_dotfiles/workbox/host-identity.sh" "$lib/host-identity.sh" || true
+    local identity_conf
+    identity_conf=$(mktemp)
+    printf 'WORKBOX_EXPECT_MACHINE_ID=%s\n' "$WORKBOX_EXPECT_MACHINE_ID" > "$identity_conf"
+    put 0644 "$identity_conf" "$etc/hetzner-workbox/host-identity.env" || true
+    rm -f "$identity_conf"
     if put 0644 "$hb_dir/systemd/hetzner-workbox-storage.service" "$etc/systemd/system/hetzner-workbox-storage.service"; then changed=1; fi
     if ((changed)); then systemctl daemon-reload; fi
     systemctl is-enabled --quiet hetzner-workbox-storage.service 2>/dev/null || systemctl enable --quiet hetzner-workbox-storage.service
@@ -250,6 +257,25 @@ phase_storage() {
 
 phase_reserve() {
     "$hb_dotfiles/workbox/system-tools.sh" reserve slices
+    # Docker uses systemd cgroups on Noble. Keep daemon-launched containers inside
+    # the same workload budget as login sessions; do not replace unrelated settings.
+    if command -v dockerd >/dev/null; then
+        local config=$etc/docker/daemon.json candidate
+        candidate=$(mktemp)
+        if [[ -e $config ]]; then
+            jq -e 'if type != "object" then error("expected object")
+                else .["cgroup-parent"] = "user-jobs.slice"
+                | .["exec-opts"] = (((.["exec-opts"] // []) | map(select(startswith("native.cgroupdriver=") | not))) + ["native.cgroupdriver=systemd"]) end' \
+                "$config" > "$candidate"
+        else
+            printf '%s\n' '{"cgroup-parent":"user-jobs.slice","exec-opts":["native.cgroupdriver=systemd"]}' > "$candidate"
+        fi
+        dockerd --validate --config-file "$candidate" || die "Docker workload configuration is invalid"
+        if put 0644 "$candidate" "$config"; then
+            say "Docker's workload parent applies at its next start; reboot before opening the new box to jobs"
+        fi
+        rm -f "$candidate"
+    fi
 }
 
 phase_upgrades() {
@@ -282,6 +308,7 @@ phase_bootstrap() {
     local uid
     uid=$(id -u "$HB_USER")
     runuser -u "$HB_USER" -- env HOME="$HB_HOME" USER="$HB_USER" XDG_RUNTIME_DIR="/run/user/$uid" \
+        WORKBOX_EXPECT_MACHINE_ID="$WORKBOX_EXPECT_MACHINE_ID" \
         PATH="$HB_HOME/.local/bin:$HB_HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin" "$boot"
 }
 

@@ -1,6 +1,13 @@
 #!/bin/sh
 
 set -eu
+if [ "$#" -eq 0 ]; then
+  guard=$(dirname "$0")/../host-identity.sh
+  [ -r "$guard" ] || guard="$HOME/.local/share/workbox/host-identity.sh"
+  # shellcheck source=../host-identity.sh
+  . "$guard"
+  workbox_require_host
+fi
 
 repository=${BITE_REPOSITORY:-/workspaces/bite}
 if [ ! -f "$repository/package.json" ]; then

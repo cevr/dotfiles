@@ -91,6 +91,7 @@ const host = (opts: { arch?: string; pins?: Record<string, string>; noCandidate?
   const workbox = join(dir, "tree", "workbox")
   mkdirSync(join(workbox, "systemd"), { recursive: true })
   cpSync(underTest, join(workbox, "system-tools.sh"))
+  cpSync(join(workboxDir, "host-identity.sh"), join(workbox, "host-identity.sh"))
   chmodSync(join(workbox, "system-tools.sh"), 0o755)
   cpSync(join(workboxDir, "systemd", "reserve"), join(workbox, "systemd", "reserve"), { recursive: true })
   for (const dir of ["slices", "tmp", "disk-free"]) cpSync(join(workboxDir, "systemd", dir), join(workbox, "systemd", dir), { recursive: true })
@@ -122,6 +123,7 @@ const host = (opts: { arch?: string; pins?: Record<string, string>; noCandidate?
     TMPDIR: dir,
     PATH: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`,
     WORKBOX_TOOLS_ROOT: root,
+    WORKBOX_EXPECT_MACHINE_ID: Bun.spawnSync(["sh", "-c", '. "$1"; workbox_host_identity', "test", join(workbox, "host-identity.sh")]).stdout.toString().trim(),
     WORKBOX_TOOLS_PROC: proc,
     WORKBOX_PROC_DIR: proc,
     WORKBOX_PINS: join(dir, "pins.conf"),
@@ -184,9 +186,7 @@ const snapshot = (...dirs: Array<string>) => {
   return out
 }
 
-const reserveFiles = ["system/user.slice.d", "system/user-.slice.d", "system/user@.service.d", "user/app.slice.d", "user/opencode-service-.scope.d"].map(
-  (dir) => `${dir}/30-workbox-reserve.conf`,
-)
+const reserveFiles = ["system/workboxprotected.slice", "system/workbox-opencode@.service", "user/app.slice.d/30-workbox-reserve.conf"]
 
 describe("system-tools.sh installs the pinned tools, once", () => {
   test("every step on a fresh amd64 root installs; a second run changes nothing; --check passes", () => {
@@ -217,7 +217,7 @@ describe("system-tools.sh installs the pinned tools, once", () => {
     expect(installs.map((line) => line.split(" ").filter((word) => !word.startsWith("-")).slice(2))).toEqual([["fish", "ksh", "mksh"], ["qemu-user-static"], ["powershell"]])
     // The run families: a slice unit each for the user manager, a drop-in each for the system's slices.
     expect(readFileSync(join(h.root, "etc", "systemd", "user", "ergo.slice"), "utf8")).toContain("[Slice]\nCPUWeight=20\nCPUQuota=1000%\nIOAccounting=yes\nMemoryMax=22%\nMemorySwapMax=0\n")
-    expect(readFileSync(join(h.root, "etc", "systemd", "system", "user.slice.d", "40-workbox-slices.conf"), "utf8")).toContain("[Slice]\nCPUWeight=100\nMemoryMax=82%\nMemorySwapMax=1G\n")
+    expect(readFileSync(join(h.root, "etc", "systemd", "system", "user.slice.d", "40-workbox-slices.conf"), "utf8")).toContain("[Slice]\nCPUWeight=100\nMemoryMax=73%\nMemorySwapMax=0\n")
     expect(readFileSync(join(h.root, "etc", "systemd", "system", "user@.service.d", "40-workbox-delegate.conf"), "utf8")).toContain("Delegate=cpu io memory pids")
     // /tmp's rules and the guard; the free-space script, its unit and timer.
     for (const [src, dest] of [

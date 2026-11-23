@@ -14,6 +14,14 @@ HB_TARGET=${HB_TARGET:-}
 HB_FSTAB=${HB_FSTAB:-$HB_TARGET/etc/fstab}
 HB_HOME=${HB_HOME:-$HB_TARGET/home/$HB_USER}
 HB_WORKSPACES=${HB_WORKSPACES:-$HB_TARGET/workspaces}
+
+hb_require_host() {
+    local identity=$hb_dir/host-identity.sh
+    [[ -r $identity ]] || identity=$hb_dotfiles/workbox/host-identity.sh
+    # shellcheck source=../../workbox/host-identity.sh
+    . "$identity"
+    workbox_require_host
+}
 # The durable run areas (@runs): run records kept for good, never cleaned, backed up.
 HB_RUNS=${HB_RUNS:-$HB_TARGET/runs}
 # Mount options of every btrfs line, the same as the exe box's image; user_subvol_rm_allowed: Ergo's work deletes a workspace's subvolume as the user (set by hand on the workbox 2026-11-15).

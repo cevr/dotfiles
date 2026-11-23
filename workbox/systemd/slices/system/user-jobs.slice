@@ -1,0 +1,6 @@
+[Unit]
+Description=Workbox daemon-launched jobs and containers
+
+[Slice]
+MemoryMax=36%
+MemorySwapMax=0

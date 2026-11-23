@@ -118,7 +118,7 @@ type Host = {
   version: string
   keeps: Keeps
   hcEnabled: boolean
-  /** The user unit `ps -o uunit=` names for the core's pid. */
+  /** The user unit reported for the running core. */
   coreUnit: string
   /** That unit's OOMPolicy, whatever unit it is. */
   oomPolicy: string
@@ -169,6 +169,9 @@ case "$*" in
   "--user is-enabled --quiet hc-core.service") exit "$HC_ENABLED_EXIT" ;;
   "--user is-active --quiet herdr-bite.service"|"--user is-enabled --quiet herdr-bite.service") exit "$HERDR_ACTIVE_EXIT" ;;
   "--user show $HC_UNIT -p OOMPolicy --value") echo "$HC_OOM" ;;
+  "--user list-units --type=service --state=running --no-legend --plain hc-serve-*.service")
+    if [ "$HC_ANSWERS" = 1 ]; then echo "$HC_UNIT loaded active running"; fi ;;
+  "--user show $HC_UNIT -p MainPID --value") echo 4242 ;;
   *" -p Slice --value") echo bite.slice ;;
   *".timer -p NextElapseUSecRealtime -p NextElapseUSecMonotonic --value") printf '%s\\n%s\\n' "$TIMER_NEXT" 0 ;;
   "show bite.slice -p MemoryMin --value") echo 268435456 ;;
@@ -176,7 +179,7 @@ case "$*" in
   "show bite.slice -p CPUWeight --value") echo 1000 ;;
   "show user.slice -p MemoryLow --value"|"show user@"*" -p MemoryLow --value"|"--user show app.slice -p MemoryLow --value") echo 4294967296 ;;
   "show user-"*" -p MemoryMax --value") echo 55834574848 ;;
-  "show user-"*" -p MemorySwapMax --value") echo 1073741824 ;;
+  "show user-"*" -p MemorySwapMax --value") echo 0 ;;
   *" -p MemorySwapMax --value") echo 0 ;;
   "show tailscaled.service -p MemoryMin --value") echo 134217728 ;;
   "show tailscaled.service -p MemoryLow --value") echo 268435456 ;;
@@ -197,7 +200,8 @@ if [ "$HC_ANSWERS" != 1 ]; then
   exit 1
 fi
 case "$*" in
-  "server status --json"|"server start"*) cat "$HOME/hc-status.json" ;;
+  "--version") printf 'hc %s\\n' "$(jq -r .version "$HOME/hc-status.json")" ;;
+  "server start"*) cat "$HOME/hc-status.json" ;;
 esac
 exit 0`
 
@@ -208,17 +212,11 @@ case "$*" in
   *) exit 1 ;;
 esac`
 
-const psBody = `. "$HOME/host.env"
-case "$*" in
-  "-o uunit= -p 4242") echo " $HC_UNIT" ;;
-  *) exit 1 ;;
-esac`
-
 // Every command bootstrap --check calls by name, beyond the POSIX tools it
 // shares with the Mac.
 const quietCommands = [
   "btrfs", "bun", "curl", "git", "hunk", "mongosh", "node", "redis-cli", "sideshow", "sqlite3",
-  "syncthing", "tailscale", "work", "workbox-rift-storage", "workrift", "zsh", "install-node", "loginctl",
+  "syncthing", "tailscale", "work", "workbox-rift-storage", "workrift", "zsh", "install-node",
 ]
 
 /** The host's commands, made once for each {herdr present, hc present}. */
@@ -231,7 +229,7 @@ const hostBin = (herdrPresent: boolean, hcPresent = true) => {
   for (const name of quietCommands) stub(dir, name, null)
   stub(dir, "systemctl", null, systemctlBody)
   if (hcPresent) stub(dir, "hc", null, hcBody)
-  stub(dir, "ps", null, psBody)
+  stub(dir, "loginctl", null, `case "$1" in show-user) [ "$(jq -r .keeps_running_after_logout "$HOME/hc-status.json")" != true ] || echo yes ;; esac`)
   stub(dir, "sysctl", null, sysctlBody)
   // The real cmp for the home's files (the shell-file check); /etc's resolved config reads as current.
   stub(dir, "cmp", null, `case "$3" in "$HOME"/*) exec /usr/bin/cmp "$@" ;; esac`)
@@ -242,7 +240,11 @@ const hostBin = (herdrPresent: boolean, hcPresent = true) => {
     dir,
     "readlink",
     null,
-    `if [ "$1" = /etc/resolv.conf ]; then echo ../run/systemd/resolve/stub-resolv.conf; else exec /usr/bin/readlink "$@"; fi`,
+    `case "$1" in
+      /etc/resolv.conf) echo ../run/systemd/resolve/stub-resolv.conf ;;
+      /proc/4242/exe) command -v hc ;;
+      *) exec /usr/bin/readlink "$@" ;;
+    esac`,
   )
   if (herdrPresent) stub(dir, "herdr", null, "echo 'config: ok'")
   link(dir, "jq", jq)
@@ -332,7 +334,7 @@ const bootstrapTree = (root: string, log: string) => {
   mkdirSync(box, { recursive: true })
   cpSync(join(workbox, "bootstrap.sh"), join(box, "bootstrap.sh"))
   cpSync(join(workbox, "systemd"), join(box, "systemd"), { recursive: true })
-  for (const file of ["hunk-config.toml", "backup.env", "zshenv", "zshrc", "herdr-config.toml"])
+  for (const file of ["hunk-config.toml", "backup.env", "zshenv", "zshrc", "herdr-config.toml", "host-identity.sh"])
     cpSync(join(workbox, file), join(box, file))
   for (const name of readdirSync(join(workbox, "bin"))) stub(join(box, "bin"), name, log)
   stub(join(tree, "claude", "mods", "fx-ui"), "install.sh", log)
@@ -373,6 +375,7 @@ esac`)
     PATH: `${stubs}:${hostBin(host.herdrPresent, hcInstalled)}:${join(home, ".local", "bin")}:/usr/bin:/bin`,
     TMPDIR: root,
     WORKBOX_WORKSPACES_DIR: workspaces,
+    WORKBOX_EXPECT_MACHINE_ID: Bun.spawnSync(["sh", "-c", '. "$1"; workbox_host_identity', "test", join(box, "host-identity.sh")]).stdout.toString().trim(),
   })
   return { ...result, home, workspaces, calls: calls(log) }
 }
@@ -385,7 +388,8 @@ describe("bootstrap", () => {
       expect(result.stdout).toContain("Workbox bootstrap checks passed.")
       expect(result.code).toBe(0)
       expect(result.calls.filter((c) => c.startsWith("herdr "))).toEqual([])
-      expect(result.calls).toContain("hc server status --json")
+      expect(result.calls).toContain("hc --version")
+      expect(result.calls).not.toContain("hc server status --json")
       expect(result.calls).toContain("systemctl --user is-active --quiet workbox-pressure.timer")
       expect(result.calls).toContain("systemctl --user show workbox-pressure.timer -p NextElapseUSecRealtime -p NextElapseUSecMonotonic --value")
     }
@@ -479,7 +483,7 @@ describe("bootstrap", () => {
         "sudo sysctl -p /etc/sysctl.d/90-inotify.conf",
       ])
       // The system layer (pinned tools, reserve, slices, /tmp, free space) once, as root, every step; then its check.
-      expect(result.calls.filter((c) => c.includes("system-tools.sh"))).toEqual([expect.stringMatching(/^sudo .*\/workbox\/system-tools\.sh$/), "system-tools.sh --check"])
+      expect(result.calls.filter((c) => c.includes("system-tools.sh"))).toEqual([expect.stringMatching(/^sudo env WORKBOX_EXPECT_MACHINE_ID=[a-f0-9]{32} .*\/workbox\/system-tools\.sh$/), "system-tools.sh --check"])
       const installs = result.calls.filter((c) => c.includes("releases.herdr.dev/core/install.sh"))
       // Bounded in time, as every provisioning download.
       expect(installs).toEqual(hcInstalled ? [] : ["curl -fsSL --connect-timeout 20 --max-time 300 --retry 3 https://releases.herdr.dev/core/install.sh"])

@@ -128,8 +128,10 @@ shadows the installed one whole: Ergo wrote one on the exe box (`CPUWeight=20`,
 the AX102, would hold Ergo to 10 of 32 threads. `bootstrap.sh --check` warns
 while such a file exists; move it aside after the move (RUNBOOK.md).
 
-After a Nov 23 test reached 43–47 GB and OOM-killed neighboring runs and the
-OpenCode server, each family gets a separate hard memory cap:
+**Guarantee: this protects against accidents in ordinary agent launches, not
+commands run through `sudo` or deliberate use of root (including explicit
+Docker cgroup overrides).** After a Nov 23 test OOM-killed neighboring runs
+and the OpenCode server, `user.slice` became the workload-only parent.
 
 | Slice | CPU weight | Maximum RAM |
 | --- | ---: | ---: |
@@ -138,20 +140,28 @@ OpenCode server, each family gets a separate hard memory cap:
 | `bite-work.slice` | 100 | 30% |
 | `personal.slice` | 100 | 7% |
 | `app.slice` (default unplaced work) | 100 | 5% |
-| `opencodeserver.slice` | 1000 | 9% |
+| `workboxprotected.slice` (system-managed server; sibling of `user.slice`) | 1000 | 9% |
 
-Systemd resolves the shares against physical RAM when loading the provisioned
-units. The named caps total 80%, below the 82% cap for each user and for
-`user.slice` as a whole. That leaves 2% inside for the user manager and
-ancillary processes and 18% outside for system services. No family or server
-can swap. The server's own scope has `MemoryMin=2%`, `MemoryLow=7%` and
-`ManagedOOMPreference=omit`, with the memory floor carried through its
-ancestors. A family-local OOM cannot select that sibling scope. While
-`opencode.service` is active, its watchdog checks the managed launcher every
-15 seconds and re-ensures the server after its own cap is exceeded; an
-explicit `systemctl --user stop opencode.service` stops recovery too.
-A root, kernel or system-service allocation outside `user.slice` is not
-bounded by these limits.
+Systemd resolves the shares against physical RAM. The 73% aggregate workload
+cap covers accounts and jobs together; each account's whole logind subtree
+is capped at 72%, including SSH, tmux, linger, user timers and arbitrary user
+units and slices. The four families and `app.slice` total 71%. If present,
+cron, at and default Docker containers share `user-jobs.slice` (36%, within
+the 73%, not another reservation). Workload and server do not swap.
+
+The root-managed `workbox-opencode@exedev.service` stays in the separate
+9% branch, with `MemoryMin=2%`, `MemoryLow=7%`, and `ManagedOOMPreference=omit`.
+Systemd restarts it after its own cap kills it, but not after an explicit stop.
+The remaining 18% is outside both caps for system services, root and the
+kernel; their use is not capped by this setup. Protection applies to the
+managed server unit, not to a server a client starts in its own session.
+`shell-cgroup-cap` owns the activation, client routing, and the server-to-user
+launch path. `workbox-run` continues to isolate calls made from the workload
+branch while that integration is pending.
+
+Mutating provisioning commands require an independently recorded
+`WORKBOX_EXPECT_MACHINE_ID` before they touch a host; migration also verifies
+`HB_TARGET_MACHINE_ID` against the SSH peer. See the [runbook](RUNBOOK.md).
 
 No IO weights: on Ubuntu 24.04 NVMe's scheduler is `none`, which weighs nothing,
 so an `IOWeight` there is a no-op. io.cost would weigh, but in the noble VM it

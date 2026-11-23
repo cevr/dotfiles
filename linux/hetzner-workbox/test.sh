@@ -55,6 +55,11 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd -P)
 [[ $(uname -s) == Linux && $(id -u) == 0 ]] || { echo 'test.sh: Linux and root' >&2; exit 2; }
+# A test driver independently selects the intended guest before sending the
+# fixture, just as the operator records the intended physical host out of band.
+# shellcheck source=../../workbox/host-identity.sh
+. "$here/../../workbox/host-identity.sh"
+workbox_require_host
 user=hbtest uid=1990
 prefix=/var/tmp/hetzner-workbox-test.
 samples=/dev/shm/hetzner-workbox-test.samples
@@ -72,6 +77,9 @@ tools_files=(
     /etc/systemd/system/user-.slice.d/20-workbox-memory-limit.conf
     /etc/systemd/system/{user.slice.d,system.slice.d}/40-workbox-slices.conf
     /etc/systemd/system/user@.service.d/40-workbox-delegate.conf
+    /etc/systemd/system/{workboxprotected.slice,workbox-opencode@.service,user-jobs.slice}
+    /etc/systemd/system/{cron,atd}.service.d/40-workbox-workload.conf
+    /usr/local/libexec/workbox-opencode-server /etc/hetzner-workbox/host-identity.env
     /etc/tmpfiles.d/tmp.conf /usr/local/sbin/workbox-tmp-clean
     /etc/systemd/system/systemd-tmpfiles-clean.service.d/30-workbox-held.conf
     /etc/systemd/system/hetzner-workbox-storage.service /etc/tmpfiles.d/hetzner-runs.conf
@@ -698,26 +706,6 @@ systemctl daemon-reload
 pass "a running slice takes a changed CPUWeight on daemon-reload, without a restart"
 mem_total=$(awk '/^MemTotal:/ { printf "%.0f\n", $2 * 1024 }' /proc/meminfo)
 near_pct() { awk -v got="$1" -v pct="$2" -v total="$mem_total" 'BEGIN { want = total * pct / 100; exit !(got >= want - 1048576 && got <= want + 1048576) }'; }
-for cg in user.slice "user.slice/user-$uid.slice" "user.slice/user-$uid.slice/user@$uid.service"; do
-    near_pct "$(cat "/sys/fs/cgroup/$cg/memory.low")" 7 && near_pct "$(cat "/sys/fs/cgroup/$cg/memory.min")" 2 || fail "$cg memory floor"
-done
-runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user daemon-reload
-tools_scope=opencode-service-$$.scope
-runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" systemd-run --user --scope --quiet --collect --unit="$tools_scope" --slice=app.slice sleep 60 &
-scope_job=$!
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-    scope_cg=/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/opencodeserver.slice/$tools_scope
-    [[ -e $scope_cg/memory.low ]] && break
-    sleep 1
-done
-for cg in "$(dirname "$scope_cg")" "$scope_cg"; do
-    near_pct "$(cat "$cg/memory.low" 2>/dev/null)" 7 && near_pct "$(cat "$cg/memory.min" 2>/dev/null)" 2 ||
-        fail "${cg##*/} memory floor or protected slice placement"
-done
-pass "bite.slice CPUWeight 1000; the 2%/7% memory floor across ancestors and on a transient server scope in opencodeserver.slice"
-runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user stop "$tools_scope"
-wait "$scope_job" 2>/dev/null || true
-tools_scope=''
 
 # The run families (workbox/slices.conf, by provision.sh reserve): slices of the user's own manager.
 uctl() { runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" "$@"; }

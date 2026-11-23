@@ -6,6 +6,17 @@ on the new box until its home arrives. `NEW` is the new box's public IP,
 `NEWTS` its Tailscale IPv4 once it has one. Times are guesses unless marked
 measured; the exe box held about 430 GB on 2026-11-14 (plan.md, measured).
 
+The following are inputs to the approved deployment, not commands to run by
+hand on a real host. Before dispatch, record the intended installed host's
+`/etc/machine-id` through the trusted console/inventory; set the deployment's
+`WORKBOX_EXPECT_MACHINE_ID` to that value. Never derive it inline from the
+execution host. For migration record both identities: the source as
+`WORKBOX_EXPECT_MACHINE_ID` and the destination as `HB_TARGET_MACHINE_ID`.
+Pin the destination's SSH host key in the source's
+`/root/.ssh/hetzner-sync-known_hosts` through that same trusted channel.
+Supply them to the deployment's root environment, including after sudo and
+after reboot. A hostname does not establish identity.
+
 ## 0. The owner's part (before anything)
 
 1. Order the AX102 in HEL1 with the Rescue System and the Mac's key
@@ -47,7 +58,10 @@ measured; the exe box held about 430 GB on 2026-11-14 (plan.md, measured).
    `tools` installs the pinned tools; `storage` makes the limited subvolumes of
    `storage.conf` (README.md, Layout) and enables the unit that applies them at
    each boot; `reserve` installs the memory floor and the run families. Each
-   phase is idempotent: a rerun prints no `==>` line.
+   phase is idempotent: a rerun prints no install changes. Reboot before
+   opening the box to jobs, so Docker (if installed), cron and at (if
+   present) take their new placement. Activate the protected server only
+   with the `shell-cgroup-cap` launcher integration.
 
    It joins the tailnet as `bite-cristian-hel` (the exe node keeps
    `bite-cristian` until the cutover) and prints `NEWTS`.
@@ -64,13 +78,17 @@ measured; the exe box held about 430 GB on 2026-11-14 (plan.md, measured).
 
 From an hc terminal on the exe box (the copy outlives an ssh session there):
 
+In the following `sudo` examples the approved dispatcher supplies the two
+identity variables to the privileged process as described above.
+
 ```sh
 sudo HB_TO=exedev@NEWTS $d/sync.sh --dry-run pass 1    # GB per subvolume and the total
 sudo HB_TO=exedev@NEWTS $d/sync.sh pass 1
 sudo HB_TO=exedev@NEWTS $d/sync.sh rest                # MongoDB and the rest, live (pass 2 redoes it)
 ```
 
-The dry run reads metadata only. At 1 Gbit/s on the Hetzner side and the LAX
+The dry-run transfer reads metadata; pass accounting also creates and removes
+temporary source snapshots. At 1 Gbit/s on the Hetzner side and the LAX
 to HEL1 path (about 150 ms), expect hours for ~430 GB; a rerun resumes, skipping
 what arrived. exe bills TX past 200 GB a month at $0.05/GB: about $22 for this
 pass (plan.md). Then `sudo HB_TO=exedev@NEWTS $d/sync.sh --dry-run pass 2` shows

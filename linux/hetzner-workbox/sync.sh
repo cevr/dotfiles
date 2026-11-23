@@ -22,7 +22,7 @@
 #   sync.sh remote ...            the target's side; sync.sh ships itself there
 #
 # --dry-run prints the GB each step would move (exe bills TX over 200 GB a
-# month at $0.05/GB) and changes nothing on either side.
+# month at $0.05/GB); a pass uses and removes transient local snapshots.
 #
 # Each subvolume (the home, /workspaces, every warm source and Rift inside it)
 # is sent on its own: btrfs send does not descend into nested subvolumes. A
@@ -36,6 +36,8 @@
 # Env:
 #   HB_TO            ssh destination (exedev@<new box's Tailscale IP>); "local"
 #                    runs the target side on this host (test.sh)
+#   WORKBOX_EXPECT_MACHINE_ID  independently recorded local machine-id
+#   HB_TARGET_MACHINE_ID      independently recorded destination machine-id (remote only)
 #   HB_SSH_PORT      2222       HB_SSH_KEY  /home/exedev/.ssh/hetzner-sync
 #   HB_SYNC_SUBVOLS  "@home:/home/exedev @workspaces:/workspaces" (name:mount
 #                    point; /tmp is emptied at boot, so @tmp is not copied)
@@ -51,6 +53,11 @@ set -euo pipefail
 
 self=$(readlink -f "$0")
 remote_dir=/var/lib/hetzner-sync
+identity=${self%/*}/host-identity.sh
+[[ -r $identity ]] || identity=${self%/*}/../../workbox/host-identity.sh
+# shellcheck source=../../workbox/host-identity.sh
+. "$identity"
+workbox_require_host
 HB_TO=${HB_TO:-}
 HB_SSH_PORT=${HB_SSH_PORT:-2222}
 HB_SSH_KEY=${HB_SSH_KEY:-/home/exedev/.ssh/hetzner-sync}
@@ -162,20 +169,31 @@ cmd=${1:-}
 [[ -n $cmd ]] || die "usage: sync.sh [--dry-run] pass N | rest | runs [--yes] | activate N"
 
 ssh_cmd=(ssh -p "$HB_SSH_PORT" -o BatchMode=yes -o ServerAliveInterval=30
-    -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/root/.ssh/hetzner-sync-known_hosts)
+    -o StrictHostKeyChecking=yes -o UpdateHostKeys=no -o UserKnownHostsFile=/root/.ssh/hetzner-sync-known_hosts)
 [[ -f $HB_SSH_KEY ]] && ssh_cmd+=(-i "$HB_SSH_KEY" -o IdentitiesOnly=yes)
 remote_script=$remote_dir/sync.sh
+target_test=
+if [[ -n $HB_TO && $HB_TO != local ]]; then
+    [[ ${HB_TARGET_MACHINE_ID:-} =~ ^[a-f0-9]{32}$ ]] ||
+        { printf 'sync.sh: intended-host identity refused: set HB_TARGET_MACHINE_ID\n' >&2; exit 78; }
+    target_test="test \"\$(cat /etc/machine-id)\" = $HB_TARGET_MACHINE_ID"
+    # This check precedes local snapshot writes and any remote privileged command.
+    [[ $("${ssh_cmd[@]}" "$HB_TO" cat /etc/machine-id) == "$HB_TARGET_MACHINE_ID" ]] ||
+        { printf 'sync.sh: intended-host identity refused: SSH peer does not match HB_TARGET_MACHINE_ID\n' >&2; exit 78; }
+fi
 remote() {
-    safe "$@"
+    safe "$HB_TARGET_ANCHOR" "$@"
     if [[ $HB_TO == local ]]; then
         bash "$self" remote "$HB_TARGET_ANCHOR" "$@"
     else
-        "${ssh_cmd[@]}" "$HB_TO" sudo -n bash "$remote_script" remote "$HB_TARGET_ANCHOR" "$@"
+        "${ssh_cmd[@]}" "$HB_TO" "$target_test && sudo -n env WORKBOX_EXPECT_MACHINE_ID=$HB_TARGET_MACHINE_ID" \
+            bash "$remote_script" remote "$HB_TARGET_ANCHOR" "$@"
     fi
 }
 ship() {
     [[ $HB_TO == local ]] && return
-    "${ssh_cmd[@]}" "$HB_TO" "sudo -n install -d -m 700 $remote_dir && sudo -n tee $remote_script >/dev/null" < "$self"
+    "${ssh_cmd[@]}" "$HB_TO" "$target_test && sudo -n install -d -m 700 $remote_dir && sudo -n tee $remote_dir/host-identity.sh >/dev/null" < "$identity"
+    "${ssh_cmd[@]}" "$HB_TO" "$target_test && sudo -n tee $remote_script >/dev/null" < "$self"
 }
 
 # Prints "uuid<TAB>parent uuid<TAB>path from the top level<TAB>ro" for every
@@ -375,7 +393,7 @@ do_rest() {
         install -d "$HB_TARGET_PREFIX"
         dest=$HB_TARGET_PREFIX/
     elif [[ -n $dest ]]; then
-        args+=(-e "${ssh_cmd[*]}" --rsync-path="sudo -n rsync")
+        args+=(-e "${ssh_cmd[*]}" --rsync-path="$target_test && sudo -n rsync")
         dest=$dest:$HB_TARGET_PREFIX/
     elif ((dry)); then
         local b
@@ -417,7 +435,7 @@ do_runs() {
         to=$HB_TARGET_PREFIX$HB_RUNS_TO
         [[ -d $to ]] || die "$to is missing: the target's provision.sh storage phase makes it"
     else
-        args+=(-e "${ssh_cmd[*]}" --rsync-path="sudo -n rsync")
+        args+=(-e "${ssh_cmd[*]}" --rsync-path="$target_test && sudo -n rsync")
         to=$HB_TO:$HB_TARGET_PREFIX$HB_RUNS_TO
     fi
     for src in $HB_RUNS_FROM; do

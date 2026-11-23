@@ -23,6 +23,7 @@
 set -euo pipefail
 # shellcheck source=common.sh
 . "$(dirname "$0")/common.sh"
+[[ ${1:-} == --dry-run ]] || hb_require_host
 
 HB_DISK1=${HB_DISK1:-/dev/nvme0n1}
 HB_DISK2=${HB_DISK2:-/dev/nvme1n1}

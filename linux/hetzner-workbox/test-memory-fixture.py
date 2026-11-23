@@ -23,27 +23,31 @@ def touch_pages(mib):
     return pages
 
 
-def grow(keep):
+def grow(keep, pause=0):
     while len(keep) < 256:  # fails the test without consuming the whole VM if limits were absent
         keep.append(touch_pages(4))
+        if pause:
+            time.sleep(pause)
     raise SystemExit("memory limit failed to fire")
 
 
 def hog(family):
     sibling = os.fork()
     if sibling == 0:
-        time.sleep(25)
+        time.sleep(145)
         os._exit(0)
     data = [touch_pages(24)]
     publish(family + ".ready", f"{os.getpid()} {sibling}\n")
-    for _ in range(500):
+    for _ in range(6500):
         if (ROOT / "hog-go").exists():
-            grow(data)
+            grow(data, 0.03 if family == "unnamed" else 0)
         time.sleep(0.02)
     raise SystemExit("hog start was not released")
 
 
-def serve(unit):
+def serve(mode):
+    assert mode == "--service", mode
+    unit = Path("/proc/self/cgroup").read_text().strip().rsplit("/", 1)[-1]
     publish("server", f"{os.getpid()} {unit}\n")
     child = None
     while True:
@@ -51,7 +55,14 @@ def serve(unit):
             (ROOT / "server-grow").unlink()
             grow([])
         if child is None and (ROOT / "start-bite").exists() and not (ROOT / "bite-work.ready").exists():
-            child = subprocess.Popen([ME.with_name("workbox-run"), "bite-work", "--memory-max", "96M", "--", ME, "hog", "bite-work"])
+            # A protected system service cannot move itself across systemd's
+            # delegation boundary. Ask the user manager to start the process.
+            child = subprocess.Popen(
+                ["systemd-run", "--user", "--wait", "--pipe", "--quiet", "--collect",
+                 "--expand-environment=no", "--slice=bite-work.slice", "--property=MemoryMax=96M",
+                 "--property=MemorySwapMax=0", "--property=OOMPolicy=kill", "--", ME, "hog", "bite-work"]
+            )
+            publish("broker", f"{child.pid}\n")
         if child is not None and child.poll() is not None:
             status = child.returncode
             publish("bite-work.exit", f"{128 - status if status < 0 else status}\n")
@@ -59,42 +70,4 @@ def serve(unit):
         time.sleep(0.02)
 
 
-def running():
-    try:
-        pid, unit = (ROOT / "server").read_text().split()
-        if Path(f"/proc/{pid}/cgroup").read_text().split("/")[-1].strip() == unit:
-            return unit
-    except (OSError, ValueError):
-        pass
-    return None
-
-
-def service(action):
-    unit = running()
-    if action == "status":
-        print("running" if unit else "stopped")
-    elif action == "stop":
-        if unit:
-            subprocess.run(["systemctl", "--user", "stop", unit], check=True)
-    elif action == "start":
-        if unit:
-            return
-        unit = f"opencode-service-fixture-{os.getpid()}.scope"
-        with (ROOT / "server.log").open("a") as log:
-            child = subprocess.Popen(
-                ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--slice=app.slice",
-                 "--unit", unit, "--", ME, "serve", unit],
-                stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
-            )
-        for _ in range(100):
-            if running() == unit:
-                return
-            if child.poll() is not None:
-                break
-            time.sleep(0.04)
-        raise SystemExit("fixture server did not start")
-    else:
-        raise SystemExit(f"unknown fixture service action: {action}")
-
-
-{"serve": serve, "hog": hog, "service": service}[sys.argv[1]](sys.argv[2])
+{"serve": serve, "hog": hog}[sys.argv[1]](sys.argv[2])
