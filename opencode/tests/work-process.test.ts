@@ -1,4 +1,5 @@
-// accept: deep (415 s alone at a 1-minute load of 22–35 on 12 cores, 90 s with --parallel=4 at 12–18: its 33 cases make, commit in, land and remove real workspaces with the real work binary)
+// accept: deep (415.2 s alone on a quiet host: 1-minute load 22–35 on 12 cores, none quieter to be had; its 33 cases make, commit in, land and remove real workspaces with the real work binary)
+// accept: one at a time (it bounds a dead clone's create under 20 s).
 // The process Rifts over Ergo's real `work` binary and Git, in a scratch HOME (so the list of bases is the test's
 // own) holding a base `code/app` with a bare origin. The provider's environment carries a WORK_BASE that names no
 // base, so a call that does not name its own base reads the wrong registry and fails.

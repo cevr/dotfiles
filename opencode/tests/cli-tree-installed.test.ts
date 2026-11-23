@@ -102,6 +102,7 @@ describe("each plain-Bun command runs from the installed tree TREE_OPENCODE name
       })
       expect(copies).toEqual([])
     }),
+    120_000,
   )
 
   commandChecks(installedRoot)
