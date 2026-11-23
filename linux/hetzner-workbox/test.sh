@@ -213,7 +213,36 @@ if [[ ${1:-} == --slices-reboot ]]; then
         pass "prepared: $ruser lingering, slices installed, other Delegate drop-ins aside, personal.slice CPUWeight=77 at runtime only; reboot the VM, then --slices-reboot verify"
         ;;
     verify)
-        trap 'cleanup_tools; loginctl disable-linger "$ruser" 2>/dev/null; systemctl stop "user@$ruid.service" 2>/dev/null; userdel -r "$ruser" 2>/dev/null' EXIT
+        cleanup_reboot() {
+            local status=$? f
+            set +e
+            cleanup_tools
+            loginctl disable-linger "$ruser" >/dev/null 2>&1
+            systemctl stop "user@$ruid.service" >/dev/null 2>&1
+            loginctl terminate-user "$ruser" >/dev/null 2>&1
+            for _ in $(seq 1 20); do
+                id "$ruser" >/dev/null 2>&1 || break
+                userdel -r "$ruser" >/dev/null 2>&1 && break
+                sleep 0.25
+            done
+            if id "$ruser" >/dev/null 2>&1; then
+                printf 'FAIL: test user %s remained after the reboot check\n' "$ruser" >&2
+                status=1
+            fi
+            for f in "${tools_files[@]}"; do
+                if [[ -e $f ]]; then
+                    printf 'FAIL: %s remained after the reboot check\n' "$f" >&2
+                    status=1
+                fi
+            done
+            if [[ ${prefix}delegate-aside == /var/tmp/hetzner-workbox-test.delegate-aside ]]; then
+                rm -rf -- "${prefix}delegate-aside" || status=1
+            else
+                status=1
+            fi
+            exit "$status"
+        }
+        trap cleanup_reboot EXIT
         wait_manager
         [[ -s ${prefix}delegate-aside/boot-id ]] || fail "run --slices-reboot prepare before rebooting"
         if cmp -s /proc/sys/kernel/random/boot_id "${prefix}delegate-aside/boot-id"; then fail "the VM did not reboot"; fi
