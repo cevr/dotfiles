@@ -107,7 +107,8 @@ seeded("the shell launch contract permits only one bound spawn past permission, 
       launches: () => Effect.sync(() => [...launched]),
       held: () => Effect.sync(() => Object.values(state.leases).filter(({ state }) => state === "running" || state === "draining").map((row) => row.request.requestId)),
       input: (shell, value) => Effect.sync(() => {
-        if (bound.has(shell.id) && !ended.has(shell.id)) io.push(`${shell.id}:stdout:${value}`)
+        if (bound.has(shell.id) && !ended.has(shell.id) && known.get(shell.id) === intent(shell))
+          io.push(`${shell.id}:stdout:${value}`, `${shell.id}:stderr:${value}`)
       }),
       cancel,
       place: (shell, place) => {

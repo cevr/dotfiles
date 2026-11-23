@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { argv, env, stdin } from "bun"
-import { Cause, Config, Console, Effect, FileSystem, Option, Path, Predicate, Schema } from "effect"
+import { Config, Console, Effect, FileSystem, Option, Path, Predicate, Schema } from "effect"
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { AdmissionUnavailable } from "@dotfiles/opencode-guard/admission"
 import { Counter, OpaqueId, Purpose, Request } from "@dotfiles/opencode-guard/admission-wire"
@@ -188,22 +188,27 @@ const main = Effect.fn("HostAdmit.main")(function* (args: ReadonlyArray<string>,
 // Only the process entry sets an exit code; importing `command` starts no IO.
 if (import.meta.main) {
   let foreground = false
+  let interrupted = 1
   const task = Effect.runFork(main(argv.slice(2), (owned) => { foreground = owned }).pipe(
     Effect.catchTag("AdmissionUnavailable", ({ reason }) => print({ version: 1, state: "refused", reason }).pipe(Effect.as(2))),
     Effect.provide(BunServices.layer),
   ))
-  const end = () => { task.interruptUnsafe(task.id) }
+  const end = (status: number) => {
+    if (interrupted === 1) interrupted = status
+    task.interruptUnsafe(task.id)
+  }
+  const terminate = () => end(143)
   const interrupt = () => {
     // The terminal already sent SIGINT to every member of the owned group.
     // Reap the payload's real exit before closing the inherited descriptor.
-    if (!foreground) end()
+    if (!foreground) end(130)
   }
   process.on("SIGINT", interrupt)
-  process.on("SIGTERM", end)
+  process.on("SIGTERM", terminate)
   task.addObserver((result) => {
     process.off("SIGINT", interrupt)
-    process.off("SIGTERM", end)
+    process.off("SIGTERM", terminate)
     if (result._tag === "Success") process.exitCode = result.value
-    else process.exitCode = Option.getOrElse(Option.filter(Cause.findErrorOption(result.cause), Predicate.isNumber), () => 1)
+    else process.exitCode = interrupted
   })
 }

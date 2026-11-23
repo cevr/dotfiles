@@ -101,7 +101,7 @@ export const shellLaunchLaws = (driver: ShellLaunchDriver, equal: (actual: Reado
     yield* driver.complete(second, { signal: "SIGINT" })
     equal(yield* driver.payloads(), [
       `shell-a:${encodeProgram(shellProgram)}`, `shell-b:${encodeProgram(shellProgram)}`,
-      "shell-b:stdout:literal input: two words", "shell-b:exit:SIGINT",
+      "shell-b:stdout:literal input: two words", "shell-b:stderr:literal input: two words", "shell-b:exit:SIGINT",
     ])
     yield* driver.finish(second, "scope-b", "gone")
     const cancelled = { id: "shell-c", owner: "session-c", ownerEpoch: 4, attempt: 1 }
