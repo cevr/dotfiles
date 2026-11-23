@@ -1,5 +1,6 @@
+// @reads all
+// @reads-reason subprocess reads at scripts/guarded-workbox-docs.test.ts: const child = yield* spawner.spawn(ChildProcess.make("python3", ["../linux/hetzner-workbox/test
 // Markup docs, provisioning text docs, and shell entry points the fixture inspects.
-// @reads ../README.md ../**/*.{md,mdx,rst,org,adoc,markdown} **/*.{md,mdx,rst,org,adoc,markdown} ../**/*.sh **/*.sh ../workbox/bin/** ../workbox/**/*.txt ../linux/hetzner-workbox/**
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Effect, Stream } from "effect"
 import { expect, it } from "effect-bun-test"
