@@ -116,7 +116,15 @@ const report = Effect.gen(function* () {
   const outcome = yield* once
   const ms = Math.round(performance.now() - began)
   const running = yield* Effect.forEach(readers, (child) => child.isRunning)
-  const after = descriptors()
+  // The host emits process exit before the next turn closes its pipe fd. Measure that it closes,
+  // before starting recovery; a persistent descriptor still fails the exact-count assertion.
+  const firstAfter = descriptors()
+  let after = firstAfter
+  const closeBy = performance.now() + 200
+  while (after !== before && performance.now() < closeBy) {
+    yield* Effect.sleep("5 millis")
+    after = descriptors()
+  }
   // A new read in this SAME source must work, even after a hung open was terminated.
   if (mode === "parent-link") {
     yield* fs.rename(receipts, staged)
@@ -128,7 +136,7 @@ const report = Effect.gen(function* () {
   const recovered = yield* once
   const words = outcome._tag === "Failure" ? "failed " + outcome.failure._tag : outcome.success.refused.map((each) => "refused " + each.reason).join(",") || "frozen"
   const marker = mode !== "unlinked" && mode !== "slow" && mode !== "overflow" || (yield* fs.exists(staged + ".opened"));
-  return [words, ms, before, after, !armed.first && warm._tag === "Success", running.some(Boolean), recovered._tag === "Success" && recovered.success.receipts.length === 1, marker]
+  return [words, ms, before, after, !armed.first && warm._tag === "Success", running.some(Boolean), recovered._tag === "Success" && recovered.success.receipts.length === 1, marker, firstAfter]
 })
 const stats = await Effect.runPromise(report.pipe(Effect.provide(layer(places)), Effect.provide(gated), Effect.provide(BunServices.layer)))
 console.log(stats.join("\\t"))
@@ -424,12 +432,12 @@ describe("the receipt source under a real swap race", () => {
               })),
             )
             const ran = spawnSync(["bun", child, receipts, checkout, leaf, staged, `${WITHIN_MS}`, head, mode, good], { timeout: CHILD_MS, stdin: "ignore" })
-            const [words, ms, before, after, gated, running, recovered, started] = new TextDecoder().decode(ran.stdout).trim().split("\t")
+            const [words, ms, before, after, gated, running, recovered, started, firstAfter] = new TextDecoder().decode(ran.stdout).trim().split("\t")
             const stderr = new TextDecoder().decode(ran.stderr).slice(-500)
             expect({ mode, exit: ran.exitCode, gated, words, running, recovered, started, inBound: Number(ms) < 3 * WITHIN_MS, descriptorsLeft: Number(after) - Number(before), stderr }).toEqual({
               mode, exit: 0, gated: "true", words: expected, running: "false", recovered: "true", started: "true", inBound: true, descriptorsLeft: 0, stderr: "",
             })
-            yield* Effect.logInfo("receipt-source gated case", { mode, ms, before, after })
+            yield* Effect.logInfo("receipt-source gated case", { mode, ms, before, firstAfter, after })
           }), { discard: true },
         )
       }).pipe(Effect.scoped),
