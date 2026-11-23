@@ -180,6 +180,19 @@ describe("the plain-Bun commands a tree runs (mods/update/trees.ts COMMANDS)", (
     expect(COMMANDS.filter(({ probes }) => probes.length === 0)).toEqual([])
   })
 
+  test("the tree's plain-Bun seeds are exactly the probed commands: no seed without a probe, no probe without a seed", () => {
+    // Each Bun seed resolved to its files (a glob there would hide an unprobed entry), compared as sets both ways.
+    const seeded = new Set(SEEDS.filter(({ host }) => host === "bun").flatMap(({ glob }) => sources(glob)))
+    const probed = new Set(COMMANDS.filter(({ probes }) => probes.length > 0).map(({ path: file }) => file))
+    expect({ seedWithoutProbe: [...seeded.difference(probed)].sort(), probeWithoutSeed: [...probed.difference(seeded)].sort() }).toEqual({
+      seedWithoutProbe: [],
+      probeWithoutSeed: [],
+    })
+    // And no other host's seed reaches a command's file as its own entry: a command is a bun process, nothing else.
+    const elsewhere = SEEDS.filter(({ host }) => host !== "bun").flatMap(({ glob }) => sources(glob)).filter((file) => probed.has(file))
+    expect(elsewhere).toEqual([])
+  })
+
   test("each command's graph imports only the packages it declares, each one the root install holds, and never a module only a loader serves", () => {
     const outside = COMMANDS.flatMap(({ path: seed, packages }) =>
       bareOf(seed)
