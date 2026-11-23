@@ -11,57 +11,22 @@
  */
 import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
-import { isBuiltin } from "node:module"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { env } from "bun"
-import { Array as Arr, Match, Option, Order, Schema } from "effect"
+import { Option } from "effect"
 import { unresolvedImports } from "../mods/update/filestore/trees.ts"
 import { COMMANDS, type Host, hostProvided, SEEDS } from "../mods/update/trees.ts"
+import * as Graph from "../tests/cli-tree/graph.ts"
 
-const ROOT = process.cwd()
-const typescript = new Bun.Transpiler({ loader: "ts" })
-const tsx = new Bun.Transpiler({ loader: "tsx" })
-/** The transpiler of a source: TSX for `.tsx`, TypeScript for the rest. */
-const transpilerOf = (file: string) =>
-  Match.value(path.extname(file)).pipe(
-    Match.when(".tsx", () => tsx),
-    Match.orElse(() => typescript),
-  )
-
-/** A workspace import: a relative path, or a workspace package by its `@dotfiles/` name. */
-const workspaceImport = (specifier: string) => specifier.startsWith(".") || specifier.startsWith("@dotfiles/")
-
-/**
- * One file's runtime imports: a workspace one as the real path it resolves to, any other as its
- * package specifier (a dependency, or the JSX runtime the TSX transform adds).
- */
-const importsOf = (file: string) => {
-  const source = readFileSync(file, "utf8").replace(/^#!.*\n/, "\n")
-  const transpiler = transpilerOf(file)
-  return transpiler.scanImports(source).map((each) => {
-    if (!workspaceImport(each.path)) return each.path
-    return realpathSync(Bun.resolveSync(each.path, path.dirname(file)))
-  })
-}
-
-/** A workspace source the walk descends into: ours, not a dependency's, and code. */
-const ours = (file: string) => path.isAbsolute(file) && !file.includes("/node_modules/") && /\.(ts|tsx|js|mjs)$/.test(file)
-
-/** Every module `seed` (a path from `root`) reaches at runtime, each with the file that first imports it. */
-const reachOf = (seed: string, root = ROOT) => {
-  const reached = new Map<string, string>()
-  const pending = [path.join(root, seed)]
-  for (const file of pending) {
-    for (const target of importsOf(file)) {
-      if (reached.has(target)) continue
-      reached.set(target, path.relative(root, file))
-      if (ours(target)) pending.push(target)
-    }
-  }
-  return reached
-}
-
+const ROOT = realpathSync(process.cwd())
+/** The import graph helpers on this checkout (`tests/cli-tree/graph.ts`, which the installed-tree check shares). */
+const graph = Graph.graphOf((file) => readFileSync(file, "utf8"))
+const breaches = (seed: string, forbidden: ReadonlyArray<RegExp>, root = ROOT) => graph.breaches(seed, forbidden, root)
+const bareOf = (seed: string) => graph.bareOf(seed, ROOT)
+const { effectsOf, manifestAt, packageDirFrom, pinsAt } = graph
+const { expectedPins, forbiddenAt, packageOf, pinIn, PLATFORM_IMPL, within } = Graph
+/** The root `package.json`'s exact version of `name`. */
+const rootPin = (name: string) => pinIn(manifestAt(ROOT), name)
 /**
  * The patterns match a target as the repo names it: a workspace file by its path from the root, a
  * package by its specifier. The checkout's own directory (a Rift named `oxlint-x`) never counts.
@@ -75,31 +40,6 @@ const NATIVE_PARSER = [/^(@[^/]+\/)?oxc-parser([@/]|$)/]
  * plugin from loading ("Cannot find package '@opencode/schema'"). Import those for types only.
  */
 const FORK_ONLY = [/^@opencode\/(?!plugin(\/|$))/]
-
-/** Whether `target`, reached from the checkout at `root`, is one of `forbidden`. */
-const forbiddenAt = (root: string, target: string, forbidden: ReadonlyArray<RegExp>) => forbidden.some((pattern) => pattern.test(nameAt(root, target)))
-
-/** A target as the repo names it: a workspace file by its path from `root`, a package by its specifier. */
-const nameAt = (root: string, target: string) =>
-  Match.value(path.isAbsolute(target)).pipe(
-    Match.when(true, () => path.relative(root, target)),
-    Match.orElse(() => target),
-  )
-
-/**
- * A platform implementation: a server plugin takes `FileSystem`, `Path` and `ChildProcessSpawner` from its
- * host (since the fork's platform floor, mods/update/process/pin.ts `PLATFORM_FLOOR`) and imports only their
- * tags from `effect`, never an implementation, even one plain Bun could resolve from the tree's install.
- */
-const PLATFORM_IMPL = [/^@effect\/platform-(node|bun)(\/|$)/]
-
-/** Each module of `forbidden` that `seed` reaches from `root`, named with its importer. */
-const breaches = (seed: string, forbidden: ReadonlyArray<RegExp>, root = ROOT) =>
-  reachOf(seed, root)
-    .entries()
-    .filter(([target]) => forbiddenAt(root, target, forbidden))
-    .map(([target, importer]) => `${seed} reaches ${nameAt(root, target)} through ${importer}`)
-    .toArray()
 
 const sources = (pattern: string) => [...new Bun.Glob(pattern).scanSync({ cwd: ROOT })].filter((file) => !file.includes("node_modules/") && !/\.(test|bench)\.tsx?$/.test(file)).sort()
 
@@ -163,13 +103,6 @@ describe("runtime imports", () => {
 /** A plain-Bun entry by its own mark: a source of `cmd/` that runs as a script (`import.meta.main`, or a `#!` line). */
 const ENTRIES = sources("cmd/**/*.{ts,tsx}").filter((file) => !/\.sim\.tsx?$/.test(file) && /^#!|import\.meta\.main/m.test(readFileSync(file, "utf8")))
 
-/** Each bare import `seed`'s graph reaches from `root` that is no built-in, with its importer. */
-const bareOf = (seed: string, root = ROOT) =>
-  reachOf(seed, root)
-    .entries()
-    .filter(([target]) => !path.isAbsolute(target) && !builtinModule(target))
-    .toArray()
-
 describe("the plain-Bun commands a tree runs (mods/update/trees.ts COMMANDS)", () => {
   test("every production entry of cmd/ is a declared command, and every declared command is there, with a probe", () => {
     expect(ENTRIES).toContain("cmd/digest/devices.ts")
@@ -225,105 +158,6 @@ describe("the plain-Bun commands a tree runs (mods/update/trees.ts COMMANDS)", (
     expect([...effectsOf("scripts/daily.ts", ROOT).keys()].some((each) => each.startsWith("@effect/platform-bun"))).toBe(true)
   })
 })
-
-/** The root `package.json`'s exact version of `name`. */
-const rootPin = (name: string) => pinIn(manifestAt(ROOT), name)
-
-/** A manifest's runtime pin of `name`, or "(unpinned)". */
-const pinIn = (manifest: { readonly dependencies?: Readonly<Record<string, string>> }, name: string) =>
-  Option.getOrElse(Option.fromNullishOr(manifest.dependencies?.[name]), () => "(unpinned)")
-
-/**
- * The install's Effect at `root`: the runtime pins of `effect` and `@effect/platform-bun` in its `package.json`,
- * and every copy of `effect` and of an `@effect/platform-*` package its `bun.lock` (parsed) resolves. An install that
- * nests a second copy anywhere (a key `<dependent>/effect`) or moves one off the pin differs (package.json `overrides`).
- */
-const pinsAt = (root: string) => {
-  const lock = decodeLock(Bun.JSONC.parse(readFileSync(path.join(root, "bun.lock"), "utf8")))
-  const copies = Arr.sort(
-    Object.entries(lock.packages)
-      .filter(([key]) => /(^|\/)(effect|@effect\/platform-[a-z-]+)$/.test(key))
-      .map(([key, entry]) => [key, String(entry[0])] as const),
-    Order.mapInput(Order.String, ([key]: readonly [string, string]) => key),
-  )
-  const manifest = manifestAt(root)
-  return { effect: pinIn(manifest, "effect"), platform: pinIn(manifest, "@effect/platform-bun"), copies }
-}
-
-/** `pinsAt` of an install on one Effect release, `pinned`: one copy of each, all at it. */
-const expectedPins = (pinned: string) => ({
-  effect: pinned,
-  platform: pinned,
-  copies: [
-    ["@effect/platform-bun", `@effect/platform-bun@${pinned}`] as const,
-    ["@effect/platform-node", `@effect/platform-node@${pinned}`] as const,
-    ["@effect/platform-node-shared", `@effect/platform-node-shared@${pinned}`] as const,
-    ["effect", `effect@${pinned}`] as const,
-  ],
-})
-
-/** What these checks read of a package's `package.json`. */
-const Manifest = Schema.Struct({
-  name: Schema.optionalKey(Schema.String),
-  version: Schema.optionalKey(Schema.String),
-  dependencies: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
-  peerDependencies: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
-})
-const decodeManifest = Schema.decodeUnknownSync(Schema.fromJsonString(Manifest))
-/** The `package.json` in `dir`. */
-const manifestAt = (dir: string) => decodeManifest(readFileSync(path.join(dir, "package.json"), "utf8"))
-
-/** What these checks read of `bun.lock`: its packages table, each entry's first element the resolution `<name>@<version>`. */
-const decodeLock = Schema.decodeUnknownSync(Schema.Struct({ packages: Schema.Record(Schema.String, Schema.Array(Schema.Unknown)) }))
-
-/** The package a bare import names: its first part, or its first two for a scoped package. */
-const packageOf = (specifier: string) =>
-  specifier
-    .split("/")
-    .slice(0, 1 + Number(specifier.startsWith("@")))
-    .join("/")
-
-/** Whether `file` is `root` or under it. */
-const within = (root: string, file: string) => file === root || file.startsWith(`${root}${path.sep}`)
-
-/** The real directory of the package `name` as Bun resolves it from `dir`: the nearest `package.json` named `name` above what it resolves to. */
-const packageDirFrom = (name: string, dir: string): Option.Option<string> =>
-  Option.liftThrowable(() => realpathSync(Bun.resolveSync(name, dir)))().pipe(
-    Option.flatMap((file) => {
-      for (let at = path.dirname(file); at !== path.dirname(at); at = path.dirname(at)) {
-        const manifest = Option.liftThrowable(() => manifestAt(at))()
-        if (Option.exists(manifest, (each) => each.name === name)) return Option.some(at)
-      }
-      return Option.none()
-    }),
-  )
-
-/**
- * Every copy of `effect` `seed`'s graph loads from `root`: each one its graph imports, and each one a package
- * it imports reaches through its own dependencies and peers (a platform layer and its shared node half),
- * keyed by who reaches it and valued by its version. On a tree with no links each key's real directory is one.
- */
-const effectsOf = (seed: string, root: string) => {
-  const found = new Map<string, string>()
-  const visited = new Set<string>()
-  const versionAt = (dir: string) => manifestAt(dir).version ?? "(none)"
-  const descend = (dir: string, via: string) => {
-    if (visited.has(dir)) return
-    visited.add(dir)
-    const manifest = manifestAt(dir)
-    for (const name of Object.keys({ ...manifest.dependencies, ...manifest.peerDependencies }))
-      for (const at of Option.toArray(packageDirFrom(name, dir))) {
-        if (name === "effect") found.set(`${via} -> ${at}`, versionAt(at))
-        else descend(at, `${via}/${name}`)
-      }
-  }
-  for (const [target, importer] of bareOf(seed, root))
-    for (const at of Option.toArray(packageDirFrom(packageOf(target), path.dirname(path.join(root, importer))))) {
-      if (packageOf(target) === "effect") found.set(`${importer} -> ${at}`, versionAt(at))
-      else descend(at, packageOf(target))
-    }
-  return found
-}
 
 /**
  * What each host serves, restated here as the oracle the generated cases compare `hostProvided` to: the
@@ -390,7 +224,7 @@ describe("what each host serves, generated over host × package × subpath", () 
     )
     // The tree's check counts any subpath of an installed package as loading (`installedUp`, a dev approximation
     // for the fork's links that shadow an install): `@effect/platform-node/FileSystem` passes it though no such
-    // export resolves. Exact resolution is the real no-links tree's test below (TREE_OPENCODE).
+    // export resolves. Exact resolution is the real no-links tree's, in tests/cli-tree-installed.test.ts (TREE_OPENCODE).
     const loads = (host: Host, specifier: string) => specifier === "node:fs" || specifier === "bun" || specifier === "@effect/platform-node" || specifier.startsWith("@effect/platform-node/") || servedBy(host, specifier)
     const expected = seeds.flatMap(([host, seed]) =>
       specifiers.flatMap((specifier) => [`${seed} (${host}): ${seed} imports ${specifier}, which the ${host} host does not serve and no install of the tree holds`].filter(() => !loads(host, specifier))),
@@ -404,51 +238,7 @@ describe("what each host serves, generated over host × package × subpath", () 
     rmSync(root, { recursive: true, force: true })
   })
 
-  // The tree a build actually loads: `TREE_OPENCODE=<share>/opencode-<version>.plugins/opencode` (a copy, never the live share dir's own files written).
-  const tree = Option.fromNullishOr(env.TREE_OPENCODE)
-  test.skipIf(Option.isNone(tree))("the real no-links tree named by TREE_OPENCODE resolves every process's imports exactly, and its servers reach no platform implementation", () => {
-    const at = realpathSync(Option.getOrElse(tree, () => "/nonexistent/loop-probe-x"))
-    expect(unresolvedImports(at)).toEqual([])
-    // Exactly: every bare import a process reaches, that its host does not serve, resolves from its importer in this tree, subpath and all
-    // (React's JSX runtime is this walk's TSX transform's, not the TUI's: its Solid transform imports OpenTUI's, which it serves).
-    const unresolved = SEEDS.flatMap(({ glob, host }) =>
-      [...new Bun.Glob(glob).scanSync({ cwd: at })]
-        .filter((seed) => !/\.(test|bench)\.tsx?$/.test(seed))
-        .flatMap((seed) =>
-          reachOf(seed, at)
-            .entries()
-            .filter(([target]) => !path.isAbsolute(target) && !builtinModule(target) && !hostProvided(host, target) && !/^react(\/|$)/.test(target))
-            .filter(([target, importer]) => !resolvesFrom(target, path.join(at, importer)))
-            .map(([target, importer]) => `${seed} (${host}): ${importer} imports ${target}, which does not resolve in the tree`)
-            .toArray(),
-        ),
-    )
-    expect(unresolved).toEqual([])
-    const servers = [...new Bun.Glob("cmd/*/server.ts").scanSync({ cwd: at })].sort()
-    expect(servers).toContain("cmd/orchestrate/server.ts")
-    expect(servers.flatMap((seed) => breaches(seed, PLATFORM_IMPL, at))).toEqual([])
-    // The tree installs the checkout's Effect: the same pins, one copy of each.
-    expect(pinsAt(at)).toEqual(expectedPins(rootPin("effect")))
-    // Each plain-Bun command loads from the tree alone, and one copy of effect, its platform layer's included.
-    const leaving = COMMANDS.flatMap(({ path: seed }) =>
-      bareOf(seed, at)
-        .filter(([target, importer]) => !Option.exists(packageDirFrom(packageOf(target), path.dirname(path.join(at, importer))), (dir) => within(at, dir)))
-        .map(([target, importer]) => `${seed}: ${importer} imports ${target} from outside the tree`),
-    )
-    expect(leaving).toEqual([])
-    const copies = COMMANDS.flatMap(({ path: seed }) => {
-      const dirs = [...new Set([...effectsOf(seed, at).keys()].map((key) => key.split(" -> ")[1]))]
-      return [`${seed}: ${dirs.join(", ")}`].filter(() => dirs.length !== 1)
-    })
-    expect(copies).toEqual([])
-  })
 })
-
-/** Whether Bun or Node serves `specifier` itself. */
-const builtinModule = (specifier: string) => specifier === "bun" || specifier.startsWith("bun:") || specifier.startsWith("node:") || isBuiltin(specifier)
-
-/** Whether `specifier` resolves, exactly, from the file `importer`. */
-const resolvesFrom = (specifier: string, importer: string) => Option.isSome(Option.liftThrowable(() => Bun.resolveSync(specifier, path.dirname(importer)))())
 
 /** Writes each `[path, text]` under `root`, its directories made. */
 const writeTree = (root: string, entries: ReadonlyArray<readonly [string, string]>) => {

@@ -290,7 +290,9 @@ only the resident location's copy acts, so a host runs one updater.
   `effect` release, and the tree's Bun seeds exactly the probed commands);
   `tests/cli-tree.test.ts` runs each probe on the checkout, and
   `tests/cli-tree-installed.test.ts` on the made tree
-  `TREE_OPENCODE=<tree>/opencode` names, which it requires (unset, it fails
+  `TREE_OPENCODE=<tree>/opencode` names (its probes, its import graph exactly
+  resolved, its servers' platform imports and its Effect pins), which it
+  requires (unset, it fails
   `no installed tree given`; the acceptance runner owes it `off until
   enabled`, by name, in a run that has no tree).
 - **The TUI's plugins.** A tree's `config/cli.json` lists every plugin
