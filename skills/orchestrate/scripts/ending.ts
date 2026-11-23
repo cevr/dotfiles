@@ -19,7 +19,7 @@
 //           history (ATTEMPT_NOTE) and any other obstacle that holds (OTHER_OBSTACLES_NOTE) are separate
 //           instructions, never competing rows, and `handBackFrom` derives from a prompt's words the hand-back due;
 //   F2  outcome(role, stop, states) the multiset of the REQUIRED items' states (an optional probe's state never
-//                                   changes it) gives the verdict, by a stated precedence, and the files; the stop
+//                                   changes it, save a refused one: a refusal stops the step whatever the item) gives the verdict, by a stated precedence, and the files; the stop
 //                                   event gives the evidence they hold.
 // An input no step can produce is rejected as ill-formed, never answered.
 // agents.ts renders a role's two tables into its prompt between BEGIN and END, every role's into end-of-step.md.
@@ -178,10 +178,10 @@ export const PREDICATE: Predicates = {
   proven: [['assigned', true], ['attempt', ['fail']]],
   runnable: [['assigned', true], ['required', true], ['settled', false], ['refused', false], ['hostCannot', false], ['wait', false]],
   waits: [['assigned', true], ['required', true], ['refused', false], ['hostCannot', false], ['wait', true]],
-  refused: [['assigned', true], ['required', true], ['refused', true]],
+  refused: [['assigned', true], ['refused', true]],
   cannot: [['assigned', true], ['required', true], ['refused', false], ['hostCannot', true]],
   unclear: [['assigned', true], ['required', true], ['attempt', ['unclear']], ['settled', true]],
-  unproven: [['assigned', true], ['required', false], ['attempt', ['never', 'started', 'unclear']]],
+  unproven: [['assigned', true], ['required', false], ['refused', false], ['attempt', ['never', 'started', 'unclear']]],
   discovery: [['assigned', false]],
   unitFinding: [['assigned', false], ['provenance', 'unit']],
   baseFinding: [['assigned', false], ['provenance', 'base']],
@@ -377,8 +377,14 @@ export interface Decision {
   readonly when: When;
 }
 const FINDINGS: ReadonlyArray<Decision> = [{ id: 'discovery', state: 'discovery', when: ['notAssigned'] }];
+/**
+ * The obstacle rows. A refusal is authority, whatever the item: the Refusals paragraph stops the step on it and has
+ * its form reported, so its row needs no `required` and an optional probe that was refused is `refused`, never a
+ * quiet `unproven`. A missing tool or a wait on an optional probe does not stop the step: the probe stays
+ * `unproven`, and OTHER_OBSTACLES_NOTE has the hand-back name what held it.
+ */
 const OBSTACLES = (required: ReadonlyArray<Atom>): ReadonlyArray<Decision> => [
-  { id: 'refused', state: 'refused', when: [...required, 'refused'] },
+  { id: 'refused', state: 'refused', when: ['refused'] },
   { id: 'cannot', state: 'cannot', when: [...required, 'hostCannot'] },
   { id: 'waits', state: 'waits', when: [...required, 'wait'] },
 ];
@@ -450,6 +456,7 @@ export const ORDER: Record<Role, ReadonlyArray<Pinned>> = {
     { pair: ['waits', 'retry'], winner: 'waits', why: "the wait's id must survive: the retry runs only once it closes" },
     { pair: ['unclear', 'retry'], winner: 'unclear', why: 'both hold only under an obstacle, which governs them both; between the two, the output that settles nothing survives as ran unclear' },
     { pair: ['proven', 'unproven'], winner: 'proven', why: 'the proof must survive: an optional probe that proves a Blocker or Major is filed as one' },
+    { pair: ['refused', 'unproven'], winner: 'refused', why: 'the refusal form must survive: a refusal stops the step whatever the item (the Refusals paragraph), so a refused optional probe is reported as refused, never left a quiet unproven' },
     { pair: ['done', 'unproven'], winner: 'done', why: 'an optional probe that passed leaves nothing to prove; its command and output survive as attempt evidence' },
   ],
 };
@@ -464,11 +471,15 @@ export const OBSTACLE_EVIDENCE: Record<ObstacleRow, string> = {
   waits: 'the id it waits on',
 };
 const listOf = (items: ReadonlyArray<string>) => (items.length <= 1 ? (items[0] ?? '') : `${items.slice(0, -1).join(', ')} or ${items.at(-1)}`);
-/** The second instruction beside the list: a second or third obstacle is named, never lost behind the label. */
-export const OTHER_OBSTACLES_NOTE = `If another of the rows ${listOf(OBSTACLE_ROWS.map((row) => STATE_NAME[row]))} is also true of the item, name it after the label's evidence, with its own evidence (${OBSTACLE_ROWS.map((row) => `${STATE_NAME[row]}: ${OBSTACLE_EVIDENCE[row]}`).join('; ')}), so lifting one obstacle does not leave the item stopped by another.`;
+/**
+ * The second instruction beside the list: every obstacle holding the item that its label does not give is named,
+ * required or optional, never lost behind the label (batch 23b); an unproven probe so says why it did not run, which
+ * the probe that would settle it needs.
+ */
+export const OTHER_OBSTACLES_NOTE = `Also name each obstacle of ${listOf(OBSTACLE_ROWS.map((row) => STATE_NAME[row]))} that holds the item, required or optional, and is not the one its label gives, after the label's evidence, with its own evidence (${OBSTACLE_ROWS.map((row) => `${STATE_NAME[row]}: ${OBSTACLE_EVIDENCE[row]}`).join('; ')}), so lifting one obstacle does not leave the item stopped by another and an unproven probe says what kept it from running.`;
 /** The obstacle rows the rendered instruction names, read back from its words. */
 export function parseOtherObstacles(text: string): ObstacleRow[] {
-  const found = /If another of the rows (.+?) is also true of the item, name it after the label's evidence/.exec(text);
+  const found = /Also name each obstacle of (.+?) that holds the item, required or optional, and is not the one its label gives, after the label's evidence/.exec(text);
   if (found === null) throw new Error("the other obstacles' instruction is missing");
   const byName = new Map(OBSTACLE_ROWS.map((row) => [STATE_NAME[row], row] as const));
   return (found[1] ?? '').split(/, | or /).map((name) => {
@@ -579,7 +590,7 @@ export function illFormed(role: Role, stop: Stop, states: ReadonlyArray<State>):
   const refused = states.filter((state) => state === 'refused').length;
   const refusal = stop === 'refusalForm' || stop === 'refusalNone';
   if (refusal && refused > 1) return 'a refusal stops the step at the one item it refused';
-  if (refusal && refused === 0 && !states.includes('unproven')) return 'a refusal stops the step at the one item it refused (a refused optional probe is unproven)';
+  if (refusal && refused === 0) return 'a refusal stops the step at the one item it refused (a refused optional probe is refused too)';
   if (!refusal && refused > 0) return 'a refusal stops the step at once, so a refused item means the step stopped on it';
   if (stop === 'idle' && states.includes('runnable')) return 'the step goes on while a runnable item is left';
   if (stop === 'limit' && !states.includes('runnable')) return 'with no runnable item left the step had already stopped, before the limit passed';
@@ -661,7 +672,7 @@ export function render(role: Role, rows: ReadonlyArray<Decision> = DECISIONS[rol
     "Each item takes one row of the first table, and that row alone gives its state and its label, whatever stopped the step; the last row takes every item no row above it took.",
     ATTEMPT_NOTE,
     OTHER_OBSTACLES_NOTE,
-    `The states present give your verdict and its files (second table${role === 'verifier' ? '; an optional probe is only ever done, proven or unproven, and unproven never changes it' : ''}), and why the step stopped gives the evidence they hold. Effort is no state and no label.`,
+    `The states present give your verdict and its files (second table${role === 'verifier' ? '; an optional probe is only ever done, proven, refused or unproven, and unproven never changes it' : ''}), and why the step stopped gives the evidence they hold. Effort is no state and no label.`,
     `Assigned work is ${ASSIGNMENT[role]}; whatever else you find is not assigned.`,
     REQUIRED[role],
   ].join(' ');
@@ -709,7 +720,7 @@ export const truths = (records: ReadonlyArray<Item>): Set<Atom> => new Set(ATOM_
 /**
  * The hand-back a prompt asks for an item with these atoms, derived from the prompt's own words: the first true row
  * of its list (state, label), the obstacle rows its second instruction names (the governing one's evidence, every
- * other that is true named), and its attempt instruction (what the last attempt printed, exactly when attempted).
+ * other that holds named, on an optional probe too), and its attempt instruction (what the last attempt printed, exactly when attempted).
  */
 export function handBackFrom(role: Role, text: string, atoms: ReadonlySet<Atom>): HandBack {
   const rows = readDecisions(role, text);
@@ -719,7 +730,10 @@ export function handBackFrom(role: Role, text: string, atoms: ReadonlySet<Atom>)
   if (first === undefined) throw new Error(`${role}: no row is true`);
   const obstacle = (state: State): ObstacleRow | undefined => named.find((row) => row === state);
   const governing = obstacle(first.state) ?? null;
-  const others = named.filter((row) => row !== governing && rows.some((one) => one.state === row && one !== first && isTrue(one)));
+  // An obstacle holds the item, required or optional, when its row's condition holds with the assignment's words set
+  // aside: the instruction names it whatever the item's assignment.
+  const holdsWhatever = (row: (typeof rows)[number]) => row.when === 'otherwise' || row.when.every((atom) => atom === 'required' || atom === 'optional' || atoms.has(atom));
+  const others = named.filter((row) => row !== governing && rows.some((one) => one.state === row && holdsWhatever(one)));
   return { state: first.state, label: first.label, evidence: governing, others, lastAttempt: atoms.has('attempted') };
 }
 
