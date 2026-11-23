@@ -107,3 +107,12 @@ test("an imported helper may hide a read even through a forwarding module", () =
   expect(scan(`// @reads-indirect scripts/**\n${source}`).classification).toBe("declared")
   expect(scan(`// @reads-indirect scripts/**\n${source}`).issues).toEqual([])
 })
+
+test("a known git executable and working directory do not bound computed argv", () => {
+  const source = `// @reads scripts/fixtures/**
+import { execFileSync } from "node:child_process"
+execFileSync("git", selectedArguments(), { cwd: "scripts/fixtures" })`
+  expect(check(source).indirect).toEqual([{ line: 3, reason: "nonliteral subprocess argv" }])
+  expect(check(source).classification).toBe("unknown")
+  expect(check(source).issues).toHaveLength(1)
+})

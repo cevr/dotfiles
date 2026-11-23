@@ -406,11 +406,15 @@ const processRead = (at: Node, called: string, args: ReadonlyArray<Node>, evalua
   if (EXEC_SHELL.has(called)) return record(at, opaque("shell reads"))
   if (ARGV_HELPER.has(called)) return record(at, opaque("subprocess helper reads"))
   if (BUN_SPAWN.has(called)) {
-    const argv = nodes(field(opts(args[0], "cmd") ?? args[0], "elements"))
+    const command = opts(args[0], "cmd") ?? args[0]
+    if (command?.type !== "ArrayExpression") return record(at, opaque("nonliteral subprocess argv"))
+    const argv = nodes(field(command, "elements"))
     return childReads(at, literal(argv[0]) ?? "", argv.slice(1), opts(args[1] ?? args[0], "cwd"), evaluate, record)
   }
-  if (CHILD_SPAWN.has(called))
+  if (CHILD_SPAWN.has(called)) {
+    if (args[1]?.type !== "ArrayExpression") return record(at, opaque("nonliteral subprocess argv"))
     return childReads(at, literal(args[0]) ?? "", nodes(field(args[1], "elements")), opts(args[2], "cwd"), evaluate, record)
+  }
 }
 
 const callRead = (at: Node, syntax: Syntax, evaluate: Evaluation, record: ReadSite) => {
