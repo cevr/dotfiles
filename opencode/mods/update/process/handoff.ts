@@ -1,6 +1,6 @@
 import { file, spawn } from "bun"
 import { Effect, Layer, Option, Result, Schema } from "effect"
-import { readText } from "../filestore/files.ts"
+import { readPublished } from "../filestore/files.ts"
 import { buildOf, parseRecord, promoted } from "../record.ts"
 import { Handoff, UpdateFailed } from "../service.ts"
 import { files, HANDOFF_SETTINGS, type Settings, SettingsJson } from "../settings.ts"
@@ -47,7 +47,7 @@ export const programOf = (recordText: Option.Option<string>, exists: (path: stri
 /** `programOf` over the files: the record as it reads now, and whether the tree's handoff is there. */
 const programNow = (settings: Settings) =>
   Effect.gen(function* () {
-    const text = yield* readText(settings.record)
+    const text = yield* readPublished("read the installed record", settings.record)
     const tree = Option.map(Option.flatMap(Option.flatMap(text, parseRecord), (record) => buildOf(promoted(record))), (build) => treeProgram(treeOf(build.command[0])).path)
     const there = yield* Effect.forEach(Option.toArray(tree), (path) => Effect.tryPromise(() => file(path).exists()).pipe(Effect.orElseSucceed(() => false)))
     return yield* Effect.fromResult(programOf(text, () => there.includes(true)))

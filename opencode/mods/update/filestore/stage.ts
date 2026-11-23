@@ -1,7 +1,8 @@
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 import { exclusivelySync, holding } from "@dotfiles/opencode-work/process/flock"
-import { Effect, Layer } from "effect"
+import { changeReviewInput, checkReviewInput, siblingReviewInputLock } from "@dotfiles/opencode-work/process/landing"
+import { Effect, Layer, Option } from "effect"
 import { buildName, stagingName } from "../builds.ts"
 import { parseRecord, type Record, recordText, stagedRecord } from "../record.ts"
 import { stageInTree, Tree, Trees, UpdateFailed } from "../service.ts"
@@ -91,18 +92,20 @@ export interface Stage {
  */
 export const stageBuild = (stage: Stage, flock?: (descriptor: number, operation: number) => number): string => {
   const binary = join(stage.share, buildName(stage.version))
+  const step = "stage the installed record"
+  Effect.runSync(checkReviewInput(step, stage.record))
   exclusivelySync(stage.lock, flock)(() => {
-    mkdirSync(stage.share, { recursive: true })
-    const copy = join(stage.share, stagingName(stage.version, stage.pid))
-    copyFileSync(stage.built, copy)
-    chmodSync(copy, 0o755)
-    renameSync(copy, binary)
-    // Staged, not installed: the handoff installs it as it restarts, and the health check proves it (mods/update).
-    mkdirSync(dirname(stage.record), { recursive: true })
-    const last = readFileSync(stage.record, { encoding: "utf8", flag: "a+" })
-    const record = stagedRecord(parseRecord(last), { version: stage.version, command: [binary], dotfiles: stage.dotfiles, fork: stage.fork }, readdirSync(stage.share))
-    writeFileSync(`${stage.record}.${stage.pid}`, recordText(record))
-    renameSync(`${stage.record}.${stage.pid}`, stage.record)
+    const record = Effect.runSync(changeReviewInput(step, stage.record, siblingReviewInputLock(stage.record), { preserve: { whenAbsent: 0o600, ceiling: 0o640 } }, (read) => {
+      const last = Option.flatMap(read(), parseRecord)
+      mkdirSync(stage.share, { recursive: true })
+      const copy = join(stage.share, stagingName(stage.version, stage.pid))
+      copyFileSync(stage.built, copy)
+      chmodSync(copy, 0o755)
+      renameSync(copy, binary)
+      // Staged, not installed: the handoff installs it on restart and proves it after the health check.
+      const answer = stagedRecord(last, { version: stage.version, command: [binary], dotfiles: stage.dotfiles, fork: stage.fork }, readdirSync(stage.share))
+      return { text: recordText(answer), answer }
+    }))
     writeLauncher(stage.launcher, stage.resident, record, stage.pid)
   })
   return binary
