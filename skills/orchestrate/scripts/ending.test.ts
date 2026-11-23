@@ -185,7 +185,8 @@ describe('(i) both functions are total', () => {
       ['worker', 'limit', ['runnable'], 'a worker has no limit stop'],
       ['planner', 'idle', ['unclear'], 'a planner has no unclear state'],
       ['verifier', 'idle', ['discovery'], 'a verifier has no discovery state'],
-      ['implementor', 'refusalNone', ['runnable'], 'a refusal stops the step at the one item it refused (a refused optional probe is unproven)'],
+      ['implementor', 'refusalNone', ['runnable'], 'a refusal stops the step at the one item it refused (a refused optional probe is refused too)'],
+      ['verifier', 'refusalNone', ['done', 'unproven'], 'a refusal stops the step at the one item it refused (a refused optional probe is refused too)'],
       ['implementor', 'refusalForm', ['refused', 'refused'], 'a refusal stops the step at the one item it refused'],
       ['implementor', 'idle', ['refused'], 'a refusal stops the step at once, so a refused item means the step stopped on it'],
       ['verifier', 'idle', ['runnable', 'done'], 'the step goes on while a runnable item is left'],
@@ -606,10 +607,13 @@ describe("(vi) histories: each item's events reach one record, in one state, wit
       expect(classify('verifier', 'idle', states)).toMatchObject({ outcome: { verdict: 'accepted' } });
     }
   });
-  test("an optional probe refused: the probe is unproven and the verdict is the required checks'", () => {
-    const probe = stateOf('verifier', work({ required: false, attempt: 'started', refused: true }));
-    expect(probe).toBe('unproven');
-    expect(classify('verifier', 'refusalNone', ['done', probe])).toMatchObject({ outcome: { verdict: 'accepted' } });
+  test('an optional probe refused: a refusal is authority whatever the item, so the probe is refused and the step stops `stuck` on it (the Refusals paragraph)', () => {
+    for (const probe of [work({ required: false, attempt: 'started', refused: true }), work({ required: false, attempt: 'unclear', refused: true, hostCannot: true, wait: true })]) {
+      const state = stateOf('verifier', probe);
+      expect(state).toBe('refused');
+      expect(label('verifier', state, probe.attempt)).toContain('refused: <what>');
+      expect(classify('verifier', 'refusalNone', ['done', state])).toMatchObject({ outcome: { verdict: 'stuck' } });
+    }
   });
 });
 
@@ -784,6 +788,18 @@ describe('(vii) the list each prompt carries: read back by the grammar, the firs
       expect(verdictFaults(prompt)).toEqual([]);
       expect(historyFaults(prompt)).toEqual([]);
     });
+  test('optional probes: every subset of obstacles is reachable, and a history covers each, its hand-back naming every obstacle that holds it', () => {
+    const subsets = new Set([...reachable('verifier').values()].filter(({ item: one }) => one.assigned && !one.required && obstructed(one)).map(({ item: one }) => OBSTACLE_FACTS.filter((fact) => one[fact]).join('+')));
+    expect([...subsets].sort()).toEqual(['hostCannot', 'hostCannot+wait', 'refused', 'refused+hostCannot', 'refused+hostCannot+wait', 'refused+wait', 'wait'].sort());
+    const covered = new Set(LIST_HISTORIES.filter((one) => one.role === 'verifier' && one.items.every((it) => it.assigned && !it.required) && one.items.some(obstructed)).map((one) => OBSTACLE_FACTS.filter((fact) => one.items.some((it) => it[fact])).join('+')));
+    expect([...covered].sort()).toEqual([...subsets].sort());
+    const named = { refused: 'refused', hostCannot: 'cannot', wait: 'waits' } as const;
+    for (const one of LIST_HISTORIES.filter((h) => h.items.every((it) => it.assigned && !it.required) && h.items.some(obstructed))) {
+      const held = OBSTACLE_FACTS.filter((fact) => one.items.some((it) => it[fact])).map((fact) => named[fact]);
+      expect([one.name, [one.handBack.evidence, ...one.handBack.others].filter((row) => row !== null).sort()]).toEqual([one.name, [...held].sort()]);
+      expect([one.name, one.state]).toEqual([one.name, held.includes('refused') ? 'refused' : 'unproven']);
+    }
+  });
   test('at least 20 histories with two or three facts at once, and every history answered by every prompt of its role', () => {
     const multi = LIST_HISTORIES.filter((one) => one.name.startsWith('M') && (one.items.length > 1 || one.items.some((item) => OBSTACLE_FACTS.filter((fact) => item[fact]).length > 1 || (obstructed(item) && item.attempt !== 'never'))));
     expect(multi.length).toBeGreaterThanOrEqual(20);
@@ -878,6 +894,13 @@ describe('(vii) a rendering or hand-back fault is red', () => {
     expect(historyFaults(verifier, [h])).toEqual([]);
     expect(historyFaults(verifier, [{ ...h, handBack: 'discard the command and the last printed output' }])).not.toEqual([]);
     expect(historyFaults(verifier, [{ ...h, handBack: { ...h.handBack, lastAttempt: false } }])).not.toEqual([]);
+  });
+  test("dropping an optional probe's obstacle evidence is rejected on every optional history held by an obstacle", () => {
+    const verifier = all.find((one) => one.role === 'verifier' && one.format === 'claude');
+    if (verifier === undefined) throw new Error('no verifier prompt');
+    const optional = LIST_HISTORIES.filter((one) => one.items.every((it) => it.assigned && !it.required) && one.handBack.others.length > 0);
+    expect(optional.length).toBeGreaterThanOrEqual(8);
+    for (const one of optional) expect([one.name, historyFaults(verifier, [{ ...one, handBack: { ...one.handBack, others: [] } }])[0]?.includes('hand-back others: due')]).toEqual([one.name, true]);
   });
   test('a derivation that forgets the other obstacles or the passing attempt is red against the histories', () => {
     const forgetful = (prompt: Prompt) => ({ ...prompt, text: prompt.text.replace(OTHER_OBSTACLES_NOTE, OTHER_OBSTACLES_NOTE.replace('refused, cannot run or waiting', 'refused')) });
