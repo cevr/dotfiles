@@ -21,6 +21,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { Array as Arr, Data, Option } from "effect"
+import { immutable } from "../mods/orchestrate/immutable.ts"
 
 /** What this script uses from the orchestrate skill's scripts/agents.ts. */
 interface Source {
@@ -51,7 +52,7 @@ const WRITTEN = "Written by dotfiles opencode/scripts/agents.ts from the orchest
  * has `ask_user_async` denied after these rules, and with `subagents: "owner"`
  * it asks the owner as before.
  */
-export const PERMISSIONS = [
+export const PERMISSIONS = immutable([
   { action: "*", resource: "*", effect: "deny" },
   { action: "shell", resource: "*", effect: "allow" },
   { action: "read", resource: "*", effect: "allow" },
@@ -67,7 +68,7 @@ export const PERMISSIONS = [
   { action: "ask_user_async", resource: "*", effect: "allow" },
   { action: "ask_orchestrator", resource: "*", effect: "allow" },
   { action: "answer_subagent", resource: "*", effect: "allow" },
-] as const
+] as const)
 
 export interface Built {
   readonly path: string

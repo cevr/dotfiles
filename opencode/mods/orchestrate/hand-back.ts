@@ -9,9 +9,10 @@
 // fence keeps out of reach; ending.test.ts pins them equal). The round-policy compiler lifts this file as is.
 import { Option, Predicate, Result, Schema, SchemaIssue } from "effect"
 import type { StandardSchemaV1 } from "effect/StandardSchema"
+import { immutable } from "./immutable.ts"
 
 /** Every state an item can take in an end-of-step list. */
-export const HAND_BACK_STATES = [
+export const HAND_BACK_STATES = immutable([
   "done",
   "proven",
   "runnable",
@@ -23,21 +24,21 @@ export const HAND_BACK_STATES = [
   "discovery",
   "unitFinding",
   "baseFinding",
-] as const
+] as const)
 /** The obstacle rows a hand-back gives the evidence of, or names after the label. */
-export const HAND_BACK_OBSTACLES = ["refused", "cannot", "waits"] as const
+export const HAND_BACK_OBSTACLES = immutable(["refused", "cannot", "waits"] as const)
 
-export const ObstacleRow = Schema.Literals(HAND_BACK_OBSTACLES)
+export const ObstacleRow = immutable(Schema.Literals(HAND_BACK_OBSTACLES))
 const Others = Schema.UniqueArray(ObstacleRow)
 
 /** A hand-back, exactly: every member required, each of its exact type. */
-export const HandBack = Schema.Struct({
+export const HandBack = immutable(Schema.Struct({
   state: Schema.Literals(HAND_BACK_STATES),
-  label: Schema.NonEmptyString,
+  label: Schema.NonEmptyString.annotate({}),
   evidence: Schema.NullOr(ObstacleRow),
   others: Others,
-  lastAttempt: Schema.Boolean,
-})
+  lastAttempt: Schema.Boolean.annotate({}),
+}))
 export type HandBack = typeof HandBack.Type
 
 const decode = Schema.decodeUnknownResult(HandBack, { onExcessProperty: "error", errors: "all" })
