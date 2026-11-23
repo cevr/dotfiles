@@ -348,7 +348,7 @@ export interface Observed {
  * A worker's follow-up as the record's `add`: one unowned `follow-up` commitment, its source the session and the call's
  * idempotency key (its `key`, else the call's id), so a retry with the same key files nothing again.
  */
-export const followUpCommandOf = (input: FollowUpInput, sessionID: string, callID: string, reason: Observed): Command =>
+export const followUpCommandOf = (input: FollowUpInput, sessionID: string, callID: string, reason: Observed) =>
   Command.cases.add.make({
     run: input.run ?? DEFAULT_RUN,
     sourceKind: "follow-up",
@@ -783,9 +783,13 @@ export const followUpOf = (input: FollowUpInput, actor: Actor, callID: string, n
     const record = yield* CommitmentRecord
     if (Predicate.isNotUndefined(input.key) && !KEY.test(input.key)) return yield* Effect.fail(printed`${FOLLOW}: the key is not a slug (letters, digits, ., _ and -, at most 80); the value is not repeated`)
     const reason = yield* Result.match(reasonOfInput(FOLLOW_UP, input), { onFailure: (why) => Effect.fail(printable(why)), onSuccess: (each) => Effect.succeed(each) })
+    const context = { actor, now }
+    const command = followUpCommandOf(input, actor.id, callID, { reason: dataOf(reason), observed: Option.none() })
+    const retry = printed`${FOLLOW}: ${printable(input.id)} is filed already by this key; nothing filed again.`
+    if (yield* record.replayed(command, context)) return retry
     const seen = yield* observedReason(FOLLOW_UP, reason, checkout)
-    const done = yield* record.run(followUpCommandOf(input, actor.id, callID, seen), { actor, now })
-    if (done.events.length === 0) return printed`${FOLLOW}: ${printable(input.id)} is filed already by this key; nothing filed again.`
+    const done = yield* record.run({ ...command, observed: seen.observed }, context)
+    if (done.events.length === 0) return retry
     return printed`${FOLLOW}: filed ${printable(input.id)}, unowned, waiting on ${lineOf(seen.reason)}; the root owns or decides it.`
   }).pipe(Effect.mapError(displayFailure))
 

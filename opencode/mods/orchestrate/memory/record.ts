@@ -3,7 +3,7 @@
 import { Effect, Layer, Ref, Result } from "effect"
 import { SecureRandom } from "effect/crypto"
 import { filingMac } from "../node/platform.ts"
-import { contextForFiling, EMPTY, fold, type RecordEvent, type Snapshot, type StoredEvent } from "../record.ts"
+import { contextForFiling, EMPTY, fold, type RecordEvent, replayFiling, type Snapshot, type StoredEvent } from "../record.ts"
 import { CommitmentRecord } from "../service.ts"
 import { decideCommand } from "../standing.ts"
 
@@ -25,6 +25,8 @@ export const make = (ref: Ref.Ref<Held>): CommitmentRecord["Service"] =>
       yield* Ref.set(ref, { key: held.key, snapshot, events: [...held.events, ...stored(held, events)] })
       return { events, snapshot }
     }),
+    replayed: (command, context) => Effect.flatMap(Ref.get(ref), (held) =>
+      Result.match(replayFiling(held.snapshot.filings, command, contextForFiling(context, command, filingMac(held.key))), { onFailure: Effect.fail, onSuccess: Effect.succeed })),
     read: Effect.map(Ref.get(ref), (held) => held.snapshot),
     history: (subjectKind, subjectId) => Effect.map(Ref.get(ref), (held) => held.events.filter((event) => event.subjectKind === subjectKind && event.subjectId === subjectId)),
     events: Effect.map(Ref.get(ref), (held) => held.events),

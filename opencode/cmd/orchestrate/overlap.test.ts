@@ -157,7 +157,7 @@ Seed.effect("the host receives a redacted failure, not the raw defect, from eith
   const defect = Effect.die(new Error(`scratch reader defect: ${value}`))
   const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
   const run = yield* boot(1, true, {}, () => Layer.merge(
-    Layer.succeed(CommitmentRecord, CommitmentRecord.of({ read: defect, run: () => defect, history: () => defect, events: defect })),
+    Layer.succeed(CommitmentRecord, CommitmentRecord.of({ read: defect, run: () => defect, replayed: () => defect, history: () => defect, events: defect })),
     noEvidence,
   ))
   const root = yield* run.world.session(WORK)
@@ -235,7 +235,7 @@ Seed.effect("registered tool refusals, status and logs redact diagnostic leaves 
   const current = yield* Ref.make<unknown>("scratch")
   const defect = Ref.get(current).pipe(Effect.flatMap(Effect.die))
   const run = yield* boot(1, true, {}, () => Layer.merge(
-    Layer.succeed(CommitmentRecord, CommitmentRecord.of({ read: defect, run: () => defect, history: () => defect, events: defect })),
+    Layer.succeed(CommitmentRecord, CommitmentRecord.of({ read: defect, run: () => defect, replayed: () => defect, history: () => defect, events: defect })),
     noEvidence,
   ))
   const root = yield* run.world.session(WORK)

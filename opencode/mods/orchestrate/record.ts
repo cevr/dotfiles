@@ -1071,41 +1071,57 @@ export const contextForFiling = (context: Context, command: Command, sign: (orig
 
 const matchingFiling = (filing: Filing, identity: FilingIdentity): boolean => Option.exists(filing.identity, (saved) => saved.source === identity.source)
 
-const legacyFiling = (snapshot: Snapshot, command: Extract<Command, { _tag: "add" }>, context: Context): boolean =>
-  command.parts.some((part) => Option.exists(Option.fromUndefinedOr(snapshot.filings.get(part.id)), (filing) => Option.isNone(filing.identity))) ||
-  [...snapshot.filings.values()].some((filing) => filing.actor === context.actor.id && Option.isNone(filing.identity))
+const legacyFiling = (filings: Snapshot["filings"], command: Extract<Command, { _tag: "add" }>, context: Context): boolean =>
+  command.parts.some((part) => Option.exists(Option.fromUndefinedOr(filings.get(part.id)), (filing) => Option.isNone(filing.identity))) ||
+  [...filings.values()].some((filing) => filing.actor === context.actor.id && Option.isNone(filing.identity))
 
-const sameFiling = (snapshot: Snapshot, id: string, identity: FilingIdentity): boolean =>
-  Option.exists(Option.flatMap(Option.fromUndefinedOr(snapshot.filings.get(id)), (filing) => filing.identity), (saved) => saved.source === identity.source && saved.payload === identity.payload)
+const sameFiling = (filings: Snapshot["filings"], id: string, identity: FilingIdentity): boolean =>
+  Option.exists(Option.flatMap(Option.fromUndefinedOr(filings.get(id)), (filing) => filing.identity), (saved) => saved.source === identity.source && saved.payload === identity.payload)
 
 /**
  * A follow-up each of whose parts is filed already, by the same session and idempotency key (its source), saying the
  * same: a retry, which records nothing again. Its title is not the key: two findings may share one. Another key on a
  * filed id, or the same key saying something else, is no retry: refused (`addRefusal`).
  */
-const isRetry = (snapshot: Snapshot, command: Extract<Command, { _tag: "add" }>, context: Context): boolean =>
+const isRetry = (filings: Snapshot["filings"], command: Extract<Command, { _tag: "add" }>, context: Context): boolean =>
   command.sourceKind === "follow-up" && command.parts.length > 0 &&
-  Option.exists(Option.fromUndefinedOr(context.filing), (identity) => command.parts.every((part) => sameFiling(snapshot, part.id, identity)))
+  Option.exists(Option.fromUndefinedOr(context.filing), (identity) => command.parts.every((part) => sameFiling(filings, part.id, identity)))
+
+const filingRefusal = (filings: Snapshot["filings"], command: Extract<Command, { _tag: "add" }>, context: Context): Option.Option<string> => {
+  if (command.sourceKind !== "follow-up") return Option.none()
+  const ids = command.parts.map((part) => part.id)
+  const identity = Option.fromUndefinedOr(context.filing)
+  return firstOf([
+    when(legacyFiling(filings, command, context), "this follow-up namespace has a legacy filing without proof of exact identity; inspect its history and use a new actor for new work"),
+    when(Option.isNone(identity), "the record cannot establish this follow-up's replay identity"),
+    when(Option.exists(identity, (key) => ids.some((id) =>
+      Option.exists(Option.fromUndefinedOr(filings.get(id)), (filing) => matchingFiling(filing, key)) && !sameFiling(filings, id, key))),
+    "this idempotency key filed this follow-up already, saying something else: a retry repeats its filing exactly; a new finding takes a new key"),
+    when(
+      Option.exists(identity, (key) => [...filings.values()].some((filing) => matchingFiling(filing, key))),
+      "this idempotency key filed another follow-up already: a new finding takes a new key",
+    ),
+  ])
+}
+
+/** Check just the durable filing, without evaluating the original reason against today's evidence. */
+export const replayFiling = (filings: Snapshot["filings"], command: Extract<Command, { _tag: "add" }>, context: Context): Held<boolean> => {
+  if (isRetry(filings, command, context)) return Result.succeed(true)
+  return Option.match(filingRefusal(filings, command, context), {
+    onNone: () => Result.succeed(false),
+    onSome: (reason) => Result.fail(new RecordRefused({ reason: printable(reason) })),
+  })
+}
 
 const addRefusal = (snapshot: Snapshot, command: Extract<Command, { _tag: "add" }>, context: Context): Option.Option<string> => {
   const ids = command.parts.map((part) => part.id)
   const worker = context.actor.role === "worker"
-  const identity = Option.fromUndefinedOr(context.filing)
-  const followUp = command.sourceKind === "follow-up"
   return firstOf([
     when(command.parts.length === 0, "an add names at least one part"),
     tokenRefusal("the run", command.run),
     when(worker && !WORKER_KINDS.includes(command.sourceKind), `a worker files only ${WORKER_KINDS.join(" or ")}; ${command.sourceKind} is the root's`),
     when(worker && Option.isNone(command.reason), "a follow-up names its reason: reason_class (dependency or measured) and its referent; difficulty is not one"),
-    when(followUp && legacyFiling(snapshot, command, context), "this follow-up namespace has a legacy filing without proof of exact identity; inspect its history and use a new actor for new work"),
-    when(followUp && Option.isNone(identity), "the record cannot establish this follow-up's replay identity"),
-    when(followUp && Option.exists(identity, (key) => ids.some((id) =>
-      Option.exists(Option.fromUndefinedOr(snapshot.filings.get(id)), (filing) => matchingFiling(filing, key)) && !sameFiling(snapshot, id, key))),
-    "this idempotency key filed this follow-up already, saying something else: a retry repeats its filing exactly; a new finding takes a new key"),
-    when(
-      followUp && Option.exists(identity, (key) => [...snapshot.filings.values()].some((filing) => matchingFiling(filing, key))),
-      "this idempotency key filed another follow-up already: a new finding takes a new key",
-    ),
+    filingRefusal(snapshot.filings, command, context),
     when(Option.exists(command.reason, (reason) => reason.reasonClass === "guarantee"), "a guarantee is a close's reason, not a filing's: file with a dependency or a measurement"),
     Option.flatMap(command.reason, (reason) => Result.match(reasonChecked(snapshot, Option.none(), reason, command.observed), { onFailure: Option.some, onSuccess: () => Option.none() })),
     when(worker && command.parts.some((part) => Option.isSome(part.ownerLane)), "a worker files a follow-up unowned; suggest an owner instead"),
@@ -1134,7 +1150,7 @@ const promisedOf = (command: Extract<Command, { _tag: "add" }>, part: PartInput,
   })
 
 const decideAdd = (snapshot: Snapshot, command: Extract<Command, { _tag: "add" }>, context: Context): Decided => {
-  if (isRetry(snapshot, command, context)) return decided([])
+  if (isRetry(snapshot.filings, command, context)) return decided([])
   const refused = addRefusal(snapshot, command, context)
   if (Option.isSome(refused)) return refuse(refused.value)
   const evidence = Option.getOrElse(

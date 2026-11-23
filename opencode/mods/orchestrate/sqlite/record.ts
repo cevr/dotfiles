@@ -12,7 +12,9 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import {
   ACTOR_ROLES,
   type BoundedEvent,
+  type Command,
   type Commitment,
+  type Context,
   contextForFiling,
   EMPTY,
   fold,
@@ -25,6 +27,7 @@ import {
   RANKS,
   type RecordEvent,
   type RecordRefused,
+  replayFiling,
   ROUTINGS,
   type Snapshot,
   SOURCE_KINDS,
@@ -176,6 +179,28 @@ const V1 = [
 const V2 = [
   "CREATE TABLE filing_key (id INTEGER PRIMARY KEY CHECK (id = 1), key BLOB NOT NULL CHECK (length(key) = 32)) STRICT",
   "INSERT INTO filing_key (id, key) VALUES (1, randomblob(32))",
+  // V1 always appended an event before touching its folded rows. Its INSERT omits this column; reject it
+  // even if that old code predates the transaction's version check. Existing V1 events are not rewritten.
+  "ALTER TABLE event ADD COLUMN writer_version INTEGER NOT NULL DEFAULT 1",
+  `CREATE TRIGGER event_writer_version BEFORE INSERT ON event
+     WHEN NEW.writer_version <> (SELECT user_version FROM pragma_user_version)
+     BEGIN SELECT RAISE(ABORT, 'record: event writer format does not match the file'); END`,
+  `CREATE TRIGGER event_follow_up_identity BEFORE INSERT ON event
+     WHEN NEW.writer_version = (SELECT user_version FROM pragma_user_version) AND NEW.type = 'promised' AND
+       CASE WHEN NOT json_valid(NEW.data) THEN 1
+         WHEN json_extract(NEW.data, '$._tag') IS NOT 'promised' THEN 1
+         WHEN coalesce(json_type(NEW.data, '$.sourceKind'), '') <> 'text' THEN 1
+         WHEN json_extract(NEW.data, '$.sourceKind') IS NOT 'follow-up' THEN 0
+         ELSE NOT (
+           coalesce(json_type(NEW.data, '$.filing.source'), '') = 'text'
+           AND length(json_extract(NEW.data, '$.filing.source')) = 64
+           AND json_extract(NEW.data, '$.filing.source') NOT GLOB '*[^0-9a-f]*'
+           AND coalesce(json_type(NEW.data, '$.filing.payload'), '') = 'text'
+           AND length(json_extract(NEW.data, '$.filing.payload')) = 64
+           AND json_extract(NEW.data, '$.filing.payload') NOT GLOB '*[^0-9a-f]*'
+         )
+       END
+     BEGIN SELECT RAISE(ABORT, 'record: follow-up promise needs its filing identity'); END`,
 ]
 export const MIGRATIONS: ReadonlyArray<ReadonlyArray<string>> = [V1, V2]
 
@@ -338,6 +363,9 @@ const invariantOf = (row: Raw): Invariant => ({
 })
 
 /** The rows as they stand, or why a row does not read (a reason this code does not decode). */
+const filingsOf = (db: Database) =>
+  Result.map(eventsOf(db.query<Raw, []>("SELECT * FROM event WHERE subject_kind = 'commitment' AND type = 'promised' ORDER BY seq").all()), (promises) => fold(EMPTY, promises).filings)
+
 const snapshotOf = (db: Database): Result.Result<Snapshot, string> => {
   const after = new Map<string, Array<Prerequisite>>()
   for (const row of db.query<Raw, []>("SELECT * FROM prerequisite ORDER BY rowid").all()) {
@@ -349,9 +377,7 @@ const snapshotOf = (db: Database): Result.Result<Snapshot, string> => {
   const words = new Map(db.query<Raw, []>("SELECT * FROM word").all().map((row) => [wordKey(textIn(row, "run"), textIn(row, "word")), wordOf(row)] as const))
   const acted = new Set(db.query<Raw, []>("SELECT DISTINCT actor, run FROM event").all().map((row) => actedKey(textIn(row, "actor"), textIn(row, "run"))))
   const invariants = new Map(db.query<Raw, []>("SELECT * FROM invariant").all().map((row) => [textIn(row, "id"), invariantOf(row)] as const))
-  // The follow-ups as filed: their promises, folded as the memory record folds them (a retry is compared with these).
-  const promises = Result.all(db.query<Raw, []>("SELECT * FROM event WHERE subject_kind = 'commitment' AND type = 'promised' ORDER BY seq").all().map(eventOf))
-  return Result.map(Result.all([rows, promises]), ([each, promised]): Snapshot => ({ commitments: new Map(each), handBacks, words, acted, invariants, filings: fold(EMPTY, promised).filings }))
+  return Result.map(Result.all([rows, filingsOf(db)]), ([each, filings]): Snapshot => ({ commitments: new Map(each), handBacks, words, acted, invariants, filings }))
 }
 
 const DataCodec = Schema.fromJsonString(Happening)
@@ -402,8 +428,8 @@ const writeInvariant = (db: Database, row: Invariant): void => {
 
 const writeEvent = (db: Database, event: BoundedEvent): void => {
   db.query<Raw, Array<SQLQueryBindings>>(
-    "INSERT INTO event (at, run, subject_kind, subject_id, type, actor, actor_role, from_state, to_state, note, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-  ).run(event.at, event.run, event.subjectKind, event.subjectId, event.happening._tag, event.actor.id, event.actor.role, nullable(event.fromState), nullable(event.toState), event.note, encodeData(event.happening))
+    "INSERT INTO event (at, run, subject_kind, subject_id, type, actor, actor_role, from_state, to_state, note, data, writer_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run(event.at, event.run, event.subjectKind, event.subjectId, event.happening._tag, event.actor.id, event.actor.role, nullable(event.fromState), nullable(event.toState), event.note, encodeData(event.happening), VERSION)
 }
 
 /** Each row the fold changed: a row object is replaced only when an event touched it. */
@@ -444,33 +470,41 @@ const filingKeyOf = (db: Database) =>
     Option.liftPredicate(row.key, (key): key is Uint8Array => key instanceof Uint8Array && key.byteLength === 32),
   )
 
-/** The store on an open database; `refusal`: why every write is refused (a file of a newer version), when it is. */
+const signedContext = (db: Database, command: Command, context: Context): Context => {
+  const unsigned = { actor: context.actor, now: context.now }
+  if (command._tag !== "add" || command.sourceKind !== "follow-up") return unsigned
+  return Option.getOrElse(Option.map(filingKeyOf(db), (key) => contextForFiling(unsigned, command, filingMac(key))), () => unsigned)
+}
+
+/** A native read-only handle carries its refusal. A writable handle checks its format under the write lock. */
 export const make = (db: Database, refusal: Option.Option<Printable>): CommitmentRecord["Service"] => {
   const attempt = <A>(name: string, body: () => A) => Effect.try({ try: body, catch: (cause) => new RecordFailed({ message: printed`record ${printable(name)}: ${diagnostic(cause)}` }) })
   const decoded = <A>(name: string, result: Result.Result<A, string>) =>
     Result.match(result, { onFailure: (message) => Effect.fail(new RecordFailed({ message: printed`record ${printable(name)}: ${printable(message)}` })), onSuccess: (value) => Effect.succeed(value) })
+  const checked = <A>(work: () => Result.Result<Result.Result<A, RecordRefused>, string>) => {
+    const version = versionOf(db)
+    if (version !== VERSION) return Result.succeed(Result.fail(new RecordFailed({ message: wrongFormat(db.filename, version) })))
+    return work()
+  }
+  const decided = <A>(name: string, work: () => Result.Result<Result.Result<A, RecordRefused | RecordFailed>, string>) =>
+    Option.match(refusal, {
+      onSome: (why) => Effect.fail(new RecordFailed({ message: why })),
+      onNone: () => attempt(name, work).pipe(
+        Effect.flatMap((reply) => decoded(name, reply)),
+        Effect.flatMap((reply) => Result.match(reply, { onFailure: Effect.fail, onSuccess: Effect.succeed })),
+      ),
+    })
   return CommitmentRecord.of({
     run: (command, context) =>
-      Option.match(refusal, {
-        onSome: (why) => Effect.fail(new RecordFailed({ message: why })),
-        onNone: () =>
-          attempt(command._tag, () =>
-            db
-              .transaction(() => {
-                // A file whose rows this code cannot read refuses the write; the commitments it holds stay as they are.
-                return Result.map(snapshotOf(db), (before) => {
-                  const signed = Option.liftPredicate(command, () => command._tag === "add" && command.sourceKind === "follow-up")
-                  const unsigned = { actor: context.actor, now: context.now }
-                  const bound = Option.match(signed, {
-                    onNone: () => unsigned,
-                    onSome: () => Option.getOrElse(Option.map(filingKeyOf(db), (key) => contextForFiling(unsigned, command, filingMac(key))), () => unsigned),
-                  })
-                  return Result.map(decideCommand(before, command, bound), (events) => ({ events, snapshot: write(db, before, events) }))
-                })
-              })
-              .immediate(),
-          ).pipe(Effect.flatMap((read) => decoded(command._tag, read)), Effect.flatMap((result) => Result.match(result, { onFailure: (refused: RecordRefused) => Effect.fail(refused), onSuccess: (done) => Effect.succeed(done) }))),
-      }),
+      decided(command._tag, () => db.transaction(() => checked(() =>
+        // A file whose version or rows this code cannot read refuses the whole write.
+        Result.map(snapshotOf(db), (before) =>
+          Result.map(decideCommand(before, command, signedContext(db, command, context)), (events) => ({ events, snapshot: write(db, before, events) }))),
+      )).immediate()),
+    replayed: (command, context) =>
+      decided("replay", () => db.transaction(() => checked(() =>
+        Result.map(filingsOf(db), (filings) => replayFiling(filings, command, signedContext(db, command, context))),
+      )).deferred()),
     read: attempt("read", () => db.transaction(() => snapshotOf(db)).deferred()).pipe(Effect.flatMap((read) => decoded("read", read))),
     history: (subjectKind, subjectId) =>
       attempt("history", () => db.query<Raw, [string, string]>("SELECT * FROM event WHERE subject_kind = ? AND subject_id = ? ORDER BY seq").all(subjectKind, subjectId)).pipe(
@@ -483,16 +517,20 @@ export const make = (db: Database, refusal: Option.Option<Printable>): Commitmen
 // ── Opening ──
 
 const versionOf = (db: Database): number => Option.getOrElse(intOf(db.query<Raw, []>("PRAGMA user_version").get() ?? {}, "user_version"), () => 0)
-const newerFile = (path: string, version: number): Printable =>
-  printed`record: ${printable(path)} is version ${printable(String(version))}; this code writes version ${printable(String(VERSION))}: update it to write`
+const wrongFormat = (path: string, version: number): Printable => {
+  let advice = "migrate it before writing"
+  if (version > VERSION) advice = "update it to write"
+  return printed`record: ${printable(path)} is version ${printable(String(version))}; this code writes version ${printable(String(VERSION))}: ${printable(advice)}`
+}
 
 /** Every migration past the file's version, in one immediate transaction; none when another writer did them first. */
-const migrate = (db: Database): void =>
+const migrate = (db: Database): number =>
   db
     .transaction(() => {
       const from = versionOf(db)
       for (const statements of MIGRATIONS.slice(from)) for (const statement of statements) db.run(statement)
       if (from < MIGRATIONS.length) db.run(`PRAGMA user_version = ${MIGRATIONS.length}`)
+      return Math.max(from, MIGRATIONS.length)
     })
     .immediate()
 
@@ -560,14 +598,13 @@ const connect = (path: string, options: OpenOptions) =>
     const paths = yield* Path.Path
     yield* fs.makeDirectory(paths.dirname(path), { recursive: true })
     const db = attached(path, false)
-    // Two writers opening a new file at once (two server locations, the CLI) race for the switch to WAL, which SQLite
-    // answers SQLITE_BUSY at once, past the busy timeout: retried for as long as the timeout.
-    yield* settled(() => db.run("PRAGMA journal_mode = WAL"))
-    db.run("PRAGMA synchronous = NORMAL")
-    const version = yield* settled(() => versionOf(db))
-    if (version > VERSION) return { db, refusal: Option.some(newerFile(path, version)) }
-    yield* settled(() => migrate(db))
-    yield* backup(db, path, options.now)
+    const version = yield* settled(() => migrate(db))
+    if (version === VERSION) {
+      // Switching journal modes can report SQLITE_BUSY without waiting for the busy timeout.
+      yield* settled(() => db.run("PRAGMA journal_mode = WAL"))
+      db.run("PRAGMA synchronous = NORMAL")
+      yield* backup(db, path, options.now)
+    }
     return { db, refusal: Option.none() }
   }).pipe(Effect.mapError((cause) => new RecordFailed({ message: printed`record: open ${printable(path)}: ${diagnostic(cause)}` })))
 
@@ -582,7 +619,7 @@ export const layer = (path: string, options: OpenOptions) => Layer.effect(Commit
 
 /** A store that refuses every call with `failed`: the record whose file did not open, so its callers say why and go on. */
 export const failedStore = (failed: RecordFailed): CommitmentRecord["Service"] =>
-  CommitmentRecord.of({ run: () => Effect.fail(failed), read: Effect.fail(failed), history: () => Effect.fail(failed), events: Effect.fail(failed) })
+  CommitmentRecord.of({ run: () => Effect.fail(failed), replayed: () => Effect.fail(failed), read: Effect.fail(failed), history: () => Effect.fail(failed), events: Effect.fail(failed) })
 
 /** The record at `path`, opened at the layer's build with now's backup; a file that does not open gives `failedStore`, never a dead plugin. */
 export const layerOrFailed = (path: Effect.Effect<string, unknown, Platform>) =>
@@ -616,11 +653,10 @@ export const layerScratch = (path: string) =>
     Effect.try({
       try: () => {
         const db = attached(path, false)
-        db.run("PRAGMA journal_mode = WAL")
-        db.run("PRAGMA synchronous = NORMAL")
-        const version = versionOf(db)
-        if (version > VERSION) return make(db, Option.some(newerFile(path, version)))
-        migrate(db)
+        if (migrate(db) === VERSION) {
+          db.run("PRAGMA journal_mode = WAL")
+          db.run("PRAGMA synchronous = NORMAL")
+        }
         return make(db, Option.none())
       },
       catch: (cause) => new RecordFailed({ message: printed`record: open ${printable(path)}: ${diagnostic(cause)}` }),

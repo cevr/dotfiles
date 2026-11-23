@@ -4,7 +4,7 @@ Every reason in the commitment record is data the plugin checks, never prose. A 
 
 ## Sub-features
 
-- `follow-up-reason`: `follow_up` needs `reason_class` (`dependency` or `measured`) and `referent`; an idempotency `key` files once: a retry repeats its original canonical filing exactly, even when two different titles render alike. The same key saying something else, the same key on another id, or another key on a filed id is refused.
+- `follow-up-reason`: `follow_up` needs `reason_class` (`dependency` or `measured`) and `referent`; an idempotency `key` files once: a retry repeats its original canonical filing exactly, even when two different titles render alike. The same key saying something else, the same key on another id, or another key on a filed id is refused. The store proves an exact retry before reading any evidence; a moved receipt or closed dependency does not undo a filing.
 - `decide-guarantee`: `decide` is the root's, with `why` and `reason_class: "guarantee"` on a declared invariant; a measurement or a dependency never closes.
 - `defer`: `defer` keeps an open commitment open with a dependency or a measurement; it closes nothing.
 - `invariant`: `commitments invariant { id, doc_path, anchor }` declares an invariant bound to the document's blob at HEAD; the same again is nothing, an edited document takes a new id.
@@ -34,7 +34,7 @@ Every reason in the commitment record is data the plugin checks, never prose. A 
 
 ## Driving it with real OpenCode
 
-- **Real:** `cmd/orchestrate/record-cli.test.ts`, `cmd/orchestrate/printable.test.ts`, `cmd/orchestrate/overlap.test.ts`, `mods/orchestrate/sqlite/boundary.test.ts`, `mods/orchestrate/node/evidence.test.ts`
+- **Real:** `cmd/orchestrate/record-cli.test.ts`, `cmd/orchestrate/record-replay.test.ts`, `cmd/orchestrate/printable.test.ts`, `cmd/orchestrate/overlap.test.ts`, `mods/orchestrate/sqlite/boundary.test.ts`, `mods/orchestrate/sqlite/version-fence.test.ts`, `mods/orchestrate/node/evidence.test.ts`
 
 The CLI test runs `bun cmd/orchestrate/record.ts`'s `main` on a scratch git checkout and record file: no reason refused, an invariant declared from a committed document, a decide by guarantee, a measured close refused, a deferral and a follow-up by a receipt read from the evidence root, a missing receipt refused. `node/evidence.test.ts` runs the evidence reader on real files: a receipt or its output outside the evidence root, linked out of it, missing, of another shape (a `validated` key, prose), blank or too large is each refused; a document is found only in git at HEAD.
 
@@ -51,3 +51,4 @@ The CLI test runs `bun cmd/orchestrate/record.ts`'s `main` on a scratch git chec
 - A receipt lives under the checkout's `tmp/orchestrate/`; one elsewhere, or reached through a symlink out of it, is refused. So is every receipt when `tmp/orchestrate` (or `tmp`) is itself a link.
 - An unreadable stored reason (unit C's `ask/<id>` pointer, before C ships) fails the whole read with a named error, so a record written by a later unit is never misread.
 - Version 2 adds a random 32-byte key per record file. It authenticates original source and payload separately and keeps those tags on promised events, not in export. Opening a version-1 file for writing migrates it in place; legacy history is still readable. Without an authenticator an old filing cannot be verified: its id and its actor's legacy filing namespace refuse new follow-ups rather than guessing from display text. A fresh actor may file unrelated work.
+- A migration and every write hold the same SQLite write lock. A writer compares the file version under that lock, not at open. The event table independently rejects inserts without the matching writer version and new follow-up promises without both authenticators; earlier events remain readable. The daily backup includes the key, so a restored file answers the same exact retries.

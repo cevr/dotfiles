@@ -422,6 +422,8 @@ export { RecordFailed } from "./printable.ts"
  * - `run`: one command decided against the record as it stands, in one immediate transaction: its events appended and
  *   the rows they fold to written together, or nothing written (a refusal, a failure). Answers the events and the
  *   rows after them.
+ * - `replayed`: prove an exact follow-up from the original canonical command before reading external evidence.
+ *   A negative answer is advisory: `run` decides again inside its write transaction.
  * - `read`: the rows as they stand.
  * - `history`: the events about one subject, oldest first; `events`: every event, oldest first (the replay law, export).
  */
@@ -429,6 +431,7 @@ export class CommitmentRecord extends Context.Service<
   CommitmentRecord,
   {
     readonly run: (command: Command, context: RecordContext) => Effect.Effect<{ readonly events: ReadonlyArray<RecordEvent>; readonly snapshot: Snapshot }, RecordRefused | RecordFailed>
+    readonly replayed: (command: Extract<Command, { _tag: "add" }>, context: RecordContext) => Effect.Effect<boolean, RecordRefused | RecordFailed>
     readonly read: Effect.Effect<Snapshot, RecordFailed>
     readonly history: (subjectKind: SubjectKind, subjectId: string) => Effect.Effect<ReadonlyArray<StoredEvent>, RecordFailed>
     readonly events: Effect.Effect<ReadonlyArray<StoredEvent>, RecordFailed>
