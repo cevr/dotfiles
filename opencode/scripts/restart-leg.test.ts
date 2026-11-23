@@ -3,7 +3,7 @@
 // (with fake pids), its judgement of a stop, and its dry run, which prints every command the Linux run takes. The
 // Linux run itself (user systemd, the installed build) is the workbox's.
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { Effect, FileSystem, Option, Path, Result, Stream } from "effect"
+import { Effect, FileSystem, Option, Path, Result, Schema, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { checkoutBunCommand } from "../tests/scratch-child.ts"
@@ -47,6 +47,7 @@ const FLAGS: Flags = {
 }
 const input = (flags: Partial<Flags> = {}) => inputOf({ ...FLAGS, ...flags }, "/home/exedev", "run1")
 const RUN = "/dev/shm/restart-leg-run1"
+const restartArgs = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)))
 
 describe("flags", () => {
   it.effect("default to every case, upstream's no-wake, the installed tree, and a run dir right under the root", () =>
@@ -245,7 +246,7 @@ describe("the dry run", () => {
       const cli = (...args: ReadonlyArray<string>) =>
         Effect.scoped(
           Effect.gen(function* () {
-            yield* fs.writeFileString(request, JSON.stringify(args))
+            yield* fs.writeFileString(request, restartArgs(args))
             const handle = yield* spawner.spawn(checkoutBunCommand("scripts/fixtures/restart-leg-cli.ts", {
               scratchArgs: [request],
               scratch: { HOME: dir, TMPDIR: dir, XDG_CONFIG_HOME: dir, XDG_DATA_HOME: dir, XDG_STATE_HOME: dir, XDG_CACHE_HOME: dir },

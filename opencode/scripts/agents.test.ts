@@ -13,6 +13,7 @@ const live = it.live.layer(BunServices.layer)
 
 /** The written file's orchestrator entry. */
 const Written = Schema.fromJsonString(Schema.Struct({ orchestrator: Schema.Struct({ description: Schema.String, section: Schema.String }) }))
+const checkArgs = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)))
 
 /** SKILL.md and its no-block rule line. */
 const skill = Effect.gen(function* () {
@@ -30,7 +31,7 @@ const check = (dir: string, ...source: ReadonlyArray<string>) =>
       const fs = yield* FileSystem.FileSystem
       const path = yield* Path.Path
       const request = scratchInput(path.join(dir, "args.json"))
-      yield* fs.writeFileString(request, JSON.stringify(["--check", ...source]))
+      yield* fs.writeFileString(request, checkArgs(["--check", ...source]))
       const handle = yield* spawner.spawn(
         checkoutBunCommand("scripts/fixtures/agents-check.ts", {
           scratchArgs: [request],
