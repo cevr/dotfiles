@@ -1,3 +1,4 @@
+// accept: one at a time (it bounds the backstop-off exit-to-letter time under the sweep's RECOVER_MS).
 // A job's end as a durable event on the real host: the process runner
 // (mods/wake/process/runner.ts) launches the real runner (cmd/wake/job.ts,
 // detached in its own session) in a scratch directory, with a harmless
