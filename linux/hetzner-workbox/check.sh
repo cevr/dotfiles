@@ -71,6 +71,12 @@ for d in "$HB_HOME" "$HB_WORKSPACES"; do
     if cp --reflink=always "$f" "$f.copy" 2>/dev/null; then ok "reflinks work in $d"; else bad "no reflinks in $d"; fi
     rm -f "$f" "$f.copy"
 done
+# --- Simple quotas and the limited subvolumes (storage.conf).
+if ! skip storage; then
+    mode=$(cat "/sys/fs/btrfs/$(findmnt -n -o UUID -T "$HB_WORKSPACES")/qgroups/mode" 2>/dev/null || echo off)
+    [[ $mode == squota ]] && ok "btrfs simple quotas on" || bad "btrfs quotas: $mode, want squota (storage.sh enable)"
+    if out=$("$hb_dir/storage.sh" check 2>&1); then ok "storage.conf in place"; else bad "storage.conf: $(printf '%s' "$out" | tr '\n' ' ')"; fi
+fi
 owner=$(stat -c %U "$HB_HOME")
 [[ $owner == "$HB_USER" ]] && ok "$HB_HOME belongs to $HB_USER" || bad "$HB_HOME belongs to $owner"
 

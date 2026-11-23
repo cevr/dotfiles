@@ -12,6 +12,9 @@
 #   5. formats DRIVE2's ESP, copies DRIVE1's onto it, and has GRUB install to
 #      both drives (Ubuntu's grub-multi-install keeps both ESPs in step);
 #   6. writes the btrfs mount options and UUIDs into the fstab, /tmp 1777.
+#   7. turns on btrfs simple quotas (storage.sh enable; btrfs-progs from system-tools.sh btrfs
+#      where the release's is older than 6.7): now, before anything but the OS is on the disk,
+#      so every byte provision.sh, sync.sh and the work write later is counted (README.md, Layout).
 #
 # Usage: sudo layout.sh [--dry-run]
 # Env: HB_DISK1 HB_DISK2 (default /dev/nvme0n1 /dev/nvme1n1), HB_TARGET (the
@@ -245,6 +248,14 @@ tmpdir=$(at /tmp)
 [[ $(stat -c %a "$tmpdir") == 1777 ]] || run chmod 1777 "$tmpdir"
 if ((HB_BOOTLOADER)); then
     run update-initramfs -u -k all
+fi
+
+# --- 7. Simple quotas.
+if ((dry)); then
+    echo "would run: system-tools.sh btrfs; storage.sh enable"
+else
+    "$hb_dotfiles/workbox/system-tools.sh" btrfs
+    "$hb_dir/storage.sh" enable
 fi
 
 say "layout done; reboot, then run check.sh (it must print only ok lines)"

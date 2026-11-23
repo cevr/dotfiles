@@ -15,8 +15,9 @@ exe box's host key.
 | --- | --- |
 | `installimage.conf` | Hetzner's installimage, from the Rescue System: Ubuntu 24.04 on DRIVE1, ESP, `/boot` ext4, swap, one btrfs with `@root`, `@home`, `@tmp`, `@workspaces` |
 | `installimage-check.sh` | Runs installimage's own `read_vars`/`validate_vars` on the config, outside the Rescue System (test.sh does) |
-| `layout.sh` | First boot: DRIVE2 joins. btrfs raid1 (data and metadata), mdraid1 `/boot` and swap, a second ESP kept by Ubuntu's grub-multi-install, the fstab options |
-| `provision.sh` | The system layer, in phases: hostname, `exedev`, keys, packages, the pinned tools (`workbox/system-tools.sh`: Go, PowerShell, fish/ksh/mksh, qemu-user-static; pins in `workbox/pins.conf`), firewall, root ssh, Tailscale, the 2222 sshd, the reserve (the OpenCode service's memory floor), unattended upgrades, backup, then `workbox/bootstrap.sh` |
+| `layout.sh` | First boot: DRIVE2 joins. btrfs raid1 (data and metadata), mdraid1 `/boot` and swap, a second ESP kept by Ubuntu's grub-multi-install, the fstab options, btrfs simple quotas |
+| `storage.conf`, `storage.sh`, `systemd/hetzner-workbox-storage.service` | The limited subvolumes (scratch and caches) and their limits; applied by provision.sh's `storage` phase and at each boot (Layout, below) |
+| `provision.sh` | The system layer, in phases: hostname, `exedev`, keys, packages, the pinned tools (`workbox/system-tools.sh`: Go, PowerShell, fish/ksh/mksh, qemu-user-static, btrfs-progs, /tmp's rules, the free-space timer; pins in `workbox/pins.conf`), the limited subvolumes (`storage`), firewall, root ssh, Tailscale, the 2222 sshd, the reserve (the OpenCode service's memory floor) and the run families, unattended upgrades, backup, then `workbox/bootstrap.sh` |
 | `sync.sh` | The copy from the exe box: btrfs send per subvolume, two passes, then activate; rsync for the rest; `--dry-run` prints the GB |
 | `backup.sh`, `btrbk.conf`, `systemd/hetzner-backup.*` | Nightly btrbk snapshots, sent encrypted to a Storage Box |
 | `firewall.nft`, `systemd/hetzner-workbox-firewall.service` | Inbound: Tailscale, ICMP, ssh 22; nothing else |
@@ -43,6 +44,84 @@ system UUID (`user_subvol_rm_allowed`: Ergo's `work` deletes a workspace's subvo
 A dead drive: btrfs refuses to mount degraded on its own. Boot the Rescue
 System, `mount -o degraded,subvol=@root /dev/nvmeXn1p4 /mnt`, and follow
 Hetzner's drive swap; after the swap, `btrfs replace` and `mdadm --add`.
+
+## Layout: scratch, caches, run families, free space
+
+The exe box let scratch and caches grow without a bound (2026-11-22: `/tmp`
+298 GB from one benchmark, `/tmp/opencode` 86 GB, Ergo's Go cache 85 GB in
+7.5 h) and let one family of runs take the CPU from the way in. The new box
+bounds each by data, read by the scripts; nothing here kills a run.
+
+**Simple quotas.** `layout.sh` turns on btrfs simple quotas
+(`btrfs quota enable --simple`) on the first boot: installimage cannot make the
+file system with them, and the box holds nothing yet, so nothing goes
+uncounted. Simple quotas need btrfs-progs 6.7 and kernel 6.7; Ubuntu 24.04 has
+kernel 6.8 and btrfs-progs 6.6.3, so `system-tools.sh btrfs` installs the
+pinned newer package first (`workbox/pins.conf`, checked by sha256). Unlike
+full qgroups, simple quotas count an extent against the subvolume that wrote
+it and never walk back references, so deleting a snapshot costs no qgroup
+accounting (btrfs docs, "Qgroups", "Simple quotas"). Measured in the test VM,
+200 snapshots made, changed and deleted to the cleaner's end: 28.9 s with
+quotas off, 31.9 s with simple quotas, 97.0 s with full qgroups.
+
+**Limited subvolumes** (`storage.conf`, applied by `storage.sh` from
+provision.sh's `storage` phase and by `hetzner-workbox-storage.service` at
+each boot): a write past a limit fails with `EDQUOT` ("Disk quota exceeded")
+in that subvolume alone; everything else keeps writing.
+
+| Path | Limit | Fixes |
+| --- | --- | --- |
+| `/tmp` | 150G | builds' temporary files (GiBs) filling the workspace disk |
+| `/tmp/opencode` | 100G | OpenCode's run files; its own cap, so builds and runs cannot starve each other |
+| `/workspaces/.cache` | 60G | a cache folder nobody listed still counts against a cap |
+| `/workspaces/.cache/ergo-gocache` | 100G | Ergo's shared Go cache (a size cap: an age trim under 75 min breaks its builds) |
+| `/workspaces/.cache/turbo` | 30G | above turbo's own 20 GB trim, so turbo's trim acts first |
+| all of `/workspaces/.cache` | 150G (qgroup `1/100`) | the caches together, under the members' sum |
+| `~/.cache/go-build`, `~/go/pkg/mod`, `~/.bun/install/cache`, `~/.npm` | 40G, 30G, 30G, 10G | the tools' default caches, with no environment change |
+
+`storage.sh` deletes nothing: a missing path becomes a subvolume, an empty
+directory is replaced by one, and a directory holding files is named and left
+(exit 1). Lanes and bases are not limited; each subvolume has its own qgroup,
+so its size is readable without root: `cat
+/sys/fs/btrfs/<fs uuid>/qgroups/0_<subvolume id>/exclusive` (bytes it alone
+holds; the kernel makes these files 0444), with the id from `btrfs
+inspect-internal rootid <path>`. `btrfs qgroup show` and `limit` stay root's,
+and no sudoers line grants them.
+
+**/tmp** stays a disk subvolume, not a tmpfs: builds write GiBs there, and a
+tmpfs takes that memory from the agents. `workbox/systemd/tmp/tmpfiles.d/tmp.conf`
+empties `/tmp` at each boot (`D`) and ages it at 7 days; `/tmp/opencode` has its
+own `D` line at 14 days, so at boot its contents go and its subvolume (and its
+limit) stays. The daily clean runs `workbox-tmp-clean`, which takes a shared
+`flock` on every path under `/tmp` and `/var/tmp` that a running process holds
+(open file, working directory, mapping); tmpfiles skips a locked entry and
+everything below it (tmpfiles.d(5), "Age"), so nothing a running process holds
+is deleted.
+
+**Run families** (`workbox/slices.conf`, installed by `system-tools.sh
+slices`): slices of `exedev`'s own user manager, which has cpu, io and memory
+delegated. `opencode.slice` (CPU/IO weight 400), `ergo.slice` (20, at most 10
+CPUs, `MemoryHigh` 80%: above Ergo's own bound on its gates, so that acts
+first), `bite-work.slice` (100), `personal.slice` (100). Weights share the CPU
+under load only. Ergo's gate already runs in `ergo-gates.slice`, which systemd
+nests in `ergo.slice` by the dash in its name, so Ergo needs no change. In the
+test VM two CPU-bound runs at 100 and 20 got 4.86:1 over 20 s, and ssh
+answered in 0.6 s.
+
+The callers' contract (the host arbiter, Ergo's launcher): run a job as
+`systemd-run --user --scope --slice=<family>.slice -- <command>`, with
+`<family>` one of `opencode`, `ergo`, `bite-work`, `personal`; no root, no
+sudo. The slices are the user manager's units from `/etc/systemd/user`;
+`systemctl --user cat <family>.slice` exits 0 where they are installed. A slice
+name with no unit file is not refused: systemd makes it with no settings of
+its own (an ordinary sibling at the default share), so a caller that must have the family's values checks
+`systemctl --user cat` first and treats exit 1 as "families not installed".
+
+**Free space** (`workbox-disk-free.timer`, every minute, as root): writes
+`/run/workbox/disk-free`, world-readable `key=value` lines in bytes
+(`device_size`, `unallocated`, `free_estimated`, `free_min`, `updated`), from
+`btrfs filesystem usage`, not `df` (which sees neither raid1 nor the space held
+in allocated chunks). It enforces nothing.
 
 ## Copy: sync.sh
 
@@ -72,7 +151,16 @@ differ between the boxes, so rsync maps them by name; `exedev` is 1000 on both.
 The subvolume streams keep numeric ids, which is right for the home.
 
 Never copied: `/var/lib/tailscale` (the new box is its own node), `/etc` beyond
-the host key, Docker's images (pulled again).
+the host key, Docker's images (pulled again), and the caches (`storage.conf`'s
+`cache` lines: tools rebuild them, and the old ones are unbounded). `sync.sh`
+sends a snapshot of its own of `@home` and `@workspaces` with the caches
+removed inside that snapshot only (the source's caches are untouched), skips
+the cache subvolumes, and names each cache it leaves out. On the target, the
+boot after `activate` runs `hetzner-workbox-storage.service`, which makes each
+cache an empty limited subvolume before the user's session starts. A received
+subvolume gets its own qgroup, counting only what the receive wrote into it (a
+Rift received against its source counts its own edits); the limits come from
+`storage.conf`, never from the stream.
 
 ## Backups
 

@@ -1,0 +1,16 @@
+[Unit]
+Description=The workbox's limited subvolumes (storage.conf), made again after the boot empties /tmp
+Documentation=file:///usr/local/lib/hetzner-workbox/storage.conf
+RequiresMountsFor=/tmp /workspaces /home/exedev
+# After systemd-tmpfiles-setup, which empties /tmp (D /tmp); before any user session or lingering
+# user manager (user@.service runs after systemd-user-sessions), so OpenCode finds /tmp/opencode made.
+After=local-fs.target systemd-tmpfiles-setup.service
+Before=systemd-user-sessions.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/hetzner-workbox/storage.sh apply
+
+[Install]
+WantedBy=multi-user.target

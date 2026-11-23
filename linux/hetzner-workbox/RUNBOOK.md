@@ -40,9 +40,14 @@ measured; the exe box held about 430 GB on 2026-11-14 (plan.md, measured).
    ```sh
    read -rs TS_AUTHKEY && export TS_AUTHKEY      # paste the key from 0.3
    export HB_EXTRA_KEYS='<the line of ssh bite-workbox cat .ssh/hetzner-sync.pub>'
-   /root/dotfiles/linux/hetzner-workbox/provision.sh host user keys packages firewall rootssh tailscale sshd upgrades
+   /root/dotfiles/linux/hetzner-workbox/provision.sh host user keys packages tools storage firewall rootssh tailscale sshd reserve upgrades
    unset TS_AUTHKEY
    ```
+
+   `tools` installs the pinned tools; `storage` makes the limited subvolumes of
+   `storage.conf` (README.md, Layout) and enables the unit that applies them at
+   each boot; `reserve` installs the memory floor and the run families. Each
+   phase is idempotent: a rerun prints no `==>` line.
 
    It joins the tailnet as `bite-cristian-hel` (the exe node keeps
    `bite-cristian` until the cutover) and prints `NEWTS`.
@@ -96,7 +101,10 @@ terminal that is about to stop.
 
    `activate` prints one `activated` line for `@home` and one for `@workspaces`.
 5. **Reboot the new box**: `ssh root@NEW reboot`. It comes up with the exe
-   box's home, `/workspaces`, MongoDB data and the 2222 host key.
+   box's home, `/workspaces`, MongoDB data and the 2222 host key. The caches
+   were not copied: `hetzner-workbox-storage.service` makes each an empty
+   limited subvolume at this boot (`systemctl status
+   hetzner-workbox-storage.service`: exited 0), and the first builds fill them.
 6. **Move the Tailscale name and address**, so the alias `bite-workbox`
    (`HostName 100.88.97.119` in `~/.ssh/config`) and the phone's Herdr host
    keep working:

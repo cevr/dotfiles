@@ -18,11 +18,15 @@
 #              HB_TS_NAME (default bite-cristian-hel until the cutover)
 #   sshd       workbox/systemd/system/bite-workbox-sshd on the Tailscale IPv4
 #              (or HB_SSH_LISTEN), port 2222, AllowUsers exedev
-#   tools      workbox/system-tools.sh: fish, ksh, mksh, qemu-user-static and its
-#              binfmt entry, Go and PowerShell as workbox/pins.conf pins them
-#              (the same script bootstrap.sh runs)
+#   tools      workbox/system-tools.sh: btrfs-progs with simple quotas, fish, ksh,
+#              mksh, qemu-user-static and its binfmt entry, Go and PowerShell as
+#              workbox/pins.conf pins them, /tmp's rules and the held-file guard,
+#              the free-space figures (the same script bootstrap.sh runs)
+#   storage    storage.sh: the limited subvolumes of storage.conf (/tmp, the caches),
+#              and hetzner-workbox-storage.service, which applies them at each boot
 #   upgrades   unattended-upgrades with workbox's 20auto-upgrades
-#   reserve    workbox/system-tools.sh reserve: the OpenCode service's memory floor
+#   reserve    workbox/system-tools.sh reserve slices: the OpenCode service's memory
+#              floor, and the run families' slices (workbox/slices.conf)
 #              (bite.slice's CPU and IO weights come with the sshd phase)
 #   sysctl     workbox's sysctl.d/90-inotify.conf (the inotify limits the lab's
 #              standby keepers need), applied with sysctl -p
@@ -43,7 +47,7 @@ redis-server syncthing docker.io docker-compose-v2 docker-buildx nodejs python3-
 unattended-upgrades systemd-resolved mongodb-org gh tailscale"}
 system_dir=$hb_dotfiles/workbox/systemd/system
 etc=${HB_ETC:-/etc}
-phases=(host user keys packages tools firewall rootssh tailscale sshd reserve upgrades sysctl backup bootstrap)
+phases=(host user keys packages tools storage firewall rootssh tailscale sshd reserve upgrades sysctl backup bootstrap)
 
 need_root
 [[ $# -gt 0 ]] && phases=("$@")
@@ -220,11 +224,24 @@ phase_sshd() {
 }
 
 phase_tools() {
-    "$hb_dotfiles/workbox/system-tools.sh" shells qemu go pwsh
+    "$hb_dotfiles/workbox/system-tools.sh" btrfs shells qemu go pwsh tmp diskfree
+}
+
+# storage.sh and what it reads, copied out of the home (a root unit runs them at each boot, so not
+# from a checkout the user writes), then applied now.
+phase_storage() {
+    local lib=${HB_LIB:-/usr/local/lib/hetzner-workbox} f changed=0
+    for f in common.sh storage.sh storage.conf; do
+        if put "$([[ $f == *.sh ]] && echo 0755 || echo 0644)" "$hb_dir/$f" "$lib/$f"; then changed=1; fi
+    done
+    if put 0644 "$hb_dir/systemd/hetzner-workbox-storage.service" "$etc/systemd/system/hetzner-workbox-storage.service"; then changed=1; fi
+    if ((changed)); then systemctl daemon-reload; fi
+    systemctl is-enabled --quiet hetzner-workbox-storage.service 2>/dev/null || systemctl enable --quiet hetzner-workbox-storage.service
+    "$lib/storage.sh" apply
 }
 
 phase_reserve() {
-    "$hb_dotfiles/workbox/system-tools.sh" reserve
+    "$hb_dotfiles/workbox/system-tools.sh" reserve slices
 }
 
 phase_upgrades() {
@@ -261,7 +278,7 @@ phase_bootstrap() {
 }
 
 for p in "${phases[@]}"; do
-    declare -F "phase_$p" >/dev/null || die "unknown phase: $p (one of: host user keys packages tools firewall rootssh tailscale sshd reserve upgrades sysctl backup bootstrap)"
+    declare -F "phase_$p" >/dev/null || die "unknown phase: $p (one of: host user keys packages tools storage firewall rootssh tailscale sshd reserve upgrades sysctl backup bootstrap)"
 done
 for p in "${phases[@]}"; do
     say "phase $p"
