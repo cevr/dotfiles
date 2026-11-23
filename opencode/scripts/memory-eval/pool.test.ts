@@ -180,3 +180,4 @@ describe("the pool transport", () => {
     }
   })
 })
+// @reads-indirect scripts/memory-eval/**

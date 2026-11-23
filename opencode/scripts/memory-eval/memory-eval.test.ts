@@ -330,3 +330,4 @@ describe("our plugin as the eval hosts it", () => {
     }
   })
 })
+// @reads-indirect scripts/memory-eval/**

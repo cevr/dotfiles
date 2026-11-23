@@ -48,3 +48,4 @@ describe("a multiplexer pane's variables", () => {
     }),
   )
 })
+// @reads-indirect scripts/** tests/** testbeds/**

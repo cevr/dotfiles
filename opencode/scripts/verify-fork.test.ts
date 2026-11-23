@@ -65,3 +65,4 @@ describe("verify:doctor's fork-branch check", () => {
     }).pipe(Effect.scoped),
   )
 })
+// @reads-indirect scripts/** tests/**

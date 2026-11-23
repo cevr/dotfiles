@@ -243,3 +243,4 @@ describe("workbox-check runs the installed tree's bootstrap.sh --check", () => {
     }
   })
 })
+// @reads-indirect ../workbox/** ../linux/hetzner-workbox/**

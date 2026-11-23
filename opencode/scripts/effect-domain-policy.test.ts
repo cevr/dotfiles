@@ -580,3 +580,4 @@ describe(`${POLICY}: the legacy try statements of the domain`, () => {
     TEST_TIMEOUT,
   )
 })
+// @reads-indirect lint/** scripts/** mods/** decider/**

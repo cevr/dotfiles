@@ -93,3 +93,4 @@ describe("plugin tool inputs", () => {
     expect(decoder(PrInput)({ action: "status", prs: '[12, "owner/name#3"]' })).toEqual({ action: "status", prs: [12, "owner/name#3"] })
   })
 })
+// @reads-indirect decider/** mods/** cmd/**

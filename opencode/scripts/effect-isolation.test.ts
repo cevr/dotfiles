@@ -341,3 +341,4 @@ describe("the fixtures that wrote the process's env or registry, under generated
     TEST_TIMEOUT,
   )
 })
+// @reads-indirect lint/** scripts/**

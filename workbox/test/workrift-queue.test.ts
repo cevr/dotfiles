@@ -826,3 +826,4 @@ describe("the clone turn: one clone or delete at a time per copy base, in arriva
     expect(run.turns.map((t) => t.name).sort()).toEqual(["n1", "n2", "nr"])
   }, 60_000)
 })
+// @reads-indirect ../workbox/bin/**

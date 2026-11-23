@@ -134,3 +134,4 @@ describe("the kernel arm", () => {
     }
   })
 })
+// @reads-indirect scripts/memory-eval/**

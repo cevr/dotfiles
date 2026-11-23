@@ -165,3 +165,4 @@ describe.skipIf(!Bun.which("zsh"))("workbox zshenv", () => {
     })
   })
 })
+// @reads-indirect ../workbox/**

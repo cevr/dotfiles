@@ -253,3 +253,4 @@ describe("no assertion lost", () => {
     60_000,
   )
 })
+// @reads-indirect scripts/** tests/** sim/** sim-tui/** mods/** cmd/**

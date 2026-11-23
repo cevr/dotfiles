@@ -168,3 +168,4 @@ describe("forkWork on a fixture fork", () => {
     expect(forkWorkText(work)).toEqual([])
   })
 })
+// @reads-indirect scripts/** tests/**

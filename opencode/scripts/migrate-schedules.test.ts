@@ -123,3 +123,4 @@ describe("the dry run", () => {
     expect(() => parseArgs(["--nope"], {})).toThrow("unknown flag --nope")
   })
 })
+// @reads-indirect scripts/**

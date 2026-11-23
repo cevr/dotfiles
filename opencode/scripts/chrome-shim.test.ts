@@ -152,3 +152,4 @@ describe("the browser it runs", () => {
     }),
   )
 })
+// @reads-indirect ../claude/bin/**

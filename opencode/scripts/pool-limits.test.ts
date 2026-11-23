@@ -71,3 +71,4 @@ test("--file: a file with no tally state is an error that names the path", () =>
   expect(answer.code).toBe(1)
   expect(answer.err).toContain(`no limit tally at ${path}`)
 })
+// @reads-indirect scripts/**

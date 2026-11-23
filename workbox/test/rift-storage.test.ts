@@ -104,3 +104,4 @@ describe("workbox-rift-storage --fstab", () => {
     expect(b.reloads()).toEqual([])
   })
 })
+// @reads-indirect ../workbox/bin/**

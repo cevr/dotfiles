@@ -1520,3 +1520,4 @@ describe("a run stopped before it finishes could not run, with a partial report"
     30_000,
   )
 })
+// @reads-indirect scripts/** tests/**

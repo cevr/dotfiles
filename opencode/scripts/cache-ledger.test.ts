@@ -29,3 +29,4 @@ describe("cache-ledger's command line", () => {
     expect(() => parseArgs(["--verbose"], NOW)).toThrow("unknown flag --verbose")
   })
 })
+// @reads-indirect scripts/** mods/cache/**

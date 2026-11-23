@@ -38,3 +38,4 @@ describe("the TUI's plugin list in a build's tree", () => {
     expect(text.split(`"${ROOT}/cmd/`).length - 1).toBe(order.length)
   })
 })
+// @reads-indirect scripts/** cmd/** mods/** themes/**

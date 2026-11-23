@@ -305,3 +305,4 @@ describe("the scripts that take the fork besides link-fork", () => {
     expect(err).not.toContain("point nowhere")
   })
 })
+// @reads-indirect scripts/**

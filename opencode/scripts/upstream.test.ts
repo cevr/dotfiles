@@ -178,3 +178,4 @@ describe("the upstream reading", () => {
     }
   })
 })
+// @reads-indirect scripts/** tests/**

@@ -900,3 +900,4 @@ describe("the resident location", () => {
     expect(residentConfig).toEqual({ experimental: { location_idle_timeout: false } })
   })
 })
+// @reads-indirect scripts/** tests/** testbeds/** cmd/** mods/** themes/**

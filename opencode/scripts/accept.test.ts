@@ -993,3 +993,4 @@ describe("the deep run's daily long swarm", () => {
     RUN_MS,
   )
 })
+// @reads-indirect scripts/** tests/** testbeds/** scenarios/** cmd/** mods/** decider/** lint/** sim/** sim-tui/**

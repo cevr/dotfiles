@@ -64,3 +64,4 @@ describe("the daily Claude Code install", () => {
     }
   })
 })
+// @reads-indirect ../claude/bin/**

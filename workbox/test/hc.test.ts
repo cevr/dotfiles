@@ -627,3 +627,4 @@ describe("unit files", () => {
     }
   })
 })
+// @reads-indirect ../workbox/**

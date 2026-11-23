@@ -363,3 +363,4 @@ describe("the wake process tests end every Effect before Bun's test limit", () =
     expect(runs).toEqual(Arr.map(PROCESS_TESTS, () => 1))
   })
 })
+// @reads-indirect lint/** scripts/** mods/wake/process/**

@@ -86,3 +86,4 @@ describe("the orchestrator entry", () => {
     }),
   )
 })
+// @reads-indirect scripts/** ../agents/** ../skills/orchestrate/**

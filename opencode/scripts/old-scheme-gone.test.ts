@@ -123,3 +123,4 @@ describe("the old scheme is gone", () => {
     }),
   )
 })
+// @reads-indirect scripts/** ../workbox/** ../claude/bin/**

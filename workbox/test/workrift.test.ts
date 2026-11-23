@@ -3213,3 +3213,4 @@ describeWork("workrift deps knows its holder by identity, not by a stale holder 
     expect(cases.some((c) => c.holder.startsWith("unrelated") && c.stales.some((s) => s.startsWith("ancestor")))).toBe(true)
   }, 600_000)
 })
+// @reads-indirect ../workbox/**

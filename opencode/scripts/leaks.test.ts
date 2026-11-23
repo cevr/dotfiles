@@ -79,3 +79,4 @@ describe("owned", () => {
     expect(await until(() => !alive(grandchild))).toBe(true)
   })
 })
+// @reads-indirect scripts/** tests/** testbeds/**

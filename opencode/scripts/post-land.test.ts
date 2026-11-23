@@ -420,3 +420,4 @@ describe("the upstream lock", () => {
     }
   }, 60_000)
 })
+// @reads-indirect scripts/** tests/**

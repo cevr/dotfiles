@@ -27,7 +27,7 @@ const sources = (dir: string): ReadonlyArray<string> =>
   readdirSync(matchingInput("{mods/**,cmd/**}", dir)).flatMap((name) => {
     if (name === "node_modules" || name.startsWith(".")) return []
     const path = join(dir, name)
-    if (statSync(path).isDirectory()) return sources(path)
+    if (statSync(matchingInput("{mods/**,cmd/**}", path)).isDirectory()) return sources(path)
     return /\.tsx?$/.test(name) && !name.endsWith(".d.ts") ? [path] : []
   })
 

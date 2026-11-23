@@ -444,3 +444,4 @@ describe("forkTurns over generated fork histories", () => {
     expect(forkTurns([], SINCE)).toEqual([])
   })
 })
+// @reads-indirect lint/** scripts/**

@@ -63,3 +63,4 @@ describe("workbox-btrfs-reclaim", () => {
     }
   })
 })
+// @reads-indirect ../workbox/systemd/**

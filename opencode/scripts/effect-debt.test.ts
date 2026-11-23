@@ -1137,3 +1137,4 @@ describe(`${HARD_CONFIG}: the hard rules`, () => {
     TEST_TIMEOUT,
   )
 })
+// @reads-indirect lint/** scripts/**

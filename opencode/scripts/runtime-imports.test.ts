@@ -265,3 +265,4 @@ const writeTree = (root: string, entries: ReadonlyArray<readonly [string, string
     writeFileSync(path.join(root, file), text)
   }
 }
+// @reads-indirect scripts/** cmd/** mods/** tests/cli-tree/**

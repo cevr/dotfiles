@@ -51,3 +51,4 @@ describe("an installed build's plugin binding", () => {
     }),
   )
 })
+// @reads-indirect scripts/** tests/** testbeds/**

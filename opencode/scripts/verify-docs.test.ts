@@ -205,3 +205,4 @@ describe("the verify-opencode skill names only what the tree has", () => {
     }),
   )
 })
+// @reads all

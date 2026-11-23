@@ -110,3 +110,4 @@ describe("the static probes", () => {
     expect(probe(join(root, "none"), join(root, "none"), join(root, "none.json"))).toEqual({ systemPushers: [], mcpServers: [], toolRemovers: [] })
   })
 })
+// @reads-indirect scripts/** mods/cache/**

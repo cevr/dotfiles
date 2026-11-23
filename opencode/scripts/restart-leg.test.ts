@@ -260,3 +260,4 @@ describe("the dry run", () => {
     }),
   )
 })
+// @reads-indirect scripts/**
