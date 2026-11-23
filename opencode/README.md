@@ -273,6 +273,22 @@ only the resident location's copy acts, so a host runs one updater.
   process binds its build's tree at its start, so every start holds exactly
   its build's list (the model's I5, `mods/update/model.test.ts`
   `plugin trees`).
+- **Plain-Bun commands.** Each production file a tree runs as its own
+  process (`bun <file>`, not a plugin: the `cmd/` entries, `scripts/daily.ts`,
+  the kernel's worker) is declared in `mods/update/trees.ts` `COMMANDS` with
+  the packages it imports and a probe (arguments, exit code, output). The
+  root install owns their runtime: `effect` and `@effect/platform-bun` pinned
+  together, and a command's composition root provides `BunServices.layer`
+  (and `Digest.layerWebCrypto` where it hashes), so it needs no OpenCode
+  process (and, but for `daily.ts`, which builds the fork, no
+  `OPENCODE_DEV`). Run one from the
+  installed tree, `bun ~/.local/share/opencode-prime/current.plugins/opencode/cmd/<plugin>/<file>.ts`;
+  on another host, the same path over SSH (`ssh <host> bun …/current.plugins/opencode/cmd/…`),
+  never the synced checkout, whose fork links name a source checkout. A command
+  that reads a store reads a copy of it. `scripts/runtime-imports.test.ts` keeps
+  the list whole (every entry declared, each graph within its packages, one
+  `effect` release) and `tests/cli-tree.test.ts` runs each probe, on the
+  checkout or, with `TREE_OPENCODE=<tree>/opencode`, on a made tree.
 - **The TUI's plugins.** A tree's `config/cli.json` lists every plugin
   package that exports `./tui` (`cmd/*/package.json`): `trees.ts`
   `tuiPluginsOf`, derived, never a list kept by hand. Their order is the
@@ -4210,13 +4226,20 @@ descendants, never the owner's servers or TUIs.
 layout fence (`.oxlintrc.json`, one import override per context; see
 `ARCHITECTURE.md`) and the rules of `oxlint-plugin-effect` the workspace
 already keeps. The plugin is pinned in the `lint` workspace (`lint/package.json`),
-never the root: it needs `effect` 4.1, and the lint workspace's own `effect`
-4.1.0 meets that peer, while the root's `effect` stays at what opencode-drive
-and the OpenCode SDK are built against (4.0.1, with their 4.0.1 platform
-packages). Moving the root's `effect` breaks every real-OpenCode scenario in
-`HttpApiClient`; `scripts/effect-debt.ts --check` refuses a root dependency on
-the plugin, and `scripts/effect-debt.test.ts` holds opencode-drive to the
-versions it pins. The kept rules are the 20 recommended rules it had
+never the root, and `scripts/effect-debt.ts --check` refuses a root
+dependency on it. The root's `effect` is 4.1.0, pinned with
+`@effect/platform-bun` for the plain-Bun commands, and overrides move
+opencode-drive's exact 4.0.1 `effect` peer and `@effect/platform-node(-shared)`
+to it, so drive, the OpenCode SDK (`@opencode/client`, `/protocol`,
+`/schema`) and the tests share one `effect`. On 2026-11-12 (3d002b7f) a 4.1.0
+root broke every real-OpenCode scenario in `HttpApiClient`: it overrode only
+the platform packages, so the SDK kept its own nested `effect` 4.0.1, two
+instances in one process. `scripts/effect-debt.test.ts` holds the invariant:
+one `effect` entry in the lock, at the root's pin, and drive's platform
+packages and the SDK's `effect` resolving to it; the drive-backed acceptance
+files (each connects through the SDK's `HttpApiClient`) prove that instance on
+real OpenCode. The overrides come out when opencode-drive publishes a peer that
+admits the root's `effect`. The kept rules are the 20 recommended rules it had
 no finding of, and `requireSuppressionReason` (a suppression names its rule
 and gives a reason after ` -- `). Rules enabled since, each once its findings
 were fixed, with a generated test over the real config: `noTestGlobals` (no
