@@ -279,6 +279,9 @@ const childEvent = (name: string, child: string) => (event: HostEvent) => event.
 const point = (event: HostEvent) => Option.getOrElse(Option.fromUndefinedOr(event.durable?.seq), () => -1)
 const eventPoint = (event: HostEvent) => ({ id: event.id || "", seq: point(event), at: Number(event.created) })
 const handle = (child: string) => fixtureCall("kernel", { code: `JSON.stringify((await tools.subagent.handle(${encode(child)})).observation)` })
+const directObservation = (child: string) => fixtureCall("kernel", {
+  code: `JSON.stringify((await tools.subagents({action:"get",sessionID:${encode(child)}})).subagents[0].observation)`,
+})
 const launchChild = (description: string, prompt: string) => `await tools.subagent(${encode({ agent: "worker", description, prompt })})`
 const nextEvent = (events: AsyncIterator<HostEvent>, name: string, accept: (event: HostEvent) => boolean) =>
   observeUntil(events, name, accept).pipe(Effect.timeoutOrElse({ duration: "10 seconds", orElse: () => Effect.fail(fault(`missing fixture event: ${name}`)) }))
@@ -421,10 +424,12 @@ const silentExit = Effect.fn("LifecycleFixture.silentExit")(function* (
   const terminal = yield* nextEvent(events, "silent shell's execution failed", childEvent("session.execution.failed", child))
   const snapshot = yield* promised("silent child snapshot lost", () => instance.sessions.get({ sessionID: child }))
   const barriers = yield* beginBarriers(instance, base, root, child, snapshot, shell)
+  const previous = yield* ask(instance, root, directObservation(child))
   const killed = yield* ask(instance, root, fixtureCall("fixture_shell_suppress", { child, shellID: shell.id }))
   const exit = yield* nextEvent(events, "silent shell exited", (event) => event.type === "shell.exited" && event.data?.id === shell.id)
   const rebuilt = yield* ask(instance, root, handle(child))
   const direct = yield* ask(instance, root, fixtureCall("subagents", { action: "get", sessionID: child }))
+  const current = yield* ask(instance, root, directObservation(child))
   const change = yield* nextEvent(events, "owner persisted an exit", (event) =>
     event.type === "rpc.dotfiles-opencode.kernel.rows.changed" && event.data?.child === child,
   )
@@ -443,6 +448,7 @@ const silentExit = Effect.fn("LifecycleFixture.silentExit")(function* (
   return {
     root, child, inboxID: admitted.id, shellID: shell.id, exit: { id: exit.id || "", at: Number(exit.created) },
     observation: takeAnswer(rebuilt, "kernel"), direct: takeAnswer(direct, "subagents"),
+    previous: takeAnswer(previous, "kernel"), current: takeAnswer(current, "kernel"),
     pending: pending.length, rows, suppressed, scheduled, killed: takeAnswer(killed, "fixture_shell_suppress"),
     gap: takeAnswer(gap, "kernel"), gapRows: gapRows.visible, admittedRemount: gapRows.remount,
   }
@@ -602,12 +608,14 @@ const fixture = Effect.gen(function* () {
     })
     const context = yield* ask(opened, first.root, handle(first.child))
     const { root, child, inboxID } = first.silent
-    const retained = yield* ask(opened, root, handle(child))
+    const retained = yield* ask(opened, root, directObservation(child))
+    const direct = yield* ask(opened, root, fixtureCall("subagents", { action: "get", sessionID: child }))
     const retainedRows = yield* realRows(opened, base, root, child, retained, Option.none(), now + 1)
     yield* promised("native inbox cancellation failed", () => opened.sessions.inbox.cancel({ sessionID: child, inboxID }))
     const cancelled = yield* ask(opened, root, handle(child))
     return { replayed: periods, recovered: takeAnswer(context, "kernel"),
-      retained: takeAnswer(retained, "kernel"), retainedRows: retainedRows.visible, cancelled: takeAnswer(cancelled, "kernel") }
+      retained: takeAnswer(retained, "kernel"), retainedDirect: takeAnswer(direct, "subagents"),
+      retainedRows: retainedRows.visible, cancelled: takeAnswer(cancelled, "kernel") }
   })))
   const seen = yield* model.read
   yield* Console.log(encode({ ...first, ...reopened, content: seen.content, filtered: seen.filtered }))
@@ -637,12 +645,14 @@ const report = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({
   retry: Schema.Struct({ child: Schema.String, read: Schema.String, attempt: Schema.Number, at: Schema.Number, error: Schema.String }),
   silent: Schema.Struct({
     child: Schema.String, shellID: Schema.String, exit: Schema.Struct({ id: Schema.String, at: Schema.Number }),
-    observation: Schema.String, direct: Schema.String, pending: Schema.Number, rows: Schema.Array(Schema.String),
+    observation: Schema.String, direct: Schema.String, previous: Schema.String, current: Schema.String,
+    pending: Schema.Number, rows: Schema.Array(Schema.String),
     killed: Schema.String,
     gap: Schema.String, gapRows: Schema.Array(Schema.String), admittedRemount: Remount, scheduled: Schema.Array(CutEvidence),
     suppressed: Schema.Struct({ row: Schema.String, visible: Schema.Array(Schema.String), remount: Remount }),
   }),
-  opensAt: Schema.Number, retained: Schema.String, retainedRows: Schema.Array(Schema.String), cancelled: Schema.String,
+  opensAt: Schema.Number, retained: Schema.String, retainedDirect: Schema.String,
+  retainedRows: Schema.Array(Schema.String), cancelled: Schema.String,
 })))
 const successOf = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({
   version: Schema.Literal(1), child: Schema.String, revision: Schema.Int,
@@ -709,10 +719,16 @@ const verifyLife = Effect.fn("LifecycleFixture.verifyLife")(function* (result: E
   expect(result.silent.suppressed.visible).toEqual(["waiting"])
   const undetermined = [{ state: "waiting", update: expect.stringContaining("Undetermined:") }]
   expect(result.silent.suppressed.remount).toEqual({ same: true, beforeLinger: undetermined, afterLinger: undetermined, afterClose: 0, afterSecondClose: 0 })
+  const previous = yield* parse(lastLine(result.silent.previous))
+  const current = yield* parse(lastLine(result.silent.current))
+  expect(previous).toMatchObject({ child: result.silent.child, phase: Phase.cases.Continuing.make({ on: "Shell" }) })
+  expect(current).toEqual(silent)
   expect(result.silent.scheduled.map(({ order }) => order)).toEqual(["shell-first", "owner-first"])
   for (const cut of result.silent.scheduled) {
     for (const rows of [cut.live, cut.acrossFirst, cut.outstanding]) expect(rows.map(({ state }) => state)).toEqual(["waiting"])
     expect(cut.after).toEqual(undetermined)
+    expect(previous).toHaveProperty("revision", cut.old)
+    expect(current).toHaveProperty("revision", cut.accepted)
     expect(cut.accepted === cut.current && cut.current > cut.old).toBe(true)
   }
   const gap = yield* parse(lastLine(result.silent.gap))
@@ -721,9 +737,12 @@ const verifyLife = Effect.fn("LifecycleFixture.verifyLife")(function* (result: E
   expect(result.silent.admittedRemount).toMatchObject({ same: true, afterClose: 0, afterSecondClose: 0 })
   const retained = yield* parse(lastLine(result.retained))
   expect(retained).toMatchObject({ phase: Phase.cases.Continuing.make({ on: "Wake" }), basis: "as-of-last-observation" })
+  expect(result.retainedDirect).toContain("continuing (awaiting host wake) (as of last observation)")
   expect(result.retainedRows).toEqual(["waiting"])
   const cancelled = yield* parse(lastLine(result.cancelled))
   expect(cancelled).toMatchObject({ phase: { ...Phase.cases.Settled.make({ outcome: "failed", cause: "PolicyDenied" }) } })
+  yield* Console.log(`native RPC cuts ${encode(result.silent.scheduled)}`)
+  yield* Console.log(`native admission reload ${encode({ before: gap, after: retained, cancelled })}`)
 })
 
 if (import.meta.main && parentEnv.LIFECYCLE_FIXTURE_HOME) {

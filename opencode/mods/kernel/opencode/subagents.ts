@@ -94,6 +94,7 @@ export const sessionOf = (info: Info, observation?: Observation): Session => {
 
 /** The host's sessions, through the plugin context. A session it cannot read is none; a list it cannot read is empty. */
 export const hostOf = (ctx: Plugin.Context, lifecycle: ChildLifecycle): Host => ({
+  parent: (sessionID) => lifecycle.parent(sessionID),
   get: (sessionID) =>
     Effect.map(lifecycle.read(sessionID), Option.map(({ info, observation }) => sessionOf(info, Option.getOrUndefined(observation)))),
   children: (sessionID) =>
@@ -144,7 +145,7 @@ const diagnosticOf = Match.type<NonNullable<Observation["diagnostic"]>>().pipe(M
   StepError: ({ cause }) => `step ended in error (${cause})`,
   RetryScheduled: ({ cause, attempt }) => `host scheduled retry ${attempt} (${cause})`,
 }))
-const observedPhase = (view: Observation) => {
+export const observedPhase = (view: Observation) => {
   if (view.basis !== "as-of-last-observation") return phaseOf(view.phase)
   if (view.phase._tag === "Settled") return "unknown (no current settlement; since before reload)"
   return `${phaseOf(view.phase)} (as of last observation)`

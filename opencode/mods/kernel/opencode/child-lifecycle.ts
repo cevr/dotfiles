@@ -449,9 +449,9 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
     const info = yield* infoOf(child)
     if (!info.parentID) return { info, answer: Option.none() }
     const state = yield* load(child, info.parentID)
-    const mark = readMark(info.metadata)
     let background = workOf(state)
     if (!background && !executionActive(state) && (yield* childWork(child))) background = "Child"
+    const mark = readMark(info.metadata)
     const snapshot = snapshotOf(info, mark, background)
     const observed = present(state, { ...snapshot, stopUncertain: Option.isSome(Option.fromUndefinedOr(state.stopAfter)) }, activation)
     const created = Option.getOrElse(Option.map(Option.fromUndefinedOr(info.time.created), DateTime.toEpochMillis), () => 0)
@@ -491,16 +491,14 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
 
   return {
     read,
-    stopUncertain: (child: string, observed: Option.Option<Observation>) =>
+    parent: (child: string) => infoOf(child).pipe(
+      Effect.map(({ parentID }) => Option.map(Option.fromUndefinedOr(parentID), String)),
+      Effect.option,
+    ),
+    stopUncertain: (child: string, seq: number) =>
       lock.withPermits(1)(Effect.gen(function* () {
         const found = yield* infoOf(child).pipe(Effect.option)
         if (Option.isNone(found) || !found.value.parentID) return
-        const phase = Option.map(observed, (value) => value.phase)
-        const terminal = Option.flatMap(phase, (value) => {
-          if (value._tag === "Settled") return Option.fromUndefinedOr(value.terminal)
-          return Option.none()
-        })
-        const seq = Option.getOrElse(Option.map(terminal, (point) => point.seq), () => -1)
         yield* record(child, found.value.parentID, Fact.cases.StopRequested.make({ child, parent: found.value.parentID, seq }))
       })),
   }

@@ -11,6 +11,10 @@ import { dirname, join } from "node:path"
 import { Clock, Effect, Fiber, Layer, Match, Option, Queue, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { RESTART_NOTICE } from "@dotfiles/opencode-orchestrate/restart-hold"
+import { Hold, Phase } from "../../mods/kernel/child-lifecycle.ts"
+import { RowFact } from "../../mods/kernel/child-row.ts"
+import type { OwnerAnswer } from "../../mods/kernel/opencode/child-row.ts"
+import { MarkRead } from "../../mods/wake/latch.ts"
 import { type Latch, type LatchAsk, Opened } from "@dotfiles/opencode-wake/latch"
 import type { CallLine } from "@dotfiles/opencode-orchestrate/call-line"
 import { KEEP } from "@dotfiles/opencode-orchestrate/compaction"
@@ -77,6 +81,7 @@ interface World {
   readonly refuse?: string
   /** The latches the wakes kept, in order. */
   readonly kept?: Array<LatchAsk & { readonly child: string }>
+  readonly readStart?: (child: string) => ReadonlyArray<OwnerAnswer>
   /** The units each session started steps of, as the call log keeps them. */
   readonly steps?: Readonly<Record<string, ReadonlyArray<string>>>
   /** The runs the status plugin answers. */
@@ -178,7 +183,11 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
             return { dispose: Effect.void }
           }),
       },
-      rpc: Object.assign(() => ({ read: () => Effect.fail({ type: "rpc.unavailable", message: "Kernel is not installed" }) }), {
+      rpc: Object.assign(() => ({ read: ({ children }: { readonly children: ReadonlyArray<string> }) => {
+        const read = world.readStart
+        if (!read) return Effect.fail({ type: "rpc.unavailable", message: "Kernel is not installed" })
+        return Effect.sync(() => ({ rows: children.flatMap(read) }))
+      } }), {
         register: (definition: { readonly id: string }, handlers: Record<string, (input: unknown) => Effect.Effect<unknown>>) =>
           Effect.sync(() => {
             rpc[definition.id] = handlers
@@ -750,6 +759,59 @@ describe("a latch", () => {
             '"}',
           '{"kind":"done","sessionID":"root","callID":"call","child":"ses_latched1","status":"latched"}',
         ])
+      }),
+    ))
+
+  test("a launch reads one owner answer at reply time, after Wake can change it", () =>
+    scenario(
+      Effect.gen(function* () {
+        const heldMark = MarkRead.cases.Readable.make({ mark: {
+          hold: "pace", reason: "held by fixture", opensAt: now + 600_000, recheckAt: now + 120_000, at: now,
+        } })
+        let phase: Phase = Phase.cases.Latched.make({ hold: Hold.cases.Pace.make({}), opensAt: now + 600_000, recheckAt: now + 120_000 })
+        let mark: MarkRead = heldMark
+        let revision = 7
+        const reads: number[] = []
+        const readStart = (child: string): ReadonlyArray<OwnerAnswer> => {
+          reads.push(revision)
+          return [{ child, mark, at: now, fact: RowFact.cases.NoFact.make({}), observation: { child, version: 1, revision, basis: "current", phase } }]
+        }
+        const plugin = yield* start({ now: WEDNESDAY }, { model, pool: held, readStart })
+        const call = yield* plugin.call("subagent", "root", { agent: "explore", description: "look", prompt: "find it" })
+        expect(call.refused).toBeUndefined()
+        revision = 8
+        phase = Phase.cases.Running.make({})
+        mark = MarkRead.cases.Unreadable.make({})
+        const answer = yield* plugin.runTool(call.input)
+        expect(plugin.ran).toEqual([])
+        expect(answer.output).toMatchObject({ sessionID: "ses_latched1", status: "running", observation: { revision: 8, phase } })
+        expect(answer.output).not.toHaveProperty("latch")
+        expect(answer.content).toContain(": running.")
+        expect(answer.content).not.toContain("is latched")
+        expect(reads).toEqual([8])
+      }),
+    ))
+
+  test("a composed launch never repeats native running prose or reuses a hold when the owner cannot confirm it", () =>
+    scenario(
+      Effect.gen(function* () {
+        const phase = Phase.cases.Settled.make({ outcome: "succeeded", cause: "Unknown", terminal: { id: "event", at: now, seq: 9 } })
+        const ordinary = yield* start({ now: WEDNESDAY }, { model, readStart: (child) => [{
+          child, mark: MarkRead.cases.Unreadable.make({}), fact: RowFact.cases.NoFact.make({}), at: now,
+          observation: { child, version: 1, revision: 10, basis: "current", phase },
+        }] })
+        const started = yield* ordinary.call("subagent", "root", { agent: "explore", description: "look", prompt: "find it" })
+        const finished = yield* ordinary.runTool(started.input)
+        expect(finished.output).toMatchObject({ status: "completed", observation: { phase, revision: 10 } })
+        expect(finished.content).not.toContain("working")
+
+        const unavailable = yield* start({ now: WEDNESDAY }, { model, pool: held, readStart: () => [] })
+        const checked = yield* unavailable.call("subagent", "root", { agent: "explore", description: "look", prompt: "find it" })
+        const withoutReply = yield* unavailable.runTool(checked.input)
+        expect(withoutReply.output).toMatchObject({ status: "checking" })
+        expect(withoutReply.output).not.toHaveProperty("observation")
+        expect(withoutReply.output).not.toHaveProperty("latch")
+        expect(unavailable.ran).toEqual([])
       }),
     ))
 

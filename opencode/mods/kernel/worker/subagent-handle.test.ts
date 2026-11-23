@@ -105,6 +105,31 @@ test("a later-issued read cannot displace a newer revision of a live handle", ()
   })),
 )
 
+test("an outstanding owner read hides the previous terminal on a revisioned handle", () =>
+  Effect.runPromise(Effect.gen(function* () {
+    const reply = yield* Deferred.make<Json>()
+    const terminal = {
+      version: 1 as const, child: "ses_c", revision: 7, basis: "current" as const,
+      phase: Phase.cases.Settled.make({ outcome: "failed", cause: "PolicyDenied" }),
+    }
+    const live = yield* Effect.promise(() => runSubagent(ask, (tool) => {
+      if (tool === "subagent") return Effect.runPromise(Effect.succeed({ sessionID: "ses_c", observation: terminal }))
+      return Effect.runPromise(Deferred.await(reply))
+    }))
+    expect(live.observation?.revision).toBe(7)
+    const refresh = live.read()
+    expect(live.state).toBe("running")
+    expect(live.observation?.phase._tag).toBe("Unknown")
+    yield* Deferred.succeed(reply, { subagents: [{
+      ...view("running", "", "new work"),
+      observation: { ...terminal, revision: 8, phase: Phase.cases.Running.make({}) },
+    }] })
+    yield* Effect.promise(() => refresh)
+    expect(live.observation?.revision).toBe(8)
+    expect(live.observation?.phase._tag).toBe("Running")
+  })),
+)
+
 describe("a cell's subagent handle", () => {
   test("starts a subagent as a live handle whose methods call the subagents tool with its sessionID; a restart keeps its data and handle() rebuilds it", () =>
     Effect.runPromise(

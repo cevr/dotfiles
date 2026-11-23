@@ -26,6 +26,7 @@
 import { Option, Schema } from "effect"
 import { Hold, Observation, Phase } from "../child-lifecycle.ts"
 import type { Json } from "../frame.ts"
+import { observedState } from "../subagents.ts"
 
 /** A subagent as the subagents tool answers it. */
 export interface SubagentHandleData {
@@ -97,11 +98,27 @@ const shouldReplace = (
 
 /** `data` as a live handle whose methods reach the subagents tool through `call`. */
 export const makeSubagentHandle = (data: SubagentHandleData, call: CallTool): SubagentHandle => {
-  let snapshot = data
+  const latestState = (view: SubagentHandleData): SubagentHandleData => {
+    if (view.observation && Option.isSome(revisionOf(Option.some(view.observation)))) {
+      return { ...view, state: observedState(view.observation) }
+    }
+    return view
+  }
+  let snapshot = latestState(data)
   let issued = 0
   let read = 0
+  const render = (request: number) => {
+    const observation = Option.fromUndefinedOr(snapshot.observation)
+    const pendingTerminal = request < issued && Option.isSome(revisionOf(observation))
+      && Option.exists(observation, ({ phase }) => phase._tag === "Settled")
+    let shown = snapshot
+    if (pendingTerminal) shown = { ...snapshot, state: "running", observation: unknown(data.sessionID) }
+    // Plain enumerable data properties are required by the worker's snapshot codec.
+    Object.defineProperties(handle, Object.getOwnPropertyDescriptors(shown))
+  }
   const update = (input: JsonRecord) => {
     const request = ++issued
+    render(read)
     return call("subagents", { ...input, sessionID: data.sessionID }).then((result) => {
       const view = recordOf(listedOf(result)[0])
       if (view.sessionID !== data.sessionID) return handle
@@ -111,15 +128,13 @@ export const makeSubagentHandle = (data: SubagentHandleData, call: CallTool): Su
       const decoded = decodeView(view)
       if (Option.isNone(decoded)) return handle
       read = Math.max(read, request)
-      snapshot = { ...snapshot, ...decoded.value, ...observationFields(next) }
-      // Install only the validated data, synchronously, as one view. Data properties
-      // (not accessors) are required by the worker's binding snapshot codec.
-      Object.defineProperties(handle, Object.getOwnPropertyDescriptors(snapshot))
+      snapshot = latestState({ ...snapshot, ...decoded.value, ...observationFields(next) })
+      render(request)
       return handle
     })
   }
   const handle: SubagentHandle = {
-    ...data,
+    ...snapshot,
     stop: () => update({ action: "stop" }),
     read: () => update({ action: "get" }),
     refresh: () => update({ action: "get" }),
