@@ -8,7 +8,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Effect, Fiber, Latch, Layer, Queue, Schedule, Schema, Stream } from "effect"
+import { Cause, Clock, Effect, Fiber, Latch, Layer, Option, Queue, Schedule, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { CACHE_LIFE_MS, WINDOW_MS } from "@dotfiles/opencode-pool/accounts"
@@ -25,7 +25,7 @@ import * as QuotaTest from "@dotfiles/opencode-pool/memory/quota"
 import * as ResetsTest from "@dotfiles/opencode-pool/memory/resets"
 import type { Pace } from "@dotfiles/opencode-pool/pace"
 import type { QuotaReading } from "@dotfiles/opencode-pool/quota"
-import type { PublishedReading } from "@dotfiles/opencode-pool/service"
+import { type PublishedReading, Quota } from "@dotfiles/opencode-pool/service"
 import { StoreSource } from "@dotfiles/opencode-pool/store/store"
 import { type Alerts, type FleetStatus, POOL_STATUS, type PoolsStatus, type Report, type ResetsStatus, type SessionAnswer, type SessionLogins } from "@dotfiles/opencode-pool/status"
 import { MIGRATED } from "@dotfiles/opencode-pool/opencode/migrate"
@@ -127,10 +127,35 @@ const world = (): World => ({
 })
 
 /** The outside systems as test layers over `state`. */
+/** A reading as the ledger keeps it, as far as a test reads it: its windows' use. */
+const decodeStored = Schema.decodeUnknownOption(Schema.Struct({ windows: Schema.Array(Schema.Struct({ utilization: Schema.Number })) }))
+
+/** Fresh, quiet account windows: what the fake reads for a login with no custom quota. */
+const quiet = (now: number) => ({
+  at: now,
+  windows: [
+    { name: "5h", utilization: 0, resetAt: now - now % (5 * HOUR) + 5 * HOUR },
+    { name: "7d", utilization: 0.01, resetAt: now + 72 * HOUR },
+  ],
+})
+
+/** The memory quota, its usage read of a login with no reading answered by `quiet`. */
+const quietUsage = Layer.effect(
+  Quota,
+  Effect.gen(function* () {
+    const base = yield* Quota
+    return Quota.of({
+      ...base,
+      usage: (pool, credentialID) =>
+        base.usage(pool, credentialID).pipe(Effect.flatMap((reading) => Option.match(Option.fromUndefinedOr(reading), { onNone: () => Effect.map(Clock.currentTimeMillis, quiet), onSome: Effect.succeed }))),
+    })
+  }),
+)
+
 const testLayers = (state: World, published: Queue.Dequeue<PublishedReading>, root: string) => () =>
   Layer.mergeAll(
     LoginsTest.layer(state.integration),
-    QuotaTest.layer(new Map([[ANTHROPIC, state.readings]]), new Map([[ANTHROPIC, published]])),
+    quietUsage.pipe(Layer.provide(QuotaTest.layer(new Map([[ANTHROPIC, state.readings]]), new Map([[ANTHROPIC, published]])))),
     LedgerTest.layer(state.storage),
     PeersTest.layer(state.peers),
     FleetTest.layer(state.storage),
@@ -170,6 +195,9 @@ const start = (
     const published = yield* Queue.unbounded<PublishedReading>()
     const answer = ({ credentialID }: { readonly credentialID: string }) =>
       Effect.sync(() => ({ reading: state.readings.get(credentialID) ?? null }))
+    // A usage read of a login the test gave no reading: a fresh, quiet week (`quiet`).
+    const usage = ({ credentialID }: { readonly credentialID: string }) =>
+      Effect.map(Clock.currentTimeMillis, (now) => ({ reading: state.readings.get(credentialID) ?? quiet(now) }))
     // The auth plugin's claim: recorded, never sent anywhere; a reset empties the account's 5-hour window.
     const claims: Array<{ readonly credentialID: string; readonly creditID: string; readonly requestID: string }> = []
     const claimOf = (input: { readonly credentialID: string; readonly creditID: string; readonly requestID: string }) =>
@@ -279,7 +307,7 @@ const start = (
         (definition: { readonly id: string }) => {
           if (definition.id === "dotfiles-opencode.questions") return questionsRpc
           quotaIDs.push(definition.id)
-          return { reading: answer, usage: answer, claim: claimOf, events: { subscribe: () => Stream.fromQueue(published) } }
+          return { reading: answer, usage, claim: claimOf, events: { subscribe: () => Stream.fromQueue(published) } }
         },
         {
           register: (definition: { readonly id: string }, handlers: Record<string, Handler>) =>
@@ -514,8 +542,8 @@ describe("the hooks", () => {
         yield* plugin.respond(529)
         expect(yield* plugin.retry({ retry: true, delay: 2000 })).toEqual({ retry: true, delay: 2000 })
         expect(yield* plugin.request()).toBe("cred-a")
-        // Only where the session's cache is: no hold.
-        expect(ledgerKeys(state)).toEqual(["anthropic/cache/ses_1"])
+        // Only where the session's cache is, beside the readings its dispatch took: no hold.
+        expect(ledgerKeys(state).filter((key) => !key.includes("/reading/"))).toEqual(["anthropic/cache/ses_1"])
       }),
     ))
 
@@ -626,8 +654,8 @@ describe("the limit tally", () => {
           ["anthropic", "5h", [["Opus", 2, 1]]],
         ])
         expect(answer.line).toBe("limit/Mtok 5h: Opus 2.0% n 1 (last 7 days)")
-        // What a peer reads of this host: its tokens on the open row.
-        expect((yield* plugin.report).limits?.rows.map((row) => row.sums)).toEqual([{ Opus: { w: 1_000_000, raw: 1_000_000 } }])
+        // What a peer reads of this host: its tokens on each open row, the 5-hour window's and the week its dispatch read.
+        expect((yield* plugin.report).limits?.rows.map((row) => row.sums)).toEqual([{ Opus: { w: 1_000_000, raw: 1_000_000 } }, { Opus: { w: 1_000_000, raw: 1_000_000 } }])
       }),
     ))
 
@@ -889,6 +917,8 @@ describe("the ledger", () => {
         expect(ledgerKeys(state).sort()).toEqual([
           "anthropic/cache/s1",
           "anthropic/hold/cred-b",
+          // The week s1's dispatch read on the login it went out on.
+          "anthropic/reading/cred-a",
           "anthropic/reading/cred-b",
           "chunk/step/anthropic/<writer>/000000",
         ])
@@ -946,10 +976,12 @@ describe("the sweep", () => {
         expect(state.storage.has("anthropic/hold/cred-a")).toBe(true)
         expect(yield* plugin.request()).toBe("cred-b")
         state.readings.set("cred-b", { at: 1000, windows: [{ name: "7d", utilization: 0.5, resetAt: 3 * HOUR }] })
+        // The dispatch read cred-b's quiet week at once; the sweep reads its newer one only at its next turn.
+        const halfUsed = () => Option.exists(decodeStored(state.storage.get("anthropic/reading/cred-b")), (stored) => stored.windows.some((window) => window.utilization === 0.5))
         yield* TestClock.adjust("4 minutes")
-        expect(state.storage.has("anthropic/reading/cred-b")).toBe(false)
+        expect(halfUsed()).toBe(false)
         yield* TestClock.adjust("1 minute")
-        expect(state.storage.has("anthropic/reading/cred-b")).toBe(true)
+        expect(halfUsed()).toBe(true)
       }),
     ))
 
@@ -1066,13 +1098,14 @@ describe("the RPC", () => {
       }),
     ))
 
-  test("pace on a pool whose logins cannot be read fails, and the hooks and status go on", () =>
+  test("pace on a pool whose logins cannot be read fails, dispatch holds with a retry, and status goes on", () =>
     scenario(
       Effect.gen(function* () {
         const state = world()
         state.integration.connections.delete(ANTHROPIC)
         const plugin = yield* start(undefined, state)
-        expect(yield* plugin.request()).toBeUndefined()
+        const dispatch = yield* Effect.flip(Effect.sandbox(plugin.request()))
+        expect(Cause.pretty(dispatch)).toMatch(/the pool's logins could not be listed; it may go again at \S+Z/)
         expect((yield* Effect.exit(plugin.pace("anthropic")))._tag).toBe("Failure")
         expect((yield* plugin.status).anthropic?.accounts).toEqual([])
       }),
@@ -1083,14 +1116,18 @@ describe("on the live adapters", () => {
   test("a step's tokens reach the tally file this start names, at the next sweep", () =>
     onTestClock(
       Effect.gen(function* () {
-        const plugin = yield* start({ sweepMinutes: 5 }, world(), live())
+        const state = world()
+        const plugin = yield* start({ sweepMinutes: 5 }, state, live())
         yield* TestClock.adjust(HOUR)
         expect(yield* plugin.request("ses_1")).toBe("cred-a")
         const opus = { providerID: "anthropic", id: "claude-opus-5-5" }
         const million = { input: 1_000_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
         yield* plugin.emit({ type: "session.step.started", data: { sessionID: "ses_1", assistantMessageID: "msg_1", model: opus } })
         yield* plugin.emit({ type: "session.step.ended", data: { sessionID: "ses_1", cost: 4, assistantMessageID: "msg_1", tokens: million } })
-        yield* plugin.publish({ credentialID: "cred-a", reading: { at: HOUR, windows: [{ name: "5h", utilization: 0.02, resetAt: 5 * HOUR }] } })
+        yield* TestClock.adjust(MINUTE)
+        const reading = { at: HOUR + MINUTE, windows: [{ name: "5h", utilization: 0.02, resetAt: 5 * HOUR }] }
+        state.readings.set("cred-a", reading)
+        yield* plugin.publish({ credentialID: "cred-a", reading })
         yield* TestClock.adjust("5 minutes")
         yield* settle
         const written = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({ line: Schema.NullOr(Schema.String) })))(readFileSync(plugin.limitsFile, "utf8"))
@@ -1710,4 +1747,3 @@ describe("the push", () => {
       }),
     ))
 })
-

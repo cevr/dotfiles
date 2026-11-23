@@ -422,25 +422,27 @@ describe("the guard", () => {
       }),
     ))
 
-  test("a follow-up naming no agent keeps its child's, and is not paced", () =>
+  test("a follow-up naming no agent keeps its child's; the pace holding its model refuses it with when it opens, its child kept", () =>
     scenario(
       Effect.gen(function* () {
-        const plugin = yield* start(
-          { now: WEDNESDAY },
-          {
-            sessions: { child: { parentID: "root", agent: "verifier" } },
-            model: { providerID: "anthropic", id: "claude" },
-            pool: { anthropic: { ok: false, measured: true, reason: "held" } },
-          },
-        )
-        expect((yield* plugin.call("subagent", "root", { sessionID: "child", prompt: "go on" })).input).toEqual({
+        const sessions = { child: { parentID: "root", agent: "verifier" } }
+        const model = { providerID: "anthropic", id: "claude" }
+        const open = yield* start({ now: WEDNESDAY }, { sessions, model, pool: { anthropic: { ok: true, measured: true, reason: "room" } } })
+        expect((yield* open.call("subagent", "root", { sessionID: "child", prompt: "go on" })).input).toEqual({
           sessionID: "child",
           prompt: "go on",
           agent: "verifier",
         })
-        expect(plugin.logged()).toEqual([
-          '{"kind":"call","sessionID":"root","callID":"call","from":"build","agent":"verifier","reason":"continued","child":"child"}',
+        expect(open.logged()).toEqual([
+          '{"kind":"call","sessionID":"root","callID":"call","from":"build","agent":"verifier","reason":"continued","child":"child","pace":{"ok":true,"measured":true,"reason":"room"}}',
         ])
+        const retryAt = Date.parse(WEDNESDAY) + 600_000
+        const held = yield* start({ now: WEDNESDAY }, { sessions, model, pool: { anthropic: { ok: false, measured: true, reason: "over the weekly line", retryAt } } })
+        const refused = yield* held.call("subagent", "root", { sessionID: "child", prompt: "go on" })
+        expect(refused).toMatchObject({ refused: { message: expect.stringContaining("over the weekly line") } })
+        // No new agent: nothing ran, nothing latched.
+        expect(held.ran).toEqual([])
+        expect(held.kept).toEqual([])
       }),
     ))
 
@@ -661,12 +663,12 @@ describe("the call line's admission", () => {
       }),
     ))
 
-  test("a follow-up, and a start over the Sabbath, ask no pace and record none", () =>
+  test("a follow-up asks its model's pace and records it; a start over the Sabbath asks none and records none", () =>
     scenario(
       Effect.gen(function* () {
         const plugin = yield* start({ now: WEDNESDAY }, { model, sessions: { child: { parentID: "root", agent: "worker" } } })
         yield* plugin.call("subagent", "root", { sessionID: "child", prompt: "more" })
-        expect(admission(plugin.logged())).toEqual({})
+        expect(admission(plugin.logged())).toEqual({ pace: { ok: true, measured: false, reason: "provider is not pooled" } })
         const friday = yield* start({ now: FRIDAY_EVENING }, { model })
         yield* friday.call("subagent", "root", { agent: "explore", prompt: "x" })
         expect(admission(friday.logged())).toEqual({})
@@ -1028,13 +1030,14 @@ describe("Opus first, Codex second", () => {
       }),
     ))
 
-  test("the spend-evenly pace alone holds a planner or verifier but not an implementor, which starts on Opus", () =>
+  test("the spend-evenly pace alone holds every role: an implementor latches on Opus, a verifier falls back to Codex", () =>
     scenario(
       Effect.gen(function* () {
         const asked: Array<string> = []
         const paced = { anthropic: { ok: false, measured: true, soft: true, reason: "the pool's weekly pace is over: its 6 accounts' weeks are at 76.2% used of 100% on average; the spend-evenly line averages 54.5% used of 100% now, and the start holds past it", retryAt: Date.parse(WEDNESDAY) + 86_400_000 } }
         const plugin = yield* start({ now: WEDNESDAY }, { model, variants: ["medium"], others: codexOffered, codex: admits(asked), pool: paced })
-        expect((yield* plugin.call("subagent", "root", { agent: "implementor", prompt: "x" })).input).toEqual({ agent: "implementor", prompt: "x", model: "anthropic/claude-opus#medium" })
+        expect((yield* plugin.call("subagent", "root", { agent: "implementor", prompt: "x" })).input).toMatchObject({ agent: "implementor", model: "anthropic/claude-opus#medium", sessionID: "ses_latched1" })
+        expect(plugin.kept).toHaveLength(1)
         expect((yield* plugin.call("subagent", "root", { agent: "verifier", prompt: "x" })).input).toMatchObject({ model: "openai/gpt-6.1-sol#medium" })
       }),
     ))
