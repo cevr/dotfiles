@@ -30,14 +30,16 @@ const freezeAt = (places: ReceiptPlaces, request: InputRequest) => Effect.result
 const readTwiceAt = (places: ReceiptPlaces, ref: SourceRef) =>
   ReceiptSource.use((source) => Effect.forEach([1, 2], () => Effect.result(source.read(ref)))).pipe(Effect.provide(layer(places)))
 
-/** The swapper: until the stop file exists, rename the good file's copy over the name, then a fresh link to the outside file. */
+/** Race through bursts of renames, with a good interval so double observations can settle even on a loaded host. */
 const SWAPPER = `import { copyFileSync, existsSync, renameSync, symlinkSync } from "node:fs"
 const [name, good, outside, stop] = process.argv.slice(2)
 for (let flips = 0; !existsSync(stop); flips++) {
   copyFileSync(good, name + ".good")
   renameSync(name + ".good", name)
+  if (flips % 64 === 0) await Bun.sleep(150)
   symlinkSync(outside, name + ".link")
   renameSync(name + ".link", name)
+  if (flips % 64 === 0) await Bun.sleep(25)
 }
 `
 
@@ -235,8 +237,11 @@ const componentBarriers = Effect.gen(function* () {
   // that are not directory identities at all (a symlink to a sibling, or a FIFO).
   const cases = [
     { phase: "before-setup", kinds: ["link", "fifo"] },
+    { phase: "missing-at-setup", kinds: ["link", "directory", "fifo"] },
     { phase: "before-open", kinds: ["link", "directory", "fifo"] },
     { phase: "after-open", kinds: ["link", "directory", "fifo"] },
+    { phase: "before-recheck", kinds: ["link", "directory", "fifo"] },
+    { phase: "after-recheck", kinds: ["link", "directory", "fifo"] },
   ] as const
   yield* Effect.forEach(["top", "inner", "receipts"].flatMap((_, depth) =>
     cases.flatMap(({ phase, kinds }) => kinds.map((kind) => ({ depth, phase, kind }))),
@@ -264,9 +269,9 @@ const componentBarriers = Effect.gen(function* () {
         Match.when("fifo", () => Effect.sync(() => expect(spawnSync(["mkfifo", replacement]).exitCode).toBe(0))),
         Match.exhaustive,
       )
-      if (phase === "before-setup") {
+      if (phase === "before-setup" || phase === "missing-at-setup") {
         yield* fs.rename(target, saved)
-        yield* fs.rename(replacement, target)
+        if (phase === "before-setup") yield* fs.rename(replacement, target)
       }
       const spawner = ChildProcessSpawner.make((command) =>
         Effect.gen(function* () {
@@ -274,9 +279,11 @@ const componentBarriers = Effect.gen(function* () {
           if (command._tag !== "StandardCommand") return yield* Effect.die("unexpected pipeline")
           const [flag, source, separator, bound, folder, name, cap] = command.args
           if (!Predicate.isString(source) || flag !== "-e" || separator !== "--" || !Predicate.isString(bound) || !Predicate.isString(folder) || !Predicate.isString(name) || !Predicate.isString(cap)) return yield* Effect.die("unexpected reader")
-          const hook = `if ($part eq $hook && !-e $marker) { rename($target, $saved) or die $!; rename($replacement, $target) or die $!; open(my $m, '>', $marker) or die $!; close($m); }`
+          const pass = phase === "before-recheck" || phase === "after-recheck" ? "!$first_walk" : "$first_walk"
+          const move = phase === "missing-at-setup" ? "" : "rename($target, $saved) or die $!;"
+          const hook = `if (${pass} && $part eq $hook && !-e $marker) { ${move} rename($replacement, $target) or die $!; open(my $m, '>', $marker) or die $!; close($m); }`
           const anchor = Match.value(phase).pipe(
-            Match.when("before-open", () => "    my $id = shift @expected;"),
+            Match.whenOr("before-open", "before-recheck", "missing-at-setup", () => "    my $id = shift @expected;"),
             Match.orElse(() => "      chdir($dir) && close($dir) or answer('U');"),
           )
           if (!source.includes(anchor)) return yield* Effect.die("directory barrier lost its seam")
@@ -292,7 +299,8 @@ const componentBarriers = Effect.gen(function* () {
       if (phase !== "before-setup") expect(yield* fs.exists(marker)).toBe(true)
       const safe = Result.match(outcome, {
         onFailure: (error) => error._tag === "InputUnsettled",
-        onSuccess: (snapshot) => snapshot.artifacts.every((artifact) => artifact.text === good && artifact.digest === byteHash(good)),
+        onSuccess: (snapshot) => snapshot.refused.length === 1 ||
+          (snapshot.artifacts.length === 1 && snapshot.artifacts.every((artifact) => artifact.text === good && artifact.digest === byteHash(good))),
       })
       expect({ depth, phase, kind, safe }).toEqual({ depth, phase, kind, safe: true })
     }), { discard: true },

@@ -19,15 +19,18 @@ const run = Effect.runPromise;
 const logs = root + "/receipts-test";
 const record = root + "/state/installed.json";
 const mark = root + "/state/handoff.json";
+const git = Bun.spawnSync(["git", "init", "--quiet", root]);
+if (git.exitCode !== 0) throw new Error(git.stderr.toString());
 const options = { record, launcher: root + "/bin/oc", resident: root };
 const sha = (digit) => digit.repeat(40);
-const first = { head: sha("2"), tree: sha("5"), kind: "accept", repo: root, at: "2026-11-23T01:00:00.000Z", checks: [{ command: "true", code: 0, seconds: 1 }] };
+const first = { head: sha("2"), tree: sha("5"), kind: "round", repo: root, at: "2026-11-23T01:00:00.000Z", checks: [{ command: "true", code: 0, seconds: 1 }] };
 const second = { ...first, checks: [{ command: "false", code: 1, seconds: 1 }] };
 const build = (n) => ({ ...options, built: root + "/build", share: root + "/share", version: "2.2.7-prime." + n + n, pid: 1000 + n,
   lock: root + "/state/builds.lock", dotfiles: sha(String(n)), fork: sha(String(n)) });
 writeFileSync(root + "/build", "fixture");
 const cases = [
-  ["receipt", () => run(work.receipts(logs).write(first)), () => run(work.receipts(logs).write(second)), logs + "/receipts/" + first.head + ".accept.json"],
+  ["receipt", () => run(work.receipts(logs).write(first)), () => run(work.receipts(logs).write(second)), logs + "/receipts/" + first.head + ".round.json"],
+  ["git-mirror", () => run(work.receipts(logs).write(first)), () => run(work.receipts(logs).write(second)), root + "/.git/rift-receipt.json"],
   ["land", () => run(Landing.use((x) => x.record({ head: first.head, base: sha("1"), units: [], merge: firstMerge(first), at: first.at })).pipe(Effect.provide(work.layer({ logs })))),
     () => run(Landing.use((x) => x.record({ head: first.head, base: sha("1"), units: [], merge: firstMerge(second), at: first.at })).pipe(Effect.provide(work.layer({ logs })))),
     logs + "/receipts/" + first.head + ".land.json"],
@@ -70,7 +73,7 @@ describe("review-input publication", () => {
       expect({ exit: Number(yield* child.exitCode), error, rows: out.trim().split("\n") }).toEqual({
         exit: 0,
         error: "",
-        rows: ["receipt", "land", "stage", "install", "handoff"].map((name) => `${name}:true:true:true`),
+        rows: ["receipt", "git-mirror", "land", "stage", "install", "handoff"].map((name) => `${name}:true:true:true`),
       })
     }).pipe(Effect.scoped, Effect.timeout("10 seconds")),
   )
@@ -88,6 +91,7 @@ describe("review-input publication", () => {
       const mark = yield* read("mods/update/process/mark.ts")
       expect(landing.match(/yield\* publishReviewInput\("(?:write receipt|land record)", (?:file|kept),/g)).toHaveLength(3)
       expect(landing.match(/writeFileSync\([^,\n]+,/g)).toEqual(["writeFileSync(fd,"])
+      expect(landing).toMatch(/openSync\(temp, "wx"\)[\s\S]*?writeFileSync\(fd, text\)[\s\S]*?fsyncSync\(fd\)[\s\S]*?renameSync\(temp, file\)[\s\S]*?fsyncSync\(parent\)/)
       expect(update).toMatch(/publishReviewInput\(step, path, text\)/)
       expect(record).toMatch(/publishText\("write the installed record", settings\.record,/)
       expect(mark).toMatch(/publishText\("mark the running handoff", path,/)

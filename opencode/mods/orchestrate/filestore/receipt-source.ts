@@ -49,21 +49,17 @@ sub same_dir {
 }
 chdir('/') or answer('U');
 same_dir('.', shift @bound) or answer('U');
-my @observed;
 sub walk {
-  my ($allow_absent) = @_;
-  my (@expected) = $allow_absent ? @bound : @observed;
+  my ($first_walk) = @_;
+  my @expected = @bound;
   for my $part (@parts) {
     my $id = shift @expected;
     unless (sysopen(my $dir, $part, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK)) {
-      answer('A') if $allow_absent && !defined($id) && $! == ENOENT;
+      answer('A') if $first_walk && !defined($id) && $! == ENOENT;
       answer('U');
     } else {
-      my @found = stat($dir);
-      answer('U') unless @found;
-      my $actual = "$found[0]:$found[1]";
-      answer('U') if defined($id) && $actual ne $id;
-      push @observed, $actual if $allow_absent;
+      # Nothing created after setup can supply a missing directory identity.
+      answer('U') unless defined($id) && same_dir($dir, $id);
       chdir($dir) && close($dir) or answer('U');
     }
   }
