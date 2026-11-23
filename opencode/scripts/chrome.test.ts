@@ -5,11 +5,11 @@
 // start. No real Chrome runs here.
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { serve, spawn, spawnSync } from "bun"
-import { Effect, FileSystem, Option, Path, Result, Stream } from "effect"
+import { Duration, Effect, FileSystem, Option, Path, Result, Schedule, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { FetchHttpClient, HttpClient } from "effect/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
-import { browsersIn, chromeArgs, DEFAULTS, KEYCHAIN_FLAGS, launch, start, stop } from "./chrome.ts"
+import { browsersIn, chromeArgs, DEFAULTS, holders, KEYCHAIN_FLAGS, launch, start, stop } from "./chrome.ts"
 
 const PROFILE = "/run/chrome-x/profile"
 
@@ -207,7 +207,7 @@ describe("a launch", () => {
       const port = Number(held.port)
       const refused = yield* Effect.flip(start({ ...DEFAULTS, port }, Option.some(`${dir}/run`), binary))
       expect(refused.message).toContain(`port ${port} is in use by pid ${process.pid}`)
-      expect(yield* fs.readDirectory(`${dir}/run`)).toEqual([])
+      expect(yield* fs.exists(`${dir}/run`)).toBe(false)
       expect(yield* answers(port)).toBe(true)
     }),
   )
@@ -295,6 +295,127 @@ describe("the command line", () => {
       expect([onFixed.code, onFixed.stderr]).toEqual([0, ""])
       expect(onFixed.stdout).toContain(`"endpoint":"${fakeEndpoint(fixed)}","port":${fixed},`)
       expect((yield* cli(["stop", String(/"pid":(\d+)/.exec(onFixed.stdout)?.[1])])).code).toBe(0)
+    }),
+  )
+})
+
+/**
+ * A browser that parks at a point between its spawn and its readiness, as $STANDIN_PARK names it: `spawned` (nothing
+ * written yet) or `portfile` (its port file written, naming a port nothing answers on). It writes its pid to
+ * `$STANDIN_GATE/parked` once there, so a signal lands at that exact point, and never becomes ready.
+ */
+const PARKED = `#!/usr/bin/env bun
+const profile = process.argv.find((arg) => arg.startsWith("--user-data-dir="))?.slice(16)
+require("node:fs").mkdirSync(profile, { recursive: true })
+if (process.env.STANDIN_PARK === "portfile") await Bun.write(profile + "/DevToolsActivePort", "1\\n/devtools/browser/parked\\n")
+await Bun.write(process.env.STANDIN_GATE + "/parked", String(process.pid))
+setTimeout(() => process.exit(0), 60000)
+`
+
+/** A process that holds a loopback port with a synthetic secret in its arguments, writing the port to the file it is given. */
+const HOLDER = `#!/usr/bin/env bun
+const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("holder") })
+await Bun.write(process.argv[2], String(server.port))
+setTimeout(() => process.exit(0), 60000)
+`
+
+/** A synthetic credential marker a holder carries in its argv; no real secret. */
+const MARKER = "SYNTHETIC-CREDENTIAL-MARKER-7f3a"
+
+/** The pids whose command line names `dir`: every process a test's launch made there (browser, watchdog). */
+const census = (dir: string) =>
+  spawnSync(["ps", "-axww", "-o", "pid=,command="], { stdout: "pipe" })
+    .stdout.toString()
+    .split("\n")
+    .filter((line) => line.includes(dir) && !line.includes("ps -axww"))
+    .map((line) => Number(line.trim().split(/\s+/)[0]))
+
+/** `check` again every 20 ms until it holds, 10 s at most; whether it held. */
+const eventually = (check: () => boolean) =>
+  Effect.sync(check).pipe(
+    Effect.repeat({ schedule: Schedule.spaced(Duration.millis(20)), until: (held) => held, times: 500 }),
+    Effect.map(() => check()),
+  )
+
+describe("an interrupted launch", () => {
+  /** The CLI on a planted stand-in, parked at `park`; its handle, the run folder and the parked browser's pid. */
+  const parkedLaunch = (dir: string, park: string, name: string) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const path = yield* Path.Path
+      const script = yield* path.fromFileUrl(new URL("./chrome.ts", import.meta.url))
+      const gate = `${dir}/gate-${name}`
+      yield* fs.makeDirectory(gate, { recursive: true })
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+      const env = { PLAYWRIGHT_BROWSERS_PATH: `${dir}/pw`, HOME: dir, STANDIN_PARK: park, STANDIN_GATE: gate }
+      const handle = yield* spawner.spawn(ChildProcess.make("bun", [script, "launch", "--dir", `${dir}/run`], { env, extendEnv: true, stdin: "ignore", forceKillAfter: "5 seconds" }))
+      expect(yield* eventually(() => spawnSync(["test", "-s", `${gate}/parked`]).exitCode === 0)).toBe(true)
+      const browser = Number(yield* fs.readFileString(`${gate}/parked`))
+      expect(alive(browser)).toBe(true)
+      return { handle, browser }
+    })
+
+  const plantParked = (dir: string) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      yield* fs.makeDirectory(`${dir}/pw/chromium-1255/chrome-linux64`, { recursive: true })
+      yield* plant(`${dir}/pw/chromium-1255/chrome-linux64`, "chrome", PARKED)
+    })
+
+  it.scopedLive.layer(BunServices.layer)("SIGTERM or SIGINT at each point between spawn and readiness ends the browser and removes the profile before the launcher exits, handing back nothing", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "chrome-signal-" })
+      yield* plantParked(dir)
+      expect(census(dir)).toEqual([])
+      for (const killSignal of ["SIGTERM", "SIGINT"] as const)
+        for (const park of ["spawned", "portfile"]) {
+          const { handle, browser } = yield* parkedLaunch(dir, park, `${killSignal}-${park}`)
+          yield* handle.kill({ killSignal })
+          const [stdout, code] = yield* Effect.all([text(handle.stdout), handle.exitCode], { concurrency: 2 })
+          // The finalizers ran before the launcher exited: nothing to wait for.
+          expect([killSignal, park, stdout, alive(browser), yield* fs.readDirectory(`${dir}/run`)]).toEqual([killSignal, park, "", false, []])
+          expect(Number(code)).not.toBe(0)
+        }
+      // The watchdogs read their word and ended: no process the launches made is left.
+      expect(yield* eventually(() => census(dir).length === 0)).toBe(true)
+    }),
+  )
+
+  it.scopedLive.layer(BunServices.layer)("SIGKILL or SIGHUP, which run no finalizer, leave the browser and the profile to the watchdog, which ends and removes them", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "chrome-killed-" })
+      yield* plantParked(dir)
+      for (const killSignal of ["SIGKILL", "SIGHUP"] as const) {
+        const { handle, browser } = yield* parkedLaunch(dir, "portfile", killSignal)
+        yield* handle.kill({ killSignal })
+        yield* handle.exitCode.pipe(Effect.ignore)
+        expect([killSignal, yield* eventually(() => !alive(browser))]).toEqual([killSignal, true])
+        expect(yield* eventually(() => spawnSync(["sh", "-c", `[ -z "$(ls -A '${dir}/run')" ]`]).exitCode === 0)).toBe(true)
+      }
+      expect(yield* eventually(() => census(dir).length === 0)).toBe(true)
+    }),
+  )
+})
+
+describe("a refusal for a held port", () => {
+  it.scopedLive.layer(BunServices.layer)("names the holder by pid and program, never its arguments, and leaves it serving", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "chrome-holder-" })
+      const holderScript = (yield* plant(dir, "holder", HOLDER)).path
+      const binary = yield* plant(dir, "fake-chrome", FAKE)
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+      const holder = yield* spawner.spawn(ChildProcess.make(holderScript, [`${dir}/port`, `--token=${MARKER}`], { stdin: "ignore", forceKillAfter: "2 seconds" }))
+      expect(yield* eventually(() => spawnSync(["test", "-s", `${dir}/port`]).exitCode === 0)).toBe(true)
+      const port = Number(yield* fs.readFileString(`${dir}/port`))
+      const refused = yield* Effect.flip(start({ ...DEFAULTS, port }, Option.some(`${dir}/run`), binary))
+      expect(refused.message).toContain(`port ${port} is in use by pid ${holder.pid} (`)
+      expect(refused.message).not.toContain(MARKER)
+      expect(holders([holder.pid])).toBe(`pid ${holder.pid} (bun)`)
+      expect(yield* answers(port)).toBe(true)
+      expect(alive(holder.pid)).toBe(true)
     }),
   )
 })

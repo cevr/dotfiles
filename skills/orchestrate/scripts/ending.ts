@@ -737,40 +737,8 @@ export function handBackFrom(role: Role, text: string, atoms: ReadonlySet<Atom>)
   return { state: first.state, label: first.label, evidence: governing, others, lastAttempt: atoms.has('attempted') };
 }
 
-/**
- * A label's word: the literal a hand-back writes for it, without the words that say where it goes. It is the label
- * through the end of its first code span (`refused: <what>`, marked `base`); with no code span, its words before the
- * first ", " (a Blocker or Major); else all of it (none: it is no item left). Never empty, and the labels of one
- * role's list have distinct words (ending.test.ts checks both), so a hand-back naming the word names one label.
- */
-export function labelWord(label: string): string {
-  const open = label.indexOf('`');
-  const close = open < 0 ? -1 : label.indexOf('`', open + 1);
-  const word = close > 0 ? label.slice(0, close + 1) : label.includes(', ') ? label.slice(0, label.indexOf(', ')) : label;
-  if (word.trim() === '') throw new Error(`the label "${label}" has no word`);
-  return word;
-}
-
-const shown = (value: unknown) => (value === undefined ? 'unsaid' : JSON.stringify(value));
-
-/**
- * Every field of a hand-back that differs from the one due, each named with both values. Each comparison is exact:
- * the state and the evidence equal the due ones; the label equals the due label or its word (labelWord), never a
- * shorter prefix or a blank; `others` is an array holding exactly the due obstacles, an absent one unsaid, not empty;
- * the last attempt is the due boolean.
- */
-export function judgeHandBack(due: HandBack, given: unknown): string[] {
-  if (typeof given !== 'object' || given === null) return [`the hand-back is ${typeof given === 'string' ? `prose ("${given}")` : String(given)}, not one whose fields can be checked`];
-  const got = given as Record<keyof HandBack, unknown>;
-  const out: string[] = [];
-  if (got.state !== due.state) out.push(`state: due ${due.state}, given ${shown(got.state)}`);
-  if (got.label !== due.label && got.label !== labelWord(due.label)) out.push(`label: due ${labelWord(due.label)}, given ${shown(got.label)}`);
-  if (got.evidence !== due.evidence) out.push(`evidence: due ${String(due.evidence)}, given ${shown(got.evidence)}`);
-  const sorted = (rows: ReadonlyArray<unknown>) => JSON.stringify([...rows].map(String).sort());
-  if (!Array.isArray(got.others) || sorted(got.others) !== sorted(due.others)) out.push(`others: due [${due.others.join(', ')}], given ${Array.isArray(got.others) ? `[${got.others.join(', ')}]` : shown(got.others)}`);
-  if (got.lastAttempt !== due.lastAttempt) out.push(`last attempt: due ${due.lastAttempt ? 'present' : 'absent'}, given ${got.lastAttempt === true ? 'present' : got.lastAttempt === false ? 'absent' : shown(got.lastAttempt)}`);
-  return out;
-}
+// The hand-back judge (the decoder of a hand-back and its comparison with the one due) is opencode/mods/orchestrate/hand-back.ts:
+// it needs Effect Schema, and this file stays import-free (agents.test.ts copies it alone into a fixture).
 
 /** A prompt's second table read back: each verdict with its parsed condition. */
 export function readVerdicts(text: string): Array<{ readonly verdict: string; readonly rule: ReturnType<typeof parseWhen> }> {
