@@ -201,6 +201,51 @@ live_path() { # path from the top level -> path here
     die "no mount for $rel"
 }
 
+# The caches (storage.conf's cache lines) as paths here: they are left out of the copy (the target
+# makes each an empty limited subvolume, and the tools fill it again). ~ is @home's mount point here,
+# /workspaces @workspaces'.
+HB_STORAGE_CONF=${HB_STORAGE_CONF:-$(dirname "$self")/storage.conf}
+cache_paths() {
+    local kind path rest pair home='' ws=''
+    for pair in $HB_SYNC_SUBVOLS; do
+        case ${pair%%:*} in @home) home=${pair#*:} ;; @workspaces) ws=${pair#*:} ;; esac
+    done
+    [[ -f $HB_STORAGE_CONF ]] || return 0
+    while read -r kind path rest; do
+        [[ $kind == cache ]] || continue
+        case $path in
+        "~" | "~"/*) [[ -n $home ]] && echo "$home${path#"~"}" ;;
+        /workspaces | /workspaces/*) [[ -n $ws ]] && echo "$ws${path#/workspaces}" ;;
+        esac
+    done < <(sed -e 's/#.*//' "$HB_STORAGE_CONF" | grep .)
+    return 0
+}
+under() { [[ $1 == "$2" || $1 == "$2"/* ]]; } # path dir
+
+# A read-only snapshot of the live subvolume $1 at $2 without the caches inside it: a writable
+# snapshot, the caches' directories removed from it (only from this snapshot, which sync.sh made: the
+# live caches stay), then read-only. A cache inside a nested subvolume goes with that one's snapshot.
+snapshot_for_send() { # live dest
+    local live=$1 dest=$2 c inside=()
+    for c in "${caches[@]}"; do
+        under "$c" "$live" && [[ $c != "$live" ]] && inside+=("${c#"$live"/}")
+    done
+    if ((${#inside[@]} == 0)); then
+        btrfs subvolume snapshot -r "$live" "$dest" >/dev/null
+        return
+    fi
+    btrfs subvolume snapshot "$live" "$dest" >/dev/null
+    for c in "${inside[@]}"; do
+        # Inside this snapshot's own tree only: a path through a nested subvolume is an empty
+        # directory here and does not resolve.
+        if [[ -d $dest/$c && $(stat -f -c %i "$dest/$c") == "$(stat -f -c %i "$dest")" ]]; then
+            say "leaving out the cache $live/$c"
+            rm -rf --one-file-system "${dest:?}/$c"
+        fi
+    done
+    btrfs property set -ts "$dest" ro true
+}
+
 send_opts=()
 if btrfs send --help 2>&1 | grep -q -- --compressed-data; then send_opts=(--proto 2 --compressed-data); fi
 
@@ -215,7 +260,18 @@ do_pass() {
     dir=$HB_SNAPDIR/$n
     ((dry)) && dir=$HB_SNAPDIR/$n.dry
     install -d -m 700 "$dir"
+    mapfile -t caches < <(cache_paths)
     list=$(list_subvols)
+    # A cache that is a subvolume of its own (or inside one) is not sent at all.
+    local kept='' line c skip
+    while IFS= read -r line; do
+        skip=0
+        for c in "${caches[@]}"; do
+            if under "$(live_path "$(cut -f3 <<<"$line")")" "$c"; then skip=1; say "leaving out the cache subvolume $c"; fi
+        done
+        ((skip)) || kept+=$line$'\n'
+    done <<<"$list"
+    list=${kept%$'\n'}
     [[ -n $list ]] || die "nothing to copy"
     printf '%s\n' "$list" | cut -f1,3,4 > "$dir.manifest"
     # What the target already holds, by pass.
@@ -237,7 +293,11 @@ do_pass() {
     fi
     # Read-only snapshots of everything first, so one pass is one moment per subvolume.
     while IFS=$'\t' read -r uuid pu rel ro; do
-        [[ -d $dir/$uuid ]] || btrfs subvolume snapshot -r "$(live_path "$rel")" "$dir/$uuid" >/dev/null
+        # A snapshot left writable (a pass cut short while it left the caches out) is made again.
+        if [[ -d $dir/$uuid && $(btrfs property get -ts "$dir/$uuid" ro) == ro=false ]]; then
+            btrfs subvolume delete "$dir/$uuid" >/dev/null
+        fi
+        [[ -d $dir/$uuid ]] || snapshot_for_send "$(live_path "$rel")" "$dir/$uuid"
     done <<<"$list"
     # Parents before children, so a Rift can be sent against its warm source.
     declare -A in_list=() done_=()
