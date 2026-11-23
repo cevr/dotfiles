@@ -13,7 +13,8 @@
 // `<folder>/chrome.log` Chrome's output. The browser is Chrome for Testing from Playwright's cache (newest first),
 // then agent-browser's, then Playwright's headless shell (`--shell` puts the shell first); never the owner's Google
 // Chrome. `launch` prints one JSON line, `{ endpoint, port, pid, folder, binary }`, the endpoint the browser's
-// DevTools WebSocket, and leaves Chrome running in a process group of its own; `stop <pid>` ends that group and
+// DevTools WebSocket once the browser this launch started answers on loopback at its port (`--port N`, or for 0 the
+// one Chrome chose; another process on that port fails the launch and is left alone), and leaves Chrome running in a process group of its own; `stop <pid>` ends that group and
 // removes the folder, and refuses a pid that is not a Chrome this launcher started.
 //
 // As a library: `chromeArgs` (the argument list, refusing what it must), `findChrome`, `start`, `stop`, and `launch`,
@@ -23,9 +24,10 @@
 // Exit: 0 done, 1 refused or failed (the reason on stderr).
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { file, spawn, spawnSync } from "bun"
+import { file, spawn, spawnSync, which } from "bun"
 import { Array as Arr, Config, Console, Data, Duration, Effect, Exit, FileSystem, Match, Option, Order, Result, Schedule, Schema } from "effect"
 import { Argument, Command, Flag } from "effect/cli"
+import { FetchHttpClient, HttpClient } from "effect/http"
 
 /** The flags that keep a Chrome off the login keychain, last on its command line. */
 export const KEYCHAIN_FLAGS = ["--use-mock-keychain", "--password-store=basic"] as const
@@ -194,10 +196,72 @@ const commandOf = (pid: number): Option.Option<string> => {
 /** Sends `signal` to the process group `pid` leads, through kill(1). */
 const signalGroup = (pid: number, signal: "TERM" | "KILL") => spawnSync(["/bin/kill", `-${signal}`, "--", `-${pid}`], { stdout: "ignore", stderr: "ignore" })
 
+/** Where lsof lives (macOS /usr/sbin, Linux /usr/bin), searched whatever the caller's PATH holds. */
+const LSOF_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+
+/** The pids that listen on TCP `port`, on any address, by lsof; a failure when lsof is missing. */
+const listenersOf = (port: number): Result.Result<ReadonlyArray<number>, string> =>
+  Option.match(Option.fromNullishOr(which("lsof", { PATH: LSOF_PATH })), {
+    onNone: () => Result.fail(`no lsof in ${LSOF_PATH}: cannot tell which process holds port ${port}`),
+    onSome: (lsof) => {
+      const out = spawnSync([lsof, "-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"], { stdout: "pipe", stderr: "ignore" })
+      return Result.succeed(out.stdout.toString().split("\n").filter((line) => /^\d+$/.test(line)).map(Number))
+    },
+  })
+
+/** How the refusal names the processes holding a port: each pid with its command. */
+const holders = (pids: ReadonlyArray<number>): string =>
+  pids.map((pid) => `pid ${pid} (${Option.getOrElse(commandOf(pid), () => "gone").slice(0, 120)})`).join(", ")
+
+/** Not ready yet: the port file, the endpoint or the listening socket is not there. */
+class NotYet extends Data.TaggedError("NotYet")<{}> {}
+
+/** What `/json/version` answers: the browser's WebSocket. */
+const decodeVersion = Schema.decodeUnknownOption(Schema.Struct({ webSocketDebuggerUrl: Schema.String }))
+
+/** The WebSocket path `/json/version` names on loopback `port`; NotYet while nothing answers there. */
+const versionPath = (port: number) =>
+  Effect.gen(function* () {
+    const client = yield* HttpClient.HttpClient
+    const body = yield* client.get(`http://127.0.0.1:${port}/json/version`).pipe(Effect.flatMap((response) => response.json), Effect.timeout(Duration.seconds(1)))
+    return yield* Effect.fromOption(Option.flatMap(decodeVersion(body), (version) => Option.fromNullishOr(/^ws:\/\/[^/]+(\/.+)$/.exec(version.webSocketDebuggerUrl)?.[1])))
+  }).pipe(
+    Effect.mapError(() => new NotYet()),
+    Effect.provide(FetchHttpClient.layer),
+  )
+
+/**
+ * The endpoint of the browser `pid` once it answers DevTools on loopback: at the port Chrome wrote to its profile's
+ * `DevToolsActivePort` when the launch asked for any free port (0), else at the port it asked for (Chrome writes no
+ * file then). Either way it is this launch's browser only when `pid` itself listens on that port: an answer from
+ * another process there fails with its pid, and is never adopted. NotYet until then.
+ */
+const readiness = (pid: number, asked: number, profile: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const port = yield* Option.match(Option.liftPredicate(asked, (each) => each > 0), {
+      onSome: (fixed) => Effect.succeed(fixed),
+      onNone: () =>
+        fs.readFileString(`${profile}/DevToolsActivePort`).pipe(
+          Effect.mapError(() => new NotYet()),
+          Effect.flatMap((text) => Effect.fromOption(Option.map(endpointOf(text), (each) => each.port))),
+          Effect.mapError(() => new NotYet()),
+        ),
+    })
+    const path = yield* versionPath(port)
+    const listeners = listenersOf(port)
+    if (Result.isFailure(listeners)) return yield* new ChromeError({ message: listeners.failure })
+    if (listeners.success.includes(pid)) return { port, path }
+    if (listeners.success.length > 0) return yield* new ChromeError({ message: `port ${port} answers DevTools from another process, ${holders(listeners.success)}, not this launch's browser` })
+    return yield* new NotYet()
+  })
+
 /**
  * Starts Chrome under a fresh folder in `dir` (the system's temp directory when none) and leaves it running in a
- * process group of its own; fails, removing the folder and ending the browser, when a flag is refused or the
- * DevTools port is not open in time.
+ * process group of its own. Ready when that browser answers DevTools on loopback at the port it was given or chose
+ * (`readiness`). Fails at once when a flag is refused or a fixed port is already held, before anything starts;
+ * fails, ending only the browser it started and removing its folder, when that browser ends, another process
+ * answers on its port, or it is not ready in time.
  */
 export const start = Effect.fn("Chrome.start")(function* (options: Options, dir: Option.Option<string>, binary: Binary) {
   const fs = yield* FileSystem.FileSystem
@@ -209,18 +273,24 @@ export const start = Effect.fn("Chrome.start")(function* (options: Options, dir:
   const removeFolder = fs.remove(at.folder, { recursive: true }).pipe(Effect.ignore)
   const args = chromeArgs(options, at.profile)
   if (Result.isFailure(args)) return yield* removeFolder.pipe(Effect.andThen(new ChromeError({ message: args.failure })))
+  if (options.port > 0) {
+    // A fixed port another process holds: fail before starting anything, and leave that process alone.
+    const held = Result.getOrElse(listenersOf(options.port), () => [])
+    if (held.length > 0) return yield* removeFolder.pipe(Effect.andThen(new ChromeError({ message: `port ${options.port} is in use by ${holders(held)}: pick another --port, or 0 for any free one` })))
+  }
   const child = spawn([binary.path, ...args.success], { detached: true, stdin: "ignore", stdout: file(at.log), stderr: file(at.log) })
   child.unref()
   const pid = child.pid
   const failed = (message: string) => Effect.sync(() => signalGroup(pid, "KILL")).pipe(Effect.andThen(removeFolder), Effect.andThen(new ChromeError({ message })))
-  const opened = fs.readFileString(`${at.profile}/DevToolsActivePort`).pipe(
-    Effect.map(endpointOf),
-    Effect.flatMap((each) => Effect.fromOption(each)),
-    Effect.retry({ schedule: Schedule.spaced(Duration.millis(100)), times: Duration.toMillis(READY) / 100 }),
+  const opened = readiness(pid, options.port, at.profile).pipe(
+    Effect.retry({ schedule: Schedule.spaced(Duration.millis(100)), times: Duration.toMillis(READY) / 100, while: (error) => error._tag === "NotYet" }),
     Effect.timeoutOption(READY),
+    Effect.catchTag("NotYet", () => Effect.succeed(Option.none<{ readonly port: number; readonly path: string }>())),
   )
   // A browser that ends before it opens its port fails the launch at once.
-  const port = yield* Effect.raceFirst(opened, Effect.promise(() => child.exited).pipe(Effect.as(Option.none())))
+  const port = yield* Effect.raceFirst(opened, Effect.promise(() => child.exited).pipe(Effect.as(Option.none()))).pipe(
+    Effect.catchTag("ChromeError", (error) => failed(error.message)),
+  )
   if (Option.isNone(port)) {
     const log = yield* fs.readFileString(at.log).pipe(Effect.orElseSucceed(() => ""))
     return yield* failed(`${binary.path} opened no DevTools port within ${Duration.format(READY)}: ${log.trim().split("\n").slice(-5).join(" | ")}`)
