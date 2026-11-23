@@ -8,7 +8,7 @@
 // alone, 23b's land and accept on their own clocks with a red accept kept red. Identifiers are synthetic (one repeated
 // hex digit); no fixture is a real record. Last, the filestore source against a scratch folder of real files.
 import { freeze, type InputConflict, type InputRequest, type InputSnapshot, type InputUnsettled, parseSnapshot, publicView, ReceiptSource, SourceRead, SourceRef, sourceKey, SourceUnreadable, snapshotText } from "@dotfiles/opencode-orchestrate/batch-input"
-import { type ReceiptPlaces, receiptSource } from "@dotfiles/opencode-orchestrate/filestore/run-records"
+import { type ReceiptPlaces, receiptSource } from "@dotfiles/opencode-orchestrate/filestore/receipt-source"
 import { headsOf } from "@dotfiles/opencode-orchestrate/fleet"
 import { mainBatchText } from "@dotfiles/opencode-orchestrate/tools"
 import { LandRecordJson, type Receipt, ReceiptJson } from "@dotfiles/opencode-work/receipt"

@@ -1,8 +1,8 @@
 // A review's frozen inputs, wired (mods/orchestrate/batch-input.ts): the producers' own formats at the boundary
-// (Work's `Receipt` and `LandRecord` schemas, the updater's record through filestore/run-records.ts) and the host's
+// (Work's `Receipt` and `LandRecord` schemas, the updater's record through filestore/receipt-source.ts) and the host's
 // receipt files. The plugin's composition root provides `layer` where a review freezes its inputs.
 import { type LandFacts, objectName, type ReceiptFacts, ReceiptFormats } from "@dotfiles/opencode-orchestrate/batch-input"
-import { installedFacts, type ReceiptPlaces, receiptSource } from "@dotfiles/opencode-orchestrate/filestore/run-records"
+import { installedFacts, type ReceiptPlaces, receiptSource } from "@dotfiles/opencode-orchestrate/filestore/receipt-source"
 import { type LandRecord, LandRecordJson, type Receipt, ReceiptJson } from "@dotfiles/opencode-work/receipt"
 import { Layer, Option, Schema } from "effect"
 import { Digest } from "effect/crypto"

@@ -1,6 +1,6 @@
 // accept: deep (0.9 s alone on a quiet host: 1-minute load 9.7–10.8 on 12 cores, none quieter to be had; a real swapper process races the reader for 3000 freezes, bounded to 20 s)
 // accept: one at a time (it races two processes by the clock: a loaded host starves the swapper and proves less).
-// The receipt source's file law against a real race (mods/orchestrate/filestore/run-records.ts `receiptSource`): a
+// The receipt source's file law against a real race (mods/orchestrate/filestore/receipt-source.ts `receiptSource`): a
 // swapper process flips a receipt's name, by atomic renames, between the good file and a link to a file outside the
 // receipts folder, while the reader freezes that receipt again and again. Whatever the interleaving, no snapshot ever
 // holds the outside file's bytes or digest: each freeze holds the good file whole, refuses the link, or reads again.
@@ -13,7 +13,7 @@ import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { layer } from "../cmd/orchestrate/batch-inputs.ts"
 import { freeze, type InputRequest, type InputSnapshot } from "../mods/orchestrate/batch-input.ts"
-import type { ReceiptPlaces } from "../mods/orchestrate/filestore/run-records.ts"
+import type { ReceiptPlaces } from "../mods/orchestrate/filestore/receipt-source.ts"
 
 /** How many freezes the reader tries, and how long it may take. */
 const FREEZES = 3000
