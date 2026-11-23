@@ -37,7 +37,9 @@ import { dlopen, FFIType } from "bun:ffi"
 import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs"
 import path from "node:path"
 import { Duration, Effect, Match, Option, Result, Schedule, Schema } from "effect"
-import { DEFAULT_LIMITS, heavyArgv, type Host, ioniceAvailable, SCOPE_PROBE } from "@dotfiles/opencode-guard/launcher"
+import { DEFAULT_HEAVY, isHeavy } from "@dotfiles/opencode-guard/heavy"
+import { admissionPurpose, DEFAULT_LIMITS, heavyArgv, type Host, ioniceAvailable, SCOPE_PROBE } from "@dotfiles/opencode-guard/launcher"
+import { heavyJob, jobArgv } from "../job-admission.ts"
 import type { Descriptor } from "../backstop.ts"
 import { type JobExit, type JobSpec, KILL_GRACE_MS } from "../job.ts"
 import { type Disposition, dispositionOfExit, generationOf, RunnerClaim } from "../job-event.ts"
@@ -401,6 +403,12 @@ export const argvOf = (spec: Pick<JobSpec, "command" | "heavy">, host: () => Hos
   return spec.heavy ? heavyArgv(argv, DEFAULT_LIMITS, host()) : argv
 }
 
+export const classifyJob = (command: string) => isHeavy(command, DEFAULT_HEAVY)
+export const admittedJobArgv = (helper: ReadonlyArray<string>, command: string, requested: boolean) => {
+  if (heavyJob(requested, classifyJob(command))) return jobArgv(helper, command, admissionPurpose(command))
+  return jobArgv(helper, command)
+}
+
 /** Signal the process group `pid` leads; false when the group is already gone. */
 const signalGroup = (pid: number, signal: NodeJS.Signals | 0): boolean => {
   try {
@@ -429,6 +437,7 @@ const readEnv = (dir: string): Record<string, string> => {
 
 /** The bytes of progress written so far: the end's sequence follows them. */
 const dripped = (dir: string): number => Option.getOrElse(Option.liftThrowable(() => statSync(path.join(dir, FILES.drip)).size)(), () => 0)
+const writeTerminal = (file: string, value: JobExit) => writeAtomic(file, value, 0o600, NODE_DISK, path.dirname(path.dirname(file)))
 
 /**
  * Run the job in `dir` to its end, record it, and call `notify` with its descriptor. None, running nothing, when
@@ -438,7 +447,8 @@ export const supervise = async (
   dir: string,
   notify?: (descriptor: Descriptor) => Promise<void>,
   grace = KILL_GRACE_MS,
-  write: (file: string, value: JobExit) => void = (file, value) => writeAtomic(file, value, 0o600, NODE_DISK, path.dirname(dir)),
+  write: (file: string, value: JobExit) => void = writeTerminal,
+  launch: (spec: JobSpec) => ReadonlyArray<string> = (spec) => argvOf(spec, hostOf),
 ): Promise<Option.Option<JobExit>> => {
   const root = path.dirname(dir)
   if (!openDir(dir, NODE_DISK, root)) return Option.none()
@@ -505,7 +515,7 @@ export const supervise = async (
   const childEnv = Object.fromEntries(Object.entries(env).filter(([name]) => !(STARTUP as ReadonlyArray<string>).includes(name)))
   let spawned: ReturnType<typeof Bun.spawn>
   try {
-    spawned = Bun.spawn([...argvOf(job.spec, hostOf)], {
+    spawned = Bun.spawn([...launch(job.spec)], {
       cwd: job.spec.cwd,
       env: { ...childEnv, JOB_DRIP: drip, JOB_ID: job.spec.id },
       stdin: "ignore",
@@ -545,6 +555,10 @@ export const supervise = async (
   // own exit stands and it is neither killed nor timed out.
   return record(endOf({ exitCode, signalCode: spawned.signalCode, sent: Option.fromNullishOr(sent), timedOut, killed, startedAt, endedAt: Date.now() }))
 }
+
+/** Installed durable entry. Its classified path has no unmanaged default launcher. */
+export const superviseAdmitted = (dir: string, notify: (descriptor: Descriptor) => Promise<void>, helper: ReadonlyArray<string>) =>
+  supervise(dir, notify, KILL_GRACE_MS, writeTerminal, (spec) => admittedJobArgv(helper, spec.command, spec.heavy))
 
 /** The exit a run that went its course records: the signal that ended it, whether its own or one this runner sent, wins over its code. */
 const endOf = (run: {
