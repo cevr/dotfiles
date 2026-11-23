@@ -20,6 +20,7 @@ const tree = (root: string, label: string, files: Record<string, string>) => {
   const workbox = join(root, label, "workbox")
   mkdirSync(join(workbox, "bin"), { recursive: true })
   copyFileSync(underTest, join(workbox, "install-bin.sh"))
+  copyFileSync(join(workboxDir, "host-identity.sh"), join(workbox, "host-identity.sh"))
   for (const [path, text] of Object.entries(files)) writeFileSync(join(workbox, path), text)
   return workbox
 }
@@ -33,7 +34,8 @@ const host = (zshenv = "export FROM=tree\n") => {
   return { root, workbox, home, installed: join(home, ".local", "share", "workbox") }
 }
 
-const env = (home: string) => ({ HOME: home, PATH: "/usr/bin:/bin", TMPDIR: home })
+const identity = Bun.spawnSync(["sh", "-c", '. "$1"; workbox_host_identity', "test", join(workboxDir, "host-identity.sh")]).stdout.toString().trim()
+const env = (home: string) => ({ HOME: home, PATH: "/usr/bin:/bin", TMPDIR: home, WORKBOX_EXPECT_MACHINE_ID: identity })
 
 const run = (workbox: string, home: string) => {
   const done = Bun.spawnSync(["sh", join(workbox, "install-bin.sh")], { cwd: home, env: env(home), stdout: "pipe", stderr: "pipe" })

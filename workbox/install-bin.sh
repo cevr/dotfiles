@@ -19,6 +19,26 @@
 set -eu
 
 workbox_dir=$(CDPATH='' cd -- "$(dirname "$0")" && pwd)
+# shellcheck source-path=SCRIPTDIR source=host-identity.sh
+. "$workbox_dir/host-identity.sh"
+if [ "${1:-}" = --apply ]; then
+  # Old-box fleet updates keep their existing deployment authority until the
+  # fleet itself enrols that host. A new box never falls back from a bad pin.
+  enrolled=/etc/hetzner-workbox/host-identity.env
+  if [ -e "$enrolled" ]; then
+    pinned=$(sed -n 's/^WORKBOX_EXPECT_MACHINE_ID=//p' "$enrolled")
+    if [ "${WORKBOX_EXPECT_MACHINE_ID+x}" = x ] && [ "$WORKBOX_EXPECT_MACHINE_ID" != "$pinned" ]; then
+      WORKBOX_EXPECT_MACHINE_ID=
+      workbox_require_host
+    fi
+    WORKBOX_EXPECT_MACHINE_ID=$pinned
+    workbox_require_host
+  elif [ "${WORKBOX_EXPECT_MACHINE_ID+x}" = x ]; then
+    workbox_require_host
+  fi
+else
+  workbox_require_host
+fi
 local_bin_dir="$HOME/.local/bin"
 # The installed OpenCode build's plugin tree, a link the update moves with each
 # install record (opencode/mods/update/filestore/stage.ts `CURRENT_TREE`).
@@ -89,13 +109,14 @@ put() {
 }
 
 mkdir -p "$local_bin_dir"
+mkdir -p "$shell_dir"
+put "$workbox_dir/host-identity.sh" "$shell_dir/host-identity.sh" 644
 for script in "$workbox_dir"/bin/*; do
   put "$script" "$local_bin_dir/$(basename "$script")" 755
 done
 
 # The home's link is made only where there is a link or nothing: a real file is the owner's.
 owned=""
-mkdir -p "$shell_dir"
 for name in zshenv zshrc; do
   [ -f "$workbox_dir/$name" ] || continue
   put "$workbox_dir/$name" "$shell_dir/$name" 644
