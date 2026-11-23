@@ -28,7 +28,7 @@ import {
 import { answeredOn, held, lastPlacedAt, placedOn, sessionAccount, status, type RequestKind, type Rules } from "./accounts.ts"
 import * as Burn from "./burn.ts"
 import * as FleetModel from "./fleet.ts"
-import { dispatchPace, freshWeek, poolPace, RequestHeld, UNPOOLED, UNREAD_RETRY_MS, type Pace } from "./pace.ts"
+import { dispatchPace, evidenceGap, poolPace, RequestHeld, requiredScopes, UNPOOLED, UNREAD_RETRY_MS, type Pace } from "./pace.ts"
 import { limitsLine, weeklyRatios, type Tally, type Tokens } from "./limits.ts"
 import type { AccountStatus } from "./status.ts"
 import type { ClaimAnswer, QuotaReading, QuotaWindow } from "./quota.ts"
@@ -347,15 +347,18 @@ export const layer = (config: Config) =>
             )
 
       /**
-       * The claim on each login (by pool and login) that went through while the reading after it could not be taken:
-       * the first reading of the login's own week taken after it is its observation (`ObserveClaim`), recorded once.
-       * Kept from the store at the start, so a restart still observes a claim made before it.
+       * The claim on each login (by pool and login) that went through while no reading has shown its recovery yet
+       * (the reading after it could not be taken, or showed the week unchanged: the provider's reporting lags): each
+       * reading of the login's own week taken after it, within OBSERVE_MS, is offered as its observation
+       * (`ObserveClaim`), recorded once and only when it shows the claim's own recovery. A reading past OBSERVE_MS
+       * ends the wait with no room. Kept from the store at the start, so a restart still observes a claim made before it.
        */
       const awaiting = new Map<string, { readonly key: string; readonly at: number }>()
       const awaitingKey = (pool: string, credentialID: string) => `${pool}\u0000${credentialID}`
       const restoredClaims = (yield* resetsStore.read).claims
+      const startedAt = yield* Clock.currentTimeMillis
       for (const claim of restoredClaims)
-        if (Option.exists(ResetsModel.awaitingObservation(restoredClaims, claim.provider, claim.credentialID), (pending) => pending.key === claim.key))
+        if (Option.exists(ResetsModel.awaitingObservation(restoredClaims, claim.provider, claim.credentialID, startedAt), (pending) => pending.key === claim.key))
           awaiting.set(awaitingKey(claim.pool, claim.credentialID), { key: claim.key, at: claim.at })
       const observeClaim = (pool: PoolId, credentialID: string, reading: QuotaReading) =>
         Effect.suspend(() => {
@@ -363,10 +366,24 @@ export const layer = (config: Config) =>
           const pending = Option.filter(Option.fromUndefinedOr(awaiting.get(awaitingKey(pool, credentialID))), (claim) => own && reading.at > claim.at)
           return Option.match(pending, {
             onNone: () => Effect.void,
-            onSome: (claim) => {
-              awaiting.delete(awaitingKey(pool, credentialID))
-              return sendResets(ResetsModel.ObserveClaim.make({ key: claim.key, windows: reading.windows })).pipe(Effect.asVoid)
-            },
+            onSome: (claim) =>
+              Option.match(Option.filter(Option.some(claim), (made) => reading.at <= made.at + ResetsModel.OBSERVE_MS), {
+                // Past OBSERVE_MS the wait ends, with no room.
+                onNone: () =>
+                  Effect.sync(() => {
+                    awaiting.delete(awaitingKey(pool, credentialID))
+                  }),
+                onSome: (made) =>
+                  sendResets(ResetsModel.ObserveClaim.make({ key: made.key, windows: reading.windows, at: reading.at })).pipe(
+                    // Observed, the wait ends; a reading that showed no recovery leaves it waiting for the next.
+                    Effect.tap((events) =>
+                      Effect.sync(() => {
+                        if (events.some((event) => event._tag === "ClaimObserved")) awaiting.delete(awaitingKey(pool, credentialID))
+                      }),
+                    ),
+                    Effect.asVoid,
+                  ),
+              }),
           })
         })
 
@@ -868,8 +885,8 @@ export const layer = (config: Config) =>
           }),
         )
         const record = settled.flatMap((event) => (event._tag === "ClaimSettled" ? [event.claim] : []))[0]
-        // A claim that went through unobserved waits for the login's next reading; any other ends the wait of the one before it.
-        Option.match(Option.flatMap(Option.fromUndefinedOr(record), (made) => ResetsModel.awaitingObservation([made], made.provider, made.credentialID)), {
+        // A claim that went through with no recovery shown yet waits for the login's next readings; any other ends the wait of the one before it.
+        Option.match(Option.flatMap(Option.fromUndefinedOr(record), (made) => ResetsModel.awaitingObservation([made], made.provider, made.credentialID, made.at)), {
           onNone: () => awaiting.delete(awaitingKey(where.id, reset.credentialID)),
           onSome: (made) => awaiting.set(awaitingKey(made.pool, made.credentialID), { key: made.key, at: made.at }),
         })
@@ -1139,11 +1156,32 @@ export const layer = (config: Config) =>
         } satisfies ResetsStatus
       }).pipe(Effect.withSpan("Pool.resets"))
 
+      /**
+       * A held answer of the pool `id` with, when a claim that went through still waits for a reading to show its
+       * recovery, that claim pending in its words (`pendingWords`) and its ask again by the next sweep.
+       */
+      const withPending = (paced: Pace, id: Option.Option<PoolId>, now: number): Effect.Effect<Pace> =>
+        Option.match(Option.filter(id, () => !paced.ok), {
+          onNone: () => Effect.succeed(paced),
+          onSome: (pool) =>
+            Effect.map(resetsStore.read, (state) =>
+              Option.match(ResetsModel.pendingWords(state.claims, pool, now), {
+                onNone: () => paced,
+                onSome: (words): Pace => ({
+                  ...paced,
+                  reason: `${paced.reason}; ${words}`,
+                  retryAt: Math.min(...Option.toArray(Option.fromUndefinedOr(paced.retryAt)), now + UNREAD_RETRY_MS),
+                }),
+              }),
+            ),
+        })
+
       const pace = Effect.fn("Pool.pace")(function* (providerID: string, model?: string, sessionID?: string, dispatch?: boolean) {
-        const answer = yield* paceOf(providerID, model, dispatch)
+        const paced = yield* paceOf(providerID, model, dispatch)
         const id = measuredBy(config, providerID)
         const now = yield* Clock.currentTimeMillis
         if (id !== undefined && sessionID !== undefined && config.resets?.[id] !== undefined) askers.set(id, { at: now, sessionID })
+        const answer = yield* withPending(paced, Option.fromUndefinedOr(id), now)
         if (answer.ok || !answer.measured) return answer
         // A push active on this host covers the start when its scope names no session, or the root of the start's.
         const active = PushModel.activeOn(yield* pushStore.read, fleetConfig.host, now)
@@ -1203,9 +1241,14 @@ export const layer = (config: Config) =>
         const listed = status(yield* SynchronizedRef.get(paced.pool), now, rules)
         // A dispatch reads a login whose week the pool has no fresh reading of (none yet, or one older than STALE_AFTER_MS)
         // once more, now; a read that fails leaves it unread, and the request goes out on none such.
-        // A login held now takes no request whatever its week, so it is not read for one.
+        // A login held now takes no request whatever its week, so it is not read for one. So too a window of the
+        // model's own the request needs (`requiredScopes`) when stale; one a fresh reading lacks waits for the sweep.
+        const required = requiredScopes(listed, model)
         const unread = listed.filter(
-          (account) => dispatch === true && !Option.exists(Option.fromUndefinedOr(account.hold), (hold) => hold.until > now) && Option.isNone(freshWeek(account, now)),
+          (account) =>
+            dispatch === true &&
+            !Option.exists(Option.fromUndefinedOr(account.hold), (hold) => hold.until > now) &&
+            Option.exists(evidenceGap(account, now, required), (gap) => gap.stale),
         )
         for (const account of unread) yield* quota.usage(paced.id, account.credentialID).pipe(Effect.flatMap((reading) => take(paced, account.credentialID, reading)))
         const accounts = status(yield* SynchronizedRef.get(paced.pool), now, rules)

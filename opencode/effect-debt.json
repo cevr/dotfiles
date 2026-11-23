@@ -745,7 +745,7 @@
     "mods/pool/opencode/resets.ts": {"effect/noConditionalEmptyObjectSpread":1,"effect/noNullish":8,"effect/noTernary":4,"effect/preferServiceOf":1},
     "mods/pool/opencode/workload.ts": {"effect/noNullish":2,"effect/preferServiceOf":1},
     "mods/pool/pace.test.ts": {"effect/noNullish":6},
-    "mods/pool/pace.ts": {"effect/noNullish":13,"effect/noTernary":11},
+    "mods/pool/pace.ts": {"effect/noNullish":12,"effect/noTernary":10},
     "mods/pool/placement.ts": {"effect/noNullish":5,"effect/noTernary":6},
     "mods/pool/push.test.ts": {"effect/noEffectRunInTests":1,"effect/noNullish":1,"effect/noTernary":3,"effect/preferTaggedConstructors":2},
     "mods/pool/push.ts": {"effect/maxCognitiveComplexity":1,"effect/noConditionalEmptyObjectSpread":11,"effect/noNullish":38,"effect/noTernary":36,"effect/preferMatchTagsExhaustive":2},

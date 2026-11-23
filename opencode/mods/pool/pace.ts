@@ -24,6 +24,19 @@ export const TARGET = 0.99
 /** A 5-hour window used this much has no room for a new start. */
 export const SHORT_5H = 0.9
 const LEEWAY = 0.05
+/** How far past a week from now a weekly reset may read and still be one (a header's reset is rounded to the second). */
+const RESET_SLACK_MS = 60_000
+
+/** A weekly window's reset, when it is one a week now can have: after now, and no more than a week ahead. */
+const validWeekReset = (window: { readonly resetAt?: number }, now: number): Option.Option<number> =>
+  Option.filter(Option.fromUndefinedOr(window.resetAt), (resetAt) => resetAt > now && resetAt <= now + WEEK + RESET_SLACK_MS)
+
+/** A window of an account's reading, by name. */
+const windowOf = (account: AccountStatus, name: string) =>
+  Option.flatMap(Option.fromUndefinedOr(account.reading), (reading) => Arr.findFirst(reading.windows, (w) => w.name === name))
+
+/** The account-wide week of an account's reading. */
+const weekOf = (account: AccountStatus) => windowOf(account, "7d")
 
 /**
  * What room admits a start or a request: `ordinary`, the even line with its
@@ -206,12 +219,11 @@ export function poolPace(
       admission: "held",
     }
   }
-  const known = accounts.flatMap((a) => {
-    const w = a.reading?.windows.find((w) => w.name === "7d")
-    return w?.resetAt !== undefined && w.resetAt > now && w.resetAt <= now + WEEK
-      ? [{ used: usedOf(w.utilization, plans[a.credentialID]), resetAt: w.resetAt, plan: plans[a.credentialID] }]
-      : []
-  })
+  const known = accounts.flatMap((a) =>
+    Option.toArray(
+      Option.flatMap(weekOf(a), (w) => Option.map(validWeekReset(w, now), (resetAt) => ({ used: usedOf(w.utilization, plans[a.credentialID]), resetAt, plan: plans[a.credentialID] }))),
+    ),
+  )
   const short = available.flatMap((a) => Option.toArray(shortUntil(a, now)))
   if (short.length === available.length)
     return {
@@ -265,16 +277,83 @@ export const STALE_AFTER_MS = 30 * 60_000
 /** When a request held for want of a fresh reading asks again: the next sweep's reading may be in. */
 export const UNREAD_RETRY_MS = 60_000
 
-/** The account-wide week of an account's reading when it was read in the last STALE_AFTER_MS (a window carried over by its own time). */
+/** The account-wide week of an account's reading when it was read in the last STALE_AFTER_MS (a window carried over by its own time) and its reset is a valid one. */
 export const freshWeek = (account: AccountStatus, now: number): Option.Option<{ readonly utilization: number; readonly resetAt: number }> =>
-  Option.fromUndefinedOr(account.reading).pipe(
-    Option.flatMap((reading) =>
-      Option.flatMap(
-        Option.fromUndefinedOr(reading.windows.find((w) => w.name === "7d")),
-        (w) => Option.map(Option.filter(Option.fromUndefinedOr(w.resetAt), (resetAt) => resetAt > now && now - (w.at ?? reading.at) <= STALE_AFTER_MS), (resetAt) => ({ utilization: w.utilization, resetAt })),
-      ),
+  Option.flatMap(weekOf(account), (w) =>
+    Option.map(
+      Option.filter(validWeekReset(w, now), () => Option.isNone(staleOf(account, w, now))),
+      (resetAt) => ({ utilization: w.utilization, resetAt }),
     ),
   )
+
+/** How long ago a window of an account's reading was read, when longer than STALE_AFTER_MS: its own time (`at`, carried over) or the reading's. */
+const staleOf = (account: AccountStatus, window: { readonly at?: number }, now: number): Option.Option<number> =>
+  Option.filter(
+    Option.map(Option.fromUndefinedOr(account.reading), (reading) => now - Option.getOrElse(Option.fromUndefinedOr(window.at), () => reading.at)),
+    (age) => age > STALE_AFTER_MS,
+  )
+
+/**
+ * The model's own windows a request of `model` needs read on every account
+ * (`7d:Fable` for `claude-fable-5-2`): each such window any account of the
+ * pool reads. An account whose reading lacks one is no evidence of the
+ * model's room, whatever its week says. None for a model with no window of
+ * its own, or none named.
+ */
+export const requiredScopes = (accounts: ReadonlyArray<AccountStatus>, model?: string): ReadonlyArray<string> =>
+  Option.match(Option.fromUndefinedOr(model), {
+    onNone: () => [],
+    onSome: (id) => {
+      const names = accounts.flatMap((a) =>
+        Option.match(Option.fromUndefinedOr(a.reading), { onNone: () => [], onSome: (reading) => reading.windows }).flatMap((w) =>
+          Option.toArray(Option.filter(Option.fromUndefinedOr(scopeOf(w.name)), (scope) => limitsModel(scope, id))).map(() => w.name),
+        ),
+      )
+      return [...new Set(names)].toSorted()
+    },
+  })
+
+/**
+ * Why an account's reading is no evidence of room for a request needing the
+ * windows `required` (`requiredScopes`) at `now`: no weekly window read in the
+ * last STALE_AFTER_MS, a weekly reset no week can have, or a required window
+ * of the model's own absent, stale, or with such a reset. None when it is
+ * evidence. `stale` says whether reading the login again may mend it.
+ */
+export const evidenceGap = (
+  account: AccountStatus,
+  now: number,
+  required: ReadonlyArray<string> = [],
+): Option.Option<Gap> => {
+  if (Option.isNone(Option.fromUndefinedOr(account.reading))) return Option.some({ why: "no reading", stale: true })
+  const gapOf = (name: string): Option.Option<Gap> =>
+    Option.match(windowOf(account, name), {
+      onNone: () => Option.some({ why: `no ${name} window in its reading`, stale: name === "7d" }),
+      onSome: (w) =>
+        Option.match(staleOf(account, w, now), {
+          onSome: (): Option.Option<Gap> => Option.some({ why: `its ${name} window was read more than ${Math.round(STALE_AFTER_MS / 60_000)} min ago`, stale: true }),
+          onNone: () =>
+            Option.match(validWeekReset(w, now), {
+              onSome: () => Option.none(),
+              // A reset passed may be a period rolled over, which a reading taken now shows; one further than a week off no reading mends.
+              onNone: () => {
+                const reset = Option.fromUndefinedOr(w.resetAt)
+                return Option.some({
+                  why: `its ${name} window's reset (${Option.match(reset, { onNone: () => "unread", onSome: iso })}) is not within the next 7 days`,
+                  stale: !Option.exists(reset, (at) => at > now),
+                })
+              },
+            }),
+        }),
+    })
+  return Arr.findFirst(["7d", ...required], (name) => Option.isSome(gapOf(name))).pipe(Option.flatMap(gapOf))
+}
+
+/** Why a reading is no evidence of room, and whether reading the login again may mend it (`evidenceGap`). */
+export interface Gap {
+  readonly why: string
+  readonly stale: boolean
+}
 
 /** What room an account has on its claim's room for one more request of `cost`: its rebased line less its use (`usedOf`), when it has one. */
 export const roomLeft = (account: AccountStatus, now: number, plan?: PacePlan): Option.Option<number> =>
@@ -311,18 +390,34 @@ export function dispatchPace(
   cost: number,
   model?: string,
 ): Pace {
-  const fresh = accounts.filter((a) => Option.isSome(freshWeek(a, now)))
+  const required = requiredScopes(accounts, model)
+  const gaps = accounts.flatMap((a) => Option.toArray(evidenceGap(a, now, required)).map((gap) => gap.why))
+  const fresh = accounts.filter((a) => Option.isNone(evidenceGap(a, now, required)))
+  const scoped = Arr.match(required, { onEmpty: () => "", onNonEmpty: (names) => `, and ${names.join(", ")} read as freshly` })
+  const needs = `a weekly window read in the last ${Math.round(STALE_AFTER_MS / 60_000)} min with its reset within the next 7 days${scoped}`
+  const lacking = [...new Set(gaps)].join("; ")
+  const of = Option.match(Option.fromUndefinedOr(model), { onNone: () => "", onSome: (id) => ` of ${id}` })
   if (accounts.length > 0 && fresh.length === 0)
     return {
       ok: false,
       measured: false,
-      reason: `no account of the pool has a weekly reading from the last ${Math.round(STALE_AFTER_MS / 60_000)} min, and a request of a managed pool goes out only on one`,
+      reason: `no account of the pool has a reading a request${of} of a managed pool goes out on (${needs}): ${lacking}`,
       retryAt: now + UNREAD_RETRY_MS,
       admission: "held",
       eligible: [],
     }
   const answer = poolPace(fresh, now, NO_INFLIGHT, model, plans)
-  if (!answer.ok || !answer.measured) return { ...answer, eligible: [] }
+  if (!answer.ok && answer.measured && gaps.length > 0)
+    // The accounts read well hold it; the others may yet be read: the request asks again by the next sweep.
+    return {
+      ...answer,
+      reason: `${answer.reason}; ${gaps.length} ${byCount(gaps.length, "account", "accounts")} more ${byCount(gaps.length, "has", "have")} no reading it may go out on (${needs}): ${lacking}`,
+      retryAt: Math.min(...Option.toArray(Option.fromUndefinedOr(answer.retryAt)), now + UNREAD_RETRY_MS),
+      eligible: [],
+    }
+  if (!answer.ok) return { ...answer, eligible: [] }
+  // An unmeasured pace is no evidence of room at a dispatch: held, and asked again by the next sweep.
+  if (!answer.measured) return { ...answer, ok: false, admission: "held", retryAt: now + UNREAD_RETRY_MS, eligible: [] }
   const open = eligibleFor(fresh, now, model)
   if (answer.admission !== "backed") return { ...answer, eligible: open.map((a) => a.credentialID) }
   const backed = open.filter((a) => Option.exists(roomLeft(a, now, plans[a.credentialID]), (room) => room >= cost - 1e-9))
