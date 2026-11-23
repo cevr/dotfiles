@@ -1016,7 +1016,7 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
   /**
    * The cells each round runs at this boundary (a real merge and CLI each, about a CPU-second): every green cell,
    * each exit beside a declared skip and beside an observed expected failure, each other skip and the passing
-   * expectation, and each report kind. `FORK_CHECKS_EVERY_CELL=1` runs all of `CELLS` here instead.
+   * expectation, and each report kind. `FORK_CHECKS_EVERY_CELL=1` runs all of `CELLS` here instead, four at a time (run it alone).
    */
   const atBoundary = (cell: Cell) => {
     if (cell.report !== "present") return cell.skip === "declared" && cell.expectation === "observed"
@@ -1033,7 +1033,8 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
         const every = yield* Config.Boolean("FORK_CHECKS_EVERY_CELL").pipe(Config.withDefault(false))
         const cells = CELLS.filter((cell) => every || atBoundary(cell))
         expect(cells.length).toBe(Number(every) * CELLS.length + Number(!every) * 24)
-        const outcomes = yield* Effect.forEach(cells, (cell) => throughMerge(cell, bash), { concurrency: 2 })
+        // Two at a time in a round, beside the other test files; four for the whole table, run alone.
+        const outcomes = yield* Effect.forEach(cells, (cell) => throughMerge(cell, bash), { concurrency: 2 + 2 * Number(every) })
         const seen = outcomes.map((each) => {
           const kind = Arr.filter(["could-not-run"], () => each.report.includes("fork-checks: COULD NOT RUN")).concat(Arr.filter(["red"], () => each.report.includes("fork-checks: RED")))
           return `${nameOf(each.cell)}: ${Option.getOrElse(Arr.head(kind), () => "green")}, ${each.merged}, origin ${Option.getOrElse(Arr.head(Arr.filter(["moved"], () => each.moved)), () => "kept")}`
