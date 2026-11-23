@@ -6,7 +6,7 @@
 // plugin on the host shares.
 // The aggregate is the one decision entry point, so the stories run exactly
 // what these do. The plugin calls these and nothing else.
-import { Clock, Context, Effect, Layer, Option, Ref, Scope, Semaphore, Stream, SynchronizedRef } from "effect"
+import { Array as Arr, Clock, Context, Effect, Layer, Option, Ref, Scope, Semaphore, Stream, SynchronizedRef } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import {
   AccountPool,
@@ -28,7 +28,7 @@ import {
 import { answeredOn, held, lastPlacedAt, placedOn, sessionAccount, shouldFailOver, status, type RequestKind, type Rules } from "./accounts.ts"
 import * as Burn from "./burn.ts"
 import * as FleetModel from "./fleet.ts"
-import { eligibleFor, poolPace, RequestHeld, UNPOOLED, type Pace } from "./pace.ts"
+import { dispatchPace, freshWeek, poolPace, RequestHeld, UNPOOLED, UNREAD_RETRY_MS, type Pace } from "./pace.ts"
 import { limitsLine, weeklyRatios, type Tally, type Tokens } from "./limits.ts"
 import type { AccountStatus } from "./status.ts"
 import type { ClaimAnswer, QuotaReading, QuotaWindow } from "./quota.ts"
@@ -288,6 +288,9 @@ export const layer = (config: Config) =>
       const scope = yield* Scope.Scope
       // The resets are decided one command at a time in this instance; another instance's claim of the same hold is the same claim (its request id).
       const resetsLock = yield* Semaphore.make(1)
+      // One request of this instance at a time is admitted and placed, so two never read the same room before either reserves it.
+      const dispatchLock = yield* Semaphore.make(1)
+      let spendSeq = 0
       // One review at a time: a review carries out claims, which take seconds.
       const reviewing = yield* Semaphore.make(1)
       // The pushes are the host's when it keeps them (every instance reads the same), else this process's.
@@ -340,7 +343,32 @@ export const layer = (config: Config) =>
           : apply(pool, id, TakeReading.make({ credentialID, reading })).pipe(
               Effect.andThen(logins.markSignIn(id, credentialID, reading.refusal?.kind === "signin")),
               Effect.andThen(limits?.observe(id, credentialID, reading) ?? Effect.void),
+              Effect.andThen(observeClaim(id, credentialID, reading)),
             )
+
+      /**
+       * The claim on each login (by pool and login) that went through while the reading after it could not be taken:
+       * the first reading of the login's own week taken after it is its observation (`ObserveClaim`), recorded once.
+       * Kept from the store at the start, so a restart still observes a claim made before it.
+       */
+      const awaiting = new Map<string, { readonly key: string; readonly at: number }>()
+      const awaitingKey = (pool: string, credentialID: string) => `${pool}\u0000${credentialID}`
+      const restoredClaims = (yield* resetsStore.read).claims
+      for (const claim of restoredClaims)
+        if (Option.exists(ResetsModel.awaitingObservation(restoredClaims, claim.provider, claim.credentialID), (pending) => pending.key === claim.key))
+          awaiting.set(awaitingKey(claim.pool, claim.credentialID), { key: claim.key, at: claim.at })
+      const observeClaim = (pool: PoolId, credentialID: string, reading: QuotaReading) =>
+        Effect.suspend(() => {
+          const own = reading.windows.some((window) => window.name === "7d" && Option.isNone(Option.fromUndefinedOr(window.at)))
+          const pending = Option.filter(Option.fromUndefinedOr(awaiting.get(awaitingKey(pool, credentialID))), (claim) => own && reading.at > claim.at)
+          return Option.match(pending, {
+            onNone: () => Effect.void,
+            onSome: (claim) => {
+              awaiting.delete(awaitingKey(pool, credentialID))
+              return sendResets(ResetsModel.ObserveClaim.make({ key: claim.key, windows: reading.windows })).pipe(Effect.asVoid)
+            },
+          })
+        })
 
       /** The provider's newest reading of one login, as its auth plugin holds it now. */
       const pull = (where: Pooled, credentialID: string) =>
@@ -357,16 +385,24 @@ export const layer = (config: Config) =>
         const where = pooled(input.providerID)
         if (where === undefined) return undefined
         yield* refresh(where, false).pipe(Effect.ignore)
-        // The request's admission, at its dispatch: the one pace a start of its model gets, on the readings now. Held, it goes
-        // out on no login; the review has heard of the held work. Unreadable logins decide nothing here: placement refuses then.
-        const measured = Option.filter(yield* Effect.option(pace(input.providerID, input.model, input.sessionID, true)), (answer) => answer.measured)
+        // The request's admission, at its dispatch: the pace a request of its model gets on the readings now (`dispatchPace`).
+        // Held, it goes out on no login; the review has heard of the held work. A pace that cannot be had (the logins
+        // cannot be listed) decides nothing here: placement refuses then.
+        const asked = yield* Effect.option(pace(input.providerID, input.model, input.sessionID, true))
         const now = yield* Clock.currentTimeMillis
         const accounts = status(yield* SynchronizedRef.get(where.pool), now, rules)
         // Every account refused (a hold of the provider's or a sign-in): placement's own refusal names it, as before.
         const allHeld = accounts.length > 0 && accounts.every((account) => Option.isSome(Option.fromUndefinedOr(account.hold)))
-        const held = Option.filter(measured, (answer) => !answer.ok && !allHeld)
+        const held = Option.filter(asked, (answer) => !answer.ok && !allHeld)
         if (Option.isSome(held)) return yield* new RequestHeld({ sessionID: input.sessionID, reason: held.value.reason, retryAt: Option.fromUndefinedOr(held.value.retryAt) })
-        const eligible = Option.flatMap(measured, (answer) => Option.fromUndefinedOr(answer.eligible)).pipe(Option.filter((ids) => ids.length > 0))
+        // A claim's room is spent on the work it was claimed for: a title or another auxiliary request reserves none and waits.
+        if (Option.exists(asked, (answer) => answer.admission === "backed") && input.kind !== "primary" && input.kind !== "compaction")
+          return yield* new RequestHeld({
+            sessionID: input.sessionID,
+            reason: `the pool is past its spend-evenly line, and a ${input.kind} request does not spend the room a claimed reset gave back`,
+            retryAt: Option.none(),
+          })
+        const eligible = Option.flatMap(asked, (answer) => Option.fromUndefinedOr(answer.eligible)).pipe(Option.filter((ids) => ids.length > 0))
         const command = PlaceRequest.make({
           sessionID: input.sessionID,
           kind: input.kind,
@@ -377,12 +413,53 @@ export const layer = (config: Config) =>
         const events = yield* send(where.pool, where.id, command).pipe(
           Effect.catchTag("NoAccount", () => Effect.succeed([])),
         )
-        return events.flatMap((event): ReadonlyArray<Placed> =>
-          event._tag === "RequestPlaced"
-            ? [{ credentialID: event.credentialID, ...(event.cacheLifeMs === undefined ? {} : { cacheLifeMs: event.cacheLifeMs }) }]
-            : [],
-        )[0]
-      })
+        const placed = Arr.findFirst(
+          events.flatMap((event): ReadonlyArray<Placed> =>
+            event._tag === "RequestPlaced"
+              ? [{ credentialID: event.credentialID, ...(event.cacheLifeMs === undefined ? {} : { cacheLifeMs: event.cacheLifeMs }) }]
+              : [],
+          ),
+          () => true,
+        )
+        // On a claim's room, the request reserves its share on the account it goes out on before it goes.
+        if (Option.isSome(placed) && Option.exists(asked, (answer) => answer.admission === "backed"))
+          yield* reserve(where, placed.value.credentialID, input.sessionID)
+        return Option.getOrUndefined(placed)
+      }, (effect) => dispatchLock.withPermits(1)(effect))
+
+      /**
+       * Reserve one request's share (`fleet.startCost`) of the room the account's claim gave back (resets.ts `Spend`),
+       * then read every reservation on it back: a share that does not fit beside the others, this instance's or another's
+       * on the host, is taken back and the request held. Written first and read after, so of two instances that race, a
+       * share either sees the other's or is seen by it; a write that failed is not read back, and holds.
+       */
+      const reserve = (where: Pooled, credentialID: string, sessionID: string) =>
+        Effect.gen(function* () {
+          const now = yield* Clock.currentTimeMillis
+          const before = yield* resetsStore.read
+          const refuse = (reason: string) => new RequestHeld({ sessionID, reason, retryAt: Option.some(now + UNREAD_RETRY_MS) })
+          // The login's account and its pool's reset provider, and the claim whose room the request is admitted on.
+          const found = Option.all([
+            Option.fromUndefinedOr(config.resets?.[where.id]),
+            Arr.findFirst(status(yield* SynchronizedRef.get(where.pool), now, rules), (item) => item.credentialID === credentialID),
+          ]).pipe(
+            Option.flatMap(([provider, account]) =>
+              Option.fromUndefinedOr(ResetsModel.pacePlans(provider, [account], before.claims, now, before.spends)[credentialID]).pipe(
+                Option.flatMap((plan) => Option.fromUndefinedOr(plan.rebase)),
+                Option.flatMap((rebase) => Option.fromUndefinedOr(rebase.key)),
+                Option.map((claim) => ({ provider, account, claim })),
+              ),
+            ),
+          )
+          if (Option.isNone(found)) return yield* refuse("the room a claimed reset gave back on the chosen login could not be found to reserve on")
+          const { provider, account, claim } = found.value
+          spendSeq += 1
+          const spend: ResetsModel.Spend = { id: `${fleetConfig.host}:${sessionID}:${now}:${spendSeq}`, claim, credentialID, at: now, cost: fleetConfig.startCost }
+          yield* sendResets(ResetsModel.ReserveSpend.make({ spend }))
+          if (ResetsModel.reservationHolds(yield* resetsStore.read, provider, account, now, spend.id)) return
+          yield* sendResets(ResetsModel.WithdrawSpend.make({ id: spend.id }))
+          return yield* refuse("the room a claimed reset gave back on the chosen login is reserved by requests admitted meanwhile")
+        })
 
       const responded = Effect.fn("Pool.responded")(function* (input: {
         readonly providerID: string
@@ -616,7 +693,8 @@ export const layer = (config: Config) =>
       const plansOf = Effect.fn("Pool.plansOf")(function* (id: string, accounts: ReadonlyArray<AccountStatus>, now: number) {
         const provider = config.resets?.[id]
         if (provider === undefined) return {}
-        return ResetsModel.pacePlans(provider, accounts, (yield* resetsStore.read).claims, now)
+        const state = yield* resetsStore.read
+        return ResetsModel.pacePlans(provider, accounts, state.claims, now, state.spends)
       })
 
       const windowsText = (windows: ReadonlyArray<{ readonly name: string; readonly utilization: number; readonly resetAt?: number }> | undefined) =>
@@ -778,6 +856,11 @@ export const layer = (config: Config) =>
           }),
         )
         const record = settled.flatMap((event) => (event._tag === "ClaimSettled" ? [event.claim] : []))[0]
+        // A claim that went through unobserved waits for the login's next reading; any other ends the wait of the one before it.
+        Option.match(Option.flatMap(Option.fromUndefinedOr(record), (made) => ResetsModel.awaitingObservation([made], made.provider, made.credentialID)), {
+          onNone: () => awaiting.delete(awaitingKey(where.id, reset.credentialID)),
+          onSome: (made) => awaiting.set(awaitingKey(made.pool, made.credentialID), { key: made.key, at: made.at }),
+        })
         yield* Effect.logInfo(
           `pool resets: claimed a ${reset.provider} reset on ${reset.label} (${reset.why}): ${answer.outcome}${answer.message === undefined ? "" : ` (${answer.message})`}; ` +
             `before ${windowsText(before) || "unread"}; after ${windowsText(after?.windows) || "unread"}; the weekly reset ${record?.weekly ?? "unread"}${lease === undefined ? "" : `; ${lease}`}`,
@@ -843,6 +926,9 @@ export const layer = (config: Config) =>
               case "WaitNoted":
               case "ClaimSent":
               case "ClaimSettled":
+              case "ClaimObserved":
+              case "SpendReserved":
+              case "SpendWithdrawn":
                 return Effect.void
             }
           },
@@ -1102,17 +1188,19 @@ export const layer = (config: Config) =>
         const starts = FleetModel.inflight(fleet, now, fleetConfig.settleMs)
           .filter((start) => !dispatch && measuredBy(config, start.providerID) === paced.id)
           .map((start) => start.at)
-        const accounts = status(yield* SynchronizedRef.get(paced.pool), now, rules)
-        const answer = poolPace(
-          accounts,
-          now,
-          { starts, cost: fleetConfig.startCost, settleMs: fleetConfig.settleMs },
-          model,
-          yield* plansOf(paced.id, accounts, now),
+        const listed = status(yield* SynchronizedRef.get(paced.pool), now, rules)
+        // A dispatch reads a login whose week the pool has no fresh reading of (none yet, or one older than STALE_AFTER_MS)
+        // once more, now; a read that fails leaves it unread, and the request goes out on none such.
+        // A login held now takes no request whatever its week, so it is not read for one.
+        const unread = listed.filter(
+          (account) => dispatch === true && !Option.exists(Option.fromUndefinedOr(account.hold), (hold) => hold.until > now) && Option.isNone(freshWeek(account, now)),
         )
-        // A dispatch names the logins it may go out on, by the same rule placement reads.
-        if (!dispatch || !answer.measured) return answer
-        return { ...answer, eligible: eligibleFor(accounts, now, model).map((account) => account.credentialID) }
+        for (const account of unread) yield* quota.usage(paced.id, account.credentialID).pipe(Effect.flatMap((reading) => take(paced, account.credentialID, reading)))
+        const accounts = status(yield* SynchronizedRef.get(paced.pool), now, rules)
+        const plans = yield* plansOf(paced.id, accounts, now)
+        // A dispatch is held on stale or missing readings, and past the even line goes out only on its own account's claimed room.
+        if (dispatch === true) return dispatchPace(accounts, now, plans, fleetConfig.startCost, model)
+        return poolPace(accounts, now, { starts, cost: fleetConfig.startCost, settleMs: fleetConfig.settleMs }, model, plans)
       })
 
       const started = (providerID: string) => sendFleet(FleetModel.RecordStart.make({ providerID })).pipe(Effect.asVoid)

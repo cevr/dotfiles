@@ -10,7 +10,7 @@
 // the fleet (fleet.ts): each start that has not settled yet is charged a fixed
 // share of one account's week until it has, so a wave on one host holds the
 // next start on any host before the readings show it.
-import { Option, Schema } from "effect"
+import { Array as Arr, Option, Schema } from "effect"
 import { limitsModel, scopeOf } from "./quota.ts"
 import type { AccountStatus } from "./status.ts"
 import { byCount, holdsAt, iso, used } from "./usage-text.ts"
@@ -116,8 +116,30 @@ const spentOwn = (account: AccountStatus, now: number, model?: string): Readonly
  * the rest evenly to the weekly reset.
  */
 export interface PacePlan {
-  readonly rebase?: { readonly at: number; readonly from: number }
+  readonly rebase?: {
+    readonly at: number
+    readonly from: number
+    /** The claim whose room it is (`Spend.claim`). */
+    readonly key?: string
+    /** The share of the week reserved on that room by requests admitted on it (resets.ts `Spend`). */
+    readonly spent?: number
+  }
 }
+
+/**
+ * The share of its week an account has used as far as the pace may know: the
+ * reading's, plus, on a claim's room, every request admitted on that room
+ * (`spent`) that the reading does not yet show: only the week's rise since
+ * the claim's observation covers them. A reading that lags the requests sent
+ * never gives their reservation back; one that shows the week risen past them
+ * has covered them; one lower than the observation (more given back since)
+ * covers none.
+ */
+export const usedOf = (reading: number, plan?: PacePlan): number =>
+  Option.match(Option.fromUndefinedOr(plan?.rebase), {
+    onNone: () => reading,
+    onSome: (rebase) => reading + Math.max(0, (rebase.spent ?? 0) - Math.max(0, reading - rebase.from)),
+  })
 
 /** An account's spend-evenly line now: the share of its week it may have used. */
 export const lineOf = (resetAt: number, now: number, plan: PacePlan | undefined): number => {
@@ -187,7 +209,7 @@ export function poolPace(
   const known = accounts.flatMap((a) => {
     const w = a.reading?.windows.find((w) => w.name === "7d")
     return w?.resetAt !== undefined && w.resetAt > now && w.resetAt <= now + WEEK
-      ? [{ used: w.utilization, resetAt: w.resetAt, plan: plans[a.credentialID] }]
+      ? [{ used: usedOf(w.utilization, plans[a.credentialID]), resetAt: w.resetAt, plan: plans[a.credentialID] }]
       : []
   })
   const short = available.flatMap((a) => Option.toArray(shortUntil(a, now)))
@@ -231,5 +253,90 @@ export function poolPace(
       `the spend-evenly line ${byCount(n, "is", "averages")} ${tenth(allowance / n)} used of 100% now, and the start holds past it`,
     retryAt: Math.min(Math.ceil(catchesUp) + 1, ...settles, ...known.map((a) => a.resetAt)),
     admission: "held",
+  }
+}
+
+/**
+ * A reading older than this admits no request of a managed pool: the auth
+ * plugin reads a login's usage again by then, so an older one is a read that
+ * failed since (a 429, an outage), and the week may have moved any way.
+ */
+export const STALE_AFTER_MS = 30 * 60_000
+/** When a request held for want of a fresh reading asks again: the next sweep's reading may be in. */
+export const UNREAD_RETRY_MS = 60_000
+
+/** The account-wide week of an account's reading when it was read in the last STALE_AFTER_MS (a window carried over by its own time). */
+export const freshWeek = (account: AccountStatus, now: number): Option.Option<{ readonly utilization: number; readonly resetAt: number }> =>
+  Option.fromUndefinedOr(account.reading).pipe(
+    Option.flatMap((reading) =>
+      Option.flatMap(
+        Option.fromUndefinedOr(reading.windows.find((w) => w.name === "7d")),
+        (w) => Option.map(Option.filter(Option.fromUndefinedOr(w.resetAt), (resetAt) => resetAt > now && now - (w.at ?? reading.at) <= STALE_AFTER_MS), (resetAt) => ({ utilization: w.utilization, resetAt })),
+      ),
+    ),
+  )
+
+/** What room an account has on its claim's room for one more request of `cost`: its rebased line less its use (`usedOf`), when it has one. */
+export const roomLeft = (account: AccountStatus, now: number, plan?: PacePlan): Option.Option<number> =>
+  Option.all([freshWeek(account, now), Option.fromUndefinedOr(plan?.rebase)]).pipe(Option.map(([week]) => lineOf(week.resetAt, now, plan) - usedOf(week.utilization, plan)))
+
+/** When an account's rebased line has risen `short` more of its week: it rises from the claim's use to TARGET by the weekly reset. */
+const roomAt = (account: AccountStatus, now: number, short: number, plan?: PacePlan): ReadonlyArray<number> =>
+  Option.toArray(
+    Option.all([freshWeek(account, now), Option.fromUndefinedOr(plan?.rebase)]).pipe(
+      Option.map(([week, rebase]) => {
+        const slope = (TARGET - rebase.from) / Math.max(1, week.resetAt - rebase.at)
+        if (slope <= 0) return week.resetAt
+        return Math.min(week.resetAt, now + Math.ceil(short / slope) + 1)
+      }),
+    ),
+  )
+
+/**
+ * The pace of one request of a managed pool at its dispatch, the last point
+ * before it goes out, and the logins it may go out on (`eligible`). Only
+ * accounts read in the last STALE_AFTER_MS count (`freshWeek`): with none, the
+ * request is held, whatever a stale reading said. Within the even line
+ * (`ordinary`), every eligible account takes it (`eligibleFor`). Past it, on a
+ * claim's room (`backed`), only an account whose own claim's room still holds
+ * `cost` more (one request's fixed share of its week) takes it, so a cached
+ * login never spends another login's refund, and two requests never spend one
+ * reservation: the caller reserves `cost` on the account it chose (resets.ts
+ * `Spend`) before the request goes out.
+ */
+export function dispatchPace(
+  accounts: ReadonlyArray<AccountStatus>,
+  now: number,
+  plans: Readonly<Record<string, PacePlan>>,
+  cost: number,
+  model?: string,
+): Pace {
+  const fresh = accounts.filter((a) => Option.isSome(freshWeek(a, now)))
+  if (accounts.length > 0 && fresh.length === 0)
+    return {
+      ok: false,
+      measured: false,
+      reason: `no account of the pool has a weekly reading from the last ${Math.round(STALE_AFTER_MS / 60_000)} min, and a request of a managed pool goes out only on one`,
+      retryAt: now + UNREAD_RETRY_MS,
+      admission: "held",
+      eligible: [],
+    }
+  const answer = poolPace(fresh, now, NO_INFLIGHT, model, plans)
+  if (!answer.ok || !answer.measured) return { ...answer, eligible: [] }
+  const open = eligibleFor(fresh, now, model)
+  if (answer.admission !== "backed") return { ...answer, eligible: open.map((a) => a.credentialID) }
+  const backed = open.filter((a) => Option.exists(roomLeft(a, now, plans[a.credentialID]), (room) => room >= cost - 1e-9))
+  if (backed.length > 0) return { ...answer, eligible: backed.map((a) => a.credentialID) }
+  const opens = open.flatMap((a) =>
+    Option.toArray(roomLeft(a, now, plans[a.credentialID])).flatMap((room) => roomAt(a, now, cost - room, plans[a.credentialID])),
+  )
+  return {
+    ok: false,
+    measured: true,
+    soft: true,
+    reason: `the pool is past its spend-evenly line, and no account's room a claimed reset gave back holds one more request (${tenth(cost)} of its week): the requests already admitted on it hold the rest`,
+    ...Option.match(Arr.match(opens, { onEmpty: () => Option.none<number>(), onNonEmpty: (all) => Option.some(Math.min(...all)) }), { onNone: () => ({}), onSome: (retryAt) => ({ retryAt }) }),
+    admission: "held",
+    eligible: [],
   }
 }

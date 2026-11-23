@@ -370,6 +370,7 @@ describe("the pace's line", () => {
       account("claimed", [window("7d", 0.1, resetAt)]),
       account("redeemed", [window("7d", 0.9, resetAt)]),
       account("stale", [window("7d", 0.9, resetAt)]),
+      account("late", [window("7d", 0.4, resetAt)]),
     ]
     const claim = (credentialID: string, fields: Partial<Claim> = {}): Claim => ({
       key: `k-${credentialID}`,
@@ -386,19 +387,28 @@ describe("the pace's line", () => {
       weekly: "kept",
       ...fields,
     })
+    /** A claim whose reading after it could not be taken. */
+    const unread = ({ after: _after, ...rest }: Claim): Claim => rest
     const claims = [
       claim("claimed"),
       // Last week's claim does not move this week's line.
       claim("weekly", { at: resetAt - 8 * DAY, before: [window("7d", 1, resetAt - 7 * DAY)], after: [window("7d", 0, resetAt - 7 * DAY)] }),
       // A 5-hour reset left the week as it was: no give-back observed, no rebase.
       claim("session", { before: [window("5h", 1, T0), window("7d", 0.5, resetAt)], after: [window("5h", 0, T0), window("7d", 0.5, resetAt)] }),
-      // Already redeemed, with no reading before it: nothing attributable.
-      claim("redeemed", { outcome: "already-redeemed", before: [] }),
+      // Already redeemed: no send of this claim's own went through, so a lower week around it (another actor's refund) is not its room.
+      claim("redeemed", { outcome: "already-redeemed" }),
       // The reading after was carried over from an older one (a 429 after the claim): unread, no rebase.
       claim("stale", { after: [{ ...window("7d", 0.3, resetAt), at: T0 - 2 * HOUR }] }),
       // A claim that failed gives nothing back, whatever a reading after it shows.
       claim("fable", { outcome: "failed" }),
+      // Its reading right after was unread; the first one taken later (`observed`) is its observation.
+      unread(claim("late", { observed: [window("7d", 0.3, resetAt)] })),
     ]
-    expect(pacePlans("claude", accounts, claims, T0)).toEqual({ claimed: { rebase: { at: T0 - HOUR, from: 0.05 } } })
+    // Two requests admitted on the claimed room so far: their shares count on it until a reading shows them.
+    const spends = [0.04, 0.04].map((cost, index) => ({ id: `s${index}`, claim: "k-claimed", credentialID: "claimed", at: T0, cost }))
+    expect(pacePlans("claude", accounts, claims, T0, spends)).toEqual({
+      claimed: { rebase: { at: T0 - HOUR, from: 0.05, key: "k-claimed", spent: 0.08 } },
+      late: { rebase: { at: T0 - HOUR, from: 0.3, key: "k-late", spent: 0 } },
+    })
   })
 })
