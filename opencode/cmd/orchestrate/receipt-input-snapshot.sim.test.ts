@@ -8,11 +8,12 @@
 // alone, 23b's land and accept on their own clocks with a red accept kept red. Identifiers are synthetic (one repeated
 // hex digit); no fixture is a real record. Last, the filestore source against a scratch folder of real files.
 import { freeze, type InputConflict, type InputRequest, type InputSnapshot, type InputUnsettled, parseSnapshot, publicView, ReceiptSource, SourceRead, SourceRef, sourceKey, SourceUnreadable, snapshotText } from "@dotfiles/opencode-orchestrate/batch-input"
-import { receiptSource } from "@dotfiles/opencode-orchestrate/filestore/run-records"
+import { type ReceiptPlaces, receiptSource } from "@dotfiles/opencode-orchestrate/filestore/run-records"
 import { headsOf } from "@dotfiles/opencode-orchestrate/fleet"
 import { mainBatchText } from "@dotfiles/opencode-orchestrate/tools"
 import { LandRecordJson, type Receipt, ReceiptJson } from "@dotfiles/opencode-work/receipt"
 import * as BunServices from "@effect/platform-bun/BunServices"
+import { CryptoHasher, deepEquals, spawnSync } from "bun"
 import { Array as Arr, Context, Data, Effect, Equal, FileSystem, Layer, Match, Option, Order, Path, Result, Schema } from "effect"
 import { Digest } from "effect/crypto"
 import * as Seed from "../../sim/seed.ts"
@@ -439,7 +440,7 @@ const observation = (steps: ReadonlyArray<Step>) =>
 const namesIn = (snapshot: InputSnapshot): ReadonlyArray<string> => [
   ...snapshot.receipts.flatMap((each) => [each.input.head, each.input.tree]),
   ...snapshot.lands.flatMap((each) => [each.input.head, each.input.base]),
-  ...Option.toArray(Option.fromNullishOr(snapshot.install)).flatMap((each) => (each._tag === "Proven" ? [each.receipt.dotfiles, each.receipt.fork] : [])),
+  ...Option.toArray(Option.fromNullishOr(snapshot.install)).flatMap((each) => Match.value(each).pipe(Match.tag("Proven", (proven) => [proven.receipt.dotfiles, proven.receipt.fork]), Match.orElse(() => []))),
 ]
 
 seeded("generated source transitions between read boundaries, for the receipt, the land, the installed record and the marker: one complete proven pair, absent, refused with the file's own reason, or a reason to read again; never a composite pair or an invented green", ({ seed, expect }) =>
@@ -595,6 +596,9 @@ const perKey = (answers: ReadonlyMap<string, ReadonlyArray<SourceRead>>) => {
   )
 }
 
+/** A freeze of the generated request over `source`, its outcome. */
+const freezeOver = (source: Layer.Layer<ReceiptSource>) => Effect.result(freeze(GENERATED)).pipe(Effect.provide(Layer.mergeAll(source, formats, Digest.layerWebCrypto)))
+
 seeded("two reads of one source that differ in anything observable (absent or present, the text, its size, refused or not, the refusal's reason) are changed, for every source and both marker brackets; equal reads never are", ({ expect }) =>
   Effect.gen(function* () {
     // Where each source's pair of reads falls: the receipt, the land, the marker before the installed record, the record, the marker after it.
@@ -609,7 +613,7 @@ seeded("two reads of one source that differ in anything observable (absent or pr
       Effect.forEach(ANSWERS, (first) =>
         Effect.forEach(ANSWERS, (second) =>
           Effect.gen(function* () {
-            const outcome = yield* Effect.result(freeze(GENERATED)).pipe(Effect.provide(Layer.mergeAll(perKey(new Map([[key, place([first, second])]])), formats, Digest.layerWebCrypto)))
+            const outcome = yield* freezeOver(perKey(new Map([[key, place([first, second])]])))
             const differ = !Equal.equals(first, second)
             const must = Match.value({ differ, marker: key === "handoff" && first._tag !== "Absent" }).pipe(
               Match.when({ differ: true }, () => Option.some(`unsettled ${key}: changed`)),
@@ -651,7 +655,7 @@ seeded("the host's files: only allowlisted regular files are read; a link, a fol
     expect(yield* read(base)).toEqual(Result.succeed(SourceRead.Refused({ reason: "too large" })))
     expect(yield* read(installedDotfiles)).toEqual(Result.succeed(SourceRead.Absent()))
     // A FIFO is refused unopened (opening one would wait for a writer); a link to nothing is still a link, never absent.
-    expect(yield* Effect.sync(() => Bun.spawnSync(["mkfifo", path.join(receipts, `${outerTree}.round.json`)]).exitCode)).toBe(0)
+    expect(yield* Effect.sync(() => spawnSync(["mkfifo", path.join(receipts, `${outerTree}.round.json`)]).exitCode)).toBe(0)
     expect(yield* read(outerTree)).toEqual(Result.succeed(SourceRead.Refused({ reason: "not a regular file" })))
     yield* fs.symlink(path.join(root, "nowhere.json"), path.join(receipts, `${checkoutFork}.round.json`))
     expect(yield* read(checkoutFork)).toEqual(Result.succeed(SourceRead.Refused({ reason: "a link" })))
@@ -664,16 +668,18 @@ seeded("the host's files: only allowlisted regular files are read; a link, a fol
 )
 
 /** A SHA-256 of `bytes` by Bun's own hasher: an oracle independent of the Effect digest the snapshot uses. */
-const byteHash = (bytes: Uint8Array) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex")
+const byteHash = (bytes: Uint8Array) => new CryptoHasher("sha256").update(bytes).digest("hex")
 
 const UTF8 = new TextEncoder()
-const BOM = Uint8Array.of(0xef, 0xbb, 0xbf)
 
-/** The JSON a producer wrote, laid out as a file might hold it: compact, indented, indented with CRLF, padded, CRLF-ended. */
+/** What may come before the JSON: nothing, or a UTF-8 byte-order mark. */
+const PREFIXES = [Uint8Array.of(), Uint8Array.of(0xef, 0xbb, 0xbf)]
+
+/** The JSON a producer wrote, laid out as a file might hold it: compact, broken over LF lines, over CRLF lines, padded, CRLF-ended. */
 const LAYOUTS: ReadonlyArray<(json: string) => string> = [
   (json) => json,
-  (json) => JSON.stringify(JSON.parse(json), null, 2),
-  (json) => JSON.stringify(JSON.parse(json), null, 2).replaceAll("\n", "\r\n"),
+  (json) => json.replaceAll(',"', ',\n  "'),
+  (json) => json.replaceAll(',"', ',\r\n  "'),
   (json) => `  ${json}\n`,
   (json) => `${json}\r\n`,
 ]
@@ -684,9 +690,49 @@ const TAILS = [Uint8Array.of(), UTF8.encode("x"), Uint8Array.of(0xff)]
 /** Commands with and without multi-byte characters. */
 const COMMANDS = ["bun test fixture.test.ts", "bun test fixtüre-日本-🙂.test.ts"]
 
-/** One file's bytes: an optional byte-order mark, the laid-out JSON, a tail. */
-const bytesOf = (bom: boolean, layout: number, json: string, tail: number) =>
-  Uint8Array.from([...(bom ? BOM : []), ...UTF8.encode(Option.getOrElse(Arr.get(LAYOUTS, layout), () => (each: string) => each)(json)), ...Option.getOrElse(Arr.get(TAILS, tail), () => Uint8Array.of())])
+interface Combo {
+  readonly prefix: number
+  readonly layout: number
+  readonly tail: number
+  readonly command: number
+}
+
+/** One file's bytes: the prefix, the laid-out JSON, the tail. */
+const bytesOf = (combo: Combo, json: string) =>
+  Uint8Array.from([
+    ...Option.getOrElse(Arr.get(PREFIXES, combo.prefix), () => Uint8Array.of()),
+    ...UTF8.encode(Option.getOrElse(Arr.get(LAYOUTS, combo.layout), () => (each: string) => each)(json)),
+    ...Option.getOrElse(Arr.get(TAILS, combo.tail), () => Uint8Array.of()),
+  ])
+
+/** What the oracle expects of a combination: bytes that are not UTF-8 refused by the source; a mark or a stray tail refused by the decoder; else frozen. */
+const expectedOf = (combo: Combo) =>
+  Match.value({ prefix: combo.prefix, tail: combo.tail }).pipe(
+    Match.when({ tail: 2 }, () => ({ read: "Refused", receipt: "not text", install: "refused", artifacts: 0, proven: Option.none<boolean>() })),
+    Match.when({ prefix: 0, tail: 0 }, () => ({ read: "Present", receipt: "frozen", install: "Proven", artifacts: 2, proven: Option.some(true) })),
+    Match.orElse(() => ({ read: "Present", receipt: "not a receipt", install: "corrupt", artifacts: 0, proven: Option.none<boolean>() })),
+  )
+
+/** The install state's tag, or its reason when unavailable. */
+const installState = (snapshot: InputSnapshot) =>
+  Option.match(Option.fromNullishOr(snapshot.install), {
+    onNone: () => "none",
+    onSome: (install) => Match.value(install).pipe(Match.tag("Proven", () => "Proven"), Match.tag("Unavailable", (none) => none.reason), Match.exhaustive),
+  })
+
+/** The host an install state names. */
+const installHost = (snapshot: InputSnapshot) =>
+  Option.match(Option.fromNullishOr(snapshot.install), {
+    onNone: () => "none",
+    onSome: (install) => Match.value(install).pipe(Match.tag("Proven", (proven) => proven.receipt.host), Match.tag("Unavailable", (none) => none.host), Match.exhaustive),
+  })
+
+/** The proven install's evidence digest. */
+const provenDigest = (snapshot: InputSnapshot) =>
+  Option.flatMap(Option.fromNullishOr(snapshot.install), (install) => Match.value(install).pipe(Match.tag("Proven", (proven) => Option.some(proven.receipt.proven)), Match.orElse(() => Option.none<string>())))
+
+/** A freeze of `request` over the host files at `places`. */
+const freezeAt = (places: ReceiptPlaces, request: InputRequest) => freeze(request).pipe(Effect.provide(layer(places)))
 
 seeded("evidence is the file's exact bytes: a byte-order mark is kept and refused, CRLF and padding are kept as written, a stray tail is refused, bytes that are not UTF-8 are refused; every accepted file's digest is an independent hash of the file", ({ seed, expect }) =>
   Effect.gen(function* () {
@@ -700,51 +746,38 @@ seeded("evidence is the file's exact bytes: a byte-order mark is kept and refuse
     const places = { host: HOST, repository: { key: "dotfiles", checkouts: [checkout] }, receipts, installed: path.join(root, "state", "installed.json"), handoff: path.join(root, "state", "handoff.json"), maxBytes: 65536 }
     const source = Context.get(yield* Layer.build(receiptSource(places)), ReceiptSource)
     const next = generator(seed)
-    // The BOM case 306-byte shape the review found, then a dozen combinations the seed picks.
-    const combos = [{ bom: true, layout: 0, tail: 0, command: 0 }, ...Arr.range(1, 12).map(() => ({ bom: next(2) === 0, layout: next(LAYOUTS.length), tail: next(TAILS.length), command: next(COMMANDS.length) }))]
+    // The review's case (a compact record behind a byte-order mark), then a dozen combinations the seed picks.
+    const combos: ReadonlyArray<Combo> = [
+      { prefix: 1, layout: 0, tail: 0, command: 0 },
+      ...Arr.range(1, 12).map(() => ({ prefix: next(PREFIXES.length), layout: next(LAYOUTS.length), tail: next(TAILS.length), command: next(COMMANDS.length) })),
+    ]
     const seen = yield* Effect.forEach(combos, (combo) =>
       Effect.gen(function* () {
         const command = Option.getOrElse(Arr.get(COMMANDS, combo.command), () => "bun test")
         const receiptJson = encodeReceipt({ ...receiptAt(laneHead, "round", laneTree, [0], "2026-11-22T01:00:00.000Z", checkout), checks: [{ command, code: 0, seconds: 1 }] })
         const proven = { ...build(installedDotfiles, provenFork), command: [command] }
-        const receiptBytes = bytesOf(combo.bom, combo.layout, receiptJson, combo.tail)
-        const installedBytes = bytesOf(combo.bom, combo.layout, encodeRecord(installedAs(proven, Option.some(proven))), combo.tail)
+        const receiptBytes = bytesOf(combo, receiptJson)
+        const installedBytes = bytesOf(combo, encodeRecord(installedAs(proven, Option.some(proven))))
         yield* fs.writeFile(path.join(receipts, `${laneHead}.round.json`), receiptBytes)
         yield* fs.writeFile(places.installed, installedBytes)
         // The source answers the file's bytes exactly, the mark included, or refuses bytes that are not UTF-8.
         const read = yield* source.read(SourceRef.Receipt({ head: laneHead, kind: "round" }))
-        const exact = SourceRead.$match(read, { Present: (present) => Bun.deepEquals(UTF8.encode(present.text), receiptBytes), Absent: () => false, Refused: () => true })
-        const snapshot = yield* freeze({ receipts: [{ head: laneHead, kind: "round" }], lands: [], install: true }).pipe(Effect.provide(layer(places)))
+        const exact = SourceRead.$match(read, { Present: (present) => deepEquals(UTF8.encode(present.text), receiptBytes), Absent: () => false, Refused: () => true })
+        const snapshot = yield* freezeAt(places, { receipts: [{ head: laneHead, kind: "round" }], lands: [], install: true })
         const hashes = [byteHash(receiptBytes), byteHash(installedBytes)]
         // Every artifact kept reproduces one of the two files byte for byte, under its independent hash.
         const artifactsExact = snapshot.artifacts.every((each) => hashes.includes(each.digest) && each.digest === byteHash(UTF8.encode(each.text)))
-        const provenDigest = snapshot.install?._tag === "Proven" ? Option.some(snapshot.install.receipt.proven === byteHash(installedBytes)) : Option.none()
         const have = {
-          read: read._tag,
-          receipt: snapshot.receipts.length === 1 ? "frozen" : snapshot.refused.map((each) => each.reason).join(","),
-          install: Option.getOrElse(Option.map(Option.fromNullishOr(snapshot.install), (install) => (install._tag === "Proven" ? "Proven" : install.reason)), () => "none"),
+          read: `${read._tag}`,
+          receipt: Option.getOrElse(Option.map(Arr.head(snapshot.receipts), () => "frozen"), () => snapshot.refused.map((each) => each.reason).join(",")),
+          install: installState(snapshot),
+          artifacts: snapshot.artifacts.length,
+          proven: Option.map(provenDigest(snapshot), (digest) => digest === byteHash(installedBytes)),
         }
-        return [seed, combo, have, exact, artifactsExact, snapshot.artifacts.length, provenDigest] as const
+        return [seed, combo, have, exact, artifactsExact] as const
       }),
     )
-    expect(seen).toEqual(
-      combos.map((combo) => {
-        const accepted = !combo.bom && combo.tail === 0
-        return [
-          seed,
-          combo,
-          {
-            read: combo.tail === 2 ? "Refused" : "Present",
-            receipt: accepted ? "frozen" : combo.tail === 2 ? "not text" : "not a receipt",
-            install: accepted ? "Proven" : combo.tail === 2 ? "refused" : "corrupt",
-          },
-          true,
-          true,
-          accepted ? 2 : 0,
-          accepted ? Option.some(true) : Option.none(),
-        ] as const
-      }),
-    )
+    expect(seen).toEqual(combos.map((combo) => [seed, combo, expectedOf(combo), true, true] as const))
   }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
 )
 
@@ -768,11 +801,11 @@ seeded("host scope: a source stamps the host it reads on; Work's receipts and th
     yield* fs.writeFileString(path.join(first.receipts, `${laneHead}.round.json`), encodeReceipt(receiptAt(laneHead, "round", laneTree, [0], "2026-11-22T01:00:00.000Z", checkout)))
     yield* fs.writeFileString(first.installed, encodeRecord(installedAs(proven, Option.some(proven))))
     const request: InputRequest = { receipts: [{ head: laneHead, kind: "round" }], lands: [], install: true }
-    const freezeOn = (places: typeof first) => freeze(request).pipe(Effect.provide(layer(places)))
+    const freezeOn = (places: ReceiptPlaces) => freezeAt(places, request)
     const hosts = (snapshot: InputSnapshot) => ({
       snapshot: snapshot.host,
       receipts: snapshot.receipts.map((each) => each.input.observedOn),
-      install: Option.getOrElse(Option.map(Option.fromNullishOr(snapshot.install), (install) => (install._tag === "Proven" ? install.receipt.host : install.host)), () => "none"),
+      install: installHost(snapshot),
       absent: snapshot.absent,
     })
     const onFirst = yield* freezeOn(first)
