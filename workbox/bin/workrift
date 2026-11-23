@@ -2548,7 +2548,10 @@ sv_renameat() {
   python3 -c "$sv_rename_py" "$1" "$2" "$3" 3>&- 6>&- 7>&- 8>&- 9>&-
 }
 
-# The paths of the base $1, set once.
+# The paths of the base $1, set once and checked once (sv_is): every delete
+# names one of these read-only paths itself, never a path it was handed. The
+# state folder is only named here: a dry run creates nothing; the hold makes
+# it (sv_state_make).
 sv_paths() {
   sv_base=$1
   sv_parent=${1%/*}
@@ -2557,16 +2560,31 @@ sv_paths() {
   sv_new=$sv_dir/$sv_name.new
   sv_back=$sv_dir/$sv_name.back
   sv_old=$sv_dir/$sv_name.old
-  state_dir "$1"
+  if [ -d "$(base_home "$1")/.workrift" ]; then
+    state_dir "$1"
+  else
+    state_value=$(base_home "$1")/.workrift
+  fi
   sv_state=$state_value/subvolume
   readonly sv_base sv_parent sv_name sv_dir sv_new sv_back sv_old sv_state
+  sv_is "$sv_new" new && sv_is "$sv_back" back && sv_is "$sv_old" old ||
+    fail "$sv_base: its move folder would be $sv_dir, not a folder beside it under a parent of its own (a base directly under / is refused); nothing changed"
 }
 
-# Whether $1 is exactly this base's move path $2 (new, back or old): the
-# check on the line before every destructive call.
+# Whether $1 is exactly this base's move path $2 (new, back or old), in a
+# .subvolume-move folder beside the base under a parent that is not /.
 sv_is() {
   [ "$1" = "$sv_dir/$sv_name.$2" ] && [ "$sv_dir" = "$sv_parent/.subvolume-move" ] &&
     case "$1" in /?*/.subvolume-move/?*.new | /?*/.subvolume-move/?*.back | /?*/.subvolume-move/?*.old) true ;; *) false ;; esac
+}
+
+# The state folder, made under the hold (the dry run makes nothing): the one
+# state_dir resolves must be the one sv_paths named.
+sv_state_make() {
+  state_dir "$sv_base"
+  [ "$state_value/subvolume" = "$sv_state" ] ||
+    fail "the state folder resolves to $state_value, not $(dirname "$sv_state"); nothing changed"
+  mkdir -p "$sv_state"
 }
 
 # The kind of the path $1: - nothing, L a link, X no folder, S the root of a
@@ -2636,6 +2654,12 @@ sv_step() {
   phase "$1: $2"
   mkdir -p "$sv_state"
   printf '%s %s: %s\n' "$(date -u +%FT%TZ)" "$1" "$2" >>"$sv_state/log"
+  # Tests only: a writer that lands at this step (WORKRIFT_SUBVOLUME_HOOK_AT,
+  # a space-separated list of steps, runs WORKRIFT_SUBVOLUME_HOOK with the
+  # step as $1), and a kill -9 of the command.
+  case " ${WORKRIFT_SUBVOLUME_HOOK_AT:-} " in
+    *" $1 "*) sh -c "$WORKRIFT_SUBVOLUME_HOOK" sv-hook "$1" </dev/null >&2 3>&- 6>&- 7>&- 8>&- 9>&- || true ;;
+  esac
   [ "${WORKRIFT_SUBVOLUME_DIE_AT:-}" != "$1" ] || kill -KILL $$
 }
 
@@ -2914,12 +2938,14 @@ sv_refs() {
   base_git "$1" for-each-ref --format='%(objectname) %(refname)' | LC_ALL=C sort
 }
 
-# What a copy must reproduce: HEAD, refs, status and lock files.
+# What a copy must reproduce: HEAD, refs, status (untracked files too), lock
+# files and Git's own files (config, info, hooks).
 sv_digest() {
   base_git "$1" symbolic-ref -q HEAD || base_git "$1" rev-parse HEAD
   sv_refs "$1"
-  base_git "$1" --no-optional-locks status --porcelain=v2 --branch
+  base_git "$1" --no-optional-locks status --porcelain=v2 --branch --untracked-files=all
   lock_fingerprint "$1"
+  sv_git_files "$1"
 }
 
 # The object store of the tree $1, a line a file: the listings of
@@ -2983,8 +3009,15 @@ sv_carry() {
     "$c_snap" "$c_tmp.from" "$c_tmp.to" | LC_ALL=C sort >"$c_tmp.diff"
   sv_carried=0
   sv_kept=0
+  sv_missed=0
   while read -r c_ref c_was c_now c_there; do
     case "$c_ref" in refs/subvolume-move/*) continue ;; esac
+    # A ref the two trees differed on at the switch (`?`): a value carried
+    # only where the other tree has none; a deletion never.
+    if [ "$c_was" = "?" ]; then
+      [ "$c_now" != - ] || continue
+      [ "$c_there" != - ] || c_was=-
+    fi
     [ "$c_there" != "$c_now" ] || continue
     # The ref's objects travel with it: a fetch from the other tree brings
     # every object its new value needs that this one lacks (a ref changed
@@ -2994,7 +3027,7 @@ sv_carry() {
       base_git "$c_to" fetch -q --no-tags --no-write-fetch-head "$c_from" "$c_ref" </dev/null >&2 || true
       if ! base_git "$c_to" cat-file -e "$c_now^{object}" 2>/dev/null; then
         printf 'workrift: subvolume: %s moved to %s in %s, whose objects did not come over: not carried\n' "$c_ref" "$c_now" "$c_from" >&2
-        sv_kept=$((sv_kept + 1))
+        sv_missed=$((sv_missed + 1))
         continue
       fi
     fi
@@ -3037,6 +3070,7 @@ sv_wait_users() {
 # and removes, at most sv_turn_seconds. Fails, holding nothing, past that.
 sv_hold() {
   lock_purpose="subvolume: switch $sv_base (holds the base about 2-20 min; creates wait behind it)"
+  sv_state_make
   queue_enter "$sv_base" move w 6 try ||
     fail "another workrift subvolume runs for $sv_base:$(queue_words "$sv_base" move); nothing changed"
   move_ticket=$queue_ticket
@@ -3081,29 +3115,62 @@ sv_drop_copy() {
     fail "$sv_base is not the whole $(sv_words "$(sv_other "$d_t")") the copy was made from; $d_path is not deleted"
   d_users=$(sv_users "$d_path")
   [ -z "$d_users" ] || fail "processes work in $d_path ($(printf '%s' "$d_users" | tr '\n' ';')); end them, then run again"
-  sv_step drop-copy "delete the copy $d_path ($(sv_words "$d_t"))"
+  # The copy was never the base: the exchange is the only step that puts a
+  # tree at the base's path, and the base is still the tree it was copied from.
+  sv_step drop-copy "delete the copy $d_path ($(sv_words "$d_t")), never the base"
   if [ "$d_t" = S ]; then
-    sv_is "$d_path" new || fail "refusing to delete $d_path: not the move's new path"
-    btrfs subvolume delete "$d_path" >/dev/null || fail "btrfs subvolume delete $d_path failed"
+    btrfs subvolume delete "$sv_new" >/dev/null || fail "btrfs subvolume delete $sv_new failed"
   else
-    sv_is "$d_path" back || fail "refusing to delete $d_path: not the move's back path"
-    sv_rm_folder "$d_path"
+    sv_rm_folder back
   fi
   [ ! -e "$d_path" ] || fail "$d_path is not all deleted"
+  sv_deleted="$sv_deleted $d_path"
 }
 
-# Deletes the plain folder $1 (a move path, checked by the caller and again
-# here), never crossing into another file system.
+# Deletes the plain folder of the move path $1 (back or old), never crossing
+# into another file system.
 sv_rm_folder() {
-  local f_path="$1"
-  sv_is "$f_path" back || sv_is "$f_path" old || fail "refusing to delete $f_path: no move path"
   if rm --version >/dev/null 2>&1; then
-    sv_is "$f_path" back || sv_is "$f_path" old || fail "refusing to delete $f_path"
-    nice -n 19 rm -rf --one-file-system -- "$f_path"
+    case "$1" in
+      back) nice -n 19 rm -rf --one-file-system -- "$sv_back" ;;
+      old) nice -n 19 rm -rf --one-file-system -- "$sv_old" ;;
+    esac
   else
-    sv_is "$f_path" back || sv_is "$f_path" old || fail "refusing to delete $f_path"
-    nice -n 19 rm -rf -x -- "$f_path"
+    case "$1" in
+      back) nice -n 19 rm -rf -x -- "$sv_back" ;;
+      old) nice -n 19 rm -rf -x -- "$sv_old" ;;
+    esac
   fi
+}
+
+# The copy into $2 by cp, its pid and that pid's identity in the state folder
+# while it runs. A run whose shell alone is killed leaves its cp running; the
+# next run waits for that cp (sv_wait_copier) before it touches the copy.
+sv_cp() {
+  local p_pid p_rc=0
+  cp -a --reflink=always "$1" "$2" 3>&- 6>&- 7>&- 8>&- 9>&- &
+  p_pid=$!
+  printf '%s\n%s\n' "$p_pid" "$(process_identity "$p_pid")" >"$sv_state/copier"
+  wait "$p_pid" || p_rc=$?
+  rm -f "$sv_state/copier"
+  return "$p_rc"
+}
+
+# Waits, at most sv_wait_seconds, for the cp of a run cut short to end.
+sv_wait_copier() {
+  local w_pid w_id w_until
+  [ -f "$sv_state/copier" ] || return 0
+  w_pid=$(sed -n 1p "$sv_state/copier")
+  w_id=$(sed -n 2p "$sv_state/copier")
+  w_until=$(($(date +%s) + sv_wait_seconds))
+  while [ -n "$w_id" ] && [ "$(process_identity "$w_pid")" = "$w_id" ]; do
+    [ "$(date +%s)" -lt "$w_until" ] ||
+      fail "the cp of a run cut short (pid $w_pid) still writes into the copy after ${sv_wait_seconds} s: let it end, or end it (kill $w_pid), then run again; nothing changed"
+    phase "wait for the cp of a run cut short (pid $w_pid) to end"
+    sleep 1
+  done
+  printf 'workrift subvolume: the cp of a run cut short (pid %s) has ended\n' "$w_pid" >&2
+  rm -f "$sv_state/copier"
 }
 
 # Makes the copy of the base at the copy path of $1, verified: a subvolume
@@ -3122,7 +3189,7 @@ sv_copy_in() {
   sv_refs "$sv_base" >"$sv_state/refs"
   sv_store "$sv_base" >"$sv_state/store"
   sv_step copy "cp -a --reflink=always $sv_base/. $i_path/"
-  cp -a --reflink=always "$sv_base/." "$i_path/" 3>&- 6>&- 7>&- 8>&- 9>&- ||
+  sv_cp "$sv_base/." "$i_path/" ||
     { sv_why="the copy into $i_path failed (a full disk or metadata space?)"; return 1; }
   while :; do
     sv_step refresh "git -C $i_path update-index -q --refresh"
@@ -3138,11 +3205,10 @@ sv_copy_in() {
     fi
     sv_step copy-git "the base changed during the copy: copy its .git again"
     [ "$(sv_kind "$i_path")" = "$i_t" ] || { sv_why="$i_path is no longer the copy"; return 1; }
-    sv_is "$i_path" "$(sv_copy_word "$i_t")" || fail "refusing to delete $i_path/.git: not a move path"
-    rm -rf -- "$i_path/.git"
+    if [ "$i_t" = S ]; then rm -rf -- "$sv_new/.git"; else rm -rf -- "$sv_back/.git"; fi
     sv_refs "$sv_base" >"$sv_state/refs"
     sv_store "$sv_base" >"$sv_state/store"
-    cp -a --reflink=always "$sv_base/.git" "$i_path/.git" 3>&- 6>&- 7>&- 8>&- 9>&- ||
+    sv_cp "$sv_base/.git" "$i_path/.git" ||
       { sv_why="the copy of $sv_base/.git failed"; return 1; }
   done
   if [ $(($(date +%s) - sv_held_at)) -gt "$sv_limit_seconds" ]; then
@@ -3192,65 +3258,163 @@ sv_prove() {
   sv_smoke_rm
 }
 
-# Undoes the switch under way (the phase file says which), under the hold:
-# the base back to the tree it was, a copy made for the switch deleted, a
-# kept tree back at .old. Every point of it is a point a rerun takes up.
-sv_rollback() {
-  local r_source="$1" r_t="$2" r_o r_c r_kb
-  r_o=$(sv_other "$r_t")
-  r_c=$(sv_copy_path "$r_t")
-  sv_phase_write rollback "$r_source" "$r_t"
-  sv_step rollback "the switch to $(sv_words "$r_t") is undone"
-  if [ "$(sv_kind "$sv_base")" = S ]; then sv_smoke_rm || true; fi
-  r_kb=$(sv_kind "$sv_base")
-  if [ "$r_kb" = "$r_t" ]; then
-    if [ "$r_source" = copy ] && [ "$(sv_kind "$r_c")" = "$r_o" ] && sv_whole "$r_c"; then
-      sv_step rollback-exchange "exchange $sv_base and $r_c"
-      sv_renameat exchange "$sv_base" "$r_c" || fail "the exchange back failed; $sv_base is the new tree, whole"
-    elif [ "$(sv_kind "$sv_old")" = "$r_o" ] && sv_whole "$sv_old"; then
-      sv_step rollback-exchange "exchange $sv_base and $sv_old"
-      sv_renameat exchange "$sv_base" "$sv_old" || fail "the exchange back failed; $sv_base is the new tree, whole"
-    else
-      fail "cannot roll back: $sv_base is $(sv_words "$r_kb") and no whole $(sv_words "$r_o") is at $r_c or $sv_old; nothing changed"
-    fi
-  fi
-  if [ "$r_source" = copy ]; then
-    if [ "$(sv_kind "$sv_old")" = "$r_t" ] && [ "$(sv_kind "$r_c")" = - ]; then
-      sv_step rollback-park "rename $sv_old to $r_c"
-      sv_renameat rename "$sv_old" "$r_c" || fail "rename $sv_old $r_c failed"
-    fi
-    sv_drop_copy "$r_t"
+# The exchange is the commit point of a switch. Before it, the base never
+# moved and a failure rolls back: the copy (never the base) is deleted, or a
+# kept tree stays kept. After it, the tree at the base's path has been the
+# live base, and anything may have been written into it (refs, objects,
+# reflogs, the index, config, files; work's records live beside it, not in
+# it), so nothing rolls it back: a failure after the exchange leaves the new
+# tree as the base, keeps the tree it was at .old under its record, and says
+# what the base lacks of it. A return is a --back of its own.
+
+# Fails after rolling back a switch to $2 from $1 (copy or kept) that had not
+# exchanged, with the reason in sv_why.
+sv_abort() {
+  local a_source="$1" a_t="$2"
+  [ "$(sv_kind "$sv_base")" = "$(sv_other "$a_t")" ] && sv_whole "$sv_base" || {
+    sv_release
+    fail "$sv_why; and $sv_base is $(sv_words "$(sv_kind "$sv_base")"), not the tree it was before the exchange: nothing rolled back or deleted; look at it"
+  }
+  sv_step rollback "before the exchange: $sv_base never moved"
+  if [ "$a_source" = copy ]; then
+    sv_drop_copy "$a_t"
     rm -f "$sv_state/phase"
   else
-    sv_phase_write switched kept "$r_o"
+    sv_phase_write switched kept "$(sv_other "$a_t")"
   fi
-  sv_step rolled-back "$sv_base is $(sv_words "$(sv_kind "$sv_base")") again"
-}
-
-# Fails after rolling back, with the reason.
-sv_abort() {
-  sv_rollback "$1" "$2"
+  sv_step rolled-back "$sv_base is $(sv_words "$(sv_kind "$sv_base")") as it was"
   sv_release
-  fail "$sv_why; rolled back: $sv_base is $(sv_words "$(sv_kind "$sv_base")") as before, nothing deleted that it held"
+  fail "$sv_why; rolled back before the exchange: $sv_base is $(sv_words "$(sv_kind "$sv_base")") as it was, never moved; $(sv_deleted_said)"
 }
 
-# After the swap (phase carry): the old tree at .old left by everyone, its
-# new refs carried, work refresh, the proof, done.
+# What a run deleted, from what it did: only copies that were never the base.
+sv_deleted_said() {
+  if [ -z "${sv_deleted:-}" ]; then
+    printf 'deleted nothing'
+  else
+    printf 'deleted only its copy that was never the base:%s' "$sv_deleted"
+  fi
+}
+
+# Records the tree at .old, which was the base until the exchange, by its
+# identity: the only tree --drop-old deletes.
+sv_keep_record() {
+  printf '%s\n%s\n' "$sv_old" "$(sv_identity "$sv_old")" >"$sv_state/kept.$$"
+  mv -f "$sv_state/kept.$$" "$sv_state/kept"
+}
+
+# What the tree $2 lacks of what the tree $1 holds, a line each, empty when
+# nothing: refs (a ref the carry put under refs/subvolume-move/ is held),
+# HEAD, Git's own files (config, info, hooks and the rest outside objects,
+# refs, logs, packed-refs and the index), reflog entries, and the index and
+# worktree as `git status` sees them. Files Git ignores are not compared.
+# Reads only: no file is written, so a dry run may call it.
+sv_lacks() {
+  local l_k="$1" l_b="$2" l_hk l_hb
+  { printf '=K\n'; sv_refs "$l_k"; printf '=B\n'; sv_refs "$l_b"; } | awk '
+    $1 == "=K" { s = 1; next } $1 == "=B" { s = 2; next }
+    s == 1 && $2 !~ /^refs\/subvolume-move\// { k[$2] = $1; next }
+    s == 2 { b[$2] = $1 }
+    END {
+      for (r in k) {
+        m = "refs/subvolume-move/" substr(r, 6)
+        if (((r in b) && b[r] == k[r]) || ((m in b) && b[m] == k[r])) continue
+        print "  ref " r " " k[r] ((r in b) ? " (the base has " b[r] ")" : " (the base has no such ref)")
+      }
+    }' | LC_ALL=C sort
+  l_hk=$(base_git "$l_k" symbolic-ref -q HEAD 2>/dev/null || base_git "$l_k" rev-parse -q --verify HEAD 2>/dev/null || true)
+  l_hb=$(base_git "$l_b" symbolic-ref -q HEAD 2>/dev/null || base_git "$l_b" rev-parse -q --verify HEAD 2>/dev/null || true)
+  [ "$l_hk" = "$l_hb" ] || printf '  HEAD %s (the base has %s)\n' "$l_hk" "$l_hb"
+  { printf '=K\n'; sv_git_files "$l_k"; printf '=B\n'; sv_git_files "$l_b"; } | awk '
+    $1 == "=K" { s = 1; next } $1 == "=B" { s = 2; next }
+    { f = $0; sub(/^[^ ]+ [^ ]+ \.\//, "", f) }
+    s == 1 { k[f] = $1 " " $2; next }
+    s == 2 { b[f] = $1 " " $2 }
+    END { for (f in k) if (b[f] != k[f]) print "  Git file .git/" f ((f in b) ? " differs" : " is missing") }' | LC_ALL=C sort
+  { printf '=K\n'; sv_reflogs "$l_k"; printf '=B\n'; sv_reflogs "$l_b"; } | awk '
+    $0 == "=K" { s = 1; next } $0 == "=B" { s = 2; next }
+    s == 1 { k[$0] = 1; next }
+    s == 2 { b[$0] = 1 }
+    END {
+      for (l in k) if (!(l in b)) { f = l; sub(/\t.*/, "", f); n[f]++ }
+      for (f in n) print "  reflog .git/logs/" f ": " n[f] " entries"
+    }' | LC_ALL=C sort
+  { printf '=K\n'; sv_status "$l_k"; printf '=B\n'; sv_status "$l_b"; } | awk '
+    $0 == "=K" { s = 1; next } $0 == "=B" { s = 2; next }
+    s == 1 { k[$0] = 1; next }
+    s == 2 { b[$0] = 1 }
+    END { for (l in k) if (!(l in b)) print "  worktree or index: " l }' | LC_ALL=C sort
+}
+
+# Git's own files of the tree $1: `crc size ./path` a line.
+sv_git_files() {
+  (
+    cd "$1/.git" 2>/dev/null || exit 0
+    find . -type f ! -path './objects/*' ! -path './refs/*' ! -path './logs/*' ! -name packed-refs \
+      ! -name index ! -name HEAD ! -name '*.lock' ! -name gc.pid ! -name FETCH_HEAD -exec cksum {} + 2>/dev/null
+  )
+}
+
+# The reflog entries of the tree $1: `<log file><tab><entry>` a line.
+sv_reflogs() {
+  (
+    cd "$1/.git/logs" 2>/dev/null || exit 0
+    find . -type f -exec awk '{ f = FILENAME; sub(/^\.\//, "", f); print f "\t" $0 }' {} + 2>/dev/null
+  )
+}
+
+# The index and worktree of the tree $1 as Git sees them (no branch lines).
+sv_status() {
+  base_git "$1" --no-optional-locks status --porcelain=v2 --untracked-files=all 2>/dev/null | grep -v '^#' || true
+}
+
+# Says what the base lacks of the tree kept at .old, from sv_lacks.
+sv_lacks_said() {
+  local s_lacks
+  [ -d "$sv_old" ] || return 0
+  s_lacks=$(sv_lacks "$sv_old" "$sv_base")
+  if [ -z "$s_lacks" ]; then
+    printf '  %s holds all that %s holds (refs and their objects, HEAD, Git'\''s files, reflogs, the index and the worktree as Git sees them; files Git ignores are not compared)\n' "$sv_base" "$sv_old"
+  else
+    printf '  %s lacks, of what %s holds (kept there until --drop-old):\n%s\n' "$sv_base" "$sv_old" "$s_lacks"
+  fi
+}
+
+# After the exchange (phase carry): waits for everyone to leave the tree at
+# .old, carries the refs it gained, work refresh, the proof. Never rolls back:
+# when processes stay in .old, or the proof fails, the switch ends here with
+# the new tree as the base and sv_unfinished or sv_unproved set.
 sv_finish() {
   local f_t="$1" f_source="$2"
+  sv_unfinished=
+  sv_unproved=
+  sv_refreshed=
   sv_step carry-wait "wait up to ${sv_wait_seconds} s until no process outside workrift's line is in $sv_old"
-  sv_wait_users "$sv_old" || sv_abort "$f_source" "$f_t"
+  sv_wait_users "$sv_old" || sv_unfinished=$sv_why
   sv_step carry "the refs $sv_old gained since the copy, into $sv_base"
   sv_carry "$sv_old" "$sv_base" "$sv_state/refs"
+  [ -z "$sv_unfinished" ] || return 0
   sv_step work-refresh "work refresh in $sv_base (every inode changed)"
   sv_refreshed=true
   work_in "$sv_base" refresh >/dev/null 3>&- 6>&- 7>&- 8>&- 9>&- || sv_refreshed=false
   sv_step prove "$sv_base is $(sv_words "$f_t") work can use"
-  sv_prove "$f_t" || sv_abort "$f_source" "$f_t"
-  sv_refs "$sv_base" >"$sv_state/refs-at-switch"
-  printf '%s\n%s\n' "$sv_old" "$(sv_identity "$sv_old")" >"$sv_state/kept"
+  sv_prove "$f_t" || sv_unproved=$sv_why
+  sv_baseline >"$sv_state/refs-at-switch"
   sv_phase_write switched "$f_source" "$f_t"
   sv_step switched "$sv_base is $(sv_words "$f_t"); the tree it was is kept at $sv_old"
+}
+
+# Ends a switch to $1 that exchanged: releases the line, says what happened,
+# and fails when it did not finish or its proof failed.
+sv_end() {
+  sv_release
+  sv_said "$1"
+  if [ -n "${sv_unfinished:-}" ]; then
+    fail "$sv_unfinished; not rolled back: $sv_base has been the live base since the exchange and stays $(sv_words "$1"), with every ref $sv_old had so far carried in; the switch is not finished: when they have left, run workrift subvolume$([ "$1" = F ] && printf ' --back') --apply to carry what they wrote"
+  fi
+  if [ -n "${sv_unproved:-}" ]; then
+    fail "$sv_unproved; not rolled back: $sv_base has been the live base since the exchange and stays $(sv_words "$1"); workrift subvolume$([ "$1" = S ] && printf ' --back') --apply switches it back"
+  fi
 }
 
 # The plan of a switch to $1 from $2 (copy or kept), with its paths.
@@ -3267,7 +3431,7 @@ sv_plan() {
     fi
     printf '             cp -a --reflink=always %s/. %s/\n' "$sv_base" "$n_c"
     printf '  3 refresh  git -C %s update-index -q --refresh\n' "$n_c"
-    printf '  4 verify   HEAD, refs, status and lock files: %s = at the copy = %s (else its .git again, 3 tries)\n' "$sv_base" "$n_c"
+    printf '  4 verify   HEAD, refs, status, lock files and the object store: %s = at the copy = %s; every ref tip and branch tree in the copy; no Git lock in it (else its .git again, 3 tries)\n' "$sv_base" "$n_c"
     printf '  5 swap     exchange %s and %s (one renameat2 RENAME_EXCHANGE), then rename %s to %s\n' "$sv_base" "$n_c" "$n_c" "$sv_old"
   else
     printf '  2 carry    the refs %s changed since the last switch, into %s\n' "$sv_base" "$sv_old"
@@ -3280,7 +3444,7 @@ sv_plan() {
     printf '  7 prove    %s is a plain folder\n' "$sv_base"
   fi
   printf '  8 release  the tree that was the base stays at %s until: workrift subvolume --drop-old --apply\n' "$sv_old"
-  printf 'any failure under the hold rolls back; a cut run is finished or rolled back by the next --apply\n'
+  printf 'a failure before the exchange rolls back (it deletes the copy, never the base); from the exchange on, the new tree is the base and stays it: a failure after it is said, with what the base lacks of the tree kept at %s; a cut run is finished by the next --apply\n' "$sv_old"
 }
 
 # A switch of the base to $1 (S forward, F back); $2 true applies it.
@@ -3297,7 +3461,7 @@ sv_switch() {
     drop) fail "a --drop-old was cut short: run workrift subvolume --drop-old --apply to finish it first" ;;
     copy | swap | carry | rollback)
       [ "$sv_ph_target" = "$s_t" ] || fail "a switch to $(sv_words "$sv_ph_target") was cut short ($sv_ph): run workrift subvolume$([ "$sv_ph_target" = F ] && printf ' --back') --apply to finish it first"
-      printf 'a switch to %s was cut short (%s): --apply %s it\n' "$(sv_words "$s_t")" "$sv_ph" "$([ "$sv_ph" = rollback ] && printf 'rolls back' || printf 'finishes')"
+      printf 'a switch to %s was cut short (%s): --apply finishes it (cut before its exchange: deletes its copy and switches afresh)\n' "$(sv_words "$s_t")" "$sv_ph"
       if [ "$s_apply" != true ]; then
         printf 'dry run: nothing changed; --apply finishes it\n'
         return 0
@@ -3319,6 +3483,8 @@ sv_switch() {
     printf '%s is already %s: nothing to do' "$sv_base" "$(sv_words "$s_t")"
     [ "$s_ko" = - ] || printf '; the tree it was is kept at %s (workrift subvolume --drop-old --apply deletes it)' "$sv_old"
     printf '\n'
+    # Said every time: a run cut after its carry never said it.
+    [ "$s_ko" = - ] || sv_lacks_said
     return 0
   fi
   [ "$s_kb" = "$s_o" ] && sv_whole "$sv_base" || fail "$sv_base is $(sv_words "$s_kb"), not a whole work base on btrfs"
@@ -3355,20 +3521,35 @@ sv_switch() {
     sv_step swap "exchange $sv_base and $s_c"
     sv_renameat exchange "$sv_base" "$s_c" || { sv_why='the exchange failed'; sv_abort copy "$s_t"; }
     sv_step swapped "$sv_base is the copy; rename $s_c to $sv_old"
-    sv_renameat rename "$s_c" "$sv_old" || fail "rename $s_c $sv_old failed; run --apply again"
+    sv_renameat rename "$s_c" "$sv_old" || fail "rename $s_c $sv_old failed; $sv_base is the new tree, whole: run --apply again"
+    sv_keep_record
   else
     sv_phase_write swap kept "$s_t"
-    [ -f "$sv_state/refs-at-switch" ] || sv_refs "$sv_old" >"$sv_state/refs-at-switch"
+    [ -f "$sv_state/refs-at-switch" ] || sv_baseline >"$sv_state/refs-at-switch"
     sv_step carry-in "the refs $sv_base changed since the last switch, into $sv_old"
     sv_carry "$sv_base" "$sv_old" "$sv_state/refs-at-switch"
     sv_refs "$sv_base" >"$sv_state/refs"
     sv_step swap "exchange $sv_base and $sv_old"
     sv_renameat exchange "$sv_base" "$sv_old" || { sv_why='the exchange failed'; sv_abort kept "$s_t"; }
+    sv_keep_record
   fi
   sv_phase_write carry "$s_source" "$s_t"
   sv_finish "$s_t" "$s_source"
-  sv_release
-  sv_said "$s_t"
+  sv_end "$s_t"
+}
+
+# The refs at a switch: the value where the base and the kept tree agree,
+# `?` where they differ (a ref written into one of them after the carry). The
+# next switch carries into the kept tree what the base changed since: a change
+# of a ref they agreed on; a ref the kept tree lacks; never a deletion or an
+# overwrite of a ref they differed on (that one goes under
+# refs/subvolume-move/).
+sv_baseline() {
+  { printf '=B\n'; sv_refs "$sv_base"; printf '=O\n'; sv_refs "$sv_old"; } | awk '
+    $1 == "=B" { s = 1; next } $1 == "=O" { s = 2; next }
+    s == 1 { b[$2] = $1; all[$2] = 1; next }
+    { o[$2] = $1; all[$2] = 1 }
+    END { for (r in all) print (((r in b) && (r in o) && b[r] == o[r]) ? b[r] : "?"), r }' | LC_ALL=C sort -k2
 }
 
 # Takes up a cut switch to $1 under the hold, from what the paths hold.
@@ -3376,46 +3557,45 @@ sv_resume() {
   local m_t="$1" m_o m_c m_source="$sv_ph_source"
   m_o=$(sv_other "$m_t")
   m_c=$(sv_copy_path "$m_t")
-  if [ "$sv_ph" = rollback ]; then
-    sv_rollback "$m_source" "$m_t"
-    sv_release
-    fail "a cut switch was rolled back: $sv_base is $(sv_words "$(sv_kind "$sv_base")"); run again to switch"
-  fi
+  # A cp the cut run left running ends before anything touches its copy.
+  sv_wait_copier
   if [ "$(sv_kind "$sv_base")" = "$m_o" ]; then
-    # Cut before the exchange: the copy is dropped (the base never moved),
-    # and the caller switches afresh.
+    # Cut before the exchange (a phase `rollback` of an older run is the
+    # same): the base never moved; the copy is dropped and the caller
+    # switches afresh.
     if [ "$m_source" = copy ]; then
       sv_drop_copy "$m_t"
       rm -f "$sv_state/phase"
     else
       sv_phase_write switched kept "$m_o"
     fi
-    printf 'workrift subvolume: the cut switch had not swapped; its copy is dropped and the switch starts again\n' >&2
+    printf 'workrift subvolume: the cut switch had not swapped: %s; the switch starts again\n' "$(sv_deleted_said)" >&2
     sv_restart=true
     return 0
   fi
-  # Cut after the exchange: the base is the new tree.
+  # Cut after the exchange: the base is the new tree, and stays it.
   if [ "$m_source" = copy ] && [ "$(sv_kind "$m_c")" = "$m_o" ]; then
     [ "$(sv_kind "$sv_old")" = - ] || fail "$sv_old is taken; $m_c holds the tree that was the base: look at both"
     sv_step swapped "rename $m_c to $sv_old"
     sv_renameat rename "$m_c" "$sv_old" || fail "rename $m_c $sv_old failed"
   fi
   [ "$(sv_kind "$sv_old")" = "$m_o" ] && sv_whole "$sv_old" || fail "$sv_old is not the whole tree the base was; look at it"
+  sv_keep_record
   sv_phase_write carry "$m_source" "$m_t"
   sv_finish "$m_t" "$m_source"
-  sv_release
-  sv_said "$m_t"
+  sv_end "$m_t"
 }
 
 sv_said() {
-  printf 'workrift subvolume: %s is now %s (hold to release %s s)\n' "$sv_base" "$(sv_words "$1")" "$(($(date +%s) - sv_held_at))"
-  printf '  the tree it was is kept at %s (%s); nothing was deleted\n' "$sv_old" "$(sv_identity "$sv_old")"
-  if [ "${sv_refreshed:-true}" = true ]; then
-    printf '  work refresh ran in %s\n' "$sv_base"
-  else
-    printf '  work refresh failed in %s: run it there (cd %s && work refresh)\n' "$sv_base" "$sv_base"
-  fi
-  printf '  carried %s refs, kept %s under refs/subvolume-move/\n' "${sv_carried:-0}" "${sv_kept:-0}"
+  printf 'workrift subvolume: %s is now %s (hold to release %s s)\n' "$sv_base" "$(sv_words "$(sv_kind "$sv_base")")" "$(($(date +%s) - sv_held_at))"
+  printf '  the tree it was is kept at %s (%s); %s\n' "$sv_old" "$(sv_identity "$sv_old")" "$(sv_deleted_said)"
+  case "${sv_refreshed:-}" in
+    true) printf '  work refresh ran in %s\n' "$sv_base" ;;
+    false) printf '  work refresh failed in %s: run it there (cd %s && work refresh)\n' "$sv_base" "$sv_base" ;;
+    *) printf '  work refresh did not run (the switch is not finished)\n' ;;
+  esac
+  printf '  carried %s refs; put %s under refs/subvolume-move/; %s not carried (their objects did not come over)\n' "${sv_carried:-0}" "${sv_kept:-0}" "${sv_missed:-0}"
+  sv_lacks_said
   [ "${sv_beside:-no}" = no ] || printf "  it ran beside %s removal(s) of another base, the most its checks saw (--beside-other-removals)\n" "$sv_beside"
   if [ "$1" = S ]; then
     printf '  back:  workrift subvolume --back --apply   (a dry run without --apply)\n'
@@ -3437,8 +3617,12 @@ sv_drop() {
   d_ko=$(sv_kind "$sv_old")
   if [ "$d_ko" = - ]; then
     printf 'workrift subvolume: nothing is kept at %s: nothing to drop\n' "$sv_old"
-    rm -f "$sv_state/kept"
-    [ "$sv_ph" != drop ] || sv_phase_write switched - "$d_kb"
+    # Only a run that applies forgets a record (a cut drop finished): a dry
+    # run writes nothing.
+    if [ "$d_apply" = true ] && { [ -f "$sv_state/kept" ] || [ "$sv_ph" = drop ]; }; then
+      rm -f "$sv_state/kept"
+      [ "$sv_ph" != drop ] || sv_phase_write switched - "$d_kb"
+    fi
     return 0
   fi
   d_want=$(sed -n 2p "$sv_state/kept" 2>/dev/null || true)
@@ -3459,11 +3643,14 @@ sv_drop() {
   fi
   d_users=$(sv_users "$sv_old")
   [ -z "$d_users" ] || fail "processes work in $sv_old ($(printf '%s' "$d_users" | tr '\n' ';')): nothing deleted"
+  # What the base would lose with it, said before it goes.
+  sv_lacks_said
   if [ "$d_apply" != true ]; then
     printf 'dry run: nothing changed; --apply deletes it\n'
     return 0
   fi
   lock_purpose="subvolume: drop $sv_old"
+  sv_state_make
   queue_enter "$sv_base" move w 6 try ||
     fail "another workrift subvolume runs for $sv_base:$(queue_words "$sv_base" move); nothing changed"
   move_ticket=$queue_ticket
@@ -3472,11 +3659,9 @@ sv_drop() {
   sv_phase_write drop - "$d_kb"
   sv_step drop "delete $sv_old ($d_have)"
   if [ "$d_ko" = S ]; then
-    sv_is "$sv_old" old || fail "refusing to delete $sv_old: not the move's old path"
     btrfs subvolume delete "$sv_old" >/dev/null || fail "btrfs subvolume delete $sv_old failed"
   else
-    sv_is "$sv_old" old || fail "refusing to delete $sv_old: not the move's old path"
-    sv_rm_folder "$sv_old"
+    sv_rm_folder old
   fi
   [ ! -e "$sv_old" ] || fail "$sv_old is not all deleted; run --drop-old --apply again"
   rm -f "$sv_state/kept" "$sv_state/refs-at-switch"
@@ -3491,6 +3676,7 @@ sv_drop() {
 subvolume_command() {
   local a_mode=forward a_apply=false a_source
   sv_beside=no
+  sv_deleted=
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --back) a_mode=back ;;
@@ -3512,9 +3698,9 @@ subvolume_command() {
   esac
   [ ! -L "$a_source" ] && [ -d "$a_source" ] || fail "not a work base: $a_source"
   [ "$(cd "$a_source" && pwd -P)" = "$a_source" ] || fail "$a_source resolves to $(cd "$a_source" && pwd -P); name that path"
+  sv_paths "$a_source"
   require_source "$a_source"
   work_bases | grep -qxF "$a_source" || fail "not a work base (work --json bases does not list it): $a_source"
-  sv_paths "$a_source"
   # Its own processes stay out of the base, so none of them is a user of it.
   cd /
   phase_label="subvolume $sv_base"

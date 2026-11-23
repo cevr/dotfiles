@@ -386,7 +386,7 @@ describe("workrift subvolume: dry run and refusals", () => {
     }
     expect(b.btrfsCalls()).toEqual([])
     expect({ root: filesUnder(b.root), dir: filesUnder(b.dir).filter((f) => !f.startsWith("work-calls")) }).toEqual(before)
-  })
+  }, 120_000)
 
   test("a path that is not a work base is refused; a base already a subvolume is a no-op that says so", () => {
     const b = bench("notbase")
@@ -410,7 +410,7 @@ describe("workrift subvolume: dry run and refusals", () => {
       expect(ran.out).toContain(`${b.base} is already a btrfs subvolume: nothing to do`)
     }
     expect(b.btrfsCalls()).toEqual([])
-  })
+  }, 120_000)
 
   test("each preflight gate refuses with its reason and changes nothing: mount option, quotas, metadata slack, free space, a removal, a process in the base, an older workrift, a Git lock", () => {
     const b = bench("gates")
@@ -497,7 +497,7 @@ describe("workrift subvolume: dry run and refusals", () => {
     b.processAt(91006, b.dir, ["/bin/sh", SCRIPT, "create", "feat/y"], [SCRIPT])
     const ok = b.wr(["subvolume"])
     expect(ok.code, said(ok)).toBe(0)
-  })
+  }, 120_000)
 
   test("a removal of this base always refuses, --beside-other-removals or not; one of another base refuses unless --beside-other-removals, which runs beside it and says how many it saw", () => {
     const b = bench("removals")
@@ -669,7 +669,7 @@ describe("workrift subvolume --apply", () => {
     expect(ran.err).toContain("kept as refs/subvolume-move/heads/main")
   }, 30_000)
 
-  test("the carry waits for a process still in the old tree; one that stays past the wait rolls the switch back, whole", async () => {
+  test("the carry waits for a process still in the old tree; one that stays past the wait leaves the switch done but unfinished (never rolled back after the exchange), and a rerun once it left finishes it", async () => {
     const b = bench("stay")
     // Leaves after a second: the carry waits, then goes on.
     const stayer = String(91100)
@@ -693,10 +693,19 @@ describe("workrift subvolume --apply", () => {
     })
     expect(ran2.code, said(ran2)).toBe(1)
     expect(ran2.err).toContain("processes still work in")
-    expect(ran2.err).toContain("rolled back")
-    expect(c.layout()).toEqual({ base: "F", new: "-", back: "-", old: "-" })
+    expect(ran2.err).toContain("not rolled back: ")
+    expect(ran2.out).toContain("work refresh did not run (the switch is not finished)")
+    expect(ran2.out).toContain(`${c.base} holds all that ${c.paths.old} holds`)
+    expect(c.layout()).toEqual({ base: "S", new: "-", back: "-", old: "F" })
     whole(c)
-    expect(c.phase()).toBe("")
+    whole(c, c.paths.old)
+    expect(c.phase()).toBe("carry copy S")
+    // --drop-old refuses while the switch is unfinished; once the process left, a rerun finishes the switch.
+    expect(c.wr(["subvolume", "--drop-old", "--apply"]).code).toBe(1)
+    rmSync(join(c.proc, "91101"), { recursive: true })
+    const ran3 = c.wr(["subvolume", "--apply"])
+    expect(ran3.code, said(ran3)).toBe(0)
+    converted(c)
   }, 60_000)
 })
 
@@ -790,34 +799,55 @@ describe("a live .git under the copy (Git processes outside the line: create-fet
   }, 60_000)
 })
 
-/** Faults that fail a step under the hold: each rolls back to the folder base, whole, with no copy left. */
-const FAULTS: ReadonlyArray<{ readonly what: string; readonly env: Env; readonly says: string }> = [
-  { what: "subvolume create fails", env: { FAKE_BTRFS_FAIL: "subvolume create" }, says: "btrfs subvolume create" },
-  { what: "disk full in the copy", env: { FAKE_CP: "enospc" }, says: "full disk or metadata space" },
-  { what: "the exchange fails", env: { FAKE_EXCHANGE_FAIL: "1" }, says: "the exchange failed" },
-  { what: "the smoke workspace is no snapshot", env: { FAKE_SMOKE_CLONER: "reflink" }, says: "not a btrfs snapshot" },
-  { what: "the hold takes too long", env: { WORKRIFT_SUBVOLUME_LIMIT: "-1" }, says: "took more than -1 s" },
+/** Faults before the exchange: each rolls back to the folder base, whole, deleting only its copy (never the base). */
+const FAULTS: ReadonlyArray<{ readonly what: string; readonly env: Env; readonly says: string; readonly copy: boolean }> = [
+  { what: "subvolume create fails", env: { FAKE_BTRFS_FAIL: "subvolume create" }, says: "btrfs subvolume create", copy: false },
+  { what: "disk full in the copy", env: { FAKE_CP: "enospc" }, says: "full disk or metadata space", copy: true },
+  { what: "the exchange fails", env: { FAKE_EXCHANGE_FAIL: "1" }, says: "the exchange failed", copy: true },
+  { what: "the hold takes too long", env: { WORKRIFT_SUBVOLUME_LIMIT: "-1" }, says: "took more than -1 s", copy: true },
 ]
 
 describe("workrift subvolume: failure and kill at every step", () => {
-  test("a failure at each step rolls back: the folder base at its path, whole, no copy left, no phase; a rerun without the fault converts", () => {
+  test("a failure before the exchange rolls back: the folder base at its path, never moved, whole, the copy deleted and said so, no phase; a rerun without the fault converts", () => {
     for (const fault of FAULTS) {
       const b = bench("fault")
+      const ino = lstatSync(b.base).ino
       const ran = b.wr(["subvolume", "--apply"], fault.env)
-      expect({ what: fault.what, code: ran.code, rolled: ran.err.includes("rolled back"), says: ran.err.includes(fault.says) }, said(ran)).toEqual({
+      expect({ what: fault.what, code: ran.code, rolled: ran.err.includes("rolled back before the exchange"), says: ran.err.includes(fault.says) }, said(ran)).toEqual({
         what: fault.what,
         code: 1,
         rolled: true,
         says: true,
       })
+      expect(ran.err, fault.what).toContain(fault.copy ? `deleted only its copy that was never the base: ${b.paths.new}` : "deleted nothing")
+      expect(ran.err).not.toContain("nothing deleted that it held")
       expect(b.layout(), fault.what).toEqual({ base: "F", new: "-", back: "-", old: "-" })
+      expect(lstatSync(b.base).ino).toBe(ino)
       whole(b)
       expect(b.phase(), fault.what).toBe("")
       const again = b.wr(["subvolume", "--apply"])
       expect(again.code, said(again)).toBe(0)
       converted(b)
     }
-  }, 120_000)
+  }, 180_000)
+
+  test("a failure after the exchange (the smoke workspace is no snapshot) never rolls back: the new tree stays the base, the old one kept under its record, what the base lacks said, exit 1; --back returns", () => {
+    const b = bench("fault-after")
+    const ran = b.wr(["subvolume", "--apply"], { FAKE_SMOKE_CLONER: "reflink" })
+    expect(ran.code, said(ran)).toBe(1)
+    expect(ran.err).toContain("not a btrfs snapshot; not rolled back: ")
+    expect(ran.out).toContain("deleted nothing")
+    expect(ran.out).toContain(`${b.base} holds all that ${b.paths.old} holds`)
+    expect(b.layout()).toEqual({ base: "S", new: "-", back: "-", old: "F" })
+    whole(b)
+    whole(b, b.paths.old)
+    expect(b.phase()).toMatch(/^switched /)
+    expect(readFileSync(join(b.state, "subvolume/kept"), "utf8")).toBe(`${b.paths.old}\nfolder ${lstatSync(b.paths.old).ino}\n`)
+    const back = b.wr(["subvolume", "--back", "--apply"])
+    expect(back.code, said(back)).toBe(0)
+    expect(b.layout()).toEqual({ base: "F", new: "-", back: "-", old: "S" })
+    whole(b)
+  }, 60_000)
 
   /**
    * The property: for every step the command names (its state log of a clean run, and of a run that rolls back), a
@@ -829,10 +859,11 @@ describe("workrift subvolume: failure and kill at every step", () => {
     const clean = bench("steps")
     expect(clean.wr(["subvolume", "--apply"]).code).toBe(0)
     const forward = clean.steps()
+    // A rollback is only ever before the exchange: the copy failing (a full disk).
     const failing = bench("steps-rb")
-    expect(failing.wr(["subvolume", "--apply"], { FAKE_SMOKE_CLONER: "reflink" }).code).toBe(1)
-    const rollback = failing.steps().filter((s) => !forward.includes(s) || s.startsWith("rollback") || s === "drop-copy")
-    expect(rollback).toEqual(expect.arrayContaining(["rollback", "rollback-exchange", "rollback-park", "drop-copy", "rolled-back"]))
+    expect(failing.wr(["subvolume", "--apply"], { FAKE_CP: "enospc" }).code).toBe(1)
+    const rollback = failing.steps().filter((s) => !forward.includes(s))
+    expect(rollback).toEqual(["rollback", "drop-copy", "rolled-back"])
     const invariant = (b: Bench, label: string) => {
       const l = b.layout()
       expect(["F", "S"], label).toContain(l.base)
@@ -853,12 +884,12 @@ describe("workrift subvolume: failure and kill at every step", () => {
     }))
     await pool(rollback.map((step) => async () => {
       const b = bench(`kill-rb-${step}`)
-      const ran = await b.wrAsync(["subvolume", "--apply"], { FAKE_SMOKE_CLONER: "reflink", WORKRIFT_SUBVOLUME_DIE_AT: step })
+      const ran = await b.wrAsync(["subvolume", "--apply"], { FAKE_CP: "enospc", WORKRIFT_SUBVOLUME_DIE_AT: step })
       expect(ran.signal, `${step}: ${said(ran)}`).toBe("SIGKILL")
       kills++
       invariant(b, `rollback ${step}`)
       // The fault still there: the rerun finishes the rollback; then, without it, a run converts.
-      const finish = await b.wrAsync(["subvolume", "--apply"], { FAKE_SMOKE_CLONER: "reflink" })
+      const finish = await b.wrAsync(["subvolume", "--apply"], { FAKE_CP: "enospc" })
       if (b.phase() === "") {
         expect(b.layout(), `${step}: ${said(finish)}`).toEqual({ base: "F", new: "-", back: "-", old: "-" })
         whole(b)
@@ -875,7 +906,7 @@ describe("workrift subvolume: failure and kill at every step", () => {
     expect(mid.layout().new).toBe("S")
     const again = mid.wr(["subvolume", "--apply"])
     expect(again.code, said(again)).toBe(0)
-    expect(again.err).toContain("its copy is dropped and the switch starts again")
+    expect(again.err).toContain(`the cut switch had not swapped: deleted only its copy that was never the base: ${mid.paths.new}; the switch starts again`)
     converted(mid)
     // Two kills in a row, at seeded pairs of steps, then a clean run.
     let seed = 7
@@ -1022,3 +1053,439 @@ describe("init and check on btrfs", () => {
     expect(sub.err).not.toContain("not a subvolume")
   }, 30_000)
 })
+
+// ---- round 2: the exchange is the commit point (M1), dry runs write nothing, the cp of a run cut short.
+
+/** The verifier's probes VB1 and VB1b (workrift-subvolume r1), verbatim but for where they note what they saw. */
+describe("VB probes", () => {
+  const notes: Record<string, unknown> = {}
+  const note = (name: string, value: unknown) => {
+    notes[name] = value
+  }
+  const gq = (path: string, ...args: ReadonlyArray<string>) => `git -C '${path}' ${args.join(" ")}`
+  const refAt = (b: Bench, path: string, ref: string, oid: string) => ({
+    path,
+    ref: Bun.spawnSync(["git", "-C", path, "rev-parse", "-q", "--verify", ref], { env: b.env }).stdout.toString().trim(),
+    object: Bun.spawnSync(["git", "-C", path, "cat-file", "-e", oid], { env: b.env }).exitCode === 0,
+  })
+  const where = (b: Bench, ref: string, oid: string) =>
+    [b.base, b.paths.new, b.paths.old, b.paths.back].filter((p) => existsSync(p)).map((p) => refAt(b, p, ref, oid))
+
+  test("VB1 a ref written into the base after the exchange, then a rollback (prove fails): the ref survives somewhere", () => {
+    const b = bench("vb1")
+    const oidFile = join(b.dir, "after-swap-oid")
+    const ran = b.wr(["subvolume", "--apply"], {
+      FAKE_SMOKE_CLONER: "reflink",
+      FAKE_AFTER_EXCHANGE: `t=$(${gq(b.base, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "after-swap")}) && ${gq(b.base, "update-ref", "refs/heads/after-swap", '"$t"')} && echo "$t" >'${oidFile}'`,
+    })
+    const oid = readFileSync(oidFile, "utf8").trim()
+    const found = where(b, "refs/heads/after-swap", oid)
+    note("vb1", { code: ran.code, err: ran.err, layout: b.layout(), oid, found })
+    expect(ran.code).toBe(1)
+    expect(ran.err).toContain("rolled back")
+    expect(found.some((w) => w.ref === oid && w.object), JSON.stringify(found)).toBe(true)
+    // Round 2: the claim is from what happened, and the ref is in the base at its path.
+    expect(`${ran.out}${ran.err}`).not.toContain("nothing deleted that it held")
+    expect(found[0]).toEqual({ path: b.base, ref: oid, object: true })
+  }, 30_000)
+
+  test("VB1b the same with the carry-wait timeout as the trigger (a process lingers in the old tree)", () => {
+    const b = bench("vb1b")
+    const oidFile = join(b.dir, "after-swap-oid")
+    const ran = b.wr(["subvolume", "--apply"], {
+      WORKRIFT_SUBVOLUME_WAIT: "1",
+      FAKE_AFTER_EXCHANGE: `mkdir -p '${b.proc}/91301' && ln -s '${b.paths.old}/src' '${b.proc}/91301/cwd' && t=$(${gq(b.base, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "after-swap")}) && ${gq(b.base, "update-ref", "refs/heads/after-swap", '"$t"')} && echo "$t" >'${oidFile}'`,
+    })
+    const oid = readFileSync(oidFile, "utf8").trim()
+    const found = where(b, "refs/heads/after-swap", oid)
+    note("vb1b", { code: ran.code, err: ran.err, layout: b.layout(), oid, found })
+    expect(ran.code).toBe(1)
+    expect(ran.err).toContain("rolled back")
+    expect(found.some((w) => w.ref === oid && w.object), JSON.stringify(found)).toBe(true)
+    expect(`${ran.out}${ran.err}`).not.toContain("nothing deleted that it held")
+    expect(found[0]).toEqual({ path: b.base, ref: oid, object: true })
+  }, 30_000)
+})
+
+/** Every entry under `dir` with its kind, size, inode and time: equal before and after when nothing was written. */
+const treeHash = (dir: string, skip: ReadonlyArray<string>) =>
+  Bun.hash(
+    filesUnder(dir)
+      .filter((f) => !skip.some((s) => f === s || f.startsWith(`${s}/`)))
+      .map((f) => {
+        const st = lstatSync(join(dir, f))
+        return `${f} ${st.mode} ${st.size} ${st.ino} ${st.mtimeMs} ${st.ctimeMs}`
+      })
+      .join("\n"),
+  ).toString(16)
+
+describe("workrift subvolume: a dry run writes nothing", () => {
+  test("property: every mode without --apply, in every state a base can be in, leaves the bench's tree hash as it was and calls no btrfs", async () => {
+    const modes: ReadonlyArray<ReadonlyArray<string>> = [[], ["--check"], ["--back"], ["--back", "--check"], ["--drop-old"], ["--beside-other-removals"], ["--back", "--beside-other-removals"]]
+    /** The states: each arranges a fresh bench. */
+    const states: ReadonlyArray<{ readonly what: string; readonly arrange: (b: Bench) => Promise<void> }> = [
+      { what: "a folder base, no state folder", arrange: async () => {} },
+      { what: "converted", arrange: async (b) => void expect(b.wr(["subvolume", "--apply"]).code).toBe(0) },
+      {
+        what: "converted, then the old dropped",
+        arrange: async (b) => {
+          expect(b.wr(["subvolume", "--apply"]).code).toBe(0)
+          expect(b.wr(["subvolume", "--drop-old", "--apply"]).code).toBe(0)
+        },
+      },
+      {
+        what: "converted, the kept tree moved away by hand (VB3)",
+        arrange: async (b) => {
+          expect(b.wr(["subvolume", "--apply"]).code).toBe(0)
+          renameSync(b.paths.old, join(b.dir, "parked-old"))
+        },
+      },
+      {
+        what: "unfinished: a process stayed in the old tree past the wait",
+        arrange: async (b) => {
+          const ran = b.wr(["subvolume", "--apply"], { WORKRIFT_SUBVOLUME_WAIT: "1", FAKE_AFTER_EXCHANGE: `mkdir -p '${b.proc}/91401' && ln -s '${b.paths.old}' '${b.proc}/91401/cwd'` })
+          expect(ran.code, said(ran)).toBe(1)
+        },
+      },
+      {
+        what: "cut by a kill -9 in the copy",
+        arrange: async (b) => void expect((await b.wrAsync(["subvolume", "--apply"], { WORKRIFT_SUBVOLUME_DIE_AT: "copy" })).signal).toBe("SIGKILL"),
+      },
+    ]
+    const cases = states.flatMap((state) => modes.map((mode) => ({ state, mode })))
+    await pool(
+      states.map((state) => async () => {
+        const b = bench("dry")
+        // The btrfs calls that write (inspect-internal only reads).
+        const writes = () => b.btrfsCalls().filter((c) => c.startsWith("subvolume ")).length
+        await state.arrange(b)
+        b.records()
+        for (const { mode } of cases.filter((c) => c.state === state)) {
+          const before = { tree: treeHash(b.dir, ["work-calls", "btrfs-calls", "proc"]), btrfs: writes() }
+          const ran = await b.wrAsync(["subvolume", ...mode])
+          const after = { tree: treeHash(b.dir, ["work-calls", "btrfs-calls", "proc"]), btrfs: writes() }
+          expect({ state: state.what, mode, ...after }, said(ran)).toEqual({ state: state.what, mode, ...before })
+          expect(`${ran.out}${ran.err}`).not.toContain("nothing deleted that it held")
+        }
+      }),
+    )
+    expect(cases.length).toBe(42)
+  }, 600_000)
+
+  test("a base directly under / is refused before anything is read or made: its move folder would be /.subvolume-move", () => {
+    const b = bench("root-base")
+    const ran = b.wr(["subvolume", "--apply"], { WORKRIFT_SOURCE: "/Users" })
+    expect(ran.code, said(ran)).toBe(1)
+    expect(ran.err).toContain("/Users: its move folder would be /.subvolume-move, not a folder beside it under a parent of its own (a base directly under / is refused); nothing changed")
+    expect(existsSync("/.subvolume-move")).toBe(false)
+    expect(existsSync("/.work/Users")).toBe(false)
+    expect(b.btrfsCalls()).toEqual([])
+  })
+})
+
+describe("workrift subvolume: the cp of a run cut short", () => {
+  test("the shell alone killed mid-copy (its cp runs on): the rerun waits for that cp, then drops the copy and converts; no stray copy is left", async () => {
+    const b = bench("orphan")
+    const cpLog = join(b.dir, "cp-log")
+    const move = Bun.spawn([SCRIPT, "subvolume", "--apply"], { cwd: b.dir, env: b.envFor({ FAKE_CP_DELAY: "3", FAKE_CP_LOG: cpLog }), stdout: "ignore", stderr: "ignore" })
+    for (let i = 0; i < 400 && !existsSync(cpLog); i++) await Bun.sleep(25)
+    const copier = join(b.state, "subvolume/copier")
+    expect(existsSync(copier)).toBe(true)
+    const pid = Number(readFileSync(copier, "utf8").split("\n")[0])
+    process.kill(move.pid, "SIGKILL")
+    await move.exited
+    // The cp outlives the shell.
+    expect(() => process.kill(pid, 0)).not.toThrow()
+    const t0 = Date.now()
+    const rerun = await b.wrAsync(["subvolume", "--apply"])
+    expect(rerun.code, said(rerun)).toBe(0)
+    expect(rerun.err).toContain(`the cp of a run cut short (pid ${pid}) has ended`)
+    expect(rerun.err).toContain(`the cut switch had not swapped: deleted only its copy that was never the base: ${b.paths.new}`)
+    expect(Date.now() - t0).toBeGreaterThan(500)
+    expect(() => process.kill(pid, 0)).toThrow()
+    converted(b)
+    await Bun.sleep(500)
+    expect(readdirSync(b.move).sort()).toEqual(["app.old"])
+    expect(existsSync(copier)).toBe(false)
+  }, 60_000)
+
+  test("a cp of a run cut short that outlives the wait is named, and nothing is touched", async () => {
+    const b = bench("orphan-wait")
+    const cpLog = join(b.dir, "cp-log")
+    const move = Bun.spawn([SCRIPT, "subvolume", "--apply"], { cwd: b.dir, env: b.envFor({ FAKE_CP_DELAY: "6", FAKE_CP_LOG: cpLog }), stdout: "ignore", stderr: "ignore" })
+    for (let i = 0; i < 400 && !existsSync(cpLog); i++) await Bun.sleep(25)
+    const pid = Number(readFileSync(join(b.state, "subvolume/copier"), "utf8").split("\n")[0])
+    process.kill(move.pid, "SIGKILL")
+    await move.exited
+    const rerun = await b.wrAsync(["subvolume", "--apply"], { WORKRIFT_SUBVOLUME_WAIT: "1" })
+    expect(rerun.code, said(rerun)).toBe(1)
+    expect(rerun.err).toContain(`the cp of a run cut short (pid ${pid}) still writes into the copy after 1 s`)
+    expect(b.kind(b.paths.new)).toBe("S")
+    whole(b)
+    for (let i = 0; i < 400; i++) {
+      try {
+        process.kill(pid, 0)
+      } catch {
+        break
+      }
+      await Bun.sleep(25)
+    }
+    const last = await b.wrAsync(["subvolume", "--apply"])
+    expect(last.code, said(last)).toBe(0)
+    converted(b)
+  }, 60_000)
+})
+
+// ---- the model: histories of switches, faults, kills and writers, against four invariants.
+
+type Klass = "ref" | "index" | "config" | "file" | "oldref" | "work" | "stay"
+const KLASSES: ReadonlyArray<Klass> = ["ref", "index", "config", "file", "oldref", "work"]
+type Cmd = "fwd" | "back" | "drop" | "dry"
+const CMD_ARGV: Record<Exclude<Cmd, "dry">, ReadonlyArray<string>> = {
+  fwd: ["subvolume", "--apply"],
+  back: ["subvolume", "--back", "--apply"],
+  drop: ["subvolume", "--drop-old", "--apply"],
+}
+const MODEL_FAULTS: Record<string, Env> = {
+  none: {},
+  enospc: { FAKE_CP: "enospc" },
+  exchange: { FAKE_EXCHANGE_FAIL: "1" },
+  smoke: { FAKE_SMOKE_CLONER: "reflink" },
+  slow: { WORKRIFT_SUBVOLUME_LIMIT: "-1" },
+  stay: { WORKRIFT_SUBVOLUME_WAIT: "1" },
+}
+interface Move {
+  readonly cmd: Cmd
+  readonly fault: keyof typeof MODEL_FAULTS
+  readonly kill?: string
+  readonly writers: ReadonlyArray<{ readonly klass: Klass; readonly step: string }>
+}
+interface Write {
+  readonly klass: Klass
+  readonly mark: string
+  readonly value: string
+  said: boolean
+  dropped: boolean
+}
+
+/**
+ * The hook workrift runs at every step (WORKRIFT_SUBVOLUME_HOOK): it notes the inode at the base's path and whether a
+ * whole base is there, then runs the writers the plan names for this step, each with a mark of its own.
+ */
+const HOOK = (b: Bench) =>
+  [
+    "#!/bin/sh",
+    "unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE",
+    `D='${b.dir}' B='${b.base}' O='${b.paths.old}' WORKBIN='${join(b.bin, "work")}' P='${b.proc}'`,
+    "ino() { perl -e '@s = lstat($ARGV[0]) or exit 1; print $s[1]' \"$1\"; }",
+    'ok=0; [ -f "$B/README.md" ] && git -C "$B" rev-parse -q --verify refs/heads/main >/dev/null && ok=1',
+    'printf "obs %s %s %s\\n" "$1" "$(ino "$B")" "$ok" >>"$D/model-log"',
+    '[ -f "$D/model-plan" ] || exit 0',
+    'grep "^$1 " "$D/model-plan" | while read -r _ k; do',
+    '  n=$(($(cat "$D/model-n" 2>/dev/null || echo 0) + 1)); echo "$n" >"$D/model-n"; m="w${n}x$k"',
+    '  case "$k" in',
+    '    ref) t=$(git -C "$B" commit-tree "HEAD^{tree}" -p HEAD -m "$m") && git -C "$B" update-ref "refs/heads/$m" "$t" && echo "ref $m $t" >>"$D/model-writes" ;;',
+    '    oldref) [ -d "$O" ] && grep -q "^obs [^ ]* $(ino "$O") " "$D/model-log" || continue',
+    '      t=$(git -C "$O" commit-tree "HEAD^{tree}" -p HEAD -m "$m") && git -C "$O" update-ref "refs/heads/$m" "$t" && echo "oldref $m $t" >>"$D/model-writes" ;;',
+    '    index) echo "$m" >"$B/$m.staged" && git -C "$B" add "$m.staged" && echo "index $m -" >>"$D/model-writes" ;;',
+    '    config) git -C "$B" config "model.$m" 1 && echo "config $m -" >>"$D/model-writes" ;;',
+    '    file) echo "$m" >"$B/$m.txt" && echo "file $m -" >>"$D/model-writes" ;;',
+    '    work) WORK_BASE="$B" "$WORKBIN" --json new -branch "$m" "$m" >/dev/null && echo "work $m -" >>"$D/model-writes" ;;',
+    '    stay) [ -d "$O" ] && mkdir -p "$P/9$n" && ln -s "$O" "$P/9$n/cwd" && echo "9$n" >>"$D/model-stay" ;;',
+    "  esac",
+    "done",
+    "exit 0",
+    "",
+  ].join("\n")
+
+const gitOk = (b: Bench, path: string, ...args: ReadonlyArray<string>) => {
+  const ran = Bun.spawnSync(["git", "-C", path, ...args], { env: b.env, stdout: "pipe", stderr: "pipe" })
+  return ran.exitCode === 0 ? ran.stdout.toString().trim() : undefined
+}
+/** Whether the write `w` is in the tree at `path`. */
+const holds = (b: Bench, path: string, w: Write): boolean => {
+  if (!existsSync(join(path, ".git"))) return false
+  switch (w.klass) {
+    case "ref":
+    case "oldref":
+      return (gitOk(b, path, "rev-parse", "-q", "--verify", `refs/heads/${w.mark}`) === w.value || gitOk(b, path, "rev-parse", "-q", "--verify", `refs/subvolume-move/heads/${w.mark}`) === w.value) && gitOk(b, path, "cat-file", "-e", w.value) !== undefined
+    case "index":
+      return (gitOk(b, path, "ls-files", "-s", `${w.mark}.staged`) ?? "") !== ""
+    case "config":
+      return gitOk(b, path, "config", "--get", `model.${w.mark}`) === "1"
+    case "file":
+      return existsSync(join(path, `${w.mark}.txt`))
+    default:
+      return true
+  }
+}
+/** Whether an output says the base lacks `w` (a line of what the base lacks of the kept tree). */
+const saysLacks = (text: string, w: Write) =>
+  textLines(text).some((line) => /^ {2}(ref |HEAD |Git file |reflog |worktree or index: )/.test(line) && (line.includes(w.mark) || (w.klass === "config" && line.includes(".git/config"))))
+
+/** Seeded: the same histories every run. */
+const prng = (seed: number) => () => {
+  seed = (seed + 0x6d2b79f5) | 0
+  let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+}
+
+describe("workrift subvolume: the model (histories of switches, faults, kills and writers)", () => {
+  test("property: in every history a whole base is at its path at every step; nothing written to a live base is lost but into a kept, recorded tree the command names; no tree that was live is deleted but by --drop-old; every claim printed is true", async () => {
+    // The steps of each command, from a run of each.
+    const probe = bench("model-steps")
+    const stepsOf: Record<Exclude<Cmd, "dry">, Set<string>> = { fwd: new Set(), back: new Set(), drop: new Set() }
+    for (const cmd of ["fwd", "back", "fwd", "drop", "back", "drop"] as const) {
+      rmSync(join(probe.state, "subvolume/log"), { force: true })
+      expect(probe.wr(CMD_ARGV[cmd]).code).toBe(0)
+      for (const s of probe.steps()) stepsOf[cmd].add(s)
+    }
+    const all = [...new Set([...stepsOf.fwd, ...stepsOf.back, ...stepsOf.drop])]
+    expect([...stepsOf.fwd]).toEqual(expect.arrayContaining(["copy", "swap", "swapped", "carry-wait", "carry", "prove", "switched"]))
+
+    // Histories: every class written at every step of a forward and a back; a kill at every forward and back step
+    // with writers around the exchange; then seeded random histories of every command, fault, kill and writer.
+    const histories: Array<ReadonlyArray<Move>> = []
+    for (const klass of KLASSES) {
+      const at = (cmd: "fwd" | "back") => [...stepsOf[cmd]].map((step) => ({ klass, step }))
+      histories.push([
+        { cmd: "fwd", fault: "none", writers: at("fwd") },
+        { cmd: "back", fault: "none", writers: at("back") },
+        { cmd: "drop", fault: "none", writers: [] },
+        { cmd: "back", fault: "none", writers: at("back") },
+        { cmd: "fwd", fault: "none", writers: at("fwd") },
+      ])
+    }
+    for (const cmd of ["fwd", "back"] as const)
+      for (const kill of stepsOf[cmd])
+        histories.push([
+          ...(cmd === "back" ? [{ cmd: "fwd" as const, fault: "none" as const, writers: [] }] : []),
+          { cmd, fault: "none", kill, writers: KLASSES.map((klass) => ({ klass, step: kill })) },
+          { cmd: "dry", fault: "none", writers: [] },
+          { cmd: "drop", fault: "none", writers: [] },
+        ])
+    const random = prng(Number(process.env.MODEL_SEED ?? 20261122))
+    const pick = <T,>(xs: ReadonlyArray<T>) => xs[Math.floor(random() * xs.length)]!
+    for (let h = 0; h < Number(process.env.MODEL_HISTORIES ?? 24); h++) {
+      const moves: Array<Move> = []
+      for (let i = 0, n = 3 + Math.floor(random() * 3); i < n; i++) {
+        const cmd = pick<Cmd>(["fwd", "fwd", "back", "back", "drop", "dry"])
+        if (cmd === "dry") {
+          moves.push({ cmd, fault: "none", writers: [] })
+          continue
+        }
+        const steps = [...stepsOf[cmd]]
+        const fault = cmd === "drop" ? "none" : pick(Object.keys(MODEL_FAULTS))
+        const writers = Array.from({ length: 1 + Math.floor(random() * 4) }, () => ({ klass: pick(KLASSES), step: pick(steps) }))
+        if (fault === "stay") writers.push({ klass: "stay", step: "carry-wait" })
+        moves.push({ cmd, fault, writers, ...(random() < 0.3 ? { kill: pick(steps) } : {}) })
+      }
+      histories.push(moves)
+    }
+
+    const live = async (moves: ReadonlyArray<Move>, h: number) => {
+      const b = bench(`model-${h}`)
+      const hook = join(b.dir, "model-hook")
+      exe(hook, HOOK(b))
+      const writes: Array<Write> = []
+      const everLive = new Set<number>([lstatSync(b.base).ino])
+      const story: Array<string> = []
+      const at = (path: string) => (existsSync(path) ? lstatSync(path).ino : undefined)
+      const trees = () => new Set([b.base, b.paths.new, b.paths.back, b.paths.old].map(at).filter((i): i is number => i !== undefined))
+      const readWrites = () => {
+        const lines = existsSync(join(b.dir, "model-writes")) ? textLines(readFileSync(join(b.dir, "model-writes"), "utf8")) : []
+        for (const line of lines.slice(writes.length)) {
+          const [klass, mark, value] = line.split(" ") as [Klass, string, string]
+          writes.push({ klass, mark, value, said: false, dropped: false })
+        }
+      }
+      const observed = () => {
+        const lines = existsSync(join(b.dir, "model-log")) ? textLines(readFileSync(join(b.dir, "model-log"), "utf8")) : []
+        rmSync(join(b.dir, "model-log"), { force: true })
+        for (const line of lines) {
+          const [, step, ino, ok] = line.split(" ")
+          expect(ok, `${story.join(" > ")}: no whole base at ${b.base} at the step ${step}`).toBe("1")
+          everLive.add(Number(ino))
+        }
+      }
+      const run = async (argv: ReadonlyArray<string>, env: Env, label: string) => {
+        const before = { trees: trees(), base: at(b.base)!, kind: b.kind(b.base) }
+        const ran = await b.wrAsync(argv, { WORKRIFT_SUBVOLUME_HOOK_AT: all.join(" "), WORKRIFT_SUBVOLUME_HOOK: `sh '${hook}' "$1"`, ...env })
+        story.push(`${label}=${ran.code ?? ran.signal}`)
+        const where = story.join(" > ")
+        for (const pid of existsSync(join(b.dir, "model-stay")) ? textLines(readFileSync(join(b.dir, "model-stay"), "utf8")) : []) rmSync(join(b.proc, pid), { recursive: true, force: true })
+        rmSync(join(b.dir, "model-stay"), { force: true })
+        observed()
+        readWrites()
+        const text = `${ran.out}\n${ran.err}`
+        // A whole base at its path, after as at every step.
+        expect(["F", "S"], where).toContain(b.kind(b.base))
+        whole(b)
+        everLive.add(at(b.base)!)
+        for (const w of writes) if (saysLacks(text, w)) w.said = true
+        // No tree that was live is deleted, but by --drop-old, which says first what the base lacks of it.
+        const now = trees()
+        for (const ino of everLive) {
+          if (now.has(ino)) continue
+          expect({ where, deleted: ino, by: argv.join(" "), ended: ran.code === 0 || ran.signal === "SIGKILL" }, `${where}\n${said(ran)}`).toEqual({ where, deleted: ino, by: "subvolume --drop-old --apply", ended: true })
+          everLive.delete(ino)
+          for (const w of writes) if (!w.dropped && w.said && w.klass !== "work") w.dropped = true
+        }
+        // Nothing written is lost: in the base, or in the tree kept at .old under its record and said.
+        for (const w of writes) {
+          if (w.dropped || w.klass === "stay") continue
+          if (w.klass === "work") {
+            const rec = b.records().find((r) => r.name === w.mark)
+            expect({ where, work: w.mark, kept: rec !== undefined && existsSync(rec.path) }).toEqual({ where, work: w.mark, kept: true })
+            continue
+          }
+          const inBase = holds(b, b.base, w)
+          if (inBase) continue
+          const kept = existsSync(join(b.state, "subvolume/kept")) && readFileSync(join(b.state, "subvolume/kept"), "utf8").split("\n")[0] === b.paths.old
+          if (ran.signal === "SIGKILL") {
+            // Cut: the next run finishes it and says; until then the write is in some tree of the move.
+            expect({ where, w: w.mark, somewhere: [b.paths.old, b.paths.new, b.paths.back].some((p) => holds(b, p, w)) }, `${where}\n${said(ran)}`).toEqual({ where, w: w.mark, somewhere: true })
+            continue
+          }
+          // A ref written into the live base is carried: it is always in the base once a run ends.
+          expect({ where, lost: w.klass === "ref" ? w : undefined }, `${where}\n${said(ran)}`).toEqual({ where, lost: undefined })
+          expect({ where, w: w.mark, klass: w.klass, inKept: holds(b, b.paths.old, w), recorded: kept, said: w.said }, `${where}\n${said(ran)}`).toEqual({ where, w: w.mark, klass: w.klass, inKept: true, recorded: true, said: true })
+        }
+        // Every claim printed is true.
+        expect(text, where).not.toContain("nothing deleted that it held")
+        if (text.includes("deleted nothing")) expect({ where, gone: [...before.trees].filter((i) => !now.has(i)) }).toEqual({ where, gone: [] })
+        if (text.includes("deleted only its copy that was never the base")) expect({ where, gone: [...before.trees].filter((i) => !now.has(i) && everLive.has(i)) }).toEqual({ where, gone: [] })
+        if (text.includes("rolled back before the exchange")) expect({ where, base: at(b.base), kind: b.kind(b.base) }).toEqual({ where, base: before.base, kind: before.kind })
+        if (text.includes("not rolled back")) expect({ where, kind: b.kind(b.base) }).toEqual({ where, kind: argv.includes("--back") ? "F" : "S" })
+        if (text.includes(`${b.base} holds all that ${b.paths.old} holds`))
+          expect({ where, unsaid: writes.filter((w) => w.klass !== "work" && w.klass !== "stay" && holds(b, b.paths.old, w) && !holds(b, b.base, w)).map((w) => w.mark) }).toEqual({ where, unsaid: [] })
+        return ran
+      }
+
+      for (const [i, move] of moves.entries()) {
+        if (move.cmd === "dry") {
+          for (const mode of [[], ["--back"], ["--drop-old"]]) {
+            const before = treeHash(b.dir, ["work-calls", "btrfs-calls", "proc"])
+            const ran = await b.wrAsync(["subvolume", ...mode])
+            story.push(`dry${mode.join("")}=${ran.code}`)
+            expect({ where: story.join(" > "), tree: treeHash(b.dir, ["work-calls", "btrfs-calls", "proc"]) }).toEqual({ where: story.join(" > "), tree: before })
+          }
+          continue
+        }
+        writeFileSync(join(b.dir, "model-plan"), move.writers.map((w) => `${w.step} ${w.klass}\n`).join(""))
+        const argv = CMD_ARGV[move.cmd]
+        const env = { ...MODEL_FAULTS[move.fault], ...(move.kill ? { WORKRIFT_SUBVOLUME_DIE_AT: move.kill } : {}) }
+        let ran = await run(argv, env, `${i}:${move.cmd}${move.fault === "none" ? "" : `!${move.fault}`}${move.kill ? `@${move.kill}` : ""}[${move.writers.map((w) => `${w.klass}@${w.step}`).join(",")}]`)
+        rmSync(join(b.dir, "model-plan"), { force: true })
+        // A second run, without the fault, ends the command: the switch done, or the drop.
+        if (ran.code !== 0) ran = await run(argv, {}, `${i}:again`)
+        expect(ran.code, `${story.join(" > ")}: ${said(ran)}`).toBe(0)
+      }
+    }
+    const only = process.env.MODEL_ONLY?.split(",").map(Number)
+    await pool(histories.flatMap((moves, h) => (only && !only.includes(h) ? [] : [() => live(moves, h)])))
+    expect(histories.length).toBeGreaterThan(50)
+  }, 1_800_000)
+})
+

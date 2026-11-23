@@ -247,7 +247,8 @@ runs these steps:
 3. It reflink-copies the base into `<parent>/.subvolume-move/<name>.new`
    and refreshes the index of the copy. It then checks the copy against the
    base:
-   - HEAD, refs, status and lock files are equal;
+   - HEAD, refs, status (untracked files too), lock files and Git's own
+     files (config, info, hooks) are equal;
    - the object store's listing is the same at the copy's start, at its end
      and in the copy;
    - every ref tip and its tree are present;
@@ -256,18 +257,39 @@ runs these steps:
    Git processes outside workrift's line (a plain `git fetch` and the auto gc
    it starts) can change the base while the copy walks it. If any check fails,
    the command copies `.git` again, at most twice, and otherwise rolls back.
+   The `cp` runs as a child whose pid the state file records: when only the
+   command's shell is killed, the `cp` runs on, and the next `--apply` waits
+   for it to end (at most `WORKRIFT_SUBVOLUME_WAIT` seconds, else it names
+   the pid and changes nothing) before it deletes that copy.
 4. It swaps the copy and the base in one `renameat2(RENAME_EXCHANGE)` and
-   parks the old tree at `<name>.old`.
+   parks the old tree at `<name>.old`, recorded by its identity.
 5. It waits for processes to leave the old tree, carries in the refs the old
-   tree gained (each with its objects, by a fetch from the old tree), runs `work refresh`, and makes and removes a smoke snapshot
-   workspace.
+   tree gained (each with its objects, by a fetch from the old tree), runs
+   `work refresh`, and makes and removes a smoke snapshot workspace.
 
-A failure under the hold rolls the switch back. If the command is cut
-(kill -9 too), the next `--apply` finishes the switch or rolls it back,
-working from its state file in the base's `.workrift/subvolume/`. The
+The exchange is the commit point. A failure before it rolls back: the base
+never moved, and the command deletes only its copy, which was never the
+base. From the exchange on, the new tree has been the live base, and anything
+may have been written into it, so nothing rolls it back. A failure after the
+exchange exits 1 with "not rolled back": the new tree stays the base, the
+tree it was stays at `<name>.old` under its record, and a process that stays
+in the old tree past the wait leaves the switch unfinished (the next `--apply`
+carries what it wrote once it left). If the command is cut (kill -9 too), the
+next `--apply` deletes the copy of a switch cut before its exchange and starts
+again, or finishes one cut after it, working from its state file in the
+base's `.workrift/subvolume/`. Every output says what it deleted, from what it
+did.
+
+After each switch, and before `--drop-old` deletes it, the output lists what
+the base lacks of the tree kept at `<name>.old`: refs (with their objects),
+HEAD, Git's own files, reflog entries, and the index and worktree as
+`git status` sees them. Files Git ignores are not compared. The
 checked-out branch is never moved by the carry. When a ref changed on both
 sides, the command keeps the other value under `refs/subvolume-move/` and
-says so.
+says so; a ref written into one tree after the carry is carried into the
+other on the next switch only where that tree has none, and never deleted.
+
+A run without `--apply` writes nothing, not even the state folder.
 
 The tree the base was stays at `<name>.old` until
 `workrift subvolume --drop-old --apply`, which deletes only the tree that the
