@@ -37,7 +37,7 @@ import { NO_FREE_MODELS, releaseFlags } from "../scripts/release-flags.ts"
 import { unboundBuild } from "../testbeds/gamut/gamut.ts"
 import { type ChildTemp, childTemp, parentEnv, scratch } from "./scratch.ts"
 import { checkOwnedCommand } from "./read-path.ts"
-import { checkoutBun, driveScenarioFixture, forkFixture, scratchShell } from "./scratch-child.ts"
+import { checkoutBun, checkoutTests, driveScenarioFixture, forkFixture, scratchShell } from "./scratch-child.ts"
 // What this test process starts is stopped once it is gone, however it went (testbeds/reaper/start.ts).
 import "../testbeds/reaper/start.ts"
 
@@ -66,6 +66,12 @@ export const ownedScratchShell = (cwd: string, program: string) => {
 export const ownedCheckoutBun = (...args: Parameters<typeof checkoutBun>) => {
   const { argv, ...options } = checkoutBun(...args)
   return owned(argv, { ...options, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+}
+
+/** Reaper-owned launch of the explicit nested Bun test entries. */
+export const ownedCheckoutTests = (...args: Parameters<typeof checkoutTests>) => {
+  const { argv, ...options } = checkoutTests(...args)
+  return owned(argv, { ...options, stdin: "ignore", stdout: "ignore", stderr: "pipe" })
 }
 
 /** A reaper-owned Drive process loading one checked scenario from this checkout. */

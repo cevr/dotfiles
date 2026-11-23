@@ -286,6 +286,19 @@ test("a checkout entry's computed checkout operands remain opaque", () => {
   expect(redefined.classification).toBe("unknown")
 })
 
+test("nested Bun tests contribute the named closures, not a computed suite list", () => {
+  const files = new Map([
+    ["tests/owned.ts", "export const ownedCheckoutTests = () => {}"],
+    ["tests/inner.test.ts", 'const content = await Bun.file("fixtures/inner.txt").text()'],
+  ])
+  const input = 'import { ownedCheckoutTests } from "../tests/owned.ts"; '
+  const reads = (call: string) => checkReadInputs("scripts/example.test.ts", input + call, (file) => files.get(file) || "")
+  expect(reads('ownedCheckoutTests({ temp, state }, "tests/inner.test.ts")').patterns)
+    .toEqual(["bun.plugins/config", "fixtures/inner.txt", "tests/inner.test.ts"])
+  expect(reads("ownedCheckoutTests({ temp, state }, suiteName)").indirect)
+    .toEqual([{ line: 1, reason: "nonliteral nested checkout test" }])
+})
+
 test("a registry of deferred programs does not run its effects when the module loads", () => {
   const program = `import { Effect } from "effect"
 const refresh = Effect.fn("refresh")(function* () { yield* Bun.file("fixtures/deferred.txt").text() })

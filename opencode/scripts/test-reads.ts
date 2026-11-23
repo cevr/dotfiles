@@ -447,6 +447,7 @@ const BOUNDED_PROCESS = new Set([
   "tests/scratch-child.ts:runScratchTool",
   "tests/scratch-child.ts:spawnScratchShellFileSync",
   "tests/scratch-child.ts:fixtureHostIdentity",
+  "tests/scratch-child.ts:checkoutTests", "tests/owned.ts:ownedCheckoutTests",
   "tests/scratch-child.ts:spawnScratchShellFile",
   "tests/scratch-child.ts:installedGitManual",
   "tests/scratch-child.ts:scratchGitVersion",
@@ -481,6 +482,11 @@ const CHECKOUT_BUN = new Set([
   "tests/scratch-child.ts:spawnCheckoutBun", "tests/owned.ts:ownedCheckoutBun",
   "tests/scratch-child.ts:spawnCheckoutBunSync",
 ])
+const CHECKOUT_TESTS = new Set(["tests/scratch-child.ts:checkoutTests", "tests/owned.ts:ownedCheckoutTests"])
+const checkoutTestEntries = (args: ReadonlyArray<Node>, evaluate: Evaluation) => {
+  const entries = args.slice(1).map((arg) => Option.getOrElse(literalPath(evaluate(arg)), () => ""))
+  return entries.length && entries.every((file) => /^(?:[\w-]+\/)+[\w.-]+\.[cm]?[jt]sx?$/.test(file)) ? entries : []
+}
 const workspacePackage = (specifier: string) => specifier.startsWith("@dotfiles/")
 
 const executableImport = (at: Node) => {
@@ -611,6 +617,13 @@ const callRead = (at: Node, syntax: Syntax, evaluate: Evaluation, record: ReadSi
     const [, method = ""] = called.split(":")
     const recursive = ["cp", "cpSync"].includes(method) && field(opts(args[2], "recursive"), "value") === true
     return record(at, evaluate(args[0]), CWD, DIRECTORY.has(method) || method === "copy" || recursive)
+  }
+  if (CHECKOUT_TESTS.has(called)) {
+    const entries = checkoutTestEntries(args, evaluate)
+    if (!entries.length) return record(at, opaque("nonliteral nested checkout test"))
+    for (const entry of entries) record(at, fixed(entry))
+    checkoutBunInputs(at, args[0], evaluate, record)
+    return record(at, fixed("bun.plugins/config"))
   }
   if (CHECKOUT_BUN.has(called)) {
     const entry = checkoutBunEntry(called, args, evaluate)
@@ -775,6 +788,10 @@ const entrypointAt = (graph: Graph, at: Node, region: string, syntax: Syntax, ev
   const args = argsOf(at)
   if (LINT_FIXTURE.has(called)) {
     graph.dynamics.set(region, [...(graph.dynamics.get(region) ?? []), { file: "lint/test-env.ts", symbol: "*" }])
+    return
+  }
+  if (CHECKOUT_TESTS.has(called)) {
+    graph.dynamics.set(region, [...(graph.dynamics.get(region) ?? []), ...checkoutTestEntries(args, evaluate).map((file) => ({ file, symbol: "@main" }))])
     return
   }
   const module = ownedEntry(called, args, evaluate) || checkoutBunEntry(called, args, evaluate) ||

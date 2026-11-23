@@ -101,6 +101,49 @@ export const spawnCheckoutBunSync = (entry: string, inputs: FixtureEnvironment) 
   return spawnSync(argv, { ...options, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
 }
 
+interface CheckoutTestInputs {
+  readonly temp: string
+  readonly state: string
+  readonly timeout?: number
+  readonly filter?: string
+  readonly fork?: string
+  readonly checkout?: Readonly<Record<"OPENCODE_RECONNECT_TUI_BINARY", string>>
+}
+
+/** Explicit nested test files, not Bun's checkout test discovery. */
+export const checkoutTests = (input: CheckoutTestInputs, ...entries: ReadonlyArray<string>) => {
+  const { temp, state, timeout, filter, fork } = input
+  if (entries.length === 0 || new Set(entries).size !== entries.length || entries.some((entry) => !isEntryName(entry)))
+    return reject("nested test launch needs distinct checkout entries")
+  if (timeout !== undefined && (!Number.isSafeInteger(timeout) || timeout <= 0 || timeout > 300_000))
+    return reject("invalid nested test timeout")
+  if (filter !== undefined && !/^[\w ^$.-]+$/.test(filter)) return reject("unsupported nested test filter")
+  if (input.checkout && !exactArgs(Object.keys(input.checkout), "OPENCODE_RECONNECT_TUI_BINARY"))
+    return reject("unsupported nested test checkout environment")
+  const env: Record<string, string> = {
+    ...checkoutBun(entries[0]!, {
+      scratch: {
+        HOME: state, TMPDIR: temp, XDG_CONFIG_HOME: resolve(state, "config"), XDG_CACHE_HOME: resolve(state, "cache"),
+        XDG_STATE_HOME: resolve(state, "state"), XDG_DATA_HOME: resolve(state, "data"),
+      },
+      external: fork ? { OPENCODE_DEV: fork } : {},
+      checkout: input.checkout, values: {},
+    }).env,
+    ...(fork ? {} : { OPENCODE_DEV: "" }),
+    // Keep Bun's own cache out of the caller's TMPDIR leak detector.
+    BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
+  }
+  const data = resolve(state, "data")
+  if (localTestPaths.existsSync(data) && localTestPaths.readdirSync(data).length !== 0)
+    return reject("nested test XDG data must be empty")
+  const files = entries.map((entry) => `./${localTestPaths.relative(ROOT, matchingInput(entry))}`)
+  return {
+    argv: [localTestProcess.execPath, "--no-env-file", "test", ...(timeout ? ["--timeout", String(timeout)] : []),
+      ...(filter ? ["-t", filter] : []), ...files],
+    cwd: ROOT, env,
+  }
+}
+
 /** The reaper fixture inspects one process, not the checkout it may be running in. */
 export const reaperEnvironment = (pid: number) => {
   if (!Number.isSafeInteger(pid) || pid < 1) return reject("invalid reaper process ID")
@@ -134,7 +177,8 @@ export const detachedCheckoutBun = (
     return reject(`unsupported parent PID variable: ${parentVariable}`)
   const program = matchingInput(entry)
   const root = scratchRoot()
-  const base = { PATH: "/usr/bin:/bin", HOME: root, TMPDIR: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_STATE_HOME: root, XDG_CACHE_HOME: root }
+  // Fixtures can inspect this TMPDIR for leaks; a detached reaper must not leave a transpiler cache there.
+  const base = { PATH: "/usr/bin:/bin", HOME: root, TMPDIR: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_STATE_HOME: root, XDG_CACHE_HOME: root, BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" }
   for (const [name, value] of pathVariables) {
     if (!safeName.test(name) || name in base || name === parentVariable || /^(?:BASH|BUN|ENV|LD_|DYLD|NODE|ZDOTDIR)/.test(name))
       return reject(`redirecting Bun fixture environment: ${name}`)
