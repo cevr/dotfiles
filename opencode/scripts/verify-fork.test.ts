@@ -6,6 +6,7 @@ import { Effect, FileSystem } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { gitInit, withProcessEnv } from "../tests/git-repo.ts"
+import { scratchInput } from "../tests/read-path.ts"
 import { forkLag } from "./verify.ts"
 
 const IDENTITY = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t.invalid", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t.invalid" }
@@ -14,7 +15,7 @@ const IDENTITY = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t.invalid", GIT_CO
 const git = (repo: string, ...args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-    const said = yield* spawner.string(ChildProcess.make("git", ["-C", repo, ...args], { env: IDENTITY, extendEnv: true, stdin: "ignore", forceKillAfter: "1 second" }))
+    const said = yield* spawner.string(ChildProcess.make("git", ["-C", scratchInput(repo), ...args], { env: IDENTITY, extendEnv: true, stdin: "ignore", forceKillAfter: "1 second" }))
     return said.trim()
   })
 

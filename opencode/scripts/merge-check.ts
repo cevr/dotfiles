@@ -14,8 +14,8 @@
 // - tests/git-repo.test.ts, the guard that every test and testbed file makes its repositories through gitInit or
 //   gitClone, when a test or testbed file it scans is added or changed: it reads their text, it imports none, so no
 //   reach finds it (batch 2026-11-16cv: scripts/verify-fork.test.ts landed a raw `git init`).
-// - every workbox/test/ test when anything under the repository's workbox/ changes: the diff from opencode/ never
-//   sees that folder, and no gate leg ran its tests (batch 2026-11-16cy: workrift.test.ts landed red on the Mac).
+// - every workbox/test/ test when anything under workbox/ changes, and its explicit @reads outside workbox/
+//   (batch 2026-11-16cy: workrift.test.ts landed red on the Mac).
 import { Glob } from "bun"
 import { Option } from "effect"
 import { docsGuardDue, type Change } from "./docs-guard.ts"
@@ -36,6 +36,7 @@ export interface Tools {
   readonly exists: (file: string) => boolean
   readonly scripts: ScriptsTests
   readonly workbox: Workbox
+  readonly workboxReads?: (file: string) => ReadonlyArray<string>
 }
 
 /** The repository's workbox/ folder, outside opencode/: its changes since the base and its tests, from opencode/ (`../workbox/test/…`). */
@@ -50,6 +51,8 @@ export const workboxTests = (workbox: Workbox): ReadonlyArray<string> => (workbo
 export const DOCS_GUARD = "scripts/verify-docs.test.ts"
 export const ACCEPT_TESTS = ["scripts/accept.test.ts", "scripts/accept-parity.test.ts"] as const
 export const GIT_REPO_GUARD = "tests/git-repo.test.ts"
+export const testFilesIn = (dir: string, names: ReadonlyArray<string>): ReadonlyArray<string> =>
+  names.flatMap((name) => (/\.test\.tsx?$/.test(name) && [`${dir}/${name}`]) || [])
 
 /** The path a change leaves on disk: a rename's or a copy's new path, else its only one; none for a deletion. */
 const left = (change: Change): ReadonlyArray<string> => {
@@ -60,10 +63,11 @@ const left = (change: Change): ReadonlyArray<string> => {
 const named = (changes: ReadonlyArray<Change>) => changes.flatMap((change) => change.paths)
 
 const SCRIPT = /^scripts\/([\w.-]+)\.tsx?$/
+const IMPORTABLE = /^scripts\/(?:[\w.-]+\.tsx?|(?:[\w.-]+\/)*[\w.-]+\.json)$/
 const TEST = /^scripts\/[\w.-]+\.test\.tsx?$/
-const acceptTouched = (path: string) => path.startsWith("tests/") || /^scripts\/accept[\w-]*\.ts$/.test(path) || /\.sim\.test\.tsx?$/.test(path)
+const acceptTouched = (path: string) => path.startsWith("tests/") || /^scripts\/accept[\w-]*\.ts$/.test(path) || (!path.startsWith("../") && /\.sim\.test\.tsx?$/.test(path))
 /** A file tests/git-repo.test.ts scans for a raw `git init` or `git clone` (its `testFiles`). */
-const gitGuarded = (path: string) => /\.test\.tsx?$/.test(path) || /^(tests|testbeds)\/.*\.tsx?$/.test(path)
+const gitGuarded = (path: string) => !path.startsWith("../") && (/\.test\.tsx?$/.test(path) || /^(tests|testbeds)\/.*\.tsx?$/.test(path))
 
 /**
  * The scripts/ tests, the import specifiers each scripts/ file holds (`import`, `export … from` and `import()`,
@@ -80,7 +84,7 @@ export interface ScriptsTests {
 const resolved = (from: string, specifier: string, exists: (file: string) => boolean): ReadonlyArray<string> => {
   if (!specifier.startsWith("./")) return []
   const base = `${from.slice(0, from.lastIndexOf("/") + 1)}${specifier.slice(2)}`
-  return [base, `${base}.ts`, `${base}.tsx`].filter((file) => SCRIPT.test(file) && exists(file)).slice(0, 1)
+  return [base, `${base}.ts`, `${base}.tsx`].filter((file) => IMPORTABLE.test(file) && exists(file)).slice(0, 1)
 }
 
 /** Every scripts/ file `test` loads through its imports, any number of steps deep, itself included. */
@@ -118,7 +122,7 @@ export const scriptTests = (changes: ReadonlyArray<Change>, exists: (file: strin
   const reached = scripts.files.map((test) => ({ test, files: reachedWithin(test, scripts, exists), reads: scripts.reads(test).map((glob) => new Glob(glob)) }))
   const due = new Set(paths.flatMap((path) => testsOf(path, reached)))
   if (paths.some(acceptTouched)) for (const test of ACCEPT_TESTS) due.add(test)
-  if (docsGuardDue(changes)) due.add(DOCS_GUARD)
+  if (docsGuardDue(changes.filter((change) => change.paths.some((path) => !path.startsWith("../"))))) due.add(DOCS_GUARD)
   if (changes.flatMap(left).some(gitGuarded)) due.add(GIT_REPO_GUARD)
   return [...due].filter(exists).toSorted()
 }
@@ -141,10 +145,16 @@ const testLeg = (tests: ReadonlyArray<string>, tools: Tools): LegSpec => {
 
 /** The merge check's legs over `changes` since `base`. */
 export const mergeLegs = (base: string, changes: ReadonlyArray<Change>, tools: Tools): ReadonlyArray<LegSpec> => {
-  const lint = lintFiles(changes, tools.exists)
-  const tests = [...scriptTests(changes, tools.exists, tools.scripts), ...workboxTests(tools.workbox)]
+  const lint = lintFiles(changes, tools.exists).filter((file) => !file.startsWith("../"))
+  const paths = named(changes)
+  const workbox = new Set(workboxTests(tools.workbox))
+  for (const file of tools.workbox.tests) {
+    if (tools.workboxReads?.(file).some((glob) => paths.some((path) => new Glob(glob).match(path)))) workbox.add(file)
+  }
+  const tests = [...scriptTests(changes, tools.exists, tools.scripts), ...[...workbox].toSorted()]
   return [
     lintLeg(lint, tools),
+    { name: "test-reads", argv: [tools.bun, "scripts/check-test-reads.ts"], note: "static read anchors" },
     { name: "debt", argv: [tools.bun, "scripts/effect-debt.ts", "--check", "--since", base], note: "changed files" },
     { name: "types", argv: [...tools.typecheck, "--no-pretty"], note: `${tools.projects} projects` },
     testLeg(tests, tools),

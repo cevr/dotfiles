@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { gitInit } from "../tests/git-repo.ts"
+import { scratchInput } from "../tests/read-path.ts"
 import { dropMarkers, forkWork, forkWorkText, linkedIssues, type Lookup } from "./fork-work.ts"
 
 const AGENTS = [
@@ -20,7 +21,7 @@ afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 /** The fixtures' git env: a fixed identity, and no global config. */
 const GIT_ENV = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t", GIT_CONFIG_GLOBAL: "/dev/null" }
 const sh = (dir: string, ...args: ReadonlyArray<string>) => {
-  const ran = Bun.spawnSync(["git", "-C", dir, ...args], {
+  const ran = Bun.spawnSync(["git", "-C", scratchInput(dir), ...args], {
     env: GIT_ENV,
     stdout: "pipe",
     stderr: "pipe",

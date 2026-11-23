@@ -3,12 +3,12 @@
 // host it declares. The upstream merge cases call the daily's own check step (scripts/upstream.ts `mergeChecks`)
 // with fakes for the install, `bun run check` and the acceptance links, and the real feature step (the CLI) over
 // a fake fork whose origin and upstream are local bare repositories: nothing is pushed anywhere else.
-// @reads scripts/fork-checks.json
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Array as Arr, Clock, Config, Console, Context, Duration, Effect, FileSystem, Layer, Option, Path, Ref, Result, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { gitClone, gitInit, withProcessEnv } from "../tests/git-repo.ts"
+import { scratchInput } from "../tests/read-path.ts"
 import {
   type Case,
   casesOf,
@@ -1149,7 +1149,7 @@ const GIT_ENV = withProcessEnv(IDENTITY)
 const git = (repo: string, ...args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-    const said = yield* spawner.string(ChildProcess.make("git", ["-C", repo, ...args], { env: IDENTITY, extendEnv: true, stdin: "ignore", forceKillAfter: "1 second" }))
+    const said = yield* spawner.string(ChildProcess.make("git", ["-C", scratchInput(repo), ...args], { env: IDENTITY, extendEnv: true, stdin: "ignore", forceKillAfter: "1 second" }))
     return said.trim()
   })
 
@@ -1256,7 +1256,7 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
       const fs = yield* FileSystem.FileSystem
       expect(yield* f.merge).toMatchObject({ kind: "red", check: FEATURES })
       expect(yield* f.head(f.origin)).toBe(f.before)
-      return yield* fs.readFileString(f.report)
+      return yield* fs.readFileString(scratchInput(f.report))
     })
 
   const SKIPPED_ONLY = 'import { expect, test } from "bun:test"\ntest.skip("the fork feature", () => expect(1).toBe(1))\n'
@@ -1285,7 +1285,7 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
         expect(yield* f.merge).toMatchObject({ kind: "red", check: FEATURES })
         expect(yield* f.head(f.origin)).toBe(f.before)
         expect(yield* f.head(f.fork)).toBe(f.before)
-        const text = yield* fs.readFileString(f.report)
+        const text = yield* fs.readFileString(scratchInput(f.report))
         expect(text).toContain("# Upstream merge is red: fork feature checks")
         expect(text).toMatch(/fork-checks: RED over upstream [0-9a-f]{10}\.\.[0-9a-f]{10}, 1 tests/)
         expect(text).toContain("packages/x/test/red.test.ts > the fork feature [x]")
@@ -1300,7 +1300,7 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
       const f = yield* fixture(["bun", "test"], ["test/green.test.ts", "test/gone.test.ts"])
       expect(yield* f.merge).toMatchObject({ kind: "red", check: FEATURES })
       expect(yield* f.head(f.origin)).toBe(f.before)
-      expect(yield* fs.readFileString(f.report)).toContain("packages/x/test/gone.test.ts [x]: the listed file is not in the fork")
+      expect(yield* fs.readFileString(scratchInput(f.report))).toContain("packages/x/test/gone.test.ts [x]: the listed file is not in the fork")
     }).pipe(Effect.scoped),
   )
 
@@ -1312,7 +1312,7 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
       const f = yield* fixture(["false"], ["test/green.test.ts"])
       expect(yield* f.merge).toMatchObject({ kind: "red", check: FEATURES })
       expect(yield* f.head(f.origin)).toBe(f.before)
-      expect(yield* fs.readFileString(f.report)).toContain("fork-checks: COULD NOT RUN")
+      expect(yield* fs.readFileString(scratchInput(f.report))).toContain("fork-checks: COULD NOT RUN")
       expect(yield* fs.exists(path.join(f.fork, "upstream.txt"))).toBe(false)
     }).pipe(Effect.scoped),
   )
@@ -1410,7 +1410,7 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
       const f = yield* fixture(["bun", "runner.ts", String(cell.exit)], [CELL_FILE], { incoming, ...cellDeclarations(cell, bash) })
       const merged = yield* f.merge
       const moved = (yield* f.head(f.origin)) !== f.before
-      const report = yield* fs.readFileString(f.report).pipe(Effect.orElseSucceed(() => ""))
+      const report = yield* fs.readFileString(scratchInput(f.report)).pipe(Effect.orElseSucceed(() => ""))
       return { cell, merged: merged.kind, moved, report }
     }).pipe(Effect.scoped)
 

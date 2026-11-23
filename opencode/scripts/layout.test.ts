@@ -7,13 +7,14 @@
  * Mods without a `cmd/` package are not on the layout yet and are listed as
  * pending.
  *
- * @reads mods/** cmd/**
+ * @reads {mods/**,cmd/**}
  *
  * @module
  */
 import { describe, expect, test } from "bun:test"
 import { existsSync, readdirSync, statSync } from "node:fs"
 import { join, relative, sep } from "node:path"
+import { matchingInput } from "../tests/read-path.ts"
 
 const ROOT = join(import.meta.dir, "..")
 const MODS = join(ROOT, "mods")
@@ -23,7 +24,7 @@ const KIND_SUFFIX = /\.(aggregate|command|view|policy|saga|projection|external|r
 const KIND_FOLDERS = new Set(["host", "src", "test", "tests", "commands", "services", "domain", "adapters", "lib"])
 
 const sources = (dir: string): ReadonlyArray<string> =>
-  readdirSync(dir).flatMap((name) => {
+  readdirSync(matchingInput("{mods/**,cmd/**}", dir)).flatMap((name) => {
     if (name === "node_modules" || name.startsWith(".")) return []
     const path = join(dir, name)
     if (statSync(path).isDirectory()) return sources(path)

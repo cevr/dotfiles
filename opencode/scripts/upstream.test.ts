@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { gitClone, gitInit } from "../tests/git-repo.ts"
+import { scratchInput } from "../tests/read-path.ts"
 import { acceptance, awaitCalm, CALM_WAIT_MS, failedFiles, type Host, type TestRun, upstreamReading } from "./upstream.ts"
 
 /** A host whose load follows `loads`, one reading per check, on a clock that sleeping advances. */
@@ -114,7 +115,7 @@ describe("the failed files", () => {
 
 describe("the upstream reading", () => {
   const git = (dir: string, ...args: ReadonlyArray<string>) => {
-    const ran = Bun.spawnSync(["git", "-C", dir, ...args], {
+    const ran = Bun.spawnSync(["git", "-C", scratchInput(dir), ...args], {
       env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" },
       stdout: "pipe",
       stderr: "pipe",

@@ -2,10 +2,13 @@
 // path they backtick exists, every `bun run <script>` is a package script, every feature file keeps the entry
 // contract with its world suites, real checks and code on disk, the index lists exactly the feature files,
 // and AGENTS.md points verifiers at the skill.
+// @reads .claude/skills/verify-opencode/SKILL.md .claude/skills/verify-opencode/features/*.md **/*.sim.test.{ts,tsx} package.json AGENTS.md
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { Array as Arr, Effect, FileSystem, Option, Path, PlatformError, Schema } from "effect"
+import { Glob } from "bun"
+import { Array as Arr, Effect, FileSystem, Option, Path, Schema } from "effect"
 import { describe, expect, it } from "effect-bun-test"
-import { FEATURES_DIR, INDEX, noDrive, parseFeature, SHARED, SKILL_DIR, touched, uncovered, undriven } from "./verify-map.ts"
+import { matchingInput } from "../tests/read-path.ts"
+import { FEATURES_DIR, INDEX, noDrive, parseFeature, SKILL_DIR, touched, uncovered, undriven } from "./verify-map.ts"
 
 /** The H2s of a feature file, in order. */
 const CONTRACT = ["Sub-features", "How to get to it (user POV)", "Driving it with the world", "Driving it with real OpenCode", "Gotchas"]
@@ -24,11 +27,10 @@ const root = Effect.gen(function* () {
 /** The skill's markdown files, from opencode/, with their text. */
 const docs = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
-  const path = yield* Path.Path
   const at = yield* root
-  const features = (yield* fs.readDirectory(path.join(at, FEATURES_DIR))).filter((file) => file.endsWith(".md")).map((file) => `${FEATURES_DIR}/${file}`)
-  const files = [`${SKILL_DIR}/SKILL.md`, ...features.sort()]
-  return yield* Effect.forEach(files, (file) => Effect.map(fs.readFileString(path.join(at, file)), (text) => ({ file, text })))
+  const features = [...new Glob(".claude/skills/verify-opencode/features/*.md").scanSync({ cwd: at })].sort()
+  const read = (file: string) => Effect.map(fs.readFileString(matchingInput("{.claude/skills/verify-opencode/SKILL.md,.claude/skills/verify-opencode/features/*.md}", file)), (text) => ({ file, text }))
+  return yield* Effect.forEach([`${SKILL_DIR}/SKILL.md`, ...features], read)
 })
 
 /** Whether `file` exists from opencode/. */
@@ -37,24 +39,6 @@ const exists = (file: string) =>
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
     return yield* fs.exists(path.join(yield* root, file))
-  })
-
-/** Every file under `dir` (from opencode/), node_modules and dot folders aside, as paths from opencode/. */
-const files = (dir: string): Effect.Effect<ReadonlyArray<string>, PlatformError.PlatformError | PlatformError.BadArgument, FileSystem.FileSystem | Path.Path> =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem
-    const path = yield* Path.Path
-    const at = yield* root
-    const found = yield* Effect.forEach(yield* fs.readDirectory(path.join(at, dir)), (name) =>
-      Effect.gen(function* () {
-        const entry = `${dir}/${name}`
-        const info = yield* fs.stat(path.join(at, entry))
-        if (info.type === "Directory" && name !== "node_modules" && !name.startsWith(".")) return yield* files(entry)
-        if (info.type === "File") return [entry]
-        return []
-      }),
-    )
-    return found.flat()
   })
 
 const backticked = (text: string): ReadonlyArray<string> => Arr.map(Array.from(text.matchAll(/`([^`\n]+)`/g)), (match) => Option.getOrElse(Option.fromNullishOr(match[1]), () => ""))
@@ -103,9 +87,8 @@ describe("the verify-opencode skill names only what the tree has", () => {
       const features = (yield* docs)
         .filter(({ file }) => file.startsWith(`${FEATURES_DIR}/`) && !file.endsWith("/README.md"))
         .map(({ file, text }) => parseFeature(file.slice(FEATURES_DIR.length + 1), text))
-      // The suites on disk under each claimed folder, node_modules aside; `sim/` is every feature's and no one's.
-      const folders = Arr.dedupe(features.flatMap((feature) => feature.code.filter((prefix) => prefix.endsWith("/") && prefix !== SHARED)))
-      const suites = Arr.dedupe((yield* Effect.forEach(folders, (folder) => files(folder.replace(/\/$/, "")))).flat())
+      // `undriven` intersects this inventory with each feature's claimed folders; sim/ belongs to every feature.
+      const suites = [...new Glob("**/*.sim.test.{ts,tsx}").scanSync({ cwd: yield* root })].filter((file) => !file.includes("node_modules/"))
       expect(suites).toContain("cmd/queue/queue.sim.test.ts")
       expect(features.map((feature) => ({ feature: feature.id, undriven: undriven(feature, suites) }))).toEqual(features.map((feature) => ({ feature: feature.id, undriven: [] })))
     }),
@@ -114,12 +97,10 @@ describe("the verify-opencode skill names only what the tree has", () => {
   live("every source file batch 2026-11-15cc's, 2026-11-16cv's, 2026-11-16cx's and 2026-11-16cy's drives found in no feature's Code is now in one, or set aside by the index's No drive", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
-      const path = yield* Path.Path
-      const at = yield* root
       const features = (yield* docs)
         .filter(({ file }) => file.startsWith(`${FEATURES_DIR}/`) && !file.endsWith("/README.md"))
         .map(({ file, text }) => parseFeature(file.slice(FEATURES_DIR.length + 1), text))
-      const exempt = noDrive(yield* fs.readFileString(path.join(at, INDEX)))
+      const exempt = noDrive(yield* fs.readFileString(matchingInput(".claude/skills/verify-opencode/features/*.md", INDEX)))
       const found = [
         "cmd/status/server.test.ts",
         "formal/check.ts",
@@ -162,12 +143,10 @@ describe("the verify-opencode skill names only what the tree has", () => {
   live("every source file batch 2026-11-15cl's drive found in no feature's Code is now in one, or set aside by the index's No drive", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
-      const path = yield* Path.Path
-      const at = yield* root
       const features = (yield* docs)
         .filter(({ file }) => file.startsWith(`${FEATURES_DIR}/`) && !file.endsWith("/README.md"))
         .map(({ file, text }) => parseFeature(file.slice(FEATURES_DIR.length + 1), text))
-      const exempt = noDrive(yield* fs.readFileString(path.join(at, INDEX)))
+      const exempt = noDrive(yield* fs.readFileString(matchingInput(".claude/skills/verify-opencode/features/*.md", INDEX)))
       const found = [
         "cmd/rex/server.ts",
         "cmd/rex/show.ts",
@@ -219,7 +198,7 @@ describe("the verify-opencode skill names only what the tree has", () => {
       const at = yield* root
       const all = yield* docs
       const files = all.filter(({ file }) => file.startsWith(`${FEATURES_DIR}/`) && !file.endsWith("/README.md")).map(({ file }) => file.slice(FEATURES_DIR.length + 1))
-      const index = yield* fs.readFileString(path.join(at, FEATURES_DIR, "README.md"))
+      const index = yield* fs.readFileString(matchingInput(".claude/skills/verify-opencode/features/*.md", INDEX))
       const linked = Array.from(index.matchAll(/\]\(([\w-]+\.md)\)/g)).map((match) => Option.getOrElse(Option.fromNullishOr(match[1]), () => ""))
       expect(linked.toSorted()).toEqual(files.toSorted())
       expect(yield* fs.readFileString(path.join(at, "AGENTS.md"))).toContain(SKILL_DIR)

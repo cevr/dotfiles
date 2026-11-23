@@ -1,8 +1,9 @@
 // `bun run gate`: the check every change passes before it is pushed.
 //
-// It links the fork's modules (scripts/link-fork.ts), then runs five legs at
+// It links the fork's modules (scripts/link-fork.ts), then runs the legs at
 // once and fails if any fails:
 // - lint: oxlint over the whole workspace; debt: `scripts/effect-debt.ts --check`, its per-file Effect rule budgets;
+// - test reads: the static check for runtime path inputs of script, acceptance and workbox tests;
 // - agents: `scripts/agents.ts --check`, mods/orchestrate/agents.json against the skill;
 // - types: every project (the root and each mods/*, cmd/* package) with
 //   `bun check`, all of them every time;
@@ -42,9 +43,9 @@ import { $ } from "bun"
 import { Option } from "effect"
 import { hostLocks, landLogs, scriptReceipt } from "../mods/work/process/landing.ts"
 import { parseNameStatus } from "./docs-guard.ts"
-import { mergeLegs } from "./merge-check.ts"
+import { mergeLegs, testFilesIn } from "./merge-check.ts"
 import { checkCommand, projects } from "./typecheck.ts"
-import { importsOf, keyOf, load, reach, readsOf, ROOT, sharedKey, unitTests } from "./reach.ts"
+import { declaredInputs, fromRepository, importsOf, keyOf, load, reach, readsOf, ROOT, sharedKey, unitTests } from "./reach.ts"
 
 const ENV = process.env
 const ARGV = process.argv.slice(2)
@@ -88,7 +89,7 @@ const unit = async (): Promise<Leg> => {
   const shared = await sharedKey(["unit", "--timeout 300000"])
   const memo = new Map<string, ReadonlyArray<string>>()
   const files = unitTests(workspace)
-  const keys = new Map(files.map((file) => [file, keyOf(shared, reach(workspace, [file], memo))]))
+  const keys = new Map(files.map((file) => [file, keyOf(shared, new Set([...reach(workspace, [file], memo), ...declaredInputs(workspace, file)]))]))
   // Each file keeps the keys of its last few passes, so going back to an earlier state (a revert, a branch switch) hits too.
   const stored: Record<string, ReadonlyArray<string>> = existsSync(PASSED) ? JSON.parse(readFileSync(PASSED, "utf8")) : {}
   const passed = Object.fromEntries(Object.entries(stored).filter(([, list]) => Array.isArray(list)))
@@ -145,24 +146,26 @@ const linked = async (name: string, legs: () => ReadonlyArray<Promise<Leg>>, run
   return summary(name, started, await Promise.all(legs()))
 }
 
-/** The gate in its turn: the link, then the five legs at once; answers its exit code. */
+/** The gate in its turn: the link, then the legs at once; answers its exit code. */
 const gate = () =>
   linked("gate", () => [
     run("lint", [path.join(ROOT, "node_modules/.bin/oxlint"), "--quiet"]),
+    run("test-reads", [process.execPath, "scripts/check-test-reads.ts"]),
     run("debt", [process.execPath, "scripts/effect-debt.ts", "--check"]),
     run("agents", [process.execPath, "scripts/agents.ts", "--check"]),
     types(),
     unit(),
   ])
 
-/** The changes since `base`, from this folder. */
+/** The whole repository's diff, expressed from opencode/ (including sibling inputs). */
 const changesSince = (base: string) =>
-  $`git -C ${ROOT} diff --name-status --relative ${base} HEAD -- .`.nothrow().quiet().text().then(parseNameStatus)
+  $`git -C ${path.dirname(ROOT)} diff --name-status ${base} HEAD`.quiet().text().then((out) =>
+    parseNameStatus(out).map(({ status, paths }) => ({ status, paths: paths.map(fromRepository) })))
 
 /** The repository's workbox/ folder beside this one: its changes since `base` and its tests, from this folder. */
 const workboxSince = (base: string) => {
   const folder = path.join(ROOT, "..", "workbox", "test")
-  const tests = (existsSync(folder) && readdirSync(folder).filter((name) => /\.test\.tsx?$/.test(name)).map((name) => `../workbox/test/${name}`)) || []
+  const tests = (existsSync(folder) && testFilesIn("../workbox/test", readdirSync(folder))) || []
   return $`git -C ${ROOT} diff --name-status ${base} HEAD -- ../workbox`.nothrow().quiet().text().then((out) => ({ changes: parseNameStatus(out), tests }))
 }
 
@@ -194,13 +197,14 @@ const planned = (base: string) =>
     workboxSince(base).then((workbox) =>
       mergeLegs(base, changes, {
         workbox,
+        workboxReads: (file) => readsOf(readFileSync(path.join(ROOT, file), "utf8")),
         bun: process.execPath,
         oxlint: path.join(ROOT, "node_modules/.bin/oxlint"),
         typecheck: checkCommand(),
         projects: projects().length + 1,
         exists: (file) => existsSync(path.join(ROOT, file)),
         scripts: {
-          files: readdirSync(path.join(ROOT, "scripts")).filter((name) => /\.test\.tsx?$/.test(name)).map((name) => `scripts/${name}`),
+          files: testFilesIn("scripts", readdirSync(path.join(ROOT, "scripts"))),
           imports: (file) => importsOf(file, readFileSync(path.join(ROOT, file), "utf8")),
           reads: (file) => readsOf(readFileSync(path.join(ROOT, file), "utf8")),
         },

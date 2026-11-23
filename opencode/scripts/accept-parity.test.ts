@@ -15,15 +15,19 @@
 //
 // A baseline count is the `expect(` calls in the test's body in the real file
 // at the baseline commit; this test checks the manifest's against it.
+// @reads tests/parity.json tests/parity/*.json tests/*.test.ts **/*.sim.test.ts **/*.sim.test.tsx
 import * as BunServices from "@effect/platform-bun/BunServices"
+import { Glob } from "bun"
 import { Effect, FileSystem, Path, Schema, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { NAMES } from "../sim/law-names.ts"
 import { BUDGET_MS } from "../sim/seed.ts"
+import { matchingInput } from "../tests/read-path.ts"
 
 /** opencode/: the tests run from it. */
 const ROOT = process.cwd()
+const INPUTS = "{tests/parity.json,tests/parity/*.json,tests/*.test.ts,**/*.sim.test.ts,**/*.sim.test.tsx}"
 
 const Carried = Schema.Literals(["simulated", "real", "both"])
 const Manifest = Schema.Struct({
@@ -42,17 +46,16 @@ const Manifest = Schema.Struct({
 const read = (file: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
-    const path = yield* Path.Path
-    return yield* fs.readFileString(path.join(ROOT, file))
+    return yield* fs.readFileString(matchingInput(INPUTS, file))
   })
 
 /** A real file's text, or none once every test of it has moved to its simulated file and the file is gone. */
 const readReal = (file: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
-    const path = yield* Path.Path
-    if (!(yield* fs.exists(path.join(ROOT, file)))) return ""
-    return yield* fs.readFileString(path.join(ROOT, file))
+    const at = matchingInput("tests/*.test.ts", file)
+    if (!(yield* fs.exists(at))) return ""
+    return yield* fs.readFileString(at)
   })
 
 /** One manifest, decoded, and its files as `[real file, entry]` pairs. */
@@ -67,12 +70,8 @@ const decode = (file: string) =>
  * each with its own baseline), held to the same three rules.
  */
 const manifests = Effect.gen(function* () {
-  const fs = yield* FileSystem.FileSystem
-  const path = yield* Path.Path
-  const dir = path.join(ROOT, "tests/parity")
-  const names = yield* fs.readDirectory(dir).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []))
-  const more = names.filter((name) => name.endsWith(".json")).toSorted()
-  return yield* Effect.forEach(["tests/parity.json", ...more.map((name) => `tests/parity/${name}`)], decode)
+  const more = [...new Glob("tests/parity/*.json").scanSync({ cwd: ROOT })].sort()
+  return yield* Effect.forEach(["tests/parity.json", ...more], decode)
 })
 
 type Decoded = Effect.Success<ReturnType<typeof decode>>
@@ -106,7 +105,10 @@ const output = (command: string, args: ReadonlyArray<string>, env: Readonly<Reco
   }).pipe(Effect.scoped)
 
 /** A file's text at a commit, from opencode/. */
-const at = (commit: string, file: string) => output("git", ["show", `${commit}:./${file}`]).pipe(Effect.map((run) => run.stdout))
+const at = (commit: string, file: string) => {
+  const input = matchingInput("tests/*.test.ts", file).slice(ROOT.length + 1)
+  return output("git", ["show", `${commit}:./${input}`]).pipe(Effect.map((run) => run.stdout))
+}
 
 /** A test's title: the literal `test(`, `seeded(`, or effect-bun-test's `it.live(` or `it.effect(` opens with. */
 const TITLE = /\b(?:test(?:\.skipIf\([^\n]*?\))?|seeded|it\.(?:live|effect))\(\s*"([^"]+)"/g

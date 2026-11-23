@@ -8,7 +8,7 @@
  * accumulator copy, folds generated fork histories as an independent model of a turn does, and
  * leaves its input as it was.
  *
- * @reads .oxlintrc.json lint/**
+ * @reads .oxlintrc.json lint/{test-env,tui-clock,tui-dirs,kept-scratch,chrome-keychain}.ts
  */
 import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"

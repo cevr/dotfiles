@@ -13,7 +13,7 @@
  * four files carry none of the four rules' findings, and the helper is classified as test code in
  * both configs and the debt policy.
  *
- * @reads .oxlintrc.json .oxlintrc.effect-debt.json effect-debt.json lint/** mods/wake/process/*.ts
+ * @reads .oxlintrc.json .oxlintrc.effect-debt.json effect-debt.json lint/{test-env,tui-clock,tui-dirs,kept-scratch,chrome-keychain}.ts mods/wake/process/{runner.test.ts,checks.test.ts,readiness.ts,readiness.test.ts} mods/wake/process/{runner,checks}.test.ts
  */
 import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
@@ -21,6 +21,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { Array as Arr, Effect, Option, Order, Schema, type Scope } from "effect"
 import { type CallExpression, parseSync, Visitor } from "oxc-parser"
+import { matchingInput } from "../tests/read-path.ts"
 import { DEBT_CONFIG, HARD_CONFIG, POLICY, Policy, ruleOf, spawn } from "./effect-debt.ts"
 
 const REAL = process.cwd()
@@ -309,7 +310,8 @@ describe(`${HARD_CONFIG}: the wake process tests' wait and lifecycle rules over 
     () =>
       runScoped(
         Effect.gen(function* () {
-          const found = yield* lint(REAL, HARD_CONFIG, OWNED)
+          const files = Arr.map(OWNED, (file) => path.relative(REAL, matchingInput("mods/wake/process/{runner.test.ts,checks.test.ts,readiness.ts,readiness.test.ts}", file)))
+          const found = yield* lint(REAL, HARD_CONFIG, files)
           expect(Arr.filter(found, (each) => RULE_IDS.includes(each.rule))).toEqual([])
         }),
       ),
@@ -335,7 +337,7 @@ const callsTest = (call: CallExpression) =>
 
 /** A test call is bounded when its callback is `() => Effect.runPromise(bounded(...))` and its third argument is `testLimitMs(...)`. */
 const testCallsOf = (file: string): ReadonlyArray<TestCall> => {
-  const text = readFileSync(path.join(REAL, file), "utf8")
+  const text = readFileSync(matchingInput("mods/wake/process/{runner,checks}.test.ts", file), "utf8")
   const slice = (node: { readonly start: number; readonly end: number }) => text.slice(node.start, node.end)
   const calls: Array<CallExpression> = []
   new Visitor({ CallExpression: (call) => Arr.forEach(Arr.filter([call], callsTest), (found) => calls.push(found)) }).visit(parseSync(file, text).program)
@@ -357,7 +359,7 @@ describe("the wake process tests end every Effect before Bun's test limit", () =
     const calls = Arr.flatMap(PROCESS_TESTS, testCallsOf)
     expect(Arr.filter(calls, (call) => call.runsEffect && !call.bounded)).toEqual([])
     expect(Arr.map(PROCESS_TESTS, (file) => Arr.filter(calls, (call) => call.file === file && call.bounded).length)).toEqual(Arr.map(PROCESS_TESTS, () => 1))
-    const runs = Arr.map(PROCESS_TESTS, (file) => (readFileSync(path.join(REAL, file), "utf8").match(/\bEffect\.run(?:Promise|Fork|Callback)\w*\(/gu) ?? []).length)
+    const runs = Arr.map(PROCESS_TESTS, (file) => (readFileSync(matchingInput("mods/wake/process/{runner,checks}.test.ts", file), "utf8").match(/\bEffect\.run(?:Promise|Fork|Callback)\w*\(/gu) ?? []).length)
     expect(runs).toEqual(Arr.map(PROCESS_TESTS, () => 1))
   })
 })

@@ -4,18 +4,17 @@
 // reads its real argv under the same pid; a flag the caller passes is not added twice and a bare `--` keeps them before
 // it; a DevTools pipe on fds 3 and 4 passes through; the newest Chrome for Testing is the default; and the shim refuses
 // itself, the owner's Google Chrome.app, and a cache with no browser. No real Chrome runs here.
+// @reads ../claude/bin/chrome-mock-keychain
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { spawnSync } from "bun"
 import { Effect, FileSystem, Path, Schema, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { matchingInput, scratchInput } from "../tests/read-path.ts"
 import table from "./fixtures/chrome-launch-args.json" with { type: "json" }
 
 /** The shim, from this file's URL (opencode/scripts). */
-const shimPath = Effect.gen(function* () {
-  const path = yield* Path.Path
-  return yield* path.fromFileUrl(new URL("../../claude/bin/chrome-mock-keychain", import.meta.url))
-})
+const shimPath = Effect.sync(() => matchingInput("../claude/bin/chrome-mock-keychain"))
 
 /** The two flags it adds, one a line (a list literal holding them beside --headless is the list the repository's lint reads). */
 const FLAGS = "--use-mock-keychain\n--password-store=basic".split("\n")
@@ -57,7 +56,7 @@ const recorded = (child: ChildProcessSpawner.ChildProcessHandle, out: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     yield* child.stdout.pipe(Stream.decodeText(), Stream.splitLines, Stream.runHead)
-    return (yield* fs.readFileString(out)).trimEnd().split("\n")
+    return (yield* fs.readFileString(scratchInput(out))).trimEnd().split("\n")
   })
 
 describe("an argument list through the shim", () => {

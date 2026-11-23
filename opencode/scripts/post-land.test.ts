@@ -2,7 +2,8 @@
 // no push. And the lock it shares with daily's step 0 (scripts/upstream.ts `withUpstreamLock`), raced by
 // real processes (scripts/upstream-lock-child.ts).
 import { afterAll, describe, expect, test } from "bun:test"
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { readScratchFileSync as readFileSync } from "../tests/read-path.ts"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ForkWork } from "./fork-work.ts"

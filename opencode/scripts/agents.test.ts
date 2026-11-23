@@ -1,10 +1,12 @@
 // scripts/agents.ts's orchestrator entry: its section carries SKILL.md's no-block rule word for word, and `--check`
 // fails once that line changes in the skill without `bun run agents` writing agents.json again.
+// @reads ../skills/orchestrate/{SKILL.md,protocol.md,scripts/agents.ts,scripts/ending.ts} ../skills/loop/safety.md ../agents/**
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Effect, FileSystem, Option, Path, Schema, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
-import { build, DEFAULT_SOURCE, NO_BLOCK, orchestratorSection, ROOT } from "./agents.ts"
+import { matchingInput } from "../tests/read-path.ts"
+import { build, NO_BLOCK, orchestratorSection, ROOT } from "./agents.ts"
 
 const live = it.live.layer(BunServices.layer)
 
@@ -14,8 +16,7 @@ const Written = Schema.fromJsonString(Schema.Struct({ orchestrator: Schema.Struc
 /** SKILL.md and its no-block rule line. */
 const skill = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
-  const path = yield* Path.Path
-  const text = yield* fs.readFileString(path.join(DEFAULT_SOURCE, "SKILL.md"))
+  const text = yield* fs.readFileString("../skills/orchestrate/SKILL.md")
   const rule = yield* Effect.fromOption(Option.fromNullishOr(text.split("\n").find((line) => line.startsWith(NO_BLOCK))))
   return { text, rule }
 })
@@ -41,10 +42,11 @@ const copySkill = (dir: string) =>
     const path = yield* Path.Path
     const source = path.join(dir, "skills/orchestrate")
     yield* fs.makeDirectory(path.join(source, "scripts"), { recursive: true })
-    yield* Effect.forEach(["SKILL.md", "protocol.md", "scripts/agents.ts", "scripts/ending.ts"], (file) => fs.copyFile(path.join(DEFAULT_SOURCE, file), path.join(source, file)))
+    yield* Effect.forEach(["SKILL.md", "protocol.md", "scripts/agents.ts", "scripts/ending.ts"], (file) =>
+      fs.copyFile(matchingInput("../skills/orchestrate/{SKILL.md,protocol.md,scripts/agents.ts,scripts/ending.ts}", `../skills/orchestrate/${file}`), path.join(source, file)))
     yield* fs.makeDirectory(path.join(dir, "skills/loop"), { recursive: true })
-    yield* fs.copyFile(path.join(DEFAULT_SOURCE, "../loop/safety.md"), path.join(dir, "skills/loop/safety.md"))
-    yield* fs.copy(path.join(DEFAULT_SOURCE, "../../agents"), path.join(dir, "agents"))
+    yield* fs.copyFile("../skills/loop/safety.md", path.join(dir, "skills/loop/safety.md"))
+    yield* fs.copy("../agents", path.join(dir, "agents"))
     return source
   })
 

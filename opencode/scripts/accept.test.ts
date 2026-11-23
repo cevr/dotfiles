@@ -4,12 +4,13 @@
 // asserts an upper bound on a time, rate or CPU (its own text or the scenario
 // it drives) carries that marker, where a file that only waits for events does
 // not need it. Run from opencode/, as the gate runs it.
-// @reads sim/seed.ts
+// @reads sim/seed.ts scripts/accept.ts scripts/accept.test.ts tests/*.test.ts scenarios/*.ts
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync as readCheckoutFileSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { Array as Arr, Option } from "effect"
 import { owned } from "../tests/owned.ts"
+import { matchingInput, readScratchDirectorySync as readdirSync, readScratchFileSync as readFileSync } from "../tests/read-path.ts"
 import { scratch } from "../tests/scratch.ts"
 import { waitUntil } from "../tests/wait.ts"
 import { FIXED_SEEDS, isSerial, isSimSuite, longSwarmDue, plan, poolWidth, reachedSuites, replayLine, requestedWidth, scenariosOf, swarmBox, swarmCut, swarmFirst, swarmRead, swarmSlot, TIMED_RUNS, timedCounts, timedFilter, timingSigns, unjudgedRead } from "./accept-plan.ts"
@@ -21,7 +22,7 @@ const ROOT = process.cwd()
 
 /** The acceptance files, as scripts/reach.ts lists them: tests/*.test.ts. */
 const acceptance = () => [...new Bun.Glob("tests/*.test.ts").scanSync({ cwd: ROOT })].sort()
-const read = (file: string) => readFileSync(join(ROOT, file), "utf8")
+const read = (file: string) => readCheckoutFileSync(matchingInput("{tests/*.test.ts,scenarios/*.ts,scripts/accept.test.ts}", file), "utf8")
 
 /** A real accept run takes the machine's lock and spawns bun test twice: a loaded machine gets room. */
 const RUN_MS = 120_000
@@ -280,7 +281,7 @@ describe("the acceptance tiers over the real tree", () => {
   })
 
   test("every path the runner reads from the environment (ACCEPT_*) is in scratch for every test that runs it: none touches the owner's ledger, lock, logs or swarm state, or swarms the real suites", () => {
-    const read = new Set(Array.from(readFileSync(join(ROOT, "scripts/accept.ts"), "utf8").matchAll(/ENV\.(ACCEPT_[A-Z_]+)/g), (match) => String(match[1])))
+    const read = new Set(Array.from(readCheckoutFileSync(join(ROOT, "scripts/accept.ts"), "utf8").matchAll(/ENV\.(ACCEPT_[A-Z_]+)/g), (match) => String(match[1])))
     // Not paths: the land budget, the long swarm's box, and the files glob each test sets to its own stand-ins. The
     // simulated suites' glob is one: unset, a run swarms the real suites.
     const paths = [...read].filter((name) => name !== "ACCEPT_BUDGET_MS" && name !== "ACCEPT_LONG_SWARM_MS" && name !== "ACCEPT_FILES").sort()
@@ -732,7 +733,7 @@ describe("the swarm's plan", () => {
     const firsts = heads.map((head) => swarmFirst(head, "land"))
     expect({
       // sim/seed.ts's own constant, read from its text: the runner's gate seeds.
-      fixed: readFileSync(join(ROOT, "sim/seed.ts"), "utf8").includes(`export const SEEDS = ${FIXED_SEEDS}\n`),
+      fixed: readCheckoutFileSync(join(ROOT, "sim/seed.ts"), "utf8").includes(`export const SEEDS = ${FIXED_SEEDS}\n`),
       past: firsts.every((first) => first > FIXED_SEEDS),
       inRange: firsts.every((first) => first + 10_000_000 < 2 ** 31 - 1),
       same: swarmFirst("abc", "land") === swarmFirst("abc", "land"),

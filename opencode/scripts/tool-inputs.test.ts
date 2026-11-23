@@ -5,7 +5,9 @@
 // every `cmd/*/server.ts`, so a new tool cannot skip it.
 // @reads cmd/*/server.ts
 import { describe, expect, test } from "bun:test"
-import { readdirSync, readFileSync } from "node:fs"
+import { Glob } from "bun"
+import { readFileSync } from "node:fs"
+import { matchingInput } from "../tests/read-path.ts"
 import { join } from "node:path"
 import { Schema } from "effect"
 import { PrInput } from "../mods/git/pr.ts"
@@ -44,10 +46,10 @@ const INPUTS: Record<string, unknown> = {
 }
 
 const cmd = join(import.meta.dir, "..", "cmd")
-const registered = readdirSync(cmd).flatMap((name) => {
+const registered = [...new Glob("*/server.ts").scanSync(cmd)].flatMap((file) => {
   const text = (() => {
     try {
-      return readFileSync(join(cmd, name, "server.ts"), "utf8")
+      return readFileSync(matchingInput("cmd/*/server.ts", `cmd/${file}`), "utf8")
     } catch {
       return ""
     }

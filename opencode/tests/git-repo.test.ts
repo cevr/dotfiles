@@ -5,6 +5,7 @@
 // git's own `init` or `clone` is refused, so no repository is left loud. The guard reads each
 // file's syntax tree, so a string that only names a git command (an expected log line) is no site,
 // and it reads git's argv with the guard's own reader (mods/guard/verdict.ts), global options and all.
+// @reads {**/*.test.{ts,tsx},tests/**/*.{ts,tsx},testbeds/**/*.{ts,tsx}}
 import { describe, expect, test } from "bun:test"
 import { Array as Arr, Option, Order, Predicate } from "effect"
 import { execFileSync } from "node:child_process"
@@ -27,13 +28,14 @@ import {
 import { gitSubcommand } from "../mods/guard/verdict.ts"
 import { type GitGlobalOptions, gitGlobalOptions } from "./git-options.ts"
 import { gitClone, gitInit, QUIET_GIT } from "./git-repo.ts"
+import { matchingInput, scratchInput } from "./read-path.ts"
 import { scratch } from "./scratch.ts"
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url))
 
 /** What `git config --get` reads for each quiet key in the repository at `dir`. */
 const settings = (dir: string) =>
-  Object.fromEntries(Object.keys(QUIET_GIT).map((key) => [key, execFileSync("git", ["-C", dir, "config", "--get", key], { encoding: "utf8" }).trim()]))
+  Object.fromEntries(Object.keys(QUIET_GIT).map((key) => [key, execFileSync("git", ["-C", scratchInput(dir), "config", "--get", key], { encoding: "utf8" }).trim()]))
 
 const QUIET = { "gc.auto": "0", "maintenance.auto": "false" }
 
@@ -281,8 +283,11 @@ const rawSites = (file: string, text: string): ReadonlyArray<string> => {
 }
 
 /** Every test file, and every file under tests/ and testbeds/ (fixtures, helpers and the harnesses the tests and agents run). */
-const testFiles = () =>
-  [...new Set(["**/*.test.ts", "tests/**/*.ts", "testbeds/**/*.ts"].flatMap((glob) => [...new Bun.Glob(glob).scanSync({ cwd: ROOT })]))].filter((file) => !file.includes("node_modules/")).sort()
+const testFiles = () => [...new Set([
+  ...new Bun.Glob("**/*.test.{ts,tsx}").scanSync({ cwd: ROOT }),
+  ...new Bun.Glob("tests/**/*.{ts,tsx}").scanSync({ cwd: ROOT }),
+  ...new Bun.Glob("testbeds/**/*.{ts,tsx}").scanSync({ cwd: ROOT }),
+])].filter((file) => !file.includes("node_modules/")).sort()
 
 /** Test code with each shape the guard must judge: its wrappers first, then one call a line. */
 const SAMPLE = [
@@ -545,15 +550,15 @@ describe("a test's temp git repository", () => {
 
   test("the files the guard reads are every test file and every file under tests/ and testbeds/", () => {
     const files = new Set(testFiles())
-    const under = (dir: string) => [...new Bun.Glob(`${dir}/**/*.ts`).scanSync({ cwd: ROOT })].filter((file) => !file.includes("node_modules/"))
     expect(files).toContain("testbeds/gamut/gamut.ts")
-    expect([...under("tests"), ...under("testbeds"), "tests/git-repo.test.ts"].filter((file) => !files.has(file))).toEqual([])
+    const tree = [...new Bun.Glob("tests/**/*.{ts,tsx}").scanSync({ cwd: ROOT }), ...new Bun.Glob("testbeds/**/*.{ts,tsx}").scanSync({ cwd: ROOT })]
+    expect([...tree.filter((file) => !file.includes("node_modules/")), "tests/git-repo.test.ts"].filter((file) => !files.has(file))).toEqual([])
   })
 
   test("no test or testbed file makes a repository with a raw git init or clone: each goes through gitInit or gitClone", () => {
     const raw = testFiles()
       .filter((file) => !HELPERS.includes(file))
-      .flatMap((file) => rawSites(file, readFileSync(join(ROOT, file), "utf8")).map((site) => `${file}:${site}`))
+      .flatMap((file) => rawSites(file, readFileSync(matchingInput("{**/*.test.{ts,tsx},tests/**/*.{ts,tsx},testbeds/**/*.{ts,tsx}}", file), "utf8")).map((site) => `${file}:${site}`))
     expect(raw).toEqual([])
   })
 })

@@ -11,10 +11,11 @@
  * repo's own `dotfiles/no-module-env-in-tests` still refuses the computed root while a test file
  * loads; that retained coverage is asserted, the alias is not.
  *
- * @reads .oxlintrc.json lint/**
+ * @reads .oxlintrc.json lint/{test-env,tui-clock,tui-dirs,kept-scratch,chrome-keychain}.ts
  */
 import { describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { scratchInput } from "../tests/read-path.ts"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Array as Arr, Effect, Schema, type Scope } from "effect"
@@ -315,7 +316,7 @@ const runSuite = Effect.fn("EffectIsolationTest.runSuite")(function* (seed: numb
   const assignments = Arr.map([["PATH", CHILD_PATH], ["TMPDIR", tmpdir()], ...run.env, ["EFFECT_ISOLATION_OUT", out], ["EFFECT_ISOLATION_FAIL", run.outcome]], ([key, value]) => `${key}=${value}`)
   const answer = yield* spawn(["env", "-i", ...assignments, process.execPath, "test", "--timeout", "60000", "--preload", preload, suite.file, ...suite.only], REAL, CLI_TIMEOUT)
   const records = Arr.map(
-    Arr.filter(readFileSync(out, "utf8").split("\n"), (line) => line !== ""),
+    Arr.filter(readFileSync(scratchInput(out), "utf8").split("\n"), (line) => line !== ""),
     (line) => Schema.decodeUnknownSync(Snapshot)(line),
   )
   const label = { seed, suite: suite.file, outcome: run.outcome }

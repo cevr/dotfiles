@@ -1,7 +1,7 @@
 // What a build's tree gives the TUI (`config/cli.json`, daily's `tuiEntries`): every plugin with a TUI
 // part, in the old scheme's order. A tree's server entries carry no TUI part, so this list is the only
 // way a TUI gets one.
-// @reads cmd/*/tui.ts cmd/*/tui.tsx cmd/*/package.json
+// @reads cmd/*/tui.{ts,tsx} cmd/*/package.json
 import { describe, expect, test } from "bun:test"
 import { Glob } from "bun"
 import { Schema } from "effect"
@@ -17,7 +17,7 @@ const tuiText = () => Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))(t
 describe("the TUI's plugin list in a build's tree", () => {
   test("lists every plugin with a TUI part: a tree's server entries carry none, so a TUI gets a TUI part only from it", () => {
     // Read straight off the tree of plugins, not through the derivation: each `cmd/<name>` with a TUI entry file.
-    const withTui = [...new Glob("cmd/*/tui.{ts,tsx}").scanSync(ROOT)].map((path) => `${ROOT}/${path.slice(0, path.lastIndexOf("/"))}`)
+    const withTui = [...new Glob("cmd/*/tui.{ts,tsx}").scanSync()].map((path) => `${ROOT}/${path.slice(0, path.lastIndexOf("/"))}`)
     const tui = tuiText()
     expect(withTui.filter((dir) => !tui.includes(`"${dir}"`))).toEqual([])
     expect(withTui.length).toBeGreaterThan(10)

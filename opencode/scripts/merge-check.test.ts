@@ -4,16 +4,17 @@
 // Its selections run over the scripts/ folder as it is (`tree` reads every scripts/ source by path, not import), so a
 // new or changed scripts/ file can change what it asserts; it declares them, or no merge check runs it (fork-checks.test
 // and required-inputs.test landed by their merge checks and turned it red on main, b5735808):
-// @reads scripts/*.ts scripts/*.tsx
+// @reads scripts/*.{ts,tsx}
 // Which tests import or read a path is the tree's fact, derived (`found`); what a case pins by hand is a rule's decision.
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Glob } from "bun"
+import { matchingInput } from "../tests/read-path.ts"
 import { Effect, FileSystem, Option, Path, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { describe, expect, it } from "effect-bun-test"
 import { parseNameStatus } from "./docs-guard.ts"
 import { ACCEPT_TESTS, DOCS_GUARD, GIT_REPO_GUARD, lintFiles, mergeLegs, reachedWithin, scriptTests } from "./merge-check.ts"
-import { importsOf, load, reach, readsOf } from "./reach.ts"
+import { importsOf, matchingReads, readsOf } from "./reach.ts"
 
 /** bb435bcc's change set from opencode/ (Rift U1's land): its cmd/work/server.ts import broke runtime-imports.test, which its merge check never ran. */
 const BB435BCC = [
@@ -56,14 +57,12 @@ const BB435BCC = [
 /** The scripts/ folder as the merge check reads it (its files, each source's imports), and the selections over it. */
 const tree = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
-  const path = yield* Path.Path
-  const root = yield* path.fromFileUrl(new URL("..", import.meta.url))
-  const files = (yield* fs.readDirectory(path.join(root, "scripts"))).map((name) => `scripts/${name}`)
-  const sources = files.filter((file) => /\.tsx?$/.test(file))
-  const texts = new Map(yield* Effect.forEach(sources, (file) => Effect.map(fs.readFileString(path.join(root, file)), (text) => [file, text] as const)))
+  const files = [...new Glob("scripts/*.{ts,tsx}").scanSync()]
+  const sources = files
+  const texts = new Map(yield* Effect.forEach(sources, (file) => Effect.map(fs.readFileString(matchingInput("scripts/*.{ts,tsx}", file)), (text) => [file, text] as const)))
   const imports = new Map([...texts].map(([file, text]) => [file, importsOf(file, text)] as const))
   // The git-repo guard lives in tests/, outside the folder read here.
-  const exists = (file: string) => files.includes(file) || file === GIT_REPO_GUARD
+  const exists = (file: string) => files.includes(file) || file === GIT_REPO_GUARD || /^scripts\/.*\.json$/.test(file)
   const scripts = {
     files: sources.filter((file) => /\.test\.tsx?$/.test(file)),
     imports: (file: string) => imports.get(file) ?? [],
@@ -178,12 +177,12 @@ describe("the merge check's tests", () => {
     }),
   )
 
-  // The full gate's unit leg was never the gap: reach.ts follows the paths runtime-imports.test's code names (scripts/daily.ts names "cmd" and "mods").
-  live("the full gate's cache key over runtime-imports.test covers cmd/** and mods/**: a cmd/work change makes it due", () =>
+  live("the full gate's explicit cache inputs cover runtime-imports.test's cmd and mod readers without covering the whole tree", () =>
     Effect.gen(function* () {
-      const workspace = yield* Effect.promise(load)
-      const reached = reach(workspace, ["scripts/runtime-imports.test.ts"])
-      expect(["cmd/work/server.ts", "mods/work/tool.ts"].filter((file) => !reached.has(file))).toEqual([])
+      const fs = yield* FileSystem.FileSystem
+      const source = yield* fs.readFileString(matchingInput("scripts/runtime-imports.test.ts"))
+      const inputs = matchingReads(source, ["cmd/work/server.ts", "mods/work/tool.ts", "themes/prime.json"])
+      expect(inputs).toEqual(["cmd/work/server.ts", "mods/work/tool.ts"])
     }),
   )
 
@@ -196,6 +195,8 @@ describe("the merge check's tests", () => {
         expect(ran(out)).toContain("scripts/merge-check.test.ts")
       // What leaves scripts/ alone cannot change them.
       for (const out of ["A\ttests/new.test.ts\n", "M\tdecider/tui-clock.ts\n", "M\tscripts/fork-checks.json\n"]) expect(tests(out)).not.toContain("scripts/merge-check.test.ts")
+      // JSON from a static import is in the import graph, not an @reads dependency.
+      expect(tests("M\tscripts/fork-checks.json\n")).toContain("scripts/fork-checks.test.ts")
     }),
   )
 
@@ -212,10 +213,10 @@ describe("the merge check's tests", () => {
     Effect.gen(function* () {
       const { expected, found, importers, tests } = yield* tree
       // Pins: source no scripts/ test imports or reads selects none, and an empty diff none.
-      expect(tests("M\tdecider/tui-clock.ts\n")).toEqual([])
+      expect(tests("M\tthemes/prime.json\n")).toEqual([])
       expect(tests("")).toEqual([])
       // Pins: its test runs the git-repo guard, beside the tests that read every test source (required-inputs.test's @reads).
-      expect(tests("M\tdecider/tui-clock.ts\nM\tdecider/tui-clock.test.ts\n")).toEqual(expected([GIT_REPO_GUARD], "decider/tui-clock.ts", "decider/tui-clock.test.ts"))
+      expect(tests("M\tthemes/prime.json\nM\tdecider/tui-clock.test.ts\n")).toEqual(expected([GIT_REPO_GUARD], "themes/prime.json", "decider/tui-clock.test.ts"))
       // Pins: mod source no scripts/ test imports runs only its readers, layout.test among them.
       expect(importers("mods/update/git/source.ts")).toEqual([])
       expect(tests("M\tmods/update/git/source.ts\n")).toEqual(found("mods/update/git/source.ts"))
@@ -242,8 +243,8 @@ describe("the merge check's tests", () => {
       const both = "M\ttests/parity.json\nM\tscripts/link-fork.ts\n"
       expect(ran(both)).toEqual([...tests(both)])
       for (const test of [...ACCEPT_TESTS, "scripts/link-fork.test.ts"]) expect(ran(both)).toContain(test)
-      const none = legs("M\tdecider/tui-clock.ts\n")
-      expect(none.map((leg) => leg.name)).toEqual(["lint", "debt", "types", "tests"])
+      const none = legs("M\tthemes/prime.json\n")
+      expect(none.map((leg) => leg.name)).toEqual(["lint", "test-reads", "debt", "types", "tests"])
       expect(none.filter((leg) => leg.name === "tests").map((leg) => leg.argv)).toEqual([["true"]])
     }),
   )
@@ -275,8 +276,9 @@ describe("the merge check's tests", () => {
       ])
       const scripts = { files: ["scripts/a.test.ts"], imports: (file: string) => graph.get(file) ?? [], reads: () => [] }
       const exists = (file: string) => graph.has(file)
-      expect([...reachedWithin("scripts/a.test.ts", scripts, exists)].toSorted()).toEqual(["scripts/a.test.ts", "scripts/b.ts", "scripts/c.ts"])
+      expect([...reachedWithin("scripts/a.test.ts", scripts, exists)].toSorted()).toEqual(["scripts/a.test.ts", "scripts/b.ts", "scripts/c.ts", "scripts/fixtures/data.json"])
       expect(scriptTests(parseNameStatus("M\tscripts/c.ts\n"), exists, scripts)).toEqual(["scripts/a.test.ts"])
+      expect(scriptTests(parseNameStatus("M\tscripts/fixtures/data.json\n"), exists, scripts)).toEqual(["scripts/a.test.ts"])
       expect(scriptTests(parseNameStatus("M\tscripts/d.ts\n"), exists, scripts)).toEqual([])
       // A change outside scripts/ that a ./ path reaches selects nothing through the walk.
       expect(scriptTests(parseNameStatus("M\tscripts/fixtures/helper.ts\nM\tmods/x/y.ts\n"), exists, scripts)).toEqual([])
@@ -297,17 +299,17 @@ describe("the merge check's tests", () => {
     }),
   )
 
-  live("gate.ts --merge starts every step the merge check names: the link, lint, debt, types and tests (batch 2026-11-15cr T1)", () =>
+  live("gate.ts --merge starts the link, lint, debt, test-read guard, types and selected tests (batch 2026-11-15cr T1)", () =>
     Effect.gen(function* () {
       const path = yield* Path.Path
       const root = yield* path.fromFileUrl(new URL("..", import.meta.url))
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
       const child = yield* spawner.spawn(ChildProcess.make("bun", ["scripts/gate.ts", "--merge", "HEAD", "--dry-run"], { cwd: root, extendEnv: true, stdin: "ignore", forceKillAfter: "3 seconds" }))
       const [stdout, code] = yield* Effect.all([child.stdout.pipe(Stream.decodeText(), Stream.mkString), child.exitCode], { concurrency: 2 })
-      const steps = stdout.split("\n").flatMap((line) => Option.toArray(Option.map(Option.fromNullishOr(/^step (\w+): (.*)$/.exec(line)), (match) => [String(match[1]), String(match[2])] as const)))
+      const steps = stdout.split("\n").flatMap((line) => Option.toArray(Option.map(Option.fromNullishOr(/^step ([\w-]+): (.*)$/.exec(line)), (match) => [String(match[1]), String(match[2])] as const)))
       expect(Number(code)).toBe(0)
       // Each step prints from its own echo, so their order is not asserted.
-      expect(steps.map(([name]) => name).toSorted()).toEqual(["debt", "link", "lint", "tests", "types"])
+      expect(steps.map(([name]) => name).toSorted()).toEqual(["debt", "link", "lint", "test-reads", "tests", "types"])
       // HEAD against itself changes nothing: no file to lint, no test due.
       expect(steps.filter(([name]) => name === "tests" || name === "lint").map(([, command]) => command)).toEqual(["true", "true"])
     }).pipe(Effect.scoped),

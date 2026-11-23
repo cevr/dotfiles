@@ -7,14 +7,15 @@
  * It copies the real policy, configs and manifests into its workspaces by path, so a change of one of them alone
  * reaches it through no import: the merge check runs it on these (a5821de8 changed only the ignore lists, and
  * main went red here unseen).
- * @reads effect-debt.json .oxlintrc.json .oxlintrc.effect-debt.json package.json lint/** .gitattributes
+ * @reads effect-debt.json .oxlintrc.json .oxlintrc.effect-debt.json package.json bun.lock lint/package.json lint/{test-env,tui-clock,tui-dirs,kept-scratch,chrome-keychain}.ts .gitattributes merge-drivers.gitconfig
  */
 import { describe, expect, test } from "bun:test"
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync as readCheckoutFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Array as Arr, Effect, Order, Result, Schema, type Scope } from "effect"
 import { gitInit } from "../tests/git-repo.ts"
+import { installedInput, matchingInput, readScratchFileSync as readFileSync } from "../tests/read-path.ts"
 import { mergeConfig, mergePolicy } from "./effect-debt-merge.ts"
 import { MERGE_DRIVERS, registerMergeDriver } from "./merge-driver.ts"
 import {
@@ -46,7 +47,8 @@ const REAL = process.cwd()
 const CLI_TIMEOUT = 60_000
 const TEST_TIMEOUT = 120_000
 
-const readReal = (file: string) => readFileSync(path.join(REAL, file), "utf8")
+const readReal = (file: string) =>
+  readCheckoutFileSync(matchingInput("{effect-debt.json,.oxlintrc.json,.oxlintrc.effect-debt.json,package.json,bun.lock,lint/package.json,.gitattributes}", file), "utf8")
 const realPolicy = Schema.decodeUnknownSync(Schema.fromJsonString(Policy))(readReal(POLICY))
 const RULES = realPolicy.rules
 const KNOWN = new Set([...RULES, SUPPRESSION])
@@ -196,7 +198,7 @@ const Pinned = Schema.fromJsonString(
 const installedBeside = (moduleDir: string, name: string) => {
   const real = realpathSync(path.join(REAL, moduleDir))
   const scope = real.slice(0, real.lastIndexOf("/node_modules/") + "/node_modules".length)
-  return Schema.decodeUnknownSync(Pinned)(readFileSync(path.join(scope, name, "package.json"), "utf8"))
+  return Schema.decodeUnknownSync(Pinned)(readCheckoutFileSync(installedInput(path.join(scope, name, "package.json")), "utf8"))
 }
 
 describe("the plugin never moves the runtime's effect", () => {
@@ -225,7 +227,7 @@ describe("the plugin never moves the runtime's effect", () => {
       ["opencode-drive", "@opencode/client", "@opencode/protocol", "effect"],
       ["opencode-drive", "@opencode/client", "@opencode/schema", "effect"],
     ])
-      expect({ chain, version: Schema.decodeUnknownSync(Pinned)(readFileSync(path.join(reached(chain), "package.json"), "utf8")).version }).toEqual({ chain, version: pinned })
+      expect({ chain, version: Schema.decodeUnknownSync(Pinned)(readCheckoutFileSync(installedInput(path.join(reached(chain), "package.json")), "utf8")).version }).toEqual({ chain, version: pinned })
     expect(Object.keys({ ...root.devDependencies, ...root.dependencies })).not.toContain("oxlint-plugin-effect")
     const lint = Schema.decodeUnknownSync(Pinned)(`{"version":"0",${readReal(LINT_MANIFEST).slice(1)}`)
     expect(installedBeside("lint/node_modules/oxlint-plugin-effect", "effect").version).toBe(lint.devDependencies?.effect ?? "")
@@ -1060,7 +1062,7 @@ describe("the merge driver's registration (bun run daily, and the update plugin'
   const checkout = Effect.fn("EffectDebtTest.checkout")(function* (routed: boolean) {
     const root = yield* scratch
     gitInit(root, ["-q"])
-    put(root, MERGE_DRIVERS, readFileSync(path.join(DOTFILES, MERGE_DRIVERS), "utf8"))
+    put(root, MERGE_DRIVERS, readCheckoutFileSync(path.join(DOTFILES, MERGE_DRIVERS), "utf8"))
     if (routed) put(root, "opencode/.gitattributes", readReal(".gitattributes"))
     return root
   })

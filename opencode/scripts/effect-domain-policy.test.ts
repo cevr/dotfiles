@@ -14,9 +14,11 @@
  * `effect/noTryCatch` in the domain are the exact files the hard config leaves to the ratchet.
  * One more try in any of them passes the hard lint and fails the per-file debt comparison.
  */
-// @reads .oxlintrc.json .oxlintrc.effect-debt.json effect-debt.json lint/** mods/*/package.json
+// @reads .oxlintrc.json .oxlintrc.effect-debt.json effect-debt.json lint/{test-env,tui-clock,tui-dirs,kept-scratch,chrome-keychain}.ts mods/*/package.json {decider/tool-input.ts,mods/anthropic-auth/json.ts,mods/anthropic-auth/tool-alias.ts,mods/guard/kill.ts,mods/kernel/tools.ts,mods/kernel/wire.ts,mods/wake/wake.ts}
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { Glob } from "bun"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { matchingInput } from "../tests/read-path.ts"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Array as Arr, Effect, Option, Order, Schema, type Scope } from "effect"
@@ -248,7 +250,7 @@ const baseOf = (random: Random) =>
   random.pick([nameOf(random), `${nameOf(random)}.${nameOf(random)}`, random.pick(["model", "decision", "store", "laws-like", "testing", "spec-sheet"])])
 
 /** The real mod names, so every existing mod is covered as well as the generated ones. */
-const realMods = () => Arr.filter(readdirSync(path.join(REAL, "mods")), (name) => statSync(path.join(REAL, "mods", name)).isDirectory())
+const realMods = () => [...new Glob("mods/*/package.json").scanSync({ cwd: REAL })].map((file) => path.basename(path.dirname(file))).sort()
 
 /** Domain paths: a root file of decider/, of every real mod and of generated mods nobody wrote. */
 const domainPaths = (random: Random) =>
@@ -558,7 +560,8 @@ describe(`${POLICY}: the legacy try statements of the domain`, () => {
             put(root, HARD_CONFIG, rooted(hardText()))
             for (const file of files) {
               const tail = Arr.filter([`${random.pick(TRY_FORMS).replaceAll("$", String(random.int(1000)))}\n`], () => added)
-              put(root, file, `${readFileSync(path.join(REAL, file), "utf8")}\n${tail.join("")}`)
+              const input = matchingInput("{decider/tool-input.ts,mods/anthropic-auth/json.ts,mods/anthropic-auth/tool-alias.ts,mods/guard/kill.ts,mods/kernel/tools.ts,mods/kernel/wire.ts,mods/wake/wake.ts}", file)
+              put(root, file, `${readFileSync(input, "utf8")}\n${tail.join("")}`)
             }
             const report = yield* scan({ root, oxlint: path.join(REAL, "node_modules/.bin/oxlint"), config: path.join(root, DEBT_CONFIG), files, rules: policy().rules.length, timeoutMs: CLI_TIMEOUT })
             const counts = new Map(
