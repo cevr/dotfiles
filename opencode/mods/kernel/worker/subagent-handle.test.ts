@@ -7,12 +7,13 @@ import { describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Effect, Schema } from "effect"
+import { Deferred, Effect, Schema } from "effect"
 import type { Json } from "../frame.ts"
 import { Workers, type Cell } from "../service.ts"
 import { KernelSessionId } from "../session.ts"
 import { CallFailed } from "../tools.ts"
 import * as ProcessWorkers from "./workers.ts"
+import { runSubagent } from "./subagent-handle.ts"
 
 const scratch = Effect.acquireRelease(
   Effect.sync(() => mkdtempSync(join(tmpdir(), "kernel-subagent-"))),
@@ -30,6 +31,50 @@ const Asked = Schema.Struct({
 const asked = Schema.decodeUnknownSync(Asked)
 
 const view = (state: string, note: string, message: string): Json => ({ sessionID: "ses_c", description: "probe", agent: "worker", state, message, note })
+
+const ask = { agent: "verifier", description: "Check fixture", prompt: "Read fixture." }
+
+test("a kept latch is distinguishable without extending the old state enum", () =>
+  Effect.runPromise(Effect.gen(function* () {
+    const handle = yield* Effect.promise(() => runSubagent(ask, () =>
+      Effect.runPromise(Effect.succeed({ sessionID: "ses_c", status: "latched", latch: { id: "w_fixture", hold: "pace", opensAt: 200, recheckAt: 100 } })),
+    ))
+    expect(handle.state).toBe("running")
+    expect(handle.observation?.phase._tag).toBe("Latched")
+    expect(handle.observation?.phase).toMatchObject({ opensAt: 200, recheckAt: 100 })
+    expect(handle.observation).not.toHaveProperty("route")
+  })),
+)
+
+const orders = [
+  [0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0],
+]
+
+for (const order of orders) {
+  test(`overlapping legacy reads expose one snapshot, latest issued reply so far (${order.join(",")})`, () =>
+    Effect.runPromise(Effect.gen(function* () {
+      const replies = yield* Effect.forEach(order, () => Deferred.make<Json>())
+      const states = ["failed", "running", "done"]
+      const messages = ["old terminal", "new start", "new terminal"]
+      const pending = replies.values()
+      const handle = yield* Effect.promise(() => runSubagent(ask, (tool) => {
+        if (tool === "subagent") return Effect.runPromise(Effect.succeed({ sessionID: "ses_c", status: "running" }))
+        const next = pending.next()
+        if (next.done) return Effect.runPromise(Effect.fail("unexpected call"))
+        return Effect.runPromise(Deferred.await(next.value))
+      }))
+      const reads = [handle.refresh(), handle.read(), handle.refresh()]
+      const arrived: number[] = []
+      for (const index of order) {
+        yield* Deferred.succeed(replies[index], { subagents: [view(states[index], "", messages[index])] })
+        expect(yield* Effect.promise(() => reads[index])).toBe(handle)
+        arrived.push(index)
+        const latest = Math.max(...arrived)
+        expect([handle.state, handle.message]).toEqual([states[latest], messages[latest]])
+      }
+    })),
+  )
+}
 
 describe("a cell's subagent handle", () => {
   test("starts a subagent as a live handle whose methods call the subagents tool with its sessionID; a restart keeps its data and handle() rebuilds it", () =>
