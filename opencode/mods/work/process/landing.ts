@@ -180,6 +180,7 @@ const same = (left: string, right: string): boolean => {
 
 /** The receipt file a kind of run writes for `head` in the host's receipts folder. */
 const hostReceipt = (logs: string, receipt: Receipt): string => join(receiptsDir(logs), `${receipt.head}.${receipt.kind}.json`)
+const reviewInputLock = (logs: string): string => join(logs, "locks", "review-input.lock")
 
 /** The sink chooses its initial mode and how much of an existing mode a replacement may retain. */
 export type ReviewInputAccess = "owner-only" | { readonly preserve: { readonly whenAbsent: number; readonly ceiling: number } }
@@ -189,7 +190,7 @@ export type ReviewInputAccess = "owner-only" | { readonly preserve: { readonly w
  * only. Serialize competing publishers from the mode observation through rename (a stricter umask in another
  * process must not make this writer restore access). Set the mode in the creating open, then sync file and directory.
  */
-export const publishReviewInput = Effect.fn("ReviewInput.publish")(function* (operation: string, file: string, access: ReviewInputAccess, text: string) {
+export const publishReviewInput = Effect.fn("ReviewInput.publish")(function* (operation: string, file: string, lock: string, access: ReviewInputAccess, text: string) {
   const directory = dirname(file)
   const nonce = yield* Random.nextInt
   const temp = join(directory, `.review-input-${nonce}`)
@@ -223,7 +224,8 @@ export const publishReviewInput = Effect.fn("ReviewInput.publish")(function* (op
       (fd) => close(fd).pipe(Effect.ensuring(io(() => rmSync(temp, { force: true })).pipe(Effect.ignore))),
     )
   })
-  const result = yield* io(() => exclusivelySync(join(directory, ".review-input.lock"))(() => Effect.runSyncExit(publish)))
+  yield* io(() => mkdirSync(directory, { recursive: true }))
+  const result = yield* io(() => exclusivelySync(lock)(() => Effect.runSyncExit(publish)))
   yield* result
 })
 
@@ -260,10 +262,10 @@ export const receipts = (logs: string, env: Readonly<Record<string, string>> = {
   const write = Effect.fn("Receipts.write")(function* (receipt: Receipt) {
     const text = yield* encode(receipt)
     const file = hostReceipt(logs, receipt)
-    yield* publishReviewInput("write receipt", file, "owner-only", `${text}\n`)
+    yield* publishReviewInput("write receipt", file, reviewInputLock(logs), "owner-only", `${text}\n`)
     if (receipt.kind !== "round") return file
     const kept = yield* gitPath(receipt.repo, "rift-receipt.json")
-    yield* publishReviewInput("write receipt", kept, "owner-only", `${text}\n`)
+    yield* publishReviewInput("write receipt", kept, join(dirname(kept), "rift-receipt.lock"), "owner-only", `${text}\n`)
     return file
   })
 
@@ -535,7 +537,7 @@ export const layer = (options: Options) => {
   const record = Effect.fn("Landing.record")(function* (landed: LandRecord) {
     const text = yield* Schema.encodeEffect(LandRecordJson)(landed).pipe(Effect.mapError((error) => new RiftFailed({ operation: "land record", message: error.message })))
     const file = join(receiptsDir(options.logs), `${landed.head}.land.json`)
-    yield* publishReviewInput("land record", file, "owner-only", `${text}\n`)
+    yield* publishReviewInput("land record", file, reviewInputLock(options.logs), "owner-only", `${text}\n`)
     return file
   })
 
