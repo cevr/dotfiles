@@ -12,7 +12,7 @@ A heavy check waits at its launcher until the host can admit it. Native shells, 
 ## How to get to it (user POV)
 
 - A classified shell command, or a job with `heavy: true`, takes admission at execution. `heavy: false` does not exempt a classified command.
-- `host-admit host status --json` shows the current caller, boot, volume and controller; `host-admit check run -- COMMAND …` requests and runs a check.
+- `host-admit host status --json` shows the caller, boot, managed limits, volume and controller; `host-admit check run -- COMMAND …` requests and runs a check.
 - `host-admit lease request --json` accepts a v1 request. Use its ID with `lease status`, `lease watch`, `lease run` or `lease cancel`; requesting a lease does not authorize an exec elsewhere.
 - `host-admit holder put --json` writes observations only. `host-admit holder list --json` returns a pinned, paged owner-and-use view.
 
@@ -32,7 +32,7 @@ A heavy check waits at its launcher until the host can admit it. Native shells, 
 
 - **Real:** `tests/host-check-leases.test.ts`, `tests/host-admit-cli.test.ts`
 
-The standalone client checks its v1 responses under scratch state. Use independent processes against the same throwaway journal to observe a held shared grant, an older exclusive request and a younger shared request. A restarted reader sees the same FIFO order. A real detached shell keeps the inherited lock after its launcher closes its copy; a separate Darwin fixture kills its own launcher and observes the group watchdog drop the lock without targeting a discovered PID. These tests run no build or workload.
+The standalone client checks its v1 responses under scratch state. Use independent processes against the same throwaway journal to observe a held shared grant, an older exclusive request and a younger shared request. A restarted reader sees the same FIFO order. The Go, Bun, GNU Make and Ninja fixtures use stand-ins to check model-derived widths at the real claim; an unknown-width claimant takes the whole managed pool and its width-one successor runs only after drain. Impossible memory, volume and class demands and malformed widths are refused with no ticket. A real detached shell keeps the inherited lock after its launcher closes its copy; a separate Darwin fixture kills its own launcher and observes the group watchdog drop the lock without targeting a discovered PID. These tests run no build or workload.
 
 For native terminal-owner reclaim, run the shared shell lifecycle law on the accepted fork prerequisite and matching dotfiles pair. Its platform proof must show authorization/bind ordering and recovery from an actual scratch OpenCode restart; the world fork double does not install or establish that capability.
 
