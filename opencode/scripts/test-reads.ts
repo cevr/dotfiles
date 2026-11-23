@@ -442,6 +442,7 @@ const BOUNDED_PROCESS = new Set([
   "tests/scratch-child.ts:detachedCheckoutBun",
   "tests/scratch-child.ts:checkoutBunCommand",
   "tests/scratch-child.ts:spawnCheckoutBun",
+  "tests/scratch-child.ts:spawnCheckoutBunSync",
   "tests/scratch-child.ts:checkoutBun",
   "tests/owned.ts:ownedCheckoutBun",
   "tests/scratch-child.ts:forkServiceCommand",
@@ -457,6 +458,7 @@ const DETACHED_CHECKOUT_BUN = "tests/scratch-child.ts:detachedCheckoutBun"
 const CHECKOUT_BUN = new Set([
   DETACHED_CHECKOUT_BUN, "tests/scratch-child.ts:checkoutBun", "tests/scratch-child.ts:checkoutBunCommand",
   "tests/scratch-child.ts:spawnCheckoutBun", "tests/owned.ts:ownedCheckoutBun",
+  "tests/scratch-child.ts:spawnCheckoutBunSync",
 ])
 const workspacePackage = (specifier: string) => specifier.startsWith("@dotfiles/")
 

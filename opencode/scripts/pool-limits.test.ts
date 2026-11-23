@@ -1,5 +1,3 @@
-// @reads all
-// @reads-reason subprocess reads at scripts/pool-limits.test.ts: const run = Bun.spawnSync([process.execPath, join(import.meta.dir, "pool-limits.ts"), ...args],
 // The limit tally's CLI view on a recorded fixture: both hosts' dumps of
 // 2026-11-12 (pool-limits-dump.ts), cut to the Anthropic weeks, logins
 // renamed, each host's tokens per login and model in the login's week summed.
@@ -9,6 +7,7 @@ import { afterAll, expect, test } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { spawnCheckoutBunSync } from "../tests/scratch-child.ts"
 import { emptyState, limitsLine, observe, recount, tally, weeklyRatios } from "../mods/pool/limits.ts"
 import recorded from "./fixtures/pool-limits-2026-11-12.json"
 import { fromDumps, notes } from "./pool-limits.ts"
@@ -46,7 +45,14 @@ test("the line and the view show Fable on both weeks and the ratio as the provid
 const scratch = mkdtempSync(join(tmpdir(), "pool-limits-"))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 const cli = (...args: ReadonlyArray<string>) => {
-  const run = Bun.spawnSync([process.execPath, join(import.meta.dir, "pool-limits.ts"), ...args], { stdout: "pipe", stderr: "pipe" })
+  const request = join(scratch, "cli.json")
+  writeFileSync(request, JSON.stringify({ args, defaultFile: join(scratch, "limits.json") }))
+  const run = spawnCheckoutBunSync("scripts/fixtures/pool-limits-cli.ts", {
+    scratchArgs: [request],
+    scratch: { HOME: scratch, TMPDIR: scratch, XDG_CONFIG_HOME: scratch, XDG_DATA_HOME: scratch, XDG_STATE_HOME: scratch, XDG_CACHE_HOME: scratch },
+    external: {},
+    values: {},
+  })
   return { code: run.exitCode, out: run.stdout.toString(), err: run.stderr.toString() }
 }
 

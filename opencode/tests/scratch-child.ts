@@ -79,6 +79,11 @@ export const spawnCheckoutBun = (entry: string, inputs: FixtureEnvironment) => {
   return spawn(argv, { ...options, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
 }
 
+export const spawnCheckoutBunSync = (entry: string, inputs: FixtureEnvironment) => {
+  const { argv, ...options } = checkoutBun(entry, inputs)
+  return spawnSync(argv, { ...options, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+}
+
 /** Launch a named checkout entry behind a short-lived shim; the child gets the shim's parent PID. */
 export const detachedCheckoutBun = (
   entry: string, parentVariable: string, pathVariables: ReadonlyArray<readonly [string, string]> = [],
