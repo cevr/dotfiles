@@ -6,10 +6,15 @@
 //           (what it can do now); `validity` rejects a record, each rule with its justification (VALIDITY): either two
 //           definitions exclude each other, or no history reaches it (item-histories.ts generates every history and
 //           the test compares the reachable records with the valid ones, both ways);
-//   states  each state is a conjunction of conditions (PREDICATE), and its row in the prompt is generated from them,
-//           so the words cannot drift from the predicate; `stateOf` gives the one state an item is in;
+//   states  each state is a conjunction of conditions (PREDICATE), exclusive on every valid record; `stateOf` gives
+//           the one state an item is in;
 //   F1  label(role, state, attempt) the state, and for runnable work whether it was attempted, give the item's label,
 //                                   whatever stopped the step;
+//   list    the prompt carries F1 as an ORDERED decision list (DECISIONS: take the first row true of the item, the last
+//           row a catch-all), each row's condition written in one grammar (ATOMS: `condition` emits it, `parseCondition`
+//           reads it back) and read as generously as its English allows (READS). Batch 22w: independent English rows
+//           can always overlap, so the rows are ordered instead, and every overlap the order resolves is listed with
+//           its reason (ORDER); the attempt history is a separate instruction (ATTEMPT_NOTE), never a competing row;
 //   F2  outcome(role, stop, states) the multiset of the REQUIRED items' states (an optional probe's state never
 //                                   changes it) gives the verdict, by a stated precedence, and the files; the stop
 //                                   event gives the evidence they hold.
@@ -207,31 +212,6 @@ export const STATE_NAME: Record<State, string> = {
   baseFinding: 'a base finding',
 };
 
-/** How a condition reads in a prompt row; the row is these phrases, one per condition of the state's predicate. */
-export function phrase(role: Role, condition: Condition): string {
-  const [field, value] = condition;
-  if (field === 'assigned') return value ? 'assigned' : 'not assigned';
-  if (field === 'required') return value ? 'required' : 'optional (a wider probe)';
-  if (field === 'provenance')
-    return value === 'unit' ? "the unit's change introduced it, shown by measured attribution (whether or not a spec item names it)" : value === 'base' ? 'shown on the base head too' : 'with no provenance';
-  if (field === 'attempt') {
-    const key = (value as ReadonlyArray<Attempt>).join();
-    if (key === 'pass') return role === 'verifier' ? 'ran and passed' : 'its acceptance holds';
-    if (key === 'fail') return 'ran and proves a Blocker or Major';
-    if (key === 'unclear') return 'ran, with a result that settles neither pass nor fail';
-    if (key === 'never,started,unclear') return 'not passed, proving nothing';
-    return `last attempt ${key}`;
-  }
-  if (value === 'settled') return 'and no retry can settle it here';
-  if (value === 'advance') return role === 'worker' ? 'can still advance, attempted or not' : 'can still advance in this lane, attempted or not';
-  if (value === 'wait') return 'waits on an open unit, question, commitment or two contradicting spec lines';
-  if (value === 'refused') return 'a refusal stopped it';
-  return 'this host cannot run it (its check or tool is absent or will not start), with no refusal';
-}
-
-/** A state's row text: its predicate's conditions, in words. */
-export const stateWords = (role: Role, state: State, predicates: Predicates = PREDICATE): string => predicates[state].map((condition) => phrase(role, condition)).join(', ');
-
 // ---- F1: (state, attempt) → label ----------------------------------------------------------------------------------
 
 const CONTINUES = "`continues next round`: this unit's work, in its next round (or its rewrite after the failure cap); never a follow-up";
@@ -239,14 +219,14 @@ const WAITS = '`waits on <id>`';
 const REFUSED = "`refused: <what>`, adding `; form: <the form it named>` only when the refusal named one: this unit's work, never a follow-up, never tried another way";
 const CANNOT = '`cannot run here: <check or tool>`, with its command and output';
 
-/** A label, or a pair of them where the reader needs whether the item was attempted (runnable work). */
+/** A label, or a pair of them where the label itself differs by whether the item was attempted (a verifier's check). */
 export type Label = string | null | { readonly never: string; readonly attempted: string };
 
 /** F1. The label of each state, per role: null for `done`, which is no item left. */
 export const LABEL: Record<Role, Partial<Record<State, Label>>> = {
   planner: {
     done: null,
-    runnable: { never: CONTINUES, attempted: `${CONTINUES}; name what its last attempt printed` },
+    runnable: CONTINUES,
     waits: WAITS,
     refused: REFUSED,
     cannot: CANNOT,
@@ -254,7 +234,7 @@ export const LABEL: Record<Role, Partial<Record<State, Label>>> = {
   },
   implementor: {
     done: null,
-    runnable: { never: CONTINUES, attempted: `${CONTINUES}; name what its last attempt printed` },
+    runnable: CONTINUES,
     waits: WAITS,
     refused: REFUSED,
     cannot: CANNOT,
@@ -263,7 +243,7 @@ export const LABEL: Record<Role, Partial<Record<State, Label>>> = {
   verifier: {
     done: null,
     proven: 'a Blocker or Major, filed with its proof',
-    runnable: { never: '`not run`, named under Check', attempted: '`retry: <check>`, named under Check with what its last attempt printed; it continues to a result' },
+    runnable: { never: '`not run`, named under Check', attempted: '`retry: <check>`, named under Check; it continues to a result' },
     waits: WAITS,
     refused: REFUSED.replace("this unit's work, never a follow-up, ", ''),
     cannot: CANNOT,
@@ -274,7 +254,7 @@ export const LABEL: Record<Role, Partial<Record<State, Label>>> = {
   },
   worker: {
     done: null,
-    runnable: { never: '`left`, named in your result', attempted: '`left`, named in your result with what its last attempt printed' },
+    runnable: '`left`, named in your result',
     waits: WAITS,
     refused: '`refused: <what>`, adding `; form: <the form it named>` only when the refusal named one: never tried another way',
     cannot: CANNOT,
@@ -291,12 +271,153 @@ export function label(role: Role, state: State, attempt: Attempt = 'never', labe
   return attempt === 'never' ? found.never : found.attempted;
 }
 
-/** A label as its prompt row says it: a pair reads "<never>, when never attempted; once attempted, <attempted>". */
-export function labelCell(role: Role, state: State): string {
-  const found = LABEL[role][state];
-  if (found === undefined || found === null) return 'none: it is no item left';
-  return typeof found === 'string' ? found : `${found.never}, when never attempted; once attempted, ${found.attempted}`;
+/** The attempt history, as its own instruction beside the list: it adds evidence and never picks a row. */
+export const ATTEMPT_NOTE =
+  "Whatever the row, if the item was attempted, also give what its last attempt printed, with its command: an earlier result stays as evidence and never stands in for the row's own.";
+
+// ---- the list the prompt carries: F1 as ordered rows, in one grammar -------------------------------------------------
+
+/** The atoms a row's condition is written in. */
+export const ATOM_IDS = ['assigned', 'notAssigned', 'required', 'optional', 'refused', 'hostCannot', 'wait', 'pass', 'fail', 'unclear', 'noRetry', 'attempted', 'advance', 'unit', 'base'] as const;
+export type Atom = (typeof ATOM_IDS)[number];
+
+/** How each atom reads in a role's prompt: the one vocabulary both `condition` and `parseCondition` use. */
+export function atomWords(role: Role, atom: Atom): string {
+  const words: Record<Atom, string> = {
+    assigned: 'assigned',
+    notAssigned: 'not assigned',
+    required: 'required',
+    optional: 'optional (a wider probe)',
+    refused: 'a refusal stopped it',
+    hostCannot: 'this host cannot run it (its check or tool is absent or will not start)',
+    wait: 'waits on an open unit, question, commitment or two contradicting spec lines',
+    pass: role === 'verifier' ? 'ran and passed' : 'its acceptance holds',
+    fail: 'ran and proves a Blocker or Major',
+    unclear: 'ran, with a result that settles neither pass nor fail',
+    noRetry: 'no retry can settle it here',
+    attempted: 'attempted (it ran at least once)',
+    advance: role === 'worker' ? 'can still advance' : 'can still advance in this lane',
+    unit: "the unit's change introduced it, shown by measured attribution (whether or not a spec item names it)",
+    base: 'shown on the base head too',
+  };
+  return words[atom];
 }
+
+/**
+ * What a reader can take each atom to say of an item: true wherever its words could be read as true, not only where
+ * the model's field has that value. "no retry can settle it here" is true of a refused, unrunnable or waiting item as
+ * much as of a settled one, and "can still advance" of anything not settled. The list is checked under these
+ * readings, so an overlap a reader could see is an overlap the test sees.
+ */
+export const READS: Record<Atom, (item: Item) => boolean> = {
+  assigned: (item) => item.assigned,
+  notAssigned: (item) => !item.assigned,
+  required: (item) => item.assigned && item.required,
+  optional: (item) => item.assigned && !item.required,
+  refused: (item) => item.now === 'refused',
+  hostCannot: (item) => item.now === 'hostCannot',
+  wait: (item) => item.now === 'wait',
+  pass: (item) => item.attempt === 'pass',
+  fail: (item) => item.attempt === 'fail',
+  unclear: (item) => item.attempt === 'unclear',
+  noRetry: (item) => item.now !== 'advance',
+  attempted: (item) => item.attempt !== 'never',
+  advance: (item) => item.now !== 'settled',
+  unit: (item) => item.provenance === 'unit',
+  base: (item) => item.provenance === 'base',
+};
+
+/** A row's condition: every atom true of the item, or the catch-all. */
+export type When = ReadonlyArray<Atom> | 'otherwise';
+export const OTHERWISE = 'otherwise';
+/** A condition in words: its atoms joined by ", ", or "otherwise". */
+export const condition = (role: Role, when: When): string => (when === 'otherwise' ? OTHERWISE : when.map((atom) => atomWords(role, atom)).join(', '));
+/** A condition read back from its words, or an error naming what does not parse: the grammar `condition` writes. */
+export function parseCondition(role: Role, text: string): When {
+  if (text === OTHERWISE) return 'otherwise';
+  const vocabulary = ATOM_IDS.map((atom) => [atom, atomWords(role, atom)] as const).sort((a, b) => b[1].length - a[1].length);
+  const out: Atom[] = [];
+  let rest = text;
+  while (rest.length > 0) {
+    const found = vocabulary.find(([, words]) => rest.startsWith(words) && (rest.length === words.length || rest.startsWith(', ', words.length)));
+    if (found === undefined) throw new Error(`${role}: no atom reads "${rest}"`);
+    out.push(found[0]);
+    rest = rest.slice(found[1].length).replace(/^, /, '');
+  }
+  return out;
+}
+/** Whether a condition is true of an item, read generously (READS). */
+export const holds = (when: When, item: Item): boolean => when === 'otherwise' || when.every((atom) => READS[atom](item));
+
+/** One row of the list: the state it gives and its condition; its label is F1's for that state (see `rowLabel`). */
+export interface Decision {
+  readonly id: string;
+  readonly state: State;
+  readonly when: When;
+}
+const FINDINGS: ReadonlyArray<Decision> = [{ id: 'discovery', state: 'discovery', when: ['notAssigned'] }];
+const OBSTACLES = (required: ReadonlyArray<Atom>): ReadonlyArray<Decision> => [
+  { id: 'refused', state: 'refused', when: [...required, 'refused'] },
+  { id: 'cannot', state: 'cannot', when: [...required, 'hostCannot'] },
+  { id: 'waits', state: 'waits', when: [...required, 'wait'] },
+];
+const SPEC_WORK: ReadonlyArray<Decision> = [...FINDINGS, ...OBSTACLES([]), { id: 'done', state: 'done', when: ['pass'] }, { id: 'runnable', state: 'runnable', when: 'otherwise' }];
+
+/**
+ * F1 as the prompt carries it: rows in order, the first true of an item giving its state and label. The order is
+ * what governs now: first whether the item is this role's work at all (a finding is outside it, whatever else holds);
+ * then the current obstacle, refusal before host before wait; then a terminal result; then work that can be retried;
+ * last, the catch-all, work never attempted. ORDER gives each overlap this order resolves, and why.
+ */
+export const DECISIONS: Record<Role, ReadonlyArray<Decision>> = {
+  planner: SPEC_WORK,
+  implementor: SPEC_WORK,
+  verifier: [
+    { id: 'unitFinding', state: 'unitFinding', when: ['notAssigned', 'unit'] },
+    { id: 'baseFinding', state: 'baseFinding', when: ['notAssigned', 'base'] },
+    ...OBSTACLES(['required']),
+    { id: 'proven', state: 'proven', when: ['fail'] },
+    { id: 'done', state: 'done', when: ['pass'] },
+    { id: 'unclear', state: 'unclear', when: ['required', 'unclear', 'noRetry'] },
+    { id: 'unproven', state: 'unproven', when: ['optional'] },
+    { id: 'retry', state: 'runnable', when: ['required', 'attempted', 'advance'] },
+    { id: 'notRun', state: 'runnable', when: 'otherwise' },
+  ],
+  worker: SPEC_WORK,
+};
+
+/** A row's label: F1's for its state; where F1 has a pair, the row that asks `attempted` takes the attempted one. */
+export function rowLabel(role: Role, row: Decision, labels: typeof LABEL = LABEL): string {
+  const found = labels[role][row.state];
+  if (found === undefined) throw new Error(`no label for ${role} × ${row.state}`);
+  if (found === null) return 'none: it is no item left';
+  if (typeof found === 'string') return found;
+  return row.when !== 'otherwise' && row.when.includes('attempted') ? found.attempted : found.never;
+}
+
+/** The first row of a list true of an item. */
+export const decide = (rows: ReadonlyArray<Decision>, item: Item): Decision | undefined => rows.find((row) => holds(row.when, item));
+
+/**
+ * Every pair of rows both true of some reachable record (READS), the earlier row governing, each with why it must.
+ * The catch-all is true of every item and stands last, so it is in no pair. The test computes the pairs from the
+ * rendered prompts and requires this list to be exactly them.
+ */
+export const ORDER: Record<Role, ReadonlyArray<{ readonly earlier: string; readonly later: string; readonly why: string }>> = {
+  planner: [],
+  implementor: [],
+  worker: [],
+  verifier: [
+    { earlier: 'refused', later: 'unclear', why: 'a check that ran unclear and was then refused on its retry: the refusal stopped it, and its exact form is what the orchestrator needs to act; the unclear output stays as attempt evidence' },
+    { earlier: 'cannot', later: 'unclear', why: 'a check that ran unclear and then lost its tool: the missing tool, with its command and output, is why it cannot be settled here; the unclear output stays as attempt evidence' },
+    { earlier: 'waits', later: 'unclear', why: 'a check that ran unclear whose retry waits on an id: the wait is what holds it, and its id is how it reopens' },
+    { earlier: 'refused', later: 'retry', why: 'a refusal stops an attempted check before its retry: report the refusal, not a retry that will not run' },
+    { earlier: 'cannot', later: 'retry', why: 'an attempted check this host can no longer run: a retry here would not start, so the host is the reason' },
+    { earlier: 'waits', later: 'retry', why: 'an attempted check whose retry waits on an id: it advances only once the wait closes' },
+    { earlier: 'proven', later: 'unproven', why: 'an optional probe that proves a Blocker or Major is a proof, filed as one, never left unproven' },
+    { earlier: 'done', later: 'unproven', why: 'an optional probe that passed is done: nothing is left to prove' },
+  ],
+};
 
 // ---- F2: (stop, states) → verdict and files ----------------------------------------------------------------------
 
@@ -311,6 +432,20 @@ export const VERDICT: Record<Role, ReadonlyArray<Rule>> = {
     { verdict: 'accepted', else: true },
   ],
   worker: [{ verdict: 'none', else: true }],
+};
+
+/** Every pair of verdict rules both true of some well-formed step, the earlier governing, with why (the catch-all is in none). */
+export const VERDICT_ORDER: Record<Role, ReadonlyArray<{ readonly earlier: string; readonly later: string; readonly why: string }>> = {
+  planner: [],
+  implementor: [],
+  verifier: [
+    {
+      earlier: 'stuck',
+      later: 'changes',
+      why: 'a proven Blocker and a required check with no result: the verdict waits for every required check, and the proof is still filed under its own label',
+    },
+  ],
+  worker: [],
 };
 
 /** What a stop event's evidence is, written where the role's files say; a role may say it its own way. */
@@ -424,28 +559,78 @@ export function when(rule: Rule): string {
   return 'otherwise';
 }
 
-/** One role's two tables, as its prompt carries them. */
-export function render(role: Role): string {
+/** A verdict rule's condition read back from its words (the grammar `when` writes), or an error naming what does not parse. */
+export function parseWhen(text: string): { readonly any: ReadonlyArray<State> } | { readonly only: ReadonlyArray<State> } | { readonly else: true } {
+  if (text === 'otherwise' || text === 'always') return { else: true };
+  const byName = new Map(ALL_STATES.map((state) => [STATE_NAME[state], state] as const));
+  const names = (rest: string): State[] =>
+    rest.split(/, | or /).map((name) => {
+      const state = byName.get(name);
+      if (state === undefined) throw new Error(`no state is named "${name}"`);
+      return state;
+    });
+  if (text.startsWith('any item is ')) return { any: names(text.slice('any item is '.length)) };
+  if (text.startsWith('every item is ')) return { only: names(text.slice('every item is '.length)) };
+  throw new Error(`no verdict condition reads "${text}"`);
+}
+
+/** The sentence above each table: its rows are tried in order and the first true one decides. */
+export const FIRST_ROW = 'Take the first row that is true of the item; stop there.';
+export const FIRST_VERDICT = 'Take the first row that holds for the step; stop there.';
+export const F1_HEADER = '| State | An item that is | Its label |';
+export const F2_HEADER = '| Verdict, the first that holds | When | You write |';
+
+/** One role's two tables, as its prompt carries them: F1 as its ordered list `rows`, F2 as its ordered rules. */
+export function render(role: Role, rows: ReadonlyArray<Decision> = DECISIONS[role]): string {
   const limit = STOPS_OF[role].includes('limit');
   const intro = [
     `**How your step ends.** It stops the moment a refusal comes${role === 'worker' ? '' : ' (the Refusals paragraph)'}${limit ? " or the round's limit passes" : ''}; else it goes on until no runnable item is left.`,
-    "Each item is in exactly one state, the one whose facts it has (first table; each fact is decided by the item's own history: what its attempts printed, and what it can do now), and that state, with whether runnable work was attempted, gives its label, whatever stopped the step.",
+    "Each item takes one row of the first table, and that row alone gives its state and its label, whatever stopped the step; the last row takes every item no row above it took.",
+    ATTEMPT_NOTE,
     `The states present give your verdict and its files (second table${role === 'verifier' ? '; an optional probe is only ever done, proven or unproven, and unproven never changes it' : ''}), and why the step stopped gives the evidence they hold. Effort is no state and no label.`,
     `Assigned work is ${ASSIGNMENT[role]}; whatever else you find is not assigned.`,
     REQUIRED[role],
   ].join(' ');
-  const f1 = [
-    '| State | An item that is | Its label |',
-    '| --- | --- | --- |',
-    ...STATES_OF[role].map((state) => `| ${STATE_NAME[state]} | ${stateWords(role, state)} | ${labelCell(role, state)} |`),
-  ];
+  const f1 = [F1_HEADER, '| --- | --- | --- |', ...rows.map((row) => `| ${STATE_NAME[row.state]} | ${condition(role, row.when)} | ${rowLabel(role, row)} |`)];
   const f2 = [
-    '| Verdict, the first that holds | When | You write |',
+    F2_HEADER,
     '| --- | --- | --- |',
     ...VERDICT[role].map((rule) => `| ${word(rule.verdict)} | ${VERDICT[role].length === 1 ? 'always' : when(rule)} | ${FILES[role][rule.verdict]!.replace('<evidence>', "the stop's evidence").replace('<items>', 'each item left with its label')} |`),
   ];
   const stops = STOPS_OF[role].map((stop) => `${STOP_TEXT[stop]}: ${evidence(role, stop)}`);
-  return [BEGIN, intro, '', ...f1, '', ...f2, '', `The stop's evidence: ${stops.join('; ')}.`, END].join('\n');
+  return [BEGIN, intro, '', FIRST_ROW, '', ...f1, '', FIRST_VERDICT, '', ...f2, '', `The stop's evidence: ${stops.join('; ')}.`, END].join('\n');
+}
+
+/** A row of a rendered table, as its cells. */
+const cells = (line: string) => line.split('|').slice(1, -1).map((cell) => cell.trim());
+/** The rows under `header` in a rendered prompt, failing unless `sentence` stands as the paragraph just above it. */
+function tableAt(text: string, header: string, sentence: string): string[][] {
+  const lines = text.split('\n');
+  const at = lines.indexOf(header);
+  if (at < 0) throw new Error(`no table headed ${header}`);
+  if (lines[at - 1] !== '' || lines[at - 2] !== sentence || lines[at - 3] !== '') throw new Error(`the table headed ${header} is not under "${sentence}"`);
+  const body = lines.slice(at + 2);
+  const end = body.findIndex((line) => !line.startsWith('|'));
+  return body.slice(0, end < 0 ? body.length : end).map(cells);
+}
+
+/** A prompt's first table read back: each row's state, its condition parsed by the grammar, and its label words. */
+export function readDecisions(role: Role, text: string): Array<{ readonly state: State; readonly when: When; readonly label: string }> {
+  if (!text.includes(ATTEMPT_NOTE)) throw new Error(`${role}: the attempt history's instruction is missing`);
+  const byName = new Map(STATES_OF[role].map((state) => [STATE_NAME[state], state] as const));
+  const rows = tableAt(text, F1_HEADER, FIRST_ROW).map(([name = '', words = '', labelWords = '']) => {
+    const state = byName.get(name);
+    if (state === undefined) throw new Error(`${role}: no state is named "${name}"`);
+    return { state, when: parseCondition(role, words), label: labelWords };
+  });
+  const catchAll = rows.findIndex((row) => row.when === 'otherwise');
+  if (catchAll !== rows.length - 1) throw new Error(`${role}: the catch-all is not the last row`);
+  return rows;
+}
+
+/** A prompt's second table read back: each verdict with its parsed condition. */
+export function readVerdicts(text: string): Array<{ readonly verdict: string; readonly rule: ReturnType<typeof parseWhen> }> {
+  return tableAt(text, F2_HEADER, FIRST_VERDICT).map(([verdict = '', words = '']) => ({ verdict: verdict === 'no verdict word' ? 'none' : verdict.replaceAll('`', ''), rule: parseWhen(words) }));
 }
 
 /** Every multiset of the role's states up to `size` items. */
