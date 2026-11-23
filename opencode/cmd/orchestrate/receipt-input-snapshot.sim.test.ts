@@ -209,7 +209,7 @@ seeded("22s-w and 23a: the installed pair before and after an install: a stage p
   }),
 )
 
-const byHead = Order.mapInput(Order.String, (row: { readonly head: string }) => row.head)
+const byHead = Order.mapInput(Order.String, (row: { readonly head: string; readonly kind: string }) => `${row.head}.${row.kind}`)
 
 seeded("23a: a lane's round receipt nested in a later land is evidence of the lane head; the land's merge check is the outer head's alone", ({ expect }) =>
   Effect.gen(function* () {
@@ -219,12 +219,14 @@ seeded("23a: a lane's round receipt nested in a later land is evidence of the la
     const state = files([
       [`land:${outerHead}`, text(land)],
       [`receipt:${laneHead}.round`, text(encodeReceipt(round))],
+      [`receipt:${outerHead}.accept`, text(encodeReceipt(receipt(outerHead, "accept", outerTree, [0], "2026-11-22T02:30:00.000Z")))],
     ])
     const request: InputRequest = {
       receipts: [
         { head: laneHead, kind: "round" },
         { head: laneHead, kind: "merge" },
         { head: outerHead, kind: "merge" },
+        { head: outerHead, kind: "accept" },
       ],
       lands: [outerHead],
       install: false,
@@ -236,6 +238,7 @@ seeded("23a: a lane's round receipt nested in a later land is evidence of the la
         [
           { head: laneHead, kind: "round", tree: laneTree, sources: [`land:${outerHead}`, `receipt:${laneHead}.round`] },
           { head: outerHead, kind: "merge", tree: outerTree, sources: [`land:${outerHead}`] },
+          { head: outerHead, kind: "accept", tree: outerTree, sources: [`receipt:${outerHead}.accept`] },
         ],
         byHead,
       ),
@@ -287,6 +290,18 @@ seeded("duplicate, conflicting, aliased, out-of-scope, traversing and unreadable
     expect(failureWords(conflict.outcome)).toEqual(Option.some(`conflict dotfiles:${laneHead}:round`))
     const aliased = yield* frozen([files([[`receipt:${outerHead}.merge`, text(encodeReceipt(receipt(laneHead, "merge", laneTree, [0], "2026-11-22T01:00:00.000Z")))]])], { receipts: [{ head: outerHead, kind: "merge" }], lands: [], install: false })
     expect([aliased.receipts, aliased.refused]).toEqual([[], [{ source: `receipt:${outerHead}.merge`, reason: "names another head" }]])
+    // A land whose merge check names another head, or whose unit receipt is another repository's, proves nothing of its own.
+    const strayMerge = encodeLand({ head: outerHead, base, units: [], merge: Option.some(receipt(laneHead, "merge", laneTree, [0], "2026-11-22T02:00:00.000Z")), at: "2026-11-22T02:00:00.000Z" })
+    const strayUnit = encodeLand({ head: aggregateHead, base, units: [{ branch: "feat/other", path: "/fixture/other", receipt: receiptAt(laneHead, "round", laneTree, [0], "2026-11-22T01:00:00.000Z", "/fixture/other"), by: "held" }], merge: Option.none(), at: "2026-11-22T02:00:00.000Z" })
+    const strays = yield* frozen([files([[`land:${outerHead}`, text(strayMerge)], [`land:${aggregateHead}`, text(strayUnit)]])], { receipts: [], lands: [outerHead, aggregateHead], install: false })
+    expect([strays.receipts, strays.lands, strays.refused]).toEqual([
+      [],
+      [],
+      [
+        { source: `land:${aggregateHead}`, reason: "unit feat/other: not a round receipt of this repository" },
+        { source: `land:${outerHead}`, reason: "merge check: names another head" },
+      ],
+    ])
     const foreignText = encodeReceipt(receiptAt(laneHead, "round", laneTree, [0], "2026-11-22T01:00:00.000Z", "/fixture/other"))
     const foreign = yield* frozen([files([[`receipt:${laneHead}.round`, text(foreignText)]])], { receipts: [{ head: laneHead, kind: "round" }], lands: [], install: false })
     expect(foreign.refused).toEqual([{ source: `receipt:${laneHead}.round`, reason: "outside the repository" }])
@@ -436,7 +451,7 @@ seeded("the host's files: only allowlisted regular files are read; a link, a fol
     expect(yield* read("../outside/secret")).toEqual(Result.succeed(SourceRead.Refused({ reason: "not a commit name" })))
     expect(Result.isFailure(yield* read(laneTree))).toBe(true)
     expect(yield* Effect.result(source.read(SourceRef.Installed()))).toEqual(Result.succeed(SourceRead.Absent()))
-    const scopes = [path.join(root, "checkout", ".work", "lane"), `${path.join(root, "checkout")}/../outside`, "relative/checkout"].map(source.repositoryOf)
-    expect(scopes).toEqual([Option.some("dotfiles"), Option.none(), Option.none()])
+    const scopes = [path.join(root, "checkout", ".work", "lane"), `${path.join(root, "checkout")}/../outside`, `${path.join(root, "checkout")}-elsewhere`, path.relative(path.resolve("."), path.join(root, "checkout"))].map(source.repositoryOf)
+    expect(scopes).toEqual([Option.some("dotfiles"), Option.none(), Option.none(), Option.none()])
   }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
 )

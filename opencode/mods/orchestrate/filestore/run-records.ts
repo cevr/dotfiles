@@ -114,7 +114,6 @@ export const receiptSource = (places: ReceiptPlaces) =>
             const handle = yield* fs.open(file, { flag: "r", noFollow: true })
             const info = yield* handle.stat
             if (info.type !== "File") return SourceRead.Refused({ reason: "not a regular file" })
-            if (info.size > BigInt(places.maxBytes)) return SourceRead.Refused({ reason: "too large" })
             const bytes = yield* handle.readAlloc(places.maxBytes + 1)
             const read = Option.getOrElse(bytes, () => new Uint8Array())
             if (read.byteLength > places.maxBytes) return SourceRead.Refused({ reason: "too large" })
@@ -141,7 +140,7 @@ export const receiptSource = (places: ReceiptPlaces) =>
         repository: places.repository.key,
         repositoryOf: (checkout) =>
           Option.map(
-            Option.liftPredicate(path.resolve(checkout), (resolved) => path.isAbsolute(checkout) && resolved === path.normalize(checkout) && roots.some((root) => resolved === root || resolved.startsWith(`${root}${path.sep}`))),
+            Option.liftPredicate(path.resolve(checkout), (resolved) => path.isAbsolute(checkout) && roots.some((root) => resolved === root || resolved.startsWith(`${root}${path.sep}`))),
             () => places.repository.key,
           ),
         read,
