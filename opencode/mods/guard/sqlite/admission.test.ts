@@ -4,6 +4,7 @@ import { expect, it } from "effect-bun-test"
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Admission, initial, type Input, transition, type Lease } from "../admission.ts"
 import { owner, request, supply } from "../memory/admission-acceptance.ts"
+import { POLICY } from "../host-supply.ts"
 import { canonicalHolder, Holder, holderOf, NO_PROOF, UNKNOWN_OWNER, UNKNOWN_USAGE } from "../host-resources.ts"
 import fixtures from "../fixtures/holder-v1.json"
 import { open } from "./admission.ts"
@@ -75,6 +76,25 @@ const oracle = (seed: number) => {
 
 test("FIFO and exclusive drain match a weighted interval oracle over 64 histories, restart and repeat", () => {
   for (let seed = 0; seed < 64; seed++) oracle(seed)
+})
+
+test("a visible job-control stop holds the exact generation, with a bounded resume", () => {
+  const at = supply({ cores: 3 })
+  const start = transition(initial("host", "boot"), first("terminal"), at)
+  const id = start.reply.id || "missing"
+  const binding = "terminal-fence"
+  const generation = 1
+  const claimed = transition(start.state, { op: "claim", id, generation, binding, owner: owner("terminal") }, at)
+  const after = supply({ cores: 3, now: POLICY.maxRunningMs - 100 })
+  const stop = { op: "job-control", id, generation, binding, paused: true } as const
+  const paused = transition(claimed.state, stop, at)
+  const blocked = transition(paused.state, first("queued"), supply({ now: POLICY.supervisionMs + 1, cores: 3 }))
+  expect(blocked.reply.state).toBe("queued")
+  expect(blocked.state.leases[id]?.reason).toBe("stopped")
+  expect(transition(blocked.state, { ...stop, paused: false, generation: 2 }, after).reply.reason).toBe("stale")
+  const resumed = transition(blocked.state, { ...stop, paused: false }, after)
+  expect(resumed.reply.reason).toBe("running")
+  expect(resumed.reply.expiresBootMs).toBe(POLICY.maxRunningMs)
 })
 
 test("blocked disk and key demand leave a different volume and key available; runnable pressure is host-wide", () => {

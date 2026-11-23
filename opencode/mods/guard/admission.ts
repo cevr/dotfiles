@@ -342,7 +342,11 @@ const act = (tx: Transaction, row: Lease, input: Exclude<Input, { op: "request" 
       if (!matches(row, input) || row.state !== "running") return Option.some("stale")
       if (input.paused) tx.update(row, { reason: "stopped", expiresBootMs: Option.none() })
       else if (Option.exists(row.hardDeadline, (at) => at <= observation.now)) cancel(tx, row)
-      else tx.update(row, { reason: "running", expiresBootMs: Option.some(observation.now + POLICY.supervisionMs) })
+      else {
+        const next = observation.now + POLICY.supervisionMs
+        const until = Math.min(next, Option.getOrElse(row.hardDeadline, () => next))
+        tx.update(row, { reason: "running", expiresBootMs: Option.some(until) })
+      }
       return Option.none()
   }
 }
