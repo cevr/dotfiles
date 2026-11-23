@@ -75,7 +75,7 @@ export const hostProvided = (host: Host, specifier: string): boolean => {
 }
 
 /**
- * One benign run of a command from a tree, for the installed-tree check (`tests/cli-tree.test.ts`): its
+ * One benign run of a command from a tree, for the installed-tree check (`tests/cli-tree-installed.test.ts`; `tests/cli-tree.test.ts` on the checkout): its
  * arguments (`$SCRATCH` stands for the check's scratch directory, in `says` too), the exit code it answers
  * and a piece of what it prints: a usage refusal, and a real read or write where the command has a benign
  * one. It runs with a scratch HOME and XDG directories, no `OPENCODE_DEV` and no service, so it
