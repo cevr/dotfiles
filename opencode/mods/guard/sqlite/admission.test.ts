@@ -109,6 +109,9 @@ test("a whole-pool request cannot be skipped by another volume or land; half fre
     ...first, demand: { ...first.demand, width: "unknown" },
   } }, outside(5001, 1))
   expect(full.reply.reason).toBe("outside-busy")
+  const busy = supply({ cores: 12, now: 2, overrides: { runnable: 12, outsideNoncriticalMilli: 7500 } })
+  const fullAddress = { op: "status", id: full.reply.id || "missing", owner: owner("full") } as const
+  expect(transition(full.state, fullAddress, busy).reply.reason).toBe("outside-busy")
   const peer = request("peer")
   const younger = transition(full.state, { op: "request", owner: owner("peer"), request: {
     ...peer, purpose: "land-check", demand: { ...peer.demand, volumeReservations: [{ volumeId: "volume-b", bytes: 0 }] },

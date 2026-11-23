@@ -172,11 +172,17 @@ const volumeReason = (demand: Demand, holds: ReadonlyArray<Lease>, sample: Suppl
 }
 
 const slots = { clear: POLICY.slots, degraded: 1, hold: 0 }
+const wholePoolBlock = (sample: Supply, hasHold: boolean): Option.Option<Reason> => {
+  if (hasHold) return Option.some("whole-pool-held")
+  if (capacityOf(sample) < Math.ceil(sample.envelope.cpuMilli * POLICY.wholePoolFreeFraction)) return Option.some("outside-busy")
+  return Option.none()
+}
 const budgetReason = (entry: Lease, demand: Demand, holds: ReadonlyArray<Lease>, sample: Supply): Option.Option<Reason> => {
-  const maximum = sample.envelope.cpuMilli
-  const whole = demand.cpuMilli === maximum
-  if (whole && holds.length > 0) return Option.some("whole-pool-held")
-  if (whole && capacityOf(sample) < Math.ceil(maximum * POLICY.wholePoolFreeFraction)) return Option.some("outside-busy")
+  const whole = demand.cpuMilli === sample.envelope.cpuMilli
+  if (whole) {
+    const blocker = wholePoolBlock(sample, holds.length > 0)
+    if (Option.isSome(blocker)) return blocker
+  }
   const volume = volumeReason(demand, holds, sample)
   if (Option.isSome(volume)) return volume
   if (holds.some((row) => Option.exists(row.admittedDemand, (held) => held.width === "full"))) return Option.some("capacity")
@@ -295,7 +301,12 @@ const allocate = (tx: Transaction, observation: Observation, landBurst: number) 
   const queue = tx.rows().filter((row) => row.state === "queued")
   if (Result.isFailure(available)) {
     const sampleId = Option.fromNullishOr(sample?.id)
-    for (const row of queue) queuedFor(tx, row, available.failure, sampleId)
+    const hasHold = tx.rows().some(held)
+    for (const row of queue) {
+      if (available.failure === "pressure" && sample && wholePool(row, sample)) {
+        queuedFor(tx, row, Option.getOrElse(wholePoolBlock(sample, hasHold), () => "pressure" as const), sampleId)
+      } else queuedFor(tx, row, available.failure, sampleId)
+    }
     return landBurst
   }
   const supply = available.success

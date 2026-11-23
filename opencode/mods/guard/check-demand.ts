@@ -48,6 +48,7 @@ const wordsWidth = (input: ReadonlyArray<Word>, env: ToolEnvironment, depth: num
   const effective = envBefore(prefix, env)
   const tool = base(head.text) ?? ""
   if (SHELLS.has(tool)) {
+    if (args.some(({ text }) => text === "--login" || /^-[^-]*l/u.test(text))) return "unknown"
     const source = shellScript(args)
     if (Predicate.isString(source) && !effective.BASH_ENV && !effective.ENV) return shellWidth(source, effective, depth + 1)
     return "unknown"
@@ -62,8 +63,8 @@ export const shellWidth = (line: string, env: ToolEnvironment = {}, depth = 0): 
   // state may change cwd/env/commands. Never use one segment as its bound.
   if (commands.length !== 1 || !first) return "unknown"
   if (line.includes("`") || line.includes("$(")) return "unknown"
-  if (first.some(({ text, singleQuoted, bareStart }) =>
-    (!singleQuoted && text.includes("$")) || (bareStart && /[*?\[\]{}]/u.test(text) && !text.startsWith("./"))))
+  if (first.some(({ text, bareStart }) =>
+    text.includes("$") || (bareStart && /[*?\[\]{}]/u.test(text) && !text.startsWith("./"))))
     return "unknown"
   return wordsWidth(first, env, depth)
 }

@@ -205,12 +205,12 @@ module frontierProof {
     val packages = if (packageOption == 0) runtime else packageOption
     val width = if (unknown) f.pool else packages * runtime
     val row = request(f.next, width, f.pool, fits, exclusive)
-    val next = if (fits) f.next + 1 else f.next
+    val nextTicket = if (fits) f.next + 1 else f.next
     val previous = if (first) f.a else f.b
     all {
       not(waiting(previous) or held(previous)), f.next <= 4,
-      if (first) f' = {...f, a: row, next: next}
-      else f' = {...f, b: row, next: next},
+      if (first) f' = {...f, a: row, next: nextTicket}
+      else f' = {...f, b: row, next: nextTicket},
     }
   }
   action pressure = {

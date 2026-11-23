@@ -71,6 +71,8 @@ test("literal wrappers preserve class and argv; width follows the effective envi
     ["make -j4", 4],
     ["ninja -j 3", 3],
     ["go test -p \"$WIDTH\" ./...", "unknown"],
+    ["GOMAXPROCS=1 go test -p=1 ''$EXTRA_FLAGS", "unknown"],
+    ["bash -lc 'GOMAXPROCS=1 go test -p=1'", "unknown"],
     ["go test -p 0", "invalid"],
     ["sh -c 'GOMAXPROCS=4 go test -p 2 -parallel 3' ", 8],
     ["printf '%s' '--parallel-workers=4'", 1],
