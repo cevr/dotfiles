@@ -9,7 +9,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { BLOCK, ROLES, type Role } from './ending.ts';
+import { BLOCK, ROLES, type Role } from './round-policy.ts';
 
 export const ROOT = join(import.meta.dir, '../../..');
 export const INVENTORY = join(ROOT, 'skills/orchestrate/prompt-inventory.json');

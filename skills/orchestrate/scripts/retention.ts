@@ -3,7 +3,7 @@
 // pins this list both ways: a sentence lost with no entry is red, and so is an entry whose sentence still stands or
 // whose destination is gone. Every other sentence of those prompts is kept word for word.
 //   reworded  the rule stands in the prompt as `now`, word for word (a later accepted unit or this one rewrote it);
-//   moved     the rule is one or more cells of ending.ts's two functions, rendered into the role's block;
+//   moved     the rule is one or more rows, verdict rules or stop fields of the round policy (round-policy.ts), rendered into the role's block;
 //   replaced  this design decides it differently, by the design line `by`, at the cells in `to`.
 // A destination: `F1 <role> <state>` (a label), `F2 <role> <verdict>` (a verdict rule and its files),
 // `F2 <role> evidence <stop>` (what a stop writes), `REQUIRED <role>` (the role's required-work line).

@@ -8,7 +8,7 @@
 // Usage: bun agents.ts [--check]
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { BLOCK, document, PROTOCOL_BLOCK, render } from './ending.ts';
+import { BLOCK, block, document, PROTOCOL_BLOCK } from './round-policy.ts';
 
 const here = import.meta.dir;
 const PROTOCOL = join(here, '..', 'protocol.md');
@@ -50,8 +50,8 @@ export function instructions(role: Role, protocol: string, safety: string): stri
   const rules = safety.slice(safety.indexOf('SAFETY (mandatory')).trim();
   const own = s[role[0].toUpperCase() + role.slice(1)];
   if (!s['Ending a step'] || !s.Rounds || !own || !rules.startsWith('SAFETY')) throw new Error(`protocol.md or safety.md lost a section ${role} needs`);
-  if (!BLOCK.test(s['Ending a step'])) throw new Error("protocol.md's Ending a step lost its end-of-step block");
-  const ending = s['Ending a step'].replace(BLOCK, () => render(role));
+  if (!BLOCK.test(s['Ending a step'])) throw new Error("protocol.md's Ending a step lost its round-policy block");
+  const ending = s['Ending a step'].replace(BLOCK, () => block(role));
   return `You are the ${role} of ${SUBJECT[role]} This prompt carries the worker protocol and the safety rules, so do not read \`protocol.md\` or \`safety.md\`.
 
 # Safety
@@ -92,7 +92,7 @@ ${text}'''
 
 /** `text` with its end-of-step block rewritten as `block`; throws when it has none. */
 const withBlock = (path: string, text: string, block: string) => {
-  if (!BLOCK.test(text)) throw new Error(`${path} lost its end-of-step block`);
+  if (!BLOCK.test(text)) throw new Error(`${path} lost its round-policy block`);
   return text.replace(BLOCK, () => block);
 };
 
@@ -107,7 +107,7 @@ const built = () => {
   return [
     [PROTOCOL, protocol] as const,
     [END_OF_STEP, document()] as const,
-    [worker, withBlock(worker, readFileSync(worker, 'utf8'), render('worker'))] as const,
+    [worker, withBlock(worker, readFileSync(worker, 'utf8'), block('worker'))] as const,
     ...(Object.keys(ROLES) as Role[]).flatMap((role) => [
       [join(AGENTS, `${role}.md`), agentFile(role, protocol, safety)] as const,
       [join(CODEX_AGENTS, `${role}.toml`), codexFile(role, protocol, safety)] as const,
