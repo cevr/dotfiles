@@ -386,6 +386,60 @@ describe("the stage builds only a fork that has the platform floor in its histor
   )
 
   test(
+    "the ancestry step's every exit class: 0 answers the commit, 1 is 'does not have it', and 128, a signal or a git that cannot start refuse as unchecked, each at the step naming both commits",
+    () =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const h = yield* history
+          const bin = `${h.root}/bin`
+          const log = `${h.root}/git.log`
+          const git = Option.getOrThrow(Option.fromNullishOr(Bun.which("git")))
+          // A git first and alone on PATH: `merge-base` exits as PIN_MERGE_BASE says (or kills itself); with `gone`, the floor's
+          // rev-parse takes this git away after it answers, so the ancestry step cannot start one. Every other call is the real git's.
+          const wrapper = [
+            "#!/bin/sh",
+            `printf '%s\\n' "$1" >> "${log}"`,
+            `if [ "$1" = merge-base ]; then case "$PIN_MERGE_BASE" in signal) kill -KILL $$ ;; gone) ;; *) exit "$PIN_MERGE_BASE" ;; esac; fi`,
+            `if [ "$PIN_MERGE_BASE" = gone ] && [ "$1" = rev-parse ] && [ "$4" = "$PIN_FLOOR^{commit}" ]; then /bin/rm -f "$0"; fi`,
+            `exec "${git}" "$@"`,
+          ].join("\n")
+          const classes = [
+            // The real answer turned over each way: exit 0 on a pre-floor commit passes it (the guard reads git's verdict), exit 1 on a descendant refuses it.
+            { exit: "0", target: h.pre, verdict: Option.some(h.pre), why: "", ran: true },
+            { exit: "1", target: h.after, verdict: Option.none<string>(), why: "does not have it", ran: true },
+            { exit: "128", target: h.after, verdict: Option.none<string>(), why: "could not be checked (exit 128)", ran: true },
+            { exit: "signal", target: h.after, verdict: Option.none<string>(), why: "could not be checked (exit 137)", ran: true },
+            { exit: "gone", target: h.after, verdict: Option.none<string>(), why: "could not be checked (", ran: false },
+          ]
+          for (const each of classes) {
+            yield* files(h.root, [
+              ["bin/git", `${wrapper}\n`],
+              ["git.log", ""],
+            ])
+            sh(h.root, ["chmod", "755", `${bin}/git`])
+            const at = { cwd: h.fork, env: { ...GIT_ENV, PATH: bin, PIN_MERGE_BASE: each.exit, PIN_FLOOR: h.floor } }
+            const exit = yield* requireFloor(at, h.floor, each.target).pipe(Effect.exit)
+            const calls = sh(h.root, ["cat", log]).split("\n")
+            expect([each.exit, calls.includes("merge-base")]).toEqual([each.exit, each.ran])
+            if (Option.isSome(each.verdict)) {
+              expect([each.exit, exit]).toEqual([each.exit, Exit.succeed(each.verdict.value)])
+              continue
+            }
+            expect([each.exit, Exit.isFailure(exit)]).toEqual([each.exit, true])
+            const failure = yield* Effect.flip(Effect.suspend(() => exit))
+            expect([each.exit, failure.step]).toEqual([each.exit, FLOOR_STEP])
+            expect([each.exit, failure.message]).toEqual([each.exit, expect.stringContaining(`the fork must have ${h.floor} `)])
+            expect([each.exit, failure.message]).toEqual([each.exit, expect.stringContaining(`the target's fork ${each.target} ${each.why}`)])
+            expect(failure.message.endsWith("nothing built or staged")).toBe(true)
+          }
+          expect(dirExists(`${bin}/git`)).toBe(false)
+          spawnSync(["rm", "-rf", h.root])
+        }),
+      ),
+    60_000,
+  )
+
+  test(
     "a refused stage moves no build tree, makes none, installs nothing and builds nothing; daily's build of the checkout as it stands is held to the floor too",
     () =>
       Effect.runPromise(
