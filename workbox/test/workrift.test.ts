@@ -2149,16 +2149,30 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
     async () => {
       const { w } = loaded("fifo")
       const order = join(w.dir, "order")
+      // The first holds the base until every other one is in line behind it (the gate file).
+      const gate = join(w.dir, "gate")
       sh(w.app, w.env, "git", "config", "workrift.warm", "true")
-      sh(w.app, w.env, "git", "config", "workrift.install", `if [ "$LABEL" = first ]; then sleep 6; else sleep 0.2; fi; printf '%s\\n' "$LABEL" >>'${order}'`)
+      sh(w.app, w.env, "git", "config", "workrift.install", `if [ "$LABEL" = first ]; then until [ -e '${gate}' ]; do sleep 0.05; done; else sleep 0.2; fi; printf '%s\\n' "$LABEL" >>'${order}'`)
       expect(w.wr(w.app, "refresh").code).toBe(0)
       writeFileSync(order, "")
       const spawned: Array<ReturnType<typeof Bun.spawn>> = []
       const labels = ["first", ...Array.from({ length: 12 }, (_, i) => `r${i}`)]
+      // A refresh comes when its ticket is in the line, not when it is spawned: under load a process spawned later can
+      // reach the line first (it starts, re-runs itself under nice, then takes its ticket). Each is spawned once the one
+      // before holds its ticket, so the order they came is the order spawned, at any load.
+      // A refresh takes its place in the advance line first (one refresh or advance at a time), then the base's lock.
+      const queue = join(stateOf(w.app), "advance")
+      const seen = new Set<string>()
+      const tickets = () => (existsSync(queue) ? readdirSync(queue).filter((name) => /\.[rw]$/.test(name)) : [])
       for (const label of labels) {
         spawned.push(Bun.spawn([SCRIPT, "refresh"], { cwd: w.app, env: { ...w.env, LABEL: label }, stdout: "ignore", stderr: "ignore" }))
-        await Bun.sleep(400)
+        const deadline = Date.now() + 60_000
+        let fresh: string | undefined
+        while (!(fresh = tickets().find((name) => !seen.has(name))) && Date.now() < deadline) await Bun.sleep(20)
+        expect(fresh, `${label} took no ticket within 60 s`).toBeDefined()
+        seen.add(fresh!)
       }
+      writeFileSync(gate, "")
       for (const child of spawned) expect(await child.exited).toBe(0)
       expect(lines(readFileSync(order, "utf8"))).toEqual(labels)
     },
