@@ -947,7 +947,7 @@ const swapping = (world: World, beforeOpen: (world: World) => void, afterOpen: (
         pid: ChildProcessSpawner.ProcessId(42),
         exitCode: stuck("close", Effect.succeed(ChildProcessSpawner.ExitCode(0))),
         isRunning: Effect.succeed(true),
-        kill: () => Deferred.succeed(stopped, undefined).pipe(Effect.asVoid),
+        kill: () => Deferred.complete(stopped, Effect.void).pipe(Effect.asVoid),
         stdin: Sink.drain,
         stdout,
         stderr: Stream.empty,

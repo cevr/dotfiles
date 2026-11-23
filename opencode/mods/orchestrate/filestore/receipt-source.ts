@@ -145,7 +145,7 @@ export const receiptSource = (places: ReceiptPlaces) =>
         )
       /** Keep the pipe draining until after the producer has stopped, including on caller interruption. */
       const drain = (ref: SourceRef, child: ChildProcessSpawner.ChildProcessHandle) =>
-        Effect.uninterruptible(Effect.gen(function* () {
+        Effect.gen(function* () {
           const pump = yield* Effect.forkScoped(Effect.interruptible(reply(ref, child)))
           yield* Effect.addFinalizer(() =>
             Effect.flatMap(child.isRunning, (running) => Match.value(running).pipe(
@@ -157,8 +157,9 @@ export const receiptSource = (places: ReceiptPlaces) =>
             ),
           )
           return pump
-        }))
-      const readOpened = (ref: SourceRef, configured: string, folder: string, name: string) =>
+        })
+      /** Register both parts of the resource before interruption can observe a half-acquired reader. */
+      const start = (ref: SourceRef, configured: string, folder: string, name: string) =>
         Effect.gen(function* () {
           const child = yield* processes.spawn(ChildProcess.make("/usr/bin/perl", ["-e", READ_FILE, "--", configured, folder, name, String(places.maxBytes)], {
             env: {},
@@ -167,7 +168,11 @@ export const receiptSource = (places: ReceiptPlaces) =>
             stderr: "ignore",
             ...terminate,
           })).pipe(Effect.mapError(() => unreadable(ref, "file reader could not start")))
-          const pump = yield* drain(ref, child)
+          return { child, pump: yield* drain(ref, child) }
+        }).pipe(Effect.uninterruptible)
+      const readOpened = (ref: SourceRef, configured: string, folder: string, name: string) =>
+        Effect.gen(function* () {
+          const { child, pump } = yield* start(ref, configured, folder, name)
           const bytes = yield* Fiber.join(pump).pipe(Effect.catchTag("PlatformError", () => Effect.fail(unreadable(ref, "file reader pipe failed"))))
           const code = yield* child.exitCode.pipe(Effect.mapError(() => unreadable(ref, "file reader exit was unavailable")))
           if (code !== 0) return yield* unreadable(ref, "file reader did not exit cleanly")
