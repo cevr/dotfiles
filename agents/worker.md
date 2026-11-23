@@ -19,7 +19,7 @@ Take the first row that is true of the item; stop there.
 | # | Rule | State | An item that is | Its label |
 | --- | --- | --- | --- | --- |
 | 1 | `discovery` | a discovery | not assigned | `outside the task`, named in your result |
-| 2 | `refused` | refused | a refusal stopped it | `refused: <what>`, adding `; form: <the form it named>` only when the refusal named one: never tried another way |
+| 2 | `refused` | refused | a refusal stopped it (or your own file's write: then your final message gives it after the verdict line) | `refused: <what>`, adding `; form: <the form it named>` only when the refusal named one: never tried another way |
 | 3 | `cannot` | cannot run | this host cannot run it (its check or tool is absent or will not start) | `cannot run here: <check or tool>`, with its command and output |
 | 4 | `waits` | waiting | waits on an open unit, question, commitment or two contradicting spec lines | `waits on <id>` |
 | 5 | `done` | done | its acceptance holds | none: it is no item left |

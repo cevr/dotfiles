@@ -1,15 +1,15 @@
 // Histories the rendered label list must answer (batches 22w and 23b): each is what happened to one item, the record
 // it leaves (its current obstacles are a set: two or three can hold at once), the state and label the list must give,
-// and the hand-back, written here by hand as a structure. ending.test.ts materializes each record with content-bound
-// evidence (item-histories.ts `materialize`), derives the hand-back each delivered prompt's decoded policy makes due
-// (round-policy.ts `due`) and checks it gives exactly this: the rule and label, the governing obstacle's field, every
+// and the hand-back, written here by hand as a structure. ending.test.ts finds the shortest generated history that
+// reaches each record (item-histories.ts `traceFor`), decodes it as a step's envelope, derives the claim each delivered prompt's
+// decoded policy owes (round-policy.ts `owed`) and checks it gives exactly this: the rule and label, the governing obstacle's field, every
 // other obstacle's field, and attempt evidence exactly when there was an attempt. The swap mutants there turn one red.
 import type { Role, State } from './round-policy.ts';
 import type { Item } from './item-histories.ts';
 
 /** An obstacle row, by its state. */
 export type ObstacleRow = 'refused' | 'cannot' | 'waits';
-/** What a history's hand-back must hold, in the abstract: its state, the label's opening words, the governing obstacle, every other obstacle that holds, and whether attempt evidence (`completed` or `current`) is due. The test materializes the record and checks `due` gives exactly these. */
+/** What a history's hand-back must hold, in the abstract: its state, the label's opening words, the governing obstacle, every other obstacle that holds, and whether attempt evidence (`completed` or `current`) is due. The test decodes the shortest history reaching the record and checks `owed` gives exactly these. */
 export interface HandBack {
   readonly state: State;
   readonly label: string;

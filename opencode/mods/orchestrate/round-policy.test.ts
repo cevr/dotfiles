@@ -1,186 +1,318 @@
 // The round policy's public seams, focused: render then decode is the identity for every role; a delivered block that
-// lost an artifact, a stop field or its role is named part by part; a hand-back is judged on exact evidence values (a
-// flag never stands in for one); a step is admitted only when its claim matches what the checked records owe. The
-// whole-domain suites (every host render, every reachable record and pair, traces, mutation kills) are in
-// skills/orchestrate/scripts/round-policy.test.ts.
+// lost an artifact, a stop field or its role is named part by part; evidence enters only as a step's persisted
+// envelope (raw JSON here), through `decode`, and every claim is judged against what that envelope's histories owe.
+// The export census holds the module to that: no exported function takes a record, a trace, a stop record or an
+// evidence value. The whole-domain suites (every host render, every generated history, envelope fuzz, mutation kills)
+// are in skills/orchestrate/scripts/round-policy.test.ts.
 import { describe, expect, test } from "bun:test"
+import * as Module from "./round-policy.ts"
 import {
+  type Absent,
   admit,
   block,
   type Claim,
   decode,
+  decodeBlock,
   differences,
-  due,
-  type Facts,
   type Field,
   type HandBack,
   type ItemRecord,
-  fieldKey,
-  judge,
+  type Limit,
+  owed,
+  type Pending,
   policyFaults,
   project,
-  recordFaults,
+  type Refusal,
   render,
   ROLES,
-  type Step,
+  type Run,
+  type StepEvent,
+  type StopValue,
+  type Trace,
+  type TraceEvent,
 } from "./round-policy.ts"
 
-const facts = (over: Partial<Facts>): Facts => ({
-  assigned: true,
-  required: true,
-  attempt: "never",
-  settled: false,
-  refused: false,
-  hostCannot: false,
-  wait: false,
-  provenance: "none",
-  ...over,
-})
+// ---- raw envelopes: plain JSON, as a store or a file holds it ---------------------------------------------------------
 
-/** A required gate that ran red, with its content-bound run: what `completed` must carry, value for value. */
-const red: ItemRecord = {
-  id: "gate",
-  facts: facts({ attempt: "fail" }),
-  fields: [
-    {
-      field: "completed",
-      run: { id: "att-7", command: "cmd:gate", output: { kind: "log", digest: "sha:7" }, exit: 1, receipt: "rcpt:7", head: "head:a", result: "fail" },
-    },
-  ],
-}
-const done: ItemRecord = {
-  id: "spec",
-  facts: facts({ attempt: "pass", settled: true }),
-  fields: [
-    {
-      field: "completed",
-      run: { id: "att-1", command: "cmd:spec", output: { kind: "log", digest: "sha:1" }, exit: 0, receipt: "rcpt:1", head: "head:a", result: "pass" },
-    },
-  ],
-}
+const json = (value: unknown): unknown => JSON.parse(JSON.stringify(value))
+const assigned = { kind: "assigned", required: true }
+const begin = (attempt: string, command = `cmd:${attempt}`) => ({ kind: "begin", attempt, command })
+const finish = (attempt: string, result: string, exit: number) => ({ kind: "finish", attempt, result, exit, output: { kind: "log", digest: `sha:${attempt}` }, receipt: `rcpt:${attempt}`, head: "head:a" })
+const refusal = (what: string) => ({ what, scope: "scope:x", report: "report:x", form: { kind: "none" } })
+const envelope = (role: string, items: ReadonlyArray<unknown>, step: ReadonlyArray<unknown> = []) => json({ version: 1, role, items, step })
 
-/** The hand-back exactly as the record owes it; an empty one (which every judge refuses) when it owes none. */
-const handBackOf = (record: ItemRecord): HandBack => {
-  const owed = dueOf(record)
-  return { item: owed.item, rule: owed.rule, label: owed.label, fields: owed.fields }
-}
+/** A required gate that ran red, and a spec item that passed: their histories, as the step recorded them. */
+const red = { id: "gate", assignment: assigned, events: [begin("att-7", "cmd:gate"), finish("att-7", "fail", 1)] }
+const done = { id: "spec", assignment: assigned, events: [begin("att-1", "cmd:spec"), finish("att-1", "pass", 0)] }
+const timebox = { kind: "limit", limit: { kind: "timebox", length: "2 h" } }
 
-/** A run with one value replaced: the same-looking evidence the judge must still refuse. */
-const withRun = (field: Field, key: "id" | "receipt" | "head" | "command", value: string): Field => {
-  if (field.field !== "completed") return field
-  return { ...field, run: { ...field.run, [key]: value } }
+const checkedOf = (input: unknown) => {
+  const got = decode(input)
+  if (!got.ok) throw new Error(got.error)
+  return got.value
+}
+const owedOf = (input: unknown): Claim => {
+  const checked = checkedOf(input)
+  const due = owed(project(checked.role), checked)
+  if (!due.ok) throw new Error(due.error)
+  return due.value.claim
+}
+const admitted = (input: unknown, claim: unknown) => {
+  const checked = checkedOf(input)
+  return admit(project(checked.role), checked)(json(claim))
 }
 
 describe("the notation", () => {
   test("each role's block decodes to exactly its source policy, and a host's surrounding text changes nothing", () => {
     for (const role of ROLES) {
-      expect([role, decode(block(role))]).toEqual([role, { ok: true, value: project(role) }])
+      expect([role, decodeBlock(block(role))]).toEqual([role, { ok: true, value: project(role) }])
       expect([role, render(project(role)) === block(role), policyFaults(role, `before\n\n${block(role)}\n\nafter`)]).toEqual([role, true, []])
     }
   })
   test("F2 artifact loss (control 1): dropping state.md from the blocked verdict is named by the decoder", () => {
     const shown = block("implementor").replace("`<unit dir>/state.md` current (even with no commit since) and ", "")
-    const got = decode(shown)
+    const got = decodeBlock(shown)
     expect(shown).not.toBe(block("implementor"))
     expect(got.ok && differences(project("implementor"), got.value).map((line) => line.split(":")[0])).toEqual(["verdict blocked"])
   })
   test("form loss (control 2): dropping the refusal's exact form field is named by the decoder", () => {
     const shown = block("implementor").replace(/\n\| a refusal named an accepted form \| `refused\.form` \|[^\n]*/, "")
-    const got = decode(shown)
+    const got = decodeBlock(shown)
     expect(shown).not.toBe(block("implementor"))
     expect(got.ok && differences(project("implementor"), got.value).map((line) => line.split(":")[0])).toEqual(["stop refusalForm"])
   })
   test("an unknown version, a stray clause, a second block and an old end-of-step block are refused", () => {
     const text = block("planner")
-    expect(decode(text.replace("round-policy v1 planner", "round-policy v2 planner"))).toEqual({ ok: false, error: "unknown round-policy version v2" })
-    expect(decode(text.replace("\n\nTake the first row that is true", "\n\nSkip the acceptance check.\n\nTake the first row that is true")).ok).toBe(false)
+    expect(decodeBlock(text.replace("round-policy v1 planner", "round-policy v2 planner"))).toEqual({ ok: false, error: "unknown round-policy version v2" })
+    expect(decodeBlock(text.replace("\n\nTake the first row that is true", "\n\nSkip the acceptance check.\n\nTake the first row that is true")).ok).toBe(false)
     expect(policyFaults("planner", `${text}\n${text}`)).toEqual(["planner: 2 policy blocks open and 2 close: exactly one of each"])
     expect(policyFaults("planner", `${text}\n<!-- end-of-step: old -->`)).toEqual(["planner: an end-of-step block of an unknown version"])
   })
 })
 
-describe("a hand-back, judged on exact evidence", () => {
-  test("the hand-back a record owes is accepted as it is", () => {
-    expect(judge(dueOf(red), handBackOf(red))).toEqual([])
+// ---- the export law: one way in ----------------------------------------------------------------------------------------
+
+/**
+ * Every exported function, by its disposition: `decode` is the one decoder; `owed` and `admit` read only a `Checked`
+ * step (and the claim as unknown); the rest read a role, a policy, policy text or item states, never evidence.
+ */
+const EXPORTED_FUNCTIONS = {
+  decoder: ["decode"],
+  checked: ["admit", "owed"],
+  policy: [
+    "atomWords",
+    "batchVerdict",
+    "block",
+    "blockOf",
+    "checked",
+    "condition",
+    "decide",
+    "decodeBlock",
+    "delivered",
+    "differences",
+    "hasState",
+    "hasStop",
+    "header",
+    "heldStates",
+    "illFormed",
+    "outcome",
+    "parseCondition",
+    "parseVerdictWhen",
+    "parseWrites",
+    "policyFaults",
+    "presenceWords",
+    "project",
+    "readList",
+    "render",
+    "truths",
+    "verdictWhen",
+    "verdictWord",
+    "writesText",
+  ],
+} as const
+
+/** Whether a function's parameter list admits a value of type `X` in any position. */
+type Takes<F, X> = F extends (...args: infer P) => unknown ? (true extends { [K in keyof P]: [X] extends [P[K]] ? true : false }[number] ? true : false) : false
+/** What no exported function but the decoder may take: a record, a trace or its events, a stop record, an evidence value. */
+type Evidence = ItemRecord | Trace | TraceEvent | StepEvent | Limit | Field | Run | Pending | Refusal | Absent | StopValue | HandBack | Claim | ItemRecord["fields"]
+type TakesEvidence<F> = Evidence extends infer X ? (X extends unknown ? Takes<F, X> : never) : never
+type Functions = { [K in keyof typeof Module]: (typeof Module)[K] extends (...args: never) => unknown ? K : never }[keyof typeof Module]
+/** Each exported function but the decoder, and whether it takes evidence: every entry must be `false`. */
+type Census = { [K in Exclude<Functions, "decode">]: TakesEvidence<(typeof Module)[K]> }
+const census: { [K in keyof Census]: Census[K] extends false ? true : never } = Object.fromEntries(
+  [...EXPORTED_FUNCTIONS.checked, ...EXPORTED_FUNCTIONS.policy].map((name) => [name, true]),
+) as { [K in keyof Census]: true }
+
+describe("the export law: evidence enters only through decode", () => {
+  test("the census: the module's exported functions are exactly the allowlist, each with its disposition", () => {
+    const exported = Object.keys(Module)
+      .filter((name) => typeof Reflect.get(Module, name) === "function")
+      .sort()
+    const allowed = [...EXPORTED_FUNCTIONS.decoder, ...EXPORTED_FUNCTIONS.checked, ...EXPORTED_FUNCTIONS.policy].sort()
+    expect(exported).toEqual(allowed)
+    expect(Object.keys(census).sort()).toEqual(allowed.filter((name) => name !== "decode"))
+    // An exported table of functions (READS) is a policy reading of an item's facts: none of its members takes evidence.
+    const tables = Object.entries(Module).filter(([, value]) => value === Object(value) && Object.values(value).some((inner) => typeof inner === "function"))
+    expect(tables.map(([name]) => name)).toEqual(["READS"])
   })
-  test("forged evidence (control 3): a `lastAttempt` flag, or no `completed` content, is refused", () => {
-    const given = handBackOf(red)
-    const flagged = { ...given, fields: [], lastAttempt: true }
-    expect(judge(dueOf(red), flagged)).toEqual([
-      "unknown hand-back keys [lastAttempt]: no flag stands in for evidence",
-      `completed: due completed id="att-7" command="cmd:gate" output=log "sha:7" exit=1 receipt="rcpt:7" head="head:a" result=fail, given none`,
-    ])
-  })
-  test("a same-looking run with another receipt, head or digest is refused, naming both values", () => {
-    for (const [key, value] of [
-      ["receipt", "rcpt:8"],
-      ["head", "head:b"],
-      ["command", "cmd:other"],
-    ] as const) {
-      const given = handBackOf(red)
-      const swapped = { ...given, fields: given.fields.map((field) => withRun(field, key, value)) }
-      expect([key, judge(dueOf(red), swapped).length]).toEqual([key, 1])
-    }
-  })
-  test("values compared member by member (B1): an id and a command that print alike are still two values", () => {
-    const record: ItemRecord = { ...red, fields: red.fields.map((field) => withRun(field, "command", "verify command=fixture")) }
-    const given = handBackOf(record)
-    const moved = { ...given, fields: given.fields.map((field) => withRun(withRun(field, "id", "att-7 command=verify"), "command", "fixture")) }
-    expect(moved.fields.map(fieldKey)).toEqual(given.fields.map(fieldKey))
-    expect(judge(dueOf(record), moved).length).toBe(1)
-    expect(judge(dueOf(record), given)).toEqual([])
-  })
-  test("unreachable facts (B3) owe no hand-back: a typed rejection, never a fallback row", () => {
-    const stray: ItemRecord = { id: "stray", facts: facts({ assigned: false, required: true }), fields: [] }
-    expect(due(project("verifier"), stray)).toEqual({
-      ok: false,
-      error: "stray: a verifier's finding is the unit's or the base's; another role's has no provenance (the only history the record could be the fold of)",
-    })
-    expect(due(project("implementor"), { ...red, facts: facts({ attempt: "fail", required: false }) }).ok).toBe(false)
-  })
-  test("a record whose evidence disagrees with its facts owes nothing: it is refused", () => {
-    expect(recordFaults("implementor", { ...red, fields: [] })).toEqual(["gate: facts.attempt: the record says fail, its history leaves never"])
+  test("the type law: no exported function takes a record, a trace, a stop record or an evidence value", () => {
+    const checked = checkedOf(envelope("implementor", [done]))
+    const record: ItemRecord = checked.records[0]!
+    const trace: Trace = json(done) as Trace
+    // @ts-expect-error -- the export law, asserted: a caller-assembled record is no checked step
+    owed(project("implementor"), record)
+    // @ts-expect-error -- the export law, asserted: a trace is no checked step: only decode reads one
+    owed(project("implementor"), trace)
+    // @ts-expect-error -- the export law, asserted: a raw envelope is no checked step until decode checks it
+    admit(project("implementor"), envelope("implementor", [done]))
+    // @ts-expect-error -- the export law, asserted: a stop record is no checked step
+    admit(project("implementor"), { stop: { stop: "limit", values: [{ id: "limit", value: "nothing" }] }, items: [record] })
+    // @ts-expect-error -- the export law, asserted: a structural copy of a checked step is not one (its private member makes the type nominal)
+    owed(project("implementor"), { role: checked.role, records: checked.records, ending: checked.ending, envelope: checked.envelope })
+    // At run time too: a copy that a cast lets through is a typed rejection, never a judged step.
+    expect(owed(project("implementor"), { ...checked } as never)).toEqual({ ok: false, error: "a step is checked only by decode, from its envelope" })
   })
 })
 
-const dueOf = (record: ItemRecord) => {
-  const owed = due(project("implementor"), record)
-  if (!owed.ok) return { item: "", rule: "", state: "done" as const, label: "", fields: [] }
-  return owed.value
-}
-
-describe("a step, admitted only against its checked records", () => {
-  const step: Step = { stop: { stop: "limit", values: [{ id: "limit", value: "timebox 2 h" }] }, items: [done, red] }
-  test("`ready` with a runnable item left (control 4) is refused; the claim the records owe is admitted", () => {
-    const ready: Claim = { verdict: "ready", writes: ["request"], stop: [], items: [handBackOf(done), handBackOf(red)] }
-    expect(admit(project("implementor"), step, ready)).toEqual([
-      "verdict: due blocked, given ready",
-      "writes: due [state, blocked], given [request]",
-      `stop limit: due "timebox 2 h", given none`,
-    ])
-    const owed: Claim = { verdict: "blocked", writes: ["state", "blocked"], stop: step.stop.values, items: [handBackOf(red), handBackOf(done)] }
-    expect(admit(project("implementor"), step, owed)).toEqual([])
+describe("decode: the persisted envelope, exact, never a throw", () => {
+  test("a misspelled tag, a string for a boolean, a missing member, an excess member, null and {} are typed rejections naming the path", () => {
+    const cases: ReadonlyArray<readonly [string, unknown, string]> = [
+      ["misspelled event", envelope("implementor", [{ ...red, events: [{ ...begin("a"), kind: "begn" }] }]), `at ["items"][0]["events"][0]`],
+      ["required as a string", envelope("implementor", [{ ...red, assignment: { kind: "assigned", required: "false" } }]), `at ["items"][0]["assignment"]["required"]`],
+      ["missing member", envelope("implementor", [{ ...red, events: [{ kind: "begin", attempt: "a" }] }]), `at ["items"][0]["events"][0]`],
+      ["excess member", envelope("implementor", [{ ...red, flag: true }]), `at ["items"][0]["flag"]`],
+      ["a null event", envelope("implementor", [{ ...red, events: [null] }]), `at ["items"][0]["events"][0]`],
+      ["an empty event", envelope("implementor", [{ ...red, events: [{}] }]), `at ["items"][0]["events"][0]`],
+      ["a limit of nothing", envelope("implementor", [done, red], [{ kind: "limit", limit: "nothing" }]), `at ["step"][0]["limit"]`],
+      ["an unknown role", envelope("tester", [done]), `at ["role"]`],
+      ["another version", json({ version: 2, role: "implementor", items: [], step: [] }), `at ["version"]`],
+    ]
+    for (const [name, input, path] of cases) {
+      const got = decode(input)
+      expect([name, got.ok, !got.ok && got.error.startsWith("envelope: ") && got.error.includes(path)]).toEqual([name, false, true])
+    }
+    for (const input of [null, {}, [], "text", 7, undefined]) expect(decode(input).ok).toBe(false)
   })
-  test("a forged stop value (T1): each value changed alone is refused; the recorded one is admitted", () => {
-    const owed: Claim = { verdict: "blocked", writes: ["state", "blocked"], stop: step.stop.values, items: [handBackOf(red), handBackOf(done)] }
-    expect(admit(project("implementor"), step, owed)).toEqual([])
-    expect(admit(project("implementor"), step, { ...owed, stop: [{ id: "limit", value: "timebox 3 h" }] })).toEqual([`stop limit: due "timebox 2 h", given "timebox 3 h"`])
+  test("an event that cannot happen where the history stands is a typed rejection naming the item and the event", () => {
+    const got = decode(envelope("implementor", [{ ...red, events: [finish("att-7", "fail", 1)] }]))
+    expect(got).toEqual({ ok: false, error: "item gate: event 1 (finish): only the current attempt, running or interrupted, finishes, once no refusal holds it, with its result, exit, output (a log, or no authenticated evidence), receipt and head" })
+  })
+})
+
+describe("B4: a refusal never erases what an attempt already printed", () => {
+  const observed = [begin("b1"), { kind: "observe", attempt: "b1", digest: "sha:b1-partial" }]
+  test("a denial of an attempt that began is a typed rejection: a denied call is one that never began", () => {
+    const got = decode(envelope("implementor", [{ id: "b", assignment: assigned, events: [...observed, { kind: "deny", attempt: "b1", command: "cmd:b1", refusal: refusal("read:x") }] }]))
+    expect([got.ok, !got.ok && got.error.startsWith("item b: event 3 (deny): a denied call never began")]).toEqual([false, true])
+  })
+  test("a refusal beside the running attempt keeps it started with its partial output, in every later label", () => {
+    const refused = [...observed, { kind: "refuse", attempt: "b1", refusal: refusal("read:x") }]
+    const current: Field = { field: "current", attempt: { id: "b1", command: "cmd:b1", status: "started", output: { kind: "partial", digest: "sha:b1-partial" } } }
+    expect(owedOf(envelope("implementor", [{ id: "b", assignment: assigned, events: refused }])).items[0]?.fields).toEqual([current, { field: "refused", refusal: json(refusal("read:x")) as Refusal }])
+    // Lifted, then interrupted: the partial output is still what the attempt printed.
+    const later = [...refused, { kind: "lift" }, { kind: "interrupt", attempt: "b1", output: { kind: "partial", digest: "sha:b1-partial" } }]
+    expect(owedOf(envelope("implementor", [{ id: "b", assignment: assigned, events: later }], [timebox])).items[0]?.fields).toEqual([{ field: "current", attempt: { ...current.attempt, status: "interrupted" } }])
+    // A denial of a call that never began is told apart: denied, not started.
+    const fresh = owedOf(envelope("implementor", [{ id: "b", assignment: assigned, events: [{ kind: "deny", attempt: "b1", command: "cmd:b1", refusal: refusal("read:x") }] }]))
+    expect(fresh.items[0]?.fields[0]).toEqual({ field: "current", attempt: { id: "b1", command: "cmd:b1", status: "denied", output: { kind: "missing", why: "not-started" } } })
+  })
+})
+
+describe("a refused write of the step's own file (item 6)", () => {
+  test("a verifier whose checks all passed and whose findings write is refused: stuck, the refusal named, the passed check kept", () => {
+    const input = envelope("verifier", [done], [{ kind: "writeDenied", artifact: "findings", refusal: refusal("write:findings") }])
+    const claim = owedOf(input)
+    expect([claim.verdict, claim.stop, claim.items.map((one) => [one.item, one.rule])]).toEqual(["stuck", [{ id: "refused.what", value: "write:findings" }], [["spec", "done"]]])
+    expect(admitted(input, claim)).toEqual([])
+    expect(admitted(input, { ...claim, verdict: "accepted" })).toEqual(["verdict: due stuck, given accepted"])
+  })
+  test("a write the role never makes, or a second stop beside it, is a typed rejection", () => {
+    expect(decode(envelope("worker", [done], [{ kind: "writeDenied", artifact: "findings", refusal: refusal("write:findings") }]))).toEqual({ ok: false, error: "step: a worker writes no findings" })
+    const twice = decode(envelope("implementor", [done, red], [timebox, { kind: "writeDenied", artifact: "request", refusal: refusal("write:request") }]))
+    expect(twice).toEqual({ ok: false, error: "step: the step stopped once: a refusal or the limit, never two" })
+  })
+})
+
+describe("a claim, judged against what the envelope's histories owe", () => {
+  const input = envelope("implementor", [done, red], [timebox])
+  test("`ready` with a runnable item left (control 4) is refused; the owed claim is admitted, in any item order", () => {
+    const claim = owedOf(input)
+    expect(admitted(input, claim)).toEqual([])
+    expect(admitted(input, { ...claim, items: [...claim.items].reverse() })).toEqual([])
+    expect(admitted(input, { ...claim, verdict: "ready", writes: ["request"], stop: [] })).toEqual(["verdict: due blocked, given ready", "writes: due [state, blocked], given [request]", `stop limit: due "timebox 2 h", given none`])
+  })
+  test("the limit is compared with the observed one: another length, a placeholder or a missing one is refused", () => {
+    const claim = owedOf(input)
+    expect(claim.stop).toEqual([{ id: "limit", value: "timebox 2 h" }])
+    for (const value of ["timebox 3 h", "nothing", "failure cap 2", ""]) expect([value, admitted(input, { ...claim, stop: [{ id: "limit", value }] }).length]).toEqual([value, 1])
+  })
+  test("forged evidence (control 3): a flag beside the evidence, or an unknown claim member, is rejected before any value is read", () => {
+    const claim = owedOf(input)
+    expect(admitted(input, { ...claim, lastAttempt: true })).toEqual([`claim: Expected no excess property   at ["lastAttempt"]`])
+    const flagged = { ...claim, items: claim.items.map((one) => ({ ...one, lastAttempt: true })) }
+    expect(admitted(input, flagged)[0]?.startsWith("claim: Expected no excess property")).toBe(true)
+  })
+  test("a same-looking run with another receipt, head or command is refused, naming both values", () => {
+    const claim = owedOf(input)
+    for (const [key, value] of [["receipt", "rcpt:8"], ["head", "head:b"], ["command", "cmd:other"]] as const) {
+      const items = claim.items.map((one) => ({ ...one, fields: one.fields.map((field) => (field.field === "completed" && one.item === "gate" ? { ...field, run: { ...field.run, [key]: value } } : field)) }))
+      expect([key, admitted(input, { ...claim, items }).length]).toEqual([key, 1])
+    }
+  })
+  test("values compared member by member (B1): an id and a command that print alike are still two values", () => {
+    const spaced = envelope("implementor", [{ id: "gate", assignment: assigned, events: [begin("att-7", "verify command=fixture"), finish("att-7", "fail", 1)] }], [timebox])
+    const claim = owedOf(spaced)
+    const moved = claim.items.map((one) => ({ ...one, fields: one.fields.map((field) => (field.field === "completed" ? { ...field, run: { ...field.run, id: "att-7 command=verify", command: "fixture" } } : field)) }))
+    expect(admitted(spaced, { ...claim, items: moved }).length).toBe(1)
+    expect(admitted(spaced, claim)).toEqual([])
   })
   test("absence told by leaving the value out (B2): the truthful empty stop is admitted, a placeholder is refused", () => {
-    const clean: Step = { stop: { stop: "idle", values: [] }, items: [done] }
-    const claim: Claim = { verdict: "ready", writes: ["request"], stop: [], items: [handBackOf(done)] }
-    expect(admit(project("implementor"), clean, claim)).toEqual([])
-    const placeholder: Step = { stop: { stop: "idle", values: [{ id: "held", item: "spec", value: "nothing" }] }, items: [done] }
-    expect(admit(project("implementor"), placeholder, { ...claim, stop: placeholder.stop.values })).toEqual([
-      "ill-formed stop record: held: spec holds nothing back, so no entry is due for it",
-      `ill-formed stop record: held: spec: its trace derives "cmd:spec (exit 0)", the record "nothing"`,
-    ])
-    expect(admit(project("implementor"), { ...clean, stop: { stop: "idle", values: [{ id: "held", item: "spec", value: "" }] } }, claim).length).toBeGreaterThan(0)
+    const clean = envelope("implementor", [done])
+    const claim = owedOf(clean)
+    expect([claim.stop, admitted(clean, claim)]).toEqual([[], []])
+    expect(admitted(clean, { ...claim, stop: [{ id: "held", item: "spec", value: "nothing" }] })).toEqual([`stop held: due none, given "spec": "nothing"`])
   })
-  test("a step no history produces (stopped idle with a runnable item) admits no claim at all", () => {
-    const idle: Step = { stop: { stop: "idle", values: [] }, items: [done, red] }
-    expect(admit(project("implementor"), idle, { verdict: "ready", writes: ["request"], stop: [], items: [handBackOf(done), handBackOf(red)] })).toEqual([
-      "ill-formed step: the step goes on while a runnable item is left",
-    ])
+  test("a step no history produces (stopped idle with a runnable item) is no checked step at all", () => {
+    expect(decode(envelope("implementor", [done, red]))).toEqual({ ok: false, error: "step: the step goes on while a runnable item is left" })
+  })
+})
+
+describe("ownership: the checked step owns deep-frozen copies", () => {
+  test("every input object mutated after decode, at every depth, changes no later answer", () => {
+    const input = envelope("implementor", [done, { id: "gate", assignment: assigned, events: [begin("att-7", "cmd:gate"), finish("att-7", "fail", 1), { kind: "waitOpen", ref: "ref:x" }] }])
+    const checked = checkedOf(input)
+    const before = JSON.stringify(owed(project("implementor"), checked))
+    const claim = owedOf(json(input))
+    const objects: Array<object> = []
+    const walk = (value: unknown): void => {
+      if (value !== Object(value)) return
+      objects.push(value as object)
+      for (const inner of Object.values(value as object)) walk(inner)
+    }
+    walk(input)
+    // No object the checked step or its answer holds is one the caller handed in.
+    const held: Array<object> = []
+    const collect = (value: unknown): void => {
+      if (value !== Object(value)) return
+      held.push(value as object)
+      for (const inner of Object.values(value as object)) collect(inner)
+    }
+    collect(checked.records)
+    collect(checked.envelope)
+    const answer = owed(project("implementor"), checked)
+    collect(answer.ok && answer.value)
+    expect(held.filter((one) => objects.includes(one)).length).toBe(0)
+    expect(held.every((one) => Object.isFrozen(one))).toBe(true)
+    for (const one of objects) {
+      for (const key of Object.keys(one)) {
+        const value = Reflect.get(one, key)
+        if (typeof value === "string") Reflect.set(one, key, `${value}:mutated`)
+        if (typeof value === "number") Reflect.set(one, key, value + 1)
+        if (typeof value === "boolean") Reflect.set(one, key, !value)
+      }
+      if (Array.isArray(one)) one.push({ kind: "settle" })
+    }
+    expect(JSON.stringify(owed(project("implementor"), checked))).toBe(before)
+    expect(admit(project("implementor"), checked)(claim)).toEqual([])
   })
 })

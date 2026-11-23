@@ -26,7 +26,7 @@ export function document(): string {
   const parts = [
     '# How a step ends',
     '',
-    "Generated from `opencode/mods/orchestrate/round-policy.ts`, the one round policy: edit that, then run `scripts/agents.ts`. Each role's prompt carries its own block, as below; `decode` reads a delivered block back and `policyFaults` compares it with the source. A stop field with no value is left out, never written as a placeholder (`nothing`, `none`, `n/a`): the contract derives each value from the item's trace, so a placeholder is a value that differs from it.",
+    "Generated from `opencode/mods/orchestrate/round-policy.ts`, the one round policy: edit that, then run `scripts/agents.ts`. Each role's prompt carries its own block, as below; `decodeBlock` reads a delivered block back and `policyFaults` compares it with the source. A stop field with no value is left out, never written as a placeholder (`nothing`, `none`, `n/a`): the contract derives each value from the step's persisted history (each item's events, and the step's own: the limit passing, a refused write of its own file), so a placeholder is a value that differs from it.",
   ];
   for (const role of ROLES) parts.push('', `## ${role}`, '', block(role).split('\n').slice(1, -1).join('\n'));
   return `${parts.join('\n')}\n`;

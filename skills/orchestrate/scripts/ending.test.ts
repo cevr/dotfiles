@@ -22,7 +22,8 @@ import {
   condition,
   decide,
   decode,
-  due,
+  decodeBlock,
+  owed,
   evidence,
   labelOf,
   render,
@@ -54,7 +55,7 @@ import {
 } from './round-policy.ts';
 import { approved, current, drift, paragraphs, type Prompt, prompts, ROOT } from './inventory.ts';
 import { INSTALLED, RETENTION } from './retention.ts';
-import { allItems, EVENTS, type Item, materialize, matching, OBSTACLE_FACTS, obstructed, ORACLE_STATES, PREDICATE, type Predicates, reachable, recordKey, stateOf, type Validity, validity, VALIDITY } from './item-histories.ts';
+import { allItems, EVENTS, type Item, matching, stepEnvelope, traceFor, OBSTACLE_FACTS, obstructed, ORACLE_STATES, PREDICATE, type Predicates, reachable, recordKey, stateOf, type Validity, validity, VALIDITY } from './item-histories.ts';
 import { LIST_HISTORIES } from './list-histories.ts';
 
 const VOCAB: Record<Role, ReadonlyArray<string>> = { planner: ['ready', 'blocked'], implementor: ['ready', 'blocked'], verifier: ['stuck', 'changes', 'accepted'], worker: ['none'] };
@@ -659,11 +660,16 @@ const OBSTACLE_FIELD = { refused: 'refused', cannot: 'cannot', waits: 'waits' } 
 export function historyFaults(policy: Policy, histories = LIST_HISTORIES): string[] {
   return histories
     .filter((one) => one.role === policy.role)
-    .flatMap((one, index) => {
-      const record = materialize(`h${index}`, one.items[0]!);
-      const owed = due(policy, record);
-      if (!owed.ok) return [`${one.name}: ${owed.error}`];
-      const { state, label: words, fields } = owed.value;
+    .flatMap((one) => {
+      // The shortest generated history that reaches the list history's facts, as the envelope a step stores.
+      const reached = traceFor(policy.role, one.items[0]!);
+      if (reached === undefined) return [`${one.name}: no history reaches its facts`];
+      const checked = decode(stepEnvelope(reached));
+      if (!checked.ok) return [`${one.name}: ${checked.error}`];
+      const due = owed(policy, checked.value);
+      if (!due.ok) return [`${one.name}: ${due.error}`];
+      const state = due.value.states[0]!.state;
+      const { label: words, fields } = due.value.claim.items[0]!;
       const kinds = fields.map((field) => field.field);
       const want = one.handBack;
       const out: string[] = [];
@@ -687,7 +693,7 @@ const moveAbove = (policy: Policy, earlier: string, later: string): Policy => {
 
 const decodedOf = (prompt: Prompt): Policy => {
   const found = /<!-- round-policy v[\s\S]*?<!-- \/round-policy -->/.exec(prompt.text)?.[0] ?? '';
-  const got = decode(found);
+  const got = decodeBlock(found);
   if (!got.ok) throw new Error(`${prompt.role} ${prompt.format}: ${got.error}`);
   return got.value;
 };

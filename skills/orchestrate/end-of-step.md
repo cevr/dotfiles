@@ -1,6 +1,6 @@
 # How a step ends
 
-Generated from `opencode/mods/orchestrate/round-policy.ts`, the one round policy: edit that, then run `scripts/agents.ts`. Each role's prompt carries its own block, as below; `decode` reads a delivered block back and `policyFaults` compares it with the source. A stop field with no value is left out, never written as a placeholder (`nothing`, `none`, `n/a`): the contract derives each value from the item's trace, so a placeholder is a value that differs from it.
+Generated from `opencode/mods/orchestrate/round-policy.ts`, the one round policy: edit that, then run `scripts/agents.ts`. Each role's prompt carries its own block, as below; `decodeBlock` reads a delivered block back and `policyFaults` compares it with the source. A stop field with no value is left out, never written as a placeholder (`nothing`, `none`, `n/a`): the contract derives each value from the step's persisted history (each item's events, and the step's own: the limit passing, a refused write of its own file), so a placeholder is a value that differs from it.
 
 ## planner
 
@@ -13,7 +13,7 @@ Take the first row that is true of the item; stop there.
 | # | Rule | State | An item that is | Its label |
 | --- | --- | --- | --- | --- |
 | 1 | `discovery` | a discovery | not assigned | `finding outside the unit`, under Follow-ups in your file |
-| 2 | `refused` | refused | a refusal stopped it | `refused: <what>`, adding `; form: <the form it named>` only when the refusal named one: this unit's work, never a follow-up, never tried another way |
+| 2 | `refused` | refused | a refusal stopped it (or your own file's write: then your final message gives it after the verdict line) | `refused: <what>`, adding `; form: <the form it named>` only when the refusal named one: this unit's work, never a follow-up, never tried another way |
 | 3 | `cannot` | cannot run | this host cannot run it (its check or tool is absent or will not start) | `cannot run here: <check or tool>`, with its command and output |
 | 4 | `waits` | waiting | waits on an open unit, question, commitment or two contradicting spec lines | `waits on <id>` |
 | 5 | `done` | done | its acceptance holds | none: it is no item left |
@@ -34,7 +34,7 @@ Why the step stopped gives the evidence fields you write:
 | a refusal named an accepted form | `refused.form` | the `!` command it printed | one if printed, else none |
 | a refusal named an accepted form | `refused.allow` | the allow rule it printed | one if printed, else none |
 | a refusal named no accepted form | `refused.what` | what was refused, as the refusal said it | one |
-| the round's limit passed | `limit` | the clock (the timebox) or the count (the failure cap) | one |
+| the round's limit passed | `limit` | `timebox <its length>` or `failure cap <its count>` | one |
 | no runnable item is left | `held` | `<command> (exit <code>)` of its last run, else its label | one per item waiting or cannot run, naming it, else none |
 
 ## implementor
@@ -48,7 +48,7 @@ Take the first row that is true of the item; stop there.
 | # | Rule | State | An item that is | Its label |
 | --- | --- | --- | --- | --- |
 | 1 | `discovery` | a discovery | not assigned | `finding outside the unit`, in `state.md` under Follow-ups |
-| 2 | `refused` | refused | a refusal stopped it | `refused: <what>`, adding `; form: <the form it named>` only when the refusal named one: this unit's work, never a follow-up, never tried another way |
+| 2 | `refused` | refused | a refusal stopped it (or your own file's write: then your final message gives it after the verdict line) | `refused: <what>`, adding `; form: <the form it named>` only when the refusal named one: this unit's work, never a follow-up, never tried another way |
 | 3 | `cannot` | cannot run | this host cannot run it (its check or tool is absent or will not start) | `cannot run here: <check or tool>`, with its command and output |
 | 4 | `waits` | waiting | waits on an open unit, question, commitment or two contradicting spec lines | `waits on <id>` |
 | 5 | `done` | done | its acceptance holds | none: it is no item left |
@@ -69,7 +69,7 @@ Why the step stopped gives the evidence fields you write:
 | a refusal named an accepted form | `refused.form` | the `!` command it printed | one if printed, else none |
 | a refusal named an accepted form | `refused.allow` | the allow rule it printed | one if printed, else none |
 | a refusal named no accepted form | `refused.what` | what was refused, as the refusal said it | one |
-| the round's limit passed | `limit` | the clock (the timebox) or the count (the failure cap) | one |
+| the round's limit passed | `limit` | `timebox <its length>` or `failure cap <its count>` | one |
 | no runnable item is left | `held` | `<command> (exit <code>)` of its last run, else its label | one per item waiting or cannot run, naming it, else none |
 
 ## verifier
@@ -84,7 +84,7 @@ Take the first row that is true of the item; stop there.
 | --- | --- | --- | --- | --- |
 | 1 | `unitFinding` | a unit finding | not assigned, the unit's change introduced it, shown by measured attribution (whether or not a spec item names it) | marked `unit`: the same lane closes it in its next round |
 | 2 | `baseFinding` | a base finding | not assigned, shown on the base head too | marked `base`: a follow-up unit |
-| 3 | `refused` | refused | a refusal stopped it | `refused: <what>`, adding `; form: <the form it named>` only when the refusal named one: never tried another way |
+| 3 | `refused` | refused | a refusal stopped it (or your own file's write: then your final message gives it after the verdict line) | `refused: <what>`, adding `; form: <the form it named>` only when the refusal named one: never tried another way |
 | 4 | `cannot` | cannot run | required, this host cannot run it (its check or tool is absent or will not start) | `cannot run here: <check or tool>`, with its command and output |
 | 5 | `waits` | waiting | required, waits on an open unit, question, commitment or two contradicting spec lines | `waits on <id>` |
 | 6 | `proven` | proven | ran and proves a Blocker or Major | a Blocker or Major, filed with its proof |
@@ -123,7 +123,7 @@ Take the first row that is true of the item; stop there.
 | # | Rule | State | An item that is | Its label |
 | --- | --- | --- | --- | --- |
 | 1 | `discovery` | a discovery | not assigned | `outside the task`, named in your result |
-| 2 | `refused` | refused | a refusal stopped it | `refused: <what>`, adding `; form: <the form it named>` only when the refusal named one: never tried another way |
+| 2 | `refused` | refused | a refusal stopped it (or your own file's write: then your final message gives it after the verdict line) | `refused: <what>`, adding `; form: <the form it named>` only when the refusal named one: never tried another way |
 | 3 | `cannot` | cannot run | this host cannot run it (its check or tool is absent or will not start) | `cannot run here: <check or tool>`, with its command and output |
 | 4 | `waits` | waiting | waits on an open unit, question, commitment or two contradicting spec lines | `waits on <id>` |
 | 5 | `done` | done | its acceptance holds | none: it is no item left |

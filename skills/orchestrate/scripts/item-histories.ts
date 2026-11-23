@@ -5,16 +5,16 @@
 //             record; `stateOf` gives the one state an item is in;
 //   histories every history one item can have within a step, as sequences of events, and the records they reach
 //             (batch 22v: every record the model rejects is one no history reaches, or one two definitions exclude);
-//   evidence  `materialize` gives a reached record its content-bound evidence (distinct opaque ids, commands,
-//             digests, receipts, heads, refusal scopes and forms, probes, wait refs), and `TRACE_EVENTS` evolve
-//             a content snapshot (attempt start, completion, interruption, denial, a late older result, host and
-//             wait open/close, duplicate, restart and settling unclear) whose evidence the tests compare with `due`;
-//   traces    `generateTraces` walks those abstract events and writes each history as the contract's own `Trace`
-//             (`concrete`): the one trace type, emitted here and read by `fold`, with the snapshot model's record as
-//             the answer the fold is checked against.
+//   evidence  abstract content events (`TraceEvent`: attempt start, observed output, completion, interruption,
+//             denial, a late older result, host and wait open/close, duplicate, restart and settling unclear) evolve a
+//             snapshot, and `recordOf` gives the record it leaves, with content-bound values (distinct opaque ids,
+//             commands, digests, receipts, heads, refusal scopes and forms, probes, wait refs);
+//   traces    `generateTraces` walks those events and writes each history as the contract's own `Trace`
+//             (`concrete`), and `envelopeOf` / `stepEnvelope` write a whole step as the raw JSON envelope the
+//             contract decodes (`decode`), with the snapshot model's record as the answer it is checked against.
 // An item starts with one of two events and then takes any events whose precondition holds, in any order; the step
 // may stop after any event, so every record along the way is reached. The obstacles are independent facts.
-import { type Attempt, type Facts, type Field, type ItemRecord, type Provenance, type Role, type State, type Trace, type TraceEvent as TraceStep } from './round-policy.ts';
+import { type Attempt, type Envelope, type Facts, type Field, type ItemRecord, type Output, type Provenance, type Refusal, type Role, type State, type StepEvent, type Trace, type TraceEvent as TraceStep } from './round-policy.ts';
 
 export type Item = Facts;
 export const OBSTACLE_FACTS = ['refused', 'hostCannot', 'wait'] as const;
@@ -196,25 +196,6 @@ export function reachable(role: Role, events: ReadonlyArray<Event> = EVENTS): Ma
 // ---- evidence ------------------------------------------------------------------------------------------------------
 
 /**
- * A record with its facts' content-bound evidence: distinct opaque values derived from `id` (redacted shapes, never
- * a real command, path or log). `newer` adds a `current` attempt beside a finished one (a retry interrupted or
- * answered by a refusal); `form` gives the refusal a printed `!` command, `allow` a printed allow rule (neither: it printed no remedy).
- */
-export function materialize(id: string, facts: Facts, options: { readonly newer?: boolean; readonly form?: boolean; readonly allow?: boolean } = {}): ItemRecord {
-  const fields: Field[] = [];
-  const result = facts.attempt === 'pass' || facts.attempt === 'fail' || facts.attempt === 'unclear' ? facts.attempt : undefined;
-  if (result !== undefined)
-    fields.push({ field: 'completed', run: { id: `${id}-a1`, command: `cmd:${id}:check`, output: { kind: 'log', digest: `sha:${id}:a1` }, exit: result === 'pass' ? 0 : result === 'fail' ? 1 : 2, receipt: `rcpt:${id}:a1`, head: `head:${id}`, result } });
-  // A refusal is of an attempt: of the newest one, which it denied (after a result, a retry that never started).
-  if (facts.attempt === 'started' || facts.refused || (result !== undefined && options.newer === true && (!facts.settled || result === 'unclear')))
-    fields.push({ field: 'current', attempt: { id: `${id}-a2`, command: `cmd:${id}:check`, status: facts.refused ? 'denied' : 'interrupted', output: facts.refused ? { kind: 'missing', why: 'not-started' } : { kind: 'partial', digest: `sha:${id}:a2-partial` } } });
-  if (facts.refused) fields.push({ field: 'refused', refusal: { what: `action:${id}`, scope: `scope:${id}`, report: `report:${id}`, form: options.form === true ? { kind: 'named', form: `form:${id}` } : options.allow === true ? { kind: 'allow', allow: `allow:${id}` } : { kind: 'none' } } });
-  if (facts.hostCannot) fields.push({ field: 'cannot', absent: { tool: `tool:${id}`, probe: `probe:${id}`, output: { kind: 'log', digest: `sha:${id}:probe` } } });
-  if (facts.wait) fields.push({ field: 'waits', ref: `ref:${id}` });
-  return { id, facts, fields };
-}
-
-/**
  * The content events of one item's step, applied to a snapshot: each carries its own ids, so a duplicate or a late
  * older delivery is visible. `expected` is what a correct snapshot holds, tracked independently of the snapshot
  * (the latest completed attempt by revision, the newest unfinished one, and each obstacle's evidence).
@@ -222,6 +203,7 @@ export function materialize(id: string, facts: Facts, options: { readonly newer?
 export type TraceEvent =
   | { readonly kind: 'begin'; readonly rev: number }
   | { readonly kind: 'finish'; readonly rev: number; readonly result: 'pass' | 'fail' | 'unclear' }
+  | { readonly kind: 'observe'; readonly rev: number }
   | { readonly kind: 'interrupt'; readonly rev: number }
   | { readonly kind: 'deny'; readonly rev: number; readonly form: boolean }
   | { readonly kind: 'lift' }
@@ -233,7 +215,7 @@ export type TraceEvent =
 export interface Snapshot {
   readonly facts: Facts;
   readonly runs: ReadonlyArray<{ readonly rev: number; readonly result: 'pass' | 'fail' | 'unclear' }>;
-  readonly pending: { readonly rev: number; readonly status: 'started' | 'interrupted' | 'denied' } | undefined;
+  readonly pending: { readonly rev: number; readonly status: 'started' | 'interrupted' | 'denied'; readonly observed: boolean } | undefined;
   readonly refusal: { readonly rev: number; readonly form: boolean } | undefined;
 }
 
@@ -254,22 +236,28 @@ export function step(role: Role, at: Snapshot, event: TraceEvent): Snapshot {
   switch (event.kind) {
     case 'begin':
       if (!free || at.pending?.status === 'started' || Math.max(latest(at.runs)?.rev ?? 0, at.pending?.rev ?? 0) >= event.rev) return at;
-      return { ...at, pending: { rev: event.rev, status: 'started' }, facts: { ...at.facts, attempt: at.runs.length === 0 ? 'started' : at.facts.attempt } };
+      return { ...at, pending: { rev: event.rev, status: 'started', observed: false }, facts: { ...at.facts, attempt: at.runs.length === 0 ? 'started' : at.facts.attempt } };
     case 'finish': {
-      if (at.pending === undefined || at.pending.rev !== event.rev || at.pending.status === 'denied') return at;
+      // A refusal beside the running attempt holds it: its result comes only once the refusal lifts.
+      if (at.pending === undefined || at.pending.rev !== event.rev || at.pending.status === 'denied' || at.facts.refused) return at;
       const runs = [...at.runs, { rev: event.rev, result: event.result }];
       // A result that settles the item leaves nothing for a host loss or a wait opened during the run to hold back.
       const settled = settles(role, event.result);
       const obstacles = settled ? { hostCannot: false, wait: false } : {};
       return { ...at, runs, pending: undefined, facts: { ...at.facts, ...obstacles, attempt: event.result, settled } };
     }
+    case 'observe':
+      if (at.pending === undefined || at.pending.rev !== event.rev || at.pending.status !== 'started' || at.pending.observed) return at;
+      return { ...at, pending: { ...at.pending, observed: true } };
     case 'interrupt':
       if (at.pending === undefined || at.pending.rev !== event.rev || at.pending.status !== 'started') return at;
-      return { ...at, pending: { rev: event.rev, status: 'interrupted' } };
+      return { ...at, pending: { ...at.pending, status: 'interrupted' } };
     case 'deny':
       if (at.facts.refused) return at;
       if (!(at.pending?.status === 'started' && at.pending.rev === event.rev) && !(at.pending?.status !== 'started' && event.rev > Math.max(latest(at.runs)?.rev ?? 0, at.pending?.rev ?? 0))) return at;
-      return { ...at, pending: { rev: event.rev, status: 'denied' }, refusal: { rev: event.rev, form: event.form }, facts: { ...at.facts, refused: true, attempt: at.runs.length === 0 ? 'started' : at.facts.attempt } };
+      // A refusal beside the running attempt leaves it as it is, partial output and all; else it denies a call that never began.
+      if (at.pending?.status === 'started') return { ...at, refusal: { rev: event.rev, form: event.form }, facts: { ...at.facts, refused: true } };
+      return { ...at, pending: { rev: event.rev, status: 'denied', observed: false }, refusal: { rev: event.rev, form: event.form }, facts: { ...at.facts, refused: true, attempt: at.runs.length === 0 ? 'started' : at.facts.attempt } };
     case 'lift':
       if (!at.facts.refused) return at;
       return { ...at, refusal: undefined, facts: { ...at.facts, refused: false } };
@@ -283,6 +271,14 @@ export function step(role: Role, at: Snapshot, event: TraceEvent): Snapshot {
   }
 }
 
+/** An unfinished attempt's output: what it printed once observed (kept through a refusal or an interruption), else why it has none. */
+function pendingOutput(id: string, pending: NonNullable<Snapshot['pending']>): Output {
+  if (pending.status === 'denied') return { kind: 'missing', why: 'not-started' };
+  if (pending.observed) return { kind: 'partial', digest: `sha:${id}:r${pending.rev}-partial` };
+  if (pending.status === 'interrupted') return { kind: 'missing', why: 'interrupted' };
+  return { kind: 'missing', why: 'missing-authenticated-evidence' };
+}
+
 /** A snapshot as the record a step hands over: its facts and the evidence of its latest completed and newest pending attempts and live obstacles. */
 export function recordOf(id: string, at: Snapshot): ItemRecord {
   const fields: Field[] = [];
@@ -290,9 +286,9 @@ export function recordOf(id: string, at: Snapshot): ItemRecord {
   if (run !== undefined)
     fields.push({ field: 'completed', run: { id: `${id}-r${run.rev}`, command: `cmd:${id}`, output: { kind: 'log', digest: `sha:${id}:r${run.rev}` }, exit: run.result === 'pass' ? 0 : 1, receipt: `rcpt:${id}:r${run.rev}`, head: `head:${id}`, result: run.result } });
   if (at.pending !== undefined && (run === undefined || at.pending.rev > run.rev))
-    fields.push({ field: 'current', attempt: { id: `${id}-r${at.pending.rev}`, command: `cmd:${id}`, status: at.pending.status, output: at.pending.status === 'denied' ? { kind: 'missing', why: 'not-started' } : at.pending.status === 'interrupted' ? { kind: 'missing', why: 'interrupted' } : { kind: 'missing', why: 'missing-authenticated-evidence' } } });
+    fields.push({ field: 'current', attempt: { id: `${id}-r${at.pending.rev}`, command: `cmd:${id}`, status: at.pending.status, output: pendingOutput(id, at.pending) } });
   if (at.facts.refused && at.refusal !== undefined)
-    fields.push({ field: 'refused', refusal: { what: `action:${id}:r${at.refusal.rev}`, scope: `scope:${id}`, report: `report:${id}`, form: at.refusal.form ? { kind: 'named', form: `form:${id}` } : { kind: 'none' } } });
+    fields.push({ field: 'refused', refusal: refusalOf(id, at.refusal.rev, at.refusal.form) });
   if (at.facts.hostCannot) fields.push({ field: 'cannot', absent: { tool: `tool:${id}`, probe: `probe:${id}`, output: { kind: 'log', digest: `sha:${id}:probe` } } });
   if (at.facts.wait) fields.push({ field: 'waits', ref: `ref:${id}` });
   return { id, facts: at.facts, fields };
@@ -317,6 +313,8 @@ export function concrete(role: Role, id: string, events: ReadonlyArray<TraceEven
   return { trace: { id, assignment: { kind: 'assigned', required }, events: out }, snapshot: at };
 }
 
+/** A refusal's content-bound values: what it refused (by revision), its scope, report and the remedy it printed, if any. */
+const refusalOf = (id: string, rev: number, form: boolean): Refusal => ({ what: `action:${id}:r${rev}`, scope: `scope:${id}`, report: `report:${id}`, form: form ? { kind: 'named', form: `form:${id}` } : { kind: 'none' } });
 const changed = (a: Snapshot, b: Snapshot): boolean => JSON.stringify(a) !== JSON.stringify(b);
 const attemptId = (id: string, rev: number) => `${id}-r${rev}`;
 
@@ -326,10 +324,16 @@ function concreteOf(id: string, at: Snapshot, next: Snapshot, event: TraceEvent)
       return [{ kind: 'begin', attempt: attemptId(id, event.rev), command: `cmd:${id}` }];
     case 'finish':
       return [{ kind: 'finish', attempt: attemptId(id, event.rev), result: event.result, exit: event.result === 'pass' ? 0 : 1, output: { kind: 'log', digest: `sha:${id}:r${event.rev}` }, receipt: `rcpt:${id}:r${event.rev}`, head: `head:${id}` }];
-    case 'interrupt':
-      return [{ kind: 'interrupt', attempt: attemptId(id, event.rev), output: { kind: 'missing', why: 'interrupted' } }];
+    case 'observe':
+      return [{ kind: 'observe', attempt: attemptId(id, event.rev), digest: `sha:${id}:r${event.rev}-partial` }];
+    case 'interrupt': {
+      const pending = next.pending;
+      if (pending === undefined) return [];
+      return [{ kind: 'interrupt', attempt: attemptId(id, event.rev), output: pendingOutput(id, pending) }];
+    }
     case 'deny':
-      return [{ kind: 'deny', attempt: attemptId(id, event.rev), command: `cmd:${id}`, refusal: { what: `action:${id}:r${event.rev}`, scope: `scope:${id}`, report: `report:${id}`, form: event.form ? { kind: 'named', form: `form:${id}` } : { kind: 'none' } } }];
+      if (at.pending?.status === 'started') return [{ kind: 'refuse', attempt: attemptId(id, event.rev), refusal: refusalOf(id, event.rev, event.form) }];
+      return [{ kind: 'deny', attempt: attemptId(id, event.rev), command: `cmd:${id}`, refusal: refusalOf(id, event.rev, event.form) }];
     case 'lift':
       return [{ kind: 'lift' }];
     case 'host':
@@ -352,6 +356,7 @@ function alphabet(at: Snapshot, maxRev: number): TraceEvent[] {
   return [
     ...revs.flatMap((rev): TraceEvent[] => [
       { kind: 'begin', rev },
+      { kind: 'observe', rev },
       ...(['pass', 'fail', 'unclear'] as const).map((result): TraceEvent => ({ kind: 'finish', rev, result })),
       { kind: 'interrupt', rev },
       { kind: 'deny', rev, form: false },
@@ -365,6 +370,12 @@ function alphabet(at: Snapshot, maxRev: number): TraceEvent[] {
     { kind: 'settle' },
   ];
 }
+
+/**
+ * A step's persisted envelope as raw JSON (written out and parsed back, so it shares nothing with the values it is made
+ * from): what D, E and G store, and the one input the contract takes (`decode`).
+ */
+export const envelopeOf = (role: Role, items: ReadonlyArray<Trace>, step: ReadonlyArray<StepEvent> = []): Envelope => JSON.parse(JSON.stringify({ version: 1, role, items, step }));
 
 export interface Generated {
   readonly role: Role;
@@ -405,4 +416,33 @@ export function generateTraces(role: Role, depth = 6, maxRev = 3): Generated[] {
     out.set(JSON.stringify(trace), { role, trace, record: { id: 'item', facts, fields: [] } });
   }
   return [...out.values()];
+}
+
+// ---- steps: one item's trace as a whole persisted envelope ----------------------------------------------------------
+
+/** The step event a refused write of the role's own file leaves: what it refused, its scope and report, and no remedy. */
+export const writeDenied = (role: Role): StepEvent => ({ kind: 'writeDenied', artifact: OWN_FILE[role], refusal: { what: `write:${OWN_FILE[role]}`, scope: 'scope:write', report: 'report:write', form: { kind: 'none' } } });
+/** The file each role's verdict writes first: its findings, request, spec or result. */
+export const OWN_FILE = { planner: 'spec', implementor: 'request', verifier: 'findings', worker: 'result' } as const satisfies Record<Role, string>;
+
+/**
+ * The step one item's trace ends, as the envelope a step stores, by the oracle's state of its record: a refusal stops
+ * it where the trace has one; a runnable item stops it at the limit (a planner or implementor) or at a refused write of
+ * the role's own file (a verifier or worker, which have no limit); else no runnable item is left.
+ */
+export function stepEnvelope(one: Generated): Envelope {
+  const { role, trace, record } = one;
+  if (record.facts.refused) return envelopeOf(role, [trace]);
+  if (stateOf(role, record.facts) !== 'runnable') return envelopeOf(role, [trace]);
+  if (role === 'planner' || role === 'implementor') return envelopeOf(role, [trace], [{ kind: 'limit', limit: { kind: 'timebox', length: '2h' } }]);
+  return envelopeOf(role, [trace], [writeDenied(role)]);
+}
+
+/** The shortest generated trace whose record has these facts: a history that reaches them, for a list history or a fact set. */
+const GENERATED = new Map<string, Generated[]>();
+export function traceFor(role: Role, facts: Facts, depth = 6): Generated | undefined {
+  const key = `${depth}/${role}`;
+  const all = GENERATED.get(key) ?? generateTraces(role, depth);
+  GENERATED.set(key, all);
+  return all.find((one) => recordKey(one.record.facts) === recordKey(facts));
 }
