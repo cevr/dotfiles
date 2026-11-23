@@ -1067,6 +1067,10 @@ describe('(vii) the hand-back is decoded by its exact Schema, then compared type
         expect([one.name, member, judgeHandBack(due, missing)]).toEqual([one.name, member, [`${fieldName(member)}: ${member}: Missing key`]]);
       }
       expect([one.name, judgeHandBack(due, { ...good, extra: due.label })]).toEqual([one.name, ['extra: extra: Expected no excess property']]);
+      // A prefix of the due state, or of an obstacle word, is no state or word: the decoder rejects it at its path.
+      for (const short of [due.state.slice(0, -1), due.state.slice(0, 1)])
+        expect([one.name, short, judgeHandBack(due, { ...good, state: short })[0]?.startsWith('state: state: Expected ')]).toEqual([one.name, short, true]);
+      if (due.evidence !== null) expect([one.name, judgeHandBack(due, { ...good, evidence: due.evidence.slice(0, -1) })[0]?.startsWith('evidence: evidence: Expected ')]).toEqual([one.name, true]);
       const others = Array.isArray(good.others) ? good.others : [];
       expect([one.name, judgeHandBack(due, { ...good, others: Object.fromEntries(others.map((row, index) => [index, row])) })]).toEqual([one.name, ['others: others: Expected array']]);
       expect([one.name, judgeHandBack(due, { ...good, others: [...others, 'refused', 'refused'] })]).toEqual([one.name, ['others: others: Expected an array with unique items']]);
