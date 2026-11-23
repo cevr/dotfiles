@@ -23,6 +23,11 @@ Read this before the first wave, and when a role is held or falls back to Codex.
 
 - **Messages are files** ([`protocol.md`](../protocol.md), Messages). You talk to a worker only through the host's agent messages, naming file paths; a terminal pane is never a transport.
 
+## Worker restarts
+
+- **Provider stop.** If a provider content-filter notice reports only a session interruption, not a safety or policy refusal, send one plain continuation in that session; if it ends again without a refusal, restart the step in a fresh session or on the other model family allowed for the role, and say in the brief that the provider ended the prior session without refusing the work.
+- **Other dead workers.** Rerun the step with a fresh agent (after a limit, once `budget.ts --resume-at` has passed); the same failure twice is `stuck`.
+
 ## The model eval
 
 `bun ~/.claude/skills/orchestrate/scripts/models.ts` is the model eval. For each phase and model, from the running OpenCode service's sessions and from Claude Code and Codex transcripts, it prints the cost, minutes, tokens and compactions, and what the phase produced: units merged (plan), round-1 accepts (implement), changes (verify), and units merged per session (decide). It joins a worker to its unit by the hand-back line, so keep that line exact; a batch's verifier (`verifier batch-<k> r1`) counts once per unit of its batch, each with that unit's own `round-N-findings.md` verdict. A model with no price prints `?`; one row in `scripts/models/prices.ts` prices it.

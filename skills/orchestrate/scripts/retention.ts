@@ -35,6 +35,10 @@ export const RETENTION: Readonly<Record<string, Fate>> = immutable<Readonly<Reco
     kind: 'reworded',
     now: 'A compaction does not end your step, nor does a long context: after one, read the spec and `state.md` again and go on.',
   },
+  '**Refusals.** At the first permission or classifier refusal, stop that step and report the exact `!` command, or the allow rule, that would let it through.': {
+    kind: 'reworded',
+    now: "**Refusals.** If a permission rule, hook or classifier refuses this session's own tool call, stop the step and report the rule and any exact `!` command or allow rule it names.",
+  },
   'When something blocks you, write `<unit dir>/blocked.md` (what blocks you, what you tried, the options and your pick) and end with verdict `blocked` and that path.': {
     kind: 'replaced',
     by: "(F2) implementor/planner: `ready` only when every required item is done, else `blocked`, with blocked.md holding the stop event's evidence; verifier: any required check refused, unable to run, unclear or waiting is `stuck` (a verifier never writes blocked.md)",
