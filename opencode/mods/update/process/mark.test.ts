@@ -13,7 +13,7 @@ const deadPid = () => spawnSync(["true"]).pid
 const ownPid = () => Number(spawnSync(["sh", "-c", "echo $PPID"]).stdout.toString().trim())
 
 /** A scratch directory for one test, removed after it. */
-const scratch = <A>(body: (path: string) => Effect.Effect<A>) =>
+const scratch = <A, E>(body: (path: string) => Effect.Effect<A, E>) =>
   Effect.acquireUseRelease(
     Effect.sync(() => spawnSync(["mktemp", "-d", "-t", "update-mark"]).stdout.toString().trim()),
     (dir) => body(`${dir}/handoff.json`),
