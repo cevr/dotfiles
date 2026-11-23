@@ -58,7 +58,8 @@ import * as Swarm from "./accept-plan.ts"
 import { heading, isSerial, plan, poolWidth, requestedWidth, scenariosOf } from "./accept-plan.ts"
 import * as Accept from "./accept-ledger.ts"
 import * as Yield from "./accept-yield.ts"
-import { acceptanceTests, acceptReadKey, acceptReach, acceptSharedKey, fromRepository, load, packageOf, reach, ROOT, type Workspace } from "./reach.ts"
+import { acceptanceTests, acceptReadKey, acceptReach, acceptSharedKey, fromRepository, load, packageOf, ROOT, type Workspace } from "./reach.ts"
+import { swarmInputs } from "./test-impact.ts"
 import { swarmTests } from "./test-population.ts"
 
 const ENV = { ...process.env }
@@ -212,11 +213,10 @@ const land = Effect.fn("Accept.land")(function* (run: Run) {
     `accept: land: ${order.length} due land files (${near.size} near the ${changed.length} files changed), ${width} at a time (${cores} cores, 1-minute load ${(run.loads[0] ?? 0).toFixed(1)}); no start after ${seconds(window.startBy)}, stop at ${seconds(window.stopAt)}`,
   )
   // First the swarm: the simulated suites the change reaches, fresh seeds from the head, for a third of the budget.
-  const memo = new Map<string, ReadonlyArray<string>>()
   const suites = Option.match(Option.fromUndefinedOr(ENV.ACCEPT_SIM_FILES), {
     // A stand-in suite is outside the workspace: every one named is reached.
     onSome: () => run.suites,
-    onNone: () => Swarm.reachedSuites(run.suites, (suite) => reach(run.workspace, [suite], memo), changed),
+    onNone: () => Swarm.reachedSuites(run.suites, swarmInputs(run.workspace), changed),
   })
   const box = Swarm.swarmBox(window.end)
   if (listOnly) {

@@ -44,7 +44,7 @@ import { Option } from "effect"
 import { hostLocks, landLogs, scriptReceipt } from "../mods/work/process/landing.ts"
 import { parseNameStatus } from "./docs-guard.ts"
 import { mergeLegs } from "./merge-check.ts"
-import { mergeUnitInputs } from "./merge-unit.ts"
+import { mergeUnitInputs } from "./test-impact.ts"
 import { checkCommand, projects } from "./typecheck.ts"
 import { declaredInputs, fromRepository, importsOf, keyOf, load, mergeScriptTests, reach, readState, ROOT, selectorReads, sharedKey, unitTests, workboxTestFiles } from "./reach.ts"
 

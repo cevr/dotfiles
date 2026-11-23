@@ -15,7 +15,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { describe, expect, it } from "effect-bun-test"
 import { parseNameStatus } from "./docs-guard.ts"
 import { ACCEPT_TESTS, affectedUnits, DOCS_GUARD, GIT_REPO_GUARD, lintFiles, mergeLegs, reachedWithin, scriptTests } from "./merge-check.ts"
-import { mergeUnitInputs } from "./merge-unit.ts"
+import { mergeUnitInputs, swarmInputs } from "./test-impact.ts"
 import { readMatcher } from "./read-declarations.ts"
 import { acceptReach, importsOf, inspectReads, load, readsOf } from "./reach.ts"
 import { acceptanceTests, checkedTests, mergeScriptTests, swarmTests, workboxTestFiles } from "./test-population.ts"
@@ -150,6 +150,18 @@ describe("the fixed-seed unit leg of land", () => {
       expect(affectedUnits(["../local-bin.sh"], unit)).toContain("mods/update/git/source.test.ts")
       const outside = "../example.txt"
       expect(affectedUnits([outside], { files: ["unit.test.ts"], inputs: () => new Set(), reads: () => [], observed: () => [outside] })).toEqual(["unit.test.ts"])
+    }),
+  )
+
+  it.effect("the existing swarm selects a golden file and an observed outer input, not an unrelated sibling", () =>
+    Effect.gen(function* () {
+      const workspace = yield* Effect.promise(load)
+      const suite = "cmd/escape/escape-send.sim.test.tsx"
+      const files = swarmTests(workspace)
+      const inputs = swarmInputs(workspace)
+      expect(reachedSuites(files, inputs, ["sim-tui/golden/escape-send/checked.txt"])).toContain(suite)
+      expect(reachedSuites(files, inputs, ["../skills/principle-nothing-is-hard/SKILL.md"])).toContain("cmd/orchestrate/principles.sim.test.ts")
+      expect(reachedSuites(files, inputs, ["../unrelated-swarm-control.txt"])).toEqual([])
     }),
   )
 })
