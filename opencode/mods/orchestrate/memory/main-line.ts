@@ -27,6 +27,20 @@ export type Refs = (checkout: string, rev: string) => Option.Option<string>
 
 const indexOf = (branch: Branch, sha: string) => branch.line.findIndex((entry) => entry.sha === sha)
 
+/** The first entry that holds `sha`: the entry itself, or the merge that took it in; -1 when none does. */
+const heldAt = (branch: Branch, sha: string) => branch.line.findIndex((entry) => entry.sha === sha || entry.merged.includes(sha))
+
+/**
+ * `git rev-list base..head` for a `head` a merge took in and `base` on the line: nothing when the merge is at or
+ * before `base` (the tip is an ancestor), else the tip itself (its own commits are outside this history).
+ */
+const mergedBetween = (branch: Branch, base: string, head: string): ReadonlyArray<string> => {
+  const from = indexOf(branch, base)
+  const at = heldAt(branch, head)
+  if (from < 0 || at < 0) return []
+  return Arr.filter([head], () => at > from)
+}
+
 export const layer = (world: World, refs: Refs = () => Option.none()) =>
   Layer.succeed(
     MainLine,
@@ -67,15 +81,16 @@ export const layer = (world: World, refs: Refs = () => Option.none()) =>
               Option.map(
                 Option.liftPredicate([indexOf(branch, base), indexOf(branch, head)] as const, ([from, to]) => from >= 0 && to >= 0),
                 ([from, to]) => branch.line.slice(from + 1, to + 1).flatMap((entry) => [entry.sha, ...entry.merged]),
-              ),
+              ).pipe(Option.orElse(() => Option.some(mergedBetween(branch, base, head)))),
             ),
             (): ReadonlyArray<string> => [],
           ),
         ),
+      // A merged tip is a commit of the repository too, as `git rev-parse` resolves it.
       commitOf: (checkout, rev) =>
         Effect.sync(() =>
           Option.orElse(
-            Option.flatMap(world(checkout), (branch) => Option.liftPredicate(rev, () => indexOf(branch, rev) >= 0)),
+            Option.flatMap(world(checkout), (branch) => Option.liftPredicate(rev, () => heldAt(branch, rev) >= 0)),
             () => refs(checkout, rev),
           ),
         ),

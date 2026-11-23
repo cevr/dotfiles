@@ -92,7 +92,15 @@ export type Listed = typeof Listed.Type
 export const Inspected = Schema.Union([Schema.Struct({ outcome: Schema.Literal("answered"), text: Schema.String, rift: Lane }), Failed])
 export type Inspected = typeof Inspected.Type
 
-export const LandAnswered = Schema.Union([Schema.Struct({ outcome: Schema.Literal("answered"), text: Schema.String }), Failed])
+/** A workspace a pushed land landed, and the head the batch merged of it. */
+export const LandedWorkspace = Schema.Struct({ path: Schema.String, head: Schema.String })
+export type LandedWorkspace = typeof LandedWorkspace.Type
+
+/** A land's answer: its text, and for a pushed land what it pushed and each workspace's merged head (the tool's metadata). */
+export const LandAnswered = Schema.Union([
+  Schema.Struct({ outcome: Schema.Literal("answered"), text: Schema.String, pushed: Schema.optionalKey(Schema.String), landed: Schema.optionalKey(Schema.Array(LandedWorkspace)) }),
+  Failed,
+])
 export type LandAnswered = typeof LandAnswered.Type
 
 /** The directory name `workrift create <branch>` gives the branch's Rift on the workbox. */
