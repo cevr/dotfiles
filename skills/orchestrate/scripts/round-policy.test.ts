@@ -12,6 +12,10 @@
 //   (f) seeded production traces (attempt begin/finish/interrupt/deny, refusal lift, host and wait open/close,
 //       duplicates and restarts): every snapshot is a valid record whose owed hand-back holds its latest completed
 //       attempt, never an older one, and keeps it through a later denial or obstacle; a broken step is caught.
+//   (h) traces, the contract's input: every generated trace folds to the snapshot model's record and to a backward
+//       reading of the trace, its truthful hand-back admitted; every single-edit corruption is a typed rejection or the
+//       evidence its new history implies; every evidence value but the truthful one (a placeholder, another item's, a
+//       stale attempt's) is rejected.
 // Fixtures are redacted shapes: opaque ids, never a real command, path, log or register row.
 import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -24,12 +28,14 @@ import {
   block,
   type Claim,
   decode,
+  type Due,
+  dueTrace,
   delivered,
   differences,
   due,
-  factsFaults,
   type Field,
   fieldKey,
+  fold,
   type HandBack,
   hostPrompt,
   HOSTS,
@@ -51,10 +57,11 @@ import {
   type Step,
   type Stop,
   type StopFieldId,
+  type Trace,
   type StopValue,
   STOPS_OF,
 } from './round-policy.ts';
-import { allItems, freshSnapshot, materialize, reachable, recordKey, recordOf, type Snapshot, stateOf, step, type TraceEvent, validity } from './item-histories.ts';
+import { allItems, freshSnapshot, generateTraces, materialize, reachable, recordKey, recordOf, type Snapshot, stateOf, step, type TraceEvent, validity } from './item-histories.ts';
 
 // ---- independent expectations: written here by hand, never read from the policy --------------------------------
 
@@ -170,7 +177,7 @@ describe('(a) the four baseline controls, on the actual host artifacts', () => {
     const policy = project('implementor');
     const record = materialize('t1', { assigned: true, required: true, attempt: 'fail', settled: false, refused: true, hostCannot: true, wait: true, provenance: 'none' });
     const owed = owedOf(policy, record);
-    expect([owed.state, owed.fields.map((field) => field.field)]).toEqual(['refused', ['completed', 'refused', 'cannot', 'waits']]);
+    expect([owed.state, owed.fields.map((field) => field.field)]).toEqual(['refused', ['completed', 'current', 'refused', 'cannot', 'waits']]);
     expect(judge(owed, handBack(owed))).toEqual([]);
     const forged = { ...handBack(owed), fields: owed.fields.filter((field) => field.field !== 'completed'), lastAttempt: true };
     expect(judge(owed, forged)).toEqual([
@@ -368,7 +375,7 @@ describe('(d) every role × reachable record × evidence variant: the owed hand-
     expect(due(POLICIES.verifier, { ...record, fields: record.fields.filter((one) => one.field !== 'completed') }).ok).toBe(false);
     expect(due(POLICIES.verifier, { ...record, fields: [...record.fields, { field: 'waits', ref: '' }] }).ok).toBe(false);
     const sameId = record.fields.map((one): Field => (one.field === 'current' ? { ...one, attempt: { ...one.attempt, id: 'x-a1' } } : one));
-    expect(recordFaults('verifier', { ...record, fields: sameId })).toEqual(['`current` and `completed` are the same attempt']);
+    expect(recordFaults('verifier', { ...record, fields: sameId })).toEqual(['x: event 3 (deny): a refusal answers the running attempt or a new one, while no refusal holds the item, with what, scope, report and remedy (the only history the record could be the fold of)']);
   });
 });
 
@@ -397,7 +404,7 @@ describe('(e) every role × stop × saturated multiset of states', () => {
       materialize('c', { ...base, attempt: 'started', hostCannot: true }),
     ];
     const items = records.map((record) => handBack(owedOf(policy, record)));
-    const HELD = [{ id: 'held' as const, item: 'w', value: 'h:w' }, { id: 'held' as const, item: 'c', value: 'h:c' }];
+    const HELD = [{ id: 'held' as const, item: 'w', value: 'cmd:w:check (exit 1)' }, { id: 'held' as const, item: 'c', value: 'cannot run here: tool:c' }];
     const claim: Claim = { verdict: 'blocked', writes: ['state', 'blocked'], stop: HELD, items };
     const permutations = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
     for (const order of permutations) {
@@ -525,7 +532,7 @@ function truthfulSteps(role: Role): ReadonlyArray<{ readonly name: string; reado
     { name: 'refusal printing an allow rule', step: { stop: { stop: 'refusalForm', values: [what, { id: 'refused.allow', value: 'allow:r' }] }, items: [done, refused({ allow: true })] } },
     { name: 'refusal printing no remedy', step: { stop: { stop: 'refusalNone', values: [what] }, items: [done, refused({})] } },
     { name: 'limit', step: { stop: { stop: 'limit', values: [{ id: 'limit', value: 'clock:2h' }] }, items: [done, materialize('run', BASE)] } },
-    { name: 'idle with a held item', step: { stop: { stop: 'idle', values: [{ id: 'held', item: 'w', value: 'held: w' }] }, items: [done, materialize('w', { ...BASE, wait: true })] } },
+    { name: 'idle with a held item', step: { stop: { stop: 'idle', values: [{ id: 'held', item: 'w', value: 'waits on ref:w' }] }, items: [done, materialize('w', { ...BASE, wait: true })] } },
     { name: 'idle with nothing held', step: { stop: { stop: 'idle', values: [] }, items: [done] } },
   ];
   return all.filter((one) => STOPS_OF[role].some((stop) => stop === one.step.stop.stop));
@@ -580,7 +587,7 @@ describe('(g) the input domain, comparison, absence and the stop values', () => 
       for (const item of items) {
         const key = recordKey(item);
         const valid = validity(role, item) === undefined;
-        expect([role, key, factsFaults(role, item).length === 0, reached.has(key)]).toEqual([role, key, valid, valid]);
+        expect([role, key, recordFaults(role, materialize('x', item)).length === 0, reached.has(key)]).toEqual([role, key, valid, valid]);
         if (valid) continue;
         rejected++;
         const record = materialize('x', item);
@@ -650,5 +657,262 @@ describe('(g) the input domain, comparison, absence and the stop values', () => 
         });
       }
     expect(forged).toBeGreaterThan(20);
+  });
+});
+
+// ---- (h) traces: the contract's input, against an oracle that reads each trace backwards -------------------------------
+
+/**
+ * The record a legal trace leaves, read backwards from its end (no state machine, no fold): the latest finish, the
+ * newest attempt after it, the latest refusal no lift follows, the latest host loss and wait that nothing closed or
+ * settled. Written here by hand, independent of `fold` and of the snapshot model.
+ */
+function backwards(role: Role, trace: Trace): ItemRecord {
+  const { assignment, events } = trace;
+  if (assignment.kind === 'found') return { id: trace.id, facts: { ...BASE, assigned: false, required: false, settled: true, provenance: assignment.provenance }, fields: [] };
+  const lastIndex = (pick: (event: Trace['events'][number]) => boolean, from = 0) => {
+    let found = -1;
+    events.forEach((event, index) => {
+      if (index >= from && pick(event)) found = index;
+    });
+    return found;
+  };
+  const settles = (event: Trace['events'][number]) => event.kind === 'finish' && (event.result === 'pass' || (role === 'verifier' && event.result === 'fail'));
+  const fields: Field[] = [];
+  const done = lastIndex((event) => event.kind === 'finish');
+  const finish = events[done];
+  let result: 'pass' | 'fail' | 'unclear' | undefined;
+  if (finish?.kind === 'finish') {
+    const begun = events.slice(0, done).filter((event) => event.kind === 'begin' && event.attempt === finish.attempt).at(-1);
+    result = finish.result;
+    fields.push({ field: 'completed', run: { id: finish.attempt, command: begun?.kind === 'begin' ? begun.command : '?', output: finish.output, exit: finish.exit, receipt: finish.receipt, head: finish.head, result } });
+  }
+  const newest = lastIndex((event) => event.kind === 'begin' || event.kind === 'deny', done + 1);
+  const opened = events[newest];
+  const started = events.some((event) => event.kind === 'begin' || event.kind === 'deny');
+  if (opened?.kind === 'begin' || opened?.kind === 'deny') {
+    const id = opened.attempt;
+    const after = events.slice(newest + 1).filter((event) => 'attempt' in event && event.attempt === id);
+    const cut = after.filter((event) => event.kind === 'interrupt').at(-1);
+    const seen = after.filter((event) => event.kind === 'observe').at(-1);
+    const attempt: Field =
+      opened.kind === 'deny'
+        ? { field: 'current', attempt: { id, command: opened.command, status: 'denied', output: { kind: 'missing', why: 'not-started' } } }
+        : cut?.kind === 'interrupt'
+          ? { field: 'current', attempt: { id, command: opened.command, status: 'interrupted', output: cut.output } }
+          : { field: 'current', attempt: { id, command: opened.command, status: 'started', output: seen?.kind === 'observe' ? { kind: 'partial', digest: seen.digest } : { kind: 'missing', why: 'missing-authenticated-evidence' } } };
+    fields.push(attempt);
+  }
+  const denied = lastIndex((event) => event.kind === 'deny');
+  const deny = events[denied];
+  if (deny?.kind === 'deny' && lastIndex((event) => event.kind === 'lift', denied) < 0) fields.push({ field: 'refused', refusal: deny.refusal });
+  const settledAt = lastIndex(settles);
+  const lost = lastIndex((event) => event.kind === 'hostLost');
+  const loss = events[lost];
+  if (loss?.kind === 'hostLost' && lastIndex((event) => event.kind === 'hostBack', lost) < 0 && settledAt < lost) fields.push({ field: 'cannot', absent: loss.absent });
+  const waited = lastIndex((event) => event.kind === 'waitOpen');
+  const wait = events[waited];
+  if (wait?.kind === 'waitOpen' && lastIndex((event) => event.kind === 'waitClose', waited) < 0 && settledAt < waited) fields.push({ field: 'waits', ref: wait.ref });
+  const has = (id: Field['field']) => fields.some((one) => one.field === id);
+  const attempt = result ?? (started ? 'started' : 'never');
+  const facts = { ...BASE, required: assignment.required, attempt, settled: settledAt >= 0 || events.some((event) => event.kind === 'settle'), refused: has('refused'), hostCannot: has('cannot'), wait: has('waits') } as const;
+  return { id: trace.id, facts, fields };
+}
+
+/** What a held item's `held` entry says, from its trace read backwards: the last finished run's command and exit, else why none ran. */
+function heldOracle(record: ItemRecord): string {
+  const run = record.fields.find((one) => one.field === 'completed');
+  if (run?.field === 'completed') return `${run.run.command} (exit ${run.run.exit})`;
+  const refused = record.fields.find((one) => one.field === 'refused');
+  if (refused?.field === 'refused') return `refused: ${refused.refusal.what}${refused.refusal.form.kind === 'named' ? `; form: ${refused.refusal.form.form}` : refused.refusal.form.kind === 'allow' ? `; form: ${refused.refusal.form.allow}` : ''}`;
+  const cannot = record.fields.find((one) => one.field === 'cannot');
+  if (cannot?.field === 'cannot') return `cannot run here: ${cannot.absent.tool}`;
+  const waits = record.fields.find((one) => one.field === 'waits');
+  return waits?.field === 'waits' ? `waits on ${waits.ref}` : '';
+}
+
+const HELD_STATES: ReadonlyArray<State> = ['waits', 'cannot', 'unclear'];
+
+/** The one-item step a trace's record ends, with its truthful stop values (from the oracle), or none when no stop ends it alone. */
+function stepOf(role: Role, record: ItemRecord, state: State): Step | undefined {
+  const refusal = record.fields.find((one) => one.field === 'refused');
+  if (refusal?.field === 'refused') {
+    const { what, form } = refusal.refusal;
+    if (form.kind === 'none') return { stop: { stop: 'refusalNone', values: [{ id: 'refused.what', value: what }] }, items: [record] };
+    const remedy: StopValue = form.kind === 'named' ? { id: 'refused.form', value: form.form } : { id: 'refused.allow', value: form.allow };
+    return { stop: { stop: 'refusalForm', values: [{ id: 'refused.what', value: what }, remedy] }, items: [record] };
+  }
+  if (state === 'runnable') return role === 'planner' || role === 'implementor' ? { stop: { stop: 'limit', values: [{ id: 'limit', value: 'clock' }] }, items: [record] } : undefined;
+  const values: StopValue[] = HELD_STATES.includes(state) ? [{ id: 'held', item: record.id, value: heldOracle(record) }] : [];
+  return { stop: { stop: 'idle', values }, items: [record] };
+}
+
+const truthful = (policy: Policy, stepped: Step, owed: Due): Claim => {
+  const { state: _state, ...back } = owed;
+  const result = outcome(policy, stepped.stop.stop, [owed.state]);
+  if (!result.ok) throw new Error(result.error);
+  return { verdict: result.value.verdict, writes: result.value.writes.artifacts, stop: stepped.stop.values, items: [back] };
+};
+
+type AnyEvent = Trace['events'][number];
+/** Every one-value change of an event: each string gains a mark, each number moves, each closed word takes another value. */
+function alterations(event: AnyEvent): AnyEvent[] {
+  const out: AnyEvent[] = [];
+  const walk = (value: unknown, set: (next: unknown) => AnyEvent): void => {
+    if (typeof value === 'string') {
+      out.push(set(`${value}'`));
+      for (const word of [...RESULT_WORDS, ...OUTPUT_WORDS]) if (word !== value && (RESULT_WORDS.includes(value) || OUTPUT_WORDS.includes(value))) out.push(set(word));
+    } else if (typeof value === 'number') out.push(set(value + 1));
+    else if (value !== null && typeof value === 'object')
+      for (const [key, inner] of Object.entries(value)) walk(inner, (next) => set({ ...(value as object), [key]: next }));
+  };
+  for (const [key, value] of Object.entries(event)) if (key !== 'kind') walk(value, (next) => ({ ...event, [key]: next }) as AnyEvent);
+  return out;
+}
+const RESULT_WORDS: ReadonlyArray<string> = ['pass', 'fail', 'unclear'];
+const OUTPUT_WORDS: ReadonlyArray<string> = ['log', 'partial', 'missing', 'not-started', 'interrupted', 'missing-authenticated-evidence'];
+const KINDS: ReadonlyArray<AnyEvent['kind']> = ['begin', 'observe', 'finish', 'interrupt', 'deny', 'lift', 'hostLost', 'hostBack', 'waitOpen', 'waitClose', 'settle'];
+
+/** Every single-edit corruption of a trace: drop, duplicate, swap with the next, retype or alter one event. */
+function corruptions(trace: Trace): Array<{ readonly edit: string; readonly trace: Trace }> {
+  const { events } = trace;
+  const out: Array<{ readonly edit: string; readonly trace: Trace }> = [];
+  const put = (edit: string, next: ReadonlyArray<AnyEvent>) => out.push({ edit, trace: { ...trace, events: next } });
+  events.forEach((event, index) => {
+    const before = events.slice(0, index);
+    const after = events.slice(index + 1);
+    put(`drop ${index}`, [...before, ...after]);
+    put(`duplicate ${index}`, [...before, event, event, ...after]);
+    const next = events[index + 1];
+    if (next !== undefined) put(`swap ${index}`, [...before, next, event, ...events.slice(index + 2)]);
+    for (const kind of KINDS) if (kind !== event.kind) put(`retype ${index} ${kind}`, [...before, { ...event, kind } as AnyEvent, ...after]);
+    alterations(event).forEach((altered, which) => put(`alter ${index}.${which}`, [...before, altered, ...after]));
+  });
+  return out;
+}
+
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+describe('(h) traces: the contract reads a trace, and every evidence value is derived from it', () => {
+  test('(a) every generated trace folds to the snapshot model\'s record and the backward reading, and its truthful hand-back is admitted', () => {
+    const misses: string[] = [];
+    const counts: Record<string, number> = {};
+    for (const role of ROLES) {
+      const policy = POLICIES[role];
+      const all = generateTraces(role, 5);
+      counts[role] = all.length;
+      for (const one of all) {
+        const folded = fold(role, one.trace);
+        if (!folded.ok || !same(folded.value.record, one.record) || !same(backwards(role, one.trace), one.record)) {
+          misses.push(`${role} ${same(backwards(role, one.trace), one.record) ? 'fold' : 'backwards'} ${JSON.stringify(one.trace.events)}`);
+          continue;
+        }
+        const owed = dueTrace(policy, one.trace);
+        if (!owed.ok || owed.value.state !== stateOf(role, one.record.facts)) {
+          misses.push(`${role} due ${JSON.stringify(owed)}`);
+          continue;
+        }
+        const stepped = stepOf(role, one.record, owed.value.state);
+        if (stepped === undefined) continue;
+        const faults = admit(policy, stepped, truthful(policy, stepped, owed.value));
+        if (faults.length > 0) misses.push(`${role} truthful rejected ${JSON.stringify(one.trace.events)}: ${faults.join('; ')}`);
+      }
+    }
+    expect(misses.slice(0, 5)).toEqual([]);
+    expect(Object.values(counts).every((count) => count > 1000)).toBe(true);
+  });
+
+  test('(b) every single-edit corruption is a typed rejection, or a legal trace whose evidence is what it implies: never the old answer for a changed history', () => {
+    const misses: string[] = [];
+    let rejected = 0;
+    let legal = 0;
+    let changed = 0;
+    for (const role of ROLES)
+      for (const one of generateTraces(role, 4)) {
+        const before = backwards(role, one.trace);
+        for (const { edit, trace } of corruptions(one.trace)) {
+          const folded = fold(role, trace);
+          if (!folded.ok) {
+            rejected++;
+            if (!folded.error.startsWith(`${trace.id}: event `)) misses.push(`${role} ${edit}: untyped rejection ${folded.error}`);
+            continue;
+          }
+          legal++;
+          const implied = backwards(role, trace);
+          if (!same(folded.value.record, implied)) misses.push(`${role} ${edit} of ${JSON.stringify(one.trace.events)}: fold ${JSON.stringify(folded.value.record)}, implied ${JSON.stringify(implied)}`);
+          if (!same(implied, before)) changed++;
+        }
+      }
+    expect(misses.slice(0, 5)).toEqual([]);
+    expect([rejected > 0, legal > 0, changed > 0]).toEqual([true, true, true]);
+  });
+
+  test('(c) every legal trace × evidence value: the truthful value passes; a placeholder, another item\'s or a stale attempt\'s is rejected', () => {
+    const misses: string[] = [];
+    let probed = 0;
+    for (const role of ROLES) {
+      const policy = POLICIES[role];
+      for (const one of generateTraces(role, 5)) {
+        if (one.trace.assignment.kind === 'found') continue;
+        const owed = dueTrace(policy, one.trace);
+        if (!owed.ok) continue;
+        const stepped = stepOf(role, one.record, owed.value.state);
+        if (stepped === undefined) continue;
+        const right = truthful(policy, stepped, owed.value);
+        const other = fold(role, { ...one.trace, id: 'other', events: one.trace.events.map((event) => JSON.parse(JSON.stringify(event).replaceAll(':item', ':other').replaceAll('item-', 'other-'))) });
+        const stale = one.trace.events
+          .map((_, cut) => fold(role, { ...one.trace, events: one.trace.events.slice(0, cut) }))
+          .flatMap((prefix) => (prefix.ok ? [prefix.value.record] : []));
+        const wrong = (label: string, claim: Claim) => {
+          probed++;
+          if (admit(policy, stepped, claim).length === 0) misses.push(`${role} ${label} admitted for ${JSON.stringify(one.trace.events)}`);
+        };
+        for (const [index, field] of right.items[0]!.fields.entries()) {
+          const swap = (label: string, next: Field) => {
+            if (same(next, field)) return;
+            const fields = right.items[0]!.fields.map((one, at) => (at === index ? next : one));
+            wrong(`${field.field} ${label}`, { ...right, items: [{ ...right.items[0]!, fields }] });
+          };
+          swap('placeholder', JSON.parse(JSON.stringify(field).replace(/"(id|command|digest|receipt|head|what|scope|report|form|allow|tool|probe|ref)":"[^"]*"/g, '"$1":"nothing"')));
+          if (other.ok) for (const theirs of other.value.record.fields) if (theirs.field === field.field) swap("another item's", theirs);
+          for (const record of stale) for (const old of record.fields) if (old.field === field.field) swap('stale', old);
+        }
+        for (const [index, value] of right.stop.entries()) {
+          const swap = (label: string, text: string) => {
+            if (text === value.value) return;
+            const values = right.stop.map((one, at) => (at === index ? { ...one, value: text } : one));
+            wrong(`${value.id} ${label}`, { ...right, stop: values });
+          };
+          for (const placeholder of ['nothing', 'none', 'n/a', '-']) swap(`placeholder ${placeholder}`, placeholder);
+          if (value.id === 'held') {
+            if (other.ok) swap("another item's", heldOracle(other.value.record));
+            for (const record of stale) if (heldOracle(record) !== '') swap('stale', heldOracle(record));
+            swap('unrelated', 'unrelated check (exit 0)');
+          }
+          // The step's own record of its held value is checked too, not only the claim's copy of it.
+          if (value.id === 'held') {
+            const forged = { ...stepped, stop: { ...stepped.stop, values: [{ ...value, value: 'unrelated check (exit 0)' }] } };
+            probed++;
+            if (admit(policy, forged, { ...right, stop: forged.stop.values }).length === 0) misses.push(`${role} forged held record admitted`);
+          }
+        }
+      }
+    }
+    expect(misses.slice(0, 5)).toEqual([]);
+    expect(probed > 10000).toBe(true);
+  });
+
+  test('the verifier\'s round-2 records: a dropped denial, an attempt after a settled pass and a finished run that never started are typed rejections', () => {
+    const policy = POLICIES.verifier;
+    const ci = (events: TraceEvent[]) => recordOf('ci', events.reduce((at, event) => step('verifier', at, event), freshSnapshot(true)));
+    const refused = ci([{ kind: 'begin', rev: 1 }, { kind: 'finish', rev: 1, result: 'unclear' }, { kind: 'deny', rev: 2, form: false }]);
+    expect(due(policy, refused).ok).toBe(true);
+    const dropped = due(policy, { ...refused, fields: refused.fields.filter((one) => one.field !== 'current') });
+    expect([dropped.ok, !dropped.ok && dropped.error.startsWith('ci: ') && dropped.error.includes('`refused`')]).toEqual([false, true]);
+    const passed = ci([{ kind: 'begin', rev: 1 }, { kind: 'finish', rev: 1, result: 'pass' }]);
+    const newer: Field = { field: 'current', attempt: { id: 'ci-r2', status: 'started', command: 'cmd:ci', output: { kind: 'missing', why: 'interrupted' } } };
+    expect(due(policy, { ...passed, fields: [...passed.fields, newer] }).ok).toBe(false);
+    const never = passed.fields.map((one): Field => (one.field === 'completed' ? { ...one, run: { ...one.run, output: { kind: 'missing', why: 'not-started' } } } : one));
+    expect(due(policy, { ...passed, fields: never }).ok).toBe(false);
   });
 });

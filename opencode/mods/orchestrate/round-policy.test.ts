@@ -134,12 +134,12 @@ describe("a hand-back, judged on exact evidence", () => {
     const stray: ItemRecord = { id: "stray", facts: facts({ assigned: false, required: true }), fields: [] }
     expect(due(project("verifier"), stray)).toEqual({
       ok: false,
-      error: "stray: a provenance belongs exactly to a verifier's finding outside its assignment; work outside the assignment is never attempted, required or held back, and is settled as found",
+      error: "stray: a verifier's finding is the unit's or the base's; another role's has no provenance (the only history the record could be the fold of)",
     })
     expect(due(project("implementor"), { ...red, facts: facts({ attempt: "fail", required: false }) }).ok).toBe(false)
   })
   test("a record whose evidence disagrees with its facts owes nothing: it is refused", () => {
-    expect(recordFaults("implementor", { ...red, fields: [] })).toEqual(["`completed` is due exactly when an attempt finished (facts: fail)"])
+    expect(recordFaults("implementor", { ...red, fields: [] })).toEqual(["gate: facts.attempt: the record says fail, its history leaves never"])
   })
 })
 
@@ -173,6 +173,7 @@ describe("a step, admitted only against its checked records", () => {
     const placeholder: Step = { stop: { stop: "idle", values: [{ id: "held", item: "spec", value: "nothing" }] }, items: [done] }
     expect(admit(project("implementor"), placeholder, { ...claim, stop: placeholder.stop.values })).toEqual([
       "ill-formed stop record: held: spec holds nothing back, so no entry is due for it",
+      `ill-formed stop record: held: spec: its trace derives "cmd:spec (exit 0)", the record "nothing"`,
     ])
     expect(admit(project("implementor"), { ...clean, stop: { stop: "idle", values: [{ id: "held", item: "spec", value: "" }] } }, claim).length).toBeGreaterThan(0)
   })

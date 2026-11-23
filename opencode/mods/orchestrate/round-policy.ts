@@ -10,9 +10,15 @@
 //               into the same Policy, strictly (fixed vocabulary, numbered priority, field names, version);
 //               `policyFaults(role, text)` compares what a host delivered with the source, field by field and
 //               byte for byte;
-//   evidence    an item's record holds its facts and its content-bound evidence fields (attempt ids, commands,
-//               output digests, receipts, heads, refusal scope and form, probes, wait refs); `due(policy, record)`
-//               is the hand-back the delivered policy owes for it, `judge(due, given)` every field that differs;
+//   trace       the contract's input: an item's `Trace`, its assignment and its events, each about the attempt it
+//               names (begin, observe, finish, interrupt, deny) or an obstacle (lift, host lost and back, wait open
+//               and close, settle); `fold(role, trace)` is the record it leaves (`Folded`, which only `fold` makes)
+//               or the first event that cannot happen where it stands, a typed rejection;
+//   evidence    the record holds its facts and its content-bound evidence fields (attempt ids, commands, output
+//               digests, receipts, heads, refusal scope and remedy, probes, wait refs), all derived by the fold; a
+//               record from outside is accepted only as the fold of the one trace it can be (`decodeRecord`);
+//               `dueTrace(policy, trace)` and `due(policy, record)` are the hand-back owed, `judge(due, given)` every
+//               field that differs; a held item's stop evidence is derived from its trace (`heldEvidence`);
 //   admission   `outcome(policy, stop, states)` the verdict, artifacts and stop fields; `admit(policy, step, claim)`
 //               every reason a claimed hand-back does not match the checked step.
 // A Policy is data: the tests mutate it to show each mutation is caught by the test meant to catch it.
@@ -71,7 +77,7 @@ export interface Run {
   readonly head: string
   readonly result: Result
 }
-export const PENDING = ["started", "interrupted", "denied", "not-started"] as const
+export const PENDING = ["started", "interrupted", "denied"] as const
 export type PendingStatus = (typeof PENDING)[number]
 /** An attempt newer than the last completed one, with no result: running, interrupted, or answered by a refusal. */
 export interface Pending {
@@ -267,8 +273,11 @@ export interface StopField {
   readonly presence: Presence
   readonly text: string
 }
-/** The states whose items hold a step back: what the `held` collection names, one entry each. */
-export const HOLDS_BACK = ["runnable", "waits", "refused", "cannot", "unclear"] as const satisfies ReadonlyArray<State>
+/**
+ * The states whose items hold an idle step back (a runnable item keeps the step going and a refusal stops it at once):
+ * what the `held` collection names, one entry each.
+ */
+export const HOLDS_BACK = ["waits", "cannot", "unclear"] as const satisfies ReadonlyArray<State>
 export interface StopEvidence {
   readonly stop: Stop
   readonly fields: ReadonlyArray<StopField>
@@ -387,22 +396,24 @@ const WHAT: StopField = { id: "refused.what", presence: "always", text: "what wa
 const FORM: StopField = { id: "refused.form", presence: "ifPrinted", text: "the `!` command it printed" }
 const ALLOW: StopField = { id: "refused.allow", presence: "ifPrinted", text: "the allow rule it printed" }
 const REMEDY = [WHAT, FORM, ALLOW]
+/** A held item's evidence, derived from its trace (`heldEvidence`): its last run, else the label of what keeps it from one. */
+const HELD: StopField = { id: "held", presence: "perHeld", text: "`<command> (exit <code>)` of its last run, else its label" }
 const STOP_AUTHORED = {
   planner: {
     refusalForm: REMEDY,
     refusalNone: [WHAT],
     limit: [{ id: "limit", presence: "always", text: "the clock (the timebox) or the count (the failure cap)" }],
-    idle: [{ id: "held", presence: "perHeld", text: "what you tried for the item, the options and your pick" }],
+    idle: [HELD],
   },
   verifier: {
     refusalForm: REMEDY,
     refusalNone: [WHAT],
-    idle: [{ id: "held", presence: "perHeld", text: "the check, with its command and exit code" }],
+    idle: [HELD],
   },
   worker: {
     refusalForm: REMEDY,
     refusalNone: [WHAT],
-    idle: [{ id: "held", presence: "perHeld", text: "what holds the item back" }],
+    idle: [HELD],
   },
 } as const satisfies { readonly [K in "planner" | "verifier" | "worker"]: { readonly [S in Stop]?: ReadonlyArray<StopField> } }
 
@@ -414,7 +425,7 @@ const stopAuthored = (role: Role, stop: Stop): ReadonlyArray<StopField> => {
 
 export const FIELD_TEXT = {
   completed: "the last attempt that finished: its id, the command it ran, its output's digest, its exit code, its receipt, the head it ran at and its result",
-  current: "an attempt newer than that, with no result: its id, its command, its status (started, interrupted, denied or not started) and its partial output's digest or why it has none",
+  current: "an attempt newer than that, with no result: its id, its command, its status (started, interrupted or denied) and its partial output's digest or why it has none",
   refused: "what was refused, as the refusal said it, its scope, where its safe report is, and the `!` command or allow rule it printed, or none",
   cannot: "the check or tool, with the probe that found it absent: its command and output",
   waits: "the id it waits on",
@@ -491,7 +502,7 @@ export const FIELDS_LEAD =
   "Each item's hand-back gives its rule, its label and each of these fields its record holds, with the exact values recorded; a field the record lacks is left out, never filled in or asserted, and a label wins only the presentation, never dropping another field:"
 export const FIRST_ROW = "Take the first row that is true of the item; stop there."
 export const FIRST_VERDICT = "Take the first row that holds for the step; stop there."
-export const STOPS_LEAD = "Why the step stopped gives the evidence fields you write; leave out a field with no value, never a placeholder:"
+export const STOPS_LEAD = "Why the step stopped gives the evidence fields you write:"
 export const F1_HEADER = "| # | Rule | State | An item that is | Its label |"
 export const F2_HEADER = "| # | Rule | Verdict | When | You write |"
 export const F3_HEADER = "| Stop | Field | Its evidence | How many |"
@@ -980,11 +991,8 @@ export const fieldKey = (field: Field): string => fieldLine(field, plain)
 /** A field's values as one line with every value quoted and escaped: how a judged difference is shown. */
 export const fieldShown = (field: Field): string => fieldLine(field, quoted)
 
-const has = (record: ItemRecord, id: FieldId): boolean => record.fields.some((one) => one.field === id)
-const isResult = (attempt: Attempt): boolean => RESULTS.some((one) => one === attempt)
 /** Each a string with a character other than white space: an empty or missing value is no value. */
 const filled = (...texts: ReadonlyArray<string>): boolean => texts.every((one) => one === String(one) && one.trim().length > 0)
-const outputOk = (output: Output): boolean => (output.kind === "missing" && MISSING.includes(output.why)) || ((output.kind === "log" || output.kind === "partial") && filled(output.digest))
 const isFlag = (value: boolean): boolean => value === true || value === false
 
 /** The keys each evidence value may hold: a key beyond them is a flag standing in for evidence. */
@@ -1015,103 +1023,356 @@ const keyFaults = (field: Field): ReadonlyArray<string> => {
   return extra([])
 }
 
-const fieldFaults = (field: Field, facts: Facts): ReadonlyArray<string> => {
+const unknownKeys = (field: Field): ReadonlyArray<string> => {
   const keys = keyFaults(field)
-  const unknown = iff(keys.length > 0, `\`${field.field}\` holds unknown keys [${keys.join(", ")}]: no flag stands in for evidence`)
-  if (field.field === "completed") {
-    const run = field.run
-    const empty = !filled(run.id, run.command, run.receipt, run.head) || !outputOk(run.output) || !Number.isInteger(run.exit)
-    return [...unknown, ...iff(empty, "`completed` lacks its id, command, output, exit, receipt or head"), ...iff(run.result !== facts.attempt, `\`completed\` holds result ${run.result}, the facts ${facts.attempt}`)]
-  }
-  if (field.field === "current") {
-    const bad = !filled(field.attempt.id, field.attempt.command) || !PENDING.includes(field.attempt.status) || !outputOk(field.attempt.output) || field.attempt.output.kind === "log"
-    return [...unknown, ...iff(bad, "`current` lacks its id, command or status, or claims a finished log")]
-  }
-  if (field.field === "refused") {
-    const r = field.refusal
-    const form = r.form.kind === "none" || (r.form.kind === "named" && filled(r.form.form)) || (r.form.kind === "allow" && filled(r.form.allow))
-    return [...unknown, ...iff(!filled(r.what, r.scope, r.report) || !form, "`refused` lacks what, scope or report, or holds an empty form or allow rule (a refusal that named none holds `none`)")]
-  }
-  if (field.field === "cannot") return [...unknown, ...iff(!filled(field.absent.tool, field.absent.probe) || !outputOk(field.absent.output), "`cannot` lacks its tool, probe or output")]
-  return [...unknown, ...iff(!filled(field.ref), "`waits` lacks its ref")]
+  return iff(keys.length > 0, `\`${field.field}\` holds unknown keys [${keys.join(", ")}]: no flag stands in for evidence`)
 }
 
-const attemptIds = (record: ItemRecord): ReadonlyArray<string> =>
-  record.fields.flatMap((one) => {
-    if (one.field === "completed") return [one.run.id]
-    if (one.field === "current") return [one.attempt.id]
-    return []
-  })
+// ---- the trace: an item's history, the contract's input --------------------------------------------------------------
+
+/** Whose the item is: assigned work (required, or a verifier's optional probe), or a finding outside the assignment. */
+export type Assignment = { readonly kind: "assigned"; readonly required: boolean } | { readonly kind: "found"; readonly provenance: Provenance }
 
 /**
- * Why an item's facts are none a step of this role can reach: the facts the item histories generate, and only
- * those, pass (skills/orchestrate/scripts/item-histories.ts derives the same set independently, by its events).
+ * One event of an item's history, each about the attempt it names. An attempt begins (`begin`), may have partial
+ * output observed (`observe`), and ends completed (`finish`: its command's exit, output, receipt and head), interrupted
+ * (`interrupt`), or answered by a refusal (`deny`: of the running attempt, or of a new one that never started). Every
+ * refusal is of an attempt: a denied read or git command while working the item is that item's attempt, never started.
+ * A refusal lifts (`lift`); the host loses and regains the check's tool (`hostLost`, `hostBack`); a wait opens and closes
+ * (`waitOpen`, `waitClose`); a verifier's unclear result stays unclear once no retry can settle it (`settle`).
  */
-export const factsFaults = (role: Role, facts: Facts): ReadonlyArray<string> => {
-  const flags = [facts.assigned, facts.required, facts.settled, facts.refused, facts.hostCannot, facts.wait].every(isFlag)
-  if (!flags || !ATTEMPTS.includes(facts.attempt) || !PROVENANCES.includes(facts.provenance)) return ["the facts are not an item's facts"]
-  return [...assignmentFaults(role, facts), ...attemptFaults(role, facts)]
+export type TraceEvent =
+  | { readonly kind: "begin"; readonly attempt: string; readonly command: string }
+  | { readonly kind: "observe"; readonly attempt: string; readonly digest: string }
+  | { readonly kind: "finish"; readonly attempt: string; readonly result: Result; readonly exit: number; readonly output: Output; readonly receipt: string; readonly head: string }
+  | { readonly kind: "interrupt"; readonly attempt: string; readonly output: Output }
+  | { readonly kind: "deny"; readonly attempt: string; readonly command: string; readonly refusal: Refusal }
+  | { readonly kind: "lift" }
+  | { readonly kind: "hostLost"; readonly absent: Absent }
+  | { readonly kind: "hostBack" }
+  | { readonly kind: "waitOpen"; readonly ref: string }
+  | { readonly kind: "waitClose" }
+  | { readonly kind: "settle" }
+export const TRACE_EVENTS = ["begin", "observe", "finish", "interrupt", "deny", "lift", "hostLost", "hostBack", "waitOpen", "waitClose", "settle"] as const satisfies ReadonlyArray<TraceEvent["kind"]>
+
+/** An item's whole history within a step: what the contract reads, and what a later unit stores. */
+export interface Trace {
+  readonly id: string
+  readonly assignment: Assignment
+  readonly events: ReadonlyArray<TraceEvent>
 }
 
-const obstructed = (facts: Facts): boolean => facts.refused || facts.hostCannot || facts.wait
+/** Where a trace stands after each event: at most one of each (an empty list is none). */
+interface Folding {
+  readonly settled: boolean
+  readonly run: ReadonlyArray<Run>
+  readonly pending: ReadonlyArray<Pending>
+  readonly refusal: ReadonlyArray<Refusal>
+  readonly absent: ReadonlyArray<Absent>
+  readonly waits: ReadonlyArray<string>
+  readonly attempts: ReadonlyArray<string>
+}
 
-/** Whose work the item is: a finding outside the assignment, optional work, provenance. */
-const assignmentFaults = (role: Role, facts: Facts): ReadonlyArray<string> => {
-  const outside = !facts.assigned
+const running = (at: Folding, attempt: string): boolean => at.pending.some((one) => one.status === "started" && one.id === attempt)
+/** A running attempt, or one interrupted whose result still arrives (a late result): never a denied one, which never started. */
+const finishable = (at: Folding, attempt: string): boolean => at.pending.some((one) => one.status !== "denied" && one.id === attempt)
+const runningAny = (at: Folding): boolean => at.pending.some((one) => one.status === "started")
+const free = (at: Folding): boolean => at.refusal.length === 0 && at.absent.length === 0 && at.waits.length === 0
+const fresh = (at: Folding, attempt: string): boolean => filled(attempt) && !at.attempts.includes(attempt)
+const settles = (role: Role, result: Result): boolean => result === "pass" || (role === "verifier" && result === "fail")
+const commandOf = (at: Folding, attempt: string): ReadonlyArray<string> => at.pending.flatMap((one) => [one.command].filter(() => one.id === attempt))
+
+const refusalOk = (refusal: Refusal): boolean =>
+  filled(refusal.what, refusal.scope, refusal.report) && (refusal.form.kind === "none" || (refusal.form.kind === "named" && filled(refusal.form.form)) || (refusal.form.kind === "allow" && filled(refusal.form.allow)))
+/** A finished attempt's output is its log, or the typed word that it ran with no authenticated evidence: never "not started". */
+const finishedOutput = (output: Output): boolean => (output.kind === "log" && filled(output.digest)) || (output.kind === "missing" && output.why === "missing-authenticated-evidence")
+const interruptedOutput = (output: Output): boolean => (output.kind === "partial" && filled(output.digest)) || (output.kind === "missing" && output.why === "interrupted")
+
+type Next = Decoded<Folding>
+
+const attemptStep = (role: Role, at: Folding, event: TraceEvent): Next => {
+  if (event.kind === "begin") {
+    if (!free(at) || runningAny(at) || !fresh(at, event.attempt) || !filled(event.command)) return fail("an attempt begins only while nothing holds the item, none runs, and with a new id and its command")
+    const pending: Pending = { id: event.attempt, command: event.command, status: "started", output: { kind: "missing", why: "missing-authenticated-evidence" } }
+    return ok({ ...at, pending: [pending], attempts: [...at.attempts, event.attempt] })
+  }
+  if (event.kind === "observe") {
+    if (!running(at, event.attempt) || !filled(event.digest)) return fail("output is observed only of the running attempt")
+    return ok({ ...at, pending: at.pending.map((one) => ({ ...one, output: { kind: "partial", digest: event.digest } })) })
+  }
+  if (event.kind === "finish") {
+    if (!finishable(at, event.attempt) || !RESULTS.includes(event.result) || !Number.isInteger(event.exit) || !finishedOutput(event.output) || !filled(event.receipt, event.head))
+      return fail("only the current attempt, running or interrupted, finishes, with its result, exit, output (a log, or no authenticated evidence), receipt and head")
+    const run: Run = { id: event.attempt, command: commandOf(at, event.attempt).join(""), output: event.output, exit: event.exit, receipt: event.receipt, head: event.head, result: event.result }
+    const settled = settles(role, event.result)
+    // A result that settles the item leaves nothing for a host loss or a wait opened during the run to hold back.
+    const cleared = { absent: at.absent.filter(() => !settled), waits: at.waits.filter(() => !settled) }
+    return ok({ ...at, ...cleared, run: [run], pending: [], settled })
+  }
+  if (event.kind === "interrupt") {
+    if (!running(at, event.attempt) || !interruptedOutput(event.output)) return fail("only the running attempt is interrupted, with its partial output or the word that it was interrupted")
+    return ok({ ...at, pending: at.pending.map((one) => ({ ...one, status: "interrupted", output: event.output })) })
+  }
+  return denyStep(at, event)
+}
+
+const denyStep = (at: Folding, event: TraceEvent): Next => {
+  if (event.kind !== "deny") return fail("no such event")
+  const ofRunning = running(at, event.attempt) && commandOf(at, event.attempt).includes(event.command)
+  const ofNew = !runningAny(at) && fresh(at, event.attempt) && filled(event.command)
+  if (at.refusal.length > 0 || (!ofRunning && !ofNew) || !refusalOk(event.refusal))
+    return fail("a refusal answers the running attempt or a new one, while no refusal holds the item, with what, scope, report and remedy")
+  const pending: Pending = { id: event.attempt, command: event.command, status: "denied", output: { kind: "missing", why: "not-started" } }
+  return ok({ ...at, pending: [pending], refusal: [event.refusal], attempts: [...at.attempts.filter((one) => one !== event.attempt), event.attempt] })
+}
+
+const obstacleStep = (role: Role, at: Folding, event: TraceEvent): Next => {
+  if (event.kind === "lift") return iffOk(at.refusal.length > 0, { ...at, refusal: [] }, "only a refusal that holds the item lifts")
+  if (event.kind === "hostLost") {
+    const { tool, probe, output } = event.absent
+    return iffOk(at.absent.length === 0 && filled(tool, probe) && finishedOutput(output), { ...at, absent: [event.absent] }, "the host loses a tool once, shown by its probe and the probe's output")
+  }
+  if (event.kind === "hostBack") return iffOk(at.absent.length > 0, { ...at, absent: [] }, "only a lost tool comes back")
+  if (event.kind === "waitOpen") return iffOk(at.waits.length === 0 && filled(event.ref), { ...at, waits: [event.ref] }, "a wait opens once, on its ref")
+  if (event.kind === "waitClose") return iffOk(at.waits.length > 0, { ...at, waits: [] }, "only an open wait closes")
+  const unclear = role === "verifier" && at.run.some((one) => one.result === "unclear") && !runningAny(at) && free(at)
+  return iffOk(unclear, { ...at, settled: true }, "only a verifier's unclear result, with no attempt running and nothing holding it, settles as unclear")
+}
+
+const iffOk = (good: boolean, next: Folding, why: string): Next => {
+  if (good) return ok(next)
+  return fail(why)
+}
+
+const ATTEMPT_EVENTS: ReadonlyArray<TraceEvent["kind"]> = ["begin", "observe", "finish", "interrupt", "deny"]
+
+/** One event after the trace so far: the next standing, or why the event cannot happen there. */
+const stepTrace = (role: Role, at: Folding, event: TraceEvent): Next => {
+  if (!TRACE_EVENTS.includes(event.kind)) return fail("no such event")
+  if (!wellFormed(event)) return fail(`the event holds other members than a ${event.kind} event's`)
+  if (at.settled) return fail("the item is settled: no event follows")
+  if (ATTEMPT_EVENTS.includes(event.kind)) return attemptStep(role, at, event)
+  return obstacleStep(role, at, event)
+}
+
+/** The members each event holds, exactly: a stored trace read back is checked before any member is read. */
+const EVENT_KEYS = {
+  begin: ["kind", "attempt", "command"],
+  observe: ["kind", "attempt", "digest"],
+  finish: ["kind", "attempt", "result", "exit", "output", "receipt", "head"],
+  interrupt: ["kind", "attempt", "output"],
+  deny: ["kind", "attempt", "command", "refusal"],
+  lift: ["kind"],
+  hostLost: ["kind", "absent"],
+  hostBack: ["kind"],
+  waitOpen: ["kind", "ref"],
+  waitClose: ["kind"],
+  settle: ["kind"],
+} as const satisfies { readonly [K in TraceEvent["kind"]]: ReadonlyArray<string> }
+const OUTPUT_KEYS = { log: ["kind", "digest"], partial: ["kind", "digest"], missing: ["kind", "why"] } as const
+const FORM_KEYS = { named: KEYS.named, none: KEYS.none, allow: KEYS.allow } as const
+
+/** A value's own members, none for a value that is no object (a member missing from a stored event). */
+const membersOf = (value: Output | Refusal | Absent | Form | TraceEvent): ReadonlyArray<string> => Object.keys(Object(value)).sort()
+const exactly = (value: Output | Refusal | Absent | Form | TraceEvent, keys: ReadonlyArray<string>): boolean => sameList(membersOf(value), [...keys].sort(), eq)
+const kindKeys = (table: { readonly [kind: string]: ReadonlyArray<string> }, value: Output | Form): boolean =>
+  Object.entries(table).some(([kind, keys]) => membersOf(value).includes("kind") && kind === value.kind && exactly(value, keys))
+const outputWell = (output: Output): boolean => kindKeys(OUTPUT_KEYS, Object(output))
+const refusalWell = (refusal: Refusal): boolean => exactly(refusal, KEYS.refusal) && kindKeys(FORM_KEYS, Object(refusal).form)
+const absentWell = (absent: Absent): boolean => exactly(absent, KEYS.absent) && outputWell(Object(absent).output)
+
+/** An event holding exactly its kind's members, each nested value exactly its own. */
+const wellFormed = (event: TraceEvent): boolean => {
+  const own = Object.entries(EVENT_KEYS).some(([kind, keys]) => kind === event.kind && exactly(event, keys))
+  if (!own) return false
+  if (event.kind === "finish" || event.kind === "interrupt") return outputWell(event.output)
+  if (event.kind === "deny") return refusalWell(event.refusal)
+  if (event.kind === "hostLost") return absentWell(event.absent)
+  return true
+}
+
+const START: Folding = { settled: false, run: [], pending: [], refusal: [], absent: [], waits: [], attempts: [] }
+
+const assignmentFaults = (role: Role, trace: Trace): ReadonlyArray<string> => {
+  const { assignment } = trace
+  if (assignment.kind === "assigned") return iff(!assignment.required && role !== "verifier", "only a verifier has optional work (a wider probe)")
+  const found = role === "verifier" && (assignment.provenance === "unit" || assignment.provenance === "base")
   return [
-    ...iff((role === "verifier" && outside) !== (facts.provenance !== "none"), "a provenance belongs exactly to a verifier's finding outside its assignment"),
-    ...iff(outside && (facts.attempt !== "never" || !facts.settled || obstructed(facts) || facts.required), "work outside the assignment is never attempted, required or held back, and is settled as found"),
-    ...iff(facts.assigned && !facts.required && role !== "verifier", "only a verifier has optional work"),
+    ...iff(!found && !(role !== "verifier" && assignment.provenance === "none"), "a verifier's finding is the unit's or the base's; another role's has no provenance"),
+    ...iff(trace.events.length > 0, "a finding outside the assignment is settled as found: no event follows"),
   ]
 }
 
-/** What its attempts and obstacles leave: settled only by a result that settles it, a refusal only after an attempt. */
-const attemptFaults = (role: Role, facts: Facts): ReadonlyArray<string> => {
-  const verifier = role === "verifier"
-  return [
-    ...iff(facts.assigned && facts.settled && !isResult(facts.attempt), "a settled item is settled by a result"),
-    ...iff(!verifier && facts.assigned && facts.settled && facts.attempt !== "pass", "only its acceptance holding settles a planner's, implementor's or worker's item"),
-    ...iff(verifier && facts.attempt === "fail" && !facts.settled, "a verifier's failed check is a proof, which settles it"),
-    ...iff(facts.refused && facts.attempt === "never", "a refusal answers an attempt"),
-    ...iff(facts.attempt === "pass" && !facts.settled, "a passed item is settled"),
-    ...iff(facts.settled && obstructed(facts), "a settled item meets no obstacle"),
-  ]
+const factsOf = (assignment: Assignment, at: Folding): Facts => {
+  const assigned = assignment.kind === "assigned"
+  return {
+    assigned,
+    required: assignment.kind === "assigned" && assignment.required,
+    attempt: attemptOf(at),
+    settled: !assigned || at.settled,
+    refused: at.refusal.length > 0,
+    hostCannot: at.absent.length > 0,
+    wait: at.waits.length > 0,
+    provenance: provenanceOf(assignment),
+  }
+}
+const attemptOf = (at: Folding): Attempt => {
+  for (const run of at.run) return run.result
+  if (at.pending.length > 0) return "started"
+  return "never"
+}
+const provenanceOf = (assignment: Assignment): Provenance => {
+  if (assignment.kind === "found") return assignment.provenance
+  return "none"
 }
 
-const presence = (record: ItemRecord): ReadonlyArray<readonly [boolean, string]> => {
+const fieldsOf = (at: Folding): ReadonlyArray<Field> => [
+  ...at.run.map((run): Field => ({ field: "completed", run })),
+  ...at.pending.map((attempt): Field => ({ field: "current", attempt })),
+  ...at.refusal.map((refusal): Field => ({ field: "refused", refusal })),
+  ...at.absent.map((absent): Field => ({ field: "cannot", absent })),
+  ...at.waits.map((ref): Field => ({ field: "waits", ref })),
+]
+
+/**
+ * The record a trace folds to: what the rows read, beside the trace it is the fold of. Only `fold` makes one: the class
+ * is not exported and its private member makes the type nominal, so no literal or other object can stand for it.
+ */
+class FoldOf {
+  constructor(
+    readonly role: Role,
+    readonly record: ItemRecord,
+    private readonly source: Trace,
+  ) {}
+  /** The history this record is the fold of: what a later unit stores. */
+  get trace(): Trace {
+    return this.source
+  }
+}
+export type Folded = FoldOf
+
+/** The record an item's trace leaves, or the first event that cannot happen where it stands (a typed rejection). */
+export const fold = (role: Role, trace: Trace): Decoded<Folded> => {
+  const assigned = assignmentFaults(role, trace)
+  if (!filled(trace.id)) return fail("the item has no id")
+  if (assigned.length > 0) return fail(`${trace.id}: ${assigned.join("; ")}`)
+  let at: Folding = START
+  for (const [index, event] of trace.events.entries()) {
+    const next = stepTrace(role, at, event)
+    if (!next.ok) return fail(`${trace.id}: event ${index + 1} (${event.kind}): ${next.error}`)
+    at = next.value
+  }
+  return ok(new FoldOf(role, { id: trace.id, facts: factsOf(trace.assignment, at), fields: fieldsOf(at) }, trace))
+}
+
+// ---- a record from outside: decoded into the trace it must be the fold of ---------------------------------------------
+
+/** One kind of evidence a record holds, each value as its field carries it. */
+const runOf = (field: Field): ReadonlyArray<Run> => {
+  if (field.field === "completed") return [field.run]
+  return []
+}
+const pendingOf = (field: Field): ReadonlyArray<Pending> => {
+  if (field.field === "current") return [field.attempt]
+  return []
+}
+const refusalOf = (field: Field): ReadonlyArray<Refusal> => {
+  if (field.field === "refused") return [field.refusal]
+  return []
+}
+const absentOf = (field: Field): ReadonlyArray<Absent> => {
+  if (field.field === "cannot") return [field.absent]
+  return []
+}
+const waitOf = (field: Field): ReadonlyArray<string> => {
+  if (field.field === "waits") return [field.ref]
+  return []
+}
+const runsIn = (record: ItemRecord) => record.fields.flatMap(runOf)
+const pendingIn = (record: ItemRecord) => record.fields.flatMap(pendingOf)
+const refusalsIn = (record: ItemRecord) => record.fields.flatMap(refusalOf)
+const absentIn = (record: ItemRecord) => record.fields.flatMap(absentOf)
+const waitsIn = (record: ItemRecord) => record.fields.flatMap(waitOf)
+const observedOf = (attempt: Pending): ReadonlyArray<TraceEvent> => {
+  if (attempt.output.kind === "partial") return [{ kind: "observe", attempt: attempt.id, digest: attempt.output.digest }]
+  return []
+}
+
+
+/** The refusal a lifted denial answered: not in the record (a lifted refusal leaves none), so any well-formed one witnesses it. */
+const liftedWitness = (attempt: Pending): Refusal => ({ what: attempt.command, scope: attempt.command, report: attempt.id, form: { kind: "none" } })
+
+const pendingEvents = (record: ItemRecord, attempt: Pending): ReadonlyArray<TraceEvent> => {
+  const begin: TraceEvent = { kind: "begin", attempt: attempt.id, command: attempt.command }
+  if (attempt.status === "interrupted") return [begin, { kind: "interrupt", attempt: attempt.id, output: attempt.output }]
+  if (attempt.status === "denied") {
+    const refusals = refusalsIn(record)
+    const deny = (refusal: Refusal): TraceEvent => ({ kind: "deny", attempt: attempt.id, command: attempt.command, refusal })
+    if (refusals.length > 0) return refusals.map(deny)
+    return [deny(liftedWitness(attempt)), { kind: "lift" }]
+  }
+  return [begin, ...observedOf(attempt)]
+}
+
+/**
+ * The one trace a record can be the fold of: its completed attempt, then its current one (a refusal is of it), its
+ * settling as unclear, then what holds the item. A record is accepted only when this trace folds back to it exactly, so a record no history
+ * leaves (a refusal with its denied attempt dropped, an attempt after a settled pass, a finished run that never
+ * started) is rejected by the event that cannot happen or by the field the fold does not leave.
+ */
+export const traceOf = (record: ItemRecord): Trace => {
   const { facts } = record
-  return [
-    [!facts.assigned && record.fields.length > 0, "work outside the assignment carries no attempt or obstacle evidence"],
-    [has(record, "completed") !== isResult(facts.attempt), `\`completed\` is due exactly when an attempt finished (facts: ${facts.attempt})`],
-    [facts.attempt === "started" && !has(record, "current"), "an attempt with no result yet needs its `current` field"],
-    [facts.attempt === "never" && has(record, "current"), "an item never attempted has no `current` attempt"],
-    [has(record, "refused") !== facts.refused, "`refused` is due exactly when a refusal holds the item"],
-    [has(record, "cannot") !== facts.hostCannot, "`cannot` is due exactly when this host cannot run the item"],
-    [has(record, "waits") !== facts.wait, "`waits` is due exactly when a wait holds the item"],
-    [unique(attemptIds(record)).length > 0, "`current` and `completed` are the same attempt"],
+  if (!facts.assigned) return { id: record.id, assignment: { kind: "found", provenance: facts.provenance }, events: [] }
+  const completed = runsIn(record).flatMap((run): ReadonlyArray<TraceEvent> => [
+    { kind: "begin", attempt: run.id, command: run.command },
+    { kind: "finish", attempt: run.id, result: run.result, exit: run.exit, output: run.output, receipt: run.receipt, head: run.head },
+  ])
+  const settle: ReadonlyArray<TraceEvent> = [{ kind: "settle" } as const].filter(() => facts.settled && facts.attempt === "unclear")
+  const holds: ReadonlyArray<TraceEvent> = [
+    ...absentIn(record).map((absent): TraceEvent => ({ kind: "hostLost", absent })),
+    ...waitsIn(record).map((ref): TraceEvent => ({ kind: "waitOpen", ref })),
   ]
+  const current = pendingIn(record).flatMap((attempt) => pendingEvents(record, attempt))
+  return { id: record.id, assignment: { kind: "assigned", required: facts.required }, events: [...completed, ...current, ...settle, ...holds] }
 }
 
-/**
- * Why a record is no step's item for this role: its facts are unreachable, its evidence disagrees with them, or a
- * field is empty, doubled or carries keys beyond its shape. A valid empty field set is no fault.
- */
-export const recordFaults = (role: Role, record: ItemRecord): ReadonlyArray<string> => {
-  const facts = factsFaults(role, record.facts)
-  if (facts.length > 0) return [...iff(!filled(record.id), "the item has no id"), ...facts]
-  return [
-    ...iff(!filled(record.id), "the item has no id"),
-    ...unique(record.fields.map((one) => one.field)).map((id) => `\`${id}\` stands twice`),
-    ...record.fields.flatMap((one) => iff(!FIELDS.includes(one.field), `\`${one.field}\` is no evidence field`)),
-    ...presence(record).flatMap(([bad, why]) => iff(bad, why)),
-    ...record.fields.filter((one) => FIELDS.includes(one.field)).flatMap((field) => fieldFaults(field, record.facts)),
-  ]
+const FACT_KEYS = ["assigned", "required", "attempt", "settled", "refused", "hostCannot", "wait", "provenance"] as const satisfies ReadonlyArray<keyof Facts>
+
+/** Every way a record differs from the fold of its trace, member by member. */
+const foldDifferences = (record: ItemRecord, folded: ItemRecord): ReadonlyArray<string> => [
+  ...FACT_KEYS.flatMap((key) => iff(record.facts[key] !== folded.facts[key], `facts.${key}: the record says ${String(record.facts[key])}, its history leaves ${String(folded.facts[key])}`)),
+  ...record.fields.flatMap((field) => iff(!folded.fields.some((one) => sameField(one, field)), `\`${field.field}\` ${fieldShown(field)}: no history leaves it beside the record's other fields`)),
+  ...folded.fields.flatMap((field) => iff(!record.fields.some((one) => sameField(one, field)), `\`${field.field}\`: the record lacks ${fieldShown(field)}, which its history leaves`)),
+]
+
+/** A record from outside read as the fold of a trace: accepted only when some history leaves exactly it. */
+export const decodeRecord = (role: Role, record: ItemRecord): Decoded<Folded> => {
+  const keys = record.fields.flatMap(unknownKeys)
+  const doubled = unique(record.fields.map((one) => one.field)).map((id) => `\`${id}\` stands twice`)
+  const flags = [record.facts.assigned, record.facts.required, record.facts.settled, record.facts.refused, record.facts.hostCannot, record.facts.wait].every(isFlag)
+  const known = flags && ATTEMPTS.includes(record.facts.attempt) && PROVENANCES.includes(record.facts.provenance) && record.fields.every((one) => FIELDS.includes(one.field))
+  if (!known) return fail(`${record.id}: the record's facts or fields are not an item's`)
+  if (keys.length > 0 || doubled.length > 0) return fail(`${record.id}: ${[...keys, ...doubled].join("; ")}`)
+  const folded = fold(role, traceOf(record))
+  if (!folded.ok) return fail(`${folded.error} (the only history the record could be the fold of)`)
+  const off = foldDifferences(record, folded.value.record)
+  if (off.length > 0) return fail(`${record.id}: ${off.join("; ")}`)
+  return folded
 }
+
+/** Why a record is the fold of no history this role can have: empty when it is one. */
+export const recordFaults = (role: Role, record: ItemRecord): ReadonlyArray<string> => {
+  const got = decodeRecord(role, record)
+  if (got.ok) return []
+  return [got.error]
+}
+
+// ---- the hand-back an item owes ---------------------------------------------------------------------------------------
 
 /** The first row of a policy true of an item with these atoms (the catch-all when none above is). */
 export const decide = (policy: Policy, atoms: ReadonlySet<Atom>): ReadonlyArray<Row> => firstOf(policy.rows, (row) => row.when === "otherwise" || row.when.every((atom) => atoms.has(atom)))
 
-/** What a hand-back must hold for one item: the row's rule and label, and every evidence field the policy names that the record holds. */
+/** What a hand-back must hold for one item: the row's rule and label, and every evidence field its trace leaves. */
 export interface Due {
   readonly item: string
   readonly rule: string
@@ -1132,13 +1393,33 @@ const firstFound = <A>(items: ReadonlyArray<A>, why: string): Decoded<A> => {
   return fail(why)
 }
 
-/** The hand-back a policy owes for a record, or the typed rejection of a record no step of its role reaches. */
-export const due = (policy: Policy, record: ItemRecord): Decoded<Due> => {
-  const faults = recordFaults(policy.role, record)
-  if (faults.length > 0) return fail(`${record.id}: ${faults.join("; ")}`)
+/** The hand-back a policy owes for a folded item. */
+export const dueOf = (policy: Policy, folded: Folded): Decoded<Due> => {
+  const { record } = folded
+  if (folded.role !== policy.role) return fail(`${record.id}: folded for a ${folded.role}, judged for a ${policy.role}`)
   const named = policy.fields.map((field) => field.id)
-  const rows = decide(policy, truths([record.facts])).map((row) => ({ item: record.id, rule: row.id, state: row.state, label: row.label, fields: record.fields.filter((field) => named.includes(field.field)) }))
+  const rows = decide(policy, truths([record.facts])).map((row) => ({
+    item: record.id,
+    rule: row.id,
+    state: row.state,
+    label: row.label,
+    fields: record.fields.filter((field) => named.includes(field.field)),
+  }))
   return firstFound(rows, `${record.id}: no row is true`)
+}
+
+/** The hand-back a policy owes for an item's trace, or the typed rejection of a trace no history is. */
+export const dueTrace = (policy: Policy, trace: Trace): Decoded<Due> => {
+  const folded = fold(policy.role, trace)
+  if (!folded.ok) return fail(folded.error)
+  return dueOf(policy, folded.value)
+}
+
+/** The hand-back a policy owes for a record from outside, or the typed rejection of a record no history leaves. */
+export const due = (policy: Policy, record: ItemRecord): Decoded<Due> => {
+  const folded = decodeRecord(policy.role, record)
+  if (!folded.ok) return fail(folded.error)
+  return dueOf(policy, folded.value)
 }
 
 const HAND_BACK_KEYS: ReadonlyArray<string> = ["item", "rule", "label", "fields"]
@@ -1163,6 +1444,68 @@ export const judge = (owed: Due, given: HandBack): ReadonlyArray<string> => {
     ...iff(!Array.isArray(given.fields), "fields: due a list of evidence fields, given none"),
     ...fieldFaultsOf(owed, [given.fields].filter((fields) => Array.isArray(fields)).flat()),
   ]
+}
+
+// ---- a held item's evidence, derived from its trace ---------------------------------------------------------------------
+
+/**
+ * What keeps a held item from settling, derived from its folded trace: its last completed run's command and exit, or,
+ * when nothing ran to the end, the typed reason (a refusal with its remedy, the tool this host lacks, the ref it waits
+ * on), in the rows' order. Never a free-text field echoed back.
+ */
+export type HeldEvidence =
+  | { readonly kind: "ran"; readonly command: string; readonly exit: number }
+  | { readonly kind: "refused"; readonly what: string; readonly form: Form }
+  | { readonly kind: "cannot"; readonly tool: string }
+  | { readonly kind: "waits"; readonly ref: string }
+
+export const heldEvidence = (folded: Folded): ReadonlyArray<HeldEvidence> => {
+  const { record } = folded
+  const ran = runsIn(record).map((run): HeldEvidence => ({ kind: "ran", command: run.command, exit: run.exit }))
+  const why: ReadonlyArray<HeldEvidence> = [
+    ...refusalsIn(record).map((refusal): HeldEvidence => ({ kind: "refused", what: refusal.what, form: refusal.form })),
+    ...absentIn(record).map((absent): HeldEvidence => ({ kind: "cannot", tool: absent.tool })),
+    ...waitsIn(record).map((ref): HeldEvidence => ({ kind: "waits", ref })),
+  ]
+  return [...ran, ...why].slice(0, 1)
+}
+
+const remedyText = (form: Form): string => {
+  if (form.kind === "named") return `; form: ${form.form}`
+  if (form.kind === "allow") return `; form: ${form.allow}`
+  return ""
+}
+/** A held item's evidence as a report writes it: `<command> (exit <code>)`, else its label's words. */
+export const heldText = (evidence: HeldEvidence): string => {
+  if (evidence.kind === "ran") return `${evidence.command} (exit ${evidence.exit})`
+  if (evidence.kind === "refused") return `refused: ${evidence.what}${remedyText(evidence.form)}`
+  if (evidence.kind === "cannot") return `cannot run here: ${evidence.tool}`
+  return `waits on ${evidence.ref}`
+}
+
+/** A written held value read in the grammar of the evidence it must be, into its members: none when it is not of it. */
+const heldRead = (want: HeldEvidence, text: string): ReadonlyArray<HeldEvidence> => {
+  if (want.kind === "ran") return groupsOf(text, /^([\s\S]+) \(exit (-?\d+)\)$/).map(([command = "", exit = ""]): HeldEvidence => ({ kind: "ran", command, exit: Number(exit) }))
+  if (want.kind === "cannot") return groupsOf(text, /^cannot run here: ([\s\S]+)$/).map(([tool = ""]): HeldEvidence => ({ kind: "cannot", tool }))
+  if (want.kind === "waits") return groupsOf(text, /^waits on ([\s\S]+)$/).map(([ref = ""]): HeldEvidence => ({ kind: "waits", ref }))
+  if (want.form.kind === "none") return groupsOf(text, /^refused: ([\s\S]+)$/).map(([what = ""]): HeldEvidence => ({ kind: "refused", what, form: want.form }))
+  const kind = want.form.kind
+  return groupsOf(text, /^refused: ([\s\S]+); form: ([\s\S]+)$/).map(([what = "", remedy = ""]): HeldEvidence => ({ kind: "refused", what, form: formOf(kind, remedy) }))
+}
+const formOf = (kind: "named" | "allow", text: string): Form => {
+  if (kind === "named") return { kind, form: text }
+  return { kind, allow: text }
+}
+/** The capture groups of each whole-text match of `pattern` (anchored, so one at most). */
+const groupsOf = (text: string, pattern: RegExp): ReadonlyArray<ReadonlyArray<string>> => [...text.matchAll(new RegExp(pattern.source, "g"))].map((match) => match.slice(1))
+
+/** Two held evidence values equal member by member. */
+export const sameHeld = (a: HeldEvidence, b: HeldEvidence): boolean => {
+  if (a.kind === "ran" && b.kind === "ran") return a.command === b.command && a.exit === b.exit
+  if (a.kind === "refused" && b.kind === "refused") return a.what === b.what && sameForm(a.form, b.form)
+  if (a.kind === "cannot" && b.kind === "cannot") return a.tool === b.tool
+  if (a.kind === "waits" && b.kind === "waits") return a.ref === b.ref
+  return false
 }
 
 // ---- the step: verdict, artifacts and stop evidence -----------------------------------------------------------------
@@ -1207,8 +1550,9 @@ export const outcome = (policy: Policy, stop: Stop, states: ReadonlyArray<State>
 }
 
 /**
- * A stop evidence field's value: one of a single-valued field, or one `held` entry naming the item it is for. A field
- * the refusal did not print, or a `held` collection with nothing held, is told by leaving the entries out.
+ * A stop evidence field's value: one of a single-valued field, or one `held` entry naming the item it is for, its value
+ * written as `heldText` writes that item's derived evidence. A field the refusal did not print, or a `held` collection
+ * with nothing held, is told by leaving the entries out.
  */
 export type StopValue =
   | { readonly id: "refused.what" | "refused.form" | "refused.allow" | "limit"; readonly value: string }
@@ -1250,6 +1594,17 @@ const countFaults = (field: StopField, entries: ReadonlyArray<StopValue>, held: 
   ]
 }
 
+/** Each held entry against the evidence its item's trace derives, read in that evidence's grammar, member by member. */
+const heldValueFaults = (values: ReadonlyArray<StopValue>, folded: ReadonlyArray<Folded>): ReadonlyArray<string> =>
+  values.flatMap((value) =>
+    heldItem(value).flatMap((item) =>
+      folded
+        .filter((one) => one.record.id === item)
+        .flatMap(heldEvidence)
+        .flatMap((want) => iff(!heldRead(want, value.value).some((got) => sameHeld(got, want)), `held: ${item}: its trace derives ${quoted(heldText(want))}, the record ${quoted(value.value)}`)),
+    ),
+  )
+
 /** The remedy a refusal printed for one stop field: the `!` command for `refused.form`, the allow rule for `refused.allow`. */
 const remedyOf = (form: Form, id: StopFieldId): ReadonlyArray<string> => {
   if (form.kind === "named" && id === "refused.form") return [form.form]
@@ -1259,13 +1614,12 @@ const remedyOf = (form: Form, id: StopFieldId): ReadonlyArray<string> => {
 
 /** The refusal the step stopped on, bound to the refused item's own record: what it said and the remedy it printed, if any. */
 const refusalFaults = (stop: Stop, fields: ReadonlyArray<StopField>, values: ReadonlyArray<StopValue>, items: ReadonlyArray<ItemRecord>): ReadonlyArray<string> => {
-  const refusals = items.flatMap((record) => record.fields.flatMap((field) => [field].filter((one) => one.field === "refused")))
-  return refusals.flatMap((field) => {
-    if (field.field !== "refused") return []
-    const { what, form } = field.refusal
+  const refusals = items.flatMap(refusalsIn)
+  return refusals.flatMap((refusal) => {
+    const { what, form } = refusal
     const printed = form.kind !== "none"
     return [
-      ...values.flatMap((one) => iff(one.id === "refused.what" && one.value !== what, `refused.what: the refused item's record says ${what}, the stop ${one.value}`)),
+      ...values.flatMap((one) => iff(one.id === "refused.what" && one.value !== what, `refused.what: the refused item's record says ${quoted(what)}, the stop ${quoted(one.value)}`)),
       ...iff(stop === "refusalForm" && !printed, "the refused item's refusal printed no remedy, so the stop is a refusal that named none"),
       ...iff(stop === "refusalNone" && printed, "the refused item's refusal printed a remedy, so the stop is a refusal that named one"),
       ...fields.flatMap((one) => {
@@ -1277,10 +1631,10 @@ const refusalFaults = (stop: Stop, fields: ReadonlyArray<StopField>, values: Rea
   })
 }
 
-/** Why a recorded stop is none this step reached: a field it lacks or doubles, an empty value, an entry for no held item. */
-export const stopRecordFaults = (policy: Policy, step: Step, owed: ReadonlyArray<Due>): ReadonlyArray<string> => {
+/** Why a recorded stop is none this step reached: a field it lacks or doubles, an empty value, a value its items' traces do not derive. */
+export const stopRecordFaults = (policy: Policy, step: Step, owed: ReadonlyArray<Due>, folded: ReadonlyArray<Folded>): ReadonlyArray<string> => {
   const fields = policy.stops.filter((one) => one.stop === step.stop.stop).flatMap((one) => one.fields)
-  const states: ReadonlyArray<State> = HOLDS_BACK
+  const states = heldStates(policy.role)
   const held = owed.flatMap((one) => [one.item].filter(() => states.includes(one.state)))
   const values = step.stop.values
   return [
@@ -1288,6 +1642,7 @@ export const stopRecordFaults = (policy: Policy, step: Step, owed: ReadonlyArray
     ...values.flatMap((one) => iff(!filled(one.value), `${one.id}: an empty value is no value; leave the field out to tell its absence`)),
     ...fields.flatMap((field) => countFaults(field, values.filter((one) => one.id === field.id), held)),
     ...refusalFaults(step.stop.stop, fields, values, step.items),
+    ...heldValueFaults(values, folded),
   ]
 }
 
@@ -1315,7 +1670,9 @@ const itemFaults = (dues: ReadonlyArray<Due>, claim: Claim): ReadonlyArray<strin
 export const admit = (policy: Policy, step: Step, claim: Claim): ReadonlyArray<string> => {
   const twice = unique(step.items.map((record) => record.id))
   if (twice.length > 0) return twice.map((id) => `ill-formed step: item ${id} stands twice`)
-  const owed = allOk(step.items.map((record) => due(policy, record)))
+  const folded = allOk(step.items.map((record) => decodeRecord(policy.role, record)))
+  if (!folded.ok) return [`ill-formed item: ${folded.error}`]
+  const owed = allOk(folded.value.map((one) => dueOf(policy, one)))
   if (!owed.ok) return [`ill-formed item: ${owed.error}`]
   const result = outcome(
     policy,
@@ -1323,7 +1680,7 @@ export const admit = (policy: Policy, step: Step, claim: Claim): ReadonlyArray<s
     owed.value.map((one) => one.state),
   )
   if (!result.ok) return [`ill-formed step: ${result.error}`]
-  const recorded = stopRecordFaults(policy, step, owed.value)
+  const recorded = stopRecordFaults(policy, step, owed.value, folded.value)
   if (recorded.length > 0) return recorded.map((line) => `ill-formed stop record: ${line}`)
   const { verdict, writes } = result.value
   return [
