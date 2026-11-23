@@ -1,12 +1,11 @@
 #!/usr/bin/env bun
-import { argv, stdin } from "bun"
+import { argv, env, stdin } from "bun"
 import { Cause, Config, Console, Effect, FileSystem, Option, Path, Predicate, Schema } from "effect"
-import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { AdmissionUnavailable } from "@dotfiles/opencode-guard/admission"
-import { Counter, OpaqueId, Request } from "@dotfiles/opencode-guard/admission-wire"
+import { Counter, OpaqueId, Purpose, Request } from "@dotfiles/opencode-guard/admission-wire"
+import { argvWidth, joinWidth, readWidth } from "@dotfiles/opencode-guard/check-demand"
 import { Holder } from "@dotfiles/opencode-guard/host-resources"
-import { CHECK_PROFILE } from "@dotfiles/opencode-guard/host-supply"
 import * as Admission from "./admission.ts"
 
 const help = `host-admit v1
@@ -18,7 +17,7 @@ const help = `host-admit v1
   lease cancel --id ID --json
   holder put --json                    read a bounded JSONL observation batch
   holder list --json [--after-revision N] [--snapshot N]
-  check run [--class check|land-check|vm|inventory|exclusive-check] -- COMMAND [ARGS...]
+  check run [--class check|land-check|vm|inventory|exclusive-check] [--width N|unknown] -- COMMAND [ARGS...]
 `
 
 const bad = () => new AdmissionUnavailable({ reason: "invalid-request" })
@@ -119,16 +118,29 @@ const holder = Effect.fn("HostAdmit.holder")(function* (host: Host, args: Readon
   return 0
 })
 
-const purposeOf = Schema.decodeUnknownOption(Request.fields.purpose)
+const purposeOf = Schema.decodeUnknownOption(Purpose)
 const check = Effect.fn("HostAdmit.check")(function* (host: Host, args: ReadonlyArray<string>) {
-  const [action, flag, named, delimiter] = args
-  const shorthand = flag === "--"
-  const purpose = purposeOf((shorthand && "check") || named)
-  const payload = args.slice(4 - 2 * Number(shorthand))
-  if (action !== "run" || (flag !== "--" && (flag !== "--class" || delimiter !== "--")) ||
-    Option.isNone(purpose) || payload.length === 0) return yield* bad()
-  const profile = CHECK_PROFILE[purpose.value]
-  return yield* host.run(purpose.value, profile.cpuMilli, profile.memoryBytes, payload)
+  const [action, ...rest] = args
+  const delimiter = rest.indexOf("--")
+  const payload = rest.slice(delimiter + 1)
+  if (action !== "run" || delimiter < 0 || payload.length === 0 || delimiter % 2 !== 0) return yield* bad()
+  let purpose = purposeOf("check")
+  let width = argvWidth(payload, env.GOMAXPROCS)
+  const seen = new Set<string>()
+  for (let i = 0; i < delimiter; i += 2) {
+    const flag = rest[i] ?? ""
+    const value = rest[i + 1] ?? ""
+    if (seen.has(flag)) return yield* bad()
+    seen.add(flag)
+    if (flag === "--class") purpose = purposeOf(value)
+    else if (flag === "--width") {
+      const hint = readWidth(value)
+      if (hint === "unknown" && value !== "unknown") return yield* bad()
+      width = joinWidth(width, hint)
+    } else return yield* bad()
+  }
+  if (Option.isNone(purpose)) return yield* bad()
+  return yield* host.run({ purpose: purpose.value, width }, payload)
 })
 
 export const command = Effect.fn("HostAdmit.command")(function* (host: Host, args: ReadonlyArray<string>) {
@@ -144,7 +156,7 @@ export const command = Effect.fn("HostAdmit.command")(function* (host: Host, arg
   return yield* bad()
 })
 
-const main = Effect.fn("HostAdmit.main")(function* (args: ReadonlyArray<string>) {
+const main = Effect.fn("HostAdmit.main")(function* (args: ReadonlyArray<string>, onForeground: (owned: boolean) => void) {
   if (args[0] === "--version") {
     yield* Console.log("host-admit 1")
     return 0
@@ -165,25 +177,30 @@ const main = Effect.fn("HostAdmit.main")(function* (args: ReadonlyArray<string>)
   const script = yield* path.fromFileUrl(new URL("host-admit.ts", import.meta.url))
   const [executable = "bun"] = argv
   return yield* Effect.scoped(Effect.gen(function* () {
-    const host = yield* Admission.open({ cwd, directory, executable, script })
+    const host = yield* Admission.open({ cwd, directory, executable, script, onForeground })
     return yield* command(host, args)
   }))
 })
 
 // Only the process entry sets an exit code; importing `command` starts no IO.
 if (import.meta.main) {
-  BunRuntime.runMain(main(argv.slice(2)).pipe(
+  let foreground = false
+  const task = Effect.runFork(main(argv.slice(2), (owned) => { foreground = owned }).pipe(
     Effect.catchTag("AdmissionUnavailable", ({ reason }) => print({ version: 1, state: "refused", reason }).pipe(Effect.as(2))),
-    Effect.flatMap((code) => {
-      if (code === 0) return Effect.void
-      return Effect.fail(code)
-    }),
     Effect.provide(BunServices.layer),
-  ), {
-    disableErrorReporting: true,
-    teardown: (result, done) => {
-      if (result._tag === "Success") return done(0)
-      done(Option.getOrElse(Option.filter(Cause.findErrorOption(result.cause), Predicate.isNumber), () => 1))
-    },
+  ))
+  const end = () => { task.interruptUnsafe(task.id) }
+  const interrupt = () => {
+    // The terminal already sent SIGINT to every member of the owned group.
+    // Reap the payload's real exit before closing the inherited descriptor.
+    if (!foreground) end()
+  }
+  process.on("SIGINT", interrupt)
+  process.on("SIGTERM", end)
+  task.addObserver((result) => {
+    process.off("SIGINT", interrupt)
+    process.off("SIGTERM", end)
+    if (result._tag === "Success") process.exitCode = result.value
+    else process.exitCode = Option.getOrElse(Option.filter(Cause.findErrorOption(result.cause), Predicate.isNumber), () => 1)
   })
 }

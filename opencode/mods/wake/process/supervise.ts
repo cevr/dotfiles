@@ -36,9 +36,11 @@
 import { dlopen, FFIType } from "bun:ffi"
 import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs"
 import path from "node:path"
-import { Duration, Effect, Match, Option, Result, Schedule, Schema } from "effect"
+import { Duration, Effect, Match, Option, Predicate, Result, Schedule, Schema } from "effect"
 import { DEFAULT_HEAVY, isHeavy } from "@dotfiles/opencode-guard/heavy"
-import { admissionPurpose, DEFAULT_LIMITS, heavyArgv, type Host, ioniceAvailable, SCOPE_PROBE } from "@dotfiles/opencode-guard/launcher"
+import { shellCheck, DEFAULT_LIMITS, heavyArgv, type Host, ioniceAvailable, SCOPE_PROBE } from "@dotfiles/opencode-guard/launcher"
+import { checkPrefix } from "@dotfiles/opencode-guard/check-demand"
+import { issue, type Actuation } from "@dotfiles/opencode-guard/process/actuation"
 import { heavyJob, jobArgv } from "../job-admission.ts"
 import type { Descriptor } from "../backstop.ts"
 import { type JobExit, type JobSpec, KILL_GRACE_MS } from "../job.ts"
@@ -405,8 +407,9 @@ export const argvOf = (spec: Pick<JobSpec, "command" | "heavy">, host: () => Hos
 
 export const classifyJob = (command: string) => isHeavy(command, DEFAULT_HEAVY)
 export const admittedJobArgv = (helper: ReadonlyArray<string>, command: string, requested: boolean) => {
-  if (heavyJob(requested, classifyJob(command))) return jobArgv(helper, command, admissionPurpose(command))
-  return jobArgv(helper, command)
+  const payload = jobArgv(command)
+  if (heavyJob(requested, classifyJob(command))) return [...helper, ...checkPrefix(shellCheck(command)), ...payload]
+  return payload
 }
 
 /** Signal the process group `pid` leads; false when the group is already gone. */
@@ -449,6 +452,7 @@ export const supervise = async (
   grace = KILL_GRACE_MS,
   write: (file: string, value: JobExit) => void = writeTerminal,
   launch: (spec: JobSpec) => ReadonlyArray<string> = (spec) => argvOf(spec, hostOf),
+  stopThroughAdmission: (spec: JobSpec) => boolean = () => false,
 ): Promise<Option.Option<JobExit>> => {
   const root = path.dirname(dir)
   if (!openDir(dir, NODE_DISK, root)) return Option.none()
@@ -463,7 +467,19 @@ export const supervise = async (
   /** When a stop's grace ends: the SIGKILL then reaches what is left of the group. */
   let hardAt: number | undefined
   let hard: ReturnType<typeof setTimeout> | undefined
+  const delegated = stopThroughAdmission(job.spec)
+  const ownedLaunch: Actuation = { dispatch: (intent) => Effect.sync(() => {
+    if (intent.target !== "retained-child" || !child || !Predicate.isNull(child.exitCode) || !Predicate.isNull(child.signalCode)) return
+    child.kill("SIGTERM")
+    sent = "SIGTERM"
+  }) }
   const stop = () => {
+    if (delegated) {
+      // This helper owns its watchdog/cgroup, including descendants. Never
+      // infer the right to signal a numeric group from the job's snapshot.
+      Effect.runSync(issue(ownedLaunch, [{ target: "retained-child", signal: "TERM" }]))
+      return
+    }
     const pid = child?.pid
     // No group left: the command ended by itself before the stop reached it.
     if (pid === undefined || !signalGroup(pid, "SIGTERM")) return
@@ -558,7 +574,10 @@ export const supervise = async (
 
 /** Installed durable entry. Its classified path has no unmanaged default launcher. */
 export const superviseAdmitted = (dir: string, notify: (descriptor: Descriptor) => Promise<void>, helper: ReadonlyArray<string>) =>
-  supervise(dir, notify, KILL_GRACE_MS, writeTerminal, (spec) => admittedJobArgv(helper, spec.command, spec.heavy))
+  supervise(dir, notify, KILL_GRACE_MS, writeTerminal,
+    (spec) => admittedJobArgv(helper, spec.command, spec.heavy),
+    (spec) => heavyJob(spec.heavy, classifyJob(spec.command)),
+  )
 
 /** The exit a run that went its course records: the signal that ended it, whether its own or one this runner sent, wins over its code. */
 const endOf = (run: {

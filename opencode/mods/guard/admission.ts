@@ -45,6 +45,7 @@ export type Input =
   | ({ readonly op: "status" | "cancel" } & Address)
   | ({ readonly op: "claim" } & Address & Attempt)
   | ({ readonly op: "renew" } & Attempt)
+  | ({ readonly op: "job-control"; readonly paused: boolean } & Attempt)
   | ({ readonly op: "drain"; readonly evidence: string } & Attempt)
   | { readonly op: "observe"; readonly id: string; readonly owner: string; readonly generation: number; readonly liveness: "gone" | "unknown"; readonly evidence: string }
   | { readonly op: "advance" }
@@ -162,6 +163,7 @@ const volumeReason = (demand: Demand, holds: ReadonlyArray<Lease>, sample: Suppl
 
 const slots = { clear: POLICY.slots, degraded: 1, hold: 0 }
 const budgetReason = (entry: Lease, demand: Demand, holds: ReadonlyArray<Lease>, sample: Supply): Option.Option<Reason> => {
+  if (demand.width === "unknown") return Option.some("unqualified")
   if (demand.keys.some((key) => !sample.keys.includes(key))) return Option.some("unknown-key")
   const volume = volumeReason(demand, holds, sample)
   if (Option.isSome(volume)) return volume
@@ -174,9 +176,11 @@ const budgetReason = (entry: Lease, demand: Demand, holds: ReadonlyArray<Lease>,
   return Option.none()
 }
 
-const checkedDemand = (entry: Lease, sample: Supply): Demand => ({
-  ...entry.request.demand, cpuMilli: chargedCpu(entry.request.demand.cpuMilli, sample.qualification),
-})
+const checkedDemand = (entry: Lease, sample: Supply): Demand => {
+  const demand = entry.request.demand
+  if (demand.width === "unknown") return demand
+  return { ...demand, cpuMilli: chargedCpu(Math.max(demand.cpuMilli, demand.width * 1000), sample.qualification) }
+}
 
 const requestText = Schema.encodeSync(Schema.fromJsonString(Request))
 const sameRequest = (a: Request, b: Request) => requestText(a) === requestText(b)
@@ -331,6 +335,12 @@ const act = (tx: Transaction, row: Lease, input: Exclude<Input, { op: "request" 
     case "renew":
       if (!matches(row, input)) return Option.some("stale")
       renew(tx, row, observation.now)
+      return Option.none()
+    case "job-control":
+      if (!matches(row, input) || row.state !== "running") return Option.some("stale")
+      if (input.paused) tx.update(row, { reason: "stopped", expiresBootMs: Option.none() })
+      else if (Option.exists(row.hardDeadline, (at) => at <= observation.now)) cancel(tx, row)
+      else tx.update(row, { reason: "running", expiresBootMs: Option.some(observation.now + POLICY.supervisionMs) })
       return Option.none()
   }
 }

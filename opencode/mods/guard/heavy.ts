@@ -105,7 +105,7 @@ const base = (word: Word | undefined) => word?.text.split("/").pop()
 /** What runs past the launchers in front of it: its words, or a script it hands a shell. */
 type Unwrapped = { readonly _tag: "Words"; readonly words: ReadonlyArray<Word> } | { readonly _tag: "Script"; readonly script: string }
 
-const unwrapped = (words: ReadonlyArray<Word>): Unwrapped => {
+export const unwrapped = (words: ReadonlyArray<Word>): Unwrapped => {
   const head = base(words[0])
   if (head === undefined) return { _tag: "Words", words }
   if (isAssignment(words[0]?.text ?? "")) return unwrapped(words.slice(1))

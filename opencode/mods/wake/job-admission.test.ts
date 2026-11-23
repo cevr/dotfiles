@@ -8,10 +8,7 @@ test("an explicit true may add a heavy job, and a false cannot exempt a classifi
   }
 })
 
-test("a managed job's exact payload argv is passed after the launcher boundary", () => {
-  const original = "printf '%s' \"two words\""
-  expect(jobArgv(["/path/bun", "/path/host-admit.ts"], original, "check")).toEqual([
-    "/path/bun", "/path/host-admit.ts", "check", "run", "--class", "check", "--", "/bin/sh", "-c", original,
-  ])
-  expect(jobArgv(["/path/bun", "/path/host-admit.ts"], original)).toEqual(["/bin/sh", "-c", original])
+test("a job's shell payload remains one exact argument", () => {
+  const original = "GOMAXPROCS=4 go test -p 4 -parallel 4 './a path'"
+  expect(jobArgv(original)).toEqual(["/bin/sh", "-c", original])
 })

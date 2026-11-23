@@ -1,8 +1,9 @@
 import { CryptoHasher, env, readableStreamToText, spawn } from "bun"
 import { dlopen, FFIType } from "bun:ffi"
-import { Effect, FileSystem, Option } from "effect"
+import { Effect, FileSystem, Option, Predicate } from "effect"
 import { AdmissionUnavailable, type Observation } from "../admission.ts"
 import { type Measurements, measureSupply, POLICY, type Ticks, type Volume } from "../host-supply.ts"
+import { type Actuation, issue } from "./actuation.ts"
 
 const absent = () => new AdmissionUnavailable({ reason: "unavailable" })
 export const readProcess = Effect.fn("HostSupply.readProcess")(function* (argv: ReadonlyArray<string>) {
@@ -14,11 +15,15 @@ export const readProcess = Effect.fn("HostSupply.readProcess")(function* (argv: 
     } }),
     catch: absent,
   })
+  const port: Actuation = { dispatch: (intent) => Effect.sync(() => {
+    if (intent.target === "retained-child" && Predicate.isNull(child.exitCode) && Predicate.isNull(child.signalCode))
+      child.kill("SIGTERM")
+  }) }
   const [code, out] = yield* Effect.all([
     Effect.tryPromise({ try: () => child.exited, catch: absent }),
     Effect.tryPromise({ try: () => readableStreamToText(child.stdout), catch: absent }),
   ], { concurrency: 2 }).pipe(
-    Effect.onInterrupt(() => Effect.sync(() => child.kill())),
+    Effect.onInterrupt(() => issue(port, [{ target: "retained-child", signal: "TERM" }])),
     Effect.timeout(1000),
     Effect.mapError(absent),
   )
@@ -59,6 +64,10 @@ export const openKernel = (platform: Platform) => {
     proc_pidinfo: { args: [i32, i32, i64, ptr, i32], returns: i32 },
     proc_pidfdinfo: { args: [i32, i32, i32, ptr, i32], returns: i32 },
     proc_listpids: { args: [u32, u32, ptr, i32], returns: i32 },
+    tcgetpgrp: { args: [i32], returns: i32 },
+    tcsetpgrp: { args: [i32, i32], returns: i32 },
+    sigprocmask: { args: [i32, ptr, ptr], returns: i32 },
+    kill: { args: [i32, i32], returns: i32 },
   })))
   const linux = Option.liftPredicate(file, () => platform === "linux").pipe(Option.map((library) => dlopen(library, {
     statx: { args: [i32, ptr, i32, u32, ptr], returns: i32 },
@@ -295,9 +304,11 @@ const checkedCounter = Effect.fn("HostSupply.scopedCounter")(function* (scope: M
 
 const delta = (first: Option.Option<number>, last: Option.Option<number>) =>
   Option.filter(Option.map(Option.all([first, last]), ([before, after]) => after - before), (n) => n >= 0)
-const pressureOfLinux = (cpu: number, mem: number, io: number, load: number, swap: number): Measurements["pressure"] => {
-  if (cpu >= 50 || mem >= 10 || io >= 25 || load > POLICY.runnableLimit) return "hold"
-  if (cpu >= 20 || mem >= 2 || io >= 10 || swap >= 1024) return "degraded"
+export const linuxPressure = ({ cpu, memory, io, swap }: {
+  readonly cpu: number; readonly memory: number; readonly io: number; readonly swap: number
+}): Measurements["pressure"] => {
+  if (cpu >= 50 || memory >= 10 || io >= 25) return "hold"
+  if (cpu >= 20 || memory >= 2 || io >= 10 || swap >= 1024) return "degraded"
   return "clear"
 }
 const swapPages = (text: string) => Option.map(Option.all([cpuField(text, "pswpin"), cpuField(text, "pswpout")]), ([a, b]) => a + b)
@@ -322,10 +333,10 @@ const linuxSupply = Effect.fn("HostSupply.linux")(function* (host: BootHost, sco
     counters(),
   ], { concurrency: 2 })
   yield* Effect.sleep(160)
-  const [second, vmAfter, usageAfter, mem, cpu, memory, io, load] = yield* Effect.all([
+  const [second, vmAfter, usageAfter, mem, cpu, memory, io] = yield* Effect.all([
     read("/proc/stat"), read("/proc/vmstat"),
     counters(),
-    read("/proc/meminfo"), read("/proc/pressure/cpu"), read("/proc/pressure/memory"), read("/proc/pressure/io"), read("/proc/loadavg"),
+    read("/proc/meminfo"), read("/proc/pressure/cpu"), read("/proc/pressure/memory"), read("/proc/pressure/io"),
   ], { concurrency: 4 })
   const end = yield* clockOf(host)
   const fields = Option.all({
@@ -333,10 +344,7 @@ const linuxSupply = Effect.fn("HostSupply.linux")(function* (host: BootHost, sco
     memKB: memField(mem, "MemAvailable"), cpuPSI: psi(cpu, "some"), memPSI: psi(memory, "some"), ioPSI: psi(io, "some"),
     swap: delta(swapPages(vmBefore), swapPages(vmAfter)),
   })
-  // The fork check's former Linux limit is a pressure backstop, never an
-  // estimate of executing cores. Darwin does not use this heuristic.
-  const loadCeiling = Number(load.split(/\s+/u)[0])
-  if (Option.isNone(fields) || end <= start || !Number.isFinite(loadCeiling)) return yield* absent()
+  if (Option.isNone(fields) || end <= start) return yield* absent()
   const { before, after, runnable, memKB, cpuPSI, memPSI, ioPSI, swap } = fields.value
   const usage = usageAfter.map((after, i) => {
     const [before = Option.none()] = usageBefore.slice(i)
@@ -347,7 +355,7 @@ const linuxSupply = Effect.fn("HostSupply.linux")(function* (host: BootHost, sco
   const managed = metered.map((scope, i) => ({ binding: scope.binding, measuredCpuMilli: Math.ceil(usage[i + countProtected] ?? -1), enforcedCpuMilli: scope.cpuMilli }))
   return {
     ...limits, before, after, runnable, memoryBytes: memKB * 1024,
-    pressure: pressureOfLinux(cpuPSI, memPSI, ioPSI, loadCeiling, swap),
+    pressure: linuxPressure({ cpu: cpuPSI, memory: memPSI, io: ioPSI, swap }),
     qualified: Option.isSome(budget) && usage.every((value) => value >= 0) && metered.length === scopes.length,
     managed, protectedLowerBoundMilli,
   } satisfies Omit<Measurements, "id" | "platform" | "volumes" | "keys">

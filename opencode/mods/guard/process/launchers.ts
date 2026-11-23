@@ -2,7 +2,9 @@ import { connect, env, listen, spawn, type Socket } from "bun"
 import { Effect, FileSystem, Option, Path, Predicate, Schema } from "effect"
 import { AdmissionUnavailable } from "../admission.ts"
 import { Counter, OpaqueId, type Principal } from "../admission-wire.ts"
-import { type BootHost, cgroupOf, cpuMax, linuxBudget, readProcess, ref, WORKLOAD_SLICE } from "./admission.ts"
+import { type BootHost, linuxBudget, readProcess, ref, WORKLOAD_SLICE } from "./admission.ts"
+import { type Actuation, issue, watchdogPlan, watchdogProgram } from "./actuation.ts"
+import { attestLinux, linuxDrain, stopLinux, type LinuxManager } from "./linux-controller.ts"
 
 const unavailable = () => new AdmissionUnavailable({ reason: "unavailable" })
 const unqualified = () => new AdmissionUnavailable({ reason: "unqualified" })
@@ -99,35 +101,30 @@ export const descriptorLiveness = Effect.fn("LaunchScope.descriptorLiveness")(fu
   return "held" as const
 })
 
-export const stopOwnedCgroup = Effect.fn("LaunchScope.stopOwnedCgroup")(function* (host: BootHost, pin: ProcessPin) {
-  if (host.platform !== "linux" || host.kernel.core.symbols.getpid() !== pin.pid || Option.isNone(pin.cgroup))
-    return yield* unqualified()
+const linuxManager = Effect.fn("LaunchScope.manager")(function* () {
   const fs = yield* FileSystem.FileSystem
-  const self = yield* fs.readFileString("/proc/self/cgroup").pipe(Effect.mapError(unqualified))
-  const mounted = Option.map(cgroupOf(self), (path) => `/sys/fs/cgroup${path}`)
-  if (Option.isNone(mounted) || mounted.value !== pin.cgroup.value) return yield* unqualified()
-  const unit = mounted.value.split("/").at(-1)
-  if (!unit || !/^host-admit-run-[a-f0-9]{32}\.service$/u.test(unit)) return yield* unqualified()
+  const read = (file: string) => fs.readFileString(file).pipe(Effect.mapError(unqualified))
+  return {
+    workloadRoot: linuxBudget().pipe(Effect.map(({ control }) => control)),
+    currentGroup: read("/proc/self/cgroup"),
+    read,
+    exists: (file) => fs.exists(file).pipe(Effect.mapError(unqualified)),
+    stop: (unit) => readProcess(["/usr/bin/systemctl", "--user", "--no-block", "stop", unit]).pipe(Effect.asVoid),
+  } satisfies LinuxManager<FileSystem.FileSystem>
+})
+
+export const stopOwnedCgroup = Effect.fn("LaunchScope.stopOwnedCgroup")(function* (host: BootHost, pin: ProcessPin) {
+  if (host.platform !== "linux" || Option.isNone(pin.cgroup)) return yield* unqualified()
   // This process still inhabits the exact one-use unit; its native binding
   // cannot refer to a future reuse. The user manager drives KillMode,
   // including members that changed their POSIX group.
-  yield* readProcess(["/usr/bin/systemctl", "--user", "--no-block", "stop", unit]).pipe(Effect.mapError(unqualified))
+  yield* stopLinux(yield* linuxManager(), pin.cgroup.value, host.kernel.core.symbols.getpid() === pin.pid)
 })
 
 // stdin is a one-way control pipe, not the command's stdin. The watcher is
 // started before the lease descriptor exists. Only a post-claim `armed`
 // order authorizes a kill. EOF thereafter means the launcher disappeared.
-const watchScript = [
-  "trap '' TERM HUP INT",
-  'printf "%s\\n" ready',
-  "IFS= read -r armed || exit 0",
-  '[ "$armed" = armed ] || exit 0',
-  'if IFS= read -r order && [ "$order" = drained ]; then exit 0; fi',
-  "kill -TERM 0",
-  "/bin/sleep 2",
-  "kill -KILL 0",
-].join("\n")
-const spawnWatchdog = () => spawn(["/bin/sh", "-c", watchScript], { stdin: "pipe", stdout: "pipe", stderr: "ignore" })
+const spawnWatchdog = (script: string) => spawn(["/bin/sh", "-c", script], { stdin: "pipe", stdout: "pipe", stderr: "ignore" })
 export const watchGroup = Effect.fn("LaunchScope.watchGroup")(function* (host: BootHost, pin: UnarmedPin) {
   if (host.platform === "linux") return { arm: Effect.void, disarm: Effect.void, stop: Effect.void, onLauncherExit: Effect.void }
   return yield* watchOwnGroup(host, pin.pid)
@@ -135,12 +132,15 @@ export const watchGroup = Effect.fn("LaunchScope.watchGroup")(function* (host: B
 
 /** Darwin's production watchdog; the same portable group primitive can be
  * checked under a scratch Linux group without changing Linux's cgroup policy. */
-export const watchOwnGroup = Effect.fn("LaunchScope.watchOwnGroup")(function* (host: BootHost, leader: number) {
+export const watchOwnGroup = Effect.fn("LaunchScope.watchOwnGroup")(function* (
+  host: BootHost, leader: number, spawnNative: typeof spawnWatchdog = spawnWatchdog,
+) {
   const sys = host.kernel.core.symbols
   if (sys.getpid() !== leader || sys.getpgrp() !== leader) return yield* unqualified()
+  const dispatch = watchdogPlan({ source: "pipe", armed: true, order: "eof" })
   let waitForExit = false
   const watcher = yield* Effect.acquireRelease(
-    Effect.try({ try: spawnWatchdog, catch: unqualified }),
+    Effect.try({ try: () => spawnNative(watchdogProgram(dispatch)), catch: unqualified }),
     (child) => Effect.sync(() => {
       if (waitForExit) child.unref()
       else child.stdin.end()
@@ -162,15 +162,17 @@ export const watchOwnGroup = Effect.fn("LaunchScope.watchOwnGroup")(function* (h
     (reader) => Effect.sync(() => reader.releaseLock()),
   ).pipe(Effect.timeout(1000), Effect.mapError(unqualified))
   if (ack.done || new TextDecoder().decode(ack.value) !== "ready\n") return yield* unqualified()
-  const stop = send("stop").pipe(Effect.catchTag("AdmissionUnavailable", () => Effect.try({
-    try: () => {
+  const stop = send("stop").pipe(Effect.catchTag("AdmissionUnavailable", () => Effect.suspend(() => {
       // The group is still pinned by *this* live leader. A fresh in-group
       // sender is safe even if the original watcher was independently lost.
-      const replacement = spawnWatchdog()
+    if (!Number.isInteger(watcher.exitCode) && !watcher.signalCode) return Effect.fail(unqualified())
+    const plan = watchdogPlan({ source: "leader", ownGroup: sys.getpgrp() === leader, watchdog: "gone" })
+    if (plan.length === 0) return Effect.fail(unqualified())
+    return Effect.try({ try: () => {
+      const replacement = spawnNative(watchdogProgram(plan))
       replacement.stdin.write("armed\nstop\n")
       replacement.stdin.end()
-    },
-    catch: unqualified,
+    }, catch: unqualified })
   })))
   return { arm: send("armed"), disarm: send("drained").pipe(Effect.ignore), stop, onLauncherExit: Effect.sync(() => { waitForExit = true }) }
 })
@@ -324,47 +326,22 @@ export const scopeLiveness = Effect.fn("LaunchScope.scopeLiveness")(function* (h
   if (descriptor === "unknown") return descriptor
   if (host.platform === "darwin") return "gone" as const
   if (Option.isNone(pin.cgroup)) return "unknown" as const
-  const fs = yield* FileSystem.FileSystem
-  const result = yield* fs.readFileString(`${pin.cgroup.value}/cgroup.events`).pipe(Effect.option)
-  if (Option.isSome(result)) {
-    if (/^populated 0$/mu.test(result.value)) return "gone" as const
-    if (/^populated 1$/mu.test(result.value)) return "live" as const
-    return "unknown" as const
-  }
-  const exists = yield* fs.exists(pin.cgroup.value).pipe(Effect.option)
-  if (Option.isSome(exists) && !exists.value) return "gone" as const
-  return "unknown" as const
+  return yield* linuxDrain(yield* linuxManager(), pin.cgroup.value, descriptor)
 })
 
-const linuxSelf = Effect.fn("LaunchScope.linuxSelf")(function* (cpuMilli: number, memoryBytes: number) {
-  const fs = yield* FileSystem.FileSystem
-  const read = (path: string) => fs.readFileString(path).pipe(Effect.mapError(unqualified))
-  const workload = yield* linuxBudget()
-  const relative = cgroupOf(yield* read("/proc/self/cgroup"))
-  if (Option.isNone(relative)) return yield* unqualified()
-  const path = `/sys/fs/cgroup${relative.value}`
-  if (!path.startsWith(`${workload.control}/host-admit-`) || !path.endsWith(".service")) return yield* unqualified()
-  const [cpu, max, swap, grouping] = yield* Effect.all([
-    read(`${path}/cpu.max`), read(`${path}/memory.max`), read(`${path}/memory.swap.max`), read(`${path}/memory.oom.group`),
-  ], { concurrency: 2 })
-  const actual = cpuMax(cpu)
-  const memory = Number(max.trim())
-  if (Option.isNone(actual) || actual.value <= 0 || actual.value > cpuMilli || !Number.isSafeInteger(memory) || memory <= 0 || memory > memoryBytes ||
-    swap.trim() !== "0" || grouping.trim() !== "1") return yield* unqualified()
-  return path
-})
-
-export const pinOf = Effect.fn("LaunchScope.pin")(function* (host: BootHost, id: string, generation: number, cpuMilli: number, memoryBytes: number) {
+export const pinOf = Effect.fn("LaunchScope.pin")(function* (
+  host: BootHost, id: string, generation: number, cpuMilli: number, memoryBytes: number, foreground = Option.none<number>(),
+) {
   const sys = host.kernel.core.symbols
   const pid = sys.getpid()
   if (host.platform === "darwin" && sys.getpgrp() !== pid &&
-    (sys.isatty(0) === 1 || sys.setpgid(0, 0) !== 0)) return yield* unqualified()
+    ((sys.isatty(0) === 1 && !Option.exists(foreground, (group) => group === sys.getpgrp())) || sys.setpgid(0, 0) !== 0))
+    return yield* unqualified()
   const self = yield* processIdentity(host, pid)
   if (Option.isNone(self) || (host.platform === "darwin" && self.value.group !== pid)) return yield* unqualified()
   let cgroup = Option.none<string>()
   if (host.platform === "linux") {
-    const actual = yield* linuxSelf(cpuMilli, memoryBytes)
-    if (!actual.endsWith(`/${unitOf(id, generation)}.service`)) return yield* unqualified()
+    const actual = yield* attestLinux(yield* linuxManager(), unitOf(id, generation), cpuMilli, memoryBytes)
     cgroup = Option.some(actual)
   }
   return {
@@ -412,9 +389,15 @@ export const spawnOwned = Effect.fn("LaunchScope.spawn")(function* (
     },
     catch: unavailable,
   })
+  const port: Actuation = {
+    dispatch: (intent) => Effect.sync(() => {
+      if (intent.target === "retained-child" && Predicate.isNull(child.exitCode) && Predicate.isNull(child.signalCode))
+        child.kill("SIGTERM")
+    }),
+  }
   return {
     exited: Effect.tryPromise({ try: () => child.exited, catch: unavailable }),
-    stop: Effect.sync(() => { if (Predicate.isNull(child.exitCode) && Predicate.isNull(child.signalCode)) child.kill("SIGTERM") }),
+    stop: issue(port, [{ target: "retained-child", signal: "TERM" }]),
   }
 })
 

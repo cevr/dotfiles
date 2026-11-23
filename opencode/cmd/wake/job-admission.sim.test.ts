@@ -38,6 +38,6 @@ seeded("a below-floor or unavailable host prevents a heavy job from reaching the
       yield* model.job("ses_fixture", { command: "printf light", note: "control" })
       expect([...memory.jobs.values()].map(({ spec }) => spec.command)).toEqual(["printf light"])
       expect(admittedJobArgv(["bun", "host-admit.ts"], "bun test --filter exact", false))
-        .toEqual(["bun", "host-admit.ts", "check", "run", "--class", "check", "--", "/bin/sh", "-c", "bun test --filter exact"])
+        .toEqual(["bun", "host-admit.ts", "check", "run", "--class", "check", "--width", "1", "--", "/bin/sh", "-c", "bun test --filter exact"])
     }).pipe(Effect.provide(world), Effect.scoped)
 })

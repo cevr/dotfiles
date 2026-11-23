@@ -1,9 +1,12 @@
 import { Clock, Console, Effect, FileSystem, Option, Path, Predicate, Schedule, Stream } from "effect"
 import { AdmissionUnavailable, type Address, type Input, type Lease, type Observation } from "@dotfiles/opencode-guard/admission"
 import { type Request } from "@dotfiles/opencode-guard/admission-wire"
+import { argvWidth, demandOnVolume, type CheckDemand } from "@dotfiles/opencode-guard/check-demand"
 import { POLICY } from "@dotfiles/opencode-guard/host-supply"
 import * as Supply from "@dotfiles/opencode-guard/process/admission"
 import * as Scope from "@dotfiles/opencode-guard/process/launchers"
+import { attachGrant, runAfterClaim } from "@dotfiles/opencode-guard/process/linux-controller"
+import { foregroundOf, foregroundScope } from "@dotfiles/opencode-guard/process/terminal"
 import * as Journal from "@dotfiles/opencode-guard/sqlite/admission"
 
 const fail = (reason: ConstructorParameters<typeof AdmissionUnavailable>[0]["reason"]) => new AdmissionUnavailable({ reason })
@@ -17,6 +20,7 @@ export interface Config {
   readonly directory: string
   readonly executable: string
   readonly script: string
+  readonly onForeground?: (owned: boolean) => void
 }
 
 const inspectOwner = Effect.fn("HostAdmission.inspectOwner")(function* (
@@ -69,6 +73,7 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
   const host = yield* Supply.bootHost()
+  const foreground = foregroundOf(host)
   const filename = path.join(config.directory, "admission-v1.sqlite")
   const { ledger, holder, native } = yield* Journal.open(filename, host, host.kernel.now)
   const caller = yield* Scope.callerOf(host)
@@ -186,6 +191,9 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
     argv: ReadonlyArray<string>, environment?: Readonly<Record<string, string>>,
   ) {
     const fence = { id: row.id, generation: row.generation, binding: pin.ref }
+    const control = yield* foregroundScope(host, foreground, (paused) => cold().pipe(
+      Effect.flatMap((at) => ledger.transact({ op: "job-control", ...fence, paused }, at)), Effect.asVoid,
+    ), config.onForeground ?? (() => {}))
     const work = yield* Scope.spawnOwned(Scope.payloadArgv(host, argv), config.cwd, environment, fd)
     let stopping = false
     const stop = Effect.suspend(() => {
@@ -199,7 +207,11 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
       const tick = yield* ledger.transact({ op: "renew", ...fence }, cut(now))
       if (tick.reply.state !== "running") yield* stop
     }).pipe(Effect.repeat(loop))
-    return yield* work.exited.pipe(Effect.raceFirst(keep.pipe(Effect.andThen(Effect.never))), Effect.onError(() => stop))
+    return yield* work.exited.pipe(
+      Effect.raceFirst(keep.pipe(Effect.andThen(Effect.never))),
+      Effect.raceFirst(control),
+      Effect.onError(() => stop),
+    )
   })
 
   const claim = Effect.fn("HostAdmission.claim")(function* (
@@ -210,18 +222,18 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
     const volume = yield* Supply.volumeOf(host, config.cwd)
     if (!demand.volumeReservations.some(({ volumeId }) => volumeId === volume.id)) return yield* fail("unknown-volume")
     return yield* Effect.scoped(Effect.gen(function* () {
-      const location = yield* Scope.pinOf(host, row.id, row.generation, demand.cpuMilli, demand.memoryBytes)
+      const location = yield* Scope.pinOf(host, row.id, row.generation, demand.cpuMilli, demand.memoryBytes, foreground)
       const watcher = yield* Scope.watchGroup(host, location)
       const attempt = yield* Effect.scoped(Effect.gen(function* () {
         const { fd, descriptor } = yield* Scope.armDescriptor(host, path.join(config.directory, `${location.ref}.lock`))
         const pin = { ...location, descriptor }
         yield* native.pin(pin)
         const { reply } = yield* step({ op: "claim", owner: row.owner, id: row.id, generation: row.generation, binding: pin.ref })
-        if (reply.state === "queued" || reply.state === "granted") return Option.none()
-        if (reply.state !== "running") return yield* fail(reply.reason)
-        yield* watcher.arm
-        const code = yield* supervised(row, pin, fd, watcher.stop, args, environment)
-        return Option.some({ code, pin })
+        return yield* runAfterClaim(reply, () => Effect.gen(function* () {
+          yield* watcher.arm
+          const code = yield* supervised(row, pin, fd, watcher.stop, args, environment)
+          return { code, pin }
+        }))
       }))
       if (Option.isNone(attempt)) return Option.none()
       const { code, pin } = attempt.value
@@ -243,10 +255,9 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
   const attach = Effect.fn("HostAdmission.attach")(function* (socket: string) {
     const offer = yield* Scope.takeOffer(host, socket)
     const { leases } = yield* ledger.inspect()
-    const row = leases[offer.id]
-    if (!row || row.owner !== offer.owner || row.generation !== offer.generation || row.state !== "granted")
-      return yield* fail("stale")
-    return Option.getOrElse(yield* claim(row, offer.argv, offer.environment), () => 125)
+    return yield* attachGrant(offer, Option.fromNullishOr(leases[offer.id]), (row) => claim(row, offer.argv, offer.environment).pipe(
+      Effect.map((code) => Option.getOrElse(code, () => 125)),
+    ))
   })
 
   const linux = Effect.fn("HostAdmission.linux")(function* (row: Lease, argv: ReadonlyArray<string>) {
@@ -280,7 +291,7 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
   })
 
   const run = Effect.fn("HostAdmission.runCheck")(function* (
-    purpose: Request["purpose"], cpuMilli: number, memoryBytes: number, args: ReadonlyArray<string>,
+    demand: CheckDemand, args: ReadonlyArray<string>,
   ) {
     const now = yield* Supply.clockOf(host)
     if (Option.isNone(target)) return yield* fail("unknown-volume")
@@ -289,12 +300,10 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
     if (Option.isNone(self)) return yield* fail("unavailable")
     const owner = Supply.ref("waiter", `${host.bootId}:${self.value.pid}:${self.value.start}`)
     yield* native.remember(owner, self.value.pid, self.value.start)
-    const keysByPurpose: Partial<Record<Request["purpose"], ReadonlyArray<string>>> = { vm: ["vm"], inventory: ["trace"] }
     const draft: Request = {
       version: 1, requestId: Supply.ref("request", `${owner}:${now}`), principal: caller.principal,
-      purpose, tier: "standard", deadlineBootMs: now + POLICY.queueMs,
-      demand: { cpuMilli, memoryBytes, ioClass: "idle", volumeReservations: [{ volumeId: target.value.id, bytes: 0 }],
-        keys: keysByPurpose[purpose] ?? [] },
+      purpose: demand.purpose, tier: "standard", deadlineBootMs: now + POLICY.queueMs,
+      demand: demandOnVolume(demand, target.value.id),
     }
     const queued = yield* request(draft, owner)
     if (Predicate.isNull(queued.id)) return yield* fail(queued.reason)
@@ -322,7 +331,18 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
       return yield* holder.putObservations(caller.owner, records, yield* Supply.clockOf(host))
     }),
     list: holder.list,
-    launch: (id: string, args: ReadonlyArray<string>) => begin({ id, owner: caller.owner }, args),
+    launch: Effect.fn("HostAdmission.launchExternal")(function* (id: string, args: ReadonlyArray<string>) {
+      const address = { id, owner: caller.owner }
+      const { state } = yield* ledger.transact({ op: "status", ...address }, yield* cold())
+      const row = state.leases[id]
+      // Do not expose demand for another principal's durable address.
+      if (row?.owner === address.owner) {
+        const observed = argvWidth(args, Scope.localEnvironment().GOMAXPROCS)
+        const { width } = row.request.demand
+        if (width === "unknown" || observed === "unknown" || observed > width) return yield* fail("unqualified")
+      }
+      return yield* begin(address, args)
+    }),
     cancel: (id: string) => cold().pipe(Effect.flatMap((at) => ledger.transact({ op: "cancel", id, owner: caller.owner }, at)), Effect.map((next) => next.reply)),
     now: Clock.currentTimeMillis,
   }
