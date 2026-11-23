@@ -193,6 +193,22 @@ describe("decode: the persisted envelope, exact, never a throw", () => {
     }
     for (const input of [null, {}, [], "text", 7, undefined]) expect(decode(input).ok).toBe(false)
   })
+  test("a blank value is no value: an empty or white-space id, command, digest, receipt, refusal or limit is a typed rejection", () => {
+    const blanks: ReadonlyArray<readonly [string, unknown]> = [
+      ["attempt id", envelope("implementor", [{ ...red, events: [begin(" ", "cmd:gate")] }], [timebox])],
+      ["command", envelope("implementor", [{ ...red, events: [begin("att-7", "")] }], [timebox])],
+      ["digest", envelope("implementor", [{ ...red, events: [begin("att-7"), { ...finish("att-7", "fail", 1), output: { kind: "log", digest: " " } }] }], [timebox])],
+      ["receipt", envelope("implementor", [{ ...red, events: [begin("att-7"), { ...finish("att-7", "fail", 1), receipt: "" }] }], [timebox])],
+      ["refusal what", envelope("implementor", [{ ...red, events: [{ kind: "deny", attempt: "d", command: "cmd:d", refusal: refusal("") }] }])],
+      ["wait ref", envelope("implementor", [{ ...red, events: [{ kind: "waitOpen", ref: "" }] }])],
+      ["time box length", envelope("implementor", [done, red], [{ kind: "limit", limit: { kind: "timebox", length: " " } }])],
+      ["item id", envelope("implementor", [{ ...done, id: "" }])],
+    ]
+    for (const [name, input] of blanks) {
+      const got = decode(input)
+      expect([name, got.ok, !got.ok && /^(item [^:]*: |step: |an item )/.test(got.error)]).toEqual([name, false, true])
+    }
+  })
   test("an event that cannot happen where the history stands is a typed rejection naming the item and the event", () => {
     const got = decode(envelope("implementor", [{ ...red, events: [finish("att-7", "fail", 1)] }]))
     expect(got).toEqual({ ok: false, error: "item gate: event 1 (finish): only the current attempt, running or interrupted, finishes, once no refusal holds it, with its result, exit, output (a log, or no authenticated evidence), receipt and head" })
