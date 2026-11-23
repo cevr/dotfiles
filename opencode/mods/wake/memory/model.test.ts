@@ -763,7 +763,7 @@ describe("a latch", () => {
 })
 
 describe("a job", () => {
-  test("drips its progress at most once a minute without a turn, and its end, seen by the poll, steers one letter with the exit, log tail and note", () =>
+  test("drips its progress at most once a minute without a turn, and its end, its runner's call lost, is found by the recovery sweep within RECOVER_MS (a minute) and steers one letter with the exit, log tail and note", () =>
     run(
       Effect.gen(function* () {
         const w = world("ses_a")
@@ -850,6 +850,8 @@ describe("a job", () => {
           { id: first.id, state: "running", note: "Build it.", command: "make build", cwd: DIR, startedAt: SECOND, logTail: "compiling\nlinking\n" },
         ])
         MemoryRunner.ended(w.runner, first.id, 2, 20 * SECOND)
+        // The runner's call once its exit is written: the end goes at once.
+        expect(yield* model.due(first.id)).toEqual({ outcome: "fired" })
         yield* until(30 * SECOND)
         // The end letter took the entry; the board still shows how it ended.
         expect(w.store.entries.has(first.id)).toBe(false)
