@@ -4,6 +4,7 @@
 import { Array as Arr, Option, Schema } from "effect"
 import generated from "./agents.json"
 import { described, STEPS } from "./described.ts"
+import { policyFaults } from "./round-policy.ts"
 
 export const WORKER = "worker"
 /** The role Codex never runs (`onCodex`). */
@@ -38,14 +39,24 @@ export interface Definition extends Schema.Schema.Type<typeof Definition> {}
 export const ORCHESTRATOR = "orchestrator"
 const Orchestrator = Schema.Struct({ description: Schema.String, section: Schema.String })
 
-const Generated = Schema.Struct({
+/**
+ * agents.json as the plugin ships it. Each role's `system` must carry exactly its round policy as round-policy.ts
+ * renders it (decoded and compared part by part, then byte for byte), so a prompt whose policy was lost, swapped,
+ * edited or doubled in delivery fails here, before any role definition is exposed.
+ */
+export const Generated = Schema.Struct({
   agents: Schema.Struct({ planner: Definition, implementor: Definition, verifier: Definition, worker: Definition }),
   orchestrator: Orchestrator,
-})
+}).check(
+  Schema.makeFilter((value) => {
+    const faults = ROLES.flatMap((role) => policyFaults(role, value.agents[role].system))
+    return faults.length === 0 || `round policy: ${faults.join("; ")}`
+  }),
+)
 
 const decoded = Schema.decodeUnknownSync(Generated)(generated)
 
-/** Each role's definition. agents.json is checked by `bun run agents -- --check`, so a bad file fails at load. */
+/** Each role's definition. agents.json is checked by `bun run agents -- --check` and its policies decoded here, so a bad file fails at load. */
 export const definitions: Readonly<Record<Role, Definition>> = decoded.agents
 
 /** The orchestrator's description and prompt section, from the same file. */
