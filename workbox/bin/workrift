@@ -99,7 +99,30 @@ EOF
 fail() {
   fail_said=1
   printf 'workrift: %s\n' "$*" >&2
+  # workrift subvolume: every refusal and every stop also says the state both
+  # trees are in and the command that goes on from there (sv_facts).
+  if [ -n "${sv_at:-}" ]; then sv_facts >&2 || true; fi
   exit 1
+}
+
+# sv_read VAR CMD [ARG...]: the output of CMD into the variable VAR, and CMD's
+# status as its own: 0 only when CMD ran and succeeded. Every read workrift
+# subvolume decides on goes through it, so a command that failed is never an
+# empty answer: set -e stops no read in `$(…)` inside another command, in a
+# pipe but its last command, or left of `||`, `&&` and in a condition, and a
+# pipe answers its last command's status alone (no pipefail in sh).
+# shellcheck disable=SC2034 # sv_read_out is read by the eval
+sv_read() {
+  sv_read_to=$1
+  shift
+  if sv_read_out=$("$@"); then
+    eval "$sv_read_to=\$sv_read_out"
+    return 0
+  else
+    sv_read_rc=$?
+    eval "$sv_read_to=\$sv_read_out"
+    return "$sv_read_rc"
+  fi
 }
 
 # Compare remotes by host and path, so SSH and HTTPS URLs of one repository match.
@@ -141,15 +164,20 @@ lock_files='bun.lock bun.lockb pnpm-lock.yaml yarn.lock package-lock.json'
 
 # A dependency patch (bun and pnpm keep them in patches/) can change while the
 # lock file stays the same, and the install applies it, so it counts too.
+#
+# Fails when a hash fails (never an empty hash that two failed reads make
+# equal); what it printed before is the caller's to drop.
 lock_fingerprint() {
   for lock_file in $lock_files; do
     if [ -f "$1/$lock_file" ]; then
-      printf '%s %s\n' "$lock_file" "$(git -C "$1" hash-object "$lock_file")"
+      lock_hash=$(git -C "$1" hash-object "$lock_file") || return 1
+      printf '%s %s\n' "$lock_file" "$lock_hash"
     fi
   done
   for patch_file in "$1"/patches/*.patch; do
     [ -f "$patch_file" ] || continue
-    printf '%s %s\n' "patches/${patch_file##*/}" "$(git -C "$1" hash-object "$patch_file")"
+    lock_hash=$(git -C "$1" hash-object "$patch_file") || return 1
+    printf '%s %s\n' "patches/${patch_file##*/}" "$lock_hash"
   done
 }
 
@@ -170,7 +198,9 @@ install_dependencies() {
   fi
   # Close the source lock so a daemon the install starts cannot hold it.
   (cd "$1" && sh -c "$command") 3>&- 6>&- 7>&- 8>&- 9>&-
-  lock_fingerprint "$1" >"$(installed_locks_file "$1")"
+  # A fingerprint that does not read is no record: the next sync installs again.
+  i_locks=$(installed_locks_file "$1")
+  lock_fingerprint "$1" >"$i_locks" || rm -f "$i_locks"
 }
 
 # The fingerprint of the last install lives in the Git directory, so --copy-all
@@ -577,6 +607,9 @@ git_path() {
 # The folder of a base's workspaces, by work's own rule (Ergo's
 # modules/work/work/api.ergo Home): work.toml's [work] storage, relative to the
 # base, with <base> its folder's name; else <base's folder>/.work/<base's name>.
+#
+# Fails when a read fails (awk, sed, dirname, basename): a home read wrong is
+# another state folder and another line, so it is never guessed.
 base_home() {
   h_storage=
   if [ -f "$1/work.toml" ]; then
@@ -588,14 +621,15 @@ base_home() {
         sub(/".*$/, "", line)
         print line
         exit
-      }' "$1/work.toml")
+      }' "$1/work.toml") || return 1
   fi
+  h_name=$(basename "$1") || return 1
   if [ -z "$h_storage" ]; then
-    printf '%s/.work/%s\n' "$(dirname "$1")" "$(basename "$1")"
+    h_parent=$(dirname "$1") || return 1
+    printf '%s/.work/%s\n' "$h_parent" "$h_name"
     return 0
   fi
-  h_name=$(basename "$1")
-  h_storage=$(printf '%s' "$h_storage" | sed "s|<base>|$h_name|g")
+  h_storage=$(printf '%s' "$h_storage" | sed "s|<base>|$h_name|g") || return 1
   case "$h_storage" in
     /*) printf '%s\n' "$h_storage" ;;
     *) printf '%s/%s\n' "$1" "$h_storage" ;;
@@ -607,10 +641,11 @@ base_home() {
 # would read it).
 state_dir() {
   if [ "${state_for:-}" != "$1" ]; then
-    s_dir=$(base_home "$1")/.workrift
-    mkdir -p "$s_dir"
-    s_dir=$(cd "$s_dir" && pwd -P)
-    s_base=$(cd "$1" && pwd -P)
+    s_dir=$(base_home "$1") || fail "the workspaces' folder of $1 does not read (work.toml's [work] storage; awk, sed, dirname or basename failed): nothing done"
+    s_dir=$s_dir/.workrift
+    mkdir -p "$s_dir" || fail "mkdir -p $s_dir failed (the state folder of $1): nothing done"
+    s_dir=$(cd "$s_dir" && pwd -P) || fail "the state folder $s_dir does not resolve: nothing done"
+    s_base=$(cd "$1" && pwd -P) || fail "$1 does not resolve: nothing done"
     case "$s_dir/" in
       "$s_base/"*) fail "the state folder $s_dir is inside the base $1 (work.toml's storage): a copy of the base would read it" ;;
     esac
@@ -643,9 +678,13 @@ process_identity() {
   case "$1" in '' | *[!0-9]*) return 0 ;; esac
   if [ -r "$identity_proc/self/stat" ]; then
     i_stat=$(cat "$identity_proc/$1/stat" 2>/dev/null) || return 0
-    i_tick=$(printf '%s\n' "${i_stat##*) }" | awk '{ print $20 }')
+    # A read that fails is no identity (empty: process_is asks kill -0),
+    # never another one, which would read as a process gone.
+    i_tick=$(printf '%s\n' "${i_stat##*) }" | awk '{ print $20 }') || return 0
     case "$i_tick" in '' | *[!0-9]*) return 0 ;; esac
-    printf 'boot %s tick %s\n' "$(cat "$identity_proc/sys/kernel/random/boot_id" 2>/dev/null)" "$i_tick"
+    i_boot=$(cat "$identity_proc/sys/kernel/random/boot_id" 2>/dev/null) || return 0
+    [ -n "$i_boot" ] || return 0
+    printf 'boot %s tick %s\n' "$i_boot" "$i_tick"
   else
     LC_ALL=C TZ=UTC0 ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//; s/ *$//' || true
   fi
@@ -658,8 +697,27 @@ process_identity() {
 ticket_owner_gone() {
   t_pid=$(sed -n 1p "$1" 2>/dev/null) || return 1
   case "$t_pid" in '' | *[!0-9]*) return 1 ;; esac
-  t_start=$(sed -n 2p "$1" 2>/dev/null)
-  [ "$(process_identity "$t_pid")" != "$t_start" ]
+  t_start=$(sed -n 2p "$1" 2>/dev/null) || return 1
+  [ -n "$t_start" ] || return 1
+  if process_is "$t_pid" "$t_start"; then return 1; fi
+  [ "$process_was" = gone ]
+}
+
+# Whether the process $1 is still the one whose identity is $2: status 0 when
+# it is; else 1, and process_was says gone (no such pid, or the pid is another
+# process now) or unknown (its identity does not read while the pid lives: a
+# ps or a cat that failed on a loaded host). A failed read is never "gone":
+# kill -0 is a builtin, no fork.
+process_is() {
+  process_was=
+  p_now=$(process_identity "$1")
+  if [ -n "$p_now" ]; then
+    [ "$p_now" = "$2" ] && return 0
+    process_was=gone
+    return 1
+  fi
+  if kill -0 "$1" 2>/dev/null; then process_was=unknown; else process_was=gone; fi
+  return 1
 }
 
 # Whether a ticket is live: locked, and its owner not known to be gone. A
@@ -867,16 +925,30 @@ ticket_number() {
 
 # The live tickets the ticket $1 (of kind $2) waits for: every earlier one for
 # a writer, every earlier writer for a reader; one a line, earliest first.
+#
+# Fails when the sort fails: a line that does not read is never "nothing
+# ahead", which would let this ticket in beside a holder.
 ticket_ahead() {
   a_mine=$(ticket_number "$1")
+  a_list=
   for a_file in "${1%/*}"/*.[rw]; do
     [ -f "$a_file" ] && [ "$a_file" != "$1" ] || continue
     a_n=$(ticket_number "$a_file")
     [ "$a_n" -lt "$a_mine" ] || continue
     case "$2:$a_file" in r:*.r) continue ;; esac
     ticket_live "$a_file" || continue
-    printf '%s %s\n' "$a_n" "$a_file"
-  done | LC_ALL=C sort -n | cut -d' ' -f2-
+    a_list="$a_list$a_n $a_file
+"
+  done
+  [ -n "$a_list" ] || return 0
+  a_sorted=$(printf '%s' "$a_list" | LC_ALL=C sort -n) && [ -n "$a_sorted" ] || return 1
+  a_ifs=$IFS
+  IFS='
+'
+  set -f
+  for a_file in $a_sorted; do printf '%s\n' "${a_file#* }"; done
+  set +f
+  IFS=$a_ifs
 }
 
 # Words for the tickets ahead of $1 ($2: its kind): how many, and the oldest.
@@ -922,7 +994,11 @@ queue_words() {
 # purpose. That it holds is a file beside it, <ticket>.in, made once it is in.
 ticket_record() {
   holder_start=${holder_start:-$(process_identity "$holder_pid")}
-  printf '%s\n%s\n%s\n%s\n' "$holder_pid" "$holder_start" "$(date +%s)" "$lock_purpose" >"$1"
+  # A record with no start would read as an owner gone: no ticket without it.
+  [ -n "$holder_start" ] || fail "the identity of this process (pid $holder_pid) does not read (ps or /proc failed): no place in line taken, nothing done"
+  t_since=$(date +%s) || fail "the clock does not read (date failed): no place in line taken, nothing done"
+  printf '%s\n%s\n%s\n%s\n' "$holder_pid" "$holder_start" "$t_since" "$lock_purpose" >"$1" ||
+    fail "the ticket $1 could not be written: no place in line taken, nothing done"
 }
 
 # queue_enter BASE QUEUE KIND FD MODE: a ticket of KIND (r or w) in the base's
@@ -939,8 +1015,10 @@ queue_enter() {
   q_kind=$3
   q_fd=$4
   q_mode=$5
-  mkdir -p "$q_dir"
-  q_since=$(date +%s)
+  # Called as a condition (set -e off in it): every command that can fail is
+  # checked here, none is left to set -e.
+  mkdir -p "$q_dir" || fail "mkdir -p $q_dir (the line of $q_base) failed: no place in line taken, nothing done"
+  q_since=$(date +%s) || fail "the clock does not read (date failed): no place in line taken, nothing done"
   while :; do
     exec 3>"${q_dir%/*}/queue.lock"
     # A blocking flock ends only once it holds the lock, so a failure is an
@@ -954,14 +1032,17 @@ queue_enter() {
       exec 3>&-
       return 1
     fi
-    q_left=$((q_since + advance_every - $(date +%s)))
+    # A clock that does not read is the patience spent: take the place now.
+    q_now=$(date +%s) || q_now=$((q_since + advance_every))
+    q_left=$((q_since + advance_every - q_now))
     [ "$q_left" -gt 0 ] || break
     exec 3>&-
     # Polite: wait for what is in line now to end (or the patience to run
     # out), without a place, then look again.
     for q_in in "$q_dir"/*.[rw]; do
       [ -f "$q_in" ] || continue
-      q_left=$((q_since + advance_every - $(date +%s)))
+      q_now=$(date +%s) || q_now=$((q_since + advance_every))
+      q_left=$((q_since + advance_every - q_now))
       [ "$q_left" -gt 0 ] || break
       ticket_wait "$q_in" "$q_left"
     done
@@ -989,7 +1070,8 @@ queue_enter() {
   flock -x "$q_fd" || fail "flock of $queue_ticket failed"
   ticket_record "$queue_ticket"
   exec 3>&-
-  q_ahead=$(ticket_ahead "$queue_ticket" "$q_kind")
+  q_ahead=$(ticket_ahead "$queue_ticket" "$q_kind") ||
+    fail "the line of $q_base ($q_dir) does not read (sort failed): no place in line kept, nothing done"
   if [ -n "$q_ahead" ]; then
     q_what='the lock'
     [ "$2" != clone ] || q_what='the clone turn'
@@ -1006,11 +1088,17 @@ queue_enter() {
     # queue_patience (seconds; unset: no end) bounds the wait: past it the
     # ticket is given back and queue_enter returns 1 (workrift subvolume).
     q_until=
-    [ -z "${queue_patience:-}" ] || q_until=$(($(date +%s) + queue_patience))
+    if [ -n "${queue_patience:-}" ]; then
+      q_now=$(date +%s) || { queue_leave "$q_fd" "$queue_ticket"; fail "the clock does not read (date failed) in line for $q_base: no place in line kept, nothing done"; }
+      q_until=$((q_now + queue_patience))
+    fi
     printf '%s\n' "$q_ahead" | while IFS= read -r q_in; do
       q_rest=
       if [ -n "$q_until" ]; then
-        q_rest=$((q_until - $(date +%s)))
+        # A clock that does not read is the bound passed (the line is looked
+        # at again after), never an arithmetic error.
+        q_now=$(date +%s) || q_now=$q_until
+        q_rest=$((q_until - q_now))
         [ "$q_rest" -gt 0 ] || q_rest=1
       fi
       ticket_wait "$q_in" "$q_rest"
@@ -1020,9 +1108,13 @@ queue_enter() {
     # job, its whole source, on stderr.
     kill -KILL "$q_talker" 2>/dev/null || true
     wait "$q_talker" 2>/dev/null || true
-    if [ -n "$q_until" ] && [ -n "$(ticket_ahead "$queue_ticket" "$q_kind")" ]; then
-      queue_leave "$q_fd" "$queue_ticket"
-      return 1
+    if [ -n "$q_until" ]; then
+      q_ahead=$(ticket_ahead "$queue_ticket" "$q_kind") ||
+        fail "the line of $q_base ($q_dir) does not read (sort failed): no place in line kept, nothing done"
+      if [ -n "$q_ahead" ]; then
+        queue_leave "$q_fd" "$queue_ticket"
+        return 1
+      fi
     fi
   fi
   # A ticket whose file went while it waited (its queue folder removed) is no
@@ -1034,7 +1126,10 @@ queue_enter() {
       return 1
     }
   fi
-  : >"$queue_ticket.in"
+  printf '' >"$queue_ticket.in" || {
+    queue_leave "$q_fd" "$queue_ticket"
+    fail "$queue_ticket.in could not be written (the mark that this ticket holds): no place in line kept, nothing done"
+  }
 }
 
 # The lock the workrift before these tickets took (dotfiles a5821de8 and
@@ -1085,7 +1180,12 @@ legacy_path() {
 }
 
 legacy_take() {
-  legacy_file=$(legacy_path "$1") || return 0
+  # No Git directory, no older workrift's lock; a Git that fails where there
+  # is one is never "none" (the older workrift would run beside this one).
+  if ! legacy_file=$(legacy_path "$1"); then
+    [ -e "$1/.git" ] || return 0
+    fail "git rev-parse --absolute-git-dir failed in $1: the older workrift's lock cannot be taken; nothing done"
+  fi
   if [ "$2" = w ]; then
     exec 7>>"$legacy_file"
   else
@@ -1136,12 +1236,18 @@ legacy_yield() {
 # were this process killed while it waits, the child would keep them.
 ticket_wait() {
   w_until=
-  [ -z "$2" ] || w_until=$(($(date +%s) + $2))
+  if [ -n "$2" ]; then
+    w_now=$(date +%s) || return 0
+    w_until=$((w_now + $2))
+  fi
   while [ -f "$1" ]; do
     # Each look waits 5 s at most, and no longer than the bound left.
     w_step=5
     if [ -n "$w_until" ]; then
-      w_step=$((w_until - $(date +%s)))
+      # A clock that does not read ends the wait (the caller looks at the
+      # line again), never an arithmetic error that stops the shell.
+      w_now=$(date +%s) || return 0
+      w_step=$((w_until - w_now))
       [ "$w_step" -le 5 ] || w_step=5
       [ "$w_step" -ge 1 ] || w_step=1
     fi
@@ -1163,8 +1269,11 @@ tickets_at_exit() {
   # A command that failed under set -e ends the script with no word of why: say
   # where it stopped, so a failure seen once (a busy host) can be read after.
   # (workrift subvolume only: sv_at is its step, set once its arguments read.)
+  # It says the three facts of every other stop too (sv_facts): what happened,
+  # the state both trees are in, the command that goes on.
   if [ "$t_rc" -ne 0 ] && [ -z "${fail_said:-}" ] && [ -n "${sv_at:-}" ]; then
     printf 'workrift: subvolume stopped with status %s and no message (a command failed under set -e) at the step %s\n' "$t_rc" "$sv_at" >&2
+    sv_facts >&2 || true
   fi
   for t_mine in "${base_ticket:-}" "${advance_ticket:-}" "${hold_ticket:-}" "${clone_ticket:-}" "${move_ticket:-}"; do
     [ -z "$t_mine" ] || rm -f "$t_mine" "$t_mine.in"
@@ -1777,13 +1886,15 @@ work_init() {
 # objects/pack/tmp_*. workrift.lock and workrift-turnstile.lock are flock
 # files of the line, not Git's. A copy of a live .git carries the ones a Git
 # process held in it at that instant.
+#
+# Fails when a walk fails (a copy's locks that do not read are never "none").
 git_carried_locks() {
   [ -d "$1" ] || return 0
   find "$1" -maxdepth 1 -type f \( -name '*.lock' -o -name gc.pid \) \
-    ! -name workrift.lock ! -name workrift-turnstile.lock 2>/dev/null
-  [ ! -d "$1/refs" ] || find "$1/refs" -type f -name '*.lock' 2>/dev/null
+    ! -name workrift.lock ! -name workrift-turnstile.lock 2>/dev/null || return 1
+  [ ! -d "$1/refs" ] || find "$1/refs" -type f -name '*.lock' 2>/dev/null || return 1
   [ ! -f "$1/objects/maintenance.lock" ] || printf '%s\n' "$1/objects/maintenance.lock"
-  [ ! -d "$1/objects/pack" ] || find "$1/objects/pack" -maxdepth 1 -name 'tmp_*' 2>/dev/null
+  [ ! -d "$1/objects/pack" ] || find "$1/objects/pack" -maxdepth 1 -name 'tmp_*' 2>/dev/null || return 1
 }
 
 # Deletes from the new workspace $2 (never the base $1) the Git lock and
@@ -2269,9 +2380,36 @@ work_purge() {
   p_trashes=$(printf '%s' "$p_answer" | jq -r '.[].trash')
   p_left() { fail "$1; nothing deleted, the trash stays: $(printf '%s' "$p_trashes" | tr '\n' ' ')"; }
   [ -n "$p_rows" ] || p_left "work rm answered no removed workspace"
-  p_ids=$(printf '%s\n' "$p_rows" | cut -d "$record_separator" -f1)
-  [ "$(printf '%s\n' "$p_ids" | LC_ALL=C sort -u | wc -l)" -eq "$(printf '%s\n' "$p_ids" | wc -l)" ] || p_left "work rm answered one id twice"
-  p_kept=$(printf '%s\n' "$p_base"; printf '%s' "$p_list" | jq -r '.[] | select(.state._tag == "Active") | .path' | grep -vxF "$p_doomed" || true)
+  # Read with the shell's builtins, or with the status of the one command
+  # checked: a jq that fails is never an empty list (a trash that holds a kept
+  # workspace would pass), nor a cut that fails no duplicate.
+  p_ids=
+  while IFS= read -r p_row; do
+    p_id=${p_row%%"$record_separator"*}
+    case "$p_ids" in *"
+$p_id
+"*) p_left "work rm answered one id twice" ;; esac
+    p_ids="${p_ids:-
+}$p_id
+"
+  done <<EOF
+$p_rows
+EOF
+  p_active=$(printf '%s' "$p_list" | jq -r '.[] | select(.state._tag == "Active") | .path') ||
+    p_left "work's list of workspaces does not read (jq failed), so no kept workspace can be told from the trash"
+  p_kept=$p_base
+  while IFS= read -r p_one; do
+    [ -n "$p_one" ] || continue
+    case "
+$p_doomed
+" in *"
+$p_one
+"*) continue ;; esac
+    p_kept="$p_kept
+$p_one"
+  done <<EOF
+$p_active
+EOF
   p_plan=
   p_gone=
   while IFS=$record_separator read -r p_id p_trash p_name; do
@@ -2334,11 +2472,21 @@ EOF
       if [ -e "$p_was" ] || [ -L "$p_was" ]; then
         printf 'workrift: work rm answered that nothing went to the trash, but %s is still there\n' "$p_was" >&2
         p_unproven="$p_unproven $p_was"
-      elif printf '%s' "$p_after" | jq -e --arg id "$p_id" 'any(.[]; .id == $id)' >/dev/null; then
-        printf 'workrift: work rm answered that nothing went to the trash, but work --json list still lists id %s (%s)\n' "$p_id" "$(printf '%s' "$p_after" | jq -c --arg id "$p_id" '[.[] | select(.id == $id) | {path, state: .state._tag}]')" >&2
-        p_unproven="$p_unproven $p_was"
       else
-        printf 'deleted: %s\n' "$p_was"
+        # jq -e: 0 listed, 1 not listed; any other status read nothing.
+        p_rc=0
+        printf '%s' "$p_after" | jq -e --arg id "$p_id" 'any(.[]; .id == $id)' >/dev/null || p_rc=$?
+        case "$p_rc" in
+          0)
+            printf 'workrift: work rm answered that nothing went to the trash, but work --json list still lists id %s (%s)\n' "$p_id" "$(printf '%s' "$p_after" | jq -c --arg id "$p_id" '[.[] | select(.id == $id) | {path, state: .state._tag}]')" >&2
+            p_unproven="$p_unproven $p_was"
+            ;;
+          1) printf 'deleted: %s\n' "$p_was" ;;
+          *)
+            printf 'workrift: work rm answered that nothing went to the trash, but whether work --json list still lists id %s does not read (jq status %s)\n' "$p_id" "$p_rc" >&2
+            p_unproven="$p_unproven $p_was"
+            ;;
+        esac
       fi
     done <<EOF
 $p_gone
@@ -2568,10 +2716,12 @@ sv_paths() {
   sv_new=$sv_dir/$sv_name.new
   sv_back=$sv_dir/$sv_name.back
   sv_old=$sv_dir/$sv_name.old
-  if [ -d "$(base_home "$1")/.workrift" ]; then
+  p_home=$(base_home "$1") ||
+    fail "the workspaces' folder of $1 does not read (work.toml's [work] storage; awk, sed, dirname or basename failed): nothing changed"
+  if [ -d "$p_home/.workrift" ]; then
     state_dir "$1"
   else
-    state_value=$(base_home "$1")/.workrift
+    state_value=$p_home/.workrift
   fi
   sv_state=$state_value/subvolume
   readonly sv_base sv_parent sv_name sv_dir sv_new sv_back sv_old sv_state
@@ -2591,8 +2741,8 @@ sv_is() {
 sv_state_make() {
   state_dir "$sv_base"
   [ "$state_value/subvolume" = "$sv_state" ] ||
-    fail "the state folder resolves to $state_value, not $(dirname "$sv_state"); nothing changed"
-  mkdir -p "$sv_state"
+    fail "the state folder resolves to $state_value, not ${sv_state%/*}; nothing changed"
+  mkdir -p "$sv_state" || sv_stop "mkdir -p $sv_state (the state folder of the switch; nothing changed)"
 }
 
 # The kind of the path $1: - nothing, L a link, X no folder, S the root of a
@@ -2604,11 +2754,31 @@ sv_kind() {
     printf -- '-\n'
   elif [ ! -d "$1" ]; then
     printf 'X\n'
-  elif [ "$(stat -f -c %T "$1" 2>/dev/null)" = btrfs ] && [ "$(stat -c %i "$1" 2>/dev/null)" = 256 ]; then
-    printf 'S\n'
   else
-    printf 'F\n'
+    # A stat that fails is ? (unknown) and status 1, never F: a subvolume read
+    # as a folder would take a switch past its exchange for one before it.
+    local k_fs k_ino
+    if ! k_fs=$(stat -f -c %T "$1" 2>/dev/null); then
+      printf '?\n'
+      return 1
+    fi
+    if [ "$k_fs" != btrfs ]; then
+      printf 'F\n'
+    elif ! k_ino=$(stat -c %i "$1" 2>/dev/null); then
+      printf '?\n'
+      return 1
+    elif [ "$k_ino" = 256 ]; then
+      printf 'S\n'
+    else
+      printf 'F\n'
+    fi
   fi
+}
+
+# The kind of $2 into the variable $1, or a stop that says which path does
+# not read (sv_kind's ? never reaches a decision).
+sv_kind_of() {
+  sv_read "$1" sv_kind "$2" || sv_stop "stat of $2 (whether it is a subvolume)"
 }
 
 sv_words() {
@@ -2617,6 +2787,7 @@ sv_words() {
     F) printf 'a plain folder' ;;
     -) printf 'nothing' ;;
     L) printf 'a symbolic link' ;;
+    '?') printf 'unknown (its stat failed)' ;;
     *) printf 'no folder' ;;
   esac
 }
@@ -2628,12 +2799,17 @@ sv_whole() { [ -d "$1/.git" ] && [ -f "$1/work.toml" ]; }
 
 # What a tree is, to know it again: a subvolume by its id, a folder by its
 # inode.
+#
+# Fails when a read fails: an identity is recorded and compared before a
+# delete, so it is never a `?` that two failed reads would make equal.
 sv_identity() {
-  local i_kind
-  i_kind=$(sv_kind "$1")
+  local i_kind i_id
+  i_kind=$(sv_kind "$1") || return 1
   case "$i_kind" in
-    S) printf 'subvolume %s\n' "$(btrfs inspect-internal rootid "$1" 2>/dev/null || printf '?')" ;;
-    F) printf 'folder %s\n' "$(stat -c %i "$1" 2>/dev/null || printf '?')" ;;
+    S) i_id=$(btrfs inspect-internal rootid "$1" 2>/dev/null) && [ -n "$i_id" ] || return 1
+      printf 'subvolume %s\n' "$i_id" ;;
+    F) i_id=$(stat -c %i "$1" 2>/dev/null) && [ -n "$i_id" ] || return 1
+      printf 'folder %s\n' "$i_id" ;;
     *) printf '%s\n' "$i_kind" ;;
   esac
 }
@@ -2645,14 +2821,19 @@ sv_phase_read() {
   sv_ph_source=
   sv_ph_target=
   [ -f "$sv_state/phase" ] || return 0
-  read -r sv_ph sv_ph_source sv_ph_target <"$sv_state/phase" || true
-  [ -n "$sv_ph" ] || sv_ph=none
+  # A record that is there but does not read is never "no switch under way":
+  # a cut switch read as none would never carry what its old tree gained.
+  if ! { read -r sv_ph sv_ph_source sv_ph_target <"$sv_state/phase"; } 2>/dev/null || [ -z "$sv_ph" ]; then
+    sv_ph=none
+    fail "the record of the switch, $sv_state/phase, is there but does not read: nothing changed"
+  fi
 }
 
+# Writes the record of the switch whole (a file moved into place) or stops.
 sv_phase_write() {
-  mkdir -p "$sv_state"
-  printf '%s\n' "$*" >"$sv_state/phase.$$"
-  mv -f "$sv_state/phase.$$" "$sv_state/phase"
+  mkdir -p "$sv_state" || sv_stop "mkdir -p $sv_state (the record of the switch: $*)"
+  printf '%s\n' "$*" >"$sv_state/phase.$$" || sv_stop "the write of $sv_state/phase.$$ (the record of the switch: $*)"
+  mv -f "$sv_state/phase.$$" "$sv_state/phase" || sv_stop "mv of the record of the switch into $sv_state/phase ($*)"
 }
 
 # One step: said (with the seconds since the start) and logged in the state
@@ -2661,8 +2842,11 @@ sv_phase_write() {
 sv_step() {
   phase "$1: $2"
   sv_at=$1
-  mkdir -p "$sv_state"
-  printf '%s %s: %s\n' "$(date -u +%FT%TZ)" "$1" "$2" >>"$sv_state/log"
+  # The step log is read by a person after, and decides nothing: a log that
+  # cannot be written is said, and the switch goes on (a stop there would
+  # leave a switch half done for a line of text).
+  { mkdir -p "$sv_state" && printf '%s %s: %s\n' "$(date -u +%FT%TZ)" "$1" "$2" >>"$sv_state/log"; } 2>/dev/null ||
+    printf 'workrift subvolume: the step log %s/log was not written (step %s); the switch goes on\n' "$sv_state" "$1" >&2
   # Tests only: a writer that lands at this step (WORKRIFT_SUBVOLUME_HOOK_AT,
   # a space-separated list of steps, runs WORKRIFT_SUBVOLUME_HOOK with the
   # step as $1), and a kill -9 of the command.
@@ -2678,7 +2862,7 @@ sv_line_pids() {
   for l_t in "$state_value"/base/*.[rw] "$state_value"/advance/*.[rw] "$state_value"/clone/*.[rw] "$state_value"/move/*.[rw]; do
     [ -f "$l_t" ] || continue
     ticket_live "$l_t" || continue
-    sed -n 1p "$l_t"
+    sed -n 1p "$l_t" || return 1
   done
   printf '%s\n' "$$"
 }
@@ -2686,9 +2870,15 @@ sv_line_pids() {
 # Whether the process $1, or one it descends from, is in the line $2 (pids).
 sv_in_line() {
   local i_pid="$1" i_n=0
+  # A parent that does not read ends the walk: the process counts as outside
+  # the line (waited for, or a refusal), never as in it.
   while [ -n "$i_pid" ] && [ "$i_pid" -gt 1 ] && [ "$i_n" -lt 64 ]; do
-    ! printf '%s\n' "$2" | grep -qxF "$i_pid" || return 0
-    i_pid=$(process_parent "$i_pid")
+    case "
+$2
+" in *"
+$i_pid
+"*) return 0 ;; esac
+    i_pid=$(process_parent "$i_pid") || return 1
     i_n=$((i_n + 1))
   done
   return 1
@@ -2698,21 +2888,32 @@ sv_in_line() {
 # file open under it, `pid command` a line. One in line (a create waiting for
 # the base, a remove, their children) writes nothing in the base until its
 # turn, and by then it names the base by its path.
+#
+# Fails when the walk fails: a find that failed is never "nobody works there",
+# which would let a switch carry, or a drop delete, beside a live process. A
+# process that ends during the walk is no failure (-ignore_readdir_race).
 sv_users() {
-  local u_dir="$1" u_owners u_link u_pid u_seen=' '
-  u_owners=$(sv_line_pids)
-  find "$proc_root" -mindepth 1 -maxdepth 3 \
+  local u_dir="$1" u_owners u_links u_link u_pid u_seen=' ' u_ifs
+  u_owners=$(sv_line_pids) || return 1
+  u_links=$(find "$proc_root" -ignore_readdir_race -mindepth 1 -maxdepth 3 \
     \( ! -path "$proc_root/[0-9]*" -prune \) -o \
     \( -path "$proc_root/[0-9]*/*" ! -path "$proc_root/[0-9]*/fd" ! -path "$proc_root/[0-9]*/fd/*" ! -path "$proc_root/[0-9]*/cwd" -prune \) -o \
-    \( \( -lname "$u_dir" -o -lname "$u_dir/*" \) -print \) 2>/dev/null |
-    while IFS= read -r u_link; do
-      u_pid=${u_link#"$proc_root"/}
-      u_pid=${u_pid%%/*}
-      case "$u_seen" in *" $u_pid "*) continue ;; esac
-      u_seen="$u_seen$u_pid "
-      ! sv_in_line "$u_pid" "$u_owners" || continue
-      printf '%s %s\n' "$u_pid" "$(cat "$proc_root/$u_pid/comm" 2>/dev/null || printf '?')"
-    done
+    \( \( -lname "$u_dir" -o -lname "$u_dir/*" \) -print \) 2>/dev/null) || return 1
+  u_ifs=$IFS
+  IFS='
+'
+  set -f
+  for u_link in $u_links; do
+    u_pid=${u_link#"$proc_root"/}
+    u_pid=${u_pid%%/*}
+    case "$u_seen" in *" $u_pid "*) continue ;; esac
+    u_seen="$u_seen$u_pid "
+    ! sv_in_line "$u_pid" "$u_owners" || continue
+    # The name is for a person only.
+    printf '%s %s\n' "$u_pid" "$(cat "$proc_root/$u_pid/comm" 2>/dev/null || printf '?')"
+  done
+  set +f
+  IFS=$u_ifs
 }
 
 # Removals running or in line, `this|other pid what` a line: a workrift remove
@@ -2721,15 +2922,24 @@ sv_users() {
 # working folder or its WORKRIFT_SOURCE names the base or its workspaces);
 # `other` one of another base, or of none it can tell, named with its working
 # folder.
+#
+# A read that fails for a process still there (its command line, working
+# folder or environment) makes it `this … (does not read)`: a removal it cannot
+# rule out is refused, never taken for none. A process gone meanwhile is none.
 sv_removals() {
-  local r_home r_c r_pid r_t r_what r_cwd
-  r_home=$(base_home "$sv_base")
+  local r_home r_c r_pid r_t r_what r_cwd r_args r_env r_rec
+  r_home=$(base_home "$sv_base") || return 1
   for r_c in "$proc_root"/[0-9]*/cmdline; do
     [ -r "$r_c" ] || continue
     r_pid=${r_c%/cmdline}
     r_pid=${r_pid##*/}
     [ "$r_pid" != "$$" ] || continue
-    r_what=$(tr '\0' '\n' <"$r_c" 2>/dev/null | awk -v home="$r_home" -v base="$sv_base" '
+    if ! r_args=$(tr '\0' '\n' <"$r_c" 2>/dev/null); then
+      [ ! -e "$proc_root/$r_pid" ] || printf 'this %s (its command line does not read)\n' "$r_pid"
+      continue
+    fi
+    [ -n "$r_args" ] || continue
+    if ! r_what=$(printf '%s\n' "$r_args" | awk -v home="$r_home" -v base="$sv_base" '
       function here(p) { return p == home || index(p, home "/") == 1 || p == base || index(p, base "/") == 1 }
       { a[NR] = $0 }
       END {
@@ -2742,16 +2952,31 @@ sv_removals() {
           for (j = i + 1; j <= NR; j++) if (here(a[j])) { print "this " w; exit }
           print "other " w; exit
         }
-      }' || true)
+      }'); then
+      printf 'this %s (awk failed on its command line)\n' "$r_pid"
+      continue
+    fi
     [ -n "$r_what" ] || continue
-    r_cwd=$(readlink "$proc_root/$r_pid/cwd" 2>/dev/null || true)
     case "$r_what" in
       other\ *)
+        if ! r_cwd=$(readlink "$proc_root/$r_pid/cwd" 2>/dev/null); then
+          r_cwd='?'
+          [ ! -e "$proc_root/$r_pid" ] || r_what="this ${r_what#other } (its working folder does not read)"
+        fi
         case "$r_cwd" in
           "$sv_base" | "$sv_base"/* | "$r_home" | "$r_home"/*) r_what="this ${r_what#other }" ;;
-          *)
-            ! tr '\0' '\n' <"$proc_root/$r_pid/environ" 2>/dev/null | grep -qxF "WORKRIFT_SOURCE=$sv_base" ||
-              r_what="this ${r_what#other }"
+        esac
+        case "$r_what" in
+          other\ *)
+            if ! r_env=$(tr '\0' '\n' <"$proc_root/$r_pid/environ" 2>/dev/null); then
+              [ ! -e "$proc_root/$r_pid" ] || r_what="this ${r_what#other } (its environment does not read)"
+            else
+              case "
+$r_env
+" in *"
+WORKRIFT_SOURCE=$sv_base
+"*) r_what="this ${r_what#other }" ;; esac
+            fi
             ;;
         esac
         ;;
@@ -2763,8 +2988,15 @@ sv_removals() {
   done
   for r_t in "$state_value"/clone/*.[rw]; do
     [ -f "$r_t" ] && ticket_live "$r_t" || continue
-    case "$(sed -n 4p "$r_t")" in
-      delete\ *) printf 'this %s %s\n' "$(sed -n 1p "$r_t")" "$(sed -n 4p "$r_t")" ;;
+    if ! r_rec=$(sed -n '1p;4p' "$r_t"); then
+      printf 'this ? (the clone ticket %s does not read)\n' "$r_t"
+      continue
+    fi
+    case "${r_rec#*
+}" in
+      delete\ *) printf 'this %s %s\n' "${r_rec%%
+*}" "${r_rec#*
+}" ;;
     esac
   done
 }
@@ -2793,17 +3025,28 @@ sv_runs_tickets() {
 }
 
 # workrift processes outside the line that run an older script: `pid what`.
+#
+# A process still there whose command line does not read is named (`does not
+# read`): one it cannot rule out is refused, never taken for none.
 sv_old_workrifts() {
-  local o_c o_pid o_owners o_what
-  o_owners=$(sv_line_pids)
+  local o_c o_pid o_owners o_what o_args
+  o_owners=$(sv_line_pids) || return 1
   for o_c in "$proc_root"/[0-9]*/cmdline; do
     [ -r "$o_c" ] || continue
     o_pid=${o_c%/cmdline}
     o_pid=${o_pid##*/}
     [ "$o_pid" != "$$" ] || continue
-    o_what=$(tr '\0' '\n' <"$o_c" 2>/dev/null | awk '
+    if ! o_args=$(tr '\0' '\n' <"$o_c" 2>/dev/null); then
+      [ ! -e "$proc_root/$o_pid" ] || printf '%s ? (its command line does not read)\n' "$o_pid"
+      continue
+    fi
+    [ -n "$o_args" ] || continue
+    if ! o_what=$(printf '%s\n' "$o_args" | awk '
       { a[NR] = $0 }
-      END { for (i = 1; i < NR; i++) { n = a[i]; sub(/.*\//, "", n); if (n ~ /^workrift/ && a[i + 1] ~ /^(init|create|refresh|advance|deps|hold|settings|remove|prune)$/) { print a[i + 1]; exit } } }')
+      END { for (i = 1; i < NR; i++) { n = a[i]; sub(/.*\//, "", n); if (n ~ /^workrift/ && a[i + 1] ~ /^(init|create|refresh|advance|deps|hold|settings|remove|prune)$/) { print a[i + 1]; exit } } }'); then
+      printf '%s ? (awk failed on its command line)\n' "$o_pid"
+      continue
+    fi
     [ -n "$o_what" ] || continue
     ! sv_in_line "$o_pid" "$o_owners" || continue
     ! sv_runs_tickets "$o_pid" || continue
@@ -2813,18 +3056,31 @@ sv_old_workrifts() {
 
 # Git's lock and gc files in the base's Git directory (workrift.lock, the
 # older workrift's lock file, is the line's).
+# A read that fails is a line of its own (never an empty list, "no lock").
 sv_git_locks() {
-  local g_dir
-  g_dir=$(base_git "$1" rev-parse --absolute-git-dir 2>/dev/null) || return 0
-  find "$g_dir" -maxdepth 1 \( -name gc.pid -o -name '*.lock' \) ! -name workrift.lock 2>/dev/null
-  find "$g_dir/refs" -name '*.lock' 2>/dev/null
+  local g_dir g_list
+  if ! g_dir=$(base_git "$1" rev-parse --absolute-git-dir 2>/dev/null); then
+    printf '(git rev-parse --absolute-git-dir failed in %s: its locks are unknown)\n' "$1"
+    return 0
+  fi
+  if ! g_list=$(find "$g_dir" -maxdepth 1 \( -name gc.pid -o -name '*.lock' \) ! -name workrift.lock 2>/dev/null); then
+    printf '(find failed in %s: its locks are unknown)\n' "$g_dir"
+  fi
+  sv_lines "$g_list"
+  if ! g_list=$(find "$g_dir/refs" -name '*.lock' 2>/dev/null); then
+    printf '(find failed in %s/refs: its locks are unknown)\n' "$g_dir"
+  fi
+  sv_lines "$g_list"
 }
 
 # The btrfs state folder (/sys/fs/btrfs/<uuid>) of the file system holding
-# the base, found by its device; empty when none.
+# the base, found by its device; empty when none. Fails when findmnt fails.
 sv_fs_dir() {
   local f_source f_dev f_uuid
-  f_source=$(findmnt -n -o SOURCE --target "$sv_base" 2>/dev/null | sed 's/\[.*//' | head -n 1)
+  f_source=$(findmnt -n -o SOURCE --target "$sv_base" 2>/dev/null) || return 1
+  f_source=${f_source%%
+*}
+  f_source=${f_source%%\[*}
   [ -n "$f_source" ] || return 0
   for f_dev in "$sv_sysfs"/*/devices/"${f_source##*/}"; do
     if [ -e "$f_dev" ]; then
@@ -2832,7 +3088,7 @@ sv_fs_dir() {
       return 0
     fi
   done
-  f_uuid=$(findmnt -n -o UUID --target "$sv_base" 2>/dev/null || true)
+  f_uuid=$(findmnt -n -o UUID --target "$sv_base" 2>/dev/null) || f_uuid=
   [ -z "$f_uuid" ] || [ ! -d "$sv_sysfs/$f_uuid" ] || printf '%s\n' "$sv_sysfs/$f_uuid"
 }
 
@@ -2851,13 +3107,20 @@ sv_preflight() {
   local p_opts p_fs p_total p_used p_slack p_df p_avail p_pct p_list
   sv_refused=false
   printf 'preflight:\n'
-  p_opts=$(findmnt -n -o OPTIONS --target "$sv_base" 2>/dev/null || true)
-  case ",$p_opts," in
-    *,user_subvol_rm_allowed,*) sv_check ok 'the mount has user_subvol_rm_allowed (a workspace is deleted without sudo)' ;;
-    *) sv_check no "the mount of $sv_base lacks user_subvol_rm_allowed (options: ${p_opts:-unknown})" ;;
-  esac
-  p_fs=$(sv_fs_dir)
-  if [ -z "$p_fs" ]; then
+  # Every read here is checked: one that fails is a NO of its own, never a
+  # value (an empty, a 0) that a check then passes or refuses for the wrong
+  # reason.
+  if ! sv_read p_opts findmnt -n -o OPTIONS --target "$sv_base"; then
+    sv_check no "findmnt -o OPTIONS --target $sv_base failed: the mount options are unknown"
+  else
+    case ",$p_opts," in
+      *,user_subvol_rm_allowed,*) sv_check ok 'the mount has user_subvol_rm_allowed (a workspace is deleted without sudo)' ;;
+      *) sv_check no "the mount of $sv_base lacks user_subvol_rm_allowed (options: ${p_opts:-unknown})" ;;
+    esac
+  fi
+  if ! sv_read p_fs sv_fs_dir; then
+    sv_check no "findmnt -o SOURCE --target $sv_base failed: quotas and metadata are unknown"
+  elif [ -z "$p_fs" ]; then
     sv_check no "cannot find the file system's state under $sv_sysfs: quotas and metadata are unknown"
   else
     if [ -d "$p_fs/qgroups" ]; then
@@ -2866,10 +3129,18 @@ sv_preflight() {
       sv_check ok 'quotas are off'
     fi
     if [ "$1" = copy ]; then
-      p_total=$(cat "$p_fs/allocation/metadata/total_bytes" 2>/dev/null || printf 0)
-      p_used=$(cat "$p_fs/allocation/metadata/bytes_used" 2>/dev/null || printf 0)
-      p_slack=$(((p_total - p_used) / 1048576))
-      if [ "$p_slack" -ge "$sv_min_slack_mib" ]; then
+      # A size that does not read is no 0: a used size read as 0 would pass
+      # the gate with the whole total as slack.
+      p_total=
+      p_used=
+      { sv_read p_total cat "$p_fs/allocation/metadata/total_bytes" && sv_read p_used cat "$p_fs/allocation/metadata/bytes_used"; } 2>/dev/null || true
+      case "$p_total:$p_used" in
+        *[!0-9:]* | :* | *:) p_slack= ;;
+        *) p_slack=$(((p_total - p_used) / 1048576)) ;;
+      esac
+      if [ -z "$p_slack" ]; then
+        sv_check no "the metadata sizes under $p_fs/allocation/metadata do not read (total '${p_total}', used '${p_used}'): the slack is unknown"
+      elif [ "$p_slack" -ge "$sv_min_slack_mib" ]; then
         sv_check ok "metadata slack ${p_slack} MiB >= ${sv_min_slack_mib} MiB (a copy costs about ${sv_meta_mib} MiB)"
       else
         sv_check no "metadata slack ${p_slack} MiB < ${sv_min_slack_mib} MiB (a copy costs about ${sv_meta_mib} MiB; metadata cannot grow)"
@@ -2877,7 +3148,20 @@ sv_preflight() {
     fi
   fi
   if [ "$1" = copy ]; then
-    p_df=$(df -Pk "$sv_base" 2>/dev/null | awk 'NR == 2 { print $4, $5 }')
+    sv_read p_df df -Pk "$sv_base" 2>/dev/null || p_df=
+    # The second line's fourth and fifth fields, by the shell (no pipe whose
+    # first command's failure the last would hide).
+    p_df=${p_df#*
+}
+    p_df=${p_df%%
+*}
+    p_avail=
+    p_pct=
+    # shellcheck disable=SC2034 # the fields before and after are skipped
+    read -r p_dev p_blocks p_usedk p_avail p_pct p_rest <<EOF || true
+$p_df
+EOF
+    p_df="$p_avail $p_pct"
     p_avail=${p_df%% *}
     p_pct=${p_df#* }
     p_pct=${p_pct%\%}
@@ -2900,46 +3184,145 @@ sv_preflight() {
   sv_preflight_live
 }
 
-# The checks that can change at any moment: again under the hold.
+# The lines of $1 joined by `; `, for a message (no fork, no pipe).
+sv_joined() {
+  local j_out='' j_line
+  while IFS= read -r j_line; do
+    [ -z "$j_line" ] || j_out="${j_out:+$j_out; }$j_line"
+  done <<EOF
+$1
+EOF
+  printf '%s' "$j_out"
+}
+
+# The checks that can change at any moment: again under the hold. Each list
+# is read through sv_read: a walk that failed is a NO of its own, never an
+# empty list that reads as "nobody there".
 sv_preflight_live() {
-  local p_list p_this p_other p_n
-  p_list=$(sv_removals)
-  p_this=$(printf '%s\n' "$p_list" | sed -n 's/^this //p')
-  p_other=$(printf '%s\n' "$p_list" | sed -n 's/^other //p')
-  if [ -z "$p_this" ]; then
-    sv_check ok "no removal of $sv_base runs or waits (workrift remove or prune, work rm or gc, rm under its workspaces)"
+  local p_list p_this='' p_other='' p_n=0 p_line
+  if ! sv_read p_list sv_removals; then
+    sv_check no "the removals running do not read (the workspaces' folder of $sv_base does not read): a removal of it cannot be ruled out"
   else
-    sv_check no "a removal of $sv_base runs; let it end: $(printf '%s' "$p_this" | tr '\n' ';')"
-  fi
-  if [ -z "$p_other" ]; then
-    sv_check ok 'no removal of another base runs'
-  else
-    p_n=$(printf '%s\n' "$p_other" | grep -c .)
-    if [ "$sv_beside" = no ]; then
-      sv_check no "$p_n removal(s) of another base run, which slow the copy (they share the file system's metadata); pause them, or run beside them with --beside-other-removals: $(printf '%s' "$p_other" | tr '\n' ';')"
+    while IFS= read -r p_line; do
+      case "$p_line" in
+        this\ *) p_this="$p_this${p_line#this }
+" ;;
+        other\ *) p_other="$p_other${p_line#other }
+"
+          p_n=$((p_n + 1)) ;;
+      esac
+    done <<EOF
+$p_list
+EOF
+    if [ -z "$p_this" ]; then
+      sv_check ok "no removal of $sv_base runs or waits (workrift remove or prune, work rm or gc, rm under its workspaces)"
+    else
+      sv_check no "a removal of $sv_base runs; let it end: $(sv_joined "$p_this")"
+    fi
+    if [ -z "$p_other" ]; then
+      sv_check ok 'no removal of another base runs'
+    elif [ "$sv_beside" = no ]; then
+      sv_check no "$p_n removal(s) of another base run, which slow the copy (they share the file system's metadata); pause them, or run beside them with --beside-other-removals: $(sv_joined "$p_other")"
     else
       [ "$p_n" -le "$sv_beside" ] || sv_beside=$p_n
-      sv_check ok "beside $p_n removal(s) of another base (--beside-other-removals): $(printf '%s' "$p_other" | tr '\n' ';')"
+      sv_check ok "beside $p_n removal(s) of another base (--beside-other-removals): $(sv_joined "$p_other")"
     fi
   fi
-  p_list=$(sv_old_workrifts)
-  if [ -z "$p_list" ]; then
+  if ! sv_read p_list sv_old_workrifts; then
+    sv_check no "the workrift processes do not read (the pids of the line do not read): an older workrift cannot be ruled out"
+  elif [ -z "$p_list" ]; then
     sv_check ok 'no older workrift (one that takes no place in line) runs'
   else
-    sv_check no "an older workrift runs, which would not wait for the switch; let it end: $(printf '%s' "$p_list" | tr '\n' ';')"
+    sv_check no "an older workrift runs, which would not wait for the switch; let it end: $(sv_joined "$p_list")"
   fi
-  p_list=$(sv_users "$sv_base")
-  if [ -z "$p_list" ]; then
+  if ! sv_read p_list sv_users "$sv_base"; then
+    sv_check no "the processes in $sv_base do not read (find over $proc_root failed): a process in it cannot be ruled out"
+  elif [ -z "$p_list" ]; then
     sv_check ok "no process outside workrift's line works in $sv_base or holds a file open in it"
   else
-    sv_check no "processes outside workrift's line work in $sv_base (run this from outside it; end them): $(printf '%s' "$p_list" | tr '\n' ';')"
+    sv_check no "processes outside workrift's line work in $sv_base (run this from outside it; end them): $(sv_joined "$p_list")"
   fi
   p_list=$(sv_git_locks "$sv_base")
   if [ -z "$p_list" ]; then
     sv_check ok 'no Git lock or gc file in the base'
   else
-    sv_check no "Git lock or gc files in the base: $(printf '%s' "$p_list" | tr '\n' ' ')"
+    sv_check no "Git lock or gc files in the base: $(sv_joined "$p_list")"
   fi
+}
+
+# The command that goes on from here, said in sv_facts: a caller that knows
+# better sets sv_next. Run from anywhere: it names the base itself.
+sv_command() {
+  case "$1" in
+    S) printf 'cd / && WORKRIFT_SOURCE=%s workrift subvolume --apply' "$sv_base" ;;
+    F) printf 'cd / && WORKRIFT_SOURCE=%s workrift subvolume --back --apply' "$sv_base" ;;
+    drop) printf 'cd / && WORKRIFT_SOURCE=%s workrift subvolume --drop-old --apply' "$sv_base" ;;
+  esac
+}
+
+# The two facts every end of workrift subvolume but a success says after its
+# reason (fail, or the exit trap after a set -e stop): the state both trees
+# are in, from the paths and the record of the switch, and the exact command
+# that goes on. Reads only; a read that fails is said as unknown. Its reads
+# fork at most four times (stat, through sv_kind), so a host that cannot fork
+# still gets the record's words and the command.
+sv_facts() {
+  local f_kb f_ko f_kc f_ph f_src f_tg f_copy f_where f_next
+  if [ -z "${sv_base:-}" ] || [ -z "${sv_state:-}" ]; then
+    printf 'workrift subvolume: state: the base is not read yet; nothing changed\n'
+    printf 'workrift subvolume: next: %s\n' "${sv_next:-fix the cause above, then run the same command again}"
+    return 0
+  fi
+  f_ph=none
+  f_src=
+  f_tg=
+  if [ -f "$sv_state/phase" ]; then
+    # shellcheck disable=SC2034 # f_src: the record's middle field, unused here
+    { read -r f_ph f_src f_tg <"$sv_state/phase"; } 2>/dev/null || f_ph=unreadable
+  fi
+  f_kb=$(sv_kind "$sv_base") || f_kb='?'
+  f_ko=$(sv_kind "$sv_old") || f_ko='?'
+  f_where="$sv_base is $(sv_words "$f_kb") (the live base); $sv_old is $(sv_words "$f_ko")"
+  for f_copy in "$sv_new" "$sv_back"; do
+    f_kc=$(sv_kind "$f_copy") || f_kc='?'
+    [ "$f_kc" = - ] || f_where="$f_where; $f_copy is $(sv_words "$f_kc") (a copy, never the base)"
+  done
+  case "$f_ph:$f_kb" in
+    copy:"$f_tg" | swap:"$f_tg" | carry:"$f_tg" | rollback:"$f_tg")
+      f_where="$f_where; a switch to $(sv_words "$f_tg") exchanged and is not finished" ;;
+    copy:* | swap:* | rollback:*)
+      f_where="$f_where; a switch to $(sv_words "$f_tg") stopped before its exchange: the base never moved" ;;
+    carry:*) f_where="$f_where; a switch to $(sv_words "$f_tg") is recorded after its exchange, but the base is not $(sv_words "$f_tg"): look at both trees" ;;
+    drop:*) f_where="$f_where; a --drop-old was cut short" ;;
+    switched:*) f_where="$f_where; the last switch finished" ;;
+    unreadable:*) f_where="$f_where; the record $sv_state/phase does not read" ;;
+    *) f_where="$f_where; no switch is under way" ;;
+  esac
+  printf 'workrift subvolume: state: %s\n' "$f_where"
+  if [ -n "${sv_next:-}" ]; then
+    f_next=$sv_next
+  else
+    case "$f_ph" in
+      copy | swap | carry | rollback)
+        f_next="$(sv_command "$f_tg") (it finishes the switch to $(sv_words "$f_tg"); stopped before its exchange, it deletes its copy and switches again)" ;;
+      drop) f_next="$(sv_command drop) (it finishes the drop)" ;;
+      unreadable) f_next="look at $sv_state/phase (it names the switch under way), then $(sv_command "${sv_mode:-S}")" ;;
+      *) f_next="$(sv_command "${sv_mode:-S}") once the cause above is gone (nothing of a switch is under way)" ;;
+    esac
+  fi
+  printf 'workrift subvolume: next: %s\n' "$f_next"
+}
+
+# A command that failed where no check of its own stops the switch: fails
+# with what it was and its status (sv_facts adds the state and the command).
+# `cmd || sv_stop "what cmd did"`: $? is still cmd's on entry.
+sv_stop() {
+  sv_stop_status $? "$1"
+}
+
+# sv_stop with the status given: for a handler that runs a command first.
+sv_stop_status() {
+  fail "$2 failed (status $1) at the step ${sv_at:-start}"
 }
 
 # The lines of $1, none when it is empty (printf '%s\n' "" would make one).
@@ -2958,26 +3341,34 @@ sv_refs() {
 }
 
 # What a copy must reproduce: HEAD, refs, status (untracked files too), lock
-# files and Git's own files (config, info, hooks). Fails when Git fails.
+# files and Git's own files (config, info, hooks). Fails when a read fails.
 sv_digest() {
   base_git "$1" symbolic-ref -q HEAD || base_git "$1" rev-parse HEAD || return 1
   sv_refs "$1" || return 1
   base_git "$1" --no-optional-locks status --porcelain=v2 --branch --untracked-files=all || return 1
-  lock_fingerprint "$1"
-  sv_git_files "$1"
+  lock_fingerprint "$1" || return 1
+  sv_git_files "$1" || return 1
 }
 
 # The object store of the tree $1, a line a file: the listings of
 # objects/pack, objects/info (the commit-graph chain too), the loose folders
 # and any quarantine, each file with its size and, but for the packs (large,
 # and never rewritten under one name), its checksum. A fetch or a repack that
-# lands while the copy walks the tree changes it.
+# lands while the copy walks the tree changes it. Fails when a walk fails
+# (never a short list that two failed walks would make equal).
 sv_store() {
-  (
-    cd "$1/.git/objects" 2>/dev/null || exit 0
-    find . -type f ! -name '*.pack' -exec cksum {} + 2>/dev/null
-    find . -type f -name '*.pack' -exec wc -c {} + 2>/dev/null | grep -v ' total$'
-  ) | LC_ALL=C sort
+  local s_files s_packs s_line s_list
+  [ -d "$1/.git/objects" ] || return 1
+  s_files=$(cd "$1/.git/objects" && find . -type f ! -name '*.pack' -exec cksum {} +) || return 1
+  s_packs=$(cd "$1/.git/objects" && find . -type f -name '*.pack' -exec wc -c {} +) || return 1
+  s_list=$s_files
+  while IFS= read -r s_line; do
+    case "$s_line" in '' | *' total') ;; *) s_list="$s_list
+$s_line" ;; esac
+  done <<EOF
+$s_packs
+EOF
+  sv_lines "$s_list" | LC_ALL=C sort
 }
 
 # The ref tips of the tree $1, and the tree of each commit or tag among them,
@@ -2989,7 +3380,7 @@ sv_tips_missing() {
   # name commits, whose trees are checked too; any other ref its tip alone.
   # Each stage into a variable, never a pipe: a stage that failed answers a
   # line, not an empty list that reads as nothing missing.
-  local t_refs t_names t_check
+  local t_refs t_names t_check t_missing t_err
   if ! t_refs=$(base_git "$1" for-each-ref --format='%(objectname) %(refname)' 2>"$sv_state/tips.err"); then
     printf 'git for-each-ref failed in %s\n' "$1"
   elif ! t_names=$(sv_lines "$t_refs" | awk '{ print $1; if ($2 ~ /^refs\/(heads|remotes)\//) print $1 "^{tree}" }'); then
@@ -2997,26 +3388,36 @@ sv_tips_missing() {
   elif ! t_check=$(sv_lines "$t_names" | base_git "$1" cat-file --batch-check 2>/dev/null); then
     printf 'git cat-file failed in %s\n' "$1"
   else
-    sv_lines "$t_check" | grep ' missing$' || true
+    # grep: 0 lines found, 1 none, anything else failed (never "none").
+    if t_missing=$(sv_lines "$t_check" | grep ' missing$'); then
+      sv_lines "$t_missing"
+    elif [ $? -ne 1 ]; then
+      printf 'grep failed on the objects of %s\n' "$1"
+    fi
   fi
   # Anything for-each-ref says (a broken ref, a missing object) is a fault.
-  cat "$sv_state/tips.err" 2>/dev/null || true
-  rm -f "$sv_state/tips.err"
+  if t_err=$(cat "$sv_state/tips.err" 2>/dev/null); then
+    sv_lines "$t_err"
+  else
+    printf 'the errors of git for-each-ref in %s do not read\n' "$1"
+  fi
+  rm -f "$sv_state/tips.err" || true
 }
 
 # Whether the copy $1 is the base as it was when the copy began: HEAD, refs,
 # status and lock files equal the base's; the refs and the object store of the
 # base unchanged since then and the copy's store equal to it; every ref tip
-# and tree in the copy; no Git lock or temporary pack in it.
+# and tree in the copy; no Git lock or temporary pack in it. Every read is
+# checked: one that failed is "not the base" (copy again, then roll back).
 sv_copy_true() {
   local t_store t_a t_b
   t_store=$(cat "$sv_state/store") &&
     t_a=$(sv_digest "$sv_base") && t_b=$(sv_digest "$1") && [ "$t_a" = "$t_b" ] &&
     t_a=$(sv_refs "$sv_base") && t_b=$(cat "$sv_state/refs") && [ "$t_a" = "$t_b" ] &&
-    [ "$(sv_store "$sv_base")" = "$t_store" ] &&
-    [ "$(sv_store "$1")" = "$t_store" ] &&
-    [ -z "$(sv_tips_missing "$1")" ] &&
-    [ -z "$(git_carried_locks "$1/.git")" ]
+    t_a=$(sv_store "$sv_base") && [ "$t_a" = "$t_store" ] &&
+    t_b=$(sv_store "$1") && [ "$t_b" = "$t_store" ] &&
+    t_a=$(sv_tips_missing "$1") && [ -z "$t_a" ] &&
+    t_b=$(git_carried_locks "$1/.git") && [ -z "$t_b" ]
 }
 
 # Carries into the tree $2 each ref the tree $1 changed since the refs file
@@ -3030,7 +3431,7 @@ sv_copy_true() {
 # and a rerun carries the rest. Every read lands in a file or a variable and is
 # checked; none is piped from Git (sv_refs).
 sv_carry() {
-  local c_from="$1" c_to="$2" c_snap="$3" c_tmp c_head c_head_from c_ref c_was c_now c_there c_failed=
+  local c_from="$1" c_to="$2" c_snap="$3" c_tmp c_head c_head_from c_ref c_was c_now c_there c_rc c_failed=
   c_tmp=$sv_state/carry.$$
   sv_carried=0
   sv_kept=0
@@ -3074,9 +3475,20 @@ sv_carry() {
     # then moved only from the value this tree still holds (compare and swap).
     if [ "$c_now" != - ]; then
       base_git "$c_to" fetch -q --no-tags --no-write-fetch-head "$c_from" "$c_ref" </dev/null >&2 || true
-      if ! base_git "$c_to" cat-file -e "$c_now^{object}" 2>/dev/null; then
+      # rev-parse -q --verify: 0 there, 1 missing; anything else is Git
+      # failing, and the ref is left to the rerun (never counted as "objects
+      # did not come"). (cat-file -e answers 128 for both.)
+      c_rc=0
+      base_git "$c_to" rev-parse -q --verify "$c_now^{object}" >/dev/null 2>&1 || c_rc=$?
+      if [ "$c_rc" -eq 0 ]; then
+        :
+      elif [ "$c_rc" -eq 1 ]; then
         printf 'workrift: subvolume: %s moved to %s in %s, whose objects did not come over: not carried\n' "$c_ref" "$c_now" "$c_from" >&2
         sv_missed=$((sv_missed + 1))
+        continue
+      else
+        printf 'workrift: subvolume: whether %s (%s) came over into %s does not read (git cat-file failed): not carried yet\n' "$c_ref" "$c_now" "$c_to" >&2
+        c_failed="${c_failed:+$c_failed, }$c_ref"
         continue
       fi
     fi
@@ -3114,16 +3526,20 @@ sv_carry() {
 }
 
 # Waits until no process outside the line is in $1, at most sv_wait_seconds;
-# fails with sv_why.
+# fails with sv_why, also when the processes or the clock do not read.
 sv_wait_users() {
-  local w_until w_users
-  w_until=$(($(date +%s) + sv_wait_seconds))
-  while w_users=$(sv_users "$1") && [ -n "$w_users" ]; do
-    if [ "$(date +%s)" -ge "$w_until" ]; then
-      sv_why="processes still work in $1 after ${sv_wait_seconds} s: $(printf '%s' "$w_users" | tr '\n' ';')"
+  local w_until w_users w_now
+  w_now=$(date +%s) || { sv_why="the clock does not read (date failed) before the wait for $1"; return 1; }
+  w_until=$((w_now + sv_wait_seconds))
+  while :; do
+    sv_read w_users sv_users "$1" || { sv_why="the processes in $1 do not read (find over $proc_root failed)"; return 1; }
+    [ -n "$w_users" ] || return 0
+    w_now=$(date +%s) || { sv_why="the clock does not read (date failed) while it waits for $1"; return 1; }
+    if [ "$w_now" -ge "$w_until" ]; then
+      sv_why="processes still work in $1 after ${sv_wait_seconds} s: $(sv_joined "$w_users")"
       return 1
     fi
-    sleep 1
+    sleep 1 || true
   done
 }
 
@@ -3143,6 +3559,8 @@ sv_hold() {
     sv_release
     fail "no turn at the lock of $sv_base within ${sv_turn_seconds} s:$(queue_words "$sv_base" base); nothing changed"
   fi
+  # Whether work snapshots the base decides only whether the clone turn is
+  # taken; in doubt (any failure) it is taken: slower, never worse.
   if ! base_snapshots "$sv_base"; then
     if ! queue_enter "$sv_base" clone w 8 wait; then
       queue_patience=
@@ -3152,7 +3570,7 @@ sv_hold() {
     clone_ticket=$queue_ticket
   fi
   queue_patience=
-  sv_held_at=$(date +%s)
+  sv_held_at=$(date +%s) || { sv_rc=$?; sv_release; sv_stop_status "$sv_rc" "date (the clock at the hold)"; }
   phase 'held'
 }
 
@@ -3168,29 +3586,33 @@ sv_release() {
 # Deletes the copy a switch to $1 made at its copy path, only while it is of
 # kind $1 and the base still holds the whole tree it was copied from.
 sv_drop_copy() {
-  local d_t="$1" d_path d_kind d_users
+  local d_t="$1" d_path d_kind d_kb d_users
   d_path=$(sv_copy_path "$d_t")
-  d_kind=$(sv_kind "$d_path")
+  sv_kind_of d_kind "$d_path"
   [ "$d_kind" != - ] || return 0
   [ "$d_kind" = "$d_t" ] || fail "$d_path is $(sv_words "$d_kind"), not the copy this command makes there; nothing deleted"
-  [ "$(sv_kind "$sv_base")" = "$(sv_other "$d_t")" ] && sv_whole "$sv_base" ||
+  sv_kind_of d_kb "$sv_base"
+  [ "$d_kb" = "$(sv_other "$d_t")" ] && sv_whole "$sv_base" ||
     fail "$sv_base is not the whole $(sv_words "$(sv_other "$d_t")") the copy was made from; $d_path is not deleted"
-  d_users=$(sv_users "$d_path")
-  [ -z "$d_users" ] || fail "processes work in $d_path ($(printf '%s' "$d_users" | tr '\n' ';')); end them, then run again"
+  sv_read d_users sv_users "$d_path" ||
+    fail "the processes in $d_path do not read (find over $proc_root failed): nothing deleted"
+  [ -z "$d_users" ] || fail "processes work in $d_path ($(sv_joined "$d_users")); end them, then run again"
   # The copy was never the base: the exchange is the only step that puts a
   # tree at the base's path, and the base is still the tree it was copied from.
   sv_step drop-copy "delete the copy $d_path ($(sv_words "$d_t")), never the base"
   if [ "$d_t" = S ]; then
     btrfs subvolume delete "$sv_new" >/dev/null || fail "btrfs subvolume delete $sv_new failed"
   else
-    sv_rm_folder back
+    sv_rm_folder back || fail "rm -rf $sv_back failed (the copy, never the base)"
   fi
   [ ! -e "$d_path" ] || fail "$d_path is not all deleted"
   sv_deleted="$sv_deleted $d_path"
 }
 
 # Deletes the plain folder of the move path $1 (back or old), never crossing
-# into another file system.
+# into another file system. Fails when rm fails. (GNU rm answers --version;
+# a BSD rm, or an rm that could not start, takes -x, which GNU rm refuses: a
+# wrong guess deletes nothing and fails.)
 sv_rm_folder() {
   if rm --version >/dev/null 2>&1; then
     case "$1" in
@@ -3207,32 +3629,48 @@ sv_rm_folder() {
 
 # The copy into $2 by cp, its pid and that pid's identity in the state folder
 # while it runs. A run whose shell alone is killed leaves its cp running; the
-# next run waits for that cp (sv_wait_copier) before it touches the copy.
+# next run waits for that cp (sv_wait_copier) before it touches the copy. An
+# identity that does not read while the cp lives is recorded as `unknown`
+# (waited for by its pid alone), never as none; a record that cannot be
+# written fails the copy once the cp has ended.
 sv_cp() {
-  local p_pid p_rc=0
+  local p_pid p_rc=0 p_id p_rec=true
   cp -a --reflink=always "$1" "$2" 3>&- 6>&- 7>&- 8>&- 9>&- &
   p_pid=$!
-  printf '%s\n%s\n' "$p_pid" "$(process_identity "$p_pid")" >"$sv_state/copier"
+  p_id=$(process_identity "$p_pid")
+  if [ -z "$p_id" ] && kill -0 "$p_pid" 2>/dev/null; then p_id=unknown; fi
+  printf '%s\n%s\n' "$p_pid" "$p_id" >"$sv_state/copier" || p_rec=false
   wait "$p_pid" || p_rc=$?
-  rm -f "$sv_state/copier"
+  rm -f "$sv_state/copier" || true
+  [ "$p_rec" = true ] || { [ "$p_rc" -ne 0 ] || p_rc=1; }
   return "$p_rc"
 }
 
-# Waits, at most sv_wait_seconds, for the cp of a run cut short to end.
+# Waits, at most sv_wait_seconds, for the cp of a run cut short to end. A cp
+# whose identity does not read while its pid lives is waited for.
 sv_wait_copier() {
-  local w_pid w_id w_until
+  local w_pid='' w_id='' w_until w_now
   [ -f "$sv_state/copier" ] || return 0
-  w_pid=$(sed -n 1p "$sv_state/copier")
-  w_id=$(sed -n 2p "$sv_state/copier")
-  w_until=$(($(date +%s) + sv_wait_seconds))
-  while [ -n "$w_id" ] && [ "$(process_identity "$w_pid")" = "$w_id" ]; do
-    [ "$(date +%s)" -lt "$w_until" ] ||
+  { read -r w_pid && read -r w_id; } <"$sv_state/copier" 2>/dev/null || true
+  case "$w_pid" in '' | *[!0-9]*)
+    fail "the record of a cut run's cp, $sv_state/copier, does not read (pid '$w_pid'): look whether a cp still writes into $sv_new or $sv_back; nothing changed" ;;
+  esac
+  w_now=$(date +%s) || sv_stop "date (the clock before the wait for a cut run's cp)"
+  w_until=$((w_now + sv_wait_seconds))
+  while :; do
+    if [ "$w_id" = unknown ] || [ -z "$w_id" ]; then
+      kill -0 "$w_pid" 2>/dev/null || break
+    elif ! process_is "$w_pid" "$w_id" && [ "$process_was" = gone ]; then
+      break
+    fi
+    w_now=$(date +%s) || sv_stop "date (the clock while it waits for a cut run's cp)"
+    [ "$w_now" -lt "$w_until" ] ||
       fail "the cp of a run cut short (pid $w_pid) still writes into the copy after ${sv_wait_seconds} s: let it end, or end it (kill $w_pid), then run again; nothing changed"
     phase "wait for the cp of a run cut short (pid $w_pid) to end"
-    sleep 1
+    sleep 1 || true
   done
   printf 'workrift subvolume: the cp of a run cut short (pid %s) has ended\n' "$w_pid" >&2
-  rm -f "$sv_state/copier"
+  rm -f "$sv_state/copier" || sv_stop "rm of $sv_state/copier"
 }
 
 # Makes the copy of the base at the copy path of $1, verified: a subvolume
@@ -3240,7 +3678,7 @@ sv_wait_copier() {
 # status and lock files the base's. The refs at the copy go to the state
 # folder's refs file. Fails with sv_why.
 sv_copy_in() {
-  local i_t="$1" i_path i_try=0
+  local i_t="$1" i_path i_try=0 i_kind i_now
   i_path=$(sv_copy_path "$i_t")
   sv_step copy-make "$([ "$i_t" = S ] && printf 'btrfs subvolume create' || printf 'mkdir') $i_path"
   if [ "$i_t" = S ]; then
@@ -3255,6 +3693,8 @@ sv_copy_in() {
     { sv_why="the copy into $i_path failed (a full disk or metadata space?)"; return 1; }
   while :; do
     sv_step refresh "git -C $i_path update-index -q --refresh"
+    # The refresh only rewrites stat data the verify compares: a refresh that
+    # failed shows as a status that differs, and the .git is copied again.
     base_git "$i_path" update-index -q --refresh >/dev/null 2>&1 || true
     sv_step verify "HEAD, refs, status, lock files and the object store: $sv_base = at the copy = $i_path; every ref tip and its tree in $i_path; no Git lock in it"
     if sv_copy_true "$i_path"; then
@@ -3262,36 +3702,57 @@ sv_copy_in() {
     fi
     i_try=$((i_try + 1))
     if [ "$i_try" -ge 3 ]; then
-      sv_why="$i_path differs from $sv_base after 3 copies of its .git (the base keeps changing)"
+      sv_why="$i_path differs from $sv_base after 3 copies of its .git (the base keeps changing, or a read of it fails)"
       return 1
     fi
     sv_step copy-git "the base changed during the copy: copy its .git again"
-    [ "$(sv_kind "$i_path")" = "$i_t" ] || { sv_why="$i_path is no longer the copy"; return 1; }
-    if [ "$i_t" = S ]; then rm -rf -- "$sv_new/.git"; else rm -rf -- "$sv_back/.git"; fi
+    sv_read i_kind sv_kind "$i_path" || { sv_why="stat of $i_path failed"; return 1; }
+    [ "$i_kind" = "$i_t" ] || { sv_why="$i_path is no longer the copy"; return 1; }
+    if [ "$i_t" = S ]; then
+      rm -rf -- "$sv_new/.git" || { sv_why="rm -rf $sv_new/.git failed (the copy's .git, to copy it again)"; return 1; }
+    else
+      rm -rf -- "$sv_back/.git" || { sv_why="rm -rf $sv_back/.git failed (the copy's .git, to copy it again)"; return 1; }
+    fi
     sv_refs_write || return 1
     sv_store "$sv_base" >"$sv_state/store" || { sv_why="the object store of $sv_base could not be listed"; return 1; }
     sv_cp "$sv_base/.git" "$i_path/.git" ||
       { sv_why="the copy of $sv_base/.git failed"; return 1; }
   done
-  if [ $(($(date +%s) - sv_held_at)) -gt "$sv_limit_seconds" ]; then
+  i_now=$(date +%s) || { sv_why="the clock does not read (date failed) after the copy"; return 1; }
+  if [ $((i_now - sv_held_at)) -gt "$sv_limit_seconds" ]; then
     sv_why="the copy and its checks took more than ${sv_limit_seconds} s of the hold"
     return 1
   fi
 }
 
-# Removes the smoke workspace, when there is one. Fails with sv_why.
+# The smoke workspace's record in work's list $1, into s_id and s_path (both
+# empty when there is none); fails when jq fails.
+sv_smoke_record() {
+  s_id=
+  s_path=
+  s_rec=$(printf '%s' "$1" | jq -r --arg n "$sv_smoke" '.[] | select(.name == $n and .state._tag == "Active") | [.id, .path, (.cloner // "")] | join("\u001f")') || return 1
+  s_rec=${s_rec%%
+*}
+  [ -n "$s_rec" ] || return 0
+  s_id=${s_rec%%"$record_separator"*}
+  s_rec=${s_rec#*"$record_separator"}
+  s_path=${s_rec%%"$record_separator"*}
+  s_cloner=${s_rec#*"$record_separator"}
+}
+
+# Removes the smoke workspace, when there is one. Fails with sv_why, also
+# when work's list or its record does not read (never "there is none").
 sv_smoke_rm() {
-  local s_list s_id s_path s_answer s_i=0
+  local s_list s_answer s_i=0
   s_list=$(work_in "$sv_base" --json list 2>/dev/null) || { sv_why="work list failed in $sv_base"; return 1; }
-  s_id=$(printf '%s' "$s_list" | jq -r --arg n "$sv_smoke" '.[] | select(.name == $n and .state._tag == "Active") | .id')
+  sv_smoke_record "$s_list" || { sv_why="the record of $sv_smoke in work's list does not read (jq failed)"; return 1; }
   [ -n "$s_id" ] || return 0
-  s_path=$(printf '%s' "$s_list" | jq -r --arg n "$sv_smoke" '.[] | select(.name == $n and .state._tag == "Active") | .path')
   sv_step smoke-rm "work rm $sv_smoke ($s_path)"
   s_answer=$(work_in "$sv_base" --json rm -abandon -expect "$s_id" "$sv_smoke" 3>&- 6>&- 7>&- 8>&- 9>&-) ||
     { sv_why="work rm $sv_smoke failed: $s_answer"; return 1; }
   (work_purge "$sv_base" "$s_list" "$s_path" "$s_answer") >&2 || { sv_why="work rm $sv_smoke left it: $s_answer"; return 1; }
   while { [ -e "$s_path" ] || [ -L "$s_path" ]; } && [ "$s_i" -lt 5 ]; do
-    sleep 1
+    sleep 1 || true
     s_i=$((s_i + 1))
   done
   [ ! -e "$s_path" ] || { sv_why="$s_path is still there 5 s after its removal"; return 1; }
@@ -3299,21 +3760,31 @@ sv_smoke_rm() {
 
 # The base after a switch to $1 is what work needs. For a subvolume: work
 # clones it by btrfs, and a smoke workspace is a btrfs record whose folder is
-# a subvolume, removed in one call. Fails with sv_why.
+# a subvolume, removed in one call. Fails with sv_why; a read that fails is
+# said as such (never "not a btrfs snapshot").
 sv_prove() {
-  local v_t="$1" v_answer v_list v_cloner v_path
-  [ "$(sv_kind "$sv_base")" = "$v_t" ] || { sv_why="$sv_base is $(sv_words "$(sv_kind "$sv_base")")"; return 1; }
+  local v_t="$1" v_answer v_list v_kind v_head
+  sv_read v_kind sv_kind "$sv_base" || { sv_why="stat of $sv_base failed: what it is does not read"; return 1; }
+  [ "$v_kind" = "$v_t" ] || { sv_why="$sv_base is $(sv_words "$v_kind")"; return 1; }
   [ "$v_t" = S ] || return 0
-  base_snapshots "$sv_base" || { sv_why="work does not clone $sv_base by btrfs (work --json doctor: cloners)"; return 1; }
+  base_snapshots "$sv_base" || { sv_why="work does not clone $sv_base by btrfs (work --json doctor: cloners; or the doctor or jq failed)"; return 1; }
   sv_smoke_rm || return 1
   sv_step smoke "work new $sv_smoke in $sv_base: a btrfs record, a subvolume"
-  v_answer=$(work_in "$sv_base" --json new -branch "$sv_smoke" -from "$(base_git "$sv_base" rev-parse HEAD)" "$sv_smoke" 3>&- 6>&- 7>&- 8>&- 9>&-) ||
+  v_head=$(base_git "$sv_base" rev-parse HEAD) || { sv_why="git rev-parse HEAD failed in $sv_base"; return 1; }
+  v_answer=$(work_in "$sv_base" --json new -branch "$sv_smoke" -from "$v_head" "$sv_smoke" 3>&- 6>&- 7>&- 8>&- 9>&-) ||
     { sv_why="work new $sv_smoke failed: $v_answer"; sv_smoke_rm || true; return 1; }
-  v_list=$(work_in "$sv_base" --json list 2>/dev/null || true)
-  v_cloner=$(printf '%s' "$v_list" | jq -r --arg n "$sv_smoke" '.[] | select(.name == $n and .state._tag == "Active") | .cloner' 2>/dev/null || true)
-  v_path=$(printf '%s' "$v_list" | jq -r --arg n "$sv_smoke" '.[] | select(.name == $n and .state._tag == "Active") | .path' 2>/dev/null || true)
-  if [ "$v_cloner" != btrfs ] || [ "$(sv_kind "$v_path")" != S ]; then
-    sv_why="the smoke workspace $v_path was made by '$v_cloner' and is $(sv_words "$(sv_kind "$v_path")"), not a btrfs snapshot"
+  if ! v_list=$(work_in "$sv_base" --json list 2>/dev/null) || ! sv_smoke_record "$v_list"; then
+    sv_why="work list failed in $sv_base (or its record of $sv_smoke does not read): the smoke workspace is unproven"
+    sv_smoke_rm || true
+    return 1
+  fi
+  if ! sv_read v_kind sv_kind "${s_path:-/nonexistent/smoke}"; then
+    sv_why="stat of the smoke workspace $s_path failed: the smoke workspace is unproven"
+    sv_smoke_rm || true
+    return 1
+  fi
+  if [ "$s_cloner" != btrfs ] || [ "$v_kind" != S ]; then
+    sv_why="the smoke workspace $s_path was made by '$s_cloner' and is $(sv_words "$v_kind"), not a btrfs snapshot"
     sv_smoke_rm || true
     return 1
   fi
@@ -3332,21 +3803,22 @@ sv_prove() {
 # Fails after rolling back a switch to $2 from $1 (copy or kept) that had not
 # exchanged, with the reason in sv_why.
 sv_abort() {
-  local a_source="$1" a_t="$2"
-  [ "$(sv_kind "$sv_base")" = "$(sv_other "$a_t")" ] && sv_whole "$sv_base" || {
+  local a_source="$1" a_t="$2" a_kb
+  a_kb=$(sv_kind "$sv_base") || a_kb='?'
+  [ "$a_kb" = "$(sv_other "$a_t")" ] && sv_whole "$sv_base" || {
     sv_release
-    fail "$sv_why; and $sv_base is $(sv_words "$(sv_kind "$sv_base")"), not the tree it was before the exchange: nothing rolled back or deleted; look at it"
+    fail "$sv_why; and $sv_base is $(sv_words "$a_kb"), not the tree it was before the exchange: nothing rolled back or deleted; look at it"
   }
   sv_step rollback "before the exchange: $sv_base never moved"
   if [ "$a_source" = copy ]; then
     sv_drop_copy "$a_t"
-    rm -f "$sv_state/phase"
+    rm -f "$sv_state/phase" || sv_stop "rm of the record $sv_state/phase (after the copy was deleted)"
   else
     sv_phase_write switched kept "$(sv_other "$a_t")"
   fi
-  sv_step rolled-back "$sv_base is $(sv_words "$(sv_kind "$sv_base")") as it was"
+  sv_step rolled-back "$sv_base is $(sv_words "$a_kb") as it was"
   sv_release
-  fail "$sv_why; rolled back before the exchange: $sv_base is $(sv_words "$(sv_kind "$sv_base")") as it was, never moved; $(sv_deleted_said)"
+  fail "$sv_why; rolled back before the exchange: $sv_base is $(sv_words "$a_kb") as it was, never moved; $(sv_deleted_said)"
 }
 
 # What a run deleted, from what it did: only copies that were never the base.
@@ -3360,9 +3832,15 @@ sv_deleted_said() {
 
 # Records the tree at .old, which was the base until the exchange, by its
 # identity: the only tree --drop-old deletes.
+#
+# Stops when the identity does not read or the record cannot be written: no
+# record of `?`, which a drop could take for any tree. (Called after the
+# exchange: the rerun records it, sv_resume.)
 sv_keep_record() {
-  printf '%s\n%s\n' "$sv_old" "$(sv_identity "$sv_old")" >"$sv_state/kept.$$"
-  mv -f "$sv_state/kept.$$" "$sv_state/kept"
+  local k_id
+  k_id=$(sv_identity "$sv_old") || sv_stop "the identity of $sv_old (btrfs inspect-internal rootid or stat), for the record of the tree kept there"
+  printf '%s\n%s\n' "$sv_old" "$k_id" >"$sv_state/kept.$$" || sv_stop "the write of $sv_state/kept.$$ (the record of the tree kept at $sv_old)"
+  mv -f "$sv_state/kept.$$" "$sv_state/kept" || sv_stop "mv of the record of the tree kept at $sv_old into $sv_state/kept"
 }
 
 # What the tree $2 lacks of what the tree $1 holds, a line each, empty when
@@ -3371,81 +3849,136 @@ sv_keep_record() {
 # refs, logs, packed-refs and the index), reflog entries, and the index and
 # worktree as `git status` sees them. Files Git ignores are not compared.
 # Reads only: no file is written, so a dry run may call it.
+#
+# Each side is read into a variable and checked, and each comparison is
+# checked: a read or an awk that fails is said as an `unknown` line (never an
+# empty list, which would read as "holds all"). Fails only when a sort fails.
 sv_lacks() {
-  local l_k="$1" l_b="$2" l_hk l_hb l_rk l_rb l_sk l_sb
-  # A read that fails is said as a line (never an empty list, which would read
-  # as "holds all"): what it could not compare is unknown, not equal.
-  if ! l_rk=$(sv_refs "$l_k") || ! l_rb=$(sv_refs "$l_b"); then
+  local l_k="$1" l_b="$2" l_hk l_hb l_x l_y l_out
+  if l_x=$(sv_refs "$l_k") && l_y=$(sv_refs "$l_b"); then
+    if l_out=$({ printf '=K\n'; sv_lines "$l_x"; printf '=B\n'; sv_lines "$l_y"; } | awk '
+      $1 == "=K" { s = 1; next } $1 == "=B" { s = 2; next }
+      s == 1 && $2 !~ /^refs\/subvolume-move\// { k[$2] = $1; next }
+      s == 2 { b[$2] = $1 }
+      END {
+        for (r in k) {
+          m = "refs/subvolume-move/" substr(r, 6)
+          if (((r in b) && b[r] == k[r]) || ((m in b) && b[m] == k[r])) continue
+          print "  ref " r " " k[r] ((r in b) ? " (the base has " b[r] ")" : " (the base has no such ref)")
+        }
+      }'); then
+      sv_lines "$l_out" | LC_ALL=C sort || return 1
+    else
+      printf '  refs: unknown (awk failed comparing them); run it again\n'
+    fi
+  else
     printf '  refs: unknown (git for-each-ref failed in %s or %s); run it again\n' "$l_k" "$l_b"
   fi
-  { printf '=K\n'; sv_lines "${l_rk:-}"; printf '=B\n'; sv_lines "${l_rb:-}"; } | awk '
-    $1 == "=K" { s = 1; next } $1 == "=B" { s = 2; next }
-    s == 1 && $2 !~ /^refs\/subvolume-move\// { k[$2] = $1; next }
-    s == 2 { b[$2] = $1 }
-    END {
-      for (r in k) {
-        m = "refs/subvolume-move/" substr(r, 6)
-        if (((r in b) && b[r] == k[r]) || ((m in b) && b[m] == k[r])) continue
-        print "  ref " r " " k[r] ((r in b) ? " (the base has " b[r] ")" : " (the base has no such ref)")
-      }
-    }' | LC_ALL=C sort
-  l_hk=$(base_git "$l_k" symbolic-ref -q HEAD 2>/dev/null || base_git "$l_k" rev-parse -q --verify HEAD 2>/dev/null || true)
-  l_hb=$(base_git "$l_b" symbolic-ref -q HEAD 2>/dev/null || base_git "$l_b" rev-parse -q --verify HEAD 2>/dev/null || true)
-  [ "$l_hk" = "$l_hb" ] || printf '  HEAD %s (the base has %s)\n' "$l_hk" "$l_hb"
-  { printf '=K\n'; sv_git_files "$l_k"; printf '=B\n'; sv_git_files "$l_b"; } | awk '
-    $1 == "=K" { s = 1; next } $1 == "=B" { s = 2; next }
-    { f = $0; sub(/^[^ ]+ [^ ]+ \.\//, "", f) }
-    s == 1 { k[f] = $1 " " $2; next }
-    s == 2 { b[f] = $1 " " $2 }
-    END { for (f in k) if (b[f] != k[f]) print "  Git file .git/" f ((f in b) ? " differs" : " is missing") }' | LC_ALL=C sort
-  { printf '=K\n'; sv_reflogs "$l_k"; printf '=B\n'; sv_reflogs "$l_b"; } | awk '
-    $0 == "=K" { s = 1; next } $0 == "=B" { s = 2; next }
-    s == 1 { k[$0] = 1; next }
-    s == 2 { b[$0] = 1 }
-    END {
-      for (l in k) if (!(l in b)) { f = l; sub(/\t.*/, "", f); n[f]++ }
-      for (f in n) print "  reflog .git/logs/" f ": " n[f] " entries"
-    }' | LC_ALL=C sort
-  if ! l_sk=$(sv_status "$l_k") || ! l_sb=$(sv_status "$l_b"); then
+  if sv_head l_hk "$l_k" && sv_head l_hb "$l_b"; then
+    [ "$l_hk" = "$l_hb" ] || printf '  HEAD %s (the base has %s)\n' "$l_hk" "$l_hb"
+  else
+    printf '  HEAD: unknown (git symbolic-ref or rev-parse failed in %s or %s); run it again\n' "$l_k" "$l_b"
+  fi
+  if l_x=$(sv_git_files "$l_k") && l_y=$(sv_git_files "$l_b"); then
+    if l_out=$({ printf '=K\n'; sv_lines "$l_x"; printf '=B\n'; sv_lines "$l_y"; } | awk '
+      $1 == "=K" { s = 1; next } $1 == "=B" { s = 2; next }
+      { f = $0; sub(/^[^ ]+ [^ ]+ \.\//, "", f) }
+      s == 1 { k[f] = $1 " " $2; next }
+      s == 2 { b[f] = $1 " " $2 }
+      END { for (f in k) if (b[f] != k[f]) print "  Git file .git/" f ((f in b) ? " differs" : " is missing") }'); then
+      sv_lines "$l_out" | LC_ALL=C sort || return 1
+    else
+      printf '  Git files: unknown (awk failed comparing them); run it again\n'
+    fi
+  else
+    printf '  Git files: unknown (find or cksum failed in %s/.git or %s/.git); run it again\n' "$l_k" "$l_b"
+  fi
+  if l_x=$(sv_reflogs "$l_k") && l_y=$(sv_reflogs "$l_b"); then
+    if l_out=$({ printf '=K\n'; sv_lines "$l_x"; printf '=B\n'; sv_lines "$l_y"; } | awk '
+      $0 == "=K" { s = 1; next } $0 == "=B" { s = 2; next }
+      s == 1 { k[$0] = 1; next }
+      s == 2 { b[$0] = 1 }
+      END {
+        for (l in k) if (!(l in b)) { f = l; sub(/\t.*/, "", f); n[f]++ }
+        for (f in n) print "  reflog .git/logs/" f ": " n[f] " entries"
+      }'); then
+      sv_lines "$l_out" | LC_ALL=C sort || return 1
+    else
+      printf '  reflogs: unknown (awk failed comparing them); run it again\n'
+    fi
+  else
+    printf '  reflogs: unknown (find or awk failed in %s/.git/logs or %s/.git/logs); run it again\n' "$l_k" "$l_b"
+  fi
+  if l_x=$(sv_status "$l_k") && l_y=$(sv_status "$l_b"); then
+    if l_out=$({ printf '=K\n'; sv_lines "$l_x"; printf '=B\n'; sv_lines "$l_y"; } | awk '
+      $0 == "=K" { s = 1; next } $0 == "=B" { s = 2; next }
+      s == 1 { k[$0] = 1; next }
+      s == 2 { b[$0] = 1 }
+      END { for (l in k) if (!(l in b)) print "  worktree or index: " l }'); then
+      sv_lines "$l_out" | LC_ALL=C sort || return 1
+    else
+      printf '  worktree or index: unknown (awk failed comparing them); run it again\n'
+    fi
+  else
     printf '  worktree or index: unknown (git status failed in %s or %s); run it again\n' "$l_k" "$l_b"
   fi
-  { printf '=K\n'; sv_lines "${l_sk:-}"; printf '=B\n'; sv_lines "${l_sb:-}"; } | awk '
-    $0 == "=K" { s = 1; next } $0 == "=B" { s = 2; next }
-    s == 1 { k[$0] = 1; next }
-    s == 2 { b[$0] = 1 }
-    END { for (l in k) if (!(l in b)) print "  worktree or index: " l }' | LC_ALL=C sort
+}
+
+# HEAD of the tree $2 into the variable $1: the branch it names, or the
+# commit when detached (symbolic-ref's status 1); fails when Git fails.
+# shellcheck disable=SC2034 # h_v is read by the eval
+sv_head() {
+  local h_v
+  if h_v=$(base_git "$2" symbolic-ref -q HEAD 2>/dev/null); then
+    :
+  elif [ $? -eq 1 ]; then
+    h_v=$(base_git "$2" rev-parse -q --verify HEAD 2>/dev/null) || return 1
+  else
+    return 1
+  fi
+  eval "$1=\$h_v"
 }
 
 # Git's own files of the tree $1: `crc size ./path` a line.
+# Fails when the walk fails.
 sv_git_files() {
   (
-    cd "$1/.git" 2>/dev/null || exit 0
+    cd "$1/.git" 2>/dev/null || exit 1
     find . -type f ! -path './objects/*' ! -path './refs/*' ! -path './logs/*' ! -name packed-refs \
       ! -name index ! -name HEAD ! -name '*.lock' ! -name gc.pid ! -name FETCH_HEAD -exec cksum {} + 2>/dev/null
   )
 }
 
-# The reflog entries of the tree $1: `<log file><tab><entry>` a line.
+# The reflog entries of the tree $1: `<log file><tab><entry>` a line; none
+# when it has no logs. Fails when the walk fails.
 sv_reflogs() {
+  [ -d "$1/.git/logs" ] || return 0
   (
-    cd "$1/.git/logs" 2>/dev/null || exit 0
+    cd "$1/.git/logs" 2>/dev/null || exit 1
     find . -type f -exec awk '{ f = FILENAME; sub(/^\.\//, "", f); print f "\t" $0 }' {} + 2>/dev/null
   )
 }
 
 # The index and worktree of the tree $1 as Git sees them (no branch lines).
+# Fails when Git fails (the header lines are dropped by the shell: no grep
+# whose failure would read as a clean tree).
 sv_status() {
-  local s_out
+  local s_out s_line
   s_out=$(base_git "$1" --no-optional-locks status --porcelain=v2 --untracked-files=all 2>/dev/null) || return 1
-  sv_lines "$s_out" | grep -v '^#' || true
+  while IFS= read -r s_line; do
+    case "$s_line" in '' | '#'*) ;; *) printf '%s\n' "$s_line" ;; esac
+  done <<EOF
+$s_out
+EOF
 }
 
 # Says what the base lacks of the tree kept at .old, from sv_lacks.
 sv_lacks_said() {
   local s_lacks
   [ -d "$sv_old" ] || return 0
-  s_lacks=$(sv_lacks "$sv_old" "$sv_base")
-  if [ -z "$s_lacks" ]; then
+  if ! s_lacks=$(sv_lacks "$sv_old" "$sv_base"); then
+    printf '  what %s lacks of %s is unknown (a sort failed comparing them); run workrift subvolume (a dry run) to see it\n' "$sv_base" "$sv_old"
+  elif [ -z "$s_lacks" ]; then
     printf '  %s holds all that %s holds (refs and their objects, HEAD, Git'\''s files, reflogs, the index and the worktree as Git sees them; files Git ignores are not compared)\n' "$sv_base" "$sv_old"
   else
     printf '  %s lacks, of what %s holds (kept there until --drop-old):\n%s\n' "$sv_base" "$sv_old" "$s_lacks"
@@ -3485,9 +4018,11 @@ sv_end() {
   sv_release
   sv_said "$1"
   if [ -n "${sv_unfinished:-}" ]; then
+    sv_next="$(sv_command "$1") once no process works in $sv_old (it carries what $sv_old gained and finishes the switch)"
     fail "$sv_unfinished; not rolled back: $sv_base has been the live base since the exchange and stays $(sv_words "$1"); the switch is not finished: run workrift subvolume$([ "$1" = F ] && printf ' --back') --apply again (once no process works in $sv_old) to carry what $sv_old gained and finish it"
   fi
   if [ -n "${sv_unproved:-}" ]; then
+    sv_next="$(sv_command "$(sv_other "$1")") switches it back; or keep it as it is, the switch is recorded as done"
     fail "$sv_unproved; not rolled back: $sv_base has been the live base since the exchange and stays $(sv_words "$1"); workrift subvolume$([ "$1" = S ] && printf ' --back') --apply switches it back"
   fi
 }
@@ -3524,13 +4059,13 @@ sv_plan() {
 
 # A switch of the base to $1 (S forward, F back); $2 true applies it.
 sv_switch() {
-  local s_t="$1" s_apply="$2" s_o s_c s_kb s_kc s_ko s_source s_held=false
+  local s_t="$1" s_apply="$2" s_o s_c s_kb s_kc s_ko s_fs s_source s_held=false
   s_o=$(sv_other "$s_t")
   s_c=$(sv_copy_path "$s_t")
   sv_phase_read
-  s_kb=$(sv_kind "$sv_base")
-  s_kc=$(sv_kind "$s_c")
-  s_ko=$(sv_kind "$sv_old")
+  sv_kind_of s_kb "$sv_base"
+  sv_kind_of s_kc "$s_c"
+  sv_kind_of s_ko "$sv_old"
   printf 'workrift subvolume: %s is %s; %s: %s; %s: %s\n' "$sv_base" "$(sv_words "$s_kb")" "$s_c" "$(sv_words "$s_kc")" "$sv_old" "$(sv_words "$s_ko")"
   case "$sv_ph" in
     drop) fail "a --drop-old was cut short: run workrift subvolume --drop-old --apply to finish it first" ;;
@@ -3548,9 +4083,9 @@ sv_switch() {
       [ "$sv_restart" = true ] || return 0
       # Cut before its exchange and undone: a switch afresh, still holding.
       sv_phase_read
-      s_kb=$(sv_kind "$sv_base")
-      s_kc=$(sv_kind "$s_c")
-      s_ko=$(sv_kind "$sv_old")
+      sv_kind_of s_kb "$sv_base"
+      sv_kind_of s_kc "$s_c"
+      sv_kind_of s_ko "$sv_old"
       ;;
   esac
   if [ "$s_kb" = "$s_t" ]; then
@@ -3563,7 +4098,8 @@ sv_switch() {
     return 0
   fi
   [ "$s_kb" = "$s_o" ] && sv_whole "$sv_base" || fail "$sv_base is $(sv_words "$s_kb"), not a whole work base on btrfs"
-  [ "$(stat -f -c %T "$sv_base" 2>/dev/null)" = btrfs ] || fail "$sv_base is not on btrfs: nothing to switch"
+  sv_read s_fs stat -f -c %T "$sv_base" || sv_stop "stat -f of $sv_base (whether it is on btrfs; nothing changed)"
+  [ "$s_fs" = btrfs ] || fail "$sv_base is not on btrfs: nothing to switch"
   [ "$s_kc" = - ] || fail "$s_c is $(sv_words "$s_kc"), left by nothing this command knows: look at it, remove it by hand, run again"
   if [ "$s_ko" = "$s_t" ] && sv_whole "$sv_old"; then
     s_source=kept
@@ -3587,8 +4123,8 @@ sv_switch() {
     sv_release
     fail 'refused under the hold: nothing changed'
   fi
-  mkdir -p "$sv_dir" "$sv_state"
-  rm -f "$sv_state/log"
+  mkdir -p "$sv_dir" "$sv_state" || { sv_rc=$?; sv_release; sv_stop_status "$sv_rc" "mkdir -p $sv_dir $sv_state (nothing changed)"; }
+  rm -f "$sv_state/log" || { sv_rc=$?; sv_release; sv_stop_status "$sv_rc" "rm of the old step log $sv_state/log (nothing changed)"; }
   if [ "$s_source" = copy ]; then
     sv_phase_write copy copy "$s_t"
     sv_copy_in "$s_t" || sv_abort copy "$s_t"
@@ -3653,18 +4189,19 @@ sv_refs_write() {
 
 # Takes up a cut switch to $1 under the hold, from what the paths hold.
 sv_resume() {
-  local m_t="$1" m_o m_c m_source="$sv_ph_source"
+  local m_t="$1" m_o m_c m_kb m_kc m_ko m_source="$sv_ph_source"
   m_o=$(sv_other "$m_t")
   m_c=$(sv_copy_path "$m_t")
   # A cp the cut run left running ends before anything touches its copy.
   sv_wait_copier
-  if [ "$(sv_kind "$sv_base")" = "$m_o" ]; then
+  sv_kind_of m_kb "$sv_base"
+  if [ "$m_kb" = "$m_o" ]; then
     # Cut before the exchange (a phase `rollback` of an older run is the
     # same): the base never moved; the copy is dropped and the caller
     # switches afresh.
     if [ "$m_source" = copy ]; then
       sv_drop_copy "$m_t"
-      rm -f "$sv_state/phase"
+      rm -f "$sv_state/phase" || sv_stop "rm of the record $sv_state/phase (after the cut run's copy was deleted)"
     else
       sv_phase_write switched kept "$m_o"
     fi
@@ -3673,12 +4210,15 @@ sv_resume() {
     return 0
   fi
   # Cut after the exchange: the base is the new tree, and stays it.
-  if [ "$m_source" = copy ] && [ "$(sv_kind "$m_c")" = "$m_o" ]; then
-    [ "$(sv_kind "$sv_old")" = - ] || fail "$sv_old is taken; $m_c holds the tree that was the base: look at both"
+  sv_kind_of m_kc "$m_c"
+  if [ "$m_source" = copy ] && [ "$m_kc" = "$m_o" ]; then
+    sv_kind_of m_ko "$sv_old"
+    [ "$m_ko" = - ] || fail "$sv_old is taken; $m_c holds the tree that was the base: look at both"
     sv_step swapped "rename $m_c to $sv_old"
     sv_renameat rename "$m_c" "$sv_old" || fail "rename $m_c $sv_old failed"
   fi
-  [ "$(sv_kind "$sv_old")" = "$m_o" ] && sv_whole "$sv_old" || fail "$sv_old is not the whole tree the base was; look at it"
+  sv_kind_of m_ko "$sv_old"
+  [ "$m_ko" = "$m_o" ] && sv_whole "$sv_old" || fail "$sv_old is not the whole tree the base was; look at it"
   sv_keep_record
   sv_phase_write carry "$m_source" "$m_t"
   sv_finish "$m_t" "$m_source"
@@ -3686,8 +4226,13 @@ sv_resume() {
 }
 
 sv_said() {
-  printf 'workrift subvolume: %s is now %s (hold to release %s s)\n' "$sv_base" "$(sv_words "$(sv_kind "$sv_base")")" "$(($(date +%s) - sv_held_at))"
-  printf '  the tree it was is kept at %s (%s); %s\n' "$sv_old" "$(sv_identity "$sv_old")" "$(sv_deleted_said)"
+  # The report decides nothing: a read that fails here is said as unknown.
+  local r_kb r_id r_now
+  r_kb=$(sv_kind "$sv_base") || r_kb='?'
+  r_id=$(sv_identity "$sv_old") || r_id='its identity does not read'
+  if r_now=$(date +%s); then r_now="$((r_now - sv_held_at)) s"; else r_now='? s (the clock does not read)'; fi
+  printf 'workrift subvolume: %s is now %s (hold to release %s)\n' "$sv_base" "$(sv_words "$r_kb")" "$r_now"
+  printf '  the tree it was is kept at %s (%s); %s\n' "$sv_old" "$r_id" "$(sv_deleted_said)"
   case "${sv_refreshed:-}" in
     true) printf '  work refresh ran in %s\n' "$sv_base" ;;
     false) printf '  work refresh failed in %s: run it there (cd %s && work refresh)\n' "$sv_base" "$sv_base" ;;
@@ -3707,41 +4252,45 @@ sv_said() {
 # --drop-old: deletes the kept tree, by its exact path, only when it is the
 # tree the last switch parked there (its identity recorded then).
 sv_drop() {
-  local d_apply="$1" d_kb d_ko d_want d_have d_users
+  local d_apply="$1" d_kb d_ko d_path d_want d_have d_base_id d_users d_now
   sv_phase_read
   case "$sv_ph" in
     copy | swap | carry | rollback) fail "a switch is under way or was cut short ($sv_ph): run it again to finish it first" ;;
   esac
-  d_kb=$(sv_kind "$sv_base")
-  d_ko=$(sv_kind "$sv_old")
+  sv_kind_of d_kb "$sv_base"
+  sv_kind_of d_ko "$sv_old"
   if [ "$d_ko" = - ]; then
     printf 'workrift subvolume: nothing is kept at %s: nothing to drop\n' "$sv_old"
     # Only a run that applies forgets a record (a cut drop finished): a dry
     # run writes nothing.
     if [ "$d_apply" = true ] && { [ -f "$sv_state/kept" ] || [ "$sv_ph" = drop ]; }; then
-      rm -f "$sv_state/kept"
+      rm -f "$sv_state/kept" || sv_stop "rm of the record $sv_state/kept"
       [ "$sv_ph" != drop ] || sv_phase_write switched - "$d_kb"
     fi
     return 0
   fi
-  d_want=$(sed -n 2p "$sv_state/kept" 2>/dev/null || true)
-  [ "$(sed -n 1p "$sv_state/kept" 2>/dev/null || true)" = "$sv_old" ] && [ -n "$d_want" ] ||
+  d_path=
+  d_want=
+  { read -r d_path && read -r d_want; } <"$sv_state/kept" 2>/dev/null || true
+  [ "$d_path" = "$sv_old" ] && [ -n "$d_want" ] ||
     fail "no switch recorded the tree at $sv_old ($sv_state/kept): nothing deleted; look at it"
-  d_have=$(sv_identity "$sv_old")
+  case "$d_want" in *'?'*) fail "the record $sv_state/kept names no identity ($d_want): nothing deleted; look at $sv_old" ;; esac
+  d_have=$(sv_identity "$sv_old") || sv_stop "the identity of $sv_old (btrfs inspect-internal rootid or stat; nothing deleted)"
   [ "$d_have" = "$d_want" ] ||
     fail "$sv_old is $d_have, not the $d_want the last switch kept there: nothing deleted"
   { [ "$d_kb" = S ] && [ "$d_ko" = F ]; } || { [ "$d_kb" = F ] && [ "$d_ko" = S ]; } ||
     fail "$sv_base is $(sv_words "$d_kb") and $sv_old $(sv_words "$d_ko"): not a base beside the other tree; nothing deleted"
   sv_whole "$sv_base" || fail "$sv_base is not a whole work base: nothing deleted"
-  [ "$(sv_identity "$sv_base")" != "$d_have" ] || fail "$sv_old is the base itself: nothing deleted"
+  d_base_id=$(sv_identity "$sv_base") || sv_stop "the identity of $sv_base (btrfs inspect-internal rootid or stat; nothing deleted)"
+  [ "$d_base_id" != "$d_have" ] || fail "$sv_old is the base itself: nothing deleted"
   printf 'workrift subvolume: drop %s, %s (%s); %s stays %s\n' "$sv_old" "$(sv_words "$d_ko")" "$d_have" "$sv_base" "$(sv_words "$d_kb")"
   if [ "$d_ko" = S ]; then
     printf '  btrfs subvolume delete %s   (one call; the kernel frees its blocks after)\n' "$sv_old"
   else
     printf '  nice -n 19 rm -rf --one-file-system -- %s   (a walk of every file)\n' "$sv_old"
   fi
-  d_users=$(sv_users "$sv_old")
-  [ -z "$d_users" ] || fail "processes work in $sv_old ($(printf '%s' "$d_users" | tr '\n' ';')): nothing deleted"
+  sv_read d_users sv_users "$sv_old" || fail "the processes in $sv_old do not read (find over $proc_root failed): nothing deleted"
+  [ -z "$d_users" ] || fail "processes work in $sv_old ($(sv_joined "$d_users")): nothing deleted"
   # What the base would lose with it, said before it goes.
   sv_lacks_said
   if [ "$d_apply" != true ]; then
@@ -3754,26 +4303,27 @@ sv_drop() {
     fail "another workrift subvolume runs for $sv_base:$(queue_words "$sv_base" move); nothing changed"
   move_ticket=$queue_ticket
   phase_label="subvolume $sv_base"
-  create_started=$(date +%s)
+  create_started=$(date +%s) || sv_stop "date (the clock before the drop; nothing deleted)"
   sv_phase_write drop - "$d_kb"
   sv_step drop "delete $sv_old ($d_have)"
   if [ "$d_ko" = S ]; then
     btrfs subvolume delete "$sv_old" >/dev/null || fail "btrfs subvolume delete $sv_old failed"
   else
-    sv_rm_folder old
+    sv_rm_folder old || fail "rm -rf $sv_old failed; run --drop-old --apply again"
   fi
   [ ! -e "$sv_old" ] || fail "$sv_old is not all deleted; run --drop-old --apply again"
-  rm -f "$sv_state/kept" "$sv_state/refs-at-switch"
+  rm -f "$sv_state/kept" "$sv_state/refs-at-switch" || sv_stop "rm of the records $sv_state/kept and refs-at-switch ($sv_old is deleted)"
   sv_phase_write switched - "$d_kb"
-  sv_step dropped "$sv_old deleted in $(($(date +%s) - create_started)) s"
+  d_now=$(date +%s) || d_now=$create_started
+  sv_step dropped "$sv_old deleted in $((d_now - create_started)) s"
   queue_leave 6 "$move_ticket"
   move_ticket=
-  printf 'workrift subvolume: deleted %s in %s s\n' "$sv_old" "$(($(date +%s) - create_started))"
+  printf 'workrift subvolume: deleted %s in %s s\n' "$sv_old" "$((d_now - create_started))"
 }
 
 # `workrift subvolume [--back | --drop-old] [--check] [--apply] [--beside-other-removals]`.
 subvolume_command() {
-  local a_mode=forward a_apply=false a_source
+  local a_mode=forward a_apply=false a_source a_bases
   sv_beside=no
   sv_deleted=
   while [ "$#" -gt 0 ]; do
@@ -3787,8 +4337,9 @@ subvolume_command() {
     esac
     shift
   done
+  case "$a_mode" in forward) sv_mode=S ;; back) sv_mode=F ;; drop) sv_mode=drop ;; esac
   sv_at=start
-  a_source=$(resolve_source)
+  a_source=$(resolve_source) || sv_stop "the base's path (resolve_source; nothing changed)"
   case "$a_source" in
     /*) ;;
     *) fail "the base must be an absolute path: $a_source" ;;
@@ -3800,11 +4351,19 @@ subvolume_command() {
   [ "$(cd "$a_source" && pwd -P)" = "$a_source" ] || fail "$a_source resolves to $(cd "$a_source" && pwd -P); name that path"
   sv_paths "$a_source"
   require_source "$a_source"
-  work_bases | grep -qxF "$a_source" || fail "not a work base (work --json bases does not list it): $a_source"
+  a_bases=$(work_bases) || sv_stop "work --json bases (nothing changed)"
+  case "
+$a_bases
+" in
+    *"
+$a_source
+"*) ;;
+    *) fail "not a work base (work --json bases does not list it): $a_source" ;;
+  esac
   # Its own processes stay out of the base, so none of them is a user of it.
-  cd /
+  cd / || sv_stop "cd / (nothing changed)"
   phase_label="subvolume $sv_base"
-  create_started=$(date +%s)
+  create_started=$(date +%s) || sv_stop "date (the clock at the start; nothing changed)"
   case "$a_mode" in
     forward) sv_switch S "$a_apply" ;;
     back) sv_switch F "$a_apply" ;;
