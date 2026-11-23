@@ -9,7 +9,8 @@ import { type BuildFacts, type InstalledFacts, isObjectName, objectName, Receipt
 /**
  * Where a review's inputs live on one host (batch-input.ts `ReceiptSource`): Work's receipts folder (each receipt
  * `<head>.<kind>.json`, each land record `<head>.land.json`), the updater's installed record and its handoff marker,
- * and the repository whose checkouts a receipt may name. Nothing else is ever opened.
+ * and the repository whose checkouts a receipt may name. These configured locations are not supplied by a receipt
+ * or derived from the reviewed checkout. All four kinds use Work's replacement-only publisher.
  */
 export interface ReceiptPlaces {
   readonly host: string
@@ -25,49 +26,91 @@ export interface ReceiptPlaces {
 
 // The host FileSystem cannot pass O_NONBLOCK. Use the system Perl on macOS/Linux for POSIX sysopen and fstat,
 // in a process the read can terminate. No shell or inherited Perl startup options; parameters are separate argv.
-// Walk the canonical directory using no-follow directory opens and fchdir, so a parent swap cannot redirect the
-// leaf open. Only the held regular fd can supply bytes. Before emitting them, verify its name and directory again.
+// Walk the configured, bound directory using no-follow directory opens and fchdir, checking every held directory
+// identity. No path item from the observed tree can authorize a different root. Only the held regular fd can
+// supply bytes. Check the same handle before/after the exact-size read, then rewalk before emitting bytes.
 const READ_FILE = `
 use strict;
 use warnings;
-use Cwd qw(realpath getcwd);
-use Errno qw(ELOOP);
+use Cwd qw(getcwd);
+use Errno qw(ELOOP ENOENT);
 use Fcntl qw(O_RDONLY O_DIRECTORY O_NOFOLLOW O_NONBLOCK O_NOCTTY S_ISREG S_ISLNK);
+use Time::HiRes qw(stat);
 binmode STDOUT, ':raw' or exit 1;
 sub answer { print STDOUT @_ or exit 1; close STDOUT or exit 1; exit 0; }
-my ($configured, $directory, $leaf, $cap) = @ARGV;
+my ($bound, $directory, $leaf, $cap) = @ARGV;
 answer('U') unless $directory =~ m{^/} && $leaf !~ m{/} && $leaf ne '.' && $leaf ne '..';
-chdir('/') or answer('U');
-for my $part (grep { length } split m{/}, $directory) {
-  sysopen(my $dir, $part, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK) or answer('U');
-  chdir($dir) && close($dir) or answer('U');
+my @bound = split m{/}, $bound;
+my @parts = grep { length } split m{/}, $directory;
+sub same_dir {
+  my ($dir, $id) = @_;
+  my @info = stat($dir);
+  return @info && "$info[0]:$info[1]" eq $id;
 }
+chdir('/') or answer('U');
+same_dir('.', shift @bound) or answer('U');
+my @observed;
+sub walk {
+  my ($allow_absent) = @_;
+  my (@expected) = $allow_absent ? @bound : @observed;
+  for my $part (@parts) {
+    my $id = shift @expected;
+    unless (sysopen(my $dir, $part, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK)) {
+      answer('A') if $allow_absent && !defined($id) && $! == ENOENT;
+      answer('U');
+    } else {
+      my @found = stat($dir);
+      answer('U') unless @found;
+      my $actual = "$found[0]:$found[1]";
+      answer('U') if defined($id) && $actual ne $id;
+      push @observed, $actual if $allow_absent;
+      chdir($dir) && close($dir) or answer('U');
+    }
+  }
+}
+walk(1);
+my @look = lstat($leaf);
+answer('L') if @look && S_ISLNK($look[2]);
+answer('N') if @look && !S_ISREG($look[2]);
 unless (sysopen(my $file, $leaf, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_NOCTTY)) {
   my $link = $! == ELOOP;
+  my $missing = $! == ENOENT;
   my @entry = lstat($leaf);
   answer('L') if $link || (@entry && S_ISLNK($entry[2]));
   answer('N') if @entry && !S_ISREG($entry[2]);
+  if ($missing && !@entry && $! == ENOENT) {
+    chdir('/') or answer('U');
+    walk(0);
+    @entry = lstat($leaf);
+    answer('A') if !@entry && $! == ENOENT;
+  }
   answer('U');
 } else {
   my @held = stat($file);
   answer('U') unless @held;
   answer('N') unless S_ISREG($held[2]);
   answer('H') if $held[3] > 1;
+  answer('U') unless $held[3] == 1;
   answer('S') if $held[7] > $cap;
   my $bytes = '';
-  while (length($bytes) <= $cap) {
-    my $remaining = $cap + 1 - length($bytes);
+  while (length($bytes) < $held[7]) {
+    my $remaining = $held[7] - length($bytes);
     my $count = sysread($file, my $part, $remaining < 16384 ? $remaining : 16384);
-    answer('U') unless defined($count);
-    last unless $count;
+    answer('U') unless $count;
     $bytes .= $part;
   }
-  answer('S') if length($bytes) > $cap;
+  my $extra = sysread($file, my $extra_byte, 1);
+  answer('U') unless defined($extra);
   my @still = stat($file);
+  answer('U') unless @still;
+  answer('S') if $still[7] > $cap;
+  answer('U') if $extra || grep { $held[$_] != $still[$_] } (0, 1, 2, 3, 7, 9, 10);
+  # Rewalk the original rooted path, not a mutable canonicalization of the configured name.
+  answer('U') unless (getcwd() // '') eq $directory;
+  chdir('/') or answer('U');
+  walk(0);
   my @named = lstat($leaf);
-  answer('U') unless @still && @named && $still[3] == 1 &&
-    $held[0] == $named[0] && $held[1] == $named[1] &&
-    (getcwd() // '') eq $directory && (realpath($configured) // '') eq $directory;
+  answer('U') unless @named && $held[0] == $named[0] && $held[1] == $named[1];
   close($file) or answer('U');
   answer('P', $bytes);
 }
@@ -106,16 +149,47 @@ export const receiptSource = (places: ReceiptPlaces) =>
       const path = yield* Path.Path
       const processes = yield* ChildProcessSpawner.ChildProcessSpawner
       const roots = places.repository.checkouts.map((root) => path.resolve(root))
+      // Only these fixed system aliases may be resolved, at setup. A link anywhere else is never a root.
+      const systemAlias = (folder: string) =>
+        Effect.gen(function* () {
+          const first = path.join("/", folder.split("/").slice(1, 2).join(""))
+          if (first !== "/var" && first !== "/tmp" && first !== "/etc") return folder
+          const real = yield* fs.realPath(first).pipe(Effect.orElseSucceed(() => first))
+          if (real !== `/private${first}`) return folder
+          return `${real}${folder.slice(first.length)}`
+        })
+      const bind = (configured: string) =>
+        Effect.gen(function* () {
+          const folder = yield* systemAlias(path.resolve(configured))
+          const components = folder.split("/").filter((part) => part.length > 0)
+          const prefixes = ["/", ...components.map((_, i) => path.join("/", ...components.slice(0, i + 1)))]
+          const ids: Array<string> = []
+          for (const prefix of prefixes) {
+            const info = yield* fs.lstat(prefix).pipe(
+              Effect.map(Option.some),
+              Effect.catchIf((error) => error.reason._tag === "NotFound", () => Effect.succeed(Option.none())),
+            )
+            if (Option.isNone(info)) break
+            if (info.value.type !== "Directory" || Option.isNone(info.value.ino)) return Option.none()
+            ids.push(`${info.value.dev}:${info.value.ino.value}`)
+          }
+          if (ids.length === 0) return Option.none()
+          return Option.some({ folder, bound: ids.join("/") })
+        }).pipe(Effect.timeoutOrElse({ duration: places.readWithin, orElse: () => Effect.succeed(Option.none()) }), Effect.orElseSucceed(() => Option.none()))
+      const { receiptFolder, installFolder, handoffFolder } = yield* Effect.all({
+        receiptFolder: bind(places.receipts),
+        installFolder: bind(path.dirname(places.installed)),
+        handoffFolder: bind(path.dirname(places.handoff)),
+      }, { concurrency: 3 })
       /** The allowlisted folder and file name a reference names; none for a head that is not a full object name. */
-      const placeOf = (ref: SourceRef): Option.Option<{ readonly folder: string; readonly name: string }> =>
+      const placeOf = (ref: SourceRef) =>
         SourceRef.$match(ref, {
-          Receipt: (each) => Option.map(Option.liftPredicate(each.head, isObjectName), (head) => ({ folder: places.receipts, name: `${head}.${each.kind}.json` })),
-          Land: (each) => Option.map(Option.liftPredicate(each.head, isObjectName), (head) => ({ folder: places.receipts, name: `${head}.land.json` })),
-          Installed: () => Option.some({ folder: path.dirname(places.installed), name: path.basename(places.installed) }),
-          Handoff: () => Option.some({ folder: path.dirname(places.handoff), name: path.basename(places.handoff) }),
+          Receipt: (each) => Option.map(Option.liftPredicate(each.head, isObjectName), (head) => ({ root: receiptFolder, name: `${head}.${each.kind}.json` })),
+          Land: (each) => Option.map(Option.liftPredicate(each.head, isObjectName), (head) => ({ root: receiptFolder, name: `${head}.land.json` })),
+          Installed: () => Option.some({ root: installFolder, name: path.basename(places.installed) }),
+          Handoff: () => Option.some({ root: handoffFolder, name: path.basename(places.handoff) }),
         })
       const unreadable = (ref: SourceRef, message: string) => new SourceUnreadable({ source: sourceKey(ref), message })
-      const notFound = (error: PlatformError.PlatformError | SourceUnreadable) => error._tag === "PlatformError" && error.reason._tag === "NotFound"
       const reply = (ref: SourceRef, child: ChildProcessSpawner.ChildProcessHandle) =>
         Effect.gen(function* () {
           const bytes = new Uint8Array(places.maxBytes + 1)
@@ -138,6 +212,7 @@ export const receiptSource = (places: ReceiptPlaces) =>
             ),
           ),
           Match.when("L", () => Effect.succeed(SourceRead.Refused({ reason: "a link" }))),
+          Match.when("A", () => Effect.succeed(SourceRead.Absent())),
           Match.when("N", () => Effect.succeed(SourceRead.Refused({ reason: "not a regular file" }))),
           Match.when("H", () => Effect.succeed(SourceRead.Refused({ reason: "a hard link" }))),
           Match.when("S", () => Effect.succeed(SourceRead.Refused({ reason: "too large" }))),
@@ -159,9 +234,9 @@ export const receiptSource = (places: ReceiptPlaces) =>
           return pump
         })
       /** Register both parts of the resource before interruption can observe a half-acquired reader. */
-      const start = (ref: SourceRef, configured: string, folder: string, name: string) =>
+      const start = (ref: SourceRef, bound: string, folder: string, name: string) =>
         Effect.gen(function* () {
-          const child = yield* processes.spawn(ChildProcess.make("/usr/bin/perl", ["-e", READ_FILE, "--", configured, folder, name, String(places.maxBytes)], {
+          const child = yield* processes.spawn(ChildProcess.make("/usr/bin/perl", ["-e", READ_FILE, "--", bound, folder, name, String(places.maxBytes)], {
             env: {},
             detached: true,
             stdin: "ignore",
@@ -170,32 +245,23 @@ export const receiptSource = (places: ReceiptPlaces) =>
           })).pipe(Effect.mapError(() => unreadable(ref, "file reader could not start")))
           return { child, pump: yield* drain(ref, child) }
         }).pipe(Effect.uninterruptible)
-      const readOpened = (ref: SourceRef, configured: string, folder: string, name: string) =>
+      const readOpened = (ref: SourceRef, bound: string, folder: string, name: string) =>
         Effect.gen(function* () {
-          const { child, pump } = yield* start(ref, configured, folder, name)
+          const { child, pump } = yield* start(ref, bound, folder, name)
           const bytes = yield* Fiber.join(pump).pipe(Effect.catchTag("PlatformError", () => Effect.fail(unreadable(ref, "file reader pipe failed"))))
           const code = yield* child.exitCode.pipe(Effect.mapError(() => unreadable(ref, "file reader exit was unavailable")))
           if (code !== 0) return yield* unreadable(ref, "file reader did not exit cleanly")
           return yield* decode(ref, bytes)
         })
-      const whole = (ref: SourceRef, place: { readonly folder: string; readonly name: string }) =>
-        Effect.gen(function* () {
-          const configured = path.resolve(place.folder)
-          const folder = yield* fs.realPath(configured)
-          const entry = yield* fs.lstat(path.join(folder, place.name))
-          if (entry.type === "SymbolicLink") return SourceRead.Refused({ reason: "a link" })
-          if (entry.type !== "File") return SourceRead.Refused({ reason: "not a regular file" })
-          return yield* readOpened(ref, configured, folder, place.name)
-        })
       const read = Effect.fn("ReceiptSource.read")(function* (ref: SourceRef) {
         const place = placeOf(ref)
         if (Option.isNone(place)) return SourceRead.Refused({ reason: "not a commit name" })
+        const root = place.value.root
+        if (Option.isNone(root)) return yield* unreadable(ref, "file reader could not bind the configured directory")
         // Our scope owns the child's pipes and lifetime even when the deadline interrupts the read.
-        return yield* whole(ref, place.value).pipe(
+        return yield* readOpened(ref, root.value.bound, root.value.folder, place.value.name).pipe(
           Effect.timeoutOrElse({ duration: places.readWithin, orElse: () => Effect.fail(unreadable(ref, "file reader did not return in time")) }),
           Effect.scoped,
-          Effect.catchIf(notFound, () => Effect.succeed(SourceRead.Absent())),
-          Effect.catchTag("PlatformError", (error) => Effect.fail(unreadable(ref, error.message))),
         )
       })
       return ReceiptSource.of({

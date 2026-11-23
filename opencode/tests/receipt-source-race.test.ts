@@ -7,11 +7,11 @@
 // cmd/orchestrate/receipt-input-snapshot.sim.test.ts (a fake file system); this is its confirmation on real files.
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { CryptoHasher, spawnSync } from "bun"
-import { Array as Arr, Effect, FileSystem, Match, Option, Order, Path, Result } from "effect"
+import { Array as Arr, Effect, FileSystem, Match, Option, Order, Path, Predicate, Result } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { layer } from "../cmd/orchestrate/batch-inputs.ts"
-import { freeze, type InputRequest, type InputSnapshot } from "../mods/orchestrate/batch-input.ts"
+import { freeze, type InputRequest, type InputSnapshot, ReceiptSource, SourceRead, SourceRef } from "../mods/orchestrate/batch-input.ts"
 import type { ReceiptPlaces } from "../mods/orchestrate/filestore/receipt-source.ts"
 
 /** How many freezes the reader tries, and how long it may take. */
@@ -131,6 +131,171 @@ console.log(stats.join("\\t"))
 `
 
 const byteHash = (text: string) => new CryptoHasher("sha256").update(text).digest("hex")
+
+// Performed inside the production child, immediately after an actual sysread. The fixture records every
+// whole version the writer creates; the parent only sees the public freeze result and its artifact digest.
+const BARRIER = `
+    ++$i;
+    if ($i == $cut) {
+      if ($change eq 'rename') { rename($next, $leaf) or die $!; }
+      elsif ($change eq 'unlink') { unlink($leaf) or die $!; }
+      else {
+        open(my $write, '+<', $leaf) or die $!;
+        if ($change eq 'truncate') { truncate($write, 1024) or die $!; }
+        elsif ($change eq 'append') { seek($write, 0, 2) or die $!; syswrite($write, ' ') == 1 or die $!; }
+        else {
+          sysseek($write, $first, 0); syswrite($write, '1') == 1 or die $!;
+          sysseek($write, $second, 0); syswrite($write, '0') == 1 or die $!;
+        }
+        close($write) or die $!;
+      }
+      open(my $ran, '>', $marker) or die $!; close($ran) or die $!;
+    }
+`
+
+const barriers = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
+  const processes = yield* ChildProcessSpawner.ChildProcessSpawner
+  const root = yield* fs.makeTempDirectoryScoped({ prefix: "receipt-barriers-" })
+  const receipts = path.join(root, "receipts")
+  yield* fs.makeDirectory(receipts)
+  const leaf = path.join(receipts, `${head}.round.json`)
+  const next = path.join(receipts, ".next")
+  const prefix = `{"repo":"${root}","head":"${head}","tree":"${goodTree}","kind":"round","checks":[{"command":"first","code":`
+  const middle = `,"seconds":1},${" ".repeat(33_000)}{"command":"second","code":`
+  const suffix = `,"seconds":1}],"at":"2026-11-22T01:00:00.000Z"}`
+  const text = (a: number, b: number) => `${prefix}${a}${middle}${b}${suffix}`
+  const before = text(0, 1)
+  const accepted = [before, text(1, 1), text(1, 0), before.slice(0, 1024), `${before} `]
+  const allowed = new Set(accepted.map(byteHash))
+  const first = new TextEncoder().encode(prefix).length
+  const second = new TextEncoder().encode(`${prefix}0${middle}`).length
+  const places = { host: "fixture", repository: { key: "dotfiles", checkouts: [root] }, receipts, installed: path.join(root, "installed.json"), handoff: path.join(root, "handoff.json"), maxBytes: 65536, readWithin: "1 second" as const }
+  const ref = SourceRef.Receipt({ head, kind: "round" })
+  const rounds = [1, 2, 3] as const
+  const actions = ["overwrite", "truncate", "append", "rename", "unlink"] as const
+  const schedules = ["first", "second", "both"] as const
+  yield* Effect.forEach(rounds.flatMap((cut) => actions.flatMap((change) => schedules.map((schedule) => ({ cut, change, schedule })))), ({ cut, change, schedule }) =>
+    Effect.gen(function* () {
+      const marker = path.join(receipts, `.ran-${cut}-${change}-${schedule}`)
+      const calls = { reads: 0, expected: 0 }
+      const on = ChildProcessSpawner.make((command) =>
+        Effect.gen(function* () {
+          if (command._tag !== "StandardCommand") return yield* Effect.die("unexpected pipeline")
+          const [flag, program, separator, bound, folder, name, cap] = command.args
+          if (!Predicate.isString(program) || flag !== "-e" || separator !== "--" || !Predicate.isString(bound) || !Predicate.isString(folder) || !Predicate.isString(name) || !Predicate.isString(cap)) return yield* Effect.die("unexpected reader")
+          const read = ++calls.reads
+          if (schedule === "first" && read === 2 || schedule === "second" && read === 1) return yield* processes.spawn(command)
+          calls.expected += 1
+          // Each observation starts on the same complete inode version. The write happens only after sysread.
+          yield* fs.writeFileString(next, before)
+          yield* fs.rename(next, leaf)
+          yield* fs.writeFileString(next, text(1, 0))
+          const stamp = `${marker}-${read}`
+          const anchor = "    $bytes .= $part;"
+          if (!program.includes(anchor)) return yield* Effect.die("read barrier lost its seam")
+          const patched = program.replace("my ($bound, $directory, $leaf, $cap) = @ARGV;", "my ($bound, $directory, $leaf, $cap, $cut, $change, $next, $marker, $first, $second) = @ARGV; my $i = 0;")
+            .replace(anchor, `${anchor}\n${BARRIER}`)
+          return yield* processes.spawn(ChildProcess.make(command.command, [flag, patched, separator, bound, folder, name, cap, String(cut), change, next, stamp, String(first), String(second)], command.options))
+        }),
+      )
+      yield* fs.writeFileString(next, before)
+      yield* fs.rename(next, leaf)
+      const outcomes = yield* Effect.gen(function* () {
+        const source = yield* ReceiptSource
+        return yield* Effect.forEach([1, 2], () => Effect.result(source.read(ref)))
+      }).pipe(Effect.provide(layer(places)), Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, on))
+      const hits = yield* Effect.forEach([1, 2], (at) => fs.exists(`${marker}-${at}`))
+      const want = Match.value(schedule).pipe(Match.when("both", () => [true, true]), Match.when("first", () => [true, false]), Match.when("second", () => [false, true]), Match.exhaustive)
+      expect({ cut, change, schedule, hits, count: calls.expected }).toEqual({ cut, change, schedule, hits: want, count: want.filter(Boolean).length })
+      for (const [index, outcome] of outcomes.entries()) {
+        expect(Result.match(outcome, {
+          onFailure: (error) => error._tag === "SourceUnreadable",
+          onSuccess: SourceRead.$match({
+            Present: ({ text }) => !want[index] && allowed.has(byteHash(text)),
+            Absent: () => !want[index] && change === "unlink",
+            Refused: () => true,
+          }),
+        })).toBe(true)
+      }
+    }), { discard: true },
+  )
+}).pipe(Effect.scoped)
+
+const componentBarriers = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
+  const processes = yield* ChildProcessSpawner.ChildProcessSpawner
+  const fixture = yield* fs.makeTempDirectoryScoped({ prefix: "receipt-components-" })
+  const root = yield* fs.realPath(fixture)
+  const leaf = `${head}.round.json`
+  const good = receiptText(root, goodTree, 0)
+  const outside = receiptText(root, outsideTree, 1)
+  const cases = ["before-setup", "before-open", "after-open"] as const
+  const kinds = ["link", "directory", "fifo"] as const
+  // Directory swaps are only meaningful after authority is bound. The pre-setup threats are paths
+  // that are not directory identities at all (a symlink to a sibling, or a FIFO).
+  yield* Effect.forEach(["top", "inner", "receipts"].flatMap((_, depth) =>
+    cases.flatMap((phase) => kinds.filter((kind) => phase !== "before-setup" || kind !== "directory").map((kind) => ({ depth, phase, kind }))),
+  ), ({ depth, phase, kind }) =>
+    Effect.gen(function* () {
+      const dir = path.join(root, `${depth}-${phase}-${kind}`)
+      const names = ["top", "inner", "receipts"]
+      const parts = names.slice(0, depth + 1)
+      const tail = names.slice(depth + 1)
+      const target = path.join(dir, ...parts)
+      const receipts = path.join(dir, ...names)
+      const stored = path.join(dir, "outside", ...tail)
+      const replacement = path.join(dir, ".replacement")
+      const saved = path.join(dir, ".saved")
+      const marker = path.join(dir, ".swapped")
+      const step = path.basename(target)
+      yield* fs.makeDirectory(dir)
+      yield* Effect.forEach(names, (_, i) => fs.makeDirectory(path.join(dir, ...names.slice(0, i + 1))), { discard: true })
+      yield* Effect.forEach(["outside", ...tail], (_, i) => fs.makeDirectory(path.join(dir, ...["outside", ...tail].slice(0, i + 1))), { discard: true })
+      yield* fs.writeFileString(path.join(receipts, leaf), good)
+      yield* fs.writeFileString(path.join(stored, leaf), outside)
+      yield* Match.value(kind).pipe(
+        Match.when("link", () => fs.symlink(path.join(dir, "outside"), replacement)),
+        Match.when("directory", () => fs.rename(path.join(dir, "outside"), replacement)),
+        Match.when("fifo", () => Effect.sync(() => expect(spawnSync(["mkfifo", replacement]).exitCode).toBe(0))),
+        Match.exhaustive,
+      )
+      if (phase === "before-setup") {
+        yield* fs.rename(target, saved)
+        yield* fs.rename(replacement, target)
+      }
+      const spawner = ChildProcessSpawner.make((command) =>
+        Effect.gen(function* () {
+          if (phase === "before-setup") return yield* processes.spawn(command)
+          if (command._tag !== "StandardCommand") return yield* Effect.die("unexpected pipeline")
+          const [flag, source, separator, bound, folder, name, cap] = command.args
+          if (!Predicate.isString(source) || flag !== "-e" || separator !== "--" || !Predicate.isString(bound) || !Predicate.isString(folder) || !Predicate.isString(name) || !Predicate.isString(cap)) return yield* Effect.die("unexpected reader")
+          const hook = `if ($part eq $hook && !-e $marker) { rename($target, $saved) or die $!; rename($replacement, $target) or die $!; open(my $m, '>', $marker) or die $!; close($m); }`
+          const anchor = Match.value(phase).pipe(
+            Match.when("before-open", () => "    my $id = shift @expected;"),
+            Match.orElse(() => "      chdir($dir) && close($dir) or answer('U');"),
+          )
+          if (!source.includes(anchor)) return yield* Effect.die("directory barrier lost its seam")
+          const program = source.replace("my ($bound, $directory, $leaf, $cap) = @ARGV;", "my ($bound, $directory, $leaf, $cap, $hook, $target, $saved, $replacement, $marker) = @ARGV;")
+            .replace(anchor, `${anchor}\n${hook}`)
+          return yield* processes.spawn(ChildProcess.make(command.command, [flag, program, separator, bound, folder, name, cap, step, target, saved, replacement, marker], command.options))
+        }),
+      )
+      const places = { host: "fixture", repository: { key: "dotfiles", checkouts: [root] }, receipts, installed: path.join(root, "installed.json"), handoff: path.join(root, "handoff.json"), maxBytes: 65536, readWithin: "1 second" as const }
+      const outcome = yield* freezeAt(places, { receipts: [{ head, kind: "round" }], lands: [], install: false }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      )
+      if (phase !== "before-setup") expect(yield* fs.exists(marker)).toBe(true)
+      const safe = Result.match(outcome, {
+        onFailure: (error) => error._tag === "InputUnsettled",
+        onSuccess: (snapshot) => snapshot.artifacts.every((artifact) => artifact.text === good && artifact.digest === byteHash(good)),
+      })
+      expect({ depth, phase, kind, safe }).toEqual({ depth, phase, kind, safe: true })
+    }), { discard: true },
+  )
+}).pipe(Effect.scoped)
 
 /** One freeze's outcome in words; a snapshot holding the outside file in any form is a leak. */
 const outcomeOf = (outcome: Result.Result<InputSnapshot, { readonly _tag: string }>, outsideDigest: string, outsideText: string): string =>
@@ -257,6 +422,17 @@ describe("the receipt source under a real swap race", () => {
           }), { discard: true },
         )
       }).pipe(Effect.scoped),
+    60_000,
+  )
+
+  it.live.layer(BunServices.layer)(
+    "every read-barrier schedule yields a complete published version or refuses, including a repeated tear",
+    () => barriers,
+    60_000,
+  )
+  it.live.layer(BunServices.layer)(
+    "every configured directory component refuses links and rooted substitutions before and after open",
+    () => componentBarriers,
     60_000,
   )
 })

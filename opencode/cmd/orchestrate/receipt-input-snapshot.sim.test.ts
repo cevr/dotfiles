@@ -839,6 +839,7 @@ type World = Map<string, Node>
 
 /** Where `file` leads in `world`: every link among its parents followed, the last one too when `followLast`. */
 const resolveIn = (world: World, file: string, followLast: boolean): string => {
+  if (file === "/") return file
   const parts = file.split("/").filter((part) => part !== "")
   return Arr.reduce(parts, "", (at, part, index) => {
     const next = `${at}/${part}`
@@ -912,20 +913,32 @@ const swapping = (world: World, beforeOpen: (world: World) => void, afterOpen: (
   const processes = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, ChildProcessSpawner.make((command) =>
     Effect.gen(function* () {
       if (command._tag !== "StandardCommand") return yield* Effect.die("expected one file reader")
-      const [configured, real, name, cap] = command.args.slice(-4)
-      if (!Predicate.isString(configured) || !Predicate.isString(real) || !Predicate.isString(name) || !Predicate.isString(cap)) return yield* Effect.die("invalid reader arguments")
+      const [bound, real, name, cap] = command.args.slice(-4)
+      if (!Predicate.isString(bound) || !Predicate.isString(real) || !Predicate.isString(name) || !Predicate.isString(cap)) return yield* Effect.die("invalid reader arguments")
+      const sameRoot = () => {
+        const parts = real.split("/").filter((part) => part.length > 0)
+        const prefixes = ["/", ...parts.map((_, i) => `/${parts.slice(0, i + 1).join("/")}`)]
+        return bound.split("/").every((id, i) =>
+          Option.exists(Option.flatMap(Arr.get(prefixes, i), (prefix) => Option.fromNullishOr(world.get(prefix))), (node) => node._tag === "Folder" && `1:${node.ino}` === id),
+        )
+      }
       const seen = yield* Effect.acquireRelease(Effect.sync(() => {
         live.handles += 1
         for (const swap of swaps.before.splice(0)) swap(world)
         const file = `${real}/${name}`
         const node = Option.fromNullishOr(world.get(file))
-        const held = Option.filter(node, (entry) => resolveIn(world, real, true) === real && entry._tag !== "Link")
+        const inside = sameRoot()
+        const held = Option.filter(node, (entry) => inside && entry._tag !== "Link")
         if (Option.isSome(held)) opened.push(file)
         for (const swap of swaps.after.splice(0)) swap(world)
-        return { node, held, file }
+        return { node, held, file, inside }
       }), () => Effect.sync(() => { live.handles -= 1 }))
       const response = Option.match(seen.held, {
-        onNone: () => Match.value(Option.exists(seen.node, Node.$is("Link"))).pipe(Match.when(true, () => "L"), Match.orElse(() => "U")),
+        onNone: () => {
+          if (!seen.inside) return "U"
+          if (Option.isNone(seen.node)) return "A"
+          return "L"
+        },
         onSome: Node.$match({
           Link: () => "L",
           Fifo: () => "N",
@@ -933,7 +946,7 @@ const swapping = (world: World, beforeOpen: (world: World) => void, afterOpen: (
           File: (before) => {
             const after = Option.fromNullishOr(world.get(seen.file))
             if (before.names > 1) return "H"
-            if (Option.isNone(after) || after.value._tag !== "File" || after.value.ino !== before.ino || resolveIn(world, configured, true) !== real) return "U"
+            if (Option.isNone(after) || after.value._tag !== "File" || after.value.ino !== before.ino || !sameRoot()) return "U"
             if (UTF8.encode(after.value.text).length > Number(cap)) return "S"
             return `P${after.value.text}`
           },
@@ -988,6 +1001,7 @@ seeded("a fake host schedules file swaps and interrupted readers: the source pro
     const secretFile = Node.File({ ino: 20n, text: secret, names: 1 })
     const worldOf = (): World =>
       new Map<string, Node>([
+        ["/", Node.Folder({ ino: 0n })],
         ["/real", Node.Folder({ ino: 1n })],
         ["/real/receipts", Node.Folder({ ino: 2n })],
         [leaf, Node.File({ ino: 10n, text: good, names: 1 })],
@@ -1001,7 +1015,7 @@ seeded("a fake host schedules file swaps and interrupted readers: the source pro
     const restore = (file: string) => (world: World) => void Option.map(Option.fromNullishOr(worldOf().get(file)), (node) => world.set(file, node))
     const cases: ReadonlyArray<readonly [string, string, (world: World) => void, (world: World) => void]> = [
       ["no swap", "/real/receipts", keep, keep],
-      ["the configured folder behind a link (configuration, resolved once)", "/alias/receipts", keep, keep],
+      ["configured ancestor already a link", "/alias/receipts", keep, keep],
       ["file swapped for a link to an outside file", "/real/receipts", put(leaf, Node.Link({ ino: 30n, target: "/outside/secret.json" })), keep],
       ["file swapped for a FIFO", "/real/receipts", put(leaf, Node.Fifo({ ino: 31n, text: secret })), keep],
       ["file swapped for a FIFO, then back before the writer comes", "/real/receipts", put(leaf, Node.Fifo({ ino: 31n, text: secret })), restore(leaf)],
@@ -1043,7 +1057,7 @@ seeded("a fake host schedules file swaps and interrupted readers: the source pro
     )
     expect(seen).toEqual([
       ["no swap", "the file", 0, [leaf], 0],
-      ["the configured folder behind a link (configuration, resolved once)", "the file", 0, [leaf], 0],
+      ["configured ancestor already a link", "unreadable", 0, [], 0],
       ["file swapped for a link to an outside file", "refused: a link", 0, [], 0],
       ["file swapped for a FIFO", "refused: not a regular file", 0, [leaf], 0],
       ["file swapped for a FIFO, then back before the writer comes", "refused: not a regular file", 0, [leaf], 0],
@@ -1067,7 +1081,7 @@ seeded("a fake host schedules file swaps and interrupted readers: the source pro
       ["the file", 0, 2, 0],
     ])
     // The same deadline handles the rest of the phases, including a child that sent bytes but never exited.
-    const hung = yield* Effect.forEach(["realPath", "lstat", "stat", "read", "close"] as const, (call) =>
+    const hung = yield* Effect.forEach(["stat", "read", "close"] as const, (call) =>
       Effect.gen(function* () {
         const fake = swapping(worldOf(), keep, keep, [call])
         const read = yield* readBy(fake, yield* sourceOn(fake, "/real/receipts"), true)
@@ -1075,11 +1089,14 @@ seeded("a fake host schedules file swaps and interrupted readers: the source pro
       }),
     )
     expect(hung).toEqual([
-      ["realPath", "unreadable: file reader did not return in time", 1],
-      ["lstat", "unreadable: file reader did not return in time", 1],
       ["stat", "unreadable: file reader did not return in time", 1],
       ["read", "unreadable: file reader did not return in time", 1],
       ["close", "unreadable: file reader did not return in time", 1],
     ])
+    const setup = swapping(worldOf(), keep, keep, ["lstat"])
+    const started = yield* Effect.forkChild(sourceOn(setup, "/real/receipts"))
+    const [seconds, bound] = yield* byTheClock(started)
+    expect(seconds).toBe(1)
+    expect(Option.exists(bound, Exit.isSuccess)).toBe(true)
   }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
 )
