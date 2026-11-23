@@ -37,13 +37,15 @@ export const supply = (input: {
 export interface ShellLaunchDriver {
   readonly permission: (shell: ShellIdentity, verdict: "pending" | "allowed" | "denied", origin: "model" | "native") => Effect.Effect<void>
   readonly bind: (shell: ShellIdentity, handle: string) => Effect.Effect<void>
-  readonly owner: (shell: ShellIdentity, state: "terminal" | "handoff" | "unknown") => Effect.Effect<void>
+  readonly owner: (shell: ShellIdentity, state: "terminal" | "live" | "handoff" | "unknown") => Effect.Effect<void>
   readonly finish: (shell: ShellIdentity, handle: string, state: "gone" | "live" | "unknown") => Effect.Effect<void>
   readonly restart: () => Effect.Effect<void>
   readonly launches: () => Effect.Effect<ReadonlyArray<string>>
   readonly held: () => Effect.Effect<ReadonlyArray<string>>
   readonly input: (shell: ShellIdentity, value: string) => Effect.Effect<void>
   readonly place: (shell: ShellIdentity, state: "verified" | "rejected") => Effect.Effect<void>
+  readonly holdExec: (shell: ShellIdentity) => Effect.Effect<void>
+  readonly openExec: (shell: ShellIdentity) => Effect.Effect<void>
   readonly cancel: (shell: ShellIdentity) => Effect.Effect<void>
   readonly transportFailure: (shell: ShellIdentity, phase: "before-ack" | "after-bind") => Effect.Effect<void>
   readonly complete: (shell: ShellIdentity, exit: ShellExit) => Effect.Effect<void>
@@ -126,6 +128,7 @@ export const shellLaunchLaws = (driver: ShellLaunchDriver, equal: (actual: Reado
     yield* driver.transportFailure(uncertain, "after-bind")
     yield* driver.restart()
     yield* driver.bind(uncertain, "scope-d")
+    yield* driver.owner(uncertain, "live")
     yield* driver.owner(uncertain, "unknown")
     yield* driver.owner(uncertain, "handoff")
     equal(yield* driver.held(), ["shell-d"])
@@ -141,13 +144,13 @@ export const shellLaunchLaws = (driver: ShellLaunchDriver, equal: (actual: Reado
     equal(yield* driver.wakes(), ["session-b:2", "session-d:6"])
     equal(yield* driver.launches(), ["shell-a", "shell-b", "shell-d", "shell-e"])
     equal(yield* driver.replay(pinned.watermark), [
-      "shell-d:owner:unknown", "shell-d:owner:handoff", "shell-d:owner:terminal", "shell-e:authorized",
+      "shell-d:owner:live", "shell-d:owner:unknown", "shell-d:owner:handoff", "shell-d:owner:terminal", "shell-e:authorized",
       "shell-d:ended:17", "shell-d:drained", "shell-e:bound", "shell-e:ended:0", "shell-e:drained",
     ])
     equal(yield* driver.replay(base.watermark), [
       "shell-c:authorized", "shell-c:cancelled", "shell-placement:authorized", "shell-placement:cancelled",
       "shell-d:authorized", "shell-d:bound",
-      "shell-d:owner:unknown", "shell-d:owner:handoff", "shell-d:owner:terminal", "shell-e:authorized",
+      "shell-d:owner:live", "shell-d:owner:unknown", "shell-d:owner:handoff", "shell-d:owner:terminal", "shell-e:authorized",
       "shell-d:ended:17", "shell-d:drained", "shell-e:bound", "shell-e:ended:0", "shell-e:drained",
     ])
     const interrupted = { id: "shell-interrupted", owner: "session-interrupted", ownerEpoch: 9, attempt: 1 }
@@ -163,4 +166,15 @@ export const shellLaunchLaws = (driver: ShellLaunchDriver, equal: (actual: Reado
     equal(yield* driver.replay(interruptedPin.watermark + 1), ["shell-interrupted:drained"])
     equal(yield* driver.held(), [])
     equal(yield* driver.launches(), ["shell-a", "shell-b", "shell-d", "shell-e", "shell-interrupted"])
+    const fenced = { id: "shell-fenced", owner: "session-fenced", ownerEpoch: 10, attempt: 1 }
+    yield* driver.holdExec(fenced)
+    yield* driver.permission(fenced, "allowed", "model")
+    yield* driver.bind(fenced, "scope-fenced")
+    equal(yield* driver.held(), ["shell-fenced"])
+    yield* driver.cancel(fenced)
+    yield* driver.openExec(fenced)
+    equal(yield* driver.launches(), ["shell-a", "shell-b", "shell-d", "shell-e", "shell-interrupted"])
+    equal(yield* driver.held(), ["shell-fenced"])
+    yield* driver.finish(fenced, "scope-fenced", "gone")
+    equal(yield* driver.held(), [])
   })

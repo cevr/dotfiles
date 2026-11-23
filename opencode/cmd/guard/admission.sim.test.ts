@@ -44,6 +44,7 @@ seeded("the shell launch contract permits only one bound spawn past permission, 
     const woke: string[] = []
     const known = new Map<string, string>()
     const bound = new Set<string>()
+    const execClosed = new Set<string>()
     const ended = new Set<string>()
     const blocked = new Set<string>()
     const retired = new Set<string>()
@@ -53,7 +54,6 @@ seeded("the shell launch contract permits only one bound spawn past permission, 
     const incarnation = (shell: ShellFact["shell"]) => `${shell.owner}:${shell.ownerEpoch}`
     const intent = (shell: ShellFact["shell"]) => `${incarnation(shell)}:${shell.attempt}`
     const execute = (shell: ShellFact["shell"], program: typeof shellProgram) => {
-      bound.add(shell.id)
       launched.push(shell.id)
       io.push(`${shell.id}:${encodeProgram(program)}`)
     }
@@ -68,8 +68,9 @@ seeded("the shell launch contract permits only one bound spawn past permission, 
         record(shell, "authorized")
       }
       if (fact.kind === "bound" && affected?.state === "running" && !bound.has(shell.id)) {
+        bound.add(shell.id)
         record(shell, "bound")
-        execute(shell, shellProgram)
+        if (!execClosed.has(shell.id)) execute(shell, shellProgram)
       }
       if (fact.kind === "ended" && affected?.state === "released") record(shell, "drained")
       state = next.state
@@ -107,7 +108,7 @@ seeded("the shell launch contract permits only one bound spawn past permission, 
       launches: () => Effect.sync(() => [...launched]),
       held: () => Effect.sync(() => Object.values(state.leases).filter(({ state }) => state === "running" || state === "draining").map((row) => row.request.requestId)),
       input: (shell, value) => Effect.sync(() => {
-        if (bound.has(shell.id) && !ended.has(shell.id) && known.get(shell.id) === intent(shell))
+        if (launched.includes(shell.id) && !ended.has(shell.id) && known.get(shell.id) === intent(shell))
           io.push(`${shell.id}:stdout:${value}`, `${shell.id}:stderr:${value}`)
       }),
       cancel,
@@ -115,6 +116,12 @@ seeded("the shell launch contract permits only one bound spawn past permission, 
         if (place === "rejected") return cancel(shell)
         return Effect.void
       },
+      holdExec: (shell) => Effect.sync(() => { execClosed.add(shell.id) }),
+      openExec: (shell) => Effect.sync(() => {
+        if (known.get(shell.id) !== intent(shell) || !execClosed.delete(shell.id) || !bound.has(shell.id)) return
+        const lease = Object.values(state.leases).find(({ request }) => request.requestId === shell.id)
+        if (lease?.state === "running") execute(shell, shellProgram)
+      }),
       transportFailure: (shell, phase) => Effect.sync(() => {
         if (phase === "before-ack") blocked.add(shell.id)
         else if (bound.has(shell.id)) offline.add(shell.id)

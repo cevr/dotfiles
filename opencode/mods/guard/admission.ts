@@ -84,7 +84,7 @@ export type ShellFact =
   | { readonly kind: "bound"; readonly shell: ShellIdentity; readonly binding: string }
   | { readonly kind: "terminal-owner"; readonly shell: ShellIdentity; readonly evidence: string }
   | { readonly kind: "ended"; readonly shell: ShellIdentity; readonly binding: string; readonly scope: "gone" | "live" | "unknown"; readonly evidence: string }
-  | { readonly kind: "handoff" | "unknown"; readonly shell: ShellIdentity }
+  | { readonly kind: "live" | "handoff" | "unknown"; readonly shell: ShellIdentity }
 
 export const shellFact = (state: Admission, fact: ShellFact): Option.Option<Input> => {
   const { shell } = fact
