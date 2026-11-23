@@ -36,6 +36,14 @@ const standIn = (calls: Array<Call>): Rpc => (call) => {
 
 const has = (needle: string) => (shown: ReadonlyArray<string>) => shown.some((line) => line.includes(needle))
 
+/** The host lays out each footer action in its own column and may wrap its title. */
+const pickerShowsQueueAction = (shown: ReadonlyArray<string>) =>
+  shown.some((line, row) => {
+    if (line.includes("at next compaction")) return true
+    const column = line.indexOf("at next")
+    return column >= 0 && line.trimEnd().endsWith("at next") && /^compaction\b/.test(shown[row + 1]?.slice(column) ?? "")
+  })
+
 seeded("a queued switch shows on the tray beside the model: old → new queued", ({ seed, expect }) =>
   Effect.gen(function* () {
     const shown = yield* App.seed(
@@ -122,7 +130,7 @@ seeded("the host's model picker offers `at next compaction`, and its key queues 
         yield* tui.until("the composer", has(MODEL_REF.id))
         yield* tui.press({ name: "x", ctrl: true })
         yield* tui.press({ name: "m" })
-        yield* tui.until("the picker's action", has("at next compaction"))
+        yield* tui.until("the picker's action", pickerShowsQueueAction)
         yield* tui.press({ name: "g", ctrl: true })
         yield* tui.until("the toast", has("queued:"))
         return tui.text()
