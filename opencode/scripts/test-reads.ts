@@ -448,6 +448,7 @@ const BOUNDED_PROCESS = new Set([
   "tests/scratch-child.ts:spawnScratchShellFileSync",
   "tests/scratch-child.ts:fixtureHostIdentity",
   "tests/scratch-child.ts:checkoutTests", "tests/owned.ts:ownedCheckoutTests",
+  "tests/owned.ts:ownedTempFixture",
   "tests/scratch-child.ts:spawnScratchShellFile",
   "tests/scratch-child.ts:installedGitManual",
   "tests/scratch-child.ts:scratchGitVersion",

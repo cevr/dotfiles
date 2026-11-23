@@ -35,8 +35,8 @@ import { descendants, type Proc, stop, survivors, table, watch, type Watch } fro
 import { outsidePanes } from "../scripts/pane-env.ts"
 import { NO_FREE_MODELS, releaseFlags } from "../scripts/release-flags.ts"
 import { unboundBuild } from "../testbeds/gamut/gamut.ts"
-import { type ChildTemp, childTemp, parentEnv, scratch } from "./scratch.ts"
-import { checkOwnedCommand } from "./read-path.ts"
+import { type ChildTemp, childTemp, parentEnv, scratch, scratchRoot } from "./scratch.ts"
+import { checkOwnedCommand, scratchInput } from "./read-path.ts"
 import { checkoutBun, checkoutTests, driveScenarioFixture, forkFixture, scratchShell } from "./scratch-child.ts"
 // What this test process starts is stopped once it is gone, however it went (testbeds/reaper/start.ts).
 import "../testbeds/reaper/start.ts"
@@ -60,6 +60,16 @@ const releases = new Map<number, Promise<void>>()
 export const ownedScratchShell = (cwd: string, program: string) => {
   const { script, ...options } = scratchShell(cwd, program)
   return owned(["/bin/sh", script], { ...options, stdout: "pipe", stderr: "ignore" })
+}
+
+/** Exercise the owned TMPDIR lifecycle without accepting arbitrary shell text or argv. */
+export const ownedTempFixture = (temporary?: string) => {
+  const temp = temporary && scratchInput(temporary)
+  return owned(["/bin/sh", "-c", 'mkdir -p "$TMPDIR/opencode-drive/run-x" "$TMPDIR/opencode" && printf %s "$TMPDIR"'], {
+    cwd: temp || scratchRoot(),
+    env: { PATH: "/usr/bin:/bin", HOME: temp || scratchRoot(), ...(temp ? { TMPDIR: temp } : {}), TEST_READS_SCRATCH_CHILD: "sh" },
+    stdin: "ignore", stdout: "pipe", stderr: "ignore",
+  })
 }
 
 /** Reaper-owned Bun entry with the same checked paths and environment as a plain fixture child. */

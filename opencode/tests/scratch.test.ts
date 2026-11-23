@@ -1,12 +1,12 @@
 // @reads all
-// @reads-reason subprocess helper reads at tests/scratch.test.ts: const child = owned(MAKES_TEMP, { stdout: "pipe", stderr: "ignore" })
+// @reads-reason computed read at cmd/kernel/server.test.ts: execute: (input: { readonly path: string }) => Effect.promise(() => Bun.file(input.path).text()
 // accept: deep (30.8 s alone on a quiet host: 1-minute load 69.7–77.6 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 import { describe, expect, test } from "bun:test"
 import { Array as Arr } from "effect"
 import { existsSync } from "node:fs"
 import { readScratchDirectorySync as readdirSync, scratchExistsSync } from "./read-path.ts"
 import { basename, join } from "node:path"
-import { owned, ownedCheckoutTests, released } from "./owned.ts"
+import { ownedCheckoutTests, ownedTempFixture, released } from "./owned.ts"
 import { scratch } from "./scratch.ts"
 
 /** How long the suites get together, well past their usual 20 seconds. */
@@ -132,9 +132,6 @@ const FAILING_CASES = [
   "closing-after-late-setup > setup",
 ]
 
-/** A child that makes the folders opencode-drive and OpenCode leave under TMPDIR, and prints its TMPDIR. */
-const MAKES_TEMP = ["/bin/sh", "-c", 'mkdir -p "$TMPDIR/opencode-drive/run-x" "$TMPDIR/opencode" && printf %s "$TMPDIR"']
-
 /** How long an owned child's run and cleanup may take: nothing it started is left to stop. */
 const RELEASE_MS = 20_000
 
@@ -142,7 +139,7 @@ describe("an owned child's TMPDIR", () => {
   test(
     "is a folder of its own, removed with what opencode-drive and OpenCode made there once the child has stopped",
     async () => {
-      const child = owned(MAKES_TEMP, { stdout: "pipe", stderr: "ignore" })
+      const child = ownedTempFixture()
       const temp = await new Response(child.stdout).text()
       const code = await child.exited
       const made = scratchExistsSync(join(temp, "opencode-drive"))
@@ -156,7 +153,7 @@ describe("an owned child's TMPDIR", () => {
     "is the one the test chose for it, kept as it is",
     async () => {
       using chosen = scratch("scratch-chosen-")
-      const child = owned(MAKES_TEMP, { env: { ...process.env, TMPDIR: chosen.path }, stdout: "pipe", stderr: "ignore" })
+      const child = ownedTempFixture(chosen.path)
       const temp = await new Response(child.stdout).text()
       const code = await child.exited
       expect({ code, temp, made: existsSync(join(chosen.path, "opencode")) }).toEqual({ code: 0, temp: chosen.path, made: true })
