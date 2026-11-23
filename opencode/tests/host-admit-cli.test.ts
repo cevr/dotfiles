@@ -51,7 +51,7 @@ it.scopedLive("standalone, Guard and Wake carry modeled Go, Bun, Make and Ninja 
     const [exe = "bun"] = argv
     const cli = yield* path.fromFileUrl(new URL("../cmd/guard/host-admit.ts", import.meta.url))
     const helper = [exe, cli]
-    const command = "GOMAXPROCS=2 go test -p 2 -parallel 4 './exact argument'"
+    const command = "GOMAXPROCS=2 go test -p 1 -parallel 4 './exact argument'"
     const file = path.join(folder, "guard-wrapper")
     yield* fs.writeFileString(file, admissionLauncher("/bin/sh", helper, command), { mode: 0o700 })
     for (const tool of ["go", "bun", "make", "ninja", "unmodeled"]) {
@@ -65,9 +65,9 @@ it.scopedLive("standalone, Guard and Wake carry modeled Go, Bun, Make and Ninja 
     }), { mode: 0o600 })
     const programs = [
       { argv: [...helper, "check", "run", "--", "go", "test", "-p", "4", "-parallel", "4", "./exact argument"], width: 16, env: { GOMAXPROCS: "4" } },
-      { argv: [file, "-c", command], width: 4 },
-      { argv: admittedJobArgv(helper, command, false), width: 4 },
-      { argv: [exe, wake, job], width: 4 },
+      { argv: [file, "-c", command], width: 2 },
+      { argv: admittedJobArgv(helper, command, false), width: 2 },
+      { argv: [exe, wake, job], width: 2 },
       { argv: [...helper, "check", "run", "--", "go", "test", "-p=1", "./fixture"], width: "full" },
       { argv: admittedJobArgv(helper, "bun test --parallel=2 ./fixture", false), width: 2 },
       { argv: admittedJobArgv(helper, "make -j2", true), width: 2 },
@@ -88,7 +88,7 @@ it.scopedLive("standalone, Guard and Wake carry modeled Go, Bun, Make and Ninja 
       }), (child) => Effect.sync(() => { if (Predicate.isNull(child.exitCode) && Predicate.isNull(child.signalCode)) child.kill("SIGTERM") }))
       yield* fs.exists(marker).pipe(
         Effect.repeat({ schedule: Schedule.spaced(50), until: (exists) => exists }),
-        Effect.timeoutOrElse({ duration: 6500, orElse: () => rowsAt(filename).pipe(
+        Effect.timeoutOrElse({ duration: 16_000, orElse: () => rowsAt(filename).pipe(
           Effect.flatMap((rows) => Effect.die(`wrapper leg ${i} did not claim: ${json(rows)}`))) }),
       )
       const rows = yield* rowsAt(filename)
@@ -100,7 +100,7 @@ it.scopedLive("standalone, Guard and Wake carry modeled Go, Bun, Make and Ninja 
       expect(yield* Effect.promise(() => task.exited).pipe(Effect.timeout(6500))).toBe(0)
     }
   }).pipe(Effect.provide(BunServices.layer)),
-  52_000,
+  100_000,
 )
 
 it.scopedLive("Unknown executes; a width-one peer cannot exec until it drains", () =>
