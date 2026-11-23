@@ -880,15 +880,15 @@ const NOTHING = FileSystem.makeNoop({})
 const found = (node: Option.Option<Node>, file: string): Effect.Effect<Node, PlatformError.PlatformError> =>
   Option.match(node, { onNone: () => NOTHING.lstat(file).pipe(Effect.andThen(Effect.die("the no-op file system has no entries"))), onSome: Effect.succeed })
 
-/** An opened handle: it keeps the entry it opened, whatever the world does to the path afterwards. */
-const handleOf = (node: Node): FileSystem.File => ({
+/** An opened handle: it keeps the entry it opened, whatever the world does to the path afterwards; it reads that entry's inode as it is now (a file written in place grows under it). */
+const handleOf = (world: World, node: Node): FileSystem.File => ({
   [FileSystem.FileTypeId]: FileSystem.FileTypeId,
   stat: Effect.succeed(infoOf(node)),
   seek: () => Effect.die("unused"),
   sync: Effect.void,
   read: () => Effect.die("unused"),
   readAlloc: (size) =>
-    Effect.succeed(Option.some(UTF8.encode(Node.$match(node, { File: (each) => each.text, Fifo: (each) => each.text, Folder: () => "", Link: () => "" })).slice(0, size))),
+    Effect.succeed(Option.some(UTF8.encode(Node.$match(Option.getOrElse(Arr.findFirst([...world.values()], (each) => each._tag === node._tag && each.ino === node.ino), () => node), { File: (each) => each.text, Fifo: (each) => each.text, Folder: () => "", Link: () => "" })).slice(0, size))),
   truncate: () => Effect.die("unused"),
   write: () => Effect.die("unused"),
   writeAll: () => Effect.die("unused"),
@@ -920,7 +920,7 @@ const swapping = (world: World, beforeOpen: (world: World) => void, afterOpen: (
             Effect.flatMap((node) =>
               Match.value(node).pipe(
                 Match.tag("Link", () => Effect.fail(PlatformError.badArgument({ module: "FileSystem", method: "open", description: `ELOOP: ${file} is a link` }))),
-                Match.orElse((each) => Effect.sync(() => opened.push(target)).pipe(Effect.as(handleOf(each)))),
+                Match.orElse((each) => Effect.sync(() => opened.push(target)).pipe(Effect.as(handleOf(world, each)))),
               ),
             ),
             Effect.tap(() => Effect.sync(() => swaps.after.splice(0).forEach((swap) => swap(world)))),
@@ -963,6 +963,7 @@ seeded("a file swapped between the look and the open, by the fake file system: a
       ["parent folder swapped for a link outside", "/real/receipts", put("/real/receipts", Node.Link({ ino: 34n, target: "/outside" })), keep],
       ["parent folder swapped for a link outside, then back", "/real/receipts", put("/real/receipts", Node.Link({ ino: 34n, target: "/outside" })), restore("/real/receipts")],
       ["file replaced while open", "/real/receipts", keep, put(leaf, Node.File({ ino: 35n, text: other, names: 1 }))],
+      ["file written past the cap in place while open", "/real/receipts", keep, put(leaf, Node.File({ ino: 10n, text: `${good}${" ".repeat(65536)}`, names: 1 }))],
     ]
     const seen = yield* Effect.forEach(cases, ([what, folder, beforeOpen, afterOpen]) =>
       Effect.gen(function* () {
@@ -992,6 +993,7 @@ seeded("a file swapped between the look and the open, by the fake file system: a
       ["parent folder swapped for a link outside", "unreadable", [`/outside/${name}`]],
       ["parent folder swapped for a link outside, then back", "unreadable", [`/outside/${name}`]],
       ["file replaced while open", "unreadable", [leaf]],
+      ["file written past the cap in place while open", "refused: too large", [leaf]],
     ])
   }).pipe(Effect.scoped),
 )
