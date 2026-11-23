@@ -83,12 +83,21 @@ describe("the host's commands, over the checkout as it stands", () => {
     { host: "the workbox", script: fileURLToPath(new URL("../../../../workbox/install-bin.sh", import.meta.url)) },
   ] as const
   const TREE_SHOW = "opencode-2.3.0-prime.aaaaaaaa.bbbbbbbb.tree.plugins/opencode/cmd/rex/show.ts"
+  // This direct link test does not use the fleet's --apply dispatch.
+  const identityScript = fileURLToPath(new URL("../../../../workbox/host-identity.sh", import.meta.url))
+  const identity = sh(".", ["sh", "-c", '. "$1"; workbox_host_identity', "test", identityScript]).out
 
   for (const { host, script } of SCRIPTS)
     test(`on ${host}, rex-show links through current.plugins alone: into the tree when it holds the file; with none, no link is made and one that is there stays`, () =>
       Effect.runPromise(
         Effect.gen(function* () {
-          const run = (home: string) => spawnSync(["sh", script], { cwd: home, env: { ...GIT_ENV, HOME: home, PATH: hostEnv.PATH ?? "" }, stdin: "ignore", stdout: "pipe", stderr: "pipe" }).exitCode
+          const run = (home: string) => spawnSync(["sh", script], {
+            cwd: home,
+            env: { ...GIT_ENV, HOME: home, PATH: hostEnv.PATH ?? "", WORKBOX_EXPECT_MACHINE_ID: identity },
+            stdin: "ignore",
+            stdout: "pipe",
+            stderr: "pipe",
+          }).exitCode
           const rexShow = (home: string) => sh(home, ["readlink", ".local/bin/rex-show"]).out
           // With the installed build's tree.
           const treed = sh(".", ["mktemp", "-d", "-t", "update-bin-home"]).out

@@ -607,11 +607,20 @@ export const LAWS: ReadonlyArray<Law> = [
           { startImmediately: true },
         )
         const kept = SessionMessage.ID.make("msg_lawbeforecut")
+        const cut = SessionMessage.ID.make("msg_lawaftercut")
         yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, id: kept, text: "law: before the cut" }))
-        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: after the cut" }))
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, id: cut, text: "law: after the cut" }))
         const before = yield* ctx.session.context({ sessionID: session.id })
-        const boundary = yield* Effect.fromOption(Arr.findFirst(before, (message) => message.type === "assistant"))
-        yield* ensure(before.length === 4 && before[0]?.id === kept && before[1]?.id === boundary.id, "expected two complete turns before the revert")
+        // The fork projects each terminal execution as an idle record (session/message-updater.ts `idle`).
+        // Count turns without those records, but require them to be gone too when reading the committed context.
+        const turns = before.filter((message) => message.type !== "idle")
+        const boundary = yield* Effect.fromOption(Arr.findFirst(turns, (message) => message.type === "assistant"))
+        yield* ensure(
+          turns.length === 4 &&
+            turns[0]?.type === "user" && turns[0].id === kept && turns[1]?.id === boundary.id &&
+            turns[2]?.type === "user" && turns[2].id === cut && turns[3]?.type === "assistant",
+          `expected two complete turns before the revert; context was ${before.map((message) => `${message.type}:${message.id}`).join(",")}`,
+        )
         yield* probe.client({ action: "revert", sessionID: session.id, messageID: boundary.id })
         yield* waitFor(Ref.get(seen).pipe(Effect.map((lines) => lines.length > 0)), "no session.revert.committed event")
         const lines = (yield* Ref.get(seen)).join(", ")

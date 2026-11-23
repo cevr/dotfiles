@@ -6,15 +6,26 @@ This directory defines the persistent workflow layer for the Bite workbox
 
 ## Apply
 
-Run this command on the workbox:
+Use this command in the approved deployment, as the workbox user.
+
+### Host identity
+
+These commands assume a machine you trust: the check behind this document constrains the commands as written here, not your shell's startup files, the programs those command names resolve to, this checkout, or the local and remote configuration of the tools they use (ssh, git, systemd, rsync).
+
+Replace the literal `<machine-id-from-deployment-record>` with the intended
+workbox ID from the operator's deployment record opened at order time and
+confirmed via the provider console.
+Reading the ID from whichever machine you are logged into defeats the check.
 
 ```sh
-~/Developer/personal/dotfiles/workbox/bootstrap.sh
+# Pin source: workbox deployment record; see [Host identity](#host-identity).
+WORKBOX_EXPECT_MACHINE_ID='<machine-id-from-deployment-record>' ~/Developer/personal/dotfiles/workbox/bootstrap.sh
 ```
 
 Run this command to verify the installed state:
 
 ```sh
+# No pin needed: read-only health check.
 workbox-check
 ```
 
@@ -32,14 +43,63 @@ Sideshow, agent settings, S3 backups, security updates, the Tailscale SSH
 service, and swap protection. It configures `systemd-resolved` with public
 fallback servers. It protects Tailscale, the DNS resolver, and the Tailscale SSH
 service from workload memory pressure. It caps user sessions, which hold the
-terminals and every agent, at 52 GB of memory and 1 GB of swap. It caps
+terminals and every agent, under a 73% aggregate workload budget without swap. It caps
 `/dev/shm` at 8 GB because no process owns its files and the kernel cannot
 reclaim them. It raises the inotify limits to 4194304 watches and 1024
 instances (`systemd/sysctl.d/90-inotify.conf`, which the Hetzner box's
 `provision.sh sysctl` installs too): the Bite lab's standby keepers watch each
 file, about 286,000 each. `--check` warns when a live value is below the
-file's. It starts the herdr-core core and the OpenCode service at boot. It
+file's. It starts the herdr-core core at boot. The legacy box still uses the
+OpenCode user service; the new box uses the protected system unit after the
+client integration is active. It
 uses `/workspaces/.cache/turbo` as a local Turbo cache.
+
+## Pinned tools and the reserve: system-tools.sh
+
+`system-tools.sh` (root) installs what both provisioning paths need from one
+place: `bootstrap.sh` runs it here, and the Hetzner box's `provision.sh` runs
+it as its `tools` and `reserve` phases. The versions, checksums and key
+fingerprint are in `pins.conf` and nowhere else (`test/system-tools.test.ts`
+fails when one is typed into another file). Steps, each idempotent:
+
+| Step | What |
+| --- | --- |
+| `btrfs` | btrfs-progs with simple quotas (6.7 or newer): where the distribution's is older (Ubuntu 24.04 has 6.6.3), the pinned package, checked by sha256 before it is installed |
+| `shells` | fish, ksh and mksh from the distribution |
+| `qemu` | `qemu-user-static`, and the binfmt_misc entry for the other architecture (`qemu-aarch64` on amd64, for Ergo's arm64 receipts) registered now from the package's `binfmt.d` file with the F flag; `systemd-binfmt` registers the rest at boot |
+| `go` | Go from go.dev for the pinned architecture only (another is refused): the tarball's sha256 is checked before it is unpacked; the tree goes to `/usr/local/go-<version>`, `/usr/local/go` is a link to it swapped by one rename, and `/usr/local/bin/go` and `gofmt` link to it. A hand-installed `/usr/local/go` directory is replaced once (two renames apart) |
+| `pwsh` | PowerShell from `packages.microsoft.com/ubuntu/<release>/prod`; the downloaded key is refused unless its fingerprint is the pin (`/usr/share/keyrings/microsoft-prod.gpg`, `microsoft-prod.list`, the same paths as Microsoft's own setup package). amd64 only: Microsoft publishes no arm64 package there |
+| `reserve` | the separate protected server slice and system unit (`systemd/reserve/`), then `systemctl daemon-reload`; client integration activates this service |
+| `slices` | the run families from `slices.conf`: `/etc/systemd/user/<family>.slice` for each user line, a drop-in for each system line, and cpu, io and memory delegated to the user manager (`systemd/slices/`); then `daemon-reload`, no restart. A CPU cap written as a share of the threads (`CPUQuota=62.5%threads`) becomes a percentage of this host's `nproc` (16 threads: 1000%). A running user manager takes the io delegation at its next start (a boot), not at a reload. A run joins a family with `systemd-run --user --scope --slice=<family>.slice -- <command>` (linux/hetzner-workbox/README.md, Layout) |
+| `tmp` | `/tmp`'s rules (`systemd/tmp/tmpfiles.d/tmp.conf`: emptied at boot, aged at 7 days, `/tmp/opencode` at 14, the families' `/tmp/ergo`, `/tmp/bite-work`, `/tmp/personal` at 7 on lines of their own, `/tmp/vperf2` never aged on the exe box) and the daily clean through `workbox-tmp-clean`, which preserves run trees with holders |
+| `diskfree` | `workbox-disk-free.timer`: every minute, `/run/workbox/disk-free` gets the btrfs's free space from `btrfs filesystem usage` (not df), for the work tool and the host arbiter to read; it enforces nothing |
+
+Read-only `system-tools.sh --check` (run by `bootstrap.sh --check`) needs no
+pin and fails, naming the
+step, unless each is in place.
+
+**Guarantee: containment is for accidents, not work done through `sudo` or
+deliberate use of root.** `bite.slice` holds the way in (the Tailscale SSH service,
+tailscaled, systemd-resolved) beside `user.slice`, which holds every agent. It
+runs at `CPUWeight=1000` against `user.slice`'s default
+100, so under agent load the way in gets the CPU the moment it asks
+(2026-11-22: sshd and tailscaled starved for 15 minutes); its memory floor is
+unchanged (`MemoryMin` 256M, `MemoryLow` 512M, each service its own). The
+protected `workbox-opencode@<user>.service` has a 9% maximum and a 2%/7%
+memory floor in `workboxprotected.slice`, outside the 73% workload cap.
+SSH sessions, the user manager and unclassified user units all inherit the
+workload cap; cron, at and default Docker containers bill their jobs child.
+Systemd restarts the protected unit after an OOM unless it is explicitly stopped.
+The run families track I/O with `IOAccounting`, but do not set I/O
+weights (linux/hetzner-workbox/README.md, Run families, says why). `--check`
+warns when a user's own `~/.config/systemd/user/<family>.slice` shadows an
+installed one.
+
+Use `workbox-run bite-work -- bun test` (or another family or `default`) for
+bounded tests. Each call opens a new user scope with its own hard cap
+(`--memory-max SIZE`, default 12 GiB), no swap and whole-run OOM handling.
+See the [host contract](../linux/hetzner-workbox/README.md#layout-scratch-caches-run-families-free-space)
+for limits and exit codes. The default OpenCode shell adapter is separate.
 
 ## Terminals: herdr-core
 
@@ -68,6 +128,10 @@ Mac with `--on workbox` and addresses such as `workbox/t7` once
 `herdr-config.toml` is the Mac's herdr config (`install.sh` links it).
 
 ## Timers
+
+`workbox-pressure.timer` samples host CPU, memory and I/O pressure and logs
+the largest five user processes by RSS every minute. Read the samples with
+`journalctl --user -u workbox-pressure.service`.
 
 | Timer | Runs |
 | --- | --- |
@@ -183,7 +247,8 @@ file too, with `loop` (mount reuses `/workspaces`' loop device), never by
 `UUID=`: systemd-udevd is masked there, so a `/dev/disk/by-uuid` link never
 appears and a `UUID=` line fails the boot after 90 s (2026-11-19).
 `workbox-rift-storage --apply` (bootstrap) rewrites such lines, and
-`workbox-rift-storage --fstab` does only that; `--check` fails while one is left.
+`workbox-rift-storage --fstab` does only that. Both require the deployment
+pin; read-only `--check` needs no pin and fails while one is left.
 `workbox-btrfs-reclaim.service` turns on btrfs dynamic reclaim
 (`allocation/data/dynamic_reclaim`) at each boot for the file system mounted at
 `/workspaces`, found by its device, so nearly empty data chunks go back to

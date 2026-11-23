@@ -1,0 +1,9 @@
+#!/bin/sh
+# The launcher arbitrates races with clients starting the same managed service.
+set -eu
+launcher=$HOME/.local/bin/opencode
+status=$("$launcher" service status)
+if [ "$status" = stopped ]; then
+  printf '%s\n' 'workbox-opencode-recover: restarting the stopped managed server'
+  exec "$launcher" service start
+fi
