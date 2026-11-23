@@ -7,6 +7,7 @@
  *
  * It finds its sources by walking, not import, so it declares them for the gate's selection (scripts/reach.ts `readsOf`):
  * @reads mods/orchestrate/** mods/status/** mods/queue/stale.ts ../skills/orchestrate/scripts/** scripts/no-prose-state.allow.json
+ * @reads-indirect mods/orchestrate/** mods/status/** ../skills/orchestrate/scripts/**
  */
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Array as Arr, Effect, FileSystem, Option, Path, Predicate, Schema } from "effect"
