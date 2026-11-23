@@ -446,6 +446,8 @@ const BOUNDED_PROCESS = new Set([
   "tests/scratch-child.ts:spawnScratchShellFile",
   "tests/scratch-child.ts:installedGitManual",
   "tests/scratch-child.ts:scratchGitVersion",
+  "tests/scratch-child.ts:scratchArchive",
+  "tests/scratch-child.ts:scratchHostConfig",
   "tests/scratch-child.ts:checkoutBlob",
   "tests/scratch-child.ts:initScratchGit",
   "tests/scratch-child.ts:cloneScratchGit",

@@ -378,20 +378,23 @@ export const writeScratchScript = (file: string, program: string) => {
 
 interface ProgramInputs {
   readonly cwd: string
-  readonly tools: string
+  readonly tools: string | ReadonlyArray<string>
   readonly paths: Readonly<Record<string, string>>
   readonly values: Readonly<Record<string, string>>
   readonly pathLists?: Readonly<Record<string, string>>
+  readonly systemTools?: boolean
 }
 
 const programPaths = new Set([
   "HOME", "TMPDIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME",
   "WORKRIFT_ROOT", "WORKRIFT_PROC", "WORKRIFT_SOURCE", "WORK", "WORK_BASE", "FAKE_WORK_BASES", "FAKE_HOLDS", "FAKE_LOG",
+  "XDG_RUNTIME_DIR", "WORKBOX_WORKSPACES_DIR", "WORKBOX_BACKUP_CONFIG",
 ])
 
 const programValues = new Set([
   "WORKRIFT_PURGE", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
   "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1",
+  "USER",
 ])
 
 const checkScript = (file: string) => {
@@ -400,12 +403,32 @@ const checkScript = (file: string) => {
   return at
 }
 
+const toolDirectories = (tools: ProgramInputs["tools"]): ReadonlyArray<string> => {
+  if (Predicate.isString(tools)) return [tools]
+  return tools
+}
+
+const checkTools = (tools: ProgramInputs["tools"]) =>
+  toolDirectories(tools).map((dir) => {
+    const at = scratchInput(dir)
+    if (!localTestPaths.existsSync(at)) return at
+    for (const name of localTestPaths.readdirSync(at)) {
+      const tool = resolve(at, name)
+      if (name === "jq" && localTestPaths.isSymbolicLink(tool)) {
+        const target = localTestPaths.realpathSync(tool)
+        const fixed = systemPath.map((directory) => resolve(directory, "jq"))
+        if (!fixed.some((path) => localTestPaths.existsSync(path) && localTestPaths.realpathSync(path) === target))
+          return reject("unexpected jq fixture tool")
+      } else checkScript(tool)
+    }
+    return at
+  })
+
 const scratchProgram = (
   interpreter: "sh" | "perl", script: string, args: ReadonlyArray<string>, input: ProgramInputs,
 ) => {
   const cwd = scratchInput(input.cwd)
-  const tools = scratchInput(input.tools)
-  for (const tool of localTestPaths.readdirSync(tools)) checkScript(resolve(tools, tool))
+  const tools = checkTools(input.tools)
   for (const arg of args) {
     if (containsCheckout(arg)) return reject("checkout path in fixture argv")
     if (localTestPaths.isAbsolute(arg)) scratchInput(arg)
@@ -430,7 +453,8 @@ const scratchProgram = (
   }
   const executable = { sh: "/bin/sh", perl: "/usr/bin/perl" }[interpreter]
   const argv: [string, ...Array<string>] = [executable, checkScript(script), ...args]
-  return { argv, cwd, env: { HOME: cwd, TMPDIR: cwd, ...Object.fromEntries(env), PATH: `${tools}:${searchPath()}`, [marker]: interpreter } }
+  const path = [...tools, input.systemTools && "/usr/bin:/bin:/usr/sbin:/sbin" || searchPath()].join(":")
+  return { argv, cwd, env: { HOME: cwd, TMPDIR: cwd, ...Object.fromEntries(env), PATH: path, [marker]: interpreter } }
 }
 
 export const spawnScratchProgram = (
@@ -453,6 +477,27 @@ export const spawnScratchShellFileSync = (script: string, args: ReadonlyArray<st
 export const spawnScratchShellFile = (script: string, args: ReadonlyArray<string>, input: ProgramInputs) => {
   const { argv, ...options } = scratchProgram("sh", script, args, input)
   return spawn(argv, { ...options, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+}
+
+/** Reviewable native tools used only on scratch fixtures. */
+export const scratchArchive = (cwd: string, mode: "list" | "extract", archive: string, dest: string) => {
+  const directory = scratchInput(cwd)
+  const at = scratchInput(archive)
+  const argv: [string, ...Array<string>] = ["/usr/bin/tar", "-tzf", at]
+  if (mode === "extract") argv.splice(1, Infinity, "-xzf", at, "-C", scratchInput(dest))
+  return spawn(argv, { cwd: directory, env: { PATH: "/usr/bin:/bin", HOME: directory, TMPDIR: directory, [marker]: "tar" }, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+}
+
+export const scratchHostConfig = (cwd: string, tool: string, home: string, input?: { readonly runtime: string; readonly unit: string }) => {
+  const directory = scratchInput(cwd)
+  const exe = externalInput(tool)
+  const kind = exe.split("/").at(-1)
+  const env = { HOME: scratchInput(home), TMPDIR: directory, PATH: "/usr/bin:/bin:/usr/sbin:/sbin", [marker]: "host-config" }
+  if (kind === "herdr" && !input)
+    return spawn([exe, "config", "check"], { cwd: directory, env: { ...env, XDG_CONFIG_HOME: resolve(home, ".config") }, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+  if (kind === "systemd-analyze" && input)
+    return spawn([exe, "--user", "verify", scratchInput(input.unit)], { cwd: directory, env: { ...env, XDG_RUNTIME_DIR: scratchInput(input.runtime) }, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+  return reject("not a checked host config tool")
 }
 
 /** Write and launch exactly this fixture script, with no ambient environment. */

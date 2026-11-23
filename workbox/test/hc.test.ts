@@ -1,5 +1,4 @@
-// @reads all
-// @reads-reason computed read at ../workbox/test/hc.test.ts: expect(existsSync(join(result.home, ".config", "systemd", "user", "hc-core.service"))).toBe(tru
+// @reads ../workbox/systemd/user/{hc-core.service,opencode.service} ../workbox/{hunk-config.toml,backup.env,zshenv,zshrc,herdr-config.toml}
 // The workbox's hc (herdr-core) side, run through the real scripts with a
 // scratch HOME and a PATH of stub commands that answer from a fixture and
 // record their arguments. Nothing here touches the real host: every path a
@@ -11,7 +10,6 @@ import { afterAll, describe, expect, test } from "bun:test"
 import {
   chmodSync,
   cpSync,
-  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -21,7 +19,8 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs"
-import { matchingInput, readScratchDirectorySync, readScratchFileSync, readScratchLinkSync } from "../../opencode/tests/read-path.ts"
+import { externalInput, matchingInput, readScratchDirectorySync, readScratchFileSync, scratchExistsSync as existsSync, scratchInput } from "../../opencode/tests/read-path.ts"
+import { scratchArchive, scratchHostConfig, spawnScratchShellFile, writeScratchScript } from "../../opencode/tests/scratch-child.ts"
 import { homedir, tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 
@@ -29,28 +28,26 @@ const repo = join(import.meta.dir, "..", "..")
 const workbox = join(repo, "workbox")
 
 /** `path` with its symbolic links resolved, a dangling one too, as far as it exists. */
-const resolved = (path: string): string => {
-  if (existsSync(path)) return realpathSync(path)
+const resolved = (file: string): string => {
+  const path = scratchInput(file)
+  if (existsSync(path)) return realpathSync(scratchInput(path))
   const parent = dirname(path)
   if (parent === path) return path
-  const real = join(resolved(parent), basename(path))
-  const target = linkTarget(real)
-  return target === null ? real : resolved(resolve(dirname(real), target))
-}
-const linkTarget = (path: string) => {
-  try {
-    return readScratchLinkSync(path)
-  } catch {
-    return null
-  }
+  return join(resolved(parent), basename(path))
 }
 const isInside = (path: string, root: string) => {
-  const real = resolved(path)
-  return real === root || real.startsWith(`${root}/`)
+  const absolute = resolve(path)
+  if (absolute !== root && !absolute.startsWith(`${root}/`)) return false
+  try {
+    const real = resolved(absolute)
+    return real === root || real.startsWith(`${root}/`)
+  } catch {
+    return false
+  }
 }
 
 const scratchRoot = realpathSync(mkdtempSync(join(tmpdir(), "hc-workbox-test-")))
-for (const real of ["/workspaces", homedir()].map(resolved))
+for (const real of ["/workspaces", realpathSync(externalInput(homedir()))])
   if (isInside(scratchRoot, real)) throw new Error(`hc.test: scratch folder ${scratchRoot} is inside ${real}; set TMPDIR to /tmp`)
 afterAll(() => rmSync(scratchRoot, { recursive: true, force: true }))
 
@@ -97,15 +94,23 @@ const link = (dir: string, name: string, target: string) => {
   symlinkSync(target, join(dir, name))
 }
 
-const run = async (cmd: string[], env: Record<string, string>, cwd = scratchRoot) => {
-  guard(cmd, env, cwd)
-  const proc = Bun.spawn(cmd, { env, cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore" })
+const output = async (proc: ReturnType<typeof spawnScratchShellFile>) => {
   const [stdout, stderr, code] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
     proc.exited,
   ])
   return { stdout, stderr, code }
+}
+
+const run = async (cmd: string[], env: Record<string, string>, cwd = scratchRoot) => {
+  guard(cmd, env, cwd)
+  const [tool, entry, ...args] = cmd
+  if (tool !== "/bin/sh" || !entry) throw new Error("hc fixture expects a staged shell program")
+  const tools = (env.PATH || "").split(":").filter((dir) => !["/usr/bin", "/bin", "/usr/sbin", "/sbin"].includes(dir))
+  const paths = Object.fromEntries(writtenPathKeys.flatMap((name) => name in env ? [[name, env[name]!]] : []))
+  const values = env.USER ? { USER: env.USER } : {}
+  return output(spawnScratchShellFile(entry, args, { cwd, tools, paths, values, systemTools: true }))
 }
 
 const calls = (log: string) => (existsSync(log) ? readScratchFileSync(log, "utf8").split("\n").filter(Boolean) : [])
@@ -303,7 +308,12 @@ const placeShellFiles = (home: string, shell: Shell) => {
   for (const name of ["zshenv", "zshrc"]) {
     writeFileSync(join(tree, name), `# the tree's ${name}\n`)
     writeFileSync(join(installed, name), shell === "behind" ? `# an older ${name}\n` : `# the tree's ${name}\n`)
-    symlinkSync(shell === "checkout" ? join(workbox, name) : join(installed, name), join(home, `.${name}`))
+    if (shell === "checkout") {
+      const stale = join(home, "checkout")
+      mkdirSync(stale, { recursive: true })
+      writeFileSync(join(stale, name), `# the stale checkout's ${name}\n`)
+      symlinkSync(join(stale, name), join(home, `.${name}`))
+    } else symlinkSync(join(installed, name), join(home, `.${name}`))
   }
   if (shell === "file") {
     rmSync(join(home, ".zshenv"))
@@ -315,7 +325,10 @@ const bootstrapCheck = async (host: Host, shell: Shell = "installed") => {
   const home = hostHome("check", host)
   const log = join(home, "calls.log")
   placeShellFiles(home, shell)
-  const result = await run(["/bin/sh", join(workbox, "bootstrap.sh"), "--check"], {
+  const staged = join(home, "bootstrap.sh")
+  writeScratchScript(staged, readFileSync(matchingInput("../workbox/bootstrap.sh"), "utf8"))
+  cpSync(matchingInput("../workbox/systemd/sysctl.d"), join(home, "systemd/sysctl.d"), { recursive: true })
+  const result = await run(["/bin/sh", staged, "--check"], {
     HOME: home,
     PATH: `${join(home, ".local", "bin")}:/usr/bin:/bin`,
     TMPDIR: home,
@@ -329,14 +342,14 @@ const bootstrapTree = (root: string, log: string) => {
   const tree = join(root, "dotfiles")
   const box = join(tree, "workbox")
   mkdirSync(box, { recursive: true })
-  cpSync(join(workbox, "bootstrap.sh"), join(box, "bootstrap.sh"))
-  cpSync(join(workbox, "systemd"), join(box, "systemd"), { recursive: true })
+  writeScratchScript(join(box, "bootstrap.sh"), readFileSync(matchingInput("../workbox/bootstrap.sh"), "utf8"))
+  cpSync(matchingInput("../workbox/systemd"), join(box, "systemd"), { recursive: true })
   for (const file of ["hunk-config.toml", "backup.env", "zshenv", "zshrc", "herdr-config.toml"])
     cpSync(matchingInput("../workbox/{hunk-config.toml,backup.env,zshenv,zshrc,herdr-config.toml}", `../workbox/${file}`), join(box, file))
-  for (const name of readdirSync(join(workbox, "bin"))) stub(join(box, "bin"), name, log)
+  for (const name of readdirSync(matchingInput("../workbox/bin"))) stub(join(box, "bin"), name, log)
   stub(join(tree, "claude", "mods", "fx-ui"), "install.sh", log)
   // The real install-bin.sh: it installs the stubbed bin/ into ~/.local/bin, as bootstrap did itself before.
-  cpSync(join(workbox, "install-bin.sh"), join(box, "install-bin.sh"))
+  chmodSync(writeScratchScript(join(box, "install-bin.sh"), readFileSync(matchingInput("../workbox/install-bin.sh"), "utf8")), 0o755)
   return box
 }
 
@@ -526,7 +539,8 @@ const runBackup = async (dirs: string[]) => {
   "s3api get-object") for last; do :; done; cp '${uploaded}' "$last" ;;
 esac`)
   stub(stubs, "sqlite3", log)
-  const result = await run(["/bin/sh", join(workbox, "bin", "backup-state")], {
+  const staged = writeScratchScript(join(root, "backup-state"), readFileSync(matchingInput("../workbox/bin/backup-state"), "utf8"))
+  const result = await run(["/bin/sh", staged], {
     HOME: home,
     PATH: `${stubs}:/usr/bin:/bin:/usr/sbin:/sbin`,
     TMPDIR: root,
@@ -535,10 +549,10 @@ esac`)
   const out = join(root, "out")
   mkdirSync(out)
   const list = async (archive: string) =>
-    (await run(["tar", "-tzf", archive], { PATH: "/usr/bin:/bin" })).stdout.split("\n").filter(Boolean)
+    (await output(scratchArchive(root, "list", archive, out))).stdout.split("\n").filter(Boolean)
   let archives: string[] = []
   if (existsSync(uploaded)) {
-    await run(["tar", "-xzf", uploaded, "-C", out], { PATH: "/usr/bin:/bin" })
+    await output(scratchArchive(root, "extract", uploaded, out))
     archives = readScratchDirectorySync(join(out, "snapshot", "archives")).sort()
   }
   return { ...result, archives, list: (name: string) => list(join(out, "snapshot", "archives", name)) }
@@ -576,12 +590,8 @@ describe("herdr-config.toml", () => {
   test.skipIf(!which("herdr"))("herdr accepts the config (a scratch HOME)", async () => {
     const home = scratch("herdr-config")
     mkdirSync(join(home, ".config", "herdr"), { recursive: true })
-    cpSync(join(workbox, "herdr-config.toml"), join(home, ".config", "herdr", "config.toml"))
-    const result = await run([which("herdr"), "config", "check"], {
-      HOME: home,
-      XDG_CONFIG_HOME: join(home, ".config"),
-      PATH: "/usr/bin:/bin",
-    })
+    cpSync(matchingInput("../workbox/herdr-config.toml"), join(home, ".config", "herdr", "config.toml"))
+    const result = await output(scratchHostConfig(scratchRoot, which("herdr"), home))
     expect({ code: result.code, out: result.stdout.trim() }).toEqual({ code: 0, out: "config: ok" })
   })
 })
@@ -620,10 +630,9 @@ describe("unit files", () => {
     const home = scratch("systemd-analyze")
     for (const name of ["hc", "opencode"]) stub(join(home, ".local", "bin"), name, join(home, "calls.log"))
     for (const unit of ["hc-core.service", "opencode.service"]) {
-      const result = await run(
-        ["systemd-analyze", "--user", "verify", join(workbox, "systemd", "user", unit)],
-        { PATH: process.env.PATH ?? "", HOME: home, XDG_RUNTIME_DIR: scratch("systemd-analyze-run") },
-      )
+      const staged = join(home, unit)
+      cpSync(matchingInput("../workbox/systemd/user/{hc-core.service,opencode.service}", `../workbox/systemd/user/${unit}`), staged)
+      const result = await output(scratchHostConfig(scratchRoot, which("systemd-analyze"), home, { runtime: scratch("systemd-analyze-run"), unit: staged }))
       expect({ unit, code: result.code, stderr: result.stderr }).toEqual({ unit, code: 0, stderr: "" })
     }
   })
