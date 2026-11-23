@@ -11,8 +11,12 @@ measured; the exe box held about 430 GB on 2026-11-14 (plan.md, measured).
 The following are inputs to the approved deployment, not commands to run by
 hand on a real host. Open the operator's deployment records at order time.
 During enrollment, use each provider's trusted console for the specific
-instance to record the installed OS's machine ID. Set `NEW_MACHINE_ID` and
-`EXE_MACHINE_ID` from the new box and exe deployment records, respectively.
+instance to record the installed OS's machine ID. Replace
+`<machine-id-from-deployment-record>` with the intended host's recorded ID.
+For transfer, replace `<source-machine-id-from-deployment-record>` with the
+exe box's recorded ID and `<destination-machine-id-from-deployment-record>`
+with the new box's recorded ID. Keep the quotes and supply each ID directly
+to its command, not through a shell variable or a command substitution.
 Reading the ID from whichever machine you are logged into defeats the check.
 From that same trusted channel, pin the destination's SSH host key in
 `/root/.ssh/hetzner-sync-known_hosts` on the source. A hostname is not a pin.
@@ -42,8 +46,11 @@ From that same trusted channel, pin the destination's SSH host key in
    ```sh
    # No pin needed: read-only layout preview.
    /root/dotfiles/linux/hetzner-workbox/layout.sh --dry-run
+   ```
+
+   ```sh
    # Pin source: new host's deployment record; see [Host identity](#host-identity).
-   WORKBOX_EXPECT_MACHINE_ID="$NEW_MACHINE_ID" /root/dotfiles/linux/hetzner-workbox/layout.sh
+   WORKBOX_EXPECT_MACHINE_ID='<machine-id-from-deployment-record>' /root/dotfiles/linux/hetzner-workbox/layout.sh
    ```
 
    After reboot, run the check as root. It requires the pin because its
@@ -51,7 +58,7 @@ From that same trusted channel, pin the destination's SSH host key in
 
    ```sh
    # Pin source: new host's deployment record; see [Host identity](#host-identity).
-   WORKBOX_EXPECT_MACHINE_ID="$NEW_MACHINE_ID" HB_CHECK_SKIP="firewall sshd backup" \
+   WORKBOX_EXPECT_MACHINE_ID='<machine-id-from-deployment-record>' HB_CHECK_SKIP="firewall sshd backup" \
      /root/dotfiles/linux/hetzner-workbox/check.sh
    ```
 
@@ -66,9 +73,17 @@ From that same trusted channel, pin the destination's SSH host key in
    ```sh
    read -rs TS_AUTHKEY && export TS_AUTHKEY      # paste the key from 0.3
    export HB_EXTRA_KEYS='<the line of ssh bite-workbox cat .ssh/hetzner-sync.pub>'
+   ```
+
+   ```sh
    # Pin source: new host's deployment record; see [Host identity](#host-identity).
-   WORKBOX_EXPECT_MACHINE_ID="$NEW_MACHINE_ID" \
+   WORKBOX_EXPECT_MACHINE_ID='<machine-id-from-deployment-record>' \
      /root/dotfiles/linux/hetzner-workbox/provision.sh host user keys packages tools storage firewall rootssh tailscale sshd reserve upgrades
+   ```
+
+   Clear the key from the root shell afterward:
+
+   ```sh
    unset TS_AUTHKEY
    ```
 
@@ -81,7 +96,7 @@ From that same trusted channel, pin the destination's SSH host key in
 
    ```sh
    # Pin source: new host's deployment record; see [Host identity](#host-identity).
-   WORKBOX_EXPECT_MACHINE_ID="$NEW_MACHINE_ID" /root/dotfiles/linux/hetzner-workbox/check.sh docker
+   WORKBOX_EXPECT_MACHINE_ID='<machine-id-from-deployment-record>' /root/dotfiles/linux/hetzner-workbox/check.sh docker
    ```
 
    Reboot before opening the box to jobs so user managers get their installed
@@ -98,7 +113,7 @@ From that same trusted channel, pin the destination's SSH host key in
 
    ```sh
    # Pin source: new host's deployment record; see [Host identity](#host-identity).
-   WORKBOX_EXPECT_MACHINE_ID="$NEW_MACHINE_ID" HB_STORAGEBOX_HOST="$STORAGEBOX_HOST" HB_STORAGEBOX_USER="$STORAGEBOX_USER" \
+   WORKBOX_EXPECT_MACHINE_ID='<machine-id-from-deployment-record>' HB_STORAGEBOX_HOST="$STORAGEBOX_HOST" HB_STORAGEBOX_USER="$STORAGEBOX_USER" \
      /root/dotfiles/linux/hetzner-workbox/provision.sh backup
    ```
 
@@ -112,13 +127,19 @@ From an hc terminal on the exe box (the copy outlives an ssh session there):
 
 ```sh
 # Pin source: exe and new host deployment records; see [Host identity](#host-identity).
-sudo env WORKBOX_EXPECT_MACHINE_ID="$EXE_MACHINE_ID" HB_TARGET_MACHINE_ID="$NEW_MACHINE_ID" \
+sudo env WORKBOX_EXPECT_MACHINE_ID='<source-machine-id-from-deployment-record>' HB_TARGET_MACHINE_ID='<destination-machine-id-from-deployment-record>' \
   HB_TO="exedev@$NEWTS" "$d/sync.sh" --dry-run pass 1
+```
+
+```sh
 # Pin source: exe and new host deployment records; see [Host identity](#host-identity).
-sudo env WORKBOX_EXPECT_MACHINE_ID="$EXE_MACHINE_ID" HB_TARGET_MACHINE_ID="$NEW_MACHINE_ID" \
+sudo env WORKBOX_EXPECT_MACHINE_ID='<source-machine-id-from-deployment-record>' HB_TARGET_MACHINE_ID='<destination-machine-id-from-deployment-record>' \
   HB_TO="exedev@$NEWTS" "$d/sync.sh" pass 1
+```
+
+```sh
 # Pin source: exe and new host deployment records; see [Host identity](#host-identity).
-sudo env WORKBOX_EXPECT_MACHINE_ID="$EXE_MACHINE_ID" HB_TARGET_MACHINE_ID="$NEW_MACHINE_ID" \
+sudo env WORKBOX_EXPECT_MACHINE_ID='<source-machine-id-from-deployment-record>' HB_TARGET_MACHINE_ID='<destination-machine-id-from-deployment-record>' \
   HB_TO="exedev@$NEWTS" "$d/sync.sh" rest
 ```
 
@@ -130,7 +151,7 @@ pass (plan.md). Preview the final pass once more shortly before the window:
 
 ```sh
 # Pin source: exe and new host deployment records; see [Host identity](#host-identity).
-sudo env WORKBOX_EXPECT_MACHINE_ID="$EXE_MACHINE_ID" HB_TARGET_MACHINE_ID="$NEW_MACHINE_ID" \
+sudo env WORKBOX_EXPECT_MACHINE_ID='<source-machine-id-from-deployment-record>' HB_TARGET_MACHINE_ID='<destination-machine-id-from-deployment-record>' \
   HB_TO="exedev@$NEWTS" "$d/sync.sh" --dry-run pass 2
 ```
 
@@ -153,13 +174,19 @@ terminal that is about to stop.
 
    ```sh
    # Pin source: exe and new host deployment records; see [Host identity](#host-identity).
-   sudo env WORKBOX_EXPECT_MACHINE_ID="$EXE_MACHINE_ID" HB_TARGET_MACHINE_ID="$NEW_MACHINE_ID" \
+   sudo env WORKBOX_EXPECT_MACHINE_ID='<source-machine-id-from-deployment-record>' HB_TARGET_MACHINE_ID='<destination-machine-id-from-deployment-record>' \
      HB_TO="exedev@$NEWTS" "$d/sync.sh" pass 2
+   ```
+
+   ```sh
    # Pin source: exe and new host deployment records; see [Host identity](#host-identity).
-   sudo env WORKBOX_EXPECT_MACHINE_ID="$EXE_MACHINE_ID" HB_TARGET_MACHINE_ID="$NEW_MACHINE_ID" \
+   sudo env WORKBOX_EXPECT_MACHINE_ID='<source-machine-id-from-deployment-record>' HB_TARGET_MACHINE_ID='<destination-machine-id-from-deployment-record>' \
      HB_TO="exedev@$NEWTS" "$d/sync.sh" rest
+   ```
+
+   ```sh
    # Pin source: exe and new host deployment records; see [Host identity](#host-identity).
-   sudo env WORKBOX_EXPECT_MACHINE_ID="$EXE_MACHINE_ID" HB_TARGET_MACHINE_ID="$NEW_MACHINE_ID" \
+   sudo env WORKBOX_EXPECT_MACHINE_ID='<source-machine-id-from-deployment-record>' HB_TARGET_MACHINE_ID='<destination-machine-id-from-deployment-record>' \
      HB_TO="exedev@$NEWTS" "$d/sync.sh" activate 2
    ```
 
@@ -171,7 +198,7 @@ terminal that is about to stop.
 
    ```sh
    # Pin source: exe and new host deployment records; see [Host identity](#host-identity).
-   sudo env WORKBOX_EXPECT_MACHINE_ID="$EXE_MACHINE_ID" HB_TARGET_MACHINE_ID="$NEW_MACHINE_ID" \
+   sudo env WORKBOX_EXPECT_MACHINE_ID='<source-machine-id-from-deployment-record>' HB_TARGET_MACHINE_ID='<destination-machine-id-from-deployment-record>' \
      HB_TO="exedev@$NEWTS" "$d/sync.sh" --dry-run runs
    ```
 
@@ -187,7 +214,7 @@ terminal that is about to stop.
 
    ```sh
    # Pin source: exe and new host deployment records; see [Host identity](#host-identity).
-   sudo env WORKBOX_EXPECT_MACHINE_ID="$EXE_MACHINE_ID" HB_TARGET_MACHINE_ID="$NEW_MACHINE_ID" \
+   sudo env WORKBOX_EXPECT_MACHINE_ID='<source-machine-id-from-deployment-record>' HB_TARGET_MACHINE_ID='<destination-machine-id-from-deployment-record>' \
      HB_TO="exedev@$NEWTS" "$d/sync.sh" runs --yes
    ```
 
@@ -219,9 +246,12 @@ terminal that is about to stop.
 
    ```sh
    # Pin source: new host's deployment record; see [Host identity](#host-identity).
-   sudo env WORKBOX_EXPECT_MACHINE_ID="$NEW_MACHINE_ID" "$d/provision.sh" sshd bootstrap
+   sudo env WORKBOX_EXPECT_MACHINE_ID='<machine-id-from-deployment-record>' "$d/provision.sh" sshd bootstrap
+   ```
+
+   ```sh
    # Pin source: new host's deployment record; see [Host identity](#host-identity).
-   sudo env WORKBOX_EXPECT_MACHINE_ID="$NEW_MACHINE_ID" "$d/check.sh"
+   sudo env WORKBOX_EXPECT_MACHINE_ID='<machine-id-from-deployment-record>' "$d/check.sh"
    ```
 
    The sshd phase picks up the new Tailscale address; bootstrap installs the
@@ -277,7 +307,7 @@ terminal that is about to stop.
 
   ```sh
   # Pin source: new host's deployment record; see [Host identity](#host-identity).
-  sudo env WORKBOX_EXPECT_MACHINE_ID="$NEW_MACHINE_ID" "$d/backup.sh" list
+  sudo env WORKBOX_EXPECT_MACHINE_ID='<machine-id-from-deployment-record>' "$d/backup.sh" list
   ```
 
 ## Rollback during the window

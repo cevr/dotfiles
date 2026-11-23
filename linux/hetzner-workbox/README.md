@@ -320,7 +320,8 @@ The pin is for the Linux machine you are restoring **onto**, not the lost
 machine or the Storage Box. For a newly ordered recovery host, open its
 deployment record when ordering it. Once its OS boots, use the provider's
 console for that specific order to record the installed machine ID **before**
-connecting to a restore target. Set `RESTORE_MACHINE_ID` from that record.
+connecting to a restore target. In each command, replace the literal
+`<machine-id-from-deployment-record>` with the recovery host ID from that record.
 
 Start from the repository root on the recovery host. Set `BACKUP_COPY` to
 the root of an already mounted Storage Box or a local copy of its data.
@@ -330,7 +331,7 @@ preflight prints the available `.info` files across months:
 
 ```sh
 # Pin source: recovery host's deployment record; see [Host identity](#host-identity).
-sudo env WORKBOX_EXPECT_MACHINE_ID="$RESTORE_MACHINE_ID" \
+sudo env WORKBOX_EXPECT_MACHINE_ID='<machine-id-from-deployment-record>' \
   HB_BACKUP_DIR="$BACKUP_COPY" HB_BACKUP_NAME="$BACKUP_HOST_LABEL" \
   linux/hetzner-workbox/backup.sh list
 ```
@@ -341,7 +342,7 @@ Set `RESTORE_DIR` to an existing directory on a writable btrfs filesystem.
 
 ```sh
 # Pin source: recovery host's deployment record; see [Host identity](#host-identity).
-sudo env WORKBOX_EXPECT_MACHINE_ID="$RESTORE_MACHINE_ID" \
+sudo env WORKBOX_EXPECT_MACHINE_ID='<machine-id-from-deployment-record>' \
   HB_BACKUP_DIR="$BACKUP_COPY" HB_BACKUP_NAME="$BACKUP_HOST_LABEL" HB_BACKUP_MONTH="$RESTORE_MONTH" \
   linux/hetzner-workbox/backup.sh restore runs "$RESTORE_DIR"
 ```

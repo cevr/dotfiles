@@ -10,13 +10,14 @@ Use this command in the approved deployment, as the workbox user.
 
 ### Host identity
 
-Set `WORKBOX_MACHINE_ID` from the operator's deployment record opened at
-order time and confirmed via the provider console.
+Replace the literal `<machine-id-from-deployment-record>` with the intended
+workbox ID from the operator's deployment record opened at order time and
+confirmed via the provider console.
 Reading the ID from whichever machine you are logged into defeats the check.
 
 ```sh
 # Pin source: workbox deployment record; see [Host identity](#host-identity).
-WORKBOX_EXPECT_MACHINE_ID="$WORKBOX_MACHINE_ID" ~/Developer/personal/dotfiles/workbox/bootstrap.sh
+WORKBOX_EXPECT_MACHINE_ID='<machine-id-from-deployment-record>' ~/Developer/personal/dotfiles/workbox/bootstrap.sh
 ```
 
 Run this command to verify the installed state:

@@ -15,8 +15,8 @@ mkdir -p "$BACKUP_COPY/$BACKUP_HOST_LABEL/2026-12"
 info="$BACKUP_COPY/$BACKUP_HOST_LABEL/2026-12/runs.sample.info"
 touch "$info"
 
-# Extract the first fenced shell example under Restore as-is; no shell
-# command is duplicated here or rewritten before invoking bash.
+# Extract the first fenced shell example under Restore. Replace only the
+# documented placeholder, just as the operator would, not the command.
 awk '
     /^### Restore$/ { restore = 1; next }
     restore && /^```sh$/ { block = 1; next }
@@ -24,15 +24,19 @@ awk '
     block { print }
 ' "$here/README.md" > "$scratch/list.sh"
 test -s "$scratch/list.sh"
-printf '%s\n' '--- Documented restore preflight, verbatim ---'
+printf '%s\n' '--- Documented restore preflight template ---'
 cat "$scratch/list.sh"
+placeholder='<machine-id-from-deployment-record>'
+[[ $(grep -oF -- "$placeholder" "$scratch/list.sh" | wc -l) -eq 1 ]]
+sed "s/$placeholder/$pin/" "$scratch/list.sh" > "$scratch/with-pin.sh"
+sed "s/$placeholder//" "$scratch/list.sh" > "$scratch/no-pin.sh"
 
 code=0
-listing=$(env -u WORKBOX_EXPECT_MACHINE_ID RESTORE_MACHINE_ID="$pin" bash "$scratch/list.sh" 2>&1) || code=$?
+listing=$(env -u WORKBOX_EXPECT_MACHINE_ID bash "$scratch/with-pin.sh" 2>&1) || code=$?
 printf 'documented restore list with recorded pin: exit %s; %s\n' "$code" "$listing"
 [[ $code == 0 && $listing == *"$info" ]]
 
 code=0
-listing=$(env -u WORKBOX_EXPECT_MACHINE_ID -u RESTORE_MACHINE_ID bash "$scratch/list.sh" 2>&1) || code=$?
+listing=$(env -u WORKBOX_EXPECT_MACHINE_ID bash "$scratch/no-pin.sh" 2>&1) || code=$?
 printf 'documented restore list without recorded pin: exit %s; %s\n' "$code" "$listing"
 [[ $code == 78 && $listing == *'intended-host identity refused'* && $listing != *"$info"* ]]

@@ -42,13 +42,14 @@ ln -sf $(pwd)/skills/track-work-hours/scripts/hours ~/.local/bin/hours
 
 #### Host identity
 
-For the approved deployment, set `WORKBOX_MACHINE_ID` from the operator's
-deployment record opened at order time and confirmed via the provider console.
+For the approved deployment, replace the literal
+`<machine-id-from-deployment-record>` with the intended workbox ID from the
+operator's deployment record opened at order time and confirmed via the provider console.
 Reading the ID from whichever machine you are logged into defeats the check.
 
 ```bash
 # Pin source: workbox deployment record; see [Host identity](#host-identity).
-WORKBOX_EXPECT_MACHINE_ID="$WORKBOX_MACHINE_ID" ~/Developer/personal/dotfiles/workbox/bootstrap.sh
+WORKBOX_EXPECT_MACHINE_ID='<machine-id-from-deployment-record>' ~/Developer/personal/dotfiles/workbox/bootstrap.sh
 ```
 
 ### Claude
