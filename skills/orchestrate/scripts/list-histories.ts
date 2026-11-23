@@ -46,7 +46,7 @@ const h = (name: string, role: Role, events: string, one: Item, state: State, la
   handBack: { state, label, evidence, others, lastAttempt },
 });
 
-const CANNOT = '`cannot run here:';
+const CANNOT = '`cannot run here: <check or tool>`';
 const REFUSED = '`refused: <what>`';
 const WAITS = '`waits on <id>`';
 const NONE = 'none: it is no item left';
