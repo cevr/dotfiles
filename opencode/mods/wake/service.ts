@@ -7,6 +7,7 @@
 import { Context, type Effect, Schema } from "effect"
 import type { Job, Schedule } from "./backstop.ts"
 import type { JobRecord, JobSpec, Launched } from "./job.ts"
+import type { Delivery } from "./job-event.ts"
 import type { Latch, Mark, Opened } from "./latch.ts"
 import type { Letter } from "./message.ts"
 import type { Check, Entry, Notice } from "./wake.ts"
@@ -147,8 +148,10 @@ export class JobRefused extends Schema.TaggedError<JobRefused>()("JobRefused", {
  *   user unit on Linux, its own session and process group elsewhere), its
  *   stdout and stderr to the log, `$JOB_DRIP` naming its progress file. The
  *   runner records the exit beside the spec. It returns at once.
- * - `read`: the job's spec and run, undefined for an id it never launched.
- *   A run whose runner is gone without an exit reads `lost`.
+ * - `read`: the job's spec and run, undefined for an id it never launched,
+ *   with its delivery record's newest slot. A run whose runner is gone
+ *   without an exit reads `lost`; one retired before any runner claimed it,
+ *   `never-started`.
  * - `tail`: the last `chars` characters of the log ("" when none).
  * - `drip`: the progress written since byte `from`, whole lines only, and
  *   the offset after them; a line still being written waits.
@@ -166,8 +169,41 @@ export class Runner extends Context.Service<
     readonly tail: (id: string, chars: number) => Effect.Effect<string>
     readonly drip: (id: string, from: number) => Effect.Effect<{ readonly text: string; readonly offset: number }>
     readonly kill: (id: string) => Effect.Effect<boolean>
+    /**
+     * Call `announce` when the job's exit is written (and once at once when it already is): one watch, not recursive,
+     * on the job's own directory, kept until `unwatch`. It only announces; the end is read from the files. False when
+     * no watch could be opened (a host out of watches): the wakes' sweep finds that job's end instead.
+     */
+    readonly watch: (id: string, announce: () => void) => Effect.Effect<boolean>
+    readonly unwatch: (id: string) => Effect.Effect<void>
+    /** The jobs watched now: one per live job of this server's, none once they are all delivered. */
+    readonly watching: Effect.Effect<ReadonlyArray<string>>
+    /**
+     * Retire a job no runner claimed: its launch slot written with the retirement, so a runner that comes after finds
+     * it taken and runs nothing, and the job reads `lost` (`never-started`). Whether this call retired it: false when a
+     * runner claimed it first, or it was retired before.
+     */
+    readonly retire: (id: string) => Effect.Effect<boolean>
+    /**
+     * Write slot `version + 1` of the job's delivery record, only while `version` is its newest (0: none yet): whether
+     * this call wrote it. A writer that loses does nothing more. A `delivered` slot takes the job off `owed`.
+     */
+    readonly advance: (id: string, version: number, next: Delivery) => Effect.Effect<boolean>
+    /** Flush a delivery slot read from another writer before acting on it. A name is visible before that writer's sync. */
+    readonly stabilize: (id: string) => Effect.Effect<void>
+    /** Before removing an entry with a held delivery, make its record durably discoverable without that entry. */
+    readonly retain: (id: string) => Effect.Effect<void>
+    /** Managed jobs whose delivery is not yet final, optionally restricted by home directory and/or owner. */
+    readonly owed: (query?: { readonly directory?: string; readonly sessionID?: string }) => Effect.Effect<ReadonlyArray<string>>
   }
 >()("dotfiles-opencode/wake/Runner") {}
+
+/**
+ * The host's answer about a call: `committed`, `failed`, `running`, or `gone` (no such session). `missing` means a
+ * successful read covered the part's message but did not find it; `unknown` means that message may be outside
+ * the readable window; `unreadable` means the read itself failed. The latter two prove nothing about the call.
+ */
+export type CallAnswer = "committed" | "failed" | "running" | "gone" | "missing" | "unreadable" | "unknown"
 
 /** Word that a session's wakes changed, so whatever shows them reads again. */
 export class Changes extends Context.Service<Changes, { readonly changed: (sessionID: string) => Effect.Effect<void> }>()(
