@@ -4,7 +4,7 @@ import { isSubscriptionUsageDiagnostic } from '../rate-limit.ts'
 import { enhanceRateLimitResponse as enhance, type RateLimitOptions } from './rate-limit.ts'
 
 /** Hang guard for the runner; the product's diagnostic timeout remains configured per case. */
-const HANG_GUARD_MS = 120_000
+const HANG_GUARD_MS = 30_000
 
 // The enhancement is an Effect now; run it to a promise so the assertions read as before.
 const enhanceRateLimitResponse = (response: Response, connection: string, options?: RateLimitOptions) =>

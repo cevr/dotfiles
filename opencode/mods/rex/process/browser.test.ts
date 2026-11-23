@@ -13,7 +13,7 @@ import { Browser } from "../service.ts"
 import * as ProcessBrowser from "./browser.ts"
 
 /** Hang guard awaiting the fake browser process, not a performance limit. */
-const HANG_GUARD_MS = 120_000
+const HANG_GUARD_MS = 30_000
 const FAKE = fileURLToPath(new URL("./fake-browser.sh", import.meta.url))
 
 /** A scratch folder for the test's files, removed when the test ends. */

@@ -30,7 +30,7 @@ const served = (onRequest: () => void = () => {}) => Effect.gen(function* () {
 
 const TIMEOUT = 300
 /** Hang guard for a Unix socket or fiber that never answers. Socket deadlines use TestClock. */
-const HANG_GUARD_MS = 120_000
+const HANG_GUARD_MS = 30_000
 
 herdrLaws("socket Herdr", () =>
   Effect.gen(function* () {

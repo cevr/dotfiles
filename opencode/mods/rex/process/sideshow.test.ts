@@ -12,7 +12,7 @@ import { Sideshow } from "../service.ts"
 import * as ProcessSideshow from "./sideshow.ts"
 
 /** Hang guard for the test runner. */
-const HANG_GUARD_MS = 120_000
+const HANG_GUARD_MS = 30_000
 const POSTS = [{ id: "p1", sessionId: "s1", title: "notes", version: 2, createdAt: "x", updatedAt: "2026-11-15T10:00:00Z", surfaces: [{ kind: "markdown", index: 0, markdown: "# hi", id: "u" }] }]
 const SESSIONS = [
   { id: "s1", title: "Plan", cwd: "/work", lastActiveAt: "2026-11-15T10:00:00Z" },

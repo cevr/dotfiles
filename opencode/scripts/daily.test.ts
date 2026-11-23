@@ -816,7 +816,7 @@ describe("the upstream merge", () => {
 })
 
 /** Hang guard if the move never gives its lock back. */
-const HANG_GUARD_MS = 120_000
+const HANG_GUARD_MS = 30_000
 
 describe("the fork move", () => {
   const kept = keptScratch(true, "daily-move-")

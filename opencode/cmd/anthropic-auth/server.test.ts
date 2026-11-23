@@ -16,7 +16,7 @@ import { effectTest } from '../../sim-tui/effect-test.ts'
 import Plugin, { type Env, type Fetch, make, makeShared } from './server.ts'
 
 /** Test-runner hang guard; these cases assert auth outcomes, not host latency. */
-const HANG_GUARD_MS = 120_000
+const HANG_GUARD_MS = 30_000
 
 type Host = Parameters<(typeof Plugin)['effect']>[0]
 

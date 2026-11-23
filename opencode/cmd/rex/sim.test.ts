@@ -19,7 +19,7 @@ import { effectTest } from "../../sim-tui/effect-test.ts"
 import { parse, Refused, Request, run, type Screen, viewer } from "./show.ts"
 
 /** Hang guard for the in-memory simulator fixture. */
-const HANG_GUARD_MS = 120_000
+const HANG_GUARD_MS = 30_000
 
 /** A PNG's first 24 bytes, `width` × `height`, then `mark` so two screens of one size differ. */
 const png = (width: number, height: number, mark: number) => {

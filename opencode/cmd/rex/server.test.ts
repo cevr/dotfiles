@@ -8,7 +8,7 @@ import { effectTest } from "../../sim-tui/effect-test.ts"
 import Rex, { make } from "./server.ts"
 
 /** Hang guard for the test runner, not a plugin performance limit. */
-const HANG_GUARD_MS = 120_000
+const HANG_GUARD_MS = 30_000
 type Host = Parameters<(typeof Rex)["effect"]>[0]
 
 effectTest(

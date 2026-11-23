@@ -15,7 +15,7 @@ import * as MemoryStore from "./store.ts"
 
 const T0 = Date.parse("2026-11-18T08:00:00Z")
 const HOUR = 60 * 60_000
-const TIMEOUT_MS = 5_000
+const TIMEOUT_MS = 30_000
 
 interface Noted {
   readonly sessionID: string

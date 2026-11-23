@@ -15,7 +15,7 @@ import * as PushesLive from "./pushes.ts"
 import * as ResetsLive from "./resets.ts"
 
 /** Hang guard for the test runner. */
-const HANG_GUARD_MS = 120_000
+const HANG_GUARD_MS = 30_000
 const run = (entries: Map<string, Schema.Json>) => migrate(storage(entries))
 
 // Every place the plugin's storage names a login, in the shape its adapter

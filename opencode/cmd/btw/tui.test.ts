@@ -126,7 +126,7 @@ const start = (host: World, route: { readonly type: string; readonly sessionID?:
 }
 
 /** Hang guard for the asynchronous fixture events. */
-const HANG_GUARD_MS = 120_000
+const HANG_GUARD_MS = 30_000
 
 describe("the btw plugin", () => {
   test("registers /btw, alias /side, as a Session palette command taking the question as its argument", () => {

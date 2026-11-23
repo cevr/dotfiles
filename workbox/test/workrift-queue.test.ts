@@ -574,7 +574,7 @@ interface Outcome {
 }
 
 /** Hang guard for the actual shell and Git fixtures; never part of the FIFO/overlap oracle. */
-const FIXTURE_HANG_GUARD_MS = 120_000
+const FIXTURE_HANG_GUARD_MS = 30_000
 
 interface FixtureEvents {
   readonly entered: (name: string) => Promise<void>

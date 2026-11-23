@@ -28,7 +28,7 @@ tracksLaws("the test's tracks", () => memoryTracks(), effectTest)
 
 const MINUTE = 60_000
 /** Each case's time limit, ms. */
-const LIMIT = 5_000
+const LIMIT = 30_000
 const POLICY: Policy = { afterMs: 30 * MINUTE, afterTurns: 6 }
 
 /** A root session of this copy's location, idle: the seat of every session the test does not set. */

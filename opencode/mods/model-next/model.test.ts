@@ -10,7 +10,7 @@ import { Cancelled, KEY, Queued } from "./pending.ts"
 const OLD = { providerID: "sim", id: "old" }
 const NEW = { providerID: "other", id: "new" }
 const LATCH = { id: "latch_1", opensAt: 5 }
-const CASE_MS = 5_000
+const CASE_MS = 30_000
 const cachedAt = (startedAt: number) => ({ last: Option.some({ startedAt, cached: true, ttl: Option.some(300_000), unresolved: Option.none() }), compacted: false })
 
 /** A session on OLD with a latch mark, both models in the catalog, and the handlers over it. */

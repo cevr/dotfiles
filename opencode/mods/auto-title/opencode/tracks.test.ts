@@ -9,7 +9,7 @@ import { Tracks } from "../service.ts"
 import { layer, type Storage } from "./tracks.ts"
 
 /** Hang guard for the test runner. */
-const HANG_GUARD_MS = 120_000
+const HANG_GUARD_MS = 30_000
 
 const storage = (entries: Map<string, Schema.Json>): Storage => ({
   get: (key) => Effect.sync(() => entries.get(key)),

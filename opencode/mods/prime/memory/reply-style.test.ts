@@ -11,7 +11,7 @@ import * as MemoryReplyStyles from "./reply-style.ts"
 import { replyStylesLaws } from "./reply-style.laws.ts"
 
 /** Hang guard for the test runner. */
-const HANG_GUARD_MS = 120_000
+const HANG_GUARD_MS = 30_000
 
 replyStylesLaws("the in-memory store", () => MemoryReplyStyles.layer)
 

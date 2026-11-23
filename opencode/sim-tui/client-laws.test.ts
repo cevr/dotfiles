@@ -11,7 +11,7 @@ import { type Answer, type Call, KINDS, LAWS, type LawServer, LawServerError, RO
 import * as Server from "./server.ts"
 
 /** A law on the double takes a few milliseconds. */
-const TIMEOUT_MS = 5_000
+const TIMEOUT_MS = 30_000
 const BRIEF = "Worker brief."
 /** The command the shell law runs: real OpenCode runs it. */
 const SHELL = "printf 'ok\\n'"

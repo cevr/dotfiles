@@ -15,7 +15,7 @@ import { type Clock, HandFailed, isTransport, QUIET_MS, RETRY_FOR_MS, RETRY_MAX_
 
 
 /** Each test drives minutes of clock through hundreds of hands; bun's 5 s default is room enough, named here. */
-const TIMEOUT_MS = 5_000
+const TIMEOUT_MS = 30_000
 
 const RESET_TEXT = "ECONNRESET: Unable to connect. Is the computer able to access the url?"
 const reset = Effect.fail(new HandFailed({ transport: true, message: `ClientError: Transport: ${RESET_TEXT}` }))

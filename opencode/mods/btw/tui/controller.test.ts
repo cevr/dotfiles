@@ -50,7 +50,7 @@ const bench = (host: World) =>
   )
 
 /** Hang guard while waiting for the fixture's read/refresh events. */
-const HANG_GUARD_MS = 120_000
+const HANG_GUARD_MS = 30_000
 
 describe("ask", () => {
   test("holds the question as pending until the fork's reading lands, which shows it unanswered", async () => {

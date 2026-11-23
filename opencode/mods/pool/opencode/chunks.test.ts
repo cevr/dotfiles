@@ -16,7 +16,7 @@ import * as Records from "./records.ts"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
 
 /** Hang guard for the runner, separate from the pool's modeled time. */
-const HANG_GUARD_MS = 120_000
+const HANG_GUARD_MS = 30_000
 const DAY = 24 * 3_600_000
 const NOW = 30 * DAY
 const ANTHROPIC = PoolId.make("anthropic")

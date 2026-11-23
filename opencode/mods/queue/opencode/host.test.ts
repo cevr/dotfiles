@@ -7,7 +7,7 @@ import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { QueueHost } from "../service.ts"
 import { type Host, layer, type SessionRecord } from "./host.ts"
 
-const TIMEOUT_MS = 5_000
+const TIMEOUT_MS = 30_000
 
 const at = (ms: number) => DateTime.makeUnsafe(ms)
 

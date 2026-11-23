@@ -21,7 +21,7 @@ import { effectTest } from "../../sim-tui/effect-test.ts"
 import { parse, Refused, Request, run, type Screen, viewer } from "./show.ts"
 
 /** Hang guard for the in-memory viewer fixture. */
-const HANG_GUARD_MS = 120_000
+const HANG_GUARD_MS = 30_000
 const PAGE = "http://127.0.0.1:8765/page.html"
 
 const refusalOf = <A>(exit: Exit.Exit<A, unknown>) => Option.map(Option.filter(Exit.findErrorOption(exit), Schema.is(Refused)), (refused) => refused.code)

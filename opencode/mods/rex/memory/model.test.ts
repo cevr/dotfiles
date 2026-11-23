@@ -17,7 +17,7 @@ import { arrange, LABEL } from "../showcase.ts"
 import { Browse, Feed, Picture, Sim, type Spooled, Url } from "../spool.ts"
 
 /** Hang guard for the generated in-memory cases. */
-const HANG_GUARD_MS = 120_000
+const HANG_GUARD_MS = 30_000
 
 /** A seeded generator of numbers in [0, 1) (mulberry32). */
 const drawer = (seed: number) => {

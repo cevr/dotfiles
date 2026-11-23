@@ -46,14 +46,14 @@ const standIn = (file: string) => {
 const auth = (password: string) => ({ authorization: `Basic ${btoa(`opencode:${password}`)}` })
 
 /** Hang guard for the loopback server, not a boot-latency requirement. */
-const HANG_GUARD_MS = 120_000
+const HANG_GUARD_MS = 30_000
 
 describe("a test's service is ready once it can serve, not once its file is written", () => {
   test("while the service boots it waits, and the service it returns answers a call", async () => {
     const file = join(root, "booting.json")
     const service = standIn(file)
     const progress = { polling: false, released: false, completed: false }
-    const pending = ready(file, () => "stand-in", 60_000, () => {
+    const pending = ready(file, () => "stand-in", HANG_GUARD_MS, () => {
       progress.polling = true
       return waitUntil("the test releasing the next readiness probe", () => progress.released)
     })
@@ -75,7 +75,7 @@ describe("a test's service is ready once it can serve, not once its file is writ
     const file = join(root, "failed.json")
     standIn(file).boot("failed")
     const retries: Array<boolean> = []
-    const pending = ready(file, () => "stand-in", 60_000, () => {
+    const pending = ready(file, () => "stand-in", HANG_GUARD_MS, () => {
       retries.push(true)
       return waitUntil("advance the retry after a failed boot", () => true)
     })

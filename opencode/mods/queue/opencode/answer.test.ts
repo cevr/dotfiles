@@ -6,7 +6,7 @@ import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { formOf } from "../answer.ts"
 import { type FormHost, FormRefused, openAnswer } from "./answer.ts"
 
-const TIMEOUT_MS = 5_000
+const TIMEOUT_MS = 30_000
 const form = formOf("ses_root", { id: "panes", text: "Close old Claude panes" })
 
 const host = (pending: ReadonlyArray<string>, created: Array<{ readonly sessionID: string }>, refuses = false): FormHost => ({

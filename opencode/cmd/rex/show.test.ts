@@ -19,7 +19,7 @@ import { effectTest } from "../../sim-tui/effect-test.ts"
 import { parse, Refused, Request, run, type Screen, viewer } from "./show.ts"
 
 /** Hang guard for the test runner; the tests assert the visible outcomes. */
-const HANG_GUARD_MS = 120_000
+const HANG_GUARD_MS = 30_000
 const screen: Screen = { size: Effect.succeed({ cols: 80, rows: 24 }), cell: () => Effect.succeed({ width: 12, height: 38 }), display: () => Effect.void, input: Effect.succeed(Effect.never) }
 const settings = { rex: Option.some("rex"), leaf: Option.none<string>(), spool: "/state/rex-show", self: ["/opt/bun", "/dotfiles/rex/show.ts"] }
 const SHOW = fileURLToPath(new URL("./show.ts", import.meta.url))

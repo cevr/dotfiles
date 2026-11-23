@@ -12,7 +12,7 @@ import { watch } from "./server.ts"
 
 const OPTIONS = { thresholdMs: 300, tickMs: 20, windowMs: 5_000, captureMs: 100, cooldownMs: 60_000, keep: 5, intervalUs: 1_000, turnMs: 50 }
 // Only a hang guard. No scheduler or inspector operation has a performance deadline here.
-const HANG_GUARD_MS = 120_000
+const HANG_GUARD_MS = 45_000
 
 function holdTheSeamTestLoop() {
   // Give the real inspector JavaScript to sample, regardless of time spent descheduled.

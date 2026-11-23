@@ -15,7 +15,7 @@ const alive = (pid: number) => {
 
 import { observed } from "../tests/owned.ts"
 
-const HANG_GUARD_MS = 120_000
+const HANG_GUARD_MS = 30_000
 
 const until = async (done: () => boolean, ms = HANG_GUARD_MS) => {
   const deadline = Date.now() + ms

@@ -9,7 +9,7 @@ import { Simulators } from "../service.ts"
 import * as ProcessSimulators from "./simulators.ts"
 
 /** Hang guard for the fake simulator processes. */
-const HANG_GUARD_MS = 120_000
+const HANG_GUARD_MS = 30_000
 const LISTED = `{
   "devices" : {
     "com.apple.CoreSimulator.SimRuntime.iOS-27-0" : [

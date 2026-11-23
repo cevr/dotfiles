@@ -221,14 +221,18 @@ describe.skipIf(!fork)("the update notice", () => {
       const { OpenCode } = (await import(join(fork ?? "", "packages/client/src/promise/index.ts"))) as ClientModule
       const session = await OpenCode.make({ baseUrl: service.url, headers: auth(service) }).session.create({ location: { directory: work }, title })
 
+      // Give the first connection a visible reading. The next connection must replace it.
+      writeUpstream(1, false)
       const { host, screen } = await tui("same", service.password, "-s", session.id)
       try {
         await until(screen, (text) => text.includes(title), (last) => `the TUI never showed the session:\n${last}`, 60_000)
-        // The TUI has read the service's build, and it is its own, and upstream has nothing past it: no notice.
-        writeUpstream(1, false)
-        await until(screen, (text) => infoReads > 0 && text.includes("upstream +1"), () => "the TUI never rendered its first build reading", 60_000)
+        await until(screen, (text) => streams.size > 0 && infoReads > 0 && text.includes("upstream +1"), (last) => `the TUI never rendered its first build reading:\n${last}`, 30_000)
+        // Prime rereads the file on server.connected, not when the file changes.
+        drop()
         writeUpstream(0, false)
-        const same = await until(screen, (text) => !text.includes("upstream"), () => "the TUI never cleared its upstream badge", 60_000)
+        const beforeReconnect = infoReads
+        held = false
+        const same = await until(screen, (text) => infoReads > beforeReconnect && text.includes(title) && !text.includes("upstream"), (last) => `the TUI never cleared its upstream badge on reconnect:\n${last}`, 30_000)
         expect(same).not.toContain("update available")
         expect(same).not.toContain("upstream")
 
@@ -256,6 +260,7 @@ describe.skipIf(!fork)("the update notice", () => {
         expect(shown).not.toContain("Ctrl+O to")
         expect(shown).toContain(title)
       } finally {
+        held = false
         await host.stop()
       }
     }),

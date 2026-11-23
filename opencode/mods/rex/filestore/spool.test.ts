@@ -12,7 +12,7 @@ import { empty, Picture } from "../spool.ts"
 import * as FileSpool from "./spool.ts"
 
 /** Hang guard for the test runner. */
-const HANG_GUARD_MS = 120_000
+const HANG_GUARD_MS = 30_000
 const SESSION = "session:01a"
 
 effectTest(
