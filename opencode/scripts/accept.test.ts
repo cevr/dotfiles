@@ -16,7 +16,7 @@ import { waitUntil } from "../tests/wait.ts"
 import { FIXED_SEEDS, isSerial, isSimSuite, longSwarmDue, plan, poolWidth, reachedSuites, replayLine, requestedWidth, scenariosOf, swarmBox, swarmCut, swarmFirst, swarmRead, swarmSlot, TIMED_RUNS, timedCounts, timedFilter, timingSigns, unjudgedRead } from "./accept-plan.ts"
 import { offUntil, parseClosing, readLedger, SLOW_DEEP, tierOf } from "./accept-ledger.ts"
 import { table } from "./leaks.ts"
-import { acceptanceTests, acceptReach, codeOf, load, packageOf, reach } from "./reach.ts"
+import { acceptanceTests, acceptReach, codeOf, declaredInputs, load, packageOf, reach } from "./reach.ts"
 
 const ROOT = process.cwd()
 
@@ -266,16 +266,17 @@ describe("bun run accept", () => {
 const ledgerAt = (file: string) => readLedger({ read: (each) => Option.liftPredicate(each, existsSync).pipe(Option.map((found) => readFileSync(found, "utf8"))), write: () => {}, rename: () => {} }, file).ledger
 
 describe("the acceptance tiers over the real tree", () => {
-  test("each file's acceptance reach is its reach less only in-package unit tests, benches and Markdown", async () => {
+  test("acceptance keeps declared inputs even when import reach would omit them", async () => {
     const workspace = await load()
     const memo = new Map<string, ReadonlyArray<string>>()
     const wrong = acceptanceTests(workspace).flatMap((file) => {
       const all = reach(workspace, [file], memo)
+      const declared = new Set(declaredInputs(workspace, file))
       const inputs = acceptReach(workspace, file, memo)
-      const extra = [...inputs].filter((each) => !all.has(each))
-      const dropped = [...all].filter((each) => !inputs.has(each))
-      const unexpected = dropped.filter((each) => !packageOf(each) || !/(\.test\.tsx?|\.bench\.ts|\.md)$/.test(each))
-      return [...extra.map((each) => `${file}: ${each} is not in its reach`), ...unexpected.map((each) => `${file}: ${each} dropped`)]
+      const expected = new Set([...declared, ...[...all].filter((each) => !packageOf(each) || !/(\.test\.tsx?|\.bench\.ts|\.md)$/.test(each))])
+      const extra = [...inputs].filter((each) => !expected.has(each))
+      const dropped = [...expected].filter((each) => !inputs.has(each))
+      return [...extra.map((each) => `${file}: ${each} is not an input`), ...dropped.map((each) => `${file}: ${each} dropped`)]
     })
     expect(wrong).toEqual([])
   })

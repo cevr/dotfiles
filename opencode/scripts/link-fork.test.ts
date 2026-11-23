@@ -289,7 +289,9 @@ describe("the scripts that take the fork besides link-fork", () => {
   test("accept removes link-fork's old stray before its check, then reaches link-fork, whose refusal it names, before it lists any test", () => {
     stray()
     // This checkout's anchor, a folder where a link belongs: link-fork refuses before it touches any package.
-    mkdirSync(join(scratch, "state/opencode-fork", relative(homedir(), OPENCODE), "modules"), { recursive: true })
+    const homeRelative = relative(homedir(), OPENCODE)
+    const anchor = (homeRelative.startsWith("..") && OPENCODE.replace(/^[/\\]+/, "")) || homeRelative
+    mkdirSync(join(scratch, "state/opencode-fork", anchor, "modules"), { recursive: true })
     const { code, out, err } = script("accept.ts", "--list")
     expect({ code, out, stray: strayLeft() }).toEqual({ code: 1, out: "", stray: false })
     expect(err).toContain("accept: link-fork failed:")
