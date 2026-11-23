@@ -463,6 +463,7 @@ const BOUNDED_PROCESS = new Set([
   "tests/scratch-child.ts:forkServiceCommand",
   "tests/scratch-child.ts:forkProcessCommand",
   "tests/scratch-child.ts:forkFixture",
+  "tests/scratch-child.ts:forkTuiFixture",
   "tests/scratch-child.ts:spawnForkFixture",
   "tests/fork-launcher.ts:stageForkLauncher",
   "tests/fork-launcher.ts:spawnForkLauncher",

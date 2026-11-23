@@ -324,7 +324,6 @@ export const hostCli = (existing: Json) => ({
  */
 export const hostServer = (existing: Json): Json => ({ ...retired(existing), autoupdate: false })
 
-const readJson = (path: string): Json => (existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as Json) : {})
 /** A config's text, as daily writes every JSON file. */
 export const jsonText = (value: Json): string => `${JSON.stringify(value, null, 2)}\n`
 const writeJson = (path: string, value: Json) => {
@@ -333,11 +332,12 @@ const writeJson = (path: string, value: Json) => {
 }
 
 /** Writes `text` at `path` only when the file does not hold it already: a TUI and the service watch these files. */
-const writeChanged = (path: string, text: string) => {
-  if (existsSync(path) && readFileSync(path, "utf8") === text) return
+const writeChangedFrom = (path: string, text: string, read: (path: string) => Option.Option<string>) => {
+  if (Option.exists(read(path), (before) => before === text)) return
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, text, { mode: 0o600 })
 }
+const readTextIfPresent = (path: string) => Option.map(Option.liftPredicate(path, existsSync), (file) => readFileSync(file, "utf8"))
 
 /** Whether the TUI config lacks a default `hostCli` adds: only then is it written, so a file that has both is never rewritten, nor its text reformatted. */
 export const lacksCliDefault = (existing: Json): boolean => !Object.hasOwn(record(existing.theme), "name") || !Object.hasOwn(record(existing.tabs), "scope")
@@ -351,15 +351,20 @@ export const lacksCliDefault = (existing: Json): boolean => !Object.hasOwn(recor
  * added. Both configs are read before anything is written, so one that does not read stops daily with nothing
  * changed. The role models and every plugin entry are left as they are: the build's tree carries them.
  */
-export const writeSettings = (home: string) => {
+export const writeSettingsFrom = (home: string, read: (path: string) => Option.Option<string>, theme: () => string) => {
   const config = join(home, ".config/opencode")
-  const server = hostServer(readJson(join(config, "opencode.json")))
-  const cli = readJson(join(config, "cli.json"))
-  writeChanged(join(residentDir(home), "opencode.json"), jsonText(residentConfig))
-  writeChanged(join(config, "opencode.json"), jsonText(server))
+  const json = (file: string): Json => {
+    const text = read(join(config, file))
+    return Option.match(text, { onNone: () => ({}), onSome: (source) => JSON.parse(source) as Json })
+  }
+  const server = hostServer(json("opencode.json"))
+  const cli = json("cli.json")
+  writeChangedFrom(join(residentDir(home), "opencode.json"), jsonText(residentConfig), read)
+  writeChangedFrom(join(config, "opencode.json"), jsonText(server), read)
   if (lacksCliDefault(cli)) writeJson(join(config, "cli.json"), hostCli(cli))
-  writeChanged(join(config, "themes/prime.json"), readFileSync(THEME, "utf8"))
+  writeChangedFrom(join(config, "themes/prime.json"), theme(), read)
 }
+export const writeSettings = (home: string) => writeSettingsFrom(home, readTextIfPresent, () => readFileSync(THEME, "utf8"))
 
 /**
  * Moves prime-look to origin (`sync`) and, when it moved and is checked out there (`head`), installs what

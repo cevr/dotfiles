@@ -33,6 +33,7 @@ const loaderVariable = /^(?:BASH|BUN|DYLD|ENV|LD_|NODE|SHELL|ZDOTDIR)/
 const bunStatePaths = ["HOME", "TMPDIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]
 const fixtureFlag = (name: string, value: string) => {
   if (name === "OPENCODE_FLAGS") return /^(?:-?[\w]+)(?:,-?[\w]+)*$/.test(value)
+  if (name === "GAMUT_OWNER") return /^[1-9]\d{0,9}$/.test(value) && Number(value) > 1
   return ["OPENCODE_DISABLE_MODELS_FETCH", "OPENCODE_DISABLE_FREE_MODELS"].includes(name) && value === "1"
 }
 
@@ -80,12 +81,12 @@ export const checkoutBun = (entry: string, inputs: FixtureEnvironment) => {
 
 /** A fixed local Bun entry, with each generated, pinned and checkout input checked before launch. */
 export const checkoutBunCommand = (
-  entry: string, inputs: FixtureEnvironment, lifecycle: Pick<ChildProcess.CommandOptions, "detached" | "stderr" | "forceKillAfter"> = {},
+  entry: string, inputs: FixtureEnvironment, lifecycle: Pick<ChildProcess.CommandOptions, "detached" | "stdout" | "stderr" | "forceKillAfter"> = {},
 ) => {
   const { argv: [bun, ...args], ...options } = checkoutBun(entry, inputs)
   return ChildProcess.make(bun, args, {
     ...options, extendEnv: false, stdin: "ignore", forceKillAfter: lifecycle.forceKillAfter || "3 seconds",
-    detached: lifecycle.detached, stderr: lifecycle.stderr,
+    detached: lifecycle.detached, stdout: lifecycle.stdout, stderr: lifecycle.stderr,
   })
 }
 
@@ -151,6 +152,7 @@ const servicePathVariables = new Set([
 const serviceValues = new Set([
   "PATH", "TERM", "HERDR_ENV", "OPENCODE_PASSWORD", "OPENCODE_DISABLE_FREE_MODELS", "OPENCODE_DISABLE_MODELS_FETCH",
   "OPENCODE_DISABLE_FILEWATCHER", "OPENCODE_FLAGS", "BUN_OPTIONS", "OPENCODE_PRINT_LOGS", "ANTHROPIC_BASE_URL",
+  "BUN_RUNTIME_TRANSPILER_CACHE_PATH", "OPENCODE_CLI_CONFIG_CONTENT",
 ])
 const exactArgs = (given: ReadonlyArray<string>, ...expected: ReadonlyArray<string>) =>
   given.length === expected.length && given.every((arg, index) => arg === expected[index])
@@ -174,14 +176,22 @@ const forkArgsAllowed = (args: ReadonlyArray<string>) => {
   }
 }
 
-/** A fixed CLI mode from the pinned external fork with scratch state and a checked preload. */
-export const forkFixture = (
-  fork: string, cwd: string, args: ReadonlyArray<string>, env: Readonly<Record<string, string>>,
-) => {
-  if (!forkArgsAllowed(args)) return reject("unsupported external fork fixture command")
-  const entry = externalInput(resolve(fork, "packages/cli/src/index.ts"))
-  const preload = externalInput(resolve(fork, "packages/tui/node_modules/@opentui/solid/scripts/preload.js"))
-  if (env.BUN_OPTIONS !== `--conditions=browser --preload=${preload}`) return reject("unexpected Bun fixture options")
+const forkVersionOption = (version: string) => {
+  if (!/^\d+\.\d+\.\d+-prime\.[a-f0-9]{8}\.[a-f0-9]{8}$/.test(version)) return reject("invalid fixture version")
+  return `--define=OPENCODE_VERSION:"${version}"`
+}
+
+const checkForkBunOptions = (env: Readonly<Record<string, string>>, preload: string, version?: string) => {
+  const option = (value?: string) => {
+    if (value) return ` ${forkVersionOption(value)}`
+    return ""
+  }
+  if (env.BUN_OPTIONS !== `--conditions=browser --preload=${preload}${option(version)}` ||
+      (Object.hasOwn(env, "BUN_RUNTIME_TRANSPILER_CACHE_PATH") && env.BUN_RUNTIME_TRANSPILER_CACHE_PATH !== "0"))
+    return reject("unexpected Bun fixture options")
+}
+
+const checkForkEnvironment = (env: Readonly<Record<string, string>>) => {
   for (const variable of ["HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "OPENCODE_DB"]) {
     const path = env[variable]
     if (!path) return reject(`missing fork fixture environment: ${variable}`)
@@ -193,12 +203,37 @@ export const forkFixture = (
   }
   if (env.ANTHROPIC_BASE_URL && !loopback(env.ANTHROPIC_BASE_URL))
     return reject("fixture API must be on loopback")
+  if (Object.hasOwn(env, "OPENCODE_CLI_CONFIG_CONTENT") && !/^\s*\{\s*"plugins"\s*:\s*\[\s*\]\s*\}\s*$/.test(env.OPENCODE_CLI_CONFIG_CONTENT || ""))
+    return reject("only a plugin-free CLI fixture may be supplied as inline config")
+}
+
+/** A fixed CLI mode from the pinned external fork with scratch state and a checked preload. */
+export const forkFixture = (
+  fork: string, cwd: string, args: ReadonlyArray<string>, env: Readonly<Record<string, string>>,
+  version?: string,
+) => {
+  if (!forkArgsAllowed(args)) return reject("unsupported external fork fixture command")
+  const entry = externalInput(resolve(fork, "packages/cli/src/index.ts"))
+  const preload = externalInput(resolve(fork, "packages/tui/node_modules/@opentui/solid/scripts/preload.js"))
+  checkForkBunOptions(env, preload, version)
+  checkForkEnvironment(env)
   const path = resolve(localTestProcess.execPath, "..")
   if (containsCheckout(path) || containsCheckout(localTestPaths.realpathSync(path))) return reject("checkout directory on the fixture PATH")
   return {
     argv: [localTestProcess.execPath, "--no-env-file", entry, ...args] as const, cwd: scratchInput(cwd),
     env: { TMPDIR: scratchRoot(), ...env, PATH: `${path}:${searchPath()}` },
   }
+}
+
+/** Interactive fork entry, with only the default screen or one session ID allowed. */
+export const forkTuiFixture = (
+  fork: string, cwd: string, env: Readonly<Record<string, string>>,
+  move?: { readonly installed: string; readonly own: string; readonly session: string },
+) => {
+  const { argv: [bun, noEnv, entry], ...options } = forkFixture(fork, cwd, ["service", "start"], env, move?.installed)
+  if (!move) return { ...options, command: [bun, noEnv, entry] as const }
+  if (!/^ses_[\w-]+$/.test(move.session)) return reject("invalid fork fixture session")
+  return { ...options, command: [bun, noEnv, forkVersionOption(move.own), entry, "-s", move.session] as const }
 }
 
 export const forkProcessCommand = (
@@ -214,14 +249,14 @@ export const forkServiceCommand = (...input: Parameters<typeof forkFixture>) => 
 
 export const spawnForkFixture = (...input: Parameters<typeof forkFixture>) => {
   const { argv, ...options } = forkFixture(...input)
-  return spawn(argv, { ...options, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+  return spawn([...argv], { ...options, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
 }
 
 export const importForkCredentials = (
   fork: string, cwd: string, env: Readonly<Record<string, string>>, stdin: Uint8Array,
 ) => {
   const { argv, ...options } = forkFixture(fork, cwd, ["auth", "import", "--standalone"], env)
-  return spawnSync(argv, { ...options, stdin, stdout: "pipe", stderr: "pipe" })
+  return spawnSync([...argv], { ...options, stdin, stdout: "pipe", stderr: "pipe" })
 }
 
 const checkGitArg = (arg: string, cwd: string, pathOperand = false) => {

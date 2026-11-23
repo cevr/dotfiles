@@ -69,5 +69,5 @@ export const run = (argv: ReadonlyArray<string>, cwd: string, env: Readonly<Reco
   return capture(ChildProcess.make(command, args, { cwd, env, extendEnv: false, stdin: "ignore", forceKillAfter: "3 seconds" }))
 }
 
-export const runForkService = (fork: string, cwd: string, args: ReadonlyArray<string>, env: Readonly<Record<string, string>>) =>
-  capture(forkServiceCommand(fork, cwd, args, env))
+export const runForkService = (fork: string, cwd: string, args: ReadonlyArray<string>, env: Readonly<Record<string, string>>, version?: string) =>
+  capture(forkServiceCommand(fork, cwd, args, env, version))
