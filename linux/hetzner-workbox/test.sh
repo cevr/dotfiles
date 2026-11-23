@@ -226,11 +226,13 @@ if [[ ${1:-} == --slices-reboot ]]; then
             fail "after the reboot ergo.slice has cpu.weight $(cat "$rmanager/ergo.slice/cpu.weight"), cpu.max $(cat "$rmanager/ergo.slice/cpu.max")"
         wbytes=$(awk '{ for (i = 2; i <= NF; i++) if ($i ~ /^wbytes=/) { sub(/wbytes=/, "", $i); s += $i } } END { print s + 0 }' "$rmanager/ergo.slice/io.stat" 2>/dev/null || echo 0)
         ((wbytes >= 8 << 20)) || fail "after the reboot ergo.slice counts $wbytes bytes written: the io delegation is not in effect"
+        # systemd can garbage-collect the inactive slice once its last scope is stopped.
+        fragment=$(ructl systemctl --user show -p FragmentPath --value ergo.slice)
+        [[ $fragment == /etc/systemd/user/ergo.slice ]] || fail "ergo.slice came from '$fragment', not /etc/systemd/user"
         ructl systemctl --user stop hbr-place.scope
         wait "$job" 2>/dev/null || true
         [[ $(ructl systemctl --user show -p CPUWeight --value personal.slice) == 100 ]] ||
             fail "personal.slice CPUWeight after the reboot: $(ructl systemctl --user show -p CPUWeight --value personal.slice)"
-        [[ $(ructl systemctl --user show -p FragmentPath --value ergo.slice) == /etc/systemd/user/ergo.slice ]] || fail "ergo.slice is not read from /etc/systemd/user"
         pass "after a real reboot: ergo.slice cpu.weight 20, cpu.max $quota_pct% from its unit file, io counted ($wbytes bytes) with no manager restart; the runtime-only CPUWeight=77 on personal.slice is gone (100), as the exe box lost ergo.slice's"
         ructl systemctl --user is-active --quiet workbox-pressure.timer || fail "the pressure timer is not active after boot"
         pressure_samples() {
