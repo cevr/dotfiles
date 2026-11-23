@@ -7,6 +7,7 @@
 import { Context, type Effect, Schema } from "effect"
 import type { Job, Schedule } from "./backstop.ts"
 import type { JobRecord, JobSpec, Launched } from "./job.ts"
+import type { Delivery } from "./job-event.ts"
 import type { Latch, Mark, Opened } from "./latch.ts"
 import type { Letter } from "./message.ts"
 import type { Check, Entry, Notice } from "./wake.ts"
@@ -175,8 +176,28 @@ export class Runner extends Context.Service<
     readonly unwatch: (id: string) => Effect.Effect<void>
     /** The jobs watched now: one per live job of this server's, none once they are all delivered. */
     readonly watching: Effect.Effect<ReadonlyArray<string>>
+    /**
+     * Retire a job no runner claimed: its launch slot written with the retirement, so a runner that comes after finds
+     * it taken and runs nothing, and the job reads `lost` (`never-started`). Whether this call retired it: false when a
+     * runner claimed it first, or it was retired before.
+     */
+    readonly retire: (id: string) => Effect.Effect<boolean>
+    /**
+     * Write slot `version + 1` of the job's delivery record, only while `version` is its newest (0: none yet): whether
+     * this call wrote it. A writer that loses does nothing more. A `delivered` slot takes the job off `owed`.
+     */
+    readonly advance: (id: string, version: number, next: Delivery) => Effect.Effect<boolean>
+    /** The managed jobs of `directory` whose delivery is not yet final: running, or ended and not yet delivered. */
+    readonly owed: (directory: string) => Effect.Effect<ReadonlyArray<string>>
   }
 >()("dotfiles-opencode/wake/Runner") {}
+
+/**
+ * A host call as its session records it: `committed` (its answer is in the session), `failed` (it ended in an error,
+ * or was stopped: its answer never reached the session), `running` (or the session could not be read now), `gone` (no
+ * such session), or `unknown` (the session's context no longer holds it, or there is no way to ask).
+ */
+export type CallAnswer = "committed" | "failed" | "running" | "gone" | "unknown"
 
 /** Word that a session's wakes changed, so whatever shows them reads again. */
 export class Changes extends Context.Service<Changes, { readonly changed: (sessionID: string) => Effect.Effect<void> }>()(

@@ -13,10 +13,10 @@
 //   and that one letter makes one turn.
 // - 22u B1 as a job: the runner's call lands inside the owner's turn, after
 //   its inbox was read; the letter still makes a turn once that one ends.
-// - T1 as a job: the plugin's own storage write of the fire dies; the
+// - T1 as a job: the write of the job record's delivery claim dies; the
 //   runner's call is retried and the sweep reconciles, one letter. The write
-//   of its delivery dies after the session took the letter: the resend under
-//   the same id adds no message and no turn.
+//   that marks it delivered dies after the session took the letter: after a
+//   reload the resend under the same id adds no message and no turn.
 // - A call lost across a reload, an outage and two locations starting: the
 //   start or the sweep delivers it, within RECOVER_MS.
 // - The backstop off (no runner's call): the job's watch announces the end at
@@ -217,7 +217,7 @@ seeded("a call that lands inside the owner's turn after its inbox was read (22u 
   }),
 )
 
-seeded("T1 as a job: a fire write that dies and a delivery write that dies after the session took the letter each end with one letter and one turn, from the plugin's own writes", ({ seed, expect }) =>
+seeded("T1 as a job: a claim write that dies and a delivered write that dies after the session took the letter each end with one letter and one turn, from the record's own writes", ({ seed, expect }) =>
   Effect.gen(function* () {
     const runner = MemoryRunner.empty()
     const world = World.make({ seed, script: reading("T1") })
@@ -225,11 +225,11 @@ seeded("T1 as a job: a fire write that dies and a delivery write that dies after
     const session = yield* world.session(WORK)
     const start = (note: string) => world.tool(session, "job", { command: `make ${note}`, note }).pipe(Effect.map((answer) => Option.getOrElse(jobIdOf(answer.output), () => "missing")))
 
-    // The fire's own write dies: the call fails, the entry is as it was; the runner's retried call delivers.
+    // The claim's own write dies: the call fails, the record is as it was; the runner's retried call delivers.
     const first = yield* start("first")
     MemoryRunner.running(runner, first, world.now())
     MemoryRunner.ended(runner, first, 0, world.now())
-    world.faults.failWrites(WAKES.id, 1)
+    MemoryRunner.failWrites(runner, 1)
     yield* doorbell(world, first)
     expect(lettersIn(world, session, first)).toHaveLength(0)
     yield* doorbell(world, first)
@@ -239,17 +239,17 @@ seeded("T1 as a job: a fire write that dies and a delivery write that dies after
     const second = yield* start("second")
     MemoryRunner.running(runner, second, world.now())
     MemoryRunner.ended(runner, second, 1, world.now())
-    world.faults.failWrites(WAKES.id, 1)
+    MemoryRunner.failWrites(runner, 1)
     yield* doorbell(world, second)
     expect(lettersIn(world, session, second)).toHaveLength(0)
     yield* world.advance(RECOVER_MS)
     expect(lettersIn(world, session, second)).toHaveLength(1)
 
-    // The fire is written and the session takes the letter; the write of its delivery dies; then a reload.
+    // The claim is written and the session takes the letter; the write marking it delivered dies; then a reload.
     const third = yield* start("third")
     MemoryRunner.running(runner, third, world.now())
     MemoryRunner.ended(runner, third, 2, world.now())
-    world.faults.failWrites(WAKES.id, 1, 1)
+    MemoryRunner.failWrites(runner, 1, 1)
     yield* doorbell(world, third)
     expect(lettersIn(world, session, third)).toHaveLength(1)
     yield* world.restart

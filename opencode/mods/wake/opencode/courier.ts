@@ -27,10 +27,10 @@
 //   the metadata whole, so a mark is merged into what the session has; the TUI
 //   reads the change from `session.metadata.updated`.
 import { Model, type Plugin } from "@opencode/plugin/effect"
-import { Clock, Effect, Layer, Random } from "effect"
+import { Clock, Effect, Layer, Option, Random, Schema } from "effect"
 import { MARK_KEY, type Mark } from "../latch.ts"
 import type { Letter } from "../message.ts"
-import { type Child, Courier, DeliveryRefused, type Start } from "../service.ts"
+import { type CallAnswer, type Child, Courier, DeliveryRefused, type Start } from "../service.ts"
 
 /** A synthetic message, as the host's `session.synthetic` takes it. */
 export interface Synthetic {
@@ -172,6 +172,30 @@ export const layer = (host: Host, mintMessage: Effect.Effect<string> = minted("m
       ),
   })
 
+/** A message of a session's context, as far as a tool call goes: an assistant message holds its calls as content parts. */
+const Message = Schema.Struct({ content: Schema.Array(Schema.Unknown) })
+/** A tool call's part (session-message.ts `AssistantTool`): its id is the host's call id; its state's status says how it went. */
+const ToolPart = Schema.Struct({ type: Schema.Literal("tool"), id: Schema.String, state: Schema.Struct({ status: Schema.String }) })
+
+/**
+ * How the host's call `call` went, read from its session's context (`session.context`: the messages from the newest
+ * compaction on): its part `completed` is committed, `error` failed, any other state running. No such part is
+ * `unknown`; no such session `gone`; a context that could not be read now reads running, and is asked again.
+ */
+export const callAnswer =
+  (context: (sessionID: string) => Effect.Effect<ReadonlyArray<unknown>, unknown>) =>
+  (sessionID: string, call: string): Effect.Effect<CallAnswer> =>
+    context(sessionID).pipe(
+      Effect.map((messages): CallAnswer => {
+        const parts = messages.flatMap((message) => Option.match(Schema.decodeUnknownOption(Message)(message), { onNone: () => [], onSome: (found) => found.content }))
+        const part = parts.flatMap((each) => Option.toArray(Schema.decodeUnknownOption(ToolPart)(each))).findLast((each) => each.id === call)
+        if (part === undefined) return "unknown"
+        if (part.state.status === "completed") return "committed"
+        return part.state.status === "error" ? "failed" : "running"
+      }),
+      Effect.catch((cause) => Effect.succeed<CallAnswer>(notFound(cause) ? "gone" : "running")),
+    )
+
 type Ids = Parameters<Plugin.Context["session"]["synthetic"]>[0]
 type Create = NonNullable<Parameters<Plugin.Context["session"]["create"]>[0]>
 type Directory = NonNullable<Create["location"]>["directory"]
@@ -198,3 +222,6 @@ export const fromContext = (ctx: Plugin.Context) =>
     get: (sessionID) => ctx.session.get({ sessionID: sessionID as Ids["sessionID"] }),
     update: (input) => ctx.session.update({ sessionID: input.sessionID as Ids["sessionID"], metadata: input.metadata as Metadata }),
   })
+
+/** How a host call went, through the plugin context's `session.context`. */
+export const answeredOf = (ctx: Plugin.Context) => callAnswer((sessionID) => ctx.session.context({ sessionID: sessionID as Ids["sessionID"] }))

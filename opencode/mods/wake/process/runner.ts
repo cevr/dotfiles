@@ -10,16 +10,16 @@
 // signals only the claim's own runner, never a pid read alone. `watch` keeps
 // one non-recursive watch on a live job's own directory and announces its exit
 // file; the wakes close it once the end is delivered.
-import { chmodSync, existsSync, type FSWatcher, mkdirSync, readFileSync, watch, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, type FSWatcher, mkdirSync, readdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs"
 import path from "node:path"
 import { Effect, Layer, Match, Option, Schema } from "effect"
 import type { Descriptor } from "../backstop.ts"
 import { carried } from "../backstop.ts"
-import { JobExit, type JobRecord, JobSpec, type Launched, type Run, unitOf } from "../job.ts"
+import { JobExit, type JobRecord, JobSpec, type Launched, NEVER_STARTED, type Run, unitOf } from "../job.ts"
 import { type Exec } from "../cron/backstop.ts"
 import { JobRefused, Runner } from "../service.ts"
-import { RunnerClaim } from "../job-event.ts"
-import { FILES, type JobFile, processStart, writeAtomic } from "./supervise.ts"
+import { Delivery, isJobID, LaunchClaim, type Retired, RunnerClaim, type Slot } from "../job-event.ts"
+import { type Barrier, FILES, type JobFile, processStart, writeAtomic, writeDurable } from "./supervise.ts"
 
 export interface Config {
   /** Where each job's directory is kept. */
@@ -74,10 +74,13 @@ export const runOf = (dir: string): Run => {
   return Option.match(readJson(JobExit, path.join(dir, FILES.exit)), {
     onSome: ended,
     onNone: () =>
-      Option.match(readJson(RunnerClaim, path.join(dir, FILES.runner)), {
+      Option.match(readJson(LaunchClaim, path.join(dir, FILES.runner)), {
         onNone: (): Run => ({ state: "starting" }),
-        onSome: (runner): Run =>
-          Match.value(claimed(runner)).pipe(
+        onSome: (slot): Run => {
+          // Retired before any runner claimed it: it never started, and no runner runs it after.
+          if ("retiredAt" in slot) return NEVER_STARTED
+          const runner = slot
+          return Match.value(claimed(runner)).pipe(
             Match.when(true, (): Run => ({ state: "running", startedAt: runner.startedAt })),
             // The exit may have landed between the two reads.
             Match.orElse(() =>
@@ -86,10 +89,36 @@ export const runOf = (dir: string): Run => {
                 onNone: (): Run => ({ state: "lost", startedAt: runner.startedAt, why: "its runner is gone without recording an exit (the machine restarted, or it was killed)", cause: "runner-gone" }),
               }),
             ),
-          ),
+          )
+        },
       }),
   })
 }
+
+/** A delivery slot's file: `delivery.<n>.json`. */
+const SLOT = /^delivery\.([1-9][0-9]*)\.json$/
+
+/** The newest slot of the delivery record in `dir`: the highest-numbered whole slot (a `*.tmp` is never one). */
+export const slotOf = (dir: string): Option.Option<Slot> => {
+  const versions = Option.getOrElse(Option.liftThrowable(() => readdirSync(dir))(), (): ReadonlyArray<string> => []).flatMap((name) =>
+    Option.toArray(Option.map(Option.fromNullishOr(SLOT.exec(name)), (found) => Number(found[1]))),
+  )
+  const version = Math.max(0, ...versions)
+  return Option.map(readJson(Delivery, path.join(dir, `delivery.${version}.json`)), (delivery) => ({ version, delivery }))
+}
+
+/** The directory the managed jobs not yet delivered are listed in, one empty file per job: `.owed/<id>`. */
+const OWED = ".owed"
+
+/** Retire the job in `dir` (made if it is not there yet, so a launch still to come is fenced too): whether its launch slot was free. */
+export const retireIn = (dir: string, at: number, barrier?: (at: Barrier) => void): boolean => {
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  return writeDurable(path.join(dir, FILES.runner), { retiredAt: at } satisfies Retired, { exclusive: true, ...(barrier === undefined ? {} : { barrier }) })
+}
+
+/** Write slot `version + 1` of the delivery record in `dir`, only if no writer took it: whether this one did. Slots are taken in order, so it is taken only while `version` is the newest. */
+export const advanceIn = (dir: string, version: number, next: Delivery, barrier?: (at: Barrier) => void): boolean =>
+  existsSync(dir) && writeDurable(path.join(dir, `delivery.${version + 1}.json`), next, { exclusive: true, ...(barrier === undefined ? {} : { barrier }) })
 
 /** The bytes of `file` from `from` to its end, or none. */
 const bytesFrom = (file: string, from: number): Uint8Array => {
@@ -111,6 +140,13 @@ export const layer = (config: Config) => {
       try: () => Bun.spawn([config.bun, config.script, dir], { stdin: "ignore", stdout: "ignore", stderr: "ignore", detached: true }).unref(),
       catch: (cause) => new JobRefused({ message: `its runner did not start: ${cause instanceof Error ? cause.message : String(cause)}` }),
     })
+
+  /**
+   * A write to a job's record: whether it took its slot. One that failed (a full disk, an unwritable root) took nothing
+   * and is no lost race: it dies, saying why, and the wakes reconcile the job again.
+   */
+  const written = (id: string, what: string, write: () => boolean) =>
+    Effect.try({ try: write, catch: (cause) => new Error(`job ${id}: its record was not written (${what}): ${cause instanceof Error ? cause.message : String(cause)}`) }).pipe(Effect.orDie)
 
   /** Each watched job's watch: one per live job, on its own directory alone. */
   const watches = new Map<string, FSWatcher>()
@@ -158,6 +194,26 @@ export const layer = (config: Config) => {
       ),
     unwatch: (id) => Effect.sync(() => unwatch(id)),
     watching: Effect.sync(() => [...watches.keys()]),
+    retire: (id) => written(id, "retire", () => retireIn(dirOf(id), Date.now())),
+    advance: (id, version, next) =>
+      written(id, "advance", () => {
+        const took = advanceIn(dirOf(id), version, next)
+        // Delivered: off the owed list (a crash before this leaves it listed, and `owed` drops it).
+        if (took && next.state === "delivered") rmSync(path.join(config.root, OWED, id), { force: true })
+        return took
+      }),
+    owed: (directory) =>
+      Effect.sync(() => {
+        const listed = Option.getOrElse(Option.liftThrowable(() => readdirSync(path.join(config.root, OWED)))(), (): ReadonlyArray<string> => [])
+        return listed.filter(isJobID).filter((id) => {
+          const dir = dirOf(id)
+          if (Option.exists(slotOf(dir), (slot) => slot.delivery.state === "delivered")) {
+            rmSync(path.join(config.root, OWED, id), { force: true })
+            return false
+          }
+          return Option.exists(readJson(Spec, path.join(dir, FILES.job)), (job) => job.spec.directory === directory)
+        })
+      }),
     launch: (spec: JobSpec) =>
       Effect.gen(function* () {
         const dir = dirOf(spec.id)
@@ -169,6 +225,11 @@ export const layer = (config: Config) => {
             chmodSync(dir, 0o700)
             writeAtomic(path.join(dir, FILES.job), { spec, ...(descriptor === undefined ? {} : { notify: descriptor }) } satisfies JobFile)
             writeAtomic(path.join(dir, FILES.env), Object.fromEntries(Object.entries(config.env).filter(([, value]) => value !== undefined)))
+            // A managed job is owed its delivery from now until a `delivered` slot: listed before its runner starts.
+            if (spec.generation !== undefined) {
+              mkdirSync(path.join(config.root, OWED), { recursive: true, mode: 0o700 })
+              writeAtomic(path.join(config.root, OWED, spec.id), {})
+            }
           },
           catch: (cause) => new JobRefused({ message: `its files were not written in ${dir}: ${cause instanceof Error ? cause.message : String(cause)}` }),
         })
@@ -196,6 +257,7 @@ export const layer = (config: Config) => {
           log: path.join(dir, FILES.log),
           drip: path.join(dir, FILES.drip),
           ...Option.match(Option.flatMapNullishOr(readJson(Launch, path.join(dir, FILES.launch)), (launch) => launch.unit), { onNone: () => ({}), onSome: (unit) => ({ unit }) }),
+          ...Option.match(slotOf(dir), { onNone: () => ({}), onSome: (delivery) => ({ delivery }) }),
         }))
         return Option.getOrUndefined(record)
       }),

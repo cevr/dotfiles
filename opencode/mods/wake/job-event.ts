@@ -15,10 +15,17 @@
 // - Log: an opaque handle (`job-log:<id>/<generation>`) the owner's session
 //   reads through `job({ action: "check" })`; it names no path.
 //
-// The runner's claim (runner.json) is here too: who runs the job, by an
-// identity a reused pid does not match. The runner writes it once, exclusively,
-// before it starts the command, so a second runner for the same job finds it
-// and runs nothing.
+// The job's record is here too, one state machine per job in the runner's
+// files, which every location and process reads; each slot is written once,
+// exclusively, so of two writers one wins and the other does nothing:
+// - Launch (runner.json): accepted (no slot) → a runner's claim (`starting`,
+//   then running: its identity a reused pid does not match) or the wakes'
+//   retirement (`never-started`). A runner spawns only after its claim won,
+//   so a retired job never runs.
+// - Delivery (delivery.<n>.json, n from 1): once the job is over, →
+//   `delivering` (held by the owner's answer or by the letter, under one
+//   delivery id) → `delivered`. Whoever acts on it acts only after writing
+//   the next slot; a hand-over (the answer's call failed) writes a slot too.
 import { Match, Option, Schema } from "effect"
 import type { JobExit, JobSpec, Run } from "./job.ts"
 
@@ -120,3 +127,36 @@ export const RunnerClaim = Schema.Struct({
   start: Schema.optional(Schema.String),
 })
 export type RunnerClaim = typeof RunnerClaim.Type
+
+/** The wakes retired a job no runner had claimed: it never started, and a runner that comes after finds the slot taken and runs nothing. */
+export const Retired = Schema.Struct({ retiredAt: Schema.Number })
+export type Retired = typeof Retired.Type
+
+/** The job's launch slot (runner.json), written once: a runner's claim, or the wakes' retirement, whichever came first. */
+export const LaunchClaim = Schema.Union([RunnerClaim, Retired])
+export type LaunchClaim = typeof LaunchClaim.Type
+
+/** Who holds a managed job's delivery: the owner's call that returned the end (`observed` once the host had its answer), or the letter. */
+export const Holder = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("answer"), sessionID: Schema.String, call: Schema.optional(Schema.String) }),
+  Schema.Struct({ kind: Schema.Literal("observed"), sessionID: Schema.String, call: Schema.String }),
+  Schema.Struct({ kind: Schema.Literal("letter") }),
+])
+export type Holder = typeof Holder.Type
+
+/**
+ * A managed job's delivery, as its record keeps it: `delivering` under one delivery id (the letter's message id, kept
+ * across a hand-over) and one attempt (fresh per claim), then `delivered`, to the owner's answer, the letter, or
+ * nobody (its session is gone).
+ */
+export const Delivery = Schema.Union([
+  Schema.Struct({ state: Schema.Literal("delivering"), delivery: Schema.String, attempt: Schema.String, holder: Holder }),
+  Schema.Struct({ state: Schema.Literal("delivered"), delivery: Schema.String, attempt: Schema.String, to: Schema.Literals(["answer", "letter", "nobody"]) }),
+])
+export type Delivery = typeof Delivery.Type
+
+/** The newest slot of a job's delivery record and its version (1 for the first); a job with none has version 0. */
+export interface Slot {
+  readonly version: number
+  readonly delivery: Delivery
+}

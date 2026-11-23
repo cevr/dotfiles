@@ -382,6 +382,24 @@ export const specOf = (job: Job): JobSpec => ({
   ...Option.match(Option.fromNullishOr(job.generation), { onNone: () => ({}), onSome: (generation) => ({ generation }) }),
 })
 
+/** A job as its letter reads it, from what the runner keeps: its end goes by its record once its entry went (an owner's call that took the end and could not hand it over). */
+export const jobOfSpec = (spec: JobSpec): Job => ({
+  kind: "job",
+  id: spec.id,
+  sessionID: spec.sessionID,
+  directory: spec.directory,
+  mode: "wake",
+  note: spec.note,
+  setAt: spec.setAt,
+  command: spec.command,
+  cwd: spec.cwd,
+  heavy: spec.heavy,
+  timeoutSeconds: spec.timeoutSeconds,
+  dripped: 0,
+  drippedAt: spec.setAt,
+  ...Option.match(Option.fromNullishOr(spec.generation), { onNone: () => ({}), onSome: (generation) => ({ generation }) }),
+})
+
 // ── Firing ──
 
 /** The next tick of a repeat still ahead of `now`; every tick missed while no server ran folds into the fire that just happened. */

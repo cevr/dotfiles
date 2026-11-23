@@ -62,6 +62,8 @@ const start = (
     const added = new Map<string, Added>()
     // The registry's built-in tools before the transform: OpenCode's automation tools, by either fork's ids, beside one that stays.
     const builtin = new Set<string>(["shell", ...AUTOMATION_IDS])
+    /** The `execute.after` hooks, as the host runs them once a call ran. */
+    const afters: Array<(event: { readonly tool: string; readonly id: string; readonly status: "completed" | "error" }) => Effect.Effect<void>> = []
     const host = {
       options,
       location: { directory: DIR },
@@ -71,7 +73,10 @@ const start = (
             callback({ add: (tool) => void added.set(tool.name, tool), remove: (id) => void builtin.delete(id) })
             return { dispose: Effect.void }
           }),
+        hook: (name: string, callback: (typeof afters)[number]) => Effect.sync(() => void (name === "execute.after" && afters.push(callback))),
       },
+      // A session's context holds no calls here: a call that took a job's end is delivered once the host ran it.
+      session: { context: () => Effect.succeed([]) },
       event: { subscribe: () => Stream.fromQueue(events) },
       rpc: {
         register: (definition: { readonly id: string }, handlers: Record<string, Handler>) =>
@@ -98,8 +103,17 @@ const start = (
       const tool = added.get(name)
       return tool === undefined ? Effect.die(new Error(`no tool ${name}`)) : Effect.succeed(tool)
     }
+    let calls = 0
+    // Each call under an id of its own, then the host's `execute.after` hooks, as the host runs a call.
     const execute = (name: string, input: unknown, sessionID = "ses_root") =>
-      toolOf(name).pipe(Effect.flatMap((tool) => tool.execute(input, { sessionID, agent: "build", messageID: "msg_1", id: "call_1", progress: () => Effect.void })))
+      Effect.gen(function* () {
+        calls += 1
+        const id = `call_${calls}`
+        const tool = yield* toolOf(name)
+        const ran = yield* Effect.exit(tool.execute(input, { sessionID, agent: "build", messageID: "msg_1", id, progress: () => Effect.void }))
+        for (const after of afters) yield* after({ tool: name, id, status: Exit.isSuccess(ran) ? "completed" : "error" })
+        return yield* ran
+      })
     const call = (name: string, input: unknown, sessionID?: string) =>
       execute(name, input, sessionID).pipe(Effect.map((result) => result.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n")))
     const fail = (name: string, input: unknown, sessionID?: string) => Effect.flip(execute(name, input, sessionID)).pipe(Effect.map((error) => error.message))

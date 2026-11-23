@@ -14,22 +14,28 @@
 // the call (or after a call that was lost) reads the end.
 //
 // Before it runs anything the runner claims the job: it writes runner.json
-// only if none is there (a link, which fails on an existing file), with its
-// pid and its process's start time. A second runner for the same job
-// finds the claim and runs nothing, so a launch repeated after a crash never
-// runs a command twice; a reader takes the claim's pid as the runner only
-// while that pid's start time is the claim's, so a reused pid is not it.
+// (the job's launch slot, job-event.ts) only if none is there (a link, which
+// fails on an existing file), with its pid and its process's start time. A
+// second runner for the same job, or one that comes after the wakes retired
+// the job as never started, finds the slot taken and runs nothing, so a launch
+// repeated after a crash never runs a command twice and a retired one never
+// runs; a reader takes the claim's pid as the runner only while that pid's
+// start time is the claim's, so a reused pid is not it. Every file of the
+// record is written durably (`writeDurable`).
 //
 // The files of <dir>, which the process runner (runner.ts) writes and reads:
 // - job.json: { spec, notify? } (the descriptor, absent when the backstop is off)
 // - env.json: the environment the command runs in, 0600; read once and deleted
 // - launch.json: { how, unit? }
-// - runner.json: the claim, { pid, startedAt, start }, once this runner is up
+// - runner.json: the launch slot: the claim, { pid, startedAt, start }, once
+//   this runner is up, or the wakes' { retiredAt }
+// - delivery.<n>.json: the delivery record's slots (the wakes write them)
 // - stop: asks a runner not yet up to record a kill instead of running
 // - log, drip, exit.json
-import { closeSync, existsSync, linkSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { randomUUID } from "node:crypto"
+import { closeSync, existsSync, fsyncSync, linkSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs"
 import path from "node:path"
-import { Duration, Effect, Option, Schedule, Schema } from "effect"
+import { Duration, Effect, Option, Schedule } from "effect"
 import { DEFAULT_LIMITS, heavyArgv, type Host, ioniceAvailable, SCOPE_PROBE } from "@dotfiles/opencode-guard/launcher"
 import type { Descriptor } from "../backstop.ts"
 import { type JobExit, type JobSpec, KILL_GRACE_MS } from "../job.ts"
@@ -52,12 +58,62 @@ export interface JobFile {
   readonly notify?: Descriptor | undefined
 }
 
-/** Write `value` as JSON to `file` through a rename, so a reader never sees half of it. */
-export const writeAtomic = (file: string, value: unknown, mode = 0o600) => {
-  const temporary = `${file}.${process.pid}.tmp`
-  writeFileSync(temporary, JSON.stringify(value), { mode })
-  renameSync(temporary, file)
+/** Where a durable write stands, for a test that kills its writer there: its temporary file synced (`temp`), or its name taken and the directory not yet synced (`named`). */
+export type Barrier = "temp" | "named"
+
+export interface Durable {
+  /** Take the name only if it is free (a link, which fails on an existing file): of two writers, one takes it. Else a rename replaces it. */
+  readonly exclusive?: boolean
+  readonly mode?: number
+  readonly barrier?: (at: Barrier) => void
 }
+
+/** Sync a directory, so a name made or replaced in it outlives a power loss. */
+const syncDirectory = (dir: string) => {
+  const fd = openSync(dir, "r")
+  try {
+    fsyncSync(fd)
+  } finally {
+    closeSync(fd)
+  }
+}
+
+/**
+ * Write `value` as JSON to `file` so a reader, a crash or a power loss never leaves half of it: a temporary file of
+ * its own, written and synced; then the name (a link when exclusive, else a rename); then the directory synced. A
+ * writer acts on what it wrote only once this returns. At each barrier a loss leaves: before the name, the file as it
+ * was (a stray `*.tmp`, which nothing reads); after it, the new file whole, or (a power loss before the directory's
+ * sync) the old one, as if the write never was. Whether it took the name (an exclusive write finds it taken: false).
+ */
+export const writeDurable = (file: string, value: unknown, options: Durable = {}): boolean => {
+  const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`
+  const fd = openSync(temporary, "wx", options.mode ?? 0o600)
+  try {
+    writeSync(fd, JSON.stringify(value))
+    fsyncSync(fd)
+  } finally {
+    closeSync(fd)
+  }
+  options.barrier?.("temp")
+  if (options.exclusive !== true) renameSync(temporary, file)
+  else {
+    const linked = Option.isSome(Option.liftThrowable(() => linkSync(temporary, file))())
+    if (!linked) {
+      rmSync(temporary, { force: true })
+      return false
+    }
+    options.barrier?.("named")
+    rmSync(temporary, { force: true })
+    syncDirectory(path.dirname(file))
+    return true
+  }
+  options.barrier?.("named")
+  syncDirectory(path.dirname(file))
+  return true
+}
+
+/** Write `value` as JSON to `file`, replacing it, durably (`writeDurable`). */
+export const writeAtomic = (file: string, value: unknown, mode = 0o600) => void writeDurable(file, value, { mode })
 
 /** A process's start time as `ps -o lstart=` prints it (by its own path, in the C locale); none when `ps` could not say (no such process, or no `ps`). */
 export const processStart = (pid: number): Option.Option<string> =>
@@ -71,18 +127,13 @@ export const processStart = (pid: number): Option.Option<string> =>
 const ranOf = (argv: ReadonlyArray<string>, env?: Record<string, string>) =>
   Option.liftThrowable(() => Bun.spawnSync([...argv], { stdin: "ignore", stdout: "pipe", stderr: "ignore", ...Option.match(Option.fromNullishOr(env), { onNone: () => ({}), onSome: (set) => ({ env: set }) }) }))()
 
-const encodeClaim = Schema.encodeSync(Schema.fromJsonString(RunnerClaim))
-
-/** Claim the job in `dir` for this runner, as the process `pid`: true when no runner claimed it before. */
-export const claim = (dir: string, startedAt: number, pid: number = process.pid): boolean => {
-  const file = path.join(dir, FILES.runner)
-  const temporary = `${file}.${pid}.claim`
+/**
+ * Claim the job in `dir` for this runner, as the process `pid`: true when its launch slot was free. The slot holds
+ * one claim or the wakes' retirement, whichever came first, so a job retired as never started never runs.
+ */
+export const claim = (dir: string, startedAt: number, pid: number = process.pid, barrier?: (at: Barrier) => void): boolean => {
   const own: RunnerClaim = { pid, startedAt, ...Option.match(processStart(pid), { onNone: () => ({}), onSome: (start) => ({ start }) }) }
-  writeFileSync(temporary, encodeClaim(own), { mode: 0o600 })
-  // A link fails on an existing file: of two runners, one claims it.
-  const linked = Option.isSome(Option.liftThrowable(() => linkSync(temporary, file))())
-  rmSync(temporary, { force: true })
-  return linked
+  return writeDurable(path.join(dir, FILES.runner), own, { exclusive: true, ...(barrier === undefined ? {} : { barrier }) })
 }
 
 /** How many times the runner tries to write the exit, and how long it waits between. */

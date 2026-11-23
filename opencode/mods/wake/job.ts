@@ -9,7 +9,7 @@
 // it reads back: the spec it runs, how the process ended, and how a job's run
 // reads at a time. It imports nothing of wake.ts.
 import { Option, Schema } from "effect"
-import { Disposition } from "./job-event.ts"
+import { Disposition, type Slot } from "./job-event.ts"
 
 /** What the runner runs and keeps beside the job, so a check reads it after the entry went. */
 export const JobSpec = Schema.Struct({
@@ -59,7 +59,8 @@ export type JobExit = typeof JobExit.Type
  * - `running`: its runner is alive.
  * - `ended`: its runner recorded the exit.
  * - `lost`: no exit was recorded and the runner that claimed it is gone (`runner-gone`: the machine restarted, or it
- *   was killed; the command may have run, and is never run again), or no runner ever claimed it (`never-started`).
+ *   was killed; the command may have run, and is never run again), or the wakes retired it before any runner claimed it
+ *   (`never-started`: its launch slot holds the retirement, so no runner runs it after).
  */
 export type Run =
   | { readonly state: "starting" }
@@ -75,6 +76,8 @@ export interface JobRecord {
   readonly drip: string
   /** The systemd unit it runs in, on Linux. */
   readonly unit?: string | undefined
+  /** Its delivery record's newest slot; none before its end was claimed. */
+  readonly delivery?: Slot | undefined
 }
 
 /** How a launch went: where its log and progress file are, and what it runs under. */
@@ -92,7 +95,7 @@ export interface Launched {
 
 export const DEFAULT_JOB_TIMEOUT_SECONDS = 24 * 60 * 60
 export const MAX_JOB_TIMEOUT_SECONDS = 7 * 24 * 60 * 60
-/** A launched job whose runner is not up this long after it was set never started. */
+/** A launched job whose runner is not up this long after it was set is retired, unless a runner claimed it first. */
 export const START_GRACE_MS = 30_000
 /**
  * How often the wakes' one recovery sweep looks at the jobs of its directory while any runs: a runner gone without
@@ -116,13 +119,14 @@ export const DRIP_LINES = 20
 /** The systemd unit a job runs in on Linux. */
 export const unitOf = (id: string): string => `opencode-job-${id}`
 
-/** The run as the wakes read it at `now`: a job still starting past its grace never started. */
-export const settledRun = (run: Run | undefined, setAt: number, now: number): Run => {
-  if (run === undefined)
-    return now - setAt > START_GRACE_MS ? { state: "lost", why: "it never started: the runner left no record", cause: "never-started" } : { state: "starting" }
-  if (run.state === "starting" && now - setAt > START_GRACE_MS) return { state: "lost", why: "it never started: its runner did not come up", cause: "never-started" }
-  return run
-}
+/** A job the wakes retired before any runner claimed it: it never started, and never will. */
+export const NEVER_STARTED: Run = { state: "lost", why: "it never started: no runner claimed it before the wakes retired it", cause: "never-started" }
+
+/** The run as the wakes read it: one with no record yet is starting. Only the launch slot says a job never started (its retirement won it). */
+export const runOrStarting = (run: Run | undefined): Run => run ?? { state: "starting" }
+
+/** Whether a starting job is past its grace at `now`, so the wakes try to retire it; the launch slot decides whether they did. */
+export const overdue = (run: Run, setAt: number, now: number): boolean => run.state === "starting" && now - setAt > START_GRACE_MS
 
 export const over = (run: Run): run is Extract<Run, { readonly state: "ended" | "lost" }> => run.state === "ended" || run.state === "lost"
 
