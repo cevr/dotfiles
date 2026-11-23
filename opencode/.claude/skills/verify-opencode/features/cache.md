@@ -41,5 +41,5 @@ The verify model reports no cache usage, so on a scratch server no request hits 
 
 - A miss row shows only for a large miss, 20k tokens or $0.10 and up; the sidebar's sum still counts every miss.
 - The keepalive pings only a subagent's request on a cache of five minutes or less; a root session, or an hour's cache, is never pinged.
-- A ping on a pool login goes out only when the pool's pace, asked as a dispatch (`dispatch: true`), admits its model on that login (`eligible`); held, ineligible, failed, undecodable or unanswered skips it and ends the wait's pings, the tool call running on (`cmd/cache/server.test.ts`). A ping no pool placed, or on a host where no plugin answers the pool's RPC, goes out as before.
+- A ping on a pool login goes out only when the pool's pace, asked as a dispatch (`dispatch: true`), admits its model on that login (`eligible`) on a fresh reading (`measured`) within the even line; on a claim's room (`admission: "backed"`), which a ping reserves none of, unmeasured, held, ineligible, failed, undecodable or unanswered skips it and ends the wait's pings, the tool call running on (`cmd/cache/server.test.ts`). A ping no pool placed, or on a host where no plugin answers the pool's RPC, goes out as before.
 - The cost comes from the model catalog's price: a miss on a model the catalog does not price costs nothing.
