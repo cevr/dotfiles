@@ -100,12 +100,15 @@ const issueText = (path: ReadonlyArray<PropertyKey>, message: string): string =>
 }
 
 /** Each member as a fault names it: the reader's words, the same for a decode failure and a wrong value. */
-export const FIELD_NAME: Readonly<Record<string, string>> = { lastAttempt: "last attempt" }
+export const fieldName = (member: string): string => {
+  if (member === "lastAttempt") return "last attempt"
+  return member
+}
 
 /** The field a decode failure is in, as a fault names it, or `hand-back` when it is the whole. */
 const memberOf = (path: ReadonlyArray<PropertyKey>): string => {
   const [head] = path
-  if (Predicate.isString(head)) return FIELD_NAME[head] ?? head
+  if (Predicate.isString(head)) return fieldName(head)
   return "hand-back"
 }
 

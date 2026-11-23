@@ -76,7 +76,7 @@ import { INSTALLED, RETENTION } from './retention.ts';
 import { EVENTS, reachable, recordKey } from './item-histories.ts';
 import { LIST_HISTORIES } from './list-histories.ts';
 // The hand-back judge needs Effect Schema, so it lives where effect resolves; ending.ts stays import-free.
-import { FIELD_NAME, HAND_BACK_OBSTACLES, HAND_BACK_STATES, judgeHandBack, labelWord } from '../../../opencode/mods/orchestrate/hand-back.ts';
+import { fieldName, HAND_BACK_OBSTACLES, HAND_BACK_STATES, judgeHandBack, labelWord } from '../../../opencode/mods/orchestrate/hand-back.ts';
 
 /** A label's word, which every label of the lists has (the label-word test pins it never blank). */
 const wordOf = (label: string): string => {
@@ -661,7 +661,10 @@ describe('(vi) a model fault is red', () => {
 type Read = ReturnType<typeof readDecisions>;
 const isTrue = (row: Read[number], atoms: ReadonlySet<Atom>) => row.when === 'otherwise' || row.when.every((atom) => atoms.has(atom));
 /** A rendered row's id in DECISIONS: the model row with its state and condition. */
-const idOf = (role: Role, row: Read[number]) => DECISIONS[role].find((one) => one.state === row.state && JSON.stringify(one.when) === JSON.stringify(row.when))?.id ?? `?${row.state}`;
+/** Two conditions alike: both the catch-all, or the same atoms in the same order (compared as atoms, never as text). */
+const sameWhen = (a: Read[number]['when'], b: Read[number]['when']) =>
+  a === 'otherwise' || b === 'otherwise' ? a === b : a.length === b.length && a.every((atom, index) => atom === b[index]);
+const idOf = (role: Role, row: Read[number]) => DECISIONS[role].find((one) => one.state === row.state && sameWhen(one.when, row.when))?.id ?? `?${row.state}`;
 const pairKey = (a: string, b: string) => [a, b].sort().join(' & ');
 
 /**
@@ -1046,7 +1049,7 @@ describe('(vii) the hand-back is decoded by its exact Schema, then compared type
           }
           const faults = judgeHandBack(due, setAt(good, at, after));
           const [fault] = faults;
-          expect([one.name, pathText(at), edit, faults.length, fault?.startsWith(`${FIELD_NAME[at.member] ?? at.member}: ${pathText(at)}`)]).toEqual([one.name, pathText(at), edit, 1, true]);
+          expect([one.name, pathText(at), edit, faults.length, fault?.startsWith(`${fieldName(at.member)}: ${pathText(at)}`)]).toEqual([one.name, pathText(at), edit, 1, true]);
           rejected++;
         }
     }
@@ -1061,7 +1064,7 @@ describe('(vii) the hand-back is decoded by its exact Schema, then compared type
       const good = truthful(one);
       for (const member of Object.keys(good)) {
         const missing = Object.fromEntries(Object.entries(good).filter(([key]) => key !== member));
-        expect([one.name, member, judgeHandBack(due, missing)]).toEqual([one.name, member, [`${FIELD_NAME[member] ?? member}: ${member}: Missing key`]]);
+        expect([one.name, member, judgeHandBack(due, missing)]).toEqual([one.name, member, [`${fieldName(member)}: ${member}: Missing key`]]);
       }
       expect([one.name, judgeHandBack(due, { ...good, extra: due.label })]).toEqual([one.name, ['extra: extra: Expected no excess property']]);
       const others = Array.isArray(good.others) ? good.others : [];
