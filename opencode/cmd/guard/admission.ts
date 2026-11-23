@@ -15,33 +15,34 @@ const granting = (lease: Lease) => lease.state === "queued" || lease.state === "
 const terminal = (state: string) => ["released", "expired", "cancelled", "refused"].includes(state)
 const cut = (now: number): Observation => ({ now })
 const wholePoolStatus = (reason: Reason, observation: Observation) => {
-  if (reason === "granted") return "whole managed CPU pool granted"
+  if (reason === "granted") return "granted"
   if (reason === "whole-pool-held") return "waiting for running checks to end"
   if (reason === "fifo") return "waiting for older checks in FIFO order"
   const { sample } = observation
   if (sample && reason === "outside-busy") {
     return `host busy outside the lease: ${sample.outsideNoncriticalMilli / 1000} of ${sample.effectiveCpuMilli / 1000} cores in use`
   }
-  return `waiting for the whole managed CPU pool (${reason})`
+  return `waiting (${reason})`
 }
 const warnFull = (width: Width, observation: Observation, reason: Reason) => {
   const maximum = observation.envelope?.cpuMilli ?? observation.sample?.envelope.cpuMilli ?? 0
   const status = wholePoolStatus(reason, observation)
   const bound = "To narrow a modeled tool, set Go GOMAXPROCS and -p, Bun --parallel=N, or Make/Ninja -j N."
-  if (width === "unknown") return Console.error(`host-admit: no verified tool width; ${status}. ${bound}`)
-  if (width === "full") return Console.error(`host-admit: tool uses host width; ${status}. ${bound}`)
-  if (width * 1000 > maximum) return Console.error(`host-admit: width ${width} clamped to ${maximum} mCPU; ${status}.`)
-  if (width * 1000 === maximum) return Console.error(`host-admit: ${status}. ${bound}`)
+  if (width === "unknown") return Console.error(`host-admit: no verified tool width; whole managed CPU pool: ${status}. ${bound}`)
+  if (width === "full") return Console.error(`host-admit: tool uses host width; whole managed CPU pool: ${status}. ${bound}`)
+  if (width * 1000 > maximum) return Console.error(`host-admit: width ${width} clamped to ${maximum} mCPU; whole managed CPU pool: ${status}.`)
+  if (width * 1000 === maximum) return Console.error(`host-admit: whole managed CPU pool: ${status}. ${bound}`)
   return Effect.void
 }
 const describeWait = (width: Width) => {
-  const reported = new Set<Reason>()
+  let reported = false
   return (observation: Observation, reason: Reason) => {
-    // One line on entering the wait, plus a line if a newly observed
-    // blocker changes what the caller can do. Never log on each poll.
-    if (reported.has(reason) || (reported.size > 0 && reason !== "outside-busy" && reason !== "whole-pool-held"))
-      return Effect.void
-    reported.add(reason)
+    if (reported) return Effect.void
+    // A losing probe slot or stale sample cannot diagnose the host. Wait
+    // for the first sampled decision rather than printing a misleading
+    // line and its replacement. The journal still tracks every change.
+    if (reason === "unavailable" || reason === "stale-sample" || reason === "unqualified") return Effect.void
+    reported = true
     return warnFull(width, observation, reason)
   }
 }
