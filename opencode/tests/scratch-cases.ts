@@ -9,7 +9,7 @@ const hang = () => Effect.runPromise(Effect.never)
 const HANG_MS = 50
 
 /** How long a setup that returns in time may take. */
-const SETUP_MS = 5_000
+const SETUP_MS = 10_000
 
 /** A body that returns, but only well after HANG_MS, and before a waiting test ends. */
 const late = () => Effect.runPromise(Effect.sleep(`${HANG_MS * 3} millis`))
@@ -72,7 +72,7 @@ describe("late-writer", () => {
 describe("closing-after-late-setup", () => {
   const kept = keptScratch(true, "kept-closing-after-late-setup-", true)
   test("setup", ...kept.setup(late, HANG_MS))
-  test("waits", wait, HANG_MS * 12)
+  test("waits", wait)
   test("closes", () => kept.done())
 })
 

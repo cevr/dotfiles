@@ -311,7 +311,7 @@ const searched = (run: () => void) => {
 }
 
 /** A CPU budget's wall-clock ceiling: only a guard against a hung search, sized for a host loaded 30 times over. */
-const wallFor = (cpuMs: number) => cpuMs * 30
+const WALL_OVER_CPU = 30
 
 /** Each exhaustive test's CPU budget, in ms: about three times its CPU at a 1-minute load near 40 on 12 cores (2026-11-13: 13.3, 6.9, 46.2, 3.8, 2.3 and 2.0 s). */
 const CPU_MS = { two: 40_000, outside: 21_000, skews: 140_000, three: 12_000, crossClock: 7000, noQuiet: 6000 }
@@ -340,7 +340,7 @@ describe("the spend authority, every interleaving within small bounds", () => {
       }
     })
     expect(cpu, "CPU ms").toBeLessThan(CPU_MS.two)
-  }, wallFor(CPU_MS.two))
+  }, CPU_MS.two * WALL_OVER_CPU)
 
   test("two hosts whose readings do not lag, and the owner claiming in Claude's app meanwhile: no host spends a second grant unasked", () => {
     const cpu = searched(() => {
@@ -349,7 +349,7 @@ describe("the spend authority, every interleaving within small bounds", () => {
       expect(found.spendsOne).toBe(true)
     })
     expect(cpu, "CPU ms").toBeLessThan(CPU_MS.outside)
-  }, wallFor(CPU_MS.outside))
+  }, CPU_MS.outside * WALL_OVER_CPU)
 
   test("two hosts whose clocks are SETTLE_MS or twice it apart, either way, each with or without the owner's yes: the same", () => {
     const cpu = searched(() => {
@@ -361,7 +361,7 @@ describe("the spend authority, every interleaving within small bounds", () => {
         }
     })
     expect(cpu, "CPU ms").toBeLessThan(CPU_MS.skews)
-  }, wallFor(CPU_MS.skews))
+  }, CPU_MS.skews * WALL_OVER_CPU)
 
   test("three hosts, none with a yes: one grant at most", () => {
     const cpu = searched(() => {
@@ -370,7 +370,7 @@ describe("the spend authority, every interleaving within small bounds", () => {
       expect(found.spendsOne).toBe(true)
     })
     expect(cpu, "CPU ms").toBeLessThan(CPU_MS.three)
-  }, wallFor(CPU_MS.three))
+  }, CPU_MS.three * WALL_OVER_CPU)
 })
 
 describe("the model reaches what breaks it", () => {
@@ -390,7 +390,7 @@ describe("the model reaches what breaks it", () => {
       expect(explore({ ...TWO, yes: [false, false] }, { crossClock: true }).counterexample).toBeUndefined()
     })
     expect(cpu, "CPU ms").toBeLessThan(CPU_MS.crossClock)
-  }, wallFor(CPU_MS.crossClock))
+  }, CPU_MS.crossClock * WALL_OVER_CPU)
 
   test("a restarted host that forgets the claim it sent spends two grants", () => {
     const found = explore({ ...TWO, yes: [false, false] }, { forgets: true })
@@ -404,5 +404,5 @@ describe("the model reaches what breaks it", () => {
   test("without the quiet after a restart, still one grant: a lease the restarted lender forgot, its borrower holds and refuses others with; the quiet is a second guard", () => {
     const cpu = searched(() => expect(explore({ ...TWO, yes: [false, false] }, { noQuiet: true }).counterexample).toBeUndefined())
     expect(cpu, "CPU ms").toBeLessThan(CPU_MS.noQuiet)
-  }, wallFor(CPU_MS.noQuiet))
+  }, CPU_MS.noQuiet * WALL_OVER_CPU)
 })

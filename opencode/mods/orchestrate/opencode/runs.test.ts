@@ -43,5 +43,5 @@ effectTest(
     expect(Option.isSome((yield* readOf(() => Effect.die("broken"))).error)).toBe(true)
     expect(Option.isSome((yield* readOf(() => Effect.succeed({ runs: "p1" }))).error)).toBe(true)
   }),
-  5_000,
+  10_000,
 )

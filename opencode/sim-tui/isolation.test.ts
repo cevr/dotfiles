@@ -74,6 +74,6 @@ describe("seeds alone give the traces they give in the full run", () => {
           for (const [name, trace] of traces) expect({ name, trace }).toEqual({ name, trace: everyone.get(name) ?? "(not in the full run)" })
         }
       }),
-      RUN_MS * (alone.length + 1),
+      Math.max(RUN_MS, RUN_MS * (alone.length + 1)),
     )
 })

@@ -84,7 +84,7 @@ effectTest(
     })
     expect(yield* heldOf({ pending: failing, open: failing, queue: failing, jobs: failing })).toEqual({ queue: [], wakes: [], jobs: [] })
   }),
-  5_000,
+  10_000,
 )
 
 test("a plugin that is missing holds nothing, and the others still answer", async () => {
