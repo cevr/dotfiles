@@ -1922,6 +1922,23 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       return publish({ type: "session.moved", data: { sessionID: session.id, location: { directory } } }, void 0, from)
     })
 
+  /**
+   * A client commits a history-only revert of an idle session with no queued input. The fork's
+   * session/revert.ts publishes the boundary; session/projector.ts removes it and everything after it
+   * before a subscriber can read the context. Staging, file restoration and inbox rewind are not modelled.
+   */
+  const revert = (session: Session, to: string) =>
+    Effect.suspend(() => {
+      const boundary = session.messages.findIndex((message) => message.type !== "tool" && message.id === to)
+      if (session.running || session.inbox.length > 0 || boundary < 0) {
+        unmodelled.push(`session.revert of ${session.id} needs an idle session, an empty inbox and a visible boundary (${to})`)
+        return Effect.void
+      }
+      session.messages.splice(boundary)
+      touch(session)
+      return publish({ type: "session.revert.committed", data: { sessionID: session.id, to } })
+    })
+
   /** Inbox item `inboxID` ends undelivered (`session.inbox.cancelled`); an item already taken is not in the inbox. */
   const cancel = (session: Session, inboxID: string) =>
     Effect.suspend(() => {
@@ -2012,6 +2029,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     providers,
     callRpc,
     move,
+    revert,
     takeBack,
     cancel,
     merge,

@@ -1,7 +1,13 @@
 [Unit]
 Description=Protected Bite remote access services
 
+# bite.slice holds the Tailscale SSH service, tailscaled and systemd-resolved: the way in. It is a
+# sibling of user.slice, which holds every agent, and of system.slice. Under load the kernel splits
+# CPU among siblings by weight: at 1000 against their default 100, the way in gets up to ~83% of the
+# CPU the moment it asks, so agents cannot starve it (2026-11-22: sshd and tailscaled starved for
+# 15 minutes under agent load). It needs a few percent, so agents lose nothing measurable.
 [Slice]
+CPUWeight=1000
 MemoryAccounting=yes
 MemoryMin=256M
 MemoryLow=512M

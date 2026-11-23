@@ -19,7 +19,7 @@ export const POOL_STATUS = {
     pace: {
       input: {
         type: "object",
-        properties: { providerID: { type: "string" }, model: { type: "string" }, sessionID: { type: "string" } },
+        properties: { providerID: { type: "string" }, model: { type: "string" }, sessionID: { type: "string" }, dispatch: { type: "boolean" } },
         required: ["providerID"],
       },
       output: { type: "object" },

@@ -1,0 +1,41 @@
+#!/bin/sh
+# Exec a command as a transient user scope without changing its working directory, environment or IO.
+set -eu
+usage() {
+  printf '%s\n' 'usage: workbox-run {opencode|ergo|bite-work|personal|default} [--memory-max SIZE] -- COMMAND [ARG...]'
+}
+bad() { printf 'workbox-run: %s\n' "$*" >&2; usage >&2; exit 2; }
+
+case ${1:-} in
+  -h|--help) usage; exit 0 ;;
+  default) family=app; shift ;;
+  opencode|ergo|bite-work|personal) family=$1; shift ;;
+  *) bad "expected a run family" ;;
+esac
+memory=12G
+if [ "${1:-}" = --memory-max ]; then
+  [ "$#" -ge 2 ] || bad "--memory-max requires a positive byte count or K/M/G suffix"
+  memory=$2
+  case $memory in
+    *[KMG]) number=${memory%?} ;;
+    *) number=$memory ;;
+  esac
+  case $number in ''|*[!0-9]*|0*) bad "invalid memory size: $memory" ;; esac
+  shift 2
+fi
+[ "${1:-}" = -- ] && [ "$#" -ge 2 ] || bad "expected -- COMMAND"
+shift
+
+if [ "$(uname -s)" != Linux ] || [ ! -d /run/systemd/system ]; then
+  printf '%s\n' 'workbox-run: systemd is absent; running without cgroup limits' >&2
+  exec "$@"
+fi
+if ! systemctl --user cat "$family.slice" >/dev/null; then
+  printf 'workbox-run: cannot inspect %s.slice; configure the workbox user manager first\n' "$family" >&2
+  exit 125
+fi
+# OOMPolicy=kill sets memory.oom.group=1 on the scope. The family cap also
+# applies when it is tighter than the requested per-command cap.
+exec systemd-run --user --scope --quiet --collect --no-ask-password --expand-environment=no \
+  --description="Workbox bounded $family command" --slice="$family.slice" \
+  --property="MemoryMax=$memory" --property=MemorySwapMax=0 --property=OOMPolicy=kill -- "$@"

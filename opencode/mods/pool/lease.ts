@@ -230,6 +230,7 @@ export class Leases extends Context.Service<
   Leases,
   {
     readonly lock: (provider: ResetProvider) => Semaphore.Semaphore
+    readonly resetLedgerLock: Semaphore.Semaphore
     readonly answer: (self: string, ask: LeaseAsk) => Effect.Effect<LeaseAnswer>
     readonly release: (message: LeaseRelease) => Effect.Effect<void>
     readonly begin: (self: string, ask: Pick<LeaseAsk, "id" | "provider" | "grants" | "readAt" | "requestedAt" | "holdMs">) => Effect.Effect<string | undefined>
@@ -254,6 +255,7 @@ export const make = (options: { readonly quietMs?: number } = {}): Leases["Servi
       return result
     })
   return {
+    resetLedgerLock: Semaphore.makeUnsafe(1),
     lock: (provider) => {
       const held = locks.get(provider)
       if (held !== undefined) return held

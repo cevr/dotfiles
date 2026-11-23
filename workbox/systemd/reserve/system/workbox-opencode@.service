@@ -1,0 +1,24 @@
+[Unit]
+Description=Protected OpenCode server for %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=%i
+WorkingDirectory=~
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/local/libexec/workbox-opencode-server
+Slice=workboxprotected.slice
+MemoryMin=2%
+MemoryLow=7%
+MemoryMax=9%
+MemorySwapMax=0
+ManagedOOMPreference=omit
+OOMPolicy=kill
+OOMScoreAdjust=-500
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target

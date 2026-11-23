@@ -348,8 +348,9 @@ export const layer = (config: Config) =>
           // A usage read says nothing of a refusal: a held credential stays
           // held until its refusal ends.
           const previous = readings.get(credentialID)?.refusal
+          const measured = { ...reading, usage: { at: now, samples: 1 } } satisfies QuotaReading
           const kept =
-            previous && (previous.until === undefined || previous.until > now) ? { ...reading, refusal: previous } : reading
+            previous && (previous.until === undefined || previous.until > now) ? { ...measured, refusal: previous } : measured
           yield* publish(credentialID, kept)
           return kept
         })

@@ -25,6 +25,16 @@ describe("rankPlacement", () => {
     ])
   })
 
+  test("the cache keeps its account only while the request's admission leaves it eligible; eligible accounts go before every other", () => {
+    // The healthy cached account stays the choice.
+    expect(rankPlacement({ slots: [slot("a"), slot("b")], spent: 0, sessions: 0, preferred: "b" })[0]).toBe("b")
+    // Its account at a hold line for the model: the run moves to the alternate healthy account, the cache account after it.
+    const moved = rankPlacement({ slots: [slot("a", { eligible: false }), slot("b", { eligible: false }), slot("c")], spent: 0, sessions: 0, preferred: "b" })
+    expect(moved).toEqual(["c", "a", "b"])
+    // A held account still goes last, after the ineligible ones.
+    expect(rankPlacement({ slots: [slot("a", { held: true }), slot("b", { eligible: false }), slot("c")], spent: 0, sessions: 0, preferred: "b" })).toEqual(["c", "b", "a"])
+  })
+
   test("with every account held, the preferred one, else the first", () => {
     const held = [slot("a", { held: true }), slot("b", { held: true })] as const
     expect(rankPlacement({ slots: [...held], spent: 0, sessions: 0 })[0]).toBe("a")
