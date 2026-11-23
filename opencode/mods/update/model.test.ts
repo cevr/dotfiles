@@ -54,6 +54,8 @@ interface World {
   restartFailures: number
   /** Whether the prune of old builds cannot read what runs. */
   pruneFails: boolean
+  /** Failure or silent mispublication at a record-write boundary. */
+  recordFault: "none" | "install" | "install-unchanged" | "rollback" | "rollback-unchanged" | "proof" | "proof-absent" | "proof-other" | "proof-wrong-command"
   /** The providers the service had a login for before the restart; none when that read fails. */
   before: Option.Option<ReadonlyArray<string>>
   /** How many reads of the verified target still die (a defect, not a failed step). */
@@ -79,6 +81,7 @@ const world = (at: Partial<Omit<World, "calls" | "lines" | "beats">> = {}): Worl
   serverConfig: "clean",
   restartFailures: 0,
   pruneFails: false,
+  recordFault: "none",
   before: Option.some([]),
   digest: Option.some("digest ok dev host=mac events=3 last=none peers=none tailnet=yes"),
   ...at,
@@ -94,8 +97,11 @@ const recordLine = (record: Record) =>
     ...Option.toArray(Option.map(Option.fromNullishOr(record.staged), (staged) => `staged ${staged.version}`)),
   ].join(" ")
 
+type ProofBoundary = "proof written" | "notice cleared" | "proof logged" | "prune entered" | "prune completed" | "commands completed"
+const PROOF_LINE = "handoff: the build is proven and recorded as the good build"
+
 /** Fake git, build and exec: each seam records its call and answers from the world. */
-const fakes = (host: World) =>
+const fakes = (host: World, boundary: (event: ProofBoundary) => void = constVoid) =>
   Layer.mergeAll(
     Layer.succeed(
       Source,
@@ -106,7 +112,10 @@ const fakes = (host: World) =>
           return Effect.die(new Error("git fetch: the origin's ref did not parse"))
         }),
         fetch: (commit) => Effect.sync(() => void host.calls.push(`fetch ${commit.slice(0, 1)}`)),
-        commands: Effect.sync(() => void host.calls.push("commands")),
+        commands: Effect.sync(() => {
+          host.calls.push("commands")
+          boundary("commands completed")
+        }),
       }),
     ),
     Layer.succeed(
@@ -139,9 +148,21 @@ const fakes = (host: World) =>
       Records.of({
         read: Effect.sync(() => host.record),
         write: (record) =>
-          Effect.sync(() => {
-            host.record = Option.some(record)
-            host.calls.push(recordLine(record))
+          Effect.suspend(() => {
+            const line = recordLine(record)
+            if (host.recordFault === "install" && line === INSTALL) return failure("install record")
+            if (host.recordFault === "install-unchanged" && line === INSTALL) return Effect.void
+            if (host.recordFault === "rollback" && line === ROLL_BACK) return failure("rollback record")
+            if (host.recordFault === "rollback-unchanged" && line === ROLL_BACK) return Effect.void
+            const isProof = line === PROVEN[0]
+            if (isProof && host.recordFault === "proof") return failure("write proof")
+            if (isProof && host.recordFault === "proof-absent") host.record = Option.none()
+            else if (isProof && host.recordFault === "proof-other") host.record = Option.some({ ...record, good: { ...NEW, fork: GOOD.fork } })
+            else if (isProof && host.recordFault === "proof-wrong-command") host.record = Option.some({ ...record, good: { ...NEW, command: GOOD.command } })
+            else host.record = Option.some(record)
+            host.calls.push(line)
+            if (isProof) boundary("proof written")
+            return Effect.void
           }),
       }),
     ),
@@ -161,10 +182,13 @@ const fakes = (host: World) =>
       Builds.of({
         // The call notes the record it reads itself (under its lock), and whether the handoff's mark is still held then.
         prune: (read) =>
-          read.pipe(
+          Effect.sync(() => boundary("prune entered")).pipe(
+            Effect.andThen(read),
             Effect.flatMap((record) => {
               host.calls.push([`prune ${Option.match(record, { onNone: () => "no record", onSome: (each) => each.version })}`, ...Option.toArray(Option.map(host.mark, () => "under the mark"))].join(" "))
               if (host.pruneFails) return failure("list the running processes")
+              if (Option.isNone(record)) return Effect.succeed([])
+              boundary("prune completed")
               return Effect.succeed([{ name: "opencode-2.2.5-prime.old", bytes: 225_000_000 }])
             }),
           ),
@@ -188,12 +212,21 @@ const fakes = (host: World) =>
         remove: () => Effect.sync(() => void host.calls.push("remove tree")),
       }),
     ),
-    Layer.succeed(Log, Log.of({ line: (text) => Effect.sync(() => void host.lines.push(text)) })),
+    Layer.succeed(Log, Log.of({ line: (text) => Effect.sync(() => {
+      host.lines.push(text)
+      if (text === PROOF_LINE) boundary("proof logged")
+    }) })),
     Layer.succeed(
       Heartbeat,
       Heartbeat.of({ beat: Clock.currentTimeMillis.pipe(Effect.map((at) => void host.beats.push(at))), last: Effect.sync(() => Option.fromNullishOr(host.beats.at(-1))) }),
     ),
-    Layer.succeed(Notice, Notice.of({ show: (text) => Effect.sync(() => void host.calls.push(`notice ${text}`)), clear: Effect.sync(() => void host.calls.push("notice cleared")) })),
+    Layer.succeed(Notice, Notice.of({
+      show: (text) => Effect.sync(() => void host.calls.push(`notice ${text}`)),
+      clear: Effect.sync(() => {
+        host.calls.push("notice cleared")
+        boundary("notice cleared")
+      }),
+    })),
     Layer.succeed(
       Service,
       Service.of({
@@ -483,12 +516,90 @@ describe("old builds, pruned after a proven install", () => {
       Effect.gen(function* () {
         expect(yield* handOff).toBe("proven")
         expect(host.lines).toContain("prune: every build kept: list the running processes: list the running processes exited 1")
+        expect(host.calls).not.toContain("commands")
       }),
     )
   })
 })
 
 describe("the handoff on its seams", () => {
+  // A competing record write may invalidate previously observed proof. Inject it from the host
+  // ports, not by counting Records.read calls; observe the allowed prefix of real handoff effects.
+  for (const [supersedesAt, allowed] of [
+    ["proof written", ["proof written"]],
+    ["notice cleared", ["proof written", "notice cleared"]],
+    ["proof logged", ["proof written", "notice cleared", "proof logged", "prune entered"]],
+    ["prune entered", ["proof written", "notice cleared", "proof logged", "prune entered"]],
+    ["prune completed", ["proof written", "notice cleared", "proof logged", "prune entered", "prune completed"]],
+    ["commands completed", ["proof written", "notice cleared", "proof logged", "prune entered", "prune completed", "commands completed"]],
+  ] as const) {
+    test(`T3: proof superseded at ${supersedesAt} permits only the preceding effects`, () => {
+      const host = world({ record: stagedTarget(), readings: [healthy] })
+      const seen: ProofBoundary[] = []
+      const superseding = { ...NEW, fork: GOOD.fork }
+      const seams = fakes(host, (event) => {
+        seen.push(event)
+        if (event === supersedesAt) host.record = Option.some(proven(superseding))
+      })
+      return run(host, Effect.gen(function* () {
+        const outcome = yield* handOff
+        expect({
+          exit: EXIT_CODES[outcome],
+          effects: seen,
+          good: Option.flatMap(host.record, goodOf),
+          restarts: host.calls.filter((call) => call === "restart").length,
+          mark: host.mark,
+        }).toEqual({ exit: 1, effects: [...allowed], good: Option.some(superseding), restarts: 1, mark: Option.none() })
+      }), seams)
+    })
+  }
+
+  // Public handoff outcome (the CLI exit mapping), and persisted identity, notices, log, prune,
+  // and commands. Vary record outcomes independently of the service's health.
+  for (const [recordFault, kept] of [
+    ["proof", Option.some(GOOD)],
+    ["proof-absent", Option.none<Build>()],
+    ["proof-other", Option.some({ ...NEW, fork: GOOD.fork })],
+    ["proof-wrong-command", Option.some({ ...NEW, command: GOOD.command })],
+  ] as const) {
+    test(`B5: a healthy handoff cannot announce or act on ${recordFault} without persisted proof`, () => {
+      const host = world({ record: stagedTarget(), readings: [healthy], recordFault })
+      return run(host, Effect.gen(function* () {
+        const outcome = yield* handOff
+        expect({
+          exit: EXIT_CODES[outcome],
+          good: Option.flatMap(host.record, goodOf),
+          successEffects: host.calls.filter((call) => call === "notice cleared" || call.startsWith("prune ") || call === "commands"),
+          proofLines: host.lines.filter((line) => line.includes("build is proven and recorded")),
+          restarts: host.calls.filter((call) => call === "restart").length,
+        }).toEqual({ exit: 1, good: kept, successEffects: [], proofLines: [], restarts: 1 })
+      }))
+    })
+  }
+
+  for (const [name, scenario, restarts] of [
+    ["tree refusal", { trees: new Set([GOOD.version]) }, 0],
+    ["config refusal", { serverConfig: "unreadable" }, 0],
+    ["install refusal", { recordFault: "install" }, 0],
+    ["install acknowledgment without persistence", { recordFault: "install-unchanged" }, 0],
+    ["rollback refusal", { readings: [failedPool, healthy], recordFault: "rollback" }, 1],
+    ["rollback acknowledgment without persistence", { readings: [failedPool, healthy], recordFault: "rollback-unchanged" }, 1],
+    ["failed rollback restart", { restartFailures: 2 }, 2],
+  ] satisfies ReadonlyArray<readonly [string, Partial<World>, number]>) {
+    test(`B5: ${name} emits no post-proof effects and does not restart past the failure`, () => {
+      const host = world({ record: stagedTarget(), readings: [healthy], ...scenario })
+      return run(host, Effect.gen(function* () {
+        const outcome = yield* handOff
+        expect({
+          exit: EXIT_CODES[outcome],
+          restarts: host.calls.filter((call) => call === "restart").length,
+          successEffects: host.calls.filter((call) => call === "notice cleared" || call.startsWith("prune ") || call === "commands"),
+          proofLines: host.lines.filter((line) => line.includes("build is proven and recorded")),
+        }).toEqual({ exit: 1, restarts, successEffects: [], proofLines: [] })
+      }))
+    })
+  }
+
   test("installs the staged build, restarts, and a healthy restart proves it and clears the corner", () => {
     const host = world({ record: stagedTarget(), readings: [healthy] })
     return run(

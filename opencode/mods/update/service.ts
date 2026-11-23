@@ -63,17 +63,17 @@ export class Handoff extends Context.Service<
 
 /**
  * The running handoff's mark (`update.ts` `Running`): the handoff holds it while it runs, and
- * every check reads it, with whether its process lives, before it plans. A mark that does not
- * write, or does not read, holds nothing: the check plans as before.
+ * every check reads it, with whether its process lives, before it plans. An unsafe mark is a refusal,
+ * not evidence that another handoff is absent.
  */
 export class HandoffMark extends Context.Service<
   HandoffMark,
   {
     /** Marks this process as the running handoff, from now. */
-    readonly hold: Effect.Effect<void>
+    readonly hold: Effect.Effect<void, UpdateFailed>
     /** Drops the mark, when it is this process's. */
-    readonly release: Effect.Effect<void>
-    readonly read: Effect.Effect<Option.Option<Running>>
+    readonly release: Effect.Effect<void, UpdateFailed>
+    readonly read: Effect.Effect<Option.Option<Running>, UpdateFailed>
     /** Whether process `pid` lives (read with `ps`, never a signal). */
     readonly alive: (pid: number) => Effect.Effect<boolean>
   }
@@ -100,7 +100,7 @@ export class Builds extends Context.Service<
      * answering each; with no record, none. Fails, deleting none, when the lock stays held or what
      * runs does not read.
      */
-    readonly prune: (read: Effect.Effect<Option.Option<Record>>) => Effect.Effect<ReadonlyArray<Pruned>, UpdateFailed>
+    readonly prune: (read: Effect.Effect<Option.Option<Record>, UpdateFailed>) => Effect.Effect<ReadonlyArray<Pruned>, UpdateFailed>
   }
 >()("dotfiles-opencode/update/Builds") {}
 
@@ -162,7 +162,7 @@ export class Records extends Context.Service<
   Records,
   {
     /** None when there is no record, or it does not read. */
-    readonly read: Effect.Effect<Option.Option<Record>>
+    readonly read: Effect.Effect<Option.Option<Record>, UpdateFailed>
     readonly write: (record: Record) => Effect.Effect<void, UpdateFailed>
   }
 >()("dotfiles-opencode/update/Records") {}

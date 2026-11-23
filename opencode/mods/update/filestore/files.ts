@@ -1,3 +1,4 @@
+import { publishReviewInput, readReviewInput, removeReviewInput, type ReviewInputAccess, siblingReviewInputLock } from "@dotfiles/opencode-work/process/landing"
 import { file, write } from "bun"
 import { Effect, Option } from "effect"
 import { UpdateFailed } from "../service.ts"
@@ -13,6 +14,12 @@ export const readText = (path: string): Effect.Effect<Option.Option<string>> =>
 export const writeText = (step: string, path: string, text: string): Effect.Effect<void, UpdateFailed> =>
   Effect.tryPromise({ try: () => write(path, text, { createPath: true }), catch: (cause) => new UpdateFailed({ step, message: String(cause) }) }).pipe(Effect.asVoid)
 
-/** Deletes `path`; a file already gone is fine. */
-export const remove = (path: string): Effect.Effect<void> =>
-  Effect.tryPromise(() => file(path).delete()).pipe(Effect.orElseSucceed(() => "gone"), Effect.asVoid)
+/** Publish update facts consumed by review. An already published version is never written again. */
+export const publishText = (step: string, path: string, access: ReviewInputAccess, text: string): Effect.Effect<void, UpdateFailed> =>
+  publishReviewInput(step, path, siblingReviewInputLock(path), access, text).pipe(Effect.mapError((cause) => new UpdateFailed({ step, message: cause.message })))
+
+export const readPublished = (step: string, path: string): Effect.Effect<Option.Option<string>, UpdateFailed> =>
+  readReviewInput(step, path).pipe(Effect.mapError((cause) => new UpdateFailed({ step, message: cause.message })))
+
+export const removePublished = (step: string, path: string, owns: (text: string) => boolean): Effect.Effect<void, UpdateFailed> =>
+  removeReviewInput(step, path, siblingReviewInputLock(path), owns).pipe(Effect.mapError((cause) => new UpdateFailed({ step, message: cause.message })))

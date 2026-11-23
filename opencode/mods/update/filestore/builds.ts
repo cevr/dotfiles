@@ -181,7 +181,7 @@ export const wouldPrune = (options: Options, record: Record) =>
  */
 export const layer = (options: Options) => {
   const running = runningOf(options)
-  const prune = (read: Effect.Effect<Option.Option<Record>>) =>
+  const prune = (read: Effect.Effect<Option.Option<Record>, UpdateFailed>) =>
     underLock(
       options.lock,
       options.lockWaitMs,
