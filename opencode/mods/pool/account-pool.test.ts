@@ -39,6 +39,7 @@ const T0 = 1_800_000_000_000
 
 const story = Story.make(AccountPool(DEFAULT_RULES))
 const run = (...steps: Parameters<typeof story>) => Effect.runPromise(story(...steps))
+const recorded = Story.then
 /** A pool whose caches live an hour, as Claude's do when `bun run daily` asks for it. */
 const hourStory = Story.make(AccountPool({ cacheLifeMs: HOUR }))
 
@@ -483,10 +484,10 @@ describe("an account is held", () => {
       accounts("a", "b"),
       Story.clock(T0),
       Story.when(TakeReading.make({ credentialID: "a", reading: refused })),
-      Story.then(ReadingTaken.make({ credentialID: "a", reading: refused, hold: { kind: "rate-limit", until: reset, at: T0, refusedUntil: reset } })),
+      recorded(ReadingTaken.make({ credentialID: "a", reading: refused, hold: { kind: "rate-limit", until: reset, at: T0, refusedUntil: reset } })),
       Story.clock(T0 + MINUTE),
       Story.when(TakeReading.make({ credentialID: "a", reading: exhausted })),
-      Story.then(ReadingTaken.make({
+      recorded(ReadingTaken.make({
         credentialID: "a", reading: exhausted,
         hold: { kind: "usage-limit", until: T0 + 40 * HOUR, at: T0 + MINUTE, refusedUntil: reset },
       })),

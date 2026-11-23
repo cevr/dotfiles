@@ -4,7 +4,7 @@
 // session; the pool asks nothing, and withdraws any older question still
 // open. Nothing here reaches a provider: the claim is the memory quota's.
 import { describe, expect, test } from "bun:test"
-import { Context, Effect, Layer, Schema } from "effect"
+import { Context, Effect, Layer, Option, Schema } from "effect"
 import { TestClock } from "effect/testing"
 import { PoolId } from "../account-pool.ts"
 import { CACHE_LIFE_MS } from "../accounts.ts"
@@ -122,8 +122,10 @@ test("an in-flight title's success cannot send a refused primary turn back to th
       yield* pool.responded({ ...title, status: 200 })
       expect(yield* pool.retry({ ...turn, error: "provider.quota" })).toBe(true)
       const retry = yield* pool.place(turn)
-      const replies = new Map<string | undefined, number>([["alpha", 429], ["beta", 200]])
-      const primarySends = [primary?.credentialID, retry?.credentialID].map((slot) => [slot, replies.get(slot)])
+      const replies = new Map([["alpha", 429], ["beta", 200]])
+      const primarySends = [primary, retry].flatMap((placed) =>
+        Option.toArray(Option.map(Option.fromUndefinedOr(placed), ({ credentialID }) => [credentialID, replies.get(credentialID)])),
+      )
       expect(primarySends).toEqual([["alpha", 429], ["beta", 200]])
     }).pipe(Effect.provide(TestClock.layer())),
   ),
