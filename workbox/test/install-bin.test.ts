@@ -34,11 +34,11 @@ const host = (zshenv = "export FROM=tree\n") => {
   return { root, workbox, home, installed: join(home, ".local", "share", "workbox") }
 }
 
-const env = (home: string) => ({ HOME: home, PATH: "/usr/bin:/bin", TMPDIR: home })
+const identity = Bun.spawnSync(["sh", "-c", '. "$1"; workbox_host_identity', "test", join(workboxDir, "host-identity.sh")]).stdout.toString().trim()
+const env = (home: string) => ({ HOME: home, PATH: "/usr/bin:/bin", TMPDIR: home, WORKBOX_EXPECT_MACHINE_ID: identity })
 
 const run = (workbox: string, home: string) => {
-  const identity = Bun.spawnSync(["sh", "-c", '. "$1"; workbox_host_identity', "test", join(workbox, "host-identity.sh")]).stdout.toString().trim()
-  const done = Bun.spawnSync(["sh", join(workbox, "install-bin.sh")], { cwd: home, env: { ...env(home), WORKBOX_EXPECT_MACHINE_ID: identity }, stdout: "pipe", stderr: "pipe" })
+  const done = Bun.spawnSync(["sh", join(workbox, "install-bin.sh")], { cwd: home, env: env(home), stdout: "pipe", stderr: "pipe" })
   return { code: done.exitCode, stderr: done.stderr.toString() }
 }
 
