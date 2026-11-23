@@ -32,8 +32,9 @@
  *
  * @module
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { externalInput, matchingInput, readScratchFileSync, scratchInput } from "../read-path.ts"
 import { BACKGROUND_TASK, EARLY_MS, LATE_MS, MARGIN_SECONDS, PRECOMPUTE_TASK, serve, TASK, TTL_SECONDS, WAKE_MS, type Seen } from "./sim.ts"
 
 export interface Spec {
@@ -68,9 +69,10 @@ export interface Result {
   readonly log: ReadonlyArray<Line>
 }
 
-const spec = JSON.parse(readFileSync(process.argv[2]!, "utf8")) as Spec
-const work = join(spec.base, "work")
-const config = join(spec.base, "config")
+const spec = JSON.parse(readScratchFileSync(process.argv[2]!, "utf8")) as Spec
+const base = scratchInput(spec.base)
+const work = join(base, "work")
+const config = join(base, "config")
 mkdirSync(work, { recursive: true })
 mkdirSync(config, { recursive: true })
 
@@ -92,7 +94,7 @@ const content = {
     },
   },
   // A 1000-token prompt is over a 50-token threshold.
-  plugins: [{ package: spec.plugin, options: { ttlSeconds: TTL_SECONDS, shortMarginSeconds: MARGIN_SECONDS, thresholdTokens: 50 } }],
+  plugins: [{ package: matchingInput("cmd/idle-compact", spec.plugin), options: { ttlSeconds: TTL_SECONDS, shortMarginSeconds: MARGIN_SECONDS, thresholdTokens: 50 } }],
 }
 
 /** As much of the fork's SDK as the run uses; the fork is found at run time, so it is typed here. */
@@ -109,7 +111,7 @@ interface Embedded {
 interface Sdk {
   readonly OpenCode: { readonly create: (options: Record<string, unknown>) => Promise<Embedded> }
 }
-const { OpenCode } = (await import(join(spec.fork, "packages/sdk/src/index.ts"))) as Sdk
+const { OpenCode } = (await import(externalInput(join(spec.fork, "packages/sdk/src/index.ts")))) as Sdk
 const log: Array<Line> = []
 const started: Array<Started> = []
 /** The host's hook context, as much as the clock uses. */
@@ -152,7 +154,7 @@ try {
   if (spec.others !== undefined) {
     await opencode.location.get({ location: { directory: work } })
     for (let index = 0; index < spec.others; index += 1) {
-      const directory = join(spec.base, `other-${index}`)
+      const directory = join(base, `other-${index}`)
       mkdirSync(directory, { recursive: true })
       await opencode.location.get({ location: { directory } })
     }
@@ -178,7 +180,7 @@ try {
   if (spec.background) await opencode.experimental.session.wait({ sessionID: session.id })
   late = await opencode.sessions.context({ sessionID: session.id })
   const result: Result = { early, late, seen: sim.seen, started, log }
-  writeFileSync(join(spec.base, "result.json"), JSON.stringify(result, null, 2))
+  writeFileSync(join(base, "result.json"), JSON.stringify(result, null, 2))
 } finally {
   await opencode.close()
   sim.server.stop(true)

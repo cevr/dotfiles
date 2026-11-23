@@ -1,5 +1,5 @@
 // @reads all
-// @reads-reason nonliteral subprocess arguments at tests/cli-tree-installed.test.ts: const ran = spawnSync(["/bin/cat", externalInput(file)], { stdout: "pipe", stderr: "pipe" })
+// @reads-reason computed read at tests/cli-tree-installed.test.ts: [...new Glob(glob).scanSync({ cwd: at })]
 // accept: deep (3.0 s alone on a quiet host: it runs every plain-Bun command's probes from a whole installed tree)
 // accept: off until TREE_OPENCODE is set (it checks the no-links tree the production tree maker made, which only the deep gate makes)
 /**

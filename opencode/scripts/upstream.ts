@@ -434,15 +434,20 @@ export const withUpstreamLock = async <A>(state: string, merge: () => Promise<A>
  * merge step fetched nothing) it fetches upstream first, once, if the fork has
  * the remote. None when the fork has no `upstream/dev` to count against.
  */
-export const upstreamReading = (fork: string, report: string, fetch: boolean, now: Date = new Date(), env?: GitEnv): UpstreamReading | undefined => {
-  const { git, must } = runner(env)
+export const upstreamReadingFrom = (
+  fork: string, report: string, fetch: boolean, now: Date,
+  { git, must, exists }: Pick<Runner, "git" | "must"> & { readonly exists: (file: string) => boolean },
+): UpstreamReading | undefined => {
   if (fetch && git(fork, "remote", "get-url", UPSTREAM_REMOTE).ok) git(fork, "fetch", "--quiet", UPSTREAM_REMOTE, UPSTREAM_BRANCH)
   const upstream = git(fork, "rev-parse", "--verify", "--quiet", `refs/remotes/${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH}`)
   if (!upstream.ok) return undefined
   const build = must(fork, "rev-parse", "HEAD")
   const commits = Number(must(fork, "rev-list", "--count", `${build}..${upstream.out}`))
-  return { commits, blocked: existsSync(report), upstream: upstream.out, build, at: now.toISOString() }
+  return { commits, blocked: exists(report), upstream: upstream.out, build, at: now.toISOString() }
 }
+
+export const upstreamReading = (fork: string, report: string, fetch: boolean, now: Date = new Date(), env?: GitEnv) =>
+  upstreamReadingFrom(fork, report, fetch, now, { ...runner(env), exists: existsSync })
 
 export type SyncOutcome =
   | { readonly kind: "fetch-failed"; readonly error: string }

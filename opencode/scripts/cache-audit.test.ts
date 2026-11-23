@@ -1,17 +1,23 @@
-// @reads all
-// @reads-reason computed read at scripts/cache-audit.ts: const servers = existsSync(join(root, "cmd"))
 import { describe, expect, test } from "bun:test"
+import { Option } from "effect"
 import { mkdirSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { audit } from "../mods/cache/audit.ts"
 import { DEFAULT_DIR, FILE_NAME } from "../mods/cache/filestore/request-log.ts"
 import type { LedgerLine } from "../mods/cache/request-log.ts"
 import { ORCHESTRATOR } from "../mods/orchestrate/role.ts"
+import { readScratchDirectorySync, readScratchFileSync, scratchExistsSync } from "../tests/read-path.ts"
 import { scratch } from "../tests/scratch.ts"
-import { parseArgs, probe } from "./cache-audit.ts"
+import { parseArgs, probeWith } from "./cache-audit.ts"
 
 const NOW = Date.parse("2026-11-06T12:00:00Z")
 const DAY = 86_400_000
+const probe = (root: string, fork: string, config: string) =>
+  probeWith({
+    exists: scratchExistsSync,
+    entries: readScratchDirectorySync,
+    text: (file) => Option.getOrUndefined(Option.map(Option.liftPredicate(file, scratchExistsSync), (path) => readScratchFileSync(path, "utf8"))),
+  }, root, fork, config)
 
 describe("cache-audit's command line", () => {
   test("by default: the last 7 days of this machine's ledger, build, plan and the orchestrator as the primary agents, no static check", () => {

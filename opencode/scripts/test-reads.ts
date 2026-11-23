@@ -9,6 +9,9 @@ const path = Effect.runSync(Effect.provide(Path.Path, Path.layer))
 const REPO = "/checkout"
 const CWD = `${REPO}/opencode`
 const TEMP = "/scratch"
+const EXTERNAL = "/external-checked-input"
+/** Virtual address for a resolution known to belong to a locked installed package. */
+export const INSTALLED_MODULE = "/installed-dependency"
 const FS = new Set(["fs", "fs/promises"])
 const FILE = new Set([
   "readFile", "readFileSync", "readFileString", "createReadStream", "stream", "open", "openSync", "copy", "copyFile", "copyFileSync", "cp", "cpSync", "readLink", "readlink", "readlinkSync",
@@ -18,8 +21,12 @@ const DIRECTORY = new Set(["readDirectory", "readdir", "readdirSync", "opendir",
 const GIT_READS = new Set(["grep", "ls-files", "ls-tree", "show", "diff"])
 const WHOLE_TREE = new Set(["**", "**/*", "./**", "../**"])
 const SCOPE = new Set(["Program", "BlockStatement", "ArrowFunctionExpression", "FunctionExpression", "FunctionDeclaration", "ForOfStatement", "ForInStatement", "ForStatement", "CatchClause"])
+const ERASED_SYNTAX = new Set([
+  "TSInterfaceDeclaration", "TSTypeAliasDeclaration", "TSTypeAnnotation", "TSTypeParameterDeclaration",
+  "TSTypeParameterInstantiation", "TSTypeQuery", "TSImportType",
+])
 const SCRATCH = new Set([
-  "tests/read-path.ts:scratchInput", "tests/read-path.ts:externalInput", "tests/read-path.ts:installedInput", "tests/scratch.ts:scratch", "tests/scratch.ts:keptScratch",
+  "tests/read-path.ts:scratchInput", "tests/read-path.ts:installedInput", "tests/scratch.ts:scratch", "tests/scratch.ts:keptScratch",
 ])
 const MESSAGE = "cannot prove the read stays in scope; use a literal path or matchingInput with a declared scope; otherwise declare @reads all and name the opaque site in @reads-reason"
 const keyOf = (at: Node) => `${at.type}:${at.start}`
@@ -82,21 +89,26 @@ const builtinModule = (at: Node) => {
 
 const syntaxOf = (program: Node, dir: string) => {
   const entries = new Array<Node>()
-  const bindings = new Array<Binding>()
+  const bindings = new Map<number, Map<string, Binding>>()
   const scopes = new Map<string, ReadonlyArray<number>>()
   const visit = (at: Node, parent: ReadonlyArray<number>) => {
+    if (ERASED_SYNTAX.has(at.type)) return
     const current = (SCOPE.has(at.type) && [...parent, entries.length]) || parent
     scopes.set(keyOf(at), current)
     entries.push(at)
-    bindings.push(...bindingsAt(at, current.at(-1) ?? -1, dir))
+    const scope = current.at(-1) ?? -1
+    const own = bindings.get(scope) ?? new Map<string, Binding>()
+    for (const binding of bindingsAt(at, scope, dir)) if (!own.has(binding.name)) own.set(binding.name, binding)
+    bindings.set(scope, own)
     for (const each of children(at)) visit(each, current)
   }
   visit(program, [])
   const bindingOf = (at: MaybeNode) => {
     if (!at) return
     const name = id(at)
+    if (!name) return
     for (const scope of (scopes.get(keyOf(at)) ?? []).toReversed()) {
-      const binding = bindings.find((item) => item.name === name && item.scope === scope)
+      const binding = bindings.get(scope)?.get(name)
       if (binding) return binding
     }
   }
@@ -222,9 +234,10 @@ const composedPath = (called: string, args: ReadonlyArray<Node>, read: Evaluatio
 const callPath = (called: string, callee: MaybeNode, args: ReadonlyArray<Node>, read: Evaluation): Resolved => {
   if (called === "process:cwd") return fixed(CWD)
   if (called === "os:tmpdir" || SCRATCH.has(called)) return fixed(TEMP)
+  if (called === "tests/read-path.ts:externalInput") return fixed(EXTERNAL)
   if (called === "tests/read-path.ts:matchingInput") {
     const target = literalPath(read(args[1] ?? args[0]))
-    if (Option.isSome(target)) return fixed(target.value)
+    if (Option.isSome(target)) return fixed(path.resolve(CWD, target.value))
     return Option.map(literalPath(read(args[0])), (glob) => ({ glob, bounded: true }))
   }
   if (["url:fileURLToPath", "fs:realpathSync", "fs:realPath", "path:fromFileUrl"].includes(called)) return read(args[0])
@@ -260,7 +273,18 @@ const identifierPath = (binding: ReturnType<Syntax["bindingOf"]>, loadSource: (f
   return read(binding?.value)
 }
 
-const evaluate = (file: string, syntax: Syntax, loadSource: (file: string) => string): Evaluation => {
+const resolveCandidates = (args: ReadonlyArray<Node>, read: Evaluation, loadSource: Source, resolvePackage: ResolvePackage) =>
+  combinations([read(args[0]), read(args[1])]).map(([name = "", dir = ""]) => {
+    const cwd = path.resolve(CWD, dir)
+    const local = name.startsWith(".") || path.isAbsolute(name)
+    const from = path.relative(CWD, path.join(cwd, "resolver.ts"))
+    const request = (path.isAbsolute(name) && `./${path.relative(cwd, name)}`) || name
+    const found = resolvePackage(request, from) || (local && modulePath(name, cwd, loadSource)) || ""
+    return { name, found, files: (local && modulePaths(name, cwd)) || [] }
+  })
+
+const RESOLVE_SYNC = new Set(["bun:resolveSync", "Bun:resolveSync"])
+const evaluate = (file: string, syntax: Syntax, loadSource: Source, resolvePackage: ResolvePackage): Evaluation => {
   const absolute = path.resolve(CWD, file)
   const valueOf = (expr: MaybeNode, seen = new Set<string>()): Resolved => {
     const at = unwrap(expr)
@@ -279,7 +303,14 @@ const evaluate = (file: string, syntax: Syntax, loadSource: (file: string) => st
     if (at.type === "BinaryExpression" && field(at, "operator") === "+") return pathParts([again(child(at, "left")), again(child(at, "right"))], "")
     if (at.type === "CallExpression" || at.type === "NewExpression") {
       const callee = child(at, "callee")
-      return callPath(syntax.symbol(callee), callee, argsOf(at), again)
+      const called = syntax.symbol(callee)
+      const args = argsOf(at)
+      if (RESOLVE_SYNC.has(called)) {
+        const candidates = resolveCandidates(args, again, loadSource, resolvePackage)
+        if (candidates.some(({ found }) => !found)) return Option.none()
+        return choice(candidates.map(({ found }) => path.resolve(CWD, found)))
+      }
+      return callPath(called, callee, args, again)
     }
     return Option.none()
   }
@@ -296,6 +327,7 @@ const patternOf = (input: Address, cwd: string, listing: boolean): Option.Option
   }
   const at = path.resolve(cwd, input.prefix)
   if (input.tail) return Option.none()
+  if (at === INSTALLED_MODULE || at === EXTERNAL) return Option.some("")
   if (within(TEMP, at)) return Option.some("")
   if (listing && (at === CWD || at === REPO)) return Option.none()
   if (!input.tail && !listing && (at === CWD || at === REPO)) return Option.some("")
@@ -326,8 +358,14 @@ const gitReads = (at: Node, args: ReadonlyArray<Node>, cwd: string, from: number
 }
 
 // sleep accepts only durations. This ps form names only columns, never a file (other ps flags can).
+const psQuery = (args: ReadonlyArray<Node>) => {
+  const [first, second, third, fourth] = args.map(literal)
+  return (args.length === 2 && (first === "-p" || (first === "-axo" && /^[a-z=, ]+$/.test(second ?? "")))) ||
+    (args.length === 5 && first === "-ww" && second === "-o" && third === "command=" && fourth === "-p")
+}
+
 const noFileOperands = (command: string, args: ReadonlyArray<Node>) =>
-  command === "sleep" || (command === "ps" && args.length === 2 && literal(args[0]) === "-axo" && /^[a-z=, ]+$/.test(literal(args[1]) ?? ""))
+  command === "sleep" || (command === "ps" && psQuery(args))
 
 const childDirectory = (command: string, dashC: number, args: ReadonlyArray<Node>, directory: MaybeNode, evaluate: Evaluation) => {
   const override = (command === "git" && dashC >= 0 && args[dashC + 1]) || directory
@@ -337,6 +375,7 @@ const childDirectory = (command: string, dashC: number, args: ReadonlyArray<Node
 const childReads = (at: Node, program: string, args: ReadonlyArray<Node>, directory: MaybeNode, evaluate: Evaluation, record: ReadSite) => {
   const command = program.replace(/^(?:\/usr)?\/bin\//, "")
   if (noFileOperands(command, args)) return
+  if (command === "cat" && args.length === 1 && temporary(evaluate(args[0]))) return
   if (!["git", "grep", "rg", "cat"].includes(command)) return record(at, opaque("subprocess reads"))
   if (args.some((arg) => !Predicate.isString(literal(arg)))) return record(at, opaque("nonliteral subprocess arguments"))
   const dashC = args.map(literal).indexOf("-C")
@@ -391,7 +430,29 @@ const ARGV_HELPER = new Set(["tests/owned.ts:owned", "tests/reconnect/host.ts:ru
 const MODULE_DATA = /\.(?:json|toml|txt|md)$/
 // These adapters keep process/scratch housekeeping separate from the caller's inputs.
 // Their read and spawn entrypoints are modeled at the call (including unknown argv).
-const CHECKED_HELPERS = new Set(["tests/scratch.ts", "tests/read-path.ts", "tests/owned.ts"])
+const CHECKED_HELPERS = new Set(["tests/scratch.ts", "tests/read-path.ts", "tests/owned.ts", "tests/scratch-child.ts", "tests/lint-fixture.ts"])
+const BOUNDED_PROCESS = new Set([
+  "tests/scratch-child.ts", "tests/scratch-child.ts:spawnScratchGitSync", "tests/scratch-child.ts:spawnScratchShell", "tests/owned.ts:ownedScratchShell",
+  "tests/scratch-child.ts:scratchBunJUnitSync",
+  "tests/scratch-child.ts:spawnCheckoutShellSync",
+  "tests/scratch-child.ts:checkoutShellFixtureCommand",
+  "tests/scratch-child.ts:spawnScratchZshSync",
+  "tests/scratch-child.ts:initScratchGit",
+  "tests/scratch-child.ts:cloneScratchGit",
+  "tests/scratch-child.ts:detachedCheckoutBun",
+  "tests/scratch-child.ts:checkoutBunCommand",
+  "tests/scratch-child.ts:spawnCheckoutBun",
+  "tests/scratch-child.ts:checkoutBun",
+  "tests/owned.ts:ownedCheckoutBun",
+  "tests/scratch-child.ts:forkServiceCommand",
+  "tests/lint-fixture.ts", "tests/lint-fixture.ts:lintFixture", "tests/lint-fixture.ts:lintCheckoutFixture",
+])
+const LINT_FIXTURE = new Set(["tests/lint-fixture.ts:lintFixture", "tests/lint-fixture.ts:lintCheckoutFixture"])
+const DETACHED_CHECKOUT_BUN = "tests/scratch-child.ts:detachedCheckoutBun"
+const CHECKOUT_BUN = new Set([
+  DETACHED_CHECKOUT_BUN, "tests/scratch-child.ts:checkoutBun", "tests/scratch-child.ts:checkoutBunCommand",
+  "tests/scratch-child.ts:spawnCheckoutBun", "tests/owned.ts:ownedCheckoutBun",
+])
 const workspacePackage = (specifier: string) => specifier.startsWith("@dotfiles/")
 
 const executableImport = (at: Node) => {
@@ -433,24 +494,62 @@ const ownedEnvironmentOnly = (called: string, args: ReadonlyArray<Node>) => {
   return argv.length === 1 && literal(argv[0]) === "/usr/bin/env"
 }
 
-const processRead = (at: Node, called: string, args: ReadonlyArray<Node>, evaluate: Evaluation, record: ReadSite) => {
-  if (EXEC_SHELL.has(called)) return record(at, opaque("shell reads"))
-  if (ARGV_HELPER.has(called)) {
-    if (ownedEnvironmentOnly(called, args)) return
-    const module = ownedEntry(called, args, evaluate)
-    if (module) {
-      record(at, fixed(module))
-      return record(at, fixed("bun.plugins/config"))
-    }
-    const scenario = scenarioArg(called, args)
-    const cwd = opts(args[1], "cwd")
-    const root = Option.getOrElse(literalPath(evaluate(cwd)), () => "")
-    if (scenario && (!cwd || (root && path.resolve(CWD, root) === CWD))) {
-      record(at, fixed(scenario))
-      return record(at, fixed("bunx.plugins/config"))
-    }
-    return record(at, opaque("subprocess helper reads"))
+const checkoutBunEntry = (called: string, args: ReadonlyArray<Node>, evaluate: Evaluation) => {
+  if (!CHECKOUT_BUN.has(called)) return ""
+  return Option.getOrElse(literalPath(evaluate(args[0])), () => "")
+}
+
+const objectProperties = (at: MaybeNode) =>
+  nodes(field(at, "properties"))
+const literalObject = (at: MaybeNode) => {
+  if (at?.type !== "ObjectExpression") return false
+  const keys = new Set<string>()
+  for (const item of objectProperties(at)) {
+    const key = id(child(item, "key")) ?? literal(child(item, "key"))
+    if (item.type !== "Property" || field(item, "computed") || field(item, "kind") !== "init" || !key || key === "__proto__" || keys.has(key)) return false
+    keys.add(key)
   }
+  return true
+}
+
+const checkoutBunInputs = (at: Node, inputs: MaybeNode, evaluate: Evaluation, record: ReadSite) => {
+  if (!literalObject(inputs)) return record(at, opaque("computed checkout fixture inputs"))
+  const checkout = opts(inputs, "checkout")
+  if (!checkout) return
+  if (!literalObject(checkout)) return record(at, opaque("computed checkout fixture operands"))
+  for (const item of objectProperties(checkout)) record(at, evaluate(child(item, "value")))
+}
+
+const argvHelperRead = (at: Node, called: string, args: ReadonlyArray<Node>, evaluate: Evaluation, record: ReadSite) => {
+  if (ownedEnvironmentOnly(called, args)) return
+  const module = ownedEntry(called, args, evaluate)
+  if (module) {
+    record(at, fixed(module))
+    return record(at, fixed("bun.plugins/config"))
+  }
+  const scenario = scenarioArg(called, args)
+  const cwd = opts(args[1], "cwd")
+  const root = Option.getOrElse(literalPath(evaluate(cwd)), () => "")
+  if (scenario && (!cwd || (root && path.resolve(CWD, root) === CWD))) {
+    record(at, fixed(scenario))
+    return record(at, fixed("bunx.plugins/config"))
+  }
+  return record(at, opaque("subprocess helper reads"))
+}
+
+const processRead = (at: Node, called: string, args: ReadonlyArray<Node>, evaluate: Evaluation, record: ReadSite) => {
+  if (LINT_FIXTURE.has(called)) {
+    record(at, fixed("lint/test-env.ts"))
+    if (called === "tests/lint-fixture.ts:lintCheckoutFixture") {
+      record(at, fixed(".oxlintrc.json"))
+      record(at, Option.map(literalPath(evaluate(args[0])), (glob) => ({ glob, bounded: true })))
+    }
+    return
+  }
+  if (called === "tests/scratch-child.ts:spawnCheckoutShellSync") return record(at, evaluate(args[1]))
+  if (called === "tests/scratch-child.ts:checkoutShellFixtureCommand") return record(at, evaluate(args[0]))
+  if (EXEC_SHELL.has(called)) return record(at, opaque("shell reads"))
+  if (ARGV_HELPER.has(called)) return argvHelperRead(at, called, args, evaluate, record)
   if (BUN_SPAWN.has(called)) {
     const command = opts(args[0], "cmd") ?? args[0]
     if (command?.type !== "ArrayExpression") return record(at, opaque("nonliteral subprocess argv"))
@@ -472,15 +571,19 @@ const callRead = (at: Node, syntax: Syntax, evaluate: Evaluation, record: ReadSi
     return record(at, opaque("native TUI plugin loader reads"))
   if (dynamicMember(callee, syntax.symbol)) return record(at, opaque("computed filesystem or process method"))
   if (called === "eval" || called === "Function") return record(at, opaque("evaluated program reads"))
-  if (called === "require") {
-    const name = literal(args[0])
-    if (!name || /^[./]/.test(name) || workspacePackage(name)) return record(at, opaque("dynamically required module"))
-  }
   if (called === "tests/read-path.ts:matchingInput") return record(at, evaluate(at))
+  if (called === "tests/read-path.ts:readInputText") return record(at, callPath("tests/read-path.ts:matchingInput", callee, args, evaluate))
   if (filesystemCall(called)) {
     const [, method = ""] = called.split(":")
     const recursive = ["cp", "cpSync"].includes(method) && field(opts(args[2], "recursive"), "value") === true
     return record(at, evaluate(args[0]), CWD, DIRECTORY.has(method) || method === "copy" || recursive)
+  }
+  if (CHECKOUT_BUN.has(called)) {
+    const entry = checkoutBunEntry(called, args, evaluate)
+    if (!entry) return record(at, opaque("nonliteral checkout entry"))
+    record(at, fixed(entry))
+    if (called !== DETACHED_CHECKOUT_BUN) checkoutBunInputs(at, args[1], evaluate, record)
+    return record(at, fixed("bun.plugins/config"))
   }
   processRead(at, called, args, evaluate, record)
   globRead(at, syntax, evaluate, record)
@@ -498,15 +601,10 @@ export interface ReadCheck {
 const parserFailure = (messages: ReadonlyArray<string>): ReadCheck =>
   ({ patterns: [], bounded: [], indirect: [], classification: "unknown", issues: messages.map((message) => ({ line: 1, message })) })
 
-const checkSite = (at: Node, fileDir: string, syntax: Syntax, valueOf: Evaluation, record: ReadSite) => {
+const checkSite = (at: Node, syntax: Syntax, valueOf: Evaluation, record: ReadSite) => {
   if (at.type === "TaggedTemplateExpression") return shellRead(at, syntax, record)
   if (at.type === "CallExpression") return callRead(at, syntax, valueOf, record)
   if (at.type === "NewExpression" && syntax.symbol(child(at, "callee")) === "Function") return record(at, opaque("evaluated program reads"))
-  if (at.type !== "ImportExpression") return
-  const target = child(at, "source")
-  const name = literal(target)
-  if (!Predicate.isString(name) || name.startsWith(".") || name.startsWith("/")) record(at, valueOf(target), fileDir)
-  if (!Predicate.isString(name)) record(at, opaque("dynamically loaded module"))
 }
 
 const readClassification = (unknown: boolean, count: number): ReadCheck["classification"] => {
@@ -526,12 +624,16 @@ interface Site {
 
 type Source = (file: string) => string
 type ResolvePackage = (specifier: string, from: string) => string
-const LOCAL_MODULE = new Set(["ImportDeclaration", "ExportNamedDeclaration", "ExportAllDeclaration", "ImportExpression"])
-const modulePath = (specifier: string, dir: string, loadSource: Source) => {
+const LOCAL_MODULE = new Set(["ImportDeclaration", "ExportNamedDeclaration", "ExportAllDeclaration"])
+const modulePaths = (specifier: string, dir: string) => {
   const base = path.relative(CWD, path.resolve(dir, specifier))
   const stem = base.replace(/\.[cm]?jsx?$/, "")
-  return [base, `${stem}.ts`, `${stem}.tsx`, `${base}.js`, `${base}/index.ts`, `${base}/index.tsx`, `${base}/index.js`].find(loadSource) ?? ""
+  if (/\.[cm]?tsx?$/.test(base)) return [base]
+  if (stem !== base) return [base, `${stem}.ts`, `${stem}.tsx`]
+  return [base, ...[".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", "/index.ts", "/index.tsx", "/index.js", "/package.json"].map((suffix) => base + suffix)]
 }
+
+const modulePath = (specifier: string, dir: string, loadSource: Source) => modulePaths(specifier, dir).find(loadSource) ?? ""
 
 const moduleEdge = (at: Node, current: string, dir: string, loadSource: Source, resolvePackage: ResolvePackage, record: ReadSite) => {
   if (!LOCAL_MODULE.has(at.type) || !executableImport(at)) return ""
@@ -539,15 +641,24 @@ const moduleEdge = (at: Node, current: string, dir: string, loadSource: Source, 
   if (MODULE_DATA.test(specifier)) return ""
   if (!specifier.startsWith(".") && !workspacePackage(specifier)) return ""
   const next = (specifier.startsWith(".") && modulePath(specifier, dir, loadSource)) || resolvePackage(specifier, current)
+  if (next === INSTALLED_MODULE) return ""
   if (next) return next
   record(at, opaque(`unresolved helper ${specifier}`))
   return ""
 }
 
-const resolutionAt = (at: Node, syntax: Syntax, record: ReadSite) => {
+const resolutionAt = (at: Node, syntax: Syntax, read: Evaluation, loadSource: Source, resolvePackage: ResolvePackage, record: ReadSite) => {
   const called = syntax.symbol(child(at, "callee"))
-  if (at.type !== "CallExpression" || !["bun:resolveSync", "Bun:resolveSync"].includes(called)) return
-  record(at, opaque("computed module resolver reads"))
+  if (at.type !== "CallExpression" || !RESOLVE_SYNC.has(called)) return
+  const operands = resolveCandidates(argsOf(at), read, loadSource, resolvePackage)
+  if (operands.length === 0) return record(at, opaque("computed module resolver reads"))
+  for (const { name, found, files } of operands) {
+    if (!found) {
+      record(at, opaque(`unresolved resolver candidate ${name}`))
+      continue
+    }
+    for (const file of new Set([found, ...files])) record(at, fixed(file))
+  }
 }
 
 const graph = () => ({
@@ -559,24 +670,80 @@ const graph = () => ({
 })
 type Graph = ReturnType<typeof graph>
 
-const referenceAt = (graph: Graph, at: Node, region: string, next: string) => {
-  if (!next || (at.type === "ImportDeclaration" && CHECKED_HELPERS.has(next))) return
-  if (at.type === "ImportExpression") graph.dynamics.set(region, [...(graph.dynamics.get(region) ?? []), { file: next, symbol: "*" }])
-  else graph.initializers.add(next)
+const referenceAt = (graph: Graph, at: Node, next: string) => {
+  if (!next) return
+  graph.initializers.add(next)
+  if (at.type === "ImportDeclaration" && CHECKED_HELPERS.has(next)) return
   for (const { local, target } of moduleReferences(at, next))
     graph.imports.set(local, [...(graph.imports.get(local) ?? []), target])
 }
 
+const importedCandidate = (name: string, dir: string, current: string, load: Source, resolvePackage: ResolvePackage) => {
+    const local = name.startsWith(".") || path.isAbsolute(name)
+    const request = (path.isAbsolute(name) && `./${path.relative(dir, name)}`) || name
+    const next = resolvePackage(request, current) || (local && modulePath(name, dir, load))
+    const files = (local && modulePaths(name, dir)) || []
+    return { local, next, files }
+}
+
+const importedModule = (at: Node, target: Node, name: string, dir: string, current: string, load: Source, resolvePackage: ResolvePackage, record: ReadSite) => {
+  const location = path.resolve(dir, name)
+  if (location === INSTALLED_MODULE || location === EXTERNAL) return ""
+  if (within(TEMP, location)) {
+    record(at, opaque("generated module reads"))
+    return ""
+  }
+  if (MODULE_DATA.test(name)) {
+    record(at, fixed(name), dir)
+    return ""
+  }
+  const { local, next, files } = importedCandidate(name, dir, current, load, resolvePackage)
+  if (next === INSTALLED_MODULE) return ""
+  if (!next) {
+    // Like an installed static import, a literal package need not have source here.
+    if (!literal(target) || local || workspacePackage(name)) record(at, opaque(`unresolved loaded module ${name}`))
+    return ""
+  }
+  for (const file of new Set([next, ...files])) record(at, fixed(file))
+  return next
+}
+
+const dynamicTarget = (at: Node, syntax: Syntax) =>
+  (at.type === "ImportExpression" && child(at, "source")) ||
+  (at.type === "CallExpression" && syntax.symbol(child(at, "callee")) === "require" && argsOf(at)[0])
+
+const dynamicModuleAt = (graph: Graph, at: Node, region: string, current: string, syntax: Syntax, read: Evaluation, load: Source, resolvePackage: ResolvePackage, record: ReadSite) => {
+  const target = dynamicTarget(at, syntax)
+  if (!target) return
+  const candidates = choicesOf(read(target))
+  if (candidates.length === 0) return record(at, opaque("dynamically loaded module"))
+  const dir = path.dirname(path.resolve(CWD, current))
+  for (const name of candidates) {
+    const next = importedModule(at, target, name, dir, current, load, resolvePackage, record)
+    if (next) graph.dynamics.set(region, [...(graph.dynamics.get(region) ?? []), { file: next, symbol: "*" }])
+  }
+}
+
 const entrypointAt = (graph: Graph, at: Node, region: string, syntax: Syntax, evaluate: Evaluation) => {
   if (at.type !== "CallExpression") return
-  const module = ownedEntry(syntax.symbol(child(at, "callee")), argsOf(at), evaluate)
+  const called = syntax.symbol(child(at, "callee"))
+  const args = argsOf(at)
+  if (LINT_FIXTURE.has(called)) {
+    graph.dynamics.set(region, [...(graph.dynamics.get(region) ?? []), { file: "lint/test-env.ts", symbol: "*" }])
+    return
+  }
+  const module = ownedEntry(called, args, evaluate) || checkoutBunEntry(called, args, evaluate)
   if (module) graph.dynamics.set(region, [...(graph.dynamics.get(region) ?? []), { file: module, symbol: "@main" }])
 }
 
 const memberNames = new Set(["MemberExpression", "Property", "MethodDefinition", "PropertyDefinition"])
-const symbolAt = (graph: Graph, at: Node, region: string, nonReferences: ReadonlySet<string>) => {
+const symbolAt = (graph: Graph, at: Node, region: string, nonReferences: ReadonlySet<string>, syntax: Syntax) => {
   const symbol = id(at)
   if (!symbol || nonReferences.has(keyOf(at))) return
+  const binding = syntax.bindingOf(at)
+  // Local values are analyzed where they are defined; their names do not also
+  // call an unrelated, same-named top-level export.
+  if (binding && binding.scope !== 0) return
   const names = graph.symbols.get(region) ?? new Set<string>()
   names.add(symbol)
   graph.symbols.set(region, names)
@@ -585,13 +752,15 @@ const symbolAt = (graph: Graph, at: Node, region: string, nonReferences: Readonl
 
 const escapedProcess = (at: Node, syntax: Syntax, signatures: ReadonlySet<string>, calls: ReadonlySet<string>) =>
   id(at) && !signatures.has(keyOf(at)) && !calls.has(keyOf(at)) &&
-  ["tests/owned.ts", "tests/owned.ts:owned"].includes(syntax.symbol(at))
+  (["tests/owned.ts", "tests/owned.ts:owned"].includes(syntax.symbol(at)) || BOUNDED_PROCESS.has(syntax.symbol(at)))
 
 const nonReferencesOf = (entries: ReadonlyArray<Node>) => new Set(entries.flatMap((at) => {
   const specifiers = nodes(field(at, "specifiers")).flatMap(children).map(keyOf)
-  if (!memberNames.has(at.type) || field(at, "computed") || field(at, "shorthand")) return specifiers
+  const declaration = ["ClassDeclaration", "FunctionDeclaration", "VariableDeclarator"].includes(at.type) && child(at, "id")
+  const nonReferences = (declaration && [...specifiers, keyOf(declaration)]) || specifiers
+  if (!memberNames.has(at.type) || field(at, "computed") || field(at, "shorthand")) return nonReferences
   const key = child(at, "property") ?? child(at, "key")
-  return (key && [...specifiers, keyOf(key)]) || specifiers
+  return (key && [...nonReferences, keyOf(key)]) || nonReferences
 }))
 
 const inspect = (file: string, source: string, loadSource: Source, resolvePackage: ResolvePackage) => {
@@ -604,7 +773,7 @@ const inspect = (file: string, source: string, loadSource: Source, resolvePackag
   if (!program || errors.length > 0) return { sites, ...refs, errors, comments: [] }
   const fileDir = path.dirname(path.resolve(CWD, file))
   const syntax = syntaxOf(program, fileDir)
-  const valueOf = evaluate(file, syntax, loadSource)
+  const valueOf = evaluate(file, syntax, loadSource, resolvePackage)
   const regions = [...entryRegions(syntax.entries), ...regionsOf(program, syntax.symbol)]
   const signatures = nonReferencesOf(syntax.entries)
   const calls = new Set(syntax.entries.flatMap((at) => {
@@ -617,12 +786,13 @@ const inspect = (file: string, source: string, loadSource: Source, resolvePackag
   }
   for (const at of syntax.entries) {
     const region = regionOf(regions, at)
-    symbolAt(refs, at, region, signatures)
-    referenceAt(refs, at, region, moduleEdge(at, file, fileDir, loadSource, resolvePackage, record))
+    symbolAt(refs, at, region, signatures, syntax)
+    referenceAt(refs, at, moduleEdge(at, file, fileDir, loadSource, resolvePackage, record))
+    dynamicModuleAt(refs, at, region, file, syntax, valueOf, loadSource, resolvePackage, record)
     entrypointAt(refs, at, region, syntax, valueOf)
     if (escapedProcess(at, syntax, signatures, calls)) record(at, opaque("escaped subprocess helper"))
-    resolutionAt(at, syntax, record)
-    checkSite(at, fileDir, syntax, valueOf, record)
+    resolutionAt(at, syntax, valueOf, loadSource, resolvePackage, record)
+    checkSite(at, syntax, valueOf, record)
   }
   for (const { original, alias } of exportedAliases(program)) {
     refs.symbols.set(alias, new Set([...(refs.symbols.get(alias) ?? []), original]))
@@ -635,7 +805,7 @@ type Inspection = ReturnType<typeof inspect>
 const referencesOf = (file: string, symbol: string, summary: Inspection): ReadonlyArray<Reference> => {
   if (symbol === "*") {
     const owned = [...summary.deferred, ...summary.imports.keys()].flatMap((name) => (name !== "*" && [{ file, symbol: name }]) || [])
-    return [...owned, ...(summary.imports.get("*") ?? [])]
+    return [{ file, symbol: "" }, ...owned, ...(summary.imports.get("*") ?? [])]
   }
   const refs = [...(summary.dynamics.get(symbol) ?? [])]
   if (!symbol) {
@@ -655,7 +825,6 @@ const allSites = (file: string, root: Inspection, examine: (file: string) => Ins
   const queue = new Map<string, Reference>()
   const add = (reference: Reference) => queue.set(`${reference.file}\0${reference.symbol}`, reference)
   add({ file, symbol: "" })
-  for (const symbol of root.deferred) add({ file, symbol })
   const sites = new Set<Site>()
   for (const [key, reference] of queue) {
     if (seen.has(key)) continue

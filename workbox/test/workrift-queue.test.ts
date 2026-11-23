@@ -1,5 +1,5 @@
 // @reads all
-// @reads-reason subprocess reads at ../workbox/test/workrift-queue.test.ts: const ran = Bun.spawnSync([...argv], { cwd, env, stdout: "pipe", stderr: "pipe" })
+// @reads-reason computed read at ../workbox/test/workrift-queue.test.ts: if (!existsSync(state)) continue
 // A model, on a manual clock, of how workrift admits creates (readers: a copy of the base) and moves of the base
 // (writers: an advance's fast-forward and install, a refresh, a repair) to the base, and of what each writes inside
 // the tree a copy reads. Two protocols:

@@ -1,5 +1,3 @@
-// @reads all
-// @reads-reason subprocess reads at tests/questions-locations.test.ts: const child = Bun.spawn([process.execPath, join(import.meta.dir, "questions/run.ts"), file], {
 // The questions plugin in real OpenCode (the fork, through its SDK) on the
 // scripted model, with two project directories open on one server, as the
 // owner's servers have: the plugin is loaded once per directory. A question
@@ -12,16 +10,17 @@
 // host law pins where a form's reply is heard (tests/parity/subagents.json).
 // The subagent's question, answered in its root's form, moved there.
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
+import { externalInput, readScratchFileSync, scratchExistsSync } from "./read-path.ts"
 import type { Result, Spec } from "./questions/run.ts"
 import { ANSWERED, IDLE, LETTER, messagesOf } from "./questions/sim.ts"
 import { scratch as scratchDir } from "./scratch.ts"
+import { spawnCheckoutBun } from "./scratch-child.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/questions-locations.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 
-const ROOT = resolve(import.meta.dir, "..")
 const scratch = scratchDir("questions-locations-").path
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
@@ -31,28 +30,27 @@ const run = async (): Promise<Result> => {
   const home = join(base, "home")
   mkdirSync(home, { recursive: true })
   const file = join(base, "spec.json")
-  writeFileSync(file, JSON.stringify({ base, fork: resolve(fork ?? ""), plugin: join(ROOT, "cmd/questions") } satisfies Spec))
-  const child = Bun.spawn([process.execPath, join(import.meta.dir, "questions/run.ts"), file], {
-    env: {
-      PATH: process.env.PATH ?? "",
+  writeFileSync(file, JSON.stringify({ base, fork: externalInput(resolve(fork ?? "")) } satisfies Spec))
+  const child = spawnCheckoutBun("tests/questions/run.ts", {
+    scratchArgs: [file],
+    scratch: {
       HOME: home,
+      TMPDIR: base,
       XDG_CONFIG_HOME: join(home, ".config"),
       XDG_DATA_HOME: join(home, ".local/share"),
       XDG_STATE_HOME: join(home, ".local/state"),
       XDG_CACHE_HOME: join(home, ".cache"),
-      OPENCODE_DISABLE_MODELS_FETCH: "1",
     },
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
+    external: {},
+    values: { OPENCODE_DISABLE_MODELS_FETCH: "1" },
   })
   const timer = setTimeout(() => child.kill(), 120_000)
   const [stdout, stderr] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()])
   await child.exited
   clearTimeout(timer)
   const result = join(base, "result.json")
-  if (child.exitCode !== 0 || !existsSync(result)) throw new Error(`the questions run failed (exit ${child.exitCode}):\n${stdout}\n${stderr}`)
-  return JSON.parse(readFileSync(result, "utf8")) as Result
+  if (child.exitCode !== 0 || !scratchExistsSync(result)) throw new Error(`the questions run failed (exit ${child.exitCode}):\n${stdout}\n${stderr}`)
+  return JSON.parse(readScratchFileSync(result, "utf8")) as Result
 }
 
 describe.skipIf(!fork)("questions with two directories open on one server", () => {

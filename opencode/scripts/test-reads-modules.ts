@@ -1,4 +1,5 @@
-import { child, field, id, literal, type Node, nodes, property } from "./test-reads-ast.ts"
+import { Predicate } from "effect"
+import { child, children, field, id, literal, type Node, nodes, property, unwrap } from "./test-reads-ast.ts"
 
 export interface Reference {
   readonly file: string
@@ -23,7 +24,13 @@ const LAZY = new Set([
   "effect:Layer:suspend", "effect:Layer:mergeAll", "effect:Layer:succeed", "effect:Layer:unwrap",
 ])
 const FUNCTION = new Set(["ArrowFunctionExpression", "FunctionExpression", "FunctionDeclaration"])
+const EFFECT_FN = new Set(["effect:Effect:fn", "effect:Effect:fnUntraced"])
 const SIMPLE = new Set(["Identifier", "Literal", "ThisExpression"])
+const EFFECT_OPERATORS = new Set([
+  "effect:Effect:as", "effect:Effect:asVoid", "effect:Effect:catch", "effect:Effect:catchAll",
+  "effect:Effect:flatMap", "effect:Effect:map", "effect:Effect:mapError", "effect:Effect:option",
+  "effect:Effect:orDie", "effect:Effect:orElseSucceed", "effect:Effect:scoped", "effect:Effect:tap", "effect:Effect:withSpan",
+])
 
 const valueCreation = (value: Node, symbol: SymbolOf): boolean => {
   if (SIMPLE.has(value.type) || safelyLazy(value, symbol)) return true
@@ -41,11 +48,45 @@ const safelyLazy = (value: Node, symbol: SymbolOf): boolean => {
   if (value.type !== "CallExpression") return false
   const callee = child(value, "callee")
   const args = nodes(field(value, "arguments"))
-  return LAZY.has(symbol(callee)) && args.every((arg) => valueCreation(arg, symbol))
+  if (LAZY.has(symbol(callee))) return args.every((arg) => valueCreation(arg, symbol))
+  if (callee?.type === "CallExpression" && EFFECT_FN.has(symbol(child(callee, "callee"))) &&
+    nodes(field(callee, "arguments")).every((name) => Predicate.isString(literal(name)))) {
+    return args.length > 0 && args.every((arg) => valueCreation(arg, symbol))
+  }
+  const receiver = child(callee, "object")
+  return property(callee) === "pipe" && receiver?.type === "CallExpression" &&
+    safelyLazy(receiver, symbol) && args.every((arg) => effectOperator(arg, symbol))
+}
+
+const effectOperator = (value: Node, symbol: SymbolOf) => {
+  if (value.type !== "CallExpression") return EFFECT_OPERATORS.has(symbol(value))
+  const operator = child(value, "callee")
+  return EFFECT_OPERATORS.has(symbol(operator)) && nodes(field(value, "arguments")).every((arg) => valueCreation(arg, symbol))
+}
+
+/** A class's methods and instance initializers run only when the class is used. */
+const classRegions = (declaration: Node): ReadonlyArray<Region> => {
+  const name = id(child(declaration, "id")) ?? "default"
+  const members = nodes(field(child(declaration, "body"), "body"))
+  const accessesReceiver = (at: Node): boolean => at.type === "ThisExpression" || at.type === "Super" || children(at).some(accessesReceiver)
+  // Decorators can invoke a method while defining it. Static initialization
+  // can invoke one through `this` without spelling the class name.
+  if ([declaration, ...members].some((at) => nodes(field(at, "decorators")).length > 0)) return []
+  if (members.some((member) => {
+    if (member.type === "StaticBlock") return accessesReceiver(member)
+    const value = child(member, "value")
+    return member.type === "PropertyDefinition" && field(member, "static") && value && accessesReceiver(value)
+  })) return []
+  return members.flatMap((member) => {
+    const deferred = member.type === "MethodDefinition" || (member.type === "PropertyDefinition" && !field(member, "static"))
+    const value = deferred && child(member, "value")
+    return (value && [range(name, value)]) || []
+  })
 }
 
 const functionRegions = (statement: Node, symbol: SymbolOf): ReadonlyArray<Region> => {
   const declaration = child(statement, "declaration") ?? statement
+  if (declaration.type === "ClassDeclaration") return classRegions(declaration)
   if (declaration.type === "FunctionDeclaration") {
     const name = id(child(declaration, "id"))
     return [range(name ?? "default", declaration)]
@@ -53,8 +94,8 @@ const functionRegions = (statement: Node, symbol: SymbolOf): ReadonlyArray<Regio
   if (declaration.type !== "VariableDeclaration") return []
   return nodes(field(declaration, "declarations")).flatMap((binding) => {
     const name = id(child(binding, "id"))
-    const init = child(binding, "init")
-    return (name && init && safelyLazy(init, symbol) && [range(name, binding)]) || []
+    const init = unwrap(child(binding, "init"))
+    return (name && init && valueCreation(init, symbol) && [range(name, binding)]) || []
   })
 }
 

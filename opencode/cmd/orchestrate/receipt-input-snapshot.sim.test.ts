@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at cmd/orchestrate/receipt-input-snapshot.sim.test.ts: check(yield* Effect.sync(() => spawnSync(["mkfifo", path.join(receipts, `${outerTree}.round.jso
 // A review's inputs frozen from receipts (mods/orchestrate/batch-input.ts), through the producers' own formats
 // (batch-inputs.ts: Work's receipt and land record schemas, the updater's record), at 20 seeds. The source is a
 // script of whole file states, one served per read, so a test sees what a reader racing an install, a land or a

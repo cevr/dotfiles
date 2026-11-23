@@ -1,5 +1,5 @@
 // @reads all
-// @reads-reason computed read at mods/pool/store/store.ts: names: (path) => Effect.try({ try: () => readdirSync(path), catch: (cause) => cause }),
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // The commitment record through the plugin on the simulated host (orch-tools-world.ts): the real orchestrate plugin
 // with its `commitments` and `follow_up` tools, on the SQLite record in a scratch file (`options.record`), so a restart
 // reopens the same file. Every answer is read from the record at the call; the plugin keeps nothing of a run.

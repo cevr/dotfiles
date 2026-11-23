@@ -47,7 +47,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { homedir, hostname } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { type Catalog, loadCatalog, loginStoreDir, newestRelease } from "../testbeds/gamut/gamut.ts"
-import { BUILTIN_AUTOMATION_OFF, BUILTIN_BTW_OFF, SERVER_OFF, SERVER_PLUGINS, serverEntry, serverEntryDir, TUI_OFF, tuiPluginsOf } from "../mods/update/trees.ts"
+import { BUILTIN_AUTOMATION_OFF, BUILTIN_BTW_OFF, SERVER_OFF, SERVER_PLUGINS, serverEntry, serverEntryDir } from "../mods/update/trees.ts"
 import type { Settings } from "../mods/update/settings.ts"
 import type { TailnetRead, TailnetWrite } from "../mods/digest/policy.ts"
 import { readyFork } from "./fork.ts"
@@ -62,6 +62,7 @@ import { treeStageCommand } from "../mods/update/process/builder.ts"
 import { treeProgram } from "../mods/update/process/handoff.ts"
 import { environment } from "../mods/update/process/run.ts"
 import { releaseBuild, runDailyBuild, versionOf } from "../mods/update/process/pin.ts"
+import { pluginPackagesFrom, tuiEntriesFrom } from "./tui-entries.ts"
 
 /** This checkout's `opencode/` directory, which daily runs from. */
 const ROOT = resolve(import.meta.dir, "..")
@@ -489,16 +490,16 @@ export const serverEntries = (facts: HostFacts, dirOf: (name: string) => string)
 
 /** The plugin packages of the `opencode/` directory `root`, each `cmd/<name>` by its name and `package.json`, for `trees.ts` `tuiPluginsOf`. */
 export const pluginPackages = (root: string): ReadonlyArray<{ readonly name: string; readonly manifest: string }> =>
-  readdirSync(join(root, "cmd")).flatMap((name) => {
+  pluginPackagesFrom(readdirSync(join(root, "cmd")), (name) => {
     const manifest = join(root, "cmd", name, "package.json")
-    return Option.toArray(Option.liftPredicate(manifest, existsSync)).map((path) => ({ name, manifest: readFileSync(path, "utf8") }))
+    return Option.map(Option.liftPredicate(manifest, existsSync), (path) => readFileSync(path, "utf8"))
   })
 
 /**
  * The TUI's plugin entries: every plugin of the `opencode/` directory `root` with a TUI part, as `trees.ts`
  * `tuiPluginsOf` derives them, then the built-ins it turns off, each at the directory `dirOf` names.
  */
-export const tuiEntries = (root: string, dirOf: (name: string) => string): ReadonlyArray<string> => [...tuiPluginsOf(pluginPackages(root)).map(dirOf), ...TUI_OFF]
+export const tuiEntries = (root: string, dirOf: (name: string) => string): ReadonlyArray<string> => tuiEntriesFrom(pluginPackages(root), dirOf)
 
 /** Step 3 by hand: the host's settings the tree cannot carry (`writeSettings`). */
 const settingsByHand = (home: string) => writeSettings(home)

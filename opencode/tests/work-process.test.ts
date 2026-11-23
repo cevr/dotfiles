@@ -1,5 +1,5 @@
 // @reads all
-// @reads-reason subprocess reads at mods/work/process/command.ts: try: () => Bun.spawn([...argv], { cwd, env: { ...base, ...extra }, stdin: "ignore", stdout: "pi
+// @reads-reason nonliteral subprocess arguments at tests/git-repo.ts: execFileSync("git", [...args], { env, stdio: ["ignore", "ignore", "pipe"] })
 // accept: deep (415.2 s alone on a quiet host: 1-minute load 22–35 on 12 cores, none quieter to be had; its 33 cases make, commit in, land and remove real workspaces with the real work binary)
 // accept: one at a time (it bounds a dead clone's create under 20 s).
 // The process Rifts over Ergo's real `work` binary and Git, in a scratch HOME (so the list of bases is the test's

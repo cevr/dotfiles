@@ -1,5 +1,5 @@
 // @reads all
-// @reads-reason subprocess reads at scripts/effect-debt.ts: try: () => Bun.spawn([...argv], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", detache
+// @reads-reason subprocess reads at scripts/effect-debt.ts: try: () => Bun.spawn([...argv], { cwd, env: environment, stdin: "ignore", stdout: "pipe", stder
 /**
  * Test isolation at its two seams. At the lint CLI: `.oxlintrc.json` refuses every generated
  * test-global write (process.env and the global objects, by assignment, update, delete or the

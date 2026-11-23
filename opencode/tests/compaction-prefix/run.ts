@@ -19,9 +19,10 @@
  *
  * @module
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { main } from "../../cmd/memory/cli.ts"
+import { externalInput, matchingInput, readScratchFileSync, scratchInput } from "../read-path.ts"
 import { AUTO_TASK, BACKGROUND_TASK, IDLE_TASK, MARGIN_SECONDS, NOTE, type Seen, serve, TTL_SECONDS } from "./sim.ts"
 
 export type Mode = "auto" | "idle" | "background"
@@ -41,12 +42,13 @@ export interface Result {
   readonly compacted: boolean
 }
 
-const spec = JSON.parse(readFileSync(process.argv[2]!, "utf8")) as Spec
-const work = join(spec.base, "work")
-const config = join(spec.base, "config")
+const spec = JSON.parse(readScratchFileSync(process.argv[2]!, "utf8")) as Spec
+const base = scratchInput(spec.base)
+const work = join(base, "work")
+const config = join(base, "config")
 mkdirSync(work, { recursive: true })
 mkdirSync(config, { recursive: true })
-const db = join(spec.base, "memory.db")
+const db = join(base, "memory.db")
 const added = await main(["add", NOTE, "--scope", "global"], { db, now: Date.now() })
 if (added.code !== 0) throw new Error(`the note was not added: ${added.out}`)
 
@@ -69,10 +71,10 @@ const content = {
   },
   plugins: [
     // Prime's reply style, then memory's digest, as daily loads them.
-    spec.prime,
-    { package: spec.memory, options: { path: db } },
+    matchingInput("cmd/prime", spec.prime),
+    { package: matchingInput("cmd/memory", spec.memory), options: { path: db } },
     // A 1000-token prompt is over a 50-token threshold.
-    ...(spec.mode === "idle" ? [{ package: spec.idleCompact, options: { ttlSeconds: TTL_SECONDS, shortMarginSeconds: MARGIN_SECONDS, thresholdTokens: 50 } }] : []),
+    ...(spec.mode === "idle" ? [{ package: matchingInput("cmd/idle-compact", spec.idleCompact), options: { ttlSeconds: TTL_SECONDS, shortMarginSeconds: MARGIN_SECONDS, thresholdTokens: 50 } }] : []),
   ],
 }
 
@@ -89,7 +91,7 @@ interface Embedded {
 interface Sdk {
   readonly OpenCode: { readonly create: (options: Record<string, unknown>) => Promise<Embedded> }
 }
-const { OpenCode } = (await import(join(spec.fork, "packages/sdk/src/index.ts"))) as Sdk
+const { OpenCode } = (await import(externalInput(join(spec.fork, "packages/sdk/src/index.ts")))) as Sdk
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)))
 const compactedIn = (messages: unknown) =>
@@ -105,7 +107,7 @@ const WAIT_MS = 20_000
 try {
   const opencode = await OpenCode.create({
     events: { persist: true },
-    database: { path: join(spec.base, "opencode.db") },
+    database: { path: join(base, "opencode.db") },
     // The bundled catalog only. The embedded host reads no OPENCODE_DISABLE_MODELS_FETCH (the CLI's server does), and
     // a live models.dev fetch landing mid-run turns on the tools its models enable: once models.dev listed a free
     // image model (the `opencode` provider's grok-imagine-image-2.0), experimental_image_generate joined the idle
@@ -127,7 +129,7 @@ try {
     // The background summary's request is in; give it time to finish before the host closes.
     if (spec.mode === "background") await sleep(1_000)
     const result: Result = { seen: sim.seen, compacted }
-    writeFileSync(join(spec.base, "result.json"), JSON.stringify(result, null, 2))
+    writeFileSync(join(base, "result.json"), JSON.stringify(result, null, 2))
   } finally {
     await opencode.close()
   }

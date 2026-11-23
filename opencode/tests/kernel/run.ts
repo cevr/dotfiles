@@ -11,9 +11,10 @@
  *
  * @module
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { Effect, Schedule } from "effect"
+import { externalInput, matchingInput, readScratchFileSync, scratchInput } from "../read-path.ts"
 import { HELLO, PIXEL_FILE, PIXEL_PNG, QUEUED_PROMPT, REPORT_TASK, SELF, serve, type Seen, STALL_TASK, STOP_TASK, isReport } from "./sim.ts"
 
 export interface Spec {
@@ -42,9 +43,10 @@ export interface Result {
   readonly waited: number
 }
 
-const spec = JSON.parse(readFileSync(process.argv[2]!, "utf8")) as Spec
-const work = join(spec.base, "work")
-const config = join(spec.base, "config")
+const spec = JSON.parse(readScratchFileSync(process.argv[2]!, "utf8")) as Spec
+const base = scratchInput(spec.base)
+const work = join(base, "work")
+const config = join(base, "config")
 mkdirSync(work, { recursive: true })
 mkdirSync(config, { recursive: true })
 const file = join(work, "hello.txt")
@@ -70,11 +72,11 @@ const content = {
   },
   plugins: [
     {
-      package: spec.plugin,
+      package: matchingInput("cmd/kernel", spec.plugin),
       options: { denyExecute: spec.denyExecute, timeoutMs: 20_000, ...(spec.codeOnly === undefined ? {} : { codeOnly: spec.codeOnly }) },
     },
-    ...(spec.orchestrate ? [{ package: spec.orchestrate.plugin, options: { now: spec.orchestrate.now, log: join(spec.base, "agents.jsonl") } }] : []),
-    ...(spec.memory ? [{ package: spec.memory.plugin, options: { path: join(spec.base, "memory.db") } }] : []),
+    ...(spec.orchestrate ? [{ package: matchingInput("cmd/orchestrate", spec.orchestrate.plugin), options: { now: spec.orchestrate.now, log: join(base, "agents.jsonl") } }] : []),
+    ...(spec.memory ? [{ package: matchingInput("cmd/memory", spec.memory.plugin), options: { path: join(base, "memory.db") } }] : []),
   ],
 }
 
@@ -93,7 +95,7 @@ interface Embedded {
 interface Sdk {
   readonly OpenCode: { readonly create: (options: Record<string, unknown>) => Promise<Embedded> }
 }
-const { OpenCode } = (await import(join(spec.fork, "packages/sdk/src/index.ts"))) as Sdk
+const { OpenCode } = (await import(externalInput(join(spec.fork, "packages/sdk/src/index.ts")))) as Sdk
 const opencode = await OpenCode.create({
   events: { persist: true },
   // The bundled model catalog only, as tests/compaction-prefix/run.ts says why.
@@ -134,7 +136,7 @@ try {
   })
   const inbox = await Effect.runPromise(ran)
   const result: Result = { messages: await opencode.sessions.context({ sessionID: session.id }), seen: sim.seen, inbox, waited: sim.waited() }
-  writeFileSync(join(spec.base, "result.json"), JSON.stringify(result, null, 2))
+  writeFileSync(join(base, "result.json"), JSON.stringify(result, null, 2))
 } finally {
   await opencode.close()
   sim.server.stop(true)

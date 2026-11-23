@@ -1,5 +1,5 @@
 // @reads all
-// @reads-reason computed read at mods/pool/store/store.ts: names: (path) => Effect.try({ try: () => readdirSync(path), catch: (cause) => cause }),
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // The world on generated runs, with our real plugins (wakes, idle compaction)
 // and a probe plugin whose tool steers a session:
 // - determinism: one seed's command sequence, run twice, gives byte-equal

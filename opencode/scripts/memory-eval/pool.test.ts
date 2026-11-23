@@ -1,5 +1,3 @@
-// @reads all
-// @reads-reason unresolved helper ../../mods/memory/node_modules/effect/dist/index.js at scripts/memory-eval/effect.ts: export { Effect, Layer, Result, Schema } from "../../mods/memory/node_modules/effect/dist/index
 // The eval's pool transport against a fake Anthropic, a fake login store and a
 // fake live pool: no live call. It sends as the auth plugin does, places as the
 // pool does (away from the owner's live sessions and holds), fails over on a

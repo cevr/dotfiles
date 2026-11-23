@@ -1,5 +1,5 @@
 // @reads all
-// @reads-reason subprocess reads at scripts/agents.test.ts: ChildProcess.make("bun", [path.join(ROOT, "scripts/agents.ts"), "--check", ...source], { extend
+// @reads-reason computed read at scripts/agents.ts: const protocol = readFileSync(join(sourceDir, "protocol.md"), "utf8")
 // scripts/agents.ts's orchestrator entry: its section carries SKILL.md's no-block rule word for word, and `--check`
 // fails once that line changes in the skill without `bun run agents` writing agents.json again.
 import * as BunServices from "@effect/platform-bun/BunServices"

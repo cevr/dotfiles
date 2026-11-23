@@ -1,5 +1,4 @@
-// @reads all
-// @reads-reason computed read at tests/reconnect/fixture.ts: const work = yield* fs.realPath(`${root}/work`)
+// @reads cmd/*
 // accept: deep (48.1 s alone on a quiet host: 1-minute load 91.3–58.9 on 12 cores; it starts a service from source and restarts it under a TUI from source)
 // A TUI on a root whose turn the restart cuts keeps it.
 // The shared world and the cases' bodies: tests/reconnect/fixture.ts.

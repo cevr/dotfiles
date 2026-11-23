@@ -1,5 +1,3 @@
-// @reads all
-// @reads-reason subprocess reads at testbeds/reaper/start.ts: const command = ChildProcess.make("sh", ["-c", 'REAPER_OWNER=$PPID bun "$0" </dev/null >/dev/nu
 // accept: one at a time (a failed boot must be named within five seconds, by the clock).
 // `ready` against a stand-in for the fork's background service that answers
 // as the fork's `ServerProcess` does (packages/server/src/process.ts

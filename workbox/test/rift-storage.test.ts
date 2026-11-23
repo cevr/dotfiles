@@ -1,16 +1,15 @@
-// @reads all
-// @reads-reason subprocess reads at ../workbox/test/rift-storage.test.ts: const ran = Bun.spawnSync(["sh", SCRIPT, "--fstab"], { cwd: dir, env, stdout: "pipe", stderr: "
 // workbox/bin/workbox-rift-storage --fstab, run on a scratch fstab with shims for findmnt (the loop device the
 // image is mounted from), sudo (runs the command as is), systemctl (logs its arguments) and a scratch
 // /sys/fs/btrfs. The fstab is the workbox's own of 2026-11-19, whose UUID= lines for @home and @tmp failed the boot
 // (systemd-udevd is masked there, so /dev/disk/by-uuid never appears). Nothing here touches the real host.
 import { afterAll, describe, expect, test } from "bun:test"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
-import { matchingInput, readScratchDirectorySync as readdirSync, readScratchFileSync as readFileSync } from "../../opencode/tests/read-path.ts"
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { readScratchDirectorySync as readdirSync, readScratchFileSync as readFileSync, scratchExistsSync } from "../../opencode/tests/read-path.ts"
+import { spawnCheckoutShellSync } from "../../opencode/tests/scratch-child.ts"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-const SCRIPT = matchingInput("../workbox/bin/workbox-rift-storage")
+const SCRIPT = "../workbox/bin/workbox-rift-storage"
 const scratchRoot = realpathSync(mkdtempSync(join(tmpdir(), "rift-storage-test-")))
 afterAll(() => rmSync(scratchRoot, { recursive: true, force: true }))
 let count = 0
@@ -53,12 +52,11 @@ const bench = (fstabText: string) => {
   exe(join(bin, "findmnt"), `#!/bin/sh\ncase "$*" in *--mountpoint*) echo '/dev/loop0[/@workspaces]' ;; esac\n`)
   exe(join(bin, "sudo"), '#!/bin/sh\nexec "$@"\n')
   exe(join(bin, "systemctl"), `#!/bin/sh\necho "$*" >>'${calls}'\n`)
-  const env = { PATH: `${bin}:/usr/bin:/bin`, HOME: dir, WORKBOX_RIFT_FSTAB: fstab, WORKBOX_SYSFS_BTRFS: sys }
   const run = () => {
-    const ran = Bun.spawnSync(["sh", SCRIPT, "--fstab"], { cwd: dir, env, stdout: "pipe", stderr: "pipe" })
+    const ran = spawnCheckoutShellSync(dir, SCRIPT, ["--fstab"], { tools: bin, paths: { WORKBOX_RIFT_FSTAB: fstab, WORKBOX_SYSFS_BTRFS: sys } })
     return { code: ran.exitCode, out: ran.stdout.toString(), err: ran.stderr.toString() }
   }
-  const reloads = () => (existsSync(calls) ? readFileSync(calls, "utf8") : "").split("\n").filter((line) => line !== "")
+  const reloads = () => (scratchExistsSync(calls) ? readFileSync(calls, "utf8") : "").split("\n").filter((line) => line !== "")
   const backups = () => readdirSync(etc).filter((name) => name.startsWith("fstab.workbox-rift-storage."))
   return { etc, fstab, run, reloads, backups }
 }

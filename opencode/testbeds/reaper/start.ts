@@ -9,8 +9,9 @@
 // tests/owned.ts and tests/service.ts import it, so every test that spawns through `owned` or starts a
 // background service has one; tests/reaper.test.ts kills a runner mid-run and finds nothing it started left.
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { Effect, Path, Scope } from "effect"
-import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { Config, Effect, Option, Scope } from "effect"
+import { ChildProcessSpawner } from "effect/process"
+import { detachedCheckoutBun } from "../../tests/scratch-child.ts"
 
 /**
  * Starts the reaper for this process. `sh`'s `$PPID` is this process, the owner the reaper watches. `sh` starts the
@@ -20,11 +21,10 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
  * work; the scope is never closed, as a closed one would stop that group.
  */
 export const startReaper = Effect.gen(function* () {
-  const path = yield* Path.Path
-  const program = yield* path.fromFileUrl(new URL("./run.ts", import.meta.url))
+  const seen = yield* Config.option(Config.String("REAPER_SEEN"))
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
   const scope = yield* Scope.make()
-  const command = ChildProcess.make("sh", ["-c", 'REAPER_OWNER=$PPID bun "$0" </dev/null >/dev/null 2>&1 &', program], { detached: true, stdin: "ignore", stdout: "ignore", stderr: "ignore", forceKillAfter: "1 second" })
+  const command = detachedCheckoutBun("testbeds/reaper/run.ts", "REAPER_OWNER", Option.toArray(seen).map((file) => ["REAPER_SEEN", file]))
   yield* spawner.spawn(command).pipe(Scope.provide(scope))
 }).pipe(Effect.provide(BunServices.layer), Effect.ignore)
 

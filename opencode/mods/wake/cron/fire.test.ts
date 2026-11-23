@@ -1,5 +1,3 @@
-// @reads all
-// @reads-reason computed read at mods/wake/cron/fire.ts: Effect.tryPromise(() => Bun.file(file).text()).pipe(Effect.orElseSucceed(() => undefined)),
 // The OS job's run over a stand-in world: a service file, a server that
 // answers or not, and an `opencode service start` that brings one up.
 import { describe, expect, test } from "bun:test"

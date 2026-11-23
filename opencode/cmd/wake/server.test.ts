@@ -1,5 +1,5 @@
 // @reads all
-// @reads-reason subprocess reads at mods/wake/cron/backstop.ts: const child = Bun.spawn([...argv], { stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+// @reads-reason computed read at mods/wake/process/runner.ts: const all = readFileSync(file)
 // The plugin seam: the composition root on a stand-in host over the memory
 // doubles. It checks what OpenCode sees: the four direct tools, their answers
 // and refusals, the RPC's pending list and `due`, a `changed` event per change,

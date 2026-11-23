@@ -1,5 +1,4 @@
-// @reads all
-// @reads-reason subprocess helper reads at tests/kernel.test.ts: const child = owned([process.execPath, join(import.meta.dir, "kernel/run.ts"), file], {
+// @reads cmd/kernel cmd/memory cmd/orchestrate
 // accept: deep (33.8 s alone on a quiet host: 1-minute load 7.1–9.0 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // The kernel in real OpenCode (the fork, through its SDK) on the scripted
 // model: two kernel calls in one session share a binding, the first reads a
@@ -11,14 +10,14 @@
 // is refused a session that is no descendant, and a child a cell started, once
 // finished, reaches its parent as its next message, which the parent answers. The kernel on its own is tested beside its code in mods/kernel.
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
-import { readScratchFileSync as readFileSync } from "./read-path.ts"
+import { mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { readScratchFileSync as readFileSync, scratchExistsSync as existsSync } from "./read-path.ts"
 import { join, resolve } from "node:path"
 import { Option, Schema } from "effect"
 import type { Result, Spec } from "./kernel/run.ts"
 import { envelopes } from "../mods/subagents/envelope.ts"
 import { ATTACH_CELL, ATTACH_TASK, cells, DONE, DROP_TASK, HELLO, KERNEL_TASK, MEMORY_TASK, QUEUED_PROMPT, REPORT_HEARD, REPORT_TASK, SELF, SHELL_TASK, STALL_TASK, STOP_TASK, SUBAGENT_TASK, isReport } from "./kernel/sim.ts"
-import { owned } from "./owned.ts"
+import { ownedCheckoutBun } from "./owned.ts"
 import { scratch as scratchDir } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
@@ -39,18 +38,18 @@ const run = async (
   mkdirSync(home, { recursive: true })
   const file = join(base, "spec.json")
   writeFileSync(file, JSON.stringify({ ...spec, base, fork: resolve(fork!), plugin: join(ROOT, "cmd/kernel") } satisfies Spec))
-  const child = owned([process.execPath, join(import.meta.dir, "kernel/run.ts"), file], {
-    env: {
-      PATH: process.env.PATH ?? "",
+  const child = ownedCheckoutBun("tests/kernel/run.ts", {
+    scratchArgs: [file],
+    scratch: {
       HOME: home,
+      TMPDIR: base,
       XDG_CONFIG_HOME: join(home, ".config"),
       XDG_DATA_HOME: join(home, ".local/share"),
       XDG_STATE_HOME: join(home, ".local/state"),
       XDG_CACHE_HOME: join(home, ".cache"),
-      OPENCODE_DISABLE_MODELS_FETCH: "1",
     },
-    stdout: "pipe",
-    stderr: "pipe",
+    external: {},
+    values: { OPENCODE_DISABLE_MODELS_FETCH: "1" },
   })
   const timer = setTimeout(() => child.kill(), 120_000)
   const [stdout, stderr] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()])

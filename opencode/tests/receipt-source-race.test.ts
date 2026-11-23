@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at tests/receipt-source-race.test.ts: yield* spawner.spawn(ChildProcess.make("bun", [path.join(root, "swapper.ts"), name, good, outsi
 // accept: one at a time (the real swapper and scoped readers race under a 20 s bound; load can starve either).
 // The receipt source's file law against a real race (mods/orchestrate/filestore/receipt-source.ts `receiptSource`): a
 // swapper process flips a receipt's name, by atomic renames, between the good file and a link to a file outside the

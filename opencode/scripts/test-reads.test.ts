@@ -1,6 +1,8 @@
 import { file as bunFile } from "bun"
 import { expect, test } from "bun:test"
 import { matchingInput } from "../tests/read-path.ts"
+import { spawnScratchGitSync, spawnScratchShell } from "../tests/scratch-child.ts"
+import { scratch } from "../tests/scratch.ts"
 import { readMatcher } from "./read-declarations.ts"
 import { acceptanceTests, checkedTests, mergeScriptTests, unitTests, workboxTestFiles } from "./test-population.ts"
 import { checkReadInputs } from "./test-reads.ts"
@@ -82,9 +84,64 @@ test("the real scoped read refuses an escape before returning its path", () => {
   expect(() => matchingInput("scripts/release-flags.ts", "scripts/fixtures/../../tests/accept.test.ts")).toThrow("not under scripts/release-flags.ts")
 })
 
+test("scratch Git refuses a checkout operand before spawning", () => {
+  using fixture = scratch("read-guard-git-")
+  const inside = spawnScratchGitSync(fixture.path, ["init", "-q"], {
+    GIT_DIR: matchingInput("scripts/test-reads.ts"),
+  })
+  expect(inside.exitCode).toBe(0)
+  expect(() => spawnScratchGitSync(fixture.path, ["add", matchingInput("scripts/test-reads.ts")]))
+    .toThrow("checkout path in argv")
+  expect(() => spawnScratchShell(fixture.path, `cat '${matchingInput("scripts/test-reads.ts")}'`))
+    .toThrow("checkout path in generated shell script")
+})
+
+test("a resolver with finite local operands anchors every candidate", () => {
+  const source = `const name = choose() ? "./static.ts" : "./alternate.ts"
+Bun.resolveSync(name, import.meta.dir)`
+  const r = checkReadInputs("scripts/example.test.ts", source, (file) =>
+    ["scripts/static.ts", "scripts/alternate.ts"].includes(file) && "export {}" || "")
+  expect(r.patterns).toEqual(["scripts/alternate.ts", "scripts/static.ts"])
+  expect(r.issues).toEqual([])
+  expect(check(source).indirect.map(({ reason }) => reason)).toContain("unresolved resolver candidate ./alternate.ts")
+})
+
+test("finite dynamic imports follow each candidate's runtime input", () => {
+  const modules = new Map([
+    ["scripts/first.ts", 'Bun.file("fixtures/first.txt").text()'],
+    ["scripts/second.ts", 'import { readFileSync } from "node:fs"; export const b = () => readFileSync("fixtures/second.txt")'],
+  ])
+  const r = checkReadInputs("scripts/example.test.ts",
+    'await import(pick() ? "./first.ts" : "./second.ts")', (file) => modules.get(file) || "")
+  expect(r.patterns).toEqual(["fixtures/first.txt", "fixtures/second.txt", "scripts/first.ts", "scripts/second.ts"])
+  expect(r.issues).toEqual([])
+  const viaRequire = checkReadInputs("scripts/example.test.ts",
+    'require(pick() ? "./first.ts" : "./second.ts")', (file) => modules.get(file) || "")
+  expect(viaRequire).toEqual(r)
+})
+
+test("a typeof reference erased by TypeScript cannot reach a runtime read", () => {
+  const source = `import { runtime } from "./helper.ts"
+type Signature = typeof runtime
+const check: Signature = () => "nothing was read"
+check()`
+  const r = checkReadInputs("scripts/example.test.ts", source, (file) => file === "scripts/helper.ts" &&
+    'import { readFileSync } from "node:fs"; export const runtime = () => readFileSync(pick())' || "")
+  expect(r.patterns).toEqual([])
+  expect(r.issues).toEqual([])
+})
+
 test("implicit workspace globs cannot select a sibling; explicit siblings can", () => {
   expect(readMatcher(["**/*.test.ts"])("../skills/orchestrate/scripts/ending.test.ts")).toBe(false)
   expect(readMatcher(["{scripts/**,../skills/orchestrate/**}"])("../skills/orchestrate/scripts/ending.test.ts")).toBe(true)
+})
+
+test("a source inventory can exclude sibling test files without excluding source or directories", () => {
+  const match = readMatcher(["../skills/orchestrate/scripts/**/!(*.test.ts|*.test.tsx)"])
+  expect(match("../skills/orchestrate/scripts/ending.test.ts")).toBe(false)
+  expect(match("../skills/orchestrate/scripts/nested/ending.test.tsx")).toBe(false)
+  expect(match("../skills/orchestrate/scripts/nested/ending.ts")).toBe(true)
+  expect(match("../skills/orchestrate/scripts/nested")).toBe(true)
 })
 
 test("the checker takes the union of the actual runner populations", () => {
@@ -153,12 +210,19 @@ test("destructuring the Effect platform does not hide a read", () => {
 function* input() {
   const { readFileString: read } = yield* FileSystem.FileSystem
   yield* read("scripts/input.txt")
-}`
+}
+input()`
   expect(check(source).patterns).toEqual(["scripts/input.txt"])
 })
 
 test("a parameter that shadows Bun does not count as Bun's filesystem", () => {
-  expect(check("function probe(Bun) { Bun.file(getPath()) }").issues).toEqual([])
+  expect(check("function probe(Bun) { Bun.file(getPath()) }; probe(custom())").issues).toEqual([])
+})
+
+test("a callback that is only defined, not registered or passed, cannot read in the test", () => {
+  const probe = 'import { test } from "bun:test"; const pruned = () => Bun.file(selectPath()); test("pure", () => 1)'
+  expect(check(probe).issues).toEqual([])
+  expect(check(`${probe}; test("reads", pruned)`).classification).toBe("unknown")
 })
 
 test("a declaration for the entire checkout is rejected", () => {
@@ -175,6 +239,69 @@ test("an arbitrary shell, archive, or dynamic argv cannot hide behind a subproce
   expect(check(`// @reads scripts/second.txt\n${source}`).issues.map(({ line }) => line)).toEqual([3, 4, 5, 1])
   expect(check(`// @reads all\n// @reads-reason shell reads at scripts/example.test.ts: cat through the test shell\n${source}`).issues).toEqual([])
   expect(check(`// @reads all\n${source}`).classification).toBe("unknown")
+})
+
+test("a fixed checkout launcher follows the entry's execution closure", () => {
+  const source = `import { detachedCheckoutBun } from "../tests/scratch-child.ts"
+detachedCheckoutBun("scripts/entry.ts", "FIXTURE_OWNER")`
+  const program = `import { readFileSync } from "node:fs"
+if (import.meta.main) readFileSync("fixtures/used-by-entry.txt")`
+  const modules = new Map([
+    ["scripts/entry.ts", program],
+    ["tests/scratch-child.ts", "export const detachedCheckoutBun = () => {}"],
+  ])
+  const r = checkReadInputs("scripts/example.test.ts", source, (file) => modules.get(file) || "")
+  expect(r.patterns).toEqual(["bun.plugins/config", "fixtures/used-by-entry.txt", "scripts/entry.ts"])
+  expect(r.issues).toEqual([])
+})
+
+test("a checkout entry's computed checkout operands remain opaque", () => {
+  const program = 'export const checkoutBunCommand = () => {}'
+  const load = (file: string) => file === "tests/scratch-child.ts" && program || ""
+  const setup = 'import { checkoutBunCommand } from "../tests/scratch-child.ts"; '
+  const fixed = checkReadInputs("scripts/example.test.ts", `${setup}checkoutBunCommand("scripts/entry.ts", { checkout: { INPUT: "fixtures/pinned.ts" } })`, load)
+  expect(fixed.patterns).toEqual(["bun.plugins/config", "fixtures/pinned.ts", "scripts/entry.ts"])
+  const dynamic = checkReadInputs("scripts/example.test.ts", `${setup}checkoutBunCommand("scripts/entry.ts", { ...generateInputs() })`, load)
+  expect(dynamic.classification).toBe("unknown")
+  expect(dynamic.indirect.map(({ reason }) => reason)).toContain("computed checkout fixture inputs")
+  const redefined = checkReadInputs("scripts/example.test.ts", `${setup}checkoutBunCommand("scripts/entry.ts", {
+    checkout: { INPUT: "fixtures/pinned.ts" },
+    get checkout() { return selectCheckoutOperands() },
+  })`, load)
+  expect(redefined.classification).toBe("unknown")
+})
+
+test("a registry of deferred programs does not run its effects when the module loads", () => {
+  const program = `import { Effect } from "effect"
+const refresh = Effect.fn("refresh")(function* () { yield* Bun.file("fixtures/deferred.txt").text() })
+export const programs = { refresh }
+export const describe = () => "refresh"`
+  const load = (file: string) => file === "scripts/programs.ts" && program || ""
+  const unused = checkReadInputs("scripts/example.test.ts", 'import { describe } from "./programs.ts"; describe()', load)
+  const used = checkReadInputs("scripts/example.test.ts", 'import { programs } from "./programs.ts"; programs.refresh()', load)
+  expect(unused.patterns).toEqual([])
+  expect(used.patterns).toEqual(["fixtures/deferred.txt"])
+})
+
+test("importing a module runs static class fields but not constructors or methods", () => {
+  const program = `export class File {
+  static schema = Bun.file("fixtures/schema.txt").text();
+  constructor() { Bun.file("fixtures/constructor.txt").text() }
+  read() { return Bun.file("fixtures/body.txt").text() }
+}
+export const version = 1`
+  const load = (file: string) => file === "scripts/file.ts" && program || ""
+  const unused = checkReadInputs("scripts/example.test.ts", 'import { version } from "./file.ts"; use(version)', load)
+  const used = checkReadInputs("scripts/example.test.ts", 'import { File } from "./file.ts"; new File().read()', load)
+  expect(unused.patterns).toEqual(["fixtures/schema.txt"])
+  expect(used.patterns).toEqual(["fixtures/body.txt", "fixtures/constructor.txt", "fixtures/schema.txt"])
+})
+
+test("a local variable does not invoke a same-named top-level filesystem helper", () => {
+  const program = `export const result = () => { const report = "computed"; return report }
+export const report = () => Bun.file("fixtures/unrelated.txt").text()`
+  const load = (file: string) => file === "scripts/alias.ts" && program || ""
+  expect(checkReadInputs("scripts/example.test.ts", 'import { result } from "./alias.ts"; result()', load).patterns).toEqual([])
 })
 
 test("an imported helper may hide a read even through a forwarding module", () => {
@@ -198,6 +325,18 @@ test("an imported pure export does not inherit reads from an unused export or a 
   const result = checkReadInputs("scripts/example.test.ts", source, (file) => sources.get(file) ?? "")
   expect(result).toEqual({ patterns: [], bounded: [], indirect: [], classification: "static", issues: [] })
 })
+
+test("known lazy Effect operators do not run an unused callback; a foreign operator is not assumed lazy", () => {
+  const source = `import { selected } from "./helper.ts"; selected(42)`
+  const helper = `import { Effect } from "effect"
+export const selected = (v) => v + 1
+export const unused = Effect.sync(() => Bun.file(dynamicPath())).pipe(OPERATOR)`
+  const scan = (operator: string) => checkReadInputs("scripts/example.test.ts", source, (file) =>
+    file === "scripts/helper.ts" && helper.replace("OPERATOR", operator) || "")
+  expect(scan("Effect.orDie").classification).toBe("static")
+  expect(scan("unknownOperator").classification).toBe("unknown")
+})
+
 test("a known git executable and working directory do not bound computed argv", () => {
   const source = `// @reads scripts/fixtures/**
 import { execFileSync } from "node:child_process"

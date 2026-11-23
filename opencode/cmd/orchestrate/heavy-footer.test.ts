@@ -1,5 +1,5 @@
 // @reads all
-// @reads-reason computed read at mods/orchestrate/filestore/run-records.ts: Effect.tryPromise(() => readFile(join(runDir, SEEN_FILE), "utf8")).pipe(
+// @reads-reason computed read at mods/orchestrate/filestore/run-files.ts: const namesIn = (dir: string) => Effect.tryPromise(() => Array.fromAsync(new Glob("*").scan({ c
 // The heavy-check footer at the plugin seam: the composition root on a
 // stand-in host whose cores, load and heavy agents working the test fixes
 // (memory/heavy-host.ts), with every other outside system a test layer. It

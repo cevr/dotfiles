@@ -1,5 +1,5 @@
-// @reads all
-// @reads-reason computed read at scripts/old-scheme-gone.test.ts: expect(yield* Effect.filter(gone, (file) => fs.exists(path.join(at, file)))).toEqual([])
+// @reads ../local-bin.sh ../workbox/bin/apply-agent-settings ../workbox/install-bin.sh .claude/skills/verify-opencode/SKILL.md AGENTS.md README.md mods/update/process/advance.test.ts scripts/daily-configure.golden.ts scripts/daily.ts
+// @reads-indirect cmd/update/** mods/update/**
 // The guard that the update's old install scheme (the checkout that moves, the global plugin entries,
 // their migration) stays gone from every run-time path and from the docs (plugin-trees U6).
 import * as BunServices from "@effect/platform-bun/BunServices"
@@ -104,10 +104,9 @@ describe("the old scheme is gone", () => {
   live("its files are deleted", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
-      const path = yield* Path.Path
-      const at = yield* root
       const gone = ["opencode/mods/update/process/advance.test.ts", "opencode/scripts/daily-configure.golden.ts"]
-      expect(yield* Effect.filter(gone, (file) => fs.exists(path.join(at, file)))).toEqual([])
+      const candidates = "{mods/update/process/advance.test.ts,scripts/daily-configure.golden.ts}"
+      expect(yield* Effect.filter(gone, (file) => fs.exists(matchingInput(candidates, file.slice("opencode/".length))))).toEqual([])
     }),
   )
 

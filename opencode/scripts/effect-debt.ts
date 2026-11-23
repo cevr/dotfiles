@@ -238,11 +238,13 @@ const killGroup = (pid: number) =>
   )
 
 /** Runs `argv` in its own process group; a run past `timeoutMs` fails and its whole group is killed. */
-export const spawn = Effect.fn("EffectDebt.spawn")(function* (argv: ReadonlyArray<string>, cwd: string, timeoutMs: number) {
+export const spawn = Effect.fn("EffectDebt.spawn")(function* (
+  argv: ReadonlyArray<string>, cwd: string, timeoutMs: number, environment?: Readonly<Record<string, string>>,
+) {
   const command = argv.join(" ").slice(0, 200)
   return yield* Effect.acquireUseRelease(
     Effect.try({
-      try: () => Bun.spawn([...argv], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true }),
+      try: () => Bun.spawn([...argv], { cwd, env: environment, stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true }),
       catch: () => new DebtError({ problems: [`cannot start ${command}`] }),
     }),
     (child) =>
@@ -315,16 +317,22 @@ const reportProblems = (report: Report, input: ScanInput) => {
   return [...coverage, ...loaded, ...diagnostics]
 }
 
-/** One oxlint run over exactly `files`, parsed and checked; a failed, partial or unparsable run fails, never an empty scan. */
-export const scan = Effect.fn("EffectDebt.scan")(function* (input: ScanInput) {
+/** Validate a scan over exactly `files`; failed, partial and unparsable scans never succeed empty. */
+export const scanWith = Effect.fn("EffectDebt.scan")(function* (
+  input: Pick<ScanInput, "root" | "files" | "rules">, execute: () => Effect.Effect<Answer, DebtError>,
+) {
   if (input.files.length === 0) return yield* fail(`no source files under ${input.root}`)
-  const argv = [input.oxlint, "--threads=3", "--disable-nested-config", "--format=json", "-c", input.config, ...input.files]
-  const answer = yield* spawn(argv, input.root, input.timeoutMs)
+  const answer = yield* execute()
   if (answer.code !== 0 && answer.code !== 1) return yield* fail(`oxlint exited ${answer.code}: ${`${answer.stderr}${answer.stdout}`.trim().slice(0, 2000)}`)
   const report = yield* decode(Report, "oxlint's JSON report", "ignore")(answer.stdout)
   const problems = reportProblems(report, input)
   if (problems.length > 0) return yield* fail(...problems)
   return report
+})
+
+export const scan = (input: ScanInput) => scanWith(input, () => {
+  const argv = [input.oxlint, "--threads=3", "--disable-nested-config", "--format=json", "-c", input.config, ...input.files]
+  return spawn(argv, input.root, input.timeoutMs)
 })
 
 const add = (counts: Map<string, Map<string, number>>, file: string, rule: string, by: number) => {

@@ -1,5 +1,5 @@
 // @reads all
-// @reads-reason computed read at mods/pool/store/store.ts: names: (path) => Effect.try({ try: () => readdirSync(path), catch: (cause) => cause }),
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // The world's doubles of what a plugin keeps outside OpenCode keep the same
 // laws as the adapters OpenCode runs: the status script's runs in the world's
 // shell (`runTables`) the RunTables laws the process adapter keeps on disk

@@ -1,5 +1,4 @@
-// @reads ../skills/orchestrate/scripts mods/orchestrate mods/queue/stale.ts mods/status
-// @reads-indirect ../skills/orchestrate/scripts/** mods/orchestrate/** mods/status/**
+// @reads ../skills/orchestrate/scripts ../skills/orchestrate/scripts/**/!(*.test.ts|*.test.tsx) mods/orchestrate mods/orchestrate/**/!(*.test.ts|*.test.tsx) mods/queue/stale.ts mods/status mods/status/**/!(*.test.ts|*.test.tsx)
 /**
  * The ratchet on parsing run state from prose (the commitments spec, "Parsers of run state"): every regular expression
  * (a literal, `RegExp(…)` with or without `new`, a string `.match`/`.matchAll`/`.search`, a `.split` on a marker line) in a non-test source of orchestrate, status, the queue's stale check and the orchestrate
@@ -19,7 +18,7 @@ const live = it.live.layer(BunServices.layer)
 
 /** The folders and files the ratchet watches, relative to the repository (the parent of opencode/, where the gate runs the suite). */
 const ROOTS = ["opencode/mods/orchestrate", "opencode/mods/status", "opencode/mods/queue/stale.ts", "skills/orchestrate/scripts"]
-const WATCHED = "{mods/orchestrate,mods/orchestrate/**,mods/status,mods/status/**,mods/queue/stale.ts,../skills/orchestrate/scripts,../skills/orchestrate/scripts/**}"
+const WATCHED = "{mods/orchestrate,mods/orchestrate/**/!(*.test.ts|*.test.tsx),mods/status,mods/status/**/!(*.test.ts|*.test.tsx),mods/queue/stale.ts,../skills/orchestrate/scripts,../skills/orchestrate/scripts/**/!(*.test.ts|*.test.tsx)}"
 
 const Entry = Schema.Struct({
   file: Schema.String,
@@ -31,7 +30,8 @@ type Entry = typeof Entry.Type
 const decodeAllow = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(Entry)))
 
 /** A source the ratchet reads: TypeScript, not a test, not a dependency. */
-const isSource = (name: string) => /\.tsx?$/.test(name) && !/\.test\.tsx?$/.test(name)
+const isTestSource = (name: string) => /\.test\.tsx?$/.test(name)
+const isSource = (name: string) => /\.tsx?$/.test(name) && !isTestSource(name)
 
 /** The repository's root and the allow list: the list's paths are relative to the root. */
 const places = Effect.gen(function* () {
@@ -47,7 +47,7 @@ const sourcesUnder = (repo: string, opencode: string, at: string): Effect.Effect
     const path = yield* Path.Path
     const full = matchingInput(WATCHED, path.relative(opencode, path.join(repo, at)))
     if ((yield* fs.stat(full)).type !== "Directory") return [at]
-    const names = (yield* fs.readDirectory(full)).filter((name) => name !== "node_modules")
+    const names = (yield* fs.readDirectory(full)).filter((name) => name !== "node_modules" && !isTestSource(name))
     const each = yield* Effect.forEach(names, (name) =>
       Effect.gen(function* () {
         const child = path.join(at, name)

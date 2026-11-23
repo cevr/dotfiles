@@ -1,5 +1,4 @@
-// @reads all
-// @reads-reason computed read at scripts/effect-domain-policy.test.ts: expect(Arr.filter(legacy, (file) => !existsSync(path.join(REAL, file)))).toEqual([])
+// @reads decider/*.ts decider/tool-input.ts mods/*/*.ts mods/anthropic-auth/json.ts mods/anthropic-auth/tool-alias.ts mods/guard/kill.ts mods/kernel/tools.ts mods/kernel/wire.ts mods/wake/wake.ts
 /**
  * The production domain's syntax policy at the real lint CLI. The production domain is every
  * `decider/*.ts` and `mods/<mod>/<file>.ts`, except `*.test.*`, `*.spec.*`, `*.bench.*` and
@@ -20,10 +19,11 @@ import { describe, expect, test } from "bun:test"
 import { Glob } from "bun"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { matchingInput } from "../tests/read-path.ts"
+import { lintFixture } from "../tests/lint-fixture.ts"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Array as Arr, Effect, Option, Order, Schema, type Scope } from "effect"
-import { compare, DEBT_CONFIG, HARD_CONFIG, knownRules, POLICY, Policy, ruleOf, scan, spawn } from "./effect-debt.ts"
+import { compare, DEBT_CONFIG, HARD_CONFIG, knownRules, POLICY, Policy, ruleOf, scanWith } from "./effect-debt.ts"
 
 const REAL = process.cwd()
 const CLI_TIMEOUT = 120_000
@@ -300,7 +300,7 @@ const OxlintReport = Schema.fromJsonString(
 
 /** Lints `files` in `root` with `config`: every diagnostic, with its rule id, line and severity. */
 const lint = Effect.fn("EffectDomainPolicyTest.lint")(function* (root: string, config: string, files: ReadonlyArray<string>) {
-  const linted = yield* spawn([path.join(REAL, "node_modules/.bin/oxlint"), "--threads=3", "--format=json", "-c", config, ...files], root, CLI_TIMEOUT)
+  const linted = yield* lintFixture(root, config, files, CLI_TIMEOUT)
   expect({ stderr: linted.stderr }).toEqual({ stderr: "" })
   return Arr.map(Schema.decodeUnknownSync(OxlintReport)(linted.stdout).diagnostics, (each) => ({
     file: each.filename,
@@ -496,7 +496,8 @@ describe(`${HARD_CONFIG}: the production domain's syntax rules over generated pa
         exact: Arr.filter(legacy, () => Object.keys(override.rules ?? {}).includes("effect/noTryCatch")),
       })),
     )
-    expect(Arr.filter(legacy, (file) => !existsSync(path.join(REAL, file)))).toEqual([])
+    const exists = (file: string) => existsSync(matchingInput("{decider/*.ts,mods/*/*.ts}", file))
+    expect(Arr.filter(legacy, (file) => !exists(file))).toEqual([])
     expect(unpinned(legacyBudgets())).toEqual([])
     expect(Arr.filter(legacy, (file) => !inDomain(file))).toEqual([])
   })
@@ -564,7 +565,7 @@ describe(`${POLICY}: the legacy try statements of the domain`, () => {
               const input = matchingInput("{decider/tool-input.ts,mods/anthropic-auth/json.ts,mods/anthropic-auth/tool-alias.ts,mods/guard/kill.ts,mods/kernel/tools.ts,mods/kernel/wire.ts,mods/wake/wake.ts}", file)
               put(root, file, `${readFileSync(input, "utf8")}\n${tail.join("")}`)
             }
-            const report = yield* scan({ root, oxlint: path.join(REAL, "node_modules/.bin/oxlint"), config: path.join(root, DEBT_CONFIG), files, rules: policy().rules.length, timeoutMs: CLI_TIMEOUT })
+            const report = yield* scanWith({ root, files, rules: policy().rules.length }, () => lintFixture(root, DEBT_CONFIG, files, CLI_TIMEOUT))
             const counts = new Map(
               Arr.map(files, (file) => [file, new Map([["effect/noTryCatch", Arr.filter(report.diagnostics, (each) => each.filename === file && ruleOf(each.code ?? "") === "effect/noTryCatch").length]])] as const),
             )

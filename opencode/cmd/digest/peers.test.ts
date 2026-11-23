@@ -1,5 +1,5 @@
 // @reads all
-// @reads-reason computed read at mods/digest/http/listener.ts: Effect.tryPromise(() => readFile(join(dist, folder, safe))).pipe(
+// @reads-reason computed read at mods/digest/filestore/devices.ts: Effect.tryPromise({ try: () => stat(path), catch: codeOf }).pipe(
 // One page over every host (unit 5, the read half), against a model. Two and three digests run in-process, each with
 // its own scratch log and marks and its own listener on a loopback scratch port, wired as each other's named peers
 // through the real HTTP handlers (`/peer/view.json` on a listener that applies the tailnet's policy, read as a

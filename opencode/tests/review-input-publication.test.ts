@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at tests/review-input-publication.test.ts: const read = (file: string) => fs.readFileString(path.join(root, file))
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Effect, FileSystem, Path, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"

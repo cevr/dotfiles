@@ -20,10 +20,24 @@ const matcher = (pattern: string) => {
 }
 
 const canonicalRoot = realpathSync(workspace)
-const resolvedInput = (target: string) => {
-  if (!existsSync(target)) return target
-  return resolve(workspace, relative(canonicalRoot, realpathSync(target)))
+const existingAncestor = (target: string): string => {
+  if (existsSync(target)) return target
+  // A dangling symlink is not an ordinary missing leaf: the name that will
+  // become readable is outside the spelling the matcher checked.
+  if (localTestPaths.isSymbolicLink(target)) return denied(target, "a path without dangling symlinks")
+  return existingAncestor(resolve(target, ".."))
 }
+const canonicalPath = (target: string) => {
+  const existing = existingAncestor(target)
+  const parent = resolve(existing, "..")
+  if (parent === existing || localTestPaths.isSymbolicLink(existing)) {
+    return resolve(realpathSync(existing), relative(existing, target))
+  }
+  // A non-link leaf needs no realpath call of its own (it may be a mode-000
+  // fixture). Resolving its parent still detects escapes through ancestors.
+  return resolve(realpathSync(parent), relative(parent, target))
+}
+const resolvedInput = (target: string) => resolve(workspace, relative(canonicalRoot, canonicalPath(target)))
 
 /** A computed input selected by a known glob, from opencode/. Reject anything outside that set. */
 export const matchingInput = (pattern: string, file = pattern) => {
@@ -34,6 +48,10 @@ export const matchingInput = (pattern: string, file = pattern) => {
   if (canonical !== target) return denied(file, pattern)
   return target
 }
+
+/** Read one checked text input without exposing the native filesystem adapter. */
+export const readInputText = (pattern: string, file = pattern) =>
+  readFileSync(matchingInput(pattern, file), "utf8")
 
 /** Check checkout operands of the fixed launcher forms modeled by the read guard. */
 export const checkOwnedCommand = (argv: ReadonlyArray<string>, cwd = processCwd()) => {
@@ -57,7 +75,7 @@ const outside = (root: string, target: string) => {
 export const scratchInput = (file: string) => {
   const root = scratchRoot()
   const repo = realpathSync(join(workspace, ".."))
-  const target = realpathSync((existsSync(file) && file) || resolve(file, ".."))
+  const target = canonicalPath(resolve(file))
   if (!isAbsolute(file) || outside(root, target) || !outside(repo, target)) return denied(file, root)
   return file
 }

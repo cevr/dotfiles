@@ -1,5 +1,3 @@
-// @reads all
-// @reads-reason subprocess reads at scripts/effect-debt.ts: try: () => Bun.spawn([...argv], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", detache
 /**
  * The four small rules at their two seams. At the lint CLI: `.oxlintrc.json` refuses, as errors
  * of the exact rule, every generated form of `effect/requireNamedEffectFn`, `effect/preferEffectFn`,
@@ -17,7 +15,8 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { Array as Arr, Effect, Option, Schema, type Scope } from "effect"
 import { forkTurns, type Turn } from "../mods/btw/turns.ts"
-import { HARD_CONFIG, spawn } from "./effect-debt.ts"
+import { lintFixture } from "../tests/lint-fixture.ts"
+import { HARD_CONFIG } from "./effect-debt.ts"
 
 const REAL = process.cwd()
 const CLI_TIMEOUT = 120_000
@@ -223,7 +222,7 @@ const CODES = new Map<string, Rule>(Arr.map(RULES, (rule) => [`effect(${rule})`,
 
 /** Lints `files` in `root` with the real hard config: per file, per line, the four rules' errors. */
 const lint = Effect.fn("EffectSmallRulesTest.lint")(function* (root: string, files: ReadonlyArray<string>) {
-  const linted = yield* spawn([path.join(REAL, "node_modules/.bin/oxlint"), "--threads=3", "--format=json", "-c", HARD_CONFIG, ...files], root, CLI_TIMEOUT)
+  const linted = yield* lintFixture(root, HARD_CONFIG, files, CLI_TIMEOUT)
   expect({ stderr: linted.stderr }).toEqual({ stderr: "" })
   const found = Arr.flatMap(Schema.decodeUnknownSync(OxlintReport)(linted.stdout).diagnostics, (each) =>
     Option.toArray(

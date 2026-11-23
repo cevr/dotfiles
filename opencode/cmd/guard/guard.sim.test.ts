@@ -1,5 +1,5 @@
 // @reads all
-// @reads-reason computed read at mods/pool/store/store.ts: names: (path) => Effect.try({ try: () => readdirSync(path), catch: (cause) => cause }),
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // The guard on the simulated host, each test at 20 seeds: tests/guard.test.ts's
 // names, with what the world carries of each claim. The guard runs from its
 // composition root (`cmd/guard/server.ts`'s `make`) on the world's context: the

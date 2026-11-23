@@ -1,5 +1,3 @@
-// @reads all
-// @reads-reason subprocess reads at tests/client-laws.test.ts: const command = ChildProcess.make(process.execPath, [path.join(ROOT, "tests/client-laws/real.ts
 // accept: deep (59.9 s alone on a quiet host: measured alone under the accept lock at 1-minute load 39.5–73.7 on 12 cores, the quietest the host was that day; one boot of the fork's embedded host, then ten laws one after another on it)
 // The client laws (sim-tui/client-laws.ts) in real OpenCode: one boot of the
 // fork's embedded host (tests/client-laws/real.ts) in a scratch home, on a
@@ -10,12 +8,12 @@
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Config, Deferred, Effect, Fiber, FileSystem, Option, Path, Schema, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
-import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { ChildProcessSpawner } from "effect/process"
 import { NO_FREE_MODELS, releaseFlags } from "../scripts/release-flags.ts"
 import { LAWS } from "../sim-tui/client-laws.ts"
+import { scratchInput } from "./read-path.ts"
+import { checkoutBunCommand } from "./scratch-child.ts"
 
-/** opencode/: the tests run from it. */
-const ROOT = process.cwd()
 /** How long the real boot and its laws may take before they are stopped. */
 const BOOT = "6 minutes"
 const Outcome = Schema.Struct({ name: Schema.String, failures: Schema.Array(Schema.String) })
@@ -31,38 +29,34 @@ const boot = Effect.gen(function* () {
   const path = yield* Path.Path
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
   const fork = yield* Config.String("OPENCODE_DEV")
-  const search = yield* Config.String("PATH")
   const base = yield* fs.makeTempDirectoryScoped({ prefix: "client-laws-e2e-" })
   const home = path.join(base, "home")
   const temp = path.join(base, "tmp")
   yield* fs.makeDirectory(home)
   yield* fs.makeDirectory(temp)
-  const command = ChildProcess.make(process.execPath, [path.join(ROOT, "tests/client-laws/real.ts")], {
-    cwd: ROOT,
-    env: {
-      PATH: search,
+  const command = checkoutBunCommand("tests/client-laws/real.ts", {
+    scratch: {
       HOME: home,
       TMPDIR: temp,
       XDG_CONFIG_HOME: path.join(home, ".config"),
       XDG_DATA_HOME: path.join(home, ".local/share"),
       XDG_STATE_HOME: path.join(home, ".local/state"),
       XDG_CACHE_HOME: path.join(home, ".cache"),
+      SIM_REAL_BASE: base,
+    },
+    external: { SIM_REAL_FORK: path.resolve(fork) },
+    values: {
       OPENCODE_DISABLE_MODELS_FETCH: "1",
       // The runner starts the fork in its own process: at the owner's build's flags (scripts/release-flags.ts).
       OPENCODE_FLAGS: releaseFlags(""),
       ...NO_FREE_MODELS,
-      SIM_REAL_BASE: base,
-      SIM_REAL_FORK: path.resolve(fork),
     },
-    extendEnv: false,
-    stdin: "ignore",
-    forceKillAfter: "3 seconds",
   })
   // The child runs in a process group of its own; the scope's end stops the group.
   const child = yield* spawner.spawn(command)
   const output = yield* Effect.all([text(child.stdout), text(child.stderr)], { concurrency: 2 }).pipe(Effect.forkScoped)
   const code = yield* child.exitCode.pipe(Effect.timeoutOption(BOOT))
-  const result = path.join(base, "result.json")
+  const result = scratchInput(path.join(base, "result.json"))
   const done = Option.isSome(code) && code.value === 0 && (yield* fs.exists(result))
   if (!done) {
     const said = yield* Fiber.join(output).pipe(Effect.timeoutOption("5 seconds"))

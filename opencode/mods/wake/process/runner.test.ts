@@ -1,5 +1,5 @@
 // @reads all
-// @reads-reason computed read at mods/wake/process/runner.test.ts: const ids = yield* Effect.sync(() => Option.match(Option.liftPredicate(root, existsSync), { onN
+// @reads-reason computed read at mods/wake/process/runner.test.ts: expect(existsSync(root)).toBe(false)
 // The process runner over real processes in a scratch directory: a job runs
 // detached under its own runner, records its exit, drips whole lines, keeps
 // its log, runs niced when heavy, stops at its timeout and on a kill; a

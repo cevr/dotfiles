@@ -1,5 +1,5 @@
 // @reads all
-// @reads-reason computed read at mods/pool/store/store.ts: names: (path) => Effect.try({ try: () => readdirSync(path), catch: (cause) => cause }),
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // A1 of the `orchestrate` tool on the simulated host (orch-tools-world.ts), model-based, in its own file for its own CPU
 // budget: a seeded run of generated starts, hand-backs, lanes, lands, verifies, verifier starts, restarts and root
 // handoffs against a reference model of the units' logs and lanes. No batch rule refuses; each land lands exactly the

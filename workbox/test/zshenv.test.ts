@@ -1,5 +1,3 @@
-// @reads all
-// @reads-reason subprocess reads at ../workbox/test/zshenv.test.ts: const mac = Bun.spawnSync(["zsh", "-fc", `source ${matchingInput("../zshenv")}; print -r -- "\$
 // The workbox's zshenv, linked as ~/.zshenv by bootstrap.sh, is what every agent shell on the workbox reads
 // (zsh reads it for every shell, a `zsh -c` one too). It runs here in a scratch HOME with nothing else in the
 // environment; nothing touches the real host.
@@ -7,10 +5,12 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { matchingInput } from "../../opencode/tests/read-path.ts"
+import { readInputText } from "../../opencode/tests/read-path.ts"
+import { spawnScratchZshSync, writeScratchScript } from "../../opencode/tests/scratch-child.ts"
 
-const zshenv = matchingInput("../workbox/zshenv")
 const home = mkdtempSync(join(tmpdir(), "zshenv-test-"))
+const zshenv = join(home, "fixture.zshenv")
+writeScratchScript(zshenv, readInputText("../workbox/zshenv"))
 symlinkSync(zshenv, join(home, ".zshenv"))
 afterAll(() => rmSync(home, { recursive: true, force: true }))
 
@@ -18,15 +18,7 @@ afterAll(() => rmSync(home, { recursive: true, force: true }))
 const fake = "fake-turbo-token-0123"
 
 /** What a fresh `zsh -c` shell of the scratch HOME, started in `cwd`, prints for `script`, with `env` added. */
-const shell = (script: string, env: Record<string, string> = {}, cwd = home) => {
-  const run = Bun.spawnSync(["zsh", "-c", script], {
-    cwd,
-    env: { HOME: home, PATH: "/usr/bin:/bin", ...env },
-    stdout: "pipe",
-    stderr: "pipe",
-  })
-  return { stdout: run.stdout.toString(), stderr: run.stderr.toString() }
-}
+const shell = (script: string, env: Record<string, string> = {}, cwd = home) => spawnScratchZshSync(cwd, home, script, env)
 
 /** The value `name` has in a fresh `zsh -c` shell of the scratch HOME. */
 const shellValue = (name: string, env: Record<string, string> = {}, cwd = home) =>
@@ -65,11 +57,9 @@ describe.skipIf(!Bun.which("zsh"))("workbox zshenv", () => {
   })
 
   test("the Mac's own zshenv names no simulator host: there rex-show sim reads this host's", () => {
-    const mac = Bun.spawnSync(["zsh", "-fc", `source ${matchingInput("../zshenv")}; print -r -- "\${REX_SHOW_SIM_HOST-unset}"`], {
-      env: { HOME: home, PATH: "/usr/bin:/bin" },
-      stdout: "pipe",
-      stderr: "pipe",
-    })
+    const source = join(home, "fixture.mac-zshenv")
+    writeScratchScript(source, readInputText("../zshenv"))
+    const mac = spawnScratchZshSync(home, home, `source ${JSON.stringify(source)}; print -r -- "\${REX_SHOW_SIM_HOST-unset}"`, {}, true)
     expect(mac.stdout.toString().trim()).toBe("unset")
   })
 

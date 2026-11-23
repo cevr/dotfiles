@@ -1,5 +1,5 @@
-// @reads all
-// @reads-reason computed read at scripts/verify-docs.test.ts: return yield* fs.exists(path.join(yield* root, file))
+// @reads .claude .claude/skills/verify-opencode/SKILL.md .claude/skills/verify-opencode/features/*.md cmd decider formal lint mods scenarios scripts scripts/**/*.ts scripts/**/*.tsx sim sim-tui testbeds tests themes
+// @reads-indirect .claude/** cmd/** decider/** formal/** lint/** mods/** scenarios/** sim-tui/** sim/** testbeds/** tests/** themes/**
 // The verify-opencode skill's docs guard: the skill and its feature map name only what the tree has. Every
 // path they backtick exists, every `bun run <script>` is a package script, every feature file keeps the entry
 // contract with its world suites, real checks and code on disk, the index lists exactly the feature files,
@@ -15,6 +15,8 @@ import { FEATURES_DIR, INDEX, noDrive, parseFeature, SKILL_DIR, touched, uncover
 const CONTRACT = ["Sub-features", "How to get to it (user POV)", "Driving it with the world", "Driving it with real OpenCode", "Gotchas"]
 /** The folders a backticked path may start with, from opencode/; `out/` is a drive's output, never checked. */
 const PATH = /^(?:\.claude|cmd|mods|sim|sim-tui|scripts|tests|scenarios|testbeds|decider|themes|formal|lint)\/[\w./-]*$/
+// The feature map can point to directories as well as files.
+const DOC_INPUT = "{.claude,.claude/**,cmd,cmd/**,mods,mods/**,sim,sim/**,sim-tui,sim-tui/**,scripts,scripts/**/*.ts,scripts/**/*.tsx,tests,tests/**,scenarios,scenarios/**,testbeds,testbeds/**,decider,decider/**,themes,themes/**,formal,formal/**,lint,lint/**}"
 /** A drive's own output (`out/`, `sim/out/`): git ignores it, and a fresh checkout has none. */
 const OUTPUT = /(?:^|\/)out\//
 const Manifest = Schema.fromJsonString(Schema.Struct({ scripts: Schema.Record(Schema.String, Schema.String) }))
@@ -38,8 +40,7 @@ const docs = Effect.gen(function* () {
 const exists = (file: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
-    const path = yield* Path.Path
-    return yield* fs.exists(path.join(yield* root, file))
+    return yield* fs.exists(matchingInput(DOC_INPUT, file))
   })
 
 const backticked = (text: string): ReadonlyArray<string> => Arr.map(Array.from(text.matchAll(/`([^`\n]+)`/g)), (match) => Option.getOrElse(Option.fromNullishOr(match[1]), () => ""))

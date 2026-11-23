@@ -1,5 +1,5 @@
 // @reads all
-// @reads-reason computed read at mods/pool/store/store.ts: names: (path) => Effect.try({ try: () => readdirSync(path), catch: (cause) => cause }),
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // Session mail on the simulated host (sim/world.ts), at 20 seeds:
 // tests/mail.test.ts's name and the claims it reads off the model's requests
 // and the transcripts, moved off real OpenCode. The plugin is

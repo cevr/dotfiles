@@ -1,6 +1,6 @@
 import { resolveSync } from "bun"
 import { Effect, Option, Path } from "effect"
-import { readInputChecker } from "./test-reads.ts"
+import { INSTALLED_MODULE, readInputChecker } from "./test-reads.ts"
 
 const path = Effect.runSync(Effect.provide(Path.Path, Path.layer))
 
@@ -14,7 +14,8 @@ export const projectReadChecker = (root: string, files: ReadonlyArray<string>, s
       onNone: () => "",
       onSome: (file) => {
         const local = path.relative(root, file)
-        return (sources.has(local) && local) || ""
+        return (sources.has(local) && local) ||
+          (!specifier.startsWith("@dotfiles/") && file.includes("/node_modules/") && INSTALLED_MODULE) || ""
       },
     })
   }

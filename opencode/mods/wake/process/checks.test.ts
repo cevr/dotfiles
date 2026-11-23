@@ -1,5 +1,5 @@
 // @reads all
-// @reads-reason computed read at mods/wake/process/checks.test.ts: if (!existsSync(file)) return notYet(`${path.basename(file)} not written`)
+// @reads-reason subprocess reads at mods/wake/process/checks.ts: Bun.spawn(["/bin/sh", "-c", command], { cwd, env: environmentOf(env), stdin: "ignore", stdout:
 // The checks as real child processes: what a command prints and exits with,
 // no shell startup file read, the output kept to its tail, and the whole
 // process group killed past the time and on interruption.

@@ -1,5 +1,5 @@
 // @reads all
-// @reads-reason computed read at mods/pool/store/store.ts: names: (path) => Effect.try({ try: () => readdirSync(path), catch: (cause) => cause }),
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // A subagent asks its orchestrator, not the owner: a model-based test on the
 // simulated host at 20 seeds. One directory holds a root R, its subagent C and
 // C's subagent G; the seed chooses up to 40 commands: a session asks (R with

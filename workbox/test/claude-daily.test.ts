@@ -1,15 +1,14 @@
-// @reads all
-// @reads-reason subprocess reads at ../workbox/test/claude-daily.test.ts: const done = Bun.spawnSync(["/bin/sh", script], { env: { HOME: home, PATH: "/usr/bin:/bin" }, s
 // claude/bin/claude-daily-install, run each day by workbox/systemd/user/claude-daily.timer and on the Mac by
 // mac/launchd/com.cvr.claude-daily.plist. It runs here against a stand-in `claude` in a scratch HOME; nothing
 // touches the real host's Claude Code.
 import { afterAll, describe, expect, test } from "bun:test"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { matchingInput } from "../../opencode/tests/read-path.ts"
+import { readScratchFileSync as readFileSync, scratchExistsSync } from "../../opencode/tests/read-path.ts"
+import { spawnCheckoutShellSync } from "../../opencode/tests/scratch-child.ts"
 
-const script = matchingInput("../claude/bin/claude-daily-install")
+const script = "../claude/bin/claude-daily-install"
 const root = mkdtempSync(join(tmpdir(), "claude-daily-test-"))
 afterAll(() => rmSync(root, { recursive: true, force: true }))
 
@@ -34,12 +33,12 @@ const run = (version: string, installExit: number, recorded?: string) => {
     mkdirSync(state, { recursive: true })
     writeFileSync(join(state, "version"), recorded)
   }
-  const done = Bun.spawnSync(["/bin/sh", script], { env: { HOME: home, PATH: "/usr/bin:/bin" }, stdout: "pipe", stderr: "pipe" })
+  const done = spawnCheckoutShellSync(home, script, [], { tools: bin, paths: {} })
   const versionFile = join(state, "version")
   return {
     exit: done.exitCode,
     output: done.stdout.toString() + done.stderr.toString(),
-    recorded: existsSync(versionFile) ? readFileSync(versionFile, "utf8") : undefined,
+    recorded: scratchExistsSync(versionFile) ? readFileSync(versionFile, "utf8") : undefined,
     log: readFileSync(join(state, "install.log"), "utf8"),
   }
 }

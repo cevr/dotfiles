@@ -1,5 +1,4 @@
-// @reads all
-// @reads-reason subprocess reads at scripts/effect-debt.ts: try: () => Bun.spawn([...argv], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", detache
+// @reads mods/wake/process/{runner,checks}.test.ts mods/wake/process/{runner.test.ts,checks.test.ts,readiness.ts,readiness.test.ts}
 /**
  * The wake process tests' wait and lifecycle policy at the real lint CLI. `.oxlintrc.json` keeps
  * `noFixedWaitInTests`, `noNewPromise`, `noPromiseChainsInTests` and `noTestLifecycleHooks` as
@@ -23,7 +22,8 @@ import path from "node:path"
 import { Array as Arr, Effect, Option, Order, Schema, type Scope } from "effect"
 import { type CallExpression, parseSync, Visitor } from "oxc-parser"
 import { matchingInput } from "../tests/read-path.ts"
-import { DEBT_CONFIG, HARD_CONFIG, POLICY, Policy, ruleOf, spawn } from "./effect-debt.ts"
+import { lintCheckoutFixture, lintFixture } from "../tests/lint-fixture.ts"
+import { type Answer, DEBT_CONFIG, HARD_CONFIG, POLICY, Policy, ruleOf } from "./effect-debt.ts"
 
 const REAL = process.cwd()
 const CLI_TIMEOUT = 120_000
@@ -204,9 +204,8 @@ const OxlintReport = Schema.fromJsonString(
   }),
 )
 
-/** Lints `files` in `root` with `config`: every diagnostic, with its rule id, line and severity. */
-const lint = Effect.fn("EffectProcessPolicyTest.lint")(function* (root: string, config: string, files: ReadonlyArray<string>) {
-  const linted = yield* spawn([path.join(REAL, "node_modules/.bin/oxlint"), "--threads=3", "--format=json", "-c", config, ...files], root, CLI_TIMEOUT)
+/** Every lint diagnostic, with its rule id, line and severity. */
+const diagnostics = (linted: Answer) => {
   expect({ stderr: linted.stderr }).toEqual({ stderr: "" })
   return Arr.map(Schema.decodeUnknownSync(OxlintReport)(linted.stdout).diagnostics, (each) => ({
     file: each.filename,
@@ -214,7 +213,9 @@ const lint = Effect.fn("EffectProcessPolicyTest.lint")(function* (root: string, 
     rule: ruleOf(each.code ?? ""),
     severity: each.severity,
   }))
-})
+}
+const lint = (root: string, config: string, files: ReadonlyArray<string>) =>
+  lintFixture(root, config, files, CLI_TIMEOUT).pipe(Effect.map(diagnostics))
 type Found = Effect.Success<ReturnType<typeof lint>>
 
 /** The four rules' diagnostics on one line, as sorted `rule:severity`. */
@@ -311,8 +312,7 @@ describe(`${HARD_CONFIG}: the wake process tests' wait and lifecycle rules over 
     () =>
       runScoped(
         Effect.gen(function* () {
-          const files = Arr.map(OWNED, (file) => path.relative(REAL, matchingInput("mods/wake/process/{runner.test.ts,checks.test.ts,readiness.ts,readiness.test.ts}", file)))
-          const found = yield* lint(REAL, HARD_CONFIG, files)
+          const found = diagnostics(yield* lintCheckoutFixture("mods/wake/process/{runner.test.ts,checks.test.ts,readiness.ts,readiness.test.ts}", OWNED, CLI_TIMEOUT))
           expect(Arr.filter(found, (each) => RULE_IDS.includes(each.rule))).toEqual([])
         }),
       ),
