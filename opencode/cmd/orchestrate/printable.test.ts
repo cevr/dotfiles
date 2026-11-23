@@ -6,7 +6,7 @@ import { describe, expect, test } from "bun:test"
 import { Array as Arr, Cause, Effect, Exit, FileSystem, Path, Predicate } from "effect"
 import { type MemberExpression, parseSync, Visitor } from "oxc-parser"
 import { whyOf } from "@dotfiles/opencode-orchestrate/commitments-tool"
-import { printable } from "@dotfiles/opencode-orchestrate/printable"
+import { printed, printable } from "@dotfiles/opencode-orchestrate/printable"
 import { RecordRefused } from "@dotfiles/opencode-orchestrate/record"
 import { EvidenceRefused, RecordFailed } from "@dotfiles/opencode-orchestrate/service"
 import { hostServices } from "../../sim/host-services.ts"
@@ -71,6 +71,8 @@ describe("printable", () => {
       new EvidenceRefused({ reason: raw }),
       // @ts-expect-error -- the point of the test: the CLI's answer is printable
       ranOf(Exit.succeed(raw)),
+      // @ts-expect-error -- composition requires already rewritten original leaves
+      printed`a diagnostic: ${raw}`,
     ]
     expect(typecheckOnly).toBeFunction()
   })
@@ -79,6 +81,7 @@ describe("printable", () => {
 /** The record's modules: every text they print leaves through `printable`. */
 const SERVER = "cmd/orchestrate/server.ts"
 const MODULES = [
+  "mods/orchestrate/printable.ts",
   "mods/orchestrate/record.ts",
   "mods/orchestrate/commitments-tool.ts",
   "mods/orchestrate/reasons.ts",
@@ -111,7 +114,6 @@ const CUT = /\$\{[^`}]*\.(?:slice|substring|substr)\(/g
  */
 const CUTS_KEPT: ReadonlyArray<readonly [string, string]> = [
   ["mods/orchestrate/commitments-tool.ts", '${keys.map(segment).join("").slice('],
-  ["mods/orchestrate/commitments-tool.ts", "${held.commit.slice("],
   ["mods/orchestrate/sqlite/record.ts", "${COMMITMENT_COLUMNS.slice("],
   ["mods/orchestrate/sqlite/record.ts", "${isoOf(now).slice("],
 ]
@@ -130,19 +132,29 @@ const unsafeSinks = (file: string, text: string): ReadonlyArray<string> => {
     [text.indexOf("const actorOf"), text.indexOf("name: Tools.ORCHESTRATE,")],
   ]
   const holdsRecord = (start: number) => file !== SERVER || recordRanges.some(([lo, hi]) => start >= lo && start < hi)
+  const formatters = new Set(["pretty", "prettyErrors", "squash", "squashWith", "stringify", "inspect", "formatWithOptions"])
   new Visitor({
     ThrowStatement: (node) => sites.push(text.slice(node.start, node.end)),
     NewExpression: (node) => {
       if (!holdsRecord(node.start)) return
       const { callee } = node
-      const raw = callee.type === "Identifier" && callee.name === "Error"
+      const raw = callee.type === "Identifier" && callee.name.endsWith("Error")
       const tool = callee.type === "MemberExpression" && callee.object.type === "Identifier" && callee.object.name === "Tool" && memberName(callee) === "Error"
       if (raw || tool) sites.push(text.slice(node.start, node.end))
     },
     MemberExpression: (node) => {
+      if (holdsRecord(node.start) && formatters.has(memberName(node))) sites.push(text.slice(node.start, node.end))
       if (node.object.type !== "Identifier") return
-      if (["console", "Console"].includes(node.object.name) || (["Effect", "Cause", "Exit"].includes(node.object.name) && memberName(node).startsWith("die")))
+      if (["console", "Console"].includes(node.object.name) ||
+        (node.object.name === "process" && ["stdout", "stderr"].includes(memberName(node))) ||
+        (["Effect", "Cause", "Exit"].includes(node.object.name) && memberName(node).startsWith("die")))
         sites.push(text.slice(node.start, node.end))
+    },
+    ImportDeclaration: (node) => {
+      if (node.source.value !== "util" && node.source.value !== "node:util") return
+      const parserOnly = node.specifiers.length === 1 && node.specifiers.every((entry) =>
+        entry.type === "ImportSpecifier" && entry.imported.type === "Identifier" && entry.imported.name === "parseArgs")
+      if (!parserOnly) sites.push(text.slice(node.start, node.end))
     },
     CallExpression: (node) => {
       if (!holdsRecord(node.start) || node.callee.type !== "MemberExpression" || node.callee.object.type !== "Identifier" || node.callee.object.name !== "Effect") return
@@ -161,8 +173,9 @@ describe("the record's modules", () => {
   })
 
   onTexts("redact only through printable: no second layer, no text redacted and then cut", (textOf) => {
-    expect(Arr.filter(MODULES, (file) => textOf(file).includes("redact("))).toEqual([])
-    expect(Arr.filter(MODULES, (file) => textOf(file).includes("opencode-digest/redact"))).toEqual([])
+    const others = MODULES.filter((file) => file !== "mods/orchestrate/printable.ts")
+    expect(Arr.filter(others, (file) => textOf(file).includes("redact("))).toEqual([])
+    expect(Arr.filter(others, (file) => textOf(file).includes("opencode-digest/redact"))).toEqual([])
   })
 
   onTexts("log and print nothing but a printable text: the CLI's two prints are its run's printable output", (textOf) => {
@@ -187,5 +200,16 @@ describe("the record's modules", () => {
     }
     const digest = {}`
     expect(unsafeSinks(SERVER, source)).toEqual(["console.log", "Effect.logWarning(raw)", "throw new Error(raw)", "new Error(raw)", 'Effect["die"]'])
+  })
+
+  test("a new diagnostic formatting bypass is rejected even if the formatter is first aliased", () => {
+    const source = `import { inspect } from "node:util"
+const pretty = Cause.pretty
+const escaped = JSON["stringify"]
+const out = process["stderr"]
+out.write(printable(escaped(pretty(problem))))`
+    expect(unsafeSinks("mods/orchestrate/printable.ts", source)).toEqual([
+      'import { inspect } from "node:util"', "Cause.pretty", 'JSON["stringify"]', 'process["stderr"]',
+    ])
   })
 })

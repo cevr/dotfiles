@@ -5,7 +5,7 @@
 // is kept between calls. Nothing here reads prose: every field is the call's own.
 import { Array as Arr, Effect, flow, Match, Option, Order, Predicate, Result, Schema, SchemaIssue, SchemaParser, SchemaTransformation } from "effect"
 import { toolInput } from "@dotfiles/decider/tool-input"
-import { type Printable, printable } from "./printable.ts"
+import { joined, prefixOf, printed, type Printable, printable, printableJson } from "./printable.ts"
 import {
   AfterItem,
   Command,
@@ -277,7 +277,7 @@ const msIn = (what: string, iso: Option.Option<string>): Result.Result<Option.Op
   })
 
 const partOf = (part: typeof Part.Type): Result.Result<PartInput, string> =>
-  Result.map(msIn(`the review_by of ${part.id}`, Option.fromUndefinedOr(part.review_by)), (reviewBy) =>
+  Result.map(msIn("the part's review_by", Option.fromUndefinedOr(part.review_by)), (reviewBy) =>
     PartInput.make({ id: part.id, title: part.title, part: Option.fromUndefinedOr(part.part), rank: Option.fromUndefinedOr(part.rank), ownerLane: Option.fromUndefinedOr(part.owner_lane), after: Option.fromUndefinedOr(part.after), reviewBy }),
   )
 
@@ -330,7 +330,7 @@ export const observedReason = (tool: string, reason: Reason, checkout: string) =
     const referent = reason.referent
     if (referent.kind !== "receipt") return { reason: dataOf(reason), observed: Option.none<ReceiptSeen>() } satisfies Observed
     const evidence = yield* Evidence
-    const seen = yield* Effect.mapError(evidence.receipt(checkout, referent.path), (refused: EvidenceRefused) => `${tool}: ${refused.reason}`)
+    const seen = yield* Effect.mapError(evidence.receipt(checkout, referent.path), (refused: EvidenceRefused) => printed`${printable(tool)}: ${refused.reason}`)
     return { reason: dataOf(reason), observed: Option.some(seen) } satisfies Observed
   })
 
@@ -473,16 +473,16 @@ const landedOf = (input: CommitmentsInput, actor: Actor, now: number, reads: Rea
     const record = yield* CommitmentRecord
     const id = input.id ?? ""
     const head = input.head ?? ""
-    if (actor.role !== ROOT) return yield* Effect.fail(`${COMMITMENTS}: only the root says where a commitment's work landed`)
+    if (actor.role !== ROOT) return yield* Effect.fail(printed`${TOOL}: only the root says where a commitment's work landed`)
     const row = Option.filter(Option.fromUndefinedOr((yield* record.read).commitments.get(id)), (each) => each.state === "open")
-    if (Option.isNone(row)) return yield* Effect.fail(`${COMMITMENTS}: ${id} is not an open commitment`)
-    if (Option.isNone(row.value.ownerLane)) return yield* Effect.fail(`${COMMITMENTS}: ${id} is unowned; own it first: ${callOf("assign")}`)
+    if (Option.isNone(row)) return yield* Effect.fail(printed`${TOOL}: ${printable(id)} is not an open commitment`)
+    if (Option.isNone(row.value.ownerLane)) return yield* Effect.fail(printed`${TOOL}: ${printable(id)} is unowned; own it first: ${printable(callOf("assign"))}`)
     const claims = Arr.filter([{ id, run: row.value.run, owner: row.value.ownerLane.value, head }], () => !Option.contains(row.value.head, head))
     const after = yield* claimsRecorded(claims, "landed", actor.id, actor, now, reads.facts)
     const landed = Option.exists(Option.fromUndefinedOr(after.commitments.get(id)), (each) => each.state === "landed")
     return Match.value(landed).pipe(
-      Match.when(true, () => `${COMMITMENTS}: ${id} landed: ${head} is on the default branch.`),
-      Match.orElse(() => `${COMMITMENTS}: ${id} claims ${head}; it lands once git has ${head} on the default branch (it does not now).`),
+      Match.when(true, () => printed`${TOOL}: ${printable(id)} landed: ${printable(head)} is on the default branch.`),
+      Match.orElse(() => printed`${TOOL}: ${printable(id)} claims ${printable(head)}; it lands once git has ${printable(head)} on the default branch (it does not now).`),
     )
   })
 
@@ -501,6 +501,17 @@ export const goneOf = (owners: ReadonlyArray<string>, lanes: Option.Option<{ rea
 
 // ── Answers ──
 
+const TOOL = printable(COMMITMENTS)
+const FOLLOW = printable(FOLLOW_UP)
+const LINE = printable("\n")
+const EMPTY_LINE = printable("")
+const COMMA = printable(", ")
+const count = (value: number): Printable => printable(String(value))
+const namesOf = (ids: ReadonlyArray<string>): Printable => Arr.match(ids, {
+  onEmpty: () => printable("none"),
+  onNonEmpty: (each) => joined(each.map(printable), COMMA),
+})
+
 const isOwnerSourced = (row: Commitment): boolean => OWNER_KINDS.includes(row.sourceKind)
 
 /** The order the section names a standing's ids in: owner-sourced first, then oldest, then by id. */
@@ -510,10 +521,10 @@ export const sectionOrder: Order.Order<Commitment> = Order.combineAll([
   Order.mapInput(Order.String, (row: Commitment) => row.id),
 ])
 
-const idsLine = (standing: Standing, rows: ReadonlyArray<Commitment>): string => {
+const idsLine = (standing: Standing, rows: ReadonlyArray<Commitment>): Printable => {
   const named = Arr.sort(rows, sectionOrder).slice(0, SECTION_IDS).map((row) => row.id)
   const more = Arr.filter([`, and ${rows.length - named.length} more: ${listCallOf(standing)}`], () => rows.length > named.length)
-  return `- ${standing}: ${named.join(", ")}${more.join("")}${Option.getOrElse(Option.fromUndefinedOr(RESOLVES[standing]), () => "")}`
+  return printed`- ${printable(standing)}: ${namesOf(named)}${printable(more.join(""))}${printable(Option.getOrElse(Option.fromUndefinedOr(RESOLVES[standing]), () => ""))}`
 }
 
 /** What a listed standing's line says resolves it, where the standing calls for a tool call the others do not. */
@@ -539,12 +550,12 @@ export const noticeRowsOf = (snapshot: Snapshot): ReadonlyArray<Commitment> =>
   )
 
 /** A notice as the section names it: its id, run and closing session, and whether that session had acted in the run. */
-const noticeOf = (row: Commitment): string =>
-  `${row.id} (${[`run ${row.run}`, ...Option.toArray(Option.map(row.noticeBy, (by) => `by ${by}`)), ...Arr.filter(["outside its run"], () => row.noticeOutsideRun)].join(", ")})`
+const noticeOf = (row: Commitment): Printable =>
+  printed`${printable(row.id)} (${joined([printed`run ${printable(row.run)}`, ...Option.toArray(Option.map(row.noticeBy, (by) => printed`by ${printable(by)}`)), ...Arr.filter([printable("outside its run")], () => row.noticeOutsideRun)], COMMA)})`
 
 /** At most `SECTION_IDS` of `items`, then how many more and the call that lists them. */
-const capped = (items: ReadonlyArray<string>, rest: string): string =>
-  [items.slice(0, SECTION_IDS).join(", "), ...Arr.filter([`and ${items.length - SECTION_IDS} more: ${rest}`], () => items.length > SECTION_IDS)].join(", ")
+const capped = (items: ReadonlyArray<Printable>, rest: Printable): Printable =>
+  joined([joined(items.slice(0, SECTION_IDS), COMMA), ...Arr.filter([printed`and ${count(items.length - SECTION_IDS)} more: ${rest}`], () => items.length > SECTION_IDS)], COMMA)
 
 const countOf = (listed: Listed, standing: Standing): number => (listed.by.get(standing) ?? []).length
 
@@ -553,60 +564,60 @@ const countOf = (listed: Listed, standing: Standing): number => (listed.by.get(s
  * then oldest, with the call that lists the rest), the unrouted hand-backs and the notices the owner has not seen.
  * Nothing when nothing is listed, unrouted or unseen: only held is quiet, so a record of held ones says nothing.
  */
-export const sectionOf = (listed: Listed): ReadonlyArray<Printable> => Arr.map(sectionText(listed), (line) => printable(line))
-
-const sectionText = (listed: Listed): ReadonlyArray<string> => {
+export const sectionOf = (listed: Listed): ReadonlyArray<Printable> => {
   const open = STANDINGS.reduce((sum, standing) => sum + countOf(listed, standing), 0)
   const loud = LISTED.reduce((sum, standing) => sum + countOf(listed, standing), 0)
   if (loud + listed.unrouted.length + listed.notices.length === 0) return []
   const counts = STANDINGS.map((standing) => `${countOf(listed, standing)} ${standing}`).join(", ")
   const lines = LISTED.flatMap((standing) => Arr.match(listed.by.get(standing) ?? [], { onEmpty: () => [], onNonEmpty: (rows) => [idsLine(standing, rows)] }))
   return [
-    `Commitments: ${open} open (${counts}). Only held is quiet: own (${callOf("assign")}), order or decide each listed one.`,
+    printed`Commitments: ${count(open)} open (${printable(counts)}). Only held is quiet: own (${printable(callOf("assign"))}), order or decide each listed one.`,
     ...lines,
-    ...Arr.match(listed.unrouted, { onEmpty: () => [], onNonEmpty: (ids) => [`- unrouted hand-backs: ${capped(ids.map(String), "the oldest are named; routing them names the next")}: ${callOf("route")}`] }),
-    ...Arr.match(listed.notices, { onEmpty: () => [], onNonEmpty: (rows) => [`- closed by decision, not yet seen by the owner: ${capped(rows.map(noticeOf), callOf("list", [["all", "true"]]))}`] }),
+    ...Arr.match(listed.unrouted, { onEmpty: () => [], onNonEmpty: (ids) => [printed`- unrouted hand-backs: ${capped(ids.map(count), printable("the oldest are named; routing them names the next"))}: ${printable(callOf("route"))}`] }),
+    ...Arr.match(listed.notices, { onEmpty: () => [], onNonEmpty: (rows) => [printed`- closed by decision, not yet seen by the owner: ${capped(rows.map(noticeOf), printable(callOf("list", [["all", "true"]])))}`] }),
   ]
 }
 
-/** The section's keys: one per listed id, so the queue check says it again only when the set changes. */
-export const sectionKeys = (listed: Listed): ReadonlyArray<Printable> =>
-  Arr.map([
+/** Identity for the queue check: compare validated original ids, never the text that renders them. */
+export const sectionKeys = (listed: Listed): ReadonlyArray<string> => [
   ...LISTED.flatMap((standing) => (listed.by.get(standing) ?? []).map((row) => `commitment:${standing}:${row.id}`)),
   ...listed.unrouted.map((id) => `hand-back:${id}`),
   ...listed.notices.map((row) => `notice:${row.id}`),
-  ], (key) => printable(key))
+]
 
 const DAY = 86_400_000
 
-const rowLine = (snapshot: Snapshot, facts: Facts) => (row: Commitment): string => {
+const rowLine = (snapshot: Snapshot, facts: Facts) => (row: Commitment): Printable => {
   const where = Match.value(row.state).pipe(
     Match.when("open", () => standingOf(snapshot, row, facts)),
     Match.orElse((state) => state),
   )
   const owner = Option.getOrElse(row.ownerLane, () => "-")
-  const review = Option.match(row.reviewBy, { onNone: () => "", onSome: (at) => ` review by ${at}` })
+  const review = Option.match(row.reviewBy, { onNone: () => EMPTY_LINE, onSome: (at) => printed` review by ${printable(at)}` })
   // Its last known lane facts: where its lane was, the commit it started at, the commit a land or the root claimed.
   const lastKnown = [
-    ...Option.toArray(Option.map(row.lanePath, (path) => `lane ${path}`)),
-    ...Option.toArray(Option.map(row.startHead, (head) => `started at ${head}`)),
-    ...Option.toArray(Option.map(row.head, (head) => `claims ${head}`)),
+    ...Option.toArray(Option.map(row.lanePath, (path) => printed`lane ${printable(path)}`)),
+    ...Option.toArray(Option.map(row.startHead, (head) => printed`started at ${printable(head)}`)),
+    ...Option.toArray(Option.map(row.head, (head) => printed`claims ${printable(head)}`)),
   ]
-  const known = Arr.match(lastKnown, { onEmpty: () => "", onNonEmpty: (each) => `; ${each.join(", ")}` })
-  return `${row.id} [${where}] ${owner}: ${row.title} (${row.sourceKind} ${row.sourceRef}; ${row.run})${review}${known}${reasonPart(row)}`
+  const known = Arr.match(lastKnown, { onEmpty: () => EMPTY_LINE, onNonEmpty: (each) => printed`; ${joined(each, COMMA)}` })
+  return printed`${printable(row.id)} [${printable(where)}] ${printable(owner)}: ${printable(row.title)} (${printable(row.sourceKind)} ${printable(row.sourceRef)}; ${printable(row.run)})${review}${known}${reasonPart(row)}`
 }
 
 /** A row's reason, or how a reasonless close was made: an import's is printed "historical, unclassified". */
-const reasonPart = (row: Commitment): string =>
+const reasonPart = (row: Commitment): Printable =>
   Option.match(row.reason, {
     onSome: (reason) => Match.value(row.state).pipe(
-      Match.when("decided", () => `; closed on ${lineOf(reason)}`),
-      Match.orElse(() => `; waits on ${lineOf(reason)}`),
+      Match.when("decided", () => printed`; closed on ${lineOf(reason)}`),
+      Match.orElse(() => printed`; waits on ${lineOf(reason)}`),
     ),
     onNone: () =>
       Option.match(row.unreasonedClose, {
-        onNone: () => "",
-        onSome: (close) => Match.value(close).pipe(Match.when("historical", () => "; historical, unclassified"), Match.orElse(() => "; placed in its parts")),
+        onNone: () => EMPTY_LINE,
+        onSome: (close) => {
+          if (close === "historical") return printable("; historical, unclassified")
+          return printable("; placed in its parts")
+        },
       }),
   })
 
@@ -619,17 +630,17 @@ const kept = (input: CommitmentsInput, snapshot: Snapshot, facts: Facts) => (row
   Option.getOrElse(Option.map(Option.fromUndefinedOr(input.standing), (standing) => row.state === "open" && standingOf(snapshot, row, facts) === standing), () => true)
 
 /** The list action's answer: one line per commitment the filters keep, by id. */
-export const listAnswer = (input: CommitmentsInput, snapshot: Snapshot, facts: Facts): string => {
+export const listAnswer = (input: CommitmentsInput, snapshot: Snapshot, facts: Facts): Printable => {
   const rows = Arr.sort([...snapshot.commitments.values()].filter(kept(input, snapshot, facts)), Order.mapInput(Order.String, (row: Commitment) => row.id))
   return Arr.match(rows, {
-    onEmpty: () => `${COMMITMENTS}: none match.`,
-    onNonEmpty: (each) => [`${COMMITMENTS}: ${each.length}`, ...each.map(rowLine(snapshot, facts))].join("\n"),
+    onEmpty: () => printed`${TOOL}: none match.`,
+    onNonEmpty: (each) => joined([printed`${TOOL}: ${count(each.length)}`, ...each.map(rowLine(snapshot, facts))], LINE),
   })
 }
 
-const eventLine = (event: StoredEvent): string => {
-  const states = Option.match(Option.all([event.fromState, event.toState]), { onNone: () => "", onSome: ([from, to]) => ` ${from} → ${to}` })
-  const note = Arr.filter([` (${event.note})`], () => event.note !== "")
+const eventLine = (event: StoredEvent): Printable => {
+  const states = Option.match(Option.all([event.fromState, event.toState]), { onNone: () => EMPTY_LINE, onSome: ([from, to]) => printed` ${printable(from)} → ${printable(to)}` })
+  const note = joined(Arr.filter([printed` (${printable(event.note)})`], () => event.note !== ""), EMPTY_LINE)
   // The reason the event carried: history keeps it after a reopen clears the row's.
   const happened = event.happening
   const reason = Match.value(happened).pipe(
@@ -638,53 +649,60 @@ const eventLine = (event: StoredEvent): string => {
     Match.tag("imported", (each) => Option.as(Option.liftPredicate(each.row.state, (state) => state === "decided"), "historical, unclassified")),
     Match.orElse(() => Option.none<ReasonData | string>()),
   )
-  const why = Option.match(reason, { onNone: () => "", onSome: (each) => `; ${Match.value(each).pipe(Match.when(Predicate.isString, (text) => text), Match.orElse(lineOf))}` })
-  return `${event.seq} ${event.at} ${event.happening._tag}${states} by ${event.actor.role} ${event.actor.id}${note.join("")}${why}`
+  const why = Option.match(reason, {
+    onNone: () => EMPTY_LINE,
+    onSome: (each) => {
+      if (Predicate.isString(each)) return printed`; ${printable(each)}`
+      return printed`; ${lineOf(each)}`
+    },
+  })
+  return printed`${count(event.seq)} ${printable(event.at)} ${printable(event.happening._tag)}${states} by ${printable(event.actor.role)} ${printable(event.actor.id)}${note}${why}`
 }
 
 /** The history action's answer: every event of the commitment, oldest first. */
-export const historyAnswer = (id: string, events: ReadonlyArray<StoredEvent>): string =>
-  Arr.match(events, { onEmpty: () => `${COMMITMENTS}: ${id} has no history: no such commitment.`, onNonEmpty: (each) => [`${COMMITMENTS}: ${id}`, ...each.map(eventLine)].join("\n") })
+export const historyAnswer = (id: string, events: ReadonlyArray<StoredEvent>): Printable =>
+  Arr.match(events, {
+    onEmpty: () => printed`${TOOL}: ${printable(id)} has no history: no such commitment.`,
+    onNonEmpty: (each) => joined([printed`${TOOL}: ${printable(id)}`, ...each.map(eventLine)], LINE),
+  })
 
 const idsOf = (events: ReadonlyArray<RecordEvent>, tag: RecordEvent["happening"]["_tag"]): ReadonlyArray<string> =>
   Arr.dedupe(events.flatMap((event) => Arr.filter([event.subjectId], () => event.happening._tag === tag)))
 
-const namesOf = (ids: ReadonlyArray<string>): string => Arr.match(ids, { onEmpty: () => "none", onNonEmpty: (each) => each.join(", ") })
-
 /** What a writing action did, in a line or two: the commitments it touched, and what the root does next. */
-export const doneAnswer = (command: Command, events: ReadonlyArray<RecordEvent>, snapshot: Snapshot): string =>
+export const doneAnswer = (command: Command, events: ReadonlyArray<RecordEvent>, snapshot: Snapshot): Printable =>
   Match.value(command).pipe(
     Match.tag("add", (add) => {
       const unowned = add.parts.filter((part) => Option.isNone(part.ownerLane)).map((part) => part.id)
-      const placed = idsOf(events, "placed").map((id) => ` ${id} is placed in them: closed, its parts carry it.`)
-      return `${COMMITMENTS}: added ${namesOf(add.parts.map((part) => part.id))}. Unowned until assigned: ${namesOf(unowned)}.${placed.join("")}`
+      const placed = idsOf(events, "placed").map((id) => printed` ${printable(id)} is placed in them: closed, its parts carry it.`)
+      return printed`${TOOL}: added ${namesOf(add.parts.map((part) => part.id))}. Unowned until assigned: ${namesOf(unowned)}.${joined(placed, EMPTY_LINE)}`
     }),
     Match.tag("assign", (assign) =>
       Option.match(Option.fromUndefinedOr(snapshot.commitments.get(assign.id)), {
-        onNone: () => `${COMMITMENTS}: ${assign.id} not found.`,
-        onSome: (row) => `${COMMITMENTS}: ${row.id} owned by ${assign.ownerLane}, review by ${Option.getOrElse(row.reviewBy, () => "-")}; waits on ${namesOf(row.after.map((each) => `${each.kind} ${each.ref}`))}.`,
+        onNone: () => printed`${TOOL}: ${printable(assign.id)} not found.`,
+        onSome: (row) => printed`${TOOL}: ${printable(row.id)} owned by ${printable(assign.ownerLane)}, review by ${printable(Option.getOrElse(row.reviewBy, () => "-"))}; waits on ${Arr.match(row.after, { onEmpty: () => printable("none"), onNonEmpty: (items) => joined(items.map((each) => printed`${printable(each.kind)} ${printable(each.ref)}`), COMMA) })}.`,
       }),
     ),
     Match.tag("order", (order) => {
       const open = [...snapshot.commitments.values()].filter((row) => row.state === "open" && Option.contains(row.ownerLane, order.ownerLane))
-      return `${COMMITMENTS}: started ${namesOf(idsOf(events, "ordered"))}. ${order.ownerLane}'s open commitments, each placed by this order: ${namesOf(open.map((row) => row.id))}.`
+      return printed`${TOOL}: started ${namesOf(idsOf(events, "ordered"))}. ${printable(order.ownerLane)}'s open commitments, each placed by this order: ${namesOf(open.map((row) => row.id))}.`
     }),
     Match.tag("decide", (decide) => {
       const noticed = Option.exists(Option.fromUndefinedOr(snapshot.commitments.get(decide.id)), (row) => Option.isSome(row.noticeUntil))
       const told = Arr.filter([" The owner approved it: they are told, and can have it reopened."], () => noticed)
-      return `${COMMITMENTS}: ${decide.id} closed by decision, ${lineOf(decide.reason)}.${told.join("")}`
+      return printed`${TOOL}: ${printable(decide.id)} closed by decision, ${lineOf(decide.reason)}.${printable(told.join(""))}`
     }),
-    Match.tag("defer", (defer) => `${COMMITMENTS}: ${defer.id} stays open, waiting on ${lineOf(defer.reason)}.`),
+    Match.tag("defer", (defer) => printed`${TOOL}: ${printable(defer.id)} stays open, waiting on ${lineOf(defer.reason)}.`),
     Match.tag("invariant", (invariant) =>
       Option.match(Option.fromUndefinedOr(snapshot.invariants.get(invariant.id)), {
-        onNone: () => `${COMMITMENTS}: invariant ${invariant.id} not found.`,
-        onSome: (held) => `${COMMITMENTS}: invariant ${held.id} declared: ${held.docPath}#${held.anchor} at ${held.commit.slice(0, 12)}; a guarantee names it as { kind: "invariant", id: "${held.id}" }.`,
+        onNone: () => printed`${TOOL}: invariant ${printable(invariant.id)} not found.`,
+        onSome: (held) => printed`${TOOL}: invariant ${printable(held.id)} declared: ${printable(held.docPath)}#${printable(held.anchor)} at ${prefixOf(printable(held.commit), 12)}; a guarantee names it as { kind: "invariant", id: ${printableJson(held.id)} }.`,
       }),
     ),
-    Match.tag("reopen", (reopen) => `${COMMITMENTS}: ${reopen.id} is open again and unowned; its reason is cleared, its history kept.`),
-    Match.tag("word", (word) => `${COMMITMENTS}: word ${word.word} given in ${word.run}.`),
-    Match.tag("route", (route) => `${COMMITMENTS}: hand-back ${route.handBack} ${route.as}.`),
-    Match.orElse((other) => `${COMMITMENTS}: ${other._tag} done (changes: ${events.length}).`),
+    Match.tag("reopen", (reopen) => printed`${TOOL}: ${printable(reopen.id)} is open again and unowned; its reason is cleared, its history kept.`),
+    Match.tag("word", (word) => printed`${TOOL}: word ${printable(word.word)} given in ${printable(word.run)}.`),
+    Match.tag("route", (route) => printed`${TOOL}: hand-back ${count(route.handBack)} ${printable(route.as)}.`),
+    Match.orElse((other) => printed`${TOOL}: ${printable(other._tag)} done (changes: ${count(events.length)}).`),
   )
 
 // ── A call ──
@@ -692,20 +710,23 @@ export const doneAnswer = (command: Command, events: ReadonlyArray<RecordEvent>,
 /** What a call reads from outside the record: a standing's facts, and an import's register (read and mapped). */
 export interface Reads {
   readonly facts: (snapshot: Snapshot) => Effect.Effect<Facts>
-  readonly register: (from: string, run: string, now: number) => Effect.Effect<{ readonly command: Command; readonly counts: string }, string>
+  readonly register: (from: string, run: string, now: number) => Effect.Effect<{ readonly command: Command; readonly counts: string }, Printable>
   /** The checkout the call runs in: where the evidence reader looks for a receipt or a declared document. */
   readonly checkout: string
 }
 
 /** Why a record call failed, in its words. */
 export const whyOf = (failed: RecordRefused | RecordFailed | string): Printable =>
-  printable(
-    Match.value(failed).pipe(
-      Match.when(Predicate.isString, (why) => why),
-      Match.tag("RecordRefused", (refused) => `${COMMITMENTS}: ${refused.reason}`),
-      Match.orElse((other) => `${COMMITMENTS}: ${other.message}`),
-    ),
+  Match.value(failed).pipe(
+    Match.when(Predicate.isString, printable),
+    Match.tag("RecordRefused", (refused) => printed`${printable(COMMITMENTS)}: ${refused.reason}`),
+    Match.orElse((other) => printed`${printable(COMMITMENTS)}: ${other.message}`),
   )
+
+const displayFailure = (failed: RecordRefused | RecordFailed | Printable): Printable => {
+  if (Predicate.isString(failed)) return failed
+  return whyOf(failed)
+}
 
 const imported = (events: ReadonlyArray<RecordEvent>): number => events.filter((event) => event.happening._tag === "imported").length
 
@@ -717,7 +738,7 @@ export const answerOf = (input: CommitmentsInput, actor: Actor, now: number, rea
   Effect.gen(function* () {
     const record = yield* CommitmentRecord
     const refused = inputRefusal(input)
-    if (Option.isSome(refused)) return yield* Effect.fail(refused.value)
+    if (Option.isSome(refused)) return yield* Effect.fail(printable(refused.value))
     const action = input.action
     if (action === "list") {
       const snapshot = yield* record.read
@@ -727,49 +748,49 @@ export const answerOf = (input: CommitmentsInput, actor: Actor, now: number, rea
     if (action === "history") return historyAnswer(id, yield* record.history("commitment", id))
     if (action === "landed") return yield* landedOf(input, actor, now, reads)
     if (action === "import") {
-      if (actor.role !== ROOT) return yield* Effect.fail(`${COMMITMENTS}: only the root imports a register`)
+      if (actor.role !== ROOT) return yield* Effect.fail(printed`${TOOL}: only the root imports a register`)
       const run = input.run ?? DEFAULT_RUN
       const map = input.map ?? "ergo-register"
-      const mapped = yield* Effect.mapError(reads.register(input.from ?? "", run, now), (why) => `${COMMITMENTS}: ${why}`)
+      const mapped = yield* Effect.mapError(reads.register(input.from ?? "", run, now), (why) => printed`${TOOL}: ${why}`)
       // The import's rows are the register's, so its events are the import's (actor `ergo-register`), on the root's call.
       const done = yield* record.run(mapped.command, { actor: { id: map, role: "import" }, now })
-      return `${COMMITMENTS}: imported ${imported(done.events)} rows into ${run}; the rest were held already. Counts out from in: ${mapped.counts}.`
+      return printed`${TOOL}: imported ${count(imported(done.events))} rows into ${printable(run)}; the rest were held already. Counts out from in: ${printable(mapped.counts)}.`
     }
     if (action === "defer") {
       // The receipt a measurement names is read here, before the record's transaction; the record checks the rest inside it.
-      const reason = yield* Result.match(reasonOfInput(COMMITMENTS, input), { onFailure: (why) => Effect.fail(why), onSuccess: (each) => Effect.succeed(each) })
+      const reason = yield* Result.match(reasonOfInput(COMMITMENTS, input), { onFailure: (why) => Effect.fail(printable(why)), onSuccess: (each) => Effect.succeed(each) })
       const seen = yield* observedReason(COMMITMENTS, reason, reads.checkout)
       const command = Command.cases.defer.make({ id, reason: seen.reason, observed: seen.observed })
       const done = yield* record.run(command, { actor, now })
       return doneAnswer(command, done.events, done.snapshot)
     }
     if (action === "invariant") {
-      if (actor.role !== ROOT) return yield* Effect.fail(`${COMMITMENTS}: only the root declares an invariant`)
+      if (actor.role !== ROOT) return yield* Effect.fail(printed`${TOOL}: only the root declares an invariant`)
       const evidence = yield* Evidence
-      const observed = yield* Effect.mapError(evidence.document(reads.checkout, input.doc_path ?? ""), (refused: EvidenceRefused) => `${COMMITMENTS}: ${refused.reason}`)
+      const observed = yield* Effect.mapError(evidence.document(reads.checkout, input.doc_path ?? ""), (refused: EvidenceRefused) => printed`${TOOL}: ${refused.reason}`)
       const command = Command.cases.invariant.make({ id, anchor: input.anchor ?? "", observed })
       const done = yield* record.run(command, { actor, now })
       return doneAnswer(command, done.events, done.snapshot)
     }
-    const command = yield* Result.match(commandOf(input, action), { onFailure: (why) => Effect.fail(why), onSuccess: (each) => Effect.succeed(each) })
+    const command = yield* Result.match(commandOf(input, action), { onFailure: (why) => Effect.fail(printable(why)), onSuccess: (each) => Effect.succeed(each) })
     const done = yield* record.run(command, { actor, now })
     return doneAnswer(command, done.events, done.snapshot)
-  }).pipe(Effect.map((answer) => printable(answer)), Effect.mapError(whyOf))
+  }).pipe(Effect.mapError(displayFailure))
 
 /** A `follow_up` call: one unowned follow-up commitment, by the calling session. */
 export const followUpOf = (input: FollowUpInput, actor: Actor, callID: string, now: number, checkout: string) =>
   Effect.gen(function* () {
     const record = yield* CommitmentRecord
-    if (Predicate.isNotUndefined(input.key) && !KEY.test(input.key)) return yield* Effect.fail(`${FOLLOW_UP}: the key is not a slug (letters, digits, ., _ and -, at most 80); the value is not repeated`)
-    const reason = yield* Result.match(reasonOfInput(FOLLOW_UP, input), { onFailure: (why) => Effect.fail(why), onSuccess: (each) => Effect.succeed(each) })
+    if (Predicate.isNotUndefined(input.key) && !KEY.test(input.key)) return yield* Effect.fail(printed`${FOLLOW}: the key is not a slug (letters, digits, ., _ and -, at most 80); the value is not repeated`)
+    const reason = yield* Result.match(reasonOfInput(FOLLOW_UP, input), { onFailure: (why) => Effect.fail(printable(why)), onSuccess: (each) => Effect.succeed(each) })
     const seen = yield* observedReason(FOLLOW_UP, reason, checkout)
     const done = yield* record.run(followUpCommandOf(input, actor.id, callID, seen), { actor, now })
-    if (done.events.length === 0) return `${FOLLOW_UP}: ${input.id} is filed already by this key; nothing filed again.`
-    return `${FOLLOW_UP}: filed ${input.id}, unowned, waiting on ${lineOf(seen.reason)}; the root owns or decides it.`
-  }).pipe(Effect.map((answer) => printable(answer)), Effect.mapError(whyOf))
+    if (done.events.length === 0) return printed`${FOLLOW}: ${printable(input.id)} is filed already by this key; nothing filed again.`
+    return printed`${FOLLOW}: filed ${printable(input.id)}, unowned, waiting on ${lineOf(seen.reason)}; the root owns or decides it.`
+  }).pipe(Effect.mapError(displayFailure))
 
 /** A lane's answer with `line` before its implementor's start, whose call and lane stay its last lines. */
-export const beforeStart = (answer: string, line: string): string => {
+export const beforeStart = (answer: string, line: Printable): string => {
   const lines = answer.split("\n")
   const at = Option.getOrElse(Arr.findFirstIndex(lines, (each) => each.startsWith("Start its implementor")), () => Math.max(0, lines.length - 1))
   return [...lines.slice(0, at), line, ...lines.slice(at)].join("\n")
@@ -777,4 +798,4 @@ export const beforeStart = (answer: string, line: string): string => {
 
 /** The lane hook's line: the unit's commitment and every open commitment of the unit as its owner. */
 export const laneLine = (unit: string, open: ReadonlyArray<string>): Printable =>
-  printable(`Commitments of ${unit}: ${namesOf(open)}. A land of its lane (orchestrate land, the work tool's) claims the head it merges; ${callOf("list", [["owner", `"${unit}"`]])} lists them.`)
+  printed`Commitments of ${printable(unit)}: ${namesOf(open)}. A land of its lane (orchestrate land, the work tool's) claims the head it merges; ${TOOL}({ action: "list", owner: ${printableJson(unit)} }) lists them.`

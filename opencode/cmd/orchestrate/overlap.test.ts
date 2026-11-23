@@ -1,14 +1,15 @@
 import { expect, test } from "bun:test"
-import { Array as Arr, Effect, Layer, Option, Schema } from "effect"
+import { Array as Arr, Cause, Data, Effect, Exit, Layer, Option, Ref, Schema } from "effect"
 import * as PrintableModule from "@dotfiles/opencode-orchestrate/printable"
 import { noEvidence } from "@dotfiles/opencode-orchestrate/reasons"
 import { CommitmentRecord } from "@dotfiles/opencode-orchestrate/service"
 import { textsOf } from "../../sim/canary.ts"
 import * as Seed from "../../sim/seed.ts"
-import { leaked } from "../../sim/tokens.ts"
+import { generator } from "../../sim/runtime.ts"
+import { KINDS, leaked } from "../../sim/tokens.ts"
 import { scratch } from "../../tests/scratch.ts"
 import { boot, WORK } from "./orch-tools-world.ts"
-import { main } from "./record.ts"
+import { main, ranOf } from "./record.ts"
 
 const { printable } = PrintableModule
 
@@ -96,10 +97,14 @@ function* extend(base: Composition): Iterable<Composition> {
 test("intersecting and touching pairs and triples of secret shapes are replaced whole", () => {
   let pairs = 0
   let triples = 0
+  let discarded = 0
   const failed: Array<string> = []
   const check = (each: Composition): boolean => {
     const token = draw(each.pattern, each.random)
-    if (Option.isNone(token)) return false
+    if (Option.isNone(token)) {
+      discarded++
+      return false
+    }
     const output = printable(`before!qqqqqq${token.value}zzzzzz!after`)
     if (output !== "before![redacted]!after" && failed.length < 8) failed.push(each.name)
     return true
@@ -112,6 +117,8 @@ test("intersecting and touching pairs and triples of secret shapes are replaced 
   }
   expect(pairs).toBeGreaterThan(FORMS.length ** 2)
   expect(triples).toBeGreaterThan(FORMS.length ** 3)
+  expect({ generated: pairs + triples + discarded, pairs, triples, discarded })
+    .toEqual({ generated: 206_174, pairs: 1_518, triples: 204_656, discarded: 0 })
   expect(failed).toEqual([])
 })
 
@@ -166,6 +173,91 @@ Seed.effect("the host receives a redacted failure, not the raw defect, from eith
   expect(status.text).toContain("Commitments: the record did not read")
   expect(logs).toContain("scratch reader defect: [redacted]")
   expect(leaked(encode({ answers, status, logs }), { value, secrets: [value] }).length).toBe(0)
+})))
+
+const separators = [
+  ["space", " "], ["tab", "\t"], ["line", "\n"], ["quote", "\""], ["backslash", "\\"], ["unicode space", "\u2003"],
+] as const
+const diagnosticForms = KINDS.map(([kind, draw]) => {
+  if (kind === "bearer") {
+    const body = ALNUM.slice(4, 20)
+    return { kind, text: `Bearer ${body}`, secret: body }
+  }
+  return draw(generator(`record-diagnostic/${kind}`))
+})
+
+/** A native Error subclass: message and cause are own data, whereas stack is rendered lazily. */
+class NativeDiagnostic extends Data.TaggedError("NativeDiagnostic")<{ readonly message: string; readonly cause?: Error }> {}
+
+/** One set of original recognized values through each diagnostic representation, before escaping can alter it. */
+const diagnostics = () => diagnosticForms.flatMap(({ kind, text, secret }) => separators.map(([label, separator]) => {
+  let separated = text
+  if (kind === "bearer" && label !== "quote" && label !== "backslash") separated = `Bearer${separator}${secret}`
+  const original = `before${separator}${separated}${separator}after`
+  const native = new NativeDiagnostic({ message: original })
+  return { label: `${kind}/${label}`, body: secret, original, representations: [
+    original,
+    native,
+    new NativeDiagnostic({ message: "outer scratch defect", cause: native }),
+    Cause.die({ cause: Cause.die(original) }),
+    { diagnostic: [{ [original]: original }] },
+    [original, { inner: original }],
+  ] }
+}))
+
+test("the CLI rewrites original diagnostic leaves before formatting separators, nested errors, arrays or object fields", () => {
+  const cases = diagnostics()
+  expect(cases.length).toBe(12 * 6)
+  const escaped = cases.flatMap(({ label, body, original, representations }) => representations.flatMap((value, at) => {
+    const ran = ranOf(Exit.die(value))
+    const stdout = ranOf(Exit.succeed(PrintableModule.diagnostic(value)))
+    const refused = ranOf(Exit.fail(PrintableModule.diagnostic(value)))
+    return Arr.filter([`${label}/${at}`], () =>
+      ran.code !== 1 || stdout.code !== 0 || refused.code !== 1 || [ran.err, stdout.out, refused.err].some((text) =>
+        !text.includes("[redacted]") || leaked(text, { value: original, secrets: [body] }).length > 0))
+  }))
+  expect(escaped).toEqual([])
+})
+
+test("opaque defects never invoke getters or render hooks", () => {
+  const body = ALNUM.slice(0, 18)
+  let calls = 0
+  const get = () => {
+    calls++
+    return `Bearer\t${body}`
+  }
+  const value = { get message() { return get() }, toString: get, toJSON: get }
+  expect(ranOf(Exit.die(value)).err).toContain("record/opaque-defect")
+  expect(calls).toBe(0)
+})
+
+Seed.effect("registered tool refusals, status and logs redact diagnostic leaves before the host renders them", Effect.scoped(Effect.gen(function* () {
+  const current = yield* Ref.make<unknown>("scratch")
+  const defect = Ref.get(current).pipe(Effect.flatMap(Effect.die))
+  const run = yield* boot(1, true, {}, () => Layer.merge(
+    Layer.succeed(CommitmentRecord, CommitmentRecord.of({ read: defect, run: () => defect, history: () => defect, events: defect })),
+    noEvidence,
+  ))
+  const root = yield* run.world.session(WORK)
+  const child = yield* run.world.session(WORK, { parentID: root })
+  const follow = { id: "one", title: "one", reason_class: "dependency", referent: { kind: "commitment", id: "two" } }
+  const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
+  let exercised = 0
+  for (const { body, original, representations } of diagnostics()) {
+    for (const defect of representations) {
+      yield* Ref.set(current, defect)
+      const from = run.world.logs().length
+      const a = yield* run.probe(root, "commitments", { action: "list" })
+      const b = yield* run.probe(child, "follow_up", follow)
+      const status = yield* run.probe(root, "orchestrate", { action: "status" })
+      const log = encode(run.world.logs().slice(from))
+      const outputs = [a.text, b.text, status.text, log]
+      expect([a.error, b.error, status.error]).toEqual([true, true, false])
+      expect(outputs.every((text) => text.includes("[redacted]") && leaked(text, { value: original, secrets: [body] }).length === 0)).toBe(true)
+      exercised += outputs.length
+    }
+  }
+  expect(exercised).toBe(12 * 6 * 6 * 4)
 })))
 
 Seed.effect("CLI list, history, export and the stored bytes agree for overlapping tokens at every offset", Effect.gen(function* () {

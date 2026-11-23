@@ -5,7 +5,7 @@
 import { Database } from "bun:sqlite"
 import { Array as Arr, Effect, Option, Order, Result, Schema } from "effect"
 import { Command, type ImportRow, isoOf, msOf, type PrerequisiteKind, RANKS, REVIEW_MS, SOURCE_KINDS, type State } from "../record.ts"
-import { printable } from "../printable.ts"
+import { diagnostic, printed, printable } from "../printable.ts"
 import { RecordFailed } from "../service.ts"
 
 /** The import's name, its events' actor. */
@@ -76,11 +76,11 @@ const oneOf = <A extends string>(values: ReadonlyArray<A>, value: string): Optio
 
 /** Why `row` does not map, by its id and column; none when it does. */
 const unmapped = (row: ErgoCommitment, events: ReadonlyArray<ErgoEvent>): Option.Option<string> => {
-  const at = (column: string, why: string) => Option.some(`row ${row.id}, column ${column}: ${why}`)
-  if (Option.isNone(oneOf(SOURCE_KINDS, row.source_kind))) return at("source_kind", `"${row.source_kind}" is none of ${SOURCE_KINDS.join(", ")}`)
-  if (Option.isNone(oneOf(RANKS, row.rank))) return at("rank", `"${row.rank}" is none of A, B, C, D`)
-  if (!STATE_MAP.has(row.state)) return at("state", `"${row.state}" is no state of the register`)
-  if (row.trigger_kind !== "none" && !KIND_MAP.has(row.trigger_kind)) return at("trigger_kind", `"${row.trigger_kind}" is no wait the record keeps`)
+  const at = (column: string, why: string) => Option.some(`row ${printable(row.id)}, column ${column}: ${why}`)
+  if (Option.isNone(oneOf(SOURCE_KINDS, row.source_kind))) return at("source_kind", `the value is none of ${SOURCE_KINDS.join(", ")}`)
+  if (Option.isNone(oneOf(RANKS, row.rank))) return at("rank", "the value is none of A, B, C, D")
+  if (!STATE_MAP.has(row.state)) return at("state", "the value is no state of the register")
+  if (row.trigger_kind !== "none" && !KIND_MAP.has(row.trigger_kind)) return at("trigger_kind", "the value is no wait the record keeps")
   if (row.state === "landed" && Option.isNone(Option.flatten(Option.fromUndefinedOr(row.landed_commit)))) return at("landed_commit", "a landed row needs the commit on the default branch")
   if (CLOSING.includes(row.state) && Option.isNone(closingNote(row, events))) return at("event.note", "a closed row needs its closing event's note")
   return Option.none()
@@ -92,7 +92,7 @@ const newestFirst = Order.flip(Order.mapInput(Order.Number, (event: ErgoEvent) =
 const closingNote = (row: ErgoCommitment, events: ReadonlyArray<ErgoEvent>): Option.Option<string> => {
   const sorted = Arr.sort(events, newestFirst)
   const closing = Option.orElse(Arr.findFirst(sorted, (event) => CLOSING.includes(event.to_state)), () => Arr.head(sorted))
-  return Option.filter(Option.map(closing, (event) => event.note.trim()), (note) => note !== "")
+  return Option.filter(Option.map(closing, (event) => event.note), (note) => note.trim() !== "")
 }
 
 /** When a started row started: its newest event into `started`, else its last change. */
@@ -169,16 +169,16 @@ export const countsLine = (counts: Counts): string =>
   [...counts.out].map(([state, n]) => `${state} ${n}`).join(", ") + ` from ${[...counts.in].map(([state, n]) => `${state} ${n}`).join(", ")}`
 
 const decodeAll = <S extends Schema.Top & { readonly DecodingServices: never }>(schema: S, rows: ReadonlyArray<unknown>, table: string) =>
-  Effect.mapError(Schema.decodeUnknownEffect(Schema.Array(schema))(rows), (error) => new RecordFailed({ message: printable(`${ERGO_REGISTER}: table ${table}: ${error.message}`) }))
+  Effect.mapError(Schema.decodeUnknownEffect(Schema.Array(schema))(rows), () => new RecordFailed({ message: printed`${printable(ERGO_REGISTER)}: table ${printable(table)}: invalid row (record/register-row)` }))
 
 /** The register at `path`, read-only: its commitment, event and prerequisite tables. */
 export const readRegister = (path: string) =>
   Effect.acquireUseRelease(
-    Effect.try({ try: () => new Database(path, { readonly: true }), catch: (cause) => new RecordFailed({ message: printable(`${ERGO_REGISTER}: open ${path}: ${String(cause)}`) }) }),
+    Effect.try({ try: () => new Database(path, { readonly: true }), catch: (cause) => new RecordFailed({ message: printed`${printable(ERGO_REGISTER)}: open ${printable(path)}: ${diagnostic(cause)}` }) }),
     (db) =>
       Effect.gen(function* () {
         const all = (table: string) =>
-          Effect.try({ try: () => db.query(`SELECT * FROM ${table}`).all(), catch: (cause) => new RecordFailed({ message: printable(`${ERGO_REGISTER}: table ${table}: ${String(cause)}`) }) })
+          Effect.try({ try: () => db.query(`SELECT * FROM ${table}`).all(), catch: (cause) => new RecordFailed({ message: printed`${printable(ERGO_REGISTER)}: table ${printable(table)}: ${diagnostic(cause)}` }) })
         const commitments = yield* decodeAll(ErgoCommitment, yield* all("commitment"), "commitment")
         const events = yield* decodeAll(ErgoEvent, yield* all("event"), "event")
         const prerequisites = yield* decodeAll(ErgoPrerequisite, yield* all("prerequisite"), "prerequisite")
@@ -196,9 +196,8 @@ export const registerReads = (from: string, run: string, now: number) =>
     Effect.mapError((failed) => failed.message),
     Effect.flatMap((register) =>
       Result.match(mapRegister(register, now), {
-        onFailure: (why) => Effect.fail(`${ERGO_REGISTER}: ${why}`),
+        onFailure: (why) => Effect.fail(printed`${printable(ERGO_REGISTER)}: ${printable(why)}`),
         onSuccess: (mapped) => Effect.succeed({ command: importCommandOf(run, mapped.rows), counts: countsLine(mapped.counts) }),
       }),
     ),
   )
-

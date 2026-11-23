@@ -16,6 +16,7 @@
 import { parseArgs } from "node:util"
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Clock, Console, Effect, Exit, Layer, Match, Option, Schema } from "effect"
+import * as SchemaIssue from "effect/SchemaIssue"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import * as Commitments from "@dotfiles/opencode-orchestrate/commitments-tool"
 import * as GitMainLine from "@dotfiles/opencode-orchestrate/git/main-line"
@@ -23,7 +24,7 @@ import type { Actor } from "@dotfiles/opencode-orchestrate/record"
 import { CommitmentRecord, MainLine } from "@dotfiles/opencode-orchestrate/service"
 import * as ErgoRegister from "@dotfiles/opencode-orchestrate/sqlite/ergo-register"
 import { platform } from "@dotfiles/opencode-orchestrate/node/platform"
-import { failureText, type Printable, printable } from "@dotfiles/opencode-orchestrate/printable"
+import { diagnostic, failureText, joined, printed, type Printable, printable } from "@dotfiles/opencode-orchestrate/printable"
 import * as Reasons from "@dotfiles/opencode-orchestrate/reasons"
 import * as SqliteRecord from "@dotfiles/opencode-orchestrate/sqlite/record"
 
@@ -59,6 +60,17 @@ const READS: ReadonlyArray<string> = ["list", "history", "export"]
 const decodeFields = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json)))
 const decodeCommitments = Schema.decodeUnknownEffect(Commitments.CommitmentsInput)
 const decodeFollowUp = Schema.decodeUnknownEffect(Commitments.FollowUpInput)
+const decodeFailure = (issue: SchemaIssue.Issue): Printable =>
+  Match.value(issue).pipe(
+    Match.tag("InvalidValue", (error) => {
+      const message = Option.fromUndefinedOr(error.annotations?.message)
+      return Option.match(message, {
+        onSome: (value) => printed`record: ${diagnostic(value)}`,
+        onNone: () => printable("record: invalid input (record/input-decode)"),
+      })
+    }),
+    Match.orElse(() => printable("record: invalid input (record/input-decode)")),
+  )
 
 /** The fields of `--json`, as an object. */
 const fieldsOf = (call: Call) => Effect.mapError(decodeFields(call.json), () => printable("record: --json is not a JSON object of fields; its text is not repeated"))
@@ -78,7 +90,7 @@ const readsOf = (checkout: string): Commitments.Reads => ({
 const commitmentsCall = (call: Call) =>
   Effect.gen(function* () {
     const fields = yield* fieldsOf(call)
-    const input = yield* Effect.mapError(decodeCommitments({ ...fields, action: call.action }), (error) => printable(`record: ${error.message}`))
+    const input = yield* Effect.mapError(decodeCommitments({ ...fields, action: call.action }), (error) => decodeFailure(error.issue))
     const actor: Actor = { id: call.actor, role: "root" }
     return yield* Commitments.answerOf(input, actor, yield* Clock.currentTimeMillis, readsOf(call.checkout))
   })
@@ -86,7 +98,7 @@ const commitmentsCall = (call: Call) =>
 /** A worker's `follow_up`, its call id the CLI's. */
 const followUpCall = (call: Call) =>
   Effect.gen(function* () {
-    const input = yield* Effect.mapError(decodeFollowUp(yield* fieldsOf(call)), (error) => printable(`record: ${error.message}`))
+    const input = yield* Effect.mapError(decodeFollowUp(yield* fieldsOf(call)), (error) => decodeFailure(error.issue))
     const now = yield* Clock.currentTimeMillis
     return yield* Commitments.followUpOf(input, { id: call.actor, role: "worker" }, `cli-${now}`, now, call.checkout)
   })
@@ -94,7 +106,7 @@ const followUpCall = (call: Call) =>
 /** Every event, oldest first, one JSON line each. */
 const exportCall = Effect.gen(function* () {
   const events = yield* Effect.mapError((yield* CommitmentRecord).events, (failed) => failed.message)
-  return printable(events.map(SqliteRecord.exportLine).join("\n"))
+  return joined(events.map(SqliteRecord.exportLine), printable("\n"))
 })
 
 /** The answer to `call` on its record. */
@@ -123,7 +135,7 @@ const recordOf = (call: Call) =>
   Layer.effect(
     CommitmentRecord,
     Effect.gen(function* () {
-      const file = yield* Effect.mapError(fileOf(call), (failed) => printable(failed.message))
+      const file = yield* Effect.mapError(fileOf(call), (cause) => printed`record: no file: ${diagnostic(cause)}`)
       const now = yield* Clock.currentTimeMillis
       const opened = yield* Effect.mapError(SqliteRecord.open(file, { readonly: READS.includes(call.action), now }), (failed) => failed.message)
       return SqliteRecord.make(opened.db, opened.refusal)
@@ -141,7 +153,7 @@ const NOTHING = printable("")
 
 /**
  * A run's output from how it ended: its answer, its refusal, or a defect. The one place a defect's text (a thrown
- * SQLite error, which repeats values) becomes output, and it passes `printable` whole, as every output does.
+ * SQLite error, which repeats values) becomes output. `failureText` rewrites its original leaves before rendering.
  */
 export const ranOf = (exit: Exit.Exit<Printable, Printable>): Ran =>
   Exit.match(exit, {

@@ -5,6 +5,7 @@
 import { Array as Arr, Effect, Option, Schema } from "effect"
 import type { Run } from "./idle.ts"
 import type { Held } from "./ledger.ts"
+import type { Printable } from "./printable.ts"
 import { hashReasons, type HeadSeen, IDLE_MS, type LaneSeen, type LaneStatus, lostReport, lostText, OnMain, sameCommit, type SessionSeen, type UnitSeen, Verifier } from "./lost.ts"
 import { MainLine, RootHolds, RunFiles, Sessions, StepLog, WorkGit } from "./service.ts"
 import { isInternal, type Lane, lanesOf } from "./tools.ts"
@@ -201,7 +202,7 @@ export interface LostAnswer {
 export const NOTHING: LostAnswer = { lines: [], keys: [], hashes: [] }
 
 /** The answer with the commitment record's section after its lists (commitments-tool.ts `sectionOf`), its keys with theirs. */
-export const withRecordSection = (answer: LostAnswer, section: { readonly lines: ReadonlyArray<string>; readonly keys: ReadonlyArray<string> }): LostAnswer => ({
+export const withRecordSection = (answer: LostAnswer, section: { readonly lines: ReadonlyArray<Printable>; readonly keys: ReadonlyArray<string> }): LostAnswer => ({
   ...answer,
   lines: [...answer.lines, ...section.lines],
   keys: [...answer.keys, ...section.keys],

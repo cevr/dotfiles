@@ -26,7 +26,7 @@ import { Effect, Layer, Match, Option, Predicate, Result, Schema, Stream } from 
 import { Digest } from "effect/crypto"
 import { FileSystem, Path } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
-import { printable } from "./printable.ts"
+import { printed, type Printable, printable } from "./printable.ts"
 import { Evidence, EvidenceRefused } from "./service.ts"
 
 export const REASON_CLASSES = ["guarantee", "dependency", "measured"] as const
@@ -119,7 +119,7 @@ export const reasonOf = (data: ReasonData): Option.Option<Reason> => Option.map(
 export const dataOf = (reason: Reason): ReasonData => ({ reasonClass: reason.reasonClass, referent: pointerOf(reason.referent) })
 
 /** The reason a pointer and class name, in a line: `guarantee invariant/root-owns`. */
-export const lineOf = (data: ReasonData): string => `${data.reasonClass} ${data.referent}`
+export const lineOf = (data: ReasonData): Printable => printed`${printable(data.reasonClass)} ${printable(data.referent)}`
 
 /** Why `path` is not a checkout-relative path the record takes, else none. The path is never repeated. */
 const pathRefusal = (what: string, path: string): Option.Option<string> =>

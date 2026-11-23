@@ -177,7 +177,7 @@ import { type Actor, Command as RecordCommand, openOf, type Snapshot } from "@do
 import * as ErgoRegister from "@dotfiles/opencode-orchestrate/sqlite/ergo-register"
 import { platform } from "@dotfiles/opencode-orchestrate/node/platform"
 import * as SqliteRecord from "@dotfiles/opencode-orchestrate/sqlite/record"
-import { failureText, type Printable, printable } from "@dotfiles/opencode-orchestrate/printable"
+import { failureText, printed, type Printable, printable } from "@dotfiles/opencode-orchestrate/printable"
 import * as Reasons from "@dotfiles/opencode-orchestrate/reasons"
 import { Subagents } from "@dotfiles/opencode-orchestrate/asking"
 import * as Asking from "@dotfiles/opencode-orchestrate/opencode/asking"
@@ -782,7 +782,7 @@ export const make = <R = never>(
           return { lines: Commitments.sectionOf(listed), keys: Commitments.sectionKeys(listed) }
         }).pipe(Effect.mapError((failed) => failed.message)),
         (why) => warnRecord(printable("orchestrate: the commitment record did not read"), why).pipe(
-          Effect.as({ lines: [`Commitments: the record did not read: ${why}`], keys: ["record-unread"] }),
+          Effect.as({ lines: [printed`Commitments: the record did not read: ${why}`], keys: ["record-unread"] }),
         ),
       )
       // The run's facts go to the digest through its RPC, held while the digest plugin is not up (cmd/orchestrate/digest.ts).
@@ -1362,7 +1362,7 @@ export const make = <R = never>(
           })
           return Commitments.beforeStart(answer, Commitments.laneLine(unit, openOf(done.snapshot, unit)))
         }).pipe(Effect.mapError(Commitments.whyOf)),
-        (why) => Effect.succeed(Commitments.beforeStart(made.answer, `${why}: the unit's commitment was not recorded.`)),
+        (why) => Effect.succeed(Commitments.beforeStart(made.answer, printed`${why}: the unit's commitment was not recorded.`)),
       )
 
       /**

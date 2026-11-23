@@ -8,6 +8,7 @@ import { expect } from "bun:test"
 import { spawnSync, write } from "bun"
 import { Array as Arr, Effect, Layer, Option, Schema } from "effect"
 import { listedOf, sectionOf } from "@dotfiles/opencode-orchestrate/commitments-tool"
+import { printable } from "@dotfiles/opencode-orchestrate/printable"
 import { platform as ownPlatform } from "@dotfiles/opencode-orchestrate/node/platform"
 import { hostServices } from "../../sim/host-services.ts"
 import * as SqliteRecord from "@dotfiles/opencode-orchestrate/sqlite/record"
@@ -70,6 +71,128 @@ interface Event {
 const fieldsJson = Schema.encodeSync(Schema.fromJsonString(Schema.Json))
 
 const AT = "2026-11-01T09:00:00.000Z"
+
+const retryInput = (id: string, title: string) => ({
+  id, title, run: "one", rank: "A", suggest_owner: "lane-one", key: `key-${id}`,
+  reason_class: "dependency", referent: { kind: "commitment", id: "blocker" },
+})
+
+Seed.effect("a reopened store retries identical original payloads and refuses every changed follow-up field", Effect.gen(function* () {
+  using dir = scratch("record-retry-identity-")
+  const db = `${dir.path}/record.db`
+  const receiptPath = "tmp/orchestrate/retry.json"
+  const receipt = (exit: number) => write(`${dir.path}/${receiptPath}`, fieldsJson({
+    receipt: 1, command: "synthetic check", exit, output: { value: "fixture result" }, run: "one", checkout: "a".repeat(40),
+  }))
+  yield* Effect.promise(() => receipt(1))
+  gitInit(dir.path, ["-q", "-b", "main"], gitEnv)
+  const measured = { reason_class: "measured", referent: { kind: "receipt", path: receiptPath } }
+  const run = (action: string, fields: Schema.Json, actor = "scratch-worker") =>
+    main([action, "--file", db, "--actor", actor, "--json", fieldsJson(fields)], dir.path)
+  const parts = [{ id: "blocker", title: "pending" }, { id: "another", title: "another pending" }]
+  expect((yield* run("add", { source_kind: "plan-part", source_ref: "plan:1", parts })).code).toBe(0)
+  for (const at of Arr.range(0, 7)) {
+    const key = ["AK", "IA", "A".repeat(16 + at)].join("")
+    const a = `alphafix${key}`
+    const b = `betafix${key}`
+    expect(printable(a)).toBe(printable(b))
+    const base = retryInput(`case-${at}`, a)
+    const changes = [
+      { title: b },
+      { title: ` ${a}` },
+      { run: "two" },
+      { rank: "B" },
+      { suggest_owner: "lane-two" },
+      measured,
+      { referent: { kind: "commitment", id: "another" } },
+      { id: `changed-${at}` },
+      { key: "other-key" },
+    ]
+    expect((yield* run("follow_up", base)).code).toBe(0)
+    const exact = yield* run("follow_up", base)
+    expect(exact.code).toBe(0)
+    expect(exact.out).toContain("filed already")
+    for (const changed of changes) {
+      const result = yield* run("follow_up", { ...base, ...changed })
+      expect(result.code).toBe(1)
+      expect(result.out).not.toContain("filed already")
+    }
+    expect((yield* run("follow_up", base, "other-worker")).code).toBe(1)
+    const history = yield* run("history", { id: base.id })
+    expect(history.out.split("\n").filter((line) => line.includes("promised")).length).toBe(1)
+  }
+  const checked = { ...retryInput("measurement", "check results"), ...measured }
+  expect((yield* run("follow_up", checked)).out).toContain("filed measurement")
+  // The observation changed, not what the caller filed.
+  yield* Effect.promise(() => receipt(0))
+  expect((yield* run("follow_up", checked)).out).toContain("filed already")
+  const exported = yield* run("export", {})
+  expect(exported.out).not.toContain('"filing":')
+  const bytes = yield* textsOf([db, `${db}-wal`])
+  expect(bytes.join("").includes("alphafix")).toBe(false)
+  expect(bytes.join("").includes("betafix")).toBe(false)
+}))
+
+Seed.effect("two source keys with the same display remain distinct and stores have different authenticators", Effect.gen(function* () {
+  using dir = scratch("record-source-identity-")
+  const run = (db: string, action: string, fields: Schema.Json) =>
+    main([action, "--file", db, "--actor", "scratch-worker", "--json", fieldsJson(fields)], dir.path)
+  const tag = (db: string, id: string) => {
+    using file = new Database(db, { readonly: true })
+    return file.query<{ readonly source: string; readonly payload: string }, [string]>(
+      "SELECT json_extract(data, '$.filing.source') AS source, json_extract(data, '$.filing.payload') AS payload FROM event WHERE subject_id = ? AND type = 'promised'",
+    ).get(id)
+  }
+  const a = `${dir.path}/a.db`
+  const b = `${dir.path}/b.db`
+  const formed = ["AK", "IA", "A".repeat(16)].join("")
+  const left = { ...retryInput("left", "one"), key: `left${formed}` }
+  const right = { ...retryInput("right", "two"), key: `right${formed}` }
+  expect(printable(`scratch-worker:${left.key}`)).toBe(printable(`scratch-worker:${right.key}`))
+  for (const file of [a, b]) {
+    expect((yield* run(file, "add", { source_kind: "plan-part", source_ref: "p:1", parts: [{ id: "blocker", title: "pending" }] })).code).toBe(0)
+    expect((yield* run(file, "follow_up", left)).code).toBe(0)
+    expect((yield* run(file, "follow_up", right)).code).toBe(0)
+    expect((yield* run(file, "follow_up", right)).out).toContain("filed already")
+    expect((yield* run(file, "follow_up", { ...left, id: "third" })).err).toContain("filed another follow-up")
+  }
+  const first = tag(a, "left")
+  const second = tag(b, "left")
+  expect(first?.source).toBeString()
+  expect(first?.payload).toBeString()
+  expect(first?.source).not.toBe(second?.source)
+  expect(first?.payload).not.toBe(second?.payload)
+}))
+
+Seed.effect("a version-one follow-up survives migration but cannot be claimed as a verified retry", Effect.gen(function* () {
+  using dir = scratch("record-legacy-identity-")
+  const path = `${dir.path}/record.db`
+  {
+    using db = new Database(path)
+    for (const ddl of SqliteRecord.MIGRATIONS[0]) db.run(ddl)
+    db.run("PRAGMA user_version = 1")
+    db.query("INSERT INTO commitment (id,run,title,source_kind,source_ref,state,created_at,updated_at) VALUES ('old','one','[redacted]','follow-up','legacy-worker:key-old','open',?,?)").run(AT, AT)
+    db.query("INSERT INTO event (at,run,subject_kind,subject_id,type,actor,actor_role,to_state,data) VALUES (?,?, 'commitment',?,'promised',?,'worker','open',?)")
+      .run(AT, "one", "old", "legacy-worker", '{"_tag":"promised","title":"[redacted]","sourceKind":"follow-up","sourceRef":"legacy-worker:key-old","reason":{"reasonClass":"dependency","referent":"commitment/blocker"}}')
+  }
+  const run = (action: string, fields: Schema.Json, actor = "legacy-worker") =>
+    main([action, "--file", path, "--actor", actor, "--json", fieldsJson(fields)], dir.path)
+  const before = yield* run("history", { id: "old" })
+  expect(before.code).toBe(0)
+  expect(before.out).toContain("promised")
+  const retry = yield* run("follow_up", retryInput("old", "[redacted]"))
+  expect(retry.code).toBe(1)
+  expect(retry.err).toContain("legacy filing")
+  expect((yield* run("history", { id: "old" })).out).toBe(before.out)
+  expect((yield* run("add", { source_kind: "plan-part", source_ref: "p:1", parts: [{ id: "blocker", title: "pending" }] })).code).toBe(0)
+  const fresh = retryInput("new", "new title")
+  expect((yield* run("follow_up", fresh)).err).toContain("legacy filing")
+  expect((yield* run("follow_up", fresh, "fresh-worker")).code).toBe(0)
+  expect((yield* run("follow_up", fresh, "fresh-worker")).out).toContain("filed already")
+  using db = new Database(path, { readonly: true })
+  expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 2 })
+  expect(db.query("SELECT length(key) AS bytes FROM filing_key").get()).toEqual({ bytes: 32 })
+}))
 
 /** A register at `path` with `rows`, their `events` and `prerequisites`, all invented. */
 const register = (path: string, rows: ReadonlyArray<Row>, events: ReadonlyArray<Event>, prerequisites: ReadonlyArray<readonly [string, string, string]> = []) => {

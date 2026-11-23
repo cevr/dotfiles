@@ -4,14 +4,14 @@ Every reason in the commitment record is data the plugin checks, never prose. A 
 
 ## Sub-features
 
-- `follow-up-reason`: `follow_up` needs `reason_class` (`dependency` or `measured`) and `referent`; an idempotency `key` files once: a retry repeats its filing exactly; the same key saying something else, the same key on another id, or another key on a filed id is refused.
+- `follow-up-reason`: `follow_up` needs `reason_class` (`dependency` or `measured`) and `referent`; an idempotency `key` files once: a retry repeats its original canonical filing exactly, even when two different titles render alike. The same key saying something else, the same key on another id, or another key on a filed id is refused.
 - `decide-guarantee`: `decide` is the root's, with `why` and `reason_class: "guarantee"` on a declared invariant; a measurement or a dependency never closes.
 - `defer`: `defer` keeps an open commitment open with a dependency or a measurement; it closes nothing.
 - `invariant`: `commitments invariant { id, doc_path, anchor }` declares an invariant bound to the document's blob at HEAD; the same again is nothing, an edited document takes a new id.
 - `receipt-evidence`: a measured reason's receipt is a JSON envelope (`receipt`, `command`, `exit`, `output`, `run`, `checkout`) inside the checkout's evidence root, its realpath contained, its bytes and output hashed into the event. The root is configured (`<checkout top>/tmp/orchestrate`, the top canonical once), never discovered: a root that is itself a link, or sits under one, is refused; a link above the checkout (macOS `/var`) is fine.
 - `close-kind`: each decided row has one close kind (guarantee, placed, historical; not-asked is unit C's), bound to its state in the schema.
 - `reopen-history`: a reopen clears the row's reason; `history` keeps every event's.
-- `no-echo`: refusals name declared fields or stray-key positions, never the caller's value. The store and outputs share one redactor: detect spans on the original text, widen to whole token runs, and replace each merged span once. Tool defects pass this boundary before the host can display them.
+- `no-echo`: refusals name declared fields or stray-key positions, not unknown field text or values. The store and outputs share one redactor: detect spans on the original strings, widen to whole token runs, and replace each merged span once. Error and cause rendering visits original own data leaves before escaping or joining; stack traces, getters and serialization hooks supply no text.
 
 ## How to get to it (user POV)
 
@@ -38,7 +38,7 @@ Every reason in the commitment record is data the plugin checks, never prose. A 
 
 The CLI test runs `bun cmd/orchestrate/record.ts`'s `main` on a scratch git checkout and record file: no reason refused, an invariant declared from a committed document, a decide by guarantee, a measured close refused, a deferral and a follow-up by a receipt read from the evidence root, a missing receipt refused. `node/evidence.test.ts` runs the evidence reader on real files: a receipt or its output outside the evidence root, linked out of it, missing, of another shape (a `validated` key, prose), blank or too large is each refused; a document is found only in git at HEAD.
 
-`overlap.test.ts` composes pairs and triples of token shapes at intersecting and adjacent offsets, checks CLI list, history and export against raw record bytes, and injects a throwing reader through the host's registered tools. `sqlite/boundary.test.ts` varies crossing tokens at every offset in each text field and searches the database, WAL and refusals for six-character fragments.
+`overlap.test.ts` composes pairs and triples of token shapes at intersecting and adjacent offsets, checks CLI list, history and export against record bytes, and crosses diagnostic forms and separators through CLI, tool, status and log output. `sqlite/boundary.test.ts` crosses recognized forms, offsets and all text fields and searches the database, WAL and refusals for six-character fragments. `record-cli.test.ts` reopens SQLite between filings and retries, including originals that collide after rewriting.
 
 1. **Scratch root.** `bun run verify:seed $ROOT`, `bun run verify:launch --root $ROOT --port $PORT`, then `pilotty spawn --name verify-$PORT bun run verify:tui --root $ROOT`.
 2. **Declare.** Type `verify: call commitments {"action":"invariant","id":"notes","doc_path":"notes.txt","anchor":"notes"}`, Enter. The answer reads `invariant notes declared: notes.txt#notes at <blob>`.
@@ -50,3 +50,4 @@ The CLI test runs `bun cmd/orchestrate/record.ts`'s `main` on a scratch git chec
 - The world's host reads no files (its evidence reader is `noEvidence`): a receipt or a declaration there is refused, by design. Prove them on real files, never by a fake reader in the world.
 - A receipt lives under the checkout's `tmp/orchestrate/`; one elsewhere, or reached through a symlink out of it, is refused. So is every receipt when `tmp/orchestrate` (or `tmp`) is itself a link.
 - An unreadable stored reason (unit C's `ask/<id>` pointer, before C ships) fails the whole read with a named error, so a record written by a later unit is never misread.
+- Version 2 adds a random 32-byte key per record file. It authenticates original source and payload separately and keeps those tags on promised events, not in export. Opening a version-1 file for writing migrates it in place; legacy history is still readable. Without an authenticator an old filing cannot be verified: its id and its actor's legacy filing namespace refuse new follow-ups rather than guessing from display text. A fresh actor may file unrelated work.

@@ -1,15 +1,17 @@
 // The record's domain: who may make each move, what each refuses, and what the fold keeps, without a store.
 import { describe, expect, test } from "bun:test"
-import { Option, Result } from "effect"
-import { type Actor, closeKindOf, type Command, type Commitment, Command as Commands, type Context, decide, EMPTY, fold, PartInput, type Snapshot } from "./record.ts"
+import { Hash, Option, Result } from "effect"
+import { type Actor, closeKindOf, type Command, type Commitment, Command as Commands, type Context, contextForFiling, decide, EMPTY, fold, PartInput, type Snapshot } from "./record.ts"
 import type { ReasonData } from "./reasons.ts"
-import { decideCommand } from "./standing.ts"
+import { decideCommand as decideBounded } from "./standing.ts"
 
 const T0 = 1_800_000_000_000
 const DAY = 86_400_000
 const ROOT: Actor = { id: "ses_root", role: "root" }
 const WORKER: Actor = { id: "ses_worker", role: "worker" }
 const IMPORT: Actor = { id: "ergo-register", role: "import" }
+const decideCommand = (snapshot: Snapshot, command: Command, context: Context) =>
+  decideBounded(snapshot, command, contextForFiling(context, command, (text) => (Hash.string(text) >>> 0).toString(16).padStart(64, "0")))
 
 /** Runs `command` against `snapshot`: the record after it, or why it was refused. */
 const step = (snapshot: Snapshot, command: Command, actor: Actor = ROOT, now = T0): Result.Result<Snapshot, string> => {

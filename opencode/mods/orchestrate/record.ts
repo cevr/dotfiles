@@ -3,8 +3,8 @@
 // is a command decided here into events (`decide`); the folded rows are the events' fold (`fold`), so a store writes a
 // command's events and the rows they fold to in one transaction, and replaying the events into an empty store gives
 // the same rows (laws.ts). Nothing here reads a document: every field comes from a tool call's input.
-import { Array as Arr, DateTime, Effect, Match, Option, Order, Predicate, Result, Schema } from "effect"
-import { RecordRefused, printable, secretFree } from "./printable.ts"
+import { Array as Arr, Brand, DateTime, Effect, Match, Option, Order, Predicate, Result, Schema } from "effect"
+import { type Printable, prefixOf, RecordRefused, printable, secretFree, trimmed } from "./printable.ts"
 import { DocumentSeen, KINDS_OF, REASON_CLASSES, ReasonData, ReceiptSeen, referentOf, UNAVAILABLE } from "./reasons.ts"
 
 export const SOURCE_KINDS = ["owner-answer", "owner-ask", "assignment", "follow-up", "bug", "plan-part"] as const
@@ -151,14 +151,19 @@ export interface Snapshot {
   readonly acted: ReadonlySet<string>
   /** The declared invariants, by id. */
   readonly invariants: ReadonlyMap<string, Invariant>
-  /** Each follow-up as it was filed, by its id: its source (session and key) and what it said, folded from its promise. */
+  /** Each follow-up's private replay identity, folded from the original promise. */
   readonly filings: ReadonlyMap<string, Filing>
 }
 
-/** A follow-up's filing: the source a retry repeats, and what the filing said, which a retry repeats exactly. */
+const HEX_DIGEST = /^[0-9a-f]{64}$/
+const FilingDigest = Schema.String.check(Schema.isPattern(HEX_DIGEST))
+export const FilingIdentity = Schema.Struct({ source: FilingDigest, payload: FilingDigest })
+export interface FilingIdentity extends Schema.Schema.Type<typeof FilingIdentity> {}
+
+/** Old events have no proof of exact identity. Never compare their displayed text to authorize a retry. */
 export interface Filing {
-  readonly sourceRef: string
-  readonly said: string
+  readonly actor: string
+  readonly identity: Option.Option<FilingIdentity>
 }
 
 export const EMPTY: Snapshot = { commitments: new Map(), handBacks: new Map(), words: new Map(), acted: new Set(), invariants: new Map(), filings: new Map() }
@@ -231,6 +236,7 @@ export const Happening = Schema.TaggedUnion({
     suggestOwner: Opt(Schema.String),
     reason: Opt(ReasonData),
     evidence: Opt(EvidenceData),
+    filing: Opt(FilingIdentity),
   },
   deferred: { reason: ReasonData, evidence: Opt(EvidenceData) },
   assigned: { ownerLane: Schema.String, ownerSession: Opt(Schema.String), after: Schema.Array(AfterItem), reviewBy: Schema.String },
@@ -280,6 +286,10 @@ export interface RecordEvent {
   readonly note: string
   readonly happening: Happening
 }
+
+/** A write-ready event. Only `bounded` constructs it, after the original fields have been checked or rewritten. */
+export type BoundedEvent = RecordEvent & Brand.Brand<"BoundedRecordEvent">
+const sealEvent = Brand.nominal<BoundedEvent>()
 
 /** An event as stored, with its place in the history. */
 export interface StoredEvent extends RecordEvent {
@@ -402,22 +412,11 @@ const commitmentChange = (event: RecordEvent, draft: Draft) => (row: Commitment)
     }),
   )
 
-/**
- * What a promise said, as one value a retry is compared by: its title as the record keeps it, part, rank, plan,
- * suggested owner and reason. A retry of a follow-up repeats it exactly; anything else under its key is refused.
- */
-export const saidOf = (happened: Extract<Happening, { _tag: "promised" }>): string =>
-  [
-    kept(happened.title),
-    ...[happened.part, happened.rank, happened.plan, happened.suggestOwner].map((each) => Option.match(each, { onNone: () => "-", onSome: (value) => `+${value}` })),
-    Option.match(happened.reason, { onNone: () => "-", onSome: (reason) => `+${reason.reasonClass} ${reason.referent}` }),
-  ].join("\u0000")
-
 const applyCommitment = (draft: Draft, event: RecordEvent): void => {
   const happened = event.happening
   if (happened._tag === "promised") {
     draft.commitments.set(event.subjectId, promisedRow(event, happened))
-    if (happened.sourceKind === "follow-up") draft.filings.set(event.subjectId, { sourceRef: happened.sourceRef, said: saidOf(happened) })
+    if (happened.sourceKind === "follow-up") draft.filings.set(event.subjectId, { actor: event.actor.id, identity: happened.filing })
     return
   }
   if (happened._tag === "imported") {
@@ -553,6 +552,8 @@ export { RecordRefused } from "./printable.ts"
 export interface Context {
   readonly actor: Actor
   readonly now: number
+  /** Supplied by the store on a follow-up, never the tool caller. */
+  readonly filing?: FilingIdentity
 }
 
 type Decided = Result.Result<ReadonlyArray<RecordEvent>, RecordRefused>
@@ -574,7 +575,7 @@ export const lineRefusal = (what: string, value: string, max = TEXT_MAX): Option
   firstOf([when(value.trim() === "", `${what} is empty`), when(!ONE_LINE.test(value), `${what} is more than one line`), when(value.length > max, `${what} is ${value.length} characters, more than ${max}`)])
 
 /** The text a record keeps of `text`: every secret shape the digest redacts replaced, ends trimmed. */
-export const kept = (text: string): string => printable(text).trim()
+const kept = (text: string): Printable => trimmed(printable(text))
 
 /** The longest note an event keeps: longer (an imported history's) is cut there. */
 export const NOTE_MAX = 1000
@@ -715,7 +716,6 @@ const SLUG_RULE = 'is not a slug (letters, digits, ".", "_", "-", at most 80, st
 const HEAD = /^[0-9a-f]{7,40}$/
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/
 const PATH = /^[^\n\r\0]+$/
-const DIGEST = /^[0-9a-f]{64}$/
 
 /** Whether `value` holds a secret's shape: the digest's redaction would change it. */
 const holdsSecret = (value: string): boolean => secretFree(value) !== value
@@ -727,7 +727,7 @@ const wordRefusal = (kind: ColumnKind, column: string, value: string): Option.Op
     Match.when("head", () => when(!HEAD.test(value), "is not a commit (7 to 40 lowercase hex digits)")),
     Match.when("time", () => when(!ISO.test(value) || Number.isNaN(msOf(value)), "is not an ISO time")),
     Match.when("pointer", () => firstOf([when(Option.isNone(referentOf(value)), "is not a canonical referent (invariant/<id>, commitment/<id>, receipt/<path>, …)"), when(holdsSecret(value), "holds a secret's shape")])),
-    Match.when("digest", () => when(!DIGEST.test(value), "is not a SHA-256 (64 lowercase hex digits)")),
+    Match.when("digest", () => when(!HEX_DIGEST.test(value), "is not a SHA-256 (64 lowercase hex digits)")),
     Match.when("path", () => firstOf([when(!PATH.test(value) || value.length > PATH_MAX, `is not one line of at most ${PATH_MAX} characters`), when(holdsSecret(value), "holds a secret's shape")])),
     Match.when("literal", () => {
       const values = Option.getOrElse(Option.fromUndefinedOr(LITERALS.get(column)), (): ReadonlyArray<string> => [])
@@ -748,7 +748,7 @@ const held = (where: Where, column: Column | DataOnly, value: string, kind: Colu
   Match.value(kind).pipe(
     Match.when("free", () => freeText(`${where}column ${column}`, value)),
     Match.when("why", () => freeText(`${where}column ${column}`, value, WHY_MAX)),
-    Match.when("note", () => Result.succeed(kept(value).slice(0, NOTE_MAX))),
+    Match.when("note", () => Result.succeed(prefixOf(kept(value), NOTE_MAX))),
     Match.orElse(() =>
       Option.match(wordRefusal(kind, column, value), {
         onSome: (why) => Result.fail(new RecordRefused({ reason: printable(`${where}column ${column} ${why}; the value is not repeated`) })),
@@ -915,7 +915,10 @@ const heldEnvelope = (where: Where, event: RecordEvent): Held<RecordEvent> =>
 
 /** Where an event's refusal is: an import's row by its id, else the command. */
 const isImport = Predicate.or(Predicate.isTagged("imported"), Predicate.isTagged("imported_history"))
-const whereOf = (event: RecordEvent): Where => Arr.filter([`row ${event.subjectId}, `], () => isImport(event.happening)).join("")
+const whereOf = (event: RecordEvent): Where => {
+  if (isImport(event.happening)) return `row ${printable(event.subjectId)}, `
+  return ""
+}
 
 /**
  * The record's one boundary, which every command's events pass (standing.ts `decideCommand`) before any store writes
@@ -923,11 +926,11 @@ const whereOf = (event: RecordEvent): Where => Arr.filter([`row ${event.subjectI
  * bounded and redacted, one-word values to their grammar with no secret's shape; else the whole command is refused,
  * naming the column. Every column of every table is folded from these fields, so no column holds a secret.
  */
-export const bounded = (events: ReadonlyArray<RecordEvent>): Held<ReadonlyArray<RecordEvent>> =>
+export const bounded = (events: ReadonlyArray<RecordEvent>): Held<ReadonlyArray<BoundedEvent>> =>
   Result.all(
     events.map((each) => {
       const where = whereOf(each)
-      return Result.flatMap(heldEnvelope(where, each), (enveloped) => Result.map(heldHappening(where, each.happening), (happening): RecordEvent => ({ ...enveloped, happening })))
+      return Result.flatMap(heldEnvelope(where, each), (enveloped) => Result.map(heldHappening(where, each.happening), (happening) => sealEvent({ ...enveloped, happening })))
     }),
   )
 
@@ -955,7 +958,7 @@ const onCommitment = (context: Context, row: Commitment, happening: Happening, t
 export const PLACER: Actor = { id: "orchestrate", role: "plugin" }
 
 const rootOnly = (context: Context, what: string): Option.Option<string> =>
-  when(context.actor.role !== "root" && context.actor.role !== "plugin", `${what} is the root's: a ${context.actor.role} cannot`)
+  when(context.actor.role !== "root" && context.actor.role !== "plugin", `${what} is the root's: a ${printable(context.actor.role)} cannot`)
 
 // ── add ──
 
@@ -963,7 +966,7 @@ const afterRefusal = (snapshot: Snapshot, after: ReadonlyArray<AfterItem>): Opti
   firstOf(
     after.map((item) =>
       Match.value(item.kind).pipe(
-        Match.when("commitment-closed", () => firstOf([idRefusal(item.ref), when(!snapshot.commitments.has(item.ref), `the wait names ${item.ref}, which is no commitment`)])),
+        Match.when("commitment-closed", () => firstOf([idRefusal(item.ref), when(!snapshot.commitments.has(item.ref), `the wait names ${printable(item.ref)}, which is no commitment`)])),
         Match.when("date", () => when(Number.isNaN(msOf(item.ref)), `the wait's date is not an ISO time; the value is not repeated`)),
         Match.orElse(() => tokenRefusal(`the ${item.kind} wait`, item.ref)),
       ),
@@ -994,19 +997,19 @@ type Checked = Result.Result<Option.Option<EvidenceData>, string>
  * the command is decided against, so inside the store's immediate transaction.
  */
 const dependencyRefusal = (snapshot: Snapshot, self: Option.Option<string>, target: string): Option.Option<string> => {
-  if (Option.contains(self, target)) return Option.some(`${target} cannot wait on itself`)
+  if (Option.contains(self, target)) return Option.some(`${printable(target)} cannot wait on itself`)
   const seen = new Set<string>(Option.toArray(self))
   let at = target
   for (;;) {
     const row = snapshot.commitments.get(at)
-    if (Predicate.isUndefined(row)) return Option.some(`the dependency "${at}" is no commitment of this repository's record`)
-    if (row.state !== "open" && at === target) return Option.some(`the dependency ${at} is ${row.state}, not open: a dependency names work still owed`)
-    if (row.state !== "open") return Option.some(`the dependency ${target} waits through ${at}, which is ${row.state}: no path around a closed prerequisite`)
-    if (seen.has(at)) return Option.some(`the dependency ${target} waits on ${at} again: a cycle`)
+    if (Predicate.isUndefined(row)) return Option.some(`the dependency "${printable(at)}" is no commitment of this repository's record`)
+    if (row.state !== "open" && at === target) return Option.some(`the dependency ${printable(at)} is ${row.state}, not open: a dependency names work still owed`)
+    if (row.state !== "open") return Option.some(`the dependency ${printable(target)} waits through ${printable(at)}, which is ${row.state}: no path around a closed prerequisite`)
+    if (seen.has(at)) return Option.some(`the dependency ${printable(target)} waits on ${printable(at)} again: a cycle`)
     seen.add(at)
     const next = Option.flatMap(row.reason, (reason) => Option.filter(referentOf(reason.referent), (each) => reason.reasonClass === "dependency" && each.kind === "commitment"))
     if (Option.isNone(next) || next.value.kind === "receipt") return Option.none()
-    if (Option.contains(self, next.value.id)) return Option.some(`the dependency ${target} waits on ${next.value.id}, the commitment itself: a cycle`)
+    if (Option.contains(self, next.value.id)) return Option.some(`the dependency ${printable(target)} waits on ${printable(next.value.id)}, the commitment itself: a cycle`)
     at = next.value.id
   }
 }
@@ -1038,43 +1041,69 @@ const reasonChecked = (snapshot: Snapshot, self: Option.Option<string>, reason: 
     )
   if (pointed.kind === "invariant")
     return Option.match(Option.fromUndefinedOr(snapshot.invariants.get(pointed.id)), {
-      onNone: () => Result.fail(`the invariant ${pointed.id} is not declared: the root declares it first with commitments({ action: "invariant", id, doc_path, anchor })`),
+      onNone: () => Result.fail(`the invariant ${printable(pointed.id)} is not declared: the root declares it first with commitments({ action: "invariant", id, doc_path, anchor })`),
       onSome: (declared) => Result.succeed(Option.some(EvidenceData.cases.invariant.make({ blob: declared.blob, commit: declared.commit }))),
     })
   return Option.match(dependencyRefusal(snapshot, self, pointed.id), { onSome: (why) => Result.fail(why), onNone: () => Result.succeed(Option.none()) })
 }
 
-/** Each part of a follow-up `command` with its filing under the same source (session and key), if one is filed: whether it says the same. */
-const refiled = (snapshot: Snapshot, command: Extract<Command, { _tag: "add" }>): ReadonlyArray<Option.Option<boolean>> =>
-  command.parts.map((part) =>
-    Option.map(
-      Option.filter(Option.fromUndefinedOr(snapshot.filings.get(part.id)), (filing) => command.sourceKind === "follow-up" && filing.sourceRef === command.sourceRef),
-      (filing) => filing.said === saidOf(promisedOf(command, part, Option.none())),
-    ),
-  )
+const encodeFiling = Schema.encodeResult(Schema.fromJsonString(Command.cases.add))
+const encodeSource = Schema.encodeResult(Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String])))
+
+/** Authenticate the original canonical command; the fresh evidence observation is not caller payload. */
+const filingIdentityOf = (command: Command, actor: Actor, sign: (original: string) => string): Option.Option<FilingIdentity> => {
+  if (command._tag !== "add" || command.sourceKind !== "follow-up") return Option.none()
+  // A bad input to the encoder is refused without rendering the schema issue, which can hold the original payload.
+  const source = Result.getSuccess(encodeSource([actor.id, command.sourceRef]))
+  const payload = Result.getSuccess(encodeFiling({ ...command, observed: Option.none() }))
+  return Option.zipWith(source, payload, (source, payload) => ({
+    source: sign(`record/follow-up/source/v1:${source}`),
+    payload: sign(`record/follow-up/payload/v1:${payload}`),
+  }))
+}
+
+/** A store obtains the identity before passing a command to the pure decider. */
+export const contextForFiling = (context: Context, command: Command, sign: (original: string) => string): Context =>
+  Option.match(filingIdentityOf(command, context.actor, sign), {
+    onNone: () => ({ actor: context.actor, now: context.now }),
+    onSome: (filing) => ({ actor: context.actor, now: context.now, filing }),
+  })
+
+const matchingFiling = (filing: Filing, identity: FilingIdentity): boolean => Option.exists(filing.identity, (saved) => saved.source === identity.source)
+
+const legacyFiling = (snapshot: Snapshot, command: Extract<Command, { _tag: "add" }>, context: Context): boolean =>
+  command.parts.some((part) => Option.exists(Option.fromUndefinedOr(snapshot.filings.get(part.id)), (filing) => Option.isNone(filing.identity))) ||
+  [...snapshot.filings.values()].some((filing) => filing.actor === context.actor.id && Option.isNone(filing.identity))
+
+const sameFiling = (snapshot: Snapshot, id: string, identity: FilingIdentity): boolean =>
+  Option.exists(Option.flatMap(Option.fromUndefinedOr(snapshot.filings.get(id)), (filing) => filing.identity), (saved) => saved.source === identity.source && saved.payload === identity.payload)
 
 /**
  * A follow-up each of whose parts is filed already, by the same session and idempotency key (its source), saying the
  * same: a retry, which records nothing again. Its title is not the key: two findings may share one. Another key on a
  * filed id, or the same key saying something else, is no retry: refused (`addRefusal`).
  */
-const isRetry = (snapshot: Snapshot, command: Extract<Command, { _tag: "add" }>): boolean =>
-  command.parts.length > 0 && refiled(snapshot, command).every((same) => Option.contains(same, true))
+const isRetry = (snapshot: Snapshot, command: Extract<Command, { _tag: "add" }>, context: Context): boolean =>
+  command.sourceKind === "follow-up" && command.parts.length > 0 &&
+  Option.exists(Option.fromUndefinedOr(context.filing), (identity) => command.parts.every((part) => sameFiling(snapshot, part.id, identity)))
 
 const addRefusal = (snapshot: Snapshot, command: Extract<Command, { _tag: "add" }>, context: Context): Option.Option<string> => {
   const ids = command.parts.map((part) => part.id)
   const worker = context.actor.role === "worker"
+  const identity = Option.fromUndefinedOr(context.filing)
+  const followUp = command.sourceKind === "follow-up"
   return firstOf([
     when(command.parts.length === 0, "an add names at least one part"),
     tokenRefusal("the run", command.run),
     when(worker && !WORKER_KINDS.includes(command.sourceKind), `a worker files only ${WORKER_KINDS.join(" or ")}; ${command.sourceKind} is the root's`),
     when(worker && Option.isNone(command.reason), "a follow-up names its reason: reason_class (dependency or measured) and its referent; difficulty is not one"),
+    when(followUp && legacyFiling(snapshot, command, context), "this follow-up namespace has a legacy filing without proof of exact identity; inspect its history and use a new actor for new work"),
+    when(followUp && Option.isNone(identity), "the record cannot establish this follow-up's replay identity"),
+    when(followUp && Option.exists(identity, (key) => ids.some((id) =>
+      Option.exists(Option.fromUndefinedOr(snapshot.filings.get(id)), (filing) => matchingFiling(filing, key)) && !sameFiling(snapshot, id, key))),
+    "this idempotency key filed this follow-up already, saying something else: a retry repeats its filing exactly; a new finding takes a new key"),
     when(
-      refiled(snapshot, command).some((same) => Option.contains(same, false)),
-      "this idempotency key filed this follow-up already, saying something else: a retry repeats its filing exactly; a new finding takes a new key",
-    ),
-    when(
-      command.sourceKind === "follow-up" && [...snapshot.commitments.values()].some((row) => row.sourceKind === "follow-up" && row.sourceRef === command.sourceRef),
+      followUp && Option.exists(identity, (key) => [...snapshot.filings.values()].some((filing) => matchingFiling(filing, key))),
       "this idempotency key filed another follow-up already: a new finding takes a new key",
     ),
     when(Option.exists(command.reason, (reason) => reason.reasonClass === "guarantee"), "a guarantee is a close's reason, not a filing's: file with a dependency or a measurement"),
@@ -1083,13 +1112,13 @@ const addRefusal = (snapshot: Snapshot, command: Extract<Command, { _tag: "add" 
     when(Option.isSome(command.quote) && !OWNER_KINDS.includes(command.sourceKind), "a quote is the owner's words: only an owner-answer or owner-ask carries one"),
     firstOf(ids.map(idRefusal)),
     when(Arr.dedupe(ids).length !== ids.length, "two parts share an id"),
-    Option.map(Arr.findFirst(ids, (id) => snapshot.commitments.has(id)), (id) => `the id ${id} is taken`),
+    Option.map(Arr.findFirst(ids, (id) => snapshot.commitments.has(id)), (id) => `the id ${printable(id)} is taken`),
     firstOf(command.parts.map((part) => Option.flatMap(part.ownerLane, (lane) => tokenRefusal("the owner", lane)))),
     firstOf(command.parts.map((part) => afterRefusal(snapshot, Option.getOrElse(part.after, () => [])))),
   ])
 }
 
-const promisedOf = (command: Extract<Command, { _tag: "add" }>, part: PartInput, evidence: Option.Option<EvidenceData>) =>
+const promisedOf = (command: Extract<Command, { _tag: "add" }>, part: PartInput, evidence: Option.Option<EvidenceData>, filing: Option.Option<FilingIdentity>) =>
   Happening.cases.promised.make({
     title: part.title,
     sourceKind: command.sourceKind,
@@ -1101,10 +1130,11 @@ const promisedOf = (command: Extract<Command, { _tag: "add" }>, part: PartInput,
     suggestOwner: command.suggestOwner,
     reason: command.reason,
     evidence,
+    filing,
   })
 
 const decideAdd = (snapshot: Snapshot, command: Extract<Command, { _tag: "add" }>, context: Context): Decided => {
-  if (isRetry(snapshot, command)) return decided([])
+  if (isRetry(snapshot, command, context)) return decided([])
   const refused = addRefusal(snapshot, command, context)
   if (Option.isSome(refused)) return refuse(refused.value)
   const evidence = Option.getOrElse(
@@ -1113,7 +1143,7 @@ const decideAdd = (snapshot: Snapshot, command: Extract<Command, { _tag: "add" }
   )
   const events: Array<RecordEvent> = []
   for (const part of command.parts) {
-    const promised = event(context, command.run, "commitment", part.id, promisedOf(command, part, evidence), [Option.none(), Option.some("open")])
+    const promised = event(context, command.run, "commitment", part.id, promisedOf(command, part, evidence, Option.fromUndefinedOr(context.filing)), [Option.none(), Option.some("open")])
     events.push(promised)
     if (Option.isNone(part.ownerLane)) continue
     const review = reviewOf(context, part.reviewBy)
@@ -1134,7 +1164,7 @@ const decideAssign = (snapshot: Snapshot, command: Extract<Command, { _tag: "ass
   const row = openRow(snapshot, command.id)
   const refused = firstOf([
     rootOnly(context, "owning a commitment"),
-    when(Option.isNone(row), `${command.id} is not an open commitment`),
+    when(Option.isNone(row), `${printable(command.id)} is not an open commitment`),
     tokenRefusal("the owner", command.ownerLane),
     Option.flatMap(command.ownerSession, (session) => tokenRefusal("the session", session)),
     afterRefusal(snapshot, command.after),
@@ -1149,7 +1179,7 @@ const decideOrder = (snapshot: Snapshot, command: Extract<Command, { _tag: "orde
   const rows = command.ids.map((id) => openRow(snapshot, id))
   const refused = firstOf([
     rootOnly(context, "an order"),
-    when(rows.some((row) => !Option.exists(row, (each) => Option.contains(each.ownerLane, command.ownerLane))), `each id must be an open commitment of ${command.ownerLane}`),
+    when(rows.some((row) => !Option.exists(row, (each) => Option.contains(each.ownerLane, command.ownerLane))), `each id must be an open commitment of ${printable(command.ownerLane)}`),
   ])
   if (Option.isSome(refused)) return refuse(refused.value)
   const unstarted = Arr.dedupeWith(Arr.getSomes(rows), (a, b) => a.id === b.id).filter((row) => Option.isNone(row.startedAt))
@@ -1158,7 +1188,7 @@ const decideOrder = (snapshot: Snapshot, command: Extract<Command, { _tag: "orde
 
 const decideRelease = (snapshot: Snapshot, command: Extract<Command, { _tag: "release" }>, context: Context): Decided => {
   const row = Option.filter(openRow(snapshot, command.id), (each) => Option.isSome(each.ownerLane))
-  if (Option.isNone(row)) return refuse(`${command.id} is not an owned open commitment`)
+  if (Option.isNone(row)) return refuse(`${printable(command.id)} is not an owned open commitment`)
   const own = context.actor.role === "worker" && Option.contains(row.value.ownerSession, context.actor.id)
   if (Option.isSome(rootOnly(context, "releasing a commitment")) && !own) return refuse("only the root, or the owner's own session, releases a commitment")
   return decided([onCommitment(context, row.value, Happening.cases.released.make({}))])
@@ -1175,11 +1205,11 @@ const outsideRunOf = (snapshot: Snapshot, row: Commitment, context: Context): bo
 
 const decideDecide = (snapshot: Snapshot, command: Extract<Command, { _tag: "decide" }>, context: Context): Decided => {
   const row = openRow(snapshot, command.id)
-  if (Option.isNone(row)) return refuse(`${command.id} is not an open commitment`)
+  if (Option.isNone(row)) return refuse(`${printable(command.id)} is not an open commitment`)
   const ownerSourced = isOwnerSourced(row.value)
   // A close is the root's alone, with a guarantee: a measurement orders and a dependency waits, neither closes.
   const refused = firstOf([
-    when(context.actor.role !== "root", `a close by decision is the root's: a ${context.actor.role} cannot decide`),
+    when(context.actor.role !== "root", `a close by decision is the root's: a ${printable(context.actor.role)} cannot decide`),
     when(command.reason.reasonClass === "measured", "a measurement orders work, it never closes it: decide takes a guarantee; defer takes a measurement"),
     when(command.reason.reasonClass === "dependency", "a dependency is work still owed: it never closes a commitment; defer it on the dependency instead"),
   ])
@@ -1194,7 +1224,7 @@ const decideDecide = (snapshot: Snapshot, command: Extract<Command, { _tag: "dec
 /** `defer`: an open commitment kept open with why it waits (a dependency, a measurement, a guarantee it rests on). */
 const decideDefer = (snapshot: Snapshot, command: Extract<Command, { _tag: "defer" }>, context: Context): Decided => {
   const row = openRow(snapshot, command.id)
-  const refused = firstOf([rootOnly(context, "deferring a commitment"), when(Option.isNone(row), `${command.id} is not an open commitment`)])
+  const refused = firstOf([rootOnly(context, "deferring a commitment"), when(Option.isNone(row), `${printable(command.id)} is not an open commitment`)])
   if (Option.isSome(refused) || Option.isNone(row)) return refuse(Option.getOrElse(refused, () => ""))
   const checked = reasonChecked(snapshot, Option.some(row.value.id), command.reason, command.observed)
   if (Result.isFailure(checked)) return refuse(checked.failure)
@@ -1203,18 +1233,18 @@ const decideDefer = (snapshot: Snapshot, command: Extract<Command, { _tag: "defe
 
 /** `invariant`: the root declares a named invariant, its document as git held it; an id names one document for good. */
 const decideInvariant = (snapshot: Snapshot, command: Extract<Command, { _tag: "invariant" }>, context: Context): Decided => {
-  const refused = firstOf([when(context.actor.role !== "root", `declaring an invariant is the root's: a ${context.actor.role} cannot`), idRefusal(command.id), idRefusal(command.anchor)])
+  const refused = firstOf([when(context.actor.role !== "root", `declaring an invariant is the root's: a ${printable(context.actor.role)} cannot`), idRefusal(command.id), idRefusal(command.anchor)])
   if (Option.isSome(refused)) return refuse(refused.value)
   const found = Option.fromUndefinedOr(snapshot.invariants.get(command.id))
   const seen = command.observed
   if (Option.exists(found, (held) => held.docPath === seen.path && held.anchor === command.anchor && held.blob === seen.blob)) return decided([])
-  if (Option.isSome(found)) return refuse(`the invariant ${command.id} is declared already, for another document or revision: a changed invariant takes a new id`)
+  if (Option.isSome(found)) return refuse(`the invariant ${printable(command.id)} is declared already, for another document or revision: a changed invariant takes a new id`)
   return decided([event(context, REPOSITORY_RUN, "invariant", command.id, Happening.cases.invariant_declared.make({ docPath: seen.path, anchor: command.anchor, blob: seen.blob, commit: seen.commit }))])
 }
 
 const decideReopen = (snapshot: Snapshot, command: Extract<Command, { _tag: "reopen" }>, context: Context): Decided => {
   const row = Option.filter(Option.fromUndefinedOr(snapshot.commitments.get(command.id)), (each) => each.state === "decided")
-  const refused = firstOf([rootOnly(context, "reopening a decision"), when(Option.isNone(row), `${command.id} is not a decided commitment`)])
+  const refused = firstOf([rootOnly(context, "reopening a decision"), when(Option.isNone(row), `${printable(command.id)} is not a decided commitment`)])
   if (Option.isSome(refused) || Option.isNone(row)) return refuse(Option.getOrElse(refused, () => ""))
   return decided([onCommitment(context, row.value, Happening.cases.reopened.make({ outsideRun: Option.some(outsideRunOf(snapshot, row.value, context)) }), Option.some("open"))])
 }
@@ -1239,12 +1269,12 @@ const nextHandBack = (snapshot: Snapshot): number => Math.max(0, ...snapshot.han
 const decideHandBack = (snapshot: Snapshot, command: Extract<Command, { _tag: "hand_back" }>, context: Context): Decided => {
   const rows = command.claims.map((id) => openRow(snapshot, id))
   const refused = firstOf([
-    when(context.actor.role === "import" || context.actor.role === "owner", `a ${context.actor.role} does not hand back`),
+    when(context.actor.role === "import" || context.actor.role === "owner", `a ${printable(context.actor.role)} does not hand back`),
     tokenRefusal("the owner", command.ownerLane),
     tokenRefusal("the session", command.session),
     Option.flatMap(command.head, (head) => tokenRefusal("the head", head)),
     when(command.claims.length > 0 && Option.isNone(command.head), "a hand-back that claims commitments names its head"),
-    when(rows.some((row) => !Option.exists(row, (each) => Option.contains(each.ownerLane, command.ownerLane))), `each claimed id must be an open commitment of ${command.ownerLane}`),
+    when(rows.some((row) => !Option.exists(row, (each) => Option.contains(each.ownerLane, command.ownerLane))), `each claimed id must be an open commitment of ${printable(command.ownerLane)}`),
   ])
   if (Option.isSome(refused)) return refuse(refused.value)
   const id = nextHandBack(snapshot)
@@ -1306,10 +1336,10 @@ const decideLane = (snapshot: Snapshot, command: Extract<Command, { _tag: "lane"
 
 const importRefusal = (row: ImportRow): Option.Option<string> =>
   firstOf([
-    Option.map(idRefusal(row.id), (why) => `row ${row.id}, column id: ${why}`),
-    when(row.row.state === "landed" && Option.isNone(row.row.landedCommit), `row ${row.id}, column landed_commit: a landed row needs the commit on the default branch`),
-    when(row.row.state === "decided" && Option.isNone(row.row.decidedWhy), `row ${row.id}, column state: a decided row needs a closing event's note`),
-    when(Option.isSome(row.row.ownerLane) && Option.isNone(row.row.reviewBy) && row.row.state === "open", `row ${row.id}, column review_by: an owned open row needs one`),
+    Option.map(idRefusal(row.id), (why) => `row ${printable(row.id)}, column id: ${why}`),
+    when(row.row.state === "landed" && Option.isNone(row.row.landedCommit), `row ${printable(row.id)}, column landed_commit: a landed row needs the commit on the default branch`),
+    when(row.row.state === "decided" && Option.isNone(row.row.decidedWhy), `row ${printable(row.id)}, column state: a decided row needs a closing event's note`),
+    when(Option.isSome(row.row.ownerLane) && Option.isNone(row.row.reviewBy) && row.row.state === "open", `row ${printable(row.id)}, column review_by: an owned open row needs one`),
   ])
 
 const decideImport = (snapshot: Snapshot, command: Extract<Command, { _tag: "import" }>, context: Context): Decided => {

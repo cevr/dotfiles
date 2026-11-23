@@ -3,7 +3,7 @@
 // lists the rest), said again only when its ids change. The handlers over a store, refusals included, run on the
 // simulated host (cmd/orchestrate/commitments.sim.test.ts).
 import { describe, expect, test } from "bun:test"
-import { Array as Arr, Match, Option, Result, Schema, SchemaAST } from "effect"
+import { Array as Arr, Hash, Match, Option, Result, Schema, SchemaAST } from "effect"
 import {
   beforeStart,
   type CommitmentsInput,
@@ -26,8 +26,12 @@ import {
 /** The section and its keys, read as the text they print. */
 const sectionOf = (listed: Parameters<typeof printedSection>[0]): ReadonlyArray<string> => printedSection(listed)
 const sectionKeys = (listed: Parameters<typeof printedKeys>[0]): ReadonlyArray<string> => printedKeys(listed)
-import { type Actor, Command, EMPTY, fold, type RecordEvent, type Snapshot, type StoredEvent } from "./record.ts"
-import { decideCommand, type Facts } from "./standing.ts"
+import { type Actor, Command, type Context, contextForFiling, EMPTY, fold, type RecordEvent, type Snapshot, type StoredEvent } from "./record.ts"
+import { decideCommand as decideBounded, type Facts } from "./standing.ts"
+import { printable } from "./printable.ts"
+
+const decideCommand = (snapshot: Snapshot, command: Command, context: Context) =>
+  decideBounded(snapshot, command, contextForFiling(context, command, (text) => (Hash.string(text) >>> 0).toString(16).padStart(64, "0")))
 
 const T0 = Date.parse("2026-11-22T10:00:00.000Z")
 const ROOT: Actor = { id: "ses_root", role: "root" }
@@ -123,28 +127,28 @@ describe("the answers", () => {
   test("add with three parts answers their ids, unowned; list shows each with its standing", () => {
     const command = add(["p1", "p2", "p3"])
     const { snapshot, events } = played([command])
-    expect(doneAnswer(command, events, snapshot)).toBe("commitments: added p1, p2, p3. Unowned until assigned: p1, p2, p3.")
+    expect<string>(doneAnswer(command, events, snapshot)).toBe("commitments: added p1, p2, p3. Unowned until assigned: p1, p2, p3.")
     expect(listAnswer({ action: "list" }, snapshot, facts).split("\n")).toEqual([
       "commitments: 3",
       ...["p1", "p2", "p3"].map((id) => `${id} [unowned] -: the ${id} part (plan-part plan.md:1; default)`),
     ])
-    expect(listAnswer({ action: "list", standing: "held" }, snapshot, facts)).toBe("commitments: none match.")
+    expect<string>(listAnswer({ action: "list", standing: "held" }, snapshot, facts)).toBe("commitments: none match.")
   })
 
   test("an order answers every open commitment of its owner, started or not", () => {
     const order = commandIn({ action: "order", owner_lane: "u1", ids: ["p1"] })
     const before = played([add(["p1", "p2", "p3"]), assign("p1", "u1"), assign("p2", "u1")])
     const events = Result.getOrThrow(decideCommand(before.snapshot, order, { actor: ROOT, now: T0 + 9000 }))
-    expect(doneAnswer(order, events, fold(before.snapshot, events))).toBe("commitments: started p1. u1's open commitments, each placed by this order: p1, p2.")
+    expect<string>(doneAnswer(order, events, fold(before.snapshot, events))).toBe("commitments: started p1. u1's open commitments, each placed by this order: p1, p2.")
   })
 
   test("a root's decision on what the owner approved says the owner is told; history lists each event", () => {
     const decide = commandIn({ action: "decide", id: "o1", why: "not needed", ...GUARANTEED })
     const { snapshot, events } = played([add(["o1"], "owner-answer"), decide])
-    expect(doneAnswer(decide, events.slice(1), snapshot)).toBe("commitments: o1 closed by decision, guarantee invariant/one-writer. The owner approved it: they are told, and can have it reopened.")
+    expect<string>(doneAnswer(decide, events.slice(1), snapshot)).toBe("commitments: o1 closed by decision, guarantee invariant/one-writer. The owner approved it: they are told, and can have it reopened.")
     const history = historyAnswer("o1", stored(events)).split("\n")
     expect(history.slice(1).map((line) => line.split(" ").slice(2, 7).join(" "))).toEqual(["promised by root ses_root", "decided open → decided by"])
-    expect(historyAnswer("nope", [])).toBe("commitments: nope has no history: no such commitment.")
+    expect<string>(historyAnswer("nope", [])).toBe("commitments: nope has no history: no such commitment.")
   })
 })
 
@@ -249,7 +253,7 @@ describe("the lane's answer", () => {
       "Start its implementor:",
       "agent({ … })",
     ])
-    expect(beforeStart("one\ntwo", "x")).toBe("one\nx\ntwo")
+    expect(beforeStart("one\ntwo", printable("x"))).toBe("one\nx\ntwo")
   })
 })
 

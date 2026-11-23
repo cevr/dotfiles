@@ -12,6 +12,7 @@ import { scratch } from "../../../tests/scratch.ts"
 import * as Seed from "../../../sim/seed.ts"
 import { answerOf, claimsRecorded, factsOf, landClaimsOf, passed } from "../commitments-tool.ts"
 import * as MemoryRecord from "../memory/record.ts"
+import { printable } from "../printable.ts"
 import { type Actor, Command, PartInput, type Snapshot } from "../record.ts"
 import { CommitmentRecord, type Evidence, MainLine } from "../service.ts"
 import { noEvidence } from "../reasons.ts"
@@ -103,7 +104,7 @@ const recordOf = (repo: Repository) => {
     status: (gone: ReadonlyArray<string> = []) => passed({ id: "orchestrate-pass", role: "plugin" }, T0 + 2000, facts(gone)),
     /** The root's `landed`, as the commitments tool answers it. */
     explicitly: (id: string, head: string, gone: ReadonlyArray<string> = []) =>
-      answerOf({ action: "landed", id, head }, ROOT, T0 + 3000, { facts: facts(gone), register: () => Effect.fail("no register"), checkout: repo.path }),
+      answerOf({ action: "landed", id, head }, ROOT, T0 + 3000, { facts: facts(gone), register: () => Effect.fail(printable("no register")), checkout: repo.path }),
     history: (id: string) =>
       Effect.gen(function* () {
         return yield* (yield* CommitmentRecord).history("commitment", id)

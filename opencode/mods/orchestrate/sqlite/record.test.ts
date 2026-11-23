@@ -13,7 +13,7 @@ import { gitInit, withProcessEnv } from "../../../tests/git-repo.ts"
 import { scratch as scratchDir } from "../../../tests/scratch.ts"
 import { commitmentRecordLaws, RECORD_SCRIPT } from "../laws.ts"
 import * as MemoryRecord from "../memory/record.ts"
-import { type Actor, COLUMNS, Command, EMPTY, fold } from "../record.ts"
+import { type Actor, COLUMNS, Command, EMPTY, fold, type StoredEvent } from "../record.ts"
 import { CommitmentRecord } from "../service.ts"
 import type * as SqliteRecord from "./record.ts"
 import { BACKUPS_KEPT, connected, keyOfCheckout, layer, layerOrFailed, MIGRATIONS, pathOf, stateDir, textColumnsOf, VERSION } from "./record.ts"
@@ -138,7 +138,7 @@ const columnsOf = (db: Database, table: string) =>
     .all()
     .map((each) => [each.name, each.type, each.notnull, each.dflt, each.pk, each.hidden])
 
-Seed.effect("version 1 is the only version: its commitment and invariant tables have exactly this shape, reason pair and generated close kind included",
+Seed.effect("version 2 preserves the commitment and invariant columns, reason pair and generated close kind",
   inScratch((dir) =>
     Effect.gen(function* () {
       const made = yield* connected(`${dir}/repo.db`, { readonly: false, now: T0 })
@@ -152,9 +152,9 @@ Seed.effect("version 1 is the only version: its commitment and invariant tables 
       const visible = db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('commitment')").all().map((each) => each.name)
       db.close()
       const text = (name: string, notnull = 0, pk = 0) => [name, "TEXT", notnull, "-", pk, 0]
-      expect([VERSION, MIGRATIONS.length]).toEqual([1, 1])
+      expect([VERSION, MIGRATIONS.length]).toEqual([2, 2])
       expect(tables).toEqual({
-        version: Option.some(1),
+        version: Option.some(2),
         commitment: [
           text("id", 1, 1), text("run", 1), text("title", 1), text("source_kind", 1), text("source_ref", 1), text("quote"), text("plan"), text("part"), text("rank"),
           text("owner_lane"), text("owner_session"), text("state", 1), text("started_at"), text("review_by"), text("woke_at"), text("head"), text("request_path"),
@@ -323,8 +323,17 @@ Seed.effect("the file and the memory record agree on every kind of command, reas
       const reopened = yield* connected(path, { readonly: true, now: T0 })
       const [rows, events] = [yield* reopened.store.read, yield* reopened.store.events]
       reopened.close()
-      expect(rows).toEqual(yield* memory.read)
-      expect(events).toEqual(yield* memory.events)
+      const { filings: diskFilings, ...diskRows } = rows
+      const { filings: memoryFilings, ...memoryRows } = yield* memory.read
+      expect(diskRows).toEqual(memoryRows)
+      const identities = (filings: typeof diskFilings) => [...filings].map(([id, each]) => [id, each.actor, Option.isSome(each.identity)])
+      expect(identities(diskFilings)).toEqual(identities(memoryFilings))
+      const withoutMac = (each: StoredEvent): StoredEvent => {
+        const happening = each.happening
+        if (happening._tag !== "promised") return each
+        return { ...each, happening: { ...happening, filing: Option.none() } }
+      }
+      expect(events.map(withoutMac)).toEqual((yield* memory.events).map(withoutMac))
       expect(fold(EMPTY, events)).toEqual(rows)
       // The reasons the script gave survive the file: a decided guarantee, a deferral's dependency, a reopen's clear.
       expect([...rows.commitments.values()].map((row) => [row.id, row.state, Option.map(row.reason, (reason) => reason.referent), row.unreasonedClose])).toEqual(

@@ -1,11 +1,14 @@
 // The commitment record held in memory, for the plugin's seam tests and the laws: the same decisions and fold as the
 // SQLite store (record.ts, standing.ts), its events in a list and its rows in a reference, one command at a time.
 import { Effect, Layer, Ref, Result } from "effect"
-import { EMPTY, fold, type RecordEvent, type Snapshot, type StoredEvent } from "../record.ts"
+import { SecureRandom } from "effect/crypto"
+import { filingMac } from "../node/platform.ts"
+import { contextForFiling, EMPTY, fold, type RecordEvent, type Snapshot, type StoredEvent } from "../record.ts"
 import { CommitmentRecord } from "../service.ts"
 import { decideCommand } from "../standing.ts"
 
 interface Held {
+  readonly key: Uint8Array
   readonly snapshot: Snapshot
   readonly events: ReadonlyArray<StoredEvent>
 }
@@ -17,9 +20,9 @@ export const make = (ref: Ref.Ref<Held>): CommitmentRecord["Service"] =>
   CommitmentRecord.of({
     run: Effect.fn("CommitmentRecord.run")(function* (command, context) {
       const held = yield* Ref.get(ref)
-      const events = yield* Result.match(decideCommand(held.snapshot, command, context), { onFailure: Effect.fail, onSuccess: Effect.succeed })
+      const events = yield* Result.match(decideCommand(held.snapshot, command, contextForFiling(context, command, filingMac(held.key))), { onFailure: Effect.fail, onSuccess: Effect.succeed })
       const snapshot = fold(held.snapshot, events)
-      yield* Ref.set(ref, { snapshot, events: [...held.events, ...stored(held, events)] })
+      yield* Ref.set(ref, { key: held.key, snapshot, events: [...held.events, ...stored(held, events)] })
       return { events, snapshot }
     }),
     read: Effect.map(Ref.get(ref), (held) => held.snapshot),
@@ -28,7 +31,7 @@ export const make = (ref: Ref.Ref<Held>): CommitmentRecord["Service"] =>
   })
 
 /** An empty record's state, to share between stores. */
-export const empty = Ref.make<Held>({ snapshot: EMPTY, events: [] })
+export const empty = Effect.sync(() => SecureRandom.randomBytesUnsafe(32)).pipe(Effect.flatMap((key) => Ref.make<Held>({ key, snapshot: EMPTY, events: [] })))
 
 /** A store of its own, empty. */
 export const layer = Layer.effect(CommitmentRecord, Effect.map(empty, make))

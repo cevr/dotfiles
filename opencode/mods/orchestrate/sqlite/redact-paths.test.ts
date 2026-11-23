@@ -7,6 +7,7 @@ import { Effect, Layer, Option, Schema } from "effect"
 import * as Seed from "../../../sim/seed.ts"
 import { scratch } from "../../../tests/scratch.ts"
 import * as Tool from "../commitments-tool.ts"
+import { printable } from "../printable.ts"
 import { type Actor, Command } from "../record.ts"
 import { CommitmentRecord, Evidence } from "../service.ts"
 import { evidenceOf } from "../reasons.ts"
@@ -31,7 +32,7 @@ const T = Date.parse("2026-11-22T10:00:00.000Z")
 const ROOT: Actor = { id: "ses_rootA", role: "root" }
 const WORKER: Actor = { id: "ses_child", role: "worker" }
 const PLUGIN: Actor = { id: "orchestrate-land", role: "plugin" }
-const READS: Tool.Reads = { facts: () => Effect.succeed({ now: T, onMain: new Set(), gone: new Set() }), register: () => Effect.fail("none"), checkout: "/nonexistent/redact-checkout" }
+const READS: Tool.Reads = { facts: () => Effect.succeed({ now: T, onMain: new Set(), gone: new Set() }), register: () => Effect.fail(printable("none")), checkout: "/nonexistent/redact-checkout" }
 /** What the evidence reader finds: one committed document; no receipt (a token-shaped path is never one). */
 const EVIDENCE = evidenceOf(new Map(), new Map([["docs/record.md", { path: "docs/record.md", blob: "b".repeat(40), commit: "c".repeat(40) }]]))
 const GUARANTEED = { reason_class: "guarantee", referent: { kind: "invariant", id: "one-writer" } } as const

@@ -11,7 +11,9 @@ import { Digest } from "effect/crypto"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import {
   ACTOR_ROLES,
+  type BoundedEvent,
   type Commitment,
+  contextForFiling,
   EMPTY,
   fold,
   type HandBack,
@@ -37,7 +39,8 @@ import {
 } from "../record.ts"
 import { REASON_CLASSES, type ReasonData, referentOf } from "../reasons.ts"
 import { localKey, keyOfOrigin } from "../repo-key.ts"
-import { printable } from "../printable.ts"
+import { diagnostic, printed, type Printable, printable, printableJson } from "../printable.ts"
+import { filingMac } from "../node/platform.ts"
 import { CommitmentRecord, RecordFailed } from "../service.ts"
 import { decideCommand } from "../standing.ts"
 
@@ -170,7 +173,11 @@ const V1 = [
 ]
 
 /** Each version's statements, in order: forward-only and additive (a non-additive change is the owner's). */
-export const MIGRATIONS: ReadonlyArray<ReadonlyArray<string>> = [V1]
+const V2 = [
+  "CREATE TABLE filing_key (id INTEGER PRIMARY KEY CHECK (id = 1), key BLOB NOT NULL CHECK (length(key) = 32)) STRICT",
+  "INSERT INTO filing_key (id, key) VALUES (1, randomblob(32))",
+]
+export const MIGRATIONS: ReadonlyArray<ReadonlyArray<string>> = [V1, V2]
 
 /** The schema version this code writes: one per migration, so the two cannot disagree. */
 export const VERSION = MIGRATIONS.length
@@ -265,7 +272,7 @@ const reasonRead = (row: Raw): Result.Result<Option.Option<ReasonData>, string> 
   const referent = textOf(row, "referent")
   if (Option.isNone(reasonClass) && Option.isNone(referent) && Option.isNone(textOf(row, "reason_class"))) return Result.succeed(Option.none())
   return Option.match(Option.all([reasonClass, Option.filter(referent, (pointer) => Option.isSome(referentOf(pointer)))]), {
-    onNone: () => Result.fail(`commitment ${textIn(row, "id")}: its reason is not one this code reads (a class and a canonical referent)`),
+    onNone: () => Result.fail(`commitment ${printable(textIn(row, "id"))}: its reason is not one this code reads (a class and a canonical referent)`),
     onSome: ([each, pointer]) => Result.succeed(Option.some({ reasonClass: each, referent: pointer })),
   })
 }
@@ -393,7 +400,7 @@ const writeInvariant = (db: Database, row: Invariant): void => {
   )
 }
 
-const writeEvent = (db: Database, event: RecordEvent): void => {
+const writeEvent = (db: Database, event: BoundedEvent): void => {
   db.query<Raw, Array<SQLQueryBindings>>(
     "INSERT INTO event (at, run, subject_kind, subject_id, type, actor, actor_role, from_state, to_state, note, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   ).run(event.at, event.run, event.subjectKind, event.subjectId, event.happening._tag, event.actor.id, event.actor.role, nullable(event.fromState), nullable(event.toState), event.note, encodeData(event.happening))
@@ -403,7 +410,7 @@ const writeEvent = (db: Database, event: RecordEvent): void => {
 const changed = <K, V>(before: ReadonlyMap<K, V>, after: ReadonlyMap<K, V>): ReadonlyArray<V> =>
   [...after].flatMap(([key, value]) => Arr.filter([value], () => before.get(key) !== value))
 
-const write = (db: Database, before: Snapshot, events: ReadonlyArray<RecordEvent>): Snapshot => {
+const write = (db: Database, before: Snapshot, events: ReadonlyArray<BoundedEvent>): Snapshot => {
   const after = fold(before, events)
   for (const event of events) writeEvent(db, event)
   for (const row of changed(before.commitments, after.commitments)) writeCommitment(db, row)
@@ -415,7 +422,7 @@ const write = (db: Database, before: Snapshot, events: ReadonlyArray<RecordEvent
 
 const eventOf = (row: Raw): Result.Result<StoredEvent, string> =>
   Result.map(
-    Result.mapError(decodeData(textIn(row, "data")), (issue) => `event ${Option.getOrElse(intOf(row, "seq"), () => 0)}: ${String(issue)}`),
+    Result.mapError(decodeData(textIn(row, "data")), () => `event ${Option.getOrElse(intOf(row, "seq"), () => 0)}: unsupported event data (record/event-data)`),
     (happening): StoredEvent => ({
       seq: Option.getOrElse(intOf(row, "seq"), () => 0),
       at: textIn(row, "at"),
@@ -432,26 +439,34 @@ const eventOf = (row: Raw): Result.Result<StoredEvent, string> =>
 
 const eventsOf = (rows: ReadonlyArray<Raw>): Result.Result<ReadonlyArray<StoredEvent>, string> => Result.all(rows.map(eventOf))
 
-const messageOf = (cause: unknown): string => {
-  if (cause instanceof Error) return cause.message
-  return String(cause)
-}
+const filingKeyOf = (db: Database) =>
+  Option.flatMap(Option.fromNullishOr(db.query<Raw, []>("SELECT key FROM filing_key WHERE id = 1").get()), (row) =>
+    Option.liftPredicate(row.key, (key): key is Uint8Array => key instanceof Uint8Array && key.byteLength === 32),
+  )
 
 /** The store on an open database; `refusal`: why every write is refused (a file of a newer version), when it is. */
-export const make = (db: Database, refusal: Option.Option<string>): CommitmentRecord["Service"] => {
-  const attempt = <A>(name: string, body: () => A) => Effect.try({ try: body, catch: (cause) => new RecordFailed({ message: printable(`record ${name}: ${messageOf(cause)}`) }) })
+export const make = (db: Database, refusal: Option.Option<Printable>): CommitmentRecord["Service"] => {
+  const attempt = <A>(name: string, body: () => A) => Effect.try({ try: body, catch: (cause) => new RecordFailed({ message: printed`record ${printable(name)}: ${diagnostic(cause)}` }) })
   const decoded = <A>(name: string, result: Result.Result<A, string>) =>
-    Result.match(result, { onFailure: (message) => Effect.fail(new RecordFailed({ message: printable(`record ${name}: ${message}`) })), onSuccess: (value) => Effect.succeed(value) })
+    Result.match(result, { onFailure: (message) => Effect.fail(new RecordFailed({ message: printed`record ${printable(name)}: ${printable(message)}` })), onSuccess: (value) => Effect.succeed(value) })
   return CommitmentRecord.of({
     run: (command, context) =>
       Option.match(refusal, {
-        onSome: (why) => Effect.fail(new RecordFailed({ message: printable(why) })),
+        onSome: (why) => Effect.fail(new RecordFailed({ message: why })),
         onNone: () =>
           attempt(command._tag, () =>
             db
               .transaction(() => {
                 // A file whose rows this code cannot read refuses the write; the commitments it holds stay as they are.
-                return Result.map(snapshotOf(db), (before) => Result.map(decideCommand(before, command, context), (events) => ({ events, snapshot: write(db, before, events) })))
+                return Result.map(snapshotOf(db), (before) => {
+                  const signed = Option.liftPredicate(command, () => command._tag === "add" && command.sourceKind === "follow-up")
+                  const unsigned = { actor: context.actor, now: context.now }
+                  const bound = Option.match(signed, {
+                    onNone: () => unsigned,
+                    onSome: () => Option.getOrElse(Option.map(filingKeyOf(db), (key) => contextForFiling(unsigned, command, filingMac(key))), () => unsigned),
+                  })
+                  return Result.map(decideCommand(before, command, bound), (events) => ({ events, snapshot: write(db, before, events) }))
+                })
               })
               .immediate(),
           ).pipe(Effect.flatMap((read) => decoded(command._tag, read)), Effect.flatMap((result) => Result.match(result, { onFailure: (refused: RecordRefused) => Effect.fail(refused), onSuccess: (done) => Effect.succeed(done) }))),
@@ -468,6 +483,8 @@ export const make = (db: Database, refusal: Option.Option<string>): CommitmentRe
 // ── Opening ──
 
 const versionOf = (db: Database): number => Option.getOrElse(intOf(db.query<Raw, []>("PRAGMA user_version").get() ?? {}, "user_version"), () => 0)
+const newerFile = (path: string, version: number): Printable =>
+  printed`record: ${printable(path)} is version ${printable(String(version))}; this code writes version ${printable(String(VERSION))}: update it to write`
 
 /** Every migration past the file's version, in one immediate transaction; none when another writer did them first. */
 const migrate = (db: Database): void =>
@@ -494,7 +511,7 @@ export const backup = (db: Database, file: string, now: number) =>
     yield* fs.makeDirectory(dir, { recursive: true })
     // Into a file of this process's own, then renamed: two processes opening at once each write whole copies, never one file.
     const own = `${day}.${ownSuffix(db)}.tmp`
-    yield* Effect.try({ try: () => db.query<Raw, [string]>("VACUUM INTO ?").run(own), catch: (cause) => new RecordFailed({ message: printable(`record: backup ${day}: ${messageOf(cause)}`) }) })
+    yield* Effect.try({ try: () => db.query<Raw, [string]>("VACUUM INTO ?").run(own), catch: (cause) => new RecordFailed({ message: printed`record: backup ${printable(day)}: ${diagnostic(cause)}` }) })
     yield* fs.rename(own, day)
     const days = Arr.sort(
       (yield* fs.readDirectory(dir)).filter((name) => name.startsWith(`${key}-`) && name.endsWith(".db") && name.length === key.length + 14),
@@ -525,7 +542,7 @@ const settled = <A>(work: () => A) =>
 /** An open database, and why its writes are refused when they are. */
 interface Connected {
   readonly db: Database
-  readonly refusal: Option.Option<string>
+  readonly refusal: Option.Option<Printable>
 }
 
 /** The database at `path`, existing, attached with the record's pragmas: no migration, no backup (`connect` does both). */
@@ -538,7 +555,7 @@ const attached = (path: string, readonly: boolean): Database => {
 /** The database at `path` opened, created and migrated (or read-only), and why its writes are refused when they are. */
 const connect = (path: string, options: OpenOptions) =>
   Effect.gen(function* () {
-    if (options.readonly) return { db: attached(path, true), refusal: Option.some(`record: ${path} is open to read only`) }
+    if (options.readonly) return { db: attached(path, true), refusal: Option.some(printed`record: ${printable(path)} is open to read only`) }
     const fs = yield* FileSystem.FileSystem
     const paths = yield* Path.Path
     yield* fs.makeDirectory(paths.dirname(path), { recursive: true })
@@ -548,11 +565,11 @@ const connect = (path: string, options: OpenOptions) =>
     yield* settled(() => db.run("PRAGMA journal_mode = WAL"))
     db.run("PRAGMA synchronous = NORMAL")
     const version = yield* settled(() => versionOf(db))
-    if (version > VERSION) return { db, refusal: Option.some(`record: ${path} is version ${version}; this code writes version ${VERSION}: update it to write`) }
+    if (version > VERSION) return { db, refusal: Option.some(newerFile(path, version)) }
     yield* settled(() => migrate(db))
     yield* backup(db, path, options.now)
     return { db, refusal: Option.none() }
-  }).pipe(Effect.mapError((cause) => new RecordFailed({ message: printable(`record: open ${path}: ${messageOf(cause)}`) })))
+  }).pipe(Effect.mapError((cause) => new RecordFailed({ message: printed`record: open ${printable(path)}: ${diagnostic(cause)}` })))
 
 /** The record at `path`, open for the scope's life. */
 export const open = (path: string, options: OpenOptions) => Effect.acquireRelease(connect(path, options), (opened: Connected) => Effect.sync(() => opened.db.close()))
@@ -572,7 +589,7 @@ export const layerOrFailed = (path: Effect.Effect<string, unknown, Platform>) =>
   Layer.effect(
     CommitmentRecord,
     Effect.gen(function* () {
-      const file = yield* Effect.mapError(path, (cause) => new RecordFailed({ message: printable(`record: no file: ${messageOf(cause)}`) }))
+      const file = yield* Effect.mapError(path, (cause) => new RecordFailed({ message: printed`record: no file: ${diagnostic(cause)}` }))
       const now = yield* Clock.currentTimeMillis
       return yield* open(file, { readonly: false, now })
     }).pipe(
@@ -602,11 +619,11 @@ export const layerScratch = (path: string) =>
         db.run("PRAGMA journal_mode = WAL")
         db.run("PRAGMA synchronous = NORMAL")
         const version = versionOf(db)
-        if (version > VERSION) return make(db, Option.some(`record: ${path} is version ${version}; this code writes version ${VERSION}: update it to write`))
+        if (version > VERSION) return make(db, Option.some(newerFile(path, version)))
         migrate(db)
         return make(db, Option.none())
       },
-      catch: (cause) => new RecordFailed({ message: printable(`record: open ${path}: ${messageOf(cause)}`) }),
+      catch: (cause) => new RecordFailed({ message: printed`record: open ${printable(path)}: ${diagnostic(cause)}` }),
     }).pipe(Effect.catch((failed) => Effect.succeed(failedStore(failed)))),
   )
 
@@ -625,11 +642,17 @@ export const replayed = (events: ReadonlyArray<RecordEvent>): Snapshot => fold(E
 
 const encodeHappening = Schema.encodeSync(Happening)
 
-const jsonLine = Schema.encodeSync(Schema.fromJsonString(Schema.Json))
+/** Per-store replay authenticators are internal, not interchange data. */
+const exportedData = (happening: Happening) => {
+  const encoded = encodeHappening(happening)
+  if (encoded._tag !== "promised") return encoded
+  const { filing: _, ...publicFields } = encoded
+  return publicFields
+}
 
 /** One event as the CLI's `export` writes it: a JSON line with the event table's columns, `data` its fields. */
-export const exportLine = (event: StoredEvent): string =>
-  jsonLine({
+export const exportLine = (event: StoredEvent): Printable =>
+  printableJson({
     seq: event.seq,
     at: event.at,
     run: event.run,
@@ -641,5 +664,5 @@ export const exportLine = (event: StoredEvent): string =>
     from_state: nullable(event.fromState),
     to_state: nullable(event.toState),
     note: event.note,
-    data: encodeHappening(event.happening),
+    data: exportedData(event.happening),
   })

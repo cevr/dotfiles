@@ -6,10 +6,12 @@
 // driver, or this test stays red.
 import { Database } from "bun:sqlite"
 import { expect } from "bun:test"
+import { file, write } from "bun"
 import { Array as Arr, Effect, Layer, Match, Option, Result, Schema } from "effect"
 import * as Seed from "../../../sim/seed.ts"
 import { textsOf } from "../../../sim/canary.ts"
-import { leaked } from "../../../sim/tokens.ts"
+import { KINDS, leaked } from "../../../sim/tokens.ts"
+import { generator } from "../../../sim/runtime.ts"
 import { scratch } from "../../../tests/scratch.ts"
 import { DEFAULT_RUN, followUpOf } from "../commitments-tool.ts"
 import { type Actor, Command, decodeCommand, PartInput } from "../record.ts"
@@ -17,7 +19,7 @@ import { CommitmentRecord, Evidence } from "../service.ts"
 import { evidenceOf } from "../reasons.ts"
 import { hostServices } from "../../../sim/host-services.ts"
 import { platform as ownPlatform } from "../node/platform.ts"
-import { connected, textColumnsOf } from "./record.ts"
+import { connected, make, textColumnsOf } from "./record.ts"
 
 const T0 = Date.parse("2027-01-15T08:00:00.000Z")
 /** A reader that finds no receipt and no document: the follow-ups here name a dependency. */
@@ -114,8 +116,8 @@ const imported = (
     ],
   })
 
-/** A role as a caller that bypassed the types would give it: any string, read back from JSON. */
-const roleOf = (value: string): Actor["role"] => Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Any))(`"${value}"`)
+/** A role as a caller that bypassed the types would give it. */
+const roleOf = (value: string): Actor["role"] => Schema.decodeUnknownSync(Schema.Any)(value)
 
 const refused = (names: string, sent: Sent, setup: ReadonlyArray<Sent> = []): Driver => ({ kind: "refused", setup, sent, names })
 const redacted = (sent: Sent, setup: ReadonlyArray<Sent> = []): Driver => ({ kind: "redacted", setup, sent })
@@ -125,6 +127,7 @@ const UNWRITTEN: Driver = { kind: "unwritten" }
 /** A column the fold derives from an event's kind alone (a close with no reason: `placed`, `historical`), no command field: its CHECK holds it to them. */
 const DERIVED: Driver = { kind: "derived" }
 const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Any))
+const jsonString = Schema.encodeSync(Schema.fromJsonString(Schema.String))
 const OWNED = [by(add(["c1"]))]
 /** The invariant a guarantee names, declared by the root as the evidence reader would have found its document. */
 const DOCUMENT = { path: "docs/record.md", blob: "b".repeat(40), commit: "c".repeat(40) }
@@ -135,20 +138,31 @@ const DECLARED = [...OWNED, by(declare())]
 /** An import's history event carries `at` (every derived time column is a fold of an event's time) and its states. */
 const historyAt = refused("event.at", by(imported("i1", {}, { at: S }), IMPORT))
 
+const SLUG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/
+const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,119}$/
+
+const dependency = (token: string): Driver => {
+  const referent = `commitment/${token}`
+  // A dependency's public pointer accepts a slug up to 80 characters; other shapes must fail the decoder.
+  if (!SLUG.test(token))
+    return literal(`{ "_tag": "defer", "id": "c1", "reason": { "reasonClass": "dependency", "referent": ${jsonString(referent)} } }`)
+  return refused("commitment.referent", by(Command.cases.defer.make({ id: "c1", reason: { reasonClass: "dependency", referent } })), OWNED)
+}
+
 /** Each TEXT column's driver, by `<table>.<column>`. */
 const driversOf = (S: string) => new Map<string, Driver>([
   ["commitment.id", refused("event.subject_id", by(add([S])))],
   ["commitment.run", refused("event.run", by(add(["c1"], { run: S })))],
   ["commitment.title", redacted(by(add(["c1"], { title: `the title ${S}` })))],
-  ["commitment.source_kind", literal(`{ "_tag": "add", "run": "r", "sourceKind": "${S}", "sourceRef": "x", "parts": [] }`)],
+  ["commitment.source_kind", literal(`{ "_tag": "add", "run": "r", "sourceKind": ${jsonString(S)}, "sourceRef": "x", "parts": [] }`)],
   ["commitment.source_ref", redacted(by(add(["c1"], { sourceRef: `plan.md ${S}` })))],
   ["commitment.quote", redacted(by(add(["c1"], { quote: `the owner said ${S}` })))],
   ["commitment.plan", redacted(by(add(["c1"], { plan: `the plan ${S}` })))],
   ["commitment.part", redacted(by(add(["c1"], { part: `the part ${S}` })))],
-  ["commitment.rank", literal(`{ "_tag": "add", "run": "r", "sourceKind": "plan-part", "sourceRef": "x", "parts": [{ "id": "c1", "title": "t", "rank": "${S}" }] }`)],
+  ["commitment.rank", literal(`{ "_tag": "add", "run": "r", "sourceKind": "plan-part", "sourceRef": "x", "parts": [{ "id": "c1", "title": "t", "rank": ${jsonString(S)} }] }`)],
   ["commitment.owner_lane", refused("commitment.owner_lane", by(assign("c1", { ownerLane: S })), OWNED)],
   ["commitment.owner_session", refused("commitment.owner_session", by(assign("c1", { ownerSession: S })), OWNED)],
-  ["commitment.state", literal(`{ "_tag": "import", "run": "r", "rows": [{ "id": "i1", "row": { "state": "${S}" }, "history": [] }] }`)],
+  ["commitment.state", literal(`{ "_tag": "import", "run": "r", "rows": [{ "id": "i1", "row": { "title": "t", "sourceKind": "plan-part", "sourceRef": "plan:1", "after": [], "createdAt": "${AT}", "updatedAt": "${AT}", "state": ${jsonString(S)} }, "history": [] }] }`)],
   ["commitment.started_at", refused("commitment.started_at", by(imported("i1", { startedAt: S }), IMPORT))],
   ["commitment.review_by", refused("commitment.review_by", by(imported("i1", { reviewBy: S }), IMPORT))],
   ["commitment.woke_at", historyAt],
@@ -162,8 +176,8 @@ const driversOf = (S: string) => new Map<string, Driver>([
   ["commitment.start_head", refused("commitment.start_head", by(Command.cases.lane.make({ run: DEFAULT_RUN, unit: "u1", startHead: Option.some(S) })))],
   ["commitment.notice_by", refused("event.actor", by(add(["c1"]), { id: S, role: "root" }))],
   ["commitment.lane_path", refused("commitment.lane_path", by(Command.cases.lane.make({ run: DEFAULT_RUN, unit: "u1", path: Option.some(`/work/${S}`) })))],
-  ["commitment.reason_class", literal(`{ "_tag": "defer", "id": "c1", "reason": { "reasonClass": "${S}", "referent": "commitment/c2" } }`)],
-  ["commitment.referent", refused("commitment.referent", by(Command.cases.defer.make({ id: "c1", reason: { reasonClass: "dependency", referent: `commitment/${S}` } })), OWNED)],
+  ["commitment.reason_class", literal(`{ "_tag": "defer", "id": "c1", "reason": { "reasonClass": ${jsonString(S)}, "referent": "commitment/c2" } }`)],
+  ["commitment.referent", dependency(S)],
   ["commitment.unreasoned_close", DERIVED],
   ["invariant.id", refused("event.subject_id", by(declare({ id: S })))],
   ["invariant.doc_path", refused("invariant.doc_path", by(declare({ path: `docs/${S}.md` })))],
@@ -173,14 +187,14 @@ const driversOf = (S: string) => new Map<string, Driver>([
   ["invariant.declared_at", historyAt],
   ["invariant.declared_by", refused("event.actor", by(declare(), { id: S, role: "root" }))],
   ["prerequisite.commitment_id", refused("event.subject_id", by(add([S])))],
-  ["prerequisite.kind", literal(`{ "_tag": "assign", "id": "c1", "ownerLane": "u1", "after": [{ "kind": "${S}", "ref": "x" }] }`)],
+  ["prerequisite.kind", literal(`{ "_tag": "assign", "id": "c1", "ownerLane": "u1", "after": [{ "kind": ${jsonString(S)}, "ref": "x" }] }`)],
   ["prerequisite.ref", refused("prerequisite.ref", by(assign("c1", { manual: S })), OWNED)],
   ["prerequisite.met_at", historyAt],
   ["event.at", historyAt],
   ["event.run", refused("event.run", by(Command.cases.word.make({ run: S, word: "go" })))],
-  ["event.subject_kind", literal(`{ "_tag": "nothing", "subjectKind": "${S}" }`)],
+  ["event.subject_kind", DERIVED],
   ["event.subject_id", refused("event.subject_id", by(Command.cases.word.make({ run: DEFAULT_RUN, word: S })))],
-  ["event.type", literal(`{ "_tag": "${S}" }`)],
+  ["event.type", literal(`{ "_tag": ${jsonString(S)} }`)],
   ["event.actor", refused("event.actor", by(imported("i1", {}, { actor: S }), IMPORT))],
   // A role is the caller's own (the tool's root, a worker, the import), never a field of a command: one that is no role is refused.
   ["event.actor_role", refused("event.actor_role", by(add(["c1"]), { id: "ses_root", role: roleOf(S) }))],
@@ -192,11 +206,11 @@ const driversOf = (S: string) => new Map<string, Driver>([
   ["hand_back.owner_lane", refused("hand_back.owner_lane", by(handBack({ ownerLane: S })))],
   ["hand_back.role", refused("hand_back.role", by(handBack({ role: S })))],
   ["hand_back.session", refused("hand_back.session", by(handBack({ session: S })))],
-  ["hand_back.verdict", literal(`{ "_tag": "hand_back", "run": "r", "ownerLane": "u1", "role": "x", "session": "s", "verdict": "${S}", "claims": [] }`)],
+  ["hand_back.verdict", literal(`{ "_tag": "hand_back", "run": "r", "ownerLane": "u1", "role": "x", "session": "s", "verdict": ${jsonString(S)}, "claims": [] }`)],
   ["hand_back.head", refused("hand_back.head", by(handBack({ head: S })))],
   ["hand_back.file", redacted(by(handBack({ file: `requests/${S}.md` })))],
   ["hand_back.at", historyAt],
-  ["hand_back.routing", literal(`{ "_tag": "route", "handBack": 1, "as": "${S}" }`)],
+  ["hand_back.routing", literal(`{ "_tag": "route", "handBack": 1, "as": ${jsonString(S)} }`)],
   ["hand_back.routed_at", historyAt],
   ["hand_back.routed_by", refused("event.actor", by(Command.cases.route.make({ handBack: 1, as: "routed" }), { id: S, role: "root" }), [by(handBack())])],
   ["lane_session.lane", UNWRITTEN],
@@ -208,62 +222,84 @@ const driversOf = (S: string) => new Map<string, Driver>([
 ])
 
 /** Every TEXT value of every table in the file, with its column. */
-const storedIn = (path: string): ReadonlyArray<readonly [string, string]> => {
-  const db = new Database(path, { readonly: true })
-  const stored = textColumnsOf(db).flatMap((column) => {
-    const [table, name] = column.split(".")
-    return db.query<{ value: string }, []>(`SELECT coalesce(${name}, '') AS value FROM ${table}`).all().map((each) => [column, each.value] as const)
-  })
-  db.close()
-  return stored
+const storedIn = (db: Database): ReadonlyArray<readonly [string, string]> =>
+  textColumnsOf(db).flatMap((column) => valuesIn(db, column).map((value) => [column, value] as const))
+
+const valuesIn = (db: Database, column: string): ReadonlyArray<string> => {
+  const [table, name] = column.split(".")
+  return db.query<{ value: string }, []>(`SELECT coalesce(${name}, '') AS value FROM ${table}`).all().map((each) => each.value)
 }
 
 /** A driver that runs commands: the ones before, and the one with the secret. */
 type Driving = Extract<Driver, { readonly kind: "refused" | "redacted" }>
 
 /** The driver's refusal, if any, and the bytes of the DB and WAL while the writer still has them open. */
-const drive = (path: string, driver: Driving) =>
+const drive = (schema: Uint8Array, path: string, column: string, driver: Driving) =>
   Effect.gen(function* () {
-    const opened = yield* connected(path, { readonly: false, now: T0 })
-    for (const each of driver.setup) yield* opened.store.run(each.command, { actor: each.actor, now: T0 })
-    const done = yield* Effect.result(opened.store.run(driver.sent.command, { actor: driver.sent.actor, now: T0 }))
+    // A private copy of the empty migrated fixture for each field. The real writer is the same; there is no need
+    // to repeat migration or daily backup for 17,688 independent combinations. Read before the WAL is closed.
+    yield* Effect.promise(() => write(path, schema))
+    using db = new Database(path, { strict: true })
+    db.run("PRAGMA foreign_keys = ON")
+    db.run("PRAGMA synchronous = NORMAL")
+    const store = make(db, Option.none())
+    for (const each of driver.setup) yield* store.run(each.command, { actor: each.actor, now: T0 })
+    const done = yield* Effect.result(store.run(driver.sent.command, { actor: driver.sent.actor, now: T0 }))
     const bytes = yield* textsOf([path, `${path}-wal`])
-    opened.close()
+    const redacted = Result.isSuccess(done) && driver.kind === "redacted" && valuesIn(db, column).some((value) => value.includes("[redacted]"))
     const why = Result.match(done, {
       onSuccess: () => Option.none<string>(),
       onFailure: (failed) => Option.some(Match.value(failed).pipe(Match.tag("RecordRefused", (each) => each.reason), Match.orElse((each) => each.message))),
     })
-    return { why, bytes }
+    return { why, bytes, redacted }
   })
 
 /** The column a driven refusal must name: its driver's, else the column itself. */
 const namedBy = (driver: Driving, column: string): string => Match.value(driver).pipe(Match.when({ kind: "refused" }, (each) => each.names), Match.orElse(() => column))
 
+const slugColumns = new Set(["commitment.id", "prerequisite.commitment_id", "invariant.id", "invariant.anchor"])
+const tokenColumns = new Map([
+  ["commitment.run", "run"], ["commitment.owner_lane", "owner"], ["commitment.owner_session", "session"],
+  ["prerequisite.ref", "manual wait"], ["event.run", "run"], ["event.subject_id", "word"],
+  ["hand_back.owner_lane", "owner"], ["hand_back.session", "session"], ["hand_back.head", "head"],
+  ["word.run", "run"], ["word.word", "word"],
+])
+
+/** Some invalid shapes fail the public grammar before they can reach the corresponding SQL column check. */
+const refusalOf = (secret: string, driver: Driving, column: string): string => {
+  if (!SLUG.test(secret) && slugColumns.has(column)) return "the id is not a slug"
+  if (!TOKEN.test(secret)) {
+    const word = Option.fromUndefinedOr(tokenColumns.get(column))
+    if (Option.isSome(word)) return `the ${word.value} is not one token`
+  }
+  return `column ${namedBy(driver, column)} `
+}
+
 /** What a driven command did with the secret, in a word. */
-const answerOf = (path: string, driver: Driving, column: string, why: Option.Option<string>): string =>
+const answerOf = (redacted: boolean, expected: string, why: Option.Option<string>): string =>
   Option.match(why, {
-    onNone: () => Arr.filter(["redacted"], () => driver.kind === "redacted" && storedIn(path).some(([, value]) => value.includes("[redacted]")))[0] ?? "kept",
+    onNone: () => Match.value(redacted).pipe(Match.when(true, () => "redacted"), Match.orElse(() => "kept")),
     onSome: (reason) =>
       Match.value(reason).pipe(
-        Match.when((text) => text.includes(`column ${namedBy(driver, column)} `), () => "refused"),
+        Match.when((text) => text.includes(expected), () => "refused"),
         Match.orElse((text) => `refused: ${text}`),
       ),
   })
 
 /** What the record does with one column's driver: its outcome in a word, the secret's leaks first. */
-const outcomeOf = (dir: string, column: string, at: number, driver: Driver, secret: string) =>
+const outcomeOf = (dir: string, schema: Uint8Array, column: string, at: number, driver: Driver, secret: string, fragments: string) =>
   Match.value(driver).pipe(
-    Match.when({ kind: "literal" }, (each) => Effect.succeed(Result.match(Result.try(() => decodeCommand(decodeJson(each.encoded))), { onFailure: () => "literal", onSuccess: (decoded) => Result.match(decoded, { onFailure: () => "literal", onSuccess: () => "decoded" }) }))),
+    Match.when({ kind: "literal" }, (each) => Effect.sync(() => Result.match(decodeCommand(decodeJson(each.encoded)), { onFailure: () => "literal", onSuccess: () => "decoded" }))),
     Match.when({ kind: "unwritten" }, () => Effect.succeed("unwritten")),
     Match.when({ kind: "derived" }, () => Effect.succeed("derived")),
     Match.orElse((each) =>
       Effect.gen(function* () {
         const path = `${dir}/c${at}.db`
-        const { why, bytes } = yield* drive(path, each)
-        const fixture = { value: secret, secrets: [secret] }
+        const { why, bytes, redacted } = yield* drive(schema, path, column, each)
+        const fixture = { value: fragments, secrets: [fragments] }
         if (bytes.some((file) => leaked(file, fixture).length > 0)) return "fragment in SQLite bytes"
         if (Option.exists(why, (message) => leaked(message, fixture).length > 0)) return "fragment in refusal"
-        return answerOf(path, each, column, why)
+        return answerOf(redacted, refusalOf(secret, each, column), why)
       }),
     ),
   )
@@ -276,7 +312,13 @@ const overlapping = (at: number): string => {
   return `${stem.slice(0, at)}${fixed}${stem.slice(at)}`
 }
 
-const checkColumns = (secret: string) =>
+/** All known forms crossed with the offset and then with columns by `checkColumns`. */
+const crossingForms = KINDS.map(([kind, draw]) => {
+  const token = draw(generator(`record-column-overlap/${kind}`))
+  return { kind, token }
+})
+
+const checkColumns = (secret: string, fragments = secret, multiline = false) =>
   Effect.acquireUseRelease(
     Effect.sync(() => scratch("record-boundary-")),
     (dir) =>
@@ -287,13 +329,21 @@ const checkColumns = (secret: string) =>
         const db = new Database(schema, { readonly: true })
         const columns = textColumnsOf(db)
         db.close()
+        const emptyFile = yield* Effect.promise(() => file(schema).bytes())
         const drivers = driversOf(secret)
-        expect(columns.filter((column) => !drivers.has(column))).toEqual([])
+        expect([...columns].sort()).toEqual([...drivers.keys()].sort())
         const outcomes = yield* Effect.forEach(columns, (column, at) =>
-          Effect.map(outcomeOf(dir.path, column, at, Option.getOrElse(Option.fromUndefinedOr(drivers.get(column)), () => UNWRITTEN), secret), (outcome) => [column, outcome] as const),
+          Effect.map(outcomeOf(dir.path, emptyFile, column, at, Option.getOrElse(Option.fromUndefinedOr(drivers.get(column)), () => UNWRITTEN), secret, fragments), (outcome) => [column, outcome] as const),
         )
-        const expected = columns.map((column) => [column, Option.match(Option.fromUndefinedOr(drivers.get(column)), { onNone: () => "no driver", onSome: (driver) => driver.kind })] as const)
+        const expected = columns.map((column) => [column, Option.match(Option.fromUndefinedOr(drivers.get(column)), {
+          onNone: () => "no driver",
+          onSome: (driver) => {
+            if (multiline && driver.kind === "redacted" && column !== "event.note") return "refused"
+            return driver.kind
+          },
+        })] as const)
         expect(outcomes).toEqual(expected)
+        return outcomes.length
       }),
     (dir) => Effect.sync(() => dir[Symbol.dispose]()),
   ).pipe(Effect.provide(platform))
@@ -307,6 +357,18 @@ Seed.effect(
   "crossing tokens moved across every offset in every TEXT field leave no fragment in the DB, WAL or refusal",
   Effect.forEach(Arr.range(0, 21), (at) => checkColumns(overlapping(at)), { discard: true }),
 )
+
+for (const { kind, token } of crossingForms) {
+  Seed.effect(`form × offset × column: ${kind} leaves no six-character fragment even when glued to both edges`, Effect.gen(function* () {
+    const cases = Arr.range(0, 21)
+    expect(cases.length).toBe(22)
+    const tested = yield* Effect.forEach(cases, (offset) =>
+      checkColumns(`${"q".repeat(offset)}${token.text}${"z".repeat(21 - offset)}`, token.secret, kind === "private key"))
+    const generated = cases.length * driversOf(token.text).size
+    expect({ generated, checked: tested.reduce((sum, each) => sum + each, 0), discarded: 0 })
+      .toEqual({ generated: 22 * 67, checked: 22 * 67, discarded: 0 })
+  }))
+}
 
 Seed.effect(
   "a worker's follow_up with a secret as its id or run is refused whole, naming the column, and writes nothing",
@@ -324,7 +386,8 @@ Seed.effect(
         const byRun = yield* Effect.flip(record(followUpOf({ id: "f1", title: "a missing test", run: S, ...waits }, worker, "call_2", T0, dir.path)))
         opened.close()
         expect([byId.includes("column event.subject_id "), byRun.includes("column event.run "), byId.includes(SECRET), byRun.includes(SECRET)]).toEqual([true, true, false, false])
-        expect(storedIn(path).filter(([column, value]) => (column.startsWith("commitment.") || column.startsWith("event.")) && value.includes("f1"))).toEqual([])
+        using db = new Database(path, { readonly: true })
+        expect(storedIn(db).filter(([column, value]) => (column.startsWith("commitment.") || column.startsWith("event.")) && value.includes("f1"))).toEqual([])
       }),
     (dir) => Effect.sync(() => dir[Symbol.dispose]()),
   ).pipe(Effect.provide(platform)),
