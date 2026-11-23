@@ -16,7 +16,7 @@ const outcome = (exit: ShellExit) => {
   if ("signal" in exit) return exit.signal
   return "unknown"
 }
-const expectedDispatch = (authority: boolean) => {
+const expectedDispatch = (authority: boolean): Array<SignalIntent["signal"]> => {
   if (authority) return ["TERM", "KILL"]
   return []
 }

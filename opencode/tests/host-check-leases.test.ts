@@ -1,4 +1,4 @@
-import { argv, readableStreamToText, spawn } from "bun"
+import { argv, readableStreamToText, spawn, stdin } from "bun"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Console, Data, Effect, FileSystem, Option, Path, Predicate, Schedule, Schema } from "effect"
@@ -38,7 +38,7 @@ const watchdogLeader = Effect.fn("LeaseHarness.watchdogLeader")(function* (folde
   if (failure === "watchdog-first") {
     const first = children[0]
     if (!first) return yield* new FixtureUnavailable({ op: "retained-watchdog" })
-    yield* Effect.tryPromise({ try: () => new Response(Bun.stdin.stream()).text(), catch: () => new FixtureUnavailable({ op: "watch-order" }) })
+    yield* Effect.tryPromise({ try: () => stdin.text(), catch: () => new FixtureUnavailable({ op: "watch-order" }) })
     yield* Effect.sync(() => first.kill("SIGKILL"))
     yield* Effect.promise(() => first.exited)
     yield* guard.stop

@@ -30,7 +30,7 @@ const looksParallel = /(?:parallel|concurren|(?:^|-)jobs|workers|threads)/iu
 const goModes = new Set(["build", "test", "vet"])
 const tools = new Set(["go", "bun", "make", "gmake", "cargo", "ninja", "vitest", "jest", "turbo", "playwright", "rustc", "tsc", "tsgo"])
 const makeTools = new Set(["make", "gmake", "ninja", "cargo"])
-const literalWidth = (value: string | undefined) => Option.match(Option.fromNullishOr(value), {
+const literalWidth = (value: Option.Option<string>) => Option.match(value, {
   onSome: readWidth, onNone: () => "unknown" as const,
 })
 
@@ -56,7 +56,7 @@ const flagWidths = (tool: string, args: ReadonlyArray<Word>, initial: Width) => 
     packages ||= parsed.packages
     if (Option.isSome(parsed.inline)) width = joinWidth(width, readWidth(parsed.inline.value))
     else {
-      width = joinWidth(width, literalWidth(args[i + 1]?.text))
+      width = joinWidth(width, literalWidth(Option.fromNullishOr(args[i + 1]?.text)))
       i += 1
     }
   }
