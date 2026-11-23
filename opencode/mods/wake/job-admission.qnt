@@ -155,3 +155,89 @@ module descriptorProof {
   val safe = (not(h.released) or (descriptorFree and (not(h.linux) or cgroupFree)))
     and h.foreignSignals == 0 and (not(h.admittedAfterClose) or not(h.escapedWork))
 }
+
+module frontierProof {
+  // Whole-pool exclusivity needs half the managed pool available, not
+  // zero ambient work. The two slots bound the FIFO witness: lower ambient
+  // pressure to the floor, drain an older lease, and grant the waiter.
+  type Request = {phase: str, ticket: int, realWidth: int, charge: int, exclusive: bool, feasible: bool}
+  type Frontier = {a: Request, b: Request, pool: int, outside: int, next: int, bypassed: bool}
+  var f: Frontier
+  val empty = {phase: "none", ticket: 0, realWidth: 0, charge: 0, exclusive: false, feasible: false}
+  pure def minimum(a: int, b: int): int = if (a < b) a else b
+  pure def waiting(r: Request): bool = r.phase == "queued"
+  pure def held(r: Request): bool = r.phase == "running"
+  pure def done(r: Request): Request = {...r, phase: "done"}
+  pure def running(r: Request): Request = {...r, phase: "running"}
+  pure def ordered(r: Request, predecessor: Request): bool =
+    not(waiting(predecessor)) or r.ticket < predecessor.ticket
+  pure def used(r: Request): int = if (held(r)) r.charge else 0
+  pure def grantable(r: Request, peer: Request, pool: int, cap: int): bool =
+    waiting(r) and r.feasible and r.charge > 0 and ordered(r, peer)
+      and (if (r.charge == pool) not(held(peer)) and 2 * cap >= pool
+           else r.charge + used(peer) <= cap)
+      and (not(held(peer)) or not(r.exclusive or peer.exclusive))
+  pure def request(ticket: int, width: int, pool: int, feasible: bool, exclusive: bool): Request =
+    {phase: if (feasible) "queued" else "refused", ticket: ticket,
+      realWidth: width, charge: minimum(pool, width), exclusive: exclusive, feasible: feasible}
+  pure def eligible(r: Request, pool: int): bool =
+    not(waiting(r) or held(r)) or (r.charge >= minimum(r.realWidth, pool) and r.charge <= pool and r.feasible)
+  pure def hasWitness(r: Request, peer: Request, pool: int): bool =
+    if (not(waiting(r))) true
+    else if (waiting(peer) and peer.ticket < r.ticket)
+      grantable(peer, r, pool, pool) and grantable(r, done(running(peer)), pool, pool)
+    else grantable(r, done(peer), pool, pool)
+  pure def atFloor(r: Request, pool: int): bool =
+    not(waiting(r) and r.charge == pool) or grantable(r, empty, pool, pool - 1)
+  action init = {
+    nondet pool = Set(2, 3).oneOf()
+    f' = {a: empty, b: empty, pool: pool, outside: 0, next: 1, bypassed: false}
+  }
+  action post = {
+    nondet first = Set(true, false).oneOf()
+    nondet packageOption = Set(0, 1, 4).oneOf()
+    nondet runtimeOption = Set(0, 1, 4).oneOf()
+    nondet unknown = Set(false, true).oneOf()
+    nondet fits = Set(true, false).oneOf()
+    nondet exclusive = Set(true, false).oneOf()
+    val runtime = if (runtimeOption == 0) f.pool + 2 else runtimeOption
+    val packages = if (packageOption == 0) runtime else packageOption
+    val width = if (unknown) f.pool else packages * runtime
+    val row = request(f.next, width, f.pool, fits, exclusive)
+    val previous = if (first) f.a else f.b
+    all {
+      not(waiting(previous) or held(previous)), f.next <= 4,
+      if (first) f' = {...f, a: row, next: f.next + 1}
+      else f' = {...f, b: row, next: f.next + 1},
+    }
+  }
+  action pressure = {
+    nondet outside = Set(0, 1, 2).oneOf()
+    f' = {...f, outside: outside}
+  }
+  action step = any {
+    post, pressure,
+    all { grantable(f.a, f.b, f.pool, f.pool - f.outside), f' = {...f, a: running(f.a)} },
+    all { grantable(f.b, f.a, f.pool, f.pool - f.outside), f' = {...f, b: running(f.b)} },
+    all { held(f.a), f' = {...f, a: done(f.a)} },
+    all { held(f.b), f' = {...f, b: done(f.b)} },
+    f' = f,
+  }
+  action immortal = any { step, all {
+    not(waiting(f.a) or held(f.a)),
+    f' = {...f, a: {...request(f.next, 1, f.pool, false, false), phase: "queued"}},
+  } }
+  action collapsedFactors = any { step, all {
+    not(waiting(f.a) or held(f.a)),
+    f' = {...f, a: {...request(f.next, 16, f.pool, true, false), charge: 1}},
+  } }
+  action jumpedWaiter = any { step, all {
+    waiting(f.a), waiting(f.b), f.a.ticket < f.b.ticket,
+    f' = {...f, b: running(f.b), bypassed: true},
+  } }
+  val safe = eligible(f.a, f.pool) and eligible(f.b, f.pool)
+    and hasWitness(f.a, f.b, f.pool) and hasWitness(f.b, f.a, f.pool)
+    and atFloor(f.a, f.pool) and atFloor(f.b, f.pool)
+    and used(f.a) + used(f.b) <= f.pool and not(f.bypassed)
+    and (not(held(f.a) and held(f.b)) or not(f.a.exclusive or f.b.exclusive))
+}
