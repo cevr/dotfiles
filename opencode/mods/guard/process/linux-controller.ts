@@ -27,11 +27,10 @@ export const attestLinux = Effect.fn("LinuxController.attest")(function* <R>(
   const expected = `${root}/${unit}.service`
   const actual = yield* mountedGroup(manager)
   if (!Option.exists(actual, (found) => found === expected)) return yield* unqualified()
-  const [cpu, max, swap, grouping] = yield* Effect.forEach(
-    ["cpu.max", "memory.max", "memory.swap.max", "memory.oom.group"],
-    (entry) => manager.read(`${expected}/${entry}`),
-    { concurrency: 2 },
-  )
+  const read = (entry: string) => manager.read(`${expected}/${entry}`)
+  const { cpu, max, swap, grouping } = yield* Effect.all({
+    cpu: read("cpu.max"), max: read("memory.max"), swap: read("memory.swap.max"), grouping: read("memory.oom.group"),
+  }, { concurrency: 2 })
   const bound = cpuMax(cpu)
   const memory = Number(max.trim())
   if (!Option.exists(bound, (value) => value > 0 && value <= cpuMilli) ||

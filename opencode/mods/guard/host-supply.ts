@@ -28,6 +28,7 @@ export interface Volume {
 export interface HostEnvelope {
   readonly cpuMilli: number
   readonly memoryBytes: number
+  readonly containedMemoryBytes?: number
   readonly needsMemoryReservation: boolean
   readonly volumes: Readonly<Record<string, number>>
   readonly keys: ReadonlyArray<string>
@@ -49,6 +50,7 @@ export interface Supply {
   readonly volumes: Readonly<Record<string, Volume>>
   readonly keys: ReadonlyArray<string>
   readonly envelope: HostEnvelope
+  readonly interval?: { readonly before: Ticks; readonly after: Ticks }
 }
 
 export interface Measurements {
@@ -109,17 +111,21 @@ type EnvelopeMeasurements = Pick<Measurements, "platform" | "effectiveCpuMilli" 
 
 export const hostEnvelope = (raw: EnvelopeMeasurements): HostEnvelope => {
   const cpu = Math.max(0, raw.effectiveCpuMilli - POLICY.reserveCpuMilli)
-  return {
+  const envelope = {
     cpuMilli: Math.min(cpu, raw.containedCpuMilli ?? cpu),
-    memoryBytes: Math.min(POLICY.maxRequestMemoryBytes, Math.max(0, raw.totalMemoryBytes - POLICY.reserveMemoryBytes),
-      raw.containedMemoryBytes ?? raw.totalMemoryBytes),
+    memoryBytes: Math.max(0, raw.totalMemoryBytes - POLICY.reserveMemoryBytes),
     needsMemoryReservation: raw.platform === "linux",
     volumes: Object.fromEntries(Object.entries(raw.volumes).map(([id, volume]) =>
       [id, volume.capacityBytes - Math.max(volume.diskFloorBytes, POLICY.diskFloorBytes)])),
     keys: raw.keys,
     purposes: purposes.filter(() => raw.controllerAvailable && cpu > 0),
   }
+  if (Predicate.isNumber(raw.containedMemoryBytes)) return { ...envelope, containedMemoryBytes: raw.containedMemoryBytes }
+  return envelope
 }
+
+export const maximumRequestMemory = (envelope: HostEnvelope) =>
+  Math.min(POLICY.maxRequestMemoryBytes, envelope.memoryBytes, envelope.containedMemoryBytes ?? envelope.memoryBytes)
 
 const nonnegative = (n: number) => Number.isSafeInteger(n) && n >= 0
 const ticksValid = ({ idle, total, at }: Ticks) => [idle, total, at].every(nonnegative) && idle <= total
@@ -154,15 +160,17 @@ export const measureSupply = (raw: Measurements, envelope = hostEnvelope(raw)): 
     runnable: raw.runnable,
     managed: Option.match(credit, { onNone: () => [], onSome: () => raw.managed }),
     volumes: raw.volumes,
-    keys: raw.keys, envelope,
+    keys: raw.keys, envelope, interval: { before, after },
   }
   if (Option.isSome(contain)) return Option.some({ ...base, containedCpuMilli: contain.value })
   return Option.some(base)
 }
 
 export const capacityOf = (sample: Supply): number =>
-  Math.min(sample.containedCpuMilli ?? sample.effectiveCpuMilli,
-    Math.max(0, sample.effectiveCpuMilli - sample.protectedCpuMilli - sample.outsideNoncriticalMilli))
+  Math.min(sample.envelope.cpuMilli, freeHostCpu(sample))
+
+export const freeHostCpu = (sample: Supply): number =>
+  Math.max(0, sample.effectiveCpuMilli - sample.protectedCpuMilli - sample.outsideNoncriticalMilli)
 
 export const runnableLimit = (sample: Supply) =>
   Math.min(POLICY.runnableLimit, Math.max(1, Math.floor(sample.effectiveCpuMilli / 1000)))

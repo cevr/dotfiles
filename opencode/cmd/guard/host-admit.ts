@@ -4,9 +4,10 @@ import { Config, Console, Effect, FileSystem, Option, Path, Predicate, Schema } 
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { AdmissionUnavailable } from "@dotfiles/opencode-guard/admission"
 import { Counter, OpaqueId, Purpose, qualifiedForm, Request, Width } from "@dotfiles/opencode-guard/admission-wire"
-import { argvWidth, joinWidth, readWidth } from "@dotfiles/opencode-guard/check-demand"
+import { argvModel, joinWidth, readWidth } from "@dotfiles/opencode-guard/check-demand"
 import { Holder } from "@dotfiles/opencode-guard/host-resources"
 import { argvPurpose } from "@dotfiles/opencode-guard/launcher"
+import { type ForegroundInterrupt } from "@dotfiles/opencode-guard/process/terminal"
 import * as Admission from "./admission.ts"
 
 const help = `host-admit v1
@@ -139,10 +140,10 @@ const widthHint = (value: string) => {
     return Effect.fail(new AdmissionUnavailable({ reason: "invalid-width" }))
   return Effect.succeed(width)
 }
-const checkSpec = Effect.fn("HostAdmit.checkSpec")(function* (payload: ReadonlyArray<string>, options: ReadonlyArray<string>) {
+export const checkSpec = Effect.fn("HostAdmit.checkSpec")(function* (payload: ReadonlyArray<string>, options: ReadonlyArray<string>, enforced: boolean) {
   const inferred = argvPurpose(payload)
   let purpose = purposeOf(inferred)
-  let width = argvWidth(payload, env)
+  let hint = Option.none<Effect.Success<ReturnType<typeof widthHint>>>()
   const seen = new Set<string>()
   for (let i = 0; i < options.length; i += 2) {
     const flag = options[i] ?? ""
@@ -150,13 +151,17 @@ const checkSpec = Effect.fn("HostAdmit.checkSpec")(function* (payload: ReadonlyA
     if (seen.has(flag)) return yield* bad()
     seen.add(flag)
     if (flag === "--class") purpose = purposeOf(value)
-    else if (flag === "--width") width = joinWidth(width, yield* widthHint(value))
+    else if (flag === "--width") hint = Option.some(yield* widthHint(value))
     else return yield* bad()
   }
   if (Option.isNone(purpose)) return yield* new AdmissionUnavailable({ reason: "unsupported-class" })
   if (inferred !== "check" && purpose.value !== inferred) return yield* bad()
+  if (enforced && Option.isSome(hint) && Predicate.isNumber(hint.value))
+    return { purpose: purpose.value, width: hint.value, imposed: true, advice: "The Linux CPU controller enforces the declared width." }
+  const model = argvModel(payload, env)
+  const width = joinWidth(model.width, Option.getOrElse(hint, () => model.width))
   if (width === "invalid") return yield* new AdmissionUnavailable({ reason: "invalid-width" })
-  return { purpose: purpose.value, width }
+  return { purpose: purpose.value, width, imposed: false, advice: model.advice }
 })
 
 const check = Effect.fn("HostAdmit.check")(function* (host: Host, args: ReadonlyArray<string>) {
@@ -164,8 +169,8 @@ const check = Effect.fn("HostAdmit.check")(function* (host: Host, args: Readonly
   const delimiter = rest.indexOf("--")
   const payload = rest.slice(delimiter + 1)
   if (action !== "run" || delimiter < 0 || payload.length === 0 || delimiter % 2 !== 0) return yield* bad()
-  const demand = yield* checkSpec(payload, rest.slice(0, delimiter))
-  return yield* host.run(demand, payload)
+  const demand = yield* checkSpec(payload, rest.slice(0, delimiter), host.enforcedWidth)
+  return yield* host.run(demand, payload, demand.advice, demand.imposed)
 })
 
 export const command = Effect.fn("HostAdmit.command")(function* (host: Host, args: ReadonlyArray<string>) {
@@ -181,7 +186,11 @@ export const command = Effect.fn("HostAdmit.command")(function* (host: Host, arg
   return yield* bad()
 })
 
-const main = Effect.fn("HostAdmit.main")(function* (args: ReadonlyArray<string>, onForeground: (owned: boolean) => void) {
+type Ports = Pick<Admission.Config, "sample" | "beforeResume">
+const main = Effect.fn("HostAdmit.main")(function* (
+  args: ReadonlyArray<string>, onInterrupt: (handler: Option.Option<ForegroundInterrupt>) => void, ports: Ports,
+) {
+  if (args[0] === "--test-supply") return yield* bad()
   if (args[0] === "--version") {
     yield* Console.log("host-admit 1")
     return 0
@@ -199,19 +208,19 @@ const main = Effect.fn("HostAdmit.main")(function* (args: ReadonlyArray<string>,
   yield* fs.makeDirectory(state, { recursive: true, mode: 0o700 })
   const root = yield* fs.realPath(state)
   const directory = path.join(root, "host-admit")
-  const script = yield* path.fromFileUrl(new URL("host-admit.ts", import.meta.url))
+  const script = yield* path.fromFileUrl(new URL("host-admit.ts", import.meta.url)).pipe(Effect.mapError(bad))
   const [executable = "bun"] = argv
   return yield* Effect.scoped(Effect.gen(function* () {
-    const host = yield* Admission.open({ cwd, directory, executable, script, onForeground })
+    const host = yield* Admission.open({ cwd, directory, executable, script, onInterrupt, ...ports })
     return yield* command(host, args)
   }))
 })
 
 // Only the process entry sets an exit code; importing `command` starts no IO.
-if (import.meta.main) {
-  let foreground = false
+export const runProcessMain = (args: ReadonlyArray<string>, ports: Ports = {}) => {
+  let foreground = Option.none<ForegroundInterrupt>()
   let interrupted = 1
-  const task = Effect.runFork(main(argv.slice(2), (owned) => { foreground = owned }).pipe(
+  const task = Effect.runFork(main(args, (handler) => { foreground = handler }, ports).pipe(
     Effect.catchTag("AdmissionUnavailable", ({ reason }) => print({
       version: 1, state: "refused", reason, qualifiedForm: qualifiedForm(reason),
     }).pipe(Effect.as(2))),
@@ -225,7 +234,7 @@ if (import.meta.main) {
   const interrupt = () => {
     // The terminal already sent SIGINT to every member of the owned group.
     // Reap the payload's real exit before closing the inherited descriptor.
-    if (!foreground) end(130)
+    if (!Option.exists(foreground, (handle) => handle())) end(130)
   }
   process.on("SIGINT", interrupt)
   process.on("SIGTERM", terminate)
@@ -236,3 +245,4 @@ if (import.meta.main) {
     else process.exitCode = interrupted
   })
 }
+if (import.meta.main) runProcessMain(argv.slice(2))

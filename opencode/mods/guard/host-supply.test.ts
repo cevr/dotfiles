@@ -32,6 +32,9 @@ test("Mac ticks and runnable count do not mistake stale load averages for execut
   expect(sample?.outsideNoncriticalMilli).toBe(600)
   expect(sample && capacityOf(sample)).toBe(13_400)
   expect(sample.envelope.cpuMilli).toBe(14_000)
+  const idle = Option.getOrThrow(measureSupply({ ...interval, platform: "darwin", runnable: 0, after: { idle: 900, total: 1000, at: 1000 } }))
+  expect(idle.outsideNoncriticalMilli).toBe(0)
+  expect(capacityOf(idle)).toBe(14_000)
 })
 
 test("unknown/reversed/stale counters do not become idle capacity; runnable pressure is independent", () => {

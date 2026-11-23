@@ -283,9 +283,22 @@ const linuxEffective = Effect.fn("HostSupply.linuxEffective")(function* (budget:
   const caps = Option.all(yield* Effect.forEach(paths, (path) => read(`${path}/cpu.max`).pipe(Effect.map(cpuMax)), { concurrency: 4 }))
   if (Option.isNone(caps)) return yield* absent()
   const limits = { hostCpuMilli: online.value * 1000, effectiveCpuMilli: Math.min(online.value * 1000, slots.value * 1000, ...caps.value) }
-  if (Option.isSome(budget)) return { ...limits, containedCpuMilli: budget.value.cap, containedMemoryBytes: budget.value.memoryCap }
+  if (Option.isSome(budget)) {
+    const memory = Option.all(yield* Effect.forEach(paths, (path) => read(`${path}/memory.max`).pipe(
+      Effect.map(memoryMax),
+    ), { concurrency: 4 }))
+    if (Option.isNone(memory)) return yield* absent()
+    return { ...limits, containedCpuMilli: budget.value.cap,
+      containedMemoryBytes: Math.min(budget.value.memoryCap, ...memory.value) }
+  }
   return limits
 })
+
+const memoryMax = (text: string) => {
+  const value = text.trim()
+  if (value === "max") return Option.some(Number.MAX_SAFE_INTEGER)
+  return scalar(value)
+}
 
 export interface MeteredScope {
   readonly binding: string

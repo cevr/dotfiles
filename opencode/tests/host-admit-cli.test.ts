@@ -1,15 +1,19 @@
 import { argv, readableStreamToText, spawn } from "bun"
 import { Database } from "bun:sqlite"
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { Data, Effect, FileSystem, Path, Predicate, Schedule, Schema } from "effect"
+import { Console, Data, Effect, FileSystem, Path, Predicate, Schedule, Schema } from "effect"
 import { expect, it } from "effect-bun-test"
 import fixtures from "../mods/guard/fixtures/holder-v1.json"
 import { admissionLauncher } from "../mods/guard/launcher.ts"
 import { admittedJobArgv } from "../mods/wake/process/supervise.ts"
 import { scratch } from "./scratch.ts"
 
+const fixtureEntry = new URL("./fixtures/host-admit-test-entry.ts", import.meta.url)
+const realEntry = new URL("../cmd/guard/host-admit.ts", import.meta.url)
 const decode = <S extends Schema.Top>(codec: S) => Schema.decodeUnknownEffect(Schema.fromJsonString(codec))
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Json))
+const seed = (folder: string, outside = 500) => Effect.flatMap(FileSystem.FileSystem, (fs) =>
+  fs.writeFileString(`${folder}/host-admit-supply.json`, json({ outside })))
 const Status = Schema.Struct({
   hostId: Schema.String, bootId: Schema.String, nowBootMs: Schema.Int,
   principal: Schema.Struct({ kind: Schema.Literal("external-runner"), scopeId: Schema.String, epoch: Schema.Int }),
@@ -33,12 +37,13 @@ const readAdmission = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Stru
   })),
 })))
 
-const rowsAt = (filename: string) => Effect.try(() => {
+type LeaseRows = ReturnType<typeof readAdmission>["leases"]
+const rowsAt = (filename: string) => Effect.try((): LeaseRows => {
   using db = new Database(filename, { readonly: true })
   const body = db.query<{ body: string }, []>("SELECT body FROM admission_v1").get()
   if (!body) return {}
   return readAdmission(body.body).leases
-}).pipe(Effect.orElseSucceed(() => ({})))
+}).pipe(Effect.orElseSucceed((): LeaseRows => ({})))
 
 it.scopedLive("standalone, Guard and Wake carry modeled Go, Bun, Make and Ninja width to the durable claim", () =>
   Effect.gen(function* () {
@@ -47,28 +52,28 @@ it.scopedLive("standalone, Guard and Wake carry modeled Go, Bun, Make and Ninja 
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
     const folder = yield* fs.realPath(dir.path)
+    yield* seed(folder)
     const host = yield* decode(Status)((yield* runner(folder)(["host", "status", "--json"])).out)
     const [exe = "bun"] = argv
-    const cli = yield* path.fromFileUrl(new URL("../cmd/guard/host-admit.ts", import.meta.url))
+    const cli = yield* path.fromFileUrl(fixtureEntry)
     const helper = [exe, cli]
-    const command = "GOMAXPROCS=2 go test -p 1 -parallel 4 './exact argument'"
+    const command = "GOENV=off GOMAXPROCS=2 go test -p 1 -parallel 4 './exact argument'"
     const file = path.join(folder, "guard-wrapper")
     yield* fs.writeFileString(file, admissionLauncher("/bin/sh", helper, command), { mode: 0o700 })
     for (const tool of ["go", "bun", "make", "ninja", "unmodeled"]) {
       yield* fs.writeFileString(path.join(folder, tool), "#!/bin/sh\nprintf 'payload ran\\n' > \"$HCL_MARKER\"\nexec /bin/sleep 2\n", { mode: 0o700 })
     }
     const job = path.join(folder, "wake-job")
-    const wake = yield* path.fromFileUrl(new URL("../cmd/wake/job.ts", import.meta.url))
     yield* fs.makeDirectory(job, { mode: 0o700 })
     yield* fs.writeFileString(path.join(job, "job.json"), json({
       spec: { id: "j000001", sessionID: "ses_fixture", directory: folder, command, cwd: folder, note: "fixture", heavy: false, timeoutSeconds: 15, setAt: 1 },
     }), { mode: 0o600 })
     const programs = [
-      { argv: [...helper, "check", "run", "--", "go", "test", "-p", "4", "-parallel", "4", "./exact argument"], width: 16, env: { GOMAXPROCS: "4" } },
+      { argv: [...helper, "check", "run", "--", "go", "test", "-p", "4", "-parallel", "4", "./exact argument"], width: 16, env: { GOENV: "off", GOMAXPROCS: "4" } },
       { argv: [file, "-c", command], width: 2 },
       { argv: admittedJobArgv(helper, command, false), width: 2 },
-      { argv: [exe, wake, job], width: 2 },
-      { argv: [...helper, "check", "run", "--", "go", "test", "-p=1", "./fixture"], width: "full" },
+      { argv: [...helper, "wake", job], width: 2 },
+      { argv: [...helper, "check", "run", "--", "go", "test", "-p=1", "./fixture"], width: "unknown" },
       { argv: admittedJobArgv(helper, "bun test --parallel=2 ./fixture", false), width: 2 },
       { argv: admittedJobArgv(helper, "make -j2", true), width: 2 },
       { argv: admittedJobArgv(helper, "ninja -j 2", true), width: 2 },
@@ -78,7 +83,7 @@ it.scopedLive("standalone, Guard and Wake carry modeled Go, Bun, Make and Ninja 
       const marker = path.join(folder, `payload-ran-${i}`)
       const filename = path.join(state, "host-admit", "admission-v1.sqlite")
       const environment = { HOME: folder, XDG_STATE_HOME: state, PATH: `${folder}:/usr/bin:/bin`, HCL_MARKER: marker, ...env }
-      if (program.includes(wake)) yield* fs.writeFileString(path.join(job, "env.json"), json(environment), { mode: 0o600 })
+      if (program.includes("wake")) yield* fs.writeFileString(path.join(job, "env.json"), json(environment), { mode: 0o600 })
       const task = yield* Effect.acquireRelease(Effect.try({
         try: () => spawn([...program], {
           cwd: folder, env: environment,
@@ -110,7 +115,8 @@ it.scopedLive("Unknown executes; a width-one peer cannot exec until it drains", 
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
     const folder = yield* fs.realPath(dir.path)
-    const cli = yield* path.fromFileUrl(new URL("../cmd/guard/host-admit.ts", import.meta.url))
+    yield* seed(folder)
+    const cli = yield* path.fromFileUrl(fixtureEntry)
     const [exe = "bun"] = argv
     const file = path.join(folder, "unmodeled")
     const claimed = path.join(folder, "full-started")
@@ -163,9 +169,9 @@ it.scopedLive("Unknown executes; a width-one peer cannot exec until it drains", 
   25_000,
 )
 
-const runner = (folder: string) => Effect.fn("HostAdmitTest.invoke")(function* (args: ReadonlyArray<string>, input: string = "") {
+const runner = (folder: string, entry = fixtureEntry) => Effect.fn("HostAdmitTest.invoke")(function* (args: ReadonlyArray<string>, input: string = "") {
   const path = yield* Path.Path
-  const cli = yield* path.fromFileUrl(new URL("../cmd/guard/host-admit.ts", import.meta.url))
+  const cli = yield* path.fromFileUrl(entry)
   const [exe = "bun"] = argv
   const task = yield* Effect.acquireRelease(
     Effect.try({
@@ -180,9 +186,67 @@ const runner = (folder: string) => Effect.fn("HostAdmitTest.invoke")(function* (
   return { out, code: yield* Effect.promise(() => task.exited) }
 })
 
+it.scopedLive("the scripted public CLI diagnoses outside CPU without starting a full-width command", () =>
+  Effect.gen(function* () {
+    if (process.platform !== "darwin") return
+    using dir = scratch("hcl-outside-")
+    yield* seed(dir.path, 7300)
+    const path = yield* Path.Path
+    const fs = yield* FileSystem.FileSystem
+    const cli = yield* path.fromFileUrl(fixtureEntry)
+    const [exe = "bun"] = argv
+    const payload = path.join(dir.path, "bun")
+    yield* fs.writeFileString(payload, "#!/bin/sh\nprintf 'unexpected exec\\n'\n", { mode: 0o700 })
+    const child = yield* Effect.acquireRelease(
+      Effect.sync(() => spawn([exe, cli, "check", "run", "--", payload, "test"], {
+        cwd: dir.path, env: { HOME: dir.path, XDG_STATE_HOME: dir.path, PATH: "/usr/bin:/bin" },
+        stdout: "pipe", stderr: "pipe", stdin: "ignore", detached: true,
+      })),
+      (task) => Effect.sync(() => { if (Predicate.isNull(task.exitCode)) task.kill("SIGTERM") }),
+    )
+    const filename = path.join(dir.path, "host-admit", "admission-v1.sqlite")
+    const rows = yield* rowsAt(filename).pipe(Effect.repeat({
+      schedule: Schedule.spaced(25), until: (rows) => Object.values(rows).some(({ reason }) => reason === "outside-busy"),
+    }), Effect.timeout(4000))
+    expect(Object.values(rows).map(({ state, reason }) => [state, reason])).toEqual([["queued", "outside-busy"]])
+    const reader = child.stderr.getReader()
+    const first = yield* Effect.promise(() => reader.read()).pipe(Effect.timeout(2500))
+    reader.releaseLock()
+    expect(new TextDecoder().decode(first.value)).toContain("host busy outside the lease: 7.3 of 12 cores in use. bun test: worker count: pass --parallel=N.")
+    expect(child.exitCode).toBeNull()
+    child.kill("SIGTERM")
+    expect(yield* Effect.promise(() => child.exited)).toBe(143)
+    expect(yield* Effect.promise(() => readableStreamToText(child.stdout))).toBe("")
+  }).pipe(Effect.provide(BunServices.layer)),
+)
+
+it.scopedLive("real Darwin sampler matches independent counters and its observed supply branch", () =>
+  Effect.gen(function* () {
+    if (process.platform !== "darwin") return
+    using dir = scratch("hcl-measured-")
+    yield* seed(dir.path, 12000)
+    const path = yield* Path.Path
+    const cli = yield* path.fromFileUrl(realEntry)
+    const script = yield* path.fromFileUrl(new URL("./fixtures/host-admit-measured.py", import.meta.url))
+    const [exe = "bun"] = argv
+    const result = yield* Effect.acquireUseRelease(
+      Effect.sync(() => spawn(["/usr/bin/python3", script, dir.path, exe, cli], { stdout: "pipe", stderr: "pipe", stdin: "ignore" })),
+      (child) => Effect.all([Effect.promise(() => child.exited), Effect.promise(() => readableStreamToText(child.stdout)),
+        Effect.promise(() => readableStreamToText(child.stderr))], { concurrency: 3 }),
+      (child) => Effect.sync(() => { if (Predicate.isNull(child.exitCode)) child.kill("SIGTERM") }),
+    )
+    const [code, output, error] = result
+    expect({ code, error }).toEqual({ code: 0, error: "" })
+    expect(output).toContain("positive leg")
+    yield* Console.log(output.trim())
+  }).pipe(Effect.provide(BunServices.layer)),
+  20_000,
+)
+
 it.scopedLive("v1 JSONL holder input works across fresh CLI processes; scanner cannot forge a terminal event", () =>
   Effect.gen(function* () {
     using dir = scratch("host-admit-cli-")
+    yield* seed(dir.path)
     const invoke = runner(dir.path)
     const status = yield* invoke(["host", "status", "--json"])
     expect(status.code).toBe(0)
@@ -210,6 +274,7 @@ it.scopedLive("v1 JSONL holder input works across fresh CLI processes; scanner c
 it.scopedLive("the standalone API binds request identity to the caller, not the submitted principal", () =>
   Effect.gen(function* () {
     using dir = scratch("host-admit-owner-")
+    yield* seed(dir.path)
     const invoke = runner(dir.path)
     const host = yield* decode(Status)((yield* invoke(["host", "status", "--json"])).out)
     const draft = {
@@ -244,6 +309,7 @@ it.scopedLive("public CLI refuses an impossible predecessor before ticketing and
   Effect.gen(function* () {
     if (process.platform !== "darwin") return
     using dir = scratch("hcl-frontier-")
+    yield* seed(dir.path)
     const invoke = runner(dir.path)
     const host = yield* decode(Status)((yield* invoke(["host", "status", "--json"])).out)
     const draft = {

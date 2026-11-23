@@ -160,10 +160,10 @@ module frontierProof {
   // Whole-pool exclusivity needs half the managed pool available, not
   // zero ambient work. The two slots bound the FIFO witness: lower ambient
   // pressure to the floor, drain an older lease, and grant the waiter.
-  type Request = {phase: str, ticket: int, realWidth: int, charge: int, exclusive: bool, feasible: bool}
-  type Frontier = {a: Request, b: Request, pool: int, outside: int, next: int, bypassed: bool}
+  type Request = {phase: str, ticket: int, realWidth: int, charge: int, exclusive: bool, feasible: bool, deadline: int}
+  type Frontier = {a: Request, b: Request, pool: int, outside: int, next: int, bypassed: bool, now: int, missedTurn: bool}
   var f: Frontier
-  val empty = {phase: "none", ticket: 0, realWidth: 0, charge: 0, exclusive: false, feasible: false}
+  val empty = {phase: "none", ticket: 0, realWidth: 0, charge: 0, exclusive: false, feasible: false, deadline: 0}
   pure def minimum(a: int, b: int): int = if (a < b) a else b
   pure def waiting(r: Request): bool = r.phase == "queued"
   pure def held(r: Request): bool = r.phase == "running"
@@ -177,9 +177,9 @@ module frontierProof {
       and (if (r.charge == pool) not(held(peer)) and 2 * cap >= pool
            else r.charge + used(peer) <= cap)
       and (not(held(peer)) or not(r.exclusive or peer.exclusive))
-  pure def request(ticket: int, width: int, pool: int, feasible: bool, exclusive: bool): Request =
+  pure def request(ticket: int, width: int, pool: int, feasible: bool, exclusive: bool, deadline: int): Request =
     {phase: if (feasible) "queued" else "refused", ticket: if (feasible) ticket else 0,
-      realWidth: width, charge: minimum(pool, width), exclusive: exclusive, feasible: feasible}
+      realWidth: width, charge: minimum(pool, width), exclusive: exclusive, feasible: feasible, deadline: deadline}
   pure def eligible(r: Request, pool: int): bool =
     (r.phase != "refused" or r.ticket == 0)
       and (not(waiting(r) or held(r)) or (r.charge >= minimum(r.realWidth, pool) and r.charge <= pool and r.feasible))
@@ -192,19 +192,25 @@ module frontierProof {
     not(waiting(r) and r.charge == pool) or grantable(r, empty, pool, pool - 1)
   action init = {
     nondet pool = Set(2, 3).oneOf()
-    f' = {a: empty, b: empty, pool: pool, outside: 0, next: 1, bypassed: false}
+    f' = {a: empty, b: empty, pool: pool, outside: 0, next: 1, bypassed: false, now: 0, missedTurn: false}
   }
   action post = {
     nondet first = Set(true, false).oneOf()
     nondet packageOption = Set(0, 1, 4).oneOf()
     nondet runtimeOption = Set(0, 1, 4).oneOf()
+    nondet testOption = Set(0, 1, 4).oneOf()
+    nondet hiddenPackages = Set(1, 4, 12).oneOf()
+    nondet hiddenRuntime = Set(1, 4, 12).oneOf()
+    nondet hiddenTest = Set(1, 4, 12).oneOf()
     nondet unknown = Set(false, true).oneOf()
     nondet fits = Set(true, false).oneOf()
     nondet exclusive = Set(true, false).oneOf()
-    val runtime = if (runtimeOption == 0) f.pool + 2 else runtimeOption
-    val packages = if (packageOption == 0) runtime else packageOption
-    val width = if (unknown) f.pool else packages * runtime
-    val row = request(f.next, width, f.pool, fits, exclusive)
+    val runtime = if (runtimeOption == 0) hiddenRuntime else runtimeOption
+    val testing = if (testOption == 0) hiddenTest else testOption
+    val packages = if (packageOption == 0) hiddenPackages else packageOption
+    val width = packages * (if (runtime > testing) runtime else testing)
+    val charge = if (unknown or packageOption == 0 or runtimeOption == 0 or testOption == 0) f.pool else minimum(f.pool, width)
+    val row = {...request(f.next, width, f.pool, fits, exclusive, f.now + 3), charge: charge}
     val nextTicket = if (fits) f.next + 1 else f.next
     val previous = if (first) f.a else f.b
     all {
@@ -217,8 +223,25 @@ module frontierProof {
     nondet outside = Set(0, 1, 2).oneOf()
     f' = {...f, outside: outside}
   }
+  pure def expire(r: Request, at: int): Request =
+    if (waiting(r) and r.deadline <= at) {...r, phase: "expired"} else r
+  pure def missed(older: Request, peer: Request, result: Request, pool: int, free: int): bool =
+    grantable(older, peer, pool, free) and waiting(result)
+  // A host turn (status/claim/advance in production) runs deadline and
+  // allocation together. Progress is conditional on host turns advancing
+  // the clock, not on arbitrary environmental stutters stopping.
+  action tick = {
+    val now = f.now + 1
+    val a = expire(f.a, now)
+    val b = expire(f.b, now)
+    val cap = f.pool - f.outside
+    val nextA = if (grantable(a, b, f.pool, cap)) running(a) else a
+    val nextB = if (grantable(b, nextA, f.pool, cap)) running(b) else b
+    f' = {...f, now: now, a: nextA, b: nextB,
+      missedTurn: missed(a, b, nextA, f.pool, cap) or missed(b, a, nextB, f.pool, cap)}
+  }
   action step = any {
-    post, pressure,
+    post, pressure, tick,
     all { grantable(f.a, f.b, f.pool, f.pool - f.outside), f' = {...f, a: running(f.a)} },
     all { grantable(f.b, f.a, f.pool, f.pool - f.outside), f' = {...f, b: running(f.b)} },
     all { held(f.a), f' = {...f, a: done(f.a)} },
@@ -227,19 +250,31 @@ module frontierProof {
   }
   action immortal = any { step, all {
     not(waiting(f.a) or held(f.a)),
-    f' = {...f, a: {...request(f.next, 1, f.pool, false, false), phase: "queued"}},
+    f' = {...f, a: {...request(f.next, 1, f.pool, false, false, f.now + 3), phase: "queued"}},
   } }
   action collapsedFactors = any { step, all {
     not(waiting(f.a) or held(f.a)),
-    f' = {...f, a: {...request(f.next, 16, f.pool, true, false), charge: 1}},
+    f' = {...f, a: {...request(f.next, 16, f.pool, true, false, f.now + 3), charge: 1}},
   } }
   action jumpedWaiter = any { step, all {
     waiting(f.a), waiting(f.b), f.a.ticket < f.b.ticket,
     f' = {...f, b: running(f.b), bypassed: true},
   } }
+  action ignoredWaitDeadline = any { step, all {
+    waiting(f.a), f' = {...f, now: f.a.deadline},
+  } }
+  action skippedEligibleTurn = any { step, {
+    val cap = f.pool - f.outside
+    all {
+      grantable(f.a, f.b, f.pool, cap), expire(f.a, f.now + 1) == f.a,
+      f' = {...f, now: f.now + 1, missedTurn: missed(f.a, f.b, f.a, f.pool, cap)},
+    }
+  } }
   val safe = eligible(f.a, f.pool) and eligible(f.b, f.pool)
     and hasWitness(f.a, f.b, f.pool) and hasWitness(f.b, f.a, f.pool)
     and atFloor(f.a, f.pool) and atFloor(f.b, f.pool)
-    and used(f.a) + used(f.b) <= f.pool and not(f.bypassed)
+    and used(f.a) + used(f.b) <= f.pool and not(f.bypassed) and not(f.missedTurn)
+    and (not(waiting(f.a)) or f.a.deadline > f.now)
+    and (not(waiting(f.b)) or f.b.deadline > f.now)
     and (not(held(f.a) and held(f.b)) or not(f.a.exclusive or f.b.exclusive))
 }

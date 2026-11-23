@@ -151,6 +151,117 @@ test("a persisted waiter made impossible by the host envelope stops fencing its 
   expect(resumed.reply.state).toBe("granted")
 })
 
+const memoryRequest = (name: string, gib: number): Input => {
+  const draft = request(name)
+  return { op: "request", owner: owner(name), request: { ...draft, demand: { ...draft.demand, memoryBytes: gib * 2 ** 30 } } }
+}
+test("shared memory is reserved under every ceiling through claim and drain", () => {
+  const gib = 2 ** 30
+  for (const [physical, controller, fresh] of [[24, 6, 24], [6, 24, 24], [24, 24, 7], [6, 9, 12], [10, 10, 8]]) {
+    if (!physical || !controller || !fresh) continue
+    const at = supply({ cores: 12 })
+    const envelope = { ...at.envelope, memoryBytes: physical * gib, containedMemoryBytes: controller * gib }
+    const observation = { ...at, envelope, sample: { ...at.sample, envelope, memoryBytes: fresh * gib } }
+    const a = transition(initial("host", "boot"), memoryRequest("a", 4), observation)
+    expect(a.reply.state).toBe("granted")
+    const aId = a.reply.id ?? "missing"
+    const bound = transition(a.state, { op: "claim", id: aId, generation: 1, owner: owner("a"), binding: "scope-a" }, observation)
+    expect(bound.reply.state).toBe("running")
+    const b = transition(bound.state, memoryRequest("b", 4), observation)
+    expect(b.reply.state).toBe("queued")
+    expect(b.reply.reason).toBe("memory")
+    const bId = b.reply.id ?? "missing"
+    const failed = transition(b.state, { op: "claim", id: bId, generation: 1, owner: owner("b"), binding: "scope-b" }, observation)
+    expect(failed.reply.reason).toBe("stale")
+    const cancelled = transition(failed.state, { op: "cancel", id: aId, owner: owner("a") }, observation)
+    expect(cancelled.state.leases[bId]?.state).toBe("queued")
+    const released = transition(cancelled.state, { op: "drain", id: aId, generation: 1, binding: "scope-a", evidence: "drained" }, observation)
+    expect(released.state.leases[bId]?.state).toBe("granted")
+  }
+})
+
+test("generated reservation histories preserve static and fresh limits", () => {
+  const gib = 2 ** 30
+  for (let index = 0; index < 40; index += 1) {
+    const physical = 5 + index % 9
+    const controller = 5 + index % 13
+    const fresh = 6 + index % 11
+    const disk = 3 + index % 7
+    const diskFree = 2 + index % 8
+    const cpuFree = 4 + index % 7
+    const at = supply({ cores: 12, overrides: { outsideNoncriticalMilli: 1000 * (10 - cpuFree) } })
+    const envelope = { ...at.envelope, memoryBytes: physical * gib, containedMemoryBytes: controller * gib,
+      volumes: { "volume-a": disk * gib }, needsMemoryReservation: true }
+    const volumes = { "volume-a": { capacityBytes: 24 * gib, freeBytes: (6 + diskFree) * gib,
+      diskFloorBytes: 6 * gib, metadataFreeBytes: gib, freeInodes: 10_000 } }
+    const observation = { ...at, envelope, sample: { ...at.sample, envelope, volumes, memoryBytes: fresh * gib } }
+    let state = initial("host", "boot")
+    const send = (input: Input) => {
+      state = transition(state, input, observation).state
+      const reserves = Object.values(state.leases).filter(openInterval).flatMap((row) => Option.toArray(row.admittedDemand))
+      const memory = reserves.map((d) => d.memoryBytes / gib)
+      expect(memory.reduce((sum, value) => sum + value, 0)).toBeLessThanOrEqual(Math.min(physical, controller, fresh - 1))
+      expect(Math.max(0, ...memory)).toBeLessThanOrEqual(12)
+      expect(reserves.reduce((sum, d) => sum + d.cpuMilli, 0)).toBeLessThanOrEqual(cpuFree * 1000)
+      expect(reserves.flatMap((d) => d.volumeReservations).reduce((sum, v) => sum + v.bytes / gib, 0))
+        .toBeLessThanOrEqual(Math.min(disk, diskFree))
+    }
+    for (let each = 1; each <= 8; each += 1) {
+      const name = `memory-${each}`
+      const draft = request(name, 1000 * (1 + (index + each) % 3))
+      send({ op: "request", owner: owner(name), request: { ...draft, demand: {
+        ...draft.demand, memoryBytes: (1 + (index * each) % 16) * gib,
+        volumeReservations: [{ volumeId: "volume-a", bytes: (1 + (index + each * 3) % 5) * gib }],
+      } } })
+      for (const row of Object.values(state.leases)) {
+        const { id, owner, generation } = row
+        const binding = `scope-${id}`
+        if (row.state === "granted") send({ op: "claim", id, owner, generation, binding })
+        if (row.state === "running" && (index + each + row.ticket) % 2 === 0) send({ op: "cancel", id, owner })
+        if (row.state === "draining" && (index + each + row.ticket) % 3 === 0) send({ op: "drain", id, generation, binding, evidence: "gone" })
+      }
+    }
+  }
+})
+
+test("the fresh claim cannot use a grant after aggregate controller memory contracted", () => {
+  const observation = supply({ cores: 12, overrides: { memoryBytes: 24 * 2 ** 30 } })
+  const a = transition(initial("host", "boot"), memoryRequest("first", 4), observation)
+  const b = transition(a.state, memoryRequest("second", 4), observation)
+  expect(b.reply.state).toBe("granted")
+  const envelope = { ...observation.envelope, containedMemoryBytes: 6 * 2 ** 30 }
+  const tightened = { ...observation, envelope, sample: { ...observation.sample, envelope } }
+  const claim = transition(b.state, {
+    op: "claim", id: b.reply.id ?? "missing", owner: owner("second"), binding: "second-scope", generation: 1,
+  }, tightened)
+  expect(claim.reply.state).toBe("queued")
+  expect(claim.reply.reason).toBe("memory")
+  const released = transition(claim.state, { op: "cancel", id: a.reply.id ?? "missing", owner: owner("first") }, tightened)
+  expect(released.state.leases[b.reply.id ?? "missing"]?.state).toBe("granted")
+})
+
+test("queued work expires at its deadline, and growing the pool cannot overtake a live whole-pool hold", () => {
+  const draft = request("whole")
+  const start: Input = { op: "request", owner: owner("whole"), request: {
+    ...draft, deadlineBootMs: 10, demand: { ...draft.demand, width: "unknown" },
+  } }
+  const busy = supply({ cores: 8, now: 1, overrides: { outsideNoncriticalMilli: 5000 } })
+  const waiting = transition(initial("host", "boot"), start, busy)
+  const id = waiting.reply.id ?? "missing"
+  const status = { op: "status", id, owner: owner("whole") } as const
+  expect(transition(waiting.state, status, { ...busy, now: 9 }).reply.state).toBe("queued")
+  expect(transition(waiting.state, status, { ...busy, now: 10 }).reply.reason).toBe("deadline")
+  const half = supply({ cores: 8, now: 2 })
+  const grant = transition(waiting.state, status, half)
+  const running = transition(grant.state, { op: "claim", id, generation: 1, owner: owner("whole"), binding: "scope" }, half)
+  expect(running.reply.state).toBe("running")
+  const grown = supply({ cores: 16, now: 3 })
+  const peer = transition(running.state, first("later"), grown)
+  expect(peer.reply.state).toBe("queued")
+  const after = transition(peer.state, { op: "drain", id, generation: 1, binding: "scope", evidence: "gone" }, grown)
+  expect(after.state.leases[peer.reply.id ?? "missing"]?.state).toBe("granted")
+})
+
 const witness = (cores: number, exclusive: boolean, width: ReturnType<typeof request>["demand"]["width"],
   volume: string, memoryBytes: number, bytes: number) => {
   const blocked = supply({ cores, now: 1, overrides: { pressure: "hold" } })

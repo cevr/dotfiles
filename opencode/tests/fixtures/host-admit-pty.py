@@ -11,13 +11,13 @@ import sqlite3
 import sys
 import time
 
-ROOT, EXE, CLI = sys.argv[1:]
+ROOT, EXE, CLI, *BUN_OPTIONS = sys.argv[1:]
 pid, master = pty.fork()
 if pid == 0:
     os.chdir(ROOT)
     os.execve("/bin/bash", ["bash", "--noprofile", "--norc", "-i"], {
         "HOME": ROOT, "XDG_STATE_HOME": ROOT, "PATH": "/usr/bin:/bin",
-        "PS1": "hcl> ", "TERM": "dumb",
+        "PS1": "hcl> ", "TERM": "dumb", "HCL_PAUSE_RESUME": "true",
     })
 
 buffer = b""
@@ -59,14 +59,18 @@ def owns_foreground():
 try:
     await_line(b"hcl> ")
     owns_foreground()
-    payload = "trap 'printf \"payload-resumed\\n\"' CONT; printf 'payload-ready\\n'; while IFS= read -r line; do printf 'read:%s\\n' \"$line\"; done"
+    payload = """trap 'printf "payload-resumed\\n"' CONT
+trap '' TERM
+trap '/bin/sleep 2.2; printf "interrupt-complete\\n"; exit 130' INT
+printf 'payload-ready\\n'
+while IFS= read -r line; do printf 'read:%s\\n' "$line"; done"""
     # Give the terminal law a verified single-width payload, without running
     # Go or relying on an idle whole-host observation to test foreground I/O.
     stand_in = f"{ROOT}/go"
     with open(stand_in, "w", encoding="utf-8") as file:
         file.write(f"#!/bin/sh\n{payload}\n")
     os.chmod(stand_in, 0o700)
-    command = ["/usr/bin/env", "GOMAXPROCS=1", EXE, CLI, "check", "run", "--", stand_in, "test", "-p=1"]
+    command = ["/usr/bin/env", "GOENV=off", "GOMAXPROCS=1", EXE, *BUN_OPTIONS, CLI, "check", "run", "--", stand_in, "test", "-p=1"]
     os.write(master, (shlex.join(command) + "\n").encode())
     await_line(rb"(?:^|\r\n)payload-ready\r\n")
     assert os.tcgetpgrp(master) != pid
@@ -80,10 +84,11 @@ try:
     await_line(rb"\r\nread:terminal-input\r\n")
     assert os.tcgetpgrp(master) != pid
     os.write(master, b"\x03")
-    await_line(rb"hcl> ")
+    await_line(rb"(?:interrupt-complete\r\n)?hcl> ")
     owns_foreground()
     os.write(master, b"printf 'caller-status=%s\\n' \"$?\"\n")
     await_line(rb"\r\ncaller-status=130\r\n")
+    assert b"interrupt-complete\r\n" in history, history
     assert lease_is("released", "scope-drained")
     print("PTY foreground, stopped lease, resumed input, Ctrl-C exit and drain verified")
 finally:

@@ -573,7 +573,7 @@ export const supervise = async (
 }
 
 /** Installed durable entry. Its classified path has no unmanaged default launcher. */
-export const superviseAdmitted = (dir: string, notify: (descriptor: Descriptor) => Promise<void>, helper: ReadonlyArray<string>) =>
+export const superviseAdmitted = (dir: string, helper: ReadonlyArray<string>, notify?: (descriptor: Descriptor) => Promise<void>) =>
   supervise(dir, notify, KILL_GRACE_MS, writeTerminal,
     (spec) => admittedJobArgv(helper, spec.command, spec.heavy),
     (spec) => heavyJob(spec.heavy, classifyJob(spec.command)),

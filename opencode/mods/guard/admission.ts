@@ -1,6 +1,6 @@
 import { Context, Effect, Option, Predicate, Result, Schema } from "effect"
 import { Counter, Demand, normalizeRequest, OpaqueId, Phase, qualifiedForm, Reason, reply, Request, type Reply } from "./admission-wire.ts"
-import { capacityOf, type HostEnvelope, POLICY, runnableLimit, type Supply, usableVolume } from "./host-supply.ts"
+import { capacityOf, freeHostCpu, type HostEnvelope, POLICY, runnableLimit, type Supply, usableVolume } from "./host-supply.ts"
 
 export const Lease = Schema.Struct({
   id: OpaqueId,
@@ -159,42 +159,58 @@ const liveCharge = (row: Lease, sample: Supply) =>
   Math.max(Option.match(row.admittedDemand, { onSome: ({ cpuMilli }) => cpuMilli, onNone: () => 0 }),
     sample.managed.find((use) => Option.exists(row.binding, (binding) => use.binding === binding))?.measuredCpuMilli ?? 0)
 
-const volumeReason = (demand: Demand, holds: ReadonlyArray<Lease>, sample: Supply): Option.Option<Reason> => {
-  for (const reservation of demand.volumeReservations) {
-    if (!Object.hasOwn(sample.volumes, reservation.volumeId)) return Option.some("unknown-volume")
-    const volume = sample.volumes[reservation.volumeId]
-    if (!volume) return Option.some("unknown-volume")
-    const other = holds.flatMap((row) => Option.match(row.admittedDemand, { onSome: ({ volumeReservations }) => volumeReservations, onNone: () => [] }))
-      .filter((entry) => entry.volumeId === reservation.volumeId).reduce((sum, entry) => sum + entry.bytes, 0)
-    if (!usableVolume(volume) || volume.freeBytes - other - reservation.bytes < Math.max(volume.diskFloorBytes, POLICY.diskFloorBytes)) return Option.some("disk")
-  }
-  return Option.none()
+type Ceiling = { readonly limit: number; readonly used: number; readonly added: number; readonly reason: Reason }
+const ceiling = (limit: number, added: number, reason: Reason, used = 0): Ceiling => ({ limit, added, reason, used })
+const fits = (ceilings: ReadonlyArray<Ceiling>): Option.Option<Reason> =>
+  Option.map(Option.fromNullishOr(ceilings.find(({ limit, used, added }) => used + added > limit)), ({ reason }) => reason)
+
+const reserved = (holds: ReadonlyArray<Lease>, quantify: (demand: Demand) => number) =>
+  holds.reduce((sum, lease) => sum + Option.getOrElse(Option.map(lease.admittedDemand, quantify), () => 0), 0)
+const bytesOn = (demand: Demand, volumeId: string) =>
+  demand.volumeReservations.find((item) => item.volumeId === volumeId)?.bytes ?? 0
+const staticCeilings = (demand: Demand, limit: HostEnvelope, holds: ReadonlyArray<Lease>, memoryReason: Reason) => {
+  const memory = reserved(holds, (d) => d.memoryBytes)
+  const controller = limit.containedMemoryBytes ?? limit.memoryBytes
+  return [
+    ceiling(demand.memoryBytes, Number(limit.needsMemoryReservation), "memory-limit"),
+    ceiling(POLICY.maxRequestMemoryBytes, demand.memoryBytes, "memory-limit"),
+    ceiling(limit.memoryBytes, demand.memoryBytes, memoryReason, memory),
+    ceiling(controller, demand.memoryBytes, memoryReason, memory),
+    ceiling(limit.cpuMilli, demand.cpuMilli, "capacity", reserved(holds, (d) => d.cpuMilli)),
+    ...demand.volumeReservations.map(({ volumeId, bytes }) =>
+      ceiling(limit.volumes[volumeId] ?? -1, bytes, "disk-limit", reserved(holds, (d) => bytesOn(d, volumeId)))),
+    ...demand.keys.map((key) => ceiling(1, 1, "resource", reserved(holds, (d) => Number(d.keys.includes(key))))),
+  ]
 }
 
+const volumeCeiling = (demand: Demand, sample: Supply, holds: ReadonlyArray<Lease>, volumeId: string) => {
+  const volume = sample.volumes[volumeId]
+  if (!volume || !usableVolume(volume)) return ceiling(-1, 0, "disk")
+  return ceiling(volume.freeBytes - Math.max(volume.diskFloorBytes, POLICY.diskFloorBytes),
+    bytesOn(demand, volumeId), "disk", reserved(holds, (d) => bytesOn(d, volumeId)))
+}
 const slots = { clear: POLICY.slots, degraded: 1, hold: 0 }
-const wholePoolBlock = (sample: Supply, hasHold: boolean): Option.Option<Reason> => {
-  if (hasHold) return Option.some("whole-pool-held")
-  if (capacityOf(sample) < Math.ceil(sample.envelope.cpuMilli * POLICY.wholePoolFreeFraction)) return Option.some("outside-busy")
-  return Option.none()
+const wholePoolFloor = (sample: Supply) => Math.ceil(sample.envelope.cpuMilli * POLICY.wholePoolFreeFraction)
+const wholeCpuCeilings = (sample: Supply, hasHold: boolean) =>
+  [ceiling(0, Number(hasHold), "whole-pool-held"), ceiling(capacityOf(sample), wholePoolFloor(sample), "outside-busy")]
+const cpuCeilings = (demand: Demand, holds: ReadonlyArray<Lease>, sample: Supply) => {
+  if (demand.cpuMilli === sample.envelope.cpuMilli) return wholeCpuCeilings(sample, holds.length > 0)
+  const cpu = holds.reduce((sum, row) => sum + liveCharge(row, sample), 0)
+  return [ceiling(freeHostCpu(sample), demand.cpuMilli, "capacity", cpu)]
 }
-const budgetReason = (entry: Lease, demand: Demand, holds: ReadonlyArray<Lease>, sample: Supply): Option.Option<Reason> => {
-  const whole = demand.cpuMilli === sample.envelope.cpuMilli
-  if (whole) {
-    const blocker = wholePoolBlock(sample, holds.length > 0)
-    if (Option.isSome(blocker)) return blocker
-  }
-  const volume = volumeReason(demand, holds, sample)
-  if (Option.isSome(volume)) return volume
-  if (holds.some((row) => Option.exists(row.admittedDemand, (held) => held.width === "full"))) return Option.some("capacity")
-  if (holds.some((row) => exclusive(row) || exclusive(entry))) return Option.some("capacity")
-  if (holds.some((row) => overlap(entry, row))) return Option.some("resource")
-  if (holds.length >= slots[sample.pressure]) return Option.some("capacity")
-  if (!whole && demand.cpuMilli + holds.reduce((sum, row) => sum + liveCharge(row, sample), 0) > capacityOf(sample))
-    return Option.some("capacity")
-  const memory = holds.reduce((sum, row) => sum + Option.match(row.admittedDemand, { onSome: ({ memoryBytes }) => memoryBytes, onNone: () => 0 }), 0)
-  if (demand.memoryBytes + memory > sample.memoryBytes - POLICY.reserveMemoryBytes) return Option.some("memory")
-  return Option.none()
+const liveCeilings = (entry: Lease, demand: Demand, holds: ReadonlyArray<Lease>, sample: Supply) => {
+  const exclusiveHold = holds.some((row) => exclusive(row) || exclusive(entry))
+  const wholeHold = holds.some((row) => Option.exists(row.admittedDemand, (held) => held.width === "full"))
+  return [
+    ...cpuCeilings(demand, holds, sample),
+    ceiling(0, Number(exclusiveHold || wholeHold), "capacity"),
+    ...demand.volumeReservations.map(({ volumeId }) => volumeCeiling(demand, sample, holds, volumeId)),
+    ceiling(slots[sample.pressure], 1, "capacity", holds.length),
+    ceiling(sample.memoryBytes - POLICY.reserveMemoryBytes, demand.memoryBytes, "memory", reserved(holds, (d) => d.memoryBytes)),
+  ]
 }
+const budgetReason = (entry: Lease, demand: Demand, holds: ReadonlyArray<Lease>, sample: Supply) =>
+  fits([...liveCeilings(entry, demand, holds, sample), ...staticCeilings(demand, sample.envelope, holds, "memory")])
 
 export const cpuDemand = (demand: Demand, maximum: number) => {
   if (!Predicate.isNumber(demand.width)) return maximum
@@ -213,16 +229,9 @@ const checkedDemand = (entry: Lease, sample: Supply): Demand => {
 const feasibility = (request: Request, limit: HostEnvelope): Option.Option<Reason> => {
   const { demand } = request
   if (!limit.purposes.includes(request.purpose) || limit.cpuMilli <= 0) return Option.some("unsupported-class")
-  if (demand.memoryBytes > limit.memoryBytes || (limit.needsMemoryReservation && demand.memoryBytes <= 0))
-    return Option.some("memory-limit")
   if (demand.keys.some((key) => !limit.keys.includes(key))) return Option.some("unknown-key")
-  for (const { volumeId, bytes } of demand.volumeReservations) {
-    if (!Object.hasOwn(limit.volumes, volumeId)) return Option.some("unknown-volume")
-    const maximum = limit.volumes[volumeId]
-    if (Predicate.isUndefined(maximum)) return Option.some("unknown-volume")
-    if (bytes > maximum) return Option.some("disk-limit")
-  }
-  return Option.none()
+  if (demand.volumeReservations.some(({ volumeId }) => !Object.hasOwn(limit.volumes, volumeId))) return Option.some("unknown-volume")
+  return fits(staticCeilings({ ...demand, cpuMilli: cpuDemand(demand, limit.cpuMilli) }, limit, [], "memory-limit"))
 }
 
 const requestText = Schema.encodeSync(Schema.fromJsonString(Request))
@@ -304,7 +313,7 @@ const allocate = (tx: Transaction, observation: Observation, landBurst: number) 
     const hasHold = tx.rows().some(held)
     for (const row of queue) {
       if (available.failure === "pressure" && sample && wholePool(row, sample)) {
-        queuedFor(tx, row, Option.getOrElse(wholePoolBlock(sample, hasHold), () => "pressure" as const), sampleId)
+        queuedFor(tx, row, Option.getOrElse(fits(wholeCpuCeilings(sample, hasHold)), () => "pressure" as const), sampleId)
       } else queuedFor(tx, row, available.failure, sampleId)
     }
     return landBurst

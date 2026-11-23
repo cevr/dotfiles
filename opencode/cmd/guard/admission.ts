@@ -1,12 +1,12 @@
-import { Clock, Console, Effect, FileSystem, Option, Path, Predicate, Schedule, Stream } from "effect"
+import { Clock, Console, Deferred, Effect, FileSystem, Option, Path, Predicate, Schedule, Stream } from "effect"
 import { AdmissionUnavailable, type Address, type Input, type Lease, type Observation } from "@dotfiles/opencode-guard/admission"
 import { type Reason, type Request, type Width } from "@dotfiles/opencode-guard/admission-wire"
-import { argvWidth, demandOnVolume, type CheckDemand } from "@dotfiles/opencode-guard/check-demand"
-import { capacityOf, POLICY } from "@dotfiles/opencode-guard/host-supply"
+import { argvModel, demandOnVolume, enforceDeclaredWidth, type CheckDemand } from "@dotfiles/opencode-guard/check-demand"
+import { capacityOf, maximumRequestMemory, POLICY } from "@dotfiles/opencode-guard/host-supply"
 import * as Supply from "@dotfiles/opencode-guard/process/admission"
 import * as Scope from "@dotfiles/opencode-guard/process/launchers"
 import { attachGrant, runAfterClaim } from "@dotfiles/opencode-guard/process/linux-controller"
-import { foregroundOf, foregroundScope } from "@dotfiles/opencode-guard/process/terminal"
+import { foregroundOf, foregroundScope, INTERRUPT_GRACE_MS, type ForegroundInterrupt } from "@dotfiles/opencode-guard/process/terminal"
 import * as Journal from "@dotfiles/opencode-guard/sqlite/admission"
 
 const fail = (reason: ConstructorParameters<typeof AdmissionUnavailable>[0]["reason"]) => new AdmissionUnavailable({ reason })
@@ -14,6 +14,14 @@ const active = (lease: Lease) => lease.state === "running" || lease.state === "d
 const granting = (lease: Lease) => lease.state === "queued" || lease.state === "granted"
 const terminal = (state: string) => ["released", "expired", "cancelled", "refused"].includes(state)
 const cut = (now: number): Observation => ({ now })
+const supplyReport = (observation: Observation) => Option.map(Option.fromNullishOr(observation.sample), (sample) => ({
+  hostCpuMilli: sample.effectiveCpuMilli, managedCpuMilli: sample.envelope.cpuMilli,
+  freeManagedCpuMilli: capacityOf(sample), outsideNoncriticalMilli: sample.outsideNoncriticalMilli,
+  pressure: sample.pressure, qualification: sample.qualification, runnable: sample.runnable,
+  interval: Option.getOrNull(Option.map(Option.fromNullishOr(sample.interval), ({ before, after }) => ({
+    before: { ...before }, after: { ...after },
+  }))),
+}))
 const wholePoolStatus = (reason: Reason, observation: Observation) => {
   if (reason === "granted") return "granted"
   if (reason === "whole-pool-held") return "waiting for running checks to end"
@@ -24,17 +32,16 @@ const wholePoolStatus = (reason: Reason, observation: Observation) => {
   }
   return `waiting (${reason})`
 }
-const warnFull = (width: Width, observation: Observation, reason: Reason) => {
+const warnFull = (width: Width, advice: string, observation: Observation, reason: Reason) => {
   const maximum = observation.envelope?.cpuMilli ?? observation.sample?.envelope.cpuMilli ?? 0
   const status = wholePoolStatus(reason, observation)
-  const bound = "To narrow a modeled tool, set Go GOMAXPROCS and -p, Bun --parallel=N, or Make/Ninja -j N."
-  if (width === "unknown") return Console.error(`host-admit: no verified tool width; whole managed CPU pool: ${status}. ${bound}`)
-  if (width === "full") return Console.error(`host-admit: tool uses host width; whole managed CPU pool: ${status}. ${bound}`)
+  if (width === "unknown") return Console.error(`host-admit: no verified tool width; whole managed CPU pool: ${status}. ${advice}`)
+  if (width === "full") return Console.error(`host-admit: tool uses host width; whole managed CPU pool: ${status}. ${advice}`)
   if (width * 1000 > maximum) return Console.error(`host-admit: width ${width} clamped to ${maximum} mCPU; whole managed CPU pool: ${status}.`)
-  if (width * 1000 === maximum) return Console.error(`host-admit: whole managed CPU pool: ${status}. ${bound}`)
+  if (width * 1000 === maximum) return Console.error(`host-admit: whole managed CPU pool: ${status}. ${advice}`)
   return Effect.void
 }
-const describeWait = (width: Width) => {
+const describeWait = (width: Width, advice: string) => {
   let reported = false
   return (observation: Observation, reason: Reason) => {
     if (reported) return Effect.void
@@ -43,7 +50,7 @@ const describeWait = (width: Width) => {
     // line and its replacement. The journal still tracks every change.
     if (reason === "unavailable" || reason === "stale-sample" || reason === "unqualified") return Effect.void
     reported = true
-    return warnFull(width, observation, reason)
+    return warnFull(width, advice, observation, reason)
   }
 }
 
@@ -52,7 +59,10 @@ export interface Config {
   readonly directory: string
   readonly executable: string
   readonly script: string
-  readonly onForeground?: (owned: boolean) => void
+  readonly onInterrupt?: (handler: Option.Option<ForegroundInterrupt>) => void
+  readonly beforeResume?: Effect.Effect<void>
+  readonly sample?: (host: Supply.BootHost, target: Option.Option<string>) =>
+    Effect.Effect<Observation, AdmissionUnavailable, FileSystem.FileSystem>
 }
 
 const inspectOwner = Effect.fn("HostAdmission.inspectOwner")(function* (
@@ -128,6 +138,7 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
     }))
   })
   const measure = Effect.fn("HostAdmission.measure")(function* () {
+    if (config.sample) return yield* config.sample(host, Option.map(target, ({ id }) => id))
     const now = yield* Supply.clockOf(host)
     const probe = Supply.ref("probe", `${caller.owner}:${host.kernel.core.symbols.getpid()}:${now}`)
     if (!(yield* native.probe(probe, now))) return cut(now)
@@ -232,9 +243,10 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
     argv: ReadonlyArray<string>, environment?: Readonly<Record<string, string>>,
   ) {
     const fence = { id: row.id, generation: row.generation, binding: pin.ref }
+    const interrupted = yield* Deferred.make<void>()
     const control = yield* foregroundScope(host, foreground, (paused) => cold().pipe(
       Effect.flatMap((at) => ledger.transact({ op: "job-control", ...fence, paused }, at)), Effect.asVoid,
-    ), config.onForeground ?? (() => {}))
+    ), config.onInterrupt ?? (() => {}), interrupted, config.beforeResume)
     const work = yield* Scope.spawnOwned(Scope.payloadArgv(host, argv), config.cwd, environment, fd)
     let stopping = false
     const stop = Effect.suspend(() => {
@@ -243,16 +255,22 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
       if (host.platform === "darwin") return stopGroup.pipe(Effect.ignore)
       return Scope.stopOwnedCgroup(host, pin).pipe(Effect.catchTag("AdmissionUnavailable", () => work.stop))
     })
+    const escalate = Effect.gen(function* () {
+      yield* Deferred.await(interrupted)
+      yield* Effect.sleep(INTERRUPT_GRACE_MS)
+      yield* stop
+      return yield* Effect.never
+    })
     const keep = Effect.gen(function* () {
       const now = yield* Supply.clockOf(host)
       const tick = yield* ledger.transact({ op: "renew", ...fence }, cut(now))
       if (tick.reply.state !== "running") yield* stop
     }).pipe(Effect.repeat(loop))
-    return yield* work.exited.pipe(
-      Effect.raceFirst(keep.pipe(Effect.andThen(Effect.never))),
-      Effect.raceFirst(control),
-      Effect.onError(() => stop),
-    )
+    const code = yield* Effect.raceAllFirst([
+      work.exited, escalate, keep.pipe(Effect.andThen(Effect.never)), control,
+    ]).pipe(Effect.onError(() => stop))
+    if (Deferred.isDoneUnsafe(interrupted) && !stopping) return 130
+    return code
   })
 
   const claim = Effect.fn("HostAdmission.claim")(function* (
@@ -334,7 +352,7 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
   })
 
   const run = Effect.fn("HostAdmission.runCheck")(function* (
-    demand: CheckDemand, args: ReadonlyArray<string>,
+    demand: CheckDemand, args: ReadonlyArray<string>, advice: string, imposed: boolean,
   ) {
     const now = yield* Supply.clockOf(host)
     if (Option.isNone(target)) return yield* fail("unknown-volume")
@@ -343,14 +361,16 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
     if (Option.isNone(self)) return yield* fail("unavailable")
     const owner = Supply.ref("waiter", `${host.bootId}:${self.value.pid}:${self.value.start}`)
     yield* native.remember(owner, self.value.pid, self.value.start)
+    let reservation = demandOnVolume(demand, target.value.id)
+    if (imposed && host.platform === "linux") reservation = enforceDeclaredWidth(reservation)
     const draft: Request = {
       version: 1, requestId: Supply.ref("request", `${owner}:${now}`), principal: caller.principal,
       purpose: demand.purpose, tier: "standard", deadlineBootMs: now + POLICY.queueMs,
-      demand: demandOnVolume(demand, target.value.id),
+      demand: reservation,
     }
     const { reply: queued, observation } = yield* request(draft, owner)
     if (Predicate.isNull(queued.id)) return yield* fail(queued.reason)
-    const explain = describeWait(demand.width)
+    const explain = describeWait(demand.width, advice)
     yield* explain(observation, queued.reason)
     const address = { id: queued.id, owner }
     return yield* begin(address, args, explain).pipe(Effect.onError(() => cold().pipe(
@@ -371,14 +391,17 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
       maximumCpuMilli: limits?.cpuMilli ?? 0,
       freeManagedCpuMilli: Option.getOrNull(Option.map(Option.fromNullishOr(sample), capacityOf)),
       outsideNoncriticalMilli: Option.getOrNull(Option.fromNullishOr(sample?.outsideNoncriticalMilli)),
-      maximumMemoryBytes: limits?.memoryBytes ?? 0,
+      maximumMemoryBytes: Option.getOrElse(Option.map(Option.fromNullishOr(limits), maximumRequestMemory), () => 0),
       offeredClasses: limits?.purposes ?? [],
       resourceKeys: limits?.keys ?? [],
     }
   })
 
   return {
-    hostStatus, request: (draft: Request) => request(draft).pipe(Effect.map(({ reply }) => reply)), status, watch, run, attach,
+    enforcedWidth: host.platform === "linux",
+    hostStatus, request: (draft: Request) => request(draft).pipe(Effect.map(({ reply, observation }) => ({
+      ...reply, supply: Option.getOrNull(supplyReport(observation)),
+    }))), status, watch, run, attach,
     put: Effect.fn("HostAdmission.observe")(function* (records: Parameters<typeof holder.putObservations>[1]) {
       return yield* holder.putObservations(caller.owner, records, yield* Supply.clockOf(host))
     }),
@@ -389,12 +412,16 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
       const row = state.leases[id]
       // Do not expose demand for another principal's durable address.
       if (!row || row.owner !== address.owner || terminal(reply.state)) return yield* fail(reply.reason)
-      const observed = argvWidth(args, Scope.localEnvironment())
-      if (observed === "invalid") return yield* fail("invalid-width")
       const { demand } = row.request
-      if (Predicate.isNumber(demand.width) && (!Predicate.isNumber(observed) ||
-        observed * 1000 > Math.max(demand.width * 1000, demand.cpuMilli))) return yield* fail("unqualified")
-      const explain = describeWait(demand.width)
+      let advice = "On Linux the applied scope CPU controller enforces the reservation."
+      if (host.platform === "darwin") {
+        const model = argvModel(args, Scope.localEnvironment())
+        if (model.width === "invalid") return yield* fail("invalid-width")
+        if (Predicate.isNumber(demand.width) && (!Predicate.isNumber(model.width) ||
+          model.width * 1000 > Math.max(demand.width * 1000, demand.cpuMilli))) return yield* fail("unqualified")
+        advice = model.advice
+      }
+      const explain = describeWait(demand.width, advice)
       yield* explain(observation, reply.reason)
       return yield* begin(address, args, explain)
     }),

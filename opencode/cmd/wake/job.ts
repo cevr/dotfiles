@@ -17,6 +17,6 @@ else if (dir === "--seal-root" && root) sealJobRoot(root)
 else if (dir) {
   const [executable = "bun"] = argv
   const helper = [executable, fileURLToPath(new URL("../guard/host-admit.ts", import.meta.url))]
-  await superviseAdmitted(dir, scheduled, helper)
+  await superviseAdmitted(dir, helper, scheduled)
 }
 process.exit(Number(!accepted) * 2)

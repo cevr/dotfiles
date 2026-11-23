@@ -1,11 +1,13 @@
 import { Effect, Option, Predicate, Schema } from "effect"
-import { Admission, AdmissionUnavailable, initial, shellFact, type ShellFact, transition } from "@dotfiles/opencode-guard/admission"
+import { Admission, AdmissionUnavailable, cpuDemand, initial, shellFact, type ShellFact, transition } from "@dotfiles/opencode-guard/admission"
+import { demandOnVolume, enforceDeclaredWidth } from "@dotfiles/opencode-guard/check-demand"
 import { encodeProgram, owner, request, shellLaunchLaws, shellProgram, supply, type ShellExit, type ShellLaunchDriver } from "@dotfiles/opencode-guard/memory/admission-acceptance"
 import { systemdArgv } from "@dotfiles/opencode-guard/process/launchers"
 import { linuxPressure } from "@dotfiles/opencode-guard/process/admission"
 import { issue, watchdogPlan, type Actuation, type SignalIntent } from "@dotfiles/opencode-guard/process/actuation"
 import { attachGrant, attestLinux, linuxDrain, runAfterClaim, stopLinux, type LinuxManager } from "@dotfiles/opencode-guard/process/linux-controller"
 import * as Seed from "../../sim/seed.ts"
+import { checkSpec } from "./host-admit.ts"
 
 const { seeded } = Seed.runner("cmd/guard/admission.sim.test.ts")
 const persisted = Schema.fromJsonString(Admission)
@@ -21,6 +23,22 @@ const expectedDispatch = (authority: boolean): Array<SignalIntent["signal"]> => 
   return []
 }
 const counterFiles = ["cpu.max", "memory.max", "memory.swap.max", "memory.oom.group", "cgroup.events"] as const
+
+seeded("a Linux declaration is a scope cap, not a tool inference or advisory hint", ({ expect }) =>
+  Effect.gen(function* () {
+    const payload = ["/fixture/unmodeled", "-j", "99"]
+    const options = ["--class", "vm", "--width", "1"]
+    const linux = yield* checkSpec(payload, options, true)
+    const darwin = yield* checkSpec(payload, options, false)
+    expect({ width: String(linux.width), imposed: linux.imposed }).toEqual({ width: "1", imposed: true })
+    expect({ width: darwin.width, imposed: darwin.imposed }).toEqual({ width: "unknown", imposed: false })
+    const demand = enforceDeclaredWidth(demandOnVolume(linux, "fixture"))
+    const cap = cpuDemand(demand, 10000)
+    expect(cap).toBe(1000)
+    expect(systemdArgv({ id: "declaration", generation: 1, cwd: "/fixture", cpuMilli: cap,
+      memoryBytes: demand.memoryBytes, helper: payload })).toContain("CPUQuota=100%")
+  }),
+)
 
 seeded("historical load cannot fence a start; measured PSI and the current runnable ceiling can", ({ expect }) =>
   Effect.sync(() => {
