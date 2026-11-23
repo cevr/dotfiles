@@ -34,6 +34,7 @@ export type Session = {
   readonly wakePending?: boolean
   /** The owner-read projection, never a fold kept by this row. */
   readonly execution?: Execution
+  readonly lifecycle?: Lifecycle
   /**
    * The shell commands the host's shell registry lists as running for it now
    * (a background one outlives its turn), live like `running`: one the
@@ -78,10 +79,21 @@ export type Execution =
   | { readonly kind: "checking" | "none"; readonly at?: never }
   | { readonly kind: "failed" | "undetermined"; readonly at: number }
 
+/** One owner-produced display phase. Its clocks and authority belong to its revision. */
+export type Lifecycle = {
+  readonly kind: "checking" | "none" | "unknown" | "recovering" | "running" | "blocked" | "latched" | "continuing" | "undetermined" | "failed" | "done" | "cancelled"
+  readonly revision: number
+  readonly sinceReload: boolean
+  readonly at: number
+  readonly waitingOn: "Shell" | "Child" | "Wake" | "permission" | "question" | ""
+  readonly diagnostic: boolean
+}
+
 export type OwnedRow = {
   readonly child: string
   readonly latch?: Latch
-  readonly execution: Execution
+  readonly execution?: Execution
+  readonly lifecycle?: Lifecycle
 }
 
 /**

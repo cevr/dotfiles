@@ -369,6 +369,7 @@ function rowsOf(family: Family, rootSessionID: string, options: ReadOptions): Re
     const busy = session.time.busy ?? session.time.created
     const heard = lastHeard(session.messages)
     const timed = (since: number) => ({ since, ...(heard === undefined ? {} : { heard }) })
+    if (session.lifecycle) return ownedRow(session, base, options, timed)
     const works = now(session.id)
     const permission = session.permissions[0]
     if (permission !== undefined) return { ...base, state: "blocked", update: `permission: ${permission}`.trim(), ...timed(busy) }
@@ -416,6 +417,44 @@ function rowsOf(family: Family, rootSessionID: string, options: ReadOptions): Re
     if (end.state === "idle" && found.notice) return { ...row, heard: found.notice.at }
     return row
   })
+}
+
+function ownedRow(session: Session, base: Omit<Row, "state" | "update">, options: ReadOptions, timed: (since: number) => Pick<Row, "since" | "heard">): Row {
+  const view = session.lifecycle!
+  const qualify = (text: string) => {
+    if (view.sinceReload) return `${text} (since before reload)`
+    return text
+  }
+  switch (view.kind) {
+    case "checking": return { ...base, state: "waiting", update: "Checking the last execution" }
+    case "none":
+    case "unknown": return { ...base, state: "waiting", update: qualify("Current execution not known") }
+    case "recovering": return { ...base, state: "waiting", update: qualify("Recovering"), ...timed(view.at) }
+    case "running": return { ...base, state: "working", update: qualify(runningUpdate(session.messages)), ...timed(view.at) }
+    case "blocked": return { ...base, state: "blocked", update: qualify(`waiting for ${view.waitingOn}`), ...timed(view.at) }
+    case "latched": {
+      const latch = session.latch
+      if (latch) return { ...base, state: "latched", update: qualify(latchUpdate(latch, options.timeZone)), ...timed(view.at) }
+      return { ...base, state: "latched", update: qualify("Held start"), ...timed(view.at) }
+    }
+    case "continuing": {
+      const label = { Wake: "awaiting host wake", Shell: "shell still running", Child: "child still working", permission: "", question: "", "": "" }
+      const what = label[view.waitingOn]
+      const words = waitingUpdate(session.messages, []) || what
+      return { ...base, state: "waiting", update: qualify(continuationUpdate(words, view.diagnostic)), ...timed(view.at) }
+    }
+    case "undetermined": return {
+      ...base, state: "waiting",
+      update: qualify("Undetermined: a step failed; its background command ended; the host does not say whether a result is still to be delivered"),
+      ...timed(view.at),
+    }
+    case "done":
+    case "failed":
+    case "cancelled":
+      if (view.sinceReload) return { ...base, state: "waiting", update: "Checking the last execution (since before reload)" }
+      if (view.kind === "done") return { ...base, state: "done", update: plural(stepCount(session.messages), "step"), ended: view.at }
+      return { ...base, state: view.kind, update: "", ended: view.at }
+  }
 }
 
 /** How long a stopped subagent's row stays after it stopped. */

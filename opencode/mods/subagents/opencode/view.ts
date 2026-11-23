@@ -5,7 +5,7 @@
 // tools its cell called), and the stop notices its background subagents and
 // shell commands sent it. Read inside a Solid computation, every read here is
 // reactive.
-import type { Call, Execution, Family, Message, OwnedRow, Part, Session, Shell } from "../family.ts"
+import type { Call, Family, Message, OwnedRow, Part, Session, Shell } from "../family.ts"
 import { envelopes } from "../envelope.ts"
 
 /** A session as `context.data.session.get` returns it, narrowed to what a row reads. */
@@ -203,15 +203,34 @@ export const transcript = (items: ReadonlyArray<unknown>, convert: Convert): Tra
   return { messages: items.flatMap((item) => convert(item) ?? []), ...(model ? { model } : {}) }
 }
 
-const CHECKING: Execution = { kind: "checking" }
-const ownedFields = (checking: boolean, owner?: OwnedRow): Pick<Session, "execution" | "latch"> => {
+const OWNED_CHECKING = { kind: "checking", revision: 0, sinceReload: false, at: 0, waitingOn: "", diagnostic: false } as const
+const ownedFields = (owner?: OwnedRow): Pick<Session, "execution" | "latch" | "lifecycle"> => {
   if (owner) {
-    if (owner.latch) return { execution: owner.execution, latch: owner.latch }
-    return { execution: owner.execution }
+    const { child: _child, ...phase } = owner
+    return phase
   }
-  if (checking) return { execution: CHECKING }
-  return {}
+  return { lifecycle: OWNED_CHECKING }
 }
+
+/** Presentation inputs only; this function cannot read client lifecycle state. */
+export function ownedSessionOf(id: string, told: Transcript, info?: SessionInfo, owner?: OwnedRow): Session {
+  const model = told.model ?? info?.model?.id
+  return {
+    id,
+    ...identityOf(model, info),
+    time: { created: info?.time?.created || 0 },
+    running: false, shells: [], permissions: [], questions: [],
+    messages: told.messages,
+    ...ownedFields(owner),
+  }
+}
+
+const identityOf = (model?: string, info?: SessionInfo) => ({
+  ...(info?.parentID ? { parentID: info.parentID } : {}),
+  ...(info?.title === undefined ? {} : { title: info.title }),
+  ...(info?.agent === undefined ? {} : { agent: info.agent }),
+  ...(model ? { model } : {}),
+})
 
 /**
  * Session `id` from the host's reads, its messages and step model given as
@@ -224,17 +243,13 @@ export function sessionOf(
   shells: ReadonlyArray<Shell>,
   { messages, model: stepped }: Transcript,
   owner?: OwnedRow,
-  checking = false,
 ): Session {
   const info = reads.session.get(id)
   const time = info?.time
   const model = stepped ?? info?.model?.id
   return {
     id,
-    ...(info?.parentID ? { parentID: info.parentID } : {}),
-    ...(info?.title === undefined ? {} : { title: info.title }),
-    ...(info?.agent === undefined ? {} : { agent: info.agent }),
-    ...(model ? { model } : {}),
+    ...identityOf(model, info),
     ...(info?.outcome === undefined ? {} : { outcome: info.outcome }),
     time: {
       created: time?.created ?? 0,
@@ -244,7 +259,7 @@ export function sessionOf(
     },
     running: reads.session.status(id) === "running",
     wakePending: shellWakePending(reads, id),
-    ...ownedFields(checking && info?.outcome === "failed", owner),
+    ...legacyFields(owner),
     shells,
     permissions: (reads.session.permission.list(id) ?? []).map((request) =>
       [request.action, request.resources[0]].filter(Boolean).join(" "),
@@ -252,6 +267,10 @@ export function sessionOf(
     questions: (reads.session.form.list(id) ?? []).map((form) => form.title),
     messages,
   }
+}
+const legacyFields = (owner?: OwnedRow) => {
+  if (owner) return ownedFields(owner)
+  return {}
 }
 
 /** The sessions of `root`'s family, the root first when the host's family list leaves it out. */

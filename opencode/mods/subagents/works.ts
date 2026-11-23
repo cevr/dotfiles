@@ -16,6 +16,18 @@ import type { Family, Session } from "./family.ts"
 
 export type Works = "running" | "waiting" | "blocked" | "latched"
 
+function ownedWork(kind: NonNullable<Session["lifecycle"]>["kind"]) {
+  switch (kind) {
+    case "running": return "running"
+    case "blocked": return "blocked"
+    case "latched": return "latched"
+    case "undetermined":
+    case "continuing":
+    case "recovering":
+    case "checking": return "waiting"
+  }
+}
+
 /** A held start still waiting to open: latched, never run, neither cancelled nor failed. */
 export const latched = (session: Session) =>
   session.latch !== undefined &&
@@ -62,6 +74,7 @@ function worksOf(family: Family): (id: string) => Works | undefined {
     if (known.has(id)) return known.get(id)
     const session = byID.get(id)
     if (session === undefined || path.has(id)) return undefined
+    if (session.lifecycle) return ownedWork(session.lifecycle.kind)
     const inner = new Set([...path, id])
     const works: Works | undefined =
       session.permissions.length > 0 || session.questions.length > 0

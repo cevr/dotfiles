@@ -2,7 +2,7 @@
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { Array as Arr, Clock, Config, Console, DateTime, Deferred, Effect, Layer, Option, Path, Predicate, Ref, Schema, Stream } from "effect"
+import { Array as Arr, Clock, Config, Console, DateTime, Deferred, Effect, Layer, Option, Path, Predicate, Ref, Schema, Scope, Stream } from "effect"
 import { HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { describe, expect, it } from "effect-bun-test"
@@ -28,6 +28,8 @@ interface HostEvent {
     readonly error?: { readonly type: string }
     readonly metadata?: Readonly<Record<string, Schema.Json>>
     readonly inboxID?: string
+    readonly child?: string
+    readonly revision?: number
     readonly item?: { readonly type: string; readonly payload: { readonly metadata?: Readonly<Record<string, Schema.Json>> } }
   }
 }
@@ -83,9 +85,22 @@ interface SolidFixture {
     readonly rows: () => ReturnType<typeof subagents>
   }
   readonly replayRows: (info: SessionInfo, root: string, shell: ShellInfo, events: ReadonlyArray<HostEvent>) => ReadonlyArray<string>
+  readonly openBarrier: (client: Embedded, base: string, root: string, child: string, info: SessionInfo, shell: ShellInfo) => Effect.Effect<Barrier, unknown, Scope.Scope>
+}
+type Display = ReadonlyArray<{ readonly state: string; readonly update: string }>
+interface Barrier {
+  readonly notify: (details: HostEvent) => void
+  readonly hideShell: () => void
+  readonly next: Effect.Effect<{ readonly revision: number; readonly release: Effect.Effect<boolean> }>
+  readonly initial: number
+  readonly ready: Effect.Effect<void>
+  readonly live: Display
+  readonly snapshot: () => Display
+  readonly revision: () => number
 }
 const fixtureModule = Schema.declare((value): value is SolidFixture =>
-  Predicate.isObject(value) && Predicate.isFunction(value.liveEvents) && Predicate.isFunction(value.mountRows) && Predicate.isFunction(value.replayRows),
+  Predicate.isObject(value) && Predicate.isFunction(value.liveEvents) && Predicate.isFunction(value.mountRows) &&
+  Predicate.isFunction(value.replayRows) && Predicate.isFunction(value.openBarrier),
 )
 const solidFixture = Effect.gen(function* () {
   const path = yield* Path.Path
@@ -358,6 +373,39 @@ const nativeShell = (instance: Embedded, base: string, gate: string, child: stri
     command: `cat '${gate}'`, location: { directory: base }, metadata: { sessionID: child, background: true },
   })).pipe(Effect.map(({ data }) => data))
 
+const beginBarriers = Effect.fn("LifecycleFixture.beginBarriers")(function* (instance: Embedded, base: string, root: string, child: string, info: SessionInfo, shell: ShellInfo) {
+  const { openBarrier } = yield* solidFixture
+  return yield* Effect.forEach(["shell-first", "owner-first"], (order) => Effect.gen(function* () {
+    const barrier = yield* openBarrier(instance, base, root, child, info, shell)
+    yield* Effect.sync(() => barrier.notify({ type: "server.connected" }))
+    const stale = yield* barrier.next
+    return { order, barrier, stale }
+  }), { concurrency: 2 })
+})
+
+const finishBarriers = Effect.fn("LifecycleFixture.finishBarriers")(function* (
+  cases: Effect.Success<ReturnType<typeof beginBarriers>>, exit: HostEvent, change: HostEvent,
+) {
+  return yield* Effect.forEach(cases, ({ order, barrier, stale }) => Effect.gen(function* () {
+    const raw = () => { barrier.hideShell(); barrier.notify(exit) }
+    const owner = () => barrier.notify(change)
+    if (order === "shell-first") raw()
+    else owner()
+    const acrossFirst = barrier.snapshot()
+    if (order === "shell-first") owner()
+    else raw()
+    yield* stale.release
+    const pending = yield* barrier.next
+    const outstanding = barrier.snapshot()
+    yield* pending.release
+    yield* barrier.ready
+    return {
+      order, live: barrier.live, acrossFirst, outstanding, after: barrier.snapshot(),
+      old: stale.revision, current: pending.revision, accepted: Number(barrier.revision()),
+    }
+  }), { concurrency: 2 })
+})
+
 /** The native kill action marks the result answered. Invoke it without a
  * new child execution so no newer execution fact masks the silent gap. */
 const silentExit = Effect.fn("LifecycleFixture.silentExit")(function* (
@@ -372,10 +420,15 @@ const silentExit = Effect.fn("LifecycleFixture.silentExit")(function* (
   yield* failChild
   const terminal = yield* nextEvent(events, "silent shell's execution failed", childEvent("session.execution.failed", child))
   const snapshot = yield* promised("silent child snapshot lost", () => instance.sessions.get({ sessionID: child }))
+  const barriers = yield* beginBarriers(instance, base, root, child, snapshot, shell)
   const killed = yield* ask(instance, root, fixtureCall("fixture_shell_suppress", { child, shellID: shell.id }))
   const exit = yield* nextEvent(events, "silent shell exited", (event) => event.type === "shell.exited" && event.data?.id === shell.id)
   const rebuilt = yield* ask(instance, root, handle(child))
   const direct = yield* ask(instance, root, fixtureCall("subagents", { action: "get", sessionID: child }))
+  const change = yield* nextEvent(events, "owner persisted an exit", (event) =>
+    event.type === "rpc.dotfiles-opencode.kernel.rows.changed" && event.data?.child === child,
+  )
+  const scheduled = yield* finishBarriers(barriers, exit, change)
   const { replayRows } = yield* solidFixture
   const rows = replayRows(snapshot, root, shell, [created, terminal, exit])
   const suppressed = yield* realRows(instance, base, root, child, direct, Option.none(), Number(exit.created) + 1)
@@ -387,13 +440,11 @@ const silentExit = Effect.fn("LifecycleFixture.silentExit")(function* (
   }))
   const gap = yield* ask(instance, root, handle(child))
   const gapRows = yield* realRows(instance, base, root, child, gap, Option.none(), Number(exit.created) + 1)
-  yield* promised("native inbox cancellation failed", () => instance.sessions.inbox.cancel({ sessionID: child, inboxID: admitted.id }))
-  const cancelled = yield* ask(instance, root, handle(child))
   return {
-    child, shellID: shell.id, exit: { id: exit.id || "", at: Number(exit.created) },
+    root, child, inboxID: admitted.id, shellID: shell.id, exit: { id: exit.id || "", at: Number(exit.created) },
     observation: takeAnswer(rebuilt, "kernel"), direct: takeAnswer(direct, "subagents"),
-    pending: pending.length, rows, suppressed, killed: takeAnswer(killed, "fixture_shell_suppress"),
-    gap: takeAnswer(gap, "kernel"), gapRows: gapRows.visible, admittedRemount: gapRows.remount, cancelled: takeAnswer(cancelled, "kernel"),
+    pending: pending.length, rows, suppressed, scheduled, killed: takeAnswer(killed, "fixture_shell_suppress"),
+    gap: takeAnswer(gap, "kernel"), gapRows: gapRows.visible, admittedRemount: gapRows.remount,
   }
 })
 
@@ -550,7 +601,13 @@ const fixture = Effect.gen(function* () {
       return event.type === "log.synced"
     })
     const context = yield* ask(opened, first.root, handle(first.child))
-    return { replayed: periods, recovered: takeAnswer(context, "kernel") }
+    const { root, child, inboxID } = first.silent
+    const retained = yield* ask(opened, root, handle(child))
+    const retainedRows = yield* realRows(opened, base, root, child, retained, Option.none(), now + 1)
+    yield* promised("native inbox cancellation failed", () => opened.sessions.inbox.cancel({ sessionID: child, inboxID }))
+    const cancelled = yield* ask(opened, root, handle(child))
+    return { replayed: periods, recovered: takeAnswer(context, "kernel"),
+      retained: takeAnswer(retained, "kernel"), retainedRows: retainedRows.visible, cancelled: takeAnswer(cancelled, "kernel") }
   })))
   const seen = yield* model.read
   yield* Console.log(encode({ ...first, ...reopened, content: seen.content, filtered: seen.filtered }))
@@ -561,6 +618,10 @@ const RowDisplay = Schema.Array(Schema.Struct({ state: Schema.String, update: Sc
 const Remount = Schema.Struct({
   same: Schema.Boolean, beforeLinger: RowDisplay, afterLinger: RowDisplay,
   afterClose: Schema.Int, afterSecondClose: Schema.Int,
+})
+const CutEvidence = Schema.Struct({
+  order: Schema.String, live: RowDisplay, acrossFirst: RowDisplay, outstanding: RowDisplay, after: RowDisplay,
+  old: Schema.Int, current: Schema.Int, accepted: Schema.Int,
 })
 const ReadLatch = Schema.Struct({ child: Schema.String, mark: Schema.String, launch: Schema.String, rebuilt: Schema.String, listed: Schema.String })
 const report = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({
@@ -578,10 +639,10 @@ const report = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({
     child: Schema.String, shellID: Schema.String, exit: Schema.Struct({ id: Schema.String, at: Schema.Number }),
     observation: Schema.String, direct: Schema.String, pending: Schema.Number, rows: Schema.Array(Schema.String),
     killed: Schema.String,
-    gap: Schema.String, gapRows: Schema.Array(Schema.String), cancelled: Schema.String, admittedRemount: Remount,
+    gap: Schema.String, gapRows: Schema.Array(Schema.String), admittedRemount: Remount, scheduled: Schema.Array(CutEvidence),
     suppressed: Schema.Struct({ row: Schema.String, visible: Schema.Array(Schema.String), remount: Remount }),
   }),
-  opensAt: Schema.Number,
+  opensAt: Schema.Number, retained: Schema.String, retainedRows: Schema.Array(Schema.String), cancelled: Schema.String,
 })))
 const successOf = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({
   version: Schema.Literal(1), child: Schema.String, revision: Schema.Int,
@@ -648,11 +709,20 @@ const verifyLife = Effect.fn("LifecycleFixture.verifyLife")(function* (result: E
   expect(result.silent.suppressed.visible).toEqual(["waiting"])
   const undetermined = [{ state: "waiting", update: expect.stringContaining("Undetermined:") }]
   expect(result.silent.suppressed.remount).toEqual({ same: true, beforeLinger: undetermined, afterLinger: undetermined, afterClose: 0, afterSecondClose: 0 })
+  expect(result.silent.scheduled.map(({ order }) => order)).toEqual(["shell-first", "owner-first"])
+  for (const cut of result.silent.scheduled) {
+    for (const rows of [cut.live, cut.acrossFirst, cut.outstanding]) expect(rows.map(({ state }) => state)).toEqual(["waiting"])
+    expect(cut.after).toEqual(undetermined)
+    expect(cut.accepted === cut.current && cut.current > cut.old).toBe(true)
+  }
   const gap = yield* parse(lastLine(result.silent.gap))
   expect(gap).toHaveProperty("phase", Phase.cases.Continuing.make({ on: "Wake" }))
   expect(result.silent.gapRows).toEqual(["waiting"])
   expect(result.silent.admittedRemount).toMatchObject({ same: true, afterClose: 0, afterSecondClose: 0 })
-  const cancelled = yield* parse(lastLine(result.silent.cancelled))
+  const retained = yield* parse(lastLine(result.retained))
+  expect(retained).toMatchObject({ phase: Phase.cases.Continuing.make({ on: "Wake" }), basis: "as-of-last-observation" })
+  expect(result.retainedRows).toEqual(["waiting"])
+  const cancelled = yield* parse(lastLine(result.cancelled))
   expect(cancelled).toMatchObject({ phase: { ...Phase.cases.Settled.make({ outcome: "failed", cause: "PolicyDenied" }) } })
 })
 
