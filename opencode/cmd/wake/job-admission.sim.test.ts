@@ -14,8 +14,7 @@ const { seeded } = Seed.runner("cmd/wake/job-admission.sim.test.ts")
 
 // Observe the existing job-to-launcher seam on the exact base. Supply and
 // process execution are controlled boundaries; nothing starts on the host.
-seeded("a below-floor or unavailable host prevents a heavy job from reaching the payload", ({ expect, seed }) =>
-  Effect.gen(function* () {
+seeded("a below-floor or unavailable host prevents a heavy job from reaching the payload", ({ expect, seed }) => {
     const memory = Runner.empty()
     const faults = ["unavailable", "disk"] as const
     const [short = faults[0]] = faults.slice(seed % faults.length)
@@ -31,16 +30,14 @@ seeded("a below-floor or unavailable host prevents a heavy job from reaching the
       Store.layer(Store.empty()),
       Layer.succeed(Changes, Changes.of({ changed: () => Effect.void })),
     )
-    const submit = Effect.gen(function* () {
+    const world = Model.layer({ directory: "/scratch/project", classifyJob }).pipe(Layer.provide(layers))
+    return Effect.gen(function* () {
       const model = yield* Model.WakesModel
       yield* Effect.result(model.job("ses_fixture", { command: "printf fixture", heavy: true, note: "fixture" }))
       yield* Effect.result(model.job("ses_fixture", { command: "bun test --filter exact", heavy: false, note: "classified" }))
       yield* model.job("ses_fixture", { command: "printf light", note: "control" })
-    })
-    const world = Model.layer({ directory: "/scratch/project", classifyJob }).pipe(Layer.provide(layers))
-    yield* submit.pipe(Effect.provide(world), Effect.scoped)
-    expect([...memory.jobs.values()].map(({ spec }) => spec.command)).toEqual(["printf light"])
-    expect(admittedJobArgv(["bun", "host-admit.ts"], "bun test --filter exact", false))
-      .toEqual(["bun", "host-admit.ts", "check", "run", "--class", "check", "--", "/bin/sh", "-c", "bun test --filter exact"])
-  }),
-)
+      expect([...memory.jobs.values()].map(({ spec }) => spec.command)).toEqual(["printf light"])
+      expect(admittedJobArgv(["bun", "host-admit.ts"], "bun test --filter exact", false))
+        .toEqual(["bun", "host-admit.ts", "check", "run", "--class", "check", "--", "/bin/sh", "-c", "bun test --filter exact"])
+    }).pipe(Effect.provide(world), Effect.scoped)
+})

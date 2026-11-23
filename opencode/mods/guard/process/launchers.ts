@@ -130,8 +130,14 @@ const watchScript = [
 const spawnWatchdog = () => spawn(["/bin/sh", "-c", watchScript], { stdin: "pipe", stdout: "pipe", stderr: "ignore" })
 export const watchGroup = Effect.fn("LaunchScope.watchGroup")(function* (host: BootHost, pin: UnarmedPin) {
   if (host.platform === "linux") return { arm: Effect.void, disarm: Effect.void, stop: Effect.void, onLauncherExit: Effect.void }
+  return yield* watchOwnGroup(host, pin.pid)
+})
+
+/** Darwin's production watchdog; the same portable group primitive can be
+ * checked under a scratch Linux group without changing Linux's cgroup policy. */
+export const watchOwnGroup = Effect.fn("LaunchScope.watchOwnGroup")(function* (host: BootHost, leader: number) {
   const sys = host.kernel.core.symbols
-  if (sys.getpid() !== pin.pid || sys.getpgrp() !== pin.pid) return yield* unqualified()
+  if (sys.getpid() !== leader || sys.getpgrp() !== leader) return yield* unqualified()
   let waitForExit = false
   const watcher = yield* Effect.acquireRelease(
     Effect.try({ try: spawnWatchdog, catch: unqualified }),
@@ -282,7 +288,9 @@ const linuxHolds = Effect.fn("LaunchScope.linuxHolds")(function* (host: BootHost
 
 /** Positive evidence only. A partial scan never certifies absence or gives
  * an actuator a PID. The inherited lock is the independent release proof. */
-export const descriptorHolders = Effect.fn("LaunchScope.descriptorHolders")(function* (host: BootHost, descriptor: Descriptor) {
+export const descriptorHolders = Effect.fn("LaunchScope.descriptorHolders")(function* (
+  host: BootHost, descriptor: Descriptor, candidates?: ReadonlyArray<number>,
+) {
   const fs = yield* FileSystem.FileSystem
   const inventory = {
     darwin: () => Effect.succeed(Option.match(Option.flatMap(host.kernel.mach, ({ symbols }) => listPids(symbols.proc_listpids)), {
@@ -295,7 +303,7 @@ export const descriptorHolders = Effect.fn("LaunchScope.descriptorHolders")(func
     darwin: (pid: number) => Effect.sync(() => darwinHolds(host, pid, descriptor)),
     linux: (pid: number) => linuxHolds(host, pid, descriptor),
   }
-  const pids = yield* inventory[host.platform]()
+  const pids = candidates ?? (yield* inventory[host.platform]())
   const matches: ProcessIdentity[] = []
   for (const pid of pids.slice(0, 1024)) {
     if (matches.length >= 16) break
@@ -382,7 +390,7 @@ export const systemdArgv = (input: {
   "-p", `CPUQuota=${input.cpuMilli / 10}%`, "-p", "CPUWeight=20",
   "-p", `MemoryMax=${input.memoryBytes}`, "-p", "MemorySwapMax=0", "-p", "OOMPolicy=kill",
   "-p", "MemoryOOMGroup=yes", "-p", "KillMode=control-group", "-p", "TimeoutStopSec=2s",
-  ...serviceEnv.filter((name) => Predicate.isString(env[name])).map((name) => `--setenv=${name}`),
+  ...serviceEnv.values().filter((name) => Predicate.isString(env[name])).map((name) => `--setenv=${name}`),
   "--", ...input.helper,
 ]
 
