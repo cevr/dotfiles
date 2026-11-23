@@ -28,6 +28,7 @@ interface Node {
   readonly declarations?: ReadonlyArray<Node>
   readonly id?: Node
   readonly init?: Node
+  readonly expression?: Node
 }
 
 /** Whether an element is a node, not a hole. */
@@ -69,14 +70,22 @@ const declared = (statement: Node): Node => {
   return statement
 }
 
+/** An expression without the type assertions around it (`[...] as const`, `[...] satisfies T`). */
+const unwrapped = (node: Node): Node => {
+  if (node.type === "TSAsExpression" || node.type === "TSSatisfiesExpression") return unwrapped(node.expression ?? NOTHING)
+  return node
+}
+
 /** The elements of the array literal a top-level `const name = [...]` of `program` binds, exported or not. */
 const boundElements = (program: Node, name: string): ReadonlyArray<Node> =>
   (program.body ?? [])
     .map(declared)
     .filter((statement) => statement.type === "VariableDeclaration")
     .flatMap((declaration) => declaration.declarations ?? [])
-    .filter((declarator) => declarator.id?.name === name && declarator.init?.type === "ArrayExpression")
-    .flatMap((declarator) => (declarator.init?.elements ?? []).filter(present))
+    .filter((declarator) => declarator.id?.name === name)
+    .map((declarator) => unwrapped(declarator.init ?? NOTHING))
+    .filter((init) => init.type === "ArrayExpression")
+    .flatMap((init) => (init.elements ?? []).filter(present))
 
 /** The flags an array literal holds: its literals, and those of a same-file `const` list it spreads. */
 const flagsOf = (array: Node): ReadonlyArray<string> =>

@@ -32,6 +32,8 @@ const FILES: ReadonlyArray<readonly [string, string, number]> = [
       'export const a = ["--headless=new", "--use-mock-keychain", "--password-store=basic"]',
       'const KEYCHAIN = ["--use-mock-keychain", "--password-store=basic"]',
       'export const b = [...KEYCHAIN, "--remote-debugging-port=0"]',
+      'export const FLAGS = ["--use-mock-keychain", "--password-store=basic"] as const',
+      'export const e = ["--headless", ...FLAGS]',
       'export const c = ["--window-size=800,600", "--no-first-run"]',
       "export const d = (args: ReadonlyArray<string>) => args.includes('--headless')",
     ].join("\n"),
