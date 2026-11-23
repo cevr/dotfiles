@@ -45,7 +45,33 @@ for (let flips = 0; !existsSync(stop); flips++) {
 
 /** How long each file-system call of the FIFO child's reader may take, and how long the child may live. */
 const WITHIN_MS = 500
-const CHILD_MS = 15_000
+const CHILD_MS = 145_000
+
+const DESCRIPTORS = `
+const descriptors = () => readdirSync(process.platform === "linux" ? "/proc/self/fd" : "/dev/fd").filter((name) => {
+  try { fstatSync(+name); return true }
+  catch (error) { if (error.code === "EBADF") return false; throw error }
+}).length
+const initializeRuntime = async () => {
+  // Bun lazily duplicates its stdout/stderr sockets. Initialize them and wait for a
+  // throwaway child's native close before we measure the reader's own descriptors.
+  await Promise.all([process.stdout, process.stderr].map((stream) => new Promise((resolve) => stream.write("", resolve))))
+  await new Promise((resolve, reject) => {
+    const warm = spawn("/usr/bin/true", [], { detached: true, env: {}, stdio: ["ignore", "pipe", "ignore"] })
+    warm.stdout.resume()
+    warm.once("error", reject)
+    warm.once("close", (code) => code === 0 ? resolve() : reject(new Error("warm process exited " + code)))
+  })
+}
+const backAt = async (baseline, label) => {
+  const hangGuard = performance.now() + 65000
+  for (let count; (count = descriptors()) !== baseline;) {
+    if (performance.now() >= hangGuard) throw new Error("65s descriptor retirement hang guard: " + label + " baseline=" + baseline + " observed=" + count)
+    await new Promise((resolve) => setImmediate(resolve))
+  }
+  return baseline
+}
+`
 
 /**
  * The FIFO child: one freeze over the real file system, gated so that the first open of the receipt for reading finds
@@ -56,11 +82,12 @@ const CHILD_MS = 15_000
 const CHILD = (imports: { readonly effect: string; readonly process: string; readonly bun: string; readonly inputs: string; readonly input: string }) => `import * as BunServices from "${imports.bun}"
 import { Effect, FileSystem, Layer, Schedule } from "${imports.effect}"
 import { ChildProcess, ChildProcessSpawner } from "${imports.process}"
-import { readdirSync } from "node:fs"
+import { fstatSync, readdirSync } from "node:fs"
+import { spawn } from "node:child_process"
 import { layer } from "${imports.inputs}"
 import { freeze } from "${imports.input}"
 const [receipts, checkout, leaf, staged, within, head, mode, good] = process.argv.slice(2)
-const descriptors = () => readdirSync(process.platform === "linux" ? "/proc/self/fd" : "/dev/fd").length
+${DESCRIPTORS}
 const armed = { first: false }
 const readers = []
 const gated = Layer.effect(ChildProcessSpawner.ChildProcessSpawner, Effect.gen(function* () {
@@ -79,6 +106,15 @@ const gated = Layer.effect(ChildProcessSpawner.ChildProcessSpawner, Effect.gen(f
     } else {
       yield* fs.rename(leaf, leaf + ".warm")
       yield* fs.rename(staged, leaf)
+    }
+    if (mode === "close-after-exit" || mode === "close-after-deadline") {
+      const fixture = "use Time::HiRes qw(sleep); $| = 1; print 'U'; " +
+        "my $fork = fork(); defined($fork) or die $!; exit 0 if $fork; " +
+        "sleep($ARGV[0]); close(STDOUT) or die $!; exit 0;";
+      const wait = mode === "close-after-exit" ? "0.18" : "3";
+      const child = yield* real.spawn(ChildProcess.make(command.command, ["-e", fixture, "--", wait], command.options))
+      readers.push(child)
+      return child
     }
     if (mode !== "unlinked" && mode !== "slow" && mode !== "overflow") {
       const child = yield* real.spawn(command)
@@ -109,14 +145,16 @@ const request = { receipts: [{ head, kind: "round" }], lands: [], install: false
 const report = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const once = Effect.result(freeze(request))
-  const warm = yield* once
+  yield* Effect.promise(initializeRuntime)
   const before = descriptors()
+  const warm = yield* once
+  yield* Effect.promise(() => backAt(before, "warm production read"))
   armed.first = true
   const began = performance.now()
   const outcome = yield* once
   const ms = Math.round(performance.now() - began)
   const running = yield* Effect.forEach(readers, (child) => child.isRunning)
-  const after = descriptors()
+  const after = yield* Effect.promise(() => backAt(before, mode))
   // A new read in this SAME source must work, even after a hung open was terminated.
   if (mode === "parent-link") {
     yield* fs.rename(receipts, staged)
@@ -126,13 +164,128 @@ const report = Effect.gen(function* () {
   }
   yield* fs.copyFile(good, leaf)
   const recovered = yield* once
-  const afterRecovery = descriptors()
+  const afterRecovery = yield* Effect.promise(() => backAt(before, mode + " recovery"))
   const words = outcome._tag === "Failure" ? "failed " + outcome.failure._tag : outcome.success.refused.map((each) => "refused " + each.reason).join(",") || "frozen"
   const marker = mode !== "unlinked" && mode !== "slow" && mode !== "overflow" || (yield* fs.exists(staged + ".opened"));
   return [words, ms, before, after, !armed.first && warm._tag === "Success", running.some(Boolean), recovered._tag === "Success" && recovered.success.receipts.length === 1, marker, afterRecovery]
 })
 const stats = await Effect.runPromise(report.pipe(Effect.provide(layer(places)), Effect.provide(gated), Effect.provide(BunServices.layer)))
 console.log(stats.join("\\t"))
+`
+
+// Isolated process: no test runner, peer test, or observer pipes owned by another workflow.
+const LIFECYCLE = (imports: { readonly effect: string; readonly process: string; readonly bun: string; readonly source: string; readonly input: string }) => `
+import * as BunServices from "${imports.bun}"
+import { Deferred, Effect, Stream } from "${imports.effect}"
+import { ChildProcess, ChildProcessSpawner } from "${imports.process}"
+import { closeSync, fstatSync, readdirSync, existsSync, mkdirSync, openSync, writeFileSync, rmSync } from "node:fs"
+import { spawn } from "node:child_process"
+import { strict as assert } from "node:assert"
+import { join } from "node:path"
+import { receiptSource } from "${imports.source}"
+import { ReceiptSource, SourceRef } from "${imports.input}"
+
+const [root, seedText] = process.argv.slice(2)
+const receipts = join(root, "receipts")
+mkdirSync(receipts)
+const name = (digit) => digit.repeat(40)
+const pathFor = (digit) => join(receipts, name(digit) + ".round.json")
+const ref = (digit) => SourceRef.Receipt({ head: name(digit), kind: "round" })
+writeFileSync(pathFor("1"), "ready")
+assert.equal(Bun.spawnSync(["mkfifo", pathFor("2")]).exitCode, 0)
+const marker = join(root, "close-marker")
+const modes = ["success", "fifo", "overflow", "deadline", "delayed-close"]
+const samples = Array.from({ length: 250 }, (_, i) => modes[i % modes.length])
+const seed = Number(seedText)
+let state = seed
+for (let i = samples.length - 1; i > 0; i--) {
+  state ^= state << 13; state ^= state >>> 17; state ^= state << 5
+  const j = (state >>> 0) % (i + 1)
+  ;[samples[i], samples[j]] = [samples[j], samples[i]]
+}
+${DESCRIPTORS}
+const places = { host: "fixture", repository: { key: "dotfiles", checkouts: [root] }, receipts,
+  installed: join(root, "installed.json"), handoff: join(root, "handoff.json"), maxBytes: 65536, readWithin: "350 millis" }
+let mode = "success"
+let checkTrailer = false
+const measure = Effect.gen(function* () {
+  const real = yield* ChildProcessSpawner.ChildProcessSpawner
+  const observe = ChildProcessSpawner.make((command) => Effect.gen(function* () {
+    assert.equal(command._tag, "StandardCommand")
+    if (mode === "success" || mode === "fifo") return yield* real.spawn(command)
+    const perl = mode === "overflow" ? "$| = 1; while (1) { print 'P' x 16384 or die $! }"
+      : mode === "deadline" ? "open(my $held, '<', $ARGV[1]) or die $!; sleep 30;"
+      : "use Time::HiRes qw(sleep); $| = 1; print 'Pready'; my $pid = fork(); defined($pid) or die $!; exit 0 if $pid; " +
+        "sleep 0.06; open(my $marked, '>', $ARGV[0]) or die $!; close($marked); close(STDOUT) or die $!; exit 0;";
+    const child = yield* real.spawn(ChildProcess.make(command.command, ["-e", perl, "--", marker, pathFor("1")], command.options))
+    if (!checkTrailer || mode !== "deadline") return child
+    // An owned read lease that is released only when the complete stream runs through its EOF
+    // trailer. Gate it on kill, then deliver its completion on the next I/O turn, like a native
+    // callback. Skipping the production drain cancels the trailer and strands this descriptor.
+    const lease = openSync(pathFor("1"), "r")
+    const killed = yield* Deferred.make()
+    const trailer = Deferred.await(killed).pipe(Effect.andThen(Effect.callback((resume) => {
+      const turn = setImmediate(() => resume(Effect.sync(() => closeSync(lease))))
+      return Effect.sync(() => clearImmediate(turn))
+    })))
+    return ChildProcessSpawner.makeHandle({ ...child,
+      kill: (options) => child.kill(options).pipe(Effect.ensuring(Deferred.succeed(killed, undefined))),
+      stdout: Stream.concat(child.stdout, Stream.fromEffectDrain(trailer)),
+    })
+  }))
+  return yield* ReceiptSource.use((source) => Effect.gen(function* () {
+    const read = (kind) => Effect.gen(function* () {
+      mode = kind
+      if (kind === "delayed-close") rmSync(marker, { force: true })
+      const result = yield* Effect.result(source.read(ref(kind === "fifo" ? "2" : "1")))
+      switch (kind) {
+        case "success":
+        case "delayed-close":
+          assert.deepEqual([result._tag, result.success?._tag, result.success?.text], ["Success", "Present", "ready"]);
+          if (kind === "delayed-close") assert.ok(existsSync(marker), "returned before delayed holder closed stdout");
+          break
+        case "fifo":
+          assert.deepEqual([result._tag, result.success?._tag, result.success?.reason], ["Success", "Refused", "not a regular file"]);
+          break
+        case "overflow":
+        case "deadline":
+          assert.equal(result._tag, "Failure");
+          assert.match(result.failure.message, kind === "overflow" ? /exceeded its byte limit/ : /did not return in time/);
+      }
+    })
+    // First use initializes Bun's own process infrastructure. Await an unrelated child's
+    // native close before sampling, then require the production warm read to retire too.
+    yield* Effect.promise(initializeRuntime)
+    const baseline = descriptors()
+    yield* read("success")
+    yield* Effect.promise(() => backAt(baseline, "warm production read"))
+    for (const kind of modes) {
+      checkTrailer = true
+      yield* read(kind)
+      yield* Effect.promise(() => backAt(baseline, kind))
+    }
+    checkTrailer = false
+    let peak = baseline
+    let witness
+    let active = true
+    const sample = () => {
+      const count = descriptors()
+      if (count > peak) { peak = count; witness = mode }
+      if (active) setImmediate(sample)
+    }
+    sample()
+    try {
+      // No retirement wait in this loop: even a slowly released handle overlaps the next read.
+      for (const kind of samples) {
+        yield* read(kind)
+        assert.ok(peak <= baseline + 2, "seed " + seed + " descriptor accumulation: baseline=" + baseline + " peak=" + peak + " at " + witness)
+      }
+    } finally { active = false }
+    yield* Effect.promise(() => backAt(baseline, "after seeded burst"))
+    console.log(JSON.stringify({ seed, isolated: modes, reads: samples.length, baseline, peak, bound: 2, final: descriptors() }))
+  })).pipe(Effect.provide(receiptSource(places)), Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, observe))
+})
+await Effect.runPromise(measure.pipe(Effect.provide(BunServices.layer)))
 `
 
 const byteHash = (text: string) => new CryptoHasher("sha256").update(text).digest("hex")
@@ -407,6 +560,8 @@ describe("the receipt source under a real swap race", () => {
           ["unlinked", "failed InputUnsettled"],
           ["slow", "failed InputUnsettled"],
           ["overflow", "failed InputUnsettled"],
+          ["close-after-exit", "failed InputUnsettled"],
+          ["close-after-deadline", "failed InputUnsettled"],
         ] as const
         yield* Effect.forEach(matrix, ([mode, expected]) =>
           Effect.gen(function* () {
@@ -431,11 +586,13 @@ describe("the receipt source under a real swap race", () => {
               mode, exit: 0, gated: "true", words: expected, running: "false", recovered: "true", started: "true", inBound: true, descriptorsLeft: 0, stderr: "",
             })
             expect(afterRecovery).toBe(before)
+            if (mode === "close-after-exit") expect(Number(ms)).toBeGreaterThanOrEqual(170)
+            if (mode === "close-after-deadline") expect(Number(ms)).toBeGreaterThanOrEqual(WITHIN_MS)
             yield* Effect.logInfo("receipt-source gated case", { mode, ms, before, after, afterRecovery })
           }), { discard: true },
         )
       }).pipe(Effect.scoped),
-    60_000,
+    160_000,
   )
 
   it.live.layer(BunServices.layer)(
@@ -447,5 +604,28 @@ describe("the receipt source under a real swap race", () => {
     "every configured directory component refuses links and rooted substitutions before and after open",
     () => componentBarriers,
     60_000,
+  )
+  it.live.layer(BunServices.layer)(
+    "retires each reader's descriptors and bounds 250 seeded, consecutive mixed reads",
+    () => Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const path = yield* Path.Path
+      const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped({ prefix: "receipt-lifecycle-" }))
+      const child = path.join(root, "lifecycle.ts")
+      yield* fs.writeFileString(child, LIFECYCLE({
+        effect: import.meta.resolve("effect"),
+        process: import.meta.resolve("effect/process"),
+        bun: import.meta.resolve("@effect/platform-bun/BunServices"),
+        source: yield* path.fromFileUrl(new URL("../mods/orchestrate/filestore/receipt-source.ts", import.meta.url)),
+        input: yield* path.fromFileUrl(new URL("../mods/orchestrate/batch-input.ts", import.meta.url)),
+      }))
+      const ran = spawnSync(["bun", child, root, "267369"], { timeout: 150_000, stdin: "ignore" })
+      const report = new TextDecoder().decode(ran.stdout).trim()
+      expect({ code: ran.exitCode, stderr: new TextDecoder().decode(ran.stderr) }).toEqual({ code: 0, stderr: "" })
+      expect(report).toContain('"seed":267369')
+      expect(report).toContain('"reads":250')
+      yield* Effect.logInfo("reader descriptor lifecycle", report)
+    }).pipe(Effect.scoped),
+    160_000,
   )
 })
