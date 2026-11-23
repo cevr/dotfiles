@@ -190,10 +190,14 @@ if [[ ${1:-} == --slices-reboot ]]; then
     case ${2:-} in
     prepare)
         id "$ruser" >/dev/null 2>&1 || useradd -u "$ruid" -U -m -s /bin/bash "$ruser"
+        ructl install -d "/home/$ruser/.config/systemd/user" "/home/$ruser/.local/bin"
+        ructl install -m 0644 "$here/../../workbox/systemd/user/workbox-pressure."{service,timer} "/home/$ruser/.config/systemd/user/"
+        ructl install -m 0755 "$here/../../workbox/bin/workbox-pressure" "/home/$ruser/.local/bin/"
         mkdir -p "${prefix}delegate-aside"
+        touch "${prefix}delegate-aside/list"
         for f in /etc/systemd/system/user@.service.d/*.conf /run/systemd/system/user@.service.d/*.conf /usr/lib/systemd/system/user@.service.d/*.conf; do
             [[ -f $f && ${f##*/} != 40-workbox-delegate.conf ]] && grep -q '^Delegate' "$f" || continue
-            n=$(wc -l < "${prefix}delegate-aside/list" 2>/dev/null || echo 0)
+            n=$(wc -l < "${prefix}delegate-aside/list")
             cp -a "$f" "${prefix}delegate-aside/$n"
             echo "$f" >> "${prefix}delegate-aside/list"
             rm -f "$f"
@@ -201,14 +205,17 @@ if [[ ${1:-} == --slices-reboot ]]; then
         bash "$here/../../workbox/system-tools.sh" slices || fail "system-tools.sh slices"
         loginctl enable-linger "$ruser"
         wait_manager
+        ructl systemctl --user enable --now workbox-pressure.timer
         ructl systemctl --user set-property --runtime personal.slice CPUWeight=77
         [[ $(ructl systemctl --user show -p CPUWeight --value personal.slice) == 77 ]] || fail "the runtime CPUWeight did not take"
+        cp /proc/sys/kernel/random/boot_id "${prefix}delegate-aside/boot-id"
         pass "prepared: $ruser lingering, slices installed, other Delegate drop-ins aside, personal.slice CPUWeight=77 at runtime only; reboot the VM, then --slices-reboot verify"
         ;;
     verify)
         trap 'cleanup_tools; loginctl disable-linger "$ruser" 2>/dev/null; systemctl stop "user@$ruid.service" 2>/dev/null; userdel -r "$ruser" 2>/dev/null' EXIT
         wait_manager
-        [[ $(awk '{ print int($1) }' /proc/uptime) -lt 600 ]] || fail "the VM did not reboot (up $(cut -d' ' -f1 /proc/uptime) s)"
+        [[ -s ${prefix}delegate-aside/boot-id ]] || fail "run --slices-reboot prepare before rebooting"
+        if cmp -s /proc/sys/kernel/random/boot_id "${prefix}delegate-aside/boot-id"; then fail "the VM did not reboot"; fi
         ructl systemd-run --user --scope --quiet --collect --unit=hbr-place.scope --slice=ergo.slice \
             sh -c "dd if=/dev/zero of=/home/$ruser/io bs=1M count=8 oflag=direct status=none; sleep 30" &
         job=$!
@@ -225,6 +232,17 @@ if [[ ${1:-} == --slices-reboot ]]; then
             fail "personal.slice CPUWeight after the reboot: $(ructl systemctl --user show -p CPUWeight --value personal.slice)"
         [[ $(ructl systemctl --user show -p FragmentPath --value ergo.slice) == /etc/systemd/user/ergo.slice ]] || fail "ergo.slice is not read from /etc/systemd/user"
         pass "after a real reboot: ergo.slice cpu.weight 20, cpu.max $quota_pct% from its unit file, io counted ($wbytes bytes) with no manager restart; the runtime-only CPUWeight=77 on personal.slice is gone (100), as the exe box lost ergo.slice's"
+        ructl systemctl --user is-active --quiet workbox-pressure.timer || fail "the pressure timer is not active after boot"
+        pressure_samples() {
+            journalctl -b --no-pager -o cat "_UID=$ruid" _SYSTEMD_USER_UNIT=workbox-pressure.service |
+                grep -E '^workbox-pressure .*cpu_some_avg10=[0-9.]+ .*memory_some_avg10=[0-9.]+ .*io_some_avg10=[0-9.]+ .*MemAvailable_kib=[0-9]+'
+        }
+        for _ in $(seq 1 33); do
+            if pressure_samples > "${prefix}delegate-aside/pressure.log"; then break; fi
+            sleep 2
+        done
+        [[ -s ${prefix}delegate-aside/pressure.log ]] || fail "no automatic pressure sample from the unprivileged minute timer after reboot"
+        pass "after reboot, the enabled user timer recorded a pressure sample without a manual start (CPU, memory, I/O, MemAvailable)"
         ;;
     *) fail "usage: test.sh --slices-reboot prepare | verify" ;;
     esac
@@ -791,35 +809,38 @@ pass "CPU-bound runs in personal.slice (100) and ergo.slice (20) got $ratio:1 ov
 
 
 # /tmp's rules and the held-file guard, installed for real; the guard on the target's /tmp with short
-# ages: an old directory goes, one a process holds open (an open file, a working directory) stays;
+# ages: an old directory goes, an entire run tree a process holds open stays;
 # without the guard tmpfiles takes the held one too.
 bash "$tools" tmp > "$work/tmp-1.log" 2>&1 || { cat "$work/tmp-1.log"; fail "system-tools.sh tmp"; }
 bash "$tools" tmp > "$work/tmp-2.log" 2>&1 || { cat "$work/tmp-2.log"; fail "system-tools.sh tmp rerun"; }
 grep '^==>' "$work/tmp-2.log" && fail "system-tools.sh tmp's rerun changed something"
 [[ $(systemctl show -p ExecStart systemd-tmpfiles-clean.service) == *workbox-tmp-clean* ]] || fail "the daily clean does not run workbox-tmp-clean"
-mkdir -p "$T/tmp/old/sub" "$T/tmp/held-file" "$T/tmp/held-cwd/x" "$T/tmp/held-deep/a/b" "$T/tmp/opencode/old-run"
-touch "$T/tmp/old/sub/f" "$T/tmp/held-file/f" "$T/tmp/held-file/g" "$T/tmp/held-cwd/x/f" "$T/tmp/held-deep/a/b/f" "$T/tmp/held-deep/a/g" "$T/tmp/opencode/old-run/f"
-printf 'D %s 1777 root root 2s\nD %s - - - 1h\n' "$T/tmp" "$T/tmp/opencode" > "$work/age-tmp.conf"
+mkdir -p "$T/tmp/old/sub" "$T/tmp/held-file" "$T/tmp/held-cwd/x" \
+    "$T/tmp/opencode/held-deep/a/b" "$T/tmp/opencode/old-run" "$T/tmp/opencode/dead-run"
+touch "$T/tmp/old/sub/f" "$T/tmp/held-file/f" "$T/tmp/held-file/g" "$T/tmp/held-cwd/x/f" \
+    "$T/tmp/opencode/held-deep/a/b/f" "$T/tmp/opencode/held-deep/a/g" "$T/tmp/opencode/old-run/f" "$T/tmp/opencode/dead-run/f"
+printf 'D %s 1777 root root 2s\nD %s - - - 2s\nx %s\n' "$T/tmp" "$T/tmp/opencode" "$T/tmp/opencode/old-run" > "$work/age-tmp.conf"
 sleep 3
-( exec 9<"$T/tmp/held-file/f"; sleep 30 ) &
+( exec 9<"$T/tmp/held-file/f"; exec sleep 30 ) &
 hold1=$!
-( cd "$T/tmp/held-cwd" && sleep 30 ) &
+( cd "$T/tmp/held-cwd/x" && exec sleep 30 ) &
 hold2=$!
-# A file two levels down, held open: it and the directories above it stay, its old neighbour goes.
-( exec 8<"$T/tmp/held-deep/a/b/f"; sleep 30 ) &
+# A file two levels down, held open: it protects the run, not the whole family.
+( exec 8<"$T/tmp/opencode/held-deep/a/b/f"; exec sleep 30 ) &
 hold3=$!
 sleep 1
-WORKBOX_TMP_ROOTS=$T/tmp /usr/local/sbin/workbox-tmp-clean "$work/age-tmp.conf" > "$work/clean.log" 2>&1 || { cat "$work/clean.log"; fail "workbox-tmp-clean"; }
-[[ ! -e $T/tmp/old && ! -e $T/tmp/held-file/g && ! -e $T/tmp/held-deep/a/g ]] || fail "the cleaner kept old entries: $(find "$T/tmp" | tr '\n' ' ')"
-[[ -e $T/tmp/held-file/f && -e $T/tmp/held-cwd/x/f && -e $T/tmp/held-deep/a/b/f && -e $T/tmp/opencode/old-run/f ]] ||
+WORKBOX_TMP_ROOTS="$T/tmp $T/tmp/opencode" /usr/local/sbin/workbox-tmp-clean "$work/age-tmp.conf" > "$work/clean.log" 2>&1 || { cat "$work/clean.log"; fail "workbox-tmp-clean"; }
+[[ ! -e $T/tmp/old && ! -e $T/tmp/opencode/dead-run ]] || fail "the cleaner kept unheld old entries: $(find "$T/tmp" | tr '\n' ' ')"
+[[ -e $T/tmp/held-file/f && -e $T/tmp/held-file/g && -e $T/tmp/held-cwd/x/f &&
+    -e $T/tmp/opencode/held-deep/a/b/f && -e $T/tmp/opencode/held-deep/a/g && -e $T/tmp/opencode/old-run/f ]] ||
     fail "the cleaner took a held entry or /tmp/opencode's (its own line, 1h): $(find "$T/tmp" | tr '\n' ' ')"
 grep -q '3 held paths locked' "$work/clean.log" || { cat "$work/clean.log"; fail "the guard's count"; }
 systemd-tmpfiles --clean "$work/age-tmp.conf" 2>/dev/null || true
-[[ ! -e $T/tmp/held-file/f && ! -e $T/tmp/held-deep/a/b/f ]] || fail "plain tmpfiles kept a held file: the guard proved nothing"
+[[ ! -e $T/tmp/held-file/f && ! -e $T/tmp/opencode/held-deep/a/b/f ]] || fail "plain tmpfiles kept a held file: the guard proved nothing"
 kill "$hold1" "$hold2" "$hold3" 2>/dev/null
 wait "$hold1" "$hold2" "$hold3" 2>/dev/null || true
-rm -rf "$T/tmp/held-cwd" "$T/tmp/held-file" "$T/tmp/held-deep" "$T/tmp/opencode/old-run"
-pass "the daily clean runs workbox-tmp-clean: an aged directory goes, one held open (a file, a file two levels down, a working directory) stays, /tmp/opencode keeps its own age; plain tmpfiles would take the held one"
+rm -rf "$T/tmp/held-cwd" "$T/tmp/held-file" "$T/tmp/opencode/held-deep" "$T/tmp/opencode/old-run"
+pass "the daily clean keeps entire held run trees, including aged unopened siblings (held by a file, deeper file, or cwd); the unheld aged directory goes; plain tmpfiles would remove the held files"
 
 # The free-space figures: btrfs filesystem usage's, readable by the user.
 WORKBOX_DISK_FREE_OUT=$work/run-workbox/disk-free sh "$here/../../workbox/systemd/disk-free/workbox-disk-free" "$T/workspaces" ||
@@ -934,14 +955,17 @@ head -c $((3 << 20)) /dev/urandom > "$v/runs/r1/receipts/receipt.json"
 echo r2 > "$v/runs/r2/record.md"
 ln "$v/runs/r2/record.md" "$v/runs/r2/record-link.md"
 truncate -s 64M "$v/db/shard/sparse.db"
-# Two copies of an OpenCode session store, as in the Bite run's area: left out by default and named.
+# Empty filename fixtures only: the move must never transfer a session store or its sidecars.
 mkdir -p "$v/oc/a" "$v/oc/b"
-head -c $((1 << 20)) /dev/urandom > "$v/oc/a/opencode.db"
-echo wal > "$v/oc/a/opencode.db-wal"
-head -c $((1 << 20)) /dev/urandom > "$v/oc/b/opencode.db"
+touch "$v/oc/a/opencode.db" "$v/oc/a/opencode.db-wal" "$v/oc/b/opencode.db"
 head -c $((1 << 20)) /dev/urandom | dd of="$v/db/shard/sparse.db" bs=1M seek=10 conv=notrunc status=none
 chown -R "$uid:$uid" "$v"
-(cd "$v" && find . -printf '%U %G %m %s %p\n' | sort && find . -type f -exec sha256sum {} + | sort -k2) | grep -v opencode.db > "$work/vperf2-before"
+runs_inventory() {
+    (cd "$1" &&
+        find . ! -name 'opencode.db' ! -name 'opencode.db-*' -printf '%U %G %m %s %p\n' | sort &&
+        find . -type f ! -name 'opencode.db' ! -name 'opencode.db-*' -exec sha256sum {} + | sort -k2)
+}
+runs_inventory "$v" > "$work/vperf2-before"
 runs_env=(HB_RUNS_FROM="$v" HB_TARGET_PREFIX="$T")
 env "${runs_env[@]}" bash "$here/sync.sh" --dry-run runs > "$work/runs-dry.log" 2>&1 || { cat "$work/runs-dry.log"; fail "sync.sh --dry-run runs"; }
 env "${runs_env[@]}" bash "$here/sync.sh" runs > "$work/runs-no.log" 2>&1 || { cat "$work/runs-no.log"; fail "sync.sh runs (no --yes)"; }
@@ -949,19 +973,16 @@ measured=$(sed -n 's/^runs: .* -> \/runs\/vperf2: \([0-9]*\) bytes.*/\1/p' "$wor
 # 3 MiB + 3 bytes + the sparse file's 64 MiB (rsync counts a file's length; --sparse keeps the holes).
 ((measured >= 67 << 20 && measured < 68 << 20)) || { cat "$work/runs-dry.log"; fail "runs measured $measured bytes"; }
 grep -q '^runs: .* in all; at \$0.05/GB past exe.s 200 GB: \$0.00 at most$' "$work/runs-dry.log" || { cat "$work/runs-dry.log"; fail "runs printed no cost"; }
-for db in oc/a/opencode.db oc/a/opencode.db-wal oc/b/opencode.db; do
-    grep -q "^runs: left out (an OpenCode session store; HB_RUNS_WITH_DB=1 copies it): $v/$db (" "$work/runs-dry.log" || { cat "$work/runs-dry.log"; fail "the dry run did not name $db"; }
-done
 grep -q 'Rerun with --yes' "$work/runs-no.log" || { cat "$work/runs-no.log"; fail "runs without --yes did not say how to copy"; }
 [[ -z $(ls -A "$T/runs/vperf2") ]] || fail "runs copied without --yes"
 env "${runs_env[@]}" bash "$here/sync.sh" runs --yes > "$work/runs-yes.log" 2>&1 || { cat "$work/runs-yes.log"; fail "sync.sh runs --yes"; }
 grep -q "^runs: verified /runs/vperf2: every file's checksum equals $v's. $v stays on this box until it is retired.$" "$work/runs-yes.log" ||
     { cat "$work/runs-yes.log"; fail "runs did not report its comparison"; }
-(cd "$T/runs/vperf2" && find . -printf '%U %G %m %s %p\n' | sort && find . -type f -exec sha256sum {} + | sort -k2) | grep -v opencode.db > "$work/vperf2-target"
-(cd "$v" && find . -printf '%U %G %m %s %p\n' | sort && find . -type f -exec sha256sum {} + | sort -k2) | grep -v opencode.db > "$work/vperf2-after"
+runs_inventory "$T/runs/vperf2" > "$work/vperf2-target"
+runs_inventory "$v" > "$work/vperf2-after"
 diff "$work/vperf2-before" "$work/vperf2-after" >/dev/null || fail "runs changed the source"
 diff "$work/vperf2-before" "$work/vperf2-target" >/dev/null || { diff "$work/vperf2-before" "$work/vperf2-target" | head; fail "the copy differs from the source"; }
-[[ ! -e $T/runs/vperf2/oc/a/opencode.db && ! -e $T/runs/vperf2/oc/b/opencode.db && ! -e $T/runs/vperf2/oc/a/opencode.db-wal ]] || fail "runs copied a session store without HB_RUNS_WITH_DB"
+[[ ! -e $T/runs/vperf2/oc/a/opencode.db && ! -e $T/runs/vperf2/oc/b/opencode.db && ! -e $T/runs/vperf2/oc/a/opencode.db-wal ]] || fail "runs copied a session store filename"
 [[ $(stat -c %i "$T/runs/vperf2/runs/r2/record.md") == $(stat -c %i "$T/runs/vperf2/runs/r2/record-link.md") ]] || fail "runs lost a hard link"
 (($(stat -c %b "$T/runs/vperf2/db/shard/sparse.db") * 512 < 8 << 20)) || fail "runs filled the sparse file's holes"
 # A copy that went wrong unseen (same size and time, other bytes): the comparison catches it.
@@ -977,7 +998,12 @@ env "${runs_env[@]}" HB_RUNS_INCLUDE="$work/runs-include" HB_RUNS_TO=/runs/narro
 [[ -f $T/runs/narrow/vperf2/runs/r2/record.md && ! -e $T/runs/narrow/vperf2/runs/r1 && ! -e $T/runs/narrow/vperf2/db ]] ||
     { find "$T/runs/narrow"; fail "the include list did not narrow the copy"; }
 rm -rf "$T/runs/narrow"
-pass "runs: $measured bytes measured and priced, nothing copied without --yes; with it, a copy equal by checksum (hard links, holes kept), the source untouched; a changed byte is caught; an include list narrows it; the two opencode.db copies are named and left out"
+printf 'oc/a/opencode.db-wal\n' > "$work/runs-include"
+if env "${runs_env[@]}" HB_RUNS_INCLUDE="$work/runs-include" bash "$here/sync.sh" runs --yes > "$work/runs-db.log" 2>&1; then
+    fail "runs accepted a session store in the include list"
+fi
+grep -q 'must not name OpenCode session-store files' "$work/runs-db.log" || { cat "$work/runs-db.log"; fail "runs include failed for another reason"; }
+pass "runs: $measured bytes measured and priced, nothing copied without --yes; with it, a copy equal by checksum (hard links, holes kept), the source untouched; a changed byte is caught; an include list narrows it and cannot name a session store"
 bash "$here/sync.sh" activate 2 > "$work/activate.log" 2>&1 || { cat "$work/activate.log"; fail "activate"; }
 # What the reboot would do: mount the subvolumes by name again.
 umount "$T/home/$user" "$T/workspaces"

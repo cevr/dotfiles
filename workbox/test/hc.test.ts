@@ -173,7 +173,7 @@ case "$*" in
   *".timer -p NextElapseUSecRealtime -p NextElapseUSecMonotonic --value") printf '%s\\n%s\\n' "$TIMER_NEXT" 0 ;;
   "show bite.slice -p MemoryMin --value") echo 268435456 ;;
   "show bite.slice -p MemoryLow --value") echo 536870912 ;;
-  "show bite.slice -p CPUWeight --value"|"show bite.slice -p IOWeight --value") echo 1000 ;;
+  "show bite.slice -p CPUWeight --value") echo 1000 ;;
   "show user.slice -p MemoryLow --value"|"show user@"*" -p MemoryLow --value"|"--user show app.slice -p MemoryLow --value") echo 4294967296 ;;
   "show user-"*" -p MemoryMax --value") echo 55834574848 ;;
   "show user-"*" -p MemorySwapMax --value") echo 1073741824 ;;
@@ -311,15 +311,7 @@ const placeShellFiles = (home: string, shell: Shell) => {
   }
 }
 
-// A /sys whose disk weighs IO by cgroup (io.cost on), so --check has no IOWeight warning to give.
-const sysDir = (() => {
-  const dir = scratch("sys")
-  mkdirSync(join(dir, "fs", "cgroup"), { recursive: true })
-  writeFileSync(join(dir, "fs", "cgroup", "io.cost.qos"), "259:0 enable=1 ctrl=auto\n")
-  return dir
-})()
-
-const bootstrapCheck = async (host: Host, shell: Shell = "installed", sys = sysDir) => {
+const bootstrapCheck = async (host: Host, shell: Shell = "installed") => {
   const home = hostHome("check", host)
   const log = join(home, "calls.log")
   placeShellFiles(home, shell)
@@ -329,7 +321,6 @@ const bootstrapCheck = async (host: Host, shell: Shell = "installed", sys = sysD
     PATH: `${join(home, ".local", "bin")}:/usr/bin:/bin`,
     TMPDIR: home,
     WORKBOX_WORKSPACES_DIR: join(home, "workspaces"),
-    WORKBOX_SYS_DIR: sys,
   })
   return { ...result, calls: calls(log) }
 }
@@ -382,7 +373,6 @@ esac`)
     PATH: `${stubs}:${hostBin(host.herdrPresent, hcInstalled)}:${join(home, ".local", "bin")}:/usr/bin:/bin`,
     TMPDIR: root,
     WORKBOX_WORKSPACES_DIR: workspaces,
-    WORKBOX_SYS_DIR: sysDir,
   })
   return { ...result, home, workspaces, calls: calls(log) }
 }
@@ -396,6 +386,8 @@ describe("bootstrap", () => {
       expect(result.code).toBe(0)
       expect(result.calls.filter((c) => c.startsWith("herdr "))).toEqual([])
       expect(result.calls).toContain("hc server status --json")
+      expect(result.calls).toContain("systemctl --user is-active --quiet workbox-pressure.timer")
+      expect(result.calls).toContain("systemctl --user show workbox-pressure.timer -p NextElapseUSecRealtime -p NextElapseUSecMonotonic --value")
     }
   }, 30_000)
 
@@ -416,14 +408,6 @@ describe("bootstrap", () => {
     const owned = await bootstrapCheck(today, "file")
     expect({ code: owned.code === 0 ? 0 : "failed", passed: owned.stdout.includes("checks passed") }).toEqual({ code: "failed", passed: false })
     expect(owned.stderr).toMatch(/~\/\.zshenv is a file of its own, not the link to .*\.local\/share\/workbox\/zshenv: new shells do not read the installed one\. Move what you want to keep from it into ~\/\.config\/secrets\.env, then `mv ~\/\.zshenv ~\/\.zshenv\.mine`; the next install links it\./)
-  }, 30_000)
-
-  test("--check warns, and still passes, when no disk weighs IO by cgroup (no io.cost, no BFQ)", async () => {
-    const none = await bootstrapCheck(today, "installed", scratch("sys-none"))
-    expect({ code: none.code, passed: none.stdout.includes("checks passed") }).toEqual({ code: 0, passed: true })
-    expect(none.stderr.trim().split("\n")).toEqual([
-      "workbox bootstrap: warning: no disk weighs IO by cgroup (no io.cost, no BFQ): IOWeight has no effect here",
-    ])
   }, 30_000)
 
   test("--check warns, and still passes, when a live inotify limit is below sysctl.d/90-inotify.conf's", async () => {
@@ -486,6 +470,7 @@ describe("bootstrap", () => {
       expect(all).not.toMatch(/(stop|disable|mask|kill).*herdr-bite/)
       expect(all).not.toMatch(/^hc server (stop|restart)/m)
       expect(result.calls).toContain("systemctl --user enable --now hc-core.service")
+      expect(result.calls.some((call) => /^systemctl --user enable --now sideshow.service .*workbox-pressure\.timer$/.test(call))).toBe(true)
       expect(result.calls).toContain("systemctl --user enable opencode.service")
       // The inotify limits from the one sysctl.d file provision.sh installs too, applied by that file alone.
       const sysctlCalls = result.calls.filter((c) => c.includes("90-inotify.conf"))

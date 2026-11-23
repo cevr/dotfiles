@@ -1,5 +1,5 @@
 #!/bin/sh
-# The system layer both workboxes share (pinned tools, the CPU, IO and memory reserve, the run
+# The system layer both workboxes share (pinned tools, the CPU and memory reserve, the run
 # families' slices, /tmp's rules, the free-space figures), as root. bootstrap.sh runs it
 # (sudo) on the exe.dev workbox and provision.sh's `tools` and `reserve` phases on the Hetzner box, so
 # both paths install the same things from one place; the pins are in pins.conf beside it.
@@ -20,7 +20,7 @@
 #           MICROSOFT_KEY_FINGERPRINT. Refused on an arch other than PWSH_ARCH.
 #   reserve the systemd drop-ins that give the OpenCode service a memory floor (systemd/reserve/),
 #           then `systemctl daemon-reload`, which applies them to running units without a restart.
-#           bite.slice's CPU and IO weights are in bite.slice itself (bootstrap and provision install it).
+#           bite.slice's CPU weight is in bite.slice itself (bootstrap and provision install it).
 #   slices  the run families' slices of the user manager from slices.conf (/etc/systemd/user/<name>.slice),
 #           the system slices' weights from it (drop-ins), and cpu, io and memory delegated to each user
 #           manager (systemd/slices/), then `systemctl daemon-reload`. A user manager takes the delegation

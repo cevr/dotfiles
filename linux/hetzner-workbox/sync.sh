@@ -45,8 +45,6 @@
 #   HB_RUNS_TO       /runs (the target's durable area, @runs)
 #   HB_RUNS_INCLUDE  a file of subpaths (relative to each HB_RUNS_FROM directory)
 #                    to copy instead of all of it; unset: all
-#   HB_RUNS_WITH_DB  1 copies OpenCode session stores (opencode.db and its -wal, -shm) found
-#                    there; unset: they are left out and named (the owner's call)
 #   HB_TARGET_ANCHOR a path on the target's btrfs (default /workspaces)
 #   HB_TARGET_PREFIX prefix of the rsync destination (test.sh only)
 set -euo pipefail
@@ -65,7 +63,6 @@ HB_TARGET_PREFIX=${HB_TARGET_PREFIX:-}
 HB_RUNS_FROM=${HB_RUNS_FROM:-/tmp/vperf2}
 HB_RUNS_TO=${HB_RUNS_TO:-/runs}
 HB_RUNS_INCLUDE=${HB_RUNS_INCLUDE:-}
-HB_RUNS_WITH_DB=${HB_RUNS_WITH_DB:-0}
 # Dollars per GB of exe's TX past its 200 GB.
 tx_price=0.05
 
@@ -401,19 +398,20 @@ do_rest() {
 # source is never changed or removed (it stays on the old box until that box is retired). Nothing is
 # deleted on the target either (no --delete).
 do_runs() {
-    local yes=0 src name dest bytes args list=() diffs
+    local yes=0 src name dest bytes args list=() diffs to
+    [[ -z ${1:-} || $1 == --yes ]] || die "usage: sync.sh [--dry-run] runs [--yes]"
     [[ ${1:-} == --yes ]] && yes=1
     [[ -n $HB_TO ]] || die "set HB_TO"
-    args=(-aHAX --sparse)
+    # Run records are not session stores. Never read or transfer one, even with an include list.
+    args=(-aHAX --sparse --exclude=opencode.db --exclude='opencode.db-*')
     if [[ -n $HB_RUNS_INCLUDE ]]; then
         [[ -f $HB_RUNS_INCLUDE ]] || die "HB_RUNS_INCLUDE: no file $HB_RUNS_INCLUDE"
+        if grep -Eq '(^|/)opencode\.db(-[^/]*)?(/|$)' "$HB_RUNS_INCLUDE"; then
+            die "HB_RUNS_INCLUDE must not name OpenCode session-store files"
+        fi
         # Only these subpaths; -r again, as --files-from turns -a's recursion off.
         args+=(-r --files-from="$HB_RUNS_INCLUDE")
     fi
-    # OpenCode session stores in a run area are copies of the owner's own (two of 3.5 GB in /tmp/vperf2):
-    # left out unless the owner says so, and named below.
-    ((HB_RUNS_WITH_DB)) || args+=(--exclude=opencode.db --exclude=opencode.db-wal --exclude=opencode.db-shm)
-    local to
     if [[ $HB_TO == local ]]; then
         [[ -n $HB_TARGET_PREFIX ]] || die "HB_TO=local needs HB_TARGET_PREFIX"
         to=$HB_TARGET_PREFIX$HB_RUNS_TO
@@ -423,22 +421,16 @@ do_runs() {
         to=$HB_TO:$HB_TARGET_PREFIX$HB_RUNS_TO
     fi
     for src in $HB_RUNS_FROM; do
-        if [[ -d $src ]]; then list+=("$src"); else say "skip $src (absent here)"; fi
+        src=${src%/}
+        [[ -d $src ]] || die "runs source $src is absent; nothing copied"
+        list+=("$src")
     done
-    ((${#list[@]})) || return 0
+    ((${#list[@]})) || die "no runs sources; nothing copied"
     local total=0
-    local db
-    if ! ((HB_RUNS_WITH_DB)); then
-        for src in "${list[@]}"; do
-            while IFS= read -r db; do
-                printf 'runs: left out (an OpenCode session store; HB_RUNS_WITH_DB=1 copies it): %s (%s)\n' "$db" "$(gb "$(stat -c %s "$db")")"
-            done < <(find "$src" -type f \( -name opencode.db -o -name opencode.db-wal -o -name opencode.db-shm \) | sort)
-        done
-    fi
     for src in "${list[@]}"; do
         name=${src##*/}
         dest=$to/$name/
-        bytes=$(rsync "${args[@]}" --dry-run --stats "$src/" "$dest" | awk '/^Total transferred file size:/ { gsub(/[^0-9]/, "", $5); print $5 }')
+        bytes=$(LC_ALL=C rsync "${args[@]}" --dry-run --stats "$src/" "$dest" | awk '/^Total transferred file size:/ { gsub(/[^0-9]/, "", $5); print $5 }')
         [[ $bytes =~ ^[0-9]+$ ]] || die "rsync measured nothing for $src"
         printf 'runs: %s -> %s: %s bytes (%s) to send\n' "$src" "$HB_RUNS_TO/$name" "$bytes" "$(gb "$bytes")"
         total=$((total + bytes))
@@ -454,8 +446,9 @@ do_runs() {
         dest=$to/$name/
         say "copying $src to $HB_RUNS_TO/$name"
         rsync "${args[@]}" "$src/" "$dest"
-        # The comparison: a checksum of every file on both sides; any line is a difference.
-        diffs=$(rsync "${args[@]}" --checksum --dry-run --itemize-changes "$src/" "$dest" | grep -v '^\.d' || true)
+        # Compare source-selected files and their metadata; a failed comparison is not a match.
+        diffs=$(rsync "${args[@]}" --checksum --dry-run --itemize-changes "$src/" "$dest") ||
+            die "runs: could not verify $HB_RUNS_TO/$name"
         if [[ -n $diffs ]]; then
             printf '%s\n' "$diffs" | head -n 20 >&2
             die "runs: $HB_RUNS_TO/$name differs from $src ($(printf '%s\n' "$diffs" | wc -l) paths): copy again before relying on it"
@@ -467,7 +460,7 @@ do_runs() {
 case $cmd in
 pass) do_pass "${2:-}" ;;
 rest) do_rest ;;
-runs) do_runs "${2:-}" ;;
+runs) [[ $# -le 2 ]] || die "usage: sync.sh [--dry-run] runs [--yes]"; do_runs "${2:-}" ;;
 activate)
     ((dry)) && die "activate has no dry run"
     [[ ${2:-} =~ ^[1-9][0-9]*$ ]] || die "activate needs a pass number"

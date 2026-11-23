@@ -14,7 +14,7 @@ user_unit_dir="$HOME/.config/systemd/user"
 workspaces_dir=${WORKBOX_WORKSPACES_DIR:-/workspaces}
 bite_source="$workspaces_dir/bite"
 local_bin_dir="$HOME/.local/bin"
-user_timers="claude-daily.timer cleanup-mosh-servers.timer cull-transcript-images.timer transcript-archive.timer workbox-backup.timer"
+user_timers="claude-daily.timer cleanup-mosh-servers.timer cull-transcript-images.timer transcript-archive.timer workbox-backup.timer workbox-pressure.timer"
 
 if [ "$(uname -s)" = Linux ] && [ -S "/run/user/$(id -u)/bus" ]; then
   XDG_RUNTIME_DIR="/run/user/$(id -u)"
@@ -82,15 +82,6 @@ check_sysctl() {
   done
 }
 
-# Warns, without failing, when no disk weighs IO by cgroup (io.cost enabled, or the BFQ scheduler):
-# then bite.slice's and the OpenCode service's IOWeight have no effect; their CPU weight still does.
-check_io_weight() {
-  sys=${WORKBOX_SYS_DIR:-/sys} # a test's fixture in its place
-  if grep -q 'enable=1' "$sys/fs/cgroup/io.cost.qos" 2>/dev/null; then return; fi
-  if grep -qs '\[bfq\]' "$sys"/block/*/queue/scheduler; then return; fi
-  printf 'workbox bootstrap: warning: no disk weighs IO by cgroup (no io.cost, no BFQ): IOWeight has no effect here\n' >&2
-}
-
 # Warns, without failing, when a family slice of the user's own (~/.config/systemd/user/<family>.slice)
 # shadows the installed one: systemd reads the user's file instead of /etc/systemd/user/'s, whole, so
 # slices.conf's values (a CPU cap scaled to this host's threads) do not apply to that family.
@@ -144,12 +135,10 @@ check_mode() {
   test "$(systemctl show bite.slice -p MemoryLow --value)" -eq 536870912
   test "$(systemctl show bite.slice -p MemorySwapMax --value)" -eq 0
   test "$(systemctl show bite.slice -p CPUWeight --value)" -eq 1000
-  test "$(systemctl show bite.slice -p IOWeight --value)" -eq 1000
   test "$(systemctl show user.slice -p MemoryLow --value)" -eq 4294967296
   test "$(systemctl show "user@$(id -u).service" -p MemoryLow --value)" -eq 4294967296
   test "$(systemctl --user show app.slice -p MemoryLow --value)" -eq 4294967296
   "$workbox_dir/system-tools.sh" --check
-  check_io_weight
   check_family_shadow
   test "$(systemctl show "user-$(id -u).slice" -p MemoryMax --value)" -eq 55834574848
   test "$(systemctl show "user-$(id -u).slice" -p MemorySwapMax --value)" -eq 1073741824

@@ -1,0 +1,17 @@
+#!/bin/sh
+# One host sample, recorded by the user service in journald (which handles timestamps and retention).
+set -eu
+LC_ALL=C awk '
+  FILENAME ~ /\/pressure\// {
+    resource = FILENAME
+    sub(/^.*\//, "", resource)
+    for (i = 2; i <= NF; i++) printf " %s_%s_%s", resource, $1, $i
+  }
+  /^(MemAvailable|SwapFree|Dirty|Writeback):/ {
+    key = $1
+    sub(/:$/, "", key)
+    printf " %s_kib=%s", key, $2
+  }
+  BEGIN { printf "workbox-pressure" }
+  END { print "" }
+' /proc/pressure/cpu /proc/pressure/memory /proc/pressure/io /proc/meminfo

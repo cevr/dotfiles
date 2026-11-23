@@ -101,20 +101,20 @@ terminal that is about to stop.
 
    `activate` prints one `activated` line for `@home` and one for `@workspaces`.
 
-   **Run records** (the Bite run's `/tmp/vperf2`, to `/runs/vperf2`; its own
-   step, never automatic). First the measured bytes and their price, nothing
-   copied:
+   **MOVE vperf2 run records** (owner's explicit yes required; never
+   automatic). Copy the Bite run's `/tmp/vperf2` to `/runs/vperf2`.
+   First measure the selected logical bytes and estimate the transfer cost:
 
    ```sh
    sudo HB_TO=exedev@NEWTS $d/sync.sh --dry-run runs
    ```
 
    It prints `runs: /tmp/vperf2 -> /runs/vperf2: <bytes> bytes (<GB>) to send`
-   and the total at $0.05/GB past exe's 200 GB, and names each OpenCode session
-   store it leaves out (`opencode.db`, two 3.5 GB copies there: the owner's
-   call; `HB_RUNS_WITH_DB=1` copies them). The Bite run cleans its ~89 GB of
-   rebuildable scratch first and names its durable parts (about 5 GB; `/runs`
-   holds 40G); if it names a subset, write those subpaths (relative to
+   and the estimate at $0.05/GB past exe's 200 GB. The owner had the two
+   OpenCode session-store copies deleted; the sync excludes those names and
+   sidecars unconditionally. The Bite run cleans its ~89 GB of rebuildable
+   scratch first and names its durable parts (5–10 GB; `/runs` holds 20 GiB);
+   if it names a subset, write those subpaths (relative to
    `/tmp/vperf2`, one per line) to a file and add `HB_RUNS_INCLUDE=<file>` to
    both commands. Show the owner the bytes and the cost; only on an explicit
    yes:

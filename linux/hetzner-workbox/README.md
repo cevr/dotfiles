@@ -23,7 +23,7 @@ exe box's host key.
 | `firewall.nft`, `systemd/hetzner-workbox-firewall.service` | Inbound: Tailscale, ICMP, ssh 22; nothing else |
 | `check.sh` | After each step: raid1, the subvolume mounts, md arrays, fstab, reflinks, firewall, sshd, backup timer |
 | `authorized_keys` | The Mac's key and herdr-mobile's (public keys) |
-| `test.sh` | All of it on loop devices in a Linux VM (Lima `wbtest`), root |
+| `test.sh` | On loop devices in a Linux VM, as root (Ubuntu 24.04 on Lima `wbnoble`, newer Linux regression on `wbtest`) |
 
 ## Disks
 
@@ -75,7 +75,7 @@ in that subvolume alone; everything else keeps writing.
 | `/tmp` | 150G | builds' temporary files (GiBs) filling the workspace disk |
 | `/tmp/opencode` | 100G | OpenCode's scratch (the opencode family's temp); its own cap, so builds and runs cannot starve each other |
 | `/tmp/ergo`, `/tmp/bite-work`, `/tmp/personal` | 80G, 40G, 30G | each run family's temp (its callers' `TMPDIR` and `GOTMPDIR`): Go's link and test steps write GiBs there, so one family's builds cannot fill another's temp, nor `/tmp` |
-| `/runs` | 40G | the durable run areas (`@runs`): run records kept for good, never cleaned, backed up (about 18 GB at most today: the Bite run's 5-10 GB, OpenCode's unit folders under 0.3 GB, two 3.5 GB session-store copies if kept); a cap so a runaway run cannot fill the disk |
+| `/runs` | 20G | the durable run areas (`@runs`): never cleaned, backed up; roughly double Bite's 5–10 GB of durable records plus OpenCode's 0.26 GB of unit folders and logs. The two session-store copies were deleted; rebuildable scratch is not part of the sizing. |
 | `/workspaces/.cache` | 60G | a cache folder nobody listed still counts against a cap |
 | `/workspaces/.cache/ergo-gocache` | 100G | Ergo's shared Go cache, a backstop: Ergo's size-driven trim keeps it near 80G (never entries used in the last 75 min), since at a full cache the pinned Go's `go vet` (pins.conf) exits 1 (build and test still pass) |
 | `/workspaces/.cache/turbo` | 30G | above turbo's own 20 GB trim, so turbo's trim acts first |
@@ -103,11 +103,16 @@ at each boot after `/tmp` is emptied (`systemd/tmpfiles.d/hetzner-runs.conf`, an
 once): the Bite run names `/tmp/vperf2` in thousands of places, and its records
 live in the durable area. On the exe box a reboot empties `/tmp/vperf2` (its
 `x` line in tmp.conf holds off only the daily clean): move it before that box
-reboots. The daily clean runs `workbox-tmp-clean`, which takes a shared
-`flock` on every path under `/tmp` and `/var/tmp` that a running process holds
-(open file, working directory, mapping); tmpfiles skips a locked entry and
-everything below it (tmpfiles.d(5), "Age"), so nothing a running process holds
-is deleted.
+reboots. The daily clean runs `workbox-tmp-clean`. It uses a process's open
+files, working directory and mappings to find its run entry directly under
+the temp root (including each family's root), and locks that entry. An aged
+file in the entry stays even if no process has opened that particular file.
+For a run that may sit idle with no files open, or reopens an aged tree,
+hold a shared directory lock for its full lifetime (`flock --shared "$run_dir"
+command …`) before touching its contents. This also protects a holder that
+starts during the scan: tmpfiles skips a locked entry and its descendants
+(`tmpfiles.d(5)`, "Age"). An unlocked path first opened after the scan can
+still race the cleaner.
 
 **Run families** (`workbox/slices.conf`, installed by `system-tools.sh
 slices`): slices of `exedev`'s own user manager, which has cpu, io and memory
@@ -130,8 +135,17 @@ No IO weights: on Ubuntu 24.04 NVMe's scheduler is `none`, which weighs nothing,
 so an `IOWeight` there is a no-op. io.cost would weigh, but in the noble VM it
 gave 21:1 for weights 400:20 once and 1:1 in three later runs (the VM's disk
 never counts as saturated), and two runs with it on saw kernel I/O errors, so
-it is not shipped untested: fitting and testing io.cost on the AX102 at
-install, before any family relies on IO isolation, is a follow-up. Each family
+it is not shipped untested: **fit and test io.cost on the AX102 at install**,
+before any family relies on I/O isolation. For the pre-data test, use `lsblk
+-d -o NAME,MAJ:MIN,MODEL` and `cat /sys/fs/cgroup/io.cost.{model,qos}` to check
+both NVMe devices and the controller. Fit each device against disposable
+data on the same device (the kernel's `tools/cgroup/iocost_coef_gen.py` is for
+a disposable device; never point it at a disk holding data). Run two
+direct-I/O writers in sibling cgroups at equal weights and then at 400:20,
+using the same test files and saturation conditions. Compare per-device
+`io.stat` write-byte deltas, repeat both arms, and check the kernel journal
+for I/O errors. Accept a model only if the equal split repeats near 1:1 and
+the weighted arm repeatedly favors the heavier cgroup. Each family
 has `IOAccounting=yes` instead, so its `io.stat` counts the bytes it reads and
 writes. Stock `user@.service` delegates cpu, memory and pids, not io: our drop-in
 adds io, and a user manager takes it at its next start (a boot), not at a
@@ -153,6 +167,12 @@ its own (an ordinary sibling at the default share), so a caller that must have t
 A job also sets its family's temp: `TMPDIR=/tmp/<family> GOTMPDIR=/tmp/<family>`
 (`/tmp/opencode` for the opencode family), so its build files count against
 that family's cap.
+
+**Pressure.** `workbox/bootstrap.sh` enables `workbox-pressure.timer` in the
+lingering user's manager. It records CPU, memory and I/O PSI and available,
+dirty, writeback and free-swap KiB once per minute. Read it with `journalctl
+--user -u workbox-pressure.service`; journald bounds retention, and samples
+survive a reboot when the journal is persistent.
 
 **Free space** (`workbox-disk-free.timer`, every minute, as root): writes
 `/run/workbox/disk-free`, world-readable `key=value` lines in bytes
@@ -191,19 +211,17 @@ The subvolume streams keep numeric ids, which is right for the home.
 working area, goes to `/runs/vperf2`. It is not a subvolume there, so rsync
 (`-aHAX --sparse`: hard links, ACLs, xattrs and holes kept), not `btrfs send`.
 It is a step of its own at the move (RUNBOOK.md), never part of pass 1 or 2:
-`sync.sh --dry-run runs` (or `runs` without `--yes`) prints the bytes rsync
-would send, measured by rsync itself (not the folder's apparent size) and
-their price, and copies nothing;
+`sync.sh --dry-run runs` (or `runs` without `--yes`) prints the rsync-selected
+logical bytes, including sparse lengths, and estimates the egress price
+(not an exact wire byte count). It copies nothing.
 `sync.sh runs --yes` copies, then compares every file by checksum (`rsync
 --checksum --dry-run`: any line is a difference, and the step fails). Nothing
 is deleted on either side; the source stays on the old box until it is
 retired. `HB_RUNS_INCLUDE=<file of subpaths>` narrows the copy to those
-subpaths with the same command. OpenCode session stores found there
-(`opencode.db` and its `-wal`, `-shm`: two 3.5 GB copies in `/tmp/vperf2`) are
-the owner's: left out by default and named in the dry run;
-`HB_RUNS_WITH_DB=1` copies them. Sizes (the Bite run, 2026-11-23): 110 GB on
-disk, ~89 GB of it rebuildable scratch it cleans itself, records it plans at
-5 GB.
+subpaths with the same command. OpenCode session stores and sidecars are
+always excluded; the owner had the two copies deleted. Sizes (the Bite run,
+2026-11-23): 110 GB on disk, ~89 GB rebuildable scratch it cleans itself,
+and 5–10 GB of durable records.
 
 Never copied: `/var/lib/tailscale` (the new box is its own node), `/etc` beyond
 the host key, Docker's images (pulled again), and the caches (`storage.conf`'s
