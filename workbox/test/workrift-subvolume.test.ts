@@ -337,6 +337,8 @@ const bench = (label: string) => {
     symlinkSync(cwd, join(at, "cwd"))
     writeFileSync(join(at, "cmdline"), `${argv.join("\0")}\0`)
     writeFileSync(join(at, "comm"), `${argv[0]?.split("/").at(-1) ?? "sh"}\n`)
+    // A process of the owner's own: its environment reads (empty here).
+    writeFileSync(join(at, "environ"), "")
     fds.forEach((file, i) => symlinkSync(file, join(at, "fd", String(10 + i))))
     return at
   }
@@ -406,13 +408,17 @@ describe("workrift subvolume: dry run and refusals", () => {
     expect({ root: filesUnder(b.root), dir: filesUnder(b.dir).filter((f) => !f.startsWith("work-calls")) }).toEqual(before)
   }, 120_000)
 
-  test("a run that stops on a failed command with no message of its own (set -e) still says so and names its step", () => {
+  test("a command that fails stops the switch with the three facts: what failed and its status at which step, the state of both trees, the next command", () => {
     const b = bench("silent")
-    // The journal a directory: the first step's append to it fails.
+    // The step log a directory: its rm fails before anything changes.
     mkdirSync(join(b.state, "subvolume/log"), { recursive: true })
     const ran = b.wr(["subvolume", "--apply"])
-    expect(ran.code, said(ran)).not.toBe(0)
-    expect(ran.err).toMatch(/workrift: subvolume stopped with status \d+ and no message \(a command failed under set -e\) at the step [a-z-]+/)
+    expect(ran.code, said(ran)).toBe(1)
+    expect(ran.err).toMatch(/^workrift: rm of the old step log \S+ \(nothing changed\) failed \(status [1-9]\d*\) at the step start$/m)
+    expect(ran.err).toContain(`workrift subvolume: state: ${b.base} is a plain folder (the live base)`)
+    expect(ran.err).toContain(`workrift subvolume: next: cd / && WORKRIFT_SOURCE=${b.base} workrift subvolume --apply`)
+    expect(b.layout()).toEqual({ base: "F", new: "-", back: "-", old: "-" })
+    whole(b)
   })
 
   test("a path that is not a work base is refused; a base already a subvolume is a no-op that says so", () => {
@@ -1702,129 +1708,905 @@ describe("workrift subvolume: the model (histories of switches, faults, kills an
   }, 1_800_000)
 })
 
-/** The external commands workrift and its stand-ins run, each put behind a shim by the census. */
-const CENSUS_COMMANDS = ["git", "jq", "date", "sed", "tr", "grep", "cat", "awk", "rm", "find", "work", "stat", "head", "mkdir", "dirname", "wc", "sleep", "cut", "cp", "basename", "readlink", "mv", "lsof", "python3", "ps", "mktemp", "ls", "ln", "id", "getconf", "df", "uname", "sort", "cksum", "btrfs", "flock", "findmnt", "touch", "xargs", "comm", "tail"]
+/** The external commands workrift runs, each put behind a shim by the census (`work` through WORK). */
+const CENSUS_COMMANDS = ["git", "jq", "date", "sed", "tr", "grep", "cat", "awk", "rm", "find", "work", "stat", "head", "mkdir", "dirname", "wc", "sleep", "cut", "cp", "basename", "readlink", "mv", "lsof", "python3", "ps", "mktemp", "ls", "ln", "id", "getconf", "df", "uname", "sort", "cksum", "btrfs", "flock", "findmnt", "touch", "xargs", "comm", "tail", "sh"]
+/** Functions that only run one external command: a failure inside one is its caller's call site. */
+const WRAPPERS: Record<string, string> = { base_git: "git", work_in: "work", sv_renameat: "python3" }
+/** Functions that run the command their arguments name (sv_read VAR CMD…): the command is the call site. */
+const RUNNERS = ["sv_read"]
+
+/** One call site of the script: an external command (or a wrapper's call) at a line, the k-th of its kind there. */
+interface Site {
+  readonly id: string
+  readonly line: number
+  /** Where the census's instrumented copy puts `CENSUS_SITE=<id> ` (before `nice`, `command` or `sv_read` when one leads). */
+  readonly col: number
+  /** The last line of the statement it is in. */
+  readonly end: number
+  readonly fn: string
+  readonly command: string
+  readonly ordinal: number
+  /** The first run of literal words after the command, as a case pattern (to read the table by). */
+  readonly glob: string
+  readonly construct: ReadonlyArray<string>
+  /** What set -e does with a failure here. */
+  readonly setE: "stops" | "does not stop"
+  readonly text: string
+}
+
+/** A command the scanner found, before it is kept as a site. */
+interface Raw {
+  line: number
+  col: number
+  read: boolean
+  end: number
+  fn: string
+  word: string
+  args: string
+  subst: "none" | "assigned" | "embedded"
+  pipeNotLast: boolean
+  pipeLast: boolean
+  or: string | undefined
+  and: boolean
+  afterAndOr: boolean
+  cond: boolean
+  neg: boolean
+  devnull: boolean
+  text: string
+}
+
+/** The words after a command, to its segment's end, quotes stripped; a word with an expansion is null. */
+const argWords = (raw: string, from: number): Array<string | null> => {
+  const out: Array<string | null> = []
+  let word = ""
+  let literal = true
+  let started = false
+  let q: string | undefined
+  let depth = 0
+  const push = () => {
+    if (started) out.push(literal ? word : null)
+    word = ""
+    literal = true
+    started = false
+  }
+  for (let k = from; k < raw.length; k++) {
+    const c = raw[k]!
+    if (q) {
+      if (c === q) q = undefined
+      else {
+        if (q === '"' && (c === "$" || c === "`")) literal = false
+        word += c
+      }
+      continue
+    }
+    if (depth > 0) {
+      if (c === "(") depth++
+      if (c === ")") depth--
+      continue
+    }
+    if (c === "'" || c === '"') {
+      q = c
+      started = true
+      continue
+    }
+    if (c === "$" && raw[k + 1] === "(") {
+      depth = 1
+      k++
+      literal = false
+      started = true
+      continue
+    }
+    if (c === "$" || c === "`") literal = false
+    if (/\s/.test(c)) {
+      push()
+      continue
+    }
+    if (c === "|" || c === ";" || c === "&" || c === ")" || (c === "#" && !started)) break
+    if ((c === ">" || c === "<") && !started) {
+      // A redirection and its target: no argument.
+      let t = k + 1
+      while (raw[t] === ">" || raw[t] === "&" || raw[t] === "<") t++
+      while (t < raw.length && /\s/.test(raw[t]!)) t++
+      while (t < raw.length && !/[\s;|&)]/.test(raw[t]!)) t++
+      k = t - 1
+      continue
+    }
+    if (/[0-9]/.test(c) && !started && (raw[k + 1] === ">" || raw[k + 1] === "<")) continue
+    word += c
+    started = true
+  }
+  push()
+  return out
+}
+/** The case pattern of a call site: its first run of literal arguments. */
+const globOf = (words: Array<string | null>) => {
+  const run: Array<string> = []
+  for (const w of words) {
+    if (w === null || w === "\\") {
+      if (run.length > 0) break
+      continue
+    }
+    run.push(w)
+  }
+  const esc = run.join(" ").replace(/[\\*?[\]]/g, (c) => `\\${c}`)
+  return run.length > 0 ? `*${esc}*` : "*"
+}
 
 /**
- * The census (WORKRIFT_CENSUS=<scenario>, run by hand, not in the gate): every call of an external command in one
- * workrift command, one case each. In `fail` mode call k fails (exit 1; git 128, grep 2: a fork that failed, a full
- * disk, a lock taken); in `kill` mode call k first kills the workrift process alone (kill -9), and the call and every
- * child go on. Each case then checks the base is whole with every ref it had, classes the end (ok, refused with a
- * message of workrift, stopped under set -e, cut), and runs the commands that must finish the switch from there.
- * CENSUS_FROM / CENSUS_TO pick the cases; CENSUS_OUT (a .jsonl) gets one line a case. The full stderr of every
- * command of a case goes to <bench>/case.log, and the bench is kept when the case fails a check.
+ * The sites of the scanned commands: those of the functions workrift subvolume reaches, and of the top level that runs
+ * for it (before the dispatch on the command, and its `subvolume)` arm), with set -e's verdict on each.
  */
-describe.skipIf(!process.env.WORKRIFT_CENSUS)("census: a failure or a kill at every external call", () => {
-  const scenario = process.env.WORKRIFT_CENSUS ?? ""
-  const mode = scenario.startsWith("kill") ? "kill" : "fail"
-  const shim = (b: Bench) => {
-    const dir = join(b.dir, "shim")
-    mkdirSync(dir, { recursive: true })
-    for (const name of CENSUS_COMMANDS) {
-      const real = Bun.which(name, { PATH: `${b.bin}:${process.env.PATH ?? ""}` })
-      if (!real) continue
-      const code = name === "git" ? 128 : name === "grep" ? 2 : 1
-      exe(
-        join(dir, name),
-        [
-          "#!/bin/sh",
-          'if [ -n "${CENSUS_LOG:-}" ]; then',
-          `  printf '%s\\n' "${name} $*" >>"$CENSUS_LOG"`,
-          '  n=$(( $(/usr/bin/wc -l <"$CENSUS_LOG") ))',
-          // CENSUS_MATCH (a case pattern): the first call that matches it fails, whatever its number.
-          `  if [ -n "\${CENSUS_MATCH:-}" ] && [ ! -e "$CENSUS_LOG.matched" ]; then case "${name} $*" in $CENSUS_MATCH) : >"$CENSUS_LOG.matched"; printf 'census: ${name} failed (matched)\\n' >&2; exit ${code} ;; esac; fi`,
-          '  if [ "$n" -eq "${CENSUS_AT:-0}" ]; then',
-          '    case "${CENSUS_MODE:-fail}" in',
-          `      fail) printf 'census: ${name} failed (injected at call %s)\\n' "$n" >&2; exit ${code} ;;`,
-          '      kill) kill -KILL "$(/bin/cat "$CENSUS_PIDFILE")" 2>/dev/null || true ;;',
-          "    esac",
-          "  fi",
-          "fi",
-          `exec '${real}' "$@"`,
-          "",
-        ].join("\n"),
-      )
+const keptSites = (raws: ReadonlyArray<Raw>, fns: ReadonlyArray<{ readonly name: string; readonly start: number; readonly end: number }>, names: ReadonlySet<string>, topRuns: (line: number) => boolean): ReadonlyArray<Site> => {
+  const byName = new Map(fns.map((f) => [f.name, f]))
+  const reach = new Set<string>(["(top)"])
+  const walk = (name: string) => {
+    if (reach.has(name) || !byName.has(name)) return
+    reach.add(name)
+    for (const r of raws) if (r.fn === name && names.has(r.word)) walk(r.word)
+  }
+  for (const root of ["subvolume_command", "tickets_at_exit", "fail"]) walk(root)
+  raws = raws.filter((r) => r.fn !== "(top)" || topRuns(r.line))
+  for (const r of raws) if (r.fn === "(top)" && names.has(r.word)) walk(r.word)
+  // A call in a condition, after `!`, or left of `||` / `&&`: set -e is off for the whole call.
+  const off = new Set<string>()
+  const walkOff = (name: string) => {
+    if (off.has(name) || !byName.has(name)) return
+    off.add(name)
+    for (const r of raws) if (r.fn === name && names.has(r.word)) walkOff(r.word)
+  }
+  for (const r of raws) if (reach.has(r.fn) && names.has(r.word) && (r.cond || r.neg || r.or !== undefined || r.and)) walkOff(r.word)
+  const external = (w: string) => CENSUS_COMMANDS.includes(w) || w in WRAPPERS
+  const kept = raws.filter((r) => reach.has(r.fn) && !(r.fn in WRAPPERS) && external(r.word))
+  const seen = new Map<string, number>()
+  return kept.map((r) => {
+    const command = WRAPPERS[r.word] ?? r.word
+    const key = `${r.line}:${command}`
+    const ordinal = (seen.get(key) ?? 0) + 1
+    seen.set(key, ordinal)
+    const construct: Array<string> = []
+    if (r.read) construct.push("sv_read (its status returned)")
+    if (r.subst === "assigned") construct.push("x=$(…)")
+    if (r.subst === "embedded") construct.push("$(…) in another command")
+    if (r.pipeNotLast) construct.push("pipe, not its last command")
+    if (r.pipeLast) construct.push("pipe, last")
+    if (r.or !== undefined) construct.push(`|| ${r.or}`)
+    if (r.and) construct.push("&& …")
+    if (r.afterAndOr) construct.push("after && or ||")
+    if (r.cond) construct.push("condition")
+    if (r.neg) construct.push("!")
+    if (r.devnull) construct.push("2>/dev/null")
+    if (off.has(r.fn)) construct.push(`set -e off in ${r.fn} (called in a condition)`)
+    const ignored = r.pipeNotLast || r.subst === "embedded" || r.or !== undefined || r.and || r.cond || r.neg || off.has(r.fn)
+    return {
+      id: `${r.line}:${command}#${ordinal}`,
+      line: r.line,
+      col: r.col,
+      end: r.end,
+      fn: r.fn,
+      command,
+      ordinal,
+      glob: globOf(JSON.parse(r.args) as Array<string | null>),
+      construct,
+      setE: ignored ? "does not stop" : "stops",
+      text: r.text,
+    } satisfies Site
+  })
+}
+
+/** The offset just past the bracket that closes the one at `from` (`$((…))`, `${…}`), on the same line. */
+const pastClose = (raw: string, from: number, open: string, close: string) => {
+  let d = 0
+  let k = from
+  for (; k < raw.length; k++) {
+    if (raw[k] === open) d++
+    else if (raw[k] === close && --d === 0) break
+  }
+  return k + 1
+}
+
+/** A `||` that ends a line: its handler is the next line. */
+const handlersOnNextLine = (raws: ReadonlyArray<Raw>, lines: ReadonlyArray<string>) => {
+  for (const r of raws) {
+    if (r.or !== "(the next line)") continue
+    const at = lines.slice(r.line - 1, r.end).findIndex((l) => /\|\|\s*$/.test(l))
+    if (at >= 0) r.or = lines[r.line - 1 + at + 1]!.trim().slice(0, 160)
+  }
+}
+
+/** The functions of the script: each `name() {` to its `}` at the line's start. */
+const scriptFunctions = (lines: ReadonlyArray<string>) => {
+  const fns: Array<{ readonly name: string; readonly start: number; readonly end: number }> = []
+  lines.forEach((text, i) => {
+    const m = text.match(/^([a-z_][a-z0-9_]*)\(\) \{(.*\})?\s*$/)
+    if (!m) return
+    let j = i
+    if (!m[2]) while (j + 1 < lines.length && lines[j] !== "}") j++
+    fns.push({ name: m[1]!, start: i + 1, end: j + 1 })
+  })
+  return fns
+}
+
+/**
+ * The call sites of every function `workrift subvolume` reaches (from subvolume_command, fail and the exit trap) and of
+ * the top level, by a scanner over the script's text: quotes, `$(…)`, heredocs, comments and redirections are tracked,
+ * and each simple command's first word is a command. The census addresses calls by these sites, never by a count.
+ */
+const callSites = (src: string): ReadonlyArray<Site> => {
+  const lines = src.split("\n")
+  const fns = scriptFunctions(lines)
+  const fnAt = (n: number) => fns.find((f) => f.start <= n && n <= f.end)?.name ?? "(top)"
+  const names = new Set(fns.map((f) => f.name))
+  const raws: Array<Raw> = []
+  type Ctx = { kind: "top" | "subst" | "dq" | "sq"; depth: number; assigned: boolean }
+  const stack: Array<Ctx> = [{ kind: "top", depth: 0, assigned: false }]
+  interface Seg { cmd: Raw | undefined; expect: boolean; pipeFrom: boolean; afterAndOr: boolean; neg: boolean; col: number | undefined; read: boolean }
+  const fresh = (): Seg => ({ cmd: undefined, expect: true, pipeFrom: false, afterAndOr: false, neg: false, col: undefined, read: false })
+  const segs: Array<Seg> = [fresh()]
+  const seg = () => segs[segs.length - 1]!
+  let heredoc: string | undefined
+  let cond = 0
+  let pendingAssign = false
+  let open: Array<Raw> = []
+  /** A command named at line n, its arguments from the offset `from`: in the current segment. */
+  const record = (n: number, raw: string, word: string, at: number) => {
+    const s = seg()
+    const substCtx = [...stack].reverse().find((x) => x.kind === "subst")
+    const from = at + (word === "work" && raw.startsWith('"$work_bin"', at) ? 11 : raw.slice(at).match(/^[^\s;|&()<>'"`$]+/)![0].length)
+    const r: Raw = {
+      line: n,
+      col: s.col ?? at,
+      read: s.read,
+      end: n,
+      fn: fnAt(n),
+      word,
+      args: JSON.stringify(argWords(raw, from)),
+      subst: substCtx ? (substCtx.assigned ? "assigned" : "embedded") : "none",
+      pipeNotLast: false,
+      pipeLast: s.pipeFrom,
+      or: undefined,
+      and: false,
+      afterAndOr: s.afterAndOr,
+      cond: cond > 0,
+      neg: s.neg,
+      devnull: false,
+      text: raw.trim().slice(0, 160),
     }
-    return dir
+    raws.push(r)
+    open.push(r)
+    s.cmd = r
+    s.expect = false
   }
-  /** One command: plain, or under the shims with call `at` failed or killed (0: only counted). */
-  const run = async (b: Bench, argv: ReadonlyArray<string>, census?: { readonly at: number; readonly log: string }, extra: Env = {}) => {
-    const pidfile = join(b.dir, "census.pid")
-    const env = b.envFor({
-      ...extra,
-      ...(census ? { PATH: `${shim(b)}:${b.env.PATH}`, CENSUS_LOG: census.log, CENSUS_AT: String(census.at), CENSUS_MODE: mode, CENSUS_PIDFILE: pidfile } : {}),
-    })
-    // The pid is the script's own (exec), for a kill of it alone.
-    const child = Bun.spawn(["/bin/sh", "-c", 'printf "%s\\n" "$$" >"$0.pid"; exec "$@"', join(b.dir, "census"), SCRIPT, ...argv], { cwd: b.dir, env, stdout: "pipe", stderr: "pipe" })
-    const [out, err] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()])
-    await child.exited
-    const ran: Ran = { code: child.signalCode ? null : child.exitCode, signal: child.signalCode ?? null, out, err }
-    writeFileSync(join(b.dir, "case.log"), `$ workrift ${argv.join(" ")}${census ? ` (census ${mode} at ${census.at})` : ""}\n${said(ran)}\n`, { flag: "a" })
-    // A cut run's children (the call that killed it) end before anything is read.
-    if (ran.signal) await Bun.sleep(300)
-    return ran
+  for (let i = 0; i < lines.length; i++) {
+    const n = i + 1
+    const raw = lines[i]!
+    if (heredoc !== undefined) {
+      if (raw.trim() === heredoc) heredoc = undefined
+      continue
+    }
+    let j = /^[a-z_][a-z0-9_]*\(\) \{/.test(raw) ? raw.indexOf("{") + 1 : 0
+    const at = (k: number) => raw[k] ?? ""
+    while (j < raw.length) {
+      const c = at(j)
+      const ctx = stack[stack.length - 1]!
+      if (ctx.kind === "sq") {
+        if (c === "'") stack.pop()
+        j++
+        continue
+      }
+      if (ctx.kind === "dq") {
+        if (c === "\\") j += 2
+        else if (c === '"') {
+          stack.pop()
+          j++
+        } else if (c === "$" && at(j + 1) === "(" && at(j + 2) !== "(") {
+          stack.push({ kind: "subst", depth: 0, assigned: false })
+          segs.push(fresh())
+          j += 2
+        } else j++
+        continue
+      }
+      if (c === "#" && (j === 0 || /[\s;]/.test(at(j - 1)))) break
+      if (c === "\\") {
+        j += 2
+        continue
+      }
+      if (c === "'") {
+        stack.push({ kind: "sq", depth: 0, assigned: false })
+        seg().expect = false
+        j++
+        continue
+      }
+      if (c === '"') {
+        stack.push({ kind: "dq", depth: 0, assigned: false })
+        if (!seg().expect) {
+          j++
+          continue
+        }
+        // `"$work_bin" …` as a command.
+        if (raw.startsWith('"$work_bin"', j)) {
+          stack.pop()
+          record(n, raw, "work", j)
+          j += 11
+          continue
+        }
+        // Another quoted word in command place is the command (`"$@"`), no site; after `=`, a value.
+        if (at(j - 1) !== "=") seg().expect = false
+        j++
+        continue
+      }
+      if (c === "$" && at(j + 1) === "(" && at(j + 2) === "(") {
+        j = pastClose(raw, j + 1, "(", ")")
+        continue
+      }
+      if (c === "$" && at(j + 1) === "(") {
+        stack.push({ kind: "subst", depth: 0, assigned: pendingAssign })
+        pendingAssign = false
+        segs.push(fresh())
+        j += 2
+        continue
+      }
+      if (c === "$" && at(j + 1) === "{") {
+        j = pastClose(raw, j + 1, "{", "}")
+        seg().expect = false
+        continue
+      }
+      if (c === "(") {
+        ctx.depth++
+        segs[segs.length - 1] = fresh()
+        j++
+        continue
+      }
+      if (c === ")") {
+        if (ctx.kind === "subst" && ctx.depth === 0) {
+          stack.pop()
+          const inner = segs.pop()!
+          // `x=$(…) || h`: the substitution's last command is the status the handler sees.
+          if (ctx.assigned && seg().cmd === undefined && inner.cmd) seg().cmd = inner.cmd
+          j++
+          continue
+        }
+        if (ctx.depth > 0) ctx.depth--
+        segs[segs.length - 1] = fresh()
+        j++
+        continue
+      }
+      if (c === "<" && at(j + 1) === "<" && at(j + 2) !== "<") {
+        const m = raw.slice(j + 2).match(/^-?\s*['"]?([A-Za-z_]+)['"]?/)
+        if (m) heredoc = m[1]
+        j += 2
+        continue
+      }
+      const redir = raw.slice(j).match(/^[0-9]*(<<<|>>|<>|>&|<&|>|<)(-|[0-9]+)?/)
+      if (redir && (c === "<" || c === ">" || (/[0-9]/.test(c) && /^[0-9]+[<>]/.test(raw.slice(j))))) {
+        const rest = raw.slice(j + redir[0].length)
+        if (/^>|2>/.test(redir[0]) && rest.startsWith("/dev/null") && redir[0].startsWith("2")) {
+          const s = seg()
+          if (s.cmd) s.cmd.devnull = true
+        }
+        j += redir[0].length
+        if (/^\s*["']/.test(raw.slice(j))) {
+          const k0 = raw.slice(j).search(/["']/) + j
+          const k = raw.indexOf(raw[k0]!, k0 + 1)
+          j = k < 0 ? raw.length : k + 1
+        } else {
+          const tw = raw.slice(j).match(/^\s*[^\s;|&()<>'"`]+/)
+          if (tw) j += tw[0].length
+        }
+        continue
+      }
+      if (c === "|" && at(j + 1) === "|") {
+        const s = seg()
+        if (s.cmd) s.cmd.or = raw.slice(j + 2).trim().slice(0, 160) || "(the next line)"
+        segs[segs.length - 1] = { ...fresh(), afterAndOr: true }
+        j += 2
+        continue
+      }
+      if (c === "&" && at(j + 1) === "&") {
+        const s = seg()
+        if (s.cmd) s.cmd.and = true
+        segs[segs.length - 1] = { ...fresh(), afterAndOr: true }
+        j += 2
+        continue
+      }
+      if (c === "|") {
+        const s = seg()
+        if (s.cmd) s.cmd.pipeNotLast = true
+        segs[segs.length - 1] = { ...fresh(), pipeFrom: true }
+        j++
+        continue
+      }
+      if (c === ";" || c === "&") {
+        if (at(j + 1) === ";") j++
+        segs[segs.length - 1] = fresh()
+        j++
+        continue
+      }
+      if (/\s/.test(c)) {
+        j++
+        continue
+      }
+      const m = raw.slice(j).match(/^[^\s;|&()<>'"`$]+/)
+      if (!m) {
+        j++
+        seg().expect = false
+        continue
+      }
+      const w = m[0]
+      const s = seg()
+      if (s.expect) {
+        if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) {
+          if (w.endsWith("=") && raw.startsWith("$(", j + w.length)) pendingAssign = true
+          j += w.length
+          continue
+        }
+        if (w === "local" || w === "!" || ["then", "do", "else", "fi", "done", "esac", "{", "}", "in", "time", "command"].includes(w)) {
+          if (w === "!") s.neg = true
+          if (w === "then" || w === "do") cond = Math.max(0, cond - 1)
+          // `command -v x` looks x up: no call of it.
+          if (w === "command" && /^command\s+-[vV]/.test(raw.slice(j))) s.expect = false
+          j += w.length
+          continue
+        }
+        if (["if", "while", "until", "elif"].includes(w)) {
+          cond++
+          j += w.length
+          continue
+        }
+        if (w === "case" || w === "for") {
+          s.expect = false
+          j += w.length
+          continue
+        }
+        if (w === "nice" || RUNNERS.includes(w)) {
+          // `nice -n N cmd`, `sv_read VAR cmd`: the command is the word after; the site's mark goes before them.
+          const nm = raw.slice(j).match(/^\S+\s+(-n\s+)?\S+\s+/)
+          s.col ??= j
+          s.read ||= w !== "nice"
+          j += nm ? nm[0].length : w.length
+          continue
+        }
+        if (w.endsWith(")") || /^[^a-z_/]/.test(w)) {
+          // `[` is the test builtin: its words are no commands. (A case pattern's `x)` leaves the arm's command next.)
+          if (w === "[") s.expect = false
+          j += w.length
+          continue
+        }
+        record(n, raw, w.replace(/^.*\//, ""), j)
+        j += w.length
+        continue
+      }
+      j += w.length
+    }
+    // A line that ends its statement closes it: the end line of every command opened since.
+    const t = raw.replace(/\s+#.*$/, "").trimEnd()
+    if (stack.length === 1 && heredoc === undefined && !/(\\|\||&&|\(|\{|(^|\s)(then|do|else|in))$/.test(t)) {
+      for (const r of open) r.end = n
+      open = []
+      if (t !== "") segs[0] = fresh()
+    }
   }
+  handlersOnNextLine(raws, lines)
+  const dispatch = lines.indexOf('case "$command" in') + 1
+  const arm = lines.indexOf("  subvolume)") + 1
+  const armEnd = lines.indexOf("    ;;", arm) + 1
+  if (dispatch === 0 || arm === 0 || armEnd === 0) throw new Error("the script's dispatch (case \"$command\" in, its subvolume) arm) is not where the census looks")
+  return keptSites(raws, fns, names, (line) => line < dispatch || (arm <= line && line <= armEnd))
+}
+
+/** The handler of a site's `||`, from its construct. */
+const handlerOf = (site: Site) => site.construct.find((c) => c.startsWith("|| "))?.slice(3) ?? ""
+
+/**
+ * What a failure at the site becomes, where its construct says it: set -e stops the script; a `|| fail` stops it with
+ * its own message; a `|| return 1` hands the failure to the caller. Undefined: VERDICTS says it.
+ */
+const autoVerdict = (site: Site): string | undefined => {
+  const or = handlerOf(site)
+  if (site.setE === "stops") return "stops: set -e ends the script; the exit trap says what failed, its status and step, the state of both trees and the next command"
+  if (/\b(fail|sv_stop|sv_stop_status|p_left)\b/.test(or)) return "stops: its own message (fail), with the state of both trees and the next command"
+  if (/^(\{ .*)?return [1-9]/.test(or) || /^\{ sv_why=.*(return 1|sv_abort)/.test(or)) return "returned: the function fails (sv_why says why where it is set) and its caller checks it"
+  return undefined
+}
+
+/**
+ * What a failure becomes at each site whose construct does not say it (autoVerdict), and what the script decides from
+ * it, keyed by verdictKeys. Each starts with its kind: closed (the failure leads to a refusal, a wait or a fault said,
+ * never to the step that a success allows), returned (the function's status, which its caller checks), branch (a
+ * condition whose false branch is the safe one), message (read only for words a person reads), cleanup (a scratch
+ * file; nothing reads it after), unreachable (a path the census host cannot take: Linux's /proc, lsof, a test hook).
+ */
+const VERDICTS: Record<string, string> = {
+  "(top):uname#1": "closed: uname that fails reads as not Linux: purge_trash=false, the trash is kept, never purged",
+  "normalized_origin:git#1": "closed: no origin (pipe member) reads as an origin no source has: resolve_source finds none and fails; never reached with WORKRIFT_SOURCE set",
+  "normalized_origin:sed#1": "closed: as its git: an empty origin, no source found, a refusal",
+  "process_identity:cat#1": "closed: /proc/<pid>/stat that does not read is no identity (empty): process_is asks kill -0, alive is unknown, never gone",
+  "process_identity:awk#1": "closed: no start tick is no identity (empty): unknown while kill -0 finds the pid, never gone",
+  "process_identity:cat#2": "closed: no boot id is no identity (empty), never one that differs (r4: it was `boot  tick N`, a mismatch, a holder taken for gone)",
+  "process_identity:ps#1": "closed: ps that fails prints nothing: no identity, unknown while kill -0 finds the pid, never gone",
+  "process_identity:sed#1": "closed: as its ps: empty, no identity, never gone",
+  "ticket_live:flock#1": "closed: flock -n that fails (held or an error) is a held ticket: it is live unless its owner is known gone",
+  "process_parent:cat#1": "closed: no parent: sv_in_line's walk ends, the process counts as outside workrift's line (a user of the base: wait or refusal)",
+  "process_parent:awk#1": "closed: as its cat: no parent, the process is outside the line",
+  "process_parent:ps#1": "closed: as on Linux: no parent, outside the line",
+  "process_parent:tr#1": "closed: as its ps",
+  "queue_sweep:rm#1": "cleanup: a dead ticket left in place; every reader checks liveness (ticket_live), so it is skipped as dead",
+  "queue_sweep:rm#2": "cleanup: a stray .in left; a .in without its ticket is never read",
+  "ticket_ahead:sort#1": "returned: `&& [ -n ] || return 1`: a sort that fails is the line unreadable; both queue_enter callers fail on it",
+  "ticket_ahead_words:grep#1": "message: the count in the waiting line's words",
+  "ticket_ahead_words:head#1": "message: the first ticket's words; empty says nothing ahead in the message only",
+  "ticket_words:sed#1": "message: the pid in the waiting line's words",
+  "ticket_words:ps#1": "message: whether the holder is stopped, in words",
+  "ticket_words:sed#2": "message: the purpose in words",
+  "ticket_words:sed#3": "message: the since in words",
+  "queue_enter:date#2": "closed: a clock that does not read is the polite patience spent: it takes its place in line now (a writer waits its turn there)",
+  "queue_enter:date#3": "closed: as before it",
+  "queue_enter:cat#1": "closed: a counter that does not read is 0; the next number is past every ticket present, so no ticket is numbered below a live one",
+  "queue_enter:sleep#1": "message: the talker that repeats the waiting line ends; the wait goes on",
+  "queue_enter:date#5": "closed: a clock that does not read is the bound passed: the line is read again, and a ticket still ahead gives the place back (subvolume: a refusal)",
+  "legacy_path:git#1": "returned: `&& [ -n ] || return 1`; legacy_take fails when a .git is there (r4), queue_enter's check then makes a reader a writer (more exclusive)",
+  "legacy_take:flock#1": "branch: try mode, the lock held or an error: returns 1, no place taken",
+  "legacy_take:flock#2": "branch: the try failed: the blocking flock follows, and its failure fails",
+  "legacy_yield:ls#1": "unreachable: Linux only (/proc/locks); an inode that does not read yields to nothing: fairness to an older waiting writer, not exclusion (the flock after it is)",
+  "legacy_yield:awk#1": "unreachable: as its ls",
+  "legacy_yield:awk#2": "unreachable: Linux only; awk that fails ends the yield, as above",
+  "legacy_yield:sleep#1": "unreachable: Linux only; a sleep that fails looks again at once",
+  "ticket_wait:date#1": "closed: returns: the caller reads the line again (ticket_ahead), and a ticket still ahead gives the place back",
+  "ticket_wait:date#2": "closed: as before it",
+  "ticket_wait:flock#1": "branch: flock -w that fails (held, timed out, an error) waits on; the owner and the bound are checked each round",
+  "ticket_wait:date#3": "closed: [ '' -lt N ] fails, the wait returns: the caller reads the line again",
+  "queue_leave:rm#1": "cleanup: a given-back ticket's file left; its lock is closed, so it is dead and swept",
+  "base_snapshots:stat#1": "closed: not a snapshot base: it takes the clone turn (slower, never worse)",
+  "base_snapshots:stat#2": "closed: as before it",
+  "base_snapshots:work#1": "closed: doctor that fails is no btrfs cloner: the clone turn is taken",
+  "base_snapshots:jq#1": "closed: as its work",
+  "clock_time:date#1": "branch: GNU date's -d failing tries BSD date's -r (message only)",
+  "clock_time:date#2": "message: a time of day in words",
+  "phase:date#1": "message: the seconds in a phase line",
+  "work_bases:head#1": "message: the answer quoted in a fail",
+  "work_bases:jq#2": "closed: after the list was checked by jq -e, a jq that fails lists fewer bases: the base is not listed, a refusal",
+  "work_workspaces:work#1": "branch: work list that fails: no workspaces when the base is gone, else a fail",
+  "work_workspaces:jq#1": "returned: the function's status (last of its pipe)",
+  "work_resolve_source:cut#1": "closed: not found among the workspaces: the source is then found by origin, and the switch acts only on a listed work base (never reached with WORKRIFT_SOURCE)",
+  "work_resolve_source:grep#1": "closed: as its cut",
+  "work_resolve_source:grep#2": "closed: a count that does not read matches no case arm: no source, a refusal",
+  "work_resolve_source:tr#1": "message: the sources named in a fail",
+  "work_list_checked:head#1": "message: the answer quoted in a fail",
+  "work_purge:jq#2": "message: the trash folders named in a fail",
+  "work_purge:tr#1": "message: as before it",
+  "work_purge:jq#4": "closed: an id that does not read is none of those asked for: p_left fails",
+  "work_purge:grep#1": "closed: grep that fails is not among those asked for: p_left fails",
+  "work_purge:work#1": "closed: work gc that fails leaves the trash, named, and the purge fails",
+  "work_purge:jq#5": "closed: an answer that does not read differs from the name: the trash is said and the purge fails",
+  "work_purge:jq#6": "closed: as before it",
+  "work_purge:jq#7": "closed: jq -e's status read: 0 listed, 1 gone, any other unproven and the purge fails (r4: any failure read as gone)",
+  "work_purge:jq#8": "message: the record quoted",
+  "sv_kind:stat#1": "closed: prints `?` and fails: sv_kind_of stops with the three facts; no `?` is taken for a kind",
+  "sv_kind:stat#2": "closed: as before it",
+  "sv_identity:btrfs#1": "returned: `&& [ -n ] || return 1`: every caller stops or refuses (no identity is recorded or compared as `?`)",
+  "sv_identity:stat#1": "returned: as before it",
+  "sv_step:mkdir#1": "message: the step log is a record for a person; its write failing is said, and the switch goes on (the phase record, which decides, is sv_phase_write, checked)",
+  "sv_step:date#1": "message: the log line's time",
+  "sv_step:sh#1": "unreachable: the test hook (WORKRIFT_SUBVOLUME_HOOK), set by tests only",
+  "sv_users:cat#1": "message: the command name of a process found in the tree (`?` when it does not read); the process is counted either way",
+  "sv_removals:tr#1": "closed: a process still there whose command line does not read is a removal of this base (refused)",
+  "sv_removals:awk#1": "closed: as before it",
+  "sv_removals:readlink#1": "closed: a process still there whose working folder does not read is a removal of this base (refused)",
+  "sv_removals:tr#2": "closed: a removal whose environment does not read counts as one of this base (refused)",
+  "sv_removals:sed#1": "closed: a clone ticket that does not read is a removal of this base (refused)",
+  "sv_runs_tickets:sed#1": "closed: a script that does not read is not one that takes tickets: the process counts as an older workrift (refused)",
+  "sv_runs_tickets:grep#1": "closed: as before it",
+  "sv_runs_tickets:lsof#1": "closed: no open files read: not one that takes tickets, an older workrift (refused)",
+  "sv_runs_tickets:sed#2": "closed: as its lsof",
+  "sv_runs_tickets:sed#3": "closed: as on Linux",
+  "sv_runs_tickets:grep#2": "closed: as on Linux",
+  "sv_runs_tickets:grep#3": "closed: as on Linux",
+  "sv_old_workrifts:tr#1": "closed: a process still there whose command line does not read is an older workrift (refused)",
+  "sv_old_workrifts:awk#1": "closed: as before it",
+  "sv_git_locks:git#1": "closed: prints `unknown`: the lock check says NO",
+  "sv_git_locks:find#1": "closed: as before it",
+  "sv_git_locks:find#2": "closed: as before it",
+  "sv_fs_dir:findmnt#2": "closed: no UUID is no state folder: the metadata check says the sizes do not read (NO)",
+  "sv_preflight:findmnt#1": "closed: sv_read's status: options that do not read are a NO",
+  "sv_preflight:cat#1": "closed: sv_read's status: sizes that do not read stay empty, a NO (r4: they were 0, a slack read wrong)",
+  "sv_preflight:df#1": "closed: sv_read's status: a df that does not read is a NO",
+  "(top):python3#1": "closed: no python3 with ctypes is a NO: nothing can make the exchange",
+  "sv_refs:sort#1": "returned: the function's status (last of its pipe); its callers check it",
+  "sv_digest:git#1": "branch: no symbolic HEAD tries rev-parse HEAD, and that failing fails",
+  "sv_store:sort#1": "returned: the function's status (last of its pipe)",
+  "sv_tips_missing:git#1": "closed: prints the failure: a non-empty answer, the copy is not true",
+  "sv_tips_missing:awk#1": "closed: as before it",
+  "sv_tips_missing:git#2": "closed: as before it",
+  "sv_tips_missing:grep#1": "closed: grep's status read: 1 none missing, any other the failure printed (the copy is not true)",
+  "sv_tips_missing:cat#1": "closed: errors that do not read are said: the copy is not true",
+  "sv_tips_missing:rm#1": "cleanup: tips.err is written again before it is read",
+  "sv_copy_true:cat#1": "returned: the && chain: a read that fails is a copy not true (copy again, then roll back)",
+  "sv_copy_true:cat#2": "returned: as before it",
+  "sv_carry:rm#1": "cleanup: the files are written again (>) right after",
+  "sv_carry:git#1": "branch: symbolic-ref's status read: 0 HEAD names a branch, 1 detached, any other sv_why and return 1",
+  "sv_carry:git#2": "branch: as before it",
+  "sv_carry:awk#1": "returned: `if ! awk … || ! sort`: sv_why, return 1 (nothing carried, the switch said unfinished)",
+  "sv_carry:sort#1": "returned: as its awk",
+  "sv_carry:rm#2": "cleanup: the scratch files of a carry that failed",
+  "sv_carry:git#3": "closed: a fetch that fails is checked by the rev-parse after it: an object missing is not carried (sv_missed, said)",
+  "sv_carry:git#4": "branch: rev-parse -q --verify's status read: 1 missing (not carried), any other c_failed, rerun",
+  "sv_carry:git#5": "branch: update-ref that fails keeps the ref under refs/subvolume-move/, said",
+  "sv_carry:git#6": "closed: that failing too is counted and said (not carried)",
+  "sv_carry:rm#3": "cleanup: the scratch files after the carry",
+  "sv_wait_users:sleep#1": "closed: a sleep that fails looks again; the clock bounds the wait (checked)",
+  "sv_rm_folder:rm#1": "closed: no GNU rm --version takes BSD's -x, which GNU rm refuses: a wrong guess deletes nothing and fails",
+  "sv_rm_folder:rm#2": "returned: the function's status; callers fail on it",
+  "sv_rm_folder:rm#3": "returned: as before it",
+  "sv_rm_folder:rm#4": "returned: as before it",
+  "sv_rm_folder:rm#5": "returned: as before it",
+  "sv_cp:cp#1": "returned: in the background; its status is read by wait in sv_cp, and a copy that failed fails",
+  "sv_cp:rm#1": "cleanup: the copier record; a stale one is read with the copier's identity, which no longer matches",
+  "sv_wait_copier:sleep#1": "closed: a sleep that fails looks again; the clock bounds the wait",
+  "sv_copy_in:git#1": "closed: an index not refreshed differs in status: sv_copy_true says the copy is not true",
+  "sv_smoke_rm:sleep#1": "closed: a sleep that fails looks again; the wait is bounded",
+  "sv_prove:work#2": "returned: sv_why, the smoke workspace unproven: the switch said unproved with the --back command",
+  "sv_lacks:awk#1": "closed: `if l_out=$(…)`: else the lack is said as unknown (the report)",
+  "sv_lacks:awk#2": "closed: as before it",
+  "sv_lacks:awk#3": "closed: as before it",
+  "sv_lacks:awk#4": "closed: as before it",
+  "sv_head:git#1": "branch: symbolic-ref's status read: 1 tries rev-parse, any other return 1",
+  "sv_git_files:find#1": "returned: the function's status (the subshell's last command)",
+  "sv_reflogs:find#1": "returned: as before it",
+  "sv_finish:work#1": "message: work refresh that fails is said with the command to run (cd <base> && work refresh); the proof after it decides",
+  "sv_baseline:sort#1": "returned: the function's status (last of its pipe)",
+  "sv_baseline_write:mv#1": "returned: the && return 0 is skipped: sv_why, return 1",
+  "sv_baseline_write:rm#1": "cleanup: the scratch record of a write that failed",
+  "sv_refs_write:mv#1": "returned: as sv_baseline_write's",
+  "sv_refs_write:rm#1": "cleanup: as sv_baseline_write's",
+  "sv_said:date#1": "message: the hold's seconds, `?` when the clock does not read",
+  "sv_drop:date#2": "message: the drop's seconds",
+}
+
+/** The key of each site in VERDICTS: `<function>:<command>#<k>`, the k-th call of that command in that function. */
+const verdictKeys = (sites: ReadonlyArray<Site>) => {
+  const seen = new Map<string, number>()
+  return sites.map((s) => {
+    const k = `${s.fn}:${s.command}`
+    const n = (seen.get(k) ?? 0) + 1
+    seen.set(k, n)
+    return `${k}#${n}`
+  })
+}
+
+interface Call { readonly id: string; readonly command: string; readonly args: string }
+/** The calls a census run logged (`site<TAB>command<TAB>args`; site `-`: a call no site named), in order. */
+const loggedCalls = (log: string): ReadonlyArray<Call> =>
+  existsSync(log)
+    ? textLines(readFileSync(log, "utf8")).map((l) => {
+        const [id, command, ...args] = l.split("\t")
+        return { id: id!, command: command!, args: args.join("\t") }
+      })
+    : []
+
+/** Each call's site: the one it named (undefined: a call the table does not name, or names for another command, a finding). */
+const siteOf = (sites: ReadonlyArray<Site>, calls: ReadonlyArray<Call>) => {
+  const byId = new Map(sites.map((s) => [s.id, s]))
+  return calls.map((call) => {
+    const site = byId.get(call.id)
+    return site?.command === call.command ? site : undefined
+  })
+}
+
+/**
+ * The census's copy of the script: each call site of the table names itself, `CENSUS_SITE=<id> ` before its command
+ * (a wrapper's or sv_read's call passes it to the command inside). Line 2 (a comment: no line moves) clears it before
+ * every other command (set -T: in every function, substitution and pipe), so a name a function call left behind (bash's
+ * POSIX mode keeps it) never reaches a command that is no site: that call logs `-`, a finding.
+ */
+const instrumented = (dir: string, sites: ReadonlyArray<Site>) => {
+  const text = readFileSync(SCRIPT, "utf8").split("\n")
+  if (!text[1]!.startsWith("#")) throw new Error(`line 2 of ${SCRIPT} is no comment: ${text[1]}`)
+  for (const site of [...sites].sort((a, b) => b.line - a.line || b.col - a.col)) {
+    const line = text[site.line - 1]!
+    text[site.line - 1] = `${line.slice(0, site.col)}CENSUS_SITE=${site.id} ${line.slice(site.col)}`
+  }
+  text[1] = `set -T; trap 'case \${FUNCNAME:-} in ${[...Object.keys(WRAPPERS), ...RUNNERS].join("|")}) ;; *) unset CENSUS_SITE ;; esac' DEBUG`
+  const path = join(dir, "workrift-census")
+  exe(path, text.join("\n"))
+  const parsed = Bun.spawnSync(["/bin/sh", "-n", path], { stderr: "pipe" })
+  if (parsed.exitCode !== 0) throw new Error(`the census's copy does not parse: ${parsed.stderr.toString()}`)
+  return path
+}
+
+/** The shims of the census in <bench>/shim: each logs its call with its site and, at the target, fails it or kills workrift. */
+const censusShims = (b: Bench) => {
+  const dir = join(b.dir, "shim")
+  mkdirSync(dir, { recursive: true })
+  for (const name of CENSUS_COMMANDS) {
+    const real = Bun.which(name, { PATH: `${b.bin}:${process.env.PATH ?? ""}` })
+    if (!real) continue
+    const code = name === "git" ? 128 : name === "grep" ? 2 : 1
+    exe(
+      join(dir, name),
+      [
+        "#!/bin/sh",
+        // A stand-in's own commands (CENSUS_IN) are no call of workrift's.
+        'if [ -z "${CENSUS_IN:-}" ]; then',
+        "  s=${CENSUS_SITE:--}",
+        "  unset CENSUS_SITE",
+        "  CENSUS_IN=1",
+        "  export CENSUS_IN",
+        `  printf '%s\\t%s\\t%s\\n' "$s" '${name}' "$(printf '%s' "$*" | /usr/bin/tr '\\n\\t' '  ')" >>"$CENSUS_LOG"`,
+        // The site's first call only.
+        `  if [ "$s" = "\${CENSUS_AT:-}" ] && [ ! -e "$CENSUS_LOG.hit" ]; then`,
+        `    printf '%s\\n' "$s" >"$CENSUS_LOG.hit"`,
+        '    case "$CENSUS_MODE" in',
+        `      fail) printf 'census: ${name} failed (injected at %s)\\n' "$s" >&2; exit ${code} ;;`,
+        '      kill) kill -KILL "$(/bin/cat "$CENSUS_PIDFILE")" 2>/dev/null || true ;;',
+        "    esac",
+        "  fi",
+        "fi",
+        `exec '${real}' "$@"`,
+        "",
+      ].join("\n"),
+    )
+  }
+  return dir
+}
+
+/** The three facts every end but a success says: what happened, the state both trees are in, the command that goes on. */
+const hasFacts = (err: string) => /^workrift: /m.test(err) && /^workrift subvolume: state: /m.test(err) && /^workrift subvolume: next: /m.test(err)
+
+describe("workrift subvolume: the call sites of the census", () => {
+  test("every call site has its verdict: what a failure there becomes, and every verdict names a site", () => {
+    const sites = callSites(readFileSync(SCRIPT, "utf8"))
+    const keys = verdictKeys(sites)
+    const rows = sites.map((site, i) => ({ key: keys[i]!, ...site, verdict: autoVerdict(site) ?? VERDICTS[keys[i]!] }))
+    if (process.env.CENSUS_TABLE) writeFileSync(process.env.CENSUS_TABLE, JSON.stringify(rows, null, 1))
+    expect(rows.filter((r) => r.verdict === undefined).map((r) => `${r.key} (${r.id}): ${r.text}`), "sites with no verdict").toEqual([])
+    const manual = new Set(rows.filter((r) => autoVerdict(r) === undefined).map((r) => r.key))
+    expect(Object.keys(VERDICTS).filter((k) => !manual.has(k)), "verdicts that name no site (or one whose construct says it)").toEqual([])
+    expect(rows.every((r) => /^(stops|returned|closed|branch|message|cleanup|unreachable): /.test(r.verdict!))).toBe(true)
+  })
+
+  test("the table names every call a forward, a --back and a --drop-old make, and each such call maps to one site", async () => {
+    const sites = callSites(readFileSync(SCRIPT, "utf8"))
+    expect(new Set(sites.map((s) => s.id)).size).toBe(sites.length)
+    const b = bench("sites")
+    const script = instrumented(b.dir, sites)
+    const shims = censusShims(b)
+    const log = join(b.dir, "census.calls")
+    for (const argv of [["subvolume", "--apply"], ["subvolume", "--back", "--apply"], ["subvolume", "--drop-old", "--apply"]]) {
+      const ran = Bun.spawnSync([script, ...argv], { cwd: b.dir, env: b.envFor({ PATH: `${shims}:${b.env.PATH}`, WORK: join(shims, "work"), CENSUS_LOG: log }), stdout: "pipe", stderr: "pipe" })
+      expect(ran.exitCode, `${argv.join(" ")}: ${ran.stderr.toString()}`).toBe(0)
+    }
+    const calls = loggedCalls(log)
+    const mapped = siteOf(sites, calls)
+    const outside = calls.filter((_c, i) => mapped[i] === undefined).map((c) => `${c.id} ${c.command} ${c.args.slice(0, 80)}`)
+    expect(outside, "calls no site of the table names").toEqual([])
+    expect(calls.length).toBeGreaterThan(100)
+  }, 120_000)
+})
+
+/**
+ * The census (WORKRIFT_CENSUS=<scenario>, run by hand, not in the gate): every call site of the table (callSites) that
+ * the scenario's command reaches, one case each, addressed by the name the census's copy gives the site
+ * (`<line>:<command>#<k>`, the k-th of that command on that line; never a running number). In `fail` mode the site's first call fails (exit 1; git 128, grep 2: a fork that failed, a
+ * full disk, a lock taken); in `kill` mode it first kills the workrift process alone (kill -9), and the call goes on.
+ * Each case checks the injection hit its site, the trees are whole with every ref, every end but a success and a cut
+ * says the three facts (what happened, the state, the next command), and the commands that finish from there finish.
+ * CENSUS_OUT (a .jsonl) gets one line a case; <CENSUS_OUT>.coverage.json the table, the sites reached and the calls no
+ * site names. CENSUS_ONLY (site ids, comma-separated) picks cases. The full stderr of every command of a case goes to
+ * <bench>/case.log, and the bench is kept when the case fails a check.
+ */
+describe.skipIf(!process.env.WORKRIFT_CENSUS)("census: a failure or a kill at every call site", () => {
+  const scenario = process.env.WORKRIFT_CENSUS ?? ""
+  type Step = { readonly argv: ReadonlyArray<string>; readonly env?: Env; readonly code: number | null }
+  type Settle = "S" | "F" | "drop" | "refused"
+  interface Plan {
+    readonly mode: "fail" | "kill"
+    readonly before: ReadonlyArray<Step>
+    readonly setup?: (b: Bench) => void
+    readonly argv: ReadonlyArray<string>
+    readonly settle: Settle
+  }
+  const fwd: Step = { argv: ["subvolume", "--apply"], code: 0 }
+  const back: Step = { argv: ["subvolume", "--back", "--apply"], code: 0 }
+  const cutBack: Step = { argv: ["subvolume", "--back", "--apply"], env: { WORKRIFT_SUBVOLUME_DIE_AT: "carry-wait" }, code: null }
+  const drop: Step = { argv: ["subvolume", "--drop-old", "--apply"], code: 0 }
+  /** Every preflight refusal at once: removals of this base and of another, an older workrift, a process in the base, a Git lock, no slack, no room, no user_subvol_rm_allowed. */
+  const refusing = (b: Bench) => {
+    b.processAt(91001, b.base)
+    b.processAt(91002, b.dir, ["work", "rm", "lane"])
+    writeFileSync(join(b.proc, "91002", "environ"), `WORKRIFT_SOURCE=${b.base}\0`)
+    b.processAt(91003, "/nonexistent/census-other", ["work", "rm", "other"])
+    b.processAt(91004, b.dir, ["/bin/sh", "/nonexistent/census/workrift", "create", "old"])
+    writeFileSync(join(b.base, ".git", "index.lock"), "")
+    writeFileSync(join(b.sys, UUID, "allocation/metadata/bytes_used"), `${57 * 2 ** 30 - 1}\n`)
+  }
+  const refusingEnv: Env = { FAKE_DF_AVAIL: "10", FAKE_DF_PCT: "99", FAKE_MOUNT_OPTIONS: "rw,noatime" }
+  const plans: Record<string, Plan> = {
+    fwd: { mode: "fail", before: [], argv: fwd.argv, settle: "S" },
+    back: { mode: "fail", before: [fwd], argv: back.argv, settle: "F" },
+    // The r2 failure's history: forward, a --back cut at carry-wait, the --back again, then the forward under census.
+    "cut-fwd": { mode: "fail", before: [fwd, cutBack, back], argv: fwd.argv, settle: "S" },
+    // The --back itself after its cut at carry-wait, under census.
+    "cut-back": { mode: "fail", before: [fwd, cutBack], argv: back.argv, settle: "F" },
+    // A --back with no kept tree: the copy into .back, the rm of a folder copy.
+    "back-copy": { mode: "fail", before: [fwd, drop], argv: back.argv, settle: "F" },
+    drop: { mode: "fail", before: [fwd], argv: drop.argv, settle: "drop" },
+    refused: { mode: "fail", before: [], setup: refusing, argv: fwd.argv, settle: "refused" },
+    "kill-back": { mode: "kill", before: [fwd], argv: back.argv, settle: "F" },
+    "kill-fwd": { mode: "kill", before: [], argv: fwd.argv, settle: "S" },
+    "kill-back-copy": { mode: "kill", before: [fwd, drop], argv: back.argv, settle: "F" },
+    "kill-drop": { mode: "kill", before: [fwd], argv: drop.argv, settle: "drop" },
+  }
+  const plan = plans[scenario]
   const end = (ran: Ran) =>
     ran.signal ? "cut" : ran.code === 0 ? "ok" : /and no message \(a command failed under set -e\)/.test(ran.err) ? "set-e" : /^workrift: /m.test(ran.err) ? "refused" : "other"
-  const lastSaid = (ran: Ran) => textLines(ran.err).filter((l) => /^(workrift|census|fatal|error):? /.test(l)).slice(-2).join(" | ").slice(0, 300)
-  /** The setup before the command under census, and the command. */
-  const scenarios: Record<string, { readonly before: ReadonlyArray<{ readonly argv: ReadonlyArray<string>; readonly env?: Env; readonly code: number | null }>; readonly argv: ReadonlyArray<string> }> = {
-    fwd: { before: [], argv: ["subvolume", "--apply"] },
-    back: { before: [{ argv: ["subvolume", "--apply"], code: 0 }], argv: ["subvolume", "--back", "--apply"] },
-    // The r2 failure's history: forward, a --back cut at carry-wait, the --back again, then the forward under census.
-    "cut-fwd": {
-      before: [
-        { argv: ["subvolume", "--apply"], code: 0 },
-        { argv: ["subvolume", "--back", "--apply"], env: { WORKRIFT_SUBVOLUME_DIE_AT: "carry-wait" }, code: null },
-        { argv: ["subvolume", "--back", "--apply"], code: 0 },
-      ],
-      argv: ["subvolume", "--apply"],
-    },
-    // The --back itself after its cut at carry-wait, under census.
-    "cut-back": {
-      before: [
-        { argv: ["subvolume", "--apply"], code: 0 },
-        { argv: ["subvolume", "--back", "--apply"], env: { WORKRIFT_SUBVOLUME_DIE_AT: "carry-wait" }, code: null },
-      ],
-      argv: ["subvolume", "--back", "--apply"],
-    },
-    "kill-back": { before: [{ argv: ["subvolume", "--apply"], code: 0 }], argv: ["subvolume", "--back", "--apply"] },
-    "kill-fwd": { before: [], argv: ["subvolume", "--apply"] },
-  }
-  const plan = scenarios[scenario]
+  const lastSaid = (ran: Ran) => textLines(ran.err).filter((l) => /^(workrift|census|fatal|error):? /.test(l) && !/^workrift subvolume: (state|next): /.test(l)).slice(-2).join(" | ").slice(0, 300)
 
   test(`census ${scenario}`, async () => {
-    if (!plan) throw new Error(`WORKRIFT_CENSUS=${scenario}: one of ${Object.keys(scenarios).join(", ")}`)
-    const forward = plan.argv.includes("--back") ? false : true
+    if (!plan) throw new Error(`WORKRIFT_CENSUS=${scenario}: one of ${Object.keys(plans).join(", ")}`)
+    const sites = callSites(readFileSync(SCRIPT, "utf8"))
+    const planEnv: Env = plan.setup === refusing ? refusingEnv : {}
+    /** One command: plain, or instrumented with the site `at` failed or killed (none: only logged). */
+    const run = async (b: Bench, argv: ReadonlyArray<string>, census?: { readonly log: string; readonly at?: { readonly site: Site; readonly call: Call } }, extra: Env = {}) => {
+      const pidfile = join(b.dir, "census.pid")
+      const shims = census ? censusShims(b) : ""
+      const script = census ? instrumented(b.dir, sites) : SCRIPT
+      const runEnv = b.envFor({
+        ...planEnv,
+        ...extra,
+        ...(census
+          ? {
+              PATH: `${shims}:${b.env.PATH}`,
+              WORK: join(shims, "work"),
+              CENSUS_LOG: census.log,
+              CENSUS_MODE: plan.mode,
+              CENSUS_PIDFILE: pidfile,
+              ...(census.at ? { CENSUS_AT: census.at.site.id } : {}),
+            }
+          : {}),
+      })
+      // The pid is the script's own (exec), for a kill of it alone.
+      const child = Bun.spawn(["/bin/sh", "-c", 'printf "%s\\n" "$$" >"$0.pid"; exec "$@"', join(b.dir, "census"), script, ...argv], { cwd: b.dir, env: runEnv, stdout: "pipe", stderr: "pipe" })
+      const [out, err] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()])
+      await child.exited
+      const ran: Ran = { code: child.signalCode ? null : child.exitCode, signal: child.signalCode ?? null, out, err }
+      writeFileSync(join(b.dir, "case.log"), `$ workrift ${argv.join(" ")}${census?.at ? ` (census ${plan.mode} at ${census.at.site.id})` : ""}\n${said(ran)}\n`, { flag: "a" })
+      // A cut run's children (the call that killed it) end before anything is read.
+      if (ran.signal) await Bun.sleep(300)
+      return ran
+    }
     const prepare = async (label: string) => {
       const b = bench(label)
       for (const step of plan.before) {
         const ran = await run(b, step.argv, undefined, step.env)
         expect(ran.code, `${label} before: ${step.argv.join(" ")}: ${said(ran)}`).toBe(step.code)
       }
+      plan.setup?.(b)
       return b
     }
-    // The count: the command once, every call logged (none with CENSUS_MATCH: its one case is the first match).
-    const matching = process.env.CENSUS_MATCH !== undefined
-    const counted = matching ? undefined : await prepare("census-count")
-    const countLog = counted ? join(counted.dir, "census.calls") : ""
-    if (counted) {
-      const first = await run(counted, plan.argv, { at: 0, log: countLog })
-      expect(first.code, said(first)).toBe(0)
-    }
-    const calls = counted ? textLines(readFileSync(countLog, "utf8")) : ["(match)"]
-    const from = matching ? 0 : Number(process.env.CENSUS_FROM ?? 1)
-    const to = matching ? 0 : Math.min(Number(process.env.CENSUS_TO ?? calls.length), calls.length)
+    // The count: the command once, every call logged with its site.
+    const counted = await prepare("census-count")
+    const countLog = join(counted.dir, "census.calls")
+    const first = await run(counted, plan.argv, { log: countLog })
+    expect(first.code, said(first)).toBe(plan.settle === "refused" ? 1 : 0)
+    const calls = loggedCalls(countLog)
+    const mapped = siteOf(sites, calls)
+    const outside = calls.flatMap((c, i) => (mapped[i] === undefined ? [`${c.id} ${c.command} ${c.args.slice(0, 100)}`] : []))
+    // Each site's first call.
+    const targets = new Map<string, { readonly site: Site; readonly call: Call }>()
+    calls.forEach((call, i) => {
+      const site = mapped[i]
+      if (site && !targets.has(site.id)) targets.set(site.id, { site, call })
+    })
     const out = process.env.CENSUS_OUT ?? join(scratch, `census-${scenario}.jsonl`)
-    console.log(`census ${scenario} (${mode}): ${calls.length} calls; cases ${from}-${to}; results in ${out}`)
-    const bad: Array<string> = []
-    const cases = Array.from({ length: to - from + 1 }, (_, i) => from + i)
+    writeFileSync(`${out}.coverage.json`, JSON.stringify({ scenario, mode: plan.mode, table: sites.length, calls: calls.length, reached: [...targets.keys()], outside }, null, 1))
+    const only = process.env.CENSUS_ONLY?.split(",")
+    const cases = [...targets.values()].filter((t) => !only || only.includes(t.site.id))
+    console.log(`census ${scenario} (${plan.mode}): ${calls.length} calls, ${targets.size} of ${sites.length} sites reached, ${outside.length} calls outside the table; ${cases.length} cases; results in ${out}`)
+    const bad: Array<string> = outside.map((o) => `a call no site names: ${o}`)
     await pool(
-      cases.map((k) => async () => {
-        const b = await prepare(`census-${k}`)
+      cases.map((target) => async () => {
+        const b = await prepare(`census-${target.site.line}-${target.site.command}-${target.site.ordinal}`)
         const log = join(b.dir, "census.calls")
-        const ran = await run(b, plan.argv, { at: k, log })
-        const call = textLines(existsSync(log) ? readFileSync(log, "utf8") : "")[k - 1] ?? "(fewer calls)"
+        const ran = await run(b, plan.argv, { log, at: target })
         const problems: Array<string> = []
         const check = (what: string, f: () => void) => {
           try {
@@ -1833,38 +2615,60 @@ describe.skipIf(!process.env.WORKRIFT_CENSUS)("census: a failure or a kill at ev
             problems.push(`${what}: ${String(error).split("\n").slice(0, 3).join(" ")}`)
           }
         }
+        const runs: Array<[string, Ran]> = [["under census", ran]]
+        check("the injection hit its site", () => expect(existsSync(`${log}.hit`) ? readFileSync(`${log}.hit`, "utf8").trim() : "(not hit)").toBe(target.site.id))
         check("whole after", () => {
           expect(["F", "S"]).toContain(b.kind(b.base))
           whole(b)
         })
-        const result: Record<string, unknown> = { k, call: call.slice(0, 160), end: end(ran), said: lastSaid(ran), layout: b.layout() }
-        // What finishes it from here: after a kill, the other direction is refused or runs (never stops silently);
-        // then this command again, then the switch the other way and back, each 0 with a whole base.
-        if (mode === "kill") {
-          const other = await run(b, forward ? ["subvolume", "--back", "--apply"] : ["subvolume", "--apply"])
+        const result: Record<string, unknown> = { site: target.site.id, fn: target.site.fn, call: `${target.site.command} ${target.call.args}`.slice(0, 160), end: end(ran), said: lastSaid(ran), layout: b.layout() }
+        const forward = plan.settle === "S"
+        // After a kill, the other direction is refused or runs (never stops without its facts).
+        if (plan.mode === "kill") {
+          const other = await run(b, plan.settle === "S" ? back.argv : fwd.argv)
+          runs.push(["the other way after the kill", other])
           result.other = { end: end(other), said: lastSaid(other) }
           check("other after the kill", () => expect(["ok", "refused"]).toContain(end(other)))
           check("whole after other", () => whole(b))
         }
         const again = await run(b, plan.argv)
+        runs.push(["again", again])
         result.again = { end: end(again), said: lastSaid(again) }
-        check("again", () => expect(again.code, said(again)).toBe(0))
-        check("layout again", () => expect(b.layout()).toEqual(forward ? { base: "S", new: "-", back: "-", old: "F" } : { base: "F", new: "-", back: "-", old: "S" }))
-        check("whole again", () => {
-          whole(b)
-          whole(b, b.paths.old)
-        })
-        const way = await run(b, forward ? ["subvolume", "--back", "--apply"] : ["subvolume", "--apply"])
-        check("the other way", () => expect(way.code, said(way)).toBe(0))
-        const back = await run(b, plan.argv)
-        check("and again", () => expect(back.code, said(back)).toBe(0))
-        check("whole at the end", () => {
-          whole(b)
-          whole(b, b.paths.old)
-        })
+        if (plan.settle === "refused") {
+          check("again refused", () => expect(again.code, said(again)).toBe(1))
+          check("layout again", () => expect(b.layout()).toEqual({ base: "F", new: "-", back: "-", old: "-" }))
+          check("whole again", () => whole(b))
+        } else if (plan.settle === "drop") {
+          check("again", () => expect(again.code, said(again)).toBe(0))
+          check("layout again", () => expect(b.layout()).toEqual({ base: "S", new: "-", back: "-", old: "-" }))
+          check("whole again", () => whole(b))
+          const way = await run(b, back.argv)
+          runs.push(["back", way])
+          check("back after the drop", () => expect(way.code, said(way)).toBe(0))
+          check("whole at the end", () => whole(b))
+        } else {
+          check("again", () => expect(again.code, said(again)).toBe(0))
+          check("layout again", () => expect(b.layout()).toEqual(forward ? { base: "S", new: "-", back: "-", old: "F" } : { base: "F", new: "-", back: "-", old: "S" }))
+          check("whole again", () => {
+            whole(b)
+            whole(b, b.paths.old)
+          })
+          const way = await run(b, forward ? back.argv : fwd.argv)
+          runs.push(["the other way", way])
+          check("the other way", () => expect(way.code, said(way)).toBe(0))
+          const and = await run(b, plan.argv)
+          runs.push(["and again", and])
+          check("and again", () => expect(and.code, said(and)).toBe(0))
+          check("whole at the end", () => {
+            whole(b)
+            whole(b, b.paths.old)
+          })
+        }
+        // No end but a success or a cut goes without the three facts.
+        for (const [what, r] of runs) if (r.code !== 0 && !r.signal) check(`the three facts (${what})`, () => expect(hasFacts(r.err), r.err).toBe(true))
         result.problems = problems
         appendFileSync(out, `${JSON.stringify(result)}\n`)
-        if (problems.length > 0) bad.push(`case ${k} (${call.slice(0, 80)}): ${problems.join("; ")} [bench ${b.dir}]`)
+        if (problems.length > 0) bad.push(`site ${target.site.id} (${target.site.fn}: ${target.site.text.slice(0, 60)}): ${problems.join("; ")} [bench ${b.dir}]`)
         else rmSync(b.dir, { recursive: true, force: true })
       }),
     )
