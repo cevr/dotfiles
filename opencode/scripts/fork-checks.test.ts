@@ -637,7 +637,9 @@ describe("what may explain a nonzero exit, every composition through checkFork",
 })
 
 describe("a feature's since: required only in a checkout that contains the commit", () => {
-  const test = it.scoped.layer(Layer.merge(fakeLayer, BunServices.layer))
+  // Each case makes and reads a real git fork: 30 s each, for a loaded host.
+  const scoped = it.scoped.layer(Layer.merge(fakeLayer, BunServices.layer))
+  const test = (name: string, self: Parameters<typeof scoped>[1]) => scoped(name, self, 30_000)
 
   /** A git fork: packages/x's test at its first commit, packages/y's new test at its second; the list's y feature since the second. */
   const sinceFork = Effect.gen(function* () {
@@ -861,7 +863,9 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
   const BOTH_RUN = 'import { expect, test } from "bun:test"\ntest("passes", () => expect(1).toBe(1))\ntest("the fork feature", () => expect(1).toBe(1))\n'
   const DECLARED: ReadonlyArray<Skip> = [{ package: "packages/x", file: "test/green.test.ts", test: "the fork feature", reason: "the probe needs a real terminal" }]
 
-  const test = it.live.layer(BunServices.layer)
+  // Each case is a real merge and a CLI run: about a second on a quiet host, several under load, so 30 s each.
+  const live = it.live.layer(BunServices.layer)
+  const test = <A, E>(name: string, self: () => Effect.Effect<A, E, BunServices.BunServices>, timeout = 30_000) => live(name, self, timeout)
 
   test("green checks: the merge goes to origin (control)", () =>
     Effect.gen(function* () {
