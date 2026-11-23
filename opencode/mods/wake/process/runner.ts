@@ -101,6 +101,9 @@ const bytesFrom = (file: string, from: number): Uint8Array => {
   }
 }
 
+/** A system error's code, as `fs.watch` throws one (ENOSPC past Linux's inotify watches, EMFILE past the open files). */
+const Coded = Schema.Struct({ code: Schema.String })
+
 export const layer = (config: Config) => {
   const dirOf = (id: string) => path.join(config.root, id)
   const detached = (dir: string) =>
@@ -143,8 +146,12 @@ export const layer = (config: Config) => {
           if (existsSync(path.join(dir, FILES.exit))) announce()
           return true
         },
-        // The error's text names its code (ENOSPC, EMFILE, ENOENT).
-        catch: (cause) => String(cause),
+        // The error's code (ENOSPC, EMFILE, ENOENT), or its text when it has none.
+        catch: (cause) =>
+          Schema.decodeUnknownOption(Coded)(cause).pipe(
+            Option.map((coded) => coded.code),
+            Option.getOrElse(() => String(cause)),
+          ),
       }).pipe(
         // ENOSPC or EMFILE (the host's watch limit), or no directory: that job's end is the sweep's to find; the job runs on.
         Effect.catch((code) => Effect.logWarning("wake: a job is not watched; the sweep finds its end", { id, code }).pipe(Effect.as(false))),

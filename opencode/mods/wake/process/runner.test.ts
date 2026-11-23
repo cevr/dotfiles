@@ -4,10 +4,10 @@
 // runner gone without an exit reads lost. On Linux, `systemd-run --user`
 // is asked first, and a refusal falls back to a detached runner with a warning.
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { Context, Effect, Layer, Option, Ref, Schema, type Scope } from "effect"
+import { Context, Effect, Layer, Logger, Option, Ref, Schema, type Scope } from "effect"
 import { JobExit, type JobRecord, type JobSpec, type Run } from "../job.ts"
 import { RunnerClaim } from "../job-event.ts"
 import { Runner } from "../service.ts"
@@ -345,6 +345,10 @@ const scratchDir = (prefix: string) =>
     (dir) => Effect.sync(() => rmSync(dir, { recursive: true, force: true })),
   )
 
+/** What the runner logged, by message, kept for the test to read. */
+const logged: Array<unknown> = []
+const KEEP_LOGS = Logger.layer([Logger.make(({ message }) => void logged.push(message))])
+
 /** A live process's pid that is not this one's: launchd's or init's. */
 const OTHER_LIVE = 1
 /** A pid no process has. */
@@ -374,6 +378,26 @@ describe("the runner's claim and its exit", () => {
       ProcessRunner.claimed({ pid: NO_PROCESS, startedAt: 1, start: "then" }, () => Option.some("then")),
     ]).toEqual([true, false, true, true, false])
   })
+
+  fixtureTest("a process out of open files: the real fs.watch refuses with EMFILE, the job is not watched and the refusal is logged with that code; with files again it is", ({ scratch, runner, specOf }) =>
+    Effect.gen(function* () {
+      const id = specOf("true").id
+      mkdirSync(path.join(scratch, "jobs", id), { recursive: true })
+      // Every descriptor this process may open, held while the watch opens, then closed.
+      const held: Array<number> = []
+      const open = Option.liftThrowable(() => openSync("/dev/null", "r"))
+      const refused = yield* Effect.sync(() => {
+        for (let fd = open(); Option.isSome(fd); fd = open()) held.push(fd.value)
+      }).pipe(
+        Effect.andThen(runner.watch(id, () => {})),
+        Effect.ensuring(Effect.sync(() => held.splice(0).forEach((fd) => closeSync(fd)))),
+      )
+      expect({ refused, watching: yield* runner.watching, logged }).toEqual({ refused: false, watching: [], logged: [["wake: a job is not watched; the sweep finds its end", { id, code: "EMFILE" }]] })
+      expect(yield* runner.watch(id, () => {})).toBe(true)
+      expect(yield* runner.watching).toEqual([id])
+      yield* runner.unwatch(id)
+    }).pipe(Effect.provide(KEEP_LOGS)),
+  )
 
   limitedTest(
     "an exit write that fails is tried again; one that never goes through says so",

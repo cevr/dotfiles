@@ -103,6 +103,8 @@ export interface Config {
   readonly directory: string
   /** How long after an OS job called `due` its job is removed, so the removal does not stop the job's own run. */
   readonly settleMs?: number
+  /** How often the recovery sweep looks at this directory's kept jobs; RECOVER_MS by default. */
+  readonly recoverMs?: number
 }
 
 /** A session takes at most this many pending entries. */
@@ -257,6 +259,7 @@ export const layer = (config: Config) =>
       const timers = yield* FiberMap.make<string>()
       const later = yield* FiberSet.make()
       const settleMs = config.settleMs ?? 5000
+      const recoverMs = config.recoverMs ?? RECOVER_MS
       /** Each running monitor's newest check, for the tray; it goes with the monitor's timer. */
       const lastChecks = new Map<string, LastCheck>()
       /** The jobs this server has seen, by id, with their session: the board shows one for a while after its entry went. */
@@ -614,9 +617,9 @@ export const layer = (config: Config) =>
         for (const id of yield* runner.watching) if (!ids.has(id)) yield* runner.unwatch(id)
         const kept = entries.filter((entry): entry is Job => entry.kind === "job" && entry.directory === config.directory)
         if (kept.length === 0) sweepAt = Option.none()
-        else if (Option.isNone(sweepAt)) sweepAt = Option.some(now + RECOVER_MS)
+        else if (Option.isNone(sweepAt)) sweepAt = Option.some(now + recoverMs)
         else if (now >= sweepAt.value) {
-          sweepAt = Option.some(now + RECOVER_MS)
+          sweepAt = Option.some(now + recoverMs)
           for (const job of kept) yield* reconcile(job.id, { drip: true })
         }
         const next = Math.min(Option.getOrElse(sweepAt, () => Number.POSITIVE_INFINITY), ...retries.values())

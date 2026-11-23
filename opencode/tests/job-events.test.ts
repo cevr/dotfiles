@@ -22,7 +22,7 @@
 //   running.
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { Array as Arr, Clock, Console, Context, Deferred, Effect, Exit, FileSystem, Layer, Option, Path, Random, Ref, Schedule, Schema } from "effect"
+import { Array as Arr, Clock, Console, Context, Deferred, Effect, Exit, FileSystem, Layer, Logger, Option, Path, Random, Ref, Schedule, Schema } from "effect"
 import { Base64 } from "effect/encoding"
 import { HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
@@ -57,8 +57,6 @@ const until = <A,>(look: Effect.Effect<Option.Option<A>>, ms = 20_000) =>
 
 const ExitRecord = Schema.Struct({ exitCode: Schema.NullOr(Schema.Number), endedAt: Schema.Number, disposition: Schema.optional(Schema.String), generation: Schema.optional(Schema.Number), sequence: Schema.optional(Schema.Number) })
 const Claim = Schema.Struct({ pid: Schema.Number, startedAt: Schema.Number, start: Schema.String })
-/** Nothing decodes as it: a watch made of it throws, as a host out of watches refuses one. */
-const OutOfWatches = Schema.Never
 const Service = Schema.Struct({ url: Schema.String, password: Schema.String, pid: Schema.Number })
 
 /** The scratch folders one test runs in, and the runner's paths. */
@@ -101,6 +99,35 @@ const specOf = (at: Scratch, id: string, setAt: number): JobSpec => ({
   setAt,
   generation: 1,
 })
+
+/** The wakes' model of the scratch work directory over `runner`, its letters going to `sessions`; `recoverMs` is its sweep's period. */
+const wakesOver = (at: Scratch, sessions: MemoryCourier.MemorySessions, runner: Layer.Layer<Runner>, recoverMs = RECOVER_MS) =>
+  Effect.gen(function* () {
+    const context = yield* Layer.build(
+      Model.layer({ directory: at.work, settleMs: 0, recoverMs }).pipe(
+        Layer.provideMerge(runner),
+        Layer.provide(MemoryStore.layer(MemoryStore.empty())),
+        Layer.provide(MemoryCourier.layer(sessions)),
+        Layer.provide(MemoryChecks.layer(MemoryChecks.empty())),
+        Layer.provide(MemoryBackstop.layer(MemoryBackstop.empty())),
+        Layer.provide(MemoryOpener.layer(MemoryOpener.empty())),
+        Layer.provide(Layer.succeed(Changes, Changes.of({ changed: () => Effect.void }))),
+      ),
+    )
+    return { wakes: Context.get(context, Model.WakesModel), runner: Context.get(context, Runner) }
+  })
+
+/** A job's end letters in the fixture session: its job letters that are not progress. */
+const lettersIn = (sessions: MemoryCourier.MemorySessions) => (id: string) =>
+  (sessions.inboxes.get(SESSION) ?? []).filter((received) => received.letter.metadata["id"] === id && received.letter.metadata["progress"] !== true)
+
+/** A watch the host refuses with `code`, thrown as `fs.watch` throws it: an object naming its code. */
+const refusedWatch = (code: "ENOSPC" | "EMFILE"): NonNullable<ProcessRunner.Config["watch"]> => () =>
+  Option.getOrThrowWith(Option.none(), () => ({ code, message: `${code}: the host refused a watch` }))
+
+/** What the wakes logged, by message, kept for the test to read. */
+const logged: Array<unknown> = []
+const Keep = Logger.layer([Logger.make(({ message }) => void logged.push(message))])
 
 const readExit = (at: Scratch, id: string) =>
   at.fs.readFileString(at.path.join(at.root, id, FILES.exit)).pipe(Effect.flatMap(Schema.decodeEffect(Schema.fromJsonString(ExitRecord))), Effect.option)
@@ -186,25 +213,10 @@ describe("durable job events on the real host", () => {
       Effect.gen(function* () {
         const at = yield* scratch
         const sessions = MemoryCourier.empty(SESSION)
-        const wakesOver = (runner: Layer.Layer<Runner>) =>
-          Effect.gen(function* () {
-            const context = yield* Layer.build(
-              Model.layer({ directory: at.work, settleMs: 0 }).pipe(
-                Layer.provideMerge(runner),
-                Layer.provide(MemoryStore.layer(MemoryStore.empty())),
-                Layer.provide(MemoryCourier.layer(sessions)),
-                Layer.provide(MemoryChecks.layer(MemoryChecks.empty())),
-                Layer.provide(MemoryBackstop.layer(MemoryBackstop.empty())),
-                Layer.provide(MemoryOpener.layer(MemoryOpener.empty())),
-                Layer.provide(Layer.succeed(Changes, Changes.of({ changed: () => Effect.void }))),
-              ),
-            )
-            return { wakes: Context.get(context, Model.WakesModel), runner: Context.get(context, Runner) }
-          })
-        const lettersOf = (id: string) => (sessions.inboxes.get(SESSION) ?? []).filter((received) => received.letter.metadata["id"] === id && received.letter.metadata["progress"] !== true)
+        const lettersOf = lettersIn(sessions)
 
         // Watched: the letter goes when the exit is written, long before any sweep.
-        const watched = yield* wakesOver(runnerOf(at))
+        const watched = yield* wakesOver(at, sessions, runnerOf(at))
         const placed = yield* watched.wakes.job(SESSION, { command: `printf watched > '${at.marker}'; exit 3`, note: "WATCHED" })
         const id = placed.job.id
         expect(yield* watched.runner.watching).toEqual([id])
@@ -221,9 +233,11 @@ describe("durable job events on the real host", () => {
 
         // Out of watches: the job still runs; the runner's call delivers its end.
         const refusing = yield* wakesOver(
+          at,
+          sessions,
           runnerOf(at, {
             // A host out of watches: the watch call itself fails, as fs.watch does with ENOSPC or EMFILE.
-            watch: () => Schema.decodeUnknownSync(OutOfWatches)("ENOSPC"),
+            watch: refusedWatch("ENOSPC"),
           }),
         )
         const unwatched = (yield* refusing.wakes.job(SESSION, { command: "exit 0", note: "UNWATCHED" })).job.id
@@ -232,6 +246,39 @@ describe("durable job events on the real host", () => {
         expect(lettersOf(unwatched)).toEqual([])
         expect((yield* refusing.wakes.due(unwatched)).outcome).toBe("fired")
         expect(lettersOf(unwatched)).toHaveLength(1)
+      }).pipe(Effect.scoped),
+    60_000,
+  )
+
+  it.live.layer(Layer.mergeAll(BunServices.layer, Keep))(
+    "the backstop off and the host out of watches (ENOSPC, EMFILE at the watch's open): each job still runs and ends; the sweep alone delivers each end once; each fallback is logged with its code",
+    () =>
+      Effect.gen(function* () {
+        const at = yield* scratch
+        const sessions = MemoryCourier.empty(SESSION)
+        const lettersOf = lettersIn(sessions)
+        // A short sweep period stands for RECOVER_MS: with no call (backstop off) and no watch, only the sweep can deliver.
+        const recoverMs = 1_500
+        const ids = yield* Effect.forEach(["ENOSPC", "EMFILE"] as const, (code) =>
+          Effect.gen(function* () {
+            const refusing = yield* wakesOver(at, sessions, runnerOf(at, { watch: refusedWatch(code) }), recoverMs)
+            const id = (yield* refusing.wakes.job(SESSION, { command: `printf ${code} > '${at.marker}.${code}'`, note: code })).job.id
+            expect(yield* refusing.runner.watching).toEqual([])
+            return { code, id, wakes: refusing.wakes }
+          }),
+        )
+        for (const { code, id, wakes } of ids) {
+          const exit = yield* until(readExit(at, id))
+          expect({ code, marker: yield* at.fs.readFileString(`${at.marker}.${code}`), disposition: exit.disposition }).toEqual({ code, marker: code, disposition: "succeeded" })
+          const letter = yield* until(Effect.sync(() => Arr.head(lettersOf(id))), 4 * recoverMs + 10_000)
+          expect(letter.letter.metadata["event"]).toMatchObject({ job: id, disposition: "succeeded" })
+          // The fallback is on record: the warning that names the job and the host's code.
+          expect(logged).toContainEqual(["wake: a job is not watched; the sweep finds its end", { id, code }])
+          // A late call finds it delivered.
+          expect((yield* wakes.due(id)).outcome).toBe("gone")
+        }
+        // Their entries gone (the late calls found none), nothing can fire again: one letter each.
+        expect(ids.map(({ id }) => lettersOf(id).length)).toEqual([1, 1])
       }).pipe(Effect.scoped),
     60_000,
   )
