@@ -7,6 +7,7 @@
 // Edit the canonical source, then run agents.ts (and opencode's `bun run agents`).
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { immutable } from '../../../opencode/mods/orchestrate/immutable.ts';
 
 import { block, END, header, HOSTS_OF, type Host, policyFaults, project, ROLES, type Role, STATE_NAME, type Stop, STOP_TEXT, writesText } from '../../../opencode/mods/orchestrate/round-policy.ts';
 
@@ -38,9 +39,9 @@ export interface Render {
   readonly host: Host;
   readonly path: string;
 }
-export const RENDERS: ReadonlyArray<Render> = ROLES.flatMap((role) =>
+export const RENDERS: ReadonlyArray<Render> = immutable(ROLES.flatMap((role) =>
   HOSTS_OF[role].map((host): Render => ({ role, host, path: host === 'claude' ? `agents/${role}.md` : host === 'codex' ? `codex/agents/${role}.toml` : 'opencode/mods/orchestrate/agents.json' })),
-);
+));
 
 /** The prompt a host gives the model, from its file's text. */
 export function hostPrompt(host: Host, role: Role, file: string): string {

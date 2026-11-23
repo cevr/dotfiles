@@ -1,6 +1,6 @@
 // scripts/agents.ts's orchestrator entry: its section carries SKILL.md's no-block rule word for word, and `--check`
 // fails once that line changes in the skill without `bun run agents` writing agents.json again.
-// @reads mods/orchestrate/round-policy.ts mods/orchestrate/agents.json
+// @reads mods/orchestrate/round-policy.ts mods/orchestrate/immutable.ts mods/orchestrate/agents.json
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Effect, FileSystem, Option, Path, Schema, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
@@ -46,7 +46,7 @@ const copySkill = (dir: string) =>
     // The skill's round-policy.ts places the canonical policy, which ships with the plugin: it stands at the same place relative to the skill.
     const leaf = path.join(dir, "opencode/mods/orchestrate")
     yield* fs.makeDirectory(leaf, { recursive: true })
-    yield* fs.copyFile(path.join(ROOT, "mods/orchestrate/round-policy.ts"), path.join(leaf, "round-policy.ts"))
+    yield* Effect.forEach(["round-policy.ts", "immutable.ts"], (file) => fs.copyFile(path.join(ROOT, "mods/orchestrate", file), path.join(leaf, file)))
     yield* fs.makeDirectory(path.join(dir, "skills/loop"), { recursive: true })
     yield* fs.copyFile(path.join(DEFAULT_SOURCE, "../loop/safety.md"), path.join(dir, "skills/loop/safety.md"))
     yield* fs.copy(path.join(DEFAULT_SOURCE, "../../agents"), path.join(dir, "agents"))

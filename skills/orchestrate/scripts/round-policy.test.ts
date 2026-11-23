@@ -24,6 +24,17 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import * as PolicyLeaf from '../../../opencode/mods/orchestrate/round-policy.ts';
+import * as RoleLeaf from '../../../opencode/mods/orchestrate/role.ts';
+import * as HandBackLeaf from '../../../opencode/mods/orchestrate/hand-back.ts';
+import * as ImmutableLeaf from '../../../opencode/mods/orchestrate/immutable.ts';
+import * as OpenCodeAgents from '../../../opencode/scripts/agents.ts';
+import * as HostProjection from './round-policy.ts';
+import * as SkillAgents from './agents.ts';
+import * as ItemHistories from './item-histories.ts';
+import * as ListHistories from './list-histories.ts';
+import * as Retention from './retention.ts';
+import * as Inventory from './inventory.ts';
 
 import {
   admit,
@@ -135,6 +146,83 @@ const owedOf = (checked: Checked) => {
   return got.value;
 };
 const judged = (checked: Checked, claim: unknown) => admit(checked)(json(claim));
+
+test('public vocabulary is deeply immutable and cannot change issued or future admissions (B5)', () => {
+  const modules = { PolicyLeaf, RoleLeaf, HandBackLeaf, ImmutableLeaf, OpenCodeAgents, HostProjection, SkillAgents, ItemHistories, ListHistories, Retention, Inventory };
+  const record = (value: unknown): value is object => (typeof value === 'object' && value !== null) || typeof value === 'function';
+  const seen = new Set<object>();
+  const all: Array<{ path: string; value: object }> = [];
+  const visit = (path: string, value: unknown) => {
+    if (!record(value) || seen.has(value)) return;
+    seen.add(value);
+    all.push({ path, value });
+    for (const key of Reflect.ownKeys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor && 'value' in descriptor) visit(`${path}.${String(key)}`, descriptor.value);
+    }
+  };
+  for (const [module, exports] of Object.entries(modules))
+    for (const [name, value] of Object.entries(exports)) {
+      // An ordinary function export is an operation, not data; callable schemas carry own data and are traversed.
+      if (typeof value !== 'function' || Object.keys(value).length > 0) visit(`${module}.${name}`, value);
+    }
+  expect(all.filter(({ value }) => !Object.isFrozen(value)).map(({ path }) => path)).toEqual([]);
+  expect(all.length).toBeGreaterThan(100);
+
+  const untouched = Symbol('B5');
+  const speculate = (action: () => unknown) => {
+    try { action(); } catch { /* a mutation may throw instead of returning false */ }
+  };
+  const perturb = () => {
+    const changes: string[] = [];
+    for (const { path, value } of all) {
+      const before = Reflect.ownKeys(value).map((key) => [key, Object.getOwnPropertyDescriptor(value, key)] as const);
+      speculate(() => Reflect.defineProperty(value, untouched, { value: untouched }));
+      for (const [key] of before) {
+        speculate(() => Reflect.set(value, key, untouched));
+        speculate(() => Reflect.defineProperty(value, key, { value: untouched }));
+      }
+      if (Array.isArray(value)) {
+        speculate(() => value.push(untouched));
+        speculate(() => value.splice(0, 1, untouched));
+      }
+      const after = Reflect.ownKeys(value).map((key) => [key, Object.getOwnPropertyDescriptor(value, key)] as const);
+      if (before.length !== after.length || before.some(([key, desc], at) => {
+        const [actual, next] = after[at] ?? [];
+        return actual !== key || !Object.is(desc?.value, next?.value) || desc?.get !== next?.get || desc?.set !== next?.set;
+      })) changes.push(path);
+    }
+    expect(changes).toEqual([]);
+  };
+
+  const pending: Trace = { id: 'check', assignment: { kind: 'assigned', required: true }, events: [] };
+  const limits = [{ kind: 'timebox', length: '60s' }, { kind: 'failureCap', count: 3 }] as const;
+  const input = [
+    ...limits.map((limit) => envelopeOf('planner', [pending], [{ kind: 'limit', limit }])),
+    envelopeOf('verifier', [{ ...pending, events: [{ kind: 'waitOpen', ref: 'q:example' }] }]),
+    ...([{ kind: 'none' }, { kind: 'named', form: '! report' }, { kind: 'allow', allow: 'report rule' }] as const).map((form) =>
+      envelopeOf('verifier', [pending], [{ kind: 'writeDenied', artifact: 'findings', refusal: { what: 'write report', scope: 'verifier', report: 'report', form } }])),
+  ];
+  const witnesses = input.map((raw) => {
+    const issued = checkedOf(raw);
+    const { claim } = owedOf(issued);
+    const claims = [claim, { ...claim, stop: [] }, ...claim.stop.map((value, at) => ({
+      ...claim, stop: claim.stop.map((one, index) => index === at ? { ...value, value: 'invented' } : one),
+    }))];
+    const pinned = admit(issued);
+    const answers = claims.map(pinned);
+    expect(answers[0]).toEqual([]);
+    expect(answers.slice(1).every((faults) => faults.length > 0)).toBe(true);
+    return { raw, pinned, claims, answers };
+  });
+  perturb();
+  const afterFirst = witnesses.map((one) => ({ ...one, fresh: admit(checkedOf(one.raw)) }));
+  perturb();
+  for (const { pinned, fresh, claims, answers } of afterFirst) {
+    expect(claims.map(pinned)).toEqual(answers);
+    expect(claims.map(fresh)).toEqual(answers);
+  }
+});
 
 /** Generated histories per role and depth, computed once. */
 const GENERATED = new Map<string, Generated[]>();

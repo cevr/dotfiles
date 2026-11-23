@@ -15,11 +15,12 @@
 // An item starts with one of two events and then takes any events whose precondition holds, in any order; the step
 // may stop after any event, so every record along the way is reached. The obstacles are independent facts.
 import { type Attempt, type Envelope, type Facts, type Field, type ItemRecord, type Output, type Provenance, type Refusal, type Role, type State, type StepEvent, type Trace, type TraceEvent as TraceStep } from './round-policy.ts';
+import { immutable } from '../../../opencode/mods/orchestrate/immutable.ts';
 
 export type Item = Facts;
-export const OBSTACLE_FACTS = ['refused', 'hostCannot', 'wait'] as const;
-export const PROVENANCES = ['none', 'unit', 'base'] as const;
-export const ATTEMPTS = ['never', 'started', 'pass', 'fail', 'unclear'] as const;
+export const OBSTACLE_FACTS = Object.freeze(['refused', 'hostCannot', 'wait'] as const);
+export const PROVENANCES = Object.freeze(['none', 'unit', 'base'] as const);
+export const ATTEMPTS = Object.freeze(['never', 'started', 'pass', 'fail', 'unclear'] as const);
 
 /** Whether any obstacle holds the item now. */
 export const obstructed = (item: Item): boolean => item.refused || item.hostCannot || item.wait;
@@ -31,7 +32,7 @@ export interface Validity {
   readonly justification: Justification;
   readonly breaks: (role: Role, item: Item) => boolean;
 }
-export const VALIDITY: ReadonlyArray<Validity> = [
+export const VALIDITY: ReadonlyArray<Validity> = immutable<ReadonlyArray<Validity>>([
   {
     rule: "a provenance belongs only to a verifier's finding outside its assignment, and every such finding has one",
     justification: { kind: 'definition', cites: "`provenance` (defined only for a verifier's finding outside its assignment) against `assigned` = true and the other roles" },
@@ -77,7 +78,7 @@ export const VALIDITY: ReadonlyArray<Validity> = [
     justification: { kind: 'unreachable', why: 'no obstacle event of these histories applies to a settled item' },
     breaks: (_, item) => item.settled && obstructed(item),
   },
-];
+]);
 
 /** The first validity rule an item breaks for this role, or undefined when some history produces it. */
 export const validity = (role: Role, item: Item, rules: ReadonlyArray<Validity> = VALIDITY): string | undefined => rules.find((one) => one.breaks(role, item))?.rule;
@@ -87,9 +88,9 @@ export type Condition =
   | readonly ['assigned' | 'required' | 'settled' | 'refused' | 'hostCannot' | 'wait', boolean]
   | readonly ['attempt', ReadonlyArray<Attempt>]
   | readonly ['provenance', Provenance];
-export type Predicates = Record<State, ReadonlyArray<Condition>>;
+export type Predicates = Readonly<Record<State, ReadonlyArray<Condition>>>;
 /** Each state as a conjunction of conditions, exclusive on every valid record (refused before host before wait). */
-export const PREDICATE: Predicates = {
+export const PREDICATE: Predicates = immutable<Predicates>({
   done: [['assigned', true], ['attempt', ['pass']]],
   proven: [['assigned', true], ['attempt', ['fail']]],
   runnable: [['assigned', true], ['required', true], ['settled', false], ['refused', false], ['hostCannot', false], ['wait', false]],
@@ -101,15 +102,15 @@ export const PREDICATE: Predicates = {
   discovery: [['assigned', false]],
   unitFinding: [['assigned', false], ['provenance', 'unit']],
   baseFinding: [['assigned', false], ['provenance', 'base']],
-};
+});
 
 /** The states each role has: the oracle's own copy, compared with the policy's. */
-export const ORACLE_STATES: Record<Role, ReadonlyArray<State>> = {
+export const ORACLE_STATES: Readonly<Record<Role, ReadonlyArray<State>>> = immutable<Readonly<Record<Role, ReadonlyArray<State>>>>({
   planner: ['done', 'runnable', 'waits', 'refused', 'cannot', 'discovery'],
   implementor: ['done', 'runnable', 'waits', 'refused', 'cannot', 'discovery'],
   verifier: ['done', 'proven', 'runnable', 'waits', 'refused', 'cannot', 'unclear', 'unproven', 'unitFinding', 'baseFinding'],
   worker: ['done', 'runnable', 'waits', 'refused', 'cannot', 'discovery'],
-};
+});
 
 export const meets = (item: Item, condition: Condition): boolean => {
   const [field, value] = condition;
@@ -153,7 +154,7 @@ export interface Event {
 const open = (item: Item, when: boolean, next: Partial<Item>): Item | undefined => (item.assigned && !item.settled && when ? { ...item, ...next } : undefined);
 const settles = (role: Role, result: Attempt) => result === 'pass' || (result === 'fail' && role === 'verifier');
 
-export const EVENTS: ReadonlyArray<Event> = [
+export const EVENTS: ReadonlyArray<Event> = immutable<ReadonlyArray<Event>>([
   ...(['started', 'pass', 'fail', 'unclear'] as const).map(
     (result): Event => ({ name: `attempt → ${result === 'started' ? 'no result yet' : result}`, apply: (role, item) => open(item, !obstructed(item), { attempt: result, settled: settles(role, result) }) }),
   ),
@@ -164,7 +165,7 @@ export const EVENTS: ReadonlyArray<Event> = [
   { name: 'refusal lifted', apply: (_, item) => open(item, item.refused, { refused: false }) },
   { name: 'host probe fails', apply: (_, item) => open(item, !item.hostCannot, { hostCannot: true }) },
   { name: 'host recovers', apply: (_, item) => open(item, item.hostCannot, { hostCannot: false }) },
-];
+]);
 
 /** The records an item starts as. */
 export function starts(role: Role): Item[] {
@@ -426,7 +427,7 @@ export function generateTraces(role: Role, depth = 6, maxRev = 3): Generated[] {
 /** The step event a refused write of the role's own file leaves: what it refused, its scope and report, and no remedy. */
 export const writeDenied = (role: Role): StepEvent => ({ kind: 'writeDenied', artifact: OWN_FILE[role], refusal: { what: `write:${OWN_FILE[role]}`, scope: 'scope:write', report: 'report:write', form: { kind: 'none' } } });
 /** The file each role's verdict writes first: its findings, request, spec or result. */
-export const OWN_FILE = { planner: 'spec', implementor: 'request', verifier: 'findings', worker: 'result' } as const satisfies Record<Role, string>;
+export const OWN_FILE = Object.freeze({ planner: 'spec', implementor: 'request', verifier: 'findings', worker: 'result' } as const satisfies Record<Role, string>);
 
 /**
  * The step one item's trace ends, as the envelope a step stores, by the oracle's state of its record: a refusal stops

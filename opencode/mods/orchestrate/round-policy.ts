@@ -24,29 +24,30 @@
 // A Policy is data: the tests mutate it to show each mutation is caught by the test meant to catch it.
 
 import { Array as Arr, flow, Option, Result, Schema } from "effect"
+import { immutable } from "./immutable.ts"
 
 export const VERSION = 1
 
-export const ROLES = ["planner", "implementor", "verifier", "worker"] as const
+export const ROLES = immutable(["planner", "implementor", "verifier", "worker"] as const)
 export type Role = (typeof ROLES)[number]
 
-export const HOSTS = ["claude", "codex", "opencode"] as const
+export const HOSTS = immutable(["claude", "codex", "opencode"] as const)
 export type Host = (typeof HOSTS)[number]
 /** The hosts each role ships on: the lean worker has no Codex runtime (its Codex file is no eligible route). */
-export const HOSTS_OF = {
+export const HOSTS_OF = immutable({
   planner: HOSTS,
   implementor: HOSTS,
   verifier: HOSTS,
   worker: ["claude", "opencode"],
-} as const satisfies { readonly [R in Role]: ReadonlyArray<Host> }
+} as const satisfies { readonly [R in Role]: ReadonlyArray<Host> })
 
 // ---- the item ------------------------------------------------------------------------------------------------------
 
-export const ATTEMPTS = ["never", "started", "pass", "fail", "unclear"] as const
+export const ATTEMPTS = immutable(["never", "started", "pass", "fail", "unclear"] as const)
 export type Attempt = (typeof ATTEMPTS)[number]
-export const RESULTS = ["pass", "fail", "unclear"] as const
+export const RESULTS = immutable(["pass", "fail", "unclear"] as const)
 export type Result = (typeof RESULTS)[number]
-export const PROVENANCES = ["none", "unit", "base"] as const
+export const PROVENANCES = immutable(["none", "unit", "base"] as const)
 export type Provenance = (typeof PROVENANCES)[number]
 
 /** An item's facts: what the decision reads. `attempt` is the last completed result, or `started`/`never`. */
@@ -62,7 +63,7 @@ export interface Facts {
 }
 
 /** Why an attempt shows no output: it never started, was interrupted, or ran with no authenticated evidence. */
-export const MISSING = ["not-started", "interrupted", "missing-authenticated-evidence"] as const
+export const MISSING = immutable(["not-started", "interrupted", "missing-authenticated-evidence"] as const)
 export type Missing = (typeof MISSING)[number]
 export type Output =
   | { readonly kind: "log"; readonly digest: string }
@@ -79,7 +80,7 @@ export interface Run {
   readonly head: string
   readonly result: Result
 }
-export const PENDING = ["started", "interrupted", "denied"] as const
+export const PENDING = immutable(["started", "interrupted", "denied"] as const)
 export type PendingStatus = (typeof PENDING)[number]
 /** An attempt newer than the last completed one, with no result: running, interrupted, or answered by a refusal. */
 export interface Pending {
@@ -106,7 +107,7 @@ export interface Absent {
   readonly output: Output
 }
 
-export const FIELDS = ["completed", "current", "refused", "cannot", "waits"] as const
+export const FIELDS = immutable(["completed", "current", "refused", "cannot", "waits"] as const)
 export type FieldId = (typeof FIELDS)[number]
 export type Field =
   | { readonly field: "completed"; readonly run: Run }
@@ -124,28 +125,30 @@ export interface ItemRecord {
 
 // ---- vocabulary --------------------------------------------------------------------------------------------------
 
-export const STATES = ["done", "proven", "runnable", "waits", "refused", "cannot", "unclear", "unproven", "discovery", "unitFinding", "baseFinding"] as const
+export const STATES = immutable(["done", "proven", "runnable", "waits", "refused", "cannot", "unclear", "unproven", "discovery", "unitFinding", "baseFinding"] as const)
 export type State = (typeof STATES)[number]
-export const STOPS = ["refusalForm", "refusalNone", "limit", "idle"] as const
+export const STOPS = immutable(["refusalForm", "refusalNone", "limit", "idle"] as const)
 export type Stop = (typeof STOPS)[number]
 
-export const STATES_OF = {
+const ROLE_STATES = immutable({
   planner: ["done", "runnable", "waits", "refused", "cannot", "discovery"],
   implementor: ["done", "runnable", "waits", "refused", "cannot", "discovery"],
   verifier: ["done", "proven", "runnable", "waits", "refused", "cannot", "unclear", "unproven", "unitFinding", "baseFinding"],
   worker: ["done", "runnable", "waits", "refused", "cannot", "discovery"],
-} as const satisfies { readonly [R in Role]: ReadonlyArray<State> }
-export const STOPS_OF = {
+} as const satisfies { readonly [R in Role]: ReadonlyArray<State> })
+const ROLE_STOPS = immutable({
   planner: STOPS,
   implementor: STOPS,
   verifier: ["refusalForm", "refusalNone", "idle"],
   worker: ["refusalForm", "refusalNone", "idle"],
-} as const satisfies { readonly [R in Role]: ReadonlyArray<Stop> }
+} as const satisfies { readonly [R in Role]: ReadonlyArray<Stop> })
+export const STATES_OF = ROLE_STATES
+export const STOPS_OF = ROLE_STOPS
 
-export const hasState = (role: Role, state: State): boolean => STATES_OF[role].some((one) => one === state)
-export const hasStop = (role: Role, stop: Stop): boolean => STOPS_OF[role].some((one) => one === stop)
+export const hasState = (role: Role, state: State): boolean => ROLE_STATES[role].some((one) => one === state)
+export const hasStop = (role: Role, stop: Stop): boolean => ROLE_STOPS[role].some((one) => one === stop)
 
-export const STATE_NAME = {
+export const STATE_NAME = immutable({
   done: "done",
   proven: "proven",
   runnable: "runnable",
@@ -157,16 +160,16 @@ export const STATE_NAME = {
   discovery: "a discovery",
   unitFinding: "a unit finding",
   baseFinding: "a base finding",
-} as const satisfies { readonly [S in State]: string }
+} as const satisfies { readonly [S in State]: string })
 
-export const STOP_TEXT = {
+export const STOP_TEXT = immutable({
   refusalForm: "a refusal named an accepted form",
   refusalNone: "a refusal named no accepted form",
   limit: "the round's limit passed",
   idle: "no runnable item is left",
-} as const satisfies { readonly [S in Stop]: string }
+} as const satisfies { readonly [S in Stop]: string })
 
-export const ATOMS = ["assigned", "notAssigned", "required", "optional", "refused", "hostCannot", "wait", "pass", "fail", "unclear", "noRetry", "attempted", "advance", "unit", "base"] as const
+export const ATOMS = immutable(["assigned", "notAssigned", "required", "optional", "refused", "hostCannot", "wait", "pass", "fail", "unclear", "noRetry", "attempted", "advance", "unit", "base"] as const)
 export type Atom = (typeof ATOMS)[number]
 
 const ATOM_WORDS = {
@@ -195,7 +198,7 @@ export const atomWords = (role: Role, atom: Atom): string => {
 }
 
 /** What a reader can take each atom to say of an item: true wherever its words could be read as true. */
-export const READS = Object.freeze({
+export const READS = immutable({
   assigned: (facts: Facts) => facts.assigned,
   notAssigned: (facts: Facts) => !facts.assigned,
   required: (facts: Facts) => facts.assigned && facts.required,
@@ -228,9 +231,9 @@ export interface Row {
   readonly label: string
 }
 
-export const ARTIFACTS = ["spec", "request", "state", "blocked", "findings", "batch", "result"] as const
+export const ARTIFACTS = immutable(["spec", "request", "state", "blocked", "findings", "batch", "result"] as const)
 export type Artifact = (typeof ARTIFACTS)[number]
-export const ARTIFACT_TEXT = {
+export const ARTIFACT_TEXT = immutable({
   spec: "`<unit dir>/spec.md`",
   request: "`<unit dir>/round-N-request.md`, committed, once `request.ts` exits 0",
   state: "`<unit dir>/state.md` current (even with no commit since)",
@@ -238,14 +241,14 @@ export const ARTIFACT_TEXT = {
   findings: "each unit's `round-N-findings.md`",
   batch: "the batch's findings file",
   result: "your result as text",
-} as const satisfies { readonly [A in Artifact]: string }
-export const CONTENTS = ["check", "evidence", "items"] as const
+} as const satisfies { readonly [A in Artifact]: string })
+export const CONTENTS = immutable(["check", "evidence", "items"] as const)
 export type Content = (typeof CONTENTS)[number]
-export const CONTENT_TEXT = {
+export const CONTENT_TEXT = immutable({
   check: "under Check",
   evidence: "the stop's evidence",
   items: "each item left with its label",
-} as const satisfies { readonly [C in Content]: string }
+} as const satisfies { readonly [C in Content]: string })
 
 export type VerdictWhen = { readonly kind: "any"; readonly states: ReadonlyArray<State> } | { readonly kind: "only"; readonly states: ReadonlyArray<State> } | { readonly kind: "else" }
 export interface Writes {
@@ -260,7 +263,7 @@ export interface VerdictRule {
   readonly writes: Writes
 }
 
-export const STOP_FIELDS = ["refused.what", "refused.form", "refused.allow", "limit", "held"] as const
+export const STOP_FIELDS = immutable(["refused.what", "refused.form", "refused.allow", "limit", "held"] as const)
 export type StopFieldId = (typeof STOP_FIELDS)[number]
 /**
  * How many values a stop field takes, and so whether absence is the truth: `always` exactly one; `ifPrinted` one when the
@@ -268,7 +271,7 @@ export type StopFieldId = (typeof STOP_FIELDS)[number]
  * the step back, naming it, so none (an empty collection) when no item does. A value is never empty: empty is no
  * value at all, and absence is told by leaving the field out.
  */
-export const PRESENCES = ["always", "ifPrinted", "perHeld"] as const
+export const PRESENCES = immutable(["always", "ifPrinted", "perHeld"] as const)
 export type Presence = (typeof PRESENCES)[number]
 export interface StopField {
   readonly id: StopFieldId
@@ -279,7 +282,8 @@ export interface StopField {
  * The states whose items hold an idle step back (a runnable item keeps the step going and a refusal stops it at once):
  * what the `held` collection names, one entry each.
  */
-export const HOLDS_BACK = ["waits", "cannot", "unclear"] as const satisfies ReadonlyArray<State>
+const HELD_STATES = immutable(["waits", "cannot", "unclear"] as const satisfies ReadonlyArray<State>)
+export const HOLDS_BACK = HELD_STATES
 export interface StopEvidence {
   readonly stop: Stop
   readonly fields: ReadonlyArray<StopField>
@@ -348,7 +352,7 @@ const OBSTACLE_PINS: ReadonlyArray<Pin> = [
   { pair: ["refused", "waits"], winner: "refused", why: "the refusal's scope and form must survive: the wait closes by itself, the refusal never does; the `waits` field stays" },
   { pair: ["cannot", "waits"], winner: "cannot", why: "the missing tool and its probe must survive: no retry here changes the host; the `waits` field stays" },
 ]
-export const PINS = {
+export const PINS = immutable({
   planner: OBSTACLE_PINS,
   implementor: OBSTACLE_PINS,
   worker: OBSTACLE_PINS,
@@ -365,7 +369,7 @@ export const PINS = {
     { pair: ["refused", "unproven"], winner: "refused", why: "a refusal stops the step whatever the item, so a refused optional probe is refused, never a quiet unproven" },
     { pair: ["done", "unproven"], winner: "done", why: "an optional probe that passed leaves nothing to prove; its run stays as `completed`" },
   ],
-} as const satisfies { readonly [R in Role]: ReadonlyArray<Pin> }
+} as const satisfies { readonly [R in Role]: ReadonlyArray<Pin> })
 
 const BLOCKED: Writes = { artifacts: ["state", "blocked"], contents: ["evidence", "items"] }
 const FINDINGS: Writes = { artifacts: ["findings", "batch"], contents: ["check", "evidence", "items"] }
@@ -387,12 +391,12 @@ const VERDICTS_AUTHORED = {
 } as const satisfies { readonly [R in Role]: ReadonlyArray<Omit<VerdictRule, "priority">> }
 
 /** Every pair of verdict rules both true of some well-formed step, the earlier governing, with why. */
-export const VERDICT_ORDER = {
+export const VERDICT_ORDER = immutable({
   planner: [],
   implementor: [],
   verifier: [{ earlier: "stuck", later: "changes", why: "a proven Blocker and a required check with no result: the verdict waits for every required check, and the proof is still filed under its own label" }],
   worker: [],
-} as const satisfies { readonly [R in Role]: ReadonlyArray<{ readonly earlier: string; readonly later: string; readonly why: string }> }
+} as const satisfies { readonly [R in Role]: ReadonlyArray<{ readonly earlier: string; readonly later: string; readonly why: string }> })
 
 const WHAT: StopField = { id: "refused.what", presence: "always", text: "what was refused, as the refusal said it" }
 const FORM: StopField = { id: "refused.form", presence: "ifPrinted", text: "the `!` command it printed" }
@@ -425,29 +429,29 @@ const stopAuthored = (role: Role, stop: Stop): ReadonlyArray<StopField> => {
   return STOP_AUTHORED[role][stop]
 }
 
-export const FIELD_TEXT = {
+export const FIELD_TEXT = immutable({
   completed: "the last attempt that finished: its id, command, output digest or why none, exit code, receipt, head and result",
   current: "an attempt newer than that, with no result: its id, its command, its status (started, interrupted or denied) and its partial output's digest or why it has none",
   refused: "what was refused, as the refusal said it, its scope, where its safe report is, and the `!` command or allow rule it printed, or none",
   cannot: "the check or tool, with the probe that found it absent: its command and output",
   waits: "the id it waits on",
-} as const satisfies { readonly [F in FieldId]: string }
+} as const satisfies { readonly [F in FieldId]: string })
 
-export const ASSIGNMENT = {
+export const ASSIGNMENT = immutable({
   planner: "the spec items",
   implementor: "the spec items",
   verifier: "the checks of step 1, which are required, and the wider probes you run, which are optional",
   worker: "the task in your first message",
-} as const satisfies { readonly [R in Role]: string }
+} as const satisfies { readonly [R in Role]: string })
 
-export const REQUIRED = {
+export const REQUIRED = immutable({
   planner:
     "Your required work: every section of the spec filled, and its acceptance check runnable and recorded red. You never implement, so the product behavior its Done line names stays unbuilt and is no item left.",
   implementor: "Your required work: every item of the spec, built, gated and requested.",
   verifier:
     "Your required work: every check of step 1 ran to a result that settles pass or fail, for every unit; a check of step 1 that could not run or ran unclear is `stuck`, never `accepted`, and a wider probe this host cannot run goes under Unproven and does not stop `accepted`. Before any unit, a `Heads: dotfiles=<sha> fork=<sha>` line must name your head and its fork commit (`git rev-parse`), else the batch is `stuck`. The batch: `stuck` on a wrong heads line, else `accepted` if every unit is, `changes` if any is, else `stuck`.",
   worker: "Your required work: the task in your first message.",
-} as const satisfies { readonly [R in Role]: string }
+} as const satisfies { readonly [R in Role]: string })
 
 /** A batch's verdict from its heads line and its units' verdicts, as REQUIRED.verifier says it. */
 export const batchVerdict = (headsMatch: boolean, units: ReadonlyArray<"accepted" | "changes" | "stuck">): "accepted" | "changes" | "stuck" => {
@@ -487,7 +491,7 @@ const policyOf = (role: Role): Policy => ({
   fields: FIELDS.map((id) => ({ id, text: FIELD_TEXT[id] })),
   rows: AUTHORED[role].map(([id, state, when, label], index) => ({ priority: index + 1, id, state, when, label })),
   verdicts: VERDICTS_AUTHORED[role].map((rule, index) => ({ ...rule, priority: index + 1 })),
-  stops: STOPS_OF[role].map((stop) => ({ stop, fields: stopAuthored(role, stop) })),
+  stops: ROLE_STOPS[role].map((stop) => ({ stop, fields: stopAuthored(role, stop) })),
 })
 export const project = (role: Role): Policy => POLICIES[role]
 
@@ -497,8 +501,8 @@ export const SOURCE = "opencode/mods/orchestrate/round-policy.ts"
 export const header = (role: Role | "protocol", version: number = VERSION): string =>
   `<!-- round-policy v${version} ${role}: generated by ${SOURCE}; edit that, then run skills/orchestrate/scripts/agents.ts -->`
 export const END = "<!-- /round-policy -->"
-/** A rendered block, wherever it stands in a file. */
-export const BLOCK = /<!-- round-policy v\d+ [a-z]+: [^\n]*-->[\s\S]*?<!-- \/round-policy -->/
+/** A rendered block's pattern, wherever it stands in a file. Each reader owns its RegExp. */
+export const BLOCK = String.raw`<!-- round-policy v\d+ [a-z]+: [^\n]*-->[\s\S]*?<!-- /round-policy -->`
 const HEADER = /^<!-- round-policy v(\d+) ([a-z]+): generated by opencode\/mods\/orchestrate\/round-policy\.ts; edit that, then run skills\/orchestrate\/scripts\/agents\.ts -->$/
 
 export const FIELDS_LEAD =
@@ -554,7 +558,7 @@ const rowLine = (role: Role, row: Row): string => `| ${row.priority} | \`${row.i
 const verdictLine = (single: boolean, rule: VerdictRule): string =>
   `| ${rule.priority} | \`${rule.id}\` | ${verdictWord(rule.verdict)} | ${verdictWhen(rule.when, single)} | ${writesText(rule.writes)} |`
 /** The states a role's `held` collection names an entry for. */
-export const heldStates = (role: Role): ReadonlyArray<State> => HOLDS_BACK.filter((state) => hasState(role, state))
+export const heldStates = (role: Role): ReadonlyArray<State> => HELD_STATES.filter((state) => hasState(role, state))
 
 /** How many values a stop field takes, in the words a prompt carries: the one vocabulary written and read back. */
 export const presenceWords = (role: Role, presence: Presence): string => {
@@ -777,7 +781,7 @@ export const blockOf = (text: string): Decoded<string> => {
   const closes = text.split(END).length - 1
   if (text.includes("<!-- end-of-step")) return fail("an end-of-step block of an unknown version")
   if (opens !== 1 || closes !== 1) return fail(`${opens} policy blocks open and ${closes} close: exactly one of each`)
-  const found = text.match(new RegExp(BLOCK.source, "g")) ?? []
+  const found = text.match(new RegExp(BLOCK, "g")) ?? []
   if (found.length !== 1) return fail("the policy block does not close after it opens")
   return ok(found.join(""))
 }
@@ -1255,7 +1259,7 @@ class CheckedStep {
   }
 }
 export type Checked = CheckedStep
-const issued = new WeakMap<Checked, Owed>()
+const issued = new WeakMap<Checked, Issued>()
 Object.freeze(CheckedStep.prototype)
 
 /** A value and everything inside it, frozen: what the contract returns can never be changed by whoever holds it. */
@@ -1395,6 +1399,16 @@ export interface Owed {
   readonly states: ReadonlyArray<ItemState>
 }
 
+/** The step's actual obligations, kept typed beside its public report. */
+interface Issued {
+  readonly owed: Owed
+  readonly stop: ReadonlyArray<StopObligation>
+}
+type StopObligation =
+  | { readonly id: "refused.what" | "refused.form" | "refused.allow"; readonly text: string }
+  | { readonly id: "limit"; readonly limit: Limit }
+  | { readonly id: "held"; readonly item: string; readonly evidence: HeldEvidence }
+
 /** A held item's evidence, derived from its folded history: its last run, else the typed reason none ran to the end. */
 type HeldEvidence =
   | { readonly kind: "ran"; readonly command: string; readonly exit: number }
@@ -1420,83 +1434,78 @@ const remedyText = (form: Form): string => {
 }
 /** A held item's evidence as a report writes it: `<command> (exit <code>)`, else its label's words. */
 const heldText = (evidence: HeldEvidence): string => {
-  if (evidence.kind === "ran") return `${evidence.command} (exit ${evidence.exit})`
-  if (evidence.kind === "refused") return `refused: ${evidence.what}${remedyText(evidence.form)}`
-  if (evidence.kind === "cannot") return `cannot run here: ${evidence.tool}`
-  return `waits on ${evidence.ref}`
+  switch (evidence.kind) {
+    case "ran": return `${evidence.command} (exit ${evidence.exit})`
+    case "refused": return `refused: ${evidence.what}${remedyText(evidence.form)}`
+    case "cannot": return `cannot run here: ${evidence.tool}`
+    case "waits": return `waits on ${evidence.ref}`
+  }
+  return evidence satisfies never
 }
-/** The capture groups of each whole-text match of `pattern` (anchored, so one at most). */
-const groupsOf = (text: string, pattern: RegExp): ReadonlyArray<ReadonlyArray<string>> => [...text.matchAll(new RegExp(pattern.source, "g"))].map((match) => match.slice(1))
-const formOf = (kind: "named" | "allow", text: string): Form => {
-  if (kind === "named") return { kind, form: text }
-  return { kind, allow: text }
-}
-/** A written held value read in the grammar of the evidence it must be, into its members: none when it is not of it. */
-const heldRead = (want: HeldEvidence, text: string): ReadonlyArray<HeldEvidence> => {
-  if (want.kind === "ran") return groupsOf(text, /^([\s\S]+) \(exit (-?\d+)\)$/).map(([command = "", exit = ""]): HeldEvidence => ({ kind: "ran", command, exit: Number(exit) }))
-  if (want.kind === "cannot") return groupsOf(text, /^cannot run here: ([\s\S]+)$/).map(([tool = ""]): HeldEvidence => ({ kind: "cannot", tool }))
-  if (want.kind === "waits") return groupsOf(text, /^waits on ([\s\S]+)$/).map(([ref = ""]): HeldEvidence => ({ kind: "waits", ref }))
-  if (want.form.kind === "none") return groupsOf(text, /^refused: ([\s\S]+)$/).map(([what = ""]): HeldEvidence => ({ kind: "refused", what, form: want.form }))
-  const kind = want.form.kind
-  return groupsOf(text, /^refused: ([\s\S]+); form: ([\s\S]+)$/).map(([what = "", remedy = ""]): HeldEvidence => ({ kind: "refused", what, form: formOf(kind, remedy) }))
-}
-const sameHeld = (a: HeldEvidence, b: HeldEvidence): boolean => {
-  if (a.kind === "ran" && b.kind === "ran") return a.command === b.command && a.exit === b.exit
-  if (a.kind === "refused" && b.kind === "refused") return a.what === b.what && sameForm(a.form, b.form)
-  if (a.kind === "cannot" && b.kind === "cannot") return a.tool === b.tool
-  if (a.kind === "waits" && b.kind === "waits") return a.ref === b.ref
-  return false
-}
-
 /** The limit as a report writes it: `timebox <its length>` or `failure cap <its count>`. */
 const limitText = (limit: Limit): string => {
-  if (limit.kind === "timebox") return `timebox ${limit.length}`
-  return `failure cap ${limit.count}`
-}
-const limitRead = (text: string): ReadonlyArray<Limit> => [
-  ...groupsOf(text, /^timebox ([\s\S]+)$/).map(([length = ""]): Limit => ({ kind: "timebox", length })),
-  ...groupsOf(text, /^failure cap (\d+)$/).map(([count = ""]): Limit => ({ kind: "failureCap", count: Number(count) })),
-]
-const sameLimit = (a: Limit, b: Limit): boolean => {
-  if (a.kind === "timebox" && b.kind === "timebox") return a.length === b.length
-  if (a.kind === "failureCap" && b.kind === "failureCap") return a.count === b.count
-  return false
+  switch (limit.kind) {
+    case "timebox": return `timebox ${limit.length}`
+    case "failureCap": return `failure cap ${limit.count}`
+  }
+  return limit satisfies never
 }
 
 /** The remedy a refusal printed, by the stop field it fills. */
-const remedyValues = (form: Form): ReadonlyArray<StopValue> => {
-  if (form.kind === "named") return [{ id: "refused.form", value: form.form }]
-  if (form.kind === "allow") return [{ id: "refused.allow", value: form.allow }]
-  return []
+const remedyOf = (form: Form): ReadonlyArray<StopObligation> => {
+  switch (form.kind) {
+    case "named": return [{ id: "refused.form", text: form.form }]
+    case "allow": return [{ id: "refused.allow", text: form.allow }]
+    case "none": return []
+  }
+  return form satisfies never
 }
 
-/** The stop's evidence values, each derived from the history it is about. */
-const stopValuesOf = (ending: Ending, records: ReadonlyArray<ItemRecord>, held: ReadonlyArray<string>): ReadonlyArray<StopValue> => {
-  if (ending.kind === "refusal" || ending.kind === "write") return [{ id: "refused.what", value: ending.refusal.what }, ...remedyValues(ending.refusal.form)]
-  if (ending.kind === "limit") return [{ id: "limit", value: limitText(ending.limit) }]
-  return records
-    .filter((record) => held.includes(record.id))
-    .flatMap((record) => heldEvidence(record).map((evidence): StopValue => ({ id: "held", item: record.id, value: heldText(evidence) })))
+const holds = (read: Read): boolean => HELD_STATES.some((state) => state === read.row.state)
+
+/** The actual stop obligations, not a catalog of fields the policy might ask for. */
+const stopObligations = (ending: Ending, reads: ReadonlyArray<Read>): ReadonlyArray<StopObligation> => {
+  switch (ending.kind) {
+    case "refusal":
+    case "write": return [{ id: "refused.what", text: ending.refusal.what }, ...remedyOf(ending.refusal.form)]
+    case "limit": return [{ id: "limit", limit: ending.limit }]
+    case "idle": return reads.flatMap((read) => {
+      if (!holds(read)) return []
+      return heldEvidence(read.record).map((evidence): StopObligation => ({ id: "held", item: read.record.id, evidence }))
+    })
+  }
+  return ending satisfies never
+}
+
+/** The one spelling on the wire, computed only from typed observations, never by reparsing a claim. */
+const stopValueOf = (obligation: StopObligation): StopValue => {
+  switch (obligation.id) {
+    case "refused.what":
+    case "refused.form":
+    case "refused.allow": return { id: obligation.id, value: obligation.text }
+    case "limit": return { id: obligation.id, value: limitText(obligation.limit) }
+    case "held": return { id: obligation.id, item: obligation.item, value: heldText(obligation.evidence) }
+  }
+  return obligation satisfies never
 }
 
 /** The one claim true of the step, using only the role policy and evidence folded from its own envelope. */
-const deriveOwed = (policy: Policy, ending: Ending, reads: ReadonlyArray<Read>): Decoded<Owed> => {
+const deriveOwed = (policy: Policy, ending: Ending, reads: ReadonlyArray<Read>): Decoded<Issued> => {
   const result = outcome(policy, stopOf(ending), statesOf(ending, reads.map((one) => one.row)))
   if (!result.ok) return fail(`step: ${result.error}`)
   const named = policy.fields.map((field) => field.id)
   const items = reads.map(({ record, row }): HandBack => ({ item: record.id, rule: row.id, label: row.label, fields: record.fields.filter((field) => named.includes(field.field)) }))
-  const holding = heldStates(policy.role)
-  const held = reads.flatMap(({ row, record }) => iff(holding.includes(row.state), record.id))
-  const claim: Claim = { verdict: result.value.verdict, writes: result.value.writes.artifacts, stop: stopValuesOf(ending, reads.map(({ record }) => record), held), items }
+  const stop = stopObligations(ending, reads)
+  const claim: Claim = { verdict: result.value.verdict, writes: result.value.writes.artifacts, stop: stop.map(stopValueOf), items }
   const states = reads.map(({ record, row }): ItemState => ({ item: record.id, rule: row.id, state: row.state, facts: record.facts }))
-  return ok(frozen({ claim, states }))
+  return ok(frozen({ owed: { claim, states }, stop }))
 }
 
 /** What this exact issued step owes, with no way to substitute a policy, a record, or different evidence. */
 export const owed = (checked: Checked): Decoded<Owed> =>
   Option.match(Option.fromUndefinedOr(issued.get(checked)), {
     onNone: () => fail("a step is checked only by decode, from its envelope"),
-    onSome: ok,
+    onSome: (one) => ok(one.owed),
   })
 
 /** An item's record with the row a policy gives it. */
@@ -1547,28 +1556,21 @@ const heldItem = (value: StopValue): ReadonlyArray<string> => {
 }
 const stopValueText = (value: StopValue): string => [...heldItem(value).map((item) => `${quoted(item)}: `), quoted(value.value)].join("")
 
-/** A claimed stop value against the derived one, read in that value's own grammar and compared member by member. */
-const sameStopValue = (checked: Checked, want: StopValue, got: StopValue): boolean => {
-  if (want.id !== got.id || !sameList(heldItem(want), heldItem(got), eq)) return false
-  if (want.id === "limit") return limitsOf(checked.ending).some((limit) => limitRead(got.value).some((other) => sameLimit(limit, other)))
-  if (want.id !== "held") return want.value === got.value
-  // The held entry's evidence, derived again from its item's history, and the claim read in that evidence's grammar.
-  const derived = checked.records.filter((record) => record.id === want.item).flatMap(heldEvidence)
-  return derived.some((evidence) => heldRead(evidence, got.value).some((one) => sameHeld(one, evidence)))
-}
-const limitsOf = (ending: Ending): ReadonlyArray<Limit> => {
-  if (ending.kind === "limit") return [ending.limit]
-  return []
-}
+/** Compare the actual obligation to exact wire members; no claim text determines how evidence is read. */
+const sameStopValue = (want: StopValue, got: StopValue): boolean =>
+  want.id === got.id && sameList(heldItem(want), heldItem(got), eq) && want.value === got.value
 
-const stopFaults = (checked: Checked, want: ReadonlyArray<StopValue>, got: ReadonlyArray<StopValue>): ReadonlyArray<string> =>
-  STOP_FIELDS.flatMap((id) => {
+const stopFaults = (obligations: ReadonlyArray<StopObligation>, got: ReadonlyArray<StopValue>): ReadonlyArray<string> => {
+  const want = obligations.map(stopValueOf)
+  return [...new Set([...want, ...got].map((one) => one.id))].flatMap((id) => {
     const owed = want.filter((one) => one.id === id)
     const given = got.filter((one) => one.id === id)
-    const same = (a: StopValue, b: StopValue) => sameStopValue(checked, a, b)
-    const exact = owed.length === given.length && owed.every((one) => given.some((other) => same(one, other))) && given.every((one) => owed.some((other) => same(other, one)))
+    const exact = owed.length === given.length
+      && owed.every((one) => given.some((other) => sameStopValue(one, other)))
+      && given.every((one) => owed.some((other) => sameStopValue(other, one)))
     return iff(!exact, `stop ${id}: due ${owed.map(stopValueText).join(" and ") || "none"}, given ${given.map(stopValueText).join(" and ") || "none"}`)
   })
+}
 
 const itemFaults = (owed: ReadonlyArray<HandBack>, given: ReadonlyArray<HandBack>): ReadonlyArray<string> => [
   ...owed.flatMap((one) => {
@@ -1581,13 +1583,13 @@ const itemFaults = (owed: ReadonlyArray<HandBack>, given: ReadonlyArray<HandBack
 
 /** Every way a decoded claim differs from the claim the step owes. */
 const claimFaults = (checked: Checked, claim: Claim): ReadonlyArray<string> => {
-  const due = owed(checked)
-  if (!due.ok) return [`ill-formed: ${due.error}`]
-  const want = due.value.claim
+  const due = Option.fromUndefinedOr(issued.get(checked))
+  if (Option.isNone(due)) return ["ill-formed: a step is checked only by decode, from its envelope"]
+  const want = due.value.owed.claim
   return [
     ...iff(claim.verdict !== want.verdict, `verdict: due ${want.verdict}, given ${claim.verdict}`),
     ...iff(!sameList(claim.writes, want.writes, eq), `writes: due [${want.writes.join(", ")}], given [${claim.writes.join(", ")}]`),
-    ...stopFaults(checked, want.stop, claim.stop),
+    ...stopFaults(due.value.stop, claim.stop),
     ...itemFaults(want.items, claim.items),
   ]
 }

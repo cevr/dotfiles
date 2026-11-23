@@ -7,6 +7,7 @@
 import type { Role, State } from './round-policy.ts';
 import type { Item } from './item-histories.ts';
 import { HAND_BACK_OBSTACLES, type HandBack } from '../../../opencode/mods/orchestrate/hand-back.ts';
+import { immutable } from '../../../opencode/mods/orchestrate/immutable.ts';
 
 /** An obstacle row, by its state: hand-back.ts's list, the one decoder's (ending.test.ts pins it equal to the round policy's). */
 export type ObstacleRow = (typeof HAND_BACK_OBSTACLES)[number];
@@ -59,7 +60,7 @@ const REFUSED = '`refused: <what>`';
 const WAITS = '`waits on <id>`';
 const NONE = 'none: it is no item left';
 
-export const LIST_HISTORIES: ReadonlyArray<ListHistory> = [
+export const LIST_HISTORIES: ReadonlyArray<ListHistory> = immutable<ReadonlyArray<ListHistory>>([
   // 22w's own: an unclear result, then the obstacle that now governs.
   h('W01 a check printed HTML instead of a compiler result, then the compiler left this host', 'verifier', 'attempt → unclear; host probe fails', work({ attempt: 'unclear', hostCannot: true }), 'cannot', CANNOT, 'cannot', [], true),
   h('W03 a truncated log, then a permission refusal on the retry', 'verifier', 'attempt → unclear; refusal', work({ attempt: 'unclear', refused: true }), 'refused', REFUSED, 'refused', [], true),
@@ -131,4 +132,4 @@ export const LIST_HISTORIES: ReadonlyArray<ListHistory> = [
   h('O09 an optional probe ran unclear, its tool left, then a refusal', 'verifier', 'assign(optional); attempt → unclear; host probe fails; refusal', probe({ attempt: 'unclear', refused: true, hostCannot: true }), 'refused', REFUSED, 'refused', ['cannot'], true),
   h('O10 an optional probe refused on its first run, its tool absent and a unit open', 'verifier', 'assign(optional); host probe fails; wait opens; refusal', probe({ attempt: 'started', refused: true, hostCannot: true, wait: true }), 'refused', REFUSED, 'refused', ['cannot', 'waits'], true),
   h('O11 control: a wait opens and closes, then the optional probe ran unclear', 'verifier', 'assign(optional); wait opens; wait closes; attempt → unclear', probe({ attempt: 'unclear' }), 'unproven', '`unproven: <probe>`', null, [], true),
-];
+]);

@@ -4,12 +4,13 @@
 import { Array as Arr, Option, Schema } from "effect"
 import generated from "./agents.json"
 import { described, STEPS } from "./described.ts"
+import { immutable } from "./immutable.ts"
 import { policyFaults } from "./round-policy.ts"
 
 export const WORKER = "worker"
 /** The role Codex never runs (`onCodex`). */
 export const IMPLEMENTOR = "implementor"
-export const ROLES = [...STEPS, WORKER] as const
+export const ROLES = immutable([...STEPS, WORKER] as const)
 export type Role = (typeof ROLES)[number]
 
 /**
@@ -24,27 +25,28 @@ export const ROLE_CACHE_TTL = "5m"
 export const isRole = (name: string): name is Role => (ROLES as readonly string[]).includes(name)
 
 /** A role as OpenCode agent fields, and the reasoning effort it runs at. */
-export const Definition = Schema.Struct({
-  description: Schema.String,
+const text = Schema.String.annotate({})
+export const Definition = immutable(Schema.Struct({
+  description: text,
   mode: Schema.Literal("subagent"),
   permissions: Schema.Array(
-    Schema.Struct({ action: Schema.String, resource: Schema.String, effect: Schema.Literals(["allow", "deny", "ask"]) }),
+    Schema.Struct({ action: text, resource: text, effect: Schema.Literals(["allow", "deny", "ask"]) }),
   ),
-  system: Schema.String,
-  effort: Schema.optional(Schema.String),
-})
+  system: text,
+  effort: Schema.optional(text),
+}))
 export interface Definition extends Schema.Schema.Type<typeof Definition> {}
 
 /** The primary agent a new session opens with: build's fields, its description, and a section after build's prompt. */
 export const ORCHESTRATOR = "orchestrator"
-const Orchestrator = Schema.Struct({ description: Schema.String, section: Schema.String })
+const Orchestrator = Schema.Struct({ description: text, section: text })
 
 /**
  * agents.json as the plugin ships it. Each role's `system` must carry exactly its round policy as round-policy.ts
  * renders it (decoded and compared part by part, then byte for byte), so a prompt whose policy was lost, swapped,
  * edited or doubled in delivery fails here, before any role definition is exposed.
  */
-export const Generated = Schema.Struct({
+export const Generated = immutable(Schema.Struct({
   agents: Schema.Struct({ planner: Definition, implementor: Definition, verifier: Definition, worker: Definition }),
   orchestrator: Orchestrator,
 }).check(
@@ -52,15 +54,15 @@ export const Generated = Schema.Struct({
     const faults = ROLES.flatMap((role) => policyFaults(role, value.agents[role].system))
     return faults.length === 0 || `round policy: ${faults.join("; ")}`
   }),
-)
+))
 
 const decoded = Schema.decodeUnknownSync(Generated)(generated)
 
 /** Each role's definition. agents.json is checked by `bun run agents -- --check` and its policies decoded here, so a bad file fails at load. */
-export const definitions: Readonly<Record<Role, Definition>> = decoded.agents
+export const definitions: Readonly<Record<Role, Definition>> = immutable(decoded.agents)
 
 /** The orchestrator's description and prompt section, from the same file. */
-export const orchestrator: typeof Orchestrator.Type = decoded.orchestrator
+export const orchestrator: typeof Orchestrator.Type = immutable(decoded.orchestrator)
 
 /**
  * The system parts an `agent`'s request carries: for the orchestrator, the first part (build's prompt, as the host
@@ -90,13 +92,13 @@ export const effort = (role: Role): string | undefined => definitions[role].effo
 const FULL = new Set(["", "general", "general-purpose", "claude"])
 
 /** Former agent names → current: the roles dropped their orchestrate- prefix; the reviewer is the verifier's former name. */
-export const RENAMED: Readonly<Record<string, Role>> = {
+export const RENAMED: Readonly<Record<string, Role>> = Object.freeze({
   "orchestrate-worker": "worker",
   "orchestrate-planner": "planner",
   "orchestrate-implementor": "implementor",
   "orchestrate-verifier": "verifier",
   "orchestrate-reviewer": "verifier",
-}
+})
 
 /**
  * Why a call runs as the agent it does; `described` is role work asked of the
@@ -104,7 +106,7 @@ export const RENAMED: Readonly<Record<string, Role>> = {
  * keeping its child's agent; `model-dropped` is a new role start that named
  * the role's own model, which runs as if it named none (tool-call.ts).
  */
-export const Reason = Schema.Literals(["untyped", "general", "renamed", "kept", "described", "continued", "model-dropped"])
+export const Reason = immutable(Schema.Literals(["untyped", "general", "renamed", "kept", "described", "continued", "model-dropped"]))
 export type Reason = typeof Reason.Type
 
 /**
@@ -181,7 +183,7 @@ export const capEffort = (
 }
 
 /** The providers Codex runs on, whatever the plugin's `codex` option names. */
-export const CODEX_PROVIDERS: ReadonlyArray<string> = ["openai"]
+export const CODEX_PROVIDERS: ReadonlyArray<string> = Object.freeze(["openai"])
 
 /**
  * Whether a model reference (`provider/model#variant`) is a Codex model: on
@@ -203,7 +205,7 @@ export const onCodex = (agent: string): boolean => agent === "planner" || agent 
  * Where an implementor runs when the model it would run on is a Codex one (its parent's, say): the newest
  * Opus on one of these providers, at the role's effort. Codex never implements.
  */
-export const OPUS = { providers: ["anthropic"], family: "claude-opus" } as const
+export const OPUS = immutable({ providers: ["anthropic"], family: "claude-opus" } as const)
 
 /**
  * The Codex model a held planner or verifier falls back to: the newest sol,

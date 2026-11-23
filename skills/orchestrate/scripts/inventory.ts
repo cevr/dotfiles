@@ -10,6 +10,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { BLOCK, ROLES, type Role } from './round-policy.ts';
+const BLOCK_PATTERN = new RegExp(BLOCK);
 
 export const ROOT = join(import.meta.dir, '../../..');
 export const INVENTORY = join(ROOT, 'skills/orchestrate/prompt-inventory.json');
@@ -36,7 +37,7 @@ export function prompts(): Prompt[] {
 /** A prompt's text outside its block, as paragraphs in order (the block's place is one paragraph of its own). */
 export const paragraphs = (text: string): string[] =>
   text
-    .replace(BLOCK, '\n\n<end-of-step block>\n\n')
+    .replace(BLOCK_PATTERN, '\n\n<end-of-step block>\n\n')
     .split(/\n\s*\n/)
     .map((one) => one.trim())
     .filter(Boolean);

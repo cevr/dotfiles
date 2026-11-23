@@ -7,6 +7,7 @@
 //   replaced  this design decides it differently, by the design line `by`, at the cells in `to`.
 // A destination: `F1 <role> <state>` (a label), `F2 <role> <verdict>` (a verdict rule and its files),
 // `F2 <role> evidence <stop>` (what a stop writes), `REQUIRED <role>` (the role's required-work line).
+import { immutable } from '../../../opencode/mods/orchestrate/immutable.ts';
 
 export const INSTALLED = '4afe1fda';
 
@@ -17,7 +18,7 @@ export type Fate =
 
 const TABLE_ROW = (role: 'planner' | 'implementor', ...verdicts: string[]): Fate => ({ kind: 'moved', to: verdicts.map((verdict) => `F2 ${role} ${verdict}`) });
 
-export const RETENTION: Readonly<Record<string, Fate>> = {
+export const RETENTION: Readonly<Record<string, Fate>> = immutable<Readonly<Record<string, Fate>>>({
   'When it is done, end with a final message whose **first line** is:': {
     kind: 'reworded',
     now: "Your final message's **first line** is:",
@@ -93,4 +94,4 @@ export const RETENTION: Readonly<Record<string, Fate>> = {
     kind: 'moved',
     to: ['F2 verifier stuck', 'F2 verifier changes', 'F2 verifier accepted', 'F1 verifier unclear', 'REQUIRED verifier'],
   },
-};
+});

@@ -375,6 +375,52 @@ describe("a claim, judged against what the envelope's histories owe", () => {
     expect(claim.stop).toEqual([{ id: "limit", value: "timebox 2 h" }])
     for (const value of ["timebox 3 h", "nothing", "failure cap 2", ""]) expect([value, admitted(input, { ...claim, stop: [{ id: "limit", value }] }).length]).toEqual([value, 1])
   })
+  test("a count is admitted in exactly the recorded spelling, not by parsing equivalent numbers", () => {
+    const count = envelope("implementor", [red], [{ kind: "limit", limit: { kind: "failureCap", count: Number.MAX_SAFE_INTEGER } }])
+    const claim = owedOf(count)
+    expect(claim.stop).toEqual([{ id: "limit", value: "failure cap 9007199254740991" }])
+    expect(admitted(count, claim)).toEqual([])
+    for (const value of ["failure cap 09007199254740991", "failure cap 9007199254740991\n", "failure cap 9007199254740992"]) {
+      expect(admitted(count, { ...claim, stop: [{ id: "limit", value }] })).toHaveLength(1)
+    }
+  })
+  test("a held command can contain separators without making the trailing exit ambiguous", () => {
+    const waiting = envelope("verifier", [{
+      id: "gate",
+      assignment: assigned,
+      events: [begin("a", "first (exit 123)\nnext; form: fixture"), finish("a", "unclear", 0), { kind: "waitOpen", ref: "q1" }],
+    }])
+    const claim = owedOf(waiting)
+    const value = "first (exit 123)\nnext; form: fixture (exit 0)"
+    expect(claim.stop).toEqual([{ id: "held", item: "gate", value }])
+    expect(admitted(waiting, claim)).toEqual([])
+    for (const changed of [`${value}\n`, value.replace("(exit 0)", "(exit -0)"), value.replace("(exit 0)", "(exit 00)")]) {
+      expect(admitted(waiting, { ...claim, stop: [{ id: "held", item: "gate", value: changed }] })).toHaveLength(1)
+    }
+  })
+  test("each refusal remedy occupies its own exact field, even when its text contains another field's separator", () => {
+    const what = "write; form: fixture"
+    const forms = [{ kind: "none" }, { kind: "named", form: "! command; form: fixture" }, { kind: "allow", allow: "allow; form: fixture" }] as const
+    for (const form of forms) {
+      const stopped = envelope("verifier", [done], [{ kind: "writeDenied", artifact: "findings", refusal: { ...refusal(what), form } }])
+      const claim = owedOf(stopped)
+      expect(admitted(stopped, claim)).toEqual([])
+      switch (form.kind) {
+        case "none":
+          expect(claim.stop).toEqual([{ id: "refused.what", value: what }])
+          expect(admitted(stopped, { ...claim, stop: [...claim.stop, { id: "refused.form", value: "none" }] })).toHaveLength(1)
+          break
+        case "named":
+          expect(claim.stop).toEqual([{ id: "refused.what", value: what }, { id: "refused.form", value: form.form }])
+          expect(admitted(stopped, { ...claim, stop: [{ id: "refused.what", value: what }, { id: "refused.allow", value: form.form }] })).toHaveLength(2)
+          break
+        case "allow":
+          expect(claim.stop).toEqual([{ id: "refused.what", value: what }, { id: "refused.allow", value: form.allow }])
+          expect(admitted(stopped, { ...claim, stop: [{ id: "refused.what", value: what }, { id: "refused.form", value: form.allow }] })).toHaveLength(2)
+          break
+      }
+    }
+  })
   test("forged evidence (control 3): a flag beside the evidence, or an unknown claim member, is rejected before any value is read", () => {
     const claim = owedOf(input)
     expect(admitted(input, Object.assign({}, claim, { lastAttempt: true }))).toEqual([`claim: Expected no excess property   at ["lastAttempt"]`])
