@@ -10,7 +10,7 @@
 // batch's merges, and what it rewrote is committed. Receipts (`receipts`) are read and written here: a
 // checkout's in its Git dir, every one in the host's receipts folder beside the logs; `scriptReceipt` and
 // `scriptReceipts` give them to scripts outside Effect (scripts/gate.ts, post-land.ts, receipt.ts).
-import { closeSync, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { closeSync, constants, copyFileSync, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, type Stats, writeFileSync } from "node:fs"
 import { availableParallelism, loadavg } from "node:os"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { basename, dirname, join } from "node:path"
@@ -187,33 +187,79 @@ export const siblingReviewInputLock = (file: string): string => join(dirname(fil
 /** The sink chooses its initial mode and how much of an existing mode a replacement may retain. */
 export type ReviewInputAccess = "owner-only" | { readonly preserve: { readonly whenAbsent: number; readonly ceiling: number } }
 
+const reviewIo = <A>(operation: string, step: () => A) =>
+  Effect.try({ try: step, catch: (cause) => new RiftFailed({ operation, message: String(cause) }) })
+
+/** One incumbent open for both publisher and producer reads. Only absence is not an error. */
+const withReviewInput = <A>(
+  operation: string,
+  file: string,
+  absent: Effect.Effect<A, RiftFailed>,
+  present: (fd: number, stat: Stats) => Effect.Effect<A, RiftFailed>,
+) => Effect.acquireUseRelease(
+  Effect.try({
+    try: () => Option.some(openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK | constants.O_NOCTTY)),
+    catch: (cause) => cause,
+  }).pipe(Effect.catch((cause) => {
+    if (Predicate.hasProperty(cause, "code") && cause.code === "ENOENT") return Effect.succeed(Option.none<number>())
+    return Effect.fail(new RiftFailed({ operation, message: String(cause) }))
+  })),
+  Option.match({
+    onNone: () => absent,
+    onSome: (fd) => Effect.flatMap(reviewIo(operation, () => fstatSync(fd)), (stat) => {
+      if (!stat.isFile() || !Option.exists(Option.fromNullishOr(geteuid), (uid) => stat.uid === uid()) || stat.nlink !== 1)
+        return Effect.fail(new RiftFailed({ operation, message: "the review input is not an owner-owned regular file with one link" }))
+      return present(fd, stat)
+    }),
+  }),
+  Option.match({ onNone: () => Effect.void, onSome: (fd) => reviewIo(operation, () => closeSync(fd)) }),
+)
+
+export const readReviewInput = (operation: string, file: string) =>
+  withReviewInput(operation, file, Effect.succeed(Option.none<string>()), (fd) => reviewIo(operation, () => Option.some(readFileSync(fd, "utf8"))))
+
+export const checkReviewInput = (operation: string, file: string) =>
+  withReviewInput(operation, file, Effect.void, () => Effect.void)
+
+/** Remove only the version selected by a guarded read under the same lock that publishes its replacement. */
+export const removeReviewInput = Effect.fn("ReviewInput.remove")(function* (operation: string, file: string, lock: string, owns: (text: string) => boolean) {
+  yield* checkReviewInput(operation, file)
+  const remove = withReviewInput(operation, file, Effect.void, (fd) =>
+    reviewIo(operation, () => { if (owns(readFileSync(fd, "utf8"))) rmSync(file) }),
+  )
+  const result = yield* reviewIo(operation, () => exclusivelySync(lock)(() => Effect.runSyncExit(remove)))
+  yield* result
+})
+
 /**
  * Publish one complete version. Never open the published inode for writing: review readers depend on replacement
  * only. Serialize competing publishers from the mode observation through rename (a stricter umask in another
  * process must not make this writer restore access). Set the mode in the creating open, then sync file and directory.
  */
-export const publishReviewInput = Effect.fn("ReviewInput.publish")(function* (operation: string, file: string, lock: string, access: ReviewInputAccess, text: string) {
+export const changeReviewInput = Effect.fn("ReviewInput.publish")(function* <A>(
+  operation: string, file: string, lock: string, access: ReviewInputAccess,
+  make: (incumbent: () => Option.Option<string>) => { readonly text: string; readonly answer: A },
+) {
   const directory = dirname(file)
   const nonce = yield* Random.nextInt
   const temp = join(directory, `.review-input-${nonce}`)
-  const io = <A>(step: () => A) => Effect.try({ try: step, catch: (cause) => new RiftFailed({ operation, message: String(cause) }) })
+  const io = <B>(step: () => B) => reviewIo(operation, step)
   const close = (fd: number) => io(() => closeSync(fd))
-  const publish = Effect.gen(function* () {
-    const previous = yield* io(() => lstatSync(file, { throwIfNoEntry: false }))
-    if (previous && (!previous.isFile() || previous.uid !== geteuid?.()))
-      return yield* new RiftFailed({ operation, message: "the published name is not an owner-owned regular file" })
+  const publish = (previous: Option.Option<Stats>, read: () => Option.Option<string>) => Effect.gen(function* () {
     const { ceiling, whenAbsent: fresh } = Match.value(access).pipe(
       Match.when("owner-only", () => ({ ceiling: 0o600, whenAbsent: 0o600 })),
       Match.orElse(({ preserve }) => preserve),
     )
-    const mode = (previous?.mode ?? fresh) & ceiling & 0o777
+    const mode = Option.getOrElse(Option.map(previous, (stat) => stat.mode), () => fresh) & ceiling & 0o777
     // A setgid parent can choose the new inode's group. Retain group bits only if both possible creation
     // groups match the prior file, rather than giving the same bits to a different group.
     const allowed = yield* io(() => {
-      if (!previous || (mode & 0o070) === 0) return mode
-      if (previous.gid === getegid?.() && previous.gid === statSync(directory).gid) return mode
+      if (Option.isNone(previous) || (mode & 0o070) === 0) return mode
+      const { gid } = previous.value
+      if (gid === getegid?.() && gid === statSync(directory).gid) return mode
       return mode & 0o707
     })
+    const { text, answer } = yield* io(() => make(read))
     yield* Effect.acquireUseRelease(
       io(() => openSync(temp, "wx", allowed)),
       (fd) =>
@@ -225,11 +271,21 @@ export const publishReviewInput = Effect.fn("ReviewInput.publish")(function* (op
         }),
       (fd) => close(fd).pipe(Effect.ensuring(io(() => rmSync(temp, { force: true })).pipe(Effect.ignore))),
     )
+    return answer
   })
+  // An unsafe name is refused before waiting for a lock. Reopen under the publishing lock so the
+  // version used for mode and optional content is the one no competing publisher can now replace.
+  yield* checkReviewInput(operation, file)
   yield* io(() => mkdirSync(directory, { recursive: true }))
-  const result = yield* io(() => exclusivelySync(lock)(() => Effect.runSyncExit(publish)))
-  yield* result
+  const guarded = withReviewInput(
+    operation, file, publish(Option.none(), Option.none), (fd, stat) => publish(Option.some(stat), () => Option.some(readFileSync(fd, "utf8"))),
+  )
+  const result = yield* io(() => exclusivelySync(lock)(() => Effect.runSyncExit(guarded)))
+  return yield* result
 })
+
+export const publishReviewInput = (operation: string, file: string, lock: string, access: ReviewInputAccess, text: string) =>
+  changeReviewInput(operation, file, lock, access, () => ({ text, answer: undefined }))
 
 /**
  * Receipts on disk (receipt.ts), for the land and for a script that writes one (scripts/gate.ts,
@@ -242,6 +298,8 @@ export const receipts = (logs: string, env: Readonly<Record<string, string>> = {
   const { run } = commands(env)
   const trimmed = (path: string, ...args: ReadonlyArray<string>) => run(["git", "-C", path, ...args], path).pipe(Effect.map((out) => out.trim()))
   const gitPath = (path: string, name: string) => trimmed(path, "rev-parse", "--path-format=absolute", "--git-path", name)
+  // --git-path with an absolute format follows a symlink at the leaf. Resolve only the Git directory.
+  const mirror = (path: string) => trimmed(path, "rev-parse", "--absolute-git-dir").pipe(Effect.map((dir) => join(dir, "rift-receipt.json")))
   const io = <A>(operation: string, step: () => A) => Effect.try({ try: step, catch: (cause) => new RiftFailed({ operation, message: String(cause) }) })
   const encode = (receipt: Receipt) => Schema.encodeEffect(ReceiptJson)(receipt).pipe(Effect.mapError((error) => new RiftFailed({ operation: "receipt", message: error.message })))
 
@@ -266,14 +324,14 @@ export const receipts = (logs: string, env: Readonly<Record<string, string>> = {
     const file = hostReceipt(logs, receipt)
     yield* publishReviewInput("write receipt", file, reviewInputLock(logs), "owner-only", `${text}\n`)
     if (receipt.kind !== "round") return file
-    const kept = yield* gitPath(receipt.repo, "rift-receipt.json")
+    const kept = yield* mirror(receipt.repo)
     yield* publishReviewInput("write receipt", kept, join(dirname(kept), "rift-receipt.lock"), "owner-only", `${text}\n`)
     return file
   })
 
   const newest = Effect.fn("Receipts.newest")(function* (path: string) {
-    const kept = yield* gitPath(path, "rift-receipt.json")
-    const text = yield* io("read receipt", () => Option.liftPredicate(kept, existsSync).pipe(Option.map((file) => readFileSync(file, "utf8"))))
+    const kept = yield* mirror(path)
+    const text = yield* readReviewInput("read receipt", kept)
     return Option.flatMap(text, Schema.decodeUnknownOption(ReceiptJson))
   })
 

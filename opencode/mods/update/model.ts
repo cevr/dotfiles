@@ -1,4 +1,4 @@
-import { Array as Arr, Clock, Context, Duration, Effect, Layer, Option, Ref, Schedule } from "effect"
+import { Array as Arr, Clock, Context, Duration, Effect, Layer, Option, Ref, Result, Schedule } from "effect"
 import { describeGate, Gate, gate } from "./gate.ts"
 import { describeHealth, digestSaid, final, Health, healthOf, provenNotice, recover, Recovery, type Stage } from "./health.ts"
 import { type Build, buildOf, goodOf, promoted, proven, type Record, rolledBack } from "./record.ts"
@@ -373,7 +373,9 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Builds | Service 
   })
 
   yield* log.line(`handoff: ${reason}`)
-  const before = yield* records.read
+  const read = yield* Effect.result(records.read)
+  if (Result.isFailure(read)) return yield* refuse(Option.none(), read.failure.step, read.failure.message)
+  const before = read.success
   const tried = Option.flatMap(Option.map(before, promoted), buildOf)
   // Read from the running service before anything changes under it.
   const hadLogins = yield* loginsBefore
@@ -397,4 +399,9 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Builds | Service 
  * the mark and waits, so one handoff runs at a time.
  */
 export const handoff = (reason: string): Effect.Effect<Outcome, never, Builds | HandoffMark | Service | Source | Records | Rejections | Configs | Trees | Notice | Log> =>
-  HandoffMark.use((mark) => mark.hold.pipe(Effect.andThen(steps(reason)), Effect.ensuring(mark.release)))
+  HandoffMark.use((mark) => Log.use((log) => mark.hold.pipe(
+    Effect.andThen(steps(reason).pipe(Effect.ensuring(mark.release.pipe(
+      Effect.catch((failed) => log.line(`handoff: ${failed.step}: ${failed.message}`)),
+    )))),
+    Effect.catch((failed) => log.line(`handoff: ${failed.step}: ${failed.message}; ${UNCHANGED}`).pipe(Effect.as("gave-up" as const))),
+  )))

@@ -2,7 +2,7 @@ import { Effect, Layer, Option } from "effect"
 import { parseRecord, recordText } from "../record.ts"
 import { Records, UpdateFailed } from "../service.ts"
 import type { Settings } from "../settings.ts"
-import { publishText, readText } from "./files.ts"
+import { publishText, readPublished } from "./files.ts"
 import { writeLauncher } from "./stage.ts"
 
 /**
@@ -15,7 +15,7 @@ export const layer = (settings: Pick<Settings, "record" | "launcher" | "resident
   Layer.succeed(
     Records,
     Records.of({
-      read: readText(settings.record).pipe(Effect.map((text) => Option.flatMap(text, parseRecord))),
+      read: readPublished("read the installed record", settings.record).pipe(Effect.map((text) => Option.flatMap(text, parseRecord))),
       write: (record) =>
         publishText("write the installed record", settings.record, { preserve: { whenAbsent: 0o600, ceiling: 0o640 } }, recordText(record)).pipe(
           Effect.andThen(

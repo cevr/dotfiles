@@ -1,6 +1,6 @@
 import { spawnSync } from "bun"
 import { Clock, Effect, Layer, Option, Schema } from "effect"
-import { publishText, readText, remove } from "../filestore/files.ts"
+import { publishText, readPublished, removePublished } from "../filestore/files.ts"
 import { HandoffMark } from "../service.ts"
 import { Running } from "../update.ts"
 
@@ -16,16 +16,15 @@ const alive = (pid: number): Effect.Effect<boolean> =>
 
 /**
  * The handoff's mark in its file, `<update state>/handoff.json`, for the process `pid` (the
- * handoff's own, from its composition root). A write that fails is lost: a check then plans as
- * before.
+ * handoff's own, from its composition root). A refused mark prevents the handoff.
  */
 export const layer = (path: string, pid: number) => {
-  const read = readText(path).pipe(Effect.map((text) => Option.flatMap(text, decode)))
+  const read = readPublished("read the running handoff", path).pipe(Effect.map((text) => Option.flatMap(text, decode)))
   return Layer.succeed(
     HandoffMark,
     HandoffMark.of({
-      hold: Clock.currentTimeMillis.pipe(Effect.flatMap((at) => publishText("mark the running handoff", path, "owner-only", encode({ pid, at }))), Effect.ignore),
-      release: read.pipe(Effect.flatMap((mark) => Effect.when(remove(path), Effect.succeed(Option.exists(mark, (each) => each.pid === pid)))), Effect.asVoid),
+      hold: Clock.currentTimeMillis.pipe(Effect.flatMap((at) => publishText("mark the running handoff", path, "owner-only", encode({ pid, at })))),
+      release: removePublished("release the running handoff", path, (text) => Option.exists(decode(text), (each) => each.pid === pid)),
       read,
       alive,
     }),

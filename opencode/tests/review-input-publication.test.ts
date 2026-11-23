@@ -5,7 +5,7 @@ import { describe, expect, it } from "effect-bun-test"
 
 // Both observers exercise the public producers, including the second sink of a round receipt.
 const WRITERS = `
-import { chmodSync, closeSync, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { strict as assert } from "node:assert";
 const [rootArg, code, role, nameArg, maskArg] = process.argv.slice(2);
@@ -51,7 +51,7 @@ const run = Effect.runPromise;
 const fdCount = () => readdirSync(process.platform === "linux" ? "/proc/self/fd" : "/dev/fd").filter((fd) => {
   try {
     const stat = fstatSync(Number(fd));
-    return stat.isFile() || stat.isDirectory();
+    return stat.isFile() || stat.isDirectory() || stat.isFIFO();
   } catch (error) {
     if (error.code === "EBADF") return false;
     throw error;
@@ -80,7 +80,7 @@ function layout(root) {
   const marker = (n) => run(HandoffMark.use((x) => x.hold).pipe(Effect.provide(marks.layer(mark, 1000 + n))));
   const names = { receipt: [join(receipts, head + ".round.json"), keep], "git-mirror": [join(root, ".git", "rift-receipt.json"), keep],
     land: [join(receipts, head + ".land.json"), land], stage: [record, (n) => stageBuild(build(n))], install: [record, install], handoff: [mark, marker] };
-  return { logs, receipts, record, mark, head, names };
+  return { logs, receipts, record, mark, head, names, build };
 }
 function prepare(root, file) {
   if (!existsSync(join(root, ".git"))) {
@@ -95,6 +95,50 @@ if (role === "writer") {
   globalThis.__observedPublication = file;
   process.umask(Number(maskArg));
   await put(2);
+  process.exit(0);
+}
+if (role === "try-unsafe") {
+  const [file, put] = layout(root).names[nameArg];
+  try {
+    await put(2);
+  } catch (refusal) {
+    if (refusal._tag !== "RiftFailed" && refusal._tag !== "UpdateFailed") throw refusal;
+    console.log("typed refusal: " + refusal._tag);
+    process.exit(2);
+  }
+  console.log("published");
+  process.exit(0);
+}
+if (role === "refuse-and-recover") {
+  const [file, put] = layout(root).names[nameArg];
+  await retainingFds(nameArg + " refusal", () => assert.rejects(async () => put(2), (error) =>
+    error._tag === "RiftFailed" || error._tag === "UpdateFailed"));
+  rmSync(file, { recursive: true });
+  await retainingFds(nameArg + " recovery", () => put(3));
+  JSON.parse(readFileSync(file, "utf8"));
+  console.log("refused and republished in one process");
+  process.exit(0);
+}
+if (role === "refuse-under-lock") {
+  const { build, record, names } = layout(root);
+  const { dlopen, FFIType } = await import("bun:ffi");
+  const libc = dlopen(process.platform === "darwin" ? "/usr/lib/libSystem.B.dylib" : "libc.so.6", {
+    flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+  });
+  try {
+    let entered = false;
+    assert.throws(() => stageBuild(build(2), (fd, op) => {
+      assert.equal(libc.symbols.flock(fd, op), 0);
+      assert.equal(Bun.spawnSync(["mkfifo", record]).exitCode, 0);
+      entered = true;
+      return 0;
+    }), (error) => error._tag === "RiftFailed");
+    assert.ok(entered, "the refusal must happen while actually holding the builds lock");
+    unlinkSync(record);
+    await names.stage[1](3);
+    JSON.parse(readFileSync(record, "utf8"));
+    console.log("racing hold: refused and recovered under real builds lock");
+  } finally { libc.close(); }
   process.exit(0);
 }
 `
@@ -228,18 +272,62 @@ for (const name of sites) {
     console.log(name + ":12/12");
   }
 }
-if (role === "crash") {
-  const fixture = mkdtempSync(join(root, "refused-"));
-  const paths = layout(fixture);
-  const [file, put] = paths.names.receipt;
-  prepare(fixture, file);
-  const notTheName = join(fixture, "keep");
-  writeFileSync(notTheName, "unchanged");
-  symlinkSync(notTheName, file);
-  await retainingFds("refused nonregular publication", () => assert.rejects(() => put(1)));
-  assert.equal(readFileSync(notTheName, "utf8"), "unchanged");
-  unlinkSync(file);
+`
+
+const DESTINATIONS = WRITERS + `
+import { lstatSync } from "node:fs";
+import { createServer } from "node:net";
+const shapes = ["FIFO", "symlink", "directory", "socket"];
+for (const name of sites) {
+  for (const shape of shapes) {
+    // Keep the UNIX socket pathname short, including on macOS.
+    const fixture = mkdtempSync(join(root, "u-"));
+    const [file] = layout(fixture).names[name];
+    prepare(fixture, file);
+    const other = join(fixture, "keep");
+    writeFileSync(other, "unchanged");
+    let socket;
+    if (shape === "FIFO") assert.equal(Bun.spawnSync(["mkfifo", file]).exitCode, 0);
+    if (shape === "symlink") symlinkSync(other, file);
+    if (shape === "directory") mkdirSync(file);
+    if (shape === "socket") {
+      socket = createServer();
+      // Bind the socket directly at the fixed sink. Relative names avoid sockaddr_un's length limit.
+      const cwd = process.cwd();
+      process.chdir(dirname(file));
+      try { await new Promise((resolve, reject) => socket.once("error", reject).listen(basename(file), resolve)); }
+      finally { process.chdir(cwd); }
+    }
+    const run = (role = "try-unsafe") => Bun.spawnSync([process.execPath, import.meta.path, fixture, code, role, name], {
+      timeout: 1500, stdin: "ignore", stdout: "pipe", stderr: "pipe",
+    });
+    const old = lstatSync(file);
+    const rejected = run();
+    assert.equal(rejected.exitCode, 2, name + "/" + shape + ": " + rejected.stdout + rejected.stderr);
+    assert.match(rejected.stdout.toString(), /typed refusal: (?:RiftFailed|UpdateFailed)/);
+    const still = lstatSync(file);
+    assert.deepEqual([still.ino, still.mode, still.uid], [old.ino, old.mode, old.uid]);
+    assert.equal(readFileSync(other, "utf8"), "unchanged");
+    if (!socket) {
+      const again = run("refuse-and-recover");
+      assert.equal(again.exitCode, 0, name + "/same-process recovery: " + again.stdout + again.stderr);
+      assert.match(again.stdout.toString(), /refused and republished in one process/);
+    }
+    if (socket) { await new Promise((resolve) => socket.close(resolve)); }
+    if (existsSync(file)) rmSync(file, { recursive: true });
+    const recovered = run();
+    assert.equal(recovered.exitCode, 0, name + "/recovery: " + recovered.stdout + recovered.stderr);
+    JSON.parse(readFileSync(file, "utf8"));
+  }
+  console.log(name + ":4/4 typed refusal+recovery");
 }
+const fixture = mkdtempSync(join(root, "race-"));
+prepare(fixture, layout(fixture).record);
+const raced = Bun.spawnSync([process.execPath, import.meta.path, fixture, code, "refuse-under-lock", "stage"], {
+  timeout: 1500, stdin: "ignore", stdout: "pipe", stderr: "pipe",
+});
+assert.equal(raced.exitCode, 0, "racing builds lock/" + raced.stdout + raced.stderr);
+console.log(raced.stdout.toString().trim());
 `
 
 const observe = (programText: string, phase: string, expected: ReadonlyArray<string>) =>
@@ -265,6 +353,9 @@ describe("review-input publication", () => {
     () => observe(MATRIX, "mode", sites.map((name) => `${name}:12/12`)), 60_000)
   it.live.layer(BunServices.layer)("crash recovery: kill each fixture writer before rename; read old or absent and publish again with its stray temp still present",
     () => observe(MATRIX, "crash", sites.map((name) => `${name}:killed-before-rename:absent+existing:recovered`)), 60_000)
+  it.live.layer(BunServices.layer)("unsafe destination matrix: each public producer refuses each special file and the next call succeeds",
+    () => observe(DESTINATIONS, "unsafe", [...sites.map((name) => `${name}:4/4 typed refusal+recovery`),
+      "racing hold: refused and recovered under real builds lock"]), 60_000)
 
   it.live.layer(BunServices.layer)("each review input sink uses its atomic writer, never the general text writer", () =>
     Effect.gen(function* () {
@@ -283,7 +374,7 @@ describe("review-input publication", () => {
       expect(update).toMatch(/publishReviewInput\(step, path, siblingReviewInputLock\(path\), access, text\)/)
       expect(record).toMatch(/publishText\("write the installed record", settings\.record,/)
       expect(mark).toMatch(/publishText\("mark the running handoff", path,/)
-      expect(stage).toMatch(/publishReviewInput\("stage the installed record", stage\.record,/)
+      expect(stage).toMatch(/changeReviewInput\(step, stage\.record,/)
       expect(stage).not.toMatch(/(?:writeFileSync|openSync)\(stage\.record|flag: "a\+"/)
     }),
   )
