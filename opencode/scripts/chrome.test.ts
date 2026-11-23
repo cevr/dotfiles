@@ -1,27 +1,71 @@
-// scripts/chrome.ts against a stand-in browser (a shell script that writes the DevTools port file Chrome writes and
-// records its arguments): the argument list keeps both keychain flags last whatever the caller adds, refusing every
+// scripts/chrome.ts against a stand-in browser (a Bun script that serves DevTools as Chrome does, writing the port file
+// only for a port it chose, and records its arguments): the argument list keeps both keychain flags last whatever the caller adds, refusing every
 // spelling that would replace or drop one; the browsers are found in their order on a planted cache; a launch prints
 // the endpoint and leaves a process group that `stop` ends, removing its folder; `stop` refuses a pid it did not
 // start. No real Chrome runs here.
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { spawn, spawnSync } from "bun"
+import { serve, spawn, spawnSync } from "bun"
 import { Effect, FileSystem, Option, Path, Result, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
+import { FetchHttpClient, HttpClient } from "effect/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { browsersIn, chromeArgs, DEFAULTS, KEYCHAIN_FLAGS, launch, start, stop } from "./chrome.ts"
 
 const PROFILE = "/run/chrome-x/profile"
 
-/** A browser that writes its DevTools port file, records its arguments beside its profile, and waits to be ended. */
-const FAKE = [
-  "#!/bin/sh",
-  'for a in "$@"; do case "$a" in --user-data-dir=*) p="${a#--user-data-dir=}";; esac; done',
-  'mkdir -p "$p"',
-  "printf '%s\\n' \"$@\" > \"$p/../args.txt\"",
-  "printf '4242\\n/devtools/browser/fake\\n' > \"$p/DevToolsActivePort\"",
-  "sleep 30 & wait",
-  "",
-].join("\n")
+/**
+ * A browser that behaves as Chrome does with its DevTools port: it records its arguments beside its profile, serves
+ * `/json/version` on loopback at the port it was given (any free one for 0), and writes `DevToolsActivePort` only
+ * when it chose the port itself (Chrome writes no file for a fixed port); then waits to be ended.
+ */
+const FAKE = `#!/usr/bin/env bun
+const args = process.argv.slice(2)
+const value = (name) => args.find((arg) => arg.startsWith("--" + name + "="))?.slice(name.length + 3)
+const profile = value("user-data-dir")
+const asked = Number(value("remote-debugging-port") ?? "0")
+require("node:fs").mkdirSync(profile, { recursive: true })
+await Bun.write(profile + "/../args.txt", args.join("\\n") + "\\n")
+const server = Bun.serve({
+  hostname: "127.0.0.1",
+  port: asked,
+  fetch: (request) => new URL(request.url).pathname === "/json/version" ? Response.json({ webSocketDebuggerUrl: "ws://127.0.0.1:" + server.port + "/devtools/browser/fake" }) : new Response(null, { status: 404 }),
+})
+if (asked === 0) await Bun.write(profile + "/DevToolsActivePort", server.port + "\\n/devtools/browser/fake\\n")
+setTimeout(() => process.exit(0), 30000)
+`
+
+/** A browser that writes a port file naming the port in $IMPOSTOR_PORT, where another process answers, and listens nowhere. */
+const IMPOSTOR = `#!/usr/bin/env bun
+const profile = process.argv.find((arg) => arg.startsWith("--user-data-dir="))?.slice(16)
+require("node:fs").mkdirSync(profile, { recursive: true })
+await Bun.write(profile + "/DevToolsActivePort", process.env.IMPOSTOR_PORT + "\\n/devtools/browser/other\\n")
+setTimeout(() => process.exit(0), 30000)
+`
+
+/** Another process's DevTools on loopback: what a browser already on a port answers. */
+const other = () =>
+  Effect.acquireRelease(
+    Effect.sync(() => serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json({ webSocketDebuggerUrl: "ws://127.0.0.1:1/devtools/browser/other" }) })),
+    (server) => Effect.promise(() => server.stop(true)),
+  )
+
+/** A free loopback port: one the system hands out, released again. */
+const freePort = Effect.gen(function* () {
+  const server = serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") })
+  const port = Number(server.port)
+  yield* Effect.promise(() => server.stop(true))
+  return port
+})
+
+/** Whether something answers `/json/version` at loopback `port`. */
+const answers = (port: number) =>
+  Effect.gen(function* () {
+    const client = yield* HttpClient.HttpClient
+    return (yield* client.get(`http://127.0.0.1:${port}/json/version`)).status === 200
+  }).pipe(Effect.provide(FetchHttpClient.layer))
+
+/** The endpoint the stand-in serves at `port`. */
+const fakeEndpoint = (port: number) => `ws://127.0.0.1:${port}/devtools/browser/fake`
 
 /** A browser that ends before it opens a port. */
 const BROKEN = "#!/bin/sh\necho 'cannot open display' >&2\nexit 3\n"
@@ -127,7 +171,8 @@ describe("a launch", () => {
       const dir = yield* fs.makeTempDirectoryScoped({ prefix: "chrome-launch-" })
       const binary = yield* plant(dir, "fake-chrome", FAKE)
       const launched = yield* start({ ...DEFAULTS, flags: ["--lang=fr"] }, Option.some(`${dir}/run`), binary)
-      expect(launched.endpoint).toBe("ws://127.0.0.1:4242/devtools/browser/fake")
+      expect(launched.port).toBeGreaterThan(0)
+      expect(launched.endpoint).toBe(fakeEndpoint(launched.port))
       expect(launched.folder.startsWith(`${dir}/run/chrome-`)).toBe(true)
       const args = (yield* fs.readFileString(`${launched.folder}/args.txt`)).trim().split("\n")
       expect(args.slice(-3)).toEqual([...KEYCHAIN_FLAGS, "about:blank"])
@@ -136,6 +181,47 @@ describe("a launch", () => {
       expect(yield* stop(launched.pid)).toBe(launched.folder)
       expect(alive(launched.pid)).toBe(false)
       expect(yield* fs.exists(launched.folder)).toBe(false)
+    }),
+  )
+
+  it.scopedLive.layer(BunServices.layer)("on a fixed port, where Chrome writes no port file, is ready once its own browser answers there", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "chrome-fixed-" })
+      const binary = yield* plant(dir, "fake-chrome", FAKE)
+      const port = yield* freePort
+      const launched = yield* start({ ...DEFAULTS, port }, Option.some(`${dir}/run`), binary)
+      expect([launched.port, launched.endpoint]).toEqual([port, fakeEndpoint(port)])
+      expect(yield* fs.exists(`${launched.folder}/profile/DevToolsActivePort`)).toBe(false)
+      expect(yield* stop(launched.pid)).toBe(launched.folder)
+      expect(alive(launched.pid)).toBe(false)
+    }),
+  )
+
+  it.scopedLive.layer(BunServices.layer)("on a port another process holds, fails at once naming it, starts nothing, and leaves that process serving", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "chrome-held-" })
+      const binary = yield* plant(dir, "fake-chrome", FAKE)
+      const held = yield* other()
+      const port = Number(held.port)
+      const refused = yield* Effect.flip(start({ ...DEFAULTS, port }, Option.some(`${dir}/run`), binary))
+      expect(refused.message).toContain(`port ${port} is in use by pid ${process.pid}`)
+      expect(yield* fs.readDirectory(`${dir}/run`)).toEqual([])
+      expect(yield* answers(port)).toBe(true)
+    }),
+  )
+
+  it.scopedLive.layer(BunServices.layer)("is never another process's browser: a port its file names that another process answers fails, ending only its own", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "chrome-impostor-" })
+      const held = yield* other()
+      const binary = yield* plant(dir, "impostor-chrome", IMPOSTOR.replace("process.env.IMPOSTOR_PORT", String(held.port)))
+      const refused = yield* Effect.flip(start(DEFAULTS, Option.some(`${dir}/run`), binary))
+      expect(refused.message).toContain(`port ${held.port} answers DevTools from another process, pid ${process.pid}`)
+      expect(yield* fs.readDirectory(`${dir}/run`)).toEqual([])
+      expect(yield* answers(Number(held.port))).toBe(true)
     }),
   )
 
@@ -197,11 +283,18 @@ describe("the command line", () => {
         }).pipe(Effect.scoped)
       const launched = yield* cli(["launch", "--dir", `${dir}/run`])
       expect([launched.code, launched.stderr]).toEqual([0, ""])
-      expect(launched.stdout).toContain('"endpoint":"ws://127.0.0.1:4242/devtools/browser/fake"')
+      const port = Number(/"port":(\d+)/.exec(launched.stdout)?.[1])
+      expect(launched.stdout).toContain(`"endpoint":"${fakeEndpoint(port)}"`)
       const pid = Number(/"pid":(\d+)/.exec(launched.stdout)?.[1])
       expect(alive(pid)).toBe(true)
       expect((yield* cli(["stop", String(pid)])).code).toBe(0)
       expect(alive(pid)).toBe(false)
+      // A fixed port, by the command line too.
+      const fixed = yield* freePort
+      const onFixed = yield* cli(["launch", "--dir", `${dir}/run`, "--port", String(fixed)])
+      expect([onFixed.code, onFixed.stderr]).toEqual([0, ""])
+      expect(onFixed.stdout).toContain(`"endpoint":"${fakeEndpoint(fixed)}","port":${fixed},`)
+      expect((yield* cli(["stop", String(/"pid":(\d+)/.exec(onFixed.stdout)?.[1])])).code).toBe(0)
     }),
   )
 })

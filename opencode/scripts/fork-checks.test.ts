@@ -19,6 +19,9 @@ import {
   exitAccounted,
   ExitExplanation,
   exitOf,
+  FLAKY,
+  FLAKY_EXIT,
+  RERUN,
   SkipNote,
   HostGauge,
   hostGauge,
@@ -633,6 +636,204 @@ describe("what may explain a nonzero exit, every composition through checkFork",
       expect(judge(both, 7, cases).reds.map((each) => each.file)).toEqual(["(the run)"])
       expect(judge(both, 1, cases).explanations).toMatchObject([{ exit: 1, failed: { test: "expected" } }])
       expect(judge(both, 1, cases).explanations.every((each) => each instanceof ExitExplanation)).toBe(true)
+    }),
+  )
+})
+
+// What a rerun leaves in the report: each file's facts from its last run, merged per file. File A holds a declared
+// skip, an expected failure or plain passes; file B fails once, fails twice or passes; A's run is observed once, or
+// rerun whole (its first exit, 7, is unaccounted for); A and B share a package or sit in two.
+const A_CELLS = ["declared skip", "expected failure", "plain pass"] as const
+const B_CELLS = ["fails once", "fails twice", "passes"] as const
+const A_RERUN_CELLS = ["A observed once", "A rerun"] as const
+const PLACES = ["same package", "different packages"] as const
+interface RerunCell {
+  readonly a: (typeof A_CELLS)[number]
+  readonly b: (typeof B_CELLS)[number]
+  readonly rerun: (typeof A_RERUN_CELLS)[number]
+  readonly place: (typeof PLACES)[number]
+}
+const RERUN_CELLS: ReadonlyArray<RerunCell> = A_CELLS.flatMap((a) => B_CELLS.flatMap((b) => A_RERUN_CELLS.flatMap((rerun) => PLACES.map((place) => ({ a, b, rerun, place })))))
+const rerunName = (cell: RerunCell) => `A ${cell.a}, B ${cell.b}, ${cell.rerun}, ${cell.place}`
+
+const FILE_A = "test/a.test.ts"
+const FILE_B = "test/b.test.ts"
+const packagesOf = (cell: RerunCell) => ({ a: "packages/x", b: Option.getOrElse(Option.liftPredicate("packages/x", () => cell.place === "same package"), () => "packages/y") })
+const SKIP_NOTE = (pkg: string) => `skipped as declared: ${pkg}/${FILE_A} > optional check; why: declared for this fixture`
+const EXPECTED_NOTE = (pkg: string) => `expected red on bash 5.2.37: ${pkg}/${FILE_A} > expected (red on this bash)`
+
+/** The cell's list: A's and B's features, A's skip or expectation declared. */
+const rerunList = (cell: RerunCell): List => {
+  const at = packagesOf(cell)
+  return {
+    about: "",
+    packages: { [at.a]: ["bun", "test"], [at.b]: ["bun", "test"] },
+    features: [
+      { id: "a", feature: "a", package: at.a, files: [FILE_A], proved: "here" },
+      { id: "b", feature: "b", package: at.b, files: [FILE_B], proved: "here" },
+    ],
+    skips: Arr.filter([{ package: at.a, file: FILE_A, test: "optional check", reason: "declared for this fixture" }], () => cell.a === "declared skip"),
+    expectations: Arr.filter([{ package: at.a, file: FILE_A, test: "expected", host: { bash: "5.2.37" }, reason: "red on this bash" }], () => cell.a === "expected failure"),
+  }
+}
+
+/** The runner's answer to the cell's run: each file's tests as the cell plays them on that attempt (1 or 2 of its package). */
+const rerunAnswer = (cell: RerunCell, run: Run, attempt: number): Ran => {
+  const aRows: Readonly<Record<RerunCell["a"], ReadonlyArray<Row>>> = {
+    "declared skip": [["", "runs", "passed"], ["", "optional check", "skipped"]],
+    "expected failure": [["", "runs", "passed"], ["", "expected", "failed"]],
+    "plain pass": [["", "runs", "passed"]],
+  }
+  const bFails = cell.b === "fails twice" || (cell.b === "fails once" && attempt === 1)
+  const rows = (file: string): ReadonlyArray<Row> => Option.getOrElse(Option.liftPredicate(aRows[cell.a], () => file === FILE_A), (): ReadonlyArray<Row> => [["", "t", bFails]])
+  const failed = run.files.some((file) => (file === FILE_A && cell.a === "expected failure") || (file === FILE_B && bFails))
+  const unaccounted = run.files.includes(FILE_A) && cell.rerun === "A rerun" && attempt === 1
+  const code = Option.getOrElse(Option.liftPredicate(7, () => unaccounted), () => Number(failed))
+  return { kind: "exited", code, log: `log of attempt ${attempt}`, junit: Option.some(run.files.map((file) => junit(file, rows(file))).join("\n")) }
+}
+
+/** The runner's answers in the order the cell's runs come: each package's first run, then its rerun when it has one. */
+const rerunAnswers = (cell: RerunCell): ReadonlyArray<(run: Run) => Ran> => {
+  const aReruns = cell.rerun === "A rerun"
+  const bReruns = cell.b !== "passes"
+  const attempts = Option.match(Option.liftPredicate(cell, () => cell.place === "same package"), {
+    onSome: () => [1, ...Arr.filter([2], () => aReruns || bReruns)],
+    onNone: () => [1, ...Arr.filter([2], () => aReruns), 1, ...Arr.filter([2], () => bReruns)],
+  })
+  return attempts.map((attempt) => (run: Run) => rerunAnswer(cell, run, attempt))
+}
+
+/**
+ * The notes each cell's report must carry, in order, each once. Per package: A's expected failure or skip from its
+ * last run; the flakes (B, when its red test passed on the rerun; never A, whose own tests never failed); the files
+ * rerun only with their package (A when its package's exit 7 reran it, B when it passed and shared that rerun); the
+ * exit 7 gone on the rerun; then the last run's log on a red. Red only where B fails twice.
+ */
+const rerunNotes = (cell: RerunCell): ReadonlyArray<string> => {
+  const at = packagesOf(cell)
+  const aFacts = [...Arr.filter([EXPECTED_NOTE(at.a)], () => cell.a === "expected failure"), ...Arr.filter([SKIP_NOTE(at.a)], () => cell.a === "declared skip")]
+  const aRerun = cell.rerun === "A rerun"
+  const same = cell.place === "same package"
+  const line = (label: string, files: ReadonlyArray<string>) => Arr.filter([`${label}: ${files.join(", ")}`], () => files.length > 0)
+  const flakes = line(FLAKY, Arr.filter([`${at.b}/${FILE_B}`], () => cell.b === "fails once"))
+  const withPackage = (files: ReadonlyArray<string>) => line(RERUN, files)
+  const exitGone = Arr.filter([`${FLAKY_EXIT}: ${at.a}: bun test exited 7, and no failed test in its report accounts for it (a failed test exits 1; a skip accounts for no exit)`], () => aRerun)
+  const log = Arr.filter([`${at.b} log (bun test, exit 1):\nlog of attempt 2`], () => cell.b === "fails twice")
+  if (same) {
+    const rerunWith = [...Arr.filter([`${at.a}/${FILE_A}`], () => aRerun), ...Arr.filter([`${at.b}/${FILE_B}`], () => aRerun && cell.b === "passes")]
+    return [...aFacts, ...flakes, ...withPackage(rerunWith), ...exitGone, ...log]
+  }
+  return [...aFacts, ...withPackage(Arr.filter([`${at.a}/${FILE_A}`], () => aRerun)), ...exitGone, ...flakes, ...log]
+}
+
+/** A scratch fork holding the cell's two files. */
+const rerunFork = (cell: RerunCell) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const dir = yield* fs.makeTempDirectoryScoped({ prefix: "fork-checks-rerun-" })
+    const at = packagesOf(cell)
+    yield* writeAll(dir, [
+      [`${at.a}/${FILE_A}`, ""],
+      [`${at.b}/${FILE_B}`, ""],
+    ])
+    return { list: rerunList(cell), fork: dir, limits: LIMITS, lock: path.join(dir, "lock") } satisfies Input
+  })
+
+describe("a rerun: each file's facts from its last run, merged per file", () => {
+  const test = it.scoped.layer(Layer.merge(fakeLayer, BunServices.layer))
+
+  test("every combination: the skips, the expected failures, the flakes and the outcome, each named once", () =>
+    Effect.gen(function* () {
+      const outcomes = yield* Effect.forEach(RERUN_CELLS, (cell) =>
+        Effect.gen(function* () {
+          const input = yield* rerunFork(cell)
+          const { verdict, runs } = yield* checkWith(input, { answers: rerunAnswers(cell) })
+          return { cell, verdict, runs, lines: reportLines(input.list, verdict, Option.none()) }
+        }),
+      )
+      expect(outcomes.map((each) => `${rerunName(each.cell)}: ${each.verdict.kind}`)).toEqual(RERUN_CELLS.map((cell) => `${rerunName(cell)}: ${Option.getOrElse(Option.liftPredicate("red", () => cell.b === "fails twice"), () => "green")}`))
+      expect(outcomes.map((each) => `${rerunName(each.cell)}: ${each.verdict.notes.join(" | ")}`)).toEqual(RERUN_CELLS.map((cell) => `${rerunName(cell)}: ${rerunNotes(cell).join(" | ")}`))
+      // Every run the cell plays was asked for: none left over, none missing.
+      expect(outcomes.map((each) => each.runs.length)).toEqual(RERUN_CELLS.map((cell) => rerunAnswers(cell).length))
+      for (const each of outcomes) {
+        const summary = each.lines.at(-1)
+        const at = packagesOf(each.cell)
+        if (each.verdict.kind === "green")
+          expect([rerunName(each.cell), summary]).toEqual([
+            rerunName(each.cell),
+            `fork-checks: green, 2 features${Arr.filter([`; 1 skipped as declared: ${at.a}/${FILE_A} > optional check`], () => each.cell.a === "declared skip").join("")}`,
+          ])
+        if (each.verdict.kind === "red") expect([rerunName(each.cell), summary]).toEqual([rerunName(each.cell), `fork-checks: RED, 1 tests: ${at.b}/${FILE_B} > t [b]`])
+        // No superseded first-run log: an attempt-1 log is never in a report.
+        expect([rerunName(each.cell), each.lines.join("\n")]).not.toEqual([rerunName(each.cell), expect.stringContaining("log of attempt 1")])
+      }
+    }),
+  )
+
+  test("the verifier's probe: a declared skip in a file passed once, a flake beside it, both named", () =>
+    Effect.gen(function* () {
+      const cell: RerunCell = { a: "declared skip", b: "fails once", rerun: "A observed once", place: "same package" }
+      const input = yield* rerunFork(cell)
+      const { verdict, runs } = yield* checkWith(input, { answers: rerunAnswers(cell) })
+      expect(runs.map((run) => run.files)).toEqual([[FILE_A, FILE_B], [FILE_B]])
+      expect(exitOf(verdict)).toBe(0)
+      expect(reportLines(input.list, verdict, Option.none())).toEqual([
+        SKIP_NOTE("packages/x"),
+        `${FLAKY}: packages/x/${FILE_B}`,
+        `fork-checks: green, 2 features; 1 skipped as declared: packages/x/${FILE_A} > optional check`,
+      ])
+    }),
+  )
+
+  test("a file whose facts differ on its rerun: the report holds the rerun's only, and says the file was rerun", () =>
+    Effect.gen(function* () {
+      const input = yield* rerunFork({ a: "declared skip", b: "passes", rerun: "A rerun", place: "same package" })
+      const list: List = { ...input.list, features: [{ id: "a", feature: "a", package: "packages/x", files: [FILE_A], proved: "here" }] }
+      const at = "packages/x"
+      const exitGone = `${FLAKY_EXIT}: ${at}: bun test exited 7, and no failed test in its report accounts for it (a failed test exits 1; a skip accounts for no exit)`
+      // The first run exits 7, so the package reruns whole, whatever its tests showed.
+      const play = (first: ReadonlyArray<Row>, second: ReadonlyArray<Row>) =>
+        checkWith(
+          { ...input, list },
+          {
+            answers: [
+              () => ({ kind: "exited", code: 7, log: "log of attempt 1", junit: Option.some(junit(FILE_A, first)) }),
+              () => ({ kind: "exited", code: 0, log: "log of attempt 2", junit: Option.some(junit(FILE_A, second)) }),
+            ],
+          },
+        )
+      const skippedThenRan = yield* play(
+        [["", "runs", "passed"], ["", "optional check", "skipped"]],
+        [["", "runs", "passed"], ["", "optional check", "passed"]],
+      )
+      expect(skippedThenRan.verdict).toEqual({
+        kind: "red",
+        reds: [{ package: at, file: FILE_A, test: "optional check", why: "declared skipped but it ran: remove the skip" }],
+        notes: [`${RERUN}: ${at}/${FILE_A}`, exitGone, `${at} log (bun test, exit 0):\nlog of attempt 2`],
+      })
+      const ranThenSkipped = yield* play(
+        [["", "runs", "passed"], ["", "optional check", "passed"]],
+        [["", "runs", "passed"], ["", "optional check", "skipped"]],
+      )
+      expect(ranThenSkipped.verdict).toEqual({ kind: "green", notes: [SKIP_NOTE(at), `${FLAKY}: ${at}/${FILE_A}`, exitGone] })
+      const renamed = yield* play(
+        [["", "runs", "passed"], ["", "optional check", "skipped"]],
+        [["", "runs", "passed"], ["", "optional check, renamed", "skipped"]],
+      )
+      expect(renamed.verdict).toMatchObject({
+        kind: "red",
+        reds: [
+          { file: FILE_A, test: "optional check, renamed", why: expect.stringContaining("skipped, and fork-checks.json declares no skip for it") },
+          { file: FILE_A, test: "optional check", why: "declared skipped but it is gone: the skip names a test the file does not hold" },
+        ],
+        notes: [`${RERUN}: ${at}/${FILE_A}`, exitGone, `${at} log (bun test, exit 0):\nlog of attempt 2`],
+      })
+      expect([skippedThenRan, ranThenSkipped, renamed].map((each) => each.runs.map((run) => run.files))).toEqual([
+        [[FILE_A], [FILE_A]],
+        [[FILE_A], [FILE_A]],
+        [[FILE_A], [FILE_A]],
+      ])
     }),
   )
 })
