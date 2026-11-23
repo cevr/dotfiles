@@ -24,7 +24,8 @@
 #   slices  the run families' slices of the user manager from slices.conf (/etc/systemd/user/<name>.slice),
 #           the system slices' weights from it (drop-ins), and cpu, io and memory delegated to each user
 #           manager (systemd/slices/), then `systemctl daemon-reload`. A user manager takes the delegation
-#           when it next starts (a boot); its slices with its own daemon-reload.
+#           when it next starts (a boot); its slices with its own daemon-reload. A CPUQuota=<n>%threads
+#           becomes <n> x nproc percent here (16 threads: 62.5%threads is 1000%).
 #   tmp     /tmp's rules (systemd/tmp/tmpfiles.d/tmp.conf as /etc/tmpfiles.d/tmp.conf: emptied at boot,
 #           aged daily) and the daily clean through workbox-tmp-clean, which keeps what a process holds
 #   diskfree  workbox-disk-free and its timer: the btrfs free-space figures in /run/workbox/disk-free
@@ -137,13 +138,19 @@ step_btrfs() {
     return
   fi
   arch=$(host_arch)
-  [ "$arch" = "$BTRFS_PROGS_ARCH" ] ||
-    die "btrfs: btrfs-progs ${have:-(none)} is older than $BTRFS_PROGS_MIN and the pinned package is for $BTRFS_PROGS_ARCH only; this host is $arch: refusing"
-  deb=$scratch/${BTRFS_PROGS_DEB_URL##*/}
-  fetch "$BTRFS_PROGS_DEB_URL" "$deb"
+  # The pin pair for this architecture (pins.conf: BTRFS_PROGS_DEB_URL_<arch>, BTRFS_PROGS_SHA256_<arch>).
+  url='' sha=''
+  case "$arch" in
+    *[!a-z0-9]* | '') ;;
+    *) eval "url=\${BTRFS_PROGS_DEB_URL_$arch:-} sha=\${BTRFS_PROGS_SHA256_$arch:-}" ;;
+  esac
+  [ -n "$url" ] && [ -n "$sha" ] ||
+    die "btrfs: btrfs-progs ${have:-(none)} is older than $BTRFS_PROGS_MIN and pins.conf pins no package for this host's architecture, $arch: refusing"
+  deb=$scratch/${url##*/}
+  fetch "$url" "$deb"
   got=$(sha256_of "$deb")
-  [ "$got" = "$BTRFS_PROGS_SHA256" ] ||
-    die "btrfs: ${deb##*/} has sha256 $got, not the pinned $BTRFS_PROGS_SHA256: refusing it; nothing was installed"
+  [ "$got" = "$sha" ] ||
+    die "btrfs: ${deb##*/} has sha256 $got, not the pinned $sha: refusing it; nothing was installed"
   # apt reads a local package as its _apt user: the scratch directory is root's 0700 otherwise.
   chmod 0755 "$scratch"
   say "installing ${deb##*/} (btrfs-progs ${have:-none} is older than $BTRFS_PROGS_MIN)"
@@ -402,7 +409,20 @@ slice_text() { # file line
       printf '[Unit]\nDescription=Workbox run family %s (workbox/slices.conf)\n\n' "${unit%.slice}"
     fi
     printf '[Slice]\n'
-    printf '%s\n' "$@"
+    for setting in "$@"; do
+      case $setting in
+        # A share of the machine's online threads (CPUQuota=62.5%threads), counted here, at install:
+        # 100% is one thread, so 16 threads give 1000% and 32 give 2000%. Rerun the step on a new host.
+        CPUQuota=*%threads)
+          share=${setting#CPUQuota=}
+          share=${share%\%threads}
+          n=$(nproc)
+          case $n in '' | *[!0-9]*) die "slices: nproc said '$n'" ;; esac
+          printf 'CPUQuota=%s%%\n' "$(awk -v s="$share" -v n="$n" 'BEGIN { printf "%d", s * n + 0.5 }')"
+          ;;
+        *) printf '%s\n' "$setting" ;;
+      esac
+    done
   } > "$out"
 }
 
@@ -450,6 +470,7 @@ check_slices() {
     cmp -s "$made" "$(slice_dest "$1" "$2")" || die "check slices: $(slice_dest "$1" "$2") is not what slices.conf makes"
   done < "$scratch/slices"
 }
+
 
 # ---------------------------------------------------------------- tmp
 tmp_dir=$here/systemd/tmp

@@ -75,6 +75,7 @@ cp "$FAKE_DOWNLOADS/$(basename "$last")" "$out" 2>/dev/null || exit 22
   "apt-cache": `#!/bin/sh\nfor last; do :; done\ncase " $FAKE_NO_CANDIDATE " in *" $last "*) echo "  Candidate: (none)" ;; *) echo "  Candidate: 1:1.0" ;; esac\n`,
   btrfs: `#!/bin/sh\n[ "$1" = --version ] && [ -s "$FAKE_STATE/btrfs-version" ] && echo "btrfs-progs v$(cat "$FAKE_STATE/btrfs-version")"\n`,
   systemctl: `#!/bin/sh\ncase $1 in is-*) exit 0 ;; esac\necho "systemctl $*" >> "$FAKE_LOG"\n`,
+  nproc: `#!/bin/sh\necho "$FAKE_THREADS"\n`,
   "systemd-binfmt": `#!/bin/sh
 echo "systemd-binfmt $*" >> "$FAKE_LOG"
 name=$(grep -v '^#' "$1" | head -n 1 | cut -d: -f2)
@@ -85,7 +86,7 @@ printf 'enabled\\ninterpreter /usr/libexec/qemu-binfmt/x\\nflags: %s\\n' "$flags
 
 let n = 0
 /** A scratch host: the script (and the files it reads beside it) in a tree, a root, a /proc, fakes and served files. */
-const host = (opts: { arch?: string; pins?: Record<string, string>; noCandidate?: string; btrfs?: string } = {}) => {
+const host = (opts: { arch?: string; pins?: Record<string, string>; noCandidate?: string; btrfs?: string; threads?: number } = {}) => {
   const dir = join(scratch, `host-${n++}`)
   const workbox = join(dir, "tree", "workbox")
   mkdirSync(join(workbox, "systemd"), { recursive: true })
@@ -130,6 +131,7 @@ const host = (opts: { arch?: string; pins?: Record<string, string>; noCandidate?
     FAKE_LOG: log,
     FAKE_DOWNLOADS: downloads,
     FAKE_NO_CANDIDATE: opts.noCandidate ?? "",
+    FAKE_THREADS: String(opts.threads ?? 16),
     COPYFILE_DISABLE: "1",
   }
   const run = (...args: Array<string>) => {
@@ -214,8 +216,8 @@ describe("system-tools.sh installs the pinned tools, once", () => {
     const installs = h.logLines().filter((line) => line.startsWith("apt-get install"))
     expect(installs.map((line) => line.split(" ").filter((word) => !word.startsWith("-")).slice(2))).toEqual([["fish", "ksh", "mksh"], ["qemu-user-static"], ["powershell"]])
     // The run families: a slice unit each for the user manager, a drop-in each for the system's slices.
-    expect(readFileSync(join(h.root, "etc", "systemd", "user", "ergo.slice"), "utf8")).toContain("[Slice]\nCPUWeight=20\nCPUQuota=1000%\nIOWeight=20\nMemoryHigh=80%\n")
-    expect(readFileSync(join(h.root, "etc", "systemd", "system", "user.slice.d", "40-workbox-slices.conf"), "utf8")).toContain("[Slice]\nCPUWeight=100\nIOWeight=100\n")
+    expect(readFileSync(join(h.root, "etc", "systemd", "user", "ergo.slice"), "utf8")).toContain("[Slice]\nCPUWeight=20\nCPUQuota=1000%\nIOAccounting=yes\nMemoryHigh=80%\n")
+    expect(readFileSync(join(h.root, "etc", "systemd", "system", "user.slice.d", "40-workbox-slices.conf"), "utf8")).toContain("[Slice]\nCPUWeight=100\n")
     expect(readFileSync(join(h.root, "etc", "systemd", "system", "user@.service.d", "40-workbox-delegate.conf"), "utf8")).toContain("Delegate=cpu io memory pids")
     // /tmp's rules and the guard; the free-space script, its unit and timer.
     for (const [src, dest] of [
@@ -291,14 +293,17 @@ describe("system-tools.sh installs the pinned tools, once", () => {
   })
 })
 
-const btrfsDeb = pin("BTRFS_PROGS_DEB_URL").split("/").at(-1) ?? ""
+const btrfsDebOf = (arch: string) => pin(`BTRFS_PROGS_DEB_URL_${arch}`).split("/").at(-1) ?? ""
+const btrfsDeb = btrfsDebOf("amd64")
 /** A host with btrfs-progs `version` installed, served a package (its sha the pin unless `servedSha` differs). */
 const btrfsHost = (version: string, opts: { arch?: string; tampered?: boolean } = {}) => {
+  const arch = opts.arch ?? "amd64"
+  const deb = arch === "amd64" || arch === "arm64" ? btrfsDebOf(arch) : btrfsDeb
   const probe = join(scratch, `deb-${n++}`)
   mkdirSync(probe)
-  writeFileSync(join(probe, btrfsDeb), "a btrfs-progs package\n")
-  const h = host({ arch: opts.arch, btrfs: version, pins: { BTRFS_PROGS_SHA256: sha256(join(probe, btrfsDeb)) } })
-  writeFileSync(join(h.downloads, btrfsDeb), opts.tampered === true ? "another package\n" : "a btrfs-progs package\n")
+  writeFileSync(join(probe, deb), "a btrfs-progs package\n")
+  const h = host({ arch: opts.arch, btrfs: version, pins: { [`BTRFS_PROGS_SHA256_${arch}`]: sha256(join(probe, deb)) } })
+  writeFileSync(join(h.downloads, deb), opts.tampered === true ? "another package\n" : "a btrfs-progs package\n")
   return h
 }
 
@@ -308,7 +313,7 @@ describe("system-tools.sh btrfs: btrfs-progs with simple quotas", () => {
     const first = h.run("btrfs")
     expect(first).toMatchObject({ code: 0, stderr: "" })
     expect(first.stdout).toContain("installed btrfs-progs 6.16")
-    expect(h.logLines().filter((line) => line.startsWith("curl"))).toEqual([`curl ${pin("BTRFS_PROGS_DEB_URL")}`])
+    expect(h.logLines().filter((line) => line.startsWith("curl"))).toEqual([`curl ${pin("BTRFS_PROGS_DEB_URL_amd64")}`])
     const installs = h.logLines().filter((line) => line.startsWith("apt-get install"))
     expect(installs).toHaveLength(1)
     expect(installs[0]).toEndWith(`/${btrfsDeb}`)
@@ -341,7 +346,9 @@ describe("system-tools.sh slices: the run families from slices.conf", () => {
     const lines = conf.split("\n").map((line) => line.replace(/#.*/, "").trim()).filter(Boolean)
     expect(lines.length).toBeGreaterThan(0)
     for (const line of lines) {
-      const [unit, manager, ...settings] = line.split(/\s+/)
+      const [unit, manager, ...written] = line.split(/\s+/)
+      // A CPU share of the threads, as this host (16 threads) counts it: 62.5%threads is 1000%.
+      const settings = written.map((s) => s.replace(/^CPUQuota=([0-9.]+)%threads$/, (_, share) => `CPUQuota=${Math.round(Number(share) * 16)}%`))
       const path = manager === "user" ? join(h.root, "etc", "systemd", "user", unit) : join(h.root, "etc", "systemd", "system", `${unit}.d`, "40-workbox-slices.conf")
       expect(readFileSync(path, "utf8")).toEndWith(`[Slice]\n${settings.join("\n")}\n`)
     }
@@ -357,6 +364,21 @@ describe("system-tools.sh slices: the run families from slices.conf", () => {
     expect(h.leftovers()).toEqual([])
   })
 
+  test("a CPU share of the threads scales with the host: 62.5%threads is 1000% on 16 threads, 2000% on 32, 125% on 2", () => {
+    for (const [threads, want] of [[16, "1000%"], [32, "2000%"], [2, "125%"]] as const) {
+      const h = host({ threads })
+      expect(h.run("slices")).toMatchObject({ code: 0, stderr: "" })
+      expect(readFileSync(join(h.root, "etc", "systemd", "user", "ergo.slice"), "utf8")).toContain(`\nCPUQuota=${want}\n`)
+      expect(h.run("--check", "slices").code).toBe(0)
+    }
+  })
+
+  test("a host whose thread count is not a number is refused", () => {
+    const h = host()
+    writeFileSync(join(h.dir, "bin", "nproc"), "#!/bin/sh\necho\n")
+    expect(h.run("slices")).toMatchObject({ code: 1, stderr: expect.stringContaining("nproc said") })
+  })
+
   test("a line that is not a slice, or names another manager, is refused", () => {
     const h = host()
     writeFileSync(join(h.tree, "slices.conf"), "ergo.service user CPUWeight=1\n")
@@ -365,6 +387,7 @@ describe("system-tools.sh slices: the run families from slices.conf", () => {
     expect(h.run("slices")).toMatchObject({ code: 1, stderr: expect.stringContaining("names manager root") })
   })
 })
+
 
 describe("system-tools.sh refuses, and changes nothing", () => {
   test("a btrfs-progs package whose sha256 is not the pin: refused before it is installed", () => {
@@ -379,11 +402,18 @@ describe("system-tools.sh refuses, and changes nothing", () => {
     expect(h.leftovers()).toEqual([])
   })
 
-  test("an older btrfs-progs on another architecture: refused before any download", () => {
+  test("arm64 (the test VMs) gets its own pinned package", () => {
     const h = btrfsHost("6.6.3", { arch: "arm64" })
+    expect(h.run("btrfs")).toMatchObject({ code: 0, stderr: "" })
+    expect(h.logLines().filter((line) => line.startsWith("curl"))).toEqual([`curl ${pin("BTRFS_PROGS_DEB_URL_arm64")}`])
+    expect(h.logLines().filter((line) => line.startsWith("apt-get install"))[0]).toEndWith(`/${btrfsDebOf("arm64")}`)
+  })
+
+  test("an older btrfs-progs on an architecture with no pin: refused before any download", () => {
+    const h = btrfsHost("6.6.3", { arch: "riscv64" })
     const done = h.run("btrfs")
     expect(done.code).toBe(1)
-    expect(done.stderr).toContain("this host is arm64")
+    expect(done.stderr).toContain("no package for this host's architecture, riscv64")
     expect(h.logLines()).toEqual([])
   })
 
@@ -446,12 +476,12 @@ describe("pins.conf is the one place the pins are typed", () => {
     expect(goVersion).toMatch(/^\d+\.\d+\.\d+$/)
     expect(goSha).toMatch(/^[0-9a-f]{64}$/)
     expect(keyFingerprint).toMatch(/^[0-9A-F]{40}$/)
-    expect(pin("BTRFS_PROGS_SHA256")).toMatch(/^[0-9a-f]{64}$/)
+    for (const arch of ["amd64", "arm64"]) expect(pin(`BTRFS_PROGS_SHA256_${arch}`)).toMatch(/^[0-9a-f]{64}$/)
   })
 
   test("no other file in the repository holds the Go sha, the key fingerprint, the Go version or the btrfs-progs package and sha", () => {
     const spaced = keyFingerprint.match(/.{4}/g)?.join(" ") ?? keyFingerprint
-    const needles = [goSha, keyFingerprint, spaced, pin("BTRFS_PROGS_SHA256"), btrfsDeb, `go${goVersion}`, `go-${goVersion}`, `Go ${goVersion}`, `GO_VERSION=${goVersion}`]
+    const needles = [goSha, keyFingerprint, spaced, pin("BTRFS_PROGS_SHA256_amd64"), pin("BTRFS_PROGS_SHA256_arm64"), btrfsDeb, btrfsDebOf("arm64"), `go${goVersion}`, `go-${goVersion}`, `Go ${goVersion}`, `GO_VERSION=${goVersion}`]
     // Tracked and untracked (not ignored) files: a pin typed into a new file counts too. Exit 1: none.
     const found = Bun.spawnSync(
       ["git", "grep", "--untracked", "-I", "-n", "-F", ...needles.flatMap((needle) => ["-e", needle]), "--", ".", ":(exclude)workbox/pins.conf"],

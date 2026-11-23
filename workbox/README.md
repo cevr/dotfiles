@@ -57,8 +57,8 @@ fails when one is typed into another file). Steps, each idempotent:
 | `go` | Go from go.dev for the pinned architecture only (another is refused): the tarball's sha256 is checked before it is unpacked; the tree goes to `/usr/local/go-<version>`, `/usr/local/go` is a link to it swapped by one rename, and `/usr/local/bin/go` and `gofmt` link to it. A hand-installed `/usr/local/go` directory is replaced once (two renames apart) |
 | `pwsh` | PowerShell from `packages.microsoft.com/ubuntu/<release>/prod`; the downloaded key is refused unless its fingerprint is the pin (`/usr/share/keyrings/microsoft-prod.gpg`, `microsoft-prod.list`, the same paths as Microsoft's own setup package). amd64 only: Microsoft publishes no arm64 package there |
 | `reserve` | the OpenCode service's memory floor (`systemd/reserve/`), then `systemctl daemon-reload`, which applies it to running units: no restart |
-| `slices` | the run families from `slices.conf`: `/etc/systemd/user/<family>.slice` for each user line, a drop-in for each system line, and cpu, io and memory delegated to the user manager (`systemd/slices/`); then `daemon-reload`, no restart. A run joins a family with `systemd-run --user --scope --slice=<family>.slice -- <command>` (linux/hetzner-workbox/README.md, Layout) |
-| `tmp` | `/tmp`'s rules (`systemd/tmp/tmpfiles.d/tmp.conf`: emptied at boot, aged at 7 days, `/tmp/opencode` at 14) and the daily clean through `workbox-tmp-clean`, which keeps whatever a running process holds open |
+| `slices` | the run families from `slices.conf`: `/etc/systemd/user/<family>.slice` for each user line, a drop-in for each system line, and cpu, io and memory delegated to the user manager (`systemd/slices/`); then `daemon-reload`, no restart. A CPU cap written as a share of the threads (`CPUQuota=62.5%threads`) becomes a percentage of this host's `nproc` (16 threads: 1000%). A running user manager takes the io delegation at its next start (a boot), not at a reload A run joins a family with `systemd-run --user --scope --slice=<family>.slice -- <command>` (linux/hetzner-workbox/README.md, Layout) |
+| `tmp` | `/tmp`'s rules (`systemd/tmp/tmpfiles.d/tmp.conf`: emptied at boot, aged at 7 days, `/tmp/opencode` at 14, the families' `/tmp/ergo`, `/tmp/bite-work`, `/tmp/personal` at 7 on lines of their own, `/tmp/vperf2` never aged on the exe box) and the daily clean through `workbox-tmp-clean`, which keeps whatever a running process holds open |
 | `diskfree` | `workbox-disk-free.timer`: every minute, `/run/workbox/disk-free` gets the btrfs's free space from `btrfs filesystem usage` (not df), for the work tool and the host arbiter to read; it enforces nothing |
 
 `system-tools.sh --check` (run by `bootstrap.sh --check`) fails, naming the
@@ -78,7 +78,7 @@ high-water mark, 4.22 GB), through a prefix drop-in systemd applies to the
 transient scope, and the same floor on each parent (`user.slice`, `user-.slice`,
 `user@.service`, `app.slice`), since a cgroup's floor holds only as far as its
 parent's. IO weights count only where the disk weighs IO by cgroup (io.cost or
-BFQ); `--check` warns when none does.
+BFQ); `--check` warns when none does. The run families have no IO weight (linux/hetzner-workbox/README.md, Run families, says why); they have `IOAccounting`, and `--check` warns when a user's own `~/.config/systemd/user/<family>.slice` shadows an installed one.
 
 ## Terminals: herdr-core
 

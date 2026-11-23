@@ -91,6 +91,17 @@ check_io_weight() {
   printf 'workbox bootstrap: warning: no disk weighs IO by cgroup (no io.cost, no BFQ): IOWeight has no effect here\n' >&2
 }
 
+# Warns, without failing, when a family slice of the user's own (~/.config/systemd/user/<family>.slice)
+# shadows the installed one: systemd reads the user's file instead of /etc/systemd/user/'s, whole, so
+# slices.conf's values (a CPU cap scaled to this host's threads) do not apply to that family.
+check_family_shadow() {
+  for family in opencode ergo bite-work personal; do
+    own=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$family.slice
+    [ -e "$own" ] || continue
+    printf 'workbox bootstrap: warning: %s shadows /etc/systemd/user/%s.slice (slices.conf): move it aside once the installed one has its values\n' "$own" "$family" >&2
+  done
+}
+
 # Fails, naming the file, unless ~/.zshenv and ~/.zshrc are links to their installed copies
 # (install-bin.sh) and, once the installed OpenCode build's tree holds workbox/, those copies are
 # that tree's: a delivery that did not happen (a failed or skipped install-bin) shows here.
@@ -139,6 +150,7 @@ check_mode() {
   test "$(systemctl --user show app.slice -p MemoryLow --value)" -eq 4294967296
   "$workbox_dir/system-tools.sh" --check
   check_io_weight
+  check_family_shadow
   test "$(systemctl show "user-$(id -u).slice" -p MemoryMax --value)" -eq 55834574848
   test "$(systemctl show "user-$(id -u).slice" -p MemorySwapMax --value)" -eq 1073741824
   systemctl is-active --quiet workbox-shm-limit.service
