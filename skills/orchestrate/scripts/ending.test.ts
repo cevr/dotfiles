@@ -41,9 +41,6 @@ import {
   OTHER_OBSTACLES_NOTE,
   parseOtherObstacles,
   handBackFrom,
-  judgeHandBack,
-  type HandBack,
-  labelWord,
   type Pinned,
   truths,
   readDecisions,
@@ -78,6 +75,15 @@ import { approved, current, drift, paragraphs, type Prompt, prompts, ROOT } from
 import { INSTALLED, RETENTION } from './retention.ts';
 import { EVENTS, reachable, recordKey } from './item-histories.ts';
 import { LIST_HISTORIES } from './list-histories.ts';
+// The hand-back judge needs Effect Schema, so it lives where effect resolves; ending.ts stays import-free.
+import { FIELD_NAME, HAND_BACK_OBSTACLES, HAND_BACK_STATES, judgeHandBack, labelWord } from '../../../opencode/mods/orchestrate/hand-back.ts';
+
+/** A label's word, which every label of the lists has (the label-word test pins it never blank). */
+const wordOf = (label: string): string => {
+  const word = labelWord(label);
+  if (word._tag === 'None') throw new Error(`the label "${label}" has no word`);
+  return word.value;
+};
 
 /** The verdict words each role may give. */
 const VOCAB: Record<Role, ReadonlyArray<string>> = { planner: ['ready', 'blocked'], implementor: ['ready', 'blocked'], verifier: ['stuck', 'changes', 'accepted'], worker: ['none'] };
@@ -745,8 +751,8 @@ export function historyFaults(prompt: Prompt, histories: ReadonlyArray<{ readonl
     .flatMap((one) => {
       const due = handBackFrom(prompt.role, prompt.text, truths(one.items));
       const out: string[] = [];
-      // Exact: the history's label is the due label or its word (labelWord), never a shorter prefix or a blank.
-      if (due.state !== one.state || (one.label !== due.label && one.label !== labelWord(due.label))) out.push(`${one.name}: ${STATE_NAME[due.state]} (${due.label})`);
+      // Exact: the history's label is the due label or its word (wordOf), never a shorter prefix or a blank.
+      if (due.state !== one.state || (one.label !== due.label && one.label !== wordOf(due.label))) out.push(`${one.name}: ${STATE_NAME[due.state]} (${due.label})`);
       for (const fault of judgeHandBack(due, one.handBack)) out.push(`${one.name}: hand-back ${fault}`);
       return out;
     });
@@ -923,7 +929,7 @@ describe('(vii) a rendering or hand-back fault is red', () => {
     expect(h.handBack.lastAttempt).toBe(true);
     expect(historyFaults(claude('verifier'), [h])).toEqual([]);
     expect(historyFaults(claude('verifier'), [{ ...h, handBack: 'discard the command and the last printed output' }])).toEqual([
-      `${h.name}: hand-back the hand-back is prose ("discard the command and the last printed output"), not one whose fields can be checked`,
+      `${h.name}: hand-back hand-back: Expected object`,
     ]);
     expect(historyFaults(claude('verifier'), [{ ...h, handBack: { ...h.handBack, lastAttempt: false } }])).toEqual([`${h.name}: hand-back last attempt: due present, given absent`]);
   });
@@ -942,86 +948,169 @@ describe('(vii) a rendering or hand-back fault is red', () => {
   });
 });
 
-describe('(vii) the hand-back judge compares every field exactly (batch 23d T1)', () => {
+describe('(vii) the hand-back is decoded by its exact Schema, then compared typed (batches 23d T1, 23e B1)', () => {
   const all = prompts();
-  /** Every label one role's list gives a reachable record, each with its word. */
+  const claudeOf = (role: Role) => {
+    const prompt = all.find((one) => one.role === role && one.format === 'claude');
+    if (prompt === undefined) throw new Error(`no ${role} prompt`);
+    return prompt;
+  };
+  /** Every label one role's list gives a reachable record. */
   const labelsOf = (role: Role) => {
     const text = render(role);
     return [...new Set([...reachable(role).values()].map(({ item: one }) => handBackFrom(role, text, truths([one])).label))].sort();
   };
+  const dueOf = (one: (typeof LIST_HISTORIES)[number]) => handBackFrom(one.role, claudeOf(one.role).text, truths(one.items));
+  /** The truthful hand-back as it would arrive: plain JSON. */
+  const truthful = (one: (typeof LIST_HISTORIES)[number]): Record<string, unknown> => JSON.parse(JSON.stringify(one.handBack));
+
+  test("the decoder's states and obstacle rows are the model's", () => {
+    expect([...HAND_BACK_STATES].sort()).toEqual([...ALL_STATES].sort());
+    expect([...HAND_BACK_OBSTACLES]).toEqual([...OBSTACLE_ROWS]);
+  });
   test("a label's word is never blank, and the labels of one role have distinct words (printed for the request)", () => {
     const table: Record<string, Record<string, string>> = {};
     for (const role of ROLES) {
       const labels = labelsOf(role);
-      table[role] = Object.fromEntries(labels.map((one) => [one, labelWord(one)]));
-      for (const one of labels) expect([role, one, labelWord(one).trim().length > 0, one.startsWith(labelWord(one))]).toEqual([role, one, true, true]);
-      expect([role, new Set(labels.map(labelWord)).size]).toEqual([role, labels.length]);
+      table[role] = Object.fromEntries(labels.map((one) => [one, wordOf(one)]));
+      for (const one of labels) expect([role, one, one.startsWith(wordOf(one))]).toEqual([role, one, true]);
+      expect([role, new Set(labels.map(wordOf)).size]).toEqual([role, labels.length]);
     }
     console.log(`LABEL_WORDS ${JSON.stringify(table)}`);
-    expect(() => labelWord('')).toThrow('has no word');
-    expect(() => labelWord('   , and more')).toThrow('has no word');
+    expect(labelWord('')._tag).toBe('None');
+    expect(labelWord('   , and more')._tag).toBe('None');
   });
-  test('each field: blank, prefix-only and wrong values are each rejected with exactly that field named; the due value and the label word are accepted', () => {
+  test('every history: the truthful hand-back, as JSON, passes; its label word and full label both pass', () => {
     for (const one of LIST_HISTORIES) {
-      const prompt = all.find((p) => p.role === one.role && p.format === 'claude');
-      if (prompt === undefined) throw new Error(`no ${one.role} prompt`);
-      const due = handBackFrom(one.role, prompt.text, truths(one.items));
-      const word = labelWord(due.label);
-      const good: HandBack = { ...one.handBack };
-      expect([one.name, judgeHandBack(due, good)]).toEqual([one.name, []]);
-      expect([one.name, judgeHandBack(due, { ...good, label: due.label })]).toEqual([one.name, []]);
-      expect([one.name, judgeHandBack(due, { ...good, label: word })]).toEqual([one.name, []]);
-      const otherWord = labelsOf(one.role).map(labelWord).find((w) => w !== word);
-      if (otherWord === undefined) throw new Error(`${one.role} has one label`);
+      const due = dueOf(one);
+      expect([one.name, judgeHandBack(due, truthful(one))]).toEqual([one.name, []]);
+      expect([one.name, judgeHandBack(due, { ...truthful(one), label: due.label })]).toEqual([one.name, []]);
+      expect([one.name, judgeHandBack(due, { ...truthful(one), label: wordOf(due.label) })]).toEqual([one.name, []]);
+    }
+  });
+
+  /** A type-changing edit of the value at one path: each must be rejected as a decode failure at that path. */
+  const reshape: ReadonlyArray<[string, (value: unknown) => unknown]> = [
+    ['wrapped in an array', (value) => [value]],
+    ['wrapped in an array one deeper', (value) => [[value]]],
+    ['as an object with an index key', (value) => ({ 0: value })],
+    ['as an object one deeper', (value) => ({ 0: { 0: value } })],
+    ['as a number', () => 0],
+    ['as null', () => null],
+    ['as a boolean', (value) => (typeof value === 'boolean' ? 'true' : true)],
+    ['as a string', (value) => (typeof value === 'string' ? 0 : 'refused')],
+  ];
+  /** One path inside a hand-back: a member, or one element of `others`. */
+  type At = { readonly member: string; readonly index?: number };
+  const pathText = (at: At) => (at.index === undefined ? at.member : `${at.member}[${at.index}]`);
+  /** Every path inside a truthful hand-back: each member, and each element of `others`. */
+  const pathsOf = (value: Record<string, unknown>): At[] => [
+    ...Object.keys(value).map((member) => ({ member })),
+    ...(Array.isArray(value.others) ? value.others.map((_, index) => ({ member: 'others', index })) : []),
+  ];
+  const valueAt = (value: Record<string, unknown>, at: At): unknown => {
+    const member = value[at.member];
+    if (at.index === undefined) return member;
+    if (!Array.isArray(member)) throw new Error(`${pathText(at)} is no element`);
+    return member[at.index];
+  };
+  const setAt = (value: Record<string, unknown>, at: At, to: unknown): Record<string, unknown> => {
+    const copy: Record<string, unknown> = JSON.parse(JSON.stringify(value));
+    const member = copy[at.member];
+    if (at.index === undefined) copy[at.member] = to;
+    else if (Array.isArray(member)) member[at.index] = to;
+    else throw new Error(`${pathText(at)} is no element`);
+    return copy;
+  };
+  /** An edit that leaves a well-typed value: null or an obstacle word where evidence is nullable. Each is counted, none skipped silently. */
+  const stillTyped = (at: At, after: unknown) => at.member === 'evidence' && (after === null || (typeof after === 'string' && (HAND_BACK_OBSTACLES as ReadonlyArray<string>).includes(after)));
+
+  test('every history, every path, every type-changing edit: rejected by the decoder, naming exactly that path, and nothing else', () => {
+    let rejected = 0;
+    let typed = 0;
+    let total = 0;
+    for (const one of LIST_HISTORIES) {
+      const due = dueOf(one);
+      const good = truthful(one);
+      for (const at of pathsOf(good))
+        for (const [edit, change] of reshape) {
+          total++;
+          const after = change(valueAt(good, at));
+          if (stillTyped(at, after)) {
+            typed++;
+            continue;
+          }
+          const faults = judgeHandBack(due, setAt(good, at, after));
+          const [fault] = faults;
+          expect([one.name, pathText(at), edit, faults.length, fault?.startsWith(`${FIELD_NAME[at.member] ?? at.member}: ${pathText(at)}`)]).toEqual([one.name, pathText(at), edit, 1, true]);
+          rejected++;
+        }
+    }
+    console.log(`DECODE_REJECTED ${rejected} of ${total}; ${typed} left a well-typed evidence (judged by the comparison below)`);
+    expect(rejected + typed).toBe(total);
+    // Per history: `as null` always, and `as a string` ('refused') when the due evidence is null.
+    expect(typed).toBe(LIST_HISTORIES.reduce((sum, one) => sum + (one.handBack.evidence === null ? 2 : 1), 0));
+  });
+  test('every history: a missing member, an extra member, a duplicate element, and others as an object with index keys are each rejected by path', () => {
+    for (const one of LIST_HISTORIES) {
+      const due = dueOf(one);
+      const good = truthful(one);
+      for (const member of Object.keys(good)) {
+        const missing = Object.fromEntries(Object.entries(good).filter(([key]) => key !== member));
+        expect([one.name, member, judgeHandBack(due, missing)]).toEqual([one.name, member, [`${FIELD_NAME[member] ?? member}: ${member}: Missing key`]]);
+      }
+      expect([one.name, judgeHandBack(due, { ...good, extra: due.label })]).toEqual([one.name, ['extra: extra: Expected no excess property']]);
+      const others = Array.isArray(good.others) ? good.others : [];
+      expect([one.name, judgeHandBack(due, { ...good, others: Object.fromEntries(others.map((row, index) => [index, row])) })]).toEqual([one.name, ['others: others: Expected array']]);
+      expect([one.name, judgeHandBack(due, { ...good, others: [...others, 'refused', 'refused'] })]).toEqual([one.name, ['others: others: Expected an array with unique items']]);
+      if (others.length > 0) {
+        expect([one.name, judgeHandBack(due, { ...good, others: [...others, ...others.slice(0, 1)] })]).toEqual([one.name, ['others: others: Expected an array with unique items']]);
+        // 23e B1: each element stringifies to a due word, yet none is one.
+        expect([one.name, judgeHandBack(due, { ...good, others: others.map((row) => [row]) })[0]?.startsWith('others: others[0]: ')]).toEqual([one.name, true]);
+        expect([one.name, judgeHandBack(due, { ...good, others: others.map((row) => ({ [row]: row })) })[0]?.startsWith('others: others[0]: ')]).toEqual([one.name, true]);
+      }
+      expect([one.name, judgeHandBack(due, JSON.stringify(good))]).toEqual([one.name, ['hand-back: Expected object']]);
+      expect([one.name, judgeHandBack(due, [good])]).toEqual([one.name, ['hand-back: Expected object']]);
+    }
+  });
+  test('every history, every field: a well-typed wrong value is rejected by the typed comparison, that field alone named', () => {
+    for (const one of LIST_HISTORIES) {
+      const due = dueOf(one);
+      const good = truthful(one);
+      const word = wordOf(due.label);
+      const otherWord = labelsOf(one.role).map(wordOf).find((w) => w !== word);
       const wrongState = STATES_OF[one.role].find((state) => state !== due.state);
       const wrongEvidence = OBSTACLE_ROWS.find((row) => row !== due.evidence);
-      const without = <K extends keyof HandBack>(key: K) => Object.fromEntries(Object.entries(good).filter(([k]) => k !== key));
-      const cases: ReadonlyArray<[unknown, string]> = [
-        [{ ...good, label: '' }, `label: due ${word}, given ""`],
-        [without('label'), `label: due ${word}, given unsaid`],
-        [{ ...good, label: word.slice(0, 1) }, `label: due ${word}, given ${JSON.stringify(word.slice(0, 1))}`],
-        [{ ...good, label: word.slice(0, -1) }, `label: due ${word}, given ${JSON.stringify(word.slice(0, -1))}`],
-        [{ ...good, label: otherWord }, `label: due ${word}, given ${JSON.stringify(otherWord)}`],
-        [{ ...good, label: `${word} and more` }, `label: due ${word}, given ${JSON.stringify(`${word} and more`)}`],
-        [{ ...good, state: '' }, `state: due ${due.state}, given ""`],
-        [without('state'), `state: due ${due.state}, given unsaid`],
-        [{ ...good, state: due.state.slice(0, -1) }, `state: due ${due.state}, given ${JSON.stringify(due.state.slice(0, -1))}`],
-        [{ ...good, state: wrongState }, `state: due ${due.state}, given ${JSON.stringify(wrongState)}`],
-        [{ ...good, evidence: '' }, `evidence: due ${String(due.evidence)}, given ""`],
-        [without('evidence'), `evidence: due ${String(due.evidence)}, given unsaid`],
-        [{ ...good, evidence: wrongEvidence }, `evidence: due ${String(due.evidence)}, given ${JSON.stringify(wrongEvidence)}`],
-        [{ ...good, evidence: due.evidence === null ? 'refused' : null }, `evidence: due ${String(due.evidence)}, given ${due.evidence === null ? '"refused"' : 'null'}`],
-        [without('others'), `others: due [${due.others.join(', ')}], given unsaid`],
-        [{ ...good, others: due.others.join(',') }, `others: due [${due.others.join(', ')}], given ${JSON.stringify(due.others.join(','))}`],
-        [{ ...good, others: [...due.others, ...due.others.slice(0, 1), 'refused'] }, `others: due [${due.others.join(', ')}], given [${[...due.others, ...due.others.slice(0, 1), 'refused'].join(', ')}]`],
-        [without('lastAttempt'), `last attempt: due ${due.lastAttempt ? 'present' : 'absent'}, given unsaid`],
-        [{ ...good, lastAttempt: String(due.lastAttempt) }, `last attempt: due ${due.lastAttempt ? 'present' : 'absent'}, given ${JSON.stringify(String(due.lastAttempt))}`],
-        [{ ...good, lastAttempt: !due.lastAttempt }, `last attempt: due ${due.lastAttempt ? 'present' : 'absent'}, given ${due.lastAttempt ? 'absent' : 'present'}`],
+      if (otherWord === undefined || wrongState === undefined || wrongEvidence === undefined) throw new Error(`${one.name}: no wrong value`);
+      const present = (on: boolean) => (on ? 'present' : 'absent');
+      const cases: ReadonlyArray<[Record<string, unknown>, string]> = [
+        [{ ...good, label: '' }, 'label: label: Expected a value with a length of at least 1'],
+        [{ ...good, label: word.slice(0, 1) }, `label: due ${word}, given ${word.slice(0, 1)}`],
+        [{ ...good, label: word.slice(0, -1) }, `label: due ${word}, given ${word.slice(0, -1)}`],
+        [{ ...good, label: otherWord }, `label: due ${word}, given ${otherWord}`],
+        [{ ...good, label: `${word} and more` }, `label: due ${word}, given ${word} and more`],
+        [{ ...good, state: wrongState }, `state: due ${due.state}, given ${wrongState}`],
+        [{ ...good, evidence: wrongEvidence }, `evidence: due ${due.evidence ?? 'none'}, given ${wrongEvidence}`],
+        [{ ...good, evidence: due.evidence === null ? 'refused' : null }, `evidence: due ${due.evidence ?? 'none'}, given ${due.evidence === null ? 'refused' : 'none'}`],
+        [{ ...good, lastAttempt: !due.lastAttempt }, `last attempt: due ${present(due.lastAttempt)}, given ${present(!due.lastAttempt)}`],
+        [{ ...good, others: [...due.others, ...OBSTACLE_ROWS.filter((row) => !due.others.includes(row)).slice(0, 1)] }, `others: due [${due.others.join(', ')}], given [${[...due.others, ...OBSTACLE_ROWS.filter((row) => !due.others.includes(row)).slice(0, 1)].join(', ')}]`],
       ];
       for (const [given, fault] of cases) expect([one.name, judgeHandBack(due, given)]).toEqual([one.name, [fault]]);
       if (due.others.length > 0) {
         expect([one.name, judgeHandBack(due, { ...good, others: [] })]).toEqual([one.name, [`others: due [${due.others.join(', ')}], given []`]]);
-        expect([one.name, judgeHandBack(due, { ...good, others: due.others.slice(0, -1) })]).toEqual([one.name, [`others: due [${due.others.join(', ')}], given [${due.others.slice(0, -1).join(', ')}]`]]);
-        // Same length, a wrong obstacle: a length-only comparison would pass it.
-        const swapped = [...due.others.slice(0, -1), OBSTACLE_ROWS.find((row) => !due.others.includes(row)) ?? 'refused'];
+        const swapped = [...due.others.slice(0, -1), ...OBSTACLE_ROWS.filter((row) => !due.others.includes(row)).slice(0, 1)];
         expect([one.name, judgeHandBack(due, { ...good, others: swapped })]).toEqual([one.name, [`others: due [${due.others.join(', ')}], given [${swapped.join(', ')}]`]]);
+        expect([one.name, judgeHandBack(due, { ...good, others: [...due.others].reverse() })]).toEqual([one.name, []]);
       }
     }
   });
-  test("a history's own label words are exact too: blank, prefix-only and another label's word are red", () => {
+  test("a history's own label words are exact: blank, prefix-only and another label's word are red", () => {
     const o07 = LIST_HISTORIES.find((one) => one.name.startsWith('O07 '));
-    const verifier = all.find((one) => one.role === 'verifier' && one.format === 'claude');
-    if (o07 === undefined || verifier === undefined) throw new Error('no O07');
+    if (o07 === undefined) throw new Error('no O07');
+    const verifier = claudeOf('verifier');
     expect(historyFaults(verifier, [o07])).toEqual([]);
     const due = handBackFrom('verifier', verifier.text, truths(o07.items));
     for (const wrong of ['', '`ref', '`waits on <id>`'])
       expect([wrong, historyFaults(verifier, [{ ...o07, label: wrong }])]).toEqual([wrong, [`${o07.name}: ${STATE_NAME[due.state]} (${due.label})`]]);
-  });
-  test("the verifier's 23d probe: O07 with a blank label is rejected by the label alone", () => {
-    const o07 = LIST_HISTORIES.find((one) => one.name.startsWith('O07 '));
-    const verifier = all.find((one) => one.role === 'verifier' && one.format === 'claude');
-    if (o07 === undefined || verifier === undefined) throw new Error('no O07');
-    const due = handBackFrom('verifier', verifier.text, truths(o07.items));
-    expect(judgeHandBack(due, { ...o07.handBack, label: '' })).toEqual([`label: due ${labelWord(due.label)}, given ""`]);
   });
 });
