@@ -252,7 +252,7 @@ describe("review-input publication", () => {
       expect(landing.match(/yield\* publishReviewInput\("(?:write receipt|land record)", (?:file|kept),/g)).toHaveLength(3)
       expect(landing.match(/writeFileSync\([^,\n]+,/g)).toEqual(["writeFileSync(fd,"])
       expect(landing).toMatch(/openSync\(temp, "wx", allowed\)[\s\S]*?writeFileSync\(fd, text\)[\s\S]*?fsyncSync\(fd\)[\s\S]*?renameSync\(temp, file\)[\s\S]*?fsyncSync\(parent\)/)
-      expect(update).toMatch(/publishReviewInput\(step, path, publicationLock\(path\), access, text\)/)
+      expect(update).toMatch(/publishReviewInput\(step, path, siblingReviewInputLock\(path\), access, text\)/)
       expect(record).toMatch(/publishText\("write the installed record", settings\.record,/)
       expect(mark).toMatch(/publishText\("mark the running handoff", path,/)
       expect(stage).toMatch(/publishReviewInput\("stage the installed record", stage\.record,/)

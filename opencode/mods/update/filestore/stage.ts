@@ -1,14 +1,13 @@
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 import { exclusivelySync, holding } from "@dotfiles/opencode-work/process/flock"
-import { publishReviewInput } from "@dotfiles/opencode-work/process/landing"
+import { publishReviewInput, siblingReviewInputLock } from "@dotfiles/opencode-work/process/landing"
 import { Effect, Layer, Predicate } from "effect"
 import { buildName, stagingName } from "../builds.ts"
 import { parseRecord, type Record, recordText, stagedRecord } from "../record.ts"
 import { stageInTree, Tree, Trees, UpdateFailed } from "../service.ts"
 import { TREE_SUFFIX, treeOf } from "../trees.ts"
 import { removeMaking } from "./builds.ts"
-import { publicationLock } from "./files.ts"
 import { launcher } from "./launcher.ts"
 import { check, make, type Options as TreeOptions } from "./trees.ts"
 
@@ -106,7 +105,7 @@ export const stageBuild = (stage: Stage, flock?: (descriptor: number, operation:
       ),
     )
     const record = stagedRecord(parseRecord(last), { version: stage.version, command: [binary], dotfiles: stage.dotfiles, fork: stage.fork }, readdirSync(stage.share))
-    Effect.runSync(publishReviewInput("stage the installed record", stage.record, publicationLock(stage.record), { preserve: { whenAbsent: 0o600, ceiling: 0o640 } }, recordText(record)))
+    Effect.runSync(publishReviewInput("stage the installed record", stage.record, siblingReviewInputLock(stage.record), { preserve: { whenAbsent: 0o600, ceiling: 0o640 } }, recordText(record)))
     writeLauncher(stage.launcher, stage.resident, record, stage.pid)
   })
   return binary

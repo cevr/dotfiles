@@ -181,6 +181,8 @@ const same = (left: string, right: string): boolean => {
 /** The receipt file a kind of run writes for `head` in the host's receipts folder. */
 const hostReceipt = (logs: string, receipt: Receipt): string => join(receiptsDir(logs), `${receipt.head}.${receipt.kind}.json`)
 const reviewInputLock = (logs: string): string => join(logs, "locks", "review-input.lock")
+/** A publisher without an existing lock directory shares this sibling lock with its other writers. */
+export const siblingReviewInputLock = (file: string): string => join(dirname(file), ".review-input.lock")
 
 /** The sink chooses its initial mode and how much of an existing mode a replacement may retain. */
 export type ReviewInputAccess = "owner-only" | { readonly preserve: { readonly whenAbsent: number; readonly ceiling: number } }
