@@ -8,9 +8,13 @@
 // - a write sent to a host from another host's page origin, which must be refused and change nothing.
 // After each step every host reads its peers once, and each page's merged view must equal the model's: its own
 // projects, each up peer's (ids qualified by the peer, its renames applied), and each peer's state and last seen.
-import { describe, expect, test } from "bun:test"
-import { join } from "node:path"
-import { Array as Arr, Effect, Exit, Match, Option, Ref, Scope } from "effect"
+// Effect tests on Bun's platform services: the scratch folders through FileSystem and Path, the pages over HTTP
+// through HttpClient.
+import * as BunServices from "@effect/platform-bun/BunServices"
+import { describe } from "bun:test"
+import { Array as Arr, Clock, Effect, Exit, FileSystem, Layer, Match, Option, Path, Ref, Schema, Scope } from "effect"
+import { expect, it } from "effect-bun-test"
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
 import { DigestEvent, encodeLine, VERSION } from "@dotfiles/opencode-digest/event"
 import * as FileLog from "@dotfiles/opencode-digest/filestore/log"
 import * as Listener from "@dotfiles/opencode-digest/http/listener"
@@ -20,8 +24,10 @@ import { noTailnet, type PeerStatus, StatusRead } from "@dotfiles/opencode-diges
 import * as FileDevices from "@dotfiles/opencode-digest/filestore/devices"
 import { locateIn, type NamedPeer, NOT_ALLOWED, type Peer, peerId, peerOriginsOf, type Sighting, type Target, UNSEEN } from "@dotfiles/opencode-digest/peers"
 import * as LivePeers from "@dotfiles/opencode-digest/process/peers"
-import { scratch } from "../../tests/scratch.ts"
 import { handlersOf, probeKeeping, STARTING, writeConfigOf } from "./server.ts"
+
+/** The platform the cases run on: Bun's file system and path, and a fetch HTTP client. */
+const Platform = Layer.mergeAll(BunServices.layer, FetchHttpClient.layer)
 
 /** A seeded generator of numbers in [0, 1) (mulberry32). */
 const drawer = (seed: number) => {
@@ -38,8 +44,8 @@ const NAMES = ["macbook", "workbox", "spare"]
 const PROJECTS = ["harbor", "ledger", "atlas"]
 const T0 = Date.parse("2026-11-20T12:00:00Z")
 const LATER_UNTIL = T0 + 30 * 86_400_000
-const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(effect)
 const one = <A,>(found: A): NonNullable<A> => Option.getOrThrow(Option.fromNullishOr(found))
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
 
 type MessageState = "unread" | "read" | "later"
 
@@ -86,10 +92,22 @@ interface Shown {
 /** Projects in a fixed order: by host, then default name. */
 const byPlace = (a: Shown, b: Shown) => Number(`${a.host}/${a.defaultName}` > `${b.host}/${b.defaultName}`) - Number(`${a.host}/${a.defaultName}` < `${b.host}/${b.defaultName}`)
 
-interface ViewJson {
-  readonly projects: ReadonlyArray<{ host: string; name: string; defaultName: string; id: string; inbox: ReadonlyArray<{ id: string; unread: boolean }>; later: ReadonlyArray<{ id: string }> }>
-  readonly peers: ReadonlyArray<{ name: string; state: string; lastSeen?: number; reason: string }>
-}
+/** A page's view as the cases read it: each project's host, names and messages; each peer's state and last seen. */
+const ViewJson = Schema.Struct({
+  projects: Schema.Array(
+    Schema.Struct({
+      host: Schema.String,
+      name: Schema.String,
+      defaultName: Schema.String,
+      id: Schema.String,
+      inbox: Schema.Array(Schema.Struct({ id: Schema.String, unread: Schema.Boolean })),
+      later: Schema.Array(Schema.Struct({ id: Schema.String })),
+    }),
+  ),
+  peers: Schema.Array(Schema.Struct({ name: Schema.String, state: Schema.String, lastSeen: Schema.optionalKey(Schema.Number), reason: Schema.String })),
+})
+type ViewJson = typeof ViewJson.Type
+const decodeView = Schema.decodeUnknownEffect(Schema.fromJsonString(ViewJson))
 
 /** A merged view as compared: each project's host, names and messages; each peer's state and last seen. */
 const normal = (view: ViewJson) => ({
@@ -173,50 +191,65 @@ const statusOf = (name: string, hosts: ReadonlyArray<string>): StatusRead =>
 type StoreState = "keyed" | "unkeyed"
 
 /** Write host `name`'s store copies under `dir` (scratch only, never the real store). */
-const keep = async (paths: readonly [string, string], state: StoreState, others: ReadonlyArray<string>) => {
-  if (state === "unkeyed") return
-  const store = { v: 1, agents: others.map((other) => ({ name: other, ids: [`n-${other}`] })), excluded: [{ name: EXCLUDED, ids: [`n-${EXCLUDED}`] }] }
-  for (const path of paths) await Bun.write(path, JSON.stringify(store))
-}
+const keep = (paths: readonly [string, string], state: StoreState, others: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    if (state === "unkeyed") return
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const store = { v: 1, agents: others.map((other) => ({ name: other, ids: [`n-${other}`] })), excluded: [{ name: EXCLUDED, ids: [`n-${EXCLUDED}`] }] }
+    for (const copy of paths) {
+      yield* fs.makeDirectory(path.dirname(copy), { recursive: true })
+      yield* fs.writeFileString(copy, encodeJson(store))
+    }
+  })
 
 /** Who calls the listeners now: every listener of the world takes it as the socket's peer address (a tailnet one). */
 const caller = { address: PHONE }
 
+/** Close every host's listener: the world's end, whatever the case came to. */
+const closeAll = (lives: ReadonlyArray<Live>) => Effect.forEach(lives, (live) => Scope.close(live.scope, Exit.void), { discard: true })
+
 /**
- * A world of `count` hosts, each naming the others as peers and as agent hosts, as scripts/daily.ts ships them: his
- * own devices read unpaired (`reads`, default "member") and write unless they are agent machines. Each host's device
- * store stands as `stores` says, and its members and peers come from it through the plugin's own probeKeeping.
+ * A world of `count` hosts in a scratch folder, each naming the others as peers and as agent hosts, as
+ * scripts/daily.ts ships them: his own devices read unpaired (`reads`, default "member") and write unless they are
+ * agent machines. Each host's device store stands as `stores` says, and its members and peers come from it through
+ * the plugin's own probeKeeping. Its listeners close, and its folder goes, with the case's scope.
  */
-const world = async (dir: string, count: number, reads: (name: string) => "paired" | "member" = () => "member", stores: (name: string) => StoreState = () => "keyed"): Promise<ReadonlyArray<Live>> => {
-  const lives: Array<Live> = []
-  const hosts = NAMES.slice(0, count)
-  for (const name of hosts) {
-    const others = hosts.filter((other) => other !== name)
-    const named = others.map((other) => ({ name: other, host: other }))
-    const options = { dir: join(dir, name), timezone: "UTC", tailnetRead: reads(name), tailnetWrite: "member-except-hosts" as const, agentHosts: others, excludedDevices: [EXCLUDED], name, peers: named }
-    const paths = FileDevices.pathsOf(options.dir, join(dir, `${name}-config`))
-    await keep(paths, stores(name), others)
-    const log = FileLog.make(options.dir)
-    const peers = Ref.makeUnsafe(unreadAll(named))
-    const members = Ref.makeUnsafe(STARTING)
-    const sighting = Ref.makeUnsafe(UNSEEN)
-    const probe = probeKeeping(writeConfigOf(options), Effect.succeed({ tailnet: noTailnet("test"), status: statusOf(name, hosts) }), members, FileDevices.readCopies(paths), (seen) => Ref.set(sighting, seen))
-    const old = Ref.makeUnsafe(false)
-    const base = handlersOf(options, log, { question: () => Effect.die("no answer here"), item: () => Effect.die("no answer here") }, Effect.succeed("yes"), Ref.get(members), {
-      known: Ref.get(peers),
-      pull: Effect.void,
-      origins: Effect.map(Ref.get(sighting), (seen) => peerOriginsOf(named, seen, Date.now(), 8240)),
-      pages: Effect.succeed([]),
-    })
-    // A host on another wire: its peer view says wire 2, with a view this build must not parse loosely.
-    const newer = Effect.succeed(`{"wire":2,"host":"${name}","view":{"projects":"elsewhere"}}`)
-    const handlers: Listener.Handlers = { ...base, peerView: Effect.flatMap(Ref.get(old), (isOld) => Option.match(Option.liftPredicate(isOld, Boolean), { onSome: () => newer, onNone: () => base.peerView })) }
-    await run(probe)
-    const bound = await run(open(handlers, 0))
-    lives.push({ name, handlers, log, peers, named, old, sighting, probe, scope: bound.scope, port: bound.port })
-  }
-  return lives
-}
+const world = (count: number, reads: (name: string) => "paired" | "member" = () => "member", stores: (name: string) => StoreState = () => "keyed") =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const dir = yield* fs.makeTempDirectoryScoped({ prefix: "digest-peers-" })
+    const lives: Array<Live> = []
+    yield* Effect.addFinalizer(() => closeAll(lives))
+    const hosts = NAMES.slice(0, count)
+    for (const name of hosts) {
+      const others = hosts.filter((other) => other !== name)
+      const named = others.map((other) => ({ name: other, host: other }))
+      const options = { dir: path.join(dir, name), timezone: "UTC", tailnetRead: reads(name), tailnetWrite: "member-except-hosts" as const, agentHosts: others, excludedDevices: [EXCLUDED], name, peers: named }
+      const paths = FileDevices.pathsOf(options.dir, path.join(dir, `${name}-config`))
+      yield* keep(paths, stores(name), others)
+      const log = FileLog.make(options.dir)
+      const peers = Ref.makeUnsafe(unreadAll(named))
+      const members = Ref.makeUnsafe(STARTING)
+      const sighting = Ref.makeUnsafe(UNSEEN)
+      const probe = probeKeeping(writeConfigOf(options), Effect.succeed({ tailnet: noTailnet("test"), status: statusOf(name, hosts) }), members, FileDevices.readCopies(paths), (seen) => Ref.set(sighting, seen))
+      const old = Ref.makeUnsafe(false)
+      const base = handlersOf(options, log, { question: () => Effect.die("no answer here"), item: () => Effect.die("no answer here") }, Effect.succeed("yes"), Ref.get(members), {
+        known: Ref.get(peers),
+        pull: Effect.void,
+        origins: Effect.flatMap(Ref.get(sighting), (seen) => Effect.map(Clock.currentTimeMillis, (now) => peerOriginsOf(named, seen, now, 8240))),
+        pages: Effect.succeed([]),
+      })
+      // A host on another wire: its peer view says wire 2, with a view this build must not parse loosely.
+      const newer = Effect.succeed(`{"wire":2,"host":"${name}","view":{"projects":"elsewhere"}}`)
+      const handlers: Listener.Handlers = { ...base, peerView: Effect.flatMap(Ref.get(old), (isOld) => Option.match(Option.liftPredicate(isOld, Boolean), { onSome: () => newer, onNone: () => base.peerView })) }
+      yield* probe
+      const bound = yield* open(handlers, 0)
+      lives.push({ name, handlers, log, peers, named, old, sighting, probe, scope: bound.scope, port: bound.port })
+    }
+    return lives
+  })
 
 /**
  * Every host reads its peers once, at time `at`, each at its loopback port, as from its own tailnet address (the
@@ -246,10 +279,13 @@ const pullAll = (lives: ReadonlyArray<Live>, at: number) =>
   )
 
 /** A page's view, as his phone reads it: over its listener when it is up, from its handlers when it is down. */
-const pageView = async (live: Live, up: boolean): Promise<ViewJson> => {
-  if (up) return (await fetch(`http://${Listener.HOSTNAME}:${live.port}/view.json`)).json()
-  return JSON.parse(await run(live.handlers.view))
-}
+const pageView = (live: Live, up: boolean) =>
+  Effect.gen(function* () {
+    if (!up) return yield* decodeView(yield* live.handlers.view)
+    const client = yield* HttpClient.HttpClient
+    const answer = yield* client.get(`http://${Listener.HOSTNAME}:${live.port}/view.json`)
+    return yield* decodeView(yield* answer.text)
+  }).pipe(Effect.orDie)
 
 /** What one step does: to a host (`live`, modelled as `host`) at time `t`, drawing with `pick`; its line in the trace. */
 interface Step {
@@ -261,67 +297,71 @@ interface Step {
   readonly pick: <A>(all: ReadonlyArray<A>) => A
 }
 
-const message = async ({ live, host, t, n, pick }: Step) => {
-  const project = pick(PROJECTS)
-  const known = Option.fromUndefinedOr(host.projects.get(project))
-  const root = Option.getOrElse(Option.map(known, (each) => each.root), () => `r-${live.name}-${project}`)
-  if (Option.isNone(known)) {
-    await run(live.log.append(encodeLine(DigestEvent.cases.Run.make({ v: VERSION, t, root, host: live.name, repo: project, dir: Option.none(), name: Option.some(project) })), t))
-    host.projects.set(project, { root, rename: "", messages: new Map() })
-  }
-  const id = `m${n}`
-  await run(live.log.append(encodeLine(DigestEvent.cases.Item.make({ answer: Option.none(), choices: Option.none(), v: VERSION, t, root, id, text: `Step ${n} ships.`, state: "done", owner: "mine", who: Option.none(), level: Option.none(), unit: Option.none() })), t))
-  one(host.projects.get(project)).messages.set(`item:${root}:${id}`, "unread")
-  return `${live.name} message in ${project}`
-}
+const message = ({ live, host, t, n, pick }: Step) =>
+  Effect.gen(function* () {
+    const project = pick(PROJECTS)
+    const known = Option.fromUndefinedOr(host.projects.get(project))
+    const root = Option.getOrElse(Option.map(known, (each) => each.root), () => `r-${live.name}-${project}`)
+    if (Option.isNone(known)) {
+      yield* live.log.append(encodeLine(DigestEvent.cases.Run.make({ v: VERSION, t, root, host: live.name, repo: project, dir: Option.none(), name: Option.some(project) })), t)
+      host.projects.set(project, { root, rename: "", messages: new Map() })
+    }
+    const id = `m${n}`
+    yield* live.log.append(encodeLine(DigestEvent.cases.Item.make({ answer: Option.none(), choices: Option.none(), v: VERSION, t, root, id, text: `Step ${n} ships.`, state: "done", owner: "mine", who: Option.none(), level: Option.none(), unit: Option.none() })), t)
+    one(host.projects.get(project)).messages.set(`item:${root}:${id}`, "unread")
+    return `${live.name} message in ${project}`
+  })
 
-const mark = async ({ live, host, t, pick }: Step) => {
-  const project = pick([...host.projects.values()])
-  const id = pick([...project.messages.keys()])
-  const kind = pick(["read", "unread", "later"] as const)
-  await run(live.handlers.write(markOf(id, t, kind, Option.liftPredicate(LATER_UNTIL, () => kind === "later"))))
-  project.messages.set(id, kind)
-  return `${live.name} ${kind} ${id}`
-}
+const mark = ({ live, host, t, pick }: Step) =>
+  Effect.gen(function* () {
+    const project = pick([...host.projects.values()])
+    const id = pick([...project.messages.keys()])
+    const kind = pick(["read", "unread", "later"] as const)
+    yield* live.handlers.write(markOf(id, t, kind, Option.liftPredicate(LATER_UNTIL, () => kind === "later")))
+    project.messages.set(id, kind)
+    return `${live.name} ${kind} ${id}`
+  })
 
-const rename = async ({ live, host, t, pick }: Step) => {
-  const [name, project] = pick([...host.projects.entries()])
-  const view: ViewJson = JSON.parse(await run(live.handlers.view))
-  const id = one(view.projects.find((each) => each.host === live.name && each.defaultName === name)).id
-  const to = pick(["", `${name} renamed`, "Billing"])
-  await run(live.handlers.write(nameOf(id, to, t)))
-  project.rename = to
-  return `${live.name} rename ${name} "${to}"`
-}
+const rename = ({ live, host, t, pick }: Step) =>
+  Effect.gen(function* () {
+    const [name, project] = pick([...host.projects.entries()])
+    const view = yield* pageView(live, false)
+    const id = one(view.projects.find((each) => each.host === live.name && each.defaultName === name)).id
+    const to = pick(["", `${name} renamed`, "Billing"])
+    yield* live.handlers.write(nameOf(id, to, t))
+    project.rename = to
+    return `${live.name} rename ${name} "${to}"`
+  })
 
-const downOrUp = async ({ live, host }: Step) => {
-  if (host.up) await run(Scope.close(live.scope, Exit.void))
-  else live.scope = (await run(open(live.handlers, live.port))).scope
-  host.up = !host.up
-  return `${live.name} ${["down", "up"][Number(host.up)]}`
-}
+const downOrUp = ({ live, host }: Step) =>
+  Effect.gen(function* () {
+    if (host.up) yield* Scope.close(live.scope, Exit.void)
+    else live.scope = (yield* open(live.handlers, live.port)).scope
+    host.up = !host.up
+    return `${live.name} ${["down", "up"][Number(host.up)]}`
+  })
 
-const wire = async ({ live, host }: Step) => {
-  host.old = !host.old
-  await run(Ref.set(live.old, host.old))
-  return `${live.name} wire ${2 - Number(!host.old)}`
-}
+const wire = ({ live, host }: Step) =>
+  Effect.gen(function* () {
+    host.old = !host.old
+    yield* Ref.set(live.old, host.old)
+    return `${live.name} wire ${2 - Number(!host.old)}`
+  })
 
-const foreignWrite = async ({ live, host, lives, pick }: Step) => {
-  const from = pick(lives.filter((each) => each.name !== live.name))
-  if (host.up) {
-    const sent = await fetch(`http://${Listener.HOSTNAME}:${live.port}/api/name`, {
-      method: "POST",
-      headers: { origin: `http://${Listener.HOSTNAME}:${from.port}`, "content-type": "application/json", [Listener.PAGE_HEADER]: "1" },
-      body: JSON.stringify({ project: "harbor", name: "taken over" }),
-    })
-    expect(sent.status).toBe(403)
-  }
-  return `${from.name}'s page writes to ${live.name}: refused`
-}
+const foreignWrite = ({ live, host, lives, pick }: Step) =>
+  Effect.gen(function* () {
+    const from = pick(lives.filter((each) => each.name !== live.name))
+    if (host.up) {
+      const client = yield* HttpClient.HttpClient
+      const request = HttpClientRequest.post(`http://${Listener.HOSTNAME}:${live.port}/api/name`, { headers: { origin: `http://${Listener.HOSTNAME}:${from.port}`, [Listener.PAGE_HEADER]: "1" } })
+      const sent = yield* client.execute(HttpClientRequest.bodyText(request, encodeJson({ project: "harbor", name: "taken over" }), "application/json"))
+      expect(sent.status).toBe(403)
+    }
+    return `${from.name}'s page writes to ${live.name}: refused`
+  })
 
 /** The steps by the share of draws below which each is taken; a host with no project yet always gets a message. */
-const STEPS: ReadonlyArray<readonly [number, (step: Step) => Promise<string>]> = [
+const STEPS: ReadonlyArray<readonly [number, (step: Step) => Effect.Effect<string, unknown, HttpClient.HttpClient>]> = [
   [0.35, message],
   [0.6, mark],
   [0.7, rename],
@@ -330,72 +370,79 @@ const STEPS: ReadonlyArray<readonly [number, (step: Step) => Promise<string>]> =
   [1, foreignWrite],
 ]
 
-const simulate = async (seed: number, count: number, steps: number) => {
-  using held = scratch("digest-peers-")
-  const lives = await world(held.path, count)
-  await using _closed = { [Symbol.asyncDispose]: () => run(Effect.forEach(lives, (live) => Scope.close(live.scope, Exit.void), { discard: true })) }
-  const draw = drawer(seed)
-  const pick = <A,>(all: ReadonlyArray<A>): A => Option.getOrThrow(Arr.get(all, Math.floor(draw() * all.length)))
-  const model = new Map(lives.map((live): readonly [string, ModelHost] => [live.name, { projects: new Map(), up: true, old: false, seenBy: new Map() }]))
-  const trace: Array<string> = []
-  for (let n = 1; n <= steps; n++) {
-    const live = pick(lives)
-    const host = one(model.get(live.name))
-    const roll = Option.getOrElse(Option.liftPredicate(draw(), () => host.projects.size > 0), () => 0)
-    const [, act] = one(STEPS.find(([below]) => roll < below))
-    trace.push(`${n} ${await act({ live, host, lives, t: T0 + n * 1000, n, pick })}`)
-    await run(pullAll(lives, n))
-    for (const [name, each] of model) for (const viewer of model.keys()) if (viewer !== name && each.up && !each.old) each.seenBy.set(viewer, n)
-    for (const viewer of lives) {
-      const actual = normal(await pageView(viewer, one(model.get(viewer.name)).up))
-      expect(actual, `seed ${seed}, ${viewer.name}'s page after:\n${trace.join("\n")}`).toEqual(expected(model, viewer.name))
-    }
-  }
-}
+const simulate = (seed: number, count: number, steps: number) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const lives = yield* world(count)
+      const draw = drawer(seed)
+      const pick = <A,>(all: ReadonlyArray<A>): A => Option.getOrThrow(Arr.get(all, Math.floor(draw() * all.length)))
+      const model = new Map(lives.map((live): readonly [string, ModelHost] => [live.name, { projects: new Map(), up: true, old: false, seenBy: new Map() }]))
+      const trace: Array<string> = []
+      for (let n = 1; n <= steps; n++) {
+        const live = pick(lives)
+        const host = one(model.get(live.name))
+        const roll = Option.getOrElse(Option.liftPredicate(draw(), () => host.projects.size > 0), () => 0)
+        const [, act] = one(STEPS.find(([below]) => roll < below))
+        trace.push(`${n} ${yield* act({ live, host, lives, t: T0 + n * 1000, n, pick })}`)
+        yield* pullAll(lives, n)
+        for (const [name, each] of model) for (const viewer of model.keys()) if (viewer !== name && each.up && !each.old) each.seenBy.set(viewer, n)
+        for (const viewer of lives) {
+          const actual = normal(yield* pageView(viewer, one(model.get(viewer.name)).up))
+          expect(actual, `seed ${seed}, ${viewer.name}'s page after:\n${trace.join("\n")}`).toEqual(expected(model, viewer.name))
+        }
+      }
+    }),
+  )
+
+/** Each peer of `live` as its page shows it: name, state and why. */
+const peersOf = (live: Live) => Effect.map(pageView(live, false), (view) => view.peers.map((peer) => ({ name: peer.name, state: peer.state, reason: peer.reason })))
 
 describe("one page over every host", () => {
-  test("a host whose policy lets this one read it is read; one that needs pairing is unavailable, and the page says why", async () => {
-    using held = scratch("digest-peers-")
-    const lives = await world(held.path, 2, (name) => Option.getOrElse(Option.as(Option.liftPredicate(name, (each) => each === "workbox"), "paired" as const), () => "member" as const))
-    await using _closed = { [Symbol.asyncDispose]: () => run(Effect.forEach(lives, (live) => Scope.close(live.scope, Exit.void), { discard: true })) }
-    await run(pullAll(lives, 1))
-    const peersOf = async (live: Live) => (await pageView(live, false)).peers.map((peer) => ({ name: peer.name, state: peer.state, reason: peer.reason }))
-    // macbook reads the tailnet as a member may: workbox (paired) refuses it; workbox reads macbook (member). Each
-    // page is read from its handlers: workbox's own page needs pairing on its listener.
-    expect(await peersOf(one(lives[0]))).toEqual([{ name: "workbox", state: "down", reason: NOT_ALLOWED }])
-    expect(await peersOf(one(lives[1]))).toEqual([{ name: "macbook", state: "up", reason: "" }])
-  })
+  it.scopedLive.layer(Platform)("a host whose policy lets this one read it is read; one that needs pairing is unavailable, and the page says why", () =>
+    Effect.gen(function* () {
+      const lives = yield* world(2, (name) => Option.getOrElse(Option.as(Option.liftPredicate(name, (each) => each === "workbox"), "paired" as const), () => "member" as const))
+      yield* pullAll(lives, 1)
+      // macbook reads the tailnet as a member may: workbox (paired) refuses it; workbox reads macbook (member). Each
+      // page is read from its handlers: workbox's own page needs pairing on its listener.
+      expect(yield* peersOf(one(lives[0]))).toEqual([{ name: "workbox", state: "down", reason: NOT_ALLOWED }])
+      expect(yield* peersOf(one(lives[1]))).toEqual([{ name: "macbook", state: "up", reason: "" }])
+    }),
+  )
 
-  test("a peer host reads as an agent machine: allowed once its store keys the hosts, refused while it is unkeyed, and the page says why", async () => {
-    using held = scratch("digest-peers-")
-    // workbox has no device store yet: its exclusion is unkeyed, so its tailnet is pairing-only for every source.
-    const lives = await world(held.path, 3, () => "member", (name) => Option.getOrElse(Option.as(Option.liftPredicate(name, (each) => each === "workbox"), "unkeyed" as const), () => "keyed" as const))
-    await using _closed = { [Symbol.asyncDispose]: () => run(Effect.forEach(lives, (live) => Scope.close(live.scope, Exit.void), { discard: true })) }
-    await run(pullAll(lives, 1))
-    const peersOf = async (live: Live) => (await pageView(live, false)).peers.map((peer) => ({ name: peer.name, state: peer.state, reason: peer.reason }))
-    expect(await peersOf(one(lives[0]))).toEqual([
-      { name: "workbox", state: "down", reason: NOT_ALLOWED },
-      { name: "spare", state: "up", reason: "" },
-    ])
-    expect(await peersOf(one(lives[2]))).toEqual([
-      { name: "macbook", state: "up", reason: "" },
-      { name: "workbox", state: "down", reason: NOT_ALLOWED },
-    ])
-    // workbox itself reads the others: their stores key it as an agent machine, which may read.
-    expect(await peersOf(one(lives[1]))).toEqual([
-      { name: "macbook", state: "up", reason: "" },
-      { name: "spare", state: "up", reason: "" },
-    ])
-    // Each host finds its peers by the stable IDs its own store keys, never by name: workbox, keying none, finds none.
-    expect([...locateIn(one(lives[0]).named, await run(Ref.get(one(lives[0]).sighting)), Date.now(), 8240).keys()]).toEqual(["workbox", "spare"])
-    expect([...locateIn(one(lives[1]).named, await run(Ref.get(one(lives[1]).sighting)), Date.now(), 8240).keys()]).toEqual([])
-  })
+  it.scopedLive.layer(Platform)("a peer host reads as an agent machine: allowed once its store keys the hosts, refused while it is unkeyed, and the page says why", () =>
+    Effect.gen(function* () {
+      // workbox has no device store yet: its exclusion is unkeyed, so its tailnet is pairing-only for every source.
+      const lives = yield* world(3, () => "member", (name) => Option.getOrElse(Option.as(Option.liftPredicate(name, (each) => each === "workbox"), "unkeyed" as const), () => "keyed" as const))
+      yield* pullAll(lives, 1)
+      expect(yield* peersOf(one(lives[0]))).toEqual([
+        { name: "workbox", state: "down", reason: NOT_ALLOWED },
+        { name: "spare", state: "up", reason: "" },
+      ])
+      expect(yield* peersOf(one(lives[2]))).toEqual([
+        { name: "macbook", state: "up", reason: "" },
+        { name: "workbox", state: "down", reason: NOT_ALLOWED },
+      ])
+      // workbox itself reads the others: their stores key it as an agent machine, which may read.
+      expect(yield* peersOf(one(lives[1]))).toEqual([
+        { name: "macbook", state: "up", reason: "" },
+        { name: "spare", state: "up", reason: "" },
+      ])
+      // Each host finds its peers by the stable IDs its own store keys, never by name: workbox, keying none, finds none.
+      const now = yield* Clock.currentTimeMillis
+      expect([...locateIn(one(lives[0]).named, yield* Ref.get(one(lives[0]).sighting), now, 8240).keys()]).toEqual(["workbox", "spare"])
+      expect([...locateIn(one(lives[1]).named, yield* Ref.get(one(lives[1]).sighting), now, 8240).keys()]).toEqual([])
+    }),
+  )
 
-  test("two hosts: each page shows its own projects and the other's, as the model says, through every step", async () => {
-    for (const seed of [1, 2, 3, 4, 5, 6]) await simulate(seed, 2, 30)
-  }, 60_000)
+  it.scopedLive.layer(Platform)(
+    "two hosts: each page shows its own projects and the other's, as the model says, through every step",
+    () => Effect.forEach([1, 2, 3, 4, 5, 6], (seed) => simulate(seed, 2, 30), { discard: true }),
+    60_000,
+  )
 
-  test("three hosts: each reads the other two directly, none relays, and one down or on another wire leaves the rest whole", async () => {
-    for (const seed of [11, 12, 13, 14]) await simulate(seed, 3, 30)
-  }, 60_000)
+  it.scopedLive.layer(Platform)(
+    "three hosts: each reads the other two directly, none relays, and one down or on another wire leaves the rest whole",
+    () => Effect.forEach([11, 12, 13, 14], (seed) => simulate(seed, 3, 30), { discard: true }),
+    60_000,
+  )
 })
