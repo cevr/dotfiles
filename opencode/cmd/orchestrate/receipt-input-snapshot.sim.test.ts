@@ -16,11 +16,16 @@ import * as BunServices from "@effect/platform-bun/BunServices"
 import { Array as Arr, Context, Data, Effect, Equal, FileSystem, Layer, Match, Option, Order, Path, Result, Schema } from "effect"
 import { Digest } from "effect/crypto"
 import * as Seed from "../../sim/seed.ts"
-import { formats } from "./batch-inputs.ts"
+import { formats, layer } from "./batch-inputs.ts"
 
 const { seeded } = Seed.runner("cmd/orchestrate/receipt-input-snapshot.sim.test.ts")
 
-const sha = (digit: string) => digit.repeat(40)
+// The oracle's own full object name: 40 lower-case hex digits (SHA-1) or 64 (SHA-256), branded as a snapshot's names are.
+const FullName = Schema.String.check(Schema.isPattern(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/)).pipe(Schema.brand("ObjectName"))
+const toName = Schema.decodeSync(FullName)
+const isFull = Schema.is(FullName)
+const sha = (digit: string) => toName(digit.repeat(40))
+const sha256 = (digit: string) => toName(digit.repeat(64))
 const HOST = "host-a"
 const REPO = "/fixture/dotfiles"
 const LANE = "/fixture/dotfiles/.work/lane"
@@ -76,8 +81,8 @@ const provenPair = (record: FixtureRecord): Option.Option<{ readonly dotfiles: s
     (good) => ({ dotfiles: good.dotfiles, fork: good.fork }),
   )
 
-/** What one file holds in one state of the script: text, a link the source refuses, or a read that fails. */
-type Entry = Data.TaggedEnum<{ Text: { readonly text: string }; Link: {}; Broken: {} }>
+/** What one file holds in one state of the script: text, a file the source refuses (with its reason), or a read that fails. */
+type Entry = Data.TaggedEnum<{ Text: { readonly text: string }; Refused: { readonly reason: string }; Broken: {} }>
 const Entry = Data.taggedEnum<Entry>()
 
 type State = ReadonlyMap<string, Entry>
@@ -116,7 +121,7 @@ const serve = (key: string, entry: Option.Option<Entry>): Effect.Effect<SourceRe
     onNone: () => Effect.succeed(SourceRead.Absent()),
     onSome: Entry.$match({
       Text: (each) => Effect.succeed(SourceRead.Present({ text: each.text })),
-      Link: () => Effect.succeed(SourceRead.Refused({ reason: "a link" })),
+      Refused: (each) => Effect.succeed(SourceRead.Refused({ reason: each.reason })),
       Broken: () => Effect.fail(new SourceUnreadable({ source: key, message: "fixture I/O failure" })),
     }),
   })
@@ -323,8 +328,8 @@ const generator = (seed: number) => {
   }
 }
 
-/** What a receipt state means to the oracle: absent, a receipt with its tree and exits, a torn write, a link. */
-type Meaning = Data.TaggedEnum<{ None: {}; Valid: { readonly tree: string; readonly codes: ReadonlyArray<number> }; Torn: {}; Linked: {} }>
+/** What a source state means to the oracle: absent, a record with the tree and exits it proves, a torn write, a refused file, a failing read. */
+type Meaning = Data.TaggedEnum<{ None: {}; Valid: { readonly tree: string; readonly codes: ReadonlyArray<number> }; Torn: {}; Refused: { readonly reason: string }; Broken: {} }>
 const Meaning = Data.taggedEnum<Meaning>()
 
 interface Step {
@@ -332,27 +337,50 @@ interface Step {
   readonly record: FixtureRecord
   readonly torn: boolean
   readonly receipt: number
+  readonly land: number
 }
 
 const ROUND_KEY = `receipt:${laneHead}.round`
+const LAND_KEY = `land:${outerHead}`
+
+/** Every refusal the host's source gives for a file it will not read. */
+const REFUSALS = ["a link", "not a regular file", "too large", "not text"]
+
+/** A source state for each refusal and for a failing read: the same for every source. */
+const unreadStates: ReadonlyArray<{ readonly entry: Option.Option<Entry>; readonly meaning: Meaning }> = [
+  ...REFUSALS.map((reason) => ({ entry: Option.some(Entry.Refused({ reason })), meaning: Meaning.Refused({ reason }) })),
+  { entry: Option.some(Entry.Broken()), meaning: Meaning.Broken() },
+]
 
 const receiptStates: ReadonlyArray<{ readonly entry: Option.Option<Entry>; readonly meaning: Meaning }> = [
   { entry: Option.none(), meaning: Meaning.None() },
   { entry: Option.some(text(encodeReceipt(receipt(laneHead, "round", laneTree, [0, 0], "2026-11-22T01:00:00.000Z")))), meaning: Meaning.Valid({ tree: laneTree, codes: [0, 0] }) },
   { entry: Option.some(text(encodeReceipt(receipt(laneHead, "round", outerTree, [1], "2026-11-22T01:30:00.000Z")))), meaning: Meaning.Valid({ tree: outerTree, codes: [1] }) },
   { entry: Option.some(text(encodeReceipt(receipt(laneHead, "round", laneTree, [0], "2026-11-22T01:00:00.000Z")).slice(0, 37))), meaning: Meaning.Torn() },
-  { entry: Option.some(Entry.Link()), meaning: Meaning.Linked() },
+  ...unreadStates,
+]
+
+/** A land of the outer head whose merge check proves `tree` with `codes`. */
+const landText = (tree: string, codes: ReadonlyArray<number>, at: string) =>
+  encodeLand({ head: outerHead, base, units: [], merge: Option.some(receiptAt(outerHead, "merge", tree, codes, at, REPO)), at })
+
+const landStates: ReadonlyArray<{ readonly entry: Option.Option<Entry>; readonly meaning: Meaning }> = [
+  { entry: Option.none(), meaning: Meaning.None() },
+  { entry: Option.some(text(landText(outerTree, [0], "2026-11-22T02:00:00.000Z"))), meaning: Meaning.Valid({ tree: outerTree, codes: [0] }) },
+  { entry: Option.some(text(landText(laneTree, [0, 1], "2026-11-22T02:30:00.000Z"))), meaning: Meaning.Valid({ tree: laneTree, codes: [0, 1] }) },
+  { entry: Option.some(text(landText(outerTree, [0], "2026-11-22T02:00:00.000Z").slice(0, 50))), meaning: Meaning.Torn() },
+  ...unreadStates,
 ]
 
 const PAIRS = [build(installedDotfiles, provenFork), build(laneHead, provenFork), build(aggregateHead, checkoutFork)]
 
-/** The script for a seed: 3 to 8 whole states, each held for 1 to 6 reads, moving the record, the receipt and the handoff marker. */
+/** The script for a seed: 3 to 8 whole states, each held for 1 to 6 reads, moving the record, the receipt, the land and the handoff marker. */
 const scriptOf = (seed: number): ReadonlyArray<Step> => {
   const next = generator(seed)
   const pick = <A>(all: ReadonlyArray<A>, fallback: A) => Option.getOrElse(Arr.get(all, next(all.length)), () => fallback)
   const first = pick(PAIRS, build(base, base))
   const moves: ReadonlyArray<(record: FixtureRecord) => FixtureRecord> = [(record) => staged(record, pick(PAIRS, first)), promoted, provenNow, rolledBack]
-  const walk = { record: installedAs(first, Option.some(first)), receipt: next(receiptStates.length), handoff: false }
+  const walk = { record: installedAs(first, Option.some(first)), receipt: next(receiptStates.length), land: next(landStates.length), handoff: false }
   const steps: Array<Step> = []
   for (const _state of Arr.range(1, 3 + next(6))) {
     const torn = next(8) === 0
@@ -360,20 +388,61 @@ const scriptOf = (seed: number): ReadonlyArray<Step> => {
     const installed = text(Match.value(torn).pipe(Match.when(true, () => whole.slice(0, whole.length - 9)), Match.orElse(() => whole)))
     const entries: Array<readonly [string, Entry]> = [["installed", installed]]
     for (const entry of Option.toArray(Option.flatMap(Arr.get(receiptStates, walk.receipt), (each) => each.entry))) entries.push([ROUND_KEY, entry])
+    for (const entry of Option.toArray(Option.flatMap(Arr.get(landStates, walk.land), (each) => each.entry))) entries.push([LAND_KEY, entry])
     if (walk.handoff) entries.push(["handoff", text('{"pid":1}')])
-    const step: Step = { files: files(entries), record: walk.record, torn, receipt: walk.receipt }
+    const step: Step = { files: files(entries), record: walk.record, torn, receipt: walk.receipt, land: walk.land }
     for (const _read of Arr.range(1, 1 + next(6))) steps.push(step)
     walk.record = pick(moves, provenNow)(walk.record)
     if (next(3) === 0) walk.receipt = next(receiptStates.length)
+    if (next(3) === 0) walk.land = next(landStates.length)
     walk.handoff = next(5) === 0
   }
   return steps
 }
 
 /** How many scripts a seed plays. */
-const SCRIPTS = 40
+const SCRIPTS = 80
 
-seeded("generated source transitions between read boundaries: one complete proven pair, absent, refused, or a reason to read again; never a composite pair or an invented green", ({ seed, expect }) =>
+/** What the generated scripts ask for. */
+const GENERATED: InputRequest = { receipts: [{ head: laneHead, kind: "round" }], lands: [outerHead], install: true }
+
+/**
+ * The documented observation, written down rather than read off the calls made: the receipt read twice, then the
+ * land twice, then the handoff marker twice, the installed record twice and the marker twice again. A pair whose two
+ * answers differ, a marker present, or a read that fails ends the freeze there with a reason to read again.
+ */
+const READS = [ROUND_KEY, ROUND_KEY, LAND_KEY, LAND_KEY, "handoff", "handoff", "installed", "installed", "handoff", "handoff"]
+
+/** What the script puts at read `index` of `key`: the state the script holds then. */
+const entryAt = (steps: ReadonlyArray<Step>, index: number, key: string): Option.Option<Entry> =>
+  Option.flatMap(Arr.get(steps, Math.min(index, steps.length - 1)), (step) => Option.fromNullishOr(step.files.get(key)))
+
+/** The script's own verdict on one pair of reads: none when the pair settles. */
+const pairVerdict = (steps: ReadonlyArray<Step>, pair: number): Option.Option<{ readonly reads: number; readonly failure: string }> => {
+  const key = Option.getOrElse(Arr.get(READS, pair * 2), () => "")
+  const [first, second] = [entryAt(steps, pair * 2, key), entryAt(steps, pair * 2 + 1, key)]
+  if (Option.exists(first, Entry.$is("Broken"))) return Option.some({ reads: pair * 2 + 1, failure: `unsettled ${key}: unreadable` })
+  if (Option.exists(second, Entry.$is("Broken"))) return Option.some({ reads: pair * 2 + 2, failure: `unsettled ${key}: unreadable` })
+  if (!Equal.equals(first, second)) return Option.some({ reads: pair * 2 + 2, failure: `unsettled ${key}: changed` })
+  if (key === "handoff" && Option.isSome(first)) return Option.some({ reads: pair * 2 + 2, failure: "unsettled handoff: handoff" })
+  return Option.none()
+}
+
+/** The reads a freeze of the script must make, and its failure if it must fail. */
+const observation = (steps: ReadonlyArray<Step>) =>
+  Option.match(Arr.findFirst(Arr.range(0, READS.length / 2 - 1), (pair) => pairVerdict(steps, pair)), {
+    onNone: () => ({ reads: READS, failure: Option.none<string>() }),
+    onSome: (verdict) => ({ reads: READS.slice(0, verdict.reads), failure: Option.some(verdict.failure) }),
+  })
+
+/** Every head, tree and base a snapshot projects. */
+const namesIn = (snapshot: InputSnapshot): ReadonlyArray<string> => [
+  ...snapshot.receipts.flatMap((each) => [each.input.head, each.input.tree]),
+  ...snapshot.lands.flatMap((each) => [each.input.head, each.input.base]),
+  ...Option.toArray(Option.fromNullishOr(snapshot.install)).flatMap((each) => (each._tag === "Proven" ? [each.receipt.dotfiles, each.receipt.fork] : [])),
+]
+
+seeded("generated source transitions between read boundaries, for the receipt, the land, the installed record and the marker: one complete proven pair, absent, refused with the file's own reason, or a reason to read again; never a composite pair or an invented green", ({ seed, expect }) =>
   Effect.gen(function* () {
     const seen = yield* Effect.forEach(Arr.range(1, SCRIPTS), (index) => checkScript(seed * SCRIPTS + index, expect))
     // Each seed's scripts reach every kind of outcome, so the oracle is exercised on each.
@@ -381,47 +450,180 @@ seeded("generated source transitions between read boundaries: one complete prove
   }),
 )
 
+/** What a source's meaning leaves in a snapshot: the receipts it proves (head, kind, tree, exits), absent or refused with why. */
+const leaves = (key: string, head: string, kind: string, notOne: string, meaning: Meaning) =>
+  Meaning.$match(meaning, {
+    None: () => ({ rows: [], absent: [key], refused: [] }),
+    Valid: (valid) => ({ rows: [{ head, kind, tree: valid.tree, codes: valid.codes }], absent: [], refused: [] }),
+    Torn: () => ({ rows: [], absent: [], refused: [{ source: key, reason: notOne }] }),
+    Refused: (refused) => ({ rows: [], absent: [], refused: [{ source: key, reason: refused.reason }] }),
+    Broken: () => ({ rows: [], absent: [], refused: [] }),
+  })
+
 /** One generated script, frozen and checked against the oracle: which kind of outcome it reached. */
 const checkScript = (seed: number, expect: Seed.Seeded["expect"]) =>
   Effect.gen(function* () {
     const steps = scriptOf(seed)
     const { outcome, served } = yield* run(
       steps.map((each) => each.files),
-      { receipts: [{ head: laneHead, kind: "round" }], lands: [], install: true },
+      GENERATED,
     )
-    // The oracle walks what was served, two reads per source: two reads that differ, a handoff marker seen, or a failed
-    // read must fail and be read again; else each answer is the script's meaning of the one state both reads saw.
-    const unsettled = Arr.chunksOf(served, 2).some((pair) => {
-      const first = Arr.headNonEmpty(pair)
-      const differ = Option.exists(Arr.get(pair, 1), (second) => !Equal.equals(first.entry, second.entry))
-      const broken = Option.exists(first.entry, Entry.$is("Broken"))
-      return differ || broken || (first.key === "handoff" && Option.isSome(first.entry))
-    })
-    if (unsettled) {
-      expect([seed, Option.map(failureWords(outcome), (words) => words.startsWith("unsettled "))]).toEqual([seed, Option.some(true)])
-      return "unsettled"
-    }
+    const must = observation(steps)
+    // The freeze made exactly the documented reads, and failed exactly when and why the script says it must.
+    expect([seed, served.map((each) => each.key), failureWords(outcome)]).toEqual([seed, must.reads, must.failure])
+    if (Option.isSome(must.failure)) return "unsettled"
     const snapshot = yield* Effect.orDie(Effect.fromResult(outcome))
-    const stepAt = (key: string) => Option.flatMap(Arr.findFirst(served, (each) => each.key === key), (read) => Arr.get(steps, read.state))
-    const meaning = Option.getOrElse(Option.flatMap(stepAt(ROUND_KEY), (step) => Option.map(Arr.get(receiptStates, step.receipt), (each) => each.meaning)), () => Meaning.None())
-    const kept = snapshot.receipts.map((each) => ({ tree: each.input.tree, codes: each.input.checks.map((check) => check.code) }))
-    const want: ReadonlyArray<unknown> = Meaning.$match(meaning, {
-        None: () => [seed, [], [ROUND_KEY], []],
-        Valid: (valid) => [seed, [{ tree: valid.tree, codes: valid.codes }], [], []],
-        Torn: () => [seed, [], [], [{ source: ROUND_KEY, reason: "not a receipt" }]],
-        Linked: () => [seed, [], [], [{ source: ROUND_KEY, reason: "a link" }]],
-      })
-    const have: ReadonlyArray<unknown> = [seed, kept, snapshot.absent, snapshot.refused]
-    expect(have).toEqual(want)
+    const meaningAt = (read: number, of: (step: Step) => Option.Option<Meaning>) => Option.getOrElse(Option.flatMap(Arr.get(steps, Math.min(read, steps.length - 1)), of), () => Meaning.None())
+    const round = leaves(ROUND_KEY, laneHead, "round", "not a receipt", meaningAt(0, (step) => Option.map(Arr.get(receiptStates, step.receipt), (each) => each.meaning)))
+    const land = leaves(LAND_KEY, outerHead, "merge", "not a land record", meaningAt(2, (step) => Option.map(Arr.get(landStates, step.land), (each) => each.meaning)))
+    const rows = snapshot.receipts.map((each) => ({ head: each.input.head, kind: `${each.input.kind}`, tree: each.input.tree, codes: each.input.checks.map((check) => check.code) }))
+    const have: ReadonlyArray<unknown> = [seed, Arr.sort(rows, byHead), snapshot.lands.map((each) => each.input.head), snapshot.absent, snapshot.refused]
+    expect(have).toEqual([
+      seed,
+      Arr.sort([...land.rows, ...round.rows], byHead),
+      land.rows.map((each) => each.head),
+      [...land.absent, ...round.absent],
+      [...land.refused, ...round.refused],
+    ])
+    expect([seed, namesIn(snapshot).every(isFull)]).toEqual([seed, true])
     const expected = Option.flatMap(
-      Option.filter(stepAt("installed"), (step) => !step.torn),
+      Option.filter(Arr.get(steps, Math.min(6, steps.length - 1)), (step) => !step.torn),
       (step) => provenPair(step.record),
     )
     const install = Option.fromNullishOr(snapshot.install)
     const got = Option.flatMap(install, (each) => Match.value(each).pipe(Match.tag("Proven", (proven) => Option.some({ dotfiles: proven.receipt.dotfiles, fork: proven.receipt.fork })), Match.orElse(() => Option.none())))
-    expect([seed, got]).toEqual([seed, expected])
+    const gotPair: ReadonlyArray<unknown> = [seed, got]
+    expect(gotPair).toEqual([seed, expected])
     return Option.match(got, { onNone: () => "unproven", onSome: () => "proven" })
   })
+
+/** A freeze's result in words: its refusals, else what it froze; the install state when asked. */
+const resultWords = (outcome: Result.Result<InputSnapshot, InputConflict | InputUnsettled>): string =>
+  Result.match(outcome, {
+    onFailure: () => Option.getOrElse(failureWords(outcome), () => "failed"),
+    onSuccess: (snapshot) =>
+      Match.value(snapshot.refused.length > 0).pipe(
+        Match.when(true, () => snapshot.refused.map((each) => `refused ${each.reason}`).join(", ")),
+        Match.orElse(() => `frozen ${snapshot.receipts.length} receipts, ${snapshot.lands.length} lands; install ${installWords(snapshot)}`),
+      ),
+  })
+
+seeded("every head, tree and base a snapshot projects is a full object name: a record naming an abbreviation or upper case anywhere in it (a nested round, a merge check, a base, an installed or good build), or mixing object formats, is refused whole; a SHA-256 repository's 64-digit names stand", ({ expect }) =>
+  Effect.gen(function* () {
+    const short = (name: string) => name.slice(0, 8)
+    const at = "2026-11-22T01:00:00.000Z"
+    const round = (head: string, tree: string) => receipt(head, "round", tree, [0], at)
+    const merge = (head: string, tree: string) => receiptAt(head, "merge", tree, [0], at, REPO)
+    const landOf = (head: string, landBase: string, unit: Receipt, check: Receipt) =>
+      encodeLand({ head, base: landBase, units: [{ branch: "feat/lane", path: LANE, receipt: unit, by: "held" }], merge: Option.some(check), at })
+    const [wideOuter, wideBase, wideLane, wideTree] = ["c", "d", "e", "f"].map(sha256)
+    const lettered = sha("e")
+    const landCase = (head: string, landText: string) => run([files([[`land:${head}`, text(landText)]])], { receipts: [], lands: [head], install: false })
+    const receiptCase = (receiptText: string) => run([files([[ROUND_KEY, text(receiptText)]])], { receipts: [{ head: laneHead, kind: "round" }], lands: [], install: false })
+    const proven = (each: FixtureBuild, good: FixtureBuild) => run([installedFile(installedAs(each, Option.some(good)))], installOnly)
+    const whole = build(installedDotfiles, provenFork)
+    const cases: ReadonlyArray<readonly [string, Effect.Effect<{ readonly outcome: Result.Result<InputSnapshot, InputConflict | InputUnsettled> }>]> = [
+      ["land: nested round head abbreviated", landCase(outerHead, landOf(outerHead, base, round(short(laneHead), laneTree), merge(outerHead, outerTree)))],
+      ["land: nested round tree abbreviated", landCase(outerHead, landOf(outerHead, base, round(laneHead, short(laneTree)), merge(outerHead, outerTree)))],
+      ["land: nested round head upper case", landCase(outerHead, landOf(outerHead, base, round(lettered.toUpperCase(), laneTree), merge(outerHead, outerTree)))],
+      ["land: merge head abbreviated", landCase(outerHead, landOf(outerHead, base, round(laneHead, laneTree), merge(short(outerHead), outerTree)))],
+      ["land: merge tree abbreviated", landCase(outerHead, landOf(outerHead, base, round(laneHead, laneTree), merge(outerHead, short(outerTree))))],
+      ["land: base abbreviated", landCase(outerHead, landOf(outerHead, short(base), round(laneHead, laneTree), merge(outerHead, outerTree)))],
+      ["land: its own head abbreviated", landCase(outerHead, landOf(short(outerHead), base, round(laneHead, laneTree), merge(outerHead, outerTree)))],
+      ["land: two object formats", landCase(wideOuter, landOf(wideOuter, wideBase, round(laneHead, laneTree), merge(wideOuter, wideTree)))],
+      ["land: SHA-256 throughout", landCase(wideOuter, landOf(wideOuter, wideBase, round(wideLane, wideTree), merge(wideOuter, wideTree)))],
+      ["receipt: tree abbreviated", receiptCase(encodeReceipt(round(laneHead, short(laneTree))))],
+      ["receipt: head upper case", receiptCase(encodeReceipt(round(lettered.toUpperCase(), laneTree)))],
+      ["receipt: two object formats", receiptCase(encodeReceipt(round(laneHead, wideTree)))],
+      ["install: installed dotfiles abbreviated", proven(build(short(installedDotfiles), provenFork), build(short(installedDotfiles), provenFork))],
+      ["install: good fork abbreviated", proven(whole, build(installedDotfiles, short(provenFork)))],
+      ["install: each repository its own format", proven(build(wideLane, provenFork), build(wideLane, provenFork))],
+    ]
+    const seen = yield* Effect.forEach(cases, ([name, each]) =>
+      Effect.map(each, ({ outcome }) => {
+        const names = Result.match(outcome, { onFailure: () => [], onSuccess: namesIn })
+        return [name, resultWords(outcome), names.every(isFull)] as const
+      }),
+    )
+    const wide = build(wideLane, provenFork)
+    expect(seen).toEqual([
+      ["land: nested round head abbreviated", "refused not a land record", true],
+      ["land: nested round tree abbreviated", "refused not a land record", true],
+      ["land: nested round head upper case", "refused not a land record", true],
+      ["land: merge head abbreviated", "refused not a land record", true],
+      ["land: merge tree abbreviated", "refused not a land record", true],
+      ["land: base abbreviated", "refused not a land record", true],
+      ["land: its own head abbreviated", "refused not a land record", true],
+      ["land: two object formats", "refused mixes object formats", true],
+      ["land: SHA-256 throughout", "frozen 2 receipts, 1 lands; install not asked", true],
+      ["receipt: tree abbreviated", "refused not a receipt", true],
+      ["receipt: head upper case", "refused not a receipt", true],
+      ["receipt: two object formats", "refused mixes object formats", true],
+      ["install: installed dotfiles abbreviated", "frozen 0 receipts, 0 lands; install unavailable on host-a: corrupt", true],
+      ["install: good fork abbreviated", "frozen 0 receipts, 0 lands; install unavailable on host-a: corrupt", true],
+      ["install: each repository its own format", `frozen 0 receipts, 0 lands; install proven on host-a: ${wide.version} dotfiles=${wideLane} fork=${provenFork}`, true],
+    ])
+  }),
+)
+
+/** Every answer a source gives, as a snapshot observes it: none, two texts of different sizes, and each refusal with its reason. */
+const ANSWERS: ReadonlyArray<SourceRead> = [
+  SourceRead.Absent(),
+  SourceRead.Present({ text: "{}" }),
+  SourceRead.Present({ text: '{"a":1}' }),
+  ...[...REFUSALS, "not a commit name"].map((reason) => SourceRead.Refused({ reason })),
+]
+
+/** A source answering each key from its own list, one answer per read of that key, the last one held (absent when none). */
+const perKey = (answers: ReadonlyMap<string, ReadonlyArray<SourceRead>>) => {
+  const counts = new Map<string, number>()
+  return Layer.succeed(
+    ReceiptSource,
+    ReceiptSource.of({
+      host: HOST,
+      repository: "dotfiles",
+      repositoryOf: (checkout) => Option.map(Option.liftPredicate(checkout, inRepo), () => "dotfiles"),
+      read: (ref: SourceRef) =>
+        Effect.sync(() => {
+          const key = sourceKey(ref)
+          const index = Option.getOrElse(Option.fromNullishOr(counts.get(key)), () => 0)
+          counts.set(key, index + 1)
+          const list = Option.getOrElse(Option.fromNullishOr(answers.get(key)), () => [])
+          return Option.getOrElse(Arr.get(list, Math.min(index, list.length - 1)), () => SourceRead.Absent())
+        }),
+    }),
+  )
+}
+
+seeded("two reads of one source that differ in anything observable (absent or present, the text, its size, refused or not, the refusal's reason) are changed, for every source and both marker brackets; equal reads never are", ({ expect }) =>
+  Effect.gen(function* () {
+    // Where each source's pair of reads falls: the receipt, the land, the marker before the installed record, the record, the marker after it.
+    const placings: ReadonlyArray<readonly [string, string, (pair: ReadonlyArray<SourceRead>) => ReadonlyArray<SourceRead>]> = [
+      ["receipt", ROUND_KEY, (pair) => pair],
+      ["land", LAND_KEY, (pair) => pair],
+      ["marker before", "handoff", (pair) => pair],
+      ["installed", "installed", (pair) => pair],
+      ["marker after", "handoff", (pair) => [SourceRead.Absent(), SourceRead.Absent(), ...pair]],
+    ]
+    const wrong = yield* Effect.forEach(placings, ([name, key, place]) =>
+      Effect.forEach(ANSWERS, (first) =>
+        Effect.forEach(ANSWERS, (second) =>
+          Effect.gen(function* () {
+            const outcome = yield* Effect.result(freeze(GENERATED)).pipe(Effect.provide(Layer.mergeAll(perKey(new Map([[key, place([first, second])]])), formats, Digest.layerWebCrypto)))
+            const differ = !Equal.equals(first, second)
+            const must = Match.value({ differ, marker: key === "handoff" && first._tag !== "Absent" }).pipe(
+              Match.when({ differ: true }, () => Option.some(`unsettled ${key}: changed`)),
+              Match.when({ marker: true }, () => Option.some("unsettled handoff: handoff")),
+              Match.orElse(() => Option.none<string>()),
+            )
+            return Option.liftPredicate({ name, first, second, must, got: failureWords(outcome) }, (row) => !Equal.equals(row.must, row.got))
+          }),
+        ),
+      ),
+    )
+    expect(wrong.flat(2).flatMap(Option.toArray)).toEqual([])
+  }),
+)
 
 seeded("the host's files: only allowlisted regular files are read; a link, a folder, an oversized file, a bad name or an unreadable file is refused or unreadable, never absent or followed", ({ expect }) =>
   Effect.gen(function* () {
@@ -448,10 +650,143 @@ seeded("the host's files: only allowlisted regular files are read; a link, a fol
     expect(yield* read(aggregateHead)).toEqual(Result.succeed(SourceRead.Refused({ reason: "not a regular file" })))
     expect(yield* read(base)).toEqual(Result.succeed(SourceRead.Refused({ reason: "too large" })))
     expect(yield* read(installedDotfiles)).toEqual(Result.succeed(SourceRead.Absent()))
+    // A FIFO is refused unopened (opening one would wait for a writer); a link to nothing is still a link, never absent.
+    expect(yield* Effect.sync(() => Bun.spawnSync(["mkfifo", path.join(receipts, `${outerTree}.round.json`)]).exitCode)).toBe(0)
+    expect(yield* read(outerTree)).toEqual(Result.succeed(SourceRead.Refused({ reason: "not a regular file" })))
+    yield* fs.symlink(path.join(root, "nowhere.json"), path.join(receipts, `${checkoutFork}.round.json`))
+    expect(yield* read(checkoutFork)).toEqual(Result.succeed(SourceRead.Refused({ reason: "a link" })))
     expect(yield* read("../outside/secret")).toEqual(Result.succeed(SourceRead.Refused({ reason: "not a commit name" })))
     expect(Result.isFailure(yield* read(laneTree))).toBe(true)
     expect(yield* Effect.result(source.read(SourceRef.Installed()))).toEqual(Result.succeed(SourceRead.Absent()))
     const scopes = [path.join(root, "checkout", ".work", "lane"), `${path.join(root, "checkout")}/../outside`, `${path.join(root, "checkout")}-elsewhere`, path.relative(path.resolve("."), path.join(root, "checkout"))].map(source.repositoryOf)
     expect(scopes).toEqual([Option.some("dotfiles"), Option.none(), Option.none(), Option.none()])
+  }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
+)
+
+/** A SHA-256 of `bytes` by Bun's own hasher: an oracle independent of the Effect digest the snapshot uses. */
+const byteHash = (bytes: Uint8Array) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex")
+
+const UTF8 = new TextEncoder()
+const BOM = Uint8Array.of(0xef, 0xbb, 0xbf)
+
+/** The JSON a producer wrote, laid out as a file might hold it: compact, indented, indented with CRLF, padded, CRLF-ended. */
+const LAYOUTS: ReadonlyArray<(json: string) => string> = [
+  (json) => json,
+  (json) => JSON.stringify(JSON.parse(json), null, 2),
+  (json) => JSON.stringify(JSON.parse(json), null, 2).replaceAll("\n", "\r\n"),
+  (json) => `  ${json}\n`,
+  (json) => `${json}\r\n`,
+]
+
+/** What may follow the JSON: nothing, a stray byte of text, a byte that is not UTF-8. */
+const TAILS = [Uint8Array.of(), UTF8.encode("x"), Uint8Array.of(0xff)]
+
+/** Commands with and without multi-byte characters. */
+const COMMANDS = ["bun test fixture.test.ts", "bun test fixtüre-日本-🙂.test.ts"]
+
+/** One file's bytes: an optional byte-order mark, the laid-out JSON, a tail. */
+const bytesOf = (bom: boolean, layout: number, json: string, tail: number) =>
+  Uint8Array.from([...(bom ? BOM : []), ...UTF8.encode(Option.getOrElse(Arr.get(LAYOUTS, layout), () => (each: string) => each)(json)), ...Option.getOrElse(Arr.get(TAILS, tail), () => Uint8Array.of())])
+
+seeded("evidence is the file's exact bytes: a byte-order mark is kept and refused, CRLF and padding are kept as written, a stray tail is refused, bytes that are not UTF-8 are refused; every accepted file's digest is an independent hash of the file", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "receipt-bytes-" })
+    const receipts = path.join(root, "receipts")
+    const checkout = path.join(root, "checkout")
+    yield* fs.makeDirectory(receipts)
+    yield* fs.makeDirectory(path.join(root, "state"))
+    const places = { host: HOST, repository: { key: "dotfiles", checkouts: [checkout] }, receipts, installed: path.join(root, "state", "installed.json"), handoff: path.join(root, "state", "handoff.json"), maxBytes: 65536 }
+    const source = Context.get(yield* Layer.build(receiptSource(places)), ReceiptSource)
+    const next = generator(seed)
+    // The BOM case 306-byte shape the review found, then a dozen combinations the seed picks.
+    const combos = [{ bom: true, layout: 0, tail: 0, command: 0 }, ...Arr.range(1, 12).map(() => ({ bom: next(2) === 0, layout: next(LAYOUTS.length), tail: next(TAILS.length), command: next(COMMANDS.length) }))]
+    const seen = yield* Effect.forEach(combos, (combo) =>
+      Effect.gen(function* () {
+        const command = Option.getOrElse(Arr.get(COMMANDS, combo.command), () => "bun test")
+        const receiptJson = encodeReceipt({ ...receiptAt(laneHead, "round", laneTree, [0], "2026-11-22T01:00:00.000Z", checkout), checks: [{ command, code: 0, seconds: 1 }] })
+        const proven = { ...build(installedDotfiles, provenFork), command: [command] }
+        const receiptBytes = bytesOf(combo.bom, combo.layout, receiptJson, combo.tail)
+        const installedBytes = bytesOf(combo.bom, combo.layout, encodeRecord(installedAs(proven, Option.some(proven))), combo.tail)
+        yield* fs.writeFile(path.join(receipts, `${laneHead}.round.json`), receiptBytes)
+        yield* fs.writeFile(places.installed, installedBytes)
+        // The source answers the file's bytes exactly, the mark included, or refuses bytes that are not UTF-8.
+        const read = yield* source.read(SourceRef.Receipt({ head: laneHead, kind: "round" }))
+        const exact = SourceRead.$match(read, { Present: (present) => Bun.deepEquals(UTF8.encode(present.text), receiptBytes), Absent: () => false, Refused: () => true })
+        const snapshot = yield* freeze({ receipts: [{ head: laneHead, kind: "round" }], lands: [], install: true }).pipe(Effect.provide(layer(places)))
+        const hashes = [byteHash(receiptBytes), byteHash(installedBytes)]
+        // Every artifact kept reproduces one of the two files byte for byte, under its independent hash.
+        const artifactsExact = snapshot.artifacts.every((each) => hashes.includes(each.digest) && each.digest === byteHash(UTF8.encode(each.text)))
+        const provenDigest = snapshot.install?._tag === "Proven" ? Option.some(snapshot.install.receipt.proven === byteHash(installedBytes)) : Option.none()
+        const have = {
+          read: read._tag,
+          receipt: snapshot.receipts.length === 1 ? "frozen" : snapshot.refused.map((each) => each.reason).join(","),
+          install: Option.getOrElse(Option.map(Option.fromNullishOr(snapshot.install), (install) => (install._tag === "Proven" ? "Proven" : install.reason)), () => "none"),
+        }
+        return [seed, combo, have, exact, artifactsExact, snapshot.artifacts.length, provenDigest] as const
+      }),
+    )
+    expect(seen).toEqual(
+      combos.map((combo) => {
+        const accepted = !combo.bom && combo.tail === 0
+        return [
+          seed,
+          combo,
+          {
+            read: combo.tail === 2 ? "Refused" : "Present",
+            receipt: accepted ? "frozen" : combo.tail === 2 ? "not text" : "not a receipt",
+            install: accepted ? "Proven" : combo.tail === 2 ? "refused" : "corrupt",
+          },
+          true,
+          true,
+          accepted ? 2 : 0,
+          accepted ? Option.some(true) : Option.none(),
+        ] as const
+      }),
+    )
+  }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
+)
+
+seeded("host scope: a source stamps the host it reads on; Work's receipts and the updater's record name no producing host, so bytes copied into another host's folder read as that host's, with the same digest", ({ expect }) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "receipt-hosts-" })
+    const checkout = path.join(root, "checkout")
+    const placesOf = (host: string) => ({
+      host,
+      repository: { key: "dotfiles", checkouts: [checkout] },
+      receipts: path.join(root, host, "receipts"),
+      installed: path.join(root, host, "installed.json"),
+      handoff: path.join(root, host, "handoff.json"),
+      maxBytes: 65536,
+    })
+    const [first, second] = [placesOf("host-a"), placesOf("host-b")]
+    yield* Effect.forEach([first, second], (places) => fs.makeDirectory(places.receipts, { recursive: true }))
+    const proven = build(installedDotfiles, provenFork)
+    yield* fs.writeFileString(path.join(first.receipts, `${laneHead}.round.json`), encodeReceipt(receiptAt(laneHead, "round", laneTree, [0], "2026-11-22T01:00:00.000Z", checkout)))
+    yield* fs.writeFileString(first.installed, encodeRecord(installedAs(proven, Option.some(proven))))
+    const request: InputRequest = { receipts: [{ head: laneHead, kind: "round" }], lands: [], install: true }
+    const freezeOn = (places: typeof first) => freeze(request).pipe(Effect.provide(layer(places)))
+    const hosts = (snapshot: InputSnapshot) => ({
+      snapshot: snapshot.host,
+      receipts: snapshot.receipts.map((each) => each.input.observedOn),
+      install: Option.getOrElse(Option.map(Option.fromNullishOr(snapshot.install), (install) => (install._tag === "Proven" ? install.receipt.host : install.host)), () => "none"),
+      absent: snapshot.absent,
+    })
+    const onFirst = yield* freezeOn(first)
+    const beforeCopy = yield* freezeOn(second)
+    yield* fs.copyFile(path.join(first.receipts, `${laneHead}.round.json`), path.join(second.receipts, `${laneHead}.round.json`))
+    yield* fs.copyFile(first.installed, second.installed)
+    const onSecond = yield* freezeOn(second)
+    expect([hosts(onFirst), hosts(beforeCopy), hosts(onSecond)]).toEqual([
+      { snapshot: "host-a", receipts: ["host-a"], install: "host-a", absent: [] },
+      { snapshot: "host-b", receipts: [], install: "host-b", absent: [ROUND_KEY] },
+      { snapshot: "host-b", receipts: ["host-b"], install: "host-b", absent: [] },
+    ])
+    // The same bytes, so the same evidence digests; the observation differs, so the identities do.
+    expect(onSecond.artifacts.map((each) => each.digest)).toEqual(onFirst.artifacts.map((each) => each.digest))
+    expect([onSecond.id === onFirst.id, onSecond.receipts[0]?.id === onFirst.receipts[0]?.id]).toEqual([false, false])
   }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
 )
