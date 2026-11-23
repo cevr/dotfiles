@@ -100,6 +100,36 @@ terminal that is about to stop.
    ```
 
    `activate` prints one `activated` line for `@home` and one for `@workspaces`.
+
+   **Run records** (the Bite run's `/tmp/vperf2`, to `/runs/vperf2`; its own
+   step, never automatic). First the measured bytes and their price, nothing
+   copied:
+
+   ```sh
+   sudo HB_TO=exedev@NEWTS $d/sync.sh --dry-run runs
+   ```
+
+   It prints `runs: /tmp/vperf2 -> /runs/vperf2: <bytes> bytes (<GB>) to send`
+   and the total at $0.05/GB past exe's 200 GB, and names each OpenCode session
+   store it leaves out (`opencode.db`, two 3.5 GB copies there: the owner's
+   call; `HB_RUNS_WITH_DB=1` copies them). The Bite run cleans its ~89 GB of
+   rebuildable scratch first and names its durable parts (about 5 GB; `/runs`
+   holds 40G); if it names a subset, write those subpaths (relative to
+   `/tmp/vperf2`, one per line) to a file and add `HB_RUNS_INCLUDE=<file>` to
+   both commands. Show the owner the bytes and the cost; only on an explicit
+   yes:
+
+   ```sh
+   sudo HB_TO=exedev@NEWTS $d/sync.sh runs --yes
+   ```
+
+   It copies, then compares every file by checksum and ends with `runs:
+   verified /runs/vperf2: every file's checksum equals /tmp/vperf2's.
+   /tmp/vperf2 stays on this box until it is retired.` A difference fails the
+   step and names the paths: run it again. Nothing is deleted on either side.
+   On the new box `/tmp/vperf2` is already a link to `/runs/vperf2` (the
+   storage phase made it; every boot makes it again), so the Bite run's paths
+   keep working.
 5. **Reboot the new box**: `ssh root@NEW reboot`. It comes up with the exe
    box's home, `/workspaces`, MongoDB data and the 2222 host key. The caches
    were not copied: `hetzner-workbox-storage.service` makes each an empty
@@ -121,7 +151,13 @@ terminal that is about to stop.
    `sudo ~/Developer/personal/dotfiles/linux/hetzner-workbox/provision.sh sshd bootstrap`
    (the sshd phase picks up the new Tailscale address; bootstrap installs the
    user units and runs its own checks). Then `sudo $d/check.sh`: every line
-   `ok`, the backup timer included.
+   `ok`, the backup timer included. Ergo's own `~/.config/systemd/user/ergo.slice`
+   (written on the exe box, `CPUQuota=1000%`: 10 threads) came along in the home
+   and shadows the installed one (`CPUQuota=2000%` here: 20 of 32); bootstrap's
+   check warns about it. Tell the Ergo run, and with its yes:
+   `mv ~/.config/systemd/user/ergo.slice ~/.config/systemd/user/ergo.slice.exe && systemctl --user daemon-reload`;
+   `systemctl --user show -p FragmentPath ergo.slice` then names
+   `/etc/systemd/user/ergo.slice`.
 8. **Services**: `systemctl --user enable --now hc-core.service sideshow.service
    film-lab.service t3code.service teamclaude.service sh.executor.daemon.service`,
    `systemctl --user start opencode.service`, `sudo systemctl enable --now
@@ -141,7 +177,13 @@ terminal that is about to stop.
 11. **The 5 OpenCode sessions**: in hc on the new box, one terminal each,
     `opencode -s <id>` with the ids from step 2.
 12. **Tell the runs** to resume, with the new box's facts (same paths, same
-    alias, 32 threads, 128 GB).
+    alias, 32 threads, 128 GB), and: the Bite run's working area is now
+    `/runs/vperf2`, still reached as `/tmp/vperf2` (a link made at each boot;
+    durable, 40G for all of `/runs`, never cleaned; the rest of `/tmp` is
+    emptied at each boot; its /tmp/opencode monitor scripts, PR bodies and
+    review receipts are not kept across a boot unless it moves them to
+    `/runs`); each family's temp is `/tmp/<family>`
+    (`TMPDIR` and `GOTMPDIR`), capped (README.md, Layout).
 
 ## 5. After
 

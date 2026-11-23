@@ -9,6 +9,13 @@
 #   sync.sh [--dry-run] rest      rsync -aHAX of HB_RSYNC_PATHS (outside the
 #                                 subvolumes: MongoDB, Redis, /usr/local, the
 #                                 crontab, the Tailscale sshd host key)
+#   sync.sh [--dry-run] runs [--yes]
+#                                 the durable run areas (HB_RUNS_FROM: the Bite
+#                                 run's /tmp/vperf2) to /runs/<name> on the target:
+#                                 measures the bytes and the cost and copies only
+#                                 with --yes (the owner's, at that step of the
+#                                 move), then compares every file's checksum; the
+#                                 source is never changed
 #   sync.sh activate N            on the target: puts pass N in place as @home
 #                                 and @workspaces (the old ones are kept aside);
 #                                 the target then reboots
@@ -34,6 +41,12 @@
 #                    point; /tmp is emptied at boot, so @tmp is not copied)
 #   HB_SNAPDIR       /tmp/.hetzner-sync (must be on the same btrfs)
 #   HB_RSYNC_PATHS   see below
+#   HB_RUNS_FROM     /tmp/vperf2 (directories, space-separated)
+#   HB_RUNS_TO       /runs (the target's durable area, @runs)
+#   HB_RUNS_INCLUDE  a file of subpaths (relative to each HB_RUNS_FROM directory)
+#                    to copy instead of all of it; unset: all
+#   HB_RUNS_WITH_DB  1 copies OpenCode session stores (opencode.db and its -wal, -shm) found
+#                    there; unset: they are left out and named (the owner's call)
 #   HB_TARGET_ANCHOR a path on the target's btrfs (default /workspaces)
 #   HB_TARGET_PREFIX prefix of the rsync destination (test.sh only)
 set -euo pipefail
@@ -49,6 +62,10 @@ HB_RSYNC_PATHS=${HB_RSYNC_PATHS:-"/var/lib/mongodb /var/lib/redis /usr/local /va
 /etc/ssh/bite-workbox-ssh-host-ed25519-key /etc/ssh/bite-workbox-ssh-host-ed25519-key.pub"}
 HB_TARGET_ANCHOR=${HB_TARGET_ANCHOR:-/workspaces}
 HB_TARGET_PREFIX=${HB_TARGET_PREFIX:-}
+HB_RUNS_FROM=${HB_RUNS_FROM:-/tmp/vperf2}
+HB_RUNS_TO=${HB_RUNS_TO:-/runs}
+HB_RUNS_INCLUDE=${HB_RUNS_INCLUDE:-}
+HB_RUNS_WITH_DB=${HB_RUNS_WITH_DB:-0}
 # Dollars per GB of exe's TX past its 200 GB.
 tx_price=0.05
 
@@ -145,7 +162,7 @@ fi
 dry=0
 if [[ ${1:-} == --dry-run ]]; then dry=1; shift; fi
 cmd=${1:-}
-[[ -n $cmd ]] || die "usage: sync.sh [--dry-run] pass N | rest | activate N"
+[[ -n $cmd ]] || die "usage: sync.sh [--dry-run] pass N | rest | runs [--yes] | activate N"
 
 ssh_cmd=(ssh -p "$HB_SSH_PORT" -o BatchMode=yes -o ServerAliveInterval=30
     -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/root/.ssh/hetzner-sync-known_hosts)
@@ -376,9 +393,81 @@ do_rest() {
     rsync "${args[@]}" "${paths[@]}" "$dest" | awk '/^Total transferred file size/ { print "rest: " $0 } /^Total bytes sent/ { print "rest: " $0 }'
 }
 
+# The durable run areas: the owner's run records (the Bite run's /tmp/vperf2 on the exe box, which a
+# boot would empty on the new box) go to /runs, @runs: limited, never cleaned, backed up. rsync, not
+# btrfs send: on the exe box they are not a subvolume. The bytes are measured, not estimated (rsync's
+# own count of what it would send: the apparent size of a copy-on-write disk says nothing), with their
+# price; nothing is copied without --yes. After the copy every file is compared by checksum; the
+# source is never changed or removed (it stays on the old box until that box is retired). Nothing is
+# deleted on the target either (no --delete).
+do_runs() {
+    local yes=0 src name dest bytes args list=() diffs
+    [[ ${1:-} == --yes ]] && yes=1
+    [[ -n $HB_TO ]] || die "set HB_TO"
+    args=(-aHAX --sparse)
+    if [[ -n $HB_RUNS_INCLUDE ]]; then
+        [[ -f $HB_RUNS_INCLUDE ]] || die "HB_RUNS_INCLUDE: no file $HB_RUNS_INCLUDE"
+        # Only these subpaths; -r again, as --files-from turns -a's recursion off.
+        args+=(-r --files-from="$HB_RUNS_INCLUDE")
+    fi
+    # OpenCode session stores in a run area are copies of the owner's own (two of 3.5 GB in /tmp/vperf2):
+    # left out unless the owner says so, and named below.
+    ((HB_RUNS_WITH_DB)) || args+=(--exclude=opencode.db --exclude=opencode.db-wal --exclude=opencode.db-shm)
+    local to
+    if [[ $HB_TO == local ]]; then
+        [[ -n $HB_TARGET_PREFIX ]] || die "HB_TO=local needs HB_TARGET_PREFIX"
+        to=$HB_TARGET_PREFIX$HB_RUNS_TO
+        [[ -d $to ]] || die "$to is missing: the target's provision.sh storage phase makes it"
+    else
+        args+=(-e "${ssh_cmd[*]}" --rsync-path="sudo -n rsync")
+        to=$HB_TO:$HB_TARGET_PREFIX$HB_RUNS_TO
+    fi
+    for src in $HB_RUNS_FROM; do
+        if [[ -d $src ]]; then list+=("$src"); else say "skip $src (absent here)"; fi
+    done
+    ((${#list[@]})) || return 0
+    local total=0
+    local db
+    if ! ((HB_RUNS_WITH_DB)); then
+        for src in "${list[@]}"; do
+            while IFS= read -r db; do
+                printf 'runs: left out (an OpenCode session store; HB_RUNS_WITH_DB=1 copies it): %s (%s)\n' "$db" "$(gb "$(stat -c %s "$db")")"
+            done < <(find "$src" -type f \( -name opencode.db -o -name opencode.db-wal -o -name opencode.db-shm \) | sort)
+        done
+    fi
+    for src in "${list[@]}"; do
+        name=${src##*/}
+        dest=$to/$name/
+        bytes=$(rsync "${args[@]}" --dry-run --stats "$src/" "$dest" | awk '/^Total transferred file size:/ { gsub(/[^0-9]/, "", $5); print $5 }')
+        [[ $bytes =~ ^[0-9]+$ ]] || die "rsync measured nothing for $src"
+        printf 'runs: %s -> %s: %s bytes (%s) to send\n' "$src" "$HB_RUNS_TO/$name" "$bytes" "$(gb "$bytes")"
+        total=$((total + bytes))
+    done
+    printf 'runs: %s bytes (%s) in all; at $%s/GB past exe'"'"'s 200 GB: $%s at most\n' "$total" "$(gb "$total")" "$tx_price" \
+        "$(awk -v b="$total" -v p="$tx_price" 'BEGIN { printf "%.2f", b / 1e9 * p }')"
+    if ((dry || !yes)); then
+        echo "runs: nothing copied. Rerun with --yes to copy (the owner approves the bytes and the cost above)."
+        return
+    fi
+    for src in "${list[@]}"; do
+        name=${src##*/}
+        dest=$to/$name/
+        say "copying $src to $HB_RUNS_TO/$name"
+        rsync "${args[@]}" "$src/" "$dest"
+        # The comparison: a checksum of every file on both sides; any line is a difference.
+        diffs=$(rsync "${args[@]}" --checksum --dry-run --itemize-changes "$src/" "$dest" | grep -v '^\.d' || true)
+        if [[ -n $diffs ]]; then
+            printf '%s\n' "$diffs" | head -n 20 >&2
+            die "runs: $HB_RUNS_TO/$name differs from $src ($(printf '%s\n' "$diffs" | wc -l) paths): copy again before relying on it"
+        fi
+        echo "runs: verified $HB_RUNS_TO/$name: every file's checksum equals $src's. $src stays on this box until it is retired."
+    done
+}
+
 case $cmd in
 pass) do_pass "${2:-}" ;;
 rest) do_rest ;;
+runs) do_runs "${2:-}" ;;
 activate)
     ((dry)) && die "activate has no dry run"
     [[ ${2:-} =~ ^[1-9][0-9]*$ ]] || die "activate needs a pass number"
