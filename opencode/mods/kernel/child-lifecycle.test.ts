@@ -6,9 +6,9 @@ import { Diagnostic, Fact, Terminal, evolve, initial, observe, type Snapshot } f
 const child = "ses_fixture"
 const parent = "ses_parent"
 const point = (seq: number) => ({ id: `evt_${seq}`, at: 100, seq })
-const start = (seq: number): Fact => Fact.cases.Execution.make({ child, parent, segment: { point: point(seq) }, unfinished: false })
-const end = (seq: number, outcome: "succeeded" | "failed" | "interrupted", unfinished = false): Fact => Fact.cases.Execution.make({
-  child, parent, unfinished,
+const start = (seq: number): Fact => Fact.cases.Execution.make({ child, parent, segment: { point: point(seq) } })
+const end = (seq: number, outcome: "succeeded" | "failed" | "interrupted"): Fact => Fact.cases.Execution.make({
+  child, parent,
   segment: { point: point(seq), terminal: Terminal.cases.Ended.make({ outcome, cause: causeOf(outcome) }) },
 })
 const causeOf = (outcome: string) => {
@@ -24,8 +24,8 @@ test("a step error and a busy-period failure with a continuing shell do not sett
   const states = [
     { event: start(1), snapshot: snap(), phase: "Running" },
     { event: step(2), snapshot: snap({ running: true, background: "Shell" }), phase: "Running" },
-    { event: end(3, "failed", true), snapshot: snap({ background: "Shell" }), phase: "Continuing" },
-    { event: end(3, "failed", true), snapshot: snap(), phase: "Continuing" },
+    { event: end(3, "failed"), snapshot: snap({ background: "Shell" }), phase: "Continuing" },
+    { event: end(3, "failed"), snapshot: snap({ background: "Wake" }), phase: "Continuing" },
     { event: start(4), snapshot: snap(), phase: "Running" },
     { event: end(5, "succeeded"), snapshot: snap(), phase: "Settled" },
   ]

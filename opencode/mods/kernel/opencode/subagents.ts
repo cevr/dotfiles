@@ -129,7 +129,10 @@ const phaseOf = Match.type<Phase>().pipe(Match.tagsExhaustive({
     return `continuing (${on.toLowerCase()} still running)`
   },
   Recovering: () => "recovering",
-  Unknown: () => "unknown (no current settlement)",
+  Unknown: ({ reason }) => {
+    if (reason) return "undetermined (background command ended; the host does not say if a result is still to be delivered)"
+    return "unknown (no current settlement)"
+  },
   Running: () => "running",
   Settled: ({ outcome, cause }) => {
     if (cause === "Unknown") return `settled: ${outcome}`

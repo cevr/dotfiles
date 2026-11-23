@@ -1,20 +1,21 @@
 module childLifecycle {
-  type Phase = Held | Active | Background | Recovering | Unknown | Settled
+  type Phase = Held | Active | ShellWork | ResultUndetermined | WakePending | Recovering | Unknown | Settled
   type Route = None | Primary | Secondary
   type End = NoEnd | Ok | Failed | Cancelled
   var s: {
     phase: Phase, generation: int, route: Route, compatible: bool, room: bool,
     refused: bool, sawNotice: bool, deniedThenStarted: bool, incompatibleStarted: bool,
     end: End, handBack: bool, closedRound: bool, delivered: int, seen: int,
-    seq: int, stepError: bool, pendingShell: bool
+    seq: int, stepError: bool, pendingShell: bool, pendingWake: bool, trace: str
   }
 
-  action init = s' = {
+  pure val empty = {
     phase: Held, generation: 1, route: None, compatible: false, room: false,
     refused: false, sawNotice: false, deniedThenStarted: false, incompatibleStarted: false,
     end: NoEnd, handBack: false, closedRound: false, delivered: 0, seen: 1,
-    seq: 0, stepError: false, pendingShell: false
+    seq: 0, stepError: false, pendingShell: false, pendingWake: false, trace: ""
   }
+  action init = s' = empty
 
   action readCatalog = {
     nondet v = oneOf(Set(false, true))
@@ -29,7 +30,7 @@ module childLifecycle {
     s' = { ...s, phase: Active, route: if (s.room) Primary else Secondary, seq: s.seq + 1 }
   }
   action notice = all {
-    or { s.phase == Active, s.phase == Recovering, s.phase == Background },
+    or { s.phase == Active, s.phase == Recovering, s.phase == ShellWork, s.phase == WakePending },
     s' = { ...s, sawNotice: true }
   }
   action stopAuthorization = all {
@@ -38,7 +39,7 @@ module childLifecycle {
   }
   action shutdown = all {
     s.phase == Active,
-    s' = { ...s, phase: Recovering }
+    s' = { ...s, phase: Recovering, trace: "shutdown" }
   }
   action resume = all {
     s.phase == Recovering, not(s.refused),
@@ -48,23 +49,48 @@ module childLifecycle {
     s.phase == Active,
     s' = { ...s, pendingShell: true }
   }
-  action stepFails = all {
-    s.phase == Active, s.pendingShell,
-    s' = { ...s, stepError: true, phase: Background }
+  action diagnostic = all {
+    s.phase == Active,
+    s' = { ...s, stepError: true, trace: "diagnostic" }
   }
-  action shellAwakensSameChild = all {
-    s.phase == Background, s.pendingShell, not(s.refused),
-    s' = { ...s, pendingShell: false, phase: Active, seq: s.seq + 1 }
+  action failedSegment = all {
+    s.phase == Active, not(s.pendingWake),
+    s' = { ...s, phase: if (s.pendingShell) ShellWork else Settled,
+      end: Failed, seq: s.seq + 1, trace: "failed" }
+  }
+  action shellExited = all {
+    s.pendingShell, or { s.phase == Active, s.phase == ShellWork },
+    s' = { ...s, pendingShell: false, phase: if (s.phase == ShellWork) ResultUndetermined else Active, trace: "exited" }
+  }
+  action wakeEnqueued = all {
+    s.phase == ResultUndetermined, s.end == Failed, s.delivered == 0,
+    s' = { ...s, pendingWake: true, phase: WakePending, trace: "enqueued" }
+  }
+  action wakeCancelled = all {
+    s.phase == WakePending,
+    s' = { ...s, pendingWake: false, phase: Settled, trace: "cancelled" }
+  }
+  action wakeResumed = all {
+    s.phase == WakePending, not(s.refused),
+    s' = { ...s, phase: Active, stepError: false, end: NoEnd, seq: s.seq + 1, trace: "resumed" }
+  }
+  action wakeDelivered = all {
+    s.phase == Active, s.pendingWake,
+    s' = { ...s, pendingWake: false, seq: s.seq + 1, trace: "delivered" }
+  }
+  action succeededSegment = all {
+    s.phase == Active, not(s.pendingShell), not(s.pendingWake),
+    s' = { ...s, phase: Settled, pendingWake: false, end: Ok, seq: s.seq + 1, trace: "succeeded" }
   }
   action stopTimesOut = all {
-    or { s.phase == Active, s.phase == Background, s.phase == Recovering },
-    s' = { ...s, pendingShell: false, phase: Unknown }
+    or { s.phase == Active, s.phase == ShellWork, s.phase == WakePending, s.phase == ResultUndetermined, s.phase == Recovering },
+    s' = { ...s, pendingShell: false, pendingWake: false, phase: Unknown, trace: "timeout" }
   }
   action settle = all {
     or { s.phase == Active, s.phase == Recovering, s.phase == Unknown },
-    not(s.pendingShell),
+    not(s.pendingShell), not(s.pendingWake),
     nondet e = oneOf(Set(Ok, Failed, Cancelled))
-    s' = { ...s, phase: Settled, end: e, seq: s.seq + 1 }
+    s' = { ...s, phase: Settled, end: e, seq: s.seq + 1, trace: "settled" }
   }
   action handBack = all {
     s.phase == Settled, s.end == Ok, not(s.refused),
@@ -89,8 +115,25 @@ module childLifecycle {
   }
   action step = any {
     readCatalog, readPace, admit, notice, stopAuthorization, shutdown, resume,
-    shellPending, stepFails, shellAwakensSameChild, stopTimesOut,
+    shellPending, diagnostic, failedSegment, shellExited, wakeEnqueued, wakeCancelled, wakeResumed, wakeDelivered, stopTimesOut,
     settle, handBack, deliver, nextGeneration, staleObservation, readLatest
+  }
+  // Fixed orders exported as ITF, compared against direct `subagents` after
+  // each event. Both use the same transitions the bounded invariant explores.
+  action initContinuation = s' = { ...empty, phase: Active, seq: 1, pendingShell: true, trace: "started" }
+  action traceContinuation = any {
+    all { s.trace == "started", diagnostic },
+    all { s.trace == "diagnostic", failedSegment },
+    all { s.trace == "failed", shellExited },
+    all { s.trace == "exited", wakeEnqueued },
+    all { s.trace == "enqueued", wakeResumed },
+    all { s.trace == "resumed", wakeDelivered },
+    all { s.trace == "delivered", succeededSegment },
+  }
+  action traceEarlierExit = any {
+    all { s.trace == "started", diagnostic },
+    all { s.trace == "diagnostic", shellExited },
+    all { s.trace == "exited", failedSegment },
   }
   action noticeCloses = any {
     step,
@@ -116,7 +159,10 @@ module childLifecycle {
     not(s.deniedThenStarted),
     not(s.incompatibleStarted),
     s.seen >= s.generation - 1,
-    s.phase != Settled or (s.end != NoEnd and not(s.pendingShell)),
-    s.phase != Background or (s.stepError and s.pendingShell),
+    s.phase != Settled or (s.end != NoEnd and not(s.pendingShell) and not(s.pendingWake)),
+    s.phase != ShellWork or (s.end == Failed and s.pendingShell),
+    s.phase != ResultUndetermined or (s.end == Failed and not(s.pendingShell) and not(s.pendingWake)),
+    s.phase != WakePending or (s.end == Failed and s.pendingWake and not(s.pendingShell)),
+    s.trace != "diagnostic" or s.phase == Active,
   }
 }

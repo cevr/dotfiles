@@ -35,7 +35,7 @@ const view = (state: string, note: string, message: string) => ({ sessionID: "se
 
 const ask = { agent: "verifier", description: "Check fixture", prompt: "Read fixture." }
 
-test("a kept latch is distinguishable without extending the old state enum", () =>
+test("the launch decoder reads a structured latch without extending the old state enum", () =>
   Effect.runPromise(Effect.gen(function* () {
     const handle = yield* Effect.promise(() => runSubagent(ask, () =>
       Effect.runPromise(Effect.succeed({ sessionID: "ses_c", status: "latched", latch: { id: "w_fixture", hold: "pace", opensAt: 200, recheckAt: 100 } })),

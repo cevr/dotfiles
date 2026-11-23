@@ -403,9 +403,11 @@ describe("a subagent waiting on its own background work", () => {
 
   test("an error notice while a shell is live, a lagging snapshot, and a fresh success are different", () => {
     const root = { messages: [notice("a", "error", 500, "Fixture step error")] }
-    const failure = { outcome: "failed", messages: [step([{ ...backgrounded("fixture", "sh_1"), completed: 120 }])] }
+    const failure = { outcome: "failed", time: { created: 1, busy: 100, idle: 300 }, messages: [step([{ ...backgrounded("fixture", "sh_1"), completed: 120 }])] }
     expect(one({ ...failure, ...runs("sh_1") }, root)).toMatchObject({ state: "waiting", update: "Step ended in error; work continues: fixture" })
-    expect(one(failure, root)).toMatchObject({ state: "idle", update: "Fixture step error" })
+    const pending = one({ ...failure, wakePending: true }, root)
+    expect(visible([pending], 301)).toMatchObject([{ state: "waiting", update: "Step ended in error; work continues: awaiting host wake" }])
+    expect(visible([one(failure, root)], 301)).toMatchObject([{ state: "failed", ended: 300 }])
     expect(one({ ...failure, running: true }, root)).toMatchObject({ state: "working" })
     expect(one({ outcome: "succeeded", time: { created: 1, busy: 501, idle: 530 } }, root)).toMatchObject({ state: "done", ended: 530 })
   })

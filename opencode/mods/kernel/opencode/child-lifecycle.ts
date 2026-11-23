@@ -1,6 +1,6 @@
 import type { Plugin } from "@opencode/plugin/effect"
 import { DateTime, Effect, Match, Option, Schema, Semaphore, Stream, type Types } from "effect"
-import { Diagnostic, Fact, Hold, Phase, Terminal, evolve, initial, observe, Projection, type Cause, type Snapshot } from "../child-lifecycle.ts"
+import { Diagnostic, Fact, Hold, Phase, Terminal, Undetermined, evolve, initial, observe, Projection, type Cause, type Snapshot } from "../child-lifecycle.ts"
 import type { Observation } from "../child-lifecycle.ts"
 
 type Info = Effect.Success<ReturnType<Plugin.Context["session"]["get"]>>
@@ -10,6 +10,7 @@ const TYPES = [
   "session.execution.started", "session.execution.succeeded", "session.execution.failed", "session.execution.interrupted",
   "session.step.failed", "session.retry.scheduled", "session.deleted",
   "shell.created", "shell.exited", "shell.deleted", "experimental.job.updated",
+  "session.inbox.enqueued", "session.inbox.delivered", "session.inbox.cancelled",
 ] as const
 
 const eventsOf = (ctx: Plugin.Context) => ctx.event.subscribe({ types: TYPES })
@@ -34,14 +35,26 @@ const ExecutionEvent = Schema.Union([
   Schema.Struct({ ...Durable, type: Schema.Literal("session.step.failed"), data: Schema.Struct({ ...Session, error: ErrorType }) }),
   Schema.Struct({ ...Durable, type: Schema.Literal("session.retry.scheduled"), data: Schema.Struct({ ...Session, error: ErrorType, attempt: Schema.Int, at: Schema.Finite }) }),
 ])
+const InboxRef = { ...Session, inboxID: Schema.String }
+const InboxEvent = Schema.Union([
+  Schema.Struct({ ...Durable, type: Schema.Literal("session.inbox.enqueued"), data: Schema.Struct({
+    ...InboxRef, item: Schema.Struct({
+      type: Schema.Literal("synthetic"),
+      payload: Schema.Struct({ metadata: Schema.Struct({ source: Schema.Literal("shell"), shellID: Schema.String }) }),
+    }),
+  }) }),
+  Schema.Struct({ ...Durable, type: Schema.Literals(["session.inbox.delivered", "session.inbox.cancelled"]), data: Schema.Struct(InboxRef) }),
+])
+type InboxEvent = typeof InboxEvent.Type
 const Event = Schema.Union([
   ExecutionEvent,
+  InboxEvent,
   Schema.Struct({ ...Position, type: Schema.Literal("session.deleted"), data: Schema.Struct(Session) }),
   Schema.Struct({ ...Position, type: Schema.Literals(["shell.exited", "shell.deleted"]), data: Schema.Struct({ id: Schema.String }) }),
   Schema.Struct({ ...Position, type: Schema.Literal("shell.created"), data: Schema.Struct({ info: Schema.Struct({
     id: Schema.String,
     status: Schema.String,
-    metadata: Schema.Struct({ sessionID: Schema.optionalKey(Schema.String) }),
+    metadata: Schema.Struct({ sessionID: Schema.optionalKey(Schema.String), background: Schema.optionalKey(Schema.Boolean) }),
     time: Schema.Struct({ started: Schema.Finite }),
   }) }) }),
   Schema.Struct({ ...Position, type: Schema.Literal("experimental.job.updated"), data: Schema.Struct({ info: Schema.Struct({
@@ -52,6 +65,8 @@ const Event = Schema.Union([
 ])
 type Event = typeof Event.Type
 const decodeEvent = Schema.decodeUnknownResult(Event)
+const isInboxEvent = (event: Event): event is InboxEvent =>
+  event.type === "session.inbox.enqueued" || event.type === "session.inbox.delivered" || event.type === "session.inbox.cancelled"
 
 const SessionID = Schema.String.check(Schema.isStartingWith("ses")).pipe(Schema.brand("SessionID"))
 const sessionID = Schema.decodeUnknownOption(SessionID)
@@ -103,13 +118,12 @@ const causeOf = (type: string): Cause => {
 const executionFact = (
   event: typeof ExecutionEvent.Type,
   parent: string,
-  unfinished: boolean,
 ): Fact => {
   const child = event.data.sessionID
   const point = { id: event.id, seq: event.durable.seq, at: event.created }
   const execution = (terminal?: typeof Terminal.Type) => {
-    if (terminal) return Fact.cases.Execution.make({ child, parent, segment: { point, terminal }, unfinished })
-    return Fact.cases.Execution.make({ child, parent, segment: { point }, unfinished })
+    if (terminal) return Fact.cases.Execution.make({ child, parent, segment: { point, terminal } })
+    return Fact.cases.Execution.make({ child, parent, segment: { point } })
   }
   const note = (diagnostic: typeof Diagnostic.Type) => Fact.cases.Diagnostic.make({ child, parent, note: { point, diagnostic } })
   return Match.value(event).pipe(Match.discriminatorsExhaustive("type")({
@@ -155,7 +169,13 @@ const snapshotOf = (info: Info, background: Snapshot["background"], stopUncertai
 const sameLocation = (actual: { readonly directory: string; readonly workspaceID?: string }, owner: Location) =>
   actual.directory === owner.directory && actual.workspaceID === owner.workspaceID
 
-type Background = { readonly owner: string; readonly kind: "Shell" | "Child"; readonly running: boolean; readonly at: number }
+type Background = { readonly owner: string; readonly kind: "Shell" | "Child"; readonly running: boolean; readonly at: number; readonly backgrounded?: boolean; readonly native?: boolean }
+type Inbox = { readonly child: string; readonly seq: number; readonly pending: boolean; readonly shellID?: string }
+type Uncertain = { readonly child: string; readonly failed: number; readonly reason: Undetermined }
+const snapshotWithExit = (snapshot: Snapshot, exit?: Uncertain): Snapshot => {
+  if (exit) return { ...snapshot, undetermined: exit.reason }
+  return snapshot
+}
 
 /** One location-bound subscriber and persisted projection; neither schedules work nor sends notices. */
 export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Context, subscribe: Subscribe) {
@@ -165,6 +185,8 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
   const active = new Set<string>()
   const parents = new Map<string, string>()
   const background = new Map<string, Background>()
+  const inbox = new Map<string, Inbox>()
+  const exits = new Map<string, Uncertain>()
   const stopping = new Map<string, number>()
   const { directory, workspaceID } = ctx.location
   const workspace = Option.getOrElse(Option.map(Option.fromUndefinedOr(workspaceID), String), () => "")
@@ -201,12 +223,21 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
     if (own) return own.kind
     if (active.values().some((id) => ownedBy(id, child))) return "Child"
     if (background.values().some((job) => job.running && ownedBy(job.owner, child))) return "Child"
+    if (inbox.values().some((item) => item.pending && item.child === child)) return "Wake"
+    if (inbox.values().some((item) => item.pending && ownedBy(item.child, child))) return "Child"
   }
 
   const job = (id: string, updated: Background) => {
     const old = background.get(id)
-    if (old && (old.owner !== updated.owner || old.at > updated.at || (!old.running && old.at === updated.at))) return
-    background.set(id, updated)
+    if (old && old.owner !== updated.owner) return
+    if (old?.native && !updated.native) {
+      // Job completion can precede shell.exited. It marks ownership but
+      // cannot remove a native process from the live shell registry.
+      if (updated.backgrounded) background.set(id, { ...old, backgrounded: true })
+      return
+    }
+    if (old && (old.at > updated.at || (!old.running && old.at === updated.at))) return
+    background.set(id, { ...old, ...updated })
     if (background.size > MAX_TRACKED) {
       const evict = background.entries().find(([, item]) => !item.running)
       if (evict) background.delete(evict[0])
@@ -216,6 +247,19 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
     const old = background.get(id)
     if (old) job(id, { ...old, running: false })
   }
+
+  const shellExit = Effect.fn("ChildLifecycle.shellExit")(function* (shellID: string, id: string, at: number) {
+    const shell = background.get(shellID)
+    releaseShell(shellID)
+    if (!shell?.backgrounded || exits.has(shellID)) return
+    const child = shell.owner
+    if (!current.has(child) || inbox.values().some((item) => item.child === child && item.shellID === shellID)) return
+    const parent = parents.get(child)
+    if (!parent) return
+    const { segment } = yield* load(child, parent)
+    if (segment?.terminal?._tag !== "Ended" || segment.terminal.outcome !== "failed") return
+    exits.set(shellID, { child, failed: segment.point.seq, reason: Undetermined.make({ shellID, exit: { id, at } }) })
+  })
 
   const registerWork = Effect.fn("ChildLifecycle.registerWork")(function* (id: string, work: Background) {
     const info = yield* infoOf(work.owner).pipe(Effect.option)
@@ -229,6 +273,8 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
     parents.delete(child)
     stopping.delete(child)
     for (const [id, item] of background) if (item.owner === child) background.delete(id)
+    for (const [id, item] of inbox) if (item.child === child) inbox.delete(id)
+    for (const [id, item] of exits) if (item.child === child) exits.delete(id)
     yield* ctx.storage.remove(keyOf(child))
   })
 
@@ -238,11 +284,34 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
     const found = yield* infoOf(child).pipe(Effect.option)
     if (Option.isNone(found) || !found.value.parentID) return
     const parent = found.value.parentID
-    yield* record(child, parent, executionFact(event, parent, Boolean(liveWork(child))))
+    yield* record(child, parent, executionFact(event, parent))
+  })
+
+  const updateInbox = Effect.fn("ChildLifecycle.updateInbox")(function* (event: InboxEvent) {
+    const { sessionID: child, inboxID } = event.data
+    const { aggregateID, seq } = event.durable
+    if (aggregateID !== child) return
+    const existing = inbox.get(inboxID)
+    if (existing && (existing.child !== child || existing.seq >= seq)) return
+    const found = yield* infoOf(child).pipe(Effect.option)
+    if (!Option.exists(found, (info) => Boolean(info.parentID))) return
+    const pending = event.type === "session.inbox.enqueued"
+    if (event.type === "session.inbox.enqueued") {
+      const { shellID } = event.data.item.payload.metadata
+      if (exits.get(shellID)?.child === child) exits.delete(shellID)
+      inbox.set(inboxID, { child, seq, pending, shellID })
+    } else {
+      inbox.set(inboxID, { ...existing, child, seq, pending })
+    }
+    if (inbox.size > MAX_TRACKED) {
+      const closed = inbox.entries().find(([, item]) => !item.pending)
+      if (closed) inbox.delete(closed[0])
+    }
   })
 
   const fold = Effect.fn("ChildLifecycle.fold")(function* (event: Event) {
     if (event.location && !sameLocation(event.location, ctx.location)) return
+    if (isInboxEvent(event)) return yield* updateInbox(event)
     if ("durable" in event) return yield* absorb(event)
     switch (event.type) {
       case "shell.created": {
@@ -250,9 +319,10 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
         // A native shell can publish globally from its process scope. Its
         // host-issued session ID is revalidated in this location before use.
         if (!metadata.sessionID) return
-        return yield* registerWork(id, { owner: metadata.sessionID, kind: "Shell", running: status === "running", at: time.started })
+        return yield* registerWork(id, { owner: metadata.sessionID, kind: "Shell", running: status === "running", at: time.started, native: true, backgrounded: metadata.background === true })
       }
       case "shell.exited":
+        return yield* shellExit(event.data.id, event.id, event.created)
       case "shell.deleted":
         releaseShell(event.data.id)
         return
@@ -260,7 +330,7 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
         const item = event.data.info
         if (item.kind === "shell") {
           if (!item.shellID) return
-          return yield* registerWork(item.shellID, { owner: item.sessionID, kind: "Shell", running: item.status === "running", at: item.time.started })
+          return yield* registerWork(item.shellID, { owner: item.sessionID, kind: "Shell", running: item.status === "running", at: item.time.started, backgrounded: true })
         }
         return yield* registerWork(item.id, { owner: item.sessionID, kind: "Child", running: item.status === "running", at: item.time.started })
       }
@@ -278,6 +348,7 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
     if (!written) return
     if (next.start && next.start !== state.start) starts.set(child, next.start.seq)
     if (next.segment === state.segment) return
+    for (const [id, item] of exits) if (item.child === child && item.failed < (next.segment?.point.seq ?? -1)) exits.delete(id)
     // Seeing a late diagnostic after activation does not validate a stored terminal.
     current.add(child)
     if (next.segment?.terminal) active.delete(child)
@@ -295,7 +366,7 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
   const stream = subscribe(ctx).pipe(
     Stream.filterMap(decodeEvent),
     Stream.runForEach((event) => lock.withPermits(1)(fold(event))),
-    Effect.ensuring(Effect.sync(() => { current.clear(); starts.clear(); background.clear(); active.clear() })),
+    Effect.ensuring(Effect.sync(() => { current.clear(); starts.clear(); background.clear(); inbox.clear(); exits.clear(); active.clear() })),
     Effect.catchCause(() => Effect.logWarning("subagents: lifecycle subscriber stopped; using coarse session snapshots")),
   )
   yield* Effect.forkScoped(stream, { startImmediately: true })
@@ -316,7 +387,9 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
       const info = yield* infoOf(child)
       if (!info.parentID) return { info, observation: Option.none() }
       const state = yield* load(child, info.parentID)
-      const snapshot = snapshotOf(info, liveWork(child), false)
+      const snapshot = snapshotWithExit(snapshotOf(info, liveWork(child), false), exits.values().find((item) =>
+        item.child === child && item.failed === state.segment?.point.seq,
+      ))
       // A terminal observed after restart cannot use an older saved start as
       // its identity. The pinned host tells us only the terminal's own seq.
       const fresh = current.has(child) && Boolean(state.start && starts.get(child) === state.start.seq)

@@ -36,12 +36,13 @@
 //   failed one failed.
 // The time is how long it has been in that state, not since it started.
 import { described as stepOf } from "@dotfiles/opencode-orchestrate/described"
+import { Option } from "effect"
 import { canonical, firstSentence, lastHeard, lastSentence, liveCall, once, running, runningUpdate, sayings, waiting, waits } from "./activity.ts"
 import { unwrap } from "./envelope.ts"
 import type { Call, Family, Latch, Message, Session } from "./family.ts"
 import { modelName, type ModelName } from "./model.ts"
 import { label } from "./shell.ts"
-import { childrenOf, worksNow, type Works } from "./works.ts"
+import { childrenOf, waitingForWake, worksNow, type Works } from "./works.ts"
 
 /**
  * How a subagent stands. `working`, `waiting` and `latched` are live (see
@@ -232,13 +233,10 @@ const when = (at: number | undefined) => (at === undefined ? {} : { at })
 
 /** Only the host session's outcome can supply a coarse end, never a notice or a launch tool reply. */
 function ending(session: Session, found: ReturnType<typeof launch>): Ending {
+  const ordered = Option.fromUndefinedOr(session.orderedFailureAt)
+  if (Option.isSome(ordered)) return { state: "failed", at: ordered.value }
   if (session.outcome === "succeeded") return { state: "done", ...when(session.time.idle) }
-  if (session.outcome === "failed") {
-    // The shell may have exited but its same-child wake has not started yet.
-    // A recorded shell launch proves neither current liveness nor settlement.
-    if (mayContinueAfterFailure(session)) return { state: "idle", ...when(session.time.updated), why: diagnosis(found) || "No current settlement" }
-    return { state: "failed", ...when(session.time.idle) }
-  }
+  if (session.outcome === "failed") return { state: "failed", ...when(session.time.idle) }
   if (session.outcome === "interrupted") return { state: "cancelled", ...when(session.time.idle) }
   return { state: "idle", ...when(session.time.updated), why: diagnosis(found) }
 }
@@ -249,21 +247,15 @@ const diagnosis = ({ call, notice }: Launch): string => {
   return ""
 }
 
-const mayContinueAfterFailure = (session: Session) => backgroundCalls(session.messages).some(({ call, by }) =>
-  canonical(call.tool) === "shell" && (call.input.background === true || call.metadata.status === "running") &&
-  !callBefore(by, session.time.busy),
-)
-
-const callBefore = (call: Call, busy?: number): boolean => {
-  if (!Number.isFinite(busy)) return false
-  // A nested call has no time of its own; use the containing step call's time.
-  return [call.started, call.completed].some((at) => Number.isFinite(at) && Number(at) < Number(busy))
-}
-
 const continuationUpdate = (update: string, failed: boolean): string => {
   if (!failed) return update
   if (update === "") return "Step ended in error; work continues"
   return `Step ended in error; work continues: ${update}`
+}
+
+const waitingText = (session: Session, pendings: ReadonlyArray<Pending>): string => {
+  if (pendings.length === 0 && waitingForWake(session)) return "awaiting host wake"
+  return waitingUpdate(session.messages, pendings)
 }
 
 /** When a running turn last started working: its start, or the end of the latest wait call it ran since. */
@@ -402,12 +394,20 @@ function rowsOf(family: Family, rootSessionID: string, options: ReadOptions): Re
       const pendings = pendingWork(session, children.get(session.id) ?? [], now)
       const idle = session.time.idle
       const since = idle !== undefined && idle >= busy ? idle : (heard ?? busy)
-      const update = waitingUpdate(session.messages, pendings)
+      const update = waitingText(session, pendings)
       return {
         ...base,
         state: "waiting",
-        update: continuationUpdate(update, session.outcome === "failed"),
+        update: continuationUpdate(update, session.outcome === "failed" || Option.isSome(Option.fromUndefinedOr(session.orderedFailureAt))),
         ...timed(since),
+      }
+    }
+    const uncertain = Option.fromUndefinedOr(session.shellResultUndeterminedAt)
+    if (Option.isSome(uncertain)) {
+      return {
+        ...base, state: "waiting",
+        update: "Undetermined: a step failed; its background command ended; the host does not say whether a result is still to be delivered",
+        ...timed(uncertain.value),
       }
     }
     const end = ending(session, found)

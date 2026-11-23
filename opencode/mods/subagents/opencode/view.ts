@@ -5,8 +5,10 @@
 // tools its cell called), and the stop notices its background subagents and
 // shell commands sent it. Read inside a Solid computation, every read here is
 // reactive.
+import { Option } from "effect"
 import type { Call, Family, Latch, Message, Part, Session, Shell } from "../family.ts"
 import { envelopes } from "../envelope.ts"
+import { noShellExit, type ShellExitRead } from "./shell-exits.ts"
 
 /** A session as `context.data.session.get` returns it, narrowed to what a row reads. */
 export type SessionInfo = {
@@ -35,11 +37,13 @@ export type ShellInfo = {
  * host's location reference, which the shell registry is kept per.
  */
 export interface Reads<Location = unknown> {
+  readonly listen?: (handler: (event: { readonly details: unknown }) => void) => () => void
   readonly session: {
     get(sessionID: string): SessionInfo | undefined
     root(sessionID: string): string
     family(sessionID: string): ReadonlyArray<string>
     status(sessionID: string): "idle" | "running"
+    readonly pending?: { list(sessionID: string): ReadonlyArray<PendingInput> }
     readonly message: { list(sessionID: string): ReadonlyArray<unknown> }
     readonly permission: {
       list(sessionID: string): ReadonlyArray<{ readonly action: string; readonly resources: ReadonlyArray<string> }> | undefined
@@ -49,6 +53,15 @@ export interface Reads<Location = unknown> {
   /** The shell commands the host's registry holds for a location: only those in flight, each tagged with its session. */
   readonly shell: { list(location?: Location): ReadonlyArray<ShellInfo> }
 }
+
+type PendingInput = { readonly type: string; readonly payload: object }
+
+const shellWakePending = (reads: Pick<Reads, "session">, id: string) =>
+  reads.session.pending?.list(id).some(({ type, payload }) => {
+    if (type !== "synthetic") return false
+    const metadata = record(record(payload).metadata)
+    return metadata.source === "shell" && Boolean(string(metadata.shellID))
+  }) === true
 
 type Fields = Readonly<Record<string, unknown>>
 
@@ -205,6 +218,11 @@ export const transcript = (items: ReadonlyArray<unknown>, convert: Convert): Tra
   return { messages: items.flatMap((item) => convert(item) ?? []), ...(model ? { model } : {}) }
 }
 
+const failureFields = ({ failureAt, undeterminedAt }: ShellExitRead) => ({
+  ...Option.match(failureAt, { onNone: () => ({}), onSome: (orderedFailureAt) => ({ orderedFailureAt }) }),
+  ...Option.match(undeterminedAt, { onNone: () => ({}), onSome: (shellResultUndeterminedAt) => ({ shellResultUndeterminedAt }) }),
+})
+
 /**
  * Session `id` from the host's reads, its messages and step model given as
  * `read` (`transcript`): a TUI keeps the transcript in a memo of its own, so
@@ -215,6 +233,7 @@ export function sessionOf(
   id: string,
   shells: ReadonlyArray<Shell>,
   { messages, model: stepped }: Transcript,
+  execution = noShellExit,
 ): Session {
   const info = reads.session.get(id)
   const time = info?.time
@@ -235,6 +254,8 @@ export function sessionOf(
     },
     ...(latch === undefined ? {} : { latch }),
     running: reads.session.status(id) === "running",
+    wakePending: shellWakePending(reads, id),
+    ...failureFields(execution),
     shells,
     permissions: (reads.session.permission.list(id) ?? []).map((request) =>
       [request.action, request.resources[0]].filter(Boolean).join(" "),

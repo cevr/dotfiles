@@ -70,7 +70,7 @@ function worksOf(family: Family): (id: string) => Works | undefined {
           ? "running"
           : latched(session)
             ? "latched"
-            : session.shells.length > 0 || (children.get(id) ?? []).some((child) => of(child.id, inner) !== undefined)
+            : session.shells.length > 0 || waitingForWake(session) || (children.get(id) ?? []).some((child) => of(child.id, inner) !== undefined)
               ? "waiting"
               : undefined
     known.set(id, works)
@@ -78,3 +78,5 @@ function worksOf(family: Family): (id: string) => Works | undefined {
   }
   return (id) => of(id, new Set())
 }
+
+export const waitingForWake = (session: Session) => session.wakePending === true && session.outcome !== "interrupted"

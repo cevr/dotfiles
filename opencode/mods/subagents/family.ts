@@ -30,6 +30,11 @@ export type Session = {
   }
   /** Whether the host runs it now. */
   readonly running: boolean
+  /** The host's current inbox still holds a shell completion, not a delivered notice. */
+  readonly wakePending?: boolean
+  /** Host-observed background shell exit after the current failed execution. */
+  readonly shellResultUndeterminedAt?: number
+  readonly orderedFailureAt?: number
   /**
    * The shell commands the host's shell registry lists as running for it now
    * (a background one outlives its turn), live like `running`: one the

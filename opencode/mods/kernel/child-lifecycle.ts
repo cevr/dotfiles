@@ -25,8 +25,15 @@ export type Hold = typeof Hold.Type
 const Ref = Schema.Struct({ provider: Schema.String, model: Schema.String, effort: Schema.optionalKey(Schema.String) })
 const Route = Schema.TaggedUnion({ Pending: { requested: Schema.optionalKey(Ref) }, Committed: { effective: Ref } })
 
+/** Shell exits are host events, but are ephemeral and have no durable sequence. */
+export const Undetermined = Schema.TaggedStruct("ShellResultUndetermined", {
+  shellID: Schema.String,
+  exit: Schema.Struct({ id: Schema.String, at: Schema.Finite }),
+})
+export type Undetermined = typeof Undetermined.Type
+
 export const Phase = Schema.TaggedUnion({
-  Unknown: {},
+  Unknown: { reason: Schema.optionalKey(Undetermined) },
   Latched: { hold: Hold, recheckAt: Schema.optionalKey(Schema.Finite), opensAt: Schema.optionalKey(Schema.Finite) },
   Running: {},
   Continuing: { on: Schema.Literals(["Shell", "Child", "Wake"]) },
@@ -43,6 +50,7 @@ export const Observation = Schema.Struct({
   started: Schema.optionalKey(Point),
   phase: Phase,
   diagnostic: Schema.optionalKey(Diagnostic),
+  /** Reserved: this observer never populates a requested or effective route. */
   route: Schema.optionalKey(Route),
 })
 export type Observation = typeof Observation.Type
@@ -68,7 +76,6 @@ export const Projection = Schema.Struct({
   start: Schema.optionalKey(Point),
   segment: Schema.optionalKey(Segment),
   noted: Schema.optionalKey(Noted),
-  continued: Schema.optionalKey(Schema.Int),
   sampled: Schema.optionalKey(Schema.String),
 })
 export type Projection = typeof Projection.Type
@@ -77,7 +84,7 @@ export const initial = (child: string, parent: string): Projection => ({ version
 
 const Owner = { child: Schema.String, parent: Schema.String }
 export const Fact = Schema.TaggedUnion({
-  Execution: { ...Owner, segment: Segment, unfinished: Schema.Boolean },
+  Execution: { ...Owner, segment: Segment },
   Diagnostic: { ...Owner, note: Noted },
 })
 export type Fact = typeof Fact.Type
@@ -92,7 +99,6 @@ const withExecution = (state: Projection, fact: typeof Fact.cases.Execution.Type
   const next = { ...state, rev: state.rev + 1 }
   if (newestStart) next.start = point
   if (newest) next.segment = fact.segment
-  if (newest && terminal?._tag === "Ended" && fact.unfinished) next.continued = point.seq
   return next
 }
 
@@ -113,7 +119,8 @@ export interface Snapshot {
   readonly outcome?: Outcome
   readonly busyAt?: number
   readonly idleAt?: number
-  readonly background?: "Shell" | "Child"
+  readonly background?: "Shell" | "Child" | "Wake"
+  readonly undetermined?: Undetermined
   readonly latch?: Extract<Phase, { readonly _tag: "Latched" }>
   readonly latchCancelled?: boolean
   readonly stopUncertain?: boolean
@@ -160,22 +167,22 @@ const incomparableOutcome = (terminal: Option.Option<Terminal>, snapshot: Snapsh
 
 const phaseOf = (state: Projection, snapshot: Snapshot, current: boolean, applicable: boolean): Phase => {
   if (snapshot.stopUncertain) return Phase.cases.Unknown.make({})
-  if (applicable && state.segment) return orderedPhase(state, snapshot, state.segment)
+  if (applicable && state.segment) return orderedPhase(snapshot, state.segment)
   if (snapshot.running) return Phase.cases.Running.make({})
-  if (snapshot.background) return Phase.cases.Continuing.make({ on: snapshot.background })
+  if (snapshot.background && snapshot.outcome !== "interrupted") return Phase.cases.Continuing.make({ on: snapshot.background })
   if (snapshot.latch) return snapshot.latch
   if (snapshot.latchCancelled) return Phase.cases.Settled.make({ outcome: "interrupted", cause: "UserStop" })
-  if (current || (state.segment && state.continued === state.segment.point.seq)) return Phase.cases.Unknown.make({})
+  if (current) return Phase.cases.Unknown.make({})
   if (state.segment?.terminal?._tag === "Shutdown") return Phase.cases.Recovering.make({})
   if (snapshot.outcome) return Phase.cases.Settled.make({ outcome: snapshot.outcome, cause: "Unknown" })
   return Phase.cases.Unknown.make({})
 }
 
-const orderedPhase = (state: Projection, snapshot: Snapshot, segment: typeof Segment.Type): Phase => {
+const orderedPhase = (snapshot: Snapshot, segment: typeof Segment.Type): Phase => {
   const { terminal, point } = segment
   if (!terminal) return Phase.cases.Running.make({})
   if (terminal._tag === "Shutdown") return Phase.cases.Recovering.make({})
-  if (snapshot.background) return Phase.cases.Continuing.make({ on: snapshot.background })
-  if (state.continued === point.seq) return Phase.cases.Continuing.make({ on: "Wake" })
+  if (snapshot.background && terminal.outcome !== "interrupted") return Phase.cases.Continuing.make({ on: snapshot.background })
+  if (snapshot.undetermined && terminal.outcome === "failed") return Phase.cases.Unknown.make({ reason: snapshot.undetermined })
   return Phase.cases.Settled.make({ outcome: terminal.outcome, cause: terminal.cause, terminal: point })
 }

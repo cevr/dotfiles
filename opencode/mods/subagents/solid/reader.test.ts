@@ -249,6 +249,9 @@ test("two readings of a session are the same while every field it carries is, an
     "latch.failed": [withLatch({ failed: "other" }), { ...base, latch: without(latch, "failed") }],
     permissions: [{ ...base, permissions: ["edit b.ts"] }, { ...base, permissions: [] }],
     questions: [{ ...base, questions: ["What?"] }, { ...base, questions: [] }],
+    wakePending: [{ ...base, wakePending: true }],
+    shellResultUndeterminedAt: [{ ...base, shellResultUndeterminedAt: 2 }],
+    orderedFailureAt: [{ ...base, orderedFailureAt: 3 }],
     // Compared as one value: the transcript memo keeps the array while no item changes.
     messages: [{ ...base, messages: [...messages] }],
   } satisfies { readonly [P in Paths<Session, "messages">]: ReadonlyArray<Session> }

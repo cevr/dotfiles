@@ -1,5 +1,6 @@
+import * as BunServices from "@effect/platform-bun/BunServices"
 import { Plugin, Tool } from "@opencode/plugin/effect"
-import { Effect, Queue, Schema, Stream } from "effect"
+import { Config, Effect, FileSystem, Option, Queue, Schema, Stream } from "effect"
 import { make, live } from "./server.ts"
 import * as Seed from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
@@ -37,7 +38,7 @@ const fixtureLatch = (plugin: ReturnType<typeof make>) =>
       yield* ctx.tool.transform((editor) => editor.add({
         name: "fixture_latch", description: "Seed the host's latch metadata in the simulator only.", input: LatchInput,
         execute: (input) => {
-          const latch = { hold: "pace", opensAt: 1_600_000, recheckAt: 1_500_000 }
+          const latch = { hold: "pace", opensAt: 1_600_000 }
           const metadata = latchMetadata(input.phase, latch)
           return ctx.session.update({ sessionID: input.child, metadata }).pipe(
             Effect.as({ content: [{ type: "text" as const, text: "fixture updated" }] }),
@@ -50,11 +51,39 @@ const fixtureLatch = (plugin: ReturnType<typeof make>) =>
 
 const latchMetadata = (
   phase: typeof LatchInput.Type.phase,
-  latch: { readonly hold: string; readonly opensAt: number; readonly recheckAt: number },
+  latch: { readonly hold: string; readonly opensAt: number },
 ): Schema.JsonObject => {
   if (phase === "opened") return {}
   if (phase === "cancelled") return { latch: { ...latch, cancelledAt: 1_400_000 } }
   return { latch }
+}
+
+const QuintTrace = Schema.fromJsonString(Schema.Struct({
+  states: Schema.Array(Schema.Struct({
+    s: Schema.Struct({ trace: Schema.String, phase: Schema.Struct({ tag: Schema.String }), end: Schema.Struct({ tag: Schema.String }) }),
+  })),
+}))
+const modelTrace = (variable: string) =>
+  Config.schema(Schema.String, variable).pipe(
+    Effect.option,
+    Effect.flatMap(Option.match({
+      onNone: () => Effect.succeed(Option.none()),
+      onSome: (path) => Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const { states } = yield* Schema.decodeUnknownEffect(QuintTrace)(yield* fs.readFileString(path))
+        return Option.some(states.map(({ s }) => [s.trace, `${s.phase.tag}/${s.end.tag}`]))
+      }).pipe(Effect.provide(BunServices.layer)),
+    })),
+  )
+
+const formalPhase = (line: string) => {
+  if (line.includes("undetermined (background command ended")) return "ResultUndetermined/Failed"
+  if (line.includes("continuing (shell")) return "ShellWork/Failed"
+  if (line.includes("continuing (awaiting host wake")) return "WakePending/Failed"
+  if (line.includes("settled: failed")) return "Settled/Failed"
+  if (line.includes("settled: succeeded")) return "Settled/Ok"
+  if (line.includes(" running")) return "Active/NoEnd"
+  return line
 }
 
 /** The sim does not supply durable sequence or the error taxonomy. This script
@@ -78,7 +107,7 @@ seeded("the direct tool distinguishes live work, diagnostics and ordered settlem
     const readChild = (sessionID: string) => world.tool(root, "subagents", { action: "get", sessionID })
     const held = yield* world.session(WORK, { parentID: root, agent: "worker" })
     yield* latch(held, "held")
-    expect((yield* readChild(held)).output).toContain(`${held} latched (pace; recheck`)
+    expect((yield* readChild(held)).output).toContain(`${held} latched (pace)`)
     const stopped = yield* world.tool(root, "subagents", { action: "stop", sessionID: held })
     expect(stopped.output).toContain("still latched; cancel with wake_cancel")
     yield* latch(held, "opened")
@@ -93,16 +122,65 @@ seeded("the direct tool distinguishes live work, diagnostics and ordered settlem
     const shell = (type: string, data: FixtureEvent["data"]) => Queue.offer(events, {
       type, id: "evt_shell", created: world.now(), location: { directory: WORK }, data,
     }).pipe(Effect.andThen(world.advance(0)))
+    const continued: string[][] = []
+    const earlier: string[][] = []
+    const readPoint = (trace: string[][], child: string, step: string, phase: string) => Effect.gen(function* () {
+      const output = (yield* readChild(child)).output
+      const observed = formalPhase(output)
+      trace.push([step, observed])
+      expect(observed).toBe(phase)
+    })
     yield* emit(type.start, 1, {}, WORK, withShell)
-    yield* shell("shell.created", { info: { id: shellID, status: "running", metadata: { sessionID: withShell }, time: { started: world.now() } } })
+    yield* shell("shell.created", { info: { id: shellID, status: "running", metadata: { sessionID: withShell, background: true }, time: { started: world.now() } } })
+    yield* readPoint(continued, withShell, "started", "Active/NoEnd")
     yield* emit(type.step, 2, { error: { type: "provider.content-filter" } }, WORK, withShell)
+    yield* readPoint(continued, withShell, "diagnostic", "Active/NoEnd")
     yield* emit(type.fail, 3, { error: { type: "provider.content-filter" } }, WORK, withShell)
-    expect((yield* readChild(withShell)).output).toContain(`${withShell} continuing (shell still running)`)
+    yield* readPoint(continued, withShell, "failed", "ShellWork/Failed")
+    yield* shell("experimental.job.updated", { info: {
+      id: "job_fixture", sessionID: withShell, kind: "shell", status: "completed", shellID, time: { started: world.now() },
+    } })
+    expect((yield* readChild(withShell)).output).toContain("continuing (shell still running)")
     yield* shell("shell.exited", { id: shellID })
-    expect((yield* readChild(withShell)).output).toContain(`${withShell} continuing (awaiting host wake)`)
-    yield* emit(type.start, 4, {}, WORK, withShell)
-    yield* emit(type.end, 5, {}, WORK, withShell)
-    expect((yield* readChild(withShell)).output).toContain(`${withShell} settled: succeeded`)
+    yield* readPoint(continued, withShell, "exited", "ResultUndetermined/Failed")
+    expect((yield* readChild(withShell)).output).not.toContain("settled")
+    const notice = { inboxID: "msg_shell", item: { type: "synthetic", payload: { metadata: { source: "shell", shellID } } } }
+    yield* emit("session.inbox.enqueued", 4, notice, WORK, withShell)
+    yield* readPoint(continued, withShell, "enqueued", "WakePending/Failed")
+    yield* emit(type.start, 5, {}, WORK, withShell)
+    yield* readPoint(continued, withShell, "resumed", "Active/NoEnd")
+    yield* emit("session.inbox.delivered", 6, { inboxID: notice.inboxID }, WORK, withShell)
+    yield* readPoint(continued, withShell, "delivered", "Active/NoEnd")
+    yield* emit(type.end, 7, {}, WORK, withShell)
+    yield* readPoint(continued, withShell, "succeeded", "Settled/Ok")
+    yield* emit("session.inbox.enqueued", 4, notice, WORK, withShell)
+    expect((yield* readChild(withShell)).output).toContain("settled: succeeded")
+    const silent = yield* world.session(WORK, { parentID: root })
+    const silentShell = "sh_suppressed"
+    yield* emit(type.start, 1, {}, WORK, silent)
+    yield* shell("shell.created", { info: { id: silentShell, status: "running", metadata: { sessionID: silent, background: true }, time: { started: world.now() } } })
+    yield* emit(type.fail, 2, { error: { type: "provider.content-filter" } }, WORK, silent)
+    yield* shell("shell.exited", { id: silentShell })
+    const unresolved = (yield* readChild(silent)).output
+    expect(unresolved).toContain(`${silent} undetermined`)
+    yield* world.advance(60_000)
+    expect((yield* readChild(silent)).output).toBe(unresolved)
+    yield* emit(type.recover, 3, { reason: "user" }, WORK, silent)
+    expect((yield* readChild(silent)).output).toContain(`${silent} settled: interrupted`)
+    const exited = yield* world.session(WORK, { parentID: root })
+    yield* emit(type.start, 1, {}, WORK, exited)
+    yield* shell("shell.created", { info: { id: "sh_earlier", status: "running", metadata: { sessionID: exited }, time: { started: world.now() } } })
+    yield* readPoint(earlier, exited, "started", "Active/NoEnd")
+    yield* emit(type.step, 2, { error: { type: "provider.content-filter" } }, WORK, exited)
+    yield* readPoint(earlier, exited, "diagnostic", "Active/NoEnd")
+    yield* shell("shell.exited", { id: "sh_earlier" })
+    yield* readPoint(earlier, exited, "exited", "Active/NoEnd")
+    yield* emit(type.fail, 3, { error: { type: "provider.content-filter" } }, WORK, exited)
+    yield* readPoint(earlier, exited, "failed", "Settled/Failed")
+    const firstTrace = yield* modelTrace("LIFECYCLE_CONTINUATION_ITF")
+    const secondTrace = yield* modelTrace("LIFECYCLE_EARLIER_EXIT_ITF")
+    if (Option.isSome(firstTrace)) expect(continued).toEqual(firstTrace.value)
+    if (Option.isSome(secondTrace)) expect(earlier).toEqual(secondTrace.value)
     const expected = [
       [type.start, 1, {}, "running"],
       [type.retry, 2, { error: { type: "provider.transport", message: "do not expose fixture payload" }, attempt: 2, at: 50 }, "host scheduled retry 2 (Transient)"],

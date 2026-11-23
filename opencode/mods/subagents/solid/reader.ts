@@ -12,11 +12,13 @@
 //   other session's object (and its `messages` array) as it was;
 // - the family of a root is one memo, shared by every computation in the
 //   process that reads it, and disposed once none reads it.
-import { createMemo, createRoot, getOwner, onCleanup, type Accessor } from "solid-js"
+import { createMemo, createRoot, createSignal, getOwner, onCleanup, type Accessor } from "solid-js"
+import { Option } from "effect"
 import type { Family, Latch, Message, Session, Shell } from "../family.ts"
 import { familyOf, message, read, sessionOf, shellsBySession, transcript, type Reads, type Transcript } from "../opencode/view.ts"
 import { fields, is, list } from "../same.ts"
 import { keptMemo } from "./kept.ts"
+import { decodeShellFact, shellExits } from "../opencode/shell-exits.ts"
 
 /**
  * `convert` kept per item: each object item gets one memo, which reads it
@@ -64,6 +66,9 @@ export const sameSession = fields<Session>({
   outcome: is(),
   time: fields<Session["time"]>({ created: is(), busy: is(), idle: is(), updated: is() }),
   running: is(),
+  wakePending: is(),
+  shellResultUndeterminedAt: is(),
+  orderedFailureAt: is(),
   shells: list(fields<Shell>({ id: is(), command: is(), description: is() })),
   // Absent from both, or present in both and the same.
   latch: (a, b) => a === b || Boolean(a && b && sameLatch(a, b)),
@@ -80,10 +85,11 @@ function keepSession(
   id: string,
   shells: Accessor<ReadonlyMap<string, ReadonlyArray<Shell>>>,
   convert: (item: unknown) => Message | undefined,
+  execution: () => ReturnType<ReturnType<typeof shellExits>["read"]>,
 ): Kept<Session> {
   return createRoot((dispose) => {
     const told = createMemo(() => transcript(reads.session.message.list(id), convert), undefined, { equals: sameTranscript })
-    const value = keptMemo(() => sessionOf(reads, id, shells().get(id) ?? NONE, told()), sameSession)
+    const value = keptMemo(() => sessionOf(reads, id, shells().get(id) ?? NONE, told(), execution()), sameSession)
     return { value, dispose }
   })
 }
@@ -93,6 +99,11 @@ function keepFamily(reads: Reads<unknown>, root: string, location: unknown, conv
   return createRoot((disposeRoot) => {
     const shells = createMemo(() => shellsBySession(reads.shell.list(location)))
     const ids = createMemo(() => familyOf(reads, root), undefined, { equals: sameList })
+    const exits = shellExits((id) => id !== root && reads.session.root(id) === root)
+    const [revision, update] = createSignal(0)
+    const unlisten = reads.listen?.(({ details }) => {
+      if (Option.exists(decodeShellFact(details), exits.ingest)) update((n) => n + 1)
+    })
     const sessions = new Map<string, Kept<Session>>()
     const value = createMemo((): Family => {
       const wanted = ids()
@@ -107,7 +118,7 @@ function keepFamily(reads: Reads<unknown>, root: string, location: unknown, conv
         sessions: wanted.map((id) => {
           let kept = sessions.get(id)
           if (kept === undefined) {
-            kept = keepSession(reads, id, shells, convert)
+            kept = keepSession(reads, id, shells, convert, () => { revision(); return exits.read(id) })
             sessions.set(id, kept)
           }
           return kept.value()
@@ -117,6 +128,7 @@ function keepFamily(reads: Reads<unknown>, root: string, location: unknown, conv
     const dispose = () => {
       for (const kept of sessions.values()) kept.dispose()
       sessions.clear()
+      unlisten?.()
       disposeRoot()
     }
     return { value, dispose }
