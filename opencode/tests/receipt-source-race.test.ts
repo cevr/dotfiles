@@ -279,10 +279,11 @@ const componentBarriers = Effect.gen(function* () {
           if (command._tag !== "StandardCommand") return yield* Effect.die("unexpected pipeline")
           const [flag, source, separator, bound, folder, name, cap] = command.args
           if (!Predicate.isString(source) || flag !== "-e" || separator !== "--" || !Predicate.isString(bound) || !Predicate.isString(folder) || !Predicate.isString(name) || !Predicate.isString(cap)) return yield* Effect.die("unexpected reader")
-          const pass = phase === "before-recheck" || phase === "after-recheck" ? "!$first_walk" : "$first_walk"
-          const move = phase === "missing-at-setup" ? "" : "rename($target, $saved) or die $!;"
+          const phaseMatch = Match.value(phase)
+          const pass = phaseMatch.pipe(Match.whenOr("before-recheck", "after-recheck", () => "!$first_walk"), Match.orElse(() => "$first_walk"))
+          const move = phaseMatch.pipe(Match.when("missing-at-setup", () => ""), Match.orElse(() => "rename($target, $saved) or die $!;"))
           const hook = `if (${pass} && $part eq $hook && !-e $marker) { ${move} rename($replacement, $target) or die $!; open(my $m, '>', $marker) or die $!; close($m); }`
-          const anchor = Match.value(phase).pipe(
+          const anchor = phaseMatch.pipe(
             Match.whenOr("before-open", "before-recheck", "missing-at-setup", () => "    my $id = shift @expected;"),
             Match.orElse(() => "      chdir($dir) && close($dir) or answer('U');"),
           )
