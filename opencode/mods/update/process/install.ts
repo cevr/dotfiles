@@ -2,6 +2,7 @@ import { env, file, spawnSync } from "bun"
 import { Array as Arr, Effect, Option, Schema } from "effect"
 import { buildName } from "../builds.ts"
 import { oursOf } from "../filestore/configs.ts"
+import { readPublished } from "../filestore/files.ts"
 import { makeAndStage } from "../filestore/stage.ts"
 import type { Options as TreeOptions } from "../filestore/trees.ts"
 import { buildsLock, HANDOFF_SETTINGS, type Settings, SettingsJson, shareDir, stepEnv } from "../settings.ts"
@@ -182,7 +183,7 @@ export const installByHand = (steps: ByHand): Promise<number> =>
   Effect.runPromise(
     Effect.gen(function* () {
       yield* Effect.sync(() => steps.log(notInstalledLine(steps.commit, uncommitted(steps.checkout))))
-      const record = yield* Effect.promise(() => file(steps.record).text().catch(() => "")).pipe(Effect.map(parseRecord))
+      const record = yield* readPublished("read the installed record", steps.record).pipe(Effect.map((text) => Option.flatMap(text, parseRecord)))
       const treeStands = yield* Effect.promise(() => file(`${steps.trees.share}/${treeOf(buildName(steps.version))}/config/opencode.json`).exists())
       if (alreadyInstalled(record, steps.version, treeStands)) {
         yield* Effect.sync(steps.settings)
