@@ -1,62 +1,114 @@
-// Histories the rendered label list must answer (batch 22w): each is what happened to one item, the record (or, where
-// two obstacles hold at once, the records) it leaves, the state and label the list must give, and what the hand-back
-// must hold. ending.test.ts reads every prompt's list back and evaluates these on it; the swap mutants there must turn
-// one of them red. Grouped by the kinds 22w had not tried: an obstacle that appears and clears, two obstacles at once,
-// a wait on a retry, a refusal lifted, a tool that returns after a host change, discovery mid-retry, reassignment.
-import type { Item, Role, State } from './ending.ts';
+// Histories the rendered label list must answer (batches 22w and 23b): each is what happened to one item, the record
+// it leaves (its current obstacles are a set: two or three can hold at once), the state and label the list must give,
+// and the hand-back, written here by hand as a structure. ending.test.ts derives the hand-back each prompt's own words
+// make due (handBackFrom) and judges this one against it field by field: the label, the governing obstacle's
+// evidence, every other obstacle named, and whether what the last attempt printed is given (exactly when there was an
+// attempt, a passing one and a probe displaced by an obstacle included). The swap mutants there must turn one red.
+import type { HandBack, Item, ObstacleRow, Role, State } from './ending.ts';
 
 export interface ListHistory {
   readonly name: string;
   readonly role: Role;
   /** What happened, in order. */
   readonly events: string;
-  /** The item at the end; two records when two obstacles hold at once (every atom true of either is true of it). */
+  /** The item at the end. */
   readonly items: ReadonlyArray<Item>;
   readonly state: State;
   /** Words the label must hold. */
   readonly label: string;
-  /** What the hand-back must contain for this item. */
-  readonly handBack: string;
+  /** The hand-back for this item, field by field: the label's opening words stand for the label. */
+  readonly handBack: HandBack;
 }
 
-const item = (facts: Partial<Item>): Item => ({ assigned: false, required: false, attempt: 'never', now: 'settled', provenance: 'none', ...facts });
-const work = (facts: Partial<Item>): Item => item({ assigned: true, required: true, now: 'advance', ...facts });
+const item = (facts: Partial<Item>): Item => ({ assigned: false, required: false, attempt: 'never', settled: true, refused: false, hostCannot: false, wait: false, provenance: 'none', ...facts });
+const work = (facts: Partial<Item>): Item => item({ assigned: true, required: true, settled: false, ...facts });
 const probe = (facts: Partial<Item>): Item => work({ required: false, ...facts });
+/** A history whose hand-back is the state, the label's opening words, the governing obstacle, the others named, and whether the last attempt is given. */
+const h = (name: string, role: Role, events: string, one: Item, state: State, label: string, evidence: ObstacleRow | null, others: ReadonlyArray<ObstacleRow>, lastAttempt: boolean): ListHistory => ({
+  name,
+  role,
+  events,
+  items: [one],
+  state,
+  label,
+  handBack: { state, label, evidence, others, lastAttempt },
+});
+
+const CANNOT = '`cannot run here:';
+const REFUSED = '`refused: <what>`';
+const WAITS = '`waits on <id>`';
+const NONE = 'none: it is no item left';
 
 export const LIST_HISTORIES: ReadonlyArray<ListHistory> = [
   // 22w's own: an unclear result, then the obstacle that now governs.
-  { name: 'W01 a check printed HTML instead of a compiler result, then the compiler left this host', role: 'verifier', events: 'attempt → unclear; host probe fails', items: [work({ attempt: 'unclear', now: 'hostCannot' })], state: 'cannot', label: '`cannot run here:', handBack: 'cannot run here: the compiler, with its command and output; and the HTML its attempt printed' },
-  { name: 'W03 a truncated log, then a permission refusal on the retry', role: 'verifier', events: 'attempt → unclear; refusal', items: [work({ attempt: 'unclear', now: 'refused' })], state: 'refused', label: '`refused: <what>`', handBack: 'refused: what, as the refusal said it; and the truncated log its attempt printed' },
-  { name: 'a retry of an unclear check waits on a question', role: 'verifier', events: 'attempt → unclear; wait opens', items: [work({ attempt: 'unclear', now: 'wait' })], state: 'waits', label: '`waits on <id>`', handBack: 'waits on the question id; and the unclear output its attempt printed' },
-  { name: 'an interrupted check, then the host cannot run it', role: 'verifier', events: 'attempt → no result yet; host probe fails', items: [work({ attempt: 'started', now: 'hostCannot' })], state: 'cannot', label: '`cannot run here:', handBack: 'cannot run here: the tool, with its command and output; and what the interrupted attempt printed' },
-  { name: 'an interrupted check, then a wait opens on its rerun', role: 'verifier', events: 'attempt → no result yet; wait opens', items: [work({ attempt: 'started', now: 'wait' })], state: 'waits', label: '`waits on <id>`', handBack: 'waits on the id; and what the interrupted attempt printed' },
-  { name: 'an optional probe proves a Blocker', role: 'verifier', events: 'assign(optional); attempt → fail', items: [probe({ attempt: 'fail', now: 'settled' })], state: 'proven', label: 'a Blocker or Major', handBack: 'the Blocker, filed with its proof' },
-  { name: 'an optional probe passes after an earlier unclear run', role: 'verifier', events: 'assign(optional); attempt → unclear; attempt → pass', items: [probe({ attempt: 'pass', now: 'settled' })], state: 'done', label: 'none: it is no item left', handBack: 'nothing for the probe' },
+  h('W01 a check printed HTML instead of a compiler result, then the compiler left this host', 'verifier', 'attempt → unclear; host probe fails', work({ attempt: 'unclear', hostCannot: true }), 'cannot', CANNOT, 'cannot', [], true),
+  h('W03 a truncated log, then a permission refusal on the retry', 'verifier', 'attempt → unclear; refusal', work({ attempt: 'unclear', refused: true }), 'refused', REFUSED, 'refused', [], true),
+  h('a retry of an unclear check waits on a question', 'verifier', 'attempt → unclear; wait opens', work({ attempt: 'unclear', wait: true }), 'waits', WAITS, 'waits', [], true),
+  h('an interrupted check, then the host cannot run it', 'verifier', 'attempt → no result yet; host probe fails', work({ attempt: 'started', hostCannot: true }), 'cannot', CANNOT, 'cannot', [], true),
+  h('an interrupted check, then a wait opens on its rerun', 'verifier', 'attempt → no result yet; wait opens', work({ attempt: 'started', wait: true }), 'waits', WAITS, 'waits', [], true),
+  h('an optional probe proves a Blocker', 'verifier', 'assign(optional); attempt → fail', probe({ attempt: 'fail', settled: true }), 'proven', 'a Blocker or Major', null, [], true),
+  h('an optional probe passes after an earlier unclear run', 'verifier', 'assign(optional); attempt → unclear; attempt → pass', probe({ attempt: 'pass', settled: true }), 'done', NONE, null, [], true),
   // An obstacle that appears and then clears.
-  { name: 'a host probe fails, then the host recovers, before any attempt', role: 'verifier', events: 'host probe fails; host recovers', items: [work({})], state: 'runnable', label: '`not run`', handBack: 'not run, named under Check' },
-  { name: 'a wait opens and closes around a retry of an unclear check', role: 'verifier', events: 'attempt → unclear; wait opens; wait closes', items: [work({ attempt: 'unclear' })], state: 'runnable', label: '`retry: <check>`', handBack: 'retry: the check, named under Check; and the unclear output its attempt printed' },
-  { name: 'the gate cannot run, the host recovers, the gate is not yet rerun', role: 'implementor', events: 'attempt → fail; host probe fails; host recovers', items: [work({ attempt: 'fail' })], state: 'runnable', label: '`continues next round`', handBack: 'continues next round; and the failing gate output its attempt printed' },
+  h('a host probe fails, then the host recovers, before any attempt', 'verifier', 'host probe fails; host recovers', work({}), 'runnable', '`not run`', null, [], false),
+  h('a wait opens and closes around a retry of an unclear check', 'verifier', 'attempt → unclear; wait opens; wait closes', work({ attempt: 'unclear' }), 'runnable', '`retry: <check>`', null, [], true),
+  h('the gate cannot run, the host recovers, the gate is not yet rerun', 'implementor', 'attempt → fail; host probe fails; host recovers', work({ attempt: 'fail' }), 'runnable', '`continues next round`', null, [], true),
   // Two obstacles at once.
-  { name: 'a refusal arrives while this host also cannot run the check', role: 'verifier', events: 'attempt → unclear; host probe fails and a refusal comes on the same check', items: [work({ attempt: 'unclear', now: 'refused' }), work({ attempt: 'unclear', now: 'hostCannot' })], state: 'refused', label: '`refused: <what>`', handBack: 'refused: what, as the refusal said it; and the unclear output its attempt printed' },
-  { name: 'the tool is absent and the check also waits on an open unit', role: 'verifier', events: 'host probe fails while a wait is open', items: [work({ now: 'hostCannot' }), work({ now: 'wait' })], state: 'cannot', label: '`cannot run here:', handBack: 'cannot run here: the tool, with its command and output' },
-  { name: 'a spec item waits on a question and its retry is refused', role: 'implementor', events: 'attempt → fail; wait opens; a refusal comes on the retry', items: [work({ attempt: 'fail', now: 'refused' }), work({ attempt: 'fail', now: 'wait' })], state: 'refused', label: '`refused: <what>`', handBack: 'refused: what; and the failing output its attempt printed' },
-  { name: 'an optional probe refused while its tool is also absent', role: 'verifier', events: 'assign(optional); a refusal comes; host probe fails', items: [probe({ attempt: 'started', now: 'refused' }), probe({ attempt: 'started', now: 'hostCannot' })], state: 'unproven', label: '`unproven: <probe>`', handBack: 'unproven: the probe, with the probe that would settle it' },
+  h('a refusal arrives while this host also cannot run the check', 'verifier', 'attempt → unclear; host probe fails; refusal', work({ attempt: 'unclear', refused: true, hostCannot: true }), 'refused', REFUSED, 'refused', ['cannot'], true),
+  h('the tool is absent and the check also waits on an open unit', 'verifier', 'wait opens; host probe fails', work({ hostCannot: true, wait: true }), 'cannot', CANNOT, 'cannot', ['waits'], false),
+  h('a spec item waits on a question and its retry is refused', 'implementor', 'attempt → fail; wait opens; refusal', work({ attempt: 'fail', refused: true, wait: true }), 'refused', REFUSED, 'refused', ['waits'], true),
+  h('an optional probe refused while its tool is also absent', 'verifier', 'assign(optional); refusal; host probe fails', probe({ attempt: 'started', refused: true, hostCannot: true }), 'refused', REFUSED, 'refused', ['cannot'], true),
   // A wait that opens on a retry.
-  { name: 'the gate failed and its retry waits on the orchestrator', role: 'implementor', events: 'attempt → fail; wait opens', items: [work({ attempt: 'fail', now: 'wait' })], state: 'waits', label: '`waits on <id>`', handBack: 'waits on the id; and the failing output its attempt printed' },
+  h('the gate failed and its retry waits on the orchestrator', 'implementor', 'attempt → fail; wait opens', work({ attempt: 'fail', wait: true }), 'waits', WAITS, 'waits', [], true),
   // A refusal lifted by the orchestrator.
-  { name: 'a refused check, the orchestrator grants the rule, the rerun passes', role: 'verifier', events: 'refusal; the orchestrator lifts it; attempt → pass', items: [work({ attempt: 'pass', now: 'settled' })], state: 'done', label: 'none: it is no item left', handBack: 'nothing for the check' },
-  { name: 'a refused check, the rule granted, the rerun prints an unclear result and can retry', role: 'verifier', events: 'refusal; lifted; attempt → unclear', items: [work({ attempt: 'unclear' })], state: 'runnable', label: '`retry: <check>`', handBack: 'retry: the check; and the unclear output its attempt printed' },
-  { name: 'a refused task, the rule granted, not yet rerun', role: 'worker', events: 'refusal; lifted', items: [work({ attempt: 'started' })], state: 'runnable', label: '`left`', handBack: 'left; and what the refused attempt printed' },
+  h('a refused check, the orchestrator grants the rule, the rerun passes', 'verifier', 'refusal; refusal lifted; attempt → pass', work({ attempt: 'pass', settled: true }), 'done', NONE, null, [], true),
+  h('a refused check, the rule granted, the rerun prints an unclear result and can retry', 'verifier', 'refusal; refusal lifted; attempt → unclear', work({ attempt: 'unclear' }), 'runnable', '`retry: <check>`', null, [], true),
+  h('a refused task, the rule granted, not yet rerun', 'worker', 'refusal; refusal lifted', work({ attempt: 'started' }), 'runnable', '`left`', null, [], true),
   // A tool that returns after a host change.
-  { name: 'the tool returns after a host change, the task not yet rerun', role: 'worker', events: 'host probe fails; the host changes; host recovers', items: [work({})], state: 'runnable', label: '`left`', handBack: 'left, named in the result' },
-  { name: 'the tool returns, the rerun is unclear and no retry can settle it here', role: 'verifier', events: 'host probe fails; host recovers; attempt → unclear; retry becomes unavailable', items: [work({ attempt: 'unclear', now: 'settled' })], state: 'unclear', label: '`ran unclear: <check>`', handBack: 'ran unclear: the check, with its command and the output that settles nothing' },
-  { name: 'the tool returns and the rerun proves a Blocker', role: 'verifier', events: 'host probe fails; host recovers; attempt → fail', items: [work({ attempt: 'fail', now: 'settled' })], state: 'proven', label: 'a Blocker or Major', handBack: 'the Blocker, filed with its proof' },
+  h('the tool returns after a host change, the task not yet rerun', 'worker', 'host probe fails; host recovers', work({}), 'runnable', '`left`', null, [], false),
+  h('the tool returns, the rerun is unclear and no retry can settle it here', 'verifier', 'host probe fails; host recovers; attempt → unclear; retry becomes unavailable', work({ attempt: 'unclear', settled: true }), 'unclear', '`ran unclear: <check>`', null, [], true),
+  h('the tool returns and the rerun proves a Blocker', 'verifier', 'host probe fails; host recovers; attempt → fail', work({ attempt: 'fail', settled: true }), 'proven', 'a Blocker or Major', null, [], true),
   // Discovery mid-retry.
-  { name: 'while retrying, the verifier finds a defect the base head shows too', role: 'verifier', events: 'discover(base) during a retry', items: [item({ provenance: 'base' })], state: 'baseFinding', label: 'marked `base`', handBack: 'the finding, marked base: a follow-up unit' },
-  { name: 'while retrying, the verifier finds a defect the unit introduced', role: 'verifier', events: 'discover(unit) during a retry', items: [item({ provenance: 'unit' })], state: 'unitFinding', label: 'marked `unit`', handBack: 'the finding, marked unit: the same lane closes it' },
-  { name: 'while rerunning the gate, the implementor finds an unrelated defect', role: 'implementor', events: 'discover during a retry', items: [item({})], state: 'discovery', label: '`finding outside the unit`', handBack: 'the finding, in state.md under Follow-ups' },
+  h('while retrying, the verifier finds a defect the base head shows too', 'verifier', 'discover(base) during a retry', item({ provenance: 'base' }), 'baseFinding', 'marked `base`', null, [], false),
+  h('while retrying, the verifier finds a defect the unit introduced', 'verifier', 'discover(unit) during a retry', item({ provenance: 'unit' }), 'unitFinding', 'marked `unit`', null, [], false),
+  h('while rerunning the gate, the implementor finds an unrelated defect', 'implementor', 'discover during a retry', item({}), 'discovery', '`finding outside the unit`', null, [], false),
   // An item reassigned.
-  { name: 'a spec item moved to another unit by the orchestrator', role: 'implementor', events: 'assign(required); attempt → fail; the orchestrator moves it to another unit', items: [item({})], state: 'discovery', label: '`finding outside the unit`', handBack: 'the item, in state.md under Follow-ups, naming the unit it moved to' },
-  { name: 'a finding the orchestrator adds to this unit', role: 'planner', events: 'discover; the orchestrator adds it to the spec', items: [work({})], state: 'runnable', label: '`continues next round`', handBack: 'continues next round' },
-  { name: 'the acceptance holds once the wait closes', role: 'planner', events: 'wait opens; wait closes; attempt → pass', items: [work({ attempt: 'pass', now: 'settled' })], state: 'done', label: 'none: it is no item left', handBack: 'nothing for the item' },
+  h('a spec item moved to another unit by the orchestrator', 'implementor', 'assign(required); attempt → fail; the orchestrator moves it to another unit (it is now outside the assignment, as found)', item({}), 'discovery', '`finding outside the unit`', null, [], false),
+  h('a finding the orchestrator adds to this unit', 'planner', 'discover; the orchestrator adds it to the spec', work({}), 'runnable', '`continues next round`', null, [], false),
+  h('the acceptance holds once the wait closes', 'planner', 'wait opens; wait closes; attempt → pass', work({ attempt: 'pass', settled: true }), 'done', NONE, null, [], true),
+  // 23b: two and three facts at once. Every pair of obstacles in every role, all three in several, a probe displaced by obstacles.
+  h('M01 a refused preflight while the tool is also absent', 'verifier', 'host probe fails; refusal', work({ attempt: 'started', refused: true, hostCannot: true }), 'refused', REFUSED, 'refused', ['cannot'], true),
+  h('M02 the tool is absent and the prerequisite unit is still open, never attempted', 'verifier', 'host probe fails; wait opens', work({ hostCannot: true, wait: true }), 'cannot', CANNOT, 'cannot', ['waits'], false),
+  h('M03 a refused retry while a question is open', 'verifier', 'attempt → no result yet; wait opens; refusal', work({ attempt: 'started', refused: true, wait: true }), 'refused', REFUSED, 'refused', ['waits'], true),
+  h('M04 partial JSON, then the compiler is gone, a question opens, and a refusal comes', 'verifier', 'attempt → unclear; host probe fails; wait opens; refusal', work({ attempt: 'unclear', refused: true, hostCannot: true, wait: true }), 'refused', REFUSED, 'refused', ['cannot', 'waits'], true),
+  h('M05 an interrupted check with all three obstacles', 'verifier', 'attempt → no result yet; wait opens; host probe fails; refusal', work({ attempt: 'started', refused: true, hostCannot: true, wait: true }), 'refused', REFUSED, 'refused', ['cannot', 'waits'], true),
+  h('M06 unclear output, then the tool is gone and a unit is open', 'verifier', 'attempt → unclear; host probe fails; wait opens', work({ attempt: 'unclear', hostCannot: true, wait: true }), 'cannot', CANNOT, 'cannot', ['waits'], true),
+  h('M07 an optional probe ran unclear, then its tool left and a question opened', 'verifier', 'assign(optional); attempt → unclear; host probe fails; wait opens', probe({ attempt: 'unclear', hostCannot: true, wait: true }), 'unproven', '`unproven: <probe>`', null, ['cannot', 'waits'], true),
+  h('M08 an optional probe refused on its first run', 'verifier', 'assign(optional); refusal', probe({ attempt: 'started', refused: true }), 'refused', REFUSED, 'refused', [], true),
+  h('M09 the planner refused while its renderer is absent', 'planner', 'host probe fails; refusal', work({ attempt: 'started', refused: true, hostCannot: true }), 'refused', REFUSED, 'refused', ['cannot'], true),
+  h('M10 the renderer is absent and an upstream question is open', 'planner', 'host probe fails; wait opens', work({ hostCannot: true, wait: true }), 'cannot', CANNOT, 'cannot', ['waits'], false),
+  h('M11 a red acceptance attempt, a question opens, and the retry is refused', 'planner', 'attempt → fail; wait opens; refusal', work({ attempt: 'fail', refused: true, wait: true }), 'refused', REFUSED, 'refused', ['waits'], true),
+  h('M12 a failed gate, the compiler is gone, and the retry is refused', 'implementor', 'attempt → fail; host probe fails; refusal', work({ attempt: 'fail', refused: true, hostCannot: true }), 'refused', REFUSED, 'refused', ['cannot'], true),
+  h('M13 an unclear gate, then the tool is gone and a dependency is open', 'implementor', 'attempt → unclear; host probe fails; wait opens', work({ attempt: 'unclear', hostCannot: true, wait: true }), 'cannot', CANNOT, 'cannot', ['waits'], true),
+  h('M14 a failed gate with all three obstacles', 'implementor', 'attempt → fail; wait opens; host probe fails; refusal', work({ attempt: 'fail', refused: true, hostCannot: true, wait: true }), 'refused', REFUSED, 'refused', ['cannot', 'waits'], true),
+  h('M15 the worker refused while its converter is absent', 'worker', 'host probe fails; refusal', work({ attempt: 'started', refused: true, hostCannot: true }), 'refused', REFUSED, 'refused', ['cannot'], true),
+  h('M16 the converter is absent and the conversion wait is open', 'worker', 'host probe fails; wait opens', work({ hostCannot: true, wait: true }), 'cannot', CANNOT, 'cannot', ['waits'], false),
+  h('M17 an unclear comparison, a wait opens, then the retry is refused', 'worker', 'attempt → unclear; wait opens; refusal', work({ attempt: 'unclear', refused: true, wait: true }), 'refused', REFUSED, 'refused', ['waits'], true),
+  h('M18 the worker with all three obstacles after an interrupted run', 'worker', 'attempt → no result yet; host probe fails; wait opens; refusal', work({ attempt: 'started', refused: true, hostCannot: true, wait: true }), 'refused', REFUSED, 'refused', ['cannot', 'waits'], true),
+  h('M19 a wait opens, the host fails, the wait closes', 'verifier', 'attempt → unclear; wait opens; host probe fails; wait closes', work({ attempt: 'unclear', hostCannot: true }), 'cannot', CANNOT, 'cannot', [], true),
+  h('M20 the refusal is lifted while the tool is still absent and a unit still open', 'verifier', 'refusal; host probe fails; wait opens; refusal lifted', work({ attempt: 'started', hostCannot: true, wait: true }), 'cannot', CANNOT, 'cannot', ['waits'], true),
+  h('M21 a wait closes, leaving a refusal and a missing tool', 'implementor', 'wait opens; host probe fails; refusal; wait closes', work({ attempt: 'started', refused: true, hostCannot: true }), 'refused', REFUSED, 'refused', ['cannot'], true),
+  h('M22 the planner with all three obstacles', 'planner', 'host probe fails; wait opens; refusal', work({ attempt: 'started', refused: true, hostCannot: true, wait: true }), 'refused', REFUSED, 'refused', ['cannot', 'waits'], true),
+  // Round 2: an optional probe held by one, two or three obstacles. A refusal makes it refused (the Refusals paragraph
+  // stops the step on it); a missing tool or a wait leaves it unproven, and the hand-back names what held it.
+  h('O01 an optional probe whose tool is absent, never run', 'verifier', 'assign(optional); host probe fails', probe({ hostCannot: true }), 'unproven', '`unproven: <probe>`', null, ['cannot'], false),
+  h('O02 an optional probe waiting on an open unit, never run', 'verifier', 'assign(optional); wait opens', probe({ wait: true }), 'unproven', '`unproven: <probe>`', null, ['waits'], false),
+  h('O03 an optional probe ran unclear, then its tool left', 'verifier', 'assign(optional); attempt → unclear; host probe fails', probe({ attempt: 'unclear', hostCannot: true }), 'unproven', '`unproven: <probe>`', null, ['cannot'], true),
+  h('O04 an interrupted optional probe whose rerun waits on a question', 'verifier', 'assign(optional); attempt → no result yet; wait opens', probe({ attempt: 'started', wait: true }), 'unproven', '`unproven: <probe>`', null, ['waits'], true),
+  h('O05 an optional probe with its tool absent and a unit open, never run', 'verifier', 'assign(optional); wait opens; host probe fails', probe({ hostCannot: true, wait: true }), 'unproven', '`unproven: <probe>`', null, ['cannot', 'waits'], false),
+  h('O06 an optional probe refused while a question is open', 'verifier', 'assign(optional); wait opens; refusal', probe({ attempt: 'started', refused: true, wait: true }), 'refused', REFUSED, 'refused', ['waits'], true),
+  h('O07 an optional probe ran unclear, then all three obstacles', 'verifier', 'assign(optional); attempt → unclear; host probe fails; wait opens; refusal', probe({ attempt: 'unclear', refused: true, hostCannot: true, wait: true }), 'refused', REFUSED, 'refused', ['cannot', 'waits'], true),
+  h('O08 an optional probe refused, the rule granted, its tool still absent', 'verifier', 'assign(optional); refusal; host probe fails; refusal lifted', probe({ attempt: 'started', hostCannot: true }), 'unproven', '`unproven: <probe>`', null, ['cannot'], true),
+  h('O09 an optional probe ran unclear, its tool left, then a refusal', 'verifier', 'assign(optional); attempt → unclear; host probe fails; refusal', probe({ attempt: 'unclear', refused: true, hostCannot: true }), 'refused', REFUSED, 'refused', ['cannot'], true),
+  h('O10 an optional probe refused on its first run, its tool absent and a unit open', 'verifier', 'assign(optional); host probe fails; wait opens; refusal', probe({ attempt: 'started', refused: true, hostCannot: true, wait: true }), 'refused', REFUSED, 'refused', ['cannot', 'waits'], true),
+  h('O11 control: a wait opens and closes, then the optional probe ran unclear', 'verifier', 'assign(optional); wait opens; wait closes; attempt → unclear', probe({ attempt: 'unclear' }), 'unproven', '`unproven: <probe>`', null, [], true),
 ];
