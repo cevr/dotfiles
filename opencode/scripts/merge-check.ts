@@ -5,7 +5,8 @@
 // - the docs guard, scripts/verify-docs.test.ts, when the change can turn it red (docs-guard.ts);
 // - for a changed scripts/<name>.ts its own scripts/<name>.test.ts and every scripts/ test whose imports reach it
 //   within scripts/, through any number of steps (fork.ts → daily.ts → daily.test), and a changed scripts/ test itself;
-// - every scripts/ test whose `@reads <glob> …` line (scripts/reach.ts `readsOf`) matches a changed path: a test that
+// - every scripts/ test whose `@reads <glob> …` line (scripts/reach.ts `readsOf`) matches a changed path, a changed
+//   scripts/ test among them (merge-check.test reads the scripts/ folder, required-inputs.test every test source): a test that
 //   globs or reads files by path text imports none of them, so no walk finds it (Rift U1, bb435bcc: a cmd/work/server.ts
 //   import broke scripts/runtime-imports.test.ts, which reads every cmd/** and mods/** source, and main went red);
 // - scripts/accept.test.ts and scripts/accept-parity.test.ts when the acceptance tree changes (tests/, its parity
@@ -103,8 +104,9 @@ interface Inputs {
  * and imports neither: Rift U1's cmd/work/server.ts import reached main red, bb435bcc).
  */
 const testsOf = (path: string, inputs: ReadonlyArray<Inputs>): ReadonlyArray<string> => {
-  if (TEST.test(path)) return [path]
-  const own = Option.match(Option.fromNullishOr(SCRIPT.exec(path)), { onNone: () => [], onSome: (match) => [`scripts/${String(match[1])}.test.ts`] })
+  // A scripts/ test is its own; the tests that read it run too (required-inputs.test reads every test source, and
+  // merge-check.test every scripts/ file: fe8b7bd1 and fe8d8243 added tests that only ran themselves and reddened it).
+  const own = (TEST.test(path) && [path]) || Option.match(Option.fromNullishOr(SCRIPT.exec(path)), { onNone: () => [], onSome: (match) => [`scripts/${String(match[1])}.test.ts`] })
   return [...own, ...inputs.flatMap((each) => ((each.files.has(path) || each.reads.some((glob) => glob.match(path))) && [each.test]) || [])]
 }
 

@@ -1,6 +1,13 @@
 // The legs of a land's merge check (scripts/merge-check.ts, which scripts/gate.ts --merge runs as given): which
 // scripts/ tests a diff selects, and that a selected test is in the leg the merge check runs.
+//
+// Its selections run over the scripts/ folder as it is (`tree` reads every scripts/ source by path, not import), so a
+// new or changed scripts/ file can change what it asserts; it declares them, or no merge check runs it (fork-checks.test
+// and required-inputs.test landed by their merge checks and turned it red on main, b5735808):
+// @reads scripts/*.ts scripts/*.tsx
+// Which tests import or read a path is the tree's fact, derived (`found`); what a case pins by hand is a rule's decision.
 import * as BunServices from "@effect/platform-bun/BunServices"
+import { Glob } from "bun"
 import { Effect, FileSystem, Option, Path, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { describe, expect, it } from "effect-bun-test"
@@ -71,8 +78,17 @@ const tree = Effect.gen(function* () {
     scripts,
     workbox: { changes: parseNameStatus(workbox), tests: ["../workbox/test/workrift.test.ts", "../workbox/test/hc.test.ts"] },
   })
+  // The tree's facts, from the parts the selection composes (reachedWithin, @reads), not from scriptTests itself.
+  const importers = (file: string) => scripts.files.filter((test) => reachedWithin(test, scripts, exists).has(file))
+  const readers = (file: string) => scripts.files.filter((test) => scripts.reads(test).some((glob) => new Glob(glob).match(file)))
+  /** The scripts/ tests whose imports reach, or whose @reads globs match, any of `files`. */
+  const found = (...files: ReadonlyArray<string>) => [...new Set(files.flatMap((file) => [...importers(file), ...readers(file)]))].toSorted()
   return {
     exists,
+    importers,
+    found,
+    /** What a diff of `files` must select: the `pinned` tests its rules name, beside every test the tree says imports or reads one. */
+    expected: (pinned: ReadonlyArray<string>, ...files: ReadonlyArray<string>) => [...new Set([...pinned, ...found(...files)])].toSorted(),
     tests: (out: string) => scriptTests(parseNameStatus(out), exists, scripts),
     /** The files the merge check's `tests` leg runs over `out` (and `workbox`, the workbox/ diff), from opencode/. */
     ran: (out: string, workbox = "") =>
@@ -88,28 +104,38 @@ describe("the merge check's tests", () => {
 
   live("a changed script runs its own test and every scripts/ test that imports it; a changed scripts/ test runs itself", () =>
     Effect.gen(function* () {
-      const { exists, legs, ran, tests } = yield* tree
-      expect(tests("M\tscripts/link-fork.ts\n")).toEqual(["scripts/link-fork.test.ts"])
-      expect(tests("M\tscripts/leaks.ts\n")).toEqual(["scripts/accept.test.ts", "scripts/leaks.test.ts"])
-      // reach.ts has no test of its own; the tests that import it run.
-      expect(tests("M\tscripts/reach.ts\n")).toEqual(["scripts/accept-ledger.test.ts", "scripts/accept.test.ts", "scripts/merge-check.test.ts"])
-      expect(tests("M\tscripts/leaks.test.ts\n")).toEqual(["scripts/leaks.test.ts", GIT_REPO_GUARD])
-      // A script no test reaches selects none: its typecheck and lint still run.
-      expect(tests("M\tscripts/receipt.ts\n")).toEqual([])
+      const { expected, importers, tests } = yield* tree
+      // Pins: a changed script runs its own test.
+      expect(tests("M\tscripts/link-fork.ts\n")).toEqual(expected(["scripts/link-fork.test.ts"], "scripts/link-fork.ts"))
+      // Pins: a test that imports a script runs beside the script's own test (accept.test imports leaks.ts).
+      expect(tests("M\tscripts/leaks.ts\n")).toEqual(expected(["scripts/leaks.test.ts"], "scripts/leaks.ts"))
+      expect(tests("M\tscripts/leaks.ts\n")).toContain("scripts/accept.test.ts")
+      // Pins: reach.ts has no test of its own; the tests that import it run, these three among them.
+      expect(tests("M\tscripts/reach.ts\n")).toEqual(expected([], "scripts/reach.ts"))
+      for (const test of ["scripts/accept-ledger.test.ts", "scripts/accept.test.ts", "scripts/merge-check.test.ts"]) expect(tests("M\tscripts/reach.ts\n")).toContain(test)
+      // Pins: a changed scripts/ test runs itself, and the git-repo guard over its text.
+      expect(tests("M\tscripts/leaks.test.ts\n")).toEqual(expected(["scripts/leaks.test.ts", GIT_REPO_GUARD], "scripts/leaks.test.ts"))
+      // Pins: a script no test imports selects only the tests that read it by path; its typecheck and lint still run.
+      expect(importers("scripts/receipt.ts")).toEqual([])
+      expect(tests("M\tscripts/receipt.ts\n")).toEqual(expected([], "scripts/receipt.ts"))
     }),
   )
 
   live("the acceptance tree, its baselines and the accept scripts run accept.test and accept-parity (batch 2026-11-15cq)", () =>
     Effect.gen(function* () {
-      const { exists, legs, ran, tests } = yield* tree
-      // auto-claim renamed tests in tests/pool-resets.test.ts, and the work.test marker changed: both reached main red.
-      const accept = [...ACCEPT_TESTS].toSorted()
-      expect(tests("M\ttests/pool-resets.test.ts\n")).toEqual([...accept, GIT_REPO_GUARD])
-      expect(tests("M\ttests/work.test.ts\n")).toEqual([...accept, GIT_REPO_GUARD])
-      expect(tests("M\ttests/parity.json\n")).toEqual(accept)
-      // layout.test and runtime-imports.test read every cmd/** file too (@reads).
-      expect(tests("M\tcmd/pool/pool-resets.sim.test.ts\n")).toEqual([...accept, "scripts/layout.test.ts", "scripts/runtime-imports.test.ts", GIT_REPO_GUARD])
-      expect(tests("M\tscripts/accept-ledger.ts\n")).toEqual(["scripts/accept-ledger.test.ts", "scripts/post-land.test.ts", ...ACCEPT_TESTS].toSorted())
+      const { expected, tests } = yield* tree
+      // Pins: auto-claim renamed tests in tests/pool-resets.test.ts, and the work.test marker changed: both reached main red.
+      // A changed tests/ file runs the accept tests and the git-repo guard.
+      for (const file of ["tests/pool-resets.test.ts", "tests/work.test.ts"]) expect(tests(`M\t${file}\n`)).toEqual(expected([...ACCEPT_TESTS, GIT_REPO_GUARD], file))
+      // Pins: a parity baseline runs the accept tests, and no git-repo guard (it is no test source).
+      expect(tests("M\ttests/parity.json\n")).toEqual(expected(ACCEPT_TESTS, "tests/parity.json"))
+      expect(tests("M\ttests/parity.json\n")).not.toContain(GIT_REPO_GUARD)
+      // Pins: a simulated suite a parity manifest counts runs the accept tests; layout.test and runtime-imports.test read every cmd/** file too (@reads).
+      expect(tests("M\tcmd/pool/pool-resets.sim.test.ts\n")).toEqual(expected([...ACCEPT_TESTS, GIT_REPO_GUARD], "cmd/pool/pool-resets.sim.test.ts"))
+      for (const test of ["scripts/layout.test.ts", "scripts/runtime-imports.test.ts"]) expect(tests("M\tcmd/pool/pool-resets.sim.test.ts\n")).toContain(test)
+      // Pins: an accept script runs the accept tests beside its own test and its importers (post-land.test).
+      expect(tests("M\tscripts/accept-ledger.ts\n")).toEqual(expected(["scripts/accept-ledger.test.ts", ...ACCEPT_TESTS], "scripts/accept-ledger.ts"))
+      expect(tests("M\tscripts/accept-ledger.ts\n")).toContain("scripts/post-land.test.ts")
     }),
   )
 
@@ -161,37 +187,61 @@ describe("the merge check's tests", () => {
     }),
   )
 
-  live("a change to the verify docs runs the docs guard", () =>
+  live("a new or changed scripts/ file runs this file, whose selections read the scripts/ folder (fe8b7bd1, fe8d8243 reached main red)", () =>
     Effect.gen(function* () {
-      const { exists, legs, ran, tests } = yield* tree
-      expect(tests("M\t.claude/skills/verify-opencode/features/rex.md\n")).toEqual([DOCS_GUARD])
+      const { ran, tests } = yield* tree
+      // fe8b7bd1 added fork-checks.test importing reach.ts; fe8d8243 added required-inputs.test reading every test source.
+      // Each changed what this file selects, and each merge check ran only the new test.
+      for (const out of ["A\tscripts/fork-checks.test.ts\n", "A\tscripts/required-inputs.test.ts\n", "A\tscripts/new.ts\n", "M\tscripts/receipt.ts\n"])
+        expect(ran(out)).toContain("scripts/merge-check.test.ts")
+      // What leaves scripts/ alone cannot change them.
+      for (const out of ["A\ttests/new.test.ts\n", "M\tdecider/tui-clock.ts\n", "M\tscripts/fork-checks.json\n"]) expect(tests(out)).not.toContain("scripts/merge-check.test.ts")
     }),
   )
 
-  live("an unrelated diff runs none: source no scripts/ test imports or reads, which the land's round gate tested; its tests run only the git-repo guard; mod source runs only the tests that read mods/", () =>
+  live("a change to the verify docs runs the docs guard", () =>
     Effect.gen(function* () {
-      const { exists, legs, ran, tests } = yield* tree
+      const { expected, tests } = yield* tree
+      // Pins: a feature page runs the docs guard.
+      const page = ".claude/skills/verify-opencode/features/rex.md"
+      expect(tests(`M\t${page}\n`)).toEqual(expected([DOCS_GUARD], page))
+    }),
+  )
+
+  live("an unrelated diff runs none: source no scripts/ test imports or reads, which the land's round gate tested; its tests run only the git-repo guard and the tests that read every test source; mod source runs only the tests that read mods/", () =>
+    Effect.gen(function* () {
+      const { expected, found, importers, tests } = yield* tree
+      // Pins: source no scripts/ test imports or reads selects none, and an empty diff none.
       expect(tests("M\tdecider/tui-clock.ts\n")).toEqual([])
-      expect(tests("M\tdecider/tui-clock.ts\nM\tdecider/tui-clock.test.ts\n")).toEqual([GIT_REPO_GUARD])
-      expect(tests("M\tmods/update/git/source.ts\n")).toEqual(["scripts/layout.test.ts", "scripts/old-scheme-gone.test.ts", "scripts/runtime-imports.test.ts"])
       expect(tests("")).toEqual([])
+      // Pins: its test runs the git-repo guard, beside the tests that read every test source (required-inputs.test's @reads).
+      expect(tests("M\tdecider/tui-clock.ts\nM\tdecider/tui-clock.test.ts\n")).toEqual(expected([GIT_REPO_GUARD], "decider/tui-clock.ts", "decider/tui-clock.test.ts"))
+      // Pins: mod source no scripts/ test imports runs only its readers, layout.test among them.
+      expect(importers("mods/update/git/source.ts")).toEqual([])
+      expect(tests("M\tmods/update/git/source.ts\n")).toEqual(found("mods/update/git/source.ts"))
+      expect(tests("M\tmods/update/git/source.ts\n")).toContain("scripts/layout.test.ts")
     }),
   )
 
   live("a change under the repository's workbox/ runs every workbox/test/ test, beside what opencode/'s diff selects; none without one (batch 2026-11-16cy)", () =>
     Effect.gen(function* () {
-      const { ran } = yield* tree
-      expect(ran("", "M\tworkbox/bin/workrift\n")).toEqual(["../workbox/test/hc.test.ts", "../workbox/test/workrift.test.ts"])
-      expect(ran("M\tscripts/link-fork.ts\n", "M\tworkbox/test/workrift.test.ts\n")).toEqual(["scripts/link-fork.test.ts", "../workbox/test/hc.test.ts", "../workbox/test/workrift.test.ts"])
-      expect(ran("M\tscripts/link-fork.ts\n")).toEqual(["scripts/link-fork.test.ts"])
+      const { ran, tests } = yield* tree
+      const workbox = ["../workbox/test/hc.test.ts", "../workbox/test/workrift.test.ts"]
+      expect(ran("", "M\tworkbox/bin/workrift\n")).toEqual(workbox)
+      expect(ran("M\tscripts/link-fork.ts\n", "M\tworkbox/test/workrift.test.ts\n")).toEqual([...tests("M\tscripts/link-fork.ts\n"), ...workbox])
+      expect(ran("M\tscripts/link-fork.ts\n")).toEqual([...tests("M\tscripts/link-fork.ts\n")])
     }),
   )
 
   live("what a selection names is in the leg the merge check runs, and a docs change puts the docs guard there (docs-gate T1)", () =>
     Effect.gen(function* () {
-      const { exists, legs, ran, tests } = yield* tree
-      expect(ran("M\t.claude/skills/verify-opencode/features/rex.md\n")).toEqual([DOCS_GUARD])
-      expect(ran("M\ttests/parity.json\nM\tscripts/link-fork.ts\n")).toEqual(["scripts/accept-parity.test.ts", "scripts/accept.test.ts", "scripts/link-fork.test.ts"])
+      const { legs, ran, tests } = yield* tree
+      const page = "M\t.claude/skills/verify-opencode/features/rex.md\n"
+      expect(ran(page)).toEqual([...tests(page)])
+      expect(ran(page)).toContain(DOCS_GUARD)
+      const both = "M\ttests/parity.json\nM\tscripts/link-fork.ts\n"
+      expect(ran(both)).toEqual([...tests(both)])
+      for (const test of [...ACCEPT_TESTS, "scripts/link-fork.test.ts"]) expect(ran(both)).toContain(test)
       const none = legs("M\tdecider/tui-clock.ts\n")
       expect(none.map((leg) => leg.name)).toEqual(["lint", "debt", "types", "tests"])
       expect(none.filter((leg) => leg.name === "tests").map((leg) => leg.argv)).toEqual([["true"]])
