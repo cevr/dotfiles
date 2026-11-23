@@ -39,6 +39,18 @@ say() { printf '==> %s\n' "$*"; }
 ok() { printf 'ok: %s\n' "$*"; }
 die() { printf 'system-tools: %s\n' "$*" >&2; exit 1; }
 
+# Every scratch path the script makes is under $scratch, or listed in $scratch_paths (the Go unpack,
+# which must be on /usr/local's file system); the one EXIT trap removes them on every exit path.
+scratch=$(mktemp -d)
+scratch_paths=$scratch
+# shellcheck disable=SC2086 # a word list of paths without spaces
+trap 'rm -rf $scratch_paths' EXIT
+trap 'exit 130' INT TERM HUP
+
+# Network calls are bounded: a stalled download fails after its time, not never.
+curl_bounds="--connect-timeout 20 --max-time 900 --retry 3 --retry-delay 5"
+apt_bounds="-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3"
+
 # Debian's name for this machine's architecture (amd64, arm64), as the Go and apt pins name it.
 host_arch() {
   if command -v dpkg >/dev/null 2>&1; then
@@ -55,7 +67,8 @@ host_arch() {
 sha256_of() { sha256sum "$1" | cut -d' ' -f1; }
 
 fetch() { # url file
-  curl -fsSL --retry 3 -o "$2" "$1" || die "could not download $1"
+  # shellcheck disable=SC2086 # a word list
+  curl -fsSL $curl_bounds -o "$2" "$1" || die "could not download $1"
 }
 
 # Replaces (or makes) the link $2 so it points at $1, by one rename(2): a reader sees the old target
@@ -87,10 +100,11 @@ apt_ensure() {
     return
   fi
   say "installing$missing"
-  apt-get update -q >/dev/null
-  # shellcheck disable=SC2086 # a word list
+  # shellcheck disable=SC2086 # word lists
+  apt-get $apt_bounds update -q >/dev/null
   # NEEDRESTART_SUSPEND: Ubuntu's needrestart hook would restart services after the install.
-  NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive apt-get install -y -q $missing >/dev/null
+  # shellcheck disable=SC2086 # word lists
+  NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive apt-get $apt_bounds install -y -q $missing >/dev/null
   for package in $missing; do
     installed "$package" || die "apt-get did not install $package"
   done
@@ -133,7 +147,8 @@ step_qemu() {
   if qemu_installed; then
     ok "packages $QEMU_PACKAGES (one of)"
   else
-    apt-get update -q >/dev/null
+    # shellcheck disable=SC2086 # a word list
+    apt-get $apt_bounds update -q >/dev/null
     choice=
     for package in $QEMU_PACKAGES; do
       candidate=$(apt-cache policy "$package" | awk '/Candidate:/ { print $2 }')
@@ -206,7 +221,7 @@ step_go() {
   fi
   install -d -m 0755 "$go_local"
   work=$(mktemp -d "$go_local/.go-install.XXXXXX")
-  trap 'rm -rf "$work"' EXIT
+  scratch_paths="$scratch_paths $work"
   fetch "https://go.dev/dl/$go_tarball" "$work/$go_tarball"
   got=$(sha256_of "$work/$go_tarball")
   [ "$got" = "$GO_SHA256" ] ||
@@ -227,7 +242,6 @@ step_go() {
     [ "$tree" = "$go_tree" ] || [ ! -d "$tree" ] || rm -rf "$tree"
   done
   rm -rf "$work"
-  trap - EXIT
   say "installed Go $GO_VERSION at $go_local/go (-> go-$GO_VERSION)"
   go_links
 }
@@ -246,10 +260,10 @@ ms_list=$root/etc/apt/sources.list.d/microsoft-prod.list
 
 # The fingerprints of a key file's primary keys, one per line (gpg reads armored and binary alike).
 primary_fingerprints() {
-  scratch=$(mktemp -d)
-  GNUPGHOME=$scratch gpg --batch --quiet --show-keys --with-colons "$1" 2>/dev/null |
+  gpg_home=$(mktemp -d "$scratch/gpg.XXXXXX")
+  GNUPGHOME=$gpg_home gpg --batch --quiet --no-autostart --show-keys --with-colons "$1" 2>/dev/null |
     awk -F: '$1 == "pub" { want = 1; next } $1 == "sub" { want = 0 } $1 == "fpr" && want { print $10; want = 0 }'
-  rm -rf "$scratch"
+  rm -rf "$gpg_home"
 }
 
 only_pinned_key() { [ "$(primary_fingerprints "$1")" = "$MICROSOFT_KEY_FINGERPRINT" ]; }
@@ -272,16 +286,14 @@ step_pwsh() {
   if [ -f "$ms_keyring" ] && only_pinned_key "$ms_keyring"; then
     ok "Microsoft key $MICROSOFT_KEY_FINGERPRINT"
   else
-    scratch_key=$(mktemp -d)
-    trap 'rm -rf "$scratch_key"' EXIT
+    scratch_key=$(mktemp -d "$scratch/key.XXXXXX")
     fetch "$MICROSOFT_KEY_URL" "$scratch_key/key.asc"
     found=$(primary_fingerprints "$scratch_key/key.asc" | tr '\n' ' ')
     only_pinned_key "$scratch_key/key.asc" ||
       die "pwsh: the key at $MICROSOFT_KEY_URL has fingerprint ${found:-none}, not the pinned $MICROSOFT_KEY_FINGERPRINT: refusing it; nothing was installed"
-    GNUPGHOME=$scratch_key gpg --batch --quiet --yes --dearmor -o "$scratch_key/key.gpg" "$scratch_key/key.asc"
+    GNUPGHOME=$scratch_key gpg --batch --quiet --no-autostart --yes --dearmor -o "$scratch_key/key.gpg" "$scratch_key/key.asc"
     put 0644 "$scratch_key/key.gpg" "$ms_keyring"
     rm -rf "$scratch_key"
-    trap - EXIT
   fi
   line=$(ms_line)
   # apt refuses the same repository under two signed-by keys: name another list that has it.
@@ -291,7 +303,7 @@ step_pwsh() {
       die "pwsh: $other names packages.microsoft.com too; remove it (this step writes $ms_list)"
     fi
   done
-  list=$(mktemp)
+  list=$(mktemp "$scratch/list.XXXXXX")
   printf '%s\n' "$line" > "$list"
   put 0644 "$list" "$ms_list" || ok "$ms_list"
   rm -f "$list"

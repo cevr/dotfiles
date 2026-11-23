@@ -36,7 +36,14 @@ const fakes: Record<string, string> = {
   dpkg: `#!/bin/sh\n[ "$1" = --print-architecture ] && echo "$FAKE_ARCH"\n`,
   "dpkg-query": `#!/bin/sh\nfor last; do :; done\n[ -e "$FAKE_STATE/$last" ] && printf 'ii '\nexit 0\n`,
   "apt-get": `#!/bin/sh
-echo "apt-get $*" >> "$FAKE_LOG"
+# The -o settings go to their own log (each call must bound its network time); the rest to FAKE_LOG.
+opts= words=
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -o ]; then opts="$opts $2"; shift 2; else words="$words $1"; shift; fi
+done
+echo "apt-get$opts" >> "$FAKE_LOG.apt-opts"
+echo "apt-get$words" >> "$FAKE_LOG"
+set -- $words
 [ "$1" = update ] && exit 0
 for p; do
   case $p in
@@ -60,6 +67,7 @@ for last; do :; done
 out=
 while [ "$#" -gt 0 ]; do [ "$1" = -o ] && out=$2; shift; done
 echo "curl $last" >> "$FAKE_LOG"
+echo "$*" >> "$FAKE_LOG.curl-args"
 cp "$FAKE_DOWNLOADS/$(basename "$last")" "$out" 2>/dev/null || exit 22
 `,
   "apt-cache": `#!/bin/sh\nfor last; do :; done\ncase " $FAKE_NO_CANDIDATE " in *" $last "*) echo "  Candidate: (none)" ;; *) echo "  Candidate: 1:1.0" ;; esac\n`,
@@ -121,8 +129,10 @@ const host = (opts: { arch?: string; pins?: Record<string, string>; noCandidate?
     const done = Bun.spawnSync(["sh", join(workbox, "system-tools.sh"), ...args], { cwd: dir, env, stdout: "pipe", stderr: "pipe" })
     return { code: done.exitCode, stdout: done.stdout.toString(), stderr: done.stderr.toString() }
   }
+  // What the script left in TMPDIR (its scratch dir, a key, a list): nothing, on every exit path.
+  const leftovers = () => readdirSync(dir).filter((name) => name.startsWith("tmp."))
   const logLines = () => readFileSync(log, "utf8").split("\n").filter(Boolean)
-  return { dir, root, proc, downloads, run, logLines, local: join(root, "usr", "local") }
+  return { dir, root, proc, downloads, run, logLines, leftovers, local: join(root, "usr", "local") }
 }
 
 /** A Go tarball as go.dev lays it out (go/VERSION, go/bin/go, go/bin/gofmt), holding `version`. */
@@ -198,6 +208,9 @@ describe("system-tools.sh installs the pinned tools, once", () => {
     expect(installs.map((line) => line.split(" ").filter((word) => !word.startsWith("-")).slice(2))).toEqual([["fish", "ksh", "mksh"], ["qemu-user-static"], ["powershell"]])
     expect(h.logLines().filter((line) => line.startsWith("systemctl"))).toEqual(["systemctl daemon-reload"])
     expect(h.logLines().filter((line) => line.startsWith("curl"))).toEqual([`curl https://go.dev/dl/${tarballName}`, "curl https://packages.microsoft.com/keys/microsoft.asc"])
+    // Every download is bounded in time, so a stalled one fails instead of hanging the provisioning.
+    for (const args of readFileSync(join(h.dir, "log.curl-args"), "utf8").split("\n").filter(Boolean)) expect(args).toMatch(/--connect-timeout \d+ --max-time \d+ --retry \d/)
+    for (const opts of readFileSync(join(h.dir, "log.apt-opts"), "utf8").split("\n").filter(Boolean)) expect(opts).toMatch(/Acquire::https?::Timeout=\d+ .*Acquire::Retries=\d/)
 
     const before = snapshot(h.root, h.proc)
     const logged = h.logLines().length
@@ -209,6 +222,7 @@ describe("system-tools.sh installs the pinned tools, once", () => {
     expect(h.logLines().slice(logged)).toEqual([])
 
     expect(h.run("--check")).toMatchObject({ code: 0, stderr: "" })
+    expect(h.leftovers()).toEqual([])
   })
 
   test("an older Go, installed by hand as a real /usr/local/go, is replaced by the link; the old tree is gone", () => {
@@ -263,6 +277,8 @@ describe("system-tools.sh refuses, and changes nothing", () => {
     expect(done.stderr).toContain("not the pinned")
     expect(done.stderr).toContain("nothing was installed")
     expect(snapshot(h.root)).toEqual(before)
+    expect(h.leftovers()).toEqual([])
+    expect(readdirSync(h.local).filter((name) => name.startsWith(".go-install"))).toEqual([])
   })
 
   test("another architecture: Go and PowerShell refused before any download", () => {
@@ -290,6 +306,7 @@ describe("system-tools.sh refuses, and changes nothing", () => {
     expect(done.stderr).toContain("nothing was installed")
     expect(snapshot(h.root)).toEqual(before)
     expect(h.logLines().filter((line) => line.startsWith("apt-get"))).toEqual([])
+    expect(h.leftovers()).toEqual([])
   })
 
   test("a keyring already in place with another key is not trusted: the key is fetched and checked again", () => {
