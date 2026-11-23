@@ -187,7 +187,7 @@ describe("the guard plugin", () => {
   test("refuses a Chrome started for DevTools without the keychain flags, by hand or by a script, in the guard's words, and names the launcher", () =>
     scenario(
       Effect.gen(function* () {
-        const probe = 'Bun.spawn([CHROME, "--headless", `--user-data-dir=${dir}`, "--remote-debugging-port=0"])'
+        const probe = 'const CHROME = "/opt/chrome-linux64/chrome"\nBun.spawn([CHROME, "--headless", `--user-data-dir=${dir}`, "--remote-debugging-port=0"])'
         const safe = 'Bun.spawn([chromePath(), "--headless=new", "--use-mock-keychain", "--password-store=basic"])'
         const { call } = yield* start({ home: HOME }, { scripts: { "/tmp/run/probe.ts": probe, "/tmp/run/safe.ts": safe } })
         const refused = yield* call("shell", { command: "chrome-headless-shell --headless --remote-debugging-port=0" })
@@ -203,6 +203,12 @@ describe("the guard plugin", () => {
         expect(yield* call("shell", { command: "bun safe.ts", workdir: "/tmp/run" })).toBeUndefined()
         expect(yield* call("shell", { command: "bun /tmp/run/missing.ts" })).toBeUndefined()
         expect(yield* call("shell", { command: 'open -a "Google Chrome" https://example.com' })).toBeUndefined()
+        // A bisect runs old commits' launchers: refused naming the shim prefix, and run with it.
+        const shim = "$HOME/Developer/personal/dotfiles/claude/bin/chrome-mock-keychain"
+        const bisect = yield* call("shell", { command: "git bisect run bun tools/drive-web.ts web measure" })
+        expect(bisect).toStartWith("Tool.Error: guard-keychain: `git bisect run bun tools/drive-web.ts web measure` runs a bisect")
+        expect(bisect).toContain(`CHROME="${shim}" git bisect run bun tools/drive-web.ts web measure`)
+        expect(yield* call("shell", { command: `CHROME="${shim}" git bisect run bun tools/drive-web.ts web measure` })).toBeUndefined()
       }),
     ))
 
