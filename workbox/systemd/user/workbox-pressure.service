@@ -1,0 +1,8 @@
+[Unit]
+Description=Sample workbox CPU, memory and I/O pressure
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/workbox-pressure
+StandardOutput=journal
+NoNewPrivileges=yes

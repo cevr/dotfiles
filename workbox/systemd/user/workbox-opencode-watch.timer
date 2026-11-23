@@ -1,0 +1,8 @@
+[Unit]
+Description=Check that the managed OpenCode server is running
+PartOf=opencode.service
+
+[Timer]
+OnActiveSec=15s
+OnUnitInactiveSec=15s
+AccuracySec=1s

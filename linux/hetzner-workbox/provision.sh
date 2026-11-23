@@ -18,7 +18,16 @@
 #              HB_TS_NAME (default bite-cristian-hel until the cutover)
 #   sshd       workbox/systemd/system/bite-workbox-sshd on the Tailscale IPv4
 #              (or HB_SSH_LISTEN), port 2222, AllowUsers exedev
+#   tools      workbox/system-tools.sh: btrfs-progs with simple quotas, fish, ksh,
+#              mksh, qemu-user-static and its binfmt entry, Go and PowerShell as
+#              workbox/pins.conf pins them, /tmp's rules and the held-file guard,
+#              the free-space figures (the same script bootstrap.sh runs)
+#   storage    storage.sh: the limited subvolumes of storage.conf (/tmp, the caches),
+#              and hetzner-workbox-storage.service, which applies them at each boot
 #   upgrades   unattended-upgrades with workbox's 20auto-upgrades
+#   reserve    workbox/system-tools.sh reserve slices: the OpenCode service's memory
+#              floor, the run families' slices (workbox/slices.conf)
+#              (bite.slice's CPU and IO weights come with the sshd phase)
 #   sysctl     workbox's sysctl.d/90-inotify.conf (the inotify limits the lab's
 #              standby keepers need), applied with sysctl -p
 #   backup     backup.sh install (btrbk, nightly, to the Storage Box)
@@ -27,6 +36,7 @@
 set -euo pipefail
 # shellcheck source=common.sh
 . "$(dirname "$0")/common.sh"
+hb_require_host
 
 HB_TS_NAME=${HB_TS_NAME:-bite-cristian-hel}
 HB_APT_REPOS=${HB_APT_REPOS:-1}
@@ -34,16 +44,18 @@ HB_SSH_LISTEN=${HB_SSH_LISTEN:-}
 HB_SSH_PORT=${HB_SSH_PORT:-2222}
 HB_PACKAGES=${HB_PACKAGES:-"btrfs-progs btrbk mdadm rsync mbuffer zstd pv sshfs jq curl git zsh mosh tmux \
 ripgrep fd-find htop btop ncdu lsof unzip build-essential ffmpeg ghostscript sqlite3 nftables \
-redis-server syncthing docker.io docker-compose-v2 docker-buildx nodejs python3-pip nginx \
+redis-server syncthing $hb_docker_packages nodejs python3-pip nginx \
 unattended-upgrades systemd-resolved mongodb-org gh tailscale"}
 system_dir=$hb_dotfiles/workbox/systemd/system
 etc=${HB_ETC:-/etc}
-phases=(host user keys packages firewall rootssh tailscale sshd upgrades sysctl backup bootstrap)
+phases=(host user keys packages tools storage firewall rootssh tailscale sshd reserve upgrades sysctl backup bootstrap)
 
 need_root
 [[ $# -gt 0 ]] && phases=("$@")
 
-apt_install() { DEBIAN_FRONTEND=noninteractive apt-get install -y -q "$@" >/dev/null; }
+# Bounded network time; NEEDRESTART_SUSPEND keeps Ubuntu's needrestart hook from restarting services.
+apt_bounds=(-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3)
+apt_install() { NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive apt-get "${apt_bounds[@]}" install -y -q "$@" >/dev/null; }
 # Installs a file only when it differs; prints whether it changed.
 put() { # mode src dest
     if [[ -e $3 ]] && cmp -s "$2" "$3"; then return 1; fi
@@ -109,19 +121,27 @@ phase_packages() {
         codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
         install -d -m 755 /etc/apt/keyrings
         if [[ ! -e /usr/share/keyrings/tailscale-archive-keyring.gpg ]]; then
-            curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/$codename.noarmor.gpg" -o /usr/share/keyrings/tailscale-archive-keyring.gpg
-            curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/$codename.tailscale-keyring.list" -o /etc/apt/sources.list.d/tailscale.list
+            curl -fsSL --connect-timeout 20 --max-time 300 --retry 3 "https://pkgs.tailscale.com/stable/ubuntu/$codename.noarmor.gpg" -o /usr/share/keyrings/tailscale-archive-keyring.gpg
+            curl -fsSL --connect-timeout 20 --max-time 300 --retry 3 "https://pkgs.tailscale.com/stable/ubuntu/$codename.tailscale-keyring.list" -o /etc/apt/sources.list.d/tailscale.list
         fi
         if [[ ! -e /usr/share/keyrings/mongodb-server-8.0.gpg ]]; then
-            curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg
+            curl -fsSL --connect-timeout 20 --max-time 300 --retry 3 https://www.mongodb.org/static/pgp/server-8.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg
             printf 'deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu %s/mongodb-org/8.0 multiverse\n' \
                 "$codename" > /etc/apt/sources.list.d/mongodb-org-8.0.list
         fi
         if [[ ! -e /etc/apt/keyrings/githubcli-archive-keyring.gpg ]]; then
-            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg
+            curl -fsSL --connect-timeout 20 --max-time 300 --retry 3 https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg
             printf 'deb [arch=%s signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\n' \
                 "$arch" > /etc/apt/sources.list.d/github-cli.list
         fi
+    fi
+    local docker_restart=0 docker_required=0
+    if [[ " $HB_PACKAGES " == *" docker.io "* ]] || command -v dockerd >/dev/null; then
+        # Install placement before apt: package postinst can start the engine
+        # even when reserve is not among the phases, or has already run.
+        docker_required=1
+        "$hb_dotfiles/workbox/system-tools.sh" slices
+        configure_docker
     fi
     # shellcheck disable=SC2086 # a word list
     local missing
@@ -131,13 +151,14 @@ phase_packages() {
     for p in $HB_PACKAGES; do dpkg-query -W "$p" >/dev/null 2>&1 || missing="$missing $p"; done
     if [[ -n ${missing// /} ]]; then
         say "installing:$(echo "$missing" | tr '\n' ' ')"
-        apt-get update -q >/dev/null
+        apt-get "${apt_bounds[@]}" update -q >/dev/null
         # shellcheck disable=SC2086
         apt_install $missing
     else
         say "ok: packages"
     fi
     getent group docker >/dev/null && id "$HB_USER" >/dev/null 2>&1 && usermod -a -G docker "$HB_USER"
+    if ((docker_required)); then activate_docker; fi
     if systemctl list-unit-files mongod.service >/dev/null 2>&1; then systemctl enable --now mongod.service >/dev/null 2>&1 || true; fi
     if systemctl list-unit-files syncthing@.service >/dev/null 2>&1 && id "$HB_USER" >/dev/null 2>&1; then
         systemctl enable "syncthing@$HB_USER.service" >/dev/null 2>&1 || true
@@ -212,6 +233,87 @@ phase_sshd() {
     say "ok: sshd on $listen:$HB_SSH_PORT for $HB_USER"
 }
 
+phase_tools() {
+    "$hb_dotfiles/workbox/system-tools.sh" btrfs shells qemu go pwsh tmp diskfree
+}
+
+# storage.sh and what it reads, copied out of the home (a root unit runs them at each boot, so not
+# from a checkout the user writes), then applied now.
+phase_storage() {
+    local lib=${HB_LIB:-/usr/local/lib/hetzner-workbox} f changed=0
+    for f in common.sh storage.sh storage.conf; do
+        if put "$([[ $f == *.sh ]] && echo 0755 || echo 0644)" "$hb_dir/$f" "$lib/$f"; then changed=1; fi
+    done
+    put 0644 "$hb_dotfiles/workbox/host-identity.sh" "$lib/host-identity.sh" || true
+    local identity_conf
+    identity_conf=$(mktemp)
+    printf 'WORKBOX_EXPECT_MACHINE_ID=%s\n' "$WORKBOX_EXPECT_MACHINE_ID" > "$identity_conf"
+    put 0644 "$identity_conf" "$etc/hetzner-workbox/host-identity.env" || true
+    rm -f "$identity_conf"
+    if put 0644 "$hb_dir/systemd/hetzner-workbox-storage.service" "$etc/systemd/system/hetzner-workbox-storage.service"; then changed=1; fi
+    if ((changed)); then systemctl daemon-reload; fi
+    systemctl is-enabled --quiet hetzner-workbox-storage.service 2>/dev/null || systemctl enable --quiet hetzner-workbox-storage.service
+    "$lib/storage.sh" apply
+    # The durable run areas' boot rules: /runs/vperf2, and /tmp/vperf2 a link to it (made now too, so
+    # the move finds it; a boot makes it again after emptying /tmp).
+    local runs_conf
+    runs_conf=$(mktemp)
+    sed "s/__UID__/$HB_UID/g" "$hb_dir/systemd/tmpfiles.d/hetzner-runs.conf" > "$runs_conf"
+    put 0644 "$runs_conf" "$etc/tmpfiles.d/hetzner-runs.conf" || true
+    rm -f "$runs_conf"
+    systemd-tmpfiles --create ${HB_TARGET:+"--root=$HB_TARGET"} - < "$etc/tmpfiles.d/hetzner-runs.conf"
+}
+
+configure_docker() {
+    local config=$etc/docker/daemon.json candidate
+    candidate=$(mktemp)
+    if ! python3 -c '
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+config = json.loads(path.read_text()) if path.exists() else {}
+config["cgroup-parent"] = "user-jobs.slice"
+options = config.get("exec-opts", [])
+if not isinstance(options, list):
+    raise ValueError("exec-opts must be a list")
+config["exec-opts"] = [x for x in options if not x.startswith("native.cgroupdriver=")] + ["native.cgroupdriver=systemd"]
+print(json.dumps(config, indent=2))
+' "$config" > "$candidate" || { command -v dockerd >/dev/null && ! dockerd --validate --config-file "$candidate"; }; then
+        rm -f "$candidate"
+        die "Docker workload configuration is invalid"
+    fi
+    if put 0644 "$candidate" "$config" && systemctl is-active --quiet docker.service; then docker_restart=1; fi
+    rm -f "$candidate"
+}
+
+activate_docker() {
+    local service
+    dockerd --validate --config-file "$etc/docker/daemon.json"
+    for service in "${hb_docker_services[@]}"; do
+        if systemctl is-active --quiet "$service" && [[ $(hb_unit_cgroup "$service") != "$hb_jobs_cgroup/$service" ]]; then
+            # Move a preexisting runtime as one group; on a fresh install apt
+            # has already started it with the installed placement.
+            systemctl stop docker.service docker.socket containerd.service
+            break
+        fi
+    done
+    if ((docker_restart)) && systemctl is-active --quiet docker.service; then systemctl restart docker.service; fi
+    systemctl start "${hb_docker_services[@]}"
+}
+
+phase_reserve() {
+    "$hb_dotfiles/workbox/system-tools.sh" reserve slices
+    local docker_restart=0 service
+    if command -v dockerd >/dev/null; then
+        configure_docker
+        activate_docker
+    fi
+    for service in cron.service atd.service; do
+        if systemctl is-active --quiet "$service" && [[ $(hb_unit_cgroup "$service") != "$hb_jobs_cgroup/$service" ]]; then
+            systemctl restart "$service"
+        fi
+    done
+}
+
 phase_upgrades() {
     dpkg-query -W unattended-upgrades >/dev/null 2>&1 || apt_install unattended-upgrades
     put 0644 "$system_dir/20auto-upgrades" "$etc/apt/apt.conf.d/20auto-upgrades" || say "ok: unattended upgrades"
@@ -242,11 +344,12 @@ phase_bootstrap() {
     local uid
     uid=$(id -u "$HB_USER")
     runuser -u "$HB_USER" -- env HOME="$HB_HOME" USER="$HB_USER" XDG_RUNTIME_DIR="/run/user/$uid" \
+        WORKBOX_EXPECT_MACHINE_ID="$WORKBOX_EXPECT_MACHINE_ID" \
         PATH="$HB_HOME/.local/bin:$HB_HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin" "$boot"
 }
 
 for p in "${phases[@]}"; do
-    declare -F "phase_$p" >/dev/null || die "unknown phase: $p (one of: host user keys packages firewall rootssh tailscale sshd upgrades sysctl backup bootstrap)"
+    declare -F "phase_$p" >/dev/null || die "unknown phase: $p (one of: host user keys packages tools storage firewall rootssh tailscale sshd reserve upgrades sysctl backup bootstrap)"
 done
 for p in "${phases[@]}"; do
     say "phase $p"

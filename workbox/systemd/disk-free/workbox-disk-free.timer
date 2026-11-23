@@ -1,0 +1,10 @@
+[Unit]
+Description=Publish the /workspaces btrfs's free space every minute
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=1min
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

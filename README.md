@@ -28,20 +28,30 @@ git clone git@github.com:cevr/dotfiles.git ~/Developer/personal/dotfiles
 cd ~/Developer/personal/dotfiles
 
 # Symlink (run install.sh or manually)
-ln -sf $(pwd)/zshenv ~/.zshenv
-ln -sf $(pwd)/zshrc ~/.zshrc
-ln -sf $(pwd)/gitconfig ~/.gitconfig
-ln -sf $(pwd)/gitignore_global ~/.gitignore_global
-ln -sf $(pwd)/ghostty/config ~/Library/Application\ Support/com.mitchellh.ghostty/config
-ln -sf $(pwd)/atuin.toml ~/.config/atuin/config.toml
+ln -sf -- "$PWD/zshenv" ~/.zshenv
+ln -sf -- "$PWD/zshrc" ~/.zshrc
+ln -sf -- "$PWD/gitconfig" ~/.gitconfig
+ln -sf -- "$PWD/gitignore_global" ~/.gitignore_global
+ln -sf -- "$PWD/ghostty/config" "$HOME/Library/Application Support/com.mitchellh.ghostty/config"
+ln -sf -- "$PWD/atuin.toml" ~/.config/atuin/config.toml
 mkdir -p ~/.local/bin
-ln -sf $(pwd)/skills/track-work-hours/scripts/hours ~/.local/bin/hours
+ln -sf -- "$PWD/skills/track-work-hours/scripts/hours" ~/.local/bin/hours
 ```
 
 ### Bite workbox
 
+#### Host identity
+
+These commands assume a machine you trust: the check behind this document constrains the commands as written here, not your shell's startup files, the programs those command names resolve to, this checkout, or the local and remote configuration of the tools they use (ssh, git, systemd, rsync).
+
+For the approved deployment, replace the literal
+`<machine-id-from-deployment-record>` with the intended workbox ID from the
+operator's deployment record opened at order time and confirmed via the provider console.
+Reading the ID from whichever machine you are logged into defeats the check.
+
 ```bash
-~/Developer/personal/dotfiles/workbox/bootstrap.sh
+# Pin source: workbox deployment record; see [Host identity](#host-identity).
+WORKBOX_EXPECT_MACHINE_ID='<machine-id-from-deployment-record>' ~/Developer/personal/dotfiles/workbox/bootstrap.sh
 ```
 
 ### Claude
