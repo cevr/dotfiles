@@ -299,7 +299,7 @@ export interface ScanInput {
   readonly timeoutMs: number
 }
 
-const reportProblems = (report: Report, input: ScanInput) => {
+const reportProblems = (report: Report, input: Pick<ScanInput, "files" | "rules">) => {
   const listed = new Set(input.files)
   const coverage = Arr.flatMap([report.number_of_files], (count) => {
     if (count === input.files.length) return []
