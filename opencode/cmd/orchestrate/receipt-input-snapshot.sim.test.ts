@@ -14,7 +14,7 @@ import { mainBatchText } from "@dotfiles/opencode-orchestrate/tools"
 import { LandRecordJson, type Receipt, ReceiptJson } from "@dotfiles/opencode-work/receipt"
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { CryptoHasher, deepEquals, spawnSync } from "bun"
-import { Array as Arr, Context, Data, Effect, Equal, FileSystem, Layer, Match, Option, Order, Path, Result, Schema } from "effect"
+import { Array as Arr, ByteSize, Context, Data, Effect, Equal, FileSystem, Layer, Match, Option, Order, Path, PlatformError, Result, Schema } from "effect"
 import { Digest } from "effect/crypto"
 import * as Seed from "../../sim/seed.ts"
 import { formats, layer } from "./batch-inputs.ts"
@@ -822,4 +822,176 @@ seeded("host scope: a source stamps the host it reads on; Work's receipts and th
     expect(onSecond.artifacts.map((each) => each.digest)).toEqual(onFirst.artifacts.map((each) => each.digest))
     expect([onSecond.id === onFirst.id, onSecond.receipts[0]?.id === onFirst.receipts[0]?.id]).toEqual([false, false])
   }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
+)
+
+/** One entry of the fake file system: a file (its inode, its text, how many names it has), a FIFO, a folder, a link. */
+type Node = Data.TaggedEnum<{
+  File: { readonly ino: bigint; readonly text: string; readonly names: number }
+  Fifo: { readonly ino: bigint; readonly text: string }
+  Folder: { readonly ino: bigint }
+  Link: { readonly ino: bigint; readonly target: string }
+}>
+const Node = Data.taggedEnum<Node>()
+
+/** The fake's world: an entry by absolute path, changed in place by a swap. */
+type World = Map<string, Node>
+
+/** Where `file` leads in `world`: every link among its parents followed, the last one too when `followLast`. */
+const resolveIn = (world: World, file: string, followLast: boolean): string => {
+  const parts = file.split("/").filter((part) => part !== "")
+  return Arr.reduce(parts, "", (at, part, index) => {
+    const next = `${at}/${part}`
+    return Option.match(Option.filter(Option.fromNullishOr(world.get(next)), Node.$is("Link")), {
+      onNone: () => next,
+      onSome: (link) => Match.value(index < parts.length - 1 || followLast).pipe(Match.when(true, () => resolveIn(world, link.target, true)), Match.orElse(() => next)),
+    })
+  })
+}
+
+/** An entry's facts as `stat` gives them. */
+const infoOf = (node: Node): FileSystem.File.Info => {
+  const [type, size, names] = Node.$match(node, {
+    File: (each) => ["File", UTF8.encode(each.text).length, each.names] as const,
+    Fifo: (each) => ["FIFO", UTF8.encode(each.text).length, 1] as const,
+    Folder: () => ["Directory", 0, 2] as const,
+    Link: (each) => ["SymbolicLink", each.target.length, 1] as const,
+  })
+  return {
+    type,
+    mtime: Option.none(),
+    atime: Option.none(),
+    birthtime: Option.none(),
+    dev: 1n,
+    ino: Option.some(node.ino),
+    mode: 0o644,
+    nlink: Option.some(BigInt(names)),
+    uid: Option.none(),
+    gid: Option.none(),
+    rdev: Option.none(),
+    size: ByteSize.bytes(size),
+    blksize: Option.none(),
+    blocks: Option.none(),
+  }
+}
+
+// The platform's own "no such entry", as its no-op file system answers it.
+const NOTHING = FileSystem.makeNoop({})
+/** The entry at `file`, or the platform's NotFound. */
+const found = (node: Option.Option<Node>, file: string): Effect.Effect<Node, PlatformError.PlatformError> =>
+  Option.match(node, { onNone: () => NOTHING.lstat(file).pipe(Effect.andThen(Effect.die("the no-op file system has no entries"))), onSome: Effect.succeed })
+
+/** An opened handle: it keeps the entry it opened, whatever the world does to the path afterwards. */
+const handleOf = (node: Node): FileSystem.File => ({
+  [FileSystem.FileTypeId]: FileSystem.FileTypeId,
+  stat: Effect.succeed(infoOf(node)),
+  seek: () => Effect.die("unused"),
+  sync: Effect.void,
+  read: () => Effect.die("unused"),
+  readAlloc: (size) =>
+    Effect.succeed(Option.some(UTF8.encode(Node.$match(node, { File: (each) => each.text, Fifo: (each) => each.text, Folder: () => "", Link: () => "" })).slice(0, size))),
+  truncate: () => Effect.die("unused"),
+  write: () => Effect.die("unused"),
+  writeAll: () => Effect.die("unused"),
+})
+
+/**
+ * The fake file system: what the host gives a reader (a real path, a look that does not follow the last link, an open
+ * that follows every parent link and the last one unless `noFollow`), over `world`. `beforeOpen` runs once just before
+ * the first open (the point between the look and the open), `afterOpen` once just after it; `opened` records where
+ * each open led.
+ */
+const swapping = (world: World, beforeOpen: (world: World) => void, afterOpen: (world: World) => void) => {
+  const opened: Array<string> = []
+  const swaps = { before: [beforeOpen], after: [afterOpen] }
+  const layer = Layer.succeed(
+    FileSystem.FileSystem,
+    FileSystem.makeNoop({
+      realPath: (file) =>
+        Effect.suspend(() => {
+          const real = resolveIn(world, file, true)
+          return Effect.as(found(Option.fromNullishOr(world.get(real)), file), real)
+        }),
+      lstat: (file) => Effect.suspend(() => Effect.map(found(Option.fromNullishOr(world.get(resolveIn(world, file, false))), file), infoOf)),
+      open: (file, options) =>
+        Effect.suspend(() => {
+          for (const swap of swaps.before.splice(0)) swap(world)
+          const target = resolveIn(world, file, !Option.exists(Option.fromNullishOr(options), (each) => each.noFollow === true))
+          return found(Option.fromNullishOr(world.get(target)), file).pipe(
+            Effect.flatMap((node) =>
+              Match.value(node).pipe(
+                Match.tag("Link", () => Effect.fail(PlatformError.badArgument({ module: "FileSystem", method: "open", description: `ELOOP: ${file} is a link` }))),
+                Match.orElse((each) => Effect.sync(() => opened.push(target)).pipe(Effect.as(handleOf(each)))),
+              ),
+            ),
+            Effect.tap(() => Effect.sync(() => swaps.after.splice(0).forEach((swap) => swap(world)))),
+          )
+        }),
+    }),
+  )
+  return { layer, opened }
+}
+
+seeded("a file swapped between the look and the open, by the fake file system: a link is never followed (the open refuses it), a FIFO, a folder or a hard link is refused from the opened handle, another file is read whole, a parent swapped for a link or a file replaced while open fails the read; the outside file's bytes never come back", ({ expect }) =>
+  Effect.gen(function* () {
+    const name = `${laneHead}.round.json`
+    const leaf = `/real/receipts/${name}`
+    const good = encodeReceipt(receipt(laneHead, "round", laneTree, [0], "2026-11-22T01:00:00.000Z"))
+    const other = encodeReceipt(receipt(laneHead, "round", outerTree, [1], "2026-11-22T02:00:00.000Z"))
+    const secret = encodeReceipt(receipt(laneHead, "round", base, [0], "2026-11-22T03:00:00.000Z"))
+    const secretFile = Node.File({ ino: 20n, text: secret, names: 1 })
+    const worldOf = (): World =>
+      new Map<string, Node>([
+        ["/real", Node.Folder({ ino: 1n })],
+        ["/real/receipts", Node.Folder({ ino: 2n })],
+        [leaf, Node.File({ ino: 10n, text: good, names: 1 })],
+        ["/outside", Node.Folder({ ino: 3n })],
+        ["/outside/secret.json", secretFile],
+        [`/outside/${name}`, Node.File({ ino: 21n, text: secret, names: 1 })],
+        ["/alias", Node.Link({ ino: 4n, target: "/real" })],
+      ])
+    const keep = (_world: World) => {}
+    const put = (file: string, node: Node) => (world: World) => void world.set(file, node)
+    const restore = (file: string) => (world: World) => void Option.map(Option.fromNullishOr(worldOf().get(file)), (node) => world.set(file, node))
+    const cases: ReadonlyArray<readonly [string, string, (world: World) => void, (world: World) => void]> = [
+      ["no swap", "/real/receipts", keep, keep],
+      ["the configured folder behind a link (configuration, resolved once)", "/alias/receipts", keep, keep],
+      ["file swapped for a link to an outside file", "/real/receipts", put(leaf, Node.Link({ ino: 30n, target: "/outside/secret.json" })), keep],
+      ["file swapped for a FIFO", "/real/receipts", put(leaf, Node.Fifo({ ino: 31n, text: secret })), keep],
+      ["file swapped for a folder", "/real/receipts", put(leaf, Node.Folder({ ino: 32n })), keep],
+      ["file swapped for a hard link to an outside file", "/real/receipts", put(leaf, Node.File({ ...secretFile, names: 2 })), keep],
+      ["file swapped for another file", "/real/receipts", put(leaf, Node.File({ ino: 33n, text: other, names: 1 })), keep],
+      ["parent folder swapped for a link outside", "/real/receipts", put("/real/receipts", Node.Link({ ino: 34n, target: "/outside" })), keep],
+      ["parent folder swapped for a link outside, then back", "/real/receipts", put("/real/receipts", Node.Link({ ino: 34n, target: "/outside" })), restore("/real/receipts")],
+      ["file replaced while open", "/real/receipts", keep, put(leaf, Node.File({ ino: 35n, text: other, names: 1 }))],
+    ]
+    const seen = yield* Effect.forEach(cases, ([what, folder, beforeOpen, afterOpen]) =>
+      Effect.gen(function* () {
+        const fake = swapping(worldOf(), beforeOpen, afterOpen)
+        const places = { host: HOST, repository: { key: "dotfiles", checkouts: [LANE] }, receipts: folder, installed: "/real/state/installed.json", handoff: "/real/state/handoff.json", maxBytes: 65536 }
+        const source = Context.get(yield* Layer.build(receiptSource(places).pipe(Layer.provide(Layer.mergeAll(fake.layer, Path.layer)))), ReceiptSource)
+        const read = yield* Effect.result(source.read(SourceRef.Receipt({ head: laneHead, kind: "round" })))
+        const words = Result.match(read, {
+          onFailure: () => "unreadable",
+          onSuccess: SourceRead.$match({
+            Present: (present) => Match.value(present.text).pipe(Match.when(good, () => "the file"), Match.when(other, () => "the other file"), Match.orElse(() => "OTHER BYTES")),
+            Absent: () => "absent",
+            Refused: (refused) => `refused: ${refused.reason}`,
+          }),
+        })
+        return [what, words, [...fake.opened]] as const
+      }),
+    )
+    expect(seen).toEqual([
+      ["no swap", "the file", [leaf]],
+      ["the configured folder behind a link (configuration, resolved once)", "the file", [leaf]],
+      ["file swapped for a link to an outside file", "unreadable", []],
+      ["file swapped for a FIFO", "refused: not a regular file", [leaf]],
+      ["file swapped for a folder", "refused: not a regular file", [leaf]],
+      ["file swapped for a hard link to an outside file", "refused: a hard link", [leaf]],
+      ["file swapped for another file", "the other file", [leaf]],
+      ["parent folder swapped for a link outside", "unreadable", [`/outside/${name}`]],
+      ["parent folder swapped for a link outside, then back", "unreadable", [`/outside/${name}`]],
+      ["file replaced while open", "unreadable", [leaf]],
+    ])
+  }).pipe(Effect.scoped),
 )
