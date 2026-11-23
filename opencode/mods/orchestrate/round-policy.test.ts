@@ -236,7 +236,7 @@ describe("the export law: evidence enters only through decode", () => {
     const proto = Object.getPrototypeOf(proof)
     const copied: Checked = Object.assign(Object.create(proto), withoutEvidence)
     const constructed: Checked = Reflect.construct(proto.constructor, [proof.role, [], proof.ending, proof.envelope])
-    const expected = { ok: false, error: "a step is checked only by decode, from its envelope" }
+    const expected = { ok: false, error: "a step is checked only by decode, from its envelope" } as const
     for (const candidate of [copied, constructed]) {
       expect(owed(candidate)).toEqual(expected)
       expect(admit(candidate)(owedOf(envelope("implementor", [done])))).toEqual([`ill-formed: ${expected.error}`])

@@ -1334,7 +1334,8 @@ const checkStep = (envelope: Envelope): Decoded<Checked> => {
   if (!reads.ok) return fail(reads.error)
   const due = deriveOwed(policy, ending.value, reads.value)
   if (!due.ok) return fail(due.error)
-  const checked = Object.freeze(new CheckedStep(role, frozen(records.value), frozen(ending.value), frozen(envelope)))
+  const checked = new CheckedStep(role, frozen(records.value), frozen(ending.value), frozen(envelope))
+  Object.freeze(checked)
   issued.set(checked, due.value)
   return ok(checked)
 }
@@ -1350,7 +1351,7 @@ const readUnknown = <Input, A>(read: (input: Input) => A, unreadable: () => A) =
  * (exact tags, primitives, array elements and members, each rejection naming its path), then each item's history
  * folded event by event and the step's stop derived. Never throws: a typed rejection, or the checked step.
  */
-export const decode = readUnknown(flow(decodeEnvelope, Result.match({ onFailure: rejected, onSuccess: checkStep })), () => fail("envelope: could not read the value"))
+export const decode = readUnknown<unknown, Decoded<Checked>>(flow(decodeEnvelope, Result.match({ onFailure: rejected, onSuccess: checkStep })), () => fail("envelope: could not read the value"))
 
 // ---- what a step owes, derived ----------------------------------------------------------------------------------------
 
