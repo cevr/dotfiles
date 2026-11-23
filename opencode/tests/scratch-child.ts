@@ -68,9 +68,14 @@ export const checkoutBun = (entry: string, inputs: FixtureEnvironment) => {
 }
 
 /** A fixed local Bun entry, with each generated, pinned and checkout input checked before launch. */
-export const checkoutBunCommand = (entry: string, inputs: FixtureEnvironment) => {
+export const checkoutBunCommand = (
+  entry: string, inputs: FixtureEnvironment, lifecycle: Pick<ChildProcess.CommandOptions, "detached" | "stderr" | "forceKillAfter"> = {},
+) => {
   const { argv: [bun, ...args], ...options } = checkoutBun(entry, inputs)
-  return ChildProcess.make(bun, args, { ...options, extendEnv: false, stdin: "ignore", forceKillAfter: "3 seconds" })
+  return ChildProcess.make(bun, args, {
+    ...options, extendEnv: false, stdin: "ignore", forceKillAfter: lifecycle.forceKillAfter || "3 seconds",
+    detached: lifecycle.detached, stderr: lifecycle.stderr,
+  })
 }
 
 /** The same checked entry for Bun tests that own their subprocess lifecycle. */
@@ -82,6 +87,29 @@ export const spawnCheckoutBun = (entry: string, inputs: FixtureEnvironment, deta
 export const spawnCheckoutBunSync = (entry: string, inputs: FixtureEnvironment) => {
   const { argv, ...options } = checkoutBun(entry, inputs)
   return spawnSync(argv, { ...options, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+}
+
+/** The reaper fixture inspects one process, not the checkout it may be running in. */
+export const reaperEnvironment = (pid: number) => {
+  if (!Number.isSafeInteger(pid) || pid < 1) return reject("invalid reaper process ID")
+  return ChildProcess.make("/bin/ps", ["eww", "-o", "command=", "-p", `${pid}`], {
+    extendEnv: false, env: { PATH: "/usr/bin:/bin" }, stdin: "ignore", stderr: "ignore", forceKillAfter: "1 second",
+  })
+}
+
+/** Real child lifecycles for the reaper: background, own group, and a child that replaces itself. */
+export const reaperChild = (kind: "daemon" | "child" | "respawner", seen: string) => {
+  const file = scratchInput(seen)
+  const cwd = resolve(file, "..")
+  const options = { cwd, env: { ...scratchPtyEnv(cwd), REAPER_SEEN: file }, extendEnv: false, stdin: "ignore", stderr: "ignore", forceKillAfter: "1 second" } as const
+  switch (kind) {
+    case "daemon":
+      return ChildProcess.make("/bin/sh", ["-c", "sleep 120 >/dev/null 2>&1 & echo $!; sleep 1"], options)
+    case "child":
+      return ChildProcess.make("/bin/sleep", ["121"], { ...options, detached: true, stdout: "ignore" })
+    case "respawner":
+      return ChildProcess.make("/bin/sh", ["-c", `trap 'sleep 122 & echo $! >"$REAPER_SEEN.respawned"; exit' TERM; while :; do sleep 1; done`], { ...options, detached: true, stdout: "ignore" })
+  }
 }
 
 /** Launch a named checkout entry behind a short-lived shim; the child gets the shim's parent PID. */

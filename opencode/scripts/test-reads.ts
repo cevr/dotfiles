@@ -440,6 +440,8 @@ const BOUNDED_PROCESS = new Set([
   "tests/scratch-child.ts:spawnScratchZshSync",
   "tests/scratch-child.ts:scratchPtyCommand",
   "tests/scratch-child.ts:scratchPtyEnv",
+  "tests/scratch-child.ts:reaperChild",
+  "tests/scratch-child.ts:reaperEnvironment",
   "tests/scratch-child.ts:spawnScratchProgram",
   "tests/scratch-child.ts:runScratchTool",
   "tests/scratch-child.ts:spawnScratchShellFileSync",

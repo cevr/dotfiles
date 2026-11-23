@@ -1,5 +1,3 @@
-// @reads all
-// @reads-reason subprocess reads at tests/reaper.test.ts: ChildProcess.make("bun", [script], { detached: true, stdin: "ignore", stderr: "inherit", env: {
 // testbeds/reaper/start.ts: a test runner killed with SIGKILL mid-run (no finalizer, no exit hook) leaves nothing it
 // started. tests/reaper/runner.ts imports the reaper as tests/owned.ts and tests/service.ts do, starts a process
 // handed to pid 1 (a `service start` daemon), one leading a group of its own (an opencode-drive TUI) and one that
@@ -10,8 +8,10 @@
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Array as Arr, Effect, FileSystem, Option, Path, Schedule, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
-import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { ChildProcessSpawner } from "effect/process"
 import { type Proc, signal, stop, survivors, table } from "../scripts/leaks.ts"
+import { checkoutBunCommand, reaperEnvironment } from "./scratch-child.ts"
+import { scratchInput } from "./read-path.ts"
 
 /** The pid a `<label> <pid>` line of the runner names; 0 when none does. */
 const pidOf = (lines: ReadonlyArray<string>, label: string) =>
@@ -31,7 +31,7 @@ const within = <A, R>(check: Effect.Effect<A, never, R>, holds: (value: A) => bo
 const environ = (pid: number) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-    const ps = yield* spawner.spawn(ChildProcess.make("ps", ["eww", "-o", "command=", "-p", `${pid}`], { stdin: "ignore", stderr: "ignore", forceKillAfter: "1 second" }))
+    const ps = yield* spawner.spawn(reaperEnvironment(pid))
     return yield* ps.stdout.pipe(Stream.decodeText(), Stream.mkString)
   }).pipe(Effect.scoped, Effect.orElseSucceed(() => ""))
 
@@ -42,18 +42,19 @@ const reapersOf = (seen: string) =>
   )
 
 /** `bun <script>` with `REAPER_SEEN` naming `seen`. */
-const bunWith = (script: string, seen: string) =>
-  ChildProcess.make("bun", [script], { detached: true, stdin: "ignore", stderr: "inherit", env: { REAPER_SEEN: seen }, extendEnv: true, forceKillAfter: "1 second" })
+const reaperEnv = (dir: string, seen: string) => ({
+  REAPER_SEEN: seen, HOME: dir, TMPDIR: dir, XDG_CONFIG_HOME: dir,
+  XDG_CACHE_HOME: dir, XDG_DATA_HOME: dir, XDG_STATE_HOME: dir,
+})
+const LIFE = { detached: true, stderr: "inherit", forceKillAfter: "1 second" } as const
 
 /** A scratch file for a case's reaper to name what it sees: its path also tells this case's reapers apart. */
 const seenFile = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
-  return path.join(yield* fs.makeTempDirectoryScoped({ prefix: "reaper-" }), "seen")
+  const dir = yield* fs.makeTempDirectoryScoped({ prefix: "reaper-" })
+  return { dir, seen: scratchInput(path.join(dir, "seen")) }
 })
-
-/** The path of a file beside this one. */
-const beside = (name: string) => Effect.flatMap(Path.Path, (path) => path.fromFileUrl(new URL(name, import.meta.url)))
 
 describe("the reaper of a test process", () => {
   it.live.layer(BunServices.layer)(
@@ -62,9 +63,11 @@ describe("the reaper of a test process", () => {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
         const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-        const seen = yield* seenFile
+        const { dir, seen } = yield* seenFile
         // Its own group: the kill below is for the runner alone, as a SIGKILL of a test process is.
-        const child = yield* spawner.spawn(bunWith(yield* beside("./reaper/runner.ts"), seen))
+        const child = yield* spawner.spawn(checkoutBunCommand("tests/reaper/runner.ts", {
+          scratch: reaperEnv(dir, seen), external: {}, values: {},
+        }, LIFE))
         const lines = yield* child.stdout.pipe(
           Stream.decodeText(),
           Stream.splitLines,
@@ -75,7 +78,7 @@ describe("the reaper of a test process", () => {
         const started = table().filter((row) => pids.includes(row.pid))
         expect(started.length).toBe(3)
         // The kill once the reaper has seen them all (or, with no reaper, once it would have).
-        const named = fs.readFileString(seen).pipe(Effect.orElseSucceed(() => ""))
+        const named = fs.readFileString(scratchInput(seen)).pipe(Effect.orElseSucceed(() => ""))
         yield* within(named, (text) => pids.every((pid) => text.split("\n").includes(`${pid}`)))
         const reapers = yield* reapersOf(seen)
         yield* child.kill({ killSignal: "SIGKILL" })
@@ -86,7 +89,7 @@ describe("the reaper of a test process", () => {
         // Whatever a failed run left, the test stops: it started them. SIGKILL, not a SIGTERM the respawner would
         // answer with one more; and the one a reaper's SIGTERM made it start, named in its file, goes too.
         yield* Effect.sync(() => signal(orphans, "SIGKILL"))
-        const respawned = Number((yield* fs.readFileString(`${seen}.respawned`).pipe(Effect.orElseSucceed(() => ""))).trim())
+        const respawned = Number((yield* fs.readFileString(scratchInput(`${seen}.respawned`)).pipe(Effect.orElseSucceed(() => ""))).trim())
         const spawned = table().filter((row) => row.pid === respawned && row.args === "sleep 122")
         yield* Effect.sync(() => signal(spawned, "SIGKILL"))
         expect([reapers.length, orphans.map((proc) => proc.args)]).toEqual([1, []])
@@ -101,10 +104,12 @@ describe("the reaper of a test process", () => {
     () =>
       Effect.gen(function* () {
         const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-        const seen = yield* seenFile
-        const quick = yield* beside("./reaper/quick.ts")
+        const { dir, seen } = yield* seenFile
+        const quick = checkoutBunCommand("tests/reaper/quick.ts", {
+          scratch: reaperEnv(dir, seen), external: {}, values: {},
+        }, LIFE)
         for (const _ of [1, 2, 3, 4, 5]) {
-          const child = yield* spawner.spawn(bunWith(quick, seen))
+          const child = yield* spawner.spawn(quick)
           expect(Option.map(yield* child.exitCode.pipe(Effect.timeoutOption("5 seconds")), Number)).toEqual(Option.some(0))
         }
         const left = yield* within(reapersOf(seen), (rows) => rows.length === 0)
