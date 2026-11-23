@@ -20,13 +20,27 @@ import {
   ASSIGNMENT,
   type Item,
   matching,
-  phrase,
   PREDICATE,
   type Predicates,
   STATE_NAME,
   stateOf,
-  stateWords,
-  labelCell,
+  ATOM_IDS,
+  type Atom,
+  atomWords,
+  ATTEMPT_NOTE,
+  condition,
+  DECISIONS,
+  F1_HEADER,
+  FIRST_ROW,
+  ORDER,
+  parseCondition,
+  parseWhen,
+  READS,
+  readDecisions,
+  readVerdicts,
+  rowLabel,
+  VERDICT_ORDER,
+  when,
   type Validity,
   validity,
   VALIDITY,
@@ -53,6 +67,7 @@ import {
 import { approved, current, drift, paragraphs, type Prompt, prompts, ROOT } from './inventory.ts';
 import { INSTALLED, RETENTION } from './retention.ts';
 import { EVENTS, reachable, recordKey } from './item-histories.ts';
+import { LIST_HISTORIES, type ListHistory } from './list-histories.ts';
 
 /** The verdict words each role may give. */
 const VOCAB: Record<Role, ReadonlyArray<string>> = { planner: ['ready', 'blocked'], implementor: ['ready', 'blocked'], verifier: ['stuck', 'changes', 'accepted'], worker: ['none'] };
@@ -406,7 +421,7 @@ describe('(iv) every case found so far has its one disposition', () => {
   test('an item keeps its label whatever stops the step (N1 to N3): F1 takes no stop', () => {
     expect(label.length).toBe(2);
     for (const role of ROLES)
-      for (const state of STATES_OF[role]) expect(render(role)).toContain(`| ${labelCell(role, state)} |`);
+      for (const row of DECISIONS[role]) expect(render(role)).toContain(`| ${rowLabel(role, row)} |`);
   });
   test('22s-7 a wrong heads line makes the batch `stuck` even with a proven Blocker; the prompt says the same', () => {
     expect(batchVerdict(false, ['changes'])).toBe('stuck');
@@ -523,22 +538,6 @@ describe('(vi) the item model: valid = reachable, and every valid item is in exa
     expect(() => stateOf('verifier', work({ attempt: 'pass', now: 'advance' }))).toThrow('a passed item stays settled');
     expect(() => stateOf('planner', work({ attempt: 'started', now: 'settled' }))).toThrow('a settled item is settled by a result');
   });
-  test("each state's row in every prompt is its predicate's conditions, one phrase each, and the phrases are one-to-one", () => {
-    for (const role of ROLES) {
-      const byPhrase = new Map<string, string>();
-      for (const condition of STATES_OF[role].flatMap((state) => [...PREDICATE[state]])) {
-        const words = phrase(role, condition);
-        const key = JSON.stringify(condition);
-        expect([role, words, byPhrase.get(words) ?? key]).toEqual([role, words, key]);
-        byPhrase.set(words, key);
-      }
-      for (const state of STATES_OF[role]) {
-        expect(render(role)).toContain(`| ${STATE_NAME[state]} | ${stateWords(role, state)} | ${labelCell(role, state)} |`);
-        for (const condition of PREDICATE[state]) expect(stateWords(role, state)).toContain(phrase(role, condition));
-      }
-      expect(render(role)).toContain(`Assigned work is ${ASSIGNMENT[role]}`);
-    }
-  });
 });
 
 /** A history: the events one item went through, the record they leave, its state and words its label must hold. */
@@ -552,10 +551,10 @@ interface History {
   readonly not?: string;
 }
 const HISTORIES: ReadonlyArray<History> = [
-  { name: 'V7 a required check ran, printed a truncated report, and can be retried here (a sibling refusal then stops the step)', role: 'verifier', events: ['attempt → unclear'], item: work({ attempt: 'unclear' }), state: 'runnable', label: '`retry: <check>`, named under Check with what its last attempt printed; it continues to a result', not: '`not run`' },
+  { name: 'V7 a required check ran, printed a truncated report, and can be retried here (a sibling refusal then stops the step)', role: 'verifier', events: ['attempt → unclear'], item: work({ attempt: 'unclear' }), state: 'runnable', label: '`retry: <check>`, named under Check; it continues to a result', not: '`not run`' },
   { name: 'V6 a required check ran unclear and no retry can settle it here', role: 'verifier', events: ['attempt → unclear', 'retry becomes unavailable'], item: work({ attempt: 'unclear', now: 'settled' }), state: 'unclear', label: '`ran unclear: <check>`' },
-  { name: 'A1 the only gate ran red, is repairable, and the timebox arrives', role: 'implementor', events: ['attempt → fail'], item: work({ attempt: 'fail' }), state: 'runnable', label: 'name what its last attempt printed' },
-  { name: 'A1 variant: the gate printed an unclear result and can be rerun', role: 'implementor', events: ['attempt → unclear'], item: work({ attempt: 'unclear' }), state: 'runnable', label: 'name what its last attempt printed' },
+  { name: 'A1 the only gate ran red, is repairable, and the timebox arrives', role: 'implementor', events: ['attempt → fail'], item: work({ attempt: 'fail' }), state: 'runnable', label: '`continues next round`' },
+  { name: 'A1 variant: the gate printed an unclear result and can be rerun', role: 'implementor', events: ['attempt → unclear'], item: work({ attempt: 'unclear' }), state: 'runnable', label: '`continues next round`' },
   { name: 'A1 control: the gate never ran', role: 'implementor', events: [], item: work({}), state: 'runnable', label: '`continues next round`' },
   { name: 'A2 an optional wider probe the host cannot run, no refusal', role: 'verifier', events: ['host probe fails'], item: work({ required: false, now: 'hostCannot' }), state: 'unproven', label: '`unproven: <probe>`' },
   { name: 'A2 control: the same host failure on a required check', role: 'verifier', events: ['host probe fails'], item: work({ now: 'hostCannot' }), state: 'cannot', label: '`cannot run here:' },
@@ -634,5 +633,169 @@ describe('(vi) a model fault is red', () => {
   test('a hole (runnable only when never attempted, as 22u A1 found) is red', () => {
     const predicates: Predicates = { ...PREDICATE, runnable: [...PREDICATE.runnable, ['attempt', ['never']]] };
     expect(partition(predicates).some((line) => line.startsWith('implementor') && line.endsWith('no state'))).toBe(true);
+  });
+});
+
+// ---- (vii) the rendered list: every prompt read back, first row true, one label each ------------------------------
+
+/** Every atom a reader can take as true of an item that holds every record given (two records: two obstacles at once). */
+const truths = (records: ReadonlyArray<Item>): Set<Atom> => new Set(ATOM_IDS.filter((atom) => records.some((one) => READS[atom](one))));
+type Read = ReturnType<typeof readDecisions>;
+/** The index of the first rendered row true of the atoms, or -1. */
+const firstRow = (rows: Read, atoms: Set<Atom>) => rows.findIndex((row) => row.when === 'otherwise' || row.when.every((atom) => atoms.has(atom)));
+/** A rendered row's id in DECISIONS: the model row with its state and condition. */
+const idOf = (role: Role, row: Read[number]) => DECISIONS[role].find((one) => one.state === row.state && JSON.stringify(one.when) === JSON.stringify(row.when))?.id ?? `?${row.state}`;
+
+/** Every way one prompt's rendered list disagrees with F1 on a reachable record, and every overlap ORDER does not list (or lists but no record shows). */
+export function listFaults(prompt: Prompt): string[] {
+  const at = `${prompt.role} ${prompt.format}`;
+  let rows: Read;
+  try {
+    rows = readDecisions(prompt.role, prompt.text);
+  } catch (error) {
+    return [`${at}: ${String(error)}`];
+  }
+  const out: string[] = [];
+  const pairs = new Map<string, string>();
+  for (const { item: one } of reachable(prompt.role).values()) {
+    const atoms = truths([one]);
+    const first = firstRow(rows, atoms);
+    const state = stateOf(prompt.role, one);
+    const want = label(prompt.role, state, one.attempt) ?? 'none: it is no item left';
+    const got = rows[first];
+    if (got === undefined || got.state !== state || got.label !== want) out.push(`${at} ${recordKey(one)}: the list gives ${got === undefined ? 'no row' : `${STATE_NAME[got.state]} (${got.label})`}, F1 ${STATE_NAME[state]} (${want})`);
+    for (const [index, row] of rows.entries())
+      if (index > first && row.when !== 'otherwise' && row.when.every((atom) => atoms.has(atom)) && got !== undefined) pairs.set(`${idOf(prompt.role, got)} > ${idOf(prompt.role, row)}`, recordKey(one));
+  }
+  const listed = new Set(ORDER[prompt.role].map((pair) => `${pair.earlier} > ${pair.later}`));
+  for (const [pair, record] of pairs) if (!listed.has(pair)) out.push(`${at}: rows ${pair} both true of ${record}, and ORDER does not say why the first governs`);
+  for (const pair of listed) if (!pairs.has(pair)) out.push(`${at}: ORDER lists ${pair}, but no reachable record makes both true`);
+  return out;
+}
+
+/** Every way one prompt's verdict table, read back, answers a well-formed step otherwise than F2, and every unlisted overlap. */
+export function verdictFaults(prompt: Prompt): string[] {
+  const at = `${prompt.role} ${prompt.format}`;
+  let rows: ReturnType<typeof readVerdicts>;
+  try {
+    rows = readVerdicts(prompt.text);
+  } catch (error) {
+    return [`${at}: ${String(error)}`];
+  }
+  const out: string[] = [];
+  const pairs = new Set<string>();
+  const holdsFor = (rule: (typeof rows)[number]['rule'], states: ReadonlyArray<State>) =>
+    'any' in rule ? rule.any.some((state) => states.includes(state)) : 'only' in rule ? states.every((state) => rule.only.includes(state)) : true;
+  for (const stop of STOPS_OF[prompt.role])
+    for (const states of multisets(STATES_OF[prompt.role], SIZE)) {
+      const got = classify(prompt.role, stop, states);
+      if (!('outcome' in got)) continue;
+      const first = rows.findIndex((row) => holdsFor(row.rule, states));
+      if (rows[first]?.verdict !== got.outcome.verdict) out.push(`${at} ${stop} [${states}]: the table gives ${rows[first]?.verdict}, F2 ${got.outcome.verdict}`);
+      for (const [index, row] of rows.entries()) if (index > first && !('else' in row.rule) && holdsFor(row.rule, states)) pairs.add(`${rows[first]?.verdict} > ${row.verdict}`);
+    }
+  const listed = new Set(VERDICT_ORDER[prompt.role].map((pair) => `${pair.earlier} > ${pair.later}`));
+  for (const pair of pairs) if (!listed.has(pair)) out.push(`${at}: verdicts ${pair} both hold, and VERDICT_ORDER does not say why`);
+  for (const pair of listed) if (!pairs.has(pair)) out.push(`${at}: VERDICT_ORDER lists ${pair}, but no step makes both hold`);
+  return out;
+}
+
+/** Every list history a prompt's rendered list answers otherwise than the history expects. */
+export function historyFaults(prompt: Prompt, histories: ReadonlyArray<ListHistory> = LIST_HISTORIES): string[] {
+  let rows: Read;
+  try {
+    rows = readDecisions(prompt.role, prompt.text);
+  } catch (error) {
+    return [`${prompt.role} ${prompt.format}: ${String(error)}`];
+  }
+  return histories
+    .filter((one) => one.role === prompt.role)
+    .flatMap((one) => {
+      const got = rows[firstRow(rows, truths(one.items))];
+      return got !== undefined && got.state === one.state && got.label.includes(one.label) ? [] : [`${one.name}: ${got === undefined ? 'no row' : `${STATE_NAME[got.state]} (${got.label})`}`];
+    });
+}
+
+/** The prompt's text with the rendered row `later` moved to just above `earlier`. */
+function moveAbove(prompt: Prompt, earlier: string, later: string): Prompt {
+  const line = (id: string) => {
+    const row = DECISIONS[prompt.role].find((one) => one.id === id);
+    if (row === undefined) throw new Error(`no row ${id}`);
+    return `| ${STATE_NAME[row.state]} | ${condition(prompt.role, row.when)} | ${rowLabel(prompt.role, row)} |`;
+  };
+  const [a, b] = [line(earlier), line(later)];
+  if (!prompt.text.includes(a) || !prompt.text.includes(b)) throw new Error(`${prompt.role} ${prompt.format}: rows ${earlier}, ${later} not found`);
+  return { ...prompt, text: prompt.text.replace(`${b}\n`, '').replace(a, `${b}\n${a}`) };
+}
+
+describe('(vii) the list each prompt carries: read back by the grammar, the first true row gives F1 on every reachable record', () => {
+  const all = prompts();
+  test('each row is written by the grammar it is read back by: emit then parse is the identity on every row', () => {
+    for (const role of ROLES)
+      for (const row of DECISIONS[role]) expect([role, row.id, parseCondition(role, condition(role, row.when))]).toEqual([role, row.id, row.when]);
+    for (const role of ROLES) for (const rule of VERDICT[role]) expect(parseWhen(when(rule))).toEqual('any' in rule ? { any: rule.any } : 'only' in rule ? { only: rule.only } : { else: true });
+    expect(() => parseCondition('verifier', 'required, the moon is full')).toThrow('no atom reads');
+    expect(() => parseWhen('any item is lost')).toThrow('no state is named');
+  });
+  test('the atoms read one-to-one in each role: no two atoms share words', () => {
+    for (const role of ROLES) expect(new Set(ATOM_IDS.map((atom) => atomWords(role, atom))).size).toBe(ATOM_IDS.length);
+    for (const role of ROLES) expect(render(role)).toContain(`Assigned work is ${ASSIGNMENT[role]}`);
+  });
+  for (const prompt of all)
+    test(`${prompt.role} ${prompt.format}: every reachable record gets F1's label from the first true row, and every overlap is listed`, () => {
+      expect(listFaults(prompt)).toEqual([]);
+      expect(verdictFaults(prompt)).toEqual([]);
+      expect(historyFaults(prompt)).toEqual([]);
+    });
+  test(`at least 20 histories of the kinds 22w had not tried, each answered by every prompt of its role`, () => {
+    expect(LIST_HISTORIES.filter((one) => !one.name.startsWith('W0')).length).toBeGreaterThanOrEqual(20);
+    for (const one of LIST_HISTORIES) expect([one.name, all.filter((prompt) => prompt.role === one.role).length > 0]).toEqual([one.name, true]);
+  });
+  test('the rows each history makes true, the first, and its label (for the request)', () => {
+    const lines = LIST_HISTORIES.map((one) => {
+      const rows = DECISIONS[one.role];
+      const atoms = truths(one.items);
+      const trueRows = rows.filter((row) => row.when === 'otherwise' || row.when.every((atom) => atoms.has(atom))).map((row) => row.id);
+      return { name: one.name, role: one.role, events: one.events, trueRows, first: trueRows[0], label: rowLabel(one.role, rows.find((row) => row.id === trueRows[0]) ?? rows[0]!), handBack: one.handBack };
+    });
+    console.log(`LIST_HISTORIES ${JSON.stringify(lines)}`);
+    expect(lines.every((line) => line.first !== undefined)).toBe(true);
+  });
+});
+
+describe('(vii) a rendering fault is red', () => {
+  const verifiers = prompts().filter((prompt) => prompt.role === 'verifier');
+  test('moving any later row of an ORDER pair above the earlier turns a named history red, in every verifier format', () => {
+    for (const prompt of verifiers)
+      for (const { earlier, later } of ORDER.verifier) {
+        const red = historyFaults(moveAbove(prompt, earlier, later));
+        expect([prompt.format, earlier, later, red.length > 0]).toEqual([prompt.format, earlier, later, true]);
+        expect(listFaults(moveAbove(prompt, earlier, later)).length).toBeGreaterThan(0);
+      }
+  });
+  test('dropping the "first row" sentence is red in every format', () => {
+    for (const prompt of prompts()) {
+      const text = prompt.text.replace(`${FIRST_ROW}\n\n`, '');
+      expect([prompt.role, prompt.format, text !== prompt.text, listFaults({ ...prompt, text }).length > 0]).toEqual([prompt.role, prompt.format, true, true]);
+    }
+  });
+  test('folding the attempt history back into a row (no separate instruction; ran unclear first, on its result alone) is red', () => {
+    for (const prompt of verifiers) {
+      const unclear = `| ran unclear | ${condition('verifier', ['required', 'unclear', 'noRetry'])} | ${rowLabel('verifier', DECISIONS.verifier.find((row) => row.id === 'unclear')!)} |`;
+      const folded = `| ran unclear | ${condition('verifier', ['required', 'unclear'])} | ${rowLabel('verifier', DECISIONS.verifier.find((row) => row.id === 'unclear')!)} |`;
+      const header = `${F1_HEADER}\n| --- | --- | --- |\n`;
+      const text = prompt.text.replace(`${unclear}\n`, '').replace(header, `${header}${folded}\n`);
+      expect(text).not.toBe(prompt.text);
+      expect(listFaults({ ...prompt, text }).length).toBeGreaterThan(0);
+      const kept = { ...prompt, text: text.replace(ATTEMPT_NOTE, '') };
+      expect(listFaults(kept)[0]).toContain("the attempt history's instruction is missing");
+      expect(historyFaults({ ...prompt, text }).some((line) => line.startsWith('W01') || line.startsWith('W03'))).toBe(true);
+    }
+  });
+  test('a row the grammar cannot read, or a catch-all that is not last, is red', () => {
+    for (const prompt of verifiers) {
+      expect(listFaults({ ...prompt, text: prompt.text.replace('| ran and passed |', '| ran fine |') })[0]).toContain('no atom reads');
+      expect(listFaults(moveAbove(prompt, 'retry', 'notRun'))[0]).toContain('the catch-all is not the last row');
+    }
   });
 });
