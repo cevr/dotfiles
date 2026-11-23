@@ -42,12 +42,14 @@ export const Phase = Schema.TaggedUnion({
   Settled: { outcome: Outcome, cause: Cause, terminal: Schema.optionalKey(Point) },
 })
 export type Phase = typeof Phase.Type
+export const Basis = Schema.Literals(["current", "as-of-last-observation"])
 
 /** Observation at one read. A terminal without a host point is coarse display, not a binding receipt. */
 export const Observation = Schema.Struct({
   version: Schema.Literal(1),
   child: Schema.String,
   revision: Schema.optionalKey(Schema.Int),
+  basis: Schema.optionalKey(Basis),
   started: Schema.optionalKey(Point),
   phase: Phase,
   diagnostic: Schema.optionalKey(Diagnostic),
@@ -80,6 +82,14 @@ export const Projection = Schema.Struct({
   exits: Schema.optionalKey(Schema.Array(Undetermined)),
   /** An owner correlation for an exit received after subscription restart; not a list of live jobs. */
   shellOwners: Schema.optionalKey(Schema.Record(Schema.String, Schema.Finite)),
+  work: Schema.optionalKey(Schema.Record(Schema.String, Schema.Struct({
+    kind: Schema.Literals(["Shell", "Child"]), running: Schema.Boolean, at: Schema.Finite,
+    native: Schema.Boolean, backgrounded: Schema.Boolean,
+  }))),
+  stopAfter: Schema.optionalKey(Schema.Int),
+  attention: Schema.optionalKey(Schema.Record(Schema.String, Schema.Struct({
+    kind: Schema.Literals(["permission", "question"]), at: Schema.Finite, open: Schema.Boolean,
+  }))),
   inbox: Schema.optionalKey(Schema.Record(Schema.String, Schema.Struct({
     seq: Schema.Int,
     pending: Schema.Boolean,
@@ -87,6 +97,7 @@ export const Projection = Schema.Struct({
   }))),
   noted: Schema.optionalKey(Noted),
   sampled: Schema.optionalKey(Schema.String),
+  observedIn: Schema.optionalKey(Schema.Int),
 })
 export type Projection = typeof Projection.Type
 
@@ -99,6 +110,12 @@ export const Fact = Schema.TaggedUnion({
   Exit: { ...Owner, reason: Undetermined },
   ShellObserved: { ...Owner, id: Schema.String, startedAt: Schema.Finite },
   ShellRemoved: { ...Owner, id: Schema.String },
+  Work: { ...Owner, id: Schema.String, work: Schema.Struct({
+    kind: Schema.Literals(["Shell", "Child"]), running: Schema.Boolean, at: Schema.Finite,
+    native: Schema.Boolean, backgrounded: Schema.Boolean,
+  }) },
+  StopRequested: { ...Owner, seq: Schema.Int },
+  Attention: { ...Owner, id: Schema.String, kind: Schema.Literals(["permission", "question"]), at: Schema.Finite, open: Schema.Boolean },
   Inbox: { ...Owner, id: Schema.String, seq: Schema.Int, shellID: Schema.optionalKey(Schema.String) },
 })
 export type Fact = typeof Fact.Type
@@ -115,8 +132,12 @@ const withExecution = (state: Projection, fact: typeof Fact.cases.Execution.Type
   if (newest) {
     next.segment = fact.segment
     delete next.exits
+    if (terminal && Option.exists(Option.fromUndefinedOr(next.stopAfter), (seq) => point.seq > seq)) delete next.stopAfter
+    if (terminal && state.attention) {
+      next.attention = Object.fromEntries(Object.entries(state.attention).filter(([, item]) => item.at > point.at))
+    }
     if (state.inbox && terminal) {
-      next.inbox = Object.fromEntries(Object.entries(state.inbox).filter(([, item]) => item.pending || item.seq > point.seq))
+      next.inbox = Object.fromEntries(Object.entries(state.inbox).filter(([, item]) => item.seq > point.seq))
     }
   }
   return next
@@ -133,15 +154,36 @@ const withExit = (state: Projection, reason: Undetermined): Projection => {
 }
 
 const withoutShell = (state: Projection, id: string): Projection => {
-  if (!state.shellOwners || !Object.hasOwn(state.shellOwners, id)) return state
+  const work = state.work?.[id]
+  const owned = state.shellOwners && Object.hasOwn(state.shellOwners, id)
+  if (!owned && !work?.running) return state
   const shellOwners = { ...state.shellOwners }
   delete shellOwners[id]
-  return { ...state, rev: state.rev + 1, shellOwners }
+  const next = { ...state, rev: state.rev + 1, shellOwners }
+  if (work) next.work = { ...state.work, [id]: { ...work, running: false } }
+  return next
 }
 
 const withShell = (state: Projection, id: string, at: number): Projection => {
   if (state.shellOwners?.[id] === at || state.exits?.some((item) => item.shellID === id)) return state
   return { ...state, rev: state.rev + 1, shellOwners: { ...state.shellOwners, [id]: at } }
+}
+
+const withWork = (state: Projection, fact: typeof Fact.cases.Work.Type): Projection => {
+  const previous = state.work?.[fact.id]
+  let work = fact.work
+  // A job's completion may precede the native exit. It cannot close the native process.
+  if (previous?.native && !work.native) {
+    if (previous.backgrounded || !work.backgrounded || !previous.running) return state
+    work = { ...previous, backgrounded: true }
+  } else if (previous && (previous.at > work.at || (previous.at === work.at && !previous.running))) return state
+  if (previous && previous.at === work.at && previous.running === work.running
+    && previous.native === work.native && previous.backgrounded === work.backgrounded) return state
+  const next = { ...state, rev: state.rev + 1, work: { ...state.work, [fact.id]: work } }
+  if (work.kind === "Shell" && work.backgrounded && work.running) {
+    next.shellOwners = { ...state.shellOwners, [fact.id]: work.at }
+  }
+  return next
 }
 
 const withInbox = (state: Projection, fact: typeof Fact.cases.Inbox.Type): Projection => {
@@ -176,6 +218,19 @@ export const evolve = (state: Projection, fact: Fact): Projection => {
     Exit: ({ reason }) => withExit(state, reason),
     ShellObserved: ({ id, startedAt }) => withShell(state, id, startedAt),
     ShellRemoved: ({ id }) => withoutShell(state, id),
+    Work: (work) => withWork(state, work),
+    StopRequested: ({ seq }) => {
+      if (Option.exists(Option.fromUndefinedOr(state.stopAfter), (previous) => previous >= seq)) return state
+      if (state.segment?.terminal && state.segment.point.seq > seq) return state
+      return { ...state, rev: state.rev + 1, stopAfter: seq }
+    },
+    Attention: ({ id, kind, at, open }) => {
+      const record = state.attention?.[id]
+      if (record && (record.at > at || (record.at === at && (record.open === open || !record.open)))) return state
+      const ended = state.segment?.terminal && state.segment.point.at >= at
+      if (ended && open) return state
+      return { ...state, rev: state.rev + 1, attention: { ...state.attention, [id]: { kind, at, open } } }
+    },
     Inbox: (input) => withInbox(state, input),
     Diagnostic: ({ note }) => {
       if (note.point.seq <= pointSeq(state.noted?.point)) return state
@@ -192,8 +247,18 @@ export interface Snapshot {
   readonly background?: "Shell" | "Child" | "Wake"
   readonly latch?: Extract<Phase, { readonly _tag: "Latched" }>
   readonly latchCancelled?: boolean
+  readonly latchFailed?: boolean
   readonly stopUncertain?: boolean
 }
+
+export const workOf = (state: Projection): Snapshot["background"] => {
+  const work = Object.values(Option.getOrElse(Option.fromUndefinedOr(state.work), () => ({}))).find((item) => item.running)
+  if (work) return work.kind
+  const pending = Object.values(Option.getOrElse(Option.fromUndefinedOr(state.inbox), () => ({}))).some((item) => item.pending)
+  if (pending) return "Wake"
+}
+
+export const executionActive = (state: Projection) => Boolean(state.segment && !state.segment.terminal)
 
 /** Read only evidence matching the currently reported execution, never a historical launch. */
 export const rowFactOf = (state: Projection, snapshot: Snapshot): RowFact => {
@@ -218,6 +283,18 @@ export const observe = (state: Projection, snapshot: Snapshot, current: boolean)
   if (!applicable) return base
   const inRun = noted && noted.point.seq > pointSeq(start) && base.phase._tag !== "Settled"
   return { ...base, ...startFields(start), ...diagnosticFields(noted, inRun) }
+}
+
+/** Evidence from a previous activation retains its phase, but can never bind a receipt. */
+export const present = (state: Projection, snapshot: Snapshot, activation: number): Observation => {
+  const newer = snapshotIsNewer(state, snapshot)
+  const now = { ...snapshot }
+  if (newer) delete now.background
+  const observed = observe(state, now, !newer && Boolean(state.segment))
+  const remembered = state.segment || state.exits?.length || workOf(state) || Option.isSome(Option.fromUndefinedOr(state.stopAfter))
+  const view = { ...observed, basis: "current" as const }
+  if (!remembered || state.observedIn === activation || newer) return view
+  return { ...observed, basis: "as-of-last-observation" }
 }
 
 const startFields = (start?: Point) => {
@@ -252,6 +329,7 @@ const phaseOf = (state: Projection, snapshot: Snapshot, current: boolean, applic
   if (snapshot.background && snapshot.outcome !== "interrupted") return Phase.cases.Continuing.make({ on: snapshot.background })
   if (snapshot.latch) return snapshot.latch
   if (snapshot.latchCancelled) return Phase.cases.Settled.make({ outcome: "interrupted", cause: "UserStop" })
+  if (snapshot.latchFailed) return Phase.cases.Settled.make({ outcome: "failed", cause: "Unknown" })
   if (exit) return Phase.cases.Unknown.make({ reason: exit })
   if (current) return Phase.cases.Unknown.make({})
   if (state.segment?.terminal?._tag === "Shutdown") return Phase.cases.Recovering.make({})

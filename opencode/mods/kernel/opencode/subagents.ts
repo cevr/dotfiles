@@ -144,12 +144,17 @@ const diagnosticOf = Match.type<NonNullable<Observation["diagnostic"]>>().pipe(M
   StepError: ({ cause }) => `step ended in error (${cause})`,
   RetryScheduled: ({ cause, attempt }) => `host scheduled retry ${attempt} (${cause})`,
 }))
+const observedPhase = (view: Observation) => {
+  if (view.basis !== "as-of-last-observation") return phaseOf(view.phase)
+  if (view.phase._tag === "Settled") return "unknown (no current settlement; since before reload)"
+  return `${phaseOf(view.phase)} (as of last observation)`
+}
 
 /** One subagent as the model reads it: its sessionID, state, agent and description, what the call did. */
 const lineOf = (view: View) => {
   const observation = Option.fromUndefinedOr(view.observation)
   const step = Option.getOrElse(Option.map(Option.flatMap(observation, (value) => Option.fromUndefinedOr(value.diagnostic)), diagnosticOf), () => "")
-  const phase = Option.getOrElse(Option.map(observation, (value) => phaseOf(value.phase)), () => view.state)
+  const phase = Option.getOrElse(Option.map(observation, observedPhase), () => view.state)
   return [`${view.sessionID} ${phase} (${view.agent}: ${view.description})`, step, view.note].filter((part) => part !== "").join(": ")
 }
 

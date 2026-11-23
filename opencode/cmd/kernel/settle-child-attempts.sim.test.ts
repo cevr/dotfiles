@@ -152,9 +152,7 @@ seeded("the direct tool distinguishes live work, diagnostics and ordered settlem
     const rowTag = (phase: string) => {
       switch (phase) {
         case "ResultUndetermined/Failed": return "ShellResultUndetermined"
-        case "ShellWork/Failed":
-        case "Settled/Failed":
-        case "WakePending/Failed": return "Failed"
+        case "Settled/Failed": return "Failed"
         default: return "NoFact"
       }
     }
@@ -293,3 +291,64 @@ seeded("the direct tool distinguishes live work, diagnostics and ordered settlem
     )
   }),
 )
+
+seeded("both public observers preserve the owner phase across every source cut including wake admission", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const world = World.make({ seed, script: () => World.say("Fixture") })
+    const events = yield* Queue.unbounded<FixtureEvent>()
+    yield* world.load(fixtureLatch(make(live, () => Stream.fromQueue(events))), { directory: WORK, options: { codeOnly: false } })
+    const hostID = "sh_every_cut"
+    const inboxID = "msg_every_cut"
+    const terminal = { error: { type: "provider.content-filter" } }
+    const admitted = { inboxID, item: { type: "synthetic", payload: { metadata: { source: "shell", shellID: hostID } } } }
+    const put = (child: string, name: string, data: FixtureEvent["data"], seq = 0) =>
+      Queue.offer(events, {
+        type: name, id: `evt_${name}`, created: world.now(), location: { directory: WORK },
+        data: { sessionID: child, ...data },
+        ...durability(child, seq),
+      }).pipe(Effect.andThen(world.advance(0)))
+    const trace = (child: string) => [
+      put(child, type.start, {}, 1),
+      put(child, "shell.created", { info: { id: hostID, status: "running", metadata: { sessionID: child, background: true }, time: { started: world.now() } } }),
+      put(child, type.step, terminal, 2),
+      put(child, type.fail, terminal, 3),
+      put(child, "shell.exited", { id: hostID }),
+      put(child, "session.inbox.enqueued", admitted, 4),
+      put(child, type.start, {}, 5),
+      put(child, "session.inbox.delivered", { inboxID }, 6),
+      put(child, type.end, {}, 7),
+    ]
+    const read = (child: string) => world.rpc(CHILD_ROWS, "read", { children: [child] }).pipe(
+      Effect.flatMap((raw) => Effect.fromOption(Option.flatMap(readRows(raw), ({ rows }) => Option.fromUndefinedOr(rows[0])))),
+    )
+    const parent = yield* world.session(WORK)
+    for (let cut = 0; cut < 10; cut++) {
+      const child = yield* world.session(WORK, { parentID: parent, agent: "worker" })
+      const frames = trace(child)
+      for (const frame of frames.slice(0, cut)) yield* frame
+      const before = yield* read(child)
+      const tool = yield* world.tool(parent, "subagents", { action: "get", sessionID: child })
+      expect(tool.output).toContain(child)
+      yield* world.restart
+      const reopened = yield* read(child)
+      const direct = yield* world.tool(parent, "subagents", { action: "get", sessionID: child })
+      expect(reopened.observation.phase).toEqual(before.observation.phase)
+      expect(reopened.observation.revision >= before.observation.revision).toBe(true)
+      if (reopened.observation.basis === "as-of-last-observation" && reopened.observation.phase._tag === "Settled") {
+        expect(direct.output).not.toContain("settled:")
+      }
+      if (reopened.observation.phase._tag === "Continuing" && reopened.observation.phase.on === "Wake") {
+        expect(direct.output).toContain("continuing (awaiting host wake) (as of last observation)")
+      }
+      for (const frame of frames.slice(cut)) yield* frame
+      const end = yield* read(child)
+      expect(end.observation.phase).toMatchObject({ outcome: "succeeded" })
+      expect(end.observation.revision >= reopened.observation.revision).toBe(true)
+    }
+  }),
+)
+
+const durability = (child: string, seq: number) => {
+  if (seq > 0) return { durable: { aggregateID: child, seq, version: 1 } }
+  return {}
+}

@@ -79,6 +79,7 @@ const busy = (session: Session) => Option.exists(session.busy, (busyAt) => Optio
 export const stateOf = (session: Session): State => {
   const phase = session.observation?.phase
   if (phase) {
+    if (session.observation?.basis === "as-of-last-observation") return "running"
     if (phase._tag === "Settled") return OUTCOMES[phase.outcome]
     return "running"
   }

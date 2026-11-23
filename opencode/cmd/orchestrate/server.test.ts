@@ -135,6 +135,14 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
     const published = yield* Queue.unbounded<Record<string, unknown>>()
     // Each session's messages as the host's `session.context` answers them, which the test sets.
     const contexts = new Map<string, ReadonlyArray<unknown>>()
+    const kept = world.kept ?? []
+    const latchOf = (child: string) => kept.find((item) => item.child === child)
+    const fixtureTime = Option.map(Schema.decodeUnknownOption(Schema.String)(options.now), Date.parse)
+    const latchMark = (latch: LatchAsk) => {
+      if (latch.hold !== "pace" || Option.isNone(fixtureTime)) return { ...latch, at: latch.recheckAt }
+      const recheckAt = fixtureTime.value + 120_000
+      return { ...latch, at: fixtureTime.value, recheckAt, opensAt: recheckAt + latch.opensAt - latch.recheckAt }
+    }
     const register = (name: string, callback: Hook) =>
       Effect.sync(() => {
         ;(hooks[name] ??= []).push(callback)
@@ -152,7 +160,11 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
       },
       session: {
         hook: register,
-        get: () => Effect.succeed({ location: { directory: "/work" } }),
+        get: ({ sessionID }: { readonly sessionID: string }) => Effect.sync(() => {
+          const latch = latchOf(sessionID)
+          if (!latch) return { location: { directory: "/work" } }
+          return { location: { directory: "/work" }, metadata: { latch: latchMark(latch) } }
+        }),
         context: (input: { readonly sessionID: string }) => Effect.sync(() => [...(contexts.get(input.sessionID) || [])]),
       },
       location: { directory: "/work" },
@@ -166,15 +178,14 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
             return { dispose: Effect.void }
           }),
       },
-      rpc: {
+      rpc: Object.assign(() => ({ read: () => Effect.fail({ type: "rpc.unavailable", message: "Kernel is not installed" }) }), {
         register: (definition: { readonly id: string }, handlers: Record<string, (input: unknown) => Effect.Effect<unknown>>) =>
           Effect.sync(() => {
             rpc[definition.id] = handlers
             return { dispose: Effect.void, events: { emit: () => Effect.void } }
           }),
-      },
+      }),
     } as unknown as Host
-    const kept = world.kept ?? []
     const keep = (ask: LatchAsk) =>
       Effect.sync(() => {
         if (world.refuse !== undefined) return { outcome: "refused", reason: world.refuse }

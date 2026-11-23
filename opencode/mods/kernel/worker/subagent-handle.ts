@@ -179,7 +179,10 @@ export const runSubagent = (input: Json, call: CallTool): Promise<SubagentHandle
     const asked = recordOf(input)
     const started = recordOf(result)
     const child = String(started.sessionID)
-    const latch = Option.map(Option.liftPredicate(started.status, (status) => status === "latched"), () => latchOf(started.latch, child))
+    const observed = observationOf(started.observation, child)
+    const latch = Option.orElse(observed, () =>
+      Option.map(Option.liftPredicate(started.status, (status) => status === "latched"), () => latchOf(started.latch, child)),
+    )
     return makeSubagentHandle(
       {
         sessionID: child,
