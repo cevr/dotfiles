@@ -29,8 +29,17 @@
 //   history says what each job owes; the observed letters and the owner's
 //   answers must deliver each eligible end exactly once, with its kind, and
 //   every letter must reach a model request.
-import { Array as Arr, Console, Effect, Match, Option, Schema } from "effect"
+import { expect as bunExpect } from "bun:test"
+import { Array as Arr, Clock, Console, Context, Deferred, Effect, Exit, Fiber, Layer, Logger, Match, Option, Schema, Scope } from "effect"
+import { TestClock } from "effect/testing"
+import * as MemoryBackstop from "@dotfiles/opencode-wake/memory/backstop"
+import * as MemoryChecks from "@dotfiles/opencode-wake/memory/checks"
+import * as MemoryCourier from "@dotfiles/opencode-wake/memory/courier"
+import * as MemoryOpener from "@dotfiles/opencode-wake/memory/opener"
 import * as MemoryRunner from "@dotfiles/opencode-wake/memory/runner"
+import * as MemoryStore from "@dotfiles/opencode-wake/memory/store"
+import * as Model from "@dotfiles/opencode-wake/model"
+import { type CallAnswer, Changes, Courier, Runner, WakeStore } from "@dotfiles/opencode-wake/service"
 import { WAKES } from "@dotfiles/opencode-wake/wake"
 import * as Plugins from "../../sim/plugins.ts"
 import { below, generator } from "../../sim/runtime.ts"
@@ -109,7 +118,7 @@ const jobCalls = (world: World.World, session: string, from: number, to: number)
   world
     .messages(session)
     .filter(isAssistant)
-    .flatMap((message) => Option.toArray(Option.filter(message.call, (used) => used.name === "job")).map((used) => ({ at: message.created, action: actionOf(used.input) })))
+    .flatMap((message) => Option.toArray(Option.filter(message.call, (used) => used.name === "job")).map((used) => ({ at: message.created, id: used.id, action: actionOf(used.input) })))
     .filter((call) => call.at >= from && call.at <= to)
 
 seeded("a worker's job ends its turn; nothing polls it while it runs; the runner's call at a barrier before the next 10 s tick wakes it once with its typed end and log handle", ({ seed, expect }) =>
@@ -214,6 +223,34 @@ seeded("a call that lands inside the owner's turn after its inbox was read (22u 
     const reading = world.asked().filter((request) => request.sessionID === session && request.kind === "primary" && world.start + request.at >= letterAt && request.text.includes("Note: BETA"))
     expect(reading).toHaveLength(1)
     expect(world.sessions.get(session)?.inbox ?? []).toEqual([])
+  }),
+)
+
+seeded("an archived owner gets its job's end once, in its own session, across the runner's call, a reload and the sweep; a deleted owner's end goes to nobody and is not sent again", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const runner = MemoryRunner.empty()
+    const world = World.make({ seed, script: reading("archived") })
+    yield* world.load(Plugins.wake(world, runner), { directory: WORK, options: { backstop: "off" } })
+    const start = (session: string, note: string) => world.tool(session, "job", { command: `make ${note}`, note }).pipe(Effect.map((answer) => Option.getOrElse(jobIdOf(answer.output), () => "missing")))
+    const archived = yield* world.session(WORK)
+    const deleted = yield* world.session(WORK)
+    const kept = yield* start(archived, "kept")
+    const gone = yield* start(deleted, "gone")
+    for (const id of [kept, gone]) MemoryRunner.running(runner, id, world.now())
+    yield* world.archive(archived)
+    yield* world.remove(deleted)
+    for (const id of [kept, gone]) MemoryRunner.ended(runner, id, 0, world.now())
+    for (const id of [kept, gone]) yield* doorbell(world, id)
+    yield* world.restart
+    for (const id of [kept, gone]) yield* doorbell(world, id)
+    yield* world.advance(2 * RECOVER_MS)
+    // The archived session holds the one letter; the deleted one's record says nobody, and nothing is owed.
+    expect(lettersIn(world, archived, kept).map(kindIn)).toEqual(["succeeded"])
+    const final = (id: string) => Option.getOrElse(Option.map(Option.fromNullishOr(runner.deliveries.get(id)?.at(-1)), (slot) => (slot.state === "delivered" ? `delivered to ${slot.to}` : slot.state)), () => "none")
+    expect([final(kept), final(gone)]).toEqual(["delivered to letter", "delivered to nobody"])
+    // What the fork does with an archived session's inbox is its own: a turn here or none; the letter is there either way.
+    const turns = world.asked().filter((request) => request.sessionID === archived && request.text.includes("Note: kept")).length
+    yield* Console.log(`job-events archived: letters=${lettersIn(world, archived, kept).length} turns=${turns}`)
   }),
 )
 
@@ -428,10 +465,11 @@ interface Folded {
 
 const kindOf = (how: How) => ({ exit0: "succeeded", exit1: "failed", spawn: "spawn-failed", lost: "lost", timeout: "timed-out" })[how]
 
-/** The owner's own call that returned an ended job's end: the fold's delivery, when no letter came before. */
+/** The owner's own call whose committed answer delivered a job's end ("This answer is its end"), with the kind it said. */
 interface Answered {
   readonly job: string
   readonly at: number
+  readonly kind: string
 }
 
 interface Run {
@@ -476,9 +514,10 @@ const act = (run: Run, session: string, input: Record<string, string | number>) 
     return Arr.findFirst(run.world.messages(session), (message): message is ToolMessage => message.type === "tool" && message.callID === `call_job_${n}`)
   })
 
-/** The owner's call that answered without an error: a delivery when it returned the end. */
+/** The owner's call whose answer the session holds: a delivery when it says it is the end, with the kind its end line names. */
 const answered = (run: Run, job: Folded, answer: Option.Option<ToolMessage>) => {
-  for (const ok of Option.toArray(Option.filter(answer, (each) => !each.error))) run.answers.push({ job: job.id, at: ok.created })
+  for (const ok of Option.toArray(Option.filter(answer, (each) => !each.error && each.output.includes("This answer is its end"))))
+    run.answers.push({ job: job.id, at: ok.created, kind: Option.getOrElse(Option.flatMapNullishOr(Option.fromNullishOr(/End: ([a-z-]+) /.exec(ok.output)), (found) => found[1]), () => "no end line") })
 }
 
 /** The call each prompt `ACT#N` makes, read by the script. */
@@ -686,8 +725,10 @@ seeded("each managed job's end is delivered exactly once, by its letter or the o
     // Every letter reached a model request of its session.
     for (const session of run.sessions.filter((each) => !(run.deleted && each === s1))) expect(unasked(world, session)).toEqual([])
     expect(world.stale()).toEqual([])
-    // The success numbers, with their denominator: the owner's model never called check or wait to look for an end.
-    const polls = run.sessions.flatMap((session) => jobCalls(world, session, 0, Number.POSITIVE_INFINITY)).filter((call) => call.action === "check").length
+    // The success numbers, with their denominator. A poll is a `job` call the history did not ask for: each scripted
+    // act (a start, an explicit check, park, wait or kill) is its own call id, `call_job_<n>`, made in answer to its
+    // prompt (once, or again when a restart cut its turn); any other `job` call is a model looking for an end again.
+    const polls = run.sessions.flatMap((session) => jobCalls(world, session, 0, Number.POSITIVE_INFINITY)).filter((call) => !/^call_job_\d+$/.test(call.id) || !actions.has(Number(call.id.slice(9)))).length
     const eligible = rows.filter((row) => !row.deletedOwner)
     const delivered = eligible.filter((row) => row.deliveries === 1).length
     const duplicate = rows.filter((row) => row.deliveries > 1).length
@@ -713,16 +754,15 @@ const finish = (run: Run) =>
     yield* run.world.until(() => run.sessions.every((session) => idle(run.world, session)), 5 * MINUTE)
   })
 
-/** The fold of one job: its deliveries are its letters, plus at most one of the owner's own calls that returned its end before any letter came. */
+/** The fold of one job: its deliveries are its letters plus every committed answer of the owner's that said it was the end, whenever it came; each says a kind. */
 const rowOf = (run: Run, job: Folded) => {
   const letters = lettersIn(run.world, run.sessions[job.owner] ?? "", job.id)
-  const firstLetter = Math.min(...letters.map((message) => message.created))
-  const answered = run.answers.filter((answer) => answer.job === job.id && Option.exists(job.end, (end) => end.at <= answer.at) && answer.at < firstLetter)
+  const answered = run.answers.filter((answer) => answer.job === job.id)
   return {
     job: job.id,
-    deliveries: letters.length + Math.min(1, answered.length),
+    deliveries: letters.length + answered.length,
     deletedOwner: run.deleted && job.owner === 1,
-    kinds: letters.map(kindIn),
+    kinds: [...letters.map(kindIn), ...answered.map((answer) => answer.kind)],
     expected: Option.getOrElse(Option.map(job.end, (end) => end.kind), () => "no end"),
   }
 }
@@ -732,3 +772,333 @@ const unasked = (world: World.World, session: string) =>
   lettersIn(world, session)
     .map((letter) => ({ created: letter.created, head: letter.text.split("\n")[0] ?? "" }))
     .filter((letter) => !world.asked().some((request) => request.sessionID === session && world.start + request.at >= letter.created && request.text.includes(letter.head)))
+
+// ── Two locations at every storage boundary ──
+//
+// The model itself, in two locations over one store, one runner's record and one inbox, as OpenCode's locations share
+// them: A, the job's own, and B, where its owner's session moved (its tools run there; the runner's call still reaches
+// A). Each family races two actors. In turn the first is held, or stopped just before or just after, at each of its
+// location's writes (the record's claim, retirement and delivery slots, the store's writes, the courier's send), while
+// the second runs; a stop kills that location as a crash would (nothing more it writes lands). Then every stopped
+// location reopens, the host settles a call a dead location left running as failed (as its own restart does), every
+// location starts and the sweeps run. The oracle counts what the owner was given: each answer the host committed that
+// said it was the end, and each letter; one per job, never zero and never two, each with the kind the runner recorded,
+// and a job retired as never started never ran.
+
+const OWNER = "ses_owner"
+const HOME = "/scratch/job-home"
+const MOVED = "/scratch/moved-to"
+
+type Where = "A" | "B"
+type Mode = "hold" | "stop-before" | "stop-after"
+interface Plan {
+  readonly where: Where
+  readonly at: number
+  readonly mode: Mode
+}
+
+interface Place {
+  readonly model: Context.Service.Shape<typeof Model.WakesModel>
+  readonly close: Effect.Effect<void>
+  readonly state: { dead: boolean }
+}
+
+interface Matrix {
+  readonly store: MemoryStore.MemoryWakes
+  readonly runner: MemoryRunner.MemoryRunner
+  readonly inbox: MemoryCourier.MemorySessions
+  /** The host's calls, as each one's session records it. */
+  readonly calls: Map<string, "running" | "committed" | "failed">
+  /** The kinds the owner's committed answers said, each an end it delivered. */
+  readonly answers: Array<string>
+  readonly places: Map<Where, Place>
+  readonly release: Deferred.Deferred<void>
+  plan: Option.Option<Plan>
+  /** Writes at the plan's place so far. */
+  seen: number
+  /** The job's command ran (the supervisor's claim won). */
+  ran: boolean
+}
+
+/** A write of the location `where`: dead, it lands nothing; at the plan's write, held or stopped before or after it. */
+const gate =
+  (m: Matrix, where: Where, state: { dead: boolean }) =>
+  <A, E>(write: Effect.Effect<A, E>): Effect.Effect<A, E> =>
+    Effect.suspend(() => {
+      if (state.dead) return Effect.interrupt
+      return Option.match(
+        Option.filter(m.plan, (plan) => plan.where === where),
+        {
+          onNone: () => write,
+          onSome: (plan) => {
+            m.seen += 1
+            if (m.seen !== plan.at) return write
+            if (plan.mode === "hold") return Deferred.await(m.release).pipe(Effect.andThen(write))
+            if (plan.mode === "stop-before") {
+              state.dead = true
+              return Effect.interrupt
+            }
+            return write.pipe(
+              Effect.tap(() => Effect.sync(() => void (state.dead = true))),
+              Effect.andThen(Effect.interrupt),
+            )
+          },
+        },
+      )
+    })
+
+/** The location `where` opened (again): its model over the shared externals, every write through its gate. */
+const openPlace = (m: Matrix, where: Where) =>
+  Effect.gen(function* () {
+    const state = { dead: false }
+    const gated = gate(m, where, state)
+    const scope = yield* Scope.make()
+    const runner = Layer.effect(
+      Runner,
+      Effect.gen(function* () {
+        const inner = yield* Runner
+        return Runner.of({ ...inner, advance: (id, version, next) => gated(inner.advance(id, version, next)), retire: (id) => gated(inner.retire(id)) })
+      }),
+    ).pipe(Layer.provide(MemoryRunner.layer(m.runner)))
+    const store = Layer.effect(
+      WakeStore,
+      Effect.gen(function* () {
+        const inner = yield* WakeStore
+        return WakeStore.of({ ...inner, write: (entry) => gated(inner.write(entry)), remove: (id) => gated(inner.remove(id)) })
+      }),
+    ).pipe(Layer.provide(MemoryStore.layer(m.store)))
+    const courier = Layer.effect(
+      Courier,
+      Effect.gen(function* () {
+        const inner = yield* Courier
+        return Courier.of({ ...inner, deliver: (sessionID, delivery, letter, resume) => gated(inner.deliver(sessionID, delivery, letter, resume)) })
+      }),
+    ).pipe(Layer.provide(MemoryCourier.layer(m.inbox)))
+    const answered = (_sessionID: string, call: string) => Effect.sync((): CallAnswer => Option.getOrElse(Option.fromNullishOr(m.calls.get(call)), (): CallAnswer => "unknown"))
+    const layer = Model.layer({ directory: where === "A" ? HOME : MOVED, recoverMs: RECOVER_MS, answered }).pipe(
+      Layer.provide(Layer.mergeAll(runner, store, courier, MemoryBackstop.layer(MemoryBackstop.empty()), MemoryChecks.layer(MemoryChecks.empty()), MemoryOpener.layer(MemoryOpener.empty()))),
+      Layer.provide(Layer.succeed(Changes, { changed: () => Effect.void })),
+    )
+    const model = Context.get(yield* Layer.buildWithScope(layer, scope), Model.WakesModel)
+    const place: Place = { model, close: Scope.close(scope, Exit.void), state }
+    m.places.set(where, place)
+    return place
+  })
+
+const placeOf = (m: Matrix, where: Where) => Option.getOrThrow(Option.fromNullishOr(m.places.get(where)))
+
+/** Let every fiber that can run, run. */
+const settle = Effect.forEach(Arr.range(1, 200), () => Effect.yieldNow, { discard: true })
+
+type Actor = (m: Matrix, id: string) => Effect.Effect<void>
+
+/** The kind an end event says. */
+const kindOfEvent = (event: Option.Option<{ readonly disposition: string }>) =>
+  Option.getOrElse(
+    Option.map(event, (each) => each.disposition),
+    () => "no event",
+  )
+
+/**
+ * The owner's `how` call in `where`, as the host runs it: a call id of its own; what the tool returned is committed to
+ * the session unless its location died first (then the host's restart records the call failed); with `crash`, the host
+ * dies after the tool returned and before it committed the answer.
+ */
+const answering =
+  (where: Where, how: "wait" | "kill" | "park", crash = false): Actor =>
+  (m, id) =>
+    Effect.gen(function* () {
+      const place = placeOf(m, where)
+      const call = `call_${m.calls.size + 1}`
+      m.calls.set(call, "running")
+      const exit = yield* Effect.exit(
+        Match.value(how).pipe(
+          Match.when("wait", () => place.model.wait(OWNER, id, 5 * SECOND, call)),
+          Match.when("kill", () => place.model.kill(OWNER, id, call)),
+          Match.orElse(() => place.model.park(OWNER, id, call)),
+        ),
+      )
+      if (Exit.isFailure(exit) || place.state.dead || crash) {
+        if (crash) place.state.dead = true
+        m.calls.set(call, "failed")
+        return
+      }
+      yield* Effect.exit(place.model.answered(call, "observed"))
+      if (place.state.dead) {
+        m.calls.set(call, "failed")
+        return
+      }
+      m.calls.set(call, "committed")
+      if (exit.value.delivered) m.answers.push(kindOfEvent(Option.flatten(Option.fromNullishOr(exit.value.view.event))))
+      yield* Effect.exit(place.model.answered(call, "committed"))
+    })
+
+/** The runner's call (`due`) reaching `where`. */
+const ringing =
+  (where: Where): Actor =>
+  (m, id) =>
+    Effect.asVoid(Effect.exit(placeOf(m, where).model.due(id)))
+
+/** `where` restarts: its server stops and starts again. */
+const restarting =
+  (where: Where): Actor =>
+  (m) =>
+    Effect.gen(function* () {
+      yield* placeOf(m, where).close
+      const place = yield* openPlace(m, where)
+      yield* Effect.exit(place.model.start)
+    })
+
+/** The job's supervisor comes up: it claims the launch slot, and only when it won runs the command (which exits 0) and rings A. */
+const supervising: Actor = (m, id) =>
+  Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis
+    if (!MemoryRunner.claim(m.runner, id, now)) return
+    m.ran = true
+    MemoryRunner.ended(m.runner, id, 0, now)
+    yield* Effect.exit(placeOf(m, "A").model.due(id))
+  })
+
+interface Family {
+  readonly name: string
+  /** The command's exit code, or `unclaimed`: no runner claimed it, and it is past its start grace. */
+  readonly end: number | "unclaimed"
+  /** Where the first actor writes: the place its plan holds or stops. */
+  readonly where: Where
+  readonly first: Actor
+  readonly second: Actor
+  /** Whether some history of it delivers by the owner's committed answer (the owner can win the end and its host commits). */
+  readonly byAnswer: boolean
+}
+
+const FAMILIES: ReadonlyArray<Family> = [
+  { name: "the owner's wait in A against the runner's call in A", end: 0, where: "A", first: answering("A", "wait"), second: ringing("A"), byAnswer: true },
+  { name: "moved: the owner's wait in B against the runner's call in A", end: 0, where: "B", first: answering("B", "wait"), second: ringing("A"), byAnswer: true },
+  { name: "moved: the runner's call in A against the owner's kill in B", end: 3, where: "A", first: ringing("A"), second: answering("B", "kill"), byAnswer: true },
+  { name: "moved: the owner's park in B against A's restart", end: 1, where: "B", first: answering("B", "park"), second: restarting("A"), byAnswer: true },
+  { name: "moved: the owner's wait in B returns and its host dies before committing it, against the runner's call in A", end: 0, where: "B", first: answering("B", "wait", true), second: ringing("A"), byAnswer: false },
+  { name: "the retirement in A against the supervisor's claim", end: "unclaimed", where: "A", first: ringing("A"), second: supervising, byAnswer: false },
+  { name: "the supervisor's claim against the retirement in A", end: "unclaimed", where: "A", first: supervising, second: ringing("A"), byAnswer: false },
+]
+
+/** One history of `family` under `plan` (none: a count of the first actor's writes): what the owner was given. */
+const history = (family: Family, plan: Option.Option<Plan>) =>
+  Effect.gen(function* () {
+    const m: Matrix = {
+      store: MemoryStore.empty(),
+      runner: MemoryRunner.empty(),
+      inbox: MemoryCourier.empty(OWNER),
+      calls: new Map(),
+      answers: [],
+      places: new Map(),
+      release: yield* Deferred.make<void>(),
+      plan: Option.none(),
+      seen: 0,
+      ran: false,
+    }
+    const home = yield* openPlace(m, "A")
+    yield* openPlace(m, "B")
+    const { job } = yield* home.model.job(OWNER, { command: "true", note: "matrix" })
+    const now = yield* Clock.currentTimeMillis
+    // The job's admission looks at it once: it runs (or, unclaimed, it is past its grace). Then it ends, with nothing
+    // announcing it, so the two actors are the first to see the end.
+    if (family.end === "unclaimed") yield* TestClock.adjust(31 * SECOND)
+    else MemoryRunner.running(m.runner, job.id, now)
+    yield* settle
+    if (family.end !== "unclaimed") MemoryRunner.ended(m.runner, job.id, family.end, now)
+    // Nothing reached the owner yet: the history starts from the end owed.
+    const owedAtStart = (m.runner.deliveries.get(job.id) ?? []).length === 0 && (m.inbox.inboxes.get(OWNER) ?? []).length === 0
+    // Count the first actor's writes (a plan that never comes), or hold or stop it at one.
+    m.plan = Option.orElse(plan, () => Option.some({ where: family.where, at: Number.POSITIVE_INFINITY, mode: "hold" as const }))
+    const first = yield* Effect.forkChild(family.first(m, job.id))
+    yield* settle
+    const second = yield* Effect.forkChild(family.second(m, job.id))
+    yield* settle
+    yield* Deferred.succeed(m.release, undefined)
+    yield* Fiber.await(first)
+    yield* Fiber.await(second)
+    const writes = m.seen
+    m.plan = Option.none()
+    // Recovery: what stopped reopens, the host settles the calls a dead location left running, every location starts, the sweeps run.
+    for (const where of ["A", "B"] as const) {
+      const place = placeOf(m, where)
+      if (!place.state.dead) continue
+      yield* place.close
+      yield* openPlace(m, where)
+    }
+    for (const [call, said] of m.calls) if (said === "running") m.calls.set(call, "failed")
+    for (const where of ["A", "B"] as const) yield* Effect.exit(placeOf(m, where).model.start)
+    for (const _ of Arr.range(1, 4)) {
+      yield* settle
+      yield* TestClock.adjust(RECOVER_MS + 30 * SECOND)
+    }
+    yield* settle
+    const letters = (m.inbox.inboxes.get(OWNER) ?? []).filter((received) => received.letter.metadata["kind"] === "job" && received.letter.metadata["progress"] !== true)
+    const kinds = [...letters.map((received) => kindOfEvent(Schema.decodeUnknownOption(Ended)(received.letter.metadata["event"]))), ...m.answers]
+    const expected = family.end === "unclaimed" ? (m.ran ? "succeeded" : "never-started") : family.end === 0 ? "succeeded" : "failed"
+    const final = Option.map(Option.fromNullishOr(m.runner.deliveries.get(job.id)?.at(-1)), (slot) => slot.state)
+    for (const where of ["A", "B"] as const) yield* placeOf(m, where).close
+    return { writes, owedAtStart, answers: m.answers.length, given: letters.length + m.answers.length, kinds, expected, final: Option.getOrElse(final, () => "none"), ran: m.ran }
+  })
+
+Seed.effect("each job's end reaches its owner once across two locations, a move, wait, kill, park, the runner's call, restart and the supervisor's claim, held or stopped at every write",
+  Effect.gen(function* () {
+    const failures: Array<unknown> = []
+    let histories = 0
+    const coverage: Array<{ readonly family: string; readonly writes: number; readonly byAnswer: number }> = []
+    for (const family of FAMILIES) {
+      const counted = yield* history(family, Option.none())
+      let byAnswer = 0
+      const plans = Arr.range(1, Math.max(1, counted.writes)).flatMap((at) => (["hold", "stop-before", "stop-after"] as const).map((mode) => ({ where: family.where, at, mode })))
+      for (const plan of [Option.none<Plan>(), ...plans.map((each) => Option.some(each))]) {
+        const seen = yield* history(family, plan)
+        histories += 1
+        const ok = seen.owedAtStart && seen.given === 1 && seen.kinds.every((kind) => kind === seen.expected) && seen.final === "delivered"
+        byAnswer += seen.answers
+        if (!ok) failures.push({ family: family.name, plan: Option.getOrUndefined(plan), owedAtStart: seen.owedAtStart, given: seen.given, kinds: seen.kinds, expected: seen.expected, final: seen.final, ran: seen.ran })
+      }
+      coverage.push({ family: family.name, writes: counted.writes, byAnswer })
+    }
+    yield* Console.log(`job-events boundaries: histories=${histories} failures=${failures.length} ${coverage.map((each) => `${each.writes}w/${each.byAnswer}a`).join(" ")}`)
+    bunExpect(failures).toEqual([])
+    // Each family exercised what it names: its first actor wrote (so each write was held and stopped), and a family
+    // whose owner can win the end had histories where the committed answer was the delivery.
+    bunExpect(coverage.map((each) => ({ family: each.family, wrote: each.writes > 0, byAnswer: each.byAnswer > 0 }))).toEqual(FAMILIES.map((family) => ({ family: family.name, wrote: true, byAnswer: family.byAnswer })))
+  }).pipe(Effect.provide(TestClock.layer()), Effect.provide(Logger.layer([]))),
+)
+
+Seed.effect("an owner's wait on a running job reads nothing while it waits: fifty quiet seconds add no read, and its end wakes it",
+  Effect.gen(function* () {
+    const m: Matrix = {
+      store: MemoryStore.empty(),
+      runner: MemoryRunner.empty(),
+      inbox: MemoryCourier.empty(OWNER),
+      calls: new Map(),
+      answers: [],
+      places: new Map(),
+      release: yield* Deferred.make<void>(),
+      plan: Option.none(),
+      seen: 0,
+      ran: false,
+    }
+    const home = yield* openPlace(m, "A")
+    const { job } = yield* home.model.job(OWNER, { command: "true", note: "quiet" })
+    MemoryRunner.running(m.runner, job.id, yield* Clock.currentTimeMillis)
+    m.calls.set("call_wait", "running")
+    const waiting = yield* Effect.forkChild(home.model.wait(OWNER, job.id, 15 * MINUTE, "call_wait"))
+    yield* settle
+    const reads = m.runner.reads
+    // Under the sweep's period: only the wait could read, and it does not.
+    for (const _ of Arr.range(1, 10)) {
+      yield* TestClock.adjust(5 * SECOND)
+      yield* settle
+    }
+    bunExpect(m.runner.reads).toBe(reads)
+    MemoryRunner.ended(m.runner, job.id, 0, yield* Clock.currentTimeMillis)
+    MemoryRunner.announce(m.runner, job.id)
+    yield* settle
+    const answer = yield* Fiber.join(waiting)
+    bunExpect({ ended: answer.ended, delivered: answer.delivered }).toEqual({ ended: true, delivered: true })
+    yield* home.close
+  }).pipe(Effect.provide(TestClock.layer()), Effect.provide(Logger.layer([]))),
+)

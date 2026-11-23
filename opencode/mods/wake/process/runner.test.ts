@@ -4,6 +4,7 @@
 // runner gone without an exit reads lost. On Linux, `systemd-run --user`
 // is asked first, and a refusal falls back to a detached runner with a warning.
 import { describe, expect, test } from "bun:test"
+import { spawnSync } from "node:child_process"
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -416,6 +417,71 @@ describe("the runner's claim and its exit", () => {
       expect(tries.count).toBe(2)
       expect(Schema.decodeUnknownSync(Schema.fromJsonString(JobExit))(readFileSync(path.join(late, FILES.exit), "utf8"))).toEqual(exit)
       expect(yield* writeExit(path.join(dir, "missing", "dir"), exit)).toBe(false)
+    }),
+  )
+})
+
+/**
+ * A writer of a job's record that kills itself (SIGKILL, as a crash would) at `barrier` of its one write: `write` is
+ * `claim` (the supervisor's launch claim), `retire` (a sweep's retirement) or `advance` (delivery slot 1). The script
+ * is written into the scratch directory and run by this bun.
+ */
+const killedAt = (scratch: string, dir: string, write: "claim" | "retire" | "advance", barrier: "temp" | "named") => {
+  const script = path.join(scratch, "writer.ts")
+  writeFileSync(
+    script,
+    [
+      `import { claim } from ${JSON.stringify(path.join(import.meta.dir, "supervise.ts"))}`,
+      `import { advanceIn, retireIn } from ${JSON.stringify(path.join(import.meta.dir, "runner.ts"))}`,
+      `const [dir, write, barrier] = process.argv.slice(2)`,
+      `const stop = (at: string) => { if (at === barrier) process.kill(process.pid, "SIGKILL") }`,
+      `if (write === "claim") claim(dir, 1, process.pid, stop)`,
+      `if (write === "retire") retireIn(dir, 1, stop)`,
+      `if (write === "advance") advanceIn(dir, 0, { state: "delivering", delivery: "msg_d1", attempt: "a1", holder: { kind: "letter" } }, stop)`,
+      `console.log("not killed")`,
+    ].join("\n"),
+  )
+  const ran = spawnSync(process.execPath, [script, dir, write, barrier], { encoding: "utf8" })
+  return { signal: ran.signal, stdout: ran.stdout }
+}
+
+/** A run as the outcomes name it: its state, and why when it is lost. */
+const said = (run: Run) => (run.state === "lost" ? `lost: ${run.cause}` : run.state)
+
+describe("a record write killed at each barrier, then reopened", () => {
+  limitedTest(
+    "killed after its temporary file synced, a write took nothing: the next writer wins the slot; killed after it took the name, it holds the slot whole and the next writer loses",
+    Effect.gen(function* () {
+      const scratch = yield* scratchDir("opencode-job-barrier-")
+      const outcomes: Array<unknown> = []
+      for (const barrier of ["temp", "named"] as const) {
+        // The supervisor's claim, then a sweep's retirement against it.
+        const launch = path.join(scratch, `claim-${barrier}`)
+        mkdirSync(launch)
+        const claimed = killedAt(scratch, launch, "claim", barrier)
+        outcomes.push({ write: "claim", barrier, signal: claimed.signal, run: said(ProcessRunner.runOf(launch)), retired: ProcessRunner.retireIn(launch, 2) })
+        // A sweep's retirement, then the supervisor's claim against it.
+        const fence = path.join(scratch, `retire-${barrier}`)
+        const retiredBy = killedAt(scratch, fence, "retire", barrier)
+        outcomes.push({ write: "retire", barrier, signal: retiredBy.signal, run: said(ProcessRunner.runOf(fence)), claimed: claim(fence, 2, OTHER_LIVE) })
+        // A delivery claim, then another location's claim of the same slot.
+        const delivery = path.join(scratch, `advance-${barrier}`)
+        mkdirSync(delivery)
+        const advanced = killedAt(scratch, delivery, "advance", barrier)
+        const reopened = Option.map(ProcessRunner.slotOf(delivery), (slot) => ({ version: slot.version, attempt: slot.delivery.attempt }))
+        const next = ProcessRunner.advanceIn(delivery, 0, { state: "delivering", delivery: "msg_d1", attempt: "a2", holder: { kind: "letter" } })
+        outcomes.push({ write: "advance", barrier, signal: advanced.signal, reopened, next })
+      }
+      expect(outcomes).toEqual([
+        // At `temp`: the stray temporary file is no claim; the job reads starting, and the retirement wins.
+        { write: "claim", barrier: "temp", signal: "SIGKILL", run: "starting", retired: true },
+        { write: "retire", barrier: "temp", signal: "SIGKILL", run: "starting", claimed: true },
+        { write: "advance", barrier: "temp", signal: "SIGKILL", reopened: Option.none(), next: true },
+        // At `named`: the claim is whole; its runner is dead, so it reads lost, and the retirement loses.
+        { write: "claim", barrier: "named", signal: "SIGKILL", run: "lost: runner-gone", retired: false },
+        { write: "retire", barrier: "named", signal: "SIGKILL", run: "lost: never-started", claimed: false },
+        { write: "advance", barrier: "named", signal: "SIGKILL", reopened: Option.some({ version: 1, attempt: "a1" }), next: false },
+      ])
     }),
   )
 })
