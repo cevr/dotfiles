@@ -30,8 +30,8 @@ export const wallTime = (text: string) =>
     return []
   })
 
-/** Every `*.sim.test.ts` under `dir` (a path from opencode/), node_modules and dot folders aside. */
-const simulated = (dir: string): Effect.Effect<ReadonlyArray<string>, PlatformError.PlatformError, FileSystem.FileSystem | Path.Path> =>
+/** Matching files under `dir` (a path from opencode/), node_modules and dot folders aside. */
+const sources = (dir: string, includes: (file: string) => boolean): Effect.Effect<ReadonlyArray<string>, PlatformError.PlatformError, FileSystem.FileSystem | Path.Path> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
@@ -40,8 +40,8 @@ const simulated = (dir: string): Effect.Effect<ReadonlyArray<string>, PlatformEr
       Effect.gen(function* () {
         const entry = path.join(dir, name)
         const info = yield* fs.stat(path.join(ROOT, entry))
-        if (info.type === "Directory" && name !== "node_modules" && !name.startsWith(".")) return yield* simulated(entry)
-        if (info.type === "File" && name.endsWith(".sim.test.ts")) return [entry]
+        if (info.type === "Directory" && name !== "node_modules" && !name.startsWith(".")) return yield* sources(entry, includes)
+        if (info.type === "File" && includes(name)) return [entry]
         return []
       }),
     )
@@ -70,7 +70,7 @@ describe("no wall time in a simulated file", () => {
   Seed.effect(
     "no simulated test file names one",
     Effect.gen(function* () {
-      const files = (yield* Effect.forEach(["cmd", "mods", "sim", "tests"], simulated)).flat()
+      const files = (yield* Effect.forEach(["cmd", "mods", "sim", "tests"], (dir) => sources(dir, (file) => file.endsWith(".sim.test.ts")))).flat()
       expect(files.length).toBeGreaterThanOrEqual(2)
       expect(yield* scan(files)).toEqual([])
     }).pipe(Effect.provide(Platform)),
@@ -84,3 +84,29 @@ describe("no wall time in a simulated file", () => {
     ),
   )
 })
+
+/** The test driver is not an OpenCode plugin capability. Only the fork-checked `session.context` crosses it. */
+const driverAccess = /(?:from\s*|import\s*\(?\s*|require\s*\(\s*)["'](?:@dotfiles\/opencode-sim(?:\/|["'])|(?:\.\.\/)+sim\/)|\bworld\s*(?:\.\s*messages\b|\[\s*["']messages["']\s*\])/
+
+test("the plugin cannot import or expose the simulated driver's raw transcript", () => {
+  expect(driverAccess.test('import { make } from "../../../sim/world.ts"')).toBe(true)
+  expect(driverAccess.test('const expose = () => world.messages(sessionID)')).toBe(true)
+  expect(driverAccess.test('yield* ctx.session.context({ sessionID })')).toBe(false)
+})
+
+Seed.effect("production mods and composition roots cannot see the simulated driver's raw transcript",
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const isProduction = (file: string) => /\.tsx?$/.test(file) && !/\.(?:test|bench)\.tsx?$/.test(file)
+    const files = [
+      ...yield* sources("mods", isProduction),
+      ...yield* sources("cmd", (file) => file === "server.ts" || file === "tui.tsx"),
+    ]
+    const leaks = yield* Effect.forEach([...files, "sim/context.ts"], (file) =>
+      fs.readFileString(path.join(ROOT, file)).pipe(Effect.map((text) => [file].filter(() => driverAccess.test(text)))),
+    )
+    expect(files.length).toBeGreaterThan(100)
+    expect(leaks.flat()).toEqual([])
+  }).pipe(Effect.provide(Platform)),
+)
