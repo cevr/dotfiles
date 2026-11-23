@@ -25,7 +25,9 @@
 import { existsSync, readFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import path from "node:path"
-import { $, Glob } from "bun"
+import { $ } from "bun"
+import { ALL_READS, readMatcher, readsOf } from "./read-declarations.ts"
+export { readsOf } from "./read-declarations.ts"
 
 export const ROOT = path.resolve(import.meta.dir, "..")
 
@@ -53,6 +55,8 @@ export interface Workspace {
   readonly files: ReadonlyArray<string>
   /** Sibling inputs relative to opencode/, used only by explicit @reads. */
   readonly siblings?: ReadonlyArray<string>
+  /** Git-object inputs can change even if all working files have the same contents. */
+  readonly head?: string
   /** Package directory (`mods/prime`) of each package. */
   readonly packages: ReadonlyMap<string, Package>
 }
@@ -72,7 +76,11 @@ export const packageOf = (file: string): string | undefined => {
 }
 
 export const load = async (): Promise<Workspace> => {
-  const listed = await $`git ls-files -co --exclude-standard -z`.cwd(path.dirname(ROOT)).quiet().text()
+  const cwd = path.dirname(ROOT)
+  const [listed, head] = await Promise.all([
+    $`git ls-files -co --exclude-standard -z`.cwd(cwd).quiet().text(),
+    $`git rev-parse HEAD`.cwd(cwd).quiet().nothrow().text(),
+  ])
   // A deleted file git still tracks is not an input.
   const known = listed.split("\0").filter(Boolean).map(fromRepository).filter((file) => existsSync(path.join(ROOT, file)))
   const files = known.filter((file) => !file.startsWith("../"))
@@ -95,7 +103,7 @@ export const load = async (): Promise<Workspace> => {
     const deps = (manifests.get(dir)?.deps ?? []).flatMap((name) => dirOfName.get(name) ?? [])
     packages.set(dir, { dir, files: list, deps })
   }
-  return { files, siblings, packages }
+  return { files, siblings, packages, head: head.trim() }
 }
 
 /** A path from the repository's root expressed from opencode/. */
@@ -135,26 +143,26 @@ export const codeOf = (file: string, source: string): string => scan(file, sourc
 /** The import specifiers a source holds (`import`, `export … from`, `import()`), through Bun's transpiler. */
 export const importsOf = (file: string, source: string): ReadonlyArray<string> => scan(file, source).imports
 
-const READS = /^\s*(?:\/\/|\*)\s*@reads\s+(.+?)\s*$/gm
-
 /**
  * The globs, from opencode/, of the files a source declares it reads by path rather than import: its `@reads <glob> …`
  * comment lines. A test that globs, lists or reads files by their path text (scripts/runtime-imports.test.ts walks
  * every cmd/** and mods/** source) declares them, so the gate's cache key (`reach`) and the merge check's selection
  * (scripts/merge-check.ts) see a change to one as a change to the test's input; no import edge does.
  */
-export const readsOf = (source: string): ReadonlyArray<string> => [...source.matchAll(READS)].flatMap((match) => String(match[1]).split(/\s+/))
-
 /** Files a test declares by path; these are inputs even if they are docs or another test. */
 export const declaredInputs = (workspace: Workspace, file: string): ReadonlyArray<string> => {
   return matchingReads(sourceText(file), [...workspace.files, ...(workspace.siblings ?? [])])
 }
 
 export const matchingReads = (source: string, files: ReadonlyArray<string>): ReadonlyArray<string> => {
-  const globs = readsOf(source).map((pattern) => new Glob(pattern))
-  if (globs.length === 0) return []
-  return files.filter((input) => globs.some((glob) => glob.match(input)))
+  const patterns = readsOf(source)
+  if (patterns.length === 0) return []
+  return files.filter(readMatcher(patterns))
 }
+
+/** Only unknown-input tests also follow Git's object identity (relevant to archives and history). */
+export const readState = (workspace: Workspace, file: string): string =>
+  (readsOf(sourceText(file)).includes(ALL_READS) && workspace.head) || ""
 
 /** The workspace file a specifier from `from` names, if any. */
 const resolveLocal = (known: ReadonlySet<string>, from: string, specifier: string): string | undefined => {
@@ -334,12 +342,16 @@ export const acceptSharedFrom = (hashFile: (file: string) => string, fork: strin
 export const acceptSharedKey = (extra: ReadonlyArray<string>) => forkLine().then((fork) => acceptSharedFrom(hashOf, fork, extra))
 
 /** An acceptance file's key: the shared key and the contents of the inputs chosen by `acceptReach`. */
-export const acceptKey = (shared: string, reached: Iterable<string>, hashFile: (file: string) => string = hashOf) => {
+export const acceptKey = (shared: string, reached: Iterable<string>, hashFile: (file: string) => string = hashOf, repoState = "") => {
   const hash = createHash("sha256")
   hash.update(shared)
+  if (repoState) hash.update(`\nrepository:${repoState}\n`)
   for (const file of [...reached].sort()) hash.update(`${file}:${hashFile(file)}\n`)
   return hash.digest("hex")
 }
+
+export const acceptReadKey = (workspace: Workspace, test: string, shared: string, reached: Iterable<string>) =>
+  acceptKey(shared, reached, hashOf, readState(workspace, test))
 
 /** A key over `files`' contents and the shared key. */
 export const keyOf = (shared: string, files: Iterable<string>) => {

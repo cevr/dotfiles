@@ -17,8 +17,8 @@ BunRuntime.runMain(Effect.gen(function* () {
   const problems = new Array<string>()
   for (const file of files) {
     const source = yield* fs.readFileString(`${ROOT}/${file}`)
-    const { patterns, issues } = checkReadInputs(file, source, sourceText)
-    if (argv.includes("--inventory")) yield* Console.log(`${file}\t${patterns.join(" ")}`)
+    const { patterns, issues, classification, indirect } = checkReadInputs(file, source, sourceText)
+    if (argv.includes("--inventory")) yield* Console.log(`${file}\t${patterns.join(" ")}\t${classification}\t${indirect.map(({ line, reason }) => `${line}: ${reason}`).join("; ")}`)
     for (const { line, message } of issues) problems.push(`${file}:${line}: ${message}`)
   }
   if (problems.length > 0) {

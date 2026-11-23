@@ -58,7 +58,7 @@ import * as Swarm from "./accept-plan.ts"
 import { heading, isSerial, plan, poolWidth, requestedWidth, scenariosOf } from "./accept-plan.ts"
 import * as Accept from "./accept-ledger.ts"
 import * as Yield from "./accept-yield.ts"
-import { acceptanceTests, acceptKey, acceptReach, acceptSharedKey, fromRepository, load, packageOf, reach, ROOT, type Workspace } from "./reach.ts"
+import { acceptanceTests, acceptReadKey, acceptReach, acceptSharedKey, fromRepository, load, packageOf, reach, ROOT, type Workspace } from "./reach.ts"
 
 const ENV = { ...process.env }
 const ARGS = process.argv.slice(2)
@@ -177,7 +177,7 @@ const prepare = Effect.fn("Accept.prepare")(function* (signalled: Deferred.Defer
   const shared = yield* Effect.promise(() => acceptSharedKey([`accept-ledger:${Accept.KEY_VERSION}`, "bun test --timeout 300000"]))
   const memo = new Map<string, ReadonlyArray<string>>()
   const reached = new Map(files.map((file) => [file, acceptReach(workspace, file, memo)]))
-  const keys = new Map(files.map((file) => [file, acceptKey(shared, reached.get(file) ?? [file])]))
+  const keys = new Map(files.map((file) => [file, acceptReadKey(workspace, file, shared, reached.get(file) ?? [file])]))
   const tiers = new Map(files.map((file) => [file, Accept.tierOf(text(file))]))
   const candidates = files.map((file) => ({ file, tier: tiers.get(file) ?? "land", key: keys.get(file) ?? "", ...Option.match(Accept.offUntil(text(file), ENV), { onNone: () => ({}), onSome: (off) => ({ off }) }) }))
   const named = own.filter((arg) => files.includes(arg))

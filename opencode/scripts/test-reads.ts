@@ -1,8 +1,8 @@
 import { Glob } from "bun"
 import { Effect, Option, Path, Predicate } from "effect"
 import { parseSync } from "oxc-parser"
-import { readsOf } from "./reach.ts"
-import { child, children, field, id, literal, type MaybeNode, type Node, node, nodes, one, property, str, unwrap } from "./test-reads-ast.ts"
+import { ALL_READS, readDeclarations } from "./read-declarations.ts"
+import { child, children, field, id, literal, type MaybeNode, type Node, node, nodes, property, str, unwrap } from "./test-reads-ast.ts"
 
 const path = Effect.runSync(Effect.provide(Path.Path, Path.layer))
 // Virtual roots let cwd and module paths mix without reading the host's tree.
@@ -10,7 +10,10 @@ const REPO = "/checkout"
 const CWD = `${REPO}/opencode`
 const TEMP = "/scratch"
 const FS = new Set(["fs", "fs/promises"])
-const FILE = new Set(["readFile", "readFileSync", "readFileString", "createReadStream", "stream", "open", "openSync", "copy", "copyFile", "copyFileSync", "cp", "cpSync", "readLink", "readlink", "readlinkSync"])
+const FILE = new Set([
+  "readFile", "readFileSync", "readFileString", "createReadStream", "stream", "open", "openSync", "copy", "copyFile", "copyFileSync", "cp", "cpSync", "readLink", "readlink", "readlinkSync",
+  "access", "accessSync", "exists", "existsSync", "stat", "statSync", "lstat", "lstatSync", "realPath", "realpath", "realpathSync",
+])
 const DIRECTORY = new Set(["readDirectory", "readdir", "readdirSync", "opendir", "opendirSync"])
 const GIT_READS = new Set(["grep", "ls-files", "ls-tree", "show", "diff"])
 const WHOLE_TREE = new Set(["**", "**/*", "./**", "../**"])
@@ -18,7 +21,7 @@ const SCOPE = new Set(["Program", "BlockStatement", "ArrowFunctionExpression", "
 const SCRATCH = new Set([
   "tests/read-path.ts:scratchInput", "tests/read-path.ts:externalInput", "tests/read-path.ts:installedInput", "tests/scratch.ts:scratch", "tests/scratch.ts:keptScratch",
 ])
-const MESSAGE = "cannot resolve read path; use a literal file, a literal directory before the computed part, or a scratch root"
+const MESSAGE = "cannot resolve read path; use a literal file, a literal directory before the computed part, or a scratch root; for an indirect read declare @reads-indirect dir/** or @reads all"
 const keyOf = (at: Node) => `${at.type}:${at.start}`
 const argsOf = (at: Node) => nodes(field(at, "arguments"))
 const opts = (at: MaybeNode, name: string) => child(nodes(field(at, "properties")).find((prop) => (id(child(prop, "key")) ?? literal(child(prop, "key"))) === name), "value")
@@ -109,6 +112,10 @@ const syntaxOf = (program: Node, dir: string) => {
     if (binding) return ""
     const builtin = builtinModule(at)
     if (builtin) return builtin
+    if (at.type === "CallExpression") {
+      const callee = child(at, "callee")
+      if (property(callee) === "bind") return symbol(child(callee, "object"), seen)
+    }
     const member = property(at)
     if (!member) return id(at) ?? ""
     const object = child(at, "object")
@@ -125,11 +132,12 @@ const memberSymbol = (base: string, member: string) => {
 }
 type Syntax = ReturnType<typeof syntaxOf>
 
-type Address = { readonly prefix: string; readonly tail: boolean } | { readonly glob: string }
+type Address = { readonly prefix: string; readonly tail: boolean } | { readonly glob: string } | { readonly opaque: string }
 type Resolved = Option.Option<Address>
 type Evaluation = (node: MaybeNode) => Resolved
 const fixed = (prefix: string): Resolved => Option.some({ prefix, tail: false })
 const computed = (prefix: string): Resolved => Option.some({ prefix, tail: true })
+const opaque = (reason: string): Resolved => Option.some({ opaque: reason })
 const prefixOf = (at: Resolved) => Option.flatMap(at, (address) => ("prefix" in address && Option.some(address)) || Option.none())
 const literalPath = (at: Resolved) => Option.map(Option.filter(prefixOf(at), (address) => !address.tail), ({ prefix }) => prefix)
 const temporary = (at: Resolved) => Option.exists(prefixOf(at), ({ prefix }) => within(TEMP, path.resolve(CWD, prefix)))
@@ -255,9 +263,11 @@ const evaluate = (file: string, syntax: Syntax, loadSource: (file: string) => st
 
 const regexGlob = /[*?[\]{]/
 const patternOf = (input: Address, cwd: string, listing: boolean): Option.Option<string> => {
+  if ("opaque" in input) return Option.none()
   if ("glob" in input) return Option.some(input.glob)
   const at = path.resolve(cwd, input.prefix)
   if (within(TEMP, at)) return Option.some("")
+  if (!input.tail && !listing && (at === CWD || at === REPO)) return Option.some("")
   if (!within(REPO, at) || (input.tail && [CWD, REPO].includes(at))) return Option.none()
   const rel = path.relative(CWD, at) || "."
   if (input.tail || listing) return Option.some(`${rel}/**`)
@@ -283,6 +293,10 @@ const alternatives = (glob: string) => {
   return [...parts, glob.slice(start, -1)]
 }
 const wholeTree = (pattern: string): boolean => WHOLE_TREE.has(pattern) || alternatives(pattern).some(wholeTree)
+const indirectDirectory = (pattern: string) => {
+  const directory = pattern.replace(/^\.\.\//, "")
+  return /^(?:[\w.-]+\/)+\*\*$/.test(directory) && directory.split("/").every((part) => part !== "." && part !== "..")
+}
 const covers = (declared: ReadonlyArray<string>, needed: string): boolean => {
   if (wholeTree(needed)) return false
   if (declared.includes(needed) || declared.some((glob) => alternatives(glob).includes(needed))) return true
@@ -298,10 +312,10 @@ type ReadSite = (at: Node, input: Resolved, cwd?: string, listing?: boolean) => 
 const gitReads = (at: Node, args: ReadonlyArray<Node>, cwd: string, from: number, evaluate: Evaluation, record: ReadSite) => {
   const words = args.map(literal)
   if (words[from] === "show") {
-    const names = words.flatMap((word) => one(word?.match(/^[^:]+:(.+)$/)?.[1]))
-    for (const name of names) record(at, fixed(name), (name.startsWith("./") && cwd) || REPO)
-    if (names.length === 0 && words.slice(from + 1).some(Predicate.isUndefined)) record(at, Option.none())
-    return
+    const [object = ""] = words.slice(from + 1)
+    const name = object.match(/^[a-zA-Z0-9_.@~^/-]+:(.+)$/)?.[1]
+    if (name && words.length === from + 2) return record(at, fixed(name), (name.startsWith("./") && cwd) || REPO)
+    return record(at, opaque("Git command or object reads"))
   }
   const divider = words.indexOf("--")
   if (divider >= 0 && args[divider + 1])
@@ -311,52 +325,30 @@ const gitReads = (at: Node, args: ReadonlyArray<Node>, cwd: string, from: number
 
 const childReads = (at: Node, program: string, args: ReadonlyArray<Node>, directory: MaybeNode, evaluate: Evaluation, record: ReadSite) => {
   const command = path.basename(program)
-  if (!["git", "grep", "rg", "cat"].includes(command)) return
+  if (!["git", "grep", "rg", "cat"].includes(command)) return record(at, opaque("subprocess reads"))
+  if (args.some((arg) => !Predicate.isString(literal(arg)))) return record(at, opaque("nonliteral subprocess arguments"))
   const dashC = args.map(literal).indexOf("-C")
   const from = (dashC >= 0 && dashC + 2) || 0
   const sub = literal(args[from])
-  if (command === "git" && sub && !GIT_READS.has(sub)) return
+  if (command === "git" && sub && !GIT_READS.has(sub)) {
+    if (["rev-parse", "branch", "version", "--version"].includes(sub)) return
+    return record(at, opaque("Git command or object reads"))
+  }
   const override = (command === "git" && dashC >= 0 && args[dashC + 1]) || directory
   const cwd = (override && evaluate(override)) || fixed(CWD)
-  if (temporary(cwd)) return
+  if (temporary(cwd) && command === "git") return
   const base = literalPath(cwd)
   if (Option.isNone(base)) return record(at, Option.none())
   const dir = path.resolve(CWD, base.value)
   if (command === "git") return gitReads(at, args, dir, from, evaluate, record)
-  const operands = args.filter((argument) => !literal(argument)?.startsWith("-"))
-  if (command === "rg" && operands.length === 1) return record(at, computed(dir))
-  for (const file of operands.slice(Number(command !== "cat"))) record(at, evaluate(file), dir)
-}
-
-const shellWords = (at: Node): ReadonlyArray<ReadonlyArray<string>> => {
-  const text = nodes(field(child(at, "quasi"), "quasis")).map((quasi) => {
-    const value = field(quasi, "value")
-    return (Predicate.isObject(value) && "cooked" in value && str(value.cooked)) || ""
-  }).join(" __computed__ ")
-  return text.split(/(?:&&|\|\||[;|\n])/).map((part) => part.trim().split(/\s+/))
-}
-
-const shellGit = (at: Node, args: ReadonlyArray<string>, record: ReadSite) => {
-  const divider = args.indexOf("--")
-  const operands = (divider >= 0 && args.slice(divider + 1)) || []
-  const paths = operands.flatMap((file) => (file !== "__computed__" && [file]) || [])
-  for (const file of paths) record(at, fixed(file))
-  if (paths.length === 0 || paths.length !== operands.length) record(at, Option.none())
-}
-
-const shellFiles = (at: Node, words: ReadonlyArray<string>, skip: number, record: ReadSite) => {
-  for (const file of words.filter((arg) => arg && !arg.startsWith("-")).slice(skip)) {
-    if (file === "__computed__") record(at, Option.none())
-    else record(at, fixed(file))
-  }
+  if (args.some((argument) => literal(argument)?.startsWith("-"))) return record(at, opaque("subprocess options"))
+  const operands = args.slice(Number(command !== "cat"))
+  if (operands.length === 0) return record(at, opaque("implicit subprocess inputs"))
+  for (const file of operands) record(at, evaluate(file), dir)
 }
 
 const shellRead = (at: Node, syntax: Syntax, record: ReadSite) => {
-  if (!["bun:$", "Bun:$"].includes(syntax.symbol(child(at, "tag")))) return
-  for (const [command = "", sub = "", ...args] of shellWords(at)) {
-    if (command === "git" && GIT_READS.has(sub)) shellGit(at, args, record)
-    if (["grep", "rg", "cat"].includes(command)) shellFiles(at, [sub, ...args], Number(command !== "cat"), record)
-  }
+  if (["bun:$", "Bun:$"].includes(syntax.symbol(child(at, "tag")))) record(at, opaque("shell reads"))
 }
 
 const globRead = (at: Node, syntax: Syntax, evaluate: Evaluation, record: ReadSite) => {
@@ -380,59 +372,133 @@ const filesystemCall = (called: string) => {
   return (FS.has(module) && (FILE.has(method) || DIRECTORY.has(method))) || ["Bun:file", "bun:file"].includes(called)
 }
 
+const BUN_SPAWN = new Set(["bun:spawn", "bun:spawnSync", "Bun:spawn", "Bun:spawnSync"])
+const CHILD_SPAWN = new Set(["child_process:spawn", "child_process:spawnSync", "child_process:execFile", "child_process:execFileSync", "effect/process:ChildProcess:make"])
+const EXEC_SHELL = new Set(["child_process:exec", "child_process:execSync"])
+const ARGV_HELPER = new Set(["tests/owned.ts:owned", "tests/reconnect/host.ts:run"])
+
+// Executable workspace modules are opaque. Do not infer purity from the
+// absence of a known filesystem API: an unused-looking import can run code,
+// and a forwarding module can hide an arbitrary helper.
+const MODULE_DATA = /\.json$/
+const CHECKED_HELPERS = new Set(["tests/scratch.ts", "tests/read-path.ts"])
+const workspacePackage = (specifier: string) => specifier.startsWith("@dotfiles/")
+
+const importedHelper = (at: Node, dir: string, record: ReadSite) => {
+  if (field(at, "importKind") === "type") return
+  const specifier = literal(child(at, "source"))
+  if (!specifier) return
+  const specifiers = nodes(field(at, "specifiers"))
+  if (specifiers.length > 0 && specifiers.every((spec) => field(spec, "importKind") === "type")) return
+  if (workspacePackage(specifier)) return record(at, opaque(`imported workspace package ${specifier}`))
+  if (!specifier.startsWith(".")) return
+  const file = importedFrom(at, dir)
+  if (!MODULE_DATA.test(file) && !CHECKED_HELPERS.has(file)) record(at, opaque(`imported helper ${file}`))
+}
+
+const dynamicMember = (at: MaybeNode, symbol: Syntax["symbol"]) => {
+  if (at?.type !== "MemberExpression" || !field(at, "computed") || property(at)) return false
+  const module = symbol(child(at, "object"))
+  return FS.has(module) || ["Bun", "bun", "child_process", "effect:FileSystem:FileSystem", "effect/FileSystem:FileSystem"].includes(module)
+}
+
+const processRead = (at: Node, called: string, args: ReadonlyArray<Node>, evaluate: Evaluation, record: ReadSite) => {
+  if (EXEC_SHELL.has(called)) return record(at, opaque("shell reads"))
+  if (ARGV_HELPER.has(called)) return record(at, opaque("subprocess helper reads"))
+  if (BUN_SPAWN.has(called)) {
+    const argv = nodes(field(opts(args[0], "cmd") ?? args[0], "elements"))
+    return childReads(at, literal(argv[0]) ?? "", argv.slice(1), opts(args[1] ?? args[0], "cwd"), evaluate, record)
+  }
+  if (CHILD_SPAWN.has(called))
+    return childReads(at, literal(args[0]) ?? "", nodes(field(args[1], "elements")), opts(args[2], "cwd"), evaluate, record)
+}
+
 const callRead = (at: Node, syntax: Syntax, evaluate: Evaluation, record: ReadSite) => {
-  const called = syntax.symbol(child(at, "callee"))
+  const callee = child(at, "callee")
+  const called = syntax.symbol(callee)
   const args = argsOf(at)
+  if (dynamicMember(callee, syntax.symbol)) return record(at, opaque("computed filesystem or process method"))
+  if (called === "eval" || called === "Function") return record(at, opaque("evaluated program reads"))
+  if (called === "require") {
+    const name = literal(args[0])
+    if (!name || /^[./]/.test(name) || workspacePackage(name)) return record(at, opaque("dynamically required module"))
+  }
   if (called === "tests/read-path.ts:matchingInput") return record(at, evaluate(at))
   if (filesystemCall(called)) {
     const [, method = ""] = called.split(":")
     const recursive = ["cp", "cpSync"].includes(method) && field(opts(args[2], "recursive"), "value") === true
     return record(at, evaluate(args[0]), CWD, DIRECTORY.has(method) || method === "copy" || recursive)
   }
-  if (["bun:spawn", "bun:spawnSync", "Bun:spawn", "Bun:spawnSync"].includes(called)) {
-    const argv = nodes(field(opts(args[0], "cmd") ?? args[0], "elements"))
-    return childReads(at, literal(argv[0]) ?? "", argv.slice(1), opts(args[1] ?? args[0], "cwd"), evaluate, record)
-  }
-  if (["child_process:spawn", "child_process:spawnSync", "child_process:execFile", "child_process:execFileSync", "effect/process:ChildProcess:make"].includes(called))
-    return childReads(at, literal(args[0]) ?? "", nodes(field(args[1], "elements")), opts(args[2], "cwd"), evaluate, record)
+  processRead(at, called, args, evaluate, record)
   globRead(at, syntax, evaluate, record)
 }
 
 export interface ReadCheck {
   readonly patterns: ReadonlyArray<string>
+  readonly indirect: ReadonlyArray<{ readonly line: number; readonly reason: string }>
+  readonly classification: "static" | "declared" | "unknown"
   readonly issues: ReadonlyArray<{ readonly line: number; readonly message: string }>
+}
+
+const declarationsAt = (source: string, parsed: ReturnType<typeof parseSync>) =>
+  parsed.comments.flatMap(({ start, end }) => readDeclarations(source.slice(start, end)))
+
+const parserFailure = (messages: ReadonlyArray<string>): ReadCheck =>
+  ({ patterns: [], indirect: [], classification: "unknown", issues: messages.map((message) => ({ line: 1, message })) })
+
+const checkSite = (at: Node, fileDir: string, syntax: Syntax, valueOf: Evaluation, record: ReadSite) => {
+  if (at.type === "ImportDeclaration") return importedHelper(at, fileDir, record)
+  if (at.type === "TaggedTemplateExpression") return shellRead(at, syntax, record)
+  if (at.type === "CallExpression") return callRead(at, syntax, valueOf, record)
+  if (at.type === "NewExpression" && syntax.symbol(child(at, "callee")) === "Function") return record(at, opaque("evaluated program reads"))
+  if (at.type !== "ImportExpression") return
+  const target = child(at, "source")
+  const name = literal(target)
+  if (!Predicate.isString(name) || name.startsWith(".") || name.startsWith("/")) record(at, valueOf(target), fileDir)
+  if (!Predicate.isString(name)) record(at, opaque("dynamically loaded module"))
+  else if ((/^[./]/.test(name) && !MODULE_DATA.test(name)) || workspacePackage(name)) record(at, opaque("dynamically loaded helper"))
+}
+
+const readClassification = (unknown: boolean, count: number): ReadCheck["classification"] => {
+  if (unknown) return "unknown"
+  if (count > 0) return "declared"
+  return "static"
 }
 
 export const checkReadInputs = (file: string, source: string, loadSource: (file: string) => string = () => ""): ReadCheck => {
   const parsed = parseSync(file, source, { sourceType: "module" })
-  if (parsed.errors.length > 0) return { patterns: [], issues: parsed.errors.map(({ message }) => ({ line: 1, message })) }
+  if (parsed.errors.length > 0) return parserFailure(parsed.errors.map(({ message }) => message))
   const program = node(parsed.program)
-  if (!program) return { patterns: [], issues: [{ line: 1, message: "source did not produce a syntax tree" }] }
+  if (!program) return parserFailure(["source did not produce a syntax tree"])
   const fileDir = path.dirname(path.resolve(CWD, file))
   const syntax = syntaxOf(program, fileDir)
   const valueOf = evaluate(file, syntax, loadSource)
   const found = new Set<string>()
   const issues = new Array<ReadCheck["issues"][number]>()
-  const declared = parsed.comments.flatMap(({ start, end }) => readsOf(source.slice(start, end)))
-  const issue = (at: Node, message: string) => issues.push({ line: source.slice(0, at.start).split("\n").length, message })
+  const indirect = new Array<ReadCheck["indirect"][number]>()
+  const declarations = declarationsAt(source, parsed)
+  const declared = declarations.map(({ pattern }) => pattern)
+  const hasAll = declared.includes(ALL_READS)
+  const hasScope = declarations.some(({ indirect, pattern }) => indirect && indirectDirectory(pattern))
+  const lineOf = (at: Node) => source.slice(0, at.start).split("\n").length
+  const issue = (at: Node, message: string) => issues.push({ line: lineOf(at), message })
   const record: ReadSite = (at, input, cwd = CWD, listing = false) => {
     const needed = Option.flatMap(input, (address) => patternOf(address, cwd, listing))
-    if (Option.isNone(needed)) return void issue(at, MESSAGE)
+    if (Option.isNone(needed)) {
+      const reason = Option.getOrElse(Option.flatMap(input, (address) => ("opaque" in address && Option.some(address.opaque)) || Option.none()), () => "computed read")
+      indirect.push({ line: lineOf(at), reason })
+      if (!hasAll && !hasScope) issue(at, `${MESSAGE}: ${reason}`)
+      return
+    }
     if (!needed.value) return
     found.add(needed.value)
-    if (!covers(declared, needed.value)) issue(at, `declare @reads ${needed.value}`)
+    if (!hasAll && !covers(declared, needed.value)) issue(at, `declare @reads ${needed.value}`)
   }
-  if (readsOf(source).some((pattern) => !declared.includes(pattern)))
+  if (readDeclarations(source).some(({ pattern, indirect }) => !declarations.some((each) => each.pattern === pattern && each.indirect === indirect)))
     issue(program, "@reads declarations must be source comments, not text in a string")
-  if (declared.some(wholeTree))
-    issue(program, "@reads must name the input, not the whole checkout")
-  for (const at of syntax.entries) {
-    if (at.type === "TaggedTemplateExpression") shellRead(at, syntax, record)
-    if (at.type === "CallExpression") callRead(at, syntax, valueOf, record)
-    if (at.type !== "ImportExpression") continue
-    const target = child(at, "source")
-    const name = literal(target)
-    if (!Predicate.isString(name) || name.startsWith(".") || name.startsWith("/")) record(at, valueOf(target), fileDir)
-  }
-  return { patterns: [...found].toSorted(), issues }
+  if (declared.some(wholeTree)) issue(program, "@reads must name the input or use @reads all for an opaque read")
+  if (declarations.some(({ indirect, pattern }) => indirect && !indirectDirectory(pattern)))
+    issue(program, "@reads-indirect must name a directory ending in /**; for an unknown scope use @reads all")
+  for (const at of syntax.entries) checkSite(at, fileDir, syntax, valueOf, record)
+  return { patterns: [...found].toSorted(), indirect, issues, classification: readClassification(hasAll || (indirect.length > 0 && !hasScope), indirect.length) }
 }

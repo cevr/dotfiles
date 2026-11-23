@@ -17,3 +17,4 @@ describe("releaseFlags", () => {
     expect(releaseFlags(" -full_codemode ")).toBe(" -full_codemode ")
   })
 })
+// @reads-indirect scripts/**

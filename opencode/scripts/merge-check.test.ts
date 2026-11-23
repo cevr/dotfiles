@@ -5,6 +5,7 @@
 // new or changed scripts/ file can change what it asserts; it declares them, or no merge check runs it (fork-checks.test
 // and required-inputs.test landed by their merge checks and turned it red on main, b5735808):
 // @reads scripts/*.{ts,tsx}
+// @reads-indirect scripts/** ../workbox/test/**
 // Which tests import or read a path is the tree's fact, derived (`found`); what a case pins by hand is a rule's decision.
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Glob } from "bun"
@@ -79,7 +80,7 @@ const tree = Effect.gen(function* () {
   })
   // The tree's facts, from the parts the selection composes (reachedWithin, @reads), not from scriptTests itself.
   const importers = (file: string) => scripts.files.filter((test) => reachedWithin(test, scripts, exists).has(file))
-  const readers = (file: string) => scripts.files.filter((test) => scripts.reads(test).some((glob) => new Glob(glob).match(file)))
+  const readers = (file: string) => scripts.files.filter((test) => scripts.reads(test).some((glob) => glob === "all" || new Glob(glob).match(file)))
   /** The scripts/ tests whose imports reach, or whose @reads globs match, any of `files`. */
   const found = (...files: ReadonlyArray<string>) => [...new Set(files.flatMap((file) => [...importers(file), ...readers(file)]))].toSorted()
   return {
@@ -152,7 +153,7 @@ describe("the merge check's tests", () => {
 
   live("a test that reads files by path, not import, runs when a file it declares with @reads changes (Rift U1, bb435bcc)", () =>
     Effect.gen(function* () {
-      const { ran, tests } = yield* tree
+      const { expected, ran, tests } = yield* tree
       const RUNTIME_IMPORTS = "scripts/runtime-imports.test.ts"
       // bb435bcc changed cmd/work/server.ts's imports; runtime-imports.test globs cmd/** and mods/**, imports neither, and stayed unselected.
       expect(tests("M\tcmd/work/server.ts\n")).toContain(RUNTIME_IMPORTS)
@@ -172,8 +173,9 @@ describe("the merge check's tests", () => {
       for (const file of ["effect-debt.json", ".oxlintrc.json", ".oxlintrc.effect-debt.json", "lint/package.json"])
         expect(tests(`M\t${file}\n`)).toContain("scripts/effect-debt.test.ts")
       expect(tests("M\tsim/seed.ts\n")).toContain("scripts/accept.test.ts")
-      // What no test reads selects none of them.
-      expect(tests("M\tREADME.txt\n")).toEqual([])
+      // A path-specific reader is not selected simply because another test has unknown inputs.
+      expect(tests("M\tREADME.txt\n")).toEqual(expected([], "README.txt"))
+      expect(tests("M\tREADME.txt\n")).not.toContain(RUNTIME_IMPORTS)
     }),
   )
 
@@ -194,7 +196,7 @@ describe("the merge check's tests", () => {
       for (const out of ["A\tscripts/fork-checks.test.ts\n", "A\tscripts/required-inputs.test.ts\n", "A\tscripts/new.ts\n", "M\tscripts/receipt.ts\n"])
         expect(ran(out)).toContain("scripts/merge-check.test.ts")
       // What leaves scripts/ alone cannot change them.
-      for (const out of ["A\ttests/new.test.ts\n", "M\tdecider/tui-clock.ts\n", "M\tscripts/fork-checks.json\n"]) expect(tests(out)).not.toContain("scripts/merge-check.test.ts")
+      for (const out of ["A\ttests/new.test.ts\n", "M\tdecider/tui-clock.ts\n"]) expect(tests(out)).not.toContain("scripts/merge-check.test.ts")
       // JSON from a static import is in the import graph, not an @reads dependency.
       expect(tests("M\tscripts/fork-checks.json\n")).toContain("scripts/fork-checks.test.ts")
     }),
@@ -209,11 +211,25 @@ describe("the merge check's tests", () => {
     }),
   )
 
-  live("an unrelated diff runs none: source no scripts/ test imports or reads, which the land's round gate tested; its tests run only the git-repo guard and the tests that read every test source; mod source runs only the tests that read mods/", () =>
+  it.effect("an unrelated diff runs unknown-input tests, not a test with a scoped declaration", () =>
+    Effect.sync(() => {
+      const files = ["scripts/opaque.test.ts", "scripts/scoped.test.ts"]
+      const scripts = {
+        files,
+        imports: () => [],
+        reads: (file: string) => (file === "scripts/opaque.test.ts" && ["all"]) || ["fixtures/**"],
+      }
+      const exists = (file: string) => files.includes(file)
+      expect(scriptTests(parseNameStatus("M\t../some/unrelated.txt\n"), exists, scripts)).toEqual(["scripts/opaque.test.ts"])
+      expect(scriptTests(parseNameStatus("D\t../a-deleted-file\n"), exists, scripts)).toEqual(["scripts/opaque.test.ts"])
+      expect(scriptTests([], exists, scripts)).toEqual([])
+    }),
+  )
+
+  live("a change selects readers and unknown-input tests; an empty diff selects none", () =>
     Effect.gen(function* () {
       const { expected, found, importers, tests } = yield* tree
-      // Pins: source no scripts/ test imports or reads selects none, and an empty diff none.
-      expect(tests("M\tthemes/prime.json\n")).toEqual([])
+      expect(tests("M\tthemes/prime.json\n")).toEqual(expected([], "themes/prime.json"))
       expect(tests("")).toEqual([])
       // Pins: its test runs the git-repo guard, beside the tests that read every test source (required-inputs.test's @reads).
       expect(tests("M\tthemes/prime.json\nM\tdecider/tui-clock.test.ts\n")).toEqual(expected([GIT_REPO_GUARD], "themes/prime.json", "decider/tui-clock.test.ts"))
@@ -243,7 +259,7 @@ describe("the merge check's tests", () => {
       const both = "M\ttests/parity.json\nM\tscripts/link-fork.ts\n"
       expect(ran(both)).toEqual([...tests(both)])
       for (const test of [...ACCEPT_TESTS, "scripts/link-fork.test.ts"]) expect(ran(both)).toContain(test)
-      const none = legs("M\tthemes/prime.json\n")
+      const none = legs("")
       expect(none.map((leg) => leg.name)).toEqual(["lint", "test-reads", "debt", "types", "tests"])
       expect(none.filter((leg) => leg.name === "tests").map((leg) => leg.argv)).toEqual([["true"]])
     }),

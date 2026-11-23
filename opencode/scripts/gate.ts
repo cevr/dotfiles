@@ -45,7 +45,7 @@ import { hostLocks, landLogs, scriptReceipt } from "../mods/work/process/landing
 import { parseNameStatus } from "./docs-guard.ts"
 import { mergeLegs, testFilesIn } from "./merge-check.ts"
 import { checkCommand, projects } from "./typecheck.ts"
-import { declaredInputs, fromRepository, importsOf, keyOf, load, reach, readsOf, ROOT, sharedKey, unitTests } from "./reach.ts"
+import { declaredInputs, fromRepository, importsOf, keyOf, load, reach, readsOf, readState, ROOT, sharedKey, unitTests } from "./reach.ts"
 
 const ENV = process.env
 const ARGV = process.argv.slice(2)
@@ -89,7 +89,7 @@ const unit = async (): Promise<Leg> => {
   const shared = await sharedKey(["unit", "--timeout 300000"])
   const memo = new Map<string, ReadonlyArray<string>>()
   const files = unitTests(workspace)
-  const keys = new Map(files.map((file) => [file, keyOf(shared, new Set([...reach(workspace, [file], memo), ...declaredInputs(workspace, file)]))]))
+  const keys = new Map(files.map((file) => [file, keyOf(`${shared}${readState(workspace, file)}`, new Set([...reach(workspace, [file], memo), ...declaredInputs(workspace, file)]))]))
   // Each file keeps the keys of its last few passes, so going back to an earlier state (a revert, a branch switch) hits too.
   const stored: Record<string, ReadonlyArray<string>> = existsSync(PASSED) ? JSON.parse(readFileSync(PASSED, "utf8")) : {}
   const passed = Object.fromEntries(Object.entries(stored).filter(([, list]) => Array.isArray(list)))

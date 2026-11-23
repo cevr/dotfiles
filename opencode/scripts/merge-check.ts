@@ -16,9 +16,9 @@
 //   reach finds it (batch 2026-11-16cv: scripts/verify-fork.test.ts landed a raw `git init`).
 // - every workbox/test/ test when anything under workbox/ changes, and its explicit @reads outside workbox/
 //   (batch 2026-11-16cy: workrift.test.ts landed red on the Mac).
-import { Glob } from "bun"
 import { Option } from "effect"
 import { docsGuardDue, type Change } from "./docs-guard.ts"
+import { readMatcher } from "./read-declarations.ts"
 
 /** A leg the merge check runs: its name, its command (from opencode/) and what its summary notes. */
 export interface LegSpec {
@@ -99,7 +99,7 @@ export const reachedWithin = (test: string, scripts: ScriptsTests, exists: (file
 interface Inputs {
   readonly test: string
   readonly files: ReadonlySet<string>
-  readonly reads: ReadonlyArray<Glob>
+  readonly reads: (path: string) => boolean
 }
 
 /**
@@ -111,7 +111,7 @@ const testsOf = (path: string, inputs: ReadonlyArray<Inputs>): ReadonlyArray<str
   // A scripts/ test is its own; the tests that read it run too (required-inputs.test reads every test source, and
   // merge-check.test every scripts/ file: fe8b7bd1 and fe8d8243 added tests that only ran themselves and reddened it).
   const own = (TEST.test(path) && [path]) || Option.match(Option.fromNullishOr(SCRIPT.exec(path)), { onNone: () => [], onSome: (match) => [`scripts/${String(match[1])}.test.ts`] })
-  return [...own, ...inputs.flatMap((each) => ((each.files.has(path) || each.reads.some((glob) => glob.match(path))) && [each.test]) || [])]
+  return [...own, ...inputs.flatMap((each) => ((each.files.has(path) || each.reads(path)) && [each.test]) || [])]
 }
 
 const NO_SCRIPTS: ScriptsTests = { files: [], imports: () => [], reads: () => [] }
@@ -119,7 +119,7 @@ const NO_SCRIPTS: ScriptsTests = { files: [], imports: () => [], reads: () => []
 /** The scripts/ tests the changes can break, each once, sorted; only those on disk. */
 export const scriptTests = (changes: ReadonlyArray<Change>, exists: (file: string) => boolean, scripts: ScriptsTests = NO_SCRIPTS): ReadonlyArray<string> => {
   const paths = named(changes)
-  const reached = scripts.files.map((test) => ({ test, files: reachedWithin(test, scripts, exists), reads: scripts.reads(test).map((glob) => new Glob(glob)) }))
+  const reached = scripts.files.map((test) => ({ test, files: reachedWithin(test, scripts, exists), reads: readMatcher(scripts.reads(test)) }))
   const due = new Set(paths.flatMap((path) => testsOf(path, reached)))
   if (paths.some(acceptTouched)) for (const test of ACCEPT_TESTS) due.add(test)
   if (docsGuardDue(changes.filter((change) => change.paths.some((path) => !path.startsWith("../"))))) due.add(DOCS_GUARD)
@@ -149,7 +149,7 @@ export const mergeLegs = (base: string, changes: ReadonlyArray<Change>, tools: T
   const paths = named(changes)
   const workbox = new Set(workboxTests(tools.workbox))
   for (const file of tools.workbox.tests) {
-    if (tools.workboxReads?.(file).some((glob) => paths.some((path) => new Glob(glob).match(path)))) workbox.add(file)
+    if (paths.some(readMatcher(tools.workboxReads?.(file) ?? []))) workbox.add(file)
   }
   const tests = [...scriptTests(changes, tools.exists, tools.scripts), ...[...workbox].toSorted()]
   return [
