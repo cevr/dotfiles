@@ -905,6 +905,13 @@ const parentMode = (disk: Disk, mode: number, supported: boolean): Disk => ({
   syncVolume: (dir) => supported && disk.syncVolume(dir),
 })
 
+const checkReopenedRoot = (image: Disk, original: boolean, peer: boolean, rootExists: boolean) => {
+  if (original) expect(image.read(path.join(CRASH_ROOT, "first.json"))).toEqual(Option.some('{"actor":1}'))
+  if (peer) expect(image.read(path.join(CRASH_ROOT, "peer.json"))).toEqual(Option.some('{"actor":2}'))
+  // Refusal before publication never made a root.
+  if (!rootExists && !peer) expect(image.named(CRASH_ROOT)).toBe(false)
+}
+
 limitedTest("a peer can arrive at every job root creation cut under changed permissions",
   Effect.gen(function* () {
     const file = path.join(CRASH_ROOT, "first.json")
@@ -929,10 +936,7 @@ limitedTest("a peer can arrive at every job root creation cut under changed perm
         const canUse = mode === 0o755 || (rootExists && (mode === 0o555 || supported || !firstUnsealed))
         expect({ cut, mode, supported, acknowledged: Exit.isSuccess(ack) }).toEqual({ cut, mode, supported, acknowledged: canUse })
         for (const { disk: image } of crash.outcomes()) {
-          if (Exit.isSuccess(original)) expect(image.read(file)).toEqual(Option.some('{"actor":1}'))
-          if (canUse) expect(image.read(peer)).toEqual(Option.some('{"actor":2}'))
-          // No visible final name is ever published without its marker during the uncertain interval.
-          if (!rootExists && !canUse) expect(image.named(CRASH_ROOT)).toBe(false)
+          checkReopenedRoot(image, Exit.isSuccess(original), canUse, rootExists)
           recovered += 1
         }
       }
