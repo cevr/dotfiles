@@ -25,6 +25,13 @@ export const DEFAULT_HEAVY: ReadonlyArray<string> = [
   "bun run check",
   "bun run typecheck",
   "bun run accept",
+  "bun scripts/gate.ts",
+  "bun scripts/merge-check.ts",
+  "bun scripts/fork-checks.ts",
+  "bun scripts/receipt.ts",
+  "bun scripts/accept.ts",
+  "bun scripts/post-land.ts",
+  "bun scripts/typecheck.ts",
   "npm test",
   "npm run test",
   "pnpm test",
@@ -42,6 +49,11 @@ export const DEFAULT_HEAVY: ReadonlyArray<string> = [
   // A disk survey walks a whole tree for minutes (perf-load H5 caught two at
   // nice 0 on the workbox, 5 to 8 minutes each).
   "du",
+  "dtruss",
+  "strace",
+  "fs_usage",
+  "limactl start",
+  "limactl shell",
   // Go and Rust compile every package they touch on all cores. `go run` and
   // `cargo run` are left out: what they start is usually a server or a tool
   // that lives on, and their build is mostly cached.
