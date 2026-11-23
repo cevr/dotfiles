@@ -1,15 +1,14 @@
-// @reads all
-// @reads-reason computed read at tests/pty-host.test.ts: await until("the host to listen", () => (existsSync(socket) ? true : undefined))
 // accept: deep (17.2 s alone on a quiet host: 1-minute load 13.8–16.0 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // The terminal host keeps one program on a live pty and answers other
 // processes on a Unix socket: each test serves a real shell program and calls
 // the host through the same client gamut uses.
 import { afterEach, describe, expect, test } from "bun:test"
-import { existsSync, rmSync } from "node:fs"
-import { readScratchFileSync as readFileSync } from "./read-path.ts"
+import { rmSync } from "node:fs"
+import { readScratchFileSync as readFileSync, scratchExistsSync as existsSync } from "./read-path.ts"
 import { join } from "node:path"
 import { HostError, hostCall, rowsSince, serve, type HostScreen, type ServedHost } from "../testbeds/gamut/pty-host.ts"
 import { scratch as scratchDir } from "./scratch.ts"
+import { scratchPtyCommand, scratchPtyEnv } from "./scratch-child.ts"
 
 describe("rows since the last read", () => {
   test("an unchanged screen adds nothing", () => {
@@ -38,7 +37,6 @@ describe("rows since the last read", () => {
 })
 
 const SIZE = { cols: 60, rows: 12 }
-const ENV = { PATH: process.env.PATH ?? "/usr/bin:/bin" }
 
 const cleanups: Array<() => Promise<void> | void> = []
 afterEach(async () => {
@@ -66,7 +64,7 @@ const scratch = () => {
 const hosted = async (script: string, onFrame?: (rows: ReadonlyArray<string>) => void) => {
   const dir = scratch()
   const socket = join(dir, "host.sock")
-  const host: ServedHost = serve({ socket, cwd: dir, command: ["/bin/sh", "-c", script], env: ENV, ...SIZE }, onFrame)
+  const host: ServedHost = serve({ socket, cwd: dir, command: scratchPtyCommand(script), env: scratchPtyEnv(dir), ...SIZE }, onFrame)
   cleanups.push(() => host.stop())
   await until("the host to listen", () => (existsSync(socket) ? true : undefined))
   return { socket, host, dir }
@@ -174,7 +172,7 @@ describe("terminal host", () => {
     const { socket } = await hosted(`printf 'first\\n'; exec sleep 60`)
     await screenShows(socket, "first")
     await hostCall(socket, { op: "read", scope: "changes" })
-    await hostCall(socket, { op: "restart", command: ["/bin/sh", "-c", "printf 'second\\n'; exec sleep 60"] })
+    await hostCall(socket, { op: "restart", command: scratchPtyCommand("printf 'second\\n'; exec sleep 60") })
     await screenShows(socket, "second")
     const rows = (await hostCall(socket, { op: "read", scope: "changes" })).rows
     expect(rows).toContain("second")
@@ -188,7 +186,7 @@ describe("terminal host", () => {
     // process table counts them: a program the other restart quit may never
     // have run a line.
     const marker = join(dir, "restarted")
-    const again = ["/bin/sh", "-c", "sleep 60; :", marker] as const
+    const again = scratchPtyCommand("sleep 60; :", marker)
     await Promise.all([
       hostCall(socket, { op: "restart", command: again }),
       hostCall(socket, { op: "restart", command: again }),
@@ -213,8 +211,8 @@ describe("terminal host", () => {
     const host = serve({
       socket: join(dir, "missing/host.sock"),
       cwd: dir,
-      command: ["/bin/sh", "-c", "sleep 60; :", dir],
-      env: ENV,
+      command: scratchPtyCommand("sleep 60; :", dir),
+      env: scratchPtyEnv(dir),
       ...SIZE,
     })
     expect(await host.stopped.then(() => "stopped", () => "failed")).toBe("failed")

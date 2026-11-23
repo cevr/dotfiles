@@ -437,6 +437,8 @@ const BOUNDED_PROCESS = new Set([
   "tests/scratch-child.ts:spawnCheckoutShellSync",
   "tests/scratch-child.ts:checkoutShellFixtureCommand",
   "tests/scratch-child.ts:spawnScratchZshSync",
+  "tests/scratch-child.ts:scratchPtyCommand",
+  "tests/scratch-child.ts:scratchPtyEnv",
   "tests/scratch-child.ts:initScratchGit",
   "tests/scratch-child.ts:cloneScratchGit",
   "tests/scratch-child.ts:detachedCheckoutBun",

@@ -326,6 +326,19 @@ export const scratchShell = (cwd: string, program: string) => {
 }
 
 /** A shell fixture whose test manages descendants itself. */
+/** A generated script for the PTY's initial or restart command. */
+export const scratchPtyCommand = (program: string, label?: string): readonly [string, ...string[]] => {
+  if (containsCheckout(program)) return reject("checkout path in generated PTY script")
+  if (label) return ["/bin/sh", "-c", program, scratchInput(label)]
+  return ["/bin/sh", "-c", program]
+}
+
+export const scratchPtyEnv = (cwd: string) => {
+  const directory = scratchInput(cwd)
+  return { PATH: "/usr/bin:/bin", HOME: directory, TMPDIR: directory, [marker]: "sh-pty" }
+}
+
+/** A shell fixture whose test manages descendants itself. */
 export const spawnScratchShell = (cwd: string, program: string) => {
   const { script, ...options } = scratchShell(cwd, program)
   const child = localTestProcess.spawn("/bin/sh", [script], { ...options, stdio: "ignore" })
