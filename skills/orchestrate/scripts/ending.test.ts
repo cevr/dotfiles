@@ -967,6 +967,10 @@ describe('(vii) the hand-back is decoded by its exact Schema, then compared type
   test("the decoder's states and obstacle rows are the model's", () => {
     expect([...HAND_BACK_STATES].sort()).toEqual([...ALL_STATES].sort());
     expect([...HAND_BACK_OBSTACLES]).toEqual([...OBSTACLE_ROWS]);
+    // No decoded literal is a prefix of another, so once decoded a prefix compare cannot pass a wrong value: the
+    // "state by prefix" mutant is equivalent by construction (hand-back-decode r1).
+    for (const list of [HAND_BACK_STATES, HAND_BACK_OBSTACLES] as ReadonlyArray<ReadonlyArray<string>>)
+      for (const a of list) expect([a, list.filter((b) => b !== a && b.startsWith(a))]).toEqual([a, []]);
   });
   test("a label's word is never blank, and the labels of one role have distinct words (printed for the request)", () => {
     const table: Record<string, Record<string, string>> = {};
