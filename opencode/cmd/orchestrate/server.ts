@@ -130,7 +130,7 @@
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { dirname, join } from "node:path"
 import { Agent, Plugin, Tool } from "@opencode/plugin/effect"
-import { Array as Arr, Cause, Clock, Context, Effect, FileSystem, Layer, Match, Option, Path, Predicate, Schema, SchemaGetter, Stream } from "effect"
+import { Array as Arr, Cause, Clock, Context, Effect, type Fiber, FileSystem, Layer, Match, Option, Path, Predicate, Schema, SchemaGetter, type Scope, Stream } from "effect"
 import type { ChildProcessSpawner } from "effect/process"
 import { DIGEST, DigestLog } from "@dotfiles/opencode-digest/event"
 import * as Relay from "@dotfiles/opencode-digest/relay"
@@ -593,12 +593,15 @@ const ORCHESTRATE_PASS = "orchestrate-pass"
 /** The work plugin's tool and its alias: a land through either is a land event. */
 const WORK_TOOLS: ReadonlyArray<string> = ["work", "rift"]
 
+/** Start a finite background task with the plugin's lifetime, not the caller's. */
+type ForkTask = (scope: Scope.Scope) => <A, E, R>(task: Effect.Effect<A, E, R>) => Effect.Effect<Fiber.Fiber<A, E>, never, R>
+
 /**
  * The plugin on `externals`: the live systems in OpenCode, test layers in the seam tests. `heavy` is the host the
  * heavy-check footer reads; the plugin OpenCode loads always has it (`liveHeavy`), and only the seam tests written
  * before the footer leave it out.
  */
-export const make = <R = never>(
+export const withTaskFork = (forkTask: ForkTask) => <R = never>(
   externals: (ctx: Plugin.Context, options: Options, start: LatchesLive.Start, background: Background) => Layer.Layer<Externals>,
   heavy?: (ctx: Plugin.Context, options: Options, background: Background) => Layer.Layer<HeavyHost>,
   record: RecordLayer<R> = namedRecord,
@@ -686,6 +689,7 @@ export const make = <R = never>(
       const verdicts = Context.get(services, Model.Verdicts)
       const idleRoots = Context.get(services, Model.IdleRoots)
       const scope = yield* Effect.scope
+      const fork = forkTask(scope)
 
       // An idle root with ready work is steered once per idle period (idle.ts). The decision runs on
       // the plugin's scope, so the session goes idle at once; the nudge wakes it.
@@ -698,7 +702,7 @@ export const make = <R = never>(
               ? Effect.logWarning("orchestrate: the nudge did not reach the root").pipe(Effect.annotateLogs({ sessionID, message: outcome.message }))
               : Effect.logDebug("orchestrate: no nudge").pipe(Effect.annotateLogs({ sessionID, why: outcome.why, detail: outcome.detail }))
       const background = (sessionID: string, work: Effect.Effect<Model.IdleOutcome | undefined>) =>
-        work.pipe(Effect.flatMap(logged(sessionID)), Effect.ignoreCause, Effect.forkIn(scope), Effect.asVoid)
+        work.pipe(Effect.flatMap(logged(sessionID)), Effect.ignoreCause, fork, Effect.asVoid)
       yield* ctx.session.hook("experimental.idle", (event) =>
         idleRoots.idle(event.sessionID, event.background.length).pipe(Effect.flatMap((decide) => background(event.sessionID, decide))),
       )
@@ -712,7 +716,7 @@ export const make = <R = never>(
             ? Effect.logWarning("orchestrate: the skill note did not reach the root").pipe(Effect.annotateLogs({ sessionID, message: outcome.message }))
             : Effect.logDebug("orchestrate: no skill note").pipe(Effect.annotateLogs({ sessionID, why: outcome.why }))
       yield* ctx.session.hook("experimental.idle", (event) =>
-        drifts.idle(event.sessionID).pipe(Effect.flatMap(driftLogged(event.sessionID)), Effect.ignoreCause, Effect.forkIn(scope), Effect.asVoid),
+        drifts.idle(event.sessionID).pipe(Effect.flatMap(driftLogged(event.sessionID)), Effect.ignoreCause, fork, Effect.asVoid),
       )
       // The `orchestrate` tool's reads (mods/orchestrate/tools.ts), at each call: the run tables (the status plugin's
       // RPC, through `Runs`) and the base's workspaces (the rift RPC). Its lanes, its verify checkout and
@@ -970,7 +974,7 @@ export const make = <R = never>(
               : Effect.void,
           ),
           Effect.ignoreCause,
-          Effect.forkIn(scope),
+          fork,
           Effect.asVoid,
         )
       }
@@ -1196,7 +1200,7 @@ export const make = <R = never>(
           Effect.flatMap((tables) => unitDirOf(unit, tables)),
           Effect.orElseSucceed(() => Option.none<string>()),
           Effect.flatMap((dir) => digest.lane(root, unit, lane, Option.map(dir, dirname))),
-          Effect.forkIn(scope),
+          fork,
           Effect.asVoid,
         )
 
@@ -1561,8 +1565,8 @@ export const make = <R = never>(
           // What still runs of its own: a step idle with its shell or subagent running has not ended.
           backgrounds.set(event.sessionID, event.background.filter((work) => work.sessionID === event.sessionID).length)
           yield* orchestrate.handBack({ sessionID: event.sessionID })
-          yield* verdicts.handBack(event.sessionID).pipe(Effect.ignoreCause, Effect.forkIn(scope))
-          yield* noteHandBack(event.sessionID).pipe(Effect.forkIn(scope))
+          yield* verdicts.handBack(event.sessionID).pipe(Effect.ignoreCause, fork)
+          yield* noteHandBack(event.sessionID).pipe(fork)
         }),
       )
       yield* ctx.tool.hook("execute.after", (event) => {
@@ -1575,7 +1579,7 @@ export const make = <R = never>(
         starting.delete(key)
         const noted = Option.filter(begun, () => event.status === "completed").pipe(
           Option.map((step) =>
-            digest.started(event.sessionID, Option.orElse(Option.fromUndefinedOr(child), () => step.child), step.agent, step.description, step.t).pipe(Effect.forkIn(scope), Effect.asVoid),
+            digest.started(event.sessionID, Option.orElse(Option.fromUndefinedOr(child), () => step.child), step.agent, step.description, step.t).pipe(fork, Effect.asVoid),
           ),
           Option.getOrElse(() => Effect.void),
         )
@@ -1596,5 +1600,7 @@ export const make = <R = never>(
       })
     }),
   })
+
+export const make = withTaskFork(Effect.forkIn)
 
 export default make(live, liveHeavy, liveRecord)

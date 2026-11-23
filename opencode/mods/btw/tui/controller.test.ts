@@ -51,6 +51,7 @@ const bench = (host: World) =>
 
 /** Hang guard while waiting for the fixture's read/refresh events. */
 const HANG_GUARD_MS = 30_000
+const EVENT_WAIT_MS = 10_000
 
 describe("ask", () => {
   test("holds the question as pending until the fork's reading lands, which shows it unanswered", async () => {
@@ -59,7 +60,7 @@ describe("ask", () => {
     gate.holding = true
     const asking = control.ask("main", " why? ")
     expect(control.pending("main")).toBe("why?")
-    await waitUntil("the first read waiting at its gate", () => gate.reads >= 1)
+    await waitUntil("the first read waiting at its gate", () => gate.reads >= 1, EVENT_WAIT_MS)
     expect(gate.reads).toBe(1)
     expect(control.pending("main")).toBe("why?")
     expect(control.reading("main").turns).toEqual([])
@@ -87,7 +88,7 @@ describe("ask", () => {
     await control.ask("main", "why?")
     gate.holding = true
     const asking = control.ask("main", "and the tests?")
-    await waitUntil("the new fork's read waiting at its gate", () => gate.reads >= 2)
+    await waitUntil("the new fork's read waiting at its gate", () => gate.reads >= 2, EVENT_WAIT_MS)
     expect(control.fork("main")?.sessionID).toBe("fork-2")
     expect(control.reading("main").turns).toEqual([])
     gate.release()
@@ -112,7 +113,7 @@ describe("the reading", () => {
     clock.advance(SETTLE_MS - 1)
     expect(gate.reads).toBe(before)
     clock.advance(1)
-    await waitUntil("the watch read the answer from the fork", () => !control.reading("main").replying)
+    await waitUntil("the watch read the answer from the fork", () => !control.reading("main").replying, EVENT_WAIT_MS)
     expect(gate.reads).toBe(before + 1)
     expect(control.reading("main").turns.map((turn) => [turn.question, turn.answer])).toEqual([["why?", "Because."]])
     expect(control.reading("main").replying).toBe(false)
@@ -144,11 +145,11 @@ describe("the reading", () => {
     const first = control.refresh("main")
     const second = control.refresh("main")
     const third = control.refresh("main")
-    await waitUntil("the first refresh waiting at its gate", () => gate.reads >= before + 1)
+    await waitUntil("the first refresh waiting at its gate", () => gate.reads >= before + 1, EVENT_WAIT_MS)
     expect(gate.reads).toBe(before + 1)
     gate.release()
     await first
-    await waitUntil("the shared follow-up refresh waiting at its gate", () => gate.reads >= before + 2)
+    await waitUntil("the shared follow-up refresh waiting at its gate", () => gate.reads >= before + 2, EVENT_WAIT_MS)
     expect(gate.reads).toBe(before + 2)
     gate.release()
     await Promise.all([second, third])

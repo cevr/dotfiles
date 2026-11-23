@@ -35,6 +35,8 @@ interface Prompt {
 }
 
 const scenario = <A, E>(body: Effect.Effect<A, E, Scope.Scope>) => Effect.runPromise(Effect.scoped(body))
+const EVENT_WAIT_MS = 15_000
+const HANG_GUARD_MS = 60_000
 
 const skillFile = (description: string, body: string) => `---\ndescription: ${description}\n---\n${body}\n`
 
@@ -121,7 +123,7 @@ const start = (at: Effect.Success<typeof layout>, before: ReadonlyArray<Info>, a
       registry: () => registry,
       reload,
       reloads: () => reloads,
-      handled: Queue.take(handled),
+      handled: (event: string) => Queue.take(handled).pipe(Effect.timeoutOrElse({ duration: EVENT_WAIT_MS, orElse: () => Effect.die(`skill.updated was not handled: ${event}`) })),
       send: (text: string, skills?: Prompt["prompt"]["skills"]) =>
         Effect.gen(function* () {
           const event: Prompt = { sessionID: "ses_1", messageID: "msg_1", prompt: skills ? { text, skills } : { text }, delivery: "steer" }
@@ -200,7 +202,7 @@ describe("the skills plugin", () => {
         at.write(join(at.project, ".claude/skills/review/SKILL.md"), skillFile("Project review", "LOCAL BODY"))
         const plugin = yield* start(at, [])
         // The start's reload published skill.updated; the scan had not changed, so no reload followed.
-        yield* plugin.handled
+        yield* plugin.handled("the initial reload")
         expect(plugin.reloads()).toBe(1)
         expect(plugin.registry().has("review:global")).toBe(false)
 
@@ -208,10 +210,10 @@ describe("the skills plugin", () => {
         at.write(join(at.config, "skills/review/SKILL.md"), skillFile("User review", "GLOBAL BODY"))
         yield* plugin.reload
         // The plugin scans, sees the change and reloads once; that reload's event finds nothing new.
-        yield* plugin.handled
-        yield* plugin.handled
+        yield* plugin.handled("the host's reload after the file appeared")
+        yield* plugin.handled("the reload that installed the changed registry")
         expect(plugin.registry().has("review:global")).toBe(true)
         expect(plugin.reloads()).toBe(3)
       }),
-    ))
+    ), HANG_GUARD_MS)
 })

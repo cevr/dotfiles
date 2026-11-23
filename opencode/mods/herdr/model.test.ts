@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Exit, Layer, Ref, Scope } from "effect"
+import { TestClock } from "effect/testing"
 import type { Activity } from "./activity.ts"
-import type { Bench, Peer, Received } from "./laws.ts"
+import type { Bench, Received } from "./laws.ts"
 import { reporter, type Reporter } from "./model.ts"
+import { METADATA_REFRESH_MS } from "./report.ts"
 import { Herdr, HerdrRefused } from "./service.ts"
 
 /** A herdr that records each request and accepts it, or refuses every request once told to. */
@@ -32,18 +34,19 @@ const methods = (received: ReadonlyArray<Received>) => received.map((request) =>
 const param = (request: Received | undefined, key: string) =>
   request !== undefined && typeof request.params === "object" && request.params !== null ? Object.getOwnPropertyDescriptor(request.params, key)?.value : undefined
 
-/** Wait for the recording peer to receive the required requests. */
-const settle = (peer: Peer, count: number) =>
-  Effect.gen(function* () {
-    for (let tries = 0; tries < 24_000 && (yield* peer.received).length < count; tries++) yield* Effect.sleep(5)
-    return yield* peer.received
-  })
+const run = <A, E>(body: Effect.Effect<A, E, Scope.Scope>) => Effect.runPromise(body.pipe(Effect.provide(TestClock.layer()), Effect.scoped))
+// Run every send due before the next regular refresh, then close and inspect the trace.
+const REPORT_WINDOW_MS = METADATA_REFRESH_MS - 1
+const REFRESH_MS = 30
+const AGENT = "pane.report_agent"
+const LABELS = "pane.report_metadata"
+const RELEASE = "pane.release_agent"
 
 /** A reporter over a recording herdr, in a scope the test closes when it wants the release. */
 const bench = (refreshMillis?: number) =>
   Effect.gen(function* () {
     const { layer, peer } = yield* recording
-    const scope = yield* Scope.make()
+    const scope = yield* Scope.fork(yield* Scope.Scope)
     const reporting: Reporter = yield* reporter({ paneId: "w1:p1", ...(refreshMillis === undefined ? {} : { refreshMillis }) }).pipe(
       Effect.provide(Layer.merge(layer, Layer.succeed(Scope.Scope, scope))),
     )
@@ -55,21 +58,22 @@ const idle: Activity = { state: "idle", sessionId: "ses_1", title: "Fix login" }
 
 describe("the reporter", () => {
   test("a turn: the state, then its labels, each once; the release on close", () =>
-    Effect.runPromise(
+    run(
       Effect.gen(function* () {
         const { peer, reporting, close } = yield* bench()
         reporting.show(working)
-        yield* settle(peer, 2)
+        yield* TestClock.adjust(REPORT_WINDOW_MS)
         reporting.show(working)
         reporting.show(idle)
-        const turn = yield* settle(peer, 4)
+        // Drive the entire report window before closing, including any wrongly delayed send.
+        yield* TestClock.adjust(REPORT_WINDOW_MS)
         yield* close
         const all = yield* peer.received
-        expect(methods(turn)).toEqual(["pane.report_agent", "pane.report_metadata", "pane.report_agent", "pane.report_metadata"])
-        expect(turn.map((request) => param(request, "state"))).toEqual(["working", undefined, "idle", undefined])
-        expect(param(turn[1], "state_labels")).toEqual({ working: "shell: bun test" })
-        expect(param(turn[3], "clear_state_labels")).toBe(true)
-        expect(methods(all).at(-1)).toBe("pane.release_agent")
+        expect(methods(all)).toEqual([AGENT, LABELS, AGENT, LABELS, RELEASE])
+        expect([param(all[0], "state"), param(all[2], "state")]).toEqual(["working", "idle"])
+        for (const index of [1, 3, 4]) expect(param(all[index], "state")).toBeUndefined()
+        expect(param(all[1], "state_labels")).toEqual({ working: "shell: bun test" })
+        expect(param(all[3], "clear_state_labels")).toBe(true)
         const seqs = all.map((request) => param(request, "seq"))
         expect(seqs).toEqual([...seqs].sort((a, b) => a - b))
         expect(new Set(seqs).size).toBe(seqs.length)
@@ -77,47 +81,45 @@ describe("the reporter", () => {
     ))
 
   test("only the newest of a burst waits; a change of label alone sends metadata only", () =>
-    Effect.runPromise(
+    run(
       Effect.gen(function* () {
         const { peer, reporting, close } = yield* bench()
         reporting.show(working)
-        yield* settle(peer, 2)
+        yield* TestClock.adjust(REPORT_WINDOW_MS)
         for (const command of ["a", "b", "c", "d"]) reporting.show({ ...working, working: `shell: ${command}` })
-        const received = yield* settle(peer, 3)
+        yield* TestClock.adjust(REPORT_WINDOW_MS)
         yield* close
-        const after = received.slice(2)
-        expect(methods(after).every((method) => method === "pane.report_metadata")).toBe(true)
-        expect(after.length).toBeLessThan(4)
-        expect(param(after.at(-1), "state_labels")).toEqual({ working: "shell: d" })
+        const all = yield* peer.received
+        expect(methods(all)).toEqual([AGENT, LABELS, LABELS, RELEASE])
+        expect(param(all[2], "state_labels")).toEqual({ working: "shell: d" })
       }),
     ))
 
   test("an unchanged label is refreshed before its ttl runs out", () =>
-    Effect.runPromise(
+    run(
       Effect.gen(function* () {
-        const { peer, reporting, close } = yield* bench(30)
+        const { peer, reporting, close } = yield* bench(REFRESH_MS)
         reporting.show(idle)
-        const received = yield* settle(peer, 4)
+        yield* TestClock.adjust(2 * REFRESH_MS)
         yield* close
-        expect(methods(received).slice(0, 4)).toEqual(["pane.report_agent", "pane.report_metadata", "pane.report_metadata", "pane.report_metadata"])
+        expect(methods(yield* peer.received)).toEqual([AGENT, LABELS, LABELS, LABELS, RELEASE])
       }),
     ))
 
   test("a refused state is tried twice, holds back its labels, and is tried again at the next refresh", () =>
-    Effect.runPromise(
+    run(
       Effect.gen(function* () {
-        const { peer, reporting, close } = yield* bench(30)
+        const { peer, reporting, close } = yield* bench(REFRESH_MS)
         yield* peer.refuse("resume_not_accepted", "no")
         reporting.show(working)
-        const refused = yield* settle(peer, 3)
+        yield* TestClock.adjust(REFRESH_MS)
         yield* close
-        expect(methods(refused).slice(0, 3)).toEqual(["pane.report_agent", "pane.report_agent", "pane.report_agent"])
-        expect(methods(refused)).not.toContain("pane.report_metadata")
+        expect(methods(yield* peer.received)).toEqual([AGENT, AGENT, AGENT, AGENT, RELEASE, RELEASE])
       }),
     ))
 
   test("nothing is reported after close, or after a release run as a stop signal arrives, which releases at once; the close after it releases no second time", () =>
-    Effect.runPromise(
+    run(
       Effect.gen(function* () {
         const { peer, reporting, close } = yield* bench()
         yield* close
@@ -125,11 +127,11 @@ describe("the reporter", () => {
         // Told to stop mid-turn: the signal's run and the teardown's run at once release the pane once, before the scope closes.
         const stopped = yield* bench()
         stopped.reporting.show(working)
-        yield* settle(stopped.peer, 2)
+        yield* TestClock.adjust(REPORT_WINDOW_MS)
         yield* Effect.all([stopped.reporting.release, stopped.reporting.release], { concurrency: "unbounded" })
         const released = yield* stopped.peer.received
         stopped.reporting.show(idle)
-        yield* Effect.yieldNow
+        yield* TestClock.adjust(REPORT_WINDOW_MS)
         yield* stopped.close
         expect(methods(yield* peer.received)).toEqual(["pane.release_agent"])
         expect(methods(released)).toEqual(["pane.report_agent", "pane.report_metadata", "pane.release_agent"])

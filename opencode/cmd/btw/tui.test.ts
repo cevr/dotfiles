@@ -127,6 +127,7 @@ const start = (host: World, route: { readonly type: string; readonly sessionID?:
 
 /** Hang guard for the asynchronous fixture events. */
 const HANG_GUARD_MS = 30_000
+const EVENT_WAIT_MS = 10_000
 
 describe("the btw plugin", () => {
   test("registers /btw, alias /side, as a Session palette command taking the question as its argument", () => {
@@ -149,10 +150,14 @@ describe("the btw plugin", () => {
   test("in a session, /btw opens the btw panel, forks, names the fork after the question, asks it and keeps the side question", async () => {
     const host = world({ main: 1 })
     const before = structuredClone(host.sessions.get("main")?.messages)
-    const { command, toasts, opened, stored, pages } = start(host, { type: "session", sessionID: "main" })
+    const { command, toasts, opened, stored, pages, slots, drawn } = start(host, { type: "session", sessionID: "main" })
+    slots[0]?.render({ name: "btw", sessionID: "main" })
+    const control = drawn[0]?.controller
     command("side")?.run("why is it slow?")
     expect(opened).toEqual(["btw"])
-    await waitUntil("the question's first fork read", () => pages.length > 0)
+    expect(control?.pending("main")).toBe("why is it slow?")
+    await waitUntil("the question to finish its first fork read", () => !control?.pending("main"), EVENT_WAIT_MS)
+    expect(pages).toEqual(["ses_fork1"])
     const fork = host.sessions.get("ses_fork1")
     expect(fork?.title).toBe("btw: why is it slow?")
     expect(fork?.messages.slice(-2).map((message) => [message.type, message.text, message.description])).toEqual([
@@ -168,9 +173,12 @@ describe("the btw plugin", () => {
 
   test("a fork the host refuses reaches the reader as a warning and keeps nothing", async () => {
     const host = world({ main: 1 })
-    const { command, toasts, stored } = start(host, { type: "session", sessionID: "gone" })
+    const { command, toasts, stored, slots, drawn } = start(host, { type: "session", sessionID: "gone" })
+    slots[0]?.render({ name: "btw", sessionID: "gone" })
+    const control = drawn[0]?.controller
     command("btw")?.run("why?")
-    await waitUntil("the host's refusal toast", () => toasts.length > 0)
+    expect(control?.pending("gone")).toBe("why?")
+    await waitUntil("the refused question to finish", () => !control?.pending("gone"), EVENT_WAIT_MS)
     expect(toasts).toEqual([{ message: "btw: could not fork: Session not found: gone", variant: "warning" }])
     expect(stored().sessions).toEqual({})
   }, HANG_GUARD_MS)
@@ -191,7 +199,7 @@ describe("the btw plugin", () => {
     command("btw")?.run("why is it slow?")
     slots[0]?.render({ name: "btw", sessionID: "main" })
     const control = drawn[0]?.controller
-    await waitUntil("the pane's first reading", () => control?.reading("main").replying === true)
+    await waitUntil("the pane's first reading", () => control?.reading("main").replying === true && !control.pending("main"), EVENT_WAIT_MS)
     expect(control?.reading("main")).toEqual({ turns: [{ question: "why is it slow?", answer: "" }], replying: true })
     const stop = control?.watch("main")
     answer(host, "ses_fork1", "It sleeps.")
@@ -199,7 +207,7 @@ describe("the btw plugin", () => {
     emit({ type: "server.connected", data: {} })
     emit({ type: "session.execution.succeeded", data: { sessionID: "ses_fork1" } })
     clock.advance(SETTLE_MS)
-    await waitUntil("the pane has read the finished reply", () => control?.reading("main").replying === false)
+    await waitUntil("the pane has read the finished reply", () => control?.reading("main").replying === false, EVENT_WAIT_MS)
     expect(pages).toEqual(["ses_fork1", "ses_fork1"])
     expect(control?.reading("main").turns.map((turn) => [turn.question, turn.answer])).toEqual([["why is it slow?", "It sleeps."]])
     expect(control?.reading("main").replying).toBe(false)
