@@ -10,6 +10,7 @@ A shell call that would lose work for good never runs: a recursive `rm` of the r
 - `guard-sleep`: a subagent's opening `sleep` of 30 s or more is refused; the root's runs.
 - `guard-worktree`: `git worktree add` in a checkout a workspace can copy is refused, naming the work tool's `create` and `workrift create <branch>`.
 - `guard-work-gc`: `work gc` is refused while its base has a workspace whose record says creating and whose folder exists, naming it (`cmd/guard/server.test.ts`); it runs when none is.
+- `guard-keychain`: a line that starts a Chrome (a binary, an app bundle, `open -a … --args`, a `$CHROME` variable, behind env, nice, timeout or `sh -c`) with `--remote-debugging-*` or `--headless` and without both `--use-mock-keychain` and `--password-store=basic` is refused as `guard-keychain: …`, naming `scripts/chrome.ts`; so is a `bun`/`node`/`deno`/`tsx` line whose script (or `-e` code) lists such flags for a Chrome without the keychain ones (`mods/guard/chrome.test.ts`, `cmd/guard/server.test.ts`). The owner's own `open -a "Google Chrome"`, a launch with both flags, a line that only reads (`pgrep`, `grep`, `echo`) and `bun test` pass. The script is read as text and its imports are not followed.
 - `guard-heavy`: a heavy command runs under the launcher, niced.
 
 ## How to get to it (user POV)
@@ -43,5 +44,6 @@ Drive the sleep rule, which is harmless whatever happens; the destructive forms 
 ## Gotchas
 
 - Never type a destructive command into a real TUI to see it refused. The world proves the refusals; the real test runs them in scratch repositories it owns.
+- Never run a bare headless Chrome on the Mac to see the keychain rule refuse it: a run that slips past would put a keychain dialog on the owner's screen. The seam test proves it with memory scripts.
 - The sleep rule is for a subagent's foreground call only: a root's `sleep 60` runs, and a background shell passes.
 - The niceness is real only on real OpenCode; the world proves the launcher is the program, not the priority it runs at.

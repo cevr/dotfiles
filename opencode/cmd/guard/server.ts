@@ -23,8 +23,13 @@
  * has a workspace whose record still says creating and whose folder exists:
  * gc deletes such a folder outright, and a `work new` cut off before it
  * finished leaves one over a whole workspace (`@dotfiles/opencode-guard/work-gc`);
- * the registry is read with `work --json list` only for such a call.
- * Everything else runs untouched.
+ * the registry is read with `work --json list` only for such a call. So is a
+ * line that starts a Chrome with a DevTools port or headless and without
+ * `--use-mock-keychain --password-store=basic`, or runs a script (`bun x.ts`,
+ * `node x.mjs`, `bun -e`) whose text does: such a Chrome puts a keychain
+ * dialog on the owner's screen, and the refusal names `scripts/chrome.ts`
+ * (`@dotfiles/opencode-guard/chrome`); the script is read from disk only for
+ * a line that runs one. Everything else runs untouched.
  *
  * The hook is the registry's, so it sees every call the registry runs: a
  * direct call, a call from code mode's `execute`, and a kernel cell's
@@ -63,7 +68,9 @@ import * as OpenCodeSessionDirectories from "@dotfiles/opencode-guard/opencode/s
 import * as OpenCodeSubagents from "@dotfiles/opencode-guard/opencode/subagents"
 import * as ProcessCheckouts from "@dotfiles/opencode-guard/process/checkouts"
 import * as WorkReservations from "@dotfiles/opencode-guard/process/reservations"
-import type { Checkouts, Launchers, Processes, RepoRoots, Reservations, Scopes, SessionDirectories, Subagents } from "@dotfiles/opencode-guard/service"
+import type { Checkouts, Launchers, Processes, RepoRoots, Reservations, Scopes, ScriptFiles, SessionDirectories, Subagents } from "@dotfiles/opencode-guard/service"
+import { type KeychainPrompt, keychainMessage } from "@dotfiles/opencode-guard/chrome"
+import * as FilesystemScriptFiles from "@dotfiles/opencode-guard/filesystem/script-files"
 import { type Idle, idleMessage } from "@dotfiles/opencode-guard/sleep"
 import { type Destructive, message } from "@dotfiles/opencode-guard/verdict"
 import { type FullCopy, worktreeMessage } from "@dotfiles/opencode-guard/worktree"
@@ -101,14 +108,15 @@ const decodeInput = Schema.decodeUnknownOption(ShellInput)
 const decodeInputText = Schema.decodeUnknownOption(Schema.fromJsonString(ShellInput))
 
 /** What the model reads of a refusal, each rule in its own words. */
-const wordsOf = (refusal: Destructive | FullCopy | Idle): string => {
+const wordsOf = (refusal: Destructive | FullCopy | KeychainPrompt | Idle): string => {
   if (refusal._tag === "Idle") return idleMessage(refusal.reason)
   if (refusal._tag === "FullCopy") return worktreeMessage(refusal.reason)
+  if (refusal._tag === "KeychainPrompt") return keychainMessage(refusal.reason)
   return message(refusal.reason)
 }
 
 /** The outside systems the model runs on. */
-export type Externals = Checkouts | Launchers | Processes | RepoRoots | Reservations | Scopes | SessionDirectories | Subagents
+export type Externals = Checkouts | Launchers | Processes | RepoRoots | Reservations | Scopes | ScriptFiles | SessionDirectories | Subagents
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
 
@@ -127,6 +135,7 @@ export const live = (ctx: Plugin.Context, options: Options): Layer.Layer<Externa
     FilesystemRepoRoots.layer,
     ProcessCheckouts.layer(),
     WorkReservations.layer(),
+    FilesystemScriptFiles.layer,
     FilesystemLaunchers.layer(options.launchers),
     PsProcesses.layer(),
     ProcessScopes.layer(),
