@@ -1,3 +1,4 @@
+import { Plugin, Tool } from "@opencode/plugin/effect"
 import { Effect, Queue, Schema, Stream } from "effect"
 import { make, live } from "./server.ts"
 import * as Seed from "../../sim/seed.ts"
@@ -19,9 +20,41 @@ type FixtureEvent = {
   readonly type: string
   readonly id: string
   readonly created: number
-  readonly location: { readonly directory: string }
-  readonly durable: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+  readonly location: { readonly directory: string; readonly workspaceID?: string }
+  readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
   readonly data: Readonly<Record<string, Schema.Json>>
+}
+
+const LatchInput = Schema.Struct({
+  child: Schema.String.check(Schema.isStartingWith("ses")).pipe(Schema.brand("SessionID")),
+  phase: Schema.Literals(["held", "opened", "cancelled"]),
+})
+const fixtureLatch = (plugin: ReturnType<typeof make>) =>
+  Plugin.define({
+    id: plugin.id,
+    effect: Effect.fn("LifecycleFixture.install")(function* (ctx) {
+      yield* plugin.effect(ctx)
+      yield* ctx.tool.transform((editor) => editor.add({
+        name: "fixture_latch", description: "Seed the host's latch metadata in the simulator only.", input: LatchInput,
+        execute: (input) => {
+          const latch = { hold: "pace", opensAt: 1_600_000, recheckAt: 1_500_000 }
+          const metadata = latchMetadata(input.phase, latch)
+          return ctx.session.update({ sessionID: input.child, metadata }).pipe(
+            Effect.as({ content: [{ type: "text" as const, text: "fixture updated" }] }),
+            Effect.mapError(() => new Tool.Error({ message: "fixture latch update failed" })),
+          )
+        },
+      }))
+    }),
+  })
+
+const latchMetadata = (
+  phase: typeof LatchInput.Type.phase,
+  latch: { readonly hold: string; readonly opensAt: number; readonly recheckAt: number },
+): Schema.JsonObject => {
+  if (phase === "opened") return {}
+  if (phase === "cancelled") return { latch: { ...latch, cancelledAt: 1_400_000 } }
+  return { latch }
 }
 
 /** The sim does not supply durable sequence or the error taxonomy. This script
@@ -30,17 +63,46 @@ seeded("the direct tool distinguishes live work, diagnostics and ordered settlem
   Effect.gen(function* () {
     const world = World.make({ seed, script: () => World.say("Fixture") })
     const events = yield* Queue.unbounded<FixtureEvent>()
-    const plugin = make(live, () => Stream.fromQueue(events))
+    const plugin = fixtureLatch(make(live, () => Stream.fromQueue(events)))
     yield* world.load(plugin, { directory: WORK, options: { codeOnly: false } })
     const root = yield* world.session(WORK)
     const child = yield* world.session(WORK, { parentID: root, agent: "worker" })
     const unrelated = yield* world.session(WORK)
     const read = () => world.tool(root, "subagents", { action: "get", sessionID: child })
-    const emit = (kind: string, seq: number, fields: Readonly<Record<string, Schema.Json>> = {}, directory = WORK) =>
+    const emit = (kind: string, seq: number, fields: Readonly<Record<string, Schema.Json>> = {}, directory = WORK, sessionID = child) =>
       Queue.offer(events, {
         type: kind, id: `evt_${seq}`, created: world.now(), location: { directory },
-        durable: { aggregateID: child, seq, version: 1 }, data: { sessionID: child, ...fields },
+        durable: { aggregateID: sessionID, seq, version: 1 }, data: { sessionID, ...fields },
       }).pipe(Effect.andThen(world.advance(0)))
+    const latch = (sessionID: string, phase: typeof LatchInput.Type.phase) => world.tool(root, "fixture_latch", { child: sessionID, phase })
+    const readChild = (sessionID: string) => world.tool(root, "subagents", { action: "get", sessionID })
+    const held = yield* world.session(WORK, { parentID: root, agent: "worker" })
+    yield* latch(held, "held")
+    expect((yield* readChild(held)).output).toContain(`${held} latched (pace; recheck`)
+    const stopped = yield* world.tool(root, "subagents", { action: "stop", sessionID: held })
+    expect(stopped.output).toContain("still latched; cancel with wake_cancel")
+    yield* latch(held, "opened")
+    yield* emit(type.start, 1, {}, WORK, held)
+    expect((yield* readChild(held)).output).toContain(`${held} running`)
+    const cancelled = yield* world.session(WORK, { parentID: root, agent: "worker" })
+    yield* latch(cancelled, "held")
+    yield* latch(cancelled, "cancelled")
+    expect((yield* readChild(cancelled)).output).toContain(`${cancelled} settled: interrupted (UserStop)`)
+    const withShell = yield* world.session(WORK, { parentID: root, agent: "worker" })
+    const shellID = "sh_fixture"
+    const shell = (type: string, data: FixtureEvent["data"]) => Queue.offer(events, {
+      type, id: "evt_shell", created: world.now(), location: { directory: WORK }, data,
+    }).pipe(Effect.andThen(world.advance(0)))
+    yield* emit(type.start, 1, {}, WORK, withShell)
+    yield* shell("shell.created", { info: { id: shellID, status: "running", metadata: { sessionID: withShell }, time: { started: world.now() } } })
+    yield* emit(type.step, 2, { error: { type: "provider.content-filter" } }, WORK, withShell)
+    yield* emit(type.fail, 3, { error: { type: "provider.content-filter" } }, WORK, withShell)
+    expect((yield* readChild(withShell)).output).toContain(`${withShell} continuing (shell still running)`)
+    yield* shell("shell.exited", { id: shellID })
+    expect((yield* readChild(withShell)).output).toContain(`${withShell} continuing (awaiting host wake)`)
+    yield* emit(type.start, 4, {}, WORK, withShell)
+    yield* emit(type.end, 5, {}, WORK, withShell)
+    expect((yield* readChild(withShell)).output).toContain(`${withShell} settled: succeeded`)
     const expected = [
       [type.start, 1, {}, "running"],
       [type.retry, 2, { error: { type: "provider.transport", message: "do not expose fixture payload" }, attempt: 2, at: 50 }, "host scheduled retry 2 (Transient)"],

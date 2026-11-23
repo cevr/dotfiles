@@ -139,6 +139,7 @@ export const make = (host: Host) => {
     const inScope = yield* Effect.option(own(caller, target))
     if (Option.isNone(inScope)) return "unknown"
     const session = inScope.value
+    if (session.observation?.phase._tag === "Latched") return "idle"
     const stopped = yield* host.stop(session.id).pipe(Effect.timeoutOption(SETTLE), Effect.map(Option.flatten))
     if (Option.contains(stopped, true)) return "stopped"
     if (Option.contains(stopped, false)) return "idle"

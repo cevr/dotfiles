@@ -51,6 +51,7 @@ export const Terminal = Schema.TaggedUnion({
   Ended: { outcome: Outcome, cause: Cause },
   Shutdown: {},
 })
+type Terminal = typeof Terminal.Type
 const Segment = Schema.Struct({
   point: Point,
   terminal: Schema.optionalKey(Terminal),

@@ -19,7 +19,9 @@ export type Subscribe = (ctx: Plugin.Context) => Stream.Stream<unknown, unknown>
 const Position = {
   id: Schema.String,
   created: Schema.Finite,
-  location: Schema.optionalKey(Schema.Struct({ directory: Schema.String, workspaceID: Schema.optionalKey(Schema.String) })),
+  // In-process ephemeral events can have an explicit undefined workspaceID;
+  // the SDK's JSON stream omits it.
+  location: Schema.optional(Schema.Struct({ directory: Schema.String, workspaceID: Schema.optional(Schema.String) })),
 }
 const Durable = { ...Position, durable: Schema.Struct({ aggregateID: Schema.String, seq: Schema.Int, version: Schema.Literal(1) }) }
 const Session = { sessionID: Schema.String }
@@ -44,6 +46,7 @@ const Event = Schema.Union([
   }) }) }),
   Schema.Struct({ ...Position, type: Schema.Literal("experimental.job.updated"), data: Schema.Struct({ info: Schema.Struct({
     id: Schema.String, sessionID: Schema.String, kind: Schema.String, status: Schema.String,
+    shellID: Schema.optionalKey(Schema.String),
     time: Schema.Struct({ started: Schema.Finite }),
   }) }) }),
 ])
@@ -164,7 +167,7 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
   const background = new Map<string, Background>()
   const stopping = new Map<string, number>()
   const { directory, workspaceID } = ctx.location
-  const workspace = Option.getOrElse(Option.fromUndefinedOr<string>(workspaceID), () => "")
+  const workspace = Option.getOrElse(Option.map(Option.fromUndefinedOr(workspaceID), String), () => "")
   const keyOf = (child: string) => `${prefix}${directory.length}:${directory}:${workspace}:${child}`
 
   const load = (child: string, parent: string) =>
@@ -244,7 +247,9 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
     switch (event.type) {
       case "shell.created": {
         const { id, time, metadata, status } = event.data.info
-        if (!metadata.sessionID || !event.location) return
+        // A native shell can publish globally from its process scope. Its
+        // host-issued session ID is revalidated in this location before use.
+        if (!metadata.sessionID) return
         return yield* registerWork(id, { owner: metadata.sessionID, kind: "Shell", running: status === "running", at: time.started })
       }
       case "shell.exited":
@@ -253,7 +258,10 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
         return
       case "experimental.job.updated": {
         const item = event.data.info
-        if (item.kind === "shell") return
+        if (item.kind === "shell") {
+          if (!item.shellID) return
+          return yield* registerWork(item.shellID, { owner: item.sessionID, kind: "Shell", running: item.status === "running", at: item.time.started })
+        }
         return yield* registerWork(item.id, { owner: item.sessionID, kind: "Child", running: item.status === "running", at: item.time.started })
       }
       case "session.deleted": {

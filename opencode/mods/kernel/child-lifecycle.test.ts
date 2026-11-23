@@ -46,8 +46,8 @@ const orders = [
 for (const order of orders) {
   test(`old, foreign and repeated events do not change the latest busy period (${order.join(",")})`, () => {
     const timeline = [end(2, "failed"), start(3), end(4, "succeeded")]
-    const chart = ["Settled", "Running", "Settled"]
-    const outcomes = ["failed", "", "succeeded"]
+    const chart = ["Settled", "Running", "Settled"] as const
+    const outcomes = ["failed", "", "succeeded"] as const
     let projection = evolve(initial(child, parent), start(1))
     let newest = 0
     for (const index of order) {
@@ -56,7 +56,7 @@ for (const order of orders) {
       newest = Math.max(index, newest)
       const phase = observe(projection, snap(), true).phase
       expect(phase._tag).toBe(chart[newest])
-      if (phase._tag === "Settled") expect(phase.outcome).toBe(outcomes[newest])
+      if (phase._tag === "Settled") expect(String(phase.outcome)).toBe(outcomes[newest])
       expect(evolve(projection, fact)).toBe(projection)
       expect(evolve(projection, { ...end(99, "failed"), parent: "ses_unowned" })).toBe(projection)
     }

@@ -31,7 +31,7 @@ const Asked = Schema.Struct({
 })
 const asked = Schema.decodeUnknownSync(Asked)
 
-const view = (state: string, note: string, message: string): Json => ({ sessionID: "ses_c", description: "probe", agent: "worker", state, message, note })
+const view = (state: string, note: string, message: string) => ({ sessionID: "ses_c", description: "probe", agent: "worker", state, message, note }) satisfies Json
 
 const ask = { agent: "verifier", description: "Check fixture", prompt: "Read fixture." }
 

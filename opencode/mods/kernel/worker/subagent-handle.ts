@@ -152,14 +152,15 @@ const handleOfView = (view: Json, call: CallTool): SubagentHandle => {
 /** What a start answers of where it runs, beside its session: the orchestrate plugin's fallback, effort or latch note, and its model. */
 const Started = Schema.Struct({ note: Schema.optionalKey(Schema.String), model: Schema.optionalKey(Schema.String) })
 const decodeStarted = Schema.decodeUnknownOption(Started)
-const decodeLatch = Schema.decodeUnknownOption(Schema.Struct({
+const Latch = Schema.Struct({
   hold: Schema.optionalKey(Schema.Literals(["pace", "sabbath"])),
   opensAt: Schema.optionalKey(Schema.Finite),
   recheckAt: Schema.optionalKey(Schema.Finite),
-}))
+})
+const decodeLatch = Schema.decodeUnknownOption(Latch)
 
 const latchOf = (raw: Json, child: string): Observation => {
-  const latch = Option.getOrElse(decodeLatch(raw), () => ({}))
+  const latch = Option.getOrElse(decodeLatch(raw), () => Latch.make({}))
   const fields = (hold: Hold) => ({ ...latch, hold })
   const hold = (() => {
     if (latch.hold === "pace") return Hold.cases.Pace.make({})
