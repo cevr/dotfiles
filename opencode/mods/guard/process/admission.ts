@@ -1,8 +1,8 @@
 import { CryptoHasher, env, readableStreamToText, spawn } from "bun"
 import { dlopen, FFIType } from "bun:ffi"
-import { Effect, FileSystem, Option, Predicate } from "effect"
+import { Array as Arr, Effect, FileSystem, Option, Predicate } from "effect"
 import { AdmissionUnavailable, type Observation } from "../admission.ts"
-import { type Measurements, measureSupply, POLICY, type Ticks, type Volume } from "../host-supply.ts"
+import { hostEnvelope, type Measurements, measureSupply, POLICY, type Ticks, type Volume } from "../host-supply.ts"
 import { type Actuation, issue } from "./actuation.ts"
 
 const absent = () => new AdmissionUnavailable({ reason: "unavailable" })
@@ -139,31 +139,38 @@ export const clockOf = Effect.fn("HostSupply.clock")(function* (host: BootHost) 
 
 const DF = "/bin/df"
 const last = (text: string) => text.split("\n").at(-1)?.trim().split(/\s+/u)
-export const volumeOf = Effect.fn("HostSupply.volume")(function* (host: BootHost, path: string) {
+export const volumeIdentity = Effect.fn("HostSupply.volumeIdentity")(function* (path: string) {
   const fs = yield* FileSystem.FileSystem
   const cwd = yield* fs.realPath(path).pipe(Effect.mapError(absent))
-  const [data, inodes] = yield* Effect.all([
-    readProcess([DF, "-kP", cwd]), readProcess([DF, "-ki", cwd]),
-  ], { concurrency: 2 })
+  const data = yield* readProcess([DF, "-kP", cwd])
   const fields = last(data)
-  const nodeFields = last(inodes)
+  const totalBlocks = scalar(fields?.[1])
   const freeBlocks = scalar(fields?.[3])
+  const mount = fields?.slice(5).join(" ")
+  if (!fields?.[0] || !mount || Option.isNone(freeBlocks) || Option.isNone(totalBlocks)) return yield* absent()
+  const stat = yield* fs.stat(cwd).pipe(Effect.mapError(absent))
+  return { cwd, id: ref("volume", `${stat.dev}:${fields[0]}`), object: mount,
+    capacityBytes: totalBlocks.value * 1024, freeBytes: freeBlocks.value * 1024, diskFloorBytes: POLICY.diskFloorBytes }
+})
+
+const sampleVolume = Effect.fn("HostSupply.sampleVolume")(function* (host: BootHost, volume: Effect.Success<ReturnType<typeof volumeIdentity>>) {
+  const { cwd, id, object, capacityBytes, freeBytes, diskFloorBytes } = volume
+  const nodeFields = last(yield* readProcess([DF, "-ki", cwd]))
   const fsTypeOf = { linux: () => readProcess(["/usr/bin/stat", "-f", "-c", "%T", cwd]), darwin: () => Effect.succeed("apfs") }
   const fsType = yield* fsTypeOf[host.platform]()
   const inodeIndex = { darwin: 6, linux: 3 }
   let freeInodes: Option.Option<Volume["freeInodes"]> = scalar(nodeFields?.[inodeIndex[host.platform]])
   if (fsType === "btrfs") freeInodes = Option.some("dynamic")
-  const mount = fields?.slice(5).join(" ")
-  if (!fields?.[0] || !mount || Option.isNone(freeBlocks) || Option.isNone(freeInodes)) return yield* absent()
-  const stat = yield* fs.stat(cwd).pipe(Effect.mapError(absent))
-  const freeBytes = freeBlocks.value * 1024
+  if (Option.isNone(freeInodes)) return yield* absent()
   // A Linux btrfs mount's metadata budget is not interchangeable with its
   // data budget. Unknown metadata is fail-closed rather than assumed free.
   let metadataFreeBytes = freeBytes
   if (fsType === "btrfs") metadataFreeBytes = yield* linuxMetadata(cwd)
-  const sample: Volume = { freeBytes, freeInodes: freeInodes.value, metadataFreeBytes, diskFloorBytes: POLICY.diskFloorBytes }
-  return { id: ref("volume", `${stat.dev}:${fields[0]}`), sample, object: mount }
+  const sample: Volume = { capacityBytes, freeBytes, freeInodes: freeInodes.value, metadataFreeBytes, diskFloorBytes }
+  return { id, sample, object }
 })
+export const volumeOf = (host: BootHost, path: string) =>
+  volumeIdentity(path).pipe(Effect.flatMap((volume) => sampleVolume(host, volume)))
 
 const linuxMetadata = Effect.fn("HostSupply.linuxMetadata")(function* (cwd: string) {
   const raw = yield* readProcess(["/usr/bin/btrfs", "filesystem", "usage", "-b", cwd])
@@ -213,6 +220,7 @@ interface LinuxBudget {
   readonly control: string
   readonly parent: string
   readonly cap: number
+  readonly memoryCap: number
   readonly protected: ReadonlyArray<string>
 }
 
@@ -249,13 +257,14 @@ export const linuxBudget = Effect.fn("HostSupply.linuxBudget")(function* () {
     read("/sys/fs/cgroup/bite.slice/memory.min"), read("/sys/fs/cgroup/bite.slice/memory.low"),
   ], { concurrency: 4 })
   const cap = cpuMax(quota)
+  const memoryCap = scalar(max.trim())
   if (Option.isNone(cap) || cap.value === Number.MAX_SAFE_INTEGER || cap.value < 1000 ||
     !Option.exists(scalar(cpu.trim()), (weight) => weight === 20) || !Option.exists(ioWeight(io), (weight) => weight <= 100) ||
-    !controllerMemory(max, high, swap, current) || !Option.exists(scalar(tasks.trim()), positive) ||
+    Option.isNone(memoryCap) || !controllerMemory(max, high, swap, current) || !Option.exists(scalar(tasks.trim()), positive) ||
     !qualifiedMeters(stat, events, [pressure, memPressure, ioPressure]) ||
     !protectedWeights(resident, residentIO, residentMin, residentLow) || !protectedWeights(systemCPU, systemIO, systemMin, systemLow))
     return yield* new AdmissionUnavailable({ reason: "unqualified" })
-  return { control, cap: cap.value, parent, protected: protectedScopes } satisfies LinuxBudget
+  return { control, cap: cap.value, memoryCap: memoryCap.value, parent, protected: protectedScopes } satisfies LinuxBudget
 })
 
 const linuxEffective = Effect.fn("HostSupply.linuxEffective")(function* (budget: Option.Option<LinuxBudget>) {
@@ -274,7 +283,7 @@ const linuxEffective = Effect.fn("HostSupply.linuxEffective")(function* (budget:
   const caps = Option.all(yield* Effect.forEach(paths, (path) => read(`${path}/cpu.max`).pipe(Effect.map(cpuMax)), { concurrency: 4 }))
   if (Option.isNone(caps)) return yield* absent()
   const limits = { hostCpuMilli: online.value * 1000, effectiveCpuMilli: Math.min(online.value * 1000, slots.value * 1000, ...caps.value) }
-  if (Option.isSome(budget)) return { ...limits, containedCpuMilli: budget.value.cap }
+  if (Option.isSome(budget)) return { ...limits, containedCpuMilli: budget.value.cap, containedMemoryBytes: budget.value.memoryCap }
   return limits
 })
 
@@ -341,11 +350,11 @@ const linuxSupply = Effect.fn("HostSupply.linux")(function* (host: BootHost, sco
   const end = yield* clockOf(host)
   const fields = Option.all({
     before: linuxTicks(first, start), after: linuxTicks(second, end), runnable: cpuField(second, "procs_running"),
-    memKB: memField(mem, "MemAvailable"), cpuPSI: psi(cpu, "some"), memPSI: psi(memory, "some"), ioPSI: psi(io, "some"),
+    memKB: memField(mem, "MemAvailable"), totalKB: memField(mem, "MemTotal"), cpuPSI: psi(cpu, "some"), memPSI: psi(memory, "some"), ioPSI: psi(io, "some"),
     swap: delta(swapPages(vmBefore), swapPages(vmAfter)),
   })
   if (Option.isNone(fields) || end <= start) return yield* absent()
-  const { before, after, runnable, memKB, cpuPSI, memPSI, ioPSI, swap } = fields.value
+  const { before, after, runnable, memKB, totalKB, cpuPSI, memPSI, ioPSI, swap } = fields.value
   const usage = usageAfter.map((after, i) => {
     const [before = Option.none()] = usageBefore.slice(i)
     return Option.match(delta(before, after), { onNone: () => -1, onSome: (step) => step / (end - start) })
@@ -354,7 +363,8 @@ const linuxSupply = Effect.fn("HostSupply.linux")(function* (host: BootHost, sco
   const protectedLowerBoundMilli = usage.slice(0, countProtected).reduce((sum, use) => sum + Math.max(0, Math.floor(use)), 0)
   const managed = metered.map((scope, i) => ({ binding: scope.binding, measuredCpuMilli: Math.ceil(usage[i + countProtected] ?? -1), enforcedCpuMilli: scope.cpuMilli }))
   return {
-    ...limits, before, after, runnable, memoryBytes: memKB * 1024,
+    ...limits, before, after, runnable, memoryBytes: memKB * 1024, totalMemoryBytes: totalKB * 1024,
+    controllerAvailable: Option.isSome(budget),
     pressure: linuxPressure({ cpu: cpuPSI, memory: memPSI, io: ioPSI, swap }),
     qualified: Option.isSome(budget) && usage.every((value) => value >= 0) && metered.length === scopes.length,
     managed, protectedLowerBoundMilli,
@@ -394,25 +404,59 @@ const darwinSupply = Effect.fn("HostSupply.darwin")(function* (host: BootHost) {
     before: startTicks, after, hostCpuMilli: cores * 1000, effectiveCpuMilli: cores * 1000,
     runnable: processes.split("\n").filter((state) => state.trim().startsWith("R")).length,
     memoryBytes: Math.floor(physical * Math.min(headroom, 100) / 100),
+    totalMemoryBytes: physical, controllerAvailable: true,
     pressure: macPressure(level, headroom, growth),
     qualified: true, managed: [], protectedLowerBoundMilli: 0,
   } satisfies Omit<Measurements, "id" | "platform" | "volumes" | "keys">
 })
 
 export const CORE_KEYS: ReadonlyArray<string> = ["gate", "vm", "trace", "build"]
+const darwinLimits = Effect.fn("HostSupply.darwinLimits")(function* () {
+  const [cpu, memory] = yield* Effect.all([
+    readProcess(["/usr/sbin/sysctl", "-n", "hw.activecpu"]), readProcess(["/usr/sbin/sysctl", "-n", "hw.memsize"]),
+  ], { concurrency: 2 })
+  const capacity = Option.all([scalar(cpu), scalar(memory)])
+  if (Option.isNone(capacity)) return yield* absent()
+  const [cores, totalMemoryBytes] = capacity.value
+  return { effectiveCpuMilli: cores * 1000, totalMemoryBytes, controllerAvailable: true }
+})
+
+const linuxLimits = Effect.fn("HostSupply.linuxLimits")(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const budget = yield* linuxBudget().pipe(Effect.option)
+  const limits = yield* linuxEffective(budget)
+  const memory = memField(yield* fs.readFileString("/proc/meminfo").pipe(Effect.mapError(absent)), "MemTotal")
+  if (Option.isNone(memory)) return yield* absent()
+  return { ...limits, totalMemoryBytes: memory.value * 1024, controllerAvailable: Option.isSome(budget) }
+})
+
+export const envelopeOf = Effect.fn("HostSupply.envelope")(function* (host: BootHost, targets: ReadonlyArray<string>) {
+  const limits = { darwin: darwinLimits, linux: linuxLimits }
+  const [read, capacity] = yield* Effect.all([
+    Effect.forEach(targets, (target) => volumeIdentity(target).pipe(Effect.option), { concurrency: 2 }),
+    limits[host.platform](),
+  ], { concurrency: 2 })
+  const volumes = Object.fromEntries(Arr.getSomes(read).map((volume) =>
+    [volume.id, volume]))
+  return hostEnvelope({ ...capacity, platform: host.platform, volumes, keys: CORE_KEYS })
+})
+
 export const observationOf = Effect.fn("HostSupply.sample")(function* (
   host: BootHost, targets: ReadonlyArray<string>, metered: ReadonlyArray<MeteredScope> = [],
 ): Effect.fn.Return<Observation, AdmissionUnavailable, FileSystem.FileSystem> {
   const started = yield* clockOf(host)
-  const volumes = yield* Effect.forEach(targets, (path) => volumeOf(host, path), { concurrency: 2 })
+  const identities = Arr.getSomes(yield* Effect.forEach(targets, (path) => volumeIdentity(path).pipe(Effect.option), { concurrency: 2 }))
+  const volumes = Arr.getSomes(yield* Effect.forEach(identities, (volume) => sampleVolume(host, volume).pipe(Effect.option), { concurrency: 2 }))
   const measure = { darwin: () => darwinSupply(host), linux: () => linuxSupply(host, metered) }
   const measurements = yield* measure[host.platform]()
   const now = yield* clockOf(host)
-  if (now - started > POLICY.freshnessMs) return { now }
-  const sample = measureSupply({
+  const observed = {
     ...measurements, id: `sample-${measurements.after.at}`, platform: host.platform, keys: CORE_KEYS,
     volumes: Object.fromEntries(volumes.map(({ id, sample }) => [id, sample])),
-  })
-  if (Option.isNone(sample)) return { now }
-  return { now, sample: sample.value }
+  }
+  const envelope = hostEnvelope({ ...observed, volumes: Object.fromEntries(identities.map((volume) => [volume.id, volume])) })
+  if (now - started > POLICY.freshnessMs) return { now, envelope }
+  const sample = measureSupply(observed, envelope)
+  if (Option.isNone(sample)) return { now, envelope }
+  return { now, envelope, sample: sample.value }
 })

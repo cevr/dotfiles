@@ -1,113 +1,80 @@
-import { Option, Predicate, Schema } from "effect"
-import { Purpose, purposeKeys, Width, widthOf, type Demand } from "./admission-wire.ts"
+import { Predicate, Schema } from "effect"
+import { Purpose, purposeKeys, Width, type Demand } from "./admission-wire.ts"
 import { unwrapped } from "./heavy.ts"
 import { CHECK_PROFILE } from "./host-supply.ts"
 import { SHELLS, shellScript, simpleCommands, type Word } from "./shell-line.ts"
+import { toolWidth, type ToolEnvironment, type ToolWidth } from "./tool-width.ts"
 
-export const CheckDemand = Schema.Struct({
-  purpose: Purpose,
-  width: Width,
-})
+export { joinWidth, readWidth } from "./tool-width.ts"
+export const CheckDemand = Schema.Struct({ purpose: Purpose, width: Width })
 export type CheckDemand = typeof CheckDemand.Type
-const known = (n: number): Width => Option.getOrElse(widthOf(n), () => "unknown" as const)
-export const readWidth = (value: string): Width => {
-  if (!/^[1-9]\d*$/u.test(value)) return "unknown"
-  return known(Number(value))
-}
-export const joinWidth = (a: Width, b: Width): Width => {
-  if (a === "unknown" || b === "unknown") return "unknown"
-  if (a >= b) return a
-  return b
-}
-const serial = known(1)
 const base = (arg: string) => arg.split("/").at(-1)
 const asWord = (text: string): Word => ({ text, bareStart: true, singleQuoted: false })
+const relevant = new Set(["GOMAXPROCS", "GOFLAGS", "MAKEFLAGS", "MFLAGS", "GNUMAKEFLAGS", "BASH_ENV", "ENV"])
+const assignment = /^([A-Za-z_]\w*)=(.*)$/su
+const opaqueWrappers = new Set(["sudo", "doas", "npx", "pnpx", "bunx", "pnpm", "yarn"])
 
-/** One table for literal concurrency controls. An explicitly unbounded or
- * expansion-dependent width is Unknown, not an implicit single worker. */
-const longWidth = new Set(["--parallel", "-parallel", "--jobs", "--threads", "--max-workers", "--maxWorkers", "--concurrency"])
-const looksParallel = /(?:parallel|concurren|(?:^|-)jobs|workers|threads)/iu
-const goModes = new Set(["build", "test", "vet"])
-const tools = new Set(["go", "bun", "make", "gmake", "cargo", "ninja", "vitest", "jest", "turbo", "playwright", "rustc", "tsc", "tsgo"])
-const makeTools = new Set(["make", "gmake", "ninja", "cargo"])
-const literalWidth = (value: Option.Option<string>) => Option.match(value, {
-  onSome: readWidth, onNone: () => "unknown" as const,
-})
-
-const widthFlag = (tool: string, text: string) => {
-  const [flag = "", equals] = text.split("=", 2)
-  const jobs = text.match(/^-j(\S+)$/u)?.[1]
-  if (longWidth.has(flag) || (tool === "go" && flag === "-p") || (makeTools.has(tool) && (flag === "-j" || jobs)))
-    return { kind: "width", inline: Option.fromNullishOr(equals ?? jobs), packages: flag === "-p" } as const
-  if (looksParallel.test(flag) || (tools.has(tool) && flag === "-j")) return { kind: "unknown" } as const
-  return { kind: "other" } as const
-}
-
-const flagWidths = (tool: string, args: ReadonlyArray<Word>, initial: Width) => {
-  let width = initial
-  let packages = false
-  for (let i = 0; i < args.length; i += 1) {
-    const text = args[i]?.text ?? ""
-    if (text === "--") break
-    if (!text.startsWith("-") || tool === "printf" || tool === "echo") continue
-    const parsed = widthFlag(tool, text)
-    if (parsed.kind === "unknown") return { width: "unknown" as const, packages }
-    if (parsed.kind !== "width") continue
-    packages ||= parsed.packages
-    if (Option.isSome(parsed.inline)) width = joinWidth(width, readWidth(parsed.inline.value))
-    else {
-      width = joinWidth(width, literalWidth(Option.fromNullishOr(args[i + 1]?.text)))
-      i += 1
+const envBefore = (prefix: ReadonlyArray<Word>, baseEnv: ToolEnvironment) => {
+  const result: Record<string, string | undefined> = { ...baseEnv }
+  let withinEnv = false
+  for (const [i, { text }] of prefix.entries()) {
+    const name = base(text)
+    if (name === "env") withinEnv = true
+    if (withinEnv && (text === "-i" || text === "--ignore-environment" || text === "-"))
+      for (const key of relevant) delete result[key]
+    if (withinEnv && (text === "-u" || text === "--unset")) {
+      const key = prefix[i + 1]?.text
+      if (Predicate.isString(key)) delete result[key]
     }
+    if (withinEnv && text.startsWith("--unset=")) delete result[text.slice(8)]
+    const matched = text.match(assignment)
+    const [, assigned, value] = matched ?? []
+    if (Predicate.isString(assigned) && relevant.has(assigned)) result[assigned] = value
   }
-  return { width, packages }
+  return result
 }
 
-const runtimeWidth = (prefix: ReadonlyArray<Word>) =>
-  prefix.reduce((width: Width, { text }) => {
-    if (!text.startsWith("GOMAXPROCS=")) return width
-    return joinWidth(width, readWidth(text.slice(11)))
-  }, serial)
-
-const wordsWidth = (input: ReadonlyArray<Word>, depth: number): Width => {
+const wordsWidth = (input: ReadonlyArray<Word>, env: ToolEnvironment, depth: number): ToolWidth => {
   if (depth >= 5) return "unknown"
   const command = unwrapped(input)
   if (command._tag === "Script") {
-    // The launcher's command is a separate literal argument, not argv text
-    // to re-quote; keep any outer runtime settings as a conservative bound.
     const prefix = input.slice(0, input.findIndex(({ text }) => text === command.script))
-    return joinWidth(runtimeWidth(prefix), shellWidth(command.script, depth + 1))
+    return shellWidth(command.script, envBefore(prefix, env), depth + 1)
   }
-  const args = command.words
-  const [head, sub] = args
-  if (!head) return serial
-  const tool = base(head.text) ?? ""
+  const [head, ...args] = command.words
+  if (!head) return "unknown"
   const prefix = input.slice(0, input.indexOf(head))
-  const width = runtimeWidth(prefix)
-  if (SHELLS.has(tool)) return Option.match(Option.fromNullishOr(shellScript(args.slice(1))), {
-    onNone: () => width, onSome: (source) => joinWidth(width, shellWidth(source, depth + 1)),
-  })
-  if (tool === "eval") return joinWidth(width, shellWidth(args.slice(1).map(({ text }) => text).join(" "), depth + 1))
-  const parsed = flagWidths(tool, args.slice(1), width)
-  // A Go driver's package defaults are not bounded by the check profile.
-  // A literal `-p` makes the recognizable width chargeable; the advisory
-  // ledger accounts for its process × thread fan-out.
-  if (tool === "go" && sub && goModes.has(sub.text) && !parsed.packages && !prefix.some(({ text }) => text.startsWith("GOMAXPROCS=")))
+  if (prefix.some(({ text }) => opaqueWrappers.has(base(text) ?? ""))) return "unknown"
+  const effective = envBefore(prefix, env)
+  const tool = base(head.text) ?? ""
+  if (SHELLS.has(tool)) {
+    const source = shellScript(args)
+    if (Predicate.isString(source) && !effective.BASH_ENV && !effective.ENV) return shellWidth(source, effective, depth + 1)
     return "unknown"
-  return parsed.width
+  }
+  return toolWidth(tool, args.map(({ text }) => text), effective)
 }
 
-export const shellWidth = (line: string, depth = 0): Width =>
-  simpleCommands(line).reduce((width, words) => joinWidth(width, wordsWidth(words, depth)), serial)
-
-export const argvWidth = (argv: ReadonlyArray<string>, gomaxprocs?: string): Width => {
-  const width = wordsWidth(argv.map(asWord), 0)
-  if (Predicate.isUndefined(gomaxprocs)) return width
-  return joinWidth(width, readWidth(gomaxprocs))
+export const shellWidth = (line: string, env: ToolEnvironment = {}, depth = 0): ToolWidth => {
+  const commands = simpleCommands(line)
+  const [first] = commands
+  // A pipeline/background list may run concurrently; sequential shell
+  // state may change cwd/env/commands. Never use one segment as its bound.
+  if (commands.length !== 1 || !first) return "unknown"
+  if (line.includes("`") || line.includes("$(")) return "unknown"
+  if (first.some(({ text, singleQuoted, bareStart }) =>
+    (!singleQuoted && text.includes("$")) || (bareStart && /[*?\[\]{}]/u.test(text) && !text.startsWith("./"))))
+    return "unknown"
+  return wordsWidth(first, env, depth)
 }
 
-export const checkPrefix = ({ purpose, width }: CheckDemand): ReadonlyArray<string> =>
-  ["check", "run", "--class", purpose, "--width", String(width), "--"]
+export const argvWidth = (argv: ReadonlyArray<string>, env: ToolEnvironment = {}): ToolWidth =>
+  wordsWidth(argv.map(asWord), env, 0)
+
+/** Wrappers run before the effective payload environment is known. Carry
+ * the literal argv and class unchanged and resolve the bound at the one
+ * authority that can see both, rather than transporting a guessed number. */
+export const checkPrefix = (purpose: Purpose): ReadonlyArray<string> => ["check", "run", "--class", purpose, "--"]
 
 export const demandOnVolume = ({ purpose, width }: CheckDemand, volumeId: string): Demand => ({
   ...CHECK_PROFILE[purpose], width, ioClass: "idle", keys: purposeKeys[purpose], volumeReservations: [{ volumeId, bytes: 0 }],

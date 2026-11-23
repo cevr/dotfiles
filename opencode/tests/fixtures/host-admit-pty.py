@@ -60,7 +60,14 @@ try:
     await_line(b"hcl> ")
     owns_foreground()
     payload = "trap 'printf \"payload-resumed\\n\"' CONT; printf 'payload-ready\\n'; while IFS= read -r line; do printf 'read:%s\\n' \"$line\"; done"
-    os.write(master, (shlex.join([EXE, CLI, "check", "run", "--", "/bin/sh", "-c", payload]) + "\n").encode())
+    # Give the terminal law a verified single-width payload, without running
+    # Go or relying on an idle whole-host observation to test foreground I/O.
+    stand_in = f"{ROOT}/go"
+    with open(stand_in, "w", encoding="utf-8") as file:
+        file.write(f"#!/bin/sh\n{payload}\n")
+    os.chmod(stand_in, 0o700)
+    command = ["/usr/bin/env", "GOMAXPROCS=1", EXE, CLI, "check", "run", "--", stand_in, "test", "-p=1"]
+    os.write(master, (shlex.join(command) + "\n").encode())
     await_line(rb"(?:^|\r\n)payload-ready\r\n")
     assert os.tcgetpgrp(master) != pid
     os.write(master, b"\x1a")

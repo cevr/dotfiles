@@ -1,7 +1,7 @@
 import { Effect, Option, Schema } from "effect"
 import { type Observation, type ShellIdentity } from "../admission.ts"
 import { widthOf, type Request } from "../admission-wire.ts"
-import { POLICY, type Supply } from "../host-supply.ts"
+import { hostEnvelope, POLICY, type Supply } from "../host-supply.ts"
 
 export const owner = (id: string) => `fixture-${id}`
 const classOf = (exclusive: boolean): Request["purpose"] => {
@@ -22,16 +22,17 @@ export const supply = (input: {
   readonly overrides?: Partial<Supply>
 } = {}): Observation => {
   const { now = 0, cores = 16 } = input
-  const free = { freeBytes: 12 * 2 ** 30, metadataFreeBytes: 2 ** 30, freeInodes: 50_000, diskFloorBytes: POLICY.diskFloorBytes }
-  return {
-    now,
-    sample: {
+  const free = { capacityBytes: 64 * 2 ** 30, freeBytes: 12 * 2 ** 30, metadataFreeBytes: 2 ** 30, freeInodes: 50_000, diskFloorBytes: POLICY.diskFloorBytes }
+  const sample = {
       id: `sample-${now}`, at: now, effectiveCpuMilli: cores * 1000, outsideNoncriticalMilli: 0, protectedCpuMilli: POLICY.reserveCpuMilli,
-      memoryBytes: 32 * 2 ** 30, pressure: "clear", qualification: "enforced", runnable: 0, managed: [],
+      memoryBytes: 32 * 2 ** 30, pressure: "clear" as const, qualification: "enforced" as const, runnable: 0, managed: [],
       volumes: { "volume-a": free, "volume-b": free }, keys: ["device-a", "device-b"],
       ...input.overrides,
-    },
   }
+  const envelope = input.overrides?.envelope ?? hostEnvelope({
+    ...sample, totalMemoryBytes: 32 * 2 ** 30, platform: "darwin", controllerAvailable: true,
+  })
+  return { now, sample: { ...sample, envelope }, envelope }
 }
 
 export interface ShellLaunchDriver {

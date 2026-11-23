@@ -14,49 +14,71 @@ const Status = Schema.Struct({
   hostId: Schema.String, bootId: Schema.String, nowBootMs: Schema.Int,
   principal: Schema.Struct({ kind: Schema.Literal("external-runner"), scopeId: Schema.String, epoch: Schema.Int }),
   defaultVolume: Schema.NullOr(Schema.String),
+  maximumCpuMilli: Schema.Int,
+  maximumMemoryBytes: Schema.Int,
 })
-const Reply = Schema.Struct({ id: Schema.NullOr(Schema.String), state: Schema.String, sequence: Schema.Int })
+const Reply = Schema.Struct({
+  id: Schema.NullOr(Schema.String), state: Schema.String, sequence: Schema.Int, reason: Schema.String,
+  qualifiedForm: Schema.optionalKey(Schema.String),
+})
 class CliFixtureUnavailable extends Data.TaggedError("CliFixtureUnavailable")<{ readonly operation: "spawn" | "read" }> {}
 
 const readAdmission = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({
   leases: Schema.Record(Schema.String, Schema.Struct({
-    state: Schema.String,
-    request: Schema.Struct({ purpose: Schema.String, demand: Schema.Struct({ width: Schema.Number, memoryBytes: Schema.Number }) }),
+    state: Schema.String, reason: Schema.String,
+    request: Schema.Struct({ purpose: Schema.String, demand: Schema.Struct({
+      width: Schema.Union([Schema.Number, Schema.Literals(["unknown", "full"])]), memoryBytes: Schema.Number,
+    }) }),
     admittedDemand: Schema.NullOr(Schema.Struct({ cpuMilli: Schema.Number })),
   })),
 })))
 
-it.scopedLive("standalone, Guard, and durable Wake all reserve width four or hold before the payload", () =>
+const rowsAt = (filename: string) => Effect.try(() => {
+  using db = new Database(filename, { readonly: true })
+  const body = db.query<{ body: string }, []>("SELECT body FROM admission_v1").get()
+  if (!body) return {}
+  return readAdmission(body.body).leases
+}).pipe(Effect.orElseSucceed(() => ({})))
+
+it.scopedLive("standalone, Guard and Wake carry modeled Go, Bun, Make and Ninja width to the durable claim", () =>
   Effect.gen(function* () {
     if (process.platform !== "darwin") return
     using dir = scratch("hcl-demand-")
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
     const folder = yield* fs.realPath(dir.path)
+    const host = yield* decode(Status)((yield* runner(folder)(["host", "status", "--json"])).out)
     const [exe = "bun"] = argv
     const cli = yield* path.fromFileUrl(new URL("../cmd/guard/host-admit.ts", import.meta.url))
-    const marker = path.join(folder, "payload-ran")
     const helper = [exe, cli]
     const command = "GOMAXPROCS=4 go test -p 4 -parallel 4 './exact argument'"
     const file = path.join(folder, "guard-wrapper")
     yield* fs.writeFileString(file, admissionLauncher("/bin/sh", helper, command), { mode: 0o700 })
-    yield* fs.writeFileString(path.join(folder, "go"), "#!/bin/sh\nprintf 'payload ran\\n' > \"$HCL_MARKER\"\nexec /bin/sleep 8\n", { mode: 0o700 })
+    for (const tool of ["go", "bun", "make", "ninja", "unmodeled"]) {
+      yield* fs.writeFileString(path.join(folder, tool), "#!/bin/sh\nprintf 'payload ran\\n' > \"$HCL_MARKER\"\nexec /bin/sleep 2\n", { mode: 0o700 })
+    }
     const job = path.join(folder, "wake-job")
     const wake = yield* path.fromFileUrl(new URL("../cmd/wake/job.ts", import.meta.url))
     yield* fs.makeDirectory(job, { mode: 0o700 })
     yield* fs.writeFileString(path.join(job, "job.json"), json({
       spec: { id: "j000001", sessionID: "ses_fixture", directory: folder, command, cwd: folder, note: "fixture", heavy: false, timeoutSeconds: 15, setAt: 1 },
     }), { mode: 0o600 })
-    const programs: ReadonlyArray<ReadonlyArray<string>> = [
-      [...helper, "check", "run", "--", "go", "test", "-p", "4", "-parallel", "4", "./exact argument"],
-      [file, "-c", command],
-      admittedJobArgv(helper, command, false),
-      [exe, wake, job],
+    const programs = [
+      { argv: [...helper, "check", "run", "--", "go", "test", "-p", "4", "-parallel", "4", "./exact argument"], width: 16, env: { GOMAXPROCS: "4" } },
+      { argv: [file, "-c", command], width: 16 },
+      { argv: admittedJobArgv(helper, command, false), width: 16 },
+      { argv: [exe, wake, job], width: 16 },
+      { argv: [...helper, "check", "run", "--", "go", "test", "-p=1", "./fixture"], width: "full" },
+      { argv: admittedJobArgv(helper, "bun test --parallel=2 ./fixture", false), width: 2 },
+      { argv: admittedJobArgv(helper, "make -j2", false), width: 2 },
+      { argv: admittedJobArgv(helper, "ninja -j 2", false), width: 2 },
+      { argv: [...helper, "check", "run", "--", "unmodeled", "--parallel=1"], width: "unknown" },
     ]
-    for (const [i, program] of programs.entries()) {
+    for (const [i, { argv: program, env, width }] of programs.entries()) {
       const state = path.join(folder, `state-${i}`)
+      const marker = path.join(folder, `payload-ran-${i}`)
       const filename = path.join(state, "host-admit", "admission-v1.sqlite")
-      const environment = { HOME: folder, XDG_STATE_HOME: state, PATH: `${folder}:/usr/bin:/bin`, HCL_MARKER: marker, GOMAXPROCS: "4" }
+      const environment = { HOME: folder, XDG_STATE_HOME: state, PATH: `${folder}:/usr/bin:/bin`, HCL_MARKER: marker, ...env }
       if (program.includes(wake)) yield* fs.writeFileString(path.join(job, "env.json"), json(environment), { mode: 0o600 })
       const task = yield* Effect.acquireRelease(Effect.try({
         try: () => spawn([...program], {
@@ -65,29 +87,81 @@ it.scopedLive("standalone, Guard, and durable Wake all reserve width four or hol
         }),
         catch: () => new CliFixtureUnavailable({ operation: "spawn" }),
       }), (child) => Effect.sync(() => { if (Predicate.isNull(child.exitCode) && Predicate.isNull(child.signalCode)) child.kill("SIGTERM") }))
-      const observed = Effect.gen(function* () {
-        if (!(yield* fs.exists(filename))) return {}
-        return yield* Effect.try(() => {
-            using db = new Database(filename, { readonly: true })
-            const body = db.query<{ body: string }, []>("SELECT body FROM admission_v1").get()
-            if (!body) return {}
-            return readAdmission(body.body).leases
-        }).pipe(Effect.orElseSucceed(() => ({})))
-      })
-      const rows = yield* observed.pipe(
-        Effect.repeat({ schedule: Schedule.spaced(50), until: (rows) => Object.keys(rows).length > 0 }),
-        Effect.timeoutOrElse({ duration: 4500, orElse: () => Effect.die(`wrapper leg ${i} did not write its demand`) }),
+      yield* fs.exists(marker).pipe(
+        Effect.repeat({ schedule: Schedule.spaced(50), until: (exists) => exists }),
+        Effect.timeoutOrElse({ duration: 6500, orElse: () => rowsAt(filename).pipe(
+          Effect.flatMap((rows) => Effect.die(`wrapper leg ${i} did not claim: ${json(rows)}`))) }),
       )
+      const rows = yield* rowsAt(filename)
       const [row] = Object.values(rows)
-      expect(row?.request).toMatchObject({ purpose: "check", demand: { width: 4, memoryBytes: 4 * 2 ** 30 } })
-      if (row?.state === "queued") expect(yield* fs.exists(marker)).toBe(false)
-      else expect(row?.admittedDemand?.cpuMilli).toBe(16_000)
-      task.kill("SIGTERM")
-      yield* Effect.promise(() => task.exited).pipe(Effect.timeout(4000))
-      if (yield* fs.exists(marker)) yield* fs.remove(marker)
+      expect(row?.request).toMatchObject({ purpose: "check", demand: { width, memoryBytes: 4 * 2 ** 30 } })
+      expect(row?.state).toBe("running")
+      const ceiling = host.maximumCpuMilli
+      expect(row?.admittedDemand?.cpuMilli).toBe(Math.min(ceiling, typeof width === "number" ? width * 1000 : ceiling))
+      expect(yield* Effect.promise(() => task.exited).pipe(Effect.timeout(6500))).toBe(0)
     }
   }).pipe(Effect.provide(BunServices.layer)),
-  22_000,
+  52_000,
+)
+
+it.scopedLive("Unknown executes; a width-one peer cannot exec until it drains", () =>
+  Effect.gen(function* () {
+    if (process.platform !== "darwin") return
+    using dir = scratch("hcl-r3-fifo-")
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const folder = yield* fs.realPath(dir.path)
+    const cli = yield* path.fromFileUrl(new URL("../cmd/guard/host-admit.ts", import.meta.url))
+    const [exe = "bun"] = argv
+    const file = path.join(folder, "unmodeled")
+    const claimed = path.join(folder, "full-started")
+    const next = path.join(folder, "peer-started")
+    yield* fs.writeFileString(file, "#!/bin/sh\nprintf '%s\\n' ready > \"$HCL_MARKER\"\nIFS= read -r stop\n", { mode: 0o700 })
+    const home = { HOME: folder, XDG_STATE_HOME: `${folder}/state`, XDG_CONFIG_HOME: `${folder}/config`, XDG_DATA_HOME: `${folder}/data` }
+    const start = (args: ReadonlyArray<string>, marker: string) => Effect.acquireRelease(
+      Effect.try({
+        try: () => spawn([exe, cli, ...args], {
+          cwd: folder, env: { ...home, HCL_MARKER: marker }, stdin: "pipe", stdout: "ignore", stderr: "pipe", detached: true,
+        }),
+        catch: () => new CliFixtureUnavailable({ operation: "spawn" }),
+      }),
+      (task) => Effect.sync(() => {
+        task.stdin.end()
+        if (Predicate.isNull(task.exitCode) && Predicate.isNull(task.signalCode)) task.kill("SIGTERM")
+      }),
+    )
+    const invoke = runner(folder)
+    const host = yield* decode(Status)((yield* invoke(["host", "status", "--json"])).out)
+    const filename = path.join(folder, "state", "host-admit", "admission-v1.sqlite")
+    const full = yield* start(["check", "run", "--", file, "--parallel=1"], claimed)
+    const read = (marker: string) => fs.exists(marker).pipe(
+      Effect.repeat({ schedule: Schedule.spaced(50), until: (ok) => ok }), Effect.timeout(6500),
+    )
+    expect(yield* read(claimed)).toBe(true)
+    const [held] = Object.values(yield* rowsAt(filename))
+    expect(held?.state).toBe("running")
+    expect(held?.request.demand.width).toBe("unknown")
+    expect(held?.admittedDemand?.cpuMilli).toBe(host.maximumCpuMilli)
+    const waiting = yield* decode(Reply)((yield* invoke(["lease", "request", "--json"], json({
+      version: 1, requestId: "peer", principal: host.principal, purpose: "check", tier: "small",
+      deadlineBootMs: host.nowBootMs + 30_000,
+      demand: { width: 1, cpuMilli: 1000, memoryBytes: 2 ** 30, keys: [], ioClass: "idle",
+        volumeReservations: [{ volumeId: host.defaultVolume ?? "missing", bytes: 0 }] },
+    }))).out)
+    expect(waiting.state).toBe("queued")
+    const peer = yield* start(["lease", "run", "--id", waiting.id ?? "missing", "--", "/bin/echo", "peer-ran"], next)
+    expect((yield* rowsAt(filename))[waiting.id ?? "missing"]?.state).toBe("queued")
+    expect(peer.exitCode).toBeNull()
+    full.stdin.write("finish\n")
+    expect(yield* Effect.promise(() => full.exited).pipe(Effect.timeout(4500))).toBe(0)
+    expect(yield* Effect.promise(() => peer.exited).pipe(Effect.timeout(6500))).toBe(0)
+    expect(Object.values(yield* rowsAt(filename)).find((row) => row.request.demand.width === 1)?.state).toBe("released")
+    const err = yield* Effect.promise(() => readableStreamToText(full.stderr))
+    expect(err.trim().split("\n")).toHaveLength(1)
+    expect(err).toContain("no verified tool width")
+    expect(err).toContain("whole managed CPU pool")
+  }).pipe(Effect.provide(BunServices.layer)),
+  25_000,
 )
 
 const runner = (folder: string) => Effect.fn("HostAdmitTest.invoke")(function* (args: ReadonlyArray<string>, input: string = "") {
@@ -161,13 +235,62 @@ it.scopedLive("the standalone API binds request identity to the caller, not the 
     const { width: _width, ...legacyDemand } = draft.demand
     const legacy = { ...draft, requestId: "legacy-width", demand: legacyDemand }
     const held = yield* decode(Reply)((yield* invoke(req, json(legacy))).out)
-    expect(held.state).toBe("queued")
+    expect(["queued", "granted"]).toContain(held.state)
     expect(held.id).not.toBeNull()
-    const noWidth = yield* invoke(["lease", "run", "--id", held.id ?? "missing", "--", "/bin/echo", "must-not-exec"])
-    expect(noWidth.code).toBe(2)
-    expect(noWidth.out).toContain(`"reason":"unqualified"`)
-    expect(noWidth.out).not.toContain("must-not-exec")
+    expect((yield* invoke(["lease", "cancel", "--id", held.id ?? "missing", "--json"])).code).toBe(0)
   }).pipe(Effect.provide(BunServices.layer)),
+)
+
+it.scopedLive("public CLI refuses an impossible predecessor before ticketing and still grants the next qualified check", () =>
+  Effect.gen(function* () {
+    if (process.platform !== "darwin") return
+    using dir = scratch("hcl-frontier-")
+    const invoke = runner(dir.path)
+    const host = yield* decode(Status)((yield* invoke(["host", "status", "--json"])).out)
+    const draft = {
+      version: 1, requestId: "fixture", principal: host.principal, purpose: "check", tier: "small",
+      deadlineBootMs: host.nowBootMs + 30_000,
+      demand: { width: 1, cpuMilli: 1000, memoryBytes: 2 ** 30, ioClass: "idle", keys: [],
+        volumeReservations: [{ volumeId: host.defaultVolume ?? "missing", bytes: 0 }] },
+    }
+    const submit = (request: typeof draft) => invoke(["lease", "request", "--json"], json(request))
+    const review = decode(Reply)
+    const impossible = [
+      { ...draft, requestId: "memory", demand: { ...draft.demand, memoryBytes: host.maximumMemoryBytes + 1 } },
+      { ...draft, requestId: "volume", demand: { ...draft.demand, volumeReservations: [{ volumeId: "not-mounted", bytes: 0 }] } },
+      { ...draft, requestId: "class", purpose: "class-not-offered" },
+      { ...draft, requestId: "width", demand: { ...draft.demand, width: 0 } },
+    ]
+    for (const [i, reason] of ["memory-limit", "unknown-volume", "unsupported-class", "invalid-width"].entries()) {
+      const request = impossible[i]
+      if (!request) return yield* Effect.die("missing ungrantable fixture")
+      const reply = yield* submit(request)
+      expect(reply.code).toBe(2)
+      expect(reply.out).toContain(`"reason":"${reason}"`)
+      expect(reply.out).toContain(`"qualifiedForm":`)
+      expect(reply.out).not.toContain(`"id":"`)
+    }
+    const younger = yield* review((yield* submit(draft)).out)
+    const id = younger.id ?? "missing"
+    const granted = yield* invoke(["lease", "status", "--id", id, "--json"]).pipe(Effect.flatMap(({ out }) => review(out)),
+      Effect.repeat({ schedule: Schedule.spaced(100), until: (row) => row.state === "granted" }), Effect.timeout(6500))
+    expect(granted.state).toBe("granted")
+    expect((yield* invoke(["lease", "cancel", "--id", id, "--json"])).code).toBe(0)
+    const older = yield* review((yield* invoke(["lease", "request", "--json"], json({
+      ...draft, requestId: "host-wide", demand: { ...draft.demand, width: "unknown" },
+    }))).out)
+    expect(["queued", "granted"]).toContain(older.state)
+    const successor = yield* review((yield* submit({ ...draft, requestId: "successor" })).out)
+    expect(successor.state).toBe("queued")
+    expect((yield* invoke(["lease", "cancel", "--id", older.id ?? "missing", "--json"])).code).toBe(0)
+    const after = yield* invoke(["lease", "status", "--id", successor.id ?? "missing", "--json"]).pipe(
+      Effect.flatMap(({ out }) => review(out)),
+      Effect.repeat({ schedule: Schedule.spaced(100), until: (row) => row.state === "granted" }), Effect.timeout(6500),
+    )
+    expect(after.state).toBe("granted")
+    expect((yield* invoke(["lease", "cancel", "--id", successor.id ?? "missing", "--json"])).code).toBe(0)
+  }).pipe(Effect.provide(BunServices.layer)),
+  20_000,
 )
 
 it.scopedLive("Wake's real durable entry fails closed before heavy payload exec and still runs a light job", () =>

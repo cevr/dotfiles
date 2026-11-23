@@ -1,8 +1,8 @@
 import { Clock, Console, Effect, FileSystem, Option, Path, Predicate, Schedule, Stream } from "effect"
 import { AdmissionUnavailable, type Address, type Input, type Lease, type Observation } from "@dotfiles/opencode-guard/admission"
-import { type Request } from "@dotfiles/opencode-guard/admission-wire"
+import { type Reason, type Request, type Width } from "@dotfiles/opencode-guard/admission-wire"
 import { argvWidth, demandOnVolume, type CheckDemand } from "@dotfiles/opencode-guard/check-demand"
-import { POLICY } from "@dotfiles/opencode-guard/host-supply"
+import { capacityOf, POLICY } from "@dotfiles/opencode-guard/host-supply"
 import * as Supply from "@dotfiles/opencode-guard/process/admission"
 import * as Scope from "@dotfiles/opencode-guard/process/launchers"
 import { attachGrant, runAfterClaim } from "@dotfiles/opencode-guard/process/linux-controller"
@@ -14,6 +14,37 @@ const active = (lease: Lease) => lease.state === "running" || lease.state === "d
 const granting = (lease: Lease) => lease.state === "queued" || lease.state === "granted"
 const terminal = (state: string) => ["released", "expired", "cancelled", "refused"].includes(state)
 const cut = (now: number): Observation => ({ now })
+const wholePoolStatus = (reason: Reason, observation: Observation) => {
+  if (reason === "granted") return "whole managed CPU pool granted"
+  if (reason === "whole-pool-held") return "waiting for running checks to end"
+  if (reason === "fifo") return "waiting for older checks in FIFO order"
+  const { sample } = observation
+  if (sample && reason === "outside-busy") {
+    return `host busy outside the lease: ${sample.outsideNoncriticalMilli / 1000} of ${sample.effectiveCpuMilli / 1000} cores in use`
+  }
+  return `waiting for the whole managed CPU pool (${reason})`
+}
+const warnFull = (width: Width, observation: Observation, reason: Reason) => {
+  const maximum = observation.envelope?.cpuMilli ?? observation.sample?.envelope.cpuMilli ?? 0
+  const status = wholePoolStatus(reason, observation)
+  const bound = "To narrow a modeled tool, set Go GOMAXPROCS and -p, Bun --parallel=N, or Make/Ninja -j N."
+  if (width === "unknown") return Console.error(`host-admit: no verified tool width; ${status}. ${bound}`)
+  if (width === "full") return Console.error(`host-admit: tool uses host width; ${status}. ${bound}`)
+  if (width * 1000 > maximum) return Console.error(`host-admit: width ${width} clamped to ${maximum} mCPU; ${status}.`)
+  if (width * 1000 === maximum) return Console.error(`host-admit: ${status}. ${bound}`)
+  return Effect.void
+}
+const describeWait = (width: Width) => {
+  const reported = new Set<Reason>()
+  return (observation: Observation, reason: Reason) => {
+    // One line on entering the wait, plus a line if a newly observed
+    // blocker changes what the caller can do. Never log on each poll.
+    if (reported.has(reason) || (reported.size > 0 && reason !== "outside-busy" && reason !== "whole-pool-held"))
+      return Effect.void
+    reported.add(reason)
+    return warnFull(width, observation, reason)
+  }
+}
 
 export interface Config {
   readonly cwd: string
@@ -78,7 +109,7 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
   const { ledger, holder, native } = yield* Journal.open(filename, host, host.kernel.now)
   const caller = yield* Scope.callerOf(host)
   yield* native.remember(caller.owner, caller.pid, caller.start)
-  const target = yield* Supply.volumeOf(host, config.cwd).pipe(Effect.option)
+  const target = yield* Supply.volumeIdentity(config.cwd).pipe(Effect.option)
   if (Option.isSome(target)) yield* native.volume(target.value.id, target.value.object)
 
   const cold = Effect.fn("HostAdmission.cold")(function* () {
@@ -109,6 +140,13 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
       native.finish(probe).pipe(Effect.ignore),
     )
   })
+  const attest = Effect.fn("HostAdmission.attest")(function* (observation: Observation) {
+    if (observation.envelope || observation.sample?.envelope) return observation
+    const mounts = yield* native.volumes()
+    const limit = yield* Supply.envelopeOf(host, mounts).pipe(Effect.option)
+    if (Option.isNone(limit)) return observation
+    return { ...observation, envelope: limit.value }
+  })
 
   const inspect = Effect.fn("HostAdmission.reconcile")(function* (observation: Observation) {
     const state = yield* ledger.inspect()
@@ -130,8 +168,9 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
   const step = Effect.fn("HostAdmission.step")(function* (input: Input) {
     yield* inspect(yield* cold())
     const observation = yield* measure()
+    const verified = yield* attest(observation)
     const now = yield* Supply.clockOf(host)
-    return yield* ledger.transact(input, { ...observation, now })
+    return yield* ledger.transact(input, { ...verified, now }).pipe(Effect.map((result) => ({ ...result, observation: verified })))
   })
 
   const request = Effect.fn("HostAdmission.request")(function* (draft: Request, owner = caller.owner) {
@@ -139,7 +178,7 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
     const claimed = draft.principal
     if (claimed.kind !== principal.kind || claimed.scopeId !== principal.scopeId || claimed.epoch !== principal.epoch)
       return yield* fail("wrong-owner")
-    return (yield* step({ op: "request", request: draft, owner })).reply
+    return yield* step({ op: "request", request: draft, owner })
   })
 
   const status = Effect.fn("HostAdmission.status")(function* (id: string) {
@@ -174,10 +213,11 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
     }
   })
 
-  const wait = Effect.fn("HostAdmission.awaitGrant")(function* (address: Address) {
+  const wait = Effect.fn("HostAdmission.awaitGrant")(function* (address: Address, explain: ReturnType<typeof describeWait>) {
     for (;;) {
-      const { reply, state } = yield* step({ op: "status", ...address })
+      const { reply, state, observation } = yield* step({ op: "status", ...address })
       if (terminal(reply.state)) return yield* fail(reply.reason)
+      yield* explain(observation, reply.reason)
       const row = state.leases[address.id]
       if (!row) return yield* fail("unknown-id")
       if (!granting(row)) return yield* fail("stale")
@@ -280,9 +320,11 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
     return Option.some(code)
   })
 
-  const begin = Effect.fn("HostAdmission.run")(function* (address: Address, args: ReadonlyArray<string>) {
+  const begin = Effect.fn("HostAdmission.run")(function* (
+    address: Address, args: ReadonlyArray<string>, explain: ReturnType<typeof describeWait>,
+  ) {
     for (;;) {
-      const row = yield* wait(address)
+      const row = yield* wait(address, explain)
       const launch = { linux: () => Effect.scoped(linux(row, args)), darwin: () => claim(row, args) }
       const code = yield* launch[host.platform]()
       if (Option.isSome(code)) return code.value
@@ -305,16 +347,19 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
       purpose: demand.purpose, tier: "standard", deadlineBootMs: now + POLICY.queueMs,
       demand: demandOnVolume(demand, target.value.id),
     }
-    const queued = yield* request(draft, owner)
+    const { reply: queued, observation } = yield* request(draft, owner)
     if (Predicate.isNull(queued.id)) return yield* fail(queued.reason)
+    const explain = describeWait(demand.width)
+    yield* explain(observation, queued.reason)
     const address = { id: queued.id, owner }
-    return yield* begin(address, args).pipe(Effect.onError(() => cold().pipe(
+    return yield* begin(address, args, explain).pipe(Effect.onError(() => cold().pipe(
       Effect.flatMap((now) => ledger.transact({ op: "cancel", ...address }, now)), Effect.ignore,
     )))
   })
 
   const hostStatus = Effect.fn("HostAdmission.hostStatus")(function* () {
-    const { sample, now } = yield* measure()
+    const { sample, now, envelope } = yield* measure().pipe(Effect.flatMap(attest))
+    const limits = envelope ?? sample?.envelope
     const state = yield* ledger.inspect()
     return {
       version: 1, hostId: host.hostId, bootId: host.bootId, nowBootMs: now, revision: state.revision, principal: caller.principal,
@@ -322,26 +367,35 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
       capabilities: { pressure: sample?.pressure ?? "unknown", controller: sample?.qualification ?? "unavailable", platform: host.platform },
       coresMilli: Option.getOrNull(Option.fromNullishOr(sample?.effectiveCpuMilli)),
       runnable: Option.getOrNull(Option.fromNullishOr(sample?.runnable)),
+      maximumCpuMilli: limits?.cpuMilli ?? 0,
+      freeManagedCpuMilli: sample ? capacityOf(sample) : null,
+      outsideNoncriticalMilli: sample?.outsideNoncriticalMilli ?? null,
+      maximumMemoryBytes: limits?.memoryBytes ?? 0,
+      offeredClasses: limits?.purposes ?? [],
+      resourceKeys: limits?.keys ?? [],
     }
   })
 
   return {
-    hostStatus, request, status, watch, run, attach,
+    hostStatus, request: (draft: Request) => request(draft).pipe(Effect.map(({ reply }) => reply)), status, watch, run, attach,
     put: Effect.fn("HostAdmission.observe")(function* (records: Parameters<typeof holder.putObservations>[1]) {
       return yield* holder.putObservations(caller.owner, records, yield* Supply.clockOf(host))
     }),
     list: holder.list,
     launch: Effect.fn("HostAdmission.launchExternal")(function* (id: string, args: ReadonlyArray<string>) {
       const address = { id, owner: caller.owner }
-      const { state } = yield* ledger.transact({ op: "status", ...address }, yield* cold())
+      const { state, observation, reply } = yield* step({ op: "status", ...address })
       const row = state.leases[id]
       // Do not expose demand for another principal's durable address.
-      if (row?.owner === address.owner) {
-        const observed = argvWidth(args, Scope.localEnvironment().GOMAXPROCS)
-        const { width } = row.request.demand
-        if (width === "unknown" || observed === "unknown" || observed > width) return yield* fail("unqualified")
-      }
-      return yield* begin(address, args)
+      if (!row || row.owner !== address.owner || terminal(reply.state)) return yield* fail(reply.reason)
+      const observed = argvWidth(args, Scope.localEnvironment())
+      if (observed === "invalid") return yield* fail("invalid-width")
+      const { demand } = row.request
+      if (Predicate.isNumber(demand.width) && (!Predicate.isNumber(observed) ||
+        observed * 1000 > Math.max(demand.width * 1000, demand.cpuMilli))) return yield* fail("unqualified")
+      const explain = describeWait(demand.width)
+      yield* explain(observation, reply.reason)
+      return yield* begin(address, args, explain)
     }),
     cancel: (id: string) => cold().pipe(Effect.flatMap((at) => ledger.transact({ op: "cancel", id, owner: caller.owner }, at)), Effect.map((next) => next.reply)),
     now: Clock.currentTimeMillis,

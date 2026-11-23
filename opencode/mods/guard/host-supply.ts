@@ -1,4 +1,5 @@
 import { Option, Predicate } from "effect"
+import type { Purpose } from "./admission-wire.ts"
 
 /** Boot-local monotonic measurements. A poll is one coherent host interval,
  * not a minute-old load average and not the count of slots we granted. */
@@ -15,10 +16,22 @@ export interface ManagedUse {
 }
 
 export interface Volume {
+  readonly capacityBytes: number
   readonly freeBytes: number
   readonly freeInodes: number | "dynamic"
   readonly metadataFreeBytes: number
   readonly diskFloorBytes: number
+}
+
+/** A quiet-host witness, independent of ticks, PSI and free memory/disk.
+ * These are ceilings of the currently attested configuration, not claims. */
+export interface HostEnvelope {
+  readonly cpuMilli: number
+  readonly memoryBytes: number
+  readonly needsMemoryReservation: boolean
+  readonly volumes: Readonly<Record<string, number>>
+  readonly keys: ReadonlyArray<string>
+  readonly purposes: ReadonlyArray<Purpose>
 }
 
 export interface Supply {
@@ -35,6 +48,7 @@ export interface Supply {
   readonly managed: ReadonlyArray<ManagedUse>
   readonly volumes: Readonly<Record<string, Volume>>
   readonly keys: ReadonlyArray<string>
+  readonly envelope: HostEnvelope
 }
 
 export interface Measurements {
@@ -47,6 +61,9 @@ export interface Measurements {
   readonly hostCpuMilli: number
   readonly runnable: number
   readonly memoryBytes: number
+  readonly totalMemoryBytes: number
+  readonly containedMemoryBytes?: number
+  readonly controllerAvailable: boolean
   readonly pressure: Supply["pressure"]
   readonly qualified: boolean
   readonly managed: ReadonlyArray<ManagedUse>
@@ -70,6 +87,9 @@ export const POLICY = {
   slots: 3,
   landBurst: 2,
   maxRequestCpuMilli: 4000,
+  // Below half the managed pool, unmanaged work is already keeping the host
+  // busy; starting a whole-host check would only add contention.
+  wholePoolFreeFraction: 0.5,
   maxRequestMemoryBytes: 12 * 2 ** 30,
 } as const
 
@@ -81,6 +101,25 @@ export const CHECK_PROFILE = {
   inventory: { cpuMilli: 1000, memoryBytes: 2 * GiB },
   "exclusive-check": { cpuMilli: 1000, memoryBytes: 4 * GiB },
 } as const
+const purposes: ReadonlyArray<Purpose> = ["check", "land-check", "vm", "inventory", "exclusive-check"]
+type EnvelopeMeasurements = Pick<Measurements, "platform" | "effectiveCpuMilli" | "containedCpuMilli" |
+  "totalMemoryBytes" | "containedMemoryBytes" | "controllerAvailable" | "keys"> & {
+  readonly volumes: Readonly<Record<string, Pick<Volume, "capacityBytes" | "diskFloorBytes">>>
+}
+
+export const hostEnvelope = (raw: EnvelopeMeasurements): HostEnvelope => {
+  const cpu = Math.max(0, raw.effectiveCpuMilli - POLICY.reserveCpuMilli)
+  return {
+    cpuMilli: Math.min(cpu, raw.containedCpuMilli ?? cpu),
+    memoryBytes: Math.min(POLICY.maxRequestMemoryBytes, Math.max(0, raw.totalMemoryBytes - POLICY.reserveMemoryBytes),
+      raw.containedMemoryBytes ?? raw.totalMemoryBytes),
+    needsMemoryReservation: raw.platform === "linux",
+    volumes: Object.fromEntries(Object.entries(raw.volumes).map(([id, volume]) =>
+      [id, volume.capacityBytes - Math.max(volume.diskFloorBytes, POLICY.diskFloorBytes)])),
+    keys: raw.keys,
+    purposes: purposes.filter(() => raw.controllerAvailable && cpu > 0),
+  }
+}
 
 const nonnegative = (n: number) => Number.isSafeInteger(n) && n >= 0
 const ticksValid = ({ idle, total, at }: Ticks) => [idle, total, at].every(nonnegative) && idle <= total
@@ -88,7 +127,7 @@ const managedValid = ({ measuredCpuMilli, enforcedCpuMilli }: ManagedUse) =>
   [measuredCpuMilli, enforcedCpuMilli].every(nonnegative) && measuredCpuMilli <= enforcedCpuMilli
 
 const activeQualification = { darwin: "advisory", linux: "enforced" } as const
-export const measureSupply = (raw: Measurements): Option.Option<Supply> => {
+export const measureSupply = (raw: Measurements, envelope = hostEnvelope(raw)): Option.Option<Supply> => {
   const { before, after } = raw
   const total = after.total - before.total
   const idle = after.idle - before.idle
@@ -115,7 +154,7 @@ export const measureSupply = (raw: Measurements): Option.Option<Supply> => {
     runnable: raw.runnable,
     managed: Option.match(credit, { onNone: () => [], onSome: () => raw.managed }),
     volumes: raw.volumes,
-    keys: raw.keys,
+    keys: raw.keys, envelope,
   }
   if (Option.isSome(contain)) return Option.some({ ...base, containedCpuMilli: contain.value })
   return Option.some(base)
@@ -128,13 +167,8 @@ export const capacityOf = (sample: Supply): number =>
 export const runnableLimit = (sample: Supply) =>
   Math.min(POLICY.runnableLimit, Math.max(1, Math.floor(sample.effectiveCpuMilli / 1000)))
 
-export const chargedCpu = (milli: number, qualification: Supply["qualification"]) => {
-  if (qualification === "enforced") return milli
-  const width = Math.max(1, Math.ceil(milli / 1000))
-  return width * width * 1000
-}
-
 export const usableVolume = (volume: Volume): boolean =>
-  [volume.freeBytes, volume.metadataFreeBytes, volume.diskFloorBytes].every(nonnegative) &&
+  [volume.capacityBytes, volume.freeBytes, volume.metadataFreeBytes, volume.diskFloorBytes].every(nonnegative) &&
+  volume.freeBytes <= volume.capacityBytes &&
   (volume.freeInodes === "dynamic" || (nonnegative(volume.freeInodes) && volume.freeInodes >= POLICY.minFreeInodes)) &&
   volume.metadataFreeBytes >= POLICY.minMetadataBytes

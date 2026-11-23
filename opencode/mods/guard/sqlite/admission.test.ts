@@ -78,6 +78,107 @@ test("FIFO and exclusive drain match a weighted interval oracle over 64 historie
   for (let seed = 0; seed < 64; seed++) oracle(seed)
 })
 
+test("an impossible request has no ticket; a full-width request can run and cannot starve its successor", () => {
+  const at = supply({ cores: 12 })
+  const huge = request("huge", 1000, true)
+  const refused = transition(initial("host", "boot"), {
+    op: "request", owner: owner("huge"), request: {
+      ...huge, demand: { ...huge.demand, memoryBytes: 40 * 2 ** 30 },
+    },
+  }, at)
+  expect(refused.reply.state).toBe("refused")
+  expect(refused.reply.id).toBeNull()
+  expect(Object.values(refused.state.leases)).toEqual([])
+  const candidate = request("large")
+  const full = transition(refused.state, {
+    op: "request", owner: owner("large"), request: { ...candidate, demand: { ...candidate.demand, width: "unknown" } },
+  }, at)
+  expect(full.reply.state).toBe("granted")
+  expect(full.reply.admittedDemand?.cpuMilli).toBe(10_000)
+  const younger = transition(full.state, first("younger"), at)
+  expect(younger.reply.state).toBe("queued")
+  const now = transition(younger.state, { op: "cancel", id: full.reply.id || "missing", owner: owner("large") }, at)
+  expect(now.state.leases[younger.reply.id || "missing"]?.state).toBe("granted")
+})
+
+test("a whole-pool request cannot be skipped by another volume or land; half free is sufficient to claim", () => {
+  const empty = initial("host", "boot")
+  const outside = (milli: number, now: number) => supply({ cores: 12, now, overrides: { outsideNoncriticalMilli: milli } })
+  const first = request("full")
+  const full = transition(empty, { op: "request", owner: owner("full"), request: {
+    ...first, demand: { ...first.demand, width: "unknown" },
+  } }, outside(5001, 1))
+  expect(full.reply.reason).toBe("outside-busy")
+  const peer = request("peer")
+  const younger = transition(full.state, { op: "request", owner: owner("peer"), request: {
+    ...peer, purpose: "land-check", demand: { ...peer.demand, volumeReservations: [{ volumeId: "volume-b", bytes: 0 }] },
+  } }, outside(5001, 2))
+  expect(younger.reply.reason).toBe("fifo")
+  const id = full.reply.id || "missing"
+  const granted = transition(younger.state, { op: "status", id, owner: owner("full") }, outside(5000, 3))
+  expect(granted.reply.state).toBe("granted")
+  expect(granted.reply.admittedDemand?.cpuMilli).toBe(10_000)
+  const running = transition(granted.state, { op: "claim", id, owner: owner("full"), generation: 1, binding: "scope" }, outside(5000, 4))
+  expect(running.reply.state).toBe("running")
+  const released = transition(running.state, { op: "drain", id, generation: 1, binding: "scope", evidence: "gone" }, outside(5000, 5))
+  expect(released.state.leases[younger.reply.id || "missing"]?.state).toBe("granted")
+  for (const trace of [[9999, 7500, 5001, 5000], [8500, 4000], [5001, 9500, 5001, 1200]]) {
+    let state = full.state
+    for (const [i, busy] of trace.entries()) {
+      const tick = transition(state, { op: "status", id, owner: owner("full") }, outside(busy, i + 2))
+      expect(tick.reply.reason).toBe(busy > 5000 ? "outside-busy" : "granted")
+      state = tick.state
+    }
+  }
+})
+
+test("a persisted waiter made impossible by the host envelope stops fencing its younger peer", () => {
+  const unavailable = supply({ overrides: { pressure: "hold" }, now: 1 })
+  const legacy = request("legacy")
+  const queued = transition(initial("host", "boot"), { op: "request", owner: owner("legacy"), request: {
+    ...legacy, demand: { ...legacy.demand, memoryBytes: 10 * 2 ** 30, width: "unknown" },
+  } }, unavailable)
+  expect(queued.reply.state).toBe("queued")
+  const quiet = supply({ now: 2 })
+  const envelope = { ...quiet.envelope, memoryBytes: 8 * 2 ** 30 }
+  const resumed = transition(queued.state, first("younger"), { ...quiet, envelope, sample: { ...quiet.sample, envelope } })
+  expect(resumed.state.leases[queued.reply.id || "missing"]?.state).toBe("refused")
+  expect(resumed.state.leases[queued.reply.id || "missing"]?.reason).toBe("memory-limit")
+  expect(resumed.reply.state).toBe("granted")
+})
+
+test("all queued demands have an empty-host grant witness, for shared and exclusive classes", () => {
+  for (const cores of [3, 8, 12]) {
+    for (const exclusive of [false, true]) {
+      for (const width of ["unknown", "full", request("candidate", 1000).demand.width, request("candidate", 40_000).demand.width] as const) {
+        for (const volume of ["volume-a", "volume-b", "unmounted"]) {
+          for (const memoryBytes of [2 ** 30, 40 * 2 ** 30]) {
+            const now = 1
+            const blocked = supply({ cores, now, overrides: { pressure: "hold" } })
+            const quiet = supply({ cores, now: now + 1 })
+            const draft = request("candidate", 1000, exclusive)
+            const input: Input = { op: "request", owner: owner("candidate"), request: {
+              ...draft, demand: { ...draft.demand, width, memoryBytes, volumeReservations: [{ volumeId: volume, bytes: 0 }] },
+            } }
+            const result = transition(initial("host", "boot"), input, blocked)
+            if (volume === "unmounted" || memoryBytes > POLICY.maxRequestMemoryBytes) {
+              expect(result.reply.state).toBe("refused")
+              expect(result.reply.id).toBeNull()
+              continue
+            }
+            expect(result.reply.state).toBe("queued")
+            const witnessed = transition(result.state, { op: "advance" }, quiet)
+            const row = witnessed.state.leases[result.reply.id || "missing"]
+            expect(row?.state).toBe("granted")
+            const expected = Math.min(quiet.envelope.cpuMilli, Number(width) * 1000 || quiet.envelope.cpuMilli)
+            expect(Option.getOrUndefined(row?.admittedDemand ?? Option.none())?.cpuMilli).toBe(expected)
+          }
+        }
+      }
+    }
+  }
+})
+
 test("a visible job-control stop holds the exact generation, with a bounded resume", () => {
   const at = supply({ cores: 3 })
   const start = transition(initial("host", "boot"), first("terminal"), at)
@@ -111,8 +212,8 @@ test("blocked disk and key demand leave a different volume and key available; ru
 
 test("bounded land priority yields to the older normal request, and never jumps an exclusive waiter", () => {
   let state = initial("host", "boot")
-  const ready = supply({ cores: 3 })
-  const held = { now: 0 }
+  const ready = supply({ cores: 6, overrides: { pressure: "degraded" } })
+  const held = { now: 0, envelope: ready.envelope }
   for (const id of ["check", "land-a", "land-b", "land-c", "exclusive", "land-d"]) {
     const draft = request(id, 1000, id === "exclusive")
     let purpose = draft.purpose
@@ -176,7 +277,7 @@ it.scoped("an aged reading and a changed canonical disk floor do not start a res
     const { a, b } = yield* fixture
     const before = supply({ now: 1 })
     const at = (freeBytes: number, now: number) => supply({ now,
-      overrides: { volumes: { "volume-a": { freeBytes, freeInodes: 10_000, metadataFreeBytes: 2 ** 30, diskFloorBytes: 6 * 2 ** 30 } } } })
+      overrides: { volumes: { "volume-a": { capacityBytes: 64 * 2 ** 30, freeBytes, freeInodes: 10_000, metadataFreeBytes: 2 ** 30, diskFloorBytes: 6 * 2 ** 30 } } } })
     const reserved = yield* a.ledger.transact(first("a"), at(6 * 2 ** 30, 1))
     expect(reserved.reply.state).toBe("granted")
     const id = reserved.reply.id ?? "missing"

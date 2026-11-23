@@ -3,7 +3,7 @@ import { argv, env, stdin } from "bun"
 import { Config, Console, Effect, FileSystem, Option, Path, Predicate, Schema } from "effect"
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { AdmissionUnavailable } from "@dotfiles/opencode-guard/admission"
-import { Counter, OpaqueId, Purpose, Request } from "@dotfiles/opencode-guard/admission-wire"
+import { Counter, OpaqueId, Purpose, qualifiedForm, Request, Width } from "@dotfiles/opencode-guard/admission-wire"
 import { argvWidth, joinWidth, readWidth } from "@dotfiles/opencode-guard/check-demand"
 import { Holder } from "@dotfiles/opencode-guard/host-resources"
 import { argvPurpose } from "@dotfiles/opencode-guard/launcher"
@@ -18,7 +18,7 @@ const help = `host-admit v1
   lease cancel --id ID --json
   holder put --json                    read a bounded JSONL observation batch
   holder list --json [--after-revision N] [--snapshot N]
-  check run [--class check|land-check|vm|inventory|exclusive-check] [--width N|unknown] -- COMMAND [ARGS...]
+  check run [--class check|land-check|vm|inventory|exclusive-check] [--width N|full|unknown] -- COMMAND [ARGS...]
 `
 
 const bad = () => new AdmissionUnavailable({ reason: "invalid-request" })
@@ -28,6 +28,11 @@ const address = Schema.decodeUnknownOption(OpaqueId)
 const count = Schema.decodeUnknownOption(Counter)
 const decodeJsonString = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.String))
 const requestOf = Schema.decodeUnknownEffect(Schema.fromJsonString(Request))
+const peek = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({
+  purpose: Schema.String, demand: Schema.Struct({ width: Schema.optionalKey(Schema.Unknown) }),
+})))
+const validWidth = Schema.decodeUnknownOption(Width)
+const purposeOf = Schema.decodeUnknownOption(Purpose)
 const holderOf = Schema.decodeUnknownEffect(Schema.fromJsonString(Holder))
 
 /** Decode legal JSON normally, then reject ambiguous object key spellings,
@@ -73,8 +78,14 @@ const lease = Effect.fn("HostAdmit.lease")(function* (host: Host, args: Readonly
   const [action, flag, value, suffix, ...rest] = args
   if (action === "request" && flag === "--json" && args.length === 2) {
     const text = yield* read()
-    const request = yield* requestOf(text).pipe(Effect.mapError(bad))
     if (!uniqueKeys(text)) return yield* bad()
+    const header = peek(text)
+    if (Option.isSome(header)) {
+      if (Option.isNone(purposeOf(header.value.purpose))) return yield* new AdmissionUnavailable({ reason: "unsupported-class" })
+      if ("width" in header.value.demand && Option.isNone(validWidth(header.value.demand.width)))
+        return yield* new AdmissionUnavailable({ reason: "invalid-width" })
+    }
+    const request = yield* requestOf(text).pipe(Effect.mapError(bad))
     const reply = yield* host.request(request)
     yield* print(reply)
     return refused(reply)
@@ -119,7 +130,6 @@ const holder = Effect.fn("HostAdmit.holder")(function* (host: Host, args: Readon
   return 0
 })
 
-const purposeOf = Schema.decodeUnknownOption(Purpose)
 const check = Effect.fn("HostAdmit.check")(function* (host: Host, args: ReadonlyArray<string>) {
   const [action, ...rest] = args
   const delimiter = rest.indexOf("--")
@@ -127,7 +137,7 @@ const check = Effect.fn("HostAdmit.check")(function* (host: Host, args: Readonly
   if (action !== "run" || delimiter < 0 || payload.length === 0 || delimiter % 2 !== 0) return yield* bad()
   const inferred = argvPurpose(payload)
   let purpose = purposeOf(inferred)
-  let width = argvWidth(payload, env.GOMAXPROCS)
+  let width = argvWidth(payload, env)
   const seen = new Set<string>()
   for (let i = 0; i < delimiter; i += 2) {
     const flag = rest[i] ?? ""
@@ -136,13 +146,16 @@ const check = Effect.fn("HostAdmit.check")(function* (host: Host, args: Readonly
     seen.add(flag)
     if (flag === "--class") purpose = purposeOf(value)
     else if (flag === "--width") {
-      const hint = readWidth(value)
-      if (hint === "unknown" && value !== "unknown") return yield* bad()
+      let hint = readWidth(value)
+      if (value === "full") hint = "full"
+      if (hint === "invalid" || (hint === "unknown" && value !== "unknown"))
+        return yield* new AdmissionUnavailable({ reason: "invalid-width" })
       width = joinWidth(width, hint)
     } else return yield* bad()
   }
-  if (Option.isNone(purpose)) return yield* bad()
+  if (Option.isNone(purpose)) return yield* new AdmissionUnavailable({ reason: "unsupported-class" })
   if (inferred !== "check" && purpose.value !== inferred) return yield* bad()
+  if (width === "invalid") return yield* new AdmissionUnavailable({ reason: "invalid-width" })
   return yield* host.run({ purpose: purpose.value, width }, payload)
 })
 
@@ -190,7 +203,9 @@ if (import.meta.main) {
   let foreground = false
   let interrupted = 1
   const task = Effect.runFork(main(argv.slice(2), (owned) => { foreground = owned }).pipe(
-    Effect.catchTag("AdmissionUnavailable", ({ reason }) => print({ version: 1, state: "refused", reason }).pipe(Effect.as(2))),
+    Effect.catchTag("AdmissionUnavailable", ({ reason }) => print({
+      version: 1, state: "refused", reason, qualifiedForm: qualifiedForm(reason),
+    }).pipe(Effect.as(2))),
     Effect.provide(BunServices.layer),
   ))
   const end = (status: number) => {

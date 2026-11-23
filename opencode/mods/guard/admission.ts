@@ -1,6 +1,6 @@
-import { Context, Effect, Option, Result, Schema } from "effect"
-import { Counter, Demand, normalizeRequest, OpaqueId, Phase, Reason, reply, Request, type Reply } from "./admission-wire.ts"
-import { capacityOf, chargedCpu, POLICY, runnableLimit, type Supply, usableVolume } from "./host-supply.ts"
+import { Context, Effect, Option, Predicate, Result, Schema } from "effect"
+import { Counter, Demand, normalizeRequest, OpaqueId, Phase, qualifiedForm, Reason, reply, Request, type Reply } from "./admission-wire.ts"
+import { capacityOf, type HostEnvelope, POLICY, runnableLimit, type Supply, usableVolume } from "./host-supply.ts"
 
 export const Lease = Schema.Struct({
   id: OpaqueId,
@@ -53,6 +53,7 @@ export type Input =
 export interface Observation {
   readonly now: number
   readonly sample?: Supply
+  readonly envelope?: HostEnvelope
 }
 interface Outcome {
   readonly state: Admission
@@ -117,6 +118,11 @@ const overlap = (a: Lease, b: Lease) => a.request.demand.keys.some((key) => b.re
 const sharesVolume = (a: Lease, b: Lease) =>
   a.request.demand.volumeReservations.some((volume) => b.request.demand.volumeReservations.some((v) => v.volumeId === volume.volumeId))
 
+const refusalDetails = (state: Phase, reason: Reason) => {
+  if (state === "refused") return { qualifiedForm: qualifiedForm(reason) }
+  return {}
+}
+
 export const receipt = (state: Pick<Admission, "hostId" | "bootId">, row: Lease): Reply => reply({
   version: 1,
   hostId: state.hostId,
@@ -128,11 +134,13 @@ export const receipt = (state: Pick<Admission, "hostId" | "bootId">, row: Lease)
   sampleId: row.sampleId,
   admittedDemand: row.admittedDemand,
   expiresBootMs: row.expiresBootMs,
+  ...refusalDetails(row.state, row.reason),
 })
 
 const refusal = (state: Admission, reason: Reason): Reply => reply({
   version: 1, hostId: state.hostId, bootId: state.bootId, id: Option.none(), sequence: state.revision,
   state: "refused", reason, sampleId: Option.none(), admittedDemand: Option.none(), expiresBootMs: Option.none(),
+  qualifiedForm: qualifiedForm(reason),
 })
 
 const fresh = ({ now, sample }: Observation): Result.Result<Supply, Reason> => {
@@ -143,7 +151,7 @@ const fresh = ({ now, sample }: Observation): Result.Result<Supply, Reason> => {
   return Result.succeed(sample)
 }
 
-const terminal = (state: "released" | "expired" | "cancelled", reason: Reason): Partial<Lease> => ({
+const terminal = (state: "released" | "expired" | "cancelled" | "refused", reason: Reason): Partial<Lease> => ({
   state, reason, admittedDemand: Option.none(), expiresBootMs: Option.none(), hardDeadline: Option.none(),
 })
 
@@ -165,23 +173,49 @@ const volumeReason = (demand: Demand, holds: ReadonlyArray<Lease>, sample: Suppl
 
 const slots = { clear: POLICY.slots, degraded: 1, hold: 0 }
 const budgetReason = (entry: Lease, demand: Demand, holds: ReadonlyArray<Lease>, sample: Supply): Option.Option<Reason> => {
-  if (demand.width === "unknown") return Option.some("unqualified")
-  if (demand.keys.some((key) => !sample.keys.includes(key))) return Option.some("unknown-key")
+  const maximum = sample.envelope.cpuMilli
+  const whole = demand.cpuMilli === maximum
+  if (whole && holds.length > 0) return Option.some("whole-pool-held")
+  if (whole && capacityOf(sample) < Math.ceil(maximum * POLICY.wholePoolFreeFraction)) return Option.some("outside-busy")
   const volume = volumeReason(demand, holds, sample)
   if (Option.isSome(volume)) return volume
+  if (holds.some((row) => Option.exists(row.admittedDemand, (held) => held.width === "full"))) return Option.some("capacity")
   if (holds.some((row) => exclusive(row) || exclusive(entry))) return Option.some("capacity")
   if (holds.some((row) => overlap(entry, row))) return Option.some("resource")
   if (holds.length >= slots[sample.pressure]) return Option.some("capacity")
-  if (demand.cpuMilli + holds.reduce((sum, row) => sum + liveCharge(row, sample), 0) > capacityOf(sample)) return Option.some("capacity")
+  if (!whole && demand.cpuMilli + holds.reduce((sum, row) => sum + liveCharge(row, sample), 0) > capacityOf(sample))
+    return Option.some("capacity")
   const memory = holds.reduce((sum, row) => sum + Option.match(row.admittedDemand, { onSome: ({ memoryBytes }) => memoryBytes, onNone: () => 0 }), 0)
   if (demand.memoryBytes + memory > sample.memoryBytes - POLICY.reserveMemoryBytes) return Option.some("memory")
   return Option.none()
 }
 
+export const cpuDemand = (demand: Demand, maximum: number) => {
+  if (!Predicate.isNumber(demand.width)) return maximum
+  return Math.min(maximum, Math.max(demand.cpuMilli, demand.width * 1000))
+}
+
 const checkedDemand = (entry: Lease, sample: Supply): Demand => {
-  const demand = entry.request.demand
-  if (demand.width === "unknown") return demand
-  return { ...demand, cpuMilli: chargedCpu(Math.max(demand.cpuMilli, demand.width * 1000), sample.qualification) }
+  const { demand } = entry.request
+  const cpuMilli = cpuDemand(demand, sample.envelope.cpuMilli)
+  // Once a whole-pool claim starts it stays exclusive until drain, even
+  // if the pool later expands. Keep the literal model in request.demand.
+  return { ...demand, width: cpuMilli === sample.envelope.cpuMilli ? "full" : demand.width, cpuMilli }
+}
+
+const feasibility = (request: Request, limit: HostEnvelope): Option.Option<Reason> => {
+  const { demand } = request
+  if (!limit.purposes.includes(request.purpose) || limit.cpuMilli <= 0) return Option.some("unsupported-class")
+  if (demand.memoryBytes > limit.memoryBytes || (limit.needsMemoryReservation && demand.memoryBytes <= 0))
+    return Option.some("memory-limit")
+  if (demand.keys.some((key) => !limit.keys.includes(key))) return Option.some("unknown-key")
+  for (const { volumeId, bytes } of demand.volumeReservations) {
+    if (!Object.hasOwn(limit.volumes, volumeId)) return Option.some("unknown-volume")
+    const maximum = limit.volumes[volumeId]
+    if (Predicate.isUndefined(maximum)) return Option.some("unknown-volume")
+    if (bytes > maximum) return Option.some("disk-limit")
+  }
+  return Option.none()
 }
 
 const requestText = Schema.encodeSync(Schema.fromJsonString(Request))
@@ -192,7 +226,7 @@ const validRequest = (request: Request, now: number) => {
   const maxCpu = { small: 1000, standard: POLICY.maxRequestCpuMilli }
   return request.deadlineBootMs > now && request.deadlineBootMs - now <= POLICY.queueMs &&
     demand.cpuMilli > 0 && demand.cpuMilli <= maxCpu[request.tier] &&
-    demand.memoryBytes <= POLICY.maxRequestMemoryBytes && demand.keys.length <= 16 &&
+    demand.keys.length <= 16 &&
     demand.volumeReservations.length > 0 && demand.volumeReservations.length <= 16 &&
     new Set(demand.volumeReservations.map((v) => v.volumeId)).size === demand.volumeReservations.length
 }
@@ -213,7 +247,19 @@ const expire = (tx: Transaction, now: number) => {
   }
 }
 
-const sharesFrontier = (older: Lease, newer: Lease) =>
+const requalify = (tx: Transaction, observation: Observation) => {
+  const limit = observation.envelope ?? observation.sample?.envelope
+  if (!limit) return
+  for (const row of tx.rows()) {
+    if (row.state !== "granted" && row.state !== "queued") continue
+    const problem = feasibility(row.request, limit)
+    if (Option.isSome(problem)) tx.update(row, terminal("refused", problem.value))
+  }
+}
+
+const wholePool = (row: Lease, sample: Supply) => cpuDemand(row.request.demand, sample.envelope.cpuMilli) === sample.envelope.cpuMilli
+const sharesFrontier = (older: Lease, newer: Lease, sample: Supply) =>
+  wholePool(older, sample) || wholePool(newer, sample) ||
   exclusive(older) || exclusive(newer) || overlap(older, newer) || sharesVolume(older, newer) ||
   older.reason === "capacity" || older.reason === "memory" || older.reason === "fifo"
 
@@ -227,7 +273,8 @@ const preferredLand = (queue: ReadonlyArray<Lease>, headroom: number, holds: Rea
   requestedBeforeExclusive(queue).filter((row, i, prefix) =>
     row.request.purpose === "land-check" &&
     prefix.slice(0, i).some((earlier) => earlier.request.purpose !== "land-check") &&
-    !prefix.slice(0, i).some((earlier) => overlap(earlier, row)) &&
+    !wholePool(row, sample) &&
+    !prefix.slice(0, i).some((earlier) => wholePool(earlier, sample) || overlap(earlier, row)) &&
     Option.isNone(budgetReason(row, checkedDemand(row, sample), holds, sample)),
   ).slice(0, headroom)
 
@@ -237,7 +284,7 @@ const queuedFor = (tx: Transaction, row: Lease, reason: Reason, sampleId: Lease[
 }
 
 const atFrontier = (row: Lease, older: ReadonlyArray<Lease>, holds: ReadonlyArray<Lease>, sample: Supply) => {
-  if (older.some((entry) => sharesFrontier(entry, row))) return Option.some<Reason>("fifo")
+  if (older.some((entry) => sharesFrontier(entry, row, sample))) return Option.some<Reason>("fifo")
   return budgetReason(row, checkedDemand(row, sample), holds, sample)
 }
 
@@ -273,6 +320,8 @@ const allocate = (tx: Transaction, observation: Observation, landBurst: number) 
 
 const approveClaim = (tx: Transaction, row: Lease, observation: Observation) => Result.flatMap(fresh(observation), (sample) => {
   const demand = checkedDemand(row, sample)
+  if (!Option.exists(row.admittedDemand, (granted) => granted.cpuMilli === demand.cpuMilli && granted.width === demand.width))
+    return Result.fail("capacity")
   const other = tx.rows().filter((r) => r.id !== row.id && held(r))
   const reason = budgetReason(row, demand, other, sample)
   if (Option.isSome(reason)) return Result.fail(reason.value)
@@ -351,19 +400,23 @@ const act = (tx: Transaction, row: Lease, input: Exclude<Input, { op: "request" 
   }
 }
 
-const register = (tx: Transaction, bootId: string, input: Extract<Input, { op: "request" }>, now: number): Result.Result<string, Reason> => {
+const register = (tx: Transaction, bootId: string, input: Extract<Input, { op: "request" }>, observation: Observation): Result.Result<string, Reason> => {
   const request = normalizeRequest(input.request)
   const known = tx.rows().find((row) => row.request.requestId === request.requestId && row.owner === input.owner)
   if (known) {
     if (sameRequest(known.request, request)) return Result.succeed(known.id)
     return Result.fail("invalid-request")
   }
-  if (!validRequest(request, now)) return Result.fail("invalid-request")
+  if (!validRequest(request, observation.now)) return Result.fail("invalid-request")
+  const limit = observation.envelope ?? observation.sample?.envelope
+  if (!limit) return Result.fail("unavailable")
+  const problem = feasibility(request, limit)
+  if (Option.isSome(problem)) return Result.fail(problem.value)
   const ticket = tx.nextTicket()
   const id = `${bootId}:${ticket}`
   tx.update({
     id, ticket, generation: 0, owner: input.owner, request,
-    state: "queued", reason: "queued", sequence: 0, changedAt: now, binding: Option.none(),
+    state: "queued", reason: "queued", sequence: 0, changedAt: observation.now, binding: Option.none(),
     evidence: Option.none(), sampleId: Option.none(), admittedDemand: Option.none(),
     expiresBootMs: Option.none(), hardDeadline: Option.none(),
   }, {})
@@ -371,7 +424,7 @@ const register = (tx: Transaction, bootId: string, input: Extract<Input, { op: "
 }
 
 const apply = (tx: Transaction, bootId: string, input: Input, observation: Observation): Result.Result<string, Reason> => {
-  if (input.op === "request") return register(tx, bootId, input, observation.now)
+  if (input.op === "request") return register(tx, bootId, input, observation)
   if (input.op === "advance") return Result.fail("unknown-id")
   const row = tx.get(input.id)
   if (Option.isNone(row)) return Result.fail("unknown-id")
@@ -401,6 +454,7 @@ export const transition = (state: Admission, input: Input, observation: Observat
     },
   }
   expire(tx, observation.now)
+  requalify(tx, observation)
   const result = apply(tx, state.bootId, input, observation)
   let landBurst = state.landBurst
   if (observation.sample || input.op === "request" || input.op === "advance") landBurst = allocate(tx, observation, landBurst)

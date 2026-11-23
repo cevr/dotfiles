@@ -38,7 +38,7 @@ import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, mkdtempSync, ope
 import path from "node:path"
 import { Duration, Effect, Match, Option, Predicate, Result, Schedule, Schema } from "effect"
 import { DEFAULT_HEAVY, isHeavy } from "@dotfiles/opencode-guard/heavy"
-import { shellCheck, DEFAULT_LIMITS, heavyArgv, type Host, ioniceAvailable, SCOPE_PROBE } from "@dotfiles/opencode-guard/launcher"
+import { admissionPurpose, DEFAULT_LIMITS, heavyArgv, type Host, ioniceAvailable, SCOPE_PROBE } from "@dotfiles/opencode-guard/launcher"
 import { checkPrefix } from "@dotfiles/opencode-guard/check-demand"
 import { issue, type Actuation } from "@dotfiles/opencode-guard/process/actuation"
 import { heavyJob, jobArgv } from "../job-admission.ts"
@@ -408,7 +408,7 @@ export const argvOf = (spec: Pick<JobSpec, "command" | "heavy">, host: () => Hos
 export const classifyJob = (command: string) => isHeavy(command, DEFAULT_HEAVY)
 export const admittedJobArgv = (helper: ReadonlyArray<string>, command: string, requested: boolean) => {
   const payload = jobArgv(command)
-  if (heavyJob(requested, classifyJob(command))) return [...helper, ...checkPrefix(shellCheck(command)), ...payload]
+  if (heavyJob(requested, classifyJob(command))) return [...helper, ...checkPrefix(admissionPurpose(command)), ...payload]
   return payload
 }
 

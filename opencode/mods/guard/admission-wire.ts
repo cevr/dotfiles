@@ -10,8 +10,8 @@ export const Principal = Schema.Struct({
 })
 export type Principal = typeof Principal.Type
 export const VolumeReservation = Schema.Struct({ volumeId: OpaqueId, bytes: Counter })
-export const KnownWidth = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 1024 })).pipe(Schema.brand("HostWidth"))
-export const Width = Schema.Union([KnownWidth, Schema.Literal("unknown")])
+export const KnownWidth = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })).pipe(Schema.brand("HostWidth"))
+export const Width = Schema.Union([KnownWidth, Schema.Literals(["full", "unknown"])])
 export type Width = typeof Width.Type
 export const widthOf = Schema.decodeUnknownOption(KnownWidth)
 export const Purpose = Schema.Literals(["check", "land-check", "vm", "inventory", "exclusive-check"])
@@ -44,8 +44,22 @@ export const Reason = Schema.Literals([
   "queued", "fifo", "capacity", "resource", "pressure", "disk", "memory", "unknown-volume", "unknown-key", "unavailable",
   "stale-sample", "unqualified", "granted", "running", "stopped", "owner-gone", "owner-unknown", "scope-live", "scope-drained",
   "deadline", "expired-grant", "cancelled", "stale", "incompatible", "invalid-request", "unknown-id", "wrong-owner",
+  "memory-limit", "disk-limit", "unsupported-class", "invalid-width",
+  "whole-pool-held", "outside-busy",
 ])
 export type Reason = typeof Reason.Type
+export const qualifiedForm = (reason: Reason) => {
+  switch (reason) {
+    case "memory-limit": return "Request memoryBytes within host status --json maximumMemoryBytes; Linux requires a positive reservation."
+    case "disk-limit": return "Request fewer bytes on a registered volume; leave its permanent disk floor unreserved."
+    case "unknown-volume": return "Run host status --json from the executing volume and use its defaultVolume."
+    case "unknown-key": return "Use only resource keys offered by host status --json."
+    case "unsupported-class": return "Use an offered class from host status --json; Linux requires the attested workload controller."
+    case "invalid-width": return "Use a positive integer, full, or unknown for width."
+    case "unavailable": return "Retry submission when host status --json can attest the managed pool and volume."
+    default: return "Use host-admit --help and host status --json for a qualified request."
+  }
+}
 const ReplyModel = Schema.Struct({
   version: Version,
   hostId: OpaqueId,
@@ -57,6 +71,7 @@ const ReplyModel = Schema.Struct({
   sampleId: Schema.OptionFromNullOr(OpaqueId),
   admittedDemand: Schema.OptionFromNullOr(Demand),
   expiresBootMs: Schema.OptionFromNullOr(Counter),
+  qualifiedForm: Schema.optionalKey(Schema.String),
 })
 export const reply = Schema.encodeSync(ReplyModel)
 export const Reply = Schema.toEncoded(ReplyModel)
