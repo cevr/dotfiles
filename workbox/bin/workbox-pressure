@@ -1,0 +1,30 @@
+#!/bin/sh
+# One host sample, recorded by the user service in journald (which handles timestamps and retention).
+set -eu
+LC_ALL=C awk '
+  FILENAME ~ /\/pressure\// {
+    resource = FILENAME
+    sub(/^.*\//, "", resource)
+    for (i = 2; i <= NF; i++) printf " %s_%s_%s", resource, $1, $i
+  }
+  /^(MemAvailable|SwapFree|Dirty|Writeback):/ {
+    key = $1
+    sub(/:$/, "", key)
+    printf " %s_kib=%s", key, $2
+  }
+  BEGIN { printf "workbox-pressure" }
+  END { print "" }
+' /proc/pressure/cpu /proc/pressure/memory /proc/pressure/io /proc/meminfo
+
+# Bounded result, commands only (never argv or environment, which may contain secrets).
+ps -u "$(id -u)" --sort=-rss -o pid=,rss=,comm= |
+  awk 'NR <= 5 {
+    pid = $1; rss = $2
+    sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+/, "")
+    file = "/proc/" pid "/cgroup"; cg = "-"
+    while ((getline line < file) > 0) {
+      if (line ~ /^0::/) { cg = substr(line, 4); break }
+    }
+    close(file)
+    printf "workbox-big-process pid=%s rss_kib=%s cgroup=%s comm=%s\n", pid, rss, cg, $0
+  }'

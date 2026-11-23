@@ -1,0 +1,7 @@
+[Unit]
+Description=Publish the /workspaces btrfs's free space to /run/workbox/disk-free
+RequiresMountsFor=/workspaces
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/workbox-disk-free /workspaces

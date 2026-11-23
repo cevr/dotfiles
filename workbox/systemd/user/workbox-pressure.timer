@@ -1,0 +1,9 @@
+[Unit]
+Description=Sample workbox pressure once per minute
+
+[Timer]
+OnCalendar=minutely
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

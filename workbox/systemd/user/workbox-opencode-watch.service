@@ -1,0 +1,10 @@
+[Unit]
+Description=Recover the managed OpenCode server after a crash
+After=opencode.service
+PartOf=opencode.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=30s
+ExecCondition=/usr/bin/systemctl --user is-active --quiet opencode.service
+ExecStart=%h/.local/bin/workbox-opencode-recover

@@ -4,6 +4,7 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
+EnvironmentFile=/etc/hetzner-workbox/host-identity.env
 Type=oneshot
 Nice=10
 IOSchedulingClass=idle

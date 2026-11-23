@@ -9,6 +9,9 @@
 # Usage: sudo installimage-check.sh <installimage checkout> [config]
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd -P)
+# shellcheck source=../../workbox/host-identity.sh
+. "$here/../../workbox/host-identity.sh"
+workbox_require_host
 src=${1:?usage: installimage-check.sh <installimage checkout> [config]}
 conf=${2:-$here/installimage.conf}
 [[ -f $src/functions.sh ]] || { echo "no installimage checkout at $src" >&2; exit 2; }
