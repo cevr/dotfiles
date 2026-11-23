@@ -26,7 +26,7 @@
 #              and hetzner-workbox-storage.service, which applies them at each boot
 #   upgrades   unattended-upgrades with workbox's 20auto-upgrades
 #   reserve    workbox/system-tools.sh reserve slices: the OpenCode service's memory
-#              floor, and the run families' slices (workbox/slices.conf)
+#              floor, the run families' slices (workbox/slices.conf)
 #              (bite.slice's CPU and IO weights come with the sshd phase)
 #   sysctl     workbox's sysctl.d/90-inotify.conf (the inotify limits the lab's
 #              standby keepers need), applied with sysctl -p
@@ -238,6 +238,14 @@ phase_storage() {
     if ((changed)); then systemctl daemon-reload; fi
     systemctl is-enabled --quiet hetzner-workbox-storage.service 2>/dev/null || systemctl enable --quiet hetzner-workbox-storage.service
     "$lib/storage.sh" apply
+    # The durable run areas' boot rules: /runs/vperf2, and /tmp/vperf2 a link to it (made now too, so
+    # the move finds it; a boot makes it again after emptying /tmp).
+    local runs_conf
+    runs_conf=$(mktemp)
+    sed "s/__UID__/$HB_UID/g" "$hb_dir/systemd/tmpfiles.d/hetzner-runs.conf" > "$runs_conf"
+    put 0644 "$runs_conf" "$etc/tmpfiles.d/hetzner-runs.conf" || true
+    rm -f "$runs_conf"
+    systemd-tmpfiles --create ${HB_TARGET:+"--root=$HB_TARGET"} - < "$etc/tmpfiles.d/hetzner-runs.conf"
 }
 
 phase_reserve() {

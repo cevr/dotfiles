@@ -15,7 +15,7 @@
 # own figure is what it wrote since it was taken. Each subvolume's figures are world-readable in
 # /sys/fs/btrfs/<fs uuid>/qgroups/0_<subvolume id>/{referenced,exclusive,max_referenced}.
 #
-# Env (test.sh): HB_TARGET, HB_HOME, HB_WORKSPACES, HB_USER (common.sh); HB_STORAGE_CONF.
+# Env (test.sh): HB_TARGET, HB_HOME, HB_WORKSPACES, HB_RUNS, HB_USER (common.sh); HB_STORAGE_CONF.
 set -euo pipefail
 # shellcheck source=common.sh
 . "$(dirname "$0")/common.sh"
@@ -46,6 +46,7 @@ box_path() {
     case $1 in
     "~" | "~"/*) echo "$HB_HOME${1#"~"}" ;;
     /workspaces | /workspaces/*) echo "$HB_WORKSPACES${1#/workspaces}" ;;
+    /runs | /runs/*) echo "$HB_RUNS${1#/runs}" ;;
     *) echo "$HB_TARGET$1" ;;
     esac
 }
@@ -121,7 +122,7 @@ apply_line() { # kind path limit owner mode group
     local kind=$1 path=$2 limit=$3 owner mode=$5 group=$6 p id q gid
     owner=$(owner_of "$4")
     p=$(box_path "$path")
-    case $kind in scratch | cache) ;; *) die "storage.conf: unknown kind $kind for $path" ;; esac
+    case $kind in scratch | cache | durable) ;; *) die "storage.conf: unknown kind $kind for $path" ;; esac
     ensure_subvolume "$p" "$owner" || return 0
     [[ $(stat -c %U "$p") == "$owner" ]] || act "owner $owner: $p" -- chown "$owner:$(id -gn "$owner")" "$p"
     [[ $mode == - || $(stat -c %a "$p") == "${mode#0}" ]] || act "mode $mode: $p" -- chmod "$mode" "$p"
