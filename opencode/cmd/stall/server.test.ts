@@ -13,6 +13,7 @@ import { watch } from "./server.ts"
 const OPTIONS = { thresholdMs: 300, tickMs: 20, windowMs: 5_000, captureMs: 100, cooldownMs: 60_000, keep: 5, intervalUs: 1_000, turnMs: 50 }
 // Only a hang guard. No scheduler or inspector operation has a performance deadline here.
 const HANG_GUARD_MS = 45_000
+const HANDOFF_GUARD_MS = 35_000
 
 function holdTheSeamTestLoop() {
   // Give the real inspector JavaScript to sample, regardless of time spent descheduled.
@@ -80,45 +81,55 @@ describe("the stall plugin", () => {
     "two copies in one process: the first captures a stall once; when it leaves, the second captures the next",
     () =>
       Effect.gen(function* () {
-        const dir = yield* scratchDir
-        const log = yield* logLines
-        // Each copy owns its requests, so the first's interrupted tick can't wake the second.
-        const copy = Effect.gen(function* () {
-          const scope = yield* Scope.fork(yield* Scope.Scope)
-          const tick = yield* ticks
-          yield* watch({ ...OPTIONS, dir }).pipe(
-            Scope.provide(scope),
-            Effect.provideService(Clock.Clock, tick.clock),
-            Effect.provideService(Logger.CurrentLoggers, log.loggers),
-          )
-          return { scope, ...tick }
+        const waitingFor = yield* Ref.make("the first watchdog to watch")
+        const at = <A, E, R>(label: string, effect: Effect.Effect<A, E, R>) => Effect.andThen(Ref.set(waitingFor, label), effect)
+        const live = yield* TestClock.withLive(Clock.Clock)
+        const deadline = live.sleep(Duration.millis(HANDOFF_GUARD_MS)).pipe(
+          Effect.andThen(Ref.get(waitingFor)),
+          Effect.flatMap((label) => Effect.die(`stall watchdog did not observe ${label}`)),
+        )
+        const exercise = Effect.gen(function* () {
+          const dir = yield* scratchDir
+          const log = yield* logLines
+          // Each copy owns its requests, so the first's interrupted tick can't wake the second.
+          const copy = Effect.gen(function* () {
+            const scope = yield* Scope.fork(yield* Scope.Scope)
+            const tick = yield* ticks
+            yield* watch({ ...OPTIONS, dir }).pipe(
+              Scope.provide(scope),
+              Effect.provideService(Clock.Clock, tick.clock),
+              Effect.provideService(Logger.CurrentLoggers, log.loggers),
+            )
+            return { scope, ...tick }
+          })
+          const stall = Effect.sync(() => expect(holdTheSeamTestLoop()).not.toBe(1))
+          const capture = (tick: Effect.Success<typeof ticks>, lag: number) =>
+            tick.endTick(lag + OPTIONS.tickMs, stall).pipe(Effect.andThen(tick.endTick(OPTIONS.captureMs)))
+          const first = yield* copy
+          const second = yield* copy
+          yield* at("the first watchdog to watch", log.next("watching"))
+          yield* at("the second watchdog to queue for ownership", second.waitingForTurn)
+
+          yield* at("the first watchdog's measurement and capture ticks", capture(first, OPTIONS.thresholdMs))
+          const written = yield* at("the first CPU profile", log.next("CPU profile"))
+          expect(yield* log.count("watching")).toBe(1)
+          const path = written.slice(written.indexOf("CPU profile ") + "CPU profile ".length)
+          expect(path).toMatch(/\/stall-\d{8}T\d{9}Z-\d+ms-\d+\.cpuprofile$/)
+          expect(Number(/-(\d+)ms-/.exec(path)?.[1])).toBe(OPTIONS.thresholdMs)
+          const profile = yield* at("the first CPU profile to be readable", Effect.promise(() => file(path).text()).pipe(Effect.flatMap(decodeProfile)))
+          expect(profile.nodes.map((node) => node.callFrame.functionName)).toContain("holdTheSeamTestLoop")
+
+          yield* at("the first watchdog to close", Scope.close(first.scope, Exit.void))
+          yield* TestClock.adjust(OPTIONS.turnMs)
+          yield* at("the second watchdog to take ownership", log.next("watching"))
+          yield* at("the second watchdog's measurement and capture ticks", capture(second, OPTIONS.thresholdMs * 10))
+          const again = yield* at("the second CPU profile", log.next("CPU profile"))
+          yield* at("the second watchdog to close", Scope.close(second.scope, Exit.void))
+          expect(again).not.toContain(path)
+          expect(again).toContain(`-${OPTIONS.thresholdMs * 10}ms-`)
+          expect(yield* log.count("CPU profile")).toBe(2)
         })
-        const stall = Effect.sync(() => expect(holdTheSeamTestLoop()).not.toBe(1))
-        const capture = (tick: Effect.Success<typeof ticks>, lag: number) =>
-          tick.endTick(lag + OPTIONS.tickMs, stall).pipe(Effect.andThen(tick.endTick(OPTIONS.captureMs)))
-        const first = yield* copy
-        const second = yield* copy
-        yield* log.next("watching")
-        yield* second.waitingForTurn
-
-        yield* capture(first, OPTIONS.thresholdMs)
-        const written = yield* log.next("CPU profile")
-        expect(yield* log.count("watching")).toBe(1)
-        const path = written.slice(written.indexOf("CPU profile ") + "CPU profile ".length)
-        expect(path).toMatch(/\/stall-\d{8}T\d{9}Z-\d+ms-\d+\.cpuprofile$/)
-        expect(Number(/-(\d+)ms-/.exec(path)?.[1])).toBe(OPTIONS.thresholdMs)
-        const profile = yield* decodeProfile(yield* Effect.promise(() => file(path).text()))
-        expect(profile.nodes.map((node) => node.callFrame.functionName)).toContain("holdTheSeamTestLoop")
-
-        yield* Scope.close(first.scope, Exit.void)
-        yield* TestClock.adjust(OPTIONS.turnMs)
-        yield* log.next("watching")
-        yield* capture(second, OPTIONS.thresholdMs * 10)
-        const again = yield* log.next("CPU profile")
-        expect(again).not.toContain(path)
-        expect(again).toContain(`-${OPTIONS.thresholdMs * 10}ms-`)
-        expect(yield* log.count("CPU profile")).toBe(2)
-        yield* Scope.close(second.scope, Exit.void)
+        yield* Effect.raceFirst(exercise, deadline)
       }),
     HANG_GUARD_MS,
   )

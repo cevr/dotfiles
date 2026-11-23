@@ -17,6 +17,9 @@ import {
 } from '../tool-alias.ts'
 import { createStrippedStream, MAX_SSE_EVENT_BYTES, MAX_SSE_LINE_BYTES } from './response-stream.ts'
 
+const CANCELLATION_WAIT_MS = 15_000
+const CANCELLATION_RUNNER_MS = 30_000
+
 // Aliasing answers a Result now; a rejection throws here, as it did.
 const unwrap = <A, E>(result: Result.Result<A, E>): A => {
   if (Result.isFailure(result)) throw result.failure
@@ -917,9 +920,9 @@ describe('createStrippedStream - cancellation', () => {
     const reader = bodyOf(response).getReader()
     await reader.read()
     await reader.cancel()
-    await waitUntil('the source stream to observe cancellation', () => cancelled)
+    await waitUntil('the source stream to observe cancellation', () => cancelled, CANCELLATION_WAIT_MS)
     expect(cancelled).toBe(true)
-  })
+  }, CANCELLATION_RUNNER_MS)
 
   test('buffers a chunk without a newline until flush', async () => {
     const output = await readText(
@@ -1206,7 +1209,7 @@ describe('bounded structured JSON responses', () => {
     const reader = bodyOf(jsonResponse(source)).getReader()
     await reader.read()
     await reader.cancel()
-    await waitUntil('the source JSON stream to observe cancellation', () => cancelled)
+    await waitUntil('the source JSON stream to observe cancellation', () => cancelled, CANCELLATION_WAIT_MS)
     expect(cancelled).toBe(true)
 
     const failure = new Error('upstream JSON failed')
@@ -1216,7 +1219,7 @@ describe('bounded structured JSON responses', () => {
       },
     })
     await expect(readText(jsonResponse(failed))).rejects.toBe(failure)
-  })
+  }, CANCELLATION_RUNNER_MS)
 
   test('decodes multiple deferred message tool names when root type is last', async () => {
     const payload = `{"content":[{"name":"${READ_ALIAS}","type":"tool_use"},{"name":"${WRITE_ALIAS}","type":"tool_use"}],"type":"message"}`

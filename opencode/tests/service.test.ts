@@ -47,6 +47,7 @@ const auth = (password: string) => ({ authorization: `Basic ${btoa(`opencode:${p
 
 /** Hang guard for the loopback server, not a boot-latency requirement. */
 const HANG_GUARD_MS = 30_000
+const EVENT_WAIT_MS = 10_000
 
 describe("a test's service is ready once it can serve, not once its file is written", () => {
   test("while the service boots it waits, and the service it returns answers a call", async () => {
@@ -55,14 +56,14 @@ describe("a test's service is ready once it can serve, not once its file is writ
     const progress = { polling: false, released: false, completed: false }
     const pending = ready(file, () => "stand-in", HANG_GUARD_MS, () => {
       progress.polling = true
-      return waitUntil("the test releasing the next readiness probe", () => progress.released)
+      return waitUntil("the test releasing the next readiness probe", () => progress.released, EVENT_WAIT_MS)
     })
     const result = pending.then((value) => {
       progress.completed = true
       return value
     })
     // The first 503 reaches a retry, not a service result. Only the test ends the boot.
-    await waitUntil("the first 503 handed to the retry", () => progress.polling || progress.completed)
+    await waitUntil("the first 503 handed to the retry", () => progress.polling || progress.completed, EVENT_WAIT_MS)
     expect(progress.completed).toBe(false)
     service.boot("ready")
     progress.released = true
@@ -77,7 +78,7 @@ describe("a test's service is ready once it can serve, not once its file is writ
     const retries: Array<boolean> = []
     const pending = ready(file, () => "stand-in", HANG_GUARD_MS, () => {
       retries.push(true)
-      return waitUntil("advance the retry after a failed boot", () => true)
+      return waitUntil("advance the retry after a failed boot", () => true, EVENT_WAIT_MS)
     })
     await expect(pending).rejects.toThrow("stand-in: the service failed to start (/api/info answered 500)")
     expect(retries).toEqual([])
