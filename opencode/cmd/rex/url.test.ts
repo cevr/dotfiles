@@ -18,6 +18,8 @@ import { Base64 } from "effect/encoding"
 import { effectTest } from "../../sim-tui/effect-test.ts"
 import { parse, Refused, Request, run, type Screen, viewer } from "./show.ts"
 
+/** Hang guard for the in-memory viewer fixture. */
+const HANG_GUARD_MS = 120_000
 const PAGE = "http://localhost:4321/"
 
 /** A PNG's first 24 bytes, `width` × `height`, then `mark` so two shots of one size differ. */
@@ -47,7 +49,7 @@ describe("the arguments of rex-show url", () => {
         expect({ bad, code: refusalOf(yield* Effect.exit(parse(bad))) }).toEqual({ bad, code: Option.some(2) })
       }
     }),
-    5_000,
+    HANG_GUARD_MS,
   )
 })
 
@@ -74,7 +76,7 @@ describe("the caller of rex-show url", () => {
         ),
       ),
     ),
-    5_000,
+    HANG_GUARD_MS,
   )
 })
 

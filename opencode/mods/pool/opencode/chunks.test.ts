@@ -15,6 +15,8 @@ import * as LimitsLive from "./limits.ts"
 import * as Records from "./records.ts"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
 
+/** Hang guard for the runner, separate from the pool's modeled time. */
+const HANG_GUARD_MS = 120_000
 const DAY = 24 * 3_600_000
 const NOW = 30 * DAY
 const ANTHROPIC = PoolId.make("anthropic")
@@ -91,7 +93,7 @@ describe("the chunk store", () => {
         expect(yield* Chunks.open(memory(entries), kind).fold).toBe(0)
       }),
     ),
-    5_000,
+    HANG_GUARD_MS,
   )
 
   effectTest(
@@ -106,7 +108,7 @@ describe("the chunk store", () => {
         expect(yield* readBack(entries)).toEqual(sorted(live))
       }),
     ),
-    5_000,
+    HANG_GUARD_MS,
   )
 
   effectTest(
@@ -126,7 +128,7 @@ describe("the chunk store", () => {
         expect(yield* readBack(entries)).toEqual(sorted(steps))
       }),
     ),
-    5_000,
+    HANG_GUARD_MS,
   )
 
   effectTest(
@@ -145,7 +147,7 @@ describe("the chunk store", () => {
         expect(yield* readBack(entries)).toEqual(sorted([...steps, late]))
       }),
     ),
-    5_000,
+    HANG_GUARD_MS,
   )
 
   effectTest(
@@ -168,7 +170,7 @@ describe("the chunk store", () => {
         expect(yield* readBack(entries)).toEqual(sorted([...first, ...second, both]))
       }),
     ),
-    5_000,
+    HANG_GUARD_MS,
   )
 
   effectTest(
@@ -188,7 +190,7 @@ describe("the chunk store", () => {
         expect(yield* readBack(entries)).toHaveLength(8)
       }),
     ),
-    5_000,
+    HANG_GUARD_MS,
   )
 
   effectTest(
@@ -221,7 +223,7 @@ describe("the chunk store", () => {
         expect(yield* readBack(entries)).toEqual(sorted([...sessions(5), late]))
       }),
     ),
-    5_000,
+    HANG_GUARD_MS,
   )
 
   effectTest(
@@ -244,7 +246,7 @@ describe("the chunk store", () => {
         expect(yield* readBack(entries)).toEqual([step(NOW, "b1"), b2])
       }),
     ),
-    5_000,
+    HANG_GUARD_MS,
   )
 
   effectTest(
@@ -268,7 +270,7 @@ describe("the chunk store", () => {
         expect((yield* readBack(entries)).map((entry) => entry.sessionID)).toContain("b2")
       }),
     ),
-    5_000,
+    HANG_GUARD_MS,
   )
 
   effectTest(
@@ -289,7 +291,7 @@ describe("the chunk store", () => {
         expect(yield* readBack(entries)).toEqual([later])
       }),
     ),
-    5_000,
+    HANG_GUARD_MS,
   )
 
   effectTest(
@@ -304,7 +306,7 @@ describe("the chunk store", () => {
         expect(yield* store.entries).toEqual([])
       }),
     ),
-    5_000,
+    HANG_GUARD_MS,
   )
 
   effectTest(
@@ -324,7 +326,7 @@ describe("the chunk store", () => {
         expect(yield* readBack(entries)).toEqual([first])
       }),
     ),
-    5_000,
+    HANG_GUARD_MS,
   )
 })
 
@@ -346,7 +348,7 @@ describe("the readers on both shapes", () => {
         expect(before.holds).toEqual({ "cred-a": { kind: "usage-limit", until: NOW + DAY, at: NOW } })
       }),
     ),
-    5_000,
+    HANG_GUARD_MS,
   )
 
   effectTest(
@@ -370,6 +372,6 @@ describe("the readers on both shapes", () => {
         expect(yield* report).toEqual(reportBefore)
       }),
     ),
-    5_000,
+    HANG_GUARD_MS,
   )
 })

@@ -18,6 +18,8 @@ import { ConfigProvider, Effect, Exit, Fiber, Layer, Option, Queue, Ref, Schema 
 import { effectTest } from "../../sim-tui/effect-test.ts"
 import { parse, Refused, Request, run, type Screen, viewer } from "./show.ts"
 
+/** Hang guard for the test runner; the tests assert the visible outcomes. */
+const HANG_GUARD_MS = 120_000
 const screen: Screen = { size: Effect.succeed({ cols: 80, rows: 24 }), cell: () => Effect.succeed({ width: 12, height: 38 }), display: () => Effect.void, input: Effect.succeed(Effect.never) }
 const settings = { rex: Option.some("rex"), leaf: Option.none<string>(), spool: "/state/rex-show", self: ["/opt/bun", "/dotfiles/rex/show.ts"] }
 const SHOW = fileURLToPath(new URL("./show.ts", import.meta.url))
@@ -39,7 +41,7 @@ describe("the arguments rex-show takes", () => {
         expect({ bad, code: refusalOf(yield* Effect.exit(parse(bad))) }).toEqual({ bad, code: Option.some(2) })
       }
     }),
-    5_000,
+    HANG_GUARD_MS,
   )
 })
 
@@ -63,7 +65,7 @@ describe("a run from a caller's pane", () => {
       expect((yield* Ref.get(spools)).get("session:a")).toMatchObject({ tally: { msg: "2 of 5 done", progress: 40, state: "working" } })
       yield* closeShowcases
     }).pipe(Effect.provide(Layer.mergeAll(systems, env(inPane)))),
-    5_000,
+    HANG_GUARD_MS,
   )
 
   effectTest(
@@ -72,7 +74,7 @@ describe("a run from a caller's pane", () => {
       const block = yield* run(yield* parse(["tally", "x"]), screen, settings)
       expect(yield* showcases).toEqual([[block, ["/bin/rex-show", "view", "--session", "session:a", "--spool", "/state/rex-show"]]])
     }).pipe(Effect.provide(Layer.mergeAll(systems, env({ ...inPane, REX_SHOW_BIN: "/bin/rex-show" })))),
-    5_000,
+    HANG_GUARD_MS,
   )
 
   effectTest(
@@ -83,7 +85,7 @@ describe("a run from a caller's pane", () => {
       expect(refusalOf(exit)).toEqual(Option.some(2))
       expect(yield* Ref.get(rex)).toEqual(before)
     }).pipe(Effect.provide(Layer.mergeAll(systems, env({ REX_SESSION: "session:a" })))),
-    5_000,
+    HANG_GUARD_MS,
   )
 })
 

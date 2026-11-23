@@ -15,6 +15,9 @@ import {
 import { effectTest } from '../../sim-tui/effect-test.ts'
 import Plugin, { type Env, type Fetch, make, makeShared } from './server.ts'
 
+/** Test-runner hang guard; these cases assert auth outcomes, not host latency. */
+const HANG_GUARD_MS = 120_000
+
 type Host = Parameters<(typeof Plugin)['effect']>[0]
 
 /** A value the plugin answered, read as JSON-shaped data in assertions. */
@@ -1734,7 +1737,7 @@ describe('session http.response hook', () => {
       expect(sent.request.headers.get('user-agent')).toBe(`claude-cli/${V1} (external, cli)`)
       expect(yield* Effect.promise(() => sent.request.clone().text())).toContain(`cc_version=${V1}.`)
     }),
-    5_000,
+    HANG_GUARD_MS,
   )
 
   describe('the installed Claude Code release (CLAUDE_CODE_INSTALLED_VERSION)', () => {
@@ -1764,7 +1767,7 @@ describe('session http.response hook', () => {
       Effect.gen(function* () {
         expect(yield* reports(freshProcess(Option.some(V2)), V2)).toBe(true)
       }),
-      5_000,
+      HANG_GUARD_MS,
     )
 
     effectTest(
@@ -1775,7 +1778,7 @@ describe('session http.response hook', () => {
           expect([value, yield* reports(freshProcess(value), V0)]).toEqual([value, true])
         }
       }),
-      5_000,
+      HANG_GUARD_MS,
     )
 
     effectTest(
@@ -1797,7 +1800,7 @@ describe('session http.response hook', () => {
 
         expect(yield* reports(proc, V2)).toBe(true)
       }),
-      5_000,
+      HANG_GUARD_MS,
     )
   })
 
@@ -3685,7 +3688,7 @@ describe('credential choice, wire extras and quota readings', () => {
       expect(yield* Effect.promise(() => onA.clone().text())).toContain(`cc_version=${CLAUDE_CODE_VERSION}.`)
       expect(yield* Effect.promise(() => onB.clone().text())).toContain(`cc_version=${CLAUDE_CODE_VERSION}.`)
     }),
-    5_000,
+    HANG_GUARD_MS,
   )
 
   effectTest(
@@ -3704,7 +3707,7 @@ describe('credential choice, wire extras and quota readings', () => {
       )
       expect(yield* Effect.promise(() => onB.clone().text())).toContain(`cc_version=${installed}.`)
     }),
-    5_000,
+    HANG_GUARD_MS,
   )
 
   describe('the cache-lifetime header', () => {

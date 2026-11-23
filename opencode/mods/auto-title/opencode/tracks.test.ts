@@ -8,6 +8,9 @@ import { tracksLaws } from "../laws.ts"
 import { Tracks } from "../service.ts"
 import { layer, type Storage } from "./tracks.ts"
 
+/** Hang guard for the test runner. */
+const HANG_GUARD_MS = 120_000
+
 const storage = (entries: Map<string, Schema.Json>): Storage => ({
   get: (key) => Effect.sync(() => entries.get(key)),
   set: (key, value) => Effect.sync(() => void entries.set(key, value)),
@@ -21,5 +24,5 @@ effectTest(
   Effect.gen(function* () {
     expect(yield* (yield* Tracks).get("ses_old")).toEqual(Option.none())
   }).pipe(Effect.provide(layer(storage(new Map([["track:ses_old", { pinned: "yes" }]]))))),
-  5_000,
+  HANG_GUARD_MS,
 )

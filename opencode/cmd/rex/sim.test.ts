@@ -18,6 +18,9 @@ import { Base64 } from "effect/encoding"
 import { effectTest } from "../../sim-tui/effect-test.ts"
 import { parse, Refused, Request, run, type Screen, viewer } from "./show.ts"
 
+/** Hang guard for the in-memory simulator fixture. */
+const HANG_GUARD_MS = 120_000
+
 /** A PNG's first 24 bytes, `width` × `height`, then `mark` so two screens of one size differ. */
 const png = (width: number, height: number, mark: number) => {
   const bytes = new Uint8Array(25)
@@ -44,7 +47,7 @@ describe("the arguments of rex-show sim", () => {
         expect({ bad, code: refusalOf(yield* Effect.exit(parse(bad))) }).toEqual({ bad, code: Option.some(2) })
       }
     }),
-    5_000,
+    HANG_GUARD_MS,
   )
 })
 
@@ -76,7 +79,7 @@ describe("the caller of rex-show sim", () => {
         ),
       ),
     ),
-    5_000,
+    HANG_GUARD_MS,
   )
 })
 

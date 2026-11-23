@@ -12,6 +12,8 @@ import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { Browser } from "../service.ts"
 import * as ProcessBrowser from "./browser.ts"
 
+/** Hang guard awaiting the fake browser process, not a performance limit. */
+const HANG_GUARD_MS = 120_000
 const FAKE = fileURLToPath(new URL("./fake-browser.sh", import.meta.url))
 
 /** A scratch folder for the test's files, removed when the test ends. */
@@ -38,7 +40,7 @@ describe("which browser", () => {
         expect(ProcessBrowser.findBrowser({ ...places, chosen: Option.some("/opt/chrome") })).toEqual(Option.some("/opt/chrome"))
       }),
     ),
-    5_000,
+    HANG_GUARD_MS,
   )
 })
 

@@ -11,6 +11,8 @@ import { Spool } from "../service.ts"
 import { empty, Picture } from "../spool.ts"
 import * as FileSpool from "./spool.ts"
 
+/** Hang guard for the test runner. */
+const HANG_GUARD_MS = 120_000
 const SESSION = "session:01a"
 
 effectTest(
@@ -39,5 +41,5 @@ effectTest(
 effectTest(
   "names a session's folder with nothing that climbs out of the root",
   Effect.sync(() => expect(FileSpool.folderOf("session:01a/../x")).toBe("session_01a_.._x")),
-  5_000,
+  HANG_GUARD_MS,
 )

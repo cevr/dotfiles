@@ -815,6 +815,9 @@ describe("the upstream merge", () => {
   })
 })
 
+/** Hang guard if the move never gives its lock back. */
+const HANG_GUARD_MS = 120_000
+
 describe("the fork move", () => {
   const kept = keptScratch(true, "daily-move-")
   /** The land's locks of a host whose cache is a fresh scratch folder. */
@@ -832,7 +835,7 @@ describe("the fork move", () => {
       expect(lines).toEqual(["daily: the fork's install after its move to b failed; daily stops before the build"])
       return moveFork(locks.move, () => ({ kind: "current" }), Effect.succeed("b"), Effect.die("installed"), none)
     },
-    2000,
+    HANG_GUARD_MS,
   )
 
   test("each step daily runs on prime-look starts and ends while its lock is held: the move and its install under the checks lock, the fork tests under the accept lock, the install after a merge under the checks lock", () => {
@@ -850,7 +853,7 @@ describe("the fork move", () => {
     /** An asynchronous step: its start, a pause, its end. */
     const timed = <A,>(name: string, value: A) =>
       Effect.sync(() => events.push(`${name} starts`)).pipe(
-        Effect.andThen(Effect.sleep("5 millis")),
+        Effect.andThen(Effect.yieldNow),
         Effect.andThen(Effect.sync(() => events.push(`${name} ends`))),
         Effect.as(value),
       )

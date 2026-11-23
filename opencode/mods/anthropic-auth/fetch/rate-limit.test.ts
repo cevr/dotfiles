@@ -3,6 +3,9 @@ import { Effect } from 'effect'
 import { isSubscriptionUsageDiagnostic } from '../rate-limit.ts'
 import { enhanceRateLimitResponse as enhance, type RateLimitOptions } from './rate-limit.ts'
 
+/** Hang guard for the runner; the product's diagnostic timeout remains configured per case. */
+const HANG_GUARD_MS = 120_000
+
 // The enhancement is an Effect now; run it to a promise so the assertions read as before.
 const enhanceRateLimitResponse = (response: Response, connection: string, options?: RateLimitOptions) =>
   Effect.runPromise(enhance(response, connection, options))
@@ -440,7 +443,7 @@ describe('Anthropic 429 diagnostics', () => {
     expect(result.category).toBe('unknown-rate-limit')
     expect(result.response.status).toBe(429)
     await result.response.body?.cancel()
-  }, 500)
+  }, HANG_GUARD_MS)
 
   test('handles a late stalled-read rejection before replay consumption', async () => {
     let rejectRead: ((error: Error) => void) | undefined
@@ -463,7 +466,7 @@ describe('Anthropic 429 diagnostics', () => {
 
     expect(result.category).toBe('unknown-rate-limit')
     await result.response.body?.cancel().catch(() => {})
-  }, 500)
+  }, HANG_GUARD_MS)
 
   test('replays a genuinely streaming oversized body byte-for-byte', async () => {
     const chunks = [

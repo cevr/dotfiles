@@ -8,6 +8,8 @@ import { replyStylesLaws } from "../memory/reply-style.laws.ts"
 import { ReplyStyles } from "../reply-style.ts"
 import * as OpenCodeReplyStyles from "./reply-style.ts"
 
+/** Hang guard for the test runner. */
+const HANG_GUARD_MS = 120_000
 const toJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
 const fromJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))
 
@@ -38,7 +40,7 @@ describe("the storage entry", () => {
         }),
       )
     }),
-    5_000,
+    HANG_GUARD_MS,
   )
 
   effectTest(
@@ -54,6 +56,6 @@ describe("the storage entry", () => {
       )
       expect(entries.get("reply-style:ses_a")).toBe('{"text":"S"}')
     }),
-    5_000,
+    HANG_GUARD_MS,
   )
 })

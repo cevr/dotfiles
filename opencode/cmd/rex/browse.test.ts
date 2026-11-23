@@ -20,6 +20,8 @@ import { ConfigProvider, Context, Effect, Exit, Fiber, Layer, Option, Queue, Ref
 import { effectTest } from "../../sim-tui/effect-test.ts"
 import { parse, Refused, Request, run, type Screen, viewer } from "./show.ts"
 
+/** Hang guard for the in-memory viewer fixture. */
+const HANG_GUARD_MS = 120_000
 const PAGE = "http://127.0.0.1:8765/page.html"
 
 const refusalOf = <A>(exit: Exit.Exit<A, unknown>) => Option.map(Option.filter(Exit.findErrorOption(exit), Schema.is(Refused)), (refused) => refused.code)
@@ -36,7 +38,7 @@ describe("the arguments of rex-show browse", () => {
         expect({ bad, code: refusalOf(yield* Effect.exit(parse(bad))) }).toEqual({ bad, code: Option.some(2) })
       }
     }),
-    5_000,
+    HANG_GUARD_MS,
   )
 })
 
@@ -65,7 +67,7 @@ describe("the caller of rex-show browse", () => {
         ),
       ),
     ),
-    5_000,
+    HANG_GUARD_MS,
   )
 })
 

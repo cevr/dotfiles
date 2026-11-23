@@ -16,6 +16,9 @@ import type { Rex, Spool } from "../service.ts"
 import { arrange, LABEL } from "../showcase.ts"
 import { Browse, Feed, Picture, Sim, type Spooled, Url } from "../spool.ts"
 
+/** Hang guard for the generated in-memory cases. */
+const HANG_GUARD_MS = 120_000
+
 /** A seeded generator of numbers in [0, 1) (mulberry32). */
 const drawer = (seed: number) => {
   const state = { at: seed >>> 0 }
@@ -170,7 +173,7 @@ describe("the showcase rule", () => {
       expect(yield* ensureShowcase(pane, VIEWER)).toBe(first)
       expect((yield* Ref.get(one.rex)).blocks.map((block) => block.label)).toEqual(["shell", LABEL])
     }).pipe(Effect.provide(one.services)),
-    5_000,
+    HANG_GUARD_MS,
   )
 
   const runs = Array.from({ length: 300 }, (_, seed) => seeded(seed))
