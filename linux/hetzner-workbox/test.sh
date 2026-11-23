@@ -963,7 +963,8 @@ head -c $((1 << 20)) /dev/urandom | dd of="$v/db/shard/sparse.db" bs=1M seek=10 
 chown -R "$uid:$uid" "$v"
 runs_inventory() {
     (cd "$1" &&
-        find . ! -name 'opencode.db' ! -name 'opencode.db-*' -printf '%U %G %m %s %p\n' | sort &&
+        # A directory's st_size changes when excluded files are absent; compare type, owner, mode and name.
+        find . ! -name 'opencode.db' ! -name 'opencode.db-*' -printf '%y %U %G %m %p\n' | sort &&
         find . -type f ! -name 'opencode.db' ! -name 'opencode.db-*' -exec sha256sum {} + | sort -k2)
 }
 runs_inventory "$v" > "$work/vperf2-before"
@@ -973,7 +974,7 @@ env "${runs_env[@]}" bash "$here/sync.sh" runs > "$work/runs-no.log" 2>&1 || { c
 measured=$(sed -n 's/^runs: .* -> \/runs\/vperf2: \([0-9]*\) bytes.*/\1/p' "$work/runs-dry.log")
 # 3 MiB + 3 bytes + the sparse file's 64 MiB (rsync counts a file's length; --sparse keeps the holes).
 ((measured >= 67 << 20 && measured < 68 << 20)) || { cat "$work/runs-dry.log"; fail "runs measured $measured bytes"; }
-grep -q '^runs: .* in all; at \$0.05/GB past exe.s 200 GB: \$0.00 at most$' "$work/runs-dry.log" || { cat "$work/runs-dry.log"; fail "runs printed no cost"; }
+grep -q '^runs: .* logical bytes .* in all; at \$0.05/GB past exe.s 200 GB: estimated \$0.00$' "$work/runs-dry.log" || { cat "$work/runs-dry.log"; fail "runs printed no estimate"; }
 grep -q 'Rerun with --yes' "$work/runs-no.log" || { cat "$work/runs-no.log"; fail "runs without --yes did not say how to copy"; }
 [[ -z $(ls -A "$T/runs/vperf2") ]] || fail "runs copied without --yes"
 env "${runs_env[@]}" bash "$here/sync.sh" runs --yes > "$work/runs-yes.log" 2>&1 || { cat "$work/runs-yes.log"; fail "sync.sh runs --yes"; }
@@ -982,7 +983,8 @@ grep -q "^runs: verified /runs/vperf2: every file's checksum equals $v's. $v sta
 runs_inventory "$T/runs/vperf2" > "$work/vperf2-target"
 runs_inventory "$v" > "$work/vperf2-after"
 diff "$work/vperf2-before" "$work/vperf2-after" >/dev/null || fail "runs changed the source"
-diff "$work/vperf2-before" "$work/vperf2-target" >/dev/null || { diff "$work/vperf2-before" "$work/vperf2-target" | head; fail "the copy differs from the source"; }
+diff -u "$work/vperf2-before" "$work/vperf2-target" > "$work/vperf2-diff" ||
+    { sed -n '1,20p' "$work/vperf2-diff"; fail "the copy differs from the source"; }
 [[ ! -e $T/runs/vperf2/oc/a/opencode.db && ! -e $T/runs/vperf2/oc/b/opencode.db && ! -e $T/runs/vperf2/oc/a/opencode.db-wal ]] || fail "runs copied a session store filename"
 [[ $(stat -c %i "$T/runs/vperf2/runs/r2/record.md") == $(stat -c %i "$T/runs/vperf2/runs/r2/record-link.md") ]] || fail "runs lost a hard link"
 (($(stat -c %b "$T/runs/vperf2/db/shard/sparse.db") * 512 < 8 << 20)) || fail "runs filled the sparse file's holes"

@@ -435,7 +435,7 @@ do_runs() {
         printf 'runs: %s -> %s: %s bytes (%s) to send\n' "$src" "$HB_RUNS_TO/$name" "$bytes" "$(gb "$bytes")"
         total=$((total + bytes))
     done
-    printf 'runs: %s bytes (%s) in all; at $%s/GB past exe'"'"'s 200 GB: $%s at most\n' "$total" "$(gb "$total")" "$tx_price" \
+    printf 'runs: %s logical bytes (%s) in all; at $%s/GB past exe'"'"'s 200 GB: estimated $%s\n' "$total" "$(gb "$total")" "$tx_price" \
         "$(awk -v b="$total" -v p="$tx_price" 'BEGIN { printf "%.2f", b / 1e9 * p }')"
     if ((dry || !yes)); then
         echo "runs: nothing copied. Rerun with --yes to copy (the owner approves the bytes and the cost above)."
@@ -450,7 +450,7 @@ do_runs() {
         diffs=$(rsync "${args[@]}" --checksum --dry-run --itemize-changes "$src/" "$dest") ||
             die "runs: could not verify $HB_RUNS_TO/$name"
         if [[ -n $diffs ]]; then
-            printf '%s\n' "$diffs" | head -n 20 >&2
+            printf '%s\n' "$diffs" | sed -n '1,20p' >&2
             die "runs: $HB_RUNS_TO/$name differs from $src ($(printf '%s\n' "$diffs" | wc -l) paths): copy again before relying on it"
         fi
         echo "runs: verified $HB_RUNS_TO/$name: every file's checksum equals $src's. $src stays on this box until it is retired."
