@@ -40,8 +40,15 @@ ln -sf $(pwd)/skills/track-work-hours/scripts/hours ~/.local/bin/hours
 
 ### Bite workbox
 
+#### Host identity
+
+For the approved deployment, set `WORKBOX_MACHINE_ID` from the operator's
+deployment record opened at order time and confirmed via the provider console.
+Reading the ID from whichever machine you are logged into defeats the check.
+
 ```bash
-~/Developer/personal/dotfiles/workbox/bootstrap.sh
+# Pin source: workbox deployment record; see [Host identity](#host-identity).
+WORKBOX_EXPECT_MACHINE_ID="$WORKBOX_MACHINE_ID" ~/Developer/personal/dotfiles/workbox/bootstrap.sh
 ```
 
 ### Claude

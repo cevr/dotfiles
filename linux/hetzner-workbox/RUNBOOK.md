@@ -6,16 +6,16 @@ on the new box until its home arrives. `NEW` is the new box's public IP,
 `NEWTS` its Tailscale IPv4 once it has one. Times are guesses unless marked
 measured; the exe box held about 430 GB on 2026-11-14 (plan.md, measured).
 
+## Host identity
+
 The following are inputs to the approved deployment, not commands to run by
-hand on a real host. Before dispatch, record the intended installed host's
-`/etc/machine-id` through the trusted console/inventory; set the deployment's
-`WORKBOX_EXPECT_MACHINE_ID` to that value. Never derive it inline from the
-execution host. For migration record both identities: the source as
-`WORKBOX_EXPECT_MACHINE_ID` and the destination as `HB_TARGET_MACHINE_ID`.
-Pin the destination's SSH host key in the source's
-`/root/.ssh/hetzner-sync-known_hosts` through that same trusted channel.
-Supply them to the deployment's root environment, including after sudo and
-after reboot. A hostname does not establish identity.
+hand on a real host. Open the operator's deployment records at order time.
+During enrollment, use each provider's trusted console for the specific
+instance to record the installed OS's machine ID. Set `NEW_MACHINE_ID` and
+`EXE_MACHINE_ID` from the new box and exe deployment records, respectively.
+Reading the ID from whichever machine you are logged into defeats the check.
+From that same trusted channel, pin the destination's SSH host key in
+`/root/.ssh/hetzner-sync-known_hosts` on the source. A hostname is not a pin.
 
 ## 0. The owner's part (before anything)
 
@@ -37,10 +37,25 @@ after reboot. A hostname does not establish identity.
    then `reboot`.
 3. From the Mac: `rsync -a ~/Developer/personal/dotfiles/{linux,workbox} root@NEW:/root/dotfiles/`
    (provision.sh reads `workbox/systemd`).
-4. `ssh root@NEW`; `/root/dotfiles/linux/hetzner-workbox/layout.sh --dry-run`,
-   then `layout.sh` (seconds: the file system is nearly empty). `reboot`, then
-   `HB_CHECK_SKIP="firewall sshd backup" /root/dotfiles/linux/hetzner-workbox/check.sh`:
-   every line `ok` (raid1, the four subvolumes, `/boot` and swap on md).
+4. As root on the installed box, preview then apply the layout:
+
+   ```sh
+   # No pin needed: read-only layout preview.
+   /root/dotfiles/linux/hetzner-workbox/layout.sh --dry-run
+   # Pin source: new host's deployment record; see [Host identity](#host-identity).
+   WORKBOX_EXPECT_MACHINE_ID="$NEW_MACHINE_ID" /root/dotfiles/linux/hetzner-workbox/layout.sh
+   ```
+
+   After reboot, run the check as root. It requires the pin because its
+   reflink probe writes temporary files into the installed layout:
+
+   ```sh
+   # Pin source: new host's deployment record; see [Host identity](#host-identity).
+   WORKBOX_EXPECT_MACHINE_ID="$NEW_MACHINE_ID" HB_CHECK_SKIP="firewall sshd backup" \
+     /root/dotfiles/linux/hetzner-workbox/check.sh
+   ```
+
+   Expect `ok` for raid1, the subvolumes, `/boot` and swap on md.
    `cat /proc/mdstat` may show a resync for a few minutes; that is fine.
 
 ## 2. Provision (~10 min)
@@ -51,7 +66,9 @@ after reboot. A hostname does not establish identity.
    ```sh
    read -rs TS_AUTHKEY && export TS_AUTHKEY      # paste the key from 0.3
    export HB_EXTRA_KEYS='<the line of ssh bite-workbox cat .ssh/hetzner-sync.pub>'
-   /root/dotfiles/linux/hetzner-workbox/provision.sh host user keys packages tools storage firewall rootssh tailscale sshd reserve upgrades
+   # Pin source: new host's deployment record; see [Host identity](#host-identity).
+   WORKBOX_EXPECT_MACHINE_ID="$NEW_MACHINE_ID" \
+     /root/dotfiles/linux/hetzner-workbox/provision.sh host user keys packages tools storage firewall rootssh tailscale sshd reserve upgrades
    unset TS_AUTHKEY
    ```
 
@@ -60,7 +77,13 @@ after reboot. A hostname does not establish identity.
    each boot; `reserve` installs the memory floor and the run families. Each
    phase is idempotent: a rerun prints no install changes. `packages`
    places Docker under the workload cap before starting it, even if `reserve`
-   ran earlier; `check.sh docker` checks its installed and running setup.
+   ran earlier. To check the installed and running Docker setup as root:
+
+   ```sh
+   # Pin source: new host's deployment record; see [Host identity](#host-identity).
+   WORKBOX_EXPECT_MACHINE_ID="$NEW_MACHINE_ID" /root/dotfiles/linux/hetzner-workbox/check.sh docker
+   ```
+
    Reboot before opening the box to jobs so user managers get their installed
    controller delegation. Activate the protected server only with the
    `shell-cgroup-cap` launcher integration.
@@ -71,7 +94,14 @@ after reboot. A hostname does not establish identity.
    the exe box: `ssh -p 2222 -i ~/.ssh/hetzner-sync exedev@NEWTS sudo -n true`.
    Both must exit 0. Public ssh on 22 stays for root, by key, as the way back in
    besides the Rescue System.
-4. Backups: `HB_STORAGEBOX_HOST=... HB_STORAGEBOX_USER=... /root/dotfiles/linux/hetzner-workbox/provision.sh backup`.
+4. Backups: set `STORAGEBOX_HOST` and `STORAGEBOX_USER` from step 0.2; as root:
+
+   ```sh
+   # Pin source: new host's deployment record; see [Host identity](#host-identity).
+   WORKBOX_EXPECT_MACHINE_ID="$NEW_MACHINE_ID" HB_STORAGEBOX_HOST="$STORAGEBOX_HOST" HB_STORAGEBOX_USER="$STORAGEBOX_USER" \
+     /root/dotfiles/linux/hetzner-workbox/provision.sh backup
+   ```
+
    It prints the `install-ssh-key` line to run once (it asks for the Storage
    Box password) and makes `/etc/btrbk/backup.key`: copy that key into the
    password manager now. The timer starts backing up after the cutover's reboot.
@@ -80,21 +110,29 @@ after reboot. A hostname does not establish identity.
 
 From an hc terminal on the exe box (the copy outlives an ssh session there):
 
-In the following `sudo` examples the approved dispatcher supplies the two
-identity variables to the privileged process as described above.
-
 ```sh
-sudo HB_TO=exedev@NEWTS $d/sync.sh --dry-run pass 1    # GB per subvolume and the total
-sudo HB_TO=exedev@NEWTS $d/sync.sh pass 1
-sudo HB_TO=exedev@NEWTS $d/sync.sh rest                # MongoDB and the rest, live (pass 2 redoes it)
+# Pin source: exe and new host deployment records; see [Host identity](#host-identity).
+sudo env WORKBOX_EXPECT_MACHINE_ID="$EXE_MACHINE_ID" HB_TARGET_MACHINE_ID="$NEW_MACHINE_ID" \
+  HB_TO="exedev@$NEWTS" "$d/sync.sh" --dry-run pass 1
+# Pin source: exe and new host deployment records; see [Host identity](#host-identity).
+sudo env WORKBOX_EXPECT_MACHINE_ID="$EXE_MACHINE_ID" HB_TARGET_MACHINE_ID="$NEW_MACHINE_ID" \
+  HB_TO="exedev@$NEWTS" "$d/sync.sh" pass 1
+# Pin source: exe and new host deployment records; see [Host identity](#host-identity).
+sudo env WORKBOX_EXPECT_MACHINE_ID="$EXE_MACHINE_ID" HB_TARGET_MACHINE_ID="$NEW_MACHINE_ID" \
+  HB_TO="exedev@$NEWTS" "$d/sync.sh" rest
 ```
 
 The dry-run transfer reads metadata; pass accounting also creates and removes
 temporary source snapshots. At 1 Gbit/s on the Hetzner side and the LAX
 to HEL1 path (about 150 ms), expect hours for ~430 GB; a rerun resumes, skipping
 what arrived. exe bills TX past 200 GB a month at $0.05/GB: about $22 for this
-pass (plan.md). Then `sudo HB_TO=exedev@NEWTS $d/sync.sh --dry-run pass 2` shows
-what the final pass would move; run it once more shortly before the window.
+pass (plan.md). Preview the final pass once more shortly before the window:
+
+```sh
+# Pin source: exe and new host deployment records; see [Host identity](#host-identity).
+sudo env WORKBOX_EXPECT_MACHINE_ID="$EXE_MACHINE_ID" HB_TARGET_MACHINE_ID="$NEW_MACHINE_ID" \
+  HB_TO="exedev@$NEWTS" "$d/sync.sh" --dry-run pass 2
+```
 
 ## 4. The window (about an hour)
 
@@ -114,9 +152,15 @@ terminal that is about to stop.
 4. **Final copy** (minutes: only what changed since pass 1):
 
    ```sh
-   sudo HB_TO=exedev@NEWTS $d/sync.sh pass 2
-   sudo HB_TO=exedev@NEWTS $d/sync.sh rest
-   sudo HB_TO=exedev@NEWTS $d/sync.sh activate 2
+   # Pin source: exe and new host deployment records; see [Host identity](#host-identity).
+   sudo env WORKBOX_EXPECT_MACHINE_ID="$EXE_MACHINE_ID" HB_TARGET_MACHINE_ID="$NEW_MACHINE_ID" \
+     HB_TO="exedev@$NEWTS" "$d/sync.sh" pass 2
+   # Pin source: exe and new host deployment records; see [Host identity](#host-identity).
+   sudo env WORKBOX_EXPECT_MACHINE_ID="$EXE_MACHINE_ID" HB_TARGET_MACHINE_ID="$NEW_MACHINE_ID" \
+     HB_TO="exedev@$NEWTS" "$d/sync.sh" rest
+   # Pin source: exe and new host deployment records; see [Host identity](#host-identity).
+   sudo env WORKBOX_EXPECT_MACHINE_ID="$EXE_MACHINE_ID" HB_TARGET_MACHINE_ID="$NEW_MACHINE_ID" \
+     HB_TO="exedev@$NEWTS" "$d/sync.sh" activate 2
    ```
 
    `activate` prints one `activated` line for `@home` and one for `@workspaces`.
@@ -126,7 +170,9 @@ terminal that is about to stop.
    First measure the selected logical bytes and estimate the transfer cost:
 
    ```sh
-   sudo HB_TO=exedev@NEWTS $d/sync.sh --dry-run runs
+   # Pin source: exe and new host deployment records; see [Host identity](#host-identity).
+   sudo env WORKBOX_EXPECT_MACHINE_ID="$EXE_MACHINE_ID" HB_TARGET_MACHINE_ID="$NEW_MACHINE_ID" \
+     HB_TO="exedev@$NEWTS" "$d/sync.sh" --dry-run runs
    ```
 
    It prints `runs: /tmp/vperf2 -> /runs/vperf2: <bytes> bytes (<GB>) to send`
@@ -140,7 +186,9 @@ terminal that is about to stop.
    yes:
 
    ```sh
-   sudo HB_TO=exedev@NEWTS $d/sync.sh runs --yes
+   # Pin source: exe and new host deployment records; see [Host identity](#host-identity).
+   sudo env WORKBOX_EXPECT_MACHINE_ID="$EXE_MACHINE_ID" HB_TARGET_MACHINE_ID="$NEW_MACHINE_ID" \
+     HB_TO="exedev@$NEWTS" "$d/sync.sh" runs --yes
    ```
 
    It copies, then compares every file by checksum and ends with `runs:
@@ -167,11 +215,18 @@ terminal that is about to stop.
       key warning (the key came along).
    If the console refuses the address, set `HostName NEWTS` for `bite-workbox`
    in `~/.ssh/config` instead, and the phone's Herdr host likewise.
-7. **Bootstrap**: `ssh bite-workbox`, then
-   `sudo ~/Developer/personal/dotfiles/linux/hetzner-workbox/provision.sh sshd bootstrap`
-   (the sshd phase picks up the new Tailscale address; bootstrap installs the
-   user units and runs its own checks). Then `sudo $d/check.sh`: every line
-   `ok`, the backup timer included. Ergo's own `~/.config/systemd/user/ergo.slice`
+7. **Bootstrap**: on the new box after the address moves (alias `bite-workbox`):
+
+   ```sh
+   # Pin source: new host's deployment record; see [Host identity](#host-identity).
+   sudo env WORKBOX_EXPECT_MACHINE_ID="$NEW_MACHINE_ID" "$d/provision.sh" sshd bootstrap
+   # Pin source: new host's deployment record; see [Host identity](#host-identity).
+   sudo env WORKBOX_EXPECT_MACHINE_ID="$NEW_MACHINE_ID" "$d/check.sh"
+   ```
+
+   The sshd phase picks up the new Tailscale address; bootstrap installs the
+   user units and runs its own checks. The final check should include the
+   backup timer. Ergo's own `~/.config/systemd/user/ergo.slice`
    (written on the exe box, `CPUQuota=1000%`: 10 threads) came along in the home
    and shadows the installed one (`CPUQuota=2000%` here: 20 of 32); bootstrap's
    check warns about it. Tell the Ergo run, and with its yes:
@@ -181,7 +236,8 @@ terminal that is about to stop.
 8. **Services**: `systemctl --user enable --now hc-core.service sideshow.service
    film-lab.service t3code.service teamclaude.service sh.executor.daemon.service`,
    `systemctl --user start opencode.service`, `sudo systemctl enable --now
-   syncthing@exedev`. `workbox-check` must pass. It runs `bootstrap.sh --check`
+   syncthing@exedev`. The read-only `workbox-check` needs no pin and must pass.
+   It runs `bootstrap.sh --check`
    from the installed build's tree (`current.plugins/workbox/`), never the
    checkout's copy, which mirrors the Mac's base and can lag. OpenCode arrives on its proven tree build, with no install: `opencode --version` ends in `.tree` and `readlink ~/.local/share/opencode-prime/current.plugins` names that build's `.plugins` tree (a tree's `node_modules` hardlinks into `~/.bun/install/cache` survive `btrfs send` within `@home`; a broken one costs disk only).
 9. **exe-only features** (README.md, last table): `tailscale serve --bg
@@ -216,8 +272,13 @@ terminal that is about to stop.
   delete `.hetzner-sync/old-*` (the provisioned home) and the received
   snapshots in `.hetzner-sync/<pass>`, `sudo umount /mnt`. On the exe box,
   `/tmp/.hetzner-sync` holds the sent snapshots until it goes.
-- The first nightly backup is a full one (hours); `sudo $d/backup.sh list` the
-  next morning lists a `.info` per subvolume.
+- The first nightly backup is a full one (hours). List it on the new box
+  the next morning; expect one `.info` per subvolume:
+
+  ```sh
+  # Pin source: new host's deployment record; see [Host identity](#host-identity).
+  sudo env WORKBOX_EXPECT_MACHINE_ID="$NEW_MACHINE_ID" "$d/backup.sh" list
+  ```
 
 ## Rollback during the window
 

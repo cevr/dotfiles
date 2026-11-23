@@ -6,15 +6,23 @@ This directory defines the persistent workflow layer for the Bite workbox
 
 ## Apply
 
-Run this command on the workbox:
+Use this command in the approved deployment, as the workbox user.
+
+### Host identity
+
+Set `WORKBOX_MACHINE_ID` from the operator's deployment record opened at
+order time and confirmed via the provider console.
+Reading the ID from whichever machine you are logged into defeats the check.
 
 ```sh
-~/Developer/personal/dotfiles/workbox/bootstrap.sh
+# Pin source: workbox deployment record; see [Host identity](#host-identity).
+WORKBOX_EXPECT_MACHINE_ID="$WORKBOX_MACHINE_ID" ~/Developer/personal/dotfiles/workbox/bootstrap.sh
 ```
 
 Run this command to verify the installed state:
 
 ```sh
+# No pin needed: read-only health check.
 workbox-check
 ```
 
@@ -63,7 +71,8 @@ fails when one is typed into another file). Steps, each idempotent:
 | `tmp` | `/tmp`'s rules (`systemd/tmp/tmpfiles.d/tmp.conf`: emptied at boot, aged at 7 days, `/tmp/opencode` at 14, the families' `/tmp/ergo`, `/tmp/bite-work`, `/tmp/personal` at 7 on lines of their own, `/tmp/vperf2` never aged on the exe box) and the daily clean through `workbox-tmp-clean`, which preserves run trees with holders |
 | `diskfree` | `workbox-disk-free.timer`: every minute, `/run/workbox/disk-free` gets the btrfs's free space from `btrfs filesystem usage` (not df), for the work tool and the host arbiter to read; it enforces nothing |
 
-`system-tools.sh --check` (run by `bootstrap.sh --check`) fails, naming the
+Read-only `system-tools.sh --check` (run by `bootstrap.sh --check`) needs no
+pin and fails, naming the
 step, unless each is in place.
 
 **Guarantee: containment is for accidents, not work done through `sudo` or
@@ -231,7 +240,8 @@ file too, with `loop` (mount reuses `/workspaces`' loop device), never by
 `UUID=`: systemd-udevd is masked there, so a `/dev/disk/by-uuid` link never
 appears and a `UUID=` line fails the boot after 90 s (2026-11-19).
 `workbox-rift-storage --apply` (bootstrap) rewrites such lines, and
-`workbox-rift-storage --fstab` does only that; `--check` fails while one is left.
+`workbox-rift-storage --fstab` does only that. Both require the deployment
+pin; read-only `--check` needs no pin and fails while one is left.
 `workbox-btrfs-reclaim.service` turns on btrfs dynamic reclaim
 (`allocation/data/dynamic_reclaim`) at each boot for the file system mounted at
 `/workspaces`, found by its device, so nearly empty data chunks go back to

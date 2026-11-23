@@ -119,7 +119,8 @@ slices`): slices of `exedev`'s own user manager, which has cpu, io and memory
 delegated. Weights share the CPU under load only. Ergo's cap is written as a share
 (`CPUQuota=62.5%threads`) and turned into a percentage at install: 10 of the
 exe box's 16 threads (`CPUQuota=1000%`, set there 2026-11-23 03:5xZ), 20 of the
-AX102's 32 (`2000%`); rerun `system-tools.sh slices` on a new host. They are
+AX102's 32 (`2000%`); the runbook's pinned `provision.sh reserve` step
+renders them on a new host. They are
 unit files, so they survive a reboot (test.sh `--slices-reboot` shows it across
 a real reboot of the VM; the exe box lost ergo.slice's runtime-only values at
 its 2026-11-23 reboot). A user's own `~/.config/systemd/user/<family>.slice`
@@ -150,8 +151,9 @@ cron and at share `user-jobs.slice` with Docker's daemon, containerd, its
 shims, and default containers (36%, within the 73%, not another reservation).
 The packages phase configures Docker's systemd driver and workload parent
 before the package can start the engine; reserve also reconciles an installed
-engine. `check.sh docker` checks the configured parent, running driver, and
-actual Docker/containerd process cgroups. An explicit Docker `--cgroup-parent`
+engine. The [runbook's pinned Docker check](RUNBOOK.md#2-provision-10-min)
+checks the configured parent, running driver, and actual Docker/containerd
+process cgroups. An explicit Docker `--cgroup-parent`
 override can choose another branch and is outside the guarantee. Workload
 and server do not swap.
 
@@ -165,9 +167,14 @@ managed server unit, not to a server a client starts in its own session.
 launch path. `workbox-run` continues to isolate calls made from the workload
 branch while that integration is pending.
 
-Mutating provisioning commands require an independently recorded
-`WORKBOX_EXPECT_MACHINE_ID` before they touch a host; migration also verifies
-`HB_TARGET_MACHINE_ID` against the SSH peer. See the [runbook](RUNBOOK.md).
+### Host identity
+
+Use the operator's deployment record, opened at order time. Record the
+installed machine's ID via its trusted provider console during enrollment,
+before selecting a host for deployment or recovery.
+Reading the ID from whichever machine you are logged into defeats the check.
+Migration uses both the source and destination records; see the
+[runbook](RUNBOOK.md#host-identity).
 
 No IO weights: on Ubuntu 24.04 NVMe's scheduler is `none`, which weighs nothing,
 so an `IOWeight` there is a no-op. io.cost would weigh, but in the noble VM it
@@ -290,7 +297,7 @@ lost box. `backup.sh run` (the `hetzner-backup.timer`, 02:30 UTC nightly):
    the undo for mistakes. `/workspaces` is skipped, the owner's ruling: lanes
    and bases come back from git, and pushed work is on GitHub. That is why run
    records live in `@runs`, not under `/workspaces`. `backup.sh subvolumes`
-   prints the list;
+   is read-only and needs no pin; it prints the paths that would be backed up;
 2. sends each snapshot to the Storage Box as a file: zstd, then AES-256 with the
    key in `/etc/btrbk/backup.key`. The Storage Box is not btrfs and its ssh has
    no pipes or redirects, which btrbk's raw target over ssh needs, so the files
@@ -309,20 +316,41 @@ manager when `provision.sh backup` makes it.
 
 ### Restore
 
-On any Linux with btrfs-progs, openssl and zstd, the key at
-`/etc/btrbk/backup.key` and the Storage Box mounted by `backup.sh` (or copied):
+The pin is for the Linux machine you are restoring **onto**, not the lost
+machine or the Storage Box. For a newly ordered recovery host, open its
+deployment record when ordering it. Once its OS boots, use the provider's
+console for that specific order to record the installed machine ID **before**
+connecting to a restore target. Set `RESTORE_MACHINE_ID` from that record.
+
+Start from the repository root on the recovery host. Set `BACKUP_COPY` to
+the root of an already mounted Storage Box or a local copy of its data.
+Set `BACKUP_HOST_LABEL` to the backed-up host's directory name (for example,
+`bite-cristian`); that label selects data, not a host identity. The list
+preflight prints the available `.info` files across months:
 
 ```sh
-sudo HB_BACKUP_MONTH=2026-12 linux/hetzner-workbox/backup.sh list
-sudo btrfs subvolume create /restore      # on a btrfs
-sudo HB_BACKUP_MONTH=2026-12 linux/hetzner-workbox/backup.sh restore runs /restore
+# Pin source: recovery host's deployment record; see [Host identity](#host-identity).
+sudo env WORKBOX_EXPECT_MACHINE_ID="$RESTORE_MACHINE_ID" \
+  HB_BACKUP_DIR="$BACKUP_COPY" HB_BACKUP_NAME="$BACKUP_HOST_LABEL" \
+  linux/hetzner-workbox/backup.sh list
+```
+
+For restore, install btrfs-progs, openssl and zstd, put the saved key at
+`/etc/btrbk/backup.key`, and choose `RESTORE_MONTH` (`YYYY-MM`) from the list.
+Set `RESTORE_DIR` to an existing directory on a writable btrfs filesystem.
+
+```sh
+# Pin source: recovery host's deployment record; see [Host identity](#host-identity).
+sudo env WORKBOX_EXPECT_MACHINE_ID="$RESTORE_MACHINE_ID" \
+  HB_BACKUP_DIR="$BACKUP_COPY" HB_BACKUP_NAME="$BACKUP_HOST_LABEL" HB_BACKUP_MONTH="$RESTORE_MONTH" \
+  linux/hetzner-workbox/backup.sh restore runs "$RESTORE_DIR"
 ```
 
 `restore` receives the month's chain for that name in order (the full backup,
-then each night), so `/restore` holds one read-only snapshot per night; the
+then each night), so the destination holds one read-only snapshot per night; the
 last is the newest. Copy files out, or `btrfs subvolume snapshot` one to a
 writable place. A whole box: restore `home` and `runs` (and the home's nested subvolumes), put
-them in place as `sync.sh activate` does, and clone `/workspaces` again from git.
+them in place, and clone `/workspaces` again from git.
 
 ## exe-only features and their replacements
 
