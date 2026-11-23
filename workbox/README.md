@@ -274,7 +274,11 @@ may have been written into it, so nothing rolls it back. A failure after the
 exchange exits 1 with "not rolled back": the new tree stays the base, the
 tree it was stays at `<name>.old` under its record, and a process that stays
 in the old tree past the wait leaves the switch unfinished (the next `--apply`
-carries what it wrote once it left). If the command is cut (kill -9 too), the
+carries what it wrote once it left), as does a carry that could not read a
+tree's refs or move one of them (a Git that failed: it says what it could not
+do, and a read that fails never counts as a tree with no refs). A command
+that fails under `set -e` with no reason of its own still says so and names
+its step. If the command is cut (kill -9 too), the
 next `--apply` deletes the copy of a switch cut before its exchange and starts
 again, or finishes one cut after it, working from its state file in the
 base's `.workrift/subvolume/`. Every output says what it deleted, from what it
