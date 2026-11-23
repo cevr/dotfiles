@@ -9,10 +9,11 @@
  *
  * @module
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { makeRepo } from "./repo.ts"
 import { serve, type Seen } from "./sim.ts"
+import { externalInput, matchingInput, readScratchFileSync, scratchInput } from "../read-path.ts"
 
 export interface Spec {
   readonly base: string
@@ -34,9 +35,10 @@ export interface Result {
   readonly head: string
 }
 
-const spec = JSON.parse(readFileSync(process.argv[2]!, "utf8")) as Spec
-const work = join(spec.base, "work")
-const config = join(spec.base, "config")
+const spec = JSON.parse(readScratchFileSync(process.argv[2]!, "utf8")) as Spec
+const base = scratchInput(spec.base)
+const work = join(base, "work")
+const config = join(base, "config")
 mkdirSync(work, { recursive: true })
 mkdirSync(config, { recursive: true })
 const head = makeRepo(work)
@@ -59,7 +61,10 @@ const content = {
       },
     },
   },
-  plugins: [{ package: spec.kernel, options: { codeOnly: spec.codeOnly, timeoutMs: 20_000 } }, spec.guard],
+  plugins: [
+    { package: matchingInput("cmd/kernel", spec.kernel), options: { codeOnly: spec.codeOnly, timeoutMs: 20_000 } },
+    matchingInput("cmd/guard", spec.guard),
+  ],
 }
 
 /** As much of the fork's SDK as the run uses; the fork is found at run time, so it is typed here. */
@@ -75,7 +80,7 @@ interface Embedded {
 interface Sdk {
   readonly OpenCode: { readonly create: (options: Record<string, unknown>) => Promise<Embedded> }
 }
-const { OpenCode } = (await import(join(spec.fork, "packages/sdk/src/index.ts"))) as Sdk
+const { OpenCode } = (await import(externalInput(join(spec.fork, "packages/sdk/src/index.ts")))) as Sdk
 const opencode = await OpenCode.create({
   events: { persist: true },
   // The bundled model catalog only, as tests/compaction-prefix/run.ts says why.
@@ -93,7 +98,7 @@ try {
   const children: Record<string, unknown> = {}
   for (const id of ids) children[id] = await opencode.sessions.context({ sessionID: id }).catch(() => undefined)
   const result: Result = { messages, children, seen: sim.seen, head }
-  writeFileSync(join(spec.base, "result.json"), JSON.stringify(result, null, 2))
+  writeFileSync(join(base, "result.json"), JSON.stringify(result, null, 2))
 } finally {
   await opencode.close()
   sim.server.stop(true)

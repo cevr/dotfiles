@@ -1,5 +1,4 @@
-// @reads all
-// @reads-reason computed read at tests/guard.test.ts: const written = readdirSync(launchers).flatMap((hash) => readdirSync(join(launchers, hash)))
+// @reads cmd/guard cmd/kernel
 // accept: deep (56.4 s alone on a quiet host: 1-minute load 9.8–12.8 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // The guard in real OpenCode (the fork, through its SDK) on the scripted
 // model, beside the kernel: what only the real host proves. The guard's
@@ -17,14 +16,14 @@
 // in a scratch dir. The guard on its own is tested beside its code in
 // mods/guard and cmd/guard.
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs"
-import { readScratchFileSync as readFileSync } from "./read-path.ts"
+import { mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { readScratchDirectorySync as readdirSync, readScratchFileSync as readFileSync, scratchExistsSync as existsSync } from "./read-path.ts"
 import { getPriority } from "node:os"
 import { join, resolve } from "node:path"
 import { DIRTY, git, KEPT_FILE } from "./guard/repo.ts"
 import type { Result, Spec } from "./guard/run.ts"
 import { CELL_TASK, CHILD_SLEEP, DIRECT_TASK, DONE, HARMLESS_FILE, HARMLESS_OUT, HEAVY_NICE, killByPattern, LIGHT_NICE, POLICY_TASK, SLEEP_TASK } from "./guard/sim.ts"
-import { owned } from "./owned.ts"
+import { ownedCheckoutBun } from "./owned.ts"
 import { scratch as scratchDir } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
@@ -44,19 +43,17 @@ const run = async (name: string, spec: Pick<Spec, "task" | "codeOnly">): Promise
     file,
     JSON.stringify({ ...spec, base, fork: resolve(fork ?? ""), kernel: join(ROOT, "cmd/kernel"), guard: join(ROOT, "cmd/guard") } satisfies Spec),
   )
-  const child = owned([process.execPath, join(import.meta.dir, "guard/run.ts"), file], {
-    env: {
-      PATH: process.env.PATH ?? "",
-      HOME: home,
+  const child = ownedCheckoutBun("tests/guard/run.ts", {
+    scratchArgs: [file],
+    scratch: {
+      HOME: home, TMPDIR: base,
       XDG_CONFIG_HOME: join(home, ".config"),
       XDG_DATA_HOME: join(home, ".local/share"),
       XDG_STATE_HOME: join(home, ".local/state"),
       XDG_CACHE_HOME: join(home, ".cache"),
-      OPENCODE_DISABLE_MODELS_FETCH: "1",
     },
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
+    external: {},
+    values: { OPENCODE_DISABLE_MODELS_FETCH: "1" },
   })
   const timer = setTimeout(() => child.kill(), 120_000)
   const [stdout, stderr] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()])
