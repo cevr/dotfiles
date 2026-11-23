@@ -190,16 +190,16 @@ const megabytes = (bytes: number): string => `${(bytes / 1_000_000).toFixed(1)} 
  * The old builds deleted once a build is proven (`Builds`), each logged with its size: the handoff's
  * last step, never before the health check passed, and never on a rollback or a give-up. The record
  * is read inside the prune, under the builds lock. A prune that cannot take the lock or read what
- * runs deletes nothing, and says so; it never changes the handoff's outcome.
+ * runs deletes nothing, and says so. A failed prune skips commands; it does not erase proof.
  */
-const pruneBuilds = Effect.gen(function* () {
+const pruneBuilds = Effect.fn("Update.pruneProven")(function* (read: Effect.Effect<Record, UpdateFailed>) {
   const builds = yield* Builds
-  const records = yield* Records
   const log = yield* Log
-  yield* builds.prune(records.read).pipe(
+  return yield* builds.prune(Effect.map(read, Option.some)).pipe(
     Effect.tap((pruned) => Effect.forEach(pruned, (each) => log.line(`prune: deleted the old build ${each.name} (${megabytes(each.bytes)})`), { discard: true })),
     Effect.tap((pruned) => log.line(`prune: ${pruned.length} old builds deleted, ${megabytes(pruned.reduce((sum, each) => sum + each.bytes, 0))} freed`)),
-    Effect.catch((failed) => log.line(`prune: every build kept: ${failed.step}: ${failed.message}`)),
+    Effect.as(true),
+    Effect.catch((failed) => log.line(`prune: every build kept: ${failed.step}: ${failed.message}`).pipe(Effect.as(false))),
   )
 })
 
@@ -219,6 +219,20 @@ const failedStep = (step: string) => (failed: UpdateFailed) => Health.Sick({ plu
 
 /** What a refusal's notice and log line add: the update changed nothing. */
 const UNCHANGED = "nothing changed and the service was not restarted"
+
+const namesBuild = (actual: Option.Option<Build>, expected: Build) =>
+  Option.exists(actual, (build) =>
+    build.version === expected.version && build.dotfiles === expected.dotfiles && build.fork === expected.fork &&
+    build.command.length === expected.command.length && build.command.every((part, i) => part === expected.command[i]),
+  )
+
+/** A write acknowledgment is not a recorded fact. Check the identity, not just a matching version. */
+const requireBuild = (step: string, record: Option.Option<Record>, expected: Option.Option<Build>, fact: "installed" | "proven" = "installed") => {
+  if (Option.isSome(record) && Option.exists(expected, (build) => namesBuild(buildOf(record.value), build) && (fact === "installed" || namesBuild(goodOf(record.value), build)))) {
+    return Effect.succeed(record.value)
+  }
+  return Effect.fail(new UpdateFailed({ step, message: "the installed record does not name the expected build" }))
+}
 
 /**
  * The handoff, for a staged build with its plugin tree beside it: read the logins and what refuses the
@@ -307,8 +321,9 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Builds | Service 
   }
 
   /** The installed record names the staged build: the step before the restart; answers the failure's health, if it failed. */
-  const install = (before: Option.Option<Record>) =>
+  const install = (before: Option.Option<Record>, tried: Option.Option<Build>) =>
     Effect.forEach(Option.toArray(before), (record) => records.write(promoted(record)), { discard: true }).pipe(
+      Effect.andThen(Effect.flatMap(records.read, (record) => requireBuild("read back the installed build", record, tried))),
       Effect.as(Option.none<Health>()),
       Effect.catch((failed) => Effect.succeed(Option.some(failedStep("installed record")(failed)))),
     )
@@ -321,6 +336,7 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Builds | Service 
     if (Option.isNone(back) || Option.isNone(good)) return Option.some(Health.Sick({ plugin: "rollback", cause: "no good build to roll back to", final: true }))
     yield* log.line(`handoff: rolling back to ${good.value.version}`)
     return yield* records.write(back.value).pipe(
+      Effect.andThen(Effect.flatMap(records.read, (read) => requireBuild("read back the rollback build", read, good, "proven"))),
       Effect.as(Option.none<Health>()),
       Effect.catch((failed) => Effect.succeed(Option.some(failedStep(`rollback at ${failed.step}`)(failed)))),
     )
@@ -350,17 +366,22 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Builds | Service 
       const blocked = yield* noRollBack
       const recovery = recover(stage, health, Option.isNone(blocked))
       if (Recovery.$is("Proven")(recovery)) {
-        const record = yield* records.read
-        yield* Effect.forEach(Option.toArray(record), (current) => records.write(proven(current)), { discard: true }).pipe(
-          Effect.catch((failed) => log.line(`handoff: recording the good build failed: ${failed.message}`)),
-        )
+        const current = yield* Effect.flatMap(records.read, (record) => requireBuild("record the good build", record, tried))
+        yield* records.write(proven(current))
+        const proof = Effect.flatMap(records.read, (record) => requireBuild("read back the good build", record, tried, "proven"))
+        yield* proof
         yield* Option.match(provenNotice(health), { onNone: () => notice.clear, onSome: notice.show })
+        yield* proof
         yield* log.line("handoff: the build is proven and recorded as the good build")
         // The handoff's last steps. The prune reads the record and lists the share directory under the
         // builds lock daily's stage holds from its copy to its record write (`Builds`), not under this
         // mark, which daily never reads.
-        yield* pruneBuilds
-        yield* hostCommands
+        const pruned = yield* pruneBuilds(proof)
+        yield* proof
+        if (pruned) {
+          yield* hostCommands
+          yield* proof
+        }
         return "proven" satisfies Outcome
       }
       if (Recovery.$is("RolledBack")(recovery)) return yield* end("rolled-back", tried, failure, `${describeHealth(failure)}; rolled back`)
@@ -388,7 +409,7 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Builds | Service 
   // R2: a server config with our entries would start the build with our plugins twice, the tree's and the config's.
   const listed = yield* listedOurs
   if (Option.isSome(listed)) return yield* refuse(tried, "config", listed.value)
-  const failedInstall = yield* install(before)
+  const failedInstall = yield* install(before, tried)
   if (Option.isSome(failedInstall)) return yield* end("gave-up", tried, failedInstall.value, `${describeHealth(failedInstall.value)}; the service was not restarted`)
   return yield* ladder(tried, hadLogins).pipe(Effect.catch((failed) => {
     const failure = failedStep(failed.step)(failed)
