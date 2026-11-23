@@ -6,13 +6,16 @@
 //
 // One `bun test` per package, one at a time, niced, `--parallel=4`, in the package's own command (core's
 // `script/test.ts`), its JUnit report read per test. A listed file that is not there, a failed test, a file
-// that ran no test (an import that no longer resolves) and a run that exits red with no failed test are red;
+// that ran no test (an import that no longer resolves) and a nonzero exit no failed test accounts for are red
+// (a declared skip explains no exit: a package command that fails after its tests is red beside any skip);
 // a red file is run once more, and a file green on that rerun is a named flake. An expectation declares one
 // test red on a host by a condition read at run time (the version of the first bash on PATH) with its reason:
 // the test still runs, its failure there is a note, and its passing there (or its absence) is red, so a stale
 // expectation cannot stay. It waits while the 1-minute load is over 24 and for the host's fork-checks lock (at
 // most 30 minutes each), refuses to start under 6 GiB free on the Mac, and stops at its time bound: each is
-// "could not run", which holds a merge as a red does.
+// "could not run", which holds a merge as a red does. Each package prints its verdict and time as it ends; a run
+// past its bound, or stopped by a SIGTERM or SIGINT (a caller's own bound), prints a partial report: each package
+// finished, running or not started, with its time.
 //
 // Exit: 0 green, 1 red, 2 could not run, no fork named, or a list that does not parse. The last line is the summary.
 //
@@ -20,7 +23,7 @@
 //        (--fork defaults to OPENCODE_DEV; --list, --max-load and --lock are for tests)
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { Array as Arr, Cause, Clock, Config, Console, Context, Data, Duration, Effect, Exit, FileSystem, Layer, Match, Option, Path, Result, Schema, Stream } from "effect"
+import { Array as Arr, Cause, Clock, Config, Console, Context, Data, Duration, Effect, Exit, FileSystem, Layer, Match, Option, Path, Ref, Result, Schema, Stream } from "effect"
 import { Command, Flag } from "effect/cli"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import declared from "./fork-checks.json" with { type: "json" }
@@ -171,9 +174,11 @@ export const casesOf = (junit: string): ReadonlyArray<Case> => {
   return cases
 }
 
-/** One package's run: its package, the files it runs, and its expectations that hold on this host. */
+/** One package's run: its package, its command, the files it runs, and its expectations that hold on this host. */
 export interface Plan {
   readonly package: string
+  /** The package's test command (fork-checks.json `packages`), named when its exit is red. */
+  readonly command: ReadonlyArray<string>
   readonly files: ReadonlyArray<string>
   readonly expected: ReadonlyArray<Expectation>
   /** Its declared skips that hold on this host. */
@@ -221,16 +226,49 @@ const hostOf = (skip: Skip) =>
     () => "",
   )
 
+/** The exit bun gives when a test failed: the one nonzero exit a failed test in the report accounts for. */
+export const TESTS_FAILED = 1
+
+/** How a red names the whole run of a package (its exit), not one file: it holds each of the package's features. */
+const THE_RUN = "(the run)"
+
+/** A declared skip the report shows skipped: a note, named in the summary. It accounts for no exit of the runner. */
+export class SkipNote extends Data.TaggedClass("SkipNote")<{ readonly skip: Skip }> {}
+
+/**
+ * A failed test the report shows, and the exit its failure makes (bun's `TESTS_FAILED`): the only thing that accounts
+ * for a nonzero exit. One an active expectation declares is a note; any other is red besides.
+ */
+export class ExitExplanation extends Data.TaggedClass("ExitExplanation")<{ readonly failed: Case; readonly exit: typeof TESTS_FAILED; readonly expected: Option.Option<Expectation> }> {}
+
+/**
+ * Whether the runner's `code` is accounted for: 0 needs nothing; any other code only a failed test whose failure makes
+ * that very code. It takes explanations alone: a skip, declared or not, explains no exit, so a package command that
+ * fails after its tests (exit 7) is red beside any number of declared skips.
+ */
+export const exitAccounted = (code: number, explanations: ReadonlyArray<ExitExplanation>): boolean => code === 0 || explanations.some((each) => each.exit === code)
+
 export interface Judged {
   readonly reds: ReadonlyArray<Red>
+  /** The failed tests, each accounting for exit 1. */
+  readonly explanations: ReadonlyArray<ExitExplanation>
+  /** The declared skips that skipped. */
+  readonly skipped: ReadonlyArray<SkipNote>
+  /** What a reader sees: each expected failure, then each declared skip. */
   readonly notes: ReadonlyArray<string>
 }
 
+/** The note a declared skip that skipped makes. */
+const skipNoteText = (plan: Plan, note: SkipNote) => `${SKIPPED}${hostOf(note.skip)}: ${plan.package}/${note.skip.file} > ${note.skip.test}${WHY}${note.skip.reason}`
+/** The note an expected failure makes. */
+const expectedText = (plan: Plan, each: Expectation) => `expected red on bash ${each.host.bash}: ${plan.package}/${each.file} > ${each.test} (${each.reason})`
+
 /**
- * Judges one run of `plan` by its exit and its report's tests: the reds, and a note per expectation and declared skip
- * that held. Only an executed case (passed or failed) proves its file ran: a listed file with none is red, however many
- * skipped or todo cases it reports. A skipped or todo case is red unless the list declares it, and a declared skip that
- * ran, or is gone, is red.
+ * Judges one run of `plan` by its exit and its report's tests: the reds, the failed tests that account for the exit,
+ * and the declared skips that held. Only an executed case (passed or failed) proves its file ran: a listed file with
+ * none is red, however many skipped or todo cases it reports. A skipped or todo case is red unless the list declares
+ * it, and a declared skip that ran, or is gone, is red. A nonzero exit no failed test accounts for (`exitAccounted`)
+ * is red, naming the command and its exit.
  */
 export const judge = (plan: Plan, code: number, cases: ReadonlyArray<Case>): Judged => {
   const listed = cases.filter((found) => plan.files.includes(found.file))
@@ -261,21 +299,19 @@ export const judge = (plan: Plan, code: number, cases: ReadonlyArray<Case>): Jud
     if (ran.some(executed)) return [red(each.file, each.test, `declared skipped${hostOf(each)} but it ran: remove the skip`)]
     return []
   })
+  const explanations = listed.flatMap((found) =>
+    Arr.filter([new ExitExplanation({ failed: found, exit: TESTS_FAILED, expected: Arr.findFirst(expected, same(found)) })], () => found.status === "failed"),
+  )
+  const skipped = skips.flatMap((skip) => Arr.filter([new SkipNote({ skip })], () => listed.some((found) => !executed(found) && same(found)(skip))))
   const notes = [
-    ...expected.flatMap((each) =>
-      Arr.filter([`expected red on bash ${each.host.bash}: ${plan.package}/${each.file} > ${each.test} (${each.reason})`], () =>
-        cases.some((found) => found.status === "failed" && found.file === each.file && found.test === each.test),
-      ),
-    ),
-    ...skips.flatMap((each) =>
-      Arr.filter([`${SKIPPED}${hostOf(each)}: ${plan.package}/${each.file} > ${each.test}${WHY}${each.reason}`], () =>
-        cases.some((found) => !executed(found) && found.file === each.file && found.test === each.test),
-      ),
-    ),
+    ...explanations.flatMap((each) => Option.toArray(Option.map(each.expected, (expectation) => expectedText(plan, expectation)))),
+    ...skipped.map((note) => skipNoteText(plan, note)),
   ]
-  const reds = [...silent, ...failed, ...undeclared, ...stale, ...staleSkips]
-  const unexplained = code !== 0 && reds.length === 0 && notes.length === 0
-  return { reds: [...reds, ...Arr.filter([red("(the run)", "", `bun test exited ${code} with no failed test`)], () => unexplained)], notes }
+  const exit = Arr.filter(
+    [red(THE_RUN, "", `${plan.command.join(" ")} exited ${code}, and no failed test in its report accounts for it (a failed test exits ${TESTS_FAILED}; a skip accounts for no exit)`)],
+    () => !exitAccounted(code, explanations),
+  )
+  return { reds: [...silent, ...failed, ...undeclared, ...stale, ...staleSkips, ...exit], explanations, skipped, notes }
 }
 
 /** One run's request to a runner: the package's command, the files, the width and the time it has. */
@@ -320,6 +356,12 @@ export interface Limits {
   /** How long it waits for a calm host, and for the lock, before it could not run. */
   readonly waitMs: number
   readonly everyMs: number
+  /**
+   * How long the package runs may take once the lock is held, all of them together. The daily's merge step puts no
+   * bound of its own around the CLI (`featureStep` waits for it), so this is the daily's bound: 40 minutes, against
+   * the real list's 2.7 minutes on a quiet Mac and about 4 loaded (each run niced, at width 4). Only a hung run
+   * reaches it, and an unattended daily that holds a merge for a slow host loses a day, so the bound is wide.
+   */
   readonly timeBoundMs: number
   readonly diskFloor: number
   readonly threads: number
@@ -339,6 +381,7 @@ export interface Input {
 export const plansOf = (list: List, bash: Option.Option<string>, present: ReadonlySet<string> = new Set()): ReadonlyArray<Plan> =>
   Arr.dedupe(list.features.map((feature) => feature.package)).map((pkg) => ({
     package: pkg,
+    command: Option.getOrElse(Option.fromNullishOr(list.packages[pkg]), (): ReadonlyArray<string> => ["bun", "test"]),
     files: Arr.dedupe(list.features.filter((feature) => feature.package === pkg).flatMap((feature) => feature.files)),
     expected: activeExpectations(list, bash).filter((each) => each.package === pkg),
     skips: activeSkips(list, { bash, present }).filter((each) => each.package === pkg),
@@ -347,6 +390,7 @@ export const plansOf = (list: List, bash: Option.Option<string>, present: Readon
 const couldNot = (reason: string, notes: ReadonlyArray<string> = []): Verdict => ({ kind: "could-not-run", reason, notes })
 const tail = (text: string, lines = 30) => text.trimEnd().split("\n").slice(-lines).join("\n")
 const minutes = (ms: number) => `${Number((ms / 60_000).toFixed(3))} min`
+const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} s`
 
 /** Each listed file that is not in the checkout, as a red. */
 export const missingFiles = Effect.fn("ForkChecks.missingFiles")(function* (list: { readonly features: ReadonlyArray<Feature> }, fork: string) {
@@ -370,26 +414,40 @@ const patiently = Effect.fn("ForkChecks.patiently")(function* <R>(limits: Limits
   }
 })
 
-/** Waits for the load to drop to `limits.maxLoad`; answers whether it did. */
-const calm = Effect.fn("ForkChecks.calm")(function* (limits: Limits) {
+/** Waits for the load to drop to `limits.maxLoad` before `pkg` runs, saying so once when it must wait (a package's time counts the wait); answers whether it did. */
+const calm = Effect.fn("ForkChecks.calm")(function* (limits: Limits, pkg: string) {
   const gauge = yield* HostGauge
-  const ready = Effect.map(gauge.load, (load) => Option.map(Option.liftPredicate(load, (each) => each <= limits.maxLoad), (): Verdict => ({ kind: "green", notes: [] })))
-  return Option.isSome(yield* patiently(limits, ready))
+  const told = yield* Ref.make(false)
+  const say = (load: number) => Console.log(`fork-checks: ${pkg}: the 1-minute load is ${load.toFixed(1)}, over ${limits.maxLoad}: waiting for it to drop (at most ${minutes(limits.waitMs)})`)
+  // Said once: at the first read over the limit.
+  const tell = (load: number) =>
+    Effect.when(
+      Effect.when(say(load), Effect.map(Ref.getAndSet(told, true), (before) => !before)),
+      Effect.succeed(load > limits.maxLoad),
+    )
+  const ready = gauge.load.pipe(
+    Effect.tap(tell),
+    Effect.map((load) => Option.map(Option.liftPredicate(load, (each) => each <= limits.maxLoad), (): Verdict => ({ kind: "green", notes: [] }))),
+  )
+  const start = yield* Clock.currentTimeMillis
+  const calmed = Option.isSome(yield* patiently(limits, ready))
+  const waited = (yield* Clock.currentTimeMillis) - start
+  yield* Effect.when(Console.log(`fork-checks: ${pkg}: the load dropped to ${limits.maxLoad} or under after ${seconds(waited)}`), Effect.map(Ref.get(told), (said) => said && calmed))
+  return calmed
 })
 
 /** One run of `plan`, judged; could not run when the host stays loaded, the time bound passes or bun writes no report. */
 const runOnce = Effect.fn("ForkChecks.runOnce")(function* (input: Input, plan: Plan, deadline: number) {
-  if (!(yield* calm(input.limits))) return couldNot(`the 1-minute load stayed over ${input.limits.maxLoad} for ${minutes(input.limits.waitMs)} before ${plan.package} ran`)
+  if (!(yield* calm(input.limits, plan.package))) return couldNot(`the 1-minute load stayed over ${input.limits.maxLoad} for ${minutes(input.limits.waitMs)} before ${plan.package} ran`)
   const left = deadline - (yield* Clock.currentTimeMillis)
   if (left <= 0) return couldNot(`the time bound (${minutes(input.limits.timeBoundMs)}) passed before ${plan.package} ran`)
   yield* Console.log(`fork-checks: ${plan.package}: ${plan.files.length} files`)
   const path = yield* Path.Path
   const runner = yield* TestRunner
-  const command = Option.getOrElse(Option.fromNullishOr(input.list.packages[plan.package]), () => ["bun", "test"])
-  const ran = yield* runner.run({ cwd: path.join(input.fork, plan.package), command, files: plan.files, threads: input.limits.threads, timeoutMs: left })
-  // Each file's line: what its report says ran, so a log shows every listed file was run.
+  const ran = yield* runner.run({ cwd: path.join(input.fork, plan.package), command: plan.command, files: plan.files, threads: input.limits.threads, timeoutMs: left })
+  // Each file's line: what its whole report says ran, so a log shows every listed file was run.
   const report = Match.value(ran).pipe(
-    Match.when({ kind: "exited" }, (out) => Option.map(out.junit, casesOf)),
+    Match.when({ kind: "exited" }, (out) => Option.map(Option.filter(out.junit, whole), casesOf)),
     Match.orElse(() => Option.none<ReadonlyArray<Case>>()),
   )
   yield* Effect.forEach(Option.toArray(report), (cases) =>
@@ -403,30 +461,41 @@ const runOnce = Effect.fn("ForkChecks.runOnce")(function* (input: Input, plan: P
   )
   return Match.value(ran).pipe(
     Match.when({ kind: "timed-out" }, (out): Verdict => couldNot(`${plan.package} ran past the time bound (${minutes(input.limits.timeBoundMs)}), its process group ended:\n${tail(out.log)}`)),
-    Match.when({ kind: "exited" }, (out): Verdict =>
-      Option.match(out.junit, {
-        onNone: (): Verdict => {
-          // A run that exits 0 with no report proved nothing ran: each listed file is red. A red exit with none could not run.
-          if (out.code !== 0) return couldNot(`bun test in ${plan.package} exited ${out.code} and wrote no report:\n${tail(out.log)}`)
-          const reds = plan.files.map((file) => ({ package: plan.package, file, test: "", why: "the runner exited 0 and wrote no report: the file is not proven to have run" }))
-          return { kind: "red", reds, notes: [`${plan.package} log:\n${tail(out.log)}`] }
-        },
-        onSome: (junit) => {
-          const judged = judge(plan, out.code, casesOf(junit))
-          if (judged.reds.length === 0) return { kind: "green", notes: judged.notes }
-          return { kind: "red", reds: judged.reds, notes: [...judged.notes, `${plan.package} log:\n${tail(out.log)}`] }
-        },
-      }),
-    ),
+    Match.when({ kind: "exited" }, (out) => exitedVerdict(plan, out)),
     Match.exhaustive,
   )
 })
+
+/** Whether bun finished writing its JUnit report: it ends with `</testsuites>`. A report cut short proves nothing. */
+export const whole = (junit: string) => /<\/testsuites>\s*$/.test(junit)
+
+/**
+ * The verdict of a run that exited, by its report. With a whole report, `judge`'s. Without one (none, or one cut
+ * short): a 0 exit proved nothing ran, so each listed file is red; any other exit could not run. Either way the
+ * command, its exit and its log's tail are named.
+ */
+const exitedVerdict = (plan: Plan, out: Extract<Ran, { readonly kind: "exited" }>): Verdict => {
+  const log = `${plan.package} log (${plan.command.join(" ")}, exit ${out.code}):\n${tail(out.log)}`
+  return Option.match(Option.filter(out.junit, whole), {
+    onNone: (): Verdict => {
+      const what = Option.match(out.junit, { onNone: () => "wrote no report", onSome: () => "wrote a report cut short (no closing </testsuites>)" })
+      if (out.code !== 0) return couldNot(`${plan.command.join(" ")} in ${plan.package} exited ${out.code} and ${what}:\n${tail(out.log)}`)
+      const reds = plan.files.map((file) => ({ package: plan.package, file, test: "", why: `the runner exited 0 and ${what}: the file is not proven to have run` }))
+      return { kind: "red", reds, notes: [log] }
+    },
+    onSome: (junit): Verdict => {
+      const judged = judge(plan, out.code, casesOf(junit))
+      if (judged.reds.length === 0) return { kind: "green", notes: judged.notes }
+      return { kind: "red", reds: judged.reds, notes: [...judged.notes, log] }
+    },
+  })
+}
 
 /** `plan`'s run, and once more for its red files: a file green on the rerun is a named flake, a file red twice stays red. */
 const runPlan = Effect.fn("ForkChecks.runPlan")(function* (input: Input, plan: Plan, deadline: number) {
   const first = yield* runOnce(input, plan, deadline)
   if (first.kind !== "red") return first
-  const whole = first.reds.some((red) => red.file === "(the run)")
+  const whole = first.reds.some((red) => red.file === THE_RUN)
   const files = Arr.filter(plan.files, (file) => whole || first.reds.some((red) => red.file === file))
   yield* Console.log(`fork-checks: ${plan.package}: ${files.length} red files; running them once more`)
   const second = yield* runOnce(input, { ...plan, files }, deadline)
@@ -434,20 +503,56 @@ const runPlan = Effect.fn("ForkChecks.runPlan")(function* (input: Input, plan: P
   return { kind: "green", notes: [...second.notes, `flaky, green on the rerun: ${files.map((file) => `${plan.package}/${file}`).join(", ")}`] } satisfies Verdict
 })
 
-/** Every plan in turn: stops at the first that could not run, else gathers the reds and notes. */
-const runAll = Effect.fn("ForkChecks.runAll")(function* (input: Input, deadline: number) {
+/** Where one package's run stands: its features, when it started, and when it ended with what. */
+export interface Stage {
+  readonly package: string
+  readonly features: ReadonlyArray<string>
+  readonly started: Option.Option<number>
+  readonly ended: Option.Option<{ readonly at: number; readonly kind: Verdict["kind"] }>
+}
+
+/** Each package's stage at `now`: finished with its verdict and time, running and for how long, or not started. */
+export const progressOf = (stages: ReadonlyArray<Stage>, now: number): string =>
+  stages
+    .map((stage) => {
+      const name = `${stage.package} [${stage.features.join(", ")}]`
+      return Option.match(stage.started, {
+        onNone: () => `${name}: not started`,
+        onSome: (start) =>
+          Option.match(stage.ended, {
+            onNone: () => `${name}: running for ${seconds(now - start)}`,
+            onSome: (end) => `${name}: ${end.kind} in ${seconds(end.at - start)}`,
+          }),
+      })
+    })
+    .join("; ")
+
+/** How a note names the packages' progress when a run could not finish. */
+const PROGRESS = "progress"
+
+/** Every plan in turn, each one's stage kept in `stages`: stops at the first that could not run, else gathers the reds and notes. */
+const runAll = Effect.fn("ForkChecks.runAll")(function* (input: Input, deadline: number, stages: Ref.Ref<ReadonlyArray<Stage>>) {
   const gauge = yield* HostGauge
   const bash = yield* gauge.bash
   // Only the commands a declared skip names are looked up.
   const commands = commandsOf(input.list)
   const found = yield* Effect.forEach(commands, (command) => gauge.has(command))
   const present = new Set(commands.filter((_, at) => found[at]))
+  const plans = plansOf(input.list, bash, present)
+  const idsOf = (pkg: string) => input.list.features.filter((feature) => feature.package === pkg).map((feature) => feature.id)
+  yield* Ref.set(stages, plans.map((plan) => ({ package: plan.package, features: idsOf(plan.package), started: Option.none(), ended: Option.none() })))
+  const mark = (pkg: string, change: (stage: Stage) => Stage) => Ref.update(stages, (all) => all.map((stage) => Option.getOrElse(Option.map(Option.liftPredicate(stage, (each) => each.package === pkg), change), () => stage)))
   const reds: Array<Red> = []
   const notes: Array<string> = []
-  for (const plan of plansOf(input.list, bash, present)) {
+  for (const plan of plans) {
+    const start = yield* Clock.currentTimeMillis
+    yield* mark(plan.package, (stage) => ({ ...stage, started: Option.some(start) }))
     const verdict = yield* runPlan(input, plan, deadline)
+    const end = yield* Clock.currentTimeMillis
+    yield* mark(plan.package, (stage) => ({ ...stage, ended: Option.some({ at: end, kind: verdict.kind }) }))
+    yield* Console.log(`fork-checks: ${plan.package}: ${verdict.kind} in ${seconds(end - start)}`)
     notes.push(...verdict.notes)
-    if (verdict.kind === "could-not-run") return couldNot(verdict.reason, notes)
+    if (verdict.kind === "could-not-run") return couldNot(verdict.reason, [...notes, `${PROGRESS}: ${progressOf(yield* Ref.get(stages), end)}`])
     if (verdict.kind === "red") reds.push(...verdict.reds)
   }
   if (reds.length > 0) return { kind: "red", reds, notes } satisfies Verdict
@@ -490,18 +595,39 @@ export const activeList = Effect.fn("ForkChecks.activeList")(function* (list: Li
   return { features, notes }
 })
 
-/** The checks over the checkout: the features it holds (`activeList`), missing files first, then the disk floor, the lock, and each package's run. */
+/** How the partial report a stopped run prints names why it stopped. */
+export const STOPPED = "stopped by a signal (the caller's own bound, or a kill) before it finished"
+
+/** The partial report of a run stopped from outside: each package finished, running or not started, with its time; the last line could not run. */
+const stoppedReport = (notes: ReadonlyArray<string>, began: number, stages: Ref.Ref<ReadonlyArray<Stage>>) =>
+  Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis
+    const progress = Arr.match(yield* Ref.get(stages), {
+      onEmpty: () => "no package had started (it was waiting for a calm host, the disk or the lock)",
+      onNonEmpty: (all) => progressOf(all, now),
+    })
+    for (const note of notes) yield* Console.log(note)
+    yield* Console.log(`fork-checks: COULD NOT RUN: ${STOPPED}, after ${seconds(now - began)}; ${PROGRESS}: ${progress}`)
+  })
+
+/**
+ * The checks over the checkout: the features it holds (`activeList`), missing files first, then the disk floor, the
+ * lock, and each package's run. Stopped from outside (a SIGTERM or SIGINT interrupts the CLI), it prints a partial
+ * report first: what finished, what was running, each with its time; the CLI then exits 2, could not run.
+ */
 export const checkFork = Effect.fn("ForkChecks.check")(function* (input: Input) {
+  const began = yield* Clock.currentTimeMillis
   const active = yield* activeList(input.list, input.fork)
+  const stages = yield* Ref.make<ReadonlyArray<Stage>>([])
   const verdict = yield* Arr.match(active.features, {
     onEmpty: () => Effect.succeed<Verdict>({ kind: "green", notes: [] }),
-    onNonEmpty: (features) => checkHeld({ ...input, list: { ...input.list, features } }),
-  })
+    onNonEmpty: (features) => checkHeld({ ...input, list: { ...input.list, features } }, stages),
+  }).pipe(Effect.onInterrupt(() => stoppedReport(active.notes, began, stages)))
   return { ...verdict, notes: [...active.notes, ...verdict.notes] } satisfies Verdict
 })
 
-/** The checks over features the checkout holds. A host that cannot be read could not run. */
-const checkHeld = Effect.fn("ForkChecks.checkHeld")(function* (input: Input) {
+/** The checks over features the checkout holds, each package's stage kept in `stages`. A host that cannot be read could not run. */
+const checkHeld = Effect.fn("ForkChecks.checkHeld")(function* (input: Input, stages: Ref.Ref<ReadonlyArray<Stage>>) {
   const missing = yield* missingFiles(input.list, input.fork)
   if (missing.length > 0) return { kind: "red", reds: missing, notes: [] } satisfies Verdict
   const gauge = yield* HostGauge
@@ -511,14 +637,14 @@ const checkHeld = Effect.fn("ForkChecks.checkHeld")(function* (input: Input) {
     if ((yield* gauge.floored) && free < input.limits.diskFloor)
       return couldNot(`${(free / 2 ** 30).toFixed(1)} GiB free on ${input.fork}'s disk, under the ${(input.limits.diskFloor / 2 ** 30).toFixed(0)} GiB floor`)
     const deadline = (yield* Clock.currentTimeMillis) + input.limits.timeBoundMs
-    const verdict = yield* patiently(input.limits, lock.holding(input.lock, runAll(input, deadline)))
+    const verdict = yield* patiently(input.limits, lock.holding(input.lock, runAll(input, deadline, stages)))
     return Option.getOrElse(verdict, () => couldNot(`another fork-checks run held the host's lock for ${minutes(input.limits.waitMs)}`))
   })
   return yield* checked.pipe(Effect.catchTag("HostUnread", (error) => Effect.succeed(couldNot(`the host could not be read: ${error.message}`))))
 })
 
-/** The features that list `red`'s file. */
-const featuresOf = (list: List, red: Red) => list.features.filter((feature) => feature.package === red.package && feature.files.includes(red.file)).map((feature) => feature.id)
+/** The features that list `red`'s file; every feature of its package for a red of the whole run. */
+const featuresOf = (list: List, red: Red) => list.features.filter((feature) => feature.package === red.package && (red.file === THE_RUN || feature.files.includes(red.file))).map((feature) => feature.id)
 
 /** The report's lines; the last is the summary, naming each red test, its features and the merge's range (`over …`) when the head is a merge. */
 export const reportLines = (list: List, verdict: Verdict, range: Option.Option<string>): ReadonlyArray<string> => {
