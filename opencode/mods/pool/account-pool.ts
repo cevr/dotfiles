@@ -9,7 +9,7 @@
 // The AccountPool decider, made for the pool's rules (its cache life), and
 // each command it decides with its events and rejections, in the order a
 // request meets them.
-import { DateTime, Effect, Option, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
 import {
   DEFAULT_HOLD_MS,
@@ -29,6 +29,7 @@ import {
   WINDOW_MS,
 } from "./accounts.ts"
 import { accountWide, carryOver, QuotaReading } from "./quota.ts"
+import { tryAgainAt } from "./usage-text.ts"
 import { Hold } from "./status.ts"
 
 /** One pool: the integration whose logins it holds (`anthropic`). Several providers may share one. */
@@ -97,7 +98,8 @@ const listLogins = (state: AccountPoolState, command: ListLogins): Effect.Effect
 
 // ── PlaceRequest ──
 // A model request of a session goes out: on the run's pin while its account
-// is not held, else on the first account of a new placement, which keeps the
+// is not held and its admission leaves it eligible (`eligible`), else on the
+// first account of a new placement, which keeps the
 // account its cache is on while the cache lives. A session with no cache of its
 // own that reads another's (a fork reads its source's) keeps that one's account.
 // A session whose agent keeps a shorter lifetime than the provider's asks for
@@ -110,6 +112,12 @@ export const PlaceRequest = Schema.TaggedStruct("PlaceRequest", {
   cacheLifeMs: Schema.optionalKey(Schema.Number),
   /** The session whose cache the request reads when the session has none of its own: a fork's source. */
   cacheOf: Schema.optionalKey(Schema.String),
+  /**
+   * The accounts the request's admission leaves eligible for its model
+   * (pace.ts `eligibleFor`): the run's pin and its cache hold only on one of
+   * them. Absent: the admission named none (unmeasured), every account is.
+   */
+  eligible: Schema.optionalKey(Schema.Array(Schema.String)),
 })
 export interface PlaceRequest extends Schema.Schema.Type<typeof PlaceRequest> {}
 
@@ -143,7 +151,7 @@ export class NoAccount extends Schema.TaggedError<NoAccount>()("NoAccount", {
 export class AccountsHeld extends Schema.TaggedError<AccountsHeld>()("AccountsHeld", {
   sessionID: Schema.String,
   kind: RequestKind,
-  retryAt: Schema.Number,
+  retryAt: Schema.Finite,
   /** When every account is held for a new sign-in, those accounts (no time opens them; only a sign-in does); else none. */
   signIn: Schema.Array(Schema.String),
 }) {}
@@ -154,8 +162,8 @@ export class AccountsHeld extends Schema.TaggedError<AccountsHeld>()("AccountsHe
  */
 export const heldMessage = (error: AccountsHeld): string => {
   if (error.signIn.length > 0)
-    return `dotfiles-opencode.pool: every pool account needs a new sign-in (${error.signIn.join(", ")}). Sign in to them again.`
-  return `dotfiles-opencode.pool: all pool accounts are held; the first opens at ${DateTime.formatIso(DateTime.makeUnsafe(error.retryAt))}`
+    return `dotfiles-opencode.pool: every pool account needs a new sign-in (${error.signIn.join(", ")}). Sign in to them again; ${tryAgainAt(error.retryAt)} if a login is signed in.`
+  return `dotfiles-opencode.pool: all pool accounts are held; ${tryAgainAt(error.retryAt)}`
 }
 
 export declare namespace PlaceRequest {
@@ -173,10 +181,11 @@ const placeRequest = (
     pin !== undefined &&
     now - pin.at < PIN_IDLE_MS &&
     state.credentials.includes(pin.credentialID) &&
-    !held(state, pin.credentialID, now)
+    !held(state, pin.credentialID, now) &&
+    Option.match(Option.fromUndefinedOr(command.eligible), { onNone: () => true, onSome: (ids) => ids.includes(pin.credentialID) })
       ? pin.credentialID
       : undefined
-  const choice = pinned ?? rank(state, command.sessionID, now, rules, command.cacheOf)[0]
+  const choice = pinned ?? rank(state, command.sessionID, now, rules, command.cacheOf, command.eligible)[0]
   if (choice === undefined) return Effect.fail(new NoAccount({ sessionID: command.sessionID, kind: command.kind }))
   // Placement ranks held accounts last: a held choice means every account is held.
   if (held(state, choice, now)) {
@@ -234,7 +243,7 @@ const takeReading = (
   now: number,
 ): Effect.Effect<ReadonlyArray<ReadingTaken | HoldCleared>> => {
   const { credentialID } = command
-  const reading = carryOver(state.readings[credentialID], command.reading, now)
+  const reading = carryOver(state.readings[credentialID], command.reading)
   const refusal = reading.refusal
   const refused =
     refusal !== undefined && (refusal.until === undefined || refusal.until > now)

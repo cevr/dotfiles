@@ -170,6 +170,8 @@ export class ResetsStore extends Context.Service<
   ResetsStore,
   {
     readonly read: Effect.Effect<ResetsState>
+    /** Read just the claim ledger to offer an observation, without reading waits, grants or reservations. */
+    readonly claims: Effect.Effect<ResetsState["claims"]>
     /** Write what `events` change; `state` is the state with them folded in. */
     readonly record: (events: ReadonlyArray<ResetsEvent>, state: ResetsState) => Effect.Effect<void>
   }
