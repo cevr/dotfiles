@@ -1,5 +1,5 @@
 // @reads all
-// @reads-reason subprocess reads at tests/plugin-start.test.ts: const root = spawnSync(["mktemp", "-d", "-t", "plugin-start"]).stdout.toString().trim()
+// @reads-reason nonliteral subprocess arguments at scripts/perf/plugin-start.ts: Bun.spawnSync(["git", "init", "-q", directory])
 // accept: one at a time (it measures each plugin's setup time and the service's CPU at start).
 // Our server plugins start without holding a location up: a scratch fork service with
 // daily's server plugins (scripts/perf/plugin-start.ts, from its own OTLP spans) opens
@@ -20,12 +20,13 @@
 // scratch HOME, as daily's stage or a handoff's prune would: only those two take it, never a
 // plugin's setup or a location's start, so a held lock delays no location.
 import { describe, expect, test } from "bun:test"
-import { spawnSync } from "bun"
 import { Deferred, Effect } from "effect"
 import { exclusively } from "../mods/work/process/flock.ts"
 import { buildsLock } from "../mods/update/settings.ts"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { type Measure, measure, rows } from "../scripts/perf/plugin-start.ts"
+import { externalInput } from "./read-path.ts"
+import { scratch } from "./scratch.ts"
 // The scratch service is stopped once this test process is gone, however it went (testbeds/reaper/start.ts).
 import "../testbeds/reaper/start.ts"
 
@@ -66,9 +67,10 @@ describe.skipIf(!fork)("our server plugins at a service's start", () => {
       Effect.runPromise(
         Effect.gen(function* () {
           // The scratch root `measure` runs in (and removes); the lock is taken in its HOME before the service starts.
-          const root = spawnSync(["mktemp", "-d", "-t", "plugin-start"]).stdout.toString().trim()
+          using temp = scratch("plugin-start-")
+          const root = temp.path
           const release = yield* holdBuildsLock(`${root}/home`)
-          check(yield* Effect.promise(() => measure({ launch: forkLaunch(fork ?? "", process.execPath), locations: 3, alone: 2, root })).pipe(Effect.ensuring(release)))
+          check(yield* Effect.promise(() => measure({ launch: forkLaunch(externalInput(fork ?? ""), process.execPath), locations: 3, alone: 2, root })).pipe(Effect.ensuring(release)))
         }),
       ),
     120_000,
