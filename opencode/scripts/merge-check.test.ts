@@ -1,5 +1,5 @@
 // @reads all
-// @reads-reason subprocess reads at scripts/merge-check.test.ts: expect(scriptTests(parseNameStatus("M\tscripts/fixtures/data.json\n"), exists, scripts)).toEqua
+// @reads-reason subprocess reads at scripts/merge-check.test.ts: const child = yield* spawner.spawn(ChildProcess.make("bun", ["scripts/gate.ts", "--merge", "HEA
 // The legs of a land's merge check (scripts/merge-check.ts, which scripts/gate.ts --merge runs as given): which
 // scripts/ tests a diff selects, and that a selected test is in the leg the merge check runs.
 //
@@ -147,6 +147,7 @@ describe("the fixed-seed unit leg of land", () => {
       expect(inventory.filter((file) => !selected.has(file))).toEqual([])
       const memo = new Map<string, ReadonlyArray<string>>()
       expect([...acceptance].filter((file) => !acceptReach(workspace, file, memo).has(file))).toEqual([])
+      expect(affectedUnits(["../local-bin.sh"], unit)).toContain("mods/update/git/source.test.ts")
       const outside = "../example.txt"
       expect(affectedUnits([outside], { files: ["unit.test.ts"], inputs: () => new Set(), reads: () => [], observed: () => [outside] })).toEqual(["unit.test.ts"])
     }),
