@@ -1,0 +1,300 @@
+{
+  "about": "Each Chrome argument list without the keychain flags of Exact's 13 launches (~/Developer/vendor/exact at 7b80cf82052646b292d77f61656f3afeb2fcbf8d) and of manna's launcher at the 7 old commits the 2026-11-22 bisect ran (each the program dropped); a template's ${…} is X, a spread or a name is <its text>.",
+  "commit": "7b80cf82052646b292d77f61656f3afeb2fcbf8d",
+  "launches": [
+    {
+      "source": "scripts/metrics.mjs:510",
+      "args": [
+        "--headless=new",
+        "--remote-debugging-pipe",
+        "--user-data-dir=X",
+        "--no-sandbox",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "about:blank"
+      ]
+    },
+    {
+      "source": "scripts/agent-launch.mjs:525",
+      "args": [
+        "--headless=new",
+        "--remote-debugging-pipe",
+        "--user-data-dir=X",
+        "--no-sandbox",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--disable-component-update",
+        "<...args>",
+        "about:blank"
+      ]
+    },
+    {
+      "source": "scripts/agent-browser.test.mjs:320",
+      "args": [
+        "--headless=new",
+        "--no-sandbox",
+        "--disable-gpu",
+        "--disable-background-networking",
+        "--disable-component-update",
+        "--disable-sync",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--remote-debugging-port=0",
+        "--user-data-dir=X",
+        "about:blank"
+      ]
+    },
+    {
+      "source": "scripts/stress-metrics.mjs:80",
+      "args": [
+        "--headless=new",
+        "--remote-debugging-pipe",
+        "--user-data-dir=X",
+        "--no-sandbox",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--no-first-run",
+        "--disable-background-timer-throttling",
+        "--disable-renderer-backgrounding",
+        "--disable-backgrounding-occluded-windows",
+        "--no-default-browser-check",
+        "about:blank"
+      ]
+    },
+    {
+      "source": "scripts/canvasparity.mjs:113",
+      "args": [
+        "--headless=new",
+        "--disable-gpu",
+        "--allow-file-access-from-files",
+        "--user-data-dir=X",
+        "--virtual-time-budget=5000",
+        "--dump-dom",
+        "file://X?scale=X&steps=X"
+      ]
+    },
+    {
+      "source": "scripts/windows.test.mjs:324",
+      "args": [
+        "--headless=new",
+        "--remote-debugging-pipe",
+        "--user-data-dir=X",
+        "--no-sandbox",
+        "--no-first-run",
+        "--disable-background-networking",
+        "about:blank"
+      ]
+    },
+    {
+      "source": "scripts/smoke-auth.mjs:148",
+      "args": [
+        "--headless=new",
+        "<DESKTOP_INPUT>",
+        "--remote-debugging-pipe",
+        "--window-size=500,700",
+        "--user-data-dir=X",
+        "--no-sandbox",
+        "--no-first-run",
+        "--disable-background-networking",
+        "about:blank"
+      ]
+    },
+    {
+      "source": "host/web/parity.mjs:293",
+      "args": [
+        "--headless=new",
+        "--disable-gpu",
+        "--user-data-dir=X",
+        "--no-sandbox",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--remote-debugging-pipe",
+        "about:blank"
+      ]
+    },
+    {
+      "source": "host/web/tests/holds.mjs:33",
+      "args": [
+        "--headless=new",
+        "--no-sandbox",
+        "--remote-debugging-pipe",
+        "--disable-background-networking",
+        "--user-data-dir=X/chrome",
+        "about:blank"
+      ]
+    },
+    {
+      "source": "host/web/tests/collection.mjs:90",
+      "args": [
+        "--headless=new",
+        "--no-sandbox",
+        "--remote-debugging-pipe",
+        "--disable-background-networking",
+        "--user-data-dir=X/chrome",
+        "about:blank"
+      ]
+    },
+    {
+      "source": "host/web/tests/navigation.mjs:149",
+      "args": [
+        "--headless=new",
+        "--no-sandbox",
+        "--remote-debugging-pipe",
+        "--no-first-run",
+        "--disable-background-networking",
+        "--user-data-dir=X/chrome",
+        "about:blank"
+      ]
+    },
+    {
+      "source": "host/web/tests/field-range.test.mjs:55",
+      "args": [
+        "<...(process.env.EXACT_HEADED_ORACLE ? [] : ['--headless=new'])>",
+        "--remote-debugging-pipe",
+        "--window-size=600,400",
+        "--user-data-dir=X",
+        "--no-sandbox",
+        "--no-first-run",
+        "--disable-background-networking",
+        "about:blank"
+      ]
+    },
+    {
+      "source": "host/web/tests/page.test.mjs:16",
+      "args": [
+        "--headless=new",
+        "--remote-debugging-pipe",
+        "--user-data-dir=X",
+        "--no-sandbox",
+        "--no-first-run",
+        "--disable-background-networking",
+        "about:blank"
+      ]
+    },
+    {
+      "source": "manna@cac2ef674:apps/hymnal-exact/tools/web/chrome.ts",
+      "args": [
+        "--headless=new",
+        "--user-data-dir=X",
+        "--remote-debugging-port=0",
+        "--mute-audio",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-background-networking",
+        "--disable-component-update",
+        "--disable-sync",
+        "--disable-default-apps",
+        "--window-size=430,932",
+        "about:blank"
+      ]
+    },
+    {
+      "source": "manna@9ba6d5c10:apps/hymnal-exact/tools/web/chrome.ts",
+      "args": [
+        "--headless=new",
+        "--user-data-dir=X",
+        "--remote-debugging-port=0",
+        "--mute-audio",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-background-networking",
+        "--disable-component-update",
+        "--disable-sync",
+        "--disable-default-apps",
+        "--window-size=430,932",
+        "about:blank"
+      ]
+    },
+    {
+      "source": "manna@8f74dda98:apps/hymnal-exact/tools/web/chrome.ts",
+      "args": [
+        "--headless=new",
+        "--user-data-dir=X",
+        "--remote-debugging-port=0",
+        "--mute-audio",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-background-networking",
+        "--disable-component-update",
+        "--disable-sync",
+        "--disable-default-apps",
+        "--window-size=430,932",
+        "about:blank"
+      ]
+    },
+    {
+      "source": "manna@b8fdf432c:apps/hymnal-exact/tools/web/chrome.ts",
+      "args": [
+        "--headless=new",
+        "--user-data-dir=X",
+        "--remote-debugging-port=0",
+        "--mute-audio",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-background-networking",
+        "--disable-component-update",
+        "--disable-sync",
+        "--disable-default-apps",
+        "--window-size=430,932",
+        "about:blank"
+      ]
+    },
+    {
+      "source": "manna@b82c2dfd0:apps/hymnal-exact/tools/web/chrome.ts",
+      "args": [
+        "--headless=new",
+        "--user-data-dir=X",
+        "--remote-debugging-port=0",
+        "--mute-audio",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-background-networking",
+        "--disable-component-update",
+        "--disable-sync",
+        "--disable-default-apps",
+        "--window-size=430,932",
+        "about:blank"
+      ]
+    },
+    {
+      "source": "manna@2f9c7e771:apps/hymnal-exact/tools/web/chrome.ts",
+      "args": [
+        "--headless=new",
+        "--user-data-dir=X",
+        "--remote-debugging-port=0",
+        "--mute-audio",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-background-networking",
+        "--disable-component-update",
+        "--disable-sync",
+        "--disable-default-apps",
+        "--window-size=430,932",
+        "about:blank"
+      ]
+    },
+    {
+      "source": "manna@ab1d0ef10:apps/hymnal-exact/tools/web/chrome.ts",
+      "args": [
+        "--headless=new",
+        "--user-data-dir=X",
+        "--remote-debugging-port=0",
+        "--mute-audio",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-background-networking",
+        "--disable-component-update",
+        "--disable-sync",
+        "--disable-default-apps",
+        "--window-size=430,932",
+        "about:blank"
+      ]
+    }
+  ]
+}
