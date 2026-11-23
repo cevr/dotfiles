@@ -1,13 +1,13 @@
-// @reads all
-// @reads-reason computed read at ../workbox/test/install-bin.test.ts: const held = lstatSync(join(installed, "zshenv")).ino
+// @reads ../linux/hetzner-workbox/RUNBOOK.md ../workbox/README.md ../workbox/bin/* ../workbox/zshenv ../workbox/zshrc
 // workbox/install-bin.sh, as the fleet update runs it from the installed build's tree (`current.plugins/workbox/`)
 // once a build is proven: it installs that tree's commands and shell files, so the workbox's ~/.zshenv and
 // ~/.zshrc are the verified build's, whatever the live checkout holds. It runs here in a scratch HOME on a
 // copy of the script in a scratch tree; nothing touches the real host. INSTALL_BIN_UNDER_TEST names another
 // copy of the script to run (an older one, to see these cases red against it).
 import { afterAll, describe, expect, test } from "bun:test"
-import { closeSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync as readCheckoutFileSync, readSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
+import { closeSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync as readCheckoutFileSync, readSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { externalInput, matchingInput, readScratchFileSync as readFileSync, readScratchLinkSync as readlinkSync, scratchInput } from "../../opencode/tests/read-path.ts"
+import { spawnScratchShellFile, spawnScratchShellFileSync, writeScratchScript } from "../../opencode/tests/scratch-child.ts"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -15,16 +15,15 @@ const scratch = mkdtempSync(join(tmpdir(), "install-bin-test-"))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
 const underTest = process.env.INSTALL_BIN_UNDER_TEST
-const workboxDir = join(import.meta.dir, "..")
+const installer = () => readCheckoutFileSync(underTest === undefined ? matchingInput("../workbox/install-bin.sh") : externalInput(underTest), "utf8")
 
 let n = 0
 /** A scratch tree's workbox/ holding the script and `files` (paths under workbox/), in a fresh root beside a scratch HOME. */
-const tree = (root: string, label: string, files: Record<string, string>) => {
+const tree = (root: string, label: string, files: Record<string, string>, script = installer()) => {
   const workbox = join(root, label, "workbox")
   mkdirSync(join(workbox, "bin"), { recursive: true })
-  if (underTest === undefined) copyFileSync(join(workboxDir, "install-bin.sh"), join(workbox, "install-bin.sh"))
-  else copyFileSync(externalInput(underTest), join(workbox, "install-bin.sh"))
-  for (const [path, text] of Object.entries(files)) writeFileSync(join(workbox, path), text)
+  writeScratchScript(join(workbox, "install-bin.sh"), script)
+  for (const [path, text] of Object.entries(files)) writeScratchScript(join(workbox, path), text)
   return workbox
 }
 
@@ -37,15 +36,18 @@ const host = (zshenv = "export FROM=tree\n") => {
   return { root, workbox, home, installed: join(home, ".local", "share", "workbox") }
 }
 
-const env = (home: string) => ({ HOME: home, PATH: "/usr/bin:/bin", TMPDIR: home })
+const input = (home: string, tools = join(home, "tools")) => {
+  mkdirSync(tools, { recursive: true })
+  return { cwd: home, tools, paths: {}, values: {} }
+}
 
 const run = (workbox: string, home: string) => {
-  const done = Bun.spawnSync(["sh", join(workbox, "install-bin.sh")], { cwd: home, env: env(home), stdout: "pipe", stderr: "pipe" })
+  const done = spawnScratchShellFileSync(join(workbox, "install-bin.sh"), [], input(home))
   return { code: done.exitCode, stderr: done.stderr.toString() }
 }
 
 /** Where ~/<name> points, or "file" when it is no link. */
-const pointer = (home: string, name: string) => (lstatSync(join(home, name)).isSymbolicLink() ? readlinkSync(join(home, name)) : "file")
+const pointer = (home: string, name: string) => (lstatSync(scratchInput(join(home, name))).isSymbolicLink() ? readlinkSync(join(home, name)) : "file")
 
 const hash = (path: string) => Bun.hash(readFileSync(path)).toString()
 
@@ -70,11 +72,11 @@ describe("install-bin.sh delivers the tree's shell files", () => {
   test("a later tree replaces the installed copy by rename (a new file, never a write into the one a shell reads)", () => {
     const { workbox, home, installed } = host("export FROM=first\n")
     expect(run(workbox, home).code).toBe(0)
-    const held = lstatSync(join(installed, "zshenv")).ino
+    const held = lstatSync(scratchInput(join(installed, "zshenv"))).ino
     writeFileSync(join(workbox, "zshenv"), "export FROM=second\n")
     expect(run(workbox, home).code).toBe(0)
     expect(readFileSync(join(home, ".zshenv"), "utf8")).toBe("export FROM=second\n")
-    expect(lstatSync(join(installed, "zshenv")).ino).not.toBe(held)
+    expect(lstatSync(scratchInput(join(installed, "zshenv"))).ino).not.toBe(held)
   })
 
   test("an installed command is replaced by a new file: a process that has the old one open (a running sh) reads the old one to its end", () => {
@@ -85,7 +87,7 @@ describe("install-bin.sh delivers the tree's shell files", () => {
     mkdirSync(join(home, ".local", "bin"), { recursive: true })
     const old = `#!/bin/sh\n${"echo old\n".repeat(200)}`
     writeFileSync(installed, old)
-    const before = statSync(installed).ino
+    const before = statSync(scratchInput(installed)).ino
     const fd = openSync(scratchInput(installed), "r")
     readSync(fd, Buffer.alloc(16), 0, 16, 0)
     expect(run(workbox, home).code).toBe(0)
@@ -93,9 +95,9 @@ describe("install-bin.sh delivers the tree's shell files", () => {
     const got = readSync(fd, rest, 0, old.length, 0)
     closeSync(fd)
     expect(rest.subarray(0, got).toString()).toBe(old)
-    expect(statSync(installed).ino).not.toBe(before)
+    expect(statSync(scratchInput(installed)).ino).not.toBe(before)
     expect(readFileSync(installed, "utf8")).toBe("#!/bin/sh\necho tree\n")
-    expect(statSync(installed).mode & 0o777).toBe(0o755)
+    expect(statSync(scratchInput(installed)).mode & 0o777).toBe(0o755)
   })
 
   test("with no link there yet, it makes them", () => {
@@ -152,8 +154,13 @@ describe("install-bin.sh refuses a file that would not run, before it replaces a
   })
 
   test("the repository's own zshenv, zshrc and commands pass the checks", () => {
-    const { home } = host()
-    const done = Bun.spawnSync(["sh", join(workboxDir, "install-bin.sh")], { cwd: home, env: env(home), stdout: "pipe", stderr: "pipe" })
+    const { home, root } = host()
+    const files = Object.fromEntries(
+      ["zshenv", "zshrc", ...readdirSync(matchingInput("../workbox/bin")).map((file) => `bin/${file}`)]
+        .map((file) => [file, readCheckoutFileSync(matchingInput("{../workbox/zshenv,../workbox/zshrc,../workbox/bin/*}", `../workbox/${file}`), "utf8")]),
+    )
+    const staged = tree(root, "repository", files, readCheckoutFileSync(matchingInput("../workbox/install-bin.sh"), "utf8"))
+    const done = spawnScratchShellFileSync(join(staged, "install-bin.sh"), [], input(home))
     expect({ code: done.exitCode, stderr: done.stderr.toString() }).toEqual({ code: 0, stderr: "" })
   })
 })
@@ -192,10 +199,9 @@ describe("install-bin.sh replaces each file whole", () => {
         `#!/bin/sh\nmode=644\nif [ "$1" = -m ]; then mode=$2; shift 2; fi\nrm -f "$2"\ncat "$1" >"$2"\nchmod "$mode" "$2"\n`,
         { mode: 0o755 },
       )
-      const gnuEnv = { ...env(home), PATH: `${gnu}:/usr/bin:/bin` }
       const seen = { reads: 0, missing: 0, empty: 0, partial: 0 }
       for (let at = 0; at < 20; at++) {
-        const install = Bun.spawn(["sh", join(trees[at % 2]!, "install-bin.sh")], { cwd: home, env: gnuEnv, stdout: "ignore", stderr: "ignore" })
+        const install = spawnScratchShellFile(join(trees[at % 2]!, "install-bin.sh"), [], input(home, gnu))
         while (install.exitCode === null) {
           for (const path of watched) {
             seen.reads++
@@ -226,14 +232,15 @@ describe("workbox-check runs the installed tree's bootstrap.sh --check", () => {
     const home = join(scratch, `check-${n++}`)
     const box = join(home, ".local", "share", "opencode-prime", "current.plugins", "workbox")
     mkdirSync(home, { recursive: true })
-    const none = Bun.spawnSync(["sh", check], { env: env(home), stdout: "pipe", stderr: "pipe" })
+    const script = writeScratchScript(join(home, "workbox-check"), readCheckoutFileSync(check, "utf8"))
+    const none = spawnScratchShellFileSync(script, [], input(home))
     expect({ code: none.exitCode, stderr: none.stderr.toString() }).toEqual({
       code: 1,
       stderr: `workbox-check: ${box}/bootstrap.sh is not there: the installed build holds no workbox/ yet (the next install brings it)\n`,
     })
     mkdirSync(box, { recursive: true })
     writeFileSync(join(box, "bootstrap.sh"), `printf 'tree bootstrap %s\\n' "$*"\n`)
-    const ran = Bun.spawnSync(["sh", check], { env: env(home), stdout: "pipe", stderr: "pipe" })
+    const ran = spawnScratchShellFileSync(script, [], input(home))
     expect({ code: ran.exitCode, stdout: ran.stdout.toString() }).toEqual({ code: 0, stdout: "tree bootstrap --check\n" })
   })
 

@@ -439,6 +439,11 @@ const BOUNDED_PROCESS = new Set([
   "tests/scratch-child.ts:spawnScratchZshSync",
   "tests/scratch-child.ts:scratchPtyCommand",
   "tests/scratch-child.ts:scratchPtyEnv",
+  "tests/scratch-child.ts:spawnScratchProgram",
+  "tests/scratch-child.ts:runScratchTool",
+  "tests/scratch-child.ts:spawnScratchShellFileSync",
+  "tests/scratch-child.ts:spawnScratchShellFile",
+  "tests/scratch-child.ts:checkoutBlob",
   "tests/scratch-child.ts:initScratchGit",
   "tests/scratch-child.ts:cloneScratchGit",
   "tests/scratch-child.ts:detachedCheckoutBun",
@@ -557,6 +562,10 @@ const processRead = (at: Node, called: string, args: ReadonlyArray<Node>, evalua
   }
   if (called === "tests/scratch-child.ts:spawnCheckoutShellSync") return record(at, evaluate(args[1]))
   if (called === "tests/scratch-child.ts:checkoutShellFixtureCommand") return record(at, evaluate(args[0]))
+  if (called === "tests/scratch-child.ts:checkoutBlob") {
+    if (!Option.exists(literalPath(evaluate(args[0])), (sha) => /^[a-f0-9]{40}$/.test(sha))) return record(at, opaque("nonliteral Git revision"))
+    return record(at, evaluate(args[1]))
+  }
   if (EXEC_SHELL.has(called)) return record(at, opaque("shell reads"))
   if (ARGV_HELPER.has(called)) return argvHelperRead(at, called, args, evaluate, record)
   if (BUN_SPAWN.has(called)) {

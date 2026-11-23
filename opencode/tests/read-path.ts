@@ -20,6 +20,7 @@ const matcher = (pattern: string) => {
 }
 
 const canonicalRoot = realpathSync(workspace)
+const canonicalRepo = resolve(canonicalRoot, "..")
 const existingAncestor = (target: string): string => {
   if (existsSync(target)) return target
   // A dangling symlink is not an ordinary missing leaf: the name that will
@@ -74,9 +75,8 @@ const outside = (root: string, target: string) => {
 /** An absolute path in a scratch tree, including one returned by a fixture builder. */
 export const scratchInput = (file: string) => {
   const root = scratchRoot()
-  const repo = realpathSync(join(workspace, ".."))
   const target = canonicalPath(resolve(file))
-  if (!isAbsolute(file) || outside(root, target) || !outside(repo, target)) return denied(file, root)
+  if (!isAbsolute(file) || outside(root, target) || !outside(canonicalRepo, target)) return denied(file, root)
   return file
 }
 

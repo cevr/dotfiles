@@ -214,9 +214,11 @@ const cloneArgs = (args: ReadonlyArray<string>) =>
 const gitCommandAllowed = (command: string, args: ReadonlyArray<string>) => {
   switch (command) {
     case "config": return ["gc.auto 0", "maintenance.auto false"].includes(args.join(" "))
-    case "remote": return args.length === 2 && ["get-url", "remove"].includes(args[0] ?? "") && /^\w[\w-]*$/.test(args[1] ?? "")
+    case "remote": return (args.length === 2 && ["get-url", "remove"].includes(args[0] ?? "") && /^\w[\w-]*$/.test(args[1] ?? "")) ||
+      exactArgs(args, "set-head", "origin", "--auto")
     case "clone": return cloneArgs(args)
     case "fetch": return args.length === 3 && args[0] === "--quiet" && args.slice(1).every((operand) => /^\w[\w./-]*$/.test(operand))
+    case "push": return args.length === 4 && args[0] === "-q" && args[1] === "-u" && args[2] === "origin" && /^\w[\w./-]*$/.test(args[3] ?? "")
     default: return gitCommands.has(command)
   }
 }
@@ -249,6 +251,12 @@ const scratchGit = (cwd: string, args: ReadonlyArray<string>, values: Readonly<N
   return { cwd: directory, env }
 }
 
+const remoteOf = (args: ReadonlyArray<string>): ReadonlyArray<string> => {
+  if (args[0] === "push") return ["remote", "get-url", "--push", "origin"]
+  if (args[0] === "fetch" || (args[0] === "remote" && args[1] === "set-head")) return ["remote", "get-url", args[2] ?? ""]
+  return []
+}
+
 /** A Git invocation with checkout-independent operands and environment. */
 export const spawnScratchGitSync = (cwd: string, args: ReadonlyArray<string>, env: Readonly<NodeJS.ProcessEnv> = {}, input = "") => {
   if (input && (args[0] !== "check-attr" || !args.includes("--stdin") || !args.includes("-z")))
@@ -256,11 +264,12 @@ export const spawnScratchGitSync = (cwd: string, args: ReadonlyArray<string>, en
   for (const path of input.split("\0").filter(Boolean)) checkGitArg(path, cwd, true)
   const options = scratchGit(cwd, args, env)
   const git = (argv: ReadonlyArray<string>) => localTestProcess.spawnSync("git", argv, { ...options, input, stdio: ["pipe", "pipe", "pipe"] })
-  if (args[0] === "fetch") {
-    const remote = git(["remote", "get-url", args[2] ?? ""])
-    if (remote.status !== 0) return reject("scratch fetch needs a configured local remote")
+  const target = remoteOf(args)
+  if (target.length > 0) {
+    const remote = git(target)
+    if (remote.status !== 0) return reject("scratch Git needs a configured local remote")
     const source = remote.stdout.toString().trim()
-    if (!localTestPaths.isAbsolute(source)) return reject("scratch fetch needs an absolute local remote")
+    if (!localTestPaths.isAbsolute(source)) return reject("scratch Git needs an absolute local remote")
     scratchInput(source)
   }
   const ran = git(args)
@@ -286,6 +295,20 @@ export const cloneScratchGit = (cwd: string, source: string, destination: string
   const ran = spawnScratchGitSync(cwd, cloneGitArgv(["--quiet", "--origin", remote], source, destination))
   if (ran.exitCode !== 0) return reject(ran.stderr.toString())
   quietScratchGit(destination, {})
+}
+
+/** A fixed Git object operand in the repository, with its own explicit checkout input. */
+export const checkoutBlob = (revision: string, entry: string) => {
+  if (!/^[a-f0-9]{40}$/.test(revision)) return reject("a checked object read needs a full hexadecimal object ID")
+  const file = matchingInput(entry)
+  const objectPath = localTestPaths.relative(checkout, file)
+  const ran = localTestProcess.spawnSync("git", ["show", `${revision}:${objectPath}`], {
+    cwd: checkout,
+    env: { PATH: searchPath(), HOME: scratchRoot(), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_NO_REPLACE_OBJECTS: "1" },
+    stdio: ["ignore", "pipe", "pipe"],
+  })
+  if (ran.status !== 0) return reject(ran.stderr.toString())
+  return ran.stdout.toString()
 }
 
 /** Bun runs explicit, generated test files, never discovers suites in a checkout. */
@@ -318,6 +341,85 @@ export const writeScratchScript = (file: string, program: string) => {
   return script
 }
 
+interface ProgramInputs {
+  readonly cwd: string
+  readonly tools: string
+  readonly paths: Readonly<Record<string, string>>
+  readonly values: Readonly<Record<string, string>>
+  readonly pathLists?: Readonly<Record<string, string>>
+}
+
+const programPaths = new Set([
+  "HOME", "TMPDIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME",
+  "WORKRIFT_ROOT", "WORKRIFT_PROC", "WORKRIFT_SOURCE", "WORK", "WORK_BASE", "FAKE_WORK_BASES", "FAKE_HOLDS", "FAKE_LOG",
+])
+
+const programValues = new Set([
+  "WORKRIFT_PURGE", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+  "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1",
+])
+
+const checkScript = (file: string) => {
+  const at = scratchInput(file)
+  if (containsCheckout(localTestPaths.readFileSync(at, "utf8"))) return reject(`checkout path in generated program: ${file}`)
+  return at
+}
+
+const scratchProgram = (
+  interpreter: "sh" | "perl", script: string, args: ReadonlyArray<string>, input: ProgramInputs,
+) => {
+  const cwd = scratchInput(input.cwd)
+  const tools = scratchInput(input.tools)
+  for (const tool of localTestPaths.readdirSync(tools)) checkScript(resolve(tools, tool))
+  for (const arg of args) {
+    if (containsCheckout(arg)) return reject("checkout path in fixture argv")
+    if (localTestPaths.isAbsolute(arg)) scratchInput(arg)
+    else if (!/^-{0,2}[\w.-]+$/.test(arg) || arg === "..") return reject(`unmodeled fixture argument: ${arg}`)
+  }
+  const env = new Map<string, string>()
+  const put = (key: string, value: string) => {
+    if (env.has(key)) return reject(`duplicate program environment: ${key}`)
+    env.set(key, value)
+  }
+  for (const [key, value] of Object.entries(input.paths)) {
+    if (!programPaths.has(key)) return reject(`unsupported program path environment: ${key}`)
+    put(key, scratchInput(value))
+  }
+  for (const [key, value] of Object.entries(input.values)) {
+    if (!programValues.has(key) || !/^[\w @.-]*$/.test(value)) return reject(`unsupported literal program environment: ${key}`)
+    put(key, value)
+  }
+  for (const [key, value] of Object.entries(input.pathLists || {})) {
+    if (key !== "FAKE_SUBVOLUMES") return reject(`unsupported program path-list environment: ${key}`)
+    put(key, value.split(":").filter(Boolean).map(scratchInput).join(":"))
+  }
+  const executable = { sh: "/bin/sh", perl: "/usr/bin/perl" }[interpreter]
+  const argv: [string, ...Array<string>] = [executable, checkScript(script), ...args]
+  return { argv, cwd, env: { HOME: cwd, TMPDIR: cwd, ...Object.fromEntries(env), PATH: `${tools}:${searchPath()}`, [marker]: interpreter } }
+}
+
+export const spawnScratchProgram = (
+  script: string, args: ReadonlyArray<string>, input: ProgramInputs, stderr: Bun.BunFile,
+) => {
+  const { argv, ...options } = scratchProgram("sh", script, args, input)
+  return spawn(argv, { ...options, stdin: "ignore", stdout: "ignore", stderr, detached: true })
+}
+
+export const runScratchTool = (script: string, args: ReadonlyArray<string>, input: ProgramInputs) => {
+  const { argv, ...options } = scratchProgram("perl", script, args, input)
+  return spawnSync(argv, { ...options, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+}
+
+export const spawnScratchShellFileSync = (script: string, args: ReadonlyArray<string>, input: ProgramInputs) => {
+  const { argv, ...options } = scratchProgram("sh", script, args, input)
+  return spawnSync(argv, { ...options, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+}
+
+export const spawnScratchShellFile = (script: string, args: ReadonlyArray<string>, input: ProgramInputs) => {
+  const { argv, ...options } = scratchProgram("sh", script, args, input)
+  return spawn(argv, { ...options, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+}
+
 /** Write and launch exactly this fixture script, with no ambient environment. */
 export const scratchShell = (cwd: string, program: string) => {
   const directory = scratchInput(cwd)
@@ -325,7 +427,6 @@ export const scratchShell = (cwd: string, program: string) => {
   return { script, cwd: directory, env: { PATH: "/usr/bin:/bin", HOME: directory, TMPDIR: directory, [marker]: "sh" } }
 }
 
-/** A shell fixture whose test manages descendants itself. */
 /** A generated script for the PTY's initial or restart command. */
 export const scratchPtyCommand = (program: string, label?: string): readonly [string, ...string[]] => {
   if (containsCheckout(program)) return reject("checkout path in generated PTY script")
