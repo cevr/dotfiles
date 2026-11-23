@@ -139,7 +139,7 @@ import * as Digest from "./digest.ts"
 import { QUESTIONS } from "@dotfiles/opencode-questions/question"
 import { QUEUE } from "@dotfiles/opencode-queue/queue"
 import { STATUS } from "@dotfiles/opencode-status/status"
-import { Latch, MARK_KEY, type Opened, OPENER } from "@dotfiles/opencode-wake/latch"
+import { Latch, Mark, MARK_KEY, type Opened, OPENER } from "@dotfiles/opencode-wake/latch"
 import { WAKES } from "@dotfiles/opencode-wake/wake"
 import * as CodexAdmissionLive from "@dotfiles/opencode-orchestrate/codex/admission"
 import { keepMessage, WINDOW } from "@dotfiles/opencode-orchestrate/compaction"
@@ -508,7 +508,7 @@ const tellingOf = (fields: Telling): Telling =>
   Object.fromEntries(Object.entries(fields).filter(([, value]) => Predicate.isString(value) && value !== ""))
 
 /** What a latched call answers, as the subagent tool's output: why it waits, when it opens, and that its result wakes the parent. */
-const latchedResult = (latched: Model.LatchedStart, place: Place) => {
+const latchedResult = (latched: Model.LatchedStart, place: Place, recheck: Option.Option<number>) => {
   const event = latched.latched
   const holds = event.hold === "sabbath" ? event.why : `${whoseOf(event.whose)} pace holds this agent: ${event.why}.`
   const latch = {
@@ -516,12 +516,16 @@ const latchedResult = (latched: Model.LatchedStart, place: Place) => {
     hold: event.hold,
     reason: event.why,
     opensAt: event.opensAt,
+    ...Option.match(recheck, { onNone: () => ({}), onSome: (recheckAt) => ({ recheckAt }) }),
     opens: new Date(event.opensAt).toISOString(),
     local: local(event.opensAt, place),
   }
   const output = [
     `The subagent is latched (sessionID: ${latched.child}, latch ${latched.id}). ${holds}`,
-    `It starts by itself in the background when the latch opens, about ${timeOf(event.opensAt, place)}${event.recheckAt < event.opensAt ? `, or sooner: it is decided again at ${new Date(event.recheckAt).toISOString()}` : ""}. You will be woken with its result, as for a background subagent.`,
+    `It starts by itself in the background when the latch opens, about ${timeOf(event.opensAt, place)}${Option.getOrElse(
+      Option.map(Option.filter(recheck, (at) => at < event.opensAt), (at) => `, or sooner: it is decided again at ${new Date(at).toISOString()}`),
+      () => "",
+    )}. You will be woken with its result, as for a background subagent.`,
     "Go on with other work, or end your turn. Do not start it again, poll or wait for it. wake_list shows the latch; wake_cancel cancels it.",
   ].join("\n")
   return {
@@ -531,6 +535,14 @@ const latchedResult = (latched: Model.LatchedStart, place: Place) => {
     metadata: { sessionID: latched.child, status: "latched", latch },
   }
 }
+
+const LatchChild = Schema.String.check(Schema.isStartingWith("ses")).pipe(Schema.brand("SessionID"))
+const latchChild = Schema.decodeUnknownOption(LatchChild)
+const latchMark = Schema.decodeUnknownOption(Mark)
+const recheckOf = (ctx: Plugin.Context, child: string) =>
+  Effect.option(Effect.flatMap(Effect.fromOption(latchChild(child)), (sessionID) => ctx.session.get({ sessionID }))).pipe(
+    Effect.map(Option.flatMap((info) => Option.flatMap(latchMark(info.metadata?.[MARK_KEY]), (mark) => Option.fromUndefinedOr(mark.recheckAt)))),
+  )
 
 /** The subagent tool's output, widened with the latched answer. */
 const SubagentOutput = Schema.Struct({
@@ -543,6 +555,7 @@ const SubagentOutput = Schema.Struct({
       hold: Schema.Literals(["pace", "sabbath"]),
       reason: Schema.String,
       opensAt: Schema.Number,
+      recheckAt: Schema.optionalKey(Schema.Number),
       opens: Schema.String,
       local: Schema.String,
     }),
@@ -1485,8 +1498,8 @@ export const make = <R = never>(
         const key = noteKey(event.sessionID, event.id, event.input)
         return orchestrate.startSubagent({ call, from: event.agent, messageID: event.messageID, input: event.input }).pipe(
           Effect.mapError((rejection) => refusal(event.tool, rejection, options.place)),
-          Effect.map((outcome) => {
-            if (Option.isNone(outcome) || !isObject(event.input)) return outcome
+          Effect.flatMap((outcome) => {
+            if (Option.isNone(outcome) || !isObject(event.input)) return Effect.succeed(outcome)
             const routed = outcome.value._tag === "LatchedStart" ? outcome.value.latched : outcome.value
             // Run the call as the guard routed it, on the role's model when one was chosen.
             const input: Record<string, unknown> = { ...event.input, agent: routed.agent }
@@ -1505,11 +1518,16 @@ export const make = <R = never>(
             }
             // A latched call names its child, whose answer the subagent tool gives back at once.
             if (outcome.value._tag === "LatchedStart") {
-              latched.set(outcome.value.child, latchedResult(outcome.value, options.place))
-              input.sessionID = outcome.value.child
+              const kept = outcome.value
+              return recheckOf(ctx, kept.child).pipe(Effect.map((recheck) => {
+                latched.set(kept.child, latchedResult(kept, options.place, recheck))
+                input.sessionID = kept.child
+                event.input = input
+                return outcome
+              }))
             }
             event.input = input
-            return outcome
+            return Effect.succeed(outcome)
           }),
           // A step's start is a digest line once the host runs the call (`execute.after`): held here with its time, as
           // a later hook or the host may still refuse it.
