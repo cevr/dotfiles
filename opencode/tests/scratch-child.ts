@@ -186,7 +186,7 @@ export const forkFixture = (
   if (containsCheckout(path) || containsCheckout(localTestPaths.realpathSync(path))) return reject("checkout directory on the fixture PATH")
   return {
     argv: [localTestProcess.execPath, "--no-env-file", entry, ...args] as const, cwd: scratchInput(cwd),
-    env: { ...env, PATH: `${path}:${searchPath()}`, TMPDIR: env.TMPDIR || scratchRoot() },
+    env: { TMPDIR: scratchRoot(), ...env, PATH: `${path}:${searchPath()}` },
   }
 }
 
