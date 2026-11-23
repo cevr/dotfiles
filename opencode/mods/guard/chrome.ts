@@ -11,7 +11,7 @@
 // - A command line that runs a Chrome binary (a Chrome, Chromium, Chrome for
 //   Testing or headless-shell program, a `$CHROME`-like variable, or
 //   `open -a "Google Chrome" --args …`) with `--remote-debugging-*` or
-//   `--headless*` and without both flags: add them, or use `scripts/chrome.ts`.
+//   `--headless*` and without both flags: use Playwright or the browse tool.
 //   The owner's own Chrome start opens no DevTools port, so it never matches.
 // - A script a line runs (`bun x.ts`, `node x.mjs`, `bun -e '…'`) that hands
 //   such a list to a Chrome it names itself: a spawn-like call whose program is
@@ -34,9 +34,6 @@ import { type Place, placedCommands } from "./verdict.ts"
 
 /** The two flags that keep a Chrome off the login keychain: the mock keychain (macOS) and the plain password store (Linux). */
 export const KEYCHAIN_FLAGS: ReadonlyArray<string> = ["--use-mock-keychain", "--password-store=basic"]
-
-/** Where the launcher that passes them lives. */
-export const LAUNCHER = "~/Developer/personal/dotfiles/opencode/scripts/chrome.ts"
 
 /** The shim a launcher that reads CHROME starts Chrome through, with both flags added. */
 export const SHIM = "$HOME/Developer/personal/dotfiles/claude/bin/chrome-mock-keychain"
@@ -373,8 +370,7 @@ export const keychainReason = (launch: BareLaunch): string => {
   return (
     `\`${launch.command}\` ${starts(launch)} Chrome with a DevTools port or headless and without ${KEYCHAIN_FLAGS.join(" ")}: ` +
     `Chrome then reads its Safe Storage key from the login keychain, ${dialog}. ` +
-    `Add both flags to the launch, or start Chrome with \`bun ${LAUNCHER} launch [--proxy …] [--resolver-rules …] -- <flags>\` ` +
-    "(it prints the DevTools endpoint and pid; `stop <pid>` ends it), agent-browser or Playwright, which pass both flags"
+    "Use Playwright for tests or the browse tool; never spawn a Chrome binary directly."
   )
 }
 

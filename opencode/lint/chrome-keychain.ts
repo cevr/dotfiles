@@ -6,8 +6,7 @@
 // on that item's access list (Chrome for Testing, a new Chromium build) macOS
 // puts a keychain dialog on the owner's screen at each launch. The guard
 // (mods/guard/chrome.ts) refuses such a launch from a shell line or a scratch
-// script; this rule holds the repository's own launchers (mods/rex's browser,
-// scripts/chrome.ts) to it.
+// script; this rule holds the repository's own code to it.
 //
 // A list's flags are its string literals, the first part of each template
 // literal, and the literals of a top-level `const NAME = [...]` of the same
@@ -42,7 +41,7 @@ interface Context {
 const KEYCHAIN_FLAGS = ["--use-mock-keychain", "--password-store=basic"]
 
 const MESSAGE =
-  "A Chrome started with its DevTools protocol or headless passes --use-mock-keychain and --password-store=basic: without them it reads the login keychain, and macOS puts a keychain dialog on the owner's screen at each launch. Add both flags to the list (or start Chrome with scripts/chrome.ts)."
+  "A Chrome started with its DevTools protocol or headless passes --use-mock-keychain and --password-store=basic: without them macOS shows a keychain dialog. Use Playwright for tests or the browse tool."
 
 /** A node that holds nothing: what the rule reads where there is no node. */
 const NOTHING: Node = { type: "" }

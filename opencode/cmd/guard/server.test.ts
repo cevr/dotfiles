@@ -184,7 +184,7 @@ describe("the guard plugin", () => {
       }),
     ))
 
-  test("refuses a Chrome started for DevTools without the keychain flags, by hand or by a script, in the guard's words, and names the launcher", () =>
+  test("refuses a Chrome started for DevTools without the keychain flags, by hand or by a script, and names the testing tools", () =>
     scenario(
       Effect.gen(function* () {
         const probe = 'const CHROME = "/opt/chrome-linux64/chrome"\nBun.spawn([CHROME, "--headless", `--user-data-dir=${dir}`, "--remote-debugging-port=0"])'
@@ -194,7 +194,7 @@ describe("the guard plugin", () => {
         expect(refused).toStartWith(
           "Tool.Error: guard-keychain: `chrome-headless-shell --headless --remote-debugging-port=0` starts Chrome with a DevTools port or headless and without --use-mock-keychain --password-store=basic",
         )
-        expect(refused).toContain("bun ~/Developer/personal/dotfiles/opencode/scripts/chrome.ts launch")
+        expect(refused).toContain("Use Playwright for tests or the browse tool")
         expect(yield* call("bash", { command: "cd /tmp/run && bun probe.ts" })).toStartWith("Tool.Error: guard-keychain: `bun probe.ts` runs /tmp/run/probe.ts, which starts Chrome")
         expect(yield* call("shell", { command: "D=/tmp/run; nice bun $D/probe.ts --port 1" })).toContain("runs /tmp/run/probe.ts")
         expect(yield* call("shell", { command: "bun -e 'Bun.spawn([\"chromium\", \"--headless\"])'" })).toContain("runs its inline script")
