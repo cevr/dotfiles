@@ -6,7 +6,7 @@
 // for the writers of the model (move.qnt); `cp -a --reflink=always` is BSD cp, slowed, failed or killed on request;
 // `findmnt`, `df` and /sys/fs/btrfs are files of the bench; /proc is a folder of the bench. Nothing touches the host.
 import { afterAll, describe, expect, test } from "bun:test"
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -177,9 +177,17 @@ const CP = [
   "",
 ].join("\n")
 
-/** git, logging each call (FAKE_GIT_LOG) when asked. */
+/** git, logging each call (FAKE_GIT_LOG) when asked; FAKE_GIT_FAIL_ONCE (a case pattern of its arguments) fails the first call that matches (fatal, 128), as a Git that could not start on a loaded host. */
 const GIT_REAL = Bun.which("git") ?? "/usr/bin/git"
-const GIT = ["#!/bin/sh", '[ -z "${FAKE_GIT_LOG:-}" ] || printf "%s\\n" "$*" >>"$FAKE_GIT_LOG"', `exec '${GIT_REAL}' "$@"`, ""].join("\n")
+const GIT = [
+  "#!/bin/sh",
+  '[ -z "${FAKE_GIT_LOG:-}" ] || printf "%s\\n" "$*" >>"$FAKE_GIT_LOG"',
+  'if [ -n "${FAKE_GIT_FAIL_ONCE:-}" ] && [ ! -e "$FAKE_GIT_FAIL_ONCE_MARK" ]; then',
+  '  case "$*" in $FAKE_GIT_FAIL_ONCE) : >"$FAKE_GIT_FAIL_ONCE_MARK"; echo "fatal: injected: $*" >&2; exit 128 ;; esac',
+  "fi",
+  `exec '${GIT_REAL}' "$@"`,
+  "",
+].join("\n")
 
 /** python3, with FAKE_BEFORE_EXCHANGE / FAKE_AFTER_EXCHANGE run around the first exchange, FAKE_EXCHANGE_FAIL failing it. */
 const PY = [
@@ -286,17 +294,22 @@ const bench = (label: string) => {
   const paths = { base, new: join(move, "app.new"), back: join(move, "app.back"), old: join(move, "app.old") }
   const state = join(root, ".work", "app", ".workrift")
   const envFor = (extra: Env = {}): Env => ({ ...env, WORKRIFT_SOURCE: base, ...extra })
+  /** Every command of the bench with its full output, in commands.log: a failure is read from it, never from a grep. */
+  const logged = (argv: ReadonlyArray<string>, ran: Ran): Ran => {
+    writeFileSync(join(dir, "commands.log"), `$ workrift ${argv.join(" ")} (${new Date().toISOString()})\n${said(ran)}\n`, { flag: "a" })
+    return ran
+  }
   /** Runs workrift in the bench's folder (outside the base). */
   const wr = (argv: ReadonlyArray<string>, extra: Env = {}): Ran => {
     const ran = Bun.spawnSync([SCRIPT, ...argv], { cwd: dir, env: envFor(extra), stdout: "pipe", stderr: "pipe" })
-    return { code: ran.exitCode, signal: ran.signalCode ?? null, out: ran.stdout.toString(), err: ran.stderr.toString() }
+    return logged(argv, { code: ran.exitCode, signal: ran.signalCode ?? null, out: ran.stdout.toString(), err: ran.stderr.toString() })
   }
   /** The same, without blocking: cases run side by side. */
   const wrAsync = async (argv: ReadonlyArray<string>, extra: Env = {}): Promise<Ran> => {
     const child = Bun.spawn([SCRIPT, ...argv], { cwd: dir, env: envFor(extra), stdout: "pipe", stderr: "pipe" })
     const [out, err] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()])
     await child.exited
-    return { code: child.signalCode ? null : child.exitCode, signal: child.signalCode ?? null, out, err }
+    return logged(argv, { code: child.signalCode ? null : child.exitCode, signal: child.signalCode ?? null, out, err })
   }
   const registered = () => textLines(readFileSync(env.FAKE_SUBVOLS!, "utf8"))
   /** S (a registered subvolume root), F (a folder), - (nothing). */
@@ -721,6 +734,143 @@ describe("workrift subvolume --apply", () => {
     expect(ran3.code, said(ran3)).toBe(0)
     converted(c)
   }, 60_000)
+
+  // Found by the census (r3): `sv_refs` piped Git into sort, so a Git that failed read as a tree with no refs, and
+  // the carry from it deleted every ref of the new base but its HEAD branch. Each read of the carry, failed once.
+  test("a Git that fails once while the switch reads or moves refs never loses a ref: the run ends with workrift's reason, both trees whole, and the next run finishes", async () => {
+    const cases = [
+      { what: "the kept tree's refs, read by the carry", fail: "*/app.old for-each-ref*", says: "nothing carried" },
+      { what: "the kept tree's HEAD, read by the carry", fail: "*/app.old symbolic-ref -q HEAD*", says: "nothing carried" },
+      { what: "the base's refs, read before the copy", fail: "*/root/app for-each-ref*", says: "rolled back before the exchange" },
+      { what: "a ref the carry moves into the base", fail: "*/root/app update-ref refs/heads/late *", says: "could not move refs/heads/late" },
+    ]
+    await pool(
+      cases.map((c) => async () => {
+        const b = bench("git-once")
+        // Run right after the exchange, before the rename: the tree that was the base is still at .new then.
+        const late = `t=$(git -C '${b.paths.new}' commit-tree 'HEAD^{tree}' -p HEAD -m late) && git -C '${b.paths.new}' update-ref refs/heads/late "$t"`
+        const ran = await b.wrAsync(["subvolume", "--apply"], { FAKE_GIT_FAIL_ONCE: c.fail, FAKE_GIT_FAIL_ONCE_MARK: join(b.dir, "git-failed"), FAKE_AFTER_EXCHANGE: late })
+        expect(existsSync(join(b.dir, "git-failed")), `${c.what}: the injected failure ran`).toBe(true)
+        expect(ran.code, `${c.what}: ${said(ran)}`).toBe(1)
+        expect(ran.err, c.what).toContain(c.says)
+        expect(ran.err, c.what).not.toContain("and no message")
+        expect(["F", "S"]).toContain(b.kind(b.base))
+        whole(b)
+        if (existsSync(b.paths.old)) whole(b, b.paths.old)
+        const again = await b.wrAsync(["subvolume", "--apply"])
+        expect(again.code, `${c.what}, again: ${said(again)}`).toBe(0)
+        converted(b)
+        // The ref written into the kept tree after the exchange reached the base, when there was an exchange.
+        if (!c.says.startsWith("rolled back")) expect(b.refs(b.base), c.what).toContain("refs/heads/late")
+      }),
+    )
+  }, 120_000)
+
+  // Every bound of a switch that ends in a refusal (the copy's three tries and the hold's limit are on the copy path:
+  // the tests above), each past its end in the history of the r2 failure: a forward, a --back cut at carry-wait,
+  // then the --back that finishes it (the bounds of the line, the carry's wait) and the forward after (the proof's).
+  test("past every bound, from a --back cut at carry-wait: a refusal of workrift's own, both trees whole, and the next run finishes", async () => {
+    const cutBack = async (label: string) => {
+      const b = bench(label)
+      const fwd = b.wr(["subvolume", "--apply"])
+      expect(fwd.code, said(fwd)).toBe(0)
+      const cut = await b.wrAsync(["subvolume", "--back", "--apply"], { WORKRIFT_SUBVOLUME_DIE_AT: "carry-wait" })
+      expect(cut.signal, said(cut)).toBe("SIGKILL")
+      return b
+    }
+    const intact = (b: Bench, ran: Ran, says: string) => {
+      expect(ran.code, said(ran)).toBe(1)
+      expect(ran.err).toContain(says)
+      expect(ran.err).not.toContain("and no message")
+      expect(["F", "S"]).toContain(b.kind(b.base))
+      whole(b)
+      whole(b, b.paths.old)
+    }
+    const finishes = (b: Bench, argv: ReadonlyArray<string>, layout: ReturnType<Bench["layout"]>) => {
+      const ran = b.wr(argv)
+      expect(ran.code, said(ran)).toBe(0)
+      expect(b.layout()).toEqual(layout)
+      whole(b)
+      whole(b, b.paths.old)
+    }
+    const back = ["subvolume", "--back", "--apply"]
+    const folder = { base: "F", new: "-", back: "-", old: "S" }
+    const children: Array<ReturnType<typeof Bun.spawn>> = []
+    const spawn = (b: Bench, argv: ReadonlyArray<string>, extra: Env = {}) => {
+      const child = Bun.spawn([SCRIPT, ...argv], { cwd: b.dir, env: b.envFor(extra), stdout: "ignore", stderr: "ignore", detached: true })
+      children.push(child)
+      return child
+    }
+    const until = async (what: () => boolean) => {
+      for (let i = 0; i < 400 && !what(); i++) await Bun.sleep(25)
+      expect(what()).toBe(true)
+    }
+    const ticketIn = (b: Bench, queue: string) => () => existsSync(join(b.state, queue)) && readdirSync(join(b.state, queue)).some((f) => f.endsWith(".in"))
+    try {
+      // The line's try: another subvolume run holds its place (paused at its carry-wait until a gate opens).
+      const a = await cutBack("bound-move")
+      const gate = join(a.dir, "gate")
+      const other = spawn(a, back, { WORKRIFT_SUBVOLUME_HOOK_AT: "carry-wait", WORKRIFT_SUBVOLUME_HOOK: `i=0; until [ -e '${gate}' ] || [ $i -ge 400 ]; do sleep 0.05; i=$((i+1)); done` })
+      await until(ticketIn(a, "move"))
+      intact(a, a.wr(back), "another workrift subvolume runs for")
+      writeFileSync(gate, "")
+      expect(await other.exited).toBe(0)
+      finishes(a, back, folder)
+
+      // The turn at the base's lock: a holder past TURN_WAIT.
+      const t = await cutBack("bound-turn")
+      const holder = spawn(t, ["hold", "--", "sleep", "6"])
+      await until(ticketIn(t, "base"))
+      intact(t, t.wr(back, { WORKRIFT_SUBVOLUME_TURN_WAIT: "1" }), "no turn at the lock of")
+      process.kill(-holder.pid, "SIGKILL")
+      await holder.exited
+      finishes(t, back, folder)
+
+      // The clone turn: a create in its clone past TURN_WAIT (the base, a folder, does not snapshot).
+      const k = await cutBack("bound-clone")
+      writeFileSync(join(k.holds, "slow"), "6\n")
+      const create = spawn(k, ["create", "slow"])
+      await until(() => existsSync(k.env.FAKE_LOG!) && readFileSync(k.env.FAKE_LOG!, "utf8").includes("in clone slow"))
+      const turn = k.wr(back, { WORKRIFT_SUBVOLUME_TURN_WAIT: "1" })
+      intact(k, turn, "within 1 s")
+      expect(turn.err).toMatch(/no (clone turn of|turn at the lock of)/)
+      process.kill(-create.pid, "SIGKILL")
+      await create.exited
+      finishes(k, back, folder)
+
+      // The carry's wait: a process stays in the tree at .old past WAIT.
+      const w = await cutBack("bound-wait")
+      w.processAt(91500, w.paths.old, ["zsh"])
+      intact(w, w.wr(back, { WORKRIFT_SUBVOLUME_WAIT: "1" }), "processes still work in")
+      rmSync(join(w.proc, "91500"), { recursive: true })
+      finishes(w, back, folder)
+
+      // The proof's 5 s: the forward after, whose smoke workspace's folder comes back after its removal.
+      const p = await cutBack("bound-smoke")
+      finishes(p, back, folder)
+      const smoke = join(p.root, ".work", "app", "scratch-subvolume-smoke")
+      // Something makes the folder again and again (until told to stop, at most 20 s) from the removal on.
+      const stop = join(p.dir, "stop-smoke")
+      const proof = p.wr(["subvolume", "--apply"], {
+        WORKRIFT_SUBVOLUME_HOOK_AT: "smoke-rm",
+        WORKRIFT_SUBVOLUME_HOOK: `(i=0; until [ -e '${stop}' ] || [ $i -ge 400 ]; do mkdir -p '${smoke}'; sleep 0.05; i=$((i+1)); done) >/dev/null 2>&1 &`,
+      })
+      writeFileSync(stop, "")
+      await Bun.sleep(300)
+      intact(p, proof, "not rolled back")
+      // Seen by the purge (`left it`) or, once the purge passed, by the 5 s wait (`still there 5 s`).
+      expect(proof.err).toMatch(/work rm scratch-subvolume-smoke left it|still there 5 s after its removal/)
+      rmSync(smoke, { recursive: true, force: true })
+      finishes(p, ["subvolume", "--apply"], { base: "S", new: "-", back: "-", old: "F" })
+    } finally {
+      for (const c of children)
+        try {
+          process.kill(-c.pid, "SIGKILL")
+        } catch {
+          // ended
+        }
+    }
+  }, 120_000)
 })
 
 describe("a live .git under the copy (Git processes outside the line: create-fetch G1-G5)", () => {
@@ -947,7 +1097,19 @@ const SEQ_STEPS = ["carry", "carry-in", "carry-wait", "copy", "copy-git", "copy-
 
 describe("workrift subvolume --back and --drop-old", () => {
   /** forward, back (exchange), forward (exchange), drop the folder, back (copy into a folder), drop the subvolume. */
+  /** A sequence that fails keeps the full output of its every command outside the scratch (removed after the run). */
   const sequence = async (b: Bench, die: { readonly at: number; readonly step: string } | undefined) => {
+    try {
+      await sequenceOf(b, die)
+    } catch (error) {
+      const kept = join(tmpdir(), "workrift-subvolume-failures")
+      mkdirSync(kept, { recursive: true })
+      const file = join(kept, `${b.dir.split("/").at(-1)}-${Date.now()}.log`)
+      writeFileSync(file, existsSync(join(b.dir, "commands.log")) ? readFileSync(join(b.dir, "commands.log")) : "")
+      throw new Error(`${String(error)}\nthe sequence's every command, in full: ${file}`)
+    }
+  }
+  const sequenceOf = async (b: Bench, die: { readonly at: number; readonly step: string } | undefined) => {
     const argvs: ReadonlyArray<ReadonlyArray<string>> = [
       ["subvolume", "--apply"],
       ["subvolume", "--back", "--apply"],
@@ -1536,5 +1698,175 @@ describe("workrift subvolume: the model (histories of switches, faults, kills an
     await pool(histories.flatMap((moves, h) => (only && !only.includes(h) ? [] : [() => live(moves, h)])))
     expect(histories.length).toBeGreaterThan(50)
   }, 1_800_000)
+})
+
+/** The external commands workrift and its stand-ins run, each put behind a shim by the census. */
+const CENSUS_COMMANDS = ["git", "jq", "date", "sed", "tr", "grep", "cat", "awk", "rm", "find", "work", "stat", "head", "mkdir", "dirname", "wc", "sleep", "cut", "cp", "basename", "readlink", "mv", "lsof", "python3", "ps", "mktemp", "ls", "ln", "id", "getconf", "df", "uname", "sort", "cksum", "btrfs", "flock", "findmnt", "touch", "xargs", "comm", "tail"]
+
+/**
+ * The census (WORKRIFT_CENSUS=<scenario>, run by hand, not in the gate): every call of an external command in one
+ * workrift command, one case each. In `fail` mode call k fails (exit 1; git 128, grep 2: a fork that failed, a full
+ * disk, a lock taken); in `kill` mode call k first kills the workrift process alone (kill -9), and the call and every
+ * child go on. Each case then checks the base is whole with every ref it had, classes the end (ok, refused with a
+ * message of workrift, stopped under set -e, cut), and runs the commands that must finish the switch from there.
+ * CENSUS_FROM / CENSUS_TO pick the cases; CENSUS_OUT (a .jsonl) gets one line a case. The full stderr of every
+ * command of a case goes to <bench>/case.log, and the bench is kept when the case fails a check.
+ */
+describe.skipIf(!process.env.WORKRIFT_CENSUS)("census: a failure or a kill at every external call", () => {
+  const scenario = process.env.WORKRIFT_CENSUS ?? ""
+  const mode = scenario.startsWith("kill") ? "kill" : "fail"
+  const shim = (b: Bench) => {
+    const dir = join(b.dir, "shim")
+    mkdirSync(dir, { recursive: true })
+    for (const name of CENSUS_COMMANDS) {
+      const real = Bun.which(name, { PATH: `${b.bin}:${process.env.PATH ?? ""}` })
+      if (!real) continue
+      const code = name === "git" ? 128 : name === "grep" ? 2 : 1
+      exe(
+        join(dir, name),
+        [
+          "#!/bin/sh",
+          'if [ -n "${CENSUS_LOG:-}" ]; then',
+          `  printf '%s\\n' "${name} $*" >>"$CENSUS_LOG"`,
+          '  n=$(( $(/usr/bin/wc -l <"$CENSUS_LOG") ))',
+          // CENSUS_MATCH (a case pattern): the first call that matches it fails, whatever its number.
+          `  if [ -n "\${CENSUS_MATCH:-}" ] && [ ! -e "$CENSUS_LOG.matched" ]; then case "${name} $*" in $CENSUS_MATCH) : >"$CENSUS_LOG.matched"; printf 'census: ${name} failed (matched)\\n' >&2; exit ${code} ;; esac; fi`,
+          '  if [ "$n" -eq "${CENSUS_AT:-0}" ]; then',
+          '    case "${CENSUS_MODE:-fail}" in',
+          `      fail) printf 'census: ${name} failed (injected at call %s)\\n' "$n" >&2; exit ${code} ;;`,
+          '      kill) kill -KILL "$(/bin/cat "$CENSUS_PIDFILE")" 2>/dev/null || true ;;',
+          "    esac",
+          "  fi",
+          "fi",
+          `exec '${real}' "$@"`,
+          "",
+        ].join("\n"),
+      )
+    }
+    return dir
+  }
+  /** One command: plain, or under the shims with call `at` failed or killed (0: only counted). */
+  const run = async (b: Bench, argv: ReadonlyArray<string>, census?: { readonly at: number; readonly log: string }, extra: Env = {}) => {
+    const pidfile = join(b.dir, "census.pid")
+    const env = b.envFor({
+      ...extra,
+      ...(census ? { PATH: `${shim(b)}:${b.env.PATH}`, CENSUS_LOG: census.log, CENSUS_AT: String(census.at), CENSUS_MODE: mode, CENSUS_PIDFILE: pidfile } : {}),
+    })
+    // The pid is the script's own (exec), for a kill of it alone.
+    const child = Bun.spawn(["/bin/sh", "-c", 'printf "%s\\n" "$$" >"$0.pid"; exec "$@"', join(b.dir, "census"), SCRIPT, ...argv], { cwd: b.dir, env, stdout: "pipe", stderr: "pipe" })
+    const [out, err] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()])
+    await child.exited
+    const ran: Ran = { code: child.signalCode ? null : child.exitCode, signal: child.signalCode ?? null, out, err }
+    writeFileSync(join(b.dir, "case.log"), `$ workrift ${argv.join(" ")}${census ? ` (census ${mode} at ${census.at})` : ""}\n${said(ran)}\n`, { flag: "a" })
+    // A cut run's children (the call that killed it) end before anything is read.
+    if (ran.signal) await Bun.sleep(300)
+    return ran
+  }
+  const end = (ran: Ran) =>
+    ran.signal ? "cut" : ran.code === 0 ? "ok" : /and no message \(a command failed under set -e\)/.test(ran.err) ? "set-e" : /^workrift: /m.test(ran.err) ? "refused" : "other"
+  const lastSaid = (ran: Ran) => textLines(ran.err).filter((l) => /^(workrift|census|fatal|error):? /.test(l)).slice(-2).join(" | ").slice(0, 300)
+  /** The setup before the command under census, and the command. */
+  const scenarios: Record<string, { readonly before: ReadonlyArray<{ readonly argv: ReadonlyArray<string>; readonly env?: Env; readonly code: number | null }>; readonly argv: ReadonlyArray<string> }> = {
+    fwd: { before: [], argv: ["subvolume", "--apply"] },
+    back: { before: [{ argv: ["subvolume", "--apply"], code: 0 }], argv: ["subvolume", "--back", "--apply"] },
+    // The r2 failure's history: forward, a --back cut at carry-wait, the --back again, then the forward under census.
+    "cut-fwd": {
+      before: [
+        { argv: ["subvolume", "--apply"], code: 0 },
+        { argv: ["subvolume", "--back", "--apply"], env: { WORKRIFT_SUBVOLUME_DIE_AT: "carry-wait" }, code: null },
+        { argv: ["subvolume", "--back", "--apply"], code: 0 },
+      ],
+      argv: ["subvolume", "--apply"],
+    },
+    // The --back itself after its cut at carry-wait, under census.
+    "cut-back": {
+      before: [
+        { argv: ["subvolume", "--apply"], code: 0 },
+        { argv: ["subvolume", "--back", "--apply"], env: { WORKRIFT_SUBVOLUME_DIE_AT: "carry-wait" }, code: null },
+      ],
+      argv: ["subvolume", "--back", "--apply"],
+    },
+    "kill-back": { before: [{ argv: ["subvolume", "--apply"], code: 0 }], argv: ["subvolume", "--back", "--apply"] },
+    "kill-fwd": { before: [], argv: ["subvolume", "--apply"] },
+  }
+  const plan = scenarios[scenario]
+
+  test(`census ${scenario}`, async () => {
+    if (!plan) throw new Error(`WORKRIFT_CENSUS=${scenario}: one of ${Object.keys(scenarios).join(", ")}`)
+    const forward = plan.argv.includes("--back") ? false : true
+    const prepare = async (label: string) => {
+      const b = bench(label)
+      for (const step of plan.before) {
+        const ran = await run(b, step.argv, undefined, step.env)
+        expect(ran.code, `${label} before: ${step.argv.join(" ")}: ${said(ran)}`).toBe(step.code)
+      }
+      return b
+    }
+    // The count: the command once, every call logged (none with CENSUS_MATCH: its one case is the first match).
+    const matching = process.env.CENSUS_MATCH !== undefined
+    const counted = matching ? undefined : await prepare("census-count")
+    const countLog = counted ? join(counted.dir, "census.calls") : ""
+    if (counted) {
+      const first = await run(counted, plan.argv, { at: 0, log: countLog })
+      expect(first.code, said(first)).toBe(0)
+    }
+    const calls = counted ? textLines(readFileSync(countLog, "utf8")) : ["(match)"]
+    const from = matching ? 0 : Number(process.env.CENSUS_FROM ?? 1)
+    const to = matching ? 0 : Math.min(Number(process.env.CENSUS_TO ?? calls.length), calls.length)
+    const out = process.env.CENSUS_OUT ?? join(scratch, `census-${scenario}.jsonl`)
+    console.log(`census ${scenario} (${mode}): ${calls.length} calls; cases ${from}-${to}; results in ${out}`)
+    const bad: Array<string> = []
+    const cases = Array.from({ length: to - from + 1 }, (_, i) => from + i)
+    await pool(
+      cases.map((k) => async () => {
+        const b = await prepare(`census-${k}`)
+        const log = join(b.dir, "census.calls")
+        const ran = await run(b, plan.argv, { at: k, log })
+        const call = textLines(existsSync(log) ? readFileSync(log, "utf8") : "")[k - 1] ?? "(fewer calls)"
+        const problems: Array<string> = []
+        const check = (what: string, f: () => void) => {
+          try {
+            f()
+          } catch (error) {
+            problems.push(`${what}: ${String(error).split("\n").slice(0, 3).join(" ")}`)
+          }
+        }
+        check("whole after", () => {
+          expect(["F", "S"]).toContain(b.kind(b.base))
+          whole(b)
+        })
+        const result: Record<string, unknown> = { k, call: call.slice(0, 160), end: end(ran), said: lastSaid(ran), layout: b.layout() }
+        // What finishes it from here: after a kill, the other direction is refused or runs (never stops silently);
+        // then this command again, then the switch the other way and back, each 0 with a whole base.
+        if (mode === "kill") {
+          const other = await run(b, forward ? ["subvolume", "--back", "--apply"] : ["subvolume", "--apply"])
+          result.other = { end: end(other), said: lastSaid(other) }
+          check("other after the kill", () => expect(["ok", "refused"]).toContain(end(other)))
+          check("whole after other", () => whole(b))
+        }
+        const again = await run(b, plan.argv)
+        result.again = { end: end(again), said: lastSaid(again) }
+        check("again", () => expect(again.code, said(again)).toBe(0))
+        check("layout again", () => expect(b.layout()).toEqual(forward ? { base: "S", new: "-", back: "-", old: "F" } : { base: "F", new: "-", back: "-", old: "S" }))
+        check("whole again", () => {
+          whole(b)
+          whole(b, b.paths.old)
+        })
+        const way = await run(b, forward ? ["subvolume", "--back", "--apply"] : ["subvolume", "--apply"])
+        check("the other way", () => expect(way.code, said(way)).toBe(0))
+        const back = await run(b, plan.argv)
+        check("and again", () => expect(back.code, said(back)).toBe(0))
+        check("whole at the end", () => {
+          whole(b)
+          whole(b, b.paths.old)
+        })
+        result.problems = problems
+        appendFileSync(out, `${JSON.stringify(result)}\n`)
+        if (problems.length > 0) bad.push(`case ${k} (${call.slice(0, 80)}): ${problems.join("; ")} [bench ${b.dir}]`)
+        else rmSync(b.dir, { recursive: true, force: true })
+      }),
+    )
+    expect(bad, bad.join("\n")).toEqual([])
+  }, 7_200_000)
 })
 
