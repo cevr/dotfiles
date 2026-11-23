@@ -5,7 +5,7 @@
 // a fake fork whose origin and upstream are local bare repositories: nothing is pushed anywhere else.
 // @reads scripts/fork-checks.json
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { Array as Arr, Config, Console, Context, Effect, FileSystem, Layer, Option, Path, Ref, Result, Stream } from "effect"
+import { Array as Arr, Clock, Config, Console, Context, Duration, Effect, FileSystem, Layer, Option, Path, Ref, Result, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { gitClone, gitInit, withProcessEnv } from "../tests/git-repo.ts"
@@ -22,6 +22,7 @@ import {
   SkipNote,
   HostGauge,
   hostGauge,
+  type HostUnread,
   type Input,
   judge,
   LIMITS,
@@ -461,7 +462,7 @@ describe("a run of the checks", () => {
     Effect.gen(function* () {
       const { input } = yield* fakeFork(["test/a.test.ts"])
       const { verdict, runs, reads } = yield* checkWith({ ...input, limits: SHORT }, { loads: [30] })
-      expect(verdict).toMatchObject({ kind: "could-not-run", reason: expect.stringContaining("load stayed over 24 for 0.001 min") })
+      expect(verdict).toMatchObject({ kind: "could-not-run", reason: "the calm-host wait (0.001 min, every wait together) was spent before packages/x ran: the 1-minute load stayed over 24" })
       expect(runs).toEqual([])
       expect(reads).toBeGreaterThan(2)
     }),
@@ -498,7 +499,7 @@ describe("a run of the checks", () => {
     Effect.gen(function* () {
       const { input } = yield* fakeFork(["test/a.test.ts"])
       const timedOut = yield* checkWith(input, { answers: [() => ({ kind: "timed-out", log: "still going" })] })
-      expect(timedOut.verdict).toMatchObject({ kind: "could-not-run", reason: expect.stringContaining("ran past the time bound") })
+      expect(timedOut.verdict).toMatchObject({ kind: "could-not-run", reason: expect.stringContaining("ran past the package runs' budget (40 min)") })
       expect(Arr.map(timedOut.runs, (run) => run.timeoutMs)).toEqual([LIMITS.timeBoundMs])
       const silent = yield* checkWith(input, { answers: [() => ({ kind: "exited", code: 1, log: "error: no node_modules", junit: Option.none() })] })
       expect(silent.verdict).toMatchObject({ kind: "could-not-run", reason: expect.stringContaining("wrote no report") })
@@ -632,6 +633,205 @@ describe("what may explain a nonzero exit, every composition through checkFork",
       expect(judge(both, 7, cases).reds.map((each) => each.file)).toEqual(["(the run)"])
       expect(judge(both, 1, cases).explanations).toMatchObject([{ exit: 1, failed: { test: "expected" } }])
       expect(judge(both, 1, cases).explanations.every((each) => each instanceof ExitExplanation)).toBe(true)
+    }),
+  )
+})
+
+// The three budgets, on a virtual clock the fakes move: the lock frees, the load drops and a package's run ends at
+// set times, and a sleep moves the clock at once, so hours of waiting take no time. What the check must show: no wait
+// is charged to the package runs, and each budget, spent, names itself.
+const MIN = 60_000
+
+/** When each thing happens: the lock frees at `lockFreeAt`; the load stays high for `before` after the lock is taken and for `between` after each run; each run takes its `runs` entry. */
+interface Plot {
+  readonly lockFreeAt: number
+  readonly before: number
+  readonly between: number
+  readonly runs: ReadonlyArray<number>
+  /** Whether a run reports its files failing (in turn; the last repeated). */
+  readonly failing?: ReadonlyArray<boolean>
+}
+
+/** The virtual clock and the fakes over it; `play` sets a plot and the clock to 0, `runs` answers what the runner was asked. */
+/** The virtual clock's time, when the load drops, the plot playing and the runs asked for. */
+interface Scenery {
+  now: number
+  highUntil: number
+  plot: Plot
+  runs: Array<Run>
+}
+
+class Timeline extends Context.Service<Timeline, { readonly play: (plot: Plot) => Effect.Effect<void>; readonly runs: Effect.Effect<ReadonlyArray<Run>> }>()("fork-checks.test/Timeline") {}
+
+const timelineLayer = Layer.unwrap(
+  Effect.sync(() => {
+    const state: Scenery = { now: 0, highUntil: 0, plot: { lockFreeAt: 0, before: 0, between: 0, runs: [] }, runs: [] }
+    const clock: Clock.Clock = {
+      currentTimeMillisUnsafe: () => state.now,
+      currentTimeMillis: Effect.sync(() => state.now),
+      currentTimeNanosUnsafe: () => BigInt(state.now) * 1_000_000n,
+      currentTimeNanos: Effect.sync(() => BigInt(state.now) * 1_000_000n),
+      monotonicTimeNanosUnsafe: () => BigInt(state.now) * 1_000_000n,
+      monotonicTimeNanos: Effect.sync(() => BigInt(state.now) * 1_000_000n),
+      sleep: (duration) => Effect.sync(() => (state.now += Duration.toMillis(duration))),
+    }
+    const run = (each: Run) =>
+      Effect.sync((): Ran => {
+        const at = state.runs.length
+        state.runs.push(each)
+        const takes = nth(state.plot.runs, at, 0)
+        if (takes > each.timeoutMs) {
+          state.now += each.timeoutMs
+          return { kind: "timed-out", log: "still running" }
+        }
+        state.now += takes
+        state.highUntil = state.now + state.plot.between
+        return report(each, Arr.filter(each.files, () => nth(Option.getOrElse(Option.fromUndefinedOr(state.plot.failing), (): ReadonlyArray<boolean> => [false]), at, false)))
+      })
+    const holding = <R>(_file: string, inner: Effect.Effect<Verdict, HostUnread, R>) =>
+      Effect.suspend(() => {
+        if (state.now < state.plot.lockFreeAt) return Effect.succeed(Option.none<Verdict>())
+        state.highUntil = state.now + state.plot.before
+        return Effect.map(inner, Option.some)
+      })
+    const timeline = Timeline.of({
+      play: (plot) =>
+        Effect.sync(() => {
+          state.now = 0
+          state.highUntil = 0
+          state.plot = plot
+          state.runs = []
+        }),
+      runs: Effect.sync(() => [...state.runs]),
+    })
+    return Layer.mergeAll(
+      Layer.succeed(Timeline, timeline),
+      Layer.succeed(Clock.Clock, clock),
+      Layer.succeed(TestRunner, TestRunner.of({ run })),
+      Layer.succeed(RunLock, RunLock.of({ holding })),
+      Layer.succeed(
+        HostGauge,
+        HostGauge.of({
+          bash: Effect.succeed(Option.some("5.2.37")),
+          floored: Effect.succeed(false),
+          load: Effect.sync(() => 1 + 29 * Number(state.now < state.highUntil)),
+          freeBytes: () => Effect.succeed(100 * 2 ** 30),
+          has: () => Effect.succeed(false),
+        }),
+      ),
+    )
+  }),
+)
+
+/** A two-package fork (x, then y) in a scratch folder, and the input over it with the real limits. */
+const twoPackages = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
+  const dir = yield* fs.makeTempDirectoryScoped({ prefix: "fork-checks-budget-" })
+  yield* writeAll(dir, [
+    ["packages/x/test/a.test.ts", ""],
+    ["packages/y/test/b.test.ts", ""],
+  ])
+  const listed: List = {
+    about: "",
+    packages: { "packages/x": ["bun", "test"], "packages/y": ["bun", "test"] },
+    features: [
+      { id: "x", feature: "x", package: "packages/x", files: ["test/a.test.ts"], proved: "here" },
+      { id: "y", feature: "y", package: "packages/y", files: ["test/b.test.ts"], proved: "here" },
+    ],
+    expectations: [],
+  }
+  return { list: listed, fork: dir, limits: LIMITS, lock: path.join(dir, "lock") } satisfies Input
+})
+
+const WAITS = { none: 0, short: 5 * MIN, "just under": 30 * MIN - LIMITS.everyMs, over: 31 * MIN } as const
+type Wait = keyof typeof WAITS
+const WAIT_CELLS: ReadonlyArray<Wait> = ["none", "short", "just under", "over"]
+/** The two packages' run times: under the 40 min budget, exactly at it, and past it. */
+const RUN_TIMES = { under: [10 * MIN, 10 * MIN], at: [20 * MIN, 20 * MIN], over: [20 * MIN, 25 * MIN] } as const
+type RunTime = keyof typeof RUN_TIMES
+const RUN_CELLS: ReadonlyArray<RunTime> = ["under", "at", "over"]
+interface BudgetCell {
+  readonly lock: Wait
+  readonly before: Wait
+  readonly between: Wait
+  readonly run: RunTime
+}
+const BUDGET_CELLS: ReadonlyArray<BudgetCell> = WAIT_CELLS.flatMap((lock) =>
+  WAIT_CELLS.flatMap((before) => WAIT_CELLS.flatMap((between) => RUN_CELLS.map((run) => ({ lock, before, between, run })))),
+)
+const budgetName = (cell: BudgetCell) => `lock ${cell.lock}, load before x ${cell.before}, load between x and y ${cell.between}, runs ${cell.run}`
+
+/**
+ * What each cell must end with. The lock wait over its 30 min: could not run, nothing ran. The calm-host waits
+ * together over their 30 min: could not run before x (the first wait alone over) or before y. The runs past 40 min:
+ * could not run, y past the run budget. Else green, whatever the waits took.
+ */
+const budgetOutcome = (cell: BudgetCell): string => {
+  if (cell.lock === "over") return "could-not-run: lock wait"
+  if (cell.before === "over") return "could-not-run: calm-host wait before packages/x"
+  if (WAITS[cell.before] + WAITS[cell.between] > 30 * MIN) return "could-not-run: calm-host wait before packages/y"
+  if (cell.run === "over") return "could-not-run: package runs, packages/y"
+  return "green"
+}
+/** Which budget a could-not-run reason names. */
+const budgetNamed = (verdict: Verdict): string => {
+  if (verdict.kind !== "could-not-run") return verdict.kind
+  if (verdict.reason.startsWith("the lock wait (30 min) was spent")) return "could-not-run: lock wait"
+  if (verdict.reason.startsWith("the calm-host wait (30 min, every wait together) was spent before packages/x")) return "could-not-run: calm-host wait before packages/x"
+  if (verdict.reason.startsWith("the calm-host wait (30 min, every wait together) was spent before packages/y")) return "could-not-run: calm-host wait before packages/y"
+  if (verdict.reason.startsWith("packages/y ran past the package runs' budget (40 min)")) return "could-not-run: package runs, packages/y"
+  return `could-not-run: ${verdict.reason}`
+}
+
+describe("three budgets apart: the lock wait, the calm-host waits and the package runs", () => {
+  const test = it.scoped.layer(Layer.merge(timelineLayer, BunServices.layer))
+
+  test("every combination: only the runs are charged to the run budget, and a spent budget names itself", () =>
+    Effect.gen(function* () {
+      const timeline = yield* Timeline
+      const input = yield* twoPackages
+      const outcomes = yield* Effect.forEach(BUDGET_CELLS, (cell) =>
+        Effect.gen(function* () {
+          yield* timeline.play({ lockFreeAt: WAITS[cell.lock], before: WAITS[cell.before], between: WAITS[cell.between], runs: RUN_TIMES[cell.run] })
+          const verdict = yield* checkFork(input)
+          return { cell, verdict, runs: yield* timeline.runs }
+        }),
+      )
+      expect(outcomes.map((each) => `${budgetName(each.cell)}: ${budgetNamed(each.verdict)}`)).toEqual(BUDGET_CELLS.map((cell) => `${budgetName(cell)}: ${budgetOutcome(cell)}`))
+      // The run budget each run is offered: 40 min less the runs before it, never less any wait.
+      for (const each of outcomes)
+        expect(each.runs.map((run) => run.timeoutMs)).toEqual(each.runs.map((_, at) => 40 * MIN - RUN_TIMES[each.cell.run].slice(0, at).reduce((sum, ms) => sum + ms, 0)))
+      for (const each of outcomes.filter((one) => one.verdict.kind === "could-not-run"))
+        expect(each.verdict.notes.join("\n")).toMatch(/^budgets: lock wait \d+\.\d s of 30 min; calm-host wait \d+\.\d s of 30 min; package runs \d+\.\d s of 40 min$/m)
+      // The verifier's own case: both waits just under their allowance, then 40 minutes of runs, is green.
+      expect(outcomes.filter((each) => each.cell.lock === "just under" && each.cell.before === "just under" && each.cell.between === "none" && each.cell.run === "at").map((each) => each.verdict.kind)).toEqual(["green"])
+    }),
+  )
+
+  test("a rerun is charged to the run budget: a red file rerun, then a package past what is left", () =>
+    Effect.gen(function* () {
+      const timeline = yield* Timeline
+      const input = yield* twoPackages
+      yield* timeline.play({ lockFreeAt: 0, before: 0, between: 0, runs: [15 * MIN, 15 * MIN, 15 * MIN], failing: [true, false, false] })
+      const verdict = yield* checkFork(input)
+      expect(budgetNamed(verdict)).toBe("could-not-run: package runs, packages/y")
+      expect((yield* timeline.runs).map((run) => run.timeoutMs)).toEqual([40 * MIN, 25 * MIN, 10 * MIN])
+      expect(verdict.notes).toContain("budgets: lock wait 0.0 s of 30 min; calm-host wait 0.0 s of 30 min; package runs 2400.0 s of 40 min")
+    }),
+  )
+
+  test("the verifier's probes: the lock, then the load, free after two 75 ms waits, with a 60 ms run budget, are green and run once", () =>
+    Effect.gen(function* () {
+      const timeline = yield* Timeline
+      const input = yield* twoPackages
+      const one: Input = { ...input, list: { ...input.list, features: [input.list.features[0]] }, limits: { ...LIMITS, timeBoundMs: 60, everyMs: 75, waitMs: 1000 } }
+      yield* timeline.play({ lockFreeAt: 150, before: 0, between: 0, runs: [0] })
+      expect(yield* checkFork(one)).toEqual({ kind: "green", notes: [] })
+      expect((yield* timeline.runs).length).toBe(1)
+      yield* timeline.play({ lockFreeAt: 0, before: 150, between: 0, runs: [0] })
+      expect(yield* checkFork(one)).toEqual({ kind: "green", notes: [] })
+      expect((yield* timeline.runs).length).toBe(1)
     }),
   )
 })
@@ -1100,6 +1300,7 @@ describe("a run stopped before it finishes could not run, with a partial report"
       const text = yield* Ref.get(said)
       expect(Number(code)).toBe(2)
       expect(text).toMatch(/fork-checks: COULD NOT RUN: stopped by a signal \(the caller's own bound, or a kill\) before it finished, after \d+\.\d s; progress: packages\/x \[x\]: running for \d+\.\d s$/m)
+      expect(text).toMatch(/^budgets: lock wait \d+\.\d s of 30 min; calm-host wait \d+\.\d s of 30 min; package runs \d+\.\d s of 40 min$/m)
     }).pipe(Effect.scoped),
     30_000,
   )
@@ -1112,7 +1313,8 @@ describe("a run stopped before it finishes could not run, with a partial report"
       const [text, code] = yield* Effect.all([handle.all.pipe(Stream.decodeText(), Stream.mkString), handle.exitCode], { concurrency: 2 })
       expect(Number(code)).toBe(2)
       expect(text).toMatch(/^progress: packages\/x \[x\]: could-not-run in \d+\.\d s$/m)
-      expect(text).toContain("fork-checks: COULD NOT RUN: packages/x ran past the time bound (0.025 min), its process group ended")
+      expect(text).toContain("fork-checks: COULD NOT RUN: packages/x ran past the package runs' budget (0.025 min), its process group ended")
+      expect(text).toMatch(/^budgets: lock wait \d+\.\d s of 30 min; calm-host wait \d+\.\d s of 30 min; package runs \d+\.\d s of 0\.025 min$/m)
     }).pipe(Effect.scoped),
     30_000,
   )
