@@ -4,25 +4,31 @@
 // per claim made: `resets/wait/<pool>`, `resets/reset/<key, URI-encoded>` and
 // `resets/claim/<at, 15 digits>/<key, URI-encoded>`. A claim's record is the
 // ledger of what claims did to the windows; the newest MAX_CLAIMS are kept.
-import { Effect, Layer, Option, Schema } from "effect"
-import { Claim, type Event, MAX_CLAIMS, Reset, type ResetsState, Wait } from "../resets.ts"
+// A request admitted on a claim's room is `resets/spend/<at, 15 digits>/<id, URI-encoded>`, kept
+// while its claim is.
+import { Array as Arr, Effect, Layer, Option, Schema } from "effect"
+import { Claim, type Event, keptSpends, MAX_CLAIMS, Reset, type ResetsState, Spend, Wait } from "../resets.ts"
 import { ResetsStore } from "../service.ts"
 import { PAGE, type Storage } from "./ledger.ts"
 
 const WAITS = "resets/wait/"
 const RESETS = "resets/reset/"
 const CLAIMS = "resets/claim/"
+const SPENDS = "resets/spend/"
 
 const atKey = (at: number) => String(Math.max(0, Math.floor(at))).padStart(15, "0")
 const resetKey = (key: string) => `${RESETS}${encodeURIComponent(key)}`
 const claimKey = (claim: Claim) => `${CLAIMS}${atKey(claim.at)}/${encodeURIComponent(claim.key)}`
+const spendKey = (spend: Spend) => `${SPENDS}${atKey(spend.at)}/${encodeURIComponent(spend.id)}`
 
 const decodeWait = Schema.decodeUnknownOption(Wait)
 const decodeReset = Schema.decodeUnknownOption(Reset)
 const decodeClaim = Schema.decodeUnknownOption(Claim)
+const decodeSpend = Schema.decodeUnknownOption(Spend)
 const encodeWait = Schema.encodeSync(Wait)
 const encodeReset = Schema.encodeSync(Reset)
 const encodeClaim = Schema.encodeSync(Claim)
+const encodeSpend = Schema.encodeSync(Spend)
 
 /** Every entry under `prefix`, in key order. */
 const scanAll = (storage: Storage, prefix: string) =>
@@ -54,7 +60,8 @@ export const layer = (storage: Storage) =>
         if (reset !== undefined) resets[reset.key] = reset
       }
       const claims = (yield* scanAll(storage, CLAIMS)).flatMap(({ value }) => Option.toArray(decodeClaim(value))).slice(-MAX_CLAIMS)
-      return { waits, resets, claims } satisfies ResetsState
+      const spends = keptSpends(claims, (yield* scanAll(storage, SPENDS)).flatMap(({ value }) => Option.toArray(decodeSpend(value))))
+      return { waits, resets, claims, ...Arr.match(spends, { onEmpty: () => ({}), onNonEmpty: (kept) => ({ spends: kept }) }) } satisfies ResetsState
     }).pipe(
       Effect.catchCause(() => Effect.succeed(EMPTY)),
       Effect.withSpan("ResetsStore.read"),
@@ -85,12 +92,30 @@ export const layer = (storage: Storage) =>
                     Effect.forEach(entries.slice(0, Math.max(0, entries.length - MAX_CLAIMS)), ({ key }) => storage.remove(key), { discard: true }),
                   ),
                 ),
+                // The reservations of claims no longer kept go with them.
+                scanAll(storage, SPENDS).pipe(
+                  Effect.flatMap((entries) => {
+                    const kept = new Set(state.claims.map((claim) => claim.key))
+                    const gone = entries.filter(({ value }) => Option.exists(decodeSpend(value), (spend) => !kept.has(spend.claim)))
+                    return Effect.forEach(gone, ({ key }) => storage.remove(key), { discard: true })
+                  }),
+                ),
               ])
             }
             case "ResetsForgotten":
               return Effect.forEach(event.keys, (key) => storage.remove(resetKey(key)), { discard: true })
             case "ClaimWeighed":
               return Effect.void
+            case "ClaimObserved": {
+              return Option.match(Arr.findFirst(state.claims, (item) => item.key === event.key), {
+                onNone: () => Effect.void,
+                onSome: (claim) => storage.set(claimKey(claim), encodeClaim(claim)),
+              })
+            }
+            case "SpendReserved":
+              return storage.set(spendKey(event.spend), encodeSpend(event.spend))
+            case "SpendWithdrawn":
+              return storage.remove(spendKey(event.spend))
           }
         })()
         yield* write.pipe(Effect.ignoreCause)

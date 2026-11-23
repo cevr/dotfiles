@@ -287,6 +287,20 @@ export const layer = (config: Config) =>
         return { ref, hold, asked }
       })
 
+      /**
+       * A follow-up's pace, on the model its child runs on: the pool's only, as its requests' dispatch would answer
+       * (a Codex child keeps the Codex admission's own boundary, which counts starts). None when nothing paces it.
+       */
+      const followUpOf = Effect.fnUntraced(function* (sessionID: string, agent: string, model?: string) {
+        const ref = yield* Option.match(Option.fromUndefinedOr(parseModel(model)), {
+          onNone: () => models.base(sessionID, agent).pipe(Effect.map(Option.fromUndefinedOr)),
+          onSome: (named) => Effect.succeed(Option.some(named)),
+        })
+        const pooled = Option.filter(ref, (each) => !Option.exists(Option.fromUndefinedOr(config.codex), (codex) => codex.providers.includes(each.providerID)))
+        if (Option.isNone(pooled)) return Option.none<Effect.Success<ReturnType<typeof paceOf>>>()
+        return Option.some(yield* paceOf(sessionID, agent, formatRef(pooled.value)))
+      })
+
       /** The hold on a model, if any, with each pace's reply as asked: the pool's, the Codex admission's. */
       const holdOf = Effect.fnUntraced(function* (ref: ModelRef, agent: string, sessionID: string) {
         const whose = config.codex?.providers.includes(ref.providerID) ? "codex" : "pool"
@@ -297,8 +311,9 @@ export const layer = (config: Config) =>
         const pace = codexReply === undefined ? pooled : paceOfReply(codexReply)
         const replies = { ...(poolReply === undefined ? {} : { pool: poolReply }), ...(codexReply === undefined ? {} : { codex: codexReply }) }
         if (pace === undefined || pace.ok) return { hold: undefined, replies }
-        // An agent that never runs on Codex is not held by the spend-evenly target alone: only by a pool with no quota left.
-        if (!onCodex(agent) && pace.soft === true) return { hold: undefined, replies }
+        // Every role is held by a measured hold, the spend-evenly target's too: the pool's own request boundary would hold
+        // its requests anyway (pool `place`). One that never runs on Codex latches for its own model and opens when the
+        // pace does, by the weekly line, a natural reset or a reset the pool claimed.
         const hold: PaceHold = { whose, reason: pace.reason, ...(pace.retryAt === undefined ? {} : { retryAt: pace.retryAt }) }
         return { hold, replies }
       })
@@ -477,7 +492,15 @@ export const layer = (config: Config) =>
               ? { ref: parseModel(model) ?? (yield* models.base(call.sessionID, routed.agent)), hold: undefined, asked: {} }
               : (onFirst?.paced ?? (yield* paceOf(call.sessionID, routed.agent, model)))
             : undefined
-        const hold = paced?.hold
+        // A follow-up asks its model's pace too: held, it is refused with when it opens (its requests would be held at
+        // the pool's dispatch anyway). It counts no new start, and takes no fallback: its child keeps its model.
+        // Only the pool's pace: a Codex follow-up keeps the Codex admission's own boundary.
+        const following = Option.filter(Option.fromUndefinedOr(child), () => !resting)
+        const followed = yield* Option.match(following, {
+          onNone: () => Effect.succeed(Option.none<Effect.Success<ReturnType<typeof paceOf>>>()),
+          onSome: () => followUpOf(call.sessionID, routed.agent, model),
+        })
+        const hold = Option.getOrUndefined(Option.orElse(Option.fromUndefinedOr(paced?.hold), () => Option.flatMap(followed, (each) => Option.fromUndefinedOr(each.hold))))
         // The model it would run on, named; with a fallback the command names it so the log says what was held.
         const primary = model ?? (paced?.ref === undefined ? undefined : `${paced.ref.providerID}/${paced.ref.id}`)
         // A model the call named is kept as asked: only a role's own model falls back.
@@ -485,8 +508,8 @@ export const layer = (config: Config) =>
         const offered =
           hold !== undefined && !named && paced?.ref !== undefined ? yield* fallbackOf(call.sessionID, paced.ref, routed.agent, base.description) : undefined
         const fallback = offered?.fallback
-        // What each pace asked said, for the line: a follow-up asked none.
-        const asked: Asked = { ...paced?.asked, ...offered?.asked }
+        // What each pace asked said, for the line.
+        const asked: Asked = { ...paced?.asked, ...Option.match(followed, { onNone: () => ({}), onSome: (each) => each.asked }), ...offered?.asked }
         const command = StartSubagent.make({
           ...base,
           ...(childAgent ? { childAgent } : {}),
@@ -646,7 +669,7 @@ export const layer = (config: Config) =>
         const resting = resumesAt(now, config.place) !== undefined
         const inSubagent = resting ? Boolean(yield* sessions.parentOf(call.sessionID)) : false
         // Another tool is never paced.
-        yield* decide(UseTool.make({ call, tool, inSubagent, place: config.place }), now, tool).pipe(Effect.catchTags({ StillLatched: Effect.die, CodexNeverImplements: Effect.die }))
+        yield* decide(UseTool.make({ call, tool, inSubagent, place: config.place }), now, tool).pipe(Effect.catchTags({ StillLatched: Effect.die, CodexNeverImplements: Effect.die, PaceHeld: Effect.die }))
       })
 
       const finish = Effect.fn("Orchestrate.finishSubagent")(function* (input: {
@@ -656,7 +679,7 @@ export const layer = (config: Config) =>
       }) {
         // A finish is only recorded, never refused.
         const now = yield* sabbathNow
-        yield* decide(FinishSubagent.make(input), now, SUBAGENT).pipe(Effect.catchTags({ SabbathRest: Effect.die, StillLatched: Effect.die, CodexNeverImplements: Effect.die }))
+        yield* decide(FinishSubagent.make(input), now, SUBAGENT).pipe(Effect.catchTags({ SabbathRest: Effect.die, StillLatched: Effect.die, CodexNeverImplements: Effect.die, PaceHeld: Effect.die }))
       })
 
       return { startSubagent, openLatch, useTool, finishSubagent: finish, handBack }

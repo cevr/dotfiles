@@ -1,6 +1,6 @@
 // The pool's pace: whether a new agent may start now, from its accounts' readings.
 import { expect, test } from "bun:test"
-import { poolPace } from "./pace.ts"
+import { dispatchPace, eligibleFor, NO_INFLIGHT, poolPace } from "./pace.ts"
 import type { AccountStatus } from "./status.ts"
 const now = Date.parse("2026-11-04T15:00:00Z")
 const day = 86400000
@@ -63,4 +63,99 @@ test("agents started in the fleet count until they settle, so a wave holds the n
   expect(held.retryAt).toBe(now + 7 * minute + 1)
   // Without readings the starts cannot be weighed: the pace stays unmeasured and open.
   expect(poolPace([{ ...account(0.54), reading: { at: now, windows: [] } }], now, inflight([now, now, now]))).toMatchObject({ ok: true, measured: false })
+})
+
+test("admission, as a property over boundary partitions of 5h, week and a model's own week, both models and an unknown reset: one rule for the pace and the eligible accounts, against an independent oracle", () => {
+  // The even line at the explicit midweek clock: 0.99 × 3.5/7 + 0.05 = 0.545.
+  const LINE = 0.545
+  const near = (edge: number) => [edge - 1e-6, edge, edge + 1e-6]
+  const fives = [0, ...near(0.9), 1]
+  const weeks = [0, ...near(LINE), ...near(0.99), 1]
+  const owns = [0, ...near(1)]
+  const models = ["claude-opus-5-5", "claude-fable-5-2"] as const
+  // A model's own week with its reset known, or unknown (a reading that names none).
+  const ownWindows = (own: number) => [
+    { label: "known", window: { name: "7d:Fable", utilization: own, resetAt: now + 2 * day } },
+    { label: "unknown", window: { name: "7d:Fable", utilization: own } },
+  ]
+  const cases = fives.flatMap((five) =>
+    weeks.flatMap((week) => owns.flatMap((own) => models.flatMap((model) => ownWindows(own).map((scoped) => ({ five, week, own, model, scoped }))))),
+  )
+  for (const { five, week, own, model, scoped } of cases) {
+    const read: AccountStatus = {
+      credentialID: "a",
+      live: 0,
+      load: 0,
+      noRoom: false,
+      reading: {
+        at: now,
+        windows: [{ name: "5h", utilization: five, resetAt: now + 3600000 }, { name: "7d", utilization: week, resetAt: now + 3.5 * day }, scoped.window],
+      },
+    }
+    // The oracle, written from the rule's words, not its code: a window of the model's own at 100% with a
+    // known reset holds that model; 5h at 90% or the week at 99% holds every model; past the even line holds softly.
+    const ownHolds = model === "claude-fable-5-2" && own >= 1 && scoped.label === "known"
+    const hard = ownHolds || five >= 0.9 || week >= 0.99
+    const soft = !hard && week > LINE + 1e-9
+    const pace = poolPace([read], now, NO_INFLIGHT, model)
+    expect(
+      { ok: pace.ok, measured: pace.measured, soft: pace.soft === true, held: pace.admission === "held", opens: pace.ok || pace.retryAt! > now, eligible: eligibleFor([read], now, model).length },
+      `5h ${five}, week ${week}, Fable ${own} (reset ${scoped.label}), ${model}`,
+    ).toEqual({ ok: !hard && !soft, measured: true, soft, held: hard || soft, opens: true, eligible: Number(!hard) })
+    expect(pace.admission).toBeOneOf(["held", "ordinary"])
+  }
+  expect(cases).toHaveLength(fives.length * weeks.length * owns.length * models.length * 2)
+})
+
+test("a claim's observed rebase admits as backed room, bounded by the week observed after it; a reset in hand adds none", () => {
+  const resetAt = now + 3.5 * day
+  const at = (used: number) => account(used, resetAt)
+  const opus = "claude-opus-5-5"
+  // At 70%, past the 54.5% even line: held, a reset in hand or not (the plan carries none).
+  expect(poolPace([at(0.7)], now, NO_INFLIGHT, opus, {})).toMatchObject({ ok: false, soft: true, admission: "held" })
+  // Claimed an hour ago, observed at 66% after it: the line starts again there, so 70% is room the claim gave back.
+  const rebased = { a: { rebase: { at: now - 3600000, from: 0.66 } } }
+  expect(poolPace([at(0.7)], now, NO_INFLIGHT, opus, rebased)).toMatchObject({ ok: true, admission: "backed" })
+  // Spending past what it gave back holds again.
+  expect(poolPace([at(0.72)], now, NO_INFLIGHT, opus, rebased)).toMatchObject({ ok: false, soft: true, admission: "held" })
+  // Under the even line the room is ordinary, whatever the plan.
+  expect(poolPace([at(0.5)], now, NO_INFLIGHT, opus, rebased)).toMatchObject({ ok: true, admission: "ordinary" })
+})
+test("a dispatch takes no invalid week, and no absent or stale window of the model's own, as room", () => {
+  const minute = 60000
+  const fable = "claude-fable-5-2"
+  /** An account read now; with `fable`, its Fable window too, read `fable` ms ago. */
+  const read = (credentialID: string, weekReset: number, fable: ReadonlyArray<number> = []): AccountStatus => ({
+    credentialID,
+    live: 0,
+    load: 0,
+    noRoom: false,
+    reading: {
+      at: now,
+      windows: [
+        { name: "7d", utilization: 0.2, resetAt: weekReset },
+        { name: "5h", utilization: 0.1, resetAt: now + 3600000 },
+        ...fable.map((ago) => ({ name: "7d:Fable", utilization: 0.2, resetAt: now + 2 * day, at: now - ago })),
+      ],
+    },
+  })
+  // A week resetting more than 7 days ahead, or never: held with a reason and a time to ask again, never ordinary.
+  for (const reset of [now + 9 * day, now - 1]) {
+    const held = dispatchPace([read("a", reset)], now, {}, 0.04, "claude-opus-5-5")
+    expect(held).toMatchObject({ ok: false, admission: "held", eligible: [], retryAt: now + minute })
+    expect(held.reason).toContain("not within the next 7 days")
+  }
+  // Beside a valid account, the invalid one is never eligible.
+  expect(dispatchPace([read("a", now + 9 * day), read("b", now + 3.5 * day)], now, {}, 0.04, "claude-opus-5-5")).toMatchObject({ ok: true, admission: "ordinary", eligible: ["b"] })
+  // Fable's own window absent on one account where another reads one: that account is no Fable room; Opus is unaffected.
+  const pair = [{ ...read("a", now + 3.5 * day, [0]), hold: { kind: "rate-limit" as const, at: now, until: now + 10000 } }, read("b", now + 3.5 * day)]
+  const absent = dispatchPace(pair, now, {}, 0.04, fable)
+  expect(absent).toMatchObject({ ok: false, eligible: [] })
+  expect(absent.reason).toContain("no 7d:Fable window")
+  expect(dispatchPace(pair, now, {}, 0.04, "claude-opus-5-5")).toMatchObject({ ok: true, eligible: ["b"] })
+  // Stale (carried over 31 minutes): held; read 29 minutes ago: room.
+  const stale = dispatchPace([read("a", now + 3.5 * day, [31 * minute])], now, {}, 0.04, fable)
+  expect(stale).toMatchObject({ ok: false, eligible: [], retryAt: now + minute })
+  expect(stale.reason).toContain("7d:Fable window was read more than 30 min ago")
+  expect(dispatchPace([read("a", now + 3.5 * day, [29 * minute])], now, {}, 0.04, fable)).toMatchObject({ ok: true, admission: "ordinary", eligible: ["a"] })
 })
