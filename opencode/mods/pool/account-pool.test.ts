@@ -509,7 +509,7 @@ describe("an account is held", () => {
     )
   })
 
-  test("a response's reading keeps the model windows and resets only the usage endpoint reads, until they lapse", () => {
+  test("headers retain learned model windows and their original reading times even after a window rolls over", () => {
     const resets = { available: 2, nextExpiresAt: T0 + 50 * HOUR, credits: [{ id: "g-1", count: 2, usable: true, expiresAt: T0 + 50 * HOUR }] }
     const usage = reading({
       windows: [
@@ -521,14 +521,15 @@ describe("an account is held", () => {
     })
     // The unified headers of a response carry the 5-hour and 7-day windows only.
     const headers: QuotaReading = { at: T0 + 2 * HOUR, status: "allowed", windows: [{ name: "7d", utilization: 0.6, resetAt: T0 + 10 * HOUR }] }
+    const rolled = { at: usage.at, name: "7d:Gone", utilization: 0.9, resetAt: T0 + HOUR }
     const carried: QuotaReading = {
       ...headers,
       // The carried window names when it was read too: a fresh reading around it does not make it fresh.
-      windows: [...headers.windows, { at: usage.at, name: "7d:Fable", utilization: 0.3, resetAt: T0 + 10 * HOUR }],
+      windows: [...headers.windows, { at: usage.at, name: "7d:Fable", utilization: 0.3, resetAt: T0 + 10 * HOUR }, rolled],
       // Carried resets name when they were read, the usage reading's time, so a claim no one asked for sees their age.
       resets: { at: usage.at, ...resets },
     }
-    // A reading that reads the model windows and resets itself replaces them.
+    // A reading replaces only the models and resets it actually reads.
     const fresh = reading({ at: T0 + 3 * HOUR, windows: [{ name: "7d", utilization: 0.7 }], resets: { available: 0, credits: [] } })
     return run(
       accounts("a"),
@@ -540,7 +541,7 @@ describe("an account is held", () => {
       Story.clock(T0 + 3 * HOUR),
       Story.when(TakeReading.make({ credentialID: "a", reading: { ...fresh, windows: [...fresh.windows, { name: "7d:Fable", utilization: 0.4 }] } })),
       Story.then(
-        ReadingTaken.make({ credentialID: "a", reading: { ...fresh, windows: [...fresh.windows, { name: "7d:Fable", utilization: 0.4 }] } }),
+        ReadingTaken.make({ credentialID: "a", reading: { ...fresh, windows: [...fresh.windows, { name: "7d:Fable", utilization: 0.4 }, rolled] } }),
       ),
     )
   })

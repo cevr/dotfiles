@@ -353,7 +353,8 @@ export const layer = (config: Config) =>
         Option.match(resetProvider(pool), {
           onNone: () => Effect.void,
           onSome: (provider) => {
-            if (!reading.windows.some((window) => window.name === "7d" && Option.isNone(Option.fromUndefinedOr(window.at)))) return Effect.void
+            // A carried week or a week still at its maximum cannot show a refund.
+            if (!reading.windows.some((window) => window.name === "7d" && window.utilization < 1 && Option.isNone(Option.fromUndefinedOr(window.at)))) return Effect.void
             return sendResets(ResetsModel.ObserveClaim.make({ pool, provider, credentialID, windows: reading.windows, at: reading.at })).pipe(Effect.asVoid)
           },
         })
