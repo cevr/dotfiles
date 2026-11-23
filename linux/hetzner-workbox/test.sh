@@ -28,47 +28,59 @@
 # Root on a scratch Linux VM (sudo). It creates and removes: loop devices,
 # md arrays named hbt-*, a user hbtest (uid 1990), the units and files
 # provision.sh installs, and its own directory under /var/tmp.
+#
+# Its cleanup removes every run's leftovers, not only its own: it runs at the
+# start of a run and at its exit, and alone with --cleanup (a run cut short by
+# a VM restart skips its exit). Each item is removed only if present, so it is
+# idempotent.
+#
+# While it runs, a sampler writes memory, pressure and the largest processes
+# every 3 s, and the kernel's warnings, to the serial console (/dev/hvc0, which
+# Lima keeps in serialv.log on the host) and to /dev/shm: a run that hangs the
+# guest still leaves its last samples outside it. The run prints the peaks.
+#
 # Usage: sudo test.sh <installimage checkout>
+#        sudo test.sh --cleanup
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd -P)
-installimage_src=${1:?usage: test.sh <installimage checkout>}
 [[ $(uname -s) == Linux && $(id -u) == 0 ]] || { echo 'test.sh: Linux and root' >&2; exit 2; }
-
-work=$(mktemp -d /var/tmp/hetzner-workbox-test.XXXXXX)
-# The test user's home is under it, and sshd reads authorized_keys as that user.
-chmod 755 "$work"
-T=$work/target S=$work/source
 user=hbtest uid=1990
-loops=()
+prefix=/var/tmp/hetzner-workbox-test.
+samples=/dev/shm/hetzner-workbox-test.samples
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 pass() { printf 'ok: %s\n' "$*"; }
 step() { printf '\n== %s\n' "$*"; }
 
-# What step 3b added to the VM itself: the packages (only those not here before), the binfmt entry
-# (only if it registered it), the reserve drop-ins, and its transient scope.
-tools_pkgs_before=''
-tools_binfmt_before=1
-tools_foreign=''
+# Step 3b's additions to the VM itself, from what each run recorded in its directory: the packages
+# that were not here before it (pkgs-before), the binfmt entry it registered (binfmt-registered).
 cleanup_tools() {
-    local f new
-    [[ -n ${tools_scope:-} ]] && runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user stop "$tools_scope" >/dev/null 2>&1
+    local d f new
     for f in system/user.slice.d system/user-.slice.d system/user@.service.d user/app.slice.d user/opencode-service-.scope.d; do
         rm -f "/etc/systemd/$f/30-workbox-reserve.conf"
         rmdir "/etc/systemd/$f" 2>/dev/null
     done
-    if [[ -n $tools_pkgs_before ]]; then
-        new=$(comm -13 "$tools_pkgs_before" <(dpkg-query -W -f='${Package}\n' | sort -u))
-        # shellcheck disable=SC2086 # a word list
-        [[ -n $new ]] && DEBIAN_FRONTEND=noninteractive apt-get purge -y -q $new >/dev/null 2>&1
-    fi
-    if ((tools_binfmt_before == 0)) && [[ -e /proc/sys/fs/binfmt_misc/qemu-$tools_foreign ]]; then
-        printf -- '-1' > "/proc/sys/fs/binfmt_misc/qemu-$tools_foreign"
-    fi
+    for d in "$prefix"*; do
+        if [[ -f $d/pkgs-before ]]; then
+            new=$(comm -13 "$d/pkgs-before" <(dpkg-query -W -f='${Package}\n' | sort -u))
+            # shellcheck disable=SC2086 # a word list
+            [[ -n $new ]] && NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive apt-get purge -y -q $new >/dev/null 2>&1
+        fi
+        if [[ -f $d/binfmt-registered ]]; then
+            f=/proc/sys/fs/binfmt_misc/qemu-$(cat "$d/binfmt-registered")
+            [[ -e $f ]] && printf -- '-1' > "$f"
+        fi
+    done
     systemctl daemon-reload
 }
 
 cleanup() {
     set +e
+    local l s m md h
+    # shellcheck disable=SC2086 # two pids
+    [[ -n ${sampler_pids:-} ]] && kill $sampler_pids 2>/dev/null
+    if [[ -n ${tools_scope:-} ]] && id "$user" >/dev/null 2>&1; then
+        runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user stop "$tools_scope" >/dev/null 2>&1
+    fi
     cleanup_tools
     systemctl disable --now bite-workbox-sshd.service >/dev/null 2>&1
     rm -f /etc/systemd/system/bite-workbox-sshd.service /etc/systemd/system/bite.slice \
@@ -79,12 +91,12 @@ cleanup() {
     for s in $(awk 'NR > 1 { print $1 }' /proc/swaps); do
         case $(readlink -f "$s") in /dev/md* | /dev/loop*) swapoff "$s" ;; esac
     done
-    for m in $(findmnt -rn -o TARGET | grep -E "^($work|/var/lib/hetzner-sync/top)" | sort -r); do umount "$m" || umount -l "$m"; done
+    for m in $(findmnt -rn -o TARGET | grep -E "^(${prefix//./\\.}|/var/lib/hetzner-sync/top)" | sort -r); do umount "$m" || umount -l "$m"; done
     for md in /dev/md/hbt-*; do [[ -e $md ]] && mdadm --stop "$md" >/dev/null 2>&1; done
     udevadm settle
-    # A stopped array's members can stay busy for a moment; udev may also
-    # assemble them again, so stop whatever holds a loop partition.
-    for l in "${loops[@]}"; do
+    # The loop devices backed by any run's files. A stopped array's members can stay busy for a
+    # moment; udev may also assemble them again, so stop whatever holds a loop partition.
+    for l in $(losetup -n -l -O NAME,BACK-FILE | awk -v p="$prefix" 'index($2, p) == 1 { print $1 }'); do
         for h in /sys/block/"${l##*/}"/"${l##*/}"p*/holders/md*; do
             [[ -e $h ]] && mdadm --stop "/dev/${h##*/}" >/dev/null 2>&1
         done
@@ -94,11 +106,72 @@ cleanup() {
     if id "$user" >/dev/null 2>&1; then
         loginctl disable-linger "$user"
         systemctl stop "user@$uid.service" 2>/dev/null
-        userdel "$user"
+        loginctl terminate-user "$user" 2>/dev/null
+        # The user manager's last process (sd-pam) can outlive its unit by a moment.
+        for _ in 1 2 3 4 5; do
+            pkill -KILL -u "$user" 2>/dev/null
+            userdel "$user" 2>/dev/null && break
+            sleep 1
+        done
     fi
-    rm -rf "$work"
+    rm -rf "$prefix"*
 }
+
+# Fails, naming what is left, unless the cleanup removed every item a run makes.
+check_clean() {
+    local left=()
+    compgen -G "$prefix*" >/dev/null && left+=("$(ls -d "$prefix"*)")
+    [[ -n $(losetup -n -l -O NAME,BACK-FILE | awk -v p="$prefix" 'index($2, p) == 1') ]] && left+=("loop devices")
+    compgen -G '/dev/md/hbt-*' >/dev/null && left+=("md arrays hbt-*")
+    id "$user" >/dev/null 2>&1 && left+=("user $user")
+    compgen -G '/etc/systemd/*/*/30-workbox-reserve.conf' >/dev/null && left+=("reserve drop-ins")
+    [[ -e /etc/systemd/system/bite.slice || -e /etc/systemd/system/bite-workbox-sshd.service ]] && left+=("units")
+    ((${#left[@]} == 0)) || fail "left after cleanup: ${left[*]}"
+}
+
+if [[ ${1:-} == --cleanup ]]; then
+    cleanup
+    rm -f "$samples"
+    check_clean
+    pass "nothing left of earlier runs"
+    exit 0
+fi
+installimage_src=${1:?usage: test.sh <installimage checkout> | test.sh --cleanup}
+
+# A run cut short (a VM restart skips the exit trap) left its things: remove them first.
+(cleanup) >/dev/null 2>&1
+check_clean
 trap cleanup EXIT
+
+work=$(mktemp -d "${prefix}XXXXXX")
+# The test user's home is under it, and sshd reads authorized_keys as that user.
+chmod 755 "$work"
+T=$work/target S=$work/source
+loops=()
+tools_scope=''
+
+# The sampler: MemAvailable, the memory and IO pressure (some, avg10), dirty and writeback pages,
+# and the three largest processes, every 3 s; the kernel's warnings as they come.
+console=/dev/null
+[[ -w /dev/hvc0 ]] && console=/dev/hvc0
+: > "$samples"
+(
+    set +e
+    while :; do
+        line="hb-sample $(date +%T) avail_mb=$(awk '/^MemAvailable/ { print int($2 / 1024) }' /proc/meminfo)"
+        line+=" mem_some=$(awk -F'[ =]' '/^some/ { print $3 }' /proc/pressure/memory)"
+        line+=" io_some=$(awk -F'[ =]' '/^some/ { print $3 }' /proc/pressure/io)"
+        line+=" dirty_mb=$(awk '/^Dirty:/ { print int($2 / 1024) }' /proc/meminfo)"
+        line+=" writeback_mb=$(awk '/^Writeback:/ { print int($2 / 1024) }' /proc/meminfo)"
+        line+=" top=$(ps -eo rss=,comm= --sort=-rss | head -n 3 | awk '{ printf "%s:%dM,", $2, $1 / 1024 }')"
+        printf '%s\n' "$line" >> "$samples"
+        printf '%s\r\n' "$line" > "$console" 2>/dev/null
+        sleep 3
+    done
+) &
+sampler_pids=$!
+dmesg -w --level=emerg,alert,crit,err,warn > "$console" 2>/dev/null &
+sampler_pids+=" $!"
 
 new_loop() { # size file -> sets loop to a loop device with partitions (not in a subshell, so cleanup sees it)
     truncate -s "$1" "$2"
@@ -225,9 +298,9 @@ tools=$here/../../workbox/system-tools.sh
 pin() { sed -n "s/^$1=//p" "$here/../../workbox/pins.conf"; }
 arch=$(dpkg --print-architecture)
 case $arch in amd64) tools_foreign=aarch64 ;; arm64) tools_foreign=x86_64 ;; *) fail "a $arch VM" ;; esac
+# For the cleanup: the packages here before, and the binfmt entry if this run registers it.
 dpkg-query -W -f='${Package}\n' | sort -u > "$work/pkgs-before"
-tools_pkgs_before=$work/pkgs-before
-[[ -e /proc/sys/fs/binfmt_misc/qemu-$tools_foreign ]] || tools_binfmt_before=0
+[[ -e /proc/sys/fs/binfmt_misc/qemu-$tools_foreign ]] || printf '%s\n' "$tools_foreign" > "$work/binfmt-registered"
 if [[ $arch == amd64 ]]; then
     # An amd64 VM would take the real Go and PowerShell into its own /usr/local and apt: the shells
     # and qemu only here; the scratch-root runs below still cover Go and PowerShell.
@@ -493,5 +566,14 @@ printf '# nothing\n' > "$work/fstab.none"
 if WORKBOX_RIFT_MOUNT=$T/workspaces WORKBOX_RIFT_FSTAB=$work/fstab.none WORKBOX_RIFT_IMAGE=$work/no-image \
     sh "$here/../../workbox/bin/workbox-rift-storage" --check >/dev/null 2>&1; then fail "workbox-rift-storage accepts a /workspaces with no fstab line"; fi
 pass "workbox-rift-storage --check: native line yes, no line no"
+
+step "peaks over the run (the sampler, every 3 s)"
+awk '{ for (i = 1; i <= NF; i++) { split($i, kv, "="); v[kv[1]] = kv[2] }
+       n++
+       if (n == 1 || v["avail_mb"] + 0 < lo) { lo = v["avail_mb"] + 0; at = $2; top = v["top"] }
+       if (v["mem_some"] + 0 > mem) mem = v["mem_some"] + 0
+       if (v["io_some"] + 0 > io) io = v["io_some"] + 0
+       if (v["dirty_mb"] + 0 > dirty) dirty = v["dirty_mb"] + 0 }
+     END { printf "samples %d; lowest MemAvailable %d MB at %s (largest: %s); memory pressure some avg10 max %.2f%%; IO %.2f%%; dirty max %d MB\n", n, lo, at, top, mem, io, dirty }' "$samples"
 
 printf '\nALL OK\n'
