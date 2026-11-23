@@ -82,3 +82,4 @@ describe.skipIf(!fork)("Escape cancels within the grace and interrupts after it,
     expect(composer).toBe(" ┃")
   }))
 })
+// @reads all

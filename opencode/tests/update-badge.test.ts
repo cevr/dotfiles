@@ -300,3 +300,4 @@ describe.skipIf(!fork)("the update notice", () => {
     TIMEOUT_MS,
   )
 })
+// @reads all

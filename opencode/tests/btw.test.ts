@@ -103,3 +103,4 @@ describe.skipIf(!fork)("/btw", () => {
     for (const message of back) expect(textOf(message)).not.toBe(note)
   }), 150_000)
 })
+// @reads all

@@ -139,3 +139,4 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
     RUN_MS,
   )
 })
+// @reads all

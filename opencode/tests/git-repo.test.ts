@@ -562,3 +562,4 @@ describe("a test's temp git repository", () => {
     expect(raw).toEqual([])
   })
 })
+// @reads-indirect tests/**

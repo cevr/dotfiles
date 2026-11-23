@@ -148,3 +148,4 @@ describe.skipIf(!ready)("a store account whose refresh is rate-limited does not 
     RUN_TIMEOUT_MS + 30_000,
   )
 })
+// @reads all

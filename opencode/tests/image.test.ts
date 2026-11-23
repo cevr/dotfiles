@@ -143,3 +143,4 @@ describe.skipIf(!fork)("the image tool", () => {
     SCENARIO_MS,
   )
 })
+// @reads all

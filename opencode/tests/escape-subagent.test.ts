@@ -98,3 +98,4 @@ describe.skipIf(!fork)("a subagent's view opens on its prompt, and Escape there 
     expect(requests()).toEqual(["brief", "steer", "now"])
   }))
 })
+// @reads all

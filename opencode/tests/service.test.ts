@@ -66,3 +66,4 @@ describe("a test's service is ready once it can serve, not once its file is writ
     expect(Date.now() - started).toBeLessThan(5_000)
   })
 })
+// @reads all

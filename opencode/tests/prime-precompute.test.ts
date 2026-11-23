@@ -74,3 +74,4 @@ describe.skipIf(!fork)("an automatic compaction swaps in the summary written in 
     expect(frames.swapped.join("\n")).not.toContain("Compacting")
   }))
 })
+// @reads all

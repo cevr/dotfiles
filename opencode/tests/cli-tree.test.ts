@@ -13,3 +13,4 @@ import { matchingInput } from "./read-path.ts"
 describe("each plain-Bun command runs from this checkout (the development path)", () => {
   commandChecks(checkoutRoot, (file) => matchingInput("{cmd/digest/devices.ts,cmd/digest/pair.ts,cmd/digest/export.ts,cmd/image/key.ts,cmd/image/run.ts,cmd/mail/pair.ts,cmd/memory/cli.ts,cmd/rex/show.ts,cmd/update/handoff.ts,cmd/wake/backstop.ts,cmd/wake/job.ts,scripts/daily.ts,mods/kernel/worker/program.ts}", file))
 })
+// @reads-indirect tests/cli-tree/** scripts/** cmd/** mods/**

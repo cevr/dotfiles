@@ -67,7 +67,8 @@ describe.skipIf(!forkRuns)("a build's plugin tree, loaded by real OpenCode", () 
         const checkout = (yield* ok(["git", "rev-parse", "--show-toplevel"], ".")).out.trim()
         const tree = `${root}/share/${treeOf(buildName(VERSION))}`
         yield* fs.makeDirectory(tree)
-        yield* ok(["git", "-C", checkout, "archive", "--format=tar", `--output=${root}/opencode.tar`, "HEAD", "opencode"], root)
+        const archived = yield* run(["git", "-C", checkout, "archive", "--format=tar", `--output=${root}/opencode.tar`, "HEAD", "opencode"], root, base)
+        expect({ code: archived.code, err: archived.err.slice(-1500) }).toMatchObject({ code: 0 })
         yield* ok(["tar", "-xf", `${root}/opencode.tar`, "-C", tree], root)
         yield* ok([process.execPath, "install", "--frozen-lockfile"], `${tree}/opencode`)
         yield* ok([process.execPath, `${tree}/opencode/scripts/daily.ts`, "--tree", tree, "--at", tree, "--checkout", `${root}/live`, "--host", HOST], `${tree}/opencode`, { ...base, OPENCODE_DEV: fork })
@@ -160,3 +161,4 @@ describe.skipIf(!forkRuns)("a build's plugin tree, loaded by real OpenCode", () 
     TIMEOUT_MS,
   )
 })
+// @reads all

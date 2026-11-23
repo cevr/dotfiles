@@ -92,3 +92,4 @@ describe.skipIf(!fork)("a prompt sent to an idle session is no queued prompt, in
     expect(shown.at(-1)).not.toMatch(ROW)
   }))
 })
+// @reads all

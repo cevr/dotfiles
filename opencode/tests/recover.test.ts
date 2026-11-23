@@ -37,3 +37,4 @@ describe.skipIf(!fork)("session recover", () => {
     expect(settled).not.toContain("Session location unavailable")
   }), 150_000)
 })
+// @reads all

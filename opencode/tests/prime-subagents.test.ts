@@ -159,3 +159,4 @@ describe.skipIf(!fork)("moving between subagents in the Prime look (OPENCODE_DEV
     WORKERS.forEach((worker, index) => expect(rows[index]).toMatch(dockRow(worker.title)))
   }))
 })
+// @reads all

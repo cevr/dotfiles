@@ -115,3 +115,4 @@ describe.skipIf(!fork)("the mail listener from the service's start", () => {
     TIMEOUT_MS,
   )
 })
+// @reads all

@@ -162,3 +162,4 @@ describe.skipIf(!fork)("the cache mod in a real TUI", () => {
     }
   }, 150_000)
 })
+// @reads all

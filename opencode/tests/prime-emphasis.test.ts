@@ -79,3 +79,4 @@ describe.skipIf(!fork)("Prime teaches root sessions the chips and draws them (OP
     SCENARIO_MS,
   )
 })
+// @reads all

@@ -106,3 +106,4 @@ function turn(frame: ReadonlyArray<string>) {
   // The turn's end time shows once its completion arrives (tests/turn-time.ts): either frame may hold it or not.
   return withoutTurnTime(frame.slice(first, last + 1)).map((line) => line.trimEnd())
 }
+// @reads all

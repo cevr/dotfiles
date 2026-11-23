@@ -65,3 +65,4 @@ describe.skipIf(!fork)("the subagent rows beside the sidebar in the Prime look (
     expect(shown[1]).toMatch(new RegExp(`${ROW.source}Check the money parser first\\. · \\d+s$`))
   }))
 })
+// @reads all

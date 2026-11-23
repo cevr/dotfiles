@@ -232,3 +232,4 @@ describe("an e2e suite's directory", () => {
     CASES_MS,
   )
 })
+// @reads-indirect tests/** scripts/**

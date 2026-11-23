@@ -113,3 +113,4 @@ describe.skipIf(!fork)("Prime's dock and goal line", () => {
     expect(resumed).not.toContain("untrusted_objective")
   }))
 })
+// @reads all

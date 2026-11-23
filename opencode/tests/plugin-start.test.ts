@@ -72,3 +72,4 @@ describe.skipIf(!fork)("our server plugins at a service's start", () => {
     120_000,
   )
 })
+// @reads all

@@ -375,3 +375,4 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
 
   test("they leave it when the TUI's first read of what runs after the reconnect fails", kept.test(() => scenario("failed-read", { failActiveReads: 1 })), TIMEOUT_MS)
 })
+// @reads all

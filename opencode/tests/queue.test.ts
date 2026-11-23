@@ -94,3 +94,4 @@ describe.skipIf(!fork)("the Queue section of the sidebar", () => {
       } else expect(tools.filter((name) => name === "queue")).toHaveLength(2)
     }), 150_000)
 })
+// @reads all

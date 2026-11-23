@@ -51,3 +51,4 @@ describe("gamut's detached processes and their owner", () => {
     20_000,
   )
 })
+// @reads all

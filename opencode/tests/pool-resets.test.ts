@@ -445,3 +445,4 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
     TIMEOUT_MS,
   )
 })
+// @reads all

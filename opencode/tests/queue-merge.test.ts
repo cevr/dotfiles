@@ -108,3 +108,4 @@ describe.skipIf(!fork)("waiting prompts act as one (OPENCODE_DEV)", () => {
     SCENARIO_MS,
   )
 })
+// @reads all

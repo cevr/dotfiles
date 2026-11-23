@@ -58,3 +58,4 @@ describe.skipIf(!fork)("an idle orchestrator's TUI (OPENCODE_DEV)", () => {
     SCENARIO_MS,
   )
 })
+// @reads all

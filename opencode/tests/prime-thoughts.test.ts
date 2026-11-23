@@ -203,3 +203,4 @@ describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE
     for (const end of timedRows(frames.overview.lines).filter((line) => shown.includes(line))) expect([`  ${STARTED}`, `  ${NOTED}`]).toContain(end)
   }))
 })
+// @reads all

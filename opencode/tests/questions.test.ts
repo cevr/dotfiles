@@ -168,3 +168,4 @@ describe.skipIf(!fork)("background questions", () => {
       else expect(tools.filter((name) => name === "ask_user_async")).toHaveLength(3)
     }), 150_000)
 })
+// @reads all

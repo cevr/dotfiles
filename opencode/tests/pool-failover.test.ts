@@ -215,3 +215,4 @@ describe.skipIf(!ready)("the pool fails a refused run over to the next login (re
     RUN_TIMEOUT_MS + 30_000,
   )
 })
+// @reads all

@@ -67,3 +67,4 @@ describe.skipIf(!fork)("questions with two directories open on one server", () =
     expect(result.warnings.filter((warning) => warning.message.startsWith("questions:"))).toEqual([])
   }, 150_000)
 })
+// @reads all

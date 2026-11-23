@@ -242,3 +242,4 @@ describe.skipIf(!fork)("session mail between two paired OpenCode servers (real p
     TIMEOUT_MS,
   )
 })
+// @reads all

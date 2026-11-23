@@ -40,3 +40,4 @@ describe.skipIf(!fork)("a held subagent falls back to Codex (OPENCODE_DEV)", () 
     expect(frame.map((line) => line.trim())).toContainEqual(expect.stringMatching(/^◆ planner sol 6\.1  Check the export  /))
   }))
 })
+// @reads all

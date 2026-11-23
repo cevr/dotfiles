@@ -94,3 +94,4 @@ describe.skipIf(!fork)("the Queue tab", () => {
     expect(answered).toContain("○ Merge workers, run daily · next · answered: Run it tonight")
   }), 150_000)
 })
+// @reads all

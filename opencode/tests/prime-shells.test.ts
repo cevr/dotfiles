@@ -134,3 +134,4 @@ describe.skipIf(!fork)("background shells in Prime", () => {
     expect(lineOf(frames["user-killed"], DOCK)).toBeUndefined()
   }))
 })
+// @reads all

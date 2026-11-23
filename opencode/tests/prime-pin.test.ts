@@ -97,3 +97,4 @@ describe.skipIf(!fork)("the ask pinned over the transcript in the Prime look (OP
     expect(fill("pin-revealed")).toBe(0)
   }))
 })
+// @reads all

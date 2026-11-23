@@ -64,3 +64,4 @@ describe.skipIf(!fork)("jobs", () => {
     expect(letters.map((message) => message.metadata?.exitCode)).toEqual([4])
   }), 240_000)
 })
+// @reads all

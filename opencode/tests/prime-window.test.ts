@@ -53,3 +53,4 @@ describe.skipIf(!fork)("the tray's context share under an agent's compaction win
     expect(frame).not.toContain("(24%)")
   }))
 })
+// @reads all

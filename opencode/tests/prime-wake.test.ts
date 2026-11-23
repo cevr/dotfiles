@@ -63,3 +63,4 @@ describe.skipIf(!fork)("a worker waiting on its own background shell (OPENCODE_D
     expect(done).toContain("Root heard: the background check passed.")
   }))
 })
+// @reads all

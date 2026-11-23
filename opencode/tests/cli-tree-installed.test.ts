@@ -111,3 +111,4 @@ describe("each plain-Bun command runs from the installed tree TREE_OPENCODE name
 
   commandChecks(installedRoot)
 })
+// @reads-indirect tests/cli-tree/** scripts/** cmd/** mods/**

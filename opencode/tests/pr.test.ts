@@ -42,3 +42,4 @@ describe.skipIf(!fork)("the pr tool and its watcher", () => {
     expect(calls.filter((call) => call[0] === "api" && call[1] === "--include").every((call) => call.includes("--silent"))).toBe(true)
   }), 150_000)
 })
+// @reads all

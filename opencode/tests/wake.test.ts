@@ -150,3 +150,4 @@ describe.skipIf(!fork)("wakes", () => {
     expect(fired[0]?.metadata?.lateMs ?? 0).toBeGreaterThanOrEqual(60_000)
   }), 300_000)
 })
+// @reads all

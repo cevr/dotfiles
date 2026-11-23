@@ -206,3 +206,4 @@ describe.skipIf(!forkRuns)("the pool lets a run's login go when its session goes
 
   test("a turn that succeeds lets its login go", () => releasedAfter(kept, "succeeded", () => ({ kind: "ok", text: "Hello." }), 200), TIMEOUT_MS)
 })
+// @reads all

@@ -9,3 +9,4 @@ describe.skipIf(!forkRuns)(SUITE, () => {
   const kept = keptScratch(forkRuns, "rs-open-")
   test("a TUI opened while the service is down or booting waits for it, says so, and opens its session", reconnectTest(kept, openWhileDown), TIMEOUT_MS)
 })
+// @reads all

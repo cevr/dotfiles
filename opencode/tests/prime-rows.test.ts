@@ -125,3 +125,4 @@ describe.skipIf(!fork)("the live subagent rows in the Prime look (OPENCODE_DEV)"
     expect(shown[0]).toMatch(new RegExp(`^${SPIN} worker gpt  Fix CSV quoting  .+ · \\d+s$`))
   }))
 })
+// @reads all

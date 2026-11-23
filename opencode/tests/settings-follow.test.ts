@@ -225,3 +225,4 @@ describe.skipIf(!forkRuns)("the settings follow an update, from each build's tre
     TIMEOUT_MS,
   )
 })
+// @reads-indirect themes/** scripts/** tests/** testbeds/** cmd/** mods/**

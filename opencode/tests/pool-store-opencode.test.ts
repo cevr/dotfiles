@@ -125,3 +125,4 @@ describe.skipIf(!ready)("OpenCode runs on a login store's Claude accounts throug
     RUN_TIMEOUT_MS + 30_000,
   )
 })
+// @reads all

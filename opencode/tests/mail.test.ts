@@ -35,3 +35,4 @@ describe.skipIf(!fork)("session mail", () => {
     expect(exchange).not.toContain("It is not the user speaking")
   }), 150_000)
 })
+// @reads all

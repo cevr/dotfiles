@@ -110,3 +110,4 @@ describe("the client laws in real OpenCode", () => {
       400_000,
     )
 })
+// @reads all

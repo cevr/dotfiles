@@ -73,3 +73,4 @@ describe.skipIf(!hooked)("$ skills", () => {
     expect(requests.some((request) => request.includes("DEPLOY-BODY"))).toBe(false)
   }), 240_000)
 })
+// @reads all

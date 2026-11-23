@@ -139,3 +139,4 @@ describe.skipIf(!fork)("the background-work panel in the Prime look (OPENCODE_DE
     SCENARIO_MS,
   )
 })
+// @reads all

@@ -1083,3 +1083,4 @@ describe("process Rifts on work", () => {
     TIMEOUT,
   )
 })
+// @reads all

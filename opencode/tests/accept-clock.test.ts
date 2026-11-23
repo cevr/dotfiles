@@ -53,3 +53,4 @@ describe("the accept lock by the clock", () => {
     600_000,
   )
 })
+// @reads-indirect scripts/** cmd/** mods/** decider/** lint/** sim/** sim-tui/**

@@ -216,3 +216,4 @@ describe("the pool's source over a login store", () => {
     }),
   )
 })
+// @reads all

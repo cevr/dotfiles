@@ -241,3 +241,4 @@ describe.skipIf(!forkRuns)("an open TUI moves onto a build that differs only in 
     TIMEOUT_MS,
   )
 })
+// @reads all

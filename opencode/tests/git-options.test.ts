@@ -48,3 +48,4 @@ describe("the guard's git global options", () => {
     expect(manualOptions("no manual")).toEqual([])
   })
 })
+// @reads-indirect tests/** mods/guard/**

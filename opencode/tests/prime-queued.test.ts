@@ -111,3 +111,4 @@ describe.skipIf(!fork)("prompts sent during a compaction wait above the composer
     expect(frames.after.join("\n")).not.toContain("◌")
   }))
 })
+// @reads all

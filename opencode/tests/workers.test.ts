@@ -68,3 +68,4 @@ describe.skipIf(!fork)("background workers in the Prime look (OPENCODE_DEV)", ()
     expect(frames.opened.slice(at + 4, at + 6)).toEqual(["", "  Noted."])
   }))
 })
+// @reads all

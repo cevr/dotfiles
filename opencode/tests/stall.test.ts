@@ -182,3 +182,4 @@ describe.skipIf(!runs)("the stall watchdog (real OpenCode service)", () => {
     TIMEOUT_MS,
   )
 })
+// @reads all

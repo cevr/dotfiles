@@ -92,3 +92,4 @@ describe.skipIf(!fork).each(["ctrl", "leader"])("%s chord interrupts a turn stuc
     expect(requests.at(-1)).toEqual([ASK, LATER, DRAFT])
   }))
 })
+// @reads all

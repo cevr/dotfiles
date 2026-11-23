@@ -70,3 +70,4 @@ describe.skipIf(!fork)("a compaction is one line in the Prime look, and the host
     expect(frames.all.join("\n")).not.toContain("◇ Compacted")
   }))
 })
+// @reads all

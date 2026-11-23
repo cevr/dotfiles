@@ -80,3 +80,4 @@ describe.skipIf(!fork)("one Escape stops a busy session in every state (OPENCODE
     expect(frame("offline-after").replace(/\s*┃\s*/g, " ")).toContain("Still running 5 s after Escape: the server has not")
   }))
 })
+// @reads all

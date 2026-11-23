@@ -41,3 +41,4 @@ describe.skipIf(!fork)("an idle root with units to move", () => {
     expect(frame("nudged")).toMatch(/… Owner review of alpha/)
   }), 200_000)
 })
+// @reads all

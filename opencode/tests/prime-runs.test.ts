@@ -125,3 +125,4 @@ describe.skipIf(!fork)("a message between two calls starts a new group in the Pr
     for (const end of timedRows(rows(frames.overview))) expect(end).toBe("  Suite passed; the notes say ship it.")
   }))
 })
+// @reads all

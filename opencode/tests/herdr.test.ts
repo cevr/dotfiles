@@ -78,3 +78,4 @@ describe.skipIf(!fork)("the herdr reporter in a real TUI", () => {
     }
   }, 150_000)
 })
+// @reads all

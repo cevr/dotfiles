@@ -57,3 +57,4 @@ describe.skipIf(!fork)("a question taller than a phone's pane", () => {
       expect(lines(read("done"))).toContain("Root read Drop it")
     }), 300_000)
 })
+// @reads all

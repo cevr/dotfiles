@@ -61,3 +61,4 @@ describe.skipIf(!fork)("a subagent latched on the pace (OPENCODE_DEV)", () => {
     expect(rows(frame)).toContainEqual(expect.stringMatching(/^◆ worker gpt  Check the export  /))
   }))
 })
+// @reads all

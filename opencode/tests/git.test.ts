@@ -50,3 +50,4 @@ describe.skipIf(!fork)("the Git sidebar section and /git", () => {
     expect(after).not.toContain("hunk not found")
   }), 150_000)
 })
+// @reads all

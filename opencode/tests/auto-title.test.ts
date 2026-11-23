@@ -84,3 +84,4 @@ describe("auto-title in real OpenCode", () => {
     150_000,
   )
 })
+// @reads all

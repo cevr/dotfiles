@@ -112,3 +112,4 @@ describe("the reaper of a test process", () => {
     40_000,
   )
 })
+// @reads all

@@ -238,3 +238,4 @@ describe("terminal host", () => {
     30_000,
   )
 })
+// @reads all

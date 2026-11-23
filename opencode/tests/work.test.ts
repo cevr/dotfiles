@@ -151,3 +151,4 @@ if (runnable)
     )
   })
 else test.skip("the work tool in real OpenCode needs a work binary (WORK_BIN, or work on PATH) and OPENCODE_DEV, the fork", () => {})
+// @reads all

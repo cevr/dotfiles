@@ -315,3 +315,4 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
     TIMEOUT_MS,
   )
 })
+// @reads all

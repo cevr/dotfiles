@@ -86,3 +86,4 @@ describe.skipIf(!fork)("a waiting subagent's wait ends with no notice (OPENCODE_
     expect(panel(frames["ended-panel"])).toEqual({ tab: "Subagents", rows: ["No active subagents"] })
   }))
 })
+// @reads all

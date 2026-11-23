@@ -15,3 +15,4 @@ describe.skipIf(!forkRuns)(SUITE, () => {
     TIMEOUT_MS,
   )
 })
+// @reads all

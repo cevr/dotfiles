@@ -85,3 +85,4 @@ describe.skipIf(!fork)("a kernel cell's description in the Prime look (OPENCODE_
     expect(fg("● Ran printf 'lint ok", 2)).toBe(MUTED)
   }))
 })
+// @reads all

@@ -79,3 +79,4 @@ describe.skipIf(!fork)("the composer panel's Wakes and Monitors tabs (OPENCODE_D
     expect(underRule(frames.alarm, ALARM.length)).toEqual(ALARM.map(matcher))
   }))
 })
+// @reads all

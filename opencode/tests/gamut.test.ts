@@ -604,3 +604,4 @@ describe.skipIf(!fork)("gamut on the sim preset", () => {
     240_000,
   )
 })
+// @reads all

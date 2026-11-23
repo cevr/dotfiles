@@ -111,3 +111,4 @@ describe("the host laws in real OpenCode", () => {
     400_000,
   )
 })
+// @reads all

@@ -56,3 +56,4 @@ describe.skipIf(!fork)("with OpenCode's automations on", () => {
     }
   }), 180_000)
 })
+// @reads all
