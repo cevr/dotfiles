@@ -7,6 +7,7 @@ import { Effect, Option } from "effect"
 import * as App from "./app.ts"
 import { router } from "./route/registry.ts"
 import { type Model, text } from "./server.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 const FILE = "sim-tui/boot-fail.test.tsx"
 const BOOT: App.BootOptions = { file: FILE, plugins: ["cmd/prime"], width: 100, height: 30 }
@@ -20,7 +21,7 @@ App.effectTest(
       expect(Option.isNone(router().navigate)).toBe(true)
     }),
   ),
-  App.BOOT_TIMEOUT_MS,
+  hangGuard("installer"),
 )
 
 App.effectTest(
@@ -32,7 +33,7 @@ App.effectTest(
       yield* tui.until("the opened session", (shown) => shown.join("\n").includes("After the failed boot"))
     }),
   ),
-  App.BOOT_TIMEOUT_MS,
+  hangGuard("installer"),
 )
 
 App.closeTest()

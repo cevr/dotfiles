@@ -5,6 +5,7 @@ import { Effect, Exit, Option, Path } from "effect"
 import { scratch } from "../../../tests/scratch.ts"
 import { byteLength, decodeLines, DigestEvent, encodeLine, MAX_LINE, VERSION } from "../event.ts"
 import { fileOf, make, type Sink, writeLine } from "./log.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 const WRITERS = 4
 const EACH = 40
@@ -55,7 +56,7 @@ describe("the digest's file log", () => {
     expect(lines.every((line) => byteLength(line) <= MAX_LINE)).toBe(true)
     const read = decodeLines(text)
     expect([read.events.length, read.bad]).toEqual([WRITERS * EACH, 0])
-  }, 30_000)
+  }, hangGuard("local-fixture"))
 
   test("a line appended after a torn last line is read; only the torn line is counted bad", async () => {
     using held = scratch("digest-log-")

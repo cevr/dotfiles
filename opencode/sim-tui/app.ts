@@ -41,6 +41,7 @@ import * as Server from "./server.ts"
 import * as Seed from "../sim/seed.ts"
 import { wallTime } from "../sim/wall-clock.ts"
 import { router } from "./route/registry.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 /** Where every seed's virtual clock starts: 2026-11-04 15:00 UTC, a Wednesday afternoon. */
 export const EPOCH = 1_793_804_400_000
@@ -240,12 +241,12 @@ export interface Waited {
  * naming the first not done, the wall time it waited and its passes. For a wait on real I/O: a count of passes
  * alone gave up however long each real turn took, and a loaded host's import of a plugin outlasted 10 000 of them.
  */
-export const within = <E, R>(awaited: ReadonlyArray<Waited>, step: Effect.Effect<void, E, R>, deadlineMs: number) =>
+export const within = <E, R>(awaited: ReadonlyArray<Waited>, step: Effect.Effect<void, E, R>, deadlineMs: number, deadline = wallTime) =>
   Effect.gen(function* () {
     const box = { over: false }
     const passes = { run: 0 }
     const all = () => awaited.every((each) => each.done())
-    const timer = yield* Effect.forkChild(Effect.andThen(wallTime(deadlineMs), Effect.sync(() => (box.over = true))))
+    const timer = yield* Effect.forkChild(Effect.andThen(deadline(deadlineMs), Effect.sync(() => (box.over = true))))
     const run = Effect.gen(function* () {
       for (; !all() && !box.over; passes.run++) yield* step
     })
@@ -732,9 +733,9 @@ export const bootWithin = (options: BootOptions, limitMs: number, host: Effect.E
 
 export { effectTest } from "./effect-test.ts"
 /** A TUI file's first test: it boots the file's app, with the time a first boot takes on a loaded host. */
-export const bootTest = (options: BootOptions) => effectTest(BOOT_TEST, boot(options), BOOT_TIMEOUT_MS)
+export const bootTest = (options: BootOptions) => effectTest(BOOT_TEST, boot(options), hangGuard("installer"))
 /** A TUI file's last test: it closes the app and reports the seeds. */
-export const closeTest = () => effectTest(CLOSE_TEST, shutdown, CLOSE_TIMEOUT_MS)
+export const closeTest = () => effectTest(CLOSE_TEST, shutdown, hangGuard("local-fixture"))
 
 export interface Key {
   readonly name: string

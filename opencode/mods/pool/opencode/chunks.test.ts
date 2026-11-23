@@ -14,9 +14,8 @@ import * as LedgerLive from "./ledger.ts"
 import * as LimitsLive from "./limits.ts"
 import * as Records from "./records.ts"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
-/** Hang guard for the runner, separate from the pool's modeled time. */
-const HANG_GUARD_MS = 30_000
 const DAY = 24 * 3_600_000
 const NOW = 30 * DAY
 const ANTHROPIC = PoolId.make("anthropic")
@@ -93,7 +92,7 @@ describe("the chunk store", () => {
         expect(yield* Chunks.open(memory(entries), kind).fold).toBe(0)
       }),
     ),
-    HANG_GUARD_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -108,7 +107,7 @@ describe("the chunk store", () => {
         expect(yield* readBack(entries)).toEqual(sorted(live))
       }),
     ),
-    HANG_GUARD_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -128,7 +127,7 @@ describe("the chunk store", () => {
         expect(yield* readBack(entries)).toEqual(sorted(steps))
       }),
     ),
-    HANG_GUARD_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -147,7 +146,7 @@ describe("the chunk store", () => {
         expect(yield* readBack(entries)).toEqual(sorted([...steps, late]))
       }),
     ),
-    HANG_GUARD_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -170,7 +169,7 @@ describe("the chunk store", () => {
         expect(yield* readBack(entries)).toEqual(sorted([...first, ...second, both]))
       }),
     ),
-    HANG_GUARD_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -190,7 +189,7 @@ describe("the chunk store", () => {
         expect(yield* readBack(entries)).toHaveLength(8)
       }),
     ),
-    HANG_GUARD_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -223,7 +222,7 @@ describe("the chunk store", () => {
         expect(yield* readBack(entries)).toEqual(sorted([...sessions(5), late]))
       }),
     ),
-    HANG_GUARD_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -246,7 +245,7 @@ describe("the chunk store", () => {
         expect(yield* readBack(entries)).toEqual([step(NOW, "b1"), b2])
       }),
     ),
-    HANG_GUARD_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -270,7 +269,7 @@ describe("the chunk store", () => {
         expect((yield* readBack(entries)).map((entry) => entry.sessionID)).toContain("b2")
       }),
     ),
-    HANG_GUARD_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -291,7 +290,7 @@ describe("the chunk store", () => {
         expect(yield* readBack(entries)).toEqual([later])
       }),
     ),
-    HANG_GUARD_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -306,7 +305,7 @@ describe("the chunk store", () => {
         expect(yield* store.entries).toEqual([])
       }),
     ),
-    HANG_GUARD_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -326,7 +325,7 @@ describe("the chunk store", () => {
         expect(yield* readBack(entries)).toEqual([first])
       }),
     ),
-    HANG_GUARD_MS,
+    hangGuard("local-fixture"),
   )
 })
 
@@ -348,7 +347,7 @@ describe("the readers on both shapes", () => {
         expect(before.holds).toEqual({ "cred-a": { kind: "usage-limit", until: NOW + DAY, at: NOW } })
       }),
     ),
-    HANG_GUARD_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -372,6 +371,6 @@ describe("the readers on both shapes", () => {
         expect(yield* report).toEqual(reportBefore)
       }),
     ),
-    HANG_GUARD_MS,
+    hangGuard("local-fixture"),
   )
 })

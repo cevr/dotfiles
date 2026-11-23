@@ -16,9 +16,9 @@ import {
   ToolNameAliasTable,
 } from '../tool-alias.ts'
 import { createStrippedStream, MAX_SSE_EVENT_BYTES, MAX_SSE_LINE_BYTES } from './response-stream.ts'
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 const CANCELLATION_WAIT_MS = 15_000
-const CANCELLATION_RUNNER_MS = 30_000
 
 // Aliasing answers a Result now; a rejection throws here, as it did.
 const unwrap = <A, E>(result: Result.Result<A, E>): A => {
@@ -922,7 +922,7 @@ describe('createStrippedStream - cancellation', () => {
     await reader.cancel()
     await waitUntil('the source stream to observe cancellation', () => cancelled, CANCELLATION_WAIT_MS)
     expect(cancelled).toBe(true)
-  }, CANCELLATION_RUNNER_MS)
+  }, hangGuard("local-fixture"))
 
   test('buffers a chunk without a newline until flush', async () => {
     const output = await readText(
@@ -1219,7 +1219,7 @@ describe('bounded structured JSON responses', () => {
       },
     })
     await expect(readText(jsonResponse(failed))).rejects.toBe(failure)
-  }, CANCELLATION_RUNNER_MS)
+  }, hangGuard("local-fixture"))
 
   test('decodes multiple deferred message tool names when root type is last', async () => {
     const payload = `{"content":[{"name":"${READ_ALIAS}","type":"tool_use"},{"name":"${WRITE_ALIAS}","type":"tool_use"}],"type":"message"}`

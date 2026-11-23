@@ -8,7 +8,7 @@ import { Console, Effect } from "effect"
 import * as Seed from "../seed.ts"
 
 const ran: Array<number> = []
-const { seeded } = Seed.runner("sim/fixtures/seed-fake-timers.fixture.ts", { timeoutMs: 1_000 })
+const { seeded } = Seed.runner("sim/fixtures/seed-fake-timers.fixture.ts", { budget: Seed.simulationBudget(1_000) })
 
 test("the fake timers are taken", () => {
   jest.useFakeTimers()

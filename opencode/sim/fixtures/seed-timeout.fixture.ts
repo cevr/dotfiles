@@ -6,7 +6,7 @@ import { Console, Effect } from "effect"
 import * as Seed from "../seed.ts"
 
 const ran: Array<number> = []
-const { seeded } = Seed.runner("sim/fixtures/seed-timeout.fixture.ts", { timeoutMs: 300 })
+const { seeded } = Seed.runner("sim/fixtures/seed-timeout.fixture.ts", { budget: Seed.simulationBudget(300) })
 
 seeded("seeds that run past the timeout", ({ seed }) =>
   Effect.gen(function* () {

@@ -13,6 +13,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 interface Request {
   readonly session?: "root" | "title"
@@ -53,5 +54,5 @@ describe.skipIf(!fork)("with OpenCode's automations on", () => {
       expect(request.request).not.toMatch(/automation_(create|list|pause|resume|delete)/)
       expect(request.request).toContain("wake_cancel")
     }
-  }), 180_000)
+  }), hangGuard("fork-session"))
 })

@@ -14,13 +14,13 @@ const alive = (pid: number) => {
 }
 
 import { observed } from "../tests/owned.ts"
+import { hangGuard, watchdog } from "../tests/hang-guard.ts"
 
 const EVENT_WAIT_MS = 30_000
-const HANG_GUARD_MS = 90_000
 
 const until = async (done: () => boolean) => {
-  const deadline = Date.now() + EVENT_WAIT_MS
-  while (!done() && Date.now() < deadline) await Bun.sleep(50)
+  const deadline = watchdog(EVENT_WAIT_MS)
+  while (!done() && !deadline.expired()) await Bun.sleep(50)
   return done()
 }
 
@@ -63,7 +63,7 @@ describe("the leak check", () => {
     expect(strays[0]?.ppid).toBe(run.pid)
     await stop([...left])
     expect(left.every((proc: Proc) => !alive(proc.pid))).toBe(true)
-  }, HANG_GUARD_MS)
+  }, hangGuard("process-tree"))
 })
 
 describe("owned", () => {
@@ -74,7 +74,7 @@ describe("owned", () => {
     child.stdin.write("go\n")
     child.stdin.end()
     expect(await until(() => Number.isInteger(child.exitCode) && !alive(grandchild)), "the child to exit and its grandchild to be gone").toBe(true)
-  }, HANG_GUARD_MS)
+  }, hangGuard("process-tree"))
 
   test("stops what the child started in a process group of its own, as opencode-drive starts its server", async () => {
     const child = owned(["sh", "-c", 'perl -e "setpgrp(0, 0); sleep 120" & echo $!; read release'], { stdin: "pipe", stdout: "pipe", stderr: "ignore" })
@@ -83,7 +83,7 @@ describe("owned", () => {
     child.stdin.write("go\n")
     child.stdin.end()
     expect(await until(() => Number.isInteger(child.exitCode) && !alive(grandchild)), "the child to exit and separately grouped grandchild to be gone").toBe(true)
-  }, HANG_GUARD_MS)
+  }, hangGuard("process-tree"))
 
   test("a child killed alone takes its group with it", async () => {
     const child = owned(["sh", "-c", "sleep 30 & echo $!; wait"], { stdout: "pipe", stderr: "ignore" })
@@ -91,5 +91,5 @@ describe("owned", () => {
     const grandchild = Number(new TextDecoder().decode((await reader.read()).value).trim())
     child.kill()
     expect(await until(() => child.signalCode === "SIGTERM" && !alive(grandchild)), "the child to die by SIGTERM and take its group with it").toBe(true)
-  }, HANG_GUARD_MS)
+  }, hangGuard("process-tree"))
 })

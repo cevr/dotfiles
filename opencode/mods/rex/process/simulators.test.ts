@@ -7,9 +7,8 @@ import { Effect, Option } from "effect"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { Simulators } from "../service.ts"
 import * as ProcessSimulators from "./simulators.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
-/** Hang guard for the fake simulator processes. */
-const HANG_GUARD_MS = 30_000
 const LISTED = `{
   "devices" : {
     "com.apple.CoreSimulator.SimRuntime.iOS-27-0" : [
@@ -31,7 +30,7 @@ describe("the simctl adapter", () => {
       )
       expect(ProcessSimulators.bootedIn("Permission denied")).toEqual(Option.none())
     }),
-    HANG_GUARD_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -45,7 +44,7 @@ describe("the simctl adapter", () => {
       expect(command).toStartWith("f=$(mktemp -t rex-show-sim) && ")
       expect(command).toContain(`cat "$f"; rm -f "$f"; exit $s`)
     }),
-    HANG_GUARD_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -57,6 +56,6 @@ describe("the simctl adapter", () => {
       const bad = yield* at("linux", "-oProxyCommand=true")
       expect((yield* Effect.flip(bad.booted)).message).toBe("REX_SHOW_SIM_HOST is not an ssh host: -oProxyCommand=true")
     }),
-    HANG_GUARD_MS,
+    hangGuard("local-fixture"),
   )
 })

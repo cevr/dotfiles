@@ -13,6 +13,7 @@ import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 import { withoutTurnTime } from "./turn-time.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-indent.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -63,10 +64,10 @@ const TURN = {
 }
 
 describe.skipIf(!fork)("every transcript row starts in one column in the Prime look (OPENCODE_DEV)", () => {
-  beforeAll(...kept.setup(async () => {
+  beforeAll(kept.test(async () => {
     await run("medium")
     await run("low")
-  }, 600_000))
+  }), hangGuard("deep-scenario"))
 
   test("medium: each call, the grouped run, the inline tool, the prose and the notice start in the call rows' column", kept.test(() => {
     const frame = frames["indent-medium"]!

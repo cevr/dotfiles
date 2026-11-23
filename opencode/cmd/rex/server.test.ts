@@ -6,9 +6,8 @@ import { expect } from "bun:test"
 import { Effect } from "effect"
 import { effectTest } from "../../sim-tui/effect-test.ts"
 import Rex, { make } from "./server.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 
-/** Hang guard for the test runner, not a plugin performance limit. */
-const HANG_GUARD_MS = 30_000
 type Host = Parameters<(typeof Rex)["effect"]>[0]
 
 effectTest(
@@ -29,5 +28,5 @@ effectTest(
       ["REX_BIN_DIR", "/opt/rex"],
     ])
   }),
-  HANG_GUARD_MS,
+  hangGuard("local-fixture"),
 )

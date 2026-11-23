@@ -19,6 +19,7 @@ import {
 } from "./fake-anthropic.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard, stamp } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 const ready = Boolean(fork)
@@ -110,7 +111,7 @@ describe.skipIf(!ready)("the pool fails a refused run over to the next login (re
         methodID: "claude-max",
         refresh: account.refresh,
         access: account.access,
-        expires: Date.now() + 8 * HOUR,
+        expires: stamp() + 8 * HOUR,
       },
     }))
     const imported = Bun.spawnSync([...launch.base, "auth", "import", "--standalone"], {
@@ -139,7 +140,7 @@ describe.skipIf(!ready)("the pool fails a refused run over to the next login (re
       expect(run.stdout).not.toContain("Hello from the second login.")
       expect(turns.map((request) => [request.account, request.status])).toEqual([["first", 429]])
     }),
-    RUN_TIMEOUT_MS + 30_000,
+    hangGuard("fork-turn"),
   )
 
   test(
@@ -154,12 +155,14 @@ describe.skipIf(!ready)("the pool fails a refused run over to the next login (re
 
       expect(run.exitCode).toBe(0)
       expect(run.stdout).toContain("Hello from the second login.")
-      // The agent turn went out on the first login, was refused, and went again at once on the second.
+      // The same agent turn went out on the first login, was refused once, and
+      // went again on the second while the first login was still on hold.
       expect(turns.map((request) => [request.account, request.status])).toEqual([
         ["first", 429],
         ["second", 200],
       ])
-      expect(turns[1]!.at - turns[0]!.at).toBeLessThan(2_000)
+      expect(turns[1]!.sessionHeader).toBe(turns[0]!.sessionHeader)
+      expect(turns[1]!.at).toBeLessThan(resetAt)
       // Nothing went out unsigned, nothing on a stranger's token.
       expect(messages.every((request) => request.account !== undefined)).toBe(true)
       // The credential choice never reached Anthropic.
@@ -176,7 +179,7 @@ describe.skipIf(!ready)("the pool fails a refused run over to the next login (re
         expect(run.stdout + run.stderr).not.toContain(account.refresh)
       }
     }),
-    RUN_TIMEOUT_MS + 30_000,
+    hangGuard("fork-turn"),
   )
 
   test(
@@ -210,8 +213,9 @@ describe.skipIf(!ready)("the pool fails a refused run over to the next login (re
       expect(ends, run.stdout.slice(-2_000)).toHaveLength(1)
       const opens = Option.flatMap(Option.fromNullishOr(POOL_REFUSAL.exec(ends.join(""))?.[1]), DateTime.make)
       expect(Option.isSome(opens), ends.join("")).toBe(true)
-      expect(Math.abs(Option.getOrElse(Option.map(opens, DateTime.toEpochMillis), () => 0) - (now + HOUR))).toBeLessThan(5_000)
+      const encodedReset = Math.floor((now + HOUR) / 1000) * 1000
+      expect(Option.map(opens, DateTime.toEpochMillis)).toEqual(Option.some(encodedReset))
     }),
-    RUN_TIMEOUT_MS + 30_000,
+    hangGuard("fork-turn"),
   )
 })

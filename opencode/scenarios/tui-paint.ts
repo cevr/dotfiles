@@ -23,6 +23,7 @@
 import { Array as Arr, Deferred, Effect, Option, Schedule, Schema, Stream } from "effect"
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { Llm, OpenCodeDriver } from "opencode-drive"
+import { stamp } from "../tests/hang-guard.ts"
 
 const root = process.cwd()
 const out = process.env.SCENARIO_OUT || "out"
@@ -166,11 +167,11 @@ export default OpenCodeDriver.use(
       /** The probe's counts over the window, from a moment after the last capture settled. */
       const measure = Effect.gen(function* () {
         // What the last capture drew settles first: two probe samples on.
-        yield* sampledFrom(Date.now() + 2_000)
-        const from = Date.now()
+        yield* sampledFrom(stamp() + 2_000)
+        const from = stamp()
         // One sample past the window's end, so the window holds WINDOW_MS of samples.
         yield* sampledFrom(from + WINDOW_MS + 1_000)
-        return between(from, Date.now())
+        return between(from, stamp())
       })
 
       yield* until("ready", (frame) => frame.length > 0 && samples().length > 0)

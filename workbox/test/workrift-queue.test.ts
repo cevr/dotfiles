@@ -19,6 +19,7 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
+import { hangGuard, stamp, watchdog } from "../../opencode/tests/hang-guard.ts"
 
 type Kind = "r" | "w"
 type Protocol = "flock" | "tickets"
@@ -628,17 +629,17 @@ const runOps = async (b: TurnBench, ops: ReadonlyArray<Op>, snapshots: ReadonlyA
       // The request is written before the kernel could unblock the next waiter.
       appendFileSync(b.log, `kill - ${name}\n`)
       process.kill(-pid, "SIGKILL")
-      kills.set(name, Date.now() / 1000)
+      kills.set(name, stamp() / 1000)
     } catch {
       // It had ended; this is not a kill of a waiter or holder.
     }
   }
   const phaseLog = () => textLines(existsSync(b.log) ? readFileSync(b.log, "utf8") : "")
   const observe = async (what: string, ready: () => boolean) => {
-    const deadline = performance.now() + FIXTURE_HANG_GUARD_MS
+    const deadline = watchdog(FIXTURE_HANG_GUARD_MS)
     while (!ready()) {
       if (!polling) throw new Error(`fixture ended before ${what}`)
-      if (performance.now() > deadline) throw new Error(`hang guard: never saw ${what}`)
+      if (deadline.expired()) throw new Error(`hang guard: never saw ${what}`)
       await Bun.sleep(20)
     }
   }
@@ -648,12 +649,12 @@ const runOps = async (b: TurnBench, ops: ReadonlyArray<Op>, snapshots: ReadonlyA
     release: (name) => writeFileSync(join(b.holds, `${name}.go`), ""),
     kill,
   }
-  const started = Date.now()
+  const started = stamp()
   const jobs = Promise.all(
     ops.map(async (op): Promise<Outcome> => {
       if (op.afterEntered !== undefined) await events.entered(op.afterEntered)
       if (op.afterQueued !== undefined) await events.queued(op.afterQueued)
-      const beforeStart = started + op.at - Date.now()
+      const beforeStart = started + op.at - stamp()
       if (beforeStart > 0) await Bun.sleep(beforeStart)
       if (!polling) throw new Error(`fixture ended before ${op.name} could start`)
       const script = op.script ?? TURN_SCRIPT
@@ -782,7 +783,7 @@ describe("the clone turn: one clone or delete at a time per copy base, in arriva
       expect(killed).toBeGreaterThan(0)
       expect(both).toBeGreaterThan(2)
     },
-    240_000,
+    hangGuard("generated-schedule"),
   )
 
   test("a clone never overlaps a delete of its base, removes go one at a time, and a later create waits behind an earlier remove", async () => {
@@ -799,7 +800,7 @@ describe("the clone turn: one clone or delete at a time per copy base, in arriva
     })
     expect(judge(run, ["A"])).toEqual([])
     expect(run.phases.map((p) => p.name).sort()).toEqual(["c1", "c2", "r1", "r2"])
-  }, FIXTURE_HANG_GUARD_MS + 30_000)
+  }, hangGuard("process-fixture"))
 
   test("two bases do not wait for each other: a long clone of A and a long delete of B run together", async () => {
     const b = turnBench("two", ["A", "B"])
@@ -814,7 +815,7 @@ describe("the clone turn: one clone or delete at a time per copy base, in arriva
     expect(judge(run, ["A", "B"])).toEqual([])
     const [ca, rb] = ["ca", "rb"].map((name) => run.phases.find((p) => p.name === name)!)
     expect(ca!.t0 < rb!.t1 && rb!.t0 < ca!.t1).toBe(true)
-  }, FIXTURE_HANG_GUARD_MS + 30_000)
+  }, hangGuard("process-fixture"))
 
   test("a holder killed in its clone frees the turn: the queued delete enters without releasing the clone's gate", async () => {
     const b = turnBench("killed", ["A"])
@@ -834,7 +835,7 @@ describe("the clone turn: one clone or delete at a time per copy base, in arriva
     expect(c0.open).toBe(true)
     expect(r1.t0).toBeGreaterThanOrEqual(c0.t1)
     expect(existsSync(join(b.holds, "c0.go"))).toBe(false)
-  }, FIXTURE_HANG_GUARD_MS + 30_000)
+  }, hangGuard("process-fixture"))
 
   test("a snapshot base (a btrfs subvolume whose work clones by btrfs) takes no turn: its clones and deletes run side by side, while a copy base beside it still takes turns", async () => {
     const b = turnBench("snap", ["S", "A"])
@@ -855,7 +856,7 @@ describe("the clone turn: one clone or delete at a time per copy base, in arriva
     )
     expect(judge(run, ["S", "A"], ["S"])).toEqual([])
     expect(overlapping(run.phases.filter((p) => p.base === "S")).length).toBeGreaterThan(0)
-  }, FIXTURE_HANG_GUARD_MS + 30_000)
+  }, hangGuard("process-fixture"))
 
   test("beside the script before the turn (83b97f9e) installed by rename: old creates and removes take no turn and are not starved; nothing deadlocks; the new ones still take turns among themselves", async () => {
     const b = turnBench("old", ["A"])
@@ -875,5 +876,5 @@ describe("the clone turn: one clone or delete at a time per copy base, in arriva
     expect(fresh).toHaveLength(3)
     expect(overlapping(fresh)).toEqual([])
     expect(run.turns.map((t) => t.name).sort()).toEqual(["n1", "n2", "nr"])
-  }, 60_000)
+  }, hangGuard("process-fixture"))
 })

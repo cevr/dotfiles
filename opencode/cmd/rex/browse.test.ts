@@ -19,9 +19,8 @@ import { Browse, Page, type Spooled } from "@dotfiles/opencode-rex/spool"
 import { ConfigProvider, Context, Effect, Exit, Fiber, Layer, Option, Queue, Ref, Schema } from "effect"
 import { effectTest } from "../../sim-tui/effect-test.ts"
 import { parse, Refused, Request, run, type Screen, viewer } from "./show.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 
-/** Hang guard for the in-memory viewer fixture. */
-const HANG_GUARD_MS = 30_000
 const PAGE = "http://127.0.0.1:8765/page.html"
 
 const refusalOf = <A>(exit: Exit.Exit<A, unknown>) => Option.map(Option.filter(Exit.findErrorOption(exit), Schema.is(Refused)), (refused) => refused.code)
@@ -38,7 +37,7 @@ describe("the arguments of rex-show browse", () => {
         expect({ bad, code: refusalOf(yield* Effect.exit(parse(bad))) }).toEqual({ bad, code: Option.some(2) })
       }
     }),
-    HANG_GUARD_MS,
+    hangGuard("local-fixture"),
   )
 })
 
@@ -67,7 +66,7 @@ describe("the caller of rex-show browse", () => {
         ),
       ),
     ),
-    HANG_GUARD_MS,
+    hangGuard("local-fixture"),
   )
 })
 
@@ -168,7 +167,7 @@ effectTest(
     expect(yield* Fiber.join(running)).toBe("")
     expect(yield* Ref.get(side.open)).toBe(false)
   }).pipe(Effect.provide(browsing)),
-  15_000,
+  hangGuard("short-fixture"),
 )
 
 effectTest(
@@ -187,7 +186,7 @@ effectTest(
     expect(yield* Ref.get(side.open)).toBe(false)
     yield* Fiber.interrupt(running)
   }).pipe(Effect.provide(browsing)),
-  15_000,
+  hangGuard("short-fixture"),
 )
 
 effectTest(
@@ -210,5 +209,5 @@ effectTest(
       ).pipe(Layer.provideMerge(queues)),
     ),
   ),
-  15_000,
+  hangGuard("short-fixture"),
 )

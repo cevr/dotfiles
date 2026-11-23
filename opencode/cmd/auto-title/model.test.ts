@@ -12,6 +12,7 @@ import { AutoTitle, layer } from "@dotfiles/opencode-auto-title/model"
 import type { Policy, Track } from "@dotfiles/opencode-auto-title/retitle"
 import { type Seat, Sessions, TitleFailed, Tracks } from "@dotfiles/opencode-auto-title/service"
 import { effectTest } from "../../sim-tui/effect-test.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 
 /** The tracks in a map the test reads. */
 const memoryTracks = (entries: Map<string, Track> = new Map()) =>
@@ -27,8 +28,6 @@ const memoryTracks = (entries: Map<string, Track> = new Map()) =>
 tracksLaws("the test's tracks", () => memoryTracks(), effectTest)
 
 const MINUTE = 60_000
-/** Each case's time limit, ms. */
-const LIMIT = 30_000
 const POLICY: Policy = { afterMs: 30 * MINUTE, afterTurns: 6 }
 
 /** A root session of this copy's location, idle: the seat of every session the test does not set. */
@@ -81,7 +80,7 @@ const scenario = <A>(name: string, body: (input: { readonly world: Host; readonl
         return yield* body({ world, title, tracks })
       }),
     ).pipe(Effect.provide(TestClock.layer()), Effect.orDie),
-    LIMIT,
+    hangGuard("local-fixture"),
   )
 
 /** `n` turns of the session, each ending idle. */
@@ -267,6 +266,6 @@ describe("auto-title, on the test clock", () => {
           expect(pinned(tracks, "ses_b")).toEqual(Option.some(false))
         }),
       ).pipe(Effect.provide(TestClock.layer())),
-    LIMIT,
+    hangGuard("local-fixture"),
   )
 })

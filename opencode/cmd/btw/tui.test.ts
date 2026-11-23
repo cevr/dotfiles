@@ -15,6 +15,7 @@ import type { Stored } from "@dotfiles/opencode-btw/opencode/store"
 import { manualTuiClock } from "../../tests/manual-tui-clock.ts"
 import { waitUntil } from "../../tests/wait.ts"
 import { type Draw, setup } from "./setup.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 
 type Host = Parameters<typeof setup>[0]
 
@@ -125,8 +126,6 @@ const start = (host: World, route: { readonly type: string; readonly sessionID?:
   return { toasts, opened, commands, slots, keys, drawn, stored: () => stored, pages, listeners, emit, cleanup, command }
 }
 
-/** Hang guard for the asynchronous fixture events. */
-const HANG_GUARD_MS = 30_000
 const EVENT_WAIT_MS = 10_000
 
 describe("the btw plugin", () => {
@@ -169,7 +168,7 @@ describe("the btw plugin", () => {
     expect(pages).toEqual(["ses_fork1"])
     expect(stored().sessions.main).toEqual({ fork: { sessionID: "ses_fork1", name: "btw: why is it slow?", createdAt: expect.any(Number), broughtBack: [] } })
     expect(toasts).toEqual([])
-  }, HANG_GUARD_MS)
+  }, hangGuard("local-fixture"))
 
   test("a fork the host refuses reaches the reader as a warning and keeps nothing", async () => {
     const host = world({ main: 1 })
@@ -181,7 +180,7 @@ describe("the btw plugin", () => {
     await waitUntil("the refused question to finish", () => !control?.pending("gone"), EVENT_WAIT_MS)
     expect(toasts).toEqual([{ message: "btw: could not fork: Session not found: gone", variant: "warning" }])
     expect(stored().sessions).toEqual({})
-  }, HANG_GUARD_MS)
+  }, hangGuard("local-fixture"))
 
   test("draws the pane in the host's session panel, for the btw panel only", () => {
     const { slots, drawn } = start(world(), { type: "home" })
@@ -212,7 +211,7 @@ describe("the btw plugin", () => {
     expect(control?.reading("main").turns.map((turn) => [turn.question, turn.answer])).toEqual([["why is it slow?", "It sleeps."]])
     expect(control?.reading("main").replying).toBe(false)
     stop?.()
-  }, HANG_GUARD_MS)
+  }, hangGuard("local-fixture"))
 
   test("its cleanup stops listening to the host's events", () => {
     const { listeners, cleanup } = start(world(), { type: "home" })

@@ -31,12 +31,12 @@ import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { hostCall, serve, type ServedHost } from "../testbeds/gamut/pty-host.ts"
 import { freePort, ready, type Service } from "./service.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard, stamp, watchdog } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/update-badge.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 
 const ROOT = join(import.meta.dir, "..")
-const TIMEOUT_MS = 180_000
 const NOTICE = "update available · restart to update"
 /** A newer build as daily names one: the fork commit, then the dotfiles commit (mods/update/process/pin.ts `versionOf`). */
 const NEWER = "9.9.9-prime.0e0e0e0e.d0d0d0d0"
@@ -53,10 +53,10 @@ interface ClientModule {
 const unavailable = () => Response.json({ code: "service_starting" }, { status: 503, headers: { "retry-after": "1" } })
 
 const until = async <A>(read: () => Promise<A> | A, done: (value: A) => boolean, label: (last: A) => string, ms: number): Promise<A> => {
-  const deadline = Date.now() + ms
+  const deadline = watchdog(ms)
   let last = await read()
   while (!done(last)) {
-    if (Date.now() > deadline) return expect.unreachable(label(last))
+    if (deadline.expired()) return expect.unreachable(label(last))
     await Bun.sleep(250)
     last = await read()
   }
@@ -176,7 +176,7 @@ describe.skipIf(!fork)("the update notice", () => {
   /** What `bun run daily` writes for the TUI's corner: `commits` of upstream/dev past the build, the merge `blocked` or not. Its folder is boot's. */
   const writeUpstream = (commits: number, blocked: boolean) => {
     const file = upstreamFile(home, env.XDG_STATE_HOME)
-    writeFileSync(file, JSON.stringify({ commits, blocked, upstream: "72616be4dbe772dc645640b5623cb3d6f4453bd3", build: "314c9607bf6ca4254f1a7b478a8d5deb15c3b910", at: new Date().toISOString() }))
+    writeFileSync(file, JSON.stringify({ commits, blocked, upstream: "72616be4dbe772dc645640b5623cb3d6f4453bd3", build: "314c9607bf6ca4254f1a7b478a8d5deb15c3b910", at: new Date(stamp()).toISOString() }))
   }
 
   const auth = (service: Service) => ({ authorization: `Basic ${btoa(`opencode:${service.password}`)}` })
@@ -264,7 +264,7 @@ describe.skipIf(!fork)("the update notice", () => {
         await host.stop()
       }
     }),
-    TIMEOUT_MS,
+    hangGuard("fork-session"),
   )
 
   test(
@@ -283,7 +283,7 @@ describe.skipIf(!fork)("the update notice", () => {
         await host.stop()
       }
     }),
-    TIMEOUT_MS,
+    hangGuard("fork-session"),
   )
 
   test(
@@ -302,6 +302,6 @@ describe.skipIf(!fork)("the update notice", () => {
         await host.stop()
       }
     }),
-    TIMEOUT_MS,
+    hangGuard("fork-session"),
   )
 })

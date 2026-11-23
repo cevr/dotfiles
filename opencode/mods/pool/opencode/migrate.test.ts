@@ -13,9 +13,8 @@ import * as LedgerLive from "./ledger.ts"
 import { MIGRATED, migrate } from "./migrate.ts"
 import * as PushesLive from "./pushes.ts"
 import * as ResetsLive from "./resets.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
-/** Hang guard for the test runner. */
-const HANG_GUARD_MS = 30_000
 const run = (entries: Map<string, Schema.Json>) => migrate(storage(entries))
 
 // Every place the plugin's storage names a login, in the shape its adapter
@@ -223,6 +222,6 @@ describe("the storage migration", () => {
       expect(entries.get(MIGRATED)).toBe(true)
       expect([...entries.keys()].every((key) => key === MIGRATED || key.startsWith("anthropic/reading/store:"))).toBe(true)
     }),
-    HANG_GUARD_MS,
+    hangGuard("local-fixture"),
   )
 })

@@ -10,9 +10,8 @@ import { Effect, Option } from "effect"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { Sideshow } from "../service.ts"
 import * as ProcessSideshow from "./sideshow.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
-/** Hang guard for the test runner. */
-const HANG_GUARD_MS = 30_000
 const POSTS = [{ id: "p1", sessionId: "s1", title: "notes", version: 2, createdAt: "x", updatedAt: "2026-11-15T10:00:00Z", surfaces: [{ kind: "markdown", index: 0, markdown: "# hi", id: "u" }] }]
 const SESSIONS = [
   { id: "s1", title: "Plan", cwd: "/work", lastActiveAt: "2026-11-15T10:00:00Z" },
@@ -85,7 +84,7 @@ describe("the caller's own session", () => {
         expect(yield* mineWith(places(base, dir, { cwd: "/elsewhere" }))).toEqual(Option.some("s1"))
       }),
     ),
-    10_000,
+    hangGuard("in-memory"),
   )
 
   effectTest(
@@ -94,7 +93,7 @@ describe("the caller's own session", () => {
       expect(ProcessSideshow.stateFile("/t", 123, "/w")).toBe(`/t/${new Bun.CryptoHasher("sha1").update("123:/w").digest("hex").slice(0, 12)}.json`)
       expect(ProcessSideshow.agentOf(process.pid)).toBeGreaterThan(1)
     }),
-    HANG_GUARD_MS,
+    hangGuard("local-fixture"),
   )
 })
 
@@ -120,7 +119,7 @@ describe("reading a server", () => {
         expect(other.log).toEqual(["/api/sessions/s1/posts -"])
       }),
     ),
-    10_000,
+    hangGuard("in-memory"),
   )
 
   effectTest(
@@ -137,6 +136,6 @@ describe("reading a server", () => {
         expect(yield* why(sideshow.at(down).posts("s1"))).toBe(`Sideshow not reachable at ${down}: ECONNREFUSED`)
       }),
     ),
-    10_000,
+    hangGuard("in-memory"),
   )
 })

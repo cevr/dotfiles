@@ -50,6 +50,7 @@ import {
 import { forkNamed, NO_FORK } from "./fork.ts"
 import { ROOT } from "./reach.ts"
 import { featureStep, mergeChecks, mergeUpstream, type StepRun, unlocked } from "./upstream.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 const list = (): List => Result.getOrThrow(declaredList)
 
@@ -1047,7 +1048,7 @@ describe("three budgets apart: the lock wait, the calm-host waits and the packag
 describe("a feature's since: required only in a checkout that contains the commit", () => {
   // Each case makes and reads a real git fork: 30 s each, for a loaded host.
   const scoped = it.scoped.layer(Layer.merge(fakeLayer, BunServices.layer))
-  const test = (name: string, self: Parameters<typeof scoped>[1]) => scoped(name, self, 30_000)
+  const test = (name: string, self: Parameters<typeof scoped>[1]) => scoped(name, self, hangGuard("local-fixture"))
 
   /** A git fork: packages/x's test at its first commit, packages/y's new test at its second; the list's y feature since the second. */
   const sinceFork = Effect.gen(function* () {
@@ -1273,7 +1274,7 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
 
   // Each case is a real merge and a CLI run: about a second on a quiet host, several under load, so 30 s each.
   const live = it.live.layer(BunServices.layer)
-  const test = <A, E>(name: string, self: () => Effect.Effect<A, E, BunServices.BunServices>, timeout = 30_000) => live(name, self, timeout)
+  const test = <A, E>(name: string, self: () => Effect.Effect<A, E, BunServices.BunServices>) => live(name, self, hangGuard("local-fixture"))
 
   test("green checks: the merge goes to origin (control)", () =>
     Effect.gen(function* () {
@@ -1298,7 +1299,7 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
         expect(text).toContain("packages/x/test/red.test.ts > the fork feature [x]")
         expect(text).toMatch(/Upstream commits it brings: `git log [0-9a-f]{10}\.\.[0-9a-f]{10}` \(1 commit\)/)
       }).pipe(Effect.scoped),
-    30_000,
+    hangGuard("local-fixture"),
   )
 
   test("a listed file the merge lacks holds the push", () =>
@@ -1396,7 +1397,7 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
       expect(text).toContain("fixture: post-test report check failed")
       expect(text).toMatch(/fork-checks: RED over upstream [0-9a-f]{10}\.\.[0-9a-f]{10}, 1 tests: packages\/x\/\(the run\) \[x\]/)
     }).pipe(Effect.scoped),
-    30_000,
+    hangGuard("local-fixture"),
   )
 
   /** A package command that copies its cell's report (if the merge holds one) to bun's report file and exits its cell's code. */
@@ -1458,7 +1459,7 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
           expect(each.report).toContain(`RED packages/x/(the run) [x]: bun runner.ts ${each.cell.exit} exited ${each.cell.exit}, and no failed test in its report accounts for it`)
         for (const each of outcomes.filter((one) => outcomeOf(one.cell) !== "green")) expect(each.report).toContain(`fixture: post-test step exited ${each.cell.exit}`)
       }),
-    300_000,
+    hangGuard("acceptance"),
   )
 })
 
@@ -1510,7 +1511,7 @@ describe("a run stopped before it finishes could not run, with a partial report"
       expect(text).toMatch(/fork-checks: COULD NOT RUN: stopped by a signal \(the caller's own bound, or a kill\) before it finished, after \d+\.\d s; progress: packages\/x \[x\]: running for \d+\.\d s$/m)
       expect(text).toMatch(/^budgets: lock wait \d+\.\d s of 30 min; calm-host wait \d+\.\d s of 30 min; package runs \d+\.\d s of 40 min$/m)
     }).pipe(Effect.scoped),
-    30_000,
+    hangGuard("local-fixture"),
   )
 
   test("the run's own time bound: could not run, the package's progress named", () =>
@@ -1524,6 +1525,6 @@ describe("a run stopped before it finishes could not run, with a partial report"
       expect(text).toContain("fork-checks: COULD NOT RUN: packages/x ran past the package runs' budget (0.025 min), its process group ended")
       expect(text).toMatch(/^budgets: lock wait \d+\.\d s of 30 min; calm-host wait \d+\.\d s of 30 min; package runs \d+\.\d s of 0\.025 min$/m)
     }).pipe(Effect.scoped),
-    30_000,
+    hangGuard("local-fixture"),
   )
 })

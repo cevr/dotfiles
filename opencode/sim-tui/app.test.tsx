@@ -9,13 +9,12 @@ import { expect } from "bun:test"
 import { Effect, Schema } from "effect"
 import * as App from "./app.ts"
 import { MODEL_REF, type Model, reasoning, stall, subagent, text } from "./server.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 const FILE = "sim-tui/app.test.tsx"
 const BOOT: App.BootOptions = { file: FILE, plugins: ["cmd/prime", "cmd/escape"], width: 120, height: 36 }
 const SEEDS = 20
 const STEPS = 30
-/** The test plays 40 seed runs in one: its timeout. */
-const TIMEOUT_MS = 300_000
 
 const WORDS = ["parser", "helper", "docs", "tests", "money", "rename", "split", "cache"]
 const BRIEF = "Worker brief."
@@ -104,7 +103,7 @@ App.effectTest(
     }
     expect(traces.size).toBeGreaterThanOrEqual(5)
   }),
-  TIMEOUT_MS,
+  hangGuard("acceptance"),
 )
 
 /** Whether the frame draws the reply to the prompt that ends in `word`. */
@@ -134,7 +133,7 @@ App.effectTest(
       expect({ refetched, blank: quiet.filter((frame) => !draws(frame, "docs")), afterNext: draws(tui.text(), "docs") }).toEqual({ refetched: [], blank: [], afterNext: true })
     }),
   ),
-  TIMEOUT_MS,
+  hangGuard("acceptance"),
 )
 
 // The renderer keeps the last pointer and lights whatever comes to sit under it. A seed starts with the pointer off
@@ -169,7 +168,7 @@ App.effectTest(
     expect(lit.after).not.toEqual(lit.before)
     expect(yield* asked(1)).toEqual(alone)
   }),
-  TIMEOUT_MS,
+  hangGuard("acceptance"),
 )
 
 App.closeTest()

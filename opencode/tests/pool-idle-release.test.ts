@@ -17,9 +17,9 @@ import { fakeAccount, startFakeAnthropic, type FakeAnswer, type FakeRequestInfo 
 import { ENV, Platform } from "./reconnect/host.ts"
 import { forkRuns, keptScratch } from "./scratch.ts"
 import { ready } from "./service.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const HOUR = 3_600_000
-const TIMEOUT_MS = 150_000
 /** How long the pool has, after the session went idle, to let the pin go. */
 const RELEASE_MS = 10_000
 const LOOK_MS = 250
@@ -200,8 +200,8 @@ describe.skipIf(!forkRuns)("the pool lets a run's login go when its session goes
   test(
     "a turn that ends failed lets its login go",
     () => releasedAfter(kept, "failed", (now) => ({ kind: "usage-429", claim: "five_hour", resetAt: now + 3 * HOUR }), 429),
-    TIMEOUT_MS,
+    hangGuard("fork-turn"),
   )
 
-  test("a turn that succeeds lets its login go", () => releasedAfter(kept, "succeeded", () => ({ kind: "ok", text: "Hello." }), 200), TIMEOUT_MS)
+  test("a turn that succeeds lets its login go", () => releasedAfter(kept, "succeeded", () => ({ kind: "ok", text: "Hello." }), 200), hangGuard("fork-turn"))
 })

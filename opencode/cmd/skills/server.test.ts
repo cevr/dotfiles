@@ -12,6 +12,7 @@ import { dirname, join } from "node:path"
 import { Effect, Queue, Schema, type Scope, Stream } from "effect"
 import { Answer, SKILLS } from "@dotfiles/opencode-skills/catalog"
 import SkillsPlugin, { live, make } from "./server.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 
 type Host = Parameters<(typeof SkillsPlugin)["effect"]>[0]
 type Handler = (input: unknown) => Effect.Effect<unknown>
@@ -36,7 +37,6 @@ interface Prompt {
 
 const scenario = <A, E>(body: Effect.Effect<A, E, Scope.Scope>) => Effect.runPromise(Effect.scoped(body))
 const EVENT_WAIT_MS = 15_000
-const HANG_GUARD_MS = 60_000
 
 const skillFile = (description: string, body: string) => `---\ndescription: ${description}\n---\n${body}\n`
 
@@ -215,5 +215,5 @@ describe("the skills plugin", () => {
         expect(plugin.registry().has("review:global")).toBe(true)
         expect(plugin.reloads()).toBe(3)
       }),
-    ), HANG_GUARD_MS)
+    ), hangGuard("process-fixture"))
 })

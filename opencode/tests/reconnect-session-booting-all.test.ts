@@ -4,6 +4,7 @@
 import { describe } from "bun:test"
 import { reconnectTest, restart, SUITE, test, TIMEOUT_MS, transcript } from "./reconnect/fixture.ts"
 import { forkRuns, keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 describe.skipIf(!forkRuns)(SUITE, () => {
   const kept = keptScratch(forkRuns, "rs-booting-all-")
@@ -12,6 +13,6 @@ describe.skipIf(!forkRuns)(SUITE, () => {
     reconnectTest(kept, (fixture) =>
       restart(fixture, "booting-all", transcript(fixture, "Reconnect booting all", "booting-all-transcript-marker"), "booting-all-transcript-marker", { bootingAll: true, draft: true }),
     ),
-    TIMEOUT_MS,
+    hangGuard("fork-session"),
   )
 })

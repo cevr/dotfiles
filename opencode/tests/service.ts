@@ -9,6 +9,7 @@
 import { readFileSync } from "node:fs"
 // The background service a test starts is stopped once the test process is gone, however it went (testbeds/reaper/start.ts).
 import "../testbeds/reaper/start.ts"
+import { watchdog } from "./hang-guard.ts"
 
 export interface Service {
   readonly url: string
@@ -59,7 +60,7 @@ const probe = async (service: Service): Promise<"ready" | "waiting" | { failed: 
  * error, with the last thing seen at the deadline.
  */
 export const ready = async (file: string, label: () => string, ms = 60_000, pollAgain = () => Bun.sleep(250)): Promise<Service> => {
-  const deadline = Date.now() + ms
+  const deadline = watchdog(ms)
   let seen = `no service file at ${file}`
   for (;;) {
     const service = readService(file)
@@ -69,7 +70,7 @@ export const ready = async (file: string, label: () => string, ms = 60_000, poll
       if (state !== "waiting") throw new Error(`${label()}: the service failed to start (/api/info answered ${state.failed})`)
       seen = `${service.url} still starting`
     }
-    if (Date.now() > deadline) throw new Error(`${label()}: ${seen}`)
+    if (deadline.expired()) throw new Error(`${label()}: ${seen}`)
     await pollAgain()
   }
 }

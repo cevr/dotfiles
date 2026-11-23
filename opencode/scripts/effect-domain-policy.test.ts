@@ -21,6 +21,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { Array as Arr, Effect, Option, Order, Schema, type Scope } from "effect"
 import { compare, DEBT_CONFIG, HARD_CONFIG, knownRules, POLICY, Policy, ruleOf, scan, spawn } from "./effect-debt.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 const REAL = process.cwd()
 const CLI_TIMEOUT = 120_000
@@ -444,7 +445,7 @@ describe(`${HARD_CONFIG}: the production domain's syntax rules over generated pa
           expect(found.refusals).toBeGreaterThan(found.domain.length * 15)
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("generated-schedule"),
   )
 
   test.concurrent(
@@ -456,7 +457,7 @@ describe(`${HARD_CONFIG}: the production domain's syntax rules over generated pa
           expect(found.wrong).toEqual([])
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("generated-schedule"),
   )
 
   test("the domain overrides name the domain by glob, leave out only tests, specs, benchmarks, mod laws and the exact legacy try files, and only ever raise their rules to errors", () => {
@@ -530,7 +531,7 @@ describe(`${HARD_CONFIG}: the production domain's syntax rules over generated pa
           expect(Arr.map(missed, (probe) => probe.glob)).toEqual([])
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("generated-schedule"),
   )
 })
 
@@ -574,6 +575,6 @@ describe(`${POLICY}: the legacy try statements of the domain`, () => {
           expect(changed.verdict).toEqual({ breaches: Arr.map(legacy, ({ file, count }) => ({ file, rule: "effect/noTryCatch", budget: count, count: count + 1 })), unknownRules: [] })
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("generated-schedule"),
   )
 })

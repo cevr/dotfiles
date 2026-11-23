@@ -15,6 +15,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/escape-send.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -36,7 +37,7 @@ describe.skipIf(!fork).each(["ctrl", "leader"])("%s chord interrupts a turn stuc
   let tool = ""
   let requests: ReadonlyArray<ReadonlyArray<string>> = []
 
-  beforeAll(...kept.setup(async () => {
+  beforeAll(kept.test(async () => {
     const out = kept.dir(`escape-send-${chord}-`)
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/escape-send.ts"], {
       cwd: root,
@@ -51,7 +52,7 @@ describe.skipIf(!fork).each(["ctrl", "leader"])("%s chord interrupts a turn stuc
     checked = readFileSync(join(out, "checked.txt"), "utf8")
     tool = readFileSync(join(out, "tool.txt"), "utf8")
     requests = JSON.parse(readFileSync(join(out, "requests.json"), "utf8"))
-  }, 300_000))
+  }), hangGuard("acceptance"))
 
   test("before the press: the shell runs, one prompt is queued, the draft is in the composer and the hint names the key", kept.test(() => {
     // The running call's dot pulses.

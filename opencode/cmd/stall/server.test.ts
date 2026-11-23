@@ -9,10 +9,10 @@ import { Clock, Duration, Effect, Exit, Latch, Logger, Queue, Ref, Schema, Scope
 import { describe, expect, it } from "effect-bun-test"
 import { TestClock } from "effect/testing"
 import { watch } from "./server.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 
 const OPTIONS = { thresholdMs: 300, tickMs: 20, windowMs: 5_000, captureMs: 100, cooldownMs: 60_000, keep: 5, intervalUs: 1_000, turnMs: 50 }
 // Only a hang guard. No scheduler or inspector operation has a performance deadline here.
-const HANG_GUARD_MS = 45_000
 const HANDOFF_GUARD_MS = 35_000
 
 function holdTheSeamTestLoop() {
@@ -131,7 +131,7 @@ describe("the stall plugin", () => {
         })
         yield* Effect.raceFirst(exercise, deadline)
       }),
-    HANG_GUARD_MS,
+    hangGuard("inspector"),
   )
 
   it.scoped("a malformed option stops the plugin", () =>

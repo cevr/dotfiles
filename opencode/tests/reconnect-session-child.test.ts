@@ -5,6 +5,7 @@ import { describe } from "bun:test"
 import { Effect } from "effect"
 import { reconnectTest, restart, SUITE, test, TIMEOUT_MS } from "./reconnect/fixture.ts"
 import { forkRuns, keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 describe.skipIf(!forkRuns)(SUITE, () => {
   const kept = keptScratch(forkRuns, "rs-child-")
@@ -13,6 +14,6 @@ describe.skipIf(!forkRuns)(SUITE, () => {
     reconnectTest(kept, (fixture) =>
       restart(fixture, "child", Effect.succeed(fixture.child), "child-transcript-marker"),
     ),
-    TIMEOUT_MS,
+    hangGuard("fork-session"),
   )
 })

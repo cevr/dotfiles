@@ -43,6 +43,7 @@ import { definitions, ORCHESTRATOR, orchestrator } from "@dotfiles/opencode-orch
 import { KNOWLTON, rest } from "@dotfiles/opencode-orchestrate/sabbath"
 import { type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
 import Orchestrate, { CODEX_BUDGET, DEFAULT_LOG, Options, SKILL_DIR, SUBAGENTS, type StepHostSession, stepSessionOf, UNIT_LOG, withTaskFork } from "./server.ts"
+import { stamp } from "../../tests/hang-guard.ts"
 
 /** This test file's folder. */
 const HERE = import.meta.dir
@@ -689,9 +690,9 @@ describe("a latch", () => {
    */
   const timed = <A, E>(body: Effect.Effect<A, E>) =>
     Effect.gen(function* () {
-      const before = Date.now() - now
+      const before = stamp() - now
       const value = yield* body
-      return { value, ahead: { min: before, max: Date.now() - now } }
+      return { value, ahead: { min: before, max: stamp() - now } }
     })
   const onWall = (value: number, fixed: number, ahead: { readonly min: number; readonly max: number }) => {
     expect(value).toBeGreaterThanOrEqual(fixed + ahead.min)
@@ -1681,7 +1682,7 @@ describe("an idle root with units to move or to land", () => {
       Effect.gen(function* () {
         const ready = (units: ReadonlyArray<{ readonly unit: string; readonly since?: string; readonly cadence?: string }>) =>
           start({ now: WEDNESDAY }, { ...world, runs: [{ name: "p5", units: [{ unit: "closure-flake", state: "merged abc1234" }, ...units.map((unit) => ({ ...unit, state: "ready" }))] }] })
-        const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString().slice(0, 16) + "Z"
+        const minutesAgo = (minutes: number) => new Date(stamp() - minutes * 60_000).toISOString().slice(0, 16) + "Z"
         const one = yield* ready([{ unit: "hotfix", since: minutesAgo(1) }])
         // An older run table's cadence is passed over: three wanted, one ready, it is still ready to land.
         const slow = yield* ready([{ unit: "lexer", since: minutesAgo(5), cadence: "3 ready or 60 min" }])

@@ -3,6 +3,7 @@
 // went red at a load of 316, the likeliest cause cmd/pool's 1 s waitFor).
 import { describe, expect, test } from "bun:test"
 import { eventuallyPasses, waitUntil } from "./wait.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 /** A flag that turns true after `ms` of real time, as background work that is slow under load. */
 const lateFlag = (ms: number) => {
@@ -16,8 +17,6 @@ const lateFlag = (ms: number) => {
 /** How long the late condition takes: past the 1 s, 2 s and 3 s bounds the old helpers held. */
 const LATE_MS = 3_500
 
-/** How long a case may run: the late condition, with room for a loaded machine. */
-const CASE_MS = 60_000
 
 describe("a test's wait for background work", () => {
   test(
@@ -27,7 +26,7 @@ describe("a test's wait for background work", () => {
       await waitUntil("the late flag", () => flag.set)
       expect(flag.set).toBe(true)
     },
-    CASE_MS,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -35,7 +34,7 @@ describe("a test's wait for background work", () => {
     async () => {
       await expect(waitUntil("the flag nobody sets", () => false, 200)).rejects.toThrow("waited 200 ms in vain for the flag nobody sets")
     },
-    CASE_MS,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -45,6 +44,6 @@ describe("a test's wait for background work", () => {
       await eventuallyPasses(() => expect(flag.set).toBe(true))
       await expect(eventuallyPasses(() => expect("asked", "the never-asked question").toBe("answered"), 200)).rejects.toThrow("the never-asked question")
     },
-    CASE_MS,
+    hangGuard("process-fixture"),
   )
 })

@@ -6,15 +6,15 @@ import { describe, expect } from "bun:test"
 import { Effect, type Layer, Option } from "effect"
 import { fresh } from "./retitle.ts"
 import { Tracks } from "./service.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 
 /** Registers a test whose body is an Effect. */
-export type EffectTest = (name: string, body: Effect.Effect<void>, timeoutMs: number) => void
+export type EffectTest = (name: string, body: Effect.Effect<void>, timeout: ReturnType<typeof hangGuard>) => void
 
-const LIMIT = 5_000
 
 export const tracksLaws = (name: string, make: () => Layer.Layer<Tracks>, effectTest: EffectTest) =>
   describe(`${name} owes the Tracks laws`, () => {
-    const law = (title: string, body: Effect.Effect<void, never, Tracks>) => effectTest(title, Effect.provide(body, make()), LIMIT)
+    const law = (title: string, body: Effect.Effect<void, never, Tracks>) => effectTest(title, Effect.provide(body, make()), hangGuard("unit-law"))
 
     law(
       "a session never put reads as none",

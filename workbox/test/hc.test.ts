@@ -22,6 +22,7 @@ import {
 } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
+import { hangGuard } from "../../opencode/tests/hang-guard.ts"
 
 const repo = join(import.meta.dir, "..", "..")
 const workbox = join(repo, "workbox")
@@ -381,12 +382,12 @@ describe("bootstrap", () => {
       expect(result.calls.filter((c) => c.startsWith("herdr "))).toEqual([])
       expect(result.calls).toContain("hc server status --json")
     }
-  }, 30_000)
+  }, hangGuard("local-fixture"))
 
   test("--check fails when a user timer is active with no next run (2026-11-13: OnUnitActiveSec after a user manager restart)", async () => {
     const checked = await bootstrapCheck({ ...today, timersArmed: false })
     expect({ code: checked.code === 0 ? 0 : "failed", passed: checked.stdout.includes("checks passed") }).toEqual({ code: "failed", passed: false })
-  }, 30_000)
+  }, hangGuard("local-fixture"))
 
   test("--check fails, naming the file, when ~/.zshenv links into the live checkout or its installed copy is not the installed build's (2026-11-22: two days behind)", async () => {
     const [checkout, behind] = await Promise.all([bootstrapCheck(today, "checkout"), bootstrapCheck(today, "behind")])
@@ -394,13 +395,13 @@ describe("bootstrap", () => {
     expect(checkout.stderr).toContain("~/.zshenv does not link to")
     expect({ code: behind.code === 0 ? 0 : "failed", passed: behind.stdout.includes("checks passed") }).toEqual({ code: "failed", passed: false })
     expect(behind.stderr).toMatch(/\.local\/share\/workbox\/zshenv is not the installed build's .*current\.plugins\/workbox\/zshenv/)
-  }, 30_000)
+  }, hangGuard("local-fixture"))
 
   test("--check fails on a ~/.zshenv that is a file of its own, saying what the owner must do", async () => {
     const owned = await bootstrapCheck(today, "file")
     expect({ code: owned.code === 0 ? 0 : "failed", passed: owned.stdout.includes("checks passed") }).toEqual({ code: "failed", passed: false })
     expect(owned.stderr).toMatch(/~\/\.zshenv is a file of its own, not the link to .*\.local\/share\/workbox\/zshenv: new shells do not read the installed one\. Move what you want to keep from it into ~\/\.config\/secrets\.env, then `mv ~\/\.zshenv ~\/\.zshenv\.mine`; the next install links it\./)
-  }, 30_000)
+  }, hangGuard("local-fixture"))
 
   test("--check warns, and still passes, when a live inotify limit is below sysctl.d/90-inotify.conf's", async () => {
     const low = await bootstrapCheck({ ...today, inotifyWatches: 8192 })
@@ -410,7 +411,7 @@ describe("bootstrap", () => {
     ])
     const high = await bootstrapCheck({ ...today, inotifyWatches: 8388608 })
     expect({ code: high.code, stderr: high.stderr }).toEqual({ code: 0, stderr: "" })
-  }, 30_000)
+  }, hangGuard("local-fixture"))
 
   test("--check compares hc versions as numbers, not text", async () => {
     const cases: [string, boolean][] = [
@@ -427,7 +428,7 @@ describe("bootstrap", () => {
     cases.forEach(([version, ok], i) => {
       expect({ version, passed: results[i]!.code === 0 }).toEqual({ version, passed: ok })
     })
-  }, 60_000)
+  }, hangGuard("process-fixture"))
 
   test("--check fails on each wrong hc input alone: no core, hc-core.service not enabled, keeps unknown, the core outside an hc-serve unit, OOMPolicy=stop", async () => {
     const wrong: Host[] = [
@@ -447,7 +448,7 @@ describe("bootstrap", () => {
         passed: false,
       })
     }
-  }, 60_000)
+  }, hangGuard("process-fixture"))
 
   test("a full run enables hc-core.service and opencode.service, leaves herdr alone and never restarts a core", async () => {
     for (const [host, hcInstalled] of [[today, true], [saturday, true], [saturday, false]] as const) {
@@ -485,7 +486,7 @@ describe("bootstrap", () => {
       expect(existsSync(join(result.workspaces, "bite", ".env"))).toBe(false)
       expect(all).not.toMatch(/(^|\s)\/workspaces\//m)
     }
-  }, 60_000)
+  }, hangGuard("process-fixture"))
 
   test("the guard refuses a bootstrap run whose paths leave the scratch folder", async () => {
     const home = scratch("guard")

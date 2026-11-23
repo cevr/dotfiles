@@ -11,6 +11,7 @@ import { join } from "node:path"
 import { ready } from "./service.ts"
 import { scratch } from "./scratch.ts"
 import { waitUntil } from "./wait.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const root = scratch("service-ready-").path
 const servers: Array<{ stop: (force: boolean) => unknown }> = []
@@ -70,7 +71,7 @@ describe("a test's service is ready once it can serve, not once its file is writ
     const { url, password } = await result
     const call = await fetch(new URL("/api/session", url), { headers: auth(password) })
     expect(call.status).toBe(200)
-  }, HANG_GUARD_MS)
+  }, hangGuard("local-fixture"))
 
   test("a boot that failed is named at once, not waited out to the deadline", async () => {
     const file = join(root, "failed.json")
@@ -82,5 +83,5 @@ describe("a test's service is ready once it can serve, not once its file is writ
     })
     await expect(pending).rejects.toThrow("stand-in: the service failed to start (/api/info answered 500)")
     expect(retries).toEqual([])
-  }, HANG_GUARD_MS)
+  }, hangGuard("local-fixture"))
 })

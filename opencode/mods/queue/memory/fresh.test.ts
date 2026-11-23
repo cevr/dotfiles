@@ -12,10 +12,10 @@ import { type Lost, NoteRefused, QueueHost, type Root } from "../service.ts"
 import type { Linked } from "../stale.ts"
 import * as MemoryDigest from "@dotfiles/opencode-digest/memory/log"
 import * as MemoryStore from "./store.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 const T0 = Date.parse("2026-11-18T08:00:00Z")
 const HOUR = 60 * 60_000
-const TIMEOUT_MS = 30_000
 
 interface Noted {
   readonly sessionID: string
@@ -72,7 +72,7 @@ const sweepTest = <A, E>(name: string, body: (world: World) => Effect.Effect<A, 
       Effect.provide(Layer.merge(freshness, queues).pipe(Layer.provide(Layer.mergeAll(MemoryStore.layer(MemoryStore.empty()), hostOf(world), MemoryDigest.writer())))),
       Effect.provide(TestClock.layer()),
     ),
-    TIMEOUT_MS,
+    hangGuard("local-fixture"),
   )
 }
 

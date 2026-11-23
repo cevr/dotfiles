@@ -22,6 +22,7 @@ import path from "node:path"
 import { Array as Arr, Effect, Option, Order, Schema, type Scope } from "effect"
 import { type CallExpression, parseSync, Visitor } from "oxc-parser"
 import { DEBT_CONFIG, HARD_CONFIG, POLICY, Policy, ruleOf, spawn } from "./effect-debt.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 const REAL = process.cwd()
 const CLI_TIMEOUT = 120_000
@@ -268,7 +269,7 @@ describe(`${HARD_CONFIG}: the wake process tests' wait and lifecycle rules over 
           expect(found.refusals).toBe(OWNED.length * FORBIDDEN.length)
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("generated-schedule"),
   )
 
   test.concurrent(
@@ -280,7 +281,7 @@ describe(`${HARD_CONFIG}: the wake process tests' wait and lifecycle rules over 
           expect(found.wrong).toEqual([])
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("generated-schedule"),
   )
 
   test("the override names exactly the four files and raises exactly the four rules to errors; no override switches one of them down for these files", () => {
@@ -313,7 +314,7 @@ describe(`${HARD_CONFIG}: the wake process tests' wait and lifecycle rules over 
           expect(Arr.filter(found, (each) => RULE_IDS.includes(each.rule))).toEqual([])
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("generated-schedule"),
   )
 })
 

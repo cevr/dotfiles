@@ -30,6 +30,7 @@ import { claimEffect, type FakeAccount, fakeAccount, type FakeGrant, type Receiv
 import { spentAccount, startFakeChatGPT } from "./fake-chatgpt.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard, stamp, watchdog } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 const ready = Boolean(fork)
@@ -39,7 +40,6 @@ const SECOND = 1000
 const MINUTE = 60 * SECOND
 const HOUR = 60 * MINUTE
 const DAY = 24 * HOUR
-const TIMEOUT_MS = 180_000
 const SESSION = "ses_resets_root"
 
 interface Service {
@@ -62,10 +62,10 @@ const rpc = async (service: Service, plugin: string, method: string, input: unkn
 }
 
 const until = async <A>(read: () => A | Promise<A>, done: (value: A) => boolean, label: () => string, ms = 60_000): Promise<A> => {
-  const deadline = Date.now() + ms
+  const deadline = watchdog(ms)
   let last = await read()
   while (!done(last)) {
-    if (Date.now() > deadline) return expect.unreachable(`${label()}: still ${JSON.stringify(last)}`)
+    if (deadline.expired()) return expect.unreachable(`${label()}: still ${JSON.stringify(last)}`)
     await Bun.sleep(250)
     last = await read()
   }
@@ -224,7 +224,7 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
   test(
     "with agents running, a Codex credit and a Claude grant are each claimed on their own, once, and the owner told after; with no agent running and no start held, nothing is claimed and nothing asked",
     kept.test(async () => {
-      const now = Date.now()
+      const now = stamp()
       // ── The fakes ──
       const chatgpt = startFakeChatGPT()
       stops.push(chatgpt.stop)
@@ -245,7 +245,7 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
         grants: (account) => [{ id: `grant-${account}`, resetsLeft: 2, endsAt: now + 120 * DAY, clears: ["five_hour", "seven_day_overage_included"] }],
         claim: (account) => {
           const quota = quotas.get(account)!
-          quotas.set(account, { ...quota, fiveHour: { utilization: 0, resetAt: Date.now() + 5 * HOUR } })
+          quotas.set(account, { ...quota, fiveHour: { utilization: 0, resetAt: stamp() + 5 * HOUR } })
           return "reset"
         },
       })
@@ -306,13 +306,13 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
       const shown = JSON.stringify(settled) + stderr()
       for (const token of [accounts.a.access, accounts.b.access, accounts.a.refresh, "chatgpt-access-1", "chatgpt-refresh-1"]) expect(shown).not.toContain(token)
     }),
-    TIMEOUT_MS,
+    hangGuard("fork-session"),
   )
 
   test(
     "a spent week is not claimed while the forecast keeps room on a fresher account to the reset; a Fable reset about to expire unused is claimed on its own, gives Fable's part of the week back, and the owner is told",
     kept.test(async () => {
-      const now = Date.now()
+      const now = stamp()
       const accounts = { c: fakeAccount(), d: fakeAccount() }
       // A day and a half left of both weeks. c: Fable's own week spent, its allowance half the weekly window; 60% of the week used,
       // so at the pool's burn its room outlasts the reset. d: its whole week spent.
@@ -398,13 +398,13 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
       await swept(anthropic, 1)
       expect(anthropic.claims).toHaveLength(1)
     }),
-    TIMEOUT_MS,
+    hangGuard("fork-session"),
   )
 
   test(
     "one spent week with two weekly resets about to expire spends one: the reading after it shows the week back, so the second is kept",
     kept.test(async () => {
-      const now = Date.now()
+      const now = stamp()
       const accounts = { e: fakeAccount() }
       // The round-1 verifier's case: the week spent, resetting in three days; two weekly grants ending in two hours.
       let quota: FakeQuota = { fiveHour: { utilization: 0.2, resetAt: now + HOUR }, sevenDay: { utilization: 1, resetAt: now + 3 * DAY } }
@@ -439,6 +439,6 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
       expect(settled.claims).toHaveLength(1)
       expect(settled.claims[0]?.after?.find((window) => window.name === "7d")?.utilization).toBe(0)
     }),
-    TIMEOUT_MS,
+    hangGuard("fork-session"),
   )
 })

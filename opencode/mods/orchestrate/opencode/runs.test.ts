@@ -6,6 +6,7 @@ import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { runsLaws } from "../laws.ts"
 import { Runs } from "../service.ts"
 import * as OpenCodeRuns from "./runs.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 runsLaws("OpenCode's Runs", (world) =>
   OpenCodeRuns.layer(() =>
@@ -43,5 +44,5 @@ effectTest(
     expect(Option.isSome((yield* readOf(() => Effect.die("broken"))).error)).toBe(true)
     expect(Option.isSome((yield* readOf(() => Effect.succeed({ runs: "p1" }))).error)).toBe(true)
   }),
-  10_000,
+  hangGuard("in-memory"),
 )

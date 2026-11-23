@@ -19,6 +19,7 @@ import { rmSync } from "node:fs"
 import { whenOwnerGone } from "./owner.ts"
 import { Terminal } from "@xterm/headless"
 import { spawn, type IPty } from "zigpty"
+import { watchdog } from "../../tests/hang-guard.ts"
 
 // ── Keys ──
 
@@ -375,8 +376,8 @@ export const serve = (config: HostConfig, onFrame?: (rows: ReadonlyArray<string>
 
   /** Press ctrl+c until the program exits. */
   const quit = async (current: Program) => {
-    const deadline = Date.now() + QUIT_WITHIN_MS
-    while (Date.now() < deadline) {
+    const deadline = watchdog(QUIT_WITHIN_MS)
+    while (!deadline.expired()) {
       current.write(keys["ctrl+c"])
       if ((await exitedWithin(current.pty, QUIT_EVERY_MS)) !== undefined) return true
     }

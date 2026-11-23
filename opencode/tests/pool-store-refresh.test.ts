@@ -14,6 +14,7 @@ import { fakeAccount, startFakeAnthropic, type FakeAnswer, type FakeRequestInfo,
 import { openSlotStore } from "./store/store.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard, stamp } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 const ready = Boolean(fork)
@@ -55,8 +56,8 @@ describe.skipIf(!ready)("a store account whose refresh is rate-limited does not 
       const store = kept.dir("store-auth-")
       const logins = openSlotStore(store)
       // alpha's token has expired: it must be refreshed before it is sent, and its refresh is rate-limited.
-      await logins.signIn("alpha", { ...accounts.alpha, expires: Date.now() - 1000 })
-      await logins.signIn("beta", { ...accounts.beta, expires: Date.now() + 8 * HOUR })
+      await logins.signIn("alpha", { ...accounts.alpha, expires: stamp() - 1000 })
+      await logins.signIn("beta", { ...accounts.beta, expires: stamp() + 8 * HOUR })
 
       const fake = startFakeAnthropic({
         accounts,
@@ -145,6 +146,6 @@ describe.skipIf(!ready)("a store account whose refresh is rate-limited does not 
         await fake.stop()
       }
     }),
-    RUN_TIMEOUT_MS + 30_000,
+    hangGuard("fork-turn"),
   )
 })

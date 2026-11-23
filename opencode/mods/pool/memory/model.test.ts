@@ -18,6 +18,7 @@ import * as ResetsTest from "./resets.ts"
 import * as Model from "../model.ts"
 import type { ClaimAnswer, QuotaReading, ResetCredit } from "../quota.ts"
 import { SEEN } from "../resets.ts"
+import { stamp } from "../../../tests/hang-guard.ts"
 
 const HOUR = 60 * 60_000
 const DAY = 24 * HOUR
@@ -99,7 +100,7 @@ describe("Codex resets", () => {
   test("every account spent, a start held and work running: one credit is claimed on its own, once, the account read again, and the owner told", () =>
     scoped(
       Effect.gen(function* () {
-        const now = Date.now()
+        const now = stamp()
         const codex = world(config, logins)
         codex.readings.get(OPENAI)!.set("codex-a", reading(now, { credits: [credit("credit-late", now, 20 * DAY)] }))
         // It expires before the week resets by itself: not one to keep in hand.
@@ -134,7 +135,7 @@ describe("Codex resets", () => {
   test("one account with room: nothing is claimed", () =>
     scoped(
       Effect.gen(function* () {
-        const now = Date.now()
+        const now = stamp()
         const codex = world(config, logins)
         codex.readings.get(OPENAI)!.set("codex-a", reading(now, { credits: [credit("credit-a", now, 2 * DAY)] }))
         codex.readings.get(OPENAI)!.set("codex-b", reading(now, { fiveHour: 0.1, credits: [credit("credit-b", now, 2 * DAY)] }))
@@ -159,7 +160,7 @@ describe("Claude resets", () => {
   test("a held start with work running: a grant is claimed on its own, once, recorded with whether the week moved, and the owner told in the waiting session; nothing asked", () =>
     scoped(
       Effect.gen(function* () {
-        const now = Date.now()
+        const now = stamp()
         const claude = world(config, logins)
         held(claude, now)
         // A Claude grant clears the 5-hour window and keeps the weekly reset.
@@ -187,7 +188,7 @@ describe("Claude resets", () => {
   test("no agent running and no start held: nothing claimed, nothing asked, however spent the pool; agents running across the fleet with no start held: the forecast runs it out before its reset, and a grant is claimed", () =>
     scoped(
       Effect.gen(function* () {
-        const now = Date.now()
+        const now = stamp()
         const claude = world(config, logins)
         held(claude, now)
         const pool = yield* claude.pool
@@ -263,7 +264,7 @@ describe("Claude resets", () => {
   test("an older pool's question still open, about a reset or a push, is withdrawn", () =>
     scoped(
       Effect.gen(function* () {
-        const now = Date.now()
+        const now = stamp()
         const claude = world(config, logins)
         held(claude, now)
         const old = { sessionID: "ses_root", question: "Claim it?", header: "Claude reset · Claude A", options: [{ label: "Claim it" }], assume: "Don't claim" }

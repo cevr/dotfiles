@@ -4,8 +4,9 @@
 import { describe } from "bun:test"
 import { openWhileDown, reconnectTest, SUITE, test, TIMEOUT_MS } from "./reconnect/fixture.ts"
 import { forkRuns, keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 describe.skipIf(!forkRuns)(SUITE, () => {
   const kept = keptScratch(forkRuns, "rs-open-")
-  test("a TUI opened while the service is down or booting waits for it, says so, and opens its session", reconnectTest(kept, openWhileDown), TIMEOUT_MS)
+  test("a TUI opened while the service is down or booting waits for it, says so, and opens its session", reconnectTest(kept, openWhileDown), hangGuard("fork-session"))
 })

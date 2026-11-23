@@ -17,6 +17,7 @@ import path from "node:path"
 import { Array as Arr, Effect, Option, Schema, type Scope } from "effect"
 import { forkTurns, type Turn } from "../mods/btw/turns.ts"
 import { HARD_CONFIG, spawn } from "./effect-debt.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 const REAL = process.cwd()
 const CLI_TIMEOUT = 120_000
@@ -285,7 +286,7 @@ describe(`${HARD_CONFIG}: the four small rules over generated fixtures`, () => {
           expect(found.positions).toEqual(new Set(POSITIONS))
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("generated-schedule"),
   )
 })
 

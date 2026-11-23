@@ -6,10 +6,20 @@
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import { test } from "bun:test"
 import { Effect, type Layer, type Scope } from "effect"
+import { bridgeBudget, type RunnerGuard, runnerCapOf } from "../tests/hang-guard.ts"
+import { wallTime } from "../sim/wall-clock.ts"
 
 /** A test whose body is an Effect, with its own timeout: one that plays many seeds outlasts bun's 5 s default. */
-export const effectTest = <A, E>(name: string, body: Effect.Effect<A, E>, timeoutMs: number) => test(name, () => Effect.runPromise(Effect.asVoid(body)), timeoutMs)
+export const tuiTestBudget = (cap: RunnerGuard) => bridgeBudget(cap)
+
+export const effectTest = <A, E>(name: string, body: Effect.Effect<A, E>, timeout: RunnerGuard) => {
+  const budget = tuiTestBudget(timeout)
+  const diagnostic = wallTime(budget.deadline).pipe(
+    Effect.andThen(Effect.die(`${name}: its fixture did not complete before the ${budget.deadline} ms diagnostic deadline`)),
+  )
+  return test(name, () => Effect.runPromise(Effect.raceFirst(Effect.asVoid(body), diagnostic)), runnerCapOf(budget))
+}
 
 /** As `effectTest`, with the platform's services (file system, path, child processes) and a scope the test closes. */
-export const platformTest = <A, E>(name: string, body: Effect.Effect<A, E, Layer.Success<typeof NodeServices.layer> | Scope.Scope>, timeoutMs: number) =>
-  effectTest(name, body.pipe(Effect.scoped, Effect.provide(NodeServices.layer)), timeoutMs)
+export const platformTest = <A, E>(name: string, body: Effect.Effect<A, E, Layer.Success<typeof NodeServices.layer> | Scope.Scope>, timeout: RunnerGuard) =>
+  effectTest(name, body.pipe(Effect.scoped, Effect.provide(NodeServices.layer)), timeout)

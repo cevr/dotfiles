@@ -9,6 +9,7 @@ import { Effect, Option } from "effect"
 import { expect } from "effect-bun-test"
 import { errorToast, openManaged, reconnectTest, SUITE, test, TIMEOUT_MS } from "./reconnect/fixture.ts"
 import { forkRuns, keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 test("the frame guard recognizes a transient error toast, not transcript text", () =>
   Effect.sync(() => {
@@ -20,5 +21,5 @@ test("the frame guard recognizes a transient error toast, not transcript text", 
 
 describe.skipIf(!forkRuns)(SUITE, () => {
   const kept = keptScratch(forkRuns, "rs-managed-")
-  test("a TUI opened on the background service while it is stopped or restarting opens its session", reconnectTest(kept, openManaged), TIMEOUT_MS)
+  test("a TUI opened on the background service while it is stopped or restarting opens its session", reconnectTest(kept, openManaged), hangGuard("fork-session"))
 })

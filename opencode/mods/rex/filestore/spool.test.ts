@@ -10,9 +10,8 @@ import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { Spool } from "../service.ts"
 import { empty, Picture } from "../spool.ts"
 import * as FileSpool from "./spool.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
-/** Hang guard for the test runner. */
-const HANG_GUARD_MS = 30_000
 const SESSION = "session:01a"
 
 effectTest(
@@ -35,11 +34,11 @@ effectTest(
       }).pipe(Effect.provide(FileSpool.layer(root))),
     (root) => Effect.sync(() => rmSync(root, { recursive: true, force: true })),
   ),
-  10_000,
+  hangGuard("in-memory"),
 )
 
 effectTest(
   "names a session's folder with nothing that climbs out of the root",
   Effect.sync(() => expect(FileSpool.folderOf("session:01a/../x")).toBe("session_01a_.._x")),
-  HANG_GUARD_MS,
+  hangGuard("local-fixture"),
 )

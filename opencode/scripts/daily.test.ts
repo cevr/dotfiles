@@ -14,6 +14,7 @@ import { BUILTIN_BTW_OFF, BUILTIN_AUTOMATION_OFF, CLAUDE_CACHE_TTL, digestEntry,
 import type { PluginEntry } from "./daily.ts"
 import { NO_FORK } from "./fork.ts"
 import { ATTEMPTS, type CheckResult, exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions, unlocked } from "./upstream.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 const MODS = "/repo/opencode/mods"
 const CHECKOUTS = { dotfiles: "/repo", fork: "/fork" }
@@ -815,8 +816,6 @@ describe("the upstream merge", () => {
   })
 })
 
-/** Hang guard if the move never gives its lock back. */
-const HANG_GUARD_MS = 30_000
 
 describe("the fork move", () => {
   const kept = keptScratch(true, "daily-move-")
@@ -835,7 +834,7 @@ describe("the fork move", () => {
       expect(lines).toEqual(["daily: the fork's install after its move to b failed; daily stops before the build"])
       return moveFork(locks.move, () => ({ kind: "current" }), Effect.succeed("b"), Effect.die("installed"), none)
     },
-    HANG_GUARD_MS,
+    hangGuard("local-fixture"),
   )
 
   test("each step daily runs on prime-look starts and ends while its lock is held: the move and its install under the checks lock, the fork tests under the accept lock, the install after a merge under the checks lock", () => {

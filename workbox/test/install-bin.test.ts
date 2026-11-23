@@ -7,6 +7,7 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { closeSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, readSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { hangGuard } from "../../opencode/tests/hang-guard.ts"
 
 const scratch = mkdtempSync(join(tmpdir(), "install-bin-test-"))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
@@ -221,7 +222,7 @@ describe("install-bin.sh replaces each file whole", () => {
       }
       expect(seen).toEqual({ reads: 20 * watched.length ** 2, missing: 0, empty: 0, partial: 0 })
     },
-    120_000,
+    hangGuard("installer"),
   )
 })
 

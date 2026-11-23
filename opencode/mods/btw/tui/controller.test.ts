@@ -13,6 +13,7 @@ import { Btw, layer } from "../model.ts"
 import { HostFailed } from "../service.ts"
 import { INITIAL, NoFork } from "../side-question.ts"
 import { controller, failureText, SETTLE_MS } from "./controller.tsx"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 /**
  * A controller over the World. Each reading waits for `release` while
@@ -49,8 +50,6 @@ const bench = (host: World) =>
     }),
   )
 
-/** Hang guard while waiting for the fixture's read/refresh events. */
-const HANG_GUARD_MS = 30_000
 const EVENT_WAIT_MS = 10_000
 
 describe("ask", () => {
@@ -70,7 +69,7 @@ describe("ask", () => {
     expect(control.fork("main")?.name).toBe("btw: why?")
     expect(control.reading("main")).toEqual({ turns: [{ question: "why?", answer: "" }], replying: true })
     expect(notices).toEqual([])
-  }, HANG_GUARD_MS)
+  }, hangGuard("local-fixture"))
 
   test("a failure is told on one line and the question is no longer pending", async () => {
     const host = world({ main: 1 })
@@ -94,7 +93,7 @@ describe("ask", () => {
     gate.release()
     await asking
     expect(control.reading("main").turns.map((turn) => turn.question)).toEqual(["and the tests?"])
-  }, HANG_GUARD_MS)
+  }, hangGuard("local-fixture"))
 })
 
 describe("the reading", () => {
@@ -118,7 +117,7 @@ describe("the reading", () => {
     expect(control.reading("main").turns.map((turn) => [turn.question, turn.answer])).toEqual([["why?", "Because."]])
     expect(control.reading("main").replying).toBe(false)
     stop()
-  }, HANG_GUARD_MS)
+  }, hangGuard("local-fixture"))
 
   test("unwatched, or about another session, an event reads nothing", async () => {
     using clock = manualTuiClock()
@@ -154,7 +153,7 @@ describe("the reading", () => {
     gate.release()
     await Promise.all([second, third])
     expect(gate.reads).toBe(before + 2)
-  }, HANG_GUARD_MS)
+  }, hangGuard("local-fixture"))
 
   test("dispose stops listening to the host", async () => {
     const { control, listeners } = await bench(world({ main: 1 }))

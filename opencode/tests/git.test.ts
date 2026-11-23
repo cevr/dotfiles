@@ -9,6 +9,7 @@ import { join } from "node:path"
 import { PULL_REQUEST_FIELDS } from "../mods/git/pull-request.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/git.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -48,5 +49,5 @@ describe.skipIf(!fork)("the Git sidebar section and /git", () => {
     const after = readFileSync(join(out, "git-after-review.txt"), "utf8")
     expect(after).toContain("▸ M  a.ts  +3 −1")
     expect(after).not.toContain("hunk not found")
-  }), 150_000)
+  }), hangGuard("fork-turn"))
 })

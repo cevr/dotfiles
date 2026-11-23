@@ -6,8 +6,8 @@ import { DateTime, Effect, Option, Schema } from "effect"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { QueueHost } from "../service.ts"
 import { type Host, layer, type SessionRecord } from "./host.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
-const TIMEOUT_MS = 30_000
 
 const at = (ms: number) => DateTime.makeUnsafe(ms)
 
@@ -66,7 +66,7 @@ describe("the host as the sweep reads it", () => {
       expect(yield* use(host({ get: () => Effect.fail(new Down({ message: "down" })) }), (service) => service.linked("ses_busy"))).toEqual(Option.none())
       expect(yield* use(host({ sessions: Effect.fail(new Down({ message: "down" })) }), (service) => service.roots)).toEqual([])
     }),
-    TIMEOUT_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -92,7 +92,7 @@ describe("the host as the sweep reads it", () => {
       expect(yield* use(silent, (service) => service.wakes(["ses_busy"]))).toEqual(Option.none())
       expect(yield* use(silent, (service) => service.questions(["ses_busy"]))).toEqual(Option.none())
     }),
-    TIMEOUT_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -113,7 +113,7 @@ describe("the host as the sweep reads it", () => {
       expect(yield* use(host({ lost: () => Effect.succeed({ nonsense: true }) }), (service) => service.lost("ses_busy", []))).toEqual(Option.none())
       expect(yield* use(host(), (service) => service.lost("ses_busy", []))).toEqual(Option.none())
     }),
-    TIMEOUT_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -130,7 +130,7 @@ describe("the host as the sweep reads it", () => {
       )
       expect(down.message).toBe("busy elsewhere")
     }),
-    TIMEOUT_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -146,6 +146,6 @@ describe("the host as the sweep reads it", () => {
       const late = yield* cut((service) => Effect.flip(service.note("ses_idle", "check", "Queue check", true, "staleness")))
       expect([late._tag, late.message]).toEqual(["NoteRefused", "the host did not answer in time"])
     }),
-    TIMEOUT_MS,
+    hangGuard("local-fixture"),
   )
 })

@@ -9,6 +9,7 @@ import { agentParams } from "../report.ts"
 import { Herdr, HerdrUnreachable } from "../service.ts"
 import { listen } from "./fake-server.ts"
 import * as SocketHerdr from "./socket.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 /** A scratch directory for the scope's lifetime; Unix socket paths must stay short. */
 const scratch = Effect.acquireRelease(
@@ -29,8 +30,6 @@ const served = (onRequest: () => void = () => {}) => Effect.gen(function* () {
 })
 
 const TIMEOUT = 300
-/** Hang guard for a Unix socket or fiber that never answers. Socket deadlines use TestClock. */
-const HANG_GUARD_MS = 30_000
 
 herdrLaws("socket Herdr", () =>
   Effect.gen(function* () {
@@ -60,7 +59,7 @@ describe("socket Herdr", () => {
         expect(Exit.isFailure(exit)).toBe(true)
         expect(exit).toMatchObject({ cause: { reasons: [{ error: { _tag: "HerdrUnreachable" } }] } })
       }),
-    ), HANG_GUARD_MS)
+    ), hangGuard("local-fixture"))
 
   test("a herdr that never answers fails HerdrUnreachable after the timeout, having received the request", () =>
     run(
@@ -78,7 +77,7 @@ describe("socket Herdr", () => {
         expect(exit).toEqual(Exit.fail(new HerdrUnreachable({ message: `herdr did not answer pane.report_agent within ${TIMEOUT} ms` })))
         expect(server.received()).toEqual([{ method: "pane.report_agent", params: report }])
       }),
-    ), HANG_GUARD_MS)
+    ), hangGuard("local-fixture"))
 
   test("one line per request, as herdr's NDJSON protocol reads it", () =>
     run(
@@ -89,5 +88,5 @@ describe("socket Herdr", () => {
         expect(server.received().map((request) => request.params)).toContainEqual({ ...report, seq: 2 })
         expect(server.received()).toHaveLength(2)
       }),
-    ), HANG_GUARD_MS)
+    ), hangGuard("local-fixture"))
 })

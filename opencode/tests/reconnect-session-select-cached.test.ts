@@ -4,12 +4,13 @@
 import { describe } from "bun:test"
 import { reconnectTest, selectWhileBooting, SUITE, test, TIMEOUT_MS } from "./reconnect/fixture.ts"
 import { forkRuns, keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 describe.skipIf(!forkRuns)(SUITE, () => {
   const kept = keptScratch(forkRuns, "rs-select-cached-")
   test(
     "selecting a cached session from home during service boot and submitting waits without an error toast",
     reconnectTest(kept, (fixture) => selectWhileBooting(fixture, "cached")),
-    TIMEOUT_MS,
+    hangGuard("fork-session"),
   )
 })

@@ -15,6 +15,7 @@ import * as Seed from "./seed.ts"
 import { Plugin } from "@opencode/plugin/effect"
 import { SessionID } from "@opencode/schema/session-id"
 import { Array as Arr, Clock, Effect, Option, Schema } from "effect"
+import { measured } from "../tests/hang-guard.ts"
 import * as Plugins from "./plugins.ts"
 import type { InboxItem, Message } from "./host.ts"
 import { below, generator, line } from "./runtime.ts"
@@ -500,13 +501,14 @@ describe("the world", () => {
       yield* Effect.forEach(sessions, (session, index) =>
         world.prompt(session, "start").pipe(Effect.andThen(world.tool(session, "wake", { afterSeconds: 60 * (index + 1), everySeconds: 300, note: "tick" }))),
       )
-      const started = yield* Clock.currentTimeMillis
-      yield* world.advance(3_600_000)
-      const cost = (yield* Clock.currentTimeMillis) - started
-      yield* Effect.logInfo(`sim: one simulated hour (3 sessions, repeating alarms, idle compaction) took ${cost} ms of wall time`)
+      yield* measured("one simulated hour with three sessions, repeating alarms and compaction", "< 2000 ms", ({ begin, end }) =>
+        Effect.gen(function* () {
+          begin()
+          yield* world.advance(3_600_000)
+          end()
+        }),
+      )
       expect(world.elapsed()).toBeGreaterThanOrEqual(3_600_000)
-      expect(cost).toBeLessThan(2_000)
     }),
   )
 })
-

@@ -13,6 +13,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-latch.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -33,7 +34,7 @@ function rows(frame: ReadonlyArray<string>): ReadonlyArray<string> {
 
 describe.skipIf(!fork)("a subagent latched on the pace (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-latch-")
-  beforeAll(...kept.setup(async () => {
+  beforeAll(kept.test(async () => {
     const out = kept.dir("prime-latch-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-latch.ts"], {
       cwd: root,
@@ -44,7 +45,7 @@ describe.skipIf(!fork)("a subagent latched on the pace (OPENCODE_DEV)", () => {
     const [code, stdout, stderr] = await Promise.all([run.exited, new Response(run.stdout).text(), new Response(run.stderr).text()])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names) frames[name] = readFileSync(join(out, `${name}.txt`), "utf8").split("\n")
-  }, 300_000))
+  }), hangGuard("acceptance"))
 
   test("the held foreground call answers latched at once, and the parent goes on", kept.test(() => {
     expect(frames["latch-latched"].join("\n")).toContain("Latched; I will hear back.")

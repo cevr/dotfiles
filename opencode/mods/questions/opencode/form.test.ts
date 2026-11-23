@@ -8,8 +8,8 @@ import { effectTest } from "../../../sim-tui/effect-test.ts"
 import type { FormInput } from "../form.ts"
 import type { Question } from "../question.ts"
 import { FormRefused, type FormHost, opener, type PendingForm, QuestionsUnread } from "./form.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
-const TIMEOUT_MS = 10_000
 
 const asked = (sessionID: string, id: string, askedAt: number): Question => ({ id, sessionID, question: `${sessionID} ${id}?`, assume: "no", askedAt })
 
@@ -82,7 +82,7 @@ describe("opening the questions form", () => {
         ],
       ])
     }),
-    TIMEOUT_MS,
+    hangGuard("in-memory"),
   )
 
   effectTest(
@@ -98,7 +98,7 @@ describe("opening the questions form", () => {
       expect(yield* forms.open("ses_root")).toBe("already")
       expect(keys(stand.made)).toEqual([["ses_root", ["ask_user_async:q1"]]])
     }),
-    TIMEOUT_MS,
+    hangGuard("in-memory"),
   )
 
   effectTest(
@@ -111,7 +111,7 @@ describe("opening the questions form", () => {
       expect(yield* opener(none.view).open("ses_root")).toBe("none")
       expect(none.made).toEqual([])
     }),
-    TIMEOUT_MS,
+    hangGuard("in-memory"),
   )
 
   effectTest(
@@ -123,7 +123,7 @@ describe("opening the questions form", () => {
       const failing = yield* host({ open: [asked("ses_root", "q1", 1)], failing: true })
       expect(yield* opener(failing.view).open("ses_root")).toBe("failed")
     }),
-    TIMEOUT_MS,
+    hangGuard("in-memory"),
   )
 
   effectTest(
@@ -142,7 +142,7 @@ describe("opening the questions form", () => {
       expect(yield* opener(live.view).open("ses_root")).toBe("already")
       expect(live.cancelled).toEqual([])
     }),
-    TIMEOUT_MS,
+    hangGuard("in-memory"),
   )
 
   /** One generated run: opens (clicks), slow creates let through and submits, in a seeded order. */
@@ -181,6 +181,6 @@ describe("opening the questions form", () => {
       // Not vacuous: forms were shown.
       expect(runs.some((each) => each.most === 1)).toBe(true)
     }),
-    TIMEOUT_MS,
+    hangGuard("in-memory"),
   )
 })

@@ -3,6 +3,7 @@ import { Effect } from 'effect'
 import { CLIENT_ID, CODE_CALLBACK_URL, exchangeCallback } from '../oauth.ts'
 import { TokenEndpoint } from '../service.ts'
 import { type Fetch, layer } from './token.ts'
+import { stamp } from "../../../tests/hang-guard.ts"
 
 // Each test sets the fetch the endpoint calls; the endpoint is built over a
 // forwarder, so nothing global is replaced.
@@ -351,7 +352,7 @@ describe('refreshToken', () => {
     if (result.type !== 'success') throw new Error('unreachable')
     expect(result.access).toBe('new-access')
     expect(result.refresh).toBe('new-refresh')
-    expect(result.expires).toBeGreaterThan(Date.now())
+    expect(result.expires).toBeGreaterThan(stamp())
 
     const body = bodyOf(capturedBody)
     expect(body.grant_type).toBe('refresh_token')

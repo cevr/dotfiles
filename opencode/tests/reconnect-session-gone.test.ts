@@ -4,6 +4,7 @@
 import { describe } from "bun:test"
 import { reconnectTest, restart, riftOf, SUITE, test, TIMEOUT_MS, transcript } from "./reconnect/fixture.ts"
 import { forkRuns, keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 describe.skipIf(!forkRuns)(SUITE, () => {
   const kept = keptScratch(forkRuns, "rs-gone-")
@@ -12,6 +13,6 @@ describe.skipIf(!forkRuns)(SUITE, () => {
     reconnectTest(kept, (fixture) =>
       restart(fixture, "gone", transcript(fixture, "Reconnect worker", "worker-transcript-marker", riftOf(fixture)), "worker-transcript-marker", { gone: riftOf(fixture) }),
     ),
-    TIMEOUT_MS,
+    hangGuard("fork-session"),
   )
 })

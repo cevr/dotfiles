@@ -12,6 +12,7 @@ import { Data, Effect, Fiber, FileSystem, Option, Path, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { TRACE_ENV } from "./app.ts"
 import { platformTest } from "./effect-test.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 // Each file's seeds checked alone. In prime-escape and prime-sidebar every test reads one play a seed, so seed 1
 // is the first after the boot in both runs and seeds 2 to 4 are the ones a seed before could reach. escape-states
@@ -63,17 +64,17 @@ const read = (dir: string) =>
   })
 
 describe("seeds alone give the traces they give in the full run", () => {
-  for (const [file, alone] of FILES)
-    platformTest(
-      `${file}: seeds ${alone.join(", ")} alone give the traces they give in the full run`,
-      Effect.gen(function* () {
-        const everyone = yield* read(yield* run(file, Option.none()))
-        for (const seed of alone) {
-          const traces = yield* read(yield* run(file, Option.some(seed)))
-          expect(traces.size).toBeGreaterThan(0)
-          for (const [name, trace] of traces) expect({ name, trace }).toEqual({ name, trace: everyone.get(name) ?? "(not in the full run)" })
-        }
-      }),
-      Math.max(RUN_MS, RUN_MS * (alone.length + 1)),
-    )
+  for (const [file, alone] of FILES) {
+    const name = `${file}: seeds ${alone.join(", ")} alone give the traces they give in the full run`
+    const trace = Effect.gen(function* () {
+      const everyone = yield* read(yield* run(file, Option.none()))
+      for (const seed of alone) {
+        const traces = yield* read(yield* run(file, Option.some(seed)))
+        expect(traces.size).toBeGreaterThan(0)
+        for (const [name, trace] of traces) expect({ name, trace }).toEqual({ name, trace: everyone.get(name) ?? "(not in the full run)" })
+      }
+    })
+    if (alone.length === 2) platformTest(name, trace, hangGuard("isolated-seed-pair"))
+    else platformTest(name, trace, hangGuard("isolated-seed-trio"))
+  }
 })

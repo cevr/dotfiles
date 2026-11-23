@@ -17,6 +17,7 @@ import { NO_HOLDS } from "../idle.ts"
 import type { Run } from "../idle.ts"
 import { RootHolds } from "../service.ts"
 import type { Lane } from "../tools.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 const NOW = Date.UTC(2026, 10, 21, 12)
 const HOUR = 3_600_000
@@ -84,18 +85,16 @@ const alphaIn = (state: string, findings: Option.Option<readonly [string, number
   return { runs: [{ name: "run-1", dir: RUN, units: [{ unit: "alpha", state }] }], files, lanes: [] }
 }
 
-const MS = 5_000
-
 describe("a unit's verifier, read from its run dir", () => {
   effectTest(
     "in verify with no verdict on its round: named with its verifier",
     Effect.map(lostFor(alphaIn("verify", Option.none())), (lines) => expect(lines).toEqual(["orchestrate: ready, not landed (1, oldest first):", "- ready, with its verifier: alpha a1a1a1a1a lane gone"])),
-    2 * MS,
+    hangGuard("in-memory"),
   )
   effectTest(
     "a changes verdict on its round: nothing until its next round",
     Effect.map(lostFor(alphaIn("verify", Option.some(["changes", 7 * HOUR]))), (lines) => expect(lines).toEqual([])),
-    2 * MS,
+    hangGuard("in-memory"),
   )
   effectTest(
     "a changes verdict on an earlier round: a later ready round supersedes it",
@@ -110,7 +109,7 @@ describe("a unit's verifier, read from its run dir", () => {
       ),
       (lines) => expect(lines[1]).toBe("- ready, not landed 8 h: alpha a1a1a1a1a lane gone"),
     ),
-    2 * MS,
+    hangGuard("in-memory"),
   )
   effectTest(
     "accepted an hour ago: within the threshold from the verdict; seven hours ago: not landed",
@@ -118,7 +117,7 @@ describe("a unit's verifier, read from its run dir", () => {
       expect(yield* lostFor(alphaIn("ready", Option.some(["accepted", HOUR])))).toEqual([])
       expect((yield* lostFor(alphaIn("ready", Option.some(["accepted", 7 * HOUR]))))[1]).toBe("- ready, not landed 7 h: alpha a1a1a1a1a lane gone")
     }),
-    2 * MS,
+    hangGuard("in-memory"),
   )
 })
 
@@ -126,31 +125,31 @@ describe("who is on a lane, read from where it lives", () => {
   effectTest(
     "nobody: the orphan lane is named",
     Effect.map(lostFor({}), (lines) => expect(lines.slice(0, 2)).toEqual(["orchestrate: committed work not on main, nobody on it (1, oldest first):", ORPHAN_LINE])),
-    2 * MS,
+    hangGuard("in-memory"),
   )
   effectTest(
     "a session working in the lane's directory keeps it off",
     Effect.map(lostFor({ sessions: { ses_lane: { directory: ORPHAN, started: true } } }), (lines) => expect(lines).toEqual([])),
-    2 * MS,
+    hangGuard("in-memory"),
   )
   effectTest(
     "a session idle there for two days does not, and is named",
     Effect.map(lostFor({ sessions: { ses_lane: { directory: ORPHAN, started: true, idleSince: NOW - 48 * HOUR } } }), (lines) =>
       expect(lines[1]).toBe(ORPHAN_LINE.replace("no session known", "session ses_lane")),
     ),
-    2 * MS,
+    hangGuard("in-memory"),
   )
   effectTest(
     "a running subagent whose description names the lane keeps it off",
     Effect.map(lostFor({ children: [{ child: "ses_child", description: `implementor orphan r1 (lane: ${ORPHAN})` }], sessions: { ses_child: { directory: CHECKOUT, started: true } } }), (lines) =>
       expect(lines).toEqual([]),
     ),
-    2 * MS,
+    hangGuard("in-memory"),
   )
   effectTest(
     "a unit of the lane blocked keeps it off",
     Effect.map(lostFor({ runs: [{ name: "run-1", dir: RUN, units: [{ unit: "orphan", state: "blocked" }] }] }), (lines) => expect(lines).toEqual([])),
-    2 * MS,
+    hangGuard("in-memory"),
   )
   effectTest(
     "a queue item waiting that names the lane keeps it off; a done one does not",
@@ -159,7 +158,7 @@ describe("who is on a lane, read from where it lives", () => {
       expect(yield* lostFor({ held: item("needs-you") })).toEqual([])
       expect((yield* lostFor({ held: item("done") }))[1]).toBe(ORPHAN_LINE)
     }),
-    2 * MS,
+    hangGuard("in-memory"),
   )
 })
 
@@ -169,7 +168,7 @@ describe("the queue check's answer: status's lists, to an orchestrator only, and
   effectTest(
     "a root that started no unit's step hears of no lane, only of the commits its own queue names; main's own commit and an unknown one are not named",
     Effect.map(answerFor({}, ["a1a1a1a1a1", "e0e0e0e0e0", "0ddba11"]), (answer) => expect(answer).toEqual({ lines: [], keys: [], hashes: [{ hash: "a1a1a1a1a1", why: ALPHA_WHY }] })),
-    2 * MS,
+    hangGuard("in-memory"),
   )
   effectTest(
     "an orchestrator hears the same lines status prints, keyed by the lane",
@@ -178,7 +177,7 @@ describe("the queue check's answer: status's lists, to an orchestrator only, and
       expect(answer).toEqual({ lines: yield* lostFor({}), keys: [ORPHAN], hashes: [] })
       expect(answer.lines[1]).toBe(ORPHAN_LINE)
     }),
-    2 * MS,
+    hangGuard("in-memory"),
   )
 })
 
@@ -191,7 +190,7 @@ describe("Ergo's list status, read when `work` gives it", () => {
       expect(yield* lostFor({ statuses: status({ ahead: 0 }) })).toEqual([])
       expect(yield* lostFor({ statuses: status({ ahead: 0, by: Option.some("ancestry") }) })).toEqual([])
     }),
-    2 * MS,
+    hangGuard("in-memory"),
   )
   effectTest(
     "its last commit an hour ago keeps the lane off; an error, or a status of another head, is not read and git answers",
@@ -200,6 +199,6 @@ describe("Ergo's list status, read when `work` gives it", () => {
       expect((yield* lostFor({ statuses: status({ ahead: 0, error: Option.some("git failed") }) }))[1]).toBe(ORPHAN_LINE)
       expect((yield* lostFor({ statuses: status({ ahead: 0, head: Option.some("1234567abc") }) }))[1]).toBe(ORPHAN_LINE)
     }),
-    2 * MS,
+    hangGuard("in-memory"),
   )
 })

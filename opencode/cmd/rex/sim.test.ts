@@ -17,9 +17,8 @@ import { ConfigProvider, Context, Effect, Exit, Fiber, Layer, Option, Queue, Ref
 import { Base64 } from "effect/encoding"
 import { effectTest } from "../../sim-tui/effect-test.ts"
 import { parse, Refused, Request, run, type Screen, viewer } from "./show.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 
-/** Hang guard for the in-memory simulator fixture. */
-const HANG_GUARD_MS = 30_000
 
 /** A PNG's first 24 bytes, `width` × `height`, then `mark` so two screens of one size differ. */
 const png = (width: number, height: number, mark: number) => {
@@ -47,7 +46,7 @@ describe("the arguments of rex-show sim", () => {
         expect({ bad, code: refusalOf(yield* Effect.exit(parse(bad))) }).toEqual({ bad, code: Option.some(2) })
       }
     }),
-    HANG_GUARD_MS,
+    hangGuard("local-fixture"),
   )
 })
 
@@ -79,7 +78,7 @@ describe("the caller of rex-show sim", () => {
         ),
       ),
     ),
-    HANG_GUARD_MS,
+    hangGuard("local-fixture"),
   )
 })
 
@@ -136,5 +135,5 @@ effectTest(
     expect(yield* Queue.take(frames)).toContain("✗ cannot reach cvr@mac with ssh")
     yield* Fiber.interrupt(running)
   }).pipe(Effect.provide(mirroring)),
-  15_000,
+  hangGuard("short-fixture"),
 )

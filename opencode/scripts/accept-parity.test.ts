@@ -20,7 +20,7 @@ import { Effect, FileSystem, Path, Schema, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { NAMES } from "../sim/law-names.ts"
-import { BUDGET_MS } from "../sim/seed.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 /** opencode/: the tests run from it. */
 const ROOT = process.cwd()
@@ -147,8 +147,6 @@ const simulatedCounts = (files: ReadonlyArray<string>) =>
     }),
   )
 
-/** The simulated run's wall-clock ceiling, only a guard against a hung run: the CPU budgets of 20 simulated files (10 today), for a host loaded 30 times over. */
-const SIMULATED_CEILING_MS = 20 * BUDGET_MS * 30
 
 describe("no assertion lost", () => {
   const live = it.live.layer(BunServices.layer)
@@ -219,7 +217,7 @@ describe("no assertion lost", () => {
           expect({ file, atLeastBaseline: carried.reduce((sum, calls) => sum + calls, 0) >= baseline }).toEqual({ file, atLeastBaseline: true })
         }
       }),
-    SIMULATED_CEILING_MS,
+    hangGuard("sim-parity"),
   )
 
   live(
@@ -248,6 +246,6 @@ describe("no assertion lost", () => {
         const carriers = new Set([...NAMES, ...simulatedNames.flat()])
         for (const item of retired) expect({ name: item.name, carriedBy: carriers.has(item.by) }).toEqual({ name: item.name, carriedBy: true })
       }),
-    60_000,
+    hangGuard("process-fixture"),
   )
 })

@@ -14,6 +14,7 @@
 import { Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
 import { Llm, OpenCodeDriver } from "opencode-drive"
+import { stamp } from "../tests/hang-guard.ts"
 
 const root = process.cwd()
 const out = process.env.SCENARIO_OUT ?? "out"
@@ -59,9 +60,9 @@ export default OpenCodeDriver.use(
       const save = (name: string) =>
         ui.capture().pipe(Effect.map((frame) => writeFileSync(`${out}/${name}.txt`, text(frame))))
       // Sleeps until `ms` after `start`.
-      const at = (start: number, ms: number) => Effect.sleep(Math.max(0, start + ms - Date.now()))
+      const at = (start: number, ms: number) => Effect.sleep(Math.max(0, start + ms - stamp()))
 
-      const first = Date.now()
+      const first = stamp()
       yield* ui.submit(ASK)
       yield* until("cancel-hint", (frame) => frame.includes(PARTIAL))
       yield* save("cancel-hint")
@@ -72,7 +73,7 @@ export default OpenCodeDriver.use(
       yield* save("cancelled")
 
       // Send the restored prompt again; this time wait out the grace.
-      const second = Date.now()
+      const second = stamp()
       yield* ui.enter()
       yield* until("resent", (frame) => frame.includes(PARTIAL))
       yield* at(second, 7_000)
