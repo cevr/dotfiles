@@ -48,9 +48,22 @@ const uniqueKeys = (text: string) => {
 }
 
 const read = Effect.fn("HostAdmit.stdin")(function* () {
-  const text = yield* Effect.tryPromise({ try: () => stdin.text(), catch: bad })
-  if (text.length > 262_144) return yield* bad()
-  return text
+  return yield* Effect.acquireUseRelease(
+    Effect.try({ try: () => stdin.stream().getReader(), catch: bad }),
+    (reader) => Effect.gen(function* () {
+      const decoder = new TextDecoder("utf-8", { fatal: true })
+      let bytes = 0
+      let text = ""
+      for (;;) {
+        const chunk = yield* Effect.tryPromise({ try: () => reader.read(), catch: bad })
+        if (chunk.done) return text + (yield* Effect.try({ try: () => decoder.decode(), catch: bad }))
+        bytes += chunk.value.byteLength
+        if (bytes > 262_144) return yield* bad()
+        text += yield* Effect.try({ try: () => decoder.decode(chunk.value, { stream: true }), catch: bad })
+      }
+    }),
+    (reader) => Effect.tryPromise({ try: () => reader.cancel(), catch: bad }).pipe(Effect.ignore),
+  )
 })
 
 type Host = Effect.Success<ReturnType<typeof Admission.open>>

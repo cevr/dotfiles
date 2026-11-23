@@ -212,10 +212,10 @@ const controllerMemory = (max: string, high: string, swap: string, used: string)
   return Option.exists(limits, ({ max, high, used }) => high > 0 && high <= max && used <= max)
 }
 const ioWeight = (text: string) => scalar(text.trim().split(/\s+/u)[1])
-const protectedWeights = (cpu: string, io: string, memory: string) =>
+const protectedWeights = (cpu: string, io: string, minimum: string, low: string) =>
   Option.exists(scalar(cpu.trim()), (weight) => weight >= 1000) &&
   Option.exists(ioWeight(io), (weight) => weight >= 1000) &&
-  Option.exists(scalar(memory.trim()), positive)
+  Option.exists(scalar(minimum.trim()), positive) && Option.exists(scalar(low.trim()), positive)
 const qualifiedMeters = (cpu: string, events: string, pressures: ReadonlyArray<string>) =>
   [cpuField(cpu, "usage_usec"), cpuField(cpu, "throttled_usec"), cpuField(events, "oom"),
     ...pressures.map((text) => psi(text, "some"))].every(Option.isSome)
@@ -228,20 +228,23 @@ export const linuxBudget = Effect.fn("HostSupply.linuxBudget")(function* () {
   const control = `/sys/fs/cgroup${relative}`
   const parent = control.slice(0, control.lastIndexOf("/"))
   const protectedScopes = [`${parent}/opencodecontrol.slice`, "/sys/fs/cgroup/bite.slice"]
-  const [quota, cpu, io, max, high, swap, current, stat, pressure, memPressure, ioPressure, events, resident, residentIO, residentMin, systemCPU, systemIO, systemMin] = yield* Effect.all([
+  const [quota, cpu, io, max, high, swap, current, tasks, stat, pressure, memPressure, ioPressure, events,
+    resident, residentIO, residentMin, residentLow, systemCPU, systemIO, systemMin, systemLow] = yield* Effect.all([
     read(`${control}/cpu.max`), read(`${control}/cpu.weight`), read(`${control}/io.weight`),
     read(`${control}/memory.max`), read(`${control}/memory.high`), read(`${control}/memory.swap.max`),
-    read(`${control}/memory.current`), read(`${control}/cpu.stat`), read(`${control}/cpu.pressure`),
+    read(`${control}/memory.current`), read(`${control}/pids.max`), read(`${control}/cpu.stat`), read(`${control}/cpu.pressure`),
     read(`${control}/memory.pressure`), read(`${control}/io.pressure`), read(`${control}/memory.events`),
     read(`${parent}/opencodecontrol.slice/cpu.weight`), read(`${parent}/opencodecontrol.slice/io.weight`),
-    read(`${parent}/opencodecontrol.slice/memory.min`),
-    read("/sys/fs/cgroup/bite.slice/cpu.weight"), read("/sys/fs/cgroup/bite.slice/io.weight"), read("/sys/fs/cgroup/bite.slice/memory.min"),
+    read(`${parent}/opencodecontrol.slice/memory.min`), read(`${parent}/opencodecontrol.slice/memory.low`),
+    read("/sys/fs/cgroup/bite.slice/cpu.weight"), read("/sys/fs/cgroup/bite.slice/io.weight"),
+    read("/sys/fs/cgroup/bite.slice/memory.min"), read("/sys/fs/cgroup/bite.slice/memory.low"),
   ], { concurrency: 4 })
   const cap = cpuMax(quota)
   if (Option.isNone(cap) || cap.value === Number.MAX_SAFE_INTEGER || cap.value < 1000 ||
     !Option.exists(scalar(cpu.trim()), (weight) => weight === 20) || !Option.exists(ioWeight(io), (weight) => weight <= 100) ||
-    !controllerMemory(max, high, swap, current) || !qualifiedMeters(stat, events, [pressure, memPressure, ioPressure]) ||
-    !protectedWeights(resident, residentIO, residentMin) || !protectedWeights(systemCPU, systemIO, systemMin))
+    !controllerMemory(max, high, swap, current) || !Option.exists(scalar(tasks.trim()), positive) ||
+    !qualifiedMeters(stat, events, [pressure, memPressure, ioPressure]) ||
+    !protectedWeights(resident, residentIO, residentMin, residentLow) || !protectedWeights(systemCPU, systemIO, systemMin, systemLow))
     return yield* new AdmissionUnavailable({ reason: "unqualified" })
   return { control, cap: cap.value, parent, protected: protectedScopes } satisfies LinuxBudget
 })

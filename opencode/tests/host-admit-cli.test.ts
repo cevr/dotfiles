@@ -49,6 +49,7 @@ it.scopedLive("v1 JSONL holder input works across fresh CLI processes; scanner c
     expect(forged.code).toBe(2)
     const duplicateKey = json(record).replace(`"version":1`, `"version":99,"version":1`)
     expect((yield* invoke(put, duplicateKey)).code).toBe(2)
+    expect((yield* invoke(put, " ".repeat(262_145))).code).toBe(2)
     const listing = yield* invoke(["holder", "list", "--json"])
     const page = yield* decode(Schema.Struct({ complete: Schema.Boolean, records: Schema.Array(Schema.Json) }))(listing.out)
     const row = yield* Schema.decodeUnknownEffect(Schema.Struct({ revision: Schema.Int }))(page.records[0])
