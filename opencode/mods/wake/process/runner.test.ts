@@ -4,10 +4,10 @@
 // runner gone without an exit reads lost. On Linux, `systemd-run --user`
 // is asked first, and a refusal falls back to a detached runner with a warning.
 import { describe, expect, test } from "bun:test"
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { Console, Context, Effect, Exit, Layer, Logger, Match, Option, Ref, Schema, type Scope } from "effect"
+import { Console, Context, Effect, Exit, Layer, Logger, Match, Option, Ref, Result, Schema, type Scope } from "effect"
 import { TestClock } from "effect/testing"
 import { JobExit, type JobRecord, type JobSpec, type Run } from "../job.ts"
 import { RunnerClaim } from "../job-event.ts"
@@ -19,7 +19,7 @@ import * as MemoryStore from "../memory/store.ts"
 import * as Model from "../model.ts"
 import { type CallAnswer, Changes, Runner, WakeStore } from "../service.ts"
 import * as ProcessRunner from "./runner.ts"
-import { argvOf, claim, type Disk, FILES, hostOf, processStart, ranOf, removeDurable, scopeAvailable, writeAtomic, writeDurable, writeExit } from "./supervise.ts"
+import { argvOf, claim, type Disk, FILES, hostOf, NODE_DISK, processStart, ranOf, removeDurable, scopeAvailable, writeAtomic, writeDurable, writeExit } from "./supervise.ts"
 import type { Ran } from "../cron/backstop.ts"
 import { bounded, notYet, type Observation, type Policy, ready, type TestBounds, testLimitMs, waitFor } from "./readiness.ts"
 
@@ -173,6 +173,74 @@ const gone = (pid: number) =>
     if (ProcessRunner.alive(pid)) return notYet(`${pid} alive`)
     return ready(pid)
   })
+
+fixtureTest("job root layout matrix on the real filesystem", ({ scratch, runnerOf, specOf }) =>
+  Effect.gen(function* () {
+    for (const provisioned of [true, false]) {
+      for (const readable of [true, false]) {
+        for (const peerSynced of [true, false]) {
+          const spec = specOf("printf root-layout", { generation: 1 })
+          const parent = path.join(scratch, spec.id)
+          const root = path.join(parent, "job-state")
+          yield* Effect.scoped(Effect.gen(function* () {
+            yield* Effect.acquireRelease(
+              Effect.sync(() => mkdirSync(parent, { mode: 0o700 })),
+              () => Effect.sync(() => chmodSync(parent, 0o700)),
+            )
+            if (provisioned) {
+              mkdirSync(root)
+              NODE_DISK.syncDir(parent)
+            }
+            if (!readable) {
+              // Owner can search and create, not enumerate or open the parent for syncing.
+              chmodSync(parent, 0o311)
+              const cannotOpen = yield* Effect.exit(Effect.sync(() => NODE_DISK.syncDir(parent)))
+              expect(Exit.isFailure(cannotOpen)).toBe(true)
+            }
+            let peerMade = false
+            let parentSyncs = 0
+            const peerDir = path.join(root, spec.id)
+            const disk: Disk = {
+              ...NODE_DISK,
+              syncDir: (dir) => {
+                if (dir === parent) parentSyncs += 1
+                NODE_DISK.syncDir(dir)
+              },
+              named: (file) => {
+                if (file === peerDir && !peerMade && NODE_DISK.named(root)) {
+                  peerMade = true
+                  // Another writer creates a real name just before this writer looks it up.
+                  NODE_DISK.mkdir(peerDir)
+                  if (peerSynced) NODE_DISK.syncDir(root)
+                }
+                return NODE_DISK.named(file)
+              },
+            }
+            const runner = runnerOf({ root, disk })
+            const launched = yield* runner.launch(spec).pipe(Effect.result)
+            if (provisioned || readable) {
+              expect(launched._tag).toBe("Success")
+              const run = yield* until(runner, spec.id, ended)
+              expect(run.state === "ended" && run.exit.exitCode).toBe(0)
+              expect(yield* runner.tail(spec.id, 32)).toBe("root-layout")
+              expect(peerMade).toBe(true)
+              expect(parentSyncs > 0).toBe(!provisioned)
+            } else {
+              const refused = Option.getOrThrow(Result.getFailure(launched))
+              expect(refused._tag).toBe("JobRefused")
+              expect(refused.message).toContain(parent)
+              expect(refused.message).toContain("Pre-provision")
+              expect(existsSync(root)).toBe(false)
+              expect(peerMade).toBe(false)
+            }
+            const layout = [provisioned && "provisioned" || "new", readable && "readable" || "traverse-only", peerSynced && "peer-synced" || "peer-unsynced"]
+            yield* Console.log(`job root layout: ${layout.join(" / ")}: ${launched._tag}`)
+          }))
+        }
+      }
+    }
+  }),
+)
 
 describe("the process runner", () => {
   fixtureTest("runs the command detached, keeps its log, and records its exit code", ({ runner, specOf }) =>
@@ -668,6 +736,7 @@ const crashDisk = (lossAt: number, files: ReadonlyMap<string, string>, dirs: Rea
     read: (file) => call(() => Option.map(Option.fromNullishOr(names.get(file)), (inode) => got(inodes[inode]).data)),
     list: (dir) =>
       call(() => [...new Set([...names.keys(), ...present].flatMap((each) => Option.toArray(Option.liftPredicate(each, (one) => one !== dir && path.dirname(one) === dir)).map((one) => path.basename(one))))]),
+    named: (name) => call(() => names.has(name) || present.has(name)),
   }
   function* outcomes(): IterableIterator<Crash> {
     const seen = new Set<string>()
@@ -725,7 +794,7 @@ const crashServer = (
     readonly root?: string
     readonly directory?: string
     readonly beforeLaunch?: (job: JobSpec) => Effect.Effect<void>
-    readonly afterDrop?: (id: string) => void
+    readonly observeDrop?: (phase: "before" | "after") => void
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -748,11 +817,17 @@ const crashServer = (
       })).pipe(Layer.provide(runner)),
     })
     const storeLayer = MemoryStore.layer(store)
-    const withDrop = Option.match(Option.fromUndefinedOr(options.afterDrop), {
+    const withDrop = Option.match(Option.fromUndefinedOr(options.observeDrop), {
       onNone: () => storeLayer,
       onSome: (drop) => Layer.effect(WakeStore, Effect.gen(function* () {
         const inner = yield* WakeStore
-        return WakeStore.of({ ...inner, remove: (id) => inner.remove(id).pipe(Effect.tap(() => Effect.sync(() => drop(id)))) })
+        return WakeStore.of({
+          ...inner,
+          remove: (id) => Effect.sync(() => drop("before")).pipe(
+            Effect.andThen(inner.remove(id)),
+            Effect.tap(() => Effect.sync(() => drop("after"))),
+          ),
+        })
       })).pipe(Layer.provide(storeLayer)),
     })
     const answered = (_sessionID: string, call: string) =>
@@ -1072,7 +1147,7 @@ const uncommitted = (crash: Crash, parent: string, name: string) => {
   expect(survived).toEqual(new Set([false, true]))
 }
 
-limitedTest("a peer paused at mkdir, rename or link cannot strand a dependent write; each location recovers the original delivery after power loss",
+const peerPowerLoss = (phase: "before" | "after") =>
   Effect.gen(function* () {
     let checked = 0
     for (const which of peerCases) {
@@ -1081,21 +1156,37 @@ limitedTest("a peer paused at mkdir, rename or link cannot strand a dependent wr
       const store = MemoryStore.empty()
       const acted: Acted = { ran: 0, exited: false, calls: new Map(), answers: [] }
       const before = MemoryCourier.empty(CRASH_OWNER)
-      const atDrop: Array<ReadonlyArray<Crash>> = []
+      const atDrop: Array<{ readonly disk: ReadonlyArray<Crash>; readonly wakes: MemoryStore.MemoryWakes }> = []
       const { id, delivery } = yield* Effect.scoped(Effect.gen(function* () {
         const model = yield* crashServer(disk, store, before, acted, {
           root: DEEP_ROOT,
-          afterDrop: () => {
-            atDrop.push([...crash.outcomes()], [...crash.outcomes()])
+          observeDrop: (at) => {
+            if (at !== phase) return
+            const wakes = { entries: new Map(store.entries), notices: new Map(store.notices), broken: new Set(store.broken) }
+            atDrop.push({ disk: [...crash.outcomes()], wakes }, { disk: [...crash.outcomes()], wakes })
           },
           beforeLaunch: (spec) => Effect.gen(function* () {
             // Ensure that creating .owed later cannot incidentally flush the job's parent directory.
-            if (which === "job-dir") writeAtomic(path.join(DEEP_ROOT, ".owed", "peer.json"), {}, 0o600, { ...disk })
+            if (which === "job-dir") writeAtomic(path.join(DEEP_ROOT, ".owed", "peer.json"), {}, 0o600, { ...disk }, DEEP_ROOT)
             const launch = (peer: Disk) => ProcessRunner.writeLaunch(DEEP_ROOT, spec, { spec }, {}, peer)
             for (const name of Option.toArray(pauseAtDirectory(which, spec.id))) {
               const result = yield* stoppedPeer(disk, { operation: "mkdir", name }, launch)
               expect(Exit.isFailure(result)).toBe(true)
               uncommitted(crash, path.dirname(name), path.basename(name))
+              if (which === "root") {
+                // The parent may become unreadable after the first writer made its root but before it sealed it.
+                // The durable intent, not the current permissions, still makes that name ours.
+                const parent = path.dirname(name)
+                const blocked = yield* Effect.exit(Effect.sync(() => launch({
+                  ...disk,
+                  syncDir: (dir) => {
+                    if (dir === parent) lost()
+                    disk.syncDir(dir)
+                  },
+                })))
+                expect(Exit.isFailure(blocked)).toBe(true)
+                expect(disk.list(name)).not.toContain(spec.id)
+              }
             }
             for (const name of Option.toArray(pauseAtLaunch(which, spec.id))) {
               const result = yield* stoppedPeer(disk, { operation: "rename", name }, launch)
@@ -1113,7 +1204,7 @@ limitedTest("a peer paused at mkdir, rename or link cannot strand a dependent wr
         acted.ran += 1
         const exitPath = path.join(dir, FILES.exit)
         const writeEnd = (writer: Disk) =>
-          writeAtomic(exitPath, { exitCode: 0, startedAt: 1, endedAt: 2, timedOut: false, killed: false, disposition: "succeeded", generation: 1, sequence: 1 }, 0o600, writer)
+          writeAtomic(exitPath, { exitCode: 0, startedAt: 1, endedAt: 2, timedOut: false, killed: false, disposition: "succeeded", generation: 1, sequence: 1 }, 0o600, writer, DEEP_ROOT)
         if (which === "exit") {
           const result = yield* stoppedPeer(disk, { operation: "rename", name: exitPath }, writeEnd)
           expect(Exit.isFailure(result)).toBe(true)
@@ -1122,8 +1213,8 @@ limitedTest("a peer paused at mkdir, rename or link cannot strand a dependent wr
         const marker = markerAt(DEEP_ROOT, id)
         if (which === "marker") {
           // A r4-era obstacle left no durable index, and a competing writer has only renamed its replacement.
-          removeDurable(marker, disk)
-          const result = yield* stoppedPeer(disk, { operation: "rename", name: marker }, (peer) => writeAtomic(marker, {}, 0o600, peer))
+          removeDurable(marker, disk, DEEP_ROOT)
+          const result = yield* stoppedPeer(disk, { operation: "rename", name: marker }, (peer) => writeAtomic(marker, {}, 0o600, peer, DEEP_ROOT))
           expect(Exit.isFailure(result)).toBe(true)
           uncommitted(crash, path.dirname(marker), id)
         }
@@ -1131,12 +1222,12 @@ limitedTest("a peer paused at mkdir, rename or link cannot strand a dependent wr
           const found = "msg_peer_letter"
           const name = path.join(dir, "delivery.1.json")
           const result = yield* stoppedPeer(disk, { operation: "link", name }, (peer) => {
-            writeDurable(name, { state: "delivering", delivery: found, attempt: "msg_peer_attempt", holder: { kind: "answer", sessionID: CRASH_OWNER, call: "call_a", message: "msg_a" } }, { exclusive: true, disk: peer })
+            writeDurable(name, { state: "delivering", delivery: found, attempt: "msg_peer_attempt", holder: { kind: "answer", sessionID: CRASH_OWNER, call: "call_a", message: "msg_a" } }, { exclusive: true, disk: peer, root: DEEP_ROOT })
           })
           expect(Exit.isFailure(result)).toBe(true)
           uncommitted(crash, dir, path.basename(name))
           // Persist a follow-up write in the exit's directory while the peer has not returned.
-          writeAtomic(path.join(dir, FILES.launch), { how: "systemd" }, 0o600, { ...disk })
+          writeAtomic(path.join(dir, FILES.launch), { how: "systemd" }, 0o600, { ...disk }, DEEP_ROOT)
           return { id, delivery: found }
         }
         expect((yield* model.wait(CRASH_OWNER, id, 0, { id: "call_test", message: "msg_test" })).delivered).toBe(true)
@@ -1148,13 +1239,17 @@ limitedTest("a peer paused at mkdir, rename or link cannot strand a dependent wr
         checked += yield* reopenAt(crash.outcomes, store, acted, id, delivery)
       } else {
         expect(atDrop).toHaveLength(2)
-        checked += yield* reopenAt(() => got(atDrop.shift()), store, acted, id, delivery)
+        const saved = got(atDrop[0])
+        expect(saved.wakes.entries.has(id)).toBe(phase === "before")
+        checked += yield* reopenAt(() => got(atDrop.shift()).disk, saved.wakes, acted, id, delivery)
       }
     }
     expect(checked).toBeGreaterThanOrEqual(peerCases.length * 2)
-    yield* Console.log(`peer power loss: ${peerCases.length} name pauses, ${checked} independently reopened locations`)
-  }).pipe(Effect.provide(TestClock.layer()), Effect.provide(Logger.layer([]))),
-)
+    yield* Console.log(`peer power loss ${phase} wake removal: ${peerCases.length} name pauses, ${checked} independently reopened locations`)
+  }).pipe(Effect.provide(TestClock.layer()), Effect.provide(Logger.layer([])))
+
+limitedTest("peer power loss before wake removal recovers the original delivery at home or destination", peerPowerLoss("before"))
+limitedTest("peer power loss after wake removal recovers the original delivery at home or destination", peerPowerLoss("after"))
 
 test("each writer seals an existing path once, but flushes the containing directory for every write", () => {
   const { disk } = crashDisk(Number.POSITIVE_INFINITY, new Map(), new Set(["/", "/r", "/r/cache", "/r/cache/job"]))
@@ -1164,11 +1259,11 @@ test("each writer seals an existing path once, but flushes the containing direct
       disk.syncDir(dir)
       flushed.push(dir)
     } }
-    writeAtomic("/r/cache/job/first.json", {}, 0o600, port)
-    writeAtomic("/r/cache/job/second.json", {}, 0o600, port)
+    writeAtomic("/r/cache/job/first.json", {}, 0o600, port, "/r")
+    writeAtomic("/r/cache/job/second.json", {}, 0o600, port, "/r")
     return flushed
   }
-  const expected = ["/", "/r", "/r/cache", "/r/cache/job", "/r/cache/job"]
+  const expected = ["/r", "/r/cache", "/r/cache/job", "/r/cache/job"]
   expect(writer()).toEqual(expected)
   expect(writer()).toEqual(expected)
 })

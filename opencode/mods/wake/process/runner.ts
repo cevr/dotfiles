@@ -134,13 +134,13 @@ export const slotOf = (dir: string, disk: Disk = NODE_DISK): Option.Option<Slot>
 const OWED = ".owed"
 
 /** Retire the job in `dir` (made if it is not there yet, so a launch still to come is fenced too): whether its launch slot was free. */
-export const retireIn = (dir: string, at: number, barrier: (at: Barrier) => void = () => {}, disk: Disk = NODE_DISK): boolean => {
-  return writeDurable(path.join(dir, FILES.runner), { retiredAt: at } satisfies Retired, { exclusive: true, barrier, disk })
+export const retireIn = (dir: string, at: number, barrier: (at: Barrier) => void = () => {}, disk: Disk = NODE_DISK, root: string = path.dirname(dir)): boolean => {
+  return writeDurable(path.join(dir, FILES.runner), { retiredAt: at } satisfies Retired, { exclusive: true, barrier, disk, root })
 }
 
 /** Write slot `version + 1` of the delivery record in `dir`, only if no writer took it: whether this one did. Slots are taken in order, so it is taken only while `version` is the newest. */
-export const advanceIn = (dir: string, version: number, next: Delivery, barrier: (at: Barrier) => void = () => {}, disk: Disk = NODE_DISK): boolean =>
-  openDir(dir, disk) && writeDurable(path.join(dir, `delivery.${version + 1}.json`), next, { exclusive: true, barrier, disk })
+export const advanceIn = (dir: string, version: number, next: Delivery, barrier: (at: Barrier) => void = () => {}, disk: Disk = NODE_DISK, root: string = path.dirname(dir)): boolean =>
+  openDir(dir, disk, root) && writeDurable(path.join(dir, `delivery.${version + 1}.json`), next, { exclusive: true, barrier, disk, root })
 
 /** The launch slot of the job in `dir`: its runner's claim or the wakes' retirement; none while neither took it. */
 export const launchOf = (dir: string, disk: Disk = NODE_DISK): Option.Option<LaunchClaim> => readJson(LaunchClaim, path.join(dir, FILES.runner), disk)
@@ -151,9 +151,9 @@ export const launchOf = (dir: string, disk: Disk = NODE_DISK): Option.Option<Lau
  */
 export const writeLaunch = (root: string, spec: JobSpec, file: JobFile, env: Readonly<Record<string, string>>, disk: Disk = NODE_DISK): void => {
   const dir = path.join(root, spec.id)
-  writeAtomic(path.join(dir, FILES.job), file, 0o600, disk)
-  writeAtomic(path.join(dir, FILES.env), env, 0o600, disk)
-  if (Option.isSome(Option.fromNullishOr(spec.generation))) writeAtomic(path.join(root, OWED, spec.id), {}, 0o600, disk)
+  writeAtomic(path.join(dir, FILES.job), file, 0o600, disk, root)
+  writeAtomic(path.join(dir, FILES.env), env, 0o600, disk, root)
+  if (Option.isSome(Option.fromNullishOr(spec.generation))) writeAtomic(path.join(root, OWED, spec.id), {}, 0o600, disk, root)
 }
 
 /** The bytes of `file` from `from` to its end, or none. */
@@ -170,7 +170,8 @@ const bytesFrom = (file: string, from: number): Uint8Array => {
 const Coded = Schema.Struct({ code: Schema.String })
 
 export const layer = (config: Config) => {
-  const dirOf = (id: string) => path.join(config.root, id)
+  const { root } = config
+  const dirOf = (id: string) => path.join(root, id)
   const detached = (dir: string) =>
     Effect.try({
       try: () => Bun.spawn([config.bun, config.script, dir], { stdin: "ignore", stdout: "ignore", stderr: "ignore", detached: true }).unref(),
@@ -236,33 +237,33 @@ export const layer = (config: Config) => {
       ),
     unwatch: (id) => Effect.sync(() => unwatch(id)),
     watching: Effect.sync(() => [...watches.keys()]),
-    retire: (id) => Effect.flatMap(Clock.currentTimeMillis, (now) => written(id, "retire", () => retireIn(dirOf(id), now, () => {}, disk))),
+    retire: (id) => Effect.flatMap(Clock.currentTimeMillis, (now) => written(id, "retire", () => retireIn(dirOf(id), now, () => {}, disk, root))),
     advance: (id, version, next) =>
       written(id, "advance", () => {
-        const took = advanceIn(dirOf(id), version, next, () => {}, disk)
+        const took = advanceIn(dirOf(id), version, next, () => {}, disk, root)
         // Delivered: off the owed list (a crash before this leaves it listed, and `owed` drops it).
-        if (took && next.state === "delivered") removeDurable(path.join(config.root, OWED, id), disk)
+        if (took && next.state === "delivered") removeDurable(path.join(root, OWED, id), disk, root)
         return took
       }),
-    stabilize: (id) => required(id, "stabilize", () => sealDirectory(dirOf(id), disk)),
+    stabilize: (id) => required(id, "stabilize", () => sealDirectory(dirOf(id), disk, root)),
     retain: (id) =>
       required(id, "retain", () => {
-        if (!openDir(dirOf(id), disk)) return false
-        const marker = path.join(config.root, OWED, id)
+        if (!openDir(dirOf(id), disk, root)) return false
+        const marker = path.join(root, OWED, id)
         // An older run may have lost the marker, or a peer may not have flushed its rename yet.
-        if (Option.isNone(disk.read(marker))) writeAtomic(marker, {}, 0o600, disk)
-        else return sealDirectory(path.dirname(marker), disk)
+        if (Option.isNone(disk.read(marker))) writeAtomic(marker, {}, 0o600, disk, root)
+        else return sealDirectory(path.dirname(marker), disk, root)
         return true
       }),
     owed: ({ directory, sessionID } = {}) =>
       Effect.sync(() => {
-        const index = path.join(config.root, OWED)
-        if (!openDir(index, disk)) return []
+        const index = path.join(root, OWED)
+        if (!openDir(index, disk, root)) return []
         return disk.list(index).filter(isJobID).filter((id) => {
           const dir = dirOf(id)
-          if (!openDir(dir, disk)) return false
+          if (!openDir(dir, disk, root)) return false
           if (Option.exists(slotOf(dir, disk), (slot) => slot.delivery.state === "delivered")) {
-            if (sealDirectory(dir, disk)) removeDurable(path.join(index, id), disk)
+            if (sealDirectory(dir, disk, root)) removeDurable(path.join(index, id), disk, root)
             return false
           }
           return Option.exists(readJson(Spec, path.join(dir, FILES.job), disk), ({ spec }) =>
@@ -279,7 +280,7 @@ export const layer = (config: Config) => {
         yield* Effect.try({
           try: () => {
             const env = Object.fromEntries(Object.entries(config.env).flatMap(([key, value]) => Option.toArray(Option.map(Option.fromNullishOr(value), (set) => [key, set] as const))))
-            writeLaunch(config.root, spec, { spec, ...(descriptor === undefined ? {} : { notify: descriptor }) }, env, disk)
+            writeLaunch(root, spec, { spec, ...(descriptor === undefined ? {} : { notify: descriptor }) }, env, disk)
           },
           catch: (cause) => new JobRefused({ message: `its files were not written in ${dir}: ${cause instanceof Error ? cause.message : String(cause)}` }),
         })
@@ -289,19 +290,19 @@ export const layer = (config: Config) => {
           const unit = unitOf(spec.id)
           const ran = yield* config.exec(["systemd-run", "--user", "--unit", unit, "--collect", "--quiet", "--", config.bun, config.script, dir])
           if (ran.exitCode === 0) {
-            writeAtomic(path.join(dir, FILES.launch), { how: "systemd", unit }, 0o600, disk)
+            writeAtomic(path.join(dir, FILES.launch), { how: "systemd", unit }, 0o600, disk, root)
             return { ...where, how: "systemd", unit } satisfies Launched
           }
           warning = `systemd-run --user refused (${(ran.stderr || ran.stdout).trim() || `exit ${ran.exitCode}`}), so it runs in its own process group instead: a stop of the OpenCode service's unit may end it.`
         }
         yield* detached(dir)
-        writeAtomic(path.join(dir, FILES.launch), { how: "detached" }, 0o600, disk)
+        writeAtomic(path.join(dir, FILES.launch), { how: "detached" }, 0o600, disk, root)
         return { ...where, how: "detached", ...(warning === undefined ? {} : { warning }) } satisfies Launched
       }),
     read: (id) =>
       Effect.sync(() => {
         const dir = dirOf(id)
-        const spec = Option.flatMap(Option.liftPredicate(dir, (entry) => openDir(entry, disk)), (entry) => readJson(Spec, path.join(entry, FILES.job), disk))
+        const spec = Option.flatMap(Option.liftPredicate(dir, (entry) => openDir(entry, disk, root)), (entry) => readJson(Spec, path.join(entry, FILES.job), disk))
         const record = Option.map(spec, (job): JobRecord => ({
           spec: job.spec,
           run: runOf(dir, disk),
@@ -332,7 +333,7 @@ export const layer = (config: Config) => {
     kill: (id) =>
       Effect.sync(() => {
         const dir = dirOf(id)
-        if (!openDir(dir, disk) || Option.isNone(disk.read(path.join(dir, FILES.job)))) return false
+        if (!openDir(dir, disk, root) || Option.isNone(disk.read(path.join(dir, FILES.job)))) return false
         const run = runOf(dir, disk)
         if (run.state === "starting") {
           writeFileSync(path.join(dir, FILES.stop), "")

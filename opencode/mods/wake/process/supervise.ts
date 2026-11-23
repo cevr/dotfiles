@@ -36,7 +36,7 @@
 import { dlopen, FFIType } from "bun:ffi"
 import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs"
 import path from "node:path"
-import { Duration, Effect, Option, Result, Schedule } from "effect"
+import { Duration, Effect, Option, Result, Schedule, Schema } from "effect"
 import { DEFAULT_LIMITS, heavyArgv, type Host, ioniceAvailable, SCOPE_PROBE } from "@dotfiles/opencode-guard/launcher"
 import type { Descriptor } from "../backstop.ts"
 import { type JobExit, type JobSpec, KILL_GRACE_MS } from "../job.ts"
@@ -68,6 +68,7 @@ export interface Durable {
   readonly mode?: number
   readonly barrier?: (at: Barrier) => void
   readonly disk?: Disk
+  readonly root?: string
 }
 
 /**
@@ -89,6 +90,8 @@ export interface Disk {
   readonly mkdir: (dir: string) => void
   readonly read: (file: string) => Option.Option<string>
   readonly list: (dir: string) => ReadonlyArray<string>
+  /** Look up one name, without opening its parent for enumeration. Only absence is false. */
+  readonly named: (name: string) => boolean
 }
 
 /** `fcntl(fd, F_FULLFSYNC)` from libSystem, on macOS: there `fsync` leaves the data in the drive's cache; none elsewhere, or where it cannot be bound. */
@@ -119,18 +122,56 @@ export const NODE_DISK: Disk = {
   mkdir: (dir) => void mkdirSync(dir, { recursive: true, mode: 0o700 }),
   read: (file) => Option.liftThrowable(() => readFileSync(file, "utf8"))(),
   list: (dir) => Option.getOrElse(Option.liftThrowable(() => readdirSync(dir))(), (): ReadonlyArray<string> => []),
+  named: (name) => Option.isSome(Option.fromUndefinedOr(statSync(name, { throwIfNoEntry: false }))),
 }
 
 /** A process's own synced directory names. The job store does not rename or remove directories. */
-const sealed = new WeakMap<Disk, Set<string>>()
+const sealed = new WeakMap<Disk, Map<string, Set<string>>>()
 
-/** Establish every name from the filesystem root down, including names first seen from a peer. */
-const sealPath = (dir: string, disk: Disk, synced: Set<string>, create: boolean): boolean => {
+class RootUnsealed extends Schema.TaggedError<RootUnsealed>()("RootUnsealed", { root: Schema.String, parent: Schema.String, reason: Schema.String }) {
+  override get message() {
+    return `Cannot certify job storage directory ${this.root} in ${this.parent}: ${this.reason}. Pre-provision the job storage directory or give Wake read, write and search access to its parent.`
+  }
+}
+
+/**
+ * A configured root is provisioned unless a creation intent names it. A writer makes that sibling name durable
+ * BEFORE mkdir, and removes it only after syncing the directory entry. Looking up the root before the intent
+ * distinguishes a peer's unsynced mkdir from a provisioned root without ever opening a provisioning parent.
+ */
+const sealRoot = (root: string, disk: Disk, synced: Set<string>, create: boolean): boolean => {
+  if (synced.has(root)) return true
+  const exists = disk.named(root)
+  if (!exists && !create) return false
+  const parent = path.dirname(root)
+  if (parent === root) return exists
+  const intent = path.join(parent, `.wake-creating-${path.basename(root)}`)
+  if (!exists || disk.named(intent)) {
+    const result = Result.try(() => {
+      if (!exists) {
+        // A missing chain of directories becomes ours only below its deepest provisioned directory.
+        sealRoot(parent, disk, synced, true)
+        disk.syncDir(parent)
+        writeName(intent, {}, disk, {})
+        disk.mkdir(root)
+      }
+      disk.syncDir(parent)
+      disk.unlink(intent)
+      disk.syncDir(parent)
+    })
+    Result.getOrThrowWith(result, (cause) => new RootUnsealed({ root, parent, reason: String(cause) }))
+  }
+  synced.add(root)
+  return true
+}
+
+/** Seal every name below the boundary, whether created here or first seen from a peer. */
+const sealPath = (dir: string, disk: Disk, synced: Set<string>, create: boolean, root: string): boolean => {
   if (synced.has(dir)) return true
+  if (dir === root) return sealRoot(root, disk, synced, create)
   const parent = path.dirname(dir)
-  if (parent === dir) return true
-  if (!sealPath(parent, disk, synced, create)) return false
-  if (!disk.list(parent).includes(path.basename(dir))) {
+  if (parent === dir || !sealPath(parent, disk, synced, create, root)) return false
+  if (!disk.named(dir)) {
     if (!create) return false
     disk.mkdir(dir)
   }
@@ -139,33 +180,39 @@ const sealPath = (dir: string, disk: Disk, synced: Set<string>, create: boolean)
   return true
 }
 
-const directoriesOf = (disk: Disk) => {
-  const seen = Option.fromUndefinedOr(sealed.get(disk))
+const directoriesOf = (disk: Disk, root: string) => {
+  const roots = Option.getOrElse(Option.fromUndefinedOr(sealed.get(disk)), () => new Map<string, Set<string>>())
+  sealed.set(disk, roots)
+  const seen = Option.fromUndefinedOr(roots.get(root))
   if (Option.isSome(seen)) return seen.value
   const synced = new Set<string>()
-  sealed.set(disk, synced)
+  roots.set(root, synced)
   return synced
 }
 
-/** Open a directory by a path this process has made durable, without creating a missing name. */
-export const openDir = (dir: string, disk: Disk = NODE_DISK): boolean => sealPath(path.resolve(dir), disk, directoriesOf(disk), false)
+const inStorage = (root: string, dir: string): boolean => {
+  const relative = path.relative(root, dir)
+  return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+}
 
-/** Make or open a directory by a path this process has made durable. */
-const makeDir = (dir: string, disk: Disk): void => {
-  sealPath(path.resolve(dir), disk, directoriesOf(disk), true)
+/** Open a directory by a path this process has made durable, without creating a missing name. */
+export const openDir = (dir: string, disk: Disk, root: string): boolean => {
+  const boundary = path.resolve(root)
+  const target = path.resolve(dir)
+  return inStorage(boundary, target) && sealPath(target, disk, directoriesOf(disk, boundary), false, boundary)
 }
 
 /** Stabilize a reader's visible names before depending on them, even when their writer has not synced them yet. */
-export const sealDirectory = (dir: string, disk: Disk): boolean => {
-  if (!openDir(dir, disk)) return false
+export const sealDirectory = (dir: string, disk: Disk, root: string): boolean => {
+  if (!openDir(dir, disk, root)) return false
   disk.syncDir(dir)
   return true
 }
 
 /** Remove `file` and sync its directory, so the name stays gone after a power loss. */
-export const removeDurable = (file: string, disk: Disk = NODE_DISK): void => {
+export const removeDurable = (file: string, disk: Disk, root: string): void => {
   const dir = path.dirname(file)
-  if (!openDir(dir, disk)) return
+  if (!openDir(dir, disk, root)) return
   disk.unlink(file)
   disk.syncDir(dir)
 }
@@ -187,7 +234,16 @@ const made = { count: 0 }
 export const writeDurable = <A>(file: string, value: A, options: Durable = {}): boolean => {
   const disk = options.disk ?? NODE_DISK
   const dir = path.dirname(file)
-  makeDir(dir, disk)
+  const root = path.resolve(options.root ?? dir)
+  const target = path.resolve(dir)
+  if (!inStorage(root, target) || !sealPath(target, disk, directoriesOf(disk, root), true, root)) {
+    return Result.getOrThrow(Result.fail(new RootUnsealed({ root, parent: dir, reason: "record path is outside job storage" })))
+  }
+  return writeName(file, value, disk, options)
+}
+
+/** Write a name whose containing directory is already durable. Only root creation bypasses `writeDurable`. */
+const writeName = <A>(file: string, value: A, disk: Disk, options: Durable): boolean => {
   made.count += 1
   // A stray one of a dead process under the same pid is overwritten: that process links nothing any more.
   const temporary = `${file}.${SELF}.${made.count}.tmp`
@@ -209,12 +265,13 @@ export const writeDurable = <A>(file: string, value: A, options: Durable = {}): 
     disk.unlink(temporary)
   }
   options.barrier?.("named")
-  disk.syncDir(dir)
+  disk.syncDir(path.dirname(file))
   return true
 }
 
 /** Write `value` as JSON to `file`, replacing it, durably (`writeDurable`). */
-export const writeAtomic = <A>(file: string, value: A, mode = 0o600, disk: Disk = NODE_DISK) => void writeDurable(file, value, { mode, disk })
+export const writeAtomic = <A>(file: string, value: A, mode = 0o600, disk: Disk = NODE_DISK, root: string = path.dirname(file)) =>
+  void writeDurable(file, value, { mode, disk, root })
 
 /** A process's start time as `ps -o lstart=` prints it (by its own path, in the C locale); none when `ps` could not say (no such process, or no `ps`). */
 export const processStart = (pid: number): Option.Option<string> =>
@@ -232,9 +289,9 @@ export const ranOf = (argv: ReadonlyArray<string>, env?: Record<string, string>)
  * Claim the job in `dir` for this runner, as the process `pid`: true when its launch slot was free. The slot holds
  * one claim or the wakes' retirement, whichever came first, so a job retired as never started never runs.
  */
-export const claim = (dir: string, startedAt: number, pid: number = SELF, barrier: (at: Barrier) => void = () => {}, disk: Disk = NODE_DISK): boolean => {
+export const claim = (dir: string, startedAt: number, pid: number = SELF, barrier: (at: Barrier) => void = () => {}, disk: Disk = NODE_DISK, root: string = path.dirname(dir)): boolean => {
   const own: RunnerClaim = { pid, startedAt, ...Option.match(processStart(pid), { onNone: () => ({}), onSome: (start) => ({ start }) }) }
-  return writeDurable(path.join(dir, FILES.runner), own, { exclusive: true, barrier, disk })
+  return writeDurable(path.join(dir, FILES.runner), own, { exclusive: true, barrier, disk, root })
 }
 
 /** How many times the runner tries to write the exit, and how long it waits between. */
@@ -305,9 +362,10 @@ export const supervise = async (
   dir: string,
   notify?: (descriptor: Descriptor) => Promise<void>,
   grace = KILL_GRACE_MS,
-  write: (file: string, value: JobExit) => void = writeAtomic,
+  write: (file: string, value: JobExit) => void = (file, value) => writeAtomic(file, value, 0o600, NODE_DISK, path.dirname(dir)),
 ): Promise<Option.Option<JobExit>> => {
-  if (!openDir(dir)) return Option.none()
+  const root = path.dirname(dir)
+  if (!openDir(dir, NODE_DISK, root)) return Option.none()
   const job = JSON.parse(readFileSync(path.join(dir, FILES.job), "utf8")) as JobFile
   const startedAt = Date.now()
 
