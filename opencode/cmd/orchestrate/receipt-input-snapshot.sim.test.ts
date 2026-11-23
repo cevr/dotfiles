@@ -378,6 +378,17 @@ const landStates: ReadonlyArray<{ readonly entry: Option.Option<Entry>; readonly
 
 const PAIRS = [build(installedDotfiles, provenFork), build(laneHead, provenFork), build(aggregateHead, checkoutFork)]
 
+/** A whole source state with its independent oracle facts. */
+const stepOf = ({ record, receipt, land, handoff }: Omit<Step, "files" | "torn"> & { readonly handoff: boolean }, torn = false): Step => {
+  const whole = encodeRecord(record)
+  const installed = text(Match.value(torn).pipe(Match.when(true, () => whole.slice(0, whole.length - 9)), Match.orElse(() => whole)))
+  const entries: Array<readonly [string, Entry]> = [["installed", installed]]
+  for (const entry of Option.toArray(Option.flatMap(Arr.get(receiptStates, receipt), (each) => each.entry))) entries.push([ROUND_KEY, entry])
+  for (const entry of Option.toArray(Option.flatMap(Arr.get(landStates, land), (each) => each.entry))) entries.push([LAND_KEY, entry])
+  if (handoff) entries.push(["handoff", text('{"pid":1}')])
+  return { files: files(entries), record, torn, receipt, land }
+}
+
 /** The script for a seed: 3 to 8 whole states, each held for 1 to 6 reads, moving the record, the receipt, the land and the handoff marker. */
 const scriptOf = (seed: number): ReadonlyArray<Step> => {
   const next = generator(seed)
@@ -387,14 +398,7 @@ const scriptOf = (seed: number): ReadonlyArray<Step> => {
   const walk = { record: installedAs(first, Option.some(first)), receipt: next(receiptStates.length), land: next(landStates.length), handoff: false }
   const steps: Array<Step> = []
   for (const _state of Arr.range(1, 3 + next(6))) {
-    const torn = next(8) === 0
-    const whole = encodeRecord(walk.record)
-    const installed = text(Match.value(torn).pipe(Match.when(true, () => whole.slice(0, whole.length - 9)), Match.orElse(() => whole)))
-    const entries: Array<readonly [string, Entry]> = [["installed", installed]]
-    for (const entry of Option.toArray(Option.flatMap(Arr.get(receiptStates, walk.receipt), (each) => each.entry))) entries.push([ROUND_KEY, entry])
-    for (const entry of Option.toArray(Option.flatMap(Arr.get(landStates, walk.land), (each) => each.entry))) entries.push([LAND_KEY, entry])
-    if (walk.handoff) entries.push(["handoff", text('{"pid":1}')])
-    const step: Step = { files: files(entries), record: walk.record, torn, receipt: walk.receipt, land: walk.land }
+    const step = stepOf(walk, next(8) === 0)
     for (const _read of Arr.range(1, 1 + next(6))) steps.push(step)
     walk.record = pick(moves, provenNow)(walk.record)
     if (next(3) === 0) walk.receipt = next(receiptStates.length)
@@ -416,6 +420,20 @@ const GENERATED: InputRequest = { receipts: [{ head: laneHead, kind: "round" }],
  * answers differ, a marker present, or a read that fails ends the freeze there with a reason to read again.
  */
 const READS = [ROUND_KEY, ROUND_KEY, LAND_KEY, LAND_KEY, "handoff", "handoff", "installed", "installed", "handoff", "handoff"]
+
+/** Guaranteed witnesses: the record moves before the installed pair, or between its two reads. */
+const witnesses = () => {
+  const incumbent = build(installedDotfiles, provenFork)
+  const pending = staged(installedAs(incumbent, Option.some(incumbent)), build(laneHead, checkoutFork))
+  const promotion = promoted(pending)
+  const state = (record: FixtureRecord) => stepOf({ record, receipt: 1, land: 2, handoff: false })
+  const transition = (before: FixtureRecord, after: FixtureRecord, priorReads: number) => [...Arr.replicate(state(before), priorReads), state(after)]
+  return [
+    ["proven", transition(promotion, provenNow(promotion), 6)],
+    ["unproven", transition(pending, promotion, 6)],
+    ["unsettled", transition(pending, promotion, 7)],
+  ] as const
+}
 
 /** What the script puts at read `index` of `key`: the state the script holds then. */
 const entryAt = (steps: ReadonlyArray<Step>, index: number, key: string): Option.Option<Entry> =>
@@ -448,9 +466,12 @@ const namesIn = (snapshot: InputSnapshot): ReadonlyArray<string> => [
 
 seeded("generated source transitions between read boundaries, for the receipt, the land, the installed record and the marker: one complete proven pair, absent, refused with the file's own reason, or a reason to read again; never a composite pair or an invented green", ({ seed, expect }) =>
   Effect.gen(function* () {
-    const seen = yield* Effect.forEach(Arr.range(1, SCRIPTS), (index) => checkScript(seed * SCRIPTS + index, expect))
-    // Each seed's scripts reach every kind of outcome, so the oracle is exercised on each.
-    expect([seed, Arr.sort(Arr.dedupe(seen), Order.String)]).toEqual([seed, ["proven", "unproven", "unsettled"]])
+    const guaranteed = yield* Effect.forEach(witnesses(), ([kind, steps]) => checkScript(kind, steps, expect))
+    expect([seed, guaranteed]).toEqual([seed, ["proven", "unproven", "unsettled"]])
+    yield* Effect.forEach(Arr.range(1, SCRIPTS), (index) => {
+      const scriptSeed = seed * SCRIPTS + index
+      return checkScript(scriptSeed, scriptOf(scriptSeed), expect)
+    }, { discard: true })
   }),
 )
 
@@ -464,41 +485,48 @@ const leaves = (key: string, head: string, kind: string, notOne: string, meaning
     Broken: () => ({ rows: [], absent: [], refused: [] }),
   })
 
-/** One generated script, frozen and checked against the oracle: which kind of outcome it reached. */
-const checkScript = (seed: number, expect: Seed.Seeded["expect"]) =>
+/** One script, frozen and checked against the oracle: which kind of outcome it reached. */
+const checkScript = (label: number | string, steps: ReadonlyArray<Step>, expect: Seed.Seeded["expect"]) =>
   Effect.gen(function* () {
-    const steps = scriptOf(seed)
     const { outcome, served } = yield* run(
       steps.map((each) => each.files),
       GENERATED,
     )
     const must = observation(steps)
     // The freeze made exactly the documented reads, and failed exactly when and why the script says it must.
-    expect([seed, served.map((each) => each.key), failureWords(outcome)]).toEqual([seed, must.reads, must.failure])
+    expect([label, served.map((each) => each.key), failureWords(outcome)]).toEqual([label, must.reads, must.failure])
     if (Option.isSome(must.failure)) return "unsettled"
     const snapshot = yield* Effect.orDie(Effect.fromResult(outcome))
     const meaningAt = (read: number, of: (step: Step) => Option.Option<Meaning>) => Option.getOrElse(Option.flatMap(Arr.get(steps, Math.min(read, steps.length - 1)), of), () => Meaning.None())
     const round = leaves(ROUND_KEY, laneHead, "round", "not a receipt", meaningAt(0, (step) => Option.map(Arr.get(receiptStates, step.receipt), (each) => each.meaning)))
     const land = leaves(LAND_KEY, outerHead, "merge", "not a land record", meaningAt(2, (step) => Option.map(Arr.get(landStates, step.land), (each) => each.meaning)))
     const rows = snapshot.receipts.map((each) => ({ head: each.input.head, kind: `${each.input.kind}`, tree: each.input.tree, codes: each.input.checks.map((check) => check.code) }))
-    const have: ReadonlyArray<unknown> = [seed, Arr.sort(rows, byHead), snapshot.lands.map((each) => each.input.head), snapshot.absent, snapshot.refused]
+    const have: ReadonlyArray<unknown> = [label, Arr.sort(rows, byHead), snapshot.lands.map((each) => each.input.head), snapshot.absent, snapshot.refused]
     expect(have).toEqual([
-      seed,
+      label,
       Arr.sort([...land.rows, ...round.rows], byHead),
       land.rows.map((each) => each.head),
       [...land.absent, ...round.absent],
       [...land.refused, ...round.refused],
     ])
-    expect([seed, namesIn(snapshot).every(isFull)]).toEqual([seed, true])
-    const expected = Option.flatMap(
-      Option.filter(Arr.get(steps, Math.min(6, steps.length - 1)), (step) => !step.torn),
-      (step) => provenPair(step.record),
-    )
+    expect([label, namesIn(snapshot).every(isFull)]).toEqual([label, true])
+    const step = Arr.get(steps, Math.min(6, steps.length - 1))
+    const expected = Option.flatMap(Option.filter(step, (each) => !each.torn), (each) => provenPair(each.record))
     const install = Option.fromNullishOr(snapshot.install)
-    const got = Option.flatMap(install, (each) => Match.value(each).pipe(Match.tag("Proven", (proven) => Option.some({ dotfiles: proven.receipt.dotfiles, fork: proven.receipt.fork })), Match.orElse(() => Option.none())))
-    const gotPair: ReadonlyArray<unknown> = [seed, got]
-    expect(gotPair).toEqual([seed, expected])
-    return Option.match(got, { onNone: () => "unproven", onSome: () => "proven" })
+    const haveInstall: ReadonlyArray<unknown> = Option.match(install, {
+      onNone: () => [label, "missing install evidence"],
+      onSome: Match.type<NonNullable<InputSnapshot["install"]>>().pipe(
+        Match.tag("Proven", (each) => [label, "Proven", { dotfiles: each.receipt.dotfiles, fork: each.receipt.fork }]),
+        Match.tag("Unavailable", (each) => [label, "Unavailable", each.reason]),
+        Match.exhaustive,
+      ),
+    })
+    const reason = Match.value(Option.exists(step, (each) => each.torn)).pipe(Match.when(true, () => "corrupt"), Match.orElse(() => "unproven"))
+    expect(haveInstall).toEqual(Option.match(expected, {
+      onNone: () => [label, "Unavailable", reason],
+      onSome: (pair) => [label, "Proven", pair],
+    }))
+    return Match.value(Option.exists(install, (each) => each._tag === "Proven")).pipe(Match.when(true, () => "proven"), Match.orElse(() => "unproven"))
   })
 
 /** A freeze's result in words: its refusals, else what it froze; the install state when asked. */
