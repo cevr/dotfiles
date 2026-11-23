@@ -8,7 +8,8 @@
 // Usage: bun agents.ts [--check]
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { BLOCK, document, PROTOCOL_BLOCK, render } from './ending.ts';
+import { BLOCK, block, document, PROTOCOL_BLOCK } from './round-policy.ts';
+const BLOCK_PATTERN = new RegExp(BLOCK);
 
 const here = import.meta.dir;
 const PROTOCOL = join(here, '..', 'protocol.md');
@@ -18,11 +19,11 @@ export const CODEX_AGENTS = join(here, '..', '..', '..', 'codex', 'agents');
 const END_OF_STEP = join(here, '..', 'end-of-step.md');
 const TOOLS = 'Bash, Read, Edit, Write, Skill, Monitor, TaskStop, WebFetch, WebSearch';
 
-export const ROLES = {
+export const ROLES = Object.freeze({
   planner: 'Writes one orchestrate unit\'s spec and its red acceptance check. Changes no product code.',
   implementor: 'The sole writer of one orchestrate unit: builds its spec on the unit\'s branch and hands back a round request.',
   verifier: 'Verifies what an orchestrate batch file names (a range of main, a landed batch, or one deep unit before its merge) on a clean checkout of its head: tries to break each unit\'s change against its spec, and writes findings per unit.',
-} as const;
+} as const);
 
 /** What a role's first message names: a unit's spec, or for the verifier its batch's file. */
 const SUBJECT: Record<Role, string> = {
@@ -50,8 +51,8 @@ export function instructions(role: Role, protocol: string, safety: string): stri
   const rules = safety.slice(safety.indexOf('SAFETY (mandatory')).trim();
   const own = s[role[0].toUpperCase() + role.slice(1)];
   if (!s['Ending a step'] || !s.Rounds || !own || !rules.startsWith('SAFETY')) throw new Error(`protocol.md or safety.md lost a section ${role} needs`);
-  if (!BLOCK.test(s['Ending a step'])) throw new Error("protocol.md's Ending a step lost its end-of-step block");
-  const ending = s['Ending a step'].replace(BLOCK, () => render(role));
+  if (!BLOCK_PATTERN.test(s['Ending a step'])) throw new Error("protocol.md's Ending a step lost its round-policy block");
+  const ending = s['Ending a step'].replace(BLOCK_PATTERN, () => block(role));
   return `You are the ${role} of ${SUBJECT[role]} This prompt carries the worker protocol and the safety rules, so do not read \`protocol.md\` or \`safety.md\`.
 
 # Safety
@@ -92,8 +93,8 @@ ${text}'''
 
 /** `text` with its end-of-step block rewritten as `block`; throws when it has none. */
 const withBlock = (path: string, text: string, block: string) => {
-  if (!BLOCK.test(text)) throw new Error(`${path} lost its end-of-step block`);
-  return text.replace(BLOCK, () => block);
+  if (!BLOCK_PATTERN.test(text)) throw new Error(`${path} lost its round-policy block`);
+  return text.replace(BLOCK_PATTERN, () => block);
 };
 
 /**
@@ -107,7 +108,7 @@ const built = () => {
   return [
     [PROTOCOL, protocol] as const,
     [END_OF_STEP, document()] as const,
-    [worker, withBlock(worker, readFileSync(worker, 'utf8'), render('worker'))] as const,
+    [worker, withBlock(worker, readFileSync(worker, 'utf8'), block('worker'))] as const,
     ...(Object.keys(ROLES) as Role[]).flatMap((role) => [
       [join(AGENTS, `${role}.md`), agentFile(role, protocol, safety)] as const,
       [join(CODEX_AGENTS, `${role}.toml`), codexFile(role, protocol, safety)] as const,

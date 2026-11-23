@@ -6,7 +6,6 @@
 // cmd/orchestrate/orchestrate.sim.test.ts (tests/parity/orchestrate.json).
 // The plugin's rules on their own are tested beside mods/orchestrate and cmd/orchestrate.
 import { afterAll, describe, expect, test } from "bun:test"
-// @reads ../agents/*.md ../skills/orchestrate/{SKILL.md,protocol.md,scripts/agents.ts,scripts/ending.ts} ../skills/loop/safety.md mods/orchestrate/agents.json
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { matchingInput } from "./read-path.ts"
 import { join, resolve } from "node:path"

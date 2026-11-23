@@ -1,6 +1,6 @@
 // scripts/agents.ts's orchestrator entry: its section carries SKILL.md's no-block rule word for word, and `--check`
 // fails once that line changes in the skill without `bun run agents` writing agents.json again.
-// @reads ../skills/orchestrate/{SKILL.md,protocol.md,scripts/agents.ts,scripts/ending.ts} ../skills/loop/safety.md ../agents/**
+// @reads ../skills/orchestrate/{SKILL.md,protocol.md,scripts/agents.ts,scripts/round-policy.ts} ../skills/loop/safety.md ../agents/** mods/orchestrate/{round-policy.ts,immutable.ts} mods/orchestrate/agents.json
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Effect, FileSystem, Option, Path, Schema, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
@@ -35,15 +35,20 @@ const check = (...source: ReadonlyArray<string>) =>
     }),
   )
 
-/** The orchestrate skill and what its agents script reads beside it (loop/safety.md, the agents dir), under `dir`. */
+/** The orchestrate skill and what its agents script reads beside it (loop/safety.md, the agents dir, the canonical round policy), under `dir`. */
 const copySkill = (dir: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
     const source = path.join(dir, "skills/orchestrate")
     yield* fs.makeDirectory(path.join(source, "scripts"), { recursive: true })
-    yield* Effect.forEach(["SKILL.md", "protocol.md", "scripts/agents.ts", "scripts/ending.ts"], (file) =>
-      fs.copyFile(matchingInput("../skills/orchestrate/{SKILL.md,protocol.md,scripts/agents.ts,scripts/ending.ts}", `../skills/orchestrate/${file}`), path.join(source, file)))
+    yield* Effect.forEach(["SKILL.md", "protocol.md", "scripts/agents.ts", "scripts/round-policy.ts"], (file) =>
+      fs.copyFile(matchingInput("../skills/orchestrate/{SKILL.md,protocol.md,scripts/agents.ts,scripts/round-policy.ts}", `../skills/orchestrate/${file}`), path.join(source, file)))
+    // The skill's round-policy.ts places the canonical policy, which ships with the plugin: it stands at the same place relative to the skill.
+    const leaf = path.join(dir, "opencode/mods/orchestrate")
+    yield* fs.makeDirectory(leaf, { recursive: true })
+    yield* Effect.forEach(["round-policy.ts", "immutable.ts"], (file) =>
+      fs.copyFile(matchingInput("mods/orchestrate/{round-policy.ts,immutable.ts}", `mods/orchestrate/${file}`), path.join(leaf, file)))
     yield* fs.makeDirectory(path.join(dir, "skills/loop"), { recursive: true })
     yield* fs.copyFile("../skills/loop/safety.md", path.join(dir, "skills/loop/safety.md"))
     yield* fs.copy("../agents", path.join(dir, "agents"))
