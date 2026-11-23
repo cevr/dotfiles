@@ -1,14 +1,17 @@
 // The peers' wire and their place on the tailnet: what a peer's answer comes to (up, down, needs update), a newer
 // peer's unknown message skipped alone, and a peer found only in Tailscale's own status.
 import { describe, expect, test } from "bun:test"
-import { Array as Arr, Option } from "effect"
+import { Array as Arr, Option, Schema } from "effect"
 import { canonicalOf, type PeerStatus, StatusRead } from "./bind.ts"
 import { DigestEvent, VERSION } from "./event.ts"
 import { EMPTY, fold } from "./fold.ts"
 import { NO_MARKS } from "./marks.ts"
 import { pageOf } from "./messages.ts"
 import { browserSpelling, envelopeOf, keyedOf, locateIn, mergeView, NOT_ALLOWED, peerOriginsOf, Reading, readingOf, selfPagesOf, type Sighting, WIRE } from "./peers.ts"
-import { viewOf } from "./view.ts"
+import { View, viewOf } from "./view.ts"
+
+const encodeView = Schema.encodeSync(View)
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
 
 const T = Date.parse("2026-11-20T12:00:00Z")
 const run = DigestEvent.cases.Run.make({ v: VERSION, t: T, root: "r", host: "harbor", repo: "harbor", dir: Option.none(), name: Option.some("harbor") })
@@ -32,11 +35,14 @@ describe("a peer's answer", () => {
   })
 
   test("a newer peer's message of a kind this build does not know is left out alone; the rest of its view shows", () => {
-    const wire = JSON.parse(ENVELOPE)
-    const known = wire.view.projects[0].inbox[0]
-    wire.view.projects[0].inbox.push({ ...known, id: "agent:workbox:1", kind: "agent-answer", extra: { proposed: "yes" } })
-    wire.view.projects[0].mood = "a field a later build added"
-    const reading = readingOf(200, JSON.stringify(wire))
+    // The envelope a later build would send: this build's view as it encodes it, with a message of a new kind and a
+    // project field it does not know.
+    const encoded = encodeView(VIEW)
+    const [first, ...rest] = encoded.projects
+    const project = Option.getOrThrow(Option.fromUndefinedOr(first))
+    const known = Option.getOrThrow(Arr.head(project.inbox))
+    const newer = { ...encoded, projects: [{ ...project, mood: "a field a later build added", inbox: [...project.inbox, { ...known, id: "agent:workbox:1", kind: "agent-answer", extra: { proposed: "yes" } }] }, ...rest] }
+    const reading = readingOf(200, encodeJson({ wire: WIRE, host: "workbox", view: newer }))
     expect(reading).toEqual(Reading.Up({ view: VIEW }))
   })
 })
