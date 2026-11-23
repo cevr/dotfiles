@@ -660,7 +660,12 @@ const moduleEdge = (at: Node, current: string, dir: string, loadSource: Source, 
   if (!specifier.startsWith(".") && !workspacePackage(specifier)) return ""
   const next = (specifier.startsWith(".") && modulePath(specifier, dir, loadSource)) || resolvePackage(specifier, current)
   if (next === INSTALLED_MODULE) return ""
-  if (next) return next
+  if (next) {
+    // The legacy import walk only knows opencode/ files. Keep an actual
+    // sibling import, and its edges back into opencode/, as inputs here.
+    if (next.startsWith("../") || current.startsWith("../")) record(at, fixed(next))
+    return next
+  }
   record(at, opaque(`unresolved helper ${specifier}`))
   return ""
 }
