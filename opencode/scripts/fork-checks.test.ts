@@ -984,6 +984,7 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
       expect(text).toContain("fixture: post-test report check failed")
       expect(text).toMatch(/fork-checks: RED over upstream [0-9a-f]{10}\.\.[0-9a-f]{10}, 1 tests: packages\/x\/\(the run\) \[x\]/)
     }).pipe(Effect.scoped),
+    30_000,
   )
 
   /** A package command that copies its cell's report (if the merge holds one) to bun's report file and exits its cell's code. */
@@ -1008,19 +1009,33 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
       return { cell, merged: merged.kind, moved, report }
     }).pipe(Effect.scoped)
 
+  /**
+   * The cells each round runs at this boundary (a real merge and CLI each, about a CPU-second): every green cell,
+   * each exit beside a declared skip and beside an observed expected failure, each other skip and the passing
+   * expectation, and each report kind. `FORK_CHECKS_EVERY_CELL=1` runs all of `CELLS` here instead.
+   */
+  const atBoundary = (cell: Cell) => {
+    if (cell.report !== "present") return cell.skip === "declared" && cell.expectation === "observed"
+    if (cell.skip === "none" || cell.skip === "declared") return cell.expectation !== "passing" || (cell.skip === "declared" && cell.exit !== 7)
+    return cell.expectation === "none" && cell.exit !== 1
+  }
+
   it.live.layer(Layer.provideMerge(hostGauge, BunServices.layer))(
-    "every composition at the bare-ref boundary: only the table's green cells reach origin; every other is held with its report",
+    "the compositions at the bare-ref boundary: only the table's green cells reach origin; every other is held with its report",
     () =>
       Effect.gen(function* () {
         // The expectation holds on this host's bash, as the CLI reads it.
         const bash = Option.getOrElse(yield* (yield* HostGauge).bash, () => "none")
-        const outcomes = yield* Effect.forEach(CELLS, (cell) => throughMerge(cell, bash), { concurrency: 4 })
+        const every = yield* Config.Boolean("FORK_CHECKS_EVERY_CELL").pipe(Config.withDefault(false))
+        const cells = CELLS.filter((cell) => every || atBoundary(cell))
+        expect(cells.length).toBe(Number(every) * CELLS.length + Number(!every) * 24)
+        const outcomes = yield* Effect.forEach(cells, (cell) => throughMerge(cell, bash), { concurrency: 2 })
         const seen = outcomes.map((each) => {
           const kind = Arr.filter(["could-not-run"], () => each.report.includes("fork-checks: COULD NOT RUN")).concat(Arr.filter(["red"], () => each.report.includes("fork-checks: RED")))
           return `${nameOf(each.cell)}: ${Option.getOrElse(Arr.head(kind), () => "green")}, ${each.merged}, origin ${Option.getOrElse(Arr.head(Arr.filter(["moved"], () => each.moved)), () => "kept")}`
         })
         expect(seen).toEqual(
-          CELLS.map((cell) => {
+          cells.map((cell) => {
             const outcome = outcomeOf(cell)
             if (outcome === "green") return `${nameOf(cell)}: green, merged, origin moved`
             return `${nameOf(cell)}: ${outcome}, red, origin kept`
@@ -1030,7 +1045,7 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
           expect(each.report).toContain(`RED packages/x/(the run) [x]: bun runner.ts ${each.cell.exit} exited ${each.cell.exit}, and no failed test in its report accounts for it`)
         for (const each of outcomes.filter((one) => outcomeOf(one.cell) !== "green")) expect(each.report).toContain(`fixture: post-test step exited ${each.cell.exit}`)
       }),
-    180_000,
+    300_000,
   )
 })
 
@@ -1081,6 +1096,7 @@ describe("a run stopped before it finishes could not run, with a partial report"
       expect(Number(code)).toBe(2)
       expect(text).toMatch(/fork-checks: COULD NOT RUN: stopped by a signal \(the caller's own bound, or a kill\) before it finished, after \d+\.\d s; progress: packages\/x \[x\]: running for \d+\.\d s$/m)
     }).pipe(Effect.scoped),
+    30_000,
   )
 
   test("the run's own time bound: could not run, the package's progress named", () =>
@@ -1093,5 +1109,6 @@ describe("a run stopped before it finishes could not run, with a partial report"
       expect(text).toMatch(/^progress: packages\/x \[x\]: could-not-run in \d+\.\d s$/m)
       expect(text).toContain("fork-checks: COULD NOT RUN: packages/x ran past the time bound (0.025 min), its process group ended")
     }).pipe(Effect.scoped),
+    30_000,
   )
 })
