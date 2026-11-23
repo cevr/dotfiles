@@ -2152,7 +2152,7 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       // The first holds the base until every other one is in line behind it (the gate file).
       const gate = join(w.dir, "gate")
       sh(w.app, w.env, "git", "config", "workrift.warm", "true")
-      sh(w.app, w.env, "git", "config", "workrift.install", `if [ "$LABEL" = first ]; then until [ -e '${gate}' ]; do sleep 0.05; done; else sleep 0.2; fi; printf '%s\\n' "$LABEL" >>'${order}'`)
+      sh(w.app, w.env, "git", "config", "workrift.install", `if [ "$LABEL" = first ]; then i=0; until [ -e '${gate}' ] || [ "$i" -ge 2400 ]; do sleep 0.05; i=$((i + 1)); done; else sleep 0.2; fi; printf '%s\\n' "$LABEL" >>'${order}'`)
       expect(w.wr(w.app, "refresh").code).toBe(0)
       writeFileSync(order, "")
       const spawned: Array<ReturnType<typeof Bun.spawn>> = []
@@ -2164,19 +2164,34 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       const queue = join(stateOf(w.app), "advance")
       const seen = new Set<string>()
       const tickets = () => (existsSync(queue) ? readdirSync(queue).filter((name) => /\.[rw]$/.test(name)) : [])
-      for (const label of labels) {
-        spawned.push(Bun.spawn([SCRIPT, "refresh"], { cwd: w.app, env: { ...w.env, LABEL: label }, stdout: "ignore", stderr: "ignore" }))
-        const deadline = Date.now() + 60_000
-        let fresh: string | undefined
-        while (!(fresh = tickets().find((name) => !seen.has(name))) && Date.now() < deadline) await Bun.sleep(20)
-        expect(fresh, `${label} took no ticket within 60 s`).toBeDefined()
-        seen.add(fresh!)
+      // Each refresh runs in its own process group; whatever the test's end, the gate opens and every group still
+      // running is ended, so none outlives it.
+      try {
+        for (const label of labels) {
+          spawned.push(Bun.spawn([SCRIPT, "refresh"], { cwd: w.app, env: { ...w.env, LABEL: label }, stdout: "ignore", stderr: "ignore", detached: true }))
+          const deadline = Date.now() + 60_000
+          let fresh: string | undefined
+          while (!(fresh = tickets().find((name) => !seen.has(name))) && Date.now() < deadline) await Bun.sleep(20)
+          expect(fresh, `${label} took no ticket within 60 s`).toBeDefined()
+          seen.add(fresh!)
+        }
+        writeFileSync(gate, "")
+        for (const child of spawned) expect(await child.exited).toBe(0)
+      } finally {
+        writeFileSync(gate, "")
+        for (const child of spawned) {
+          if (child.exitCode !== null || child.signalCode !== null) continue
+          try {
+            process.kill(-child.pid, "SIGKILL")
+          } catch {
+            // ended meanwhile
+          }
+        }
       }
-      writeFileSync(gate, "")
-      for (const child of spawned) expect(await child.exited).toBe(0)
       expect(lines(readFileSync(order, "utf8"))).toEqual(labels)
     },
-    120_000,
+    // Above the 13 ticket waits of 60 s: a slow line fails on its own message, and the finally always runs.
+    900_000,
   )
 
   test(
