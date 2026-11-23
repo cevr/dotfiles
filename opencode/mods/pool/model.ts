@@ -857,7 +857,7 @@ export const layer = (config: Config) =>
           found._tag === "unreachable" ? settles(failed(`not sent: no agreement, ${found.peers.join(", ")} unreachable`), []) : found
         const { answer, before, lease } = sent
         // A claim that emptied the windows frees the account; the reading taken next holds it again if a window is still spent.
-        if (answer.outcome === "reset" || answer.outcome === "already-redeemed")
+        if (answer.outcome === "reset")
           yield* apply(where.pool, where.id, ClearHold.make({ credentialID: reset.credentialID }))
         const after = yield* quota.usage(where.id, reset.credentialID)
         yield* take(where, reset.credentialID, after)

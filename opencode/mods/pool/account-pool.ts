@@ -210,9 +210,9 @@ const placeRequest = (
 // ── TakeReading ──
 // A reading of one account came in. A live refusal holds the account until the
 // refusal's time; a window read as exhausted holds it until that window resets.
-// A reading taken after a usage-limit hold was set, with no live refusal and
-// no exhausted window, lifts it: a reset claimed since, or a reading that
-// arrived late and held the account on windows a claim had already emptied.
+// A reading taken after a hold inferred from exhausted windows can lift it.
+// It cannot lift a live provider refusal: another request (such as a title)
+// may have left before the 429 and reported room when it finally answered.
 
 export const TakeReading = Schema.TaggedStruct("TakeReading", {
   credentialID: Schema.String,
@@ -237,6 +237,33 @@ export declare namespace TakeReading {
   export type Rejections = never
 }
 
+const refusalEnd = (hold: Option.Option<Hold>): number =>
+  hold.pipe(Option.flatMap((entry) => Option.fromUndefinedOr(entry.refusedUntil)), Option.getOrElse(() => 0))
+
+const readingHold = (
+  current: Option.Option<Hold>,
+  refused: Option.Option<{ readonly kind: Hold["kind"]; readonly until: number }>,
+  until: number,
+  now: number,
+): Option.Option<Hold> => {
+  const previous = Option.getOrElse(Option.map(current, (hold) => hold.until), () => 0)
+  const before = refusalEnd(current)
+  const reported = Option.getOrElse(Option.map(refused, (hold) => hold.until), () => 0)
+  const refusedUntil = Math.max(before, reported)
+  const grows = until > Math.max(previous, now)
+  if (!grows && refusedUntil <= Math.max(before, now)) return Option.none()
+  const kind = Option.getOrElse(
+    Option.map(Option.filter(current, () => !grows), (hold) => hold.kind).pipe(Option.orElse(() => Option.map(refused, (hold) => hold.kind))),
+    (): Hold["kind"] => "usage-limit",
+  )
+  return Option.some(Hold.make({
+    kind,
+    at: now,
+    until: Math.max(previous, until),
+    ...Option.match(Option.filter(Option.some(refusedUntil), (at) => at > now), { onNone: () => ({}), onSome: (at) => ({ refusedUntil: at }) }),
+  }))
+}
+
 const takeReading = (
   state: AccountPoolState,
   command: TakeReading,
@@ -255,14 +282,14 @@ const takeReading = (
     .filter((window) => accountWide(window) && window.utilization >= 1 && window.resetAt !== undefined && window.resetAt > now)
     .reduce<number | undefined>((latest, window) => Math.max(latest ?? 0, window.resetAt ?? 0), undefined)
   const until = Math.max(refused?.until ?? 0, exhausted ?? 0)
-  const current = state.holds[credentialID]
-  const grows = until > now && (current === undefined || current.until < until)
-  const lifts = until <= now && Option.exists(Option.fromUndefinedOr(current), (hold) => hold.kind === "usage-limit" && command.reading.at > hold.at)
+  const current = Option.fromUndefinedOr(state.holds[credentialID])
+  const hold = readingHold(current, Option.fromUndefinedOr(refused), until, now)
+  const lifts = until <= now && refusalEnd(current) <= now && Option.exists(current, (hold) => hold.kind === "usage-limit" && command.reading.at > hold.at)
   return Effect.succeed([
     ReadingTaken.make({
       credentialID,
       reading,
-      ...(grows ? { hold: { kind: refused?.kind ?? "usage-limit", until, at: now } } : {}),
+      ...Option.match(hold, { onNone: () => ({}), onSome: (hold) => ({ hold }) }),
     }),
     ...[HoldCleared.make({ credentialID })].filter(() => lifts),
   ])
@@ -294,10 +321,22 @@ const refuseRequest = (
   command: RefuseRequest,
   now: number,
 ): Effect.Effect<ReadonlyArray<RequestRefused>> => {
-  if (held(state, command.credentialID, now)) return Effect.succeed([])
+  const current = Option.filter(Option.fromUndefinedOr(state.holds[command.credentialID]), (hold) => hold.until > now)
+  if (Option.isSome(current)) {
+    const hold = current.value
+    if (command.status !== 429 || hold.kind !== "usage-limit" || refusalEnd(current) > now) return Effect.succeed([])
+    // The response confirmed a hold inferred from a window, but its detailed
+    // refusal was unavailable. Keep at least the default refusal independently.
+    const refusedUntil = now + DEFAULT_HOLD_MS
+    return Effect.succeed([RequestRefused.make({
+      credentialID: command.credentialID,
+      hold: { ...hold, until: Math.max(hold.until, refusedUntil), refusedUntil, at: now },
+    })])
+  }
   const kind = command.status === 401 ? "unauthorized" : "rate-limit"
+  const until = now + DEFAULT_HOLD_MS
   return Effect.succeed([
-    RequestRefused.make({ credentialID: command.credentialID, hold: { kind, until: now + DEFAULT_HOLD_MS, at: now } }),
+    RequestRefused.make({ credentialID: command.credentialID, hold: { kind, until, at: now, refusedUntil: until } }),
   ])
 }
 

@@ -92,6 +92,43 @@ const busy = (pool: Model.Pool["Service"], providerID: string) =>
 /** Let the review a held pace forked run. */
 const settle = Effect.promise(() => new Promise<void>((done) => setTimeout(done, 20)))
 
+test("an in-flight title's success cannot send a refused primary turn back to the same login", () =>
+  scoped(
+    Effect.gen(function* () {
+      const now = Date.parse("2026-11-23T00:00:00Z")
+      yield* TestClock.setTime(now)
+      const logins = new Map([[ANTHROPIC, [{ id: "alpha", label: "Alpha" }, { id: "beta", label: "Beta" }]]])
+      const fixture = world({ providers: { anthropic: ANTHROPIC }, cacheLifeMs: CACHE_LIFE_MS }, logins)
+      const samples = fixture.readings.get(ANTHROPIC)!
+      const room = reading(now, { fiveHour: 0.1, sevenDay: 0.2 })
+      samples.set("alpha", room)
+      samples.set("beta", room)
+      const pool = yield* fixture.pool
+      const turn = { providerID: "anthropic", model: "claude-haiku-4-5", sessionID: "ses_owner", kind: "primary" } as const
+      const title = { ...turn, kind: "title" } as const
+      const primary = yield* pool.place(turn)
+      const auxiliary = yield* pool.place(title)
+      expect(auxiliary?.credentialID).toBe("alpha")
+
+      // Both requests have already left. Receive the primary's 429 first, then
+      // the title's 200 whose headers still say the account has room.
+      samples.set("alpha", {
+        ...reading(now, { sevenDay: 0.2 }),
+        refusal: { kind: "usage-limit", until: now + 2 * HOUR },
+      })
+      yield* pool.responded({ ...turn, status: 429 })
+      yield* TestClock.adjust(1)
+      samples.set("alpha", { ...room, at: now + 1, status: "allowed" })
+      yield* pool.responded({ ...title, status: 200 })
+      expect(yield* pool.retry({ ...turn, error: "provider.quota" })).toBe(true)
+      const retry = yield* pool.place(turn)
+      const replies = new Map<string | undefined, number>([["alpha", 429], ["beta", 200]])
+      const primarySends = [primary?.credentialID, retry?.credentialID].map((slot) => [slot, replies.get(slot)])
+      expect(primarySends).toEqual([["alpha", 429], ["beta", 200]])
+    }).pipe(Effect.provide(TestClock.layer())),
+  ),
+)
+
 describe("Codex resets", () => {
   const config: Model.Config = { providers: {}, paced: { openai: OPENAI }, cacheLifeMs: CACHE_LIFE_MS, resets: { openai: "codex" } }
   const logins = new Map([[OPENAI, [{ id: "codex-a", label: "Codex A" }, { id: "codex-b", label: "Codex B" }]]])
