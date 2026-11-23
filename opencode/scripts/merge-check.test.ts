@@ -13,11 +13,13 @@ import { matchingInput } from "../tests/read-path.ts"
 import { Effect, FileSystem, Option, Path, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { describe, expect, it } from "effect-bun-test"
+import { acceptKey } from "./accept-key.ts"
+import { emptyLedger, select, tierOf, withPass } from "./accept-ledger.ts"
 import { parseNameStatus } from "./docs-guard.ts"
 import { ACCEPT_TESTS, affectedUnits, DOCS_GUARD, GIT_REPO_GUARD, lintFiles, mergeLegs, reachedWithin, scriptTests } from "./merge-check.ts"
 import { mergeUnitInputs, swarmInputs } from "./test-impact.ts"
 import { readMatcher } from "./read-declarations.ts"
-import { acceptReach, importsOf, inspectReads, load, readsOf } from "./reach.ts"
+import { acceptReach, importsOf, inspectReads, load, readState, readsOf } from "./reach.ts"
 import { acceptanceTests, checkedTests, mergeScriptTests, swarmTests, workboxTestFiles } from "./test-population.ts"
 import { reachedSuites } from "./accept-plan.ts"
 
@@ -162,6 +164,29 @@ describe("the fixed-seed unit leg of land", () => {
       expect(reachedSuites(files, inputs, ["sim-tui/golden/escape-send/checked.txt"])).toContain(suite)
       expect(reachedSuites(files, inputs, ["../skills/principle-nothing-is-hard/SKILL.md"])).toContain("cmd/orchestrate/principles.sim.test.ts")
       expect(reachedSuites(files, inputs, ["../unrelated-swarm-control.txt"])).toEqual([])
+    }),
+  )
+})
+
+describe("the real host law's acceptance leg", () => {
+  it.live.layer(BunServices.layer)("a law or real harness edit makes a previous pass due without relying on the HEAD term", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const workspace = yield* Effect.promise(load)
+      const file = "tests/host-laws.test.ts"
+      const tier = tierOf(yield* fs.readFileString(matchingInput("tests/host-laws.test.ts")))
+      expect(readState(workspace, file)).toBe("")
+      const inputs = acceptReach(workspace, file)
+      const key = (changed: string) => acceptKey("same shared key", inputs, (path) => (path === changed && "edited") || "before")
+      const prior = withPass(emptyLedger, file, key(""), 1)
+      expect(tier).toBe("deep")
+      expect(select("owed", [{ file, tier, key: key("") }], prior, 2).run).toEqual([])
+      for (const changed of ["sim/host-laws.ts", "tests/host-laws/real.ts"]) {
+        expect(inputs.has(changed)).toBe(true)
+        const candidate = { file, tier, key: key(changed) }
+        expect(select("owed", [candidate], prior, 2).run).toEqual([file])
+        expect(select("land", [candidate], prior, 2).settled).toContainEqual({ file, status: "owed", why: "deep", detail: "" })
+      }
     }),
   )
 })
