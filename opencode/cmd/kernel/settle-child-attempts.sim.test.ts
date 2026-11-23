@@ -4,6 +4,7 @@ import { Config, Effect, FileSystem, Option, Queue, Schema, Stream } from "effec
 import { make, live } from "./server.ts"
 import * as Seed from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
+import { CHILD_ROWS, readRows } from "../../mods/kernel/opencode/child-row.ts"
 
 const { seeded } = Seed.runner("cmd/kernel/settle-child-attempts.sim.test.ts")
 const WORK = "/scratch/lifecycle"
@@ -38,13 +39,20 @@ const fixtureLatch = (plugin: ReturnType<typeof make>) =>
       yield* ctx.tool.transform((editor) => editor.add({
         name: "fixture_latch", description: "Seed the host's latch metadata in the simulator only.", input: LatchInput,
         execute: (input) => {
-          const latch = { hold: "pace", opensAt: 1_600_000 }
+          const latch = { hold: "pace", reason: "simulated hold", opensAt: 1_600_000, at: 1 }
           const metadata = latchMetadata(input.phase, latch)
           return ctx.session.update({ sessionID: input.child, metadata }).pipe(
             Effect.as({ content: [{ type: "text" as const, text: "fixture updated" }] }),
             Effect.mapError(() => new Tool.Error({ message: "fixture latch update failed" })),
           )
         },
+      }))
+      yield* ctx.tool.transform((editor) => editor.add({
+        name: "fixture_child_row", description: "Read the existing child row owner RPC.", input: Schema.Struct({ child: Schema.String }),
+        execute: ({ child }) => ctx.rpc(CHILD_ROWS).read({ children: [child] }).pipe(
+          Effect.map((reply) => ({ content: [{ type: "text" as const, text: Schema.encodeSync(Schema.fromJsonString(Schema.Json))(reply) }] })),
+          Effect.mapError(() => new Tool.Error({ message: "fixture could not read child row" })),
+        ),
       }))
     }),
   })
@@ -105,9 +113,14 @@ seeded("the direct tool distinguishes live work, diagnostics and ordered settlem
       }).pipe(Effect.andThen(world.advance(0)))
     const latch = (sessionID: string, phase: typeof LatchInput.Type.phase) => world.tool(root, "fixture_latch", { child: sessionID, phase })
     const readChild = (sessionID: string) => world.tool(root, "subagents", { action: "get", sessionID })
+    const readOwned = (child: string) => world.tool(root, "fixture_child_row", { child }).pipe(
+      Effect.flatMap(({ output }) => Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))(output)),
+      Effect.map(readRows),
+    )
     const held = yield* world.session(WORK, { parentID: root, agent: "worker" })
     yield* latch(held, "held")
     expect((yield* readChild(held)).output).toContain(`${held} latched (pace)`)
+    expect(yield* readOwned(held)).toMatchObject({ value: { rows: [{ child: held, mark: { mark: { hold: "pace", at: 1 } } }] } })
     const stopped = yield* world.tool(root, "subagents", { action: "stop", sessionID: held })
     expect(stopped.output).toContain("still latched; cancel with wake_cancel")
     yield* latch(held, "opened")
@@ -129,7 +142,22 @@ seeded("the direct tool distinguishes live work, diagnostics and ordered settlem
       const observed = formalPhase(output)
       trace.push([step, observed])
       expect(observed).toBe(phase)
+      const record = yield* readOwned(child)
+      expect(Option.isSome(record)).toBe(true)
+      const owned = Option.flatMap(record, ({ rows }) => Option.fromUndefinedOr(rows[0]))
+      expect(Option.isSome(owned)).toBe(true)
+      const tag = Option.map(owned, (row) => row.fact._tag)
+      expect(tag).toEqual(Option.some(rowTag(phase)))
     })
+    const rowTag = (phase: string) => {
+      switch (phase) {
+        case "ResultUndetermined/Failed": return "ShellResultUndetermined"
+        case "ShellWork/Failed":
+        case "Settled/Failed":
+        case "WakePending/Failed": return "Failed"
+        default: return "NoFact"
+      }
+    }
     yield* emit(type.start, 1, {}, WORK, withShell)
     yield* shell("shell.created", { info: { id: shellID, status: "running", metadata: { sessionID: withShell, background: true }, time: { started: world.now() } } })
     yield* readPoint(continued, withShell, "started", "Active/NoEnd")
@@ -186,6 +214,19 @@ seeded("the direct tool distinguishes live work, diagnostics and ordered settlem
     yield* readPoint(earlier, exited, "failed", "Settled/Failed")
     yield* shell("shell.exited", { id: "sh_earlier" })
     expect((yield* readChild(exited)).output).toContain("settled: failed")
+    const reordered = yield* world.session(WORK, { parentID: root })
+    const reorderedShell = "sh_orderable"
+    yield* emit(type.start, 1, {}, WORK, reordered)
+    yield* shell("shell.created", { info: { id: reorderedShell, status: "running", metadata: { sessionID: reordered, background: true }, time: { started: world.now() } } })
+    yield* emit(type.fail, 3, { error: { type: "provider.content-filter" } }, WORK, reordered)
+    yield* shell("shell.exited", { id: reorderedShell })
+    yield* emit("session.inbox.delivered", 6, { inboxID: "msg_orderable" }, WORK, reordered)
+    expect((yield* readChild(reordered)).output).toContain("undetermined")
+    const late = { inboxID: "msg_orderable", item: { type: "synthetic", payload: { metadata: { source: "shell", shellID: reorderedShell } } } }
+    yield* emit("session.inbox.enqueued", 4, late, WORK, reordered)
+    expect((yield* readChild(reordered)).output).toContain("settled: failed")
+    yield* emit("session.inbox.enqueued", 4, late, WORK, reordered)
+    expect((yield* readChild(reordered)).output).not.toContain("awaiting host wake")
     const firstTrace = yield* modelTrace("LIFECYCLE_CONTINUATION_ITF")
     const secondTrace = yield* modelTrace("LIFECYCLE_EARLIER_EXIT_ITF")
     if (Option.isSome(firstTrace)) expect(continued).toEqual(firstTrace.value)
@@ -238,5 +279,17 @@ seeded("the direct tool distinguishes live work, diagnostics and ordered settlem
     expect((yield* read()).output).toContain("unknown")
     yield* emit(type.start, 20)
     expect((yield* read()).output).toContain("running")
+    const across = yield* world.session(WORK, { parentID: root })
+    const acrossID = "sh_registered_before_restart"
+    yield* emit(type.start, 1, {}, WORK, across)
+    yield* shell("shell.created", { info: { id: acrossID, status: "running", metadata: { sessionID: across, background: true }, time: { started: world.now() } } })
+    yield* emit(type.fail, 3, { error: { type: "provider.content-filter" } }, WORK, across)
+    yield* world.restart
+    yield* shell("shell.exited", { id: acrossID })
+    expect((yield* readChild(across)).output).toContain("undetermined")
+    const restored = yield* readOwned(across)
+    expect(Option.map(restored, ({ rows }) => rows.map(({ child, fact }) => [child, fact._tag]))).toEqual(
+      Option.some([[across, "ShellResultUndetermined"]]),
+    )
   }),
 )

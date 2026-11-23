@@ -32,9 +32,8 @@ export type Session = {
   readonly running: boolean
   /** The host's current inbox still holds a shell completion, not a delivered notice. */
   readonly wakePending?: boolean
-  /** Host-observed background shell exit after the current failed execution. */
-  readonly shellResultUndeterminedAt?: number
-  readonly orderedFailureAt?: number
+  /** The owner-read projection, never a fold kept by this row. */
+  readonly execution?: Execution
   /**
    * The shell commands the host's shell registry lists as running for it now
    * (a background one outlives its turn), live like `running`: one the
@@ -69,9 +68,20 @@ export type Latch = {
   readonly hold: string
   readonly reason: string
   readonly opensAt: number
+  readonly recheckAt?: number
   readonly at: number
   readonly cancelledAt?: number
   readonly failed?: string
+}
+
+export type Execution =
+  | { readonly kind: "checking" | "none"; readonly at?: never }
+  | { readonly kind: "failed" | "undetermined"; readonly at: number }
+
+export type OwnedRow = {
+  readonly child: string
+  readonly latch?: Latch
+  readonly execution: Execution
 }
 
 /**

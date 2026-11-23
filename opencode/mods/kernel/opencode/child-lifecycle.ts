@@ -1,7 +1,9 @@
 import type { Plugin } from "@opencode/plugin/effect"
-import { DateTime, Effect, Match, Option, Schema, Semaphore, Stream, type Types } from "effect"
-import { Diagnostic, Fact, Hold, Phase, Terminal, Undetermined, evolve, initial, observe, Projection, type Cause, type Snapshot } from "../child-lifecycle.ts"
+import { Array as Arr, DateTime, Effect, Match, Option, Ref, Schema, Semaphore, Stream, type Types } from "effect"
+import { Diagnostic, Fact, Hold, Phase, Terminal, Undetermined, evolve, initial, observe, Projection, rowFactOf, type Cause, type Snapshot } from "../child-lifecycle.ts"
 import type { Observation } from "../child-lifecycle.ts"
+import { readMark, type MarkRead } from "../../wake/latch.ts"
+import { CHILD_ROWS } from "./child-row.ts"
 
 type Info = Effect.Success<ReturnType<Plugin.Context["session"]["get"]>>
 type Location = Pick<Info["location"], "directory" | "workspaceID">
@@ -64,21 +66,13 @@ const Event = Schema.Union([
   }) }) }),
 ])
 type Event = typeof Event.Type
-const decodeEvent = Schema.decodeUnknownResult(Event)
+export const decodeEvent = Schema.decodeUnknownResult(Event)
 const isInboxEvent = (event: Event): event is InboxEvent =>
   event.type === "session.inbox.enqueued" || event.type === "session.inbox.delivered" || event.type === "session.inbox.cancelled"
 
 const SessionID = Schema.String.check(Schema.isStartingWith("ses")).pipe(Schema.brand("SessionID"))
 const sessionID = Schema.decodeUnknownOption(SessionID)
 const readProjection = Schema.decodeUnknownOption(Projection)
-const Mark = Schema.Struct({
-  hold: Schema.Literals(["pace", "sabbath"]),
-  opensAt: Schema.Finite,
-  recheckAt: Schema.optionalKey(Schema.Finite),
-  cancelledAt: Schema.optionalKey(Schema.Finite),
-  failed: Schema.optionalKey(Schema.String),
-})
-const readMark = Schema.decodeUnknownOption(Mark)
 const prefix = "child-lifecycle:"
 const MAX_TRACKED = 512
 const sampleKey = Schema.encodeSync(Schema.fromJsonString(Schema.Struct({
@@ -115,7 +109,7 @@ const causeOf = (type: string): Cause => {
   }
 }
 
-const executionFact = (
+export const executionFact = (
   event: typeof ExecutionEvent.Type,
   parent: string,
 ): Fact => {
@@ -136,25 +130,40 @@ const executionFact = (
   }))
 }
 
+export const inboxFact = (event: InboxEvent, parent: string): Fact =>
+  Fact.cases.Inbox.make({
+    child: event.data.sessionID, parent, id: event.data.inboxID, seq: event.durable.seq,
+    ...inboxShell(event),
+  })
+const inboxShell = (event: InboxEvent) => {
+  if (event.type === "session.inbox.enqueued") return { shellID: event.data.item.payload.metadata.shellID }
+  return {}
+}
+
+export const durableFact = (event: Event, parent: string): Option.Option<Fact> => {
+  if (!("durable" in event) || event.durable.aggregateID !== event.data.sessionID) return Option.none()
+  if (isInboxEvent(event)) return Option.some(inboxFact(event, parent))
+  return Option.some(executionFact(event, parent))
+}
+
 const interrupted = (reason: string): typeof Terminal.Type => {
   if (reason === "shutdown") return Terminal.cases.Shutdown.make({})
   if (reason === "user") return Terminal.cases.Ended.make({ outcome: "interrupted", cause: "UserStop" })
   return Terminal.cases.Ended.make({ outcome: "interrupted", cause: "Unknown" })
 }
 
-const snapshotOf = (info: Info, background: Snapshot["background"], stopUncertain: boolean): Snapshot => {
+const snapshotOf = (info: Info, mark: MarkRead, background?: Snapshot["background"]): Snapshot => {
   const millis = (time: Info["time"]["busy"]) => Option.map(Option.fromUndefinedOr(time), DateTime.toEpochMillis)
   const busyAt = millis(info.time.busy)
   const idleAt = millis(info.time.idle)
   const running = Option.exists(busyAt, (at) => Option.isNone(idleAt) || at > idleAt.value)
-  const value: Types.Mutable<Snapshot> = { running, stopUncertain }
+  const value: Types.Mutable<Snapshot> = { running }
   if (info.outcome) value.outcome = info.outcome
   if (Option.isSome(busyAt)) value.busyAt = busyAt.value
   if (Option.isSome(idleAt)) value.idleAt = idleAt.value
   if (background) value.background = background
-  const mark = readMark(info.metadata?.latch)
-  if (Option.isSome(mark)) {
-    const { hold, opensAt, recheckAt, cancelledAt, failed } = mark.value
+  if (mark._tag === "Readable") {
+    const { hold, opensAt, recheckAt, cancelledAt, failed } = mark.mark
     value.latchCancelled = Option.isSome(Option.fromUndefinedOr(cancelledAt))
     if (!value.latchCancelled && Option.isNone(Option.fromUndefinedOr(failed))) {
       const times = { opensAt, hold: holdOf(hold) }
@@ -175,6 +184,7 @@ type Inbox = { readonly child: string; readonly seq: number; readonly pending: b
 /** One location-bound subscriber and persisted projection; neither schedules work nor sends notices. */
 export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Context, subscribe: Subscribe) {
   const lock = yield* Semaphore.make(1)
+  const announce = yield* Ref.make<(child: string) => Effect.Effect<void>>(() => Effect.void)
   const current = new Set<string>()
   const starts = new Map<string, number>()
   const active = new Set<string>()
@@ -184,7 +194,8 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
   const stopping = new Map<string, number>()
   const { directory, workspaceID } = ctx.location
   const workspace = Option.getOrElse(Option.map(Option.fromUndefinedOr(workspaceID), String), () => "")
-  const keyOf = (child: string) => `${prefix}${directory.length}:${directory}:${workspace}:${child}`
+  const locationPrefix = `${prefix}${directory.length}:${directory}:${workspace}:`
+  const keyOf = (child: string) => `${locationPrefix}${child}`
 
   const load = (child: string, parent: string) =>
     ctx.storage.get(keyOf(child)).pipe(
@@ -242,27 +253,61 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
     if (old) job(id, { ...old, running: false })
   }
 
+  const storedShellOwner = Effect.fn("ChildLifecycle.storedShellOwner")(function* (id: string) {
+    let page = yield* ctx.storage.scan({ prefix: locationPrefix, limit: 128 })
+    while (true) {
+      for (const entry of page.entries) {
+        const state = readProjection(entry.value)
+        if (Option.exists(state, ({ shellOwners }) => Boolean(shellOwners && Object.hasOwn(shellOwners, id)))) return state
+      }
+      const after = Option.fromUndefinedOr(page.next)
+      if (Option.isNone(after)) return Option.none<Projection>()
+      page = yield* ctx.storage.scan({ prefix: locationPrefix, after: after.value, limit: 128 })
+    }
+  })
+
+  const ownerOfShell = Effect.fn("ChildLifecycle.ownerOfShell")(function* (shellID: string, shell?: Background) {
+    if (shell) {
+      if (shell.backgrounded) return Option.some(shell.owner)
+      return Option.none<string>()
+    }
+    return Option.map(yield* storedShellOwner(shellID), ({ child }) => child)
+  })
+
   const shellExit = Effect.fn("ChildLifecycle.shellExit")(function* (shellID: string, id: string, at: number) {
     const shell = background.get(shellID)
     releaseShell(shellID)
-    if (!shell?.backgrounded) return
-    if (shell.native && !shell.running) return
-    const child = shell.owner
-    if (!current.has(child) || inbox.values().some((item) => item.child === child && item.shellID === shellID)) return
-    const parent = parents.get(child)
-    if (!parent) return
-    const state = yield* load(child, parent)
-    const { segment } = state
-    if (segment?.terminal?._tag !== "Ended" || segment.terminal.outcome !== "failed") return
-    const exits = state.exits ?? []
-    if (exits.some((item) => item.shellID === shellID)) return
+    if (shell?.native && !shell.running) return
+    const owner = yield* ownerOfShell(shellID, shell)
+    if (Option.isNone(owner)) return
+    const child = owner.value
+    const info = yield* infoOf(child).pipe(Effect.option)
+    if (Option.isNone(info) || !info.value.parentID) return
+    const parent = info.value.parentID
     const reason = Undetermined.make({ shellID, exit: { id, at } })
-    yield* save(state, { ...state, rev: state.rev + 1, exits: [...exits, reason] })
+    yield* record(child, parent, Fact.cases.Exit.make({ child, parent, reason }))
   })
 
   const registerWork = Effect.fn("ChildLifecycle.registerWork")(function* (id: string, work: Background) {
     const info = yield* infoOf(work.owner).pipe(Effect.option)
-    if (Option.exists(info, (owner) => Boolean(owner.parentID))) job(id, work)
+    if (Option.isNone(info) || !info.value.parentID) return
+    job(id, work)
+    const recorded = background.get(id)
+    if (recorded?.kind !== "Shell" || recorded.owner !== work.owner || !recorded.backgrounded || !recorded.running) return
+    const parent = info.value.parentID
+    yield* record(work.owner, parent, Fact.cases.ShellObserved.make({ child: work.owner, parent, id, startedAt: recorded.at }))
+  })
+
+  const deleteShell = Effect.fn("ChildLifecycle.deleteShell")(function* (id: string) {
+    const shell = background.get(id)
+    releaseShell(id)
+    const owner = yield* ownerOfShell(id, shell)
+    if (Option.isNone(owner)) return
+    const child = owner.value
+    const found = yield* infoOf(child).pipe(Effect.option)
+    if (Option.isNone(found) || !found.value.parentID) return
+    const parent = found.value.parentID
+    yield* record(child, parent, Fact.cases.ShellRemoved.make({ child, parent, id }))
   })
 
   const forget = Effect.fn("ChildLifecycle.forget")(function* (child: string) {
@@ -290,19 +335,14 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
     const { aggregateID, seq } = event.durable
     if (aggregateID !== child) return
     const existing = inbox.get(inboxID)
-    if (existing && (existing.child !== child || existing.seq >= seq)) return
+    if (existing && existing.child !== child) return
     const found = yield* infoOf(child).pipe(Effect.option)
     if (Option.isNone(found) || !found.value.parentID) return
-    const pending = event.type === "session.inbox.enqueued"
-    if (event.type === "session.inbox.enqueued") {
-      const { shellID } = event.data.item.payload.metadata
-      const state = yield* load(child, found.value.parentID)
-      if (state.exits?.some((item) => item.shellID === shellID)) {
-        yield* save(state, { ...state, rev: state.rev + 1, exits: state.exits.filter((item) => item.shellID !== shellID) })
-      }
-      inbox.set(inboxID, { child, seq, pending, shellID })
-    } else {
-      inbox.set(inboxID, { ...existing, child, seq, pending })
+    const parent = found.value.parentID
+    const next = yield* record(child, parent, inboxFact(event, parent))
+    if (next?.inbox?.[inboxID]) inbox.set(inboxID, { child, ...next.inbox[inboxID] })
+    else if (existing && existing.seq < seq) {
+      inbox.delete(inboxID)
     }
     if (inbox.size > MAX_TRACKED) {
       const closed = inbox.entries().find(([, item]) => !item.pending)
@@ -325,8 +365,7 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
       case "shell.exited":
         return yield* shellExit(event.data.id, event.id, event.created)
       case "shell.deleted":
-        releaseShell(event.data.id)
-        return
+        return yield* deleteShell(event.data.id)
       case "experimental.job.updated": {
         const item = event.data.info
         if (item.kind === "shell") {
@@ -344,11 +383,12 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
   const record = Effect.fn("ChildLifecycle.record")(function* (child: string, parent: string, fact: Fact) {
     const state = yield* load(child, parent)
     const next = evolve(state, fact)
-    if (next === state) return
+    if (next === state) return state
     const written = yield* save(state, next)
     if (!written) return
+    yield* Effect.flatMap(Ref.get(announce), (publish) => publish(child))
     if (next.start && next.start !== state.start) starts.set(child, next.start.seq)
-    if (next.segment === state.segment) return
+    if (next.segment === state.segment) return next
     // Seeing a late diagnostic after activation does not validate a stored terminal.
     current.add(child)
     if (next.segment?.terminal) active.delete(child)
@@ -361,7 +401,22 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
         break
       }
     }
+    return next
   })
+
+  const readRow = Effect.fn("ChildLifecycle.readRow")(function* (child: string) {
+    const info = yield* infoOf(child)
+    if (!info.parentID) return yield* Effect.fail("not a child")
+    const mark = readMark(info.metadata)
+    const state = yield* load(child, info.parentID)
+    return { child, mark, fact: rowFactOf(state, snapshotOf(info, mark)) }
+  })
+  const rows = yield* ctx.rpc.register(CHILD_ROWS, {
+    read: ({ children }) => lock.withPermits(1)(
+      Effect.forEach(children, (child) => Effect.option(readRow(child))).pipe(Effect.map((rows) => ({ rows: Arr.getSomes(rows) }))),
+    ),
+  }).pipe(Effect.orDie)
+  yield* Ref.set(announce, (child) => rows.events.emit("changed", { child }).pipe(Effect.ignore))
 
   const stream = subscribe(ctx).pipe(
     Stream.filterMap(decodeEvent),
@@ -387,7 +442,7 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
       const info = yield* infoOf(child)
       if (!info.parentID) return { info, observation: Option.none() }
       const state = yield* load(child, info.parentID)
-      const snapshot = snapshotOf(info, liveWork(child), false)
+      const snapshot = snapshotOf(info, readMark(info.metadata), liveWork(child))
       // A terminal observed after restart cannot use an older saved start as
       // its identity. The pinned host tells us only the terminal's own seq.
       const fresh = current.has(child) && Boolean(state.start && starts.get(child) === state.start.seq)

@@ -1,4 +1,5 @@
 import { Match, Option, Schema } from "effect"
+import { RowFact } from "./child-row.ts"
 
 const Outcome = Schema.Literals(["succeeded", "failed", "interrupted"])
 export type Outcome = typeof Outcome.Type
@@ -77,6 +78,13 @@ export const Projection = Schema.Struct({
   segment: Schema.optionalKey(Segment),
   /** An observed shell exit is evidence of uncertainty, not of pending work. */
   exits: Schema.optionalKey(Schema.Array(Undetermined)),
+  /** An owner correlation for an exit received after subscription restart; not a list of live jobs. */
+  shellOwners: Schema.optionalKey(Schema.Record(Schema.String, Schema.Finite)),
+  inbox: Schema.optionalKey(Schema.Record(Schema.String, Schema.Struct({
+    seq: Schema.Int,
+    pending: Schema.Boolean,
+    shellID: Schema.optionalKey(Schema.String),
+  }))),
   noted: Schema.optionalKey(Noted),
   sampled: Schema.optionalKey(Schema.String),
 })
@@ -88,6 +96,10 @@ const Owner = { child: Schema.String, parent: Schema.String }
 export const Fact = Schema.TaggedUnion({
   Execution: { ...Owner, segment: Segment },
   Diagnostic: { ...Owner, note: Noted },
+  Exit: { ...Owner, reason: Undetermined },
+  ShellObserved: { ...Owner, id: Schema.String, startedAt: Schema.Finite },
+  ShellRemoved: { ...Owner, id: Schema.String },
+  Inbox: { ...Owner, id: Schema.String, seq: Schema.Int, shellID: Schema.optionalKey(Schema.String) },
 })
 export type Fact = typeof Fact.Type
 
@@ -103,6 +115,55 @@ const withExecution = (state: Projection, fact: typeof Fact.cases.Execution.Type
   if (newest) {
     next.segment = fact.segment
     delete next.exits
+    if (state.inbox && terminal) {
+      next.inbox = Object.fromEntries(Object.entries(state.inbox).filter(([, item]) => item.pending || item.seq > point.seq))
+    }
+  }
+  return next
+}
+
+const withExit = (state: Projection, reason: Undetermined): Projection => {
+  const next = withoutShell(state, reason.shellID)
+  const segment = next.segment
+  if (segment?.terminal?._tag !== "Ended" || segment.terminal.outcome !== "failed" || reason.exit.at < segment.point.at) return next
+  const exits = Option.getOrElse(Option.fromUndefinedOr(next.exits), () => [])
+  if (exits.some((exit) => exit.shellID === reason.shellID)) return next
+  if (Object.values(Option.getOrElse(Option.fromUndefinedOr(next.inbox), () => ({}))).some((input) => input.shellID === reason.shellID)) return next
+  return { ...next, rev: state.rev + 1, exits: [...exits, reason] }
+}
+
+const withoutShell = (state: Projection, id: string): Projection => {
+  if (!state.shellOwners || !Object.hasOwn(state.shellOwners, id)) return state
+  const shellOwners = { ...state.shellOwners }
+  delete shellOwners[id]
+  return { ...state, rev: state.rev + 1, shellOwners }
+}
+
+const withShell = (state: Projection, id: string, at: number): Projection => {
+  if (state.shellOwners?.[id] === at || state.exits?.some((item) => item.shellID === id)) return state
+  return { ...state, rev: state.rev + 1, shellOwners: { ...state.shellOwners, [id]: at } }
+}
+
+const withInbox = (state: Projection, fact: typeof Fact.cases.Inbox.Type): Projection => {
+  const inbox = state.inbox
+  const prev = inbox?.[fact.id]
+  const segment = state.segment
+  if (!prev && segment?.terminal && fact.seq < segment.point.seq) return state
+  // A close can be observed first. A late admission contributes correlation,
+  // but cannot resurrect that input. Repeats and conflicting IDs do nothing.
+  if (prev?.shellID && fact.shellID && prev.shellID !== fact.shellID) return state
+  const shellID = prev?.shellID ?? fact.shellID
+  const newer = !prev || prev.seq < fact.seq
+  if (!newer && prev.shellID === shellID) return state
+  const entry = { seq: fact.seq, pending: Boolean(fact.shellID) }
+  if (!newer) {
+    entry.seq = prev.seq
+    entry.pending = prev.pending
+  }
+  const next = { ...state, rev: state.rev + 1, inbox: { ...inbox, [fact.id]: entry } }
+  if (shellID) {
+    next.inbox[fact.id] = { ...entry, shellID }
+    if (state.exits) next.exits = state.exits.filter((exit) => exit.shellID !== shellID)
   }
   return next
 }
@@ -112,6 +173,10 @@ export const evolve = (state: Projection, fact: Fact): Projection => {
   if (fact.child !== state.child || fact.parent !== state.parent) return state
   return Match.value(fact).pipe(Match.tagsExhaustive({
     Execution: (execution) => withExecution(state, execution),
+    Exit: ({ reason }) => withExit(state, reason),
+    ShellObserved: ({ id, startedAt }) => withShell(state, id, startedAt),
+    ShellRemoved: ({ id }) => withoutShell(state, id),
+    Inbox: (input) => withInbox(state, input),
     Diagnostic: ({ note }) => {
       if (note.point.seq <= pointSeq(state.noted?.point)) return state
       return { ...state, rev: state.rev + 1, noted: note }
@@ -128,6 +193,16 @@ export interface Snapshot {
   readonly latch?: Extract<Phase, { readonly _tag: "Latched" }>
   readonly latchCancelled?: boolean
   readonly stopUncertain?: boolean
+}
+
+/** Read only evidence matching the currently reported execution, never a historical launch. */
+export const rowFactOf = (state: Projection, snapshot: Snapshot): RowFact => {
+  if (snapshot.running || snapshotIsNewer(state, snapshot)) return RowFact.cases.NoFact.make({})
+  const exit = state.exits?.[0]
+  if (exit) return RowFact.cases.ShellResultUndetermined.make({ at: exit.exit.at })
+  const segment = state.segment
+  if (segment?.terminal?._tag === "Ended" && segment.terminal.outcome === "failed") return RowFact.cases.Failed.make({ at: segment.point.at })
+  return RowFact.cases.NoFact.make({})
 }
 
 /** One child view. `current` is from this subscription lifetime; stored facts alone can't assert freshness. */
@@ -171,7 +246,7 @@ const incomparableOutcome = (terminal: Option.Option<Terminal>, snapshot: Snapsh
 
 const phaseOf = (state: Projection, snapshot: Snapshot, current: boolean, applicable: boolean): Phase => {
   if (snapshot.stopUncertain) return Phase.cases.Unknown.make({})
-  const exit = state.exits?.[0]
+  const exit = Option.getOrUndefined(Option.filter(Option.fromUndefinedOr(state.exits?.[0]), () => !snapshotIsNewer(state, snapshot)))
   if (applicable && state.segment) return orderedPhase(snapshot, state.segment, exit)
   if (snapshot.running) return Phase.cases.Running.make({})
   if (snapshot.background && snapshot.outcome !== "interrupted") return Phase.cases.Continuing.make({ on: snapshot.background })

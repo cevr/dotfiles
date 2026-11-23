@@ -407,7 +407,7 @@ describe("a subagent waiting on its own background work", () => {
     expect(one({ ...failure, ...runs("sh_1") }, root)).toMatchObject({ state: "waiting", update: "Step ended in error; work continues: fixture" })
     const pending = one({ ...failure, wakePending: true }, root)
     expect(visible([pending], 301)).toMatchObject([{ state: "waiting", update: "Step ended in error; work continues: awaiting host wake" }])
-    const unresolved = one({ ...failure, shellResultUndeterminedAt: 305 }, root)
+    const unresolved = one({ ...failure, execution: { kind: "undetermined", at: 305 } }, root)
     expect(visible([unresolved], 1_000_000)).toMatchObject([{
       state: "waiting", since: 305, update: "Undetermined: a step failed; its background command ended; the host does not say whether a result is still to be delivered",
     }])

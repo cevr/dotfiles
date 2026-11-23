@@ -232,7 +232,7 @@ const when = (at: number | undefined) => (at === undefined ? {} : { at })
 
 /** Only the host session's outcome can supply a coarse end, never a notice or a launch tool reply. */
 function ending(session: Session, found: ReturnType<typeof launch>): Ending {
-  if (Number.isFinite(session.orderedFailureAt)) return { state: "failed", at: Number(session.orderedFailureAt) }
+  if (session.execution?.kind === "failed") return { state: "failed", at: session.execution.at }
   if (session.outcome === "succeeded") return { state: "done", ...when(session.time.idle) }
   if (session.outcome === "failed") return { state: "failed", ...when(session.time.idle) }
   if (session.outcome === "interrupted") return { state: "cancelled", ...when(session.time.idle) }
@@ -396,15 +396,16 @@ function rowsOf(family: Family, rootSessionID: string, options: ReadOptions): Re
       return {
         ...base,
         state: "waiting",
-        update: continuationUpdate(update, session.outcome === "failed" || Number.isFinite(session.orderedFailureAt)),
+        update: continuationUpdate(update, session.outcome === "failed" || session.execution?.kind === "failed"),
         ...timed(since),
       }
     }
-    if (Number.isFinite(session.shellResultUndeterminedAt)) {
+    if (session.execution?.kind === "checking") return { ...base, state: "waiting", update: "Checking the last execution" }
+    if (session.execution?.kind === "undetermined") {
       return {
         ...base, state: "waiting",
         update: "Undetermined: a step failed; its background command ended; the host does not say whether a result is still to be delivered",
-        ...timed(Number(session.shellResultUndeterminedAt)),
+        ...timed(session.execution.at),
       }
     }
     const end = ending(session, found)

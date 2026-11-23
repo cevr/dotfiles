@@ -5,9 +5,8 @@
 // tools its cell called), and the stop notices its background subagents and
 // shell commands sent it. Read inside a Solid computation, every read here is
 // reactive.
-import type { Call, Family, Latch, Message, Part, Session, Shell } from "../family.ts"
+import type { Call, Execution, Family, Message, OwnedRow, Part, Session, Shell } from "../family.ts"
 import { envelopes } from "../envelope.ts"
-import { noShellExit, type ShellExitRead } from "./shell-exits.ts"
 
 /** A session as `context.data.session.get` returns it, narrowed to what a row reads. */
 export type SessionInfo = {
@@ -159,19 +158,6 @@ const legacyNotice = (text: string, at: number): Message | undefined => {
   if (oldChild && oldState) return { type: "notice", childID: oldChild, state: oldState, at, text }
 }
 
-/** A latched child's mark (the wakes' `latch` metadata, mods/wake latch.ts); undefined when it carries none. */
-function latchOf(value: unknown): Latch | undefined {
-  const fields = record(value)
-  const hold = string(fields.hold)
-  const reason = string(fields.reason)
-  const opensAt = number(fields.opensAt)
-  const at = number(fields.at)
-  if (hold === undefined || reason === undefined || opensAt === undefined || at === undefined) return undefined
-  const cancelledAt = number(fields.cancelledAt)
-  const failed = string(fields.failed)
-  return { hold, reason, opensAt, at, ...(cancelledAt === undefined ? {} : { cancelledAt }), ...(failed === undefined ? {} : { failed }) }
-}
-
 /** One field of an object, read alone: a store proxy then tracks that field only. */
 const field = (value: unknown, key: string): unknown =>
   value !== null && typeof value === "object" ? Reflect.get(value, key) : undefined
@@ -217,12 +203,14 @@ export const transcript = (items: ReadonlyArray<unknown>, convert: Convert): Tra
   return { messages: items.flatMap((item) => convert(item) ?? []), ...(model ? { model } : {}) }
 }
 
-type FailureFields = Pick<Session, "orderedFailureAt" | "shellResultUndeterminedAt">
-const failureFields = ({ failureAt, undeterminedAt }: ShellExitRead): FailureFields => {
-  const result: FailureFields = {}
-  if (Number.isFinite(failureAt) && Number.isFinite(undeterminedAt)) return { orderedFailureAt: failureAt, shellResultUndeterminedAt: undeterminedAt }
-  if (Number.isFinite(failureAt)) return { orderedFailureAt: failureAt }
-  return result
+const CHECKING: Execution = { kind: "checking" }
+const ownedFields = (checking: boolean, owner?: OwnedRow): Pick<Session, "execution" | "latch"> => {
+  if (owner) {
+    if (owner.latch) return { execution: owner.execution, latch: owner.latch }
+    return { execution: owner.execution }
+  }
+  if (checking) return { execution: CHECKING }
+  return {}
 }
 
 /**
@@ -235,12 +223,12 @@ export function sessionOf(
   id: string,
   shells: ReadonlyArray<Shell>,
   { messages, model: stepped }: Transcript,
-  execution = noShellExit,
+  owner?: OwnedRow,
+  checking = false,
 ): Session {
   const info = reads.session.get(id)
   const time = info?.time
   const model = stepped ?? info?.model?.id
-  const latch = latchOf(info?.metadata?.latch)
   return {
     id,
     ...(info?.parentID ? { parentID: info.parentID } : {}),
@@ -254,10 +242,9 @@ export function sessionOf(
       ...(time?.idle === undefined ? {} : { idle: time.idle }),
       ...(time?.updated === undefined ? {} : { updated: time.updated }),
     },
-    ...(latch === undefined ? {} : { latch }),
     running: reads.session.status(id) === "running",
     wakePending: shellWakePending(reads, id),
-    ...failureFields(execution),
+    ...ownedFields(checking && info?.outcome === "failed", owner),
     shells,
     permissions: (reads.session.permission.list(id) ?? []).map((request) =>
       [request.action, request.resources[0]].filter(Boolean).join(" "),
@@ -283,13 +270,14 @@ export const read = <Location>(
   sessionID: string,
   location?: Location,
   convert: Convert = message,
+  ownerRows?: ReadonlyMap<string, OwnedRow>,
 ): Family => {
   const root = reads.session.root(sessionID)
   const shells = shellsBySession(reads.shell.list(location))
   return {
     root,
     sessions: familyOf(reads, root).map((id) =>
-      sessionOf(reads, id, shells.get(id) ?? [], transcript(reads.session.message.list(id), convert)),
+      sessionOf(reads, id, shells.get(id) ?? [], transcript(reads.session.message.list(id), convert), ownerRows?.get(id)),
     ),
   }
 }

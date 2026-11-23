@@ -76,6 +76,7 @@ const start = (options: Record<string, unknown> = {}, world: World = {}, stored:
     const host = {
       options,
       location: { directory: work },
+      rpc: { register: () => Effect.succeed({ events: { emit: () => Effect.void }, dispose: Effect.void }) },
       tool: {
         list: () => Effect.succeed([...(world.tools ?? []), { id: "kernel", description: "itself", input: {}, execute: () => Effect.die("not called") }]),
         transform: (callback: (editor: { add: (tool: Added) => void }) => void) =>

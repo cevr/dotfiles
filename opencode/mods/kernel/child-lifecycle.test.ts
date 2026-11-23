@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test"
-import { Diagnostic, Fact, Terminal, evolve, initial, observe, type Snapshot } from "./child-lifecycle.ts"
+import { Diagnostic, Fact, Projection, Terminal, Undetermined, evolve, initial, observe, rowFactOf, type Snapshot } from "./child-lifecycle.ts"
+import { Schema } from "effect"
+import { RowFact } from "./child-row.ts"
 
 // Replay host facts at the projection seam. Order comes from the witness
 // sequence, not arrival; none of these traces authenticates transport.
@@ -19,6 +21,55 @@ const step = (seq: number): Fact => Fact.cases.Diagnostic.make({
   child, parent, note: { point: point(seq), diagnostic: Diagnostic.cases.StepError.make({ cause: "PolicyDenied" }) },
 })
 const snap = (fields: Partial<Snapshot> = {}): Snapshot => ({ running: false, ...fields })
+const exit = (at = 101) => Fact.cases.Exit.make({
+  child, parent, reason: Undetermined.make({ shellID: "sh_fixture", exit: { at, id: "evt_exit" } }),
+})
+const admission = (seq = 4) => Fact.cases.Inbox.make({ child, parent, id: "input", seq, shellID: "sh_fixture" })
+const closed = (seq = 5) => Fact.cases.Inbox.make({ child, parent, id: "input", seq })
+const store = Schema.fromJsonString(Projection)
+const readStore = Schema.decodeUnknownSync(store)
+const writeStore = Schema.encodeSync(store)
+const reloaded = (state: Projection) => readStore(writeStore(state))
+
+test("the same persisted points retain only the same row evidence at every restart cut", () => {
+  const traces = [
+    [start(1), step(2), end(3, "failed"), exit(), admission(), start(5), closed(6), end(7, "succeeded")],
+    [start(1), step(2), exit(99), end(3, "failed")],
+    [start(1), end(3, "failed"), exit()],
+    [start(1), end(3, "failed"), exit(), end(7, "interrupted")],
+  ]
+  for (const trace of traces) {
+    const continuous = trace.reduce(evolve, initial(child, parent))
+    for (let i = 0; i <= trace.length; i++) {
+      const before = trace.slice(0, i).reduce(evolve, initial(child, parent))
+      const after = reloaded(before)
+      expect(rowFactOf(after, snap())).toEqual(rowFactOf(before, snap()))
+      expect(observe(after, snap(), false).phase).toEqual(observe(before, snap(), false).phase)
+      expect(trace.slice(i).reduce(evolve, after)).toEqual(continuous)
+    }
+  }
+})
+
+test("delivery first closes only its inbox ID; late orderable admission correlates the shell without reviving pending work", () => {
+  const before = [start(1), end(3, "failed"), exit()].reduce(evolve, initial(child, parent))
+  const closedFirst = evolve(before, closed())
+  expect(rowFactOf(closedFirst, snap())._tag).toBe("ShellResultUndetermined")
+  const matched = evolve(reloaded(closedFirst), admission())
+  expect(rowFactOf(matched, snap())).toEqual(RowFact.cases.Failed.make({ at: 100 }))
+  expect(matched.inbox?.input).toEqual({ seq: 5, pending: false, shellID: "sh_fixture" })
+  expect(evolve(matched, admission())).toBe(matched)
+  expect(evolve(matched, closed(2))).toBe(matched)
+})
+
+test("a stale delivery cannot close a newer admission; an older exit cannot revive a later failure", () => {
+  const before = [start(1), end(3, "failed"), exit(), admission()].reduce(evolve, initial(child, parent))
+  expect(evolve(reloaded(before), closed(2))).toEqual(before)
+  const finished = evolve(before, end(6, "succeeded"))
+  expect(evolve(finished, exit(99))).toBe(finished)
+  expect(evolve(finished, end(3, "failed"))).toBe(finished)
+  const laterFailure = evolve(finished, end(7, "failed"))
+  expect(evolve(laterFailure, exit(99))).toBe(laterFailure)
+})
 
 test("a step error and a busy-period failure with a continuing shell do not settle the attempt", () => {
   const states = [
