@@ -268,7 +268,7 @@ const launchCommand = Command.make(
     port: Flag.Int("port").pipe(Flag.withDescription("The DevTools port (0: any free one)"), Flag.withDefault(0)),
     resolverRules: Flag.String("resolver-rules").pipe(Flag.withDescription("Chrome's --host-resolver-rules"), Flag.optional),
     proxy: Flag.String("proxy").pipe(Flag.withDescription("Chrome's --proxy-server"), Flag.optional),
-    shell: Flag.Boolean("shell").pipe(Flag.withDescription("Prefer Playwright's headless shell to Chrome for Testing")),
+    shell: Flag.Boolean("shell").pipe(Flag.withDescription("Prefer Playwright's headless shell to Chrome for Testing"), Flag.withDefault(false)),
     flags: Argument.String("flags").pipe(Argument.withDescription("Chrome flags after `--`"), Argument.variadic()),
   },
   Effect.fn("Chrome.launchCommand")(function* (input) {

@@ -5,8 +5,9 @@
 // start. No real Chrome runs here.
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { spawn, spawnSync } from "bun"
-import { Effect, FileSystem, Option, Result } from "effect"
+import { Effect, FileSystem, Option, Path, Result, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { browsersIn, chromeArgs, DEFAULTS, KEYCHAIN_FLAGS, launch, start, stop } from "./chrome.ts"
 
 const PROFILE = "/run/chrome-x/profile"
@@ -24,6 +25,9 @@ const FAKE = [
 
 /** A browser that ends before it opens a port. */
 const BROKEN = "#!/bin/sh\necho 'cannot open display' >&2\nexit 3\n"
+
+/** A child's whole output, as text. */
+const text = (stream: Stream.Stream<Uint8Array, unknown>) => stream.pipe(Stream.decodeText(), Stream.mkString)
 
 /** Whether `pid` still runs. */
 const alive = (pid: number) => spawnSync(["ps", "-o", "pid=", "-p", String(pid)]).exitCode === 0
@@ -169,6 +173,35 @@ describe("a launch", () => {
       expect(refused.message).toContain("is not a Chrome scripts/chrome.ts started")
       expect(alive(other.pid)).toBe(true)
       other.kill()
+    }),
+  )
+})
+
+describe("the command line", () => {
+  it.scopedLive.layer(BunServices.layer)("launch with no flag finds the newest Chrome for Testing, prints its endpoint, and stop ends it", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "chrome-cli-" })
+      yield* fs.makeDirectory(`${dir}/pw/chromium-1255/chrome-linux64`, { recursive: true })
+      yield* plant(`${dir}/pw/chromium-1255/chrome-linux64`, "chrome", FAKE)
+      const path = yield* Path.Path
+      const script = yield* path.fromFileUrl(new URL("./chrome.ts", import.meta.url))
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+      const cli = (args: ReadonlyArray<string>) =>
+        Effect.gen(function* () {
+          const child = yield* spawner.spawn(
+            ChildProcess.make("bun", [script, ...args], { env: { PLAYWRIGHT_BROWSERS_PATH: `${dir}/pw`, HOME: dir }, extendEnv: true, stdin: "ignore", forceKillAfter: "2 seconds" }),
+          )
+          const [stdout, stderr] = yield* Effect.all([text(child.stdout), text(child.stderr)], { concurrency: 2 })
+          return { code: Number(yield* child.exitCode), stdout, stderr }
+        }).pipe(Effect.scoped)
+      const launched = yield* cli(["launch", "--dir", `${dir}/run`])
+      expect([launched.code, launched.stderr]).toEqual([0, ""])
+      expect(launched.stdout).toContain('"endpoint":"ws://127.0.0.1:4242/devtools/browser/fake"')
+      const pid = Number(/"pid":(\d+)/.exec(launched.stdout)?.[1])
+      expect(alive(pid)).toBe(true)
+      expect((yield* cli(["stop", String(pid)])).code).toBe(0)
+      expect(alive(pid)).toBe(false)
     }),
   )
 })
