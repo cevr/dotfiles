@@ -14,8 +14,10 @@ import { mainBatchText } from "@dotfiles/opencode-orchestrate/tools"
 import { LandRecordJson, type Receipt, ReceiptJson } from "@dotfiles/opencode-work/receipt"
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { CryptoHasher, deepEquals, spawnSync } from "bun"
-import { Array as Arr, ByteSize, Context, Data, Deferred, Effect, Equal, Exit, type Fiber, FileSystem, Layer, Match, Option, Order, Path, PlatformError, Result, Schema } from "effect"
+import { expect as check } from "effect-bun-test"
+import { Array as Arr, ByteSize, Context, Data, Deferred, Effect, Equal, Exit, type Fiber, FileSystem, Layer, Match, Option, Order, Path, Predicate, Result, Schema, Sink, Stream } from "effect"
 import { Digest } from "effect/crypto"
+import { ChildProcessSpawner } from "effect/process"
 import { TestClock } from "effect/testing"
 import * as Seed from "../../sim/seed.ts"
 import { formats, layer } from "./batch-inputs.ts"
@@ -630,7 +632,7 @@ seeded("two reads of one source that differ in anything observable (absent or pr
   }),
 )
 
-seeded("the host's files: only allowlisted regular files are read; a link, a folder, an oversized file, a bad name or an unreadable file is refused or unreadable, never absent or followed", ({ expect }) =>
+Seed.effect("the host's files: only allowlisted regular files are read; a link, a folder, an oversized file, a bad name or an unreadable file is refused or unreadable, never absent or followed",
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
@@ -650,21 +652,21 @@ seeded("the host's files: only allowlisted regular files are read; a link, a fol
     const places = { host: HOST, repository: { key: "dotfiles", checkouts: [path.join(root, "checkout")] }, receipts, installed: path.join(root, "state", "installed.json"), handoff: path.join(root, "state", "handoff.json"), maxBytes: 4096, readWithin: "1 second" as const }
     const source = Context.get(yield* Layer.build(receiptSource(places)), ReceiptSource)
     const read = (head: string) => Effect.result(source.read(SourceRef.Receipt({ head, kind: "round" })))
-    expect(yield* read(laneHead)).toEqual(Result.succeed(SourceRead.Present({ text: valid })))
-    expect(yield* read(outerHead)).toEqual(Result.succeed(SourceRead.Refused({ reason: "a link" })))
-    expect(yield* read(aggregateHead)).toEqual(Result.succeed(SourceRead.Refused({ reason: "not a regular file" })))
-    expect(yield* read(base)).toEqual(Result.succeed(SourceRead.Refused({ reason: "too large" })))
-    expect(yield* read(installedDotfiles)).toEqual(Result.succeed(SourceRead.Absent()))
+    check(yield* read(laneHead)).toEqual(Result.succeed(SourceRead.Present({ text: valid })))
+    check(yield* read(outerHead)).toEqual(Result.succeed(SourceRead.Refused({ reason: "a link" })))
+    check(yield* read(aggregateHead)).toEqual(Result.succeed(SourceRead.Refused({ reason: "not a regular file" })))
+    check(yield* read(base)).toEqual(Result.succeed(SourceRead.Refused({ reason: "too large" })))
+    check(yield* read(installedDotfiles)).toEqual(Result.succeed(SourceRead.Absent()))
     // A FIFO is refused unopened (opening one would wait for a writer); a link to nothing is still a link, never absent.
-    expect(yield* Effect.sync(() => spawnSync(["mkfifo", path.join(receipts, `${outerTree}.round.json`)]).exitCode)).toBe(0)
-    expect(yield* read(outerTree)).toEqual(Result.succeed(SourceRead.Refused({ reason: "not a regular file" })))
+    check(yield* Effect.sync(() => spawnSync(["mkfifo", path.join(receipts, `${outerTree}.round.json`)]).exitCode)).toBe(0)
+    check(yield* read(outerTree)).toEqual(Result.succeed(SourceRead.Refused({ reason: "not a regular file" })))
     yield* fs.symlink(path.join(root, "nowhere.json"), path.join(receipts, `${checkoutFork}.round.json`))
-    expect(yield* read(checkoutFork)).toEqual(Result.succeed(SourceRead.Refused({ reason: "a link" })))
-    expect(yield* read("../outside/secret")).toEqual(Result.succeed(SourceRead.Refused({ reason: "not a commit name" })))
-    expect(Result.isFailure(yield* read(laneTree))).toBe(true)
-    expect(yield* Effect.result(source.read(SourceRef.Installed()))).toEqual(Result.succeed(SourceRead.Absent()))
+    check(yield* read(checkoutFork)).toEqual(Result.succeed(SourceRead.Refused({ reason: "a link" })))
+    check(yield* read("../outside/secret")).toEqual(Result.succeed(SourceRead.Refused({ reason: "not a commit name" })))
+    check(Result.isFailure(yield* read(laneTree))).toBe(true)
+    check(yield* Effect.result(source.read(SourceRef.Installed()))).toEqual(Result.succeed(SourceRead.Absent()))
     const scopes = [path.join(root, "checkout", ".work", "lane"), `${path.join(root, "checkout")}/../outside`, `${path.join(root, "checkout")}-elsewhere`, path.relative(path.resolve("."), path.join(root, "checkout"))].map(source.repositoryOf)
-    expect(scopes).toEqual([Option.some("dotfiles"), Option.none(), Option.none(), Option.none()])
+    check(scopes).toEqual([Option.some("dotfiles"), Option.none(), Option.none(), Option.none()])
   }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
 )
 
@@ -735,7 +737,7 @@ const provenDigest = (snapshot: InputSnapshot) =>
 /** A freeze of `request` over the host files at `places`. */
 const freezeAt = (places: ReceiptPlaces, request: InputRequest) => freeze(request).pipe(Effect.provide(layer(places)))
 
-seeded("evidence is the file's exact bytes: a byte-order mark is kept and refused, CRLF and padding are kept as written, a stray tail is refused, bytes that are not UTF-8 are refused; every accepted file's digest is an independent hash of the file", ({ seed, expect }) =>
+Seed.effect("evidence is the file's exact bytes: a byte-order mark is kept and refused, CRLF and padding are kept as written, a stray tail is refused, bytes that are not UTF-8 are refused; every accepted file's digest is an independent hash of the file",
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
@@ -746,12 +748,9 @@ seeded("evidence is the file's exact bytes: a byte-order mark is kept and refuse
     yield* fs.makeDirectory(path.join(root, "state"))
     const places = { host: HOST, repository: { key: "dotfiles", checkouts: [checkout] }, receipts, installed: path.join(root, "state", "installed.json"), handoff: path.join(root, "state", "handoff.json"), maxBytes: 65536, readWithin: "1 second" as const }
     const source = Context.get(yield* Layer.build(receiptSource(places)), ReceiptSource)
-    const next = generator(seed)
-    // The review's case (a compact record behind a byte-order mark), then a dozen combinations the seed picks.
-    const combos: ReadonlyArray<Combo> = [
-      { prefix: 1, layout: 0, tail: 0, command: 0 },
-      ...Arr.range(1, 12).map(() => ({ prefix: next(PREFIXES.length), layout: next(LAYOUTS.length), tail: next(TAILS.length), command: next(COMMANDS.length) })),
-    ]
+    const combos: ReadonlyArray<Combo> = PREFIXES.flatMap((_, prefix) =>
+      LAYOUTS.flatMap((_, layout) => TAILS.flatMap((_, tail) => COMMANDS.map((_, command) => ({ prefix, layout, tail, command })))),
+    )
     const seen = yield* Effect.forEach(combos, (combo) =>
       Effect.gen(function* () {
         const command = Option.getOrElse(Arr.get(COMMANDS, combo.command), () => "bun test")
@@ -775,14 +774,14 @@ seeded("evidence is the file's exact bytes: a byte-order mark is kept and refuse
           artifacts: snapshot.artifacts.length,
           proven: Option.map(provenDigest(snapshot), (digest) => digest === byteHash(installedBytes)),
         }
-        return [seed, combo, have, exact, artifactsExact] as const
+        return [combo, have, exact, artifactsExact] as const
       }),
     )
-    expect(seen).toEqual(combos.map((combo) => [seed, combo, expectedOf(combo), true, true] as const))
+    check(seen).toEqual(combos.map((combo) => [combo, expectedOf(combo), true, true] as const))
   }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
 )
 
-seeded("host scope: a source stamps the host it reads on; Work's receipts and the updater's record name no producing host, so bytes copied into another host's folder read as that host's, with the same digest", ({ expect }) =>
+Seed.effect("host scope: a source stamps the host it reads on; Work's receipts and the updater's record name no producing host, so bytes copied into another host's folder read as that host's, with the same digest",
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
@@ -815,14 +814,14 @@ seeded("host scope: a source stamps the host it reads on; Work's receipts and th
     yield* fs.copyFile(path.join(first.receipts, `${laneHead}.round.json`), path.join(second.receipts, `${laneHead}.round.json`))
     yield* fs.copyFile(first.installed, second.installed)
     const onSecond = yield* freezeOn(second)
-    expect([hosts(onFirst), hosts(beforeCopy), hosts(onSecond)]).toEqual([
+    check([hosts(onFirst), hosts(beforeCopy), hosts(onSecond)]).toEqual([
       { snapshot: "host-a", receipts: ["host-a"], install: "host-a", absent: [] },
       { snapshot: "host-b", receipts: [], install: "host-b", absent: [ROUND_KEY] },
       { snapshot: "host-b", receipts: ["host-b"], install: "host-b", absent: [] },
     ])
     // The same bytes, so the same evidence digests; the observation differs, so the identities do.
-    expect(onSecond.artifacts.map((each) => each.digest)).toEqual(onFirst.artifacts.map((each) => each.digest))
-    expect([onSecond.id === onFirst.id, onSecond.receipts[0]?.id === onFirst.receipts[0]?.id]).toEqual([false, false])
+    check(onSecond.artifacts.map((each) => each.digest)).toEqual(onFirst.artifacts.map((each) => each.digest))
+    check([onSecond.id === onFirst.id, onSecond.receipts[0]?.id === onFirst.receipts[0]?.id]).toEqual([false, false])
   }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
 )
 
@@ -879,59 +878,27 @@ const infoOf = (node: Node): FileSystem.File.Info => {
 // The platform's own "no such entry", as its no-op file system answers it.
 const NOTHING = FileSystem.makeNoop({})
 /** The entry at `file`, or the platform's NotFound. */
-const found = (node: Option.Option<Node>, file: string): Effect.Effect<Node, PlatformError.PlatformError> =>
+const found = (node: Option.Option<Node>, file: string) =>
   Option.match(node, { onNone: () => NOTHING.lstat(file).pipe(Effect.andThen(Effect.die("the no-op file system has no entries"))), onSome: Effect.succeed })
 
-/** An opened handle: it keeps the entry it opened, whatever the world does to the path afterwards; it reads that entry's inode as it is now (a file written in place grows under it). */
-/** A call into the fake file system that a case can make hang: it never returns. */
-type Call = "realPath" | "lstat" | "stat" | "read" | "close"
+/** A phase in which the file observation may stop responding. */
+type Call = "realPath" | "lstat" | "open" | "stat" | "read" | "close"
 /** `effect`, or one that never returns when `call` is among `hangs`. */
 const stuckIf =
   (hangs: ReadonlyArray<Call>) =>
   <A, E>(call: Call, effect: Effect.Effect<A, E>): Effect.Effect<A, E> =>
     Match.value(hangs.includes(call)).pipe(Match.when(true, () => Effect.never), Match.orElse(() => effect))
 
-const handleOf = (world: World, node: Node, hangs: ReadonlyArray<Call> = []): FileSystem.File => ({
-  [FileSystem.FileTypeId]: FileSystem.FileTypeId,
-  stat: stuckIf(hangs)("stat", Effect.succeed(infoOf(node))),
-  seek: () => Effect.die("unused"),
-  sync: Effect.void,
-  read: () => Effect.die("unused"),
-  readAlloc: (size) =>
-    stuckIf(hangs)("read", Effect.succeed(Option.some(UTF8.encode(Node.$match(Option.getOrElse(Arr.findFirst([...world.values()], (each) => each._tag === node._tag && each.ino === node.ino), () => node), { File: (each) => each.text, Fifo: (each) => each.text, Folder: () => "", Link: () => "" })).slice(0, size)))),
-  truncate: () => Effect.die("unused"),
-  write: () => Effect.die("unused"),
-  writeAll: () => Effect.die("unused"),
-})
-
 /**
- * The fake file system: what the host gives a reader (a real path, a look that does not follow the last link, an open
- * that follows every parent link and the last one unless `noFollow`), over `world`. `beforeOpen` runs once just before
- * the first open (the point between the look and the open), `afterOpen` once the first open is made (returned, or
- * waiting); `opened` records where each open led, `live` how many handles are open now. As on the host, an open of a
- * FIFO for reading waits, uninterruptibly, until something opens it for writing (`r+` opens one at once).
+ * A scripted host at the two external seams. The fake child answers the wire protocol and owns the opened
+ * file until its scope closes; deliberately hanging the pipe or exit tests the parent, not Perl.
  */
 const swapping = (world: World, beforeOpen: (world: World) => void, afterOpen: (world: World) => void, hangs: ReadonlyArray<Call> = []) => {
   const stuck = stuckIf(hangs)
   const opened: Array<string> = []
-  const live = { handles: 0 }
+  const live = { handles: 0, reads: 0 }
   const swaps = { before: [beforeOpen], after: [afterOpen] }
-  const writers = new Map<bigint, Deferred.Deferred<void>>()
-  const writerOf = (ino: bigint) =>
-    Option.getOrElse(Option.fromNullishOr(writers.get(ino)), () => {
-      const made = Deferred.makeUnsafe<void>()
-      writers.set(ino, made)
-      return made
-    })
-  /** Something opens the FIFO `ino` for writing: an open of it for reading returns. */
-  const release = (ino: bigint) => Deferred.complete(writerOf(ino), Effect.void)
-  const afterwards = Effect.sync(() => swaps.after.splice(0).forEach((swap) => swap(world)))
-  const held = (target: string, node: Node, waiting: Effect.Effect<void>) =>
-    Effect.acquireRelease(
-      waiting.pipe(Effect.andThen(Effect.sync(() => (opened.push(target), (live.handles += 1), handleOf(world, node, hangs))))),
-      () => stuck("close", Effect.sync(() => void (live.handles -= 1))),
-    )
-  const layer = Layer.succeed(
+  const files = Layer.succeed(
     FileSystem.FileSystem,
     FileSystem.makeNoop({
       realPath: (file) =>
@@ -940,33 +907,61 @@ const swapping = (world: World, beforeOpen: (world: World) => void, afterOpen: (
           return Effect.as(found(Option.fromNullishOr(world.get(real)), file), real)
         })),
       lstat: (file) => stuck("lstat", Effect.suspend(() => Effect.map(found(Option.fromNullishOr(world.get(resolveIn(world, file, false))), file), infoOf))),
-      open: (file, options) =>
-        Effect.suspend(() => {
-          for (const swap of swaps.before.splice(0)) swap(world)
-          const target = resolveIn(world, file, !Option.exists(Option.fromNullishOr(options), (each) => each.noFollow === true))
-          const writing = Option.exists(Option.flatMap(Option.fromNullishOr(options), (each) => Option.fromNullishOr(each.flag)), (flag) => flag !== "r")
-          return found(Option.fromNullishOr(world.get(target)), file).pipe(
-            Effect.flatMap((node) =>
-              Match.value(node).pipe(
-                Match.tag("Link", () => Effect.fail(PlatformError.badArgument({ module: "FileSystem", method: "open", description: `ELOOP: ${file} is a link` }))),
-                Match.tag("Fifo", (fifo) =>
-                  Match.value(writing).pipe(
-                    // `r+`: a writer, so it opens at once and releases every open waiting to read the FIFO.
-                    Match.when(true, () => held(target, fifo, release(fifo.ino).pipe(Effect.asVoid)).pipe(Effect.tap(() => afterwards))),
-                    Match.orElse(() => held(target, fifo, afterwards.pipe(Effect.andThen(Deferred.await(writerOf(fifo.ino)))))),
-                  ),
-                ),
-                Match.orElse((each) => held(target, each, Effect.void).pipe(Effect.tap(() => afterwards))),
-              ),
-            ),
-          )
-        }),
     }),
   )
-  return { layer, opened, live, release }
+  const processes = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, ChildProcessSpawner.make((command) =>
+    Effect.gen(function* () {
+      if (command._tag !== "StandardCommand") return yield* Effect.die("expected one file reader")
+      const [configured, real, name, cap] = command.args.slice(-4)
+      if (!Predicate.isString(configured) || !Predicate.isString(real) || !Predicate.isString(name) || !Predicate.isString(cap)) return yield* Effect.die("invalid reader arguments")
+      const seen = yield* Effect.acquireRelease(Effect.sync(() => {
+        live.handles += 1
+        for (const swap of swaps.before.splice(0)) swap(world)
+        const file = `${real}/${name}`
+        const node = Option.fromNullishOr(world.get(file))
+        const held = Option.filter(node, (entry) => resolveIn(world, real, true) === real && entry._tag !== "Link")
+        if (Option.isSome(held)) opened.push(file)
+        for (const swap of swaps.after.splice(0)) swap(world)
+        return { node, held, file }
+      }), () => Effect.sync(() => { live.handles -= 1 }))
+      const response = Option.match(seen.held, {
+        onNone: () => Match.value(Option.exists(seen.node, Node.$is("Link"))).pipe(Match.when(true, () => "L"), Match.orElse(() => "U")),
+        onSome: Node.$match({
+          Link: () => "L",
+          Fifo: () => "N",
+          Folder: () => "N",
+          File: (before) => {
+            const after = Option.fromNullishOr(world.get(seen.file))
+            if (before.names > 1) return "H"
+            if (Option.isNone(after) || after.value._tag !== "File" || after.value.ino !== before.ino || resolveIn(world, configured, true) !== real) return "U"
+            if (UTF8.encode(after.value.text).length > Number(cap)) return "S"
+            return `P${after.value.text}`
+          },
+        }),
+      })
+      const stopped = yield* Deferred.make<void>()
+      const reply = stuck("open", stuck("stat", stuck("read", Effect.succeed(UTF8.encode(response)))))
+      const tracked = Effect.acquireRelease(Effect.sync(() => { live.reads += 1 }), () => Effect.sync(() => { live.reads -= 1 }))
+      const stdout = Stream.fromEffect(Effect.scoped(Effect.andThen(tracked, Effect.raceFirst(reply, Effect.as(Deferred.await(stopped), new Uint8Array())))))
+      return ChildProcessSpawner.makeHandle({
+        pid: ChildProcessSpawner.ProcessId(42),
+        exitCode: stuck("close", Effect.succeed(ChildProcessSpawner.ExitCode(0))),
+        isRunning: Effect.succeed(true),
+        kill: () => Deferred.succeed(stopped, undefined).pipe(Effect.asVoid),
+        stdin: Sink.drain,
+        stdout,
+        stderr: Stream.empty,
+        all: stdout,
+        getInputFd: () => Sink.drain,
+        getOutputFd: () => Stream.empty,
+        unref: Effect.succeed(Effect.void),
+      })
+    }),
+  ))
+  return { layer: Layer.mergeAll(files, processes), opened, live }
 }
 
-/** Let every fiber that can run, run (the open's own fiber closing its handle included). */
+/** Let runnable fibers settle before advancing the fake clock. */
 const settle = Effect.forEach(Arr.range(1, 20), () => Effect.yieldNow, { discard: true })
 
 /** `fiber`'s exit, the virtual clock moved a second at a time until it ends (at most 4 s), and how many seconds it took. */
@@ -983,7 +978,7 @@ const byTheClock = <A, E>(fiber: Fiber.Fiber<A, E>, seconds = 0): Effect.Effect<
     ),
   )
 
-seeded("a file swapped between the look and the open, by the fake file system: a link is never followed (the open refuses it), a FIFO is released at the deadline and refused, a folder or a hard link is refused from the opened handle, no read waits past its deadline (the open, the real path, the look, the stat, the read; the close not at all) or leaves a handle open, another file is read whole, a parent swapped for a link or a file replaced while open fails the read; the outside file's bytes never come back", ({ expect }) =>
+seeded("a fake host schedules file swaps and interrupted readers: the source propagates refusals and timeouts, and no child or pending pipe read survives its deadline", ({ expect }) =>
   Effect.gen(function* () {
     const name = `${laneHead}.round.json`
     const leaf = `/real/receipts/${name}`
@@ -1037,7 +1032,7 @@ seeded("a file swapped between the look and the open, by the fake file system: a
         const [seconds, exit] = yield* byTheClock(fiber)
         yield* settle
         const words = Option.match(exit, { onNone: () => "still waiting", onSome: Exit.match({ onFailure: () => "died", onSuccess: (read) => said(read, messages) }) })
-        return { seconds, words, opened: [...fake.opened], live: fake.live.handles }
+        return { seconds, words, opened: [...fake.opened], live: fake.live.handles + fake.live.reads }
       })
     const seen = yield* Effect.forEach(cases, ([what, folder, beforeOpen, afterOpen]) =>
       Effect.gen(function* () {
@@ -1049,38 +1044,29 @@ seeded("a file swapped between the look and the open, by the fake file system: a
     expect(seen).toEqual([
       ["no swap", "the file", 0, [leaf], 0],
       ["the configured folder behind a link (configuration, resolved once)", "the file", 0, [leaf], 0],
-      ["file swapped for a link to an outside file", "unreadable", 0, [], 0],
-      // The open waits for a writer; at the deadline the reader is one for an instant, so it returns, says FIFO, and is refused.
-      ["file swapped for a FIFO", "refused: not a regular file", 1, [leaf, leaf], 0],
-      // Swapped away again while the open waits: the writer's open finds the file and lets it go, the reader gives up.
-      ["file swapped for a FIFO, then back before the writer comes", "unreadable", 2, [leaf], 0],
+      ["file swapped for a link to an outside file", "refused: a link", 0, [], 0],
+      ["file swapped for a FIFO", "refused: not a regular file", 0, [leaf], 0],
+      ["file swapped for a FIFO, then back before the writer comes", "refused: not a regular file", 0, [leaf], 0],
       ["file swapped for a folder", "refused: not a regular file", 0, [leaf], 0],
       ["file swapped for a hard link to an outside file", "refused: a hard link", 0, [leaf], 0],
       ["file swapped for another file", "the other file", 0, [leaf], 0],
-      ["parent folder swapped for a link outside", "unreadable", 0, [`/outside/${name}`], 0],
-      ["parent folder swapped for a link outside, then back", "unreadable", 0, [`/outside/${name}`], 0],
+      ["parent folder swapped for a link outside", "unreadable", 0, [], 0],
+      ["parent folder swapped for a link outside, then back", "unreadable", 0, [], 0],
       ["file replaced while open", "unreadable", 0, [leaf], 0],
       ["file written past the cap in place while open", "refused: too large", 0, [leaf], 0],
     ])
-    // The open given up on above still waits; while it does, no read opens anything (unreadable at once), so a
-    // folder's writer holds one of the host's threads at most; once something writes to that FIFO the waiting open
-    // returns, its handle is closed by its own fiber, and reads open the file again.
-    const fake = swapping(worldOf(), put(leaf, Node.Fifo({ ino: 31n, text: secret })), restore(leaf))
+    // Once the first open hangs behind a FIFO that is renamed away, its scope must release before a new read.
+    const hangs: Array<Call> = ["open"]
+    const fake = swapping(worldOf(), put(leaf, Node.Fifo({ ino: 31n, text: secret })), restore(leaf), hangs)
     const source = yield* sourceOn(fake, "/real/receipts")
     const first = yield* readBy(fake, source, true)
-    const meanwhile = yield* readBy(fake, source, true)
-    yield* fake.release(31n)
-    yield* settle
-    const released = fake.live.handles
+    hangs.pop()
     const after = yield* readBy(fake, source, true)
-    expect([first, meanwhile, after].map((each) => [each.words, each.seconds, each.opened.length, each.live])).toEqual([
-      ["unreadable: the open did not return in time", 2, 1, 0],
-      ["unreadable: an earlier open is still waiting for a writer", 0, 1, 0],
-      ["the file", 0, 3, 0],
+    expect([first, after].map((each) => [each.words, each.seconds, each.opened.length, each.live])).toEqual([
+      ["unreadable: file reader did not return in time", 1, 1, 0],
+      ["the file", 0, 2, 0],
     ])
-    expect(released).toBe(0)
-    // Every other call into the file system that never returns: the read is unreadable at its deadline, naming the
-    // call; a close that never returns is not waited on at all (the open's own fiber makes it).
+    // The same deadline handles the rest of the phases, including a child that sent bytes but never exited.
     const hung = yield* Effect.forEach(["realPath", "lstat", "stat", "read", "close"] as const, (call) =>
       Effect.gen(function* () {
         const fake = swapping(worldOf(), keep, keep, [call])
@@ -1089,11 +1075,11 @@ seeded("a file swapped between the look and the open, by the fake file system: a
       }),
     )
     expect(hung).toEqual([
-      ["realPath", "unreadable: the folder's real path did not return in time", 1],
-      ["lstat", "unreadable: the look did not return in time", 1],
-      ["stat", "unreadable: the opened file's stat did not return in time", 1],
-      ["read", "unreadable: the read did not return in time", 1],
-      ["close", "the file", 0],
+      ["realPath", "unreadable: file reader did not return in time", 1],
+      ["lstat", "unreadable: file reader did not return in time", 1],
+      ["stat", "unreadable: file reader did not return in time", 1],
+      ["read", "unreadable: file reader did not return in time", 1],
+      ["close", "unreadable: file reader did not return in time", 1],
     ])
   }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
 )

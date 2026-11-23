@@ -1,4 +1,4 @@
-// accept: deep (0.9 s alone on a quiet host: 1-minute load 9.7–10.8 on 12 cores, none quieter to be had; a real swapper process races the reader for 3000 freezes, bounded to 20 s)
+// accept: deep (the real swapper and scoped reader processes race under a 20 s bound)
 // accept: one at a time (it races two processes by the clock: a loaded host starves the swapper and proves less).
 // The receipt source's file law against a real race (mods/orchestrate/filestore/receipt-source.ts `receiptSource`): a
 // swapper process flips a receipt's name, by atomic renames, between the good file and a link to a file outside the
@@ -8,7 +8,7 @@
 // cmd/orchestrate/receipt-input-snapshot.sim.test.ts (a fake file system); this is its confirmation on real files.
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { CryptoHasher, spawnSync } from "bun"
-import { Array as Arr, Effect, FileSystem, Option, Order, Path, Result } from "effect"
+import { Array as Arr, Effect, FileSystem, Match, Option, Order, Path, Result } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { layer } from "../cmd/orchestrate/batch-inputs.ts"
@@ -47,37 +47,88 @@ const CHILD_MS = 15_000
 /**
  * The FIFO child: one freeze over the real file system, gated so that the first open of the receipt for reading finds
  * a FIFO renamed over it just before (the one point between the look and the open, every time, not by luck). It
- * prints the outcome, how long the freeze took, the descriptors open before and after, and whether the gate fired;
- * (counted after one ordinary freeze, so what the runtime opens once and keeps is not counted); then it ends its work and must exit by itself: a process with an open still waiting in the file system does not.
+ * prints the outcome, elapsed time, owned children still running, and the descriptor delta after warmup. It then
+ * restores an ordinary file and reuses the same source to detect a timeout that poisons later reads.
  */
-const CHILD = (imports: { readonly effect: string; readonly bun: string; readonly inputs: string; readonly input: string }) => `import * as BunServices from "${imports.bun}"
-import { Effect, FileSystem, Layer } from "${imports.effect}"
+const CHILD = (imports: { readonly effect: string; readonly process: string; readonly bun: string; readonly inputs: string; readonly input: string }) => `import * as BunServices from "${imports.bun}"
+import { Effect, FileSystem, Layer, Schedule } from "${imports.effect}"
+import { ChildProcess, ChildProcessSpawner } from "${imports.process}"
 import { readdirSync } from "node:fs"
 import { layer } from "${imports.inputs}"
 import { freeze } from "${imports.input}"
-const [receipts, checkout, leaf, fifo, within, head] = process.argv.slice(2)
+const [receipts, checkout, leaf, staged, within, head, mode, good] = process.argv.slice(2)
 const descriptors = () => readdirSync(process.platform === "linux" ? "/proc/self/fd" : "/dev/fd").length
 const armed = { first: false }
-const gated = Layer.effect(FileSystem.FileSystem, Effect.map(FileSystem.FileSystem, (real) => ({
-  ...real,
-  open: (file, options) => Effect.suspend(() => {
-    if (!armed.first || file !== leaf || options.flag !== "r") return real.open(file, options)
+const readers = []
+const gated = Layer.effect(ChildProcessSpawner.ChildProcessSpawner, Effect.gen(function* () {
+  const real = yield* ChildProcessSpawner.ChildProcessSpawner
+  const fs = yield* FileSystem.FileSystem
+  return ChildProcessSpawner.make((command) => Effect.gen(function* () {
+    if (!armed.first || command._tag !== "StandardCommand" || command.args.at(-2) !== leaf.split("/").at(-1)) {
+      const child = yield* real.spawn(command)
+      readers.push(child)
+      return child
+    }
     armed.first = false
-    return Effect.andThen(real.rename(fifo, leaf), real.open(file, options))
-  }),
-}))).pipe(Layer.provide(BunServices.layer))
+    if (mode === "parent-link") {
+      yield* fs.rename(receipts, receipts + ".held")
+      yield* fs.rename(staged, receipts)
+    } else {
+      yield* fs.rename(leaf, leaf + ".warm")
+      yield* fs.rename(staged, leaf)
+    }
+    if (mode !== "unlinked" && mode !== "slow" && mode !== "overflow") {
+      const child = yield* real.spawn(command)
+      readers.push(child)
+      return child
+    }
+    // The fake child is real at the OS process boundary. It holds a descriptor, ignores TERM and
+    // either stalls with no stdout or writes past the cap. It inherits the production kill policy.
+    const fixture = "use Fcntl qw(O_RDONLY O_RDWR O_NONBLOCK); $SIG{TERM} = 'IGNORE'; alarm(3); " +
+      "sysopen(my $anchor, $ARGV[0], O_RDWR | O_NONBLOCK) or die $!; " +
+      "sysopen(my $fd, $ARGV[0], O_RDONLY) or die $!; " +
+      "open(my $ready, '>', $ARGV[1]) or die $!; close($ready); " +
+      "if ($ARGV[2] eq 'overflow') { while (1) { print 'P' x 16384 or die $!; } } " +
+      "if ($ARGV[2] eq 'slow') { $| = 1; print 'P' x 1024; } " +
+      "sysread($fd, my $byte, 1) // die $!;";
+    const marker = staged + ".opened";
+    const child = yield* real.spawn(ChildProcess.make(command.command, ["-e", fixture, "--", leaf, marker, mode], command.options))
+    readers.push(child)
+    if (mode === "unlinked") {
+      yield* fs.exists(marker).pipe(Effect.repeat({ until: (exists) => exists, schedule: Schedule.spaced("5 millis") }))
+      yield* fs.rename(leaf, staged + ".removed")
+    }
+    return child
+  }))
+})).pipe(Layer.provide(BunServices.layer))
 const places = { host: "host-a", repository: { key: "dotfiles", checkouts: [checkout] }, receipts, installed: receipts + "/installed.json", handoff: receipts + "/handoff.json", maxBytes: 65536, readWithin: Number(within) }
-const once = () => Effect.runPromise(freeze({ receipts: [{ head, kind: "round" }], lands: [], install: false }).pipe(Effect.provide(layer(places)), Effect.provide(gated), Effect.provide(BunServices.layer), Effect.result))
-// One ordinary freeze first, so whatever the runtime opens once and keeps is open before the count.
-const warm = await once()
-const before = descriptors()
-armed.first = true
-const began = performance.now()
-const outcome = await once()
-const ms = Math.round(performance.now() - began)
-await new Promise((resolve) => setTimeout(resolve, 100))
-const words = outcome._tag === "Failure" ? "failed " + outcome.failure._tag : outcome.success.refused.map((each) => "refused " + each.reason).join(",") || "frozen"
-console.log([words, ms, before, descriptors(), !armed.first && warm._tag === "Success"].join("\\t"))
+const request = { receipts: [{ head, kind: "round" }], lands: [], install: false }
+const report = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const once = Effect.result(freeze(request))
+  const warm = yield* once
+  const before = descriptors()
+  armed.first = true
+  const began = performance.now()
+  const outcome = yield* once
+  const ms = Math.round(performance.now() - began)
+  const running = yield* Effect.forEach(readers, (child) => child.isRunning)
+  const after = descriptors()
+  // A new read in this SAME source must work, even after a hung open was terminated.
+  if (mode === "parent-link") {
+    yield* fs.rename(receipts, staged)
+    yield* fs.rename(receipts + ".held", receipts)
+  } else if (mode !== "unlinked") {
+    yield* fs.rename(leaf, staged)
+  }
+  yield* fs.copyFile(good, leaf)
+  const recovered = yield* once
+  const words = outcome._tag === "Failure" ? "failed " + outcome.failure._tag : outcome.success.refused.map((each) => "refused " + each.reason).join(",") || "frozen"
+  const marker = mode !== "unlinked" && mode !== "slow" && mode !== "overflow" || (yield* fs.exists(staged + ".opened"));
+  return [words, ms, before, after, !armed.first && warm._tag === "Success", running.some(Boolean), recovered._tag === "Success" && recovered.success.receipts.length === 1, marker]
+})
+const stats = await Effect.runPromise(report.pipe(Effect.provide(layer(places)), Effect.provide(gated), Effect.provide(BunServices.layer)))
+console.log(stats.join("\\t"))
 `
 
 const byteHash = (text: string) => new CryptoHasher("sha256").update(text).digest("hex")
@@ -143,7 +194,7 @@ describe("the receipt source under a real swap race", () => {
   )
 
   it.live.layer(BunServices.layer)(
-    "a FIFO swapped in at the receipt's name between the look and the open, on real files: the freeze returns within its bound and refuses it, no descriptor is left open, and the process exits by itself (no open left waiting)",
+    "gated nonregular swaps, a renamed-away blocked open, a slow reader and an overflowing pipe leave no process or descriptor and never poison the next read",
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
@@ -152,31 +203,60 @@ describe("the receipt source under a real swap race", () => {
         const receipts = yield* fs.realPath(yield* Effect.as(fs.makeDirectory(path.join(root, "receipts")), path.join(root, "receipts")))
         const checkout = path.join(root, "checkout")
         const leaf = path.join(receipts, `${head}.round.json`)
-        const fifo = path.join(root, "fifo")
-        yield* fs.writeFileString(leaf, receiptText(checkout, goodTree, 0))
-        const made = spawnSync(["mkfifo", fifo])
+        const good = path.join(root, "good.json")
+        const outside = path.join(root, "outside")
+        const outsideLeaf = path.join(outside, path.basename(leaf))
+        yield* fs.makeDirectory(outside)
+        yield* fs.writeFileString(outsideLeaf, receiptText(checkout, outsideTree, 1))
+        yield* fs.writeFileString(good, receiptText(checkout, goodTree, 0))
         const child = path.join(root, "child.ts")
         yield* fs.writeFileString(
           child,
           CHILD({
             effect: import.meta.resolve("effect"),
+            process: import.meta.resolve("effect/process"),
             bun: import.meta.resolve("@effect/platform-bun/BunServices"),
             inputs: yield* path.fromFileUrl(new URL("../cmd/orchestrate/batch-inputs.ts", import.meta.url)),
             input: yield* path.fromFileUrl(new URL("../mods/orchestrate/batch-input.ts", import.meta.url)),
           }),
         )
-        const ran = spawnSync(["bun", child, receipts, checkout, leaf, fifo, `${WITHIN_MS}`, head], { timeout: CHILD_MS, stdin: "ignore" })
-        const [words, ms, before, after, gated] = new TextDecoder().decode(ran.stdout).trim().split("\t")
-        // Refused as what it is, within the open's two waits (and the look's and the real path's, which return at once), every descriptor closed; and the child ended by itself, so no open was left waiting for a writer.
-        expect({ made: made.exitCode, exit: ran.exitCode, gated, words, inBound: Number(ms) < 3 * WITHIN_MS, descriptorsLeft: Number(after) - Number(before) }).toEqual({
-          made: 0,
-          exit: 0,
-          gated: "true",
-          words: "refused not a regular file",
-          inBound: true,
-          descriptorsLeft: 0,
-        })
-        yield* Effect.logInfo("receipt-source FIFO", { ms, before, after, stderr: new TextDecoder().decode(ran.stderr).slice(-400) })
+        const matrix = [
+          ["fifo", "refused not a regular file"],
+          ["readonly", "refused not a regular file"],
+          ["directory", "refused not a regular file"],
+          ["symlink", "refused a link"],
+          ["dangling", "refused a link"],
+          ["hardlink", "refused a hard link"],
+          ["parent-link", "failed InputUnsettled"],
+          ["unlinked", "failed InputUnsettled"],
+          ["slow", "failed InputUnsettled"],
+          ["overflow", "failed InputUnsettled"],
+        ] as const
+        yield* Effect.forEach(matrix, ([mode, expected]) =>
+          Effect.gen(function* () {
+            const staged = path.join(root, mode)
+            yield* fs.copyFile(good, leaf)
+            yield* Match.value(mode).pipe(
+              Match.when("directory", () => fs.makeDirectory(staged).pipe(Effect.asVoid)),
+              Match.when("symlink", () => fs.symlink(outsideLeaf, staged)),
+              Match.when("dangling", () => fs.symlink(path.join(root, "missing"), staged)),
+              Match.when("parent-link", () => fs.symlink(outside, staged)),
+              Match.when("hardlink", () => fs.link(outsideLeaf, staged)),
+              Match.orElse(() => Effect.sync(() => {
+                const permissions = Match.value(mode).pipe(Match.when("readonly", () => "400"), Match.orElse(() => "600"))
+                const made = spawnSync(["mkfifo", "-m", permissions, staged])
+                expect(made.exitCode).toBe(0)
+              })),
+            )
+            const ran = spawnSync(["bun", child, receipts, checkout, leaf, staged, `${WITHIN_MS}`, head, mode, good], { timeout: CHILD_MS, stdin: "ignore" })
+            const [words, ms, before, after, gated, running, recovered, started] = new TextDecoder().decode(ran.stdout).trim().split("\t")
+            const stderr = new TextDecoder().decode(ran.stderr).slice(-500)
+            expect({ mode, exit: ran.exitCode, gated, words, running, recovered, started, inBound: Number(ms) < 3 * WITHIN_MS, descriptorsLeft: Number(after) - Number(before), stderr }).toEqual({
+              mode, exit: 0, gated: "true", words: expected, running: "false", recovered: "true", started: "true", inBound: true, descriptorsLeft: 0, stderr: "",
+            })
+            yield* Effect.logInfo("receipt-source gated case", { mode, ms, before, after })
+          }), { discard: true },
+        )
       }).pipe(Effect.scoped),
     60_000,
   )
