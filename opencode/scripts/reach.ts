@@ -25,7 +25,7 @@
 import { existsSync, readFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import path from "node:path"
-import { $ } from "bun"
+import { $, Glob } from "bun"
 
 export const ROOT = path.resolve(import.meta.dir, "..")
 
@@ -51,6 +51,8 @@ const TEST = /\.test\.tsx?$/
 export interface Workspace {
   /** Every file git tracks or would track, relative to ROOT. */
   readonly files: ReadonlyArray<string>
+  /** Sibling inputs relative to opencode/, used only by explicit @reads. */
+  readonly siblings?: ReadonlyArray<string>
   /** Package directory (`mods/prime`) of each package. */
   readonly packages: ReadonlyMap<string, Package>
 }
@@ -61,8 +63,6 @@ interface Package {
   readonly deps: ReadonlyArray<string>
 }
 
-const groups = ["mods", "cmd"] as const
-
 /** The package directory a file belongs to, if any. */
 export const packageOf = (file: string): string | undefined => {
   const [first, second] = file.split("/")
@@ -72,9 +72,11 @@ export const packageOf = (file: string): string | undefined => {
 }
 
 export const load = async (): Promise<Workspace> => {
-  const listed = await $`git ls-files -co --exclude-standard -z`.cwd(ROOT).quiet().text()
+  const listed = await $`git ls-files -co --exclude-standard -z`.cwd(path.dirname(ROOT)).quiet().text()
   // A deleted file git still tracks is not an input.
-  const files = listed.split("\0").filter((file) => file !== "" && existsSync(path.join(ROOT, file)))
+  const known = listed.split("\0").filter(Boolean).map(fromRepository).filter((file) => existsSync(path.join(ROOT, file)))
+  const files = known.filter((file) => !file.startsWith("../"))
+  const siblings = known.filter((file) => file.startsWith("../"))
   const byDir = new Map<string, Array<string>>()
   for (const file of files) {
     const dir = packageOf(file)
@@ -93,10 +95,13 @@ export const load = async (): Promise<Workspace> => {
     const deps = (manifests.get(dir)?.deps ?? []).flatMap((name) => dirOfName.get(name) ?? [])
     packages.set(dir, { dir, files: list, deps })
   }
-  return { files, packages }
+  return { files, siblings, packages }
 }
 
-const read = (file: string) => {
+/** A path from the repository's root expressed from opencode/. */
+export const fromRepository = (file: string): string => path.posix.relative("opencode", file)
+
+export const sourceText = (file: string) => {
   try {
     return readFileSync(path.join(ROOT, file), "utf8")
   } catch {
@@ -139,6 +144,17 @@ const READS = /^\s*(?:\/\/|\*)\s*@reads\s+(.+?)\s*$/gm
  * (scripts/merge-check.ts) see a change to one as a change to the test's input; no import edge does.
  */
 export const readsOf = (source: string): ReadonlyArray<string> => [...source.matchAll(READS)].flatMap((match) => String(match[1]).split(/\s+/))
+
+/** Files a test declares by path; these are inputs even if they are docs or another test. */
+export const declaredInputs = (workspace: Workspace, file: string): ReadonlyArray<string> => {
+  return matchingReads(sourceText(file), [...workspace.files, ...(workspace.siblings ?? [])])
+}
+
+export const matchingReads = (source: string, files: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const globs = readsOf(source).map((pattern) => new Glob(pattern))
+  if (globs.length === 0) return []
+  return files.filter((input) => globs.some((glob) => glob.match(input)))
+}
 
 /** The workspace file a specifier from `from` names, if any. */
 const resolveLocal = (known: ReadonlySet<string>, from: string, specifier: string): string | undefined => {
@@ -192,7 +208,7 @@ export const reach = (workspace: Workspace, seeds: ReadonlyArray<string>, memo =
 
 /** A file's edges: workspace files, or package directories. */
 const edgesOf = (workspace: Workspace, known: ReadonlySet<string>, file: string): ReadonlyArray<string> => {
-  const { imports, code } = scan(file, read(file))
+  const { imports, code } = scan(file, sourceText(file))
   const edges: Array<string> = []
   for (const specifier of imports) {
     if (specifier.startsWith(".")) {
@@ -221,7 +237,7 @@ const names = new Map<string, string>()
 const packageName = (dir: string) => {
   let name = names.get(dir)
   if (name === undefined) {
-    name = (JSON.parse(read(`${dir}/package.json`) || "{}") as { name?: string }).name ?? dir
+    name = (JSON.parse(sourceText(`${dir}/package.json`) || "{}") as { name?: string }).name ?? dir
     names.set(dir, name)
   }
   return name
@@ -302,7 +318,7 @@ export const isAcceptInput = (file: string) => !packageOf(file) || !PACKAGE_ONLY
 
 /** What an acceptance file reaches as an input: the file itself and its reach (`reach`), less what `isAcceptInput` leaves out. */
 export const acceptReach = (workspace: Workspace, file: string, memo = new Map<string, ReadonlyArray<string>>()): ReadonlySet<string> =>
-  new Set([file, ...[...reach(workspace, [file], memo)].filter(isAcceptInput)])
+  new Set([file, ...[...reach(workspace, [file], memo)].filter(isAcceptInput), ...declaredInputs(workspace, file)])
 
 /** The acceptance shared key from a hash of each file and the fork's line (pure: the model test hands both in). */
 export const acceptSharedFrom = (hashFile: (file: string) => string, fork: string, extra: ReadonlyArray<string>) => {
@@ -317,11 +333,11 @@ export const acceptSharedFrom = (hashFile: (file: string) => string, fork: strin
 /** The acceptance shared key of this checkout, Bun and the fork in OPENCODE_DEV; `extra` adds the ledger's version and the run's flags. */
 export const acceptSharedKey = (extra: ReadonlyArray<string>) => forkLine().then((fork) => acceptSharedFrom(hashOf, fork, extra))
 
-/** An acceptance file's key: the shared key and the contents of the inputs it reaches (`isAcceptInput` applied again, so a caller's set cannot widen it). */
+/** An acceptance file's key: the shared key and the contents of the inputs chosen by `acceptReach`. */
 export const acceptKey = (shared: string, reached: Iterable<string>, hashFile: (file: string) => string = hashOf) => {
   const hash = createHash("sha256")
   hash.update(shared)
-  for (const file of [...reached].filter(isAcceptInput).sort()) hash.update(`${file}:${hashFile(file)}\n`)
+  for (const file of [...reached].sort()) hash.update(`${file}:${hashFile(file)}\n`)
   return hash.digest("hex")
 }
 

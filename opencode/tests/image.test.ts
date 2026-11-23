@@ -9,6 +9,7 @@
 // Each job's end wakes the idle session. What happened is read off the
 // model's requests, the fakes' log, the transcripts and the saved files.
 import { describe, expect, test } from "bun:test"
+// @reads mods/image/SKILL.md
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"

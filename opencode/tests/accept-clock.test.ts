@@ -5,6 +5,7 @@
 // clock bounds too: a land run ends near its budget; the lock is free within 5 s of a land run's mark; a deep
 // run takes the lock back within 2 s of the marking land run's death; a land run takes the lock of a killed deep
 // run at once; a land run's swarm ends inside its box and grace.
+// @reads scripts/accept.test.ts
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Effect, FileSystem, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"

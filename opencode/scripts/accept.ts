@@ -58,7 +58,7 @@ import * as Swarm from "./accept-plan.ts"
 import { heading, isSerial, plan, poolWidth, requestedWidth, scenariosOf } from "./accept-plan.ts"
 import * as Accept from "./accept-ledger.ts"
 import * as Yield from "./accept-yield.ts"
-import { acceptanceTests, acceptKey, acceptReach, acceptSharedKey, load, packageOf, reach, ROOT, type Workspace } from "./reach.ts"
+import { acceptanceTests, acceptKey, acceptReach, acceptSharedKey, fromRepository, load, packageOf, reach, ROOT, type Workspace } from "./reach.ts"
 
 const ENV = { ...process.env }
 const ARGS = process.argv.slice(2)
@@ -265,9 +265,9 @@ const git = (args: ReadonlyArray<string>) => Effect.promise(() => $`git ${args}`
 /** The files changed since the base (committed or not, untracked too), or in the range `A..B`. */
 const changedSince = Effect.fn("Accept.changedSince")(function* () {
   const base = yield* baseOf()
-  const diff = yield* git(["diff", "--name-only", "--relative", base])
-  const untracked = (!base.includes("..") && (yield* git(["ls-files", "--others", "--exclude-standard"]))) || ""
-  return [...new Set([...diff.split("\n"), ...untracked.split("\n")].filter(Boolean))]
+  const diff = yield* git(["-C", path.dirname(ROOT), "diff", "--name-only", base])
+  const untracked = (!base.includes("..") && (yield* git(["-C", path.dirname(ROOT), "ls-files", "--others", "--exclude-standard"]))) || ""
+  return [...new Set([...diff.split("\n"), ...untracked.split("\n")].flatMap((file) => (file && [fromRepository(file)]) || []))]
 })
 
 /** Runs `order` `width` at a time under the window: a file starts only before its start bound and while no land run wants the lock, and is stopped at the stop bound, a signal or a yield. */

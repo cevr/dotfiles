@@ -5,7 +5,9 @@
 // needs OPENCODE_DEV, the fork, like tests/prime.test.ts.
 import { Database } from "bun:sqlite"
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+// @reads testbeds/gamut/fixture/AGENTS.md
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { scratchInput } from "./read-path.ts"
 import { dirname, join } from "node:path"
 import { ORCHESTRATOR } from "../mods/orchestrate/role.ts"
 import { poolPlugin } from "../testbeds/anthropic-auth.ts"
@@ -513,7 +515,7 @@ const runSync = (argv: ReadonlyArray<string>, env: ChildEnv, where: { readonly c
 }
 
 /** A JSON file's value. */
-const readJson = (file: string) => JSON.parse(readFileSync(file, "utf8"))
+const readJson = (file: string) => JSON.parse(readFileSync(scratchInput(file), "utf8"))
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/gamut.test.ts: the end-to-end run skipped. Set OPENCODE_DEV to the fork to run it.")

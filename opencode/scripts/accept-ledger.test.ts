@@ -17,7 +17,7 @@ import { describe, expect, test } from "bun:test"
 import { Array as Arr, Option } from "effect"
 import * as Accept from "./accept-ledger.ts"
 import { isSerial } from "./accept-plan.ts"
-import { ACCEPT_SHARED, acceptKey, acceptSharedFrom, packageOf } from "./reach.ts"
+import { ACCEPT_SHARED, acceptKey, acceptSharedFrom, isAcceptInput, packageOf } from "./reach.ts"
 
 const SEEDS = 200
 const COMMANDS = 40
@@ -148,7 +148,7 @@ const dying = (model: Model): Accept.Disk => {
 const keysOf = (model: Model) => {
   const hash = (file: string) => `v${versionOf(model, file)}`
   const shared = acceptSharedFrom(hash, "fork:model", [`accept-ledger:${Accept.KEY_VERSION}`])
-  return new Map(model.files.map((file) => [file.name, acceptKey(shared, reachOf(file), hash)]))
+  return new Map(model.files.map((file) => [file.name, acceptKey(shared, [...reachOf(file)].filter(isAcceptInput), hash)]))
 }
 
 const ledgerOf = (model: Model) => Accept.readLedger(diskOf(model), PATH)

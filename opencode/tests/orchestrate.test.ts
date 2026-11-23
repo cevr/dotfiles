@@ -6,7 +6,9 @@
 // cmd/orchestrate/orchestrate.sim.test.ts (tests/parity/orchestrate.json).
 // The plugin's rules on their own are tested beside mods/orchestrate and cmd/orchestrate.
 import { afterAll, describe, expect, test } from "bun:test"
+// @reads ../agents/*.md ../skills/orchestrate/{SKILL.md,protocol.md,scripts/agents.ts,scripts/ending.ts} ../skills/loop/safety.md mods/orchestrate/agents.json
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { matchingInput } from "./read-path.ts"
 import { join, resolve } from "node:path"
 import { build, DEFAULT_SOURCE, OUT, parseAgent, ROOT } from "../scripts/agents.ts"
 import { effort, ORCHESTRATOR, orchestrator, ROLES } from "../mods/orchestrate/role.ts"
@@ -31,7 +33,7 @@ describe.skipIf(!skill)("the role agents", () => {
     const built = JSON.parse((await build(ROOT)).text) as { agents: Record<string, { description: string; system: string }> }
     expect(Object.keys(built.agents)).toEqual([...ROLES])
     for (const role of ROLES) {
-      const claude = parseAgent(readFileSync(join(CLAUDE_AGENTS, `${role}.md`), "utf8"))
+      const claude = parseAgent(readFileSync(matchingInput("../agents/*.md", join(CLAUDE_AGENTS, `${role}.md`)), "utf8"))
       expect(built.agents[role]!.system).toBe(claude.body.trim())
       expect(built.agents[role]!.description).toBe(claude.fields.description!)
     }
@@ -45,7 +47,7 @@ describe.skipIf(!skill)("the role agents", () => {
       const rule = rules.findLast((candidate) => candidate.action === "*" || candidate.action === action)
       return rule?.resource === "*" && rule.effect === "deny"
     }
-    const written = JSON.parse(readFileSync(join(ROOT, OUT), "utf8")) as { agents: Record<string, { permissions: ReadonlyArray<{ action: string; resource: string; effect: string }> }> }
+    const written = JSON.parse(readFileSync(matchingInput(OUT), "utf8")) as { agents: Record<string, { permissions: ReadonlyArray<{ action: string; resource: string; effect: string }> }> }
     for (const role of ROLES) {
       expect([role, disabled("ask_user_async", written.agents[role]!.permissions)]).toEqual([role, false])
       expect([role, disabled("question", written.agents[role]!.permissions)]).toEqual([role, true])
@@ -59,7 +61,7 @@ describe.skipIf(!skill)("the role agents", () => {
     const check = () =>
       Bun.spawnSync([process.execPath, join(ROOT, "scripts/agents.ts"), "--check", "--root", root], { stderr: "pipe" })
     expect(check().exitCode).toBe(1)
-    cpSync(join(ROOT, OUT), file)
+    cpSync(matchingInput(OUT), file)
     expect(check().exitCode).toBe(0)
     writeFileSync(file, readFileSync(file, "utf8").replace("Writes one orchestrate unit", "Writes an orchestrate unit"))
     const edited = check()
