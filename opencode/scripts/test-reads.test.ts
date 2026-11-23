@@ -55,6 +55,27 @@ Bun.file(target).text()`
   expect(check(`// @reads scripts/fixtures/*\n${source}`).issues).not.toEqual([])
 })
 
+test("a declaration proved at one site cannot bless a second read", () => {
+  const source = `// @reads-indirect scripts/fixtures/**
+import { matchingInput } from "../tests/read-path.ts"
+import { readFileSync } from "node:fs"
+readFileSync(matchingInput("scripts/fixtures/**", selectedFixture()))
+readFileSync(selectedPathOutsideTheFixture())`
+  const result = checkReadInputs("scripts/example.test.ts", source, (file) =>
+    file === "tests/read-path.ts" && "export const matchingInput = () => ''" || "")
+  expect(result.issues).toEqual([{ line: 5, message: `${unknown}: computed read` }])
+})
+
+test("a broad declaration cannot add an input the static reader does not use", () => {
+  const source = `// @reads scripts/**
+import { readFileSync } from "node:fs"
+readFileSync("scripts/input.txt")`
+  expect(check(source).issues).toEqual([{
+    line: 1,
+    message: "remove unsupported @reads scripts/**: no read site needs that scope",
+  }])
+})
+
 test("the real scoped read refuses an escape before returning its path", () => {
   const chosen = "scripts/release-flags.ts"
   expect(bunFile(matchingInput("scripts/release-flags.ts", chosen)).size).toBeGreaterThan(0)
