@@ -4,17 +4,22 @@
 // server's own unit leaves it running, and in its own session and process
 // group elsewhere (and on a Linux whose user manager refuses), so the
 // server's exit leaves it running. `read` takes the run from the files: an
-// exit recorded is `ended`; a runner up and alive `running`; up and gone
-// without an exit `lost`; never up `starting`.
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+// exit recorded is `ended`; a runner that claimed it and is still that process
+// (its pid alive and started when its claim says) `running`; a claim whose
+// runner is gone without an exit `lost`; never claimed `starting`. A kill
+// signals only the claim's own runner, never a pid read alone. `watch` keeps
+// one non-recursive watch on a live job's own directory and announces its exit
+// file; the wakes close it once the end is delivered.
+import { chmodSync, existsSync, type FSWatcher, mkdirSync, readFileSync, watch, writeFileSync } from "node:fs"
 import path from "node:path"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Match, Option, Schema } from "effect"
 import type { Descriptor } from "../backstop.ts"
 import { carried } from "../backstop.ts"
-import { type JobExit, type JobRecord, type JobSpec, type Launched, type Run, unitOf } from "../job.ts"
+import { JobExit, type JobRecord, JobSpec, type Launched, type Run, unitOf } from "../job.ts"
 import { type Exec } from "../cron/backstop.ts"
 import { JobRefused, Runner } from "../service.ts"
-import { FILES, type JobFile, writeAtomic } from "./supervise.ts"
+import { RunnerClaim } from "../job-event.ts"
+import { FILES, type JobFile, processStart, writeAtomic } from "./supervise.ts"
 
 export interface Config {
   /** Where each job's directory is kept. */
@@ -26,10 +31,16 @@ export interface Config {
   readonly platform: NodeJS.Platform
   /** The environment a job runs in. */
   readonly env: Readonly<Record<string, string | undefined>>
-  /** The `opencode` launcher the runner wakes the service with when the job ends; absent: the server's poll finds the end. */
+  /** The `opencode` launcher the runner wakes the service with when the job ends; absent: the wakes' start or recovery sweep finds the end. */
   readonly opencode?: string | undefined
   readonly exec: Exec
+  /** How a job's directory is watched; node's `fs.watch` by default (a test's stands in for a host out of watches). */
+  readonly watch?: typeof watch
 }
+
+/** What `read` takes of job.json and launch.json. */
+const Spec = Schema.Struct({ spec: JobSpec })
+const Launch = Schema.Struct({ unit: Schema.optional(Schema.String) })
 
 /** Whether `pid` is a live process. */
 export const alive = (pid: number): boolean => {
@@ -41,22 +52,43 @@ export const alive = (pid: number): boolean => {
   }
 }
 
-const readJson = <A,>(file: string): A | undefined => {
-  try {
-    return JSON.parse(readFileSync(file, "utf8")) as A
-  } catch {
-    return undefined
-  }
-}
+/** The JSON file `file` holds, decoded by `schema`; none when it is missing or unreadable. */
+const readJson = <A, I>(schema: Schema.Codec<A, I>, file: string): Option.Option<A> =>
+  Option.flatMap(Option.liftThrowable(() => readFileSync(file, "utf8"))(), Schema.decodeUnknownOption(Schema.fromJsonString(schema)))
+
+/**
+ * Whether the claim's runner is still the process at its pid: alive, and started when the claim says (an older
+ * runner's claim names no start, and its pid alone is taken). A start `ps` cannot read leaves it held: absence is not
+ * proved, so it is not called lost.
+ */
+export const claimed = (claim: RunnerClaim, start: (pid: number) => Option.Option<string> = processStart): boolean =>
+  alive(claim.pid) &&
+  Option.match(Option.fromNullishOr(claim.start), {
+    onNone: () => true,
+    onSome: (then) => Option.match(start(claim.pid), { onNone: () => true, onSome: (now) => now === then }),
+  })
 
 /** The run the files of `dir` record. */
 export const runOf = (dir: string): Run => {
-  const exit = readJson<JobExit>(path.join(dir, FILES.exit))
-  if (exit !== undefined) return { state: "ended", exit }
-  const runner = readJson<{ readonly pid: number; readonly startedAt: number }>(path.join(dir, FILES.runner))
-  if (runner === undefined) return { state: "starting" }
-  if (alive(runner.pid)) return { state: "running", startedAt: runner.startedAt }
-  return { state: "lost", startedAt: runner.startedAt, why: "its runner is gone without recording an exit (the machine restarted, or it was killed)" }
+  const ended = (exit: JobExit): Run => ({ state: "ended", exit })
+  return Option.match(readJson(JobExit, path.join(dir, FILES.exit)), {
+    onSome: ended,
+    onNone: () =>
+      Option.match(readJson(RunnerClaim, path.join(dir, FILES.runner)), {
+        onNone: (): Run => ({ state: "starting" }),
+        onSome: (runner): Run =>
+          Match.value(claimed(runner)).pipe(
+            Match.when(true, (): Run => ({ state: "running", startedAt: runner.startedAt })),
+            // The exit may have landed between the two reads.
+            Match.orElse(() =>
+              Option.match(readJson(JobExit, path.join(dir, FILES.exit)), {
+                onSome: ended,
+                onNone: (): Run => ({ state: "lost", startedAt: runner.startedAt, why: "its runner is gone without recording an exit (the machine restarted, or it was killed)", cause: "runner-gone" }),
+              }),
+            ),
+          ),
+      }),
+  })
 }
 
 /** The bytes of `file` from `from` to its end, or none. */
@@ -77,7 +109,48 @@ export const layer = (config: Config) => {
       catch: (cause) => new JobRefused({ message: `its runner did not start: ${cause instanceof Error ? cause.message : String(cause)}` }),
     })
 
-  return Layer.succeed(Runner, {
+  /** Each watched job's watch: one per live job, on its own directory alone. */
+  const watches = new Map<string, FSWatcher>()
+  const unwatch = (id: string) => {
+    const held = watches.get(id)
+    watches.delete(id)
+    held?.close()
+  }
+
+  return Layer.effect(
+    Runner,
+    Effect.gen(function* () {
+      // At most one watch per live job, so closing them all as the server stops is bounded (the host's own skip of
+      // its many file watches at a signal is not a plugin's interface).
+      yield* Effect.addFinalizer(() => Effect.sync(() => [...watches.keys()].forEach(unwatch)))
+      return Runner.of({
+    watch: (id, announce) =>
+      Effect.try({
+        try: () => {
+          if (watches.has(id)) return true
+          const dir = dirOf(id)
+          // The exit is written as a temporary file renamed onto exit.json: either name announces; the log and progress do not.
+          const watcher = (config.watch ?? watch)(dir, { persistent: false }, (_event, name) => {
+            // An event that names no file may be the exit too: it announces, and the reader reads.
+            if (Option.match(Option.fromNullishOr(name), { onNone: () => true, onSome: (file) => String(file).startsWith(FILES.exit) })) announce()
+          })
+          // A watch that fails later (its directory removed, the host's limit) is closed; the sweep finds that end.
+          watcher.on("error", () => {
+            if (watches.get(id) === watcher) unwatch(id)
+          })
+          watches.set(id, watcher)
+          // Watched before this read: an exit written before the watch opened is announced here, one after it by the watch.
+          if (existsSync(path.join(dir, FILES.exit))) announce()
+          return true
+        },
+        // The error's text names its code (ENOSPC, EMFILE, ENOENT).
+        catch: (cause) => String(cause),
+      }).pipe(
+        // ENOSPC or EMFILE (the host's watch limit), or no directory: that job's end is the sweep's to find; the job runs on.
+        Effect.catch((code) => Effect.logWarning("wake: a job is not watched; the sweep finds its end", { id, code }).pipe(Effect.as(false))),
+      ),
+    unwatch: (id) => Effect.sync(() => unwatch(id)),
+    watching: Effect.sync(() => [...watches.keys()]),
     launch: (spec: JobSpec) =>
       Effect.gen(function* () {
         const dir = dirOf(spec.id)
@@ -108,12 +181,16 @@ export const layer = (config: Config) => {
         return { ...where, how: "detached", ...(warning === undefined ? {} : { warning }) } satisfies Launched
       }),
     read: (id) =>
-      Effect.sync((): JobRecord | undefined => {
+      Effect.sync(() => {
         const dir = dirOf(id)
-        const job = readJson<JobFile>(path.join(dir, FILES.job))
-        if (job === undefined) return undefined
-        const launch = readJson<{ readonly unit?: string }>(path.join(dir, FILES.launch))
-        return { spec: job.spec, run: runOf(dir), log: path.join(dir, FILES.log), drip: path.join(dir, FILES.drip), ...(launch?.unit === undefined ? {} : { unit: launch.unit }) }
+        const record = Option.map(readJson(Spec, path.join(dir, FILES.job)), (job): JobRecord => ({
+          spec: job.spec,
+          run: runOf(dir),
+          log: path.join(dir, FILES.log),
+          drip: path.join(dir, FILES.drip),
+          ...Option.match(Option.flatMapNullishOr(readJson(Launch, path.join(dir, FILES.launch)), (launch) => launch.unit), { onNone: () => ({}), onSome: (unit) => ({ unit }) }),
+        }))
+        return Option.getOrUndefined(record)
       }),
     tail: (id, chars) =>
       Effect.sync(() => {
@@ -142,14 +219,13 @@ export const layer = (config: Config) => {
           return true
         }
         if (run.state !== "running") return false
-        const runner = readJson<{ readonly pid: number }>(path.join(dir, FILES.runner))
-        if (runner === undefined) return false
-        try {
-          process.kill(runner.pid, "SIGTERM")
-          return true
-        } catch {
-          return false
-        }
+        // Only the claim's own runner is signalled: a pid another process took since is not it.
+        return Option.match(Option.filter(readJson(RunnerClaim, path.join(dir, FILES.runner)), (runner) => claimed(runner)), {
+          onNone: () => false,
+          onSome: (runner) => Option.isSome(Option.liftThrowable(() => process.kill(runner.pid, "SIGTERM"))()),
+        })
       }),
-  })
+      })
+    }),
+  )
 }

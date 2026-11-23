@@ -89,12 +89,12 @@ export const CANCEL_DESCRIPTION =
 export const LIST_DESCRIPTION =
   "List the alarms and monitors pending in this session and the notices not yet read, with ISO times and the current time as `now`. Use it after a context handoff, or before you set a wake that may already exist."
 
-export const JobAction = Schema.Literals(["run", "check", "wait", "kill", "list"])
+export const JobAction = Schema.Literals(["run", "check", "park", "wait", "kill", "list"])
 
 export const JobInput = toolInput(Schema.Struct({
   action: Schema.optional(JobAction).annotate({
     description:
-      "`run` (default): start `command`. `check`: how job `id` stands, with its progress and log tail. `wait`: block up to `ms` for job `id` to end. `kill`: stop job `id`. `list`: this session's jobs.",
+      "`run` (default): start `command`. `check`: how job `id` stands, with its progress and log tail; it takes nothing. `park`: answer at once with job `id`'s end if it is over (no letter then follows), else that it runs and its letter will come. `wait`: block up to `ms` for job `id` to end. `kill`: stop job `id`. `list`: this session's jobs.",
   }),
   command: Schema.optional(Schema.String).annotate({ description: "For run: the command, run by /bin/sh with no shell startup files. Its stdout and stderr go to the job's log." }),
   cwd: Schema.optional(Schema.String).annotate({ description: "For run: absolute working directory. Default: this session's directory." }),
@@ -105,7 +105,7 @@ export const JobInput = toolInput(Schema.Struct({
   timeoutSeconds: Schema.optional(Schema.Finite).annotate({
     description: `For run: stop the command past this long. Default ${DEFAULT_JOB_TIMEOUT_SECONDS}, at most ${MAX_JOB_TIMEOUT_SECONDS}.`,
   }),
-  id: Schema.optional(Schema.String).annotate({ description: "For check, wait and kill: the job's id." }),
+  id: Schema.optional(Schema.String).annotate({ description: "For check, park, wait and kill: the job's id." }),
   ms: Schema.optional(Schema.Finite).annotate({ description: `For wait: how long to wait. Default ${DEFAULT_WAIT_MS}, at most ${MAX_WAIT_MS}.` }),
 }))
 export type JobInput = typeof JobInput.Type
@@ -113,7 +113,7 @@ export type JobInput = typeof JobInput.Type
 export const JOB_DESCRIPTION = [
   "Run a long command (a build, a test suite, a benchmark, a deploy) as a job outside the OpenCode server, so it survives a server restart. When it ends, a letter with its exit code, duration, log tail and your note starts a turn in this session, even if it ended while no server ran.",
   "- Use it instead of a background shell, nohup, setsid or systemd-run for anything that runs longer than a few minutes, and instead of polling with ps or pgrep: the end letter is the check.",
-  "- After run, end your turn unless other work remains. A subagent, whose turn's end hands back to its parent, uses action wait.",
+  "- After run, end your turn unless other work remains: its end reaches you once, as the letter or as the answer of your own park, wait or kill that returned it. Never poll it with check, sleep or a shell loop. A subagent, whose turn's end hands back to its parent, uses action wait.",
   "- The note is all the letter carries besides the log tail: say what to check and what result means done.",
   "- The command can append progress lines to the file named by $JOB_DRIP; they reach you at most once a minute without starting a turn.",
   "- Set heavy for CPU-heavy commands. Stop one you no longer need with action kill; list shows this session's jobs after a handoff.",

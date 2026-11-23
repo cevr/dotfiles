@@ -1,12 +1,15 @@
 // Jobs: a long command a session starts outside the OpenCode server, so it
 // outlives a restart, and whose end wakes the session. The wakes keep the job
 // as an entry of its own kind (`Job` in wake.ts) and fire a letter when it
-// ends, from the server's poll, from the runner's own call when the command
-// exits (the wakes' `due`, through the OS backstop's script), or at the next
-// start when it ended while no server ran. This file is what the runner keeps
-// beside a job and what it reads back: the spec it runs, how the process
-// ended, and how a job's run reads at a time. It imports nothing of wake.ts.
+// ends: on the runner's own call once it recorded the exit (the wakes' `due`,
+// through the OS backstop's script), at the next start when it ended while no
+// server ran or the call was lost, or at the wakes' one recovery sweep, which
+// also finds a runner gone without an exit. Nothing looks at a running job on
+// a timer of its own. This file is what the runner keeps beside a job and what
+// it reads back: the spec it runs, how the process ended, and how a job's run
+// reads at a time. It imports nothing of wake.ts.
 import { Option, Schema } from "effect"
+import { Disposition } from "./job-event.ts"
 
 /** What the runner runs and keeps beside the job, so a check reads it after the entry went. */
 export const JobSpec = Schema.Struct({
@@ -25,6 +28,8 @@ export const JobSpec = Schema.Struct({
   timeoutSeconds: Schema.Number,
   /** Epoch ms. */
   setAt: Schema.Number,
+  /** Which run of the job this is (job-event.ts); absent in an older build's spec, which reads as legacy. */
+  generation: Schema.optional(Schema.Number),
 })
 export type JobSpec = typeof JobSpec.Type
 
@@ -40,6 +45,11 @@ export const JobExit = Schema.Struct({
   timedOut: Schema.Boolean,
   /** `job({ action: "kill" })` (or another signal to its runner) stopped it. */
   killed: Schema.Boolean,
+  /** The end's kind, as this build's runner records it (job-event.ts); an older runner's exit has none and reads off the fields above. */
+  disposition: Schema.optional(Disposition),
+  generation: Schema.optional(Schema.Number),
+  /** The end's place among the job's events: one past the progress bytes written when it was recorded. */
+  sequence: Schema.optional(Schema.Number),
 })
 export type JobExit = typeof JobExit.Type
 
@@ -48,13 +58,14 @@ export type JobExit = typeof JobExit.Type
  * - `starting`: launched, its runner not yet up.
  * - `running`: its runner is alive.
  * - `ended`: its runner recorded the exit.
- * - `lost`: no exit was recorded and no runner is alive (the machine restarted, or the runner was killed), or it never started.
+ * - `lost`: no exit was recorded and the runner that claimed it is gone (`runner-gone`: the machine restarted, or it
+ *   was killed; the command may have run, and is never run again), or no runner ever claimed it (`never-started`).
  */
 export type Run =
   | { readonly state: "starting" }
   | { readonly state: "running"; readonly startedAt: number }
   | { readonly state: "ended"; readonly exit: JobExit }
-  | { readonly state: "lost"; readonly startedAt?: number; readonly why: string }
+  | { readonly state: "lost"; readonly startedAt?: number; readonly why: string; readonly cause?: "runner-gone" | "never-started" }
 
 /** What the runner reads of one job: its spec, its run, and where its log and progress file are. */
 export interface JobRecord {
@@ -83,12 +94,14 @@ export const DEFAULT_JOB_TIMEOUT_SECONDS = 24 * 60 * 60
 export const MAX_JOB_TIMEOUT_SECONDS = 7 * 24 * 60 * 60
 /** A launched job whose runner is not up this long after it was set never started. */
 export const START_GRACE_MS = 30_000
-/** How often a server looks at a running job: its end, and its progress. The runner's own call is the fast path. */
-export const JOB_POLL_MS = 10_000
+/**
+ * How often the wakes' one recovery sweep looks at the jobs of its directory while any runs: a runner gone without
+ * an exit, a launch that never came up, an end whose runner's call was lost, and progress to drip. An end whose call
+ * arrives goes at once; this bounds the rest.
+ */
+export const RECOVER_MS = 60_000
 /** Progress lines reach the session at most this often; the rest wait for the next, or the end letter. */
 export const DRIP_MS = 60_000
-/** A wait looks this often. */
-export const WAIT_POLL_MS = 1_000
 export const DEFAULT_WAIT_MS = 10 * 60 * 1000
 export const MAX_WAIT_MS = 60 * 60 * 1000
 /** How long a kill waits for the runner to record the end. */
@@ -105,8 +118,9 @@ export const unitOf = (id: string): string => `opencode-job-${id}`
 
 /** The run as the wakes read it at `now`: a job still starting past its grace never started. */
 export const settledRun = (run: Run | undefined, setAt: number, now: number): Run => {
-  if (run === undefined) return now - setAt > START_GRACE_MS ? { state: "lost", why: "it never started: the runner left no record" } : { state: "starting" }
-  if (run.state === "starting" && now - setAt > START_GRACE_MS) return { state: "lost", why: "it never started: its runner did not come up" }
+  if (run === undefined)
+    return now - setAt > START_GRACE_MS ? { state: "lost", why: "it never started: the runner left no record", cause: "never-started" } : { state: "starting" }
+  if (run.state === "starting" && now - setAt > START_GRACE_MS) return { state: "lost", why: "it never started: its runner did not come up", cause: "never-started" }
   return run
 }
 

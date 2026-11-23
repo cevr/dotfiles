@@ -18,8 +18,11 @@
  * - `job` runs a command as its own process outside the server (a
  *   `systemd-run --user` unit on Linux, a detached process group on the
  *   Mac; runner `job.ts`), so it outlives a restart; its end steers a letter
- *   into the session, through `due` from the runner, the server's poll, or
- *   the next start. `check`, `wait`, `kill` and `list` over the same tool.
+ *   into the session once, through `due` from the runner after it recorded
+ *   the exit, the next start, or the wakes' one recovery sweep; no timer looks
+ *   at a running job. `check`, `park`, `wait`, `kill` and `list` over the same
+ *   tool; the owner's `park`, `wait` or `kill` that returns a managed job's
+ *   end is its delivery, and no letter follows.
  * - `pending({ sessionIDs })` for the tray, `cancel({ sessionID, id })` for its
  *   cancel key, `jobs({ sessionID })` and `kill({ sessionID, id })` for Prime's
  *   job dock item and Jobs tab, `due({ id })` for the OS jobs;
@@ -149,18 +152,27 @@ const jobTool = (wakes: Context.Service.Shape<typeof Model.WakesModel>, input: J
   }
   const id = input.id
   if (id === undefined) return Effect.fail(asked(`job({ action: "${action}" }) needs the job's id`))
-  if (action === "check") return wakes.check(id).pipe(Effect.map(({ view, now }) => text(jobReport(view, now))), Effect.mapError(refused))
+  if (action === "check") return wakes.check(sessionID, id).pipe(Effect.map(({ view, now }) => text(jobReport(view, now))), Effect.mapError(refused))
+  if (action === "park") return wakes.park(sessionID, id).pipe(Effect.map((watched) => text(jobReport(watched.view, watched.now, handedOver(watched, "It runs: end your turn; its end letter comes once.")))), Effect.mapError(refused))
   if (action === "wait") {
     const ms = Math.min(MAX_WAIT_MS, Math.max(0, input.ms ?? DEFAULT_WAIT_MS))
-    return wakes.wait(id, ms).pipe(
-      Effect.map(({ view, now, ended }) => text(jobReport(view, now, ended ? [] : [`It still runs after a wait of ${durationOf(ms)}; its end letter still comes.`]))),
+    return wakes.wait(sessionID, id, ms).pipe(
+      Effect.map((watched) => text(jobReport(watched.view, watched.now, handedOver(watched, `It still runs after a wait of ${durationOf(ms)}; its end letter still comes.`)))),
       Effect.mapError(refused),
     )
   }
-  return wakes.kill(id).pipe(
-    Effect.map(({ view, now, asked: stopped }) => text(jobReport(view, now, stopped ? [] : ["It was not running, so nothing was stopped."]))),
+  return wakes.kill(sessionID, id).pipe(
+    Effect.map((watched) =>
+      text(jobReport(watched.view, watched.now, [...(watched.asked ? [] : ["It was not running, so nothing was stopped."]), ...handedOver(watched, "It was asked to stop; its end letter comes once it ends.")])),
+    ),
     Effect.mapError(refused),
   )
+}
+
+/** What a `park`, `wait` or `kill` answer says of the end: delivered here, or still owed by its letter. */
+const handedOver = (watched: Model.Watched, running: string): ReadonlyArray<string> => {
+  if (!watched.ended) return [running]
+  return watched.delivered ? ["This answer is its end: no letter follows."] : ["Its end letter goes (or went) to its session."]
 }
 
 const PendingInput = Schema.Struct({ sessionIDs: Schema.Array(Schema.String) })

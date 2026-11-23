@@ -166,6 +166,15 @@ export class Runner extends Context.Service<
     readonly tail: (id: string, chars: number) => Effect.Effect<string>
     readonly drip: (id: string, from: number) => Effect.Effect<{ readonly text: string; readonly offset: number }>
     readonly kill: (id: string) => Effect.Effect<boolean>
+    /**
+     * Call `announce` when the job's exit is written (and once at once when it already is): one watch, not recursive,
+     * on the job's own directory, kept until `unwatch`. It only announces; the end is read from the files. False when
+     * no watch could be opened (a host out of watches): the wakes' sweep finds that job's end instead.
+     */
+    readonly watch: (id: string, announce: () => void) => Effect.Effect<boolean>
+    readonly unwatch: (id: string) => Effect.Effect<void>
+    /** The jobs watched now: one per live job of this server's, none once they are all delivered. */
+    readonly watching: Effect.Effect<ReadonlyArray<string>>
   }
 >()("dotfiles-opencode/wake/Runner") {}
 

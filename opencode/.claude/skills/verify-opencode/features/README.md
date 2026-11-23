@@ -52,6 +52,7 @@ Name user paths, tool calls, keys, commands and observable words. Keep source se
 - [Account pool](pool.md): the login each request goes out on, failover on a refused login, resets.
 - [Session mail](mail.md): `sessions` and `message`, a woken idle receiver, a steer into a running one, paired hosts.
 - [Wake latch](wake-latch.md): a subagent start held as a latch, `wake_list`, the reopen.
+- [Durable job events](durable-job-events.md): a job's end reaches its session once, from the runner's call, the start or the sweep; `park`, no polling.
 - [Work](work.md): the `work` tool and its alias `rift`: create, list, remove and land a workspace, with no worktree tools.
 - [Guard](guard.md): refused destructive commands, a subagent's long sleep, heavy commands niced.
 - [Queue](queue.md): the agent's live queue, the tool, the RPC, the sidebar.

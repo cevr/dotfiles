@@ -4,14 +4,15 @@
 // runner gone without an exit reads lost. On Linux, `systemd-run --user`
 // is asked first, and a refusal falls back to a detached runner with a warning.
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Context, Effect, Layer, Option, Ref, Schema, type Scope } from "effect"
-import type { JobRecord, JobSpec, Run } from "../job.ts"
+import { JobExit, type JobRecord, type JobSpec, type Run } from "../job.ts"
+import { RunnerClaim } from "../job-event.ts"
 import { Runner } from "../service.ts"
 import * as ProcessRunner from "./runner.ts"
-import { argvOf, FILES, hostOf, scopeAvailable, writeAtomic } from "./supervise.ts"
+import { argvOf, claim, FILES, hostOf, processStart, scopeAvailable, writeAtomic, writeExit } from "./supervise.ts"
 import type { Ran } from "../cron/backstop.ts"
 import { bounded, notYet, type Observation, type Policy, ready, type TestBounds, testLimitMs, waitFor } from "./readiness.ts"
 
@@ -333,6 +334,64 @@ describe("the process runner", () => {
       expect(fallback.how).toBe("detached")
       expect(fallback.warning).toContain("Failed to connect to bus")
       expect(yield* until(runner, other.id, ended)).toMatchObject({ state: "ended", exit: { exitCode: 0 } })
+    }),
+  )
+})
+
+/** A scratch directory of the test's, removed when its scope closes. */
+const scratchDir = (prefix: string) =>
+  Effect.acquireRelease(
+    Effect.sync(() => mkdtempSync(path.join(tmpdir(), prefix))),
+    (dir) => Effect.sync(() => rmSync(dir, { recursive: true, force: true })),
+  )
+
+/** A live process's pid that is not this one's: launchd's or init's. */
+const OTHER_LIVE = 1
+/** A pid no process has. */
+const NO_PROCESS = 2 ** 22 + 12_345
+
+describe("the runner's claim and its exit", () => {
+  limitedTest(
+    "the first claim wins and a second finds it; the claim names its process with that process's start",
+    Effect.gen(function* () {
+      const dir = yield* scratchDir("opencode-job-claim-")
+      expect([claim(dir, 7, OTHER_LIVE), claim(dir, 8, OTHER_LIVE)]).toEqual([true, false])
+      const held = Schema.decodeUnknownSync(Schema.fromJsonString(RunnerClaim))(readFileSync(path.join(dir, FILES.runner), "utf8"))
+      expect({ pid: held.pid, startedAt: held.startedAt, start: Option.fromNullishOr(held.start) }).toEqual({ pid: OTHER_LIVE, startedAt: 7, start: processStart(OTHER_LIVE) })
+      expect(Option.isSome(processStart(OTHER_LIVE))).toBe(true)
+      // No temporary claim is left behind.
+      expect(readdirSync(dir)).toEqual([FILES.runner])
+    }),
+  )
+
+  test("a claim is the process only while its start matches: a reused pid is not it; a start ps cannot read holds it", () => {
+    const own = { pid: OTHER_LIVE, startedAt: 1, start: "then" }
+    expect([
+      ProcessRunner.claimed(own, () => Option.some("then")),
+      ProcessRunner.claimed(own, () => Option.some("another time")),
+      ProcessRunner.claimed(own, () => Option.none()),
+      ProcessRunner.claimed({ pid: OTHER_LIVE, startedAt: 1 }, () => Option.some("anything")),
+      ProcessRunner.claimed({ pid: NO_PROCESS, startedAt: 1, start: "then" }, () => Option.some("then")),
+    ]).toEqual([true, false, true, true, false])
+  })
+
+  limitedTest(
+    "an exit write that fails is tried again; one that never goes through says so",
+    Effect.gen(function* () {
+      const dir = yield* scratchDir("opencode-job-exit-")
+      // Its directory appears only at the second try: the first write fails as a transient error would.
+      const late = path.join(dir, "late")
+      const tries = { count: 0 }
+      const transient = (file: string, value: JobExit) => {
+        tries.count += 1
+        if (tries.count === 2) mkdirSync(late)
+        writeAtomic(file, value)
+      }
+      const exit: JobExit = { exitCode: 0, startedAt: 1, endedAt: 2, timedOut: false, killed: false, disposition: "succeeded", generation: 1, sequence: 1 }
+      expect(yield* writeExit(late, exit, transient)).toBe(true)
+      expect(tries.count).toBe(2)
+      expect(Schema.decodeUnknownSync(Schema.fromJsonString(JobExit))(readFileSync(path.join(late, FILES.exit), "utf8"))).toEqual(exit)
+      expect(yield* writeExit(path.join(dir, "missing", "dir"), exit)).toBe(false)
     }),
   )
 })

@@ -7,7 +7,7 @@
 // that stopped short (a reload, a crash) goes again under the same id and the
 // session reads it once. Also the wakes' RPC, which the TUI and the OS
 // backstop call.
-import { Schema } from "effect"
+import { Option, Schema } from "effect"
 import { DEFAULT_JOB_TIMEOUT_SECONDS, JobShown, type JobSpec, MAX_JOB_TIMEOUT_SECONDS } from "./job.ts"
 import { Latch } from "./latch.ts"
 
@@ -107,6 +107,14 @@ export const Job = Schema.Struct({
   dripped: Schema.Number,
   /** Epoch ms: the last progress delivery, or when it was set. */
   drippedAt: Schema.Number,
+  /**
+   * Which run of the job its runner runs (job-event.ts). Present on a job this build started: a managed job, whose end
+   * reaches its session once, by its letter or by the owner's own call that returned it. Absent on an older build's
+   * entry, which keeps the old rule: a `wait` or `kill` that saw the end takes it.
+   */
+  generation: Schema.optional(Schema.Number),
+  /** The end was delivered (`letter`: its fire reached the session; `tool`: the owner's call returned it) under this id; the entry goes next. */
+  done: Schema.optional(Schema.Struct({ delivery: Schema.String, via: Schema.Literals(["letter", "tool"]) })),
 })
 export type Job = typeof Job.Type
 
@@ -358,6 +366,7 @@ export const jobOf = (ask: JobAsk, place: Place): Job | WakeRejected => {
     timeoutSeconds: timeout,
     dripped: 0,
     drippedAt: place.now,
+    generation: 1,
   }
 }
 
@@ -372,6 +381,7 @@ export const specOf = (job: Job): JobSpec => ({
   heavy: job.heavy,
   timeoutSeconds: job.timeoutSeconds,
   setAt: job.setAt,
+  ...Option.match(Option.fromNullishOr(job.generation), { onNone: () => ({}), onSome: (generation) => ({ generation }) }),
 })
 
 // ── Firing ──
