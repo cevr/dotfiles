@@ -70,6 +70,10 @@ export interface Answer {
     readonly path?: string
     readonly branch?: string
     readonly rifts?: ReadonlyArray<string>
+    /** A pushed land's: the commit it pushed to the default branch. */
+    readonly pushed?: string
+    /** A pushed land's: each workspace it landed, with the head the batch merged of it. */
+    readonly landed?: ReadonlyArray<{ readonly path: string; readonly head: string }>
   }
 }
 
@@ -514,7 +518,8 @@ export const layer = Layer.effect(
       if (!workspace.git || workspace.branch === undefined) return yield* new LandRefused({ path, reason: "is not on a Git branch." })
       const own = yield* landing.ownChanges(path, source)
       if (own.length > 0) return yield* new LandRefused({ path, reason: `holds uncommitted changes; commit them first:\n${some(own)}` })
-      return { path, branch: workspace.branch } satisfies Unit
+      // Its head as found: what the batch merges of it, which a pushed land's answer names (`Answer.metadata.landed`).
+      return { unit: { path, branch: workspace.branch } satisfies Unit, head: workspace.head }
     })
 
     /**
@@ -635,7 +640,8 @@ export const layer = Layer.effect(
         const base = yield* rifts.source(path)
         if (base !== source) return yield* new LandRefused({ path, reason: `is a workspace of ${base}, not of ${source}; land each base's workspaces in a call of their own.` })
       }
-      const units = yield* Effect.forEach(paths, (path) => unitOf(path, source))
+      const found = yield* Effect.forEach(paths, (path) => unitOf(path, source))
+      const units = found.map((each) => each.unit)
       const config = yield* landing.config(source)
       const gateCommand = config.gate
       if (gateCommand === undefined) return yield* new GateMissing({ source })
@@ -748,7 +754,9 @@ export const layer = Layer.effect(
             Gate: ({ ran }) => landedText({ ...landed, gate: ran } satisfies Landed, acceptsAfter, postLands),
             Receipts: (by) => receiptLandedText({ ...landed, covered: by.covered, merge: Option.map(by.merge, (done) => done.ran), record }, acceptsAfter, postLands),
           }),
-          metadata: { action: "land" as const, source, path: integration, rifts: paths },
+          // A pushed land names what it pushed and each workspace's head it merged, for a reader that records lands (the
+          // orchestrate plugin's commitments); a land that did not push names neither.
+          metadata: { action: "land" as const, source, path: integration, rifts: paths, pushed: pushed.split(" ")[0] ?? "", landed: found.map((each) => ({ path: each.unit.path, head: each.head })) },
         }
       }).pipe(Effect.ensuring(Effect.sync(() => (accepting ? undefined : busy.delete(integration)))))
     })

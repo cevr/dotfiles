@@ -208,11 +208,12 @@
                   "*/**/effect",
                   "!@dotfiles/decider/*",
                   "!@dotfiles/opencode-digest/event",
+                  "!@dotfiles/opencode-digest/redact",
                   "!./*.ts",
                   "!./agents.json",
                   "!bun:test"
                 ],
-                "message": "The orchestrate domain fence: orchestrate's domain files import effect, @dotfiles/decider/*, the digest's event format (@dotfiles/opencode-digest/event), orchestrate's own root files (and the generated agents.json) and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of orchestrate's folders."
+                "message": "The orchestrate domain fence: orchestrate's domain files import effect, @dotfiles/decider/*, the digest's event format (@dotfiles/opencode-digest/event) and its redaction (@dotfiles/opencode-digest/redact), orchestrate's own root files (and the generated agents.json) and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of orchestrate's folders."
               }
             ]
           }
