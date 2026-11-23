@@ -25,7 +25,7 @@ import { JobExit, type JobRecord, JobSpec, type Launched, NEVER_STARTED, type Ru
 import { type Exec } from "../cron/backstop.ts"
 import { JobRefused, Runner } from "../service.ts"
 import { Delivery, isJobID, LaunchClaim, type Retired, RunnerClaim, type Slot } from "../job-event.ts"
-import { type Barrier, type Disk, FILES, type JobFile, NODE_DISK, openDir, processStart, removeDurable, sealDirectory, SELF, writeAtomic, writeDurable } from "./supervise.ts"
+import { type Barrier, type Disk, FILES, type JobFile, NODE_DISK, openDir, processStart, removeDurable, RootHandoff, sealDirectory, SELF, writeAtomic, writeDurable } from "./supervise.ts"
 
 export interface Config {
   /** Where each job's directory is kept. */
@@ -169,6 +169,8 @@ const bytesFrom = (file: string, from: number): Uint8Array => {
 /** A system error's code, as `fs.watch` throws one (ENOSPC past Linux's inotify watches, EMFILE past the open files). */
 const Coded = Schema.Struct({ code: Schema.String })
 
+const quoted = (arg: string) => `'${arg.replaceAll("'", "'\\''")}'`
+
 export const layer = (config: Config) => {
   const { root } = config
   const dirOf = (id: string) => path.join(root, id)
@@ -282,7 +284,13 @@ export const layer = (config: Config) => {
             const env = Object.fromEntries(Object.entries(config.env).flatMap(([key, value]) => Option.toArray(Option.map(Option.fromNullishOr(value), (set) => [key, set] as const))))
             writeLaunch(root, spec, { spec, ...(descriptor === undefined ? {} : { notify: descriptor }) }, env, disk)
           },
-          catch: (cause) => new JobRefused({ message: `its files were not written in ${dir}: ${cause instanceof Error ? cause.message : String(cause)}` }),
+          catch: (cause) => {
+            if (cause instanceof RootHandoff) {
+              const handoff = [config.bun, config.script, "--seal-root", cause.root].map(quoted).join(" ")
+              return new JobRefused({ message: `${cause.message} An operator with access to the parent and root must run: ${handoff}` })
+            }
+            return new JobRefused({ message: `its files were not written in ${dir}: ${cause instanceof Error ? cause.message : String(cause)}` })
+          },
         })
         const where = { log: path.join(dir, FILES.log), drip: path.join(dir, FILES.drip) }
         let warning: string | undefined

@@ -19,7 +19,7 @@ import * as MemoryStore from "../memory/store.ts"
 import * as Model from "../model.ts"
 import { type CallAnswer, Changes, Runner, WakeStore } from "../service.ts"
 import * as ProcessRunner from "./runner.ts"
-import { argvOf, claim, type Disk, FILES, hostOf, NODE_DISK, processStart, ranOf, removeDurable, scopeAvailable, writeAtomic, writeDurable, writeExit } from "./supervise.ts"
+import { argvOf, claim, type Disk, FILES, hostOf, NODE_DISK, processStart, ranOf, removeDurable, scopeAvailable, UNSEALED_ROOT, writeAtomic, writeDurable, writeExit } from "./supervise.ts"
 import type { Ran } from "../cron/backstop.ts"
 import { bounded, notYet, type Observation, type Policy, ready, type TestBounds, testLimitMs, waitFor } from "./readiness.ts"
 
@@ -27,7 +27,8 @@ import { bounded, notYet, type Observation, type Policy, ready, type TestBounds,
 const PATIENT: Policy = { within: "10 seconds", every: "50 millis" }
 
 /** A module beside this test, as a scratch script imports it. */
-const besideThis = (file: string) => JSON.stringify(path.join(import.meta.dir, file))
+const sourceAt = (file: string) => path.join(import.meta.dir, file)
+const besideThis = (file: string) => JSON.stringify(sourceAt(file))
 
 /** The runner a test drives, with the scratch directory its jobs live in. */
 const runnerIn = (scratch: string, script: string, config: Partial<ProcessRunner.Config> = {}) =>
@@ -239,6 +240,95 @@ fixtureTest("job root layout matrix on the real filesystem", ({ scratch, runnerO
         }
       }
     }
+  }),
+)
+
+fixtureTest("job root permissions handoff after publication cut on the real filesystem", ({ scratch, runnerOf, specOf }) =>
+  Effect.gen(function* () {
+    for (const [mode, parentSynced] of [[0o555, false], [0o555, true], [0o311, false], [0o311, true]] as const) {
+        yield* Effect.scoped(Effect.gen(function* () {
+          const spec = specOf("printf handoff", { generation: 1 })
+          const parent = path.join(scratch, spec.id)
+          const root = path.join(parent, "job-state")
+          const marker = path.join(root, UNSEALED_ROOT)
+          yield* Effect.acquireRelease(
+            Effect.sync(() => mkdirSync(parent, { mode: 0o755 })),
+            () => Effect.sync(() => chmodSync(parent, 0o700)),
+          )
+          let stopped = false
+          const first = runnerOf({ root, disk: {
+            ...NODE_DISK,
+            syncDir: (dir) => {
+              if (!parentSynced && dir === parent && NODE_DISK.named(root)) {
+                stopped = true
+                lost()
+              }
+              NODE_DISK.syncDir(dir)
+            },
+            unlink: (file) => {
+              if (parentSynced && file === marker) {
+                stopped = true
+                lost()
+              }
+              NODE_DISK.unlink(file)
+            },
+            create: (file, permissions) => {
+              if (stopped) lost()
+              return NODE_DISK.create(file, permissions)
+            },
+          } })
+          expect(Result.isFailure(yield* Effect.result(first.launch(spec)))).toBe(true)
+          expect(stopped && existsSync(marker)).toBe(true)
+          chmodSync(parent, mode)
+          if (mode === 0o311 && !parentSynced) {
+            // Exercise the typed handoff even on hosts that normally support volume sync.
+            const noVolume = runnerOf({ root, disk: { ...NODE_DISK, syncVolume: () => false } })
+            const refusal = Option.getOrThrow(Result.getFailure(yield* Effect.result(noVolume.launch(spec))))
+            expect(refusal._tag).toBe("JobRefused")
+            expect(refusal.message).toContain(`'--seal-root' '${root}'`)
+            expect(existsSync(path.join(root, spec.id))).toBe(false)
+          }
+          let viaVolume = false
+          const second = runnerOf({ root, disk: {
+            ...NODE_DISK,
+            syncVolume: (dir) => {
+              viaVolume = NODE_DISK.syncVolume(dir)
+              return viaVolume
+            },
+          } })
+          expect((yield* second.launch(spec)).how).toBe("detached")
+          const run = yield* until(second, spec.id, ended)
+          expect(run.state === "ended" && run.exit.exitCode).toBe(0)
+          expect(viaVolume).toBe(mode === 0o311)
+          expect(existsSync(marker)).toBe(false)
+          yield* Console.log(`job root handoff: parent ${mode.toString(8)}, cut ${parentSynced && "after" || "before"} parent sync, certified via ${viaVolume && "volume" || "parent"}`)
+        }))
+    }
+  }),
+)
+
+// @reads cmd/wake/job.ts
+fixtureTest("a certified job root remains usable when marker cleanup fails; the operator can clear it", ({ scratch, runnerOf, specOf }) =>
+  Effect.gen(function* () {
+    const root = path.join(scratch, "handoff")
+    const marker = path.join(root, UNSEALED_ROOT)
+    const writer = runnerOf({ root, disk: {
+      ...NODE_DISK,
+      unlink: (file) => {
+        if (file === marker) permissionDenied()
+        NODE_DISK.unlink(file)
+      },
+    } })
+    const spec = specOf("true", { generation: 1 })
+    const launched = yield* writer.launch(spec)
+    expect(launched.how).toBe("detached")
+    yield* until(writer, spec.id, ended)
+    // A detached supervisor can also certify and clear it. Plant a conservative marker on the already sealed root.
+    writeAtomic(marker, {})
+    const script = sourceAt("../../../cmd/wake/job.ts")
+    const run = Option.getOrThrow(ranOf(["bun", script, "--seal-root", root]))
+    expect(run.exitCode).toBe(0)
+    expect(existsSync(marker)).toBe(false)
   }),
 )
 
@@ -638,6 +728,8 @@ interface Crash {
   readonly outcomes: () => Iterable<Crash>
   /** Every whole content a writer gave a file: a record read from the disk must be one of these. */
   readonly written: Set<string>
+  /** The first process stopped, not the disk; another writer can still see its unsynced names. */
+  readonly resume: () => void
 }
 
 /** Every byte-prefix of the model's ASCII wire fixtures, including loss and the whole write. */
@@ -675,10 +767,10 @@ const crashDisk = (lossAt: number, files: ReadonlyMap<string, string>, dirs: Rea
   const pending: Array<NameOp> = []
   const fds = new Map<number, number>()
   const written = new Set<string>(files.values())
-  const state = { calls: 0, fds: 2 }
+  const state = { calls: 0, fds: 2, lossAt, stages: 0 }
   const call = <A>(run: () => A): A => {
     state.calls += 1
-    if (state.calls >= lossAt) return lost<A>()
+    if (state.calls >= state.lossAt) return lost<A>()
     return run()
   }
   const named = (dir: string, apply: NameOp["apply"]) => {
@@ -737,6 +829,29 @@ const crashDisk = (lossAt: number, files: ReadonlyMap<string, string>, dirs: Rea
     list: (dir) =>
       call(() => [...new Set([...names.keys(), ...present].flatMap((each) => Option.toArray(Option.liftPredicate(each, (one) => one !== dir && path.dirname(one) === dir)).map((one) => path.basename(one))))]),
     named: (name) => call(() => names.has(name) || present.has(name)),
+    stage: (parent) => call(() => {
+      const dir = path.join(parent, `.wake-stage-${++state.stages}`)
+      named(parent, (_into, made) => void made.add(dir))
+      return dir
+    }),
+    publish: (from, to) => call(() => {
+      if (present.has(to) || names.has(to)) return false
+      const children = [...names.keys()].filter((name) => name.startsWith(`${from}/`))
+      named(path.dirname(to), (into, made) => {
+        made.delete(from)
+        made.add(to)
+        for (const child of children) {
+          for (const inode of Option.toArray(Option.fromUndefinedOr(into.get(child)))) into.set(`${to}${child.slice(from.length)}`, inode)
+          into.delete(child)
+        }
+      })
+      return true
+    }),
+    syncVolume: () => call(() => {
+      for (const op of pending) op.apply(durable.names, durable.dirs)
+      pending.length = 0
+      return true
+    }),
   }
   function* outcomes(): IterableIterator<Crash> {
     const seen = new Set<string>()
@@ -766,7 +881,7 @@ const crashDisk = (lossAt: number, files: ReadonlyMap<string, string>, dirs: Rea
       }
     }
   }
-  return { disk, calls: () => state.calls, outcomes, written }
+  return { disk, calls: () => state.calls, outcomes, written, resume: () => { state.lossAt = Number.POSITIVE_INFINITY } }
 }
 
 const CRASH_ROOT = "/r/jobs"
@@ -774,6 +889,58 @@ const CRASH_DIRS = new Set(["/", "/r", CRASH_ROOT])
 const CRASH_OWNER = "ses_crash"
 const CRASH_HOME = "/work/crash"
 const CRASH_DESTINATION = "/work/moved"
+
+const permissionDenied = () => Option.getOrThrowWith(Option.none<never>(), () => ({ code: "EACCES" }))
+
+const parentMode = (disk: Disk, mode: number, supported: boolean): Disk => ({
+  ...disk,
+  stage: (parent) => {
+    if (mode === 0o555) permissionDenied()
+    return disk.stage(parent)
+  },
+  syncDir: (dir) => {
+    if (dir === "/r" && mode === 0o311) permissionDenied()
+    disk.syncDir(dir)
+  },
+  syncVolume: (dir) => supported && disk.syncVolume(dir),
+})
+
+limitedTest("a peer can arrive at every job root creation cut under changed permissions",
+  Effect.gen(function* () {
+    const file = path.join(CRASH_ROOT, "first.json")
+    const peer = path.join(CRASH_ROOT, "peer.json")
+    const directories = new Set(["/", "/r"])
+    const newDisk = (cut: number) => crashDisk(cut, new Map(), directories)
+    const first = (disk: Disk) => writeAtomic(file, { actor: 1 }, 0o600, disk, CRASH_ROOT)
+    const counted = newDisk(Number.POSITIVE_INFINITY)
+    first(counted.disk)
+    const cuts = counted.calls() + 1
+    let recovered = 0
+    for (let cut = 1; cut <= cuts; cut++) {
+      for (const [mode, supported] of [[0o755, true], [0o555, true], [0o311, true], [0o311, false]] as const) {
+        const crash = newDisk(cut)
+        const { disk } = crash
+        const original = yield* Effect.exit(Effect.sync(() => first(disk)))
+        crash.resume()
+        const rootExists = disk.named(CRASH_ROOT)
+        const firstUnsealed = disk.named(path.join(CRASH_ROOT, UNSEALED_ROOT))
+        const second = parentMode(disk, mode, supported)
+        const ack = yield* Effect.exit(Effect.sync(() => writeAtomic(peer, { actor: 2 }, 0o600, second, CRASH_ROOT)))
+        const canUse = mode === 0o755 || (rootExists && (mode === 0o555 || supported || !firstUnsealed))
+        expect({ cut, mode, supported, acknowledged: Exit.isSuccess(ack) }).toEqual({ cut, mode, supported, acknowledged: canUse })
+        for (const { disk: image } of crash.outcomes()) {
+          if (Exit.isSuccess(original)) expect(image.read(file)).toEqual(Option.some('{"actor":1}'))
+          if (canUse) expect(image.read(peer)).toEqual(Option.some('{"actor":2}'))
+          // No visible final name is ever published without its marker during the uncertain interval.
+          if (!rootExists && !canUse) expect(image.named(CRASH_ROOT)).toBe(false)
+          recovered += 1
+        }
+      }
+    }
+    expect(recovered).toBeGreaterThan(cuts * 4)
+    yield* Console.log(`job root power loss: ${cuts} writer cuts, 4 permission/capability cases per cut, ${recovered} recovered trees`)
+  }),
+)
 
 /** What the actors outside the disk did: they survive a power loss of the disk. */
 interface Acted {
@@ -1061,7 +1228,7 @@ limitedTest("a second location makes a visible but unsynced letter slot durable 
 )
 
 /** A stopped peer really enters the production disk adapter, but dies after the chosen name becomes visible. */
-const stoppedPeer = (disk: Disk, stopAfter: { readonly operation: "mkdir" | "rename" | "link"; readonly name: string }, write: (peer: Disk) => void) =>
+const stoppedPeer = (disk: Disk, stopAfter: { readonly operation: "mkdir" | "publish" | "rename" | "link"; readonly name: string }, write: (peer: Disk) => void) =>
   Effect.exit(Effect.sync(() => {
     const stop = (operation: typeof stopAfter.operation, name: string) => {
       if (stopAfter.operation === operation && stopAfter.name === name) lost()
@@ -1075,6 +1242,11 @@ const stoppedPeer = (disk: Disk, stopAfter: { readonly operation: "mkdir" | "ren
       rename: (from, to) => {
         disk.rename(from, to)
         stop("rename", to)
+      },
+      publish: (from, to) => {
+        const took = disk.publish(from, to)
+        if (took) stop("publish", to)
+        return took
       },
       link: (from, to) => {
         const took = disk.link(from, to)
@@ -1170,7 +1342,8 @@ const peerPowerLoss = (phase: "before" | "after") =>
             if (which === "job-dir") writeAtomic(path.join(DEEP_ROOT, ".owed", "peer.json"), {}, 0o600, { ...disk }, DEEP_ROOT)
             const launch = (peer: Disk) => ProcessRunner.writeLaunch(DEEP_ROOT, spec, { spec }, {}, peer)
             for (const name of Option.toArray(pauseAtDirectory(which, spec.id))) {
-              const result = yield* stoppedPeer(disk, { operation: "mkdir", name }, launch)
+              const operation = (name === path.join(DEEP_ROOT, spec.id) || name === path.join(DEEP_ROOT, ".owed")) && "mkdir" || "publish"
+              const result = yield* stoppedPeer(disk, { operation, name }, launch)
               expect(Exit.isFailure(result)).toBe(true)
               uncommitted(crash, path.dirname(name), path.basename(name))
               if (which === "root") {
@@ -1180,9 +1353,10 @@ const peerPowerLoss = (phase: "before" | "after") =>
                 const blocked = yield* Effect.exit(Effect.sync(() => launch({
                   ...disk,
                   syncDir: (dir) => {
-                    if (dir === parent) lost()
+                    if (dir === parent) permissionDenied()
                     disk.syncDir(dir)
                   },
+                  syncVolume: () => false,
                 })))
                 expect(Exit.isFailure(blocked)).toBe(true)
                 expect(disk.list(name)).not.toContain(spec.id)

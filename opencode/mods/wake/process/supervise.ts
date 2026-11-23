@@ -34,9 +34,9 @@
 // - stop: asks a runner not yet up to record a kill instead of running
 // - log, drip, exit.json
 import { dlopen, FFIType } from "bun:ffi"
-import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs"
+import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs"
 import path from "node:path"
-import { Duration, Effect, Option, Result, Schedule, Schema } from "effect"
+import { Duration, Effect, Match, Option, Result, Schedule, Schema } from "effect"
 import { DEFAULT_LIMITS, heavyArgv, type Host, ioniceAvailable, SCOPE_PROBE } from "@dotfiles/opencode-guard/launcher"
 import type { Descriptor } from "../backstop.ts"
 import { type JobExit, type JobSpec, KILL_GRACE_MS } from "../job.ts"
@@ -92,15 +92,58 @@ export interface Disk {
   readonly list: (dir: string) => ReadonlyArray<string>
   /** Look up one name, without opening its parent for enumeration. Only absence is false. */
   readonly named: (name: string) => boolean
+  /** Private sibling directory; publish its whole subtree without replacing a name another actor took. */
+  readonly stage: (parent: string) => string
+  readonly publish: (staged: string, root: string) => boolean
+  /** Wait for filesystem metadata as well as file data, using only a handle at `dir`. */
+  readonly syncVolume: (dir: string) => boolean
 }
 
+const platform = process.platform
+const LIBSYSTEM = "/usr/lib/libSystem.B.dylib"
 /** `fcntl(fd, F_FULLFSYNC)` from libSystem, on macOS: there `fsync` leaves the data in the drive's cache; none elsewhere, or where it cannot be bound. */
 const fullSync = Option.flatMap(
-  Option.liftPredicate(process.platform, (platform) => platform === "darwin"),
-  () =>
-    Option.liftThrowable(() => dlopen("/usr/lib/libSystem.B.dylib", { fcntl: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 } }).symbols.fcntl)(),
+  Option.liftPredicate(platform, (os) => os === "darwin"),
+  () => Option.liftThrowable(() => dlopen(LIBSYSTEM, { fcntl: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 } }).symbols.fcntl)(),
 )
 const F_FULLFSYNC = 51
+
+const { i32, ptr, u32 } = FFIType
+const AT_FDCWD = -100
+const RENAME_NOREPLACE = 1
+const RENAME_EXCL = 4
+const SYNC_VOLUME_FULLSYNC_WAIT = 3
+const kernelRename = Match.value(platform).pipe(
+  Match.when("darwin", () => Option.liftThrowable(() => {
+    const { renamex_np } = dlopen(LIBSYSTEM, { renamex_np: { args: [ptr, ptr, u32], returns: i32 } }).symbols
+    return (from: Uint8Array, to: Uint8Array) => renamex_np(from, to, RENAME_EXCL)
+  })()),
+  Match.when("linux", () => Option.liftThrowable(() => {
+    const { renameat2 } = dlopen("libc.so.6", { renameat2: { args: [i32, ptr, i32, ptr, u32], returns: i32 } }).symbols
+    return (from: Uint8Array, to: Uint8Array) => renameat2(AT_FDCWD, from, AT_FDCWD, to, RENAME_NOREPLACE)
+  })()),
+  Match.orElse(() => Option.none<(from: Uint8Array, to: Uint8Array) => number>()),
+)
+const volumeSync = Match.value(platform).pipe(
+  Match.when("darwin", () => Option.liftThrowable(() => {
+    const { fsync_volume_np } = dlopen(LIBSYSTEM, { fsync_volume_np: { args: [i32, i32], returns: i32 } }).symbols
+    // Darwin SDK unistd.h: wait for the volume's data and metadata, not just this descriptor's vnode.
+    return (fd: number) => fsync_volume_np(fd, SYNC_VOLUME_FULLSYNC_WAIT) === 0 && Option.exists(fullSync, (fcntl) => fcntl(fd, F_FULLFSYNC) === 0)
+  })()),
+  Match.when("linux", () => Option.liftThrowable(() => {
+    const { syncfs } = dlopen("libc.so.6", { syncfs: { args: [i32], returns: i32 } }).symbols
+    return (fd: number) => syncfs(fd) === 0
+  })()),
+  Match.orElse(() => Option.none<(fd: number) => boolean>()),
+)
+const cstring = (name: string) => new TextEncoder().encode(`${name}\0`)
+
+const onDir = <A>(dir: string, use: (fd: number) => A): A => {
+  const fd = openSync(dir, "r")
+  const done = Result.try(() => use(fd))
+  closeSync(fd)
+  return Result.getOrThrow(done)
+}
 
 /** The host's file system. On macOS a sync is F_FULLFSYNC (flushed through the drive's cache); where that is refused, and elsewhere, fsync. */
 export const NODE_DISK: Disk = {
@@ -110,12 +153,7 @@ export const NODE_DISK: Disk = {
     if (!Option.exists(fullSync, (fcntl) => fcntl(fd, F_FULLFSYNC) === 0)) fsyncSync(fd)
   },
   close: (fd) => closeSync(fd),
-  syncDir: (dir) => {
-    const fd = openSync(dir, "r")
-    const done = Result.try(() => NODE_DISK.sync(fd))
-    closeSync(fd)
-    Result.getOrThrow(done)
-  },
+  syncDir: (dir) => onDir(dir, NODE_DISK.sync),
   link: (from, to) => Option.isSome(Option.liftThrowable(() => linkSync(from, to))()),
   rename: (from, to) => renameSync(from, to),
   unlink: (file) => rmSync(file, { force: true }),
@@ -123,6 +161,9 @@ export const NODE_DISK: Disk = {
   read: (file) => Option.liftThrowable(() => readFileSync(file, "utf8"))(),
   list: (dir) => Option.getOrElse(Option.liftThrowable(() => readdirSync(dir))(), (): ReadonlyArray<string> => []),
   named: (name) => Option.isSome(Option.fromUndefinedOr(statSync(name, { throwIfNoEntry: false }))),
+  stage: (parent) => mkdtempSync(path.join(parent, ".wake-stage-")),
+  publish: (staged, root) => Option.exists(kernelRename, (rename) => rename(cstring(staged), cstring(root)) === 0),
+  syncVolume: (dir) => Option.exists(volumeSync, (sync) => onDir(dir, sync)),
 }
 
 /** A process's own synced directory names. The job store does not rename or remove directories. */
@@ -134,10 +175,51 @@ class RootUnsealed extends Schema.TaggedError<RootUnsealed>()("RootUnsealed", { 
   }
 }
 
+export class RootHandoff extends Schema.TaggedError<RootHandoff>()("RootHandoff", { root: Schema.String, parent: Schema.String, reason: Schema.String }) {
+  override get message() {
+    return `Cannot certify job storage directory ${this.root} in ${this.parent}: ${this.reason}.`
+  }
+}
+
+export const UNSEALED_ROOT = ".wake-unsealed"
+const markerIn = (root: string) => path.join(root, UNSEALED_ROOT)
+const Permission = Schema.Struct({ code: Schema.Literals(["EACCES", "EPERM"]) })
+
+const syncRootName = (root: string, disk: Disk) => {
+  const parent = path.dirname(root)
+  const sync = Result.try(() => disk.syncDir(parent))
+  if (Result.isSuccess(sync)) return
+  if (Option.isSome(Schema.decodeUnknownOption(Permission)(sync.failure))) {
+    const viaVolume = Result.try(() => disk.syncVolume(root))
+    if (Result.isSuccess(viaVolume) && viaVolume.success) return
+  }
+  // A racing writer can prove this name and clear the marker while we are attempting the parent.
+  if (!disk.named(markerIn(root))) return
+  Result.getOrThrow(Result.fail(new RootHandoff({ root, parent, reason: String(sync.failure) })))
+}
+
+/** Explicit operator handoff: only remove the marker after syncing the parent, then sync the removal. */
+export const sealJobRoot = (dir: string): void => {
+  const root = path.resolve(dir)
+  if (!NODE_DISK.named(markerIn(root))) return
+  NODE_DISK.syncDir(path.dirname(root))
+  NODE_DISK.unlink(markerIn(root))
+  NODE_DISK.syncDir(root)
+}
+
+const stageRoot = (root: string, disk: Disk): void => {
+  const parent = path.dirname(root)
+  // A missing root can't be created when its parent cannot be synced. Check before making even a temporary name.
+  disk.syncDir(parent)
+  const stage = disk.stage(parent)
+  writeName(markerIn(stage), {}, disk, {})
+  if (disk.publish(stage, root) || disk.named(root)) return
+  Result.getOrThrow(Result.fail(new RootUnsealed({ root, parent, reason: "atomic directory publication failed" })))
+}
+
 /**
- * A configured root is provisioned unless a creation intent names it. A writer makes that sibling name durable
- * BEFORE mkdir, and removes it only after syncing the directory entry. Looking up the root before the intent
- * distinguishes a peer's unsynced mkdir from a provisioned root without ever opening a provisioning parent.
+ * Only a marked directory may be published. A provisioned or sealed root has no marker and never opens its
+ * parent. A peer with a marked root first certifies the name; cleanup touches only the root and cannot veto use.
  */
 const sealRoot = (root: string, disk: Disk, synced: Set<string>, create: boolean): boolean => {
   if (synced.has(root)) return true
@@ -145,21 +227,20 @@ const sealRoot = (root: string, disk: Disk, synced: Set<string>, create: boolean
   if (!exists && !create) return false
   const parent = path.dirname(root)
   if (parent === root) return exists
-  const intent = path.join(parent, `.wake-creating-${path.basename(root)}`)
-  if (!exists || disk.named(intent)) {
+  if (!exists) {
     const result = Result.try(() => {
-      if (!exists) {
-        // A missing chain of directories becomes ours only below its deepest provisioned directory.
-        sealRoot(parent, disk, synced, true)
-        disk.syncDir(parent)
-        writeName(intent, {}, disk, {})
-        disk.mkdir(root)
-      }
-      disk.syncDir(parent)
-      disk.unlink(intent)
-      disk.syncDir(parent)
+      sealRoot(parent, disk, synced, true)
+      stageRoot(root, disk)
     })
+    if (Result.isFailure(result) && result.failure instanceof RootHandoff) Result.getOrThrow(result)
     Result.getOrThrowWith(result, (cause) => new RootUnsealed({ root, parent, reason: String(cause) }))
+  }
+  if (disk.named(markerIn(root))) {
+    syncRootName(root, disk)
+    Result.try(() => {
+      disk.unlink(markerIn(root))
+      disk.syncDir(root)
+    })
   }
   synced.add(root)
   return true

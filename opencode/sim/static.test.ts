@@ -11,7 +11,7 @@ import { describe, expect, test } from "bun:test"
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem"
 import * as NodePath from "@effect/platform-node/NodePath"
 import * as NodeChildProcessSpawner from "@effect/platform-node/NodeChildProcessSpawner"
-import { Effect, FileSystem, Layer, Option, Path, PlatformError } from "effect"
+import { Effect, FileSystem, Layer, Option, Path, PlatformError, Schema } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { gitInit } from "../tests/git-repo.ts"
 import * as Seed from "./seed.ts"
@@ -90,7 +90,7 @@ describe("no wall time in a simulated file", () => {
 })
 
 /** The test driver is not an OpenCode plugin capability. Only the fork-checked `session.context` crosses it. */
-const driverAccess = /(?:from\s*|import\s*\(?\s*|require\s*\(\s*)["'](?:@dotfiles\/opencode-sim(?:\/|["'])|(?:\.\.\/)+sim\/)|\bworld\s*(?:\.\s*messages\b|\[\s*["']messages["']\s*\])/
+const driverAccess = /(?:from\s*|import\s*\(?\s*|require\s*\(\s*)["'](?:@dotfiles\/opencode-sim(?:\/|["'])|(?:\.\.?\/)+(?:opencode\/)?sim\/)|\bworld\s*(?:\.\s*messages\b|\[\s*["']messages["']\s*\])/
 const code = /\.(?:[cm]?[jt]s|[jt]sx)$/
 const testFile = /\.(?:test|spec|bench)\.(?:[cm]?[jt]s|[jt]sx)$/
 const product = /^(?:cmd|mods)\//
@@ -102,7 +102,18 @@ const git = (root: string, ...args: ReadonlyArray<string>) =>
     return yield* spawner.string(ChildProcess.make("git", args, { cwd: root, stdin: "ignore", forceKillAfter: "1 second" }))
   })
 
-const names = (root: string) => git(root, "ls-files", "-z", "--", ".").pipe(Effect.map((output) => output.split("\0").filter((file) => code.test(file))))
+const listed = (root: string) =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path
+    const prefix = (yield* git(root, "rev-parse", "--show-prefix")).trim()
+    const output = yield* git(root, "ls-files", "--full-name", "-z", "--", ":/")
+    return output.split("\0").filter(Boolean).map((file) => path.relative(prefix, file))
+  })
+const names = (root: string) => listed(root).pipe(Effect.map((files) => files.filter((file) => code.test(file))))
+const manifest = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({
+  name: Schema.String,
+  exports: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+})))
 
 const ts = new Bun.Transpiler({ loader: "ts" })
 const tsx = new Bun.Transpiler({ loader: "tsx" })
@@ -114,27 +125,61 @@ const dependencies = (file: string, source: string) => [
   ...[...source.matchAll(/\bimport\s*\(\s*["']([^"']+)["']\s*\)/g)].map((match) => String(match[1])),
 ]
 
+const workspacePackages = (root: string, paths: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const packages = new Map<string, { readonly folder: string; readonly exports: Readonly<Record<string, string>> }>()
+    const entries = new Set<string>([adapter])
+    for (const file of paths) {
+      if (path.basename(file) !== "package.json") continue
+      for (const pkg of Option.toArray(manifest(yield* fs.readFileString(path.join(root, file))))) {
+        const folder = path.dirname(file)
+        const exports = pkg.exports || {}
+        packages.set(pkg.name, { folder, exports })
+        if (!product.test(file)) continue
+        for (const target of Object.values(exports)) if (!target.includes("*")) entries.add(path.join(folder, target))
+      }
+    }
+    return { packages, entries }
+  })
+
 const leaksIn = (root: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
-    const files = yield* names(root)
+    const paths = yield* listed(root)
+    const files = paths.filter((file) => code.test(file))
+    const { packages, entries } = yield* workspacePackages(root, paths)
     const content = yield* Effect.forEach(files, (file) => fs.readFileString(path.join(root, file)).pipe(Effect.map((text) => [file, text] as const)))
     const tracked = new Set(files)
     const importers = new Map<string, Set<string>>()
     const imports = new Map<string, Set<string>>()
     const extensions = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]
+    const workspaceOf = (target: string): ReadonlyArray<string> => {
+      const match = Option.fromNullishOr(/^((?:@[^/]+\/)?[^/]+)(?:\/(.+))?$/.exec(target))
+      return Option.toArray(Option.flatMap(match, ([, name, suffix]) => Option.fromUndefinedOr(packages.get(String(name))).pipe(
+        Option.flatMap(({ folder, exports }) => {
+          const key = (suffix && `./${suffix}`) || "."
+          for (const [prefix, value] of Object.entries(exports).toSorted(([a], [b]) => b.length - a.length)) {
+            if (prefix === key) return Option.some(path.join(folder, value))
+            if (!prefix.endsWith("*")) continue
+            const start = prefix.slice(0, -1)
+            if (key.startsWith(start)) return Option.some(path.join(folder, value.replace("*", key.slice(start.length))))
+          }
+          return Option.none()
+        }),
+      )))
+    }
     const resolve = (file: string, target: string) => {
-      const workspace = Option.fromNullishOr(/^@dotfiles\/opencode-(cmd-)?([^/]+)(?:\/(.+))?$/.exec(target))
-      const base = Option.match(workspace, {
-        onSome: ([, command, name, subpath]) => path.join((command && "cmd") || "mods", String(name), subpath || "index"),
-        onNone: () => path.join(path.dirname(file), target),
-      })
-      return [base, ...extensions.flatMap((ext) => [`${base}${ext}`, `${base}/index${ext}`])].find((candidate) => tracked.has(candidate))
+      const bases = target.startsWith(".") && [path.join(path.dirname(file), target)] || workspaceOf(target)
+      return bases
+        .map((from) => path.relative(root, path.resolve(root, from)))
+        .flatMap((base) => [base, ...extensions.flatMap((ext) => [`${base}${ext}`, `${base}/index${ext}`])])
+        .find((candidate) => tracked.has(candidate))
     }
     for (const [file, text] of content) {
       for (const target of dependencies(file, text)) {
-        if (!target.startsWith(".") && !target.startsWith("@dotfiles/opencode-")) continue
         const imported = resolve(file, target)
         if (!imported) continue
         const from = importers.get(imported) || new Set<string>()
@@ -159,8 +204,10 @@ const leaksIn = (root: string) =>
       }
       return true
     }
+    const reachable = new Set([...entries, ...files.filter((file) => product.test(file) && !testFile.test(file) && !testOnly(file))])
+    for (const entry of reachable) for (const imported of imports.get(entry) || []) reachable.add(imported)
     return content
-      .filter(([file, text]) => (file === adapter || (product.test(file) && !testFile.test(file))) && driverAccess.test(text) && !testOnly(file))
+      .filter(([file, text]) => reachable.has(file) && driverAccess.test(text))
       .map(([file]) => file)
   })
 
@@ -170,7 +217,7 @@ test("the plugin cannot import or expose the simulated driver's raw transcript",
   expect(driverAccess.test('yield* ctx.session.context({ sessionID })')).toBe(false)
 })
 
-// @reads **/*.ts **/*.tsx **/*.mts **/*.cts **/*.js **/*.jsx **/*.mjs **/*.cjs
+// @reads **/package.json **/*.ts **/*.tsx **/*.mts **/*.cts **/*.js **/*.jsx **/*.mjs **/*.cjs
 Seed.effect("tracked production sources cannot see the simulated driver's raw transcript",
   leaksIn(ROOT).pipe(Effect.map((leaks) => expect(leaks).toEqual([])), Effect.provide(Platform)),
 )
@@ -205,5 +252,35 @@ Seed.effect("the git-listed guard catches an arbitrary production helper, but al
     yield* fs.writeFileString(path.join(scratch, caller), 'import type { Fixture } from "./fixture-adapter.ts"\n')
     yield* git(scratch, "add", "--", caller)
     expect(yield* leaksIn(scratch)).toEqual([file])
+  }).pipe(Effect.scoped, Effect.provide(Platform)),
+)
+
+// @reads cmd/wake/backstop.ts tests/git-repo.ts
+Seed.effect("the git-listed guard follows a production import through a tracked helper outside cmd and mods",
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const scratch = yield* fs.makeTempDirectoryScoped({ prefix: "sim-transitive-guard-" })
+    yield* Effect.sync(() => gitInit(scratch, ["-q"]))
+    const project = path.join(scratch, "opencode")
+    const entry = "cmd/wake/backstop.ts"
+    const helper = "tests/git-repo.ts"
+    for (const file of [entry, helper]) {
+      const target = path.join(project, file)
+      yield* fs.makeDirectory(path.dirname(target), { recursive: true })
+      yield* fs.writeFileString(target, yield* fs.readFileString(path.join(ROOT, file)))
+    }
+    yield* git(project, "add", "--", entry, helper)
+    const helperPath = path.join(project, helper)
+    const entryPath = path.join(project, entry)
+    const original = yield* fs.readFileString(entryPath)
+    yield* fs.writeFileString(helperPath, `${yield* fs.readFileString(helperPath)}\nimport "../sim/world.ts"\n`)
+    expect(yield* leaksIn(project)).toEqual([])
+    yield* fs.writeFileString(entryPath, `${original}\nimport "../../tests/git-repo.ts"\n`)
+    expect(yield* leaksIn(project)).toEqual([helper])
+    yield* fs.writeFileString(path.join(scratch, "bridge.ts"), 'import "./opencode/tests/git-repo.ts"\n')
+    yield* git(scratch, "add", "--", "bridge.ts")
+    yield* fs.writeFileString(entryPath, `${original}\nimport "../../../bridge.ts"\n`)
+    expect(yield* leaksIn(project)).toEqual([helper])
   }).pipe(Effect.scoped, Effect.provide(Platform)),
 )

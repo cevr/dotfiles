@@ -380,7 +380,7 @@
     "cmd/tool-names/server.test.ts": {"effect/noAs":2,"effect/noChainedTypeAssertions":1,"effect/noEffectRunInTests":1,"effect/noKnownValueWidening":1,"effect/noNullish":1,"effect/noTernary":1,"effect/noUnsafeDictionaryType":2},
     "cmd/tool-names/server.ts": {"effect/noNullish":1},
     "cmd/wake/backstop.ts": {"effect/noGlobals":1,"effect/noNodeBuiltinImport":2,"effect/noTernary":1},
-    "cmd/wake/job.ts": {"effect/noAsyncFunction":1,"effect/noGlobals":4,"effect/noNullish":1},
+    "cmd/wake/job.ts": {"effect/noAsyncFunction":1,"effect/noGlobals":3},
     "cmd/wake/server.test.ts": {"effect/noAs":2,"effect/noAsyncFunction":2,"effect/noChainedTypeAssertions":1,"effect/noEffectRunInTests":2,"effect/noFixedWaitInTests":1,"effect/noGlobals":5,"effect/noNewPromise":1,"effect/noNullish":6,"effect/noTernary":4,"effect/noUnknownParameters":12},
     "cmd/wake/server.ts": {"effect/noGlobals":2,"effect/noNewError":1,"effect/noNodeBuiltinImport":1,"effect/noNullish":6,"effect/noShapeInSymbolNames":1,"effect/noTernary":3,"effect/preferServiceOf":1},
     "decider/story.test.ts": {"effect/noAsyncFunction":13,"effect/noEffectRunInTests":2,"effect/noPromiseChainsInTests":6,"effect/noTernary":3,"effect/preferTaggedConstructors":1},
