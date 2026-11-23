@@ -1875,7 +1875,7 @@ const keptSites = (raws: ReadonlyArray<Raw>, fns: ReadonlyArray<{ readonly name:
     if (r.cond) construct.push("condition")
     if (r.neg) construct.push("!")
     if (r.devnull) construct.push("2>/dev/null")
-    if (off.has(r.fn)) construct.push(`set -e off in ${r.fn} (called in a condition)`)
+    if (off.has(r.fn)) construct.push(`set -e off when ${r.fn} is called in a condition`)
     const ignored = r.pipeNotLast || r.subst === "embedded" || r.or !== undefined || r.and || r.cond || r.neg || off.has(r.fn)
     return {
       id: `${r.line}:${command}#${ordinal}`,
@@ -2254,7 +2254,7 @@ const VERDICTS: Record<string, string> = {
   "ticket_wait:date#2": "closed: as before it",
   "ticket_wait:flock#1": "branch: flock -w that fails (held, timed out, an error) waits on; the owner and the bound are checked each round",
   "ticket_wait:date#3": "closed: [ '' -lt N ] fails, the wait returns: the caller reads the line again",
-  "queue_leave:rm#1": "cleanup: a given-back ticket's file left; its lock is closed, so it is dead and swept",
+  "queue_leave:rm#1": "cleanup: said; the given-back ticket stays with its lock closed: dead to every reader, swept (r4: in a plain call it was a set -e stop after a finished switch)",
   "base_snapshots:stat#1": "closed: not a snapshot base: it takes the clone turn (slower, never worse)",
   "base_snapshots:stat#2": "closed: as before it",
   "base_snapshots:work#1": "closed: doctor that fails is no btrfs cloner: the clone turn is taken",
@@ -2501,6 +2501,7 @@ describe.skipIf(!process.env.WORKRIFT_CENSUS)("census: a failure or a kill at ev
     readonly mode: "fail" | "kill"
     readonly before: ReadonlyArray<Step>
     readonly setup?: (b: Bench) => void
+    readonly env?: Env
     readonly argv: ReadonlyArray<string>
     readonly settle: Settle
   }
@@ -2519,6 +2520,24 @@ describe.skipIf(!process.env.WORKRIFT_CENSUS)("census: a failure or a kill at ev
     writeFileSync(join(b.sys, UUID, "allocation/metadata/bytes_used"), `${57 * 2 ** 30 - 1}\n`)
   }
   const refusingEnv: Env = { FAKE_DF_AVAIL: "10", FAKE_DF_PCT: "99", FAKE_MOUNT_OPTIONS: "rw,noatime" }
+  /** A ref to change on both sides: census-both, at feat-a in the base before the switch. */
+  const carrying = (b: Bench) => {
+    sh(b.base, b.env, "git", "update-ref", "refs/heads/census-both", "refs/heads/feat-a")
+  }
+  /**
+   * Once, at carry-wait: the tree at .old gains census-new (to carry) and moves census-both, which the base deletes
+   * (changed on both sides: kept under refs/subvolume-move/). The carry's every call is then a site the census reaches.
+   */
+  const carryEnv: Env = {
+    WORKRIFT_SUBVOLUME_HOOK_AT: "carry-wait",
+    WORKRIFT_SUBVOLUME_HOOK: [
+      'm="${WORKRIFT_SOURCE%/*}/census-carry-done"; [ ! -e "$m" ] || exit 0; : >"$m"',
+      'o="${WORKRIFT_SOURCE%/*}/.subvolume-move/${WORKRIFT_SOURCE##*/}.old"',
+      'git -C "$o" update-ref refs/heads/census-new "$(git -C "$o" rev-parse refs/heads/feat-a)"',
+      'git -C "$o" update-ref refs/heads/census-both HEAD',
+      'git -C "$WORKRIFT_SOURCE" update-ref -d refs/heads/census-both',
+    ].join("; "),
+  }
   const plans: Record<string, Plan> = {
     fwd: { mode: "fail", before: [], argv: fwd.argv, settle: "S" },
     back: { mode: "fail", before: [fwd], argv: back.argv, settle: "F" },
@@ -2530,6 +2549,9 @@ describe.skipIf(!process.env.WORKRIFT_CENSUS)("census: a failure or a kill at ev
     "back-copy": { mode: "fail", before: [fwd, drop], argv: back.argv, settle: "F" },
     drop: { mode: "fail", before: [fwd], argv: drop.argv, settle: "drop" },
     refused: { mode: "fail", before: [], setup: refusing, argv: fwd.argv, settle: "refused" },
+    // A forward whose kept tree gains refs while the switch waits: the carry moves one and keeps one.
+    carry: { mode: "fail", before: [], setup: carrying, env: carryEnv, argv: fwd.argv, settle: "S" },
+    "kill-carry": { mode: "kill", before: [], setup: carrying, env: carryEnv, argv: fwd.argv, settle: "S" },
     "kill-back": { mode: "kill", before: [fwd], argv: back.argv, settle: "F" },
     "kill-fwd": { mode: "kill", before: [], argv: fwd.argv, settle: "S" },
     "kill-back-copy": { mode: "kill", before: [fwd, drop], argv: back.argv, settle: "F" },
@@ -2543,7 +2565,7 @@ describe.skipIf(!process.env.WORKRIFT_CENSUS)("census: a failure or a kill at ev
   test(`census ${scenario}`, async () => {
     if (!plan) throw new Error(`WORKRIFT_CENSUS=${scenario}: one of ${Object.keys(plans).join(", ")}`)
     const sites = callSites(readFileSync(SCRIPT, "utf8"))
-    const planEnv: Env = plan.setup === refusing ? refusingEnv : {}
+    const planEnv: Env = plan.env ?? (plan.setup === refusing ? refusingEnv : {})
     /** One command: plain, or instrumented with the site `at` failed or killed (none: only logged). */
     const run = async (b: Bench, argv: ReadonlyArray<string>, census?: { readonly log: string; readonly at?: { readonly site: Site; readonly call: Call } }, extra: Env = {}) => {
       const pidfile = join(b.dir, "census.pid")
