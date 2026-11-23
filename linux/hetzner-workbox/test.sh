@@ -8,6 +8,15 @@
 #      layout.sh (raid1, mdraid1 /boot and swap, the second ESP), twice;
 #   3. provision.sh's user, keys, packages, sshd, upgrades and sysctl phases, twice,
 #      then ssh into the test sshd with a test key and sudo;
+#   3b. workbox/system-tools.sh for real (provision.sh tools and reserve): the
+#      shells and qemu-user-static installed and registered, twice; Go and
+#      PowerShell refused on a VM that is not amd64, then, with dpkg saying amd64,
+#      into a scratch root: go.dev's real tarball against the pin (its go runs
+#      through the qemu binfmt entry) and Microsoft's real key against the
+#      pinned fingerprint, apt verifying the repository with it and fetching the
+#      amd64 powershell package; the reserve drop-ins and their cgroup values,
+#      a transient opencode-service scope's too. The packages it adds to the VM
+#      and the binfmt entry it registers go again at the end;
 #   4. sync.sh from a scratch "exe box" btrfs (a home with hard links,
 #      reflinks, xattrs and a nested subvolume; /workspaces with a warm source,
 #      Rifts and a read-only snapshot): dry run, pass 1, changes, pass 2, rest,
@@ -35,8 +44,32 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 pass() { printf 'ok: %s\n' "$*"; }
 step() { printf '\n== %s\n' "$*"; }
 
+# What step 3b added to the VM itself: the packages (only those not here before), the binfmt entry
+# (only if it registered it), the reserve drop-ins, and its transient scope.
+tools_pkgs_before=''
+tools_binfmt_before=1
+tools_foreign=''
+cleanup_tools() {
+    local f new
+    [[ -n ${tools_scope:-} ]] && runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user stop "$tools_scope" >/dev/null 2>&1
+    for f in system/user.slice.d system/user-.slice.d system/user@.service.d user/app.slice.d user/opencode-service-.scope.d; do
+        rm -f "/etc/systemd/$f/30-workbox-reserve.conf"
+        rmdir "/etc/systemd/$f" 2>/dev/null
+    done
+    if [[ -n $tools_pkgs_before ]]; then
+        new=$(comm -13 "$tools_pkgs_before" <(dpkg-query -W -f='${Package}\n' | sort -u))
+        # shellcheck disable=SC2086 # a word list
+        [[ -n $new ]] && DEBIAN_FRONTEND=noninteractive apt-get purge -y -q $new >/dev/null 2>&1
+    fi
+    if ((tools_binfmt_before == 0)) && [[ -e /proc/sys/fs/binfmt_misc/qemu-$tools_foreign ]]; then
+        printf -- '-1' > "/proc/sys/fs/binfmt_misc/qemu-$tools_foreign"
+    fi
+    systemctl daemon-reload
+}
+
 cleanup() {
     set +e
+    cleanup_tools
     systemctl disable --now bite-workbox-sshd.service >/dev/null 2>&1
     rm -f /etc/systemd/system/bite-workbox-sshd.service /etc/systemd/system/bite.slice \
         /etc/ssh/bite-workbox-sshd_config /etc/ssh/bite-workbox-ssh-host-ed25519-key \
@@ -185,6 +218,115 @@ pass "unattended upgrades on"
 pass "inotify limits raised"
 bash "$here/provision.sh" bootstrap | grep -q 'the home has no dotfiles yet' || fail "bootstrap phase before the sync"
 pass "bootstrap phase waits for the synced home"
+
+# ------------------------------------------------------------------ 3b
+step "system-tools.sh (workbox/pins.conf), for real"
+tools=$here/../../workbox/system-tools.sh
+pin() { sed -n "s/^$1=//p" "$here/../../workbox/pins.conf"; }
+arch=$(dpkg --print-architecture)
+case $arch in amd64) tools_foreign=aarch64 ;; arm64) tools_foreign=x86_64 ;; *) fail "a $arch VM" ;; esac
+dpkg-query -W -f='${Package}\n' | sort -u > "$work/pkgs-before"
+tools_pkgs_before=$work/pkgs-before
+[[ -e /proc/sys/fs/binfmt_misc/qemu-$tools_foreign ]] || tools_binfmt_before=0
+if [[ $arch == amd64 ]]; then
+    # An amd64 VM would take the real Go and PowerShell into its own /usr/local and apt: the shells
+    # and qemu only here; the scratch-root runs below still cover Go and PowerShell.
+    bash "$tools" shells qemu > "$work/tools-1.log" 2>&1 || { cat "$work/tools-1.log"; fail "system-tools.sh shells qemu"; }
+    pass "amd64 VM: the arch refusal is not exercised here (system-tools.test.ts covers it)"
+else
+    # provision.sh's tools phase: the shells and qemu install, then Go refuses this architecture.
+    if bash "$here/provision.sh" tools > "$work/tools-1.log" 2>&1; then cat "$work/tools-1.log"; fail "provision.sh tools passed on $arch"; fi
+    grep -q "this host is $arch: refusing" "$work/tools-1.log" || { cat "$work/tools-1.log"; fail "provision.sh tools failed for another reason"; }
+    [[ ! -e /usr/local/go-$(pin GO_VERSION) ]] || fail "a refused Go left a tree"
+    if bash "$tools" pwsh > "$work/pwsh-arch.log" 2>&1; then fail "pwsh passed on $arch"; fi
+    grep -q "this host is $arch: refusing" "$work/pwsh-arch.log" || { cat "$work/pwsh-arch.log"; fail "pwsh failed for another reason"; }
+    [[ ! -e /usr/share/keyrings/microsoft-prod.gpg ]] || fail "a refused pwsh left a keyring"
+    pass "$arch: Go and PowerShell refused, nothing installed"
+fi
+bash "$tools" shells qemu > "$work/tools-2.log" 2>&1 || { cat "$work/tools-2.log"; fail "system-tools.sh shells qemu, rerun"; }
+grep '^==>' "$work/tools-2.log" && fail "system-tools.sh's rerun changed something"
+for c in fish ksh mksh; do command -v "$c" >/dev/null || fail "$c is not on PATH"; done
+if ! grep -qx enabled "/proc/sys/fs/binfmt_misc/qemu-$tools_foreign" || ! grep -q '^flags: .*F' "/proc/sys/fs/binfmt_misc/qemu-$tools_foreign"; then
+    fail "binfmt qemu-$tools_foreign is not enabled with F"
+fi
+pass "fish, ksh, mksh, qemu-user-static; binfmt qemu-$tools_foreign enabled with F; the rerun changes nothing"
+
+# Go and PowerShell for amd64, into a scratch root: dpkg says amd64; apt-get and dpkg-query use a
+# scratch apt for the scratch root's Microsoft source, amd64 only, and `apt-get install` downloads.
+R=$work/tools-root A=$work/tools-apt
+mkdir -p "$R/etc/apt/sources.list.d" "$A/bin" "$A/parts" "$A/lists/partial" "$A/cache/archives/partial" "$A/debs"
+cp /etc/os-release "$R/etc/os-release"
+# The VM is not the box's release: name noble, the AX102's (installimage.conf).
+sed -i -e 's/^VERSION_ID=.*/VERSION_ID="24.04"/' -e 's/^VERSION_CODENAME=.*/VERSION_CODENAME=noble/' "$R/etc/os-release"
+: > "$A/status"
+printf '#!/bin/sh\necho amd64\n' > "$A/bin/dpkg"
+# shellcheck disable=SC2016 # the shim's own variables
+printf '%s\n' '#!/bin/sh' \
+    'for last; do :; done' \
+    '[ "$last" = powershell ] || exec /usr/bin/dpkg-query "$@"' \
+    'ls "$WB_APT"/debs/powershell_*_amd64.deb >/dev/null 2>&1 && printf "ii "' \
+    'exit 0' > "$A/bin/dpkg-query"
+# shellcheck disable=SC2016 # the shim's own variables
+printf '%s\n' '#!/bin/sh' \
+    'set -e' \
+    'sed "s|signed-by=/usr/share|signed-by=$WORKBOX_TOOLS_ROOT/usr/share|" "$WORKBOX_TOOLS_ROOT/etc/apt/sources.list.d/microsoft-prod.list" > "$WB_APT/sources.list"' \
+    'o="-o Dir::Etc::SourceList=$WB_APT/sources.list -o Dir::Etc::SourceParts=$WB_APT/parts -o Dir::State::Lists=$WB_APT/lists -o Dir::Cache=$WB_APT/cache -o Dir::State::status=$WB_APT/status -o APT::Architecture=amd64 -o APT::Architectures=amd64"' \
+    'case $1 in' \
+    '  update) /usr/bin/apt-get $o update -q ;;' \
+    '  install) cd "$WB_APT/debs" && /usr/bin/apt-get $o download powershell ;;' \
+    'esac' > "$A/bin/apt-get"
+chmod +x "$A/bin/"*
+amd64() { env PATH="$A/bin:$PATH" WB_APT="$A" WORKBOX_TOOLS_ROOT="$R" bash "$tools" "$@"; }
+amd64 go pwsh > "$work/amd64-1.log" 2>&1 || { cat "$work/amd64-1.log"; fail "system-tools.sh go pwsh (amd64, scratch root)"; }
+amd64 go pwsh > "$work/amd64-2.log" 2>&1 || { cat "$work/amd64-2.log"; fail "system-tools.sh go pwsh, rerun"; }
+grep '^==>' "$work/amd64-2.log" && fail "go pwsh rerun changed something"
+[[ $(readlink "$R/usr/local/go") == go-$(pin GO_VERSION) && $(cat "$R/usr/local/go/.workbox-sha256") == "$(pin GO_SHA256)" ]] || fail "Go tree"
+out=$("$R/usr/local/bin/go" version) || fail "the amd64 go does not run through binfmt"
+[[ $out == "go version go$(pin GO_VERSION) linux/amd64" ]] || fail "go version: $out"
+pass "go.dev's go$(pin GO_VERSION) linux-amd64 matched the pinned sha256; its go runs here: $out"
+deb=$(ls "$A"/debs/powershell_*_amd64.deb)
+[[ $(dpkg-deb -f "$deb" Package Architecture | tr '\n' ' ') == "Package: powershell Architecture: amd64 " ]] || fail "powershell deb"
+grep -q "^deb \[arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg\] https://packages.microsoft.com/ubuntu/24.04/prod noble main$" \
+    "$R/etc/apt/sources.list.d/microsoft-prod.list" || fail "Microsoft source line"
+amd64 --check go > /dev/null || fail "system-tools.sh --check go"
+pass "Microsoft's key matched the pinned fingerprint; apt verified noble's repository with it and fetched $(basename "$deb")"
+
+# The reserve, through provision.sh: the drop-ins, applied by daemon-reload to running units.
+bash "$here/provision.sh" reserve > "$work/reserve-1.log" 2>&1 || { cat "$work/reserve-1.log"; fail "provision.sh reserve"; }
+bash "$here/provision.sh" reserve > "$work/reserve-2.log" 2>&1 || { cat "$work/reserve-2.log"; fail "provision.sh reserve rerun"; }
+grep '^==> installed' "$work/reserve-2.log" && fail "provision.sh reserve's rerun changed something"
+[[ $(cat /sys/fs/cgroup/bite.slice/cpu.weight) == 1000 && $(cat /sys/fs/cgroup/bite.slice/io.weight 2>/dev/null || echo 'default 1000') == 'default 1000' ]] ||
+    fail "bite.slice weights: cpu $(cat /sys/fs/cgroup/bite.slice/cpu.weight)"
+# A changed weight reaches the running slice with a daemon-reload alone (the live workbox's one-time step).
+sed 's/^CPUWeight=.*/CPUWeight=500/' "$here/../../workbox/systemd/system/bite.slice" > /etc/systemd/system/bite.slice
+systemctl daemon-reload
+[[ $(cat /sys/fs/cgroup/bite.slice/cpu.weight) == 500 ]] || fail "daemon-reload did not apply a running slice's new CPUWeight"
+install -m 0644 "$here/../../workbox/systemd/system/bite.slice" /etc/systemd/system/bite.slice
+systemctl daemon-reload
+[[ $(cat /sys/fs/cgroup/bite.slice/cpu.weight) == 1000 ]] || fail "bite.slice back to 1000"
+pass "a running slice takes a changed CPUWeight on daemon-reload, without a restart"
+four=4294967296 one=1073741824
+for cg in user.slice "user.slice/user-$uid.slice" "user.slice/user-$uid.slice/user@$uid.service"; do
+    [[ $(cat "/sys/fs/cgroup/$cg/memory.low") == "$four" && $(cat "/sys/fs/cgroup/$cg/memory.min") == "$one" ]] || fail "$cg memory floor"
+done
+runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user daemon-reload
+tools_scope=opencode-service-$$.scope
+runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" systemd-run --user --scope --quiet --collect --unit="$tools_scope" sleep 60 &
+scope_job=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    scope_cg=/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/app.slice/$tools_scope
+    [[ -e $scope_cg/memory.low ]] && break
+    sleep 1
+done
+for cg in "$(dirname "$scope_cg")" "$scope_cg"; do
+    [[ $(cat "$cg/memory.low") == "$four" && $(cat "$cg/memory.min") == "$one" ]] || fail "${cg##*/} memory floor: $(cat "$cg/memory.low")"
+done
+pass "bite.slice CPUWeight 1000; the memory floor 1G/4G on user.slice, the user's slice and manager, app.slice and a transient $tools_scope"
+runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user stop "$tools_scope"
+wait "$scope_job" 2>/dev/null || true
+tools_scope=''
+bash "$tools" --check shells qemu reserve > /dev/null || fail "system-tools.sh --check"
+pass "system-tools.sh --check shells qemu reserve"
 
 # ------------------------------------------------------------------ 4
 step "sync.sh from a scratch exe box"
