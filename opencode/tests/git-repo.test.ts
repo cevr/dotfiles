@@ -1,5 +1,4 @@
-// @reads all
-// @reads-reason nonliteral subprocess arguments at tests/git-repo.test.ts: Object.fromEntries(Object.keys(QUIET_GIT).map((key) => [key, execFileSync("git", ["-C", scratch
+// @reads **/*.test.{ts,tsx} testbeds/**/*.{ts,tsx} tests/**/*.{ts,tsx}
 // tests/git-repo.ts: a test's temp git repository runs no background gc or maintenance, so a clone
 // of it under load never races a lock file git's upkeep removes (batch ar: scripts/upstream.test.ts
 // "the upstream reading" failed copying `.git/objects/maintenance.lock`). Every test makes its
@@ -9,8 +8,7 @@
 // and it reads git's argv with the guard's own reader (mods/guard/verdict.ts), global options and all.
 import { describe, expect, test } from "bun:test"
 import { Array as Arr, Option, Order, Predicate } from "effect"
-import { execFileSync } from "node:child_process"
-import { readFileSync } from "node:fs"
+import { mkdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
@@ -28,15 +26,16 @@ import {
 } from "oxc-parser"
 import { gitSubcommand } from "../mods/guard/verdict.ts"
 import { type GitGlobalOptions, gitGlobalOptions } from "./git-options.ts"
-import { gitClone, gitInit, QUIET_GIT } from "./git-repo.ts"
-import { matchingInput, scratchInput } from "./read-path.ts"
+import { QUIET_GIT } from "./git-repo.ts"
+import { cloneScratchGit, initScratchGit, spawnScratchGitSync } from "./scratch-child.ts"
+import { matchingInput } from "./read-path.ts"
 import { scratch } from "./scratch.ts"
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url))
 
 /** What `git config --get` reads for each quiet key in the repository at `dir`. */
 const settings = (dir: string) =>
-  Object.fromEntries(Object.keys(QUIET_GIT).map((key) => [key, execFileSync("git", ["-C", scratchInput(dir), "config", "--get", key], { encoding: "utf8" }).trim()]))
+  Object.fromEntries(Object.keys(QUIET_GIT).map((key) => [key, spawnScratchGitSync(dir, ["config", "--get", key]).stdout.toString().trim()]))
 
 const QUIET = { "gc.auto": "0", "maintenance.auto": "false" }
 
@@ -515,9 +514,10 @@ describe("a test's temp git repository", () => {
     const work = join(dir.path, "work")
     const bare = join(dir.path, "bare.git")
     const clone = join(dir.path, "clone")
-    gitInit(work, ["-q", "-b", "main"])
-    gitInit(bare, ["-q", "--bare"])
-    gitClone(bare, clone, ["-q"])
+    for (const folder of [work, bare]) mkdirSync(folder)
+    initScratchGit(work, ["-q", "-b", "main"])
+    initScratchGit(bare, ["-q", "--bare"])
+    cloneScratchGit(dir.path, bare, clone, "origin")
     expect({ work: settings(work), bare: settings(bare), clone: settings(clone) }).toEqual({ work: QUIET, bare: QUIET, clone: QUIET })
   })
 

@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "bun"
+import { gunzipSync, spawn, spawnSync } from "bun"
 import { Data, Option, Predicate } from "effect"
 import { ChildProcess } from "effect/process"
 import { ROOT } from "../scripts/reach.ts"
@@ -213,7 +213,8 @@ const cloneArgs = (args: ReadonlyArray<string>) =>
 
 const gitCommandAllowed = (command: string, args: ReadonlyArray<string>) => {
   switch (command) {
-    case "config": return ["gc.auto 0", "maintenance.auto false"].includes(args.join(" "))
+    case "config": return ["gc.auto 0", "maintenance.auto false"].includes(args.join(" ")) ||
+      (args.length === 2 && args[0] === "--get" && Object.hasOwn(QUIET_GIT, args[1] ?? ""))
     case "remote": return (args.length === 2 && ["get-url", "remove"].includes(args[0] ?? "") && /^\w[\w-]*$/.test(args[1] ?? "")) ||
       exactArgs(args, "set-head", "origin", "--auto")
     case "clone": return cloneArgs(args)
@@ -275,6 +276,40 @@ export const spawnScratchGitSync = (cwd: string, args: ReadonlyArray<string>, en
   const ran = git(args)
   if (ran.error) return reject(ran.error.message)
   return { exitCode: ran.status, stdout: ran.stdout, stderr: ran.stderr }
+}
+
+const gitQuery = (cwd: string, argv: ReadonlyArray<string>) => {
+  const directory = scratchInput(cwd)
+  return localTestProcess.spawnSync("git", argv, {
+    cwd: directory, encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      PATH: searchPath(), HOME: directory, TMPDIR: directory, XDG_CONFIG_HOME: directory,
+      GIT_PAGER: "cat", PAGER: "cat", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
+      GIT_TERMINAL_PROMPT: "0", [marker]: "git",
+    },
+  })
+}
+
+/** Ask the installed Git for the location of its own manual. The fixture's repo is never involved. */
+export const installedGitManual = (cwd: string) => {
+  const got = gitQuery(cwd, ["--man-path"])
+  if (got.status !== 0) return reject(`git --man-path: ${got.stderr}`)
+  const dir = got.stdout.trim()
+  if (!localTestPaths.isAbsolute(dir)) return reject("Git manual directory is not absolute")
+  const page = resolve(dir, "man1/git.1")
+  const plain = (localTestPaths.existsSync(page) && localTestPaths.readFileSync(externalInput(page), "utf8")) || ""
+  const zipped = `${page}.gz`
+  const text = (localTestPaths.existsSync(zipped) && new TextDecoder().decode(gunzipSync(localTestPaths.readFileSync(externalInput(zipped))))) || ""
+  return plain + text
+}
+
+/** Probe one installed Git option with no operation other than `version`. */
+export const scratchGitVersion = (cwd: string, flag: string, value?: string) => {
+  if (!/^-{1,2}[A-Za-z][A-Za-z-]*$/.test(flag) || ["-h", "--help"].includes(flag))
+    return reject(`not a Git version probe option: ${flag}`)
+  if (value && ![".", "core.probe=1", "core.probe=HOME", "HEAD"].includes(value))
+    return reject("not a Git version probe value")
+  return gitQuery(cwd, [flag, ...(value && [value] || []), "version"]).stdout.startsWith("git version ")
 }
 
 /** A fixture repository with automatic maintenance disabled, using only guarded Git. */
