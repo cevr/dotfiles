@@ -340,7 +340,13 @@ sudo env WORKBOX_EXPECT_MACHINE_ID='<machine-id-from-deployment-record>' \
 
 For restore, install btrfs-progs, openssl and zstd, put the saved key at
 `/etc/btrbk/backup.key`, and choose `RESTORE_MONTH` (`YYYY-MM`) from the list.
-Set `RESTORE_DIR` to an existing directory on a writable btrfs filesystem.
+Set `RESTORE_DIR` to an existing directory on a writable btrfs filesystem
+outside the checkout. Replace the quoted placeholder with the absolute
+path you chose:
+
+```sh
+RESTORE_DIR='<absolute-restore-directory-outside-the-checkout>'
+```
 
 ```sh
 # Pin source: recovery host's deployment record; see [Host identity](#host-identity).

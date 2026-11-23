@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from itertools import product
 from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
-from typing import Callable
+from typing import Callable, Literal
 
 ROOT = Path(__file__).resolve().parents[2]
 DOC_SUFFIXES = {".md", ".mdx", ".rst", ".org", ".adoc", ".markdown"}
@@ -60,6 +60,9 @@ DATA_NAMES = {
     "d": "data",
 }
 CHECKOUT_PREFIX = "~/Developer/personal/dotfiles/"
+CHECKOUT_PARTS = ("Developer", "personal", "dotfiles")
+RESTORE_PATH = "<absolute-restore-directory-outside-the-checkout>"
+CHECKOUT_WRITE = "this command writes inside the checkout: documents do not modify tracked files"
 
 
 def contract(path, source):
@@ -132,6 +135,7 @@ class Statement:
     assignments: list[Word]
     note: str
     guarded: tuple[str, str] | None = None
+    writes: tuple["Write", ...] = ()
 
 
 def logical_lines(lines, start):
@@ -317,6 +321,32 @@ class Arguments:
 class Command:
     role: str
     arguments: Callable[[list[Word]], Arguments]
+    write_operands: "WritePolicy"
+
+
+@dataclass(frozen=True)
+class WriteOperand:
+    name: str
+    policy: Literal["outside", "link", "checkout"]
+    index: int
+    production: tuple[str, ...]
+
+    def select(self, args):
+        if starts(args, *self.production) and self.index < len(args):
+            return Write(self, args[self.index])
+        return None
+
+
+@dataclass(frozen=True)
+class Write:
+    rule: WriteOperand
+    operand: Word
+
+
+@dataclass(frozen=True)
+class WritePolicy:
+    kind: Literal["read-only", "managed", "trusted", "recursive", "operands"]
+    operands: tuple[WriteOperand, ...] = ()
 
 
 def literal(words, role="these arguments"):
@@ -368,8 +398,11 @@ def brew_arguments(words):
     return Arguments()
 
 
-def cd_arguments(words):
-    if len(words) != 1 or words[0].refs or words[0].value != CHECKOUT_PREFIX.rstrip("/") or not words[0].raw.startswith("~/"):
+def cd_arguments(words, directories=(CHECKOUT_PREFIX,)):
+    if len(words) != 1 or words[0].refs or not any(
+        words[0].value == prefix.rstrip("/") and (not prefix.startswith("~") or words[0].raw.startswith("~/"))
+        for prefix in directories
+    ):
         raise ValueError("cd production takes a literal documented checkout directory")
     return Arguments()
 
@@ -440,24 +473,28 @@ def ssh_arguments(words):
 
 
 COMMANDS = {
-    "backup.sh": Command("guarded; restore destination data slot", backup_arguments),
-    "bootstrap.sh": Command("guarded; literal arguments", guarded_arguments),
-    "check.sh": Command("guarded; literal arguments", guarded_arguments),
-    "layout.sh": Command("guarded; literal arguments", guarded_arguments),
-    "provision.sh": Command("guarded; literal arguments", guarded_arguments),
-    "sync.sh": Command("guarded; literal arguments", guarded_arguments),
-    "bash": Command("tracked shell script path or runs shell text", lambda words: shell_arguments("bash", words)),
-    "sh": Command("tracked shell script path or runs shell text", lambda words: shell_arguments("sh", words)),
-    "ssh": Command("runs shell text", ssh_arguments),
-    "git": Command("external; clone production", git_arguments),
-    "brew": Command("external; bundle/install productions", brew_arguments),
-    "cd": Command("directory change; one literal checkout directory", cd_arguments),
-    "mkdir": Command("external; -p with one literal directory", mkdir_arguments),
-    "ln": Command("external; -sf -- and two data slots", link_arguments),
-    "workbox-check": Command("read-only external; no arguments", no_arguments),
-    "true": Command("success probe; no arguments", no_arguments),
-    "claude": Command("external; plugin validate/test productions", claude_arguments),
-    "python": Command("tracked Python script path and literal operands", python_arguments),
+    "backup.sh": Command("guarded backup operations", backup_arguments,
+                         WritePolicy("managed", (WriteOperand("restore destination", "outside", 2, ("restore",)),))),
+    "bootstrap.sh": Command("guarded host setup", guarded_arguments, WritePolicy("managed")),
+    "check.sh": Command("guarded temporary health probes", guarded_arguments, WritePolicy("managed")),
+    "layout.sh": Command("guarded disk layout", guarded_arguments, WritePolicy("managed")),
+    "provision.sh": Command("guarded host provisioning", guarded_arguments, WritePolicy("managed")),
+    "sync.sh": Command("guarded transfer and snapshots", guarded_arguments, WritePolicy("managed")),
+    "bash": Command("tracked script or recursive shell text", lambda words: shell_arguments("bash", words), WritePolicy("recursive")),
+    "sh": Command("tracked script or recursive shell text", lambda words: shell_arguments("sh", words), WritePolicy("recursive")),
+    "ssh": Command("recursive remote text", ssh_arguments, WritePolicy("recursive")),
+    "git": Command("checkout acquisition", git_arguments,
+                   WritePolicy("operands", (WriteOperand("clone destination", "checkout", 2, ("clone",)),))),
+    "brew": Command("package installation", brew_arguments, WritePolicy("managed")),
+    "cd": Command("shell directory change", cd_arguments, WritePolicy("read-only")),
+    "mkdir": Command("directory creation", mkdir_arguments,
+                     WritePolicy("operands", (WriteOperand("directory", "outside", 1, ("-p",)),))),
+    "ln": Command("symbolic link creation", link_arguments,
+                  WritePolicy("operands", (WriteOperand("link name", "link", 3, ("-sf", "--")),))),
+    "workbox-check": Command("installed-state check", no_arguments, WritePolicy("trusted")),
+    "true": Command("success probe", no_arguments, WritePolicy("read-only")),
+    "claude": Command("plugin validation and tests", claude_arguments, WritePolicy("trusted")),
+    "python": Command("tracked Python script", python_arguments, WritePolicy("trusted")),
 }
 
 
@@ -467,7 +504,11 @@ class Grammar:
     roles: dict
     tracked: set[Path]
 
-    def script_path(self, word):
+    def is_tracked_script(self, path):
+        file = ROOT / path
+        return path in self.tracked and file.is_file() and file.resolve() == file
+
+    def strict_script_path(self, word):
         """The operand, not the document's path or cwd, selects one index entry."""
         if not word.raw.startswith(CHECKOUT_PREFIX) or not word.value.startswith(CHECKOUT_PREFIX):
             raise ValueError(f"write the checkout-prefixed path {CHECKOUT_PREFIX}<tracked path>, unquoted at the prefix")
@@ -475,13 +516,32 @@ class Grammar:
         if any(part in {"", ".", ".."} for part in tail.split("/")):
             raise ValueError("write the checkout-prefixed path directly, without empty, '.' or '..' components")
         path = Path(tail)
-        file = ROOT / path
-        if path not in self.tracked or not file.is_file() or file.resolve() != file:
+        if not self.is_tracked_script(path):
             raise ValueError(f"interpreter script path {word.value!r} is not a tracked repository file without symlinks")
         return path
 
+    def tripwire_script_path(self, word, directory):
+        """Round 8 compatibility for a raw match outside provisioning docs only."""
+        operand = word.value
+        for prefix in (CHECKOUT_PREFIX, "/root/dotfiles/"):
+            if operand.startswith(prefix):
+                if prefix.startswith("~") and not word.raw.startswith("~/"):
+                    raise ValueError("a checkout path beginning with ~/ must leave the tilde unquoted")
+                candidates = {Path(operand[len(prefix):])}
+                break
+        else:
+            path = Path(operand)
+            if path.is_absolute() or operand.startswith("~") or ".." in path.parts or "/" not in operand:
+                raise ValueError(f"script path {operand!r} must be checkout-relative or use a documented checkout prefix")
+            candidates = {path, directory / path}
+        matches = {path for path in candidates if self.is_tracked_script(path)}
+        if len(matches) != 1:
+            why = "ambiguous" if matches else "not a tracked repository file"
+            raise ValueError(f"interpreter script path {operand!r} is {why}; name a tracked file in the checkout")
+        return matches.pop()
 
-def program(lines, start, grammar, inherited_note="", depth=0):
+
+def program(lines, start, grammar, doc, inherited_note="", depth=0):
     """Parse the language, then return the flattened statements of one fence."""
     if depth > 64:
         raise ValueError("shell text is nested too deeply")
@@ -518,10 +578,14 @@ def program(lines, start, grammar, inherited_note="", depth=0):
             raise ValueError(f"unknown command {name!r}: add it to the table with its role, or rewrite the example")
         if name not in grammar.guards and rest[0].value != name:
             raise ValueError(f"use the bare allow-listed command {name!r}, not an executable path")
-        result = rule.arguments(args)
+        if name == "cd" and doc.mode == "tripwire":
+            result = cd_arguments(args, (CHECKOUT_PREFIX, "/root/dotfiles/"))
+        else:
+            result = rule.arguments(args)
         if result.script:                                 # named tracked script production
             script, *args = result.script.words
-            tracked = grammar.script_path(script)
+            tracked = (grammar.strict_script_path(script) if doc.mode == "strict"
+                       else grammar.tripwire_script_path(script, doc.directory))
             name = tracked.name
             if result.script.suffix == ".sh" and name in grammar.guards:
                 rule = COMMANDS.get(name)
@@ -537,9 +601,12 @@ def program(lines, start, grammar, inherited_note="", depth=0):
             if name not in grammar.guards:
                 raise ValueError(f"guarded command {name!r} has no source contract")
             guard = (name, args[0].value if args else "")
-        yield Statement(words, prefix, note, guard)
+        writes = () if doc.mode == "tripwire" else tuple(
+            target for operand in rule.write_operands.operands if (target := operand.select(args))
+        )
+        yield Statement(words, prefix, note, guard, writes)
         if result.text is not None:                        # same grammar on literal shell text
-            yield from program(result.text.value.split("\n"), result.text.line, grammar, note, depth + 1)
+            yield from program(result.text.value.split("\n"), result.text.line, grammar, doc, note, depth + 1)
 
 
 def pin_value(word):
@@ -604,18 +671,125 @@ def check_names(statements, roles):
                 )
 
 
-def violations(path, content, grammar, strict):
+def outside_path(value, home_relative, link=False):
+    """Bind a destination without trusting the reader's working directory."""
+    spelling = value[2:].lstrip("/") if home_relative else value
+    if ".." in spelling.split("/"):
+        raise ValueError(f"{CHECKOUT_WRITE}; do not use '..' in a write path")
+    path = Path.home() / spelling if home_relative else Path(spelling)
+    if not path.is_absolute():
+        raise ValueError("write operands need an absolute or home-prefixed path outside the checkout")
+    try:
+        # ln -sf replaces an existing non-directory link rather than writing
+        # its referent. An existing directory operand (including a directory
+        # symlink) is where ln creates the new link, so resolve it as well.
+        resolved = path.parent.resolve() / path.name if link and not path.is_dir() else path.resolve()
+        roots = {ROOT, Path.home().joinpath(*CHECKOUT_PARTS), Path("/root/dotfiles")}
+        roots |= {root.resolve() for root in roots}
+    except (OSError, RuntimeError) as error:
+        raise ValueError(f"cannot resolve write path {value!r} outside the checkout: {error}") from error
+    for candidate in (path, resolved):
+        parts = candidate.parts
+        canonical_suffix = any(parts[i:i + len(CHECKOUT_PARTS)] == CHECKOUT_PARTS for i in range(len(parts)))
+        if canonical_suffix or any(candidate.is_relative_to(root) or root.is_relative_to(candidate) for root in roots):
+            raise ValueError(CHECKOUT_WRITE)
+    return resolved
+
+
+def literal_write_path(raw, value, link):
+    if value.startswith("~") and not raw.startswith("~/"):
+        raise ValueError("write operands must leave the literal home prefix ~/ unquoted")
+    return outside_path(value, raw.startswith("~/"), link)
+
+
+def write_paths(word, policy, definitions, roles):
+    link = policy == "link"
+    if not word.refs:
+        return [literal_write_path(word.raw, word.value, link)]
+    if len(word.refs) == 1:
+        name, ref = word.refs[0]
+        if name == "HOME" and word.value.startswith(ref + "/"):
+            return [outside_path("~" + word.value[len(ref):], True, link)]
+        if word.value == ref and roles.get(name) == "data":
+            fix = f"say where {name} points: assign it a literal or a placeholder path outside the checkout in this document"
+            values = definitions.get(name, ())
+            if not values or any(value.refs for value in values):
+                raise ValueError(fix)
+            paths = []
+            for value in values:
+                raw = value.raw.split("=", 1)[1]
+                text = value.value.split("=", 1)[1]
+                if name == "RESTORE_DIR" and text == RESTORE_PATH:
+                    continue
+                try:
+                    paths.append(literal_write_path(raw, text, link))
+                except ValueError as error:
+                    raise ValueError(f"{error}; {fix}") from error
+            return paths
+    raise ValueError("write operands need a literal outside path, a quoted $HOME path, or an assigned data-role path")
+
+
+def write_problems(fences, roles):
+    """Check all definitions in the document and writes in fence order."""
+    definitions = {}
+    for statements in fences:
+        for statement in statements:
+            for word in statement.assignments:
+                name = ASSIGNMENT.fullmatch(word.raw)[1]
+                definitions.setdefault(name, []).append(word)
+    for statements in fences:
+        linked = set()
+        for statement in statements:
+            for write in statement.writes:
+                word, rule = write.operand, write.rule
+                try:
+                    if rule.policy == "checkout":
+                        if word.value != CHECKOUT_PREFIX.rstrip("/") or not word.raw.startswith("~/"):
+                            raise ValueError("the git clone production writes only to the documented checkout path")
+                        continue
+                    targets = write_paths(word, rule.policy, definitions, roles)
+                    if any(path.is_relative_to(link) for path in targets for link in linked):
+                        raise ValueError(f"{CHECKOUT_WRITE}; a preceding link can redirect this write")
+                    if rule.policy == "link":
+                        linked.update(targets)
+                except ValueError as error:
+                    yield word.line, f"{rule.name}: {error}"
+
+
+@dataclass(frozen=True)
+class Document:
+    path: Path
+    mode: Literal["strict", "tripwire"]
+    require_boundary: bool
+    directory: Path
+
+    def diagnostic(self, line, message):
+        return f"{self.path}:{line}: [{self.mode}] {message}"
+
+
+def document(path, whole_fixture=False):
+    location = path if path.is_absolute() else ROOT / path
+    if not location.is_relative_to(ROOT):
+        return Document(path, "strict", whole_fixture, Path())
+    relative = location.relative_to(ROOT)
+    strict = strict_path(relative)
+    return Document(path, "strict" if strict else "tripwire", strict, relative.parent)
+
+
+def violations(doc, content, grammar):
     fences = list(blocks(content))
+    strict = doc.mode == "strict"
     # The boundary is prose, not a string a fence can satisfy by printing.
-    if strict_path(path):
+    if doc.require_boundary:
         prose = any(
             line == TRUST_BOUNDARY and not any(start <= number < start + len(body) for start, _, body, _ in fences)
             for number, line in enumerate(content.splitlines(), 1)
         )
         if content.count(TRUST_BOUNDARY) != 1 or not prose:
-            yield f"{path}:1: include this trust boundary verbatim once as a prose line: {TRUST_BOUNDARY}"
+            yield doc.diagnostic(1, f"include this trust boundary verbatim once as a prose line: {TRUST_BOUNDARY}")
     all_pins = {name for name, role in grammar.roles.items() if role == "pin"}
     registered = all_pins | grammar.guards.keys()
+    programs = []
     for start, tag, lines, closed in fences:
         raw = "\n".join(lines)
         if strict:
@@ -630,15 +804,19 @@ def violations(path, content, grammar, strict):
         try:
             if not closed:
                 raise ValueError("unclosed fenced block")
-            statements = list(program(lines, start, grammar))
+            statements = list(program(lines, start, grammar, doc))
             check_names(statements, grammar.roles)
         except ValueError as error:
             tag_fix = f"; {TAG}" if not tag else ""
             pin_fix = f"; {REMEDY}" if any(name in raw for name in registered) else ""
-            yield f"{path}:{start}: {error}; {LANGUAGE}{tag_fix}{pin_fix}{outside}"
+            yield doc.diagnostic(start, f"{error}; {LANGUAGE}{tag_fix}{pin_fix}{outside}")
             continue
         for line, problem in pin_problems(statements, grammar.guards, all_pins, content):
-            yield f"{path}:{line}: {problem}; {REMEDY}{outside}"
+            yield doc.diagnostic(line, f"{problem}; {REMEDY}{outside}")
+        programs.append(statements)
+    if strict:
+        for line, problem in write_problems(programs, grammar.roles):
+            yield doc.diagnostic(line, f"{problem}; {LANGUAGE}")
 
 
 def entries(paths):
@@ -668,6 +846,32 @@ def controls(roles):
     hooks = [name for name in roles if interpreter_env.fullmatch(name)]
     if hooks:
         raise AssertionError(f"assignable-name table includes interpreter environment selectors: {hooks}")
+    # Independent inventory of productions with caller-selected filesystem
+    # destinations. Existing commands without one must say what effects they
+    # do have, not accidentally get the read-only exemption.
+    caller_writes = {
+        "backup.sh": ("restore destination", "outside", 2, ("restore",)),
+        "git": ("clone destination", "checkout", 2, ("clone",)),
+        "mkdir": ("directory", "outside", 1, ("-p",)),
+        "ln": ("link name", "link", 3, ("-sf", "--")),
+    }
+    policies = {
+        "read-only": {"cd", "true"},
+        "managed": {"backup.sh", "bootstrap.sh", "check.sh", "layout.sh", "provision.sh", "sync.sh", "brew"},
+        "trusted": {"claude", "python", "workbox-check"},
+        "recursive": {"bash", "sh", "ssh"},
+        "operands": {"git", "mkdir", "ln"},
+    }
+    observed = {
+        name: (operand.name, operand.policy, operand.index, operand.production)
+        for name, command in COMMANDS.items() for operand in command.write_operands.operands
+    }
+    if observed != caller_writes:
+        raise AssertionError(f"write operands differ from the command productions: {observed}")
+    for name, command in COMMANDS.items():
+        policy = command.write_operands
+        if name not in policies.get(policy.kind, ()) or len(policy.operands) != int(name in caller_writes):
+            raise AssertionError(f"production has the wrong write policy: {name}: {policy}")
     note = "# Pin source: recovery deployment record; see [Host identity](#host-identity)."
     no_pin = "# No pin needed: read-only."
     local = "WORKBOX_EXPECT_MACHINE_ID='<machine-id-from-deployment-record>'"
@@ -676,6 +880,8 @@ def controls(roles):
     call = f"sudo env {local} {backup}"
     read_id = 'WORKBOX_EXPECT_MACHINE_ID="$(cat /etc/machine-id)"'
     nested = f"sudo -n sh -c {shlex.quote(call)}"
+    restore = f'{local} ./backup.sh restore runs "$RESTORE_DIR"'
+    external_target = "/mnt/workbox-docs-restore"
     startup = (
         'BASH_ENV=./startup-fixture.sh bash -c '
         f'"{local} ./backup.sh list"'
@@ -761,7 +967,29 @@ sudo env WORKBOX_EXPECT_MACHINE_ID="${{RECOVERY_PIN}}" ./backup.sh list'''),
         "valid-root": (True, f"{local} {backup}"),
         "valid-env": (True, f"env {local} {backup}"),
         "valid-assignment-value": (True, f'sudo env {local} HB_BACKUP_DIR="$BACKUP_COPY" {backup}'),
-        "valid-restore-value": (True, f'{local} ./backup.sh restore runs "$RESTORE_DIR"'),
+        "valid-restore-value": (True, f"RESTORE_DIR='{RESTORE_PATH}'\n~~~\n~~~sh\n{note}\n{restore}"),
+        "valid-literal-write": (True, f"mkdir -p {external_target}"),
+        "valid-home-write": (True, 'ln -sf -- "$PWD/zshenv" "$HOME/.workbox-docs-link"'),
+        "valid-two-outside-definitions": (True, f"RESTORE_DIR={external_target}\n"
+                                          f"export RESTORE_DIR={external_target}/runs\n{note}\n{restore}"),
+        "invalid-restore-undefined": (False, restore),
+        "invalid-restore-reference": (False, f'RESTORE_DIR="$BACKUP_COPY"\n{note}\n{restore}'),
+        "invalid-restore-checkout": (False, f"RESTORE_DIR={checkout}workbox\n{note}\n{restore}"),
+        "invalid-restore-other-fence": (False, f"RESTORE_DIR={external_target}\n~~~\n~~~sh\n{note}\n{restore}\n"
+                                        f"~~~\n~~~sh\nexport RESTORE_DIR={checkout}workbox"),
+        "invalid-home-checkout": (False, 'ln -sf -- /tmp/item "$HOME/Developer/personal/dotfiles/workbox/README.md"'),
+        "invalid-double-slash-home": (False, 'ln -sf -- /tmp/item "$HOME//Developer/personal/dotfiles/workbox/README.md"'),
+        "invalid-tilde-checkout": (False, f"ln -sf -- /tmp/item {checkout}workbox/README.md"),
+        "invalid-parent-write": (False, f"mkdir -p {checkout}../other"),
+        "invalid-relative-write": (False, "mkdir -p workbox"),
+        "invalid-relink": (False, f"ln -sf -- {checkout.rstrip('/')} ~/workbox-doc-alias\nmkdir -p ~/workbox-doc-alias/new"),
+        "invalid-git-destination": (False, "git clone git@github.com:cevr/dotfiles.git ~/some-other-location"),
+        "invalid-copy": (False, f"cp /tmp/item {checkout}workbox/README.md"),
+        "invalid-move": (False, f"mv /tmp/item {checkout}workbox/README.md"),
+        "invalid-tee": (False, f"true | tee {checkout}workbox/README.md"),
+        "invalid-redirection": (False, f"true > {checkout}workbox/README.md"),
+        "invalid-remove": (False, f"rm {checkout}workbox/README.md"),
+        "invalid-chmod": (False, f"chmod 755 {checkout}workbox/README.md"),
         "valid-export": (True, f"export {local}\n{note}\n{backup}"),
         "valid-continuation": (True, f"sudo -n env {local} \\\n   bash {checkout}{backup}"),
         "valid-checkout-prefix": (True, f"sudo -n env {local} sh {checkout}{backup}"),
@@ -833,6 +1061,21 @@ sudo env WORKBOX_EXPECT_MACHINE_ID="${{RECOVERY_PIN}}" ./backup.sh list'''),
         "sh-stdin": "redirection is not allowed",
         "sh-pipe-stdin": "interpreter options are not allowed",
         "python-inline": "interpreter options are not allowed",
+        "invalid-restore-undefined": "say where RESTORE_DIR points",
+        "invalid-restore-reference": "say where RESTORE_DIR points",
+        "invalid-restore-checkout": CHECKOUT_WRITE,
+        "invalid-restore-other-fence": CHECKOUT_WRITE,
+        "invalid-home-checkout": CHECKOUT_WRITE,
+        "invalid-double-slash-home": CHECKOUT_WRITE,
+        "invalid-tilde-checkout": CHECKOUT_WRITE,
+        "invalid-parent-write": CHECKOUT_WRITE,
+        "invalid-relink": "a preceding link can redirect this write",
+        "invalid-copy": "unknown command 'cp'",
+        "invalid-move": "unknown command 'mv'",
+        "invalid-tee": "unknown command 'tee'",
+        "invalid-redirection": "redirection is not allowed",
+        "invalid-remove": "unknown command 'rm'",
+        "invalid-chmod": "unknown command 'chmod'",
     })
 
     # Exhaust the cross-product independently for both transfer roles. Each
@@ -909,6 +1152,19 @@ sudo env WORKBOX_EXPECT_MACHINE_ID="${{RECOVERY_PIN}}" ./backup.sh list'''),
                 for message in messages
             ):
                 raise AssertionError(f"{file} did not check the pin with a tracked script operand: {messages}")
+        for case, prose in (
+            ("missing", ""),
+            ("changed", TRUST_BOUNDARY.replace("local and remote", "local")),
+            ("exact", TRUST_BOUNDARY),
+        ):
+            fixture = Path(scratch) / f"{case}-document.md"
+            fixture.write_text(f"{prose}\n\n~~~sh\ntrue\n~~~\n")
+            verdict = subprocess.run([*scanner, "--document-fixture", str(fixture)], capture_output=True, text=True)
+            if case == "exact":
+                if verdict.returncode != 0 or verdict.stdout.strip() != "guarded docs OK":
+                    raise AssertionError(f"exact trust statement was rejected: {verdict}")
+            elif verdict.returncode != 1 or "[strict] include this trust boundary verbatim once" not in verdict.stderr:
+                raise AssertionError(f"{case} whole-document fixture did not require the trust boundary: {verdict}")
         census_control(Path(scratch) / "census")
 
 
@@ -924,6 +1180,11 @@ def census_control(scratch):
         "workbox/untagged-diagram.md": "~~~\nstart --> done\n~~~\n",
         "workbox/new-entry.md": "~~~sh\n./workbox/bin/fresh-probe\n~~~\n",
         "workbox/relative.md": "```sh\nbash ./tracked-probe.sh\n```\n",
+        "workbox/mutation.md": (
+            "```sh\nln -sf -- ~/outside-probe.sh ~/Developer/personal/dotfiles/workbox/probe.sh\n"
+            "bash ~/Developer/personal/dotfiles/workbox/probe.sh\n```\n"
+        ),
+        "workbox/symlinked-parent.md": f"~~~sh\nln -sf -- /tmp/item {scratch.parent}/alias/workbox/probe.sh\n~~~\n",
         "linux/hetzner-workbox/checkout-ok.md": f"~~~sh\n# No pin needed: read-only.\nsh {CHECKOUT_PREFIX}linux/hetzner-workbox/layout.sh --dry-run\n~~~\n",
         "linux/hetzner-workbox/untracked.md": f"~~~sh\nbash {CHECKOUT_PREFIX}linux/hetzner-workbox/untracked.sh\n~~~\n",
         "linux/hetzner-workbox/symlink.md": f"~~~sh\nbash {CHECKOUT_PREFIX}linux/hetzner-workbox/indexed-link.sh\n~~~\n",
@@ -933,6 +1194,7 @@ def census_control(scratch):
         "workbox/duplicate-boundary.md": f"{TRUST_BOUNDARY}\n\n{TRUST_BOUNDARY}\n",
         "workbox/fenced-boundary.md": f"~~~text\n{TRUST_BOUNDARY}\n~~~\n",
         "skills/elsewhere/unrelated.md": "~~~sh\nstart --> done\n~~~\n",
+        "skills/elsewhere/relative-ok.md": "~~~sh\ncd /root/dotfiles\nbash scripts/sim_health_check.sh\n~~~\n",
         "skills/elsewhere/new-guard.md": "~~~text\n./workbox/bin/fresh-probe\n~~~\n",
         "skills/elsewhere/mentioned.md": "~~~text\nbackup.sh <diagram>\n~~~\n",
         "skills/elsewhere/pin.md": "~~~text\nWORKBOX_EXPECT_MACHINE_ID --> destination\n~~~\n",
@@ -940,7 +1202,8 @@ def census_control(scratch):
     }
     scratch.mkdir()
     layout = Path("linux/hetzner-workbox/layout.sh")
-    for path in [scanner, guard, layout]:
+    check = Path("linux/hetzner-workbox/check.sh")
+    for path in [scanner, guard, layout, check]:
         target = scratch / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes((ROOT / path).read_bytes())
@@ -948,8 +1211,11 @@ def census_control(scratch):
     (scratch / fresh).parent.mkdir(parents=True)
     (scratch / fresh).write_text("#!/bin/sh\nworkbox_require_host\n")
     decoy = "workbox/tracked-probe.sh"
+    probe = "workbox/probe.sh"
     (scratch / decoy).write_text("#!/bin/sh\nprintf 'tracked decoy\\n'\n")
+    (scratch / probe).write_text("#!/bin/sh\ntrue\n")
     (scratch / "tracked-probe.sh").write_text("#!/bin/sh\nprintf 'ran the untracked checkout-root file\\n'\n")
+    (scratch.parent / "alias").symlink_to(scratch, target_is_directory=True)
     untracked = "linux/hetzner-workbox/untracked.sh"
     link = "linux/hetzner-workbox/indexed-link.sh"
     working_link = "linux/hetzner-workbox/working-link.sh"
@@ -958,6 +1224,9 @@ def census_control(scratch):
     (scratch / untracked).write_text("#!/bin/sh\ntrue\n")
     (scratch / link).symlink_to(outside)
     (scratch / working_link).write_text("#!/bin/sh\ntrue\n")
+    skill_script = "skills/elsewhere/scripts/sim_health_check.sh"
+    (scratch / skill_script).parent.mkdir(parents=True)
+    (scratch / skill_script).write_text("#!/bin/sh\ntrue\n")
     for path, text in plants.items():
         target = scratch / path
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -965,17 +1234,23 @@ def census_control(scratch):
             text = f"{TRUST_BOUNDARY}\n\n{text}"
         target.write_text(text)
     subprocess.run(["git", "init", "-q"], cwd=scratch, check=True)
-    subprocess.run(["git", "add", "--", str(scanner), str(guard), str(layout), fresh, link, working_link, decoy, *plants],
-                   cwd=scratch, check=True)
+    subprocess.run(
+        ["git", "add", "--", str(scanner), str(guard), str(layout), str(check),
+         fresh, link, working_link, decoy, probe, skill_script, *plants],
+        cwd=scratch, check=True,
+    )
     (scratch / working_link).unlink()
     (scratch / working_link).symlink_to(outside)
     run = [sys.executable, str(scanner)]
     census = subprocess.run(run, cwd=scratch, capture_output=True, text=True)
-    expected = set(plants) - {"workbox/diagram.md", "skills/elsewhere/unrelated.md", "linux/hetzner-workbox/checkout-ok.md"}
+    expected = set(plants) - {
+        "workbox/diagram.md", "linux/hetzner-workbox/checkout-ok.md",
+        "skills/elsewhere/unrelated.md", "skills/elsewhere/relative-ok.md",
+    }
     diagnosed = {line.split(":", 1)[0] for line in census.stderr.splitlines()}
     if census.returncode != 1 or diagnosed != expected:
         raise AssertionError(f"wrong tracked document census: {census}")
-    if any(OUTSIDE not in line for line in census.stderr.splitlines() if line.startswith("skills/")):
+    if any(OUTSIDE not in line or "[tripwire]" not in line for line in census.stderr.splitlines() if line.startswith("skills/")):
         raise AssertionError(f"outside census did not explain how to fix the fence: {census}")
     if "unknown command 'fresh-probe': add it to the table with its role" not in census.stderr:
         raise AssertionError(f"new shell guard did not require a table entry: {census}")
@@ -988,13 +1263,23 @@ def census_control(scratch):
     if not any(line.startswith("workbox/relative.md:") and "write the checkout-prefixed path" in line
                for line in census.stderr.splitlines()):
         raise AssertionError(f"tracked decoy masked a relative operand: {census}")
+    for name in ("mutation", "symlinked-parent"):
+        if not any(line.startswith(f"workbox/{name}.md:") and CHECKOUT_WRITE in line
+                   for line in census.stderr.splitlines()):
+            raise AssertionError(f"{name} was not refused with the checkout-write correction: {census}")
     for case in ("missing", "changed", "duplicate", "fenced"):
         boundary = subprocess.run([*run, f"workbox/{case}-boundary.md"], cwd=scratch, capture_output=True, text=True)
         if boundary.returncode != 1 or f"include this trust boundary verbatim once as a prose line: {TRUST_BOUNDARY}" not in boundary.stderr:
             raise AssertionError(f"{case} trust boundary was not rejected: {boundary}")
-    explicit = subprocess.run([*run, "skills/elsewhere/unrelated.md"], cwd=scratch, capture_output=True, text=True)
-    if explicit.returncode != 1 or "redirection" not in explicit.stderr:
-        raise AssertionError(f"explicit files were not checked strictly: {explicit}")
+    for name, code in (("unrelated", 0), ("relative-ok", 0), ("pin", 1), ("mentioned", 1)):
+        explicit = subprocess.run([*run, f"skills/elsewhere/{name}.md"], cwd=scratch, capture_output=True, text=True)
+        if explicit.returncode != code or (code and ("[tripwire]" not in explicit.stderr or OUTSIDE not in explicit.stderr)):
+            raise AssertionError(f"naming {name} changed its outside-checkout-scope policy: {explicit}")
+    override = subprocess.run(
+        [*run, "--document-fixture", "skills/elsewhere/unrelated.md"], cwd=scratch, capture_output=True, text=True,
+    )
+    if override.returncode != 2 or "requires explicit paths outside the checkout" not in override.stderr:
+        raise AssertionError(f"fixture flag changed a repository document's scope: {override}")
 
 
 def main():
@@ -1012,18 +1297,21 @@ def main():
         controls(roles)
         print("guarded docs controls OK")
         return 0
-    docs = [path for path in paths if path.suffix in DOC_SUFFIXES or (strict_path(path) and path.suffix == ".txt")]
-    # Optional file arguments run freshly extracted historical examples against the same guards.
-    explicit = bool(sys.argv[1:])
-    if explicit:
-        docs = [Path(path).resolve() for path in sys.argv[1:]]
+    args = sys.argv[1:]
+    whole_fixture = args[:1] == ["--document-fixture"]
+    if whole_fixture:
+        args = args[1:]
+    if args:
+        docs = [Path(os.path.abspath(path)) for path in args]
+    else:
+        docs = [path for path in paths if path.suffix in DOC_SUFFIXES or (strict_path(path) and path.suffix == ".txt")]
+    if whole_fixture and (not args or any(path.is_relative_to(ROOT) for path in docs)):
+        print("--document-fixture requires explicit paths outside the checkout", file=sys.stderr)
+        return 2
+    grammar = Grammar(commands, roles, tracked)
     failures = [
         problem for path in docs
-        for problem in violations(
-            path, (ROOT / path).read_text(),
-            Grammar(commands, roles, tracked),
-            explicit or strict_path(path),
-        )
+        for problem in violations(document(path, whole_fixture), (ROOT / path).read_text(), grammar)
     ]
     if failures:
         print("\n".join(failures), file=sys.stderr)
