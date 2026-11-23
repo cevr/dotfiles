@@ -8,7 +8,7 @@
 // failed. With no Playwright Chrome on the host the launch fails, saying so (`bunx playwright install chromium`).
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { serve, spawnSync } from "bun"
-import { Effect, FileSystem, Path, Schema, Stream } from "effect"
+import { Duration, Effect, FileSystem, Option, Path, Schedule, Schema, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { FetchHttpClient, HttpClient } from "effect/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
@@ -94,4 +94,52 @@ describe("a real Chrome through scripts/chrome.ts", () => {
       expect(yield* get(port, "/")).toBe("holder")
     }),
   )
+
+  it.scopedLive.layer(BunServices.layer)("SIGTERM after it spawned its Chrome and before DevTools answers ends that Chrome and removes its profile, handing back nothing", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "chrome-term-" })
+      const path = yield* Path.Path
+      const script = yield* path.fromFileUrl(new URL("../scripts/chrome.ts", import.meta.url))
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+      /** One try: the browser pid it caught before readiness, or none when Chrome was ready first (that launch stopped). */
+      const attempt = Effect.gen(function* () {
+        const handle = yield* spawner.spawn(ChildProcess.make("bun", [script, "launch", "--dir", dir], { extendEnv: true, stdin: "ignore", forceKillAfter: "5 seconds" }))
+        const caught = yield* Effect.sync(() => browserOf(handle.pid, dir)).pipe(
+          Effect.repeat({ schedule: Schedule.spaced(Duration.millis(5)), until: (each) => each.length > 0 || !running(handle.pid), times: 2000 }),
+        )
+        const unready = caught.length > 0 && !spawnSync(["sh", "-c", `ls '${dir}'/*/profile/DevToolsActivePort`], { stdout: "ignore", stderr: "ignore" }).success
+        if (unready) yield* handle.kill({ killSignal: "SIGTERM" })
+        const [stdout] = yield* Effect.all([text(handle.stdout), handle.exitCode.pipe(Effect.ignore)], { concurrency: 2 })
+        if (unready) return { browser: caught, stdout }
+        // Chrome was ready first: stop what it handed back and try again.
+        const pid = Option.flatMap(Option.fromNullishOr(/"pid":(\d+)/.exec(stdout)), (match) => Option.fromUndefinedOr(match[1]))
+        if (Option.isSome(pid)) yield* cli(["stop", pid.value])
+        return { browser: [], stdout }
+      }).pipe(Effect.scoped)
+      const tried = yield* attempt.pipe(Effect.repeat({ until: (each) => each.browser.length > 0, times: 9 }))
+      expect(tried.browser.length).toBe(1)
+      expect(tried.stdout).toBe("")
+      expect(tried.browser.some(running)).toBe(false)
+      expect(yield* fs.readDirectory(dir)).toEqual([])
+      expect(census(dir)).toEqual([])
+    }),
+  )
 })
+
+/** The pids of the Chrome `parent` spawned with a profile under `dir`, by ps. */
+const browserOf = (parent: number, dir: string) =>
+  spawnSync(["ps", "-axww", "-o", "pid=,ppid=,command="], { stdout: "pipe" })
+    .stdout.toString()
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/))
+    .filter((words) => Number(words[1]) === parent && words.some((word) => word.startsWith(`--user-data-dir=${dir}/`)))
+    .map((words) => Number(words[0]))
+
+/** The pids whose command line names `dir`: every process a launch made there (browser, watchdog). */
+const census = (dir: string) =>
+  spawnSync(["ps", "-axww", "-o", "pid=,command="], { stdout: "pipe" })
+    .stdout.toString()
+    .split("\n")
+    .filter((line) => line.includes(dir) && !line.includes("ps -axww"))
+    .map((line) => Number(line.trim().split(/\s+/)[0]))

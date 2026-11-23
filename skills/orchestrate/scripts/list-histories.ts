@@ -6,17 +6,12 @@
 // other obstacle's field, and attempt evidence exactly when there was an attempt. The swap mutants there turn one red.
 import type { Role, State } from './round-policy.ts';
 import type { Item } from './item-histories.ts';
+import { HAND_BACK_OBSTACLES, type HandBack } from '../../../opencode/mods/orchestrate/hand-back.ts';
 
-/** An obstacle row, by its state. */
-export type ObstacleRow = 'refused' | 'cannot' | 'waits';
-/** What a history's hand-back must hold, in the abstract: its state, the label's opening words, the governing obstacle, every other obstacle that holds, and whether attempt evidence (`completed` or `current`) is due. The test decodes the shortest history reaching the record and checks `owed` gives exactly these. */
-export interface HandBack {
-  readonly state: State;
-  readonly label: string;
-  readonly evidence: ObstacleRow | null;
-  readonly others: ReadonlyArray<ObstacleRow>;
-  readonly lastAttempt: boolean;
-}
+/** An obstacle row, by its state: hand-back.ts's list, the one decoder's (ending.test.ts pins it equal to the round policy's). */
+export type ObstacleRow = (typeof HAND_BACK_OBSTACLES)[number];
+/** What a history's hand-back must hold, in the abstract: hand-back.ts's type, which its Schema decodes and its judge alone compares. */
+export type { HandBack };
 
 export interface ListHistory {
   readonly name: string;
@@ -32,24 +27,7 @@ export interface ListHistory {
   readonly handBack: HandBack;
 }
 
-// ---- the hand-back judge: every field exact (carried from text-fix8-label, 164493d5) -----------------------------------
-
-/**
- * A label's word: the literal a hand-back writes for it, without the words that say where it goes. It is the label
- * through the end of its first code span (`refused: <what>`, marked `base`); with no code span, its words before the
- * first ", " (a Blocker or Major); else all of it (none: it is no item left). Never empty, and the labels of one
- * role's list have distinct words (ending.test.ts checks both), so a hand-back naming the word names one label.
- */
-export function labelWord(label: string): string {
-  const open = label.indexOf('`');
-  const close = open < 0 ? -1 : label.indexOf('`', open + 1);
-  const word = close > 0 ? label.slice(0, close + 1) : label.includes(', ') ? label.slice(0, label.indexOf(', ')) : label;
-  if (word.trim() === '') throw new Error(`the label "${label}" has no word`);
-  return word;
-}
-
-const shown = (value: unknown) => (value === undefined ? 'unsaid' : JSON.stringify(value));
-const OBSTACLES: ReadonlyArray<ObstacleRow> = ['refused', 'cannot', 'waits'];
+// ---- the abstract hand-back of an owed claim (its one judge is hand-back.ts `judgeHandBack`) ----------------------
 
 /**
  * The abstract hand-back an owed claim gives one item: its state and label, the obstacle its state is, when the claim
@@ -58,27 +36,8 @@ const OBSTACLES: ReadonlyArray<ObstacleRow> = ['refused', 'cannot', 'waits'];
  */
 export function handBackOf(state: State, label: string, fields: ReadonlyArray<{ readonly field: string }>): HandBack {
   const kinds = fields.map((one) => one.field);
-  const evidence = OBSTACLES.find((row) => row === state && kinds.includes(row)) ?? null;
-  return { state, label, evidence, others: OBSTACLES.filter((row) => row !== evidence && kinds.includes(row)), lastAttempt: kinds.includes('completed') || kinds.includes('current') };
-}
-
-/**
- * Every field of a hand-back that differs from the one due, each named with both values. Each comparison is exact:
- * the state and the evidence equal the due ones; the label equals the due label or its word (labelWord), never a
- * shorter prefix or a blank; `others` is an array holding exactly the due obstacles, an absent one unsaid, not empty;
- * the last attempt is the due boolean.
- */
-export function judgeHandBack(due: HandBack, given: unknown): string[] {
-  if (typeof given !== 'object' || given === null) return [`the hand-back is ${typeof given === 'string' ? `prose ("${given}")` : String(given)}, not one whose fields can be checked`];
-  const got = given as Record<keyof HandBack, unknown>;
-  const out: string[] = [];
-  if (got.state !== due.state) out.push(`state: due ${due.state}, given ${shown(got.state)}`);
-  if (got.label !== due.label && got.label !== labelWord(due.label)) out.push(`label: due ${labelWord(due.label)}, given ${shown(got.label)}`);
-  if (got.evidence !== due.evidence) out.push(`evidence: due ${String(due.evidence)}, given ${shown(got.evidence)}`);
-  const sorted = (rows: ReadonlyArray<unknown>) => JSON.stringify([...rows].map(String).sort());
-  if (!Array.isArray(got.others) || sorted(got.others) !== sorted(due.others)) out.push(`others: due [${due.others.join(', ')}], given ${Array.isArray(got.others) ? `[${got.others.join(', ')}]` : shown(got.others)}`);
-  if (got.lastAttempt !== due.lastAttempt) out.push(`last attempt: due ${due.lastAttempt ? 'present' : 'absent'}, given ${got.lastAttempt === true ? 'present' : got.lastAttempt === false ? 'absent' : shown(got.lastAttempt)}`);
-  return out;
+  const evidence = HAND_BACK_OBSTACLES.find((row) => row === state && kinds.includes(row)) ?? null;
+  return { state, label, evidence, others: HAND_BACK_OBSTACLES.filter((row) => row !== evidence && kinds.includes(row)), lastAttempt: kinds.includes('completed') || kinds.includes('current') };
 }
 
 const item = (facts: Partial<Item>): Item => ({ assigned: false, required: false, attempt: 'never', settled: true, refused: false, hostCannot: false, wait: false, provenance: 'none', ...facts });
