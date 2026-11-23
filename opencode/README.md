@@ -273,6 +273,28 @@ only the resident location's copy acts, so a host runs one updater.
   process binds its build's tree at its start, so every start holds exactly
   its build's list (the model's I5, `mods/update/model.test.ts`
   `plugin trees`).
+- **Plain-Bun commands.** Each production file a tree runs as its own
+  process (`bun <file>`, not a plugin: the `cmd/` entries, `scripts/daily.ts`,
+  the kernel's worker) is declared in `mods/update/trees.ts` `COMMANDS` with
+  the packages it imports and a probe (arguments, exit code, output). The
+  root install owns their runtime: `effect` and `@effect/platform-bun` pinned
+  together, and a command's composition root provides `BunServices.layer`
+  (and `Digest.layerWebCrypto` where it hashes), so it needs no OpenCode
+  process (and, but for `daily.ts`, which builds the fork, no
+  `OPENCODE_DEV`). Run one from the
+  installed tree, `bun ~/.local/share/opencode-prime/current.plugins/opencode/cmd/<plugin>/<file>.ts`;
+  on another host, the same path over SSH (`ssh <host> bun …/current.plugins/opencode/cmd/…`),
+  never the synced checkout, whose fork links name a source checkout. A command
+  that reads a store reads a copy of it. `scripts/runtime-imports.test.ts` keeps
+  the list whole (every entry declared, each graph within its packages, one
+  `effect` release, and the tree's Bun seeds exactly the probed commands);
+  `tests/cli-tree.test.ts` runs each probe on the checkout, and
+  `tests/cli-tree-installed.test.ts` on the made tree
+  `TREE_OPENCODE=<tree>/opencode` names (its probes, its import graph exactly
+  resolved, its servers' platform imports and its Effect pins), which it
+  requires (unset, it fails
+  `no installed tree given`; the acceptance runner owes it `off until
+  enabled`, by name, in a run that has no tree).
 - **The TUI's plugins.** A tree's `config/cli.json` lists every plugin
   package that exports `./tui` (`cmd/*/package.json`): `trees.ts`
   `tuiPluginsOf`, derived, never a list kept by hand. Their order is the
@@ -2960,7 +2982,9 @@ listeners (a strict CSP, `no-store` on data). Its token never goes in a URL.
 **Pairing.** On loopback, the page and its marks are open, and only an
 answer needs a paired browser. On the tailnet, two plugin options decide who
 needs one. Both default to `"paired"`: everything needs a paired browser
-except the shell page itself, and an unpaired phone sees only how to pair.
+except the shell page itself, whether this browser is paired, the pairing
+itself and `/health` (which then answers `ok` alone), so an unpaired phone
+sees only how to pair.
 
 **His devices.** His tailnet is shared: it holds other Tailscale users'
 devices too (colleagues' laptops, servers). So `"member"` never means "any
@@ -3072,6 +3096,49 @@ and `tailnetWrite: "member-except-hosts"` on his two hosts. Each host's
 So his phone marks and answers with no pairing prompt. A browser on the Mac
 or the workbox pairs as before. A colleague's device reads nothing.
 
+**Every host on one page.** `digest.peers` names the other hosts
+(`[{ name, host }]`; the installer ships each fleet host's other hosts, which
+are also its agent hosts). Each host's page shows its own projects and its
+peers' side by side, each labeled with its host.
+
+- A peer is found only as the device this host's device store keys for its
+  name, by stable ID, never by a name lookup. A peer the store does not key,
+  that is not on the tailnet, or that runs a build this one cannot read shows
+  as a line ("workbox is unavailable, last seen …") and adds no project.
+- Each host reads `/peer/view.json` from each peer every 15 s, at the
+  peer's address and sending no credential and no Origin. The peer judges
+  that read like any other: the reader is an agent machine, so it reads
+  where `tailnetRead` is `"member"` and its own store is keyed.
+- An item's state lives only on the host that owns it. The page sends a
+  peer's item's mark, Later, name or answer straight to that host, with no
+  token. No host writes for another.
+- That host lets only its peers' pages write to it cross-origin, by CORS:
+  a mark or an answer sent to its tailnet address (never under a name)
+  whose Origin is exactly one of the origins of the device its store keys,
+  by its Tailscale addresses alone (`http://<IPv4>:<port>`,
+  `http://[<IPv6>]:<port>`, as a browser spells them), never a name and
+  never a pattern. Its preflight is answered only for such a write, by
+  POST, with the page's header and JSON's type (never the token's header).
+  Which server answers a name is the browser's resolver's choice; an
+  address reaches the keyed device by Tailscale's routing. It then applies
+  its own policy to the request's source. So his phone writes from either
+  page. A browser on an agent machine is refused (401), and the page links
+  to that host's own page to pair and act there. A token never leaves its
+  own host's page.
+- Nothing else crosses origins: on the tailnet a read or a pairing that
+  sends a peer's Origin is refused (403), and so is any write on loopback.
+  No answer but a peer write's carries `Access-Control-Allow-Origin`, so a
+  peer's page reads nothing of another host's.
+- On the tailnet no page is open under a name (see "The address only"):
+  a name's `GET /` sends the browser on to the address, and any other
+  request under a name gets 421, token or not. A tab left open under a
+  name from before keeps its last view, locks its controls and links to
+  this page by address, where a browser paired under the name pairs again.
+  On loopback, `localhost` is a name too: that page acts on its own host's
+  items as before, and for a peer's items it shows "Open this digest by
+  address to act on workbox's items", with the address links, instead of
+  writing, since a peer allows address origins alone.
+
 **Health.** Health on the tailnet answers an unpaired request `ok` alone. On
 loopback the line ends with
 `writes=<switch> members=<n> writers=<n> excluded=<n>[:unmatched:<name>][:store-...]`.
@@ -3121,11 +3188,15 @@ open to programs on this host by design.
 
 **Refusals.** A request whose `Host` is not one the listener serves under
 (on loopback `127.0.0.1` and `localhost`, on the tailnet its address as a
-browser writes it) or one of its names is refused on every route. So a
-hostile name pointed at the address (DNS rebinding) reads nothing. A write
-must come from the origin of the `Host` it names, with the page's header, as
-JSON; on the tailnet any other request that sends an Origin must send that
-one too. Pairing tries are limited by source address:
+browser writes it) is refused (421) on every route, except a `GET /` or
+`HEAD /` under one of the tailnet listener's names, which is sent on to the
+address. So a hostile name pointed at the address (DNS rebinding) reads
+nothing. A write must come from the origin of the `Host` it names, with the
+page's header, as JSON; on the tailnet any other request that sends an
+Origin must send that one too (an empty, blank, `null`, doubled or
+path-bearing one is refused). The one exception is a named peer's page
+writing a mark or an answer (above). Pairing tries are limited by source
+address:
 
 - each address may fail 5 times a minute;
 - past 30 failures a minute from all addresses together, an address that has
@@ -4211,13 +4282,20 @@ descendants, never the owner's servers or TUIs.
 layout fence (`.oxlintrc.json`, one import override per context; see
 `ARCHITECTURE.md`) and the rules of `oxlint-plugin-effect` the workspace
 already keeps. The plugin is pinned in the `lint` workspace (`lint/package.json`),
-never the root: it needs `effect` 4.1, and the lint workspace's own `effect`
-4.1.0 meets that peer, while the root's `effect` stays at what opencode-drive
-and the OpenCode SDK are built against (4.0.1, with their 4.0.1 platform
-packages). Moving the root's `effect` breaks every real-OpenCode scenario in
-`HttpApiClient`; `scripts/effect-debt.ts --check` refuses a root dependency on
-the plugin, and `scripts/effect-debt.test.ts` holds opencode-drive to the
-versions it pins. The kept rules are the 20 recommended rules it had
+never the root, and `scripts/effect-debt.ts --check` refuses a root
+dependency on it. The root's `effect` is 4.1.0, pinned with
+`@effect/platform-bun` for the plain-Bun commands, and overrides move
+opencode-drive's exact 4.0.1 `effect` peer and `@effect/platform-node(-shared)`
+to it, so drive, the OpenCode SDK (`@opencode/client`, `/protocol`,
+`/schema`) and the tests share one `effect`. On 2026-11-12 (3d002b7f) a 4.1.0
+root broke every real-OpenCode scenario in `HttpApiClient`: it overrode only
+the platform packages, so the SDK kept its own nested `effect` 4.0.1, two
+instances in one process. `scripts/effect-debt.test.ts` holds the invariant:
+one `effect` entry in the lock, at the root's pin, and drive's platform
+packages and the SDK's `effect` resolving to it; the drive-backed acceptance
+files (each connects through the SDK's `HttpApiClient`) prove that instance on
+real OpenCode. The overrides come out when opencode-drive publishes a peer that
+admits the root's `effect`. The kept rules are the 20 recommended rules it had
 no finding of, and `requireSuppressionReason` (a suppression names its rule
 and gives a reason after ` -- `). Rules enabled since, each once its findings
 were fixed, with a generated test over the real config: `noTestGlobals` (no

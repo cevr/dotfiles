@@ -20,13 +20,35 @@ import {
   ASSIGNMENT,
   type Item,
   matching,
-  phrase,
   PREDICATE,
   type Predicates,
   STATE_NAME,
   stateOf,
-  stateWords,
-  labelCell,
+  ATOM_IDS,
+  type Atom,
+  atomWords,
+  ATTEMPT_NOTE,
+  condition,
+  DECISIONS,
+  F1_HEADER,
+  FIRST_ROW,
+  ORDER,
+  parseCondition,
+  parseWhen,
+  OBSTACLE_FACTS,
+  OBSTACLE_ROWS,
+  obstructed,
+  OTHER_OBSTACLES_NOTE,
+  parseOtherObstacles,
+  handBackFrom,
+  judgeHandBack,
+  type Pinned,
+  truths,
+  readDecisions,
+  readVerdicts,
+  rowLabel,
+  VERDICT_ORDER,
+  when,
   type Validity,
   validity,
   VALIDITY,
@@ -53,6 +75,7 @@ import {
 import { approved, current, drift, paragraphs, type Prompt, prompts, ROOT } from './inventory.ts';
 import { INSTALLED, RETENTION } from './retention.ts';
 import { EVENTS, reachable, recordKey } from './item-histories.ts';
+import { LIST_HISTORIES } from './list-histories.ts';
 
 /** The verdict words each role may give. */
 const VOCAB: Record<Role, ReadonlyArray<string>> = { planner: ['ready', 'blocked'], implementor: ['ready', 'blocked'], verifier: ['stuck', 'changes', 'accepted'], worker: ['none'] };
@@ -162,7 +185,8 @@ describe('(i) both functions are total', () => {
       ['worker', 'limit', ['runnable'], 'a worker has no limit stop'],
       ['planner', 'idle', ['unclear'], 'a planner has no unclear state'],
       ['verifier', 'idle', ['discovery'], 'a verifier has no discovery state'],
-      ['implementor', 'refusalNone', ['runnable'], 'a refusal stops the step at the one item it refused (a refused optional probe is unproven)'],
+      ['implementor', 'refusalNone', ['runnable'], 'a refusal stops the step at the one item it refused (a refused optional probe is refused too)'],
+      ['verifier', 'refusalNone', ['done', 'unproven'], 'a refusal stops the step at the one item it refused (a refused optional probe is refused too)'],
       ['implementor', 'refusalForm', ['refused', 'refused'], 'a refusal stops the step at the one item it refused'],
       ['implementor', 'idle', ['refused'], 'a refusal stops the step at once, so a refused item means the step stopped on it'],
       ['verifier', 'idle', ['runnable', 'done'], 'the step goes on while a runnable item is left'],
@@ -406,7 +430,7 @@ describe('(iv) every case found so far has its one disposition', () => {
   test('an item keeps its label whatever stops the step (N1 to N3): F1 takes no stop', () => {
     expect(label.length).toBe(2);
     for (const role of ROLES)
-      for (const state of STATES_OF[role]) expect(render(role)).toContain(`| ${labelCell(role, state)} |`);
+      for (const row of DECISIONS[role]) expect(render(role)).toContain(`| ${rowLabel(role, row)} |`);
   });
   test('22s-7 a wrong heads line makes the batch `stuck` even with a proven Blocker; the prompt says the same', () => {
     expect(batchVerdict(false, ['changes'])).toBe('stuck');
@@ -478,8 +502,8 @@ export function reachGap(rules: ReadonlyArray<Validity> = VALIDITY): string[] {
   return out;
 }
 
-const item = (facts: Partial<Item>): Item => ({ assigned: false, required: false, attempt: 'never', now: 'settled', provenance: 'none', ...facts });
-const work = (facts: Partial<Item>): Item => item({ assigned: true, required: true, now: 'advance', ...facts });
+const item = (facts: Partial<Item>): Item => ({ assigned: false, required: false, attempt: 'never', settled: true, refused: false, hostCannot: false, wait: false, provenance: 'none', ...facts });
+const work = (facts: Partial<Item>): Item => item({ assigned: true, required: true, settled: false, ...facts });
 
 describe('(vi) the item model: valid = reachable, and every valid item is in exactly one state', () => {
   const counts = ROLES.map((role) => {
@@ -496,8 +520,8 @@ describe('(vi) the item model: valid = reachable, and every valid item is in exa
       byState: Object.fromEntries(STATES_OF[role].map((state) => [state, valid.filter((one) => matching(role, one)[0] === state).length])),
     };
   });
-  test('the enumeration: 2 × 2 × 5 attempts × 5 dispositions × 3 provenances per role; the valid ones meet exactly one state', () => {
-    expect(allItems().length).toBe(300);
+  test('the enumeration: 2 × 2 × 5 attempts × settled × 2³ obstacle sets × 3 provenances per role; the valid ones meet exactly one state', () => {
+    expect(allItems().length).toBe(960);
     expect(partition()).toEqual([]);
     console.log(JSON.stringify(counts));
   });
@@ -520,24 +544,8 @@ describe('(vi) the item model: valid = reachable, and every valid item is in exa
   });
   test('stateOf refuses an invalid record with its rule', () => {
     expect(() => stateOf('implementor', work({ required: false }))).toThrow('only a verifier has optional work');
-    expect(() => stateOf('verifier', work({ attempt: 'pass', now: 'advance' }))).toThrow('a passed item stays settled');
-    expect(() => stateOf('planner', work({ attempt: 'started', now: 'settled' }))).toThrow('a settled item is settled by a result');
-  });
-  test("each state's row in every prompt is its predicate's conditions, one phrase each, and the phrases are one-to-one", () => {
-    for (const role of ROLES) {
-      const byPhrase = new Map<string, string>();
-      for (const condition of STATES_OF[role].flatMap((state) => [...PREDICATE[state]])) {
-        const words = phrase(role, condition);
-        const key = JSON.stringify(condition);
-        expect([role, words, byPhrase.get(words) ?? key]).toEqual([role, words, key]);
-        byPhrase.set(words, key);
-      }
-      for (const state of STATES_OF[role]) {
-        expect(render(role)).toContain(`| ${STATE_NAME[state]} | ${stateWords(role, state)} | ${labelCell(role, state)} |`);
-        for (const condition of PREDICATE[state]) expect(stateWords(role, state)).toContain(phrase(role, condition));
-      }
-      expect(render(role)).toContain(`Assigned work is ${ASSIGNMENT[role]}`);
-    }
+    expect(() => stateOf('verifier', work({ attempt: 'pass', settled: false }))).toThrow('a passed item stays settled');
+    expect(() => stateOf('planner', work({ attempt: 'started', settled: true }))).toThrow('a settled item is settled by a result');
   });
 });
 
@@ -552,21 +560,21 @@ interface History {
   readonly not?: string;
 }
 const HISTORIES: ReadonlyArray<History> = [
-  { name: 'V7 a required check ran, printed a truncated report, and can be retried here (a sibling refusal then stops the step)', role: 'verifier', events: ['attempt → unclear'], item: work({ attempt: 'unclear' }), state: 'runnable', label: '`retry: <check>`, named under Check with what its last attempt printed; it continues to a result', not: '`not run`' },
-  { name: 'V6 a required check ran unclear and no retry can settle it here', role: 'verifier', events: ['attempt → unclear', 'retry becomes unavailable'], item: work({ attempt: 'unclear', now: 'settled' }), state: 'unclear', label: '`ran unclear: <check>`' },
-  { name: 'A1 the only gate ran red, is repairable, and the timebox arrives', role: 'implementor', events: ['attempt → fail'], item: work({ attempt: 'fail' }), state: 'runnable', label: 'name what its last attempt printed' },
-  { name: 'A1 variant: the gate printed an unclear result and can be rerun', role: 'implementor', events: ['attempt → unclear'], item: work({ attempt: 'unclear' }), state: 'runnable', label: 'name what its last attempt printed' },
+  { name: 'V7 a required check ran, printed a truncated report, and can be retried here (a sibling refusal then stops the step)', role: 'verifier', events: ['attempt → unclear'], item: work({ attempt: 'unclear' }), state: 'runnable', label: '`retry: <check>`, named under Check; it continues to a result', not: '`not run`' },
+  { name: 'V6 a required check ran unclear and no retry can settle it here', role: 'verifier', events: ['attempt → unclear', 'retry becomes unavailable'], item: work({ attempt: 'unclear', settled: true }), state: 'unclear', label: '`ran unclear: <check>`' },
+  { name: 'A1 the only gate ran red, is repairable, and the timebox arrives', role: 'implementor', events: ['attempt → fail'], item: work({ attempt: 'fail' }), state: 'runnable', label: '`continues next round`' },
+  { name: 'A1 variant: the gate printed an unclear result and can be rerun', role: 'implementor', events: ['attempt → unclear'], item: work({ attempt: 'unclear' }), state: 'runnable', label: '`continues next round`' },
   { name: 'A1 control: the gate never ran', role: 'implementor', events: [], item: work({}), state: 'runnable', label: '`continues next round`' },
-  { name: 'A2 an optional wider probe the host cannot run, no refusal', role: 'verifier', events: ['host probe fails'], item: work({ required: false, now: 'hostCannot' }), state: 'unproven', label: '`unproven: <probe>`' },
-  { name: 'A2 control: the same host failure on a required check', role: 'verifier', events: ['host probe fails'], item: work({ now: 'hostCannot' }), state: 'cannot', label: '`cannot run here:' },
-  { name: 'A2 control: an optional probe that proves a Blocker', role: 'verifier', events: ['attempt → fail'], item: work({ required: false, attempt: 'fail', now: 'settled' }), state: 'proven', label: 'a Blocker or Major' },
+  { name: 'A2 an optional wider probe the host cannot run, no refusal', role: 'verifier', events: ['host probe fails'], item: work({ required: false, hostCannot: true }), state: 'unproven', label: '`unproven: <probe>`' },
+  { name: 'A2 control: the same host failure on a required check', role: 'verifier', events: ['host probe fails'], item: work({ hostCannot: true }), state: 'cannot', label: '`cannot run here:' },
+  { name: 'A2 control: an optional probe that proves a Blocker', role: 'verifier', events: ['attempt → fail'], item: work({ required: false, attempt: 'fail', settled: true }), state: 'proven', label: 'a Blocker or Major' },
   { name: 'A2 control: an optional probe ran unclear and can be retried', role: 'verifier', events: ['attempt → unclear'], item: work({ required: false, attempt: 'unclear' }), state: 'unproven', label: 'it never changes the verdict' },
   { name: 'A3 the lean worker\'s first-message task, not yet started', role: 'worker', events: [], item: work({}), state: 'runnable', label: '`left`' },
   { name: 'A3 control: an unrelated defect the worker notices', role: 'worker', events: [], item: item({}), state: 'discovery', label: '`outside the task`' },
-  { name: 'N3 history: required check A, host cannot run it after one attempt', role: 'implementor', events: ['attempt → no result yet', 'host probe fails'], item: work({ attempt: 'started', now: 'hostCannot' }), state: 'cannot', label: '`cannot run here:' },
+  { name: 'N3 history: required check A, host cannot run it after one attempt', role: 'implementor', events: ['attempt → no result yet', 'host probe fails'], item: work({ attempt: 'started', hostCannot: true }), state: 'cannot', label: '`cannot run here:' },
   { name: 'N4 history: a written-rule break the unit introduced', role: 'verifier', events: [], item: item({ provenance: 'unit' }), state: 'unitFinding', label: 'marked `unit`' },
-  { name: '22s-1 history: the planner\'s spec work refused', role: 'planner', events: ['refusal'], item: work({ attempt: 'started', now: 'refused' }), state: 'refused', label: '`refused: <what>`' },
-  { name: 'a retry after a failed gate is refused', role: 'implementor', events: ['attempt → fail', 'refusal'], item: work({ attempt: 'fail', now: 'refused' }), state: 'refused', label: '`refused: <what>`' },
+  { name: '22s-1 history: the planner\'s spec work refused', role: 'planner', events: ['refusal'], item: work({ attempt: 'started', refused: true }), state: 'refused', label: '`refused: <what>`' },
+  { name: 'a retry after a failed gate is refused', role: 'implementor', events: ['attempt → fail', 'refusal'], item: work({ attempt: 'fail', refused: true }), state: 'refused', label: '`refused: <what>`' },
 ];
 
 describe("(vi) histories: each item's events reach one record, in one state, with its label", () => {
@@ -581,7 +589,7 @@ describe("(vi) histories: each item's events reach one record, in one state, wit
       if (one.not !== undefined) expect(got).not.toContain(one.not);
     });
   test('V7 with its sibling refusal: the retryable check and the refused check give one `stuck`, both labels distinct', () => {
-    const states = [stateOf('verifier', work({ attempt: 'unclear' })), stateOf('verifier', work({ attempt: 'started', now: 'refused' }))];
+    const states = [stateOf('verifier', work({ attempt: 'unclear' })), stateOf('verifier', work({ attempt: 'started', refused: true }))];
     expect(states).toEqual(['runnable', 'refused']);
     expect(classify('verifier', 'refusalNone', states)).toMatchObject({ outcome: { verdict: 'stuck' } });
     expect(label('verifier', 'runnable', 'unclear')).not.toBe(label('verifier', 'runnable', 'never'));
@@ -593,30 +601,33 @@ describe("(vi) histories: each item's events reach one record, in one state, wit
     expect('outcome' in got && got.outcome.files).toContain('the clock (the timebox)');
   });
   test('A2 and T1: every required check passed and an optional probe cannot run (or ran unclear): `accepted`', () => {
-    for (const probe of [work({ required: false, now: 'hostCannot' }), work({ required: false, attempt: 'unclear', now: 'settled' }), work({ required: false, attempt: 'unclear' })]) {
-      const states = [stateOf('verifier', work({ attempt: 'pass', now: 'settled' })), stateOf('verifier', probe)];
+    for (const probe of [work({ required: false, hostCannot: true }), work({ required: false, attempt: 'unclear', settled: true }), work({ required: false, attempt: 'unclear' })]) {
+      const states = [stateOf('verifier', work({ attempt: 'pass', settled: true })), stateOf('verifier', probe)];
       expect(states).toEqual(['done', 'unproven']);
       expect(classify('verifier', 'idle', states)).toMatchObject({ outcome: { verdict: 'accepted' } });
     }
   });
-  test("an optional probe refused: the probe is unproven and the verdict is the required checks'", () => {
-    const probe = stateOf('verifier', work({ required: false, attempt: 'started', now: 'refused' }));
-    expect(probe).toBe('unproven');
-    expect(classify('verifier', 'refusalNone', ['done', probe])).toMatchObject({ outcome: { verdict: 'accepted' } });
+  test('an optional probe refused: a refusal is authority whatever the item, so the probe is refused and the step stops `stuck` on it (the Refusals paragraph)', () => {
+    for (const probe of [work({ required: false, attempt: 'started', refused: true }), work({ required: false, attempt: 'unclear', refused: true, hostCannot: true, wait: true })]) {
+      const state = stateOf('verifier', probe);
+      expect(state).toBe('refused');
+      expect(label('verifier', state, probe.attempt)).toContain('refused: <what>');
+      expect(classify('verifier', 'refusalNone', ['done', state])).toMatchObject({ outcome: { verdict: 'stuck' } });
+    }
   });
 });
 
 describe('(vi) a model fault is red', () => {
-  test('merging attempt history back into disposition (ran unclear without `now = settled`) is red', () => {
-    const predicates: Predicates = { ...PREDICATE, unclear: PREDICATE.unclear.filter(([field]) => field !== 'now') };
+  test('merging attempt history back into disposition (ran unclear without `settled`) is red', () => {
+    const predicates: Predicates = { ...PREDICATE, unclear: PREDICATE.unclear.filter(([field]) => field !== 'settled') };
     expect(partition(predicates).some((line) => line.includes('runnable and unclear'))).toBe(true);
   });
   test('re-adding the deleted validity rule (a result is final: an unclear attempt cannot advance) is red', () => {
     const rules: ReadonlyArray<Validity> = [
       ...VALIDITY,
-      { rule: 'a result is final for the step', justification: { kind: 'unreachable', why: 'claimed' }, breaks: (_, one) => one.attempt === 'unclear' && one.now !== 'settled' },
+      { rule: 'a result is final for the step', justification: { kind: 'unreachable', why: 'claimed' }, breaks: (_, one) => one.attempt === 'unclear' && !one.settled },
     ];
-    expect(reachGap(rules).some((line) => line.includes('verifier true/true/unclear/advance') && line.includes('but rejected'))).toBe(true);
+    expect(reachGap(rules).some((line) => line.includes('verifier true/true/unclear/open/free') && line.includes('but rejected'))).toBe(true);
   });
   test('making the retryable-inconclusive label `not run` is red', () => {
     const labels = { ...LABEL, verifier: { ...LABEL.verifier, runnable: '`not run`, named under Check' } };
@@ -634,5 +645,265 @@ describe('(vi) a model fault is red', () => {
   test('a hole (runnable only when never attempted, as 22u A1 found) is red', () => {
     const predicates: Predicates = { ...PREDICATE, runnable: [...PREDICATE.runnable, ['attempt', ['never']]] };
     expect(partition(predicates).some((line) => line.startsWith('implementor') && line.endsWith('no state'))).toBe(true);
+  });
+});
+
+// ---- (vii) the rendered list: every prompt read back, first row true, one label each, one checked hand-back -------
+
+type Read = ReturnType<typeof readDecisions>;
+const isTrue = (row: Read[number], atoms: ReadonlySet<Atom>) => row.when === 'otherwise' || row.when.every((atom) => atoms.has(atom));
+/** A rendered row's id in DECISIONS: the model row with its state and condition. */
+const idOf = (role: Role, row: Read[number]) => DECISIONS[role].find((one) => one.state === row.state && JSON.stringify(one.when) === JSON.stringify(row.when))?.id ?? `?${row.state}`;
+const pairKey = (a: string, b: string) => [a, b].sort().join(' & ');
+
+/**
+ * Every pair of rows (catch-all aside) a rendered list makes true together on some reachable record, computed from
+ * item-histories.ts's records, two and three obstacles at once included: never written by hand.
+ */
+export function computedPairs(role: Role, rows: Read): Map<string, { readonly ids: readonly [string, string]; readonly record: string }> {
+  const out = new Map<string, { ids: readonly [string, string]; record: string }>();
+  for (const { item: one } of reachable(role).values()) {
+    const atoms = truths([one]);
+    const hits = rows.filter((row) => row.when !== 'otherwise' && isTrue(row, atoms)).map((row) => idOf(role, row));
+    for (const [i, a] of hits.entries()) for (const b of hits.slice(i + 1)) if (!out.has(pairKey(a, b))) out.set(pairKey(a, b), { ids: [a, b], record: recordKey(one) });
+  }
+  return out;
+}
+
+/** Every way one prompt's rendered list disagrees with F1 on a reachable record, and every way its overlaps and ORDER's pins disagree. */
+export function listFaults(prompt: Prompt, pins: ReadonlyArray<Pinned> = ORDER[prompt.role]): string[] {
+  const at = `${prompt.role} ${prompt.format}`;
+  let rows: Read;
+  try {
+    rows = readDecisions(prompt.role, prompt.text);
+  } catch (error) {
+    return [`${at}: ${String(error)}`];
+  }
+  const out: string[] = [];
+  for (const { item: one } of reachable(prompt.role).values()) {
+    const got = rows.find((row) => isTrue(row, truths([one])));
+    const state = stateOf(prompt.role, one);
+    const want = label(prompt.role, state, one.attempt) ?? 'none: it is no item left';
+    if (got === undefined || got.state !== state || got.label !== want) out.push(`${at} ${recordKey(one)}: the list gives ${got === undefined ? 'no row' : `${STATE_NAME[got.state]} (${got.label})`}, F1 ${STATE_NAME[state]} (${want})`);
+  }
+  const pairs = computedPairs(prompt.role, rows);
+  const pinned = new Map(pins.map((pin) => [pairKey(...pin.pair), pin]));
+  const place = (id: string) => rows.findIndex((row) => idOf(prompt.role, row) === id);
+  for (const [key, { record }] of pairs) {
+    const pin = pinned.get(key);
+    if (pin === undefined) out.push(`${at}: rows ${key} are both true of ${record}, and no winner is pinned`);
+    else {
+      const loser = pin.pair.find((id) => id !== pin.winner) ?? '';
+      if (!(place(pin.winner) < place(loser))) out.push(`${at}: ${pin.winner} is pinned over ${loser}, but the list puts ${loser} first`);
+    }
+  }
+  for (const key of pinned.keys()) if (!pairs.has(key)) out.push(`${at}: a winner is pinned for ${key}, but no reachable record makes both true`);
+  return out;
+}
+
+/** Every way one prompt's verdict table, read back, answers a well-formed step otherwise than F2, and every unlisted overlap. */
+export function verdictFaults(prompt: Prompt): string[] {
+  const at = `${prompt.role} ${prompt.format}`;
+  let rows: ReturnType<typeof readVerdicts>;
+  try {
+    rows = readVerdicts(prompt.text);
+  } catch (error) {
+    return [`${at}: ${String(error)}`];
+  }
+  const out: string[] = [];
+  const pairs = new Set<string>();
+  const holdsFor = (rule: (typeof rows)[number]['rule'], states: ReadonlyArray<State>) =>
+    'any' in rule ? rule.any.some((state) => states.includes(state)) : 'only' in rule ? states.every((state) => rule.only.includes(state)) : true;
+  for (const stop of STOPS_OF[prompt.role])
+    for (const states of multisets(STATES_OF[prompt.role], SIZE)) {
+      const got = classify(prompt.role, stop, states);
+      if (!('outcome' in got)) continue;
+      const first = rows.findIndex((row) => holdsFor(row.rule, states));
+      if (rows[first]?.verdict !== got.outcome.verdict) out.push(`${at} ${stop} [${states}]: the table gives ${rows[first]?.verdict}, F2 ${got.outcome.verdict}`);
+      for (const [index, row] of rows.entries()) if (index > first && !('else' in row.rule) && holdsFor(row.rule, states)) pairs.add(`${rows[first]?.verdict} > ${row.verdict}`);
+    }
+  const listed = new Set(VERDICT_ORDER[prompt.role].map((pair) => `${pair.earlier} > ${pair.later}`));
+  for (const pair of pairs) if (!listed.has(pair)) out.push(`${at}: verdicts ${pair} both hold, and VERDICT_ORDER does not say why`);
+  for (const pair of listed) if (!pairs.has(pair)) out.push(`${at}: VERDICT_ORDER lists ${pair}, but no step makes both hold`);
+  return out;
+}
+
+/**
+ * Every list history a prompt answers otherwise than the history expects: its state and label, and its hand-back
+ * judged field by field against the one the prompt's own words make due (handBackFrom).
+ */
+export function historyFaults(prompt: Prompt, histories: ReadonlyArray<{ readonly name: string; readonly role: Role; readonly items: ReadonlyArray<Item>; readonly state: State; readonly label: string; readonly handBack?: unknown }> = LIST_HISTORIES): string[] {
+  try {
+    readDecisions(prompt.role, prompt.text);
+  } catch (error) {
+    return [`${prompt.role} ${prompt.format}: ${String(error)}`];
+  }
+  return histories
+    .filter((one) => one.role === prompt.role)
+    .flatMap((one) => {
+      const due = handBackFrom(prompt.role, prompt.text, truths(one.items));
+      const out: string[] = [];
+      if (due.state !== one.state || !due.label.includes(one.label)) out.push(`${one.name}: ${STATE_NAME[due.state]} (${due.label})`);
+      for (const fault of judgeHandBack(due, one.handBack)) out.push(`${one.name}: hand-back ${fault}`);
+      return out;
+    });
+}
+
+/** The prompt's text with the rendered row `later` moved to just above `earlier`. */
+function moveAbove(prompt: Prompt, earlier: string, later: string): Prompt {
+  const line = (id: string) => {
+    const row = DECISIONS[prompt.role].find((one) => one.id === id);
+    if (row === undefined) throw new Error(`no row ${id}`);
+    return `| ${STATE_NAME[row.state]} | ${condition(prompt.role, row.when)} | ${rowLabel(prompt.role, row)} |`;
+  };
+  const [a, b] = [line(earlier), line(later)];
+  if (!prompt.text.includes(a) || !prompt.text.includes(b)) throw new Error(`${prompt.role} ${prompt.format}: rows ${earlier}, ${later} not found`);
+  return { ...prompt, text: prompt.text.replace(`${b}\n`, '').replace(a, `${b}\n${a}`) };
+}
+
+describe('(vii) the list each prompt carries: read back by the grammar, the first true row gives F1 on every reachable record', () => {
+  const all = prompts();
+  test('each row is written by the grammar it is read back by: emit then parse is the identity on every row', () => {
+    for (const role of ROLES)
+      for (const row of DECISIONS[role]) expect([role, row.id, parseCondition(role, condition(role, row.when))]).toEqual([role, row.id, row.when]);
+    for (const role of ROLES) for (const rule of VERDICT[role]) expect(parseWhen(when(rule))).toEqual('any' in rule ? { any: rule.any } : 'only' in rule ? { only: rule.only } : { else: true });
+    expect(parseOtherObstacles(OTHER_OBSTACLES_NOTE)).toEqual([...OBSTACLE_ROWS]);
+    expect(() => parseCondition('verifier', 'required, the moon is full')).toThrow('no atom reads');
+    expect(() => parseWhen('any item is lost')).toThrow('no state is named');
+    expect(() => parseOtherObstacles(OTHER_OBSTACLES_NOTE.replace('cannot run', 'stalled'))).toThrow('no obstacle row is named');
+  });
+  test('the atoms read one-to-one in each role: no two atoms share words', () => {
+    for (const role of ROLES) expect(new Set(ATOM_IDS.map((atom) => atomWords(role, atom))).size).toBe(ATOM_IDS.length);
+    for (const role of ROLES) expect(render(role)).toContain(`Assigned work is ${ASSIGNMENT[role]}`);
+  });
+  test('two and three obstacles at once are reachable, and every subset of them for every role', () => {
+    for (const role of ROLES) {
+      const sets = new Set([...reachable(role).values()].filter(({ item: one }) => one.assigned && one.required).map(({ item: one }) => OBSTACLE_FACTS.filter((fact) => one[fact]).join('+')));
+      expect([role, [...sets].sort()]).toEqual([role, ['', 'hostCannot', 'hostCannot+wait', 'refused', 'refused+hostCannot', 'refused+hostCannot+wait', 'refused+wait', 'wait'].sort()]);
+    }
+  });
+  for (const prompt of all)
+    test(`${prompt.role} ${prompt.format}: every reachable record gets F1's label from the first true row; the computed overlaps are exactly the pinned ones; every history's hand-back is the due one`, () => {
+      expect(listFaults(prompt)).toEqual([]);
+      expect(verdictFaults(prompt)).toEqual([]);
+      expect(historyFaults(prompt)).toEqual([]);
+    });
+  test('optional probes: every subset of obstacles is reachable, and a history covers each, its hand-back naming every obstacle that holds it', () => {
+    const subsets = new Set([...reachable('verifier').values()].filter(({ item: one }) => one.assigned && !one.required && obstructed(one)).map(({ item: one }) => OBSTACLE_FACTS.filter((fact) => one[fact]).join('+')));
+    expect([...subsets].sort()).toEqual(['hostCannot', 'hostCannot+wait', 'refused', 'refused+hostCannot', 'refused+hostCannot+wait', 'refused+wait', 'wait'].sort());
+    const covered = new Set(LIST_HISTORIES.filter((one) => one.role === 'verifier' && one.items.every((it) => it.assigned && !it.required) && one.items.some(obstructed)).map((one) => OBSTACLE_FACTS.filter((fact) => one.items.some((it) => it[fact])).join('+')));
+    expect([...covered].sort()).toEqual([...subsets].sort());
+    const named = { refused: 'refused', hostCannot: 'cannot', wait: 'waits' } as const;
+    for (const one of LIST_HISTORIES.filter((h) => h.items.every((it) => it.assigned && !it.required) && h.items.some(obstructed))) {
+      const held = OBSTACLE_FACTS.filter((fact) => one.items.some((it) => it[fact])).map((fact) => named[fact]);
+      expect([one.name, [one.handBack.evidence, ...one.handBack.others].filter((row) => row !== null).sort()]).toEqual([one.name, [...held].sort()]);
+      expect([one.name, one.state]).toEqual([one.name, held.includes('refused') ? 'refused' : 'unproven']);
+    }
+  });
+  test('at least 20 histories with two or three facts at once, and every history answered by every prompt of its role', () => {
+    const multi = LIST_HISTORIES.filter((one) => one.name.startsWith('M') && (one.items.length > 1 || one.items.some((item) => OBSTACLE_FACTS.filter((fact) => item[fact]).length > 1 || (obstructed(item) && item.attempt !== 'never'))));
+    expect(multi.length).toBeGreaterThanOrEqual(20);
+    for (const one of LIST_HISTORIES) expect([one.name, all.filter((prompt) => prompt.role === one.role).length > 0]).toEqual([one.name, true]);
+  });
+  test('the rows each history makes true, the first, its label and its due hand-back (for the request)', () => {
+    const lines = LIST_HISTORIES.map((one) => {
+      const text = render(one.role);
+      const atoms = truths(one.items);
+      const trueRows = DECISIONS[one.role].filter((row) => row.when === 'otherwise' || row.when.every((atom) => atoms.has(atom))).map((row) => row.id);
+      return { name: one.name, role: one.role, events: one.events, trueRows, due: handBackFrom(one.role, text, atoms) };
+    });
+    console.log(`LIST_HISTORIES ${JSON.stringify(lines)}`);
+    expect(lines.every((line) => line.trueRows.length > 0)).toBe(true);
+  });
+});
+
+describe('(vii) a rendering or hand-back fault is red', () => {
+  const all = prompts();
+  test('moving the loser of any pinned pair above its winner is red in every format, and turns a named history red', () => {
+    for (const prompt of all)
+      for (const { pair, winner } of ORDER[prompt.role]) {
+        const loser = pair.find((id) => id !== winner) ?? '';
+        const moved = moveAbove(prompt, winner, loser);
+        expect([prompt.role, prompt.format, winner, loser, listFaults(moved).length > 0]).toEqual([prompt.role, prompt.format, winner, loser, true]);
+        if (!(winner === 'unclear' && loser === 'retry')) expect([prompt.role, prompt.format, winner, loser, historyFaults(moved).length > 0]).toEqual([prompt.role, prompt.format, winner, loser, true]);
+      }
+  });
+  test('a computed pair with no pin, and a pin no record produces, are each red', () => {
+    for (const prompt of all) {
+      const pins = ORDER[prompt.role];
+      expect(listFaults(prompt, pins.slice(1))[0]).toContain('no winner is pinned');
+      expect(listFaults(prompt, [...pins, { pair: ['done', 'refused'], winner: 'refused', why: 'claimed' }]).at(-1)).toContain('no reachable record makes both true');
+    }
+  });
+  test('dropping the "first row" sentence, the attempt instruction or the other-obstacles instruction is red in every format', () => {
+    for (const prompt of all) {
+      for (const cut of [`${FIRST_ROW}\n\n`, ATTEMPT_NOTE, OTHER_OBSTACLES_NOTE]) {
+        const text = prompt.text.replace(cut, '');
+        expect([prompt.role, prompt.format, cut.slice(0, 20), text !== prompt.text, listFaults({ ...prompt, text }).length > 0]).toEqual([prompt.role, prompt.format, cut.slice(0, 20), true, true]);
+      }
+    }
+  });
+  test('folding the attempt history back into a row (no separate instruction; ran unclear first, on its result alone) is red', () => {
+    for (const prompt of all.filter((one) => one.role === 'verifier')) {
+      const row = DECISIONS.verifier.find((one) => one.id === 'unclear');
+      if (row === undefined) throw new Error('no unclear row');
+      const unclear = `| ran unclear | ${condition('verifier', row.when)} | ${rowLabel('verifier', row)} |`;
+      const folded = `| ran unclear | ${condition('verifier', ['required', 'unclear'])} | ${rowLabel('verifier', row)} |`;
+      const header = `${F1_HEADER}\n| --- | --- | --- |\n`;
+      const text = prompt.text.replace(`${unclear}\n`, '').replace(header, `${header}${folded}\n`);
+      expect(text).not.toBe(prompt.text);
+      expect(listFaults({ ...prompt, text }).length).toBeGreaterThan(0);
+      expect(historyFaults({ ...prompt, text }).some((line) => line.startsWith('W01') || line.startsWith('W03'))).toBe(true);
+    }
+  });
+  test('a row the grammar cannot read, or a catch-all that is not last, is red', () => {
+    for (const prompt of all.filter((one) => one.role === 'verifier')) {
+      expect(listFaults({ ...prompt, text: prompt.text.replace('| ran and passed |', '| ran fine |') })[0]).toContain('no atom reads');
+      expect(listFaults(moveAbove(prompt, 'retry', 'notRun'))[0]).toContain('the catch-all is not the last row');
+    }
+  });
+  test('a hand-back that drops the last attempt, drops a second obstacle, or gives attempt evidence where there was no attempt is rejected', () => {
+    const verifier = all.find((one) => one.role === 'verifier' && one.format === 'claude');
+    if (verifier === undefined) throw new Error('no verifier prompt');
+    let dropped = 0;
+    let lost = 0;
+    let invented = 0;
+    for (const one of LIST_HISTORIES) {
+      const prompt = all.find((p) => p.role === one.role && p.format === 'claude');
+      if (prompt === undefined) continue;
+      const given = one.handBack;
+      if (given.lastAttempt) {
+        expect([one.name, historyFaults(prompt, [{ ...one, handBack: { ...given, lastAttempt: false } }])[0]]).toEqual([one.name, `${one.name}: hand-back last attempt: due present, given absent`]);
+        dropped++;
+      } else {
+        expect([one.name, historyFaults(prompt, [{ ...one, handBack: { ...given, lastAttempt: true } }])[0]]).toEqual([one.name, `${one.name}: hand-back last attempt: due absent, given present`]);
+        invented++;
+      }
+      if (given.others.length > 0) {
+        expect(historyFaults(prompt, [{ ...one, handBack: { ...given, others: given.others.slice(1) } }])[0]).toContain('hand-back others: due');
+        lost++;
+      }
+    }
+    expect([dropped > 0, lost > 0, invented > 0]).toEqual([true, true, true]);
+  });
+  test("the verifier's 23b fixture (a passed probe whose hand-back discards the command and the last printed output) is rejected", () => {
+    const verifier = all.find((one) => one.role === 'verifier' && one.format === 'claude');
+    const h = LIST_HISTORIES.find((one) => one.name === 'an optional probe passes after an earlier unclear run');
+    if (verifier === undefined || h === undefined) throw new Error('no fixture');
+    expect(h.handBack.lastAttempt).toBe(true);
+    expect(historyFaults(verifier, [h])).toEqual([]);
+    expect(historyFaults(verifier, [{ ...h, handBack: 'discard the command and the last printed output' }])).not.toEqual([]);
+    expect(historyFaults(verifier, [{ ...h, handBack: { ...h.handBack, lastAttempt: false } }])).not.toEqual([]);
+  });
+  test("dropping an optional probe's obstacle evidence is rejected on every optional history held by an obstacle", () => {
+    const verifier = all.find((one) => one.role === 'verifier' && one.format === 'claude');
+    if (verifier === undefined) throw new Error('no verifier prompt');
+    const optional = LIST_HISTORIES.filter((one) => one.items.every((it) => it.assigned && !it.required) && one.handBack.others.length > 0);
+    expect(optional.length).toBeGreaterThanOrEqual(8);
+    for (const one of optional) expect([one.name, historyFaults(verifier, [{ ...one, handBack: { ...one.handBack, others: [] } }])[0]?.includes('hand-back others: due')]).toEqual([one.name, true]);
+  });
+  test('a derivation that forgets the other obstacles or the passing attempt is red against the histories', () => {
+    const forgetful = (prompt: Prompt) => ({ ...prompt, text: prompt.text.replace(OTHER_OBSTACLES_NOTE, OTHER_OBSTACLES_NOTE.replace('refused, cannot run or waiting', 'refused')) });
+    expect(all.some((prompt) => historyFaults(forgetful(prompt)).some((line) => line.includes('hand-back others')))).toBe(true);
   });
 });

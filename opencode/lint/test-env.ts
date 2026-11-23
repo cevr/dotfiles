@@ -23,8 +23,9 @@
 // handling turns a case red.
 //
 // `dotfiles/kept-suite-folders` lives in lint/kept-scratch.ts, `dotfiles/tui-clock-only` in lint/tui-clock.ts,
-// `dotfiles/tui-dirs-only` in lint/tui-dirs.ts.
+// `dotfiles/tui-dirs-only` in lint/tui-dirs.ts, `dotfiles/chrome-mock-keychain` in lint/chrome-keychain.ts.
 
+import chromeMockKeychain from "./chrome-keychain.ts"
 import keptSuiteFolders from "./kept-scratch.ts"
 import tuiClockOnly from "./tui-clock.ts"
 import tuiDirsOnly from "./tui-dirs.ts"
@@ -167,5 +168,5 @@ const noModuleEnvInTests = {
 
 export default {
   meta: { name: "dotfiles" },
-  rules: { "no-module-env-in-tests": noModuleEnvInTests, "kept-suite-folders": keptSuiteFolders, "tui-clock-only": tuiClockOnly, "tui-dirs-only": tuiDirsOnly },
+  rules: { "no-module-env-in-tests": noModuleEnvInTests, "kept-suite-folders": keptSuiteFolders, "tui-clock-only": tuiClockOnly, "tui-dirs-only": tuiDirsOnly, "chrome-mock-keychain": chromeMockKeychain },
 }

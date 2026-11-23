@@ -87,7 +87,7 @@ const NODE_BUILTINS = new Set([
 ])
 
 /** Whether every host serves `specifier` as a runtime built-in: Node's and Bun's own modules. */
-const builtin = (specifier: string): boolean =>
+export const builtin = (specifier: string): boolean =>
   specifier.startsWith("node:") || specifier === "bun" || specifier.startsWith("bun:") || NODE_BUILTINS.has(specifier.split("/")[0] ?? specifier)
 
 /** A workspace import: a relative path, or a workspace package by its `@dotfiles/` name. */

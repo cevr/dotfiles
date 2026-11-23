@@ -2,7 +2,7 @@
 // suites. Each implementation's test beside it runs the suite over its Layer.
 import { describe, expect, test } from "bun:test"
 import { Effect, type Layer, Option, Result, type Scope } from "effect"
-import { Checkouts, Processes, RepoRootUnknown, RepoRoots, type Reservation, Reservations, SessionDirectories, SessionUnreadable, Subagents, type WarmSource } from "./service.ts"
+import { Checkouts, Processes, RepoRootUnknown, RepoRoots, type Reservation, Reservations, ScriptFiles, SessionDirectories, SessionUnreadable, Subagents, type WarmSource } from "./service.ts"
 
 /** `layer` lists the processes running now; `self` is a process it must list: the test's own. */
 export const processesLaws = (name: string, layer: Layer.Layer<Processes>, self: { readonly pid: number; readonly args: string }) =>
@@ -110,6 +110,28 @@ export const reservationsLaws = (name: string, bench: () => Effect.Effect<Reserv
           const found = yield* Effect.result((yield* Reservations).of(made.directory))
           if (made.expected === "unreadable") expect(found._tag === "Failure" && found.failure._tag).toBe("ReservationsUnknown")
           else expect(found).toEqual(Result.succeed(made.expected))
+        }),
+      ))
+  })
+
+/** An implementation of ScriptFiles, a script it holds with that script's text, and paths that hold no script it reads. */
+export interface ScriptFilesBench {
+  readonly layer: Layer.Layer<ScriptFiles>
+  readonly script: string
+  readonly text: string
+  /** A missing path, a directory, and a path it cannot read, as far as the implementation can set each up. */
+  readonly none: ReadonlyArray<string>
+}
+
+/** `bench` makes a fresh implementation; a script answers its whole text, any other path none, and nothing fails. */
+export const scriptFilesLaws = (name: string, bench: () => Effect.Effect<ScriptFilesBench, never, Scope.Scope>) =>
+  describe(`${name} keeps the ScriptFiles laws`, () => {
+    test("a script answers its whole text; a missing path, a directory and an unreadable file answer none", () =>
+      check(bench, layerOf, (made) =>
+        Effect.gen(function* () {
+          const files = yield* ScriptFiles
+          expect(yield* files.text(made.script)).toEqual(Option.some(made.text))
+          expect(yield* Effect.forEach(made.none, files.text, { concurrency: 1 })).toEqual(made.none.map(() => Option.none()))
         }),
       ))
   })

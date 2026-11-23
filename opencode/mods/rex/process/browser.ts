@@ -80,6 +80,9 @@ export const findBrowser = (places: Places): Option.Option<string> =>
 /** The browser's arguments for one shot of `shot` into `folder`: headless, a profile of its own, no first-run pages, and the page's scripts given `settle` ms of its own time when asked. */
 export const browserArgs = (shot: Shot, folder: string): ReadonlyArray<string> => [
   "--headless",
+  // Off the login keychain: without these a headless Chrome reads its Safe Storage key and macOS asks the owner.
+  "--use-mock-keychain",
+  "--password-store=basic",
   "--hide-scrollbars",
   "--no-first-run",
   "--no-default-browser-check",
@@ -95,6 +98,8 @@ export const browserArgs = (shot: Shot, folder: string): ReadonlyArray<string> =
 /** The browser's arguments for a live tab kept in `folder`: headless, a profile of its own, no first-run pages, its debugger on a free port on loopback, a blank page until the tab is set up. */
 export const liveArgs = (folder: string): ReadonlyArray<string> => [
   "--headless",
+  "--use-mock-keychain",
+  "--password-store=basic",
   "--hide-scrollbars",
   "--no-first-run",
   "--no-default-browser-check",

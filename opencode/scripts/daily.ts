@@ -148,8 +148,20 @@ export const FLEET: Readonly<Record<string, ReadonlyArray<{ readonly name: strin
   "bite-cristian": [{ name: "macbook", ssh: "cvr@cristians-macbook-pro" }],
 }
 
+/** A host name as `FLEET` keys it: lower case, without `.local`. It is also the host's Tailscale host name. */
+export const fleetKey = (host: string): string => host.toLowerCase().replace(/\.local$/, "")
+
 /** A host's peers in `FLEET`; a host not listed has none. */
-export const peersOf = (host: string) => FLEET[host.toLowerCase().replace(/\.local$/, "")] ?? []
+export const peersOf = (host: string) => FLEET[fleetKey(host)] ?? []
+
+/** How the digest's page names each of the owner's hosts (`digest.name`, and its peers' `name`). */
+export const DIGEST_NAMES: ReadonlyMap<string, string> = new Map([
+  ["cristians-macbook-pro", "macbook"],
+  ["bite-cristian", "workbox"],
+])
+
+/** A `FLEET` host's name on the digest's page; its host name when `DIGEST_NAMES` has none. */
+export const digestName = (host: string): string => Option.getOrElse(Option.fromUndefinedOr(DIGEST_NAMES.get(host)), () => host)
 
 /**
  * The pool's plugin entry: Claude's cache lifetime, and the login store as a source of logins when
@@ -211,6 +223,10 @@ export const OWNER_TIMEZONE = "America/Montreal"
  *   reads included (`OWNER_EXCLUDED_DEVICES`). Names only: the installer never looks a device up. Each host's device
  *   store keys them by stable node ID, once, by hand (`bun cmd/digest/devices.ts agent|exclude <name>`); until it
  *   does, an unkeyed exclusion closes the tailnet to "paired" and an unkeyed agent host closes its writes.
+ * - `digest.name` is the host's `DIGEST_NAMES` name, and `digest.peers` the other fleet hosts (`fleetOthersOf`, so
+ *   every peer is also an agent host, keyed by the same store entry), each by its page name and its MagicDNS first
+ *   label: the page shows their projects beside its own and writes to each directly (owner, 2026-11-22: "the digest
+ *   is available over all environments").
  * Set `tailnetWrite` to `"paired"` here to make marks and answers need pairing again, or `"member"` to let the agent
  * machines write too.
  *
@@ -226,6 +242,8 @@ export const digestEntry = (digest: string, fleet: { readonly host: string }): P
       tailnetWrite: "member-except-hosts" satisfies TailnetWrite,
       agentHosts: [...fleetOthersOf(fleet.host), ...OWNER_AGENT_DEVICES],
       excludedDevices: OWNER_EXCLUDED_DEVICES,
+      name: digestName(fleetKey(fleet.host)),
+      peers: fleetOthersOf(fleet.host).map((host) => ({ name: digestName(host), host })),
     },
   }
 }

@@ -52,6 +52,9 @@ interface Rig {
 /** Handlers that keep each line written and each answer sent, and answer a fixed view, on the rig's clock. */
 const handlers = (rig: Rig): Handlers => ({
   view: Effect.succeed('{"v":1}'),
+  peerView: Effect.succeed('{"wire":1}'),
+  peerOrigins: Effect.succeed([]),
+  peerPages: Effect.succeed([]),
   write: (line) => Ref.update(rig.written, (lines) => [...lines, line]),
   now: Ref.get(rig.clock),
   zone: "America/Montreal",
@@ -818,6 +821,9 @@ const serveAs = async (setup: { readonly config: WriteConfig; readonly status: S
         const pairing = FilePairing.make(join(held.path, "pairing"))
         const handlers: Handlers = {
           view: Effect.succeed('{"secret":"his digest"}'),
+          peerView: Effect.succeed('{"wire":1}'),
+          peerOrigins: Effect.succeed([]),
+          peerPages: Effect.succeed([]),
           write: (line) => Ref.update(written, (all) => [...all, line]),
           now: Effect.succeed(NOW),
           zone: "America/Montreal",

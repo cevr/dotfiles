@@ -10,6 +10,7 @@ import * as MemoryLaunchers from "@dotfiles/opencode-guard/memory/launchers"
 import * as MemoryProcesses from "@dotfiles/opencode-guard/memory/processes"
 import * as MemoryRepoRoots from "@dotfiles/opencode-guard/memory/repo-roots"
 import * as MemoryReservations from "@dotfiles/opencode-guard/memory/reservations"
+import * as MemoryScriptFiles from "@dotfiles/opencode-guard/memory/script-files"
 import * as MemorySessionDirectories from "@dotfiles/opencode-guard/memory/session-directories"
 import * as MemorySubagents from "@dotfiles/opencode-guard/memory/subagents"
 import Guard, { make } from "./server.ts"
@@ -40,6 +41,7 @@ interface World {
   readonly parents?: Readonly<Record<string, string | undefined>>
   readonly processes?: MemoryProcesses.World
   readonly reservations?: MemoryReservations.World
+  readonly scripts?: MemoryScriptFiles.World
   readonly launchers?: Omit<MemoryLaunchers.World, "written">
 }
 
@@ -63,6 +65,7 @@ const start = (options: Record<string, unknown> = { home: HOME }, world: World =
         MemoryRepoRoots.layer(world.repos ?? { repos: ["/work/app"] }),
         MemoryCheckouts.layer({ checkouts: [] }),
         MemoryReservations.layer(world.reservations ?? { bases: {} }),
+        MemoryScriptFiles.layer(world.scripts),
         MemorySubagents.layer(world.parents ?? { ses_1: undefined, ses_child: "ses_1" }),
         MemoryProcesses.layer(world.processes ?? PROCESSES),
         MemoryLaunchers.layer({ scope: false, ...world.launchers, written }),
@@ -178,6 +181,34 @@ describe("the guard plugin", () => {
         expect(yield* call("shell", { command: "work gc", workdir: "/work/lib" })).toBeUndefined()
         expect(yield* call("shell", { command: "work list && work rm gc" })).toBeUndefined()
         expect(yield* call("shell", { command: "work gc", workdir: "/work/locked" })).toContain("cannot tell which workspaces `work gc` would delete")
+      }),
+    ))
+
+  test("refuses a Chrome started for DevTools without the keychain flags, by hand or by a script, in the guard's words, and names the launcher", () =>
+    scenario(
+      Effect.gen(function* () {
+        const probe = 'const CHROME = "/opt/chrome-linux64/chrome"\nBun.spawn([CHROME, "--headless", `--user-data-dir=${dir}`, "--remote-debugging-port=0"])'
+        const safe = 'Bun.spawn([chromePath(), "--headless=new", "--use-mock-keychain", "--password-store=basic"])'
+        const { call } = yield* start({ home: HOME }, { scripts: { "/tmp/run/probe.ts": probe, "/tmp/run/safe.ts": safe } })
+        const refused = yield* call("shell", { command: "chrome-headless-shell --headless --remote-debugging-port=0" })
+        expect(refused).toStartWith(
+          "Tool.Error: guard-keychain: `chrome-headless-shell --headless --remote-debugging-port=0` starts Chrome with a DevTools port or headless and without --use-mock-keychain --password-store=basic",
+        )
+        expect(refused).toContain("bun ~/Developer/personal/dotfiles/opencode/scripts/chrome.ts launch")
+        expect(yield* call("bash", { command: "cd /tmp/run && bun probe.ts" })).toStartWith("Tool.Error: guard-keychain: `bun probe.ts` runs /tmp/run/probe.ts, which starts Chrome")
+        expect(yield* call("shell", { command: "D=/tmp/run; nice bun $D/probe.ts --port 1" })).toContain("runs /tmp/run/probe.ts")
+        expect(yield* call("shell", { command: "bun -e 'Bun.spawn([\"chromium\", \"--headless\"])'" })).toContain("runs its inline script")
+        // Both flags, a script that passes them, a script the disk does not hold, and the owner's own Chrome run.
+        expect(yield* call("shell", { command: "chrome-headless-shell --headless --use-mock-keychain --password-store=basic" })).toBeUndefined()
+        expect(yield* call("shell", { command: "bun safe.ts", workdir: "/tmp/run" })).toBeUndefined()
+        expect(yield* call("shell", { command: "bun /tmp/run/missing.ts" })).toBeUndefined()
+        expect(yield* call("shell", { command: 'open -a "Google Chrome" https://example.com' })).toBeUndefined()
+        // A bisect runs old commits' launchers: refused naming the shim prefix, and run with it.
+        const shim = "$HOME/Developer/personal/dotfiles/claude/bin/chrome-mock-keychain"
+        const bisect = yield* call("shell", { command: "git bisect run bun tools/drive-web.ts web measure" })
+        expect(bisect).toStartWith("Tool.Error: guard-keychain: `git bisect run bun tools/drive-web.ts web measure` runs a bisect")
+        expect(bisect).toContain(`CHROME="${shim}" git bisect run bun tools/drive-web.ts web measure`)
+        expect(yield* call("shell", { command: `CHROME="${shim}" git bisect run bun tools/drive-web.ts web measure` })).toBeUndefined()
       }),
     ))
 

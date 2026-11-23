@@ -11,57 +11,22 @@
  */
 import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
-import { isBuiltin } from "node:module"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { env } from "bun"
-import { Match, Option } from "effect"
+import { Option } from "effect"
 import { unresolvedImports } from "../mods/update/filestore/trees.ts"
-import { type Host, hostProvided, SEEDS } from "../mods/update/trees.ts"
+import { COMMANDS, type Host, hostProvided, SEEDS } from "../mods/update/trees.ts"
+import * as Graph from "../tests/cli-tree/graph.ts"
 
-const ROOT = process.cwd()
-const typescript = new Bun.Transpiler({ loader: "ts" })
-const tsx = new Bun.Transpiler({ loader: "tsx" })
-/** The transpiler of a source: TSX for `.tsx`, TypeScript for the rest. */
-const transpilerOf = (file: string) =>
-  Match.value(path.extname(file)).pipe(
-    Match.when(".tsx", () => tsx),
-    Match.orElse(() => typescript),
-  )
-
-/** A workspace import: a relative path, or a workspace package by its `@dotfiles/` name. */
-const workspaceImport = (specifier: string) => specifier.startsWith(".") || specifier.startsWith("@dotfiles/")
-
-/**
- * One file's runtime imports: a workspace one as the real path it resolves to, any other as its
- * package specifier (a dependency, or the JSX runtime the TSX transform adds).
- */
-const importsOf = (file: string) => {
-  const source = readFileSync(file, "utf8").replace(/^#!.*\n/, "\n")
-  const transpiler = transpilerOf(file)
-  return transpiler.scanImports(source).map((each) => {
-    if (!workspaceImport(each.path)) return each.path
-    return realpathSync(Bun.resolveSync(each.path, path.dirname(file)))
-  })
-}
-
-/** A workspace source the walk descends into: ours, not a dependency's, and code. */
-const ours = (file: string) => path.isAbsolute(file) && !file.includes("/node_modules/") && /\.(ts|tsx|js|mjs)$/.test(file)
-
-/** Every module `seed` (a path from `root`) reaches at runtime, each with the file that first imports it. */
-const reachOf = (seed: string, root = ROOT) => {
-  const reached = new Map<string, string>()
-  const pending = [path.join(root, seed)]
-  for (const file of pending) {
-    for (const target of importsOf(file)) {
-      if (reached.has(target)) continue
-      reached.set(target, path.relative(root, file))
-      if (ours(target)) pending.push(target)
-    }
-  }
-  return reached
-}
-
+const ROOT = realpathSync(process.cwd())
+/** The import graph helpers on this checkout (`tests/cli-tree/graph.ts`, which the installed-tree check shares). */
+const graph = Graph.graphOf((file) => readFileSync(file, "utf8"))
+const breaches = (seed: string, forbidden: ReadonlyArray<RegExp>, root = ROOT) => graph.breaches(seed, forbidden, root)
+const bareOf = (seed: string) => graph.bareOf(seed, ROOT)
+const { effectsOf, manifestAt, packageDirFrom, pinsAt } = graph
+const { expectedPins, forbiddenAt, packageOf, pinIn, PLATFORM_IMPL, within } = Graph
+/** The root `package.json`'s exact version of `name`. */
+const rootPin = (name: string) => pinIn(manifestAt(ROOT), name)
 /**
  * The patterns match a target as the repo names it: a workspace file by its path from the root, a
  * package by its specifier. The checkout's own directory (a Rift named `oxlint-x`) never counts.
@@ -75,31 +40,6 @@ const NATIVE_PARSER = [/^(@[^/]+\/)?oxc-parser([@/]|$)/]
  * plugin from loading ("Cannot find package '@opencode/schema'"). Import those for types only.
  */
 const FORK_ONLY = [/^@opencode\/(?!plugin(\/|$))/]
-
-/** Whether `target`, reached from the checkout at `root`, is one of `forbidden`. */
-const forbiddenAt = (root: string, target: string, forbidden: ReadonlyArray<RegExp>) => forbidden.some((pattern) => pattern.test(nameAt(root, target)))
-
-/** A target as the repo names it: a workspace file by its path from `root`, a package by its specifier. */
-const nameAt = (root: string, target: string) =>
-  Match.value(path.isAbsolute(target)).pipe(
-    Match.when(true, () => path.relative(root, target)),
-    Match.orElse(() => target),
-  )
-
-/**
- * A platform implementation: a server plugin takes `FileSystem`, `Path` and `ChildProcessSpawner` from its
- * host (since the fork's platform floor, mods/update/process/pin.ts `PLATFORM_FLOOR`) and imports only their
- * tags from `effect`, never an implementation, even one plain Bun could resolve from the tree's install.
- */
-const PLATFORM_IMPL = [/^@effect\/platform-(node|bun)(\/|$)/]
-
-/** Each module of `forbidden` that `seed` reaches from `root`, named with its importer. */
-const breaches = (seed: string, forbidden: ReadonlyArray<RegExp>, root = ROOT) =>
-  reachOf(seed, root)
-    .entries()
-    .filter(([target]) => forbiddenAt(root, target, forbidden))
-    .map(([target, importer]) => `${seed} reaches ${nameAt(root, target)} through ${importer}`)
-    .toArray()
 
 const sources = (pattern: string) => [...new Bun.Glob(pattern).scanSync({ cwd: ROOT })].filter((file) => !file.includes("node_modules/") && !/\.(test|bench)\.tsx?$/.test(file)).sort()
 
@@ -157,6 +97,65 @@ describe("runtime imports", () => {
     expect(SERVERS).toContain("cmd/orchestrate/server.ts")
     expect(breaches("cmd/orchestrate/server.ts", PLATFORM_IMPL)).toEqual([])
     expect(SERVERS.flatMap((seed) => breaches(seed, PLATFORM_IMPL))).toEqual([])
+  })
+})
+
+/** A plain-Bun entry by its own mark: a source of `cmd/` that runs as a script (`import.meta.main`, or a `#!` line). */
+const ENTRIES = sources("cmd/**/*.{ts,tsx}").filter((file) => !/\.sim\.tsx?$/.test(file) && /^#!|import\.meta\.main/m.test(readFileSync(file, "utf8")))
+
+describe("the plain-Bun commands a tree runs (mods/update/trees.ts COMMANDS)", () => {
+  test("every production entry of cmd/ is a declared command, and every declared command is there, with a probe", () => {
+    expect(ENTRIES).toContain("cmd/digest/devices.ts")
+    const declared = COMMANDS.map(({ path: file }) => file)
+    expect(ENTRIES.filter((file) => !declared.includes(file))).toEqual([])
+    expect(declared.filter((file) => sources(file).length !== 1)).toEqual([])
+    expect(new Set(declared).size).toBe(declared.length)
+    expect(COMMANDS.filter(({ probes }) => probes.length === 0)).toEqual([])
+  })
+
+  test("the tree's plain-Bun seeds are exactly the probed commands: no seed without a probe, no probe without a seed", () => {
+    // Each Bun seed resolved to its files (a glob there would hide an unprobed entry), compared as sets both ways.
+    const seeded = new Set(SEEDS.filter(({ host }) => host === "bun").flatMap(({ glob }) => sources(glob)))
+    const probed = new Set(COMMANDS.filter(({ probes }) => probes.length > 0).map(({ path: file }) => file))
+    expect({ seedWithoutProbe: [...seeded.difference(probed)].sort(), probeWithoutSeed: [...probed.difference(seeded)].sort() }).toEqual({
+      seedWithoutProbe: [],
+      probeWithoutSeed: [],
+    })
+    // And no other host's seed reaches a command's file as its own entry: a command is a bun process, nothing else.
+    const elsewhere = SEEDS.filter(({ host }) => host !== "bun").flatMap(({ glob }) => sources(glob)).filter((file) => probed.has(file))
+    expect(elsewhere).toEqual([])
+  })
+
+  test("each command's graph imports only the packages it declares, each one the root install holds, and never a module only a loader serves", () => {
+    const outside = COMMANDS.flatMap(({ path: seed, packages }) =>
+      bareOf(seed)
+        .filter(([target]) => !packages.includes(packageOf(target)))
+        .map(([target, importer]) => `${seed} reaches ${target} through ${importer}, not in its packages ${JSON.stringify(packages)}`),
+    )
+    expect(outside).toEqual([])
+    // The install holds each one: it resolves from its importer inside the checkout, or, where a fork link shadows
+    // the install there (scripts/link-fork.ts), from the root's own install (the exact form is the tree's test below).
+    const held = (name: string, importer: string) => [path.dirname(path.join(ROOT, importer)), ROOT].some((dir) => Option.exists(packageDirFrom(name, dir), (at) => within(ROOT, at)))
+    const unheld = COMMANDS.flatMap(({ path: seed }) =>
+      bareOf(seed)
+        .filter(([target, importer]) => !held(packageOf(target), importer))
+        .map(([target, importer]) => `${seed}: ${importer} imports ${target}, which no install of the checkout holds`),
+    )
+    expect(unheld).toEqual([])
+    // The loader-only modules: `@opencode/*` (the server's and the fork's), the TUI's Solid and OpenTUI.
+    expect(COMMANDS.flatMap(({ packages }) => packages.filter((name) => hostProvided("tui", name) && name !== "effect"))).toEqual([])
+  })
+
+  test("each command's graph is on one effect release, the root's pin, through every package it reaches (its platform layer's too)", () => {
+    const pinned = rootPin("effect")
+    expect(pinsAt(ROOT)).toEqual(expectedPins(pinned))
+    const mixed = COMMANDS.flatMap(({ path: seed }) => {
+      const versions = [...new Set(effectsOf(seed, ROOT).values())]
+      return [`${seed}: effect ${versions.join(", ")}`].filter(() => versions.length !== 1 || versions[0] !== pinned)
+    })
+    expect(mixed).toEqual([])
+    // daily's graph holds the platform layer: the walk reaches effect through it, not just beside it.
+    expect([...effectsOf("scripts/daily.ts", ROOT).keys()].some((each) => each.startsWith("@effect/platform-bun"))).toBe(true)
   })
 })
 
@@ -225,7 +224,7 @@ describe("what each host serves, generated over host × package × subpath", () 
     )
     // The tree's check counts any subpath of an installed package as loading (`installedUp`, a dev approximation
     // for the fork's links that shadow an install): `@effect/platform-node/FileSystem` passes it though no such
-    // export resolves. Exact resolution is the real no-links tree's test below (TREE_OPENCODE).
+    // export resolves. Exact resolution is the real no-links tree's, in tests/cli-tree-installed.test.ts (TREE_OPENCODE).
     const loads = (host: Host, specifier: string) => specifier === "node:fs" || specifier === "bun" || specifier === "@effect/platform-node" || specifier.startsWith("@effect/platform-node/") || servedBy(host, specifier)
     const expected = seeds.flatMap(([host, seed]) =>
       specifiers.flatMap((specifier) => [`${seed} (${host}): ${seed} imports ${specifier}, which the ${host} host does not serve and no install of the tree holds`].filter(() => !loads(host, specifier))),
@@ -239,37 +238,7 @@ describe("what each host serves, generated over host × package × subpath", () 
     rmSync(root, { recursive: true, force: true })
   })
 
-  // The tree a build actually loads: `TREE_OPENCODE=<share>/opencode-<version>.plugins/opencode` (a copy, never the live share dir's own files written).
-  const tree = Option.fromNullishOr(env.TREE_OPENCODE)
-  test.skipIf(Option.isNone(tree))("the real no-links tree named by TREE_OPENCODE resolves every process's imports exactly, and its servers reach no platform implementation", () => {
-    const at = realpathSync(Option.getOrElse(tree, () => "/nonexistent/loop-probe-x"))
-    expect(unresolvedImports(at)).toEqual([])
-    // Exactly: every bare import a process reaches, that its host does not serve, resolves from its importer in this tree, subpath and all
-    // (React's JSX runtime is this walk's TSX transform's, not the TUI's: its Solid transform imports OpenTUI's, which it serves).
-    const unresolved = SEEDS.flatMap(({ glob, host }) =>
-      [...new Bun.Glob(glob).scanSync({ cwd: at })]
-        .filter((seed) => !/\.(test|bench)\.tsx?$/.test(seed))
-        .flatMap((seed) =>
-          reachOf(seed, at)
-            .entries()
-            .filter(([target]) => !path.isAbsolute(target) && !builtinModule(target) && !hostProvided(host, target) && !/^react(\/|$)/.test(target))
-            .filter(([target, importer]) => !resolvesFrom(target, path.join(at, importer)))
-            .map(([target, importer]) => `${seed} (${host}): ${importer} imports ${target}, which does not resolve in the tree`)
-            .toArray(),
-        ),
-    )
-    expect(unresolved).toEqual([])
-    const servers = [...new Bun.Glob("cmd/*/server.ts").scanSync({ cwd: at })].sort()
-    expect(servers).toContain("cmd/orchestrate/server.ts")
-    expect(servers.flatMap((seed) => breaches(seed, PLATFORM_IMPL, at))).toEqual([])
-  })
 })
-
-/** Whether Bun or Node serves `specifier` itself. */
-const builtinModule = (specifier: string) => specifier === "bun" || specifier.startsWith("bun:") || specifier.startsWith("node:") || isBuiltin(specifier)
-
-/** Whether `specifier` resolves, exactly, from the file `importer`. */
-const resolvesFrom = (specifier: string, importer: string) => Option.isSome(Option.liftThrowable(() => Bun.resolveSync(specifier, path.dirname(importer)))())
 
 /** Writes each `[path, text]` under `root`, its directories made. */
 const writeTree = (root: string, entries: ReadonlyArray<readonly [string, string]>) => {

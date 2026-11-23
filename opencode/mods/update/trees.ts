@@ -75,19 +75,107 @@ export const hostProvided = (host: Host, specifier: string): boolean => {
 }
 
 /**
+ * One benign run of a command from a tree, for the installed-tree check (`tests/cli-tree-installed.test.ts`; `tests/cli-tree.test.ts` on the checkout): its
+ * arguments (`$SCRATCH` stands for the check's scratch directory, in `says` too), the exit code it answers
+ * and a piece of what it prints: a usage refusal, and a real read or write where the command has a benign
+ * one. It runs with a scratch HOME and XDG directories, no `OPENCODE_DEV` and no service, so it
+ * reads and writes only there, calls no network and starts nothing.
+ */
+export interface Probe {
+  readonly args: ReadonlyArray<string>
+  readonly exit: number
+  readonly says: string
+}
+
+/**
+ * A plain-Bun command a tree runs by path (`bun <tree>/opencode/<path>`), from `opencode/`. No host serves
+ * it anything (`hostProvided("bun", …)` is false), so every package its runtime graph imports comes from
+ * the tree's own install, and only the ones listed in `packages` (by package name; Bun's and Node's
+ * built-ins and our workspace sources aside): `scripts/runtime-imports.test.ts` holds each graph to its
+ * list and to one `effect` (the root `package.json`'s exact pin). A command that needs Effect's
+ * `FileSystem`, `Path` or `ChildProcessSpawner` provides `@effect/platform-bun/BunServices`'s layer at its
+ * own composition root and lists `@effect/platform-bun`, pinned at the root beside `effect` at the same
+ * release. `probes` are its benign runs.
+ */
+export interface Command {
+  readonly path: string
+  readonly packages: ReadonlyArray<string>
+  readonly probes: ReadonlyArray<Probe>
+}
+
+/** The plain-Bun commands a tree carries: each production entry of `cmd/`, daily, and the kernel's worker. */
+export const COMMANDS: ReadonlyArray<Command> = [
+  {
+    path: "cmd/digest/devices.ts",
+    packages: ["effect"],
+    probes: [
+      { args: [], exit: 1, says: "usage: bun cmd/digest/devices.ts" },
+      { args: ["list", "--dir", "$SCRATCH/digest", "--config", "$SCRATCH/config"], exit: 0, says: "digest/devices.json: absent" },
+    ],
+  },
+  {
+    path: "cmd/digest/pair.ts",
+    packages: ["effect"],
+    probes: [
+      { args: ["--nope"], exit: 1, says: "Unknown option '--nope'" },
+      { args: ["--list", "--dir", "$SCRATCH/digest"], exit: 0, says: "No browser is paired." },
+    ],
+  },
+  {
+    path: "cmd/digest/export.ts",
+    packages: ["effect"],
+    probes: [
+      { args: [], exit: 1, says: "usage: bun cmd/digest/export.ts" },
+      { args: ["--out", "$SCRATCH/data.js", "--dir", "$SCRATCH/digest"], exit: 0, says: "digest export: 0 events" },
+    ],
+  },
+  {
+    path: "cmd/image/key.ts",
+    packages: ["effect"],
+    probes: [
+      { args: ["--help"], exit: 2, says: "bun key.ts status" },
+      { args: ["status"], exit: 1, says: "No key in $SCRATCH/data/opencode-image/openai.key." },
+    ],
+  },
+  // Its one real command calls an image provider: usage alone.
+  { path: "cmd/image/run.ts", packages: ["effect"], probes: [{ args: [], exit: 2, says: "usage: bun run.ts <request file>" }] },
+  {
+    path: "cmd/mail/pair.ts",
+    packages: ["effect"],
+    probes: [
+      { args: ["--help"], exit: 1, says: "Usage: pair.ts" },
+      { args: ["list"], exit: 0, says: "No paired hosts." },
+    ],
+  },
+  {
+    path: "cmd/memory/cli.ts",
+    packages: ["effect"],
+    probes: [
+      { args: ["--help"], exit: 2, says: "usage: bun opencode/cmd/memory/cli.ts" },
+      { args: ["list", "--db", "$SCRATCH/memory.db"], exit: 0, says: "no notes" },
+    ],
+  },
+  // Its commands drive Rex, a separate prerequisite: outside a Rex pane it refuses.
+  { path: "cmd/rex/show.ts", packages: ["effect", "pele"], probes: [{ args: [], exit: 2, says: "rex-show: no command" }] },
+  // Without its settings it gives up before any step.
+  { path: "cmd/update/handoff.ts", packages: ["effect"], probes: [{ args: ["probe"], exit: 1, says: "the handoff's settings do not read" }] },
+  // The tree's make runs its `--tree` (filestore/trees.ts `steps`); with no fork named it builds nothing.
+  { path: "scripts/daily.ts", packages: ["effect", "@effect/platform-bun", "@xterm/headless", "zigpty"], probes: [{ args: [], exit: 1, says: "OPENCODE_DEV is not set" }] },
+  // A backstop job's entry file calls it; on its own it only loads.
+  { path: "cmd/wake/backstop.ts", packages: ["effect"], probes: [{ args: [], exit: 0, says: "" }] },
+  { path: "cmd/wake/job.ts", packages: ["effect"], probes: [{ args: [], exit: 2, says: "usage: bun job.ts <job dir>" }] },
+  // Its requests (fd 4, `mods/kernel/wire.ts`) end at once: the loop ends and it exits.
+  { path: "mods/kernel/worker/program.ts", packages: ["effect", "oxc-parser"], probes: [{ args: [], exit: 0, says: "" }] },
+]
+
+/**
  * The entry points a process runs from a tree, each with its host: every server plugin's `server.ts`,
- * every TUI plugin's `tui.tsx` (or `tui.ts`), and the scripts a process runs by path with bun (the
- * handoff, daily, a wake's backstop and job, an image job, the kernel's worker). Paths from `opencode/`.
+ * every TUI plugin's `tui.tsx` (or `tui.ts`), and each plain-Bun command (`COMMANDS`). Paths from `opencode/`.
  */
 export const SEEDS: ReadonlyArray<{ readonly glob: string; readonly host: Host }> = [
   { glob: "cmd/*/server.ts", host: "server" },
   { glob: "cmd/*/tui.{ts,tsx}", host: "tui" },
-  { glob: "cmd/update/handoff.ts", host: "bun" },
-  { glob: "scripts/daily.ts", host: "bun" },
-  { glob: "cmd/wake/backstop.ts", host: "bun" },
-  { glob: "cmd/wake/job.ts", host: "bun" },
-  { glob: "cmd/image/run.ts", host: "bun" },
-  { glob: "mods/kernel/worker/program.ts", host: "bun" },
+  ...COMMANDS.map(({ path }) => ({ glob: path, host: "bun" as const })),
 ]
 
 /**

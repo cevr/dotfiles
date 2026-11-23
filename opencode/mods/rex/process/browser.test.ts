@@ -83,7 +83,7 @@ describe("a shot", () => {
         expect(Array.from(bytes.slice(1, 4), (code) => String.fromCharCode(code)).join("")).toBe("PNG")
         const [line] = yield* calls
         const profile = Option.getOrThrow(Option.fromNullishOr(/--user-data-dir=(\S+)/.exec(line)))[1]
-        expect(line).toStartWith("--headless --hide-scrollbars --no-first-run --no-default-browser-check")
+        expect(line).toStartWith("--headless --use-mock-keychain --password-store=basic --hide-scrollbars --no-first-run --no-default-browser-check")
         expect(line).toContain("--window-size=800,600")
         expect(line).toEndWith(` ${url}`)
         expect(profile).toStartWith(join(tmpdir(), "rex-show-chrome-"))
