@@ -333,7 +333,7 @@ const allocate = (tx: Transaction, observation: Observation, landBurst: number) 
 const approveClaim = (tx: Transaction, row: Lease, observation: Observation) => Result.flatMap(fresh(observation), (sample) => {
   const demand = checkedDemand(row, sample)
   if (!Option.exists(row.admittedDemand, (granted) => granted.cpuMilli === demand.cpuMilli && granted.width === demand.width))
-    return Result.fail("capacity")
+    return Result.fail("capacity" as const)
   const other = tx.rows().filter((r) => r.id !== row.id && held(r))
   const reason = budgetReason(row, demand, other, sample)
   if (Option.isSome(reason)) return Result.fail(reason.value)

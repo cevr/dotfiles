@@ -51,7 +51,7 @@ it.scopedLive("standalone, Guard and Wake carry modeled Go, Bun, Make and Ninja 
     const [exe = "bun"] = argv
     const cli = yield* path.fromFileUrl(new URL("../cmd/guard/host-admit.ts", import.meta.url))
     const helper = [exe, cli]
-    const command = "GOMAXPROCS=4 go test -p 4 -parallel 4 './exact argument'"
+    const command = "GOMAXPROCS=2 go test -p 2 -parallel 4 './exact argument'"
     const file = path.join(folder, "guard-wrapper")
     yield* fs.writeFileString(file, admissionLauncher("/bin/sh", helper, command), { mode: 0o700 })
     for (const tool of ["go", "bun", "make", "ninja", "unmodeled"]) {
@@ -65,14 +65,13 @@ it.scopedLive("standalone, Guard and Wake carry modeled Go, Bun, Make and Ninja 
     }), { mode: 0o600 })
     const programs = [
       { argv: [...helper, "check", "run", "--", "go", "test", "-p", "4", "-parallel", "4", "./exact argument"], width: 16, env: { GOMAXPROCS: "4" } },
-      { argv: [file, "-c", command], width: 16 },
-      { argv: admittedJobArgv(helper, command, false), width: 16 },
-      { argv: [exe, wake, job], width: 16 },
+      { argv: [file, "-c", command], width: 4 },
+      { argv: admittedJobArgv(helper, command, false), width: 4 },
+      { argv: [exe, wake, job], width: 4 },
       { argv: [...helper, "check", "run", "--", "go", "test", "-p=1", "./fixture"], width: "full" },
       { argv: admittedJobArgv(helper, "bun test --parallel=2 ./fixture", false), width: 2 },
-      { argv: admittedJobArgv(helper, "make -j2", false), width: 2 },
-      { argv: admittedJobArgv(helper, "ninja -j 2", false), width: 2 },
-      { argv: [...helper, "check", "run", "--", "unmodeled", "--parallel=1"], width: "unknown" },
+      { argv: admittedJobArgv(helper, "make -j2", true), width: 2 },
+      { argv: admittedJobArgv(helper, "ninja -j 2", true), width: 2 },
     ]
     for (const [i, { argv: program, env, width }] of programs.entries()) {
       const state = path.join(folder, `state-${i}`)

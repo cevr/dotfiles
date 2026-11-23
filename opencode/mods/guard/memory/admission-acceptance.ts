@@ -1,5 +1,5 @@
 import { Effect, Option, Schema } from "effect"
-import { type Observation, type ShellIdentity } from "../admission.ts"
+import { type ShellIdentity } from "../admission.ts"
 import { widthOf, type Request } from "../admission-wire.ts"
 import { hostEnvelope, POLICY, type Supply } from "../host-supply.ts"
 
@@ -20,7 +20,7 @@ export const supply = (input: {
   readonly now?: number
   readonly cores?: number
   readonly overrides?: Partial<Supply>
-} = {}): Observation => {
+} = {}) => {
   const { now = 0, cores = 16 } = input
   const free = { capacityBytes: 64 * 2 ** 30, freeBytes: 12 * 2 ** 30, metadataFreeBytes: 2 ** 30, freeInodes: 50_000, diskFloorBytes: POLICY.diskFloorBytes }
   const sample = {

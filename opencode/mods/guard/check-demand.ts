@@ -64,7 +64,7 @@ export const shellWidth = (line: string, env: ToolEnvironment = {}, depth = 0): 
   if (commands.length !== 1 || !first) return "unknown"
   if (line.includes("`") || line.includes("$(")) return "unknown"
   if (first.some(({ text, bareStart }) =>
-    text.includes("$") || (bareStart && /[*?\[\]{}]/u.test(text) && !text.startsWith("./"))))
+    text.includes("$") || (bareStart && /[*?[\]{}]/u.test(text) && !text.startsWith("./"))))
     return "unknown"
   return wordsWidth(first, env, depth)
 }

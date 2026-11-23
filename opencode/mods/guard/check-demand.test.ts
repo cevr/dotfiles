@@ -3,16 +3,19 @@ import { cpuDemand } from "./admission.ts"
 import { type Width } from "./admission-wire.ts"
 import { argvWidth, demandOnVolume, shellWidth } from "./check-demand.ts"
 import { admissionLauncher, argvPurpose } from "./launcher.ts"
-import { request } from "./memory/admission-acceptance.ts"
 import { bunTestWidth, goTestWidth, makeWidth, ninjaWidth, type ToolWidth } from "./tool-width.ts"
 
 const pool = 10_000
+const runtimeEnv = (runtime: number) => {
+  if (runtime > 0) return { GOMAXPROCS: String(runtime) }
+  return {}
+}
 const verify = (width: ToolWidth, theoretical: number) => {
   if (width === "invalid") {
     expect(width).not.toBe("invalid")
     return
   }
-  const reservation = cpuDemand({ ...request("fixture").demand, width }, pool)
+  const reservation = cpuDemand(demandOnVolume({ purpose: "check", width }, "fixture"), pool)
   expect(reservation).toBeGreaterThanOrEqual(Math.min(theoretical * 1000, pool))
   expect(reservation).toBeLessThanOrEqual(pool)
 }
@@ -20,7 +23,7 @@ const verify = (width: ToolWidth, theoretical: number) => {
 test("Go package concurrency and runtime are independent; test-level -parallel cannot lower the CPU bound", () => {
   for (const packages of [0, 1, 2, 4, 32]) {
     for (const runtime of [0, 1, 2, 4, 32]) {
-      const env = runtime > 0 ? { GOMAXPROCS: String(runtime) } : {}
+      const env = runtimeEnv(runtime)
       const workers = runtime || 12
       for (const parallel of [0, 1, 3, 48]) {
         const args = ["./fixture"]

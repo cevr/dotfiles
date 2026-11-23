@@ -46,9 +46,6 @@ export const DEFAULT_HEAVY: ReadonlyArray<string> = [
   "jest",
   "playwright test",
   "turbo",
-  "make",
-  "gmake",
-  "ninja",
   // A disk survey walks a whole tree for minutes (perf-load H5 caught two at
   // nice 0 on the workbox, 5 to 8 minutes each).
   "du",
