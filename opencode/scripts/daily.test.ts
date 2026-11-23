@@ -335,12 +335,13 @@ describe("the pool's fleet", () => {
     expect(mailEntry(`${MODS}/mail`, { host: "ci-runner", tailscale: "100.64.0.9" })).toBe(`${MODS}/mail`)
   })
 
-  test("on his hosts the digest's morning is his zone (the workbox is UTC), his own devices read, mark and answer unpaired but for the agent machines, each host naming the other; elsewhere the host's zone and the plugin's paired defaults", () => {
-    const his = (agents: ReadonlyArray<string>) => ({ package: `${MODS}/digest`, options: { timezone: "America/Montreal", tailnetRead: "member", tailnetWrite: "member-except-hosts", agentHosts: [...agents, "cristians-macbook-pro-rex"], excludedDevices: ["lenovo-rescue"] } })
+  test("on his hosts the digest's morning is his zone (the workbox is UTC), his own devices read, mark and answer unpaired but for the agent machines, each host naming the other as agent host and as peer; elsewhere the host's zone and the plugin's paired defaults", () => {
+    const his = (agents: ReadonlyArray<string>, name: string, peer: string) => ({ package: `${MODS}/digest`, options: { timezone: "America/Montreal", tailnetRead: "member", tailnetWrite: "member-except-hosts", agentHosts: [...agents, "cristians-macbook-pro-rex"], excludedDevices: ["lenovo-rescue"], name, peers: agents.map((host) => ({ name: peer, host })) } })
     // Names only, never an address or an ID: each host's device store keys them (cmd/digest/devices.ts), and the
-    // installer looks nothing up, so a configure with Tailscale up, down or lying ships the same entry.
-    expect(digestEntry(`${MODS}/digest`, { host: "bite-cristian" })).toEqual(his(["cristians-macbook-pro"]))
-    expect(digestEntry(`${MODS}/digest`, { host: "Cristians-MacBook-Pro.local" })).toEqual(his(["bite-cristian"]))
+    // installer looks nothing up, so a configure with Tailscale up, down or lying ships the same entry. Every peer is
+    // an agent host: its store entry is what finds it (peers.ts).
+    expect(digestEntry(`${MODS}/digest`, { host: "bite-cristian" })).toEqual(his(["cristians-macbook-pro"], "workbox", "macbook"))
+    expect(digestEntry(`${MODS}/digest`, { host: "Cristians-MacBook-Pro.local" })).toEqual(his(["bite-cristian"], "macbook", "workbox"))
     expect(digestEntry(`${MODS}/digest`, { host: "ci-runner" })).toBe(`${MODS}/digest`)
   })
 
@@ -355,7 +356,7 @@ describe("the pool's fleet", () => {
     // The overlay's plugins are serverEntries' list, written whole (writeTree's writeJson); an earlier build's entry does not survive.
     const earlier = { package: "/t/digest", options: { timezone: "America/Montreal", tailnetRead: "paired" } }
     const plugins = serverEntries(facts, (name) => `/t/${name}`)
-    expect(plugins).toContainEqual({ package: "/t/digest", options: { timezone: "America/Montreal", tailnetRead: "member", tailnetWrite: "member-except-hosts", agentHosts: ["cristians-macbook-pro", "cristians-macbook-pro-rex"], excludedDevices: ["lenovo-rescue"] } })
+    expect(plugins).toContainEqual({ package: "/t/digest", options: { timezone: "America/Montreal", tailnetRead: "member", tailnetWrite: "member-except-hosts", agentHosts: ["cristians-macbook-pro", "cristians-macbook-pro-rex"], excludedDevices: ["lenovo-rescue"], name: "workbox", peers: [{ name: "macbook", host: "cristians-macbook-pro" }] } })
     expect(plugins).not.toContainEqual(earlier)
   })
 

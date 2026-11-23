@@ -1,5 +1,6 @@
 // The page's one connection to its server: the view, whether this browser is paired, and the writes. Every write is
-// a JSON POST with the page's header, from the page's own origin (the listener refuses anything else). An answer
+// a JSON POST with the page's header, from the page's own origin (the listener refuses anything else), or, for a
+// peer's item, to that peer's page, tokenless (send: the peer allows this page's origin and judges by source). An answer
 // needs this browser paired; on the tailnet so does every mark, and every read, unless the browser is on one of his
 // own devices and digest.tailnetRead or digest.tailnetWrite is "member" (or "member-except-hosts", where an agent
 // machine still pairs).
@@ -33,6 +34,12 @@ export const keepToken = (value: string) => {
 /** The token header, when this browser has one. */
 const paired = (): Record<string, string> => (token() === "" ? {} : { [TOKEN_HEADER]: token() })
 
+/**
+ * This server would not answer this page under the name it was opened by (421): it answers on its addresses alone,
+ * so the page links to itself by address (`View.pages`).
+ */
+export class ByName extends Error {}
+
 /** The view is not this browser's to read until it pairs (the page on the tailnet). */
 export class Unpaired extends Error {}
 
@@ -40,6 +47,7 @@ export class Unpaired extends Error {}
 export const fetchView = async (): Promise<View> => {
   const answer = await fetch("./view.json", { cache: "no-store", headers: paired() })
   if (answer.status === 401) throw new Unpaired("pair this browser to read the digest")
+  if (answer.status === 421) throw new ByName("this host answers on its addresses only")
   if (!answer.ok) {
     const said = await answer.json().catch(() => ({ reason: `the server answered ${answer.status}` }))
     throw new Error(said.reason ?? `the server answered ${answer.status}`)
@@ -47,22 +55,50 @@ export const fetchView = async (): Promise<View> => {
   return answer.json()
 }
 
-const send = (path: string, body: Record<string, string>): Promise<Response> =>
-  fetch(path, { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json", [PAGE_HEADER]: "1", ...paired() } })
+/**
+ * A write: to this page's own server (`at` none), with this browser's token; or to a peer's page (`at`, its origin,
+ * the host that owns the item) with no token and no credential at all. This origin holds no token of a peer's and
+ * never will: pairing with a peer is done on the peer's own page, and its token stays in that origin.
+ */
+const send = (path: string, body: Record<string, string>, at?: string): Promise<Response> =>
+  at === undefined
+    ? fetch(`.${path}`, { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json", [PAGE_HEADER]: "1", ...paired() } })
+    : fetch(`${at}${path}`, {
+        method: "POST",
+        mode: "cors",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        body: JSON.stringify(body),
+        headers: { "content-type": "application/json", [PAGE_HEADER]: "1" },
+      }).catch(() => {
+        throw new PeerRefused("unreachable")
+      })
 
 /** A mark is not this browser's to write until it pairs (the page on the tailnet, read open to every member). */
 export class MarkUnpaired extends Error {}
 
-const post = async (path: string, body: Record<string, string>): Promise<void> => {
-  const answer = await send(path, body)
+/**
+ * A peer would not take a write from this page: it needs this browser paired on its own page (`pair`), or this page
+ * cannot write there at all (`unreachable`: the peer is down, or does not let this page's origin write to it).
+ */
+export class PeerRefused extends Error {
+  constructor(readonly why: "pair" | "unreachable") {
+    super(why === "pair" ? "that host needs this browser paired on its own page" : "this page cannot write to that host")
+  }
+}
+
+const post = async (path: string, body: Record<string, string>, at?: string): Promise<void> => {
+  const answer = await send(path, body, at)
+  if (answer.status === 401 && at !== undefined) throw new PeerRefused("pair")
   if (answer.status === 401) throw new MarkUnpaired("pair this browser to mark messages here")
+  if (answer.status === 421 && at === undefined) throw new ByName("this host answers on its addresses only")
   if (!answer.ok) throw new Error(`the server refused it (${answer.status})`)
 }
 
-export const markRead = (id: string, read: boolean) => post("./api/mark", { id, mark: read ? "read" : "unread" })
-export const setLater = (id: string) => post("./api/later", { id })
-export const rename = (project: string, name: string) => post("./api/name", { project, name })
-export const firstVisit = () => post("./api/since", {})
+export const markRead = (id: string, read: boolean, at?: string) => post("/api/mark", { id, mark: read ? "read" : "unread" }, at)
+export const setLater = (id: string, at?: string) => post("/api/later", { id }, at)
+export const rename = (project: string, name: string, at?: string) => post("/api/name", { project, name }, at)
+export const firstVisit = () => post("/api/since", {})
 
 /**
  * Whether this browser may answer here: its token is one the digest knows, or it is one of his own devices on the
@@ -77,7 +113,7 @@ export const fetchAnswers = async (): Promise<boolean> => {
 
 /** A pairing code exchanged for this browser's token, kept; a refusal says why (used, out of time, too many tries). */
 export const pair = async (code: string): Promise<void> => {
-  const answer = await send("./api/pair", { code })
+  const answer = await send("/api/pair", { code })
   if (answer.ok) {
     const said: { readonly token?: string } = await answer.json()
     keepToken(said.token ?? "")
@@ -94,9 +130,10 @@ export type Outcome =
   | { readonly tag: "closed"; readonly answer?: string; readonly via?: string; readonly at?: number }
   | { readonly tag: "refused"; readonly status: number; readonly reason: string }
 
-/** His answer to the message `id`: one of its options, or his own words. */
-export const answer = async (id: string, given: { readonly option: string } | { readonly text: string }): Promise<Outcome> => {
-  const reply = await send("./api/answer", { id, ...given })
+/** His answer to the message `id`: one of its options, or his own words; `at`, a peer's page that owns it (send). */
+export const answer = async (id: string, given: { readonly option: string } | { readonly text: string }, at?: string): Promise<Outcome> => {
+  const reply = await send("/api/answer", { id, ...given }, at)
+  if (reply.status === 401 && at !== undefined) throw new PeerRefused("pair")
   const said: { readonly answer?: string; readonly via?: string; readonly at?: number; readonly reason?: string } = await reply.json().catch(() => ({}))
   if (reply.ok) return { tag: "sent" }
   if (reply.status === 409) return { tag: "closed", answer: said.answer, via: said.via, at: said.at }

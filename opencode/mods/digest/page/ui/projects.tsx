@@ -4,7 +4,7 @@
 import { For, Show } from "solid-js"
 import { Listbox, ListboxItem } from "@ui-sdk/solid/listbox"
 import { enter, project, view } from "./state.ts"
-import type { Project } from "./types.ts"
+import type { PeerStatus, Project } from "./types.ts"
 
 /** The project's level word: Blocked (red), Needs you: n (open questions), or nothing. */
 export function Level(props: { readonly project: Project }) {
@@ -13,6 +13,37 @@ export function Level(props: { readonly project: Project }) {
       <span class={["word", { red: props.project.level === "red", need: props.project.level !== "red" }]}>
         {props.project.level === "red" ? (props.project.needs > 0 ? "Urgent" : "Blocked") : `Needs you: ${props.project.needs}`}
       </span>
+    </Show>
+  )
+}
+
+/** Whether the page shows more than one host: then each project says which it is on. */
+const manyHosts = () => (view()?.peers?.length ?? 0) > 0
+
+/** The host a project is on, before its line, when the page shows more than one. */
+function Host(props: { readonly project: Project }) {
+  return (
+    <Show when={manyHosts() && props.project.host !== undefined}>
+      <span class="host">{props.project.host}</span>
+      <Show when={props.project.headline !== ""}>{" · "}</Show>
+    </Show>
+  )
+}
+
+/** A host whose projects are not in: why, and when it was last read. */
+const peerLine = (peer: PeerStatus): string =>
+  peer.state === "update"
+    ? `${peer.name} runs a build this page cannot read: its projects show again once both hosts are updated.`
+    : `${peer.name} is unavailable${peer.lastSeenLabel === undefined ? "" : `, last seen ${peer.lastSeenLabel}`}.`
+
+/** The other hosts whose projects are not in this view, each on its own line; nothing when every host is in. */
+export function Peers() {
+  const out = () => (view()?.peers ?? []).filter((peer) => peer.state !== "up")
+  return (
+    <Show when={out().length > 0}>
+      <ul class="peers" aria-label="Other hosts">
+        <For each={out()}>{(peer) => <li title={peer.reason}>{peerLine(peer)}</li>}</For>
+      </ul>
     </Show>
   )
 }
@@ -34,7 +65,10 @@ export function ProjectsSide() {
                   </span>
                 </Show>
               </span>
-              <span class="state">{each.headline}</span>
+              <span class="state">
+                <Host project={each} />
+                {each.headline}
+              </span>
               <span class="lvl">
                 <Level project={each} />
               </span>
@@ -42,6 +76,7 @@ export function ProjectsSide() {
           )}
         </For>
       </Listbox>
+      <Peers />
     </nav>
   )
 }
@@ -56,6 +91,7 @@ export function ProjectsHome() {
           {(last) => `You last read ${last()}. It is ${view()?.nowLabel ?? ""}.`}
         </Show>
       </p>
+      <Peers />
       <Show when={(view()?.projects.length ?? 0) > 0} fallback={<p class="none">No projects yet. A run's first lane makes one.</p>}>
         <ul class="projects">
           <For each={view()?.projects ?? []}>
@@ -69,7 +105,10 @@ export function ProjectsHome() {
                       <span class="count">{each.unread} new</span>
                     </Show>
                   </span>
-                  <span class="pline">{each.headline}</span>
+                  <span class="pline">
+                    <Host project={each} />
+                    {each.headline}
+                  </span>
                 </button>
               </li>
             )}

@@ -11,6 +11,8 @@
 //
 // - GET `/` and `/assets/<name>`: the built files, by exact name inside `dist`; no other path reads the disk.
 // - GET `/view.json`: the view (view.ts), fresh from the log and the marks at each request.
+// - GET `/peer/view.json`: this host's own view in the wire envelope its named peers read (peers.ts); a read like
+//   `/view.json`, with the same policy: a tailnet member reads it where `tailnetRead` is `member`.
 // - POST `/api/mark` {id, mark: read | unread}, `/api/later` {id}, `/api/name` {project, name}, `/api/since` {}:
 //   one marks line each (marks.ts). A write is a POST of JSON whose Origin is the page's own and which carries
 //   PAGE_HEADER; anything else is refused and writes nothing. No GET changes state.
@@ -26,6 +28,12 @@
 // - Every request must name one of its listener's own hosts (`Host`), so a name rebound to its address reads nothing.
 //   On the tailnet that is its bound address alone: under its MagicDNS or short name, `GET /` is sent on to the
 //   address (308) and every other route is refused (421), token or not (policy.ts says why).
+// - CORS, the tailnet listener at its address only, for a named peer's page alone (policy.ts isPeerWrite,
+//   preflightOf): a mark or an answer whose Origin is exactly one of `peerOrigins` (the keyed peer's Tailscale
+//   address origins) gets Access-Control-Allow-Origin with that origin (its refusal too, so the page can say why),
+//   and its preflight is answered for POST with PEER_HEADERS, never the token's. Every answer carries
+//   `Vary: Origin`. The shell's CSP lets the page connect to its peers' pages (`peerPages`). CORS is the browser's
+//   guard; the source rule, by the socket's address, is the network's.
 //
 // OpenCode serves a plugin once per directory it serves, and only one instance can bind a port on an address (the
 // socket is never made with SO_REUSEPORT, so Linux refuses a second one as macOS does): the others try again every
@@ -39,7 +47,7 @@ import { BRIEF, isWell, localPart, type TailnetState } from "../health.ts"
 import { type MarkLine, markOf, nameOf, sinceOf } from "../marks.ts"
 import { type Pairing, TOKEN_HEADER } from "../pairing.ts"
 import { current, type Members, sourceOf, writesWord } from "../members.ts"
-import { authorityOf, Decision, decide, type Listener, mayAnswer, type Policy, type RouteKind, type Source, type TailnetRead } from "../policy.ts"
+import { authorityOf, Decision, decide, isPeerWrite, type Listener, mayAnswer, PEER_HEADERS, type Policy, preflightOf, type RouteKind, type Source, type TailnetRead } from "../policy.ts"
 import { nextMorning } from "../zone.ts"
 
 /** The loopback listener's address. */
@@ -61,6 +69,8 @@ export const NAME_MAX = 80
 export interface Handlers {
   /** The view, as JSON; a failure is shown to the page as its message. */
   readonly view: Effect.Effect<string, { readonly message: string }>
+  /** This host's own view in the peers' wire envelope (peers.ts), never its peers': what `/peer/view.json` answers. */
+  readonly peerView: Effect.Effect<string, { readonly message: string }>
   /** Keep one marks line. */
   readonly write: (line: MarkLine) => Effect.Effect<void, { readonly message: string }>
   readonly now: Effect.Effect<number>
@@ -75,6 +85,10 @@ export interface Handlers {
   readonly tailnetRead: TailnetRead
   /** His devices now, and `digest.tailnetWrite` in force (members.ts), read again at each tailnet recheck. */
   readonly members: Effect.Effect<Members>
+  /** The named peers' pages' origins this host lets write here now (peers.ts peerOriginsOf, policy.ts isPeerWrite). */
+  readonly peerOrigins: Effect.Effect<ReadonlyArray<string>>
+  /** The peers' pages this page writes to, by origin (where it read them): all its CSP lets it connect to beside itself. */
+  readonly peerPages: Effect.Effect<ReadonlyArray<string>>
 }
 
 /**
@@ -98,8 +112,17 @@ interface Answer {
   readonly body: string | Blob
 }
 
+/** An origin as a peer's page has one: http, a lower case name or a bracketed IPv6 address, a port. */
+const PLAIN_ORIGIN = /^http:\/\/([a-z0-9.-]+|\[[0-9a-f:]+\]):[0-9]{1,5}$/
+
+/** The page's CSP, connecting to its own origin and to `peers` (each an exact origin; anything else is left out). */
+const cspOf = (peers: ReadonlyArray<string>) =>
+  `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ${["'self'", ...peers.filter((each) => PLAIN_ORIGIN.test(each))].join(" ")}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
+
 const SECURITY = {
-  "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+  "content-security-policy": cspOf([]),
+  // Every answer may differ by Origin (a peer's page gets Access-Control-Allow-Origin): no cache may mix them.
+  vary: "Origin",
   "x-content-type-options": "nosniff",
   "referrer-policy": "no-referrer",
   "cross-origin-resource-policy": "same-origin",
@@ -269,10 +292,19 @@ const wholeHealth = (handlers: Handlers, asked: Asked) =>
 /** A GET route's answer, once the policy served it; `brief`, the health line's `ok` alone. */
 const read = (handlers: Handlers, dist: string, asked: Asked, brief: boolean) =>
   Match.value(asked.path).pipe(
-    Match.when("/", () => builtFile(dist, ".", "index.html", "no-store")),
+    // The page may connect to its peers' pages too: it sends their items' writes there.
+    Match.when("/", () =>
+      Effect.flatMap(handlers.peerPages, (pages) => Effect.map(builtFile(dist, ".", "index.html", "no-store"), (shell) => ({ ...shell, headers: { ...shell.headers, "content-security-policy": cspOf(pages) } }))),
+    ),
     Match.when("/health", () => Effect.map(Option.match(Option.liftPredicate(brief, Boolean), { onSome: () => Effect.succeed(BRIEF), onNone: () => wholeHealth(handlers, asked) }), (line) => text(200, line))),
     Match.when("/view.json", () =>
       handlers.view.pipe(
+        Effect.map((json) => answer(200, json, { "content-type": "application/json", ...NO_STORE })),
+        Effect.catch((failure) => Effect.succeed(reason(500, failure.message))),
+      ),
+    ),
+    Match.when("/peer/view.json", () =>
+      handlers.peerView.pipe(
         Effect.map((json) => answer(200, json, { "content-type": "application/json", ...NO_STORE })),
         Effect.catch((failure) => Effect.succeed(reason(500, failure.message))),
       ),
@@ -343,11 +375,12 @@ const UNPARSED = "the digest failed this request"
  * 1. On the tailnet, its authority, whatever its method, path or target (policy.ts `authorityOf`): a Host that is
  *    not the listener's address is refused (421), a GET or HEAD of `/` under one of its names sent on (308).
  * 2. A URL that does not parse (Bun builds it from the Host): on loopback the 500 main gave, on the tailnet 421.
- * 3. A method no route takes: 405.
- * 4. The policy's decision (`decide`): loopback's Host, the source, the origin and headers, what the route needs.
+ * 3. A method no route takes: 405 (a peer's preflight is looked at only after this, in `routed`).
+ * 4. The policy's decision (`decide`): loopback's Host, the source, the origin and headers, what the route needs;
+ *    `peerOrigins` (none by default) lets a named peer's page send a mark or an answer at the address.
  * Loopback's steps 2 to 4 are main's (4afe1fda), unchanged.
  */
-export const screen = (site: Site, policy: Policy, asking: Asking): Screened => {
+export const screen = (site: Site, policy: Policy, asking: Asking, peerOrigins: ReadonlyArray<string> = []): Screened => {
   const url = Option.fromNullishOr(URL.parse(asking.url))
   const path = Option.match(url, { onNone: () => "", onSome: (each) => each.pathname })
   const stopped = (decision: Decision): Screened => ({ decision, kind: Option.none(), path })
@@ -358,11 +391,35 @@ export const screen = (site: Site, policy: Policy, asking: Asking): Screened => 
   return Option.match(kindOf(asking.method, path), {
     onNone: () => stopped(Decision.Refuse({ status: 405, reason: "GET or POST only" })),
     onSome: (kind) => ({
-      decision: decide({ listener: site.listener, kind, source: asking.source, host: asking.host, hosts: site.hosts, names: site.names, root: path === "/", origin: asking.origin, pageHeader: asking.pageHeader, json: asking.json, paired: asking.paired }, policy),
+      decision: decide({ listener: site.listener, kind, source: asking.source, host: asking.host, hosts: site.hosts, names: site.names, root: path === "/", origin: asking.origin, pageHeader: asking.pageHeader, json: asking.json, paired: asking.paired }, policy, peerOrigins),
       kind: Option.some(kind),
       path,
     }),
   })
+}
+
+/** A request header, "" when absent. */
+const headerOf = (request: Request, name: string): string => Option.getOrElse(Option.fromNullishOr(request.headers.get(name)), () => "")
+
+/**
+ * A CORS preflight that the order (`screen`) got as far as its method (405): allowed (204, the origin echoed from
+ * the allowed list it equals, POST and the page's headers alone) only for a named peer's page announcing a mark or
+ * an answer at this listener's address (policy.ts preflightOf); else the order's own 405, no Access-Control header
+ * at all, so the browser sends nothing. Every earlier refusal (a name's 421) stands as the order gave it.
+ */
+const preflight = (request: Request, site: Site, source: Source, path: string, peerOrigins: ReadonlyArray<string>): Option.Option<Answer> => {
+  const method = headerOf(request, "access-control-request-method")
+  const origin = Option.fromNullishOr(request.headers.get("origin"))
+  const headers = headerOf(request, "access-control-request-headers")
+    .split(",")
+    .map((each) => each.trim().toLowerCase())
+    .filter((each) => each !== "")
+  const kind = Option.getOrElse(Option.filter(kindOf(method, path), () => method === "POST"), (): RouteKind | "none" => "none")
+  const asked = { listener: site.listener, kind, source, host: Option.fromNullishOr(request.headers.get("host")), hosts: site.hosts, origin, method, headers }
+  return Option.map(
+    Option.filter(origin, () => preflightOf(asked, peerOrigins)),
+    (peer) => answer(204, "", { "access-control-allow-origin": peer, "access-control-allow-methods": "POST", "access-control-allow-headers": PEER_HEADERS.join(", "), "access-control-max-age": "600" }),
+  )
 }
 
 const routed = (handlers: Handlers, dist: string, request: Request, site: Site, address: string): Effect.Effect<Answer> =>
@@ -375,7 +432,8 @@ const routed = (handlers: Handlers, dist: string, request: Request, site: Site, 
       Match.orElse(() => sourceOf(address, members)),
     )
     const policy: Policy = { tailnetRead: handlers.tailnetRead, tailnetWrite: members.write }
-    const screened = screen(site, policy, {
+    const peerOrigins = yield* handlers.peerOrigins
+    const asking: Asking = {
       method: request.method,
       url: request.url,
       // Presence by the header's absence alone (`get` answers null only then), never by its value.
@@ -385,10 +443,18 @@ const routed = (handlers: Handlers, dist: string, request: Request, site: Site, 
       json: String(request.headers.get("content-type")).startsWith("application/json"),
       paired,
       source,
-    })
+    }
+    const screened = screen(site, policy, asking, peerOrigins)
     const path = screened.path
     const asked: Asked = { path, listener: site.listener, source, policy, members, paired }
-    return yield* Match.valueTags(screened.decision, {
+    // A peer's preflight, once the order reached the method (its 405): allowed or that 405, nothing else changed.
+    const reachedMethod = Option.isNone(screened.kind) && Match.valueTags(screened.decision, { Refuse: ({ status }) => status === 405, Brief: () => false, Redirect: () => false, Serve: () => false })
+    if (request.method === "OPTIONS" && reachedMethod) return yield* Effect.succeed(Option.getOrElse(preflight(request, site, source, path, peerOrigins), () => reason(405, "GET or POST only")))
+    // A peer's page may read the answer to its write, a refusal too (so it can say why): nothing else, nowhere else.
+    const peerWrite = Option.exists(screened.kind, (kind) => isPeerWrite({ listener: site.listener, kind, host: asking.host, hosts: site.hosts, origin: asking.origin }, peerOrigins))
+    const corsFor = (each: Answer): Answer =>
+      Option.match(Option.filter(asking.origin, () => peerWrite), { onNone: () => each, onSome: (peer) => ({ ...each, headers: { ...each.headers, "access-control-allow-origin": peer } }) })
+    const decided = yield* Match.valueTags(screened.decision, {
       Refuse: ({ status, reason: why }) => Effect.succeed(reason(status, why)),
       Brief: () => read(handlers, dist, asked, true),
       // To the page at the listener's own address; nothing of the request goes into the Location.
@@ -401,6 +467,7 @@ const routed = (handlers: Handlers, dist: string, request: Request, site: Site, 
           Match.orElse(() => read(handlers, dist, asked, false)),
         ),
     })
+    return corsFor(decided)
   })
 
 /** The port could not be bound (another instance holds it, or the address is gone). */

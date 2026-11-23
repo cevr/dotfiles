@@ -20,6 +20,13 @@
 //   JSON. On the tailnet an Origin sent with any other request must be that one too (a browser sends none on the
 //   page's own GETs). With writes open to his devices (no token), these are what stop a page of another site,
 //   opened in his browser, from writing through it.
+// - The one exception (peers.ts, the write half): on the tailnet listener, at its own address, a mark or an answer
+//   may also come from a named peer's page, its Origin exactly one of `peerOrigins` (the keyed device's Tailscale
+//   addresses, never a name, on the page's port, from this host's own status and device store). Such a write is
+//   tokenless by construction: its token header, if any, is never read (the preflight never allows it either), so
+//   it is served only where this host's policy serves the same request from its own page, tokenless, from that
+//   source. Nothing else is ever allowed cross-origin: no read, no pairing, nothing under a name, nothing on
+//   loopback (`isPeerWrite`, `preflightOf`).
 // - What a route needs then (ACCESS):
 //   - On loopback, a read or a mark needs nothing more, an answer a paired browser.
 //   - Off loopback (the tailnet) every route needs a paired browser except the page's shell (its static bundle,
@@ -144,6 +151,8 @@ export const Decision = Data.taggedEnum<Decision>()
 
 /** The pairing instruction an unpaired browser is given. */
 export const PAIR_FIRST = "pair this browser first: run bun cmd/digest/pair.ts on the host and type the code it prints here"
+/** What a peer's page is told when this host needs a token for its write: pair on this host's own page, and act there. */
+export const PAIR_ON_HOST = "this host needs this browser paired: open its own page, pair there, and act on it there"
 
 /** What a request under one of the tailnet listener's names is told: its page is at its address. */
 export const ADDRESS_ONLY = "on the tailnet this page answers at its address only (http://100.x.y.z:8240, as bun cmd/digest/pair.ts prints it): open it there"
@@ -175,17 +184,66 @@ export const authorityOf = (authority: Authority): Option.Option<Decision> => {
   return Option.some(Decision.Refuse({ status: 421, reason: FOREIGN }))
 }
 
+/** The kinds a named peer's page may send here cross-origin: the marks and the answers, never a read or a pairing. */
+export const PEER_WRITES: ReadonlyArray<RouteKind> = ["mark", "answer"]
+/** The request headers a peer's page may send cross-origin: the page's header and JSON's type, never the token's. */
+export const PEER_HEADERS: ReadonlyArray<string> = ["content-type", "x-digest-page"]
+
+/** Whether the page's own origin sent it: exactly `http://<the Host it named>`, both sent. */
+const ownOrigin = (facts: Pick<Facts, "host" | "origin">): boolean =>
+  Option.exists(Option.zipWith(facts.host, facts.origin, (host, origin) => origin === `http://${host}`), (same) => same)
+
+/**
+ * Whether a request is a named peer's page writing here: the tailnet listener at its own address (the Host one of
+ * `hosts`, so never under a name), a mark or an answer, and an Origin that is not this page's own but exactly one
+ * of `peerOrigins` (peers.ts originsOf: the keyed device's Tailscale addresses). Exact string equality: never a
+ * pattern, never the Origin reflected for its own sake; an empty, `null`, doubled or path-bearing Origin is none.
+ */
+export const isPeerWrite = (facts: Pick<Facts, "listener" | "kind" | "host" | "hosts" | "origin">, peerOrigins: ReadonlyArray<string>): boolean =>
+  facts.listener === "tailnet" &&
+  PEER_WRITES.includes(facts.kind) &&
+  Option.exists(facts.host, (host) => facts.hosts.includes(host)) &&
+  !ownOrigin(facts) &&
+  Option.exists(facts.origin, (origin) => peerOrigins.includes(origin))
+
+/** A CORS preflight as the decision reads it: the request it announces (`kind`, none when no route takes it), its method and headers. */
+export interface Preflight {
+  readonly listener: Listener
+  readonly kind: RouteKind | "none"
+  readonly source: Source
+  readonly host: Option.Option<string>
+  readonly hosts: ReadonlyArray<string>
+  readonly origin: Option.Option<string>
+  readonly method: string
+  /** Access-Control-Request-Headers, each lower case. */
+  readonly headers: ReadonlyArray<string>
+}
+
+/**
+ * Whether to answer a preflight with the peer origin allowed: a peer's write (isPeerWrite, so at the listener's own
+ * address) from a tailnet source, by POST, asking only PEER_HEADERS.
+ */
+export const preflightOf = (asked: Preflight, peerOrigins: ReadonlyArray<string>): boolean =>
+  asked.kind !== "none" &&
+  !(asked.source === "outside" || asked.source === "local") &&
+  asked.method === "POST" &&
+  asked.headers.every((header) => PEER_HEADERS.includes(header)) &&
+  isPeerWrite({ listener: asked.listener, kind: asked.kind, host: asked.host, hosts: asked.hosts, origin: asked.origin }, peerOrigins)
+
 /**
  * The one decision: on the tailnet by its authority first (`authorityOf`), on loopback by its host; then the source,
  * then the origin (a write's always, any other tailnet request's when it sends one) and a write's headers, then what
- * the route needs.
+ * the route needs. `peerOrigins`: the named peers' pages' origins (isPeerWrite), none by default; a peer's write is
+ * the one request whose Origin may be other than the page's own.
  */
-export const decide = (facts: Facts, policy: Policy = PAIRED): Decision => {
+export const decide = (facts: Facts, policy: Policy = PAIRED, peerOrigins: ReadonlyArray<string> = []): Decision => {
   const first = authorityOf({ listener: facts.listener, host: facts.host, hosts: facts.hosts, names: facts.names, rootRead: facts.kind === "shell" && facts.root })
   if (Option.isSome(first)) return first.value
   if (!Option.exists(facts.host, (host) => facts.hosts.includes(host))) return Decision.Refuse({ status: 421, reason: FOREIGN })
-  // The page's own origin, from the Host it named; a request is from it only when it sent exactly that Origin.
-  const own = Option.exists(Option.zipWith(facts.host, facts.origin, (host, origin) => origin === `http://${host}`), (same) => same)
+  // The page's own origin, from the Host it named, or a named peer's page writing here (isPeerWrite): a request is
+  // from one of them only when it sent exactly that Origin.
+  const peerWrite = isPeerWrite(facts, peerOrigins)
+  const own = ownOrigin(facts) || peerWrite
   if (facts.listener === "tailnet" && (facts.source === "outside" || facts.source === "local")) return Decision.Refuse({ status: 403, reason: "this listener answers the tailnet only" })
   if (facts.listener === "tailnet" && Option.isSome(facts.origin) && !own) return Decision.Refuse({ status: 403, reason: "a request must come from the page's own origin" })
   if (WRITES.includes(facts.kind)) {
@@ -193,10 +251,18 @@ export const decide = (facts: Facts, policy: Policy = PAIRED): Decision => {
     if (!facts.pageHeader) return Decision.Refuse({ status: 403, reason: "a write must carry the page's header" })
     if (!facts.json) return Decision.Refuse({ status: 415, reason: "a write is JSON" })
   }
+  return byNeed(facts, policy, peerWrite)
+}
+
+/**
+ * What the route needs, once its host, source, origin and headers passed. A peer's page holds no token of this
+ * host's: one that arrives with its write is not read, and its refusal says to pair on this host's own page.
+ */
+const byNeed = (facts: Facts, policy: Policy, peerWrite: boolean): Decision => {
   const need = needOf(facts.listener, facts.kind, policy, facts.source)
-  if (need === "open" || facts.paired) return Decision.Serve()
+  if (need === "open" || (facts.paired && !peerWrite)) return Decision.Serve()
   if (need === "brief") return Decision.Brief()
-  return Decision.Refuse({ status: 401, reason: PAIR_FIRST })
+  return Decision.Refuse({ status: 401, reason: Option.getOrElse(Option.as(Option.liftPredicate(peerWrite, Boolean), PAIR_ON_HOST), () => PAIR_FIRST) })
 }
 
 /**
