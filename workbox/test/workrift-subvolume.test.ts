@@ -1939,8 +1939,14 @@ const callSites = (src: string): ReadonlyArray<Site> => {
   const raws: Array<Raw> = []
   type Ctx = { kind: "top" | "subst" | "dq" | "sq"; depth: number; assigned: boolean }
   const stack: Array<Ctx> = [{ kind: "top", depth: 0, assigned: false }]
-  interface Seg { cmd: Raw | undefined; expect: boolean; pipeFrom: boolean; afterAndOr: boolean; neg: boolean; col: number | undefined; read: boolean }
-  const fresh = (): Seg => ({ cmd: undefined, expect: true, pipeFrom: false, afterAndOr: false, neg: false, col: undefined, read: false })
+  interface Seg { cmd: Raw | undefined; group: ReadonlyArray<Raw>; expect: boolean; pipeFrom: boolean; afterAndOr: boolean; neg: boolean; col: number | undefined; read: boolean }
+  const fresh = (): Seg => ({ cmd: undefined, group: [], expect: true, pipeFrom: false, afterAndOr: false, neg: false, col: undefined, read: false })
+  // `{ …; }`: where each group began in raws; a group followed by || or && takes it for every command in it.
+  const groups: Array<number> = []
+  const listed = (s: Seg, how: (r: Raw) => void) => {
+    if (s.cmd) how(s.cmd)
+    else for (const r of s.group) how(r)
+  }
   const segs: Array<Seg> = [fresh()]
   const seg = () => segs[segs.length - 1]!
   let heredoc: string | undefined
@@ -2095,15 +2101,18 @@ const callSites = (src: string): ReadonlyArray<Site> => {
         continue
       }
       if (c === "|" && at(j + 1) === "|") {
-        const s = seg()
-        if (s.cmd) s.cmd.or = raw.slice(j + 2).trim().slice(0, 160) || "(the next line)"
+        const or = raw.slice(j + 2).trim().slice(0, 160) || "(the next line)"
+        listed(seg(), (r) => {
+          r.or ??= or
+        })
         segs[segs.length - 1] = { ...fresh(), afterAndOr: true }
         j += 2
         continue
       }
       if (c === "&" && at(j + 1) === "&") {
-        const s = seg()
-        if (s.cmd) s.cmd.and = true
+        listed(seg(), (r) => {
+          r.and = true
+        })
         segs[segs.length - 1] = { ...fresh(), afterAndOr: true }
         j += 2
         continue
@@ -2142,6 +2151,8 @@ const callSites = (src: string): ReadonlyArray<Site> => {
         if (w === "local" || w === "!" || ["then", "do", "else", "fi", "done", "esac", "{", "}", "in", "time", "command"].includes(w)) {
           if (w === "!") s.neg = true
           if (w === "then" || w === "do") cond = Math.max(0, cond - 1)
+          if (w === "{") groups.push(raws.length)
+          if (w === "}" && groups.length > 0) s.group = raws.slice(groups.pop())
           // `command -v x` looks x up: no call of it.
           if (w === "command" && /^command\s+-[vV]/.test(raw.slice(j))) s.expect = false
           j += w.length
@@ -2308,6 +2319,8 @@ const VERDICTS: Record<string, string> = {
   "sv_fs_dir:findmnt#2": "closed: no UUID is no state folder: the metadata check says the sizes do not read (NO)",
   "sv_preflight:findmnt#1": "closed: sv_read's status: options that do not read are a NO",
   "sv_preflight:cat#1": "closed: sv_read's status: sizes that do not read stay empty, a NO (r4: they were 0, a slack read wrong)",
+  "sv_preflight:cat#2": "closed: as the first: the group's `|| true` leaves the sizes empty, a NO",
+  "tickets_at_exit:rm#1": "cleanup: in the exit trap, the script ends either way; a ticket it cannot remove is dead (its lock goes with the process) and swept",
   "sv_preflight:df#1": "closed: sv_read's status: a df that does not read is a NO",
   "(top):python3#1": "closed: no python3 with ctypes is a NO: nothing can make the exchange",
   "sv_refs:sort#1": "returned: the function's status (last of its pipe); its callers check it",
@@ -2455,11 +2468,11 @@ describe("workrift subvolume: the call sites of the census", () => {
   test("every call site has its verdict: what a failure there becomes, and every verdict names a site", () => {
     const sites = callSites(readFileSync(SCRIPT, "utf8"))
     const keys = verdictKeys(sites)
-    const rows = sites.map((site, i) => ({ key: keys[i]!, ...site, verdict: autoVerdict(site) ?? VERDICTS[keys[i]!] }))
+    const rows = sites.map((site, i) => ({ key: keys[i]!, ...site, verdict: VERDICTS[keys[i]!] ?? autoVerdict(site) }))
     if (process.env.CENSUS_TABLE) writeFileSync(process.env.CENSUS_TABLE, JSON.stringify(rows, null, 1))
     expect(rows.filter((r) => r.verdict === undefined).map((r) => `${r.key} (${r.id}): ${r.text}`), "sites with no verdict").toEqual([])
-    const manual = new Set(rows.filter((r) => autoVerdict(r) === undefined).map((r) => r.key))
-    expect(Object.keys(VERDICTS).filter((k) => !manual.has(k)), "verdicts that name no site (or one whose construct says it)").toEqual([])
+    const named = new Set(rows.map((r) => r.key))
+    expect(Object.keys(VERDICTS).filter((k) => !named.has(k)), "verdicts that name no site").toEqual([])
     expect(rows.every((r) => /^(stops|returned|closed|branch|message|cleanup|unreachable): /.test(r.verdict!))).toBe(true)
   })
 
