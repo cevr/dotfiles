@@ -88,6 +88,8 @@ const ours = (link: string | undefined): link is string =>
 /** The fork's Effect platform packages, built on the same `effect` the TUI's modules link: sim/ reads files through them. */
 const PLATFORM = "packages/util/node_modules/@effect"
 const platformModules = path.normalize(PLATFORM) + path.sep
+/** The fork's Node platform packages, which no package is linked to (an older run linked them): removed where found. */
+const PLATFORM_PACKAGES = ["platform-node", "platform-node-shared"]
 
 /** Removes the links of ours in `dir` (one level into scopes) that point nowhere. */
 const prune = (dir: string) => {
@@ -137,6 +139,14 @@ for (const dir of packages) {
     merge(platform, path.join(modules, "@effect"))
   }
   if (path.basename(dir) === "sim-tui") for (const [name, under] of SIM_TUI) linkThrough(path.join(modules, name), under)
+  // No package gets the fork's Node platform: a plugin takes files, paths and processes from its host, and a plain-Bun
+  // command (the record CLI) composes @effect/platform-bun from the install. A link of ours an older run made goes.
+  else if (path.basename(dir) !== "sim") for (const name of PLATFORM_PACKAGES) unlinkOurs(path.join(modules, "@effect", name))
+}
+
+/** Removes `link` when it is a link of ours (an older run's), leaving anything else there. */
+function unlinkOurs(link: string) {
+  if (ours(linkOf(link))) rmSync(link)
 }
 
 /**

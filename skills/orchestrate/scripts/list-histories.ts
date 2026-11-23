@@ -1,10 +1,18 @@
 // Histories the rendered label list must answer (batches 22w and 23b): each is what happened to one item, the record
 // it leaves (its current obstacles are a set: two or three can hold at once), the state and label the list must give,
-// and the hand-back, written here by hand as a structure. ending.test.ts derives the hand-back each prompt's own words
-// make due (handBackFrom) and judges this one against it field by field: the label, the governing obstacle's
-// evidence, every other obstacle named, and whether what the last attempt printed is given (exactly when there was an
-// attempt, a passing one and a probe displaced by an obstacle included). The swap mutants there must turn one red.
-import type { HandBack, Item, ObstacleRow, Role, State } from './ending.ts';
+// and the hand-back, written here by hand as a structure. ending.test.ts finds the shortest generated history that
+// reaches each record (item-histories.ts `traceFor`), decodes it as a step's envelope, derives the claim each delivered prompt's
+// decoded policy owes (round-policy.ts `owed`) and checks it gives exactly this: the rule and label, the governing obstacle's field, every
+// other obstacle's field, and attempt evidence exactly when there was an attempt. The swap mutants there turn one red.
+import type { Role, State } from './round-policy.ts';
+import type { Item } from './item-histories.ts';
+import { HAND_BACK_OBSTACLES, type HandBack } from '../../../opencode/mods/orchestrate/hand-back.ts';
+import { immutable } from '../../../opencode/mods/orchestrate/immutable.ts';
+
+/** An obstacle row, by its state: hand-back.ts's list, the one decoder's (ending.test.ts pins it equal to the round policy's). */
+export type ObstacleRow = (typeof HAND_BACK_OBSTACLES)[number];
+/** What a history's hand-back must hold, in the abstract: hand-back.ts's type, which its Schema decodes and its judge alone compares. */
+export type { HandBack };
 
 export interface ListHistory {
   readonly name: string;
@@ -18,6 +26,19 @@ export interface ListHistory {
   readonly label: string;
   /** The hand-back for this item, field by field: the label's opening words stand for the label. */
   readonly handBack: HandBack;
+}
+
+// ---- the abstract hand-back of an owed claim (its one judge is hand-back.ts `judgeHandBack`) ----------------------
+
+/**
+ * The abstract hand-back an owed claim gives one item: its state and label, the obstacle its state is, when the claim
+ * gives that obstacle's field (the governing evidence, else none), every other obstacle field it holds, and whether attempt evidence (`completed` or `current`)
+ * is given. Read from the contract's derived claim, never from the history's expectation.
+ */
+export function handBackOf(state: State, label: string, fields: ReadonlyArray<{ readonly field: string }>): HandBack {
+  const kinds = fields.map((one) => one.field);
+  const evidence = HAND_BACK_OBSTACLES.find((row) => row === state && kinds.includes(row)) ?? null;
+  return { state, label, evidence, others: HAND_BACK_OBSTACLES.filter((row) => row !== evidence && kinds.includes(row)), lastAttempt: kinds.includes('completed') || kinds.includes('current') };
 }
 
 const item = (facts: Partial<Item>): Item => ({ assigned: false, required: false, attempt: 'never', settled: true, refused: false, hostCannot: false, wait: false, provenance: 'none', ...facts });
@@ -39,7 +60,7 @@ const REFUSED = '`refused: <what>`';
 const WAITS = '`waits on <id>`';
 const NONE = 'none: it is no item left';
 
-export const LIST_HISTORIES: ReadonlyArray<ListHistory> = [
+export const LIST_HISTORIES: ReadonlyArray<ListHistory> = immutable<ReadonlyArray<ListHistory>>([
   // 22w's own: an unclear result, then the obstacle that now governs.
   h('W01 a check printed HTML instead of a compiler result, then the compiler left this host', 'verifier', 'attempt → unclear; host probe fails', work({ attempt: 'unclear', hostCannot: true }), 'cannot', CANNOT, 'cannot', [], true),
   h('W03 a truncated log, then a permission refusal on the retry', 'verifier', 'attempt → unclear; refusal', work({ attempt: 'unclear', refused: true }), 'refused', REFUSED, 'refused', [], true),
@@ -111,4 +132,4 @@ export const LIST_HISTORIES: ReadonlyArray<ListHistory> = [
   h('O09 an optional probe ran unclear, its tool left, then a refusal', 'verifier', 'assign(optional); attempt → unclear; host probe fails; refusal', probe({ attempt: 'unclear', refused: true, hostCannot: true }), 'refused', REFUSED, 'refused', ['cannot'], true),
   h('O10 an optional probe refused on its first run, its tool absent and a unit open', 'verifier', 'assign(optional); host probe fails; wait opens; refusal', probe({ attempt: 'started', refused: true, hostCannot: true, wait: true }), 'refused', REFUSED, 'refused', ['cannot', 'waits'], true),
   h('O11 control: a wait opens and closes, then the optional probe ran unclear', 'verifier', 'assign(optional); wait opens; wait closes; attempt → unclear', probe({ attempt: 'unclear' }), 'unproven', '`unproven: <probe>`', null, [], true),
-];
+]);

@@ -208,7 +208,13 @@ const rpcHandlers = (tool: typeof Model.RiftTool.Service, rifts: typeof Rifts.Se
     }).pipe(Effect.catch((failure) => Effect.succeed<Inspected>(failedOf(failure))))
   const landed = ({ sessionID, ...asked }: LandAsk) =>
     tool.run(sessionID, { action: "land", ...asked }).pipe(
-      Effect.map((answer): LandAnswered => ({ outcome: "answered", text: answer.text })),
+      // A pushed land's structured result rides with its text, as the tool's metadata carries it.
+      Effect.map((answer): LandAnswered => ({
+        outcome: "answered",
+        text: answer.text,
+        ...Option.match(Option.fromUndefinedOr(answer.metadata.pushed), { onNone: () => ({}), onSome: (pushed) => ({ pushed }) }),
+        ...Option.match(Option.fromUndefinedOr(answer.metadata.landed), { onNone: () => ({}), onSome: (landed) => ({ landed }) }),
+      })),
       Effect.catch((failure) => Effect.succeed<LandAnswered>(failedOf(failure))),
     )
   return { create: created, list: listedOf, inspect: inspected, describe: described, land: landed }

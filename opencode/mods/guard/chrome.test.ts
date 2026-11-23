@@ -66,7 +66,7 @@ const LEFT = [
   "ls ~/Library/Caches/ms-playwright/chromium-1255",
   // The launchers that pass both flags themselves.
   "agent-browser --session r5 open http://x/",
-  "bun ~/Developer/personal/dotfiles/opencode/scripts/chrome.ts launch -- --window-size=800,600",
+  "bunx playwright test",
   "rg -- --headless src",
   // CHROME set to the shim on the line: the launch goes through it, which adds both flags.
   `CHROME=${SHIM_PATH} "$CHROME" --headless=new --remote-debugging-port=0`,
@@ -142,6 +142,7 @@ describe("a script that starts a bare Chrome", () => {
     expect(scriptLaunchesBare('Bun.spawn(["ffmpeg", "--headless"])')).toBe(false)
     expect(scriptLaunchesBare("// agent-browser drives Chrome; nothing is spawned here\nawait fetch(url)")).toBe(false)
     expect(scriptLaunchesBare("const browser = await launch({ executablePath: CHROME, args: ['--headless'] })")).toBe(false)
+    expect(scriptLaunchesBare("await chromium.launch({ headless: true, args: ['--use-mock-keychain', '--password-store=basic'] })")).toBe(false)
   })
 
   test("is a launch of the command that ran it, named by its script, with both flags as its way through", () => {
@@ -169,11 +170,11 @@ describe("a script that runs other commits", () => {
 })
 
 describe("the refusal", () => {
-  test("names the launch, both flags, the dialog and the launcher to use", () => {
+  test("names the launch, both flags, the dialog and the testing tools to use", () => {
     const reason = keychainReason({ command: "chromium --headless", script: Option.none(), remedy: "flags" })
     expect(reason).toStartWith("`chromium --headless` starts Chrome with a DevTools port or headless and without --use-mock-keychain --password-store=basic")
     expect(reason).toContain("keychain dialog on the owner's screen")
-    expect(reason).toContain("Add both flags to the launch, or start Chrome with `bun ~/Developer/personal/dotfiles/opencode/scripts/chrome.ts launch")
+    expect(reason).toContain("Use Playwright for tests or the browse tool")
     expect(keychainReason({ command: "bun /tmp/p.ts", script: Option.some("/tmp/p.ts"), remedy: "flags" })).toStartWith("`bun /tmp/p.ts` runs /tmp/p.ts, which starts Chrome")
   })
 

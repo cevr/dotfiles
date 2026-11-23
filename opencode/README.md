@@ -1288,6 +1288,80 @@ the Sabbath, a latched child and a Codex implementor (`tool-call.ts`); and
 whatever `mods/work` and `mods/guard` refuse (a red merge check never pushes;
 one land per host at a time).
 
+### Commitments
+
+What a run owes is one SQLite record per repository per host
+(`$XDG_STATE_HOME/opencode-orchestrate/<repo key>.db`, the key from the
+checkout's origin, else from its repository's common git dir, a workspace
+keyed as its base; `mods/orchestrate/record.ts`, `sqlite/record.ts`), never
+prose: one commitment per promised outcome, its events and its rows written in
+one transaction (`user_version` 1, a daily backup beside it, seven kept). A
+file of a newer version is read and never written. Every free-text field
+(titles, quotes, refs, plans, reasons, notes) passes one boundary that holds it
+to one bounded line and redacts secret shapes.
+
+- **`commitments`** (the root's tool; a subagent is refused): `add` makes one
+  open, unowned commitment per part in one call, the call that records an
+  owner's approval (`source_kind: "owner-answer"`, `source_ref`, `quote`);
+  `assign` owns or re-owns one, with its waits (`after`: a commit on main,
+  another commitment closed, a date, a manual word) and a review-by time (7
+  days by default: every owned one has one); `order` starts an owner's and
+  answers all its open ones; `release`, `decide` (with why and a guarantee),
+  `defer` (keeps one open with why it waits), `reopen` (clears its reason, the
+  history keeps it), `invariant` (declares one from a committed document),
+  `word`, `route` (a hand-back), `list`, `history`, `import` (an Ergo
+  register, table to table; its closes read `historical, unclassified`).
+- **`follow_up`** (a worker's): one unowned commitment per finding, sourced to
+  the session and its idempotency key, with the owner it suggests and its
+  reason; it replaces a Follow-ups line.
+- **Reasons are data** (`mods/orchestrate/reasons.ts`): a class and a pointer
+  the plugin checks, never prose. A guarantee names an invariant the root
+  declared (bound to the document's blob at HEAD) and is the only close by
+  decision; a dependency names an open commitment whose chain is open and
+  acyclic (checked in the write's transaction); a measurement names a receipt
+  envelope under the checkout's `tmp/orchestrate/`, read through the host's
+  file system with its realpath contained and its bytes hashed into the event.
+  Each decided row has one close kind (guarantee, placed, historical; not-asked
+  is the spec-items unit's), bound to its state by the schema.
+- **Standings**, computed at each read and never stored: unowned, orphaned
+  (its owner's lane is gone), overdue (past review-by), due (every wait met,
+  not started) or held. Nobody says landed: a commitment lands only when the
+  commit a land event claimed for it is on the default branch, by ancestry.
+  A worker never closes one the owner approved; a root that does tells the
+  owner, who can have it reopened. A close is flagged, and listed first, when
+  the deciding session had no earlier event in this run; any earlier write of
+  that session in the run (a word, an add, an assign) avoids the flag, so it
+  says only that, not who the run's root is. A reopen keeps the flagged close
+  in the history.
+- **Created without the root remembering**: `orchestrate lane` gets or makes
+  the unit's commitment (owned by the unit, started) and its answer lists the
+  unit's open ones, and records the lane's workspace and start commit. Only a
+  land event claims: `orchestrate land`, the work tool's pushed land (its
+  answer's `pushed` and `landed` metadata, read by an `execute.after` hook), or
+  the root's `commitments({ action: "landed", id, head })` for a land by hand;
+  each claims the head it merged for the commitment whose lane that workspace
+  is. Status, the queue check and `list` only read; a status pass lands a
+  claimed head once git has it on the default branch. A lane removed with no
+  land is listed orphaned, its line naming the calls that resolve it.
+- **Where it is said**: `orchestrate status` and every `land` answer end with
+  the record's section (counts by standing, at most ten ids a listed standing,
+  owner-sourced first, and the `list` call for the rest), and the queue
+  check's ask carries it for a root that runs units or wrote to the record. A
+  record of held commitments says nothing.
+- **A host with no plugin** calls the same handlers through the CLI:
+  `bun cmd/orchestrate/record.ts <action> --json '<fields>' [--file <db>]`
+  (`list`, `history` and `export` open the file read-only; `import --json
+  '{"from":"<copy of register.db>","map":"ergo-register"}'` is idempotent).
+
+`cmd/orchestrate/record-model.sim.test.ts` holds the SQLite store to a
+reference model over generated runs with restarts and over every caller,
+operation, state, reason class, pointer kind and existence (nine broken
+stores go red),
+`commitments.sim.test.ts` the tools through the plugin, and
+`scripts/no-prose-state.test.ts` keeps every regular expression in
+orchestrate, status and the skill's scripts on an allow list each unit of the
+program shrinks.
+
 ## Pool
 
 `mods/pool` pools a provider's OAuth logins; its plugin is `cmd/pool`. It chooses the login each

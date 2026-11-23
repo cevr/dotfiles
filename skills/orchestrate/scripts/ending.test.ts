@@ -1,85 +1,76 @@
-// How a step ends (ending.ts), as two independent total functions:
-//   (i)   F1 (state → label) and F2 (stop, item states → verdict and files) are total: every state of every role has
-//         one label, and every stop with every multiset of up to three item states, mixed, gets one outcome or is
-//         rejected as ill-formed with its reason; the invariants batches 22q to 22t asked for hold over all of them;
+// How a step ends: the regression suite of the round policy (round-policy.ts; its old subject, ending.ts, is
+// replaced and deleted), ported to stable rule ids and checked against the independent oracle (item-histories.ts):
+//   (i)   the outcome is total: every stop with every multiset of up to three item states, mixed, gets one verdict or
+//         is rejected as ill-formed with its reason; the invariants batches 22q to 22t asked for hold over all of them;
 //   (ii)  rule retention: every sentence of the installed prompts (4afe1fda) the head no longer holds word for word is
 //         in retention.ts with where its rule went, and every destination exists in the prompt;
-//   (iii) the prompts: one block each, its role's two tables; every paragraph outside it is in the approved inventory
-//         (inventory.ts), so any appended or edited sentence is red until the inventory is rewritten on purpose;
+//   (iii) the prompts: one block each, its role's policy byte for byte; every paragraph outside it is in the approved
+//         inventory (inventory.ts), so any appended or edited sentence is red until the inventory is rewritten;
 //   (iv)  every case found so far, N1 to N8 of 22t included, as a named row with its one disposition;
-//   (v)   a changed label, a changed verdict rule, a deleted label or rule and dropped files are each red;
-//   (vi)  the item model: every record of facts per role is either rejected by one stated validity rule or meets
-//         exactly one state's predicate; each state's prompt row is its predicate's conditions in words; histories
-//         A1 to A3 of 22u; overlapping two predicates, dropping required/optional and ignoring assignment are red.
+//   (v)   a changed label, a changed verdict rule, a deleted row or rule and dropped artifacts are each red;
+//   (vi)  the item model: every record is rejected by one stated validity rule or meets exactly one state's
+//         predicate; the valid records are the reachable ones; histories A1 to A3 of 22u;
+//   (vii) every shipped prompt's decoded policy gives the oracle's state and label on every reachable record, its
+//         overlaps are exactly the pinned ones, and every history's due hand-back holds exactly its evidence fields.
 import { describe, expect, test } from 'bun:test';
 
 import {
-  ALL_STATES,
-  ALL_STOPS,
-  allItems,
-  ASSIGNMENT,
-  type Item,
-  matching,
-  PREDICATE,
-  type Predicates,
-  STATE_NAME,
-  stateOf,
-  ATOM_IDS,
-  type Atom,
+  ATOMS,
   atomWords,
-  ATTEMPT_NOTE,
-  condition,
-  DECISIONS,
-  F1_HEADER,
-  FIRST_ROW,
-  ORDER,
-  parseCondition,
-  parseWhen,
-  OBSTACLE_FACTS,
-  OBSTACLE_ROWS,
-  obstructed,
-  OTHER_OBSTACLES_NOTE,
-  parseOtherObstacles,
-  handBackFrom,
-  judgeHandBack,
-  type HandBack,
-  labelWord,
-  type Pinned,
-  truths,
-  readDecisions,
-  readVerdicts,
-  rowLabel,
-  VERDICT_ORDER,
-  when,
-  type Validity,
-  validity,
-  VALIDITY,
-  BEGIN,
-  BLOCK,
   batchVerdict,
-  classify,
-  END,
+  block,
+  condition,
+  decide,
+  decode,
+  decodeBlock,
+  owed,
   evidence,
-  FILES,
-  label,
-  LABEL,
-  multisets,
-  REQUIRED,
+  labelOf,
   render,
+  outcome,
+  parseCondition,
+  parseVerdictWhen,
+  PINS,
+  type Pin,
+  type Policy,
+  policyFaults,
+  project,
+  REQUIRED,
   ROLES,
   type Role,
   type State,
-  type Stop,
+  FIELDS,
+  STATES,
   STATES_OF,
+  type Stop,
+  STOPS,
   STOPS_OF,
-  VERDICT,
-} from './ending.ts';
+  truths,
+  VERDICT_ORDER,
+  verdictWhen,
+  written,
+  type Artifact,
+  ASSIGNMENT,
+  type Row,
+  STATE_NAME,
+} from './round-policy.ts';
 import { approved, current, drift, paragraphs, type Prompt, prompts, ROOT } from './inventory.ts';
 import { INSTALLED, RETENTION } from './retention.ts';
-import { EVENTS, reachable, recordKey } from './item-histories.ts';
-import { LIST_HISTORIES } from './list-histories.ts';
+import { allItems, EVENTS, type Item, matching, stepEnvelope, traceFor, OBSTACLE_FACTS, obstructed, ORACLE_STATES, PREDICATE, type Predicates, reachable, recordKey, stateOf, type Validity, validity, VALIDITY } from './item-histories.ts';
+import { handBackOf, LIST_HISTORIES, type HandBack, type ObstacleRow } from './list-histories.ts';
+// The one hand-back judge: its exact Schema decodes, then each field is compared typed (main 16371ea4, lifted as is).
+import * as HandBackModule from '../../../opencode/mods/orchestrate/hand-back.ts';
+import { fieldName, HAND_BACK_OBSTACLES, HAND_BACK_STATES, judgeHandBack, labelWord } from '../../../opencode/mods/orchestrate/hand-back.ts';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
-/** The verdict words each role may give. */
+/** A label's word, which every label of the lists has (the label-word test pins it never blank). */
+const wordOf = (label: string): string => {
+  const word = labelWord(label);
+  if (word._tag === 'None') throw new Error(`the label "${label}" has no word`);
+  return word.value;
+};
+
 const VOCAB: Record<Role, ReadonlyArray<string>> = { planner: ['ready', 'blocked'], implementor: ['ready', 'blocked'], verifier: ['stuck', 'changes', 'accepted'], worker: ['none'] };
 const HOLDS_BACK: Record<Role, ReadonlyArray<State>> = {
   planner: ['runnable', 'waits', 'refused', 'cannot'],
@@ -87,93 +78,97 @@ const HOLDS_BACK: Record<Role, ReadonlyArray<State>> = {
   verifier: ['runnable', 'waits', 'refused', 'cannot', 'unclear'],
   worker: [],
 };
-const STATE_MD = '`<unit dir>/state.md` current (even with no commit since)';
 const SIZE = 3;
+const POLICIES: Record<Role, Policy> = { planner: project('planner'), implementor: project('implementor'), verifier: project('verifier'), worker: project('worker') };
 
-type Data = { readonly labels: typeof LABEL; readonly rules: typeof VERDICT; readonly files: typeof FILES };
-const DATA: Data = { labels: LABEL, rules: VERDICT, files: FILES };
+/** Every multiset of states up to `size` items. */
+export function multisets(states: ReadonlyArray<State>, size: number): State[][] {
+  const out: State[][] = [[]];
+  const grow = (prefix: State[], from: number) => {
+    if (prefix.length === size) return;
+    for (let index = from; index < states.length; index++) {
+      const next = [...prefix, states[index]!];
+      out.push(next);
+      grow(next, index);
+    }
+  };
+  grow([], 0);
+  return out;
+}
 
-// ---- (i) totality ------------------------------------------------------------------------------------------------
+/** The label the oracle expects for a state and attempt: the first source row of that state, a verifier's attempted runnable taking `retry`. */
+const label = (role: Role, state: State, attempt: Item['attempt'] = 'never', policy: Policy = POLICIES[role]): string => {
+  const rows = policy.rows.filter((row) => row.state === state);
+  const pick = state === 'runnable' && role === 'verifier' ? rows.find((row) => (row.id === 'retry') === (attempt !== 'never')) : rows[0];
+  if (pick === undefined) throw new Error(`no label for ${role} × ${state}`);
+  return pick.label;
+};
 
-/** Every input either function leaves unanswered, answers twice or answers outside the role's words. */
-export function totality(data: Data = DATA): string[] {
+// ---- (i) totality --------------------------------------------------------------------------------------------------
+
+export function totality(policies: Record<Role, Policy> = POLICIES): string[] {
   const out: string[] = [];
   for (const role of ROLES) {
-    for (const state of STATES_OF[role]) {
-      try {
-        const got = label(role, state, 'never', data.labels);
-        if ((got === null) !== (state === 'done')) out.push(`F1 ${role} × ${state}: ${String(got)}`);
-      } catch (error) {
-        out.push(`F1 ${role} × ${state}: ${String(error)}`);
-      }
-    }
-    for (const stop of ALL_STOPS)
-      for (const states of multisets(ALL_STATES, SIZE)) {
-        try {
-          const got = classify(role, stop, states, data.rules, data.files);
-          if ('outcome' in got === 'illFormed' in got) out.push(`F2 ${role} ${stop} [${states}]: not exactly one answer`);
-          if ('outcome' in got && !VOCAB[role].includes(got.outcome.verdict)) out.push(`F2 ${role} ${stop} [${states}]: verdict ${got.outcome.verdict}`);
-        } catch (error) {
-          out.push(`F2 ${role} ${stop} [${states}]: ${String(error)}`);
-        }
+    for (const state of STATES_OF[role]) if (!policies[role].rows.some((row) => row.state === state)) out.push(`F1 ${role} × ${state}: no row`);
+    for (const stop of STOPS)
+      for (const states of multisets(STATES, SIZE)) {
+        const got = outcome(policies[role], stop, states);
+        if (got.ok && !VOCAB[role].includes(got.value.verdict)) out.push(`F2 ${role} ${stop} [${states}]: verdict ${got.value.verdict}`);
+        if (!got.ok && got.error === `no verdict rule holds for ${role}`) out.push(`F2 ${role} ${stop} [${states}]: ${got.error}`);
       }
   }
   return out;
 }
 
-/** Every well-formed input whose outcome breaks a rule the batches set. */
-export function invariants(data: Data = DATA): string[] {
+const has = (writes: ReadonlyArray<Artifact>, ...want: Artifact[]) => want.every((one) => writes.includes(one));
+
+export function invariants(policies: Record<Role, Policy> = POLICIES): string[] {
   const out: string[] = [];
   for (const role of ROLES)
     for (const stop of STOPS_OF[role])
       for (const states of multisets(STATES_OF[role], SIZE)) {
-        let got;
-        try {
-          got = classify(role, stop, states, data.rules, data.files);
-        } catch (error) {
-          out.push(`${role} ${stop} [${states}]: ${String(error)}`);
+        const got = outcome(policies[role], stop, states);
+        if (!got.ok) {
+          if (got.error.startsWith('no verdict')) out.push(`${role} ${stop} [${states}]: ${got.error}`);
           continue;
         }
-        if (!('outcome' in got)) continue;
-        const { verdict, files } = got.outcome;
+        const { verdict, writes, fields } = got.value;
         const at = `${role} ${stop} [${states}] → ${verdict}`;
         const held = states.some((state) => HOLDS_BACK[role].includes(state));
         if (role === 'planner' || role === 'implementor') {
           if ((verdict === 'ready') === held) out.push(`${at}: ready only when every required item is done`);
-          if (verdict === 'blocked' && !(files.includes(STATE_MD) && files.includes('blocked.md'))) out.push(`${at}: a non-ready hand-back writes state.md current and blocked.md`);
+          if (verdict === 'blocked' && !has(writes.artifacts, 'state', 'blocked')) out.push(`${at}: a non-ready hand-back writes state.md current and blocked.md`);
         }
         if (role === 'verifier') {
           if ((verdict === 'stuck') !== held) out.push(`${at}: stuck exactly when a required check has no interpretable outcome`);
           if (!held && (verdict === 'changes') !== states.includes('proven')) out.push(`${at}: changes exactly when a Blocker or Major is proven`);
-          if (files.includes('blocked.md')) out.push(`${at}: a verifier writes no blocked.md`);
+          if (writes.artifacts.includes('blocked')) out.push(`${at}: a verifier writes no blocked.md`);
+          if (!writes.contents.includes('evidence')) out.push(`${at}: a verifier's findings hold the stop's evidence`);
         }
         if (states.includes('refused') && ['ready', 'accepted', 'changes'].includes(verdict)) out.push(`${at}: a refused required item never ends a step done`);
-        if (role === 'verifier' && !files.includes(evidence(role, stop))) out.push(`${at}: a verifier's findings hold the stop's evidence`);
-        if (verdict !== 'ready' && verdict !== 'accepted' && verdict !== 'changes' && !files.includes(evidence(role, stop))) out.push(`${at}: the stop's evidence is not written`);
+        if (verdict !== 'ready' && (!writes.contents.includes('evidence') || fields.length === 0)) out.push(`${at}: the stop's evidence fields are not written`);
+        if (stop === 'refusalForm' && !fields.includes('refused.form')) out.push(`${at}: a refusal's named form is not written`);
+        if (stop === 'refusalNone' && fields.includes('refused.form')) out.push(`${at}: a refusal that named no form gets none inferred`);
       }
   return out;
 }
 
-describe('(i) both functions are total', () => {
-  test('F1: every state of every role has one label (none for done), and a state the role lacks is refused', () => {
+describe('(i) the outcome is total', () => {
+  test('every state of every role has a row, and a state the role lacks is refused', () => {
     expect(totality().filter((line) => line.startsWith('F1'))).toEqual([]);
-    for (const role of ROLES) for (const state of ALL_STATES.filter((one) => !STATES_OF[role].includes(one))) expect(() => label(role, state)).toThrow(`${role} has no state ${state}`);
+    for (const role of ROLES) expect([role, [...STATES_OF[role]].sort()]).toEqual([role, [...ORACLE_STATES[role]].sort()]);
   });
-  test(`F2: every stop × every multiset of up to ${SIZE} item states gets one outcome or an ill-formed reason`, () => {
+  test(`every stop × every multiset of up to ${SIZE} item states gets one outcome or an ill-formed reason`, () => {
     expect(totality().filter((line) => line.startsWith('F2'))).toEqual([]);
-  });
-  test('the enumeration crosses every pair of states, mixed and repeated, under every stop', () => {
-    const all = multisets(ALL_STATES, SIZE).map((states) => states.join());
-    for (const a of ALL_STATES) for (const b of ALL_STATES) expect(all.includes([a, b].sort((x, y) => ALL_STATES.indexOf(x) - ALL_STATES.indexOf(y)).join())).toBe(true);
-    expect(all.length).toBe(364);
+    expect(multisets(STATES, SIZE).length).toBe(364);
   });
   test('each stop a role has leaves some well-formed input, and every verdict a role has is reached', () => {
     for (const role of ROLES) {
       const reached = new Set<string>();
       for (const stop of STOPS_OF[role]) {
-        const outcomes = multisets(STATES_OF[role], SIZE).map((states) => classify(role, stop, states)).filter((got) => 'outcome' in got);
+        const outcomes = multisets(STATES_OF[role], SIZE).map((states) => outcome(POLICIES[role], stop, states)).filter((got) => got.ok);
         expect([role, stop, outcomes.length > 0]).toEqual([role, stop, true]);
-        for (const got of outcomes) if ('outcome' in got) reached.add(got.outcome.verdict);
+        for (const got of outcomes) if (got.ok) reached.add(got.value.verdict);
       }
       expect([role, [...reached].sort()]).toEqual([role, [...VOCAB[role]].sort()]);
     }
@@ -194,11 +189,11 @@ describe('(i) both functions are total', () => {
       ['verifier', 'idle', ['runnable', 'done'], 'the step goes on while a runnable item is left'],
       ['implementor', 'limit', ['waits'], 'with no runnable item left the step had already stopped, before the limit passed'],
     ];
-    for (const [role, stop, states, why] of bad) expect(classify(role, stop, states)).toEqual({ illFormed: why });
+    for (const [role, stop, states, why] of bad) expect(outcome(POLICIES[role], stop, states)).toEqual({ ok: false, error: why });
   });
 });
 
-// ---- (ii) rule retention against the installed prompts -----------------------------------------------------------
+// ---- (ii) rule retention against the installed prompts -------------------------------------------------------------
 
 const RULE_ROLES = ['planner', 'implementor', 'verifier'] as const;
 const git = (...args: string[]) => {
@@ -206,9 +201,12 @@ const git = (...args: string[]) => {
   if (run.exitCode !== 0) throw new Error(`git ${args.join(' ')}: ${run.stderr.toString()}`);
   return run.stdout.toString();
 };
-/** A prompt's sentences: each line, split after a sentence's end. */
 export const sentences = (text: string) =>
-  text.split('\n').flatMap((line) => line.split(/(?<=[.!?])\s+(?=[A-Z`*(])/)).map((one) => one.trim()).filter(Boolean);
+  text
+    .split('\n')
+    .flatMap((line) => line.split(/(?<=[.!?])\s+(?=[A-Z`*(])/))
+    .map((one) => one.trim())
+    .filter(Boolean);
 function installed(role: Role): Prompt[] {
   const json = JSON.parse(git('show', `${INSTALLED}:opencode/mods/orchestrate/agents.json`)) as { agents: Record<string, { system: string }> };
   const toml = /developer_instructions = '''\n([\s\S]*?)\n'''/.exec(git('show', `${INSTALLED}:codex/agents/${role}.toml`))?.[1] ?? '';
@@ -224,19 +222,19 @@ function destination(ref: string): { role: Role; text: string } | string {
   const [kind, role, a, b] = ref.split(' ') as [string, Role, string | undefined, string | undefined];
   if (!ROLES.includes(role)) return `${ref}: no role`;
   if (kind === 'F1') {
-    const found = a !== undefined && STATES_OF[role].includes(a as State) ? label(role, a as State) : null;
-    return found === null ? `${ref}: no label` : { role, text: found };
+    const found = a === undefined ? undefined : labelOf(role, a as State);
+    return found === undefined ? `${ref}: no label` : { role, text: found };
   }
-  if (kind === 'F2' && a === 'evidence') return b !== undefined && STOPS_OF[role].includes(b as Stop) ? { role, text: evidence(role, b as Stop) } : `${ref}: no stop`;
+  if (kind === 'F2' && a === 'evidence') return b !== undefined && (STOPS_OF[role] as ReadonlyArray<string>).includes(b) ? { role, text: evidence(role, b as Stop) } : `${ref}: no stop`;
   if (kind === 'F2') {
-    const files = a === undefined ? undefined : FILES[role][a];
-    return VERDICT[role].some((rule) => rule.verdict === a) && files !== undefined ? { role, text: files.replace('<evidence>', "the stop's evidence").replace('<items>', 'each item left with its label') } : `${ref}: no verdict`;
+    const files = a === undefined ? undefined : written(role, a);
+    return files === undefined ? `${ref}: no verdict` : { role, text: files };
   }
   if (kind === 'REQUIRED') return { role, text: REQUIRED[role] };
   return `${ref}: unknown`;
 }
 
-describe('(ii) every rule of the installed prompts is kept, moved into F1 or F2, or replaced by a design line', () => {
+describe('(ii) every rule of the installed prompts is kept, moved into the policy, or replaced by a design line', () => {
   const head = prompts();
   const lost = new Map<string, Set<Role>>();
   for (const role of RULE_ROLES)
@@ -244,7 +242,7 @@ describe('(ii) every rule of the installed prompts is kept, moved into F1 or F2,
       const now = head.find((one) => one.role === role && one.format === old.format)?.text ?? '';
       for (const sentence of sentences(old.text)) if (!now.includes(sentence)) lost.set(sentence, (lost.get(sentence) ?? new Set()).add(role));
     }
-  test('the sentences no longer held word for word are exactly retention.ts\'s entries', () => {
+  test("the sentences no longer held word for word are exactly retention.ts's entries", () => {
     expect([...lost.keys()].filter((sentence) => !(sentence in RETENTION))).toEqual([]);
     expect(Object.keys(RETENTION).filter((sentence) => !lost.has(sentence))).toEqual([]);
   });
@@ -253,7 +251,7 @@ describe('(ii) every rule of the installed prompts is kept, moved into F1 or F2,
       if (fate.kind === 'reworded')
         for (const role of lost.get(sentence) ?? []) for (const prompt of head.filter((one) => one.role === role)) expect([prompt.role, prompt.format, prompt.text.includes(fate.now)]).toEqual([role, prompt.format, true]);
   });
-  test('every destination is a cell of F1 or F2 (or a required-work line) that its role\'s prompts carry', () => {
+  test("every destination is a row, verdict, stop field or required-work line that its role's prompts carry", () => {
     for (const fate of Object.values(RETENTION))
       for (const ref of fate.to ?? []) {
         const found = destination(ref);
@@ -271,17 +269,8 @@ describe('(ii) every rule of the installed prompts is kept, moved into F1 or F2,
 
 // ---- (iii) the prompts: one block, and the approved inventory outside it -------------------------------------------
 
-/** Every way a prompt's block is not its role's one block. */
-export function blockFaults(prompt: Prompt): string[] {
-  const at = `${prompt.role} ${prompt.format}`;
-  const out: string[] = [];
-  if (prompt.text.split(BEGIN).length !== 2 || prompt.text.split(END).length !== 2) out.push(`${at}: not exactly one end-of-step block`);
-  if (BLOCK.exec(prompt.text)?.[0] !== render(prompt.role)) out.push(`${at}: the block is not its role's two tables`);
-  return out;
-}
-
-/** Every structural fault: the block, then any paragraph outside it the inventory has not approved. */
-export const lint = (prompt: Prompt): string[] => [...blockFaults(prompt), ...drift(prompt)];
+/** Every structural fault: the block (decoded and byte for byte), then any paragraph outside it the inventory has not approved. */
+export const lint = (prompt: Prompt): ReadonlyArray<string> => [...policyFaults(prompt.role, prompt.text), ...drift(prompt)];
 
 const SURVIVORS: ReadonlyArray<{ role: Role; sentence: string }> = [
   { role: 'planner', sentence: 'A planner may hand back ready without running any acceptance check.' },
@@ -292,13 +281,14 @@ const SURVIVORS: ReadonlyArray<{ role: Role; sentence: string }> = [
   { role: 'verifier', sentence: 'When a required check ran unclear, call the unit accepted.' },
 ];
 
-describe('(iii) each prompt: its role\'s one block, and nothing outside it the inventory has not approved', () => {
+describe("(iii) each prompt: its role's one block, and nothing outside it the inventory has not approved", () => {
   const all = prompts();
   test('three host formats for each role, two for the lean worker', () => {
     expect(all.map((prompt) => `${prompt.role} ${prompt.format}`)).toEqual(Object.keys(approved().prompts));
+    expect(all.length).toBe(11);
   });
   for (const prompt of all)
-    test(`${prompt.role} ${prompt.format}: one block, its two tables, every other paragraph approved`, () => {
+    test(`${prompt.role} ${prompt.format}: one block, its policy, every other paragraph approved`, () => {
       expect(lint(prompt)).toEqual([]);
     });
   test('the inventory holds no paragraph no prompt uses, and matches the prompts as they are', () => {
@@ -307,11 +297,13 @@ describe('(iii) each prompt: its role\'s one block, and nothing outside it the i
     expect(Object.keys(inventory.paragraphs).filter((key) => !used.has(key))).toEqual([]);
     expect(current(all)).toEqual(inventory);
   });
-  test('each surviving mutant of 22s and 22t, appended, is red in every format of its role', () => {
+  test('each surviving mutant of 22s and 22t, appended outside or inside the block, is red in every format of its role', () => {
     for (const { role, sentence } of SURVIVORS)
       for (const prompt of all.filter((one) => one.role === role)) {
         expect([prompt.format, sentence, lint({ ...prompt, text: `${prompt.text}\n${sentence}` }).length > 0]).toEqual([prompt.format, sentence, true]);
         expect([prompt.format, sentence, lint({ ...prompt, text: `${prompt.text}\n\n${sentence}` }).length > 0]).toEqual([prompt.format, sentence, true]);
+        const inside = prompt.text.replace('\n\nTake the first row that is true', `\n\n${sentence}\n\nTake the first row that is true`);
+        expect([prompt.format, sentence, inside !== prompt.text, policyFaults(role, inside).length > 0]).toEqual([prompt.format, sentence, true, true]);
       }
   });
   test('an edit inside a paragraph, a deleted paragraph and two swapped paragraphs are each red in every format', () => {
@@ -320,8 +312,7 @@ describe('(iii) each prompt: its role\'s one block, and nothing outside it the i
       const target = parts.find((one) => one.startsWith('**Refusals.**') || one.startsWith('Do the task')) ?? parts[2] ?? '';
       const edited = prompt.text.replace(target, `${target.replace(/\.$/, '')}, unless it slows you down.`);
       expect([prompt.role, prompt.format, edited !== prompt.text, lint({ ...prompt, text: edited }).length > 0]).toEqual([prompt.role, prompt.format, true, true]);
-      const deleted = prompt.text.replace(target, '');
-      expect([prompt.role, prompt.format, lint({ ...prompt, text: deleted }).length > 0]).toEqual([prompt.role, prompt.format, true]);
+      expect([prompt.role, prompt.format, lint({ ...prompt, text: prompt.text.replace(target, '') }).length > 0]).toEqual([prompt.role, prompt.format, true]);
       const [first, second] = [parts[1] ?? '', parts[2] ?? ''];
       const swapped = prompt.text.replace(`${first}\n\n${second}`, `${second}\n\n${first}`);
       if (swapped !== prompt.text) expect([prompt.role, prompt.format, lint({ ...prompt, text: swapped }).length > 0]).toEqual([prompt.role, prompt.format, true]);
@@ -334,10 +325,9 @@ describe('(iii) each prompt: its role\'s one block, and nothing outside it the i
     }
   });
   test('a second block, or a block of another role, is red', () => {
-    const planner = all.find((one) => one.role === 'planner' && one.format === 'codex');
-    if (planner === undefined) throw new Error('no codex planner');
-    expect(lint({ ...planner, text: `${planner.text}\n${render('planner')}` }).length).toBeGreaterThan(0);
-    expect(lint({ ...planner, text: planner.text.replace(BLOCK, () => render('implementor')) }).length).toBeGreaterThan(0);
+    const planner = all.find((one) => one.role === 'planner' && one.format === 'codex')!;
+    expect(lint({ ...planner, text: `${planner.text}\n${block('planner')}` }).length).toBeGreaterThan(0);
+    expect(lint({ ...planner, text: planner.text.replace(block('planner'), () => block('implementor')) })).toContain('planner: role: source planner, shown implementor');
   });
 });
 
@@ -347,13 +337,12 @@ interface Case {
   readonly name: string;
   readonly role: Role;
   readonly stop: Stop;
-  /** Each item, by name, in its one state. */
   readonly items: Readonly<Record<string, State>>;
   readonly verdict: string;
-  /** Words each item's label must hold. */
   readonly labels: Readonly<Record<string, string>>;
-  /** Words the files written must hold. */
-  readonly files?: ReadonlyArray<string>;
+  /** Artifacts and stop fields the outcome must hold. */
+  readonly writes?: ReadonlyArray<Artifact>;
+  readonly fields?: ReadonlyArray<string>;
 }
 
 const WAITS = '`waits on <id>`';
@@ -363,8 +352,7 @@ const CONTINUES = '`continues next round`';
 const OUTSIDE = '`finding outside the unit`';
 
 export const CASES: ReadonlyArray<Case> = [
-  // 22t, the six FAIL inputs and two PASS ones of its prompt.ts, and the controls its B3 asked for.
-  { name: 'N1 verifier: check A waits, independent check B is refused', role: 'verifier', stop: 'refusalNone', items: { a: 'waits', b: 'refused' }, verdict: 'stuck', labels: { a: WAITS, b: REFUSED }, files: ['what was refused, as the refusal said it'] },
+  { name: 'N1 verifier: check A waits, independent check B is refused', role: 'verifier', stop: 'refusalNone', items: { a: 'waits', b: 'refused' }, verdict: 'stuck', labels: { a: WAITS, b: REFUSED }, fields: ['refused.what'] },
   { name: 'N2 verifier: check A waits, independent check B lacks its executable', role: 'verifier', stop: 'idle', items: { a: 'waits', b: 'cannot' }, verdict: 'stuck', labels: { a: WAITS, b: CANNOT } },
   { name: 'N3 implementor: check A cannot run, then item B is refused', role: 'implementor', stop: 'refusalNone', items: { a: 'cannot', b: 'refused' }, verdict: 'blocked', labels: { a: CANNOT, b: REFUSED } },
   { name: 'N4 verifier: a written-rule break the unit introduced, outside the spec items, no failing run', role: 'verifier', stop: 'idle', items: { checks: 'done', rule: 'unitFinding' }, verdict: 'accepted', labels: { rule: 'marked `unit`: the same lane closes it in its next round' } },
@@ -373,28 +361,24 @@ export const CASES: ReadonlyArray<Case> = [
   { name: 'N5 control: the required executable is absent', role: 'verifier', stop: 'idle', items: { check: 'cannot' }, verdict: 'stuck', labels: { check: CANNOT } },
   { name: 'N5 control: the required check is conclusively red', role: 'verifier', stop: 'idle', items: { check: 'proven' }, verdict: 'changes', labels: { check: 'a Blocker or Major' } },
   { name: 'N5 control (22u T1): every required check passed, an optional wider probe ran unclear: Unproven, verdict unaffected', role: 'verifier', stop: 'idle', items: { check: 'done', probe: 'unproven' }, verdict: 'accepted', labels: { probe: '`unproven: <probe>`, under Unproven with the probe that would settle it' } },
-  { name: 'N6 implementor: the timebox passes after uncommitted progress and a new wait', role: 'implementor', stop: 'limit', items: { progress: 'runnable', wait: 'waits' }, verdict: 'blocked', labels: { progress: CONTINUES, wait: WAITS }, files: [STATE_MD, 'the clock (the timebox)'] },
-  { name: 'N7 planner: waits on a prerequisite and finds unrelated work', role: 'planner', stop: 'idle', items: { prerequisite: 'waits', found: 'discovery' }, verdict: 'blocked', labels: { prerequisite: WAITS, found: OUTSIDE }, files: ['blocked.md'] },
-  { name: 'N8 lean worker: refused with no form, unrelated work left', role: 'worker', stop: 'refusalNone', items: { it: 'refused', other: 'runnable' }, verdict: 'none', labels: { it: 'never tried another way', other: '`left`' }, files: ['what was refused, as the refusal said it'] },
-  // 22s, the five FAIL inputs and the PASS ones of its prompt-audit.ts.
-  { name: '22s-1 planner refused by a terminal classifier that names no command or allow rule', role: 'planner', stop: 'refusalNone', items: { spec: 'refused' }, verdict: 'blocked', labels: { spec: REFUSED }, files: ['an allow rule only if one exists'] },
-  { name: '22s-2 implementor refusal with a named form, another item runnable, the clock not out', role: 'implementor', stop: 'refusalForm', items: { refused: 'refused', other: 'runnable' }, verdict: 'blocked', labels: { refused: '; form: <the form it named>', other: CONTINUES }, files: ['the form it named'] },
-  { name: '22s-3 verifier refused on its first required check', role: 'verifier', stop: 'refusalNone', items: { first: 'refused', rest: 'runnable' }, verdict: 'stuck', labels: { first: REFUSED, rest: '`not run`' }, files: ['under Check'] },
+  { name: 'N6 implementor: the timebox passes after uncommitted progress and a new wait', role: 'implementor', stop: 'limit', items: { progress: 'runnable', wait: 'waits' }, verdict: 'blocked', labels: { progress: CONTINUES, wait: WAITS }, writes: ['state', 'blocked'], fields: ['limit'] },
+  { name: 'N7 planner: waits on a prerequisite and finds unrelated work', role: 'planner', stop: 'idle', items: { prerequisite: 'waits', found: 'discovery' }, verdict: 'blocked', labels: { prerequisite: WAITS, found: OUTSIDE }, writes: ['blocked'] },
+  { name: 'N8 lean worker: refused with no form, unrelated work left', role: 'worker', stop: 'refusalNone', items: { it: 'refused', other: 'runnable' }, verdict: 'none', labels: { it: 'never tried another way', other: '`left`' }, fields: ['refused.what'] },
+  { name: '22s-1 planner refused by a terminal classifier that names no command or allow rule', role: 'planner', stop: 'refusalNone', items: { spec: 'refused' }, verdict: 'blocked', labels: { spec: REFUSED }, fields: ['refused.what'] },
+  { name: '22s-2 implementor refusal with a named form, another item runnable, the clock not out', role: 'implementor', stop: 'refusalForm', items: { refused: 'refused', other: 'runnable' }, verdict: 'blocked', labels: { refused: '; form: <the form it named>', other: CONTINUES }, fields: ['refused.what', 'refused.form'] },
+  { name: '22s-3 verifier refused on its first required check', role: 'verifier', stop: 'refusalNone', items: { first: 'refused', rest: 'runnable' }, verdict: 'stuck', labels: { first: REFUSED, rest: '`not run`' }, writes: ['findings', 'batch'] },
   { name: '22s-4 verifier whose required executable is absent, no refusal', role: 'verifier', stop: 'idle', items: { check: 'cannot' }, verdict: 'stuck', labels: { check: CANNOT } },
-  { name: '22s-5 implementor past its timebox, one item waits on an open unit, one runnable', role: 'implementor', stop: 'limit', items: { waiting: 'waits', runnable: 'runnable' }, verdict: 'blocked', labels: { waiting: WAITS, runnable: CONTINUES }, files: ['the clock'] },
+  { name: '22s-5 implementor past its timebox, one item waits on an open unit, one runnable', role: 'implementor', stop: 'limit', items: { waiting: 'waits', runnable: 'runnable' }, verdict: 'blocked', labels: { waiting: WAITS, runnable: CONTINUES }, fields: ['limit'] },
   { name: '22s-6 verifier lacking only a wider probe, every required check ran', role: 'verifier', stop: 'idle', items: { checks: 'done' }, verdict: 'accepted', labels: {} },
-  { name: '22s-8 planner with a red check and the product unbuilt', role: 'planner', stop: 'idle', items: { spec: 'done', found: 'discovery' }, verdict: 'ready', labels: { found: OUTSIDE }, files: ['spec.md'] },
-  // 22r.
-  { name: '22r-B2 first refusal names a script-file form', role: 'implementor', stop: 'refusalForm', items: { item: 'refused' }, verdict: 'blocked', labels: { item: '; form: <the form it named>' } },
+  { name: '22s-8 planner with a red check and the product unbuilt', role: 'planner', stop: 'idle', items: { spec: 'done', found: 'discovery' }, verdict: 'ready', labels: { found: OUTSIDE }, writes: ['spec'] },
+  { name: '22r-B2 first refusal names a script-file form', role: 'implementor', stop: 'refusalForm', items: { item: 'refused' }, verdict: 'blocked', labels: { item: '; form: <the form it named>' }, fields: ['refused.form'] },
   { name: '22r-principle-B1 a defect found in an owned file, one spec item unfinished at the timebox', role: 'implementor', stop: 'limit', items: { defect: 'discovery', item: 'runnable' }, verdict: 'blocked', labels: { defect: OUTSIDE, item: CONTINUES } },
   { name: '22r-R1 the lean worker meets a refusal with other work left', role: 'worker', stop: 'refusalNone', items: { it: 'refused', other: 'runnable' }, verdict: 'none', labels: { it: REFUSED, other: '`left`' } },
-  // 22q.
   { name: '22q-B1 the timebox passes with a runnable item unfinished', role: 'implementor', stop: 'limit', items: { item: 'runnable' }, verdict: 'blocked', labels: { item: CONTINUES } },
   { name: '22q-principle-B1 a refusal with no form, one item refused, another runnable', role: 'implementor', stop: 'refusalNone', items: { refused: 'refused', other: 'runnable' }, verdict: 'blocked', labels: { refused: REFUSED, other: CONTINUES } },
-  // The crossings listed before and found since.
   { name: 'refusal × timebox: the refusal came first', role: 'implementor', stop: 'refusalNone', items: { refused: 'refused', other: 'runnable' }, verdict: 'blocked', labels: { refused: REFUSED, other: CONTINUES } },
-  { name: 'refusal × timebox: the clock came first', role: 'implementor', stop: 'limit', items: { other: 'runnable' }, verdict: 'blocked', labels: { other: CONTINUES }, files: ['the clock'] },
-  { name: 'blocked × waiting: only waiting work is left', role: 'implementor', stop: 'idle', items: { item: 'waits' }, verdict: 'blocked', labels: { item: WAITS }, files: [STATE_MD] },
+  { name: 'refusal × timebox: the clock came first', role: 'implementor', stop: 'limit', items: { other: 'runnable' }, verdict: 'blocked', labels: { other: CONTINUES }, fields: ['limit'] },
+  { name: 'blocked × waiting: only waiting work is left', role: 'implementor', stop: 'idle', items: { item: 'waits' }, verdict: 'blocked', labels: { item: WAITS }, writes: ['state'] },
   { name: 'a check cannot run and another item waits', role: 'planner', stop: 'idle', items: { check: 'cannot', other: 'waits' }, verdict: 'blocked', labels: { check: CANNOT, other: WAITS } },
   { name: 'follow-up × finding: the discovery is outside the unit, the cut item is not', role: 'planner', stop: 'limit', items: { found: 'discovery', cut: 'runnable' }, verdict: 'blocked', labels: { found: OUTSIDE, cut: CONTINUES } },
   { name: 'a verifier whose spec lines contradict', role: 'verifier', stop: 'idle', items: { check: 'waits' }, verdict: 'stuck', labels: { check: WAITS } },
@@ -402,24 +386,25 @@ export const CASES: ReadonlyArray<Case> = [
   { name: 'the lean worker cannot run a tool', role: 'worker', stop: 'idle', items: { tool: 'cannot' }, verdict: 'none', labels: { tool: CANNOT } },
 ];
 
-/** Every way the two functions answer a named case otherwise than the case expects. */
-export function caseFailures(data: Data = DATA, cases: ReadonlyArray<Case> = CASES): string[] {
+export function caseFailures(policies: Record<Role, Policy> = POLICIES, cases: ReadonlyArray<Case> = CASES): string[] {
   const out: string[] = [];
   for (const one of cases) {
-    try {
-      const got = classify(one.role, one.stop, Object.values(one.items), data.rules, data.files);
-      if (!('outcome' in got)) {
-        out.push(`${one.name}: ill-formed: ${got.illFormed}`);
-        continue;
+    const got = outcome(policies[one.role], one.stop, Object.values(one.items));
+    if (!got.ok) {
+      out.push(`${one.name}: ill-formed: ${got.error}`);
+      continue;
+    }
+    if (got.value.verdict !== one.verdict) out.push(`${one.name}: verdict ${got.value.verdict}`);
+    for (const artifact of one.writes ?? []) if (!got.value.writes.artifacts.includes(artifact)) out.push(`${one.name}: writes ${got.value.writes.artifacts}`);
+    for (const field of one.fields ?? []) if (!got.value.fields.includes(field as never)) out.push(`${one.name}: fields ${got.value.fields}`);
+    for (const [name, words] of Object.entries(one.labels)) {
+      let found = '';
+      try {
+        found = label(one.role, one.items[name] ?? 'done', 'never', policies[one.role]);
+      } catch (error) {
+        found = String(error);
       }
-      if (got.outcome.verdict !== one.verdict) out.push(`${one.name}: verdict ${got.outcome.verdict}`);
-      for (const words of one.files ?? []) if (!got.outcome.files.includes(words)) out.push(`${one.name}: files ${got.outcome.files}`);
-      for (const [name, words] of Object.entries(one.labels)) {
-        const found = label(one.role, one.items[name] ?? 'done', 'never', data.labels);
-        if (found === null || !found.includes(words)) out.push(`${one.name}: ${name} is ${String(found)}`);
-      }
-    } catch (error) {
-      out.push(`${one.name}: ${String(error)}`);
+      if (!found.includes(words)) out.push(`${one.name}: ${name} is ${found}`);
     }
   }
   return out;
@@ -429,10 +414,8 @@ describe('(iv) every case found so far has its one disposition', () => {
   test('the named cases', () => {
     expect(caseFailures()).toEqual([]);
   });
-  test('an item keeps its label whatever stops the step (N1 to N3): F1 takes no stop', () => {
-    expect(label.length).toBe(2);
-    for (const role of ROLES)
-      for (const row of DECISIONS[role]) expect(render(role)).toContain(`| ${rowLabel(role, row)} |`);
+  test('an item keeps its label whatever stops the step (N1 to N3): a row takes no stop', () => {
+    for (const role of ROLES) for (const row of POLICIES[role].rows) expect(block(role)).toContain(`| ${row.label} |`);
   });
   test('22s-7 a wrong heads line makes the batch `stuck` even with a proven Blocker; the prompt says the same', () => {
     expect(batchVerdict(false, ['changes'])).toBe('stuck');
@@ -448,38 +431,49 @@ describe('(iv) every case found so far has its one disposition', () => {
 
 // ---- (v) mutations -----------------------------------------------------------------------------------------------
 
-describe('(v) a changed label, verdict rule or files, and a deleted label or rule, are each red', () => {
+const withRole = (role: Role, policy: Policy): Record<Role, Policy> => ({ ...POLICIES, [role]: policy });
+const relabel = (policy: Policy, id: string, label: string): Policy => ({ ...policy, rows: policy.rows.map((row) => (row.id === id ? { ...row, label } : row)) });
+
+describe('(v) a changed label, verdict rule or artifacts, and a deleted row or rule, are each red', () => {
   test('changing one label (a live wait relabelled `continues next round`) is red', () => {
-    const labels = { ...LABEL, implementor: { ...LABEL.implementor, waits: LABEL.implementor.runnable } };
-    expect(caseFailures({ ...DATA, labels }).length).toBeGreaterThan(0);
+    const p = POLICIES.implementor;
+    expect(caseFailures(withRole('implementor', relabel(p, 'waits', p.rows.find((row) => row.id === 'runnable')!.label))).length).toBeGreaterThan(0);
   });
   test('changing one verdict rule (ran unclear no longer `stuck`) is red', () => {
-    const rules = { ...VERDICT, verifier: VERDICT.verifier.map((rule) => ('any' in rule && rule.verdict === 'stuck' ? { ...rule, any: rule.any.filter((state) => state !== 'unclear') } : rule)) };
-    expect(invariants({ ...DATA, rules }).length).toBeGreaterThan(0);
-    expect(caseFailures({ ...DATA, rules }).some((line) => line.startsWith('N5'))).toBe(true);
+    const p = POLICIES.verifier;
+    const rules = p.verdicts.map((rule) => (rule.id === 'stuck' && rule.when.kind === 'any' ? { ...rule, when: { kind: 'any' as const, states: rule.when.states.filter((state) => state !== 'unclear') } } : rule));
+    const policies = withRole('verifier', { ...p, verdicts: rules });
+    expect(invariants(policies).length).toBeGreaterThan(0);
+    expect(caseFailures(policies).some((line) => line.startsWith('N5'))).toBe(true);
   });
   test('giving a verifier `blocked` is red', () => {
-    const rules = { ...VERDICT, verifier: [{ verdict: 'blocked', any: ['refused'] as State[] }, ...VERDICT.verifier] };
-    const files = { ...FILES, verifier: { ...FILES.verifier, blocked: '`<unit dir>/blocked.md`' } };
-    expect(totality({ labels: LABEL, rules, files }).length).toBeGreaterThan(0);
-    expect(invariants({ labels: LABEL, rules, files }).length).toBeGreaterThan(0);
+    const p = POLICIES.verifier;
+    const policies = withRole('verifier', { ...p, verdicts: [{ priority: 0, id: 'blocked', verdict: 'blocked', when: { kind: 'any', states: ['refused'] }, writes: { artifacts: ['blocked'], contents: [] } }, ...p.verdicts] });
+    expect(totality(policies).length).toBeGreaterThan(0);
+    expect(invariants(policies).length).toBeGreaterThan(0);
   });
   test('dropping state.md from a non-ready hand-back (B4) is red', () => {
-    const files = { ...FILES, implementor: { ...FILES.implementor, blocked: '`<unit dir>/blocked.md`: <evidence>, and <items>' } };
-    expect(invariants({ ...DATA, files }).length).toBeGreaterThan(0);
-    expect(caseFailures({ ...DATA, files }).some((line) => line.startsWith('N6'))).toBe(true);
+    const p = POLICIES.implementor;
+    const policies = withRole('implementor', { ...p, verdicts: p.verdicts.map((rule) => (rule.id === 'blocked' ? { ...rule, writes: { ...rule.writes, artifacts: ['blocked' as const] } } : rule)) });
+    expect(invariants(policies).length).toBeGreaterThan(0);
+    expect(caseFailures(policies).some((line) => line.startsWith('N6'))).toBe(true);
   });
-  test('deleting one label, or one verdict rule, is red', () => {
-    const { unitFinding: _gone, ...rest } = LABEL.verifier;
-    expect(totality({ ...DATA, labels: { ...LABEL, verifier: rest } })).toEqual(['F1 verifier × unitFinding: Error: no label for verifier × unitFinding']);
-    const rules = { ...VERDICT, planner: VERDICT.planner.filter((rule) => rule.verdict !== 'blocked') };
-    expect(totality({ ...DATA, rules }).length).toBeGreaterThan(0);
+  test('dropping the named form from a refusal stop, or inferring one where none was named, is red', () => {
+    const p = POLICIES.implementor;
+    const drop = withRole('implementor', { ...p, stops: p.stops.map((one) => (one.stop === 'refusalForm' ? { ...one, fields: one.fields.filter((field) => field.id !== 'refused.form') } : one)) });
+    expect(invariants(drop).some((line) => line.includes("named form is not written"))).toBe(true);
+    const infer = withRole('implementor', { ...p, stops: p.stops.map((one) => (one.stop === 'refusalNone' ? { ...one, fields: [...one.fields, { id: 'refused.form' as const, text: 'the form it implied' }] } : one)) });
+    expect(invariants(infer).some((line) => line.includes('gets none inferred'))).toBe(true);
+  });
+  test('deleting one row, or one verdict rule, is red', () => {
+    const p = POLICIES.verifier;
+    expect(totality(withRole('verifier', { ...p, rows: p.rows.filter((row) => row.id !== 'unitFinding') }))).toEqual(['F1 verifier × unitFinding: no row']);
+    expect(totality(withRole('planner', { ...POLICIES.planner, verdicts: POLICIES.planner.verdicts.filter((rule) => rule.id !== 'blocked') })).length).toBeGreaterThan(0);
   });
 });
 
-// ---- (vi) the item model: the states partition every valid item, and the valid items are the reachable ones -------
+// ---- (vi) the item model -------------------------------------------------------------------------------------------
 
-/** Every valid record a role's states do not partition: no state, or more than one. */
 export function partition(predicates: Predicates = PREDICATE, rules: ReadonlyArray<Validity> = VALIDITY): string[] {
   const out: string[] = [];
   for (const role of ROLES)
@@ -491,7 +485,6 @@ export function partition(predicates: Predicates = PREDICATE, rules: ReadonlyArr
   return out;
 }
 
-/** Every record valid but reached by no history, or reached but rejected: empty when the two sets are equal. */
 export function reachGap(rules: ReadonlyArray<Validity> = VALIDITY): string[] {
   const out: string[] = [];
   for (const role of ROLES) {
@@ -508,38 +501,21 @@ const item = (facts: Partial<Item>): Item => ({ assigned: false, required: false
 const work = (facts: Partial<Item>): Item => item({ assigned: true, required: true, settled: false, ...facts });
 
 describe('(vi) the item model: valid = reachable, and every valid item is in exactly one state', () => {
-  const counts = ROLES.map((role) => {
-    const valid = allItems().filter((one) => validity(role, one) === undefined);
-    const rejected = allItems().filter((one) => validity(role, one) !== undefined);
-    const byKind = (kind: string) => rejected.filter((one) => VALIDITY.find((rule) => rule.breaks(role, one))?.justification.kind === kind).length;
-    return {
-      role,
-      records: allItems().length,
-      valid: valid.length,
-      reachable: reachable(role).size,
-      rejectedByDefinition: byKind('definition'),
-      rejectedUnreachable: byKind('unreachable'),
-      byState: Object.fromEntries(STATES_OF[role].map((state) => [state, valid.filter((one) => matching(role, one)[0] === state).length])),
-    };
-  });
-  test('the enumeration: 2 × 2 × 5 attempts × settled × 2³ obstacle sets × 3 provenances per role; the valid ones meet exactly one state', () => {
+  test('the enumeration: 2 × 2 × 5 attempts × settled × 2³ obstacle sets × 3 provenances; the valid ones meet exactly one state', () => {
     expect(allItems().length).toBe(960);
     expect(partition()).toEqual([]);
-    console.log(JSON.stringify(counts));
   });
   test('the valid records are exactly the records some history reaches, both ways', () => {
     expect(reachGap()).toEqual([]);
   });
-  test('every rejection is justified: by two definitions it cites, or as unreachable (which the comparison above confirms)', () => {
+  test('every rejection is justified, every state is met, and every validity rule rejects some record first', () => {
     for (const rule of VALIDITY) {
       if (rule.justification.kind === 'definition') expect((rule.justification.cites.match(/`[^`]+`/g) ?? []).length).toBeGreaterThanOrEqual(2);
       else expect(rule.justification.why.length).toBeGreaterThan(0);
     }
-    for (const { rejectedByDefinition, rejectedUnreachable, records, valid } of counts) expect(rejectedByDefinition + rejectedUnreachable + valid).toBe(records);
-  });
-  test('every state of every role is met by some valid item, and every validity rule rejects some record first', () => {
-    for (const { role, byState } of counts) for (const [state, n] of Object.entries(byState)) expect([role, state, n > 0]).toEqual([role, state, true]);
     for (const role of ROLES) {
+      const valid = allItems().filter((one) => validity(role, one) === undefined);
+      for (const state of ORACLE_STATES[role]) expect([role, state, valid.some((one) => matching(role, one)[0] === state)]).toEqual([role, state, true]);
       const used = new Set(allItems().map((one) => validity(role, one)).filter((rule) => rule !== undefined));
       for (const { rule } of VALIDITY) if (!(role === 'verifier' && rule.startsWith('only a verifier')) && !(role !== 'verifier' && rule.startsWith("a verifier's")) && !(role === 'verifier' && rule.startsWith("a planner's"))) expect([role, rule, used.has(rule)]).toEqual([role, rule, true]);
     }
@@ -551,7 +527,6 @@ describe('(vi) the item model: valid = reachable, and every valid item is in exa
   });
 });
 
-/** A history: the events one item went through, the record they leave, its state and words its label must hold. */
 interface History {
   readonly name: string;
   readonly role: Role;
@@ -568,14 +543,14 @@ const HISTORIES: ReadonlyArray<History> = [
   { name: 'A1 variant: the gate printed an unclear result and can be rerun', role: 'implementor', events: ['attempt → unclear'], item: work({ attempt: 'unclear' }), state: 'runnable', label: '`continues next round`' },
   { name: 'A1 control: the gate never ran', role: 'implementor', events: [], item: work({}), state: 'runnable', label: '`continues next round`' },
   { name: 'A2 an optional wider probe the host cannot run, no refusal', role: 'verifier', events: ['host probe fails'], item: work({ required: false, hostCannot: true }), state: 'unproven', label: '`unproven: <probe>`' },
-  { name: 'A2 control: the same host failure on a required check', role: 'verifier', events: ['host probe fails'], item: work({ hostCannot: true }), state: 'cannot', label: '`cannot run here:' },
+  { name: 'A2 control: the same host failure on a required check', role: 'verifier', events: ['host probe fails'], item: work({ hostCannot: true }), state: 'cannot', label: '`cannot run here: <check or tool>`' },
   { name: 'A2 control: an optional probe that proves a Blocker', role: 'verifier', events: ['attempt → fail'], item: work({ required: false, attempt: 'fail', settled: true }), state: 'proven', label: 'a Blocker or Major' },
-  { name: 'A2 control: an optional probe ran unclear and can be retried', role: 'verifier', events: ['attempt → unclear'], item: work({ required: false, attempt: 'unclear' }), state: 'unproven', label: 'it never changes the verdict' },
-  { name: 'A3 the lean worker\'s first-message task, not yet started', role: 'worker', events: [], item: work({}), state: 'runnable', label: '`left`' },
+  { name: 'A2 control: an optional probe ran unclear and can be retried', role: 'verifier', events: ['attempt → unclear'], item: work({ required: false, attempt: 'unclear' }), state: 'unproven', label: '`unproven: <probe>`, under Unproven with the probe that would settle it; it never changes the verdict' },
+  { name: "A3 the lean worker's first-message task, not yet started", role: 'worker', events: [], item: work({}), state: 'runnable', label: '`left`' },
   { name: 'A3 control: an unrelated defect the worker notices', role: 'worker', events: [], item: item({}), state: 'discovery', label: '`outside the task`' },
-  { name: 'N3 history: required check A, host cannot run it after one attempt', role: 'implementor', events: ['attempt → no result yet', 'host probe fails'], item: work({ attempt: 'started', hostCannot: true }), state: 'cannot', label: '`cannot run here:' },
+  { name: 'N3 history: required check A, host cannot run it after one attempt', role: 'implementor', events: ['attempt → no result yet', 'host probe fails'], item: work({ attempt: 'started', hostCannot: true }), state: 'cannot', label: '`cannot run here: <check or tool>`' },
   { name: 'N4 history: a written-rule break the unit introduced', role: 'verifier', events: [], item: item({ provenance: 'unit' }), state: 'unitFinding', label: 'marked `unit`' },
-  { name: '22s-1 history: the planner\'s spec work refused', role: 'planner', events: ['refusal'], item: work({ attempt: 'started', refused: true }), state: 'refused', label: '`refused: <what>`' },
+  { name: "22s-1 history: the planner's spec work refused", role: 'planner', events: ['refusal'], item: work({ attempt: 'started', refused: true }), state: 'refused', label: '`refused: <what>`' },
   { name: 'a retry after a failed gate is refused', role: 'implementor', events: ['attempt → fail', 'refusal'], item: work({ attempt: 'fail', refused: true }), state: 'refused', label: '`refused: <what>`' },
 ];
 
@@ -586,198 +561,168 @@ describe("(vi) histories: each item's events reach one record, in one state, wit
       const reached = one.events.reduce<Item | undefined>((at, name) => (at === undefined ? undefined : EVENTS.find((event) => event.name === name)?.apply(one.role, at)), start);
       expect(reached).toEqual(one.item);
       expect(stateOf(one.role, one.item)).toBe(one.state);
-      const got = label(one.role, one.state, one.item.attempt) ?? '';
-      expect(got).toContain(one.label);
+      const got = decide(POLICIES[one.role], truths([one.item]))[0]?.label ?? '';
+      // Exact: the history's label is the label the list gives, or its word (wordOf), never a substring or a blank.
+      expect([got, one.label === got || one.label === wordOf(got)]).toEqual([got, true]);
       if (one.not !== undefined) expect(got).not.toContain(one.not);
     });
   test('V7 with its sibling refusal: the retryable check and the refused check give one `stuck`, both labels distinct', () => {
     const states = [stateOf('verifier', work({ attempt: 'unclear' })), stateOf('verifier', work({ attempt: 'started', refused: true }))];
     expect(states).toEqual(['runnable', 'refused']);
-    expect(classify('verifier', 'refusalNone', states)).toMatchObject({ outcome: { verdict: 'stuck' } });
+    expect(outcome(POLICIES.verifier, 'refusalNone', states)).toMatchObject({ ok: true, value: { verdict: 'stuck' } });
     expect(label('verifier', 'runnable', 'unclear')).not.toBe(label('verifier', 'runnable', 'never'));
   });
   test('A1 at the timebox: `blocked`, state.md current and blocked.md with the clock', () => {
-    const got = classify('implementor', 'limit', [stateOf('implementor', work({ attempt: 'fail' }))]);
-    expect(got).toMatchObject({ outcome: { verdict: 'blocked' } });
-    expect('outcome' in got && got.outcome.files).toContain(STATE_MD);
-    expect('outcome' in got && got.outcome.files).toContain('the clock (the timebox)');
+    const got = outcome(POLICIES.implementor, 'limit', [stateOf('implementor', work({ attempt: 'fail' }))]);
+    expect(got).toMatchObject({ ok: true, value: { verdict: 'blocked', writes: { artifacts: ['state', 'blocked'] }, fields: ['limit'] } });
   });
   test('A2 and T1: every required check passed and an optional probe cannot run (or ran unclear): `accepted`', () => {
     for (const probe of [work({ required: false, hostCannot: true }), work({ required: false, attempt: 'unclear', settled: true }), work({ required: false, attempt: 'unclear' })]) {
       const states = [stateOf('verifier', work({ attempt: 'pass', settled: true })), stateOf('verifier', probe)];
       expect(states).toEqual(['done', 'unproven']);
-      expect(classify('verifier', 'idle', states)).toMatchObject({ outcome: { verdict: 'accepted' } });
+      expect(outcome(POLICIES.verifier, 'idle', states)).toMatchObject({ ok: true, value: { verdict: 'accepted' } });
     }
   });
-  test('an optional probe refused: a refusal is authority whatever the item, so the probe is refused and the step stops `stuck` on it (the Refusals paragraph)', () => {
+  test('an optional probe refused: a refusal is authority whatever the item, so the probe is refused and the step stops `stuck` on it', () => {
     for (const probe of [work({ required: false, attempt: 'started', refused: true }), work({ required: false, attempt: 'unclear', refused: true, hostCannot: true, wait: true })]) {
       const state = stateOf('verifier', probe);
       expect(state).toBe('refused');
       expect(label('verifier', state, probe.attempt)).toContain('refused: <what>');
-      expect(classify('verifier', 'refusalNone', ['done', state])).toMatchObject({ outcome: { verdict: 'stuck' } });
+      expect(outcome(POLICIES.verifier, 'refusalNone', ['done', state])).toMatchObject({ ok: true, value: { verdict: 'stuck' } });
     }
   });
 });
 
 describe('(vi) a model fault is red', () => {
   test('merging attempt history back into disposition (ran unclear without `settled`) is red', () => {
-    const predicates: Predicates = { ...PREDICATE, unclear: PREDICATE.unclear.filter(([field]) => field !== 'settled') };
-    expect(partition(predicates).some((line) => line.includes('runnable and unclear'))).toBe(true);
+    expect(partition({ ...PREDICATE, unclear: PREDICATE.unclear.filter(([field]) => field !== 'settled') }).some((line) => line.includes('runnable and unclear'))).toBe(true);
   });
   test('re-adding the deleted validity rule (a result is final: an unclear attempt cannot advance) is red', () => {
-    const rules: ReadonlyArray<Validity> = [
-      ...VALIDITY,
-      { rule: 'a result is final for the step', justification: { kind: 'unreachable', why: 'claimed' }, breaks: (_, one) => one.attempt === 'unclear' && !one.settled },
-    ];
+    const rules: ReadonlyArray<Validity> = [...VALIDITY, { rule: 'a result is final for the step', justification: { kind: 'unreachable', why: 'claimed' }, breaks: (_, one) => one.attempt === 'unclear' && !one.settled }];
     expect(reachGap(rules).some((line) => line.includes('verifier true/true/unclear/open/free') && line.includes('but rejected'))).toBe(true);
   });
-  test('making the retryable-inconclusive label `not run` is red', () => {
-    const labels = { ...LABEL, verifier: { ...LABEL.verifier, runnable: '`not run`, named under Check' } };
-    const v7 = HISTORIES[0];
-    expect(v7 !== undefined && (label('verifier', 'runnable', 'unclear', labels) ?? '').includes(v7.label)).toBe(false);
-  });
   test('overlapping two predicates (runnable without `required`) is red', () => {
-    const predicates = { ...PREDICATE, runnable: PREDICATE.runnable.filter(([field]) => field !== 'required') };
-    expect(partition(predicates).some((line) => line.includes('runnable and unproven'))).toBe(true);
+    expect(partition({ ...PREDICATE, runnable: PREDICATE.runnable.filter(([field]) => field !== 'required') }).some((line) => line.includes('runnable and unproven'))).toBe(true);
   });
   test('a discovery that ignores assignment (22u A3) is red', () => {
-    const predicates = { ...PREDICATE, discovery: PREDICATE.discovery.filter(([field]) => field !== 'assigned') };
-    expect(partition(predicates).some((line) => line.startsWith('worker') && line.includes('runnable and discovery'))).toBe(true);
+    expect(partition({ ...PREDICATE, discovery: PREDICATE.discovery.filter(([field]) => field !== 'assigned') }).some((line) => line.startsWith('worker') && line.includes('runnable and discovery'))).toBe(true);
   });
   test('a hole (runnable only when never attempted, as 22u A1 found) is red', () => {
-    const predicates: Predicates = { ...PREDICATE, runnable: [...PREDICATE.runnable, ['attempt', ['never']]] };
-    expect(partition(predicates).some((line) => line.startsWith('implementor') && line.endsWith('no state'))).toBe(true);
+    expect(partition({ ...PREDICATE, runnable: [...PREDICATE.runnable, ['attempt', ['never']]] }).some((line) => line.startsWith('implementor') && line.endsWith('no state'))).toBe(true);
   });
 });
 
-// ---- (vii) the rendered list: every prompt read back, first row true, one label each, one checked hand-back -------
+// ---- (vii) each delivered prompt's decoded policy against the oracle ----------------------------------------------
 
-type Read = ReturnType<typeof readDecisions>;
-const isTrue = (row: Read[number], atoms: ReadonlySet<Atom>) => row.when === 'otherwise' || row.when.every((atom) => atoms.has(atom));
-/** A rendered row's id in DECISIONS: the model row with its state and condition. */
-const idOf = (role: Role, row: Read[number]) => DECISIONS[role].find((one) => one.state === row.state && JSON.stringify(one.when) === JSON.stringify(row.when))?.id ?? `?${row.state}`;
 const pairKey = (a: string, b: string) => [a, b].sort().join(' & ');
 
-/**
- * Every pair of rows (catch-all aside) a rendered list makes true together on some reachable record, computed from
- * item-histories.ts's records, two and three obstacles at once included: never written by hand.
- */
-export function computedPairs(role: Role, rows: Read): Map<string, { readonly ids: readonly [string, string]; readonly record: string }> {
-  const out = new Map<string, { ids: readonly [string, string]; record: string }>();
-  for (const { item: one } of reachable(role).values()) {
+/** Every pair of rows (catch-all aside) a policy makes true together on some reachable record: computed, never written by hand. */
+export function computedPairs(policy: Policy): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const { item: one } of reachable(policy.role).values()) {
     const atoms = truths([one]);
-    const hits = rows.filter((row) => row.when !== 'otherwise' && isTrue(row, atoms)).map((row) => idOf(role, row));
-    for (const [i, a] of hits.entries()) for (const b of hits.slice(i + 1)) if (!out.has(pairKey(a, b))) out.set(pairKey(a, b), { ids: [a, b], record: recordKey(one) });
+    const hits = policy.rows.filter((row) => row.when !== 'otherwise' && row.when.every((atom) => atoms.has(atom))).map((row) => row.id);
+    for (const [i, a] of hits.entries()) for (const b of hits.slice(i + 1)) if (!out.has(pairKey(a, b))) out.set(pairKey(a, b), recordKey(one));
   }
   return out;
 }
 
-/** Every way one prompt's rendered list disagrees with F1 on a reachable record, and every way its overlaps and ORDER's pins disagree. */
-export function listFaults(prompt: Prompt, pins: ReadonlyArray<Pinned> = ORDER[prompt.role]): string[] {
-  const at = `${prompt.role} ${prompt.format}`;
-  let rows: Read;
-  try {
-    rows = readDecisions(prompt.role, prompt.text);
-  } catch (error) {
-    return [`${at}: ${String(error)}`];
-  }
+/** Every way a decoded policy disagrees with the oracle on a reachable record, and its overlaps with the pins. */
+export function listFaults(policy: Policy, pins: ReadonlyArray<Pin> = PINS[policy.role]): string[] {
   const out: string[] = [];
-  for (const { item: one } of reachable(prompt.role).values()) {
-    const got = rows.find((row) => isTrue(row, truths([one])));
-    const state = stateOf(prompt.role, one);
-    const want = label(prompt.role, state, one.attempt) ?? 'none: it is no item left';
-    if (got === undefined || got.state !== state || got.label !== want) out.push(`${at} ${recordKey(one)}: the list gives ${got === undefined ? 'no row' : `${STATE_NAME[got.state]} (${got.label})`}, F1 ${STATE_NAME[state]} (${want})`);
+  const role = policy.role;
+  for (const { item: one } of reachable(role).values()) {
+    const got = decide(policy, truths([one]))[0];
+    const state = stateOf(role, one);
+    const want = label(role, state, one.attempt);
+    if (got === undefined || got.state !== state || got.label !== want) out.push(`${role} ${recordKey(one)}: the list gives ${got === undefined ? 'no row' : `${STATE_NAME[got.state]} (${got.label})`}, the oracle ${STATE_NAME[state]} (${want})`);
   }
-  const pairs = computedPairs(prompt.role, rows);
   const pinned = new Map(pins.map((pin) => [pairKey(...pin.pair), pin]));
-  const place = (id: string) => rows.findIndex((row) => idOf(prompt.role, row) === id);
-  for (const [key, { record }] of pairs) {
+  const place = (id: string) => policy.rows.findIndex((row) => row.id === id);
+  for (const [key, record] of computedPairs(policy)) {
     const pin = pinned.get(key);
-    if (pin === undefined) out.push(`${at}: rows ${key} are both true of ${record}, and no winner is pinned`);
+    if (pin === undefined) out.push(`${role}: rows ${key} are both true of ${record}, and no winner is pinned`);
     else {
-      const loser = pin.pair.find((id) => id !== pin.winner) ?? '';
-      if (!(place(pin.winner) < place(loser))) out.push(`${at}: ${pin.winner} is pinned over ${loser}, but the list puts ${loser} first`);
+      const loser = pin.pair.find((id) => id !== pin.winner);
+      if (loser === undefined) throw new Error(`${role}: the pin for ${key} has no loser`);
+      if (!(place(pin.winner) < place(loser))) out.push(`${role}: ${pin.winner} is pinned over ${loser}, but the list puts ${loser} first`);
     }
   }
-  for (const key of pinned.keys()) if (!pairs.has(key)) out.push(`${at}: a winner is pinned for ${key}, but no reachable record makes both true`);
+  const pairs = computedPairs(policy);
+  for (const key of pinned.keys()) if (!pairs.has(key)) out.push(`${role}: a winner is pinned for ${key}, but no reachable record makes both true`);
   return out;
 }
 
-/** Every way one prompt's verdict table, read back, answers a well-formed step otherwise than F2, and every unlisted overlap. */
-export function verdictFaults(prompt: Prompt): string[] {
-  const at = `${prompt.role} ${prompt.format}`;
-  let rows: ReturnType<typeof readVerdicts>;
-  try {
-    rows = readVerdicts(prompt.text);
-  } catch (error) {
-    return [`${at}: ${String(error)}`];
-  }
+/** Every way a decoded policy's verdict rules answer a well-formed step otherwise than the source, and every unlisted overlap. */
+export function verdictFaults(policy: Policy): string[] {
   const out: string[] = [];
   const pairs = new Set<string>();
-  const holdsFor = (rule: (typeof rows)[number]['rule'], states: ReadonlyArray<State>) =>
-    'any' in rule ? rule.any.some((state) => states.includes(state)) : 'only' in rule ? states.every((state) => rule.only.includes(state)) : true;
-  for (const stop of STOPS_OF[prompt.role])
-    for (const states of multisets(STATES_OF[prompt.role], SIZE)) {
-      const got = classify(prompt.role, stop, states);
-      if (!('outcome' in got)) continue;
-      const first = rows.findIndex((row) => holdsFor(row.rule, states));
-      if (rows[first]?.verdict !== got.outcome.verdict) out.push(`${at} ${stop} [${states}]: the table gives ${rows[first]?.verdict}, F2 ${got.outcome.verdict}`);
-      for (const [index, row] of rows.entries()) if (index > first && !('else' in row.rule) && holdsFor(row.rule, states)) pairs.add(`${rows[first]?.verdict} > ${row.verdict}`);
+  const holds = (rule: Policy['verdicts'][number], states: ReadonlyArray<State>) => (rule.when.kind === 'any' ? rule.when.states.some((s) => states.includes(s)) : rule.when.kind === 'only' ? states.every((s) => (rule.when as { states: ReadonlyArray<State> }).states.includes(s)) : true);
+  for (const stop of STOPS_OF[policy.role])
+    for (const states of multisets(STATES_OF[policy.role], SIZE)) {
+      const want = outcome(POLICIES[policy.role], stop, states);
+      const got = outcome(policy, stop, states);
+      if (!want.ok) continue;
+      if (!got.ok || got.value.verdict !== want.value.verdict) out.push(`${policy.role} ${stop} [${states}]: the shown rules give ${got.ok ? got.value.verdict : got.error}, the source ${want.value.verdict}`);
+      const first = policy.verdicts.findIndex((rule) => holds(rule, states));
+      for (const [index, rule] of policy.verdicts.entries()) if (index > first && rule.when.kind !== 'else' && holds(rule, states)) pairs.add(`${policy.verdicts[first]?.verdict} > ${rule.verdict}`);
     }
-  const listed = new Set(VERDICT_ORDER[prompt.role].map((pair) => `${pair.earlier} > ${pair.later}`));
-  for (const pair of pairs) if (!listed.has(pair)) out.push(`${at}: verdicts ${pair} both hold, and VERDICT_ORDER does not say why`);
-  for (const pair of listed) if (!pairs.has(pair)) out.push(`${at}: VERDICT_ORDER lists ${pair}, but no step makes both hold`);
+  const listed = new Set(VERDICT_ORDER[policy.role].map((pair) => `${pair.earlier} > ${pair.later}`));
+  for (const pair of pairs) if (!listed.has(pair)) out.push(`${policy.role}: verdicts ${pair} both hold, and VERDICT_ORDER does not say why`);
+  for (const pair of listed) if (!pairs.has(pair)) out.push(`${policy.role}: VERDICT_ORDER lists ${pair}, but no step makes both hold`);
   return out;
 }
 
-/**
- * Every list history a prompt answers otherwise than the history expects: its state and label, and its hand-back
- * judged field by field against the one the prompt's own words make due (handBackFrom).
- */
-export function historyFaults(prompt: Prompt, histories: ReadonlyArray<{ readonly name: string; readonly role: Role; readonly items: ReadonlyArray<Item>; readonly state: State; readonly label: string; readonly handBack?: unknown }> = LIST_HISTORIES): string[] {
-  try {
-    readDecisions(prompt.role, prompt.text);
-  } catch (error) {
-    return [`${prompt.role} ${prompt.format}: ${String(error)}`];
-  }
+/** Every list history a policy answers otherwise than the history expects: its state and label, and its due hand-back's evidence fields. */
+export function historyFaults(policy: Policy, histories = LIST_HISTORIES): string[] {
   return histories
-    .filter((one) => one.role === prompt.role)
+    .filter((one) => one.role === policy.role)
     .flatMap((one) => {
-      const due = handBackFrom(prompt.role, prompt.text, truths(one.items));
+      // The shortest generated history that reaches the list history's facts, as the envelope a step stores.
+      const reached = traceFor(policy.role, one.items[0]!);
+      if (reached === undefined) return [`${one.name}: no history reaches its facts`];
+      const checked = decode(stepEnvelope(reached));
+      if (!checked.ok) return [`${one.name}: ${checked.error}`];
+      const due = owed(checked.value);
+      if (!due.ok) return [`${one.name}: ${due.error}`];
+      const { fields } = due.value.claim.items[0]!;
+      const row = decide(policy, truths([due.value.states[0]!.facts]))[0];
+      if (!row) return [`${one.name}: no shown row`];
+      const shown = fields.filter((field) => policy.fields.some((entry) => entry.id === field.field));
+      const handBack = handBackOf(row.state, row.label, shown);
       const out: string[] = [];
-      // Exact: the history's label is the due label or its word (labelWord), never a shorter prefix or a blank.
-      if (due.state !== one.state || (one.label !== due.label && one.label !== labelWord(due.label))) out.push(`${one.name}: ${STATE_NAME[due.state]} (${due.label})`);
-      for (const fault of judgeHandBack(due, one.handBack)) out.push(`${one.name}: hand-back ${fault}`);
-      return out;
+      // Exact: the history's label is the due label or its word (wordOf), never a shorter prefix or a blank.
+      if (handBack.state !== one.state || (one.label !== handBack.label && one.label !== wordOf(handBack.label))) out.push(`${one.name}: ${STATE_NAME[handBack.state]} (${handBack.label})`);
+      return [...out, ...judgeHandBack(handBack, one.handBack).map((line) => `${one.name}: hand-back ${line}`)];
     });
 }
 
-/** The prompt's text with the rendered row `later` moved to just above `earlier`. */
-function moveAbove(prompt: Prompt, earlier: string, later: string): Prompt {
-  const line = (id: string) => {
-    const row = DECISIONS[prompt.role].find((one) => one.id === id);
-    if (row === undefined) throw new Error(`no row ${id}`);
-    return `| ${STATE_NAME[row.state]} | ${condition(prompt.role, row.when)} | ${rowLabel(prompt.role, row)} |`;
-  };
-  const [a, b] = [line(earlier), line(later)];
-  if (!prompt.text.includes(a) || !prompt.text.includes(b)) throw new Error(`${prompt.role} ${prompt.format}: rows ${earlier}, ${later} not found`);
-  return { ...prompt, text: prompt.text.replace(`${b}\n`, '').replace(a, `${b}\n${a}`) };
-}
+/** A policy with row `later` moved to just above `earlier`, renumbered: a well-formed block with another order. */
+const moveAbove = (policy: Policy, earlier: string, later: string): Policy => {
+  const moved = policy.rows.find((row) => row.id === later)!;
+  const rest = policy.rows.filter((row) => row.id !== later);
+  const at = rest.findIndex((row) => row.id === earlier);
+  return { ...policy, rows: [...rest.slice(0, at), moved, ...rest.slice(at)].map((row, index): Row => ({ ...row, priority: index + 1 })) };
+};
 
-describe('(vii) the list each prompt carries: read back by the grammar, the first true row gives F1 on every reachable record', () => {
+const decodedOf = (prompt: Prompt): Policy => {
+  const found = /<!-- round-policy v[\s\S]*?<!-- \/round-policy -->/.exec(prompt.text)?.[0] ?? '';
+  const got = decodeBlock(found);
+  if (!got.ok) throw new Error(`${prompt.role} ${prompt.format}: ${got.error}`);
+  return got.value;
+};
+
+describe('(vii) each delivered prompt, decoded: the first true row gives the oracle on every reachable record', () => {
   const all = prompts();
-  test('each row is written by the grammar it is read back by: emit then parse is the identity on every row', () => {
-    for (const role of ROLES)
-      for (const row of DECISIONS[role]) expect([role, row.id, parseCondition(role, condition(role, row.when))]).toEqual([role, row.id, row.when]);
-    for (const role of ROLES) for (const rule of VERDICT[role]) expect(parseWhen(when(rule))).toEqual('any' in rule ? { any: rule.any } : 'only' in rule ? { only: rule.only } : { else: true });
-    expect(parseOtherObstacles(OTHER_OBSTACLES_NOTE)).toEqual([...OBSTACLE_ROWS]);
-    expect(() => parseCondition('verifier', 'required, the moon is full')).toThrow('no atom reads');
-    expect(() => parseWhen('any item is lost')).toThrow('no state is named');
-    expect(() => parseOtherObstacles(OTHER_OBSTACLES_NOTE.replace('cannot run', 'stalled'))).toThrow('no obstacle row is named');
+  test('each row is written by the grammar it is read back by: emit then parse is the identity', () => {
+    for (const role of ROLES) for (const row of POLICIES[role].rows) expect([role, row.id, parseCondition(role, condition(role, row.when))]).toEqual([role, row.id, { ok: true, value: row.when }]);
+    for (const role of ROLES) for (const rule of POLICIES[role].verdicts) expect(parseVerdictWhen(verdictWhen(rule.when, false))).toEqual({ ok: true, value: rule.when.kind === 'else' ? { kind: 'else' } : rule.when });
+    expect(parseCondition('verifier', 'required, the moon is full').ok).toBe(false);
+    expect(parseVerdictWhen('any item is lost').ok).toBe(false);
   });
   test('the atoms read one-to-one in each role: no two atoms share words', () => {
-    for (const role of ROLES) expect(new Set(ATOM_IDS.map((atom) => atomWords(role, atom))).size).toBe(ATOM_IDS.length);
-    for (const role of ROLES) expect(render(role)).toContain(`Assigned work is ${ASSIGNMENT[role]}`);
+    for (const role of ROLES) expect(new Set(ATOMS.map((atom) => atomWords(role, atom))).size).toBe(ATOMS.length);
+    for (const role of ROLES) expect(block(role)).toContain(`Assigned work is ${ASSIGNMENT[role]}`);
   });
   test('two and three obstacles at once are reachable, and every subset of them for every role', () => {
     for (const role of ROLES) {
@@ -786,242 +731,277 @@ describe('(vii) the list each prompt carries: read back by the grammar, the firs
     }
   });
   for (const prompt of all)
-    test(`${prompt.role} ${prompt.format}: every reachable record gets F1's label from the first true row; the computed overlaps are exactly the pinned ones; every history's hand-back is the due one`, () => {
-      expect(listFaults(prompt)).toEqual([]);
-      expect(verdictFaults(prompt)).toEqual([]);
-      expect(historyFaults(prompt)).toEqual([]);
+    test(`${prompt.role} ${prompt.format}: every reachable record gets the oracle's state and label; overlaps are exactly the pinned ones; every history's due hand-back holds its fields`, () => {
+      const policy = decodedOf(prompt);
+      expect(listFaults(policy)).toEqual([]);
+      expect(verdictFaults(policy)).toEqual([]);
+      expect(historyFaults(policy)).toEqual([]);
     });
-  test('optional probes: every subset of obstacles is reachable, and a history covers each, its hand-back naming every obstacle that holds it', () => {
+  test('optional probes: every subset of obstacles is reachable, and a history covers each, its due hand-back naming every obstacle that holds it', () => {
     const subsets = new Set([...reachable('verifier').values()].filter(({ item: one }) => one.assigned && !one.required && obstructed(one)).map(({ item: one }) => OBSTACLE_FACTS.filter((fact) => one[fact]).join('+')));
     expect([...subsets].sort()).toEqual(['hostCannot', 'hostCannot+wait', 'refused', 'refused+hostCannot', 'refused+hostCannot+wait', 'refused+wait', 'wait'].sort());
     const covered = new Set(LIST_HISTORIES.filter((one) => one.role === 'verifier' && one.items.every((it) => it.assigned && !it.required) && one.items.some(obstructed)).map((one) => OBSTACLE_FACTS.filter((fact) => one.items.some((it) => it[fact])).join('+')));
     expect([...covered].sort()).toEqual([...subsets].sort());
-    const named = { refused: 'refused', hostCannot: 'cannot', wait: 'waits' } as const;
-    for (const one of LIST_HISTORIES.filter((h) => h.items.every((it) => it.assigned && !it.required) && h.items.some(obstructed))) {
-      const held = OBSTACLE_FACTS.filter((fact) => one.items.some((it) => it[fact])).map((fact) => named[fact]);
-      expect([one.name, [one.handBack.evidence, ...one.handBack.others].filter((row) => row !== null).sort()]).toEqual([one.name, [...held].sort()]);
-      expect([one.name, one.state]).toEqual([one.name, held.includes('refused') ? 'refused' : 'unproven']);
-    }
+    for (const one of LIST_HISTORIES.filter((h) => h.items.every((it) => it.assigned && !it.required) && h.items.some(obstructed)))
+      expect([one.name, one.state]).toEqual([one.name, one.items.some((it) => it.refused) ? 'refused' : 'unproven']);
   });
-  test('at least 20 histories with two or three facts at once, and every history answered by every prompt of its role', () => {
-    const multi = LIST_HISTORIES.filter((one) => one.name.startsWith('M') && (one.items.length > 1 || one.items.some((item) => OBSTACLE_FACTS.filter((fact) => item[fact]).length > 1 || (obstructed(item) && item.attempt !== 'never'))));
+  test('at least 20 histories with two or three facts at once', () => {
+    const multi = LIST_HISTORIES.filter((one) => one.name.startsWith('M') && (one.items.length > 1 || one.items.some((it) => OBSTACLE_FACTS.filter((fact) => it[fact]).length > 1 || (obstructed(it) && it.attempt !== 'never'))));
     expect(multi.length).toBeGreaterThanOrEqual(20);
-    for (const one of LIST_HISTORIES) expect([one.name, all.filter((prompt) => prompt.role === one.role).length > 0]).toEqual([one.name, true]);
-  });
-  test('the rows each history makes true, the first, its label and its due hand-back (for the request)', () => {
-    const lines = LIST_HISTORIES.map((one) => {
-      const text = render(one.role);
-      const atoms = truths(one.items);
-      const trueRows = DECISIONS[one.role].filter((row) => row.when === 'otherwise' || row.when.every((atom) => atoms.has(atom))).map((row) => row.id);
-      return { name: one.name, role: one.role, events: one.events, trueRows, due: handBackFrom(one.role, text, atoms) };
-    });
-    console.log(`LIST_HISTORIES ${JSON.stringify(lines)}`);
-    expect(lines.every((line) => line.trueRows.length > 0)).toBe(true);
   });
 });
 
-describe('(vii) a rendering or hand-back fault is red', () => {
-  const all = prompts();
-  const claude = (role: Role) => {
-    const prompt = all.find((one) => one.role === role && one.format === 'claude');
-    if (prompt === undefined) throw new Error(`no ${role} prompt`);
-    return prompt;
-  };
-  const history = (prefix: string) => {
-    const one = LIST_HISTORIES.find((h) => h.name.startsWith(prefix));
-    if (one === undefined) throw new Error(`no history ${prefix}`);
-    return one;
-  };
-  const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  test('moving the loser of any pinned pair above its winner is red in every format, and turns a named history red', () => {
-    for (const prompt of all)
-      for (const { pair, winner } of ORDER[prompt.role]) {
+describe('(vii) a reordered, unpinned or forgetful policy is red', () => {
+  test('moving the loser of any pinned pair above its winner is red against the oracle, and the delivery check names the rows', () => {
+    for (const role of ROLES)
+      for (const { pair, winner } of PINS[role]) {
         const loser = pair.find((id) => id !== winner);
-        const lost = DECISIONS[prompt.role].find((row) => row.id === loser);
-        if (loser === undefined || lost === undefined) throw new Error(`${prompt.role}: pin ${pair.join(' & ')} has no loser row`);
-        const moved = moveAbove(prompt, winner, loser);
-        expect([prompt.role, prompt.format, listFaults(moved)]).toEqual([prompt.role, prompt.format, expect.arrayContaining([`${prompt.role} ${prompt.format}: ${winner} is pinned over ${loser}, but the list puts ${loser} first`])]);
-        if (winner === 'unclear' && loser === 'retry') continue;
-        const flipped = new Set(LIST_HISTORIES.filter((one) => one.role === prompt.role).map((one) => `${one.name}: ${STATE_NAME[lost.state]} (${rowLabel(prompt.role, lost)})`));
-        expect([prompt.role, prompt.format, winner, loser, historyFaults(moved).some((line) => flipped.has(line))]).toEqual([prompt.role, prompt.format, winner, loser, true]);
+        if (loser === undefined) throw new Error(`${role}: the pin of ${winner} has no loser`);
+        const moved = moveAbove(POLICIES[role], winner, loser);
+        // Exact lines (text-fix8-label): the pin's own line, and some history's line naming the loser's row.
+        expect([role, winner, loser, listFaults(moved).includes(`${role}: ${winner} is pinned over ${loser}, but the list puts ${loser} first`)]).toEqual([role, winner, loser, true]);
+        const row = POLICIES[role].rows.find((one) => one.id === loser)!;
+        const names = new Set(LIST_HISTORIES.map((one) => one.name));
+        const tail = `: ${STATE_NAME[row.state]} (`;
+        const field = `: hand-back state: due ${row.state}, given "`;
+        // A history's own line given the loser's state, or its hand-back's state field due the loser's state.
+        // Or the history's step, whose stop the loser's state no longer allows, rejected by owed with its reason.
+        const step = ': step: '
+        const names_loser = (line: string) => [tail, field, step].some((mark) => line.includes(mark) && names.has(line.slice(0, line.indexOf(mark))));
+        if (!(winner === 'unclear' && loser === 'retry')) {
+          const lines = historyFaults(moved);
+          expect([role, winner, loser, lines.some(names_loser) ? 'named' : lines]).toEqual([role, winner, loser, 'named']);
+        }
+        const shown = render(moved);
+        expect([role, winner, loser, policyFaults(role, shown).some((line) => line.startsWith(`${role}: row ${loser}:`) || line.startsWith(`${role}: rows:`))]).toEqual([role, winner, loser, true]);
       }
   });
   test('a computed pair with no pin, and a pin no record produces, are each red', () => {
-    for (const prompt of all) {
-      const at = `${prompt.role} ${prompt.format}`;
-      const pins = ORDER[prompt.role];
-      const [dropped] = pins;
-      if (dropped === undefined) throw new Error(`${at}: no pins`);
-      const unpinned = listFaults(prompt, pins.slice(1));
-      expect(unpinned).toHaveLength(1);
-      expect(unpinned[0]).toMatch(new RegExp(`^${escape(`${at}: rows ${pairKey(...dropped.pair)} are both true of `)}\\S+, and no winner is pinned$`));
-      expect(listFaults(prompt, [...pins, { pair: ['done', 'refused'], winner: 'refused', why: 'claimed' }])).toEqual([`${at}: a winner is pinned for done & refused, but no reachable record makes both true`]);
+    for (const role of ROLES) {
+      const pins = PINS[role];
+      const first = pins[0]!;
+      const key = pairKey(...first.pair);
+      // Exact whole arrays (text-fix8-label): one fault each, the full line.
+      expect(listFaults(POLICIES[role], pins.slice(1))).toEqual([`${role}: rows ${key} are both true of ${computedPairs(POLICIES[role]).get(key)}, and no winner is pinned`]);
+      expect(listFaults(POLICIES[role], [...pins, { pair: ['done', 'refused'], winner: 'refused', why: 'claimed' }])).toEqual([`${role}: a winner is pinned for done & refused, but no reachable record makes both true`]);
     }
   });
-  test('dropping the "first row" sentence, the attempt instruction or the other-obstacles instruction is red in every format, each by name', () => {
-    for (const prompt of all) {
-      const at = `${prompt.role} ${prompt.format}`;
-      const cuts: ReadonlyArray<[string, string]> = [
-        [`${FIRST_ROW}\n\n`, `the table headed ${F1_HEADER} is not under "${FIRST_ROW}"`],
-        [ATTEMPT_NOTE, `${prompt.role}: the attempt history's instruction is missing`],
-        [OTHER_OBSTACLES_NOTE, "the other obstacles' instruction is missing"],
-      ];
-      for (const [cut, why] of cuts) {
-        const text = prompt.text.replace(cut, '');
-        expect(text).not.toBe(prompt.text);
-        expect(listFaults({ ...prompt, text })).toEqual([`${at}: Error: ${why}`]);
-      }
+  test('a policy whose evidence fields forget an obstacle or the attempt is red against the histories', () => {
+    for (const drop of ['waits', 'cannot', 'completed', 'current'] as const) {
+      const lines = ROLES.flatMap((role) => historyFaults({ ...POLICIES[role], fields: POLICIES[role].fields.filter((field) => field.id !== drop) }));
+      // Exact per line (text-fix8-label): each fault is the dropped field's own hand-back line, and there is one.
+      const shape = drop === 'waits' || drop === 'cannot' ? new RegExp(`: hand-back (evidence: due none, given ${drop}|others: due \\[[a-z, ]*\\], given \\[[a-z, ]*\\])$`) : /: hand-back last attempt: due absent, given present$/;
+      expect([drop, lines.length > 0, lines.filter((line) => !shape.test(line))]).toEqual([drop, true, []]);
     }
   });
-  test('folding the attempt history back into a row (no separate instruction; ran unclear first, on its result alone) is red', () => {
-    const w01 = history('W01');
-    const [item] = w01.items;
-    if (item === undefined) throw new Error('W01 has no item');
-    for (const prompt of all.filter((one) => one.role === 'verifier')) {
-      const row = DECISIONS.verifier.find((one) => one.id === 'unclear');
-      if (row === undefined) throw new Error('no unclear row');
-      const unclear = `| ran unclear | ${condition('verifier', row.when)} | ${rowLabel('verifier', row)} |`;
-      const folded = `| ran unclear | ${condition('verifier', ['required', 'unclear'])} | ${rowLabel('verifier', row)} |`;
-      const header = `${F1_HEADER}\n| --- | --- | --- |\n`;
-      const text = prompt.text.replace(`${unclear}\n`, '').replace(header, `${header}${folded}\n`);
-      expect(text).not.toBe(prompt.text);
-      const f1 = label('verifier', 'cannot', item.attempt);
-      expect(listFaults({ ...prompt, text })).toContain(`verifier ${prompt.format} ${recordKey(item)}: the list gives ran unclear (${rowLabel('verifier', row)}), F1 cannot run (${f1})`);
-      expect(historyFaults({ ...prompt, text })).toContain(`${w01.name}: ran unclear (${rowLabel('verifier', row)})`);
-    }
-  });
-  test('a row the grammar cannot read, or a catch-all that is not last, is red, each by name', () => {
-    for (const prompt of all.filter((one) => one.role === 'verifier')) {
-      const at = `verifier ${prompt.format}`;
-      expect(listFaults({ ...prompt, text: prompt.text.replace('| ran and passed |', '| ran fine |') })).toEqual([`${at}: Error: verifier: no atom reads "ran fine"`]);
-      expect(listFaults(moveAbove(prompt, 'retry', 'notRun'))).toEqual([`${at}: Error: verifier: the catch-all is not the last row`]);
-    }
-  });
-  test('a hand-back that drops the last attempt, drops a second obstacle, or gives attempt evidence where there was no attempt is rejected, field by name', () => {
-    let dropped = 0;
-    let lost = 0;
-    let invented = 0;
-    for (const one of LIST_HISTORIES) {
-      const prompt = claude(one.role);
-      const given = one.handBack;
-      if (given.lastAttempt) {
-        expect(historyFaults(prompt, [{ ...one, handBack: { ...given, lastAttempt: false } }])).toEqual([`${one.name}: hand-back last attempt: due present, given absent`]);
-        dropped++;
-      } else {
-        expect(historyFaults(prompt, [{ ...one, handBack: { ...given, lastAttempt: true } }])).toEqual([`${one.name}: hand-back last attempt: due absent, given present`]);
-        invented++;
-      }
-      if (given.others.length > 0) {
-        expect(historyFaults(prompt, [{ ...one, handBack: { ...given, others: given.others.slice(1) } }])).toEqual([`${one.name}: hand-back others: due [${given.others.join(', ')}], given [${given.others.slice(1).join(', ')}]`]);
-        lost++;
-      }
-    }
-    expect([dropped > 0, lost > 0, invented > 0]).toEqual([true, true, true]);
-  });
-  test("the verifier's 23b fixture (a passed probe whose hand-back discards the command and the last printed output) is rejected", () => {
-    const h = history('an optional probe passes after an earlier unclear run');
-    expect(h.handBack.lastAttempt).toBe(true);
-    expect(historyFaults(claude('verifier'), [h])).toEqual([]);
-    expect(historyFaults(claude('verifier'), [{ ...h, handBack: 'discard the command and the last printed output' }])).toEqual([
-      `${h.name}: hand-back the hand-back is prose ("discard the command and the last printed output"), not one whose fields can be checked`,
-    ]);
-    expect(historyFaults(claude('verifier'), [{ ...h, handBack: { ...h.handBack, lastAttempt: false } }])).toEqual([`${h.name}: hand-back last attempt: due present, given absent`]);
-  });
-  test("dropping an optional probe's obstacle evidence is rejected on every optional history held by an obstacle", () => {
-    const optional = LIST_HISTORIES.filter((one) => one.items.every((it) => it.assigned && !it.required) && one.handBack.others.length > 0);
-    expect(optional.length).toBeGreaterThanOrEqual(8);
-    for (const one of optional)
-      expect(historyFaults(claude('verifier'), [{ ...one, handBack: { ...one.handBack, others: [] } }])).toEqual([`${one.name}: hand-back others: due [${one.handBack.others.join(', ')}], given []`]);
-  });
-  test('a derivation that forgets the other obstacles is red against the histories, by name', () => {
-    const m01 = history('M01');
-    const verifier = claude('verifier');
-    const forgetful = { ...verifier, text: verifier.text.replace(OTHER_OBSTACLES_NOTE, OTHER_OBSTACLES_NOTE.replace('refused, cannot run or waiting', 'refused')) };
-    expect(forgetful.text).not.toBe(verifier.text);
-    expect(historyFaults(forgetful)).toContain(`${m01.name}: hand-back others: due [], given [cannot]`);
+  test('folding the attempt history back into a row (ran unclear on its result alone) is red against the oracle', () => {
+    const p = POLICIES.verifier;
+    const folded = { ...p, rows: p.rows.map((row) => (row.id === 'unclear' ? { ...row, when: ['required', 'unclear'] as const } : row)) };
+    // Exact (text-fix8-label): the one record the fold misreads, a required unclear run free to retry, as the whole array;
+    // and every history fault is a history's line saying ran unclear.
+    const unclear = p.rows.find((row) => row.id === 'unclear')!;
+    expect(listFaults(folded)).toEqual([`verifier true/true/unclear/open/free/none: the list gives ${STATE_NAME.unclear} (${unclear.label}), the oracle ${STATE_NAME.runnable} (${label('verifier', 'runnable', 'unclear')})`]);
+    const names = new Set(LIST_HISTORIES.map((one) => one.name));
+    const lines = historyFaults(folded);
+    const tail = `: ${STATE_NAME.unclear} (${unclear.label})`;
+    const fields = [`: hand-back state: due unclear, given runnable`, `: hand-back label: due ${wordOf(unclear.label)}, given ${wordOf(label('verifier', 'runnable', 'unclear'))}`];
+    const named = (line: string) => [tail, ...fields].some((end) => line.endsWith(end) && names.has(line.slice(0, -end.length)));
+    expect([lines.length > 0, lines.filter((line) => !named(line))]).toEqual([true, []]);
   });
 });
 
-describe('(vii) the hand-back judge compares every field exactly (batch 23d T1)', () => {
-  const all = prompts();
-  /** Every label one role's list gives a reachable record, each with its word. */
-  const labelsOf = (role: Role) => {
-    const text = render(role);
-    return [...new Set([...reachable(role).values()].map(({ item: one }) => handBackFrom(role, text, truths([one])).label))].sort();
+// ---- the hand-back: decoded by hand-back.ts's exact Schema, compared typed (batches 23d T1, 23e B1; main 164493d5, 16371ea4) ----
+
+describe('(vii) the hand-back is decoded by its exact Schema, then compared typed (batches 23d T1, 23e B1)', () => {
+  /** Every label one role's list gives a reachable record. */
+  const labelsOf = (role: Role) => [...new Set([...reachable(role).values()].map(({ item: one }) => decide(POLICIES[role], truths([one]))[0]!.label))].sort();
+  /** The hand-back the shipped policy owes a list history, read from the claim of its decoded envelope. */
+  const dueOf = (one: (typeof LIST_HISTORIES)[number]): HandBack => {
+    const reached = traceFor(one.role, one.items[0]!);
+    if (reached === undefined) throw new Error(`${one.name}: no history reaches it`);
+    const checked = decode(stepEnvelope(reached));
+    if (!checked.ok) throw new Error(checked.error);
+    const due = owed(checked.value);
+    if (!due.ok) throw new Error(due.error);
+    const item = due.value.claim.items[0]!;
+    return handBackOf(due.value.states[0]!.state, item.label, item.fields);
   };
-  test("a label's word is never blank, and the labels of one role have distinct words (printed for the request)", () => {
-    const table: Record<string, Record<string, string>> = {};
+  /** The truthful hand-back as it would arrive: plain JSON. */
+  const truthful = (one: (typeof LIST_HISTORIES)[number]): Record<string, unknown> => JSON.parse(JSON.stringify(one.handBack));
+  const OBSTACLE_ROWS: ReadonlyArray<ObstacleRow> = ['refused', 'cannot', 'waits'];
+
+  test("the one decoder's states and obstacle rows are the round policy's own lists (they cannot drift)", () => {
+    expect([...HAND_BACK_STATES]).toEqual([...STATES]);
+    // The obstacle rows are the round policy's evidence fields that are also states, in its order.
+    expect([...HAND_BACK_OBSTACLES]).toEqual(FIELDS.filter((field) => (STATES as ReadonlyArray<string>).includes(field)));
+    expect([...HAND_BACK_OBSTACLES]).toEqual([...OBSTACLE_ROWS]);
+    // No decoded literal is a prefix of another, so once decoded a prefix compare cannot pass a wrong value.
+    for (const list of [HAND_BACK_STATES, HAND_BACK_OBSTACLES] as ReadonlyArray<ReadonlyArray<string>>)
+      for (const a of list) expect([a, list.filter((b) => b !== a && b.startsWith(a))]).toEqual([a, []]);
+  });
+  test('one judge: no module but hand-back.ts defines a hand-back comparison, and hand-back.ts exports exactly its census', () => {
+    expect(Object.keys(HandBackModule).sort()).toEqual(['HAND_BACK_OBSTACLES', 'HAND_BACK_STATES', 'HandBack', 'ObstacleRow', 'fieldName', 'judgeHandBack', 'labelWord']);
+    const lane = join(import.meta.dir, '../../..');
+    const sources = [
+      ...readdirSync(join(lane, 'opencode/mods/orchestrate')).map((name) => join('opencode/mods/orchestrate', name)),
+      ...readdirSync(join(lane, 'skills/orchestrate/scripts')).map((name) => join('skills/orchestrate/scripts', name)),
+    ].filter((path) => path.endsWith('.ts') && !path.endsWith('.test.ts') && path !== 'opencode/mods/orchestrate/hand-back.ts');
+    // A hand-back judge, label-word reader or hand-back Schema defined anywhere else is a second judge.
+    const second = /\b(function|const|let)\s+(judgeHandBack|labelWord|judgeHandBacks?\w*)\b|\bHandBack\s*=\s*Schema\./;
+    expect(sources.filter((path) => second.test(readFileSync(join(lane, path), 'utf8')))).toEqual([]);
+    // Controls: the round-4 copy this lane deleted from list-histories.ts, and a second Schema, are each caught.
+    for (const copy of ['export function judgeHandBack(due: HandBack, given: unknown): string[] {', 'export function labelWord(label: string): string {', 'export const HandBack = Schema.Struct({'])
+      expect([copy, second.test(copy)]).toEqual([copy, true]);
+    expect(sources.length).toBeGreaterThan(10);
+  });
+  test("a label's word is never blank, and the labels of one role have distinct words", () => {
     for (const role of ROLES) {
       const labels = labelsOf(role);
-      table[role] = Object.fromEntries(labels.map((one) => [one, labelWord(one)]));
-      for (const one of labels) expect([role, one, labelWord(one).trim().length > 0, one.startsWith(labelWord(one))]).toEqual([role, one, true, true]);
-      expect([role, new Set(labels.map(labelWord)).size]).toEqual([role, labels.length]);
+      for (const one of labels) expect([role, one, one.startsWith(wordOf(one))]).toEqual([role, one, true]);
+      expect([role, new Set(labels.map(wordOf)).size]).toEqual([role, labels.length]);
     }
-    console.log(`LABEL_WORDS ${JSON.stringify(table)}`);
-    expect(() => labelWord('')).toThrow('has no word');
-    expect(() => labelWord('   , and more')).toThrow('has no word');
+    expect(labelWord('')._tag).toBe('None');
+    expect(labelWord('   , and more')._tag).toBe('None');
   });
-  test('each field: blank, prefix-only and wrong values are each rejected with exactly that field named; the due value and the label word are accepted', () => {
+  test('every history: the truthful hand-back, as JSON, passes; its label word and full label both pass', () => {
     for (const one of LIST_HISTORIES) {
-      const prompt = all.find((p) => p.role === one.role && p.format === 'claude');
-      if (prompt === undefined) throw new Error(`no ${one.role} prompt`);
-      const due = handBackFrom(one.role, prompt.text, truths(one.items));
-      const word = labelWord(due.label);
-      const good: HandBack = { ...one.handBack };
-      expect([one.name, judgeHandBack(due, good)]).toEqual([one.name, []]);
-      expect([one.name, judgeHandBack(due, { ...good, label: due.label })]).toEqual([one.name, []]);
-      expect([one.name, judgeHandBack(due, { ...good, label: word })]).toEqual([one.name, []]);
-      const otherWord = labelsOf(one.role).map(labelWord).find((w) => w !== word);
-      if (otherWord === undefined) throw new Error(`${one.role} has one label`);
+      const due = dueOf(one);
+      expect([one.name, judgeHandBack(due, truthful(one))]).toEqual([one.name, []]);
+      expect([one.name, judgeHandBack(due, { ...truthful(one), label: due.label })]).toEqual([one.name, []]);
+      expect([one.name, judgeHandBack(due, { ...truthful(one), label: wordOf(due.label) })]).toEqual([one.name, []]);
+    }
+  });
+
+  /** A type-changing edit of the value at one path: each must be rejected as a decode failure at that path. */
+  const reshape: ReadonlyArray<[string, (value: unknown) => unknown]> = [
+    ['wrapped in an array', (value) => [value]],
+    ['wrapped in an array one deeper', (value) => [[value]]],
+    ['as an object with an index key', (value) => ({ 0: value })],
+    ['as an object one deeper', (value) => ({ 0: { 0: value } })],
+    ['as a number', () => 0],
+    ['as null', () => null],
+    ['as a boolean', (value) => (typeof value === 'boolean' ? 'true' : true)],
+    ['as a string', (value) => (typeof value === 'string' ? 0 : 'refused')],
+  ];
+  /** One path inside a hand-back: a member, or one element of `others`. */
+  type At = { readonly member: string; readonly index?: number };
+  const pathText = (at: At) => (at.index === undefined ? at.member : `${at.member}[${at.index}]`);
+  const pathsOf = (value: Record<string, unknown>): At[] => [
+    ...Object.keys(value).map((member) => ({ member })),
+    ...(Array.isArray(value.others) ? value.others.map((_, index) => ({ member: 'others', index })) : []),
+  ];
+  const valueAt = (value: Record<string, unknown>, at: At): unknown => {
+    const member = value[at.member];
+    if (at.index === undefined) return member;
+    if (!Array.isArray(member)) throw new Error(`${pathText(at)} is no element`);
+    return member[at.index];
+  };
+  const setAt = (value: Record<string, unknown>, at: At, to: unknown): Record<string, unknown> => {
+    const copy: Record<string, unknown> = JSON.parse(JSON.stringify(value));
+    const member = copy[at.member];
+    if (at.index === undefined) copy[at.member] = to;
+    else if (Array.isArray(member)) member[at.index] = to;
+    else throw new Error(`${pathText(at)} is no element`);
+    return copy;
+  };
+  /** An edit that leaves a well-typed value: null or an obstacle word where evidence is nullable. Each is counted. */
+  const stillTyped = (at: At, after: unknown) => at.member === 'evidence' && (after === null || (typeof after === 'string' && (HAND_BACK_OBSTACLES as ReadonlyArray<string>).includes(after)));
+
+  test('every history, every path, every type-changing edit: rejected by the decoder, naming exactly that path, and nothing else', () => {
+    let rejected = 0;
+    let typed = 0;
+    let total = 0;
+    for (const one of LIST_HISTORIES) {
+      const due = dueOf(one);
+      const good = truthful(one);
+      for (const at of pathsOf(good))
+        for (const [edit, change] of reshape) {
+          total++;
+          const after = change(valueAt(good, at));
+          if (stillTyped(at, after)) {
+            typed++;
+            continue;
+          }
+          const faults = judgeHandBack(due, setAt(good, at, after) as never);
+          expect([one.name, pathText(at), edit, faults.length, faults[0]?.startsWith(`${fieldName(at.member)}: ${pathText(at)}`)]).toEqual([one.name, pathText(at), edit, 1, true]);
+          rejected++;
+        }
+    }
+    expect(rejected + typed).toBe(total);
+    expect(typed).toBe(LIST_HISTORIES.reduce((sum, one) => sum + (one.handBack.evidence === null ? 2 : 1), 0));
+  });
+  test('every history: a missing member, an extra member, a duplicate element, and others as an object with index keys are each rejected by path', () => {
+    for (const one of LIST_HISTORIES) {
+      const due = dueOf(one);
+      const good = truthful(one);
+      const judged = (given: unknown) => judgeHandBack(due, given as never);
+      for (const member of Object.keys(good)) {
+        const missing = Object.fromEntries(Object.entries(good).filter(([key]) => key !== member));
+        expect([one.name, member, judged(missing)]).toEqual([one.name, member, [`${fieldName(member)}: ${member}: Missing key`]]);
+      }
+      expect([one.name, judged({ ...good, extra: due.label })]).toEqual([one.name, ['extra: extra: Expected no excess property']]);
+      for (const short of [due.state.slice(0, -1), due.state.slice(0, 1)]) expect([one.name, short, judged({ ...good, state: short })[0]?.startsWith('state: state: Expected ')]).toEqual([one.name, short, true]);
+      if (due.evidence !== null) expect([one.name, judged({ ...good, evidence: due.evidence.slice(0, -1) })[0]?.startsWith('evidence: evidence: Expected ')]).toEqual([one.name, true]);
+      const others = Array.isArray(good.others) ? good.others : [];
+      expect([one.name, judged({ ...good, others: Object.fromEntries(others.map((row, index) => [index, row])) })]).toEqual([one.name, ['others: others: Expected array']]);
+      expect([one.name, judged({ ...good, others: [...others, 'refused', 'refused'] })]).toEqual([one.name, ['others: others: Expected an array with unique items']]);
+      if (others.length > 0) {
+        expect([one.name, judged({ ...good, others: [...others, ...others.slice(0, 1)] })]).toEqual([one.name, ['others: others: Expected an array with unique items']]);
+        // 23e B1: each element stringifies to a due word, yet none is one.
+        expect([one.name, judged({ ...good, others: others.map((row) => [row]) })[0]?.startsWith('others: others[0]: ')]).toEqual([one.name, true]);
+        expect([one.name, judged({ ...good, others: others.map((row) => ({ [row]: row })) })[0]?.startsWith('others: others[0]: ')]).toEqual([one.name, true]);
+      }
+      expect([one.name, judged(JSON.stringify(good))]).toEqual([one.name, ['hand-back: Expected object']]);
+      expect([one.name, judged([good])]).toEqual([one.name, ['hand-back: Expected object']]);
+    }
+  });
+  test('every history, every field: a well-typed wrong value is rejected by the typed comparison, that field alone named', () => {
+    for (const one of LIST_HISTORIES) {
+      const due = dueOf(one);
+      const good = truthful(one);
+      const word = wordOf(due.label);
+      const otherWord = labelsOf(one.role).map(wordOf).find((w) => w !== word);
       const wrongState = STATES_OF[one.role].find((state) => state !== due.state);
       const wrongEvidence = OBSTACLE_ROWS.find((row) => row !== due.evidence);
-      const without = <K extends keyof HandBack>(key: K) => Object.fromEntries(Object.entries(good).filter(([k]) => k !== key));
-      const cases: ReadonlyArray<[unknown, string]> = [
-        [{ ...good, label: '' }, `label: due ${word}, given ""`],
-        [without('label'), `label: due ${word}, given unsaid`],
-        [{ ...good, label: word.slice(0, 1) }, `label: due ${word}, given ${JSON.stringify(word.slice(0, 1))}`],
-        [{ ...good, label: word.slice(0, -1) }, `label: due ${word}, given ${JSON.stringify(word.slice(0, -1))}`],
-        [{ ...good, label: otherWord }, `label: due ${word}, given ${JSON.stringify(otherWord)}`],
-        [{ ...good, label: `${word} and more` }, `label: due ${word}, given ${JSON.stringify(`${word} and more`)}`],
-        [{ ...good, state: '' }, `state: due ${due.state}, given ""`],
-        [without('state'), `state: due ${due.state}, given unsaid`],
-        [{ ...good, state: due.state.slice(0, -1) }, `state: due ${due.state}, given ${JSON.stringify(due.state.slice(0, -1))}`],
-        [{ ...good, state: wrongState }, `state: due ${due.state}, given ${JSON.stringify(wrongState)}`],
-        [{ ...good, evidence: '' }, `evidence: due ${String(due.evidence)}, given ""`],
-        [without('evidence'), `evidence: due ${String(due.evidence)}, given unsaid`],
-        [{ ...good, evidence: wrongEvidence }, `evidence: due ${String(due.evidence)}, given ${JSON.stringify(wrongEvidence)}`],
-        [{ ...good, evidence: due.evidence === null ? 'refused' : null }, `evidence: due ${String(due.evidence)}, given ${due.evidence === null ? '"refused"' : 'null'}`],
-        [without('others'), `others: due [${due.others.join(', ')}], given unsaid`],
-        [{ ...good, others: due.others.join(',') }, `others: due [${due.others.join(', ')}], given ${JSON.stringify(due.others.join(','))}`],
-        [{ ...good, others: [...due.others, ...due.others.slice(0, 1), 'refused'] }, `others: due [${due.others.join(', ')}], given [${[...due.others, ...due.others.slice(0, 1), 'refused'].join(', ')}]`],
-        [without('lastAttempt'), `last attempt: due ${due.lastAttempt ? 'present' : 'absent'}, given unsaid`],
-        [{ ...good, lastAttempt: String(due.lastAttempt) }, `last attempt: due ${due.lastAttempt ? 'present' : 'absent'}, given ${JSON.stringify(String(due.lastAttempt))}`],
-        [{ ...good, lastAttempt: !due.lastAttempt }, `last attempt: due ${due.lastAttempt ? 'present' : 'absent'}, given ${due.lastAttempt ? 'absent' : 'present'}`],
+      if (otherWord === undefined || wrongState === undefined || wrongEvidence === undefined) throw new Error(`${one.name}: no wrong value`);
+      const present = (on: boolean) => (on ? 'present' : 'absent');
+      const extra = [...due.others, ...OBSTACLE_ROWS.filter((row) => !due.others.includes(row)).slice(0, 1)];
+      const cases: ReadonlyArray<[Record<string, unknown>, string]> = [
+        [{ ...good, label: '' }, 'label: label: Expected a value with a length of at least 1'],
+        [{ ...good, label: word.slice(0, 1) }, `label: due ${word}, given ${word.slice(0, 1)}`],
+        [{ ...good, label: word.slice(0, -1) }, `label: due ${word}, given ${word.slice(0, -1)}`],
+        [{ ...good, label: otherWord }, `label: due ${word}, given ${otherWord}`],
+        [{ ...good, label: `${word} and more` }, `label: due ${word}, given ${word} and more`],
+        [{ ...good, state: wrongState }, `state: due ${due.state}, given ${wrongState}`],
+        [{ ...good, evidence: wrongEvidence }, `evidence: due ${due.evidence ?? 'none'}, given ${wrongEvidence}`],
+        [{ ...good, evidence: due.evidence === null ? 'refused' : null }, `evidence: due ${due.evidence ?? 'none'}, given ${due.evidence === null ? 'refused' : 'none'}`],
+        [{ ...good, lastAttempt: !due.lastAttempt }, `last attempt: due ${present(due.lastAttempt)}, given ${present(!due.lastAttempt)}`],
+        [{ ...good, others: extra }, `others: due [${due.others.join(', ')}], given [${extra.join(', ')}]`],
       ];
-      for (const [given, fault] of cases) expect([one.name, judgeHandBack(due, given)]).toEqual([one.name, [fault]]);
+      for (const [given, fault] of cases) expect([one.name, judgeHandBack(due, given as never)]).toEqual([one.name, [fault]]);
       if (due.others.length > 0) {
-        expect([one.name, judgeHandBack(due, { ...good, others: [] })]).toEqual([one.name, [`others: due [${due.others.join(', ')}], given []`]]);
-        expect([one.name, judgeHandBack(due, { ...good, others: due.others.slice(0, -1) })]).toEqual([one.name, [`others: due [${due.others.join(', ')}], given [${due.others.slice(0, -1).join(', ')}]`]]);
-        // Same length, a wrong obstacle: a length-only comparison would pass it.
-        const swapped = [...due.others.slice(0, -1), OBSTACLE_ROWS.find((row) => !due.others.includes(row)) ?? 'refused'];
-        expect([one.name, judgeHandBack(due, { ...good, others: swapped })]).toEqual([one.name, [`others: due [${due.others.join(', ')}], given [${swapped.join(', ')}]`]]);
+        expect([one.name, judgeHandBack(due, { ...good, others: [] } as never)]).toEqual([one.name, [`others: due [${due.others.join(', ')}], given []`]]);
+        const swapped = [...due.others.slice(0, -1), ...OBSTACLE_ROWS.filter((row) => !due.others.includes(row)).slice(0, 1)];
+        expect([one.name, judgeHandBack(due, { ...good, others: swapped } as never)]).toEqual([one.name, [`others: due [${due.others.join(', ')}], given [${swapped.join(', ')}]`]]);
+        expect([one.name, judgeHandBack(due, { ...good, others: [...due.others].reverse() } as never)]).toEqual([one.name, []]);
       }
     }
   });
-  test("a history's own label words are exact too: blank, prefix-only and another label's word are red", () => {
-    const o07 = LIST_HISTORIES.find((one) => one.name.startsWith('O07 '));
-    const verifier = all.find((one) => one.role === 'verifier' && one.format === 'claude');
-    if (o07 === undefined || verifier === undefined) throw new Error('no O07');
-    expect(historyFaults(verifier, [o07])).toEqual([]);
-    const due = handBackFrom('verifier', verifier.text, truths(o07.items));
+  test("a history's own label words are exact: blank, prefix-only and another label's word are red", () => {
+    const o07 = LIST_HISTORIES.find((one) => one.name.startsWith('O07 '))!;
+    expect(historyFaults(POLICIES.verifier, [o07])).toEqual([]);
+    const due = dueOf(o07);
     for (const wrong of ['', '`ref', '`waits on <id>`'])
-      expect([wrong, historyFaults(verifier, [{ ...o07, label: wrong }])]).toEqual([wrong, [`${o07.name}: ${STATE_NAME[due.state]} (${due.label})`]]);
+      expect([wrong, historyFaults(POLICIES.verifier, [{ ...o07, label: wrong }])]).toEqual([wrong, [`${o07.name}: ${STATE_NAME[due.state]} (${due.label})`]]);
   });
-  test("the verifier's 23d probe: O07 with a blank label is rejected by the label alone", () => {
-    const o07 = LIST_HISTORIES.find((one) => one.name.startsWith('O07 '));
-    const verifier = all.find((one) => one.role === 'verifier' && one.format === 'claude');
-    if (o07 === undefined || verifier === undefined) throw new Error('no O07');
-    const due = handBackFrom('verifier', verifier.text, truths(o07.items));
-    expect(judgeHandBack(due, { ...o07.handBack, label: '' })).toEqual([`label: due ${labelWord(due.label)}, given ""`]);
+  test('a hand-back that drops the last attempt, drops a second obstacle, or is prose is rejected, field by name', () => {
+    for (const one of LIST_HISTORIES) {
+      const given = one.handBack;
+      if (given.lastAttempt) expect(historyFaults(POLICIES[one.role], [{ ...one, handBack: { ...given, lastAttempt: false } }])).toEqual([`${one.name}: hand-back last attempt: due present, given absent`]);
+      else expect(historyFaults(POLICIES[one.role], [{ ...one, handBack: { ...given, lastAttempt: true } }])).toEqual([`${one.name}: hand-back last attempt: due absent, given present`]);
+      if (given.others.length > 0) expect(historyFaults(POLICIES[one.role], [{ ...one, handBack: { ...given, others: given.others.slice(1) } }])).toEqual([`${one.name}: hand-back others: due [${given.others.join(', ')}], given [${given.others.slice(1).join(', ')}]`]);
+    }
+    const h = LIST_HISTORIES.find((one) => one.name.startsWith('an optional probe passes after an earlier unclear run'))!;
+    expect(historyFaults(POLICIES.verifier, [{ ...h, handBack: 'discard the command and the last printed output' as never }])).toEqual([`${h.name}: hand-back hand-back: Expected object`]);
   });
 });

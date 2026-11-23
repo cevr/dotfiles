@@ -159,7 +159,7 @@ export const TABLE: ReadonlyArray<Row> = [
   {
     id: 'lean-worker-refusal',
     input: 'the lean worker (no unit, no round) meets a guard refusal (22r On base R1)',
-    expect: { worker: "never rephrase or work around it; authority outranks effort; no bound-step instruction outside its end-of-step block" },
+    expect: { worker: "never rephrase or work around it; authority outranks effort; no bound-step instruction outside its round-policy block" },
     rules: [
       { docs: ['worker'], has: "A guard, permission or classifier refusal is the host's rule and outranks effort: never rephrase or work around it to get past." },
       { docs: ['worker'], has: 'principle-nothing-is-hard' },
