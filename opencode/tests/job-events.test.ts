@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at tests/job-events.test.ts: const second = yield* spawner.spawn(ChildProcess.make("bun", [at.script, jobDir], { env: at.env
 // accept: one at a time (it bounds the backstop-off exit-to-letter time under the sweep's RECOVER_MS).
 // A job's end as a durable event on the real host: the process runner
 // (mods/wake/process/runner.ts) launches the real runner (cmd/wake/job.ts,

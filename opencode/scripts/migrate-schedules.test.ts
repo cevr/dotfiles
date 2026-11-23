@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at scripts/migrate-schedules.test.ts: const child = Bun.spawn([process.execPath, join(import.meta.dir, "migrate-schedules.ts"), "--ro
 import { describe, expect, test } from "bun:test"
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
@@ -123,4 +125,3 @@ describe("the dry run", () => {
     expect(() => parseArgs(["--nope"], {})).toThrow("unknown flag --nope")
   })
 })
-// @reads-indirect scripts/**

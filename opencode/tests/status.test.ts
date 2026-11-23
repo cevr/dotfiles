@@ -46,4 +46,3 @@ describe.skipIf(!fork)("/pool in the Prime look", () => {
     expect(JSON.parse(readFileSync(join(out, "pool-session-query.json"), "utf8"))).toMatchObject({ sessionID: expect.stringMatching(/^ses_/), providerID: "simulation" })
   }), 150_000)
 })
-// @reads all

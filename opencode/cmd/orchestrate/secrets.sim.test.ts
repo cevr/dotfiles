@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at sim/canary.ts: fs.readFile(path).pipe(
 // The one output boundary on the plugin's `commitments` tool (secrets-world.ts): the first eight call kinds (add to the
 // dependency defer), each way into them carrying a secret of any kind at any place. No answer, log line or record byte
 // holds a fragment of it.

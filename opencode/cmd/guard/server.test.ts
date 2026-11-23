@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // The plugin seam: the composition root on a stand-in host whose tool
 // registry runs the `execute.before` hooks the plugin registers, with the
 // sessions and repositories in memory. It checks what OpenCode sees: which

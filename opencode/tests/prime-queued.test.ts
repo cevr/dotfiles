@@ -10,8 +10,8 @@
 // once that turn ends the queued prompt enters too and the list is empty.
 // Needs OPENCODE_DEV, a fork whose layout rule sees the row's message and
 // which publishes the `session.composer.queued` slot (`prime-look`).
+import { readScratchFileSync } from "./read-path.ts"
 import { beforeAll, describe, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
@@ -53,7 +53,7 @@ describe.skipIf(!fork)("prompts sent during a compaction wait above the composer
       new Response(run.stderr).text(),
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
-    for (const name of names) frames[name] = readFileSync(join(out, `${name}.txt`), "utf8").split("\n")
+    for (const name of names) frames[name] = readScratchFileSync(join(out, `${name}.txt`), "utf8").split("\n")
   }, 300_000))
 
   test("while the compaction runs: no prompt in the transcript, one list of all three, and the compaction's one timed row", kept.test(() => {
@@ -111,4 +111,3 @@ describe.skipIf(!fork)("prompts sent during a compaction wait above the composer
     expect(frames.after.join("\n")).not.toContain("◌")
   }))
 })
-// @reads all

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason nonliteral subprocess arguments at tests/cli-tree-installed.test.ts: const ran = spawnSync(["/bin/cat", externalInput(file)], { stdout: "pipe", stderr: "pipe" })
 // accept: deep (3.0 s alone on a quiet host: it runs every plain-Bun command's probes from a whole installed tree)
 // accept: off until TREE_OPENCODE is set (it checks the no-links tree the production tree maker made, which only the deep gate makes)
 /**
@@ -10,7 +12,6 @@
  * this checkout, every test here fails, saying so; it never passes on another root. The acceptance runner owes the
  * file `off until enabled`, by name, in a run that has no tree (the marker above); the deep gate sets the variable.
  *
- * @reads cmd/** mods/** scripts/daily.ts package.json bun.lock w/package.json
  */
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Config, Effect, FileSystem, Option, Path, Schema } from "effect"
@@ -111,4 +112,3 @@ describe("each plain-Bun command runs from the installed tree TREE_OPENCODE name
 
   commandChecks(installedRoot)
 })
-// @reads-indirect tests/cli-tree/** scripts/** cmd/** mods/**

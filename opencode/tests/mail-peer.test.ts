@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess helper reads at tests/mail-peer.test.ts: const child = owned([...launch.base, "serve", "--service", "--port", "0"], { cwd: join(base, "w
 // Session mail between two real OpenCode servers on this machine, standing in
 // for the Mac and the workbox: each is the fork's own `serve --service` in its
 // own scratch HOME, with the mail plugin listening on its own loopback port
@@ -242,4 +244,3 @@ describe.skipIf(!fork)("session mail between two paired OpenCode servers (real p
     TIMEOUT_MS,
   )
 })
-// @reads all

@@ -1,7 +1,8 @@
+// @reads all
+// @reads-reason subprocess reads at ../workbox/test/claude-daily.test.ts: const done = Bun.spawnSync(["/bin/sh", script], { env: { HOME: home, PATH: "/usr/bin:/bin" }, s
 // claude/bin/claude-daily-install, run each day by workbox/systemd/user/claude-daily.timer and on the Mac by
 // mac/launchd/com.cvr.claude-daily.plist. It runs here against a stand-in `claude` in a scratch HOME; nothing
 // touches the real host's Claude Code.
-// @reads ../claude/bin/claude-daily-install
 import { afterAll, describe, expect, test } from "bun:test"
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -64,4 +65,3 @@ describe("the daily Claude Code install", () => {
     }
   })
 })
-// @reads-indirect ../claude/bin/**

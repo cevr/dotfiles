@@ -1,7 +1,8 @@
+// @reads all
+// @reads-reason subprocess reads at ../workbox/test/zshenv.test.ts: const mac = Bun.spawnSync(["zsh", "-fc", `source ${matchingInput("../zshenv")}; print -r -- "\$
 // The workbox's zshenv, linked as ~/.zshenv by bootstrap.sh, is what every agent shell on the workbox reads
 // (zsh reads it for every shell, a `zsh -c` one too). It runs here in a scratch HOME with nothing else in the
 // environment; nothing touches the real host.
-// @reads ../workbox/zshenv ../zshenv
 import { afterAll, describe, expect, test } from "bun:test"
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -165,4 +166,3 @@ describe.skipIf(!Bun.which("zsh"))("workbox zshenv", () => {
     })
   })
 })
-// @reads-indirect ../workbox/**

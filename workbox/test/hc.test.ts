@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at ../workbox/test/hc.test.ts: expect(existsSync(join(result.home, ".config", "systemd", "user", "hc-core.service"))).toBe(tru
 // The workbox's hc (herdr-core) side, run through the real scripts with a
 // scratch HOME and a PATH of stub commands that answer from a fixture and
 // record their arguments. Nothing here touches the real host: every path a
@@ -5,7 +7,6 @@
 // under the scratch folder, and `run` refuses to start a script otherwise.
 // 2026-11-18: bootstrap's hard-coded /workspaces/bite let each run repoint the
 // real Bite base's .env at a scratch HOME this file then deleted.
-// @reads ../workbox/bootstrap.sh ../workbox/systemd/** ../workbox/bin/** ../workbox/install-bin.sh ../workbox/{hunk-config.toml,backup.env,zshenv,zshrc,herdr-config.toml}
 import { afterAll, describe, expect, test } from "bun:test"
 import {
   chmodSync,
@@ -627,4 +628,3 @@ describe("unit files", () => {
     }
   })
 })
-// @reads-indirect ../workbox/**

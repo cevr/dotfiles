@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess helper reads at tests/update-move.test.ts: const opencode = (...args: ReadonlyArray<string>) => run([...launch.base, ...args], work, env)
 // accept: deep (28.8 s alone on a quiet host: 1-minute load 16.5–19.1 on 12 cores; it starts a service and a TUI from source on a scripted model and holds two turns of 8 s each before the move)
 // An open TUI moves onto a build that differs from its own only in the dotfiles half, and only at its quiet moment.
 //
@@ -241,4 +243,3 @@ describe.skipIf(!forkRuns)("an open TUI moves onto a build that differs only in 
     TIMEOUT_MS,
   )
 })
-// @reads all

@@ -1,10 +1,11 @@
+// @reads all
+// @reads-reason subprocess reads at scripts/chrome-shim.test.ts: const argvOf = (pid: number) => spawnSync(["ps", "-ww", "-o", "command=", "-p", String(pid)]).s
 // claude/bin/chrome-mock-keychain against a stand-in browser (a shell script that records its arguments and waits):
 // each argument list of Exact's 13 launches and of manna's launcher at the 7 old commits the 2026-11-22 bisect ran
 // (copied text, fixtures/chrome-launch-args.json) reaches the browser unchanged with both keychain flags added, as `ps`
 // reads its real argv under the same pid; a flag the caller passes is not added twice and a bare `--` keeps them before
 // it; a DevTools pipe on fds 3 and 4 passes through; the newest Chrome for Testing is the default; and the shim refuses
 // itself, the owner's Google Chrome.app, and a cache with no browser. No real Chrome runs here.
-// @reads ../claude/bin/chrome-mock-keychain
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { spawnSync } from "bun"
 import { Effect, FileSystem, Path, Schema, Stream } from "effect"
@@ -152,4 +153,3 @@ describe("the browser it runs", () => {
     }),
   )
 })
-// @reads-indirect ../claude/bin/**

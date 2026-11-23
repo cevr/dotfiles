@@ -1,10 +1,11 @@
+// @reads all
+// @reads-reason computed read at scripts/accept.test.ts: const driven = scenariosOf(text).filter((scenario) => existsSync(join(ROOT, scenario)))
 // `bun run accept`'s order (scripts/accept-plan.ts, scripts/accept.ts): the
 // pool first, as wide as the host's load leaves room for, then the files marked
 // `// accept: one at a time`, one at a time; and every acceptance file that
 // asserts an upper bound on a time, rate or CPU (its own text or the scenario
 // it drives) carries that marker, where a file that only waits for events does
 // not need it. Run from opencode/, as the gate runs it.
-// @reads all
 import { describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, readFileSync as readCheckoutFileSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"

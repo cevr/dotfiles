@@ -6,8 +6,8 @@
 // lists the monitor with its newest output; closed, the dock counts the
 // monitor and no wake; with the monitor cancelled too the count line is gone,
 // and a turn that sets one alarm alone brings it back. It needs OPENCODE_DEV, the fork with `ui.composerTab`.
+import { readScratchFileSync } from "./read-path.ts"
 import { beforeAll, describe, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { ALARM, CLOSED, closedDock, DETAIL, panel, PANEL, underRule, type Want } from "../scenarios/prime-composer-frames.ts"
 import { owned } from "./owned.ts"
@@ -35,7 +35,7 @@ describe.skipIf(!fork)("the composer panel's Wakes and Monitors tabs (OPENCODE_D
     })
     const [code, stdout, stderr] = await Promise.all([run.exited, new Response(run.stdout).text(), new Response(run.stderr).text()])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
-    for (const name of names) frames[name] = readFileSync(join(out, `composer-${name}.txt`), "utf8").split("\n")
+    for (const name of names) frames[name] = readScratchFileSync(join(out, `composer-${name}.txt`), "utf8").split("\n")
   }, 300_000))
 
   test("↓ on the empty prompt opens the panel, its host tabs first, then Wakes and Monitors", kept.test(() => {
@@ -79,4 +79,3 @@ describe.skipIf(!fork)("the composer panel's Wakes and Monitors tabs (OPENCODE_D
     expect(underRule(frames.alarm, ALARM.length)).toEqual(ALARM.map(matcher))
   }))
 })
-// @reads all

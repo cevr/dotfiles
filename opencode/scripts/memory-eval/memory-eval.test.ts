@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at scripts/memory-eval/memory.ts: if (!existsSync(from)) return fail(`Error: The path ${input["old_path"]} does not exist`)
 // The eval's deterministic parts, with no API call: the fake shell, the
 // graders, the native memory handler's path guard, and our plugin as the eval
 // hosts it (a save in session 1 reaches session 2's system prompt as the digest).
@@ -330,4 +332,3 @@ describe("our plugin as the eval hosts it", () => {
     }
   })
 })
-// @reads-indirect scripts/memory-eval/**

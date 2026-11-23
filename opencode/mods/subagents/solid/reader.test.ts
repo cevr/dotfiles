@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/subagents/solid/reader.test.ts: mock.module("solid-js", () => import(REACTIVE.core))
 // The family read through a Solid store, as OpenCode's TUI holds the session
 // data: a token streamed into one message re-reads that message alone, never
 // the rest of a long family. Bun's tests resolve solid-js to its server build,

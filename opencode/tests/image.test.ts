@@ -8,8 +8,8 @@
 // image; `kernel`: a kernel cell makes a paid one against the fake Images API.
 // Each job's end wakes the idle session. What happened is read off the
 // model's requests, the fakes' log, the transcripts and the saved files.
+import { readScratchFileSync } from "./read-path.ts"
 import { describe, expect, test } from "bun:test"
-// @reads mods/image/SKILL.md
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -81,7 +81,7 @@ describe.skipIf(!fork)("the image tool", () => {
     const errors = await new Response(child.stderr).text()
     const code = await child.exited
     expect(code, `${output}${errors}`.slice(-5000)).toBe(0)
-    const read = (name: string) => readFileSync(join(out, `image-${mode}-${name}`), "utf8")
+    const read = (name: string) => readScratchFileSync(join(out, `image-${mode}-${name}`), "utf8")
     const requests: ReadonlyArray<Request> = JSON.parse(read("requests.json"))
     const rootRequests = requests.filter((request) => request.session === "root")
     const raw = rootRequests.map((request) => request.request)
@@ -143,4 +143,3 @@ describe.skipIf(!fork)("the image tool", () => {
     SCENARIO_MS,
   )
 })
-// @reads all

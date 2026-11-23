@@ -64,4 +64,3 @@ describe.skipIf(!fork)("a lost store login in the TUI", () => {
     for (const text of [toast, frame, cleared]) expect(text).not.toMatch(/fake-(access|refresh)-/)
   }), 150_000)
 })
-// @reads all

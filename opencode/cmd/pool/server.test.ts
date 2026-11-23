@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at cmd/pool/server.test.ts: const written = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({ line: Schema.Nul
 // The plugin seam: the composition root on a stand-in host. On test layers it
 // checks what OpenCode sees: the credential header, the retry decision, the
 // ledger's keys, the sign-in marks and the pool's RPC answers. On the live

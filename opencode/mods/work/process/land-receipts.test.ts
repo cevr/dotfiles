@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/work/process/land-receipts.test.ts: const record = Schema.decodeUnknownSync(LandRecordJson)(readFileSync(join(made.logs, "receipts"
 // A land by receipts over real Git in a scratch directory: a bare origin, a warm source, its kept Rifts and
 // two Rift clones on their branches, the process Landing and the rift tool's handler (Rifts, sessions and
 // notices in memory). Each Rift's receipt is written as its round gate writes one (`receipts`); the source's

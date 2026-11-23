@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/digest/filestore/devices.ts: Effect.tryPromise({ try: () => stat(path), catch: codeOf }).pipe(
 // The page's listener over a real socket:
 // - It binds loopback only, serves the page's built files with their content types and nothing outside them, and
 //   answers the view as JSON.

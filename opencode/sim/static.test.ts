@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed module resolver reads at sim/static.test.ts: const runtimeResolve = Option.liftThrowable((target: string, from: string) => Bun.resolveSync(t
 // No wall time in a simulated file: a `*.sim.test.ts`, and the world it runs
 // on, never names a real timer or a real clock (`Bun.sleep`, `setTimeout`,
 // `setInterval`, `Date.now`, `performance.now`, `tests/wait.ts`). Time there is
@@ -194,12 +196,10 @@ test("the plugin cannot import or expose the simulated driver's raw transcript",
   expect(driverAccess.test('yield* ctx.session.context({ sessionID })')).toBe(false)
 })
 
-// @reads **/package.json **/*.ts **/*.tsx **/*.mts **/*.cts **/*.js **/*.jsx **/*.mjs **/*.cjs
 Seed.effect("tracked production sources cannot see the simulated driver's raw transcript",
   leaksIn(ROOT).pipe(Effect.map((leaks) => expect(leaks).toEqual([])), Effect.provide(Platform)),
 )
 
-// @reads cmd/** mods/** sim/context.ts
 Seed.effect("the git-listed guard catches an arbitrary production helper, but allows a fixture reached only from tests",
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
@@ -232,7 +232,6 @@ Seed.effect("the git-listed guard catches an arbitrary production helper, but al
   }).pipe(Effect.scoped, Effect.provide(Platform)),
 )
 
-// @reads cmd/wake/backstop.ts tests/git-repo.ts
 Seed.effect("the git-listed guard follows a production import through a tracked helper outside cmd and mods",
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem

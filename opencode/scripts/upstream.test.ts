@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at scripts/upstream.test.ts: const child = Bun.spawnSync([process.execPath, "test", "--reporter=junit", `--reporter-outfile=
 // The upstream merge's acceptance check: it waits for a calm host, reruns only the files that
 // failed, once, and calls the merge red only for a file red twice (scripts/upstream.ts).
 import { describe, expect, test } from "bun:test"
@@ -178,4 +180,3 @@ describe("the upstream reading", () => {
     }
   })
 })
-// @reads-indirect scripts/** tests/**

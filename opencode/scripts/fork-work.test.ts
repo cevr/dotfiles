@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason nonliteral subprocess arguments at scripts/fork-work.test.ts: const ran = Bun.spawnSync(["git", "-C", scratchInput(dir), ...args], {
 // The fork-work finder (scripts/fork-work.ts) on fixture repositories: an upstream with new commits
 // and a fork branch with its own, never the real fork.
 import { afterAll, describe, expect, test } from "bun:test"
@@ -168,4 +170,3 @@ describe("forkWork on a fixture fork", () => {
     expect(forkWorkText(work)).toEqual([])
   })
 })
-// @reads-indirect scripts/** tests/**

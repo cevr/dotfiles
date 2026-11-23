@@ -96,4 +96,3 @@ describe("the accept lock's protocol", () => {
     expect([Yield.deepMayStart([]), Yield.deepMayStart([1])]).toEqual([true, false])
   })
 })
-// @reads-indirect scripts/**

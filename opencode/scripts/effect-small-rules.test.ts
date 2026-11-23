@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at scripts/effect-debt.ts: try: () => Bun.spawn([...argv], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", detache
 /**
  * The four small rules at their two seams. At the lint CLI: `.oxlintrc.json` refuses, as errors
  * of the exact rule, every generated form of `effect/requireNamedEffectFn`, `effect/preferEffectFn`,
@@ -8,7 +10,6 @@
  * accumulator copy, folds generated fork histories as an independent model of a turn does, and
  * leaves its input as it was.
  *
- * @reads .oxlintrc.json lint/{test-env,tui-clock,tui-dirs,kept-scratch,chrome-keychain}.ts
  */
 import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
@@ -444,4 +445,3 @@ describe("forkTurns over generated fork histories", () => {
     expect(forkTurns([], SINCE)).toEqual([])
   })
 })
-// @reads-indirect lint/** scripts/**

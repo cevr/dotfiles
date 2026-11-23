@@ -1,8 +1,9 @@
+// @reads all
+// @reads-reason computed read at scripts/link-fork.test.ts: if (existsSync(join(import.meta.dir, name))) cpSync(matchingInput("scripts/{link-fork.ts,fork.t
 // `bun run link-fork` refuses an OPENCODE_DEV that is not an installed OpenCode
 // checkout on this machine, before it touches any node_modules, and never
 // leaves a link that points nowhere. The script runs from a copy in a scratch
 // workspace (its root is the folder above the script), against a scratch fork.
-// @reads scripts/{link-fork.ts,fork.ts}
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
@@ -337,4 +338,3 @@ describe("the scripts that take the fork besides link-fork", () => {
     expect(err).not.toContain("point nowhere")
   })
 })
-// @reads-indirect scripts/**

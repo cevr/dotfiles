@@ -1,7 +1,8 @@
+// @reads all
+// @reads-reason subprocess reads at ../workbox/test/btrfs-reclaim.test.ts: const ran = Bun.spawnSync(["sh", SCRIPT, "/workspaces"], {
 // workbox/systemd/system/workbox-btrfs-reclaim, which workbox-btrfs-reclaim.service runs at boot, on a scratch
 // /sys/fs/btrfs with a findmnt shim. Nothing here touches the real host.
 import { afterAll, describe, expect, test } from "bun:test"
-// @reads ../workbox/systemd/system/workbox-btrfs-reclaim
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { matchingInput, readScratchFileSync as readFileSync } from "../../opencode/tests/read-path.ts"
 import { tmpdir } from "node:os"
@@ -63,4 +64,3 @@ describe("workbox-btrfs-reclaim", () => {
     }
   })
 })
-// @reads-indirect ../workbox/systemd/**

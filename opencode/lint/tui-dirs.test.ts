@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at lint/tui-dirs.test.ts: const command = ChildProcess.make(path.join(root, "node_modules/.bin/oxlint"), ["-c", config, "
 // dotfiles/tui-dirs-only (lint/tui-dirs.ts), through the oxlint binary the
 // gate runs, with the repository's own overrides (.oxlintrc.json): a planted
 // `homedir()` or `process.env.HOME` anywhere in mods/ and cmd/ (a TUI

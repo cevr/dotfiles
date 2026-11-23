@@ -6,8 +6,8 @@
 // wheel moves it; PageDown pages it to its last line and its options; the
 // second option, picked with ↓ and Enter, reaches the session's model.
 // scenarios/question-scroll.ts drives it; the frames are read here.
+import { readScratchFileSync, scratchExistsSync } from "./read-path.ts"
 import { describe, expect, test } from "bun:test"
-import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
@@ -31,9 +31,9 @@ describe.skipIf(!fork)("a question taller than a phone's pane", () => {
         stderr: "pipe",
       })
       const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
-      const read = (name: string) => readFileSync(join(out, `question-scroll-${via}-${name}.txt`), "utf8")
+      const read = (name: string) => readScratchFileSync(join(out, `question-scroll-${via}-${name}.txt`), "utf8")
       const timeout = join(out, `question-scroll-${via}-timeout.txt`)
-      if (code !== 0) throw new Error(`question-scroll scenario (${via}) exited ${code}:\n${(stdout + stderr).slice(-5000)}\n${existsSync(timeout) ? readFileSync(timeout, "utf8") : ""}`)
+      if (code !== 0) throw new Error(`question-scroll scenario (${via}) exited ${code}:\n${(stdout + stderr).slice(-5000)}\n${scratchExistsSync(timeout) ? readScratchFileSync(timeout, "utf8") : ""}`)
 
       // The form opens on its title and the question's first line, the keys under it on screen and the page key offered.
       const start = lines(read("start"))
@@ -57,4 +57,3 @@ describe.skipIf(!fork)("a question taller than a phone's pane", () => {
       expect(lines(read("done"))).toContain("Root read Drop it")
     }), 300_000)
 })
-// @reads all

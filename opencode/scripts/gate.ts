@@ -37,15 +37,15 @@
 // Usage: bun scripts/gate.ts [--all]   (--all ignores the cache)
 //        bun scripts/gate.ts --merge <base> [--dry-run]   (--dry-run prints each step it would start, runs nothing)
 // The cache is node_modules/.cache/gate/passed.json; deleting it is safe.
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { $ } from "bun"
 import { Option } from "effect"
 import { hostLocks, landLogs, scriptReceipt } from "../mods/work/process/landing.ts"
 import { parseNameStatus } from "./docs-guard.ts"
-import { mergeLegs, testFilesIn } from "./merge-check.ts"
+import { mergeLegs } from "./merge-check.ts"
 import { checkCommand, projects } from "./typecheck.ts"
-import { declaredInputs, fromRepository, importsOf, keyOf, load, reach, readsOf, readState, ROOT, sharedKey, unitTests } from "./reach.ts"
+import { declaredInputs, fromRepository, importsOf, keyOf, load, mergeScriptTests, reach, readState, ROOT, selectorReads, sharedKey, unitTests, workboxTestFiles } from "./reach.ts"
 
 const ENV = process.env
 const ARGV = process.argv.slice(2)
@@ -162,13 +162,6 @@ const changesSince = (base: string) =>
   $`git -C ${path.dirname(ROOT)} diff --name-status ${base} HEAD`.quiet().text().then((out) =>
     parseNameStatus(out).map(({ status, paths }) => ({ status, paths: paths.map(fromRepository) })))
 
-/** The repository's workbox/ folder beside this one: its changes since `base` and its tests, from this folder. */
-const workboxSince = (base: string) => {
-  const folder = path.join(ROOT, "..", "workbox", "test")
-  const tests = (existsSync(folder) && testFilesIn("../workbox/test", readdirSync(folder))) || []
-  return $`git -C ${ROOT} diff --name-status ${base} HEAD -- ../workbox`.nothrow().quiet().text().then((out) => ({ changes: parseNameStatus(out), tests }))
-}
-
 /** The environment the merge check's legs run in: the unit leg's, without ANTHROPIC_BASE_URL, so its tests ask no model. */
 const legEnv = () => {
   const env = { ...ENV }
@@ -194,19 +187,22 @@ const printed: typeof run = (name, argv, _env, note) =>
 /** The merge check's legs over the changes since `base` (scripts/merge-check.ts), with each scripts/ file's imports. */
 const planned = (base: string) =>
   changesSince(base).then((changes) =>
-    workboxSince(base).then((workbox) =>
+    load().then((workspace) =>
       mergeLegs(base, changes, {
-        workbox,
-        workboxReads: (file) => readsOf(readFileSync(path.join(ROOT, file), "utf8")),
+        workbox: {
+          changes: changes.filter((change) => change.paths.some((file) => file.startsWith("../workbox/"))),
+          tests: workboxTestFiles(workspace),
+        },
+        workboxReads: (file) => selectorReads(workspace, file),
         bun: process.execPath,
         oxlint: path.join(ROOT, "node_modules/.bin/oxlint"),
         typecheck: checkCommand(),
         projects: projects().length + 1,
         exists: (file) => existsSync(path.join(ROOT, file)),
         scripts: {
-          files: testFilesIn("scripts", readdirSync(path.join(ROOT, "scripts"))),
+          files: mergeScriptTests(workspace),
           imports: (file) => importsOf(file, readFileSync(path.join(ROOT, file), "utf8")),
-          reads: (file) => readsOf(readFileSync(path.join(ROOT, file), "utf8")),
+          reads: (file) => selectorReads(workspace, file),
         },
       }),
     ),

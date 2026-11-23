@@ -8,8 +8,8 @@
 // to the transcript without a frame that shows it in both.
 // Needs OPENCODE_DEV, a fork whose layout rule sees the row's message and
 // which publishes the `session.composer.queued` slot (`prime-look`).
+import { readScratchFileSync } from "./read-path.ts"
 import { beforeAll, describe, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { hintRow } from "./composer.ts"
 import { owned } from "./owned.ts"
@@ -62,7 +62,7 @@ describe.skipIf(!fork)("a prompt sent to an idle session is no queued prompt, in
       new Response(run.stderr).text(),
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
-    for (const name of names) frames[name] = JSON.parse(readFileSync(join(out, `${name}.json`), "utf8"))
+    for (const name of names) frames[name] = JSON.parse(readScratchFileSync(join(out, `${name}.json`), "utf8"))
   }, 300_000))
 
   test.each([
@@ -92,4 +92,3 @@ describe.skipIf(!fork)("a prompt sent to an idle session is no queued prompt, in
     expect(shown.at(-1)).not.toMatch(ROW)
   }))
 })
-// @reads all

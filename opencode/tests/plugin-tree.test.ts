@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess helper reads at tests/plugin-tree.test.ts: run(argv, cwd, env).pipe(Effect.tap((ran) => Effect.sync(() => expect({ argv, code: ran.code, e
 // accept: deep (16.3 s alone on a quiet host: 1-minute load 7–13 on 12 cores; it installs a tree and starts a service and a TUI from source with every plugin)
 // A build's plugin tree, loaded by real OpenCode: every plugin its overlay configures runs, from the tree alone.
 //
@@ -161,4 +163,3 @@ describe.skipIf(!forkRuns)("a build's plugin tree, loaded by real OpenCode", () 
     TIMEOUT_MS,
   )
 })
-// @reads all

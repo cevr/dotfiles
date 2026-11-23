@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pool/store/store.ts: names: (path) => Effect.try({ try: () => readdirSync(path), catch: (cause) => cause }),
 // Nothing-is-hard reaches the agents (features/nothing-is-hard-rule.md, its World suite). The real orchestrate plugin
 // on the simulated host (sim/world.ts), loaded with its `skill` option at this checkout's orchestrate skill: a root
 // session on the default agent is OFFERED `subagent` and `principles`, asks `principles` to list and to search

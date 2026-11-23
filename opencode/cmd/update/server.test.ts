@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/update/filestore/trees.ts: Effect.tryPromise(() => fileAt(path).stat()).pipe(
 // The plugin seam: the composition root on a stand-in host, its systems as fakes under a test
 // clock. It checks which copy does what: a copy outside the resident location asks the service for
 // the resident location (the workbox's stall of 2026-11-12: a service a TUI started never loaded

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at sim/canary.ts: fs.readFile(path).pipe(
 // The plugin's `commitments` tool on a scratch SQLite record (secrets-world.ts), given a token-shaped canary in every
 // key and value of the first eight call kinds (add to the dependency defer). No refusal repeats what the caller wrote:
 // the canary is in no tool result, no log line and no byte of the record's file.

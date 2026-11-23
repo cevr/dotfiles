@@ -8,6 +8,7 @@
 // lists no active subagent: whether it works is the host's live state, never
 // a notice that did not come. It needs OPENCODE_DEV, the fork whose panel
 // counts a subagent waiting on its own running work as active.
+import { readScratchFileSync } from "./read-path.ts"
 import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
@@ -57,7 +58,7 @@ describe.skipIf(!fork)("a waiting subagent's wait ends with no notice (OPENCODE_
     })
     const [code, stdout, stderr] = await Promise.all([run.exited, new Response(run.stdout).text(), new Response(run.stderr).text()])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
-    for (const name of names) frames[name] = readFileSync(join(out, `${name}.txt`), "utf8").split("\n")
+    for (const name of names) frames[name] = readScratchFileSync(join(out, `${name}.txt`), "utf8").split("\n")
     requests = JSON.parse(readFileSync(join(out, "prime-waiting-requests.json"), "utf8"))
   }, 300_000))
 
@@ -86,4 +87,3 @@ describe.skipIf(!fork)("a waiting subagent's wait ends with no notice (OPENCODE_
     expect(panel(frames["ended-panel"])).toEqual({ tab: "Subagents", rows: ["No active subagents"] })
   }))
 })
-// @reads all

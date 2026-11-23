@@ -36,6 +36,7 @@ import { outsidePanes } from "../scripts/pane-env.ts"
 import { NO_FREE_MODELS, releaseFlags } from "../scripts/release-flags.ts"
 import { unboundBuild } from "../testbeds/gamut/gamut.ts"
 import { type ChildTemp, childTemp, parentEnv, scratch } from "./scratch.ts"
+import { checkOwnedCommand } from "./read-path.ts"
 // What this test process starts is stopped once it is gone, however it went (testbeds/reaper/start.ts).
 import "../testbeds/reaper/start.ts"
 
@@ -96,6 +97,7 @@ export const owned = <
   command: ReadonlyArray<string>,
   options?: Bun.SpawnOptions.SpawnOptions<In, Out, Err>,
 ): Bun.Subprocess<In, Out, Err> => {
+  checkOwnedCommand(command, options?.cwd)
   const childOwn = childTemp(options?.env)
   // An installed build by its own path binds its plugin tree over the test's config: the child runs a clone of it, in a folder
   // removed with the child's TMPDIR (and made empty for any other program).

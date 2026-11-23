@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pool/store/store.ts: names: (path) => Effect.try({ try: () => readdirSync(path), catch: (cause) => cause }),
 // The questions plugin with two directories open on one host, on the
 // simulated host, each test at 20 seeds: tests/questions-locations.test.ts's
 // names and claims, moved off real OpenCode. As the real run

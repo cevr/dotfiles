@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/update/process/service-layer.test.ts: ).pipe(Effect.andThen(Effect.sync(() => void spawnSync(["chmod", "755", `${dir}/opencode`]))))
 import { describe, expect, test } from "bun:test"
 import { serve, spawnSync, write } from "bun"
 import { Cause, Effect, Exit, Layer, Option, Schema } from "effect"

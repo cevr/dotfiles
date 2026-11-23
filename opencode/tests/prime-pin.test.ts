@@ -5,8 +5,8 @@
 // drawn as the prompt draws, on one line; a click on it scrolls that prompt to
 // the top, where it shows itself. It needs OPENCODE_DEV, a fork with the
 // session.transcript.overlay slot.
+import { readScratchFileSync } from "./read-path.ts"
 import { beforeAll, describe, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
@@ -50,8 +50,8 @@ describe.skipIf(!fork)("the ask pinned over the transcript in the Prime look (OP
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names)
       frames.set(name, {
-        text: readFileSync(join(out, `${name}.txt`), "utf8").split("\n"),
-        lines: JSON.parse(readFileSync(join(out, `${name}.json`), "utf8")).lines,
+        text: readScratchFileSync(join(out, `${name}.txt`), "utf8").split("\n"),
+        lines: JSON.parse(readScratchFileSync(join(out, `${name}.json`), "utf8")).lines,
       })
   }, 300_000))
 
@@ -97,4 +97,3 @@ describe.skipIf(!fork)("the ask pinned over the transcript in the Prime look (OP
     expect(fill("pin-revealed")).toBe(0)
   }))
 })
-// @reads all

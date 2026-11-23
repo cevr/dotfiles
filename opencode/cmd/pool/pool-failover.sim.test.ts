@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pool/store/store.ts: names: (path) => Effect.try({ try: () => readdirSync(path), catch: (cause) => cause }),
 // The pool's failover on the simulated host, each test at 20 seeds:
 // tests/pool-failover.test.ts's names and claims, moved off real OpenCode. Two
 // Anthropic logins OpenCode holds, the Anthropic auth plugin and the pool, as

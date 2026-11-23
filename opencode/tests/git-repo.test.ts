@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason nonliteral subprocess arguments at tests/git-repo.test.ts: Object.fromEntries(Object.keys(QUIET_GIT).map((key) => [key, execFileSync("git", ["-C", scratch
 // tests/git-repo.ts: a test's temp git repository runs no background gc or maintenance, so a clone
 // of it under load never races a lock file git's upkeep removes (batch ar: scripts/upstream.test.ts
 // "the upstream reading" failed copying `.git/objects/maintenance.lock`). Every test makes its
@@ -5,7 +7,6 @@
 // git's own `init` or `clone` is refused, so no repository is left loud. The guard reads each
 // file's syntax tree, so a string that only names a git command (an expected log line) is no site,
 // and it reads git's argv with the guard's own reader (mods/guard/verdict.ts), global options and all.
-// @reads {**/*.test.{ts,tsx},tests/**/*.{ts,tsx},testbeds/**/*.{ts,tsx}}
 import { describe, expect, test } from "bun:test"
 import { Array as Arr, Option, Order, Predicate } from "effect"
 import { execFileSync } from "node:child_process"
@@ -562,4 +563,3 @@ describe("a test's temp git repository", () => {
     expect(raw).toEqual([])
   })
 })
-// @reads-indirect tests/**

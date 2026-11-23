@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at tests/settings-follow.test.ts: Effect.map(fs.readFileString(`${root}/${tree}/config/cli.json`), (cli) => ({
 // The settings follow an update: each build's tree carries the role models and Claude's cache lifetime
 // (scripts/daily.ts `treeSettings`), so a new model release reaches the role agents with the next build and no
 // update writes the owner's files. The theme's name and the tab scope are the owner's choices, made in the TUI:
@@ -225,4 +227,3 @@ describe.skipIf(!forkRuns)("the settings follow an update, from each build's tre
     TIMEOUT_MS,
   )
 })
-// @reads-indirect themes/** scripts/** tests/** testbeds/** cmd/** mods/**

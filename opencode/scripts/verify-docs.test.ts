@@ -1,8 +1,9 @@
+// @reads all
+// @reads-reason computed read at scripts/verify-docs.test.ts: return yield* fs.exists(path.join(yield* root, file))
 // The verify-opencode skill's docs guard: the skill and its feature map name only what the tree has. Every
 // path they backtick exists, every `bun run <script>` is a package script, every feature file keeps the entry
 // contract with its world suites, real checks and code on disk, the index lists exactly the feature files,
 // and AGENTS.md points verifiers at the skill.
-// @reads .claude/skills/verify-opencode/SKILL.md .claude/skills/verify-opencode/features/*.md **/*.sim.test.{ts,tsx} package.json AGENTS.md
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Glob } from "bun"
 import { Array as Arr, Effect, FileSystem, Option, Path, Schema } from "effect"
@@ -205,4 +206,3 @@ describe("the verify-opencode skill names only what the tree has", () => {
     }),
   )
 })
-// @reads all

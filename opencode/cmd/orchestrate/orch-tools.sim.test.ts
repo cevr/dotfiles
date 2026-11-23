@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pool/store/store.ts: names: (path) => Effect.try({ try: () => readdirSync(path), catch: (cause) => cause }),
 // The `orchestrate` tool on the simulated host (orch-tools-world.ts): the real orchestrate, rift and status plugins
 // on their memory layers, at 20 seeds. The plugin keeps no state of a run: every answer is read from the units' logs
 // (the status script's tables) and the Rift list at the call.

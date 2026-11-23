@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at tests/reaper.test.ts: const ps = yield* spawner.spawn(ChildProcess.make("ps", ["eww", "-o", "command=", "-p", `${pid}
 // testbeds/reaper/start.ts: a test runner killed with SIGKILL mid-run (no finalizer, no exit hook) leaves nothing it
 // started. tests/reaper/runner.ts imports the reaper as tests/owned.ts and tests/service.ts do, starts a process
 // handed to pid 1 (a `service start` daemon), one leading a group of its own (an opencode-drive TUI) and one that
@@ -112,4 +114,3 @@ describe("the reaper of a test process", () => {
     40_000,
   )
 })
-// @reads all

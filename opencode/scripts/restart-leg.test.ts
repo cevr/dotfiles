@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at scripts/restart-leg.test.ts: const handle = yield* spawner.spawn(ChildProcess.make("bun", [`${ROOT}/scripts/restart-leg.ts`,
 // The restart leg (scripts/restart-leg.ts), the parts that run on any host: its flags, its refusals (the owner's
 // port, the live port, a name clash, a run dir outside its root), its ownership check before a signal or a stop
 // (with fake pids), its judgement of a stop, and its dry run, which prints every command the Linux run takes. The
@@ -260,4 +262,3 @@ describe("the dry run", () => {
     }),
   )
 })
-// @reads-indirect scripts/**

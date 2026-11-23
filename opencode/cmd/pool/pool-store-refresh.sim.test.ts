@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pool/store/store.ts: names: (path) => Effect.try({ try: () => readdirSync(path), catch: (cause) => cause }),
 // A store account whose refresh is rate-limited, on the simulated host, at 20
 // seeds: tests/pool-store-refresh.test.ts's name and claims, moved off real
 // OpenCode. Two accounts in a login store the pool reads in place (memory

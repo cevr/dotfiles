@@ -26,8 +26,13 @@ import { existsSync, readFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import path from "node:path"
 import { $ } from "bun"
-import { ALL_READS, readMatcher, readsOf } from "./read-declarations.ts"
-export { readsOf } from "./read-declarations.ts"
+import { acceptKey, acceptSharedFrom } from "./accept-key.ts"
+import { ALL_READS, readMatcher } from "./read-declarations.ts"
+import { projectReadChecker } from "./test-read-project.ts"
+import { isAcceptInput, packageOf } from "./test-population.ts"
+export { matchingReads, readsOf } from "./read-declarations.ts"
+export { ACCEPT_SHARED, acceptKey, acceptSharedFrom } from "./accept-key.ts"
+export { acceptanceTests, checkedTests, isAcceptInput, mergeScriptTests, packageOf, unitTests, workboxTestFiles } from "./test-population.ts"
 
 export const ROOT = path.resolve(import.meta.dir, "..")
 
@@ -43,6 +48,12 @@ export const SHARED = [
   "effect-debt.json",
   "scripts/effect-debt.ts",
   "scripts/reach.ts",
+  "scripts/read-declarations.ts",
+  "scripts/test-read-project.ts",
+  "scripts/test-reads.ts",
+  "scripts/test-reads-ast.ts",
+  "scripts/test-reads-modules.ts",
+  "scripts/test-population.ts",
   "scripts/gate.ts",
   "scripts/link-fork.ts",
 ]
@@ -65,14 +76,6 @@ interface Package {
   readonly dir: string
   readonly files: ReadonlyArray<string>
   readonly deps: ReadonlyArray<string>
-}
-
-/** The package directory a file belongs to, if any. */
-export const packageOf = (file: string): string | undefined => {
-  const [first, second] = file.split("/")
-  if (first === "decider") return "decider"
-  if ((first === "mods" || first === "cmd") && second !== undefined && file.split("/").length > 2) return `${first}/${second}`
-  return undefined
 }
 
 export const load = async (): Promise<Workspace> => {
@@ -142,26 +145,38 @@ export const codeOf = (file: string, source: string): string => scan(file, sourc
 /** The import specifiers a source holds (`import`, `export … from`, `import()`), through Bun's transpiler. */
 export const importsOf = (file: string, source: string): ReadonlyArray<string> => scan(file, source).imports
 
-/**
- * The globs, from opencode/, of the files a source declares it reads by path rather than import: its `@reads <glob> …`
- * comment lines. A test that globs, lists or reads files by their path text (scripts/runtime-imports.test.ts walks
- * every cmd/** and mods/** source) declares them, so the gate's cache key (`reach`) and the merge check's selection
- * (scripts/merge-check.ts) see a change to one as a change to the test's input; no import edge does.
- */
-/** Files a test declares by path; these are inputs even if they are docs or another test. */
-export const declaredInputs = (workspace: Workspace, file: string): ReadonlyArray<string> => {
-  return matchingReads(sourceText(file), [...workspace.files, ...(workspace.siblings ?? [])])
+const analyzers = new WeakMap<Workspace, ReturnType<typeof readAnalyzer>>()
+const readAnalyzer = (workspace: Workspace) => {
+  const check = projectReadChecker(ROOT, [...workspace.files, ...(workspace.siblings ?? [])], sourceText)
+  const result = new Map<string, ReturnType<typeof check>>()
+  return (file: string) => {
+    const existing = result.get(file)
+    if (existing) return existing
+    const read = check(file, sourceText(file))
+    result.set(file, read)
+    return read
+  }
 }
 
-export const matchingReads = (source: string, files: ReadonlyArray<string>): ReadonlyArray<string> => {
-  const patterns = readsOf(source)
-  if (patterns.length === 0) return []
-  return files.filter(readMatcher(patterns))
+export const inspectReads = (workspace: Workspace, file: string) => {
+  const analyze = analyzers.get(workspace) ?? readAnalyzer(workspace)
+  analyzers.set(workspace, analyze)
+  return analyze(file)
 }
+
+export const selectorReads = (workspace: Workspace, file: string): ReadonlyArray<string> => {
+  const read = inspectReads(workspace, file)
+  if (read.classification === "unknown") return [ALL_READS]
+  return read.patterns
+}
+
+/** Runtime inputs, even if they are docs or a suite: proved static, explicitly bounded, or conservative. */
+export const declaredInputs = (workspace: Workspace, file: string): ReadonlyArray<string> =>
+  [...workspace.files, ...(workspace.siblings ?? [])].filter(readMatcher(selectorReads(workspace, file)))
 
 /** Only unknown-input tests also follow Git's object identity (relevant to archives and history). */
 export const readState = (workspace: Workspace, file: string): string =>
-  (readsOf(sourceText(file)).includes(ALL_READS) && workspace.head) || ""
+  (selectorReads(workspace, file).includes(ALL_READS) && workspace.head) || ""
 
 /** The workspace file a specifier from `from` names, if any. */
 const resolveLocal = (known: ReadonlySet<string>, from: string, specifier: string): string | undefined => {
@@ -250,13 +265,6 @@ const packageName = (dir: string) => {
   return name
 }
 
-/** The test files outside tests/ and the gamut fixture: the gate's unit tests. */
-export const unitTests = (workspace: Workspace) =>
-  workspace.files.filter((file) => TEST.test(file) && !file.startsWith("tests/") && !file.startsWith("testbeds/gamut/fixture/"))
-
-/** tests/*.test.ts: the acceptance tests, most of which run real OpenCode. */
-export const acceptanceTests = (workspace: Workspace) => workspace.files.filter((file) => /^tests\/[^/]+\.test\.tsx?$/.test(file))
-
 const contentHashes = new Map<string, string>()
 const hashOf = (file: string) => {
   let hash = contentHashes.get(file)
@@ -296,58 +304,12 @@ export const sharedKey = (extra: ReadonlyArray<string> = []) =>
     return hash.digest("hex")
   })
 
-/**
- * What every acceptance key shares (scripts/accept.ts, scripts/accept-ledger.ts): the inputs a
- * real-OpenCode run loads whatever the file, and the runner itself. Unlike SHARED it leaves out
- * what only the lint and the gate read (`.oxlintrc.json`, `.oxlintrc.effect-debt.json`,
- * `lint/package.json`, `effect-debt.json`, `scripts/effect-debt.ts`, `scripts/gate.ts`): a change to
- * those reruns no acceptance file.
- */
-export const ACCEPT_SHARED = [
-  "package.json",
-  "bun.lock",
-  "bunfig.toml",
-  "tsconfig.json",
-  "scripts/reach.ts",
-  "scripts/link-fork.ts",
-  "scripts/accept.ts",
-  "scripts/accept-plan.ts",
-  "scripts/accept-ledger.ts",
-  "scripts/leaks.ts",
-  "scripts/fork.ts",
-]
-
-/** What no acceptance run loads although a package holds it: its own unit tests, benches and Markdown. */
-const PACKAGE_ONLY = /(\.test\.tsx?|\.bench\.ts|\.md)$/
-
-/** Whether a reached file is an input of an acceptance run: anything but a package's unit test, bench or Markdown. */
-export const isAcceptInput = (file: string) => !packageOf(file) || !PACKAGE_ONLY.test(file)
-
 /** What an acceptance file reaches as an input: the file itself and its reach (`reach`), less what `isAcceptInput` leaves out. */
 export const acceptReach = (workspace: Workspace, file: string, memo = new Map<string, ReadonlyArray<string>>()): ReadonlySet<string> =>
   new Set([file, ...[...reach(workspace, [file], memo)].filter(isAcceptInput), ...declaredInputs(workspace, file)])
 
-/** The acceptance shared key from a hash of each file and the fork's line (pure: the model test hands both in). */
-export const acceptSharedFrom = (hashFile: (file: string) => string, fork: string, extra: ReadonlyArray<string>) => {
-  const hash = createHash("sha256")
-  for (const file of ACCEPT_SHARED) hash.update(`${file}:${hashFile(file)}\n`)
-  hash.update(`bun:${Bun.version}:${Bun.revision}\n`)
-  hash.update(`${fork}\n`)
-  for (const each of extra) hash.update(`${each}\n`)
-  return hash.digest("hex")
-}
-
 /** The acceptance shared key of this checkout, Bun and the fork in OPENCODE_DEV; `extra` adds the ledger's version and the run's flags. */
 export const acceptSharedKey = (extra: ReadonlyArray<string>) => forkLine().then((fork) => acceptSharedFrom(hashOf, fork, extra))
-
-/** An acceptance file's key: the shared key and the contents of the inputs chosen by `acceptReach`. */
-export const acceptKey = (shared: string, reached: Iterable<string>, hashFile: (file: string) => string = hashOf, repoState = "") => {
-  const hash = createHash("sha256")
-  hash.update(shared)
-  if (repoState) hash.update(`\nrepository:${repoState}\n`)
-  for (const file of [...reached].sort()) hash.update(`${file}:${hashFile(file)}\n`)
-  return hash.digest("hex")
-}
 
 export const acceptReadKey = (workspace: Workspace, test: string, shared: string, reached: Iterable<string>) =>
   acceptKey(shared, reached, hashOf, readState(workspace, test))

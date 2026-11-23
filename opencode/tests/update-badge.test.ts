@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at tests/update-badge.test.ts: const child = Bun.spawn([...launch.base, ...args], { cwd: work, env, stdout: "pipe", stderr: "p
 // accept: deep (38.2 s alone on a quiet host: 1-minute load 60.8–74.0 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // The TUI says when it runs an older build than its service.
 //
@@ -300,4 +302,3 @@ describe.skipIf(!fork)("the update notice", () => {
     TIMEOUT_MS,
   )
 })
-// @reads all

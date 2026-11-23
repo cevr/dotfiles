@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed module resolver reads at mods/orchestrate/sqlite/record.test.ts: import { Effect, Exit } from "${resolveSync("effect", STORE)}"
 // The SQLite record keeps the CommitmentRecord laws (laws.ts) on a scratch file, and what only a file does: two
 // processes writing at once lose nothing, a file of a newer version reads and refuses writes, a read-only open reads,
 // and the daily backup is written once a day with the newest seven kept.

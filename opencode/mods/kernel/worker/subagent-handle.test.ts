@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/kernel/worker/workers.ts: yield* Stream.fromReadableStream({ evaluate: () => Bun.file(fd).stream(), onError: messageOf })
 // A cell's subagent handle in the real worker process over scripted subagent
 // and subagents tools: `tools.subagent` resolves to a live handle, each method
 // calls the subagents tool with the handle's sessionID and updates the handle

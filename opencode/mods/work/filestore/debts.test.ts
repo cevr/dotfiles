@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/work/filestore/debts.test.ts: expect(asides().map((name) => readFileSync(join(logs, name), "utf8"))).toContain(text)
 // The owed post-land steps and accept checks in their file: nothing before the first write, what was written read back by a
 // fresh layer (a restarted server), an older file read as its owed steps, and a file that cannot be decoded kept
 // aside (never written over) and read as nothing owed.

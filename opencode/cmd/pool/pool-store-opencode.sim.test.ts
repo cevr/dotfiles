@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pool/store/store.ts: names: (path) => Effect.try({ try: () => readdirSync(path), catch: (cause) => cause }),
 // OpenCode on a login store's Claude accounts through the pool, on the
 // simulated host at 20 seeds: tests/pool-store-opencode.test.ts's name and
 // claims, moved off real OpenCode. OpenCode holds no Anthropic login of its

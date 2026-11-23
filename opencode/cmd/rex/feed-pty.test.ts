@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at cmd/rex/feed-pty.test.ts: return Bun.spawn([process.execPath, SHOW, "view", "--session", "session:pty", "--spool", root],
 // The feed as its pane runs it: `rex-show view` in a real terminal (a pty
 // from Bun.spawn's `terminal`, the child in its own process group, killed
 // when the case ends), its spool showing a feed of a stand-in Sideshow (a

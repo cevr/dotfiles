@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at tests/pty-host.test.ts: await until("the host to listen", () => (existsSync(socket) ? true : undefined))
 // accept: deep (17.2 s alone on a quiet host: 1-minute load 13.8–16.0 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // The terminal host keeps one program on a live pty and answers other
 // processes on a Unix socket: each test serves a real shell program and calls
@@ -238,4 +240,3 @@ describe("terminal host", () => {
     30_000,
   )
 })
-// @reads all

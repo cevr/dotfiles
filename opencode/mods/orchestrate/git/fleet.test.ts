@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/orchestrate/git/fleet.ts: const text = yield* Effect.tryPromise(() => file(path).text()).pipe(Effect.map(Option.some), Ef
 import { describe, expect, test } from "bun:test"
 import { Option, Result } from "effect"
 import { FleetOutcome, fleetLineOf, headsOf } from "../fleet.ts"

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pool/store/store.ts: names: (path) => Effect.try({ try: () => readdirSync(path), catch: (cause) => cause }),
 // Idle compaction on the simulated host (sim/world.ts), each test at 20
 // seeds: tests/idle-compact.test.ts's names and claims, moved off real
 // OpenCode (it waited out a 20 s cache in real time). The plugin is the one

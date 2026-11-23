@@ -3,11 +3,11 @@ import { randomBytes } from "node:crypto"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { isAbsolute, join, relative, resolve } from "node:path"
-import { env as processEnv } from "node:process"
+import { cwd as processCwd, env as processEnv } from "node:process"
 
 // Keep the package tests that use the scratch lifecycle independent of the root
 // test's input policy and its Effect instance.
-export const localTestPaths = { existsSync, isAbsolute, join, relative, resolve, readFileSync, readdirSync, readlinkSync, realpathSync }
+export const localTestPaths = { existsSync, isAbsolute, join, relative, resolve, readFileSync, readdirSync, readlinkSync, realpathSync, processCwd }
 
 /** The canonical parent of scratch fixtures; callers check a path without creating a fixture. */
 export const scratchRoot = () => realpathSync(tmpdir())

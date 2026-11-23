@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/guard/process/reservations.test.ts: const dir = spawnSync(["realpath", held.path]).stdout.toString().trim()
 // Reservations over a stand-in `work` in a scratch directory this test makes
 // and removes: it prints the records `work --json list` would, one of each
 // state, two creating (one whose folder exists, one whose does not); then

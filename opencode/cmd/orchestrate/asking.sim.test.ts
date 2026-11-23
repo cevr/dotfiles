@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pool/store/store.ts: names: (path) => Effect.try({ try: () => readdirSync(path), catch: (cause) => cause }),
 // The orchestrate plugin's question tools on the simulated host, at the
 // file's seeds: by default it adds `ask_orchestrator` and `answer_subagent`,
 // and its agents' swap leaves a root (a primary agent) `ask_user_async` and a

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/status/process/run-tables.test.ts: spawnSync(["chmod", "+x", host])
 // The runs of a real git repository in a scratch directory, read through a
 // stand-in for the orchestrate skill's status script: it prints the
 // `table.md` each run holds, and fails with a message on stderr for a run

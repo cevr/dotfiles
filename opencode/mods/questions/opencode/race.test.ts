@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/questions/opencode/race.test.ts: Effect.sync(() => Bun.spawn(["bun", PROGRAM, ...args], { stdout: "pipe", stderr: "pipe", detach
 // Two servers answer the same questions at once (the tray in one, the digest page in another), over the fork's real
 // key-value table in one sqlite file: each question is answered once, by one of them; its session gets one letter;
 // the digest one Answered line, naming who won; the loser is told the question is no longer open.

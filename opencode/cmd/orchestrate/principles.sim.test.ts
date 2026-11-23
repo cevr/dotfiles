@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at cmd/orchestrate/principles.sim.test.ts: Array.from(new Glob("principle-*/SKILL.md").scanSync({ cwd: skills }), (found) => found.slice(0
 // The `principles` tool on the simulated host (sim/world.ts): the real orchestrate plugin (sim/plugins.ts), loaded
 // with its `skill` option at this checkout's orchestrate skill, so the tool reads this checkout's principle-* skills
 // from disk. A root and a subagent each call it; every answer is checked against the skill files themselves.

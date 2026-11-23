@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/digest/filestore/devices.test.ts: expect(paths.map((path) => statSync(path).mode & 0o777)).toEqual([0o600, 0o600])
 // The device store on disk over time (round 3's B1, the property the verifier asked for): generated sequences of
 // renames, re-keys, removals, another of HIS devices or another user's device taking a name, configures, requests,
 // the owner's explicit command, and the store lost in every form (deleted, emptied, truncated, garbage, mode 000, a

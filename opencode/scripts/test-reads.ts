@@ -1,8 +1,8 @@
-import { Glob } from "bun"
 import { Effect, Option, Path, Predicate } from "effect"
 import { parseSync } from "oxc-parser"
-import { ALL_READS, readDeclarations } from "./read-declarations.ts"
+import { ALL_READS, alternatives, readDeclarations, readReasons } from "./read-declarations.ts"
 import { child, children, field, id, literal, type MaybeNode, type Node, node, nodes, property, str, unwrap } from "./test-reads-ast.ts"
+import { entryRegions, exportedAliases, moduleReferences, type Reference, regionOf, regionsOf } from "./test-reads-modules.ts"
 
 const path = Effect.runSync(Effect.provide(Path.Path, Path.layer))
 // Virtual roots let cwd and module paths mix without reading the host's tree.
@@ -21,7 +21,7 @@ const SCOPE = new Set(["Program", "BlockStatement", "ArrowFunctionExpression", "
 const SCRATCH = new Set([
   "tests/read-path.ts:scratchInput", "tests/read-path.ts:externalInput", "tests/read-path.ts:installedInput", "tests/scratch.ts:scratch", "tests/scratch.ts:keptScratch",
 ])
-const MESSAGE = "cannot resolve read path; use a literal file, a literal directory before the computed part, or a scratch root; for an indirect read declare @reads-indirect dir/** or @reads all"
+const MESSAGE = "cannot prove the read stays in scope; use a literal path or matchingInput with a declared scope; otherwise declare @reads all and name the opaque site in @reads-reason"
 const keyOf = (at: Node) => `${at.type}:${at.start}`
 const argsOf = (at: Node) => nodes(field(at, "arguments"))
 const opts = (at: MaybeNode, name: string) => child(nodes(field(at, "properties")).find((prop) => (id(child(prop, "key")) ?? literal(child(prop, "key"))) === name), "value")
@@ -132,7 +132,7 @@ const memberSymbol = (base: string, member: string) => {
 }
 type Syntax = ReturnType<typeof syntaxOf>
 
-type Address = { readonly prefix: string; readonly tail: boolean } | { readonly glob: string } | { readonly opaque: string }
+type Address = { readonly prefix: string; readonly tail: boolean } | { readonly choices: ReadonlyArray<string> } | { readonly glob: string; readonly bounded: boolean } | { readonly opaque: string }
 type Resolved = Option.Option<Address>
 type Evaluation = (node: MaybeNode) => Resolved
 const fixed = (prefix: string): Resolved => Option.some({ prefix, tail: false })
@@ -140,8 +140,27 @@ const computed = (prefix: string): Resolved => Option.some({ prefix, tail: true 
 const opaque = (reason: string): Resolved => Option.some({ opaque: reason })
 const prefixOf = (at: Resolved) => Option.flatMap(at, (address) => ("prefix" in address && Option.some(address)) || Option.none())
 const literalPath = (at: Resolved) => Option.map(Option.filter(prefixOf(at), (address) => !address.tail), ({ prefix }) => prefix)
-const temporary = (at: Resolved) => Option.exists(prefixOf(at), ({ prefix }) => within(TEMP, path.resolve(CWD, prefix)))
+const temporary = (at: Resolved) => Option.exists(literalPath(at), (prefix) => within(TEMP, path.resolve(CWD, prefix)))
+const choicesOf = (at: Resolved): ReadonlyArray<string> =>
+  Option.match(at, { onNone: () => [], onSome: (address) => ("choices" in address && address.choices) || Option.toArray(literalPath(at)) })
+const choice = (paths: ReadonlyArray<string>): Resolved => {
+  const distinct = [...new Set(paths)]
+  if (distinct.length === 0 || distinct.length > 32) return Option.none()
+  if (distinct.length === 1) return fixed(distinct.join(""))
+  return Option.some({ choices: distinct })
+}
+const combinations = (parts: ReadonlyArray<Resolved>) => {
+  let rows: ReadonlyArray<ReadonlyArray<string>> = [[]]
+  for (const item of parts) {
+    const paths = choicesOf(item)
+    if (paths.length === 0 || rows.length * paths.length > 32) return []
+    rows = rows.flatMap((set) => paths.map((file) => [...set, file]))
+  }
+  return rows
+}
 const pathParts = (parts: ReadonlyArray<Resolved>, separator: string): Resolved => {
+  if (parts.some((part) => Option.exists(part, (address) => "choices" in address)))
+    return choice(combinations(parts).map((set) => set.join(separator)))
   let prefix = ""
   for (const part of parts) {
     const next = prefixOf(part)
@@ -180,10 +199,6 @@ const moduleConstant = (imported: string, loadSource: (file: string) => string) 
 }
 
 const platformPath = (called: string, callee: MaybeNode, args: ReadonlyArray<Node>, read: Evaluation): Resolved => {
-  if (called === "Bun:resolveSync" || called === "bun:resolveSync") {
-    const pkg = literal(args[0]) ?? ""
-    if (/^(?:@[^./]+\/)?[\w-]/.test(pkg) && !pkg.startsWith("@dotfiles/") && Option.isSome(literalPath(read(args[1])))) return fixed(TEMP)
-  }
   if (called === "fs:mkdtempSync" || called === "fs/promises:mkdtemp") {
     if (temporary(read(args[0]))) return fixed(TEMP)
   }
@@ -197,6 +212,8 @@ const platformPath = (called: string, callee: MaybeNode, args: ReadonlyArray<Nod
 
 const composedPath = (called: string, args: ReadonlyArray<Node>, read: Evaluation) => {
   const parts = args.map(read)
+  const finite = combinations(parts)
+  if (finite.length > 0) return choice(finite.map((each) => (called === "path:join" && path.join(...each)) || path.resolve(CWD, ...each)))
   if (called === "path:join") return pathParts(parts, "/")
   const absolute = parts.findLastIndex((part) => Option.exists(prefixOf(part), ({ prefix }) => path.isAbsolute(prefix)))
   return pathParts(parts.slice(Math.max(0, absolute)), "/")
@@ -205,8 +222,11 @@ const composedPath = (called: string, args: ReadonlyArray<Node>, read: Evaluatio
 const callPath = (called: string, callee: MaybeNode, args: ReadonlyArray<Node>, read: Evaluation): Resolved => {
   if (called === "process:cwd") return fixed(CWD)
   if (called === "os:tmpdir" || SCRATCH.has(called)) return fixed(TEMP)
-  if (called === "tests/read-path.ts:matchingInput")
-    return Option.map(literalPath(read(args[0])), (glob) => ({ glob }))
+  if (called === "tests/read-path.ts:matchingInput") {
+    const target = literalPath(read(args[1] ?? args[0]))
+    if (Option.isSome(target)) return fixed(target.value)
+    return Option.map(literalPath(read(args[0])), (glob) => ({ glob, bounded: true }))
+  }
   if (["url:fileURLToPath", "fs:realpathSync", "fs:realPath", "path:fromFileUrl"].includes(called)) return read(args[0])
   if (called === "effect:Effect:gen") {
     const returns = nodes(field(child(args[0], "body"), "body")).filter((statement) => statement.type === "ReturnStatement")
@@ -251,6 +271,11 @@ const evaluate = (file: string, syntax: Syntax, loadSource: (file: string) => st
     if (at.type === "Identifier") return identifierPath(syntax.bindingOf(at), loadSource, again)
     if (at.type === "MemberExpression") return memberPath(at, absolute, again)
     if (at.type === "TemplateLiteral") return template(at, again)
+    if (at.type === "ConditionalExpression") {
+      const yes = choicesOf(again(child(at, "consequent")))
+      const no = choicesOf(again(child(at, "alternate")))
+      return (yes.length > 0 && no.length > 0 && choice([...yes, ...no])) || Option.none()
+    }
     if (at.type === "BinaryExpression" && field(at, "operator") === "+") return pathParts([again(child(at, "left")), again(child(at, "right"))], "")
     if (at.type === "CallExpression" || at.type === "NewExpression") {
       const callee = child(at, "callee")
@@ -261,53 +286,30 @@ const evaluate = (file: string, syntax: Syntax, loadSource: (file: string) => st
   return valueOf
 }
 
-const regexGlob = /[*?[\]{]/
 const patternOf = (input: Address, cwd: string, listing: boolean): Option.Option<string> => {
   if ("opaque" in input) return Option.none()
   if ("glob" in input) return Option.some(input.glob)
+  if ("choices" in input) {
+    const parts = input.choices.map((prefix) => patternOf({ prefix, tail: false }, cwd, listing))
+    if (parts.some(Option.isNone)) return Option.none()
+    return Option.some(parts.flatMap(Option.toArray).filter(Boolean).join(",").replace(/.*,.*$/, "{$&}"))
+  }
   const at = path.resolve(cwd, input.prefix)
+  if (input.tail) return Option.none()
   if (within(TEMP, at)) return Option.some("")
+  if (listing && (at === CWD || at === REPO)) return Option.none()
   if (!input.tail && !listing && (at === CWD || at === REPO)) return Option.some("")
-  if (!within(REPO, at) || (input.tail && [CWD, REPO].includes(at))) return Option.none()
+  if (!within(REPO, at)) return Option.none()
   const rel = path.relative(CWD, at) || "."
-  if (input.tail || listing) return Option.some(`${rel}/**`)
+  if (listing) return Option.some(`${rel}/**`)
   return Option.some(rel)
 }
 
-const alternatives = (glob: string) => {
-  if (!glob.startsWith("{") || !glob.endsWith("}")) return []
-  const parts = new Array<string>()
-  let start = 1
-  let depth = 0
-  for (let index = start; index < glob.length - 1; index++) {
-    const character = glob[index]
-    if (character === "{") depth++
-    if (character === "}") depth--
-    if (depth < 0) return []
-    if (depth === 0 && character === ",") {
-      parts.push(glob.slice(start, index))
-      start = index + 1
-    }
-  }
-  if (parts.length === 0 || depth !== 0) return []
-  return [...parts, glob.slice(start, -1)]
-}
 const wholeTree = (pattern: string): boolean => WHOLE_TREE.has(pattern) || alternatives(pattern).some(wholeTree)
 const indirectDirectory = (pattern: string) => {
   const directory = pattern.replace(/^\.\.\//, "")
   return /^(?:[\w.-]+\/)+\*\*$/.test(directory) && directory.split("/").every((part) => part !== "." && part !== "..")
 }
-const covers = (declared: ReadonlyArray<string>, needed: string): boolean => {
-  if (wholeTree(needed)) return false
-  if (declared.includes(needed) || declared.some((glob) => alternatives(glob).includes(needed))) return true
-  const union = alternatives(needed)
-  if (union.length > 0) return union.every((part) => covers(declared, part))
-  if (!regexGlob.test(needed)) return declared.some((glob) => new Glob(glob).match(needed))
-  const parts = needed.split("/")
-  const stable = parts.slice(0, parts.findIndex((segment) => regexGlob.test(segment))).join("/")
-  return declared.some((glob) => glob.endsWith("/**") && within(glob.slice(0, -3), stable))
-}
-
 type ReadSite = (at: Node, input: Resolved, cwd?: string, listing?: boolean) => void
 const gitReads = (at: Node, args: ReadonlyArray<Node>, cwd: string, from: number, evaluate: Evaluation, record: ReadSite) => {
   const words = args.map(literal)
@@ -323,8 +325,18 @@ const gitReads = (at: Node, args: ReadonlyArray<Node>, cwd: string, from: number
   else record(at, computed(cwd))
 }
 
+// sleep accepts only durations. This ps form names only columns, never a file (other ps flags can).
+const noFileOperands = (command: string, args: ReadonlyArray<Node>) =>
+  command === "sleep" || (command === "ps" && args.length === 2 && literal(args[0]) === "-axo" && /^[a-z=, ]+$/.test(literal(args[1]) ?? ""))
+
+const childDirectory = (command: string, dashC: number, args: ReadonlyArray<Node>, directory: MaybeNode, evaluate: Evaluation) => {
+  const override = (command === "git" && dashC >= 0 && args[dashC + 1]) || directory
+  return (override && evaluate(override)) || fixed(CWD)
+}
+
 const childReads = (at: Node, program: string, args: ReadonlyArray<Node>, directory: MaybeNode, evaluate: Evaluation, record: ReadSite) => {
-  const command = path.basename(program)
+  const command = program.replace(/^(?:\/usr)?\/bin\//, "")
+  if (noFileOperands(command, args)) return
   if (!["git", "grep", "rg", "cat"].includes(command)) return record(at, opaque("subprocess reads"))
   if (args.some((arg) => !Predicate.isString(literal(arg)))) return record(at, opaque("nonliteral subprocess arguments"))
   const dashC = args.map(literal).indexOf("-C")
@@ -334,8 +346,7 @@ const childReads = (at: Node, program: string, args: ReadonlyArray<Node>, direct
     if (["rev-parse", "branch", "version", "--version"].includes(sub)) return
     return record(at, opaque("Git command or object reads"))
   }
-  const override = (command === "git" && dashC >= 0 && args[dashC + 1]) || directory
-  const cwd = (override && evaluate(override)) || fixed(CWD)
+  const cwd = childDirectory(command, dashC, args, directory, evaluate)
   if (temporary(cwd) && command === "git") return
   const base = literalPath(cwd)
   if (Option.isNone(base)) return record(at, Option.none())
@@ -377,23 +388,16 @@ const CHILD_SPAWN = new Set(["child_process:spawn", "child_process:spawnSync", "
 const EXEC_SHELL = new Set(["child_process:exec", "child_process:execSync"])
 const ARGV_HELPER = new Set(["tests/owned.ts:owned", "tests/reconnect/host.ts:run"])
 
-// Executable workspace modules are opaque. Do not infer purity from the
-// absence of a known filesystem API: an unused-looking import can run code,
-// and a forwarding module can hide an arbitrary helper.
-const MODULE_DATA = /\.json$/
-const CHECKED_HELPERS = new Set(["tests/scratch.ts", "tests/read-path.ts"])
+const MODULE_DATA = /\.(?:json|toml|txt|md)$/
+// These adapters keep process/scratch housekeeping separate from the caller's inputs.
+// Their read and spawn entrypoints are modeled at the call (including unknown argv).
+const CHECKED_HELPERS = new Set(["tests/scratch.ts", "tests/read-path.ts", "tests/owned.ts"])
 const workspacePackage = (specifier: string) => specifier.startsWith("@dotfiles/")
 
-const importedHelper = (at: Node, dir: string, record: ReadSite) => {
-  if (field(at, "importKind") === "type") return
-  const specifier = literal(child(at, "source"))
-  if (!specifier) return
+const executableImport = (at: Node) => {
+  if (field(at, "importKind") === "type" || field(at, "exportKind") === "type") return false
   const specifiers = nodes(field(at, "specifiers"))
-  if (specifiers.length > 0 && specifiers.every((spec) => field(spec, "importKind") === "type")) return
-  if (workspacePackage(specifier)) return record(at, opaque(`imported workspace package ${specifier}`))
-  if (!specifier.startsWith(".")) return
-  const file = importedFrom(at, dir)
-  if (!MODULE_DATA.test(file) && !CHECKED_HELPERS.has(file)) record(at, opaque(`imported helper ${file}`))
+  return !specifiers.length || specifiers.some((spec) => field(spec, "importKind") !== "type" && field(spec, "exportKind") !== "type")
 }
 
 const dynamicMember = (at: MaybeNode, symbol: Syntax["symbol"]) => {
@@ -402,9 +406,51 @@ const dynamicMember = (at: MaybeNode, symbol: Syntax["symbol"]) => {
   return FS.has(module) || ["Bun", "bun", "child_process", "effect:FileSystem:FileSystem", "effect/FileSystem:FileSystem"].includes(module)
 }
 
+const scenarioArg = (called: string, args: ReadonlyArray<Node>) => {
+  if (called !== "tests/owned.ts:owned" || args[0]?.type !== "ArrayExpression") return ""
+  const argv = nodes(field(args[0], "elements")).map(literal)
+  const [program, launcher, command, entry] = argv
+  if (argv.length !== 4 || program !== "bunx" || launcher !== "opencode-drive" || command !== "run") return ""
+  return (entry?.startsWith("scenarios/") && entry.endsWith(".ts") && entry) || ""
+}
+
+const ownedArgv = (called: string, args: ReadonlyArray<Node>) =>
+  (called === "tests/owned.ts:owned" && args[0]?.type === "ArrayExpression" && nodes(field(args[0], "elements"))) || []
+
+const ownedEntry = (called: string, args: ReadonlyArray<Node>, evaluate: Evaluation) => {
+  const argv = ownedArgv(called, args)
+  if (argv.length !== 2 || literal(argv[0]) !== "bun") return ""
+  const cwd = opts(args[1], "cwd")
+  if (cwd && !Option.exists(literalPath(evaluate(cwd)), (dir) => path.resolve(CWD, dir) === CWD)) return ""
+  const entry = literal(argv[1]) ?? ""
+  if (!/^(?:[\w.-]+\/)+[\w.-]+\.[cm]?[jt]sx?$/.test(entry)) return ""
+  const normalized = path.relative(CWD, path.resolve(CWD, entry))
+  return (!normalized.startsWith("../") && normalized) || ""
+}
+
+const ownedEnvironmentOnly = (called: string, args: ReadonlyArray<Node>) => {
+  const argv = ownedArgv(called, args)
+  return argv.length === 1 && literal(argv[0]) === "/usr/bin/env"
+}
+
 const processRead = (at: Node, called: string, args: ReadonlyArray<Node>, evaluate: Evaluation, record: ReadSite) => {
   if (EXEC_SHELL.has(called)) return record(at, opaque("shell reads"))
-  if (ARGV_HELPER.has(called)) return record(at, opaque("subprocess helper reads"))
+  if (ARGV_HELPER.has(called)) {
+    if (ownedEnvironmentOnly(called, args)) return
+    const module = ownedEntry(called, args, evaluate)
+    if (module) {
+      record(at, fixed(module))
+      return record(at, fixed("bun.plugins/config"))
+    }
+    const scenario = scenarioArg(called, args)
+    const cwd = opts(args[1], "cwd")
+    const root = Option.getOrElse(literalPath(evaluate(cwd)), () => "")
+    if (scenario && (!cwd || (root && path.resolve(CWD, root) === CWD))) {
+      record(at, fixed(scenario))
+      return record(at, fixed("bunx.plugins/config"))
+    }
+    return record(at, opaque("subprocess helper reads"))
+  }
   if (BUN_SPAWN.has(called)) {
     const command = opts(args[0], "cmd") ?? args[0]
     if (command?.type !== "ArrayExpression") return record(at, opaque("nonliteral subprocess argv"))
@@ -421,6 +467,9 @@ const callRead = (at: Node, syntax: Syntax, evaluate: Evaluation, record: ReadSi
   const callee = child(at, "callee")
   const called = syntax.symbol(callee)
   const args = argsOf(at)
+  if (called === "Bun:mmap" || called === "bun:mmap") return record(at, evaluate(args[0]))
+  if (called === "@opencode-tui/test/fixture/app.ts:createAppFixture")
+    return record(at, opaque("native TUI plugin loader reads"))
   if (dynamicMember(callee, syntax.symbol)) return record(at, opaque("computed filesystem or process method"))
   if (called === "eval" || called === "Function") return record(at, opaque("evaluated program reads"))
   if (called === "require") {
@@ -439,19 +488,17 @@ const callRead = (at: Node, syntax: Syntax, evaluate: Evaluation, record: ReadSi
 
 export interface ReadCheck {
   readonly patterns: ReadonlyArray<string>
+  /** Parts of the selection that are enforced at runtime rather than proved as literal paths. */
+  readonly bounded: ReadonlyArray<string>
   readonly indirect: ReadonlyArray<{ readonly line: number; readonly reason: string }>
   readonly classification: "static" | "declared" | "unknown"
   readonly issues: ReadonlyArray<{ readonly line: number; readonly message: string }>
 }
 
-const declarationsAt = (source: string, parsed: ReturnType<typeof parseSync>) =>
-  parsed.comments.flatMap(({ start, end }) => readDeclarations(source.slice(start, end)))
-
 const parserFailure = (messages: ReadonlyArray<string>): ReadCheck =>
-  ({ patterns: [], indirect: [], classification: "unknown", issues: messages.map((message) => ({ line: 1, message })) })
+  ({ patterns: [], bounded: [], indirect: [], classification: "unknown", issues: messages.map((message) => ({ line: 1, message })) })
 
 const checkSite = (at: Node, fileDir: string, syntax: Syntax, valueOf: Evaluation, record: ReadSite) => {
-  if (at.type === "ImportDeclaration") return importedHelper(at, fileDir, record)
   if (at.type === "TaggedTemplateExpression") return shellRead(at, syntax, record)
   if (at.type === "CallExpression") return callRead(at, syntax, valueOf, record)
   if (at.type === "NewExpression" && syntax.symbol(child(at, "callee")) === "Function") return record(at, opaque("evaluated program reads"))
@@ -460,7 +507,6 @@ const checkSite = (at: Node, fileDir: string, syntax: Syntax, valueOf: Evaluatio
   const name = literal(target)
   if (!Predicate.isString(name) || name.startsWith(".") || name.startsWith("/")) record(at, valueOf(target), fileDir)
   if (!Predicate.isString(name)) record(at, opaque("dynamically loaded module"))
-  else if ((/^[./]/.test(name) && !MODULE_DATA.test(name)) || workspacePackage(name)) record(at, opaque("dynamically loaded helper"))
 }
 
 const readClassification = (unknown: boolean, count: number): ReadCheck["classification"] => {
@@ -469,40 +515,247 @@ const readClassification = (unknown: boolean, count: number): ReadCheck["classif
   return "static"
 }
 
-export const checkReadInputs = (file: string, source: string, loadSource: (file: string) => string = () => ""): ReadCheck => {
+interface Site {
+  readonly file: string
+  readonly line: number
+  readonly region: string
+  readonly result: Resolved
+  readonly cwd: string
+  readonly listing: boolean
+}
+
+type Source = (file: string) => string
+type ResolvePackage = (specifier: string, from: string) => string
+const LOCAL_MODULE = new Set(["ImportDeclaration", "ExportNamedDeclaration", "ExportAllDeclaration", "ImportExpression"])
+const modulePath = (specifier: string, dir: string, loadSource: Source) => {
+  const base = path.relative(CWD, path.resolve(dir, specifier))
+  const stem = base.replace(/\.[cm]?jsx?$/, "")
+  return [base, `${stem}.ts`, `${stem}.tsx`, `${base}.js`, `${base}/index.ts`, `${base}/index.tsx`, `${base}/index.js`].find(loadSource) ?? ""
+}
+
+const moduleEdge = (at: Node, current: string, dir: string, loadSource: Source, resolvePackage: ResolvePackage, record: ReadSite) => {
+  if (!LOCAL_MODULE.has(at.type) || !executableImport(at)) return ""
+  const specifier = literal(child(at, "source")) ?? ""
+  if (MODULE_DATA.test(specifier)) return ""
+  if (!specifier.startsWith(".") && !workspacePackage(specifier)) return ""
+  const next = (specifier.startsWith(".") && modulePath(specifier, dir, loadSource)) || resolvePackage(specifier, current)
+  if (next) return next
+  record(at, opaque(`unresolved helper ${specifier}`))
+  return ""
+}
+
+const resolutionAt = (at: Node, syntax: Syntax, record: ReadSite) => {
+  const called = syntax.symbol(child(at, "callee"))
+  if (at.type !== "CallExpression" || !["bun:resolveSync", "Bun:resolveSync"].includes(called)) return
+  record(at, opaque("computed module resolver reads"))
+}
+
+const graph = () => ({
+  imports: new Map<string, Reference[]>(),
+  symbols: new Map<string, Set<string>>(),
+  dynamics: new Map<string, Reference[]>(),
+  initializers: new Set<string>(),
+  deferred: new Set<string>(),
+})
+type Graph = ReturnType<typeof graph>
+
+const referenceAt = (graph: Graph, at: Node, region: string, next: string) => {
+  if (!next || (at.type === "ImportDeclaration" && CHECKED_HELPERS.has(next))) return
+  if (at.type === "ImportExpression") graph.dynamics.set(region, [...(graph.dynamics.get(region) ?? []), { file: next, symbol: "*" }])
+  else graph.initializers.add(next)
+  for (const { local, target } of moduleReferences(at, next))
+    graph.imports.set(local, [...(graph.imports.get(local) ?? []), target])
+}
+
+const entrypointAt = (graph: Graph, at: Node, region: string, syntax: Syntax, evaluate: Evaluation) => {
+  if (at.type !== "CallExpression") return
+  const module = ownedEntry(syntax.symbol(child(at, "callee")), argsOf(at), evaluate)
+  if (module) graph.dynamics.set(region, [...(graph.dynamics.get(region) ?? []), { file: module, symbol: "@main" }])
+}
+
+const memberNames = new Set(["MemberExpression", "Property", "MethodDefinition", "PropertyDefinition"])
+const symbolAt = (graph: Graph, at: Node, region: string, nonReferences: ReadonlySet<string>) => {
+  const symbol = id(at)
+  if (!symbol || nonReferences.has(keyOf(at))) return
+  const names = graph.symbols.get(region) ?? new Set<string>()
+  names.add(symbol)
+  graph.symbols.set(region, names)
+}
+
+
+const escapedProcess = (at: Node, syntax: Syntax, signatures: ReadonlySet<string>, calls: ReadonlySet<string>) =>
+  id(at) && !signatures.has(keyOf(at)) && !calls.has(keyOf(at)) &&
+  ["tests/owned.ts", "tests/owned.ts:owned"].includes(syntax.symbol(at))
+
+const nonReferencesOf = (entries: ReadonlyArray<Node>) => new Set(entries.flatMap((at) => {
+  const specifiers = nodes(field(at, "specifiers")).flatMap(children).map(keyOf)
+  if (!memberNames.has(at.type) || field(at, "computed") || field(at, "shorthand")) return specifiers
+  const key = child(at, "property") ?? child(at, "key")
+  return (key && [...specifiers, keyOf(key)]) || specifiers
+}))
+
+const inspect = (file: string, source: string, loadSource: Source, resolvePackage: ResolvePackage) => {
   const parsed = parseSync(file, source, { sourceType: "module" })
-  if (parsed.errors.length > 0) return parserFailure(parsed.errors.map(({ message }) => message))
   const program = node(parsed.program)
-  if (!program) return parserFailure(["source did not produce a syntax tree"])
+  const errors = parsed.errors.map(({ message }) => message)
+  if (!program) errors.push("source did not produce a syntax tree")
+  const sites = new Array<Site>()
+  const refs = graph()
+  if (!program || errors.length > 0) return { sites, ...refs, errors, comments: [] }
   const fileDir = path.dirname(path.resolve(CWD, file))
   const syntax = syntaxOf(program, fileDir)
   const valueOf = evaluate(file, syntax, loadSource)
+  const regions = [...entryRegions(syntax.entries), ...regionsOf(program, syntax.symbol)]
+  const signatures = nonReferencesOf(syntax.entries)
+  const calls = new Set(syntax.entries.flatMap((at) => {
+    const callee = child(at, "callee")
+    return (at.type === "CallExpression" && callee && [keyOf(callee)]) || []
+  }))
+  for (const { symbol } of regions) if (symbol !== "@main") refs.deferred.add(symbol)
+  const record: ReadSite = (at, result, cwd = CWD, listing = false) => {
+    sites.push({ file, line: source.slice(0, at.start).split("\n").length, region: regionOf(regions, at), result, cwd, listing })
+  }
+  for (const at of syntax.entries) {
+    const region = regionOf(regions, at)
+    symbolAt(refs, at, region, signatures)
+    referenceAt(refs, at, region, moduleEdge(at, file, fileDir, loadSource, resolvePackage, record))
+    entrypointAt(refs, at, region, syntax, valueOf)
+    if (escapedProcess(at, syntax, signatures, calls)) record(at, opaque("escaped subprocess helper"))
+    resolutionAt(at, syntax, record)
+    checkSite(at, fileDir, syntax, valueOf, record)
+  }
+  for (const { original, alias } of exportedAliases(program)) {
+    refs.symbols.set(alias, new Set([...(refs.symbols.get(alias) ?? []), original]))
+    refs.deferred.add(alias)
+  }
+  return { sites, ...refs, errors, comments: parsed.comments.map(({ start, end }) => source.slice(start, end)) }
+}
+
+type Inspection = ReturnType<typeof inspect>
+const referencesOf = (file: string, symbol: string, summary: Inspection): ReadonlyArray<Reference> => {
+  if (symbol === "*") {
+    const owned = [...summary.deferred, ...summary.imports.keys()].flatMap((name) => (name !== "*" && [{ file, symbol: name }]) || [])
+    return [...owned, ...(summary.imports.get("*") ?? [])]
+  }
+  const refs = [...(summary.dynamics.get(symbol) ?? [])]
+  if (!symbol) {
+    for (const next of summary.initializers) refs.push({ file: next, symbol: "" })
+  } else {
+    refs.push({ file, symbol: "" }, ...(summary.imports.get(symbol) ?? []), ...(summary.imports.get("*") ?? []))
+  }
+  for (const name of summary.symbols.get(symbol) ?? []) {
+    if (summary.deferred.has(name)) refs.push({ file, symbol: name })
+    refs.push(...(summary.imports.get(name) ?? []))
+  }
+  return refs
+}
+
+const allSites = (file: string, root: Inspection, examine: (file: string) => Inspection) => {
+  const seen = new Set<string>()
+  const queue = new Map<string, Reference>()
+  const add = (reference: Reference) => queue.set(`${reference.file}\0${reference.symbol}`, reference)
+  add({ file, symbol: "" })
+  for (const symbol of root.deferred) add({ file, symbol })
+  const sites = new Set<Site>()
+  for (const [key, reference] of queue) {
+    if (seen.has(key)) continue
+    seen.add(key)
+    const summary = (reference.file === file && root) || examine(reference.file)
+    for (const next of referencesOf(reference.file, reference.symbol, summary)) add(next)
+    for (const site of summary.sites) if (site.region === reference.symbol) sites.add(site)
+    if (reference.file !== file && !reference.symbol && summary.errors.length > 0)
+      sites.add({ file: reference.file, line: 1, region: "", result: opaque("unparsed helper"), cwd: CWD, listing: false })
+  }
+  return [...sites]
+}
+
+const unknownReason = (result: Resolved) =>
+  Option.getOrElse(Option.flatMap(result, (address) => ("opaque" in address && Option.some(address.opaque)) || Option.none()), () => "computed read")
+
+const patternParts = (pattern: string): ReadonlyArray<string> => {
+  const parts = alternatives(pattern)
+  return (parts.length > 0 && parts.flatMap(patternParts)) || [pattern]
+}
+
+const checkScope = (pattern: string, declarations: ReturnType<typeof readDeclarations>) => {
+  const indirect = indirectDirectory(pattern)
+  if (declarations.some((each) => each.pattern === pattern && each.indirect === indirect)) return ""
+  return `declare @reads${(indirect && "-indirect") || ""} ${pattern}`
+}
+
+const siteReport = (file: string, sites: ReadonlyArray<Site>, declarations: ReturnType<typeof readDeclarations>, hasAll: boolean) => {
   const found = new Set<string>()
+  const bounded = new Set<string>()
   const issues = new Array<ReadCheck["issues"][number]>()
   const indirect = new Array<ReadCheck["indirect"][number]>()
-  const declarations = declarationsAt(source, parsed)
+  for (const site of sites) {
+    const needed = Option.flatMap(site.result, (address) => patternOf(address, site.cwd, site.listing))
+    const origin = (site.file !== file && ` (${site.file}:${site.line})`) || ""
+    const at = (site.file === file && site.line) || 1
+    if (Option.isNone(needed)) {
+      const reason = `${unknownReason(site.result)}${origin}`
+      indirect.push({ line: at, reason })
+      if (!hasAll) issues.push({ line: at, message: `${MESSAGE}: ${reason}` })
+      continue
+    }
+    if (!needed.value) continue
+    found.add(needed.value)
+    if (!Option.exists(site.result, (a) => "glob" in a && a.bounded)) continue
+    for (const scope of patternParts(needed.value)) {
+      bounded.add(scope)
+      const fix = !hasAll && checkScope(scope, declarations)
+      if (fix) issues.push({ line: at, message: `${fix}${origin}` })
+    }
+  }
+  return { found, bounded, issues, indirect }
+}
+
+const reasonFor = (annotation: string, site: ReadCheck["indirect"][number], file: string) => {
+  const [, kind = site.reason, owner = file] = /^(.*?) \((.+):\d+\)$/.exec(site.reason) ?? []
+  const prefix = `${kind} at ${owner}: `
+  return annotation.startsWith(prefix) && annotation.length > prefix.length
+}
+
+const unsupportedDeclarations = (declarations: ReturnType<typeof readDeclarations>, bounded: ReadonlySet<string>) =>
+  declarations.flatMap(({ indirect, pattern }) => {
+    if (indirect && !indirectDirectory(pattern)) return ["@reads-indirect must name a directory ending in /**; for an unknown scope use @reads all"]
+    if (!indirect && pattern === ALL_READS) return []
+    if (bounded.has(pattern)) return []
+    return [`remove unsupported @reads${(indirect && "-indirect") || ""} ${pattern}: no read site needs that scope`]
+  })
+
+const report = (file: string, source: string, comments: ReadonlyArray<string>, sites: ReadonlyArray<Site>): ReadCheck => {
+  const declarations = comments.flatMap(readDeclarations)
+  const reasons = comments.flatMap(readReasons)
   const declared = declarations.map(({ pattern }) => pattern)
   const hasAll = declared.includes(ALL_READS)
-  const hasScope = declarations.some(({ indirect, pattern }) => indirect && indirectDirectory(pattern))
-  const lineOf = (at: Node) => source.slice(0, at.start).split("\n").length
-  const issue = (at: Node, message: string) => issues.push({ line: lineOf(at), message })
-  const record: ReadSite = (at, input, cwd = CWD, listing = false) => {
-    const needed = Option.flatMap(input, (address) => patternOf(address, cwd, listing))
-    if (Option.isNone(needed)) {
-      const reason = Option.getOrElse(Option.flatMap(input, (address) => ("opaque" in address && Option.some(address.opaque)) || Option.none()), () => "computed read")
-      indirect.push({ line: lineOf(at), reason })
-      if (!hasAll && !hasScope) issue(at, `${MESSAGE}: ${reason}`)
-      return
-    }
-    if (!needed.value) return
-    found.add(needed.value)
-    if (!hasAll && !covers(declared, needed.value)) issue(at, `declare @reads ${needed.value}`)
-  }
+  const { found, bounded, issues, indirect } = siteReport(file, sites, declarations, hasAll)
+  const issue = (message: string) => issues.push({ line: 1, message })
+  if (hasAll && indirect.length === 0) issue("remove @reads all: no opaque read remains; declare the exact inputs instead")
+  if (hasAll && indirect.length > 0 && !reasons.some((reason) => indirect.some((site) => reasonFor(reason, site, file))))
+    issue("add @reads-reason <reported kind> at <file>: <opaque operation>")
   if (readDeclarations(source).some(({ pattern, indirect }) => !declarations.some((each) => each.pattern === pattern && each.indirect === indirect)))
-    issue(program, "@reads declarations must be source comments, not text in a string")
-  if (declared.some(wholeTree)) issue(program, "@reads must name the input or use @reads all for an opaque read")
-  if (declarations.some(({ indirect, pattern }) => indirect && !indirectDirectory(pattern)))
-    issue(program, "@reads-indirect must name a directory ending in /**; for an unknown scope use @reads all")
-  for (const at of syntax.entries) checkSite(at, fileDir, syntax, valueOf, record)
-  return { patterns: [...found].toSorted(), indirect, issues, classification: readClassification(hasAll || (indirect.length > 0 && !hasScope), indirect.length) }
+    issue("@reads declarations must be source comments, not text in a string")
+  if (declared.some(wholeTree)) issue("@reads must name the input or use @reads all for an opaque read")
+  for (const message of unsupportedDeclarations(declarations, bounded)) issue(message)
+  return { patterns: [...found].toSorted(), bounded: [...bounded].toSorted(), indirect, issues, classification: readClassification(indirect.length > 0, bounded.size) }
 }
+
+export const readInputChecker = (loadSource: Source, resolvePackage: ResolvePackage = () => "") => {
+  const modules = new Map<string, Inspection>()
+  const examine = (file: string) => {
+    const cached = modules.get(file)
+    if (cached) return cached
+    const next = inspect(file, loadSource(file), loadSource, resolvePackage)
+    modules.set(file, next)
+    return next
+  }
+  return (file: string, source: string): ReadCheck => {
+    const root = inspect(file, source, loadSource, resolvePackage)
+    if (root.errors.length > 0) return parserFailure(root.errors)
+    return report(file, source, root.comments, allSites(file, root, examine))
+  }
+}
+
+export const checkReadInputs = (file: string, source: string, loadSource: Source = () => ""): ReadCheck =>
+  readInputChecker(loadSource)(file, source)

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at tests/reconnect/fixture.ts: const work = yield* fs.realPath(`${root}/work`)
 // accept: deep (47.6 s alone on a quiet host: 1-minute load 51.0–89.8 on 12 cores; it starts a service from source and restarts it under a TUI from source)
 // A TUI on a worker whose Rift is gone keeps its session across a restart.
 // The shared world and the cases' bodies: tests/reconnect/fixture.ts.
@@ -15,4 +17,3 @@ describe.skipIf(!forkRuns)(SUITE, () => {
     TIMEOUT_MS,
   )
 })
-// @reads all

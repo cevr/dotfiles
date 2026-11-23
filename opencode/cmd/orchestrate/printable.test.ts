@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at cmd/orchestrate/printable.test.ts: return yield* Effect.forEach(MODULES, (file) => Effect.map(fs.readFileString(path.resolve(file)
 // The commitment record's one output boundary (mods/orchestrate/printable.ts), held three ways: every secret kind at
 // every place in a text comes out of `printable` with no fragment of it (sim/tokens.ts states the bound); every maker
 // of an output (a refusal, a failure, the CLI's run, a defect's text) takes only what `printable` made, so a raw text

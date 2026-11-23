@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pool/store/store.ts: names: (path) => Effect.try({ try: () => readdirSync(path), catch: (cause) => cause }),
 // A repeating monitor on the simulated host (sim/world.ts), at 20 seeds:
 // tests/wake-repeat.test.ts's name and the claims it reads off the model's
 // requests and the transcript, moved off real OpenCode (it waited out a

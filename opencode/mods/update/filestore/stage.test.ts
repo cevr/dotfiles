@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/update/filestore/stage.test.ts: expect(spawnSync(["/bin/sh", "-c", 'mkdir -p "$(dirname "$2")" && printf "%s" "$1" > "$2"', "sh
 import { describe, expect, test } from "bun:test"
 import { argv, env, spawnSync } from "bun"
 import { Effect, Layer, Option, Schema } from "effect"

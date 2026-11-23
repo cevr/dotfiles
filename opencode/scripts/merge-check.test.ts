@@ -1,11 +1,11 @@
+// @reads all
+// @reads-reason subprocess reads at scripts/merge-check.test.ts: const child = yield* spawner.spawn(ChildProcess.make("bun", ["scripts/gate.ts", "--merge", "HEA
 // The legs of a land's merge check (scripts/merge-check.ts, which scripts/gate.ts --merge runs as given): which
 // scripts/ tests a diff selects, and that a selected test is in the leg the merge check runs.
 //
 // Its selections run over the scripts/ folder as it is (`tree` reads every scripts/ source by path, not import), so a
 // new or changed scripts/ file can change what it asserts; it declares them, or no merge check runs it (fork-checks.test
 // and required-inputs.test landed by their merge checks and turned it red on main, b5735808):
-// @reads scripts/*.{ts,tsx}
-// @reads-indirect scripts/** ../workbox/test/**
 // Which tests import or read a path is the tree's fact, derived (`found`); what a case pins by hand is a rule's decision.
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Glob } from "bun"
@@ -15,7 +15,8 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { describe, expect, it } from "effect-bun-test"
 import { parseNameStatus } from "./docs-guard.ts"
 import { ACCEPT_TESTS, DOCS_GUARD, GIT_REPO_GUARD, lintFiles, mergeLegs, reachedWithin, scriptTests } from "./merge-check.ts"
-import { importsOf, matchingReads, readsOf } from "./reach.ts"
+import { readMatcher } from "./read-declarations.ts"
+import { importsOf, inspectReads, load, readsOf } from "./reach.ts"
 
 /** bb435bcc's change set from opencode/ (Rift U1's land): its cmd/work/server.ts import broke runtime-imports.test, which its merge check never ran. */
 const BB435BCC = [
@@ -55,9 +56,10 @@ const BB435BCC = [
   "",
 ].join("\n")
 
-/** The scripts/ folder as the merge check reads it (its files, each source's imports), and the selections over it. */
+/** Scoped inputs from the real scripts/ tree. Unknown selection is exercised separately with a controlled reader. */
 const tree = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
+  const workspace = yield* Effect.promise(load)
   const files = [...new Glob("scripts/*.{ts,tsx}").scanSync()]
   const sources = files
   const texts = new Map(yield* Effect.forEach(sources, (file) => Effect.map(fs.readFileString(matchingInput("scripts/*.{ts,tsx}", file)), (text) => [file, text] as const)))
@@ -67,7 +69,7 @@ const tree = Effect.gen(function* () {
   const scripts = {
     files: sources.filter((file) => /\.test\.tsx?$/.test(file)),
     imports: (file: string) => imports.get(file) ?? [],
-    reads: (file: string) => readsOf(texts.get(file) ?? ""),
+    reads: (file: string) => inspectReads(workspace, file).patterns,
   }
   const tools = (workbox: string) => ({
     bun: "bun",
@@ -85,6 +87,7 @@ const tree = Effect.gen(function* () {
   const found = (...files: ReadonlyArray<string>) => [...new Set(files.flatMap((file) => [...importers(file), ...readers(file)]))].toSorted()
   return {
     exists,
+    workspace,
     importers,
     found,
     /** What a diff of `files` must select: the `pinned` tests its rules name, beside every test the tree says imports or reads one. */
@@ -112,7 +115,8 @@ describe("the merge check's tests", () => {
       expect(tests("M\tscripts/leaks.ts\n")).toContain("scripts/accept.test.ts")
       // Pins: reach.ts has no test of its own; the tests that import it run, these three among them.
       expect(tests("M\tscripts/reach.ts\n")).toEqual(expected([], "scripts/reach.ts"))
-      for (const test of ["scripts/accept-ledger.test.ts", "scripts/accept.test.ts", "scripts/merge-check.test.ts"]) expect(tests("M\tscripts/reach.ts\n")).toContain(test)
+      for (const test of ["scripts/fork-checks.test.ts", "scripts/accept.test.ts", "scripts/merge-check.test.ts"]) expect(tests("M\tscripts/reach.ts\n")).toContain(test)
+      expect(tests("M\tscripts/accept-key.ts\n")).toContain("scripts/accept-ledger.test.ts")
       // Pins: a changed scripts/ test runs itself, and the git-repo guard over its text.
       expect(tests("M\tscripts/leaks.test.ts\n")).toEqual(expected(["scripts/leaks.test.ts", GIT_REPO_GUARD], "scripts/leaks.test.ts"))
       // Pins: a script no test imports selects only the tests that read it by path; its typecheck and lint still run.
@@ -181,9 +185,9 @@ describe("the merge check's tests", () => {
 
   live("the full gate's explicit cache inputs cover runtime-imports.test's cmd and mod readers without covering the whole tree", () =>
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem
-      const source = yield* fs.readFileString(matchingInput("scripts/runtime-imports.test.ts"))
-      const inputs = matchingReads(source, ["cmd/work/server.ts", "mods/work/tool.ts", "themes/prime.json"])
+      const { workspace } = yield* tree
+      const inputs = ["cmd/work/server.ts", "mods/work/tool.ts", "themes/prime.json"]
+        .filter(readMatcher(inspectReads(workspace, "scripts/runtime-imports.test.ts").patterns))
       expect(inputs).toEqual(["cmd/work/server.ts", "mods/work/tool.ts"])
     }),
   )

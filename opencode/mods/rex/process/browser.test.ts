@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/rex/process/browser.test.ts: const calls = Fake.use((held) => Effect.sync(() => readFileSync(held.log, "utf8").split("\n").f
 // The headless browser adapter against a stand-in browser (fake-browser.sh)
 // and a page served here: which browser it finds, the arguments of a shot
 // (headless, a scratch profile, the viewport, the page last), the shot read

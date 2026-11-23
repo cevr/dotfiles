@@ -1,24 +1,19 @@
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { argv, Glob } from "bun"
-import { Console, Data, Effect, FileSystem } from "effect"
-import { ROOT, sourceText } from "./reach.ts"
-import { checkReadInputs } from "./test-reads.ts"
+import { argv } from "bun"
+import { Console, Data, Effect } from "effect"
+import { checkedTests, inspectReads, load } from "./reach.ts"
 
-const filesAt = (directory: string) =>
-  [...new Glob("*.test.{ts,tsx}").scanSync({ cwd: `${ROOT}/${directory}` })].map((name) => `${directory}/${name}`)
-
-const scripts = [...new Glob("scripts/**/*.test.{ts,tsx}").scanSync({ cwd: ROOT })].filter((file) => !file.includes("node_modules/"))
-const files = [...scripts, ...filesAt("tests"), ...filesAt("../workbox/test")]
 class UntrackedTestReads extends Data.TaggedError("UntrackedTestReads")<{ readonly message: string }> {}
 
 BunRuntime.runMain(Effect.gen(function* () {
-  const fs = yield* FileSystem.FileSystem
+  const workspace = yield* Effect.promise(load)
+  const files = checkedTests(workspace)
+  if (argv.includes("--files")) return yield* Console.log(files.join("\n"))
   const problems = new Array<string>()
   for (const file of files) {
-    const source = yield* fs.readFileString(`${ROOT}/${file}`)
-    const { patterns, issues, classification, indirect } = checkReadInputs(file, source, sourceText)
-    if (argv.includes("--inventory")) yield* Console.log(`${file}\t${patterns.join(" ")}\t${classification}\t${indirect.map(({ line, reason }) => `${line}: ${reason}`).join("; ")}`)
+    const { patterns, issues, classification, indirect, bounded } = inspectReads(workspace, file)
+    if (argv.includes("--inventory")) yield* Console.log(`${file}\t${patterns.join(" ")}\t${classification}\t${indirect.map(({ line, reason }) => `${line}: ${reason}`).join("; ")}\t${bounded.join(" ")}`)
     for (const { line, message } of issues) problems.push(`${file}:${line}: ${message}`)
   }
   if (problems.length > 0) {

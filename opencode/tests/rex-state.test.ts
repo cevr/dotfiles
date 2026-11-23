@@ -60,4 +60,3 @@ describe.skipIf(!fork)("OpenCode's state in a Rex pane's program status (OPENCOD
     SCENARIO_MS,
   )
 })
-// @reads all

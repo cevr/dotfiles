@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason native TUI plugin loader reads at sim-tui/app.ts: createAppFixture({
 // Determinism of the simulated TUI: for 20 seeds, a sequence the seed draws
 // (send a prompt, the reply streamed in pieces the seed cuts, a key, a resize,
 // time moved, a child session started and ended; up to 30 steps) run twice in

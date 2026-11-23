@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at tests/mail-start.test.ts: const child = Bun.spawn([link, ...args], { cwd: work, env, stdout: "pipe", stderr: "pipe" })
 // The mail listener runs from the service's start: `opencode service start`,
 // through the launcher daily writes (mods/update/filestore/launcher.ts `launcher`), loads the
 // resident location, so a fresh server, with no client, no session and no
@@ -115,4 +117,3 @@ describe.skipIf(!fork)("the mail listener from the service's start", () => {
     TIMEOUT_MS,
   )
 })
-// @reads all

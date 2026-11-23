@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at sim-tui/static.test.ts: const names = yield* fs.readDirectory(path.join(ROOT, dir))
 // No wall time in a simulated TUI file: a `*.sim.test.tsx`, and every file of
 // sim-tui/ but the fixture boot (app.ts, the one that holds the clocks), never
 // names a real timer or a real clock (`Bun.sleep`, `setTimeout`,

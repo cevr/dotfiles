@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/rex/process/simulators.ts: return yield* png(new Uint8Array(yield* Effect.tryPromise({ try: () => readFile(file), catch: (
 // `rex-show sim`: the arguments it takes, the caller (one showcase, the
 // simulator and the Mac host spooled, no simulator asked), and the viewer
 // over a fake screenshot source: the screen drawn under the device's name

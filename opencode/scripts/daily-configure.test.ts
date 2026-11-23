@@ -1,7 +1,8 @@
+// @reads all
+// @reads-reason computed read at scripts/daily.ts: const where = existsSync(join(root, "cmd", name, "package.json")) ? "cmd" : "mods"
 // What a build's tree gives the TUI (`config/cli.json`, daily's `tuiEntries`): every plugin with a TUI
 // part, in the old scheme's order. A tree's server entries carry no TUI part, so this list is the only
 // way a TUI gets one.
-// @reads cmd/*/tui.{ts,tsx} cmd/*/package.json
 import { describe, expect, test } from "bun:test"
 import { Glob } from "bun"
 import { Schema } from "effect"
@@ -38,4 +39,3 @@ describe("the TUI's plugin list in a build's tree", () => {
     expect(text.split(`"${ROOT}/cmd/`).length - 1).toBe(order.length)
   })
 })
-// @reads-indirect scripts/** cmd/** mods/** themes/**

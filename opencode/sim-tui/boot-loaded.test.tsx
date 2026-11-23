@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason native TUI plugin loader reads at sim-tui/app.ts: createAppFixture({
 // A boot past its CPU on a loaded host passes, reported and not judged: on a host past its cores the same boot
 // takes more CPU (sim/seed.ts `cpuVerdict`), and a deep run at load 40-51 failed three files on boots of 4.0-4.3 s
 // that took 2.7-3.0 s at load 8. The app it booted is the file's: a seed drives it.

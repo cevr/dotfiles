@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pool/store/store.ts: names: (path) => Effect.try({ try: () => readdirSync(path), catch: (cause) => cause }),
 // Finished work that never reached main, as `orchestrate status` says it on the simulated host (orch-tools-world.ts:
 // the real orchestrate, rift and status plugins on their memory layers; git's answers in memory/work-git.ts). A unit
 // handed back ready whose head is not on main is named first once it is past the threshold, never before, and no longer

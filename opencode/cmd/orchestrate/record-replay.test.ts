@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason nonliteral subprocess arguments at cmd/orchestrate/record-replay.test.ts: for (const args of [["add", docPath], ["commit", "-q", "-m", "fixture"]]) expect(spawnSync(["gi
 // The actual CLI and registered tool share the durable retry rule. Scratch artifact changes cannot turn
 // "filed already" into an evidence error or create another promise.
 import { Database } from "bun:sqlite"

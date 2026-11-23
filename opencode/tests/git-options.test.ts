@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason Git command or object reads at tests/git-options.ts: const page = join(execFileSync("git", ["--man-path"], { encoding: "utf8" }).trim(), "man1", "gi
 // The guard's tables of git's global options (mods/guard/verdict.ts), checked against the git
 // installed here rather than a copy: every option its manual lists is in one table, and the
 // value-taking table is exactly the options that git, run, makes take the next word. A git that
@@ -48,4 +50,3 @@ describe("the guard's git global options", () => {
     expect(manualOptions("no manual")).toEqual([])
   })
 })
-// @reads-indirect tests/** mods/guard/**

@@ -17,7 +17,9 @@ import { describe, expect, test } from "bun:test"
 import { Array as Arr, Option } from "effect"
 import * as Accept from "./accept-ledger.ts"
 import { isSerial } from "./accept-plan.ts"
-import { ACCEPT_SHARED, acceptKey, acceptSharedFrom, isAcceptInput, matchingReads, packageOf } from "./reach.ts"
+import { ACCEPT_SHARED, acceptKey, acceptSharedFrom } from "./accept-key.ts"
+import { matchingReads } from "./read-declarations.ts"
+import { isAcceptInput, packageOf } from "./test-population.ts"
 
 const SEEDS = 200
 const COMMANDS = 40
@@ -667,4 +669,3 @@ describe("the acceptance ledger against its model", () => {
     expect(Accept.select("owed", [{ file: "tests/work.test.ts", tier: "deep", key: "k1" }], Accept.emptyLedger, 0).run).toEqual(["tests/work.test.ts"])
   })
 })
-// @reads-indirect scripts/**

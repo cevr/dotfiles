@@ -344,4 +344,3 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     expect(cell(details, "for i in range(retries):").bg).toBe(DIFF.addedBg)
   }))
 })
-// @reads all

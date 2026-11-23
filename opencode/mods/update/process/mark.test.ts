@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/update/process/mark.test.ts: const deadPid = () => spawnSync(["true"]).pid
 import { describe, expect, test } from "bun:test"
 import { file, spawnSync } from "bun"
 import { Effect, Option } from "effect"

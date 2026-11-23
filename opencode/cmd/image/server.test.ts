@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at cmd/image/server.test.ts: Effect.sync(() => spawnSync(["mktemp", "-d", "-t", "image-seam"]).stdout.toString().trim()),
 // The plugin seam: the composition root on a stand-in host, over a catalog
 // and jobs that record, and real request files in a scratch folder. It checks
 // what OpenCode sees: one direct `image` tool, OpenCode's own image tool taken

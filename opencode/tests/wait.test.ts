@@ -49,4 +49,3 @@ describe("a test's wait for background work", () => {
     CASE_MS,
   )
 })
-// @reads-indirect tests/**

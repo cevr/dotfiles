@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at sim-tui/host.test.ts: ChildProcess.make(process.execPath, ["test", "--timeout", String(RUN_MS), FIXTURE], {
 // The simulated TUI never reads the host it runs on. A fake host (a scratch
 // HOME and XDG_STATE_HOME, given to a child `bun test` through its env) holds
 // the upstream reading `bun run daily` writes, 38 commits behind with the merge

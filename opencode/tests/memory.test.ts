@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at tests/memory.test.ts: const child = Bun.spawn([process.execPath, join(import.meta.dir, "memory/run.ts"), file], {
 // The memory plugin in real OpenCode (the fork, through its SDK) on the
 // scripted model, on a scratch memory file. A run sends an id, a limit and
 // tags as strings, as models do, and they are read as the number and the list
@@ -85,4 +87,3 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
     150_000,
   )
 })
-// @reads all

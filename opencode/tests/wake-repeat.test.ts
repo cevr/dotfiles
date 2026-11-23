@@ -9,8 +9,7 @@
 // prompt; a cancel stops it) runs on the simulated host under the same name:
 // cmd/wake/wake-repeat.sim.test.ts, by tests/parity/wake.json.
 import { describe, expect, test } from "bun:test"
-import { existsSync } from "node:fs"
-import { readScratchFileSync as readFileSync } from "./read-path.ts"
+import { readScratchFileSync as readFileSync, scratchExistsSync } from "./read-path.ts"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
@@ -31,7 +30,7 @@ const run = async (out: string) => {
   })
   const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
   const timeout = join(out, `${label}-timeout.txt`)
-  if (code !== 0) throw new Error(`${label} scenario exited ${code}:\n${(stdout + stderr).slice(-5000)}\n${existsSync(timeout) ? readFileSync(timeout, "utf8") : ""}`)
+  if (code !== 0) throw new Error(`${label} scenario exited ${code}:\n${(stdout + stderr).slice(-5000)}\n${scratchExistsSync(timeout) ? readFileSync(timeout, "utf8") : ""}`)
   return { read: (name: string) => readFileSync(join(out, `${label}-${name}`), "utf8") }
 }
 
@@ -56,4 +55,3 @@ describe.skipIf(!fork)("with OpenCode's automations on", () => {
     }
   }), 180_000)
 })
-// @reads all

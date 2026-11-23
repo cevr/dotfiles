@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pool/store/store.ts: names: (path) => Effect.try({ try: () => readdirSync(path), catch: (cause) => cause }),
 // A generated property of the idle-root rules (mods/orchestrate/idle.ts), on
 // the simulated host at 20 seeds: the orchestrate, status and queue plugins
 // on the world, the status script printing run `p1` (alpha in implement, beta

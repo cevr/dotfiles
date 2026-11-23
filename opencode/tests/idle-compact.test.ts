@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess helper reads at tests/idle-compact.test.ts: const child = owned([process.execPath, join(import.meta.dir, "idle-compact/run.ts"), file], {
 // accept: one at a time (it bounds when the idle compaction fires against its due time).
 // accept: may skip 1 (the fork's version picks one of "recorded as automatic" and "records the idle compaction as manual")
 // Idle compaction in real OpenCode (the fork, through its SDK) on the scripted
@@ -142,4 +144,3 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
     120_000,
   )
 })
-// @reads all

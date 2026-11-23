@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pool/store/store.ts: names: (path) => Effect.try({ try: () => readdirSync(path), catch: (cause) => cause }),
 // A job's end as a durable event, on the simulated host (sim/world.ts) at 20
 // seeds: the wakes plugin (`cmd/wake/server.ts`'s `make`, sim/plugins.ts) on
 // the runner's memory double, which the test drives as the job's runner

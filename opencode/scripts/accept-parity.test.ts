@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason nonliteral subprocess argv at scripts/accept-parity.test.ts: const child = yield* spawner.spawn(ChildProcess.make(command, args, { cwd: ROOT, env, extendEnv
 // No assertion lost: a real acceptance test leaves real OpenCode only through
 // a parity manifest (tests/parity.json, and each tests/parity/*.json beside it,
 // each with its own baseline), and only for a simulated test, under the same
@@ -15,7 +17,6 @@
 //
 // A baseline count is the `expect(` calls in the test's body in the real file
 // at the baseline commit; this test checks the manifest's against it.
-// @reads tests/parity.json tests/parity/*.json tests/*.test.ts **/*.sim.test.ts **/*.sim.test.tsx
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Glob } from "bun"
 import { Effect, FileSystem, Path, Schema, Stream } from "effect"
@@ -253,4 +254,3 @@ describe("no assertion lost", () => {
     60_000,
   )
 })
-// @reads-indirect scripts/** tests/** sim/** sim-tui/** mods/** cmd/**

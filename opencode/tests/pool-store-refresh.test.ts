@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess helper reads at tests/pool-store-refresh.test.ts: const run = owned(
 // accept: one at a time (it bounds how long the store's refresh takes).
 // Real OpenCode (the fork, from source) with the Anthropic auth plugin and
 // the pool reading a login store, against the fake Anthropic API. Two store
@@ -148,4 +150,3 @@ describe.skipIf(!ready)("a store account whose refresh is rate-limited does not 
     RUN_TIMEOUT_MS + 30_000,
   )
 })
-// @reads all

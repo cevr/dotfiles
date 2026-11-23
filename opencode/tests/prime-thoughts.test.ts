@@ -4,8 +4,8 @@
 // that step's tree, a thought-only step is a one-node tree, and a finished
 // worker's notice is a tool-call group beside an ordinary one.
 // It needs OPENCODE_DEV, the fork with the plugin hook points.
+import { readScratchFileSync } from "./read-path.ts"
 import { beforeAll, describe, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
@@ -83,10 +83,10 @@ describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     const load = (name: string): Saved => {
-      const lines = readFileSync(join(out, `${name}.txt`), "utf8")
+      const lines = readScratchFileSync(join(out, `${name}.txt`), "utf8")
         .split("\n")
         .map((line) => line.trimEnd())
-      return { lines, rows: withoutTurnTime(lines), frame: JSON.parse(readFileSync(join(out, `${name}.json`), "utf8")) }
+      return { lines, rows: withoutTurnTime(lines), frame: JSON.parse(readScratchFileSync(join(out, `${name}.json`), "utf8")) }
     }
     frames.streaming = load("thoughts-streaming")
     frames.details = load("thoughts")
@@ -203,4 +203,3 @@ describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE
     for (const end of timedRows(frames.overview.lines).filter((line) => shown.includes(line))) expect([`  ${STARTED}`, `  ${NOTED}`]).toContain(end)
   }))
 })
-// @reads all

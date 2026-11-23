@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at scripts/cache-audit.ts: const servers = existsSync(join(root, "cmd"))
 import { describe, expect, test } from "bun:test"
 import { mkdirSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
@@ -110,4 +112,3 @@ describe("the static probes", () => {
     expect(probe(join(root, "none"), join(root, "none"), join(root, "none.json"))).toEqual({ systemPushers: [], mcpServers: [], toolRemovers: [] })
   })
 })
-// @reads-indirect scripts/** mods/cache/**

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pool/store/store.ts: names: (path) => Effect.try({ try: () => readdirSync(path), catch: (cause) => cause }),
 // A generated property over faults, on the simulated host at 20 seeds and the
 // past failing ones: the
 // pool on two Claude accounts of one login store, held by the pool's process

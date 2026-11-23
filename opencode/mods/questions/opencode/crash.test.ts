@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/questions/opencode/crash.test.ts: Effect.sync(() => Bun.spawn(["bun", PROGRAM, ...args], { stdout: "pipe", stderr: "pipe", detach
 // An answer from the digest page whose server process is killed (SIGKILL) at each step, over the fork's real
 // key-value table, then the restart's resend in a fresh process. Wherever it dies, the session gets the answer at
 // most once, under one delivery id. It gets none only if the kill came before the answer was stored; then the

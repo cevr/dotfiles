@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at tests/pool-store.test.ts: expect(statSync(join(ours.dir, ".slots/anthropic/alpha")).mode & 0o777).toBe(0o600)
 // accept: one at a time (it bounds how far apart two refreshes begin).
 // The pool's login store source over a store in its slot-file format: the
 // fixtures are slot files in temporary directories, another process's
@@ -216,4 +218,3 @@ describe("the pool's source over a login store", () => {
     }),
   )
 })
-// @reads all

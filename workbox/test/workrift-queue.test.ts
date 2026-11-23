@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at ../workbox/test/workrift-queue.test.ts: const ran = Bun.spawnSync([...argv], { cwd, env, stdout: "pipe", stderr: "pipe" })
 // A model, on a manual clock, of how workrift admits creates (readers: a copy of the base) and moves of the base
 // (writers: an advance's fast-forward and install, a refresh, a repair) to the base, and of what each writes inside
 // the tree a copy reads. Two protocols:
@@ -16,7 +18,6 @@
 // warms too, under the exclusive lock). The schedule of 2026-11-22 00:00Z on the workbox (11 creates waiting, master
 // moving every ten minutes, 96-239 s clones, a 628 s warm) shows the wait each gives.
 import { afterAll, describe, expect, test } from "bun:test"
-// @reads ../workbox/bin/workrift
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { matchingInput, readScratchDirectorySync as readdirSync, readScratchFileSync as readFileSync, scratchInput } from "../../opencode/tests/read-path.ts"
 import { tmpdir } from "node:os"
@@ -826,4 +827,3 @@ describe("the clone turn: one clone or delete at a time per copy base, in arriva
     expect(run.turns.map((t) => t.name).sort()).toEqual(["n1", "n2", "nr"])
   }, 60_000)
 })
-// @reads-indirect ../workbox/bin/**

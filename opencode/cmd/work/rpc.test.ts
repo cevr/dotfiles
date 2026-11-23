@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/work/process/command.ts: try: () => Bun.spawn([...argv], { cwd, env: { ...base, ...extra }, stdin: "ignore", stdout: "pi
 // The rift RPC (`@dotfiles/opencode-work/rpc`) as cmd/work serves it, against its `work` tool, on the
 // plugin's seam, over `make` and memory layers. A differential: one seeded
 // sequence of calls goes to the tool on one world and to the RPC on a twin world, and each answer's text is

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pool/opencode/limits.ts: return renameValue(JSON.parse(readFileSync(path, "utf8")))
 // The chunk stores over the in-memory storage the seam tests use: the fold from one key per entry (fresh, stopped
 // mid-way and taken up again, an old build's key written after it), both shapes read as one, and writers in one
 // process or in several on one storage. Each `Chunks.open` over a storage is one process's store.

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at tests/auto-title.test.ts: const command = ChildProcess.make(process.execPath, [path.join(ROOT, "tests/auto-title/run.ts")
 // Auto-title in real OpenCode: one boot of the fork through its SDK
 // (tests/auto-title/run.ts) in a scratch home, on a scripted model, with the
 // plugin loaded from config, due after 0 minutes and 2 turns. An idle root
@@ -84,4 +86,3 @@ describe("auto-title in real OpenCode", () => {
     150_000,
   )
 })
-// @reads all

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason native TUI plugin loader reads at sim-tui/app.ts: createAppFixture({
 // The transcript map (ctrl+x g) on a long session, with Prime loaded. Two
 // hundred asks were queued at once, so each keeps the id it was given when
 // queued, older than the answers before it (as a notice queued long before it

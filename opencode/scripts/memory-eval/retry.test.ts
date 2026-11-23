@@ -29,4 +29,3 @@ describe("the gotcha trigger's detector", () => {
     expect(isRetryOf("pytest", "uv run pytest")).toBe(true)
   })
 })
-// @reads-indirect scripts/memory-eval/**

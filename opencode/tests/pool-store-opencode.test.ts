@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess helper reads at tests/pool-store-opencode.test.ts: const run = owned(
 // Real OpenCode (the fork, from source) with the Anthropic auth plugin and
 // the pool reading a login store, against the fake Anthropic API. OpenCode
 // holds no Anthropic login of its own: both accounts are the store's, slot
@@ -125,4 +127,3 @@ describe.skipIf(!ready)("OpenCode runs on a login store's Claude accounts throug
     RUN_TIMEOUT_MS + 30_000,
   )
 })
-// @reads all

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at scripts/pool-limits.test.ts: const run = Bun.spawnSync([process.execPath, join(import.meta.dir, "pool-limits.ts"), ...args],
 // The limit tally's CLI view on a recorded fixture: both hosts' dumps of
 // 2026-11-12 (pool-limits-dump.ts), cut to the Anthropic weeks, logins
 // renamed, each host's tokens per login and model in the login's week summed.
@@ -71,4 +73,3 @@ test("--file: a file with no tally state is an error that names the path", () =>
   expect(answer.code).toBe(1)
   expect(answer.err).toContain(`no limit tally at ${path}`)
 })
-// @reads-indirect scripts/**

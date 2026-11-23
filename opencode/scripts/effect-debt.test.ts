@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at scripts/effect-debt.test.ts: chain.reduce((from, name) => path.dirname(realpathSync(Bun.resolveSync(`${name}/package.json`,
 /**
  * The Effect lint policy at its public seams: the pure comparator over generated budgets and
  * counts, the `scripts/effect-debt.ts` command over real temporary workspaces (real oxlint and
@@ -7,7 +9,6 @@
  * It copies the real policy, configs and manifests into its workspaces by path, so a change of one of them alone
  * reaches it through no import: the merge check runs it on these (a5821de8 changed only the ignore lists, and
  * main went red here unseen).
- * @reads effect-debt.json .oxlintrc.json .oxlintrc.effect-debt.json package.json bun.lock lint/package.json lint/{test-env,tui-clock,tui-dirs,kept-scratch,chrome-keychain}.ts .gitattributes merge-drivers.gitconfig
  */
 import { describe, expect, test } from "bun:test"
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync as readCheckoutFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
@@ -1137,4 +1138,3 @@ describe(`${HARD_CONFIG}: the hard rules`, () => {
     TEST_TIMEOUT,
   )
 })
-// @reads-indirect lint/** scripts/**

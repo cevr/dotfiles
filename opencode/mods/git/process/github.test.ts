@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/git/process/github.ts: const run = Bun.spawn([program, ...args], {
 // GitHub through a stand-in `gh` (fake-gh.ts) on a scratch PATH: where a
 // checkout stands, one GraphQL read of requests and the default branch, the
 // conditional probes, a job's log and `pr create` with the reviewers; and no

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at cmd/mail/pair.test.ts: const [macFile, workboxFile] = [JSON.parse(readFileSync(mac.file, "utf8")), JSON.parse(readFile
 // The pair command and the listener together, in this process: two hosts'
 // listeners on loopback ports, each over its own pairing file. The workbox
 // invites, the Mac joins; then each lists the other's sessions and hands it a

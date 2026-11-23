@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at sim/canary.ts: fs.readFile(path).pipe(
 import { expect, test } from "bun:test"
 import { Array as Arr, Cause, Data, Effect, Exit, Layer, Option, Ref, Schema } from "effect"
 import * as PrintableModule from "@dotfiles/opencode-orchestrate/printable"

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/orchestrate/git/fleet.ts: const text = yield* Effect.tryPromise(() => file(path).text()).pipe(Effect.map(Option.some), Ef
 // A verify of main publishes the fleet target like any batch: the batch file it writes is the one git/fleet.ts reads
 // beside its verifier's findings when the verdict is accepted, and that file's heads line is the one fleet reads. A batch
 // file names its head as the fleet reads it (one reader, fleet.ts `headsOf`), so the verify-due count starts where the

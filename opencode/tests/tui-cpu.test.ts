@@ -57,4 +57,3 @@ describe.skipIf(!fork)("the TUI's CPU while a long session and its subagents str
     expect(result.busy[0]!.share).toBeLessThan(BUDGET)
   }))
 })
-// @reads all

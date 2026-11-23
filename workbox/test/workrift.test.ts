@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at ../workbox/test/workrift.test.ts: expect(existsSync(calls)).toBe(false)
 // workbox/bin/workrift, run for real in a scratch HOME with a bare origin, a
 // no-op `flock` (macOS has none) and WORKRIFT_ROOT inside the scratch folder.
 // It runs over the `work` binary WORK_BIN names (a backend file, when there is
@@ -7,7 +9,6 @@
 // install once, gh stack metadata, the removal rule, a prune that spares kept
 // bases. Nothing here touches the real host: every path is under the scratch.
 import { afterAll, describe, expect, test } from "bun:test"
-// @reads ../workbox/bin/workrift ../workbox/bootstrap.sh
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync as readCheckoutFileSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
 import { matchingInput, readScratchDirectorySync as readdirSync, readScratchFileSync as readFileSync, readScratchLinkSync as readlinkSync, scratchInput } from "../../opencode/tests/read-path.ts"
 import { tmpdir } from "node:os"
@@ -3213,4 +3214,3 @@ describeWork("workrift deps knows its holder by identity, not by a stale holder 
     expect(cases.some((c) => c.holder.startsWith("unrelated") && c.stales.some((s) => s.startsWith("ancestor")))).toBe(true)
   }, 600_000)
 })
-// @reads-indirect ../workbox/**

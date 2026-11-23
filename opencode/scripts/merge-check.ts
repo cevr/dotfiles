@@ -51,9 +51,6 @@ export const workboxTests = (workbox: Workbox): ReadonlyArray<string> => (workbo
 export const DOCS_GUARD = "scripts/verify-docs.test.ts"
 export const ACCEPT_TESTS = ["scripts/accept.test.ts", "scripts/accept-parity.test.ts"] as const
 export const GIT_REPO_GUARD = "tests/git-repo.test.ts"
-export const testFilesIn = (dir: string, names: ReadonlyArray<string>): ReadonlyArray<string> =>
-  names.flatMap((name) => (/\.test\.tsx?$/.test(name) && [`${dir}/${name}`]) || [])
-
 /** The path a change leaves on disk: a rename's or a copy's new path, else its only one; none for a deletion. */
 const left = (change: Change): ReadonlyArray<string> => {
   if (change.status === "D") return []

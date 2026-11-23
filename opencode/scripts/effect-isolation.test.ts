@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at scripts/effect-debt.ts: try: () => Bun.spawn([...argv], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", detache
 /**
  * Test isolation at its two seams. At the lint CLI: `.oxlintrc.json` refuses every generated
  * test-global write (process.env and the global objects, by assignment, update, delete or the
@@ -11,7 +13,6 @@
  * repo's own `dotfiles/no-module-env-in-tests` still refuses the computed root while a test file
  * loads; that retained coverage is asserted, the alias is not.
  *
- * @reads .oxlintrc.json lint/{test-env,tui-clock,tui-dirs,kept-scratch,chrome-keychain}.ts
  */
 import { describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
@@ -341,4 +342,3 @@ describe("the fixtures that wrote the process's env or registry, under generated
     TEST_TIMEOUT,
   )
 })
-// @reads-indirect lint/** scripts/**

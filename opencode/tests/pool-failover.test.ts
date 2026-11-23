@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at tests/pool-failover.test.ts: const imported = Bun.spawnSync([...launch.base, "auth", "import", "--standalone"], {
 // accept: one at a time (it bounds the gap between the failed turn and its retry).
 // Real OpenCode (the fork, from source) with two Anthropic logins, the
 // Anthropic auth plugin and the pool, against the fake Anthropic API. The
@@ -215,4 +217,3 @@ describe.skipIf(!ready)("the pool fails a refused run over to the next login (re
     RUN_TIMEOUT_MS + 30_000,
   )
 })
-// @reads all

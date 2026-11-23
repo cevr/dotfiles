@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at scripts/post-land.test.ts: Bun.spawn([process.execPath, CHILD], {
 // The dotfiles' post-land step (scripts/post-land.ts) over stand-in steps: no fork, no network,
 // no push. And the lock it shares with daily's step 0 (scripts/upstream.ts `withUpstreamLock`), raced by
 // real processes (scripts/upstream-lock-child.ts).
@@ -420,4 +422,3 @@ describe("the upstream lock", () => {
     }
   }, 60_000)
 })
-// @reads-indirect scripts/** tests/**

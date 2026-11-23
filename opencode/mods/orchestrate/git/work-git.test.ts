@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/orchestrate/git/work-git.test.ts: Effect.sync(() => spawnSync([...argv], { cwd, env: ENV, stdin: "ignore", stdout: "pipe", stderr
 // WorkGit over real git in a scratch folder: a base with its default branch `main`, and lanes copied from it whole
 // (as `work` copies one), whose commits the base never fetched. Each head is read in the base with the lanes'
 // objects borrowed: on main (merged), patch-equivalent (cherry-picked; rebased then squash-merged), absent (its own

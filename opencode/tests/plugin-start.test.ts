@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at tests/plugin-start.test.ts: const root = spawnSync(["mktemp", "-d", "-t", "plugin-start"]).stdout.toString().trim()
 // accept: one at a time (it measures each plugin's setup time and the service's CPU at start).
 // Our server plugins start without holding a location up: a scratch fork service with
 // daily's server plugins (scripts/perf/plugin-start.ts, from its own OTLP spans) opens
@@ -72,4 +74,3 @@ describe.skipIf(!fork)("our server plugins at a service's start", () => {
     120_000,
   )
 })
-// @reads all

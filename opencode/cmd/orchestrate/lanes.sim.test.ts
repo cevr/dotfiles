@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pool/store/store.ts: names: (path) => Effect.try({ try: () => readdirSync(path), catch: (cause) => cause }),
 // One lane, one unit, one branch, with its purpose: the `orchestrate` tool's lane, land and status on the simulated
 // host (orch-tools-world.ts: the real orchestrate, rift and status plugins on their memory layers). A lane the tool made
 // (marked) then switched to another unit's branch is refused by lane and land and flagged by status; one it did not

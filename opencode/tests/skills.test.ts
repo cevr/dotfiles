@@ -6,7 +6,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
-import { externalInput } from "./read-path.ts"
+import { externalInput, readScratchFileSync } from "./read-path.ts"
 import { keptScratch } from "./scratch.ts"
 
 /** The frame's lines, without the composer's rails and padding. */
@@ -32,7 +32,7 @@ describe.skipIf(!hooked)("$ skills", () => {
       stderr: "pipe",
     })
     const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
-    const read = (name: string) => readFileSync(join(out, `skills-${name}`), "utf8")
+    const read = (name: string) => readScratchFileSync(join(out, `skills-${name}`), "utf8")
     const timeout = join(out, "skills-timeout.txt")
     expect({ code, tail: code === 0 ? "" : `${(stdout + stderr).slice(-5000)}\n${existsSync(timeout) ? readFileSync(timeout, "utf8") : ""}` }).toEqual({ code: 0, tail: "" })
     expect(stdout).toMatch(/screenshot: .*skills-popup\.png/)
@@ -73,4 +73,3 @@ describe.skipIf(!hooked)("$ skills", () => {
     expect(requests.some((request) => request.includes("DEPLOY-BODY"))).toBe(false)
   }), 240_000)
 })
-// @reads all

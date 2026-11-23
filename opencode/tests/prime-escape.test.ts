@@ -6,8 +6,8 @@
 // The Dock, which replaces the host's footer, shows no Escape hint. The
 // escape plugin (cmd/escape), loaded beside Prime, does the cancelling; it
 // needs OPENCODE_DEV, the fork.
+import { readScratchFileSync } from "./read-path.ts"
 import { beforeAll, describe, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { hintRow } from "./composer.ts"
 import { owned } from "./owned.ts"
@@ -52,7 +52,7 @@ describe.skipIf(!fork)("Escape cancels within the grace and interrupts after it,
       new Response(run.stderr).text(),
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
-    for (const name of names) frames[name] = readFileSync(join(out, `${name}.txt`), "utf8").split("\n")
+    for (const name of names) frames[name] = readScratchFileSync(join(out, `${name}.txt`), "utf8").split("\n")
   }, 300_000))
 
   test("just after sending, the Dock shows no Escape hint", kept.test(() => {
@@ -82,4 +82,3 @@ describe.skipIf(!fork)("Escape cancels within the grace and interrupts after it,
     expect(composer).toBe(" ┃")
   }))
 })
-// @reads all

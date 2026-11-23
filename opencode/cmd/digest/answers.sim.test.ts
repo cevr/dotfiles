@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pool/store/store.ts: names: (path) => Effect.try({ try: () => readdirSync(path), catch: (cause) => cause }),
 // One question, answered from the tray and from the digest page, on the simulated host at the runner's seeds: the
 // questions plugin loaded for two directories (two copies over one storage, as OpenCode serves a plugin once per
 // directory), and the digest plugin, its page's handlers captured as the listener would get them (server.ts `make`).

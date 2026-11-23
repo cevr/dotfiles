@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at tests/work.test.ts: const command = ChildProcess.make(process.execPath, [path.join(ROOT, "tests/work/run.ts")], {
 // accept: deep (8.2 s alone on a quiet host: 1-minute load 7.8 on 12 cores; it boots real OpenCode three times on the real work binary)
 // The work tool in real OpenCode (the fork, through its SDK) on the scripted model and the real `work` binary
 // (WORK_BIN, else `work` on PATH), in a scratch HOME: tests/work/run.ts, once per task. The model makes a workspace for a branch
@@ -151,4 +153,3 @@ if (runnable)
     )
   })
 else test.skip("the work tool in real OpenCode needs a work binary (WORK_BIN, or work on PATH) and OPENCODE_DEV, the fork", () => {})
-// @reads all

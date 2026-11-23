@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/orchestrate/git/fleet-record.test.ts: const REAL_GIT = spawnSync(["sh", "-c", "command -v git"]).stdout.toString().trim()
 import { describe, expect, test } from "bun:test"
 import { tagObject, targetOfTag, VERIFIED_REF } from "@dotfiles/opencode-update/target"
 import { spawnSync, write } from "bun"

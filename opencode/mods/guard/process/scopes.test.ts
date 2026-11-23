@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/guard/process/scopes.ts: const child = Bun.spawn([...argv], { stdin: "ignore", stdout: "ignore", stderr: "ignore" })
 // Scopes: none off Linux; on Linux, the probe's exit decides, a probe that
 // cannot start is none, and it is asked once. The probes here are `true`,
 // `false` and a missing program, never systemd itself.

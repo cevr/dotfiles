@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at tests/pool-idle-release.test.ts: const work = yield* fs.realPath(`${root}/work`)
 // accept: deep (49.2 s alone on a quiet host: 1-minute load under 24 on 12 cores; it boots real OpenCode twice, one turn each)
 // Real OpenCode (the fork's `serve --service`, from source) with an Anthropic
 // login, the Anthropic auth plugin and the pool, against the fake Anthropic
@@ -206,4 +208,3 @@ describe.skipIf(!forkRuns)("the pool lets a run's login go when its session goes
 
   test("a turn that succeeds lets its login go", () => releasedAfter(kept, "succeeded", () => ({ kind: "ok", text: "Hello." }), 200), TIMEOUT_MS)
 })
-// @reads all

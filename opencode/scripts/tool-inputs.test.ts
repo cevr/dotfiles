@@ -1,9 +1,9 @@
+// @reads cmd/*/server.ts
 // Every tool our plugins add shows the model a plain number (no "Infinity" or
 // "NaN" string branch, which invites a model to send numbers as strings) and
 // reads a numeric string or a JSON-array string the way `toolInput` does
 // (decider/tool-input.ts). The list below is checked against the `input:` of
 // every `cmd/*/server.ts`, so a new tool cannot skip it.
-// @reads cmd/*/server.ts
 import { describe, expect, test } from "bun:test"
 import { Glob } from "bun"
 import { readFileSync } from "node:fs"
@@ -93,4 +93,3 @@ describe("plugin tool inputs", () => {
     expect(decoder(PrInput)({ action: "status", prs: '[12, "owner/name#3"]' })).toEqual({ action: "status", prs: [12, "owner/name#3"] })
   })
 })
-// @reads-indirect decider/** mods/** cmd/**

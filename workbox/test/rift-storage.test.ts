@@ -1,9 +1,10 @@
+// @reads all
+// @reads-reason subprocess reads at ../workbox/test/rift-storage.test.ts: const ran = Bun.spawnSync(["sh", SCRIPT, "--fstab"], { cwd: dir, env, stdout: "pipe", stderr: "
 // workbox/bin/workbox-rift-storage --fstab, run on a scratch fstab with shims for findmnt (the loop device the
 // image is mounted from), sudo (runs the command as is), systemctl (logs its arguments) and a scratch
 // /sys/fs/btrfs. The fstab is the workbox's own of 2026-11-19, whose UUID= lines for @home and @tmp failed the boot
 // (systemd-udevd is masked there, so /dev/disk/by-uuid never appears). Nothing here touches the real host.
 import { afterAll, describe, expect, test } from "bun:test"
-// @reads ../workbox/bin/workbox-rift-storage
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { matchingInput, readScratchDirectorySync as readdirSync, readScratchFileSync as readFileSync } from "../../opencode/tests/read-path.ts"
 import { tmpdir } from "node:os"
@@ -104,4 +105,3 @@ describe("workbox-rift-storage --fstab", () => {
     expect(b.reloads()).toEqual([])
   })
 })
-// @reads-indirect ../workbox/bin/**

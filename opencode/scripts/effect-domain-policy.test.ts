@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at scripts/effect-domain-policy.test.ts: expect(Arr.filter(legacy, (file) => !existsSync(path.join(REAL, file)))).toEqual([])
 /**
  * The production domain's syntax policy at the real lint CLI. The production domain is every
  * `decider/*.ts` and `mods/<mod>/<file>.ts`, except `*.test.*`, `*.spec.*`, `*.bench.*` and
@@ -14,7 +16,6 @@
  * `effect/noTryCatch` in the domain are the exact files the hard config leaves to the ratchet.
  * One more try in any of them passes the hard lint and fails the per-file debt comparison.
  */
-// @reads .oxlintrc.json .oxlintrc.effect-debt.json effect-debt.json lint/{test-env,tui-clock,tui-dirs,kept-scratch,chrome-keychain}.ts mods/*/package.json {decider/tool-input.ts,mods/anthropic-auth/json.ts,mods/anthropic-auth/tool-alias.ts,mods/guard/kill.ts,mods/kernel/tools.ts,mods/kernel/wire.ts,mods/wake/wake.ts}
 import { describe, expect, test } from "bun:test"
 import { Glob } from "bun"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
@@ -580,4 +581,3 @@ describe(`${POLICY}: the legacy try statements of the domain`, () => {
     TEST_TIMEOUT,
   )
 })
-// @reads-indirect lint/** scripts/** mods/** decider/**

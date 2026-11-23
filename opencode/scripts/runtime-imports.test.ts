@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/update/filestore/trees.ts: [...new Glob(glob).scanSync({ cwd: real })]
 /**
  * What code that runs outside the lint gate may import. The plugins (mods/*, cmd/*), the scenarios
  * opencode-drive compiles into one script, and `bun run daily` (which the update plugin runs as
@@ -8,7 +10,6 @@
  *
  * It finds its seeds by glob, not import, so it declares them for the gate's selection (scripts/reach.ts `readsOf`):
  */
-// @reads cmd/** mods/** scripts/*.ts scenarios/*.ts decider/*.ts sim/**/*.ts sim-tui/** tests/**/*.ts testbeds/**/*.ts package.json bun.lock w/package.json
 import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -265,4 +266,3 @@ const writeTree = (root: string, entries: ReadonlyArray<readonly [string, string
     writeFileSync(path.join(root, file), text)
   }
 }
-// @reads-indirect scripts/** cmd/** mods/** tests/cli-tree/**

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess helper reads at tests/wake.test.ts: const child = owned(["bunx", "opencode-drive", ...args], {
 // accept: deep (159.5 s alone on a quiet host: 1-minute load 22.8–116.3 on 12 cores; scenarios/wake-downtime.ts waits out a cron minute (75 s))
 // Public UI seam: real OpenCode, the real wake server plugin, Prime (whose
 // dock counts the wakes) and a scripted model. scenarios/wake.ts drives an
@@ -150,4 +152,3 @@ describe.skipIf(!fork)("wakes", () => {
     expect(fired[0]?.metadata?.lateMs ?? 0).toBeGreaterThanOrEqual(60_000)
   }), 300_000)
 })
-// @reads all

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/update/filestore/trees.ts: Effect.tryPromise(() => fileAt(path).stat()).pipe(
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
 import type { Build, Record } from "../record.ts"

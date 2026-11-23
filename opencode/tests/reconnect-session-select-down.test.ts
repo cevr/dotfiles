@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at tests/reconnect/fixture.ts: const work = yield* fs.realPath(`${root}/work`)
 // accept: deep (49.7 s alone on a quiet host: 1-minute load 145.3–142.5 on 12 cores; it drives a TUI from source to its session picker, then restarts the service and holds it booting for 8 s)
 // A pane at home selects a down session while the service boots, and submits.
 // The shared world and the cases' bodies: tests/reconnect/fixture.ts.
@@ -13,4 +15,3 @@ describe.skipIf(!forkRuns)(SUITE, () => {
     TIMEOUT_MS,
   )
 })
-// @reads all

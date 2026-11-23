@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at tests/orchestrate.test.ts: const skill = existsSync(join(DEFAULT_SOURCE, "scripts/agents.ts"))
 // accept: deep (36.5 s alone on a quiet host: 1-minute load 5.3–6.2 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // The orchestrate port: the role agents against the orchestrate skill they
 // come from, and a run of real OpenCode (the fork, through its SDK) on
@@ -138,4 +140,3 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
     RUN_MS,
   )
 })
-// @reads all

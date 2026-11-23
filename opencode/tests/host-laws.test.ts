@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at tests/host-laws.test.ts: const command = ChildProcess.make(process.execPath, [path.join(ROOT, "tests/host-laws/real.ts")
 // accept: one at a time (it bounds a failed probe load's boot under 60 s).
 // The host laws (sim/host-laws.ts) in real OpenCode: one boot of the fork
 // through its SDK (tests/host-laws/real.ts) in a scratch home, on a scripted
@@ -111,4 +113,3 @@ describe("the host laws in real OpenCode", () => {
     400_000,
   )
 })
-// @reads all

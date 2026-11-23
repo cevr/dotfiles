@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at scripts/effect-debt.ts: try: () => Bun.spawn([...argv], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", detache
 /**
  * The wake process tests' wait and lifecycle policy at the real lint CLI. `.oxlintrc.json` keeps
  * `noFixedWaitInTests`, `noNewPromise`, `noPromiseChainsInTests` and `noTestLifecycleHooks` as
@@ -13,7 +15,6 @@
  * four files carry none of the four rules' findings, and the helper is classified as test code in
  * both configs and the debt policy.
  *
- * @reads .oxlintrc.json .oxlintrc.effect-debt.json effect-debt.json lint/{test-env,tui-clock,tui-dirs,kept-scratch,chrome-keychain}.ts mods/wake/process/{runner.test.ts,checks.test.ts,readiness.ts,readiness.test.ts} mods/wake/process/{runner,checks}.test.ts
  */
 import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
@@ -363,4 +364,3 @@ describe("the wake process tests end every Effect before Bun's test limit", () =
     expect(runs).toEqual(Arr.map(PROCESS_TESTS, () => 1))
   })
 })
-// @reads-indirect lint/** scripts/** mods/wake/process/**

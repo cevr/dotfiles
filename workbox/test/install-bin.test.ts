@@ -1,9 +1,10 @@
+// @reads all
+// @reads-reason computed read at ../workbox/test/install-bin.test.ts: const held = lstatSync(join(installed, "zshenv")).ino
 // workbox/install-bin.sh, as the fleet update runs it from the installed build's tree (`current.plugins/workbox/`)
 // once a build is proven: it installs that tree's commands and shell files, so the workbox's ~/.zshenv and
 // ~/.zshrc are the verified build's, whatever the live checkout holds. It runs here in a scratch HOME on a
 // copy of the script in a scratch tree; nothing touches the real host. INSTALL_BIN_UNDER_TEST names another
 // copy of the script to run (an older one, to see these cases red against it).
-// @reads ../workbox/install-bin.sh ../workbox/bin/workbox-check {../workbox/README.md,../linux/hetzner-workbox/RUNBOOK.md}
 import { afterAll, describe, expect, test } from "bun:test"
 import { closeSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync as readCheckoutFileSync, readSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { externalInput, matchingInput, readScratchFileSync as readFileSync, readScratchLinkSync as readlinkSync, scratchInput } from "../../opencode/tests/read-path.ts"
@@ -243,4 +244,3 @@ describe("workbox-check runs the installed tree's bootstrap.sh --check", () => {
     }
   })
 })
-// @reads-indirect ../workbox/** ../linux/hetzner-workbox/**

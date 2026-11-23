@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/rex/process/simulators.ts: return yield* png(new Uint8Array(yield* Effect.tryPromise({ try: () => readFile(file), catch: (
 // `rex-show browse`: the arguments it takes, the caller (one showcase, the
 // tab spooled, no browser started), and the viewer over a stand-in tab: the
 // tab opened at the pane's size, each new frame drawn in place and a frame

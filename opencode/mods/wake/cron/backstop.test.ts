@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/wake/cron/backstop.test.ts: const entry = readFileSync(file, "utf8")
 // The Bun.cron backstop over a stand-in scheduler: an exec that does what
 // Bun.cron does to a LaunchAgents directory (macOS) or a crontab (Linux), so
 // the laws run without registering a real job. The job's entry file is run by

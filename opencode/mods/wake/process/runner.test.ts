@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/wake/process/runner.test.ts: const ids = yield* Effect.sync(() => Option.match(Option.liftPredicate(root, existsSync), { onN
 // The process runner over real processes in a scratch directory: a job runs
 // detached under its own runner, records its exit, drips whole lines, keeps
 // its log, runs niced when heavy, stops at its timeout and on a kill; a
@@ -244,7 +246,6 @@ fixtureTest("job root layout matrix on the real filesystem", ({ scratch, runnerO
   }),
 )
 
-// @reads cmd/wake/job.ts
 const runRootHandoff = (root: string) => {
   const script = sourceAt("../../../cmd/wake/job.ts")
   const run = Option.getOrThrow(ranOf(["bun", script, "--seal-root", root]))
@@ -329,7 +330,6 @@ fixtureTest("job root permissions handoff after publication cut on the real file
   }),
 )
 
-// @reads cmd/wake/job.ts
 fixtureTest("a certified job root remains usable when marker cleanup fails; the operator can clear it", ({ scratch, runnerOf, specOf }) =>
   Effect.gen(function* () {
     const root = path.join(scratch, "handoff")

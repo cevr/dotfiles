@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pool/store/store.ts: names: (path) => Effect.try({ try: () => readdirSync(path), catch: (cause) => cause }),
 // The mail listener from the plugin's start, on the simulated host, at 20
 // seeds: tests/mail-start.test.ts's name and its claim on the listener, moved
 // off a real service. The mail plugin (`cmd/mail/server.ts`'s `make`,

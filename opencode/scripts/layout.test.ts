@@ -1,3 +1,5 @@
+// @reads cmd/*/package.json mods/*/package.json
+// @reads-indirect cmd/** mods/**
 /**
  * The layout checks that are not imports (ARCHITECTURE.md §Layout; oxlint
  * fences the imports): every mod that has its `cmd/<mod>` package names its
@@ -7,7 +9,6 @@
  * Mods without a `cmd/` package are not on the layout yet and are listed as
  * pending.
  *
- * @reads {mods/**,cmd/**}
  *
  * @module
  */
@@ -42,8 +43,8 @@ export const kindNamed = (dir: string): ReadonlyArray<string> =>
     ]
   })
 
-const mods = readdirSync(MODS).filter((name) => existsSync(join(MODS, name, "package.json")))
-const onLayout = (mod: string) => existsSync(join(CMD, mod, "package.json"))
+const mods = readdirSync(MODS).filter((name) => existsSync(matchingInput("mods/*/package.json", join(MODS, name, "package.json"))))
+const onLayout = (mod: string) => existsSync(matchingInput("cmd/*/package.json", join(CMD, mod, "package.json")))
 
 describe("mod layout", () => {
   for (const mod of mods.filter(onLayout)) {

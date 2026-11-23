@@ -42,4 +42,3 @@ describe("the merge check's docs guard", () => {
     }),
   )
 })
-// @reads-indirect scripts/**

@@ -12,7 +12,7 @@
 // request's miss sits under the compaction's row, not at the next turn's end.
 import { describe, expect, test } from "bun:test"
 import { existsSync, rmSync } from "node:fs"
-import { readScratchFileSync as readFileSync } from "./read-path.ts"
+import { readScratchFileSync as readFileSync, scratchExistsSync } from "./read-path.ts"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { scratch } from "./scratch.ts"
@@ -42,7 +42,7 @@ const fgAt = (frame: Frame, y: number, x: number): string => {
 /** The server half's ledger lines, by what the scenario decides: cause, lifetime, writes and the missed prefix. */
 const ledgerOf = (out: string) => {
   const timeout = join(out, "ledger.timeout.txt")
-  if (existsSync(timeout)) throw new Error(readFileSync(timeout, "utf8"))
+  if (scratchExistsSync(timeout)) throw new Error(readFileSync(timeout, "utf8"))
   return readFileSync(join(out, "ledger.jsonl"), "utf8")
     .trim()
     .split("\n")
@@ -162,4 +162,3 @@ describe.skipIf(!fork)("the cache mod in a real TUI", () => {
     }
   }, 150_000)
 })
-// @reads all

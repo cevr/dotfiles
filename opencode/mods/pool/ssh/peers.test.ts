@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/pool/ssh/peers.ts: const child = Bun.spawn([...(peer.command ?? sshCommand(peer.ssh))], {
 import { afterAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"

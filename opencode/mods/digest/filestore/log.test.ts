@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/digest/filestore/log.test.ts: expect([statSync(dir).mode & 0o777, statSync(fileOf(dir, T)).mode & 0o777]).toEqual([0o700, 0o6
 import { describe, expect, test } from "bun:test"
 import { appendFileSync, chmodSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"

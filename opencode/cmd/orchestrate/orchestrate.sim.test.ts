@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pool/store/store.ts: names: (path) => Effect.try({ try: () => readdirSync(path), catch: (cause) => cause }),
 // The orchestrate plugin on the simulated host (sim/world.ts), each test at 20
 // seeds: tests/orchestrate.test.ts's OpenCode runs under the same names, moved
 // off real OpenCode (each booted the fork and waited on its events). The

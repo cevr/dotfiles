@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason dynamically loaded module at mods/prime/tui/clock.test.ts: mock.module("solid-js", () => import(REACTIVE))
 // The shared clock: a running row ticks with it, a settled one never
 // recomputes on another row's tick. Bun's tests resolve solid-js to its server
 // build, which never re-runs a computation, so this file takes the reactive

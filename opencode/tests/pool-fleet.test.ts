@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess helper reads at tests/pool-fleet.test.ts: const child = owned([...launch.base, "serve", "--service", "--port", "0"], {
 // accept: one at a time (it bounds a retry time against the clock).
 // The fleet across two real OpenCode servers on this machine, standing in for
 // the Mac and the workbox. Each is the fork's own `serve --service`, in its
@@ -315,4 +317,3 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
     TIMEOUT_MS,
   )
 })
-// @reads all

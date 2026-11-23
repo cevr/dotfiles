@@ -1,6 +1,7 @@
+// @reads all
+// @reads-reason subprocess reads at scripts/agents.test.ts: ChildProcess.make("bun", [path.join(ROOT, "scripts/agents.ts"), "--check", ...source], { extend
 // scripts/agents.ts's orchestrator entry: its section carries SKILL.md's no-block rule word for word, and `--check`
 // fails once that line changes in the skill without `bun run agents` writing agents.json again.
-// @reads ../skills/orchestrate/{SKILL.md,protocol.md,scripts/agents.ts,scripts/round-policy.ts} ../skills/loop/safety.md ../agents/** mods/orchestrate/{round-policy.ts,immutable.ts} mods/orchestrate/agents.json
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Effect, FileSystem, Option, Path, Schema, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
@@ -91,4 +92,3 @@ describe("the orchestrator entry", () => {
     }),
   )
 })
-// @reads-indirect scripts/** ../agents/** ../skills/orchestrate/**

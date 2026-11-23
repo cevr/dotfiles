@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason nonliteral subprocess arguments at scripts/verify-fork.test.ts: const said = yield* spawner.string(ChildProcess.make("git", ["-C", scratchInput(repo), ...args]
 // verify:doctor's `fork-branch` check (scripts/verify.ts `forkLag`) on real scratch repositories: a fork worktree
 // detached behind its `prime-look` branch, or behind origin's, is reported; one at or past them, or with no such
 // branch, passes. Batch 2026-11-16cv ran every check on a worktree one merge behind the branch it claimed.
@@ -65,4 +67,3 @@ describe("verify:doctor's fork-branch check", () => {
     }).pipe(Effect.scoped),
   )
 })
-// @reads-indirect scripts/** tests/**

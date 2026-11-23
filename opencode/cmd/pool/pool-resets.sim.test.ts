@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pool/store/store.ts: names: (path) => Effect.try({ try: () => readdirSync(path), catch: (cause) => cause }),
 // Rate-limit resets on the simulated host, each test at 20 seeds:
 // tests/pool-resets.test.ts's names and claims that rest on the pool and the
 // Anthropic auth plugin alone, moved off real OpenCode. The Claude logins

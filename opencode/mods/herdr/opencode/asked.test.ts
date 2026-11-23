@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason dynamically loaded module at mods/herdr/opencode/asked.test.ts: mock.module("solid-js", () => import(REACTIVE))
 // The reporter's reactive reads: the open background questions as it follows
 // them over the questions RPC, and the view it keeps (keptView). Bun's tests
 // resolve solid-js to its server build, which never re-runs a computation, so

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/image/codex/subscription.test.ts: const dir = spawnSync(["mktemp", "-d", "-t", "image-codex"]).stdout.toString().trim()
 // The subscription route against a local fake of the Codex backend: the
 // request it sends, each failure it maps, and that the login's token and
 // account never reach an outcome, a redirect's target or a message.

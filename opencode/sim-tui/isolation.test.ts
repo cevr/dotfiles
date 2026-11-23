@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at sim-tui/isolation.test.ts: const command = ChildProcess.make(process.execPath, ["test", "--timeout", String(RUN_MS), `./${
 // Isolation of the seeds that share one app: a seed run alone (`SIM_SEED=<n>`,
 // its file booting a fresh app for it) gives the same trace as that seed in
 // the file's full run, after every seed before it, for three seeds of each

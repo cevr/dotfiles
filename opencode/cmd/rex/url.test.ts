@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/rex/process/simulators.ts: return yield* png(new Uint8Array(yield* Effect.tryPromise({ try: () => readFile(file), catch: (
 // `rex-show url`: the arguments it takes, the caller (one showcase, the page
 // spooled, no check of the page: that is the pane's to show), and the
 // viewer, which shoots the page as tall as the pane's shape, draws a shot

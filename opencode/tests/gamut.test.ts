@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at tests/gamut.test.ts: if (existsSync(state)) gamut("down")
 // accept: deep (53.5 s alone on a quiet host: 1-minute load 5.6–12.3 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // gamut's pure parts (arguments, presets, config, environment, the run's
 // database, the wait), the scripted model, and one end-to-end run of the
@@ -5,7 +7,6 @@
 // needs OPENCODE_DEV, the fork, like tests/prime.test.ts.
 import { Database } from "bun:sqlite"
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-// @reads testbeds/gamut/fixture/AGENTS.md
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { scratchInput } from "./read-path.ts"
 import { dirname, join } from "node:path"
@@ -604,4 +605,3 @@ describe.skipIf(!fork)("gamut on the sim preset", () => {
     240_000,
   )
 })
-// @reads all

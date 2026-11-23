@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at lint/tui-clock.test.ts: const command = ChildProcess.make(path.join(root, "node_modules/.bin/oxlint"), ["-c", config, "
 // dotfiles/tui-clock-only (lint/tui-clock.ts), through the oxlint binary the
 // gate runs, with the repository's own override (.oxlintrc.json): a planted
 // `setInterval` in mods/prime/tui/ and a planted `Date.now()` in

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at cmd/digest/devices.test.ts: Effect.map(commandFile, (command) => Array.from({ length: 8 }, (_, at) => Bun.spawn(["bun", com
 // `digest devices`, the one way an ID enters or leaves the device store: it looks a name up once, among this host's
 // own user's devices only, says which device it found so a human can confirm it, and writes both copies; with none or
 // several it writes nothing. Two commands at once both land. Every run here uses scratch copies and a fake CLI.

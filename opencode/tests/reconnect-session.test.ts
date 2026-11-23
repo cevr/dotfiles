@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at tests/reconnect/fixture.ts: const work = yield* fs.realPath(`${root}/work`)
 // accept: deep (63.8 s alone on a quiet host: 1-minute load 136.4–65.0 on 12 cores; it starts a service from source, stops it and restarts it under a TUI from source that finds it by its registration)
 // A TUI attached to the background service keeps its session across a service restart: the
 // cases are split by group into reconnect-session-*.test.ts, each with a service of its own, so
@@ -22,4 +24,3 @@ describe.skipIf(!forkRuns)(SUITE, () => {
   const kept = keptScratch(forkRuns, "rs-managed-")
   test("a TUI opened on the background service while it is stopped or restarting opens its session", reconnectTest(kept, openManaged), TIMEOUT_MS)
 })
-// @reads all

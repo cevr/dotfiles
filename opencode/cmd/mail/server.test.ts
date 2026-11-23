@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/mail/filestore/pairs.ts: return Option.getOrElse(decode(readFileSync(file, "utf8")), () => EMPTY)
 // The plugin seam: the composition root on a stand-in host whose tool editor
 // the test reads, its sessions read through the OpenCode adapter over a world
 // in memory. It checks what OpenCode sees: two direct tools, the listing, a

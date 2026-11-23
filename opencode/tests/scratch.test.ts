@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess helper reads at tests/scratch.test.ts: const child = owned([process.execPath, "test", "--timeout", String(SUITE_TEST_MS), ...SUITES.ma
 // accept: deep (30.8 s alone on a quiet host: 1-minute load 69.7–77.6 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 import { describe, expect, test } from "bun:test"
 import { Array as Arr } from "effect"
@@ -232,4 +234,3 @@ describe("an e2e suite's directory", () => {
     CASES_MS,
   )
 })
-// @reads-indirect tests/** scripts/**

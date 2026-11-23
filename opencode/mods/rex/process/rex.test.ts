@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/rex/process/rex.test.ts: const calls = Effect.sync(() => readFileSync(log, "utf8").split("\n").filter((line) => line !==
 // Rex over its tool, against a stand-in tool (fake-rex.sh) that logs its
 // arguments: each call names the session, a split asks for the showcase
 // beside the caller, and a failing or garbled tool is RexFailed with what it

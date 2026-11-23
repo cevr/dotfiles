@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/orchestrate/sqlite/record.ts: if (yield* fs.exists(day)) return
 // The verifier's round 2 redaction probe, adopted: three provider-shaped tokens (built from parts, invented bodies) put
 // in every field each tool, a worker's follow_up, the lane hook and a land's claim can set, and as a CLI --actor. No
 // answer or refusal repeats one, no TEXT column of the live schema holds one, and the status section shows none.

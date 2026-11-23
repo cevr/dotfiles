@@ -88,4 +88,3 @@ describe("the feature map", () => {
     expect(swarmFrom("7f5120d89d32")).not.toBe(swarmFrom("944f545b0000"))
   })
 })
-// @reads-indirect scripts/**

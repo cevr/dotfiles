@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at scripts/fork-checks.test.ts: const handle = yield* spawner.spawn(ChildProcess.make("bun", [path.join(ROOT, "scripts/fork-che
 // The fork's feature checks (scripts/fork-checks.ts): the declared list parses and resolves at the fork, a red
 // test, a lost file and a run that could not finish each hold the merge, and an expectation holds only on the
 // host it declares. The upstream merge cases call the daily's own check step (scripts/upstream.ts `mergeChecks`)
@@ -1520,4 +1522,3 @@ describe("a run stopped before it finishes could not run, with a partial report"
     30_000,
   )
 })
-// @reads-indirect scripts/** tests/**

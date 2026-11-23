@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at tests/gamut-owner.test.ts: const host = yield* spawner.spawn(ChildProcess.make("bun", ["testbeds/gamut/pty-host.ts", `${di
 // gamut's detached processes and their owner (testbeds/gamut/owner.ts): the terminal host and the sim model,
 // started detached as `gamut up` starts them, end once GAMUT_OWNER's process is gone, with no `down`. The owner here
 // stands in for a test runner killed past its timeout, whose afterAll (gamut down) never runs.
@@ -51,4 +53,3 @@ describe("gamut's detached processes and their owner", () => {
     20_000,
   )
 })
-// @reads all

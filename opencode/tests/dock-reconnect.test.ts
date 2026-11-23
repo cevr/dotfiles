@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at tests/dock-reconnect.test.ts: const child = Bun.spawn([...launch.base, ...args], { cwd: work, env, stdout: "pipe", stderr: "p
 // accept: one at a time (it bounds how soon the dock settles after the TUI's first read).
 // A subagent row leaves "running" once a service restart ends its turn.
 //
@@ -375,4 +377,3 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
 
   test("they leave it when the TUI's first read of what runs after the reconnect fails", kept.test(() => scenario("failed-read", { failActiveReads: 1 })), TIMEOUT_MS)
 })
-// @reads all

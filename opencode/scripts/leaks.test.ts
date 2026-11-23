@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at scripts/leaks.test.ts: const run = Bun.spawn(["sh", "-c", 'sh -c "sleep 30; : opencode-drive run" & sh -c "sleep 0.2;
 // The leak check accept.ts runs after a run, and the spawn helper the tests use
 // so there is nothing for it to find. Real process trees of `sh` and `sleep`.
 import { describe, expect, test } from "bun:test"
@@ -79,5 +81,3 @@ describe("owned", () => {
     expect(await until(() => !alive(grandchild))).toBe(true)
   })
 })
-// @reads sh.plugins/config
-// @reads-indirect scripts/** tests/** testbeds/**

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at tests/questions-locations.test.ts: const child = Bun.spawn([process.execPath, join(import.meta.dir, "questions/run.ts"), file], {
 // The questions plugin in real OpenCode (the fork, through its SDK) on the
 // scripted model, with two project directories open on one server, as the
 // owner's servers have: the plugin is loaded once per directory. A question
@@ -67,4 +69,3 @@ describe.skipIf(!fork)("questions with two directories open on one server", () =
     expect(result.warnings.filter((warning) => warning.message.startsWith("questions:"))).toEqual([])
   }, 150_000)
 })
-// @reads all

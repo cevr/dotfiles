@@ -1,7 +1,8 @@
+// @reads all
+// @reads-reason computed read at scripts/daily.test.ts: return files.map((path) => [read(path), statSync(path).mtimeMs])
 // `bun run daily`'s settings in the global configs (never a plugin entry), its entries, and its fork steps.
 import { describe, expect, test } from "bun:test"
 import { Array as Arr, Effect, Option, Schema } from "effect"
-// @reads scripts/daily.ts
 import { chmodSync, existsSync, mkdirSync, readFileSync as readCheckoutFileSync, realpathSync, statSync, utimesSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
@@ -900,4 +901,3 @@ describe("the resident location", () => {
     expect(residentConfig).toEqual({ experimental: { location_idle_timeout: false } })
   })
 })
-// @reads-indirect scripts/** tests/** testbeds/** cmd/** mods/** themes/**

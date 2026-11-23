@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at tests/client-laws.test.ts: const command = ChildProcess.make(process.execPath, [path.join(ROOT, "tests/client-laws/real.ts
 // accept: deep (59.9 s alone on a quiet host: measured alone under the accept lock at 1-minute load 39.5–73.7 on 12 cores, the quietest the host was that day; one boot of the fork's embedded host, then ten laws one after another on it)
 // The client laws (sim-tui/client-laws.ts) in real OpenCode: one boot of the
 // fork's embedded host (tests/client-laws/real.ts) in a scratch home, on a
@@ -110,4 +112,3 @@ describe("the client laws in real OpenCode", () => {
       400_000,
     )
 })
-// @reads all

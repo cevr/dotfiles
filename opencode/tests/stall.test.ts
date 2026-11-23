@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at tests/stall.test.ts: if (!existsSync(logDir)) return []
 // accept: one at a time (a 1 s stall must read under the 2 s threshold; a loaded host's lag pushes it over).
 // The stall watchdog in a real OpenCode service: the fork's own
 // `serve --service` in a scratch home, with the stall plugin and a test-only
@@ -182,4 +184,3 @@ describe.skipIf(!runs)("the stall watchdog (real OpenCode service)", () => {
     TIMEOUT_MS,
   )
 })
-// @reads all

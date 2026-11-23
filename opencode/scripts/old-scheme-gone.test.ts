@@ -1,6 +1,7 @@
+// @reads all
+// @reads-reason computed read at scripts/old-scheme-gone.test.ts: expect(yield* Effect.filter(gone, (file) => fs.exists(path.join(at, file)))).toEqual([])
 // The guard that the update's old install scheme (the checkout that moves, the global plugin entries,
 // their migration) stays gone from every run-time path and from the docs (plugin-trees U6).
-// @reads mods/update/** cmd/update/** scripts/daily.ts scripts/daily-configure.golden.ts README.md AGENTS.md .claude/skills/verify-opencode/SKILL.md ../local-bin.sh ../workbox/install-bin.sh ../workbox/bin/apply-agent-settings
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Glob } from "bun"
 import { Effect, FileSystem, Path } from "effect"
@@ -123,4 +124,3 @@ describe("the old scheme is gone", () => {
     }),
   )
 })
-// @reads-indirect scripts/** ../workbox/** ../claude/bin/**
