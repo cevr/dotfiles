@@ -1,5 +1,3 @@
-// @reads all
-// @reads-reason subprocess reads at tests/work.test.ts: const command = ChildProcess.make(process.execPath, [path.join(ROOT, "tests/work/run.ts")], {
 // accept: deep (8.2 s alone on a quiet host: 1-minute load 7.8 on 12 cores; it boots real OpenCode three times on the real work binary)
 // The work tool in real OpenCode (the fork, through its SDK) on the scripted model and the real `work` binary
 // (WORK_BIN, else `work` on PATH), in a scratch HOME: tests/work/run.ts, once per task. The model makes a workspace for a branch
@@ -15,12 +13,13 @@ import * as BunServices from "@effect/platform-bun/BunServices"
 import { describe, test } from "bun:test"
 import { Effect, Fiber, FileSystem, Option, Path, Schema, Stream } from "effect"
 import { expect, it } from "effect-bun-test"
-import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { ChildProcessSpawner } from "effect/process"
 import { withProcessEnv } from "./git-repo.ts"
+import { externalInput, scratchInput } from "./read-path.ts"
+import { checkoutBunCommand } from "./scratch-child.ts"
+import { Request } from "./work/request.ts"
 import { ALIAS, BRANCH, COMMIT_SUBJECT, DONE, FLOW, LAND, LAND_SUBJECT, Result, watchedIn } from "./work/sim.ts"
 
-/** opencode/: the tests run from it. */
-const ROOT = process.cwd()
 const PROCESS = withProcessEnv({})
 const WORK_BIN = PROCESS["WORK_BIN"] || Bun.which("work") || ""
 const FORK = PROCESS["OPENCODE_DEV"] ?? ""
@@ -39,41 +38,38 @@ const boot = (task: string, wake: Option.Option<string>, bare = false) =>
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const base = yield* fs.makeTempDirectoryScoped({ prefix: "work-e2e-" })
     const home = path.join(base, "home")
-    const temp = path.join(base, "tmp")
     yield* fs.makeDirectory(home)
-    yield* fs.makeDirectory(temp)
-    const command = ChildProcess.make(process.execPath, [path.join(ROOT, "tests/work/run.ts")], {
-      cwd: ROOT,
-      env: {
-        // The work binary's folder first: a bare entry finds `work` there, as the installed one finds ~/.local/bin/work.
-        PATH: [path.dirname(path.resolve(WORK_BIN)), PROCESS["PATH"] ?? ""].join(":"),
+    const bin = externalInput(path.resolve(WORK_BIN))
+    const tools = path.join(base, "tools")
+    yield* fs.makeDirectory(tools)
+    // A bare entry still finds the real `work` on PATH. Its scratch link adds no other executables.
+    yield* fs.symlink(bin, path.join(tools, "work"))
+    const spec = path.join(base, "request.json")
+    yield* fs.writeFileString(spec, Schema.encodeSync(Request)({
+      base, fork: path.resolve(FORK), bin, bare, task,
+      ...Option.match(wake, { onNone: () => ({}), onSome: (said) => ({ wake: said }) }),
+    }))
+    const command = checkoutBunCommand("tests/work/run.ts", {
+      scratchArgs: [spec],
+      workBinDir: tools,
+      scratch: {
         HOME: home,
-        TMPDIR: temp,
+        TMPDIR: base,
         XDG_CONFIG_HOME: path.join(home, ".config"),
         XDG_DATA_HOME: path.join(home, ".local/share"),
         XDG_STATE_HOME: path.join(home, ".local/state"),
         XDG_CACHE_HOME: path.join(home, ".cache"),
-        OPENCODE_DISABLE_MODELS_FETCH: "1",
-        WORK_E2E_BASE: base,
-        WORK_E2E_FORK: path.resolve(FORK),
-        WORK_E2E_PLUGIN: path.join(ROOT, "cmd/work"),
-        WORK_E2E_TOOL_NAMES: path.join(ROOT, "cmd/tool-names"),
-        WORK_E2E_BIN: path.resolve(WORK_BIN),
-        WORK_E2E_BARE: String(bare),
-        WORK_E2E_TASK: task,
-        ...Option.match(wake, { onNone: () => ({}), onSome: (said) => ({ WORK_E2E_WAKE: said }) }),
       },
-      extendEnv: false,
-      stdin: "ignore",
-      forceKillAfter: "3 seconds",
+      external: {},
+      values: { OPENCODE_DISABLE_MODELS_FETCH: "1" },
     })
     // The child runs in a process group of its own; the scope's end stops the group.
     const child = yield* spawner.spawn(command)
     const output = yield* Effect.all([text(child.stdout), text(child.stderr)], { concurrency: 2 }).pipe(Effect.forkScoped)
     const code = yield* child.exitCode.pipe(Effect.timeoutOption(LIMIT))
     const result = path.join(base, "result.json")
-    if (Option.isSome(code) && code.value === 0 && (yield* fs.exists(result)))
-      return yield* fs.readFileString(result).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Result))))
+    if (Option.isSome(code) && code.value === 0 && (yield* fs.exists(scratchInput(result))))
+      return yield* fs.readFileString(scratchInput(result)).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Result))))
     const said = Option.getOrElse(yield* Fiber.join(output).pipe(Effect.timeoutOption("5 seconds")), () => ["", ""])
     return yield* Effect.die(`the ${task} run failed (exit ${Option.getOrElse(code, () => "none: it ran past its time")}):\n${said.join("\n")}`)
   }).pipe(Effect.scoped)

@@ -42,13 +42,24 @@ interface FixtureEnvironment {
   readonly checkout?: Readonly<Record<string, string>>
   readonly values: Readonly<Record<string, string>>
   readonly scratchArgs?: ReadonlyArray<string>
+  /** A scratch directory containing only one validated external work executable. */
+  readonly workBinDir?: string
 }
 
 export const checkoutBun = (entry: string, inputs: FixtureEnvironment) => {
   if (!isEntryName(entry)) return reject(`not a checkout entry: ${entry}`)
   const bunDir = resolve(localTestProcess.execPath, "..")
   if (containsCheckout(bunDir) || containsCheckout(localTestPaths.realpathSync(bunDir))) return reject("checkout directory on the fixture PATH")
-  const env = new Map<string, string>([["PATH", `${bunDir}:${searchPath()}`]])
+  const path = [bunDir, searchPath()]
+  if (inputs.workBinDir) {
+    const dir = scratchInput(inputs.workBinDir)
+    if (!exactArgs(localTestPaths.readdirSync(dir), "work")) return reject("expected one staging entry named work")
+    externalInput(resolve(dir, "work"))
+    path.unshift(dir)
+    // Work reads the platform's mount table before allowing a copy-on-write clone.
+    path.push("/sbin")
+  }
+  const env = new Map<string, string>([["PATH", path.join(":")]])
   const put = (name: string, value: string) => {
     if (!/^[A-Z][A-Z0-9_]*$/.test(name) || loaderVariable.test(name) || env.has(name))
       return reject(`unsupported checkout fixture environment: ${name}`)
@@ -241,15 +252,37 @@ const cloneArgs = (args: ReadonlyArray<string>) =>
 
 const gitCommandAllowed = (command: string, args: ReadonlyArray<string>) => {
   switch (command) {
-    case "config": return ["gc.auto 0", "maintenance.auto false"].includes(args.join(" ")) ||
+    case "config": return [
+      "gc.auto 0", "maintenance.auto false", "user.name work", "user.email work@example.com",
+      'rift.gate echo " 2 pass"', 'rift.accept sleep 1 && echo " 1 fail since $RIFT_LAND_BASE" && exit 1',
+    ].includes(args.join(" ")) ||
       (args.length === 2 && args[0] === "--get" && Object.hasOwn(QUIET_GIT, args[1] ?? ""))
     case "remote": return (args.length === 2 && ["get-url", "remove"].includes(args[0] ?? "") && /^\w[\w-]*$/.test(args[1] ?? "")) ||
+      (args.length === 3 && args[0] === "add" && args[1] === "origin" && localTestPaths.isAbsolute(args[2] || "")) ||
       exactArgs(args, "set-head", "origin", "--auto")
     case "clone": return cloneArgs(args)
     case "fetch": return args.length === 3 && args[0] === "--quiet" && args.slice(1).every((operand) => /^\w[\w./-]*$/.test(operand))
     case "push": return args.length === 4 && args[0] === "-q" && args[1] === "-u" && args[2] === "origin" && /^\w[\w./-]*$/.test(args[3] ?? "")
     default: return gitCommands.has(command)
   }
+}
+
+/** Bootstrap exactly the test's scratch Work registry; no project or user registry leaks in. */
+export const scratchWorkInit = (bin: string, cwd: string, home: string, temp: string) => {
+  const work = externalInput(bin)
+  const directory = scratchInput(cwd)
+  const base = scratchInput(home)
+  const at = scratchInput(temp)
+  return spawnSync([work, "--json", "init"], {
+    cwd: directory,
+    env: {
+      PATH: searchPath(), WORK_BASE: directory, HOME: base, TMPDIR: at,
+      XDG_CONFIG_HOME: scratchInput(resolve(base, ".config")), XDG_CACHE_HOME: scratchInput(resolve(base, ".cache")),
+      XDG_DATA_HOME: scratchInput(resolve(base, ".local/share")), XDG_STATE_HOME: scratchInput(resolve(base, ".local/state")),
+      [marker]: "work-init",
+    },
+    stdin: "ignore", stdout: "pipe", stderr: "pipe",
+  })
 }
 
 /** Git in a generated fixture. Only the identity and locale may enter from a caller. */

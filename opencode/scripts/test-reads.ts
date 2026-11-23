@@ -453,6 +453,7 @@ const BOUNDED_PROCESS = new Set([
   "tests/scratch-child.ts:checkoutBlob",
   "tests/scratch-child.ts:initScratchGit",
   "tests/scratch-child.ts:cloneScratchGit",
+  "tests/scratch-child.ts:scratchWorkInit",
   "tests/scratch-child.ts:detachedCheckoutBun",
   "tests/scratch-child.ts:checkoutBunCommand",
   "tests/scratch-child.ts:spawnCheckoutBun",
