@@ -228,7 +228,8 @@ if [[ ${1:-} == --slices-reboot ]]; then
         ((wbytes >= 8 << 20)) || fail "after the reboot ergo.slice counts $wbytes bytes written: the io delegation is not in effect"
         # systemd can garbage-collect the inactive slice once its last scope is stopped.
         fragment=$(ructl systemctl --user show -p FragmentPath --value ergo.slice)
-        [[ $fragment == /etc/systemd/user/ergo.slice ]] || fail "ergo.slice came from '$fragment', not /etc/systemd/user"
+        # Ubuntu also exposes the installed path via its /etc/xdg systemd lookup.
+        [[ $fragment -ef /etc/systemd/user/ergo.slice ]] || fail "ergo.slice came from '$fragment', not the installed unit"
         ructl systemctl --user stop hbr-place.scope
         wait "$job" 2>/dev/null || true
         [[ $(ructl systemctl --user show -p CPUWeight --value personal.slice) == 100 ]] ||
@@ -243,7 +244,11 @@ if [[ ${1:-} == --slices-reboot ]]; then
             if pressure_samples > "${prefix}delegate-aside/pressure.log"; then break; fi
             sleep 2
         done
-        [[ -s ${prefix}delegate-aside/pressure.log ]] || fail "no automatic pressure sample from the unprivileged minute timer after reboot"
+        if [[ ! -s ${prefix}delegate-aside/pressure.log ]]; then
+            ructl systemctl --user --no-pager status workbox-pressure.{service,timer} || true
+            journalctl -b --no-pager -o cat "_UID=$ruid" _SYSTEMD_USER_UNIT=workbox-pressure.service
+            fail "no automatic pressure sample from the unprivileged minute timer after reboot"
+        fi
         pass "after reboot, the enabled user timer recorded a pressure sample without a manual start (CPU, memory, I/O, MemAvailable)"
         ;;
     *) fail "usage: test.sh --slices-reboot prepare | verify" ;;
