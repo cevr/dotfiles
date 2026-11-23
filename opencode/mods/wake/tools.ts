@@ -94,7 +94,7 @@ export const JobAction = Schema.Literals(["run", "check", "park", "wait", "kill"
 export const JobInput = toolInput(Schema.Struct({
   action: Schema.optional(JobAction).annotate({
     description:
-      "`run` (default): start `command`. `check`: how job `id` stands, with its progress and log tail. `park`: job `id`'s end at once if it is over, else that it runs. `wait`: block up to `ms` for job `id` to end. `kill`: stop job `id`. `list`: this session's jobs.",
+      "`run` (default): start `command`. `check`: how job `id` stands, with its progress and log tail. `wait`: block up to `ms` for job `id` to end. `kill`: stop job `id`. `list`: this session's jobs.",
   }),
   command: Schema.optional(Schema.String).annotate({ description: "For run: the command, run by /bin/sh with no shell startup files. Its stdout and stderr go to the job's log." }),
   cwd: Schema.optional(Schema.String).annotate({ description: "For run: absolute working directory. Default: this session's directory." }),
@@ -105,7 +105,7 @@ export const JobInput = toolInput(Schema.Struct({
   timeoutSeconds: Schema.optional(Schema.Finite).annotate({
     description: `For run: stop the command past this long. Default ${DEFAULT_JOB_TIMEOUT_SECONDS}, at most ${MAX_JOB_TIMEOUT_SECONDS}.`,
   }),
-  id: Schema.optional(Schema.String).annotate({ description: "For check, park, wait and kill: the job's id." }),
+  id: Schema.optional(Schema.String).annotate({ description: "For actions on one job: its id." }),
   ms: Schema.optional(Schema.Finite).annotate({ description: `For wait: how long to wait. Default ${DEFAULT_WAIT_MS}, at most ${MAX_WAIT_MS}.` }),
 }))
 export type JobInput = typeof JobInput.Type

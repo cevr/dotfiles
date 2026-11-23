@@ -265,7 +265,7 @@ export const jobReceipt = (job: Job, launched: Launched): string =>
     }, outside the OpenCode server, so it outlives a restart; it is stopped if still running after ${durationOf(job.timeoutSeconds * 1000)}.`,
     ...(launched.warning === undefined ? [] : [launched.warning]),
     `Lines it appends to $JOB_DRIP (${launched.drip}) reach you as progress at most once a minute, without starting a turn.`,
-    `When it ends, a letter with its exit code, duration, log tail and your note starts a turn here, once. End your turn now unless there is other work; do not poll it. A subagent waits with job({ action: "wait", id: "${job.id}" }), since its turn's end hands back to its parent.`,
+    `When it ends, a letter with its exit code, duration, log tail and your note starts a turn here, once. End your turn now unless there is other work; do not poll it. job({ action: "park", id: "${job.id}" }) answers at once: its end if it is over (then no letter follows), else that it runs. A subagent waits with job({ action: "wait", id: "${job.id}" }), since its turn's end hands back to its parent.`,
   ].join("\n")
 
 /** What `check`, `wait`, `park` and `kill` answer. */
