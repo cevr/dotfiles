@@ -13,6 +13,7 @@ import * as NodePath from "@effect/platform-node/NodePath"
 import * as NodeChildProcessSpawner from "@effect/platform-node/NodeChildProcessSpawner"
 import { Effect, FileSystem, Layer, Option, Path, PlatformError } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { gitInit } from "../tests/git-repo.ts"
 import * as Seed from "./seed.ts"
 
 /** opencode/: the tests run from it. */
@@ -184,7 +185,7 @@ Seed.effect("the git-listed guard catches an arbitrary production helper, but al
     const file = candidates[Math.floor(candidates.length / 2)]
     if (!file) return yield* Effect.die("no tracked production helper")
     const scratch = yield* fs.makeTempDirectoryScoped({ prefix: "sim-driver-guard-" })
-    yield* git(scratch, "init", "-q")
+    yield* Effect.sync(() => gitInit(scratch, ["-q"]))
     const folder = path.dirname(file)
     yield* fs.makeDirectory(path.join(scratch, folder), { recursive: true })
     const original = yield* fs.readFileString(path.join(ROOT, file))
