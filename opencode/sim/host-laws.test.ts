@@ -2,9 +2,10 @@
 // loaded into the world runs each law from inside it, as tests/host-laws.test.ts
 // runs it in real OpenCode. And no operation the world's context offers stands
 // without a law: every one of them is named by one.
-import type { Plugin } from "@opencode/plugin/effect"
+import { Plugin, Tool } from "@opencode/plugin/effect"
+import { SessionMessage } from "@opencode/schema/session-message"
 import { describe, expect } from "bun:test"
-import { Array as Arr, Effect, Option, Predicate, Schema } from "effect"
+import { Array as Arr, Effect, Option, Predicate, Schema, Stream } from "effect"
 import { OPERATIONS } from "./context.ts"
 import { ClientAsk, type Law, LAWS, probeOf } from "./host-laws.ts"
 import * as Provider from "./provider.ts"
@@ -15,6 +16,62 @@ import Probe, { runLaws } from "./server.ts"
 import * as World from "./world.ts"
 
 const { seeded } = Seed.runner("sim/host-laws.test.ts")
+
+Seed.effect("session.context has only fork messages; each terminal tool event sees its already committed tool part", Effect.gen(function* () {
+  const evidence: Array<string> = []
+  const decode = Schema.decodeUnknownEffect(Schema.toType(Schema.Array(SessionMessage.Info)))
+  const probe = Plugin.define({
+    id: "sim-context-shape",
+    effect: (ctx) => Effect.gen(function* () {
+      const read = (sessionID: Parameters<typeof ctx.session.context>[0]["sessionID"], call: string) =>
+        ctx.session.context({ sessionID }).pipe(
+          Effect.flatMap((messages) => decode(messages, { onExcessProperty: "error" })),
+          Effect.map((messages) => messages.filter((message) => message.type === "assistant").flatMap((message) => message.content)),
+          Effect.flatMap((parts) => Effect.fromOption(Arr.findFirst(parts, (part): part is SessionMessage.AssistantTool => part.type === "tool" && part.id === call))),
+          Effect.map((part) => part.state.status),
+          Effect.orDie,
+        )
+      yield* ctx.tool.transform((editor) => editor.add({
+        name: "context_probe",
+        description: "Read its own context.",
+        input: Schema.Struct({ refuse: Schema.Boolean }),
+        execute: ({ refuse }, call) => read(call.sessionID, call.id).pipe(
+          Effect.tap((status) => Effect.sync(() => void evidence.push(`${call.id} during ${status}`))),
+          Effect.flatMap(() => {
+            if (refuse) return Effect.fail(new Tool.Error({ message: "probe failed" }))
+            return Effect.succeed({ content: [{ type: "text", text: "probe passed" }] as const })
+          }),
+        ),
+      }))
+      yield* ctx.event.subscribe({ types: ["session.tool.success", "session.tool.failed"] }).pipe(
+        Stream.runForEach(({ type, data }) => read(data.sessionID, data.id).pipe(
+          Effect.map((status) => void evidence.push(`${data.id} ${type} ${status}`)),
+        )),
+        Effect.forkScoped({ startImmediately: true }),
+      )
+    }),
+  })
+  const directory = "/scratch/context-law"
+  const world = World.make({
+    seed: 1,
+    script: ({ kind, text }) => {
+      if (kind === "title") return World.say("Context law")
+      if (text.includes("tool call_bad")) return World.say("Done")
+      if (text.includes("tool call_ok")) return World.call("call_bad", "context_probe", { refuse: true })
+      return World.call("call_ok", "context_probe", { refuse: false })
+    },
+  })
+  yield* world.load(probe, { directory })
+  const session = yield* world.session(directory)
+  yield* world.prompt(session, "Check success, then error")
+  yield* world.until(() => evidence.length >= 4, 30_000)
+  expect(evidence).toEqual([
+    "call_ok during running",
+    "call_ok session.tool.success completed",
+    "call_bad during running",
+    "call_bad session.tool.failed error",
+  ])
+}))
 
 /** The fields of a messages body that hold its texts. */
 const TEXTS = new Set(["text", "content", "messages"])
@@ -118,6 +175,7 @@ const decodeAsk = Schema.decodeUnknownEffect(Schema.fromJsonString(ClientAsk))
 const act = (world: World.World, ask: ClientAsk) => {
   if (ask.action === "archive") return world.archive(ask.sessionID)
   if (ask.action === "cancel") return world.cancel(ask.sessionID, ask.inboxID)
+  if (ask.action === "revert") return world.revert(ask.sessionID, ask.messageID)
   return world.form
     .create(ask.sessionID, { title: "law", fields: [{ key: ask.key }] })
     .pipe(Effect.flatMap((formID) => world.form.reply(formID, { [ask.key]: ask.value })))

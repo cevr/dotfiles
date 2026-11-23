@@ -96,6 +96,9 @@ export const LAW = {
     "a session created with an id is that session when created again; sessions list by parent and directory, newest update first unless asc, up to a limit; an update's metadata is what get answers",
   steps:
     "each step of a turn publishes session.step.started then session.step.ended for its assistant message, on the session's agent and model, then session.execution.succeeded ends the turn; the host publishes no session.idle",
+  toolSuccess: "a successful local tool publishes session.tool.success once with its session, assistant message and call ids, after its completed part is readable",
+  toolFailed: "a failed local tool publishes session.tool.failed once with its session, assistant message and call ids, after its error part is readable",
+  revertCommitted: "a client's committed revert publishes session.revert.committed with the session and boundary ids after the boundary and later messages are gone",
   removed: "a removed session publishes session.deleted once and is gone",
   archived:
     "a plugin's update does not archive a session (the plugin host drops `archived`); a client's archive publishes session.archived once, and archiving it again publishes nothing; a list with archived: false leaves it out and archived: true lists it",

@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { agentFile, codexFile, instructions, retired, ROLES, stale, type Role } from './agents.ts';
-import { render } from './ending.ts';
+import { block as render } from './round-policy.ts';
 
 const protocol = `# Worker protocol
 
@@ -13,8 +13,8 @@ Intro for the orchestrator.
 
 End with a hand-back line.
 
-<!-- end-of-step: fixture -->
-<!-- /end-of-step -->
+<!-- round-policy v1 protocol: fixture -->
+<!-- /round-policy -->
 
 ## Rounds
 
@@ -40,9 +40,9 @@ describe('agentFile', () => {
     expect(text).toStartWith('---\nname: verifier\ndescription: ');
     for (const part of ['## Ending a step', '## Rounds', '## Verifier\n\nVerify it.', '- Write files with Write.']) expect(text).toContain(part);
     for (const part of ['## Planner', '## Implementor', 'Intro for the orchestrator', 'Every loop agent reads this']) expect(text).not.toContain(part);
-    // protocol.md's end-of-step block becomes this role's rows, and only its own.
+    // protocol.md's round-policy block becomes this role's policy, and only its own.
     expect(text).toContain(render('verifier'));
-    expect(text).not.toContain('<!-- end-of-step: fixture -->');
+    expect(text).not.toContain('<!-- round-policy v1 protocol: fixture -->');
   });
 
   test('the Codex file carries the same instructions, with the role\'s effort and no pinned model', () => {

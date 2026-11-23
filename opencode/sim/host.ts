@@ -46,7 +46,7 @@ import { Agent } from "@opencode/schema/agent"
 import type { Provider } from "@opencode/schema/provider"
 import { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
-import { Array as Arr, type Cause, Data, DateTime, Effect, Exit, type Fiber, Option, Predicate, Queue, Result, Schema, type Types } from "effect"
+import { Array as Arr, type Cause, Data, DateTime, Effect, Exit, type Fiber, Match, Option, Predicate, Queue, Result, Schema, type Types } from "effect"
 import { AUTOMATION_TOOLS } from "../mods/wake/automations.ts"
 import * as Faults from "./faults.ts"
 import * as Http from "./http.ts"
@@ -151,10 +151,12 @@ export type Message =
       readonly type: "tool"
       readonly id: string
       readonly created: number
+      readonly assistantMessageID: string
       readonly callID: string
       readonly name: string
       readonly output: string
       readonly error: boolean
+      readonly errorType: string
     }
   | {
       readonly type: "compaction"
@@ -1480,6 +1482,26 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     )
   }
 
+  /** A tool's durable terminal state and its then-visible event. */
+  const commitTool = (session: Session, messageID: string, used: ToolCall, answer: Answer, failureType = "unknown") =>
+    Effect.gen(function* () {
+      session.messages.push({
+        type: "tool",
+        id: mint("msg_"),
+        created: runtime.now(),
+        assistantMessageID: messageID,
+        callID: used.id,
+        name: used.name,
+        output: answer.output,
+        error: answer.error,
+        errorType: failureType,
+      })
+      // Like the fork's bus/projector: subscribers see the already-committed part when the terminal event arrives.
+      const ended = { sessionID: session.id, assistantMessageID: messageID, id: used.id, executed: false }
+      if (answer.error) yield* publish({ type: "session.tool.failed", data: { ...ended, error: { type: failureType, message: answer.output } } })
+      else yield* publish({ type: "session.tool.success", data: { ...ended, content: [{ type: "text", text: answer.output }] } })
+    }).pipe(Effect.uninterruptible)
+
   /** One step: a primary request, its assistant message, and its tool call's answer; whether the turn goes on, or it failed. */
   const step = (session: Session) =>
     Effect.gen(function* () {
@@ -1511,7 +1533,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       touch(session)
       if (Result.isFailure(answered)) {
         const failure = answered.failure
-        session.messages.push({ type: "error", id: mint("msg_"), created: runtime.now(), tag: failure.tag, message: failure.message })
+        session.messages.push({ type: "error", id: messageID, created: runtime.now(), tag: failure.tag, message: failure.message })
         record("step-failed", { sessionID: session.id, tag: failure.tag })
         yield* publish({ type: "session.step.failed", data: { sessionID: session.id, assistantMessageID: messageID } })
         return "failed" as const
@@ -1529,6 +1551,15 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
         model: { providerID: requestModel(session).providerID, id: requestModel(session).id },
         agent: requestAgent(session),
       })
+      if (Option.isSome(used)) {
+        const call = used.value
+        yield* Effect.uninterruptibleMask((restore) =>
+          restore(runTool(session, messageID, call)).pipe(
+            Effect.onInterrupt(() => commitTool(session, messageID, call, { output: "Tool execution interrupted", error: true }, "aborted")),
+            Effect.flatMap((answer) => commitTool(session, messageID, call, answer)),
+          ),
+        )
+      }
       // The step's end: its finish, its tokens (the reply's usage; no output or reasoning counted) and no cost.
       yield* publish({
         type: "session.step.ended",
@@ -1540,18 +1571,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
           tokens: { input: usage.input, output: 0, reasoning: 0, cache: { read: usage.read, write: usage.write } },
         },
       })
-      if (Option.isNone(used)) return "answered" as const
-      const answer = yield* runTool(session, messageID, used.value)
-      session.messages.push({
-        type: "tool",
-        id: mint("msg_"),
-        created: runtime.now(),
-        callID: used.value.id,
-        name: used.value.name,
-        output: answer.output,
-        error: answer.error,
-      })
-      return "called" as const
+      return Option.match(used, { onNone: () => "answered" as const, onSome: () => "called" as const })
     })
 
   /** The turn: compactions and steps until a step answers with text; whether it did model work (not only control work), or a step failed. */
@@ -1792,15 +1812,69 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     return info
   }
 
-  /** A message as `session.context` answers it. */
-  const viewOf = (message: Message) => {
-    const created = { created: DateTime.makeUnsafe(message.created) }
-    if (message.type !== "assistant") return { ...message, time: created }
-    // Its text as the fork's assistant message holds it, and only there: a text part of its content
-    // (session-message.ts `Assistant`).
-    const { call: used, text, ...rest } = message
-    const content = Arr.filter([{ type: "text", text }], (part) => part.text.trim() !== "")
-    return Option.match(used, { onNone: () => ({ ...rest, content, time: created }), onSome: (value) => ({ ...rest, content, call: value, time: created }) })
+  /**
+   * A session's messages as the fork's `session.context` returns them (session-message.ts `Info`): an assistant
+   * message holds its text as a text part and
+   * its call as a tool part (`AssistantTool`) whose state is the call's end once its result was recorded (`completed`,
+   * or `error`), else `running`; the result is no message of its own. A failed step is its assistant message with the
+   * error; a failed compaction carries its error and no summary.
+   */
+  const viewsOf = (session: Session, messages: ReadonlyArray<Message>) => {
+    const results = new Map<string, Extract<Message, { readonly type: "tool" }>>()
+    for (const message of messages) if (message.type === "tool") results.set(message.assistantMessageID, message)
+    const time = (at: number) => ({ created: DateTime.makeUnsafe(at) })
+    const model = (ref: ModelRef) => ({ id: ref.id, providerID: ref.providerID, ...Option.match(Option.fromUndefinedOr(ref.variant), { onNone: () => ({}), onSome: (variant) => ({ variant }) }) })
+    return messages.flatMap((message): ReadonlyArray<object> => {
+      switch (message.type) {
+        case "tool":
+          return []
+        case "user":
+          return [{ type: "user", id: message.id, text: message.text, time: time(message.created) }]
+        case "synthetic":
+          return [{ type: "synthetic", id: message.id, text: message.text, description: message.description, metadata: message.metadata, time: time(message.created) }]
+        case "compaction":
+          if (message.status === "failed")
+            return [{ type: "compaction", id: message.id, status: "failed", reason: message.reason, error: { type: "compaction.failed", message: "Compaction failed" }, time: time(message.created) }]
+          return [{ type: "compaction", id: message.id, status: "completed", reason: message.reason, summary: message.summary, time: time(message.created) }]
+        case "model-switched":
+          return [{ type: "model-switched", id: message.id, model: model(message.model), previous: model(message.previous), time: time(message.created) }]
+        case "error":
+          return [{ type: "assistant", id: message.id, agent: requestAgent(session), model: model(requestModel(session)), content: [], error: { type: message.tag, message: message.message }, time: time(message.created) }]
+        case "assistant": {
+          const text = Arr.filter([{ type: "text", text: message.text }], (part) => part.text.trim() !== "")
+          const calls = Option.toArray(message.call).map((used) => {
+            const input = Option.getOrElse(Option.liftPredicate(used.input, (value) => Predicate.isObject(value) && !Array.isArray(value)), () => ({}))
+            const end = Option.fromUndefinedOr(results.get(message.id))
+            const ran = DateTime.makeUnsafe(message.created)
+            return Option.match(end, {
+              onNone: () => ({ type: "tool", id: used.id, name: used.name, state: { status: "running", input, metadata: {} }, time: { created: ran, ran } }),
+              onSome: ({ error, output, created, errorType }) => ({
+                type: "tool",
+                id: used.id,
+                name: used.name,
+                executed: false,
+                state: Match.value(error).pipe(
+                  Match.when(true, () => ({ status: "error", input, error: { type: errorType, message: output } })),
+                  Match.orElse(() => ({ status: "completed", input, content: [{ type: "text", text: output }] })),
+                ),
+                time: { created: ran, ran, completed: DateTime.makeUnsafe(created) },
+              }),
+            })
+          })
+          return [
+            {
+              type: "assistant",
+              id: message.id,
+              agent: message.agent,
+              model: model(message.model),
+              content: [...text, ...calls],
+              tokens: { input: message.tokens.input, output: 0, reasoning: 0, cache: { read: message.tokens.cache.read, write: message.tokens.cache.write } },
+              time: time(message.created),
+            },
+          ]
+        }
+      }
+    })
   }
 
   /** The catalog's providers: one per provider the models name. */
@@ -1846,6 +1920,23 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       session.directory = directory
       touch(session)
       return publish({ type: "session.moved", data: { sessionID: session.id, location: { directory } } }, void 0, from)
+    })
+
+  /**
+   * A client commits a history-only revert of an idle session with no queued input. The fork's
+   * session/revert.ts publishes the boundary; session/projector.ts removes it and everything after it
+   * before a subscriber can read the context. Staging, file restoration and inbox rewind are not modelled.
+   */
+  const revert = (session: Session, to: string) =>
+    Effect.suspend(() => {
+      const boundary = session.messages.findIndex((message) => message.type !== "tool" && message.id === to)
+      if (session.running || session.inbox.length > 0 || boundary < 0) {
+        unmodelled.push(`session.revert of ${session.id} needs an idle session, an empty inbox and a visible boundary (${to})`)
+        return Effect.void
+      }
+      session.messages.splice(boundary)
+      touch(session)
+      return publish({ type: "session.revert.committed", data: { sessionID: session.id, to } })
     })
 
   /** Inbox item `inboxID` ends undelivered (`session.inbox.cancelled`); an item already taken is not in the inbox. */
@@ -1931,13 +2022,14 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     forgetLifetime,
     createSession,
     infoOf,
-    viewOf,
+    viewsOf,
     contextOf,
     toolsOf,
     runTool,
     providers,
     callRpc,
     move,
+    revert,
     takeBack,
     cancel,
     merge,

@@ -84,6 +84,7 @@ export const ClientAsk = Schema.Union([
   Schema.Struct({ action: Schema.Literal("archive"), sessionID: Schema.String }),
   Schema.Struct({ action: Schema.Literal("form"), sessionID: Schema.String, key: Schema.String, value: Schema.String }),
   Schema.Struct({ action: Schema.Literal("cancel"), sessionID: Schema.String, inboxID: Schema.String }),
+  Schema.Struct({ action: Schema.Literal("revert"), sessionID: Schema.String, messageID: Schema.String }),
 ])
 export type ClientAsk = typeof ClientAsk.Type
 const encodeAsk = Schema.encodeSync(Schema.fromJsonString(ClientAsk))
@@ -219,6 +220,53 @@ const LAW_FAULT_RPC = {
   methods: { dies: { input: { type: "object" }, output: { type: "object" } }, hangs: { input: { type: "object" }, output: { type: "object" } } },
   events: {},
 }
+
+/** The terminal event's identity must name the same call the host gave the tool, and that part must already be readable. */
+const terminalTool = (status: "completed" | "error"): Law["check"] => (ctx, probe) =>
+  Effect.gen(function* () {
+    const session = yield* fresh(ctx)
+    const calls = yield* Ref.make<ReadonlyArray<string>>([])
+    const ends = yield* Ref.make<ReadonlyArray<string>>([])
+    const tool = `law_terminal_${status}`
+    yield* ctx.tool.transform((editor) =>
+      editor.add({
+        name: tool,
+        description: "Answers or fails for the terminal event law.",
+        options: { codemode: false },
+        input: Schema.Struct({}),
+        execute: (_input, call) =>
+          Ref.update(calls, (all) => [...all, `${call.sessionID}/${call.messageID}/${call.id}`]).pipe(
+            Effect.andThen(() => {
+              if (status === "error") return Effect.fail(new Tool.Error({ message: "law: tool failed" }))
+              return Effect.succeed({ content: "law: tool answered" })
+            }),
+          ),
+      }),
+    )
+    yield* Effect.forkScoped(
+      ctx.event.subscribe({ types: ["session.tool.success", "session.tool.failed"] }).pipe(
+        Stream.runForEach((event) =>
+          Effect.gen(function* () {
+            const { sessionID, assistantMessageID, id } = event.data
+            if (sessionID !== session.id) return
+            const messages = yield* ctx.session.context({ sessionID })
+            const assistant = messages.find((message) => message.type === "assistant" && message.id === assistantMessageID)
+            const part = assistant?.type === "assistant" && assistant.content.find((item) => item.type === "tool" && item.id === id)
+            let seen = "missing"
+            if (part && part.type === "tool") seen = part.state.status
+            yield* Ref.update(ends, (all) => [...all, `${event.type} ${sessionID}/${assistantMessageID}/${id} ${seen}`])
+          }),
+        ),
+      ),
+      { startImmediately: true },
+    )
+    yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: callFor(tool, {}) }))
+    const ran = yield* Ref.get(calls)
+    yield* ensure(ran.length === 1, `the tool executed ${ran.length} times`)
+    const kind = { completed: "session.tool.success", error: "session.tool.failed" }[status]
+    const seen = (yield* Ref.get(ends)).join(", ")
+    yield* ensure(seen === `${kind} ${ran[0]} ${status}`, `the terminal event and its tool part were ${seen || "(none)"}`)
+  })
 
 export const LAWS: ReadonlyArray<Law> = [
   {
@@ -524,6 +572,50 @@ export const LAWS: ReadonlyArray<Law> = [
         yield* ensure(assistant.length === 1, `the turn holds ${assistant.length} assistant messages`)
         const lines = (yield* Ref.get(seen)).join(", ")
         yield* ensure(lines === `started ${assistant[0]} build sim/sim-model, ended ${assistant[0]}, succeeded`, `the step events were ${lines}`)
+      }),
+  },
+  {
+    name: LAW.toolSuccess,
+    operations: ["tool.transform", "session.create", "session.prompt", "session.context", "event.subscribe"],
+    // Fork: packages/schema/src/session-event.ts Tool.Success; packages/core/src/session/runner/publish-llm-event.ts toolExecution.
+    check: terminalTool("completed"),
+  },
+  {
+    name: LAW.toolFailed,
+    operations: ["tool.transform", "session.create", "session.prompt", "session.context", "event.subscribe"],
+    // Fork: packages/schema/src/session-event.ts Tool.Failed; packages/core/src/session/runner/publish-llm-event.ts failTool.
+    check: terminalTool("error"),
+  },
+  {
+    name: LAW.revertCommitted,
+    operations: ["session.create", "session.prompt", "session.context", "event.subscribe"],
+    // Fork: packages/schema/src/session-event.ts RevertEvent.Committed; packages/core/src/session/{revert,projector}.ts.
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const session = yield* fresh(ctx)
+        const seen = yield* Ref.make<ReadonlyArray<string>>([])
+        yield* Effect.forkScoped(
+          ctx.event.subscribe({ types: ["session.revert.committed"] }).pipe(
+            Stream.runForEach((event) =>
+              Effect.gen(function* () {
+                if (event.data.sessionID !== session.id) return
+                const visible = yield* ctx.session.context({ sessionID: event.data.sessionID })
+                yield* Ref.update(seen, (all) => [...all, `${event.data.sessionID}/${event.data.to}: ${visible.map((message) => message.id).join(",")}`])
+              }),
+            ),
+          ),
+          { startImmediately: true },
+        )
+        const kept = SessionMessage.ID.make("msg_lawbeforecut")
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, id: kept, text: "law: before the cut" }))
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: after the cut" }))
+        const before = yield* ctx.session.context({ sessionID: session.id })
+        const boundary = yield* Effect.fromOption(Arr.findFirst(before, (message) => message.type === "assistant"))
+        yield* ensure(before.length === 4 && before[0]?.id === kept && before[1]?.id === boundary.id, "expected two complete turns before the revert")
+        yield* probe.client({ action: "revert", sessionID: session.id, messageID: boundary.id })
+        yield* waitFor(Ref.get(seen).pipe(Effect.map((lines) => lines.length > 0)), "no session.revert.committed event")
+        const lines = (yield* Ref.get(seen)).join(", ")
+        yield* ensure(lines === `${session.id}/${boundary.id}: ${kept}`, `the revert event and its visible context were ${lines}`)
       }),
   },
   {

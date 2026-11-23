@@ -18,8 +18,11 @@
  * - `job` runs a command as its own process outside the server (a
  *   `systemd-run --user` unit on Linux, a detached process group on the
  *   Mac; runner `job.ts`), so it outlives a restart; its end steers a letter
- *   into the session, through `due` from the runner, the server's poll, or
- *   the next start. `check`, `wait`, `kill` and `list` over the same tool.
+ *   into the session once, through `due` from the runner after it recorded
+ *   the exit, the next start, or the wakes' one recovery sweep; no timer looks
+ *   at a running job. `check`, `park`, `wait`, `kill` and `list` over the same
+ *   tool; the owner's `park`, `wait` or `kill` that returns a managed job's
+ *   end is its delivery, and no letter follows.
  * - `pending({ sessionIDs })` for the tray, `cancel({ sessionID, id })` for its
  *   cancel key, `jobs({ sessionID })` and `kill({ sessionID, id })` for Prime's
  *   job dock item and Jobs tab, `due({ id })` for the OS jobs;
@@ -138,7 +141,7 @@ const refused = (failure: WakeRejected) => new Tool.Error({ message: failure.rea
 const asked = (what: string) => new Tool.Error({ message: what })
 
 /** The `job` tool: run, check, wait, kill and list over the wakes' jobs. */
-const jobTool = (wakes: Context.Service.Shape<typeof Model.WakesModel>, input: JobInput, sessionID: string) => {
+const jobTool = (wakes: Context.Service.Shape<typeof Model.WakesModel>, input: JobInput, sessionID: string, call: Model.HostCall) => {
   const action = input.action ?? "run"
   if (action === "list") return wakes.jobs(sessionID).pipe(Effect.map(({ jobs, now }) => text(jobListing(jobs, now))))
   if (action === "run") {
@@ -149,19 +152,30 @@ const jobTool = (wakes: Context.Service.Shape<typeof Model.WakesModel>, input: J
   }
   const id = input.id
   if (id === undefined) return Effect.fail(asked(`job({ action: "${action}" }) needs the job's id`))
-  if (action === "check") return wakes.check(id).pipe(Effect.map(({ view, now }) => text(jobReport(view, now))), Effect.mapError(refused))
+  if (action === "check") return wakes.check(sessionID, id).pipe(Effect.map(({ view, now }) => text(jobReport(view, now))), Effect.mapError(refused))
+  if (action === "park") return wakes.park(sessionID, id, call).pipe(Effect.map((watched) => text(jobReport(watched.view, watched.now, handedOver(watched, "It runs: end your turn; its end letter comes once.")))), Effect.mapError(refused))
   if (action === "wait") {
     const ms = Math.min(MAX_WAIT_MS, Math.max(0, input.ms ?? DEFAULT_WAIT_MS))
-    return wakes.wait(id, ms).pipe(
-      Effect.map(({ view, now, ended }) => text(jobReport(view, now, ended ? [] : [`It still runs after a wait of ${durationOf(ms)}; its end letter still comes.`]))),
+    return wakes.wait(sessionID, id, ms, call).pipe(
+      Effect.map((watched) => text(jobReport(watched.view, watched.now, handedOver(watched, `It still runs after a wait of ${durationOf(ms)}; its end letter still comes.`)))),
       Effect.mapError(refused),
     )
   }
-  return wakes.kill(id).pipe(
-    Effect.map(({ view, now, asked: stopped }) => text(jobReport(view, now, stopped ? [] : ["It was not running, so nothing was stopped."]))),
+  return wakes.kill(sessionID, id, call).pipe(
+    Effect.map((watched) =>
+      text(jobReport(watched.view, watched.now, [...(watched.asked ? [] : ["It was not running, so nothing was stopped."]), ...handedOver(watched, "It was asked to stop; its end letter comes once it ends.")])),
+    ),
     Effect.mapError(refused),
   )
 }
+
+/** What a `park`, `wait` or `kill` answer says of the end: delivered here, or still owed by its letter. */
+const handedOver = (watched: Model.Watched, running: string): ReadonlyArray<string> => {
+  if (!watched.ended) return [running]
+  return watched.delivered ? ["This answer is its end: no letter follows."] : ["Its end letter goes (or went) to its session."]
+}
+
+/** What a call's end tells the wakes once the host ran it: its answer is with the host, or it failed and never reached the session. */
 
 const PendingInput = Schema.Struct({ sessionIDs: Schema.Array(Schema.String) })
 const DueInput = Schema.Struct({ id: Schema.String })
@@ -181,7 +195,12 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
       // Changes are announced once the RPC is registered; one before then has no reader to tell.
       const announce = yield* Ref.make<(sessionID: string) => Effect.Effect<void>>(() => Effect.void)
       const changes = Layer.succeed(Changes, { changed: (sessionID) => Effect.flatMap(Ref.get(announce), (emit) => emit(sessionID)) })
-      const services = yield* Layer.build(Model.layer({ directory: ctx.location.directory }).pipe(Layer.provide(Layer.merge(externals(ctx, options), changes))))
+      const services = yield* Layer.build(Model.layer({
+        directory: ctx.location.directory,
+        answered: OpenCodeCourier.answeredOf(ctx),
+        ownerHere: OpenCodeCourier.ownerHere(ctx),
+        server: { id: ProcessRunner.serverHere(), live: (id) => Effect.sync(() => ProcessRunner.serverRuns(id)) },
+      }).pipe(Layer.provide(Layer.merge(externals(ctx, options), changes))))
       const wakes = Context.get(services, Model.WakesModel)
 
       yield* ctx.tool.transform((editor) => {
@@ -232,18 +251,42 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
           description: JOB_DESCRIPTION,
           input: JobInput,
           options: { codemode: false },
-          execute: (input, context) => jobTool(wakes, input, context.sessionID),
+          execute: (input, context) => jobTool(wakes, input, context.sessionID, { id: context.id, message: context.messageID }),
         })
       })
 
-      // A deleted session's wakes go; a notice goes once the session's turn took its message.
-      yield* Effect.forkScoped(
-        ctx.event.subscribe({ types: ["session.deleted", "session.inbox.delivered"] }).pipe(
-          Stream.runForEach((event) =>
-            (event.type === "session.deleted" ? wakes.forget(event.data.sessionID) : wakes.read(event.data.inboxID)).pipe(Effect.ignoreCause),
-          ),
+      // A compaction takes a session's calls out of every later read: each end a call of it holds is settled by the
+      // call's part in the view it replaces, before it goes.
+      yield* ctx.session.hook("compaction", (event) =>
+        Effect.cached(OpenCodeCourier.beforeCompaction(ctx, event.sessionID)).pipe(
+          Effect.flatMap((read) => wakes.compacting(event.sessionID, (call, message) => read.pipe(Effect.map((answer) => answer(call, message))))),
           Effect.ignoreCause,
         ),
+      )
+
+      // A deleted session's wakes go; a notice goes once the session's turn took its message; a `job` call's answer
+      // committed to its session (or failed there) settles the end it took; a revert gives the ends its calls held
+      // back to their letters.
+      yield* Effect.forkScoped(
+        ctx.event.subscribe({ types: ["session.deleted", "session.inbox.delivered", "session.tool.success", "session.tool.failed", "session.revert.committed", "session.moved"] }).pipe(
+          Stream.runForEach((event) => {
+            switch (event.type) {
+              case "session.deleted":
+                return wakes.forget(event.data.sessionID).pipe(Effect.ignoreCause)
+              case "session.inbox.delivered":
+                return wakes.read(event.data.inboxID).pipe(Effect.ignoreCause)
+              case "session.tool.success":
+                return wakes.answered(event.data.sessionID, { id: event.data.id, message: event.data.assistantMessageID }, "committed").pipe(Effect.ignoreCause)
+              case "session.tool.failed":
+                return wakes.answered(event.data.sessionID, { id: event.data.id, message: event.data.assistantMessageID }, "failed").pipe(Effect.ignoreCause)
+              case "session.revert.committed":
+              case "session.moved":
+                return wakes.recheckOwner(event.data.sessionID).pipe(Effect.ignoreCause)
+            }
+          }),
+          Effect.ignoreCause,
+        ),
+        { startImmediately: true },
       )
 
       const registration = yield* ctx.rpc
