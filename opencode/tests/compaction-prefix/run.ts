@@ -124,8 +124,7 @@ try {
       await sleep(250)
       compacted = compactedIn(await opencode.sessions.context({ sessionID: session.id }))
     }
-    // The background summary's request is in; give it time to finish before the host closes.
-    if (spec.mode === "background") await sleep(1_000)
+    // For the background leg only the request prefix is under test; `seen` records it before responding.
     const result: Result = { seen: sim.seen, compacted }
     writeFileSync(join(spec.base, "result.json"), JSON.stringify(result, null, 2))
   } finally {

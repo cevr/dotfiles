@@ -12,6 +12,8 @@ import { answer, world, type World } from "@dotfiles/opencode-btw/memory/forks"
 import { SETTLE_MS } from "@dotfiles/opencode-btw/tui/controller"
 import { forkNote } from "@dotfiles/opencode-btw/question"
 import type { Stored } from "@dotfiles/opencode-btw/opencode/store"
+import { manualTuiClock } from "../../tests/manual-tui-clock.ts"
+import { waitUntil } from "../../tests/wait.ts"
 import { type Draw, setup } from "./setup.ts"
 
 type Host = Parameters<typeof setup>[0]
@@ -123,8 +125,8 @@ const start = (host: World, route: { readonly type: string; readonly sessionID?:
   return { toasts, opened, commands, slots, keys, drawn, stored: () => stored, pages, listeners, emit, cleanup, command }
 }
 
-/** Lets the handler the command started run to its end. */
-const settle = () => Bun.sleep(5)
+/** Hang guard for the asynchronous fixture events. */
+const HANG_GUARD_MS = 120_000
 
 describe("the btw plugin", () => {
   test("registers /btw, alias /side, as a Session palette command taking the question as its argument", () => {
@@ -135,11 +137,10 @@ describe("the btw plugin", () => {
     expect(keys).toEqual(["side-questions"])
   })
 
-  test("outside a session, /btw says so and forks nothing", async () => {
+  test("outside a session, /btw says so and forks nothing", () => {
     const host = world()
     const { command, toasts, opened } = start(host, { type: "home" })
     command("btw")?.run("why?")
-    await settle()
     expect(toasts).toEqual([{ message: "btw: open a session first", variant: "warning" }])
     expect(opened).toEqual([])
     expect(host.forks).toBe(0)
@@ -151,7 +152,7 @@ describe("the btw plugin", () => {
     const { command, toasts, opened, stored, pages } = start(host, { type: "session", sessionID: "main" })
     command("side")?.run("why is it slow?")
     expect(opened).toEqual(["btw"])
-    await settle()
+    await waitUntil("the question's first fork read", () => pages.length > 0)
     const fork = host.sessions.get("ses_fork1")
     expect(fork?.title).toBe("btw: why is it slow?")
     expect(fork?.messages.slice(-2).map((message) => [message.type, message.text, message.description])).toEqual([
@@ -163,16 +164,16 @@ describe("the btw plugin", () => {
     expect(pages).toEqual(["ses_fork1"])
     expect(stored().sessions.main).toEqual({ fork: { sessionID: "ses_fork1", name: "btw: why is it slow?", createdAt: expect.any(Number), broughtBack: [] } })
     expect(toasts).toEqual([])
-  })
+  }, HANG_GUARD_MS)
 
   test("a fork the host refuses reaches the reader as a warning and keeps nothing", async () => {
     const host = world({ main: 1 })
     const { command, toasts, stored } = start(host, { type: "session", sessionID: "gone" })
     command("btw")?.run("why?")
-    await settle()
+    await waitUntil("the host's refusal toast", () => toasts.length > 0)
     expect(toasts).toEqual([{ message: "btw: could not fork: Session not found: gone", variant: "warning" }])
     expect(stored().sessions).toEqual({})
-  })
+  }, HANG_GUARD_MS)
 
   test("draws the pane in the host's session panel, for the btw panel only", () => {
     const { slots, drawn } = start(world(), { type: "home" })
@@ -184,24 +185,26 @@ describe("the btw plugin", () => {
   })
 
   test("the pane's reading comes from the message list, taken again as the host's events about the fork arrive", async () => {
+    using clock = manualTuiClock()
     const host = world({ main: 1 })
     const { command, slots, drawn, emit, pages } = start(host, { type: "session", sessionID: "main" })
     command("btw")?.run("why is it slow?")
-    await settle()
     slots[0]?.render({ name: "btw", sessionID: "main" })
     const control = drawn[0]?.controller
+    await waitUntil("the pane's first reading", () => control?.reading("main").replying === true)
     expect(control?.reading("main")).toEqual({ turns: [{ question: "why is it slow?", answer: "" }], replying: true })
     const stop = control?.watch("main")
     answer(host, "ses_fork1", "It sleeps.")
     emit({ type: "session.text.delta", data: { sessionID: "main" } })
     emit({ type: "server.connected", data: {} })
     emit({ type: "session.execution.succeeded", data: { sessionID: "ses_fork1" } })
-    await Bun.sleep(SETTLE_MS + 20)
+    clock.advance(SETTLE_MS)
+    await waitUntil("the pane has read the finished reply", () => control?.reading("main").replying === false)
     expect(pages).toEqual(["ses_fork1", "ses_fork1"])
     expect(control?.reading("main").turns.map((turn) => [turn.question, turn.answer])).toEqual([["why is it slow?", "It sleeps."]])
     expect(control?.reading("main").replying).toBe(false)
     stop?.()
-  })
+  }, HANG_GUARD_MS)
 
   test("its cleanup stops listening to the host's events", () => {
     const { listeners, cleanup } = start(world(), { type: "home" })

@@ -13,7 +13,11 @@ const alive = (pid: number) => {
   }
 }
 
-const until = async (done: () => boolean, ms = 5000) => {
+import { observed } from "../tests/owned.ts"
+
+const HANG_GUARD_MS = 120_000
+
+const until = async (done: () => boolean, ms = HANG_GUARD_MS) => {
   const deadline = Date.now() + ms
   while (!done() && Date.now() < deadline) await Bun.sleep(50)
   return done()
@@ -37,45 +41,54 @@ describe("the leak check", () => {
   })
 
   test("a server a run started and left behind, handed to pid 1, is found and stopped; one that ended is not", async () => {
-    // The run: a shell that starts a long child named like a drive run and a short one, and exits after a second.
-    const run = Bun.spawn(["sh", "-c", 'sh -c "sleep 30; : opencode-drive run" & sh -c "sleep 0.2; : opencode-drive run" & sleep 1'], { stdout: "ignore", stderr: "ignore" })
+    // Keep both children, then the parent, alive until the watch has actually seen them.
+    const run = Bun.spawn(["sh", "-c", 'sh -c "sleep 120; : opencode-drive run" & sh -c "sleep 120; : opencode-drive run short" & read release'], { stdin: "pipe", stdout: "ignore", stderr: "ignore" })
     const watching = watch(run.pid, 100)
+    const seeing = () => watching.sample().filter(isServer)
+    expect(await until(() => seeing().length === 2 && watching.sample().filter((proc) => proc.args === "sleep 120").length === 2, HANG_GUARD_MS)).toBe(true)
+    const short = seeing().find((proc) => proc.args.endsWith(" short"))
+    if (short) {
+      await stop([short, ...descendants(table(), short.pid)])
+      expect(await until(() => !alive(short.pid), HANG_GUARD_MS)).toBe(true)
+    }
+    run.stdin.write("go\n")
+    run.stdin.end()
     await run.exited
     const seen = watching.stop()
     const left = survivors(seen, table())
-    expect(left.map((proc) => proc.args).toSorted()).toEqual(["sh -c sleep 30; : opencode-drive run", "sleep 30"])
+    expect(left.map((proc) => proc.args).toSorted()).toEqual(["sh -c sleep 120; : opencode-drive run", "sleep 120"])
     const strays = servers(left)
-    expect(strays.map((proc) => proc.args)).toEqual(["sh -c sleep 30; : opencode-drive run"])
+    expect(strays.map((proc) => proc.args)).toEqual(["sh -c sleep 120; : opencode-drive run"])
     expect(strays[0]?.ppid).toBe(run.pid)
     await stop([...left])
     expect(left.every((proc: Proc) => !alive(proc.pid))).toBe(true)
-  })
+  }, HANG_GUARD_MS)
 })
 
 describe("owned", () => {
   test("stops what the child started when the child exits", async () => {
-    const child = owned(["sh", "-c", "sleep 30 & echo $!; sleep 0.3"], { stdout: "pipe", stderr: "ignore" })
+    const child = owned(["sh", "-c", "sleep 120 & echo $!; read release"], { stdin: "pipe", stdout: "pipe", stderr: "ignore" })
     const grandchild = Number(new TextDecoder().decode((await child.stdout.getReader().read()).value).trim())
     expect(alive(grandchild)).toBe(true)
-    await child.exited
-    expect(await until(() => !alive(grandchild))).toBe(true)
-  })
+    child.stdin.write("go\n")
+    child.stdin.end()
+    expect(await until(() => Number.isInteger(child.exitCode) && !alive(grandchild))).toBe(true)
+  }, HANG_GUARD_MS)
 
   test("stops what the child started in a process group of its own, as opencode-drive starts its server", async () => {
-    const child = owned(["sh", "-c", 'perl -e "setpgrp(0, 0); sleep 30" & echo $!; sleep 1.5'], { stdout: "pipe", stderr: "ignore" })
+    const child = owned(["sh", "-c", 'perl -e "setpgrp(0, 0); sleep 120" & echo $!; read release'], { stdin: "pipe", stdout: "pipe", stderr: "ignore" })
     const grandchild = Number(new TextDecoder().decode((await child.stdout.getReader().read()).value).trim())
-    await Bun.sleep(200)
-    expect(table().find((proc) => proc.pid === grandchild)?.pgid).toBe(grandchild)
-    await child.exited
-    expect(await until(() => !alive(grandchild))).toBe(true)
-  })
+    expect(await until(() => observed(child.pid)?.some((proc) => proc.pid === grandchild && proc.pgid === grandchild) === true, HANG_GUARD_MS)).toBe(true)
+    child.stdin.write("go\n")
+    child.stdin.end()
+    expect(await until(() => Number.isInteger(child.exitCode) && !alive(grandchild))).toBe(true)
+  }, HANG_GUARD_MS)
 
   test("a child killed alone takes its group with it", async () => {
     const child = owned(["sh", "-c", "sleep 30 & echo $!; wait"], { stdout: "pipe", stderr: "ignore" })
     const reader = child.stdout.getReader()
     const grandchild = Number(new TextDecoder().decode((await reader.read()).value).trim())
     child.kill()
-    await child.exited
-    expect(await until(() => !alive(grandchild))).toBe(true)
-  })
+    expect(await until(() => child.signalCode === "SIGTERM" && !alive(grandchild), HANG_GUARD_MS)).toBe(true)
+  }, HANG_GUARD_MS)
 })

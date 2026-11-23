@@ -5,6 +5,8 @@
 // the reader as one line; a follow-up with no fork opens one.
 import { describe, expect, test } from "bun:test"
 import { Effect, Layer, Ref } from "effect"
+import { manualTuiClock } from "../../../tests/manual-tui-clock.ts"
+import { waitUntil } from "../../../tests/wait.ts"
 import { answer, forksLayer, readingsLayer, world, type World } from "../memory/forks.ts"
 import * as MemoryStore from "../memory/store.ts"
 import { Btw, layer } from "../model.ts"
@@ -25,15 +27,15 @@ const bench = (host: World) =>
       const notices: Array<string> = []
       const listeners = new Set<(sessionID: string) => void>()
       const gate = { holding: false, reads: 0, release: () => {} }
-      const held = Effect.promise(() => (gate.holding ? new Promise<void>((resolve) => (gate.release = resolve)) : Promise.resolve()))
+      const held = Effect.promise(() => {
+        gate.reads += 1
+        if (gate.holding) return new Promise<void>((resolve) => (gate.release = resolve))
+        return Promise.resolve()
+      })
       const control = controller({
         btw: {
           ...btw,
-          read: (sessionID) =>
-            Effect.sync(() => gate.reads++).pipe(
-              Effect.andThen(held),
-              Effect.andThen(btw.read(sessionID)),
-            ),
+          read: (sessionID) => held.pipe(Effect.andThen(btw.read(sessionID))),
         },
         state: (sessionID) => Effect.runSync(Ref.get(shelf.states)).get(sessionID) ?? INITIAL,
         listen: (handler) => {
@@ -47,7 +49,8 @@ const bench = (host: World) =>
     }),
   )
 
-const settled = () => Bun.sleep(SETTLE_MS + 20)
+/** Hang guard while waiting for the fixture's read/refresh events. */
+const HANG_GUARD_MS = 120_000
 
 describe("ask", () => {
   test("holds the question as pending until the fork's reading lands, which shows it unanswered", async () => {
@@ -56,7 +59,7 @@ describe("ask", () => {
     gate.holding = true
     const asking = control.ask("main", " why? ")
     expect(control.pending("main")).toBe("why?")
-    await Bun.sleep(1)
+    await waitUntil("the first read waiting at its gate", () => gate.reads >= 1)
     expect(gate.reads).toBe(1)
     expect(control.pending("main")).toBe("why?")
     expect(control.reading("main").turns).toEqual([])
@@ -66,7 +69,7 @@ describe("ask", () => {
     expect(control.fork("main")?.name).toBe("btw: why?")
     expect(control.reading("main")).toEqual({ turns: [{ question: "why?", answer: "" }], replying: true })
     expect(notices).toEqual([])
-  })
+  }, HANG_GUARD_MS)
 
   test("a failure is told on one line and the question is no longer pending", async () => {
     const host = world({ main: 1 })
@@ -84,17 +87,18 @@ describe("ask", () => {
     await control.ask("main", "why?")
     gate.holding = true
     const asking = control.ask("main", "and the tests?")
-    await Bun.sleep(1)
+    await waitUntil("the new fork's read waiting at its gate", () => gate.reads >= 2)
     expect(control.fork("main")?.sessionID).toBe("fork-2")
     expect(control.reading("main").turns).toEqual([])
     gate.release()
     await asking
     expect(control.reading("main").turns.map((turn) => turn.question)).toEqual(["and the tests?"])
-  })
+  }, HANG_GUARD_MS)
 })
 
 describe("the reading", () => {
   test("while watched, follows the fork's events a moment after them, once for a burst", async () => {
+    using clock = manualTuiClock()
     const host = world({ main: 1 })
     const { control, gate, emit } = await bench(host)
     await control.ask("main", "why?")
@@ -105,14 +109,18 @@ describe("the reading", () => {
     emit("fork-1")
     emit("fork-1")
     expect(control.reading("main").replying).toBe(true)
-    await settled()
+    clock.advance(SETTLE_MS - 1)
+    expect(gate.reads).toBe(before)
+    clock.advance(1)
+    await waitUntil("the watch read the answer from the fork", () => !control.reading("main").replying)
     expect(gate.reads).toBe(before + 1)
     expect(control.reading("main").turns.map((turn) => [turn.question, turn.answer])).toEqual([["why?", "Because."]])
     expect(control.reading("main").replying).toBe(false)
     stop()
-  })
+  }, HANG_GUARD_MS)
 
   test("unwatched, or about another session, an event reads nothing", async () => {
+    using clock = manualTuiClock()
     const host = world({ main: 1 })
     const { control, gate, emit } = await bench(host)
     await control.ask("main", "why?")
@@ -123,7 +131,7 @@ describe("the reading", () => {
     emit("elsewhere")
     stop()
     emit("fork-1")
-    await settled()
+    clock.advance(SETTLE_MS)
     expect(gate.reads).toBe(before)
   })
 
@@ -136,16 +144,16 @@ describe("the reading", () => {
     const first = control.refresh("main")
     const second = control.refresh("main")
     const third = control.refresh("main")
-    await Bun.sleep(1)
+    await waitUntil("the first refresh waiting at its gate", () => gate.reads >= before + 1)
     expect(gate.reads).toBe(before + 1)
     gate.release()
     await first
-    await Bun.sleep(1)
+    await waitUntil("the shared follow-up refresh waiting at its gate", () => gate.reads >= before + 2)
     expect(gate.reads).toBe(before + 2)
     gate.release()
     await Promise.all([second, third])
     expect(gate.reads).toBe(before + 2)
-  })
+  }, HANG_GUARD_MS)
 
   test("dispose stops listening to the host", async () => {
     const { control, listeners } = await bench(world({ main: 1 }))

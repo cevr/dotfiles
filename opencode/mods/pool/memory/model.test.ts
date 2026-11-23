@@ -90,7 +90,7 @@ const busy = (pool: Model.Pool["Service"], providerID: string) =>
   Effect.forEach([1, 2, 3], (n) => pool.stepStarted(`ses_busy_${n}`, providerID), { discard: true })
 
 /** Let the review a held pace forked run. */
-const settle = Effect.promise(() => new Promise<void>((done) => setTimeout(done, 20)))
+const settle = Effect.yieldNow
 
 describe("Codex resets", () => {
   const config: Model.Config = { providers: {}, paced: { openai: OPENAI }, cacheLifeMs: CACHE_LIFE_MS, resets: { openai: "codex" } }

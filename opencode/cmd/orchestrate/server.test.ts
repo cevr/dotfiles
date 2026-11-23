@@ -296,7 +296,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
 const eventually = (check: () => void) => Effect.promise(() => eventuallyPasses(check))
 
 /** Lets the plugin's background work run, for a check that nothing happened. */
-const settle = Effect.sleep("100 millis")
+const settle = Effect.yieldNow
 
 const scenario = <A, E>(body: Effect.Effect<A, E, import("effect").Scope.Scope>) => Effect.runPromise(Effect.scoped(body))
 
@@ -1719,20 +1719,21 @@ describe("an idle root with units to move or to land", () => {
         yield* settle
         expect(plugin.nudges).toEqual([])
         yield* plugin.draft({ sessionID: "root", client: "tui-1", drafting: false })
-        yield* Effect.sleep(RECHECK_MS / 2)
+        yield* TestClock.adjust(RECHECK_MS / 2)
         expect(plugin.nudges).toEqual([])
-        yield* eventually(() => expect(plugin.nudges.map((nudge) => nudge.text)).toEqual([LINE]))
+        yield* TestClock.adjust(RECHECK_MS / 2)
+        expect(plugin.nudges.map((nudge) => nudge.text)).toEqual([LINE])
 
         const sent = yield* start({ now: WEDNESDAY }, world)
         yield* sent.draft({ sessionID: "root", client: "tui-1", drafting: true })
         yield* sent.idle("root")
         yield* sent.draft({ sessionID: "root", client: "tui-1", drafting: false })
         yield* sent.enqueue("root", { type: "user" })
-        yield* Effect.sleep(RECHECK_MS + 200)
+        yield* TestClock.adjust(RECHECK_MS + 200)
         expect(sent.nudges).toEqual([])
         // A report that is not one is refused without a word.
         expect(yield* sent.draft({ sessionID: "root" })).toEqual({ ok: false })
-      }),
+      }).pipe(Effect.provide(TestClock.layer())),
     ))
 
   test("a nudge the host refuses is not tried again in that idle period", () =>

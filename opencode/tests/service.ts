@@ -58,7 +58,7 @@ const probe = async (service: Service): Promise<"ready" | "waiting" | { failed: 
  * answers 200; a failed boot (500) throws at once. `label` names it in the
  * error, with the last thing seen at the deadline.
  */
-export const ready = async (file: string, label: () => string, ms = 60_000): Promise<Service> => {
+export const ready = async (file: string, label: () => string, ms = 60_000, pollAgain = () => Bun.sleep(250)): Promise<Service> => {
   const deadline = Date.now() + ms
   let seen = `no service file at ${file}`
   for (;;) {
@@ -70,6 +70,6 @@ export const ready = async (file: string, label: () => string, ms = 60_000): Pro
       seen = `${service.url} still starting`
     }
     if (Date.now() > deadline) throw new Error(`${label()}: ${seen}`)
-    await Bun.sleep(250)
+    await pollAgain()
   }
 }

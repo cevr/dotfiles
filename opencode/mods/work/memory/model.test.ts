@@ -41,8 +41,8 @@ const make = (made: Bench, sessions: Record<string, string> = { ses_1: "/code/ap
     ),
   )
 
-/** Lets the tool's background work run as far as it can. */
-const settle = Effect.sleep("20 millis")
+/** A scheduler handoff to the background fibers over the synchronous memory adapters. */
+const settle = Effect.yieldNow
 
 /** `body` over one tool's life in the bench's world; the tool's background work stops with it. */
 const within = <A>(made: Bench, body: (tool: typeof Model.RiftTool.Service) => Effect.Effect<A>) =>

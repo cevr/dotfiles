@@ -131,3 +131,6 @@ export const owned = <
 
 /** To await: settles once the owned child `pid`, all it started and its own TMPDIR are gone (nothing to wait for once they are). */
 export const released = (pid: number) => releases.get(pid)
+
+/** Refresh and return what an owned child has started, while the child is still running. */
+export const observed = (pid: number) => running.get(pid)?.sample()

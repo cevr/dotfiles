@@ -32,11 +32,10 @@ const methods = (received: ReadonlyArray<Received>) => received.map((request) =>
 const param = (request: Received | undefined, key: string) =>
   request !== undefined && typeof request.params === "object" && request.params !== null ? Object.getOwnPropertyDescriptor(request.params, key)?.value : undefined
 
-/** Waits until herdr has received `count` requests, then a little longer to catch any extra. */
+/** Wait for the recording peer to receive the required requests. */
 const settle = (peer: Peer, count: number) =>
   Effect.gen(function* () {
-    for (let tries = 0; tries < 200 && (yield* peer.received).length < count; tries++) yield* Effect.sleep(5)
-    yield* Effect.sleep(20)
+    for (let tries = 0; tries < 24_000 && (yield* peer.received).length < count; tries++) yield* Effect.sleep(5)
     return yield* peer.received
   })
 
@@ -130,7 +129,7 @@ describe("the reporter", () => {
         yield* Effect.all([stopped.reporting.release, stopped.reporting.release], { concurrency: "unbounded" })
         const released = yield* stopped.peer.received
         stopped.reporting.show(idle)
-        yield* Effect.sleep(30)
+        yield* Effect.yieldNow
         yield* stopped.close
         expect(methods(yield* peer.received)).toEqual(["pane.release_agent"])
         expect(methods(released)).toEqual(["pane.report_agent", "pane.report_metadata", "pane.release_agent"])

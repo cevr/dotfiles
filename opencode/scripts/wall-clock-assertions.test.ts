@@ -44,7 +44,7 @@ const assertions = (file: string, text: string) => {
     if (isExpect(call)) {
       for (const argument of call.arguments)
         for (const test of comparisons)
-          if (holds(argument, test) && test.left.type !== "PrivateIdentifier" && boundsClock(test.left, test.right)) hits.push(source(test))
+          if (holds(argument, test) && boundsClock(test.left, test.right)) hits.push(source(test))
     }
     if (matchesClock(call, boundsClock)) hits.push(source(call))
   }
@@ -109,7 +109,7 @@ const files = Effect.gen(function* () {
   const cwd = yield* Path.Path
   const list = yield* spawner.spawn(ChildProcess.make("git", ["ls-files", "-z", "--", "opencode", "workbox/test"], { cwd: cwd.resolve(".."), forceKillAfter: "3 seconds" }))
   const out = yield* list.stdout.pipe(Stream.decodeText(), Stream.mkString)
-  expect(yield* list.exitCode).toBe(0)
+  expect(Number(yield* list.exitCode)).toBe(0)
   return out.split("\0").filter((file) => /\.test\.tsx?$/.test(file))
 })
 

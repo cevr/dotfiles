@@ -9,7 +9,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { Effect, Queue, Schedule, Schema, type Scope, Stream } from "effect"
+import { Effect, Queue, Schema, type Scope, Stream } from "effect"
 import { Answer, SKILLS } from "@dotfiles/opencode-skills/catalog"
 import SkillsPlugin, { live, make } from "./server.ts"
 
@@ -67,6 +67,7 @@ const start = (at: Effect.Success<typeof layout>, before: ReadonlyArray<Info>, a
     let registry = new Map<string, Info>()
     let reloads = 0
     const events = yield* Queue.unbounded<{ readonly type: "skill.updated"; readonly data: object }>()
+    const handled = yield* Queue.unbounded<true>()
     const reload = Effect.sync(() => {
       const next = new Map<string, Info>()
       for (const transform of transforms) transform({ list: () => [...next.values()], add: (skill) => void next.set(skill.id, { ...skill }) })
@@ -94,7 +95,12 @@ const start = (at: Effect.Success<typeof layout>, before: ReadonlyArray<Info>, a
             return { dispose: Effect.void }
           }),
       },
-      event: { subscribe: () => Stream.fromQueue(events) },
+      event: {
+        subscribe: () => Stream.fromEffect(Queue.take(events)).pipe(
+          Stream.concat(Stream.fromEffect(Queue.offer(handled, true)).pipe(Stream.drain)),
+          Stream.forever,
+        ),
+      },
       rpc: {
         register: (definition: { readonly id: string }, handlers: Record<string, Handler>) =>
           Effect.sync(() => {
@@ -115,6 +121,7 @@ const start = (at: Effect.Success<typeof layout>, before: ReadonlyArray<Info>, a
       registry: () => registry,
       reload,
       reloads: () => reloads,
+      handled: Queue.take(handled),
       send: (text: string, skills?: Prompt["prompt"]["skills"]) =>
         Effect.gen(function* () {
           const event: Prompt = { sessionID: "ses_1", messageID: "msg_1", prompt: skills ? { text, skills } : { text }, delivery: "steer" }
@@ -193,7 +200,7 @@ describe("the skills plugin", () => {
         at.write(join(at.project, ".claude/skills/review/SKILL.md"), skillFile("Project review", "LOCAL BODY"))
         const plugin = yield* start(at, [])
         // The start's reload published skill.updated; the scan had not changed, so no reload followed.
-        yield* Effect.sleep("100 millis")
+        yield* plugin.handled
         expect(plugin.reloads()).toBe(1)
         expect(plugin.registry().has("review:global")).toBe(false)
 
@@ -201,11 +208,9 @@ describe("the skills plugin", () => {
         at.write(join(at.config, "skills/review/SKILL.md"), skillFile("User review", "GLOBAL BODY"))
         yield* plugin.reload
         // The plugin scans, sees the change and reloads once; that reload's event finds nothing new.
-        yield* Effect.sync(() => (plugin.registry().has("review:global") ? Effect.void : Effect.fail("pending"))).pipe(
-          Effect.flatten,
-          Effect.retry({ schedule: Schedule.spaced("20 millis"), times: 100 }),
-        )
-        yield* Effect.sleep("100 millis")
+        yield* plugin.handled
+        yield* plugin.handled
+        expect(plugin.registry().has("review:global")).toBe(true)
         expect(plugin.reloads()).toBe(3)
       }),
     ))

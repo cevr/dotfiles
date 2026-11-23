@@ -241,10 +241,10 @@ describe("the ChatGPT quota source", () => {
         Effect.gen(function* () {
           const source = yield* make({ login: () => Effect.succeed(undefined), url: "http://127.0.0.1:9/never" })
           const reading = (at: number) => ({ at, windows: [{ name: "7d", utilization: 0.2 }] })
-          yield* source.observe("chatgpt", reading(Date.now()))
-          yield* source.observe("chatgpt", reading(Date.now() - 10_000))
-          expect(yield* source.rpc.reading({ credentialID: "chatgpt" })).toMatchObject({ reading: { windows: [{ name: "7d", utilization: 0.2 }] } })
-          expect(((yield* source.rpc.reading({ credentialID: "chatgpt" })) as { reading: { at: number } }).reading.at).toBeGreaterThan(Date.now() - 5000)
+          const latest = reading(20_000)
+          yield* source.observe("chatgpt", latest)
+          yield* source.observe("chatgpt", reading(10_000))
+          expect(yield* source.rpc.reading({ credentialID: "chatgpt" })).toMatchObject({ reading: latest })
         }),
       ),
     )

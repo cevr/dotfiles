@@ -1,5 +1,6 @@
 import { describe, expect, spyOn, test } from 'bun:test'
 import { Result } from 'effect'
+import { waitUntil } from '../../../tests/wait.ts'
 import {
   MAX_JSON_DEPTH,
   MAX_JSON_NUMBER_BYTES,
@@ -916,7 +917,7 @@ describe('createStrippedStream - cancellation', () => {
     const reader = bodyOf(response).getReader()
     await reader.read()
     await reader.cancel()
-    await new Promise((resolve) => setTimeout(resolve, 0))
+    await waitUntil('the source stream to observe cancellation', () => cancelled)
     expect(cancelled).toBe(true)
   })
 
@@ -1205,7 +1206,7 @@ describe('bounded structured JSON responses', () => {
     const reader = bodyOf(jsonResponse(source)).getReader()
     await reader.read()
     await reader.cancel()
-    await new Promise((resolve) => setTimeout(resolve, 0))
+    await waitUntil('the source JSON stream to observe cancellation', () => cancelled)
     expect(cancelled).toBe(true)
 
     const failure = new Error('upstream JSON failed')

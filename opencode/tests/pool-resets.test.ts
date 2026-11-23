@@ -61,7 +61,7 @@ const rpc = async (service: Service, plugin: string, method: string, input: unkn
   return body.output
 }
 
-const until = async <A>(read: () => Promise<A>, done: (value: A) => boolean, label: () => string, ms = 60_000): Promise<A> => {
+const until = async <A>(read: () => A | Promise<A>, done: (value: A) => boolean, label: () => string, ms = 60_000): Promise<A> => {
   const deadline = Date.now() + ms
   let last = await read()
   while (!done(last)) {
@@ -207,17 +207,18 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
       (value) => typeof value === "object" && value !== null && "claims" in value,
       () => `the pool (${log()})`,
     )
-    /**
-     * The pane pacing a start on each of `providers` once a second for `seconds`:
-     * the time a check that nothing more happens needs, over sweeps 6 s apart.
-     */
-    const pacing = async (providers: ReadonlyArray<string>, seconds: number): Promise<void> => {
-      for (let second = 0; second < seconds; second++) {
+    // A new read of the same login is an opportunity for the prior sweep to finish.
+    // Keep asking to pace (as the pane does) until the fake sees those opportunities.
+    const swept = (fake: { readonly received: ReadonlyArray<ReceivedRequest> }, count: number, providers: ReadonlyArray<string> = []) => {
+      const login = Object.keys(accounts).at(0)
+      const reads = () => fake.received.filter((request) => request.account === login && request.path === "/api/oauth/usage").length
+      const target = reads() + count + 2 // Skip a sweep already in progress, and read again after the last one.
+      return until(async () => {
         for (const providerID of providers) await pool("pace", { providerID, sessionID: SESSION })
-        await Bun.sleep(1000)
-      }
+        return reads()
+      }, (seen) => seen >= target, () => `the pool's ${count} completed sweeps (${log()})`)
     }
-    return { pool, questions, open, log, pacing, work, stderr: () => stderr }
+    return { pool, questions, open, log, swept, work, stderr: () => stderr }
   }
 
   test(
@@ -251,10 +252,10 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
       stops.push(anthropic.stop)
 
       // ── The server ──
-      const { pool, open, log, pacing, work, stderr } = await serve("host", accounts, anthropic.url, now, chatgpt.usageURL)
+      const { pool, open, log, swept, work, stderr } = await serve("host", accounts, anthropic.url, now, chatgpt.usageURL)
 
       // ── No work: nothing running and no start held, over two sweeps ──
-      await pacing([], 15)
+      await swept(anthropic, 2)
       expect(anthropic.claims).toEqual([])
       expect(chatgpt.consumes).toEqual([])
       expect(await open()).toEqual([])
@@ -263,8 +264,8 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
       for (let start = 0; start < 3; start++) await pool("started", { providerID: "openai" })
       const codexPace = (await pool("pace", { providerID: "openai", sessionID: SESSION })) as { ok?: boolean }
       expect(codexPace.ok).toBe(false)
-      await until(async () => chatgpt.consumes.length, (count) => count > 0, () => `a consume (${log()})`)
-      await pacing(["openai"], 1)
+      await until(() => chatgpt.consumes.length, (count) => count > 0, () => `a consume (${log()})`)
+      await until(open, (rows) => rows.some((row) => row.header === "Pool reset claimed"), () => `the recorded Codex claim (${log()})`)
       expect(chatgpt.consumes.map(({ account, creditID, code }) => ({ account, creditID, code }))).toEqual([
         { account: "acct-1", creditID: "credit-1", code: "reset" },
       ])
@@ -285,7 +286,7 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
         () => `a Claude claim (${log()})`,
       )
       // The claimed account takes the work: the other is not claimed, over two more sweeps.
-      await pacing(["anthropic"], 15)
+      await swept(anthropic, 2, ["anthropic"])
       expect(anthropic.claims.map(({ result }) => result)).toEqual(["reset"])
       expect(String(anthropic.claims[0]?.requestID)).toMatch(/^pool-[0-9a-f]{24}$/)
       // The tray holds the two notices and nothing else; each says why, in one clause.
@@ -357,11 +358,11 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
         },
       })
       stops.push(anthropic.stop)
-      const { pool, questions, open, log, pacing, work } = await serve("kinds", accounts, anthropic.url, now)
+      const { pool, questions, open, log, swept, work } = await serve("kinds", accounts, anthropic.url, now)
 
       // ── Demand: three agents busy, a start paced each second: c's room outlasts the reset, so d's week is left ──
       await work(3, anthropic)
-      await pacing(["anthropic"], 15)
+      await swept(anthropic, 2, ["anthropic"])
       expect(anthropic.claims).toEqual([])
       expect(await open()).toEqual([])
 
@@ -394,7 +395,7 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
       expect(await questions("answer", { sessionID: SESSION, answers: [{ id: notice.id, answer: "OK" }] })).toMatchObject({ ok: true })
       await until(open, (rows) => !rows.some((row) => row.id === notice.id), () => `the notice withdrawn (${log()})`)
       // Each claim once.
-      await Bun.sleep(7000)
+      await swept(anthropic, 1)
       expect(anthropic.claims).toHaveLength(1)
     }),
     TIMEOUT_MS,
@@ -422,7 +423,7 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
         },
       })
       stops.push(anthropic.stop)
-      const { pool, log } = await serve("two-grants", accounts, anthropic.url, now)
+      const { pool, log, swept } = await serve("two-grants", accounts, anthropic.url, now)
       await until(
         async () => {
           await pool("pace", { providerID: "anthropic", sessionID: SESSION })
@@ -431,12 +432,8 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
         (count) => count > 0,
         () => `a claim (${log()})`,
       )
-      // Three sweeps (6 s each) after it, each reading the week back to 0%: no second grant goes. Asked every second
-      // (a connection idle past the server's keep-alive is closed under the next request).
-      for (let second = 0; second < 20; second++) {
-        await Bun.sleep(SECOND)
-        await pool("pace", { providerID: "anthropic", sessionID: SESSION })
-      }
+      // Three sweeps after it, each reading the week back to 0%: no second grant goes.
+      await swept(anthropic, 3, ["anthropic"])
       expect(anthropic.claims.map(({ account, grant, result }) => ({ account, grant, result }))).toEqual([{ account: "e", grant: "g1", result: "reset" }])
       const settled = (await pool("resets")) as Resets
       expect(settled.claims).toHaveLength(1)

@@ -41,7 +41,6 @@ const NOTICE = "update available · restart to update"
 /** A newer build as daily names one: the fork commit, then the dotfiles commit (mods/update/process/pin.ts `versionOf`). */
 const NEWER = "9.9.9-prime.0e0e0e0e.d0d0d0d0"
 /** How long a TUI on the service's own build is watched for a notice it must not draw, once it has read `/api/info`. */
-const QUIET_MS = 3_000
 
 interface ClientModule {
   readonly OpenCode: {
@@ -226,10 +225,12 @@ describe.skipIf(!fork)("the update notice", () => {
       try {
         await until(screen, (text) => text.includes(title), (last) => `the TUI never showed the session:\n${last}`, 60_000)
         // The TUI has read the service's build, and it is its own, and upstream has nothing past it: no notice.
-        await until(() => infoReads, (reads) => reads > 0, () => "the TUI never read /api/info", 30_000)
-        await Bun.sleep(QUIET_MS)
-        expect(await screen()).not.toContain("update available")
-        expect(await screen()).not.toContain("upstream")
+        writeUpstream(1, false)
+        await until(screen, (text) => infoReads > 0 && text.includes("upstream +1"), () => "the TUI never rendered its first build reading", 60_000)
+        writeUpstream(0, false)
+        const same = await until(screen, (text) => !text.includes("upstream"), () => "the TUI never cleared its upstream badge", 60_000)
+        expect(same).not.toContain("update available")
+        expect(same).not.toContain("upstream")
 
         // An install: daily counts upstream past the new build (its merge blocked), then the service restarts onto that build while the TUI stays open.
         drop()
