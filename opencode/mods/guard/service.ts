@@ -130,6 +130,18 @@ export class Reservations extends Context.Service<
   }
 >()("dotfiles-opencode/guard/Reservations") {}
 
+/** The text of the scripts a call runs (`bun x.ts`, `node x.mjs`), read for the keychain rule (chrome.ts). */
+export class ScriptFiles extends Context.Service<
+  ScriptFiles,
+  {
+    /**
+     * The text of the file at `path` (absolute); none when it is missing, cannot be read or is larger than a script
+     * the rule reads. It never fails: a script that cannot be read cannot be run either, so the rule lets it be.
+     */
+    readonly text: (path: string) => Effect.Effect<Option.Option<string>>
+  }
+>()("dotfiles-opencode/guard/ScriptFiles") {}
+
 /** The processes running on the machine, read when a call kills by pattern. */
 export class Processes extends Context.Service<
   Processes,

@@ -200,13 +200,32 @@ const installedBeside = (moduleDir: string, name: string) => {
 }
 
 describe("the plugin never moves the runtime's effect", () => {
-  test("opencode-drive runs on the effect and platform packages it pins; the plugin on the lint workspace's effect", () => {
+  test("opencode-drive and the OpenCode SDK run on the root's one effect, platform packages at the same release; the plugin on the lint workspace's effect", () => {
     const root = Schema.decodeUnknownSync(Pinned)(`{"version":"0",${readReal("package.json").slice(1)}`)
-    const drive = installedBeside("node_modules/opencode-drive", "opencode-drive")
-    expect(installedBeside("node_modules/opencode-drive", "effect").version).toBe(drive.peerDependencies?.effect ?? "")
-    expect(root.devDependencies?.effect).toBe(drive.peerDependencies?.effect ?? "")
-    for (const name of ["@effect/platform-node", "@effect/platform-node-shared"])
-      expect({ name, version: installedBeside("node_modules/opencode-drive", name).version }).toEqual({ name, version: drive.dependencies?.[name] ?? "" })
+    const pinned = root.dependencies?.effect ?? ""
+    // Two effects in one process broke every real-OpenCode scenario in HttpApiClient (3d002b7f: drive's platform packages
+    // moved, the SDK's effect not). So the root pins one release and overrides drive's exact 4.0.1 pins to it.
+    expect(pinned).toMatch(/^\d+\.\d+\.\d+$/)
+    // (a) The lock holds one effect for drive's whole graph: one `effect` entry, at the pin, and no package's nested copy.
+    // (b) That one instance is proven on real OpenCode by the drive-backed acceptance files (tests/skills.test.ts and every
+    // scenario: each connects through @opencode/client's HttpApiClient), run by `bun run accept`, never by this file.
+    const lock = Schema.decodeUnknownSync(Schema.Struct({ packages: Schema.Record(Schema.String, Schema.Array(Schema.Unknown)) }))(
+      Bun.JSONC.parse(readReal("bun.lock")),
+    )
+    const effects = Object.entries(lock.packages).filter(([key]) => key === "effect" || key.endsWith("/effect"))
+    expect(effects.map(([key, [resolved]]) => [key, resolved])).toEqual([["effect", `effect@${pinned}`]])
+    /** The installed package `chain` reaches, each name resolved from the one before it, from the root. */
+    const reached = (chain: ReadonlyArray<string>) =>
+      chain.reduce((from, name) => path.dirname(realpathSync(Bun.resolveSync(`${name}/package.json`, from))), REAL)
+    for (const chain of [
+      ["opencode-drive", "effect"],
+      ["opencode-drive", "@effect/platform-node"],
+      ["opencode-drive", "@effect/platform-node-shared"],
+      ["opencode-drive", "@opencode/client", "effect"],
+      ["opencode-drive", "@opencode/client", "@opencode/protocol", "effect"],
+      ["opencode-drive", "@opencode/client", "@opencode/schema", "effect"],
+    ])
+      expect({ chain, version: Schema.decodeUnknownSync(Pinned)(readFileSync(path.join(reached(chain), "package.json"), "utf8")).version }).toEqual({ chain, version: pinned })
     expect(Object.keys({ ...root.devDependencies, ...root.dependencies })).not.toContain("oxlint-plugin-effect")
     const lint = Schema.decodeUnknownSync(Pinned)(`{"version":"0",${readReal(LINT_MANIFEST).slice(1)}`)
     expect(installedBeside("lint/node_modules/oxlint-plugin-effect", "effect").version).toBe(lint.devDependencies?.effect ?? "")

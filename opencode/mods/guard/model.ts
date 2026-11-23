@@ -10,7 +10,10 @@
 // the workspaces work is still making and fails with `Destructive` while one's
 // folder exists (work-gc.ts); then, for a foreground call that opens with a long
 // sleep (sleep.ts), it asks whether the session is a subagent and fails with
-// `Idle` when it is. The plugin calls this and nothing else.
+// `Idle` when it is. A line that starts Chrome for DevTools or headless without
+// the keychain flags, or runs a script that does (its text asked of
+// `ScriptFiles` only for a line that runs one), fails with `KeychainPrompt`
+// (chrome.ts). The plugin calls this and nothing else.
 //
 // The destructive, worktree and kill rules fail closed: a session whose directory the
 // host cannot give, a target it cannot tell is a repository, a worktree add in
@@ -18,13 +21,14 @@
 // pattern while it cannot list the processes, refuses the call with why. The
 // sleep rule fails open: a session the host cannot place as a subagent or a
 // root runs its sleep, since a sleep loses nothing.
-import { Context, Effect, Layer, Option } from "effect"
+import { Context, Effect, Layer, Match, Option } from "effect"
+import { type BareLaunch, bareLaunches, KeychainPrompt, keychainReason, runtimeRuns, scriptLaunch } from "./chrome.ts"
 import { isHeavy } from "./heavy.ts"
 import { killsByPattern, killVerdict } from "./kill.ts"
 import { launcherName, launcherScript, type Limits } from "./launcher.ts"
 import { resolve } from "./path.ts"
 import { expandWord } from "./shell-line.ts"
-import { type Checkout, type CheckoutUnknown, Checkouts, Launchers, Processes, RepoRoots, Reservations, Scopes, SessionDirectories, Subagents, type WarmSource } from "./service.ts"
+import { type Checkout, type CheckoutUnknown, Checkouts, Launchers, Processes, RepoRoots, Reservations, Scopes, ScriptFiles, SessionDirectories, Subagents, type WarmSource } from "./service.ts"
 import { Idle, idleReason, sleepsTooLong } from "./sleep.ts"
 import { Destructive, repoCandidates, verdict } from "./verdict.ts"
 import { workGcReason, workGcs } from "./work-gc.ts"
@@ -49,8 +53,8 @@ export interface ShellCall {
 export class Guard extends Context.Service<
   Guard,
   {
-    /** Succeeds when the call may run; fails `Destructive`, `FullCopy` or `Idle` with the words the model reads when it may not. */
-    readonly judge: (call: ShellCall) => Effect.Effect<void, Destructive | FullCopy | Idle>
+    /** Succeeds when the call may run; fails `Destructive`, `FullCopy`, `KeychainPrompt` or `Idle` with the words the model reads when it may not. */
+    readonly judge: (call: ShellCall) => Effect.Effect<void, Destructive | FullCopy | KeychainPrompt | Idle>
   }
 >()("dotfiles-opencode/guard/Guard") {}
 
@@ -64,6 +68,7 @@ export const layer = (config: Config) =>
       const subagents = yield* Subagents
       const checkouts = yield* Checkouts
       const reservations = yield* Reservations
+      const scripts = yield* ScriptFiles
 
       /** The bases that decide whether a workspace can copy `checkout`: none asked on a cloning file system, which decides alone. */
       const sourcesFor = (checkout: Checkout): Effect.Effect<ReadonlyArray<WarmSource>, CheckoutUnknown> => {
@@ -134,6 +139,14 @@ export const layer = (config: Config) =>
           : []
         const kill = killVerdict(call.command, running, config.server)
         if (kill._tag === "Deny") return yield* refuse(kill.reason)
+        // A Chrome the line starts is read from the line; a script's text only for a line that runs one.
+        const keychain = (launch: BareLaunch) => new KeychainPrompt({ command: call.command, reason: keychainReason(launch) })
+        for (const launch of bareLaunches(call.command, place)) return yield* keychain(launch)
+        for (const run of runtimeRuns(call.command, place)) {
+          const text = yield* Match.valueTags(run.ran, { Inline: ({ code }) => Effect.succeed(Option.some(code)), ScriptFile: ({ path }) => scripts.text(path) })
+          const launch = Option.flatMap(text, (code) => scriptLaunch(run, code))
+          if (Option.isSome(launch)) return yield* keychain(launch.value)
+        }
 
         const sleep = call.background === true ? undefined : sleepsTooLong(call.command)
         if (sleep === undefined) return

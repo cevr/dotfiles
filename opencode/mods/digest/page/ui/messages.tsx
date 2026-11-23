@@ -6,8 +6,8 @@ import { createSignal, For, Match, Show, Switch } from "solid-js"
 import { Accordion, AccordionHeader, AccordionItem, AccordionPanel, AccordionTrigger } from "@ui-sdk/solid/accordion"
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "@ui-sdk/solid/collapsible"
 import type { Outcome } from "./api.ts"
-import { answerMessage, answers, editing, enter, hot, marksLocked, openId, outcomes, pairProblem, pairWith, renameProject, sending, setEditing, showAll, shownAll, toggleLater, toggleOpen, toggleRead, view, wide } from "./state.ts"
-import { type Ask, inSpan, type Message, type Project, type Unit } from "./types.ts"
+import { answerMessage, answers, editing, enter, hereByAddress, hot, marksLocked, mayAct, openId, openedByName, outcomes, pairProblem, pairWith, peerLocked, peerOrigin, project, renameProject, sending, setEditing, showAll, shownAll, toggleLater, toggleOpen, toggleRead, view, wide } from "./state.ts"
+import { type Ask, inSpan, isPeer, type Message, type Project, type Unit } from "./types.ts"
 
 /** How far a row must travel before its swipe acts, in px. */
 const SWIPE_AT = 88
@@ -186,7 +186,8 @@ export function PairPrompt(props: { readonly need: "read" | "mark" | "answer" })
 function AskBlock(props: { readonly message: Message; readonly ask: Ask }) {
   let field: HTMLTextAreaElement | undefined
   const busy = () => sending().has(props.message.id)
-  const can = () => answers() === true && props.message.open && !busy()
+  // A peer's message is answered on its host, which judges this browser itself: try it, unless it said no already.
+  const can = () => (isPeer(props.message.id) ? mayAct(props.message.id) : answers() === true) && props.message.open && !busy()
   const submit = (event: SubmitEvent) => {
     event.preventDefault()
     const text = field?.value.trim() ?? ""
@@ -212,8 +213,82 @@ function AskBlock(props: { readonly message: Message; readonly ask: Ask }) {
         </button>
       </form>
       <p class="assume">{props.ask.assume === undefined ? "If you do nothing, the run waits for you: it has no assumption for this one." : `If you do nothing, the run goes on assuming: ${props.ask.assume}`}</p>
-      <Show when={answers() === false && !marksLocked()}>
+      <Show when={answers() === false && !marksLocked() && !isPeer(props.message.id)}>
         <PairPrompt need="answer" />
+      </Show>
+    </div>
+  )
+}
+
+/**
+ * A peer's message this browser cannot act on from here: what it asks, why not, and the way to that host's own page,
+ * where it pairs (its token stays there) and acts. Its codes and tokens never pass through this page.
+ */
+/**
+ * This page was opened under a name, and `host` (a peer, or this host once it answers on addresses alone) takes a
+ * write only from a page by address: the way there, to this page by address and, for a peer, to its own page.
+ */
+export function ByAddress(props: { readonly host: string; readonly theirs?: string }) {
+  return (
+    <p class="assume" role="status">
+      Open this digest by address to act on {props.host}'s items
+      <Show when={hereByAddress()} fallback={props.theirs === undefined ? " (its Tailscale address, not its name)." : ": "}>
+        {(here) => (
+          <>
+            {": "}
+            <a href={here()}>this page by address</a>
+            {props.theirs === undefined ? "." : " or "}
+          </>
+        )}
+      </Show>
+      <Show when={props.theirs}>
+        {(theirs) => (
+          <>
+            <a href={theirs()} target="_blank" rel="noreferrer">
+              {props.host}'s page
+            </a>
+            .
+          </>
+        )}
+      </Show>
+    </p>
+  )
+}
+
+function OnHost(props: { readonly message: Message }) {
+  const host = () => project()?.host ?? "its host"
+  const at = () => peerOrigin(props.message.id)
+  const why = () => {
+    const origin = at()
+    return origin === undefined ? undefined : peerLocked().get(origin)
+  }
+  const doing = () => (props.message.open && props.message.ask !== undefined ? "answer it" : "mark it")
+  return (
+    <div class="onhost">
+      <Show when={props.message.ask}>
+        {(ask) => (
+          <Show when={ask().options.length > 0}>
+            <p class="assume">Its answers: {ask().options.join(" · ")}</p>
+          </Show>
+        )}
+      </Show>
+      <Show when={!openedByName()} fallback={<ByAddress host={host()} theirs={at()} />}>
+        <p class="assume" role="status">
+          <Switch fallback={<>This is on {host()}. </>}>
+            <Match when={why() === "pair"}>{host()} needs this browser paired before it takes a mark or an answer from it. </Match>
+            <Match when={why() === "unreachable"}>This page cannot write to {host()} right now. </Match>
+          </Switch>
+          <Show when={at()} fallback="Answer or mark it on that host's page.">
+            {(origin) => (
+              <>
+                <a href={origin()} target="_blank" rel="noreferrer">
+                  Open {host()}'s page
+                </a>
+                {why() === "pair" ? `, pair this browser there, and ${doing()} there.` : ` to ${doing()}.`}
+              </>
+            )}
+          </Show>
+        </p>
       </Show>
     </div>
   )
@@ -229,7 +304,9 @@ function Detail(props: { readonly message: Message }) {
       <Show when={props.message.body !== ""}>
         <p class="body">{props.message.body}</p>
       </Show>
-      <Show when={props.message.ask}>{(ask) => <AskBlock message={props.message} ask={ask()} />}</Show>
+      <Show when={!isPeer(props.message.id) || mayAct(props.message.id)} fallback={<OnHost message={props.message} />}>
+        <Show when={props.message.ask}>{(ask) => <AskBlock message={props.message} ask={ask()} />}</Show>
+      </Show>
       <Show when={outcomes().get(props.message.id)}>{(outcome) => <OutcomeLine outcome={outcome()} />}</Show>
       <Show when={props.message.decided}>
         {(decided) => (
@@ -261,14 +338,16 @@ function Detail(props: { readonly message: Message }) {
           </Collapsible>
         </div>
       </Show>
-      <div class="acts">
-        <button type="button" onClick={() => toggleRead(props.message)}>
-          {props.message.unread ? "Mark read" : "Mark unread"}
-        </button>
-        <button type="button" onClick={() => toggleLater(props.message)}>
-          {props.message.returnsAt === undefined ? "Later" : "Back to the inbox"}
-        </button>
-      </div>
+      <Show when={!isPeer(props.message.id) || mayAct(props.message.id)}>
+        <div class="acts">
+          <button type="button" onClick={() => toggleRead(props.message)}>
+            {props.message.unread ? "Mark read" : "Mark unread"}
+          </button>
+          <button type="button" onClick={() => toggleLater(props.message)}>
+            {props.message.returnsAt === undefined ? "Later" : "Back to the inbox"}
+          </button>
+        </div>
+      </Show>
     </div>
   )
 }
@@ -294,7 +373,9 @@ function Row(props: { readonly message: Message }) {
             id={`r-${props.message.id}`}
             data-t={String(props.message.t)}
             aria-keyshortcuts="U L"
-            onPointerDown={(event: PointerEvent) => startSwipe(event, props.message)}
+            onPointerDown={(event: PointerEvent) => {
+              if (!isPeer(props.message.id) || mayAct(props.message.id)) startSwipe(event, props.message)
+            }}
             onKeyDown={onKey}
           >
             <span class="dot" aria-label={props.message.unread ? "unread" : undefined} />
@@ -410,10 +491,13 @@ export function Messages(props: { readonly project: Project }) {
         </button>
       </Show>
       <h1>
-        <Name project={props.project} />
+        <Show when={!isPeer(props.project.id) || mayAct(props.project.id)} fallback={props.project.name}>
+          <Name project={props.project} />
+        </Show>
       </h1>
       <p class="sub">
-        {props.project.where} · {props.project.unread > 0 ? `${props.project.unread} unread` : "all read"}
+        {props.project.where}
+        <Show when={(view()?.peers?.length ?? 0) > 0 && props.project.host !== undefined}> · on {props.project.host}</Show> · {props.project.unread > 0 ? `${props.project.unread} unread` : "all read"}
       </p>
       <Show when={props.project.inbox.length > 0} fallback={<p class="none">Nothing here.</p>}>
         <Rows messages={props.project.inbox} cut={props.project.cut} key={`${props.project.id}|in`} label="Messages" />

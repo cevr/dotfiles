@@ -4,6 +4,7 @@
 //
 //   bun mods/digest/page/demo.ts --dir <scratch folder> [--port 8291] [--seed full|empty|one|xss]
 //     [--as tailnet [--read member] [--write paired|member|member-except-hosts] [--from phone|agent|colleague]]
+//     [--name macbook --peers workbox=8292,spare=8293]
 //
 // `--as tailnet` serves 127.0.0.1 as the tailnet listener does (its policy: nothing but pairing until paired), for
 // a look at the unpaired page without binding the tailnet. `--read member` serves it with digest.tailnetRead
@@ -11,11 +12,15 @@
 // invented tailnet address (`--from`, default `colleague`): his phone (one of his devices), an agent machine (this
 // host), or another user's laptop.
 //
+// `--name` and `--peers` make it one host of several (peers.ts): each peer is another demo on 127.0.0.1 at its port,
+// read every 2 s through its `/peer/view.json`; a port where no demo runs is a host that is down. Each peer's page
+// (`http://127.0.0.1:<its port>`) may write here cross-origin, under this demo's policy (`--as tailnet --from`).
+//
 // `full` holds three projects: Harbor (a red message, two open questions pinned, a decision, units with rounds, one
 // message set aside for Later), Lantern (500 messages over 30 days) and Quarry (one message). `xss` holds one project
 // whose every shown text is script-shaped, for the check that the page renders it as text and runs none of it.
 import { parseArgs } from "node:util"
-import { Effect, Option, Schema } from "effect"
+import { Duration, Effect, Option, Schema } from "effect"
 import { handlersOf } from "../../../cmd/digest/server.ts"
 import { StatusRead } from "../bind.ts"
 import { membersOf } from "../members.ts"
@@ -26,12 +31,25 @@ import * as FileMarks from "../filestore/marks.ts"
 import * as FilePairing from "../filestore/pairing.ts"
 import type { Answerers } from "../answers.ts"
 import { listen, socketPeer } from "../http/listener.ts"
+import { noPeers, peerSide, servePeers } from "../http/peers.ts"
+import * as LivePeers from "../process/peers.ts"
 import { markOf, sinceOf } from "../marks.ts"
 import { nextMorning } from "../zone.ts"
 
 const { values } = parseArgs({
   args: Bun.argv.slice(2),
-  options: { dir: { type: "string" }, port: { type: "string" }, seed: { type: "string" }, zone: { type: "string" }, as: { type: "string" }, read: { type: "string" }, write: { type: "string" }, from: { type: "string" } },
+  options: {
+    dir: { type: "string" },
+    port: { type: "string" },
+    seed: { type: "string" },
+    zone: { type: "string" },
+    as: { type: "string" },
+    read: { type: "string" },
+    write: { type: "string" },
+    from: { type: "string" },
+    name: { type: "string" },
+    peers: { type: "string" },
+  },
 })
 const dir = values.dir ?? ""
 if (dir === "") throw new Error("usage: bun mods/digest/page/demo.ts --dir <scratch folder> [--port 8291] [--seed full|empty|one|xss] [--zone America/Montreal]")
@@ -173,7 +191,12 @@ const tailnet = values.as === "tailnet"
 await Effect.runPromise(
   Effect.scoped(
     Effect.gen(function* () {
-      const handlers = handlersOf({ dir, timezone: zone, ...(values.read === "member" ? { tailnetRead: "member" as const } : {}) }, log, answerers, Effect.succeed("no:starting"), members)
+      const named = (values.peers ?? "").split(",").filter((each) => each.includes("=")).map((each) => ({ name: each.split("=")[0] ?? "", host: each.split("=")[0] ?? "", port: Number(each.split("=")[1]) }))
+      const located = new Map(named.map((each) => [each.name, { name: each.name, base: `http://127.0.0.1:${each.port}` }] as const))
+      const peers = named.length === 0 ? noPeers([]) : yield* peerSide(named, Effect.succeed(located), LivePeers.get, Effect.sync(() => Date.now()), Effect.succeed(named.map((each) => `http://127.0.0.1:${each.port}`)), Effect.succeed([`http://127.0.0.1:${port}`]))
+      yield* Effect.forkScoped(servePeers(peers.pull, Duration.seconds(2)))
+      const options = { dir, timezone: zone, ...(values.read === "member" ? { tailnetRead: "member" as const } : {}), ...(values.name === undefined ? {} : { name: values.name, peers: named.map(({ name, host }) => ({ name, host })) }) }
+      const handlers = handlersOf(options, log, answerers, Effect.succeed("no:starting"), members, peers)
       const bound = yield* listen({ address: "127.0.0.1", port, listener: tailnet ? "tailnet" : "loopback", names: [] }, handlers, dist, tailnet ? () => from : socketPeer)
       console.log(`digest demo (${seed}${tailnet ? `, tailnet from ${values.from ?? "colleague"}, writes ${write}` : ""}): http://${bound.hostname}:${bound.port}/#pair=${code}`)
       yield* Effect.never

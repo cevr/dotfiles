@@ -4,9 +4,9 @@
 import "./style.css"
 import { render } from "@solidjs/web"
 import { Match, Show, Switch } from "solid-js"
-import { Messages, PairPrompt } from "./messages.tsx"
+import { ByAddress, Messages, PairPrompt } from "./messages.tsx"
 import { ProjectsHome, ProjectsSide } from "./projects.tsx"
-import { locked, marksLocked, problem, project, start, view, wide } from "./state.ts"
+import { addressNeeded, locked, marksLocked, problem, project, start, view, wide } from "./state.ts"
 import { Timeline } from "./timeline.tsx"
 
 function Banner() {
@@ -25,6 +25,11 @@ function App() {
   return (
     <>
       <Banner />
+      <Show when={addressNeeded()}>
+        <section class="marking">
+          <ByAddress host={view()?.host ?? "this host"} />
+        </section>
+      </Show>
       <Show when={marksLocked() && !locked()}>
         <section class="marking">
           <PairPrompt need="mark" />
