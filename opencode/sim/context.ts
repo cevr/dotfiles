@@ -487,7 +487,7 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
         "session.context",
       )(input).pipe(
         Effect.flatMap(({ sessionID }) => host.sessionOr(sessionID)),
-        Effect.map((found) => host.contextOf(found).map(host.viewOf)),
+        Effect.map((found) => host.viewsOf(found, host.contextOf(found))),
       ),
     compact: <I>(input: I) =>
       parse(

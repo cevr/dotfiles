@@ -89,7 +89,7 @@ export const CANCEL_DESCRIPTION =
 export const LIST_DESCRIPTION =
   "List the alarms and monitors pending in this session and the notices not yet read, with ISO times and the current time as `now`. Use it after a context handoff, or before you set a wake that may already exist."
 
-export const JobAction = Schema.Literals(["run", "check", "wait", "kill", "list"])
+export const JobAction = Schema.Literals(["run", "check", "park", "wait", "kill", "list"])
 
 export const JobInput = toolInput(Schema.Struct({
   action: Schema.optional(JobAction).annotate({
@@ -105,7 +105,7 @@ export const JobInput = toolInput(Schema.Struct({
   timeoutSeconds: Schema.optional(Schema.Finite).annotate({
     description: `For run: stop the command past this long. Default ${DEFAULT_JOB_TIMEOUT_SECONDS}, at most ${MAX_JOB_TIMEOUT_SECONDS}.`,
   }),
-  id: Schema.optional(Schema.String).annotate({ description: "For check, wait and kill: the job's id." }),
+  id: Schema.optional(Schema.String).annotate({ description: "For actions on one job: its id." }),
   ms: Schema.optional(Schema.Finite).annotate({ description: `For wait: how long to wait. Default ${DEFAULT_WAIT_MS}, at most ${MAX_WAIT_MS}.` }),
 }))
 export type JobInput = typeof JobInput.Type
