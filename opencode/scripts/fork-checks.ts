@@ -390,6 +390,7 @@ export const plansOf = (list: List, bash: Option.Option<string>, present: Readon
 const couldNot = (reason: string, notes: ReadonlyArray<string> = []): Verdict => ({ kind: "could-not-run", reason, notes })
 const tail = (text: string, lines = 30) => text.trimEnd().split("\n").slice(-lines).join("\n")
 const minutes = (ms: number) => `${Number((ms / 60_000).toFixed(3))} min`
+const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} s`
 
 /** Each listed file that is not in the checkout, as a red. */
 export const missingFiles = Effect.fn("ForkChecks.missingFiles")(function* (list: { readonly features: ReadonlyArray<Feature> }, fork: string) {
@@ -413,16 +414,31 @@ const patiently = Effect.fn("ForkChecks.patiently")(function* <R>(limits: Limits
   }
 })
 
-/** Waits for the load to drop to `limits.maxLoad`; answers whether it did. */
-const calm = Effect.fn("ForkChecks.calm")(function* (limits: Limits) {
+/** Waits for the load to drop to `limits.maxLoad` before `pkg` runs, saying so once when it must wait (a package's time counts the wait); answers whether it did. */
+const calm = Effect.fn("ForkChecks.calm")(function* (limits: Limits, pkg: string) {
   const gauge = yield* HostGauge
-  const ready = Effect.map(gauge.load, (load) => Option.map(Option.liftPredicate(load, (each) => each <= limits.maxLoad), (): Verdict => ({ kind: "green", notes: [] })))
-  return Option.isSome(yield* patiently(limits, ready))
+  const told = yield* Ref.make(false)
+  const say = (load: number) => Console.log(`fork-checks: ${pkg}: the 1-minute load is ${load.toFixed(1)}, over ${limits.maxLoad}: waiting for it to drop (at most ${minutes(limits.waitMs)})`)
+  // Said once: at the first read over the limit.
+  const tell = (load: number) =>
+    Effect.when(
+      Effect.when(say(load), Effect.map(Ref.getAndSet(told, true), (before) => !before)),
+      Effect.succeed(load > limits.maxLoad),
+    )
+  const ready = gauge.load.pipe(
+    Effect.tap(tell),
+    Effect.map((load) => Option.map(Option.liftPredicate(load, (each) => each <= limits.maxLoad), (): Verdict => ({ kind: "green", notes: [] }))),
+  )
+  const start = yield* Clock.currentTimeMillis
+  const calmed = Option.isSome(yield* patiently(limits, ready))
+  const waited = (yield* Clock.currentTimeMillis) - start
+  yield* Effect.when(Console.log(`fork-checks: ${pkg}: the load dropped to ${limits.maxLoad} or under after ${seconds(waited)}`), Effect.map(Ref.get(told), (said) => said && calmed))
+  return calmed
 })
 
 /** One run of `plan`, judged; could not run when the host stays loaded, the time bound passes or bun writes no report. */
 const runOnce = Effect.fn("ForkChecks.runOnce")(function* (input: Input, plan: Plan, deadline: number) {
-  if (!(yield* calm(input.limits))) return couldNot(`the 1-minute load stayed over ${input.limits.maxLoad} for ${minutes(input.limits.waitMs)} before ${plan.package} ran`)
+  if (!(yield* calm(input.limits, plan.package))) return couldNot(`the 1-minute load stayed over ${input.limits.maxLoad} for ${minutes(input.limits.waitMs)} before ${plan.package} ran`)
   const left = deadline - (yield* Clock.currentTimeMillis)
   if (left <= 0) return couldNot(`the time bound (${minutes(input.limits.timeBoundMs)}) passed before ${plan.package} ran`)
   yield* Console.log(`fork-checks: ${plan.package}: ${plan.files.length} files`)
@@ -494,8 +510,6 @@ export interface Stage {
   readonly started: Option.Option<number>
   readonly ended: Option.Option<{ readonly at: number; readonly kind: Verdict["kind"] }>
 }
-
-const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} s`
 
 /** Each package's stage at `now`: finished with its verdict and time, running and for how long, or not started. */
 export const progressOf = (stages: ReadonlyArray<Stage>, now: number): string =>
