@@ -1,4 +1,4 @@
-/** @reads cmd/kernel/fixtures/settle-child-pace/** cmd/kernel/server.ts cmd/orchestrate/server.ts cmd/wake/server.ts */
+/** @reads cmd/kernel/fixtures/settle-child-pace/** cmd/kernel/server.ts cmd/orchestrate/server.ts cmd/wake/server.ts mods/subagents/solid/native-row.fixture.ts */
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import * as BunServices from "@effect/platform-bun/BunServices"
@@ -7,11 +7,10 @@ import { HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { describe, expect, it } from "effect-bun-test"
 import { Answer, chatEvents } from "../sim/verify-model.ts"
-import { message, read, sessionOf, shellsBySession, type SessionInfo, type ShellInfo } from "../mods/subagents/opencode/view.ts"
-import { shellExits } from "../mods/subagents/opencode/shell-exits.ts"
-import { decodeShellEvent, shellEventOf } from "../mods/subagents/solid/shell-events.ts"
+import { message, type Reads, type SessionInfo, type ShellInfo } from "../mods/subagents/opencode/view.ts"
 import { subagents, visible } from "../mods/subagents/subagent-row.ts"
 import { Diagnostic, Phase, Undetermined } from "../mods/kernel/child-lifecycle.ts"
+import { readMark, type MarkRead } from "../mods/wake/latch.ts"
 import { owned, released } from "./owned.ts"
 import { forkRuns, parentEnv, scratch } from "./scratch.ts"
 
@@ -34,6 +33,7 @@ interface HostEvent {
 }
 
 interface Embedded {
+  readonly rpc: unknown
   readonly sessions: {
     readonly create: (input: { location: { directory: string }; title?: string }) => Promise<{ id: string }>
     readonly prompt: (input: { sessionID: string; text: string }) => PromiseLike<object>
@@ -50,7 +50,7 @@ interface Embedded {
     readonly wait: (input: { sessionID: string }) => PromiseLike<object>
     readonly log: (input: { sessionID: string; follow: false }) => AsyncIterable<HostEvent>
   } }
-  readonly events: { readonly subscribe: () => AsyncIterable<HostEvent> }
+  readonly events: { readonly subscribe: (options?: { readonly signal: AbortSignal }) => AsyncIterable<HostEvent> }
   readonly shell: {
     readonly create: (input: { command: string; location: { directory: string }; metadata: Schema.JsonObject }) => Promise<{ data: ShellInfo }>
   }
@@ -74,6 +74,24 @@ const promised = <A>(message: string, read: () => PromiseLike<A>) =>
     if (Predicate.isError(error)) return fault(`${message}: ${error.message.slice(0, 400)}`)
     return fault(message)
   } })
+
+interface SolidFixture {
+  readonly liveEvents: (events: Embedded["events"]) => { readonly listen: NonNullable<Reads["listen"]>; readonly listeners: () => number }
+  readonly mountRows: (data: Reads, base: string, root: string, child: string, client: Embedded) => {
+    readonly close: () => void
+    readonly ready: Effect.Effect<void>
+    readonly rows: () => ReturnType<typeof subagents>
+  }
+  readonly replayRows: (info: SessionInfo, root: string, shell: ShellInfo, events: ReadonlyArray<HostEvent>) => ReadonlyArray<string>
+}
+const fixtureModule = Schema.declare((value): value is SolidFixture =>
+  Predicate.isObject(value) && Predicate.isFunction(value.liveEvents) && Predicate.isFunction(value.mountRows) && Predicate.isFunction(value.replayRows),
+)
+const solidFixture = Effect.gen(function* () {
+  const path = yield* Path.Path
+  const module = yield* path.fromFileUrl(new URL("../mods/subagents/solid/native-row.fixture.ts", import.meta.url))
+  return yield* promised("Solid row harness import failed", () => loadSdk(module)).pipe(Effect.flatMap(Schema.decodeUnknownEffect(fixtureModule)))
+})
 
 const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Json))
 const denied = "SCRIPTED_CHILD_DENIAL"
@@ -263,8 +281,17 @@ const heldChild = Effect.fn("LifecycleFixture.heldChild")(function* (instance: E
   const actual = yield* promised("held child snapshot lost", () => instance.sessions.get({ sessionID: child }))
   const rebuilt = yield* ask(instance, root, handle(child))
   const listed = yield* ask(instance, root, fixtureCall("subagents", { action: "list" }))
-  return { root, child, mark: encode(Schema.decodeUnknownSync(Schema.Json)(actual.metadata?.latch)), launch: takeAnswer(launch, "kernel"), rebuilt: takeAnswer(rebuilt, "kernel"), listed: takeAnswer(listed, "subagents") }
+  const mark = yield* knownRecheck(readMark(actual.metadata))
+  return { root, child, mark: encode(mark), launch: takeAnswer(launch, "kernel"), rebuilt: takeAnswer(rebuilt, "kernel"), listed: takeAnswer(listed, "subagents") }
 })
+
+const markedTime = (read: MarkRead) => {
+  if (read._tag === "Unreadable") return Option.none()
+  const { at, hold, opensAt, recheckAt } = read.mark
+  if (hold !== "pace") return Option.none()
+  return Option.map(Option.fromUndefinedOr(recheckAt), (recheckAt) => ({ at, hold, opensAt, recheckAt }))
+}
+const knownRecheck = (read: MarkRead) => Effect.fromOption(markedTime(read)).pipe(Effect.mapError(() => fault("Wake's mark has no pace recheck")))
 
 const eventStream = Effect.fn("LifecycleFixture.eventStream")(function* (instance: Embedded) {
   const events = instance.events.subscribe()[Symbol.asyncIterator]()
@@ -278,15 +305,16 @@ const timedHold = Effect.fn("LifecycleFixture.timedHold")(function* (instance: E
   const mark = yield* decodeMark(initial.mark)
   const heldAgain = yield* observeUntil(events, "re-hold metadata", (event) => {
     if (!childEvent("session.metadata.updated", initial.child)(event)) return false
-    const updated = Schema.decodeUnknownOption(NativeMark)(event.data?.metadata?.latch)
+    const updated = markedTime(readMark(event.data?.metadata))
     return Option.exists(updated, (value) => value.recheckAt > mark.recheckAt)
   }).pipe(Effect.timeout("5 seconds"))
   const snapshot = yield* promised("re-held child lost", () => instance.sessions.get({ sessionID: initial.child }))
   const rebuilt = yield* ask(instance, initial.root, handle(initial.child))
   const listed = yield* ask(instance, initial.root, fixtureCall("subagents", { action: "list" }))
-  const data = Schema.decodeUnknownSync(NativeMark)(heldAgain.data?.metadata?.latch)
+  const data = yield* knownRecheck(readMark(heldAgain.data?.metadata))
+  const actual = yield* knownRecheck(readMark(snapshot.metadata))
   return {
-    ...initial, reheldMark: encode(Schema.decodeUnknownSync(NativeMark)(snapshot.metadata?.latch)),
+    ...initial, reheldMark: encode(actual),
     reheldAt: data.recheckAt, afterRehold: takeAnswer(rebuilt, "kernel"), listedAfterRehold: takeAnswer(listed, "subagents"),
   }
 })
@@ -318,8 +346,8 @@ const earlierFailure = Effect.fn("LifecycleFixture.earlierFailure")(function* (i
   yield* release
   const terminal = yield* nextEvent(events, "failure after exit", childEvent("session.execution.failed", child))
   const context = yield* ask(instance, root, handle(child))
-  const rows = yield* realRows(instance, root, child, context, Option.none(), Number(terminal.created) + 1)
-  return { row: rows.row, shown: rows.visible, ended: rows.ended, exit: Number(exit.created), terminal: eventPoint(terminal), observation: takeAnswer(context, "kernel") }
+  const rows = yield* realRows(instance, base, root, child, context, Option.none(), Number(terminal.created) + 1)
+  return { row: rows.row, shown: rows.visible, ended: rows.ended, remount: rows.remount, exit: Number(exit.created), terminal: eventPoint(terminal), observation: takeAnswer(context, "kernel") }
 })
 
 const releaseShell = (gate: string) => command("sh", ["-c", 'printf ready > "$1"', "fixture", gate]).pipe(
@@ -348,7 +376,9 @@ const silentExit = Effect.fn("LifecycleFixture.silentExit")(function* (
   const exit = yield* nextEvent(events, "silent shell exited", (event) => event.type === "shell.exited" && event.data?.id === shell.id)
   const rebuilt = yield* ask(instance, root, handle(child))
   const direct = yield* ask(instance, root, fixtureCall("subagents", { action: "get", sessionID: child }))
+  const { replayRows } = yield* solidFixture
   const rows = replayRows(snapshot, root, shell, [created, terminal, exit])
+  const suppressed = yield* realRows(instance, base, root, child, direct, Option.none(), Number(exit.created) + 1)
   const pending = yield* promised("silent child inbox lost", () => instance.sessions.inbox.list({ sessionID: child }))
   // A separate controlled admission uses the same native inbox producer,
   // without waking immediately, so the public tool can sample the gap.
@@ -356,49 +386,16 @@ const silentExit = Effect.fn("LifecycleFixture.silentExit")(function* (
     sessionID: child, text: "Fixture shell result", metadata: { source: "shell", shellID: shell.id }, resume: false,
   }))
   const gap = yield* ask(instance, root, handle(child))
-  const gapRows = yield* realRows(instance, root, child, gap, Option.none(), Number(exit.created) + 1)
+  const gapRows = yield* realRows(instance, base, root, child, gap, Option.none(), Number(exit.created) + 1)
   yield* promised("native inbox cancellation failed", () => instance.sessions.inbox.cancel({ sessionID: child, inboxID: admitted.id }))
   const cancelled = yield* ask(instance, root, handle(child))
   return {
     child, shellID: shell.id, exit: { id: exit.id || "", at: Number(exit.created) },
     observation: takeAnswer(rebuilt, "kernel"), direct: takeAnswer(direct, "subagents"),
-    pending: pending.length, rows, killed: takeAnswer(killed, "fixture_shell_suppress"),
-    gap: takeAnswer(gap, "kernel"), gapRows: gapRows.visible, cancelled: takeAnswer(cancelled, "kernel"),
+    pending: pending.length, rows, suppressed, killed: takeAnswer(killed, "fixture_shell_suppress"),
+    gap: takeAnswer(gap, "kernel"), gapRows: gapRows.visible, admittedRemount: gapRows.remount, cancelled: takeAnswer(cancelled, "kernel"),
   }
 })
-
-/** Fold the actual native messages at their stream boundaries; intervening
- * network calls would lose these states to the next event. */
-const replayRows = (failed: SessionInfo, root: string, shell: ShellInfo, events: ReadonlyArray<HostEvent>) => {
-  const exits = shellExits((id) => id === failed.id)
-  let running = false
-  let shells = shellsBySession([shell]).get(failed.id) ?? []
-  const pending = new Map<string, NonNullable<NonNullable<HostEvent["data"]>["item"]>>()
-  const reads = { session: {
-    get: () => failed, root: () => root, family: () => [root, failed.id],
-    status: () => Option.match(Option.liftPredicate(running, Boolean), { onNone: () => "idle" as const, onSome: () => "running" as const }),
-    pending: { list: () => [...pending.values()] },
-    message: { list: () => [] }, permission: { list: () => [] }, form: { list: () => [] },
-  } }
-  return events.flatMap((event) => {
-    Option.map(shellEventOf(decodeShellEvent(event)), exits.ingest)
-    if (event.type === "shell.created") return []
-    if (event.type === "shell.exited") shells = []
-    if (event.type === "session.execution.started") running = true
-    const item = Option.fromUndefinedOr(event.data?.item)
-    const inboxID = Option.fromUndefinedOr(event.data?.inboxID)
-    if (Option.isSome(inboxID)) {
-      if (event.type === "session.inbox.enqueued" && Option.isSome(item)) pending.set(inboxID.value, item.value)
-      if (event.type === "session.inbox.delivered") pending.delete(inboxID.value)
-    }
-    const row = sessionOf(reads, failed.id, shells, { messages: [] }, exits.read(failed.id))
-    const now = Number(event.created) + 1
-    return visible(subagents({ root, sessions: [row] }, root), now).map(({ state, update }) => {
-      if (update.startsWith("Undetermined:")) return "undetermined"
-      return state
-    })
-  })
-}
 
 const shellTrace = Effect.fn("LifecycleFixture.shellTrace")(function* (
   events: AsyncIterator<HostEvent>, child: string, shell: HostEvent, failure: HostEvent,
@@ -439,11 +436,12 @@ const firstPeriod = Effect.fn("LifecycleFixture.firstPeriod")(function* (
   const failed = yield* nextEvent(events, "child session.execution.failed", childEvent("session.execution.failed", child))
   const failedInfo = yield* promised("failed child snapshot lost", () => first.sessions.get({ sessionID: child }))
   const before = yield* ask(first, root, fixtureCall("subagents", { action: "get", sessionID: child }))
-  const row = yield* realRows(first, root, child, before, Option.fromUndefinedOr(shell.data?.info), Number(failed.created) + 1)
+  const row = yield* realRows(first, base, root, child, before, Option.fromUndefinedOr(shell.data?.info), Number(failed.created) + 1)
   const continued = yield* ask(first, root, handle(child))
   yield* releaseShell(gate)
   const { resumed, success, trace, seen } = yield* shellTrace(events, child, shell, failed)
   const shellInfo = yield* Effect.fromOption(Option.fromUndefinedOr(shell.data?.info)).pipe(Effect.mapError(() => fault("no native shell info")))
+  const { replayRows } = yield* solidFixture
   const traceRows = replayRows(failedInfo, root, shellInfo, [shell, ...seen.slice(0, -1)])
   const rebuilt = yield* ask(first, root, handle(child))
   const notices = rebuilt.map(message).flatMap((item) => {
@@ -451,7 +449,7 @@ const firstPeriod = Effect.fn("LifecycleFixture.firstPeriod")(function* (
     return []
   })
   const info = yield* promised("child snapshot lost", () => first.sessions.get({ sessionID: child }))
-  const finalRow = yield* realRows(first, root, child, rebuilt, Option.none(), Number(success.created) + 1)
+  const finalRow = yield* realRows(first, base, root, child, rebuilt, Option.none(), Number(success.created) + 1)
   return {
     root, child, before: takeAnswer(before, "subagents"), continued: takeAnswer(continued, "kernel"), row: row.row, shown: row.visible,
     finalRow: finalRow.row, after: takeAnswer(rebuilt, "kernel"), resumed: eventPoint(resumed), success: eventPoint(success), trace, traceRows,
@@ -462,7 +460,7 @@ const firstPeriod = Effect.fn("LifecycleFixture.firstPeriod")(function* (
 })
 
 const realRows = Effect.fn("LifecycleFixture.realRows")(function* (
-  first: Embedded, root: string, child: string, before: ReadonlyArray<Schema.Json>, shell: Option.Option<ShellInfo>, now: number,
+  first: Embedded, base: string, root: string, child: string, before: ReadonlyArray<Schema.Json>, shell: Option.Option<ShellInfo>, now: number,
 ) {
   const current = yield* promised("child snapshot lost", () => first.sessions.get({ sessionID: child }))
   const parent = yield* promised("parent snapshot lost", () => first.sessions.get({ sessionID: root }))
@@ -472,7 +470,9 @@ const realRows = Effect.fn("LifecycleFixture.realRows")(function* (
     if (id === root) return { info: parent, messages: before }
     return { info: current, messages: transcript }
   }
-  const row = subagents(read({
+  const { liveEvents, mountRows } = yield* solidFixture
+  const { listen, listeners } = liveEvents(first.events)
+  const data: Reads = {
     session: {
       get: (id) => choose(id).info,
       root: () => root, family: () => [root, child], status: () => "idle",
@@ -484,11 +484,28 @@ const realRows = Effect.fn("LifecycleFixture.realRows")(function* (
       message: { list: (id) => choose(id).messages },
     },
     shell: { list: () => Option.toArray(shell) },
-  }, root), root)
+    listen,
+  }
+  const readMount = Effect.acquireUseRelease(Effect.sync(() => mountRows(data, base, root, child, first)), (view) =>
+    view.ready.pipe(
+      Effect.timeout("3 seconds"),
+      Effect.map(() => view.rows()),
+    ), (view) => Effect.sync(view.close).pipe(Effect.andThen(Effect.yieldNow)),
+  )
+  const row = yield* readMount
+  const afterClose = listeners()
+  const reopened = yield* readMount
+  const shown = (rows: typeof row, at: number) => visible(rows, at).map(({ state, update }) => ({ state, update }))
+  const remount = {
+    same: encode(row) === encode(reopened),
+    beforeLinger: shown(row, now + 30_001), afterLinger: shown(reopened, now + 30_001),
+    afterClose, afterSecondClose: listeners(),
+  }
   return {
     row: Option.getOrElse(Option.map(Arr.head(row), (value) => value.state), () => ""),
     ended: Option.getOrElse(Option.flatMap(Arr.head(row), (value) => Option.fromUndefinedOr(value.ended)), () => -1),
     visible: visible(row, now).map((value) => value.state),
+    remount,
   }
 })
 
@@ -540,6 +557,11 @@ const fixture = Effect.gen(function* () {
 })
 
 const Sequenced = Schema.Struct({ id: Schema.String, seq: Schema.Int, at: Schema.Number })
+const RowDisplay = Schema.Array(Schema.Struct({ state: Schema.String, update: Schema.String }))
+const Remount = Schema.Struct({
+  same: Schema.Boolean, beforeLinger: RowDisplay, afterLinger: RowDisplay,
+  afterClose: Schema.Int, afterSecondClose: Schema.Int,
+})
 const ReadLatch = Schema.Struct({ child: Schema.String, mark: Schema.String, launch: Schema.String, rebuilt: Schema.String, listed: Schema.String })
 const report = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({
   child: Schema.String, filtered: Schema.Boolean, before: Schema.String, row: Schema.String, after: Schema.String,
@@ -550,13 +572,14 @@ const report = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({
   traceRows: Schema.Array(Schema.String),
   latch: ReadLatch,
   clamp: Schema.Struct({ ...ReadLatch.fields, reheldMark: Schema.String, reheldAt: Schema.Number, afterRehold: Schema.String, listedAfterRehold: Schema.String }),
-  earlier: Schema.Struct({ row: Schema.String, shown: Schema.Array(Schema.String), ended: Schema.Number, exit: Schema.Number, terminal: Sequenced, observation: Schema.String }),
+  earlier: Schema.Struct({ row: Schema.String, shown: Schema.Array(Schema.String), ended: Schema.Number, exit: Schema.Number, terminal: Sequenced, observation: Schema.String, remount: Remount }),
   retry: Schema.Struct({ child: Schema.String, read: Schema.String, attempt: Schema.Number, at: Schema.Number, error: Schema.String }),
   silent: Schema.Struct({
     child: Schema.String, shellID: Schema.String, exit: Schema.Struct({ id: Schema.String, at: Schema.Number }),
     observation: Schema.String, direct: Schema.String, pending: Schema.Number, rows: Schema.Array(Schema.String),
     killed: Schema.String,
-    gap: Schema.String, gapRows: Schema.Array(Schema.String), cancelled: Schema.String,
+    gap: Schema.String, gapRows: Schema.Array(Schema.String), cancelled: Schema.String, admittedRemount: Remount,
+    suppressed: Schema.Struct({ row: Schema.String, visible: Schema.Array(Schema.String), remount: Remount }),
   }),
   opensAt: Schema.Number,
 })))
@@ -566,8 +589,8 @@ const successOf = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct
   phase: Schema.Struct({ _tag: Schema.Literal("Settled"), outcome: Schema.Literal("succeeded"), cause: Schema.Literal("Unknown"), terminal: Schema.optionalKey(Sequenced) }),
 })))
 const Times = { recheckAt: Schema.Number, opensAt: Schema.Number }
-const NativeMark = Schema.Struct({ hold: Schema.Literal("pace"), at: Schema.Number, ...Times })
-const decodeMark = Schema.decodeUnknownEffect(Schema.fromJsonString(NativeMark))
+const PaceReport = Schema.Struct({ hold: Schema.Literal("pace"), at: Schema.Number, ...Times })
+const decodeMark = Schema.decodeUnknownEffect(Schema.fromJsonString(PaceReport))
 const decodeHeld = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({
   version: Schema.Literal(1), child: Schema.String, revision: Schema.optionalKey(Schema.Int),
   route: Schema.optionalKey(Schema.Json),
@@ -604,6 +627,7 @@ const verifyLife = Effect.fn("LifecycleFixture.verifyLife")(function* (result: E
   expect(result.earlier.row).toBe("failed")
   expect(result.earlier.shown).toEqual(["failed"])
   expect(result.earlier.ended).toBe(result.earlier.terminal.at)
+  expect(result.earlier.remount).toEqual({ same: true, beforeLinger: [], afterLinger: [], afterClose: 0, afterSecondClose: 0 })
   const failed = yield* parse(lastLine(result.earlier.observation))
   expect(failed).toHaveProperty("phase", Phase.cases.Settled.make({ outcome: "failed", cause: "PolicyDenied", terminal: result.earlier.terminal }))
   expect(result.retry.error).toBe("provider.rate-limit")
@@ -621,9 +645,13 @@ const verifyLife = Effect.fn("LifecycleFixture.verifyLife")(function* (result: E
   expect(result.silent.killed).toContain(result.silent.shellID)
   expect(result.silent.direct).toContain("undetermined (background command ended")
   expect(result.silent.rows).toEqual(["waiting", "undetermined"])
+  expect(result.silent.suppressed.visible).toEqual(["waiting"])
+  const undetermined = [{ state: "waiting", update: expect.stringContaining("Undetermined:") }]
+  expect(result.silent.suppressed.remount).toEqual({ same: true, beforeLinger: undetermined, afterLinger: undetermined, afterClose: 0, afterSecondClose: 0 })
   const gap = yield* parse(lastLine(result.silent.gap))
   expect(gap).toHaveProperty("phase", Phase.cases.Continuing.make({ on: "Wake" }))
   expect(result.silent.gapRows).toEqual(["waiting"])
+  expect(result.silent.admittedRemount).toMatchObject({ same: true, afterClose: 0, afterSecondClose: 0 })
   const cancelled = yield* parse(lastLine(result.silent.cancelled))
   expect(cancelled).toMatchObject({ phase: { ...Phase.cases.Settled.make({ outcome: "failed", cause: "PolicyDenied" }) } })
 })
@@ -638,7 +666,7 @@ if (import.meta.main && parentEnv.LIFECYCLE_FIXTURE_HOME) {
         const fork = yield* Config.schema(Schema.String, "OPENCODE_DEV")
         const home = yield* Effect.acquireRelease(Effect.sync(() => scratch("settle-child-attempts-")), (dir) => Effect.sync(() => dir[Symbol.dispose]()))
         const child = yield* Effect.acquireRelease(
-          Effect.sync(() => owned(["bun", path.resolve("tests/settle-child-attempts.test.ts")], {
+          Effect.sync(() => owned(["bun", "--conditions=browser", path.resolve("tests/settle-child-attempts.test.ts")], {
             cwd: home.path,
             env: {
               PATH: parentEnv.PATH, HOME: home.path, XDG_CONFIG_HOME: path.join(home.path, "config"), XDG_DATA_HOME: path.join(home.path, "data"),

@@ -32,10 +32,12 @@ A parent can distinguish a kept latch, a running child, a child with live backgr
 1. **Start and read.** `bun test tests/settle-child-attempts.test.ts` runs the kernel and its direct tool on the pinned fork, with an owned scratch process and loopback scripted model. Start a child in a cell; while its shell is held, read it after the scripted step error.
 2. **Release and rebuild.** Open the shell's gate; the same child restarts without a new launch. Read its settled observation from a rebuilt handle and compare the direct read with the row and native notices.
 3. **Restart.** Commit another execution on the same child while the observer is absent, then reopen against the same scratch store. The handle can say the coarse outcome without treating the previous receipt as current.
+4. **Remount the row.** Dispose the Solid family reader after an observed suppressed exit, then read it again through Kernel's owner projection. Both mounts show the same undetermined row beyond the failure linger; an earlier-exit failure still expires. An admitted wake remains distinct from either.
 
 ## Gotchas
 
 - `state` remains the compatibility enum. Use `observation` for the distinction between unknown, latched, continuing and settled.
 - A host execution point identifies a busy period, not a review assignment or a verifier verdict. A coarse outcome without that point is not an ordered receipt.
 - After a failed execution and a background shell exit, the child is visible as **undetermined** until the host admits the result or reports another execution fact. The host does not yet say at exit whether a result is owed. If the session already waited on or killed the command, the host can suppress the notice, and the child can remain undetermined indefinitely. An empty inbox does not settle it. A shell that exited before the failed execution ended does not produce this state.
+- Closing a view does not discard an observed exit. Kernel stores the observed fact, not a claim that a process still runs or that a result is owed. Wake alone validates its latch mark; an unreadable mark cannot supply a time on any surface.
 - Use `wake_cancel` for a held start; `subagents` does not own the latch. A stop handles local owned work, not a remote process that survives its local command.
