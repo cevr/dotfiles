@@ -16,7 +16,7 @@
 // so of two writers in any location or process one wins; `.owed/<id>` lists
 // the managed jobs whose record is not yet `delivered`. Every record write is
 // durable (supervise.ts `writeDurable`).
-import { chmodSync, existsSync, type FSWatcher, mkdirSync, readdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs"
+import { type FSWatcher, readFileSync, watch, writeFileSync } from "node:fs"
 import path from "node:path"
 import { Clock, Effect, Layer, Match, Option, Schema } from "effect"
 import type { Descriptor } from "../backstop.ts"
@@ -25,7 +25,7 @@ import { JobExit, type JobRecord, JobSpec, type Launched, NEVER_STARTED, type Ru
 import { type Exec } from "../cron/backstop.ts"
 import { JobRefused, Runner } from "../service.ts"
 import { Delivery, isJobID, LaunchClaim, type Retired, RunnerClaim, type Slot } from "../job-event.ts"
-import { type Barrier, FILES, type JobFile, processStart, writeAtomic, writeDurable } from "./supervise.ts"
+import { type Barrier, type Disk, FILES, type JobFile, makeDir, NODE_DISK, processStart, removeDurable, writeAtomic, writeDurable } from "./supervise.ts"
 
 export interface Config {
   /** Where each job's directory is kept. */
@@ -42,6 +42,8 @@ export interface Config {
   readonly exec: Exec
   /** How a job's directory is watched; node's `fs.watch` by default (a test's stands in for a host out of watches). */
   readonly watch?: typeof watch
+  /** The file system the job's record is written through and read from; the host's by default (a test's models a power loss). */
+  readonly disk?: Disk
 }
 
 /** What `read` takes of job.json and launch.json. */
@@ -59,8 +61,8 @@ export const alive = (pid: number): boolean => {
 }
 
 /** The JSON file `file` holds, decoded by `schema`; none when it is missing or unreadable. */
-const readJson = <A, I>(schema: Schema.Codec<A, I>, file: string): Option.Option<A> =>
-  Option.flatMap(Option.liftThrowable(() => readFileSync(file, "utf8"))(), Schema.decodeUnknownOption(Schema.fromJsonString(schema)))
+const readJson = <A, I>(schema: Schema.Codec<A, I>, file: string, disk: Disk = NODE_DISK): Option.Option<A> =>
+  Option.flatMap(disk.read(file), Schema.decodeUnknownOption(Schema.fromJsonString(schema)))
 
 /**
  * Whether the claim's runner is still the process at its pid: alive, and started when the claim says (an older
@@ -75,12 +77,12 @@ export const claimed = (claim: RunnerClaim, start: (pid: number) => Option.Optio
   })
 
 /** The run the files of `dir` record. */
-export const runOf = (dir: string): Run => {
+export const runOf = (dir: string, disk: Disk = NODE_DISK): Run => {
   const ended = (exit: JobExit): Run => ({ state: "ended", exit })
-  return Option.match(readJson(JobExit, path.join(dir, FILES.exit)), {
+  return Option.match(readJson(JobExit, path.join(dir, FILES.exit), disk), {
     onSome: ended,
     onNone: () =>
-      Option.match(readJson(LaunchClaim, path.join(dir, FILES.runner)), {
+      Option.match(launchOf(dir, disk), {
         onNone: (): Run => ({ state: "starting" }),
         onSome: (slot): Run => {
           // Retired before any runner claimed it: it never started, and no runner runs it after.
@@ -90,7 +92,7 @@ export const runOf = (dir: string): Run => {
             Match.when(true, (): Run => ({ state: "running", startedAt: runner.startedAt })),
             // The exit may have landed between the two reads.
             Match.orElse(() =>
-              Option.match(readJson(JobExit, path.join(dir, FILES.exit)), {
+              Option.match(readJson(JobExit, path.join(dir, FILES.exit), disk), {
                 onSome: ended,
                 onNone: (): Run => ({ state: "lost", startedAt: runner.startedAt, why: "its runner is gone without recording an exit (the machine restarted, or it was killed)", cause: "runner-gone" }),
               }),
@@ -108,26 +110,44 @@ export class RecordUnwritten extends Schema.TaggedError<RecordUnwritten>()("Reco
 const SLOT = /^delivery\.([1-9][0-9]*)\.json$/
 
 /** The newest slot of the delivery record in `dir`: the highest-numbered whole slot (a `*.tmp` is never one). */
-export const slotOf = (dir: string): Option.Option<Slot> => {
-  const versions = Option.getOrElse(Option.liftThrowable(() => readdirSync(dir))(), (): ReadonlyArray<string> => []).flatMap((name) =>
+export const slotOf = (dir: string, disk: Disk = NODE_DISK): Option.Option<Slot> => {
+  const versions = disk.list(dir).flatMap((name) =>
     Option.toArray(Option.map(Option.fromNullishOr(SLOT.exec(name)), (found) => Number(found[1]))),
   )
   const version = Math.max(0, ...versions)
-  return Option.map(readJson(Delivery, path.join(dir, `delivery.${version}.json`)), (delivery) => ({ version, delivery }))
+  return Option.map(readJson(Delivery, path.join(dir, `delivery.${version}.json`), disk), (delivery) => ({ version, delivery }))
 }
 
 /** The directory the managed jobs not yet delivered are listed in, one empty file per job: `.owed/<id>`. */
 const OWED = ".owed"
 
 /** Retire the job in `dir` (made if it is not there yet, so a launch still to come is fenced too): whether its launch slot was free. */
-export const retireIn = (dir: string, at: number, barrier: (at: Barrier) => void = () => {}): boolean => {
-  mkdirSync(dir, { recursive: true, mode: 0o700 })
-  return writeDurable(path.join(dir, FILES.runner), { retiredAt: at } satisfies Retired, { exclusive: true, barrier })
+export const retireIn = (dir: string, at: number, barrier: (at: Barrier) => void = () => {}, disk: Disk = NODE_DISK): boolean => {
+  makeDir(dir, disk)
+  return writeDurable(path.join(dir, FILES.runner), { retiredAt: at } satisfies Retired, { exclusive: true, barrier, disk })
 }
 
 /** Write slot `version + 1` of the delivery record in `dir`, only if no writer took it: whether this one did. Slots are taken in order, so it is taken only while `version` is the newest. */
-export const advanceIn = (dir: string, version: number, next: Delivery, barrier: (at: Barrier) => void = () => {}): boolean =>
-  existsSync(dir) && writeDurable(path.join(dir, `delivery.${version + 1}.json`), next, { exclusive: true, barrier })
+export const advanceIn = (dir: string, version: number, next: Delivery, barrier: (at: Barrier) => void = () => {}, disk: Disk = NODE_DISK): boolean =>
+  disk.list(path.dirname(dir)).includes(path.basename(dir)) && writeDurable(path.join(dir, `delivery.${version + 1}.json`), next, { exclusive: true, barrier, disk })
+
+/** The launch slot of the job in `dir`: its runner's claim or the wakes' retirement; none while neither took it. */
+export const launchOf = (dir: string, disk: Disk = NODE_DISK): Option.Option<LaunchClaim> => readJson(LaunchClaim, path.join(dir, FILES.runner), disk)
+
+/**
+ * A job's files before its runner starts, each durable before the next: its directory (named in the root), job.json,
+ * env.json, and, for a managed job, its name in the owed index, so the start finds it until it is delivered.
+ */
+export const writeLaunch = (root: string, spec: JobSpec, file: JobFile, env: Readonly<Record<string, string>>, disk: Disk = NODE_DISK): void => {
+  const dir = path.join(root, spec.id)
+  makeDir(dir, disk)
+  writeAtomic(path.join(dir, FILES.job), file, 0o600, disk)
+  writeAtomic(path.join(dir, FILES.env), env, 0o600, disk)
+  if (Option.isSome(Option.fromNullishOr(spec.generation))) {
+    makeDir(path.join(root, OWED), disk)
+    writeAtomic(path.join(root, OWED, spec.id), {}, 0o600, disk)
+  }
+}
 
 /** The bytes of `file` from `from` to its end, or none. */
 const bytesFrom = (file: string, from: number): Uint8Array => {
@@ -154,6 +174,7 @@ export const layer = (config: Config) => {
    * A write to a job's record: whether it took its slot. One that failed (a full disk, an unwritable root) took nothing
    * and is no lost race: it dies, saying why, and the wakes reconcile the job again.
    */
+  const disk = config.disk ?? NODE_DISK
   const written = (id: string, what: string, write: () => boolean) =>
     Effect.try({ try: write, catch: (cause) => new RecordUnwritten({ id, what, cause: String(cause) }) }).pipe(Effect.orDie)
 
@@ -188,7 +209,7 @@ export const layer = (config: Config) => {
           })
           watches.set(id, watcher)
           // Watched before this read: an exit written before the watch opened is announced here, one after it by the watch.
-          if (existsSync(path.join(dir, FILES.exit))) announce()
+          if (Option.isSome(disk.read(path.join(dir, FILES.exit)))) announce()
           return true
         },
         // The error's code (ENOSPC, EMFILE, ENOENT), or its text when it has none.
@@ -203,24 +224,24 @@ export const layer = (config: Config) => {
       ),
     unwatch: (id) => Effect.sync(() => unwatch(id)),
     watching: Effect.sync(() => [...watches.keys()]),
-    retire: (id) => Effect.flatMap(Clock.currentTimeMillis, (now) => written(id, "retire", () => retireIn(dirOf(id), now))),
+    retire: (id) => Effect.flatMap(Clock.currentTimeMillis, (now) => written(id, "retire", () => retireIn(dirOf(id), now, () => {}, disk))),
     advance: (id, version, next) =>
       written(id, "advance", () => {
-        const took = advanceIn(dirOf(id), version, next)
+        const took = advanceIn(dirOf(id), version, next, () => {}, disk)
         // Delivered: off the owed list (a crash before this leaves it listed, and `owed` drops it).
-        if (took && next.state === "delivered") rmSync(path.join(config.root, OWED, id), { force: true })
+        if (took && next.state === "delivered") removeDurable(path.join(config.root, OWED, id), disk)
         return took
       }),
     owed: (directory) =>
       Effect.sync(() => {
-        const listed = Option.getOrElse(Option.liftThrowable(() => readdirSync(path.join(config.root, OWED)))(), (): ReadonlyArray<string> => [])
+        const listed = disk.list(path.join(config.root, OWED))
         return listed.filter(isJobID).filter((id) => {
           const dir = dirOf(id)
-          if (Option.exists(slotOf(dir), (slot) => slot.delivery.state === "delivered")) {
-            rmSync(path.join(config.root, OWED, id), { force: true })
+          if (Option.exists(slotOf(dir, disk), (slot) => slot.delivery.state === "delivered")) {
+            removeDurable(path.join(config.root, OWED, id), disk)
             return false
           }
-          return Option.exists(readJson(Spec, path.join(dir, FILES.job)), (job) => job.spec.directory === directory)
+          return Option.exists(readJson(Spec, path.join(dir, FILES.job), disk), (job) => job.spec.directory === directory)
         })
       }),
     launch: (spec: JobSpec) =>
@@ -230,15 +251,8 @@ export const layer = (config: Config) => {
           config.opencode === undefined ? undefined : { id: spec.id, title: unitOf(spec.id), directory: spec.directory, opencode: config.opencode, env: carried(config.env) }
         yield* Effect.try({
           try: () => {
-            mkdirSync(dir, { recursive: true, mode: 0o700 })
-            chmodSync(dir, 0o700)
-            writeAtomic(path.join(dir, FILES.job), { spec, ...(descriptor === undefined ? {} : { notify: descriptor }) } satisfies JobFile)
-            writeAtomic(path.join(dir, FILES.env), Object.fromEntries(Object.entries(config.env).filter(([, value]) => value !== undefined)))
-            // A managed job is owed its delivery from now until a `delivered` slot: listed before its runner starts.
-            if (Option.isSome(Option.fromNullishOr(spec.generation))) {
-              mkdirSync(path.join(config.root, OWED), { recursive: true, mode: 0o700 })
-              writeAtomic(path.join(config.root, OWED, spec.id), {})
-            }
+            const env = Object.fromEntries(Object.entries(config.env).flatMap(([key, value]) => Option.toArray(Option.map(Option.fromNullishOr(value), (set) => [key, set] as const))))
+            writeLaunch(config.root, spec, { spec, ...(descriptor === undefined ? {} : { notify: descriptor }) }, env, disk)
           },
           catch: (cause) => new JobRefused({ message: `its files were not written in ${dir}: ${cause instanceof Error ? cause.message : String(cause)}` }),
         })
@@ -248,7 +262,7 @@ export const layer = (config: Config) => {
           const unit = unitOf(spec.id)
           const ran = yield* config.exec(["systemd-run", "--user", "--unit", unit, "--collect", "--quiet", "--", config.bun, config.script, dir])
           if (ran.exitCode === 0) {
-            writeAtomic(path.join(dir, FILES.launch), { how: "systemd", unit })
+            writeAtomic(path.join(dir, FILES.launch), { how: "systemd", unit }, 0o600, disk)
             return { ...where, how: "systemd", unit } satisfies Launched
           }
           warning = `systemd-run --user refused (${(ran.stderr || ran.stdout).trim() || `exit ${ran.exitCode}`}), so it runs in its own process group instead: a stop of the OpenCode service's unit may end it.`
@@ -260,13 +274,13 @@ export const layer = (config: Config) => {
     read: (id) =>
       Effect.sync(() => {
         const dir = dirOf(id)
-        const record = Option.map(readJson(Spec, path.join(dir, FILES.job)), (job): JobRecord => ({
+        const record = Option.map(readJson(Spec, path.join(dir, FILES.job), disk), (job): JobRecord => ({
           spec: job.spec,
-          run: runOf(dir),
+          run: runOf(dir, disk),
           log: path.join(dir, FILES.log),
           drip: path.join(dir, FILES.drip),
-          ...Option.match(Option.flatMapNullishOr(readJson(Launch, path.join(dir, FILES.launch)), (launch) => launch.unit), { onNone: () => ({}), onSome: (unit) => ({ unit }) }),
-          ...Option.match(slotOf(dir), { onNone: () => ({}), onSome: (delivery) => ({ delivery }) }),
+          ...Option.match(Option.flatMapNullishOr(readJson(Launch, path.join(dir, FILES.launch), disk), (launch) => launch.unit), { onNone: () => ({}), onSome: (unit) => ({ unit }) }),
+          ...Option.match(slotOf(dir, disk), { onNone: () => ({}), onSome: (delivery) => ({ delivery }) }),
         }))
         return Option.getOrUndefined(record)
       }),
@@ -290,15 +304,15 @@ export const layer = (config: Config) => {
     kill: (id) =>
       Effect.sync(() => {
         const dir = dirOf(id)
-        if (!existsSync(path.join(dir, FILES.job))) return false
-        const run = runOf(dir)
+        if (Option.isNone(disk.read(path.join(dir, FILES.job)))) return false
+        const run = runOf(dir, disk)
         if (run.state === "starting") {
           writeFileSync(path.join(dir, FILES.stop), "")
           return true
         }
         if (run.state !== "running") return false
         // Only the claim's own runner is signalled: a pid another process took since is not it.
-        return Option.match(Option.filter(readJson(RunnerClaim, path.join(dir, FILES.runner)), (runner) => claimed(runner)), {
+        return Option.match(Option.filter(readJson(RunnerClaim, path.join(dir, FILES.runner), disk), (runner) => claimed(runner)), {
           onNone: () => false,
           onSome: (runner) => Option.isSome(Option.liftThrowable(() => process.kill(runner.pid, "SIGTERM"))()),
         })

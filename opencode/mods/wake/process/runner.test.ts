@@ -7,12 +7,19 @@ import { describe, expect, test } from "bun:test"
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { Context, Effect, Layer, Logger, Match, Option, Ref, Schema, type Scope } from "effect"
+import { Context, Effect, Exit, Layer, Logger, Match, Option, Ref, Schema, type Scope } from "effect"
+import { TestClock } from "effect/testing"
 import { JobExit, type JobRecord, type JobSpec, type Run } from "../job.ts"
 import { RunnerClaim } from "../job-event.ts"
-import { Runner } from "../service.ts"
+import * as MemoryBackstop from "../memory/backstop.ts"
+import * as MemoryChecks from "../memory/checks.ts"
+import * as MemoryCourier from "../memory/courier.ts"
+import * as MemoryOpener from "../memory/opener.ts"
+import * as MemoryStore from "../memory/store.ts"
+import * as Model from "../model.ts"
+import { type CallAnswer, Changes, Runner } from "../service.ts"
 import * as ProcessRunner from "./runner.ts"
-import { argvOf, claim, FILES, hostOf, processStart, ranOf, scopeAvailable, writeAtomic, writeExit } from "./supervise.ts"
+import { argvOf, claim, type Disk, FILES, hostOf, processStart, ranOf, scopeAvailable, writeAtomic, writeExit } from "./supervise.ts"
 import type { Ran } from "../cron/backstop.ts"
 import { bounded, notYet, type Observation, type Policy, ready, type TestBounds, testLimitMs, waitFor } from "./readiness.ts"
 
@@ -518,3 +525,346 @@ describe("a heavy job's command goes through the guard's launcher", () => {
     expect(scopeAvailable("linux", ["/nonexistent/loop-probe-x"])).toBe(false)
   })
 })
+
+// ── A power loss at every step of every record transition ──
+//
+// The record is written through `Disk` (supervise.ts). `crashDisk` is a disk a power loss can hit: a file's data is
+// kept only once `sync` returned on it (else it is lost or torn to a prefix: the model takes the empty one, one byte,
+// half and all but its last byte, and the whole), a name made, replaced or removed in a directory (create, link,
+// rename, unlink, mkdir) only once `syncDir` returned on that directory (else each such operation may or may not
+// survive: every subset, applied in order), and a name under a directory that did not survive is gone with it. The
+// wakes run on it through the process runner and the model, with two actors outside the disk that act only on what a
+// call returned: the job's supervisor, which runs its command once its claim won, and the host, which keeps the answer
+// the model gave its owner's call. Each history runs once to count its disk calls, then once with the power lost
+// before each of them; every state that loss may leave is reopened by a new server over it (its start and sweeps) and
+// a supervisor that comes late. Then: one launcher, no command run once its job was announced never started, the end
+// given once (one committed answer or one letter) and never lost, with the kind the exit said when the supervisor
+// saw it written, and no torn file read as a record.
+
+/** The power went: every disk call from here fails. */
+class PowerLost extends Schema.TaggedError<PowerLost>()("PowerLost", {}) {}
+
+interface Inode {
+  data: string
+  synced: string
+}
+
+/** A name operation not yet synced into its directory: it may or may not survive a loss. */
+interface NameOp {
+  readonly dir: string
+  readonly apply: (names: Map<string, number>, dirs: Set<string>) => void
+}
+
+interface Crash {
+  readonly disk: Disk
+  /** The disk calls made so far. */
+  readonly calls: () => number
+  /** Every state a loss now may leave, as fresh disks; each state once. */
+  readonly outcomes: () => ReadonlyArray<Crash>
+  /** Every whole content a writer gave a file: a record read from the disk must be one of these. */
+  readonly written: Set<string>
+}
+
+/** The prefixes a file's unsynced data may be left at. */
+const tornOf = (data: string) => [...new Set([0, 1, Math.floor(data.length / 2), data.length - 1, data.length].filter((at) => at >= 0 && at <= data.length))].map((at) => data.slice(0, at))
+
+/** Every subset of `items`, each in order. */
+const subsets = <A>(items: ReadonlyArray<A>): ReadonlyArray<ReadonlyArray<A>> =>
+  items.reduce<ReadonlyArray<ReadonlyArray<A>>>((all, item) => all.flatMap((some) => [some, [...some, item]]), [[]])
+
+const lost = <A>(): A => Option.getOrThrowWith(Option.none<A>(), () => new PowerLost())
+const got = <A>(value: A): NonNullable<A> => Option.getOrThrow(Option.fromNullishOr(value))
+
+/** A disk whose power goes before its call number `lossAt`, starting from `files` and `dirs`, all of them on disk. */
+const crashDisk = (lossAt: number, files: ReadonlyMap<string, string>, dirs: ReadonlySet<string>): Crash => {
+  const inodes: Array<Inode> = []
+  const names = new Map<string, number>()
+  const present = new Set(dirs)
+  const durable = { names: new Map<string, number>(), dirs: new Set(dirs) }
+  for (const [file, data] of files) {
+    inodes.push({ data, synced: data })
+    names.set(file, inodes.length - 1)
+    durable.names.set(file, inodes.length - 1)
+  }
+  const pending: Array<NameOp> = []
+  const fds = new Map<number, number>()
+  const written = new Set<string>(files.values())
+  const state = { calls: 0, fds: 2 }
+  const call = <A>(run: () => A): A => {
+    state.calls += 1
+    if (state.calls >= lossAt) return lost<A>()
+    return run()
+  }
+  const named = (dir: string, apply: NameOp["apply"]) => {
+    apply(names, present)
+    pending.push({ dir, apply })
+  }
+  const inodeOf = (fd: number) => got(inodes[got(fds.get(fd))])
+  const disk: Disk = {
+    create: (file) =>
+      call(() => {
+        inodes.push({ data: "", synced: "" })
+        const inode = inodes.length - 1
+        named(path.dirname(file), (into) => void into.set(file, inode))
+        state.fds += 1
+        fds.set(state.fds, inode)
+        return state.fds
+      }),
+    write: (fd, data) =>
+      call(() => {
+        const inode = inodeOf(fd)
+        inode.data += data
+        written.add(inode.data)
+      }),
+    sync: (fd) =>
+      call(() => {
+        const inode = inodeOf(fd)
+        inode.synced = inode.data
+      }),
+    close: (fd) => call(() => void fds.delete(fd)),
+    syncDir: (dir) =>
+      call(() => {
+        for (const op of pending.filter((each) => each.dir === dir)) op.apply(durable.names, durable.dirs)
+        pending.splice(0, pending.length, ...pending.filter((each) => each.dir !== dir))
+      }),
+    link: (from, to) =>
+      call(() => {
+        if (names.has(to)) return false
+        const inode = got(names.get(from))
+        named(path.dirname(to), (into) => void into.set(to, inode))
+        return true
+      }),
+    rename: (from, to) =>
+      call(() => {
+        const inode = got(names.get(from))
+        named(path.dirname(to), (into) => {
+          into.delete(from)
+          into.set(to, inode)
+        })
+      }),
+    unlink: (file) => call(() => named(path.dirname(file), (into) => void into.delete(file))),
+    mkdir: (dir) =>
+      call(() => {
+        if (!present.has(dir)) named(path.dirname(dir), (_into, made) => void made.add(dir))
+      }),
+    read: (file) => call(() => Option.map(Option.fromNullishOr(names.get(file)), (inode) => got(inodes[inode]).data)),
+    list: (dir) =>
+      call(() => [...new Set([...names.keys(), ...present].flatMap((each) => Option.toArray(Option.liftPredicate(each, (one) => one !== dir && path.dirname(one) === dir)).map((one) => path.basename(one))))]),
+  }
+  const outcomes = () => {
+    const seen = new Map<string, Crash>()
+    for (const kept of subsets(pending)) {
+      const keptNames = new Map(durable.names)
+      const keptDirs = new Set(durable.dirs)
+      for (const op of kept) op.apply(keptNames, keptDirs)
+      // A directory, and every name under it, is there only when each directory above it is.
+      const reachable = (dir: string): boolean => dirs.has(dir) || (keptDirs.has(dir) && reachable(path.dirname(dir)))
+      const live = [...keptNames].filter(([file]) => reachable(path.dirname(file)))
+      // A file whose data was not synced is left at any of its prefixes.
+      const choices = live.map(([file, inode]) => {
+        const node = got(inodes[inode])
+        return Match.value(node.data === node.synced).pipe(
+          Match.when(true, () => [[file, node.data] as const]),
+          Match.orElse(() => tornOf(node.data).map((data) => [file, data] as const)),
+        )
+      })
+      const trees = choices.reduce<ReadonlyArray<ReadonlyArray<readonly [string, string]>>>((all, each) => all.flatMap((some) => each.map((one) => [...some, one])), [[]])
+      const keptDirList = [...keptDirs].filter(reachable).toSorted()
+      for (const tree of trees) {
+        const key = [...tree.map(([file, data]) => `${file}=${data}`).toSorted(), "|", ...keptDirList].join("\n")
+        if (!seen.has(key)) seen.set(key, crashDisk(Number.POSITIVE_INFINITY, new Map(tree), new Set(keptDirList)))
+      }
+    }
+    return [...seen.values()]
+  }
+  return { disk, calls: () => state.calls, outcomes, written }
+}
+
+const CRASH_ROOT = "/r/jobs"
+const CRASH_DIRS = new Set(["/", "/r", CRASH_ROOT])
+const CRASH_OWNER = "ses_crash"
+const CRASH_HOME = "/work/crash"
+
+/** What the actors outside the disk did: they survive a power loss of the disk. */
+interface Acted {
+  /** A supervisor won the claim and ran the command. */
+  ran: number
+  /** The supervisor saw its exit written (exit 0): the end is that one. */
+  exited: boolean
+  /** The owner's calls as the host records them: running until the host committed its answer; a call the host lost to the power loss reads failed after it. */
+  readonly calls: Map<string, "running" | "committed">
+  /** The kinds those answers said. */
+  readonly answers: Array<string>
+}
+
+/** A server of the wakes over `disk`: the process runner (its launch goes through a systemd stand-in, so no process starts) and the model. */
+const crashServer = (disk: Disk, store: MemoryStore.MemoryWakes, inbox: MemoryCourier.MemorySessions, acted: Acted) =>
+  Effect.gen(function* () {
+    const runner = ProcessRunner.layer({
+      root: CRASH_ROOT,
+      bun: "/nonexistent/loop-probe-bun",
+      script: "/nonexistent/loop-probe-script",
+      platform: "linux",
+      env: {},
+      exec: () => Effect.succeed({ exitCode: 0, stdout: "", stderr: "" }),
+      watch: () => Option.getOrThrowWith(Option.none<never>(), () => ({ code: "ENOSPC" })),
+      disk,
+    })
+    const answered = (_sessionID: string, call: string) =>
+      Effect.succeed(
+        Option.getOrElse(Option.fromNullishOr(acted.calls.get(call)), (): CallAnswer => "failed"),
+      )
+    const layer = Model.layer({ directory: CRASH_HOME, recoverMs: 60_000, answered }).pipe(
+      Layer.provide(Layer.mergeAll(runner, MemoryStore.layer(store), MemoryCourier.layer(inbox), MemoryChecks.layer(MemoryChecks.empty()), MemoryBackstop.layer(MemoryBackstop.empty()), MemoryOpener.layer(MemoryOpener.empty()))),
+      Layer.provide(Layer.succeed(Changes, Changes.of({ changed: () => Effect.void }))),
+    )
+    return Context.get(yield* Layer.build(layer), Model.WakesModel)
+  })
+
+type Wakes = Effect.Success<ReturnType<typeof crashServer>>
+
+/** Let every fiber that can run, run. */
+const yieldAll = Effect.forEach(Array.from({ length: 100 }), () => Effect.yieldNow, { discard: true })
+
+type Transition = (model: Wakes, disk: Disk, acted: Acted, id: string) => Effect.Effect<void, unknown>
+
+/** The job's supervisor comes up: its claim, and only when that won, its command (which exits 0), its exit written, and with `ringing` its call to the wakes. */
+const supervisor =
+  (ringing: boolean): Transition =>
+  (model, disk, acted, id) =>
+    Effect.gen(function* () {
+      const dir = path.join(CRASH_ROOT, id)
+      if (!claim(dir, 1, NO_PROCESS, () => {}, disk)) return
+      acted.ran += 1
+      const exit: JobExit = { exitCode: 0, startedAt: 1, endedAt: 2, timedOut: false, killed: false, disposition: "succeeded", generation: 1, sequence: 1 }
+      writeAtomic(path.join(dir, FILES.exit), exit, 0o600, disk)
+      acted.exited = true
+      if (ringing) yield* Effect.exit(model.due(id))
+    })
+
+interface History {
+  readonly name: string
+  readonly before: Transition
+}
+
+const HISTORIES: ReadonlyArray<History> = [
+  { name: "the supervisor claims, runs, writes its exit and rings: the letter", before: supervisor(true) },
+  {
+    name: "the supervisor ends the job unannounced; the owner's wait takes the end and the host commits its answer",
+    before: (model, disk, acted, id) =>
+      Effect.gen(function* () {
+        yield* supervisor(false)(model, disk, acted, id)
+        const call = `call_${id}`
+        acted.calls.set(call, "running")
+        const waited = yield* model.wait(CRASH_OWNER, id, 0, call)
+        if (!waited.delivered) return
+        acted.calls.set(call, "committed")
+        acted.answers.push(Option.getOrElse(Option.map(Option.flatten(Option.fromNullishOr(waited.view.event)), (event) => event.disposition), () => "no event"))
+        yield* model.answered(call, "committed")
+      }),
+  },
+  {
+    name: "no supervisor in its grace: the wakes retire the launch and announce never-started; then a supervisor comes",
+    before: (model, disk, acted, id) =>
+      Effect.gen(function* () {
+        yield* TestClock.adjust("31 seconds")
+        yield* Effect.exit(model.due(id))
+        yield* supervisor(true)(model, disk, acted, id)
+      }),
+  },
+]
+
+/** The end letters `inbox` holds for job `id` (the host keeps one per message id), by the kind each says. */
+const endsIn = (inbox: MemoryCourier.MemorySessions, id: string) =>
+  Option.getOrElse(Option.fromNullishOr(inbox.inboxes.get(CRASH_OWNER)), (): ReadonlyArray<MemoryCourier.Received> => [])
+    .filter((received) => received.letter.metadata["id"] === id && received.letter.metadata["progress"] !== true)
+    .map((received) =>
+      Option.getOrElse(
+        Option.map(Schema.decodeUnknownOption(Schema.Struct({ disposition: Schema.String }))(received.letter.metadata["event"]), (event) => event.disposition),
+        () => "no event",
+      ),
+    )
+
+const isJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
+
+/** One history with the power lost before disk call `lossAt`: what each state the loss may leave broke, and the disk calls it made. */
+const crashRun = (history: History, lossAt: number) =>
+  Effect.gen(function* () {
+    const crash = crashDisk(lossAt, new Map(), CRASH_DIRS)
+    const store = MemoryStore.empty()
+    const inbox = MemoryCourier.empty(CRASH_OWNER)
+    const acted: Acted = { ran: 0, exited: false, calls: new Map(), answers: [] }
+    const broken: Array<unknown> = []
+    const id = yield* Effect.scoped(
+      Effect.gen(function* () {
+        const model = yield* crashServer(crash.disk, store, inbox, acted)
+        const placed = yield* Effect.exit(model.job(CRASH_OWNER, { command: "true", note: "crash" }))
+        if (Exit.isFailure(placed)) return Option.none<string>()
+        yield* yieldAll
+        yield* Effect.exit(Effect.suspend(() => history.before(model, crash.disk, acted, placed.value.job.id)))
+        yield* yieldAll
+        return Option.some(placed.value.job.id)
+      }),
+    )
+    for (const each of Option.toArray(id)) {
+      const before = { ran: acted.ran, exited: acted.exited, calls: new Map(acted.calls), answers: [...acted.answers] }
+      for (const reopened of crash.outcomes()) {
+        const after = reopened.disk
+        const seen: Acted = { ran: before.ran, exited: before.exited, calls: new Map([...before.calls].filter(([, said]) => said === "committed")), answers: [...before.answers] }
+        const keptStore: MemoryStore.MemoryWakes = { entries: new Map(store.entries), notices: new Map(store.notices), broken: new Set(store.broken) }
+        const keptInbox: MemoryCourier.MemorySessions = { ...inbox, inboxes: new Map([...inbox.inboxes].map(([key, value]) => [key, [...value]])) }
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const model = yield* crashServer(after, keptStore, keptInbox, seen)
+            yield* Effect.exit(model.start)
+            for (const _ of [1, 2, 3]) {
+              yield* yieldAll
+              yield* TestClock.adjust("90 seconds")
+            }
+            // A supervisor that comes after the reopening claims too: it must not win a launch retired or claimed.
+            yield* Effect.exit(supervisor(true)(model, after, seen, each))
+            for (const _ of [1, 2, 3]) {
+              yield* yieldAll
+              yield* TestClock.adjust("90 seconds")
+            }
+            yield* yieldAll
+          }),
+        )
+        const dir = path.join(CRASH_ROOT, each)
+        // What a reader takes as a record is a whole file some writer wrote: a torn one never decodes.
+        const torn = after
+          .list(dir)
+          .filter((name) => Option.exists(after.read(path.join(dir, name)), (data) => Option.isSome(isJson(data)) && !crash.written.has(data) && !reopened.written.has(data)))
+        const ends = endsIn(keptInbox, each)
+        const kinds = [...ends, ...seen.answers]
+        const problems = [
+          kinds.length !== 1 && `given ${kinds.length}: letters ${ends.join(",")}, answers ${seen.answers.join(",")}`,
+          seen.ran > 0 && kinds.includes("never-started") && "its command ran, and its end said never-started",
+          seen.ran > 1 && "two supervisors won its launch",
+          before.exited && kinds.some((kind) => kind !== "succeeded") && `its exit was seen written, and its end said ${kinds.join(",")}`,
+          torn.length > 0 && `a torn file read as a record: ${torn.join(", ")}`,
+        ].filter((problem) => problem !== false)
+        if (problems.length > 0) broken.push({ history: history.name, lossAt, problems, files: after.list(dir) })
+      }
+    }
+    return { broken, calls: crash.calls(), placed: Option.isSome(id) }
+  })
+
+limitedTest("a power loss before any disk call of each record transition leaves a state that reopens to one launcher, one end of its kind, and no torn record read",
+  Effect.gen(function* () {
+    const broken: Array<unknown> = []
+    const states = { lost: 0, placed: 0 }
+    for (const history of HISTORIES) {
+      const counted = yield* crashRun(history, Number.POSITIVE_INFINITY)
+      broken.push(...counted.broken)
+      for (const lossAt of Array.from({ length: counted.calls }, (_, at) => at + 1)) {
+        const run = yield* crashRun(history, lossAt)
+        states.lost += 1
+        states.placed += Number(run.placed)
+        broken.push(...run.broken)
+      }
+    }
+    expect({ broken: broken.slice(0, 2), count: broken.length, kinds: [...new Set(broken.flatMap((each) => Schema.decodeUnknownOption(Schema.Struct({ problems: Schema.Array(Schema.String) }))(each).pipe(Option.map((found) => found.problems.map((problem) => problem.slice(0, 40))), Option.getOrElse(() => []))))] }).toEqual({ broken: [], count: 0, kinds: [] })
+    expect(states.placed).toBeGreaterThan(30)
+  }).pipe(Effect.provide(TestClock.layer()), Effect.provide(Logger.layer([]))),
+)

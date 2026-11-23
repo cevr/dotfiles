@@ -21,7 +21,8 @@
 // repeated after a crash never runs a command twice and a retired one never
 // runs; a reader takes the claim's pid as the runner only while that pid's
 // start time is the claim's, so a reused pid is not it. Every file of the
-// record is written durably (`writeDurable`).
+// record is written durably (`writeDurable`). Mac caveat: a sync there is F_FULLFSYNC (bound from libSystem), since
+// plain fsync on macOS leaves data in the drive's cache; where F_FULLFSYNC is refused it falls back to fsync.
 //
 // The files of <dir>, which the process runner (runner.ts) writes and reads:
 // - job.json: { spec, notify? } (the descriptor, absent when the backstop is off)
@@ -32,7 +33,8 @@
 // - delivery.<n>.json: the delivery record's slots (the wakes write them)
 // - stop: asks a runner not yet up to record a kill instead of running
 // - log, drip, exit.json
-import { closeSync, existsSync, fsyncSync, linkSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs"
+import { dlopen, FFIType } from "bun:ffi"
+import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs"
 import path from "node:path"
 import { Duration, Effect, Option, Result, Schedule } from "effect"
 import { DEFAULT_LIMITS, heavyArgv, type Host, ioniceAvailable, SCOPE_PROBE } from "@dotfiles/opencode-guard/launcher"
@@ -65,21 +67,74 @@ export interface Durable {
   readonly exclusive?: boolean
   readonly mode?: number
   readonly barrier?: (at: Barrier) => void
+  readonly disk?: Disk
 }
 
-/** Open `file`, do `use` with it, then sync it and close it, closed whatever `use` threw (which is thrown on). */
-const synced = (file: string, flags: string, mode: number, use: (fd: number) => void) => {
-  const fd = openSync(file, flags, mode)
-  const done = Result.try(() => {
-    use(fd)
-    fsyncSync(fd)
-  })
-  closeSync(fd)
-  Result.getOrThrow(done)
+/**
+ * The file system a job's record is written through, by the calls whose order makes it durable: a file's data is on
+ * disk once `sync` returned on it; a name made, replaced or removed in a directory (`create`, `link`, `rename`,
+ * `unlink`, `mkdir`) once `syncDir` returned on that directory. The tests put a disk that models a power loss here.
+ */
+export interface Disk {
+  readonly create: (file: string, mode: number) => number
+  readonly write: (fd: number, data: string) => void
+  readonly sync: (fd: number) => void
+  readonly close: (fd: number) => void
+  readonly syncDir: (dir: string) => void
+  /** Link `to` to `from`'s file: false when `to` is taken. */
+  readonly link: (from: string, to: string) => boolean
+  readonly rename: (from: string, to: string) => void
+  readonly unlink: (file: string) => void
+  /** Make `dir` (its parent there already); nothing when it is there. */
+  readonly mkdir: (dir: string) => void
+  readonly read: (file: string) => Option.Option<string>
+  readonly list: (dir: string) => ReadonlyArray<string>
 }
 
-/** Sync a directory, so a name made or replaced in it outlives a power loss. */
-const syncDirectory = (dir: string) => synced(dir, "r", 0, () => {})
+/** `fcntl(fd, F_FULLFSYNC)` from libSystem, on macOS: there `fsync` leaves the data in the drive's cache; none elsewhere, or where it cannot be bound. */
+const fullSync = Option.flatMap(
+  Option.liftPredicate(process.platform, (platform) => platform === "darwin"),
+  () =>
+    Option.liftThrowable(() => dlopen("/usr/lib/libSystem.B.dylib", { fcntl: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 } }).symbols.fcntl)(),
+)
+const F_FULLFSYNC = 51
+
+/** The host's file system. On macOS a sync is F_FULLFSYNC (flushed through the drive's cache); where that is refused, and elsewhere, fsync. */
+export const NODE_DISK: Disk = {
+  create: (file, mode) => openSync(file, "w", mode),
+  write: (fd, data) => void writeSync(fd, data),
+  sync: (fd) => {
+    if (!Option.exists(fullSync, (fcntl) => fcntl(fd, F_FULLFSYNC) === 0)) fsyncSync(fd)
+  },
+  close: (fd) => closeSync(fd),
+  syncDir: (dir) => {
+    const fd = openSync(dir, "r")
+    const done = Result.try(() => NODE_DISK.sync(fd))
+    closeSync(fd)
+    Result.getOrThrow(done)
+  },
+  link: (from, to) => Option.isSome(Option.liftThrowable(() => linkSync(from, to))()),
+  rename: (from, to) => renameSync(from, to),
+  unlink: (file) => rmSync(file, { force: true }),
+  mkdir: (dir) => void mkdirSync(dir, { recursive: true, mode: 0o700 }),
+  read: (file) => Option.liftThrowable(() => readFileSync(file, "utf8"))(),
+  list: (dir) => Option.getOrElse(Option.liftThrowable(() => readdirSync(dir))(), (): ReadonlyArray<string> => []),
+}
+
+/** Make `dir` and every missing parent, each name synced into its parent before the next: a power loss leaves no file in a directory that is not there. */
+export const makeDir = (dir: string, disk: Disk = NODE_DISK): void => {
+  const parent = path.dirname(dir)
+  if (parent === dir || disk.list(parent).includes(path.basename(dir))) return
+  makeDir(parent, disk)
+  disk.mkdir(dir)
+  disk.syncDir(parent)
+}
+
+/** Remove `file` and sync its directory, so the name stays gone after a power loss. */
+export const removeDurable = (file: string, disk: Disk = NODE_DISK): void => {
+  disk.unlink(file)
+  disk.syncDir(path.dirname(file))
+}
 
 /** The temporary files this process made, counted: with its pid, a name no other writer uses at once. */
 const made = { count: 0 }
@@ -92,30 +147,34 @@ const made = { count: 0 }
  * sync) the old one, as if the write never was. Whether it took the name (an exclusive write finds it taken: false).
  */
 export const writeDurable = <A>(file: string, value: A, options: Durable = {}): boolean => {
+  const disk = options.disk ?? NODE_DISK
   made.count += 1
   // A stray one of a dead process under the same pid is overwritten: that process links nothing any more.
   const temporary = `${file}.${process.pid}.${made.count}.tmp`
-  synced(temporary, "w", options.mode ?? 0o600, (fd) => void writeSync(fd, JSON.stringify(value)))
+  const fd = disk.create(temporary, options.mode ?? 0o600)
+  const done = Result.try(() => {
+    disk.write(fd, JSON.stringify(value))
+    disk.sync(fd)
+  })
+  disk.close(fd)
+  Result.getOrThrow(done)
   options.barrier?.("temp")
-  if (options.exclusive !== true) renameSync(temporary, file)
+  if (options.exclusive !== true) disk.rename(temporary, file)
   else {
-    const linked = Option.isSome(Option.liftThrowable(() => linkSync(temporary, file))())
+    const linked = disk.link(temporary, file)
     if (!linked) {
-      rmSync(temporary, { force: true })
+      disk.unlink(temporary)
       return false
     }
-    options.barrier?.("named")
-    rmSync(temporary, { force: true })
-    syncDirectory(path.dirname(file))
-    return true
+    disk.unlink(temporary)
   }
   options.barrier?.("named")
-  syncDirectory(path.dirname(file))
+  disk.syncDir(path.dirname(file))
   return true
 }
 
 /** Write `value` as JSON to `file`, replacing it, durably (`writeDurable`). */
-export const writeAtomic = <A>(file: string, value: A, mode = 0o600) => void writeDurable(file, value, { mode })
+export const writeAtomic = <A>(file: string, value: A, mode = 0o600, disk: Disk = NODE_DISK) => void writeDurable(file, value, { mode, disk })
 
 /** A process's start time as `ps -o lstart=` prints it (by its own path, in the C locale); none when `ps` could not say (no such process, or no `ps`). */
 export const processStart = (pid: number): Option.Option<string> =>
@@ -133,9 +192,9 @@ export const ranOf = (argv: ReadonlyArray<string>, env?: Record<string, string>)
  * Claim the job in `dir` for this runner, as the process `pid`: true when its launch slot was free. The slot holds
  * one claim or the wakes' retirement, whichever came first, so a job retired as never started never runs.
  */
-export const claim = (dir: string, startedAt: number, pid: number = process.pid, barrier: (at: Barrier) => void = () => {}): boolean => {
+export const claim = (dir: string, startedAt: number, pid: number = process.pid, barrier: (at: Barrier) => void = () => {}, disk: Disk = NODE_DISK): boolean => {
   const own: RunnerClaim = { pid, startedAt, ...Option.match(processStart(pid), { onNone: () => ({}), onSome: (start) => ({ start }) }) }
-  return writeDurable(path.join(dir, FILES.runner), own, { exclusive: true, barrier })
+  return writeDurable(path.join(dir, FILES.runner), own, { exclusive: true, barrier, disk })
 }
 
 /** How many times the runner tries to write the exit, and how long it waits between. */
