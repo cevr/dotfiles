@@ -112,6 +112,7 @@ it.effect("R1 rejects the timeout slot, not a list of known bad expressions", ()
     'const fast = { timeout: 55 }; test("override", () => {}, {timeout: 10_000, ...fast})',
     'const fast = { timeout: 60_000 }; test("even a safe options spread", () => {}, {...fast})',
     'const hangGuard = () => 50; test("not the imported helper", () => {}, hangGuard("local-fixture"))',
+    'const matrix = test.each([1]); matrix("curried alias", () => {}, 55)',
     'test("tuple spread", ...fixture())',
   ]
   for (const source of controls) expect(inspect(source).errors.map((error) => error.rule), source).toEqual(["R1"])

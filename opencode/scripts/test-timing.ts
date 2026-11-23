@@ -27,9 +27,9 @@ export interface Inspection {
 
 export const sourceFile = (file: string) => /\.[cm]?[jt]sx?$/.test(file)
 export const testFile = (file: string) =>
-  /\.test\.[cm]?[jt]sx?$/.test(file) ||
+  /\.(?:test|spec|fixture)\.[cm]?[jt]sx?$/.test(file) ||
   /^(?:opencode\/(?:tests|scenarios|testbeds|sim|sim-tui)\/|workbox\/test\/)/.test(file) ||
-  /\/(?:fake-[^/]+|(?:[^/]+\.)?laws|fixture|test-support)\.[cm]?[jt]sx?$/.test(file)
+  /\/(?:fake-[^/]+|(?:[^/]+\.)?laws|fixture|test-(?:support|helper|util)s?)\.[cm]?[jt]sx?$/.test(file)
 
 export const timingModule = "opencode/tests/hang-guard.ts"
 export const runnerBridges = new Map([
@@ -97,7 +97,7 @@ const bindRunnerAliases = (program: Program, runners: Map<string, ReadonlyArray<
       const value = node.init
       if (value.type === "CallExpression") {
         const path = boundPath(value.callee, runners)
-        if (path.at(-1) === "layer" && runnerArguments.has(path[0] ?? "")) runners.set(node.id.name, path.slice(0, -1))
+        if (wrappers.has(path.at(-1) ?? "") && runnerArguments.has(path[0] ?? "")) runners.set(node.id.name, path.slice(0, -1))
         return
       }
       const path = boundPath(value, runners)
@@ -337,7 +337,10 @@ export const inspectTiming = (file: string, source: string, resolve: (specifier:
       calls.push(node)
       const helper = helperName(node, names.helpers)
       if (helper !== "") approvedCalls.add(node.callee.start)
-      if (helper === "probeTimeout" && probe(node)) uses.push({ kind: "probe", at: node })
+      if (helper === "probeTimeout") {
+        if (probe(node)) uses.push({ kind: "probe", at: node })
+        else errors.push({ rule: "R1", at: node, reason: 'intentional probes must use probeTimeout(50, "reason") with literal arguments' })
+      }
       if (helper === "stamp" || helper === "elapsedForReport" || helper === "watchdog") uses.push({ kind: "clock", at: node })
       if (helper === "measured") {
         if (node.arguments.length === 3 && Option.isSome(literalText(node.arguments[0])) && Option.exists(literalText(node.arguments[1]), isProductBudget))
