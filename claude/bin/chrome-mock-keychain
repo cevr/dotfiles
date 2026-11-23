@@ -1,0 +1,118 @@
+#!/bin/sh
+# chrome-mock-keychain: a Chrome that never asks the login keychain. Set it as
+# CHROME for one command that runs a browser launcher you don't own or can't
+# edit (a bisect over old commits, an old checkout, a vendor script):
+#
+#   CHROME="$HOME/Developer/personal/dotfiles/claude/bin/chrome-mock-keychain" git bisect run …
+#
+# Every launcher that takes its browser from $CHROME (Exact's chromium(),
+# manna's tools/web/chrome.ts at any commit, nasa-handbook's render.sh) then
+# starts Chrome through it, with no change to them. It is not exported for
+# every shell: one browser cannot be right for every caller (Exact picks the
+# headless shell or full Chrome for Testing by need).
+#
+# It execs the real browser with the caller's arguments unchanged and each of
+# --use-mock-keychain --password-store=basic the caller lacks added: after the
+# last argument, or just before a bare `--` (after which Chromium reads no
+# switch). exec keeps the pid, stdio and every other descriptor, so
+# --remote-debugging-pipe (fds 3 and 4) works through it.
+#
+# The real browser: $CHROME_KEYCHAIN_TARGET, else the newest Chrome for Testing
+# in Playwright's cache ($PLAYWRIGHT_BROWSERS_PATH, ~/Library/Caches/ms-playwright
+# on macOS, ~/.cache/ms-playwright elsewhere), else agent-browser's, else
+# Playwright's newest headless shell. Exit 127 when none is there. It refuses
+# (exit 126) to exec itself or the owner's Google Chrome.app, whose profile and
+# keychain item are his.
+#
+# opencode/scripts/chrome-shim.test.ts holds it to all of this.
+
+target=${CHROME_KEYCHAIN_TARGET:-}
+
+newest() { # newest <dir> <glob prefix>: the version folder with the highest number
+  for dir in "$1"/"$2"[0-9]*; do [ -d "$dir" ] && printf '%s\n' "$dir"; done | awk -F/ '{ n = $NF; sub(/^[^0-9]*/, "", n); print n "\t" $0 }' |
+    sort -t . -k1,1nr -k2,2nr -k3,3nr -k4,4nr | cut -f2- | head -n 1
+}
+
+first() { # first <path>...: the first that is an executable file
+  for each in "$@"; do
+    if [ -f "$each" ] && [ -x "$each" ]; then
+      printf '%s\n' "$each"
+      return 0
+    fi
+  done
+  return 1
+}
+
+if [ -z "$target" ]; then
+  if [ -n "${PLAYWRIGHT_BROWSERS_PATH:-}" ]; then
+    cache=$PLAYWRIGHT_BROWSERS_PATH
+  elif [ -d "$HOME/Library/Caches/ms-playwright" ]; then
+    cache=$HOME/Library/Caches/ms-playwright
+  else
+    cache=$HOME/.cache/ms-playwright
+  fi
+  testing=$(newest "$cache" chromium-)
+  agent=$(newest "$HOME/.agent-browser/browsers" chrome-)
+  shell=$(newest "$cache" chromium_headless_shell-)
+  app="Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+  target=$(first \
+    "$testing/chrome-mac-arm64/$app" "$testing/chrome-mac-x64/$app" "$testing/chrome-mac/$app" \
+    "$testing/chrome-linux64/chrome" "$testing/chrome-linux-arm64/chrome" "$testing/chrome-linux/chrome" \
+    "$agent/$app" "$agent/chrome-linux64/chrome" "$agent/chrome" \
+    "$shell/chrome-headless-shell-mac-arm64/chrome-headless-shell" "$shell/chrome-headless-shell-mac-x64/chrome-headless-shell" \
+    "$shell/chrome-headless-shell-linux64/chrome-headless-shell" "$shell/chrome-headless-shell-linux-arm64/chrome-headless-shell") || {
+    echo "chrome-mock-keychain: no Chrome for Testing or headless shell under $cache or ~/.agent-browser/browsers; set CHROME_KEYCHAIN_TARGET" >&2
+    exit 127
+  }
+fi
+
+# The target as a canonical path, to compare with this file's.
+canonical() { # canonical <path>: its folder resolved, symlinks followed, and its name
+  (cd -P "$(dirname "$1")" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$(basename "$1")")
+}
+case "$target" in
+  */"Google Chrome.app"/*)
+    echo "chrome-mock-keychain: refusing the owner's Google Chrome.app ($target); set CHROME_KEYCHAIN_TARGET to a Chrome for Testing or headless shell" >&2
+    exit 126
+    ;;
+esac
+self=$(canonical "$0")
+resolved=$(canonical "$target")
+if [ "$(basename "$target")" = "chrome-mock-keychain" ] || { [ -n "$self" ] && [ "$resolved" = "$self" ]; }; then
+  echo "chrome-mock-keychain: refusing to exec itself ($target); set CHROME_KEYCHAIN_TARGET to a real browser" >&2
+  exit 126
+fi
+
+# The flags the caller lacks.
+mock=1
+store=1
+for arg in "$@"; do
+  [ "$arg" = "--" ] && break
+  [ "$arg" = "--use-mock-keychain" ] && mock=0
+  [ "$arg" = "--password-store=basic" ] && store=0
+done
+set_flags() { # the missing flags, as words
+  [ "$mock" = 1 ] && printf '%s\n' --use-mock-keychain
+  [ "$store" = 1 ] && printf '%s\n' --password-store=basic
+  return 0
+}
+flags=$(set_flags)
+
+# The arguments again, the missing flags put in before the first bare `--`, else at the end.
+count=$#
+placed=0
+for arg in "$@"; do
+  if [ "$placed" = 0 ] && [ "$arg" = "--" ]; then
+    # shellcheck disable=SC2086 # the flags hold no spaces: split on purpose
+    set -- "$@" $flags
+    placed=1
+  fi
+  set -- "$@" "$arg"
+done
+shift "$count"
+if [ "$placed" = 0 ]; then
+  # shellcheck disable=SC2086
+  set -- "$@" $flags
+fi
+
+exec "$target" "$@"

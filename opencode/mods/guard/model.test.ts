@@ -17,6 +17,7 @@ import {
   RepoRoots,
   Reservations,
   Scopes,
+  ScriptFiles,
   SessionDirectories,
   SessionUnreadable,
   Subagents,
@@ -89,6 +90,8 @@ const subagents = Layer.succeed(
 /** No checkout on the stand-in disk: the worktree rule's own cases run on the simulated host (cmd/guard/guard.sim.test.ts). */
 const noCheckouts = Layer.succeed(Checkouts, Checkouts.of({ of: () => Effect.succeed(Option.none()), warmSources: Effect.succeed([]) }))
 const noReservations = Layer.succeed(Reservations, Reservations.of({ of: () => Effect.succeed([]) }))
+/** No script on the stand-in disk: the keychain rule's cases run in chrome.test.ts and the seam test (cmd/guard/server.test.ts). */
+const noScripts = Layer.succeed(ScriptFiles, ScriptFiles.of({ text: () => Effect.succeed(Option.none()) }))
 
 const run = (call: Model.ShellCall, repos: Repos = { repos: ["/work/app"] }, table: ReadonlyArray<ProcessInfo> | "unreadable" = TABLE, reads = { count: 0 }) =>
   Effect.runPromise(
@@ -102,7 +105,7 @@ const run = (call: Model.ShellCall, repos: Repos = { repos: ["/work/app"] }, tab
     }).pipe(
       Effect.provide(
         Model.layer({ home: HOME, server: SERVER }).pipe(
-          Layer.provide(Layer.mergeAll(repoRoots(repos), sessionDirectories, subagents, processes(table, reads), noCheckouts, noReservations)),
+          Layer.provide(Layer.mergeAll(repoRoots(repos), sessionDirectories, subagents, processes(table, reads), noCheckouts, noReservations, noScripts)),
         ),
       ),
     ),

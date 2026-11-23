@@ -27,6 +27,7 @@
     }
   },
   "rules": {
+    "dotfiles/chrome-mock-keychain": "error",
     "effect/maxHalsteadDifficulty": ["error", { "max": 79 }],
     "effect/noAliasTestLayer": "error",
     "effect/noEagerAcquire": "error",

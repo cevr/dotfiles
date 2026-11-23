@@ -16,6 +16,7 @@ import * as MemoryCheckouts from "@dotfiles/opencode-guard/memory/checkouts"
 import * as MemoryLaunchers from "@dotfiles/opencode-guard/memory/launchers"
 import * as MemoryRepoRoots from "@dotfiles/opencode-guard/memory/repo-roots"
 import * as MemoryReservations from "@dotfiles/opencode-guard/memory/reservations"
+import * as MemoryScriptFiles from "@dotfiles/opencode-guard/memory/script-files"
 import { Processes, ProcessesUnreadable } from "@dotfiles/opencode-guard/service"
 import { externalsOn as mailOn, make as makeMail } from "@dotfiles/opencode-cmd-mail/server"
 import type * as MemoryNet from "@dotfiles/opencode-mail/memory/net"
@@ -145,6 +146,8 @@ export const guard = (machine: GuardMachine) =>
       MemoryRepoRoots.layer({ repos: machine.repos }),
       MemoryCheckouts.layer(machine.checkouts),
       MemoryReservations.layer(machine.reservations),
+      // No script on the world's disk: the keychain rule's script reads are the seam test's (cmd/guard/server.test.ts).
+      MemoryScriptFiles.layer(),
       // The memory launchers read `unwritable` at each write: the machine's fault, as it is now.
       MemoryLaunchers.layer({
         written: machine.launchers,
