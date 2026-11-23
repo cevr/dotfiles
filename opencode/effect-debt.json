@@ -942,7 +942,7 @@
     "mods/wake/memory/store.ts": {"effect/preferServiceOf":1},
     "mods/wake/message.test.ts": {"effect/noNullish":3},
     "mods/wake/message.ts": {"effect/noConditionalEmptyObjectSpread":1,"effect/noGlobals":1,"effect/noKnownValueWidening":1,"effect/noNullish":37,"effect/noTernary":73},
-    "mods/wake/model.ts": {"effect/noConditionalEmptyObjectSpread":7,"effect/noNullish":83,"effect/noTernary":26,"effect/preferServiceOf":1},
+    "mods/wake/model.ts": {"effect/noConditionalEmptyObjectSpread":7,"effect/noNullish":81,"effect/noTernary":26,"effect/preferServiceOf":1},
     "mods/wake/opencode/courier.test.ts": {"effect/noAs":2,"effect/noAsyncFunction":6,"effect/noConditionalEmptyObjectSpread":2,"effect/noEffectRunInTests":3,"effect/noNewError":1,"effect/noNullish":14,"effect/noTernary":6,"effect/noUnsafeDictionaryType":1,"effect/preferTaggedConstructors":1},
     "mods/wake/opencode/courier.ts": {"effect/noAs":12,"effect/noConditionalEmptyObjectSpread":6,"effect/noGlobals":2,"effect/noNullish":16,"effect/noRuntimeTypeof":5,"effect/noTernary":10,"effect/noUnsafeDictionaryType":4,"effect/preferServiceOf":1},
     "mods/wake/opencode/opener.test.ts": {"effect/noAsyncFunction":2,"effect/noEffectRunInTests":1,"effect/noNewError":1,"effect/noNullish":1,"effect/noTernary":1},

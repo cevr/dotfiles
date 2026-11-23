@@ -365,8 +365,6 @@ export const layer = (config: Config) =>
               yield* changes.changed(entry.sessionID)
               return "again" as const
             }
-            // A job's delivery is written down before its entry goes: a restart between the two removes it and sends nothing.
-            if (entry.kind === "job") yield* store.write({ ...entry, done: { delivery: firing.delivery, via: "letter" } })
             yield* store.remove(id)
             yield* dropJob(id, defer || mayRun(firing))
             yield* changes.changed(entry.sessionID)
@@ -557,7 +555,7 @@ export const layer = (config: Config) =>
           .pipe(Effect.andThen(again(id, 0)))
 
       /**
-       * A job's end, reconciled from what its runner recorded: a delivery written down settles its entry; a fire
+       * A job's end, reconciled from what its runner recorded: a fire
        * recorded goes again under its id; an end not yet fired fires its letter, unless an owner's call waits to take
        * it. A failure (a write that died, a session that refused) leaves the entry as it was and asks again.
        */
@@ -567,11 +565,6 @@ export const layer = (config: Config) =>
             const entry = yield* store.read(id)
             if (entry === undefined) return "gone" as const
             if (entry.kind !== "job" || entry.directory !== config.directory) return "pending" as const
-            if (entry.done !== undefined) {
-              yield* locked(store.remove(id))
-              yield* changes.changed(entry.sessionID)
-              return "fired" as const
-            }
             let fired: Fired
             if (entry.firing !== undefined) fired = yield* fire(id, () => undefined, false)
             else {
@@ -683,8 +676,8 @@ export const layer = (config: Config) =>
 
       /**
        * Hand an ended job's end to the call that read it, when that call delivers it: the owner's own call on a managed
-       * job, any `wait` or `kill` that saw a legacy job's end (the old rule). The delivery is written before the entry
-       * goes, so a write that dies leaves the entry, and its letter, as they were. Whether this call delivered it.
+       * job, any `wait` or `kill` that saw a legacy job's end (the old rule). Its entry goes in one removal, so a removal
+       * that dies leaves the entry, and its letter, as they were. Whether this call delivered it.
        */
       const handOver = (sessionID: string, view: JobView) =>
         Effect.gen(function* () {
@@ -696,9 +689,7 @@ export const layer = (config: Config) =>
             yield* take(id)
             return true
           }
-          if (entry.sessionID !== sessionID || entry.firing !== undefined || entry.done !== undefined) return false
-          const delivery = yield* courier.newDelivery
-          yield* locked(store.write({ ...entry, done: { delivery, via: "tool" } }))
+          if (entry.sessionID !== sessionID || entry.firing !== undefined) return false
           yield* locked(store.remove(id))
           yield* runner.unwatch(id)
           yield* changes.changed(entry.sessionID)

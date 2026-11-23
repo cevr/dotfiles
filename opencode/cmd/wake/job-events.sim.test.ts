@@ -630,6 +630,28 @@ const apply = (run: Run, command: Command): Effect.Effect<void, World.SimError> 
     }),
   )
 
+seeded("an owner's wait that sees its job end, and the runner's call rung meanwhile, returns the end itself; no letter follows", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    actions.clear()
+    const runner = MemoryRunner.empty()
+    const world = World.make({ seed, script: actScript })
+    yield* world.load(Plugins.wake(world, runner), { directory: WORK, options: { backstop: "off" } })
+    const owner = yield* world.session(WORK)
+    const run: Run = { world, runner, sessions: [owner], jobs: [], answers: [], deleted: false, acts: 0 }
+    yield* startJob(run, { type: "job", session: 0, started: true })
+    const job = Option.getOrThrow(Arr.head(run.jobs))
+    // The wait's call goes out; 3 s in, the runner records the end and rings, as a runner would while the owner waits.
+    yield* look(run, { type: "wait", job: 0, endDuring: true })
+    const answer = Option.getOrThrow(Arr.last(world.messages(owner).filter((message): message is ToolMessage => message.type === "tool")))
+    expect(answer.output).toContain(`End: succeeded (generation 1); log job-log:${job.id}/1.`)
+    expect(answer.output).toContain("This answer is its end: no letter follows.")
+    yield* world.advance(2 * RECOVER_MS)
+    yield* world.until(() => idle(world, owner), MINUTE)
+    expect(lettersIn(world, owner, job.id)).toEqual([])
+    expect([...runner.watched.keys()]).toEqual([])
+  }),
+)
+
 seeded("each managed job's end is delivered exactly once, by its letter or the owner's own call that returned it, across calls rung or lost, kills, failed writes, deletion, reloads and outages", ({ seed, expect }) =>
   Effect.gen(function* () {
     actions.clear()

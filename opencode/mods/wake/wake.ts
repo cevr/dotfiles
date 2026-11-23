@@ -113,8 +113,6 @@ export const Job = Schema.Struct({
    * entry, which keeps the old rule: a `wait` or `kill` that saw the end takes it.
    */
   generation: Schema.optional(Schema.Number),
-  /** The end was delivered (`letter`: its fire reached the session; `tool`: the owner's call returned it) under this id; the entry goes next. */
-  done: Schema.optional(Schema.Struct({ delivery: Schema.String, via: Schema.Literals(["letter", "tool"]) })),
 })
 export type Job = typeof Job.Type
 
