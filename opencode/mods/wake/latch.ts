@@ -8,7 +8,7 @@
 // the background, and its answer wakes the parent as any background
 // subagent's does. The wakes write the child's `latch` metadata (`Mark`),
 // which the subagent rows read; nothing else writes it.
-import { Schema } from "effect"
+import { Option, Schema } from "effect"
 
 /** What holds the start: an account's pace, or the Sabbath. */
 export const Hold = Schema.Literals(["pace", "sabbath"])
@@ -62,17 +62,30 @@ export const MARK_KEY = "latch"
  * it will not open, when it was cancelled or why it failed. A child that
  * opened carries none.
  */
-export const Mark = Schema.Struct({
+const Mark = Schema.Struct({
   hold: Hold,
   reason: Schema.String,
-  opensAt: Schema.Number,
+  opensAt: Schema.Finite,
   /** Older marks did not carry the decision time. */
-  recheckAt: Schema.optionalKey(Schema.Number),
-  at: Schema.Number,
-  cancelledAt: Schema.optional(Schema.Number),
+  recheckAt: Schema.optionalKey(Schema.Finite),
+  at: Schema.Finite,
+  cancelledAt: Schema.optional(Schema.Finite),
   failed: Schema.optional(Schema.String),
 })
 export type Mark = typeof Mark.Type
+
+export const MarkRead = Schema.TaggedUnion({ Readable: { mark: Mark }, Unreadable: {} })
+export type MarkRead = typeof MarkRead.Type
+
+const decodeMark = Schema.decodeUnknownOption(Schema.Struct({ [MARK_KEY]: Mark }))
+const Unreadable = MarkRead.cases.Unreadable.make({})
+
+/** The sole read of the owner's complete mark; a legacy omission is not corruption. */
+export const readMark = (metadata?: { readonly [MARK_KEY]?: unknown }): MarkRead =>
+  Option.match(decodeMark(metadata), {
+    onNone: () => Unreadable,
+    onSome: ({ [MARK_KEY]: mark }): MarkRead => MarkRead.cases.Readable.make({ mark }),
+  })
 
 export const markOf = (latch: Latch): Mark => ({
   hold: latch.hold, reason: latch.reason, opensAt: latch.opensAt, recheckAt: latch.recheckAt, at: latch.setAt,

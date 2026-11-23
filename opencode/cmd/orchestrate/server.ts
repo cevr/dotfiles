@@ -139,7 +139,7 @@ import * as Digest from "./digest.ts"
 import { QUESTIONS } from "@dotfiles/opencode-questions/question"
 import { QUEUE } from "@dotfiles/opencode-queue/queue"
 import { STATUS } from "@dotfiles/opencode-status/status"
-import { Latch, Mark, MARK_KEY, type Opened, OPENER } from "@dotfiles/opencode-wake/latch"
+import { Latch, readMark, MARK_KEY, type Opened, OPENER } from "@dotfiles/opencode-wake/latch"
 import { WAKES } from "@dotfiles/opencode-wake/wake"
 import * as CodexAdmissionLive from "@dotfiles/opencode-orchestrate/codex/admission"
 import { keepMessage, WINDOW } from "@dotfiles/opencode-orchestrate/compaction"
@@ -538,10 +538,13 @@ const latchedResult = (latched: Model.LatchedStart, place: Place, recheck: Optio
 
 const LatchChild = Schema.String.check(Schema.isStartingWith("ses")).pipe(Schema.brand("SessionID"))
 const latchChild = Schema.decodeUnknownOption(LatchChild)
-const latchMark = Schema.decodeUnknownOption(Mark)
+const recheckFrom = (mark: ReturnType<typeof readMark>) => {
+  if (mark._tag === "Unreadable") return Option.none()
+  return Option.fromUndefinedOr(mark.mark.recheckAt)
+}
 const recheckOf = (ctx: Plugin.Context, child: string) =>
   Effect.option(Effect.flatMap(Effect.fromOption(latchChild(child)), (sessionID) => ctx.session.get({ sessionID }))).pipe(
-    Effect.map(Option.flatMap((info) => Option.flatMap(latchMark(info.metadata?.[MARK_KEY]), (mark) => Option.fromUndefinedOr(mark.recheckAt)))),
+    Effect.map(Option.flatMap((info) => recheckFrom(readMark(info.metadata)))),
   )
 
 /** The subagent tool's output, widened with the latched answer. */
