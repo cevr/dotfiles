@@ -233,7 +233,7 @@ describe("link-fork, the fork's Node platform", () => {
     }
     file(join(plugin, "platform-node-shared/package.json"))
     expect(run(fork)).toMatchObject({ code: 0 })
-    expect([existsSync(join(plugin, "platform-node")), lstatSync(join(cli, "platform-node"), { throwIfNoEntry: false }) === undefined, lstatSync(join(plugin, "platform-node-shared")).isDirectory()]).toEqual([false, true, true])
+    expect([existsSync(join(plugin, "platform-node")), !readdirSync(cli).includes("platform-node"), lstatSync(join(plugin, "platform-node-shared")).isDirectory()]).toEqual([false, true, true])
   })
 })
 
