@@ -646,8 +646,8 @@ pass "Microsoft's key matched the pinned fingerprint; apt verified noble's repos
 bash "$here/provision.sh" reserve > "$work/reserve-1.log" 2>&1 || { cat "$work/reserve-1.log"; fail "provision.sh reserve"; }
 bash "$here/provision.sh" reserve > "$work/reserve-2.log" 2>&1 || { cat "$work/reserve-2.log"; fail "provision.sh reserve rerun"; }
 grep '^==> installed' "$work/reserve-2.log" && fail "provision.sh reserve's rerun changed something"
-[[ $(cat /sys/fs/cgroup/bite.slice/cpu.weight) == 1000 && $(cat /sys/fs/cgroup/bite.slice/io.weight 2>/dev/null || echo 'default 1000') == 'default 1000' ]] ||
-    fail "bite.slice weights: cpu $(cat /sys/fs/cgroup/bite.slice/cpu.weight)"
+[[ $(cat /sys/fs/cgroup/bite.slice/cpu.weight) == 1000 ]] || fail "bite.slice CPUWeight is not 1000"
+if grep -q '^IOWeight=' /etc/systemd/system/bite.slice; then fail "bite.slice configures an I/O weight"; fi
 # A changed weight reaches the running slice with a daemon-reload alone (the live workbox's one-time step).
 sed 's/^CPUWeight=.*/CPUWeight=500/' "$here/../../workbox/systemd/system/bite.slice" > /etc/systemd/system/bite.slice
 systemctl daemon-reload
@@ -689,9 +689,10 @@ manager=/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service
 ours=/etc/systemd/system/user@.service.d/40-workbox-delegate.conf
 aside=${prefix}delegate-aside
 mkdir -p "$aside"
+touch "$aside/list"
 for f in /etc/systemd/system/user@.service.d/*.conf /run/systemd/system/user@.service.d/*.conf /usr/lib/systemd/system/user@.service.d/*.conf; do
     [[ -f $f && $f != "$ours" ]] && grep -q '^Delegate' "$f" || continue
-    n=$(wc -l < "$aside/list" 2>/dev/null || echo 0)
+    n=$(wc -l < "$aside/list")
     cp -a "$f" "$aside/$n"
     echo "$f" >> "$aside/list"
     rm -f "$f"
