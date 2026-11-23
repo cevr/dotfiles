@@ -43,8 +43,13 @@ const indexOrEnd = (line: string, char: string, from: number) => {
  * `&`, `|`, `(`, `)` and newlines outside quotes, and leaves a heredoc's body
  * out: the body is data, not a command.
  */
-export const simpleCommands = (line: string): ReadonlyArray<ReadonlyArray<Word>> => {
-  const commands: Array<Array<Word>> = []
+export interface ShellSegment {
+  readonly words: ReadonlyArray<Word>
+  readonly pipe: boolean
+}
+
+export const shellSegments = (line: string): ReadonlyArray<ShellSegment> => {
+  const commands: Array<ShellSegment> = []
   let words: Array<Word> = []
   let draft = newDraft()
   const heredocs: Array<string> = []
@@ -52,9 +57,9 @@ export const simpleCommands = (line: string): ReadonlyArray<ReadonlyArray<Word>>
     if (draft.started) words.push({ text: draft.text, bareStart: draft.bareStart, singleQuoted: draft.singleQuoted })
     draft = newDraft()
   }
-  const endCommand = () => {
+  const endCommand = (pipe = false) => {
     endWord()
-    if (words.length > 0) commands.push(words)
+    if (words.length > 0) commands.push({ words, pipe })
     words = []
   }
   const add = (char: string, bare: boolean) => {
@@ -116,7 +121,7 @@ export const simpleCommands = (line: string): ReadonlyArray<ReadonlyArray<Word>>
     if (line.startsWith("<<", at) && !line.startsWith("<<<", at)) return readHeredoc(at)
     if (char === "\n" && heredocs.length > 0) return skipBodies(at)
     if (SEPARATORS.has(char)) {
-      endCommand()
+      endCommand(char === "|" && line.charAt(at + 1) !== "|")
       return at + 1
     }
     if (char === " " || char === "\t") {
@@ -132,6 +137,8 @@ export const simpleCommands = (line: string): ReadonlyArray<ReadonlyArray<Word>>
   return commands
 }
 
+export const simpleCommands = (line: string): ReadonlyArray<ReadonlyArray<Word>> => shellSegments(line).map(({ words }) => words)
+
 /** Words that run the command after them: skipped to find what runs. */
 const PREFIX_WORDS: ReadonlySet<string> = new Set(["sudo", "doas", "env", "command", "builtin", "exec", "nohup", "time", "nice", "!", "{"])
 
@@ -141,7 +148,7 @@ const PREFIX_VALUE_OPTIONS: ReadonlySet<string> = new Set(["-u", "-g", "-n", "-C
 const isAssignment = (text: string) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(text)
 
 /** Reserved words that introduce a command within a shell compound command. */
-const COMMAND_STARTS: ReadonlySet<string> = new Set(["do", "then", "elif", "else", "if", "while", "until"])
+export const COMMAND_STARTS: ReadonlySet<string> = new Set(["do", "then", "elif", "else", "if", "while", "until"])
 
 /** `command -v` and `command -V` describe an executable without invoking it. */
 const describesCommand = (words: ReadonlyArray<Word>): boolean => {

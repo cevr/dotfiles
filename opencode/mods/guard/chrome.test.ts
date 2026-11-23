@@ -161,6 +161,31 @@ describe("old checkouts in an executable position", () => {
     expect(bareLaunches("git switch main && git log --oneline", place)).toEqual([])
     expect(bareLaunches("git checkout -- src && bun lint.ts", place)).toEqual([])
     expect(bareLaunches("git stash list && sh ./measure.sh", place)).toEqual([])
+    expect(bareLaunches("git checkout HEAD~1 && sh -c 'cat ./fixture.md'", place)).toEqual([])
+  })
+
+  test("both explicit relative paths and tree-qualified pathspecs restore files, not HEAD", () => {
+    expect(bareLaunches("git checkout ./fixture.md && npm test", place)).toEqual([])
+    expect(bareLaunches("git checkout fixture-old -- fixture.md && npm test", place)).toEqual([])
+    expect(bareLaunches("git restore --source fixture-old -- fixture.md && npm test", place)).toEqual([])
+    expect(bareLaunches("git checkout HEAD~1 && npm test", place).map((launch) => launch.remedy)).toEqual(["shim"])
+    const unknown = bareLaunches("git checkout fixture-old && npm test", place).map(keychainReason).join()
+    expect(unknown).toContain("cannot tell whether the Git operation selects another revision or restores files")
+    expect(unknown).not.toContain("after selecting another Git revision")
+  })
+
+  test("revision selection and file restoration depend on the Git subcommand's grammar", () => {
+    const files = [
+      "checkout --ours -- fixture.md", "checkout --pathspec-from-file=./paths", "checkout 'notes with spaces'",
+      "restore --source=HEAD~1 fixture.md", "reset HEAD~1 -- fixture.md", "reset --patch HEAD~1",
+      "log -- rebase --detach", "worktree list", "rebase --show-current-patch",
+    ]
+    const moves = [
+      "switch --detach fixture-old", "checkout -b experiment HEAD~1", "checkout HEAD~1", "reset --soft HEAD~1",
+      "rebase fixture-old", "worktree add --detach /nonexistent/loop-probe-new fixture-old", "stash branch fixture-old",
+    ]
+    for (const args of files) expect([args, refused(`git ${args} && npm test`)]).toEqual([args, false])
+    for (const args of moves) expect([args, refused(`git ${args} && npm test`)]).toEqual([args, true])
   })
 })
 
@@ -195,8 +220,13 @@ describe("the scripts a line runs", () => {
     ]) expect([line, refused(line)]).toEqual([line, false])
     expect(runs("sh -n +n /tmp/bisect.sh")).toEqual([ScriptFile.make({ path: "/tmp/bisect.sh" })])
     expect(runs("sh /tmp/entry /tmp/bisect.sh")).toEqual([ScriptFile.make({ path: "/tmp/entry" })])
-    expect(runs("node server --eval /tmp/bisect.ts")).toEqual([])
+    expect(runs("node server --eval /tmp/bisect.ts")).toEqual([ScriptFile.make({ path: `${CWD}/server` })])
     expect(runs("bash -o noexec /tmp/receipt.sh /tmp/profile.sh")).toEqual([])
+  })
+
+  test("Node's startup modules precede the entry, including environment and repeated CLI options", () => {
+    const line = "env NODE_OPTIONS='--import /m/env.mjs -r /m/env.cjs' node --import=/m/cli.mjs --require /m/cli.cjs /m/app.js"
+    expect(runs(line)).toEqual(["env.cjs", "cli.cjs", "env.mjs", "cli.mjs", "app.js"].map((name) => ScriptFile.make({ path: `/m/${name}` })))
   })
 })
 
@@ -285,6 +315,10 @@ describe("a script that runs other commits", () => {
       expect([code, Option.map(scriptLaunch(run("/m/walk.ts"), code), (launch) => launch.remedy)]).toEqual([code, Option.some("shim")])
       expect(scriptLaunch(run("/m/walk.ts", true), code)).toEqual(Option.none())
     }
+  })
+
+  test("without a loader an invoked child supplies no evidence", () => {
+    expect(scriptLaunch(run("/m/parent.sh"), "sh /m/child.sh")).toEqual(Option.none())
   })
 })
 

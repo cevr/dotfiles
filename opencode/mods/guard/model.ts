@@ -21,8 +21,8 @@
 // pattern while it cannot list the processes, refuses the call with why. The
 // sleep rule fails open: a session the host cannot place as a subagent or a
 // root runs its sleep, since a sleep loses nothing.
-import { Context, Effect, Layer, Match, Option } from "effect"
-import { type BareLaunch, bareLaunches, KeychainPrompt, keychainReason, runtimeRuns, scriptLaunch } from "./chrome.ts"
+import { Context, Effect, Layer, Option } from "effect"
+import { keychainLaunch, KeychainPrompt, keychainReason } from "./chrome.ts"
 import { isHeavy } from "./heavy.ts"
 import { killsByPattern, killVerdict } from "./kill.ts"
 import { launcherName, launcherScript, type Limits } from "./launcher.ts"
@@ -140,13 +140,8 @@ export const layer = (config: Config) =>
         const kill = killVerdict(call.command, running, config.server)
         if (kill._tag === "Deny") return yield* refuse(kill.reason)
         // A Chrome the line starts is read from the line; a script's text only for a line that runs one.
-        const keychain = (launch: BareLaunch) => new KeychainPrompt({ command: call.command, reason: keychainReason(launch) })
-        for (const launch of bareLaunches(call.command, place)) return yield* keychain(launch)
-        for (const run of runtimeRuns(call.command, place)) {
-          const text = yield* Match.valueTags(run.ran, { Inline: ({ code }) => Effect.succeed(Option.some(code)), ScriptFile: ({ path }) => scripts.text(path) })
-          const launch = Option.flatMap(text, (code) => scriptLaunch(run, code))
-          if (Option.isSome(launch)) return yield* keychain(launch.value)
-        }
+        const launch = yield* keychainLaunch(call.command, place, scripts.text)
+        if (Option.isSome(launch)) return yield* new KeychainPrompt({ command: call.command, reason: keychainReason(launch.value) })
 
         const sleep = call.background === true ? undefined : sleepsTooLong(call.command)
         if (sleep === undefined) return

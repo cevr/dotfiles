@@ -5,6 +5,7 @@
 // tests/guard.test.ts runs it in OpenCode, with direct and kernel-cell calls.
 import { describe, expect, test } from "bun:test"
 import { Effect, Exit, Layer, type Scope } from "effect"
+import { MAX_CODE_DEPTH } from "@dotfiles/opencode-guard/executable"
 import * as MemoryCheckouts from "@dotfiles/opencode-guard/memory/checkouts"
 import * as MemoryLaunchers from "@dotfiles/opencode-guard/memory/launchers"
 import * as MemoryProcesses from "@dotfiles/opencode-guard/memory/processes"
@@ -223,6 +224,81 @@ describe("the guard plugin", () => {
         const { call } = yield* start({ home: HOME }, { scripts })
         expect(yield* call("shell", { command: `sh -n ${unit}/receipt.sh ${unit}/profile.sh` })).toBeUndefined()
         expect(yield* call("shell", { command: `sh ${unit}/profile.sh` })).toContain("a bisect or a run over other commits")
+      }),
+    ))
+
+  test("follows a named child only when its body supplies evidence, within the depth bound", () =>
+    scenario(
+      Effect.gen(function* () {
+        const dir = "/nonexistent/loop-probe-child"
+        const parents = {
+          [`${dir}/parent.sh`]: `#!/bin/sh\nsh ${dir}/child.sh`,
+          [`${dir}/dynamic.sh`]: '#!/bin/sh\nsh "$TARGET"',
+          [`${dir}/syntax.sh`]: `#!/bin/sh\nsh -n ${dir}/child.sh`,
+          [`${dir}/vendor.sh`]: `#!/bin/sh\n${dir}/vendor-launcher`,
+        }
+        const child = 'git switch --detach "$commit"'
+        const files = Object.fromEntries(Array.from({ length: MAX_CODE_DEPTH + 2 }, (_, index) => [`${dir}/depth-${index}.sh`, `sh ${dir}/depth-${index + 1}.sh`]))
+        const { call } = yield* start({ home: HOME }, { scripts: { ...parents, ...files, [`${dir}/depth-${MAX_CODE_DEPTH + 1}.sh`]: child, [`${dir}/child.sh`]: child, [`${dir}/$TARGET`]: child, [`${dir}/vendor-launcher`]: `#!/bin/sh\n${child}` } })
+        expect(yield* call("shell", { command: `sh ${dir}/parent.sh` })).toContain(`runs ${dir}/child.sh`)
+        expect(yield* call("shell", { command: `sh ${dir}/vendor.sh` })).toContain(`runs ${dir}/vendor-launcher`)
+        expect(yield* call("shell", { command: `sh ${dir}/dynamic.sh` })).toBeUndefined()
+        expect(yield* call("shell", { command: `sh ${dir}/syntax.sh` })).toBeUndefined()
+        expect(yield* call("shell", { command: `sh ${dir}/depth-0.sh` })).toBeUndefined()
+        expect(yield* call("shell", { command: `sh ${dir}/depth-1.sh` })).toContain(`depth-${MAX_CODE_DEPTH + 1}.sh`)
+
+        const missing = yield* start({ home: HOME }, { scripts: parents })
+        expect(yield* missing.call("shell", { command: `sh ${dir}/parent.sh` })).toBeUndefined()
+        const inert = yield* start({ home: HOME }, { scripts: { ...parents, [`${dir}/child.sh`]: "git log --oneline" } })
+        expect(yield* inert.call("shell", { command: `sh ${dir}/parent.sh` })).toBeUndefined()
+      }),
+    ))
+
+  test("wrappers, startup modules, and entry points share one evidence rule", () =>
+    scenario(
+      Effect.gen(function* () {
+        const dir = "/nonexistent/loop-probe-execution"
+        const source = (name: string) => `${dir}/${name}`
+        const revision = `require('node:child_process').spawnSync('git', ['switch', '--detach', 'fixture-old'])`
+        const inert = "const value = 'git switch --detach fixture-old'"
+        const variants = [
+          `node --title ${source("inert.js")} --require ${source("first.cjs")} --import=${source("second.mjs")} ${source("app.js")}`,
+          `node -r${source("first.cjs")} --conditions=fixture --loader ${source("second.mjs")} ${source("app.js")}`,
+          `env NODE_OPTIONS='--require ${source("first.cjs")} --import ${source("second.mjs")}' node ${source("app.js")}`,
+          `NODE_OPTIONS='--loader=${source("first.cjs")}' node --require ${source("second.mjs")} ${source("app.js")}`,
+          `bun --cwd ${dir} --preload ${source("first.cjs")} --preload=${source("second.mjs")} run ${source("app.js")}`,
+          `node --unknown-module ${source("first.cjs")} --import ${source("second.mjs")} ${source("app.js")}`,
+        ]
+        const wrapperChains = ["", "nice -n 19 ", "command -p env A=B ", "time exec nice -n 19 ", "cat /nonexistent/loop-probe-input | xargs -r "]
+        const quiet = { [source("first.cjs")]: inert, [source("second.mjs")]: inert, [source("app.js")]: inert, [source("inert.js")]: revision }
+        const allowed = yield* start({ home: HOME }, { scripts: quiet })
+        for (const filename of ["first.cjs", "second.mjs", "app.js"]) {
+          const { call } = yield* start({ home: HOME }, { scripts: { ...quiet, [source(filename)]: revision } })
+          for (const wrapper of wrapperChains) {
+            for (const runtime of variants) {
+              const line = `${wrapper}${runtime}`
+              expect([line, yield* call("shell", { command: line })]).toEqual([line, expect.stringContaining(`runs ${source(filename)}`)])
+              expect(yield* allowed.call("shell", { command: line })).toBeUndefined()
+              if (!wrapper.includes("|")) {
+                const shim = "$HOME/Developer/personal/dotfiles/claude/bin/chrome-mock-keychain"
+                expect(yield* call("shell", { command: `export CHROME="${shim}"; ${line}` })).toBeUndefined()
+              }
+            }
+          }
+        }
+        const paths = yield* start({ home: HOME }, { scripts: { [source("walk.sh")]: "git switch --detach fixture-old", [source("fixture.py")]: "import subprocess\nsubprocess.run(['git', 'switch', '--detach', 'fixture-old'])" } })
+        expect(yield* paths.call("shell", { command: `printf '%s\\n' '${source("walk.sh")}' | xargs sh` })).toContain(source("walk.sh"))
+        expect(yield* paths.call("shell", { command: `printf '%s\\n' '${source("walk.sh")}' | xargs -I '{}' sh '{}'` })).toContain(source("walk.sh"))
+        expect(yield* paths.call("shell", { command: `cat /nonexistent/loop-probe-input | xargs -I '{}' sh ${source("walk.sh")} '{}'` })).toContain(source("walk.sh"))
+        expect(yield* paths.call("shell", { command: "cat /nonexistent/loop-probe-input | xargs -I '{}' sh '{}'" })).toBeUndefined()
+        expect(yield* paths.call("shell", { command: `cd ${dir} && python3 -m fixture` })).toContain(source("fixture.py"))
+        expect(yield* paths.call("shell", { command: `python -c "import os; os.system('git switch --detach fixture-old')"` })).toContain("its inline script")
+        expect(yield* paths.call("shell", { command: `python -c "print('git switch --detach fixture-old')"` })).toBeUndefined()
+        expect(yield* paths.call("shell", { command: `sh -c 'git switch --detach fixture-old'` })).toContain("guard-keychain:")
+        const nodeCheck = yield* start({ home: HOME }, { scripts: { ...quiet, [source("first.cjs")]: revision, [source("app.js")]: revision } })
+        expect(yield* nodeCheck.call("shell", { command: `node --check ${source("app.js")}` })).toBeUndefined()
+        expect(yield* nodeCheck.call("shell", { command: `node --check --require ${source("first.cjs")} ${source("app.js")}` })).toContain(source("first.cjs"))
+        expect(yield* nodeCheck.call("shell", { command: `NODE_OPTIONS='-r ${source("first.cjs")}' node -c ${source("app.js")}` })).toContain(source("first.cjs"))
       }),
     ))
 
