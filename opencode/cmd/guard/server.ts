@@ -27,7 +27,7 @@
  * line that starts a Chrome with a DevTools port or headless and without
  * `--use-mock-keychain --password-store=basic`, or runs a script (`bun x.ts`,
  * `node x.mjs`, `bun -e`) whose text does: such a Chrome puts a keychain
- * dialog on the owner's screen, and the refusal names `scripts/chrome.ts`
+ * dialog on the owner's screen, and the refusal points to Playwright or browse
  * (`@dotfiles/opencode-guard/chrome`); the script is read from disk only for
  * a line that runs one. Everything else runs untouched.
  *
