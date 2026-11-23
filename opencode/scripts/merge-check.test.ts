@@ -208,12 +208,16 @@ describe("the merge check's tests", () => {
     }),
   )
 
-  live("an unrelated diff runs none: source no scripts/ test imports or reads, which the land's round gate tested; its tests run only the git-repo guard and the tests that read every test source; mod source runs only the tests that read mods/", () =>
+  live("an unrelated diff runs none; TypeScript source runs its readers, and a test also runs the git-repo guard", () =>
     Effect.gen(function* () {
       const { expected, found, importers, tests } = yield* tree
       // Pins: source no scripts/ test imports or reads selects none, and an empty diff none.
-      expect(tests("M\tdecider/tui-clock.ts\n")).toEqual([])
+      expect(tests("M\tREADME.txt\n")).toEqual([])
       expect(tests("")).toEqual([])
+      // The timing guard resolves imported literals: a declaration can change a runner cap without a test-file diff.
+      const clock = "decider/tui-clock.ts"
+      expect(tests(`M\t${clock}\n`)).toEqual(found(clock))
+      expect(tests(`M\t${clock}\n`)).toContain("scripts/wall-clock-assertions.test.ts")
       // Pins: its test runs the git-repo guard, beside the tests that read every test source (required-inputs.test's @reads).
       expect(tests("M\tdecider/tui-clock.ts\nM\tdecider/tui-clock.test.ts\n")).toEqual(expected([GIT_REPO_GUARD], "decider/tui-clock.ts", "decider/tui-clock.test.ts"))
       // Pins: mod source no scripts/ test imports runs only its readers, layout.test among them.
@@ -242,7 +246,7 @@ describe("the merge check's tests", () => {
       const both = "M\ttests/parity.json\nM\tscripts/link-fork.ts\n"
       expect(ran(both)).toEqual([...tests(both)])
       for (const test of [...ACCEPT_TESTS, "scripts/link-fork.test.ts"]) expect(ran(both)).toContain(test)
-      const none = legs("M\tdecider/tui-clock.ts\n")
+      const none = legs("M\tREADME.txt\n")
       expect(none.map((leg) => leg.name)).toEqual(["lint", "debt", "types", "tests"])
       expect(none.filter((leg) => leg.name === "tests").map((leg) => leg.argv)).toEqual([["true"]])
     }),
