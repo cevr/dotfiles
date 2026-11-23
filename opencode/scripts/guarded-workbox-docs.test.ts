@@ -1,5 +1,5 @@
-// The repository's Markdown docs plus shell entry points the Python fixture inspects.
-// @reads ../README.md ../**/*.{md,mdx,rst,org,adoc,markdown} **/*.{md,mdx,rst,org,adoc,markdown} ../**/*.sh **/*.sh ../workbox/bin/** ../linux/hetzner-workbox/**
+// Markup docs, provisioning text docs, and shell entry points the fixture inspects.
+// @reads ../README.md ../**/*.{md,mdx,rst,org,adoc,markdown} **/*.{md,mdx,rst,org,adoc,markdown} ../**/*.sh **/*.sh ../workbox/bin/** ../workbox/**/*.txt ../linux/hetzner-workbox/**
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Effect, Stream } from "effect"
 import { expect, it } from "effect-bun-test"
