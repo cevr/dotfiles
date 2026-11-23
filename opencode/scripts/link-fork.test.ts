@@ -217,23 +217,23 @@ describe("link-fork, the fork's Node platform", () => {
   }
   const present = (scope: string) => PLATFORM.map((name) => existsSync(join(scope, name, "package.json")))
 
-  test("is linked into the record CLI's package alone: a plugin takes files, paths and processes from its host", () => {
+  test("is linked into no package: a plugin takes files, paths and processes from its host, the record CLI composes platform-bun", () => {
     const { plugin, cli } = platformed()
     expect(run(fork)).toMatchObject({ code: 0 })
-    expect({ cli: present(cli), plugin: present(plugin), other: present(join(workspace, "mods/a/node_modules/@effect")) }).toEqual({ cli: [true, true], plugin: [false, false], other: [false, false] })
-    expect(realpathSync(join(cli, "platform-node"))).toBe(realpathSync(join(fork, "packages/util/node_modules/@effect/platform-node")))
+    expect({ cli: present(cli), plugin: present(plugin), other: present(join(workspace, "mods/a/node_modules/@effect")) }).toEqual({ cli: [false, false], plugin: [false, false], other: [false, false] })
   })
 
-  test("a link of ours an older run made into a plugin's package is removed; one Bun installed there is left", () => {
-    const { plugin } = platformed()
-    expect(run(fork)).toMatchObject({ code: 0 })
-    // As the older run linked it: through the anchor, into the plugin's package.
-    const anchorText = readlinkSync(join(workspace, "cmd/orchestrate/node_modules/@effect/platform-node"))
-    mkdirSync(plugin, { recursive: true })
-    symlinkSync(anchorText, join(plugin, "platform-node"))
+  test("a link of ours an older run made into a package is removed; one Bun installed there is left", () => {
+    const { plugin, cli } = platformed()
+    // As an older run linked them: through the anchors folder, into the plugin's and the record CLI's packages.
+    const older = join(scratch, "state/opencode-fork/x/modules/../../util/node_modules/@effect/platform-node")
+    for (const scope of [plugin, cli]) {
+      mkdirSync(scope, { recursive: true })
+      symlinkSync(older, join(scope, "platform-node"))
+    }
     file(join(plugin, "platform-node-shared/package.json"))
     expect(run(fork)).toMatchObject({ code: 0 })
-    expect([existsSync(join(plugin, "platform-node")), lstatSync(join(plugin, "platform-node-shared")).isDirectory()]).toEqual([false, true])
+    expect([existsSync(join(plugin, "platform-node")), lstatSync(join(cli, "platform-node"), { throwIfNoEntry: false }) === undefined, lstatSync(join(plugin, "platform-node-shared")).isDirectory()]).toEqual([false, true, true])
   })
 })
 

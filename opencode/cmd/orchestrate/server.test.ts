@@ -2275,6 +2275,6 @@ describe("the server's runtime graph", () => {
   })
 
   test("the record CLI composes that platform itself, so the walk would see one", () => {
-    expect([...reachOf(join(HERE, "record.ts"))].filter((each) => each.startsWith("@effect/platform-node"))).toEqual(["@effect/platform-node/NodeServices"])
+    expect([...reachOf(join(HERE, "record.ts"))].filter((each) => each.startsWith("@effect/platform"))).toEqual(["@effect/platform-bun/BunServices"])
   })
 })

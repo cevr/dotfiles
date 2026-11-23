@@ -88,10 +88,8 @@ const ours = (link: string | undefined): link is string =>
 /** The fork's Effect platform packages, built on the same `effect` the TUI's modules link: sim/ reads files through them. */
 const PLATFORM = "packages/util/node_modules/@effect"
 const platformModules = path.normalize(PLATFORM) + path.sep
-/** The fork's Node platform packages a plugin may provide: files, paths and processes on the plugin's own `effect`. */
+/** The fork's Node platform packages, which no package is linked to (an older run linked them): removed where found. */
 const PLATFORM_PACKAGES = ["platform-node", "platform-node-shared"]
-/** The packages that compose that platform themselves: processes the plugin host does not run. */
-const PLATFORM_HOSTS: ReadonlyArray<string> = ["cmd/orchestrate"]
 
 /** Removes the links of ours in `dir` (one level into scopes) that point nowhere. */
 const prune = (dir: string) => {
@@ -141,11 +139,8 @@ for (const dir of packages) {
     merge(platform, path.join(modules, "@effect"))
   }
   if (path.basename(dir) === "sim-tui") for (const [name, under] of SIM_TUI) linkThrough(path.join(modules, name), under)
-  // Only a process outside the plugin host composes the fork's Node platform itself (the record CLI,
-  // cmd/orchestrate/record.ts): linked through the anchor, so a synced link resolves on each machine. A plugin gets
-  // files, paths and processes from the host, so every other package loses a link of ours an older run made.
-  else if (PLATFORM_HOSTS.includes(path.relative(root, dir)) && existsSync(platform))
-    for (const name of PLATFORM_PACKAGES) linkThrough(path.join(modules, "@effect", name), `../../util/node_modules/@effect/${name}`)
+  // No package gets the fork's Node platform: a plugin takes files, paths and processes from its host, and a plain-Bun
+  // command (the record CLI) composes @effect/platform-bun from the install. A link of ours an older run made goes.
   else if (path.basename(dir) !== "sim") for (const name of PLATFORM_PACKAGES) unlinkOurs(path.join(modules, "@effect", name))
 }
 

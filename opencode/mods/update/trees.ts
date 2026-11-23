@@ -155,6 +155,19 @@ export const COMMANDS: ReadonlyArray<Command> = [
       { args: ["list", "--db", "$SCRATCH/memory.db"], exit: 0, says: "no notes" },
     ],
   },
+  {
+    path: "cmd/orchestrate/record.ts",
+    packages: ["effect", "@effect/platform-bun"],
+    probes: [
+      { args: [], exit: 1, says: "usage: bun cmd/orchestrate/record.ts <action>" },
+      // A write on a scratch record: the SQLite store, the platform's files and the evidence layer, on the tree's install.
+      {
+        args: ["add", "--json", '{"source_kind":"plan-part","source_ref":"probe:1","parts":[{"id":"a1","title":"one"}]}', "--file", "$SCRATCH/record.db", "--checkout", "$SCRATCH"],
+        exit: 0,
+        says: "commitments: added a1. Unowned until assigned: a1.",
+      },
+    ],
+  },
   // Its commands drive Rex, a separate prerequisite: outside a Rex pane it refuses.
   { path: "cmd/rex/show.ts", packages: ["effect", "pele"], probes: [{ args: [], exit: 2, says: "rex-show: no command" }] },
   // Without its settings it gives up before any step.

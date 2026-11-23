@@ -14,7 +14,7 @@
  * With no lanes list here, no owner reads as gone: `orphaned` is the plugin's word (status, land, the queue check).
  */
 import { parseArgs } from "node:util"
-import * as NodeServices from "@effect/platform-node/NodeServices"
+import * as BunServices from "@effect/platform-bun/BunServices"
 import { Clock, Console, Effect, Layer, Match, Option, Schema } from "effect"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { redact } from "@dotfiles/opencode-digest/redact"
@@ -119,7 +119,7 @@ const fileOf = (call: Call) =>
  * The host this CLI runs on: its files, paths and processes (a process outside the plugin host composes them itself),
  * and the plugin's digest. The CLI's platform alone: the server's graph never reaches it (server.test.ts).
  */
-const HOST = Layer.mergeAll(NodeServices.layer, platform)
+const HOST = Layer.mergeAll(BunServices.layer, platform)
 
 /** The record `call` runs on: read-only for a read. */
 const recordOf = (call: Call) =>
