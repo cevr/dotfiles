@@ -116,7 +116,7 @@ describe("the pool transport", () => {
   })
 
   test("pace: the live pool's no, then the eval accounts' own readings, stop the run", async () => {
-    const wait: Pace = { ok: false, measured: true, reason: "the pool's weekly pace is over", retryAt: NOW + HOUR }
+    const wait: Pace = { ok: false, measured: true, reason: "the pool's weekly pace is over", reasonCode: "even-line", retryAt: NOW + HOUR }
     const told = new Pool({ source: source(["store:a"]), live: live([account("store:a")], wait), now: () => NOW })
     expect(await told.pace()).toMatchObject({ ok: false, reason: "live pool: the pool's weekly pace is over" })
 

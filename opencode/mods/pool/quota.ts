@@ -1,7 +1,7 @@
 // A provider's quota as its auth plugin reads it: each window's use and
 // reset, and why the provider refuses an account, if it does. The pool reads
 // it over the quota protocol (opencode/quota.ts) and checks it here field by field.
-import { Schema } from "effect"
+import { Option, Schema } from "effect"
 
 export const QuotaStatus = Schema.Literals(["allowed", "allowed_warning", "rejected"])
 export type QuotaStatus = typeof QuotaStatus.Type
@@ -144,8 +144,14 @@ export type ClaimOutcome = typeof ClaimOutcome.Type
 export const ClaimAnswer = Schema.Struct({ outcome: ClaimOutcome, message: Schema.optionalKey(Schema.String) })
 export type ClaimAnswer = typeof ClaimAnswer.Type
 
+/** Two successful snapshots distinguish an unreported scope from a single incomplete usage response. */
+export const SCOPE_REPORT_SAMPLES = 2
+const UsageEvidence = Schema.Struct({ at: Schema.Finite, samples: Schema.Literals([1, SCOPE_REPORT_SAMPLES]) })
+
 export const QuotaReading = Schema.Struct({
   at: Schema.Number,
+  /** The latest successful usage endpoint sample and the number of distinct confirmed samples (capped at two). */
+  usage: Schema.optionalKey(UsageEvidence),
   status: Schema.optionalKey(QuotaStatus),
   windows: Schema.Array(QuotaWindow),
   refusal: Schema.optionalKey(QuotaRefusal),
@@ -176,21 +182,45 @@ export const limitsModel = (scope: string, modelID: string): boolean => {
     .every((word) => id.includes(word))
 }
 
+/** The provider's declared model limits, before we have read any account. Other scopes are learned from usage. */
+export const DEFINED_MODEL_WINDOWS = ["7d:Fable"] as const
+
+const usageEvidence = (previous: Option.Option<typeof UsageEvidence.Type>, incoming: Option.Option<typeof UsageEvidence.Type>) =>
+  Option.match(previous, {
+    onNone: () => incoming,
+    onSome: (held) => incoming.pipe(
+      Option.filter((next) => next.at > held.at),
+      Option.map((next) => UsageEvidence.make({ at: next.at, samples: SCOPE_REPORT_SAMPLES })),
+      Option.orElse(() => previous),
+    ),
+  })
+
 /**
  * A reading taken over `held`: the windows scoped to one model and the
  * resets that only a usage endpoint reads are kept from `held` while the new
- * reading has none of its own (a response's headers carry neither), and a
- * kept window only until it resets.
+ * reading has none of its own (a response's headers carry neither). The
+ * window's existence outlives its reading: an old time or a passed reset
+ * makes it unusable as evidence, not an optional limit.
  */
-export const carryOver = (held: QuotaReading | undefined, next: QuotaReading, now: number): QuotaReading => {
+export const carryOver = (held: QuotaReading | undefined, next: QuotaReading): QuotaReading => {
   if (held === undefined) return next
   const named = new Set(next.windows.map((window) => window.name))
   // Carried windows and resets keep the time they were read: a claim no one asked for needs each fresh (resets.ts `freshView`).
   const kept = held.windows
-    .filter((window) => !accountWide(window) && !named.has(window.name) && window.resetAt !== undefined && window.resetAt > now)
-    .map((window) => ({ at: window.at ?? held.at, ...window }))
-  const resets = next.resets === undefined && held.resets !== undefined ? { resets: { at: held.resets.at ?? held.at, ...held.resets } } : {}
-  return kept.length === 0 && Object.keys(resets).length === 0 ? next : { ...next, windows: [...next.windows, ...kept], ...resets }
+    .filter((window) => !accountWide(window) && !named.has(window.name))
+    .map((window) => ({ ...window, at: window.at ?? held.at }))
+  const resets = Option.fromUndefinedOr(held.resets).pipe(
+    Option.filter(() => Option.isNone(Option.fromUndefinedOr(next.resets))),
+    Option.map((resets) => ({ ...resets, at: Option.getOrElse(Option.fromUndefinedOr(resets.at), () => held.at) })),
+  )
+  const usage = usageEvidence(Option.fromUndefinedOr(held.usage), Option.fromUndefinedOr(next.usage))
+  if (kept.length === 0 && Option.isNone(resets) && Option.isNone(usage)) return next
+  return {
+    ...next,
+    windows: [...next.windows, ...kept],
+    ...Option.match(resets, { onNone: () => ({}), onSome: (resets) => ({ resets }) }),
+    ...Option.match(usage, { onNone: () => ({}), onSome: (usage) => ({ usage }) }),
+  }
 }
 
 const isRefusalKind = Schema.is(RefusalKind)
@@ -198,6 +228,8 @@ const isStatus = Schema.is(QuotaStatus)
 const isKind = Schema.is(ResetKind)
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value)
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null
+
+const asUsage = Schema.decodeUnknownOption(UsageEvidence)
 
 /** Resets from another plugin, checked field by field; a malformed credit is left out. */
 const asResets = (value: unknown): QuotaResets | undefined => {
@@ -252,8 +284,10 @@ export function asReading(value: unknown): QuotaReading | undefined {
   const refusal = value.refusal
   const status = value.status
   const resets = asResets(value.resets)
+  const usage = asUsage(value.usage)
   return {
     at: value.at,
+    ...Option.match(usage, { onNone: () => ({}), onSome: (usage) => ({ usage }) }),
     ...(isStatus(status) ? { status } : {}),
     windows,
     ...(isRecord(refusal) && isRefusalKind(refusal.kind)

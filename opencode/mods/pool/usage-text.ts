@@ -20,6 +20,9 @@ export const perHour = (share: number, of: string, digits = 2) => `${(share * 10
 /** A time as the owner reads it: `2026-11-15 18:00Z`. */
 export const iso = (at: number) => `${DateTime.formatIso(DateTime.makeUnsafe(at)).slice(0, 16).replace("T", " ")}Z`
 
+/** A retry time retains seconds and fractions: truncating to minutes can name a time already passed. */
+export const tryAgainAt = (at: number) => `it may go again at ${DateTime.formatIso(DateTime.makeUnsafe(at))}`
+
 /** A word by count: `one` for exactly 1, else `many`. */
 export const byCount = (count: number, one: string, many: string) =>
   Match.value(count).pipe(
