@@ -8,6 +8,7 @@ import * as BunServices from "@effect/platform-bun/BunServices"
 import { Array as Arr, Clock, Config, Console, Context, Duration, Effect, FileSystem, Layer, Option, Path, Ref, Result, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { TestClock } from "effect/testing"
 import { gitClone, gitInit, withProcessEnv } from "../tests/git-repo.ts"
 import {
   type Case,
@@ -453,28 +454,34 @@ describe("a run of the checks", () => {
     }),
   )
 
-  // The waits on the real clock with the poll and the wait cut to milliseconds; LIMITS holds the 15 s and 30 min.
-  const waiting = it.scopedLive.layer(Layer.merge(fakeLayer, BunServices.layer))
+  // Advance each poll on the test clock; a descheduled fiber cannot spend the wait in one sample.
   const SHORT: Limits = { ...LIMITS, everyMs: 5, waitMs: 60 }
+  const checkWaiting = (input: Input, over: Fakes) =>
+    Effect.gen(function* () {
+      const clock = yield* Clock.Clock
+      return yield* checkWith({ ...input, limits: SHORT }, over).pipe(
+        Effect.provideService(Clock.Clock, { ...clock, sleep: TestClock.adjust }),
+      )
+    })
 
   test("the limits: load 24, a 15 s poll and a 30 min wait, a 40 min bound, a 6 GiB floor, width 4", () =>
     Effect.sync(() => expect(LIMITS).toEqual({ maxLoad: 24, waitMs: 30 * 60_000, everyMs: 15_000, timeBoundMs: 40 * 60_000, diskFloor: 6 * 2 ** 30, threads: 4 })),
   )
 
-  waiting("could not run: the load stays over 24 for the wait, and nothing runs", () =>
+  test("could not run: the load stays over 24 for the wait, and nothing runs", () =>
     Effect.gen(function* () {
       const { input } = yield* fakeFork(["test/a.test.ts"])
-      const { verdict, runs, reads } = yield* checkWith({ ...input, limits: SHORT }, { loads: [30] })
+      const { verdict, runs, reads } = yield* checkWaiting(input, { loads: [30] })
       expect(verdict).toMatchObject({ kind: "could-not-run", reason: "the calm-host wait (0.001 min, every wait together) was spent before packages/x ran: the 1-minute load stayed over 24" })
       expect(runs).toEqual([])
-      expect(reads).toBeGreaterThan(2)
+      expect(reads).toBe(1 + SHORT.waitMs / SHORT.everyMs)
     }),
   )
 
-  waiting("waits while the load is over 24, then runs", () =>
+  test("waits while the load is over 24, then runs", () =>
     Effect.gen(function* () {
       const { input } = yield* fakeFork(["test/a.test.ts"])
-      const { verdict, runs, reads } = yield* checkWith({ ...input, limits: SHORT }, { loads: [30, 25, 12] })
+      const { verdict, runs, reads } = yield* checkWaiting(input, { loads: [30, 25, 12] })
       expect(verdict).toEqual({ kind: "green", notes: [] })
       expect(runs.length).toBe(1)
       expect(reads).toBe(3)
@@ -489,10 +496,10 @@ describe("a run of the checks", () => {
     }),
   )
 
-  waiting("could not run: another run holds the lock past the wait", () =>
+  test("could not run: another run holds the lock past the wait", () =>
     Effect.gen(function* () {
       const { input } = yield* fakeFork(["test/a.test.ts"])
-      const { verdict, runs } = yield* checkWith({ ...input, limits: SHORT }, { free: false })
+      const { verdict, runs } = yield* checkWaiting(input, { free: false })
       expect(verdict).toMatchObject({ kind: "could-not-run", reason: expect.stringContaining("held the host's lock") })
       expect(runs).toEqual([])
     }),

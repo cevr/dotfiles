@@ -95,13 +95,13 @@ describe("the acceptance files", () => {
   })
 
   test("the files the survey judged: those that measure are marked, those that only wait for events are not", () => {
-    // Measured: setup CPU, paints a second, a refresh's duration, the dock's settle time, a stop check's
+    // Measured: setup CPU, paints a second, the dock's settle time, a stop check's
     // requests within 6.5 s, a 1 s stall under the 2 s threshold. The rest wait for events under
     // generous deadlines (herdr's release among them, since the scenario waits for it).
     const judged = {
       "tests/plugin-start.test.ts": true,
       "tests/tui-paint.test.ts": true,
-      "tests/pool-store-refresh.test.ts": true,
+      "tests/pool-store-refresh.test.ts": false,
       "tests/dock-reconnect.test.ts": true,
       "tests/escape-send.test.ts": true,
       "tests/prime-escape.test.ts": true,
@@ -367,6 +367,39 @@ describe("the acceptance tiers over the real tree", () => {
  */
 const GRANDCHILD = '  const child = Bun.spawn(["/bin/sh", "-c", "sleep 120 & wait"], { detached: true, stdout: "ignore" })'
 
+/** The stand-in publishes its group ids before it can be stopped. The probe runs at the open/write boundary. */
+const GROUP_WRITER = [
+  'import { closeSync, fsyncSync, openSync, renameSync } from "node:fs"',
+  "function publishGroups(target: string, groups: ReadonlyArray<number>, opened = () => {}) {",
+  '  const staged = `${target}.${process.pid}.tmp`',
+  '  const fd = openSync(staged, "w")',
+  "  try {",
+  "    opened()",
+  "    writeFileSync(fd, JSON.stringify(groups))",
+  "    fsyncSync(fd)",
+  "  } finally {",
+  "    closeSync(fd)",
+  "  }",
+  "  renameSync(staged, target)",
+  "}",
+].join("\n")
+
+test("a stand-in's group ids are absent or complete even while a new list is being written", () => {
+  using dir = scratch("accept-groups-")
+  const script = join(dir.path, "publish.ts")
+  writeFileSync(script, [
+    'import { existsSync, readFileSync, writeFileSync } from "node:fs"',
+    GROUP_WRITER,
+    `const target = ${JSON.stringify(join(dir.path, "groups.json"))}`,
+    'const read = () => console.log(existsSync(target) ? JSON.parse(readFileSync(target, "utf8")).join(",") : "absent")',
+    "publishGroups(target, [1, 2], read)",
+    "publishGroups(target, [3, 4], read)",
+    "read()",
+  ].join("\n"))
+  const ran = Bun.spawnSync([process.execPath, script], { cwd: dir.path, stdout: "pipe", stderr: "pipe" })
+  expect({ code: ran.exitCode, out: linesOf(ran.stdout.toString()).filter(Boolean), err: ran.stderr.toString() }).toEqual({ code: 0, out: ["absent", "1,2", "3,4"], err: "" })
+})
+
 /** Three stand-in acceptance files: one passes in 1 s, one fails, one sleeps 120 s beside a process group of its own with a grandchild in it. */
 const STAND_INS = {
   "pass.test.ts": 'import { expect, test } from "bun:test"\ntest("passes", async () => {\n  await Bun.sleep(1000)\n  expect(1).toBe(1)\n})\n',
@@ -375,9 +408,10 @@ const STAND_INS = {
     'import { test } from "bun:test"',
     'import { writeFileSync } from "node:fs"',
     'import { join } from "node:path"',
+    GROUP_WRITER,
     'test("sleeps", async () => {',
     GRANDCHILD,
-    '  writeFileSync(join(import.meta.dir, "groups.json"), JSON.stringify([process.pid, child.pid]))',
+    '  publishGroups(join(import.meta.dir, "groups.json"), [process.pid, child.pid])',
     "  await Bun.sleep(120_000)",
     "})",
     "",
@@ -433,12 +467,13 @@ const DEEP_STAND_INS = {
     'import { test } from "bun:test"',
     'import { existsSync, writeFileSync } from "node:fs"',
     'import { join } from "node:path"',
+    GROUP_WRITER,
     'const dir = process.env.YIELD_DIR ?? ""',
     'test("sleeps", async () => {',
     '  const first = !existsSync(join(dir, "slept"))',
     '  writeFileSync(join(dir, "slept"), "")',
     GRANDCHILD,
-    '  writeFileSync(join(dir, "groups.json"), JSON.stringify([process.pid, child.pid]))',
+    '  publishGroups(join(dir, "groups.json"), [process.pid, child.pid])',
     "  await Bun.sleep((first && 60_000) || 1000)",
     "  process.kill(-child.pid, \"SIGKILL\")",
     "})",

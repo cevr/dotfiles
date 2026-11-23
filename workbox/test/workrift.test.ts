@@ -8,6 +8,7 @@
 // bases. Nothing here touches the real host: every path is under the scratch.
 import { afterAll, describe, expect, test } from "bun:test"
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
+import { rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, dirname, join } from "node:path"
 
@@ -17,7 +18,9 @@ const SCRIPT = process.env.WORKRIFT_SCRIPT ?? join(repo, "workbox/bin/workrift")
 const WORK_BIN = process.env.WORK_BIN ?? Bun.which("work") ?? undefined
 
 const scratchRoot = realpathSync(mkdtempSync(join(tmpdir(), "workrift-test-")))
-afterAll(() => rmSync(scratchRoot, { recursive: true, force: true }))
+// Hang guard, not a cleanup performance requirement. This tree holds every workspace the suite created.
+const CLEANUP_HANG_GUARD_MS = 120_000
+afterAll(() => rm(scratchRoot, { recursive: true, force: true }), CLEANUP_HANG_GUARD_MS)
 let scratchCount = 0
 
 type Env = Record<string, string>

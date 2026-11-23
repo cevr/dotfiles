@@ -1,0 +1,11 @@
+[
+  {"file":"opencode/mods/pool/memory/fleet-claims.test.ts","assertion":"expect(Date.now() - started).toBeGreaterThanOrEqual(WAIT_MS)","count":1,"why":"Real scheduling cannot falsify this minimum lease wait by being slower."},
+  {"file":"opencode/mods/wake/process/checks.test.ts","assertion":"expect(Date.now() - started).toBeLessThan(5000)","count":2,"why":"Existing cancellation-test timers; durable-job-events owns these files and should replace the durations with exit/group-death events."},
+  {"file":"opencode/mods/work/process/land-receipts.test.ts","assertion":"expect(seconds).toBeLessThan(60)","count":1,"why":"Explicit end-to-end land performance contract in the landing spec, not a hang guard."},
+  {"file":"opencode/scripts/accept.test.ts","assertion":"resumedIn < 2000","count":1,"why":"Explicit lock-resumption latency contract; only evaluated by tests/accept-clock.test.ts in the serialized acceptance tier."},
+  {"file":"opencode/tests/dock-reconnect.test.ts","assertion":"expect(Date.now() - activeServedAt, `${name}: ms from the TUI's first answered read of what runs until the dock settled`).toBeLessThan(SETTLE_MS)","count":1,"why":"Explicit dock recovery latency contract; serialized acceptance test."},
+  {"file":"opencode/tests/service.test.ts","assertion":"expect(Date.now() - started).toBeLessThan(5_000)","count":1,"why":"Explicit failed-boot reporting latency contract; serialized acceptance test."},
+  {"file":"workbox/test/workrift.test.ts","assertion":"expect(Date.now() - started).toBeLessThan(15_000)","count":1,"why":"Reserved create-under-load describe. Workrift-subvolume owns the change to a kill-to-lock ordering assertion and hang guard."},
+  {"file":"workbox/test/workrift.test.ts","assertion":"expect(Date.now() - t0).toBeGreaterThan(1500)","count":1,"why":"Reserved older-workrift describe. Workrift-subvolume owns the kernel-waiter precedence change."},
+  {"file":"workbox/test/workrift.test.ts","assertion":"expect(Date.now() - t0).toBeLessThan(15_000)","count":1,"why":"Reserved older-workrift describe. Workrift-subvolume owns replacing the bound with proof of entry while stale tickets remain locked."}
+]

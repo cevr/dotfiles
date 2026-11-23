@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Exit, type Scope } from "effect"
+import { Effect, Exit, Fiber, Latch, type Scope } from "effect"
+import { TestClock } from "effect/testing"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -16,11 +17,11 @@ const scratch = Effect.acquireRelease(
 )
 
 /** A fake herdr listening in a scratch directory, for the scope's lifetime. */
-const served = Effect.gen(function* () {
+const served = (onRequest: () => void = () => {}) => Effect.gen(function* () {
   const path = join(yield* scratch, "herdr.sock")
   return yield* Effect.acquireRelease(
     Effect.suspend(() => {
-      const server = listen(path)
+      const server = listen(path, onRequest)
       return "failed" in server ? Effect.die(server.failed) : Effect.succeed(server)
     }),
     (server) => Effect.sync(server.stop),
@@ -28,10 +29,12 @@ const served = Effect.gen(function* () {
 })
 
 const TIMEOUT = 300
+/** Hang guard for a Unix socket or fiber that never answers. Socket deadlines use TestClock. */
+const HANG_GUARD_MS = 120_000
 
 herdrLaws("socket Herdr", () =>
   Effect.gen(function* () {
-    const server = yield* served
+    const server = yield* served()
     return {
       layer: SocketHerdr.layer({ path: server.path, timeoutMillis: TIMEOUT }),
       peer: {
@@ -44,7 +47,7 @@ herdrLaws("socket Herdr", () =>
 
 const report = agentParams("w1:p1", { state: "idle", sessionId: "ses_1" }, 1)
 
-const run = <A, E>(body: Effect.Effect<A, E, Scope.Scope>) => Effect.runPromise(Effect.scoped(body))
+const run = <A, E>(body: Effect.Effect<A, E, Scope.Scope>) => Effect.runPromise(Effect.scoped(body).pipe(Effect.provide(TestClock.layer())))
 
 describe("socket Herdr", () => {
   test("a socket nobody listens on fails HerdrUnreachable at once", () =>
@@ -52,36 +55,39 @@ describe("socket Herdr", () => {
       Effect.gen(function* () {
         const dir = yield* scratch
         const herdr = yield* Herdr.pipe(Effect.provide(SocketHerdr.layer({ path: join(dir, "missing.sock"), timeoutMillis: TIMEOUT })))
-        const started = Date.now()
+        // No clock adjustment: only the failed connection, not the timeout, can complete the call.
         const exit = yield* Effect.exit(herdr.report(report))
         expect(Exit.isFailure(exit)).toBe(true)
         expect(exit).toMatchObject({ cause: { reasons: [{ error: { _tag: "HerdrUnreachable" } }] } })
-        expect(Date.now() - started).toBeLessThan(TIMEOUT)
       }),
-    ))
+    ), HANG_GUARD_MS)
 
   test("a herdr that never answers fails HerdrUnreachable after the timeout, having received the request", () =>
     run(
       Effect.gen(function* () {
-        const server = yield* served
+        const received = yield* Latch.make()
+        const server = yield* served(() => { received.openUnsafe() })
         server.answer({ kind: "silent" })
         const herdr = yield* Herdr.pipe(Effect.provide(SocketHerdr.layer({ path: server.path, timeoutMillis: TIMEOUT })))
-        const started = Date.now()
-        const exit = yield* Effect.exit(herdr.report(report))
+        const pending = yield* Effect.forkChild(herdr.report(report))
+        yield* received.await
+        yield* TestClock.adjust(TIMEOUT - 1)
+        expect(pending.pollUnsafe()).toBeUndefined()
+        yield* TestClock.adjust(1)
+        const exit = yield* Fiber.await(pending)
         expect(exit).toEqual(Exit.fail(new HerdrUnreachable({ message: `herdr did not answer pane.report_agent within ${TIMEOUT} ms` })))
-        expect(Date.now() - started).toBeGreaterThanOrEqual(TIMEOUT - 10)
         expect(server.received()).toEqual([{ method: "pane.report_agent", params: report }])
       }),
-    ))
+    ), HANG_GUARD_MS)
 
   test("one line per request, as herdr's NDJSON protocol reads it", () =>
     run(
       Effect.gen(function* () {
-        const server = yield* served
+        const server = yield* served()
         const herdr = yield* Herdr.pipe(Effect.provide(SocketHerdr.layer({ path: server.path, timeoutMillis: TIMEOUT })))
         yield* Effect.all([herdr.report(report), herdr.report({ ...report, seq: 2 })], { concurrency: 2 })
         expect(server.received().map((request) => request.params)).toContainEqual({ ...report, seq: 2 })
         expect(server.received()).toHaveLength(2)
       }),
-    ))
+    ), HANG_GUARD_MS)
 })

@@ -5,6 +5,9 @@ import { gitInit } from "../../../tests/git-repo.ts"
 import { Source } from "../service.ts"
 import * as SourceLive from "./source.ts"
 
+/** Hang guard only: installer tests run real shell and Git commands, not a latency benchmark. */
+const INSTALLER_HANG_GUARD_MS = 120_000
+
 /** Git with no config of the owner's: no signing, no hooks, a fixed identity. */
 const GIT_ENV = {
   GIT_CONFIG_NOSYSTEM: "1",
@@ -74,7 +77,7 @@ describe("the host's commands, over the checkout as it stands", () => {
           spawnSync(["rm", "-rf", root, home])
         }),
       ),
-    60_000,
+    INSTALLER_HANG_GUARD_MS,
   )
 
   /** The host's commands scripts as the repo has them, each run under `sh` from its own place. */
@@ -107,7 +110,7 @@ describe("the host's commands, over the checkout as it stands", () => {
           expect(rexShow(bare)).toBe("/nonexistent/loop-probe-x/show.ts")
           spawnSync(["rm", "-rf", treed, bare])
         }),
-      ))
+      ), INSTALLER_HANG_GUARD_MS)
 
   /**
    * A scratch live checkout and an installed tree, each with its own `workbox/install-bin.sh` that writes
@@ -139,7 +142,7 @@ describe("the host's commands, over the checkout as it stands", () => {
         expect(sh(places.home, ["cat", "ran"]).out).toBe("tree --apply")
         spawnSync(["rm", "-rf", places.dir])
       }),
-    ))
+    ), INSTALLER_HANG_GUARD_MS)
 
   test("a commands script that refuses (a file it will not install, a ~/.zshenv of the owner's) fails the commands with what it said, which the handoff logs", () =>
     Effect.runPromise(
@@ -150,7 +153,7 @@ describe("the host's commands, over the checkout as it stands", () => {
         expect(Option.map(failure, (failed) => failed.message)).toEqual(Option.some(said))
         spawnSync(["rm", "-rf", places.dir])
       }),
-    ))
+    ), INSTALLER_HANG_GUARD_MS)
 
   test("an installed tree with no workbox/ (a build from before it held one) fails the commands loudly, naming the tree, and runs the checkout's neither", () =>
     Effect.runPromise(
@@ -161,7 +164,7 @@ describe("the host's commands, over the checkout as it stands", () => {
         expect(sh(places.home, ["test", "-e", "ran"]).code).not.toBe(0)
         spawnSync(["rm", "-rf", places.dir])
       }),
-    ))
+    ), INSTALLER_HANG_GUARD_MS)
 
   test("a host with no script runs nothing", () =>
     Effect.runPromise(

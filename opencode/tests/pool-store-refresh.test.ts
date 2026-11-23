@@ -1,4 +1,3 @@
-// accept: one at a time (it bounds how long the store's refresh takes).
 // Real OpenCode (the fork, from source) with the Anthropic auth plugin and
 // the pool reading a login store, against the fake Anthropic API. Two store
 // accounts: the first one's token has expired, and the token endpoint answers
@@ -7,7 +6,7 @@
 // pool places the retry on the second account, where the turn completes with
 // no error in the transcript.
 import { afterAll, describe, expect, test } from "bun:test"
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"
@@ -62,7 +61,7 @@ describe.skipIf(!ready)("a store account whose refresh is rate-limited does not 
       const fake = startFakeAnthropic({
         accounts,
         token: (account): FakeTokenAnswer =>
-          account === "alpha" ? { kind: "rate-limited", retryAfterSeconds: 60 } : { kind: "rotate" },
+          account === "alpha" ? { kind: "rate-limited", retryAfterSeconds: 600 } : { kind: "rotate" },
         script: ({ body }: FakeRequestInfo): FakeAnswer => {
           const turn = Array.isArray(body.tools) && body.tools.length > 0
           return { kind: "ok", text: turn ? "Hello from the second store account." : "Greeting" }
@@ -102,7 +101,6 @@ describe.skipIf(!ready)("a store account whose refresh is rate-limited does not 
           ANTHROPIC_BASE_URL: fake.url,
           ...launch.env,
         }
-        const started = Date.now()
         const run = owned(
           [...launch.base, "run", "--standalone", "--dangerously-skip-permissions", "--format", "json", "say hello"],
           { cwd: join(base, "work"), env, stdout: "pipe", stderr: "pipe" },
@@ -125,8 +123,11 @@ describe.skipIf(!ready)("a store account whose refresh is rate-limited does not 
         expect(messages.length).toBeGreaterThan(0)
         expect(messages.every((request) => request.account === "beta")).toBe(true)
         expect(messages.filter((request) => request.tools > 0).map((request) => request.status)).toEqual([200])
-        // The pool failed over at once rather than waiting out alpha's pause.
-        expect(Date.now() - started).toBeLessThan(60_000)
+        // Beta served the same turn after alpha's refusal. Alpha's 10-minute pause cannot expire inside
+        // the child-run hang guard, so a scheduler delay cannot be mistaken for a failover failure.
+        expect(fake.received.findIndex((request) => request.path === "/v1/oauth/token" && request.account === "alpha")).toBeLessThan(
+          fake.received.findIndex((request) => request.path === "/v1/messages" && request.account === "beta"),
+        )
         // alpha is as the store holds it.
         expect((await logins.get("alpha"))?.access).toBe(accounts.alpha.access)
 
