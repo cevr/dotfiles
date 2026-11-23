@@ -175,6 +175,7 @@ const decodeAsk = Schema.decodeUnknownEffect(Schema.fromJsonString(ClientAsk))
 const act = (world: World.World, ask: ClientAsk) => {
   if (ask.action === "archive") return world.archive(ask.sessionID)
   if (ask.action === "cancel") return world.cancel(ask.sessionID, ask.inboxID)
+  if (ask.action === "revert") return world.revert(ask.sessionID, ask.messageID)
   return world.form
     .create(ask.sessionID, { title: "law", fields: [{ key: ask.key }] })
     .pipe(Effect.flatMap((formID) => world.form.reply(formID, { [ask.key]: ask.value })))

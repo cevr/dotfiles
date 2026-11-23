@@ -278,6 +278,8 @@ export const make = (worldOptions: WorldOptions) => {
     merge: (sessionID: string) => sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.merge(session)))),
     /** The owner moves an idle session to `directory` (host law: move): from then on that location's copies decide it. */
     move: (sessionID: string, directory: string) => sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.move(session, directory)))),
+    /** The owner commits a history-only revert at `messageID` of an idle session with no queued input. */
+    revert: (sessionID: string, messageID: string) => sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.revert(session, messageID)))),
     /** The session is deleted. */
     remove: (sessionID: string) =>
       run(Option.match(Option.fromNullishOr(host.sessions.get(sessionID)), { onNone: () => Effect.void, onSome: host.removeSession })),
