@@ -234,7 +234,7 @@ const composedPath = (called: string, args: ReadonlyArray<Node>, read: Evaluatio
 const callPath = (called: string, callee: MaybeNode, args: ReadonlyArray<Node>, read: Evaluation): Resolved => {
   if (called === "process:cwd") return fixed(CWD)
   if (called === "os:tmpdir" || SCRATCH.has(called)) return fixed(TEMP)
-  if (called === "tests/read-path.ts:externalInput") return fixed(EXTERNAL)
+  if (["tests/read-path.ts:externalInput", "scenarios/generated-input.ts:externalScenarioInput"].includes(called)) return fixed(EXTERNAL)
   if (called === "tests/read-path.ts:matchingInput") {
     const target = literalPath(read(args[1] ?? args[0]))
     if (Option.isSome(target)) return fixed(path.resolve(CWD, target.value))
@@ -427,11 +427,12 @@ const BUN_SPAWN = new Set(["bun:spawn", "bun:spawnSync", "Bun:spawn", "Bun:spawn
 const CHILD_SPAWN = new Set(["child_process:spawn", "child_process:spawnSync", "child_process:execFile", "child_process:execFileSync", "effect/process:ChildProcess:make"])
 const EXEC_SHELL = new Set(["child_process:exec", "child_process:execSync"])
 const ARGV_HELPER = new Set(["tests/owned.ts:owned", "tests/reconnect/host.ts:run"])
+const CHECKOUT_DRIVE = "tests/owned.ts:ownedDriveScenario"
 
 const MODULE_DATA = /\.(?:json|toml|txt|md)$/
 // These adapters keep process/scratch housekeeping separate from the caller's inputs.
 // Their read and spawn entrypoints are modeled at the call (including unknown argv).
-const CHECKED_HELPERS = new Set(["tests/scratch.ts", "tests/read-path.ts", "tests/owned.ts", "tests/scratch-child.ts", "tests/lint-fixture.ts", "tests/fork-launcher.ts"])
+const CHECKED_HELPERS = new Set(["tests/scratch.ts", "tests/read-path.ts", "tests/owned.ts", "tests/scratch-child.ts", "tests/lint-fixture.ts", "tests/fork-launcher.ts", "scenarios/generated-input.ts"])
 const BOUNDED_PROCESS = new Set([
   "tests/scratch-child.ts", "tests/scratch-child.ts:spawnScratchGitSync", "tests/scratch-child.ts:spawnScratchShell", "tests/owned.ts:ownedScratchShell",
   "tests/scratch-child.ts:scratchBunJUnitSync",
@@ -460,6 +461,7 @@ const BOUNDED_PROCESS = new Set([
   "tests/scratch-child.ts:spawnCheckoutBunSync",
   "tests/scratch-child.ts:checkoutBun",
   "tests/owned.ts:ownedCheckoutBun",
+  CHECKOUT_DRIVE,
   "tests/scratch-child.ts:forkServiceCommand",
   "tests/scratch-child.ts:forkProcessCommand",
   "tests/scratch-child.ts:forkFixture",
@@ -616,6 +618,12 @@ const callRead = (at: Node, syntax: Syntax, evaluate: Evaluation, record: ReadSi
     if (called !== DETACHED_CHECKOUT_BUN) checkoutBunInputs(at, args[1], evaluate, record)
     return record(at, fixed("bun.plugins/config"))
   }
+  if (called === CHECKOUT_DRIVE) {
+    const entry = literalPath(evaluate(args[0]))
+    if (Option.isNone(entry)) return record(at, opaque("nonliteral checkout scenario"))
+    record(at, fixed(entry.value))
+    return record(at, fixed("bunx.plugins/config"))
+  }
   processRead(at, called, args, evaluate, record)
   globRead(at, syntax, evaluate, record)
 }
@@ -768,7 +776,8 @@ const entrypointAt = (graph: Graph, at: Node, region: string, syntax: Syntax, ev
     graph.dynamics.set(region, [...(graph.dynamics.get(region) ?? []), { file: "lint/test-env.ts", symbol: "*" }])
     return
   }
-  const module = ownedEntry(called, args, evaluate) || checkoutBunEntry(called, args, evaluate)
+  const module = ownedEntry(called, args, evaluate) || checkoutBunEntry(called, args, evaluate) ||
+    (called === CHECKOUT_DRIVE && Option.getOrElse(literalPath(evaluate(args[0])), () => ""))
   if (module) graph.dynamics.set(region, [...(graph.dynamics.get(region) ?? []), { file: module, symbol: "@main" }])
 }
 

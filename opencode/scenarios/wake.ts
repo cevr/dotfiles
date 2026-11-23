@@ -22,9 +22,11 @@
 // `gamma`, `cancelled`, `reload-pending`, `epsilon`), a screenshot of some,
 // `wake-timeout.txt` when a wait times out, `wake-requests.json` (each model
 // request, with when it came and from which session) and `wake-transcripts.json`.
-import { Effect, Schedule, Stream } from "effect"
+import * as BunServices from "@effect/platform-bun/BunServices"
+import { Effect, FileSystem, Schedule, Stream } from "effect"
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { Llm, OpenCodeDriver } from "opencode-drive"
+import { externalScenarioInput } from "./generated-input.ts"
 import * as SimClock from "./sim-clock.ts"
 
 const root = process.cwd()
@@ -33,6 +35,11 @@ const out = process.env.SCENARIO_OUT ?? "out"
 // ── The reloadable plugin entry ──
 const wrapper = `${out}/wake-plugin`
 const revisions = `${out}/wake-plugin.log`
+const readRevisions = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  if (out === "out") return yield* fs.readFileString("out/wake-plugin.log")
+  return yield* fs.readFileString(yield* externalScenarioInput(revisions))
+}).pipe(Effect.provide(BunServices.layer))
 const entry = (rev: number) =>
   [
     `import { appendFileSync } from "node:fs"`,
@@ -190,7 +197,7 @@ export default OpenCodeDriver.use(
       yield* until((frame) => frame.includes("Epsilon alarm set.") && tray(frame).includes("1 wake"))
       yield* keep("reload-pending", true)
       writeFileSync(`${wrapper}/server.js`, entry(2))
-      yield* Effect.sync(() => readFileSync(revisions, "utf8")).pipe(
+      yield* readRevisions.pipe(
         Effect.flatMap((log) => (log.includes("rev 2") ? Effect.void : Effect.fail("not reloaded"))),
         Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 100 }),
       )

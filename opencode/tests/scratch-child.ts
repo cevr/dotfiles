@@ -236,6 +236,28 @@ export const forkTuiFixture = (
   return { ...options, command: [bun, noEnv, forkVersionOption(move.own), entry, "-s", move.session] as const }
 }
 
+/** Drive's two scenario modes, with a fixed checkout script and generated local state. */
+export const driveScenarioFixture = (entry: string, output: string, fork: string, name = "") => {
+  if (name && !/^[a-z][a-z0-9-]*$/.test(name)) return reject("invalid drive fixture name")
+  const script = matchingInput("scenarios/**/*.ts", entry)
+  const out = scratchInput(output)
+  const dev = externalInput(fork)
+  const bun = localTestProcess.execPath
+  const bin = resolve(bun, "..")
+  if (containsCheckout(bin) || containsCheckout(localTestPaths.realpathSync(bin))) return reject("checkout directory on the fixture PATH")
+  const env = {
+    PATH: `${bin}:${searchPath()}`, OPENCODE_DEV: dev, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: scratchInput(resolve(out, "media")),
+    HOME: out, TMPDIR: scratchRoot(), XDG_CONFIG_HOME: scratchInput(resolve(out, "config")),
+    XDG_DATA_HOME: scratchInput(resolve(out, "data")), XDG_STATE_HOME: scratchInput(resolve(out, "state")),
+    XDG_CACHE_HOME: scratchInput(resolve(out, "cache")),
+  }
+  const prefix = [bun, "--no-env-file", "x", "opencode-drive"]
+  if (!name) return { argv: [...prefix, "run", script], cwd: ROOT, env }
+  const db = scratchInput(resolve(out, "opencode.db"))
+  if (localTestPaths.existsSync(db) || localTestPaths.existsSync(env.XDG_DATA_HOME)) return reject("drive fixture data directory is not fresh")
+  return { argv: [...prefix, "start", "--name", name, "--dev", dev, "--script", script], cwd: ROOT, env: { ...env, OPENCODE_DRIVE_DB: db } }
+}
+
 export const forkProcessCommand = (
   input: Parameters<typeof forkFixture>, io?: Pick<ChildProcess.CommandOptions, "stdin" | "stdout" | "stderr">,
 ) => {

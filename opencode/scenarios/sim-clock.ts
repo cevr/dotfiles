@@ -15,6 +15,7 @@
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Array as Arr, Effect, FileSystem, Layer, Option, Path, Schema } from "effect"
 import { Socket } from "effect/socket"
+import { externalScenarioInput } from "./generated-input.ts"
 
 export class SimClockError extends Schema.TaggedError<SimClockError>()("SimClockError", {
   message: Schema.String,
@@ -49,13 +50,13 @@ const backendOf = Effect.fn("SimClock.backendOf")(function* (artifacts: string) 
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
   const drive = path.join(artifacts, "drive")
-  const manifests = (yield* fs.readDirectory(drive)).filter((name) => name.includes("-service-") && name.endsWith(".json"))
+  const manifests = (yield* fs.readDirectory(yield* externalScenarioInput(drive))).filter((name) => name.includes("-service-") && name.endsWith(".json"))
   const only = Arr.head(manifests).pipe(Option.filter(() => manifests.length === 1))
   const name = yield* Option.match(only, {
     onNone: () => Effect.fail(new SimClockError({ message: `expected one service manifest in ${drive}, found ${manifests.length}` })),
     onSome: Effect.succeed,
   })
-  const manifest = yield* Schema.decodeEffect(Manifest)(yield* fs.readFileString(path.join(drive, name)))
+  const manifest = yield* Schema.decodeEffect(Manifest)(yield* fs.readFileString(yield* externalScenarioInput(path.join(drive, name))))
   return manifest.endpoints.backend
 })
 

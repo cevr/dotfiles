@@ -255,6 +255,21 @@ if (import.meta.main) readFileSync("fixtures/used-by-entry.txt")`
   expect(r.issues).toEqual([])
 })
 
+test("a checked Drive launch follows its scenario, never an unknown entry", () => {
+  const sources = new Map([
+    ["tests/owned.ts", "export const ownedDriveScenario = () => {}"],
+    ["scenarios/wake.ts", 'Bun.file("themes/prime.json").text()'],
+  ])
+  const load = (file: string) => sources.get(file) ?? ""
+  const setup = 'import { ownedDriveScenario } from "./owned.ts"; '
+  const fixed = checkReadInputs("tests/wake.test.ts", `${setup}ownedDriveScenario("scenarios/wake.ts", out, fork)`, load)
+  expect(fixed.patterns).toEqual(["bunx.plugins/config", "scenarios/wake.ts", "themes/prime.json"])
+  expect(fixed.classification).toBe("static")
+  const dynamic = checkReadInputs("tests/wake.test.ts", `${setup}ownedDriveScenario(chosen, out, fork)`, load)
+  expect(dynamic.classification).toBe("unknown")
+  expect(dynamic.indirect).toEqual([{ line: 1, reason: "nonliteral checkout scenario" }])
+})
+
 test("a checkout entry's computed checkout operands remain opaque", () => {
   const program = 'export const checkoutBunCommand = () => {}'
   const load = (file: string) => file === "tests/scratch-child.ts" && program || ""

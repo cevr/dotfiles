@@ -1,5 +1,3 @@
-// @reads all
-// @reads-reason subprocess helper reads at tests/wake.test.ts: const child = owned(["bunx", "opencode-drive", ...args], {
 // accept: deep (159.5 s alone on a quiet host: 1-minute load 22.8–116.3 on 12 cores; scenarios/wake-downtime.ts waits out a cron minute (75 s))
 // Public UI seam: real OpenCode, the real wake server plugin, Prime (whose
 // dock counts the wakes) and a scripted model. scenarios/wake.ts drives an
@@ -8,10 +6,9 @@
 // it again. What fired is read off the frames, the
 // model's requests and the transcripts.
 import { describe, expect, test } from "bun:test"
-import { existsSync } from "node:fs"
-import { readScratchFileSync as readFileSync } from "./read-path.ts"
+import { readScratchFileSync as readFileSync, scratchExistsSync } from "./read-path.ts"
 import { join } from "node:path"
-import { owned } from "./owned.ts"
+import { ownedDriveScenario } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 
 /** The frame's lines, without the sidebar's column. */
@@ -46,17 +43,10 @@ const wakes = (sessions: ReadonlyArray<Session>) =>
   sessions.flatMap((session) => session.messages.filter((message) => message.type === "synthetic" && message.metadata?.source === "wake"))
 const textOf = (message: Message) => message.text ?? ""
 
-const scenario = async (out: string, args: ReadonlyArray<string>, label: string, env: (out: string) => Record<string, string> = () => ({})) => {
-  const child = owned(["bunx", "opencode-drive", ...args], {
-    cwd: join(import.meta.dir, ".."),
-    env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media"), ...env(out) },
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-  })
+const scenario = async (out: string, child: ReturnType<typeof ownedDriveScenario>, label: string) => {
   const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
   const timeout = join(out, `${label}-timeout.txt`)
-  if (code !== 0) throw new Error(`${label} scenario exited ${code}:\n${(stdout + stderr).slice(-5000)}\n${existsSync(timeout) ? readFileSync(timeout, "utf8") : ""}`)
+  if (code !== 0) throw new Error(`${label} scenario exited ${code}:\n${(stdout + stderr).slice(-5000)}\n${scratchExistsSync(timeout) ? readFileSync(timeout, "utf8") : ""}`)
   return { stdout, read: (name: string) => readFileSync(join(out, `${label}-${name}`), "utf8") }
 }
 
@@ -66,7 +56,7 @@ describe.skipIf(!fork)("wakes", () => {
   const kept = keptScratch(Boolean(fork), "wake-")
   test("an alarm wakes the idle session, a notice waits for the next turn, a monitor wakes on its match, a cancel holds, and a reload fires once", kept.test(async () => {
     const out = kept.dir("wake-")
-    const { stdout, read } = await scenario(out, ["run", "scenarios/wake.ts"], "wake")
+    const { stdout, read } = await scenario(out, ownedDriveScenario("scenarios/wake.ts", out, fork ?? ""), "wake")
     expect(stdout).toMatch(/screenshot: .*wake-pending\.png/)
     const requests: ReadonlyArray<Request> = JSON.parse(read("requests.json"))
     const root = requests.filter((request) => request.session === "root").map((request) => ({ ...request, text: unescaped(request.request) }))
@@ -123,12 +113,9 @@ describe.skipIf(!fork)("wakes", () => {
   }), 240_000)
 
   test("an alarm due while no server ran fires when one starts, and says it went late", kept.test(async () => {
-    const fork = process.env.OPENCODE_DEV ?? ""
     const out = kept.dir("wake-downtime-")
-    const { stdout, read } = await scenario(out, ["start", "--name", `wake-downtime-${process.pid}`, "--dev", fork, "--script", "scenarios/wake-downtime.ts"], "wake-downtime", (out) => ({
-      // A file, so the restarted server finds the session and its wake.
-      OPENCODE_DRIVE_DB: join(out, "opencode.db"),
-    }))
+    // Start uses a file, so the restarted server finds its session and wake.
+    const { stdout, read } = await scenario(out, ownedDriveScenario("scenarios/wake-downtime.ts", out, fork ?? "", `wake-downtime-${process.pid}`), "wake-downtime")
     expect(stdout).toMatch(/screenshot: .*wake-downtime-late\.png/)
     expect(trayOf(read("pending.txt"))).toMatch(/^1 wake$/)
 
