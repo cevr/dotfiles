@@ -1260,7 +1260,10 @@ ticket_wait() {
 # Gives a ticket back: its descriptor closed, then its file removed.
 queue_leave() {
   eval "exec $1>&-"
-  rm -f "$2" "$2.in"
+  # Its lock is closed, so a file left is a dead ticket every reader skips and
+  # the next sweep removes: said, never a stop after the work is done.
+  rm -f "$2" "$2.in" ||
+    printf 'workrift: the ticket %s stays (rm failed); its lock is free, so the line takes it for ended\n' "$2" >&2
 }
 
 # Removes this process's tickets at exit (their locks end with it anyway).
