@@ -77,10 +77,9 @@ export const packageOf = (file: string): string | undefined => {
 
 export const load = async (): Promise<Workspace> => {
   const cwd = path.dirname(ROOT)
-  const [listed, head] = await Promise.all([
-    $`git ls-files -co --exclude-standard -z`.cwd(cwd).quiet().text(),
-    $`git rev-parse HEAD`.cwd(cwd).quiet().nothrow().text(),
-  ])
+  const { listed, head } = await $`git ls-files -co --exclude-standard -z`.cwd(cwd).quiet().text().then((listed) =>
+    $`git rev-parse HEAD`.cwd(cwd).quiet().nothrow().text().then((head) => ({ listed, head })),
+  )
   // A deleted file git still tracks is not an input.
   const known = listed.split("\0").filter(Boolean).map(fromRepository).filter((file) => existsSync(path.join(ROOT, file)))
   const files = known.filter((file) => !file.startsWith("../"))

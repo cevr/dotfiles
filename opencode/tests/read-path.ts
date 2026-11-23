@@ -1,9 +1,9 @@
 import { Glob } from "bun"
 import { Data, Option, Predicate } from "effect"
 import { ROOT as workspace } from "../scripts/reach.ts"
-import { localTestPaths } from "./scratch.ts"
+import { localTestPaths, scratchRoot } from "./scratch.ts"
 
-const { existsSync, isAbsolute, join, relative, resolve, readFileSync, readdirSync, readlinkSync, realpathSync, tmpdir } = localTestPaths
+const { existsSync, isAbsolute, join, relative, resolve, readFileSync, readdirSync, readlinkSync, realpathSync } = localTestPaths
 
 class InvalidTestInput extends Data.TaggedError("InvalidTestInput")<{ readonly message: string }> {}
 
@@ -24,7 +24,7 @@ const outside = (root: string, target: string) => {
 
 /** An absolute path in a scratch tree, including one returned by a fixture builder. */
 export const scratchInput = (file: string) => {
-  const root = realpathSync(tmpdir())
+  const root = scratchRoot()
   const repo = realpathSync(join(workspace, ".."))
   const target = realpathSync((existsSync(file) && file) || resolve(file, ".."))
   if (!isAbsolute(file) || outside(root, target) || !outside(repo, target)) return denied(file, root)

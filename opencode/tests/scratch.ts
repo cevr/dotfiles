@@ -7,7 +7,10 @@ import { env as processEnv } from "node:process"
 
 // Keep the package tests that use the scratch lifecycle independent of the root
 // test's input policy and its Effect instance.
-export const localTestPaths = { existsSync, isAbsolute, join, relative, resolve, readFileSync, readdirSync, readlinkSync, realpathSync, tmpdir }
+export const localTestPaths = { existsSync, isAbsolute, join, relative, resolve, readFileSync, readdirSync, readlinkSync, realpathSync }
+
+/** The canonical parent of scratch fixtures; callers check a path without creating a fixture. */
+export const scratchRoot = () => realpathSync(tmpdir())
 
 /**
  * A test's own directory under the system temp directory. Hold it with `using dir = scratch("name-")`:
