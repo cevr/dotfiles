@@ -13,24 +13,25 @@
 //   `open -a "Google Chrome" --args …`) with `--remote-debugging-*` or
 //   `--headless*` and without both flags: use Playwright or the browse tool.
 //   The owner's own Chrome start opens no DevTools port, so it never matches.
-// - A script a line runs (`bun x.ts`, `node x.mjs`, `bun -e '…'`) that hands
+// - A script a line actually runs (`bun x.ts`, `node x.mjs`, `sh x.sh`,
+//   `./vendor/launcher.sh`, `bun -e '…'`; not `sh -n x.sh`) that hands
 //   such a list to a Chrome it names itself: a spawn-like call whose program is
 //   a Chrome path literal (or a name bound to one in the file), or a
 //   Puppeteer/Playwright `launch` with `ignoreDefaultArgs: true`. A list a
 //   script only reads (`args.includes('--headless')`), a help text, or a launch
 //   of a browser the script asks another module for is not one: those are its
 //   launcher's, held by that launcher (Exact's `chromium()` honours CHROME).
-// - A bisect, or a script that checks out old commits (`git bisect run`, a
-//   script named *bisect*, one that runs `git switch --detach` /
-//   `git checkout --detach`): an old commit's browser launcher may predate the
-//   flags, and only the CHROME shim reaches it. Refused unless the line sets
-//   `CHROME=<…>/chrome-mock-keychain`, the way through it names.
+// - `git bisect run`, a launcher after a checkout or bisect start, or a script
+//   that selects detached revisions (including a driver named *bisect*):
+//   an old revision's browser launcher may predate the flags, and only the
+//   CHROME shim reaches it. Git subcommands must be in executable positions.
+//   Reads of Git or shell words as arguments, file names, or text aren't runs.
 // A script's imports are not read, and a wrapper that runs a bisect script
 // under another name slips through: the shim prefix is the remedy there too.
 import { Array as Arr, Option, Schema } from "effect"
-import { resolve } from "./path.ts"
-import { expandWord, simpleCommands, type Word } from "./shell-line.ts"
-import { type Place, placedCommands } from "./verdict.ts"
+import { basename, resolve } from "./path.ts"
+import { expandWord, SHELLS, shellInput, shellScript, simpleCommands, type Word } from "./shell-line.ts"
+import { gitSubcommand, type Place, type PlacedCommand, placedCommands } from "./verdict.ts"
 
 /** The two flags that keep a Chrome off the login keychain: the mock keychain (macOS) and the plain password store (Linux). */
 export const KEYCHAIN_FLAGS: ReadonlyArray<string> = ["--use-mock-keychain", "--password-store=basic"]
@@ -46,7 +47,10 @@ const CHROME_PROGRAM =
 const CHROME_VARIABLE = /^\$\{?([A-Za-z_]*CHROM[A-Za-z_]*)\}?$/i
 
 /** The programs that read or show a command line without running it: a Chrome named in theirs starts nothing. */
-const READERS: ReadonlySet<string> = new Set(["echo", "printf", "grep", "rg", "ag", "pgrep", "pkill", "killall", "ps", "cat", "which", "type", "man", "ls", "git", "lsof"])
+const READERS: ReadonlySet<string> = new Set([
+  "echo", "printf", "grep", "rg", "ag", "pgrep", "pkill", "killall", "ps", "cat", "which", "type", "command", "man", "ls", "git", "lsof",
+  "head", "tail", "less", "more", "shellcheck", "shfmt", "vi", "vim", "nvim", "nano", "emacs", "code",
+])
 
 /** A flag that opens Chrome's DevTools protocol or runs it headless. */
 const opens = (flag: string): boolean => flag.startsWith("--remote-debugging-") || flag.startsWith("--headless")
@@ -57,6 +61,13 @@ const isChromePath = (path: string): boolean => CHROME_PROGRAM.test(path.slice(p
 /** Whether the line sets CHROME to the shim (`CHROME=…/chrome-mock-keychain cmd`, `export CHROME=…`). */
 export const shimmed = (line: string): boolean => /(?:^|[\s;&|(])(?:export\s+)?CHROME=["']?[^\s"';&|]*chrome-mock-keychain\b/.test(line)
 
+/** A prefix on Git only applies to Git, not to the separate launcher after it. */
+const exportedShim = (line: string): boolean =>
+  Option.exists(Arr.head(simpleCommands(line)), (words) => {
+    const [command, ...assignments] = words
+    return command?.text === "export" && assignments.some(({ text }) => text.startsWith("CHROME=") && basename(text.slice("CHROME=".length)) === basename(SHIM))
+  })
+
 /** What a refused launch needs: both flags on its list, or the shim before a bisect over old commits. */
 export type Remedy = "flags" | "shim"
 
@@ -65,6 +76,7 @@ export interface BareLaunch {
   readonly command: string
   readonly script: Option.Option<string>
   readonly remedy: Remedy
+  readonly oldCheckout?: true
 }
 
 /** Whether a launch's flags open DevTools or headless without both keychain flags. */
@@ -88,21 +100,36 @@ const chromeFlags = (head: string, words: ReadonlyArray<Word>, shim: boolean): O
   )
 }
 
-/** Whether a git command runs a bisect (`git bisect run …`, `git -C x bisect run …`). */
-const bisectRun = (head: string, args: ReadonlyArray<Word>): boolean => {
-  const texts = args.map((word) => word.text)
-  return head === "git" && Option.contains(Arr.get(texts, texts.indexOf("bisect") + 1), "run") && texts.includes("bisect")
+/** Actions that actually select or execute another Git revision, not words in a Git argument list. */
+type RevisionAction = "run" | "select" | "detach" | "none"
+
+const revisionAction = (head: string, args: ReadonlyArray<string>): RevisionAction => {
+  if (head !== "git") return "none"
+  const sub = gitSubcommand(args)
+  if (sub.kind !== "command") return "none"
+  if (sub.name === "bisect") {
+    if (sub.rest[0] === "run") return "run"
+    if (sub.rest[0] === "start") return "select"
+  }
+  if (sub.name === "worktree" && sub.rest[0] === "add") return "select"
+  if (sub.name === "stash" && sub.rest[0] === "branch") return "select"
+  if (sub.name !== "checkout" && sub.name !== "switch") return "none"
+  const positional = Arr.takeWhile(sub.rest, (arg) => arg !== "--")
+  if (positional.includes("--detach") || (positional.includes("-d") && sub.name === "switch")) return "detach"
+  // `checkout <tree> -- <paths>` reads files from the tree without switching HEAD.
+  if (positional.length + 1 < sub.rest.length) return "none"
+  if (positional.some((arg) => !arg.startsWith("-") || arg === "-")) return "select"
+  return "none"
 }
 
 /** The extensions of a script a runtime runs. */
 const SCRIPT = /\.(?:[cm]?[jt]s|tsx|sh|bash|zsh)$/
 
-/** The shells whose `-c` the line parser reads itself. */
-const SHELL_RUNTIMES: ReadonlySet<string> = new Set(["sh", "bash", "zsh"])
-
 /** The runtimes whose script the rule reads, and the options among theirs that take inline code. */
-const RUNTIMES: ReadonlySet<string> = new Set(["bun", "node", "deno", "tsx", "ts-node", ...SHELL_RUNTIMES])
+const RUNTIMES: ReadonlySet<string> = new Set(["bun", "node", "deno", "tsx", "ts-node"])
 const INLINE: ReadonlySet<string> = new Set(["-e", "--eval", "-p", "--print"])
+const RUNTIME_INFO: ReadonlySet<string> = new Set(["-h", "--help", "-v", "--version", "--check"])
+const RUNTIME_VALUES: ReadonlySet<string> = new Set(["-r", "--require", "--import", "--preload", "--loader", "--env-file", "--cwd", "--config", "--conditions", "-C", "-c"])
 
 /** Inline code a runtime is given. */
 export const Inline = Schema.TaggedStruct("Inline", { code: Schema.String })
@@ -111,13 +138,6 @@ export const ScriptFile = Schema.TaggedStruct("ScriptFile", { path: Schema.Strin
 /** What a runtime command runs. */
 export const Ran = Schema.Union([Inline, ScriptFile])
 export type Ran = typeof Ran.Type
-
-/** The inline code after an `-e`-like option. */
-const inlineOf = (args: ReadonlyArray<Word>): Option.Option<Ran> =>
-  Option.flatMap(
-    Arr.findFirstIndex(args, (word) => INLINE.has(word.text)),
-    (at) => Option.map(Arr.get(args, at + 1), (word): Ran => Inline.make({ code: word.text })),
-  )
 
 /** A shell variable's assignment: `NAME=value`. */
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s
@@ -145,45 +165,99 @@ const variablesOf = (line: string): ReadonlyMap<string, string> => {
   return values
 }
 
-/** The script file among a runtime's words: its first word with a script's extension, the line's variables put in. */
-const fileOf = (args: ReadonlyArray<Word>, runsIn: string, home: string, values: ReadonlyMap<string, string>): Option.Option<Ran> =>
-  Option.map(
-    Arr.findFirst(args, (word) => !word.text.startsWith("-") && SCRIPT.test(word.text)),
-    (word): Ran => ScriptFile.make({ path: resolve(runsIn, expandWord({ ...word, text: substituted(word.text, values) }, home, runsIn)) }),
-  )
+/** The JavaScript runtime's own options and entry point, never a path in the entry point's arguments. */
+const runtimeEntry = (head: string, args: ReadonlyArray<Word>, canRun = true): Option.Option<Word | Ran> => {
+  for (const [at, word] of args.entries()) {
+    const text = word.text
+    if (RUNTIME_INFO.has(text) || (head === "node" && text === "-c") || (head === "deno" && text === "check")) return Option.none()
+    if (INLINE.has(text)) return Option.map(Arr.get(args, at + 1), (code) => Inline.make({ code: code.text }))
+    if (text === "--") return Option.filter(Arr.get(args, at + 1), (entry) => SCRIPT.test(entry.text))
+    if (RUNTIME_VALUES.has(text)) return runtimeEntry(head, args.slice(at + 2), canRun)
+    if (text.startsWith("-")) continue
+    if (canRun && (head === "bun" || head === "deno") && text === "run") return runtimeEntry(head, args.slice(at + 1), false)
+    return Option.liftPredicate(word, (entry) => SCRIPT.test(entry.text))
+  }
+  return Option.none()
+}
+
+/** The script an executable or interpreter actually takes as its input. */
+const entryOf = ({ head, executable, args }: PlacedCommand): Option.Option<Word | Ran> => {
+  if (SHELLS.has(head)) {
+    const input = shellInput(args)
+    if (input.command || input.stdin || input.noexec) return Option.none()
+    return Option.filter(Arr.head(input.operands), (word) => word.text !== "-")
+  }
+  if (RUNTIMES.has(head)) return runtimeEntry(head, args)
+  if (head === "source" || head === ".") return Arr.head(args)
+  return Option.map(Option.liftPredicate(executable, (program) => program.includes("/") && SCRIPT.test(head)),
+    (text): Word => ({ text, bareStart: true, singleQuoted: false }))
+}
+
+const LAUNCHERS: ReadonlySet<string> = new Set(["make", "bunx", "npx", "playwright", "open"])
+const PACKAGE_RUNNERS: ReadonlySet<string> = new Set(["bun", "npm", "pnpm", "yarn"])
+const PACKAGE_RUNS: ReadonlySet<string> = new Set(["run", "start", "test", "exec", "dlx"])
+
+/** A putative browser launcher after a Git selection: an actual script, shell command, or runner, not a reader. */
+const runsLauncher = (command: PlacedCommand): boolean => {
+  const { head, args } = command
+  if (LAUNCHERS.has(head) || isChromePath(head) || Option.isSome(entryOf(command))) return true
+  if (PACKAGE_RUNNERS.has(head) && Option.exists(Arr.head(args), (word) => PACKAGE_RUNS.has(word.text))) return true
+  if ((head === "go" || head === "cargo") && Option.exists(Arr.head(args), (word) => word.text === "run")) return true
+  if (!SHELLS.has(head)) return false
+  const input = shellInput(args)
+  return input.command && !input.noexec
+}
+
+/** Whether the line runs a launcher after selecting a revision. */
+const runsSelection = (commands: ReadonlyArray<PlacedCommand>): boolean => {
+  let selected = false
+  for (const command of commands) {
+    if (selected && runsLauncher(command)) return true
+    const action = revisionAction(command.head, command.args.map((word) => word.text))
+    if (action === "select" || action === "detach") selected = true
+  }
+  return false
+}
 
 /** What a runtime of a line runs, with the command as the refusal names it, and whether the line sets CHROME to the shim. */
 export interface RuntimeRun {
   readonly command: string
   readonly ran: Ran
   readonly shimmed: boolean
+  readonly shell?: boolean
 }
 
-/** Whether a runtime's words run its test runner (`bun test`): a repository's tests, held by its lint, not a scratch probe. */
-const runsTests = (args: ReadonlyArray<Word>): boolean => Option.contains(Arr.findFirst(args, (word) => !word.text.startsWith("-")).pipe(Option.map((word) => word.text)), "test")
-
-/** Whether a runtime's words run nothing the rule reads: `bun test`, or a shell's `-c`, whose commands the line parser reads. */
-const runsNone = (head: string, args: ReadonlyArray<Word>): boolean => runsTests(args) || (SHELL_RUNTIMES.has(head) && args.some((word) => word.text === "-c"))
-
-/** Each script a line runs through a runtime (`bun x.ts`, `bun run x.ts`, `node x.mjs`, `sh x.sh`, `bun -e '…'`), in order; `bun test` runs none. */
+/** Each script a line executes (as a file or inline), in order. Tests and syntax checks do not supply script entry points. */
 export const runtimeRuns = (line: string, place: Place): ReadonlyArray<RuntimeRun> => {
   const values = variablesOf(line)
   const shim = shimmed(line)
-  return placedCommands(line, resolve("/", place.cwd), place.home).flatMap(({ head, args, command, runsIn }) => {
-    if (!RUNTIMES.has(head) || runsNone(head, args)) return []
-    const ran = Option.orElse(inlineOf(args), () => fileOf(args, runsIn, place.home, values))
-    return Option.toArray(Option.map(ran, (each): RuntimeRun => ({ command, ran: each, shimmed: shim })))
-  })
+  return placedCommands(line, resolve("/", place.cwd), place.home).flatMap((placed) =>
+    Option.toArray(Option.map(entryOf(placed), (entry): RuntimeRun => ({
+      command: placed.command,
+      ran: resolveEntry(entry, placed.runsIn, place.home, values),
+      shimmed: shim,
+      shell: SHELLS.has(placed.head) || placed.head === "source" || placed.head === ".",
+    }))),
+  )
+}
+
+const resolveEntry = (entry: Word | Ran, cwd: string, home: string, values: ReadonlyMap<string, string>): Ran => {
+  if ("_tag" in entry) return entry
+  return ScriptFile.make({ path: resolve(cwd, expandWord({ ...entry, text: substituted(entry.text, values) }, home, cwd)) })
 }
 
 /** Each command of `line` that starts Chrome for DevTools or headless without both keychain flags, or runs a bisect without the shim. */
 export const bareLaunches = (line: string, place: Place): ReadonlyArray<BareLaunch> => {
   const shim = shimmed(line)
-  return placedCommands(line, resolve("/", place.cwd), place.home).flatMap(({ head, args, command }): ReadonlyArray<BareLaunch> => {
-    if (bisectRun(head, args) && !shim) return [{ command, script: Option.none(), remedy: "shim" }]
+  const commands = placedCommands(line, resolve("/", place.cwd), place.home)
+  const launches = commands.flatMap(({ head, args, command }): ReadonlyArray<BareLaunch> => {
+    if (revisionAction(head, args.map((word) => word.text)) === "run" && !shim) return [{ command, script: Option.none(), remedy: "shim" }]
+    if (SHELLS.has(head) || RUNTIMES.has(head)) return []
     const words: ReadonlyArray<Word> = [{ text: head, bareStart: true, singleQuoted: false }, ...args]
     return Option.toArray(Option.filter(chromeFlags(head, words, shim), bare)).map((): BareLaunch => ({ command, script: Option.none(), remedy: "flags" }))
   })
+  if (launches.length === 0 && runsSelection(commands) && !exportedShim(line)) return [{ command: line, script: Option.none(), remedy: "shim", oldCheckout: true }]
+  return launches
 }
 
 // ── A script's text ──
@@ -289,8 +363,11 @@ const listOf = (argument: string, script: Script): Option.Option<string> => {
   return Option.fromUndefinedOr(script.arrays.get(trimmed))
 }
 
-/** A spawn-like call: Node's and Bun's spawners and execa. */
-const SPAWN = /\b(?:spawn|spawnSync|execFile|execFileSync|execa|execaSync)\s*\(\s*/g
+/** Read launch calls in the source, not their spelling in JS comments or string literals. */
+const CALL = /\/\/[^\n]*|\/\*[\s\S]*?\*\/|\$\s*`((?:\\.|[^`\\])*)`|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\b(spawn|spawnSync|exec|execSync|execFile|execFileSync|execa|execaSync|sh|launch)\s*\(/g
+const callsIn = (text: string) => Array.from(text.matchAll(CALL)).flatMap((match) =>
+  Option.toArray(Option.map(Option.fromUndefinedOr(match[2]), (name) => ({ name, open: match.index + match[0].length - 1 }))),
+)
 
 /** The program and the arguments' list a spawn-like call at `open` hands it, in any of its forms. */
 const spawned = (text: string, open: number, script: Script): Option.Option<{ readonly program: string; readonly list: string }> => {
@@ -310,16 +387,16 @@ const spawned = (text: string, open: number, script: Script): Option.Option<{ re
 
 /** Whether a spawn-like call in the script hands a Chrome it names a DevTools or headless list without both keychain flags. */
 const spawnsBare = (text: string, script: Script): boolean =>
-  Array.from(text.matchAll(SPAWN), (match) => match.index + match[0].length - 1).some((open) =>
-    Option.match(spawned(text, open, script), { onNone: () => false, onSome: ({ program, list }) => isChromeExpression(program, script) && bare(flagsOf(list, script)) }),
+  callsIn(text).some(({ name, open }) =>
+    name !== "launch" && Option.exists(spawned(text, open, script), ({ program, list }) => isChromeExpression(program, script) && bare(flagsOf(list, script))),
   )
-
-/** A Puppeteer or Playwright launch: these add both keychain flags themselves unless told to drop their defaults. */
-const LAUNCH = /\blaunch\s*\(\s*\{/g
 
 /** Whether a Puppeteer/Playwright launch drops its default flags (`ignoreDefaultArgs: true`) and passes no keychain flags itself. */
 const launchesBare = (text: string, script: Script): boolean =>
-  Array.from(text.matchAll(LAUNCH), (match) => inside(text, match.index + match[0].length - 1)).some((options) => {
+  callsIn(text).some(({ name, open }) => {
+    if (name !== "launch") return false
+    const options = inside(text, open).trim()
+    if (!options.startsWith("{")) return false
     if (!/\bignoreDefaultArgs\s*:\s*true\b/.test(options)) return false
     const named = Option.fromNullishOr(/\bargs\s*(?::\s*([^,}\n]+))?/.exec(options))
     const list = Option.flatMap(named, (match) => listOf(Option.getOrElse(Option.fromUndefinedOr(match[1]), () => "args"), script))
@@ -333,12 +410,46 @@ export const scriptLaunchesBare = (text: string): boolean => {
   return spawnsBare(text, script) || launchesBare(text, script)
 }
 
-/** A checkout of another commit in a script's text: a detached switch or checkout, as a shell line or a spawn's list. */
-const OLD_CHECKOUT = /\bgit\b[^\n]*?\b(?:switch|checkout)\s+--detach\b|["'](?:switch|checkout)["']\s*,\s*["']--detach["']|\bgit\s+bisect\s+run\b|["']bisect["']\s*,\s*["']run["']/
+/** A standalone string operand of a JS process invocation, not an expression merely containing a string. */
+const literalWord = (expression: string): string => {
+  const trimmed = expression.trim()
+  return Option.getOrElse(Option.filter(Arr.head(literalsIn(trimmed)), (literal) => literal === trimmed.slice(1, -1)), () => "")
+}
 
-/** Whether a script runs a bisect or other commits' code: named for it, or checking out commits detached. */
-export const scriptRunsOldCommits = (ran: Ran, text: string): boolean =>
-  (ran._tag === "ScriptFile" && /bisect/i.test(ran.path.slice(ran.path.lastIndexOf("/") + 1))) || OLD_CHECKOUT.test(text)
+const shellRevision = (commands: ReadonlyArray<PlacedCommand>): boolean => commands.some(({ head, args }) => {
+  const action = revisionAction(head, args.map((word) => word.text))
+  return action === "run" || action === "detach"
+}) || runsSelection(commands)
+
+/** Keep the existing convention for an executed bisect driver even when it delegates its Git calls. */
+const namedBisect = (ran: Ran): boolean => ran._tag === "ScriptFile" && /bisect/i.test(basename(ran.path))
+
+const revisionInLine = (line: string): boolean => shellRevision(placedCommands(line, "/", "/"))
+
+/** Only argv passed to a process counts. A detached selection stays guarded even when its next execution is indirect. */
+const jsRevision = (text: string): boolean => {
+  if (Array.from(text.matchAll(CALL)).some((match) => Option.exists(Option.fromUndefinedOr(match[1]), revisionInLine))) return true
+  const script: Script = { arrays: arraysOf(text), chromes: new Set() }
+  let selected = false
+  for (const { name, open } of callsIn(text)) {
+    if (name === "launch") continue
+    if (name === "exec" || name === "execSync" || name === "sh") {
+      const code = Option.map(Arr.head(topLevel(inside(text, open))), literalWord)
+      if (Option.exists(code, revisionInLine)) return true
+    }
+    const action = spawned(text, open, script)
+    if (Option.isNone(action)) continue
+    const head = basename(literalWord(action.value.program))
+    const words = topLevel(action.value.list).map(literalWord)
+    if (SHELLS.has(head) && Option.exists(Option.fromUndefinedOr(shellScript(words.map((word) => bareWord(word)))), revisionInLine)) return true
+    const revision = revisionAction(head, words)
+    if (revision === "run" || revision === "detach" || (selected && head !== "" && !READERS.has(head))) return true
+    if (revision === "select") selected = true
+  }
+  return false
+}
+
+const bareWord = (text: string): Word => ({ text, bareStart: true, singleQuoted: false })
 
 /** How the refusal names what a runtime ran. */
 const scriptName = (ran: Ran): string => {
@@ -349,8 +460,14 @@ const scriptName = (ran: Ran): string => {
 /** The launch a runtime run makes when its code starts a bare Chrome, or runs old commits without the shim; none when it does neither. */
 export const scriptLaunch = (run: RuntimeRun, text: string): Option.Option<BareLaunch> => {
   const named = (remedy: Remedy): BareLaunch => ({ command: run.command, script: Option.some(scriptName(run.ran)), remedy })
+  if (run.shell === true || /\.(?:ba|da|k|z)?sh$/.test(scriptName(run.ran)) || /^#![^\n]*\b(?:sh|bash|zsh|dash|ksh)\b/.test(text)) {
+    const launches = bareLaunches(text, { cwd: "/", home: "/" })
+    if (launches.some((launch) => launch.remedy === "flags")) return Option.some(named("flags"))
+    if (!run.shimmed && (namedBisect(run.ran) || revisionInLine(text))) return Option.some(named("shim"))
+    return Option.none()
+  }
   if (scriptLaunchesBare(text)) return Option.some(named("flags"))
-  if (!run.shimmed && scriptRunsOldCommits(run.ran, text)) return Option.some(named("shim"))
+  if (!run.shimmed && (namedBisect(run.ran) || jsRevision(text))) return Option.some(named("shim"))
   return Option.none()
 }
 
@@ -361,6 +478,8 @@ const starts = (launch: BareLaunch): string =>
 /** Why the rule refuses `launch`, and the way through. */
 export const keychainReason = (launch: BareLaunch): string => {
   const dialog = "and macOS puts a keychain dialog on the owner's screen at each launch of a Chrome without them"
+  if (launch.oldCheckout === true)
+    return `\`${launch.command}\` runs a launcher after selecting another Git revision, whose browser launchers may predate ${KEYCHAIN_FLAGS.join(" ")}, ${dialog}. Export CHROME before the whole command: export CHROME="${SHIM}"; ${launch.command}`
   if (launch.remedy === "shim")
     return (
       `\`${launch.command}\` ${Option.match(launch.script, { onNone: () => "runs a bisect", onSome: (script) => `runs ${script}, a bisect or a run over other commits` })}, ` +

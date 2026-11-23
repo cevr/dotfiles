@@ -94,6 +94,76 @@ describe("a bare Chrome launch is found", () => {
   })
 })
 
+describe("keychain trigger words used as data", () => {
+  const chromeSwitchSpellings = {
+    headless: "--headless",
+    modernHeadless: "--headless=new",
+    debugPort: "--remote-debugging-port=0",
+    debugPipe: "--remote-debugging-pipe",
+  }
+  const triggers = [
+    "git", "bisect", "run", "start", "stash", "branch", "checkout", "switch", "--detach", "worktree", "add", "rev-list",
+    "for", "do", "git bisect run", "git checkout --detach", "git switch --detach", "'switch', '--detach'", "'bisect', 'run'",
+    "google-chrome", "google-chrome-stable", "google-chrome-beta", "google-chrome-dev", "google-chrome-unstable",
+    "Google Chrome for Testing", "Google Chrome Canary", "chrome", "chromium", "chromium-browser", "open", "--args",
+    "chrome-headless-shell", "headless_shell", "Brave Browser", "Microsoft Edge", "msedge", "$CHROME", "${CHROMIUM_BIN}",
+    "CHROME=chrome-mock-keychain", ...Object.values(chromeSwitchSpellings),
+    ...KEYCHAIN_FLAGS, "spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync", "execa", "execaSync", "launch", "ignoreDefaultArgs",
+  ]
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
+
+  for (const word of triggers) {
+    const path = (part: string) => quote(`/nonexistent/loop-probe/${part}`)
+    const lines = [
+      `sh -n ${path(`${word}/receipt.sh`)} ${path("profile.sh")}`,
+      `bash -vn ${path(`${word}.sh`)}`,
+      `sh -n -- ${path("receipt.sh")} ${quote(word)} --headless`,
+      `cat -- ${path(word)} --headless`,
+      `grep -F -- ${quote(word)} ${path("receipt.sh")}`,
+      `ls -- ${path(word)} --headless`,
+      `git log -1 -- bisect run ${quote(word)}`,
+      `shellcheck ${path(`${word}.sh`)}`,
+      `vim ${path(`${word}.sh`)}`,
+      `command -v ${quote(word)} --headless`,
+    ]
+    test(`${quote(word)} in paths, strings and read-only arguments`, () => {
+      for (const line of lines) expect([line, refused(line), runtimeRuns(line, place)]).toEqual([line, false, []])
+    })
+  }
+})
+
+describe("old checkouts in an executable position", () => {
+  const lines = [
+    "git -C bisect -c advice.detachedHead=false bisect run ./measure.sh",
+    "git bisect start HEAD v1 && sh ./measure.sh",
+    "git stash && git checkout HEAD~1 && bun ./measure.ts",
+    "git switch --detach v1 && ./measure.sh",
+    "git worktree add --detach /nonexistent/loop-probe-old abc1234 && cd /nonexistent/loop-probe-old && ./measure.sh",
+    "for c in a b; do git checkout --detach \"$c\"; bun measure.ts; done",
+  ]
+  for (const line of lines) {
+    test(line, () => {
+      expect(bareLaunches(line, place).map((launch) => launch.remedy)).toEqual(["shim"])
+      expect(bareLaunches(`export CHROME="${SHIM_PATH}"; ${line}`, place)).toEqual([])
+    })
+  }
+
+  test("an assignment prefixed to Git protects its bisect subprocess but not a separate launcher", () => {
+    const prefix = `CHROME="${SHIM_PATH}"`
+    expect(bareLaunches(`${prefix} git -C bisect bisect run ./measure.sh`, place)).toEqual([])
+    const line = `${prefix} git switch --detach v1 && ./measure.sh`
+    const launches = bareLaunches(line, place)
+    expect(launches.map((launch) => launch.remedy)).toEqual(["shim"])
+    expect(launches.map(keychainReason).join()).toContain(`export ${prefix};`)
+  })
+
+  test("a checkout with no run or a pathspec is not an old-commit run", () => {
+    expect(bareLaunches("git switch main && git log --oneline", place)).toEqual([])
+    expect(bareLaunches("git checkout -- src && bun lint.ts", place)).toEqual([])
+    expect(bareLaunches("git stash list && sh ./measure.sh", place)).toEqual([])
+  })
+})
+
 describe("the scripts a line runs", () => {
   const runs = (line: string) => runtimeRuns(line, place).map((run) => run.ran)
 
@@ -110,6 +180,23 @@ describe("the scripts a line runs", () => {
     expect(runs("bun test mods/rex/process/browser.test.ts")).toEqual([])
     expect(runs("bun install && bun run gate")).toEqual([])
     expect(runs("cat probe.ts")).toEqual([])
+  })
+
+  test("only the runtime's entry point is read, not forwarded arguments or syntax-check input", () => {
+    for (const line of [
+      "sh -nc 'git bisect run ./measure.sh'",
+      "bash -o noexec /tmp/receipt.sh /tmp/profile.sh",
+      "sh -s /tmp/receipt.sh",
+      "bash /tmp/entry /tmp/bisect.sh",
+      "bun --version /tmp/bisect.ts",
+      "node --check /tmp/bisect.js",
+      "bun --help /tmp/bisect.ts",
+      "node server --eval /tmp/bisect.ts",
+    ]) expect([line, refused(line)]).toEqual([line, false])
+    expect(runs("sh -n +n /tmp/bisect.sh")).toEqual([ScriptFile.make({ path: "/tmp/bisect.sh" })])
+    expect(runs("sh /tmp/entry /tmp/bisect.sh")).toEqual([ScriptFile.make({ path: "/tmp/entry" })])
+    expect(runs("node server --eval /tmp/bisect.ts")).toEqual([])
+    expect(runs("bash -o noexec /tmp/receipt.sh /tmp/profile.sh")).toEqual([])
   })
 })
 
@@ -166,6 +253,38 @@ describe("a script that runs other commits", () => {
     expect(scriptLaunch(run("/m/walk.ts"), "sh(['git', 'switch', 'main'])")).toEqual(Option.none())
     expect(runtimeRuns(`CHROME="${SHIM_PATH}" bun /m/bisect.ts a b`, place).map((each) => each.shimmed)).toEqual([true])
     expect(runtimeRuns("bun /m/bisect.ts a b", place).map((each) => each.shimmed)).toEqual([false])
+  })
+
+  test("comments, logs, and Git arguments are not commands; a vendor launcher's actual command is", () => {
+    const shell = [
+      "# git checkout --detach v1",
+      "printf '%s\\n' 'git bisect run ./measure.sh'",
+      "git log --oneline -- checkout --detach",
+      "grep -F 'git checkout --detach' receipt.sh",
+    ].join("\n")
+    const js = [
+      "// sh(['git', 'checkout', '--detach', sha])",
+      "console.log(['git', 'switch', '--detach', sha])",
+      "sh(['git', 'log', '--', 'bisect', 'run'])",
+      "const sample = \"git bisect run ./measure.sh\"",
+      "/* spawn('git', ['bisect', 'run', './measure.sh']) */",
+    ].join("\n")
+    expect(scriptLaunch(run("/m/receipt.sh"), shell)).toEqual(Option.none())
+    expect(scriptLaunch(run("/m/receipt.ts"), js)).toEqual(Option.none())
+    expect(Option.map(scriptLaunch(run("/m/vendor/measure.sh"), "git -C old checkout HEAD~1 && ./launcher.sh"), (launch) => launch.remedy)).toEqual(Option.some("shim"))
+    expect(Option.map(scriptLaunch(run("/m/vendor/measure.sh"), "chromium --headless"), (launch) => launch.remedy)).toEqual(Option.some("flags"))
+  })
+
+  test("JS process calls actually running Bisect or a detached checkout are still refused", () => {
+    for (const code of [
+      'execSync("git bisect run ./measure.sh")',
+      'Bun.spawn(["git", "-C", "/nonexistent/loop-probe", "bisect", "run", "./measure.sh"])',
+      'spawn("sh", ["-c", "git switch --detach HEAD~1 && sh ./measure.sh"])',
+      "await $`git bisect run ./measure.sh`",
+    ]) {
+      expect([code, Option.map(scriptLaunch(run("/m/walk.ts"), code), (launch) => launch.remedy)]).toEqual([code, Option.some("shim")])
+      expect(scriptLaunch(run("/m/walk.ts", true), code)).toEqual(Option.none())
+    }
   })
 })
 

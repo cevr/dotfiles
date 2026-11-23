@@ -554,7 +554,7 @@
     "mods/guard/process/processes.ts": {"effect/noAsyncFunction":3,"effect/noGlobals":1,"effect/noNewError":1,"effect/noNewPromise":1,"effect/noNullish":1,"effect/noTernary":2,"effect/noThrowStatement":1},
     "mods/guard/process/scopes.test.ts": {"effect/noAsyncFunction":8,"effect/noEffectRunInTests":1,"effect/noNodeBuiltinImport":2},
     "mods/guard/process/scopes.ts": {"effect/noAsyncFunction":2,"effect/noGlobals":1,"effect/noTernary":1,"effect/noTryCatch":1},
-    "mods/guard/shell-line.ts": {"effect/noNullish":7,"effect/noTernary":2},
+    "mods/guard/shell-line.ts": {"effect/noNullish":6,"effect/noTernary":1},
     "mods/guard/sleep.ts": {"effect/noKnownValueWidening":1,"effect/noNullish":16,"effect/noTernary":3},
     "mods/guard/verdict.test.ts": {"effect/noNullish":1,"effect/noTernary":1},
     "mods/guard/verdict.ts": {"effect/noNullish":7,"effect/noTernary":7,"effect/preferSchemaTaggedUnion":1,"effect/preferTaggedConstructors":3},

@@ -212,6 +212,20 @@ describe("the guard plugin", () => {
       }),
     ))
 
+  test("a syntax check of a receipt and a profile does not run their old-commit commands", () =>
+    scenario(
+      Effect.gen(function* () {
+        const unit = "/home/exedev/.cache/baton/wf10/go-backend/PROC-RUN-BYTES"
+        const scripts = {
+          [`${unit}/receipt.sh`]: '#!/bin/sh\nfor side in before after; do\n    git switch --detach "$commit"\n    go build -o "$s/ergo-$side" ./cmd/ergo\ndone',
+          [`${unit}/profile.sh`]: '#!/bin/sh\ngit switch --detach "$source"\ngo build -o "$s/ergo" ./cmd/ergo',
+        }
+        const { call } = yield* start({ home: HOME }, { scripts })
+        expect(yield* call("shell", { command: `sh -n ${unit}/receipt.sh ${unit}/profile.sh` })).toBeUndefined()
+        expect(yield* call("shell", { command: `sh ${unit}/profile.sh` })).toContain("a bisect or a run over other commits")
+      }),
+    ))
+
   test("refuses rather than guess when the host cannot say where the call runs", () =>
     scenario(
       Effect.gen(function* () {
