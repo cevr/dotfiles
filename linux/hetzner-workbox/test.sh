@@ -4,7 +4,7 @@
 #   1. installimage-check.sh: Hetzner's own validator on installimage.conf
 #      (UEFI and BIOS), and on a broken copy, which it must refuse;
 #   2. two loop "NVMe drives", the first laid out as installimage leaves it
-#      (ESP, /boot, swap, one btrfs with @root @home @tmp @workspaces), then
+#      (ESP, /boot, swap, one btrfs with @root @home @tmp @workspaces @runs), then
 #      layout.sh (raid1, mdraid1 /boot and swap, the second ESP, simple quotas), twice;
 #   3. provision.sh's user, keys, packages, storage, sshd, upgrades and sysctl phases,
 #      twice, then ssh into the test sshd with a test key and sudo;
@@ -73,11 +73,21 @@ tools_files=(
     /etc/systemd/system/user@.service.d/40-workbox-delegate.conf
     /etc/tmpfiles.d/tmp.conf /usr/local/sbin/workbox-tmp-clean
     /etc/systemd/system/systemd-tmpfiles-clean.service.d/30-workbox-held.conf
-    /etc/systemd/system/hetzner-workbox-storage.service
+    /etc/systemd/system/hetzner-workbox-storage.service /etc/tmpfiles.d/hetzner-runs.conf
 )
 cleanup_tools() {
-    local d f new
+    local d f new n
     systemctl disable hetzner-workbox-storage.service >/dev/null 2>&1
+    # The image's own Delegate drop-ins, set aside by step 3b's delegation test.
+    if [[ -f ${prefix}delegate-aside/list ]]; then
+        n=0
+        while read -r f; do
+            mkdir -p "$(dirname "$f")"
+            cp -a "${prefix}delegate-aside/$n" "$f"
+            n=$((n + 1))
+        done < "${prefix}delegate-aside/list"
+        rm -f "${prefix}delegate-aside/list"
+    fi
     for f in "${tools_files[@]}"; do
         rm -f "$f"
         [[ $(dirname "$f") == *.d ]] && rmdir "$(dirname "$f")" 2>/dev/null
@@ -160,7 +170,67 @@ if [[ ${1:-} == --cleanup ]]; then
     pass "nothing left of earlier runs"
     exit 0
 fi
-installimage_src=${1:?usage: test.sh <installimage checkout> | test.sh --cleanup}
+# The run families across a real reboot of the VM (a driver reboots it between the two):
+#   test.sh --slices-reboot prepare   a lingering user, the slices installed, every other Delegate
+#                                     drop-in set aside, a runtime-only CPUWeight on personal.slice
+#   test.sh --slices-reboot verify    after the boot: ergo.slice's values from its unit file, the io
+#                                     delegation in effect with no restart, the runtime value gone; then
+#                                     removes all of it
+if [[ ${1:-} == --slices-reboot ]]; then
+    ruser=hbreboot ruid=1991
+    ructl() { runuser -u "$ruser" -- env XDG_RUNTIME_DIR="/run/user/$ruid" "$@"; }
+    rmanager=/sys/fs/cgroup/user.slice/user-$ruid.slice/user@$ruid.service
+    wait_manager() {
+        for _ in $(seq 1 60); do
+            ructl systemctl --user is-system-running 2>/dev/null | grep -qE 'running|degraded' && return
+            sleep 0.5
+        done
+        fail "user@$ruid.service is not up"
+    }
+    case ${2:-} in
+    prepare)
+        id "$ruser" >/dev/null 2>&1 || useradd -u "$ruid" -U -m -s /bin/bash "$ruser"
+        mkdir -p "${prefix}delegate-aside"
+        for f in /etc/systemd/system/user@.service.d/*.conf /run/systemd/system/user@.service.d/*.conf /usr/lib/systemd/system/user@.service.d/*.conf; do
+            [[ -f $f && ${f##*/} != 40-workbox-delegate.conf ]] && grep -q '^Delegate' "$f" || continue
+            n=$(wc -l < "${prefix}delegate-aside/list" 2>/dev/null || echo 0)
+            cp -a "$f" "${prefix}delegate-aside/$n"
+            echo "$f" >> "${prefix}delegate-aside/list"
+            rm -f "$f"
+        done
+        bash "$here/../../workbox/system-tools.sh" slices || fail "system-tools.sh slices"
+        loginctl enable-linger "$ruser"
+        wait_manager
+        ructl systemctl --user set-property --runtime personal.slice CPUWeight=77
+        [[ $(ructl systemctl --user show -p CPUWeight --value personal.slice) == 77 ]] || fail "the runtime CPUWeight did not take"
+        pass "prepared: $ruser lingering, slices installed, other Delegate drop-ins aside, personal.slice CPUWeight=77 at runtime only; reboot the VM, then --slices-reboot verify"
+        ;;
+    verify)
+        trap 'cleanup_tools; loginctl disable-linger "$ruser" 2>/dev/null; systemctl stop "user@$ruid.service" 2>/dev/null; userdel -r "$ruser" 2>/dev/null' EXIT
+        wait_manager
+        [[ $(awk '{ print int($1) }' /proc/uptime) -lt 600 ]] || fail "the VM did not reboot (up $(cut -d' ' -f1 /proc/uptime) s)"
+        ructl systemd-run --user --scope --quiet --collect --unit=hbr-place.scope --slice=ergo.slice \
+            sh -c "dd if=/dev/zero of=/home/$ruser/io bs=1M count=8 oflag=direct status=none; sleep 30" &
+        job=$!
+        for _ in $(seq 1 20); do [[ -n $(cat "$rmanager/ergo.slice/hbr-place.scope/cgroup.procs" 2>/dev/null) ]] && break; sleep 0.5; done
+        sleep 2
+        quota_pct=$(awk -v n="$(nproc)" 'BEGIN { printf "%d", 62.5 * n + 0.5 }')
+        [[ $(cat "$rmanager/ergo.slice/cpu.weight") == 20 && $(cat "$rmanager/ergo.slice/cpu.max") == "$((quota_pct * 1000)) 100000" ]] ||
+            fail "after the reboot ergo.slice has cpu.weight $(cat "$rmanager/ergo.slice/cpu.weight"), cpu.max $(cat "$rmanager/ergo.slice/cpu.max")"
+        wbytes=$(awk '{ for (i = 2; i <= NF; i++) if ($i ~ /^wbytes=/) { sub(/wbytes=/, "", $i); s += $i } } END { print s + 0 }' "$rmanager/ergo.slice/io.stat" 2>/dev/null || echo 0)
+        ((wbytes >= 8 << 20)) || fail "after the reboot ergo.slice counts $wbytes bytes written: the io delegation is not in effect"
+        ructl systemctl --user stop hbr-place.scope
+        wait "$job" 2>/dev/null || true
+        [[ $(ructl systemctl --user show -p CPUWeight --value personal.slice) == 100 ]] ||
+            fail "personal.slice CPUWeight after the reboot: $(ructl systemctl --user show -p CPUWeight --value personal.slice)"
+        [[ $(ructl systemctl --user show -p FragmentPath --value ergo.slice) == /etc/systemd/user/ergo.slice ]] || fail "ergo.slice is not read from /etc/systemd/user"
+        pass "after a real reboot: ergo.slice cpu.weight 20, cpu.max $quota_pct% from its unit file, io counted ($wbytes bytes) with no manager restart; the runtime-only CPUWeight=77 on personal.slice is gone (100), as the exe box lost ergo.slice's"
+        ;;
+    *) fail "usage: test.sh --slices-reboot prepare | verify" ;;
+    esac
+    exit 0
+fi
+installimage_src=${1:?usage: test.sh <installimage checkout> | test.sh --cleanup | test.sh --slices-reboot prepare|verify}
 
 # A run cut short (a VM restart skips the exit trap) left its things: remove them first.
 (cleanup) >/dev/null 2>&1
@@ -230,17 +300,18 @@ mkswap -q "${d1}p3"
 mkfs.btrfs -q -f "${d1}p4"
 mkdir -p "$work/top" "$T"
 mount "${d1}p4" "$work/top"
-for sv in @root @home @tmp @workspaces; do btrfs subvolume create "$work/top/$sv" >/dev/null; done
+for sv in @root @home @tmp @workspaces @runs; do btrfs subvolume create "$work/top/$sv" >/dev/null; done
 btrfs subvolume set-default 256 "$work/top"
 umount "$work/top"
 mount -o subvol=@root "${d1}p4" "$T"
-mkdir -p "$T/boot" "$T/home/$user" "$T/tmp" "$T/workspaces" "$T/etc"
+mkdir -p "$T/boot" "$T/home/$user" "$T/tmp" "$T/workspaces" "$T/runs" "$T/etc"
 mount "${d1}p2" "$T/boot"
 mkdir -p "$T/boot/efi"
 mount "${d1}p1" "$T/boot/efi"
 mount -o subvol=@home "${d1}p4" "$T/home/$user"
 mount -o subvol=@tmp "${d1}p4" "$T/tmp"
 mount -o subvol=@workspaces "${d1}p4" "$T/workspaces"
+mount -o subvol=@runs "${d1}p4" "$T/runs"
 swapon "${d1}p3"
 echo kernel > "$T/boot/vmlinuz-test"
 mkdir -p "$T/boot/efi/EFI/ubuntu"
@@ -251,7 +322,7 @@ echo grub > "$T/boot/efi/EFI/ubuntu/grubx64.efi"
     printf '%sp1 /boot/efi vfat umask=0077 0 1\n' "$d1"
     printf '%sp2 /boot ext4 defaults 0 0\n' "$d1"
     printf '%sp3 none swap sw 0 0\n' "$d1"
-    for pair in @root:/ @home:/home/$user @tmp:/tmp @workspaces:/workspaces; do
+    for pair in @root:/ @home:/home/$user @tmp:/tmp @workspaces:/workspaces @runs:/runs; do
         printf '%sp4 %s btrfs defaults,subvol=%s 0 0\n' "$d1" "${pair#*:}" "${pair%%:*}"
     done
 } > "$T/etc/fstab"
@@ -275,7 +346,7 @@ pass "btrfs raid1 on ${d1}p4 and ${d2}p4"
 pass "/boot on mdraid1, files copied"
 grep -qE '^UUID=[^ ]+ /boot ext4' "$T/etc/fstab" || fail "fstab /boot line not switched"
 grep -qE '^UUID=[^ ]+ none swap' "$T/etc/fstab" || fail "fstab swap line not switched"
-[[ $(awk '$3 == "btrfs"' "$T/etc/fstab" | grep -c 'subvol=@[a-z]*,noatime,compress=zstd:3,.*user_subvol_rm_allowed') == 4 ]] || fail "fstab btrfs options"
+[[ $(awk '$3 == "btrfs"' "$T/etc/fstab" | grep -c 'subvol=@[a-z]*,noatime,compress=zstd:3,.*user_subvol_rm_allowed') == 5 ]] || fail "fstab btrfs options"
 awk '$3 == "btrfs" && $1 !~ /^UUID=/ { exit 1 }' "$T/etc/fstab" || fail "a btrfs fstab line names a device, not the UUID"
 pass "fstab: /boot and swap by md UUID, btrfs by UUID with the options"
 mkdir -p "$work/esp2"
@@ -309,9 +380,9 @@ ssh-keygen -q -t ed25519 -N '' -C hb-test -f "$work/id_test"
 export HB_APT_REPOS=0 HB_PACKAGES="btrbk sshfs mdadm rsync zstd attr" HB_SSH_LISTEN=127.0.0.1 HB_SSH_PORT=2299
 # storage.conf as it is, each limit in MiB where it says GiB: small enough to fill here. storage.sh's
 # copies go to a scratch lib (the box's is /usr/local/lib/hetzner-workbox).
-sed -E -e 's/^((scratch|cache)[[:space:]]+[^[:space:]]+[[:space:]]+[0-9]+)G/\1M/' \
+sed -E -e 's/^((scratch|cache|durable)[[:space:]]+[^[:space:]]+[[:space:]]+[0-9]+)G/\1M/' \
     -e 's/^(qgroup[[:space:]]+[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+[0-9]+)G/\1M/' "$here/storage.conf" > "$work/storage.conf"
-grep -E '^(scratch|cache|qgroup)' "$work/storage.conf" | grep -q '[0-9]G' && fail "the scaled storage.conf still has a GiB limit"
+grep -E '^(scratch|cache|durable|qgroup)' "$work/storage.conf" | grep -q '[0-9]G' && fail "the scaled storage.conf still has a GiB limit"
 export HB_STORAGE_CONF=$work/storage.conf HB_LIB=$work/lib
 HB_EXTRA_KEYS=$(cat "$work/id_test.pub") bash "$here/provision.sh" user keys packages storage sshd upgrades sysctl > "$work/prov-1.log" ||
     { cat "$work/prov-1.log"; fail "provision.sh"; }
@@ -359,7 +430,7 @@ while read -r _ path limit owner mode group; do
         btrfs qgroup show -p --raw "$T/workspaces" | awk -v q="0/$(btrfs inspect-internal rootid "$p")" '$1 == q' | grep -q '1/100' ||
             fail "$path is not in qgroup 1/100"
     fi
-done < <(sed -e 's/#.*//' "$work/storage.conf" | grep -E '^(scratch|cache)')
+done < <(sed -e 's/#.*//' "$work/storage.conf" | grep -E '^(scratch|cache|durable)')
 for d in .cache go go/pkg .bun .bun/install; do
     [[ $(stat -c %U "$T/home/$user/$d") == "$user" ]] || fail "the home's $d was made as $(stat -c %U "$T/home/$user/$d"), not $user"
 done
@@ -373,6 +444,18 @@ grep -q 'Disk quota exceeded' "$work/dd.err" || { cat "$work/dd.err"; fail "/tmp
 fill "$T/tmp/beside" 20 || { cat "$work/dd.err"; fail "/tmp refused a write while /tmp/opencode was full"; }
 fill "$T/workspaces/beside" 20 || { cat "$work/dd.err"; fail "/workspaces refused a write while /tmp/opencode was full"; }
 rm -f "$T/tmp/opencode/past" "$T/tmp/beside" "$T/workspaces/beside"
+# The run families' temps: Ergo's full, as the user (a caller's TMPDIR), leaves the others and /tmp writable.
+if as_user dd if=/dev/urandom of="$T/tmp/ergo/link.tmp" bs=1M count=100 conv=fsync status=none 2>"$work/dd.err"; then
+    fail "100 MiB went into /tmp/ergo, limit 80 MiB"
+fi
+grep -q 'Disk quota exceeded' "$work/dd.err" || { cat "$work/dd.err"; fail "/tmp/ergo's refusal was not EDQUOT"; }
+for f in bite-work personal opencode; do
+    as_user dd if=/dev/urandom of="$T/tmp/$f/beside" bs=1M count=20 conv=fsync status=none 2>"$work/dd.err" ||
+        { cat "$work/dd.err"; fail "/tmp/$f refused a write while /tmp/ergo was full"; }
+done
+fill "$T/tmp/beside" 20 || { cat "$work/dd.err"; fail "/tmp refused a write while /tmp/ergo was full"; }
+rm -f "$T/tmp/ergo/link.tmp" "$T/tmp/beside" "$T"/tmp/{bite-work,personal,opencode}/beside
+pass "a full /tmp/ergo (a family's TMPDIR, 80 MiB here) refuses with EDQUOT; /tmp/bite-work, /tmp/personal, /tmp/opencode and /tmp still take writes"
 # The caches' group: each member under its own limit, together past the group's 150 MiB.
 fill "$T/workspaces/.cache/ergo-gocache/a" 90 || { cat "$work/dd.err"; fail "90 MiB into ergo-gocache (100)"; }
 fill "$T/workspaces/.cache/unlisted" 50 || { cat "$work/dd.err"; fail "50 MiB into .cache (60)"; }
@@ -400,15 +483,60 @@ pass "a directory holding files is named and left; an empty one becomes the subv
 # hetzner-workbox-storage.service's apply then finds it in place. A first boot, with no /tmp/opencode:
 # tmpfiles makes a plain directory as the user, which the apply replaces with the subvolume.
 grep -v '/var/tmp' "$here/../../workbox/systemd/tmp/tmpfiles.d/tmp.conf" | sed -e "s|/tmp|$T/tmp|" -e "s/exedev/$user/g" > "$work/boot-tmp.conf"
-echo run > "$T/tmp/opencode/run-file"
-echo left > "$T/tmp/left"
+# provision.sh's storage phase made /runs/vperf2 (the user's) and /tmp/vperf2, a link to it.
+[[ -L $T/tmp/vperf2 && $(readlink "$T/tmp/vperf2") == /runs/vperf2 && -d $T/runs/vperf2 && $(stat -c %u "$T/runs/vperf2") == "$uid" ]] ||
+    fail "the storage phase did not make /tmp/vperf2 -> /runs/vperf2: $(ls -la "$T/tmp" "$T/runs" 2>&1 | tr '\n' ' ')"
+# The exe box's case first, tmp.conf alone with /tmp/vperf2 a directory: what its x line does at a boot.
+rm -f "$T/tmp/vperf2"
+mkdir "$T/tmp/vperf2"
+echo record > "$T/tmp/vperf2/record"
 systemd-tmpfiles --remove --create "$work/boot-tmp.conf" 2>&1 | grep -v '^$' || true
-[[ $(ls -A "$T/tmp") == opencode && -z $(ls -A "$T/tmp/opencode") && $(stat -c %a "$T/tmp") == 1777 ]] ||
+if [[ -e $T/tmp/vperf2/record ]]; then vperf2_exe="kept"; else vperf2_exe="emptied (the x line holds off the daily clean only: move it before that box reboots)"; fi
+rm -rf "$T/tmp/vperf2"
+# Then the Hetzner box's boot: hetzner-runs.conf (it sorts first) and tmp.conf.
+sed -e "s|/tmp|$T/tmp|" -e "s|/runs|$T/runs|g" -e "s/__UID__/$uid/g" "$here/systemd/tmpfiles.d/hetzner-runs.conf" > "$work/boot-runs.conf"
+echo record > "$T/runs/vperf2/record"
+echo run > "$T/tmp/opencode/run-file"
+echo kept > "$T/runs/boot-record"
+touch -d '2020-01-01' "$T/runs/boot-record"
+echo left > "$T/tmp/left"
+systemd-tmpfiles --remove --create "$work/boot-runs.conf" "$work/boot-tmp.conf" 2>&1 | grep -v '^$' || true
+[[ -L $T/tmp/vperf2 && $(readlink "$T/tmp/vperf2") == "$T/runs/vperf2" && $(cat "$T/tmp/vperf2/record") == record ]] ||
+    fail "after the boot /tmp/vperf2 is not the link to /runs/vperf2 with its record: $(ls -la "$T/tmp" | tr '\n' ' ')"
+# The daily clean ages /tmp, but not a path with a line of its own: the link stays, however old.
+touch -h -d '2020-01-01' "$T/tmp/vperf2"
+printf 'D %s 1777 root root 1s\n' "$T/tmp" > "$work/age-runs.conf"
+systemd-tmpfiles --clean "$work/age-runs.conf" "$work/boot-runs.conf" "$work/boot-tmp.conf" 2>/dev/null || true
+[[ -L $T/tmp/vperf2 && $(cat "$T/tmp/vperf2/record") == record ]] || fail "the daily clean took the /tmp/vperf2 link or its record"
+rm -f "$T/runs/vperf2/record"
+# /runs: no rule of tmp.conf names it, so neither a boot nor the daily clean touches it, old or not.
+sed -e 's/#.*//' "$work/boot-tmp.conf" | grep -q '/runs' && fail "tmp.conf names /runs"
+systemd-tmpfiles --clean "$work/boot-tmp.conf" 2>/dev/null || true
+[[ $(cat "$T/runs/boot-record") == kept ]] || fail "a boot or the clean took /runs/boot-record"
+rm -f "$T/runs/boot-record"
+[[ $(ls -A "$T/tmp" | sort | tr '\n' ' ') == "bite-work ergo opencode personal vperf2 " && $(stat -c %a "$T/tmp") == 1777 ]] ||
     fail "the boot's tmpfiles did not empty /tmp: $(find "$T/tmp" | tr '\n' ' ')"
-[[ $(stat -c %i "$T/tmp/opencode") == 256 && $(stat -c %U "$T/tmp/opencode") == "$user" &&
-    $(cat "$(qgroup_of "$T/tmp/opencode")/max_referenced") == $((100 << 20)) ]] || fail "/tmp/opencode after the boot"
+# Each family's temp is emptied. Whether the boot's tmpfiles keeps the subvolume itself depends on
+# systemd: 259 (26.04) leaves it; 255 (noble) removes the emptied subvolume under D /tmp and makes a
+# plain directory for its own D line. Either way hetzner-workbox-storage.service, ordered after
+# systemd-tmpfiles-setup and before any user session, makes each a limited subvolume again.
+kept=()
+for f in opencode ergo bite-work personal; do
+    [[ -z $(ls -A "$T/tmp/$f") ]] || fail "/tmp/$f after the boot: $(ls -A "$T/tmp/$f")"
+    [[ $(stat -c %i "$T/tmp/$f") == 256 ]] && kept+=("$f")
+done
 bash "$HB_LIB/storage.sh" apply > "$work/boot-storage.log" 2>&1 || { cat "$work/boot-storage.log"; fail "storage.sh apply after the boot"; }
-grep '^==>' "$work/boot-storage.log" && fail "storage.sh apply changed something after a boot"
+if ((${#kept[@]} == 4)); then
+    grep '^==>' "$work/boot-storage.log" && fail "storage.sh apply changed something after a boot that kept the subvolumes"
+    boot_kept="tmpfiles kept the four subvolumes"
+else
+    boot_kept="tmpfiles kept ${#kept[@]} of 4 subvolumes (systemd $(systemctl --version | awk 'NR == 1 { print $2 }')); the storage apply made the others again"
+fi
+while read -r _ path limit _; do
+    case $path in /tmp/opencode | /tmp/ergo | /tmp/bite-work | /tmp/personal) ;; *) continue ;; esac
+    [[ $(stat -c %i "$T$path") == 256 && $(stat -c %U "$T$path") == "$user" &&
+        $(cat "$(qgroup_of "$T$path")/max_referenced") == $((${limit%M} << 20)) ]] || fail "$path after the boot and the storage apply"
+done < <(sed -e 's/#.*//' "$work/storage.conf" | grep -E '^scratch')
 btrfs subvolume delete "$T/tmp/opencode" >/dev/null
 systemd-tmpfiles --remove --create "$work/boot-tmp.conf" 2>&1 | grep -v '^$' || true
 [[ -d $T/tmp/opencode && $(stat -c %i "$T/tmp/opencode") != 256 && $(stat -c %U "$T/tmp/opencode") == "$user" ]] ||
@@ -417,7 +545,7 @@ bash "$HB_LIB/storage.sh" apply > "$work/boot-storage-2.log" 2>&1 || { cat "$wor
 [[ $(stat -c %i "$T/tmp/opencode") == 256 && $(stat -c %U "$T/tmp/opencode") == "$user" &&
     $(cat "$(qgroup_of "$T/tmp/opencode")/max_referenced") == $((100 << 20)) ]] || fail "/tmp/opencode after a first boot"
 systemctl is-enabled --quiet hetzner-workbox-storage.service || fail "hetzner-workbox-storage.service is not enabled"
-pass "a boot empties /tmp and /tmp/opencode, whose subvolume and limit stay; on a first boot the storage unit (enabled) makes it a limited subvolume"
+pass "a boot empties /tmp and the families' temps, each again a limited subvolume before any session ($boot_kept); /tmp/vperf2 a link to /runs/vperf2 again, its record read through it (on the exe box, with tmp.conf alone, a boot leaves it $vperf2_exe); /runs (a 2020 file) untouched by the boot and the clean; on a first boot the storage unit (enabled) makes it a limited subvolume"
 
 # ------------------------------------------------------------------ 3b
 step "system-tools.sh (workbox/pins.conf), for real"
@@ -534,11 +662,70 @@ tools_scope=''
 # The run families (workbox/slices.conf, by provision.sh reserve): slices of the user's own manager.
 uctl() { runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" "$@"; }
 manager=/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service
+# The io delegation, shown to matter. Stock Ubuntu's user@.service delegates pids, memory and cpu; a
+# drop-in of the image's own (lima.conf, Delegate=yes, on a Lima VM) would hide whether ours does
+# anything, so every other Delegate drop-in is set aside (the cleanup puts them back). Without ours, a
+# run placed in ergo.slice has no io.stat (IOAccounting counts nothing): the check fails. With ours
+# installed and a daemon-reload alone it still fails (the running manager keeps its controllers); it passes once the
+# manager starts again, which on the box is its next boot.
+ours=/etc/systemd/system/user@.service.d/40-workbox-delegate.conf
+aside=${prefix}delegate-aside
+mkdir -p "$aside"
+for f in /etc/systemd/system/user@.service.d/*.conf /run/systemd/system/user@.service.d/*.conf /usr/lib/systemd/system/user@.service.d/*.conf; do
+    [[ -f $f && $f != "$ours" ]] && grep -q '^Delegate' "$f" || continue
+    n=$(wc -l < "$aside/list" 2>/dev/null || echo 0)
+    cp -a "$f" "$aside/$n"
+    echo "$f" >> "$aside/list"
+    rm -f "$f"
+done
+restart_manager() {
+    systemctl restart "user@$uid.service"
+    for _ in $(seq 1 20); do
+        uctl systemctl --user is-system-running 2>/dev/null | grep -qE 'running|degraded' && return
+        sleep 0.5
+    done
+    fail "user@$uid.service did not come back"
+}
+# What ergo.slice counts for a run placed there that writes 8 MiB (direct IO): the bytes its io.stat
+# shows written, or "none" when it has no io.stat.
+install -d -o "$user" "$work/io"
+placed_io() {
+    uctl systemd-run --user --scope --quiet --collect --unit=hbt-io.scope --slice=ergo.slice \
+        sh -c "dd if=/dev/zero of=$work/io/placed bs=1M count=8 oflag=direct status=none; sleep 30" &
+    local job=$! w
+    for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -n $(cat "$manager/ergo.slice/hbt-io.scope/cgroup.procs" 2>/dev/null) ]] && break; sleep 0.5; done
+    sleep 2
+    if [[ -r $manager/ergo.slice/io.stat ]]; then
+        w=$(awk '{ for (i = 2; i <= NF; i++) if ($i ~ /^wbytes=/) { sub(/wbytes=/, "", $i); s += $i } } END { print s + 0 }' "$manager/ergo.slice/io.stat")
+    else
+        w=none
+    fi
+    uctl systemctl --user stop hbt-io.scope
+    wait "$job" 2>/dev/null || true
+    rm -f "$work/io/placed"
+    echo "$w"
+}
+rm -f "$ours"
+systemctl daemon-reload
+restart_manager
+systemctl show -p DelegateControllers --value "user@$uid.service" | grep -qw io && fail "with every Delegate drop-in aside, user@$uid.service still delegates io: the test cannot fail"
+without=$(placed_io)
+[[ $without == none ]] || fail "without the delegation, ergo.slice still counts IO ($without bytes): the check proves nothing"
+bash "$tools" slices > "$work/slices-deleg.log" 2>&1 || { cat "$work/slices-deleg.log"; fail "system-tools.sh slices"; }
+[[ -f $ours ]] || fail "system-tools.sh slices did not put back $ours"
 uctl systemctl --user daemon-reload
-for c in cpu io memory; do
-    grep -qw "$c" "$manager/cgroup.controllers" || fail "the user manager has no $c controller: $(cat "$manager/cgroup.controllers")"
+reloaded=$(placed_io)
+[[ $reloaded == none ]] || fail "a daemon-reload alone gave ergo.slice IO accounting ($reloaded bytes; the README says a restart is needed)"
+restart_manager
+# systemd turns a controller on below the manager only once a unit there asks for it, so io shows in
+# a placed run's slice, not in the manager's subtree_control at rest.
+restarted=$(placed_io)
+[[ $restarted =~ ^[0-9]+$ ]] && ((restarted >= 8 << 20)) || fail "after the manager's restart ergo.slice counts '$restarted' bytes written, want at least 8 MiB"
+for c in cpu memory; do
+    grep -qw "$c" "$manager/cgroup.subtree_control" || fail "the user manager passes no $c down: $(cat "$manager/cgroup.subtree_control")"
 done
 systemctl show -p DelegateControllers "user@$uid.service" | grep -qw io || fail "user@$uid.service does not delegate io"
+pass "io delegation: with stock Ubuntu's alone a run in ergo.slice counts no IO ($without); with ours and a daemon-reload, still none ($reloaded); after the manager's restart (a boot on the box) its io.stat counts the run's write ($restarted bytes)"
 # A run placed by the user alone (no root): systemd-run --user --scope --slice=<family>.slice.
 uctl systemd-run --user --scope --quiet --collect --unit=hbt-place.scope --slice=ergo.slice sleep 30 &
 place_job=$!
@@ -546,14 +733,16 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -n $(cat "$manager/ergo.slice/hbt-place.sco
 [[ -n $(cat "$manager/ergo.slice/hbt-place.scope/cgroup.procs" 2>/dev/null) ]] || fail "the run is not in ergo.slice: $(find "$manager" -name 'hbt-place.scope')"
 mem_total=$(awk '/^MemTotal:/ { print $2 * 1024 }' /proc/meminfo)
 high=$(cat "$manager/ergo.slice/memory.high")
-[[ $(cat "$manager/ergo.slice/cpu.weight") == 20 && $(cat "$manager/ergo.slice/cpu.max") == "1000000 100000" ]] ||
+# CPUQuota=62.5%threads: 62.5% of a thread per online thread, rounded to a whole percent (cpu.max in µs per 100 ms).
+quota_pct=$(awk -v n="$(nproc)" 'BEGIN { printf "%d", 62.5 * n + 0.5 }')
+[[ $(cat "$manager/ergo.slice/cpu.weight") == 20 && $(cat "$manager/ergo.slice/cpu.max") == "$((quota_pct * 1000)) 100000" ]] ||
     fail "ergo.slice: cpu.weight $(cat "$manager/ergo.slice/cpu.weight"), cpu.max $(cat "$manager/ergo.slice/cpu.max")"
 # MemoryHigh=80%, above Ergo's own bound on its gates (slices.conf), to the page.
 awk -v h="$high" -v m="$mem_total" 'BEGIN { exit !(h > m * 0.79 && h < m * 0.81) }' || fail "ergo.slice memory.high $high, want 80% of $mem_total"
-[[ $(cat "$manager/ergo.slice/io.weight" 2>/dev/null) == "default 20" ]] || fail "ergo.slice io.weight: $(cat "$manager/ergo.slice/io.weight" 2>&1)"
+[[ -r $manager/ergo.slice/io.stat ]] || fail "ergo.slice has no io.stat (IOAccounting)"
 uctl systemctl --user stop hbt-place.scope
 wait "$place_job" 2>/dev/null || true
-pass "the user manager has cpu, io and memory; a run placed with systemd-run --user --slice=ergo.slice lands there: cpu.weight 20, cpu.max 10 CPUs, memory.high 80%, io.weight 20"
+pass "the user manager has cpu, io and memory; a run placed with systemd-run --user --slice=ergo.slice lands there: cpu.weight 20, cpu.max $quota_pct% (62.5% of $(nproc) threads), memory.high 80%, io.stat"
 # Ergo's gate places itself in ergo-gates.slice (its scripts/gate/scope_linux.go): systemd nests it in
 # ergo.slice by the dash, so the family's values hold over it. The callers' contract: a family's slice
 # answers `systemctl --user cat`; a name with no unit is not refused by systemd-run, it is made at the
@@ -600,6 +789,7 @@ awk -v r="$ratio" 'BEGIN { exit !(r > 3.5 && r < 7) }' || fail "personal:ergo CP
 ((ssh_ms < 5000)) || fail "ssh took $ssh_ms ms while the runs spun"
 pass "CPU-bound runs in personal.slice (100) and ergo.slice (20) got $ratio:1 over 20 s; ssh into bite.slice's sshd took $ssh_ms ms meanwhile"
 
+
 # /tmp's rules and the held-file guard, installed for real; the guard on the target's /tmp with short
 # ages: an old directory goes, one a process holds open (an open file, a working directory) stays;
 # without the guard tmpfiles takes the held one too.
@@ -607,26 +797,29 @@ bash "$tools" tmp > "$work/tmp-1.log" 2>&1 || { cat "$work/tmp-1.log"; fail "sys
 bash "$tools" tmp > "$work/tmp-2.log" 2>&1 || { cat "$work/tmp-2.log"; fail "system-tools.sh tmp rerun"; }
 grep '^==>' "$work/tmp-2.log" && fail "system-tools.sh tmp's rerun changed something"
 [[ $(systemctl show -p ExecStart systemd-tmpfiles-clean.service) == *workbox-tmp-clean* ]] || fail "the daily clean does not run workbox-tmp-clean"
-mkdir -p "$T/tmp/old/sub" "$T/tmp/held-file" "$T/tmp/held-cwd/x" "$T/tmp/opencode/old-run"
-touch "$T/tmp/old/sub/f" "$T/tmp/held-file/f" "$T/tmp/held-file/g" "$T/tmp/held-cwd/x/f" "$T/tmp/opencode/old-run/f"
+mkdir -p "$T/tmp/old/sub" "$T/tmp/held-file" "$T/tmp/held-cwd/x" "$T/tmp/held-deep/a/b" "$T/tmp/opencode/old-run"
+touch "$T/tmp/old/sub/f" "$T/tmp/held-file/f" "$T/tmp/held-file/g" "$T/tmp/held-cwd/x/f" "$T/tmp/held-deep/a/b/f" "$T/tmp/held-deep/a/g" "$T/tmp/opencode/old-run/f"
 printf 'D %s 1777 root root 2s\nD %s - - - 1h\n' "$T/tmp" "$T/tmp/opencode" > "$work/age-tmp.conf"
 sleep 3
 ( exec 9<"$T/tmp/held-file/f"; sleep 30 ) &
 hold1=$!
 ( cd "$T/tmp/held-cwd" && sleep 30 ) &
 hold2=$!
+# A file two levels down, held open: it and the directories above it stay, its old neighbour goes.
+( exec 8<"$T/tmp/held-deep/a/b/f"; sleep 30 ) &
+hold3=$!
 sleep 1
 WORKBOX_TMP_ROOTS=$T/tmp /usr/local/sbin/workbox-tmp-clean "$work/age-tmp.conf" > "$work/clean.log" 2>&1 || { cat "$work/clean.log"; fail "workbox-tmp-clean"; }
-[[ ! -e $T/tmp/old && ! -e $T/tmp/held-file/g ]] || fail "the cleaner kept old entries: $(find "$T/tmp" | tr '\n' ' ')"
-[[ -e $T/tmp/held-file/f && -e $T/tmp/held-cwd/x/f && -e $T/tmp/opencode/old-run/f ]] ||
+[[ ! -e $T/tmp/old && ! -e $T/tmp/held-file/g && ! -e $T/tmp/held-deep/a/g ]] || fail "the cleaner kept old entries: $(find "$T/tmp" | tr '\n' ' ')"
+[[ -e $T/tmp/held-file/f && -e $T/tmp/held-cwd/x/f && -e $T/tmp/held-deep/a/b/f && -e $T/tmp/opencode/old-run/f ]] ||
     fail "the cleaner took a held entry or /tmp/opencode's (its own line, 1h): $(find "$T/tmp" | tr '\n' ' ')"
-grep -q '2 held paths locked' "$work/clean.log" || { cat "$work/clean.log"; fail "the guard's count"; }
+grep -q '3 held paths locked' "$work/clean.log" || { cat "$work/clean.log"; fail "the guard's count"; }
 systemd-tmpfiles --clean "$work/age-tmp.conf" 2>/dev/null || true
-[[ ! -e $T/tmp/held-file/f ]] || fail "plain tmpfiles kept the held file: the guard proved nothing"
-kill "$hold1" "$hold2" 2>/dev/null
-wait "$hold1" "$hold2" 2>/dev/null || true
-rm -rf "$T/tmp/held-cwd" "$T/tmp/held-file" "$T/tmp/opencode/old-run"
-pass "the daily clean runs workbox-tmp-clean: an aged directory goes, one held open (file or working directory) stays, /tmp/opencode keeps its own age; plain tmpfiles would take the held one"
+[[ ! -e $T/tmp/held-file/f && ! -e $T/tmp/held-deep/a/b/f ]] || fail "plain tmpfiles kept a held file: the guard proved nothing"
+kill "$hold1" "$hold2" "$hold3" 2>/dev/null
+wait "$hold1" "$hold2" "$hold3" 2>/dev/null || true
+rm -rf "$T/tmp/held-cwd" "$T/tmp/held-file" "$T/tmp/held-deep" "$T/tmp/opencode/old-run"
+pass "the daily clean runs workbox-tmp-clean: an aged directory goes, one held open (a file, a file two levels down, a working directory) stays, /tmp/opencode keeps its own age; plain tmpfiles would take the held one"
 
 # The free-space figures: btrfs filesystem usage's, readable by the user.
 WORKBOX_DISK_FREE_OUT=$work/run-workbox/disk-free sh "$here/../../workbox/systemd/disk-free/workbox-disk-free" "$T/workspaces" ||
@@ -732,6 +925,59 @@ pass "pass 2: $(mib "$grown2") MiB stored, every subvolume incremental, and its 
 bash "$here/sync.sh" rest > "$work/rest.log" 2>&1 || { cat "$work/rest.log"; fail "rest"; }
 [[ $(cat "$work/rest-target$S/var/lib/mongodb/WiredTiger") == wired && -f $work/rest-target$S/usr/local/bin/go ]] || fail "rest did not copy"
 pass "rest: rsync of the paths outside the subvolumes"
+# The durable run areas: the exe box's /tmp/vperf2 (the Bite run's records) to the target's /runs. It
+# measures and copies nothing without --yes; with it, it copies, compares every file's checksum and
+# leaves the source as it was; a narrowed copy is the same command with an include list.
+v=$S/tmp/vperf2
+mkdir -p "$v/runs/r1/receipts" "$v/runs/r2" "$v/db/shard"
+head -c $((3 << 20)) /dev/urandom > "$v/runs/r1/receipts/receipt.json"
+echo r2 > "$v/runs/r2/record.md"
+ln "$v/runs/r2/record.md" "$v/runs/r2/record-link.md"
+truncate -s 64M "$v/db/shard/sparse.db"
+# Two copies of an OpenCode session store, as in the Bite run's area: left out by default and named.
+mkdir -p "$v/oc/a" "$v/oc/b"
+head -c $((1 << 20)) /dev/urandom > "$v/oc/a/opencode.db"
+echo wal > "$v/oc/a/opencode.db-wal"
+head -c $((1 << 20)) /dev/urandom > "$v/oc/b/opencode.db"
+head -c $((1 << 20)) /dev/urandom | dd of="$v/db/shard/sparse.db" bs=1M seek=10 conv=notrunc status=none
+chown -R "$uid:$uid" "$v"
+(cd "$v" && find . -printf '%U %G %m %s %p\n' | sort && find . -type f -exec sha256sum {} + | sort -k2) | grep -v opencode.db > "$work/vperf2-before"
+runs_env=(HB_RUNS_FROM="$v" HB_TARGET_PREFIX="$T")
+env "${runs_env[@]}" bash "$here/sync.sh" --dry-run runs > "$work/runs-dry.log" 2>&1 || { cat "$work/runs-dry.log"; fail "sync.sh --dry-run runs"; }
+env "${runs_env[@]}" bash "$here/sync.sh" runs > "$work/runs-no.log" 2>&1 || { cat "$work/runs-no.log"; fail "sync.sh runs (no --yes)"; }
+measured=$(sed -n 's/^runs: .* -> \/runs\/vperf2: \([0-9]*\) bytes.*/\1/p' "$work/runs-dry.log")
+# 3 MiB + 3 bytes + the sparse file's 64 MiB (rsync counts a file's length; --sparse keeps the holes).
+((measured >= 67 << 20 && measured < 68 << 20)) || { cat "$work/runs-dry.log"; fail "runs measured $measured bytes"; }
+grep -q '^runs: .* in all; at \$0.05/GB past exe.s 200 GB: \$0.00 at most$' "$work/runs-dry.log" || { cat "$work/runs-dry.log"; fail "runs printed no cost"; }
+for db in oc/a/opencode.db oc/a/opencode.db-wal oc/b/opencode.db; do
+    grep -q "^runs: left out (an OpenCode session store; HB_RUNS_WITH_DB=1 copies it): $v/$db (" "$work/runs-dry.log" || { cat "$work/runs-dry.log"; fail "the dry run did not name $db"; }
+done
+grep -q 'Rerun with --yes' "$work/runs-no.log" || { cat "$work/runs-no.log"; fail "runs without --yes did not say how to copy"; }
+[[ -z $(ls -A "$T/runs/vperf2") ]] || fail "runs copied without --yes"
+env "${runs_env[@]}" bash "$here/sync.sh" runs --yes > "$work/runs-yes.log" 2>&1 || { cat "$work/runs-yes.log"; fail "sync.sh runs --yes"; }
+grep -q "^runs: verified /runs/vperf2: every file's checksum equals $v's. $v stays on this box until it is retired.$" "$work/runs-yes.log" ||
+    { cat "$work/runs-yes.log"; fail "runs did not report its comparison"; }
+(cd "$T/runs/vperf2" && find . -printf '%U %G %m %s %p\n' | sort && find . -type f -exec sha256sum {} + | sort -k2) | grep -v opencode.db > "$work/vperf2-target"
+(cd "$v" && find . -printf '%U %G %m %s %p\n' | sort && find . -type f -exec sha256sum {} + | sort -k2) | grep -v opencode.db > "$work/vperf2-after"
+diff "$work/vperf2-before" "$work/vperf2-after" >/dev/null || fail "runs changed the source"
+diff "$work/vperf2-before" "$work/vperf2-target" >/dev/null || { diff "$work/vperf2-before" "$work/vperf2-target" | head; fail "the copy differs from the source"; }
+[[ ! -e $T/runs/vperf2/oc/a/opencode.db && ! -e $T/runs/vperf2/oc/b/opencode.db && ! -e $T/runs/vperf2/oc/a/opencode.db-wal ]] || fail "runs copied a session store without HB_RUNS_WITH_DB"
+[[ $(stat -c %i "$T/runs/vperf2/runs/r2/record.md") == $(stat -c %i "$T/runs/vperf2/runs/r2/record-link.md") ]] || fail "runs lost a hard link"
+(($(stat -c %b "$T/runs/vperf2/db/shard/sparse.db") * 512 < 8 << 20)) || fail "runs filled the sparse file's holes"
+# A copy that went wrong unseen (same size and time, other bytes): the comparison catches it.
+printf 'X' | dd of="$T/runs/vperf2/runs/r1/receipts/receipt.json" bs=1 seek=100 conv=notrunc status=none
+touch -r "$v/runs/r1/receipts/receipt.json" "$T/runs/vperf2/runs/r1/receipts/receipt.json"
+if env "${runs_env[@]}" bash "$here/sync.sh" runs --yes > "$work/runs-bad.log" 2>&1; then cat "$work/runs-bad.log"; fail "runs passed a copy that differs"; fi
+grep -q 'runs: /runs/vperf2 differs from' "$work/runs-bad.log" || { cat "$work/runs-bad.log"; fail "runs failed for another reason"; }
+# A narrowed copy: the same command with HB_RUNS_INCLUDE, a file of subpaths.
+printf 'runs/r2\n' > "$work/runs-include"
+install -d -o "$uid" -g "$uid" "$T/runs/narrow"
+env "${runs_env[@]}" HB_RUNS_INCLUDE="$work/runs-include" HB_RUNS_TO=/runs/narrow bash "$here/sync.sh" runs --yes > "$work/runs-narrow.log" 2>&1 ||
+    { cat "$work/runs-narrow.log"; fail "runs with an include list"; }
+[[ -f $T/runs/narrow/vperf2/runs/r2/record.md && ! -e $T/runs/narrow/vperf2/runs/r1 && ! -e $T/runs/narrow/vperf2/db ]] ||
+    { find "$T/runs/narrow"; fail "the include list did not narrow the copy"; }
+rm -rf "$T/runs/narrow"
+pass "runs: $measured bytes measured and priced, nothing copied without --yes; with it, a copy equal by checksum (hard links, holes kept), the source untouched; a changed byte is caught; an include list narrows it; the two opencode.db copies are named and left out"
 bash "$here/sync.sh" activate 2 > "$work/activate.log" 2>&1 || { cat "$work/activate.log"; fail "activate"; }
 # What the reboot would do: mount the subvolumes by name again.
 umount "$T/home/$user" "$T/workspaces"
@@ -828,28 +1074,37 @@ pass "as $user: snapshot of a subvolume base, exclusive $before then $after byte
 step "backup.sh"
 install -d "$work/storagebox"
 openssl rand -hex 32 > "$work/backup.key"
-export HB_BACKUP_DIR=$work/storagebox HB_BACKUP_KEY=$work/backup.key HB_SNAPSHOT_DIR=$T/var/lib/btrbk/snapshots \
-    HB_BACKUP_SUBVOLS="$T/home/$user $T/workspaces"
+export HB_BACKUP_DIR=$work/storagebox HB_BACKUP_KEY=$work/backup.key HB_SNAPSHOT_DIR=$T/var/lib/btrbk/snapshots
+unset HB_BACKUP_SUBVOLS
+# What a run backs up, by default: the home with its nested subvolumes and /runs; not /workspaces (the
+# owner's ruling) and not the caches.
+bash "$here/backup.sh" subvolumes > "$work/backup-subvols" 2>&1 || { cat "$work/backup-subvols"; fail "backup.sh subvolumes"; }
+grep -qx "$T/home/$user" "$work/backup-subvols" && grep -qx "$T/runs" "$work/backup-subvols" &&
+    grep -qx "$T/home/$user/Developer/personal/sub" "$work/backup-subvols" || { cat "$work/backup-subvols"; fail "the backup leaves out the home, /runs or a nested subvolume"; }
+grep -q "^$T/workspaces" "$work/backup-subvols" && { cat "$work/backup-subvols"; fail "the backup takes /workspaces"; }
+grep -qE '/(\.cache/go-build|\.bun/install/cache|go/pkg/mod|\.npm)$' "$work/backup-subvols" && { cat "$work/backup-subvols"; fail "the backup takes a cache"; }
+pass "the backup's list: the home, its nested subvolumes and /runs; no /workspaces, no cache ($(wc -l < "$work/backup-subvols") subvolumes)"
+echo 'record, night 1' > "$T/runs/record.txt"
+chown "$user:$user" "$T/runs/record.txt"
 bash "$here/backup.sh" run > "$work/backup-1.log" 2>&1 || { cat "$work/backup-1.log"; fail "backup run"; }
-echo 'export const a = 4' > "$T/workspaces/.rifts/bite/feat/index.ts"
+echo 'record, night 2' > "$T/runs/record.txt"
 sleep 1 # snapshot names carry the second
 bash "$here/backup.sh" run > "$work/backup-2.log" 2>&1 || { cat "$work/backup-2.log"; fail "backup run 2"; }
 month=$(date -u +%Y-%m)
 dir=$work/storagebox/bite-cristian/$month
-info=$(find "$dir" -maxdepth 1 -name '*.info' | wc -l)
-((info >= 6)) || fail "backup wrote $info .info files, want one per subvolume and night"
-feat_name=$(ls "$dir" | sed -n 's/\(.*_rifts\.bite\.feat\)\..*\.info$/\1/p' | sort -u)
-[[ -n $feat_name ]] || fail "no backup of the Rift feat"
-grep -lE '^RECEIVED_PARENT_UUID=[0-9a-f]{8}-' "$dir/$feat_name".*.info >/dev/null || fail "the second backup is not incremental"
-[[ $(ls "$dir/$feat_name".*.info | wc -l) == 2 ]] ||
-    { ls "$dir" "$T/var/lib/btrbk/snapshots"; cat "$work/backup-2.log"; fail "want two backups of the Rift feat"; }
-grep -q '^encrypt=openssl_enc' "$(ls "$dir/$feat_name".*.info | head -n 1)" || fail "the backup is not encrypted"
+runs_name=$(ls "$dir" | sed -n 's/\(.*\.runs\)\..*\.info$/\1/p' | sort -u)
+[[ -n $runs_name ]] || { ls "$dir"; fail "no backup of /runs"; }
+compgen -G "$dir/*workspaces*" >/dev/null && fail "a backup of /workspaces was written"
+grep -lE '^RECEIVED_PARENT_UUID=[0-9a-f]{8}-' "$dir/$runs_name".*.info >/dev/null || fail "the second backup is not incremental"
+[[ $(ls "$dir/$runs_name".*.info | wc -l) == 2 ]] ||
+    { ls "$dir" "$T/var/lib/btrbk/snapshots"; cat "$work/backup-2.log"; fail "want two backups of /runs"; }
+grep -q '^encrypt=openssl_enc' "$(ls "$dir/$runs_name".*.info | head -n 1)" || fail "the backup is not encrypted"
 mkdir -p "$T/restore"
-bash "$here/backup.sh" restore "$feat_name" "$T/restore" > "$work/restore.log" 2>&1 || { cat "$work/restore.log"; fail "restore"; }
-last=$(ls -d "$T/restore/$feat_name".* | sort | tail -n 1)
-[[ $(cat "$last/index.ts") == 'export const a = 4' ]] ||
-    { ls -l "$dir" "$T/restore"; cat "$work/restore.log" "$work/backup-2.log"; fail "restored Rift is not the last state"; }
-pass "backup: encrypted raw files on the Storage Box dir, the second night incremental, restore gives the last state"
+bash "$here/backup.sh" restore "$runs_name" "$T/restore" > "$work/restore.log" 2>&1 || { cat "$work/restore.log"; fail "restore"; }
+last=$(ls -d "$T/restore/$runs_name".* | sort | tail -n 1)
+[[ $(cat "$last/record.txt") == 'record, night 2' ]] ||
+    { ls -l "$dir" "$T/restore"; cat "$work/restore.log" "$work/backup-2.log"; fail "restored /runs is not the last state"; }
+pass "backup: encrypted raw files on the Storage Box dir, the second night incremental, restore of /runs gives the last state"
 
 # ------------------------------------------------------------------ 6
 step "check.sh and workbox-rift-storage"
