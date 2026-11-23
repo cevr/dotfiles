@@ -14,10 +14,23 @@ HB_TARGET=${HB_TARGET:-}
 HB_FSTAB=${HB_FSTAB:-$HB_TARGET/etc/fstab}
 HB_HOME=${HB_HOME:-$HB_TARGET/home/$HB_USER}
 HB_WORKSPACES=${HB_WORKSPACES:-$HB_TARGET/workspaces}
+hb_docker_packages='docker.io docker-compose-v2 docker-buildx'
+hb_docker_services=(containerd.service docker.service)
+hb_jobs_cgroup=/user.slice/user-jobs.slice
+
+hb_require_host() {
+    local identity=$hb_dir/host-identity.sh
+    [[ -r $identity ]] || identity=$hb_dotfiles/workbox/host-identity.sh
+    # shellcheck source=../../workbox/host-identity.sh
+    . "$identity"
+    workbox_require_host
+}
+# The durable run areas (@runs): run records kept for good, never cleaned, backed up.
+HB_RUNS=${HB_RUNS:-$HB_TARGET/runs}
 # Mount options of every btrfs line, the same as the exe box's image; user_subvol_rm_allowed: Ergo's work deletes a workspace's subvolume as the user (set by hand on the workbox 2026-11-15).
 hb_btrfs_opts=noatime,compress=zstd:3,space_cache=v2,discard=async,user_subvol_rm_allowed
 # The subvolumes installimage.conf creates, with their mount points.
-hb_subvols="@root:/ @home:/home/$HB_USER @tmp:/tmp @workspaces:/workspaces"
+hb_subvols="@root:/ @home:/home/$HB_USER @tmp:/tmp @workspaces:/workspaces @runs:/runs"
 
 say() { printf '==> %s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
@@ -25,6 +38,13 @@ die() { printf '%s: %s\n' "${0##*/}" "$*" >&2; exit 1; }
 need() { local c; for c; do command -v "$c" >/dev/null 2>&1 || die "missing command: $c"; done; }
 need_root() { [[ $(id -u) == 0 ]] || die "run as root (sudo $0 $*)"; }
 gb() { awk -v b="$1" 'BEGIN { printf "%.2f GB", b / 1e9 }'; }
+
+hb_unit_cgroup() {
+    local pid
+    pid=$(systemctl show "$1" -p MainPID --value) || return 1
+    [[ $pid =~ ^[1-9][0-9]*$ && -r /proc/$pid/cgroup ]] || return 1
+    awk -F: '$1 == 0 { print $3 }' "/proc/$pid/cgroup"
+}
 
 # The device that holds a mount point (findmnt prints [/subvol] after a btrfs
 # device; drop it).

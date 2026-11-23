@@ -8,6 +8,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 const SCRIPT = join(import.meta.dir, "..", "bin", "workbox-rift-storage")
+const identity = Bun.spawnSync(["sh", "-c", '. "$1"; workbox_host_identity', "test", join(import.meta.dir, "..", "host-identity.sh")]).stdout.toString().trim()
 const scratchRoot = realpathSync(mkdtempSync(join(tmpdir(), "rift-storage-test-")))
 afterAll(() => rmSync(scratchRoot, { recursive: true, force: true }))
 let count = 0
@@ -50,7 +51,7 @@ const bench = (fstabText: string) => {
   exe(join(bin, "findmnt"), `#!/bin/sh\ncase "$*" in *--mountpoint*) echo '/dev/loop0[/@workspaces]' ;; esac\n`)
   exe(join(bin, "sudo"), '#!/bin/sh\nexec "$@"\n')
   exe(join(bin, "systemctl"), `#!/bin/sh\necho "$*" >>'${calls}'\n`)
-  const env = { PATH: `${bin}:/usr/bin:/bin`, HOME: dir, WORKBOX_RIFT_FSTAB: fstab, WORKBOX_SYSFS_BTRFS: sys }
+  const env = { PATH: `${bin}:/usr/bin:/bin`, HOME: dir, WORKBOX_RIFT_FSTAB: fstab, WORKBOX_SYSFS_BTRFS: sys, WORKBOX_EXPECT_MACHINE_ID: identity }
   const run = () => {
     const ran = Bun.spawnSync(["sh", SCRIPT, "--fstab"], { cwd: dir, env, stdout: "pipe", stderr: "pipe" })
     return { code: ran.exitCode, out: ran.stdout.toString(), err: ran.stderr.toString() }

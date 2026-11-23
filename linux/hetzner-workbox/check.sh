@@ -5,6 +5,7 @@
 set -euo pipefail
 # shellcheck source=common.sh
 . "$(dirname "$0")/common.sh"
+hb_require_host
 
 HB_CHECK_SKIP=${HB_CHECK_SKIP:-}
 root=${HB_TARGET:-/}
@@ -16,6 +17,42 @@ skip() { [[ " $HB_CHECK_SKIP " == *" $1 "* ]]; }
 at() { if [[ $1 == / ]]; then echo "$root"; else echo "$HB_TARGET$1"; fi; }
 
 need_root
+
+check_docker() {
+    if ! command -v dockerd >/dev/null; then note 'dockerd is not installed'; return; fi
+    local config=${HB_ETC:-/etc}/docker/daemon.json driver service cap swap expected
+    if ! python3 -c '
+import json, sys
+config = json.load(open(sys.argv[1]))
+drivers = [x for x in config.get("exec-opts", []) if x.startswith("native.cgroupdriver=")]
+sys.exit(not (config.get("cgroup-parent") == "user-jobs.slice" and drivers == ["native.cgroupdriver=systemd"]))
+' "$config" 2>/dev/null; then
+        bad "$config is missing the systemd driver or cgroup-parent=user-jobs.slice (provision.sh reserve)"
+        return
+    fi
+    driver=$(docker --host=unix:///run/docker.sock info --format '{{.CgroupDriver}}/{{.CgroupVersion}}' 2>/dev/null) || driver=
+    if [[ $driver != systemd/2 ]]; then bad "local Docker is not running with systemd cgroup v2"; return; fi
+    for service in "${hb_docker_services[@]}"; do
+        if [[ $(hb_unit_cgroup "$service") != "$hb_jobs_cgroup/$service" ]]; then
+            bad "$service is not running under $hb_jobs_cgroup"
+            return
+        fi
+    done
+    cap=$(cat "/sys/fs/cgroup$hb_jobs_cgroup/memory.max") || cap=
+    swap=$(cat "/sys/fs/cgroup$hb_jobs_cgroup/memory.swap.max") || swap=
+    expected=$(awk '/^MemTotal:/ { printf "%.0f\n", $2 * 1024 * 36 / 100 }' /proc/meminfo)
+    if [[ ! $cap =~ ^[0-9]+$ || $swap != 0 ]] || ((cap > expected || cap < expected - 1048576)); then
+        bad "$hb_jobs_cgroup does not have its 36% memory cap and swap off (memory.max=${cap:-missing}, memory.swap.max=${swap:-missing})"
+        return
+    fi
+    ok "Docker systemd/cgroup v2; engine and containerd under $hb_jobs_cgroup ($cap bytes, no swap)"
+}
+
+if [[ ${1:-} == docker ]]; then
+    check_docker
+    ((fails == 0))
+    exit
+fi
 
 # --- btrfs raid1 across two devices.
 if is_btrfs "$root"; then
@@ -71,6 +108,12 @@ for d in "$HB_HOME" "$HB_WORKSPACES"; do
     if cp --reflink=always "$f" "$f.copy" 2>/dev/null; then ok "reflinks work in $d"; else bad "no reflinks in $d"; fi
     rm -f "$f" "$f.copy"
 done
+# --- Simple quotas and the limited subvolumes (storage.conf).
+if ! skip storage; then
+    mode=$(cat "/sys/fs/btrfs/$(findmnt -n -o UUID -T "$HB_WORKSPACES")/qgroups/mode" 2>/dev/null || echo off)
+    [[ $mode == squota ]] && ok "btrfs simple quotas on" || bad "btrfs quotas: $mode, want squota (storage.sh enable)"
+    if out=$("$hb_dir/storage.sh" check 2>&1); then ok "storage.conf in place"; else bad "storage.conf: $(printf '%s' "$out" | tr '\n' ' ')"; fi
+fi
 owner=$(stat -c %U "$HB_HOME")
 [[ $owner == "$HB_USER" ]] && ok "$HB_HOME belongs to $HB_USER" || bad "$HB_HOME belongs to $owner"
 
@@ -85,5 +128,6 @@ fi
 if ! skip backup; then
     systemctl is-enabled --quiet hetzner-backup.timer 2>/dev/null && ok "backup timer enabled" || note "backup timer not enabled (provision.sh backup)"
 fi
+if ! skip docker; then check_docker; fi
 
 ((fails == 0)) || { printf '%d checks failed\n' "$fails"; exit 1; }
