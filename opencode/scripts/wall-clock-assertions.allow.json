@@ -1,11 +1,5 @@
 [
   {
-    "group": "measured",
-    "file": "opencode/scripts/test-runner-bridges.test.ts",
-    "count": 1,
-    "why": "Existing performance contracts: target, budget, and scheduling recorded in round-3-request.md"
-  },
-  {
     "group": "clock",
     "file": "opencode/cmd/anthropic-auth/server.test.ts",
     "count": 56,
@@ -170,7 +164,7 @@
   {
     "group": "clock",
     "file": "opencode/scenarios/question-latency.ts",
-    "count": 18,
+    "count": 20,
     "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
   },
   {
@@ -250,6 +244,12 @@
     "file": "opencode/scripts/post-land.test.ts",
     "count": 2,
     "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/scripts/test-runner-bridges.test.ts",
+    "count": 1,
+    "why": "Existing performance contracts: target, budget, and scheduling recorded in round-3-request.md"
   },
   {
     "group": "bridge",

@@ -253,16 +253,18 @@ export default OpenCodeDriver.use(
           const last = stamp()
           const deadline = watchdog(10_000)
           let settled = sign(yield* capture)
+          let lastChange = stamp()
           let quiet = watchdog(300)
           while (!quiet.expired() && !deadline.expired()) {
             yield* Effect.sleep("10 millis")
             const now = sign(yield* capture)
             if (now !== settled) {
               settled = now
+              lastChange = stamp()
               quiet = watchdog(300)
             }
           }
-          const lag = quiet - last
+          const lag = lastChange - last
           const after = cpu(pid)
           const seconds = (stamp() - started) / 1000
           const result = {

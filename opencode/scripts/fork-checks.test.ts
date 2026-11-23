@@ -1299,7 +1299,6 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
         expect(text).toContain("packages/x/test/red.test.ts > the fork feature [x]")
         expect(text).toMatch(/Upstream commits it brings: `git log [0-9a-f]{10}\.\.[0-9a-f]{10}` \(1 commit\)/)
       }).pipe(Effect.scoped),
-    hangGuard("local-fixture"),
   )
 
   test("a listed file the merge lacks holds the push", () =>
@@ -1397,7 +1396,6 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
       expect(text).toContain("fixture: post-test report check failed")
       expect(text).toMatch(/fork-checks: RED over upstream [0-9a-f]{10}\.\.[0-9a-f]{10}, 1 tests: packages\/x\/\(the run\) \[x\]/)
     }).pipe(Effect.scoped),
-    hangGuard("local-fixture"),
   )
 
   /** A package command that copies its cell's report (if the merge holds one) to bun's report file and exits its cell's code. */

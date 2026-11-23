@@ -16,13 +16,13 @@ test("the simulation diagnostic owns its deadline before Bun, even with a swarm 
 test("the real-I/O TUI bridge's wall diagnostic is earlier than Bun", () => {
   const budget = tuiTestBudget(hangGuard("installer"))
   expect(budget.deadline).toBe(119_000)
-  expect(runnerCapOf(budget)).toBe(120_000)
+  expect(Number(runnerCapOf(budget))).toBe(120_000)
 })
 
 test("the Rifts-law bridge lets its scoped diagnostic fire before Bun", () => {
   const budget = riftsLawBudget(hangGuard("process-fixture"))
   expect(budget.deadline).toBe(59_000)
-  expect(runnerCapOf(budget)).toBe(60_000)
+  expect(Number(runnerCapOf(budget))).toBe(60_000)
 })
 
 test("measurement failures name the target, budget, reading and host load", () => {

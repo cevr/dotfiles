@@ -169,6 +169,7 @@
       "files": [
         "mods/pool/*.ts"
       ],
+      "excludeFiles": ["mods/pool/spend-authority.test.ts"],
       "rules": {
         "no-restricted-imports": [
           "error",
@@ -400,6 +401,7 @@
       "files": [
         "mods/work/*.ts"
       ],
+      "excludeFiles": ["mods/work/laws.ts"],
       "rules": {
         "no-restricted-imports": [
           "error",
@@ -528,6 +530,7 @@
       "files": [
         "mods/auto-title/*.ts"
       ],
+      "excludeFiles": ["mods/auto-title/laws.ts"],
       "rules": {
         "no-restricted-imports": [
           "error",
@@ -605,6 +608,7 @@
       "files": [
         "mods/mail/*.ts"
       ],
+      "excludeFiles": ["mods/mail/model.test.ts"],
       "rules": {
         "no-restricted-imports": [
           "error",
@@ -702,6 +706,7 @@
       "files": [
         "mods/digest/*.ts"
       ],
+      "excludeFiles": ["mods/digest/agenthost.test.ts"],
       "rules": {
         "no-restricted-imports": [
           "error",
@@ -1191,6 +1196,43 @@
       ],
       "rules": {
         "effect/noTryCatch": "error"
+      }
+    },
+    {
+      "files": [
+        "mods/pool/spend-authority.test.ts",
+        "mods/work/laws.ts",
+        "mods/mail/model.test.ts",
+        "mods/digest/agenthost.test.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!effect", "!effect/*", "*/**/effect", "!@dotfiles/decider/*", "!./*.ts", "!bun:test", "!../../tests/hang-guard.ts"],
+                "message": "Shared timing is a test-only dependency; all other domain test imports keep the production fence."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["mods/auto-title/laws.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!effect", "!effect/*", "*/**/effect", "!./*.ts", "!bun:test", "!../../tests/hang-guard.ts"],
+                "message": "Shared timing is a test-only dependency; all other Auto Title law imports keep the production fence."
+              }
+            ]
+          }
+        ]
       }
     },
     {

@@ -9,7 +9,7 @@ import { inspectTiming, legacyOwners, runnerBridges, sourceFile, testFile, timin
 const ALLOW = "opencode/scripts/wall-clock-assertions.allow.json"
 // Migration-only: once the landing base has the positive policy, it is the
 // sole ceiling. Before that first landing, use the reviewed policy blob.
-const BOOTSTRAP = "b882254e67204b2129b2f9f553f1a4bd0701616b"
+const BOOTSTRAP = "9011bc73871c7f48445d16da68e6925391571902"
 
 const Group = Schema.Literals(["probe", "clock", "measured", "bridge", "legacy"])
 const Row = Schema.Struct({

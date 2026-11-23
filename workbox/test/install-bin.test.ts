@@ -174,7 +174,12 @@ describe("install-bin.sh replaces each file whole", () => {
         zshrc: `alias from=${label}\n${`# ${"r".repeat(100)}\n`.repeat(800)}`,
       })
       const trees = [tree(root, "a", files("a")), tree(root, "b", files("b"))]
-      const watched = [...names.map((name) => join(home, ".local", "bin", name)), join(home, ".zshenv"), join(home, ".zshrc")]
+      const watched = [
+        ...names.map((name) => join(home, ".local", "bin", name)),
+        join(home, ".zshenv"),
+        join(home, ".zshrc"),
+        join(home, ".local", "share", "workbox", "host-identity.sh"),
+      ]
       const allowed = new Set<string>()
       for (const workbox of trees) {
         expect(run(workbox, home)).toEqual({ code: 0, stderr: "" })
