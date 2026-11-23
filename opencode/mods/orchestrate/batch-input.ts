@@ -18,7 +18,9 @@ import { Digest } from "effect/crypto"
  * anything else (an abbreviation, upper case, a ref name) is refused whole, and nothing here resolves an
  * abbreviation. One record may not mix the two lengths: a repository has one object format.
  */
-export const ObjectName = Schema.String.check(Schema.isPattern(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/)).pipe(Schema.brand("ObjectName"))
+export const ObjectName = Schema.String.check(Schema.makeFilter((text) =>
+  (text.length === 40 || text.length === 64) && Arr.fromIterable(text).every((digit) => "0123456789abcdef".includes(digit)),
+)).pipe(Schema.brand("ObjectName"))
 export type ObjectName = typeof ObjectName.Type
 
 /** Whether `text` is a full object name. */
