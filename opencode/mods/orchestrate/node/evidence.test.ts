@@ -4,7 +4,7 @@
 // the orchestrate domain fence keeps node:*, bun and the test helpers out of the root's files and their tests.
 import { expect } from "bun:test"
 import { spawnSync, write } from "bun"
-import { Effect, FileSystem, Layer, Match, Schema } from "effect"
+import { Effect, FileSystem, Layer, Match, Ref, Schema } from "effect"
 import { Digest } from "effect/crypto"
 import * as Seed from "../../../sim/seed.ts"
 import { hostServices } from "../../../sim/host-services.ts"
@@ -221,4 +221,48 @@ Seed.effect(
       }),
     (dir) => Effect.sync(() => dir[Symbol.dispose]()),
   ).pipe(Effect.provide(evidenceLayer.pipe(Layer.provideMerge(Layer.mergeAll(hostServices, ownPlatform))))),
+)
+
+/**
+ * A host whose first read of a `r1/proof.json` swaps its folder `r1` for a link to the sibling `r2` before it reads:
+ * the swap lands between the reader's check of the receipt and its read, where the check before the read cannot see it.
+ */
+const swappedDuringRead = Layer.effect(
+  FileSystem.FileSystem,
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const done = yield* Ref.make(false)
+    const swap = (path: string) =>
+      Effect.gen(function* () {
+        const folder = path.slice(0, -"/proof.json".length)
+        yield* fs.remove(folder, { recursive: true })
+        yield* fs.symlink(`${folder.slice(0, -"r1".length)}r2`, folder)
+      }).pipe(Effect.orDie)
+    const first = (path: string) => Effect.map(Ref.getAndSet(done, true), (was) => !was && path.endsWith("/r1/proof.json"))
+    return { ...fs, readFile: (path: string) => Effect.andThen(Effect.when(swap(path), first(path)), fs.readFile(path)) }
+  }),
+)
+
+Seed.effect(
+  "a receipt's folder swapped for a link during its read is refused as moved: the reader checks again after it reads",
+  Effect.acquireUseRelease(
+    Effect.sync(() => scratch("evidence-read-swap-")),
+    (dir) =>
+      Effect.gen(function* () {
+        const checkout = `${dir.path}/repo`
+        const root = `${checkout}/${EVIDENCE_ROOT}`
+        for (const run of ["r1", "r2"]) yield* Effect.promise(() => write(`${root}/${run}/proof.json`, envelope({ run })))
+        gitInit(checkout, ["-q", "-b", "main"], env)
+        const read = Effect.gen(function* () {
+          const evidence = yield* Evidence
+          return yield* Effect.match(evidence.receipt(checkout, `${EVIDENCE_ROOT}/r1/proof.json`), { onFailure: (refused) => refused.reason, onSuccess: (seen) => `taken ${seen.run}` })
+        })
+        const swapped = yield* read
+        // Once swapped, r1 is a link inside the root to r2: a second read through it (no swap now) takes r2's
+        // receipt, so the refusal above is the check after the read, not one a link before the read meets.
+        const after = yield* read
+        expect([swapped, after]).toEqual(["the receipt moved while it was read", "taken r2"])
+      }),
+    (dir) => Effect.sync(() => dir[Symbol.dispose]()),
+  ).pipe(Effect.provide(evidenceLayer.pipe(Layer.provide(swappedDuringRead), Layer.provideMerge(Layer.mergeAll(hostServices, ownPlatform))))),
 )
