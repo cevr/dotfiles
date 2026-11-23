@@ -1,5 +1,3 @@
-// @reads all
-// @reads-reason subprocess helper reads at tests/mail-peer.test.ts: const child = owned([process.execPath, join(ROOT, "cmd/mail/pair.ts"), ...args, "--name", host.
 // Session mail between two real OpenCode servers on this machine, standing in
 // for the Mac and the workbox: each is the fork's own `serve --service` in its
 // own scratch HOME, with the mail plugin listening on its own loopback port
@@ -12,11 +10,12 @@
 // header, the answer coming back and the unpaired host's refusal are
 // cmd/mail/mail-peer.sim.test.ts's (tests/parity/mail.json).
 import { afterAll, describe, expect, test } from "bun:test"
+import { Schema } from "effect"
 import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { externalInput, readScratchFileSync as readFileSync } from "./read-path.ts"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
-import { owned, ownedForkFixture } from "./owned.ts"
+import { ownedCheckoutBun, ownedForkFixture } from "./owned.ts"
 import { ready, type Service } from "./service.ts"
 import { keptScratch } from "./scratch.ts"
 
@@ -25,6 +24,7 @@ if (!fork) console.warn("tests/mail-peer.test.ts: skipped. Set OPENCODE_DEV to t
 
 const ROOT = join(import.meta.dir, "..")
 const TIMEOUT_MS = 150_000
+const pairArgs = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)))
 
 interface Host {
   readonly name: string
@@ -196,7 +196,18 @@ describe.skipIf(!fork)("session mail between two paired OpenCode servers (real p
     )
 
   const pairCommand = async (host: Host, ...args: ReadonlyArray<string>) => {
-    const child = owned([process.execPath, join(ROOT, "cmd/mail/pair.ts"), ...args, "--name", host.name], { cwd: ROOT, env: host.env, stdout: "pipe", stderr: "pipe" })
+    const file = join(host.base, "pair-args.json")
+    writeFileSync(file, pairArgs([...args, "--name", host.name]))
+    const child = ownedCheckoutBun("tests/mail-peer/pair.ts", {
+      scratchArgs: [file],
+      scratch: {
+        HOME: host.env.HOME || "", TMPDIR: host.base,
+        XDG_CACHE_HOME: host.env.XDG_CACHE_HOME || "", XDG_CONFIG_HOME: host.env.XDG_CONFIG_HOME || "",
+        XDG_DATA_HOME: host.env.XDG_DATA_HOME || "", XDG_STATE_HOME: host.env.XDG_STATE_HOME || "",
+      },
+      external: {},
+      values: {},
+    })
     const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
     return { code, out, err }
   }
