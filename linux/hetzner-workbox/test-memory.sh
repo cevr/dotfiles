@@ -117,7 +117,14 @@ for i in "${!families[@]}"; do
     read -r pid child < "$work/${families[i]}.ready"
     if live "$pid" || live "$child"; then die "${families[i]} left part of the killed run alive"; fi
 done
-live "$(cat "$work/survivor")" && live "$server" || die "a sibling run/server was killed"
+survivor=$(cat "$work/survivor")
+if ! live "$survivor" || ! live "$server"; then
+    printf 'sibling pid %s: %s; server pid %s: %s\n' "$survivor" "$(live "$survivor" && echo alive || echo dead)" \
+        "$server" "$(live "$server" && echo alive || echo dead)" >&2
+    journalctl -k -b --since="$since" --no-pager -o cat >&2
+    journalctl -u systemd-oomd.service -b --since="$since" --no-pager -o cat >&2
+    die "a sibling run/server was killed"
+fi
 [[ $(ectl "$server_cg/memory.events" oom_kill) == "$server_kills" && $(ectl "$usercg/memory.events.local" oom) == "$parent_oom" ]] ||
     die "a kill escaped its family"
 echo "ok: five simultaneous family OOMs (including app.slice default), each kills the entire two-process run; sibling survived; server-launched hog charged only to its run; server received zero kills"
