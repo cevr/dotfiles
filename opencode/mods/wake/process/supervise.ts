@@ -112,7 +112,6 @@ const { i32, ptr, u32 } = FFIType
 const AT_FDCWD = -100
 const RENAME_NOREPLACE = 1
 const RENAME_EXCL = 4
-const SYNC_VOLUME_FULLSYNC_WAIT = 3
 const kernelRename = Match.value(platform).pipe(
   Match.when("darwin", () => Option.liftThrowable(() => {
     const { renamex_np } = dlopen(LIBSYSTEM, { renamex_np: { args: [ptr, ptr, u32], returns: i32 } }).symbols
@@ -124,12 +123,8 @@ const kernelRename = Match.value(platform).pipe(
   })()),
   Match.orElse(() => Option.none<(from: Uint8Array, to: Uint8Array) => number>()),
 )
+// XNU's volume-sync callback discards VFS_SYNC's error; F_FULLFSYNC on the root fd cannot certify its parent.
 const volumeSync = Match.value(platform).pipe(
-  Match.when("darwin", () => Option.liftThrowable(() => {
-    const { fsync_volume_np } = dlopen(LIBSYSTEM, { fsync_volume_np: { args: [i32, i32], returns: i32 } }).symbols
-    // Darwin SDK unistd.h: wait for the volume's data and metadata, not just this descriptor's vnode.
-    return (fd: number) => fsync_volume_np(fd, SYNC_VOLUME_FULLSYNC_WAIT) === 0 && Option.exists(fullSync, (fcntl) => fcntl(fd, F_FULLFSYNC) === 0)
-  })()),
   Match.when("linux", () => Option.liftThrowable(() => {
     const { syncfs } = dlopen("libc.so.6", { syncfs: { args: [i32], returns: i32 } }).symbols
     return (fd: number) => syncfs(fd) === 0

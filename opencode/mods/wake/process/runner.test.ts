@@ -29,6 +29,7 @@ const PATIENT: Policy = { within: "10 seconds", every: "50 millis" }
 /** A module beside this test, as a scratch script imports it. */
 const sourceAt = (file: string) => path.join(import.meta.dir, file)
 const besideThis = (file: string) => JSON.stringify(sourceAt(file))
+const mac = process.platform === "darwin"
 
 /** The runner a test drives, with the scratch directory its jobs live in. */
 const runnerIn = (scratch: string, script: string, config: Partial<ProcessRunner.Config> = {}) =>
@@ -243,6 +244,22 @@ fixtureTest("job root layout matrix on the real filesystem", ({ scratch, runnerO
   }),
 )
 
+// @reads cmd/wake/job.ts
+const runRootHandoff = (root: string) => {
+  const script = sourceAt("../../../cmd/wake/job.ts")
+  const run = Option.getOrThrow(ranOf(["bun", script, "--seal-root", root]))
+  expect(run.exitCode).toBe(0)
+}
+
+const expectRootRefusal = (runner: JobRunner, spec: JobSpec, root: string) =>
+  Effect.gen(function* () {
+    const refusal = Option.getOrThrow(Result.getFailure(yield* Effect.result(runner.launch(spec))))
+    expect(refusal._tag).toBe("JobRefused")
+    expect(refusal.message).toContain(`'--seal-root' '${root}'`)
+    expect(existsSync(path.join(root, spec.id))).toBe(false)
+    expect(existsSync(path.join(root, UNSEALED_ROOT))).toBe(true)
+  })
+
 fixtureTest("job root permissions handoff after publication cut on the real filesystem", ({ scratch, runnerOf, specOf }) =>
   Effect.gen(function* () {
     for (const [mode, parentSynced] of [[0o555, false], [0o555, true], [0o311, false], [0o311, true]] as const) {
@@ -276,18 +293,14 @@ fixtureTest("job root permissions handoff after publication cut on the real file
               if (stopped) lost()
               return NODE_DISK.create(file, permissions)
             },
+            mkdir: (dir) => {
+              if (stopped) lost()
+              NODE_DISK.mkdir(dir)
+            },
           } })
           expect(Result.isFailure(yield* Effect.result(first.launch(spec)))).toBe(true)
           expect(stopped && existsSync(marker)).toBe(true)
           chmodSync(parent, mode)
-          if (mode === 0o311 && !parentSynced) {
-            // Exercise the typed handoff even on hosts that normally support volume sync.
-            const noVolume = runnerOf({ root, disk: { ...NODE_DISK, syncVolume: () => false } })
-            const refusal = Option.getOrThrow(Result.getFailure(yield* Effect.result(noVolume.launch(spec))))
-            expect(refusal._tag).toBe("JobRefused")
-            expect(refusal.message).toContain(`'--seal-root' '${root}'`)
-            expect(existsSync(path.join(root, spec.id))).toBe(false)
-          }
           let viaVolume = false
           const second = runnerOf({ root, disk: {
             ...NODE_DISK,
@@ -296,12 +309,21 @@ fixtureTest("job root permissions handoff after publication cut on the real file
               return viaVolume
             },
           } })
-          expect((yield* second.launch(spec)).how).toBe("detached")
-          const run = yield* until(second, spec.id, ended)
+          if (mode === 0o311 && mac) {
+            yield* expectRootRefusal(second, spec, root)
+            chmodSync(parent, 0o555)
+            runRootHandoff(root)
+            expect(existsSync(marker)).toBe(false)
+            chmodSync(parent, mode)
+          }
+          const resumed = runnerOf({ root })
+          const active = (mode === 0o311 && mac && resumed) || second
+          expect((yield* active.launch(spec)).how).toBe("detached")
+          const run = yield* until(active, spec.id, ended)
           expect(run.state === "ended" && run.exit.exitCode).toBe(0)
-          expect(viaVolume).toBe(mode === 0o311)
+          expect(viaVolume).toBe(mode === 0o311 && !mac)
           expect(existsSync(marker)).toBe(false)
-          yield* Console.log(`job root handoff: parent ${mode.toString(8)}, cut ${parentSynced && "after" || "before"} parent sync, certified via ${viaVolume && "volume" || "parent"}`)
+          yield* Console.log(`job root handoff: parent ${mode.toString(8)}, cut ${parentSynced && "after" || "before"} parent sync, certified via ${viaVolume && "volume" || mode === 0o311 && "operator" || "parent"}`)
         }))
     }
   }),
@@ -325,9 +347,7 @@ fixtureTest("a certified job root remains usable when marker cleanup fails; the 
     yield* until(writer, spec.id, ended)
     // A detached supervisor can also certify and clear it. Plant a conservative marker on the already sealed root.
     writeAtomic(marker, {})
-    const script = sourceAt("../../../cmd/wake/job.ts")
-    const run = Option.getOrThrow(ranOf(["bun", script, "--seal-root", root]))
-    expect(run.exitCode).toBe(0)
+    runRootHandoff(root)
     expect(existsSync(marker)).toBe(false)
   }),
 )
@@ -375,7 +395,7 @@ describe("the process runner", () => {
         return Number(nice)
       })
       // The test may itself run niced: heavy is ten more than the same command run light, up to the ceiling.
-      expect(yield* niceness(heavy.id)).toBe(Math.min(process.platform === "darwin" ? 20 : 19, (yield* niceness(light.id)) + 10))
+      expect(yield* niceness(heavy.id)).toBe(Math.min(mac ? 20 : 19, (yield* niceness(light.id)) + 10))
     }),
   )
 

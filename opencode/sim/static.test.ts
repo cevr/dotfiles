@@ -125,24 +125,22 @@ const dependencies = (file: string, source: string) => [
   ...[...source.matchAll(/\bimport\s*\(\s*["']([^"']+)["']\s*\)/g)].map((match) => String(match[1])),
 ]
 
-const workspacePackages = (root: string, paths: ReadonlyArray<string>) =>
+const packageEntries = (root: string, paths: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
-    const packages = new Map<string, { readonly folder: string; readonly exports: Readonly<Record<string, string>> }>()
     const entries = new Set<string>([adapter])
     for (const file of paths) {
-      if (path.basename(file) !== "package.json") continue
+      if (path.basename(file) !== "package.json" || !product.test(file)) continue
       for (const pkg of Option.toArray(manifest(yield* fs.readFileString(path.join(root, file))))) {
-        const folder = path.dirname(file)
-        const exports = pkg.exports || {}
-        packages.set(pkg.name, { folder, exports })
-        if (!product.test(file)) continue
-        for (const target of Object.values(exports)) if (!target.includes("*")) entries.add(path.join(folder, target))
+        for (const target of Object.values(pkg.exports || {})) if (!target.includes("*")) entries.add(path.join(path.dirname(file), target))
       }
     }
-    return { packages, entries }
+    return entries
   })
+
+// resolveSync expects the importer's directory, not the filename.
+const runtimeResolve = Option.liftThrowable((target: string, from: string) => Bun.resolveSync(target, from))
 
 const leaksIn = (root: string) =>
   Effect.gen(function* () {
@@ -150,37 +148,16 @@ const leaksIn = (root: string) =>
     const path = yield* Path.Path
     const paths = yield* listed(root)
     const files = paths.filter((file) => code.test(file))
-    const { packages, entries } = yield* workspacePackages(root, paths)
+    const entries = yield* packageEntries(root, paths)
     const content = yield* Effect.forEach(files, (file) => fs.readFileString(path.join(root, file)).pipe(Effect.map((text) => [file, text] as const)))
-    const tracked = new Set(files)
+    const absoluteFiles = new Map(yield* Effect.forEach(files, (file) => fs.realPath(path.join(root, file)).pipe(Effect.map((absolute) => [file, absolute] as const))))
+    const tracked = new Map([...absoluteFiles].map(([file, absolute]) => [absolute, file] as const))
     const importers = new Map<string, Set<string>>()
     const imports = new Map<string, Set<string>>()
-    const extensions = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]
-    const workspaceOf = (target: string): ReadonlyArray<string> => {
-      const match = Option.fromNullishOr(/^((?:@[^/]+\/)?[^/]+)(?:\/(.+))?$/.exec(target))
-      return Option.toArray(Option.flatMap(match, ([, name, suffix]) => Option.fromUndefinedOr(packages.get(String(name))).pipe(
-        Option.flatMap(({ folder, exports }) => {
-          const key = (suffix && `./${suffix}`) || "."
-          for (const [prefix, value] of Object.entries(exports).toSorted(([a], [b]) => b.length - a.length)) {
-            if (prefix === key) return Option.some(path.join(folder, value))
-            if (!prefix.endsWith("*")) continue
-            const start = prefix.slice(0, -1)
-            if (key.startsWith(start)) return Option.some(path.join(folder, value.replace("*", key.slice(start.length))))
-          }
-          return Option.none()
-        }),
-      )))
-    }
-    const resolve = (file: string, target: string) => {
-      const bases = target.startsWith(".") && [path.join(path.dirname(file), target)] || workspaceOf(target)
-      return bases
-        .map((from) => path.relative(root, path.resolve(root, from)))
-        .flatMap((base) => [base, ...extensions.flatMap((ext) => [`${base}${ext}`, `${base}/index${ext}`])])
-        .find((candidate) => tracked.has(candidate))
-    }
     for (const [file, text] of content) {
+      const fromDir = path.dirname(absoluteFiles.get(file) || path.join(root, file))
       for (const target of dependencies(file, text)) {
-        const imported = resolve(file, target)
+        const imported = Option.getOrUndefined(Option.flatMapNullishOr(runtimeResolve(target, fromDir), (absolute) => tracked.get(absolute)))
         if (!imported) continue
         const from = importers.get(imported) || new Set<string>()
         from.add(file)
@@ -276,8 +253,13 @@ Seed.effect("the git-listed guard follows a production import through a tracked 
     const original = yield* fs.readFileString(entryPath)
     yield* fs.writeFileString(helperPath, `${yield* fs.readFileString(helperPath)}\nimport "../sim/world.ts"\n`)
     expect(yield* leaksIn(project)).toEqual([])
-    yield* fs.writeFileString(entryPath, `${original}\nimport "../../tests/git-repo.ts"\n`)
-    expect(yield* leaksIn(project)).toEqual([helper])
+    yield* fs.makeDirectory(path.join(project, "tests", "adapter"))
+    yield* fs.writeFileString(path.join(project, "tests", "adapter", "index.ts"), 'import "../git-repo.js"\n')
+    yield* git(project, "add", "--", "tests/adapter/index.ts")
+    for (const spelling of ["../../tests/git-repo.ts", "../../tests/git-repo.js", "../../tests/git-repo", "../../tests/adapter"]) {
+      yield* fs.writeFileString(entryPath, `${original}\nimport "${spelling}"\n`)
+      expect(yield* leaksIn(project), spelling).toEqual([helper])
+    }
     yield* fs.writeFileString(path.join(scratch, "bridge.ts"), 'import "./opencode/tests/git-repo.ts"\n')
     yield* git(scratch, "add", "--", "bridge.ts")
     yield* fs.writeFileString(entryPath, `${original}\nimport "../../../bridge.ts"\n`)
