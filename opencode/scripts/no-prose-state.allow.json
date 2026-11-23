@@ -1260,12 +1260,6 @@
     "until": "stays"
   },
   {
-    "file": "opencode/mods/orchestrate/printable.ts",
-    "source": "new RegExp(form.source.replaceAll(\"\\\\b\", \"\"), form.flags)",
-    "why": "replaces the digest's known secret forms wherever they start, glued to a word: redacting a secret, not reading run state",
-    "until": "stays"
-  },
-  {
     "file": "skills/orchestrate/scripts/ending.ts",
     "source": "/^, /",
     "why": "finds its own generated end-of-step block in the prompt files it writes: a generated document's marker, not run state",
@@ -1281,6 +1275,12 @@
     "file": "skills/orchestrate/scripts/ending.ts",
     "source": "/, | or /",
     "why": "finds its own generated end-of-step block in the prompt files it writes: a generated document's marker, not run state",
+    "until": "stays"
+  },
+  {
+    "file": "opencode/mods/orchestrate/printable.ts",
+    "source": "new RegExp(KNOWN.map((form) => `(?:${form.source.replaceAll(\"\\\\b\", \"\")})`).join(\"|\"), \"g\")",
+    "why": "replaces the digest's known secret forms wherever they start, glued to a word: redacting a secret, not reading run state",
     "until": "stays"
   }
 ]

@@ -4,7 +4,7 @@
 // (mods/orchestrate/printable.test.ts holds the record's modules to that), so no cut can leave a fragment of a token
 // too short to be known as one.
 import { Array as Arr, Brand, Match, Option, Schema } from "effect"
-import { isRandom, KNOWN, redact, REDACTED, RUN } from "@dotfiles/opencode-digest/redact"
+import { isRandom, KNOWN, REDACTED, RUN } from "@dotfiles/opencode-digest/redact"
 
 /** A text safe to print: every secret shape in it replaced, whole, before any cut. Only `printable` makes one. */
 export const Printable = Schema.String.pipe(Schema.brand("Printable"))
@@ -42,18 +42,20 @@ const windowEntropies = (run: string): ReadonlyArray<number> => {
 const holdsKey = (run: string): boolean =>
   Arr.some(windowEntropies(run), (bits, at) => bits >= 4.2 && at + WINDOW <= run.length && isRandom(run.slice(at, at + WINDOW)))
 
-/** The digest's known forms wherever they start: glued to a word (`xghp_…`), where its word boundary does not hold. */
-const GLUED = KNOWN.map((form) => new RegExp(form.source.replaceAll("\\b", ""), form.flags))
+/**
+ * The digest's known forms as one pattern, each wherever it starts: glued to a word (`xghp_…`) too, where its word
+ * boundary does not hold. One pass over a text, the private key block first, as the redactor tries them.
+ */
+const KNOWN_ANYWHERE = new RegExp(KNOWN.map((form) => `(?:${form.source.replaceAll("\\b", "")})`).join("|"), "g")
 
 /**
- * `text` with every secret shape replaced: the digest's redactor (each known form, each random run), then each known
- * form glued to a word, then each run that still holds a random window (a key glued to a word, as `aaaa…Q7mZ2xL9…`),
- * replaced whole. The record's one rule for a secret: a value it changes holds one (record.ts `holdsSecret`), and
+ * `text` with every secret shape replaced: each of the digest's known forms (glued to a word too), then each run the
+ * redactor reads as random, or that holds a random window (a key glued to a word, as `aaaa…Q7mZ2xL9…`), replaced whole. The record's one rule for a secret: a value it changes holds one (record.ts `holdsSecret`), and
  * every output passes it.
  */
 export const secretFree = (text: string): string =>
-  GLUED.reduce((kept, form) => kept.replace(form, REDACTED), redact(text)).replace(RUN, (run) =>
-    Match.value(holdsKey(run)).pipe(
+  text.replace(KNOWN_ANYWHERE, REDACTED).replace(RUN, (run) =>
+    Match.value(isRandom(run) || holdsKey(run)).pipe(
       Match.when(true, () => REDACTED),
       Match.orElse(() => run),
     ),

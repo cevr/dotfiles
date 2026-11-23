@@ -1,5 +1,5 @@
 // A token-shaped canary and every way to put it in a call: the probe of the record's one rule that no refusal, answer,
-// row or log repeats a caller's string it did not validate first (commitments.sim.test.ts, record-cli.test.ts).
+// row or log repeats a caller's string it did not validate first (canary.sim.test.ts, secrets.sim.test.ts, record-cli.test.ts).
 import { Effect, FileSystem, Match, Predicate, type Random, Schema } from "effect"
 import { hostServices } from "./host-services.ts"
 import { type Placed, placedAt } from "./tokens.ts"
