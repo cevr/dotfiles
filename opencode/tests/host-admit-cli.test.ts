@@ -97,7 +97,7 @@ it.scopedLive("standalone, Guard and Wake carry modeled Go, Bun, Make and Ninja 
       expect(row?.request).toMatchObject({ purpose: "check", demand: { width, memoryBytes: 4 * 2 ** 30 } })
       expect(row?.state).toBe("running")
       const ceiling = host.maximumCpuMilli
-      expect(row?.admittedDemand?.cpuMilli).toBe(Math.min(ceiling, typeof width === "number" ? width * 1000 : ceiling))
+      expect(row?.admittedDemand?.cpuMilli).toBe(Math.min(ceiling, Number(width) * 1000 || ceiling))
       expect(yield* Effect.promise(() => task.exited).pipe(Effect.timeout(6500))).toBe(0)
     }
   }).pipe(Effect.provide(BunServices.layer)),

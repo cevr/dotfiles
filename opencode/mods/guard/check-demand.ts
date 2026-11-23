@@ -14,22 +14,22 @@ const relevant = new Set(["GOMAXPROCS", "GOFLAGS", "MAKEFLAGS", "MFLAGS", "GNUMA
 const assignment = /^([A-Za-z_]\w*)=(.*)$/su
 const opaqueWrappers = new Set(["sudo", "doas", "npx", "pnpx", "bunx", "pnpm", "yarn"])
 
+const unsetEnv = (result: Partial<Record<string, string>>, text: string, next?: string) => {
+  if (text === "-i" || text === "--ignore-environment" || text === "-")
+    for (const key of relevant) delete result[key]
+  if ((text === "-u" || text === "--unset") && Predicate.isString(next)) delete result[next]
+  if (text.startsWith("--unset=")) delete result[text.slice(8)]
+}
 const envBefore = (prefix: ReadonlyArray<Word>, baseEnv: ToolEnvironment) => {
-  const result: Record<string, string | undefined> = { ...baseEnv }
+  const result = { ...baseEnv }
   let withinEnv = false
   for (const [i, { text }] of prefix.entries()) {
     const name = base(text)
     if (name === "env") withinEnv = true
-    if (withinEnv && (text === "-i" || text === "--ignore-environment" || text === "-"))
-      for (const key of relevant) delete result[key]
-    if (withinEnv && (text === "-u" || text === "--unset")) {
-      const key = prefix[i + 1]?.text
-      if (Predicate.isString(key)) delete result[key]
-    }
-    if (withinEnv && text.startsWith("--unset=")) delete result[text.slice(8)]
+    if (withinEnv) unsetEnv(result, text, prefix[i + 1]?.text)
     const matched = text.match(assignment)
     const [, assigned, value] = matched ?? []
-    if (Predicate.isString(assigned) && relevant.has(assigned)) result[assigned] = value
+    if (Predicate.isString(assigned) && relevant.has(assigned) && Predicate.isString(value)) result[assigned] = value
   }
   return result
 }

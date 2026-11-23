@@ -178,10 +178,11 @@ module frontierProof {
            else r.charge + used(peer) <= cap)
       and (not(held(peer)) or not(r.exclusive or peer.exclusive))
   pure def request(ticket: int, width: int, pool: int, feasible: bool, exclusive: bool): Request =
-    {phase: if (feasible) "queued" else "refused", ticket: ticket,
+    {phase: if (feasible) "queued" else "refused", ticket: if (feasible) ticket else 0,
       realWidth: width, charge: minimum(pool, width), exclusive: exclusive, feasible: feasible}
   pure def eligible(r: Request, pool: int): bool =
-    not(waiting(r) or held(r)) or (r.charge >= minimum(r.realWidth, pool) and r.charge <= pool and r.feasible)
+    (r.phase != "refused" or r.ticket == 0)
+      and (not(waiting(r) or held(r)) or (r.charge >= minimum(r.realWidth, pool) and r.charge <= pool and r.feasible))
   pure def hasWitness(r: Request, peer: Request, pool: int): bool =
     if (not(waiting(r))) true
     else if (waiting(peer) and peer.ticket < r.ticket)
@@ -204,11 +205,12 @@ module frontierProof {
     val packages = if (packageOption == 0) runtime else packageOption
     val width = if (unknown) f.pool else packages * runtime
     val row = request(f.next, width, f.pool, fits, exclusive)
+    val next = if (fits) f.next + 1 else f.next
     val previous = if (first) f.a else f.b
     all {
       not(waiting(previous) or held(previous)), f.next <= 4,
-      if (first) f' = {...f, a: row, next: f.next + 1}
-      else f' = {...f, b: row, next: f.next + 1},
+      if (first) f' = {...f, a: row, next: next}
+      else f' = {...f, b: row, next: next},
     }
   }
   action pressure = {

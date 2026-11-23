@@ -200,7 +200,8 @@ const checkedDemand = (entry: Lease, sample: Supply): Demand => {
   const cpuMilli = cpuDemand(demand, sample.envelope.cpuMilli)
   // Once a whole-pool claim starts it stays exclusive until drain, even
   // if the pool later expands. Keep the literal model in request.demand.
-  return { ...demand, width: cpuMilli === sample.envelope.cpuMilli ? "full" : demand.width, cpuMilli }
+  if (cpuMilli === sample.envelope.cpuMilli) return { ...demand, width: "full" as const, cpuMilli }
+  return { ...demand, cpuMilli }
 }
 
 const feasibility = (request: Request, limit: HostEnvelope): Option.Option<Reason> => {

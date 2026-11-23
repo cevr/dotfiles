@@ -2,7 +2,7 @@ import { Option, Predicate } from "effect"
 import { widthOf, type Width } from "./admission-wire.ts"
 
 export type ToolWidth = Width | "invalid"
-export type ToolEnvironment = Readonly<Record<string, string | undefined>>
+export type ToolEnvironment = Readonly<Partial<Record<string, string>>>
 const numeric = (n: number): Width => Option.getOrElse(widthOf(n), () => "full" as const)
 export const serial = numeric(1)
 export const readWidth = (value: string): ToolWidth => {
@@ -28,35 +28,49 @@ type Grammar = {
   readonly zero?: ToolWidth
   readonly normalize?: (name: string) => string
 }
-// Parse left to right so a value such as `-run -p=1` is not mistaken for
-// a second option. Stop at the first shape not in this tool's grammar.
+const compactNumber = (name: string, grammar: Grammar) => Option.filter(
+  Option.fromNullishOr(grammar.attached),
+  (prefix) => name.startsWith(prefix) && name !== prefix,
+).pipe(Option.map((prefix) => name.slice(prefix.length)))
+
+const positionalNumber = (next: Option.Option<string>, grammar: Grammar) => Option.filter(next, (value) =>
+  !grammar.equalsOnly && (/^[+-]?\d|^\$/u.test(value) || Predicate.isUndefined(grammar.implicit)))
+
+const widthValue = (value: string, grammar: Grammar) => {
+  if (grammar.zero && /^0+$/u.test(value)) return grammar.zero
+  return readWidth(value)
+}
+const concurrencyOption = (spelling: string, recognized: boolean, attached: Option.Option<string>,
+  following: Option.Option<string>, grammar: Grammar) => {
+  if (Option.isSome(attached) && recognized) return { width: widthValue(attached.value, grammar), skip: 0 }
+  if (!recognized) {
+    const compact = compactNumber(spelling, grammar)
+    if (Option.isNone(compact) || Option.isSome(attached)) return { width: "unknown" as const, skip: 0 }
+    return { width: widthValue(compact.value, grammar), skip: 0 }
+  }
+  const next = positionalNumber(following, grammar)
+  if (Option.isSome(next)) return { width: widthValue(next.value, grammar), skip: 1 }
+  return { width: grammar.implicit ?? "unknown", skip: 0 }
+}
+// A documented option's operand cannot be mistaken for another option:
+// e.g. `go test -run -p=1` leaves -p at its default.
 const workers = (args: ReadonlyArray<string>, grammar: Grammar, fallback: ToolWidth): ToolWidth => {
   let width = fallback
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i] ?? ""
     if (arg === "--" || grammar.stop?.has(arg)) break
     if (!arg.startsWith("-") || arg === "-") continue
-    const [spelling = "", attached] = arg.split(/=(.*)/su, 2)
+    const [spelling = "", value] = arg.split(/=(.*)/su, 2)
+    const attached = Option.fromNullishOr(value)
     const name = grammar.normalize?.(spelling) ?? spelling
     if (grammar.switches.has(name)) continue
     if (grammar.values.has(name)) {
-      if (!Predicate.isString(attached)) i += 1
+      if (Option.isNone(attached)) i += 1
       continue
     }
-    const short = grammar.attached
-    const compact = short && spelling.startsWith(short) && spelling !== short && attached === undefined
-    if (!grammar.concurrency.has(name) && !compact) return "unknown"
-    let value = compact ? spelling.slice(short.length) : attached
-    if (value === undefined && !grammar.equalsOnly) {
-      const next = args[i + 1]
-      if (next && (/^[+-]?\d|^\$/u.test(next) || grammar.implicit === undefined)) {
-        value = next
-        i += 1
-      }
-    }
-    if (value === undefined) width = grammar.implicit ?? "unknown"
-    else if (grammar.zero && /^0+$/u.test(value)) width = grammar.zero
-    else width = readWidth(value)
+    const option = concurrencyOption(spelling, grammar.concurrency.has(name), attached, Option.fromNullishOr(args[i + 1]), grammar)
+    width = option.width
+    i += option.skip
     if (width === "invalid" || width === "unknown") return width
   }
   return width
@@ -85,7 +99,7 @@ const goDefault = (env: ToolEnvironment): ToolWidth => {
 }
 const multiply = (a: ToolWidth, b: ToolWidth): ToolWidth => {
   const joined = joinWidth(a, b)
-  if (typeof a === "number" && typeof b === "number") return numeric(a * b)
+  if (Predicate.isNumber(a) && Predicate.isNumber(b)) return numeric(a * b)
   return joined
 }
 /** `go help build` (-p defaults to GOMAXPROCS) and `go help testflag`

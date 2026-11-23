@@ -126,7 +126,8 @@ test("a whole-pool request cannot be skipped by another volume or land; half fre
     let state = full.state
     for (const [i, busy] of trace.entries()) {
       const tick = transition(state, { op: "status", id, owner: owner("full") }, outside(busy, i + 2))
-      expect(tick.reply.reason).toBe(busy > 5000 ? "outside-busy" : "granted")
+      if (busy > 5000) expect(tick.reply.reason).toBe("outside-busy")
+      else expect(tick.reply.reason).toBe("granted")
       state = tick.state
     }
   }
@@ -147,33 +148,34 @@ test("a persisted waiter made impossible by the host envelope stops fencing its 
   expect(resumed.reply.state).toBe("granted")
 })
 
+const witness = (cores: number, exclusive: boolean, width: ReturnType<typeof request>["demand"]["width"],
+  volume: string, memoryBytes: number, bytes: number) => {
+  const blocked = supply({ cores, now: 1, overrides: { pressure: "hold" } })
+  const quiet = supply({ cores, now: 2 })
+  const draft = request("candidate", 1000, exclusive)
+  const input: Input = { op: "request", owner: owner("candidate"), request: {
+    ...draft, demand: { ...draft.demand, width, memoryBytes, volumeReservations: [{ volumeId: volume, bytes }] },
+  } }
+  const result = transition(initial("host", "boot"), input, blocked)
+  if (volume === "unmounted" || memoryBytes > POLICY.maxRequestMemoryBytes || bytes >= 64 * 2 ** 30) {
+    expect(result.reply.state).toBe("refused")
+    expect(result.reply.id).toBeNull()
+    return
+  }
+  expect(result.reply.state).toBe("queued")
+  const witnessed = transition(result.state, { op: "advance" }, quiet)
+  const row = witnessed.state.leases[result.reply.id || "missing"]
+  expect(row?.state).toBe("granted")
+  const expected = Math.min(quiet.envelope.cpuMilli, Number(width) * 1000 || quiet.envelope.cpuMilli)
+  expect(Option.getOrUndefined(row?.admittedDemand ?? Option.none())?.cpuMilli).toBe(expected)
+}
+
 test("all queued demands have an empty-host grant witness, for shared and exclusive classes", () => {
-  for (const cores of [3, 8, 12]) {
-    for (const exclusive of [false, true]) {
-      for (const width of ["unknown", "full", request("candidate", 1000).demand.width, request("candidate", 40_000).demand.width] as const) {
-        for (const volume of ["volume-a", "volume-b", "unmounted"]) {
-          for (const memoryBytes of [2 ** 30, 40 * 2 ** 30]) {
-            const now = 1
-            const blocked = supply({ cores, now, overrides: { pressure: "hold" } })
-            const quiet = supply({ cores, now: now + 1 })
-            const draft = request("candidate", 1000, exclusive)
-            const input: Input = { op: "request", owner: owner("candidate"), request: {
-              ...draft, demand: { ...draft.demand, width, memoryBytes, volumeReservations: [{ volumeId: volume, bytes: 0 }] },
-            } }
-            const result = transition(initial("host", "boot"), input, blocked)
-            if (volume === "unmounted" || memoryBytes > POLICY.maxRequestMemoryBytes) {
-              expect(result.reply.state).toBe("refused")
-              expect(result.reply.id).toBeNull()
-              continue
-            }
-            expect(result.reply.state).toBe("queued")
-            const witnessed = transition(result.state, { op: "advance" }, quiet)
-            const row = witnessed.state.leases[result.reply.id || "missing"]
-            expect(row?.state).toBe("granted")
-            const expected = Math.min(quiet.envelope.cpuMilli, Number(width) * 1000 || quiet.envelope.cpuMilli)
-            expect(Option.getOrUndefined(row?.admittedDemand ?? Option.none())?.cpuMilli).toBe(expected)
-          }
-        }
+  const widths = ["unknown", "full", request("candidate", 1000).demand.width, request("candidate", 40_000).demand.width] as const
+  for (const cores of [3, 8, 12]) for (const exclusive of [false, true]) {
+    for (const width of widths) for (const volume of ["volume-a", "volume-b", "unmounted"]) {
+      for (const memory of [2 ** 30, 40 * 2 ** 30]) for (const bytes of [0, 64 * 2 ** 30]) {
+        witness(cores, exclusive, width, volume, memory, bytes)
       }
     }
   }

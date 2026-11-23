@@ -74,22 +74,24 @@ const read = Effect.fn("HostAdmit.stdin")(function* () {
 type Host = Effect.Success<ReturnType<typeof Admission.open>>
 const refused = (reply: { readonly state: string }) => 2 * Number(reply.state === "refused")
 
+const submit = Effect.fn("HostAdmit.submit")(function* (host: Host) {
+  const text = yield* read()
+  if (!uniqueKeys(text)) return yield* bad()
+  const header = peek(text)
+  if (Option.isSome(header)) {
+    if (Option.isNone(purposeOf(header.value.purpose))) return yield* new AdmissionUnavailable({ reason: "unsupported-class" })
+    if ("width" in header.value.demand && Option.isNone(validWidth(header.value.demand.width)))
+      return yield* new AdmissionUnavailable({ reason: "invalid-width" })
+  }
+  const request = yield* requestOf(text).pipe(Effect.mapError(bad))
+  const reply = yield* host.request(request)
+  yield* print(reply)
+  return refused(reply)
+})
+
 const lease = Effect.fn("HostAdmit.lease")(function* (host: Host, args: ReadonlyArray<string>) {
   const [action, flag, value, suffix, ...rest] = args
-  if (action === "request" && flag === "--json" && args.length === 2) {
-    const text = yield* read()
-    if (!uniqueKeys(text)) return yield* bad()
-    const header = peek(text)
-    if (Option.isSome(header)) {
-      if (Option.isNone(purposeOf(header.value.purpose))) return yield* new AdmissionUnavailable({ reason: "unsupported-class" })
-      if ("width" in header.value.demand && Option.isNone(validWidth(header.value.demand.width)))
-        return yield* new AdmissionUnavailable({ reason: "invalid-width" })
-    }
-    const request = yield* requestOf(text).pipe(Effect.mapError(bad))
-    const reply = yield* host.request(request)
-    yield* print(reply)
-    return refused(reply)
-  }
+  if (action === "request" && flag === "--json" && args.length === 2) return yield* submit(host)
   const id = address(value)
   if (flag !== "--id" || Option.isNone(id)) return yield* bad()
   if (action === "run" && suffix === "--" && rest.length > 0) return yield* host.launch(id.value, rest)
@@ -130,33 +132,40 @@ const holder = Effect.fn("HostAdmit.holder")(function* (host: Host, args: Readon
   return 0
 })
 
+const widthHint = (value: string) => {
+  if (value === "full") return Effect.succeed("full" as const)
+  const width = readWidth(value)
+  if (width === "invalid" || (width === "unknown" && value !== "unknown"))
+    return Effect.fail(new AdmissionUnavailable({ reason: "invalid-width" }))
+  return Effect.succeed(width)
+}
+const checkSpec = Effect.fn("HostAdmit.checkSpec")(function* (payload: ReadonlyArray<string>, options: ReadonlyArray<string>) {
+  const inferred = argvPurpose(payload)
+  let purpose = purposeOf(inferred)
+  let width = argvWidth(payload, env)
+  const seen = new Set<string>()
+  for (let i = 0; i < options.length; i += 2) {
+    const flag = options[i] ?? ""
+    const value = options[i + 1] ?? ""
+    if (seen.has(flag)) return yield* bad()
+    seen.add(flag)
+    if (flag === "--class") purpose = purposeOf(value)
+    else if (flag === "--width") width = joinWidth(width, yield* widthHint(value))
+    else return yield* bad()
+  }
+  if (Option.isNone(purpose)) return yield* new AdmissionUnavailable({ reason: "unsupported-class" })
+  if (inferred !== "check" && purpose.value !== inferred) return yield* bad()
+  if (width === "invalid") return yield* new AdmissionUnavailable({ reason: "invalid-width" })
+  return { purpose: purpose.value, width }
+})
+
 const check = Effect.fn("HostAdmit.check")(function* (host: Host, args: ReadonlyArray<string>) {
   const [action, ...rest] = args
   const delimiter = rest.indexOf("--")
   const payload = rest.slice(delimiter + 1)
   if (action !== "run" || delimiter < 0 || payload.length === 0 || delimiter % 2 !== 0) return yield* bad()
-  const inferred = argvPurpose(payload)
-  let purpose = purposeOf(inferred)
-  let width = argvWidth(payload, env)
-  const seen = new Set<string>()
-  for (let i = 0; i < delimiter; i += 2) {
-    const flag = rest[i] ?? ""
-    const value = rest[i + 1] ?? ""
-    if (seen.has(flag)) return yield* bad()
-    seen.add(flag)
-    if (flag === "--class") purpose = purposeOf(value)
-    else if (flag === "--width") {
-      let hint = readWidth(value)
-      if (value === "full") hint = "full"
-      if (hint === "invalid" || (hint === "unknown" && value !== "unknown"))
-        return yield* new AdmissionUnavailable({ reason: "invalid-width" })
-      width = joinWidth(width, hint)
-    } else return yield* bad()
-  }
-  if (Option.isNone(purpose)) return yield* new AdmissionUnavailable({ reason: "unsupported-class" })
-  if (inferred !== "check" && purpose.value !== inferred) return yield* bad()
-  if (width === "invalid") return yield* new AdmissionUnavailable({ reason: "invalid-width" })
-  return yield* host.run({ purpose: purpose.value, width }, payload)
+  const demand = yield* checkSpec(payload, rest.slice(0, delimiter))
+  return yield* host.run(demand, payload)
 })
 
 export const command = Effect.fn("HostAdmit.command")(function* (host: Host, args: ReadonlyArray<string>) {
