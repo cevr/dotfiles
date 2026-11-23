@@ -24,10 +24,18 @@
 // gone without an exit, a launch that never came up, an end whose call was
 // lost, a fire that failed; it also drips progress. A job's end reaches its
 // session once: by its letter, or, for a managed job (one this build
-// started), by the owner's own `park`, `wait` or `kill` that returned it,
-// which writes the delivery down before the entry goes. A check, the owner's
-// stop from the TUI or an ancestor's kill take nothing. A legacy job keeps the
-// old rule: a `wait` or `kill` that saw the end takes the entry.
+// started), by the owner's own `park`, `wait` or `kill` that returned it.
+// A managed job's record (the runner's, shared by every location) decides
+// both: a launch overdue and unclaimed is retired by taking its launch slot,
+// never by the clock alone; the end is claimed by taking the first delivery
+// slot (`delivering`, held by the owner's call or the letter, under one
+// delivery id), and only the winner acts. An owner's call stays `delivering`
+// until the host committed its answer (`answered`: its `execute.after` hook,
+// its tool events, or the session's context read on reconcile); one that
+// failed or was stopped hands the end to the letter under the same delivery
+// id, which the host's inbox admits once. A check, the owner's stop from the
+// TUI or an ancestor's kill take nothing. A legacy job keeps the old rule: a
+// `wait` or `kill` that saw the end takes the entry.
 import { Clock, Context, Deferred, Duration, Effect, Exit, FiberMap, FiberSet, Layer, Option, Random, Semaphore } from "effect"
 import { idOfTitle, minuteOf, type Schedule, scheduleOf, titleOf } from "./backstop.ts"
 import {

@@ -6,10 +6,16 @@
 // server's exit leaves it running. `read` takes the run from the files: an
 // exit recorded is `ended`; a runner that claimed it and is still that process
 // (its pid alive and started when its claim says) `running`; a claim whose
-// runner is gone without an exit `lost`; never claimed `starting`. A kill
+// runner is gone without an exit `lost`; never claimed `starting`; retired
+// (its launch slot, `runner.json`, taken by the wakes' retirement before any
+// runner's claim) `never-started`, and no runner runs it after. A kill
 // signals only the claim's own runner, never a pid read alone. `watch` keeps
 // one non-recursive watch on a live job's own directory and announces its exit
-// file; the wakes close it once the end is delivered.
+// file; the wakes close it once the end is delivered. `advance` takes the next
+// slot of the job's delivery record (`delivery.<n>.json`) by an exclusive link,
+// so of two writers in any location or process one wins; `.owed/<id>` lists
+// the managed jobs whose record is not yet `delivered`. Every record write is
+// durable (supervise.ts `writeDurable`).
 import { chmodSync, existsSync, type FSWatcher, mkdirSync, readdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs"
 import path from "node:path"
 import { Effect, Layer, Match, Option, Schema } from "effect"

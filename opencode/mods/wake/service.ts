@@ -148,8 +148,10 @@ export class JobRefused extends Schema.TaggedError<JobRefused>()("JobRefused", {
  *   user unit on Linux, its own session and process group elsewhere), its
  *   stdout and stderr to the log, `$JOB_DRIP` naming its progress file. The
  *   runner records the exit beside the spec. It returns at once.
- * - `read`: the job's spec and run, undefined for an id it never launched.
- *   A run whose runner is gone without an exit reads `lost`.
+ * - `read`: the job's spec and run, undefined for an id it never launched,
+ *   with its delivery record's newest slot. A run whose runner is gone
+ *   without an exit reads `lost`; one retired before any runner claimed it,
+ *   `never-started`.
  * - `tail`: the last `chars` characters of the log ("" when none).
  * - `drip`: the progress written since byte `from`, whole lines only, and
  *   the offset after them; a line still being written waits.
