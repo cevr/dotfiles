@@ -169,7 +169,7 @@ branch while that integration is pending.
 
 ### Host identity
 
-Run these examples in a fresh login shell of the named account.
+These commands assume a machine you trust: the check behind this document constrains the commands as written here, not your shell's startup files, the programs those command names resolve to, this checkout, or the local and remote configuration of the tools they use (ssh, git, systemd, rsync).
 
 Use the operator's deployment record, opened at order time. Record the
 installed machine's ID via its trusted provider console during enrollment,

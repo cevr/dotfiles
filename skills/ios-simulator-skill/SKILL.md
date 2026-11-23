@@ -12,19 +12,19 @@ Build, test, and automate iOS applications using accessibility-driven navigation
 
 ```bash
 # 1. Check environment
-bash scripts/sim_health_check.sh
+bash ~/Developer/personal/dotfiles/skills/ios-simulator-skill/scripts/sim_health_check.sh
 
 # 2. Launch app
-python scripts/app_launcher.py --launch com.example.app
+python ~/Developer/personal/dotfiles/skills/ios-simulator-skill/scripts/app_launcher.py --launch com.example.app
 
 # 3. Map screen to see elements
-python scripts/screen_mapper.py
+python ~/Developer/personal/dotfiles/skills/ios-simulator-skill/scripts/screen_mapper.py
 
 # 4. Tap button
-python scripts/navigator.py --find-text "Login" --tap
+python ~/Developer/personal/dotfiles/skills/ios-simulator-skill/scripts/navigator.py --find-text "Login" --tap
 
 # 5. Enter text
-python scripts/navigator.py --find-type TextField --enter-text "user@example.com"
+python ~/Developer/personal/dotfiles/skills/ios-simulator-skill/scripts/navigator.py --find-type TextField --enter-text "user@example.com"
 ```
 
 All scripts support `--help` for detailed options and `--json` for machine-readable output.

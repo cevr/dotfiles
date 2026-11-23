@@ -23,6 +23,11 @@ SOURCE_MACHINE = "<source-machine-id-from-deployment-record>"
 DESTINATION = "<destination-machine-id-from-deployment-record>"
 SOURCE = re.compile(r"# Pin source: .*deployment record.*see \[Host identity\]\(#host-identity\)")
 WARNING = "Reading the ID from whichever machine you are logged into defeats the check."
+TRUST_BOUNDARY = (
+    "These commands assume a machine you trust: the check behind this document constrains the commands as written here, "
+    "not your shell's startup files, the programs those command names resolve to, this checkout, or the local and remote "
+    "configuration of the tools they use (ssh, git, systemd, rsync)."
+)
 REMEDY = "take the pin from the deployment record; see [Host identity](#host-identity)"
 SHELL_TAGS = {"", "sh", "bash", "shell", "console"}
 LANGUAGE = "documented examples use the document command language"
@@ -54,10 +59,7 @@ DATA_NAMES = {
     "TS_AUTHKEY": "data",
     "d": "data",
 }
-CHECKOUT_PREFIXES = (
-    "~/Developer/personal/dotfiles/",
-    "/root/dotfiles/",
-)
+CHECKOUT_PREFIX = "~/Developer/personal/dotfiles/"
 
 
 def contract(path, source):
@@ -367,12 +369,7 @@ def brew_arguments(words):
 
 
 def cd_arguments(words):
-    # A relative interpreter path is read from the checkout, not a directory
-    # that an earlier statement may have switched to.
-    if len(words) != 1 or words[0].refs or not any(
-        words[0].value == prefix.rstrip("/") and (not prefix.startswith("~") or words[0].raw.startswith("~/"))
-        for prefix in CHECKOUT_PREFIXES
-    ):
+    if len(words) != 1 or words[0].refs or words[0].value != CHECKOUT_PREFIX.rstrip("/") or not words[0].raw.startswith("~/"):
         raise ValueError("cd production takes a literal documented checkout directory")
     return Arguments()
 
@@ -469,30 +466,19 @@ class Grammar:
     guards: dict
     roles: dict
     tracked: set[Path]
-    directory: Path
 
     def script_path(self, word):
-        """Match a literal checkout prefix or a path from the root/doc directory."""
-        operand = word.value
-        for prefix in CHECKOUT_PREFIXES:
-            if operand.startswith(prefix):
-                if prefix.startswith("~") and not word.raw.startswith("~/"):
-                    raise ValueError("a checkout path beginning with ~/ must leave the tilde unquoted")
-                candidates = {Path(operand[len(prefix):])}
-                break
-        else:
-            path = Path(operand)
-            if path.is_absolute() or operand.startswith("~") or ".." in path.parts or "/" not in operand:
-                raise ValueError(f"script path {operand!r} must be checkout-relative or use a documented checkout prefix")
-            candidates = {path, self.directory / path}
-        matches = {
-            path for path in candidates & self.tracked
-            if (ROOT / path).is_file() and (ROOT / path).resolve() == ROOT / path
-        }
-        if len(matches) != 1:
-            why = "ambiguous" if matches else "not a tracked repository file"
-            raise ValueError(f"interpreter script path {operand!r} is {why}; name a tracked file in the checkout")
-        return matches.pop()
+        """The operand, not the document's path or cwd, selects one index entry."""
+        if not word.raw.startswith(CHECKOUT_PREFIX) or not word.value.startswith(CHECKOUT_PREFIX):
+            raise ValueError(f"write the checkout-prefixed path {CHECKOUT_PREFIX}<tracked path>, unquoted at the prefix")
+        tail = word.value[len(CHECKOUT_PREFIX):]
+        if any(part in {"", ".", ".."} for part in tail.split("/")):
+            raise ValueError("write the checkout-prefixed path directly, without empty, '.' or '..' components")
+        path = Path(tail)
+        file = ROOT / path
+        if path not in self.tracked or not file.is_file() or file.resolve() != file:
+            raise ValueError(f"interpreter script path {word.value!r} is not a tracked repository file without symlinks")
+        return path
 
 
 def program(lines, start, grammar, inherited_note="", depth=0):
@@ -619,9 +605,18 @@ def check_names(statements, roles):
 
 
 def violations(path, content, grammar, strict):
+    fences = list(blocks(content))
+    # The boundary is prose, not a string a fence can satisfy by printing.
+    if strict_path(path):
+        prose = any(
+            line == TRUST_BOUNDARY and not any(start <= number < start + len(body) for start, _, body, _ in fences)
+            for number, line in enumerate(content.splitlines(), 1)
+        )
+        if content.count(TRUST_BOUNDARY) != 1 or not prose:
+            yield f"{path}:1: include this trust boundary verbatim once as a prose line: {TRUST_BOUNDARY}"
     all_pins = {name for name, role in grammar.roles.items() if role == "pin"}
     registered = all_pins | grammar.guards.keys()
-    for start, tag, lines, closed in blocks(content):
+    for start, tag, lines, closed in fences:
         raw = "\n".join(lines)
         if strict:
             if tag not in SHELL_TAGS:
@@ -658,6 +653,8 @@ def entries(paths):
 
 
 def strict_path(path):
+    if path.is_absolute() and path.is_relative_to(ROOT):
+        path = path.relative_to(ROOT)
     return path == Path("README.md") or path.is_relative_to("workbox") or path.is_relative_to("linux/hetzner-workbox")
 
 
@@ -675,6 +672,7 @@ def controls(roles):
     no_pin = "# No pin needed: read-only."
     local = "WORKBOX_EXPECT_MACHINE_ID='<machine-id-from-deployment-record>'"
     backup = "linux/hetzner-workbox/backup.sh list"
+    checkout = "~/Developer/personal/dotfiles/"
     call = f"sudo env {local} {backup}"
     read_id = 'WORKBOX_EXPECT_MACHINE_ID="$(cat /etc/machine-id)"'
     nested = f"sudo -n sh -c {shlex.quote(call)}"
@@ -689,7 +687,7 @@ def controls(roles):
         "r4-inline-flow": (False, f'RESTORE_MACHINE_ID="$(cat /etc/machine-id)"; sudo env WORKBOX_EXPECT_MACHINE_ID="$RESTORE_MACHINE_ID" {backup}'),
         "r5-ansi-quote": (False, f"sudo env {read_id} " + r"$'./back\x75p.sh' list"),
         "r5-env": (False, "env WORKBOX_EXPECT_MACHINE_ID='22222222222222222222222222222222' \\\n  bash ./backup.sh list"),
-        "r5-env-tracked": (False, "env WORKBOX_EXPECT_MACHINE_ID='22222222222222222222222222222222' \\\n  bash linux/hetzner-workbox/backup.sh list"),
+        "r5-env-tracked": (False, f"env WORKBOX_EXPECT_MACHINE_ID='22222222222222222222222222222222' \\\n  bash {checkout}{backup}"),
         "r5-export": (False, f'''export RESTORE_PIN='22222222222222222222222222222222'
 {note}
 sudo env WORKBOX_EXPECT_MACHINE_ID="$RESTORE_PIN" ./backup.sh list'''),
@@ -709,8 +707,11 @@ sudo env WORKBOX_EXPECT_MACHINE_ID="${{RECOVERY_PIN}}" ./backup.sh list'''),
         "unknown-env": (False, "env EXAMPLE_UNKNOWN=value true"),
         "nested-export-env": (False, "sh -c 'export ENV=./startup-fixture.sh; true'"),
         "path-sudo-env": (False, "sudo env PATH=/unknown true"),
-        "untracked-script": (False, "bash ./untracked-script.sh"),
+        "relative-script": (False, f"bash {backup}"),
+        "untracked-script": (False, f"bash {checkout}untracked-script.sh"),
         "same-basename-outside": (False, "bash /different/checkout/backup.sh list"),
+        "old-root-prefix": (False, f"sh /root/dotfiles/{backup}"),
+        "parent-escape": (False, f"bash {checkout}../dotfiles/{backup}"),
         "off-checkout-cwd": (False, "cd /tmp; bash linux/hetzner-workbox/backup.sh list"),
         "quoted-home-script": (False, "bash '~/Developer/personal/dotfiles/linux/hetzner-workbox/backup.sh' list"),
         "bash-rcfile": (False, "bash --rcfile linux/hetzner-workbox/backup.sh -c 'true'"),
@@ -762,10 +763,9 @@ sudo env WORKBOX_EXPECT_MACHINE_ID="${{RECOVERY_PIN}}" ./backup.sh list'''),
         "valid-assignment-value": (True, f'sudo env {local} HB_BACKUP_DIR="$BACKUP_COPY" {backup}'),
         "valid-restore-value": (True, f'{local} ./backup.sh restore runs "$RESTORE_DIR"'),
         "valid-export": (True, f"export {local}\n{note}\n{backup}"),
-        "valid-continuation": (True, f"sudo -n env {local} \\\n   bash {backup}"),
-        "valid-checkout-prefix": (True, f"sudo -n env {local} bash ~/Developer/personal/dotfiles/{backup}"),
-        "valid-root-prefix": (True, f"sudo -n env {local} sh /root/dotfiles/{backup}"),
-        "valid-python-script": (True, "python skills/ios-simulator-skill/scripts/app_launcher.py --launch com.example"),
+        "valid-continuation": (True, f"sudo -n env {local} \\\n   bash {checkout}{backup}"),
+        "valid-checkout-prefix": (True, f"sudo -n env {local} sh {checkout}{backup}"),
+        "valid-python-script": (True, f"python {checkout}skills/ios-simulator-skill/scripts/app_launcher.py --launch com.example"),
         "valid-quoted-operators": (True, f"sudo env {local} HB_TO='x;&&y|z' {backup}"),
         "valid-compound": (True, f"true | true; true || true &\\\n&\n{note}\n{call};"),
         "valid-concat-target": (True, f"sudo env {local} ./b'ac'k\"up\".sh list"),
@@ -823,6 +823,11 @@ sudo env WORKBOX_EXPECT_MACHINE_ID="${{RECOVERY_PIN}}" ./backup.sh list'''),
         "unknown-env": "add the name to the table with its role",
         "nested-export-env": "assignment to 'ENV' is outside the interpreter environment restriction",
         "path-sudo-env": "assignment to 'PATH' is outside the interpreter environment restriction",
+        "relative-script": "write the checkout-prefixed path",
+        "same-basename-outside": "write the checkout-prefixed path",
+        "old-root-prefix": "write the checkout-prefixed path",
+        "parent-escape": "without empty, '.' or '..' components",
+        "quoted-home-script": "write the checkout-prefixed path",
         "untracked-script": "not a tracked repository file",
         "bash-rcfile": "interpreter options are not allowed",
         "sh-stdin": "redirection is not allowed",
@@ -848,15 +853,17 @@ sudo env WORKBOX_EXPECT_MACHINE_ID="${{RECOVERY_PIN}}" ./backup.sh list'''),
         (True, lambda pins: "sudo -n bash -c " + shlex.quote(f"env {pins} ./sync.sh rest")),
         (True, lambda pins: "ssh host " + shlex.quote(f"{pins} ./sync.sh pass 2")),
         (True, lambda pins: f"export {pins}\n{note}\n./sync.sh pass 2"),
-        (True, lambda pins: f'HB_TO="$NEWTS" sudo env {pins} bash linux/hetzner-workbox/sync.sh rest'),
+        (True, lambda pins: f'HB_TO="$NEWTS" sudo env {pins} bash {checkout}linux/hetzner-workbox/sync.sh rest'),
         (False, lambda pins: f"OPTION=-v; printf \"$OPTION\" PIN '%s' bad;\n{note}\nenv {pins} ./sync.sh rest"),
         (False, lambda pins: f"sudo env {pins} ./sync.sh rest |"),
         (False, lambda pins: "bash -c " + shlex.quote(f'{pins} "$d/sync.sh" rest')),
         (False, lambda pins: "ssh host " + shlex.quote(f"{pins} ./sync.sh rest; true >output")),
         (False, lambda pins: f"BASH_ENV=./startup-fixture.sh bash -c {shlex.quote(f'{pins} ./sync.sh rest')}"),
         (False, lambda pins: "sh -c " + shlex.quote(f"export EXAMPLE_UNKNOWN=value; env {pins} ./sync.sh rest")),
-        (False, lambda pins: f"sudo env {pins} bash ./untracked-script.sh"),
+        (False, lambda pins: f"sudo env {pins} bash {checkout}untracked-script.sh"),
         (False, lambda pins: f"sudo env {pins} bash --rcfile ./startup-fixture.sh -c 'true'"),
+        (False, lambda pins: f"sudo env {pins} bash linux/hetzner-workbox/sync.sh rest"),
+        (False, lambda pins: f"sudo env {pins} bash {checkout}../dotfiles/linux/hetzner-workbox/sync.sh rest"),
     ]
     for i, ((grammar_ok, render), (source_ok, a), (dest_ok, b)) in enumerate(
         product(productions, choices(source, dest), choices(dest, source))
@@ -916,9 +923,15 @@ def census_control(scratch):
         "workbox/diagram.md": "~~~text\nstart --> done\n~~~\n",
         "workbox/untagged-diagram.md": "~~~\nstart --> done\n~~~\n",
         "workbox/new-entry.md": "~~~sh\n./workbox/bin/fresh-probe\n~~~\n",
-        "linux/hetzner-workbox/relative-ok.md": "~~~sh\n# No pin needed: read-only.\nsh ./layout.sh --dry-run\n~~~\n",
-        "linux/hetzner-workbox/untracked.md": "~~~sh\nbash ./untracked.sh\n~~~\n",
-        "linux/hetzner-workbox/symlink.md": "~~~sh\nbash ./indexed-link.sh\n~~~\n",
+        "workbox/relative.md": "```sh\nbash ./tracked-probe.sh\n```\n",
+        "linux/hetzner-workbox/checkout-ok.md": f"~~~sh\n# No pin needed: read-only.\nsh {CHECKOUT_PREFIX}linux/hetzner-workbox/layout.sh --dry-run\n~~~\n",
+        "linux/hetzner-workbox/untracked.md": f"~~~sh\nbash {CHECKOUT_PREFIX}linux/hetzner-workbox/untracked.sh\n~~~\n",
+        "linux/hetzner-workbox/symlink.md": f"~~~sh\nbash {CHECKOUT_PREFIX}linux/hetzner-workbox/indexed-link.sh\n~~~\n",
+        "linux/hetzner-workbox/working-link.md": f"~~~sh\nbash {CHECKOUT_PREFIX}linux/hetzner-workbox/working-link.sh\n~~~\n",
+        "workbox/missing-boundary.md": "~~~sh\ntrue\n~~~\n",
+        "workbox/changed-boundary.md": TRUST_BOUNDARY.replace("local and remote", "local") + "\n",
+        "workbox/duplicate-boundary.md": f"{TRUST_BOUNDARY}\n\n{TRUST_BOUNDARY}\n",
+        "workbox/fenced-boundary.md": f"~~~text\n{TRUST_BOUNDARY}\n~~~\n",
         "skills/elsewhere/unrelated.md": "~~~sh\nstart --> done\n~~~\n",
         "skills/elsewhere/new-guard.md": "~~~text\n./workbox/bin/fresh-probe\n~~~\n",
         "skills/elsewhere/mentioned.md": "~~~text\nbackup.sh <diagram>\n~~~\n",
@@ -934,19 +947,31 @@ def census_control(scratch):
     fresh = "workbox/bin/fresh-probe"
     (scratch / fresh).parent.mkdir(parents=True)
     (scratch / fresh).write_text("#!/bin/sh\nworkbox_require_host\n")
+    decoy = "workbox/tracked-probe.sh"
+    (scratch / decoy).write_text("#!/bin/sh\nprintf 'tracked decoy\\n'\n")
+    (scratch / "tracked-probe.sh").write_text("#!/bin/sh\nprintf 'ran the untracked checkout-root file\\n'\n")
     untracked = "linux/hetzner-workbox/untracked.sh"
     link = "linux/hetzner-workbox/indexed-link.sh"
+    working_link = "linux/hetzner-workbox/working-link.sh"
+    outside = scratch.parent / "outside-checkout.sh"
+    outside.write_text("#!/bin/sh\ntrue\n")
     (scratch / untracked).write_text("#!/bin/sh\ntrue\n")
-    (scratch / link).symlink_to("untracked.sh")
+    (scratch / link).symlink_to(outside)
+    (scratch / working_link).write_text("#!/bin/sh\ntrue\n")
     for path, text in plants.items():
         target = scratch / path
         target.parent.mkdir(parents=True, exist_ok=True)
+        if strict_path(Path(path)) and not path.endswith("-boundary.md"):
+            text = f"{TRUST_BOUNDARY}\n\n{text}"
         target.write_text(text)
     subprocess.run(["git", "init", "-q"], cwd=scratch, check=True)
-    subprocess.run(["git", "add", "--", str(scanner), str(guard), str(layout), fresh, link, *plants], cwd=scratch, check=True)
+    subprocess.run(["git", "add", "--", str(scanner), str(guard), str(layout), fresh, link, working_link, decoy, *plants],
+                   cwd=scratch, check=True)
+    (scratch / working_link).unlink()
+    (scratch / working_link).symlink_to(outside)
     run = [sys.executable, str(scanner)]
     census = subprocess.run(run, cwd=scratch, capture_output=True, text=True)
-    expected = set(plants) - {"workbox/diagram.md", "skills/elsewhere/unrelated.md", "linux/hetzner-workbox/relative-ok.md"}
+    expected = set(plants) - {"workbox/diagram.md", "skills/elsewhere/unrelated.md", "linux/hetzner-workbox/checkout-ok.md"}
     diagnosed = {line.split(":", 1)[0] for line in census.stderr.splitlines()}
     if census.returncode != 1 or diagnosed != expected:
         raise AssertionError(f"wrong tracked document census: {census}")
@@ -956,10 +981,17 @@ def census_control(scratch):
         raise AssertionError(f"new shell guard did not require a table entry: {census}")
     if not any("workbox/untagged-diagram.md:" in line and TAG in line for line in census.stderr.splitlines()):
         raise AssertionError(f"untagged diagram did not explain how to opt out: {census}")
-    for case in ("untracked", "symlink"):
+    for case in ("untracked", "symlink", "working-link"):
         if not any(f"linux/hetzner-workbox/{case}.md:" in line and "not a tracked repository file" in line
                    for line in census.stderr.splitlines()):
             raise AssertionError(f"{case} was not rejected by the indexed-file check: {census}")
+    if not any(line.startswith("workbox/relative.md:") and "write the checkout-prefixed path" in line
+               for line in census.stderr.splitlines()):
+        raise AssertionError(f"tracked decoy masked a relative operand: {census}")
+    for case in ("missing", "changed", "duplicate", "fenced"):
+        boundary = subprocess.run([*run, f"workbox/{case}-boundary.md"], cwd=scratch, capture_output=True, text=True)
+        if boundary.returncode != 1 or f"include this trust boundary verbatim once as a prose line: {TRUST_BOUNDARY}" not in boundary.stderr:
+            raise AssertionError(f"{case} trust boundary was not rejected: {boundary}")
     explicit = subprocess.run([*run, "skills/elsewhere/unrelated.md"], cwd=scratch, capture_output=True, text=True)
     if explicit.returncode != 1 or "redirection" not in explicit.stderr:
         raise AssertionError(f"explicit files were not checked strictly: {explicit}")
@@ -989,7 +1021,7 @@ def main():
         problem for path in docs
         for problem in violations(
             path, (ROOT / path).read_text(),
-            Grammar(commands, roles, tracked, path.parent if not explicit else explicit_directory(path)),
+            Grammar(commands, roles, tracked),
             explicit or strict_path(path),
         )
     ]
@@ -998,10 +1030,6 @@ def main():
         return 1
     print("guarded docs OK")
     return 0
-
-
-def explicit_directory(path):
-    return path.parent.relative_to(ROOT) if path.is_relative_to(ROOT) else Path()
 
 
 if __name__ == "__main__":

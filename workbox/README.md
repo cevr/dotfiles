@@ -10,7 +10,7 @@ Use this command in the approved deployment, as the workbox user.
 
 ### Host identity
 
-Run these examples in a fresh login shell of the named account.
+These commands assume a machine you trust: the check behind this document constrains the commands as written here, not your shell's startup files, the programs those command names resolve to, this checkout, or the local and remote configuration of the tools they use (ssh, git, systemd, rsync).
 
 Replace the literal `<machine-id-from-deployment-record>` with the intended
 workbox ID from the operator's deployment record opened at order time and
