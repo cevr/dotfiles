@@ -113,7 +113,7 @@ const bothSpent = ({ account, body }: Provider.RequestInfo): Provider.Answer => 
 }
 
 /** The pool's own refusal: every account held, and when the first opens. */
-const POOL_REFUSAL = /^dotfiles-opencode\.pool: all pool accounts are held; the first opens at (\S+Z)$/
+const POOL_REFUSAL = /^dotfiles-opencode\.pool: all pool accounts are held; it may go again at (\S+Z)$/
 
 seeded(
   "with both logins spent, the run ends on the pool's own refusal and when the first opens, never sent on a spent login again",

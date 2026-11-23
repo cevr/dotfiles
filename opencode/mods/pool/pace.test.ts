@@ -1,10 +1,121 @@
 // The pool's pace: whether a new agent may start now, from its accounts' readings.
 import { expect, test } from "bun:test"
-import { dispatchPace, eligibleFor, NO_INFLIGHT, poolPace } from "./pace.ts"
+import { Array as Arr, DateTime, Option } from "effect"
+import { dispatchPace, eligibleFor, NO_INFLIGHT, poolPace, RequestHeld, requestHeldMessage } from "./pace.ts"
+import { carryOver, type QuotaReading } from "./quota.ts"
 import type { AccountStatus } from "./status.ts"
 const now = Date.parse("2026-11-04T15:00:00Z")
 const day = 86400000
+const minute = 60_000
+const hour = 60 * minute
 const account = (used: number, reset = now + 3.5 * day): AccountStatus => ({ credentialID: "a", live: 1, load: 0, noRoom: false, reading: { at: now, windows: [{ name: "7d", utilization: used, resetAt: reset }, { name: "5h", utilization: 0.1, resetAt: now + 3600000 }] } })
+
+test("a dispatch needs the model's defined and learned windows through generated reading histories", () => {
+  const scopes = [
+    { model: "claude-fable-5-2", window: "7d:Fable", defined: true },
+    { model: "claude-lyric-5", window: "7d:Lyric", defined: false },
+  ]
+  const present = { event: "present", use: Option.some(0.1) }
+  const events = [present, { event: "absent", use: Option.none() }, { event: "failed", use: Option.none() }, { event: "spent", use: Option.some(1) }]
+  const histories = Arr.cartesianWith(Arr.cartesian(events, events), events, ([a, b], c) => [a, b, c, present])
+  for (const [{ model, window, defined }, history] of Arr.cartesian(scopes, histories)) {
+    let reading = Option.none<QuotaReading>()
+    let observed = Option.none<{ readonly at: number; readonly resetAt: number; readonly utilization: number }>()
+    for (const [index, { use }] of history.entries()) {
+      const at = now + index * 20 * minute
+      const resetAt = at + 25 * minute
+      if (Option.isSome(use)) observed = Option.some({ at, resetAt, utilization: use.value })
+      // The base limits are supplied by recent response headers even when the usage endpoint fails.
+      const short = { name: "5h", utilization: 0.1, resetAt: at + hour }
+      const weekly = { name: "7d", utilization: 0.2, resetAt: now + 3 * day }
+      const scoped = Option.toArray(Option.map(use, (utilization) => ({ name: window, utilization, resetAt })))
+      const next = carryOver(Option.getOrUndefined(reading), { at, windows: [weekly, short, ...scoped] })
+      const backed = carryOver(Option.getOrUndefined(reading), { at, windows: [{ ...weekly, utilization: 0.66 }, short, ...scoped] })
+      reading = Option.some(next)
+      const accounts = [{ ...account(0.2), reading: next }]
+      const maySend = Option.match(observed, {
+        onNone: () => !defined,
+        onSome: (last) => at < last.resetAt && at - last.at <= 30 * minute && last.utilization < 1,
+      })
+      const context = `${model}: ${history.map((step) => step.event).join(", ")}, step ${index}`
+      expect(dispatchPace(accounts, at, {}, 0.04, model).ok, context).toBe(maySend)
+      const plans = { a: { rebase: { at: now - minute, from: 0.66, key: "owned" } } }
+      expect(dispatchPace([{ ...account(0.66), reading: backed }], at, plans, 0.04, model).ok, context).toBe(maySend)
+      expect(dispatchPace(accounts, at, {}, 0.04, "claude-opus-5-5")).toMatchObject({ ok: true, eligible: ["a"] })
+    }
+  }
+})
+
+test("a past 5-hour reset needs a new reading, even with a fresh weekly window", () => {
+  const read = (at: number, resetAt: number, utilization: number): AccountStatus => ({
+    ...account(0.2),
+    reading: { at, windows: [{ name: "7d", utilization: 0.2, resetAt: now + 3 * day }, { name: "5h", utilization, resetAt }] },
+  })
+  for (const reset of [now - 60_000, now]) {
+    expect(dispatchPace([read(now, reset, 1)], now, {}, 0.04)).toMatchObject({ ok: false, eligible: [], retryAt: now + 60_000 })
+  }
+  expect(dispatchPace([read(now + 60_000, now + 30_000, 1)], now, {}, 0.04)).toMatchObject({ ok: false, eligible: [], retryAt: now + 60_000 })
+  expect(dispatchPace([read(now, now + 60_000, 0)], now, {}, 0.04)).toMatchObject({ ok: true, eligible: ["a"] })
+})
+
+test("each held dispatch in a generated history states a future time, and re-evaluates at it", () => {
+  const timings = Arr.cartesian([hour, 2 * hour, 4 * hour], [0.58, 0.64, 0.72, 0.83])
+  const usage = Arr.cartesian([0.2, 0.95, 1], [0, 0.02, 0.05])
+  for (const [[resetIn, weekly], [short, spent]] of Arr.cartesian(timings, usage)) {
+    let at = now
+    const shortReset = now + resetIn
+    const weekReset = now + 3.5 * day
+    const plan = { a: { rebase: { at: now - hour, from: weekly - 0.01, spent } } }
+    const read = (credentialID: string, use: number, five: number): AccountStatus => {
+      let week = { name: "7d", utilization: use, resetAt: weekReset }
+      let session = { name: "5h", utilization: five, resetAt: shortReset }
+      if (at >= weekReset) week = { ...week, utilization: 0, resetAt: weekReset + 7 * day }
+      if (at >= shortReset) session = { ...session, utilization: 0, resetAt: at + 5 * hour }
+      return { ...account(use), credentialID, reading: { at, windows: [week, session] } }
+    }
+    for (let step = 0; step < 6; step++) {
+      const plans = Option.getOrElse(Option.filter(Option.some(plan), () => at < weekReset), () => ({}))
+      const answer = dispatchPace([read("a", weekly, short), read("b", 0.58, 0.2)], at, plans, 0.04)
+      if (step === 0 && weekly === 0.58 && short === 0.95 && spent === 0)
+        expect(answer).toMatchObject({ ok: false, retryAt: shortReset })
+      if (answer.ok) break
+      expect(answer.reason).not.toBe("")
+      expect(Number.isFinite(answer.retryAt)).toBe(true)
+      expect(answer.retryAt).toBeGreaterThan(at)
+      at = answer.retryAt
+    }
+  }
+})
+
+test("a title waits for ordinary room, and its hold names that catch-up time", () => {
+  // Single healthy login. 70% spent, 54.5% even line, 72% on a claim.
+  const accounts = [account(0.7)]
+  const plans = { a: { rebase: { at: now, from: 0.68 } } }
+  expect(dispatchPace(accounts, now, plans, 0.02)).toMatchObject({ ok: true, admission: "backed" })
+  const title = dispatchPace(accounts, now, plans, 0.02, "claude-opus-5-5", { auxiliary: "title" })
+  expect(title.ok).toBe(false)
+  if (title.ok) return
+  const catchUp = now + Math.ceil((0.7 - 0.545) * 7 * day / 0.99) + 1
+  expect(title.retryAt).toBe(catchUp)
+  expect(requestHeldMessage(new RequestHeld({ sessionID: "title-fixture", reason: title.reason, retryAt: title.retryAt })))
+    .toContain(`a title request does not spend the room a claimed reset gave back; it may go again at ${DateTime.formatIso(DateTime.makeUnsafe(catchUp))}`)
+})
+
+test("a push lifts the even line, not a model's required evidence or spent windows", () => {
+  const model = "claude-fable-5-2"
+  const fable = (id: string, used: number): AccountStatus => {
+    const item = account(0.7)
+    const windows = Option.match(Option.fromUndefinedOr(item.reading), { onNone: () => [], onSome: (reading) => reading.windows })
+    return {
+      ...item,
+      credentialID: id,
+      reading: { at: now, windows: [...windows, { name: "7d:Fable", utilization: used, resetAt: now + day }] },
+    }
+  }
+  const accounts = [account(0.2), fable("b", 1), fable("c", 0.1)]
+  expect(dispatchPace(accounts, now, {}, 0.04, model)).toMatchObject({ ok: false, eligible: [] })
+  expect(dispatchPace(accounts, now, {}, 0.04, model, { liftEvenLine: true })).toMatchObject({ ok: true, eligible: ["c"] })
+})
 
 test("weekly pace holds ahead-of-time use and opens once the pool catches up", () => {
   // Half the week: 49.5% target plus 5 percentage points of leeway.

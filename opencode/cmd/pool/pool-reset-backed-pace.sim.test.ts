@@ -7,7 +7,7 @@
 // week 100%, Fable 68% of its own week = 34 shared points, observed after the
 // claim at 66%, one claim.
 import { Pace } from "@dotfiles/opencode-pool/pace"
-import { Array as Arr, Effect, Option, Schema } from "effect"
+import { Array as Arr, Effect, Exit, Option, Schema, Scope } from "effect"
 import { claimEffect, type FakeClaimResult, type FakeGrant, type FakeQuota } from "../../tests/fake-anthropic.ts"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Provider from "../../sim/provider.ts"
@@ -193,7 +193,9 @@ const refunds = (made: Fixture, account: string): FakeClaimResult => {
 
 const readOf = (made: Fixture, account: string): FakeQuota => Option.getOrElse(Option.fromUndefinedOr(made.reading[account]), () => quota(0, 0))
 
-const fleet = (made: Fixture, options: { readonly beside?: World.World; readonly model?: string } = {}) =>
+const OTHER = "/scratch/reset-backed-pace-other"
+
+const fleet = (made: Fixture, options: { readonly beside?: World.World; readonly model?: string; readonly anotherDirectory?: boolean } = {}) =>
   Effect.gen(function* () {
     const names = Object.keys(made.reading)
     const accounts = Provider.accounts(1, names)
@@ -222,20 +224,45 @@ const fleet = (made: Fixture, options: { readonly beside?: World.World; readonly
       if (made.unavailable && target.pathname === "/api/oauth/usage") target.pathname = "/nonexistent/loop-probe-x"
       return provider.fetch(target, init)
     }
-    yield* world.load(Plugins.anthropicAuth({ ...provider, fetch }), { directory: WORK })
-    yield* world.load(Plugins.pool(new Map(), Plugins.network({ ...provider, fetch })), {
-      directory: WORK,
-      options: { sweepMinutes: 0.1, limitsFile: "/nonexistent/loop-probe-x/limits.json", fleet: { startCost: 0.04 } },
-    })
+    const sessionDirectory = Option.getOrElse(Option.filter(Option.some(OTHER), () => options.anotherDirectory === true), () => WORK)
+    yield* world.load(Plugins.anthropicAuth({ ...provider, fetch }), { directory: sessionDirectory })
+    const pool = Plugins.pool(new Map(), Plugins.network({ ...provider, fetch }))
+    const config = { sweepMinutes: 0.1, limitsFile: "/nonexistent/loop-probe-x/limits.json", fleet: { startCost: 0.04 } }
+    const claimant = yield* Scope.make()
+    if (options.anotherDirectory === true) {
+      yield* world.load(pool, { directory: OTHER, options: config })
+      yield* world.load({ ...pool, effect: (ctx) => Effect.addFinalizer(() => Scope.close(claimant, Exit.void)).pipe(Effect.andThen(pool.effect(ctx).pipe(Scope.provide(claimant)))) }, { directory: WORK, options: config })
+    } else {
+      yield* world.load(pool, { directory: WORK, options: config })
+    }
     yield* world.advance(7_000)
     return {
       world,
-      session: (id: string) => world.session(WORK, { id: `ses_${id}` }),
+      session: (id: string) => world.session(sessionDirectory, { id: `ses_${id}` }),
       pace: (sessionID: string) => Effect.map(world.rpc(POOL, "pace", { providerID: "anthropic", model: "claude-opus-5-5", sessionID }), decodePace),
       primary: () => world.provider().received().filter((request) => request.path === "/v1/messages" && request.tools > 0),
       claims: () => world.provider().claims().map((claim) => claim.result),
+      closeClaimant: world.runtime.run(Scope.close(claimant, Exit.void)),
     }
   })
+
+seeded("a still-running directory observes the refund after the claiming directory closes, without a restart", ({ expect }) =>
+  Effect.gen(function* () {
+    const made = fixture({ a: quota(1, 0.68) }, () => "reset", Option.some("a"))
+    const { world, session, pace, primary, claims, closeClaimant } = yield* fleet(made, { anotherDirectory: true })
+    const id = yield* session("surviving_directory")
+    expect(yield* pace(id)).toMatchObject({ ok: false })
+    yield* world.advance(20_000)
+    expect(claims()).toEqual(["reset"])
+    yield* closeClaimant
+    made.reading["a"] = claimEffect(readOf(made, "a"), fable)
+    yield* world.advance(60_000)
+    yield* world.prompt(id, "use the claim the other directory left pending")
+    yield* world.advance(1_000)
+    const errors = world.messages(id).filter((message) => message.type === "error").map((message) => message.message)
+    expect({ claims: claims(), sent: primary().map((request) => request.account) }, errors.join("; ")).toEqual({ claims: ["reset"], sent: ["a"] })
+  }),
+)
 
 seeded("B1: two requests on one reading after a claim share one 4-point slot: one goes out, the other is held, a restart too", ({ expect }) =>
   Effect.gen(function* () {

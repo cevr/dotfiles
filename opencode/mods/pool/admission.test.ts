@@ -113,6 +113,8 @@ const expected = (state: ModelState): "ordinary" | "backed" | "held" => {
 
 const week = (utilization: number, resetAt: number): QuotaWindow => ({ name: "7d", utilization, resetAt })
 const carried = (utilization: number, resetAt: number, at: number): QuotaWindow => ({ name: "7d", utilization, resetAt, at })
+const observation = (utilization: number, resetAt: number, at: number) =>
+  ObserveClaim.make({ pool: "anthropic", provider: "claude", credentialID: "a", windows: [week(utilization, resetAt)], at })
 
 const accountOf = (state: ModelState): AccountStatus => ({
   credentialID: "a",
@@ -190,7 +192,7 @@ const read = (world: World) => {
   state.readResetAt = state.resetAt
   const waiting = awaitingObservation(world.resets.claims, "claude", "a", state.now)
   if (Option.isSome(waiting) && state.now > waiting.value.at)
-    world.resets = decided(world.resets, ObserveClaim.make({ key: waiting.value.key, windows: [week(state.read, state.readResetAt)], at: state.now }), state.now)
+    world.resets = decided(world.resets, observation(state.read, state.readResetAt, state.now), state.now)
   // The model: a reading taken after a claim that went through and within 30 minutes of it confirms it when the week is
   // lower in its period; one that is not keeps it waiting, and past the 30 minutes the wait ends with nothing.
   const due = Option.filter(state.pending, (pending) => state.now > pending.at)
@@ -388,10 +390,10 @@ describe("reset-backed admission at the dispatch, a generated sequence against a
     // Went through; its reading after it unread. The first reading after it observes it, once.
     const own: ResetsState = { waits: {}, resets: {}, claims: [claimOf(2, START, "reset", [week(1, resetAt)], Option.none())] }
     expect(dispatchPace([at(1, START)], START, plan(own, START), COST, MODEL)).toMatchObject({ ok: false })
-    const observed = decided(own, ObserveClaim.make({ key: "k2", windows: [week(0.66, resetAt)], at: START + MINUTE }), START + MINUTE)
+    const observed = decided(own, observation(0.66, resetAt, START + MINUTE), START + MINUTE)
     expect(dispatchPace([at(0.66, START + MINUTE)], START + MINUTE, plan(observed, START + MINUTE), COST, MODEL)).toMatchObject({ ok: true, admission: "backed" })
     // A later reading is no second observation: the first stays the claim's.
-    expect(decided(observed, ObserveClaim.make({ key: "k2", windows: [week(0.2, resetAt)], at: START + 2 * MINUTE }), START + 2 * MINUTE)).toEqual(observed)
+    expect(decided(observed, observation(0.2, resetAt, START + 2 * MINUTE), START + 2 * MINUTE)).toEqual(observed)
   })
 
   test("a claim that went through, read unchanged right after it, stays pending until a timely reading shows its recovery; never past 30 minutes", () => {
@@ -409,22 +411,22 @@ describe("reset-backed admission at the dispatch, a generated sequence against a
     expect(Option.map(awaitingObservation(lagging.claims, "claude", "a", START + MINUTE), (claim) => claim.key)).toEqual(Option.some("k3"))
     expect(dispatchPace([at(1, START + MINUTE)], START + MINUTE, plan(lagging, 1, START + MINUTE), COST, MODEL)).toMatchObject({ ok: false })
     // Another unchanged reading is no observation: it stays pending.
-    const quiet = decided(lagging, ObserveClaim.make({ key: "k3", windows: [week(1, resetAt)], at: START + 5 * MINUTE }), START + 5 * MINUTE)
+    const quiet = decided(lagging, observation(1, resetAt, START + 5 * MINUTE), START + 5 * MINUTE)
     expect(quiet).toEqual(lagging)
     expect(Option.isSome(awaitingObservation(quiet.claims, "claude", "a", START + 5 * MINUTE))).toBe(true)
     // A reading of another period is no recovery of the claim's.
-    expect(decided(quiet, ObserveClaim.make({ key: "k3", windows: [week(0.02, resetAt + WEEK)], at: START + 6 * MINUTE }), START + 6 * MINUTE)).toEqual(lagging)
+    expect(decided(quiet, observation(0.02, resetAt + WEEK, START + 6 * MINUTE), START + 6 * MINUTE)).toEqual(lagging)
     // A timely lower reading in the same period is its recovery: backed room.
-    const recovered = decided(quiet, ObserveClaim.make({ key: "k3", windows: [week(0.66, resetAt)], at: START + 10 * MINUTE }), START + 10 * MINUTE)
+    const recovered = decided(quiet, observation(0.66, resetAt, START + 10 * MINUTE), START + 10 * MINUTE)
     expect(dispatchPace([at(0.66, START + 10 * MINUTE)], START + 10 * MINUTE, plan(recovered, 0.66, START + 10 * MINUTE), COST, MODEL)).toMatchObject({ ok: true, admission: "backed" })
     // The same reading past the 30 minutes is not the claim's: no room, and no longer pending.
-    const late = decided(quiet, ObserveClaim.make({ key: "k3", windows: [week(0.66, resetAt)], at: START + 31 * MINUTE }), START + 31 * MINUTE)
+    const late = decided(quiet, observation(0.66, resetAt, START + 31 * MINUTE), START + 31 * MINUTE)
     expect(late).toEqual(lagging)
     expect(Option.isNone(awaitingObservation(late.claims, "claude", "a", START + 31 * MINUTE))).toBe(true)
     expect(dispatchPace([at(0.66, START + 31 * MINUTE)], START + 31 * MINUTE, plan(late, 0.66, START + 31 * MINUTE), COST, MODEL)).toMatchObject({ ok: false })
     // An already-redeemed answer read unchanged and then lower is never pending, never room.
     const foreign: ResetsState = { waits: {}, resets: {}, claims: [claimOf(4, START, "already-redeemed", [week(1, resetAt)], Option.some([week(1, resetAt)]))] }
     expect(Option.isNone(awaitingObservation(foreign.claims, "claude", "a", START + MINUTE))).toBe(true)
-    expect(decided(foreign, ObserveClaim.make({ key: "k4", windows: [week(0.66, resetAt)], at: START + 10 * MINUTE }), START + 10 * MINUTE)).toEqual(foreign)
+    expect(decided(foreign, observation(0.66, resetAt, START + 10 * MINUTE), START + 10 * MINUTE)).toEqual(foreign)
   })
 })

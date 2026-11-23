@@ -8,7 +8,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Clock, Effect, Fiber, Latch, Layer, Option, Queue, Schedule, Schema, Stream } from "effect"
+import { Cause, Clock, Effect, Fiber, Latch, Layer, Option, Queue, Schedule, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { CACHE_LIFE_MS, WINDOW_MS } from "@dotfiles/opencode-pool/accounts"
@@ -129,8 +129,14 @@ const world = (): World => ({
 /** A reading as the ledger keeps it, as far as a test reads it: its windows' use. */
 const decodeStored = Schema.decodeUnknownOption(Schema.Struct({ windows: Schema.Array(Schema.Struct({ utilization: Schema.Number })) }))
 
-/** A fresh, quiet week: what a usage read answers for a login the test gave no reading, as a managed pool's dispatch reads one before it sends. */
-const quiet = (now: number) => ({ at: now, windows: [{ name: "7d", utilization: 0.01, resetAt: now + 72 * HOUR }] })
+/** Fresh, quiet account windows: what the fake reads for a login with no custom quota. */
+const quiet = (now: number) => ({
+  at: now,
+  windows: [
+    { name: "5h", utilization: 0, resetAt: now - now % (5 * HOUR) + 5 * HOUR },
+    { name: "7d", utilization: 0.01, resetAt: now + 72 * HOUR },
+  ],
+})
 
 /** The memory quota, its usage read of a login with no reading answered by `quiet`. */
 const quietUsage = Layer.effect(
@@ -1091,13 +1097,14 @@ describe("the RPC", () => {
       }),
     ))
 
-  test("pace on a pool whose logins cannot be read fails, and the hooks and status go on", () =>
+  test("pace on a pool whose logins cannot be read fails, dispatch holds with a retry, and status goes on", () =>
     scenario(
       Effect.gen(function* () {
         const state = world()
         state.integration.connections.delete(ANTHROPIC)
         const plugin = yield* start(undefined, state)
-        expect(yield* plugin.request()).toBeUndefined()
+        const dispatch = yield* Effect.flip(Effect.sandbox(plugin.request()))
+        expect(Cause.pretty(dispatch)).toMatch(/the pool's logins could not be listed; it may go again at \S+Z/)
         expect((yield* Effect.exit(plugin.pace("anthropic")))._tag).toBe("Failure")
         expect((yield* plugin.status).anthropic?.accounts).toEqual([])
       }),
@@ -1108,14 +1115,18 @@ describe("on the live adapters", () => {
   test("a step's tokens reach the tally file this start names, at the next sweep", () =>
     onTestClock(
       Effect.gen(function* () {
-        const plugin = yield* start({ sweepMinutes: 5 }, world(), live())
+        const state = world()
+        const plugin = yield* start({ sweepMinutes: 5 }, state, live())
         yield* TestClock.adjust(HOUR)
         expect(yield* plugin.request("ses_1")).toBe("cred-a")
         const opus = { providerID: "anthropic", id: "claude-opus-5-5" }
         const million = { input: 1_000_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
         yield* plugin.emit({ type: "session.step.started", data: { sessionID: "ses_1", assistantMessageID: "msg_1", model: opus } })
         yield* plugin.emit({ type: "session.step.ended", data: { sessionID: "ses_1", cost: 4, assistantMessageID: "msg_1", tokens: million } })
-        yield* plugin.publish({ credentialID: "cred-a", reading: { at: HOUR, windows: [{ name: "5h", utilization: 0.02, resetAt: 5 * HOUR }] } })
+        yield* TestClock.adjust(MINUTE)
+        const reading = { at: HOUR + MINUTE, windows: [{ name: "5h", utilization: 0.02, resetAt: 5 * HOUR }] }
+        state.readings.set("cred-a", reading)
+        yield* plugin.publish({ credentialID: "cred-a", reading })
         yield* TestClock.adjust("5 minutes")
         yield* settle
         const written = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({ line: Schema.NullOr(Schema.String) })))(readFileSync(plugin.limitsFile, "utf8"))
@@ -1735,4 +1746,3 @@ describe("the push", () => {
       }),
     ))
 })
-

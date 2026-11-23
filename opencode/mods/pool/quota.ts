@@ -176,19 +176,23 @@ export const limitsModel = (scope: string, modelID: string): boolean => {
     .every((word) => id.includes(word))
 }
 
+/** The provider's declared model limits, before we have read any account. Other scopes are learned from usage. */
+export const DEFINED_MODEL_WINDOWS = ["7d:Fable"] as const
+
 /**
  * A reading taken over `held`: the windows scoped to one model and the
  * resets that only a usage endpoint reads are kept from `held` while the new
- * reading has none of its own (a response's headers carry neither), and a
- * kept window only until it resets.
+ * reading has none of its own (a response's headers carry neither). The
+ * window's existence outlives its reading: an old time or a passed reset
+ * makes it unusable as evidence, not an optional limit.
  */
-export const carryOver = (held: QuotaReading | undefined, next: QuotaReading, now: number): QuotaReading => {
+export const carryOver = (held: QuotaReading | undefined, next: QuotaReading): QuotaReading => {
   if (held === undefined) return next
   const named = new Set(next.windows.map((window) => window.name))
   // Carried windows and resets keep the time they were read: a claim no one asked for needs each fresh (resets.ts `freshView`).
   const kept = held.windows
-    .filter((window) => !accountWide(window) && !named.has(window.name) && window.resetAt !== undefined && window.resetAt > now)
-    .map((window) => ({ at: window.at ?? held.at, ...window }))
+    .filter((window) => !accountWide(window) && !named.has(window.name))
+    .map((window) => ({ ...window, at: window.at ?? held.at }))
   const resets = next.resets === undefined && held.resets !== undefined ? { resets: { at: held.resets.at ?? held.at, ...held.resets } } : {}
   return kept.length === 0 && Object.keys(resets).length === 0 ? next : { ...next, windows: [...next.windows, ...kept], ...resets }
 }

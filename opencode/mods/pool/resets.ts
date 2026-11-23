@@ -616,7 +616,13 @@ export interface NoteSend extends Schema.Schema.Type<typeof NoteSend> {}
  * claim's own recovery (`recoveryIn`) and while no newer claim on the account
  * was made.
  */
-export const ObserveClaim = Schema.TaggedStruct("ObserveClaim", { key: Schema.String, windows: Schema.Array(QuotaWindow), at: Schema.Number })
+export const ObserveClaim = Schema.TaggedStruct("ObserveClaim", {
+  pool: Schema.String,
+  provider: ResetProvider,
+  credentialID: Schema.String,
+  windows: Schema.Array(QuotaWindow),
+  at: Schema.Number,
+})
 export interface ObserveClaim extends Schema.Schema.Type<typeof ObserveClaim> {}
 
 /** Reserve a request's share of a claim's room at its dispatch (`Spend`). */
@@ -1234,13 +1240,6 @@ export const reservationHolds = (state: ResetsState, provider: ResetProvider, ac
   (state.spends ?? []).some((spend) => spend.id === id) &&
   Option.exists(roomLeft(account, now, pacePlans(provider, [account], state.claims, now, state.spends)[account.credentialID]), (room) => room >= -1e-9)
 
-/** The claim `key`, when it still waits for its observation at `now` (`awaitingObservation`). */
-const pendingObservation = (claims: ReadonlyArray<Claim>, key: string, now: number): Option.Option<Claim> =>
-  Arr.findFirst(claims, (claim) => claim.key === key).pipe(
-    Option.flatMap((claim) => awaitingObservation(claims, claim.provider, claim.credentialID, now)),
-    Option.filter((claim) => claim.key === key),
-  )
-
 // ── A push's resets ──
 
 /**
@@ -1569,8 +1568,10 @@ export const decideSpend = (state: ResetsState, command: ObserveClaim | ReserveS
   switch (command._tag) {
     case "ObserveClaim":
       return Option.toArray(
-        pendingObservation(state.claims, command.key, Math.min(now, command.at)).pipe(Option.filter((claim) => Option.isSome(recoveryIn(claim, command.windows, command.at)))),
-      ).map(() => ClaimObserved.make({ key: command.key, windows: command.windows }))
+        awaitingObservation(state.claims, command.provider, command.credentialID, Math.min(now, command.at)).pipe(
+          Option.filter((claim) => claim.pool === command.pool && Option.isSome(recoveryIn(claim, command.windows, command.at))),
+        ),
+      ).map((claim) => ClaimObserved.make({ key: claim.key, windows: command.windows }))
     case "ReserveSpend":
       return [SpendReserved.make({ spend: command.spend })]
     case "WithdrawSpend":

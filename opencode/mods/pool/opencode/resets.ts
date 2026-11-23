@@ -45,8 +45,14 @@ const scanAll = (storage: Storage, prefix: string) =>
 
 const EMPTY: ResetsState = { waits: {}, resets: {}, claims: [] }
 
+const readClaims = (storage: Storage) =>
+  scanAll(storage, CLAIMS).pipe(
+    Effect.map((entries) => entries.flatMap(({ value }) => Option.toArray(decodeClaim(value))).slice(-MAX_CLAIMS)),
+  )
+
 export const layer = (storage: Storage) =>
   Layer.succeed(ResetsStore, {
+    claims: readClaims(storage).pipe(Effect.catchCause(() => Effect.succeed(EMPTY.claims))),
     // State that cannot be read is empty: a hold is then worked again, under the same request id.
     read: Effect.gen(function* () {
       const waits: Record<string, Wait> = {}
@@ -59,7 +65,7 @@ export const layer = (storage: Storage) =>
         const reset = Option.getOrUndefined(decodeReset(value))
         if (reset !== undefined) resets[reset.key] = reset
       }
-      const claims = (yield* scanAll(storage, CLAIMS)).flatMap(({ value }) => Option.toArray(decodeClaim(value))).slice(-MAX_CLAIMS)
+      const claims = yield* readClaims(storage)
       const spends = keptSpends(claims, (yield* scanAll(storage, SPENDS)).flatMap(({ value }) => Option.toArray(decodeSpend(value))))
       return { waits, resets, claims, ...Arr.match(spends, { onEmpty: () => ({}), onNonEmpty: (kept) => ({ spends: kept }) }) } satisfies ResetsState
     }).pipe(

@@ -9,7 +9,7 @@
 // The AccountPool decider, made for the pool's rules (its cache life), and
 // each command it decides with its events and rejections, in the order a
 // request meets them.
-import { DateTime, Effect, Option, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
 import {
   DEFAULT_HOLD_MS,
@@ -29,6 +29,7 @@ import {
   WINDOW_MS,
 } from "./accounts.ts"
 import { accountWide, carryOver, QuotaReading } from "./quota.ts"
+import { tryAgainAt } from "./usage-text.ts"
 import { Hold } from "./status.ts"
 
 /** One pool: the integration whose logins it holds (`anthropic`). Several providers may share one. */
@@ -150,7 +151,7 @@ export class NoAccount extends Schema.TaggedError<NoAccount>()("NoAccount", {
 export class AccountsHeld extends Schema.TaggedError<AccountsHeld>()("AccountsHeld", {
   sessionID: Schema.String,
   kind: RequestKind,
-  retryAt: Schema.Number,
+  retryAt: Schema.Finite,
   /** When every account is held for a new sign-in, those accounts (no time opens them; only a sign-in does); else none. */
   signIn: Schema.Array(Schema.String),
 }) {}
@@ -161,8 +162,8 @@ export class AccountsHeld extends Schema.TaggedError<AccountsHeld>()("AccountsHe
  */
 export const heldMessage = (error: AccountsHeld): string => {
   if (error.signIn.length > 0)
-    return `dotfiles-opencode.pool: every pool account needs a new sign-in (${error.signIn.join(", ")}). Sign in to them again.`
-  return `dotfiles-opencode.pool: all pool accounts are held; the first opens at ${DateTime.formatIso(DateTime.makeUnsafe(error.retryAt))}`
+    return `dotfiles-opencode.pool: every pool account needs a new sign-in (${error.signIn.join(", ")}). Sign in to them again; ${tryAgainAt(error.retryAt)} if a login is signed in.`
+  return `dotfiles-opencode.pool: all pool accounts are held; ${tryAgainAt(error.retryAt)}`
 }
 
 export declare namespace PlaceRequest {
@@ -242,7 +243,7 @@ const takeReading = (
   now: number,
 ): Effect.Effect<ReadonlyArray<ReadingTaken | HoldCleared>> => {
   const { credentialID } = command
-  const reading = carryOver(state.readings[credentialID], command.reading, now)
+  const reading = carryOver(state.readings[credentialID], command.reading)
   const refusal = reading.refusal
   const refused =
     refusal !== undefined && (refusal.until === undefined || refusal.until > now)
