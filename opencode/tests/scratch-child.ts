@@ -74,9 +74,9 @@ export const checkoutBunCommand = (entry: string, inputs: FixtureEnvironment) =>
 }
 
 /** The same checked entry for Bun tests that own their subprocess lifecycle. */
-export const spawnCheckoutBun = (entry: string, inputs: FixtureEnvironment) => {
+export const spawnCheckoutBun = (entry: string, inputs: FixtureEnvironment, detached = false) => {
   const { argv, ...options } = checkoutBun(entry, inputs)
-  return spawn(argv, { ...options, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+  return spawn(argv, { ...options, stdin: "ignore", stdout: "pipe", stderr: "pipe", detached })
 }
 
 export const spawnCheckoutBunSync = (entry: string, inputs: FixtureEnvironment) => {

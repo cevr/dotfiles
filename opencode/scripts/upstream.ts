@@ -407,10 +407,11 @@ const flock = (fd: number, operation: number): number => {
  * removal would let a second holder lock a new file while the first holds the old one). The file
  * says which pid holds it, for a person reading it; nothing reads it back.
  */
-export const withUpstreamLock = async <A>(state: string, merge: () => Promise<A>): Promise<A | undefined> => {
-  mkdirSync(state, { recursive: true })
+export const upstreamLockFile = (state: string) => join(state, "upstream.lock")
+
+export const withOpenedUpstreamLock = async <A>(open: () => number, merge: () => Promise<A>): Promise<A | undefined> => {
   // Opened without truncating: what it says is only rewritten by the holder.
-  const fd = openSync(join(state, "upstream.lock"), "a+")
+  const fd = open()
   try {
     if (flock(fd, LOCK_EX | LOCK_NB) !== 0) return undefined
     ftruncateSync(fd, 0)
@@ -424,6 +425,12 @@ export const withUpstreamLock = async <A>(state: string, merge: () => Promise<A>
     closeSync(fd)
   }
 }
+
+export const withUpstreamLock = <A>(state: string, merge: () => Promise<A>) =>
+  withOpenedUpstreamLock(() => {
+    mkdirSync(state, { recursive: true })
+    return openSync(upstreamLockFile(state), "a+")
+  }, merge)
 
 /**
  * Upstream OpenCode against the build at the fork's HEAD, for the TUI's corner
