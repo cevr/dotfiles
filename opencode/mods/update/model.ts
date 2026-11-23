@@ -390,7 +390,10 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Builds | Service 
   if (Option.isSome(listed)) return yield* refuse(tried, "config", listed.value)
   const failedInstall = yield* install(before)
   if (Option.isSome(failedInstall)) return yield* end("gave-up", tried, failedInstall.value, `${describeHealth(failedInstall.value)}; the service was not restarted`)
-  return yield* ladder(tried, hadLogins)
+  return yield* ladder(tried, hadLogins).pipe(Effect.catch((failed) => {
+    const failure = failedStep(failed.step)(failed)
+    return end("gave-up", tried, failure, `${describeHealth(failure)}; no further restart was attempted`)
+  }))
 })
 
 /**

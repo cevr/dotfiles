@@ -305,6 +305,7 @@ for (const name of sites) {
     const rejected = run();
     assert.equal(rejected.exitCode, 2, name + "/" + shape + ": " + rejected.stdout + rejected.stderr);
     assert.match(rejected.stdout.toString(), /typed refusal: (?:RiftFailed|UpdateFailed)/);
+    if (name === "git-mirror") assert.equal(existsSync(layout(fixture).names.receipt[0]), false, "unsafe mirror must not publish the host receipt");
     const still = lstatSync(file);
     assert.deepEqual([still.ino, still.mode, still.uid], [old.ino, old.mode, old.uid]);
     assert.equal(readFileSync(other, "utf8"), "unchanged");

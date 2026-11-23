@@ -285,7 +285,7 @@ export const changeReviewInput = Effect.fn("ReviewInput.publish")(function* <A>(
 })
 
 export const publishReviewInput = (operation: string, file: string, lock: string, access: ReviewInputAccess, text: string) =>
-  changeReviewInput(operation, file, lock, access, () => ({ text, answer: undefined }))
+  changeReviewInput(operation, file, lock, access, () => ({ text, answer: Option.none() })).pipe(Effect.asVoid)
 
 /**
  * Receipts on disk (receipt.ts), for the land and for a script that writes one (scripts/gate.ts,
@@ -322,10 +322,16 @@ export const receipts = (logs: string, env: Readonly<Record<string, string>> = {
   const write = Effect.fn("Receipts.write")(function* (receipt: Receipt) {
     const text = yield* encode(receipt)
     const file = hostReceipt(logs, receipt)
-    yield* publishReviewInput("write receipt", file, reviewInputLock(logs), "owner-only", `${text}\n`)
-    if (receipt.kind !== "round") return file
+    const operation = "write receipt"
+    if (receipt.kind !== "round") {
+      yield* publishReviewInput(operation, file, reviewInputLock(logs), "owner-only", `${text}\n`)
+      return file
+    }
     const kept = yield* mirror(receipt.repo)
-    yield* publishReviewInput("write receipt", kept, join(dirname(kept), "rift-receipt.lock"), "owner-only", `${text}\n`)
+    // Reject an already-unsafe mirror before writing or taking the host receipt lock.
+    yield* checkReviewInput(operation, kept)
+    yield* publishReviewInput(operation, file, reviewInputLock(logs), "owner-only", `${text}\n`)
+    yield* publishReviewInput(operation, kept, join(dirname(kept), "rift-receipt.lock"), "owner-only", `${text}\n`)
     return file
   })
 
