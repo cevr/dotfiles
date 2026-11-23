@@ -737,18 +737,8 @@ export function handBackFrom(role: Role, text: string, atoms: ReadonlySet<Atom>)
   return { state: first.state, label: first.label, evidence: governing, others, lastAttempt: atoms.has('attempted') };
 }
 
-/** Every field of a hand-back that differs from the one due, each named with both values. */
-export function judgeHandBack(due: HandBack, given: unknown): string[] {
-  if (typeof given !== 'object' || given === null) return [`the hand-back is ${typeof given === 'string' ? `prose ("${given}")` : String(given)}, not one whose fields can be checked`];
-  const got = given as Partial<HandBack>;
-  const out: string[] = [];
-  if (got.state !== due.state) out.push(`state: due ${due.state}, given ${String(got.state)}`);
-  if (typeof got.label !== 'string' || !due.label.startsWith(got.label)) out.push(`label: due ${due.label}, given ${String(got.label)}`);
-  if (got.evidence !== due.evidence) out.push(`evidence: due ${String(due.evidence)}, given ${String(got.evidence)}`);
-  if (JSON.stringify([...(got.others ?? [])].sort()) !== JSON.stringify([...due.others].sort())) out.push(`others: due [${due.others.join(', ')}], given [${(got.others ?? []).join(', ')}]`);
-  if (got.lastAttempt !== due.lastAttempt) out.push(`last attempt: due ${due.lastAttempt ? 'present' : 'absent'}, given ${got.lastAttempt === true ? 'present' : got.lastAttempt === false ? 'absent' : 'unsaid'}`);
-  return out;
-}
+// The hand-back judge (the decoder of a hand-back and its comparison with the one due) is opencode/mods/orchestrate/hand-back.ts:
+// it needs Effect Schema, and this file stays import-free (agents.test.ts copies it alone into a fixture).
 
 /** A prompt's second table read back: each verdict with its parsed condition. */
 export function readVerdicts(text: string): Array<{ readonly verdict: string; readonly rule: ReturnType<typeof parseWhen> }> {

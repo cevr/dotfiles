@@ -169,14 +169,29 @@ const decodeLater = Schema.decodeUnknownOption(Schema.fromJsonString(LaterInput)
 const decodeName = Schema.decodeUnknownOption(Schema.fromJsonString(NameInput))
 const decodeSince = Schema.decodeUnknownOption(Schema.fromJsonString(SinceInput))
 
+/** The marks line a mark route makes of its body at `now`; none for a malformed body. */
+type LineOf = (body: string, now: number, zone: string) => Option.Option<MarkLine>
+
+/** The mark routes, by path: the one list of where a mark is written (kindOf calls any other POST a mark too). */
+const MARK_ROUTES: ReadonlyMap<string, LineOf> = new Map<string, LineOf>([
+  ["/api/mark", (body, now) => Option.map(decodeMark(body), (input) => markOf(input.id, now, input.mark))],
+  ["/api/later", (body, now, zone) => Option.map(decodeLater(body), (input) => markOf(input.id, now, "later", Option.some(nextMorning(now, zone))))],
+  ["/api/name", (body, now) => Option.map(decodeName(body), (input) => nameOf(input.project, input.name.trim(), now))],
+  ["/api/since", (body, now) => Option.map(decodeSince(body), () => sinceOf(now))],
+])
+
 /** The marks line a write route makes of its body at `now`; none for a malformed body or no such route. */
 const lineOf = (path: string, body: string, now: number, zone: string): Option.Option<Option.Option<MarkLine>> =>
-  Match.value(path).pipe(
-    Match.when("/api/mark", () => Option.some(Option.map(decodeMark(body), (input) => markOf(input.id, now, input.mark)))),
-    Match.when("/api/later", () => Option.some(Option.map(decodeLater(body), (input) => markOf(input.id, now, "later", Option.some(nextMorning(now, zone)))))),
-    Match.when("/api/name", () => Option.some(Option.map(decodeName(body), (input) => nameOf(input.project, input.name.trim(), now)))),
-    Match.when("/api/since", () => Option.some(Option.map(decodeSince(body), () => sinceOf(now)))),
-    Match.orElse(() => Option.none()),
+  Option.map(Option.fromUndefinedOr(MARK_ROUTES.get(path)), (line) => line(body, now, zone))
+
+/**
+ * The named peers' origins as a request on `path` counts them: all of them on a route that writes (an answer, a
+ * mark at one of MARK_ROUTES), none anywhere else. A POST to any other path is judged as with no peer named.
+ */
+const peersOn = (kind: RouteKind | "none", path: string, peerOrigins: ReadonlyArray<string>): ReadonlyArray<string> =>
+  Option.getOrElse(
+    Option.liftPredicate(peerOrigins, () => kind === "answer" || (kind === "mark" && MARK_ROUTES.has(path))),
+    (): ReadonlyArray<string> => [],
   )
 
 /** A marks route's answer: the line kept (204), or why not. */
@@ -377,7 +392,8 @@ const UNPARSED = "the digest failed this request"
  * 2. A URL that does not parse (Bun builds it from the Host): on loopback the 500 main gave, on the tailnet 421.
  * 3. A method no route takes: 405 (a peer's preflight is looked at only after this, in `routed`).
  * 4. The policy's decision (`decide`): loopback's Host, the source, the origin and headers, what the route needs;
- *    `peerOrigins` (none by default) lets a named peer's page send a mark or an answer at the address.
+ *    `peerOrigins` (none by default) lets a named peer's page send a mark or an answer at the address, on one of
+ *    their paths alone (peersOn).
  * Loopback's steps 2 to 4 are main's (4afe1fda), unchanged.
  */
 export const screen = (site: Site, policy: Policy, asking: Asking, peerOrigins: ReadonlyArray<string> = []): Screened => {
@@ -391,7 +407,7 @@ export const screen = (site: Site, policy: Policy, asking: Asking, peerOrigins: 
   return Option.match(kindOf(asking.method, path), {
     onNone: () => stopped(Decision.Refuse({ status: 405, reason: "GET or POST only" })),
     onSome: (kind) => ({
-      decision: decide({ listener: site.listener, kind, source: asking.source, host: asking.host, hosts: site.hosts, names: site.names, root: path === "/", origin: asking.origin, pageHeader: asking.pageHeader, json: asking.json, paired: asking.paired }, policy, peerOrigins),
+      decision: decide({ listener: site.listener, kind, source: asking.source, host: asking.host, hosts: site.hosts, names: site.names, root: path === "/", origin: asking.origin, pageHeader: asking.pageHeader, json: asking.json, paired: asking.paired }, policy, peersOn(kind, path, peerOrigins)),
       kind: Option.some(kind),
       path,
     }),
@@ -404,7 +420,7 @@ const headerOf = (request: Request, name: string): string => Option.getOrElse(Op
 /**
  * A CORS preflight that the order (`screen`) got as far as its method (405): allowed (204, the origin echoed from
  * the allowed list it equals, POST and the page's headers alone) only for a named peer's page announcing a mark or
- * an answer at this listener's address (policy.ts preflightOf); else the order's own 405, no Access-Control header
+ * an answer at this listener's address, on one of their paths (peersOn, policy.ts preflightOf); else the order's own 405, no Access-Control header
  * at all, so the browser sends nothing. Every earlier refusal (a name's 421) stands as the order gave it.
  */
 const preflight = (request: Request, site: Site, source: Source, path: string, peerOrigins: ReadonlyArray<string>): Option.Option<Answer> => {
@@ -417,7 +433,7 @@ const preflight = (request: Request, site: Site, source: Source, path: string, p
   const kind = Option.getOrElse(Option.filter(kindOf(method, path), () => method === "POST"), (): RouteKind | "none" => "none")
   const asked = { listener: site.listener, kind, source, host: Option.fromNullishOr(request.headers.get("host")), hosts: site.hosts, origin, method, headers }
   return Option.map(
-    Option.filter(origin, () => preflightOf(asked, peerOrigins)),
+    Option.filter(origin, () => preflightOf(asked, peersOn(kind, path, peerOrigins))),
     (peer) => answer(204, "", { "access-control-allow-origin": peer, "access-control-allow-methods": "POST", "access-control-allow-headers": PEER_HEADERS.join(", "), "access-control-max-age": "600" }),
   )
 }
@@ -451,7 +467,7 @@ const routed = (handlers: Handlers, dist: string, request: Request, site: Site, 
     const reachedMethod = Option.isNone(screened.kind) && Match.valueTags(screened.decision, { Refuse: ({ status }) => status === 405, Brief: () => false, Redirect: () => false, Serve: () => false })
     if (request.method === "OPTIONS" && reachedMethod) return yield* Effect.succeed(Option.getOrElse(preflight(request, site, source, path, peerOrigins), () => reason(405, "GET or POST only")))
     // A peer's page may read the answer to its write, a refusal too (so it can say why): nothing else, nowhere else.
-    const peerWrite = Option.exists(screened.kind, (kind) => isPeerWrite({ listener: site.listener, kind, host: asking.host, hosts: site.hosts, origin: asking.origin }, peerOrigins))
+    const peerWrite = Option.exists(screened.kind, (kind) => isPeerWrite({ listener: site.listener, kind, host: asking.host, hosts: site.hosts, origin: asking.origin }, peersOn(kind, path, peerOrigins)))
     const corsFor = (each: Answer): Answer =>
       Option.match(Option.filter(asking.origin, () => peerWrite), { onNone: () => each, onSome: (peer) => ({ ...each, headers: { ...each.headers, "access-control-allow-origin": peer } }) })
     const decided = yield* Match.valueTags(screened.decision, {
