@@ -629,7 +629,11 @@ export function listFaults(policy: Policy, pins: ReadonlyArray<Pin> = PINS[polic
   for (const [key, record] of computedPairs(policy)) {
     const pin = pinned.get(key);
     if (pin === undefined) out.push(`${role}: rows ${key} are both true of ${record}, and no winner is pinned`);
-    else if (!(place(pin.winner) < place(pin.pair.find((id) => id !== pin.winner) ?? ''))) out.push(`${role}: ${pin.winner} is pinned over its pair, but the list puts the other first`);
+    else {
+      const loser = pin.pair.find((id) => id !== pin.winner);
+      if (loser === undefined) throw new Error(`${role}: the pin for ${key} has no loser`);
+      if (!(place(pin.winner) < place(loser))) out.push(`${role}: ${pin.winner} is pinned over ${loser}, but the list puts ${loser} first`);
+    }
   }
   const pairs = computedPairs(policy);
   for (const key of pinned.keys()) if (!pairs.has(key)) out.push(`${role}: a winner is pinned for ${key}, but no reachable record makes both true`);
@@ -735,10 +739,23 @@ describe('(vii) a reordered, unpinned or forgetful policy is red', () => {
   test('moving the loser of any pinned pair above its winner is red against the oracle, and the delivery check names the rows', () => {
     for (const role of ROLES)
       for (const { pair, winner } of PINS[role]) {
-        const loser = pair.find((id) => id !== winner) ?? '';
+        const loser = pair.find((id) => id !== winner);
+        if (loser === undefined) throw new Error(`${role}: the pin of ${winner} has no loser`);
         const moved = moveAbove(POLICIES[role], winner, loser);
-        expect([role, winner, loser, listFaults(moved).length > 0]).toEqual([role, winner, loser, true]);
-        if (!(winner === 'unclear' && loser === 'retry')) expect([role, winner, loser, historyFaults(moved).length > 0]).toEqual([role, winner, loser, true]);
+        // Exact lines (text-fix8-label): the pin's own line, and some history's line naming the loser's row.
+        expect([role, winner, loser, listFaults(moved).includes(`${role}: ${winner} is pinned over ${loser}, but the list puts ${loser} first`)]).toEqual([role, winner, loser, true]);
+        const row = POLICIES[role].rows.find((one) => one.id === loser)!;
+        const names = new Set(LIST_HISTORIES.map((one) => one.name));
+        const tail = `: ${STATE_NAME[row.state]} (`;
+        const field = `: hand-back state: due ${row.state}, given "`;
+        // A history's own line given the loser's state, or its hand-back's state field due the loser's state.
+        // Or the history's step, whose stop the loser's state no longer allows, rejected by owed with its reason.
+        const step = ': step: '
+        const names_loser = (line: string) => [tail, field, step].some((mark) => line.includes(mark) && names.has(line.slice(0, line.indexOf(mark))));
+        if (!(winner === 'unclear' && loser === 'retry')) {
+          const lines = historyFaults(moved);
+          expect([role, winner, loser, lines.some(names_loser) ? 'named' : lines]).toEqual([role, winner, loser, 'named']);
+        }
         const shown = render(moved);
         expect([role, winner, loser, policyFaults(role, shown).some((line) => line.startsWith(`${role}: row ${loser}:`) || line.startsWith(`${role}: rows:`))]).toEqual([role, winner, loser, true]);
       }
@@ -746,21 +763,34 @@ describe('(vii) a reordered, unpinned or forgetful policy is red', () => {
   test('a computed pair with no pin, and a pin no record produces, are each red', () => {
     for (const role of ROLES) {
       const pins = PINS[role];
-      expect(listFaults(POLICIES[role], pins.slice(1))[0]).toContain('no winner is pinned');
-      expect(listFaults(POLICIES[role], [...pins, { pair: ['done', 'refused'], winner: 'refused', why: 'claimed' }]).at(-1)).toContain('no reachable record makes both true');
+      const first = pins[0]!;
+      const key = pairKey(...first.pair);
+      // Exact whole arrays (text-fix8-label): one fault each, the full line.
+      expect(listFaults(POLICIES[role], pins.slice(1))).toEqual([`${role}: rows ${key} are both true of ${computedPairs(POLICIES[role]).get(key)}, and no winner is pinned`]);
+      expect(listFaults(POLICIES[role], [...pins, { pair: ['done', 'refused'], winner: 'refused', why: 'claimed' }])).toEqual([`${role}: a winner is pinned for done & refused, but no reachable record makes both true`]);
     }
   });
   test('a policy whose evidence fields forget an obstacle or the attempt is red against the histories', () => {
     for (const drop of ['waits', 'cannot', 'completed', 'current'] as const) {
-      const red = ROLES.some((role) => historyFaults({ ...POLICIES[role], fields: POLICIES[role].fields.filter((field) => field.id !== drop) }).length > 0);
-      expect([drop, red]).toEqual([drop, true]);
+      const lines = ROLES.flatMap((role) => historyFaults({ ...POLICIES[role], fields: POLICIES[role].fields.filter((field) => field.id !== drop) }));
+      // Exact per line (text-fix8-label): each fault is the dropped field's own hand-back line, and there is one.
+      const shape = drop === 'waits' || drop === 'cannot' ? new RegExp(`: hand-back (evidence: due null, given "${drop}"|others: due \\[[a-z, ]*\\], given \\[[a-z, ]*\\])$`) : /: hand-back last attempt: due absent, given present$/;
+      expect([drop, lines.length > 0, lines.filter((line) => !shape.test(line))]).toEqual([drop, true, []]);
     }
   });
   test('folding the attempt history back into a row (ran unclear on its result alone) is red against the oracle', () => {
     const p = POLICIES.verifier;
     const folded = { ...p, rows: p.rows.map((row) => (row.id === 'unclear' ? { ...row, when: ['required', 'unclear'] as const } : row)) };
-    expect(listFaults(folded).length).toBeGreaterThan(0);
-    expect(historyFaults(folded).some((line) => line.startsWith('W01') || line.startsWith('W03') || line.includes('retry'))).toBe(true);
+    // Exact (text-fix8-label): the one record the fold misreads, a required unclear run free to retry, as the whole array;
+    // and every history fault is a history's line saying ran unclear.
+    const unclear = p.rows.find((row) => row.id === 'unclear')!;
+    expect(listFaults(folded)).toEqual([`verifier true/true/unclear/open/free/none: the list gives ${STATE_NAME.unclear} (${unclear.label}), the oracle ${STATE_NAME.runnable} (${label('verifier', 'runnable', 'unclear')})`]);
+    const names = new Set(LIST_HISTORIES.map((one) => one.name));
+    const lines = historyFaults(folded);
+    const tail = `: ${STATE_NAME.unclear} (${unclear.label})`;
+    const fields = [`: hand-back state: due unclear, given "runnable"`, `: hand-back label: due ${labelWord(unclear.label)}, given "${labelWord(label('verifier', 'runnable', 'unclear'))}"`];
+    const named = (line: string) => [tail, ...fields].some((end) => line.endsWith(end) && names.has(line.slice(0, -end.length)));
+    expect([lines.length > 0, lines.filter((line) => !named(line))]).toEqual([true, []]);
   });
 });
 
