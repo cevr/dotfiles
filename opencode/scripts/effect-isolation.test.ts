@@ -21,6 +21,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { Array as Arr, Effect, Schema, type Scope } from "effect"
 import { HARD_CONFIG, spawn } from "./effect-debt.ts"
+import { lintFixture } from "../tests/lint-fixture.ts"
 
 const REAL = process.cwd()
 const CLI_TIMEOUT = 120_000
@@ -142,7 +143,7 @@ const RUNNER_GLOBAL = /^Import \w+ from your test library/u
 
 /** Lints `files` in `root` with the real hard config: the errors of one rule in one file. */
 const lint = Effect.fn("EffectIsolationTest.lint")(function* (root: string, files: ReadonlyArray<string>) {
-  const linted = yield* spawn([path.join(REAL, "node_modules/.bin/oxlint"), "--threads=3", "--format=json", "-c", HARD_CONFIG, ...files], root, CLI_TIMEOUT)
+  const linted = yield* lintFixture(root, HARD_CONFIG, files, CLI_TIMEOUT)
   expect({ stderr: linted.stderr }).toEqual({ stderr: "" })
   const diagnostics = Schema.decodeUnknownSync(OxlintReport)(linted.stdout).diagnostics
   return (file: string, code: string) => Arr.filter(diagnostics, (each) => each.filename === file && each.code === code && each.severity === "error")
