@@ -1,5 +1,3 @@
-// @reads all
-// @reads-reason subprocess helper reads at tests/pool-fleet.test.ts: const child = owned([...launch.base, "serve", "--service", "--port", "0"], {
 // accept: one at a time (it bounds a retry time against the clock).
 // The fleet across two real OpenCode servers on this machine, standing in for
 // the Mac and the workbox. Each is the fork's own `serve --service`, in its
@@ -13,7 +11,7 @@
 // B's pace must hold a new agent for A's wave, before any reading shows it,
 // name the unreachable peer, and carry no token across.
 import { afterAll, describe, expect, test } from "bun:test"
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"
@@ -22,8 +20,8 @@ import { fleetRows, type PaneFleet } from "../mods/status/pane.ts"
 import { fakeAccount, startFakeAnthropic } from "./fake-anthropic.ts"
 import { openSlotStore } from "./store/store.ts"
 import { ROOT_TASK, serve } from "./orchestrate/sim.ts"
-import { owned } from "./owned.ts"
-import { externalInput } from "./read-path.ts"
+import { ownedForkFixture } from "./owned.ts"
+import { externalInput, readScratchFileSync } from "./read-path.ts"
 import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
@@ -105,9 +103,7 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
     for (const dir of ["work", "home", "home/.config", "home/.config/opencode", "home/.local", "home/.local/state"]) mkdirSync(join(base, dir))
     writeFileSync(join(home, ".config/opencode/opencode.json"), JSON.stringify(config))
     const launch = forkLaunch(fork ?? "", process.execPath)
-    const child = owned([...launch.base, "serve", "--service", "--port", "0"], {
-      cwd: join(base, "work"),
-      env: {
+    const child = ownedForkFixture([fork ?? "", join(base, "work"), ["serve", "--service", "--port", "0"], {
         PATH: process.env.PATH ?? "",
         HOME: home,
         XDG_CONFIG_HOME: join(home, ".config"),
@@ -118,10 +114,7 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
         OPENCODE_DISABLE_MODELS_FETCH: "1",
         ...launch.env,
         ...extra,
-      },
-      stdout: "ignore",
-      stderr: "pipe",
-    })
+    }], { stdout: "ignore", stderr: "pipe" })
     let stderr = ""
     void (async () => {
       for await (const chunk of child.stderr) stderr += new TextDecoder().decode(chunk)
@@ -131,7 +124,7 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
     const service = await until(
       async () => {
         try {
-          return JSON.parse(readFileSync(serviceFile, "utf8")) as Service
+          return JSON.parse(readScratchFileSync(serviceFile, "utf8")) as Service
         } catch {
           return undefined
         }

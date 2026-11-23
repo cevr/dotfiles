@@ -1,5 +1,3 @@
-// @reads all
-// @reads-reason computed read at tests/pool-idle-release.test.ts: const work = yield* fs.realPath(`${root}/work`)
 // accept: deep (49.2 s alone on a quiet host: 1-minute load under 24 on 12 cores; it boots real OpenCode twice, one turn each)
 // Real OpenCode (the fork's `serve --service`, from source) with an Anthropic
 // login, the Anthropic auth plugin and the pool, against the fake Anthropic
@@ -12,13 +10,14 @@ import { describe } from "bun:test"
 import { Clock, Data, Effect, FileSystem, Option, Ref, Schedule, Schema, Stream } from "effect"
 import { expect, it } from "effect-bun-test"
 import { Base64 } from "effect/encoding"
-import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { ChildProcessSpawner } from "effect/process"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"
 import { fakeAccount, startFakeAnthropic, type FakeAnswer, type FakeRequestInfo } from "./fake-anthropic.ts"
 import { ENV, Platform } from "./reconnect/host.ts"
 import { forkRuns, keptScratch } from "./scratch.ts"
-import { externalInput } from "./read-path.ts"
+import { externalInput, scratchInput } from "./read-path.ts"
+import { forkProcessCommand } from "./scratch-child.ts"
 import { ready } from "./service.ts"
 
 const HOUR = 3_600_000
@@ -91,7 +90,7 @@ const turnOn = (root: string, turn: FakeAnswer) =>
     const home = `${root}/home`
     yield* fs.makeDirectory(`${home}/.config/opencode`, { recursive: true })
     yield* fs.makeDirectory(`${root}/work`)
-    const work = yield* fs.realPath(`${root}/work`)
+    const work = yield* fs.realPath(scratchInput(`${root}/work`))
     // The global config, which every Location the server opens reads.
     yield* fs.writeFileString(
       `${home}/.config/opencode/opencode.json`,
@@ -113,7 +112,6 @@ const turnOn = (root: string, turn: FakeAnswer) =>
       ANTHROPIC_BASE_URL: fake.url,
       ...launch.env,
     }
-    const [command = "", ...args] = launch.base
     // The login goes in on stdin, never in argv or a file.
     const login = {
       id: "cred_only",
@@ -124,14 +122,10 @@ const turnOn = (root: string, turn: FakeAnswer) =>
     }
     const imported = yield* spawner
       .spawn(
-        ChildProcess.make(command, [...args, "auth", "import", "--standalone"], {
-          cwd: work,
-          env,
-          extendEnv: false,
+        forkProcessCommand([fork, work, ["auth", "import", "--standalone"], env], {
           stdin: Stream.make(new TextEncoder().encode(toJson([login]))),
           stdout: "ignore",
           stderr: "ignore",
-          forceKillAfter: "3 seconds",
         }),
       )
       .pipe(
@@ -142,13 +136,8 @@ const turnOn = (root: string, turn: FakeAnswer) =>
 
     // The server runs in a process group of its own; the test's scope stops the group.
     const server = yield* spawner.spawn(
-      ChildProcess.make(command, [...args, "serve", "--service", "--port", "0"], {
-        cwd: work,
-        env,
-        extendEnv: false,
-        stdin: "ignore",
+      forkProcessCommand([fork, work, ["serve", "--service", "--port", "0"], env], {
         stdout: "ignore",
-        forceKillAfter: "3 seconds",
       }),
     )
     const stderr = yield* Ref.make("")

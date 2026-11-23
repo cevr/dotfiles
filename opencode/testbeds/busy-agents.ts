@@ -33,7 +33,7 @@ interface ClientModule {
   }
 }
 
-const clientOf = (fork: string): Promise<ClientModule> => import(`${fork}/packages/client/src/promise/index.ts`)
+const clientOf = (fork: string): Promise<ClientModule> => import(externalInput(`${fork}/packages/client/src/promise/index.ts`))
 
 /** How long the fake has to see what is waited for: a minute, looked at every 250 ms. */
 const WAIT = { schedule: Schedule.spaced("250 millis"), times: 240 }
@@ -85,3 +85,4 @@ export const putToWork = (work: Work): Promise<void> => {
     }),
   )
 }
+import { externalInput } from "../tests/read-path.ts"

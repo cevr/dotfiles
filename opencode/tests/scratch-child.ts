@@ -1,4 +1,4 @@
-import { spawn } from "bun"
+import { spawn, spawnSync } from "bun"
 import { Data, Option, Predicate } from "effect"
 import { ChildProcess } from "effect/process"
 import { ROOT } from "../scripts/reach.ts"
@@ -101,32 +101,83 @@ export const detachedCheckoutBun = (
   })
 }
 
-const servicePathVariables = new Set(["HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "OPENCODE_DB"])
-const serviceValues = new Set(["PATH", "TERM", "HERDR_ENV", "OPENCODE_DISABLE_FREE_MODELS", "OPENCODE_DISABLE_MODELS_FETCH", "OPENCODE_DISABLE_FILEWATCHER", "OPENCODE_FLAGS", "BUN_OPTIONS"])
+const servicePathVariables = new Set([
+  "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "OPENCODE_DB", "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "TMPDIR",
+])
+const serviceValues = new Set([
+  "PATH", "TERM", "HERDR_ENV", "OPENCODE_PASSWORD", "OPENCODE_DISABLE_FREE_MODELS", "OPENCODE_DISABLE_MODELS_FETCH",
+  "OPENCODE_DISABLE_FILEWATCHER", "OPENCODE_FLAGS", "BUN_OPTIONS", "OPENCODE_PRINT_LOGS", "ANTHROPIC_BASE_URL",
+])
+const exactArgs = (given: ReadonlyArray<string>, ...expected: ReadonlyArray<string>) =>
+  given.length === expected.length && given.every((arg, index) => arg === expected[index])
+const loopback = (url: string) => /^http:\/\/127\.0\.0\.1:\d{1,5}\/?$/.test(url)
+const remoteTuiArgs = (args: ReadonlyArray<string>) => {
+  const [flag, url, session, id] = args
+  if (flag !== "--server" || !loopback(url || "")) return false
+  return args.length === 2 || (args.length === 4 && session === "-s" && /^ses_[\w-]+$/.test(id || ""))
+}
+const forkArgsAllowed = (args: ReadonlyArray<string>) => {
+  const [command, verb, field, value] = args
+  switch (command) {
+    case "service":
+      return (args.length === 2 && ["start", "stop", "restart"].includes(verb || "")) ||
+        (args.length === 4 && verb === "set" && field === "port" && /^\d{1,5}$/.test(value || ""))
+    case "serve": return exactArgs(args, "serve", "--service", "--port", "0")
+    case "auth": return exactArgs(args, "auth", "import", "--standalone")
+    case "run": return exactArgs(args, "run", "--standalone", "--dangerously-skip-permissions", "--format", "json", "say hello")
+    case "--server": return remoteTuiArgs(args)
+    default: return false
+  }
+}
 
-/** Service commands for a pinned external fork, with only scratch config and state. */
-export const forkServiceCommand = (
+/** A fixed CLI mode from the pinned external fork with scratch state and a checked preload. */
+export const forkFixture = (
   fork: string, cwd: string, args: ReadonlyArray<string>, env: Readonly<Record<string, string>>,
 ) => {
-  const [command, verb, field, value] = args
-  const lifecycle = args.length === 2 && ["start", "stop", "restart"].includes(verb || "")
-  const port = args.length === 4 && verb === "set" && field === "port" && /^\d{1,5}$/.test(value || "")
-  if (command !== "service" || (!lifecycle && !port)) return reject("unsupported external fork service command")
+  if (!forkArgsAllowed(args)) return reject("unsupported external fork fixture command")
   const entry = externalInput(resolve(fork, "packages/cli/src/index.ts"))
   const preload = externalInput(resolve(fork, "packages/tui/node_modules/@opentui/solid/scripts/preload.js"))
   if (env.BUN_OPTIONS !== `--conditions=browser --preload=${preload}`) return reject("unexpected Bun fixture options")
-  for (const variable of servicePathVariables) {
+  for (const variable of ["HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "OPENCODE_DB"]) {
     const path = env[variable]
     if (!path) return reject(`missing fork fixture environment: ${variable}`)
-    scratchInput(path)
   }
   for (const [name, value] of Object.entries(env)) {
     if (containsCheckout(value) || (!servicePathVariables.has(name) && !serviceValues.has(name)))
       return reject(`redirecting fork fixture environment: ${name}`)
+    if (servicePathVariables.has(name)) scratchInput(value)
   }
-  return ChildProcess.make(localTestProcess.execPath, ["--no-env-file", entry, ...args], {
-    cwd: scratchInput(cwd), env, extendEnv: false, stdin: "ignore", forceKillAfter: "3 seconds",
+  if (env.ANTHROPIC_BASE_URL && !loopback(env.ANTHROPIC_BASE_URL))
+    return reject("fixture API must be on loopback")
+  const path = resolve(localTestProcess.execPath, "..")
+  if (containsCheckout(path) || containsCheckout(localTestPaths.realpathSync(path))) return reject("checkout directory on the fixture PATH")
+  return {
+    argv: [localTestProcess.execPath, "--no-env-file", entry, ...args] as const, cwd: scratchInput(cwd),
+    env: { ...env, PATH: `${path}:${searchPath()}`, TMPDIR: env.TMPDIR || scratchRoot() },
+  }
+}
+
+export const forkProcessCommand = (
+  input: Parameters<typeof forkFixture>, io?: Pick<ChildProcess.CommandOptions, "stdin" | "stdout" | "stderr">,
+) => {
+  const { argv: [bun, ...args], ...options } = forkFixture(...input)
+  return ChildProcess.make(bun, args, {
+    ...options, extendEnv: false, stdin: io?.stdin ?? "ignore", stdout: io?.stdout ?? "pipe", stderr: io?.stderr ?? "pipe", forceKillAfter: "3 seconds",
   })
+}
+
+export const forkServiceCommand = (...input: Parameters<typeof forkFixture>) => forkProcessCommand(input)
+
+export const spawnForkFixture = (...input: Parameters<typeof forkFixture>) => {
+  const { argv, ...options } = forkFixture(...input)
+  return spawn(argv, { ...options, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+}
+
+export const importForkCredentials = (
+  fork: string, cwd: string, env: Readonly<Record<string, string>>, stdin: Uint8Array,
+) => {
+  const { argv, ...options } = forkFixture(fork, cwd, ["auth", "import", "--standalone"], env)
+  return spawnSync(argv, { ...options, stdin, stdout: "pipe", stderr: "pipe" })
 }
 
 const checkGitArg = (arg: string, cwd: string, pathOperand = false) => {

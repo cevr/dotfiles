@@ -445,6 +445,11 @@ const BOUNDED_PROCESS = new Set([
   "tests/scratch-child.ts:checkoutBun",
   "tests/owned.ts:ownedCheckoutBun",
   "tests/scratch-child.ts:forkServiceCommand",
+  "tests/scratch-child.ts:forkProcessCommand",
+  "tests/scratch-child.ts:forkFixture",
+  "tests/scratch-child.ts:spawnForkFixture",
+  "tests/scratch-child.ts:importForkCredentials",
+  "tests/owned.ts:ownedForkFixture",
   "tests/lint-fixture.ts", "tests/lint-fixture.ts:lintFixture", "tests/lint-fixture.ts:lintCheckoutFixture",
 ])
 const LINT_FIXTURE = new Set(["tests/lint-fixture.ts:lintFixture", "tests/lint-fixture.ts:lintCheckoutFixture"])

@@ -1,5 +1,5 @@
 // @reads all
-// @reads-reason subprocess helper reads at tests/mail-peer.test.ts: const child = owned([...launch.base, "serve", "--service", "--port", "0"], { cwd: join(base, "w
+// @reads-reason subprocess helper reads at tests/mail-peer.test.ts: const child = owned([process.execPath, join(ROOT, "cmd/mail/pair.ts"), ...args, "--name", host.
 // Session mail between two real OpenCode servers on this machine, standing in
 // for the Mac and the workbox: each is the fork's own `serve --service` in its
 // own scratch HOME, with the mail plugin listening on its own loopback port
@@ -16,7 +16,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { externalInput, readScratchFileSync as readFileSync } from "./read-path.ts"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
-import { owned } from "./owned.ts"
+import { owned, ownedForkFixture } from "./owned.ts"
 import { ready, type Service } from "./service.ts"
 import { keptScratch } from "./scratch.ts"
 
@@ -162,7 +162,7 @@ describe.skipIf(!fork)("session mail between two paired OpenCode servers (real p
       OPENCODE_DB: join(base, "opencode.db"),
       OPENCODE_DISABLE_MODELS_FETCH: "1",
     }
-    const child = owned([...launch.base, "serve", "--service", "--port", "0"], { cwd: join(base, "work"), env: { ...env, ...launch.env }, stdout: "ignore", stderr: "pipe" })
+    const child = ownedForkFixture([fork ?? "", join(base, "work"), ["serve", "--service", "--port", "0"], { ...env, ...launch.env }], { stdout: "ignore", stderr: "pipe" })
     let stderr = ""
     void (async () => {
       for await (const chunk of child.stderr) stderr += new TextDecoder().decode(chunk)

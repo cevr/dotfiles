@@ -1,5 +1,3 @@
-// @reads all
-// @reads-reason subprocess helper reads at tests/pool-store-opencode.test.ts: const run = owned(
 // Real OpenCode (the fork, from source) with the Anthropic auth plugin and
 // the pool reading a login store, against the fake Anthropic API. OpenCode
 // holds no Anthropic login of its own: both accounts are the store's, slot
@@ -14,7 +12,7 @@ import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"
 import { fakeAccount, startFakeAnthropic, type FakeAnswer, type FakeRequestInfo } from "./fake-anthropic.ts"
 import { openSlotStore } from "./store/store.ts"
-import { owned } from "./owned.ts"
+import { ownedForkFixture } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
@@ -82,9 +80,9 @@ describe.skipIf(!ready)("OpenCode runs on a login store's Claude accounts throug
           ...launch.env,
         }
         // No `auth import`: OpenCode's own store holds no Anthropic login.
-        const run = owned(
-          [...launch.base, "run", "--standalone", "--dangerously-skip-permissions", "--format", "json", "say hello"],
-          { cwd: join(base, "work"), env, stdout: "pipe", stderr: "pipe" },
+        const run = ownedForkFixture(
+          [fork!, join(base, "work"), ["run", "--standalone", "--dangerously-skip-permissions", "--format", "json", "say hello"], env],
+          { stdout: "pipe", stderr: "pipe" },
         )
         const timer = setTimeout(() => run.kill(), RUN_TIMEOUT_MS)
         const [stdout, stderr] = await Promise.all([new Response(run.stdout).text(), new Response(run.stderr).text()])

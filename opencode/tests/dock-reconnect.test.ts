@@ -1,5 +1,4 @@
-// @reads all
-// @reads-reason subprocess reads at tests/dock-reconnect.test.ts: const child = Bun.spawn([...launch.base, ...args], { cwd: work, env, stdout: "pipe", stderr: "p
+// @reads cmd/*
 // accept: one at a time (it bounds how soon the dock settles after the TUI's first read).
 // A subagent row leaves "running" once a service restart ends its turn.
 //
@@ -23,13 +22,14 @@
 // agree with the new service: no live row (no time in its state) for a child
 // it does not run, and no subagent count, within SETTLE_MS.
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { hostCall, serve, type ServedHost } from "../testbeds/gamut/pty-host.ts"
 import { freePort, ready, type Service } from "./service.ts"
 import { keptScratch } from "./scratch.ts"
-import { externalInput } from "./read-path.ts"
+import { externalInput, matchingInput, scratchExistsSync as existsSync } from "./read-path.ts"
+import { forkFixture, spawnForkFixture } from "./scratch-child.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/dock-reconnect.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -161,7 +161,7 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
 
   /** The fork's CLI in the scratch HOME, run to its end; `service stop` in afterAll ends the service it leaves. */
   const opencode = async (...args: ReadonlyArray<string>) => {
-    const child = Bun.spawn([...launch.base, ...args], { cwd: work, env, stdout: "pipe", stderr: "pipe" })
+    const child = spawnForkFixture(fork ?? "", work, args, env)
     const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
     return { code, out, err }
   }
@@ -286,13 +286,13 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
             },
           },
           // The owner's server plugins that need no login, network listener or OS job.
-          plugins: SERVER_PLUGINS.map((name) => join(ROOT, "cmd", name)),
+          plugins: SERVER_PLUGINS.map((name) => matchingInput("cmd/*", join(ROOT, "cmd", name))),
         }),
       )
       // The owner's TUI plugins, as daily writes them (herdr left out: it reports to a herdr socket).
       writeFileSync(
         join(home, ".config/opencode/cli.json"),
-        JSON.stringify({ plugins: [...TUI_PLUGINS.map((name) => join(ROOT, "cmd", name)), "-opencode.btw"], session: { sidebar: "hide" }, theme: { name: "prime" } }),
+        JSON.stringify({ plugins: [...TUI_PLUGINS.map((name) => matchingInput("cmd/*", join(ROOT, "cmd", name))), "-opencode.btw"], session: { sidebar: "hide" }, theme: { name: "prime" } }),
       )
       // A port of its own: the other test files' scratch services would share the channel's fixed one (tests/service.ts).
       expect(await opencode("service", "set", "port", String(freePort()))).toMatchObject({ code: 0 })
@@ -317,8 +317,8 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
     await client.experimental.session.wait({ sessionID: parent.id })
 
     const socket = join(root, `${name}.sock`)
-    const command = [...launch.base, "--server", proxyURL, "-s", parent.id] as [string, ...string[]]
-    const host = serve({ socket, cwd: home, command, env: { ...env, OPENCODE_PASSWORD: service.password }, cols: 160, rows: 45 })
+    const { argv: command, ...options } = forkFixture(fork ?? "", home, ["--server", proxyURL, "-s", parent.id], { ...env, OPENCODE_PASSWORD: service.password })
+    const host = serve({ socket, command, ...options, cols: 160, rows: 45 })
     hosts.push(host)
     try {
       await until(() => existsSync(socket), Boolean, () => `${name}: the terminal host`, 10_000)

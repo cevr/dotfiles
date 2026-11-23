@@ -37,7 +37,7 @@ import { NO_FREE_MODELS, releaseFlags } from "../scripts/release-flags.ts"
 import { unboundBuild } from "../testbeds/gamut/gamut.ts"
 import { type ChildTemp, childTemp, parentEnv, scratch } from "./scratch.ts"
 import { checkOwnedCommand } from "./read-path.ts"
-import { checkoutBun, scratchShell } from "./scratch-child.ts"
+import { checkoutBun, forkFixture, scratchShell } from "./scratch-child.ts"
 // What this test process starts is stopped once it is gone, however it went (testbeds/reaper/start.ts).
 import "../testbeds/reaper/start.ts"
 
@@ -66,6 +66,13 @@ export const ownedScratchShell = (cwd: string, program: string) => {
 export const ownedCheckoutBun = (...args: Parameters<typeof checkoutBun>) => {
   const { argv, ...options } = checkoutBun(...args)
   return owned(argv, { ...options, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+}
+
+export const ownedForkFixture = <const Out extends "pipe" | "ignore", const Err extends "pipe" | "ignore">(
+  input: Parameters<typeof forkFixture>, stdio: { readonly stdout: Out; readonly stderr: Err },
+) => {
+  const { argv, ...options } = forkFixture(...input)
+  return owned(argv, { ...options, ...stdio, stdin: "ignore" })
 }
 
 const terminate = (procs: ReadonlyArray<Proc>) => {
