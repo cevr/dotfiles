@@ -4,6 +4,9 @@ module childLifecycle {
   type End = NoEnd | Ok | Failed | Cancelled
   type Row = Working | Waiting | Undetermined | Failure | Hidden | Other
   type RestartCut = NoCut | Cut({ before: Row, after: Row, afterLinger: Row, expectedAfterLinger: Row })
+  type Basis = Current | AsOf
+  type Reply = { rev: int, seq: int, phase: Phase, end: End, basis: Basis, terminalFact: bool }
+  type Observer = { last: Reply, inflight: Reply, requested: bool, checking: bool, floor: int }
   var s: {
     phase: Phase, generation: int, route: Route, compatible: bool, room: bool,
     refused: bool, sawNotice: bool, deniedThenStarted: bool, incompatibleStarted: bool,
@@ -19,7 +22,11 @@ module childLifecycle {
     seq: 0, stepError: false, pendingShell: false, pendingWake: false, trace: "",
     exitObserved: false, cut: NoCut
   }
-  action init = s' = empty
+  pure val noReply = { rev: 0, seq: 0, phase: Held, end: NoEnd, basis: Current, terminalFact: false }
+  pure val noObserver = { last: noReply, inflight: noReply, requested: false, checking: true, floor: 0 }
+  var t: { owner: Reply, row: Observer, tool: Observer, history: Set[Reply], beforeReload: Reply }
+  pure val noTransport = { owner: noReply, row: noObserver, tool: noObserver, history: Set(noReply), beforeReload: noReply }
+  action init = all { s' = empty, t' = noTransport }
 
   action readCatalog = {
     nondet v = oneOf(Set(false, true))
@@ -146,20 +153,82 @@ module childLifecycle {
 
   action losesExitOnRestart = any {
     step,
-    all { s.phase == ResultUndetermined, s' = { ...s, cut: Cut({
+    all { t' = t, s.phase == ResultUndetermined, s' = { ...s, cut: Cut({
       before: Undetermined, after: Failure, afterLinger: Hidden, expectedAfterLinger: Undetermined,
     }) } },
   }
 
-  action step = any {
+  action producers = any {
     readCatalog, readPace, admit, notice, stopAuthorization, shutdown, resume,
     shellPending, diagnostic, failedSegment, shellExited, wakeEnqueued, wakeCancelled, wakeResumed, wakeDelivered, stopTimesOut,
     settle, handBack, deliver, nextGeneration, staleObservation, readLatest, observerRestart
   }
+  pure def takeRead(observer: Observer, owner: Reply): Observer =
+    { ...observer, inflight: owner, requested: true, checking: true }
+  pure def invalidate(observer: Observer, revision: int): Observer =
+    { ...observer, floor: revision, checking: true }
+  pure def accept(observer: Observer): Observer =
+    if (observer.inflight.rev < observer.floor or observer.inflight.rev < observer.last.rev)
+      { ...observer, requested: false }
+    else { ...observer, requested: false, last: observer.inflight, checking: false }
+  pure def validObserver(o: Observer, history: Set[Reply]): bool = and {
+    history.contains(o.last),
+    o.checking or o.last.rev >= o.floor,
+    // A stale historical terminal stays Checking, never an authoritative badge.
+    not(o.checking) and o.last.phase == Settled and o.last.basis == Current implies o.last.terminalFact,
+  }
+  action refreshOwner = all {
+    t.owner.phase != s.phase or t.owner.end != s.end or t.owner.seq != s.seq,
+    val owner = { rev: t.owner.rev + 1, seq: s.seq, phase: s.phase, end: s.end, basis: Current, terminalFact: s.phase == Settled }
+    t' = { ...t, owner: owner, history: t.history.union(Set(owner)) },
+    s' = s,
+  }
+  action kernelReload = all {
+    t.owner.basis == Current,
+    val owner = { ...t.owner, rev: t.owner.rev + 1, basis: AsOf }
+    t' = { ...t, owner: owner, history: t.history.union(Set(owner)), beforeReload: t.owner },
+    s' = s,
+  }
+  action observers = all {
+    s' = s,
+    any {
+      all { not(t.row.requested), t' = { ...t, row: takeRead(t.row, t.owner) } },
+      all { not(t.tool.requested), t' = { ...t, tool: takeRead(t.tool, t.owner) } },
+      all { t.row.requested, t' = { ...t, row: accept(t.row) } },
+      all { t.tool.requested, t' = { ...t, tool: accept(t.tool) } },
+      all { t.row.floor < t.owner.rev, t' = { ...t, row: invalidate(t.row, t.owner.rev) } },
+      all { t.tool.floor < t.owner.rev, t' = { ...t, tool: invalidate(t.tool, t.owner.rev) } },
+    },
+  }
+  action staleReplyWins = any {
+    step,
+    all {
+      t.row.requested, t.row.inflight.rev < t.row.floor,
+      s' = s,
+      t' = { ...t, row: { ...t.row, checking: false, last: t.row.inflight, requested: false } },
+    },
+  }
+  action mixesRevisions = any {
+    step,
+    all {
+      t.row.last.phase == ShellWork, s.phase == ResultUndetermined,
+      s' = s,
+      t' = { ...t, row: { ...t.row, checking: false, last: {
+        ...t.row.last, phase: Settled, end: Failed, terminalFact: false,
+      } } },
+    },
+  }
+  action step = any {
+    all { producers, t' = t },
+    refreshOwner, kernelReload, observers
+  }
   // Fixed orders exported as ITF, compared against direct `subagents` after
   // each event. Both use the same transitions the bounded invariant explores.
-  action initContinuation = s' = { ...empty, phase: Active, seq: 1, pendingShell: true, trace: "started" }
-  action traceContinuation = any {
+  action initContinuation = all {
+    s' = { ...empty, phase: Active, seq: 1, pendingShell: true, trace: "started" },
+    t' = noTransport,
+  }
+  action traceContinuation = all { t' = t, any {
     all { s.trace == "started", diagnostic },
     all { s.trace == "diagnostic", failedSegment },
     all { s.trace == "failed", shellExited },
@@ -167,30 +236,34 @@ module childLifecycle {
     all { s.trace == "enqueued", wakeResumed },
     all { s.trace == "resumed", wakeDelivered },
     all { s.trace == "delivered", succeededSegment },
-  }
-  action traceEarlierExit = any {
+  } }
+  action traceEarlierExit = all { t' = t, any {
     all { s.trace == "started", diagnostic },
     all { s.trace == "diagnostic", shellExited },
     all { s.trace == "exited", failedSegment },
-  }
+  } }
   action noticeCloses = any {
     step,
-    all { s.sawNotice, s.phase == Active, s' = { ...s, closedRound: true } }
+    all { t' = t, s.sawNotice, s.phase == Active, s' = { ...s, closedRound: true } }
   }
   action retryDenied = any {
     step,
-    all { s.refused, s' = { ...s, phase: Active, route: Secondary, deniedThenStarted: true } }
+    all { t' = t, s.refused, s' = { ...s, phase: Active, route: Secondary, deniedThenStarted: true } }
   }
   action admitIncompatible = any {
     step,
-    all { s.phase == Held, not(s.room), not(s.compatible),
+    all { t' = t, s.phase == Held, not(s.room), not(s.compatible),
       s' = { ...s, phase: Active, route: Secondary, incompatibleStarted: true } }
   }
   action staleWins = any {
     step,
-    all { s.generation == 2, s.seen == 2, s' = { ...s, seen: 0 } }
+    all { t' = t, s.generation == 2, s.seen == 2, s' = { ...s, seen: 0 } }
   }
   val safe = and {
+    validObserver(t.row, t.history),
+    validObserver(t.tool, t.history),
+    t.owner.basis != AsOf or
+      (t.owner.phase == t.beforeReload.phase and t.owner.end == t.beforeReload.end and t.owner.seq == t.beforeReload.seq),
     not(s.closedRound) or (s.phase == Settled and s.end == Ok and s.handBack and not(s.refused)),
     s.delivered <= 1,
     s.delivered == 0 or s.phase == Settled,
