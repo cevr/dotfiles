@@ -8,7 +8,8 @@
 // `script/test.ts`), its JUnit report read per test. A listed file that is not there, a failed test, a file
 // that ran no test (an import that no longer resolves) and a nonzero exit no failed test accounts for are red
 // (a declared skip explains no exit: a package command that fails after its tests is red beside any skip);
-// a red file is run once more, and a file green on that rerun is a named flake. An expectation declares one
+// a red file is run once more (every file when the exit is red), and a file green on that rerun is a named
+// flake; the report holds each file's facts from its last run, a file not rerun its first. An expectation declares one
 // test red on a host by a condition read at run time (the version of the first bash on PATH) with its reason:
 // the test still runs, its failure there is a note, and its passing there (or its absence) is red, so a stale
 // expectation cannot stay. It waits for the host's fork-checks lock (at most 30 minutes) and while the 1-minute
@@ -264,6 +265,11 @@ export interface Judged {
 const skipNoteText = (plan: Plan, note: SkipNote) => `${SKIPPED}${hostOf(note.skip)}: ${plan.package}/${note.skip.file} > ${note.skip.test}${WHY}${note.skip.reason}`
 /** The note an expected failure makes. */
 const expectedText = (plan: Plan, each: Expectation) => `expected red on bash ${each.host.bash}: ${plan.package}/${each.file} > ${each.test} (${each.reason})`
+/** What a reader sees of failed tests and skips: each expected failure, then each declared skip. */
+const factNotes = (plan: Plan, explanations: ReadonlyArray<ExitExplanation>, skipped: ReadonlyArray<SkipNote>) => [
+  ...explanations.flatMap((each) => Option.toArray(Option.map(each.expected, (expectation) => expectedText(plan, expectation)))),
+  ...skipped.map((note) => skipNoteText(plan, note)),
+]
 
 /**
  * Judges one run of `plan` by its exit and its report's tests: the reds, the failed tests that account for the exit,
@@ -305,10 +311,7 @@ export const judge = (plan: Plan, code: number, cases: ReadonlyArray<Case>): Jud
     Arr.filter([new ExitExplanation({ failed: found, exit: TESTS_FAILED, expected: Arr.findFirst(expected, same(found)) })], () => found.status === "failed"),
   )
   const skipped = skips.flatMap((skip) => Arr.filter([new SkipNote({ skip })], () => listed.some((found) => !executed(found) && same(found)(skip))))
-  const notes = [
-    ...explanations.flatMap((each) => Option.toArray(Option.map(each.expected, (expectation) => expectedText(plan, expectation)))),
-    ...skipped.map((note) => skipNoteText(plan, note)),
-  ]
+  const notes = factNotes(plan, explanations, skipped)
   const exit = Arr.filter(
     [red(THE_RUN, "", `${plan.command.join(" ")} exited ${code}, and no failed test in its report accounts for it (a failed test exits ${TESTS_FAILED}; a skip accounts for no exit)`)],
     () => !exitAccounted(code, explanations),
@@ -509,14 +512,14 @@ const calm = Effect.fn("ForkChecks.calm")(function* (limits: Limits, budget: Bud
 })
 
 /**
- * One run of `plan`, judged; could not run when the calm-host wait or the run budget is spent, or bun writes no
- * report. The run alone is charged to the run budget, and it may take what is left of it.
+ * One run of `plan`, observed per file; could not run (why) when the calm-host wait or the run budget is spent, or
+ * bun exits nonzero with no report. The run alone is charged to the run budget, and it may take what is left of it.
  */
 const runOnce = Effect.fn("ForkChecks.runOnce")(function* (input: Input, plan: Plan, budgets: Budgets) {
   if (!(yield* calm(input.limits, budgets.calm, plan.package)))
-    return couldNot(`the calm-host wait (${minutes(budgets.calm.allowanceMs)}, every wait together) was spent before ${plan.package} ran: the 1-minute load stayed over ${input.limits.maxLoad}`)
+    return Result.fail(`the calm-host wait (${minutes(budgets.calm.allowanceMs)}, every wait together) was spent before ${plan.package} ran: the 1-minute load stayed over ${input.limits.maxLoad}`) satisfies Seen
   const left = yield* leftOf(budgets.runs)
-  if (left <= 0) return couldNot(`the package runs' budget (${minutes(budgets.runs.allowanceMs)}) was spent before ${plan.package} ran`)
+  if (left <= 0) return Result.fail(`the package runs' budget (${minutes(budgets.runs.allowanceMs)}) was spent before ${plan.package} ran`) satisfies Seen
   yield* Console.log(`fork-checks: ${plan.package}: ${plan.files.length} files`)
   const path = yield* Path.Path
   const runner = yield* TestRunner
@@ -536,8 +539,8 @@ const runOnce = Effect.fn("ForkChecks.runOnce")(function* (input: Input, plan: P
     }),
   )
   return Match.value(ran).pipe(
-    Match.when({ kind: "timed-out" }, (out): Verdict => couldNot(`${plan.package} ran past the package runs' budget (${minutes(budgets.runs.allowanceMs)}), its process group ended:\n${tail(out.log)}`)),
-    Match.when({ kind: "exited" }, (out) => exitedVerdict(plan, out)),
+    Match.when({ kind: "timed-out" }, (out): Seen => Result.fail(`${plan.package} ran past the package runs' budget (${minutes(budgets.runs.allowanceMs)}), its process group ended:\n${tail(out.log)}`)),
+    Match.when({ kind: "exited" }, (out) => exitedObservation(plan, out)),
     Match.exhaustive,
   )
 })
@@ -546,37 +549,130 @@ const runOnce = Effect.fn("ForkChecks.runOnce")(function* (input: Input, plan: P
 export const whole = (junit: string) => /<\/testsuites>\s*$/.test(junit)
 
 /**
- * The verdict of a run that exited, by its report. With a whole report, `judge`'s. Without one (none, or one cut
- * short): a 0 exit proved nothing ran, so each listed file is red; any other exit could not run. Either way the
+ * Which observation of a file the report holds: its only one; its rerun's, after a red test of its own (a flake when
+ * the rerun is green); or its rerun's, after its package's exit alone was red (the file never failed).
+ */
+export type Observed = "once" | "rerun after its red" | "rerun with its package"
+
+/**
+ * What a run showed of one listed file, every per-file fact the report carries: its reds, its failed tests (each an
+ * exit explanation; an expected one is a note), its declared skips that skipped, and which observation they are.
+ */
+export interface FileFacts {
+  readonly reds: ReadonlyArray<Red>
+  readonly explanations: ReadonlyArray<ExitExplanation>
+  readonly skipped: ReadonlyArray<SkipNote>
+  readonly observed: Observed
+}
+
+/**
+ * What a package's runs showed: each listed file's facts from its last run (file → facts, in the plan's order), and
+ * the run's own facts: the last run's exit reds (`THE_RUN`) and log (named when the verdict is red), and the exit
+ * reds of the first run that its rerun no longer has.
+ */
+export interface Observation {
+  readonly files: ReadonlyMap<string, FileFacts>
+  readonly run: { readonly reds: ReadonlyArray<Red>; readonly log: string; readonly recovered: ReadonlyArray<Red> }
+}
+
+/** One run's observation, or why it could not run. */
+type Seen = Result.Result<Observation, string>
+
+/** `judged` per file of `plan`; a red that names no listed file (the run's exit) is the run's. */
+export const observationOf = (plan: Plan, judged: Pick<Judged, "reds" | "explanations" | "skipped">, log: string): Observation => ({
+  files: new Map(
+    plan.files.map((file): readonly [string, FileFacts] => [
+      file,
+      {
+        reds: judged.reds.filter((red) => red.file === file),
+        explanations: judged.explanations.filter((each) => each.failed.file === file),
+        skipped: judged.skipped.filter((each) => each.skip.file === file),
+        observed: "once",
+      },
+    ]),
+  ),
+  run: { reds: judged.reds.filter((red) => !plan.files.includes(red.file)), log, recovered: [] },
+})
+
+/**
+ * The one merge of a package's runs: each file the rerun observed takes the rerun's facts entirely, marked rerun
+ * after its own red or with its package; each file it did not rerun keeps its first facts. The run's facts are the
+ * rerun's, with the first run's exit reds the rerun no longer has. So nothing superseded stays, and nothing is named
+ * twice.
+ */
+export const merged = (first: Observation, rerun: Observation): Observation => {
+  const after = (before: FileFacts, now: FileFacts): FileFacts => ({ ...now, observed: Option.getOrElse(Option.liftPredicate<Observed>("rerun after its red", () => before.reds.length > 0), (): Observed => "rerun with its package") })
+  return {
+    files: new Map(Array.from(first.files, ([file, before]) => [file, Option.match(Option.fromUndefinedOr(rerun.files.get(file)), { onNone: () => before, onSome: (now) => after(before, now) })])),
+    run: { ...rerun.run, recovered: Arr.filter(first.run.reds, () => rerun.run.reds.length === 0) },
+  }
+}
+
+/** How a note names the files whose red test passed on the rerun. */
+export const FLAKY = "flaky, green on the rerun"
+/** How a note names the files rerun only because their package's exit was red: their facts are the rerun's. */
+export const RERUN = "rerun with its package (its exit was red), facts from the rerun"
+/** How a note names a package exit red on the first run and accounted for on the rerun. */
+export const FLAKY_EXIT = "flaky exit, accounted for on the rerun"
+
+/**
+ * The verdict of `plan`'s observation: red with any red (and the last run's log), else green. The notes are each
+ * file's expected failures, then its declared skips, then the flakes (files whose own red is gone), the files rerun
+ * with their package, and the package's exit red only before the rerun.
+ */
+export const verdictOf = (plan: Plan, seen: Observation): Verdict => {
+  const facts = Array.from(seen.files.values())
+  const reds = [...facts.flatMap((each) => each.reds), ...seen.run.reds]
+  const named = (pick: (each: FileFacts) => boolean) => Array.from(seen.files).flatMap(([file, each]) => Arr.filter([`${plan.package}/${file}`], () => pick(each)))
+  const line = (label: string, files: ReadonlyArray<string>) => Arr.filter([`${label}: ${files.join(", ")}`], () => files.length > 0)
+  const notes = [
+    ...factNotes(
+      plan,
+      facts.flatMap((each) => each.explanations),
+      facts.flatMap((each) => each.skipped),
+    ),
+    ...line(FLAKY, named((each) => each.observed === "rerun after its red" && each.reds.length === 0)),
+    ...line(RERUN, named((each) => each.observed === "rerun with its package")),
+    ...seen.run.recovered.map((red) => `${FLAKY_EXIT}: ${plan.package}: ${red.why}`),
+  ]
+  if (reds.length === 0) return { kind: "green", notes }
+  return { kind: "red", reds, notes: [...notes, seen.run.log] }
+}
+
+/**
+ * What a run that exited showed, by its report: with a whole report, `judge`'s, per file. Without one (none, or one
+ * cut short): a 0 exit proved nothing ran, so each listed file is red; any other exit could not run. Either way the
  * command, its exit and its log's tail are named.
  */
-const exitedVerdict = (plan: Plan, out: Extract<Ran, { readonly kind: "exited" }>): Verdict => {
+const exitedObservation = (plan: Plan, out: Extract<Ran, { readonly kind: "exited" }>): Seen => {
   const log = `${plan.package} log (${plan.command.join(" ")}, exit ${out.code}):\n${tail(out.log)}`
   return Option.match(Option.filter(out.junit, whole), {
-    onNone: (): Verdict => {
+    onNone: (): Seen => {
       const what = Option.match(out.junit, { onNone: () => "wrote no report", onSome: () => "wrote a report cut short (no closing </testsuites>)" })
-      if (out.code !== 0) return couldNot(`${plan.command.join(" ")} in ${plan.package} exited ${out.code} and ${what}:\n${tail(out.log)}`)
+      if (out.code !== 0) return Result.fail(`${plan.command.join(" ")} in ${plan.package} exited ${out.code} and ${what}:\n${tail(out.log)}`)
       const reds = plan.files.map((file) => ({ package: plan.package, file, test: "", why: `the runner exited 0 and ${what}: the file is not proven to have run` }))
-      return { kind: "red", reds, notes: [log] }
+      return Result.succeed(observationOf(plan, { reds, explanations: [], skipped: [] }, log))
     },
-    onSome: (junit): Verdict => {
-      const judged = judge(plan, out.code, casesOf(junit))
-      if (judged.reds.length === 0) return { kind: "green", notes: judged.notes }
-      return { kind: "red", reds: judged.reds, notes: [...judged.notes, log] }
-    },
+    onSome: (junit): Seen => Result.succeed(observationOf(plan, judge(plan, out.code, casesOf(junit)), log)),
   })
 }
 
-/** `plan`'s run, and once more for its red files: a file green on the rerun is a named flake, a file red twice stays red. */
+/**
+ * `plan`'s run, and once more for its red files (every file when its exit is red): the verdict is of the two runs
+ * `merged`, so a file green on the rerun is a named flake, a file red twice stays red, and a file not rerun keeps
+ * its first run's skips and expected failures. A rerun that could not run could not run, with the first run's notes.
+ */
 const runPlan = Effect.fn("ForkChecks.runPlan")(function* (input: Input, plan: Plan, budgets: Budgets) {
   const first = yield* runOnce(input, plan, budgets)
-  if (first.kind !== "red") return first
-  const whole = first.reds.some((red) => red.file === THE_RUN)
-  const files = Arr.filter(plan.files, (file) => whole || first.reds.some((red) => red.file === file))
+  if (Result.isFailure(first)) return couldNot(first.failure)
+  const before = verdictOf(plan, first.success)
+  if (before.kind !== "red") return before
+  const whole = first.success.run.reds.length > 0
+  const files = Arr.filter(plan.files, (file) => whole || before.reds.some((red) => red.file === file))
   yield* Console.log(`fork-checks: ${plan.package}: ${files.length} red files; running them once more`)
   const second = yield* runOnce(input, { ...plan, files }, budgets)
-  if (second.kind !== "green") return second
-  return { kind: "green", notes: [...second.notes, `flaky, green on the rerun: ${files.map((file) => `${plan.package}/${file}`).join(", ")}`] } satisfies Verdict
+  if (Result.isFailure(second)) return couldNot(second.failure, before.notes)
+  return verdictOf(plan, merged(first.success, second.success))
 })
 
 /** Where one package's run stands: its features, when it started, and when it ended with what. */
