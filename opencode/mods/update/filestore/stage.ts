@@ -1,7 +1,8 @@
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 import { exclusivelySync, holding } from "@dotfiles/opencode-work/process/flock"
-import { Effect, Layer } from "effect"
+import { publishReviewInput } from "@dotfiles/opencode-work/process/landing"
+import { Effect, Layer, Predicate } from "effect"
 import { buildName, stagingName } from "../builds.ts"
 import { parseRecord, type Record, recordText, stagedRecord } from "../record.ts"
 import { stageInTree, Tree, Trees, UpdateFailed } from "../service.ts"
@@ -98,11 +99,13 @@ export const stageBuild = (stage: Stage, flock?: (descriptor: number, operation:
     chmodSync(copy, 0o755)
     renameSync(copy, binary)
     // Staged, not installed: the handoff installs it as it restarts, and the health check proves it (mods/update).
-    mkdirSync(dirname(stage.record), { recursive: true })
-    const last = readFileSync(stage.record, { encoding: "utf8", flag: "a+" })
+    const last = Effect.runSync(
+      Effect.try({ try: () => readFileSync(stage.record, "utf8"), catch: (error) => error }).pipe(
+        Effect.catchIf((error) => Predicate.hasProperty(error, "code") && error.code === "ENOENT", () => Effect.succeed("")),
+      ),
+    )
     const record = stagedRecord(parseRecord(last), { version: stage.version, command: [binary], dotfiles: stage.dotfiles, fork: stage.fork }, readdirSync(stage.share))
-    writeFileSync(`${stage.record}.${stage.pid}`, recordText(record))
-    renameSync(`${stage.record}.${stage.pid}`, stage.record)
+    Effect.runSync(publishReviewInput("stage the installed record", stage.record, recordText(record)))
     writeLauncher(stage.launcher, stage.resident, record, stage.pid)
   })
   return binary

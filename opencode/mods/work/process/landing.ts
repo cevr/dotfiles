@@ -10,12 +10,12 @@
 // batch's merges, and what it rewrote is committed. Receipts (`receipts`) are read and written here: a
 // checkout's in its Git dir, every one in the host's receipts folder beside the logs; `scriptReceipt` and
 // `scriptReceipts` give them to scripts outside Effect (scripts/gate.ts, post-land.ts, receipt.ts).
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { availableParallelism, loadavg } from "node:os"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { basename, dirname, join } from "node:path"
 import { DEFAULT_LIMITS, heavyArgv, type Host, ioniceAvailable, SCOPE_PROBE } from "@dotfiles/opencode-guard/launcher"
-import { Clock, Console, DateTime, Effect, Layer, Match, Option, Predicate, Result, Schema } from "effect"
+import { Clock, Console, DateTime, Effect, Layer, Match, Option, Predicate, Random, Result, Schema } from "effect"
 import { type HostLoad, type LandConfig, type Merged, type PostLanded, type Ran, type Started, type Unit } from "../land.ts"
 import { receiptCommand } from "../owed.ts"
 import { type LandRecord, LandRecordJson, type Receipt, ReceiptJson, type Snapshot, standing as standingOf } from "../receipt.ts"
@@ -181,6 +181,30 @@ const same = (left: string, right: string): boolean => {
 const hostReceipt = (logs: string, receipt: Receipt): string => join(receiptsDir(logs), `${receipt.head}.${receipt.kind}.json`)
 
 /**
+ * Publish one complete version. Never open the published inode for writing: review readers depend on replacement
+ * only. Sync the new file before the rename, then the directory entry. Callers are host adapters, never policy.
+ */
+export const publishReviewInput = Effect.fn("ReviewInput.publish")(function* (operation: string, file: string, text: string) {
+  const directory = dirname(file)
+  const nonce = yield* Random.nextInt
+  const temp = join(directory, `.review-input-${nonce}`)
+  const io = <A>(step: () => A) => Effect.try({ try: step, catch: (cause) => new RiftFailed({ operation, message: String(cause) }) })
+  const close = (fd: number) => io(() => closeSync(fd))
+  yield* io(() => mkdirSync(directory, { recursive: true }))
+  yield* Effect.acquireUseRelease(
+    io(() => openSync(temp, "wx")),
+    (fd) =>
+      Effect.gen(function* () {
+        yield* io(() => writeFileSync(fd, text))
+        yield* io(() => fsyncSync(fd))
+        yield* io(() => renameSync(temp, file))
+        yield* Effect.acquireUseRelease(io(() => openSync(directory, "r")), (parent) => io(() => fsyncSync(parent)), close)
+      }),
+    (fd) => close(fd).pipe(Effect.ensuring(io(() => rmSync(temp, { force: true })).pipe(Effect.ignore))),
+  )
+})
+
+/**
  * Receipts on disk (receipt.ts), for the land and for a script that writes one (scripts/gate.ts,
  * scripts/post-land.ts): `snapshot` reads a checkout's head and the tree of its tracked files as they are on
  * disk (through a scratch copy of its index, so its own index is untouched); `write` keeps a receipt in the
@@ -213,13 +237,10 @@ export const receipts = (logs: string, env: Readonly<Record<string, string>> = {
   const write = Effect.fn("Receipts.write")(function* (receipt: Receipt) {
     const text = yield* encode(receipt)
     const file = hostReceipt(logs, receipt)
-    yield* io("write receipt", () => {
-      mkdirSync(receiptsDir(logs), { recursive: true })
-      writeFileSync(file, `${text}\n`)
-    })
+    yield* publishReviewInput("write receipt", file, `${text}\n`)
     if (receipt.kind !== "round") return file
     const kept = yield* gitPath(receipt.repo, "rift-receipt.json")
-    yield* io("write receipt", () => writeFileSync(kept, `${text}\n`))
+    yield* publishReviewInput("write receipt", kept, `${text}\n`)
     return file
   })
 
@@ -491,13 +512,7 @@ export const layer = (options: Options) => {
   const record = Effect.fn("Landing.record")(function* (landed: LandRecord) {
     const text = yield* Schema.encodeEffect(LandRecordJson)(landed).pipe(Effect.mapError((error) => new RiftFailed({ operation: "land record", message: error.message })))
     const file = join(receiptsDir(options.logs), `${landed.head}.land.json`)
-    yield* Effect.try({
-      try: () => {
-        mkdirSync(receiptsDir(options.logs), { recursive: true })
-        writeFileSync(file, `${text}\n`)
-      },
-      catch: (cause) => new RiftFailed({ operation: "land record", message: String(cause) }),
-    })
+    yield* publishReviewInput("land record", file, `${text}\n`)
     return file
   })
 
