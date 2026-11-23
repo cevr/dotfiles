@@ -901,7 +901,7 @@ describe('(h) envelopes: the contract reads only the persisted envelope, and eve
       }
     expect(misses.slice(0, 5)).toEqual([]);
     expect(probed > 10000).toBe(true);
-  });
+  }, 60_000); // over ten thousand claims: ~3 s alone, past the 5 s default under a loaded host
 
   test('the limit is the observed one: a second envelope with another length or count, claimed against the first, is rejected', () => {
     const items = [{ id: 'run', assignment: ASSIGNED, events: [] }];
