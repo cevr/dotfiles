@@ -6,7 +6,8 @@
 // it again. What fired is read off the frames, the
 // model's requests and the transcripts.
 import { describe, expect, test } from "bun:test"
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync } from "node:fs"
+import { readScratchFileSync as readFileSync } from "./read-path.ts"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"

@@ -3,7 +3,8 @@
 // processes on a Unix socket: each test serves a real shell program and calls
 // the host through the same client gamut uses.
 import { afterEach, describe, expect, test } from "bun:test"
-import { existsSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, rmSync } from "node:fs"
+import { readScratchFileSync as readFileSync } from "./read-path.ts"
 import { join } from "node:path"
 import { HostError, hostCall, rowsSince, serve, type HostScreen, type ServedHost } from "../testbeds/gamut/pty-host.ts"
 import { scratch as scratchDir } from "./scratch.ts"

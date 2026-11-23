@@ -21,6 +21,7 @@ import { fakeAccount, startFakeAnthropic } from "./fake-anthropic.ts"
 import { openSlotStore } from "./store/store.ts"
 import { ROOT_TASK, serve } from "./orchestrate/sim.ts"
 import { owned } from "./owned.ts"
+import { externalInput } from "./read-path.ts"
 import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
@@ -201,7 +202,7 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
         })
 
         // Host A admits a wave: the root's task starts two subagents.
-        const { OpenCode } = (await import(join(fork ?? "", "packages/client/src/promise/index.ts"))) as ClientModule
+        const { OpenCode } = (await import(externalInput(join(fork ?? "", "packages/client/src/promise/index.ts")))) as ClientModule
         const client = OpenCode.make({ baseUrl: a.service.url, headers: { authorization: authorization(a.service) } })
         const location = { directory: join(a.base, "work") }
         const session = await client.session.create({ location })

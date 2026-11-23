@@ -2,10 +2,12 @@
 // checkout on this machine, before it touches any node_modules, and never
 // leaves a link that points nowhere. The script runs from a copy in a scratch
 // workspace (its root is the folder above the script), against a scratch fork.
+// @reads scripts/{link-fork.ts,fork.ts}
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join, relative } from "node:path"
+import { matchingInput, readScratchDirectorySync as readdirSync, readScratchLinkSync as readlinkSync } from "../tests/read-path.ts"
 
 /** A fork path that exists on no machine, like a Mac path on the workbox. */
 const ELSEWHERE = "/nonexistent/loop-probe-x/.work/opencode/prime-look"
@@ -69,7 +71,7 @@ beforeEach(() => {
   }
   // The script and the check it shares with the gate, accept and daily.
   for (const name of ["link-fork.ts", "fork.ts"])
-    if (existsSync(join(import.meta.dir, name))) cpSync(join(import.meta.dir, name), join(workspace, "scripts", name))
+    if (existsSync(join(import.meta.dir, name))) cpSync(matchingInput("scripts/{link-fork.ts,fork.ts}", `scripts/${name}`), join(workspace, "scripts", name))
   // The check decodes the fork's package.json files with Effect, which the copies resolve from opencode/'s own install.
   symlinkSync(join(OPENCODE, "node_modules"), join(workspace, "node_modules"))
   fork = makeFork(join(scratch, "fork"))

@@ -31,6 +31,7 @@ import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { hostCall, serve, type ServedHost } from "../testbeds/gamut/pty-host.ts"
 import { freePort, ready, type Service } from "./service.ts"
 import { keptScratch } from "./scratch.ts"
+import { externalInput } from "./read-path.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/update-badge.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -219,7 +220,7 @@ describe.skipIf(!fork)("the update notice", () => {
       await boot()
       const service = await ready(serviceFile, () => "the service")
       const title = "Update badge session"
-      const { OpenCode } = (await import(join(fork ?? "", "packages/client/src/promise/index.ts"))) as ClientModule
+      const { OpenCode } = (await import(externalInput(join(fork ?? "", "packages/client/src/promise/index.ts")))) as ClientModule
       const session = await OpenCode.make({ baseUrl: service.url, headers: auth(service) }).session.create({ location: { directory: work }, title })
 
       const { host, screen } = await tui("same", service.password, "-s", session.id)

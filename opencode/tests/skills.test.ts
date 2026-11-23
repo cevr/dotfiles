@@ -6,6 +6,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { externalInput } from "./read-path.ts"
 import { keptScratch } from "./scratch.ts"
 
 /** The frame's lines, without the composer's rails and padding. */
@@ -16,7 +17,7 @@ const count = (haystack: string, needle: string) => haystack.split(needle).lengt
 
 // The popup needs the fork's plugin autocomplete (`ui.autocomplete`); a fork without it draws none.
 const fork = process.env.OPENCODE_DEV
-const hooked = fork !== undefined && readFileSync(join(fork, "packages/plugin/src/tui/context.ts"), "utf8").includes("readonly autocomplete: (source: AutocompleteSource)")
+const hooked = fork !== undefined && readFileSync(externalInput(join(fork, "packages/plugin/src/tui/context.ts")), "utf8").includes("readonly autocomplete: (source: AutocompleteSource)")
 if (!fork) console.warn("tests/skills.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 else if (!hooked) console.warn(`tests/skills.test.ts: skipped. ${fork} has no plugin autocomplete (ui.autocomplete).`)
 describe.skipIf(!hooked)("$ skills", () => {

@@ -16,6 +16,7 @@ import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"
 import { fakeAccount, startFakeAnthropic, type FakeAnswer, type FakeRequestInfo } from "./fake-anthropic.ts"
 import { ENV, Platform } from "./reconnect/host.ts"
 import { forkRuns, keptScratch } from "./scratch.ts"
+import { externalInput } from "./read-path.ts"
 import { ready } from "./service.ts"
 
 const HOUR = 3_600_000
@@ -157,7 +158,7 @@ const turnOn = (root: string, turn: FakeAnswer) =>
     )
     const tail = Ref.get(stderr)
     const service = yield* Effect.promise(() => ready(`${home}/.local/state/opencode/service-local.json`, () => "the pool's server"))
-    const module = yield* Effect.promise((): Promise<ClientModule> => import(`${fork}/packages/client/src/promise/index.ts`))
+    const module = yield* Effect.promise((): Promise<ClientModule> => import(externalInput(`${fork}/packages/client/src/promise/index.ts`)))
     const client = module.OpenCode.make({ baseUrl: service.url, headers: { authorization: `Basic ${Base64.encode(`opencode:${service.password}`)}` } })
     const location = { directory: work }
     // The work directory's copy of the plugin: the one that places the session's requests.

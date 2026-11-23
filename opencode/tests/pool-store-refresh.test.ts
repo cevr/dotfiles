@@ -7,7 +7,8 @@
 // pool places the retry on the second account, where the turn completes with
 // no error in the transcript.
 import { afterAll, describe, expect, test } from "bun:test"
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { readScratchDirectorySync as readdirSync, readScratchFileSync as readFileSync } from "./read-path.ts"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"

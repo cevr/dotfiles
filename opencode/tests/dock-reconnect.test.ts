@@ -27,6 +27,7 @@ import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { hostCall, serve, type ServedHost } from "../testbeds/gamut/pty-host.ts"
 import { freePort, ready, type Service } from "./service.ts"
 import { keptScratch } from "./scratch.ts"
+import { externalInput } from "./read-path.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/dock-reconnect.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -296,7 +297,7 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
       const started = await opencode("service", "start")
       expect(started).toMatchObject({ code: 0 })
       await ready(serviceFile, () => `the service (${started.err.slice(-500)})`)
-      return ((await import(join(fork ?? "", "packages/client/src/promise/index.ts"))) as ClientModule).OpenCode
+      return ((await import(externalInput(join(fork ?? "", "packages/client/src/promise/index.ts")))) as ClientModule).OpenCode
     })())
 
   /**

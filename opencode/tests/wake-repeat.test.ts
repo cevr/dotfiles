@@ -9,7 +9,8 @@
 // prompt; a cancel stops it) runs on the simulated host under the same name:
 // cmd/wake/wake-repeat.sim.test.ts, by tests/parity/wake.json.
 import { describe, expect, test } from "bun:test"
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync } from "node:fs"
+import { readScratchFileSync as readFileSync } from "./read-path.ts"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"

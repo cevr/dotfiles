@@ -8,7 +8,8 @@
 // queued Up still walks the history. Needs OPENCODE_DEV, a fork with the
 // experimental.queue.deliver hook and ui.composer.takeBack (its queue-merge branch).
 import { describe, expect, test } from "bun:test"
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync } from "node:fs"
+import { readScratchFileSync as readFileSync } from "./read-path.ts"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { owned } from "./owned.ts"

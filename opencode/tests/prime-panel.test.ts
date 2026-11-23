@@ -11,7 +11,8 @@
 // read too. Needs OPENCODE_DEV, a fork with the `session.composer.panel.*`
 // slots and a Terminals row's terminal in its input (panel-terminal-state).
 import { describe, expect, test } from "bun:test"
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync } from "node:fs"
+import { readScratchFileSync as readFileSync } from "./read-path.ts"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { BAR, FOOTERS, panelOf as panel, ROWS, SUBAGENTS, type Tab } from "../scenarios/prime-panel-rows.ts"

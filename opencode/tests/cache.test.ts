@@ -11,7 +11,8 @@
 // scenarios/cache-compaction.ts runs /compact between two turns: the summary
 // request's miss sits under the compaction's row, not at the next turn's end.
 import { describe, expect, test } from "bun:test"
-import { existsSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, rmSync } from "node:fs"
+import { readScratchFileSync as readFileSync } from "./read-path.ts"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { scratch } from "./scratch.ts"

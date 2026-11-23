@@ -15,7 +15,8 @@
 // in a scratch dir. The guard on its own is tested beside its code in
 // mods/guard and cmd/guard.
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { readScratchFileSync as readFileSync } from "./read-path.ts"
 import { getPriority } from "node:os"
 import { join, resolve } from "node:path"
 import { DIRTY, git, KEPT_FILE } from "./guard/repo.ts"

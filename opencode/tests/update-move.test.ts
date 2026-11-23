@@ -25,6 +25,7 @@ import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { hostCall, serve } from "../testbeds/gamut/pty-host.ts"
 import { ENV, listen, Platform, run } from "./reconnect/host.ts"
 import { forkRuns, keptScratch } from "./scratch.ts"
+import { externalInput } from "./read-path.ts"
 import { freePort, ready, type Service } from "./service.ts"
 
 const TIMEOUT_MS = 240_000
@@ -193,7 +194,7 @@ describe.skipIf(!forkRuns)("an open TUI moves onto a build that differs only in 
         expect(info.version).toBe(INSTALLED)
         yield* fs.writeFileString(`${state}/opencode/installed.json`, toJson({ version: INSTALLED, command: info.command, previous: ["2.2.7-prime.f0f0f0f0", OWN] }))
 
-        const module = yield* Effect.promise((): Promise<ClientModule> => import(`${fork}/packages/client/src/promise/index.ts`))
+        const module = yield* Effect.promise((): Promise<ClientModule> => import(externalInput(`${fork}/packages/client/src/promise/index.ts`)))
         const client = module.OpenCode.make({ baseUrl: service.url, headers: authorization(service) })
         const session = yield* Effect.promise(() => client.session.create({ location: { directory: work }, title: "Move session" }))
         yield* Effect.promise(() => client.session.prompt({ sessionID: session.id, text: READY }))

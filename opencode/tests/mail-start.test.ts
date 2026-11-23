@@ -7,7 +7,8 @@
 // pairing is written as the pair command leaves it, and the peer's request is
 // signed with the shared secret.
 import { afterAll, describe, expect, test } from "bun:test"
-import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { readScratchFileSync as readFileSync } from "./read-path.ts"
 import { join } from "node:path"
 import { sign } from "../mods/mail/pairing.ts"
 import { ROUTES } from "../mods/mail/peer.ts"

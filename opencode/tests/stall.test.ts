@@ -14,7 +14,8 @@
 // - A second 3 s stall inside the cooldown writes nothing more: the log says
 //   it is skipped, and the capture stays the only one.
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { readScratchDirectorySync as readdirSync, readScratchFileSync as readFileSync } from "./read-path.ts"
 import { join } from "node:path"
 import { Effect, Schedule, Schema } from "effect"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"

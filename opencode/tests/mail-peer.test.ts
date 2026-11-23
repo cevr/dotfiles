@@ -10,7 +10,8 @@
 // header, the answer coming back and the unpaired host's refusal are
 // cmd/mail/mail-peer.sim.test.ts's (tests/parity/mail.json).
 import { afterAll, describe, expect, test } from "bun:test"
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { externalInput, readScratchFileSync as readFileSync } from "./read-path.ts"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { owned } from "./owned.ts"
@@ -203,7 +204,7 @@ describe.skipIf(!fork)("session mail between two paired OpenCode servers (real p
     "two real services pair with the pair command run as its own process, and a message by id crosses between them",
     kept.test(async () => {
       const [mac, workbox] = await Promise.all([start("mac"), start("workbox")])
-      const { OpenCode } = (await import(join(fork ?? "", "packages/client/src/promise/index.ts"))) as ClientModule
+      const { OpenCode } = (await import(externalInput(join(fork ?? "", "packages/client/src/promise/index.ts")))) as ClientModule
       const client = (host: Host) => OpenCode.make({ baseUrl: host.service.url, headers: { authorization: `Basic ${btoa(`opencode:${host.service.password}`)}` } })
       const [macClient, workboxClient] = [client(mac), client(workbox)]
       const target = await workboxClient.session.create({ location: { directory: join(workbox.base, "work") }, title: "Workbox PR" })

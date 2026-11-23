@@ -8,7 +8,8 @@
 // disk or on two real processes as well (tests/parity.json says which).
 import { afterAll, afterEach, describe, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs"
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs"
+import { readScratchDirectorySync as readdirSync } from "./read-path.ts"
 import { join } from "node:path"
 import { Clock, Effect, Option } from "effect"
 import { it } from "effect-bun-test"

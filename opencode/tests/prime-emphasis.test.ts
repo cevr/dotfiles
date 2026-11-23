@@ -8,7 +8,8 @@
 // the section (cmd/prime/prime-rules.sim.test.ts) and the frame
 // (cmd/prime/prime-emphasis.sim.test.tsx). It needs OPENCODE_DEV, the fork.
 import { describe, expect, test } from "bun:test"
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync } from "node:fs"
+import { readScratchFileSync as readFileSync } from "./read-path.ts"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { Schema } from "effect"

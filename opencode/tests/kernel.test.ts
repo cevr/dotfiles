@@ -9,7 +9,8 @@
 // is refused a session that is no descendant, and a child a cell started, once
 // finished, reaches its parent as its next message, which the parent answers. The kernel on its own is tested beside its code in mods/kernel.
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { readScratchFileSync as readFileSync } from "./read-path.ts"
 import { join, resolve } from "node:path"
 import { Option, Schema } from "effect"
 import type { Result, Spec } from "./kernel/run.ts"
