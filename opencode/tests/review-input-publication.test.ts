@@ -5,7 +5,7 @@ import { describe, expect, it } from "effect-bun-test"
 
 // Both observers exercise the public producers, including the second sink of a round receipt.
 const WRITERS = `
-import { chmodSync, closeSync, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { strict as assert } from "node:assert";
 const [rootArg, code, role, nameArg, maskArg] = process.argv.slice(2);
@@ -46,6 +46,22 @@ const marks = await import(code + "/mods/update/process/mark.ts");
 const { stageBuild } = await import(code + "/mods/update/filestore/stage.ts");
 const { Records, HandoffMark } = await import(code + "/mods/update/service.ts");
 const run = Effect.runPromise;
+// Count the publisher's resource classes (lock, temp, directory). The controller also has
+// writer and Git subprocess sockets of its own; the independent reader law counts all fds.
+const fdCount = () => readdirSync(process.platform === "linux" ? "/proc/self/fd" : "/dev/fd").filter((fd) => {
+  try {
+    const stat = fstatSync(Number(fd));
+    return stat.isFile() || stat.isDirectory();
+  } catch (error) {
+    if (error.code === "EBADF") return false;
+    throw error;
+  }
+}).length;
+async function retainingFds(label, step) {
+  const before = fdCount();
+  try { return await step(); }
+  finally { assert.equal(fdCount(), before, "descriptor count after " + label); }
+}
 const sha = (digit) => digit.repeat(40);
 const sites = ["receipt", "git-mirror", "land", "stage", "install", "handoff"];
 function layout(root) {
@@ -97,7 +113,7 @@ for (const [name, putOld, putNew, path] of cases) {
   const fd = openSync(path, "r");
   try {
     const identity = fstatSync(fd);
-    await putNew();
+    await retainingFds(name + " replacement", putNew);
     const after = readFileSync(path, "utf8");
     const held = readFileSync(fd, "utf8");
     JSON.parse(old); JSON.parse(after);
@@ -139,7 +155,7 @@ async function check(name, umask, existing, crash) {
   const [file, put] = paths.names[name];
   prepare(fixture, file);
   if (existing !== undefined) {
-    await put(1);
+    await retainingFds(name + " initial publication", () => put(1));
     chmodSync(file, existing);
   }
   const old = maybeText(file);
@@ -181,12 +197,12 @@ async function check(name, umask, existing, crash) {
       assert.equal(maybeText(file), old);
       if (old !== undefined) JSON.parse(old);
       assert.equal(readFileSync(temp, "utf8"), next, "crash must leave the controlled stray temp");
-      await readPublished(fixture, paths, name, old);
-      await put(3);
+      await retainingFds(name + " old or absent read", () => readPublished(fixture, paths, name, old));
+      await retainingFds(name + " recovery publish", () => put(3));
       const recovered = readFileSync(file, "utf8");
       assert.notEqual(recovered, old);
       assert.notEqual(recovered, next);
-      await readPublished(fixture, paths, name, recovered);
+      await retainingFds(name + " recovery read", () => readPublished(fixture, paths, name, recovered));
       assert.equal(readFileSync(temp, "utf8"), next);
       assert.deepEqual(readdirSync(dirname(file)).filter((part) => part.startsWith(".review-input-")), [basename(temp)]);
     } else {
@@ -211,6 +227,18 @@ for (const name of sites) {
       for (const existing of [undefined, 0o600, 0o640, 0o644]) await check(name, umask, existing, false);
     console.log(name + ":12/12");
   }
+}
+if (role === "crash") {
+  const fixture = mkdtempSync(join(root, "refused-"));
+  const paths = layout(fixture);
+  const [file, put] = paths.names.receipt;
+  prepare(fixture, file);
+  const notTheName = join(fixture, "keep");
+  writeFileSync(notTheName, "unchanged");
+  symlinkSync(notTheName, file);
+  await retainingFds("refused nonregular publication", () => assert.rejects(() => put(1)));
+  assert.equal(readFileSync(notTheName, "utf8"), "unchanged");
+  unlinkSync(file);
 }
 `
 

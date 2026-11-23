@@ -2,7 +2,7 @@
 // and land records in its receipts folder, the updater's installed record and handoff marker, each read whole from
 // one opened handle; and the updater's record decoded by its own reader. Nothing here touches the run's own records.
 import { buildOf, goodOf, parseRecord } from "@dotfiles/opencode-update/record"
-import { type Duration, Effect, Fiber, FileSystem, Layer, Match, Option, Path, Stream } from "effect"
+import { Clock, Context, Duration, Effect, Fiber, FileSystem, Layer, Match, Option, Path, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { type BuildFacts, type InstalledFacts, isObjectName, objectName, ReceiptSource, SourceRead, SourceRef, sourceKey, SourceUnreadable } from "../batch-input.ts"
 
@@ -130,6 +130,11 @@ export const installedFacts = (text: string): Option.Option<InstalledFacts> =>
 /** Strict UTF-8 that keeps a byte-order mark as text, so the text's UTF-8 encoding is the file's bytes exactly. */
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
 const terminate = { forceKillAfter: "100 millis" } as const
+// The spawner exposes exit and a forwarded stream's EOF, not the original socket's native close.
+// Give Bun's I/O callbacks a host-clock turn after both, even under a virtual deadline clock.
+export const ReceiptPipeBoundary = Context.Reference("orchestrate/ReceiptPipeBoundary", {
+  defaultValue: () => ({ afterExitAndDrain: Clock.Clock.defaultValue().sleep(Duration.millis(5)) }),
+})
 
 /**
  * The receipt source over the host's files: a reference names one allowlisted file (a head must be a full object
@@ -144,6 +149,7 @@ export const receiptSource = (places: ReceiptPlaces) =>
       const fs = yield* FileSystem.FileSystem
       const path = yield* Path.Path
       const processes = yield* ChildProcessSpawner.ChildProcessSpawner
+      const pipes = yield* ReceiptPipeBoundary
       const roots = places.repository.checkouts.map((root) => path.resolve(root))
       // Only these fixed system aliases may be resolved, at setup. A link anywhere else is never a root.
       const systemAlias = (folder: string) =>
@@ -232,6 +238,8 @@ export const receiptSource = (places: ReceiptPlaces) =>
       /** Register both parts of the resource before interruption can observe a half-acquired reader. */
       const start = (ref: SourceRef, bound: string, folder: string, name: string) =>
         Effect.gen(function* () {
+          // Scope finalizers are LIFO: run this after the pump and spawned process have both settled.
+          yield* Effect.addFinalizer(() => pipes.afterExitAndDrain)
           const child = yield* processes.spawn(ChildProcess.make("/usr/bin/perl", ["-e", READ_FILE, "--", bound, folder, name, String(places.maxBytes)], {
             env: {},
             detached: true,

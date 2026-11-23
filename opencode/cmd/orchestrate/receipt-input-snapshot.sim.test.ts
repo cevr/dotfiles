@@ -8,7 +8,7 @@
 // alone, 23b's land and accept on their own clocks with a red accept kept red. Identifiers are synthetic (one repeated
 // hex digit); no fixture is a real record. Last, the filestore source against a scratch folder of real files.
 import { freeze, type InputConflict, type InputRequest, type InputSnapshot, type InputUnsettled, parseSnapshot, publicView, ReceiptSource, SourceRead, SourceRef, sourceKey, SourceUnreadable, snapshotText } from "@dotfiles/opencode-orchestrate/batch-input"
-import { type ReceiptPlaces, receiptSource } from "@dotfiles/opencode-orchestrate/filestore/receipt-source"
+import { ReceiptPipeBoundary, type ReceiptPlaces, receiptSource } from "@dotfiles/opencode-orchestrate/filestore/receipt-source"
 import { headsOf } from "@dotfiles/opencode-orchestrate/fleet"
 import { mainBatchText } from "@dotfiles/opencode-orchestrate/tools"
 import { LandRecordJson, type Receipt, ReceiptJson } from "@dotfiles/opencode-work/receipt"
@@ -1028,8 +1028,10 @@ seeded("a fake host schedules file swaps and interrupted readers: the source pro
       ["file written past the cap in place while open", "/real/receipts", keep, put(leaf, Node.File({ ino: 10n, text: `${good}${" ".repeat(65536)}`, names: 1 }))],
     ]
     const places = (folder: string) => ({ host: HOST, repository: { key: "dotfiles", checkouts: [LANE] }, receipts: folder, installed: "/real/state/installed.json", handoff: "/real/state/handoff.json", maxBytes: 65536, readWithin: "1 second" as const })
+    // The simulated handle already closes its pipe in the fake platform; there is no later native close callback.
+    const closed = Layer.succeed(ReceiptPipeBoundary, ReceiptPipeBoundary.of({ afterExitAndDrain: Effect.void }))
     const sourceOn = (fake: ReturnType<typeof swapping>, folder: string) =>
-      Effect.map(Layer.build(receiptSource(places(folder)).pipe(Layer.provide(Layer.mergeAll(fake.layer, Path.layer)))), (built) => Context.get(built, ReceiptSource))
+      Effect.map(Layer.build(receiptSource(places(folder)).pipe(Layer.provide(Layer.mergeAll(fake.layer, Path.layer, closed)))), (built) => Context.get(built, ReceiptSource))
     const said = (read: Result.Result<SourceRead, SourceUnreadable>, messages: boolean) =>
       Result.match(read, {
         onFailure: (error) => Match.value(messages).pipe(Match.when(true, () => `unreadable: ${error.message}`), Match.orElse(() => "unreadable")),
