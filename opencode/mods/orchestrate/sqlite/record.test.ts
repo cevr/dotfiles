@@ -347,7 +347,7 @@ Seed.effect("a not-asked row (unit C's) is a legal row this code does not read: 
       const read = yield* Effect.flip(opened.store.read)
       const write = yield* Effect.flip(opened.store.run(add("more"), { actor: ROOT, now: T0 }))
       opened.close()
-      expect([read.message, Match.value(write).pipe(Match.tag("RecordFailed", (failed) => failed.message), Match.orElse((refused) => refused.reason))]).toEqual([
+      expect<ReadonlyArray<string>>([read.message, Match.value(write).pipe(Match.tag("RecordFailed", (failed) => failed.message), Match.orElse((refused) => refused.reason))]).toEqual([
         "record read: commitment asked: its reason is not one this code reads (a class and a canonical referent)",
         "record add: commitment asked: its reason is not one this code reads (a class and a canonical referent)",
       ])

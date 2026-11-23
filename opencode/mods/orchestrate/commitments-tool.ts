@@ -3,9 +3,9 @@
 // `orchestrate status`, every land and the queue check say of the record). The plugin (cmd/orchestrate/server.ts) runs
 // the commands on the CommitmentRecord and reads the facts a standing needs (`factsOf`) at each call; nothing of a run
 // is kept between calls. Nothing here reads prose: every field is the call's own.
-import { Array as Arr, Effect, flow, Match, Option, Order, Predicate, Result, Schema, SchemaAST, SchemaIssue, SchemaParser, SchemaTransformation } from "effect"
+import { Array as Arr, Effect, flow, Match, Option, Order, Predicate, Result, Schema, SchemaIssue, SchemaParser, SchemaTransformation } from "effect"
 import { toolInput } from "@dotfiles/decider/tool-input"
-import { redact } from "@dotfiles/opencode-digest/redact"
+import { type Printable, printable } from "./printable.ts"
 import {
   AfterItem,
   Command,
@@ -50,16 +50,6 @@ const Part = Schema.Struct({
   review_by: Schema.optional(Schema.String),
 })
 
-/** The names a tool input's struct declares, at any depth: the only keys a refusal names. */
-const declaredNames = (ast: SchemaAST.AST): ReadonlyArray<string> =>
-  Match.value(ast).pipe(
-    Match.tag("Objects", (objects) => objects.propertySignatures.flatMap((each) => [String(each.name), ...declaredNames(each.type)])),
-    Match.tag("Union", (union) => union.types.flatMap(declaredNames)),
-    Match.tag("Arrays", (arrays) => [...arrays.elements, ...arrays.rest].flatMap(declaredNames)),
-    Match.tag("Declaration", (declaration) => declaration.typeParameters.flatMap(declaredNames)),
-    Match.orElse(() => []),
-  )
-
 /** One thing wrong with a call, where it is: a key it does not take, a key it lacks, or a value its field does not take. */
 interface Flaw {
   readonly kind: "stray" | "missing" | "value"
@@ -82,12 +72,13 @@ const flawsOf = (issue: SchemaIssue.Issue, path: ReadonlyArray<PropertyKey>): Re
  * A call's refusal in words that repeat nothing the caller wrote: a declared field by its name, an element by its index,
  * and a key the input does not take by its position among its object's keys, never by its text or its value.
  */
-export const decodeRefusal = (issue: SchemaIssue.Issue, keysAt: (path: ReadonlyArray<PropertyKey>) => ReadonlyArray<string>, names: ReadonlySet<string>): string => {
+export const decodeRefusal = (issue: SchemaIssue.Issue, keysAt: (path: ReadonlyArray<PropertyKey>) => ReadonlyArray<string>): Printable => {
+  // A path's keys are the struct's own: a key the input does not take is a stray, named by its position under its
+  // parent, and no field is a record of free keys (commitments-tool.test.ts), so no issue sits under a key the caller chose.
   const segment = (key: PropertyKey) =>
     Match.value(key).pipe(
       Match.when(Match.number, (index) => `[${index}]`),
-      Match.when((name: PropertyKey) => Predicate.isString(name) && names.has(name), (name) => `.${String(name)}`),
-      Match.orElse(() => ".<a key not repeated>"),
+      Match.orElse((name) => `.${String(name)}`),
     )
   const where = (path: ReadonlyArray<PropertyKey>) => Arr.match(path, { onEmpty: () => "the call", onNonEmpty: (keys) => `the call's ${keys.map(segment).join("").slice(1)}` })
   const flaws = flawsOf(issue, [])
@@ -104,7 +95,7 @@ export const decodeRefusal = (issue: SchemaIssue.Issue, keysAt: (path: ReadonlyA
       Match.orElse(() => `${where(flaw.path)} is not a value it takes; the value is not repeated`),
     ),
   )
-  return [...stray, ...rest].join("; ")
+  return printable([...stray, ...rest].join("; "))
 }
 
 /**
@@ -116,7 +107,6 @@ const exactInput = <S extends Schema.Struct<Schema.Struct.Fields>>(struct: S) =>
   Schema.declareConstructor<S["Type"], S["Encoded"]>()(
     [toolInput(struct)],
     ([codec]) => {
-      const names = new Set(declaredNames(struct.ast))
       return (input, _ast, options) => {
         const keysAt = (path: ReadonlyArray<PropertyKey>) =>
           Arr.reduce(path, Option.some(input), (at, key) => Option.flatMap(at, (value) => Option.liftPredicate(Predicate.isObjectOrArray)(value).pipe(Option.flatMap((held) => Arr.findFirst(Object.entries(held), ([name]) => name === String(key))), Option.map(([, inner]) => inner)))).pipe(
@@ -125,7 +115,7 @@ const exactInput = <S extends Schema.Struct<Schema.Struct.Fields>>(struct: S) =>
           )
         return Effect.mapError(
           SchemaParser.decodeUnknownEffect(codec)(input, { ...options, onExcessProperty: "error", errors: "all" }),
-          (issue) => new SchemaIssue.InvalidValue({ message: decodeRefusal(issue, keysAt, names) }),
+          (issue) => new SchemaIssue.InvalidValue({ message: decodeRefusal(issue, keysAt) }),
         )
       }
     },
@@ -282,7 +272,7 @@ const msIn = (what: string, iso: Option.Option<string>): Result.Result<Option.Op
     onSome: (text) =>
       Result.fromOption(
         Option.liftPredicate(msOf(text), (ms) => !Number.isNaN(ms)).pipe(Option.map(Option.some)),
-        () => `${COMMITMENTS}: ${what} "${text.slice(0, 60)}" is not an ISO time`,
+        () => `${COMMITMENTS}: ${what} is not an ISO time; the value is not repeated`,
       ),
   })
 
@@ -563,7 +553,9 @@ const countOf = (listed: Listed, standing: Standing): number => (listed.by.get(s
  * then oldest, with the call that lists the rest), the unrouted hand-backs and the notices the owner has not seen.
  * Nothing when nothing is listed, unrouted or unseen: only held is quiet, so a record of held ones says nothing.
  */
-export const sectionOf = (listed: Listed): ReadonlyArray<string> => {
+export const sectionOf = (listed: Listed): ReadonlyArray<Printable> => Arr.map(sectionText(listed), (line) => printable(line))
+
+const sectionText = (listed: Listed): ReadonlyArray<string> => {
   const open = STANDINGS.reduce((sum, standing) => sum + countOf(listed, standing), 0)
   const loud = LISTED.reduce((sum, standing) => sum + countOf(listed, standing), 0)
   if (loud + listed.unrouted.length + listed.notices.length === 0) return []
@@ -578,11 +570,12 @@ export const sectionOf = (listed: Listed): ReadonlyArray<string> => {
 }
 
 /** The section's keys: one per listed id, so the queue check says it again only when the set changes. */
-export const sectionKeys = (listed: Listed): ReadonlyArray<string> => [
+export const sectionKeys = (listed: Listed): ReadonlyArray<Printable> =>
+  Arr.map([
   ...LISTED.flatMap((standing) => (listed.by.get(standing) ?? []).map((row) => `commitment:${standing}:${row.id}`)),
   ...listed.unrouted.map((id) => `hand-back:${id}`),
   ...listed.notices.map((row) => `notice:${row.id}`),
-]
+  ], (key) => printable(key))
 
 const DAY = 86_400_000
 
@@ -705,11 +698,13 @@ export interface Reads {
 }
 
 /** Why a record call failed, in its words. */
-export const whyOf = (failed: RecordRefused | RecordFailed | string): string =>
-  Match.value(failed).pipe(
-    Match.when(Predicate.isString, (why) => why),
-    Match.tag("RecordRefused", (refused) => `${COMMITMENTS}: ${refused.reason}`),
-    Match.orElse((other) => `${COMMITMENTS}: ${other.message}`),
+export const whyOf = (failed: RecordRefused | RecordFailed | string): Printable =>
+  printable(
+    Match.value(failed).pipe(
+      Match.when(Predicate.isString, (why) => why),
+      Match.tag("RecordRefused", (refused) => `${COMMITMENTS}: ${refused.reason}`),
+      Match.orElse((other) => `${COMMITMENTS}: ${other.message}`),
+    ),
   )
 
 const imported = (events: ReadonlyArray<RecordEvent>): number => events.filter((event) => event.happening._tag === "imported").length
@@ -759,7 +754,7 @@ export const answerOf = (input: CommitmentsInput, actor: Actor, now: number, rea
     const command = yield* Result.match(commandOf(input, action), { onFailure: (why) => Effect.fail(why), onSuccess: (each) => Effect.succeed(each) })
     const done = yield* record.run(command, { actor, now })
     return doneAnswer(command, done.events, done.snapshot)
-  }).pipe(Effect.map(redact), Effect.mapError((failed) => redact(whyOf(failed))))
+  }).pipe(Effect.map((answer) => printable(answer)), Effect.mapError(whyOf))
 
 /** A `follow_up` call: one unowned follow-up commitment, by the calling session. */
 export const followUpOf = (input: FollowUpInput, actor: Actor, callID: string, now: number, checkout: string) =>
@@ -771,7 +766,7 @@ export const followUpOf = (input: FollowUpInput, actor: Actor, callID: string, n
     const done = yield* record.run(followUpCommandOf(input, actor.id, callID, seen), { actor, now })
     if (done.events.length === 0) return `${FOLLOW_UP}: ${input.id} is filed already by this key; nothing filed again.`
     return `${FOLLOW_UP}: filed ${input.id}, unowned, waiting on ${lineOf(seen.reason)}; the root owns or decides it.`
-  }).pipe(Effect.map(redact), Effect.mapError((failed) => redact(whyOf(failed))))
+  }).pipe(Effect.map((answer) => printable(answer)), Effect.mapError(whyOf))
 
 /** A lane's answer with `line` before its implementor's start, whose call and lane stay its last lines. */
 export const beforeStart = (answer: string, line: string): string => {
@@ -781,5 +776,5 @@ export const beforeStart = (answer: string, line: string): string => {
 }
 
 /** The lane hook's line: the unit's commitment and every open commitment of the unit as its owner. */
-export const laneLine = (unit: string, open: ReadonlyArray<string>): string =>
-  `Commitments of ${unit}: ${namesOf(open)}. A land of its lane (orchestrate land, the work tool's) claims the head it merges; ${callOf("list", [["owner", `"${unit}"`]])} lists them.`
+export const laneLine = (unit: string, open: ReadonlyArray<string>): Printable =>
+  printable(`Commitments of ${unit}: ${namesOf(open)}. A land of its lane (orchestrate land, the work tool's) claims the head it merges; ${callOf("list", [["owner", `"${unit}"`]])} lists them.`)

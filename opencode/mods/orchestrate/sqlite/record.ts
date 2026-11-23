@@ -37,6 +37,7 @@ import {
 } from "../record.ts"
 import { REASON_CLASSES, type ReasonData, referentOf } from "../reasons.ts"
 import { localKey, keyOfOrigin } from "../repo-key.ts"
+import { printable } from "../printable.ts"
 import { CommitmentRecord, RecordFailed } from "../service.ts"
 import { decideCommand } from "../standing.ts"
 
@@ -438,13 +439,13 @@ const messageOf = (cause: unknown): string => {
 
 /** The store on an open database; `refusal`: why every write is refused (a file of a newer version), when it is. */
 export const make = (db: Database, refusal: Option.Option<string>): CommitmentRecord["Service"] => {
-  const attempt = <A>(name: string, body: () => A) => Effect.try({ try: body, catch: (cause) => new RecordFailed({ message: `record ${name}: ${messageOf(cause)}` }) })
+  const attempt = <A>(name: string, body: () => A) => Effect.try({ try: body, catch: (cause) => new RecordFailed({ message: printable(`record ${name}: ${messageOf(cause)}`) }) })
   const decoded = <A>(name: string, result: Result.Result<A, string>) =>
-    Result.match(result, { onFailure: (message) => Effect.fail(new RecordFailed({ message: `record ${name}: ${message}` })), onSuccess: (value) => Effect.succeed(value) })
+    Result.match(result, { onFailure: (message) => Effect.fail(new RecordFailed({ message: printable(`record ${name}: ${message}`) })), onSuccess: (value) => Effect.succeed(value) })
   return CommitmentRecord.of({
     run: (command, context) =>
       Option.match(refusal, {
-        onSome: (why) => Effect.fail(new RecordFailed({ message: why })),
+        onSome: (why) => Effect.fail(new RecordFailed({ message: printable(why) })),
         onNone: () =>
           attempt(command._tag, () =>
             db
@@ -493,7 +494,7 @@ export const backup = (db: Database, file: string, now: number) =>
     yield* fs.makeDirectory(dir, { recursive: true })
     // Into a file of this process's own, then renamed: two processes opening at once each write whole copies, never one file.
     const own = `${day}.${ownSuffix(db)}.tmp`
-    yield* Effect.try({ try: () => db.query<Raw, [string]>("VACUUM INTO ?").run(own), catch: (cause) => new RecordFailed({ message: `record: backup ${day}: ${messageOf(cause)}` }) })
+    yield* Effect.try({ try: () => db.query<Raw, [string]>("VACUUM INTO ?").run(own), catch: (cause) => new RecordFailed({ message: printable(`record: backup ${day}: ${messageOf(cause)}`) }) })
     yield* fs.rename(own, day)
     const days = Arr.sort(
       (yield* fs.readDirectory(dir)).filter((name) => name.startsWith(`${key}-`) && name.endsWith(".db") && name.length === key.length + 14),
@@ -551,7 +552,7 @@ const connect = (path: string, options: OpenOptions) =>
     yield* settled(() => migrate(db))
     yield* backup(db, path, options.now)
     return { db, refusal: Option.none() }
-  }).pipe(Effect.mapError((cause) => new RecordFailed({ message: `record: open ${path}: ${messageOf(cause)}` })))
+  }).pipe(Effect.mapError((cause) => new RecordFailed({ message: printable(`record: open ${path}: ${messageOf(cause)}`) })))
 
 /** The record at `path`, open for the scope's life. */
 export const open = (path: string, options: OpenOptions) => Effect.acquireRelease(connect(path, options), (opened: Connected) => Effect.sync(() => opened.db.close()))
@@ -571,7 +572,7 @@ export const layerOrFailed = (path: Effect.Effect<string, unknown, Platform>) =>
   Layer.effect(
     CommitmentRecord,
     Effect.gen(function* () {
-      const file = yield* Effect.mapError(path, (cause) => new RecordFailed({ message: `record: no file: ${messageOf(cause)}` }))
+      const file = yield* Effect.mapError(path, (cause) => new RecordFailed({ message: printable(`record: no file: ${messageOf(cause)}`) }))
       const now = yield* Clock.currentTimeMillis
       return yield* open(file, { readonly: false, now })
     }).pipe(
@@ -605,7 +606,7 @@ export const layerScratch = (path: string) =>
         migrate(db)
         return make(db, Option.none())
       },
-      catch: (cause) => new RecordFailed({ message: `record: open ${path}: ${messageOf(cause)}` }),
+      catch: (cause) => new RecordFailed({ message: printable(`record: open ${path}: ${messageOf(cause)}`) }),
     }).pipe(Effect.catch((failed) => Effect.succeed(failedStore(failed)))),
   )
 

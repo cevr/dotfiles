@@ -5,6 +5,7 @@
 import { Database } from "bun:sqlite"
 import { Array as Arr, Effect, Option, Order, Result, Schema } from "effect"
 import { Command, type ImportRow, isoOf, msOf, type PrerequisiteKind, RANKS, REVIEW_MS, SOURCE_KINDS, type State } from "../record.ts"
+import { printable } from "../printable.ts"
 import { RecordFailed } from "../service.ts"
 
 /** The import's name, its events' actor. */
@@ -168,16 +169,16 @@ export const countsLine = (counts: Counts): string =>
   [...counts.out].map(([state, n]) => `${state} ${n}`).join(", ") + ` from ${[...counts.in].map(([state, n]) => `${state} ${n}`).join(", ")}`
 
 const decodeAll = <S extends Schema.Top & { readonly DecodingServices: never }>(schema: S, rows: ReadonlyArray<unknown>, table: string) =>
-  Effect.mapError(Schema.decodeUnknownEffect(Schema.Array(schema))(rows), (error) => new RecordFailed({ message: `${ERGO_REGISTER}: table ${table}: ${error.message}` }))
+  Effect.mapError(Schema.decodeUnknownEffect(Schema.Array(schema))(rows), (error) => new RecordFailed({ message: printable(`${ERGO_REGISTER}: table ${table}: ${error.message}`) }))
 
 /** The register at `path`, read-only: its commitment, event and prerequisite tables. */
 export const readRegister = (path: string) =>
   Effect.acquireUseRelease(
-    Effect.try({ try: () => new Database(path, { readonly: true }), catch: (cause) => new RecordFailed({ message: `${ERGO_REGISTER}: open ${path}: ${String(cause)}` }) }),
+    Effect.try({ try: () => new Database(path, { readonly: true }), catch: (cause) => new RecordFailed({ message: printable(`${ERGO_REGISTER}: open ${path}: ${String(cause)}`) }) }),
     (db) =>
       Effect.gen(function* () {
         const all = (table: string) =>
-          Effect.try({ try: () => db.query(`SELECT * FROM ${table}`).all(), catch: (cause) => new RecordFailed({ message: `${ERGO_REGISTER}: table ${table}: ${String(cause)}` }) })
+          Effect.try({ try: () => db.query(`SELECT * FROM ${table}`).all(), catch: (cause) => new RecordFailed({ message: printable(`${ERGO_REGISTER}: table ${table}: ${String(cause)}`) }) })
         const commitments = yield* decodeAll(ErgoCommitment, yield* all("commitment"), "commitment")
         const events = yield* decodeAll(ErgoEvent, yield* all("event"), "event")
         const prerequisites = yield* decodeAll(ErgoPrerequisite, yield* all("prerequisite"), "prerequisite")

@@ -15,7 +15,10 @@ import * as Seed from "../../sim/seed.ts"
 import { gitInit, withProcessEnv } from "../../tests/git-repo.ts"
 import { scratch } from "../../tests/scratch.ts"
 import { CANARY, COMMITMENT_CALLS, canariedFields, type Fields, FOLLOW_UP_CALLS, textsOf } from "../../sim/canary.ts"
-import { main } from "./record.ts"
+import { main as printed } from "./record.ts"
+
+/** The CLI on `args`, its printable output read as the text it prints. */
+const main = (args: ReadonlyArray<string>, cwd: string) => Effect.map(printed(args, cwd), (ran): { readonly out: string; readonly err: string; readonly code: number } => ran)
 
 /** Ergo's register DDL, as its `register.sql` creates the tables the import reads. */
 const REGISTER_SQL = [

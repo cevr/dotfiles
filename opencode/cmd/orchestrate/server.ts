@@ -177,6 +177,7 @@ import { type Actor, Command as RecordCommand, openOf, type Snapshot } from "@do
 import * as ErgoRegister from "@dotfiles/opencode-orchestrate/sqlite/ergo-register"
 import { platform } from "@dotfiles/opencode-orchestrate/node/platform"
 import * as SqliteRecord from "@dotfiles/opencode-orchestrate/sqlite/record"
+import type { Printable } from "@dotfiles/opencode-orchestrate/printable"
 import * as Reasons from "@dotfiles/opencode-orchestrate/reasons"
 import { Subagents } from "@dotfiles/opencode-orchestrate/asking"
 import * as Asking from "@dotfiles/opencode-orchestrate/opencode/asking"
@@ -1327,12 +1328,12 @@ export const make = <R = never>(
 
       /** Who calls the record: the root, or a subagent's session as a worker. */
       const actorOf = (sessionID: string) => Effect.map(isChild(sessionID), (child): Actor => ({ id: sessionID, role: Match.value(child).pipe(Match.when(true, () => "worker" as const), Match.orElse(() => "root" as const)) }))
-      /** A record call's answer as the tool gives it, the root's own record provided. */
-      const recordCall = <E>(work: Effect.Effect<string, E, CommitmentRecord | Evidence>, why: (failed: E) => string) =>
+      /** A record call's answer as the tool gives it, the root's own record provided: printable, its answer and its refusal alike. */
+      const recordCall = (work: Effect.Effect<Printable, Printable, CommitmentRecord | Evidence>) =>
         work.pipe(
           Effect.provideService(CommitmentRecord, commitments),
           Effect.provideService(Evidence, evidence),
-          Effect.mapError((failed) => new Tool.Error({ message: why(failed) })),
+          Effect.mapError((why) => new Tool.Error({ message: why })),
         )
       /** The record's reads: the standing's facts for the session, and an import's register from a copy of its file. */
       const readsOf = (sessionID: string): Commitments.Reads => ({
@@ -1396,7 +1397,7 @@ export const make = <R = never>(
             Effect.gen(function* () {
               if (yield* isChild(context.sessionID)) return yield* failWith(Commitments.PARENT_REFUSAL)
               const now = yield* Clock.currentTimeMillis
-              const text = yield* recordCall(Commitments.answerOf(input, { id: context.sessionID, role: "root" }, now, readsOf(context.sessionID)), (why) => why)
+              const text = yield* recordCall(Commitments.answerOf(input, { id: context.sessionID, role: "root" }, now, readsOf(context.sessionID)))
               return { content: [{ type: "text" as const, text }], metadata: { action: input.action } }
             }),
         }),
@@ -1412,7 +1413,7 @@ export const make = <R = never>(
             Effect.gen(function* () {
               const actor = yield* actorOf(context.sessionID)
               const now = yield* Clock.currentTimeMillis
-              const text = yield* recordCall(Commitments.followUpOf(input, actor, context.id, now, checkout), (why) => why)
+              const text = yield* recordCall(Commitments.followUpOf(input, actor, context.id, now, checkout))
               return { content: [{ type: "text" as const, text }], metadata: { id: input.id } }
             }),
         }),

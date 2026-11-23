@@ -15,22 +15,22 @@
  */
 import { parseArgs } from "node:util"
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { Clock, Console, Effect, Layer, Match, Option, Schema } from "effect"
+import { Cause, Clock, Console, Effect, Exit, Layer, Match, Option, Schema } from "effect"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
-import { redact } from "@dotfiles/opencode-digest/redact"
 import * as Commitments from "@dotfiles/opencode-orchestrate/commitments-tool"
 import * as GitMainLine from "@dotfiles/opencode-orchestrate/git/main-line"
 import type { Actor } from "@dotfiles/opencode-orchestrate/record"
 import { CommitmentRecord, MainLine } from "@dotfiles/opencode-orchestrate/service"
 import * as ErgoRegister from "@dotfiles/opencode-orchestrate/sqlite/ergo-register"
 import { platform } from "@dotfiles/opencode-orchestrate/node/platform"
+import { Printable, printable } from "@dotfiles/opencode-orchestrate/printable"
 import * as Reasons from "@dotfiles/opencode-orchestrate/reasons"
 import * as SqliteRecord from "@dotfiles/opencode-orchestrate/sqlite/record"
 
 const USAGE = "usage: bun cmd/orchestrate/record.ts <action> [--json '<fields>'] [--file <db>] [--checkout <dir>] [--actor <id>]"
 
 /** A call the CLI cannot make: bad arguments or fields, or the record's refusal. */
-class Refused extends Schema.TaggedError<Refused>()("Refused", { message: Schema.String }) {}
+class Refused extends Schema.TaggedError<Refused>()("Refused", { message: Printable }) {}
 
 /** What the arguments ask for. */
 export interface Call {
@@ -64,7 +64,7 @@ const decodeCommitments = Schema.decodeUnknownEffect(Commitments.CommitmentsInpu
 const decodeFollowUp = Schema.decodeUnknownEffect(Commitments.FollowUpInput)
 
 /** The fields of `--json`, as an object. */
-const fieldsOf = (call: Call) => Effect.mapError(decodeFields(call.json), () => new Refused({ message: "record: --json is not a JSON object of fields; its text is not repeated" }))
+const fieldsOf = (call: Call) => Effect.mapError(decodeFields(call.json), () => new Refused({ message: printable("record: --json is not a JSON object of fields; its text is not repeated") }))
 
 /** The reads a call makes outside the record: the checkout's default branch through git; no lanes list, so nobody is gone. */
 const readsOf = (checkout: string): Commitments.Reads => ({
@@ -81,7 +81,7 @@ const readsOf = (checkout: string): Commitments.Reads => ({
 const commitmentsCall = (call: Call) =>
   Effect.gen(function* () {
     const fields = yield* fieldsOf(call)
-    const input = yield* Effect.mapError(decodeCommitments({ ...fields, action: call.action }), (error) => new Refused({ message: `record: ${error.message}` }))
+    const input = yield* Effect.mapError(decodeCommitments({ ...fields, action: call.action }), (error) => new Refused({ message: printable(`record: ${error.message}`) }))
     const actor: Actor = { id: call.actor, role: "root" }
     return yield* Effect.mapError(Commitments.answerOf(input, actor, yield* Clock.currentTimeMillis, readsOf(call.checkout)), (message) => new Refused({ message }))
   })
@@ -89,7 +89,7 @@ const commitmentsCall = (call: Call) =>
 /** A worker's `follow_up`, its call id the CLI's. */
 const followUpCall = (call: Call) =>
   Effect.gen(function* () {
-    const input = yield* Effect.mapError(decodeFollowUp(yield* fieldsOf(call)), (error) => new Refused({ message: `record: ${error.message}` }))
+    const input = yield* Effect.mapError(decodeFollowUp(yield* fieldsOf(call)), (error) => new Refused({ message: printable(`record: ${error.message}`) }))
     const now = yield* Clock.currentTimeMillis
     return yield* Effect.mapError(Commitments.followUpOf(input, { id: call.actor, role: "worker" }, `cli-${now}`, now, call.checkout), (message) => new Refused({ message }))
   })
@@ -97,7 +97,7 @@ const followUpCall = (call: Call) =>
 /** Every event, oldest first, one JSON line each. */
 const exportCall = Effect.gen(function* () {
   const events = yield* Effect.mapError((yield* CommitmentRecord).events, (failed) => new Refused({ message: failed.message }))
-  return events.map(SqliteRecord.exportLine).join("\n")
+  return printable(events.map(SqliteRecord.exportLine).join("\n"))
 })
 
 /** The answer to `call` on its record. */
@@ -131,28 +131,41 @@ const recordOf = (call: Call) =>
       return yield* SqliteRecord.open(file, { readonly: READS.includes(call.action), now })
     }).pipe(
       Effect.map((opened) => SqliteRecord.make(opened.db, opened.refusal)),
-      Effect.mapError((failed) => new Refused({ message: failed.message })),
+      Effect.mapError((failed) => new Refused({ message: printable(failed.message) })),
     ),
   ).pipe(Layer.merge(Reasons.evidenceLayer), Layer.provide(HOST))
 
-/** The output of one run, and its exit code. */
+/** The output of one run, and its exit code: printable, as everything the CLI prints. */
 export interface Ran {
-  readonly out: string
-  readonly err: string
+  readonly out: Printable
+  readonly err: Printable
   readonly code: number
 }
 
+const NOTHING = printable("")
+
+/**
+ * A run's output from how it ended: its answer, its refusal, or a defect. The one place a defect's text (a thrown
+ * SQLite error, which repeats values) becomes output, and it passes `printable` whole, as every output does.
+ */
+export const ranOf = (exit: Exit.Exit<Printable, Refused>): Ran =>
+  Exit.match(exit, {
+    onSuccess: (out): Ran => ({ out, err: NOTHING, code: 0 }),
+    onFailure: (cause): Ran =>
+      Option.match(Cause.findErrorOption(cause), {
+        onSome: (refused): Ran => ({ out: NOTHING, err: refused.message, code: 1 }),
+        onNone: (): Ran => ({ out: NOTHING, err: printable(`record: ${Cause.pretty(cause)}`), code: 1 }),
+      }),
+  })
+
 /** The CLI on `args` in `cwd`: its answer, or why not. */
 export const main = (args: ReadonlyArray<string>, cwd: string): Effect.Effect<Ran> =>
-  Effect.try({ try: () => callOf(args, cwd), catch: () => new Refused({ message: USAGE }) }).pipe(
+  Effect.try({ try: () => callOf(args, cwd), catch: () => new Refused({ message: printable(USAGE) }) }).pipe(
     // No action, or an argument parseArgs refuses (its text, an unknown flag's name, is not repeated): the usage.
-    Effect.flatMap((call) => Effect.mapError(Effect.fromOption(call), () => new Refused({ message: USAGE }))),
+    Effect.flatMap((call) => Effect.mapError(Effect.fromOption(call), () => new Refused({ message: printable(USAGE) }))),
     Effect.flatMap((call) => Effect.scoped(Effect.provide(answer(call), recordOf(call)))),
-    Effect.map((out): Ran => ({ out, err: "", code: 0 })),
-    Effect.catch((refused) => Effect.succeed<Ran>({ out: "", err: refused.message, code: 1 })),
-    Effect.catchDefect((defect) => Effect.succeed<Ran>({ out: "", err: `record: ${String(defect)}`, code: 1 })),
-    // The one boundary every output leaves through: a secret's shape in any of them, whatever wrote it, is not repeated.
-    Effect.map((ran): Ran => ({ ...ran, out: redact(ran.out), err: redact(ran.err) })),
+    Effect.exit,
+    Effect.map(ranOf),
   )
 
 if (import.meta.main)

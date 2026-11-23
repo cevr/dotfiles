@@ -4,7 +4,7 @@
 // command's events and the rows they fold to in one transaction, and replaying the events into an empty store gives
 // the same rows (laws.ts). Nothing here reads a document: every field comes from a tool call's input.
 import { Array as Arr, DateTime, Effect, Match, Option, Order, Predicate, Result, Schema } from "effect"
-import { redact } from "@dotfiles/opencode-digest/redact"
+import { Printable, printable, secretFree } from "./printable.ts"
 import { DocumentSeen, KINDS_OF, REASON_CLASSES, ReasonData, ReceiptSeen, referentOf, UNAVAILABLE } from "./reasons.ts"
 
 export const SOURCE_KINDS = ["owner-answer", "owner-ask", "assignment", "follow-up", "bug", "plan-part"] as const
@@ -547,7 +547,7 @@ export type Command = typeof Command.Type
 export const decodeCommand = Schema.decodeUnknownResult(Command)
 
 /** Why a command is refused, in words the caller acts on. */
-export class RecordRefused extends Schema.TaggedError<RecordRefused>()("RecordRefused", { reason: Schema.String }) {}
+export class RecordRefused extends Schema.TaggedError<RecordRefused>()("RecordRefused", { reason: Printable }) {}
 
 /** Who decides, and when. */
 export interface Context {
@@ -557,7 +557,7 @@ export interface Context {
 
 type Decided = Result.Result<ReadonlyArray<RecordEvent>, RecordRefused>
 
-const refuse = (reason: string): Decided => Result.fail(new RecordRefused({ reason: redact(reason) }))
+const refuse = (reason: string): Decided => Result.fail(new RecordRefused({ reason: printable(reason) }))
 const decided = (events: ReadonlyArray<RecordEvent>): Decided => Result.succeed(events)
 
 /** The first refusal of `checks`, else none. */
@@ -565,19 +565,16 @@ const firstOf = (checks: ReadonlyArray<Option.Option<string>>): Option.Option<st
 
 const when = (refused: boolean, reason: string): Option.Option<string> => Option.liftPredicate(reason, () => refused)
 
-/** A value as a refusal names it: quoted, cut, each secret shape in it redacted (a refusal never repeats a secret). */
-const named = (value: string, max = 80): string => `"${redact(value.slice(0, max))}"`
-
 /** A slug id, or why not. */
-export const idRefusal = (id: string): Option.Option<string> => when(!ID.test(id), `the id ${named(id)} is not a slug (letters, digits, ".", "_", "-", at most 80, starting with a letter or digit)`)
+export const idRefusal = (id: string): Option.Option<string> => when(!ID.test(id), `the id is not a slug (letters, digits, ".", "_", "-", at most 80, starting with a letter or digit); the value is not repeated`)
 /** A one-token name (a lane, a session, a commit, a word), or why not. */
-export const tokenRefusal = (what: string, value: string): Option.Option<string> => when(!TOKEN.test(value), `${what} ${named(value)} is not one token of at most 120 characters`)
+export const tokenRefusal = (what: string, value: string): Option.Option<string> => when(!TOKEN.test(value), `${what} is not one token of at most 120 characters; the value is not repeated`)
 /** One line of at most `max` characters that says something, or why not. */
 export const lineRefusal = (what: string, value: string, max = TEXT_MAX): Option.Option<string> =>
   firstOf([when(value.trim() === "", `${what} is empty`), when(!ONE_LINE.test(value), `${what} is more than one line`), when(value.length > max, `${what} is ${value.length} characters, more than ${max}`)])
 
 /** The text a record keeps of `text`: every secret shape the digest redacts replaced, ends trimmed. */
-export const kept = (text: string): string => redact(text).trim()
+export const kept = (text: string): string => secretFree(text).trim()
 
 /** The longest note an event keeps: longer (an imported history's) is cut there. */
 export const NOTE_MAX = 1000
@@ -721,7 +718,7 @@ const PATH = /^[^\n\r\0]+$/
 const DIGEST = /^[0-9a-f]{64}$/
 
 /** Whether `value` holds a secret's shape: the digest's redaction would change it. */
-const holdsSecret = (value: string): boolean => redact(value) !== value
+const holdsSecret = (value: string): boolean => secretFree(value) !== value
 
 /** Why `value` does not fit a one-word kind, else none. The value is never repeated. */
 const wordRefusal = (kind: ColumnKind, column: string, value: string): Option.Option<string> =>
@@ -754,7 +751,7 @@ const held = (where: Where, column: Column | DataOnly, value: string, kind: Colu
     Match.when("note", () => Result.succeed(kept(value).slice(0, NOTE_MAX))),
     Match.orElse(() =>
       Option.match(wordRefusal(kind, column, value), {
-        onSome: (why) => Result.fail(new RecordRefused({ reason: `${where}column ${column} ${why}; the value is not repeated` })),
+        onSome: (why) => Result.fail(new RecordRefused({ reason: printable(`${where}column ${column} ${why}; the value is not repeated`) })),
         onNone: () => Result.succeed(value),
       }),
     ),
@@ -765,7 +762,7 @@ const heldOpt = (where: Where, column: Column | DataOnly, value: Option.Option<s
 
 /** One free-text field as the record holds it: one line of at most `max` that says something, redacted (`kept`); else refused. */
 const freeText = (what: string, value: string, max = TEXT_MAX): Held<string> =>
-  Option.match(lineRefusal(what, value, max), { onSome: (reason) => Result.fail(new RecordRefused({ reason })), onNone: () => Result.succeed(kept(value)) })
+  Option.match(lineRefusal(what, value, max), { onSome: (reason) => Result.fail(new RecordRefused({ reason: printable(reason) })), onNone: () => Result.succeed(kept(value)) })
 
 /** The kind a wait's ref takes, by the wait's kind. */
 const REF_KINDS: Record<PrerequisiteKind, ColumnKind> = { "commit-on-main": "head", "commitment-closed": "slug", date: "time", manual: "slug" }
@@ -918,7 +915,7 @@ const heldEnvelope = (where: Where, event: RecordEvent): Held<RecordEvent> =>
 
 /** Where an event's refusal is: an import's row by its id, else the command. */
 const isImport = Predicate.or(Predicate.isTagged("imported"), Predicate.isTagged("imported_history"))
-const whereOf = (event: RecordEvent): Where => Arr.filter([`row ${redact(event.subjectId)}, `], () => isImport(event.happening)).join("")
+const whereOf = (event: RecordEvent): Where => Arr.filter([`row ${event.subjectId}, `], () => isImport(event.happening)).join("")
 
 /**
  * The record's one boundary, which every command's events pass (standing.ts `decideCommand`) before any store writes
@@ -967,7 +964,7 @@ const afterRefusal = (snapshot: Snapshot, after: ReadonlyArray<AfterItem>): Opti
     after.map((item) =>
       Match.value(item.kind).pipe(
         Match.when("commitment-closed", () => firstOf([idRefusal(item.ref), when(!snapshot.commitments.has(item.ref), `the wait names ${item.ref}, which is no commitment`)])),
-        Match.when("date", () => when(Number.isNaN(msOf(item.ref)), `the wait's date ${named(item.ref, 60)} is not an ISO time`)),
+        Match.when("date", () => when(Number.isNaN(msOf(item.ref)), `the wait's date is not an ISO time; the value is not repeated`)),
         Match.orElse(() => tokenRefusal(`the ${item.kind} wait`, item.ref)),
       ),
     ),
@@ -979,7 +976,7 @@ const uniqueAfter = (after: ReadonlyArray<AfterItem>): ReadonlyArray<AfterItem> 
 /** A review-by time ahead of now, the default when none is named. */
 const reviewOf = (context: Context, reviewBy: Option.Option<number>): Result.Result<string, RecordRefused> => {
   const at = Option.getOrElse(reviewBy, () => context.now + REVIEW_MS)
-  if (at <= context.now) return Result.fail(new RecordRefused({ reason: `the review-by time ${isoOf(at)} is not ahead of now (${isoOf(context.now)})` }))
+  if (at <= context.now) return Result.fail(new RecordRefused({ reason: printable(`the review-by time ${isoOf(at)} is not ahead of now (${isoOf(context.now)})`) }))
   return Result.succeed(isoOf(at))
 }
 
@@ -1002,7 +999,7 @@ const dependencyRefusal = (snapshot: Snapshot, self: Option.Option<string>, targ
   let at = target
   for (;;) {
     const row = snapshot.commitments.get(at)
-    if (Predicate.isUndefined(row)) return Option.some(`the dependency ${named(at)} is no commitment of this repository's record`)
+    if (Predicate.isUndefined(row)) return Option.some(`the dependency "${at}" is no commitment of this repository's record`)
     if (row.state !== "open" && at === target) return Option.some(`the dependency ${at} is ${row.state}, not open: a dependency names work still owed`)
     if (row.state !== "open") return Option.some(`the dependency ${target} waits through ${at}, which is ${row.state}: no path around a closed prerequisite`)
     if (seen.has(at)) return Option.some(`the dependency ${target} waits on ${at} again: a cycle`)

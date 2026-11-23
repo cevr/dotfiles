@@ -3,7 +3,7 @@
 // lists the rest), said again only when its ids change. The handlers over a store, refusals included, run on the
 // simulated host (cmd/orchestrate/commitments.sim.test.ts).
 import { describe, expect, test } from "bun:test"
-import { Array as Arr, Match, Option, Result, Schema } from "effect"
+import { Array as Arr, Match, Option, Result, Schema, SchemaAST } from "effect"
 import {
   beforeStart,
   type CommitmentsInput,
@@ -11,16 +11,21 @@ import {
   CommitmentsInput as CommitmentsSchema,
   doneAnswer,
   followUpCommandOf,
+  FollowUpInput,
   historyAnswer,
   inputRefusal,
   landClaimsOf,
   laneLine,
   listAnswer,
   listedOf,
-  sectionKeys,
-  sectionOf,
+  sectionKeys as printedKeys,
+  sectionOf as printedSection,
   workLandedOf,
 } from "./commitments-tool.ts"
+
+/** The section and its keys, read as the text they print. */
+const sectionOf = (listed: Parameters<typeof printedSection>[0]): ReadonlyArray<string> => printedSection(listed)
+const sectionKeys = (listed: Parameters<typeof printedKeys>[0]): ReadonlyArray<string> => printedKeys(listed)
 import { type Actor, Command, EMPTY, fold, type RecordEvent, type Snapshot, type StoredEvent } from "./record.ts"
 import { decideCommand, type Facts } from "./standing.ts"
 
@@ -77,12 +82,28 @@ describe("decodeRefusal", () => {
     expect(refusalOf({ action: "list", standing: token })).toBe("the call's standing is not a value it takes; the value is not repeated")
     expect(refusalOf({ action: token })).toBe("the call's action is not a value it takes; the value is not repeated")
   })
+
+  // Why a path names its keys as they are: every key on it is one the struct declares. No field is a record of free
+  // keys (an index signature), so a key the caller chose is only ever a stray, named by its position.
+  test("neither input has a field of free keys: a refusal's path holds only declared names", () => {
+    const freeKeys = (ast: SchemaAST.AST): number =>
+      Match.value(ast).pipe(
+        Match.tag("Objects", (objects) => objects.indexSignatures.length + Arr.reduce(objects.propertySignatures, 0, (sum, each) => sum + freeKeys(each.type))),
+        Match.tag("Union", (union) => Arr.reduce(union.types, 0, (sum, each) => sum + freeKeys(each))),
+        Match.tag("Arrays", (arrays) => Arr.reduce([...arrays.elements, ...arrays.rest], 0, (sum, each) => sum + freeKeys(each))),
+        Match.tag("Declaration", (declaration) => Arr.reduce(declaration.typeParameters, 0, (sum, each) => sum + freeKeys(each))),
+        Match.orElse(() => 0),
+      )
+    expect([freeKeys(CommitmentsSchema.ast), freeKeys(FollowUpInput.ast)]).toEqual([0, 0])
+    // The walk sees one: a record of free keys counts.
+    expect(freeKeys(Schema.Struct({ a: Schema.Record(Schema.String, Schema.Number) }).ast)).toBe(1)
+  })
 })
 
 describe("commandOf", () => {
   test("a review_by that is not an ISO time makes no command, and says which", () => {
     const refused = commandOf({ action: "assign", id: "p1", owner_lane: "u1", review_by: "next week" }, "assign")
-    expect(Result.match(refused, { onFailure: (why) => why, onSuccess: () => "made" })).toBe('commitments: the review_by "next week" is not an ISO time')
+    expect(Result.match(refused, { onFailure: (why) => why, onSuccess: () => "made" })).toBe("commitments: the review_by is not an ISO time; the value is not repeated")
   })
 
   test("a worker's follow-up is one unowned follow-up commitment, sourced to its call, with the owner it suggests", () => {

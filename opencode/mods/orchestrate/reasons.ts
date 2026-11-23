@@ -26,6 +26,7 @@ import { Effect, Layer, Match, Option, Predicate, Result, Schema, Stream } from 
 import { Digest } from "effect/crypto"
 import { FileSystem, Path } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { printable } from "./printable.ts"
 import { Evidence, EvidenceRefused } from "./service.ts"
 
 export const REASON_CLASSES = ["guarantee", "dependency", "measured"] as const
@@ -197,7 +198,7 @@ export const envelopeRefusal = (envelope: ReceiptEnvelope, subject: string): Opt
   ])
 }
 
-const refused = (reason: string) => new EvidenceRefused({ reason })
+const refused = (reason: string) => new EvidenceRefused({ reason: printable(reason) })
 
 /** What git prints for `args` in `dir`, trimmed, when it exits 0 and prints something; else none. Bounded in time. */
 const gitOut = (spawner: ChildProcessSpawner.ChildProcessSpawner["Service"], dir: string, args: ReadonlyArray<string>) =>
