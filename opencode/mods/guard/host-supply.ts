@@ -1,0 +1,140 @@
+import { Option, Predicate } from "effect"
+
+/** Boot-local monotonic measurements. A poll is one coherent host interval,
+ * not a minute-old load average and not the count of slots we granted. */
+export interface Ticks {
+  readonly total: number
+  readonly idle: number
+  readonly at: number
+}
+
+export interface ManagedUse {
+  readonly binding: string
+  readonly measuredCpuMilli: number
+  readonly enforcedCpuMilli: number
+}
+
+export interface Volume {
+  readonly freeBytes: number
+  readonly freeInodes: number | "dynamic"
+  readonly metadataFreeBytes: number
+  readonly diskFloorBytes: number
+}
+
+export interface Supply {
+  readonly id: string
+  readonly at: number
+  readonly effectiveCpuMilli: number
+  readonly containedCpuMilli?: number
+  readonly outsideNoncriticalMilli: number
+  readonly protectedCpuMilli: number
+  readonly memoryBytes: number
+  readonly pressure: "clear" | "degraded" | "hold"
+  readonly qualification: "enforced" | "advisory" | "unqualified"
+  readonly runnable: number
+  readonly managed: ReadonlyArray<ManagedUse>
+  readonly volumes: Readonly<Record<string, Volume>>
+  readonly keys: ReadonlyArray<string>
+}
+
+export interface Measurements {
+  readonly id: string
+  readonly platform: "darwin" | "linux"
+  readonly before: Ticks
+  readonly after: Ticks
+  readonly effectiveCpuMilli: number
+  readonly containedCpuMilli?: number
+  readonly hostCpuMilli: number
+  readonly runnable: number
+  readonly memoryBytes: number
+  readonly pressure: Supply["pressure"]
+  readonly qualified: boolean
+  readonly managed: ReadonlyArray<ManagedUse>
+  readonly protectedLowerBoundMilli: number
+  readonly volumes: Supply["volumes"]
+  readonly keys: Supply["keys"]
+}
+
+export const POLICY = {
+  diskFloorBytes: 6 * 2 ** 30,
+  minFreeInodes: 1024,
+  minMetadataBytes: 64 * 2 ** 20,
+  reserveCpuMilli: 2000,
+  reserveMemoryBytes: 2 ** 30,
+  freshnessMs: 2000,
+  queueMs: 60 * 60_000,
+  launchMs: 5000,
+  supervisionMs: 15_000,
+  maxRunningMs: 6 * 60 * 60_000,
+  runnableLimit: 24,
+  slots: 3,
+  landBurst: 2,
+  maxRequestCpuMilli: 4000,
+  maxRequestMemoryBytes: 12 * 2 ** 30,
+} as const
+
+const GiB = 2 ** 30
+export const CHECK_PROFILE = {
+  check: { cpuMilli: 1000, memoryBytes: 4 * GiB },
+  "land-check": { cpuMilli: 2000, memoryBytes: 4 * GiB },
+  vm: { cpuMilli: 2000, memoryBytes: 8 * GiB },
+  inventory: { cpuMilli: 1000, memoryBytes: 2 * GiB },
+  "exclusive-check": { cpuMilli: 1000, memoryBytes: 4 * GiB },
+} as const
+
+const nonnegative = (n: number) => Number.isSafeInteger(n) && n >= 0
+const ticksValid = ({ idle, total, at }: Ticks) => [idle, total, at].every(nonnegative) && idle <= total
+const managedValid = ({ measuredCpuMilli, enforcedCpuMilli }: ManagedUse) =>
+  [measuredCpuMilli, enforcedCpuMilli].every(nonnegative) && measuredCpuMilli <= enforcedCpuMilli
+
+const activeQualification = { darwin: "advisory", linux: "enforced" } as const
+export const measureSupply = (raw: Measurements): Option.Option<Supply> => {
+  const { before, after } = raw
+  const total = after.total - before.total
+  const idle = after.idle - before.idle
+  if (!ticksValid(before) || !ticksValid(after) || total <= 0 || idle < 0 || idle > total) return Option.none()
+  if (after.at <= before.at || after.at - before.at > POLICY.freshnessMs) return Option.none()
+  if (![raw.effectiveCpuMilli, raw.hostCpuMilli, raw.runnable, raw.memoryBytes, raw.protectedLowerBoundMilli].every(nonnegative)) return Option.none()
+  if (raw.effectiveCpuMilli === 0 || raw.effectiveCpuMilli > raw.hostCpuMilli) return Option.none()
+  if (Predicate.isNotUndefined(raw.containedCpuMilli) && !nonnegative(raw.containedCpuMilli)) return Option.none()
+  const measured = Math.ceil(((total - idle) / total) * raw.hostCpuMilli)
+  const managed = raw.managed.reduce((sum, use) => sum + use.measuredCpuMilli, 0)
+  const joined = new Set(raw.managed.map((use) => use.binding)).size === raw.managed.length
+  const qualifies = raw.qualified && joined && raw.managed.every(managedValid) && managed + raw.protectedLowerBoundMilli <= measured
+  const credit = Option.liftPredicate(managed + raw.protectedLowerBoundMilli, () => qualifies)
+  const contain = Option.fromNullishOr(raw.containedCpuMilli)
+  const base: Supply = {
+    id: raw.id,
+    at: after.at,
+    effectiveCpuMilli: raw.effectiveCpuMilli,
+    outsideNoncriticalMilli: Math.max(0, measured - Option.getOrElse(credit, () => 0)),
+    protectedCpuMilli: POLICY.reserveCpuMilli,
+    memoryBytes: raw.memoryBytes,
+    pressure: raw.pressure,
+    qualification: Option.match(credit, { onNone: () => "unqualified", onSome: () => activeQualification[raw.platform] }),
+    runnable: raw.runnable,
+    managed: Option.match(credit, { onNone: () => [], onSome: () => raw.managed }),
+    volumes: raw.volumes,
+    keys: raw.keys,
+  }
+  if (Option.isSome(contain)) return Option.some({ ...base, containedCpuMilli: contain.value })
+  return Option.some(base)
+}
+
+export const capacityOf = (sample: Supply): number =>
+  Math.min(sample.containedCpuMilli ?? sample.effectiveCpuMilli,
+    Math.max(0, sample.effectiveCpuMilli - sample.protectedCpuMilli - sample.outsideNoncriticalMilli))
+
+export const runnableLimit = (sample: Supply) =>
+  Math.min(POLICY.runnableLimit, Math.max(1, Math.floor(sample.effectiveCpuMilli / 1000)))
+
+export const chargedCpu = (milli: number, qualification: Supply["qualification"]) => {
+  if (qualification === "enforced") return milli
+  const width = Math.max(1, Math.ceil(milli / 1000))
+  return width * width * 1000
+}
+
+export const usableVolume = (volume: Volume): boolean =>
+  [volume.freeBytes, volume.metadataFreeBytes, volume.diskFloorBytes].every(nonnegative) &&
+  (volume.freeInodes === "dynamic" || (nonnegative(volume.freeInodes) && volume.freeInodes >= POLICY.minFreeInodes)) &&
+  volume.metadataFreeBytes >= POLICY.minMetadataBytes
