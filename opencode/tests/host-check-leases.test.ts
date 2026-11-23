@@ -6,7 +6,7 @@ import { expect, it } from "effect-bun-test"
 import { type Input } from "../mods/guard/admission.ts"
 import { owner, request, supply } from "../mods/guard/memory/admission-acceptance.ts"
 import { bootHost } from "../mods/guard/process/admission.ts"
-import { actorLiveness, armDescriptor, descriptorHolders, descriptorLiveness, pinOf, processIdentity, spawnOwned, watchGroup } from "../mods/guard/process/launchers.ts"
+import { actorLiveness, armDescriptor, descriptorHolders, descriptorLiveness, pinOf, processIdentity, spawnOwned, watchOwnGroup } from "../mods/guard/process/launchers.ts"
 import { open } from "../mods/guard/sqlite/admission.ts"
 import { scratch } from "./scratch.ts"
 
@@ -20,17 +20,33 @@ const descriptorOf = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Str
   file: Schema.String, device: Schema.String, inode: Schema.String,
 })))
 
-const watchdogLeader = Effect.fn("LeaseHarness.watchdogLeader")(function* (folder: string) {
+const watchdogLeader = Effect.fn("LeaseHarness.watchdogLeader")(function* (folder: string, failure: string) {
   const path = yield* Path.Path
   const host = yield* bootHost()
   const pin = yield* pinOf(host, "watch-fixture", 1, 1000, 1)
-  const guard = yield* watchGroup(host, pin)
+  const children: Array<ReturnType<typeof startWatchdog>> = []
+  const start = (script: string) => {
+    const task = startWatchdog(script)
+    children.push(task)
+    return task
+  }
+  const guard = yield* watchOwnGroup(host, pin.pid, start)
   const { fd, descriptor } = yield* armDescriptor(host, path.join(folder, "watchdog.lock"))
   yield* guard.arm
   yield* Console.log(encode(descriptor))
   const payload = yield* spawnOwned(["/bin/sh", "-c", "printf 'ready\\n'; IFS= read -r done"], folder, { HOME: folder }, fd)
+  if (failure === "watchdog-first") {
+    const first = children[0]
+    if (!first) return yield* new FixtureUnavailable({ op: "retained-watchdog" })
+    yield* Effect.tryPromise({ try: () => new Response(Bun.stdin.stream()).text(), catch: () => new FixtureUnavailable({ op: "watch-order" }) })
+    yield* Effect.sync(() => first.kill("SIGKILL"))
+    yield* Effect.promise(() => first.exited)
+    yield* guard.stop
+  }
   yield* payload.exited
 })
+
+const startWatchdog = (script: string) => spawn(["/bin/sh", "-c", script], { stdin: "pipe", stdout: "pipe", stderr: "ignore" })
 
 const untilReady = (stream: ReadableStream<Uint8Array>) => Effect.acquireUseRelease(
   Effect.sync(() => stream.getReader()),
@@ -92,8 +108,8 @@ const one = Effect.fn("LeaseHarness.one")(function* (folder: string, op: string,
 })
 
 if (import.meta.main && argv[2] === "--fixture-watchdog") {
-  const [, , , folder = ""] = argv
-  BunRuntime.runMain(Effect.scoped(watchdogLeader(folder)).pipe(Effect.provide(BunServices.layer)))
+  const [, , , folder = "", failure = "launcher-first"] = argv
+  BunRuntime.runMain(Effect.scoped(watchdogLeader(folder, failure)).pipe(Effect.provide(BunServices.layer)))
 } else if (import.meta.main && argv[2] === "--fixture-child") {
   const [file = "", op = "", name = "", id = "", pid = "0"] = argv.slice(3)
   BunRuntime.runMain(Effect.scoped(child(file, op, name, id, Number(pid))).pipe(Effect.provide(BunServices.layer)))
@@ -147,8 +163,11 @@ if (import.meta.main && argv[2] === "--fixture-watchdog") {
       if (host.platform !== "darwin") return
       const file = yield* path.fromFileUrl(new URL("host-check-leases.test.ts", import.meta.url))
       const [exe = "bun"] = argv
+      const probe = Effect.fn("LeaseHarness.watchdogProbe")(function* (failure: string) {
+      const isolated = path.join(folder, failure)
+      yield* fs.makeDirectory(isolated)
       const launcher = yield* Effect.acquireRelease(Effect.try({
-        try: () => spawn([exe, file, "--fixture-watchdog", folder], {
+        try: () => spawn([exe, file, "--fixture-watchdog", isolated, failure], {
           cwd: folder, env: { HOME: folder, XDG_STATE_HOME: folder, XDG_CONFIG_HOME: folder },
           stdio: ["pipe", "pipe", "pipe"], detached: true,
         }),
@@ -165,12 +184,18 @@ if (import.meta.main && argv[2] === "--fixture-watchdog") {
       expect(yield* Effect.scoped(descriptorLiveness(host, descriptor))).toBe("held")
       // The test controls only its acquired launcher. Payload stdin remains
       // open here, so launcher death alone cannot satisfy the read.
-      yield* Effect.sync(() => { launcher.kill("SIGKILL") })
+      yield* Effect.sync(() => {
+        if (failure === "launcher-first") launcher.kill("SIGKILL")
+        else launcher.stdin.end()
+      })
       const released = yield* Effect.scoped(descriptorLiveness(host, descriptor)).pipe(
         Effect.repeat({ schedule: Schedule.spaced(25), until: (state) => state === "gone" }),
         Effect.timeout(2500),
       )
       expect(released).toBe("gone")
+      })
+      yield* probe("launcher-first")
+      yield* probe("watchdog-first")
     }).pipe(Effect.provide(BunServices.layer)),
   )
   it.scopedLive("independent processes share counted FIFO, dead waiters and durable drain", () =>

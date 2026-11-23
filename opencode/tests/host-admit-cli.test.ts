@@ -1,8 +1,11 @@
 import { argv, readableStreamToText, spawn } from "bun"
+import { Database } from "bun:sqlite"
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { Data, Effect, FileSystem, Path, Predicate, Schema } from "effect"
+import { Data, Effect, FileSystem, Path, Predicate, Schedule, Schema } from "effect"
 import { expect, it } from "effect-bun-test"
 import fixtures from "../mods/guard/fixtures/holder-v1.json"
+import { admissionLauncher } from "../mods/guard/launcher.ts"
+import { admittedJobArgv } from "../mods/wake/process/supervise.ts"
 import { scratch } from "./scratch.ts"
 
 const decode = <S extends Schema.Top>(codec: S) => Schema.decodeUnknownEffect(Schema.fromJsonString(codec))
@@ -14,6 +17,78 @@ const Status = Schema.Struct({
 })
 const Reply = Schema.Struct({ id: Schema.NullOr(Schema.String), state: Schema.String, sequence: Schema.Int })
 class CliFixtureUnavailable extends Data.TaggedError("CliFixtureUnavailable")<{ readonly operation: "spawn" | "read" }> {}
+
+const readAdmission = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({
+  leases: Schema.Record(Schema.String, Schema.Struct({
+    state: Schema.String,
+    request: Schema.Struct({ purpose: Schema.String, demand: Schema.Struct({ width: Schema.Number, memoryBytes: Schema.Number }) }),
+    admittedDemand: Schema.NullOr(Schema.Struct({ cpuMilli: Schema.Number })),
+  })),
+})))
+
+it.scopedLive("standalone, Guard, and durable Wake all reserve width four or hold before the payload", () =>
+  Effect.gen(function* () {
+    if (process.platform !== "darwin") return
+    using dir = scratch("hcl-demand-")
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const folder = yield* fs.realPath(dir.path)
+    const [exe = "bun"] = argv
+    const cli = yield* path.fromFileUrl(new URL("../cmd/guard/host-admit.ts", import.meta.url))
+    const marker = path.join(folder, "payload-ran")
+    const helper = [exe, cli]
+    const command = "GOMAXPROCS=4 go test -p 4 -parallel 4 './exact argument'"
+    const file = path.join(folder, "guard-wrapper")
+    yield* fs.writeFileString(file, admissionLauncher("/bin/sh", helper, command), { mode: 0o700 })
+    yield* fs.writeFileString(path.join(folder, "go"), "#!/bin/sh\nprintf 'payload ran\\n' > \"$HCL_MARKER\"\nexec /bin/sleep 8\n", { mode: 0o700 })
+    const job = path.join(folder, "wake-job")
+    const wake = yield* path.fromFileUrl(new URL("../cmd/wake/job.ts", import.meta.url))
+    yield* fs.makeDirectory(job, { mode: 0o700 })
+    yield* fs.writeFileString(path.join(job, "job.json"), json({
+      spec: { id: "j000001", sessionID: "ses_fixture", directory: folder, command, cwd: folder, note: "fixture", heavy: false, timeoutSeconds: 15, setAt: 1 },
+    }), { mode: 0o600 })
+    const programs: ReadonlyArray<ReadonlyArray<string>> = [
+      [...helper, "check", "run", "--", "go", "test", "-p", "4", "-parallel", "4", "./exact argument"],
+      [file, "-c", command],
+      admittedJobArgv(helper, command, false),
+      [exe, wake, job],
+    ]
+    for (const [i, program] of programs.entries()) {
+      const state = path.join(folder, `state-${i}`)
+      const filename = path.join(state, "host-admit", "admission-v1.sqlite")
+      const environment = { HOME: folder, XDG_STATE_HOME: state, PATH: `${folder}:/usr/bin:/bin`, HCL_MARKER: marker, GOMAXPROCS: "4" }
+      if (program.includes(wake)) yield* fs.writeFileString(path.join(job, "env.json"), json(environment), { mode: 0o600 })
+      const task = yield* Effect.acquireRelease(Effect.try({
+        try: () => spawn([...program], {
+          cwd: folder, env: environment,
+          stdin: "ignore", stdout: "ignore", stderr: "ignore", detached: true,
+        }),
+        catch: () => new CliFixtureUnavailable({ operation: "spawn" }),
+      }), (child) => Effect.sync(() => { if (Predicate.isNull(child.exitCode) && Predicate.isNull(child.signalCode)) child.kill("SIGTERM") }))
+      const observed = Effect.gen(function* () {
+        if (!(yield* fs.exists(filename))) return {}
+        return yield* Effect.try(() => {
+            using db = new Database(filename, { readonly: true })
+            const body = db.query<{ body: string }, []>("SELECT body FROM admission_v1").get()
+            if (!body) return {}
+            return readAdmission(body.body).leases
+        }).pipe(Effect.orElseSucceed(() => ({})))
+      })
+      const rows = yield* observed.pipe(
+        Effect.repeat({ schedule: Schedule.spaced(50), until: (rows) => Object.keys(rows).length > 0 }),
+        Effect.timeoutOrElse({ duration: 4500, orElse: () => Effect.die(`wrapper leg ${i} did not write its demand`) }),
+      )
+      const [row] = Object.values(rows)
+      expect(row?.request).toMatchObject({ purpose: "check", demand: { width: 4, memoryBytes: 4 * 2 ** 30 } })
+      if (row?.state === "queued") expect(yield* fs.exists(marker)).toBe(false)
+      else expect(row?.admittedDemand?.cpuMilli).toBe(16_000)
+      task.kill("SIGTERM")
+      yield* Effect.promise(() => task.exited).pipe(Effect.timeout(4000))
+      if (yield* fs.exists(marker)) yield* fs.remove(marker)
+    }
+  }).pipe(Effect.provide(BunServices.layer)),
+  22_000,
+)
 
 const runner = (folder: string) => Effect.fn("HostAdmitTest.invoke")(function* (args: ReadonlyArray<string>, input: string = "") {
   const path = yield* Path.Path
@@ -67,7 +142,7 @@ it.scopedLive("the standalone API binds request identity to the caller, not the 
     const draft = {
       version: 1, requestId: "intent-fixture", principal: host.principal,
       purpose: "exclusive-check", tier: "small", deadlineBootMs: host.nowBootMs + 15_000,
-      demand: { cpuMilli: 1000, memoryBytes: 0, volumeReservations: [{ volumeId: host.defaultVolume ?? "unavailable", bytes: 0 }], keys: [], ioClass: "idle" },
+      demand: { width: 1, cpuMilli: 1000, memoryBytes: 0, volumeReservations: [{ volumeId: host.defaultVolume ?? "unavailable", bytes: 0 }], keys: [], ioClass: "idle" },
     }
     const req = ["lease", "request", "--json"]
     const impersonation = yield* invoke(req, json({ ...draft, principal: { ...draft.principal, kind: "native-shell" } }))
