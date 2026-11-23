@@ -99,7 +99,7 @@ const decodeManifest = Schema.decodeUnknownSync(Schema.fromJsonString(Manifest))
 const decodeLock = Schema.decodeUnknownSync(Schema.Struct({ packages: Schema.Record(Schema.String, Schema.Array(Schema.Unknown)) }))
 
 /** The graph helpers over files `read` reads (it throws when a file does not read). */
-export const graphOf = (read: (file: string) => string) => {
+export const graphOf = (read: (file: string) => string, resolveModule: (name: string, dir: string) => string = resolveSync) => {
   /**
    * One file's runtime imports: a workspace one as the real path it resolves to (Bun resolves every link), any other
    * as its package specifier (a dependency, or the JSX runtime the TSX transform adds).
@@ -109,7 +109,7 @@ export const graphOf = (read: (file: string) => string) => {
       .scanImports(read(file).replace(/^#!.*\n/, "\n"))
       .map((each) =>
         Match.value(workspaceImport(each.path)).pipe(
-          Match.when(true, () => resolveSync(each.path, dirOf(file))),
+          Match.when(true, () => resolveModule(each.path, dirOf(file))),
           Match.orElse(() => each.path),
         ),
       )
@@ -147,7 +147,8 @@ export const graphOf = (read: (file: string) => string) => {
 
   /** The real directory of the package `name` as Bun resolves it from `dir`: the nearest `package.json` named `name` above what it resolves to. */
   const packageDirFrom = (name: string, dir: string): Option.Option<string> =>
-    Option.liftThrowable(() => resolveSync(name, dir))().pipe(
+    Option.liftThrowable(() => resolveModule(name, dir))().pipe(
+      Option.filter((file) => file.startsWith("/")),
       Option.flatMap((file) =>
         Arr.findFirst(
           Arr.unfold(dirOf(file), (at) => Option.liftPredicate([at, dirOf(at)] as const, () => at !== dirOf(at))),

@@ -1,3 +1,4 @@
+import { Glob, resolveSync } from "bun"
 import { Data, Option, Predicate } from "effect"
 import { ALL_READS, readMatcher } from "../scripts/read-declarations.ts"
 import { ROOT as workspace } from "../scripts/reach.ts"
@@ -90,6 +91,32 @@ export const externalInput = (file: string) => {
 export const installedInput = (file: string) => {
   if (!realpathSync(file).includes("/node_modules/")) return denied(file, "an installed package")
   return file
+}
+
+/** Resolution for a test's import walk. Check the base, relative operand and any resolved file. */
+export const resolveRuntimeInput = (scope: string, specifier: string, directory: string) => {
+  const check = (file: string) => {
+    const target = resolve(file)
+    if (target === canonicalRoot) return target
+    if (!outside(canonicalRoot, target)) {
+      if (target.includes("/node_modules/")) return installedInput(target)
+      return matchingInput(scope, target)
+    }
+    if (target.includes("/node_modules/")) return installedInput(target)
+    return scratchInput(target)
+  }
+  const cwd = check(directory)
+  if (specifier.startsWith(".") || isAbsolute(specifier)) check(resolve(cwd, specifier))
+  else if (specifier.split("/").includes("..") || !/^[#@a-zA-Z0-9_./:-]+$/.test(specifier) || specifier.startsWith("file:"))
+    return denied(specifier, "a relative module path or package name")
+  const found = resolveSync(specifier, cwd)
+  if (isAbsolute(found)) check(found)
+  return found
+}
+
+export const scratchGlob = (cwd: string, pattern: string) => {
+  if (isAbsolute(pattern) || pattern.includes("..")) return denied(pattern, "a scratch-relative glob")
+  return [...new Glob(pattern).scanSync({ cwd: scratchInput(cwd), followSymlinks: false })]
 }
 
 export function readScratchFileSync(file: string, encoding: BufferEncoding): string

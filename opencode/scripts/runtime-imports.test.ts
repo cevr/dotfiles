@@ -1,5 +1,5 @@
-// @reads all
-// @reads-reason computed read at mods/update/filestore/trees.ts: [...new Glob(glob).scanSync({ cwd: real })]
+// @reads bun.lock cmd decider mods package.json scenarios scripts sim sim-tui testbeds tests
+// @reads-indirect cmd/** decider/** mods/** scenarios/** scripts/** sim-tui/** sim/** testbeds/** tests/**
 /**
  * What code that runs outside the lint gate may import. The plugins (mods/*, cmd/*), the scenarios
  * opencode-drive compiles into one script, and `bun run daily` (which the update plugin runs as
@@ -15,24 +15,24 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Option } from "effect"
-import { unresolvedImports } from "../mods/update/filestore/trees.ts"
+import { unresolvedImportsFrom } from "../mods/update/filestore/trees.ts"
 import { COMMANDS, type Host, hostProvided, SEEDS } from "../mods/update/trees.ts"
-import * as Graph from "../tests/cli-tree/graph.ts"
-import { externalInput, installedInput, matchingInput, scratchInput } from "../tests/read-path.ts"
+import { expectedPins, forbiddenAt, graphOf, packageOf, pinIn, PLATFORM_IMPL, within } from "../tests/cli-tree/graph.ts"
+import { externalInput, installedInput, matchingInput, resolveRuntimeInput, scratchGlob, scratchInput } from "../tests/read-path.ts"
 
 const ROOT = realpathSync(process.cwd())
-const INPUTS = "{cmd/**,mods/**,scripts/*.ts,scenarios/*.ts,decider/*.ts,sim/**/*.ts,sim-tui/**,tests/**/*.ts,testbeds/**/*.ts,package.json,bun.lock}"
+const INPUTS = "{cmd,cmd/**,mods,mods/**,scripts,scripts/**,scenarios,scenarios/**,decider,decider/**,sim,sim/**,sim-tui,sim-tui/**,tests,tests/**,testbeds,testbeds/**,package.json,bun.lock}"
 const read = (file: string) => {
   if (!file.startsWith(`${ROOT}/`)) return readFileSync(externalInput(file), "utf8")
   if (file.includes("/node_modules/")) return readFileSync(installedInput(file), "utf8")
   return readFileSync(matchingInput(INPUTS, file), "utf8")
 }
 /** The import graph helpers on this checkout (`tests/cli-tree/graph.ts`, which the installed-tree check shares). */
-const graph = Graph.graphOf(read)
+const resolveModule = (specifier: string, dir: string) => resolveRuntimeInput(INPUTS, specifier, dir)
+const graph = graphOf(read, resolveModule)
 const breaches = (seed: string, forbidden: ReadonlyArray<RegExp>) => graph.breaches(seed, forbidden, ROOT)
 const bareOf = (seed: string) => graph.bareOf(seed, ROOT)
 const { effectsOf, manifestAt, packageDirFrom, pinsAt } = graph
-const { expectedPins, forbiddenAt, packageOf, pinIn, PLATFORM_IMPL, within } = Graph
 /** The root `package.json`'s exact version of `name`. */
 const rootPin = (name: string) => pinIn(manifestAt(ROOT), name)
 /**
@@ -60,6 +60,8 @@ const sources = (pattern: string) => {
   const glob = new Bun.Glob(pattern)
   return seedsOnDisk.filter((file) => glob.match(file))
 }
+const resolve = (specifier: string, file: string) => Option.liftThrowable(() => resolveModule(specifier, path.dirname(file)))()
+const source = (readText: (file: string) => string) => (file: string) => readText(file).replace(/^#!.*\n/, "\n")
 
 const SCENARIOS = sources("scenarios/*.ts")
 const PLUGINS = [...sources("mods/**/*.{ts,tsx}"), ...sources("cmd/**/*.{ts,tsx}")]
@@ -108,7 +110,7 @@ describe("runtime imports", () => {
     const seeds = SEEDS.flatMap(({ glob }) => sources(glob))
     expect(SEEDS.every(({ glob }) => sources(glob).length > 0)).toBe(true)
     expect(seeds).toContain("cmd/update/handoff.ts")
-    expect(unresolvedImports(ROOT)).toEqual([])
+    expect(unresolvedImportsFrom(ROOT, { resolve, source: source(read), seeds: (_root, glob) => sources(glob) })).toEqual([])
   })
 
   test("no server plugin, the orchestrate server first, reaches a platform implementation", () => {
@@ -247,12 +249,13 @@ describe("what each host serves, generated over host × package × subpath", () 
     const expected = seeds.flatMap(([host, seed]) =>
       specifiers.flatMap((specifier) => [`${seed} (${host}): ${seed} imports ${specifier}, which the ${host} host does not serve and no install of the tree holds`].filter(() => !loads(host, specifier))),
     )
-    expect([...unresolvedImports(root)].sort()).toEqual(expected.toSorted())
+    const readTree = (file: string) => readFileSync(scratchInput(file), "utf8")
+    expect([...unresolvedImportsFrom(root, { resolve, source: source(readTree), seeds: scratchGlob })].sort()).toEqual(expected.toSorted())
     // A plain-Bun process that leans on what only a loader serves fails the tree's check.
     expect(expected).toContain("cmd/update/handoff.ts (bun): cmd/update/handoff.ts imports effect, which the bun host does not serve and no install of the tree holds")
     expect(expected).toContain("cmd/update/handoff.ts (bun): cmd/update/handoff.ts imports @opencode/plugin/effect, which the bun host does not serve and no install of the tree holds")
     // The install's copy loads for the tree's check, so the server boundary is its own assertion.
-    const graph = Graph.graphOf((file) => readFileSync(scratchInput(file), "utf8"))
+    const graph = graphOf(readTree, resolveModule)
     expect(graph.breaches("cmd/fixture/server.ts", PLATFORM_IMPL, root)).toContain(`cmd/fixture/server.ts reaches ${installed} through cmd/fixture/server.ts`)
     rmSync(root, { recursive: true, force: true })
   })

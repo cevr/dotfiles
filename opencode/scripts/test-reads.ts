@@ -592,6 +592,8 @@ const callRead = (at: Node, syntax: Syntax, evaluate: Evaluation, record: ReadSi
   if (called === "eval" || called === "Function") return record(at, opaque("evaluated program reads"))
   if (called === "tests/read-path.ts:matchingInput") return record(at, evaluate(at))
   if (called === "tests/read-path.ts:readInputText") return record(at, callPath("tests/read-path.ts:matchingInput", callee, args, evaluate))
+  if (called === "tests/read-path.ts:resolveRuntimeInput")
+    return record(at, Option.map(literalPath(evaluate(args[0])), (glob) => ({ glob, bounded: true })))
   if (filesystemCall(called)) {
     const [, method = ""] = called.split(":")
     const recursive = ["cp", "cpSync"].includes(method) && field(opts(args[2], "recursive"), "value") === true
