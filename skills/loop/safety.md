@@ -11,3 +11,4 @@ SAFETY (mandatory; a heredoc of guard probe text can run `rm -rf ~`):
 - The owner's data (a database, a session store) is read only as a copy: `/bin/cp` it (and its `-wal`) into the scratch directory, and open the copy read-only. Never write to it, commit it or publish it.
 - Never read or print credentials, tokens or private content, and never put them in a report, a ledger or a commit.
 - No model or API call that costs money, unless the owner rules name the run and the agent allowed to make it.
+- Start a browser only through agent-browser, Playwright or `bun ~/Developer/personal/dotfiles/opencode/scripts/chrome.ts launch`; never spawn a Chrome or Chromium binary yourself. A Chrome started headless or with `--remote-debugging-*` and without `--use-mock-keychain --password-store=basic` puts a keychain dialog on the owner's screen.
