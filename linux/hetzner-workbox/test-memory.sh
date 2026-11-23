@@ -79,11 +79,13 @@ since=$(date '+%F %T')
 # 96 MiB local cap is deliberately higher so the kernel OOM triggers at its family, not its leaf.
 for unit in "${units[@]}"; do uctl systemctl --user set-property --runtime "$unit" MemoryMax=64M; done
 (
-    uctl systemd-run --user --scope --quiet --collect --unit=hbt-memory-survivor.scope --slice=personal.slice \
+    uctl systemd-run --user --scope --quiet --collect --expand-environment=no --unit=hbt-memory-survivor.scope --slice=personal.slice \
         sh -c 'echo $$ > "$1"; exec sleep 60' survivor "$work/survivor"
 ) &
 survivor_job=$!
 until_file "$work/survivor"
+survivor=$(cat "$work/survivor")
+[[ $survivor =~ ^[1-9][0-9]*$ ]] && live "$survivor" || die "fixture did not report a live numeric survivor PID"
 touch "$work/start-bite"
 jobs=()
 for family in "${families[@]}"; do
@@ -117,7 +119,6 @@ for i in "${!families[@]}"; do
     read -r pid child < "$work/${families[i]}.ready"
     if live "$pid" || live "$child"; then die "${families[i]} left part of the killed run alive"; fi
 done
-survivor=$(cat "$work/survivor")
 if ! live "$survivor" || ! live "$server"; then
     printf 'sibling pid %s: %s; server pid %s: %s\n' "$survivor" "$(live "$survivor" && echo alive || echo dead)" \
         "$server" "$(live "$server" && echo alive || echo dead)" >&2
@@ -138,7 +139,7 @@ for _ in $(seq 1 150); do
 done
 [[ $new != "$server" && $(cg "$new") == "$manager/opencodeserver.slice/"* ]] || die "watchdog did not recover a server after its own cap"
 if live "$server"; then die "old server was not killed by its cap"; fi
-live "$(cat "$work/survivor")" || die "server OOM killed a sibling run"
+live "$survivor" || die "server OOM killed a sibling run"
 if journalctl -k -b --since="$since" --no-pager -o cat | grep -E 'global_oom|CONSTRAINT_NONE|^Out of memory: Killed process'; then
     die "global OOM during workbox containment test"
 fi
