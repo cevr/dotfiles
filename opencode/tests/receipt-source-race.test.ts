@@ -1,5 +1,4 @@
-// accept: deep (the real swapper and scoped reader processes race under a 20 s bound)
-// accept: one at a time (it races two processes by the clock: a loaded host starves the swapper and proves less).
+// accept: one at a time (the real swapper and scoped readers race under a 20 s bound; load can starve either).
 // The receipt source's file law against a real race (mods/orchestrate/filestore/receipt-source.ts `receiptSource`): a
 // swapper process flips a receipt's name, by atomic renames, between the good file and a link to a file outside the
 // receipts folder, while the reader freezes that receipt again and again. Whatever the interleaving, no snapshot ever
