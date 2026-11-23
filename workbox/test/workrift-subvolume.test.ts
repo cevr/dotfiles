@@ -294,9 +294,9 @@ const bench = (label: string) => {
   const paths = { base, new: join(move, "app.new"), back: join(move, "app.back"), old: join(move, "app.old") }
   const state = join(root, ".work", "app", ".workrift")
   const envFor = (extra: Env = {}): Env => ({ ...env, WORKRIFT_SOURCE: base, ...extra })
-  /** Every command of the bench with its full output, in commands.log: a failure is read from it, never from a grep. */
+  /** Every command of the bench with its full output, in <bench>.commands.log beside it (out of the trees the dry-run tests hash): a failure is read from it, never from a grep. */
   const logged = (argv: ReadonlyArray<string>, ran: Ran): Ran => {
-    writeFileSync(join(dir, "commands.log"), `$ workrift ${argv.join(" ")} (${new Date().toISOString()})\n${said(ran)}\n`, { flag: "a" })
+    writeFileSync(`${dir}.commands.log`, `$ workrift ${argv.join(" ")} (${new Date().toISOString()})\n${said(ran)}\n`, { flag: "a" })
     return ran
   }
   /** Runs workrift in the bench's folder (outside the base). */
@@ -805,13 +805,14 @@ describe("workrift subvolume --apply", () => {
       for (let i = 0; i < 400 && !what(); i++) await Bun.sleep(25)
       expect(what()).toBe(true)
     }
-    const ticketIn = (b: Bench, queue: string) => () => existsSync(join(b.state, queue)) && readdirSync(join(b.state, queue)).some((f) => f.endsWith(".in"))
     try {
       // The line's try: another subvolume run holds its place (paused at its carry-wait until a gate opens).
       const a = await cutBack("bound-move")
       const gate = join(a.dir, "gate")
-      const other = spawn(a, back, { WORKRIFT_SUBVOLUME_HOOK_AT: "carry-wait", WORKRIFT_SUBVOLUME_HOOK: `i=0; until [ -e '${gate}' ] || [ $i -ge 400 ]; do sleep 0.05; i=$((i+1)); done` })
-      await until(ticketIn(a, "move"))
+      const reached = join(a.dir, "reached")
+      const other = spawn(a, back, { WORKRIFT_SUBVOLUME_HOOK_AT: "carry-wait", WORKRIFT_SUBVOLUME_HOOK: `: >'${reached}'; i=0; until [ -e '${gate}' ] || [ $i -ge 400 ]; do sleep 0.05; i=$((i+1)); done` })
+      // At its hook it holds its place (the cut run left its ticket files, so they alone prove nothing).
+      await until(() => existsSync(reached))
       intact(a, a.wr(back), "another workrift subvolume runs for")
       writeFileSync(gate, "")
       expect(await other.exited).toBe(0)
@@ -819,8 +820,9 @@ describe("workrift subvolume --apply", () => {
 
       // The turn at the base's lock: a holder past TURN_WAIT.
       const t = await cutBack("bound-turn")
-      const holder = spawn(t, ["hold", "--", "sleep", "6"])
-      await until(ticketIn(t, "base"))
+      const held = join(t.dir, "held")
+      const holder = spawn(t, ["hold", "--", "sh", "-c", `: >'${held}'; sleep 6`])
+      await until(() => existsSync(held))
       intact(t, t.wr(back, { WORKRIFT_SUBVOLUME_TURN_WAIT: "1" }), "no turn at the lock of")
       process.kill(-holder.pid, "SIGKILL")
       await holder.exited
@@ -1105,7 +1107,7 @@ describe("workrift subvolume --back and --drop-old", () => {
       const kept = join(tmpdir(), "workrift-subvolume-failures")
       mkdirSync(kept, { recursive: true })
       const file = join(kept, `${b.dir.split("/").at(-1)}-${Date.now()}.log`)
-      writeFileSync(file, existsSync(join(b.dir, "commands.log")) ? readFileSync(join(b.dir, "commands.log")) : "")
+      writeFileSync(file, existsSync(`${b.dir}.commands.log`) ? readFileSync(`${b.dir}.commands.log`) : "")
       throw new Error(`${String(error)}\nthe sequence's every command, in full: ${file}`)
     }
   }
