@@ -7,7 +7,7 @@
 // cmd/orchestrate/receipt-input-snapshot.sim.test.ts (a fake file system); this is its confirmation on real files.
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { CryptoHasher, spawnSync } from "bun"
-import { Array as Arr, Effect, FileSystem, Match, Option, Order, Path, Predicate, Result } from "effect"
+import { Array as Arr, Effect, FileSystem, Match, Option, Path, Predicate, Result, Schedule } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { layer } from "../cmd/orchestrate/batch-inputs.ts"
@@ -30,15 +30,26 @@ const freezeAt = (places: ReceiptPlaces, request: InputRequest) => Effect.result
 const readTwiceAt = (places: ReceiptPlaces, ref: SourceRef) =>
   ReceiptSource.use((source) => Effect.forEach([1, 2], () => Effect.result(source.read(ref)))).pipe(Effect.provide(layer(places)))
 
-/** Race through bursts of renames, with a good interval so double observations can settle even on a loaded host. */
-const SWAPPER = `import { copyFileSync, existsSync, renameSync, symlinkSync } from "node:fs"
+/** Hold each side of the swap for a witness, then race through bursts of renames. */
+const SWAPPER = `import { copyFileSync, existsSync, renameSync, symlinkSync, writeFileSync } from "node:fs"
 const [name, good, outside, stop] = process.argv.slice(2)
-for (let flips = 0; !existsSync(stop); flips++) {
+const putGood = () => {
   copyFileSync(good, name + ".good")
   renameSync(name + ".good", name)
-  if (flips % 64 === 0) await Bun.sleep(150)
+}
+const putLink = () => {
   symlinkSync(outside, name + ".link")
   renameSync(name + ".link", name)
+}
+for (const [side, install] of [["good", putGood], ["link", putLink]]) {
+  install()
+  writeFileSync(stop + "." + side, "")
+  while (!existsSync(stop + "." + side + ".seen")) await Bun.sleep(5)
+}
+for (let flips = 0; !existsSync(stop); flips++) {
+  putGood()
+  if (flips % 64 === 0) await Bun.sleep(150)
+  putLink()
   if (flips % 64 === 0) await Bun.sleep(25)
 }
 `
@@ -469,9 +480,10 @@ const outcomeOf = (outcome: Result.Result<InputSnapshot, { readonly _tag: string
     onSuccess: (snapshot) => {
       const leaked =
         snapshot.artifacts.some((each) => each.digest === outsideDigest || each.text === outsideText) || snapshot.receipts.some((each) => each.input.tree === outsideTree)
+      if (leaked) return "leaked outside bytes or digest"
       return Option.match(Arr.head(snapshot.receipts), {
         onNone: () => [...snapshot.refused.map((each) => `refused ${each.reason}`), ...snapshot.absent.map(() => "absent")].join(","),
-        onSome: (frozen) => [leaked, frozen.input.tree === goodTree].join("/"),
+        onSome: (frozen) => Match.value(frozen.input.tree === goodTree).pipe(Match.when(true, () => "frozen good"), Match.orElse(() => "frozen wrong tree")),
       })
     },
   })
@@ -495,29 +507,28 @@ describe("the receipt source under a real swap race", () => {
         const outsideText = receiptText(checkout, outsideTree, 1)
         yield* fs.writeFileString(good, receiptText(checkout, goodTree, 0))
         yield* fs.writeFileString(outside, outsideText)
-        yield* fs.copyFile(good, name)
         yield* fs.writeFileString(path.join(root, "swapper.ts"), SWAPPER)
         const stop = path.join(root, "stop")
         yield* spawner.spawn(ChildProcess.make("bun", [path.join(root, "swapper.ts"), name, good, outside, stop], { detached: true, stdin: "ignore", forceKillAfter: "3 seconds" }))
         const places = { host: "host-a", repository: { key: "dotfiles", checkouts: [checkout] }, receipts, installed: path.join(root, "installed.json"), handoff: path.join(root, "handoff.json"), maxBytes: 65536, readWithin: "1 second" as const }
         const outsideDigest = byteHash(outsideText)
-        const tally = new Map<string, number>()
         const once = freezeAt(places, { receipts: [{ head, kind: "round" }], lands: [], install: false }).pipe(
           Effect.map((outcome) => outcomeOf(outcome, outsideDigest, outsideText)),
-          Effect.tap((words) => Effect.sync(() => tally.set(words, Option.getOrElse(Option.fromNullishOr(tally.get(words)), () => 0) + 1))),
         )
-        yield* Effect.forEach(Arr.range(1, FREEZES), () => once, { discard: true }).pipe(Effect.timeoutOption(BOUND))
+        for (const [side, wanted] of [["good", "frozen good"], ["link", "refused a link"]] as const) {
+          yield* fs.exists(`${stop}.${side}`).pipe(Effect.repeat({ until: (exists) => exists, schedule: Schedule.spaced("5 millis") }), Effect.timeout("10 seconds"))
+          expect(yield* once).toBe(wanted)
+          yield* fs.writeFileString(`${stop}.${side}.seen`, "")
+        }
+        const tally = new Map<string, number>()
+        yield* Effect.forEach(Arr.range(1, FREEZES), () =>
+          once.pipe(Effect.tap((words) => Effect.sync(() => tally.set(words, (tally.get(words) ?? 0) + 1)))),
+        { discard: true }).pipe(Effect.timeoutOption(BOUND))
         yield* fs.writeFileString(stop, "")
-        const seen = Object.fromEntries(tally)
-        const kinds = Arr.sort(Object.keys(seen), Order.String)
-        // Never a leak, never a refusal but the link's (a file renamed away while open is read again, not called a hard link); and both sides of the race were seen (the good file frozen, the link refused or read again), or the race proved nothing.
-        expect({ leaks: kinds.filter((kind) => kind.startsWith("true/")), wrongRefusals: kinds.filter((kind) => kind.startsWith("refused ") && kind !== "refused a link"), frozenGood: kinds.includes("false/true"), sawTheLink: kinds.some((kind) => kind === "refused a link" || kind.startsWith("failed ")) }).toEqual({
-          leaks: [],
-          wrongRefusals: [],
-          frozenGood: true,
-          sawTheLink: true,
-        })
-        yield* Effect.logInfo("receipt-source race", seen)
+        // Every free-running observation must be safe, regardless of how often any side happened to win.
+        expect(tally.size).toBeGreaterThan(0)
+        expect([...tally.keys()].filter((kind) => kind !== "frozen good" && kind !== "refused a link" && kind !== "failed InputUnsettled")).toEqual([])
+        yield* Effect.logInfo("receipt-source race", Object.fromEntries(tally))
       }).pipe(Effect.scoped),
     60_000,
   )
