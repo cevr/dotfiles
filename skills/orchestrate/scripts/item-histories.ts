@@ -195,16 +195,16 @@ export function reachable(role: Role, events: ReadonlyArray<Event> = EVENTS): Ma
 /**
  * A record with its facts' content-bound evidence: distinct opaque values derived from `id` (redacted shapes, never
  * a real command, path or log). `newer` adds a `current` attempt beside a finished one (a retry interrupted or
- * answered by a refusal); `form` names the refusal's accepted form.
+ * answered by a refusal); `form` gives the refusal a printed `!` command, `allow` a printed allow rule (neither: it printed no remedy).
  */
-export function materialize(id: string, facts: Facts, options: { readonly newer?: boolean; readonly form?: boolean } = {}): ItemRecord {
+export function materialize(id: string, facts: Facts, options: { readonly newer?: boolean; readonly form?: boolean; readonly allow?: boolean } = {}): ItemRecord {
   const fields: Field[] = [];
   const result = facts.attempt === 'pass' || facts.attempt === 'fail' || facts.attempt === 'unclear' ? facts.attempt : undefined;
   if (result !== undefined)
     fields.push({ field: 'completed', run: { id: `${id}-a1`, command: `cmd:${id}:check`, output: { kind: 'log', digest: `sha:${id}:a1` }, exit: result === 'pass' ? 0 : result === 'fail' ? 1 : 2, receipt: `rcpt:${id}:a1`, head: `head:${id}`, result } });
   if (facts.attempt === 'started' || (result !== undefined && options.newer === true))
     fields.push({ field: 'current', attempt: { id: `${id}-a2`, command: `cmd:${id}:check`, status: facts.refused ? 'denied' : 'interrupted', output: facts.refused ? { kind: 'missing', why: 'not-started' } : { kind: 'partial', digest: `sha:${id}:a2-partial` } } });
-  if (facts.refused) fields.push({ field: 'refused', refusal: { what: `action:${id}`, scope: `scope:${id}`, report: `report:${id}`, form: options.form === true ? { kind: 'named', form: `form:${id}` } : { kind: 'none' } } });
+  if (facts.refused) fields.push({ field: 'refused', refusal: { what: `action:${id}`, scope: `scope:${id}`, report: `report:${id}`, form: options.form === true ? { kind: 'named', form: `form:${id}` } : options.allow === true ? { kind: 'allow', allow: `allow:${id}` } : { kind: 'none' } } });
   if (facts.hostCannot) fields.push({ field: 'cannot', absent: { tool: `tool:${id}`, probe: `probe:${id}`, output: { kind: 'log', digest: `sha:${id}:probe` } } });
   if (facts.wait) fields.push({ field: 'waits', ref: `ref:${id}` });
   return { id, facts, fields };

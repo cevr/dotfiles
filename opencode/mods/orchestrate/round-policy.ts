@@ -80,7 +80,12 @@ export interface Pending {
   readonly status: PendingStatus
   readonly output: Output
 }
-export type Form = { readonly kind: "named"; readonly form: string } | { readonly kind: "none" }
+/**
+ * What authority a refusal named: `named`, the form to retry with (the `!` command or allow rule); `none`, nothing; or
+ * `allow`, no form to retry with but an allow rule that exists, as the refusal printed it. Absence is the `none` tag,
+ * never an empty or placeholder string.
+ */
+export type Form = { readonly kind: "named"; readonly form: string } | { readonly kind: "none" } | { readonly kind: "allow"; readonly allow: string }
 export interface Refusal {
   readonly what: string
   readonly scope: string
@@ -249,10 +254,21 @@ export interface VerdictRule {
 
 export const STOP_FIELDS = ["refused.what", "refused.form", "refused.allow", "limit", "held"] as const
 export type StopFieldId = (typeof STOP_FIELDS)[number]
+/**
+ * How many values a stop field takes, and so whether absence is the truth: `always` exactly one; `ifPrinted` one when the
+ * refused item's record holds the remedy the field is for (`refused.form` the `!` command, `refused.allow` the allow rule), else none; `perHeld` one per item that holds
+ * the step back, naming it, so none (an empty collection) when no item does. A value is never empty: empty is no
+ * value at all, and absence is told by leaving the field out.
+ */
+export const PRESENCES = ["always", "ifPrinted", "perHeld"] as const
+export type Presence = (typeof PRESENCES)[number]
 export interface StopField {
   readonly id: StopFieldId
+  readonly presence: Presence
   readonly text: string
 }
+/** The states whose items hold a step back: what the `held` collection names, one entry each. */
+export const HOLDS_BACK = ["runnable", "waits", "refused", "cannot", "unclear"] as const satisfies ReadonlyArray<State>
 export interface StopEvidence {
   readonly stop: Stop
   readonly fields: ReadonlyArray<StopField>
@@ -367,25 +383,28 @@ export const VERDICT_ORDER = {
   worker: [],
 } as const satisfies { readonly [R in Role]: ReadonlyArray<{ readonly earlier: string; readonly later: string; readonly why: string }> }
 
-const WHAT: StopField = { id: "refused.what", text: "what was refused, as the refusal said it" }
+const WHAT: StopField = { id: "refused.what", presence: "always", text: "what was refused, as the refusal said it" }
+const FORM: StopField = { id: "refused.form", presence: "ifPrinted", text: "the `!` command it printed" }
+const ALLOW: StopField = { id: "refused.allow", presence: "ifPrinted", text: "the allow rule it printed" }
+const REMEDY = [WHAT, FORM, ALLOW]
 const STOP_AUTHORED = {
   planner: {
-    refusalForm: [WHAT, { id: "refused.form", text: "the exact form it named (the `!` command or allow rule, as Refusals says)" }],
-    refusalNone: [WHAT, { id: "refused.allow", text: "an allow rule only if one exists, never one inferred" }],
-    limit: [{ id: "limit", text: "the clock (the timebox) or the count (the failure cap)" }],
-    idle: [{ id: "held", text: "what you tried for each item that holds the step back, the options and your pick" }],
+    refusalForm: REMEDY,
+    refusalNone: [WHAT],
+    limit: [{ id: "limit", presence: "always", text: "the clock (the timebox) or the count (the failure cap)" }],
+    idle: [{ id: "held", presence: "perHeld", text: "what you tried for the item, the options and your pick" }],
   },
   verifier: {
-    refusalForm: [WHAT, { id: "refused.form", text: "the exact form it named (the `!` command or allow rule, as Refusals says)" }],
-    refusalNone: [WHAT, { id: "refused.allow", text: "an allow rule only if one exists, never one inferred" }],
-    idle: [{ id: "held", text: "each check that holds the verdict back, with its command and exit code" }],
+    refusalForm: REMEDY,
+    refusalNone: [WHAT],
+    idle: [{ id: "held", presence: "perHeld", text: "the check, with its command and exit code" }],
   },
   worker: {
-    refusalForm: [WHAT, { id: "refused.form", text: "the form it named" }],
+    refusalForm: REMEDY,
     refusalNone: [WHAT],
-    idle: [{ id: "held", text: "what holds back each item left" }],
+    idle: [{ id: "held", presence: "perHeld", text: "what holds the item back" }],
   },
-} as const
+} as const satisfies { readonly [K in "planner" | "verifier" | "worker"]: { readonly [S in Stop]?: ReadonlyArray<StopField> } }
 
 const stopAuthored = (role: Role, stop: Stop): ReadonlyArray<StopField> => {
   if (role === "planner" || role === "implementor") return STOP_AUTHORED.planner[stop]
@@ -396,7 +415,7 @@ const stopAuthored = (role: Role, stop: Stop): ReadonlyArray<StopField> => {
 export const FIELD_TEXT = {
   completed: "the last attempt that finished: its id, the command it ran, its output's digest, its exit code, its receipt, the head it ran at and its result",
   current: "an attempt newer than that, with no result: its id, its command, its status (started, interrupted, denied or not started) and its partial output's digest or why it has none",
-  refused: "what was refused, as the refusal said it, its scope, where its safe report is, and the exact form it named or none",
+  refused: "what was refused, as the refusal said it, its scope, where its safe report is, and the `!` command or allow rule it printed, or none",
   cannot: "the check or tool, with the probe that found it absent: its command and output",
   waits: "the id it waits on",
 } as const satisfies { readonly [F in FieldId]: string }
@@ -472,12 +491,12 @@ export const FIELDS_LEAD =
   "Each item's hand-back gives its rule, its label and each of these fields its record holds, with the exact values recorded; a field the record lacks is left out, never filled in or asserted, and a label wins only the presentation, never dropping another field:"
 export const FIRST_ROW = "Take the first row that is true of the item; stop there."
 export const FIRST_VERDICT = "Take the first row that holds for the step; stop there."
-export const STOPS_LEAD = "Why the step stopped gives the evidence fields you write:"
+export const STOPS_LEAD = "Why the step stopped gives the evidence fields you write; leave out a field with no value, never a placeholder:"
 export const F1_HEADER = "| # | Rule | State | An item that is | Its label |"
 export const F2_HEADER = "| # | Rule | Verdict | When | You write |"
-export const F3_HEADER = "| Stop | Field | Its evidence |"
+export const F3_HEADER = "| Stop | Field | Its evidence | How many |"
 const RULE5 = "| --- | --- | --- | --- | --- |"
-const RULE3 = "| --- | --- | --- |"
+const RULE4 = "| --- | --- | --- | --- |"
 
 /** At most one element: the first of `items` that `keep` holds for. */
 const firstOf = <A>(items: ReadonlyArray<A>, keep: (item: A) => boolean): ReadonlyArray<A> => items.filter(keep).slice(0, 1)
@@ -520,7 +539,20 @@ const fieldsNote = (fields: ReadonlyArray<FieldText>): string => `${FIELDS_LEAD}
 const rowLine = (role: Role, row: Row): string => `| ${row.priority} | \`${row.id}\` | ${STATE_NAME[row.state]} | ${condition(role, row.when)} | ${row.label} |`
 const verdictLine = (single: boolean, rule: VerdictRule): string =>
   `| ${rule.priority} | \`${rule.id}\` | ${verdictWord(rule.verdict)} | ${verdictWhen(rule.when, single)} | ${writesText(rule.writes)} |`
-const stopLines = (one: StopEvidence): ReadonlyArray<string> => one.fields.map((field) => `| ${STOP_TEXT[one.stop]} | \`${field.id}\` | ${field.text} |`)
+/** The states a role's `held` collection names an entry for. */
+export const heldStates = (role: Role): ReadonlyArray<State> => HOLDS_BACK.filter((state) => hasState(role, state))
+
+/** How many values a stop field takes, in the words a prompt carries: the one vocabulary written and read back. */
+export const presenceWords = (role: Role, presence: Presence): string => {
+  if (presence === "always") return "one"
+  if (presence === "ifPrinted") return "one if printed, else none"
+  return `one per item ${listOf(heldStates(role).map((state) => STATE_NAME[state]))}, naming it, else none`
+}
+
+const stopLines =
+  (role: Role) =>
+  (one: StopEvidence): ReadonlyArray<string> =>
+    one.fields.map((field) => `| ${STOP_TEXT[one.stop]} | \`${field.id}\` | ${field.text} | ${presenceWords(role, field.presence)} |`)
 
 /** A policy as the block a prompt carries. */
 export const render = (policy: Policy): string =>
@@ -545,8 +577,8 @@ export const render = (policy: Policy): string =>
     STOPS_LEAD,
     "",
     F3_HEADER,
-    RULE3,
-    ...policy.stops.flatMap(stopLines),
+    RULE4,
+    ...policy.stops.flatMap(stopLines(policy.role)),
     END,
   ].join("\n")
 
@@ -692,12 +724,13 @@ const decodeVerdict = (line: string): Decoded<VerdictRule> => {
 }
 
 const stopLine = (role: Role, line: string): Decoded<{ readonly stop: Stop; readonly field: StopField }> => {
-  const [name = "", id = "", text = ""] = cells(line)
+  const [name = "", id = "", text = "", count = ""] = cells(line)
   const stop = firstOf(STOPS_OF[role], (one) => STOP_TEXT[one] === name)
   const field = fieldName(id)
   const known = firstOf(STOP_FIELDS, (one) => field.ok && one === field.value)
-  if (cells(line).length !== 3 || stop.length === 0 || known.length === 0) return fail(`${role}: no stop evidence row reads "${line}"`)
-  return ok({ stop: stop[0] ?? "idle", field: { id: known[0] ?? "held", text } })
+  const presence = firstOf(PRESENCES, (one) => presenceWords(role, one) === count)
+  if (cells(line).length !== 4 || stop.length === 0 || known.length === 0 || presence.length === 0) return fail(`${role}: no stop evidence row reads "${line}"`)
+  return ok({ stop: stop[0] ?? "idle", field: { id: known[0] ?? "held", presence: presence[0] ?? "always", text } })
 }
 
 const decodeStops = (role: Role, lines: ReadonlyArray<string>): Decoded<ReadonlyArray<StopEvidence>> => {
@@ -771,7 +804,7 @@ export const decode = (text: string): Decoded<Policy> => {
   if (!got.ok) return fail(got.error)
   const { role, paragraphs } = got.value
   const [intro = [], note = [], , f1 = [], , f2 = [], , f3 = []] = paragraphs
-  const tables = allOk([tableRows(f1, F1_HEADER, RULE5), tableRows(f2, F2_HEADER, RULE5), tableRows(f3, F3_HEADER, RULE3)])
+  const tables = allOk([tableRows(f1, F1_HEADER, RULE5), tableRows(f2, F2_HEADER, RULE5), tableRows(f3, F3_HEADER, RULE4)])
   if (!tables.ok) return fail(tables.error)
   const [rowLines = [], verdictLines = [], stopRows = []] = tables.value
   const fields = decodeFields(note.join("\n"))
@@ -802,44 +835,65 @@ export const checked = (policy: Policy): Decoded<Policy> => {
   return ok(policy)
 }
 
-// ---- comparing a delivered policy with the source -------------------------------------------------------------------
+// ---- comparing: typed and member by member; text is made only to show a difference, never to find one ---------------
 
-const whenKey = (when: VerdictWhen): string => {
+const eq = <A>(a: A, b: A): boolean => a === b
+/** Two lists equal element by element, in order. */
+const sameList = <A>(a: ReadonlyArray<A>, b: ReadonlyArray<A>, same: (x: A, y: A) => boolean): boolean =>
+  a.length === b.length && a.every((x, index) => b.slice(index, index + 1).every((y) => same(x, y)))
+
+const sameWhen = (a: When, b: When): boolean => {
+  if (a === "otherwise" || b === "otherwise") return a === b
+  return sameList(a, b, eq)
+}
+const sameVerdictWhen = (a: VerdictWhen, b: VerdictWhen): boolean => {
+  if (a.kind === "else" || b.kind === "else") return a.kind === b.kind
+  return a.kind === b.kind && sameList(a.states, b.states, eq)
+}
+const sameWrites = (a: Writes, b: Writes): boolean => sameList(a.artifacts, b.artifacts, eq) && sameList(a.contents, b.contents, eq)
+const sameRow = (a: Row, b: Row): boolean => a.priority === b.priority && a.id === b.id && a.state === b.state && sameWhen(a.when, b.when) && a.label === b.label
+const sameRule = (a: VerdictRule, b: VerdictRule): boolean =>
+  a.priority === b.priority && a.id === b.id && a.verdict === b.verdict && sameVerdictWhen(a.when, b.when) && sameWrites(a.writes, b.writes)
+const sameStopField = (a: StopField, b: StopField): boolean => a.id === b.id && a.presence === b.presence && a.text === b.text
+const sameStops = (a: StopEvidence, b: StopEvidence): boolean => a.stop === b.stop && sameList(a.fields, b.fields, sameStopField)
+const sameFieldText = (a: FieldText, b: FieldText): boolean => a.id === b.id && a.text === b.text
+
+const whenText = (when: VerdictWhen): string => {
   if (when.kind === "else") return "else"
   return `${when.kind} ${when.states.join(",")}`
 }
-const writesKey = (writes: Writes): string => `${writes.artifacts.join(",")} / ${writes.contents.join(",")}`
-const rowKey = (role: Role, row: Row): string => `${row.priority} ${row.state} [${condition(role, row.when)}] ${row.label}`
-const verdictKey = (rule: VerdictRule): string => `${rule.priority} ${rule.verdict} when ${whenKey(rule.when)} writes ${writesKey(rule.writes)}`
-const stopKey = (one: StopEvidence): string => one.fields.map((field) => `${field.id}: ${field.text}`).join("; ")
+const rowText = (role: Role) => (row: Row) => `${row.priority} ${row.state} [${condition(role, row.when)}] ${row.label}`
+const ruleText = (rule: VerdictRule) => `${rule.priority} ${rule.verdict} when ${whenText(rule.when)} writes ${rule.writes.artifacts.join(",")} / ${rule.writes.contents.join(",")}`
+const stopsText = (one: StopEvidence) => one.fields.map((field) => `${field.id} (${field.presence}): ${field.text}`).join("; ")
 
-/** Each keyed part of a policy, as `[name, value]`: what `differences` compares. */
-const keyed = (policy: Policy): ReadonlyArray<readonly [string, string]> => [
-  ["role", policy.role],
-  ["version", `v${policy.version}`],
-  ["intro", policy.intro],
-  ["fields", policy.fields.map((one) => one.id).join(", ")],
-  ...policy.fields.map((one): readonly [string, string] => [`field ${one.id}`, one.text]),
-  ["rows", policy.rows.map((row) => row.id).join(", ")],
-  ...policy.rows.map((row): readonly [string, string] => [`row ${row.id}`, rowKey(policy.role, row)]),
-  ["verdicts", policy.verdicts.map((rule) => rule.id).join(", ")],
-  ...policy.verdicts.map((rule): readonly [string, string] => [`verdict ${rule.id}`, verdictKey(rule)]),
-  ["stops", policy.stops.map((one) => one.stop).join(", ")],
-  ...policy.stops.map((one): readonly [string, string] => [`stop ${one.stop}`, stopKey(one)]),
+/** One kind of part of a policy, compared by id and then member by member; each line names the part and both values. */
+const partDifferences = <A>(
+  kind: string,
+  ours: ReadonlyArray<A>,
+  theirs: ReadonlyArray<A>,
+  id: (part: A) => string,
+  same: (a: A, b: A) => boolean,
+  show: (part: A) => string,
+): ReadonlyArray<string> => [
+  ...iff(!sameList(ours.map(id), theirs.map(id), eq), `${kind}s: source ${ours.map(id).join(", ")}, shown ${theirs.map(id).join(", ")}`),
+  ...ours.flatMap((part) => {
+    const other = theirs.filter((one) => id(one) === id(part))
+    if (other.length === 0) return [`${kind} ${id(part)}: source ${show(part)}, shown none`]
+    return other.flatMap((one) => iff(!same(part, one), `${kind} ${id(part)}: source ${show(part)}, shown ${show(one)}`))
+  }),
+  ...theirs.flatMap((part) => iff(!ours.some((one) => id(one) === id(part)), `${kind} ${id(part)}: source none, shown ${show(part)}`)),
 ]
 
 /** Every part of a shown policy that differs from the source, each named with both values. */
-export const differences = (source: Policy, shown: Policy): ReadonlyArray<string> => {
-  const theirs = new Map(keyed(shown))
-  const ours = new Map(keyed(source))
-  const changed = [...ours].flatMap(([name, value]) => {
-    const other = [...theirs].flatMap(([key, text]) => [text].filter(() => key === name))
-    if (other.length === 0) return [`${name}: source ${value}, shown none`]
-    return iff(other[0] !== value, `${name}: source ${value}, shown ${other.join("")}`)
-  })
-  const added = [...theirs].flatMap(([name, value]) => iff(!ours.has(name), `${name}: source none, shown ${value}`))
-  return [...changed, ...added]
-}
+export const differences = (source: Policy, shown: Policy): ReadonlyArray<string> => [
+  ...iff(source.role !== shown.role, `role: source ${source.role}, shown ${shown.role}`),
+  ...iff(source.version !== shown.version, `version: source v${source.version}, shown v${shown.version}`),
+  ...iff(source.intro !== shown.intro, `intro: source ${source.intro}, shown ${shown.intro}`),
+  ...partDifferences("field", source.fields, shown.fields, (one) => one.id, sameFieldText, (one) => one.text),
+  ...partDifferences("row", source.rows, shown.rows, (one) => one.id, sameRow, rowText(source.role)),
+  ...partDifferences("verdict", source.verdicts, shown.verdicts, (one) => one.id, sameRule, ruleText),
+  ...partDifferences("stop", source.stops, shown.stops, (one) => one.stop, sameStops, stopsText),
+]
 
 /** Every way a delivered text's policy is not the role's source: block count, decoding, each part, then the bytes. */
 export const policyFaults = (role: Role, text: string): ReadonlyArray<string> => {
@@ -850,6 +904,7 @@ export const policyFaults = (role: Role, text: string): ReadonlyArray<string> =>
   if (!shown.ok) return [`${role}: ${shown.error.replace(new RegExp(`^${role}:? `), "")}`]
   const parts = differences(project(role), shown.value).map((line) => `${role}: ${line}`)
   if (parts.length > 0) return parts
+  // The canonical-bytes check compares rendered text on purpose: it is the rendering itself being checked.
   if (found.value !== block(role)) return [`${role}: the block's bytes are not the source's canonical rendering`]
   return []
 }
@@ -863,53 +918,122 @@ export const delivered = (role: Role, text: string): Decoded<Policy> => {
 
 // ---- evidence: what a record owes, and what a hand-back gives ------------------------------------------------------
 
-const outputKey = (output: Output): string => {
+const sameOutput = (a: Output, b: Output): boolean => {
+  if (a.kind === "missing" || b.kind === "missing") return a.kind === "missing" && b.kind === "missing" && a.why === b.why
+  return a.kind === b.kind && a.digest === b.digest
+}
+const sameForm = (a: Form, b: Form): boolean => {
+  if (a.kind === "named" && b.kind === "named") return a.form === b.form
+  if (a.kind === "allow" && b.kind === "allow") return a.allow === b.allow
+  return a.kind === "none" && b.kind === "none"
+}
+const sameRun = (a: Run, b: Run): boolean =>
+  a.id === b.id && a.command === b.command && sameOutput(a.output, b.output) && a.exit === b.exit && a.receipt === b.receipt && a.head === b.head && a.result === b.result
+const samePending = (a: Pending, b: Pending): boolean => a.id === b.id && a.command === b.command && a.status === b.status && sameOutput(a.output, b.output)
+const sameRefusal = (a: Refusal, b: Refusal): boolean => a.what === b.what && a.scope === b.scope && a.report === b.report && sameForm(a.form, b.form)
+const sameAbsent = (a: Absent, b: Absent): boolean => a.tool === b.tool && a.probe === b.probe && sameOutput(a.output, b.output)
+
+/** Two evidence fields equal member by member: the kind, then every value it holds. */
+export const sameField = (a: Field, b: Field): boolean => {
+  if (a.field === "completed" && b.field === "completed") return sameRun(a.run, b.run)
+  if (a.field === "current" && b.field === "current") return samePending(a.attempt, b.attempt)
+  if (a.field === "refused" && b.field === "refused") return sameRefusal(a.refusal, b.refusal)
+  if (a.field === "cannot" && b.field === "cannot") return sameAbsent(a.absent, b.absent)
+  if (a.field === "waits" && b.field === "waits") return a.ref === b.ref
+  return false
+}
+
+/** Each value as written: `plain` as it is, `quoted` in double quotes with `\` and `"` escaped, so no two values show alike. */
+type Show = (text: string) => string
+const plain: Show = (text) => text
+const quoted: Show = (text) => `"${text.replaceAll("\\", "\\\\").replaceAll(`"`, `\\"`)}"`
+const outputText = (output: Output, show: Show = plain): string => {
   if (output.kind === "missing") return `missing ${output.why}`
-  return `${output.kind} ${output.digest}`
+  return `${output.kind} ${show(output.digest)}`
 }
-const formKey = (form: Form): string => {
+const formText = (form: Form, show: Show = plain): string => {
   if (form.kind === "none") return "none"
-  return `named ${form.form}`
+  if (form.kind === "allow") return `allow ${show(form.allow)}`
+  return `named ${show(form.form)}`
 }
-/** A field's exact values, as one string: what a hand-back is compared on. */
-export const fieldKey = (field: Field): string => {
+const fieldLine = (field: Field, show: Show): string => {
   if (field.field === "completed") {
     const { id, command, output, exit, receipt, head, result } = field.run
-    return `completed id=${id} command=${command} output=${outputKey(output)} exit=${exit} receipt=${receipt} head=${head} result=${result}`
+    return `completed id=${show(id)} command=${show(command)} output=${outputText(output, show)} exit=${exit} receipt=${show(receipt)} head=${show(head)} result=${result}`
   }
   if (field.field === "current") {
     const { id, command, status, output } = field.attempt
-    return `current id=${id} command=${command} status=${status} output=${outputKey(output)}`
+    return `current id=${show(id)} command=${show(command)} status=${status} output=${outputText(output, show)}`
   }
   if (field.field === "refused") {
     const { what, scope, report, form } = field.refusal
-    return `refused what=${what} scope=${scope} report=${report} form=${formKey(form)}`
+    return `refused what=${show(what)} scope=${show(scope)} report=${show(report)} form=${formText(form, show)}`
   }
-  if (field.field === "cannot") return `cannot tool=${field.absent.tool} probe=${field.absent.probe} output=${outputKey(field.absent.output)}`
-  return `waits ref=${field.ref}`
+  if (field.field === "cannot") return `cannot tool=${show(field.absent.tool)} probe=${show(field.absent.probe)} output=${outputText(field.absent.output, show)}`
+  return `waits ref=${show(field.ref)}`
 }
+/**
+ * A field's values as one plain line, for reading. Not injective (a value may hold ` command=`), so it is never
+ * compared: `sameField` compares, and a judged difference is shown by `fieldShown`.
+ */
+export const fieldKey = (field: Field): string => fieldLine(field, plain)
+/** A field's values as one line with every value quoted and escaped: how a judged difference is shown. */
+export const fieldShown = (field: Field): string => fieldLine(field, quoted)
 
 const has = (record: ItemRecord, id: FieldId): boolean => record.fields.some((one) => one.field === id)
 const isResult = (attempt: Attempt): boolean => RESULTS.some((one) => one === attempt)
-const filled = (...texts: ReadonlyArray<string>): boolean => texts.every((one) => one.trim().length > 0)
-const outputOk = (output: Output): boolean => output.kind === "missing" || filled(output.digest)
+/** Each a string with a character other than white space: an empty or missing value is no value. */
+const filled = (...texts: ReadonlyArray<string>): boolean => texts.every((one) => one === String(one) && one.trim().length > 0)
+const outputOk = (output: Output): boolean => (output.kind === "missing" && MISSING.includes(output.why)) || ((output.kind === "log" || output.kind === "partial") && filled(output.digest))
+const isFlag = (value: boolean): boolean => value === true || value === false
+
+/** The keys each evidence value may hold: a key beyond them is a flag standing in for evidence. */
+const KEYS = {
+  completed: ["field", "run"],
+  current: ["field", "attempt"],
+  refused: ["field", "refusal"],
+  cannot: ["field", "absent"],
+  waits: ["field", "ref"],
+  run: ["id", "command", "output", "exit", "receipt", "head", "result"],
+  pending: ["id", "command", "status", "output"],
+  refusal: ["what", "scope", "report", "form"],
+  absent: ["tool", "probe", "output"],
+  named: ["kind", "form"],
+  none: ["kind"],
+  allow: ["kind", "allow"],
+} as const satisfies { readonly [K in string]: ReadonlyArray<string> }
+const extraKeys = (keys: ReadonlyArray<string>, known: ReadonlyArray<string>): ReadonlyArray<string> =>
+  keys.filter((key) => !known.includes(key))
+
+/** The keys a field holds beyond its shape, its own and its nested value's. */
+const keyFaults = (field: Field): ReadonlyArray<string> => {
+  const extra = (inner: ReadonlyArray<string>) => [...extraKeys(Object.keys(field), KEYS[field.field]), ...inner]
+  if (field.field === "completed") return extra(extraKeys(Object.keys(field.run), KEYS.run))
+  if (field.field === "current") return extra(extraKeys(Object.keys(field.attempt), KEYS.pending))
+  if (field.field === "refused") return extra([...extraKeys(Object.keys(field.refusal), KEYS.refusal), ...extraKeys(Object.keys(field.refusal.form), KEYS[field.refusal.form.kind])])
+  if (field.field === "cannot") return extra(extraKeys(Object.keys(field.absent), KEYS.absent))
+  return extra([])
+}
 
 const fieldFaults = (field: Field, facts: Facts): ReadonlyArray<string> => {
+  const keys = keyFaults(field)
+  const unknown = iff(keys.length > 0, `\`${field.field}\` holds unknown keys [${keys.join(", ")}]: no flag stands in for evidence`)
   if (field.field === "completed") {
     const run = field.run
-    const empty = !filled(run.id, run.command, run.receipt, run.head) || !outputOk(run.output)
-    return [...iff(empty, "`completed` lacks its id, command, output, receipt or head"), ...iff(run.result !== facts.attempt, `\`completed\` holds result ${run.result}, the facts ${facts.attempt}`)]
+    const empty = !filled(run.id, run.command, run.receipt, run.head) || !outputOk(run.output) || !Number.isInteger(run.exit)
+    return [...unknown, ...iff(empty, "`completed` lacks its id, command, output, exit, receipt or head"), ...iff(run.result !== facts.attempt, `\`completed\` holds result ${run.result}, the facts ${facts.attempt}`)]
   }
   if (field.field === "current") {
-    const bad = !filled(field.attempt.id, field.attempt.command) || !outputOk(field.attempt.output) || field.attempt.output.kind === "log"
-    return iff(bad, "`current` lacks its id or command, or claims a finished log")
+    const bad = !filled(field.attempt.id, field.attempt.command) || !PENDING.includes(field.attempt.status) || !outputOk(field.attempt.output) || field.attempt.output.kind === "log"
+    return [...unknown, ...iff(bad, "`current` lacks its id, command or status, or claims a finished log")]
   }
   if (field.field === "refused") {
     const r = field.refusal
-    return iff(!filled(r.what, r.scope, r.report) || (r.form.kind === "named" && !filled(r.form.form)), "`refused` lacks what, scope, report or its named form")
+    const form = r.form.kind === "none" || (r.form.kind === "named" && filled(r.form.form)) || (r.form.kind === "allow" && filled(r.form.allow))
+    return [...unknown, ...iff(!filled(r.what, r.scope, r.report) || !form, "`refused` lacks what, scope or report, or holds an empty form or allow rule (a refusal that named none holds `none`)")]
   }
-  if (field.field === "cannot") return iff(!filled(field.absent.tool, field.absent.probe) || !outputOk(field.absent.output), "`cannot` lacks its tool, probe or output")
-  return iff(!filled(field.ref), "`waits` lacks its ref")
+  if (field.field === "cannot") return [...unknown, ...iff(!filled(field.absent.tool, field.absent.probe) || !outputOk(field.absent.output), "`cannot` lacks its tool, probe or output")]
+  return [...unknown, ...iff(!filled(field.ref), "`waits` lacks its ref")]
 }
 
 const attemptIds = (record: ItemRecord): ReadonlyArray<string> =>
@@ -918,6 +1042,41 @@ const attemptIds = (record: ItemRecord): ReadonlyArray<string> =>
     if (one.field === "current") return [one.attempt.id]
     return []
   })
+
+/**
+ * Why an item's facts are none a step of this role can reach: the facts the item histories generate, and only
+ * those, pass (skills/orchestrate/scripts/item-histories.ts derives the same set independently, by its events).
+ */
+export const factsFaults = (role: Role, facts: Facts): ReadonlyArray<string> => {
+  const flags = [facts.assigned, facts.required, facts.settled, facts.refused, facts.hostCannot, facts.wait].every(isFlag)
+  if (!flags || !ATTEMPTS.includes(facts.attempt) || !PROVENANCES.includes(facts.provenance)) return ["the facts are not an item's facts"]
+  return [...assignmentFaults(role, facts), ...attemptFaults(role, facts)]
+}
+
+const obstructed = (facts: Facts): boolean => facts.refused || facts.hostCannot || facts.wait
+
+/** Whose work the item is: a finding outside the assignment, optional work, provenance. */
+const assignmentFaults = (role: Role, facts: Facts): ReadonlyArray<string> => {
+  const outside = !facts.assigned
+  return [
+    ...iff((role === "verifier" && outside) !== (facts.provenance !== "none"), "a provenance belongs exactly to a verifier's finding outside its assignment"),
+    ...iff(outside && (facts.attempt !== "never" || !facts.settled || obstructed(facts) || facts.required), "work outside the assignment is never attempted, required or held back, and is settled as found"),
+    ...iff(facts.assigned && !facts.required && role !== "verifier", "only a verifier has optional work"),
+  ]
+}
+
+/** What its attempts and obstacles leave: settled only by a result that settles it, a refusal only after an attempt. */
+const attemptFaults = (role: Role, facts: Facts): ReadonlyArray<string> => {
+  const verifier = role === "verifier"
+  return [
+    ...iff(facts.assigned && facts.settled && !isResult(facts.attempt), "a settled item is settled by a result"),
+    ...iff(!verifier && facts.assigned && facts.settled && facts.attempt !== "pass", "only its acceptance holding settles a planner's, implementor's or worker's item"),
+    ...iff(verifier && facts.attempt === "fail" && !facts.settled, "a verifier's failed check is a proof, which settles it"),
+    ...iff(facts.refused && facts.attempt === "never", "a refusal answers an attempt"),
+    ...iff(facts.attempt === "pass" && !facts.settled, "a passed item is settled"),
+    ...iff(facts.settled && obstructed(facts), "a settled item meets no obstacle"),
+  ]
+}
 
 const presence = (record: ItemRecord): ReadonlyArray<readonly [boolean, string]> => {
   const { facts } = record
@@ -933,12 +1092,21 @@ const presence = (record: ItemRecord): ReadonlyArray<readonly [boolean, string]>
   ]
 }
 
-/** Why a record is no step's item: its evidence disagrees with its facts, or a field is empty or doubled. A valid empty field set is no fault. */
-export const recordFaults = (record: ItemRecord): ReadonlyArray<string> => [
-  ...unique(record.fields.map((one) => one.field)).map((id) => `\`${id}\` stands twice`),
-  ...presence(record).flatMap(([bad, why]) => iff(bad, why)),
-  ...record.fields.flatMap((field) => fieldFaults(field, record.facts)),
-]
+/**
+ * Why a record is no step's item for this role: its facts are unreachable, its evidence disagrees with them, or a
+ * field is empty, doubled or carries keys beyond its shape. A valid empty field set is no fault.
+ */
+export const recordFaults = (role: Role, record: ItemRecord): ReadonlyArray<string> => {
+  const facts = factsFaults(role, record.facts)
+  if (facts.length > 0) return [...iff(!filled(record.id), "the item has no id"), ...facts]
+  return [
+    ...iff(!filled(record.id), "the item has no id"),
+    ...unique(record.fields.map((one) => one.field)).map((id) => `\`${id}\` stands twice`),
+    ...record.fields.flatMap((one) => iff(!FIELDS.includes(one.field), `\`${one.field}\` is no evidence field`)),
+    ...presence(record).flatMap(([bad, why]) => iff(bad, why)),
+    ...record.fields.filter((one) => FIELDS.includes(one.field)).flatMap((field) => fieldFaults(field, record.facts)),
+  ]
+}
 
 /** The first row of a policy true of an item with these atoms (the catch-all when none above is). */
 export const decide = (policy: Policy, atoms: ReadonlySet<Atom>): ReadonlyArray<Row> => firstOf(policy.rows, (row) => row.when === "otherwise" || row.when.every((atom) => atoms.has(atom)))
@@ -958,32 +1126,33 @@ export interface HandBack {
   readonly fields: ReadonlyArray<Field>
 }
 
-/** The hand-back a policy owes for a record, or why the record is none. */
-export const due = (policy: Policy, record: ItemRecord): Decoded<Due> => {
-  const faults = recordFaults(record)
-  if (faults.length > 0) return fail(`${record.id}: ${faults.join("; ")}`)
-  const named = policy.fields.map((field) => field.id)
-  const rows = decide(policy, truths([record.facts])).map((row) => ({ item: record.id, rule: row.id, state: row.state, label: row.label, fields: record.fields.filter((field) => named.includes(field.field)) }))
-  return firstFound(rows, `${record.id}: no row is true`)
-}
-
 /** The first of `items`, or `why` when there is none. */
 const firstFound = <A>(items: ReadonlyArray<A>, why: string): Decoded<A> => {
   for (const one of items) return ok(one)
   return fail(why)
 }
 
+/** The hand-back a policy owes for a record, or the typed rejection of a record no step of its role reaches. */
+export const due = (policy: Policy, record: ItemRecord): Decoded<Due> => {
+  const faults = recordFaults(policy.role, record)
+  if (faults.length > 0) return fail(`${record.id}: ${faults.join("; ")}`)
+  const named = policy.fields.map((field) => field.id)
+  const rows = decide(policy, truths([record.facts])).map((row) => ({ item: record.id, rule: row.id, state: row.state, label: row.label, fields: record.fields.filter((field) => named.includes(field.field)) }))
+  return firstFound(rows, `${record.id}: no row is true`)
+}
+
 const HAND_BACK_KEYS: ReadonlyArray<string> = ["item", "rule", "label", "fields"]
 
 const fieldFaultsOf = (owed: Due, fields: ReadonlyArray<Field>): ReadonlyArray<string> => [
   ...owed.fields.flatMap((want) => {
-    const got = fields.flatMap((one) => [fieldKey(one)].filter(() => one.field === want.field))
-    return iff(got.length !== 1 || got[0] !== fieldKey(want), `${want.field}: due ${fieldKey(want)}, given ${got.join(" and ") || "none"}`)
+    const got = fields.filter((one) => one.field === want.field)
+    const exact = got.length === 1 && got.every((one) => sameField(one, want) && keyFaults(one).length === 0)
+    return iff(!exact, `${want.field}: due ${fieldShown(want)}, given ${got.map(fieldShown).join(" and ") || "none"}`)
   }),
-  ...fields.flatMap((one) => iff(!owed.fields.some((want) => want.field === one.field), `${one.field}: due none, given ${fieldKey(one)}`)),
+  ...fields.flatMap((one) => iff(!owed.fields.some((want) => want.field === one.field), `${one.field}: due none, given ${fieldShown(one)}`)),
 ]
 
-/** Every field of a hand-back that differs from the one due, each named with both values: exact, never a prefix or a flag. */
+/** Every field of a hand-back that differs from the one due, each named with both values: member by member, never a prefix, a rendered key or a flag. */
 export const judge = (owed: Due, given: HandBack): ReadonlyArray<string> => {
   const extra = Object.keys(given).filter((key) => !HAND_BACK_KEYS.includes(key))
   return [
@@ -1037,12 +1206,14 @@ export const outcome = (policy: Policy, stop: Stop, states: ReadonlyArray<State>
   return firstFound(rules, `no verdict rule holds for ${policy.role}`)
 }
 
-/** A stop evidence field's recorded value. */
-export interface StopValue {
-  readonly id: StopFieldId
-  readonly value: string
-}
-/** The stop event as recorded: which stop, and each of its evidence fields' value. */
+/**
+ * A stop evidence field's value: one of a single-valued field, or one `held` entry naming the item it is for. A field
+ * the refusal did not print, or a `held` collection with nothing held, is told by leaving the entries out.
+ */
+export type StopValue =
+  | { readonly id: "refused.what" | "refused.form" | "refused.allow" | "limit"; readonly value: string }
+  | { readonly id: "held"; readonly item: string; readonly value: string }
+/** The stop event as recorded: which stop, and its evidence fields' values. */
 export interface StopRecord {
   readonly stop: Stop
   readonly values: ReadonlyArray<StopValue>
@@ -1058,16 +1229,78 @@ export interface Claim {
   readonly items: ReadonlyArray<HandBack>
 }
 
-const stopFaults = (owed: Outcome, step: Step, claim: Claim): ReadonlyArray<string> => [
-  ...owed.fields.flatMap((id) => {
-    const want = step.stop.values.filter((one) => one.id === id && filled(one.value)).map((one) => one.value)
-    const got = claim.stop.filter((one) => one.id === id).map((one) => one.value)
-    if (want.length !== 1) return [`stop ${id}: the record holds no value`]
-    if (got.length === 1 && got[0] === want[0]) return []
-    return [`stop ${id}: due ${want.join("")}, given ${got.join(" and ") || "none"}`]
-  }),
-  ...claim.stop.filter((one) => !owed.fields.includes(one.id)).map((one) => `stop ${one.id}: due none, given ${one.value}`),
-]
+/** The item a `held` entry names, or none for a single-valued field (and for a `held` entry that names none). */
+const heldItem = (value: StopValue): ReadonlyArray<string> => {
+  if (value.id !== "held" || !("item" in value)) return []
+  return [value.item]
+}
+const sameStopValue = (a: StopValue, b: StopValue): boolean => a.id === b.id && a.value === b.value && sameList(heldItem(a), heldItem(b), eq)
+const stopValueText = (value: StopValue): string => [...heldItem(value).map((item) => `${quoted(item)}: `), quoted(value.value)].join("")
+
+/** Each field's count, by its presence: what the record must hold for the stop to be one a step reached. */
+const countFaults = (field: StopField, entries: ReadonlyArray<StopValue>, held: ReadonlyArray<string>): ReadonlyArray<string> => {
+  if (field.presence === "always") return iff(entries.length !== 1, `${field.id}: exactly one value is due, the record holds ${entries.length}`)
+  if (field.presence === "ifPrinted") return iff(entries.length > 1, `${field.id}: at most one value, the record holds ${entries.length}`)
+  const named = entries.flatMap(heldItem)
+  return [
+    ...iff(named.length !== entries.length || !named.every((item) => filled(item)), `${field.id}: an entry names no item`),
+    ...unique(named).map((item) => `${field.id}: ${item} stands twice`),
+    ...named.flatMap((item) => iff(!held.includes(item), `${field.id}: ${item} holds nothing back, so no entry is due for it`)),
+    ...held.flatMap((item) => iff(!named.includes(item), `${field.id}: ${item} holds the step back and has no entry`)),
+  ]
+}
+
+/** The remedy a refusal printed for one stop field: the `!` command for `refused.form`, the allow rule for `refused.allow`. */
+const remedyOf = (form: Form, id: StopFieldId): ReadonlyArray<string> => {
+  if (form.kind === "named" && id === "refused.form") return [form.form]
+  if (form.kind === "allow" && id === "refused.allow") return [form.allow]
+  return []
+}
+
+/** The refusal the step stopped on, bound to the refused item's own record: what it said and the remedy it printed, if any. */
+const refusalFaults = (stop: Stop, fields: ReadonlyArray<StopField>, values: ReadonlyArray<StopValue>, items: ReadonlyArray<ItemRecord>): ReadonlyArray<string> => {
+  const refusals = items.flatMap((record) => record.fields.flatMap((field) => [field].filter((one) => one.field === "refused")))
+  return refusals.flatMap((field) => {
+    if (field.field !== "refused") return []
+    const { what, form } = field.refusal
+    const printed = form.kind !== "none"
+    return [
+      ...values.flatMap((one) => iff(one.id === "refused.what" && one.value !== what, `refused.what: the refused item's record says ${what}, the stop ${one.value}`)),
+      ...iff(stop === "refusalForm" && !printed, "the refused item's refusal printed no remedy, so the stop is a refusal that named none"),
+      ...iff(stop === "refusalNone" && printed, "the refused item's refusal printed a remedy, so the stop is a refusal that named one"),
+      ...fields.flatMap((one) => {
+        const want = remedyOf(form, one.id)
+        const got = values.flatMap((value) => [value.value].filter(() => value.id === one.id))
+        return iff(one.presence === "ifPrinted" && !sameList(want, got, eq), `${one.id}: the refused item's record says ${formText(form, quoted)}, the stop ${got.map(quoted).join(" and ") || "none"}`)
+      }),
+    ]
+  })
+}
+
+/** Why a recorded stop is none this step reached: a field it lacks or doubles, an empty value, an entry for no held item. */
+export const stopRecordFaults = (policy: Policy, step: Step, owed: ReadonlyArray<Due>): ReadonlyArray<string> => {
+  const fields = policy.stops.filter((one) => one.stop === step.stop.stop).flatMap((one) => one.fields)
+  const states: ReadonlyArray<State> = HOLDS_BACK
+  const held = owed.flatMap((one) => [one.item].filter(() => states.includes(one.state)))
+  const values = step.stop.values
+  return [
+    ...values.flatMap((one) => iff(!fields.some((field) => field.id === one.id), `${one.id}: this stop has no such field`)),
+    ...values.flatMap((one) => iff(!filled(one.value), `${one.id}: an empty value is no value; leave the field out to tell its absence`)),
+    ...fields.flatMap((field) => countFaults(field, values.filter((one) => one.id === field.id), held)),
+    ...refusalFaults(step.stop.stop, fields, values, step.items),
+  ]
+}
+
+/** The claimed stop values against the recorded ones, field by field, each value member by member. */
+const stopFaults = (record: ReadonlyArray<StopValue>, claim: ReadonlyArray<StopValue>): ReadonlyArray<string> => {
+  const ids = STOP_FIELDS.filter((id) => record.some((one) => one.id === id) || claim.some((one) => one.id === id))
+  return ids.flatMap((id) => {
+    const want = record.filter((one) => one.id === id)
+    const got = claim.filter((one) => one.id === id)
+    const exact = want.length === got.length && want.every((one) => got.some((other) => sameStopValue(one, other))) && got.every((one) => want.some((other) => sameStopValue(one, other)))
+    return iff(!exact, `stop ${id}: due ${want.map(stopValueText).join(" and ") || "none"}, given ${got.map(stopValueText).join(" and ") || "none"}`)
+  })
+}
 
 const itemFaults = (dues: ReadonlyArray<Due>, claim: Claim): ReadonlyArray<string> => [
   ...dues.flatMap((one) => {
@@ -1080,19 +1313,23 @@ const itemFaults = (dues: ReadonlyArray<Due>, claim: Claim): ReadonlyArray<strin
 
 /** Every reason a claimed hand-back does not match the checked step under a policy: none means it is admitted. */
 export const admit = (policy: Policy, step: Step, claim: Claim): ReadonlyArray<string> => {
+  const twice = unique(step.items.map((record) => record.id))
+  if (twice.length > 0) return twice.map((id) => `ill-formed step: item ${id} stands twice`)
   const owed = allOk(step.items.map((record) => due(policy, record)))
-  if (!owed.ok) return [owed.error]
+  if (!owed.ok) return [`ill-formed item: ${owed.error}`]
   const result = outcome(
     policy,
     step.stop.stop,
     owed.value.map((one) => one.state),
   )
   if (!result.ok) return [`ill-formed step: ${result.error}`]
+  const recorded = stopRecordFaults(policy, step, owed.value)
+  if (recorded.length > 0) return recorded.map((line) => `ill-formed stop record: ${line}`)
   const { verdict, writes } = result.value
   return [
     ...iff(claim.verdict !== verdict, `verdict: due ${verdict}, given ${claim.verdict}`),
-    ...iff(claim.writes.join(",") !== writes.artifacts.join(","), `writes: due [${writes.artifacts.join(", ")}], given [${claim.writes.join(", ")}]`),
-    ...stopFaults(result.value, step, claim),
+    ...iff(!sameList(claim.writes, writes.artifacts, eq), `writes: due [${writes.artifacts.join(", ")}], given [${claim.writes.join(", ")}]`),
+    ...stopFaults(step.stop.values, claim.stop),
     ...itemFaults(owed.value, claim),
   ]
 }

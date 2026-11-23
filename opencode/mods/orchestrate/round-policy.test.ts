@@ -15,6 +15,7 @@ import {
   type Field,
   type HandBack,
   type ItemRecord,
+  fieldKey,
   judge,
   policyFaults,
   project,
@@ -65,7 +66,7 @@ const handBackOf = (record: ItemRecord): HandBack => {
 }
 
 /** A run with one value replaced: the same-looking evidence the judge must still refuse. */
-const withRun = (field: Field, key: "receipt" | "head" | "command", value: string): Field => {
+const withRun = (field: Field, key: "id" | "receipt" | "head" | "command", value: string): Field => {
   if (field.field !== "completed") return field
   return { ...field, run: { ...field.run, [key]: value } }
 }
@@ -107,7 +108,7 @@ describe("a hand-back, judged on exact evidence", () => {
     const flagged = { ...given, fields: [], lastAttempt: true }
     expect(judge(dueOf(red), flagged)).toEqual([
       "unknown hand-back keys [lastAttempt]: no flag stands in for evidence",
-      "completed: due completed id=att-7 command=cmd:gate output=log sha:7 exit=1 receipt=rcpt:7 head=head:a result=fail, given none",
+      `completed: due completed id="att-7" command="cmd:gate" output=log "sha:7" exit=1 receipt="rcpt:7" head="head:a" result=fail, given none`,
     ])
   })
   test("a same-looking run with another receipt, head or digest is refused, naming both values", () => {
@@ -121,8 +122,24 @@ describe("a hand-back, judged on exact evidence", () => {
       expect([key, judge(dueOf(red), swapped).length]).toEqual([key, 1])
     }
   })
+  test("values compared member by member (B1): an id and a command that print alike are still two values", () => {
+    const record: ItemRecord = { ...red, fields: red.fields.map((field) => withRun(field, "command", "verify command=fixture")) }
+    const given = handBackOf(record)
+    const moved = { ...given, fields: given.fields.map((field) => withRun(withRun(field, "id", "att-7 command=verify"), "command", "fixture")) }
+    expect(moved.fields.map(fieldKey)).toEqual(given.fields.map(fieldKey))
+    expect(judge(dueOf(record), moved).length).toBe(1)
+    expect(judge(dueOf(record), given)).toEqual([])
+  })
+  test("unreachable facts (B3) owe no hand-back: a typed rejection, never a fallback row", () => {
+    const stray: ItemRecord = { id: "stray", facts: facts({ assigned: false, required: true }), fields: [] }
+    expect(due(project("verifier"), stray)).toEqual({
+      ok: false,
+      error: "stray: a provenance belongs exactly to a verifier's finding outside its assignment; work outside the assignment is never attempted, required or held back, and is settled as found",
+    })
+    expect(due(project("implementor"), { ...red, facts: facts({ attempt: "fail", required: false }) }).ok).toBe(false)
+  })
   test("a record whose evidence disagrees with its facts owes nothing: it is refused", () => {
-    expect(recordFaults({ ...red, fields: [] })).toEqual(["`completed` is due exactly when an attempt finished (facts: fail)"])
+    expect(recordFaults("implementor", { ...red, fields: [] })).toEqual(["`completed` is due exactly when an attempt finished (facts: fail)"])
   })
 })
 
@@ -139,13 +156,28 @@ describe("a step, admitted only against its checked records", () => {
     expect(admit(project("implementor"), step, ready)).toEqual([
       "verdict: due blocked, given ready",
       "writes: due [state, blocked], given [request]",
-      "stop limit: due timebox 2 h, given none",
+      `stop limit: due "timebox 2 h", given none`,
     ])
     const owed: Claim = { verdict: "blocked", writes: ["state", "blocked"], stop: step.stop.values, items: [handBackOf(red), handBackOf(done)] }
     expect(admit(project("implementor"), step, owed)).toEqual([])
   })
+  test("a forged stop value (T1): each value changed alone is refused; the recorded one is admitted", () => {
+    const owed: Claim = { verdict: "blocked", writes: ["state", "blocked"], stop: step.stop.values, items: [handBackOf(red), handBackOf(done)] }
+    expect(admit(project("implementor"), step, owed)).toEqual([])
+    expect(admit(project("implementor"), step, { ...owed, stop: [{ id: "limit", value: "timebox 3 h" }] })).toEqual([`stop limit: due "timebox 2 h", given "timebox 3 h"`])
+  })
+  test("absence told by leaving the value out (B2): the truthful empty stop is admitted, a placeholder is refused", () => {
+    const clean: Step = { stop: { stop: "idle", values: [] }, items: [done] }
+    const claim: Claim = { verdict: "ready", writes: ["request"], stop: [], items: [handBackOf(done)] }
+    expect(admit(project("implementor"), clean, claim)).toEqual([])
+    const placeholder: Step = { stop: { stop: "idle", values: [{ id: "held", item: "spec", value: "nothing" }] }, items: [done] }
+    expect(admit(project("implementor"), placeholder, { ...claim, stop: placeholder.stop.values })).toEqual([
+      "ill-formed stop record: held: spec holds nothing back, so no entry is due for it",
+    ])
+    expect(admit(project("implementor"), { ...clean, stop: { stop: "idle", values: [{ id: "held", item: "spec", value: "" }] } }, claim).length).toBeGreaterThan(0)
+  })
   test("a step no history produces (stopped idle with a runnable item) admits no claim at all", () => {
-    const idle: Step = { stop: { stop: "idle", values: [{ id: "held", value: "none" }] }, items: [done, red] }
+    const idle: Step = { stop: { stop: "idle", values: [] }, items: [done, red] }
     expect(admit(project("implementor"), idle, { verdict: "ready", writes: ["request"], stop: [], items: [handBackOf(done), handBackOf(red)] })).toEqual([
       "ill-formed step: the step goes on while a runnable item is left",
     ])

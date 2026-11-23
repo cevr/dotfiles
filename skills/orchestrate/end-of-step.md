@@ -6,7 +6,7 @@ Generated from `opencode/mods/orchestrate/round-policy.ts`, the one round policy
 
 **How your step ends** (round policy v1). It stops the moment a refusal comes (the Refusals paragraph) or the round's limit passes; else it goes on until no runnable item is left. Each item takes one row of the first table, and that row alone gives its state, its rule and its label, whatever stopped the step; the last row takes every item no row above it took. The states present give your verdict and what you write (second table), and why the step stopped gives the evidence fields of the third. Effort is no state and no label. Assigned work is the spec items; whatever else you find is not assigned. Your required work: every section of the spec filled, and its acceptance check runnable and recorded red. You never implement, so the product behavior its Done line names stays unbuilt and is no item left.
 
-Each item's hand-back gives its rule, its label and each of these fields its record holds, with the exact values recorded; a field the record lacks is left out, never filled in or asserted, and a label wins only the presentation, never dropping another field: `completed`: the last attempt that finished: its id, the command it ran, its output's digest, its exit code, its receipt, the head it ran at and its result; `current`: an attempt newer than that, with no result: its id, its command, its status (started, interrupted, denied or not started) and its partial output's digest or why it has none; `refused`: what was refused, as the refusal said it, its scope, where its safe report is, and the exact form it named or none; `cannot`: the check or tool, with the probe that found it absent: its command and output; `waits`: the id it waits on.
+Each item's hand-back gives its rule, its label and each of these fields its record holds, with the exact values recorded; a field the record lacks is left out, never filled in or asserted, and a label wins only the presentation, never dropping another field: `completed`: the last attempt that finished: its id, the command it ran, its output's digest, its exit code, its receipt, the head it ran at and its result; `current`: an attempt newer than that, with no result: its id, its command, its status (started, interrupted, denied or not started) and its partial output's digest or why it has none; `refused`: what was refused, as the refusal said it, its scope, where its safe report is, and the `!` command or allow rule it printed, or none; `cannot`: the check or tool, with the probe that found it absent: its command and output; `waits`: the id it waits on.
 
 Take the first row that is true of the item; stop there.
 
@@ -26,22 +26,22 @@ Take the first row that holds for the step; stop there.
 | 1 | `ready` | `ready` | every item is done or a discovery | `<unit dir>/spec.md` |
 | 2 | `blocked` | `blocked` | otherwise | `<unit dir>/state.md` current (even with no commit since) and `<unit dir>/blocked.md`: the stop's evidence, and each item left with its label |
 
-Why the step stopped gives the evidence fields you write:
+Why the step stopped gives the evidence fields you write; leave out a field with no value, never a placeholder:
 
-| Stop | Field | Its evidence |
-| --- | --- | --- |
-| a refusal named an accepted form | `refused.what` | what was refused, as the refusal said it |
-| a refusal named an accepted form | `refused.form` | the exact form it named (the `!` command or allow rule, as Refusals says) |
-| a refusal named no accepted form | `refused.what` | what was refused, as the refusal said it |
-| a refusal named no accepted form | `refused.allow` | an allow rule only if one exists, never one inferred |
-| the round's limit passed | `limit` | the clock (the timebox) or the count (the failure cap) |
-| no runnable item is left | `held` | what you tried for each item that holds the step back, the options and your pick |
+| Stop | Field | Its evidence | How many |
+| --- | --- | --- | --- |
+| a refusal named an accepted form | `refused.what` | what was refused, as the refusal said it | one |
+| a refusal named an accepted form | `refused.form` | the `!` command it printed | one if printed, else none |
+| a refusal named an accepted form | `refused.allow` | the allow rule it printed | one if printed, else none |
+| a refusal named no accepted form | `refused.what` | what was refused, as the refusal said it | one |
+| the round's limit passed | `limit` | the clock (the timebox) or the count (the failure cap) | one |
+| no runnable item is left | `held` | what you tried for the item, the options and your pick | one per item runnable, waiting, refused or cannot run, naming it, else none |
 
 ## implementor
 
 **How your step ends** (round policy v1). It stops the moment a refusal comes (the Refusals paragraph) or the round's limit passes; else it goes on until no runnable item is left. Each item takes one row of the first table, and that row alone gives its state, its rule and its label, whatever stopped the step; the last row takes every item no row above it took. The states present give your verdict and what you write (second table), and why the step stopped gives the evidence fields of the third. Effort is no state and no label. Assigned work is the spec items; whatever else you find is not assigned. Your required work: every item of the spec, built, gated and requested.
 
-Each item's hand-back gives its rule, its label and each of these fields its record holds, with the exact values recorded; a field the record lacks is left out, never filled in or asserted, and a label wins only the presentation, never dropping another field: `completed`: the last attempt that finished: its id, the command it ran, its output's digest, its exit code, its receipt, the head it ran at and its result; `current`: an attempt newer than that, with no result: its id, its command, its status (started, interrupted, denied or not started) and its partial output's digest or why it has none; `refused`: what was refused, as the refusal said it, its scope, where its safe report is, and the exact form it named or none; `cannot`: the check or tool, with the probe that found it absent: its command and output; `waits`: the id it waits on.
+Each item's hand-back gives its rule, its label and each of these fields its record holds, with the exact values recorded; a field the record lacks is left out, never filled in or asserted, and a label wins only the presentation, never dropping another field: `completed`: the last attempt that finished: its id, the command it ran, its output's digest, its exit code, its receipt, the head it ran at and its result; `current`: an attempt newer than that, with no result: its id, its command, its status (started, interrupted, denied or not started) and its partial output's digest or why it has none; `refused`: what was refused, as the refusal said it, its scope, where its safe report is, and the `!` command or allow rule it printed, or none; `cannot`: the check or tool, with the probe that found it absent: its command and output; `waits`: the id it waits on.
 
 Take the first row that is true of the item; stop there.
 
@@ -61,22 +61,22 @@ Take the first row that holds for the step; stop there.
 | 1 | `ready` | `ready` | every item is done or a discovery | `<unit dir>/round-N-request.md`, committed, once `request.ts` exits 0 |
 | 2 | `blocked` | `blocked` | otherwise | `<unit dir>/state.md` current (even with no commit since) and `<unit dir>/blocked.md`: the stop's evidence, and each item left with its label |
 
-Why the step stopped gives the evidence fields you write:
+Why the step stopped gives the evidence fields you write; leave out a field with no value, never a placeholder:
 
-| Stop | Field | Its evidence |
-| --- | --- | --- |
-| a refusal named an accepted form | `refused.what` | what was refused, as the refusal said it |
-| a refusal named an accepted form | `refused.form` | the exact form it named (the `!` command or allow rule, as Refusals says) |
-| a refusal named no accepted form | `refused.what` | what was refused, as the refusal said it |
-| a refusal named no accepted form | `refused.allow` | an allow rule only if one exists, never one inferred |
-| the round's limit passed | `limit` | the clock (the timebox) or the count (the failure cap) |
-| no runnable item is left | `held` | what you tried for each item that holds the step back, the options and your pick |
+| Stop | Field | Its evidence | How many |
+| --- | --- | --- | --- |
+| a refusal named an accepted form | `refused.what` | what was refused, as the refusal said it | one |
+| a refusal named an accepted form | `refused.form` | the `!` command it printed | one if printed, else none |
+| a refusal named an accepted form | `refused.allow` | the allow rule it printed | one if printed, else none |
+| a refusal named no accepted form | `refused.what` | what was refused, as the refusal said it | one |
+| the round's limit passed | `limit` | the clock (the timebox) or the count (the failure cap) | one |
+| no runnable item is left | `held` | what you tried for the item, the options and your pick | one per item runnable, waiting, refused or cannot run, naming it, else none |
 
 ## verifier
 
 **How your step ends** (round policy v1). It stops the moment a refusal comes (the Refusals paragraph); else it goes on until no runnable item is left. Each item takes one row of the first table, and that row alone gives its state, its rule and its label, whatever stopped the step; the last row takes every item no row above it took. The states present give your verdict and what you write (second table; an optional probe is only ever done, proven, refused or unproven, and unproven never changes it), and why the step stopped gives the evidence fields of the third. Effort is no state and no label. Assigned work is the checks of step 1, which are required, and the wider probes you run, which are optional; whatever else you find is not assigned. Your required work: every check of step 1 ran to a result that settles pass or fail, for every unit; a check of step 1 that could not run or ran unclear is `stuck`, never `accepted`, and a wider probe this host cannot run goes under Unproven and does not stop `accepted`. Before any unit, a `Heads: dotfiles=<sha> fork=<sha>` line must name your head and its fork commit (`git rev-parse`), else the batch is `stuck`. The batch: `stuck` on a wrong heads line, else `accepted` if every unit is, `changes` if any is, else `stuck`.
 
-Each item's hand-back gives its rule, its label and each of these fields its record holds, with the exact values recorded; a field the record lacks is left out, never filled in or asserted, and a label wins only the presentation, never dropping another field: `completed`: the last attempt that finished: its id, the command it ran, its output's digest, its exit code, its receipt, the head it ran at and its result; `current`: an attempt newer than that, with no result: its id, its command, its status (started, interrupted, denied or not started) and its partial output's digest or why it has none; `refused`: what was refused, as the refusal said it, its scope, where its safe report is, and the exact form it named or none; `cannot`: the check or tool, with the probe that found it absent: its command and output; `waits`: the id it waits on.
+Each item's hand-back gives its rule, its label and each of these fields its record holds, with the exact values recorded; a field the record lacks is left out, never filled in or asserted, and a label wins only the presentation, never dropping another field: `completed`: the last attempt that finished: its id, the command it ran, its output's digest, its exit code, its receipt, the head it ran at and its result; `current`: an attempt newer than that, with no result: its id, its command, its status (started, interrupted, denied or not started) and its partial output's digest or why it has none; `refused`: what was refused, as the refusal said it, its scope, where its safe report is, and the `!` command or allow rule it printed, or none; `cannot`: the check or tool, with the probe that found it absent: its command and output; `waits`: the id it waits on.
 
 Take the first row that is true of the item; stop there.
 
@@ -102,21 +102,21 @@ Take the first row that holds for the step; stop there.
 | 2 | `changes` | `changes` | any item is proven | each unit's `round-N-findings.md` and the batch's findings file: under Check, and the stop's evidence, and each item left with its label |
 | 3 | `accepted` | `accepted` | otherwise | each unit's `round-N-findings.md` and the batch's findings file: under Check, and the stop's evidence, and each item left with its label |
 
-Why the step stopped gives the evidence fields you write:
+Why the step stopped gives the evidence fields you write; leave out a field with no value, never a placeholder:
 
-| Stop | Field | Its evidence |
-| --- | --- | --- |
-| a refusal named an accepted form | `refused.what` | what was refused, as the refusal said it |
-| a refusal named an accepted form | `refused.form` | the exact form it named (the `!` command or allow rule, as Refusals says) |
-| a refusal named no accepted form | `refused.what` | what was refused, as the refusal said it |
-| a refusal named no accepted form | `refused.allow` | an allow rule only if one exists, never one inferred |
-| no runnable item is left | `held` | each check that holds the verdict back, with its command and exit code |
+| Stop | Field | Its evidence | How many |
+| --- | --- | --- | --- |
+| a refusal named an accepted form | `refused.what` | what was refused, as the refusal said it | one |
+| a refusal named an accepted form | `refused.form` | the `!` command it printed | one if printed, else none |
+| a refusal named an accepted form | `refused.allow` | the allow rule it printed | one if printed, else none |
+| a refusal named no accepted form | `refused.what` | what was refused, as the refusal said it | one |
+| no runnable item is left | `held` | the check, with its command and exit code | one per item runnable, waiting, refused, cannot run or ran unclear, naming it, else none |
 
 ## worker
 
 **How your step ends** (round policy v1). It stops the moment a refusal comes; else it goes on until no runnable item is left. Each item takes one row of the first table, and that row alone gives its state, its rule and its label, whatever stopped the step; the last row takes every item no row above it took. The states present give your verdict and what you write (second table), and why the step stopped gives the evidence fields of the third. Effort is no state and no label. Assigned work is the task in your first message; whatever else you find is not assigned. Your required work: the task in your first message.
 
-Each item's hand-back gives its rule, its label and each of these fields its record holds, with the exact values recorded; a field the record lacks is left out, never filled in or asserted, and a label wins only the presentation, never dropping another field: `completed`: the last attempt that finished: its id, the command it ran, its output's digest, its exit code, its receipt, the head it ran at and its result; `current`: an attempt newer than that, with no result: its id, its command, its status (started, interrupted, denied or not started) and its partial output's digest or why it has none; `refused`: what was refused, as the refusal said it, its scope, where its safe report is, and the exact form it named or none; `cannot`: the check or tool, with the probe that found it absent: its command and output; `waits`: the id it waits on.
+Each item's hand-back gives its rule, its label and each of these fields its record holds, with the exact values recorded; a field the record lacks is left out, never filled in or asserted, and a label wins only the presentation, never dropping another field: `completed`: the last attempt that finished: its id, the command it ran, its output's digest, its exit code, its receipt, the head it ran at and its result; `current`: an attempt newer than that, with no result: its id, its command, its status (started, interrupted, denied or not started) and its partial output's digest or why it has none; `refused`: what was refused, as the refusal said it, its scope, where its safe report is, and the `!` command or allow rule it printed, or none; `cannot`: the check or tool, with the probe that found it absent: its command and output; `waits`: the id it waits on.
 
 Take the first row that is true of the item; stop there.
 
@@ -135,11 +135,12 @@ Take the first row that holds for the step; stop there.
 | --- | --- | --- | --- | --- |
 | 1 | `none` | no verdict word | always | your result as text: the stop's evidence, and each item left with its label |
 
-Why the step stopped gives the evidence fields you write:
+Why the step stopped gives the evidence fields you write; leave out a field with no value, never a placeholder:
 
-| Stop | Field | Its evidence |
-| --- | --- | --- |
-| a refusal named an accepted form | `refused.what` | what was refused, as the refusal said it |
-| a refusal named an accepted form | `refused.form` | the form it named |
-| a refusal named no accepted form | `refused.what` | what was refused, as the refusal said it |
-| no runnable item is left | `held` | what holds back each item left |
+| Stop | Field | Its evidence | How many |
+| --- | --- | --- | --- |
+| a refusal named an accepted form | `refused.what` | what was refused, as the refusal said it | one |
+| a refusal named an accepted form | `refused.form` | the `!` command it printed | one if printed, else none |
+| a refusal named an accepted form | `refused.allow` | the allow rule it printed | one if printed, else none |
+| a refusal named no accepted form | `refused.what` | what was refused, as the refusal said it | one |
+| no runnable item is left | `held` | what holds the item back | one per item runnable, waiting, refused or cannot run, naming it, else none |

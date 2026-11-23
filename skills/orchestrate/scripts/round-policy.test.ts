@@ -27,7 +27,9 @@ import {
   delivered,
   differences,
   due,
+  factsFaults,
   type Field,
+  fieldKey,
   type HandBack,
   hostPrompt,
   HOSTS,
@@ -49,9 +51,10 @@ import {
   type Step,
   type Stop,
   type StopFieldId,
+  type StopValue,
   STOPS_OF,
 } from './round-policy.ts';
-import { freshSnapshot, materialize, reachable, recordOf, type Snapshot, stateOf, step, type TraceEvent } from './item-histories.ts';
+import { allItems, freshSnapshot, materialize, reachable, recordKey, recordOf, type Snapshot, stateOf, step, type TraceEvent, validity } from './item-histories.ts';
 
 // ---- independent expectations: written here by hand, never read from the policy --------------------------------
 
@@ -62,12 +65,13 @@ const ARTIFACTS: Record<Role, Record<string, ReadonlyArray<Artifact>>> = {
   verifier: { stuck: ['findings', 'batch'], changes: ['findings', 'batch'], accepted: ['findings', 'batch'] },
   worker: { none: ['result'] },
 };
-/** The evidence fields each stop writes: a named form only when one was named, an allow rule never inferred. */
+/** The evidence fields each stop writes: the remedy a refusal printed (a `!` command or an allow rule), none when it printed none. */
+const REMEDY = ['refused.what', 'refused.form', 'refused.allow'] as const;
 const STOP_FIELDS: Record<Role, Partial<Record<Stop, ReadonlyArray<StopFieldId>>>> = {
-  planner: { refusalForm: ['refused.what', 'refused.form'], refusalNone: ['refused.what', 'refused.allow'], limit: ['limit'], idle: ['held'] },
-  implementor: { refusalForm: ['refused.what', 'refused.form'], refusalNone: ['refused.what', 'refused.allow'], limit: ['limit'], idle: ['held'] },
-  verifier: { refusalForm: ['refused.what', 'refused.form'], refusalNone: ['refused.what', 'refused.allow'], idle: ['held'] },
-  worker: { refusalForm: ['refused.what', 'refused.form'], refusalNone: ['refused.what'], idle: ['held'] },
+  planner: { refusalForm: REMEDY, refusalNone: ['refused.what'], limit: ['limit'], idle: ['held'] },
+  implementor: { refusalForm: REMEDY, refusalNone: ['refused.what'], limit: ['limit'], idle: ['held'] },
+  verifier: { refusalForm: REMEDY, refusalNone: ['refused.what'], idle: ['held'] },
+  worker: { refusalForm: REMEDY, refusalNone: ['refused.what'], idle: ['held'] },
 };
 /** The verdict a step's state set owes, by the stated precedence. */
 const VERDICT = (role: Role, states: ReadonlyArray<State>): string => {
@@ -116,7 +120,7 @@ function evidenceFaults(policy: Policy): string[] {
 const variants = (key: string, item: ItemRecord['facts']): ReadonlyArray<ItemRecord> => [
   materialize(key, item),
   ...(['pass', 'fail', 'unclear'].includes(item.attempt) ? [materialize(key, item, { newer: true })] : []),
-  ...(item.refused ? [materialize(key, item, { form: true })] : []),
+  ...(item.refused ? [materialize(key, item, { form: true }), materialize(key, item, { allow: true })] : []),
 ];
 
 /** Every multiset of `states` with 1 to `size` items. */
@@ -171,7 +175,7 @@ describe('(a) the four baseline controls, on the actual host artifacts', () => {
     const forged = { ...handBack(owed), fields: owed.fields.filter((field) => field.field !== 'completed'), lastAttempt: true };
     expect(judge(owed, forged)).toEqual([
       'unknown hand-back keys [lastAttempt]: no flag stands in for evidence',
-      `completed: due completed id=t1-a1 command=cmd:t1:check output=log sha:t1:a1 exit=1 receipt=rcpt:t1:a1 head=head:t1 result=fail, given none`,
+      `completed: due completed id="t1-a1" command="cmd:t1:check" output=log "sha:t1:a1" exit=1 receipt="rcpt:t1:a1" head="head:t1" result=fail, given none`,
     ]);
   });
   test('control 4: `ready` with a spec item not run is refused against its checked records; the owed claim is admitted', () => {
@@ -180,7 +184,7 @@ describe('(a) the four baseline controls, on the actual host artifacts', () => {
     const unrun = materialize('unrun', { assigned: true, required: true, attempt: 'never', settled: false, refused: false, hostCannot: false, wait: false, provenance: 'none' });
     const stepped: Step = { stop: { stop: 'limit', values: [{ id: 'limit', value: 'clock:2h' }] }, items: [built, unrun] };
     const items = [built, unrun].map((record) => handBack(owedOf(policy, record)));
-    expect(admit(policy, stepped, { verdict: 'ready', writes: ['request'], stop: [], items })).toEqual(['verdict: due blocked, given ready', 'writes: due [state, blocked], given [request]', 'stop limit: due clock:2h, given none']);
+    expect(admit(policy, stepped, { verdict: 'ready', writes: ['request'], stop: [], items })).toEqual(['verdict: due blocked, given ready', 'writes: due [state, blocked], given [request]', 'stop limit: due "clock:2h", given none']);
     expect(admit(policy, stepped, { verdict: 'blocked', writes: ['state', 'blocked'], stop: [{ id: 'limit', value: 'clock:2h' }], items })).toEqual([]);
   });
 });
@@ -255,7 +259,7 @@ interface Mutant {
 const MUTANTS: ReadonlyArray<Mutant> = [
   { name: 'state.md dropped from blocked (22t N6)', role: 'implementor', killedBy: 'expectations', mutate: (p) => ({ ...p, verdicts: p.verdicts.map((rule) => (rule.id === 'blocked' ? { ...rule, writes: { ...rule.writes, artifacts: ['blocked' as const] } } : rule)) }) },
   { name: 'the named form dropped (22r B2)', role: 'implementor', killedBy: 'expectations', mutate: (p) => ({ ...p, stops: p.stops.map((one) => (one.stop === 'refusalForm' ? { ...one, fields: one.fields.filter((field) => field.id !== 'refused.form') } : one)) }) },
-  { name: 'an allow rule inferred for the worker (22q)', role: 'worker', killedBy: 'expectations', mutate: (p) => ({ ...p, stops: p.stops.map((one) => (one.stop === 'refusalNone' ? { ...one, fields: [...one.fields, { id: 'refused.allow' as const, text: 'the rule it implies' }] } : one)) }) },
+  { name: 'an allow rule inferred for the worker (22q)', role: 'worker', killedBy: 'expectations', mutate: (p) => ({ ...p, stops: p.stops.map((one) => (one.stop === 'refusalNone' ? { ...one, fields: [...one.fields, { id: 'refused.allow' as const, presence: 'always' as const, text: 'the rule it implies' }] } : one)) }) },
   { name: 'unclear no longer stuck (22t N5)', role: 'verifier', killedBy: 'expectations', mutate: (p) => ({ ...p, verdicts: p.verdicts.map((rule) => (rule.id === 'stuck' && rule.when.kind === 'any' ? { ...rule, when: { kind: 'any' as const, states: rule.when.states.filter((state) => state !== 'unclear') } } : rule)) }) },
   { name: 'ready while a wait is left (22q timebox)', role: 'planner', killedBy: 'expectations', mutate: (p) => ({ ...p, verdicts: p.verdicts.map((rule) => (rule.id === 'ready' && rule.when.kind === 'only' ? { ...rule, when: { kind: 'only' as const, states: [...rule.when.states, 'waits' as const] } } : rule)) }) },
   ...(['cannot', 'waits', 'refused', 'completed', 'current'] as const).map((id): Mutant => ({ name: `the ${id} evidence field forgotten (22w, 23b)`, role: 'verifier', killedBy: 'evidence', mutate: (p) => ({ ...p, fields: p.fields.filter((field) => field.id !== id) }) })),
@@ -337,7 +341,7 @@ describe('(d) every role × reachable record × evidence variant: the owed hand-
               expect([key, name, judge(owed, { ...exact, fields: varied }).length]).toEqual([key, name, 1]);
             }
           const extra = { field: 'waits' as const, ref: 'ref:other' };
-          if (!owed.fields.some((one) => one.field === 'waits')) expect([key, judge(owed, { ...exact, fields: [...exact.fields, extra] })]).toEqual([key, ['waits: due none, given waits ref=ref:other']]);
+          if (!owed.fields.some((one) => one.field === 'waits')) expect([key, judge(owed, { ...exact, fields: [...exact.fields, extra] })]).toEqual([key, ['waits: due none, given waits ref="ref:other"']]);
           checked++;
         }
       expect(checked).toBeGreaterThan(20);
@@ -348,8 +352,8 @@ describe('(d) every role × reachable record × evidence variant: the owed hand-
     const a = materialize('a', facts);
     const b = materialize('b', facts);
     const [owedA, owedB] = [owedOf(policy, a), owedOf(policy, b)];
-    const stepped: Step = { stop: { stop: 'idle', values: [{ id: 'held', value: 'none held' }] }, items: [a, b] };
-    const right: Claim = { verdict: 'changes', writes: ['findings', 'batch'], stop: [{ id: 'held', value: 'none held' }], items: [handBack(owedA), handBack(owedB)] };
+    const stepped: Step = { stop: { stop: 'idle', values: [] }, items: [a, b] };
+    const right: Claim = { verdict: 'changes', writes: ['findings', 'batch'], stop: [], items: [handBack(owedA), handBack(owedB)] };
     expect(admit(policy, stepped, right)).toEqual([]);
     const swapped: Claim = { ...right, items: [{ ...handBack(owedA), fields: owedB.fields }, { ...handBack(owedB), fields: owedA.fields }] };
     const faults = admit(policy, stepped, swapped);
@@ -364,7 +368,7 @@ describe('(d) every role × reachable record × evidence variant: the owed hand-
     expect(due(POLICIES.verifier, { ...record, fields: record.fields.filter((one) => one.field !== 'completed') }).ok).toBe(false);
     expect(due(POLICIES.verifier, { ...record, fields: [...record.fields, { field: 'waits', ref: '' }] }).ok).toBe(false);
     const sameId = record.fields.map((one): Field => (one.field === 'current' ? { ...one, attempt: { ...one.attempt, id: 'x-a1' } } : one));
-    expect(recordFaults({ ...record, fields: sameId })).toEqual(['`current` and `completed` are the same attempt']);
+    expect(recordFaults('verifier', { ...record, fields: sameId })).toEqual(['`current` and `completed` are the same attempt']);
   });
 });
 
@@ -393,10 +397,11 @@ describe('(e) every role × stop × saturated multiset of states', () => {
       materialize('c', { ...base, attempt: 'started', hostCannot: true }),
     ];
     const items = records.map((record) => handBack(owedOf(policy, record)));
-    const claim: Claim = { verdict: 'blocked', writes: ['state', 'blocked'], stop: [{ id: 'held', value: 'h' }], items };
+    const HELD = [{ id: 'held' as const, item: 'w', value: 'h:w' }, { id: 'held' as const, item: 'c', value: 'h:c' }];
+    const claim: Claim = { verdict: 'blocked', writes: ['state', 'blocked'], stop: HELD, items };
     const permutations = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
     for (const order of permutations) {
-      const stepped: Step = { stop: { stop: 'idle', values: [{ id: 'held', value: 'h' }] }, items: order.map((index) => records[index]!) };
+      const stepped: Step = { stop: { stop: 'idle', values: HELD }, items: order.map((index) => records[index]!) };
       expect([order, admit(policy, stepped, claim)]).toEqual([order, []]);
       expect([order, admit(policy, stepped, { ...claim, items: order.map((index) => items[index]!), verdict: 'ready' })]).toEqual([order, ['verdict: due blocked, given ready']]);
     }
@@ -456,7 +461,7 @@ function traceFaults(stepper: Stepper, traces = 1000): string[] {
         at = after;
         rev = Math.max(rev, 'rev' in one ? one.rev : 0);
         const record = recordOf('t', at);
-        const bad = recordFaults(record);
+        const bad = recordFaults(role, record);
         if (bad.length > 0) out.push(`${role} seed ${seed} after [${seen.join(' ')}]: ${bad.join('; ')}`);
         // The latest completed attempt is kept through any later event, and never replaced by an older one.
         if (completedRev(record) < completedRev(before)) out.push(`${role} seed ${seed} after [${seen.join(' ')}]: completed went from r${completedRev(before)} to r${completedRev(record)}`);
@@ -486,5 +491,164 @@ describe('(f) seeded production traces', () => {
       return one.kind === 'deny' && next !== at ? { ...next, runs: [], facts: { ...next.facts, attempt: 'started' } } : next;
     };
     expect(traceFaults(broken).length).toBeGreaterThan(0);
+  });
+});
+
+// ---- (g) the input domain, comparison, absence and the stop's values -------------------------------------------------
+
+const BASE = { assigned: true, required: true, attempt: 'never' as const, settled: false, refused: false, hostCannot: false, wait: false, provenance: 'none' as const };
+const STOP_FIELD_IDS: ReadonlyArray<StopFieldId> = ['refused.what', 'refused.form', 'refused.allow', 'limit', 'held'];
+
+/** The claim a step's checked records owe: its verdict, artifacts, the recorded stop values and every hand-back. */
+function owedClaim(policy: Policy, stepped: Step): Claim {
+  const dues = stepped.items.map((record) => owedOf(policy, record));
+  const got = outcome(policy, stepped.stop.stop, dues.map((one) => one.state));
+  if (!got.ok) throw new Error(got.error);
+  return { verdict: got.value.verdict, writes: got.value.writes.artifacts, stop: stepped.stop.values, items: dues.map(handBack) };
+}
+/** A step's own claim admitted against it: the faults of the step's record alone. */
+const recordedFaults = (policy: Policy, stepped: Step) => {
+  const dues = stepped.items.map((record) => due(policy, record));
+  const states = dues.flatMap((one) => (one.ok ? [one.value.state] : []));
+  const got = outcome(policy, stepped.stop.stop, states);
+  const items = dues.flatMap((one) => (one.ok ? [handBack(one.value)] : []));
+  return admit(policy, stepped, { verdict: got.ok ? got.value.verdict : 'none', writes: got.ok ? got.value.writes.artifacts : [], stop: stepped.stop.values, items });
+};
+
+/** One truthful step per stop a role has and per remedy a refusal prints: the records and the stop values they make true. */
+function truthfulSteps(role: Role): ReadonlyArray<{ readonly name: string; readonly step: Step }> {
+  const done = materialize('done', { ...BASE, attempt: 'pass', settled: true });
+  const refused = (options: { readonly form?: boolean; readonly allow?: boolean }) => materialize('r', { ...BASE, attempt: 'started', refused: true }, options);
+  const what = { id: 'refused.what' as const, value: 'action:r' };
+  const all: ReadonlyArray<{ readonly name: string; readonly step: Step }> = [
+    { name: 'refusal printing a command', step: { stop: { stop: 'refusalForm', values: [what, { id: 'refused.form', value: 'form:r' }] }, items: [done, refused({ form: true })] } },
+    { name: 'refusal printing an allow rule', step: { stop: { stop: 'refusalForm', values: [what, { id: 'refused.allow', value: 'allow:r' }] }, items: [done, refused({ allow: true })] } },
+    { name: 'refusal printing no remedy', step: { stop: { stop: 'refusalNone', values: [what] }, items: [done, refused({})] } },
+    { name: 'limit', step: { stop: { stop: 'limit', values: [{ id: 'limit', value: 'clock:2h' }] }, items: [done, materialize('run', BASE)] } },
+    { name: 'idle with a held item', step: { stop: { stop: 'idle', values: [{ id: 'held', item: 'w', value: 'held: w' }] }, items: [done, materialize('w', { ...BASE, wait: true })] } },
+    { name: 'idle with nothing held', step: { stop: { stop: 'idle', values: [] }, items: [done] } },
+  ];
+  return all.filter((one) => STOPS_OF[role].some((stop) => stop === one.step.stop.stop));
+}
+
+/** A stop value of `id` holding `value`: a `held` one names the done item, which holds nothing back. */
+const valueOf = (id: StopFieldId, value: string): StopValue => (id === 'held' ? { id, item: 'done', value } : { id, value });
+
+/** A text member of a field, read and replaced: the members `fieldKey` prints one after another. */
+type Member = 'id' | 'command' | 'digest' | 'receipt' | 'head' | 'what' | 'scope' | 'report' | 'form' | 'tool' | 'probe';
+const textOf = (field: Field, member: Member): string => {
+  const flat: Record<string, unknown> =
+    field.field === 'completed'
+      ? { ...field.run, digest: field.run.output.kind === 'missing' ? '' : field.run.output.digest }
+      : field.field === 'current'
+        ? { ...field.attempt }
+        : field.field === 'refused'
+          ? { ...field.refusal, form: field.refusal.form.kind === 'named' ? field.refusal.form.form : '' }
+          : field.field === 'cannot'
+            ? { ...field.absent, digest: field.absent.output.kind === 'missing' ? '' : field.absent.output.digest }
+            : {};
+  return String(flat[member]);
+};
+const withText = (field: Field, member: Member, value: string): Field => {
+  if (field.field === 'completed') return member === 'digest' ? { ...field, run: { ...field.run, output: { kind: 'log', digest: value } } } : { ...field, run: { ...field.run, [member]: value } };
+  if (field.field === 'current') return { ...field, attempt: { ...field.attempt, [member]: value } };
+  if (field.field === 'refused') return member === 'form' ? { ...field, refusal: { ...field.refusal, form: { kind: 'named', form: value } } } : { ...field, refusal: { ...field.refusal, [member]: value } };
+  if (field.field === 'cannot') return member === 'digest' ? { ...field, absent: { ...field.absent, output: { kind: 'log', digest: value } } } : { ...field, absent: { ...field.absent, [member]: value } };
+  return field;
+};
+/** Every pair of text members printed side by side, with the text `fieldKey` prints between their values. */
+const BOUNDARIES: ReadonlyArray<readonly [Field['field'], Member, Member, string]> = [
+  ['completed', 'id', 'command', ' command='],
+  ['completed', 'command', 'digest', ' output=log '],
+  ['completed', 'receipt', 'head', ' head='],
+  ['current', 'id', 'command', ' command='],
+  ['refused', 'what', 'scope', ' scope='],
+  ['refused', 'scope', 'report', ' report='],
+  ['refused', 'report', 'form', ' form=named '],
+  ['cannot', 'tool', 'probe', ' probe='],
+  ['cannot', 'probe', 'digest', ' output=log '],
+];
+
+describe('(g) the input domain, comparison, absence and the stop values', () => {
+  test('B3: of all 960 fact combinations per role, the leaf admits exactly the oracle\'s valid ones, which are the reachable ones; each rejected one is a typed rejection of `due` and `admit`', () => {
+    const items = allItems();
+    // recordKey joins fixed-position closed values (booleans, enums, an ordered obstacle set): injective on the domain.
+    expect([items.length, new Set(items.map(recordKey)).size]).toEqual([960, 960]);
+    for (const role of ROLES) {
+      const reached = new Set(reachable(role).keys());
+      let rejected = 0;
+      for (const item of items) {
+        const key = recordKey(item);
+        const valid = validity(role, item) === undefined;
+        expect([role, key, factsFaults(role, item).length === 0, reached.has(key)]).toEqual([role, key, valid, valid]);
+        if (valid) continue;
+        rejected++;
+        const record = materialize('x', item);
+        const owed = due(POLICIES[role], record);
+        expect([role, key, owed.ok, !owed.ok && owed.error.startsWith('x: ')]).toEqual([role, key, false, true]);
+        const faults = admit(POLICIES[role], { stop: { stop: 'idle', values: [] }, items: [record] }, { verdict: 'none', writes: [], stop: [], items: [] });
+        expect([role, key, faults.length, faults[0]?.startsWith('ill-formed item: x: ')]).toEqual([role, key, 1, true]);
+      }
+      expect([role, rejected > 0, rejected + reached.size]).toEqual([role, true, 960]);
+    }
+  });
+  test('B1: two values printed alike across every boundary between them are two values; both varied together are one difference', () => {
+    const policy = POLICIES.implementor;
+    const source = materialize('t', { ...BASE, attempt: 'fail', refused: true, hostCannot: true, wait: true }, { newer: true, form: true });
+    for (const [kind, a, b, between] of BOUNDARIES) {
+      const index = source.fields.findIndex((one) => one.field === kind);
+      const original = source.fields[index]!;
+      // The record holds `b` = "x<between>y"; the hand-back moves "<between>x" onto `a`: the plain line reads the same.
+      const recorded = withText(original, b, `x${between}y`);
+      const record: ItemRecord = { ...source, fields: source.fields.map((one, at) => (at === index ? recorded : one)) };
+      const owed = owedOf(policy, record);
+      const moved = withText(withText(recorded, a, `${textOf(original, a)}${between}x`), b, 'y');
+      const given = { ...handBack(owed), fields: owed.fields.map((one) => (one.field === kind ? moved : one)) };
+      expect([kind, a, b, fieldKey(moved) === fieldKey(recorded), judge(owed, given).length]).toEqual([kind, a, b, true, 1]);
+      const both = withText(withText(recorded, a, 'other:a'), b, 'other:b');
+      expect([kind, a, b, judge(owed, { ...given, fields: owed.fields.map((one) => (one.field === kind ? both : one)) }).length]).toEqual([kind, a, b, 1]);
+      expect([kind, a, b, judge(owed, handBack(owed))]).toEqual([kind, a, b, []]);
+    }
+  });
+  test('B2: every role × stop × field: absent is admitted exactly where absence is the truth; an empty value, a placeholder or a doubled value never is', () => {
+    let cases = 0;
+    for (const role of ROLES)
+      for (const { name, step: stepped } of truthfulSteps(role)) {
+        const policy = POLICIES[role];
+        expect([role, name, recordedFaults(policy, stepped)]).toEqual([role, name, []]);
+        for (const id of STOP_FIELD_IDS) {
+          const entries = stepped.stop.values.filter((one) => one.id === id);
+          const others = stepped.stop.values.filter((one) => one.id !== id);
+          const at = (values: ReadonlyArray<StopValue>): Step => ({ ...stepped, stop: { ...stepped.stop, values } });
+          const absent = recordedFaults(policy, at(others));
+          expect([role, name, id, 'absent', absent.length === 0]).toEqual([role, name, id, 'absent', entries.length === 0]);
+          const empty = entries.length === 0 ? [...others, valueOf(id, '')] : [...others, ...entries.map((one) => ({ ...one, value: '' }))];
+          expect([role, name, id, 'empty', recordedFaults(policy, at(empty)).length > 0]).toEqual([role, name, id, 'empty', true]);
+          if (entries.length === 0) expect([role, name, id, 'placeholder', recordedFaults(policy, at([...others, valueOf(id, 'nothing')])).length > 0]).toEqual([role, name, id, 'placeholder', true]);
+          else expect([role, name, id, 'doubled', recordedFaults(policy, at([...stepped.stop.values, ...entries])).length > 0]).toEqual([role, name, id, 'doubled', true]);
+          cases += 3;
+        }
+      }
+    expect(cases).toBeGreaterThan(80);
+  });
+  test('T1: each recorded stop value changed alone, dropped, or moved across its item boundary is named; the recorded values are admitted', () => {
+    let forged = 0;
+    for (const role of ROLES)
+      for (const { name, step: stepped } of truthfulSteps(role)) {
+        const policy = POLICIES[role];
+        const owed = owedClaim(policy, stepped);
+        expect([role, name, admit(policy, stepped, owed)]).toEqual([role, name, []]);
+        stepped.stop.values.forEach((value, index) => {
+          const swap = (other: StopValue) => admit(policy, stepped, { ...owed, stop: owed.stop.map((one, at) => (at === index ? other : one)) });
+          const changed = swap({ ...value, value: `${value.value}:forged` });
+          expect([role, name, value.id, changed.length, changed[0]?.startsWith(`stop ${value.id}: due `)]).toEqual([role, name, value.id, 1, true]);
+          const dropped = admit(policy, stepped, { ...owed, stop: owed.stop.filter((_, at) => at !== index) });
+          expect([role, name, value.id, dropped.length]).toEqual([role, name, value.id, 1]);
+          if (value.id === 'held') expect([role, name, 'item', swap({ ...value, item: 'done' }).length]).toEqual([role, name, 'item', 1]);
+          if (value.id === 'held') expect([role, name, swap({ id: 'held', item: `${value.item}: ${value.value.split(': ')[0]}`, value: value.value.split(': ').slice(1).join(': ') }).length]).toEqual([role, name, 1]);
+          forged++;
+        });
+      }
+    expect(forged).toBeGreaterThan(20);
   });
 });
