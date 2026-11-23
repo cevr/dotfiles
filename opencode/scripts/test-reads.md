@@ -8,6 +8,8 @@ A computed path is not bounded by `join("fixtures", input)`: `input` could conta
 
 Paths are expressed from `opencode/`: `scripts/gate.ts` is inside; `../linux/hetzner-workbox/**` names the sibling directory. An inner glob never matches a sibling merely because it has a leading `**`. Merge sees the full repository diff, using both names of a rename; this does not extend lint, debt or typecheck's scope.
 
+Every runner test can be selected by a change to itself or a known or observed input. Acceptance files and swarm suites keep their own legs; the merge test leg includes fixed-seed unit tests outside the swarm. The latter select on source reach, checked scopes and exact paths in `merge-unit-observations.json` (generated from the independently checked runtime trace). An observed path is positive evidence only; it neither gives unknown sites a scope nor proves an unobserved read cannot happen.
+
 The conservative fallback is `// @reads all` and `// @reads-reason <reported kind> at <file>: <opaque operation>`. It makes a merge-eligible suite run on every nonempty repository diff, and invalidates an unknown unit or acceptance cache key on every new Git head. Use an enforced bound when the subject is narrower than the whole checkout. A child with unresolved inputs is not whole-tree discovery; keep it unknown rather than declaring a scope its descendants can leave.
 
 For subprocesses, a checkout filename in argv is an input, not a claim that all descendant opens were observed. The checker models fixed command/operand forms and treats opaque argv, unmodeled commands and shell programs conservatively. The preload used to check coverage sees instrumented JavaScript operations and argv, but cannot see native descendant or loader opens.

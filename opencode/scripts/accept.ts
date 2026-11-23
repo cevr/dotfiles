@@ -59,6 +59,7 @@ import { heading, isSerial, plan, poolWidth, requestedWidth, scenariosOf } from 
 import * as Accept from "./accept-ledger.ts"
 import * as Yield from "./accept-yield.ts"
 import { acceptanceTests, acceptReadKey, acceptReach, acceptSharedKey, fromRepository, load, packageOf, reach, ROOT, type Workspace } from "./reach.ts"
+import { swarmTests } from "./test-population.ts"
 
 const ENV = { ...process.env }
 const ARGS = process.argv.slice(2)
@@ -163,7 +164,7 @@ const globbed = (glob: string) => {
 /** The simulated suites: every `*.sim.test.ts(x)` the workspace holds, or ACCEPT_SIM_FILES (a glob, for the runner's own test's stand-ins). */
 const suitesOf = (workspace: Workspace) =>
   Option.match(Option.fromUndefinedOr(ENV.ACCEPT_SIM_FILES), {
-    onNone: () => workspace.files.filter(Swarm.isSimSuite).sort(),
+    onNone: () => swarmTests(workspace),
     // Named from opencode/ where they are inside it, as sim/seed.ts's runner names them in what it prints.
     onSome: (glob) => globbed(glob).map((file) => Option.getOrElse(Option.liftPredicate(path.relative(ROOT, file), (each) => !each.startsWith("..")), () => file)),
   })

@@ -1,7 +1,5 @@
-// The legs of a land's merge check (scripts/gate.ts --merge <base>), from the changes since <base>. The merge check
-// runs no unit leg, so a change could break a scripts/ test and still land (batch 2026-11-15cq: accept.test and
-// accept-parity went red on main). Beside the link, the typecheck, oxlint and the debt ratchet over the changed
-// files, it runs the tests a change can break and the full gate's unit leg would have caught:
+// The legs of a land's merge check (scripts/gate.ts --merge <base>), from the changes since <base>.
+// Beside the link, typecheck, and changed-file lint and debt ratchet, the test leg includes:
 // - the docs guard, scripts/verify-docs.test.ts, when the change can turn it red (docs-guard.ts);
 // - for a changed scripts/<name>.ts its own scripts/<name>.test.ts and every scripts/ test whose imports reach it
 //   within scripts/, through any number of steps (fork.ts → daily.ts → daily.test), and a changed scripts/ test itself;
@@ -16,6 +14,7 @@
 //   reach finds it (batch 2026-11-16cv: scripts/verify-fork.test.ts landed a raw `git init`).
 // - every workbox/test/ test when anything under workbox/ changes, and its explicit @reads outside workbox/
 //   (batch 2026-11-16cy: workrift.test.ts landed red on the Mac).
+// - fixed-seed unit tests not run by the acceptance swarm: a changed test or a known or observed input.
 import { Option } from "effect"
 import { docsGuardDue, type Change } from "./docs-guard.ts"
 import { readMatcher } from "./read-declarations.ts"
@@ -37,6 +36,15 @@ export interface Tools {
   readonly scripts: ScriptsTests
   readonly workbox: Workbox
   readonly workboxReads?: (file: string) => ReadonlyArray<string>
+  readonly unit?: UnitTests
+}
+
+/** Positive fixed-seed inputs: reachable sources, checked patterns, and exact observed paths. */
+export interface UnitTests {
+  readonly files: ReadonlyArray<string>
+  readonly inputs: (test: string) => ReadonlySet<string>
+  readonly reads: (test: string) => ReadonlyArray<string>
+  readonly observed?: (test: string) => ReadonlyArray<string>
 }
 
 /** The repository's workbox/ folder, outside opencode/: its changes since the base and its tests, from opencode/ (`../workbox/test/…`). */
@@ -124,6 +132,19 @@ export const scriptTests = (changes: ReadonlyArray<Change>, exists: (file: strin
   return [...due].filter(exists).toSorted()
 }
 
+/** These unit tests had no land leg. Their known inputs select them; opaque sites stay opaque. */
+export const affectedUnits = (paths: ReadonlyArray<string>, unit: UnitTests) => {
+  if (paths.length === 0) return []
+  const changed = new Set(paths)
+  return unit.files.filter((test) => {
+    if (changed.has(test) || unit.observed?.(test).some((file) => changed.has(file))) return true
+    const reachable = unit.inputs(test)
+    if (paths.some((file) => reachable.has(file))) return true
+    const reads = readMatcher(unit.reads(test).filter((scope) => scope !== "all"))
+    return paths.some(reads)
+  })
+}
+
 /** The files oxlint reads among the changed ones still on disk. */
 export const lintFiles = (changes: ReadonlyArray<Change>, exists: (file: string) => boolean): ReadonlyArray<string> =>
   changes.flatMap(left).filter((file) => /\.tsx?$/.test(file) && exists(file))
@@ -148,7 +169,8 @@ export const mergeLegs = (base: string, changes: ReadonlyArray<Change>, tools: T
   for (const file of tools.workbox.tests) {
     if (paths.some(readMatcher(tools.workboxReads?.(file) ?? []))) workbox.add(file)
   }
-  const tests = [...scriptTests(changes, tools.exists, tools.scripts), ...[...workbox].toSorted()]
+  const unit = Option.match(Option.fromUndefinedOr(tools.unit), { onNone: () => [], onSome: (tests) => affectedUnits(paths, tests) })
+  const tests = [...new Set([...scriptTests(changes, tools.exists, tools.scripts), ...[...workbox].toSorted(), ...unit])]
   return [
     lintLeg(lint, tools),
     { name: "test-reads", argv: [tools.bun, "scripts/check-test-reads.ts"], note: "static read anchors" },

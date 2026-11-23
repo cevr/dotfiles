@@ -1,5 +1,5 @@
 // @reads all
-// @reads-reason subprocess reads at scripts/merge-check.test.ts: const child = yield* spawner.spawn(ChildProcess.make("bun", ["scripts/gate.ts", "--merge", "HEA
+// @reads-reason subprocess reads at scripts/merge-check.test.ts: expect(scriptTests(parseNameStatus("M\tscripts/fixtures/data.json\n"), exists, scripts)).toEqua
 // The legs of a land's merge check (scripts/merge-check.ts, which scripts/gate.ts --merge runs as given): which
 // scripts/ tests a diff selects, and that a selected test is in the leg the merge check runs.
 //
@@ -14,9 +14,12 @@ import { Effect, FileSystem, Option, Path, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { describe, expect, it } from "effect-bun-test"
 import { parseNameStatus } from "./docs-guard.ts"
-import { ACCEPT_TESTS, DOCS_GUARD, GIT_REPO_GUARD, lintFiles, mergeLegs, reachedWithin, scriptTests } from "./merge-check.ts"
+import { ACCEPT_TESTS, affectedUnits, DOCS_GUARD, GIT_REPO_GUARD, lintFiles, mergeLegs, reachedWithin, scriptTests } from "./merge-check.ts"
+import { mergeUnitInputs } from "./merge-unit.ts"
 import { readMatcher } from "./read-declarations.ts"
-import { importsOf, inspectReads, load, readsOf } from "./reach.ts"
+import { acceptReach, importsOf, inspectReads, load, readsOf } from "./reach.ts"
+import { acceptanceTests, checkedTests, mergeScriptTests, swarmTests, workboxTestFiles } from "./test-population.ts"
+import { reachedSuites } from "./accept-plan.ts"
 
 /** bb435bcc's change set from opencode/ (Rift U1's land): its cmd/work/server.ts import broke runtime-imports.test, which its merge check never ran. */
 const BB435BCC = [
@@ -100,6 +103,54 @@ const tree = Effect.gen(function* () {
         .flatMap((leg) => leg.argv.filter((arg) => arg.startsWith("./")).map((arg) => arg.slice(2))),
     legs: (out: string) => mergeLegs("base", parseNameStatus(out), tools("")),
   }
+})
+
+describe("the fixed-seed unit leg of land", () => {
+  it.effect("a change to a world plugin or the law table selects the host-call census", () =>
+    Effect.gen(function* () {
+      const workspace = yield* Effect.promise(load)
+      const test = "sim/host-calls.test.ts"
+      const tools = {
+        bun: "bun",
+        oxlint: "oxlint",
+        typecheck: ["bun", "check", "-b"],
+        projects: 3,
+        exists: (file: string) => workspace.files.includes(file),
+        scripts: { files: [], imports: () => [], reads: () => [] },
+        workbox: { changes: [], tests: [] },
+        unit: mergeUnitInputs(workspace),
+      }
+      for (const file of [test, "cmd/wake/server.ts", "sim/host-laws.ts"]) {
+        const leg = mergeLegs("base", parseNameStatus(`M\t${file}\n`), tools).find(({ name }) => name === "tests")
+        expect(leg?.argv).toContain(`./${test}`)
+      }
+      const unrelated = mergeLegs("base", parseNameStatus("M\t../AGENTS.md\n"), tools).find(({ name }) => name === "tests")
+      expect(unrelated?.argv).not.toContain(`./${test}`)
+    }),
+  )
+
+  it.effect("every runner inventory file can be selected by its own change, and unit inputs retain their positive read evidence", () =>
+    Effect.gen(function* () {
+      const workspace = yield* Effect.promise(load)
+      const inventory = checkedTests(workspace)
+      const unit = mergeUnitInputs(workspace)
+      const scripted = mergeScriptTests(workspace)
+      const workbox = workboxTestFiles(workspace)
+      const acceptance = new Set(acceptanceTests(workspace))
+      const swarm = swarmTests(workspace)
+      const known = new Set([...workspace.files, ...(workspace.siblings ?? [])])
+      const exists = (file: string) => known.has(file)
+      const scriptedSelection = scriptTests(scripted.map((file) => ({ status: "M", paths: [file] })), exists)
+      const unitSelected = affectedUnits(unit.files, unit)
+      const swarmSelected = reachedSuites(swarm, () => new Set<string>(), swarm)
+      const selected = new Set([...scriptedSelection, ...unitSelected, ...swarmSelected, ...workbox, ...acceptance])
+      expect(inventory.filter((file) => !selected.has(file))).toEqual([])
+      const memo = new Map<string, ReadonlyArray<string>>()
+      expect([...acceptance].filter((file) => !acceptReach(workspace, file, memo).has(file))).toEqual([])
+      const outside = "../example.txt"
+      expect(affectedUnits([outside], { files: ["unit.test.ts"], inputs: () => new Set(), reads: () => [], observed: () => [outside] })).toEqual(["unit.test.ts"])
+    }),
+  )
 })
 
 describe("the merge check's tests", () => {

@@ -18,6 +18,17 @@ export const workboxTestFiles = (workspace: TestSources) =>
 export const mergeScriptTests = (workspace: TestSources) =>
   unitTests(workspace).filter((file) => /^scripts\/[^/]+\.test\.tsx?$/.test(file))
 
+export const isSimSuite = (file: string) => /\.sim\.test\.tsx?$/.test(file)
+
+/** Every suite eligible to run in the acceptance swarm. */
+export const swarmTests = (workspace: TestSources) => workspace.files.filter(isSimSuite).toSorted()
+
+/** Fixed-seed unit tests not already assigned to the scripts leg or acceptance swarm. */
+export const mergeUnitTests = (workspace: TestSources) => {
+  const scripts = new Set(mergeScriptTests(workspace))
+  return unitTests(workspace).filter((file) => !scripts.has(file) && !isSimSuite(file))
+}
+
 /** The read guard covers the union of the runner populations, not a parallel glob list. */
 export const checkedTests = (workspace: TestSources) =>
   [...new Set([...unitTests(workspace), ...acceptanceTests(workspace), ...workboxTestFiles(workspace)])].toSorted()

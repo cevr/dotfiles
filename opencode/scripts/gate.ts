@@ -31,8 +31,8 @@
 // green or red; a land takes it instead of running the Rift's checks again (any other proof of a round
 // is written with scripts/receipt.ts). `--merge <base>` is a land's merge check (`rift.mergeCheck`): the link, every
 // project's typecheck, oxlint over the files changed since <base> and the debt ratchet over them
-// (`effect-debt.ts --check --since <base>`), and the scripts/ tests and the verify-opencode docs guard the changes can
-// break (scripts/merge-check.ts), no lock and no receipt (the land writes it).
+// (`effect-debt.ts --check --since <base>`), and the script, workbox and fixed-seed unit tests that reach the changes
+// (scripts/merge-check.ts), no lock and no receipt (the land writes it).
 //
 // Usage: bun scripts/gate.ts [--all]   (--all ignores the cache)
 //        bun scripts/gate.ts --merge <base> [--dry-run]   (--dry-run prints each step it would start, runs nothing)
@@ -44,6 +44,7 @@ import { Option } from "effect"
 import { hostLocks, landLogs, scriptReceipt } from "../mods/work/process/landing.ts"
 import { parseNameStatus } from "./docs-guard.ts"
 import { mergeLegs } from "./merge-check.ts"
+import { mergeUnitInputs } from "./merge-unit.ts"
 import { checkCommand, projects } from "./typecheck.ts"
 import { declaredInputs, fromRepository, importsOf, keyOf, load, mergeScriptTests, reach, readState, ROOT, selectorReads, sharedKey, unitTests, workboxTestFiles } from "./reach.ts"
 
@@ -172,7 +173,7 @@ const legEnv = () => {
 /**
  * A land's merge check of the merged tree: the link, then the legs scripts/merge-check.ts names over the changes
  * since `base` (every project's typecheck, oxlint and the Effect debt ratchet over the changed files, and the
- * scripts/ tests and docs guard a change can break), at once.
+ * tests a change can break), at once.
  */
 const mergeCheck = (base: string, runner: typeof run) =>
   planned(base).then((legs) => linked("merge check", () => legs.map((leg) => runner(leg.name, leg.argv, legEnv(), leg.note)), runner))
@@ -194,6 +195,7 @@ const planned = (base: string) =>
           tests: workboxTestFiles(workspace),
         },
         workboxReads: (file) => selectorReads(workspace, file),
+        unit: mergeUnitInputs(workspace),
         bun: process.execPath,
         oxlint: path.join(ROOT, "node_modules/.bin/oxlint"),
         typecheck: checkCommand(),

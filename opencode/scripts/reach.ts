@@ -190,8 +190,9 @@ const NAMED_FILE = /["'`/]([\w.-]+(?:\/[\w.-]+)*\.(?:tsx?|json))["'`]/g
 const NAMED_GROUP = /["'`](cmd|mods)["'`]/g
 
 /** Every workspace file `seeds` can reach. */
-export const reach = (workspace: Workspace, seeds: ReadonlyArray<string>, memo = new Map<string, ReadonlyArray<string>>()): ReadonlySet<string> => {
-  const known = new Set(workspace.files)
+export const reach = (
+  workspace: Workspace, seeds: ReadonlyArray<string>, memo = new Map<string, ReadonlyArray<string>>(), known: ReadonlySet<string> = new Set(workspace.files),
+): ReadonlySet<string> => {
   const seen = new Set<string>()
   const expanded = new Set<string>()
   const queue: Array<string> = []
