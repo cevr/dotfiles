@@ -2,7 +2,7 @@
 // and land records in its receipts folder, the updater's installed record and handoff marker, each read whole from
 // one opened handle; and the updater's record decoded by its own reader. Nothing here touches the run's own records.
 import { buildOf, goodOf, parseRecord } from "@dotfiles/opencode-update/record"
-import { type Duration, Effect, Fiber, FileSystem, Layer, Match, Option, Path, type PlatformError, Stream } from "effect"
+import { type Duration, Effect, Fiber, FileSystem, Layer, Match, Option, Path, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { type BuildFacts, type InstalledFacts, isObjectName, objectName, ReceiptSource, SourceRead, SourceRef, sourceKey, SourceUnreadable } from "../batch-input.ts"
 
@@ -137,7 +137,7 @@ const terminate = { forceKillAfter: "100 millis" } as const
 
 /**
  * The receipt source over the host's files: a reference names one allowlisted file (a head must be a full object
- * name, so it names no path), read whole, as its exact bytes, from one opened handle (`whole`), only when it is a
+ * name, so it names no path), read whole, as its exact bytes, from one opened handle, only when it is a
  * regular file with one name, no larger than `maxBytes`, and strict UTF-8. A missing file or folder is absent; any
  * other failure, a file moved while it was read included, is unreadable (read again), never absent.
  */

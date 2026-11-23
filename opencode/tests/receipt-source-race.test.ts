@@ -27,6 +27,8 @@ const receiptText = (checkout: string, tree: string, code: number) =>
 
 /** One freeze of the receipt over the host files at `places`, its outcome. */
 const freezeAt = (places: ReceiptPlaces, request: InputRequest) => Effect.result(freeze(request)).pipe(Effect.provide(layer(places)))
+const readTwiceAt = (places: ReceiptPlaces, ref: SourceRef) =>
+  ReceiptSource.use((source) => Effect.forEach([1, 2], () => Effect.result(source.read(ref)))).pipe(Effect.provide(layer(places)))
 
 /** The swapper: until the stop file exists, rename the good file's copy over the name, then a fresh link to the outside file. */
 const SWAPPER = `import { copyFileSync, existsSync, renameSync, symlinkSync } from "node:fs"
@@ -202,10 +204,7 @@ const barriers = Effect.gen(function* () {
       )
       yield* fs.writeFileString(next, before)
       yield* fs.rename(next, leaf)
-      const outcomes = yield* Effect.gen(function* () {
-        const source = yield* ReceiptSource
-        return yield* Effect.forEach([1, 2], () => Effect.result(source.read(ref)))
-      }).pipe(Effect.provide(layer(places)), Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, on))
+      const outcomes = yield* readTwiceAt(places, ref).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, on))
       const hits = yield* Effect.forEach([1, 2], (at) => fs.exists(`${marker}-${at}`))
       const want = Match.value(schedule).pipe(Match.when("both", () => [true, true]), Match.when("first", () => [true, false]), Match.when("second", () => [false, true]), Match.exhaustive)
       expect({ cut, change, schedule, hits, count: calls.expected }).toEqual({ cut, change, schedule, hits: want, count: want.filter(Boolean).length })
@@ -237,7 +236,9 @@ const componentBarriers = Effect.gen(function* () {
   // Directory swaps are only meaningful after authority is bound. The pre-setup threats are paths
   // that are not directory identities at all (a symlink to a sibling, or a FIFO).
   yield* Effect.forEach(["top", "inner", "receipts"].flatMap((_, depth) =>
-    cases.flatMap((phase) => kinds.filter((kind) => phase !== "before-setup" || kind !== "directory").map((kind) => ({ depth, phase, kind }))),
+    cases.flatMap((phase) => Arr.filterMap(kinds, (kind) =>
+      Result.liftPredicate(kind, (each) => phase !== "before-setup" || each !== "directory").pipe(Result.map((kind) => ({ depth, phase, kind }))),
+    )),
   ), ({ depth, phase, kind }) =>
     Effect.gen(function* () {
       const dir = path.join(root, `${depth}-${phase}-${kind}`)

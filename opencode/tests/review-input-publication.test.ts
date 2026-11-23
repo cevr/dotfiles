@@ -67,7 +67,7 @@ describe("review-input publication", () => {
       yield* fs.writeFileString(program, OBSERVER)
       const child = yield* processes.spawn(ChildProcess.make("bun", [program, fixture, root], { detached: true, stdin: "ignore", forceKillAfter: "100 millis" }))
       const [out, error] = yield* Effect.all([Stream.mkString(Stream.decodeText(child.stdout)), Stream.mkString(Stream.decodeText(child.stderr))], { concurrency: 2 })
-      expect({ exit: yield* child.exitCode, error, rows: out.trim().split("\n") }).toEqual({
+      expect({ exit: Number(yield* child.exitCode), error, rows: out.trim().split("\n") }).toEqual({
         exit: 0,
         error: "",
         rows: ["receipt", "land", "stage", "install", "handoff"].map((name) => `${name}:true:true:true`),
