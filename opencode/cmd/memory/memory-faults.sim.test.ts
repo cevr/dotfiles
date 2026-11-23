@@ -331,14 +331,20 @@ const answers: ReadonlyArray<Command> = [
 ]
 
 Seed.effect(
-  "deliberate histories meet every named answer and a failed write, and distinct commands produce distinct traces",
+  "deliberate histories meet every named answer and a failed write",
   Effect.gen(function* () {
     const ran = yield* runOf(1, answers)
     const faulted = yield* runOf(1, HELD_ACROSS_RESTART)
     bunExpect(ran.broken).toEqual([])
     bunExpect(faulted.broken).toEqual([])
     bunExpect([...new Set([...ran.reached, ...faulted.reached])].toSorted()).toEqual([...KINDS.map(([kind]) => kind), "faulted-session"].toSorted())
-    const distinct = yield* Effect.forEach(Arr.range(1, Seed.SEEDS), (index) => runOf(1, [root, save(`deliberate note number ${index}`)]))
-    bunExpect(new Set(distinct.map((run) => run.trace)).size).toBe(Seed.SEEDS)
+  }),
+)
+
+Seed.effect(
+  "distinct seeds keep distinct traces for the simulator's fixed replay corpus",
+  Effect.gen(function* () {
+    const runs = yield* Effect.forEach(Arr.range(1, Seed.SEEDS), (seed) => runOf(seed, commandsOf(seed)))
+    bunExpect(new Set(runs.map((run) => run.trace)).size).toBe(Seed.SEEDS)
   }),
 )

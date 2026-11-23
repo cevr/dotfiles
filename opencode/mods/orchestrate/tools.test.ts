@@ -327,9 +327,12 @@ describe("every call an answer or a refusal names", () => {
       }
     }
     for (const seed of SEEDS) checkTexts(textsOf(rng(seed)))
-    const deliberate = SEEDS.flatMap((index) => textsOf(() => 0.12 + (index / (SEEDS.length + 1)) * 0.1))
-    checkTexts(deliberate)
-    expect(deliberate.flatMap(callsIn).length).toBeGreaterThan(SEEDS.length * 8)
+    // A separate corpus: varying the random seed range cannot change these draws.
+    for (const index of Arr.range(0, 199)) {
+      const deliberate = textsOf(() => 0.12 + (index / 200) * 0.1)
+      checkTexts(deliberate)
+      expect(deliberate.flatMap(callsIn).length, `deliberate table ${index}`).toBeGreaterThan(8)
+    }
   })
 })
 
