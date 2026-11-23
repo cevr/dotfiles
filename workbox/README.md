@@ -276,9 +276,14 @@ tree it was stays at `<name>.old` under its record, and a process that stays
 in the old tree past the wait leaves the switch unfinished (the next `--apply`
 carries what it wrote once it left), as does a carry that could not read a
 tree's refs or move one of them (a Git that failed: it says what it could not
-do, and a read that fails never counts as a tree with no refs). A command
-that fails under `set -e` with no reason of its own still says so and names
-its step. If the command is cut (kill -9 too), the
+do, and a read that fails never counts as a tree with no refs). Every stop
+says three things: what failed (the command, its status and the step), the
+state both trees are in (`workrift subvolume: state: …`: the base, the copy,
+the kept tree and the recorded phase), and the exact command that goes on
+(`workrift subvolume: next: …`: the rerun, `--back` or `--drop-old`). Every
+read the switch decides on returns its status: a command that failed is never
+read as an empty answer (no process, no lock, no refs), and one that cannot be
+told is a refusal. If the command is cut (kill -9 too), the
 next `--apply` deletes the copy of a switch cut before its exchange and starts
 again, or finishes one cut after it, working from its state file in the
 base's `.workrift/subvolume/`. Every output says what it deleted, from what it
