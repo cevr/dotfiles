@@ -17,6 +17,12 @@
 // one Chrome chose; another process on that port fails the launch and is left alone), and leaves Chrome running in a process group of its own; `stop <pid>` ends that group and
 // removes the folder, and refuses a pid that is not a Chrome this launcher started.
 //
+// Until `launch` hands its browser back, the browser and its folder are this launch's: every way it ends before that
+// (a refusal, a timeout, the browser ending, SIGINT or SIGTERM, a defect) ends the browser's group and removes the
+// folder before it exits. A launcher killed past its finalizers (SIGKILL, SIGHUP) leaves them to the watchdog it
+// started first, which does the same. A refusal names another process by pid and program name only, never its
+// arguments.
+//
 // As a library: `chromeArgs` (the argument list, refusing what it must), `findChrome`, `start`, `stop`, and `launch`,
 // a scoped start that stops at the scope's end. The guard (mods/guard/chrome.ts) and the lint
 // (lint/chrome-keychain.ts) send every other headless or DevTools launch here.
@@ -24,7 +30,7 @@
 // Exit: 0 done, 1 refused or failed (the reason on stderr).
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { file, spawn, spawnSync, which } from "bun"
+import { file, spawn, spawnSync, type Subprocess, which } from "bun"
 import { Array as Arr, Config, Console, Data, Duration, Effect, Exit, FileSystem, Match, Option, Order, Result, Schedule, Schema } from "effect"
 import { Argument, Command, Flag } from "effect/cli"
 import { FetchHttpClient, HttpClient } from "effect/http"
@@ -209,9 +215,15 @@ const listenersOf = (port: number): Result.Result<ReadonlyArray<number>, string>
     },
   })
 
-/** How the refusal names the processes holding a port: each pid with its command. */
-const holders = (pids: ReadonlyArray<number>): string =>
-  pids.map((pid) => `pid ${pid} (${Option.getOrElse(commandOf(pid), () => "gone").slice(0, 120)})`).join(", ")
+/** The base name of the program `pid` runs, by `ps -o comm=`: never its arguments, which may carry secrets. */
+const programOf = (pid: number): string => {
+  const out = spawnSync(["ps", "-o", "comm=", "-p", String(pid)], { stdout: "pipe", stderr: "ignore" })
+  const program = out.stdout.toString().trim()
+  return Option.getOrElse(Option.liftPredicate(program.slice(program.lastIndexOf("/") + 1), (name) => out.exitCode === 0 && name !== ""), () => "gone")
+}
+
+/** How a refusal names the processes holding a port: each pid with its program's base name, never its arguments or environment. */
+export const holders = (pids: ReadonlyArray<number>): string => pids.map((pid) => `pid ${pid} (${programOf(pid)})`).join(", ")
 
 /** Not ready yet: the port file, the endpoint or the listening socket is not there. */
 class NotYet extends Data.TaggedError("NotYet")<{}> {}
@@ -257,47 +269,119 @@ const readiness = (pid: number, asked: number, profile: string) =>
   })
 
 /**
+ * The watchdog a launch starts before its browser: a shell in a process group of its own that reads one line from the
+ * launch. `done` (every way the launch ends that runs its finalizers: a hand-back, a failure, an interruption by
+ * SIGINT or SIGTERM, a defect) ends it with nothing to do. End of input with no word means the launcher died without
+ * running them (SIGKILL, SIGHUP, a crash): it then ends every process whose command line carries this launch's own
+ * profile (`--user-data-dir=<folder>/profile `, a fresh random folder, so never another browser) and their groups,
+ * waits for them, and removes the folder. Its argument is that folder.
+ */
+const WATCHDOG = [
+  "IFS= read -r said",
+  '[ "$said" = done ] && exit 0',
+  'folder=$1',
+  'mark="--user-data-dir=$folder/profile "',
+  'for pid in $(pgrep -f -- "$mark"); do kill -KILL -- "-$pid" 2>/dev/null; kill -KILL "$pid" 2>/dev/null; done',
+  'tries=0; while [ "$tries" -lt 50 ] && pgrep -f -- "$mark" >/dev/null; do sleep 0.1; tries=$((tries + 1)); done',
+  'rm -rf -- "$folder"',
+].join("; ")
+
+/** The folder a launch made and the watchdog that holds it. */
+interface Held {
+  readonly folder: string
+  readonly watchdog: Subprocess<"pipe", "ignore", "ignore">
+}
+
+/** Tells the watchdog the launch ran its finalizers, so it ends with nothing to do. */
+const release = (held: Held) =>
+  Effect.sync(() => {
+    held.watchdog.stdin.write("done\n")
+    held.watchdog.stdin.end()
+  }).pipe(Effect.ignore)
+
+/** A fresh folder under `dir` (the temp directory when none) and its watchdog, started before anything else. */
+const acquireFolder = (dir: Option.Option<string>) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const folder = yield* Option.match(dir, {
+      onNone: () => fs.makeTempDirectory({ prefix: "chrome-" }),
+      onSome: (directory) => fs.makeDirectory(directory, { recursive: true }).pipe(Effect.andThen(fs.makeTempDirectory({ directory, prefix: "chrome-" }))),
+    }).pipe(Effect.mapError((error) => new ChromeError({ message: `cannot make the profile folder: ${error.message}` })))
+    const watchdog = yield* Effect.try({
+      try: () =>
+        spawn(["/bin/sh", "-c", WATCHDOG, "chrome-watchdog", folder], {
+          detached: true,
+          stdin: "pipe",
+          stdout: "ignore",
+          stderr: "ignore",
+          env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin" },
+        }),
+      catch: (error) => new ChromeError({ message: `cannot start the launch's watchdog: ${String(error)}` }),
+    }).pipe(Effect.tapError(() => fs.remove(folder, { recursive: true }).pipe(Effect.ignore)))
+    watchdog.unref()
+    return { folder, watchdog } satisfies Held
+  })
+
+/** Ends a browser's process group and waits (5 s at most) for the browser to end. */
+const endBrowser = (child: Subprocess) =>
+  Effect.sync(() => signalGroup(child.pid, "KILL")).pipe(Effect.andThen(Effect.promise(() => child.exited).pipe(Effect.timeoutOption(ENDING))), Effect.ignore)
+
+/**
  * Starts Chrome under a fresh folder in `dir` (the system's temp directory when none) and leaves it running in a
  * process group of its own. Ready when that browser answers DevTools on loopback at the port it was given or chose
- * (`readiness`). Fails at once when a flag is refused or a fixed port is already held, before anything starts;
- * fails, ending only the browser it started and removing its folder, when that browser ends, another process
- * answers on its port, or it is not ready in time.
+ * (`readiness`). Fails at once when a flag is refused or a fixed port is already held, before anything starts.
+ *
+ * The folder and the browser are resources this launch owns until it hands them back: each is released (the
+ * browser's group ended, then the folder removed) on every way the launch ends before the hand-back, failure,
+ * timeout, interruption (SIGINT and SIGTERM reach the CLI as one), or a defect, and only the hand-back's success
+ * keeps them. A launcher that dies without running finalizers (SIGKILL, SIGHUP) leaves them to its watchdog.
  */
 export const start = Effect.fn("Chrome.start")(function* (options: Options, dir: Option.Option<string>, binary: Binary) {
   const fs = yield* FileSystem.FileSystem
-  const made = yield* Option.match(dir, {
-    onNone: () => fs.makeTempDirectory({ prefix: "chrome-" }),
-    onSome: (directory) => fs.makeDirectory(directory, { recursive: true }).pipe(Effect.andThen(fs.makeTempDirectory({ directory, prefix: "chrome-" }))),
-  }).pipe(Effect.mapError((error) => new ChromeError({ message: `cannot make the profile folder: ${error.message}` })))
-  const at = layoutOf(made)
-  const removeFolder = fs.remove(at.folder, { recursive: true }).pipe(Effect.ignore)
-  const args = chromeArgs(options, at.profile)
-  if (Result.isFailure(args)) return yield* removeFolder.pipe(Effect.andThen(new ChromeError({ message: args.failure })))
+  // Both refusals come before anything is made.
+  const refused = chromeArgs(options, "/profile")
+  if (Result.isFailure(refused)) return yield* new ChromeError({ message: refused.failure })
   if (options.port > 0) {
-    // A fixed port another process holds: fail before starting anything, and leave that process alone.
+    // A fixed port another process holds: leave that process alone.
     const held = Result.getOrElse(listenersOf(options.port), () => [])
-    if (held.length > 0) return yield* removeFolder.pipe(Effect.andThen(new ChromeError({ message: `port ${options.port} is in use by ${holders(held)}: pick another --port, or 0 for any free one` })))
+    if (held.length > 0) return yield* new ChromeError({ message: `port ${options.port} is in use by ${holders(held)}: pick another --port, or 0 for any free one` })
   }
-  const child = spawn([binary.path, ...args.success], { detached: true, stdin: "ignore", stdout: file(at.log), stderr: file(at.log) })
-  child.unref()
-  const pid = child.pid
-  const failed = (message: string) => Effect.sync(() => signalGroup(pid, "KILL")).pipe(Effect.andThen(removeFolder), Effect.andThen(new ChromeError({ message })))
-  const opened = readiness(pid, options.port, at.profile).pipe(
-    Effect.retry({ schedule: Schedule.spaced(Duration.millis(100)), times: Duration.toMillis(READY) / 100, while: (error) => error._tag === "NotYet" }),
-    Effect.timeoutOption(READY),
-    Effect.catchTag("NotYet", () => Effect.succeed(Option.none<{ readonly port: number; readonly path: string }>())),
+  return yield* Effect.acquireUseRelease(
+    acquireFolder(dir),
+    (held) => {
+      const at = layoutOf(held.folder)
+      return Effect.acquireUseRelease(
+        Effect.try({
+          try: () => {
+            const child = spawn([binary.path, ...Result.getOrElse(chromeArgs(options, at.profile), () => [])], { detached: true, stdin: "ignore", stdout: file(at.log), stderr: file(at.log) })
+            child.unref()
+            return child
+          },
+          catch: (error) => new ChromeError({ message: `cannot start ${binary.path}: ${String(error)}` }),
+        }),
+        (child) =>
+          Effect.gen(function* () {
+            const opened = readiness(child.pid, options.port, at.profile).pipe(
+              Effect.retry({ schedule: Schedule.spaced(Duration.millis(100)), times: Duration.toMillis(READY) / 100, while: (error) => error._tag === "NotYet" }),
+              Effect.timeoutOption(READY),
+              Effect.catchTag("NotYet", () => Effect.succeed(Option.none<{ readonly port: number; readonly path: string }>())),
+            )
+            // A browser that ends before it opens its port fails the launch at once.
+            const port = yield* Effect.raceFirst(opened, Effect.promise(() => child.exited).pipe(Effect.as(Option.none())))
+            if (Option.isNone(port)) {
+              const log = yield* fs.readFileString(at.log).pipe(Effect.orElseSucceed(() => ""))
+              return yield* new ChromeError({ message: `${binary.path} opened no DevTools port within ${Duration.format(READY)}: ${log.trim().split("\n").slice(-5).join(" | ")}` })
+            }
+            const launched: Launched = { endpoint: `ws://127.0.0.1:${port.value.port}${port.value.path}`, port: port.value.port, pid: child.pid, folder: at.folder, binary: binary.path }
+            yield* fs.writeFileString(at.record, encodeLaunched(launched)).pipe(Effect.mapError((error) => new ChromeError({ message: `cannot write ${at.record}: ${error.message}` })))
+            return launched
+          }),
+        // The hand-back's success alone keeps the browser.
+        (child, exit) => Exit.match(exit, { onSuccess: () => Effect.void, onFailure: () => endBrowser(child) }),
+      )
+    },
+    (held, exit) => Exit.match(exit, { onSuccess: () => release(held), onFailure: () => fs.remove(held.folder, { recursive: true }).pipe(Effect.ignore, Effect.andThen(release(held))) }),
   )
-  // A browser that ends before it opens its port fails the launch at once.
-  const port = yield* Effect.raceFirst(opened, Effect.promise(() => child.exited).pipe(Effect.as(Option.none()))).pipe(
-    Effect.catchTag("ChromeError", (error) => failed(error.message)),
-  )
-  if (Option.isNone(port)) {
-    const log = yield* fs.readFileString(at.log).pipe(Effect.orElseSucceed(() => ""))
-    return yield* failed(`${binary.path} opened no DevTools port within ${Duration.format(READY)}: ${log.trim().split("\n").slice(-5).join(" | ")}`)
-  }
-  const launched: Launched = { endpoint: `ws://127.0.0.1:${port.value.port}${port.value.path}`, port: port.value.port, pid, folder: at.folder, binary: binary.path }
-  yield* fs.writeFileString(at.record, encodeLaunched(launched)).pipe(Effect.catch((error) => failed(`cannot write ${at.record}: ${error.message}`)))
-  return launched
 })
 
 /** The folder of the launch `pid` runs, read from its command line and confirmed by the record in it. */
