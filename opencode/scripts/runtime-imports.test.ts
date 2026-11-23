@@ -15,9 +15,9 @@ import { isBuiltin } from "node:module"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { env } from "bun"
-import { Match, Option } from "effect"
+import { Array as Arr, Match, Option, Order, Schema } from "effect"
 import { unresolvedImports } from "../mods/update/filestore/trees.ts"
-import { type Host, hostProvided, SEEDS } from "../mods/update/trees.ts"
+import { COMMANDS, type Host, hostProvided, SEEDS } from "../mods/update/trees.ts"
 
 const ROOT = process.cwd()
 const typescript = new Bun.Transpiler({ loader: "ts" })
@@ -160,6 +160,158 @@ describe("runtime imports", () => {
   })
 })
 
+/** A plain-Bun entry by its own mark: a source of `cmd/` that runs as a script (`import.meta.main`, or a `#!` line). */
+const ENTRIES = sources("cmd/**/*.{ts,tsx}").filter((file) => !/\.sim\.tsx?$/.test(file) && /^#!|import\.meta\.main/m.test(readFileSync(file, "utf8")))
+
+/** Each bare import `seed`'s graph reaches from `root` that is no built-in, with its importer. */
+const bareOf = (seed: string, root = ROOT) =>
+  reachOf(seed, root)
+    .entries()
+    .filter(([target]) => !path.isAbsolute(target) && !builtinModule(target))
+    .toArray()
+
+describe("the plain-Bun commands a tree runs (mods/update/trees.ts COMMANDS)", () => {
+  test("every production entry of cmd/ is a declared command, and every declared command is there, with a probe", () => {
+    expect(ENTRIES).toContain("cmd/digest/devices.ts")
+    const declared = COMMANDS.map(({ path: file }) => file)
+    expect(ENTRIES.filter((file) => !declared.includes(file))).toEqual([])
+    expect(declared.filter((file) => sources(file).length !== 1)).toEqual([])
+    expect(new Set(declared).size).toBe(declared.length)
+    expect(COMMANDS.filter(({ probes }) => probes.length === 0)).toEqual([])
+  })
+
+  test("each command's graph imports only the packages it declares, each one the root install holds, and never a module only a loader serves", () => {
+    const outside = COMMANDS.flatMap(({ path: seed, packages }) =>
+      bareOf(seed)
+        .filter(([target]) => !packages.includes(packageOf(target)))
+        .map(([target, importer]) => `${seed} reaches ${target} through ${importer}, not in its packages ${JSON.stringify(packages)}`),
+    )
+    expect(outside).toEqual([])
+    // The install holds each one: it resolves from its importer inside the checkout, or, where a fork link shadows
+    // the install there (scripts/link-fork.ts), from the root's own install (the exact form is the tree's test below).
+    const held = (name: string, importer: string) => [path.dirname(path.join(ROOT, importer)), ROOT].some((dir) => Option.exists(packageDirFrom(name, dir), (at) => within(ROOT, at)))
+    const unheld = COMMANDS.flatMap(({ path: seed }) =>
+      bareOf(seed)
+        .filter(([target, importer]) => !held(packageOf(target), importer))
+        .map(([target, importer]) => `${seed}: ${importer} imports ${target}, which no install of the checkout holds`),
+    )
+    expect(unheld).toEqual([])
+    // The loader-only modules: `@opencode/*` (the server's and the fork's), the TUI's Solid and OpenTUI.
+    expect(COMMANDS.flatMap(({ packages }) => packages.filter((name) => hostProvided("tui", name) && name !== "effect"))).toEqual([])
+  })
+
+  test("each command's graph is on one effect release, the root's pin, through every package it reaches (its platform layer's too)", () => {
+    const pinned = rootPin("effect")
+    expect(pinsAt(ROOT)).toEqual(expectedPins(pinned))
+    const mixed = COMMANDS.flatMap(({ path: seed }) => {
+      const versions = [...new Set(effectsOf(seed, ROOT).values())]
+      return [`${seed}: effect ${versions.join(", ")}`].filter(() => versions.length !== 1 || versions[0] !== pinned)
+    })
+    expect(mixed).toEqual([])
+    // daily's graph holds the platform layer: the walk reaches effect through it, not just beside it.
+    expect([...effectsOf("scripts/daily.ts", ROOT).keys()].some((each) => each.startsWith("@effect/platform-bun"))).toBe(true)
+  })
+})
+
+/** The root `package.json`'s exact version of `name`. */
+const rootPin = (name: string) => pinIn(manifestAt(ROOT), name)
+
+/** A manifest's runtime pin of `name`, or "(unpinned)". */
+const pinIn = (manifest: { readonly dependencies?: Readonly<Record<string, string>> }, name: string) =>
+  Option.getOrElse(Option.fromNullishOr(manifest.dependencies?.[name]), () => "(unpinned)")
+
+/**
+ * The install's Effect at `root`: the runtime pins of `effect` and `@effect/platform-bun` in its `package.json`,
+ * and every copy of `effect` and of an `@effect/platform-*` package its `bun.lock` (parsed) resolves. An install that
+ * nests a second copy anywhere (a key `<dependent>/effect`) or moves one off the pin differs (package.json `overrides`).
+ */
+const pinsAt = (root: string) => {
+  const lock = decodeLock(Bun.JSONC.parse(readFileSync(path.join(root, "bun.lock"), "utf8")))
+  const copies = Arr.sort(
+    Object.entries(lock.packages)
+      .filter(([key]) => /(^|\/)(effect|@effect\/platform-[a-z-]+)$/.test(key))
+      .map(([key, entry]) => [key, String(entry[0])] as const),
+    Order.mapInput(Order.String, ([key]: readonly [string, string]) => key),
+  )
+  const manifest = manifestAt(root)
+  return { effect: pinIn(manifest, "effect"), platform: pinIn(manifest, "@effect/platform-bun"), copies }
+}
+
+/** `pinsAt` of an install on one Effect release, `pinned`: one copy of each, all at it. */
+const expectedPins = (pinned: string) => ({
+  effect: pinned,
+  platform: pinned,
+  copies: [
+    ["@effect/platform-bun", `@effect/platform-bun@${pinned}`] as const,
+    ["@effect/platform-node", `@effect/platform-node@${pinned}`] as const,
+    ["@effect/platform-node-shared", `@effect/platform-node-shared@${pinned}`] as const,
+    ["effect", `effect@${pinned}`] as const,
+  ],
+})
+
+/** What these checks read of a package's `package.json`. */
+const Manifest = Schema.Struct({
+  name: Schema.optionalKey(Schema.String),
+  version: Schema.optionalKey(Schema.String),
+  dependencies: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+  peerDependencies: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+})
+const decodeManifest = Schema.decodeUnknownSync(Schema.fromJsonString(Manifest))
+/** The `package.json` in `dir`. */
+const manifestAt = (dir: string) => decodeManifest(readFileSync(path.join(dir, "package.json"), "utf8"))
+
+/** What these checks read of `bun.lock`: its packages table, each entry's first element the resolution `<name>@<version>`. */
+const decodeLock = Schema.decodeUnknownSync(Schema.Struct({ packages: Schema.Record(Schema.String, Schema.Array(Schema.Unknown)) }))
+
+/** The package a bare import names: its first part, or its first two for a scoped package. */
+const packageOf = (specifier: string) =>
+  specifier
+    .split("/")
+    .slice(0, 1 + Number(specifier.startsWith("@")))
+    .join("/")
+
+/** Whether `file` is `root` or under it. */
+const within = (root: string, file: string) => file === root || file.startsWith(`${root}${path.sep}`)
+
+/** The real directory of the package `name` as Bun resolves it from `dir`: the nearest `package.json` named `name` above what it resolves to. */
+const packageDirFrom = (name: string, dir: string): Option.Option<string> =>
+  Option.liftThrowable(() => realpathSync(Bun.resolveSync(name, dir)))().pipe(
+    Option.flatMap((file) => {
+      for (let at = path.dirname(file); at !== path.dirname(at); at = path.dirname(at)) {
+        const manifest = Option.liftThrowable(() => manifestAt(at))()
+        if (Option.exists(manifest, (each) => each.name === name)) return Option.some(at)
+      }
+      return Option.none()
+    }),
+  )
+
+/**
+ * Every copy of `effect` `seed`'s graph loads from `root`: each one its graph imports, and each one a package
+ * it imports reaches through its own dependencies and peers (a platform layer and its shared node half),
+ * keyed by who reaches it and valued by its version. On a tree with no links each key's real directory is one.
+ */
+const effectsOf = (seed: string, root: string) => {
+  const found = new Map<string, string>()
+  const visited = new Set<string>()
+  const versionAt = (dir: string) => manifestAt(dir).version ?? "(none)"
+  const descend = (dir: string, via: string) => {
+    if (visited.has(dir)) return
+    visited.add(dir)
+    const manifest = manifestAt(dir)
+    for (const name of Object.keys({ ...manifest.dependencies, ...manifest.peerDependencies }))
+      for (const at of Option.toArray(packageDirFrom(name, dir))) {
+        if (name === "effect") found.set(`${via} -> ${at}`, versionAt(at))
+        else descend(at, `${via}/${name}`)
+      }
+  }
+  for (const [target, importer] of bareOf(seed, root))
+    for (const at of Option.toArray(packageDirFrom(packageOf(target), path.dirname(path.join(root, importer))))) {
+      if (packageOf(target) === "effect") found.set(`${importer} -> ${at}`, versionAt(at))
+      else descend(at, packageOf(target))
+    }
+  return found
+}
+
 /**
  * What each host serves, restated here as the oracle the generated cases compare `hostProvided` to: the
  * server `effect` and `@opencode/plugin` with any subpath, the TUI those and its exact Solid and OpenTUI
@@ -262,6 +414,20 @@ describe("what each host serves, generated over host × package × subpath", () 
     const servers = [...new Bun.Glob("cmd/*/server.ts").scanSync({ cwd: at })].sort()
     expect(servers).toContain("cmd/orchestrate/server.ts")
     expect(servers.flatMap((seed) => breaches(seed, PLATFORM_IMPL, at))).toEqual([])
+    // The tree installs the checkout's Effect: the same pins, one copy of each.
+    expect(pinsAt(at)).toEqual(expectedPins(rootPin("effect")))
+    // Each plain-Bun command loads from the tree alone, and one copy of effect, its platform layer's included.
+    const leaving = COMMANDS.flatMap(({ path: seed }) =>
+      bareOf(seed, at)
+        .filter(([target, importer]) => !Option.exists(packageDirFrom(packageOf(target), path.dirname(path.join(at, importer))), (dir) => within(at, dir)))
+        .map(([target, importer]) => `${seed}: ${importer} imports ${target} from outside the tree`),
+    )
+    expect(leaving).toEqual([])
+    const copies = COMMANDS.flatMap(({ path: seed }) => {
+      const dirs = [...new Set([...effectsOf(seed, at).keys()].map((key) => key.split(" -> ")[1]))]
+      return [`${seed}: ${dirs.join(", ")}`].filter(() => dirs.length !== 1)
+    })
+    expect(copies).toEqual([])
   })
 })
 

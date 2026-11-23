@@ -41,7 +41,7 @@
 import { Cause, Clock, Data, Effect, Fiber, FileSystem, type Layer, Option, Schedule, Schema, type Scope, Stream } from "effect"
 import { expect, it } from "effect-bun-test"
 import { Base64 } from "effect/encoding"
-import { FetchHttpClient, Headers, HttpBody, HttpClient, HttpClientRequest, HttpServerRequest, HttpServerResponse } from "effect/http"
+import { FetchHttpClient, Headers, HttpBody, HttpClient, HttpClientRequest, HttpMethod, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { ChildProcessSpawner } from "effect/process"
 import { ROOT } from "../../scripts/reach.ts"
 import { forkLaunch } from "../../testbeds/gamut/gamut.ts"
@@ -304,7 +304,10 @@ const bootingProxy = (serviceFile: string) =>
         submissions.push(...Option.toArray(prompt))
         const target = yield* serviceIn(serviceFile, "the service behind the proxy")
         const headers = passable(request.headers)
-        const forwarded = HttpClientRequest.make(request.method)(new URL(url.pathname + url.search, target.url), {
+        // Since effect 4.1 a server request's method is any string the client sent: one HTTP does not name is not passed on.
+        const method = request.method
+        if (!HttpMethod.isHttpMethod(method)) return HttpServerResponse.empty({ status: 405 })
+        const forwarded = HttpClientRequest.make(method)(new URL(url.pathname + url.search, target.url), {
           headers,
           body: Option.getOrElse(
             Option.map(body, (text) => HttpBody.text(text, Option.getOrUndefined(Headers.get(headers, "content-type")))),
