@@ -10,7 +10,7 @@
 // the fleet (fleet.ts): each start that has not settled yet is charged a fixed
 // share of one account's week until it has, so a wave on one host holds the
 // next start on any host before the readings show it.
-import { Schema } from "effect"
+import { Option, Schema } from "effect"
 import { limitsModel, scopeOf } from "./quota.ts"
 import type { AccountStatus } from "./status.ts"
 import { byCount, holdsAt, iso, used } from "./usage-text.ts"
@@ -25,6 +25,14 @@ export const TARGET = 0.99
 export const SHORT_5H = 0.9
 const LEEWAY = 0.05
 
+/**
+ * What room admits a start or a request: `ordinary`, the even line with its
+ * leeway; `backed`, past that line but within one a reset the pool claimed and
+ * a fresh reading after it observed (`PacePlan.rebase`); `held`, neither.
+ */
+export const Admission = Schema.Literals(["ordinary", "backed", "held"])
+export type Admission = typeof Admission.Type
+
 /** The pace method's answer: whether a new agent may start now, and if not, when to ask again. */
 export const Pace = Schema.Struct({
   ok: Schema.Boolean,
@@ -33,8 +41,31 @@ export const Pace = Schema.Struct({
   retryAt: Schema.optionalKey(Schema.Number),
   /** A hold of the spend-evenly target only: the accounts still have quota. */
   soft: Schema.optionalKey(Schema.Boolean),
+  /** What room the answer rests on, when measured. An older pool answers none: read it as `ok`'s. */
+  admission: Schema.optionalKey(Admission),
+  /**
+   * A dispatch's answer (`dispatch`), when measured: the logins a request of the model may go out on now
+   * (`eligibleFor`). A send outside the host's hooks (the cache's keepalive) goes out only on one of these.
+   */
+  eligible: Schema.optionalKey(Schema.Array(Schema.String)),
 })
 export type Pace = typeof Pace.Type
+
+/**
+ * A model request the pool's pace holds at its dispatch: no credential is set
+ * and nothing goes out. The same answer a start of the model would get now
+ * (`poolPace`), its reason and when to ask again; the reset review was told of
+ * the held work, so a reset that relieves it is claimed meanwhile.
+ */
+export class RequestHeld extends Schema.TaggedError<RequestHeld>()("RequestHeld", {
+  sessionID: Schema.String,
+  reason: Schema.String,
+  retryAt: Schema.OptionFromOptionalKey(Schema.Number),
+}) {}
+
+/** The turn's end a held request names: the pace's words, and when it asks again. */
+export const requestHeldMessage = (held: RequestHeld): string =>
+  `dotfiles-opencode.pool: the request is held: ${held.reason}${Option.match(held.retryAt, { onNone: () => "", onSome: (at) => `; it may go again at ${iso(at)}` })}`
 
 /** The answer for a provider the pool does not hold. */
 export const UNPOOLED: Pace = { ok: true, measured: false, reason: "provider is not pooled" }
@@ -77,16 +108,14 @@ const spentOwn = (account: AccountStatus, now: number, model?: string): Readonly
       })
 
 /**
- * What an account's resets do to its spend-evenly line (resets.ts
- * `pacePlans`). A reset gives use back but keeps the weekly reset date, so it
- * is worth most spent early: while the account holds one that gives back
- * `spare` of the week, the line is raised by that much, fading with the week
- * left, so the first 100% may go fast. Once one was claimed at `rebase.at`,
+ * What a reset the pool claimed did to an account's spend-evenly line
+ * (resets.ts `pacePlans`). A reset in hand moves nothing: it is room only once
+ * claimed, sent once under the fleet's lease, and a fresh reading after it
+ * observed the week lower than before. Once one was claimed at `rebase.at`,
  * leaving the week at `rebase.from`, the line starts again there and spends
  * the rest evenly to the weekly reset.
  */
 export interface PacePlan {
-  readonly spare?: number
   readonly rebase?: { readonly at: number; readonly from: number }
 }
 
@@ -98,7 +127,27 @@ export const lineOf = (resetAt: number, now: number, plan: PacePlan | undefined)
     rebase !== undefined && rebase.at <= now && rebase.at > resetAt - WEEK && resetAt > rebase.at
       ? rebase.from + (TARGET - rebase.from) * ((now - rebase.at) / (resetAt - rebase.at))
       : TARGET * (1 - left)
-  return base + LEEWAY + (plan?.spare ?? 0) * Math.max(left, 0)
+  return base + LEEWAY
+}
+
+/**
+ * The accounts that can take a start or a request of `model` now: not held,
+ * no window of the model's own spent, the 5-hour window under SHORT_5H and the
+ * week under TARGET. Placement chooses among these alone, the cache's account
+ * too, so the pace and the request boundary read one rule.
+ */
+export const eligibleFor = (accounts: ReadonlyArray<AccountStatus>, now: number, model?: string): ReadonlyArray<AccountStatus> =>
+  accounts.filter((a) => Option.isNone(Option.fromUndefinedOr(blockedUntil(a, now, model))) && Option.isNone(shortUntil(a, now)))
+
+/** Whether a window holds a start at its hold line: the 5-hour at SHORT_5H, the week at TARGET. */
+const atHoldLine = (w: { readonly name: string; readonly utilization: number }) =>
+  (w.name === "5h" && w.utilization >= SHORT_5H) || (w.name === "7d" && w.utilization >= TARGET)
+
+/** Until when an account's 5-hour or weekly window holds a start at its hold line; none when neither does. */
+const shortUntil = (account: AccountStatus, now: number): Option.Option<number> => {
+  const windows = Option.match(Option.fromUndefinedOr(account.reading), { onNone: () => [], onSome: (reading) => reading.windows })
+  const resets = windows.flatMap((w) => Option.toArray(Option.filter(Option.fromUndefinedOr(w.resetAt), (at) => at > now && atHoldLine(w))))
+  return Option.liftPredicate(resets, (all) => all.length > 0).pipe(Option.map((all) => Math.max(...all)))
 }
 
 /**
@@ -132,6 +181,7 @@ export function poolPace(
         ? `every pool account is held or has ${model}'s own weekly window (${names.join(", ")}) at ${used(1)}: a ${model} start ${holdsAt(1)} there; the first resets ${iso(retryAt)}`
         : "all pool accounts are held",
       retryAt,
+      admission: "held",
     }
   }
   const known = accounts.flatMap((a) => {
@@ -140,27 +190,31 @@ export function poolPace(
       ? [{ used: w.utilization, resetAt: w.resetAt, plan: plans[a.credentialID] }]
       : []
   })
-  const short = available.flatMap((a) => {
-    const resets = (a.reading?.windows ?? []).flatMap((w) =>
-      w.resetAt !== undefined && w.resetAt > now && ((w.name === "5h" && w.utilization >= SHORT_5H) || (w.name === "7d" && w.utilization >= TARGET))
-        ? [w.resetAt]
-        : [],
-    )
-    return resets.length ? [Math.max(...resets)] : []
-  })
+  const short = available.flatMap((a) => Option.toArray(shortUntil(a, now)))
   if (short.length === available.length)
     return {
       ok: false,
       measured: true,
       reason: `every pool account is at a hold line: its 5-hour window at ${used(SHORT_5H)} or more, or its week at ${used(TARGET)} or more; the first resets ${iso(Math.min(...short))}`,
       retryAt: Math.min(...short),
+      admission: "held",
     }
   if (!known.length) return { ok: true, measured: false, reason: "weekly pace unmeasured" }
   const read = known.reduce((n, a) => n + a.used, 0)
   const charged = inflight.starts.length * inflight.cost
   const spent = read + charged
   const allowance = known.reduce((n, a) => n + lineOf(a.resetAt, now, a.plan), 0)
-  if (spent <= allowance + 1e-9) return { ok: true, measured: true, reason: "the pool is within its weekly pace" }
+  if (spent <= allowance + 1e-9) {
+    // Past the even line but within one a claimed, observed reset rebased: the room is that reset's.
+    const ordinary = known.reduce((n, a) => n + lineOf(a.resetAt, now, {}), 0)
+    if (spent <= ordinary + 1e-9) return { ok: true, measured: true, reason: "the pool is within its weekly pace", admission: "ordinary" }
+    return {
+      ok: true,
+      measured: true,
+      reason: `the pool is within its weekly pace on the room a claimed reset gave back, observed after the claim (the even line alone ${byCount(known.length, "is", "averages")} ${tenth(ordinary / known.length)} used of 100%)`,
+      admission: "backed",
+    }
+  }
   const catchesUp = now + ((spent - allowance) * WEEK) / (known.length * TARGET)
   const settles = inflight.starts.length ? [Math.min(...inflight.starts) + inflight.settleMs + 1] : []
   // Pool-wide figures read per account, on average, so each stays out of 100%.
@@ -176,5 +230,6 @@ export function poolPace(
       `the pool's weekly pace is over: its ${n} ${byCount(n, "account's week is", "accounts' weeks are")} at ${tenth(read / n)} used of 100%${byCount(n, "", " on average")}${starting}; ` +
       `the spend-evenly line ${byCount(n, "is", "averages")} ${tenth(allowance / n)} used of 100% now, and the start holds past it`,
     retryAt: Math.min(Math.ceil(catchesUp) + 1, ...settles, ...known.map((a) => a.resetAt)),
+    admission: "held",
   }
 }

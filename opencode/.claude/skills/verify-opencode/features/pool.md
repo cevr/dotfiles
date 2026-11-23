@@ -10,7 +10,8 @@ The pool chooses the login each request of a pooled provider (Claude) goes out o
 - `pool-claim`: the pool claims a usage-limit reset on its own (`claim-rule.ts`): one about to expire (in its last day, on anything it gives back), else one when the forecast of the work running across the fleet (its burn, the sessions busy now on every host however long ago they started, any start held) runs the pool out before its first natural reset, on the most-used account near its limit; it never asks, and tells the owner after with one `OK` notice in the waiting session's tray.
 - `pool-store`: the login store's accounts, read and refreshed in place under its lock.
 - `pool-alerts`: a lost login or failing refreshes name the slot file to sign in again.
-- `pool-rpc`: `pace`, `status`, `session`, `alerts` answer the other mods.
+- `pool-rpc`: `pace`, `status`, `session`, `alerts` answer the other mods; `pace` with `dispatch: true` answers as a request's dispatch, with the logins it may go out on (`eligible`).
+- `pool-admission`: every request of a pooled provider is admitted at its dispatch by the one pace a start gets (`place`): a fresh or cached root's, a child's, a retry, a follow-up, the cache's keepalive ping. Over the spend-evenly line it goes out on no login (`RequestHeld`, with why and when it opens) unless a reset the pool claimed, sent once and observed lower in a fresh reading of the same week, rebased the line (`admission: "backed"`); a reset in hand adds no room. Admitted, it goes out only on a login eligible for its model; the cache keeps its login only while that login is eligible.
 
 ## How to get to it (user POV)
 
@@ -22,13 +23,14 @@ The pool chooses the login each request of a pooled provider (Claude) goes out o
 
 - **Preconditions:** a world made with `anthropic` (sim/provider.ts, the fake's wire) and two or more logins; the Anthropic auth plugin and the pool loaded as the real run loads them.
 - **States:** default, refused (a 429), a reset, error (the faults suite: failed store writes, a refresh outage). Loading is `n/a`.
-- **World suites:** `cmd/pool/pool-failover.sim.test.ts`, `cmd/pool/pool-resets.sim.test.ts`, `cmd/pool/pool-faults.sim.test.ts`, `cmd/pool/pool-store.sim.test.ts`, `cmd/pool/pool-store-refresh.sim.test.ts`, `cmd/pool/pool-store-opencode.sim.test.ts`, `cmd/pool/pool-waiter.sim.test.ts`
+- **World suites:** `cmd/pool/pool-reset-backed-pace.sim.test.ts`, `cmd/pool/pool-failover.sim.test.ts`, `cmd/pool/pool-resets.sim.test.ts`, `cmd/pool/pool-faults.sim.test.ts`, `cmd/pool/pool-store.sim.test.ts`, `cmd/pool/pool-store-refresh.sim.test.ts`, `cmd/pool/pool-store-opencode.sim.test.ts`, `cmd/pool/pool-waiter.sim.test.ts`
 - **Code:** `mods/pool/`, `cmd/pool/`, `mods/anthropic-auth/`, `cmd/anthropic-auth/`, `sim/`, `tests/pool-resets.test.ts`, `testbeds/busy-agents.ts` (the resets' real check and the busy agents it runs); `tests/owned.ts`, `tests/scratch.ts` (the spawn helper and scratch folders its real checks run through: a change to them is due on every such check)
 - **Regression:** `mods/pool/*.test.ts`.
 
 1. **Failover.** The first login answers an agent turn with a plan-limit 429; the run finishes on the second, and the world's provider saw exactly those two requests in that order.
 2. **Without the pool.** The same refusal ends the run: the host does not retry a plan limit on its own.
 3. **Resets and store.** The resets suite holds a login to its reset, claims a reset on its own only with agents running (sessions busy on a long command, no start recorded) whose forecast runs the pool out before its reset (one per pool, the claimed login taking the work), leaves one while a fresher account's room outlasts the reset, uses a reset about to expire, and asks nothing; the store suites read, refresh and write the login store under its lock; a resolve that waited out another holder's lock reads the file again and serves only the login it read before the wait, unrefused, else fails over (busy).
+4. **Reset-backed pace.** `pool-reset-backed-pace.sim.test.ts`: a Fable allowance at 4–8% of its own week admits nothing past the even line and claims nothing; an Opus start held by a 100% shared week claims the Fable reset once and is admitted after it; the owner's fixture (shared 100%, Fable 68% = 34 shared points) claims once, reads the week at 66% after it, admits as `backed`, a dispatch naming its one eligible login, and claims nothing more; a 0.4% Fable part claims nothing; a cached root's continued turn over the line sends no request; a natural weekly rollover reopens it with no claim. `mods/pool/admission.test.ts` runs a generated claim/dispatch sequence against an independent model after every step; `mods/pool/pace.test.ts` holds the boundaries of 5h, week and a model's own week.
 
 ## Driving it with real OpenCode
 

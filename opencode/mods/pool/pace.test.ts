@@ -1,6 +1,6 @@
 // The pool's pace: whether a new agent may start now, from its accounts' readings.
 import { expect, test } from "bun:test"
-import { poolPace } from "./pace.ts"
+import { eligibleFor, NO_INFLIGHT, poolPace } from "./pace.ts"
 import type { AccountStatus } from "./status.ts"
 const now = Date.parse("2026-11-04T15:00:00Z")
 const day = 86400000
@@ -63,4 +63,61 @@ test("agents started in the fleet count until they settle, so a wave holds the n
   expect(held.retryAt).toBe(now + 7 * minute + 1)
   // Without readings the starts cannot be weighed: the pace stays unmeasured and open.
   expect(poolPace([{ ...account(0.54), reading: { at: now, windows: [] } }], now, inflight([now, now, now]))).toMatchObject({ ok: true, measured: false })
+})
+
+test("admission, as a property over boundary partitions of 5h, week and a model's own week, both models and an unknown reset: one rule for the pace and the eligible accounts, against an independent oracle", () => {
+  // The even line at the explicit midweek clock: 0.99 × 3.5/7 + 0.05 = 0.545.
+  const LINE = 0.545
+  const near = (edge: number) => [edge - 1e-6, edge, edge + 1e-6]
+  const fives = [0, ...near(0.9), 1]
+  const weeks = [0, ...near(LINE), ...near(0.99), 1]
+  const owns = [0, ...near(1)]
+  const models = ["claude-opus-5-5", "claude-fable-5-2"] as const
+  // A model's own week with its reset known, or unknown (a reading that names none).
+  const ownWindows = (own: number) => [
+    { label: "known", window: { name: "7d:Fable", utilization: own, resetAt: now + 2 * day } },
+    { label: "unknown", window: { name: "7d:Fable", utilization: own } },
+  ]
+  const cases = fives.flatMap((five) =>
+    weeks.flatMap((week) => owns.flatMap((own) => models.flatMap((model) => ownWindows(own).map((scoped) => ({ five, week, own, model, scoped }))))),
+  )
+  for (const { five, week, own, model, scoped } of cases) {
+    const read: AccountStatus = {
+      credentialID: "a",
+      live: 0,
+      load: 0,
+      noRoom: false,
+      reading: {
+        at: now,
+        windows: [{ name: "5h", utilization: five, resetAt: now + 3600000 }, { name: "7d", utilization: week, resetAt: now + 3.5 * day }, scoped.window],
+      },
+    }
+    // The oracle, written from the rule's words, not its code: a window of the model's own at 100% with a
+    // known reset holds that model; 5h at 90% or the week at 99% holds every model; past the even line holds softly.
+    const ownHolds = model === "claude-fable-5-2" && own >= 1 && scoped.label === "known"
+    const hard = ownHolds || five >= 0.9 || week >= 0.99
+    const soft = !hard && week > LINE + 1e-9
+    const pace = poolPace([read], now, NO_INFLIGHT, model)
+    expect(
+      { ok: pace.ok, measured: pace.measured, soft: pace.soft === true, held: pace.admission === "held", opens: pace.ok || pace.retryAt! > now, eligible: eligibleFor([read], now, model).length },
+      `5h ${five}, week ${week}, Fable ${own} (reset ${scoped.label}), ${model}`,
+    ).toEqual({ ok: !hard && !soft, measured: true, soft, held: hard || soft, opens: true, eligible: Number(!hard) })
+    expect(pace.admission).toBeOneOf(["held", "ordinary"])
+  }
+  expect(cases).toHaveLength(fives.length * weeks.length * owns.length * models.length * 2)
+})
+
+test("a claim's observed rebase admits as backed room, bounded by the week observed after it; a reset in hand adds none", () => {
+  const resetAt = now + 3.5 * day
+  const at = (used: number) => account(used, resetAt)
+  const opus = "claude-opus-5-5"
+  // At 70%, past the 54.5% even line: held, a reset in hand or not (the plan carries none).
+  expect(poolPace([at(0.7)], now, NO_INFLIGHT, opus, {})).toMatchObject({ ok: false, soft: true, admission: "held" })
+  // Claimed an hour ago, observed at 66% after it: the line starts again there, so 70% is room the claim gave back.
+  const rebased = { a: { rebase: { at: now - 3600000, from: 0.66 } } }
+  expect(poolPace([at(0.7)], now, NO_INFLIGHT, opus, rebased)).toMatchObject({ ok: true, admission: "backed" })
+  // Spending past what it gave back holds again.
+  expect(poolPace([at(0.72)], now, NO_INFLIGHT, opus, rebased)).toMatchObject({ ok: false, soft: true, admission: "held" })
+  // Under the even line the room is ordinary, whatever the plan.
+  expect(poolPace([at(0.5)], now, NO_INFLIGHT, opus, rebased)).toMatchObject({ ok: true, admission: "ordinary" })
 })

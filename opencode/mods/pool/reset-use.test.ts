@@ -21,6 +21,7 @@ import { BURN_AGENTS, LAST_CALL_MS, NATURAL_MS, NEAR_MS, NEAR_USED, NOT_WORTH_MS
 import { lineOf } from "./pace.ts"
 import type { QuotaWindow, ResetCredit } from "./quota.ts"
 import {
+  type Claim,
   type Command,
   effectOf,
   type Event,
@@ -291,43 +292,113 @@ describe("a Fable reset", () => {
       [T0, NoteWait.make({ pool: "anthropic", sessionID: "ses_root", hard: true, model: "claude-fable-5-2" })],
       [T0, Review.make({ pools: [view] })],
     ])
-    expect(events[1]).toMatchObject({ _tag: "ClaimDue", reset: { kind: "fable", why: "forecast", key: expiringKey("claude", "a", "7d:Fable", fableWeek) } })
+    expect(events[1]).toMatchObject({ reset: { kind: "fable", why: "forecast", key: expiringKey("claude", "a", "7d:Fable", fableWeek) } })
     const due = events[1]
     if (due?._tag !== "ClaimDue") throw new Error("not claimed")
     expect(due.reset.buys).toContain("Fable week 100% used of 100% → 0% used, next reset 2026-11-15 12:00Z, weekly 60% used of 100% → ~10% used, next reset 2026-11-15 12:00Z (Fable's part 50% of the week (40%–60%) by the limit tally)")
   })
 
+  /**
+   * An Opus start held by the shared week (100%) on an account whose Fable
+   * week took `points` of it: the Fable reset is judged on the week it gives
+   * back, and claimed when what it surely gives back frees the week.
+   */
+  const sharedHeld = (own: number, fields: Partial<QuotaWindow>, credit: Partial<ResetCredit> = FABLE, five = 0.3) =>
+    run([
+      [T0, NoteWait.make({ pool: "anthropic", sessionID: "ses_root", hard: true, model: "claude-opus-5-5" })],
+      [
+        T0,
+        Review.make({
+          pools: [
+            pool(
+              "claude",
+              [account("a", [window("5h", five, T0 + 3 * HOUR), window("7d", 1, T0 + 3.5 * DAY), { ...window("7d:Fable", own, T0 + 3.5 * DAY), ...fields }], [grant("g", T0 + 60 * DAY, credit)])],
+              {},
+              3,
+            ),
+          ],
+        }),
+      ],
+    ])
+
+  test("held by the shared week, a Fable reset is judged on the week it surely gives back: the owner's 68% Fable week, 34 shared points, claimed once", () => {
+    for (const [own, points] of [[0.6, 0.3], [0.68, 0.34]] as const) {
+      const { events } = sharedHeld(own, { ofWeekly: 0.5, weeklyUsed: points })
+      expect(tags(events), `Fable ${own}`).toEqual(["WaitNoted", "ClaimDue"])
+      expect(events[1], `Fable ${own}`).toMatchObject({ reset: { kind: "fable", why: "forecast", key: expiringKey("claude", "a", "7d", T0 + 3.5 * DAY) } })
+    }
+  })
+
+  test("held by the shared week, no claim on a Fable part only estimated from its allowance share, unread, or too small to free the week", () => {
+    for (const [label, fields] of [
+      ["allowance share alone", { ofWeekly: 0.5 }],
+      ["unread", {}],
+      ["reported too small", { ofWeekly: 0.5, weeklyUsed: 0.002 }],
+    ] as const) {
+      const { events } = sharedHeld(0.6, fields)
+      expect(tags(events), label).toEqual(["WaitNoted"])
+    }
+  })
+
+  test("held by the shared week and a spent 5-hour window it does not clear, a Fable reset frees nothing and is not claimed", () => {
+    const { events } = sharedHeld(0.6, { ofWeekly: 0.5, weeklyUsed: 0.3 }, { clears: ["seven_day_overage_included"], kind: "fable", givesBack: true }, 1)
+    expect(tags(events)).toEqual(["WaitNoted"])
+    expect(events.find((event) => event._tag === "ClaimWeighed")).toMatchObject({ reasons: ["a: it would not free the account, another spent window still holds it"] })
+  })
 })
 
 describe("the pace's line", () => {
-  test("with no plan it is the even line; a reset in hand raises it by what it gives back, fading with the week; a claim starts it again from the claim", () => {
+  test("with no plan it is the even line; a claim starts it again from the week observed after the claim", () => {
     const resetAt = T0 + 6 * DAY
     for (const elapsed of [0, 1, 3, 6.9]) {
       const now = resetAt - WEEK + elapsed * DAY
       expect(lineOf(resetAt, now, undefined)).toBeCloseTo(0.99 * (elapsed / 7) + 0.05)
-      expect(lineOf(resetAt, now, { spare: 0.99 }) - lineOf(resetAt, now, undefined)).toBeCloseTo(0.99 * (1 - elapsed / 7))
+      expect(lineOf(resetAt, now, {})).toBeCloseTo(0.99 * (elapsed / 7) + 0.05)
     }
-    // Spent on day one with a weekly reset in hand: within its line, so the first 100% may go fast.
-    expect(lineOf(resetAt, resetAt - 6 * DAY, { spare: 0.99 })).toBeGreaterThan(1)
     // A claim on day one that left the week at 0: the line starts at 0 then, and spends the rest evenly to the reset.
     const claimAt = resetAt - 6 * DAY
     expect(lineOf(resetAt, claimAt, { rebase: { at: claimAt, from: 0 } })).toBeCloseTo(0.05)
     expect(lineOf(resetAt, claimAt + 3 * DAY, { rebase: { at: claimAt, from: 0 } })).toBeCloseTo(0.99 / 2 + 0.05)
   })
 
-  test("plans: a claim this week re-bases its account; a Codex credit or a weekly grant in hand is a full spare, a Fable reset its part", () => {
+  test("plans: a reset in hand moves no line; only a claim its own readings observed giving back the week re-bases its account", () => {
     const resetAt = T0 + 6 * DAY
     const accounts = [
       account("weekly", [window("7d", 0.5, resetAt)], [grant("g", T0 + 60 * DAY, { ...WEEKLY, usable: false, requiresLimit: true })]),
       account("fable", [window("7d", 0.5, resetAt), { ...window("7d:Fable", 0.5, resetAt), ofWeekly: 0.5 }], [grant("f", T0 + 60 * DAY, FABLE)]),
       account("session", [window("7d", 0.5, resetAt)], [grant("s", T0 + 60 * DAY, SESSION)]),
       account("claimed", [window("7d", 0.1, resetAt)]),
+      account("redeemed", [window("7d", 0.9, resetAt)]),
+      account("stale", [window("7d", 0.9, resetAt)]),
     ]
+    const claim = (credentialID: string, fields: Partial<Claim> = {}): Claim => ({
+      key: `k-${credentialID}`,
+      pool: "anthropic",
+      provider: "claude",
+      credentialID,
+      label: credentialID,
+      creditID: "g",
+      requestID: "r",
+      at: T0 - HOUR,
+      outcome: "reset",
+      before: [window("7d", 1, resetAt)],
+      after: [window("7d", 0.05, resetAt)],
+      weekly: "kept",
+      ...fields,
+    })
     const claims = [
-      { key: "k", pool: "anthropic", provider: "claude" as const, credentialID: "claimed", label: "c", creditID: "g", requestID: "r", at: T0 - HOUR, outcome: "reset" as const, before: [], after: [window("7d", 0.05, resetAt)], weekly: "kept" as const },
+      claim("claimed"),
       // Last week's claim does not move this week's line.
-      { key: "old", pool: "anthropic", provider: "claude" as const, credentialID: "weekly", label: "w", creditID: "g", requestID: "r", at: resetAt - 8 * DAY, outcome: "reset" as const, before: [], after: [window("7d", 0, resetAt - 7 * DAY)], weekly: "kept" as const },
+      claim("weekly", { at: resetAt - 8 * DAY, before: [window("7d", 1, resetAt - 7 * DAY)], after: [window("7d", 0, resetAt - 7 * DAY)] }),
+      // A 5-hour reset left the week as it was: no give-back observed, no rebase.
+      claim("session", { before: [window("5h", 1, T0), window("7d", 0.5, resetAt)], after: [window("5h", 0, T0), window("7d", 0.5, resetAt)] }),
+      // Already redeemed, with no reading before it: nothing attributable.
+      claim("redeemed", { outcome: "already-redeemed", before: [] }),
+      // The reading after was carried over from an older one (a 429 after the claim): unread, no rebase.
+      claim("stale", { after: [{ ...window("7d", 0.3, resetAt), at: T0 - 2 * HOUR }] }),
+      // A claim that failed gives nothing back, whatever a reading after it shows.
+      claim("fable", { outcome: "failed" }),
     ]
-    expect(pacePlans("claude", accounts, claims, T0)).toEqual({ weekly: { spare: 0.99 }, fable: { spare: 0.5 }, claimed: { rebase: { at: T0 - HOUR, from: 0.05 } } })
+    expect(pacePlans("claude", accounts, claims, T0)).toEqual({ claimed: { rebase: { at: T0 - HOUR, from: 0.05 } } })
   })
 })

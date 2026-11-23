@@ -202,9 +202,17 @@ const liveSessions = (state: AccountPoolState, now: number, rules: Rules): Map<s
  * The accounts in placement order for a new run of `sessionID`; none when the
  * pool has no account. The account the session's cache is on comes first
  * while it lives; with none, the account `cacheOf`'s cache is on (a fork
- * reads its source's cache).
+ * reads its source's cache). With `eligible`, the request's admission, an
+ * account it leaves out goes after every one it names, its cache too.
  */
-export const rank = (state: AccountPoolState, sessionID: string, now: number, rules: Rules, cacheOf?: string): ReadonlyArray<string> => {
+export const rank = (
+  state: AccountPoolState,
+  sessionID: string,
+  now: number,
+  rules: Rules,
+  cacheOf?: string,
+  eligible?: ReadonlyArray<string>,
+): ReadonlyArray<string> => {
   const [first, ...others] = state.credentials
   if (first === undefined) return []
   const steps = state.steps.filter((step) => now - step.at < WINDOW_MS)
@@ -221,6 +229,7 @@ export const rank = (state: AccountPoolState, sessionID: string, now: number, ru
       held: held(state, credentialID, now),
       noRoom: noRoom(reading),
       ...(weekly?.resetAt === undefined ? {} : { weeklyResetAt: weekly.resetAt }),
+      eligible: Option.match(Option.fromUndefinedOr(eligible), { onNone: () => true, onSome: (ids) => ids.includes(credentialID) }),
     }
   }
   const liveCache = (owner: string | undefined) => {

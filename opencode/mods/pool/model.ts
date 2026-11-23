@@ -28,7 +28,7 @@ import {
 import { answeredOn, held, lastPlacedAt, placedOn, sessionAccount, shouldFailOver, status, type RequestKind, type Rules } from "./accounts.ts"
 import * as Burn from "./burn.ts"
 import * as FleetModel from "./fleet.ts"
-import { poolPace, UNPOOLED, type Pace } from "./pace.ts"
+import { eligibleFor, poolPace, RequestHeld, UNPOOLED, type Pace } from "./pace.ts"
 import { limitsLine, weeklyRatios, type Tally, type Tokens } from "./limits.ts"
 import type { AccountStatus } from "./status.ts"
 import type { ClaimAnswer, QuotaReading, QuotaWindow } from "./quota.ts"
@@ -156,17 +156,22 @@ export class Pool extends Context.Service<
      * A model request goes out: the login it goes out on, and the lifetime its
      * cache is written for when its agent keeps its own (the provider's once
      * the session has outlived it); none when the provider is not pooled or
-     * lists no login. Every account held refuses it: `AccountsHeld`, with when the first opens.
+     * lists no login. Every account held refuses it: `AccountsHeld`, with when the first opens. A request the
+     * pace holds for its model (the one rule a start's pace answers, at this dispatch, every retry, follow-up,
+     * continued run and auxiliary request alike) goes out on none: `RequestHeld`, with why and when to ask again.
+     * Admitted, it goes out on an account eligible for its model, the run's pin and its cache's only when eligible.
      */
     readonly place: (input: {
       readonly providerID: string
       readonly sessionID: string
       readonly kind: RequestKind
+      /** The model the request asks for: a window of its own (`7d:Fable`) holds it too. */
+      readonly model?: string
       /** How long its agent keeps the request's cache when it keeps its own lifetime (ms); else the provider's. */
       readonly cacheLifeMs?: number
       /** The session whose cache the request reads when the session has none of its own: a fork's source. */
       readonly cacheOf?: string
-    }) => Effect.Effect<Placed | undefined, AccountsHeld>
+    }) => Effect.Effect<Placed | undefined, AccountsHeld | RequestHeld>
     /** A response came back. A refusal (401 or 429) holds the login it went out on. */
     readonly responded: (input: {
       readonly providerID: string
@@ -195,9 +200,10 @@ export class Pool extends Context.Service<
     readonly sweep: Effect.Effect<void>
     /**
      * Whether a new agent on the provider may start now; of `model`, when
-     * named, so a window of that model's own (`7d:Fable`) can hold it too.
+     * named, so a window of that model's own (`7d:Fable`) can hold it too. With `dispatch`, the pace of a
+     * request about to go out (`place`): the fleet's unsettled starts are not counted again.
      */
-    readonly pace: (providerID: string, model?: string, sessionID?: string) => Effect.Effect<Pace, LoginsUnavailable>
+    readonly pace: (providerID: string, model?: string, sessionID?: string, dispatch?: boolean) => Effect.Effect<Pace, LoginsUnavailable>
     /** Each pool's accounts, holds and readings, and its outside stores. */
     readonly status: Effect.Effect<PoolsStatus, LoginsUnavailable>
     /** The account a session is on, with its label, hold and reading; nothing when the pool has none to name. */
@@ -344,17 +350,29 @@ export const layer = (config: Config) =>
         readonly providerID: string
         readonly sessionID: string
         readonly kind: RequestKind
+        readonly model?: string
         readonly cacheLifeMs?: number
         readonly cacheOf?: string
       }) {
         const where = pooled(input.providerID)
         if (where === undefined) return undefined
         yield* refresh(where, false).pipe(Effect.ignore)
+        // The request's admission, at its dispatch: the one pace a start of its model gets, on the readings now. Held, it goes
+        // out on no login; the review has heard of the held work. Unreadable logins decide nothing here: placement refuses then.
+        const measured = Option.filter(yield* Effect.option(pace(input.providerID, input.model, input.sessionID, true)), (answer) => answer.measured)
+        const now = yield* Clock.currentTimeMillis
+        const accounts = status(yield* SynchronizedRef.get(where.pool), now, rules)
+        // Every account refused (a hold of the provider's or a sign-in): placement's own refusal names it, as before.
+        const allHeld = accounts.length > 0 && accounts.every((account) => Option.isSome(Option.fromUndefinedOr(account.hold)))
+        const held = Option.filter(measured, (answer) => !answer.ok && !allHeld)
+        if (Option.isSome(held)) return yield* new RequestHeld({ sessionID: input.sessionID, reason: held.value.reason, retryAt: Option.fromUndefinedOr(held.value.retryAt) })
+        const eligible = Option.flatMap(measured, (answer) => Option.fromUndefinedOr(answer.eligible)).pipe(Option.filter((ids) => ids.length > 0))
         const command = PlaceRequest.make({
           sessionID: input.sessionID,
           kind: input.kind,
           ...(input.cacheLifeMs === undefined ? {} : { cacheLifeMs: input.cacheLifeMs }),
           ...(input.cacheOf === undefined ? {} : { cacheOf: input.cacheOf }),
+          ...Option.match(eligible, { onNone: () => ({}), onSome: (ids) => ({ eligible: ids }) }),
         })
         const events = yield* send(where.pool, where.id, command).pipe(
           Effect.catchTag("NoAccount", () => Effect.succeed([])),
@@ -594,12 +612,11 @@ export const layer = (config: Config) =>
         return views
       })
 
-      /** Each account's spend-evenly line moved by its resets (resets.ts `pacePlans`), for a pool whose resets are worked. */
+      /** Each account's spend-evenly line moved by the resets it claimed and observed (resets.ts `pacePlans`), for a pool whose resets are worked. */
       const plansOf = Effect.fn("Pool.plansOf")(function* (id: string, accounts: ReadonlyArray<AccountStatus>, now: number) {
         const provider = config.resets?.[id]
         if (provider === undefined) return {}
-        const tally = limits === undefined ? undefined : yield* limits.tally
-        return ResetsModel.pacePlans(provider, accounts, (yield* resetsStore.read).claims, now, tally === undefined ? {} : weeklyRatios(tally, id))
+        return ResetsModel.pacePlans(provider, accounts, (yield* resetsStore.read).claims, now)
       })
 
       const windowsText = (windows: ReadonlyArray<{ readonly name: string; readonly utilization: number; readonly resetAt?: number }> | undefined) =>
@@ -1024,8 +1041,8 @@ export const layer = (config: Config) =>
         } satisfies ResetsStatus
       }).pipe(Effect.withSpan("Pool.resets"))
 
-      const pace = Effect.fn("Pool.pace")(function* (providerID: string, model?: string, sessionID?: string) {
-        const answer = yield* paceOf(providerID, model)
+      const pace = Effect.fn("Pool.pace")(function* (providerID: string, model?: string, sessionID?: string, dispatch?: boolean) {
+        const answer = yield* paceOf(providerID, model, dispatch)
         const id = measuredBy(config, providerID)
         const now = yield* Clock.currentTimeMillis
         if (id !== undefined && sessionID !== undefined && config.resets?.[id] !== undefined) askers.set(id, { at: now, sessionID })
@@ -1042,6 +1059,7 @@ export const layer = (config: Config) =>
             ok: true,
             measured: true,
             reason: `the push "${push.goal}" lifts the spend-evenly hold until ${new Date(push.endsAt).toISOString()} (${answer.reason})`,
+            ...Option.match(Option.fromUndefinedOr(answer.eligible), { onNone: () => ({}), onSome: (ids) => ({ eligible: ids }) }),
           } satisfies Pace
         // A start held by a measured pace waits: the resets are reviewed for it, without holding up the answer.
         if (id === undefined || config.resets?.[id] === undefined) return answer
@@ -1067,7 +1085,11 @@ export const layer = (config: Config) =>
         }
       })
 
-      const paceOf = Effect.fn("Pool.paceOf")(function* (providerID: string, model?: string) {
+      /**
+       * The pace on the readings now. A start's counts the fleet's starts not yet in a reading; a request's dispatch
+       * (`dispatch`) does not: its own start was charged when it was admitted, and its spend shows in the readings.
+       */
+      const paceOf = Effect.fn("Pool.paceOf")(function* (providerID: string, model?: string, dispatch?: boolean) {
         const paced = poolOf(measuredBy(config, providerID))
         if (paced === undefined) return UNPOOLED
         yield* refresh(paced, false)
@@ -1078,16 +1100,19 @@ export const layer = (config: Config) =>
         const now = yield* Clock.currentTimeMillis
         // Every start in the fleet on a provider this pool paces counts, whichever host admitted it.
         const starts = FleetModel.inflight(fleet, now, fleetConfig.settleMs)
-          .filter((start) => measuredBy(config, start.providerID) === paced.id)
+          .filter((start) => !dispatch && measuredBy(config, start.providerID) === paced.id)
           .map((start) => start.at)
         const accounts = status(yield* SynchronizedRef.get(paced.pool), now, rules)
-        return poolPace(
+        const answer = poolPace(
           accounts,
           now,
           { starts, cost: fleetConfig.startCost, settleMs: fleetConfig.settleMs },
           model,
           yield* plansOf(paced.id, accounts, now),
         )
+        // A dispatch names the logins it may go out on, by the same rule placement reads.
+        if (!dispatch || !answer.measured) return answer
+        return { ...answer, eligible: eligibleFor(accounts, now, model).map((account) => account.credentialID) }
       })
 
       const started = (providerID: string) => sendFleet(FleetModel.RecordStart.make({ providerID })).pipe(Effect.asVoid)

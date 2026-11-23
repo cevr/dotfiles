@@ -814,10 +814,53 @@ interface Candidate {
 const restoredOf = (give: Giveback) => give.from - give.to
 
 /**
+ * What a give-back surely restores: all of an emptied window; of the week a
+ * Fable reset gives back, the part its model's week is known to have taken,
+ * as the endpoint reports it, else the low end of the limit tally's fit.
+ * Never the allowance share alone (the most the model may take, not what it
+ * took) and never an unread part.
+ */
+const sureRestored = (give: Giveback): number =>
+  Option.match(Option.fromUndefinedOr(give.share), {
+    onNone: () => restoredOf(give),
+    onSome: (share) =>
+      Match.value(share.source).pipe(
+        Match.when("reported", () => share.points),
+        Match.when("tally", () => share.low),
+        Match.orElse(() => 0),
+      ),
+  })
+
+/**
+ * The give-back a candidate reset is judged on: the one it gives back most of
+ * (the fullest on a tie), of those whose window still has its reset ahead.
+ * For a start held for lack of quota (`held`), by what each surely restores,
+ * and of those, first the ones relieving a window that holds the start.
+ */
+const judgedGive = (weighedGives: ReadonlyArray<Giveback>, held: boolean, blocking: ReadonlyArray<QuotaWindow>, now: number): Option.Option<Giveback> => {
+  const open = weighedGives.filter((give) => Option.exists(Option.fromUndefinedOr(give.resetAt), (at) => at > now))
+  const most = (gives: ReadonlyArray<Giveback>) => Arr.head(gives.toSorted((left, right) => restoredOf(right) - restoredOf(left) || right.from - left.from))
+  if (!held) return most(open)
+  const relieving = open.filter((give) => restoredOf(give) > 0 && blocking.some((window) => window.name === give.window))
+  if (relieving.length > 0) return most(relieving)
+  return most(open)
+}
+
+/** What a candidate reset frees, as it is weighed: held, what it surely gives back; else its estimate, as the forecast weighs it. */
+const weighed = (estimated: ReadonlyArray<Giveback>, held: boolean): ReadonlyArray<Giveback> => {
+  if (!held) return estimated
+  return estimated.map((give) => ({ ...give, to: give.from - sureRestored(give) }))
+}
+
+/**
  * The resets the rule weighs on a pool: each usable reset on an account read
  * fresh (`freshView`), not settling a claim nor claimed on in this review,
  * judged on the window it gives back most of (the fullest on a tie), and
- * only while that window's period has had no claim (`expiringKey`).
+ * only while that window's period has had no claim (`expiringKey`). For a
+ * start held for lack of quota (`held`), a reset that surely relieves a
+ * window holding the start is judged on that window instead (`sureRestored`):
+ * a Fable reset on an account whose shared week holds it is judged on the
+ * week it gives back, not on Fable's own week, which holds nothing.
  */
 const candidatesOf = (
   state: ResetsState,
@@ -826,18 +869,18 @@ const candidatesOf = (
   now: number,
   claiming: ReadonlySet<string>,
   model?: string,
+  held = false,
 ): ReadonlyArray<Candidate> =>
-  view.accounts.flatMap((held) => {
-    const account = freshView(state, held, now)
+  view.accounts.flatMap((read) => {
+    const account = freshView(state, read, now)
     if (account === undefined || claiming.has(account.credentialID) || settling(state, current, account, now)) return []
     const credits = usableCredits(account, now)
     const week = weekly(account)
     const blocking = blockingOf(account, now, model)
     return credits.flatMap((credit) => {
-      const gives = effectOf(view.provider, account, credit, view.ratios)
-      const best = gives
-        .filter((give) => give.resetAt !== undefined && give.resetAt > now)
-        .toSorted((left, right) => restoredOf(right) - restoredOf(left) || right.from - left.from)[0]
+      const estimated = effectOf(view.provider, account, credit, view.ratios)
+      const gives = weighed(estimated, held)
+      const best = Option.getOrUndefined(judgedGive(gives, held, blocking, now))
       if (best?.resetAt === undefined) return []
       const key = expiringKey(view.provider, account.credentialID, best.window, best.resetAt)
       if (state.resets[key] !== undefined) return []
@@ -859,7 +902,8 @@ const candidatesOf = (
         weekUsed: week?.utilization ?? 0,
         weekResetAt: Option.fromUndefinedOr(week?.resetAt),
       }
-      return [{ option, account, credit, key, gives }]
+      // The owner reads what it is estimated to give back, with the estimate's range.
+      return [{ option, account, credit, key, gives: estimated }]
     })
   })
 
@@ -897,7 +941,7 @@ const poolDue = (
   const auto = command.auto !== false
   const pushes = command.pushes ?? []
   const work = heldWork(state, view, command.pools, now)
-  const candidates = auto ? candidatesOf(state, view, current, now, claiming, work?.model) : []
+  const candidates = auto ? candidatesOf(state, view, current, now, claiming, work?.model, work?.wait.hard === true) : []
   const situation: ClaimSituation = {
     now,
     held: work === undefined ? 0 : 1,
@@ -987,40 +1031,53 @@ export const spareThisWeek = (
 }
 
 /**
- * Each account's line (pace.ts `PacePlan`): the spare its resets in hand give
- * back of a spent week (`spareThisWeek`: the best one, or more when more would
- * expire before they can be spent one per week), and, once a reset was claimed this week (the
- * claim went through and its reading after it names the week), where the line
- * starts again: the claim's time and the week's use after it.
+ * The week's use a claim gave back, as its own readings observed it: the
+ * account-wide week read right before the send and read again after the
+ * answer, in the same period (its reset kept), the after reading its own (not
+ * a window carried over from an older one), and lower. None for a claim whose
+ * readings cannot attribute a give-back: one that failed or went nowhere, an
+ * `already-redeemed` with no reading on both sides, a 5-hour-only reset that
+ * left the week as it was, or a reading after that is absent or stale (a 429).
+ */
+export const observedGiveback = (claim: Claim): Option.Option<{ readonly before: number; readonly after: number }> => {
+  if (claim.outcome !== "reset" && claim.outcome !== "already-redeemed") return Option.none()
+  const weekIn = (windows: ReadonlyArray<QuotaWindow>) => Arr.findFirst(windows, (window) => window.name === "7d" && accountWide(window))
+  const before = weekIn(claim.before)
+  // Its own reading: a window carried over from an older one (`at`) is not a reading of the claim's effect.
+  const after = Option.flatMap(Option.fromUndefinedOr(claim.after), weekIn).pipe(Option.filter((window) => Option.isNone(Option.fromUndefinedOr(window.at))))
+  const samePeriod = (left: QuotaWindow, right: QuotaWindow) =>
+    Option.exists(Option.all([Option.fromUndefinedOr(left.resetAt), Option.fromUndefinedOr(right.resetAt)]), ([one, two]) => Math.abs(one - two) <= MINUTE)
+  return Option.all([before, after]).pipe(
+    Option.filter(([was, now]) => samePeriod(was, now) && now.utilization < was.utilization - 1e-9),
+    Option.map(([was, now]) => ({ before: was.utilization, after: now.utilization })),
+  )
+}
+
+/**
+ * Each account's line (pace.ts `PacePlan`). A reset in hand adds no room: the
+ * pace never spends a reset before it is claimed. Once one was claimed this
+ * week and its own readings observed the week lower after it
+ * (`observedGiveback`), the line starts again there: the claim's time and the
+ * week's use observed after it. A claim on this host only: a peer's claim
+ * shows in its readings, never as room here, so one give-back is spent once.
  */
 export const pacePlans = (
   provider: ResetProvider,
   accounts: ReadonlyArray<AccountStatus>,
   claims: ReadonlyArray<Claim>,
   now: number,
-  ratios: Readonly<Record<string, Ratio>> = {},
 ): Readonly<Record<string, PacePlan>> => {
   const plans: Record<string, PacePlan> = {}
   for (const account of accounts) {
     const week = weekly(account)
     if (week?.resetAt === undefined) continue
-    const spare = spareThisWeek(provider, account, week.resetAt, now, ratios)
-    const claim = claims
-      .filter(
-        (claim) =>
-          claim.provider === provider &&
-          claim.credentialID === account.credentialID &&
-          (claim.outcome === "reset" || claim.outcome === "already-redeemed") &&
-          claim.at <= now &&
-          claim.at > (week.resetAt ?? 0) - 7 * DAY,
-      )
-      .toSorted((left, right) => right.at - left.at)[0]
-    const after = claim?.after?.find((window) => window.name === "7d")
-    const plan: PacePlan = {
-      ...(spare > 0 ? { spare } : {}),
-      ...(claim !== undefined && after !== undefined ? { rebase: { at: claim.at, from: after.utilization } } : {}),
-    }
-    if (plan.spare !== undefined || plan.rebase !== undefined) plans[account.credentialID] = plan
+    const periodStart = week.resetAt - 7 * DAY
+    const observed = claims
+      .filter((claim) => claim.provider === provider && claim.credentialID === account.credentialID && claim.at <= now && claim.at > periodStart)
+      .flatMap((claim) => Option.toArray(Option.map(observedGiveback(claim), (given) => ({ at: claim.at, from: given.after }))))
+    // The newest: claims are kept oldest first, and the sort keeps their order, so of two at one instant the later one listed.
+    const newest = Arr.last(observed.toSorted((left, right) => left.at - right.at))
+    if (Option.isSome(newest)) plans[account.credentialID] = { rebase: newest.value }
   }
   return plans
 }
