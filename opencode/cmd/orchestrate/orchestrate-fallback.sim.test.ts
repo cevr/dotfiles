@@ -13,9 +13,11 @@
 import type { CallLine } from "@dotfiles/opencode-orchestrate/call-line"
 import { paceOfReply, parseAdmission } from "@dotfiles/opencode-orchestrate/pace"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
+import { Pace } from "@dotfiles/opencode-pool/pace"
 import { Plugin } from "@opencode/plugin/effect"
 import { Effect, Option, Schema } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
+import * as Provider from "../../sim/provider.ts"
 import * as Seed from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
@@ -172,5 +174,65 @@ seeded("the parent reads where it ran and why, first in the call's result, then 
     expect(parent).toContain(`state="completed" description="Check the export">\nThe export check passed.`)
     // The parent's last request is the one it answered with what it heard (the row is the TUI's: tests/prime-fallback.test.ts).
     expect(parent.indexOf(NOTE)).toBeLessThan(parent.indexOf(`state="completed" description="Check the export">`))
+  }),
+)
+
+seeded("a planner whose login never reports its Fable window starts on its fallback, never on Fable", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const start = Date.parse(PIN)
+    const hour = 3_600_000
+    const calls: Array<CallLine> = []
+    const seen: Array<Seen> = []
+    const accounts = Provider.accounts(seed, ["fixture"])
+    const fable = { ...FIRST, providerID: "anthropic", id: "claude-fable-5-2", modelID: "claude-fable-5-2" }
+    const world = World.make({
+      seed,
+      start,
+      script: model(seen),
+      model: { providerID: "anthropic", id: fable.id },
+      models: [FIRST, fable],
+      anthropic: {
+        accounts,
+        quota: () => ({
+          fiveHour: { utilization: 0.2, resetAt: start + 3 * hour },
+          sevenDay: { utilization: 0.2, resetAt: start + 84 * hour },
+        }),
+      },
+      integrations: {
+        anthropic: Object.entries(accounts).map(([id, login]) => ({ id, label: id, ...login, expires: start + 8 * hour })),
+      },
+    })
+    const provider = world.provider()
+    yield* world.load(Plugins.anthropicAuth(provider), { directory: WORK })
+    yield* world.load(Plugins.pool(new Map(), Plugins.network(provider)), {
+      directory: WORK, options: { sweepMinutes: 0.1, limitsFile: "/nonexistent/loop-probe-x/limits.json" },
+    })
+    yield* world.load(Plugins.orchestrate({ lines: calls }), {
+      directory: WORK, options: { now: PIN, planner: { model: `anthropic/${fable.id}` } },
+    })
+    const rootModel = { providerID: FIRST.providerID, id: FIRST.id }
+    const root = yield* world.session(WORK, { model: rootModel })
+    yield* world.advance(13_000)
+    const query = { providerID: "anthropic", model: fable.id }
+    const decode = Schema.decodeUnknownSync(Pace)
+    const started = decode(yield* world.rpc(POOL_STATUS.id, "pace", query))
+    const dispatch = decode(yield* world.rpc(POOL_STATUS.id, "pace", { ...query, dispatch: true }))
+    expect(started).toMatchObject({ ok: false, reasonCode: "model-unreported" })
+    expect(started.reason).toContain("no Fable window reported by this login")
+    expect(started.reason).toContain("pooled logins are expected to report their required windows")
+    expect(started.reason).toContain("Use another model or login; time alone will not clear this hold")
+    expect(started).toEqual(dispatch)
+    yield* world.prompt(root, ASK)
+    yield* world.until(() => seen.some((turn) => turn.agent === "planner"), 60_000)
+    expect(calls[0]).toMatchObject({ first: { model: `anthropic/${fable.id}`, fellBack: expect.stringContaining("no Fable window reported by this login") } })
+    const plannerModels: Array<World.ModelRef> = []
+    for (const turn of seen) if (turn.agent === "planner") plannerModels.push(turn.model)
+    expect(plannerModels).toEqual([expect.objectContaining(rootModel)])
+    const childModels: Array<World.ModelRef> = []
+    for (const child of world.sessions.values()) {
+      if (Option.contains(child.parentID, root) && child.agent === "planner") childModels.push(...Option.toArray(child.model))
+    }
+    expect(childModels).toEqual([expect.objectContaining(rootModel)])
+    expect(world.provider().received().filter((request) => request.path === "/v1/messages")).toHaveLength(0)
   }),
 )

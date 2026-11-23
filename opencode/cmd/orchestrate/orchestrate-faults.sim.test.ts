@@ -10,8 +10,8 @@
 //
 // After each call: the root's turn ends, a fault or not (the plugin's own
 // timeout on the pace, never the host's); the call starts one child, on the
-// role its asked agent maps to, exactly when the pace admits it (open, failed
-// open on a fault, or a soft hold on an agent that never runs on Codex), and
+// role its asked agent maps to, exactly when the pace admits it (open, or
+// failed open on a fault; a soft hold holds every role), and
 // otherwise answers with the pace's hold and when it opens, and starts none.
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 import { Plugin } from "@opencode/plugin/effect"
@@ -37,9 +37,6 @@ const ASKED = [
   { asked: Option.some("planner"), role: "planner" },
   { asked: Option.some("worker"), role: "worker" },
 ] as const
-/** The roles that run on Codex too: a soft hold (the spend-evenly target alone) holds them. */
-const ON_CODEX = new Set(["planner", "verifier"])
-
 type Answer = "open" | "held" | "soft"
 type Fault = World.RpcFault | "none"
 
@@ -139,7 +136,8 @@ const run = (seed: number, check: (outcome: { readonly admitted: boolean; readon
         yield* world.prompt(root, `${CALL}${Schema.encodeSync(SubagentInput)(input)}`)
         // The pace's own timeout is 8 s; a minute is room for the call, the child's turn and the root's close.
         yield* world.until(rested, 60_000).pipe(Effect.ignore)
-        const admitted = state.fault !== "none" || state.answer === "open" || (state.answer === "soft" && !ON_CODEX.has(role))
+        // A soft hold (the spend-evenly target alone) holds every role: the pool's request boundary would hold it anyway.
+        const admitted = state.fault !== "none" || state.answer === "open"
         const children = world.sessions
           .values()
           .filter((session) => Option.contains(session.parentID, root))

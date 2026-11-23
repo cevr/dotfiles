@@ -10,8 +10,10 @@
  * session on the provider (`spent / sessions`). With no recorded price, or no
  * session counted, the score is the live sessions alone.
  *
+ * Accounts the request's admission leaves out for its model (pace.ts
+ * `eligibleFor`: a window at its hold line) go after every eligible one.
  * The preferred account (where the run's prompt cache still lives) is the
- * choice unless it is held. Its room, score and pace never move it: a move
+ * choice unless it is held or left out. Its score and the pool's pace never move it: a move
  * writes the whole prompt again on the new account, and an account at its
  * share still serves until a refusal holds it. Load, live sessions, room and
  * pace place only a run whose cache is gone, or one that left a held account.
@@ -36,6 +38,12 @@ export interface PlacementSlot<Slot> {
   readonly sustainable?: number
   /** Its weekly window's reset, epoch ms, when read. */
   readonly weeklyResetAt?: number
+  /**
+   * False when the request's admission (pace.ts `eligibleFor`) leaves it out
+   * for the model asked: it is chosen only when no eligible account is left,
+   * and never kept for the cache. Absent: eligible.
+   */
+  readonly eligible?: boolean
 }
 
 /** One placement's table: the accounts in pool order, and what the run prefers. */
@@ -63,9 +71,12 @@ export function rankPlacement<Slot>(table: PlacementTable<Slot>): readonly [Slot
     if (leftReset === rightReset) return 0
     return leftReset < rightReset ? -1 : 1
   }
+  const admitted = (entry: PlacementSlot<Slot>) => entry.eligible !== false
   const eligible = table.slots
     .filter((entry) => !entry.held)
     .sort((left, right) => {
+      const byAdmission = Number(admitted(right)) - Number(admitted(left))
+      if (byAdmission !== 0) return byAdmission
       const leftUnder = underPace(left)
       const rightUnder = underPace(right)
       if (leftUnder !== rightUnder) return leftUnder ? -1 : 1
@@ -79,7 +90,8 @@ export function rankPlacement<Slot>(table: PlacementTable<Slot>): readonly [Slot
     })
   // A held account is not eligible, so `kept` is unset when its hold moves the run. An account at
   // its share still serves: leaving it writes the whole prompt again, its refusal moves the run anyway.
-  const kept = table.preferred === undefined ? undefined : eligible.find((entry) => entry.slot === table.preferred)
+  // The cache keeps its account only while the request's admission leaves it eligible.
+  const kept = table.preferred === undefined ? undefined : eligible.find((entry) => entry.slot === table.preferred && admitted(entry))
   const choice = kept?.slot ?? eligible[0]?.slot ?? table.preferred ?? table.slots[0].slot
   const rest = [
     ...eligible.map((entry) => entry.slot),

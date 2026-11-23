@@ -133,6 +133,7 @@ import { hostname } from "node:os"
 import { Agent, Integration, Plugin, Tool } from "@opencode/plugin/effect"
 import { Cause, Clock, Context, Deferred, Effect, Exit, Layer, Option, Schedule, Schema, Stream } from "effect"
 import { heldMessage, PoolId } from "@dotfiles/opencode-pool/account-pool"
+import { requestHeldMessage } from "@dotfiles/opencode-pool/pace"
 import { CACHE_LIFE_MS, ttlMs, ttlOf } from "@dotfiles/opencode-pool/accounts"
 import { OUTAGE_AFTER_MS } from "@dotfiles/opencode-pool/alerts"
 import * as ChatGPT from "@dotfiles/opencode-pool/chatgpt/usage"
@@ -542,6 +543,7 @@ export const make = (
                 providerID: event.model.providerID,
                 sessionID: event.sessionID,
                 kind: event.kind,
+                model: event.model.id,
                 ...(cacheLifeMs === undefined ? {} : { cacheLifeMs }),
                 ...(source === undefined ? {} : { cacheOf: source }),
               }),
@@ -555,6 +557,8 @@ export const make = (
                 // Every account held: the request goes out on none. The host ends the turn on the pool's own words
                 // and when the first account opens; a hook declares no failure, so the refusal is its defect.
                 Effect.catchTag("AccountsHeld", (held) => Effect.die(new Error(heldMessage(held)))),
+                // Held by the pace at its dispatch: nothing goes out and no credential is set; the turn ends on why and when.
+                Effect.catchTag("RequestHeld", (held) => Effect.die(new Error(requestHeldMessage(held)))),
               ),
           ),
         ),
@@ -679,7 +683,7 @@ export const make = (
       // RPC that cannot be registered stops the plugin.
       yield* ctx.rpc
         .register(POOL_STATUS, {
-          pace: (input) => withPool((pool) => pool.pace(providerOf(input), modelOf(input), sessionOf(input))).pipe(Effect.orDie),
+          pace: (input) => withPool((pool) => pool.pace(providerOf(input), modelOf(input), sessionOf(input), dispatchOf(input))).pipe(Effect.orDie),
           status: () => withPool((pool) => pool.status).pipe(Effect.orDie),
           // A malformed question names no session: it has no account to name.
           session: (input) =>
@@ -726,6 +730,9 @@ const providerOf = (input: unknown) =>
 /** The model a pace question names, if it names one as a string. */
 const modelOf = (input: unknown) =>
   typeof input === "object" && input !== null && "model" in input && typeof input.model === "string" ? input.model : undefined
+
+/** Whether a pace question is a request's at its dispatch (a send outside the host's hooks, the cache's keepalive), not a start's. */
+const dispatchOf = Schema.is(Schema.Struct({ dispatch: Schema.Literal(true) }))
 
 /** The session a pace question comes from, if it names one: the one whose start waits when the pace holds it. */
 const sessionOf = (input: unknown) =>
