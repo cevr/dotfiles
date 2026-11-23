@@ -25,7 +25,7 @@ import {
   type Event,
   PoolId,
 } from "./account-pool.ts"
-import { answeredOn, held, lastPlacedAt, placedOn, sessionAccount, shouldFailOver, status, type RequestKind, type Rules } from "./accounts.ts"
+import { answeredOn, held, lastPlacedAt, placedOn, sessionAccount, status, type RequestKind, type Rules } from "./accounts.ts"
 import * as Burn from "./burn.ts"
 import * as FleetModel from "./fleet.ts"
 import { dispatchPace, freshWeek, poolPace, RequestHeld, UNPOOLED, UNREAD_RETRY_MS, type Pace } from "./pace.ts"
@@ -461,6 +461,18 @@ export const layer = (config: Config) =>
           return yield* refuse("the room a claimed reset gave back on the chosen login is reserved by requests admitted meanwhile")
         })
 
+      /**
+       * The login a session's request of `kind` went out on: as this copy placed it, else as the ledger has it now. A
+       * copy a restart closed may still place a request it was asked for before (its turn waited on a login's read) and
+       * record its mark after this copy restored the ledger; its answer comes back here, and the mark still names it.
+       */
+      const answeredHere = (where: Pooled, sessionID: string, kind: RequestKind) =>
+        Effect.gen(function* () {
+          const own = answeredOn(yield* SynchronizedRef.get(where.pool), sessionID, kind)
+          if (Option.isSome(own)) return own
+          return answeredOn(restored(yield* ledger.restore(where.id)), sessionID, kind)
+        })
+
       const responded = Effect.fn("Pool.responded")(function* (input: {
         readonly providerID: string
         readonly sessionID: string
@@ -470,7 +482,7 @@ export const layer = (config: Config) =>
         if (input.status !== 401 && input.status !== 429) return
         const where = pooled(input.providerID)
         if (where === undefined) return
-        const answered = answeredOn(yield* SynchronizedRef.get(where.pool), input.sessionID, input.kind)
+        const answered = yield* answeredHere(where, input.sessionID, input.kind)
         if (Option.isNone(answered)) return
         const credentialID = answered.value
         // The reading says for how long; without one (or with one that holds
@@ -483,7 +495,7 @@ export const layer = (config: Config) =>
         const where = pooled(input.providerID)
         if (where === undefined) return false
         // A request placed before a restart is answered after it: the ledger's mark names its account.
-        const answered = answeredOn(yield* SynchronizedRef.get(where.pool), input.sessionID, "primary")
+        const answered = yield* answeredHere(where, input.sessionID, "primary")
         // A refused sign-in (401) on a login this copy cannot name (placed before a restart, its mark since pruned)
         // goes again, placed afresh: on a login not held, or else the pool refuses it in its own words (a sign-in to
         // make, when the first opens), never the provider's. Another refusal (429) stays the host's to retry: placed
@@ -499,7 +511,7 @@ export const layer = (config: Config) =>
         const status = Option.fromNullishOr(REFUSED_STATUS.get(input.error ?? ""))
         if (Option.isSome(status) && !held(yield* SynchronizedRef.get(where.pool), credentialID, yield* Clock.currentTimeMillis))
           yield* apply(where.pool, where.id, RefuseRequest.make({ credentialID, status: status.value }))
-        return shouldFailOver(yield* SynchronizedRef.get(where.pool), input.sessionID, yield* Clock.currentTimeMillis)
+        return held(yield* SynchronizedRef.get(where.pool), credentialID, yield* Clock.currentTimeMillis)
       })
 
       /**
