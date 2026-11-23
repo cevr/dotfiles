@@ -431,7 +431,7 @@ const ARGV_HELPER = new Set(["tests/owned.ts:owned", "tests/reconnect/host.ts:ru
 const MODULE_DATA = /\.(?:json|toml|txt|md)$/
 // These adapters keep process/scratch housekeeping separate from the caller's inputs.
 // Their read and spawn entrypoints are modeled at the call (including unknown argv).
-const CHECKED_HELPERS = new Set(["tests/scratch.ts", "tests/read-path.ts", "tests/owned.ts", "tests/scratch-child.ts", "tests/lint-fixture.ts"])
+const CHECKED_HELPERS = new Set(["tests/scratch.ts", "tests/read-path.ts", "tests/owned.ts", "tests/scratch-child.ts", "tests/lint-fixture.ts", "tests/fork-launcher.ts"])
 const BOUNDED_PROCESS = new Set([
   "tests/scratch-child.ts", "tests/scratch-child.ts:spawnScratchGitSync", "tests/scratch-child.ts:spawnScratchShell", "tests/owned.ts:ownedScratchShell",
   "tests/scratch-child.ts:scratchBunJUnitSync",
@@ -463,6 +463,8 @@ const BOUNDED_PROCESS = new Set([
   "tests/scratch-child.ts:forkProcessCommand",
   "tests/scratch-child.ts:forkFixture",
   "tests/scratch-child.ts:spawnForkFixture",
+  "tests/fork-launcher.ts:stageForkLauncher",
+  "tests/fork-launcher.ts:spawnForkLauncher",
   "tests/scratch-child.ts:importForkCredentials",
   "tests/owned.ts:ownedForkFixture",
   "tests/lint-fixture.ts", "tests/lint-fixture.ts:lintFixture", "tests/lint-fixture.ts:lintCheckoutFixture",
