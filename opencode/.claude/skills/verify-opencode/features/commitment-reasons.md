@@ -11,7 +11,7 @@ Every reason in the commitment record is data the plugin checks, never prose. A 
 - `receipt-evidence`: a measured reason's receipt is a JSON envelope (`receipt`, `command`, `exit`, `output`, `run`, `checkout`) inside the checkout's evidence root, its realpath contained, its bytes and output hashed into the event. The root is configured (`<checkout top>/tmp/orchestrate`, the top canonical once), never discovered: a root that is itself a link, or sits under one, is refused; a link above the checkout (macOS `/var`) is fine.
 - `close-kind`: each decided row has one close kind (guarantee, placed, historical; not-asked is unit C's), bound to its state in the schema.
 - `reopen-history`: a reopen clears the row's reason; `history` keeps every event's.
-- `no-echo`: no refusal, answer, log line or row repeats a key or value the caller wrote: a stray key is named by its position, a declared field by its name, and every tool and CLI output passes `redact`.
+- `no-echo`: refusals name declared fields or stray-key positions, never the caller's value. The store and outputs share one redactor: detect spans on the original text, widen to whole token runs, and replace each merged span once. Tool defects pass this boundary before the host can display them.
 
 ## How to get to it (user POV)
 
@@ -34,9 +34,11 @@ Every reason in the commitment record is data the plugin checks, never prose. A 
 
 ## Driving it with real OpenCode
 
-- **Real:** `cmd/orchestrate/record-cli.test.ts`, `cmd/orchestrate/printable.test.ts`, `mods/orchestrate/node/evidence.test.ts`
+- **Real:** `cmd/orchestrate/record-cli.test.ts`, `cmd/orchestrate/printable.test.ts`, `cmd/orchestrate/overlap.test.ts`, `mods/orchestrate/sqlite/boundary.test.ts`, `mods/orchestrate/node/evidence.test.ts`
 
 The CLI test runs `bun cmd/orchestrate/record.ts`'s `main` on a scratch git checkout and record file: no reason refused, an invariant declared from a committed document, a decide by guarantee, a measured close refused, a deferral and a follow-up by a receipt read from the evidence root, a missing receipt refused. `node/evidence.test.ts` runs the evidence reader on real files: a receipt or its output outside the evidence root, linked out of it, missing, of another shape (a `validated` key, prose), blank or too large is each refused; a document is found only in git at HEAD.
+
+`overlap.test.ts` composes pairs and triples of token shapes at intersecting and adjacent offsets, checks CLI list, history and export against raw record bytes, and injects a throwing reader through the host's registered tools. `sqlite/boundary.test.ts` varies crossing tokens at every offset in each text field and searches the database, WAL and refusals for six-character fragments.
 
 1. **Scratch root.** `bun run verify:seed $ROOT`, `bun run verify:launch --root $ROOT --port $PORT`, then `pilotty spawn --name verify-$PORT bun run verify:tui --root $ROOT`.
 2. **Declare.** Type `verify: call commitments {"action":"invariant","id":"notes","doc_path":"notes.txt","anchor":"notes"}`, Enter. The answer reads `invariant notes declared: notes.txt#notes at <blob>`.

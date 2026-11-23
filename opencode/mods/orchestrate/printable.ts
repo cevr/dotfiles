@@ -1,68 +1,96 @@
-// The one way a text leaves the commitment record: its store, its tools and its CLI. A refusal, an error, a tool's
-// answer, a log line and the CLI's output each take `Printable`, which only `printable` makes, so a text that skipped
-// it does not compile. `printable` replaces every secret shape in the WHOLE text, and nothing before it cuts a text
-// (mods/orchestrate/printable.test.ts holds the record's modules to that), so no cut can leave a fragment of a token
-// too short to be known as one.
-import { Array as Arr, Brand, Match, Option, Schema } from "effect"
-import { isRandom, KNOWN, REDACTED, RUN } from "@dotfiles/opencode-digest/redact"
+import { Array as Arr, Brand, Cause, Option, Predicate, Schema } from "effect"
+import { isRandom, KNOWN, REDACTED, RUN_MIN, TOKEN_RUN } from "@dotfiles/opencode-digest/redact"
 
 /** A text safe to print: every secret shape in it replaced, whole, before any cut. Only `printable` makes one. */
-export const Printable = Schema.String.pipe(Schema.brand("Printable"))
-export type Printable = typeof Printable.Type
+export type Printable = string & Brand.Brand<"Printable">
 
 const make = Brand.nominal<Printable>()
 
-/** The width of a window a key of no known form fills: the redactor's shortest random run. */
-const WINDOW = 32
-
-/** `c log2 c`: a character's share of a window's entropy sum. */
-const weight = (count: number): number => Math.max(0, count * Math.log2(Math.max(1, count)))
+const WEIGHT = Arr.makeBy(RUN_MIN + 1, (count) => count * Math.log2(Math.max(1, count)))
 
 /**
- * Each window of WINDOW characters of `run`, as the entropy the redactor's `isRandom` reads (bits a character), slid
- * one character at a time: `log2(n) - Σ c log2 c / n`, the sum kept as characters enter and leave.
+ * Find a key glued to low-entropy text. Slide the entropy sum one character at a time, then confirm likely
+ * windows with `isRandom`; the small margin keeps rounding in the running sum from deciding the match.
  */
-const windowEntropies = (run: string): ReadonlyArray<number> => {
+const holdsKey = (run: string): boolean => {
+  if (run.length < RUN_MIN) return false
+  if (isRandom(run)) return true
+  if (run.length === RUN_MIN) return false
   const counts = new Map<string, number>()
-  const add = (char: string, by: number, sum: number) => {
+  let sum = 0
+  const add = (char: string, by: number) => {
     const before = Option.getOrElse(Option.fromUndefinedOr(counts.get(char)), () => 0)
     counts.set(char, before + by)
-    return sum - weight(before) + weight(before + by)
+    sum += WEIGHT[before + by] - WEIGHT[before]
   }
-  const first = Arr.reduce(Arr.range(0, WINDOW - 1), 0, (sum, at) => add(run[at], 1, sum))
-  return Arr.scan(Arr.range(WINDOW, Math.max(WINDOW, run.length - 1)), first, (sum, at) => add(run[at - WINDOW], -1, add(run[at], 1, sum))).map(
-    (sum) => Math.log2(WINDOW) - sum / WINDOW,
-  )
+  for (let at = 0; at < RUN_MIN; at++) add(run[at], 1)
+  for (let at = 0; at <= run.length - RUN_MIN; at++) {
+    if (Math.log2(RUN_MIN) - sum / RUN_MIN >= 4.19 && isRandom(run.slice(at, at + RUN_MIN))) return true
+    if (at < run.length - RUN_MIN) {
+      add(run[at], -1)
+      add(run[at + RUN_MIN], 1)
+    }
+  }
+  return false
 }
 
-/**
- * Some window of `run` reads as random: a key glued to other text, which the redactor reads as one run that is not.
- * Its windows are read by entropy, slid, and the dense ones by `isRandom` itself, so the rule stays the redactor's.
- */
-const holdsKey = (run: string): boolean =>
-  Arr.some(windowEntropies(run), (bits, at) => bits >= 4.2 && at + WINDOW <= run.length && isRandom(run.slice(at, at + WINDOW)))
+type Span = { readonly start: number; readonly end: number }
+const byStart = (a: Span, b: Span): number => a.start - b.start
 
-/**
- * The digest's known forms as one pattern, each wherever it starts: glued to a word (`xghp_…`) too, where its word
- * boundary does not hold. One pass over a text, the private key block first, as the redactor tries them.
- */
-const KNOWN_ANYWHERE = new RegExp(KNOWN.map((form) => `(?:${form.source.replaceAll("\\b", "")})`).join("|"), "g")
+// Match each form on the source, including starts inside a word or inside another match of the same kind.
+const KNOWN_ANYWHERE = KNOWN.map((form) => new RegExp(form.source.replaceAll("\\b", ""), form.flags))
+const knownSpans = (text: string): ReadonlyArray<Span> => {
+  const spans: Array<Span> = []
+  for (const form of KNOWN_ANYWHERE) {
+    for (let next = Option.fromNullishOr(form.exec(text)); Option.isSome(next); next = Option.fromNullishOr(form.exec(text))) {
+      const { value: match } = next
+      spans.push({ start: match.index, end: match.index + match[0].length })
+      form.lastIndex = match.index + 1
+    }
+  }
+  return spans.sort(byStart)
+}
 
-/**
- * `text` with every secret shape replaced: each of the digest's known forms (glued to a word too), then each run the
- * redactor reads as random, or that holds a random window (a key glued to a word, as `aaaa…Q7mZ2xL9…`), replaced whole. The record's one rule for a secret: a value it changes holds one (record.ts `holdsSecret`), and
- * every output passes it.
- */
-export const secretFree = (text: string): string =>
-  text.replace(KNOWN_ANYWHERE, REDACTED).replace(RUN, (run) =>
-    Match.value(isRandom(run) || holdsKey(run)).pipe(
-      Match.when(true, () => REDACTED),
-      Match.orElse(() => run),
-    ),
-  )
+/** `text` with the union of all recognized spans removed, widened by every maximal token run they touch. */
+export const secretFree = (text: string): string => {
+  const known = knownSpans(text)
+  const spans = [...known]
+  let at = 0
+  for (const match of text.matchAll(TOKEN_RUN)) {
+    const start = match.index
+    const end = start + match[0].length
+    while (at < known.length && known[at].end <= start) at++
+    if (holdsKey(match[0]) || (at < known.length && known[at].start < end)) spans.push({ start, end })
+  }
+  if (spans.length === 0) return text
+  spans.sort(byStart)
+  // Walk the sorted union. No edit is made until the next disjoint span proves the previous one has ended.
+  let output = ""
+  let start = spans[0].start
+  let end = start
+  let copied = 0
+  for (const span of spans) {
+    if (span.start > end) {
+      output += text.slice(copied, start) + REDACTED
+      copied = end
+      start = span.start
+    }
+    end = Math.max(end, span.end)
+  }
+  return output + text.slice(copied, start) + REDACTED + text.slice(end)
+}
 
-/**
- * `text` as it may be printed: every secret shape replaced on the whole text. The only maker of `Printable`, and it
- * cuts nothing: a refusal names a field, never its value, so no output needs a value cut to fit.
- */
+/** The shared store and output boundary. No recognizer reads a replacement or a truncated input. */
 export const printable = (text: string): Printable => make(secretFree(text))
+
+/** Preserve an authored refusal; a defect arrives whole at the boundary before the host can render it. */
+export const failureText = (cause: Cause.Cause<Printable>): Printable =>
+  Option.getOrElse(Cause.findErrorOption(cause), () => printable(`record: ${Cause.pretty(cause)}`))
+
+// The modeled errors still have schemas, but no caller can decode an unchecked Printable. Decoding any of
+// these enclosing error schemas checks its text; ordinary callers construct them with an already-safe value.
+const PrintableField = Schema.declare<Printable>((value): value is Printable => Predicate.isString(value) && secretFree(value) === value)
+
+export class RecordRefused extends Schema.TaggedError<RecordRefused>()("RecordRefused", { reason: PrintableField }) {}
+export class RecordFailed extends Schema.TaggedError<RecordFailed>()("RecordFailed", { message: PrintableField }) {}
+export class EvidenceRefused extends Schema.TaggedError<EvidenceRefused>()("EvidenceRefused", { reason: PrintableField }) {}

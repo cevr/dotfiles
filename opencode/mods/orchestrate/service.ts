@@ -3,7 +3,7 @@
 // after their dependency: filestore/, opencode/, codex/ and memory/.
 import { Context, type Effect, type Option, Schema } from "effect"
 import type { CallLine } from "./call-line.ts"
-import { Printable } from "./printable.ts"
+import type { EvidenceRefused, RecordFailed } from "./printable.ts"
 import type { FleetOutcome } from "./fleet.ts"
 import type { HeavyReading } from "./heavy.ts"
 import type { Holds, Run } from "./idle.ts"
@@ -415,7 +415,7 @@ export class HeavyHost extends Context.Service<
  * open, or a file of a newer version than this code writes (it then reads, and refuses every write). The caller sees
  * it; nothing is lost silently.
  */
-export class RecordFailed extends Schema.TaggedError<RecordFailed>()("RecordFailed", { message: Printable }) {}
+export { RecordFailed } from "./printable.ts"
 
 /**
  * The commitment record of one repository on this host: what its runs owe, and the history of every change.
@@ -436,7 +436,7 @@ export class CommitmentRecord extends Context.Service<
 >()("dotfiles-opencode/orchestrate/CommitmentRecord") {}
 
 /** Why the host's files do not back a reason's referent, in words that name no value. */
-export class EvidenceRefused extends Schema.TaggedError<EvidenceRefused>()("EvidenceRefused", { reason: Printable }) {}
+export { EvidenceRefused } from "./printable.ts"
 
 /**
  * What the host's files say of a reason's referent (reasons.ts): a receipt under the checkout's evidence root, read

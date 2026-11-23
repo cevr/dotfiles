@@ -3,7 +3,8 @@
 // of an output (a refusal, a failure, the CLI's run, a defect's text) takes only what `printable` made, so a raw text
 // does not compile; and the record's modules cut no text before the boundary and redact nowhere else.
 import { describe, expect, test } from "bun:test"
-import { Array as Arr, Cause, Effect, Exit, FileSystem, Path } from "effect"
+import { Array as Arr, Cause, Effect, Exit, FileSystem, Path, Predicate } from "effect"
+import { type MemberExpression, parseSync, Visitor } from "oxc-parser"
 import { whyOf } from "@dotfiles/opencode-orchestrate/commitments-tool"
 import { printable } from "@dotfiles/opencode-orchestrate/printable"
 import { RecordRefused } from "@dotfiles/opencode-orchestrate/record"
@@ -61,19 +62,22 @@ describe("printable", () => {
   })
 
   test("an output maker takes only a printable text: a raw one does not compile", () => {
-    const raw = "a raw text"
-    // @ts-expect-error -- the point of the test: a refusal's reason is printable, never a raw text
-    expect(new RecordRefused({ reason: raw }).reason).toBe(raw)
-    // @ts-expect-error -- the point of the test: a failure's message is printable
-    expect(new RecordFailed({ message: raw }).message).toBe(raw)
-    // @ts-expect-error -- the point of the test: an evidence refusal's reason is printable
-    expect(new EvidenceRefused({ reason: raw }).reason).toBe(raw)
-    // @ts-expect-error -- the point of the test: the CLI's answer is printable
-    expect(ranOf(Exit.succeed(raw)).out).toBe(raw)
+    const typecheckOnly = (raw: string) => [
+      // @ts-expect-error -- the point of the test: a refusal's reason is printable, never a raw text
+      new RecordRefused({ reason: raw }),
+      // @ts-expect-error -- the point of the test: a failure's message is printable
+      new RecordFailed({ message: raw }),
+      // @ts-expect-error -- the point of the test: an evidence refusal's reason is printable
+      new EvidenceRefused({ reason: raw }),
+      // @ts-expect-error -- the point of the test: the CLI's answer is printable
+      ranOf(Exit.succeed(raw)),
+    ]
+    expect(typecheckOnly).toBeFunction()
   })
 })
 
 /** The record's modules: every text they print leaves through `printable`. */
+const SERVER = "cmd/orchestrate/server.ts"
 const MODULES = [
   "mods/orchestrate/record.ts",
   "mods/orchestrate/commitments-tool.ts",
@@ -82,6 +86,7 @@ const MODULES = [
   "mods/orchestrate/sqlite/record.ts",
   "mods/orchestrate/sqlite/ergo-register.ts",
   "cmd/orchestrate/record.ts",
+  SERVER,
 ]
 /** A check of the modules' texts, run as a test. */
 const onTexts = (name: string, check: (textOf: (file: string) => string) => void) =>
@@ -111,9 +116,47 @@ const CUTS_KEPT: ReadonlyArray<readonly [string, string]> = [
   ["mods/orchestrate/sqlite/record.ts", "${isoOf(now).slice("],
 ]
 
+const memberName = (node: MemberExpression): string => {
+  if (!node.computed && node.property.type === "Identifier") return node.property.name
+  if ("value" in node.property && Predicate.isString(node.property.value)) return node.property.value
+  return ""
+}
+
+/** Throws, raw console and defect constructors escape the typed record boundary; catch aliases at their member access. */
+const unsafeSinks = (file: string, text: string): ReadonlyArray<string> => {
+  const sites: Array<string> = []
+  const recordRanges = [
+    [text.indexOf("const recordServices"), text.indexOf("const digest =")],
+    [text.indexOf("const actorOf"), text.indexOf("name: Tools.ORCHESTRATE,")],
+  ]
+  const holdsRecord = (start: number) => file !== SERVER || recordRanges.some(([lo, hi]) => start >= lo && start < hi)
+  new Visitor({
+    ThrowStatement: (node) => sites.push(text.slice(node.start, node.end)),
+    NewExpression: (node) => {
+      if (!holdsRecord(node.start)) return
+      const { callee } = node
+      const raw = callee.type === "Identifier" && callee.name === "Error"
+      const tool = callee.type === "MemberExpression" && callee.object.type === "Identifier" && callee.object.name === "Tool" && memberName(callee) === "Error"
+      if (raw || tool) sites.push(text.slice(node.start, node.end))
+    },
+    MemberExpression: (node) => {
+      if (node.object.type !== "Identifier") return
+      if (["console", "Console"].includes(node.object.name) || (["Effect", "Cause", "Exit"].includes(node.object.name) && memberName(node).startsWith("die")))
+        sites.push(text.slice(node.start, node.end))
+    },
+    CallExpression: (node) => {
+      if (!holdsRecord(node.start) || node.callee.type !== "MemberExpression" || node.callee.object.type !== "Identifier" || node.callee.object.name !== "Effect") return
+      const field = memberName(node.callee)
+      if (field.startsWith("log") || field.startsWith("annotateLogs"))
+        sites.push(text.slice(node.start, node.end))
+    },
+  }).visit(parseSync(file, text).program)
+  return sites
+}
+
 describe("the record's modules", () => {
   onTexts("cut no text inside a printed template: a cut before the boundary would leave a fragment too short to be known", (textOf) => {
-    const cuts = MODULES.flatMap((file) => Arr.map([...textOf(file).matchAll(CUT)], (match): readonly [string, string] => [file, match[0]]))
+    const cuts = MODULES.filter((file) => file !== SERVER).flatMap((file) => Arr.map([...textOf(file).matchAll(CUT)], (match): readonly [string, string] => [file, match[0]]))
     expect(cuts).toEqual([...CUTS_KEPT])
   })
 
@@ -123,7 +166,26 @@ describe("the record's modules", () => {
   })
 
   onTexts("log and print nothing but a printable text: the CLI's two prints are its run's printable output", (textOf) => {
-    const prints = MODULES.flatMap((file) => Arr.map([...textOf(file).matchAll(/(?:Effect\.log\w*|Console\.\w+|console\.\w+)\(([^)]*)\)/g)], (match) => `${file}: ${match[0]}`))
-    expect(prints).toEqual(["cmd/orchestrate/record.ts: Console.log(ran.out)", "cmd/orchestrate/record.ts: Console.error(ran.err)"])
+    const prints = MODULES.flatMap((file) => unsafeSinks(file, textOf(file)).map((site) => `${file}: ${site}`))
+    expect(prints).toEqual([
+      "cmd/orchestrate/record.ts: Console.log",
+      "cmd/orchestrate/record.ts: Console.error",
+      `${SERVER}: Effect.logWarning(title, detail)`,
+      `${SERVER}: new Tool.Error({ message: why })`,
+    ])
+    const cli = textOf("cmd/orchestrate/record.ts")
+    expect([...cli.matchAll(/Console\.\w+\(([^)]*)\)/g)].map((match) => match[0])).toEqual(["Console.log(ran.out)", "Console.error(ran.err)"])
+  })
+
+  test("the sink guard refuses direct console, thrown errors and Effect defects in record tools", () => {
+    const source = `const recordServices = (raw: string) => {
+      const log = console.log
+      log(raw)
+      Effect.logWarning(raw)
+      if (raw) throw new Error(raw)
+      return Effect["die"](raw)
+    }
+    const digest = {}`
+    expect(unsafeSinks(SERVER, source)).toEqual(["console.log", "Effect.logWarning(raw)", "throw new Error(raw)", "new Error(raw)", 'Effect["die"]'])
   })
 })

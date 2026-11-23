@@ -48,7 +48,7 @@ import { callsIn } from "@dotfiles/opencode-orchestrate/ledger"
 import { HEARTBEAT_MS, IDLE, type Reported, reportsOf, type Seen } from "@dotfiles/opencode-orchestrate/idle"
 import type { Pace } from "@dotfiles/opencode-orchestrate/pace"
 import { StepLog, UnitLogs } from "@dotfiles/opencode-orchestrate/service"
-import { hosted, make as makeOrchestrate } from "@dotfiles/opencode-cmd-orchestrate/server"
+import { hosted, make as makeOrchestrate, type RecordLayer } from "@dotfiles/opencode-cmd-orchestrate/server"
 import { make as makeQueue } from "@dotfiles/opencode-cmd-queue/server"
 import { make as makeDigest } from "@dotfiles/opencode-cmd-digest/server"
 import * as MemoryDigest from "@dotfiles/opencode-digest/memory/log"
@@ -212,7 +212,7 @@ export const stepLogOf = (lines: ReadonlyArray<unknown>) => {
  * script, the skill's files) its memory doubles, as `cmd/orchestrate/server.test.ts` holds them. The call log is one
  * for the plugin's life, its restarts too, as its file is.
  */
-export const orchestrate = (doubles: OrchestrateDoubles = {}) => {
+export const orchestrate = (doubles: OrchestrateDoubles = {}, record?: RecordLayer) => {
   const lines = doubles.lines ?? []
   return makeOrchestrate((ctx, options, start, background) =>
     Layer.mergeAll(
@@ -229,6 +229,8 @@ export const orchestrate = (doubles: OrchestrateDoubles = {}) => {
       RunFilesTest.layer(doubles.files ?? new Map()),
       WorkGitTest.layer(doubles.workGit ?? WorkGitTest.world()),
     ),
+    void 0,
+    record,
   )
 }
 

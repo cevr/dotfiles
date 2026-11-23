@@ -1279,7 +1279,7 @@
   },
   {
     "file": "opencode/mods/orchestrate/printable.ts",
-    "source": "new RegExp(KNOWN.map((form) => `(?:${form.source.replaceAll(\"\\\\b\", \"\")})`).join(\"|\"), \"g\")",
+    "source": "new RegExp(form.source.replaceAll(\"\\\\b\", \"\"), form.flags)",
     "why": "replaces the digest's known secret forms wherever they start, glued to a word: redacting a secret, not reading run state",
     "until": "stays"
   }

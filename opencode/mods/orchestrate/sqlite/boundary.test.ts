@@ -8,6 +8,8 @@ import { Database } from "bun:sqlite"
 import { expect } from "bun:test"
 import { Array as Arr, Effect, Layer, Match, Option, Result, Schema } from "effect"
 import * as Seed from "../../../sim/seed.ts"
+import { textsOf } from "../../../sim/canary.ts"
+import { leaked } from "../../../sim/tokens.ts"
 import { scratch } from "../../../tests/scratch.ts"
 import { DEFAULT_RUN, followUpOf } from "../commitments-tool.ts"
 import { type Actor, Command, decodeCommand, PartInput } from "../record.ts"
@@ -134,7 +136,7 @@ const DECLARED = [...OWNED, by(declare())]
 const historyAt = refused("event.at", by(imported("i1", {}, { at: S }), IMPORT))
 
 /** Each TEXT column's driver, by `<table>.<column>`. */
-const DRIVERS = new Map<string, Driver>([
+const driversOf = (S: string) => new Map<string, Driver>([
   ["commitment.id", refused("event.subject_id", by(add([S])))],
   ["commitment.run", refused("event.run", by(add(["c1"], { run: S })))],
   ["commitment.title", redacted(by(add(["c1"], { title: `the title ${S}` })))],
@@ -219,17 +221,19 @@ const storedIn = (path: string): ReadonlyArray<readonly [string, string]> => {
 /** A driver that runs commands: the ones before, and the one with the secret. */
 type Driving = Extract<Driver, { readonly kind: "refused" | "redacted" }>
 
-/** What the record did with the driver's secret command on a fresh file: refused (its reason), or kept. */
+/** The driver's refusal, if any, and the bytes of the DB and WAL while the writer still has them open. */
 const drive = (path: string, driver: Driving) =>
   Effect.gen(function* () {
     const opened = yield* connected(path, { readonly: false, now: T0 })
     for (const each of driver.setup) yield* opened.store.run(each.command, { actor: each.actor, now: T0 })
     const done = yield* Effect.result(opened.store.run(driver.sent.command, { actor: driver.sent.actor, now: T0 }))
+    const bytes = yield* textsOf([path, `${path}-wal`])
     opened.close()
-    return Result.match(done, {
+    const why = Result.match(done, {
       onSuccess: () => Option.none<string>(),
       onFailure: (failed) => Option.some(Match.value(failed).pipe(Match.tag("RecordRefused", (each) => each.reason), Match.orElse((each) => each.message))),
     })
+    return { why, bytes }
   })
 
 /** The column a driven refusal must name: its driver's, else the column itself. */
@@ -241,14 +245,13 @@ const answerOf = (path: string, driver: Driving, column: string, why: Option.Opt
     onNone: () => Arr.filter(["redacted"], () => driver.kind === "redacted" && storedIn(path).some(([, value]) => value.includes("[redacted]")))[0] ?? "kept",
     onSome: (reason) =>
       Match.value(reason).pipe(
-        Match.when((text) => text.includes(SECRET), () => "refused, repeating it"),
         Match.when((text) => text.includes(`column ${namedBy(driver, column)} `), () => "refused"),
         Match.orElse((text) => `refused: ${text}`),
       ),
   })
 
 /** What the record does with one column's driver: its outcome in a word, the secret's leaks first. */
-const outcomeOf = (dir: string, column: string, at: number, driver: Driver) =>
+const outcomeOf = (dir: string, column: string, at: number, driver: Driver, secret: string) =>
   Match.value(driver).pipe(
     Match.when({ kind: "literal" }, (each) => Effect.succeed(Result.match(Result.try(() => decodeCommand(decodeJson(each.encoded))), { onFailure: () => "literal", onSuccess: (decoded) => Result.match(decoded, { onFailure: () => "literal", onSuccess: () => "decoded" }) }))),
     Match.when({ kind: "unwritten" }, () => Effect.succeed("unwritten")),
@@ -256,15 +259,24 @@ const outcomeOf = (dir: string, column: string, at: number, driver: Driver) =>
     Match.orElse((each) =>
       Effect.gen(function* () {
         const path = `${dir}/c${at}.db`
-        const why = yield* drive(path, each)
-        const leaked = storedIn(path).filter(([, value]) => value.includes(SECRET)).map(([held]) => held)
-        return Arr.match(leaked, { onEmpty: () => answerOf(path, each, column, why), onNonEmpty: (into) => `leaked into ${into.join(", ")}` })
+        const { why, bytes } = yield* drive(path, each)
+        const fixture = { value: secret, secrets: [secret] }
+        if (bytes.some((file) => leaked(file, fixture).length > 0)) return "fragment in SQLite bytes"
+        if (Option.exists(why, (message) => leaked(message, fixture).length > 0)) return "fragment in refusal"
+        return answerOf(path, each, column, why)
       }),
     ),
   )
 
-Seed.effect(
-  "a secret driven into each TEXT column is refused naming the column, or kept redacted; no column of any table holds it",
+// An outer random run and two crossing fixed-width shapes. At each offset the last known form ends past
+// the first; the whole run is the sensitive region, including the pieces a sequential replacement leaves.
+const overlapping = (at: number): string => {
+  const stem = "t8Q3v6Z5b1D0p7X4m9J2f"
+  const fixed = ["AK", "IA", "J8BX", "AK", "IA", "M2W7V9H0Z4G6Q5L3"].join("")
+  return `${stem.slice(0, at)}${fixed}${stem.slice(at)}`
+}
+
+const checkColumns = (secret: string) =>
   Effect.acquireUseRelease(
     Effect.sync(() => scratch("record-boundary-")),
     (dir) =>
@@ -275,17 +287,26 @@ Seed.effect(
         const db = new Database(schema, { readonly: true })
         const columns = textColumnsOf(db)
         db.close()
-        expect(columns.filter((column) => !DRIVERS.has(column))).toEqual([])
+        const drivers = driversOf(secret)
+        expect(columns.filter((column) => !drivers.has(column))).toEqual([])
         const outcomes = yield* Effect.forEach(columns, (column, at) =>
-          Effect.map(outcomeOf(dir.path, column, at, Option.getOrElse(Option.fromUndefinedOr(DRIVERS.get(column)), () => UNWRITTEN)), (outcome) => [column, outcome] as const),
+          Effect.map(outcomeOf(dir.path, column, at, Option.getOrElse(Option.fromUndefinedOr(drivers.get(column)), () => UNWRITTEN), secret), (outcome) => [column, outcome] as const),
         )
-        const expected = columns.map((column) => [column, Option.match(Option.fromUndefinedOr(DRIVERS.get(column)), { onNone: () => "no driver", onSome: (driver) => driver.kind })] as const)
+        const expected = columns.map((column) => [column, Option.match(Option.fromUndefinedOr(drivers.get(column)), { onNone: () => "no driver", onSome: (driver) => driver.kind })] as const)
         expect(outcomes).toEqual(expected)
       }),
     (dir) => Effect.sync(() => dir[Symbol.dispose]()),
-  ).pipe(Effect.provide(platform)),
+  ).pipe(Effect.provide(platform))
+
+Seed.effect(
+  "a secret driven into each TEXT column is refused naming the column, or kept redacted; no column of any table holds it",
+  checkColumns(SECRET),
 )
 
+Seed.effect(
+  "crossing tokens moved across every offset in every TEXT field leave no fragment in the DB, WAL or refusal",
+  Effect.forEach(Arr.range(0, 21), (at) => checkColumns(overlapping(at)), { discard: true }),
+)
 
 Seed.effect(
   "a worker's follow_up with a secret as its id or run is refused whole, naming the column, and writes nothing",

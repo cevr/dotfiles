@@ -20,6 +20,7 @@ import type { Workspace } from "@dotfiles/opencode-work/workspace"
 import * as Plugins from "../../sim/plugins.ts"
 import * as World from "../../sim/world.ts"
 import { make as makeWork } from "../work/server.ts"
+import type { RecordLayer } from "./server.ts"
 
 /** The warm source the run's roots work in. */
 export const WORK = "/scratch/work"
@@ -232,7 +233,7 @@ export interface BootOptions {
 }
 
 /** The work plugin's copies and the orchestrate plugin's, loaded in each of the world's locations (`orchestrate` off: the work plugin alone). */
-export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchestrate: boolean, options: BootOptions = {}) {
+export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchestrate: boolean, options: BootOptions = {}, recordLayer?: RecordLayer) {
   const woken: Array<MemoryNotices.Woken> = []
   // The units' logs: written by the orchestrate plugin, as log.ts writes log.md; read by the status script.
   const logs = new Map<string, UnitLog>()
@@ -311,7 +312,7 @@ export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchest
       find: ({ unit }) => Effect.succeed(`${RUN_DIR}/${unit}`),
       append: (dir, transition) => Effect.sync(() => void logs.set(dir.split("/").at(-1) ?? transition.unit, { state: transition.to, round: transition.round })),
     },
-  })
+  }, recordLayer)
   for (const directory of Match.value(options.unitsAnswer === true).pipe(Match.when(true, () => [PLAIN, WORK]), Match.orElse(() => [WORK, PLAIN]))) {
     if (orchestrate) yield* world.load(plugin, { directory, options: { now: options.now ?? PIN, fleet: FLEET, ...Option.match(Option.fromUndefinedOr(options.record), { onNone: () => ({}), onSome: (record) => ({ record }) }) } })
     yield* world.load(work, { directory, options: { workrift: false } })

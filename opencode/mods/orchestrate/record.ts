@@ -4,7 +4,7 @@
 // command's events and the rows they fold to in one transaction, and replaying the events into an empty store gives
 // the same rows (laws.ts). Nothing here reads a document: every field comes from a tool call's input.
 import { Array as Arr, DateTime, Effect, Match, Option, Order, Predicate, Result, Schema } from "effect"
-import { Printable, printable, secretFree } from "./printable.ts"
+import { RecordRefused, printable, secretFree } from "./printable.ts"
 import { DocumentSeen, KINDS_OF, REASON_CLASSES, ReasonData, ReceiptSeen, referentOf, UNAVAILABLE } from "./reasons.ts"
 
 export const SOURCE_KINDS = ["owner-answer", "owner-ask", "assignment", "follow-up", "bug", "plan-part"] as const
@@ -547,7 +547,7 @@ export type Command = typeof Command.Type
 export const decodeCommand = Schema.decodeUnknownResult(Command)
 
 /** Why a command is refused, in words the caller acts on. */
-export class RecordRefused extends Schema.TaggedError<RecordRefused>()("RecordRefused", { reason: Printable }) {}
+export { RecordRefused } from "./printable.ts"
 
 /** Who decides, and when. */
 export interface Context {
@@ -574,7 +574,7 @@ export const lineRefusal = (what: string, value: string, max = TEXT_MAX): Option
   firstOf([when(value.trim() === "", `${what} is empty`), when(!ONE_LINE.test(value), `${what} is more than one line`), when(value.length > max, `${what} is ${value.length} characters, more than ${max}`)])
 
 /** The text a record keeps of `text`: every secret shape the digest redacts replaced, ends trimmed. */
-export const kept = (text: string): string => secretFree(text).trim()
+export const kept = (text: string): string => printable(text).trim()
 
 /** The longest note an event keeps: longer (an imported history's) is cut there. */
 export const NOTE_MAX = 1000

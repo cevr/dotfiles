@@ -31,8 +31,11 @@ export const KNOWN: ReadonlyArray<RegExp> = [
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
 ]
 
-/** A long run that may be a key of no known form. */
-export const RUN = /[A-Za-z0-9_+=-]{32,}/g
+/** The character alphabet and shortest width of keys of no known form. */
+const TOKEN_CHARACTERS = /[A-Za-z0-9_+=-]/
+export const TOKEN_RUN = new RegExp(`${TOKEN_CHARACTERS.source}+`, "g")
+export const RUN_MIN = 32
+const RUN = new RegExp(`${TOKEN_CHARACTERS.source}{${RUN_MIN},}`, "g")
 
 /** The run's Shannon entropy, in bits a character. */
 const entropy = (run: string): number => {
