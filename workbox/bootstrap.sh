@@ -180,8 +180,12 @@ for command in curl git jq syncthing tailscale; do
   check_command "$command"
 done
 
-sudo apt-get update
-sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+apt_bounds="-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3"
+# shellcheck disable=SC2086 # a word list
+sudo apt-get $apt_bounds update
+# NEEDRESTART_SUSPEND keeps Ubuntu's needrestart hook from restarting services.
+# shellcheck disable=SC2086 # a word list
+sudo env NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive apt-get $apt_bounds install -y \
   btrfs-progs \
   sqlite3 \
   systemd-resolved \
@@ -211,7 +215,7 @@ install -m 600 "$workbox_dir/backup.env" "$HOME/.config/bite-workbox/backup.env"
 # and herdr-core in ~/.local/bin. It runs only when hc is missing, so a running
 # core is never touched; `hc update` updates it in place.
 if [ ! -x "$local_bin_dir/hc" ] && ! command -v hc >/dev/null 2>&1; then
-  curl -fsSL https://releases.herdr.dev/core/install.sh | sh
+  curl -fsSL --connect-timeout 20 --max-time 300 --retry 3 https://releases.herdr.dev/core/install.sh | sh
 fi
 
 # `workrift init <repository> /workspaces/bite` creates the Bite base and gives it

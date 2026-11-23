@@ -48,7 +48,9 @@ phases=(host user keys packages tools firewall rootssh tailscale sshd reserve up
 need_root
 [[ $# -gt 0 ]] && phases=("$@")
 
-apt_install() { DEBIAN_FRONTEND=noninteractive apt-get install -y -q "$@" >/dev/null; }
+# Bounded network time; NEEDRESTART_SUSPEND keeps Ubuntu's needrestart hook from restarting services.
+apt_bounds=(-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3)
+apt_install() { NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive apt-get "${apt_bounds[@]}" install -y -q "$@" >/dev/null; }
 # Installs a file only when it differs; prints whether it changed.
 put() { # mode src dest
     if [[ -e $3 ]] && cmp -s "$2" "$3"; then return 1; fi
@@ -114,16 +116,16 @@ phase_packages() {
         codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
         install -d -m 755 /etc/apt/keyrings
         if [[ ! -e /usr/share/keyrings/tailscale-archive-keyring.gpg ]]; then
-            curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/$codename.noarmor.gpg" -o /usr/share/keyrings/tailscale-archive-keyring.gpg
-            curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/$codename.tailscale-keyring.list" -o /etc/apt/sources.list.d/tailscale.list
+            curl -fsSL --connect-timeout 20 --max-time 300 --retry 3 "https://pkgs.tailscale.com/stable/ubuntu/$codename.noarmor.gpg" -o /usr/share/keyrings/tailscale-archive-keyring.gpg
+            curl -fsSL --connect-timeout 20 --max-time 300 --retry 3 "https://pkgs.tailscale.com/stable/ubuntu/$codename.tailscale-keyring.list" -o /etc/apt/sources.list.d/tailscale.list
         fi
         if [[ ! -e /usr/share/keyrings/mongodb-server-8.0.gpg ]]; then
-            curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg
+            curl -fsSL --connect-timeout 20 --max-time 300 --retry 3 https://www.mongodb.org/static/pgp/server-8.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg
             printf 'deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu %s/mongodb-org/8.0 multiverse\n' \
                 "$codename" > /etc/apt/sources.list.d/mongodb-org-8.0.list
         fi
         if [[ ! -e /etc/apt/keyrings/githubcli-archive-keyring.gpg ]]; then
-            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg
+            curl -fsSL --connect-timeout 20 --max-time 300 --retry 3 https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg
             printf 'deb [arch=%s signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\n' \
                 "$arch" > /etc/apt/sources.list.d/github-cli.list
         fi
@@ -136,7 +138,7 @@ phase_packages() {
     for p in $HB_PACKAGES; do dpkg-query -W "$p" >/dev/null 2>&1 || missing="$missing $p"; done
     if [[ -n ${missing// /} ]]; then
         say "installing:$(echo "$missing" | tr '\n' ' ')"
-        apt-get update -q >/dev/null
+        apt-get "${apt_bounds[@]}" update -q >/dev/null
         # shellcheck disable=SC2086
         apt_install $missing
     else
