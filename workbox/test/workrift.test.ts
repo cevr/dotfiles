@@ -2832,7 +2832,10 @@ describeWork("workrift beside the older workrift, and its line's owners whatever
     const lockHolder = Bun.spawn([join(w.bin, "flock"), file, "sleep", "30"], { stdout: "ignore", stderr: "ignore" })
     await until("locked", () => Bun.spawnSync([join(w.bin, "flock"), "-n", file, "true"]).exitCode === 1)
     const env = { ...w.env, WORKRIFT_STAT_PROC: proc }
-    const waiter = hold(w, env, log, "waiter", 0.1, "waiter.err")
+    // The waiter's own stat in the fake /proc (its pid is the shell's, which execs it): a workrift whose own identity
+    // does not read takes no place in line.
+    const own = `mkdir -p '${proc}'/$$ && printf '%s\\n' "$$ (w) ${stat(999).split(") ").slice(2).join(") ").replace(/\n$/, "")}" >'${proc}'/$$/stat && exec "$@"`
+    const waiter = start(w.app, env, ["/bin/sh", "-c", own, "sh", SCRIPT, "hold", "--", "probe", log, "waiter", "w", "0.1"], join(w.dir, "waiter.err"))
     await Bun.sleep(7000)
     // The same tick: live, so the waiter still waits; then the pid's start changes (reused): gone.
     expect(ivs()).toEqual([])
@@ -2879,7 +2882,8 @@ describeWork("workrift beside the older workrift, and its line's owners whatever
     const [h, ran] = await Promise.all([holder.done, waiter.done])
     expect(h.code).toBe(0)
     expect(ran.code).toBe(1)
-    expect(ran.err).toContain("was removed while it waited")
+    // Removed before its record was written (it cannot be) or after (it is gone): either way nothing done.
+    expect(ran.err).toMatch(/was removed while it waited|could not be written: no place in line taken, nothing done/)
     expect(ivs().map((each) => each.id)).toEqual(["holder"])
   }, 60_000)
 
