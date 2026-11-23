@@ -136,6 +136,9 @@ export const removeDurable = (file: string, disk: Disk = NODE_DISK): void => {
   disk.syncDir(path.dirname(file))
 }
 
+/** This process's pid. */
+export const SELF = process.pid
+
 /** The temporary files this process made, counted: with its pid, a name no other writer uses at once. */
 const made = { count: 0 }
 
@@ -150,7 +153,7 @@ export const writeDurable = <A>(file: string, value: A, options: Durable = {}): 
   const disk = options.disk ?? NODE_DISK
   made.count += 1
   // A stray one of a dead process under the same pid is overwritten: that process links nothing any more.
-  const temporary = `${file}.${process.pid}.${made.count}.tmp`
+  const temporary = `${file}.${SELF}.${made.count}.tmp`
   const fd = disk.create(temporary, options.mode ?? 0o600)
   const done = Result.try(() => {
     disk.write(fd, JSON.stringify(value))
@@ -192,7 +195,7 @@ export const ranOf = (argv: ReadonlyArray<string>, env?: Record<string, string>)
  * Claim the job in `dir` for this runner, as the process `pid`: true when its launch slot was free. The slot holds
  * one claim or the wakes' retirement, whichever came first, so a job retired as never started never runs.
  */
-export const claim = (dir: string, startedAt: number, pid: number = process.pid, barrier: (at: Barrier) => void = () => {}, disk: Disk = NODE_DISK): boolean => {
+export const claim = (dir: string, startedAt: number, pid: number = SELF, barrier: (at: Barrier) => void = () => {}, disk: Disk = NODE_DISK): boolean => {
   const own: RunnerClaim = { pid, startedAt, ...Option.match(processStart(pid), { onNone: () => ({}), onSome: (start) => ({ start }) }) }
   return writeDurable(path.join(dir, FILES.runner), own, { exclusive: true, barrier, disk })
 }

@@ -209,13 +209,17 @@ const serviceOf = (memory: MemoryRunner, mine: Map<string, () => void>): Runner[
         memory.deliveries.set(id, [...slots, next])
         return true
       }),
-    owed: (directory) =>
+    stabilize: () => Effect.void,
+    owed: ({ directory, sessionID } = {}) =>
       Effect.sync(() =>
         [...memory.jobs.values()].flatMap((job) =>
           Option.toArray(
             Option.liftPredicate(
               job.spec.id,
-              () => Option.isSome(Option.fromNullishOr(job.spec.generation)) && job.spec.directory === directory && !Option.exists(slotOf(memory, job.spec.id), (slot) => slot.delivery.state === "delivered"),
+              () => Option.isSome(Option.fromNullishOr(job.spec.generation)) &&
+                !Option.exists(Option.fromUndefinedOr(directory), (value) => value !== job.spec.directory) &&
+                !Option.exists(Option.fromUndefinedOr(sessionID), (value) => value !== job.spec.sessionID) &&
+                !Option.exists(slotOf(memory, job.spec.id), (slot) => slot.delivery.state === "delivered"),
             ),
           ),
         ),

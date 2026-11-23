@@ -123,8 +123,39 @@ export interface Config {
    * How the host's call `call` in `sessionID` went, by the session's own record: the owner's call that took a job's end
    * delivered it only once the host committed its answer. None: every call reads `unknown`.
    */
-  readonly answered?: (sessionID: string, call: string) => Effect.Effect<CallAnswer>
+  readonly answered?: (sessionID: string, call: string, message?: string) => Effect.Effect<CallAnswer>
+  /** Whether this location currently hosts the owner of a foreign job. Consulted only for recorded deliveries on startup. */
+  readonly ownerHere?: (sessionID: string) => Effect.Effect<boolean>
+  /** The server this model runs in, and whether a server (by its id) still runs: a call left running by one that does not can never be committed. None: none is known gone. */
+  readonly server?: Server
 }
+
+/** A server that runs owners' calls: its id, and whether a server by id still runs (a fact of its process, not a timer). */
+export interface Server {
+  readonly id: string
+  readonly live: (id: string) => Effect.Effect<boolean>
+}
+
+/** The host's call an owner's `park`, `wait` or `kill` answers: its call id, and the message it is part of. */
+export interface HostCall {
+  readonly id: string
+  readonly message: string
+}
+
+const callKey = (sessionID: string, call: HostCall) => `${sessionID}/${call.message}/${call.id}`
+
+const isDelivering = (record: JobRecord) =>
+  Option.exists(Option.fromUndefinedOr(record.delivery), (slot) => slot.delivery.state === "delivering")
+
+/** What a held call's settled fact makes of the end it holds: delivered by the answer, the letter's again, nobody's, or still held. */
+type Fate = "answer" | "letter" | "nobody" | "held"
+
+/** A field of the owner's call that holds an end; none while the letter holds it, or when the record names none. */
+const heldBy = <A>(holder: Holder, field: (call: Exclude<Holder, { readonly kind: "letter" }>) => A): Option.Option<NonNullable<A>> =>
+  Match.value(holder).pipe(
+    Match.when({ kind: "letter" }, () => Option.none<NonNullable<A>>()),
+    Match.orElse((call) => Option.fromNullishOr(field(call))),
+  )
 
 
 /** A session takes at most this many pending entries. */
@@ -167,6 +198,13 @@ export interface Viewed {
  * (the owner's call on a managed job, or a call that saw a legacy job's end): then no letter follows. An end not
  * delivered here reaches the session once, by its letter.
  */
+/** A job of the `job` tool's list: its run, and the owner's call that holds its end while no fact settled it. */
+export interface ListedJob {
+  readonly job: Job
+  readonly run: Run
+  readonly held: Option.Option<string>
+}
+
 export interface Watched extends Viewed {
   readonly ended: boolean
   readonly delivered: boolean
@@ -182,7 +220,7 @@ export class WakesModel extends Context.Service<
     /** Start a job for the session (a subagent too) under the runner: the entry, and how it was launched. */
     readonly job: (sessionID: string, ask: JobAsk) => Effect.Effect<{ readonly job: Job; readonly launched: Launched }, WakeRejected>
     /** The session's jobs still kept (running, or not yet reported), and how each stands. */
-    readonly jobs: (sessionID: string) => Effect.Effect<{ readonly now: number; readonly jobs: ReadonlyArray<{ readonly job: Job; readonly run: Run }> }>
+    readonly jobs: (sessionID: string) => Effect.Effect<{ readonly now: number; readonly jobs: ReadonlyArray<ListedJob> }>
     /** What the TUI's dock and Jobs tab show of the session's jobs: each kept, and each this server saw end within ENDED_SHOWN_MS (at most ENDED_SHOWN), running first. */
     readonly board: (sessionID: string) => Effect.Effect<Board>
     /** The owner stops one of the session's running jobs (the TUI's kill); unlike `kill` it leaves the entry, so the end letter still wakes the session. */
@@ -194,16 +232,23 @@ export class WakesModel extends Context.Service<
      * that it runs. `call` is the host's call this answers: the delivery stands once the host committed it
      * (`answered`); with none, once this returns.
      */
-    readonly park: (sessionID: string, id: string, call?: string) => Effect.Effect<Watched, WakeRejected>
+    readonly park: (sessionID: string, id: string, call?: HostCall) => Effect.Effect<Watched, WakeRejected>
     /** Wait up to `ms` for the job to end, woken by its end, not by a poll; `delivered` and `call` as for `park`. */
-    readonly wait: (sessionID: string, id: string, ms: number, call?: string) => Effect.Effect<Watched, WakeRejected>
+    readonly wait: (sessionID: string, id: string, ms: number, call?: HostCall) => Effect.Effect<Watched, WakeRejected>
     /** Stop the job, and wait a little for its end; `delivered` and `call` as for `park`. Whether a running job was asked to stop. */
-    readonly kill: (sessionID: string, id: string, call?: string) => Effect.Effect<Watched & { readonly asked: boolean }, WakeRejected>
+    readonly kill: (sessionID: string, id: string, call?: HostCall) => Effect.Effect<Watched & { readonly asked: boolean }, WakeRejected>
     /**
-     * The host's word on a call that took a job's end: `observed` (the host has its answer), `committed` (its answer is
-     * in the session: delivered), `failed` (it never reached the session: the letter takes over).
+     * A durable host tool event: `committed` (its answer is in the session) or `failed` (the letter takes over).
      */
-    readonly answered: (call: string, outcome: "observed" | "committed" | "failed") => Effect.Effect<void>
+    readonly answered: (sessionID: string, call: HostCall, outcome: "committed" | "failed") => Effect.Effect<void>
+    /**
+     * The session is about to be compacted, and `answer` reads each call in the view the compaction replaces: every
+     * end a call of it holds is settled by that fact now, while the call is still in view (a compaction keeps the
+     * stored part but takes it out of every later read).
+     */
+    readonly compacting: (sessionID: string, answer: (call: string, message?: string) => Effect.Effect<CallAnswer>) => Effect.Effect<void>
+    /** Re-read held calls after a move or committed revert. The event itself proves nothing about a specific call. */
+    readonly recheckOwner: (sessionID: string) => Effect.Effect<void>
     /** Cancel `id`, or every entry of the session when none is named; an unread notice named goes too, and a latch's child reads cancelled. A job is not cancelled: it is killed. The ids that went. */
     readonly cancel: (sessionID: string, id?: string) => Effect.Effect<ReadonlyArray<string>, WakeRejected>
     readonly list: (sessionID: string) => Effect.Effect<Listed>
@@ -631,8 +676,8 @@ export const layer = (config: Config) =>
         })
 
       /** Whether the host committed the owner's call that took a job's end; `unknown` with no way to ask. */
-      const ask = (sessionID: string, call: string): Effect.Effect<CallAnswer> =>
-        Option.match(Option.fromNullishOr(config.answered), { onNone: () => Effect.succeed<CallAnswer>("unknown"), onSome: (answered) => answered(sessionID, call) })
+      const ask = (holder: Exclude<Holder, { readonly kind: "letter" }>, call: string): Effect.Effect<CallAnswer> =>
+        Option.match(Option.fromNullishOr(config.answered), { onNone: () => Effect.succeed<CallAnswer>("unknown"), onSome: (answered) => answered(holder.sessionID, call, holder.message) })
 
       /**
        * Send a managed job's letter under the delivery id its record holds (`version` its slot): the session keeps one
@@ -660,10 +705,17 @@ export const layer = (config: Config) =>
           return SENT_OUTCOME[sent]
         })
 
+      const forgetCall = (holder: Holder) => {
+        if (holder.kind === "letter") return
+        const key = Option.zipWith(Option.fromUndefinedOr(holder.call), Option.fromUndefinedOr(holder.message), (id, message) => callKey(holder.sessionID, { id, message }))
+        for (const each of Option.toArray(key)) calls.delete(each)
+      }
+
       /** Write the job's record delivered at `version` (a loser has nothing to do), and its entry goes. */
       const delivered = (id: string, slot: Slot, to: "answer" | "nobody") =>
         Effect.gen(function* () {
           yield* runner.advance(id, slot.version, { state: "delivered", delivery: slot.delivery.delivery, attempt: yield* fresh, to })
+          if (slot.delivery.state === "delivering") forgetCall(slot.delivery.holder)
           yield* tidy(id)
           return "gone" as const
         })
@@ -672,9 +724,8 @@ export const layer = (config: Config) =>
        * A managed job's end, delivered by its record: whoever acts writes the next slot first, and does nothing when it
        * loses. No slot yet: the letter claims it and goes. The letter holds it: it goes again under its id. The owner's
        * call holds it: the host says how that call went: committed, the end was delivered; failed (or the session gone),
-       * the letter takes over under the same delivery id; still running, it waits for the call; unknown (no way to ask,
-       * or the call no longer in the session's context), delivered once the host had the answer (`observed`), else the
-       * call's own server settles it.
+       * the letter takes over under the same delivery id (nobody if deleted). Still running in a live server, missing
+       * from a pruned view, or unreadable: keep the obligation and ask again.
        */
       const deliver = (job: Job, view: JobView, slot: Option.Option<Slot>): Effect.Effect<Due["outcome"]> =>
         Effect.gen(function* () {
@@ -689,16 +740,93 @@ export const layer = (config: Config) =>
             return "gone" as const
           }
           const holder = held.holder
-          if (holder.kind === "letter") return yield* post(job, view, slot.value.version, held.delivery)
+          if (holder.kind === "letter") {
+            yield* runner.stabilize(job.id)
+            return yield* post(job, view, slot.value.version, held.delivery)
+          }
           const call = Option.fromNullishOr(holder.call)
           if (Option.isNone(call)) return "pending" as const
-          const said = yield* ask(holder.sessionID, call.value)
-          if (said === "committed" || (said === "unknown" && holder.kind === "observed")) return yield* delivered(job.id, slot.value, "answer")
-          if (said === "gone") return yield* delivered(job.id, slot.value, "nobody")
-          if (said !== "failed") return "pending" as const
-          const version = slot.value.version
-          if (!(yield* runner.advance(job.id, version, { state: "delivering", delivery: held.delivery, attempt: yield* fresh, holder: { kind: "letter" } }))) return "pending" as const
-          return yield* post(job, view, version + 1, held.delivery)
+          const fate = yield* fateOf(holder, call.value, yield* ask(holder, call.value))
+          if (fate === "answer" || fate === "nobody") return yield* delivered(job.id, slot.value, fate)
+          if (fate === "held") {
+            // A moved session may be the only open location. Keep asking under the same recovery scheduler.
+            if (job.directory !== config.directory) yield* again(job.id, recoverMs)
+            return "pending" as const
+          }
+          if (!(yield* toLetter(job.id, slot.value))) return "pending" as const
+          return yield* post(job, view, slot.value.version + 1, held.delivery)
+        })
+
+      /**
+       * The host's fact on the owner's call that holds an end, and what it makes of it: committed, the answer delivered
+       * it; failed (an error or a stop), or still running in a server that no longer runs (no answer of it can be
+       * committed any more), the letter takes it again under the same delivery id; the session gone, nobody. Running
+       * in a live server, or unknown (the call out of the view this read had), it stays held: asked again at the next
+       * reconcile, and shown held in the job list. No timer decides it.
+       */
+      const statedFate = (said: CallAnswer): Fate =>
+        Match.value(said).pipe(
+          Match.when("committed", (): Fate => "answer"),
+          Match.when("failed", (): Fate => "letter"),
+          Match.when("missing", (): Fate => "letter"),
+          Match.when("gone", (): Fate => "nobody"),
+          Match.orElse((): Fate => "held"),
+        )
+
+      const fateOf = (holder: Exclude<Holder, { readonly kind: "letter" }>, call: string, said: CallAnswer): Effect.Effect<Fate> =>
+        Effect.gen(function* () {
+          if (said !== "running" || !(yield* goneServer(holder))) return statedFate(said)
+          // The old process might have committed between our first read and its death. Read again after proving death.
+          const final = yield* ask(holder, call)
+          if (final === "running") return "letter"
+          return statedFate(final)
+        })
+
+      /** Whether the server that ran a held call is known to run no more. */
+      const goneServer = (holder: Holder) =>
+        Option.match(
+          Option.zipWith(heldBy(holder, (call) => call.server), Option.fromNullishOr(config.server), (id, server) => ({ id, server })),
+          { onNone: () => Effect.succeed(false), onSome: ({ id, server }) => Effect.map(server.live(id), (live) => !live) },
+        )
+
+      /** The letter takes the end a call held at `slot` again, under its delivery id; whether this write took it. */
+      const toLetter = (id: string, slot: Slot) =>
+        Effect.gen(function* () {
+          const held = slot.delivery
+          if (held.state !== "delivering") return false
+          const taken = yield* runner.advance(id, slot.version, { state: "delivering", delivery: held.delivery, attempt: yield* fresh, holder: { kind: "letter" } })
+          forgetCall(held.holder)
+          return taken
+        })
+
+      /**
+       * Settle by `decide` each end a call of `sessionID` holds, including jobs started before a location move:
+       * its fate written now, a letter then sent by the job's reconcile.
+       */
+      const settleHeld = (sessionID: string, decide: (holder: Exclude<Holder, { readonly kind: "letter" }>, call: string) => Effect.Effect<Fate>) =>
+        Effect.gen(function* () {
+          const ids = yield* runner.owed({ sessionID })
+          yield* Effect.forEach(
+            ids,
+            (id) =>
+              serially(id)(
+                Effect.gen(function* () {
+                  const slot = yield* slotIn(id)
+                  if (Option.isNone(slot) || slot.value.delivery.state !== "delivering") return
+                  const holder = slot.value.delivery.holder
+                  if (holder.kind === "letter" || holder.sessionID !== sessionID) return
+                  const call = Option.fromNullishOr(holder.call)
+                  if (Option.isNone(call)) return
+                  const fate = yield* decide(holder, call.value)
+                  if (fate === "answer" || fate === "nobody") yield* delivered(id, slot.value, fate)
+                  if (fate === "letter") yield* toLetter(id, slot.value)
+                }),
+              ).pipe(
+                Effect.catchCause((cause) => Effect.logWarning("wake: a held job end could not settle", { id, cause: String(cause) })),
+                Effect.andThen(again(id, 0)),
+              ),
+            { discard: true },
+          )
         })
 
       /** The owner's call that held a job's end could not hand it over (it failed, or was stopped): the letter takes over under the same delivery id. */
@@ -707,7 +835,7 @@ export const layer = (config: Config) =>
           Effect.gen(function* () {
             const slot = yield* slotIn(id)
             if (Option.isNone(slot) || slot.value.delivery.state !== "delivering" || slot.value.delivery.holder.kind === "letter") return
-            yield* runner.advance(id, slot.value.version, { state: "delivering", delivery: slot.value.delivery.delivery, attempt: yield* fresh, holder: { kind: "letter" } })
+            yield* toLetter(id, slot.value)
           }),
         ).pipe(Effect.andThen(again(id, 0)))
 
@@ -732,14 +860,14 @@ export const layer = (config: Config) =>
         serially(id)(
           Effect.gen(function* () {
             const found = Option.fromNullishOr(yield* store.read(id))
-            // Another kind's entry, or a job of another directory's: not this server's to reconcile.
-            if (Option.exists(found, (each) => each.kind !== "job" || each.directory !== config.directory)) return "pending" as const
+            if (Option.exists(found, (each) => each.kind !== "job")) return "pending" as const
             const entry = Option.filter(found, (each): each is Job => each.kind === "job")
-            if (Option.exists(entry, (job) => Option.isSome(Option.fromNullishOr(job.firing)))) return yield* fireLegacy(id, () => undefined)
+            if (Option.exists(entry, (job) => job.directory === config.directory && Option.isSome(Option.fromNullishOr(job.firing)))) return yield* fireLegacy(id, () => undefined)
             const read = yield* endOf(id, entry)
             if (Option.isNone(read)) return "gone" as const
             const ended = read.value
-            if (ended.view.spec.directory !== config.directory) return "pending" as const
+            // A moved owner's held delivery can settle here, but this location must not start attending a foreign job.
+            if (ended.view.spec.directory !== config.directory && !Option.exists(ended.record, isDelivering)) return "pending" as const
             if (!over(ended.view.run)) {
               yield* Effect.forEach(Option.toArray(Option.filter(entry, () => look.drip === true)), drip, { discard: true })
               return "pending" as const
@@ -783,7 +911,7 @@ export const layer = (config: Config) =>
         // This directory's jobs still kept, and its managed jobs whose delivery is still owed (an owner's call that took
         // the end and has not handed it over, after its entry went).
         const kept = [
-          ...new Set([...entries.filter((entry) => entry.kind === "job" && entry.directory === config.directory).map((entry) => entry.id), ...(yield* runner.owed(config.directory))]),
+          ...new Set([...entries.filter((entry) => entry.kind === "job" && entry.directory === config.directory).map((entry) => entry.id), ...(yield* runner.owed({ directory: config.directory }))]),
         ]
         if (kept.length === 0) sweepAt = Option.none()
         else if (Option.isNone(sweepAt)) sweepAt = Option.some(now + recoverMs)
@@ -807,6 +935,21 @@ export const layer = (config: Config) =>
           })
         }
       })
+
+      /** The job's home and the moved owner's destination can resume a recorded delivery at startup. */
+      const resumeOwed = (own: ReadonlyArray<Entry>) =>
+        Effect.gen(function* () {
+          const owed = yield* runner.owed({ directory: config.directory })
+          for (const id of owed) if (!own.some((entry) => entry.id === id)) yield* again(id, 0)
+          for (const ownerHere of Option.toArray(Option.fromUndefinedOr(config.ownerHere))) {
+            const local = new Set(owed)
+            for (const id of yield* runner.owed()) {
+              if (local.has(id)) continue
+              const record = Option.filter(Option.fromUndefinedOr(yield* runner.read(id)), isDelivering)
+              if (Option.isSome(record) && (yield* ownerHere(record.value.spec.sessionID))) yield* again(id, 0)
+            }
+          }
+        })
 
       /** Take a job's entry whose end was read to the caller, so no letter follows; one whose letter is already recorded goes on. */
       const take = (id: string) =>
@@ -854,7 +997,7 @@ export const layer = (config: Config) =>
        * managed job, by writing its record's first delivery slot (held by this call, under a fresh delivery id); any
        * `wait` or `kill` that saw a legacy job's end (the old rule), by taking its entry. Whether this call won it.
        */
-      const claim = (sessionID: string, view: JobView, call: Option.Option<string>) =>
+      const claim = (sessionID: string, view: JobView, call: Option.Option<HostCall>) =>
         Effect.gen(function* () {
           const id = view.spec.id
           if (!managed(view.spec)) {
@@ -865,9 +1008,10 @@ export const layer = (config: Config) =>
           }
           if (view.spec.sessionID !== sessionID) return false
           if (Option.isSome(yield* slotIn(id))) return false
-          const holder: Holder = { kind: "answer", sessionID, ...Option.match(call, { onNone: () => ({}), onSome: (each) => ({ call: each }) }) }
+          const server = Option.match(Option.fromNullishOr(config.server), { onNone: () => ({}), onSome: (each) => ({ server: each.id }) })
+          const holder: Holder = { kind: "answer", sessionID, ...Option.match(call, { onNone: () => ({}), onSome: (each) => ({ call: each.id, message: each.message, ...server }) }) }
           const won = yield* runner.advance(id, 0, { state: "delivering", delivery: yield* courier.newDelivery, attempt: yield* fresh, holder })
-          for (const each of Option.toArray(Option.filter(call, () => won))) calls.set(each, id)
+          for (const each of Option.toArray(Option.filter(call, () => won))) calls.set(callKey(sessionID, each), id)
           return won
         }).pipe(serially(view.spec.id))
 
@@ -891,7 +1035,7 @@ export const layer = (config: Config) =>
        * end no call took still fires. A call that won the end and then failed or was stopped before its answer hands it
        * back to the letter.
        */
-      const watch = (sessionID: string, id: string, ms: number, call: Option.Option<string>, before: Effect.Effect<boolean> = Effect.succeed(false)) =>
+      const watch = (sessionID: string, id: string, ms: number, call: Option.Option<HostCall>, before: Effect.Effect<boolean> = Effect.succeed(false)) =>
         Effect.gen(function* () {
           const first = yield* viewed(sessionID, id)
           const takes = first.view.spec.sessionID === sessionID && managed(first.view.spec)
@@ -1261,13 +1405,32 @@ export const layer = (config: Config) =>
         jobs: (sessionID) =>
           Effect.gen(function* () {
             const now = yield* Clock.currentTimeMillis
-            const kept = ofSessions(yield* store.entries, [sessionID]).filter((entry): entry is Job => entry.kind === "job")
-            const jobs = yield* Effect.forEach(kept, (job) =>
-              runner.read(job.id).pipe(Effect.map((record) => ({ job, run: runOrStarting(Option.map(Option.fromNullishOr(record), (found) => found.run)) }))),
+            const kept = new Map(
+              ofSessions(yield* store.entries, [sessionID])
+                .filter((entry): entry is Job => entry.kind === "job")
+                .map((entry) => [entry.id, entry] as const),
             )
-            return { now, jobs: jobs.toSorted((left, right) => left.job.setAt - right.job.setAt) }
+            const ids = new Set([...kept.keys(), ...(yield* runner.owed({ sessionID }))])
+            const listed = yield* Effect.forEach(ids, (id) =>
+              Effect.gen(function* () {
+                const record = Option.fromNullishOr(yield* runner.read(id))
+                const run = runOrStarting(Option.map(record, (each) => each.run))
+                const slot = Option.flatMapNullishOr(record, (each) => each.delivery)
+                const held = Option.flatMap(slot, ({ delivery }) =>
+                  Match.value(delivery).pipe(
+                    Match.when({ state: "delivering" }, (open) => heldBy(open.holder, (call) => call.call)),
+                    Match.orElse(() => Option.none<string>()),
+                  ),
+                )
+                const job = Option.orElse(Option.fromUndefinedOr(kept.get(id)), () => Option.map(Option.filter(record, () => Option.isSome(held)), ({ spec }) => jobOfSpec(spec)))
+                return Option.map(job, (each): ListedJob => ({ job: each, run, held }))
+              }),
+            )
+            return { now, jobs: listed.flatMap(Option.toArray).toSorted((left, right) => left.job.setAt - right.job.setAt) }
           }),
         check: viewed,
+        compacting: (sessionID, answer) => settleHeld(sessionID, (holder, call) => answer(call, holder.message).pipe(Effect.flatMap((said) => fateOf(holder, call, said)))),
+        recheckOwner: (sessionID) => settleHeld(sessionID, (holder, call) => ask(holder, call).pipe(Effect.flatMap((said) => fateOf(holder, call, said)))),
         park: (sessionID, id, call) => watch(sessionID, id, 0, Option.fromNullishOr(call)),
         wait: (sessionID, id, ms, call) => watch(sessionID, id, ms, Option.fromNullishOr(call)),
         kill: (sessionID, id, call) =>
@@ -1276,32 +1439,24 @@ export const layer = (config: Config) =>
             if (over(before.view.run)) return yield* watch(sessionID, id, 0, Option.fromNullishOr(call))
             return yield* watch(sessionID, id, KILL_WAIT_MS, Option.fromNullishOr(call), runner.kill(id))
           }),
-        answered: (call, outcome) =>
+        answered: (sessionID, call, outcome) =>
           Effect.gen(function* () {
-            const id = calls.get(call)
+            const key = callKey(sessionID, call)
+            const id = calls.get(key)
             if (id === undefined) return
+            calls.delete(key)
             if (outcome === "failed") {
-              calls.delete(call)
               return yield* handBack(id)
             }
-            const settled = yield* serially(id)(
+            yield* serially(id)(
               Effect.gen(function* () {
                 const slot = yield* slotIn(id)
-                if (Option.isNone(slot) || slot.value.delivery.state !== "delivering") return true
+                if (Option.isNone(slot) || slot.value.delivery.state !== "delivering") return
                 const held = slot.value.delivery
-                if (held.holder.kind === "letter" || held.holder.call !== call) return true
-                if (outcome === "committed") {
-                  yield* runner.advance(id, slot.value.version, { state: "delivered", delivery: held.delivery, attempt: yield* fresh, to: "answer" })
-                  return true
-                }
-                if (held.holder.kind === "answer")
-                  yield* runner.advance(id, slot.value.version, { ...held, attempt: yield* fresh, holder: { kind: "observed", sessionID: held.holder.sessionID, call } })
-                return false
+                if (held.holder.kind === "letter" || held.holder.sessionID !== sessionID || held.holder.call !== call.id || held.holder.message !== call.message) return
+                yield* delivered(id, slot.value, "answer")
               }),
             )
-            // Observed: the host has the answer, and the record reads delivered once the host says it committed it.
-            if (settled) calls.delete(call)
-            else yield* again(id, 0)
           }),
         cancel: (sessionID, id) =>
           Effect.gen(function* () {
@@ -1375,8 +1530,7 @@ export const layer = (config: Config) =>
           const ids = yield* store.ids
           const own = (yield* store.entries).filter((entry) => entry.directory === config.directory)
           for (const entry of own) yield* (entry.kind === "job" ? follow(entry.id) : arm(entry))
-          // A managed job whose delivery is still owed after its entry went: reconciled now, from its record.
-          for (const id of yield* runner.owed(config.directory)) if (!own.some((entry) => entry.id === id)) yield* again(id, 0)
+          yield* resumeOwed(own)
           if (titles === undefined) return
           for (const title of titles) {
             const id = idOfTitle(title)
@@ -1386,6 +1540,7 @@ export const layer = (config: Config) =>
         }),
         forget: (sessionID) =>
           Effect.gen(function* () {
+            yield* settleHeld(sessionID, () => Effect.succeed("nobody"))
             for (const [id, owner] of seenJobs) if (owner === sessionID) seenJobs.delete(id)
             const gone = yield* locked(
               Effect.gen(function* () {

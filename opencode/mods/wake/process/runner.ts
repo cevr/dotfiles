@@ -25,7 +25,7 @@ import { JobExit, type JobRecord, JobSpec, type Launched, NEVER_STARTED, type Ru
 import { type Exec } from "../cron/backstop.ts"
 import { JobRefused, Runner } from "../service.ts"
 import { Delivery, isJobID, LaunchClaim, type Retired, RunnerClaim, type Slot } from "../job-event.ts"
-import { type Barrier, type Disk, FILES, type JobFile, makeDir, NODE_DISK, processStart, removeDurable, writeAtomic, writeDurable } from "./supervise.ts"
+import { type Barrier, type Disk, FILES, type JobFile, makeDir, NODE_DISK, processStart, removeDurable, SELF, writeAtomic, writeDurable } from "./supervise.ts"
 
 export interface Config {
   /** Where each job's directory is kept. */
@@ -75,6 +75,18 @@ export const claimed = (claim: RunnerClaim, start: (pid: number) => Option.Optio
     onNone: () => true,
     onSome: (then) => Option.match(start(claim.pid), { onNone: () => true, onSome: (now) => now === then }),
   })
+
+/** This process as a server that runs owners' calls: its pid and its start, as `serverRuns` reads them back. */
+export const serverHere = (): string => `${SELF}@${Option.getOrElse(processStart(SELF), () => "")}`
+
+/** Whether the server `id` (a `serverHere`) still runs: its pid alive and started when the id says (a start not recorded, or one `ps` cannot read, leaves it running). */
+export const serverRuns = (id: string, start: (pid: number) => Option.Option<string> = processStart): boolean => {
+  const at = id.indexOf("@")
+  const pid = Number(id.slice(0, at))
+  if (at < 1 || !Number.isSafeInteger(pid) || pid < 2) return true
+  const started = id.slice(at + 1)
+  return claimed({ pid, startedAt: 0, ...Option.match(Option.liftPredicate(started, (each) => each !== ""), { onNone: () => ({}), onSome: (each) => ({ start: each }) }) }, start)
+}
 
 /** The run the files of `dir` record. */
 export const runOf = (dir: string, disk: Disk = NODE_DISK): Run => {
@@ -232,7 +244,8 @@ export const layer = (config: Config) => {
         if (took && next.state === "delivered") removeDurable(path.join(config.root, OWED, id), disk)
         return took
       }),
-    owed: (directory) =>
+    stabilize: (id) => Effect.sync(() => disk.syncDir(dirOf(id))),
+    owed: ({ directory, sessionID } = {}) =>
       Effect.sync(() => {
         const listed = disk.list(path.join(config.root, OWED))
         return listed.filter(isJobID).filter((id) => {
@@ -241,7 +254,10 @@ export const layer = (config: Config) => {
             removeDurable(path.join(config.root, OWED, id), disk)
             return false
           }
-          return Option.exists(readJson(Spec, path.join(dir, FILES.job), disk), (job) => job.spec.directory === directory)
+          return Option.exists(readJson(Spec, path.join(dir, FILES.job), disk), ({ spec }) =>
+            !Option.exists(Option.fromUndefinedOr(directory), (value) => value !== spec.directory) &&
+            !Option.exists(Option.fromUndefinedOr(sessionID), (value) => value !== spec.sessionID),
+          )
         })
       }),
     launch: (spec: JobSpec) =>
@@ -268,7 +284,7 @@ export const layer = (config: Config) => {
           warning = `systemd-run --user refused (${(ran.stderr || ran.stdout).trim() || `exit ${ran.exitCode}`}), so it runs in its own process group instead: a stop of the OpenCode service's unit may end it.`
         }
         yield* detached(dir)
-        writeAtomic(path.join(dir, FILES.launch), { how: "detached" })
+        writeAtomic(path.join(dir, FILES.launch), { how: "detached" }, 0o600, disk)
         return { ...where, how: "detached", ...(warning === undefined ? {} : { warning }) } satisfies Launched
       }),
     read: (id) =>

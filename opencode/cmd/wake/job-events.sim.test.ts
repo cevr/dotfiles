@@ -822,6 +822,8 @@ interface Place {
   readonly model: Parameters<typeof Model.WakesModel.of>[0]
   readonly close: Effect.Effect<void>
   readonly state: { dead: boolean }
+  /** Its server's id: each opening is a new server. */
+  readonly server: string
 }
 
 interface Matrix {
@@ -830,9 +832,25 @@ interface Matrix {
   readonly inbox: MemoryCourier.MemorySessions
   /** The host's calls, as each one's session records it. */
   readonly calls: Map<string, "running" | "committed" | "failed">
-  /** The kinds the owner's committed answers said, each an end it delivered. */
-  readonly answers: Array<string>
+  /** The owner's committed answers that said they were the end, each with its kind. */
+  readonly answers: Array<{ readonly call: string; readonly kind: string }>
+  /** Calls a compaction took out of every later read, and calls a revert removed (with their answers). */
+  readonly compacted: Set<string>
+  readonly reverted: Set<string>
+  /** Calls left running by a server that died, which the host never settles (their session does not run again). */
+  readonly unsettled: Set<string>
+  readonly unreadable: Set<string>
+  owner: Where
+  readonly beforeProbe: Map<string, () => void>
+  /** The owner's session was removed; the letters it held then. */
+  removed: Option.Option<ReadonlyArray<MemoryCourier.Received>>
+  /** Courier attempts after the host removed the session. Removal must not attempt delivery. */
+  afterRemoval: number
+  /** A compaction's settling write did not land (its location died there): the end may stay held, shown. */
+  residual: boolean
   readonly places: Map<Where, Place>
+  /** Servers opened so far. */
+  opened: number
   readonly release: Deferred.Deferred<void>
   plan: Option.Option<Plan>
   /** Writes at the plan's place so far. */
@@ -840,6 +858,49 @@ interface Matrix {
   /** The job's command ran (the supervisor's claim won). */
   ran: boolean
 }
+
+/** A fresh matrix: nothing written, nothing called. */
+const matrixOf = Effect.gen(function* () {
+  const m: Matrix = {
+    store: MemoryStore.empty(),
+    runner: MemoryRunner.empty(),
+    inbox: MemoryCourier.empty(OWNER),
+    calls: new Map(),
+    answers: [],
+    compacted: new Set(),
+    reverted: new Set(),
+    unsettled: new Set(),
+    unreadable: new Set(),
+    owner: "A",
+    beforeProbe: new Map(),
+    removed: Option.none(),
+    afterRemoval: 0,
+    residual: false,
+    places: new Map(),
+    opened: 0,
+    release: yield* Deferred.make<void>(),
+    plan: Option.none(),
+    seen: 0,
+    ran: false,
+  }
+  return m
+})
+
+/** A host call of the owner's: its id, in a message whose id orders as the call does. */
+const hostCall = (call: string): Model.HostCall => ({ id: call, message: `msg_${call.replace(/\D/g, "").padStart(8, "0")}` })
+
+/** How the host reads the owner's call now: the session gone, out of view (compacted or reverted), or as it recorded it. */
+const readCall = (m: Matrix, call: string): CallAnswer =>
+  Option.match(m.removed, {
+    onSome: (): CallAnswer => "gone",
+    onNone: () =>
+      Match.value(m.compacted.has(call)).pipe(
+        Match.when(true, (): CallAnswer => "unknown"),
+        Match.when(() => m.unreadable.has(call), (): CallAnswer => "unreadable"),
+        Match.when(() => m.reverted.has(call), (): CallAnswer => "missing"),
+        Match.orElse(() => Option.getOrElse(Option.fromNullishOr(m.calls.get(call)), (): CallAnswer => "unknown")),
+      ),
+  })
 
 /** A write of the location `where`: dead, it lands nothing; at the plan's write, held or stopped before or after it. */
 const gate =
@@ -892,16 +953,32 @@ const openPlace = (m: Matrix, where: Where) =>
       Courier,
       Effect.gen(function* () {
         const inner = yield* Courier
-        return Courier.of({ ...inner, deliver: (sessionID, delivery, letter, resume) => gated(inner.deliver(sessionID, delivery, letter, resume)) })
+        return Courier.of({
+          ...inner,
+          deliver: (sessionID, delivery, letter, resume) => gated(
+            Effect.sync(() => {
+              if (Option.isSome(m.removed)) m.afterRemoval += 1
+            }).pipe(Effect.andThen(inner.deliver(sessionID, delivery, letter, resume))),
+          ),
+        })
       }),
     ).pipe(Layer.provide(MemoryCourier.layer(m.inbox)))
-    const answered = (_sessionID: string, call: string) => Effect.sync((): CallAnswer => Option.getOrElse(Option.fromNullishOr(m.calls.get(call)), (): CallAnswer => "unknown"))
-    const layer = Model.layer({ directory: DIRECTORY[where], recoverMs: RECOVER_MS, answered }).pipe(
+    const answered = (_sessionID: string, call: string) => Effect.sync(() => readCall(m, call))
+    m.opened += 1
+    const id = `${where}#${m.opened}`
+    const server: Model.Server = {
+      id,
+      live: (other) => Effect.sync(() => {
+        m.beforeProbe.get(`${where}/${other}`)?.()
+        return [...m.places.values()].some((place) => place.server === other && !place.state.dead)
+      }),
+    }
+    const layer = Model.layer({ directory: DIRECTORY[where], recoverMs: RECOVER_MS, answered, server, ownerHere: () => Effect.sync(() => m.owner === where) }).pipe(
       Layer.provide(Layer.mergeAll(runner, store, courier, MemoryBackstop.layer(MemoryBackstop.empty()), MemoryChecks.layer(MemoryChecks.empty()), MemoryOpener.layer(MemoryOpener.empty()))),
       Layer.provide(Layer.succeed(Changes, Changes.of({ changed: () => Effect.void }))),
     )
     const model = Context.get(yield* Layer.buildWithScope(layer, scope), Model.WakesModel)
-    const place: Place = { model, close: Scope.close(scope, Exit.void), state }
+    const place: Place = { model, close: Scope.close(scope, Exit.void), state, server: id }
     m.places.set(where, place)
     return place
   })
@@ -934,9 +1011,9 @@ const answering =
       m.calls.set(call, "running")
       const exit = yield* Effect.exit(
         Match.value(how).pipe(
-          Match.when("wait", () => place.model.wait(OWNER, id, 5 * SECOND, call)),
-          Match.when("kill", () => place.model.kill(OWNER, id, call)),
-          Match.orElse(() => place.model.park(OWNER, id, call)),
+          Match.when("wait", () => place.model.wait(OWNER, id, 5 * SECOND, hostCall(call))),
+          Match.when("kill", () => place.model.kill(OWNER, id, hostCall(call))),
+          Match.orElse(() => place.model.park(OWNER, id, hostCall(call))),
         ),
       )
       if (Exit.isFailure(exit) || place.state.dead || crash) {
@@ -944,14 +1021,102 @@ const answering =
         m.calls.set(call, "failed")
         return
       }
-      yield* Effect.exit(place.model.answered(call, "observed"))
-      if (place.state.dead) {
-        m.calls.set(call, "failed")
-        return
-      }
       m.calls.set(call, "committed")
-      if (exit.value.delivered) m.answers.push(kindOfEvent(Option.flatten(Option.fromNullishOr(exit.value.view.event))))
-      yield* Effect.exit(place.model.answered(call, "committed"))
+      if (exit.value.delivered) m.answers.push({ call, kind: kindOfEvent(Option.flatten(Option.fromNullishOr(exit.value.view.event))) })
+      yield* Effect.exit(place.model.answered(OWNER, hostCall(call), "committed"))
+    })
+
+/** The owner's wait in `where` as the host runs it up to its answer: the call and what the tool returned; none when its location died first (the host then records the call failed). */
+const taking = (m: Matrix, where: Where, id: string) =>
+  Effect.gen(function* () {
+    const place = placeOf(m, where)
+    const call = `call_${m.calls.size + 1}`
+    m.calls.set(call, "running")
+    const exit = yield* Effect.exit(place.model.wait(OWNER, id, 5 * SECOND, hostCall(call)))
+    if (Exit.isFailure(exit) || place.state.dead) {
+      m.calls.set(call, "failed")
+      return Option.none<{ readonly call: string; readonly place: Place; readonly kind: Option.Option<string> }>()
+    }
+    const kind = Option.map(Option.filter(Option.some(exit.value), (watched) => watched.delivered), (watched) => kindOfEvent(Option.flatten(Option.fromNullishOr(watched.view.event))))
+    return Option.some({ call, place, kind })
+  })
+
+/** The host records the call: committed (with the end its answer said, when it took one) or failed. No word of it reaches the model. */
+const recorded = (m: Matrix, taken: { readonly call: string; readonly kind: Option.Option<string> }, how: "committed" | "failed") => {
+  m.calls.set(taken.call, how)
+  if (how === "committed") for (const kind of Option.toArray(taken.kind)) m.answers.push({ call: taken.call, kind })
+}
+
+/** The owner's wait in `where` takes the end and the host records it `how`; then, its location still up, the session is compacted there: the hook sees the call as recorded, and every read after it does not. */
+const compacting =
+  (where: Where, how: "committed" | "failed"): Actor =>
+  (m, id) =>
+    Effect.gen(function* () {
+      for (const taken of Option.toArray(yield* taking(m, where, id))) {
+        recorded(m, taken, how)
+        if (taken.place.state.dead) return
+        yield* Effect.exit(taken.place.model.compacting(OWNER, (call) => Effect.succeed(readCall(m, call))))
+        m.compacted.add(taken.call)
+        // Its location died at the hook's write: what the hook settles did not land.
+        m.residual = taken.place.state.dead
+      }
+    })
+
+/** The server dies before the callback, with the call still running or already committed. */
+const dying =
+  (where: Where, after: "running" | "committed"): Actor =>
+  (m, id) =>
+    Effect.gen(function* () {
+      for (const taken of Option.toArray(yield* taking(m, where, id))) {
+        if (after === "committed") recorded(m, taken, "committed")
+        taken.place.state.dead = true
+        m.unsettled.add(taken.call)
+      }
+    })
+
+/** The owner's wait in `where` takes the end; then the owner's session is removed before the host records the call. */
+const removing =
+  (where: Where): Actor =>
+  (m, id) =>
+    Effect.gen(function* () {
+      for (const _ of Option.toArray(yield* taking(m, where, id))) {
+        m.removed = Option.some(Option.getOrElse(Option.fromNullishOr(m.inbox.inboxes.get(OWNER)), () => []))
+        m.inbox.inboxes.delete(OWNER)
+      }
+    })
+
+/** The owner's wait in `where` takes the end and the host commits it, no word reaching the model; then the turn is reverted from the call's message (its answer removed). */
+const reverting =
+  (where: Where, removesCall: boolean): Actor =>
+  (m, id) =>
+    Effect.gen(function* () {
+      for (const taken of Option.toArray(yield* taking(m, where, id))) {
+        recorded(m, taken, "committed")
+        // A server that died reverts nothing: the revert is its own, and it hears its own event.
+        if (taken.place.state.dead) return
+        if (removesCall) m.reverted.add(taken.call)
+        yield* Effect.exit(taken.place.model.recheckOwner(OWNER))
+      }
+    })
+
+/** A move preserves the transcript. The new location settles by the fact there, including a job created in A. */
+const moving =
+  (how: "committed" | "failed"): Actor =>
+  (m, id) =>
+    Effect.gen(function* () {
+      for (const taken of Option.toArray(yield* taking(m, "A", id))) {
+        recorded(m, taken, how)
+        m.owner = "B"
+        yield* Effect.exit(placeOf(m, "B").model.recheckOwner(OWNER))
+      }
+    })
+
+/** An interruption makes a still-running tool fail, not an answer committed before the stop. */
+const interrupting =
+  (where: Where, how: "committed" | "failed"): Actor =>
+  (m, id) =>
+    Effect.gen(function* () {
+      for (const taken of Option.toArray(yield* taking(m, where, id))) recorded(m, taken, how)
     })
 
 /** The runner's call (`due`) reaching `where`. */
@@ -990,6 +1155,8 @@ interface Family {
   readonly second: Actor
   /** Whether some history of it delivers by the owner's committed answer (the owner can win the end and its host commits). */
   readonly byAnswer: boolean
+  /** To whom the end is owed: the owner once, or nobody (its session removed); the owner by default. */
+  readonly owed?: "nobody"
 }
 
 const FAMILIES: ReadonlyArray<Family> = [
@@ -1000,23 +1167,24 @@ const FAMILIES: ReadonlyArray<Family> = [
   { name: "moved: the owner's wait in B returns and its host dies before committing it, against the runner's call in A", end: 0, where: "B", first: answering("B", "wait", true), second: ringing("A"), byAnswer: false },
   { name: "the retirement in A against the supervisor's claim", end: "unclaimed", where: "A", first: ringing("A"), second: supervising, byAnswer: false },
   { name: "the supervisor's claim against the retirement in A", end: "unclaimed", where: "A", first: supervising, second: ringing("A"), byAnswer: false },
+  // Each way a held call leaves the view, or stops being answerable, before a fact settled it.
+  { name: "compaction: the owner's wait in A commits, unheard, and A compacts the session, against the runner's call in A", end: 0, where: "A", first: compacting("A", "committed"), second: ringing("A"), byAnswer: true },
+  { name: "compaction: the owner's wait in A fails, unheard, and A compacts the session, against the runner's call in A", end: 0, where: "A", first: compacting("A", "failed"), second: ringing("A"), byAnswer: false },
+  { name: "restart: B dies with the held call still running", end: 0, where: "B", first: dying("B", "running"), second: ringing("A"), byAnswer: false },
+  { name: "restart: B dies after committing the held call and before its event is read", end: 0, where: "B", first: dying("B", "committed"), second: ringing("A"), byAnswer: true },
+  { name: "removal: the owner's wait in A takes the end and the owner's session is removed, against the runner's call in A", end: 0, where: "A", first: removing("A"), second: ringing("A"), byAnswer: false, owed: "nobody" },
+  { name: "revert: the committed call is removed", end: 0, where: "A", first: reverting("A", true), second: ringing("A"), byAnswer: false },
+  { name: "revert: only later messages were removed", end: 0, where: "A", first: reverting("A", false), second: ringing("A"), byAnswer: true },
+  { name: "move: another location reads the committed call", end: 0, where: "A", first: moving("committed"), second: ringing("A"), byAnswer: true },
+  { name: "move: another location reads the failed call", end: 0, where: "A", first: moving("failed"), second: ringing("A"), byAnswer: false },
+  { name: "interrupt: the still-running tool is failed", end: 1, where: "A", first: interrupting("A", "failed"), second: ringing("A"), byAnswer: false },
+  { name: "interrupt: a committed answer is not undone", end: 1, where: "A", first: interrupting("A", "committed"), second: ringing("A"), byAnswer: true },
 ]
 
 /** One history of `family` under `plan` (none: a count of the first actor's writes): what the owner was given. */
 const history = (family: Family, plan: Option.Option<Plan>) =>
   Effect.gen(function* () {
-    const m: Matrix = {
-      store: MemoryStore.empty(),
-      runner: MemoryRunner.empty(),
-      inbox: MemoryCourier.empty(OWNER),
-      calls: new Map(),
-      answers: [],
-      places: new Map(),
-      release: yield* Deferred.make<void>(),
-      plan: Option.none(),
-      seen: 0,
-      ran: false,
-    }
+    const m = yield* matrixOf
     const home = yield* openPlace(m, "A")
     yield* openPlace(m, "B")
     const { job } = yield* home.model.job(OWNER, { command: "true", note: "matrix" })
@@ -1047,20 +1215,34 @@ const history = (family: Family, plan: Option.Option<Plan>) =>
       yield* place.close
       yield* openPlace(m, where)
     }
-    for (const [call, said] of m.calls) if (said === "running") m.calls.set(call, "failed")
+    for (const [call, said] of m.calls) if (said === "running" && !m.unsettled.has(call)) m.calls.set(call, "failed")
     for (const where of ["A", "B"] as const) yield* Effect.exit(placeOf(m, where).model.start)
     for (const _ of Arr.range(1, 4)) {
       yield* settle
       yield* TestClock.adjust(RECOVER_MS + 30 * SECOND)
     }
     yield* settle
-    const letters = (m.inbox.inboxes.get(OWNER) ?? []).filter((received) => received.letter.metadata["kind"] === "job" && received.letter.metadata["progress"] !== true)
-    const kinds = [...letters.map((received) => kindOfEvent(Schema.decodeUnknownOption(Ended)(received.letter.metadata["event"]))), ...m.answers]
+    const held = Option.getOrElse(Option.fromNullishOr(m.inbox.inboxes.get(OWNER)), () => Option.getOrElse(m.removed, () => []))
+    const letters = held.filter((received) => received.letter.metadata["kind"] === "job" && received.letter.metadata["progress"] !== true)
+    // A reverted answer is no longer the owner's.
+    const answers = m.answers.filter((answer) => !m.reverted.has(answer.call))
+    const kinds = [...letters.map((received) => kindOfEvent(Schema.decodeUnknownOption(Ended)(received.letter.metadata["event"]))), ...answers.map((answer) => answer.kind)]
     const expected = expectedOf(family.end, m.ran)
     const final = finalOf(m.runner, job.id)
+    // An end still held is shown in the owner's job list, with the call that holds it.
+    const listed = yield* placeOf(m, "A").model.jobs(OWNER)
+    const shown = listed.jobs.some((each) => each.job.id === job.id && Option.isSome(each.held))
     for (const where of ["A", "B"] as const) yield* placeOf(m, where).close
-    return { writes, owedAtStart, answers: m.answers.length, given: letters.length + m.answers.length, kinds, expected, final, ran: m.ran }
+    return { writes, owedAtStart, answers: answers.length, given: letters.length + answers.length, kinds, expected, final, ran: m.ran, residual: m.residual, shown, removed: Option.isSome(m.removed), afterRemoval: m.afterRemoval }
   })
+
+/** Whether a history gave the owner what its family owes: its end once, of its kind (or, its session removed, nobody); an end a compaction left unsettled may stay held, shown, never given twice. */
+const okOf = (family: Family, seen: Effect.Success<ReturnType<typeof history>>) => {
+  if (family.owed === "nobody" && seen.removed) return seen.given === 0 && seen.final === "delivered to nobody" && seen.afterRemoval === 0
+  const once = seen.given === 1 && seen.kinds.every((kind) => kind === seen.expected) && seen.final.startsWith("delivered to ")
+  const held = seen.residual && seen.final === "delivering" && seen.shown && seen.given <= 1
+  return seen.owedAtStart && (once || held)
+}
 
 Seed.effect("each job's end reaches its owner once across two locations, a move, wait, kill, park, the runner's call, restart and the supervisor's claim, held or stopped at every write",
   Effect.gen(function* () {
@@ -1074,9 +1256,9 @@ Seed.effect("each job's end reaches its owner once across two locations, a move,
       for (const plan of [Option.none<Plan>(), ...plans.map((each) => Option.some(each))]) {
         const seen = yield* history(family, plan)
         histories += 1
-        const ok = seen.owedAtStart && seen.given === 1 && seen.kinds.every((kind) => kind === seen.expected) && seen.final.startsWith("delivered to ")
         byAnswer += seen.answers
-        if (!ok) failures.push({ family: family.name, plan: Option.getOrUndefined(plan), owedAtStart: seen.owedAtStart, given: seen.given, kinds: seen.kinds, expected: seen.expected, final: seen.final, ran: seen.ran })
+        if (!okOf(family, seen))
+          failures.push({ family: family.name, plan: Option.getOrUndefined(plan), owedAtStart: seen.owedAtStart, given: seen.given, kinds: seen.kinds, expected: seen.expected, final: seen.final, ran: seen.ran, residual: seen.residual, shown: seen.shown })
       }
       coverage.push({ family: family.name, writes: counted.writes, byAnswer })
     }
@@ -1088,25 +1270,73 @@ Seed.effect("each job's end reaches its owner once across two locations, a move,
   }).pipe(Effect.provide(TestClock.layer()), Effect.provide(Logger.layer([]))),
 )
 
+Seed.effect("a moved owner can restart and settle a held end with its home closed; a read failure proves nothing even about a dead server",
+  Effect.gen(function* () {
+    const m = yield* matrixOf
+    const home = yield* openPlace(m, "A")
+    const { job } = yield* home.model.job(OWNER, { command: "true", note: "moved restart" })
+    MemoryRunner.running(m.runner, job.id, yield* Clock.currentTimeMillis)
+    yield* settle
+    MemoryRunner.ended(m.runner, job.id, 0, yield* Clock.currentTimeMillis)
+    const taken = Option.getOrThrow(yield* taking(m, "A", job.id))
+    bunExpect(Option.isSome(taken.kind)).toBe(true)
+    const delivery = Option.getOrThrow(Option.fromUndefinedOr(m.runner.deliveries.get(job.id)?.[0]?.delivery))
+    m.unreadable.add(taken.call)
+    m.owner = "B"
+    home.state.dead = true
+    yield* home.close
+    const moved = yield* openPlace(m, "B")
+    yield* moved.model.start
+    yield* settle
+    yield* TestClock.adjust(3 * RECOVER_MS)
+    bunExpect(m.inbox.inboxes.get(OWNER)).toEqual([])
+    bunExpect((yield* moved.model.jobs(OWNER)).jobs.find((each) => each.job.id === job.id)?.held).toEqual(Option.some(taken.call))
+    m.unreadable.delete(taken.call)
+    recorded(m, taken, "failed")
+    yield* TestClock.adjust(2 * RECOVER_MS)
+    yield* settle
+    bunExpect(m.inbox.inboxes.get(OWNER)?.map((letter) => letter.id)).toEqual([delivery])
+    yield* moved.close
+  }).pipe(Effect.provide(TestClock.layer()), Effect.provide(Logger.layer([]))),
+)
+
+Seed.effect("a result committed between the first read and the old server's death is not re-sent",
+  Effect.gen(function* () {
+    const m = yield* matrixOf
+    const home = yield* openPlace(m, "A")
+    const { job } = yield* home.model.job(OWNER, { command: "true", note: "committed before death" })
+    MemoryRunner.running(m.runner, job.id, yield* Clock.currentTimeMillis)
+    yield* settle
+    MemoryRunner.ended(m.runner, job.id, 0, yield* Clock.currentTimeMillis)
+    const taken = Option.getOrThrow(yield* taking(m, "A", job.id))
+    bunExpect(Option.isSome(taken.kind)).toBe(true)
+    // Remove A's event callback; B has only the host read. Commit only after B read "running" and queried A's liveness.
+    const probe = `B/${home.server}`
+    m.beforeProbe.set(probe, () => {
+      m.beforeProbe.delete(probe)
+      recorded(m, taken, "committed")
+      home.state.dead = true
+    })
+    const moved = yield* openPlace(m, "B")
+    yield* moved.model.due(job.id)
+    yield* settle
+    bunExpect(m.beforeProbe.has(probe)).toBe(false)
+    bunExpect(m.answers).toEqual([{ call: taken.call, kind: "succeeded" }])
+    bunExpect(m.inbox.inboxes.get(OWNER)).toEqual([])
+    bunExpect(finalOf(m.runner, job.id)).toBe("delivered to answer")
+    yield* home.close
+    yield* moved.close
+  }).pipe(Effect.provide(TestClock.layer()), Effect.provide(Logger.layer([]))),
+)
+
 Seed.effect("an owner's wait on a running job reads nothing while it waits: fifty quiet seconds add no read, and its end wakes it",
   Effect.gen(function* () {
-    const m: Matrix = {
-      store: MemoryStore.empty(),
-      runner: MemoryRunner.empty(),
-      inbox: MemoryCourier.empty(OWNER),
-      calls: new Map(),
-      answers: [],
-      places: new Map(),
-      release: yield* Deferred.make<void>(),
-      plan: Option.none(),
-      seen: 0,
-      ran: false,
-    }
+    const m = yield* matrixOf
     const home = yield* openPlace(m, "A")
     const { job } = yield* home.model.job(OWNER, { command: "true", note: "quiet" })
     MemoryRunner.running(m.runner, job.id, yield* Clock.currentTimeMillis)
     m.calls.set("call_wait", "running")
-    const waiting = yield* Effect.forkChild(home.model.wait(OWNER, job.id, 15 * MINUTE, "call_wait"))
+    const waiting = yield* Effect.forkChild(home.model.wait(OWNER, job.id, 15 * MINUTE, hostCall("call_wait")))
     yield* settle
     const reads = m.runner.reads
     // Under the sweep's period: only the wait could read, and it does not.

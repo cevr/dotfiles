@@ -189,17 +189,19 @@ export class Runner extends Context.Service<
      * this call wrote it. A writer that loses does nothing more. A `delivered` slot takes the job off `owed`.
      */
     readonly advance: (id: string, version: number, next: Delivery) => Effect.Effect<boolean>
-    /** The managed jobs of `directory` whose delivery is not yet final: running, or ended and not yet delivered. */
-    readonly owed: (directory: string) => Effect.Effect<ReadonlyArray<string>>
+    /** Flush a delivery slot read from another writer before acting on it. A name is visible before that writer's sync. */
+    readonly stabilize: (id: string) => Effect.Effect<void>
+    /** Managed jobs whose delivery is not yet final, optionally restricted by home directory and/or owner. */
+    readonly owed: (query?: { readonly directory?: string; readonly sessionID?: string }) => Effect.Effect<ReadonlyArray<string>>
   }
 >()("dotfiles-opencode/wake/Runner") {}
 
 /**
- * A host call as its session records it: `committed` (its answer is in the session), `failed` (it ended in an error,
- * or was stopped: its answer never reached the session), `running` (or the session could not be read now), `gone` (no
- * such session), or `unknown` (the session's context no longer holds it, or there is no way to ask).
+ * The host's answer about a call: `committed`, `failed`, `running`, or `gone` (no such session). `missing` means a
+ * successful read covered the part's message but did not find it; `unknown` means that message may be outside
+ * the readable window; `unreadable` means the read itself failed. The latter two prove nothing about the call.
  */
-export type CallAnswer = "committed" | "failed" | "running" | "gone" | "unknown"
+export type CallAnswer = "committed" | "failed" | "running" | "gone" | "missing" | "unreadable" | "unknown"
 
 /** Word that a session's wakes changed, so whatever shows them reads again. */
 export class Changes extends Context.Service<Changes, { readonly changed: (sessionID: string) => Effect.Effect<void> }>()(

@@ -280,12 +280,15 @@ export const jobReport = (view: JobView, now: number, said: ReadonlyArray<string
   ].join("\n")
 
 /** What `list` answers: this session's jobs still kept, and how each stands. */
-export const jobListing = (jobs: ReadonlyArray<{ readonly job: Job; readonly run: Run }>, now: number): string =>
+export const jobListing = (jobs: ReadonlyArray<{ readonly job: Job; readonly run: Run; readonly held: Option.Option<string> }>, now: number): string =>
   jobs.length === 0
     ? "No jobs are running or waiting to report in this session."
     : [
         `Jobs (${jobs.length}):`,
-        ...jobs.map(({ job, run }) => `- ${job.id}: ${runPhrase(run, now)} · ${commandOf(job)} in ${job.cwd} · note: ${excerpt(job.note, LINE_NOTE)}`),
+        ...jobs.map(
+          ({ job, run, held }) =>
+            `- ${job.id}: ${runPhrase(run, now)} · ${commandOf(job)} in ${job.cwd} · note: ${excerpt(job.note, LINE_NOTE)}${Option.match(held, { onNone: () => "", onSome: (call) => ` · its end held, unconfirmed, by call ${call}` })}`,
+        ),
       ].join("\n")
 
 /** The first prompt of the session a `newSession` alarm starts: what it was asked to do, and where that came from. */

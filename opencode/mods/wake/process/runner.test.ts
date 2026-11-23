@@ -7,7 +7,7 @@ import { describe, expect, test } from "bun:test"
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { Context, Effect, Exit, Layer, Logger, Match, Option, Ref, Schema, type Scope } from "effect"
+import { Console, Context, Effect, Exit, Layer, Logger, Match, Option, Ref, Schema, type Scope } from "effect"
 import { TestClock } from "effect/testing"
 import { JobExit, type JobRecord, type JobSpec, type Run } from "../job.ts"
 import { RunnerClaim } from "../job-event.ts"
@@ -138,6 +138,13 @@ interface Fixture {
 
 /** A runner test's bounds: a body of a few waits of `PATIENT` each, and a release of one such wait. */
 const BOUNDS: TestBounds = { body: "40 seconds", release: PATIENT.within }
+
+test("a held call's server identity distinguishes this process from another incarnation of its pid", () => {
+  const identity = ProcessRunner.serverHere()
+  expect(ProcessRunner.serverRuns(identity)).toBe(true)
+  expect(ProcessRunner.serverRuns(identity, () => Option.some("not this process's start"))).toBe(false)
+  expect(ProcessRunner.serverRuns(identity, () => Option.none())).toBe(true)
+})
 
 /** The one Bun test of this file that runs an Effect: bounded below its Bun limit, so its scope closes and its release runs first. */
 const limitedTest = <A, E>(name: string, body: Effect.Effect<A, E, Scope.Scope>) => test(name, () => Effect.runPromise(bounded(name, body, BOUNDS)), testLimitMs(BOUNDS))
@@ -560,17 +567,28 @@ interface Crash {
   /** The disk calls made so far. */
   readonly calls: () => number
   /** Every state a loss now may leave, as fresh disks; each state once. */
-  readonly outcomes: () => ReadonlyArray<Crash>
+  readonly outcomes: () => Iterable<Crash>
   /** Every whole content a writer gave a file: a record read from the disk must be one of these. */
   readonly written: Set<string>
 }
 
-/** The prefixes a file's unsynced data may be left at. */
-const tornOf = (data: string) => [...new Set([0, 1, Math.floor(data.length / 2), data.length - 1, data.length].filter((at) => at >= 0 && at <= data.length))].map((at) => data.slice(0, at))
+/** Every byte-prefix of the model's ASCII wire fixtures, including loss and the whole write. */
+const tornOf = (data: string) => Array.from({ length: data.length + 1 }, (_, at) => data.slice(0, at))
 
-/** Every subset of `items`, each in order. */
-const subsets = <A>(items: ReadonlyArray<A>): ReadonlyArray<ReadonlyArray<A>> =>
-  items.reduce<ReadonlyArray<ReadonlyArray<A>>>((all, item) => all.flatMap((some) => [some, [...some, item]]), [[]])
+/** The Cartesian product, streamed so a broken write protocol can stop at its first counterexample. */
+function* selections<A>(choices: ReadonlyArray<ReadonlyArray<A>>, index = 0, prefix: ReadonlyArray<A> = []): IterableIterator<ReadonlyArray<A>> {
+  if (index === choices.length) {
+    yield prefix
+    return
+  }
+  for (const each of got(choices[index])) yield* selections(choices, index + 1, [...prefix, each])
+}
+
+/** Every ordered subset, without building every pending name tree at once. */
+const subsets = <A>(items: ReadonlyArray<A>): Iterable<ReadonlyArray<A>> =>
+  (function* () {
+    for (const each of selections(items.map((item) => [Option.none<A>(), Option.some(item)]))) yield each.flatMap(Option.toArray)
+  })()
 
 const lost = <A>(): A => Option.getOrThrowWith(Option.none<A>(), () => new PowerLost())
 const got = <A>(value: A): NonNullable<A> => Option.getOrThrow(Option.fromNullishOr(value))
@@ -651,8 +669,8 @@ const crashDisk = (lossAt: number, files: ReadonlyMap<string, string>, dirs: Rea
     list: (dir) =>
       call(() => [...new Set([...names.keys(), ...present].flatMap((each) => Option.toArray(Option.liftPredicate(each, (one) => one !== dir && path.dirname(one) === dir)).map((one) => path.basename(one))))]),
   }
-  const outcomes = () => {
-    const seen = new Map<string, Crash>()
+  function* outcomes(): IterableIterator<Crash> {
+    const seen = new Set<string>()
     for (const kept of subsets(pending)) {
       const keptNames = new Map(durable.names)
       const keptDirs = new Set(durable.dirs)
@@ -660,22 +678,24 @@ const crashDisk = (lossAt: number, files: ReadonlyMap<string, string>, dirs: Rea
       // A directory, and every name under it, is there only when each directory above it is.
       const reachable = (dir: string): boolean => dirs.has(dir) || (keptDirs.has(dir) && reachable(path.dirname(dir)))
       const live = [...keptNames].filter(([file]) => reachable(path.dirname(file)))
-      // A file whose data was not synced is left at any of its prefixes.
-      const choices = live.map(([file, inode]) => {
+      // A file whose data was not synced is left at any of its prefixes. Linked names share that same inode.
+      const choices = [...new Set(live.map(([, inode]) => inode))].map((inode) => {
         const node = got(inodes[inode])
         return Match.value(node.data === node.synced).pipe(
-          Match.when(true, () => [[file, node.data] as const]),
-          Match.orElse(() => tornOf(node.data).map((data) => [file, data] as const)),
+          Match.when(true, () => [[inode, node.data] as const]),
+          Match.orElse(() => tornOf(node.data).map((data) => [inode, data] as const)),
         )
       })
-      const trees = choices.reduce<ReadonlyArray<ReadonlyArray<readonly [string, string]>>>((all, each) => all.flatMap((some) => each.map((one) => [...some, one])), [[]])
       const keptDirList = [...keptDirs].filter(reachable).toSorted()
-      for (const tree of trees) {
-        const key = [...tree.map(([file, data]) => `${file}=${data}`).toSorted(), "|", ...keptDirList].join("\n")
-        if (!seen.has(key)) seen.set(key, crashDisk(Number.POSITIVE_INFINITY, new Map(tree), new Set(keptDirList)))
+      for (const tree of selections(choices)) {
+        const bytes = new Map(tree)
+        const files = live.map(([file, inode]) => [file, got(bytes.get(inode))] as const)
+        const key = [...files.map(([file, data]) => `${file}=${data}`).toSorted(), "|", ...keptDirList].join("\n")
+        if (seen.has(key)) continue
+        seen.add(key)
+        yield crashDisk(Number.POSITIVE_INFINITY, new Map(files), new Set(keptDirList))
       }
     }
-    return [...seen.values()]
   }
   return { disk, calls: () => state.calls, outcomes, written }
 }
@@ -756,11 +776,11 @@ const HISTORIES: ReadonlyArray<History> = [
         yield* supervisor(false)(model, disk, acted, id)
         const call = `call_${id}`
         acted.calls.set(call, "running")
-        const waited = yield* model.wait(CRASH_OWNER, id, 0, call)
+        const waited = yield* model.wait(CRASH_OWNER, id, 0, { id: call, message: "msg_crash" })
         if (!waited.delivered) return
         acted.calls.set(call, "committed")
         acted.answers.push(Option.getOrElse(Option.map(Option.flatten(Option.fromNullishOr(waited.view.event)), (event) => event.disposition), () => "no event"))
-        yield* model.answered(call, "committed")
+        yield* model.answered(CRASH_OWNER, { id: call, message: "msg_crash" }, "committed")
       }),
   },
   {
@@ -806,10 +826,24 @@ const crashRun = (history: History, lossAt: number) =>
         return Option.some(placed.value.job.id)
       }),
     )
-    for (const each of Option.toArray(id)) {
-      const before = { ran: acted.ran, exited: acted.exited, calls: new Map(acted.calls), answers: [...acted.answers] }
-      for (const reopened of crash.outcomes()) {
-        const after = reopened.disk
+    let states = 0
+    const tornNames = (disk: Disk, dir: string, written: Set<string>) =>
+      disk.list(dir).filter((name) => Option.exists(disk.read(path.join(dir, name)), (data) => Option.isSome(isJson(data)) && !crash.written.has(data) && !written.has(data)))
+    const calls = crash.calls()
+    const reopenedStates = Match.value(Number.isFinite(lossAt)).pipe(
+      Match.when(true, () => crash.outcomes()),
+      Match.orElse(() => [crash]),
+    )
+    const keptId = Option.orElse(id, () => Option.fromUndefinedOr([...store.entries.keys()][0]))
+    const before = { ran: acted.ran, exited: acted.exited, calls: new Map(acted.calls), answers: [...acted.answers] }
+    for (const reopened of reopenedStates) {
+      states += 1
+      const after = reopened.disk
+      const torn = after.list(CRASH_ROOT).filter((name) => name.startsWith("j")).flatMap((name) => tornNames(after, path.join(CRASH_ROOT, name), new Set()))
+      if (torn.length > 0) broken.push({ history: history.name, lossAt, problems: [`a torn record was visible on reopening: ${torn.join(", ")}`] })
+      if (Option.isNone(id) && acted.ran > 0) broken.push({ history: history.name, lossAt, problems: ["a command ran before its admission returned"] })
+      if (broken.length > 0) break
+      for (const each of Option.toArray(keptId)) {
         const seen: Acted = { ran: before.ran, exited: before.exited, calls: new Map([...before.calls].filter(([, said]) => said === "committed")), answers: [...before.answers] }
         const keptStore: MemoryStore.MemoryWakes = { entries: new Map(store.entries), notices: new Map(store.notices), broken: new Set(store.broken) }
         const keptInbox: MemoryCourier.MemorySessions = { ...inbox, inboxes: new Map([...inbox.inboxes].map(([key, value]) => [key, [...value]])) }
@@ -832,9 +866,7 @@ const crashRun = (history: History, lossAt: number) =>
         )
         const dir = path.join(CRASH_ROOT, each)
         // What a reader takes as a record is a whole file some writer wrote: a torn one never decodes.
-        const torn = after
-          .list(dir)
-          .filter((name) => Option.exists(after.read(path.join(dir, name)), (data) => Option.isSome(isJson(data)) && !crash.written.has(data) && !reopened.written.has(data)))
+        const torn = tornNames(after, dir, reopened.written)
         const ends = endsIn(keptInbox, each)
         const kinds = [...ends, ...seen.answers]
         const problems = [
@@ -846,25 +878,84 @@ const crashRun = (history: History, lossAt: number) =>
         ].filter((problem) => problem !== false)
         if (problems.length > 0) broken.push({ history: history.name, lossAt, problems, files: after.list(dir) })
       }
+      if (broken.length > 0) break
     }
-    return { broken, calls: crash.calls(), placed: Option.isSome(id) }
+    return { broken, calls, placed: Option.isSome(id), states }
   })
 
 limitedTest("a power loss before any disk call of each record transition leaves a state that reopens to one launcher, one end of its kind, and no torn record read",
   Effect.gen(function* () {
     const broken: Array<unknown> = []
-    const states = { lost: 0, placed: 0 }
-    for (const history of HISTORIES) {
+    const states = { cuts: 0, trees: 0, placed: 0 }
+    cases: for (const history of HISTORIES) {
       const counted = yield* crashRun(history, Number.POSITIVE_INFINITY)
       broken.push(...counted.broken)
-      for (const lossAt of Array.from({ length: counted.calls }, (_, at) => at + 1)) {
+      if (broken.length > 0) break
+      for (const lossAt of Array.from({ length: counted.calls + 1 }, (_, at) => at + 1)) {
         const run = yield* crashRun(history, lossAt)
-        states.lost += 1
+        states.cuts += 1
+        states.trees += run.states
         states.placed += Number(run.placed)
         broken.push(...run.broken)
+        if (broken.length > 0) break cases
       }
     }
     expect({ broken: broken.slice(0, 2), count: broken.length, kinds: [...new Set(broken.flatMap((each) => Schema.decodeUnknownOption(Schema.Struct({ problems: Schema.Array(Schema.String) }))(each).pipe(Option.map((found) => found.problems.map((problem) => problem.slice(0, 40))), Option.getOrElse(() => []))))] }).toEqual({ broken: [], count: 0, kinds: [] })
     expect(states.placed).toBeGreaterThan(30)
+    expect(states.trees).toBeGreaterThan(500)
+    yield* Console.log(`power-loss model: ${states.cuts} cuts, ${states.trees} disk trees, ${states.placed} acknowledged cuts`)
+  }).pipe(Effect.provide(TestClock.layer()), Effect.provide(Logger.layer([]))),
+)
+
+limitedTest("a second location makes a visible but unsynced letter slot durable before admitting it",
+  Effect.gen(function* () {
+    const crash = crashDisk(Number.POSITIVE_INFINITY, new Map(), CRASH_DIRS)
+    const store = MemoryStore.empty()
+    const inbox = MemoryCourier.empty(CRASH_OWNER)
+    const acted: Acted = { ran: 0, exited: false, calls: new Map(), answers: [] }
+    const id = yield* Effect.scoped(
+      Effect.gen(function* () {
+        const model = yield* crashServer(crash.disk, store, inbox, acted)
+        const { job } = yield* model.job(CRASH_OWNER, { command: "true", note: "cross-location crash" })
+        yield* yieldAll
+        yield* supervisor(false)(model, crash.disk, acted, job.id)
+        return job.id
+      }),
+    )
+    const delivery = "msg_cross_location_letter"
+    const dir = path.join(CRASH_ROOT, id)
+    // Writer A is stopped just before the directory sync. Writer B sees the link, but does not get to seal its
+    // terminal acknowledgement: the power fails after the letter goes and before B writes the next slot.
+    const first = yield* Effect.exit(Effect.sync(() =>
+      ProcessRunner.advanceIn(dir, 0, { state: "delivering", delivery, attempt: "msg_cross_location_attempt", holder: { kind: "letter" } }, (barrier) => {
+        if (barrier === "named") lost()
+      }, crash.disk),
+    ))
+    expect(Exit.isFailure(first)).toBe(true)
+    const beforeAck: Disk = {
+      ...crash.disk,
+      create: (file, mode) => {
+        if (path.basename(file).startsWith("delivery.2.json")) return lost()
+        return crash.disk.create(file, mode)
+      },
+    }
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const model = yield* crashServer(beforeAck, store, inbox, acted)
+        yield* model.due(id)
+      }),
+    )
+    const received = () => (inbox.inboxes.get(CRASH_OWNER) ?? []).map((letter) => letter.id)
+    expect(received()).toEqual([delivery])
+    for (const reopened of crash.outcomes()) {
+      expect(Option.map(ProcessRunner.slotOf(dir, reopened.disk), (slot) => slot.delivery.delivery)).toEqual(Option.some(delivery))
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const model = yield* crashServer(reopened.disk, store, inbox, acted)
+          yield* model.due(id)
+        }),
+      )
+    }
+    expect(received()).toEqual([delivery])
   }).pipe(Effect.provide(TestClock.layer()), Effect.provide(Logger.layer([]))),
 )

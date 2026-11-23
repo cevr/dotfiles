@@ -136,10 +136,13 @@ export type Retired = typeof Retired.Type
 export const LaunchClaim = Schema.Union([RunnerClaim, Retired])
 export type LaunchClaim = typeof LaunchClaim.Type
 
-/** Who holds a managed job's delivery: the owner's call that returned the end (`observed` once the host had its answer), or the letter. */
+/**
+ * Who holds a managed job's delivery: the owner's call or the letter. A call names its message and server.
+ * `observed` decodes older writes; the old pre-commit hook is not evidence that its answer was committed.
+ */
 export const Holder = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("answer"), sessionID: Schema.String, call: Schema.optional(Schema.String) }),
-  Schema.Struct({ kind: Schema.Literal("observed"), sessionID: Schema.String, call: Schema.String }),
+  Schema.Struct({ kind: Schema.Literal("answer"), sessionID: Schema.String, call: Schema.optional(Schema.String), message: Schema.optional(Schema.String), server: Schema.optional(Schema.String) }),
+  Schema.Struct({ kind: Schema.Literal("observed"), sessionID: Schema.String, call: Schema.String, message: Schema.optional(Schema.String), server: Schema.optional(Schema.String) }),
   Schema.Struct({ kind: Schema.Literal("letter") }),
 ])
 export type Holder = typeof Holder.Type
