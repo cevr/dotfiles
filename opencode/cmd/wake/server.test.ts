@@ -63,7 +63,7 @@ const start = (
     // The registry's built-in tools before the transform: OpenCode's automation tools, by either fork's ids, beside one that stays.
     const builtin = new Set<string>(["shell", ...AUTOMATION_IDS])
     /** The `execute.after` hooks, as the host runs them once a call ran. */
-    const afters: Array<(event: { readonly tool: string; readonly id: string; readonly status: "completed" | "error" }) => Effect.Effect<void>> = []
+    const ranHooks: Array<(event: { readonly tool: string; readonly id: string; readonly status: "completed" | "error" }) => Effect.Effect<void>> = []
     const host = {
       options,
       location: { directory: DIR },
@@ -73,7 +73,7 @@ const start = (
             callback({ add: (tool) => void added.set(tool.name, tool), remove: (id) => void builtin.delete(id) })
             return { dispose: Effect.void }
           }),
-        hook: (name: string, callback: (typeof afters)[number]) => Effect.sync(() => void (name === "execute.after" && afters.push(callback))),
+        hook: (name: string, callback: (typeof ranHooks)[number]) => Effect.sync(() => void (name === "execute.after" && ranHooks.push(callback))),
       },
       // A session's context holds no calls here: a call that took a job's end is delivered once the host ran it.
       session: { context: () => Effect.succeed([]) },
@@ -111,7 +111,8 @@ const start = (
         const id = `call_${calls}`
         const tool = yield* toolOf(name)
         const ran = yield* Effect.exit(tool.execute(input, { sessionID, agent: "build", messageID: "msg_1", id, progress: () => Effect.void }))
-        for (const after of afters) yield* after({ tool: name, id, status: Exit.isSuccess(ran) ? "completed" : "error" })
+        const status = Exit.match(ran, { onSuccess: (): "completed" | "error" => "completed", onFailure: (): "completed" | "error" => "error" })
+        for (const ranHook of ranHooks) yield* ranHook({ tool: name, id, status })
         return yield* ran
       })
     const call = (name: string, input: unknown, sessionID?: string) =>

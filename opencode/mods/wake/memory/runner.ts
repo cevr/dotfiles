@@ -156,7 +156,10 @@ const slotOf = (memory: MemoryRunner, id: string): Option.Option<Slot> => {
 
 const recordOf = (memory: MemoryRunner, job: MemoryJob): JobRecord => ({
   spec: job.spec,
-  run: memory.launches.get(job.spec.id) === "retired" ? NEVER_STARTED : job.run,
+  run: Match.value(memory.launches.get(job.spec.id)).pipe(
+    Match.when("retired", () => NEVER_STARTED),
+    Match.orElse(() => job.run),
+  ),
   log: LOG(job.spec.id),
   drip: DRIP(job.spec.id),
   ...(memory.how === "systemd" ? { unit: unitOf(job.spec.id) } : {}),
@@ -208,10 +211,14 @@ const serviceOf = (memory: MemoryRunner, mine: Map<string, () => void>): Runner[
       }),
     owed: (directory) =>
       Effect.sync(() =>
-        [...memory.jobs.values()]
-          .filter((job) => job.spec.generation !== undefined && job.spec.directory === directory)
-          .filter((job) => !Option.exists(slotOf(memory, job.spec.id), (slot) => slot.delivery.state === "delivered"))
-          .map((job) => job.spec.id),
+        [...memory.jobs.values()].flatMap((job) =>
+          Option.toArray(
+            Option.liftPredicate(
+              job.spec.id,
+              () => Option.isSome(Option.fromNullishOr(job.spec.generation)) && job.spec.directory === directory && !Option.exists(slotOf(memory, job.spec.id), (slot) => slot.delivery.state === "delivered"),
+            ),
+          ),
+        ),
       ),
     launch: (spec) =>
       Effect.suspend(() => {

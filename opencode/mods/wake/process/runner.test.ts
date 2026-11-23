@@ -4,21 +4,23 @@
 // runner gone without an exit reads lost. On Linux, `systemd-run --user`
 // is asked first, and a refusal falls back to a detached runner with a warning.
 import { describe, expect, test } from "bun:test"
-import { spawnSync } from "node:child_process"
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { Context, Effect, Layer, Logger, Option, Ref, Schema, type Scope } from "effect"
+import { Context, Effect, Layer, Logger, Match, Option, Ref, Schema, type Scope } from "effect"
 import { JobExit, type JobRecord, type JobSpec, type Run } from "../job.ts"
 import { RunnerClaim } from "../job-event.ts"
 import { Runner } from "../service.ts"
 import * as ProcessRunner from "./runner.ts"
-import { argvOf, claim, FILES, hostOf, processStart, scopeAvailable, writeAtomic, writeExit } from "./supervise.ts"
+import { argvOf, claim, FILES, hostOf, processStart, ranOf, scopeAvailable, writeAtomic, writeExit } from "./supervise.ts"
 import type { Ran } from "../cron/backstop.ts"
 import { bounded, notYet, type Observation, type Policy, ready, type TestBounds, testLimitMs, waitFor } from "./readiness.ts"
 
 /** How long a job gets to reach the state a test waits for, probed every 50 ms. */
 const PATIENT: Policy = { within: "10 seconds", every: "50 millis" }
+
+/** A module beside this test, as a scratch script imports it. */
+const besideThis = (file: string) => JSON.stringify(path.join(import.meta.dir, file))
 
 /** The runner a test drives, with the scratch directory its jobs live in. */
 const runnerIn = (scratch: string, script: string, config: Partial<ProcessRunner.Config> = {}) =>
@@ -97,7 +99,7 @@ const fixtureHeard = (removed: Removal) => Effect.acquireRelease(
   Effect.sync(() => {
     const scratch = mkdtempSync(path.join(tmpdir(), "opencode-job-test-"))
     const script = path.join(scratch, "job.ts")
-    writeFileSync(script, `import { supervise } from ${JSON.stringify(path.join(import.meta.dir, "supervise.ts"))}\nawait supervise(process.argv[2], undefined, 2000)\nprocess.exit(0)\n`)
+    writeFileSync(script, `import { supervise } from ${besideThis("supervise.ts")}\nawait supervise(process.argv[2], undefined, 2000)\nprocess.exit(0)\n`)
     const ids = { next: 0 }
     const specOf = (command: string, more: Partial<JobSpec> = {}): JobSpec => ({
       id: `j${String(++ids.next).padStart(6, "0")}`,
@@ -431,8 +433,8 @@ const killedAt = (scratch: string, dir: string, write: "claim" | "retire" | "adv
   writeFileSync(
     script,
     [
-      `import { claim } from ${JSON.stringify(path.join(import.meta.dir, "supervise.ts"))}`,
-      `import { advanceIn, retireIn } from ${JSON.stringify(path.join(import.meta.dir, "runner.ts"))}`,
+      `import { claim } from ${besideThis("supervise.ts")}`,
+      `import { advanceIn, retireIn } from ${besideThis("runner.ts")}`,
       `const [dir, write, barrier] = process.argv.slice(2)`,
       `const stop = (at: string) => { if (at === barrier) process.kill(process.pid, "SIGKILL") }`,
       `if (write === "claim") claim(dir, 1, process.pid, stop)`,
@@ -441,12 +443,18 @@ const killedAt = (scratch: string, dir: string, write: "claim" | "retire" | "adv
       `console.log("not killed")`,
     ].join("\n"),
   )
-  const ran = spawnSync(process.execPath, [script, dir, write, barrier], { encoding: "utf8" })
-  return { signal: ran.signal, stdout: ran.stdout }
+  return Option.getOrElse(
+    Option.map(ranOf([process.execPath, script, dir, write, barrier]), (ran) => ran.signalCode),
+    () => "did not start",
+  )
 }
 
 /** A run as the outcomes name it: its state, and why when it is lost. */
-const said = (run: Run) => (run.state === "lost" ? `lost: ${run.cause}` : run.state)
+const said = (run: Run) =>
+  Match.value(run).pipe(
+    Match.when({ state: "lost" }, (lost) => `lost: ${lost.cause}`),
+    Match.orElse((other) => other.state),
+  )
 
 describe("a record write killed at each barrier, then reopened", () => {
   limitedTest(
@@ -459,18 +467,18 @@ describe("a record write killed at each barrier, then reopened", () => {
         const launch = path.join(scratch, `claim-${barrier}`)
         mkdirSync(launch)
         const claimed = killedAt(scratch, launch, "claim", barrier)
-        outcomes.push({ write: "claim", barrier, signal: claimed.signal, run: said(ProcessRunner.runOf(launch)), retired: ProcessRunner.retireIn(launch, 2) })
+        outcomes.push({ write: "claim", barrier, signal: claimed, run: said(ProcessRunner.runOf(launch)), retired: ProcessRunner.retireIn(launch, 2) })
         // A sweep's retirement, then the supervisor's claim against it.
         const fence = path.join(scratch, `retire-${barrier}`)
         const retiredBy = killedAt(scratch, fence, "retire", barrier)
-        outcomes.push({ write: "retire", barrier, signal: retiredBy.signal, run: said(ProcessRunner.runOf(fence)), claimed: claim(fence, 2, OTHER_LIVE) })
+        outcomes.push({ write: "retire", barrier, signal: retiredBy, run: said(ProcessRunner.runOf(fence)), claimed: claim(fence, 2, OTHER_LIVE) })
         // A delivery claim, then another location's claim of the same slot.
         const delivery = path.join(scratch, `advance-${barrier}`)
         mkdirSync(delivery)
         const advanced = killedAt(scratch, delivery, "advance", barrier)
         const reopened = Option.map(ProcessRunner.slotOf(delivery), (slot) => ({ version: slot.version, attempt: slot.delivery.attempt }))
         const next = ProcessRunner.advanceIn(delivery, 0, { state: "delivering", delivery: "msg_d1", attempt: "a2", holder: { kind: "letter" } })
-        outcomes.push({ write: "advance", barrier, signal: advanced.signal, reopened, next })
+        outcomes.push({ write: "advance", barrier, signal: advanced, reopened, next })
       }
       expect(outcomes).toEqual([
         // At `temp`: the stray temporary file is no claim; the job reads starting, and the retirement wins.

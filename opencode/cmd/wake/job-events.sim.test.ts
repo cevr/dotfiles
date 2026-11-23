@@ -226,6 +226,18 @@ seeded("a call that lands inside the owner's turn after its inbox was read (22u 
   }),
 )
 
+/** The newest slot of a job's delivery record, as a word: its state, and to whom once delivered; none before the first. */
+const finalOf = (runner: MemoryRunner.MemoryRunner, id: string) =>
+  Option.getOrElse(
+    Option.map(Option.flatMap(Option.fromNullishOr(runner.deliveries.get(id)), Arr.last), (slot) =>
+      Match.value(slot).pipe(
+        Match.when({ state: "delivered" }, (done) => `delivered to ${done.to}`),
+        Match.orElse((open) => open.state),
+      ),
+    ),
+    () => "none",
+  )
+
 seeded("an archived owner gets its job's end once, in its own session, across the runner's call, a reload and the sweep; a deleted owner's end goes to nobody and is not sent again", ({ seed, expect }) =>
   Effect.gen(function* () {
     const runner = MemoryRunner.empty()
@@ -246,7 +258,7 @@ seeded("an archived owner gets its job's end once, in its own session, across th
     yield* world.advance(2 * RECOVER_MS)
     // The archived session holds the one letter; the deleted one's record says nobody, and nothing is owed.
     expect(lettersIn(world, archived, kept).map(kindIn)).toEqual(["succeeded"])
-    const final = (id: string) => Option.getOrElse(Option.map(Option.fromNullishOr(runner.deliveries.get(id)?.at(-1)), (slot) => (slot.state === "delivered" ? `delivered to ${slot.to}` : slot.state)), () => "none")
+    const final = (id: string) => finalOf(runner, id)
     expect([final(kept), final(gone)]).toEqual(["delivered to letter", "delivered to nobody"])
     // What the fork does with an archived session's inbox is its own: a turn here or none; the letter is there either way.
     const turns = world.asked().filter((request) => request.sessionID === archived && request.text.includes("Note: kept")).length
@@ -790,6 +802,15 @@ const HOME = "/scratch/job-home"
 const MOVED = "/scratch/moved-to"
 
 type Where = "A" | "B"
+const DIRECTORY: Record<Where, string> = { A: HOME, B: MOVED }
+
+/** The kind the owner must be given: the recorded exit's; an unclaimed launch's is never-started, unless its supervisor's claim won and it ran. */
+const expectedOf = (end: number | "unclaimed", ran: boolean) =>
+  Match.value(end).pipe(
+    Match.when("unclaimed", () => Match.value(ran).pipe(Match.when(true, () => "succeeded"), Match.orElse(() => "never-started"))),
+    Match.when(0, () => "succeeded"),
+    Match.orElse(() => "failed"),
+  )
 type Mode = "hold" | "stop-before" | "stop-after"
 interface Plan {
   readonly where: Where
@@ -798,7 +819,7 @@ interface Plan {
 }
 
 interface Place {
-  readonly model: Context.Service.Shape<typeof Model.WakesModel>
+  readonly model: Parameters<typeof Model.WakesModel.of>[0]
   readonly close: Effect.Effect<void>
   readonly state: { dead: boolean }
 }
@@ -875,9 +896,9 @@ const openPlace = (m: Matrix, where: Where) =>
       }),
     ).pipe(Layer.provide(MemoryCourier.layer(m.inbox)))
     const answered = (_sessionID: string, call: string) => Effect.sync((): CallAnswer => Option.getOrElse(Option.fromNullishOr(m.calls.get(call)), (): CallAnswer => "unknown"))
-    const layer = Model.layer({ directory: where === "A" ? HOME : MOVED, recoverMs: RECOVER_MS, answered }).pipe(
+    const layer = Model.layer({ directory: DIRECTORY[where], recoverMs: RECOVER_MS, answered }).pipe(
       Layer.provide(Layer.mergeAll(runner, store, courier, MemoryBackstop.layer(MemoryBackstop.empty()), MemoryChecks.layer(MemoryChecks.empty()), MemoryOpener.layer(MemoryOpener.empty()))),
-      Layer.provide(Layer.succeed(Changes, { changed: () => Effect.void })),
+      Layer.provide(Layer.succeed(Changes, Changes.of({ changed: () => Effect.void }))),
     )
     const model = Context.get(yield* Layer.buildWithScope(layer, scope), Model.WakesModel)
     const place: Place = { model, close: Scope.close(scope, Exit.void), state }
@@ -1014,7 +1035,7 @@ const history = (family: Family, plan: Option.Option<Plan>) =>
     yield* settle
     const second = yield* Effect.forkChild(family.second(m, job.id))
     yield* settle
-    yield* Deferred.succeed(m.release, undefined)
+    yield* Deferred.done(m.release, Exit.void)
     yield* Fiber.await(first)
     yield* Fiber.await(second)
     const writes = m.seen
@@ -1035,10 +1056,10 @@ const history = (family: Family, plan: Option.Option<Plan>) =>
     yield* settle
     const letters = (m.inbox.inboxes.get(OWNER) ?? []).filter((received) => received.letter.metadata["kind"] === "job" && received.letter.metadata["progress"] !== true)
     const kinds = [...letters.map((received) => kindOfEvent(Schema.decodeUnknownOption(Ended)(received.letter.metadata["event"]))), ...m.answers]
-    const expected = family.end === "unclaimed" ? (m.ran ? "succeeded" : "never-started") : family.end === 0 ? "succeeded" : "failed"
-    const final = Option.map(Option.fromNullishOr(m.runner.deliveries.get(job.id)?.at(-1)), (slot) => slot.state)
+    const expected = expectedOf(family.end, m.ran)
+    const final = finalOf(m.runner, job.id)
     for (const where of ["A", "B"] as const) yield* placeOf(m, where).close
-    return { writes, owedAtStart, answers: m.answers.length, given: letters.length + m.answers.length, kinds, expected, final: Option.getOrElse(final, () => "none"), ran: m.ran }
+    return { writes, owedAtStart, answers: m.answers.length, given: letters.length + m.answers.length, kinds, expected, final, ran: m.ran }
   })
 
 Seed.effect("each job's end reaches its owner once across two locations, a move, wait, kill, park, the runner's call, restart and the supervisor's claim, held or stopped at every write",
@@ -1053,7 +1074,7 @@ Seed.effect("each job's end reaches its owner once across two locations, a move,
       for (const plan of [Option.none<Plan>(), ...plans.map((each) => Option.some(each))]) {
         const seen = yield* history(family, plan)
         histories += 1
-        const ok = seen.owedAtStart && seen.given === 1 && seen.kinds.every((kind) => kind === seen.expected) && seen.final === "delivered"
+        const ok = seen.owedAtStart && seen.given === 1 && seen.kinds.every((kind) => kind === seen.expected) && seen.final.startsWith("delivered to ")
         byAnswer += seen.answers
         if (!ok) failures.push({ family: family.name, plan: Option.getOrUndefined(plan), owedAtStart: seen.owedAtStart, given: seen.given, kinds: seen.kinds, expected: seen.expected, final: seen.final, ran: seen.ran })
       }

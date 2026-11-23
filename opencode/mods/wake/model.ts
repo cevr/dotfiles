@@ -36,7 +36,7 @@
 // id, which the host's inbox admits once. A check, the owner's stop from the
 // TUI or an ancestor's kill take nothing. A legacy job keeps the old rule: a
 // `wait` or `kill` that saw the end takes the entry.
-import { Clock, Context, Deferred, Duration, Effect, Exit, FiberMap, FiberSet, Layer, Option, Random, Semaphore } from "effect"
+import { Clock, Context, Deferred, Duration, Effect, Exit, FiberMap, FiberSet, Layer, Match, Option, Random, Semaphore } from "effect"
 import { idOfTitle, minuteOf, type Schedule, scheduleOf, titleOf } from "./backstop.ts"
 import {
   BOARD_TAIL,
@@ -55,10 +55,12 @@ import {
   NEVER_STARTED,
   overdue,
   type JobRecord,
+  type JobSpec,
   runOrStarting,
+  STARTING,
   type Run,
 } from "./job.ts"
-import { isJobID, type Slot, terminalOf } from "./job-event.ts"
+import { type Holder, isJobID, type Slot, terminalOf } from "./job-event.ts"
 import { type Latch, type LatchAsk, type Mark, markOf } from "./latch.ts"
 import {
   alarmLetter,
@@ -237,6 +239,20 @@ const SUBAGENT =
 const MAX_ANCESTORS = 8
 
 /** A call waiting on a job's end; `takes` when it is the owner's call on a managed job, which takes the end itself. */
+/** Whether a job is managed (this build started it): its record, not its entry, decides its end. */
+const managed = (spec: Pick<JobSpec, "generation">) => Option.isSome(Option.fromNullishOr(spec.generation))
+
+/** Where a managed job's letter went once sent (its session gone: nobody), and what its reconcile says. */
+const SENT_TO = { sent: "letter", gone: "nobody" } as const
+const SENT_OUTCOME = { sent: "fired", gone: "gone" } as const
+
+/** A job as its end reads now: its entry (or one made from its spec), its runner's record, if any, and its view. */
+interface Ended {
+  readonly job: Job
+  readonly record: Option.Option<JobRecord>
+  readonly view: JobView
+}
+
 interface Waiter {
   signal: Deferred.Deferred<void>
   readonly takes: boolean
@@ -492,28 +508,34 @@ export const layer = (config: Config) =>
         (entry: FiredEntry, now: number): Made | undefined =>
           entry.kind === "job" ? { letter: jobLetter(entry, view, now), tick: jobTick(view.run, now) } : undefined
 
-      /** A fresh id for one claim of a job's delivery: never reused. */
-      const fresh = Effect.sync(() => crypto.randomUUID())
+      /** A fresh id for one write of a job's delivery record (the courier's next message id, never reused). */
+      const fresh = courier.newDelivery
+
+      /** The newest slot of a job's delivery record; none before its end was claimed, or for an id the runner never launched. */
+      const slotIn = (id: string) => runner.read(id).pipe(Effect.map((record) => Option.flatMapNullishOr(Option.fromNullishOr(record), (found) => found.delivery)))
 
       /**
        * A job as its end reads now, from its record, or from its entry when the runner has none. A job of this directory
        * still starting past its grace is retired first, unless a runner claimed it before: the launch slot says which,
-       * and the grace only says when to try. Undefined for an id with neither.
+       * and the grace only says when to try. None for an id with neither.
        */
-      const endOf = (id: string, entry: Job | undefined) =>
+      const endOf = (id: string, entry: Option.Option<Job>) =>
         Effect.gen(function* () {
-          const before = yield* runner.read(id)
-          const spec = Option.orElse(Option.map(Option.fromNullishOr(before), (record) => record.spec), () => Option.map(Option.fromNullishOr(entry), specOf))
-          if (Option.isNone(spec)) return undefined
+          const before = Option.fromNullishOr(yield* runner.read(id))
+          const found = Option.orElse(Option.map(before, (record) => record.spec), () => Option.map(entry, specOf))
+          if (Option.isNone(found)) return Option.none<Ended>()
+          const spec = found.value
           const now = yield* Clock.currentTimeMillis
-          const retiring = spec.value.directory === config.directory && overdue(runOrStarting(before?.run), spec.value.setAt, now)
-          const record = retiring ? yield* runner.retire(id).pipe(Effect.andThen(runner.read(id))) : before
-          const job = entry ?? jobOfSpec(spec.value)
-          if (record !== undefined) return { job, record: Option.some(record), view: yield* viewFrom(record, job.dripped) }
+          const retiring = spec.directory === config.directory && overdue(runOrStarting(Option.map(before, (record) => record.run)), spec.setAt, now)
+          const record = yield* Match.value(retiring).pipe(
+            Match.when(true, () => runner.retire(id).pipe(Effect.andThen(runner.read(id)), Effect.map(Option.fromNullishOr))),
+            Match.orElse(() => Effect.succeed(before)),
+          )
+          const job = Option.getOrElse(entry, () => jobOfSpec(spec))
+          if (Option.isSome(record)) return Option.some<Ended>({ job, record, view: yield* viewFrom(record.value, job.dripped) })
           // The runner has no record of it (its launch never wrote one): retired, it never started, and never will.
-          const run = retiring ? NEVER_STARTED : runOrStarting(undefined)
-          const view: JobView = { spec: spec.value, run, log: "", logTail: "", progress: "", event: terminalOf(spec.value, run, now) }
-          return { job, record: Option.none<JobRecord>(), view }
+          const run = Match.value(retiring).pipe(Match.when(true, () => NEVER_STARTED), Match.orElse(() => STARTING))
+          return Option.some<Ended>({ job, record, view: { spec, run, log: "", logTail: "", progress: "", event: terminalOf(spec, run, now) } })
         })
 
       /** Deliver the progress written since the last delivery, at most once per DRIP_MS, starting no turn. */
@@ -623,18 +645,19 @@ export const layer = (config: Config) =>
           const sent = yield* courier.deliver(job.sessionID, delivery, jobLetter(job, view, now), true).pipe(
             Effect.as("sent" as const),
             Effect.catchTag("DeliveryRefused", (refused) =>
-              refused.gone
-                ? Effect.succeed("gone" as const)
-                : Effect.logWarning("wake: the session did not take a job's letter; it goes again", { id: job.id, message: refused.message }).pipe(Effect.as("refused" as const)),
+              Match.value(refused.gone).pipe(
+                Match.when(true, () => Effect.succeed("gone" as const)),
+                Match.orElse(() => Effect.logWarning("wake: the session did not take a job's letter; it goes again", { id: job.id, message: refused.message }).pipe(Effect.as("refused" as const))),
+              ),
             ),
           )
           if (sent === "refused") {
             yield* again(job.id, RETRY_MS)
             return "refused" as const
           }
-          yield* runner.advance(job.id, version, { state: "delivered", delivery, attempt: yield* fresh, to: sent === "gone" ? "nobody" : "letter" })
+          yield* runner.advance(job.id, version, { state: "delivered", delivery, attempt: yield* fresh, to: SENT_TO[sent] })
           yield* tidy(job.id)
-          return sent === "gone" ? ("gone" as const) : ("fired" as const)
+          return SENT_OUTCOME[sent]
         })
 
       /** Write the job's record delivered at `version` (a loser has nothing to do), and its entry goes. */
@@ -667,8 +690,9 @@ export const layer = (config: Config) =>
           }
           const holder = held.holder
           if (holder.kind === "letter") return yield* post(job, view, slot.value.version, held.delivery)
-          if (holder.call === undefined) return "pending" as const
-          const said = yield* ask(holder.sessionID, holder.call)
+          const call = Option.fromNullishOr(holder.call)
+          if (Option.isNone(call)) return "pending" as const
+          const said = yield* ask(holder.sessionID, call.value)
           if (said === "committed" || (said === "unknown" && holder.kind === "observed")) return yield* delivered(job.id, slot.value, "answer")
           if (said === "gone") return yield* delivered(job.id, slot.value, "nobody")
           if (said !== "failed") return "pending" as const
@@ -681,7 +705,7 @@ export const layer = (config: Config) =>
       const handBack = (id: string) =>
         serially(id)(
           Effect.gen(function* () {
-            const slot = Option.fromNullishOr((yield* runner.read(id))?.delivery)
+            const slot = yield* slotIn(id)
             if (Option.isNone(slot) || slot.value.delivery.state !== "delivering" || slot.value.delivery.holder.kind === "letter") return
             yield* runner.advance(id, slot.value.version, { state: "delivering", delivery: slot.value.delivery.delivery, attempt: yield* fresh, holder: { kind: "letter" } })
           }),
@@ -695,7 +719,7 @@ export const layer = (config: Config) =>
             yield* again(id, RETRY_MS)
             return "refused" as const
           }
-          return fired === "gone" ? ("gone" as const) : ("fired" as const)
+          return Match.value(fired).pipe(Match.when("gone", () => "gone" as const), Match.orElse(() => "fired" as const))
         })
 
       /**
@@ -707,27 +731,29 @@ export const layer = (config: Config) =>
       const reconcile = (id: string, look: { readonly drip?: boolean } = {}): Effect.Effect<Due["outcome"]> =>
         serially(id)(
           Effect.gen(function* () {
-            const found = yield* store.read(id)
-            if (found !== undefined && (found.kind !== "job" || found.directory !== config.directory)) return "pending" as const
-            const entry = found?.kind === "job" ? found : undefined
-            if (entry?.firing !== undefined) return yield* fireLegacy(id, () => undefined)
-            const ended = yield* endOf(id, entry)
-            if (ended === undefined) return "gone" as const
+            const found = Option.fromNullishOr(yield* store.read(id))
+            // Another kind's entry, or a job of another directory's: not this server's to reconcile.
+            if (Option.exists(found, (each) => each.kind !== "job" || each.directory !== config.directory)) return "pending" as const
+            const entry = Option.filter(found, (each): each is Job => each.kind === "job")
+            if (Option.exists(entry, (job) => Option.isSome(Option.fromNullishOr(job.firing)))) return yield* fireLegacy(id, () => undefined)
+            const read = yield* endOf(id, entry)
+            if (Option.isNone(read)) return "gone" as const
+            const ended = read.value
             if (ended.view.spec.directory !== config.directory) return "pending" as const
             if (!over(ended.view.run)) {
-              if (look.drip === true && entry !== undefined) yield* drip(entry)
+              yield* Effect.forEach(Option.toArray(Option.filter(entry, () => look.drip === true)), drip, { discard: true })
               return "pending" as const
             }
             if (taking(id)) {
               yield* ring(id)
               return "pending" as const
             }
-            const managed = ended.view.spec.generation !== undefined && Option.isSome(ended.record)
-            const outcome = managed
-              ? yield* deliver(ended.job, ended.view, Option.flatMapNullishOr(ended.record, (record) => record.delivery))
-              : entry === undefined
-                ? ("gone" as const)
-                : yield* fireLegacy(id, jobFire(ended.view))
+            // A managed job's end is its record's to deliver; a legacy job's, its entry's; one with neither is gone.
+            const delivery = Option.flatMap(Option.filter(ended.record, () => managed(ended.view.spec)), (record) => Option.some(Option.fromNullishOr(record.delivery)))
+            const outcome = yield* Option.match(delivery, {
+              onSome: (slot) => deliver(ended.job, ended.view, slot),
+              onNone: () => Option.match(entry, { onNone: () => Effect.succeed("gone" as const), onSome: () => fireLegacy(id, jobFire(ended.view)) }),
+            })
             yield* ring(id)
             return outcome
           }),
@@ -828,21 +854,20 @@ export const layer = (config: Config) =>
        * managed job, by writing its record's first delivery slot (held by this call, under a fresh delivery id); any
        * `wait` or `kill` that saw a legacy job's end (the old rule), by taking its entry. Whether this call won it.
        */
-      const claim = (sessionID: string, view: JobView, call: string | undefined) =>
+      const claim = (sessionID: string, view: JobView, call: Option.Option<string>) =>
         Effect.gen(function* () {
           const id = view.spec.id
-          if (view.spec.generation === undefined) {
-            const entry = yield* store.read(id)
-            if (entry?.kind !== "job" || entry.firing !== undefined) return false
+          if (!managed(view.spec)) {
+            const entry = Option.fromNullishOr(yield* store.read(id))
+            if (!Option.exists(entry, (each) => each.kind === "job" && Option.isNone(Option.fromNullishOr(each.firing)))) return false
             yield* take(id)
             return true
           }
           if (view.spec.sessionID !== sessionID) return false
-          const record = yield* runner.read(id)
-          if (record?.delivery !== undefined) return false
-          const holder = call === undefined ? ({ kind: "answer", sessionID } as const) : ({ kind: "answer", sessionID, call } as const)
+          if (Option.isSome(yield* slotIn(id))) return false
+          const holder: Holder = { kind: "answer", sessionID, ...Option.match(call, { onNone: () => ({}), onSome: (each) => ({ call: each }) }) }
           const won = yield* runner.advance(id, 0, { state: "delivering", delivery: yield* courier.newDelivery, attempt: yield* fresh, holder })
-          if (won && call !== undefined) calls.set(call, id)
+          for (const each of Option.toArray(Option.filter(call, () => won))) calls.set(each, id)
           return won
         }).pipe(serially(view.spec.id))
 
@@ -853,7 +878,7 @@ export const layer = (config: Config) =>
       const returned = (id: string) =>
         serially(id)(
           Effect.gen(function* () {
-            const slot = Option.fromNullishOr((yield* runner.read(id))?.delivery)
+            const slot = yield* slotIn(id)
             if (Option.isNone(slot) || slot.value.delivery.state !== "delivering" || slot.value.delivery.holder.kind !== "answer" || slot.value.delivery.holder.call !== undefined) return
             yield* runner.advance(id, slot.value.version, { state: "delivered", delivery: slot.value.delivery.delivery, attempt: yield* fresh, to: "answer" })
           }),
@@ -866,10 +891,10 @@ export const layer = (config: Config) =>
        * end no call took still fires. A call that won the end and then failed or was stopped before its answer hands it
        * back to the letter.
        */
-      const watch = (sessionID: string, id: string, ms: number, call: string | undefined, before: Effect.Effect<boolean> = Effect.succeed(false)) =>
+      const watch = (sessionID: string, id: string, ms: number, call: Option.Option<string>, before: Effect.Effect<boolean> = Effect.succeed(false)) =>
         Effect.gen(function* () {
           const first = yield* viewed(sessionID, id)
-          const takes = first.view.spec.sessionID === sessionID && first.view.spec.generation !== undefined
+          const takes = first.view.spec.sessionID === sessionID && managed(first.view.spec)
           const waiter: Waiter = { signal: Deferred.makeUnsafe<void>(), takes }
           const set = waiters.get(id) ?? new Set<Waiter>()
           waiters.set(id, set)
@@ -888,7 +913,7 @@ export const layer = (config: Config) =>
               const read = yield* viewed(sessionID, id)
               if (over(read.view.run)) {
                 held = yield* claim(sessionID, read.view, call)
-                if (held && read.view.spec.generation !== undefined) {
+                if (held && managed(read.view.spec)) {
                   yield* tidy(id)
                   yield* returned(id)
                 }
@@ -899,7 +924,7 @@ export const layer = (config: Config) =>
               waiter.signal = Deferred.makeUnsafe<void>()
             }
           }).pipe(
-            Effect.onExit((exit) => (Exit.isSuccess(exit) || !held ? Effect.void : handBack(id))),
+            Effect.onExit((exit) => Effect.asVoid(Effect.when(handBack(id), Effect.sync(() => Exit.isFailure(exit) && held)))),
             Effect.ensuring(leave),
           )
         })
@@ -1200,7 +1225,7 @@ export const layer = (config: Config) =>
                 )
                 const tail = yield* runner.tail(id, BOARD_TAIL)
                 return Option.toArray(spec).map((each) => ({
-                  shown: jobShownOf(each, runOrStarting(Option.getOrUndefined(Option.map(record, (found) => found.run))), tail),
+                  shown: jobShownOf(each, runOrStarting(Option.map(record, (found) => found.run)), tail),
                   kept: Option.isSome(job),
                 }))
               }),
@@ -1238,18 +1263,18 @@ export const layer = (config: Config) =>
             const now = yield* Clock.currentTimeMillis
             const kept = ofSessions(yield* store.entries, [sessionID]).filter((entry): entry is Job => entry.kind === "job")
             const jobs = yield* Effect.forEach(kept, (job) =>
-              runner.read(job.id).pipe(Effect.map((record) => ({ job, run: runOrStarting(record?.run) }))),
+              runner.read(job.id).pipe(Effect.map((record) => ({ job, run: runOrStarting(Option.map(Option.fromNullishOr(record), (found) => found.run)) }))),
             )
             return { now, jobs: jobs.toSorted((left, right) => left.job.setAt - right.job.setAt) }
           }),
         check: viewed,
-        park: (sessionID, id, call) => watch(sessionID, id, 0, call),
-        wait: (sessionID, id, ms, call) => watch(sessionID, id, ms, call),
+        park: (sessionID, id, call) => watch(sessionID, id, 0, Option.fromNullishOr(call)),
+        wait: (sessionID, id, ms, call) => watch(sessionID, id, ms, Option.fromNullishOr(call)),
         kill: (sessionID, id, call) =>
           Effect.gen(function* () {
             const before = yield* viewed(sessionID, id)
-            if (over(before.view.run)) return yield* watch(sessionID, id, 0, call)
-            return yield* watch(sessionID, id, KILL_WAIT_MS, call, runner.kill(id))
+            if (over(before.view.run)) return yield* watch(sessionID, id, 0, Option.fromNullishOr(call))
+            return yield* watch(sessionID, id, KILL_WAIT_MS, Option.fromNullishOr(call), runner.kill(id))
           }),
         answered: (call, outcome) =>
           Effect.gen(function* () {
@@ -1261,7 +1286,7 @@ export const layer = (config: Config) =>
             }
             const settled = yield* serially(id)(
               Effect.gen(function* () {
-                const slot = Option.fromNullishOr((yield* runner.read(id))?.delivery)
+                const slot = yield* slotIn(id)
                 if (Option.isNone(slot) || slot.value.delivery.state !== "delivering") return true
                 const held = slot.value.delivery
                 if (held.holder.kind === "letter" || held.holder.call !== call) return true

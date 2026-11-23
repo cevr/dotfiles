@@ -18,7 +18,7 @@
 // durable (supervise.ts `writeDurable`).
 import { chmodSync, existsSync, type FSWatcher, mkdirSync, readdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs"
 import path from "node:path"
-import { Effect, Layer, Match, Option, Schema } from "effect"
+import { Clock, Effect, Layer, Match, Option, Schema } from "effect"
 import type { Descriptor } from "../backstop.ts"
 import { carried } from "../backstop.ts"
 import { JobExit, type JobRecord, JobSpec, type Launched, NEVER_STARTED, type Run, unitOf } from "../job.ts"
@@ -101,6 +101,9 @@ export const runOf = (dir: string): Run => {
   })
 }
 
+/** A write to a job's record that failed (a full disk, an unwritable root): which job, which write, and why. */
+export class RecordUnwritten extends Schema.TaggedError<RecordUnwritten>()("RecordUnwritten", { id: Schema.String, what: Schema.String, cause: Schema.String }) {}
+
 /** A delivery slot's file: `delivery.<n>.json`. */
 const SLOT = /^delivery\.([1-9][0-9]*)\.json$/
 
@@ -117,14 +120,14 @@ export const slotOf = (dir: string): Option.Option<Slot> => {
 const OWED = ".owed"
 
 /** Retire the job in `dir` (made if it is not there yet, so a launch still to come is fenced too): whether its launch slot was free. */
-export const retireIn = (dir: string, at: number, barrier?: (at: Barrier) => void): boolean => {
+export const retireIn = (dir: string, at: number, barrier: (at: Barrier) => void = () => {}): boolean => {
   mkdirSync(dir, { recursive: true, mode: 0o700 })
-  return writeDurable(path.join(dir, FILES.runner), { retiredAt: at } satisfies Retired, { exclusive: true, ...(barrier === undefined ? {} : { barrier }) })
+  return writeDurable(path.join(dir, FILES.runner), { retiredAt: at } satisfies Retired, { exclusive: true, barrier })
 }
 
 /** Write slot `version + 1` of the delivery record in `dir`, only if no writer took it: whether this one did. Slots are taken in order, so it is taken only while `version` is the newest. */
-export const advanceIn = (dir: string, version: number, next: Delivery, barrier?: (at: Barrier) => void): boolean =>
-  existsSync(dir) && writeDurable(path.join(dir, `delivery.${version + 1}.json`), next, { exclusive: true, ...(barrier === undefined ? {} : { barrier }) })
+export const advanceIn = (dir: string, version: number, next: Delivery, barrier: (at: Barrier) => void = () => {}): boolean =>
+  existsSync(dir) && writeDurable(path.join(dir, `delivery.${version + 1}.json`), next, { exclusive: true, barrier })
 
 /** The bytes of `file` from `from` to its end, or none. */
 const bytesFrom = (file: string, from: number): Uint8Array => {
@@ -152,7 +155,7 @@ export const layer = (config: Config) => {
    * and is no lost race: it dies, saying why, and the wakes reconcile the job again.
    */
   const written = (id: string, what: string, write: () => boolean) =>
-    Effect.try({ try: write, catch: (cause) => new Error(`job ${id}: its record was not written (${what}): ${cause instanceof Error ? cause.message : String(cause)}`) }).pipe(Effect.orDie)
+    Effect.try({ try: write, catch: (cause) => new RecordUnwritten({ id, what, cause: String(cause) }) }).pipe(Effect.orDie)
 
   /** Each watched job's watch: one per live job, on its own directory alone. */
   const watches = new Map<string, FSWatcher>()
@@ -200,7 +203,7 @@ export const layer = (config: Config) => {
       ),
     unwatch: (id) => Effect.sync(() => unwatch(id)),
     watching: Effect.sync(() => [...watches.keys()]),
-    retire: (id) => written(id, "retire", () => retireIn(dirOf(id), Date.now())),
+    retire: (id) => Effect.flatMap(Clock.currentTimeMillis, (now) => written(id, "retire", () => retireIn(dirOf(id), now))),
     advance: (id, version, next) =>
       written(id, "advance", () => {
         const took = advanceIn(dirOf(id), version, next)
@@ -232,7 +235,7 @@ export const layer = (config: Config) => {
             writeAtomic(path.join(dir, FILES.job), { spec, ...(descriptor === undefined ? {} : { notify: descriptor }) } satisfies JobFile)
             writeAtomic(path.join(dir, FILES.env), Object.fromEntries(Object.entries(config.env).filter(([, value]) => value !== undefined)))
             // A managed job is owed its delivery from now until a `delivered` slot: listed before its runner starts.
-            if (spec.generation !== undefined) {
+            if (Option.isSome(Option.fromNullishOr(spec.generation))) {
               mkdirSync(path.join(config.root, OWED), { recursive: true, mode: 0o700 })
               writeAtomic(path.join(config.root, OWED, spec.id), {})
             }

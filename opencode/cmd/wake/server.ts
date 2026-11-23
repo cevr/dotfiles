@@ -175,6 +175,9 @@ const handedOver = (watched: Model.Watched, running: string): ReadonlyArray<stri
   return watched.delivered ? ["This answer is its end: no letter follows."] : ["Its end letter goes (or went) to its session."]
 }
 
+/** What a call's end tells the wakes once the host ran it: its answer is with the host, or it failed and never reached the session. */
+const AFTER = { completed: "observed", error: "failed" } as const
+
 const PendingInput = Schema.Struct({ sessionIDs: Schema.Array(Schema.String) })
 const DueInput = Schema.Struct({ id: Schema.String })
 const CancelAsk = Schema.Struct({ sessionID: Schema.String, id: Schema.String })
@@ -251,7 +254,7 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
       // A `job` call that took a job's end: the host has its answer once the call ran (`execute.after`); an error
       // never reached the session, and the end's letter takes over.
       yield* ctx.tool.hook("execute.after", (event) =>
-        event.tool === NAMES.job ? wakes.answered(event.id, event.status === "completed" ? "observed" : "failed").pipe(Effect.ignoreCause) : Effect.void,
+        Effect.when(wakes.answered(event.id, AFTER[event.status]).pipe(Effect.ignoreCause), Effect.succeed(event.tool === NAMES.job)).pipe(Effect.asVoid),
       )
 
       // A deleted session's wakes go; a notice goes once the session's turn took its message; a `job` call's answer

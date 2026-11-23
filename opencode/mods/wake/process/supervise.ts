@@ -32,10 +32,9 @@
 // - delivery.<n>.json: the delivery record's slots (the wakes write them)
 // - stop: asks a runner not yet up to record a kill instead of running
 // - log, drip, exit.json
-import { randomUUID } from "node:crypto"
 import { closeSync, existsSync, fsyncSync, linkSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs"
 import path from "node:path"
-import { Duration, Effect, Option, Schedule } from "effect"
+import { Duration, Effect, Option, Result, Schedule } from "effect"
 import { DEFAULT_LIMITS, heavyArgv, type Host, ioniceAvailable, SCOPE_PROBE } from "@dotfiles/opencode-guard/launcher"
 import type { Descriptor } from "../backstop.ts"
 import { type JobExit, type JobSpec, KILL_GRACE_MS } from "../job.ts"
@@ -68,15 +67,22 @@ export interface Durable {
   readonly barrier?: (at: Barrier) => void
 }
 
-/** Sync a directory, so a name made or replaced in it outlives a power loss. */
-const syncDirectory = (dir: string) => {
-  const fd = openSync(dir, "r")
-  try {
+/** Open `file`, do `use` with it, then sync it and close it, closed whatever `use` threw (which is thrown on). */
+const synced = (file: string, flags: string, mode: number, use: (fd: number) => void) => {
+  const fd = openSync(file, flags, mode)
+  const done = Result.try(() => {
+    use(fd)
     fsyncSync(fd)
-  } finally {
-    closeSync(fd)
-  }
+  })
+  closeSync(fd)
+  Result.getOrThrow(done)
 }
+
+/** Sync a directory, so a name made or replaced in it outlives a power loss. */
+const syncDirectory = (dir: string) => synced(dir, "r", 0, () => {})
+
+/** The temporary files this process made, counted: with its pid, a name no other writer uses at once. */
+const made = { count: 0 }
 
 /**
  * Write `value` as JSON to `file` so a reader, a crash or a power loss never leaves half of it: a temporary file of
@@ -85,15 +91,11 @@ const syncDirectory = (dir: string) => {
  * was (a stray `*.tmp`, which nothing reads); after it, the new file whole, or (a power loss before the directory's
  * sync) the old one, as if the write never was. Whether it took the name (an exclusive write finds it taken: false).
  */
-export const writeDurable = (file: string, value: unknown, options: Durable = {}): boolean => {
-  const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`
-  const fd = openSync(temporary, "wx", options.mode ?? 0o600)
-  try {
-    writeSync(fd, JSON.stringify(value))
-    fsyncSync(fd)
-  } finally {
-    closeSync(fd)
-  }
+export const writeDurable = <A>(file: string, value: A, options: Durable = {}): boolean => {
+  made.count += 1
+  // A stray one of a dead process under the same pid is overwritten: that process links nothing any more.
+  const temporary = `${file}.${process.pid}.${made.count}.tmp`
+  synced(temporary, "w", options.mode ?? 0o600, (fd) => void writeSync(fd, JSON.stringify(value)))
   options.barrier?.("temp")
   if (options.exclusive !== true) renameSync(temporary, file)
   else {
@@ -113,7 +115,7 @@ export const writeDurable = (file: string, value: unknown, options: Durable = {}
 }
 
 /** Write `value` as JSON to `file`, replacing it, durably (`writeDurable`). */
-export const writeAtomic = (file: string, value: unknown, mode = 0o600) => void writeDurable(file, value, { mode })
+export const writeAtomic = <A>(file: string, value: A, mode = 0o600) => void writeDurable(file, value, { mode })
 
 /** A process's start time as `ps -o lstart=` prints it (by its own path, in the C locale); none when `ps` could not say (no such process, or no `ps`). */
 export const processStart = (pid: number): Option.Option<string> =>
@@ -124,16 +126,16 @@ export const processStart = (pid: number): Option.Option<string> =>
   )
 
 /** A short program run to its end, its output kept; none when it could not start. `env` set replaces the runner's. */
-const ranOf = (argv: ReadonlyArray<string>, env?: Record<string, string>) =>
+export const ranOf = (argv: ReadonlyArray<string>, env?: Record<string, string>) =>
   Option.liftThrowable(() => Bun.spawnSync([...argv], { stdin: "ignore", stdout: "pipe", stderr: "ignore", ...Option.match(Option.fromNullishOr(env), { onNone: () => ({}), onSome: (set) => ({ env: set }) }) }))()
 
 /**
  * Claim the job in `dir` for this runner, as the process `pid`: true when its launch slot was free. The slot holds
  * one claim or the wakes' retirement, whichever came first, so a job retired as never started never runs.
  */
-export const claim = (dir: string, startedAt: number, pid: number = process.pid, barrier?: (at: Barrier) => void): boolean => {
+export const claim = (dir: string, startedAt: number, pid: number = process.pid, barrier: (at: Barrier) => void = () => {}): boolean => {
   const own: RunnerClaim = { pid, startedAt, ...Option.match(processStart(pid), { onNone: () => ({}), onSome: (start) => ({ start }) }) }
-  return writeDurable(path.join(dir, FILES.runner), own, { exclusive: true, ...(barrier === undefined ? {} : { barrier }) })
+  return writeDurable(path.join(dir, FILES.runner), own, { exclusive: true, barrier })
 }
 
 /** How many times the runner tries to write the exit, and how long it waits between. */

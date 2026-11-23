@@ -27,7 +27,7 @@
 //   the metadata whole, so a mark is merged into what the session has; the TUI
 //   reads the change from `session.metadata.updated`.
 import { Model, type Plugin } from "@opencode/plugin/effect"
-import { Clock, Effect, Layer, Option, Random, Schema } from "effect"
+import { Array as Arr, Clock, Effect, Layer, Match, Option, Random, Schema } from "effect"
 import { MARK_KEY, type Mark } from "../latch.ts"
 import type { Letter } from "../message.ts"
 import { type CallAnswer, type Child, Courier, DeliveryRefused, type Start } from "../service.ts"
@@ -188,19 +188,31 @@ export const callAnswer =
     context(sessionID).pipe(
       Effect.map((messages): CallAnswer => {
         const parts = messages.flatMap((message) => Option.match(Schema.decodeUnknownOption(Message)(message), { onNone: () => [], onSome: (found) => found.content }))
-        const part = parts.flatMap((each) => Option.toArray(Schema.decodeUnknownOption(ToolPart)(each))).findLast((each) => each.id === call)
-        if (part === undefined) return "unknown"
-        if (part.state.status === "completed") return "committed"
-        return part.state.status === "error" ? "failed" : "running"
+        const part = Arr.findLast(
+          parts.flatMap((each) => Option.toArray(Schema.decodeUnknownOption(ToolPart)(each))),
+          (each) => each.id === call,
+        )
+        return Option.match(part, { onNone: () => "unknown", onSome: (found) => answerOf(found.state.status) })
       }),
-      Effect.catch((cause) => Effect.succeed<CallAnswer>(notFound(cause) ? "gone" : "running")),
+      Effect.catch((cause) => Effect.succeed(Match.value(notFound(cause)).pipe(Match.when(true, (): CallAnswer => "gone"), Match.orElse((): CallAnswer => "running")))),
     )
+
+/** What a call part's state says of its answer; any state not named is still running. */
+const answerOf = (status: string): CallAnswer =>
+  Match.value(status).pipe(
+    Match.when("completed", (): CallAnswer => "committed"),
+    Match.when("error", (): CallAnswer => "failed"),
+    Match.orElse((): CallAnswer => "running"),
+  )
 
 type Ids = Parameters<Plugin.Context["session"]["synthetic"]>[0]
 type Create = NonNullable<Parameters<Plugin.Context["session"]["create"]>[0]>
 type Directory = NonNullable<Create["location"]>["directory"]
 type Agent = NonNullable<Create["agent"]>
 type Metadata = NonNullable<Create["metadata"]>
+
+/** A session id as the host types it. */
+const sessionOf = (id: string) => id as Ids["sessionID"]
 
 /** The host's sessions through the plugin context. */
 export const fromContext = (ctx: Plugin.Context) =>
@@ -219,9 +231,9 @@ export const fromContext = (ctx: Plugin.Context) =>
         }),
       )),
     prompt: (input) => ctx.session.prompt({ sessionID: input.sessionID as Ids["sessionID"], id: input.id as Ids["id"], text: input.text }),
-    get: (sessionID) => ctx.session.get({ sessionID: sessionID as Ids["sessionID"] }),
-    update: (input) => ctx.session.update({ sessionID: input.sessionID as Ids["sessionID"], metadata: input.metadata as Metadata }),
+    get: (sessionID) => ctx.session.get({ sessionID: sessionOf(sessionID) }),
+    update: (input) => ctx.session.update({ sessionID: sessionOf(input.sessionID), metadata: input.metadata as Metadata }),
   })
 
 /** How a host call went, through the plugin context's `session.context`. */
-export const answeredOf = (ctx: Plugin.Context) => callAnswer((sessionID) => ctx.session.context({ sessionID: sessionID as Ids["sessionID"] }))
+export const answeredOf = (ctx: Plugin.Context) => callAnswer((sessionID) => ctx.session.context({ sessionID: sessionOf(sessionID) }))

@@ -123,7 +123,8 @@ export const unitOf = (id: string): string => `opencode-job-${id}`
 export const NEVER_STARTED: Run = { state: "lost", why: "it never started: no runner claimed it before the wakes retired it", cause: "never-started" }
 
 /** The run as the wakes read it: one with no record yet is starting. Only the launch slot says a job never started (its retirement won it). */
-export const runOrStarting = (run: Run | undefined): Run => run ?? { state: "starting" }
+export const STARTING: Run = { state: "starting" }
+export const runOrStarting = (run: Option.Option<Run>): Run => Option.getOrElse(run, () => STARTING)
 
 /** Whether a starting job is past its grace at `now`, so the wakes try to retire it; the launch slot decides whether they did. */
 export const overdue = (run: Run, setAt: number, now: number): boolean => run.state === "starting" && now - setAt > START_GRACE_MS
