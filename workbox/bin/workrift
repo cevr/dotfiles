@@ -2942,17 +2942,27 @@ sv_preflight_live() {
   fi
 }
 
-# The base's refs, `oid ref` a line, sorted.
+# The lines of $1, none when it is empty (printf '%s\n' "" would make one).
+sv_lines() {
+  [ -z "$1" ] || printf '%s\n' "$1"
+}
+
+# The base's refs, `oid ref` a line, sorted; fails when Git cannot list them.
+# Never a pipe from Git: a pipeline's status is its last command's, so a Git
+# that failed (a fork refused on a loaded host) read as a tree with no refs,
+# and a carry from it deleted every ref it had carried before (census, r3).
 sv_refs() {
-  base_git "$1" for-each-ref --format='%(objectname) %(refname)' | LC_ALL=C sort
+  local r_list
+  r_list=$(base_git "$1" for-each-ref --format='%(objectname) %(refname)') || return 1
+  sv_lines "$r_list" | LC_ALL=C sort
 }
 
 # What a copy must reproduce: HEAD, refs, status (untracked files too), lock
-# files and Git's own files (config, info, hooks).
+# files and Git's own files (config, info, hooks). Fails when Git fails.
 sv_digest() {
-  base_git "$1" symbolic-ref -q HEAD || base_git "$1" rev-parse HEAD
-  sv_refs "$1"
-  base_git "$1" --no-optional-locks status --porcelain=v2 --branch --untracked-files=all
+  base_git "$1" symbolic-ref -q HEAD || base_git "$1" rev-parse HEAD || return 1
+  sv_refs "$1" || return 1
+  base_git "$1" --no-optional-locks status --porcelain=v2 --branch --untracked-files=all || return 1
   lock_fingerprint "$1"
   sv_git_files "$1"
 }
@@ -2977,11 +2987,20 @@ sv_tips_missing() {
   # By name and value only: a field that reads the object (its type) makes
   # for-each-ref stop at the first one missing. Branches and remote branches
   # name commits, whose trees are checked too; any other ref its tip alone.
-  base_git "$1" for-each-ref --format='%(objectname) %(refname)' 2>"$sv_state/tips.err" |
-    awk '{ print $1; if ($2 ~ /^refs\/(heads|remotes)\//) print $1 "^{tree}" }' |
-    base_git "$1" cat-file --batch-check 2>/dev/null | grep ' missing$' || true
+  # Each stage into a variable, never a pipe: a stage that failed answers a
+  # line, not an empty list that reads as nothing missing.
+  local t_refs t_names t_check
+  if ! t_refs=$(base_git "$1" for-each-ref --format='%(objectname) %(refname)' 2>"$sv_state/tips.err"); then
+    printf 'git for-each-ref failed in %s\n' "$1"
+  elif ! t_names=$(sv_lines "$t_refs" | awk '{ print $1; if ($2 ~ /^refs\/(heads|remotes)\//) print $1 "^{tree}" }'); then
+    printf 'awk failed on the refs of %s\n' "$1"
+  elif ! t_check=$(sv_lines "$t_names" | base_git "$1" cat-file --batch-check 2>/dev/null); then
+    printf 'git cat-file failed in %s\n' "$1"
+  else
+    sv_lines "$t_check" | grep ' missing$' || true
+  fi
   # Anything for-each-ref says (a broken ref, a missing object) is a fault.
-  cat "$sv_state/tips.err"
+  cat "$sv_state/tips.err" 2>/dev/null || true
   rm -f "$sv_state/tips.err"
 }
 
@@ -2990,10 +3009,10 @@ sv_tips_missing() {
 # base unchanged since then and the copy's store equal to it; every ref tip
 # and tree in the copy; no Git lock or temporary pack in it.
 sv_copy_true() {
-  local t_store
-  t_store=$(cat "$sv_state/store")
-  [ "$(sv_digest "$sv_base")" = "$(sv_digest "$1")" ] &&
-    [ "$(sv_refs "$sv_base")" = "$(cat "$sv_state/refs")" ] &&
+  local t_store t_a t_b
+  t_store=$(cat "$sv_state/store") &&
+    t_a=$(sv_digest "$sv_base") && t_b=$(sv_digest "$1") && [ "$t_a" = "$t_b" ] &&
+    t_a=$(sv_refs "$sv_base") && t_b=$(cat "$sv_state/refs") && [ "$t_a" = "$t_b" ] &&
     [ "$(sv_store "$sv_base")" = "$t_store" ] &&
     [ "$(sv_store "$1")" = "$t_store" ] &&
     [ -z "$(sv_tips_missing "$1")" ] &&
@@ -3004,21 +3023,42 @@ sv_copy_true() {
 # $3 (`oid ref` lines), where $2 still holds the value of $3; a ref both
 # changed, and the branch either tree has checked out, is kept as
 # refs/subvolume-move/<ref> in $2 and named. Objects come by a fetch from $1.
+#
+# Fails with sv_why, having changed nothing, when it cannot read either tree's
+# refs or HEAD; fails with sv_why after the loop when a ref could not be moved
+# (its compare and swap lost, or Git failed): what it could carry is carried,
+# and a rerun carries the rest. Every read lands in a file or a variable and is
+# checked; none is piped from Git (sv_refs).
 sv_carry() {
-  local c_from="$1" c_to="$2" c_snap="$3" c_tmp c_head c_head_from c_ref c_was c_now c_there
+  local c_from="$1" c_to="$2" c_snap="$3" c_tmp c_head c_head_from c_ref c_was c_now c_there c_failed=
   c_tmp=$sv_state/carry.$$
-  sv_refs "$c_from" >"$c_tmp.from"
-  sv_refs "$c_to" >"$c_tmp.to"
-  c_head=$(base_git "$c_to" symbolic-ref -q HEAD || true)
-  c_head_from=$(base_git "$c_from" symbolic-ref -q HEAD || true)
-  awk 'FILENAME == ARGV[1] { s[$2] = $1; all[$2] = 1; next }
-    FILENAME == ARGV[2] { f[$2] = $1; all[$2] = 1; next }
-    { t[$2] = $1 }
-    END { for (r in all) { a = (r in s) ? s[r] : "-"; b = (r in f) ? f[r] : "-"; if (a != b) print r, a, b, ((r in t) ? t[r] : "-") } }' \
-    "$c_snap" "$c_tmp.from" "$c_tmp.to" | LC_ALL=C sort >"$c_tmp.diff"
   sv_carried=0
   sv_kept=0
   sv_missed=0
+  if ! sv_refs "$c_from" >"$c_tmp.from" || ! sv_refs "$c_to" >"$c_tmp.to"; then
+    rm -f "$c_tmp.from" "$c_tmp.to"
+    sv_why="git for-each-ref failed in $c_from or $c_to: nothing carried"
+    return 1
+  fi
+  # No HEAD branch (detached) is status 1; anything else is Git failing.
+  if c_head=$(base_git "$c_to" symbolic-ref -q HEAD); then :; elif [ $? -eq 1 ]; then c_head=; else
+    sv_why="git symbolic-ref HEAD failed in $c_to: nothing carried"
+    return 1
+  fi
+  if c_head_from=$(base_git "$c_from" symbolic-ref -q HEAD); then :; elif [ $? -eq 1 ]; then c_head_from=; else
+    sv_why="git symbolic-ref HEAD failed in $c_from: nothing carried"
+    return 1
+  fi
+  if ! awk 'FILENAME == ARGV[1] { s[$2] = $1; all[$2] = 1; next }
+    FILENAME == ARGV[2] { f[$2] = $1; all[$2] = 1; next }
+    { t[$2] = $1 }
+    END { for (r in all) { a = (r in s) ? s[r] : "-"; b = (r in f) ? f[r] : "-"; if (a != b) print r, a, b, ((r in t) ? t[r] : "-") } }' \
+    "$c_snap" "$c_tmp.from" "$c_tmp.to" >"$c_tmp.changed" ||
+    ! LC_ALL=C sort "$c_tmp.changed" >"$c_tmp.diff"; then
+    rm -f "$c_tmp.from" "$c_tmp.to" "$c_tmp.changed" "$c_tmp.diff"
+    sv_why="the refs of $c_from and $c_to could not be compared (awk or sort failed): nothing carried"
+    return 1
+  fi
   while read -r c_ref c_was c_now c_there; do
     case "$c_ref" in refs/subvolume-move/*) continue ;; esac
     # A ref the two trees differed on at the switch (`?`): a value carried
@@ -3041,23 +3081,36 @@ sv_carry() {
       fi
     fi
     if [ "$c_there" = "$c_was" ] && [ "$c_ref" != "$c_head" ] && [ "$c_ref" != "$c_head_from" ]; then
+      # (The arguments are copied to locals above; set -- reuses $@.)
       if [ "$c_now" = - ]; then
-        base_git "$c_to" update-ref -d "$c_ref" "$c_was" </dev/null
+        set -- -d "$c_ref" "$c_was"
       elif [ "$c_was" = - ]; then
-        base_git "$c_to" update-ref "$c_ref" "$c_now" "" </dev/null
+        set -- "$c_ref" "$c_now" ""
       else
-        base_git "$c_to" update-ref "$c_ref" "$c_now" "$c_was" </dev/null
+        set -- "$c_ref" "$c_now" "$c_was"
       fi
-      printf 'workrift: subvolume: carried %s %s -> %s into %s\n' "$c_ref" "$c_was" "$c_now" "$c_to" >&2
-      sv_carried=$((sv_carried + 1))
+      if base_git "$c_to" update-ref "$@" </dev/null; then
+        printf 'workrift: subvolume: carried %s %s -> %s into %s\n' "$c_ref" "$c_was" "$c_now" "$c_to" >&2
+        sv_carried=$((sv_carried + 1))
+      else
+        printf 'workrift: subvolume: %s could not be moved %s -> %s in %s (it changed there meanwhile, or Git failed): not carried yet\n' "$c_ref" "$c_was" "$c_now" "$c_to" >&2
+        c_failed="${c_failed:+$c_failed, }$c_ref"
+      fi
     elif [ "$c_now" != - ]; then
-      base_git "$c_to" update-ref "refs/subvolume-move/${c_ref#refs/}" "$c_now" </dev/null
-      printf 'workrift: subvolume: %s is %s in %s but %s in %s (changed on both sides, or checked out): kept as refs/subvolume-move/%s\n' \
-        "$c_ref" "$c_now" "$c_from" "$c_there" "$c_to" "${c_ref#refs/}" >&2
-      sv_kept=$((sv_kept + 1))
+      if base_git "$c_to" update-ref "refs/subvolume-move/${c_ref#refs/}" "$c_now" </dev/null; then
+        printf 'workrift: subvolume: %s is %s in %s but %s in %s (changed on both sides, or checked out): kept as refs/subvolume-move/%s\n' \
+          "$c_ref" "$c_now" "$c_from" "$c_there" "$c_to" "${c_ref#refs/}" >&2
+        sv_kept=$((sv_kept + 1))
+      else
+        c_failed="${c_failed:+$c_failed, }refs/subvolume-move/${c_ref#refs/}"
+      fi
     fi
   done <"$c_tmp.diff"
-  rm -f "$c_tmp.from" "$c_tmp.to" "$c_tmp.diff"
+  rm -f "$c_tmp.from" "$c_tmp.to" "$c_tmp.changed" "$c_tmp.diff"
+  if [ -n "$c_failed" ]; then
+    sv_why="the carry into $c_to could not move $c_failed"
+    return 1
+  fi
 }
 
 # Waits until no process outside the line is in $1, at most sv_wait_seconds;
@@ -3195,8 +3248,8 @@ sv_copy_in() {
   else
     mkdir "$i_path" || { sv_why="mkdir $i_path failed"; return 1; }
   fi
-  sv_refs "$sv_base" >"$sv_state/refs"
-  sv_store "$sv_base" >"$sv_state/store"
+  sv_refs_write || return 1
+  sv_store "$sv_base" >"$sv_state/store" || { sv_why="the object store of $sv_base could not be listed"; return 1; }
   sv_step copy "cp -a --reflink=always $sv_base/. $i_path/"
   sv_cp "$sv_base/." "$i_path/" ||
     { sv_why="the copy into $i_path failed (a full disk or metadata space?)"; return 1; }
@@ -3215,8 +3268,8 @@ sv_copy_in() {
     sv_step copy-git "the base changed during the copy: copy its .git again"
     [ "$(sv_kind "$i_path")" = "$i_t" ] || { sv_why="$i_path is no longer the copy"; return 1; }
     if [ "$i_t" = S ]; then rm -rf -- "$sv_new/.git"; else rm -rf -- "$sv_back/.git"; fi
-    sv_refs "$sv_base" >"$sv_state/refs"
-    sv_store "$sv_base" >"$sv_state/store"
+    sv_refs_write || return 1
+    sv_store "$sv_base" >"$sv_state/store" || { sv_why="the object store of $sv_base could not be listed"; return 1; }
     sv_cp "$sv_base/.git" "$i_path/.git" ||
       { sv_why="the copy of $sv_base/.git failed"; return 1; }
   done
@@ -3319,8 +3372,13 @@ sv_keep_record() {
 # worktree as `git status` sees them. Files Git ignores are not compared.
 # Reads only: no file is written, so a dry run may call it.
 sv_lacks() {
-  local l_k="$1" l_b="$2" l_hk l_hb
-  { printf '=K\n'; sv_refs "$l_k"; printf '=B\n'; sv_refs "$l_b"; } | awk '
+  local l_k="$1" l_b="$2" l_hk l_hb l_rk l_rb l_sk l_sb
+  # A read that fails is said as a line (never an empty list, which would read
+  # as "holds all"): what it could not compare is unknown, not equal.
+  if ! l_rk=$(sv_refs "$l_k") || ! l_rb=$(sv_refs "$l_b"); then
+    printf '  refs: unknown (git for-each-ref failed in %s or %s); run it again\n' "$l_k" "$l_b"
+  fi
+  { printf '=K\n'; sv_lines "${l_rk:-}"; printf '=B\n'; sv_lines "${l_rb:-}"; } | awk '
     $1 == "=K" { s = 1; next } $1 == "=B" { s = 2; next }
     s == 1 && $2 !~ /^refs\/subvolume-move\// { k[$2] = $1; next }
     s == 2 { b[$2] = $1 }
@@ -3348,7 +3406,10 @@ sv_lacks() {
       for (l in k) if (!(l in b)) { f = l; sub(/\t.*/, "", f); n[f]++ }
       for (f in n) print "  reflog .git/logs/" f ": " n[f] " entries"
     }' | LC_ALL=C sort
-  { printf '=K\n'; sv_status "$l_k"; printf '=B\n'; sv_status "$l_b"; } | awk '
+  if ! l_sk=$(sv_status "$l_k") || ! l_sb=$(sv_status "$l_b"); then
+    printf '  worktree or index: unknown (git status failed in %s or %s); run it again\n' "$l_k" "$l_b"
+  fi
+  { printf '=K\n'; sv_lines "${l_sk:-}"; printf '=B\n'; sv_lines "${l_sb:-}"; } | awk '
     $0 == "=K" { s = 1; next } $0 == "=B" { s = 2; next }
     s == 1 { k[$0] = 1; next }
     s == 2 { b[$0] = 1 }
@@ -3374,7 +3435,9 @@ sv_reflogs() {
 
 # The index and worktree of the tree $1 as Git sees them (no branch lines).
 sv_status() {
-  base_git "$1" --no-optional-locks status --porcelain=v2 --untracked-files=all 2>/dev/null | grep -v '^#' || true
+  local s_out
+  s_out=$(base_git "$1" --no-optional-locks status --porcelain=v2 --untracked-files=all 2>/dev/null) || return 1
+  sv_lines "$s_out" | grep -v '^#' || true
 }
 
 # Says what the base lacks of the tree kept at .old, from sv_lacks.
@@ -3401,14 +3464,17 @@ sv_finish() {
   sv_step carry-wait "wait up to ${sv_wait_seconds} s until no process outside workrift's line is in $sv_old"
   sv_wait_users "$sv_old" || sv_unfinished=$sv_why
   sv_step carry "the refs $sv_old gained since the copy, into $sv_base"
-  sv_carry "$sv_old" "$sv_base" "$sv_state/refs"
+  sv_carry "$sv_old" "$sv_base" "$sv_state/refs" || sv_unfinished=${sv_unfinished:-$sv_why}
   [ -z "$sv_unfinished" ] || return 0
   sv_step work-refresh "work refresh in $sv_base (every inode changed)"
   sv_refreshed=true
   work_in "$sv_base" refresh >/dev/null 3>&- 6>&- 7>&- 8>&- 9>&- || sv_refreshed=false
   sv_step prove "$sv_base is $(sv_words "$f_t") work can use"
   sv_prove "$f_t" || sv_unproved=$sv_why
-  sv_baseline >"$sv_state/refs-at-switch"
+  if ! sv_baseline_write; then
+    sv_unfinished=$sv_why
+    return 0
+  fi
   sv_phase_write switched "$f_source" "$f_t"
   sv_step switched "$sv_base is $(sv_words "$f_t"); the tree it was is kept at $sv_old"
 }
@@ -3419,7 +3485,7 @@ sv_end() {
   sv_release
   sv_said "$1"
   if [ -n "${sv_unfinished:-}" ]; then
-    fail "$sv_unfinished; not rolled back: $sv_base has been the live base since the exchange and stays $(sv_words "$1"), with every ref $sv_old had so far carried in; the switch is not finished: when they have left, run workrift subvolume$([ "$1" = F ] && printf ' --back') --apply to carry what they wrote"
+    fail "$sv_unfinished; not rolled back: $sv_base has been the live base since the exchange and stays $(sv_words "$1"); the switch is not finished: run workrift subvolume$([ "$1" = F ] && printf ' --back') --apply again (once no process works in $sv_old) to carry what $sv_old gained and finish it"
   fi
   if [ -n "${sv_unproved:-}" ]; then
     fail "$sv_unproved; not rolled back: $sv_base has been the live base since the exchange and stays $(sv_words "$1"); workrift subvolume$([ "$1" = S ] && printf ' --back') --apply switches it back"
@@ -3534,10 +3600,10 @@ sv_switch() {
     sv_keep_record
   else
     sv_phase_write swap kept "$s_t"
-    [ -f "$sv_state/refs-at-switch" ] || sv_baseline >"$sv_state/refs-at-switch"
+    [ -f "$sv_state/refs-at-switch" ] || sv_baseline_write || sv_abort kept "$s_t"
     sv_step carry-in "the refs $sv_base changed since the last switch, into $sv_old"
-    sv_carry "$sv_base" "$sv_old" "$sv_state/refs-at-switch"
-    sv_refs "$sv_base" >"$sv_state/refs"
+    sv_carry "$sv_base" "$sv_old" "$sv_state/refs-at-switch" || sv_abort kept "$s_t"
+    sv_refs_write || sv_abort kept "$s_t"
     sv_step swap "exchange $sv_base and $sv_old"
     sv_renameat exchange "$sv_base" "$sv_old" || { sv_why='the exchange failed'; sv_abort kept "$s_t"; }
     sv_keep_record
@@ -3554,11 +3620,35 @@ sv_switch() {
 # overwrite of a ref they differed on (that one goes under
 # refs/subvolume-move/).
 sv_baseline() {
-  { printf '=B\n'; sv_refs "$sv_base"; printf '=O\n'; sv_refs "$sv_old"; } | awk '
+  local b_b b_o b_all
+  b_b=$(sv_refs "$sv_base") && b_o=$(sv_refs "$sv_old") || return 1
+  b_all=$({ printf '=B\n'; sv_lines "$b_b"; printf '=O\n'; sv_lines "$b_o"; } | awk '
     $1 == "=B" { s = 1; next } $1 == "=O" { s = 2; next }
     s == 1 { b[$2] = $1; all[$2] = 1; next }
     { o[$2] = $1; all[$2] = 1 }
-    END { for (r in all) print (((r in b) && (r in o) && b[r] == o[r]) ? b[r] : "?"), r }' | LC_ALL=C sort -k2
+    END { for (r in all) print (((r in b) && (r in o) && b[r] == o[r]) ? b[r] : "?"), r }') || return 1
+  sv_lines "$b_all" | LC_ALL=C sort -k2
+}
+
+# Records the baseline (refs-at-switch) whole or not at all; fails with sv_why.
+sv_baseline_write() {
+  if sv_baseline >"$sv_state/refs-at-switch.$$"; then
+    mv -f "$sv_state/refs-at-switch.$$" "$sv_state/refs-at-switch" && return 0
+  fi
+  rm -f "$sv_state/refs-at-switch.$$"
+  sv_why="the refs of $sv_base and $sv_old could not be read for the record of the switch"
+  return 1
+}
+
+# Records the base's refs (the state folder's refs file) whole or not at all;
+# fails with sv_why.
+sv_refs_write() {
+  if sv_refs "$sv_base" >"$sv_state/refs.$$"; then
+    mv -f "$sv_state/refs.$$" "$sv_state/refs" && return 0
+  fi
+  rm -f "$sv_state/refs.$$"
+  sv_why="git for-each-ref failed in $sv_base"
+  return 1
 }
 
 # Takes up a cut switch to $1 under the hold, from what the paths hold.
