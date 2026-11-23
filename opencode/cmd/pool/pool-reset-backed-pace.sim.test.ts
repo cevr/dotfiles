@@ -195,7 +195,7 @@ const readOf = (made: Fixture, account: string): FakeQuota => Option.getOrElse(O
 
 const OTHER = "/scratch/reset-backed-pace-other"
 
-const fleet = (made: Fixture, options: { readonly beside?: World.World; readonly model?: string; readonly anotherDirectory?: boolean } = {}) =>
+const fleet = (made: Fixture, options: { readonly beside?: World.World; readonly model?: string; readonly anotherDirectory?: boolean; readonly sweepMinutes?: number } = {}) =>
   Effect.gen(function* () {
     const names = Object.keys(made.reading)
     const accounts = Provider.accounts(1, names)
@@ -227,7 +227,8 @@ const fleet = (made: Fixture, options: { readonly beside?: World.World; readonly
     const sessionDirectory = Option.getOrElse(Option.filter(Option.some(OTHER), () => options.anotherDirectory === true), () => WORK)
     yield* world.load(Plugins.anthropicAuth({ ...provider, fetch }), { directory: sessionDirectory })
     const pool = Plugins.pool(new Map(), Plugins.network({ ...provider, fetch }))
-    const config = { sweepMinutes: 0.1, limitsFile: "/nonexistent/loop-probe-x/limits.json", fleet: { startCost: 0.04 } }
+    const sweepMinutes = Option.getOrElse(Option.fromUndefinedOr(options.sweepMinutes), () => 0.1)
+    const config = { sweepMinutes, limitsFile: "/nonexistent/loop-probe-x/limits.json", fleet: { startCost: 0.04 } }
     const claimant = yield* Scope.make()
     if (options.anotherDirectory === true) {
       yield* world.load(pool, { directory: OTHER, options: config })
@@ -319,7 +320,7 @@ seeded("B3: a managed login with no usage read, or one read 31 minutes ago, send
     expect(cold.primary()).toHaveLength(0)
 
     const stale = fixture({ a: quota(0.2, 0) }, refunds)
-    const warm = yield* fleet(stale)
+    const warm = yield* fleet(stale, { sweepMinutes: 1 })
     const second = yield* warm.session("stale")
     yield* warm.world.prompt(second, "fresh positive control")
     yield* warm.world.advance(8_000)
@@ -463,7 +464,8 @@ seeded("R3: a claim whose recovery shows only past its observation interval give
       () => "reset",
       Option.some("a"),
     )
-    const { world, session, pace, primary, claims } = yield* fleet(made)
+    // Exercise repeated reads across 45 minutes without polling every six seconds.
+    const { world, session, pace, primary, claims } = yield* fleet(made, { sweepMinutes: 1 })
     const id = yield* session("late")
     yield* pace(id)
     yield* world.advance(20_000)
@@ -471,14 +473,14 @@ seeded("R3: a claim whose recovery shows only past its observation interval give
     // Unchanged past the interval, then lower: no longer attributable to the claim.
     yield* world.advance(45 * 60_000)
     made.reading["a"] = claimEffect(readOf(made, "a"), fable)
-    yield* world.advance(20_000)
+    yield* world.advance(65_000)
     expect(yield* pace(id)).toMatchObject({ ok: false, measured: true })
     yield* world.prompt(id, "a late reduction is not the claim's room")
     yield* world.advance(200)
     expect(primary()).toHaveLength(0)
     // The week rolls over: ordinary room, with no claim.
     made.reading["a"] = { ...quota(0.02, 0), sevenDay: { utilization: 0.02, resetAt: World.START + 6 * DAY } }
-    yield* world.advance(20_000)
+    yield* world.advance(65_000)
     expect(yield* pace(id)).toMatchObject({ ok: true, admission: "ordinary" })
     yield* world.prompt(id, "the week reset")
     yield* world.advance(200)
@@ -536,7 +538,7 @@ seeded("R3: a Fable request is held on a login whose reading has no Fable window
 seeded("R3: a Fable request is held while its Fable window is a stale carried-over reading, though the week is fresh", ({ expect }) =>
   Effect.gen(function* () {
     const made = fixture({ a: quota(0.2, 0.5) }, refunds)
-    const { world, primary } = yield* fleet(made)
+    const { world, primary } = yield* fleet(made, { sweepMinutes: 1 })
     const opus = yield* world.session(WORK, { id: "ses_stale_opus" })
     const fableSession = yield* world.session(WORK, { id: "ses_stale_fable", model: { providerID: "anthropic", id: "claude-fable-5-2" } })
     yield* world.prompt(opus, "read once")
@@ -557,7 +559,7 @@ seeded("R3: a Fable request is held while its Fable window is a stale carried-ov
     yield* world.advance(10_000)
     expect(primary().filter((request) => request.model === "claude-fable-5-2")).toHaveLength(0)
     made.unavailable = false
-    yield* world.advance(20_000)
+    yield* world.advance(65_000)
     yield* world.prompt(fableSession, "Fable read again")
     yield* world.until(() => primary().some((request) => request.model === "claude-fable-5-2"), HOUR)
     expect(primary().filter((request) => request.model === "claude-fable-5-2").map((request) => request.account)).toEqual(["a"])
