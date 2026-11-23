@@ -18,7 +18,12 @@
 #              HB_TS_NAME (default bite-cristian-hel until the cutover)
 #   sshd       workbox/systemd/system/bite-workbox-sshd on the Tailscale IPv4
 #              (or HB_SSH_LISTEN), port 2222, AllowUsers exedev
+#   tools      workbox/system-tools.sh: fish, ksh, mksh, qemu-user-static and its
+#              binfmt entry, Go and PowerShell as workbox/pins.conf pins them
+#              (the same script bootstrap.sh runs)
 #   upgrades   unattended-upgrades with workbox's 20auto-upgrades
+#   reserve    workbox/system-tools.sh reserve: the OpenCode service's memory floor
+#              (bite.slice's CPU and IO weights come with the sshd phase)
 #   sysctl     workbox's sysctl.d/90-inotify.conf (the inotify limits the lab's
 #              standby keepers need), applied with sysctl -p
 #   backup     backup.sh install (btrbk, nightly, to the Storage Box)
@@ -38,7 +43,7 @@ redis-server syncthing docker.io docker-compose-v2 docker-buildx nodejs python3-
 unattended-upgrades systemd-resolved mongodb-org gh tailscale"}
 system_dir=$hb_dotfiles/workbox/systemd/system
 etc=${HB_ETC:-/etc}
-phases=(host user keys packages firewall rootssh tailscale sshd upgrades sysctl backup bootstrap)
+phases=(host user keys packages tools firewall rootssh tailscale sshd reserve upgrades sysctl backup bootstrap)
 
 need_root
 [[ $# -gt 0 ]] && phases=("$@")
@@ -212,6 +217,14 @@ phase_sshd() {
     say "ok: sshd on $listen:$HB_SSH_PORT for $HB_USER"
 }
 
+phase_tools() {
+    "$hb_dotfiles/workbox/system-tools.sh" shells qemu go pwsh
+}
+
+phase_reserve() {
+    "$hb_dotfiles/workbox/system-tools.sh" reserve
+}
+
 phase_upgrades() {
     dpkg-query -W unattended-upgrades >/dev/null 2>&1 || apt_install unattended-upgrades
     put 0644 "$system_dir/20auto-upgrades" "$etc/apt/apt.conf.d/20auto-upgrades" || say "ok: unattended upgrades"
@@ -246,7 +259,7 @@ phase_bootstrap() {
 }
 
 for p in "${phases[@]}"; do
-    declare -F "phase_$p" >/dev/null || die "unknown phase: $p (one of: host user keys packages firewall rootssh tailscale sshd upgrades sysctl backup bootstrap)"
+    declare -F "phase_$p" >/dev/null || die "unknown phase: $p (one of: host user keys packages tools firewall rootssh tailscale sshd reserve upgrades sysctl backup bootstrap)"
 done
 for p in "${phases[@]}"; do
     say "phase $p"

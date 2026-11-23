@@ -82,6 +82,14 @@ check_sysctl() {
   done
 }
 
+# Warns, without failing, when no disk weighs IO by cgroup (io.cost enabled, or the BFQ scheduler):
+# then bite.slice's and the OpenCode service's IOWeight have no effect; their CPU weight still does.
+check_io_weight() {
+  if grep -q 'enable=1' /sys/fs/cgroup/io.cost.qos 2>/dev/null; then return; fi
+  if grep -qs '\[bfq\]' /sys/block/*/queue/scheduler; then return; fi
+  printf 'workbox bootstrap: warning: no disk weighs IO by cgroup (no io.cost, no BFQ): IOWeight has no effect here\n' >&2
+}
+
 # Fails, naming the file, unless ~/.zshenv and ~/.zshrc are links to their installed copies
 # (install-bin.sh) and, once the installed OpenCode build's tree holds workbox/, those copies are
 # that tree's: a delivery that did not happen (a failed or skipped install-bin) shows here.
@@ -123,6 +131,13 @@ check_mode() {
   test "$(systemctl show bite.slice -p MemoryMin --value)" -eq 268435456
   test "$(systemctl show bite.slice -p MemoryLow --value)" -eq 536870912
   test "$(systemctl show bite.slice -p MemorySwapMax --value)" -eq 0
+  test "$(systemctl show bite.slice -p CPUWeight --value)" -eq 1000
+  test "$(systemctl show bite.slice -p IOWeight --value)" -eq 1000
+  test "$(systemctl show user.slice -p MemoryLow --value)" -eq 4294967296
+  test "$(systemctl show "user@$(id -u).service" -p MemoryLow --value)" -eq 4294967296
+  test "$(systemctl --user show app.slice -p MemoryLow --value)" -eq 4294967296
+  "$workbox_dir/system-tools.sh" --check
+  check_io_weight
   test "$(systemctl show "user-$(id -u).slice" -p MemoryMax --value)" -eq 55834574848
   test "$(systemctl show "user-$(id -u).slice" -p MemorySwapMax --value)" -eq 1073741824
   systemctl is-active --quiet workbox-shm-limit.service
@@ -235,6 +250,9 @@ sudo install -m 0644 "$resolved_config" /etc/systemd/resolved.conf.d/workbox.con
 sudo install -d -m 0755 /etc/sysctl.d
 sudo install -m 0644 "$sysctl_config" /etc/sysctl.d/90-inotify.conf
 sudo sysctl -p /etc/sysctl.d/90-inotify.conf
+# The pinned tools (pins.conf: Go, PowerShell, the shells, qemu-user-static and its binfmt entry) and
+# the OpenCode service's memory floor: the same script the Hetzner box's provision.sh runs.
+sudo "$workbox_dir/system-tools.sh"
 
 tailscale_ipv4=$(tailscale ip -4 | head -1)
 sshd_config_file=$(mktemp)

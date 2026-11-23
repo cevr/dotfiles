@@ -41,6 +41,41 @@ file, about 286,000 each. `--check` warns when a live value is below the
 file's. It starts the herdr-core core and the OpenCode service at boot. It
 uses `/workspaces/.cache/turbo` as a local Turbo cache.
 
+## Pinned tools and the reserve: system-tools.sh
+
+`system-tools.sh` (root) installs what both provisioning paths need from one
+place: `bootstrap.sh` runs it here, and the Hetzner box's `provision.sh` runs
+it as its `tools` and `reserve` phases. The versions, checksums and key
+fingerprint are in `pins.conf` and nowhere else (`test/system-tools.test.ts`
+fails when one is typed into another file). Steps, each idempotent:
+
+| Step | What |
+| --- | --- |
+| `shells` | fish, ksh and mksh from the distribution |
+| `qemu` | `qemu-user-static`, and the binfmt_misc entry for the other architecture (`qemu-aarch64` on amd64, for Ergo's arm64 receipts) registered now from the package's `binfmt.d` file with the F flag; `systemd-binfmt` registers the rest at boot |
+| `go` | Go from go.dev for the pinned architecture only (another is refused): the tarball's sha256 is checked before it is unpacked; the tree goes to `/usr/local/go-<version>`, `/usr/local/go` is a link to it swapped by one rename, and `/usr/local/bin/go` and `gofmt` link to it. A hand-installed `/usr/local/go` directory is replaced once (two renames apart) |
+| `pwsh` | PowerShell from `packages.microsoft.com/ubuntu/<release>/prod`; the downloaded key is refused unless its fingerprint is the pin (`/usr/share/keyrings/microsoft-prod.gpg`, `microsoft-prod.list`, the same paths as Microsoft's own setup package). amd64 only: Microsoft publishes no arm64 package there |
+| `reserve` | the OpenCode service's memory floor (`systemd/reserve/`), then `systemctl daemon-reload`, which applies it to running units: no restart |
+
+`system-tools.sh --check` (run by `bootstrap.sh --check`) fails, naming the
+step, unless each is in place.
+
+**The reserve.** `bite.slice` holds the way in (the Tailscale SSH service,
+tailscaled, systemd-resolved) beside `user.slice`, which holds every agent. It
+runs at `CPUWeight=1000` and `IOWeight=1000` against `user.slice`'s default
+100, so under agent load the way in gets the CPU the moment it asks
+(2026-11-22: sshd and tailscaled starved for 15 minutes); its memory floor is
+unchanged (`MemoryMin` 256M, `MemoryLow` 512M, each service its own). The
+OpenCode service places itself in `opencode-service-<pid>.scope` in the user
+manager's `app.slice` at CPU and IO weight 1000
+(`opencode/mods/update/placement.ts`); the reserve adds its memory floor,
+`MemoryMin=1G` (its RSS at rest is 0.7-0.8 GB) and `MemoryLow=4G` (its
+high-water mark, 4.22 GB), through a prefix drop-in systemd applies to the
+transient scope, and the same floor on each parent (`user.slice`, `user-.slice`,
+`user@.service`, `app.slice`), since a cgroup's floor holds only as far as its
+parent's. IO weights count only where the disk weighs IO by cgroup (io.cost or
+BFQ); `--check` warns when none does.
+
 ## Terminals: herdr-core
 
 herdr-core (`hc`, herdr.dev/core) holds the workbox's terminals. Its core

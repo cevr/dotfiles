@@ -16,7 +16,7 @@ exe box's host key.
 | `installimage.conf` | Hetzner's installimage, from the Rescue System: Ubuntu 24.04 on DRIVE1, ESP, `/boot` ext4, swap, one btrfs with `@root`, `@home`, `@tmp`, `@workspaces` |
 | `installimage-check.sh` | Runs installimage's own `read_vars`/`validate_vars` on the config, outside the Rescue System (test.sh does) |
 | `layout.sh` | First boot: DRIVE2 joins. btrfs raid1 (data and metadata), mdraid1 `/boot` and swap, a second ESP kept by Ubuntu's grub-multi-install, the fstab options |
-| `provision.sh` | The system layer, in phases: hostname, `exedev`, keys, packages, firewall, root ssh, Tailscale, the 2222 sshd, unattended upgrades, backup, then `workbox/bootstrap.sh` |
+| `provision.sh` | The system layer, in phases: hostname, `exedev`, keys, packages, the pinned tools (`workbox/system-tools.sh`: Go, PowerShell, fish/ksh/mksh, qemu-user-static; pins in `workbox/pins.conf`), firewall, root ssh, Tailscale, the 2222 sshd, the reserve (the OpenCode service's memory floor), unattended upgrades, backup, then `workbox/bootstrap.sh` |
 | `sync.sh` | The copy from the exe box: btrfs send per subvolume, two passes, then activate; rsync for the rest; `--dry-run` prints the GB |
 | `backup.sh`, `btrbk.conf`, `systemd/hetzner-backup.*` | Nightly btrbk snapshots, sent encrypted to a Storage Box |
 | `firewall.nft`, `systemd/hetzner-workbox-firewall.service` | Inbound: Tailscale, ICMP, ssh 22; nothing else |
