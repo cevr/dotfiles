@@ -124,7 +124,7 @@ const REFUSALS = [
 ]
 const ANSWERS = [/^Saved #\d+ \((global|project)\)\.$/, /^Updated #\d+ /, /^Corrected #\d+ /, /^No note matches "/, /^\d+ notes? for "/, /^Forgot #\d+: "/]
 
-/** The kinds of answer a run can meet, by the answer's start: the sweep below holds that the gate's seeds meet each. */
+/** The kinds of answer a run can meet, by the answer's start. */
 const KINDS = [
   ["saved", "Saved #"],
   ["updated", "Updated #"],
@@ -310,17 +310,35 @@ seeded("a digest the file could not keep is the session's on every request, afte
   }),
 )
 
+const save = (text: string, session = 0): Command => ({ type: "call", session, call: { tool: "memory_save", input: { text } } })
+const search = (query: string): Command => ({ type: "call", session: 0, call: { tool: "memory_search", input: { query } } })
+const forget = (id: number): Command => ({ type: "call", session: 0, call: { tool: "memory_forget", input: { id } } })
+const root: Command = { type: "session", child: false }
+const note = "The user prefers bun over npm"
+const answers: ReadonlyArray<Command> = [
+  root,
+  save(note),
+  save(note),
+  { type: "call", session: 0, call: { tool: "memory_save", input: { id: 1, text: "The user uses bun for testing" } } },
+  search("bun"),
+  search("unmatched"),
+  forget(1),
+  forget(1),
+  { type: "session", child: true },
+  save(note, 1),
+  { type: "write-fails", count: 1 },
+  save(note),
+]
+
 Seed.effect(
-  "the gate's 20 seeds meet every kind of answer, a write failing during a session's request, and distinct runs",
+  "deliberate histories meet every named answer and a failed write, and distinct commands produce distinct traces",
   Effect.gen(function* () {
-    const reached = new Set<string>()
-    const traces = new Set<string>()
-    for (const seed of Array.from({ length: Seed.SEEDS }, (_, index) => index + 1)) {
-      const ran = yield* runOf(seed, commandsOf(seed))
-      for (const kind of ran.reached) reached.add(kind)
-      traces.add(ran.trace)
-    }
-    bunExpect([...reached].toSorted()).toEqual([...KINDS.map(([kind]) => kind), "faulted-session"].toSorted())
-    bunExpect(traces.size).toBe(Seed.SEEDS)
+    const ran = yield* runOf(1, answers)
+    const faulted = yield* runOf(1, HELD_ACROSS_RESTART)
+    bunExpect(ran.broken).toEqual([])
+    bunExpect(faulted.broken).toEqual([])
+    bunExpect([...new Set([...ran.reached, ...faulted.reached])].toSorted()).toEqual([...KINDS.map(([kind]) => kind), "faulted-session"].toSorted())
+    const distinct = yield* Effect.forEach(Arr.range(1, Seed.SEEDS), (index) => runOf(1, [root, save(`deliberate note number ${index}`)]))
+    bunExpect(new Set(distinct.map((run) => run.trace)).size).toBe(Seed.SEEDS)
   }),
 )

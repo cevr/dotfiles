@@ -126,9 +126,7 @@ const judge = (
   check({ ...what, aliasNoted: answer.output.includes(World.aliasNote("bash", "shell")) }).toEqual({ ...what, aliasNoted: command.form.name === "bash" })
 }
 
-seeded(
-  "a generated run of shell calls in a root and its subagent, under an unreadable process table, unwritable launchers and restarts, refuses exactly what loses work or idles a subagent, and runs the rest once as written",
-  ({ seed, expect: check }) =>
+const exercise = ({ seed, expect: check }: Seed.Seeded, commands: ReadonlyArray<Command>) =>
     Effect.gen(function* () {
       const machine = Plugins.guardMachine({
         processes: [
@@ -165,7 +163,7 @@ seeded(
       yield* world.load(Plugins.guard(machine), { directory: WORK, options: { home: HOME } })
       const root = yield* world.session(WORK)
       const child = yield* world.session(WORK, { parentID: root })
-      for (const command of commandsOf(seed)) {
+      for (const command of commands) {
         if (command.type === "ps-fails") machine.psFails = command.on
         if (command.type === "launchers-fail") machine.launchersFail = command.on
         if (command.type === "advance") yield* world.advance(command.ms)
@@ -182,17 +180,19 @@ seeded(
         judge(check, command, { psFails: machine.psFails, launchersFail: machine.launchersFail }, answer, world.spawned().slice(before))
       }
       check(world.stale()).toEqual([])
-    }),
+    })
+
+seeded(
+  "a generated run of shell calls in a root and its subagent, under an unreadable process table, unwritable launchers and restarts, refuses exactly what loses work or idles a subagent, and runs the rest once as written",
+  (run) => exercise(run, commandsOf(run.seed)),
 )
 
+const callForms = CALLS.flatMap((call) => FORMS.flatMap((form) => [false, true].map((child): CallCommand => ({ type: "call", call, form, child }))))
+
 Seed.effect(
-  "the gate's 20 seeds reach every call in every form, in a root and a subagent, both faults on, and a restart",
-  Effect.sync(() => {
-    const all = Array.from({ length: Seed.SEEDS }, (_, index) => commandsOf(index + 1)).flat()
-    const calls = new Set(all.filter((command): command is CallCommand => command.type === "call").map((command) => `${command.call.kind} ${command.form.id} ${command.child}`))
-    expect(calls.size).toBe(CALLS.length * FORMS.length * 2)
-    expect(all.some((command) => command.type === "ps-fails" && command.on)).toBe(true)
-    expect(all.some((command) => command.type === "launchers-fail" && command.on)).toBe(true)
-    expect(all.some((command) => command.type === "restart")).toBe(true)
-  }),
+  "every call in every form is judged in a root and subagent, with both faults on after a restart and with faults off",
+  exercise({ seed: 1, expect }, [
+    { type: "ps-fails", on: true }, { type: "launchers-fail", on: true }, { type: "restart" }, ...callForms,
+    { type: "ps-fails", on: false }, { type: "launchers-fail", on: false }, ...callForms,
+  ]),
 )

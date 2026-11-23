@@ -319,17 +319,17 @@ const resolvedTexts = (resolved: Resolved): ReadonlyArray<string> => {
 
 describe("every call an answer or a refusal names", () => {
   test("decodes through OrchestrateInput and passes the input rule, over generated run tables, lanes and inputs", () => {
-    let calls = 0
-    for (const seed of SEEDS) {
-      const texts = textsOf(rng(seed))
+    const checkTexts = (texts: ReadonlyArray<string>) => {
       for (const text of texts) {
-        calls += callsIn(text).length
         expectCallsDecode(text)
         expect(text).not.toContain('rift({ action: "land"')
         expect(text).not.toContain("machine")
       }
     }
-    expect(calls).toBeGreaterThan(SEEDS.length * 8)
+    for (const seed of SEEDS) checkTexts(textsOf(rng(seed)))
+    const deliberate = SEEDS.flatMap((index) => textsOf(() => 0.12 + (index / (SEEDS.length + 1)) * 0.1))
+    checkTexts(deliberate)
+    expect(deliberate.flatMap(callsIn).length).toBeGreaterThan(SEEDS.length * 8)
   })
 })
 
@@ -701,8 +701,18 @@ const STATES = ["plan", "implement", "ready", "verify", "blocked", "merged abc12
 
 describe("next", () => {
   test("B4: over generated derived tables, next names a call that decodes, and a land only for a unit ready with a lane", () => {
-    let lands = 0
-    let verifies = 0
+    const due: MainSince = { branch: "main", head: shaOf(1000), base: shaOf(7), lands: VERIFY_EVERY, last: Option.none() }
+    for (const index of Arr.range(0, 10)) {
+      const name = `ready-${index}`
+      const lane = laneOf(name, false)
+      const ready = nextOf([{ name, units: [{ unit: name, state: "ready" }] }], [lane], false, Option.some(due), NOW)
+      const verify = nextOf([], [], false, Option.some({ ...due, lands: due.lands + index }), NOW)
+      for (const [expected, next] of [["land", ready], ["verify", verify]] as const) {
+        expect(Option.map(next.input, (input) => input.action)).toEqual(Option.some(expected))
+        expect(decodedIn(next.line).map((call) => call.decoded)).toEqual([next.input])
+        expectCallsDecode(next.line)
+      }
+    }
     for (const seed of SEEDS) {
       const random = rng(seed)
       const pick = pickOf(random)
@@ -722,13 +732,11 @@ describe("next", () => {
       const units = runs.flatMap((run) => run.units)
       Option.map(next.input, (input) => {
         if (input.action === "land") {
-          lands += 1
           // A land with no units lands every unit ready with a lane: there is one; one that names units names only those.
           expect({ seed, ready: ready.length > 0 }).toEqual({ seed, ready: true })
           for (const named of input.units ?? []) expect({ seed, named, ready: ready.includes(landNameOf(named)) }).toEqual({ seed, named, ready: true })
         }
         if (input.action === "verify") {
-          verifies += 1
           expect({ seed, ready, due: Option.exists(since, (each) => isDue(each, NOW)) }).toEqual({ seed, ready: [], due: true })
         }
       })
@@ -745,8 +753,6 @@ describe("next", () => {
         })
       }
     }
-    expect(lands).toBeGreaterThan(10)
-    expect(verifies).toBeGreaterThan(10)
   })
 })
 

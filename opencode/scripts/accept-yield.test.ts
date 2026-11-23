@@ -72,20 +72,23 @@ describe("the accept lock's protocol", () => {
     expect(found).toEqual([])
   })
 
-  test("the generator reaches yields, stops, deaths and red files", () => {
-    const seen = new Set<string>()
-    for (let seed = 1; seed <= SEEDS; seed++) {
-      const draw = random(seed)
-      let state = Yield.initial()
-      for (let command = 1; command <= COMMANDS; command++) {
-        const enabled = Yield.actions(FILES).flatMap((action) => Option.toArray(Option.map(Yield.step(state, action, FILES), (next) => ({ action, next }))))
-        if (enabled.length === 0) break
-        const chosen = enabled[Math.floor(draw() * enabled.length)]!
-        seen.add(describeAction(chosen.action).replace(/ (deep|l1|l2|a|b|c)$/, "").replace("deepFileEnds", "ends"))
-        state = chosen.next
-      }
+  test("a stopped file stays owed, the land takes the lock, and the resumed run records every verdict", () => {
+    const actions: ReadonlyArray<Yield.Action> = [
+      { kind: "start", who: "deep" }, { kind: "deepTakes" }, { kind: "deepStartsFile", file: "a" },
+      { kind: "start", who: "l1" }, { kind: "mark", who: "l1" }, { kind: "deepStops" }, { kind: "deepYields" },
+      { kind: "landTakes", who: "l1" }, { kind: "landEnds", who: "l1" }, { kind: "deepTakes" },
+      { kind: "deepStartsFile", file: "a" }, { kind: "deepFileEnds", green: false },
+      { kind: "deepStartsFile", file: "b" }, { kind: "deepFileEnds", green: true },
+      { kind: "deepStartsFile", file: "c" }, { kind: "deepFileEnds", green: true },
+      { kind: "dies", who: "l2" }, { kind: "deepEnds" },
+    ]
+    let state = Yield.initial()
+    for (const action of actions) {
+      const next = Option.getOrThrow(Yield.step(state, action, FILES))
+      expect(problems(state, action, next), describeAction(action)).toEqual([])
+      state = next
     }
-    expect([...seen].sort()).toEqual(["deepEnds", "deepStartsFile", "deepStops", "deepTakes", "deepYields", "dies", "ends false", "ends true", "landEnds", "landTakes", "mark", "start"])
+    expect([Yield.over(state), [...state.report]]).toEqual([true, [["a", "failed"], ["b", "passed"], ["c", "passed"]]])
   })
 
   test("the rules the runner follows: who marks, whose wait is on the clock, when the deep run may take or start", () => {

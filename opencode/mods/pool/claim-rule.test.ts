@@ -395,23 +395,37 @@ describe("the rule on one pool, by example", () => {
     expect(verdict._tag).toBe("Claim")
     expect(verdict).toMatchObject({ step: "expiring", option: { creditID: "soon" } })
   })
+
+  test("forecast, expiry, room to wait, and no-reset exhaustion are exercised by deliberate pool states", () => {
+    const pool = (used: number, wait: number, expiry: number, index: number, running = 6): Decision => {
+      const only = load("a", used, wait + index * MINUTE, 0.02)
+      const options = [option(only, "ra", { expiresAt: Option.some(NOW + expiry) })]
+      const live = situation([only], running)
+      const accounts = [{ id: only.credentialID, windows: [{ name: "7d" as const, used, resetAt: NOW + wait + index * MINUTE, burn: 0.02 }] }]
+      return { now: NOW, running: live.running, accounts, situation: live, options, verdict: decideClaim(live, options) }
+    }
+    for (const index of Arr.range(0, 20)) {
+      const forecast = pool(0.99, 3 * DAY, 30 * DAY, index)
+      expect(forecast.verdict).toMatchObject({ step: "reset", option: { creditID: "ra" } })
+      eachClaimHolds([forecast])
+      const expiry = pool(1, 3 * DAY, 12 * HOUR, index)
+      expect(expiry.verdict).toMatchObject({ step: "expiring", option: { creditID: "ra" } })
+      expiringGoFirst([expiry])
+    }
+    for (const index of Arr.range(0, 100)) {
+      const room = pool(0.25, 2 * DAY, 30 * DAY, index, 3)
+      expect([room.options.some((each) => notSoon(each, NOW)), truth(room, "7d").runsOut, room.verdict._tag]).toEqual([true, false, "NoClaim"])
+      const spent = pool(1, 3 * DAY, 30 * DAY, index)
+      expect(outWith({ ...spent, verdict: never(spent.situation, spent.options) }).map((each) => each.creditID)).toEqual(["ra"])
+      claimedBeforeOut([spent])
+    }
+  })
 })
 
 describe("the standing allowance's rule over generated weeks", () => {
-  test("the worlds claim and hold back: resets spent on the forecast and on expiry, and resets left while the pool keeps room (the properties below are not vacuous)", () => {
-    const runs = SEEDS.map((seed) => simulate(seed))
-    const all = runs.flatMap((run) => claims(run.decisions))
-    expect(all.filter(({ verdict }) => verdict.step === "reset").length).toBeGreaterThan(20)
-    expect(all.filter(({ verdict }) => verdict.step === "expiring").length).toBeGreaterThan(20)
-    // Agents running with a reset in hand that is not soon, while the pool keeps room to its first reset: held back.
-    const kept = runs.flatMap((run) => run.decisions).filter(
-      (decision) => decision.running > 0 && decision.verdict._tag === "NoClaim" && decision.options.some((option) => notSoon(option, decision.now) && !truth(decision, option.window).runsOut),
-    )
-    expect(kept.length).toBeGreaterThan(100)
-    // With no reset ever spent, the same worlds run out of room with a useful reset in hand: the rule has those to answer, and does before them.
+  test("with the claim rule, none of the generated worlds runs all the way out of room with useful resets in hand", () => {
     const out = (decisions: ReadonlyArray<Decision>) => decisions.filter((decision) => outWith(decision).length > 0).length
-    expect(SEEDS.map((seed) => out(simulate(seed, never).decisions)).reduce((total, count) => total + count, 0)).toBeGreaterThan(100)
-    expect(runs.map((run) => out(run.decisions)).reduce((total, count) => total + count, 0)).toBe(0)
+    for (const seed of SEEDS) expect(out(simulate(seed).decisions), `seed ${seed}`).toBe(0)
   })
 
   for (const seed of SEEDS)

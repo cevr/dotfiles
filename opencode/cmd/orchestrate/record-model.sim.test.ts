@@ -22,6 +22,7 @@ import { expect } from "bun:test"
 import { Array as Arr, Config, Effect, Layer, Match, Option, type Random } from "effect"
 import { below, generator } from "../../sim/runtime.ts"
 import * as Seed from "../../sim/seed.ts"
+import { witnesses } from "../../sim/witnesses.ts"
 import { platform as ownPlatform } from "@dotfiles/opencode-orchestrate/node/platform"
 import { hostServices } from "../../sim/host-services.ts"
 import * as SqliteRecord from "@dotfiles/opencode-orchestrate/sqlite/record"
@@ -56,7 +57,7 @@ interface Books {
   /** Every receipt path made, found or lost since; every follow-up key used. */
   readonly receipts: Array<string>
   readonly keys: Array<string>
-  readonly counts: { roots: number; minted: number; step: number; reasoned: number }
+  readonly counts: { roots: number; minted: number; step: number }
 }
 
 interface Run {
@@ -168,7 +169,6 @@ const decide = (run: Run) =>
     same(run, got, run.reference.decide(input), "decide")
     if (!("ok" in got)) return
     run.books.decided.add(id)
-    run.books.counts.reasoned += 1
   })
 
 /** The root (or, refused, a worker) declares an invariant: committed or not, at the revision it was declared or edited since. */
@@ -196,7 +196,6 @@ const followUp = (run: Run) => {
   if (!retry) run.books.keys.push(key)
   if (!("ok" in got) || run.books.promised.includes(input.id)) return
   run.books.promised.push(input.id)
-  run.books.counts.reasoned += 1
 }
 
 /** The root keeps an open (or, refused, a closed) commitment waiting on a reason. */
@@ -205,7 +204,6 @@ const defer = (run: Run) =>
     const input = { id, by: "root-1", reason: reasonOf(run) }
     const got = subjectOf(run).defer(input)
     same(run, got, run.reference.defer(input), "defer")
-    if ("ok" in got) run.books.counts.reasoned += 1
   })
 
 // The world's evidence moves: an invariant's document committed or edited, a receipt written or lost.
@@ -384,23 +382,57 @@ const compared = (run: Run) => {
   }
 }
 
-const runSeed = (seed: number, expect: Seed.Seeded["expect"], open: (world: World) => Opened) => {
+const startRun = (seed: number, expect: Seed.Seeded["expect"], open: (world: World) => Opened): Run => {
   const world = freshWorld()
   const opened = open(world)
-  const books: Books = { promised: [], claimed: new Map(), decided: new Set(), epoch: new Map(), woken: new Set(), commits: [], handBacks: [], receipts: [], keys: [], counts: { roots: 1, minted: 0, step: 0, reasoned: 0 } }
+  const books: Books = { promised: [], claimed: new Map(), decided: new Set(), epoch: new Map(), woken: new Set(), commits: [], handBacks: [], receipts: [], keys: [], counts: { roots: 1, minted: 0, step: 0 } }
   const run: Run = { world, random: generator(seed), expect, opened, held: { subject: opened.subject }, reference: makeModel(world), books }
   // The root declares the invariant whose document the world starts with, so a guarantee can hold from the first step.
   same(run, opened.subject.declare({ id: "i1", by: "root-1", role: "root" }), run.reference.declare({ id: "i1", by: "root-1", role: "root" }), "declare i1")
+  return run
+}
+
+const runSeed = (seed: number, expect: Seed.Seeded["expect"], open: (world: World) => Opened) => {
+  const run = startRun(seed, expect, open)
+  const { books } = run
   for (books.counts.step = 0; books.counts.step < STEPS; books.counts.step += 1) {
     commandOf(run)(run)
     ticked(run)
     compared(run)
   }
-  opened.close()
-  // The generator did generate: a run that promises nothing proves nothing.
-  expect(books.promised.length).toBeGreaterThan(5)
-  // And it gave reasons that held: a follow-up filed, a deferral or a decision taken.
-  expect(books.counts.reasoned).toBeGreaterThan(0)
+  run.opened.close()
+}
+
+/** A deliberate walk, through the same model and invariants as the seeded walk. */
+const coverPromises = (open: (world: World) => Opened) => {
+  const run = startRun(1, expect, open)
+  const parts = Arr.makeBy(6, (index) => ({ id: `w${index}`, text: `witness ${index}` }))
+  const add = { source: "plan:p1", fromOwner: true, parts, by: "root-1" }
+  const subject = subjectOf(run)
+  const added = subject.add(add)
+  same(run, added, run.reference.add(add), "six explicit promises")
+  expect("ok" in added).toBe(true)
+  run.books.promised.push(...parts.map((part) => part.id))
+  compared(run)
+  const reason = { class: "guarantee", ref: "invariant/i1" } as const
+  const followUp = { id: "w-follow", key: "w-follow", by: "worker-1", reason: { class: "dependency", ref: "commitment/w0" } } as const
+  const defer = { id: "w0", by: "root-1", reason }
+  const decide = { id: "w1", why: "superseded", by: "root-1", role: "root", reason } as const
+  for (const [kind, [call, record]] of witnesses(["follow-up", "deferral", "decision"] as const, {
+    "follow-up": [(one: Subject) => one.followUp(followUp), () => run.books.promised.push(followUp.id)],
+    deferral: [(one: Subject) => one.defer(defer), () => {}],
+    decision: [(one: Subject) => one.decide(decide), () => run.books.decided.add(decide.id)],
+  })) {
+    const answer = call(subject)
+    same<string | true>(run, answer, call(run.reference), kind)
+    expect({ kind, took: "ok" in answer }).toEqual({ kind, took: true })
+    record()
+    ticked(run)
+    compared(run)
+  }
+  restart(run)
+  compared(run)
+  run.opened.close()
 }
 
 // ── The reasons' cross product: caller × operation × state × reason class × pointer kind × existence ──
@@ -505,6 +537,8 @@ const freshWorld = (): World => ({ now: 1_000_000, main: new Set(), alive: new S
 seeded("no commitment disappears: every open one is held or listed, through restarts, re-orders, hand-backs and triggers", ({ seed, expect }) =>
   onSubject((open) => runSeed(seed, expect, open)),
 )
+
+Seed.effect("six promised commitments and a reason for each successful follow-up, deferral and decision survive a restart", onSubject(coverPromises))
 
 Seed.effect(
   "every caller × operation × state × reason class × pointer kind × existence answers as the reference, through a reopen and a restart",

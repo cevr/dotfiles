@@ -222,9 +222,15 @@ describe("acceptance: a prune over share directories of both build formats, with
   const SEED = 20261119
   const RUNS = 400
 
+  test("an unreferenced tree build and its tree go; a recorded tree build and its tree stay", () => {
+    const stale = buildName("2.2.7-prime.11111111.22222222.tree")
+    const live = build("2.2.7-prime.33333333.44444444.tree")
+    const listing = [stale, treeOf(stale), buildName(live.version), treeOf(buildName(live.version))]
+    expect(prunable(listing, live, nothingRuns)).toEqual([stale, treeOf(stale)])
+  })
+
   test(`over ${RUNS} generated hosts (seed ${SEED}), it names (a) builds and trees only, (b) never a kept or running one, (c) every other, of either format; a tree exactly when its build, never while a command line names it`, () => {
     const next = random(SEED)
-    const reached = { treeGone: new Array<string>(), treeKept: new Array<string>() }
     for (let run = 0; run < RUNS; run++) {
       const { listing, record, running, through } = host(next)
       const pruned = new Set(prunable(listing.map((made) => made.name), record, Option.some(running)))
@@ -252,12 +258,6 @@ describe("acceptance: a prune over share directories of both build formats, with
       }
       // With what runs unread, nothing goes.
       expect(prunable(listing.map((made) => made.name), record, Option.none())).toEqual([])
-      for (const made of listing.filter((each) => each.kind === "build" && each.name.endsWith(".tree"))) {
-        if (pruned.has(made.name)) reached.treeGone.push(made.name)
-        else reached.treeKept.push(made.name)
-      }
     }
-    // The generator reaches tree builds that go and tree builds that stay.
-    expect([reached.treeGone.length > 0, reached.treeKept.length > 0]).toEqual([true, true])
   })
 })
