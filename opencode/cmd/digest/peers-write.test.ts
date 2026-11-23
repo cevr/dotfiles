@@ -18,7 +18,9 @@ import { noTailnet, type PeerStatus, StatusRead } from "@dotfiles/opencode-diges
 import * as FileDevices from "@dotfiles/opencode-digest/filestore/devices"
 import * as FileLog from "@dotfiles/opencode-digest/filestore/log"
 import * as Listener from "@dotfiles/opencode-digest/http/listener"
-import type { Listener as ListenerKind } from "@dotfiles/opencode-digest/policy"
+import * as FilePairing from "@dotfiles/opencode-digest/filestore/pairing"
+import { closed } from "@dotfiles/opencode-digest/members"
+import { isPeerWrite, type Listener as ListenerKind, type Preflight, preflightOf, ROUTE_KINDS, type RouteKind, SOURCES } from "@dotfiles/opencode-digest/policy"
 import { type Sighting, UNSEEN } from "@dotfiles/opencode-digest/peers"
 import { scratch } from "../../tests/scratch.ts"
 import { handlersOf, livePeers, probeKeeping, STARTING, writeConfigOf } from "./server.ts"
@@ -40,6 +42,8 @@ const V6: ReadonlyMap<string, string> = new Map([
 const PHONE = "100.101.102.110"
 const COLLEAGUE = "100.101.102.120"
 const LENOVO = "100.101.102.121"
+/** An address outside Tailscale's ranges: what a source the tailnet listener should never see is spelled as. */
+const OUTSIDE = "203.0.113.9"
 const SUFFIX = "example-tailnet.ts.net"
 const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(effect)
 const one = <A,>(found: A): NonNullable<A> => Option.getOrThrow(Option.fromNullishOr(found))
@@ -214,17 +218,36 @@ const CANDIDATES: ReadonlyArray<string> = [
   "*",
 ]
 
-type Route = "mark" | "later" | "name" | "answer" | "pair" | "view"
-const ROUTES: ReadonlyArray<Route> = ["mark", "later", "name", "answer", "pair", "view"]
-const WRITE_ROUTES: ReadonlyArray<Route> = ["mark", "later", "name", "answer"]
-const PATHS: Readonly<Record<Route, string>> = { mark: "/api/mark", later: "/api/later", name: "/api/name", answer: "/api/answer", pair: "/api/pair", view: "/view.json" }
+/**
+ * The routes a request may take: the four writes, the pairing, the view, and a POST to a path no write takes (the
+ * page, the peers' view, a path under /api/ no route has), which the listener's kindOf calls a mark all the same.
+ */
+type Route = "mark" | "later" | "name" | "since" | "answer" | "pair" | "view" | "postPage" | "postPeerView" | "postNowhere"
+const ROUTES: ReadonlyArray<Route> = ["mark", "later", "name", "since", "answer", "pair", "view", "postPage", "postPeerView", "postNowhere"]
+const WRITE_ROUTES: ReadonlyArray<Route> = ["mark", "later", "name", "since", "answer"]
+const PATHS: Readonly<Record<Route, string>> = {
+  mark: "/api/mark",
+  later: "/api/later",
+  name: "/api/name",
+  since: "/api/since",
+  answer: "/api/answer",
+  pair: "/api/pair",
+  view: "/view.json",
+  postPage: "/",
+  postPeerView: "/peer/view.json",
+  postNowhere: "/api/nowhere",
+}
 const BODIES: Readonly<Record<Route, string>> = {
   mark: JSON.stringify({ id: "m1", mark: "read" }),
   later: JSON.stringify({ id: "m1" }),
   name: JSON.stringify({ project: "p1", name: "Billing" }),
+  since: "{}",
   answer: JSON.stringify({ id: "m1", option: "yes" }),
   pair: JSON.stringify({ code: "000000" }),
   view: "",
+  postPage: JSON.stringify({ id: "m1", mark: "read" }),
+  postPeerView: JSON.stringify({ id: "m1", mark: "read" }),
+  postNowhere: JSON.stringify({ id: "m1", mark: "read" }),
 }
 
 /** One request as a browser's fetch (or a client no browser binds) would send it to `base`. */
@@ -246,8 +269,11 @@ const preflight = (base: string, route: Route, origin: string, headers: string) 
 const header = (answer: Response, name: string): string => Option.getOrElse(Option.fromNullishOr(answer.headers.get(name)), () => "")
 const varies = (answer: Response) => header(answer, "vary").toLowerCase().split(",").map((each) => each.trim()).includes("origin")
 
-/** The sources a request to B may come from: his phone, an agent machine (another host, or B itself), a colleague, his excluded device. */
-const sourcesOf = (hosts: ReadonlyArray<string>): ReadonlyArray<string> => [PHONE, ...hosts.map((each) => one(V4.get(each))), COLLEAGUE, LENOVO]
+/**
+ * The sources a request to B may come from: his phone, an agent machine (another host, or B itself), a colleague, his
+ * excluded device, and an address outside the tailnet (a client no browser binds, or a forwarded port).
+ */
+const sourcesOf = (hosts: ReadonlyArray<string>): ReadonlyArray<string> => [PHONE, ...hosts.map((each) => one(V4.get(each))), COLLEAGUE, LENOVO, OUTSIDE]
 
 const closeAll = (hosts: ReadonlyArray<Host>) => run(Effect.forEach(hosts, (each) => Scope.close(each.scope, Exit.void), { discard: true }))
 
@@ -294,10 +320,11 @@ const property = async (seed: number, count: number, store: StoreState, draws: n
       varies: true,
     })
     expect(cross.headers.get("access-control-allow-credentials"), trace).toBeNull()
-    // The preflight: answered for an allowed origin, a write route, POST and the page's headers alone; never the token header.
+    // The preflight: answered for an allowed origin, a write route, a source on the tailnet, POST and the page's
+    // headers alone; never the token header, never a path no write takes, never from outside the tailnet.
     const asked = pick(["content-type,x-digest-page", "content-type, x-digest-page", "x-digest-page,content-type,x-digest-token", "content-type,x-digest-page,authorization"])
     const pre = await preflight(own, route, origin, asked)
-    const preOk = isAllowed && isWrite && !asked.includes("token") && !asked.includes("authorization")
+    const preOk = isAllowed && isWrite && source !== OUTSIDE && !asked.includes("token") && !asked.includes("authorization")
     expect({ allowOrigin: pre.headers.get("access-control-allow-origin"), ok: pre.ok, varies: varies(pre) }, `${trace}, preflight asking ${asked}`).toEqual({
       allowOrigin: Option.getOrNull(Option.liftPredicate(origin, () => preOk)),
       ok: preOk,
@@ -379,6 +406,10 @@ describe("the page writes to the host that owns an item, under that host's own p
       { what: "a peer write to a foreign Host", route: "mark", origin: v4, host: `evil.example:${port}`, expect: [421, false], pre: [421, false] },
       { what: "a read of the view from the peer's origin", route: "view", origin: v4, expect: [403, false], pre: [405, false] },
       { what: "a pairing from the peer's origin", route: "pair", origin: v4, expect: [403, false], pre: [405, false] },
+      // A POST to a path no write takes is judged as with no peer named: the address-only rules' 403 for a foreign Origin.
+      { what: "a POST to the page from the peer's origin", route: "postPage", origin: v4, expect: [403, false], pre: [405, false] },
+      { what: "a POST to the peers' view from the peer's origin", route: "postPeerView", origin: v6, expect: [403, false], pre: [405, false] },
+      { what: "a POST to a path under /api/ no route has, from the peer's origin", route: "postNowhere", origin: v4, expect: [403, false], pre: [405, false] },
       { what: "the peer's origin on B's loopback listener", route: "mark", origin: v4, base: loop, expect: [403, false], pre: [405, false] },
     ]
     const before = await one(b).writes()
@@ -448,5 +479,142 @@ describe("the page writes to the host that owns an item, under that host's own p
     expect((await send(workbox, "mark", fromMacbook, Option.none())).status).toBe(401)
     caller.address = PHONE
     expect(await one(b).writes()).toBe(2)
+  }, 60_000)
+})
+
+describe("a peer's write and its preflight, as the policy decides them, at every combination", () => {
+  // The listener asks isPeerWrite and preflightOf only once its order let a request through: on the tailnet its Host
+  // is then the address, and its source is never "local". Each function still keeps its whole condition on its own,
+  // so a caller that asks earlier gets no peer write: checked here over every combination, against a reference
+  // written apart from policy.ts.
+  const ABSENT = "<absent>"
+  const ADDRESS = "100.101.102.12:8240"
+  const PEER4 = `http://${one(V4.get("macbook"))}:${PORT}`
+  const PEER6 = `http://[${one(V6.get("macbook"))}]:${PORT}`
+  const OWN = `http://${ADDRESS}`
+  const HOSTS_SENT = [ADDRESS, "100.101.102.12:9999", `workbox.${SUFFIX}:8240`, "workbox:8240", "evil.example:8240", "", ABSENT]
+  const ORIGINS_SENT = [PEER4, PEER6, `${PEER4}/`, `http://macbook:${PORT}`, OWN, `http://${PHONE}:${PORT}`, "null", "", ABSENT]
+  const METHODS = ["POST", "post", "GET", "PUT"]
+  const HEADER_SETS: ReadonlyArray<ReadonlyArray<string>> = [[], ["content-type"], ["content-type", "x-digest-page"], ["x-digest-page", "x-digest-token"], ["authorization"]]
+  /** No peer, the keyed peer's two address origins, and those with this page's own origin among them by mistake. */
+  const PEER_LISTS: ReadonlyArray<ReadonlyArray<string>> = [[], [PEER4, PEER6], [PEER4, PEER6, OWN]]
+  const sentOf = (value: string) => Option.liftPredicate(value, (each) => each !== ABSENT)
+
+  /** The reference: a write a peer's page may send, and the preflight that announces it. */
+  const reference = (asked: Preflight, peers: ReadonlyArray<string>) => {
+    const host = Option.getOrElse(asked.host, () => ABSENT)
+    const origin = Option.getOrElse(asked.origin, () => ABSENT)
+    const write = asked.listener === "tailnet" && (asked.kind === "mark" || asked.kind === "answer") && asked.hosts.includes(host) && origin !== `http://${host}` && peers.includes(origin)
+    const preflight = write && asked.method === "POST" && ["own", "agent", "other"].includes(asked.source) && asked.headers.every((each) => each === "content-type" || each === "x-digest-page")
+    return { write, preflight }
+  }
+
+  test("isPeerWrite and preflightOf decide as the reference does", () => {
+    const kinds: ReadonlyArray<RouteKind | "none"> = [...ROUTE_KINDS, "none"]
+    const listeners: ReadonlyArray<ListenerKind> = ["tailnet", "loopback"]
+    const all = listeners.flatMap((listener) =>
+      kinds.flatMap((kind) =>
+        SOURCES.flatMap((source) =>
+          HOSTS_SENT.flatMap((host) =>
+            ORIGINS_SENT.flatMap((origin) =>
+              METHODS.flatMap((method) =>
+                HEADER_SETS.flatMap((headers) => PEER_LISTS.map((peers) => ({ asked: { listener, kind, source, host: sentOf(host), hosts: [ADDRESS], origin: sentOf(origin), method, headers }, peers }))),
+              ),
+            ),
+          ),
+        ),
+      ),
+    )
+    const wrong = all.flatMap(({ asked, peers }) => {
+      const want = reference(asked, peers)
+      const write = asked.kind !== "none" && isPeerWrite({ listener: asked.listener, kind: asked.kind, host: asked.host, hosts: asked.hosts, origin: asked.origin }, peers)
+      const got = { write, preflight: preflightOf(asked, peers) }
+      const shown = { asked: { ...asked, host: Option.getOrNull(asked.host), origin: Option.getOrNull(asked.origin) }, peers, want, got }
+      return Option.toArray(Option.liftPredicate(shown, () => got.write !== want.write || got.preflight !== want.preflight))
+    })
+    expect(wrong.slice(0, 3)).toEqual([])
+    // Both sides reached: a property no case satisfies, or every case does, proves little.
+    const granted = all.filter(({ asked, peers }) => reference(asked, peers).preflight).length
+    expect([granted > 0, granted < all.length]).toEqual([true, true])
+  })
+})
+
+describe("the page's CSP names its peers' pages exactly, and nothing else", () => {
+  // Through the real listener: whatever `peerPages` holds (peers.ts gives exact origins; a config, a bug or a hostile
+  // status could give anything), the page's connect-src is 'self' and the plain origins among them, in order, and
+  // no other directive changes. Each entry drawn knows whether it was built plain: the reference is the drawing.
+  const DIRECTIVES = ["default-src 'self'", "script-src 'self'", "style-src 'self'", "img-src 'self' data:", "base-uri 'none'", "form-action 'none'", "frame-ancestors 'none'"]
+
+  test("from drawn lists of peer pages, plain and not", async () => {
+    using held = scratch("digest-peers-csp-")
+    const dist = join(held.path, "dist")
+    await Bun.write(join(dist, "index.html"), "<!doctype html><title>Digest</title>")
+    const pages = { now: Arr.empty<string>() }
+    const handlers: Listener.Handlers = {
+      view: Effect.succeed("{}"),
+      peerView: Effect.succeed("{}"),
+      write: () => Effect.void,
+      now: Effect.sync(() => Date.now()),
+      zone: "UTC",
+      answer: () => Effect.succeed(AnswerOutcome.Answered({ replaced: Option.none() })),
+      pairing: FilePairing.make(join(held.path, "pairing")),
+      health: Effect.succeed("digest ok"),
+      tailnetRead: "member",
+      members: Effect.succeed(closed("none", Date.now())),
+      peerOrigins: Effect.succeed([]),
+      peerPages: Effect.sync(() => pages.now),
+    }
+    const scope = await run(Scope.make())
+    await using _closed = { [Symbol.asyncDispose]: () => run(Scope.close(scope, Exit.void)) }
+    const served = await run(Scope.provide(scope)(Listener.listen({ address: Listener.HOSTNAME, port: 0, listener: "loopback", names: [] }, handlers, dist, () => Listener.HOSTNAME)))
+    const draw = drawer(31)
+    const pick = <A,>(all: ReadonlyArray<A>): A => Option.getOrThrow(Arr.get(all, Math.floor(draw() * all.length)))
+    const label = () => Array.from({ length: 1 + Math.floor(draw() * 8) }, () => pick([..."abcdefghijklmnopqrstuvwxyz0123456789"])).join("")
+    const port = () => String(1 + Math.floor(draw() * 65_535))
+    /** A host as a plain origin spells it: a lower case name of labels, an IPv4 address, a bracketed IPv6 one. */
+    const place = () => pick([() => label(), () => `${label()}.${SUFFIX}`, () => one(V4.get(pick(NAMES))), () => `[${one(V6.get(pick(NAMES)))}]`])()
+    /** One entry and whether it is plain: a plain origin, or one of the ways a value is not one. */
+    const entry = (): readonly [string, boolean] => {
+      const plain = `http://${place()}:${port()}`
+      return pick<readonly [string, boolean]>([
+        [plain, true],
+        [plain, true],
+        [`${plain} 'unsafe-inline'`, false],
+        [`${plain}; script-src *`, false],
+        [`${plain}/`, false],
+        [`${plain}/x`, false],
+        [plain.replace("http://", "https://"), false],
+        [plain.replace("http://", "HTTP://"), false],
+        [`http://${place().toUpperCase()}X:${port()}`, false],
+        [`http://${place()}`, false],
+        [`http://${place()}:${port()}${pick(["0", "00", "1"])}23456`, false],
+        [`http://user@${place()}:${port()}`, false],
+        [`ws://${place()}:${port()}`, false],
+        ["*", false],
+        ["'self'", false],
+        ["'unsafe-eval'", false],
+        ["data:", false],
+        ["http:", false],
+        ["", false],
+        [" ", false],
+      ])
+    }
+    let plains = 0
+    let others = 0
+    for (let n = 0; n < 300; n++) {
+      const drawn = Array.from({ length: Math.floor(draw() * 6) }, entry)
+      pages.now = drawn.map(([value]) => value)
+      const page = await fetch(`http://${Listener.HOSTNAME}:${served.port}/`)
+      const directives = String(page.headers.get("content-security-policy")).split("; ")
+      const want = ["'self'", ...drawn.flatMap(([value, plain]) => Option.toArray(Option.liftPredicate(value, () => plain)))]
+      expect({ status: page.status, rest: directives.filter((each) => !each.startsWith("connect-src ")), connect: directives.filter((each) => each.startsWith("connect-src ")) }, JSON.stringify(pages.now)).toEqual({
+        status: 200,
+        rest: DIRECTIVES,
+        connect: [`connect-src ${want.join(" ")}`],
+      })
+      plains += drawn.filter(([, plain]) => plain).length
+      others += drawn.filter(([, plain]) => !plain).length
+    }
+    expect(Math.min(plains, others)).toBeGreaterThan(50)
   }, 60_000)
 })
