@@ -45,7 +45,8 @@ The real leg runs the process runner itself (no OpenCode server, no cron job, no
 1. **Run it.** `bun test tests/job-events.test.ts` from `opencode/`. It launches the job through `mods/wake/process/runner.ts`, reads the exit the runner wrote (kind `failed`, generation 1, its sequence) and the marker, and sees the runner's call reach the scratch server only after the exit was on disk.
 2. **Late call.** The scratch server answers the call late; the exit was already readable, so a reader that came first got the end.
 3. **Backstop off.** The wakes' model over the process runner, no call configured: the job's own `fs.watch` announces its exit and one letter reaches the session; the runner's call coming late adds nothing; the watch closes; a runner made out of watches still runs the job and its call delivers it. The test logs `exit written to the letter seen` (measured 5–64 ms on the Mac); with the backstop on it logs `exit written to the runner's call arriving` (4–7 ms).
-4. **Claim.** A second runner on the same job's directory runs nothing; a claim naming a live pid with another start time reads lost, and a kill does not signal that pid.
+4. **Out of watches.** The watch's open refused with ENOSPC and with EMFILE at the runner's `watch` seam, the sweep's period short (`recoverMs`): each job runs and ends, the sweep alone delivers each end once, and the warning `wake: a job is not watched; the sweep finds its end` names the job and the code. `mods/wake/process/runner.test.ts` makes a real EMFILE by holding every descriptor while `fs.watch` opens. A real ENOSPC needs Linux's inotify limit: the unit's workbox probe lowers it in a user namespace of its own.
+5. **Claim.** A second runner on the same job's directory runs nothing; a claim naming a live pid with another start time reads lost, and a kill does not signal that pid.
 
 ## Gotchas
 
