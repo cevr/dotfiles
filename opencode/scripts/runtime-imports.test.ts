@@ -8,7 +8,7 @@
  *
  * It finds its seeds by glob, not import, so it declares them for the gate's selection (scripts/reach.ts `readsOf`):
  */
-// @reads cmd/** mods/** scripts/*.ts scenarios/*.ts decider/*.ts sim/**/*.ts sim-tui/** tests/**/*.ts testbeds/**/*.ts package.json bun.lock
+// @reads cmd/** mods/** scripts/*.ts scenarios/*.ts decider/*.ts sim/**/*.ts sim-tui/** tests/**/*.ts testbeds/**/*.ts package.json bun.lock w/package.json
 import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"

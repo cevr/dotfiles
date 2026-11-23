@@ -51,4 +51,5 @@ describe("an installed build's plugin binding", () => {
     }),
   )
 })
+// @reads bun.plugins/config
 // @reads-indirect scripts/** tests/** testbeds/**

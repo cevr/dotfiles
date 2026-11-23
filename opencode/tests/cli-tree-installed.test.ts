@@ -10,7 +10,7 @@
  * this checkout, every test here fails, saying so; it never passes on another root. The acceptance runner owes the
  * file `off until enabled`, by name, in a run that has no tree (the marker above); the deep gate sets the variable.
  *
- * @reads cmd/** mods/** scripts/daily.ts package.json bun.lock
+ * @reads cmd/** mods/** scripts/daily.ts package.json bun.lock w/package.json
  */
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Config, Effect, FileSystem, Option, Path, Schema } from "effect"

@@ -4,7 +4,7 @@
 // asserts an upper bound on a time, rate or CPU (its own text or the scenario
 // it drives) carries that marker, where a file that only waits for events does
 // not need it. Run from opencode/, as the gate runs it.
-// @reads sim/seed.ts scripts/accept.ts scripts/accept.test.ts tests/*.test.ts scenarios/*.ts
+// @reads all
 import { describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, readFileSync as readCheckoutFileSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
@@ -993,4 +993,3 @@ describe("the deep run's daily long swarm", () => {
     RUN_MS,
   )
 })
-// @reads-indirect scripts/** tests/** testbeds/** scenarios/** cmd/** mods/** decider/** lint/** sim/** sim-tui/**

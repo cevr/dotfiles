@@ -72,4 +72,4 @@ describe("the service's CPU time", () => {
     expect(groupCpu(999_999_999)).toBe(0)
   })
 })
-// @reads-indirect scripts/** tests/** testbeds/**
+// @reads-indirect scripts/** tests/** testbeds/** cmd/**
