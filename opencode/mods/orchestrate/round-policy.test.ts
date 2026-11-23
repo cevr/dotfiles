@@ -5,11 +5,13 @@
 // evidence value. The whole-domain suites (every host render, every generated history, envelope fuzz, mutation kills)
 // are in skills/orchestrate/scripts/round-policy.test.ts.
 import { describe, expect, test } from "bun:test"
+import { Predicate, Schema } from "effect"
 import * as Module from "./round-policy.ts"
 import {
   type Absent,
   admit,
   block,
+  type Checked,
   type Claim,
   decode,
   decodeBlock,
@@ -34,33 +36,50 @@ import {
 
 // ---- raw envelopes: plain JSON, as a store or a file holds it ---------------------------------------------------------
 
-const json = (value: unknown): unknown => JSON.parse(JSON.stringify(value))
+/** JSON text, as a store or a file holds it, and the plain value read back from it (Schema's JSON codec). */
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
+const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))
 const assigned = { kind: "assigned", required: true }
 const begin = (attempt: string, command = `cmd:${attempt}`) => ({ kind: "begin", attempt, command })
 const finish = (attempt: string, result: string, exit: number) => ({ kind: "finish", attempt, result, exit, output: { kind: "log", digest: `sha:${attempt}` }, receipt: `rcpt:${attempt}`, head: "head:a" })
-const refusal = (what: string) => ({ what, scope: "scope:x", report: "report:x", form: { kind: "none" } })
-const envelope = (role: string, items: ReadonlyArray<unknown>, step: ReadonlyArray<unknown> = []) => json({ version: 1, role, items, step })
+const refusal = (what: string): Refusal => ({ what, scope: "scope:x", report: "report:x", form: { kind: "none" } })
+/** A raw envelope: fresh plain objects each call, so no two envelopes share one. */
+const envelope = (role: string, items: ReadonlyArray<object>, step: ReadonlyArray<object> = []) => ({ version: 1, role, items, step })
 
 /** A required gate that ran red, and a spec item that passed: their histories, as the step recorded them. */
 const red = { id: "gate", assignment: assigned, events: [begin("att-7", "cmd:gate"), finish("att-7", "fail", 1)] }
 const done = { id: "spec", assignment: assigned, events: [begin("att-1", "cmd:spec"), finish("att-1", "pass", 0)] }
 const timebox = { kind: "limit", limit: { kind: "timebox", length: "2 h" } }
 
-const checkedOf = (input: unknown) => {
+/** A raw envelope as the builder above makes it. */
+type RawEnvelope = ReturnType<typeof envelope>
+const checkedOf = (input: RawEnvelope): Checked => {
   const got = decode(input)
-  if (!got.ok) throw new Error(got.error)
-  return got.value
+  if (got.ok) return got.value
+  return expect.unreachable(got.error)
 }
-const owedOf = (input: unknown): Claim => {
+const owedOf = (input: RawEnvelope): Claim => {
   const checked = checkedOf(input)
   const due = owed(project(checked.role), checked)
-  if (!due.ok) throw new Error(due.error)
-  return due.value.claim
+  if (due.ok) return due.value.claim
+  return expect.unreachable(due.error)
 }
-const admitted = (input: unknown, claim: unknown) => {
+const admitted = (input: RawEnvelope, claim: Claim) => {
   const checked = checkedOf(input)
-  return admit(project(checked.role), checked)(json(claim))
+  return admit(project(checked.role), checked)(claim)
 }
+const patchRun = (field: Field, patch: Partial<Run>): Field => {
+  if (field.field !== "completed") return field
+  return { ...field, run: { ...field.run, ...patch } }
+}
+/** The claim with the completed run of each item `on` picks changed by `patch`: a forgery of one evidence value. */
+const withRun = (claim: Claim, patch: Partial<Run>, on: (item: string) => boolean): Claim => ({
+  ...claim,
+  items: claim.items.map((one) => {
+    if (!on(one.item)) return one
+    return { ...one, fields: one.fields.map((field) => patchRun(field, patch)) }
+  }),
+})
 
 describe("the notation", () => {
   test("each role's block decodes to exactly its source policy, and a host's surrounding text changes nothing", () => {
@@ -139,26 +158,57 @@ type TakesEvidence<F> = Evidence extends infer X ? (X extends unknown ? Takes<F,
 type Functions = { [K in keyof typeof Module]: (typeof Module)[K] extends (...args: never) => unknown ? K : never }[keyof typeof Module]
 /** Each exported function but the decoder, and whether it takes evidence: every entry must be `false`. */
 type Census = { [K in Exclude<Functions, "decode">]: TakesEvidence<(typeof Module)[K]> }
-const census: { [K in keyof Census]: Census[K] extends false ? true : never } = Object.fromEntries(
-  [...EXPORTED_FUNCTIONS.checked, ...EXPORTED_FUNCTIONS.policy].map((name) => [name, true]),
-) as { [K in keyof Census]: true }
+/** Every key is required and none is extra (`satisfies`), and each is `true` only if that function takes no evidence. */
+const census = {
+  admit: true,
+  owed: true,
+  atomWords: true,
+  batchVerdict: true,
+  block: true,
+  blockOf: true,
+  checked: true,
+  condition: true,
+  decide: true,
+  decodeBlock: true,
+  delivered: true,
+  differences: true,
+  hasState: true,
+  hasStop: true,
+  header: true,
+  heldStates: true,
+  illFormed: true,
+  outcome: true,
+  parseCondition: true,
+  parseVerdictWhen: true,
+  parseWrites: true,
+  policyFaults: true,
+  presenceWords: true,
+  project: true,
+  readList: true,
+  render: true,
+  truths: true,
+  verdictWhen: true,
+  verdictWord: true,
+  writesText: true,
+} satisfies { [K in keyof Census]: Census[K] extends false ? true : never }
 
 describe("the export law: evidence enters only through decode", () => {
   test("the census: the module's exported functions are exactly the allowlist, each with its disposition", () => {
-    const exported = Object.keys(Module)
-      .filter((name) => typeof Reflect.get(Module, name) === "function")
+    const exported = Object.entries(Module)
+      .filter(([, value]) => Predicate.isFunction(value))
+      .map(([name]) => name)
       .sort()
     const allowed = [...EXPORTED_FUNCTIONS.decoder, ...EXPORTED_FUNCTIONS.checked, ...EXPORTED_FUNCTIONS.policy].sort()
     expect(exported).toEqual(allowed)
     expect(Object.keys(census).sort()).toEqual(allowed.filter((name) => name !== "decode"))
     // An exported table of functions (READS) is a policy reading of an item's facts: none of its members takes evidence.
-    const tables = Object.entries(Module).filter(([, value]) => value === Object(value) && Object.values(value).some((inner) => typeof inner === "function"))
+    const tables = Object.entries(Module).filter(([, value]) => value === Object(value) && Object.values(value).some(Predicate.isFunction))
     expect(tables.map(([name]) => name)).toEqual(["READS"])
   })
   test("the type law: no exported function takes a record, a trace, a stop record or an evidence value", () => {
     const checked = checkedOf(envelope("implementor", [done]))
     const record: ItemRecord = checked.records[0]!
-    const trace: Trace = json(done) as Trace
+    const trace = { id: "spec", assignment: { kind: "assigned", required: true }, events: [{ kind: "begin", attempt: "att-1", command: "cmd:spec" }] } satisfies Trace
     // @ts-expect-error -- the export law, asserted: a caller-assembled record is no checked step
     owed(project("implementor"), record)
     // @ts-expect-error -- the export law, asserted: a trace is no checked step: only decode reads one
@@ -169,8 +219,9 @@ describe("the export law: evidence enters only through decode", () => {
     admit(project("implementor"), { stop: { stop: "limit", values: [{ id: "limit", value: "nothing" }] }, items: [record] })
     // @ts-expect-error -- the export law, asserted: a structural copy of a checked step is not one (its private member makes the type nominal)
     owed(project("implementor"), { role: checked.role, records: checked.records, ending: checked.ending, envelope: checked.envelope })
-    // At run time too: a copy that a cast lets through is a typed rejection, never a judged step.
-    expect(owed(project("implementor"), { ...checked } as never)).toEqual({ ok: false, error: "a step is checked only by decode, from its envelope" })
+    // At run time too: a copy that an untyped value lets through (Object.create gives `any`) is a typed rejection, never a judged step.
+    const copy: Checked = Object.assign(Object.create(Object.prototype), checked)
+    expect(owed(project("implementor"), copy)).toEqual({ ok: false, error: "a step is checked only by decode, from its envelope" })
   })
 })
 
@@ -181,17 +232,18 @@ describe("decode: the persisted envelope, exact, never a throw", () => {
       ["required as a string", envelope("implementor", [{ ...red, assignment: { kind: "assigned", required: "false" } }]), `at ["items"][0]["assignment"]["required"]`],
       ["missing member", envelope("implementor", [{ ...red, events: [{ kind: "begin", attempt: "a" }] }]), `at ["items"][0]["events"][0]`],
       ["excess member", envelope("implementor", [{ ...red, flag: true }]), `at ["items"][0]["flag"]`],
-      ["a null event", envelope("implementor", [{ ...red, events: [null] }]), `at ["items"][0]["events"][0]`],
+      ["a null event", decodeJson(encodeJson(envelope("implementor", [{ ...red, events: [] }])).replace(`"events":[]`, `"events":[null]`)), `at ["items"][0]["events"][0]`],
       ["an empty event", envelope("implementor", [{ ...red, events: [{}] }]), `at ["items"][0]["events"][0]`],
       ["a limit of nothing", envelope("implementor", [done, red], [{ kind: "limit", limit: "nothing" }]), `at ["step"][0]["limit"]`],
       ["an unknown role", envelope("tester", [done]), `at ["role"]`],
-      ["another version", json({ version: 2, role: "implementor", items: [], step: [] }), `at ["version"]`],
+      ["another version", { version: 2, role: "implementor", items: [], step: [] }, `at ["version"]`],
     ]
     for (const [name, input, path] of cases) {
       const got = decode(input)
       expect([name, got.ok, !got.ok && got.error.startsWith("envelope: ") && got.error.includes(path)]).toEqual([name, false, true])
     }
-    for (const input of [null, {}, [], "text", 7, undefined]) expect(decode(input).ok).toBe(false)
+    // Every JSON root that is no envelope (JSON has no undefined).
+    for (const text of ["null", "{}", "[]", `"text"`, "7"]) expect([text, decode(decodeJson(text)).ok]).toEqual([text, false])
   })
   test("a blank value is no value: an empty or white-space id, command, digest, receipt, refusal or limit is a typed rejection", () => {
     const blanks: ReadonlyArray<readonly [string, unknown]> = [
@@ -224,7 +276,7 @@ describe("B4: a refusal never erases what an attempt already printed", () => {
   test("a refusal beside the running attempt keeps it started with its partial output, in every later label", () => {
     const refused = [...observed, { kind: "refuse", attempt: "b1", refusal: refusal("read:x") }]
     const current: Field = { field: "current", attempt: { id: "b1", command: "cmd:b1", status: "started", output: { kind: "partial", digest: "sha:b1-partial" } } }
-    expect(owedOf(envelope("implementor", [{ id: "b", assignment: assigned, events: refused }])).items[0]?.fields).toEqual([current, { field: "refused", refusal: json(refusal("read:x")) as Refusal }])
+    expect(owedOf(envelope("implementor", [{ id: "b", assignment: assigned, events: refused }])).items[0]?.fields).toEqual([current, { field: "refused", refusal: refusal("read:x") }])
     // Lifted, then interrupted: the partial output is still what the attempt printed.
     const later = [...refused, { kind: "lift" }, { kind: "interrupt", attempt: "b1", output: { kind: "partial", digest: "sha:b1-partial" } }]
     expect(owedOf(envelope("implementor", [{ id: "b", assignment: assigned, events: later }], [timebox])).items[0]?.fields).toEqual([{ field: "current", attempt: { ...current.attempt, status: "interrupted" } }])
@@ -264,22 +316,20 @@ describe("a claim, judged against what the envelope's histories owe", () => {
   })
   test("forged evidence (control 3): a flag beside the evidence, or an unknown claim member, is rejected before any value is read", () => {
     const claim = owedOf(input)
-    expect(admitted(input, { ...claim, lastAttempt: true })).toEqual([`claim: Expected no excess property   at ["lastAttempt"]`])
-    const flagged = { ...claim, items: claim.items.map((one) => ({ ...one, lastAttempt: true })) }
+    expect(admitted(input, Object.assign({}, claim, { lastAttempt: true }))).toEqual([`claim: Expected no excess property   at ["lastAttempt"]`])
+    const flagged = { ...claim, items: claim.items.map((one) => Object.assign({}, one, { lastAttempt: true })) }
     expect(admitted(input, flagged)[0]?.startsWith("claim: Expected no excess property")).toBe(true)
   })
   test("a same-looking run with another receipt, head or command is refused, naming both values", () => {
     const claim = owedOf(input)
     for (const [key, value] of [["receipt", "rcpt:8"], ["head", "head:b"], ["command", "cmd:other"]] as const) {
-      const items = claim.items.map((one) => ({ ...one, fields: one.fields.map((field) => (field.field === "completed" && one.item === "gate" ? { ...field, run: { ...field.run, [key]: value } } : field)) }))
-      expect([key, admitted(input, { ...claim, items }).length]).toEqual([key, 1])
+      expect([key, admitted(input, withRun(claim, { [key]: value }, (item) => item === "gate")).length]).toEqual([key, 1])
     }
   })
   test("values compared member by member (B1): an id and a command that print alike are still two values", () => {
     const spaced = envelope("implementor", [{ id: "gate", assignment: assigned, events: [begin("att-7", "verify command=fixture"), finish("att-7", "fail", 1)] }], [timebox])
     const claim = owedOf(spaced)
-    const moved = claim.items.map((one) => ({ ...one, fields: one.fields.map((field) => (field.field === "completed" ? { ...field, run: { ...field.run, id: "att-7 command=verify", command: "fixture" } } : field)) }))
-    expect(admitted(spaced, { ...claim, items: moved }).length).toBe(1)
+    expect(admitted(spaced, withRun(claim, { id: "att-7 command=verify", command: "fixture" }, () => true)).length).toBe(1)
     expect(admitted(spaced, claim)).toEqual([])
   })
   test("absence told by leaving the value out (B2): the truthful empty stop is admitted, a placeholder is refused", () => {
@@ -295,40 +345,34 @@ describe("a claim, judged against what the envelope's histories owe", () => {
 
 describe("ownership: the checked step owns deep-frozen copies", () => {
   test("every input object mutated after decode, at every depth, changes no later answer", () => {
-    const input = envelope("implementor", [done, { id: "gate", assignment: assigned, events: [begin("att-7", "cmd:gate"), finish("att-7", "fail", 1), { kind: "waitOpen", ref: "ref:x" }] }])
+    // Fresh objects each call: the input mutated below shares nothing with the other tests' fixtures.
+    const fresh = () =>
+      envelope("implementor", [
+        { id: "spec", assignment: { kind: "assigned", required: true }, events: [begin("att-1", "cmd:spec"), finish("att-1", "pass", 0)] },
+        { id: "gate", assignment: { kind: "assigned", required: true }, events: [begin("att-7", "cmd:gate"), finish("att-7", "fail", 1), { kind: "waitOpen", ref: "ref:x" }] },
+      ])
+    const input = fresh()
     const checked = checkedOf(input)
-    const before = JSON.stringify(owed(project("implementor"), checked))
-    const claim = owedOf(json(input))
-    const objects: Array<object> = []
-    const walk = (value: unknown): void => {
-      if (value !== Object(value)) return
-      objects.push(value as object)
-      for (const inner of Object.values(value as object)) walk(inner)
-    }
-    walk(input)
+    const before = encodeJson(owed(project("implementor"), checked))
+    const claim = owedOf(fresh())
+    /** Every object reachable from the roots, the roots included. */
+    const objectsIn = (roots: ReadonlyArray<object>): Array<object> => roots.flatMap((root) => [root, ...objectsIn(Object.values(root).filter((inner) => inner === Object(inner)))])
+    const objects = objectsIn([input])
     // No object the checked step or its answer holds is one the caller handed in.
-    const held: Array<object> = []
-    const collect = (value: unknown): void => {
-      if (value !== Object(value)) return
-      held.push(value as object)
-      for (const inner of Object.values(value as object)) collect(inner)
-    }
-    collect(checked.records)
-    collect(checked.envelope)
     const answer = owed(project("implementor"), checked)
-    collect(answer.ok && answer.value)
-    expect(held.filter((one) => objects.includes(one)).length).toBe(0)
+    const held = [...objectsIn([checked.records]), ...objectsIn([checked.envelope])]
+    if (answer.ok) held.push(...objectsIn([answer.value]))
+    expect([answer.ok, held.filter((one) => objects.includes(one)).length]).toEqual([true, 0])
     expect(held.every((one) => Object.isFrozen(one))).toBe(true)
     for (const one of objects) {
-      for (const key of Object.keys(one)) {
-        const value = Reflect.get(one, key)
-        if (typeof value === "string") Reflect.set(one, key, `${value}:mutated`)
-        if (typeof value === "number") Reflect.set(one, key, value + 1)
-        if (typeof value === "boolean") Reflect.set(one, key, !value)
+      for (const [key, value] of Object.entries(one)) {
+        if (Predicate.isString(value)) Object.assign(one, { [key]: `${value}:mutated` })
+        if (Predicate.isNumber(value)) Object.assign(one, { [key]: value + 1 })
+        if (Predicate.isBoolean(value)) Object.assign(one, { [key]: !value })
       }
       if (Array.isArray(one)) one.push({ kind: "settle" })
     }
-    expect(JSON.stringify(owed(project("implementor"), checked))).toBe(before)
+    expect(encodeJson(owed(project("implementor"), checked))).toBe(before)
     expect(admit(project("implementor"), checked)(claim)).toEqual([])
   })
 })
