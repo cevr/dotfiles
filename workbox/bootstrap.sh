@@ -135,12 +135,8 @@ check_mode() {
   test "$(systemctl show bite.slice -p MemoryLow --value)" -eq 536870912
   test "$(systemctl show bite.slice -p MemorySwapMax --value)" -eq 0
   test "$(systemctl show bite.slice -p CPUWeight --value)" -eq 1000
-  test "$(systemctl show user.slice -p MemoryLow --value)" -eq 4294967296
-  test "$(systemctl show "user@$(id -u).service" -p MemoryLow --value)" -eq 4294967296
-  test "$(systemctl --user show app.slice -p MemoryLow --value)" -eq 4294967296
   "$workbox_dir/system-tools.sh" --check
   check_family_shadow
-  test "$(systemctl show "user-$(id -u).slice" -p MemoryMax --value)" -eq 55834574848
   test "$(systemctl show "user-$(id -u).slice" -p MemorySwapMax --value)" -eq 1073741824
   systemctl is-active --quiet workbox-shm-limit.service
   systemctl is-active --quiet workbox-btrfs-reclaim.service
@@ -238,10 +234,6 @@ sudo install -m 0644 "$system_dir/bite.slice" /etc/systemd/system/
 sudo install -m 0644 "$system_dir/workbox-shm-limit.service" /etc/systemd/system/
 sudo install -m 0644 "$system_dir/workbox-btrfs-reclaim.service" /etc/systemd/system/
 sudo install -m 0755 "$system_dir/workbox-btrfs-reclaim" /usr/local/sbin/workbox-btrfs-reclaim
-sudo install -d -m 0755 /etc/systemd/system/user-.slice.d
-sudo install -m 0644 \
-  "$system_dir/user-.slice.d/20-workbox-memory-limit.conf" \
-  /etc/systemd/system/user-.slice.d/20-workbox-memory-limit.conf
 sudo install -m 0644 "$system_dir/20auto-upgrades" /etc/apt/apt.conf.d/20auto-upgrades
 sudo install -d -m 0755 /etc/systemd/system/tailscaled.service.d
 sudo install -m 0644 \

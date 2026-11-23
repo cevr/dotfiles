@@ -68,7 +68,8 @@ step() { printf '\n== %s\n' "$*"; }
 # VM's own /etc and /usr/local (the VM had none of them before: 2026-11-23).
 tools_files=(
     /etc/systemd/{system/user.slice.d,system/user-.slice.d,system/user@.service.d,user/app.slice.d,user/opencode-service-.scope.d}/30-workbox-reserve.conf
-    /etc/systemd/user/{opencode,ergo,bite-work,personal}.slice
+    /etc/systemd/user/{opencode,ergo,bite-work,personal,opencodeserver}.slice
+    /etc/systemd/system/user-.slice.d/20-workbox-memory-limit.conf
     /etc/systemd/system/{user.slice.d,system.slice.d}/40-workbox-slices.conf
     /etc/systemd/system/user@.service.d/40-workbox-delegate.conf
     /etc/tmpfiles.d/tmp.conf /usr/local/sbin/workbox-tmp-clean
@@ -202,7 +203,7 @@ if [[ ${1:-} == --slices-reboot ]]; then
             echo "$f" >> "${prefix}delegate-aside/list"
             rm -f "$f"
         done
-        bash "$here/../../workbox/system-tools.sh" slices || fail "system-tools.sh slices"
+        bash "$here/../../workbox/system-tools.sh" reserve slices || fail "system-tools.sh reserve slices"
         loginctl enable-linger "$ruser"
         wait_manager
         ructl systemctl --user enable --now workbox-pressure.timer
@@ -249,7 +250,10 @@ if [[ ${1:-} == --slices-reboot ]]; then
             journalctl -b --no-pager -o cat "_UID=$ruid" _SYSTEMD_USER_UNIT=workbox-pressure.service
             fail "no automatic pressure sample from the unprivileged minute timer after reboot"
         fi
-        pass "after reboot, the enabled user timer recorded a pressure sample without a manual start (CPU, memory, I/O, MemAvailable)"
+        journalctl -b --no-pager -o cat "_UID=$ruid" _SYSTEMD_USER_UNIT=workbox-pressure.service |
+            grep -E '^workbox-big-process pid=[0-9]+ rss_kib=[0-9]+ cgroup=.+ comm=' > "${prefix}delegate-aside/big-process.log" ||
+            fail "the timer did not record any large processes"
+        pass "after reboot, the enabled user timer recorded pressure and large-process samples without a manual start"
         ;;
     *) fail "usage: test.sh --slices-reboot prepare | verify" ;;
     esac
@@ -663,23 +667,25 @@ install -m 0644 "$here/../../workbox/systemd/system/bite.slice" /etc/systemd/sys
 systemctl daemon-reload
 [[ $(cat /sys/fs/cgroup/bite.slice/cpu.weight) == 1000 ]] || fail "bite.slice back to 1000"
 pass "a running slice takes a changed CPUWeight on daemon-reload, without a restart"
-four=4294967296 one=1073741824
+mem_total=$(awk '/^MemTotal:/ { printf "%.0f\n", $2 * 1024 }' /proc/meminfo)
+near_pct() { awk -v got="$1" -v pct="$2" -v total="$mem_total" 'BEGIN { want = total * pct / 100; exit !(got >= want - 1048576 && got <= want + 1048576) }'; }
 for cg in user.slice "user.slice/user-$uid.slice" "user.slice/user-$uid.slice/user@$uid.service"; do
-    [[ $(cat "/sys/fs/cgroup/$cg/memory.low") == "$four" && $(cat "/sys/fs/cgroup/$cg/memory.min") == "$one" ]] || fail "$cg memory floor"
+    near_pct "$(cat "/sys/fs/cgroup/$cg/memory.low")" 7 && near_pct "$(cat "/sys/fs/cgroup/$cg/memory.min")" 2 || fail "$cg memory floor"
 done
 runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user daemon-reload
 tools_scope=opencode-service-$$.scope
-runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" systemd-run --user --scope --quiet --collect --unit="$tools_scope" sleep 60 &
+runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" systemd-run --user --scope --quiet --collect --unit="$tools_scope" --slice=app.slice sleep 60 &
 scope_job=$!
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-    scope_cg=/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/app.slice/$tools_scope
+    scope_cg=/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/opencodeserver.slice/$tools_scope
     [[ -e $scope_cg/memory.low ]] && break
     sleep 1
 done
 for cg in "$(dirname "$scope_cg")" "$scope_cg"; do
-    [[ $(cat "$cg/memory.low") == "$four" && $(cat "$cg/memory.min") == "$one" ]] || fail "${cg##*/} memory floor: $(cat "$cg/memory.low")"
+    near_pct "$(cat "$cg/memory.low" 2>/dev/null)" 7 && near_pct "$(cat "$cg/memory.min" 2>/dev/null)" 2 ||
+        fail "${cg##*/} memory floor or protected slice placement"
 done
-pass "bite.slice CPUWeight 1000; the memory floor 1G/4G on user.slice, the user's slice and manager, app.slice and a transient $tools_scope"
+pass "bite.slice CPUWeight 1000; the 2%/7% memory floor across ancestors and on a transient server scope in opencodeserver.slice"
 runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user stop "$tools_scope"
 wait "$scope_job" 2>/dev/null || true
 tools_scope=''
@@ -757,18 +763,15 @@ uctl systemd-run --user --scope --quiet --collect --unit=hbt-place.scope --slice
 place_job=$!
 for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -n $(cat "$manager/ergo.slice/hbt-place.scope/cgroup.procs" 2>/dev/null) ]] && break; sleep 1; done
 [[ -n $(cat "$manager/ergo.slice/hbt-place.scope/cgroup.procs" 2>/dev/null) ]] || fail "the run is not in ergo.slice: $(find "$manager" -name 'hbt-place.scope')"
-mem_total=$(awk '/^MemTotal:/ { print $2 * 1024 }' /proc/meminfo)
-high=$(cat "$manager/ergo.slice/memory.high")
 # CPUQuota=62.5%threads: 62.5% of a thread per online thread, rounded to a whole percent (cpu.max in µs per 100 ms).
 quota_pct=$(awk -v n="$(nproc)" 'BEGIN { printf "%d", 62.5 * n + 0.5 }')
 [[ $(cat "$manager/ergo.slice/cpu.weight") == 20 && $(cat "$manager/ergo.slice/cpu.max") == "$((quota_pct * 1000)) 100000" ]] ||
     fail "ergo.slice: cpu.weight $(cat "$manager/ergo.slice/cpu.weight"), cpu.max $(cat "$manager/ergo.slice/cpu.max")"
-# MemoryHigh=80%, above Ergo's own bound on its gates (slices.conf), to the page.
-awk -v h="$high" -v m="$mem_total" 'BEGIN { exit !(h > m * 0.79 && h < m * 0.81) }' || fail "ergo.slice memory.high $high, want 80% of $mem_total"
+near_pct "$(cat "$manager/ergo.slice/memory.max")" 22 || fail "ergo.slice memory cap is not 22% of $mem_total"
 [[ -r $manager/ergo.slice/io.stat ]] || fail "ergo.slice has no io.stat (IOAccounting)"
 uctl systemctl --user stop hbt-place.scope
 wait "$place_job" 2>/dev/null || true
-pass "the user manager has cpu, io and memory; a run placed with systemd-run --user --slice=ergo.slice lands there: cpu.weight 20, cpu.max $quota_pct% (62.5% of $(nproc) threads), memory.high 80%, io.stat"
+pass "the user manager has cpu, io and memory; a run placed with systemd-run --user --slice=ergo.slice lands there: cpu.weight 20, cpu.max $quota_pct% (62.5% of $(nproc) threads), memory.max 22%, io.stat"
 # Ergo's gate places itself in ergo-gates.slice (its scripts/gate/scope_linux.go): systemd nests it in
 # ergo.slice by the dash, so the family's values hold over it. The callers' contract: a family's slice
 # answers `systemctl --user cat`; a name with no unit is not refused by systemd-run, it is made at the
@@ -815,6 +818,7 @@ awk -v r="$ratio" 'BEGIN { exit !(r > 3.5 && r < 7) }' || fail "personal:ergo CP
 ((ssh_ms < 5000)) || fail "ssh took $ssh_ms ms while the runs spun"
 pass "CPU-bound runs in personal.slice (100) and ergo.slice (20) got $ratio:1 over 20 s; ssh into bite.slice's sshd took $ssh_ms ms meanwhile"
 
+bash "$here/test-memory.sh" "$work/memory" "$user" "$uid" || fail "memory isolation and recovery"
 
 # /tmp's rules and the held-file guard, installed for real; the guard on the target's /tmp with short
 # ages: an old directory goes, an entire run tree a process holds open stays;

@@ -116,10 +116,7 @@ still race the cleaner.
 
 **Run families** (`workbox/slices.conf`, installed by `system-tools.sh
 slices`): slices of `exedev`'s own user manager, which has cpu, io and memory
-delegated. `opencode.slice` (CPU weight 400), `ergo.slice` (20, a CPU cap
-of 62.5% of the host's online threads, `MemoryHigh` 80%: above Ergo's own bound
-on its gates, so that acts first), `bite-work.slice` (100), `personal.slice`
-(100). Weights share the CPU under load only. The cap is written as a share
+delegated. Weights share the CPU under load only. Ergo's cap is written as a share
 (`CPUQuota=62.5%threads`) and turned into a percentage at install: 10 of the
 exe box's 16 threads (`CPUQuota=1000%`, set there 2026-11-23 03:5xZ), 20 of the
 AX102's 32 (`2000%`); rerun `system-tools.sh slices` on a new host. They are
@@ -130,6 +127,31 @@ shadows the installed one whole: Ergo wrote one on the exe box (`CPUWeight=20`,
 `CPUQuota=1000%`, equal to ours there), which comes along in the home and, on
 the AX102, would hold Ergo to 10 of 32 threads. `bootstrap.sh --check` warns
 while such a file exists; move it aside after the move (RUNBOOK.md).
+
+After a Nov 23 test reached 43–47 GB and OOM-killed neighboring runs and the
+OpenCode server, each family gets a separate hard memory cap:
+
+| Slice | CPU weight | Maximum RAM |
+| --- | ---: | ---: |
+| `opencode.slice` (work, not the server) | 400 | 7% |
+| `ergo.slice` | 20 | 22% |
+| `bite-work.slice` | 100 | 30% |
+| `personal.slice` | 100 | 7% |
+| `app.slice` (default unplaced work) | 100 | 5% |
+| `opencodeserver.slice` | 1000 | 9% |
+
+Systemd resolves the shares against physical RAM when loading the provisioned
+units. The named caps total 80%, below the 82% cap for each user and for
+`user.slice` as a whole. That leaves 2% inside for the user manager and
+ancillary processes and 18% outside for system services. No family or server
+can swap. The server's own scope has `MemoryMin=2%`, `MemoryLow=7%` and
+`ManagedOOMPreference=omit`, with the memory floor carried through its
+ancestors. A family-local OOM cannot select that sibling scope. While
+`opencode.service` is active, its watchdog checks the managed launcher every
+15 seconds and re-ensures the server after its own cap is exceeded; an
+explicit `systemctl --user stop opencode.service` stops recovery too.
+A root, kernel or system-service allocation outside `user.slice` is not
+bounded by these limits.
 
 No IO weights: on Ubuntu 24.04 NVMe's scheduler is `none`, which weighs nothing,
 so an `IOWeight` there is a no-op. io.cost would weigh, but in the noble VM it
@@ -156,21 +178,27 @@ nests in `ergo.slice` by the dash in its name, so Ergo needs no change. In the
 test VM two CPU-bound runs at 100 and 20 got 4.86:1 over 20 s, and ssh
 answered in 0.6 s.
 
-The callers' contract (the host arbiter, Ergo's launcher): run a job as
-`systemd-run --user --scope --slice=<family>.slice -- <command>`, with
-`<family>` one of `opencode`, `ergo`, `bite-work`, `personal`; no root, no
-sudo. The slices are the user manager's units from `/etc/systemd/user`;
-`systemctl --user cat <family>.slice` exits 0 where they are installed. A slice
-name with no unit file is not refused: systemd makes it with no settings of
-its own (an ordinary sibling at the default share), so a caller that must have the family's values checks
-`systemctl --user cat` first and treats exit 1 as "families not installed".
+The provisioned bounded-job interface is
+`workbox-run <family> [--memory-max SIZE] -- command [arg ...]`, without sudo.
+The four families and `default` select a fresh user scope below that family
+(`default` → `app.slice`). A scope uses 12 GiB or the requested positive
+byte/K/M/G size, further restricted by the enclosing family, with swap off
+and `memory.oom.group=1`: a killed run dies as a group. It preserves the
+working directory, argv, environment and I/O, and returns the command's status
+(137 for a SIGKILL on Linux). Invalid usage is 2; a systemd host without the
+installed family or working user manager refuses (125, or systemd-run's
+diagnostic and nonzero status if setup itself fails). On a system without
+systemd, including macOS, it says so on stderr and runs the command unchanged.
+Automatic OpenCode session-shell placement belongs to `shell-cgroup-cap`;
+until then, use this helper for test runs.
 A job also sets its family's temp: `TMPDIR=/tmp/<family> GOTMPDIR=/tmp/<family>`
 (`/tmp/opencode` for the opencode family), so its build files count against
 that family's cap.
 
 **Pressure.** `workbox/bootstrap.sh` enables `workbox-pressure.timer` in the
 lingering user's manager. It records CPU, memory and I/O PSI and available,
-dirty, writeback and free-swap KiB once per minute. Read it with `journalctl
+dirty, writeback and free-swap KiB once per minute, plus the five largest
+user processes by RSS (PID, KiB, cgroup and command name, no arguments). Read it with `journalctl
 --user -u workbox-pressure.service`; journald bounds retention, and samples
 survive a reboot when the journal is persistent.
 

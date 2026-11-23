@@ -32,7 +32,7 @@ Sideshow, agent settings, S3 backups, security updates, the Tailscale SSH
 service, and swap protection. It configures `systemd-resolved` with public
 fallback servers. It protects Tailscale, the DNS resolver, and the Tailscale SSH
 service from workload memory pressure. It caps user sessions, which hold the
-terminals and every agent, at 52 GB of memory and 1 GB of swap. It caps
+terminals and every agent, at 82% of physical memory and 1 GiB of swap. It caps
 `/dev/shm` at 8 GB because no process owns its files and the kernel cannot
 reclaim them. It raises the inotify limits to 4194304 watches and 1024
 instances (`systemd/sysctl.d/90-inotify.conf`, which the Hetzner box's
@@ -70,17 +70,23 @@ runs at `CPUWeight=1000` against `user.slice`'s default
 100, so under agent load the way in gets the CPU the moment it asks
 (2026-11-22: sshd and tailscaled starved for 15 minutes); its memory floor is
 unchanged (`MemoryMin` 256M, `MemoryLow` 512M, each service its own). The
-OpenCode service places itself in `opencode-service-<pid>.scope` in the user
-manager's `app.slice` at CPU and IO weight 1000
-(`opencode/mods/update/placement.ts`); the reserve adds its memory floor,
-`MemoryMin=1G` (its RSS at rest is 0.7-0.8 GB) and `MemoryLow=4G` (its
-high-water mark, 4.22 GB), through a prefix drop-in systemd applies to the
-transient scope, and the same floor on each parent (`user.slice`, `user-.slice`,
-`user@.service`, `app.slice`), since a cgroup's floor holds only as far as its
-parent's. The run families track I/O with `IOAccounting`, but do not set I/O
+OpenCode service places itself in `opencode-service-<pid>.scope`. The
+root-installed prefix drop-in gives it its own `opencodeserver.slice`,
+separate from `app.slice` (the default workload slice) and the four named
+families. Its 9% cap and 2%/7% memory floor scale to the host and the floor
+extends through its ancestors. While `opencode.service` is active, the
+user watchdog re-ensures the server if it exceeds its own cap and exits.
+The named family caps, default and server total 80% of RAM, below the 82%
+aggregate backstop. The run families track I/O with `IOAccounting`, but do not set I/O
 weights (linux/hetzner-workbox/README.md, Run families, says why). `--check`
 warns when a user's own `~/.config/systemd/user/<family>.slice` shadows an
 installed one.
+
+Use `workbox-run bite-work -- bun test` (or another family or `default`) for
+bounded tests. Each call opens a new user scope with its own hard cap
+(`--memory-max SIZE`, default 12 GiB), no swap and whole-run OOM handling.
+See the [host contract](../linux/hetzner-workbox/README.md#layout-scratch-caches-run-families-free-space)
+for limits and exit codes. The default OpenCode shell adapter is separate.
 
 ## Terminals: herdr-core
 
@@ -110,8 +116,8 @@ Mac with `--on workbox` and addresses such as `workbox/t7` once
 
 ## Timers
 
-`workbox-pressure.timer` samples host CPU, memory and I/O pressure every
-minute in the lingering user manager. Read the samples with
+`workbox-pressure.timer` samples host CPU, memory and I/O pressure and logs
+the largest five user processes by RSS every minute. Read the samples with
 `journalctl --user -u workbox-pressure.service`.
 
 | Timer | Runs |

@@ -216,8 +216,8 @@ describe("system-tools.sh installs the pinned tools, once", () => {
     const installs = h.logLines().filter((line) => line.startsWith("apt-get install"))
     expect(installs.map((line) => line.split(" ").filter((word) => !word.startsWith("-")).slice(2))).toEqual([["fish", "ksh", "mksh"], ["qemu-user-static"], ["powershell"]])
     // The run families: a slice unit each for the user manager, a drop-in each for the system's slices.
-    expect(readFileSync(join(h.root, "etc", "systemd", "user", "ergo.slice"), "utf8")).toContain("[Slice]\nCPUWeight=20\nCPUQuota=1000%\nIOAccounting=yes\nMemoryHigh=80%\n")
-    expect(readFileSync(join(h.root, "etc", "systemd", "system", "user.slice.d", "40-workbox-slices.conf"), "utf8")).toContain("[Slice]\nCPUWeight=100\n")
+    expect(readFileSync(join(h.root, "etc", "systemd", "user", "ergo.slice"), "utf8")).toContain("[Slice]\nCPUWeight=20\nCPUQuota=1000%\nIOAccounting=yes\nMemoryMax=22%\nMemorySwapMax=0\n")
+    expect(readFileSync(join(h.root, "etc", "systemd", "system", "user.slice.d", "40-workbox-slices.conf"), "utf8")).toContain("[Slice]\nCPUWeight=100\nMemoryMax=82%\nMemorySwapMax=1G\n")
     expect(readFileSync(join(h.root, "etc", "systemd", "system", "user@.service.d", "40-workbox-delegate.conf"), "utf8")).toContain("Delegate=cpu io memory pids")
     // /tmp's rules and the guard; the free-space script, its unit and timer.
     for (const [src, dest] of [

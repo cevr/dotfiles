@@ -15,3 +15,16 @@ LC_ALL=C awk '
   BEGIN { printf "workbox-pressure" }
   END { print "" }
 ' /proc/pressure/cpu /proc/pressure/memory /proc/pressure/io /proc/meminfo
+
+# Bounded result, commands only (never argv or environment, which may contain secrets).
+ps -u "$(id -u)" --sort=-rss -o pid=,rss=,comm= |
+  awk 'NR <= 5 {
+    pid = $1; rss = $2
+    sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+/, "")
+    file = "/proc/" pid "/cgroup"; cg = "-"
+    while ((getline line < file) > 0) {
+      if (line ~ /^0::/) { cg = substr(line, 4); break }
+    }
+    close(file)
+    printf "workbox-big-process pid=%s rss_kib=%s cgroup=%s comm=%s\n", pid, rss, cg, $0
+  }'
