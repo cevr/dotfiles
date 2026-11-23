@@ -4,10 +4,11 @@
 // now. A ping the pool placed no login for (an unpooled provider), or on a
 // host where no plugin answers the pool's RPC, needs no answer and goes out.
 // A pooled one goes out only on a measured answer that admits it on its login
-// (an older pool, which names no eligible logins, admits by its `ok`), or on
-// an unmeasured one, as the pool's own request boundary does; a failure, a
-// timeout or an answer that is not a pace skips the ping, which only lets the
-// cache go cold.
+// on ordinary room (an older pool, which names no eligible logins, admits by
+// its `ok`). An unmeasured answer (no fresh reading of a managed pool), a
+// claim's room (`backed`, which a request reserves on at its dispatch and a
+// ping does not), a failure, a timeout or an answer that is not a pace skips
+// the ping, which only lets the cache go cold.
 import { Pace } from "@dotfiles/opencode-pool/pace"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 import { Effect, Layer, Option, Schema } from "effect"
@@ -30,8 +31,7 @@ const decodeFailure = Schema.decodeUnknownOption(Schema.Struct({ type: Schema.St
 
 /** Whether a pace answer admits a request on `login`. */
 export const admitted = (pace: Pace, login: string): boolean => {
-  if (!pace.measured) return true
-  if (!pace.ok) return false
+  if (!pace.measured || !pace.ok || pace.admission === "backed") return false
   return Option.match(Option.fromUndefinedOr(pace.eligible), { onNone: () => true, onSome: (eligible) => eligible.includes(login) })
 }
 
