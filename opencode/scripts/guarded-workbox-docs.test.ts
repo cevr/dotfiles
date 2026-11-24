@@ -7,12 +7,14 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
 
 // One bounded scanner invocation, with room for scheduling delays on the loaded gate; not a speed check.
 const TEST_TIMEOUT = 30_000
+// The oracle repeats the main scanner's real Git/index work for both path spellings.
+const PARITY_TIMEOUT = 60_000
 
 const live = it.live.layer(BunServices.layer)
-const run = (args: ReadonlyArray<string>) =>
+const run = (script: string, args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-    const child = yield* spawner.spawn(ChildProcess.make("python3", ["../linux/hetzner-workbox/test-guarded-docs.py", ...args], {
+    const child = yield* spawner.spawn(ChildProcess.make("python3", [`../linux/hetzner-workbox/${script}`, ...args], {
       stdin: "ignore",
       forceKillAfter: "3 seconds",
     }))
@@ -20,9 +22,11 @@ const run = (args: ReadonlyArray<string>) =>
     return { output: output.trim(), code: Number(code) }
   }).pipe(Effect.scoped)
 
+const scan = (args: ReadonlyArray<string>) => run("test-guarded-docs.py", args)
+
 live("tracked documentation passes the script-derived host guard", () =>
   Effect.gen(function* () {
-    const result = yield* run([])
+    const result = yield* scan([])
     expect(result).toEqual({ code: 0, output: "guarded docs OK" })
   }),
   TEST_TIMEOUT,
@@ -30,8 +34,19 @@ live("tracked documentation passes the script-derived host guard", () =>
 
 live("the docs guard rejects new missing pins, broken handoffs and omitted peer pins", () =>
   Effect.gen(function* () {
-    const result = yield* run(["--controls"])
+    const result = yield* scan(["--controls"])
     expect(result).toEqual({ code: 0, output: "guarded docs controls OK" })
   }),
   TEST_TIMEOUT,
+)
+
+live("the scanner preserves main's exact verdict bytes with canonical and aliased TMPDIRs", () =>
+  Effect.gen(function* () {
+    const result = yield* run("test-guarded-docs-parity.py", [])
+    expect(result).toEqual({
+      code: 0,
+      output: "guarded docs byte parity OK (tracked scan and 15 control invocations across both TMPDIR spellings)",
+    })
+  }),
+  PARITY_TIMEOUT,
 )

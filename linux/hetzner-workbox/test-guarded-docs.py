@@ -1267,6 +1267,8 @@ def census_control(scratch):
             raise AssertionError(f"{name} was not refused with the checkout-write correction: {census}")
     # The default census above still runs at the CLI in a fresh checkout. All
     # explicit-path cases below share that checkout's now-fixed index and grammar.
+    # Use the physical root and cwd the child saw, without resolving operands.
+    scratch = scratch.resolve()
     explicit_scan = read_scanner(scratch)
     for case in ("missing", "changed", "duplicate", "fenced"):
         boundary = explicit_scan.scan([f"workbox/{case}-boundary.md"], scratch)
