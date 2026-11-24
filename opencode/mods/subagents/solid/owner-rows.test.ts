@@ -7,6 +7,7 @@
 // painted for a single frame counts: the strip may never draw a child of an
 // earlier run, nor drop a live one, and the count always equals the rows drawn.
 import { expect } from "bun:test"
+import { setImmediate } from "node:timers/promises"
 import { Effect, Option, Queue } from "effect"
 import { it } from "effect-bun-test"
 import type { RowsReply } from "../../kernel/opencode/child-row.ts"
@@ -84,14 +85,15 @@ it.effect("a reconnect and host work during a refetch never draw an old child, n
         },
         shell: { list: () => [] },
       }
-      // Each read is answered at the next revision; its answer arrives after the events emitted with its start.
+      // Each read is answered at the next revision, on the next turn of the event loop: the events emitted with
+      // its start land while it is in flight.
       let revision = 0
       const client: RowsClient = {
         rpc: () => ({
           read: (input) => {
             revision++
             const reply: RowsReply = { rows: input.children.map((child) => answer(child, revision)) }
-            return Promise.resolve(reply)
+            return setImmediate(reply)
           },
         }),
       }
