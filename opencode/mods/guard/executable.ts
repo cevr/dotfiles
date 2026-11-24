@@ -1,14 +1,23 @@
 // The keychain reader's execution plan. Wrapper options locate the next
 // executable; runtime options say which code runs before its entry point.
 import { Array as Arr, Option } from "effect"
-import { basename, resolve } from "./path.ts"
-import { COMMAND_STARTS, expandWord, SHELLS, shellInput, shellSegments, simpleCommands, type Word } from "./shell-line.ts"
+import { basename, dirname, resolve } from "./path.ts"
+import { COMMAND_STARTS, expandWord, SHELLS, shellInput, shellSegments, simpleCommands, type ShellSegment, type Word } from "./shell-line.ts"
 
-type OptionKind = "flag" | "value" | "preload" | "code" | "module" | "stop" | "replace" | "check"
+type OptionKind = "flag" | "value" | "directory" | "manifest" | "preload" | "code" | "module" | "stop" | "replace" | "check"
 type Options = ReadonlyMap<string, OptionKind>
 const options = (...groups: ReadonlyArray<readonly [OptionKind, string]>): Options =>
   new Map(groups.flatMap(([kind, words]) => words.split(" ").map((name) => [name, kind] as const)))
 const envOptions = options(["value", "-u --unset -C --chdir -S --split-string"], ["flag", "-i --ignore-environment -0 --null"], ["stop", "-h --help --version"])
+const packageDirectory = ["directory", "--prefix -C --dir --cwd"] as const
+const bunCommands = new Set(["run", "test", "build", "x", "exec", "install", "add", "remove", "update"])
+const launcherOptions = new Map([
+  ["npm", options(packageDirectory, ["value", "--workspace -w --userconfig --registry"])],
+  ["pnpm", options(packageDirectory, ["value", "--filter -F --workspace-root"])],
+  ["yarn", options(packageDirectory, ["value", "--use-yarnrc --modules-folder"])],
+  ["make", options(["directory", "-C --directory"], ["value", "-f --file --makefile -I --include-dir"])],
+  ["cargo", options(["manifest", "--manifest-path"], ["directory", "-C"], ["value", "--config --target --package -p --features"])],
+])
 
 const runtimeOptions = new Map([
   ["node", options(
@@ -20,7 +29,7 @@ const runtimeOptions = new Map([
   )],
   ["bun", options(
     ["preload", "--preload -r"], ["code", "-e --eval -p --print"],
-    ["value", "--cwd --config --env-file --conditions --filter --loader --define --port"],
+    packageDirectory, ["value", "--config --env-file --conditions --filter --loader --define --port"],
     ["flag", "--smol --watch --hot --silent --no-install --bun"], ["stop", "-h --help -v --version --revision"],
   )],
   ["deno", options(
@@ -74,7 +83,7 @@ const flag = (input: Word, table: Options): Flag => {
   const equals = input.text.indexOf("=")
   if (input.text.startsWith("--") && equals > 0) return { name: input.text.slice(0, equals), attached: Option.some({ ...input, text: input.text.slice(equals + 1) }) }
   const key = input.text.slice(0, 2)
-  if (/^-[^-].+/.test(input.text) && !table.has(input.text) && ["code", "value", "module", "preload", "replace"].includes(table.get(key) || "")) {
+  if (/^-[^-].+/.test(input.text) && !table.has(input.text) && ["code", "value", "directory", "manifest", "module", "preload", "replace"].includes(table.get(key) || "")) {
     return { name: key, attached: Option.some({ ...input, text: input.text.slice(2) }) }
   }
   return { name: input.text, attached: Option.none() }
@@ -317,6 +326,7 @@ export interface ExecutionPlace {
   readonly home: string
   readonly env?: ReadonlyMap<string, string>
   readonly unknownCwd?: true
+  readonly positionals?: ReadonlyArray<string>
 }
 
 export interface Execution {
@@ -329,15 +339,67 @@ export interface Execution {
   readonly code: ReadonlyArray<CodeInput>
   readonly sourceDepth: number
   readonly syntaxOnly: boolean
+  readonly positionals: ReadonlyArray<string>
 }
 
 export const MAX_CODE_DEPTH = 6
-const variable = /\$(?:\{([A-Za-z_][A-Za-z_0-9]*)\}|([A-Za-z_][A-Za-z_0-9]*))/g
+export const unknownTarget = "\0guard:unresolved"
+const variable = /\$(?:\{([A-Za-z_]\w*|\d+|[@*])(?:(:?)-([^}]*))?\}|([A-Za-z_]\w*|\d+|[@*?!#-]))/g
+type Alternatives = ReadonlyArray<string>
+type Bindings = ReadonlyMap<string, Alternatives>
 
 const expanded = (entry: Word, place: ExecutionPlace, vars: ReadonlyMap<string, string>): string => {
   const text = expandWord(entry, place.home, expansionCwd(place))
   if (entry.singleQuoted) return text
-  return text.replace(variable, (use, braces: string, bare: string) => vars.get(braces || bare) || use)
+  return text.replace(variable, (use, braces: string, colon: string, fallback: string, bare: string) => vars.get(braces || bare) || fallback || use)
+}
+
+/** Expand the finite readings of a word; never execute substitutions or infer an environment value. */
+const alternatives = (entry: Word, place: ExecutionPlace, bindings: Bindings): Alternatives => {
+  const text = expandWord(entry, place.home, expansionCwd(place))
+  if (entry.singleQuoted) return [text]
+  let values: Alternatives = [""]
+  let at = 0
+  for (const match of text.matchAll(variable)) {
+    const [use, braces, colon, fallback, bare] = match
+    const name = braces || bare || ""
+    const bound = bindings.get(name)
+    const choices = bound || defaultValues(name, Option.fromUndefinedOr(fallback))
+    const prefix = unresolvedTokens(text.slice(at, match.index))
+    values = values.flatMap((value) => choices.map((choice) => value + prefix + defaultValue(choice, colon || "", Option.fromUndefinedOr(fallback))))
+    at = match.index + use.length
+  }
+  return values.map((value) => value + unresolvedTokens(text.slice(at)))
+}
+
+const defaultValues = (name: string, fallback: Option.Option<string>): Alternatives => {
+  if (/^\d+$/.test(name) && Option.isSome(fallback)) return [literalDefault(fallback.value)]
+  return [unknownTarget]
+}
+
+const defaultValue = (value: string, colon: string, fallback: Option.Option<string>): string => {
+  if (colon === ":" && value === "" && Option.isSome(fallback)) return literalDefault(fallback.value)
+  return value
+}
+
+const unresolvedTokens = (value: string): string => value.replace(/(?:\$[(].*|\$\{.*|`.*)/s, unknownTarget)
+const literalDefault = (value: string): string => {
+  if (/[$`]/.test(value)) return unknownTarget
+  return value
+}
+
+const bind = (entry: Word, place: ExecutionPlace, bindings: Bindings): Bindings => {
+  const split = entry.text.indexOf("=")
+  const values = alternatives({ ...entry, bareStart: true, text: entry.text.slice(split + 1) }, place, bindings)
+  return new Map([...bindings, [entry.text.slice(0, split), values]])
+}
+
+const initialBindings = (positionals: ReadonlyArray<string>): Bindings =>
+  new Map([["@", positionalList(positionals)], ...positionals.map((value, index): [string, Alternatives] => [String(index + 1), [value]])])
+
+const positionalList = (positionals: ReadonlyArray<string>): Alternatives => {
+  if (positionals.length === 0) return [unknownTarget]
+  return positionals
 }
 
 const expansionCwd = (place: ExecutionPlace): string => {
@@ -348,7 +410,7 @@ const expansionCwd = (place: ExecutionPlace): string => {
 const bindingList = (words: ReadonlyArray<Word>, vars: ReadonlyMap<string, string>, place: ExecutionPlace) =>
   words.reduce((known, entry) => assigned({ ...entry, text: expanded(entry, place, known) }, known), vars)
 
-export const literalPath = (text: string): boolean => !/[$`*?]/.test(text)
+export const literalPath = (text: string): boolean => !text.includes(unknownTarget) && !/[$`*?]/.test(text)
 
 interface Directory {
   readonly cwd: string
@@ -365,11 +427,11 @@ const directoryAt = (at: Directory, target: string): Directory => {
 export const executionPlan = (line: string, place: ExecutionPlace, depth = -1): ReadonlyArray<Execution> => {
   const result: Array<Execution> = []
   const env = place.env || new Map<string, string>()
-  let state: ShellState = { place: { ...place, env }, vars: env, directories: [] }
+  let state: ShellState = { place: { ...place, env }, vars: env, bindings: initialBindings(place.positionals || []), directories: [] }
   const scopes: Array<ShellState> = []
   let piped: ReadonlyArray<Word> = []
   let inPipeline = false
-  for (const { words, pipe, boundary } of shellSegments(line)) {
+  for (const { words, pipe, boundary } of withLoopInput(shellSegments(line, true))) {
     if (boundary === "enter") {
       scopes.push(state)
       inPipeline = false
@@ -381,8 +443,8 @@ export const executionPlan = (line: string, place: ExecutionPlace, depth = -1): 
       piped = []
       continue
     }
-    const run = executionStep(words, piped, state, depth)
-    if (!pipe && !inPipeline) state = run.state
+    const run = plannedStep(words, piped, state, depth)
+    if (!pipe && (!inPipeline || isReadLoop(words))) state = run.state
     inPipeline = pipe
     piped = pipelineInput(pipe, words)
     for (const command of run.commands) {
@@ -393,6 +455,23 @@ export const executionPlan = (line: string, place: ExecutionPlace, depth = -1): 
   return result
 }
 
+/** A redirection after `done` feeds the matching read condition, not its last body command. */
+const withLoopInput = (segments: ReadonlyArray<ShellSegment>): ReadonlyArray<ShellSegment> => {
+  const openings: Array<number> = []
+  const replacements = new Map<number, ShellSegment>()
+  for (const [index, segment] of segments.entries()) {
+    const [head, marker, input] = segment.words
+    if (!head?.bareStart) continue
+    if (head.text === "for" || head.text === "while" || head.text === "until") openings.push(index)
+    if (head.text !== "done") continue
+    const opening = Option.fromUndefinedOr(openings.pop())
+    if (Option.isNone(opening) || marker?.text !== "<<<" || !input) continue
+    const start = segments[opening.value]
+    if (start && isReadLoop(start.words)) replacements.set(opening.value, { ...start, words: [...start.words, marker, input] })
+  }
+  return segments.map((segment, index) => replacements.get(index) || segment)
+}
+
 const pipelineInput = (pipe: boolean, words: ReadonlyArray<Word>): ReadonlyArray<Word> => {
   if (pipe) return literalInput(words)
   return []
@@ -401,6 +480,7 @@ const pipelineInput = (pipe: boolean, words: ReadonlyArray<Word>): ReadonlyArray
 interface ShellState {
   readonly place: ExecutionPlace
   readonly vars: ReadonlyMap<string, string>
+  readonly bindings: Bindings
   readonly directories: ReadonlyArray<Directory>
   readonly previous?: Directory
 }
@@ -408,6 +488,55 @@ interface ShellState {
 interface ExecutionStep {
   readonly state: ShellState
   readonly commands: ReadonlyArray<Execution>
+}
+
+const loopName = /^[A-Za-z_]\w*$/
+const emptyStep = (state: ShellState): ExecutionStep => ({ state, commands: [] })
+const withBinding = (state: ShellState, name: string, values: Alternatives): ExecutionStep =>
+  emptyStep({ ...state, bindings: new Map([...state.bindings, [name, values]]) })
+
+const loopWords = (words: ReadonlyArray<Word>, state: ShellState): Alternatives =>
+  words.flatMap((entry) => {
+    if (entry.bareStart && /[*?[\]]/.test(entry.text)) return [unknownTarget]
+    return alternatives(entry, state.place, state.bindings)
+  })
+
+const loopRead = (args: ReadonlyArray<Word>, piped: ReadonlyArray<Word>, state: ShellState): ExecutionStep => {
+  const redirection = args.findIndex((entry) => entry.bareStart && /^[<>]/.test(entry.text))
+  const names = args.slice(0, readArgumentEnd(redirection, args.length)).values().filter((entry) => loopName.test(entry.text)).toArray()
+  if (names.length !== 1) return emptyStep(state)
+  const name = names[0]?.text || ""
+  const source = args[redirection + 1]
+  if (args[redirection]?.text === "<<<" && source) return withBinding(state, name, loopWords([source], state).flatMap((value) => value.split(/\r?\n/)))
+  if (redirection >= 0) return withBinding(state, name, [unknownTarget])
+  if (piped.length > 0) return withBinding(state, name, loopWords(piped, state).flatMap((value) => value.split(/\r?\n/)))
+  return withBinding(state, name, [unknownTarget])
+}
+
+const readArgumentEnd = (redirection: number, length: number): number => {
+  if (redirection < 0) return length
+  return redirection
+}
+
+const readCondition = (words: ReadonlyArray<Word>): Option.Option<ReadonlyArray<Word>> => {
+  if (!words[0]?.bareStart || words[0].text !== "while") return Option.none()
+  const command = words.slice(1).findIndex((entry) => !assignment.test(entry.text)) + 1
+  if (words[command]?.text === "read") return Option.some(words.slice(command + 1))
+  return Option.none()
+}
+
+const isReadLoop = (words: ReadonlyArray<Word>): boolean => Option.isSome(readCondition(words))
+
+const plannedStep = (words: ReadonlyArray<Word>, piped: ReadonlyArray<Word>, state: ShellState, depth: number): ExecutionStep => {
+  const [first, second, third, ...rest] = words
+  if (first?.bareStart && first.text === "for" && second && loopName.test(second.text)) {
+    if (third?.text === "in") return withBinding(state, second.text, loopWords(rest, state))
+    return withBinding(state, second.text, state.place.positionals || [unknownTarget])
+  }
+  const read = readCondition(words)
+  if (Option.isSome(read)) return loopRead(read.value, piped, state)
+  if (first?.bareStart && (first.text === "done" || first.text === "fi")) return emptyStep(state)
+  return executionStep(words, piped, state, depth)
 }
 
 const changeDirectory = (head: string, args: ReadonlyArray<Word>, state: ShellState): ShellState => {
@@ -435,11 +564,11 @@ const executionStep = (words: ReadonlyArray<Word>, piped: ReadonlyArray<Word>, s
   const env = place.env || new Map<string, string>()
   const idle: ExecutionStep = { state, commands: [] }
   const [first, ...rest] = words
-  if (words.every(({ text }) => assignment.test(text))) return { ...idle, state: { ...state, vars: bindingList(words, vars, place) } }
+  if (words.every(({ text }) => assignment.test(text))) return emptyStep(assignments(state, words))
   if (first?.text === "export" && rest.every(({ text }) => assignment.test(text) || /^[A-Za-z_]\w*$/.test(text))) {
-    const bound = bindingList(rest.filter(({ text }) => assignment.test(text)), vars, place)
+    const assigned = assignments(state, rest.values().filter(({ text }) => assignment.test(text)).toArray())
     const exported = rest.map(({ text }) => text.split("=", 1)[0] || "")
-    return { ...idle, state: { ...state, vars: bound, place: { ...place, env: new Map([...env, ...Array.from(bound).filter(([key]) => exported.includes(key))]) } } }
+    return emptyStep({ ...assigned, place: { ...place, env: new Map([...env, ...Array.from(assigned.vars).filter(([key]) => exported.includes(key))]) } })
   }
   const invocation = executable(words, piped, env)
   const [entry, ...args] = invocation.words
@@ -447,13 +576,81 @@ const executionStep = (words: ReadonlyArray<Word>, piped: ReadonlyArray<Word>, s
   const head = basename(entry.text)
   if (head === "cd" || head === "pushd" || head === "popd") return { ...idle, state: changeDirectory(head, args, state) }
   const at = Option.getOrElse(Option.map(invocation.directory, (directory) => directoryAt(place, expanded(word(directory), place, vars))), () => place)
+  const runAt = runnerDirectory(head, args, { ...place, ...at }, vars)
   const code = codeInputs(head, entry.text, args, invocation.env).map((input): CodeInput => {
     if (input.kind === "inline") return input
-    return { ...input, source: { ...input.source, text: expanded(input.source, { ...place, ...at }, vars) } }
+    return { ...input, source: { ...input.source, text: expanded(input.source, runAt, vars) } }
   })
-  const actual = args.map((arg) => expandArg(head, arg, { ...place, ...at }, vars))
   const syntaxOnly = syntaxCheck(head, args, code)
-  return { state, commands: [{ head, args: actual, command: invocation.words.map(({ text }) => text).join(" "), cwd: at.cwd, unknownCwd: at.unknownCwd, env: invocation.env, code, sourceDepth, syntaxOnly }] }
+  const positionals = shellPositionals(head, args, place, state.bindings)
+  const command = { head, command: invocation.words.map(({ text }) => text).join(" "), cwd: runAt.cwd, unknownCwd: runAt.unknownCwd, env: invocation.env, code, sourceDepth, syntaxOnly, positionals }
+  if (head !== "git") return { state, commands: [{ ...command, args }] }
+  return { state, commands: gitArgv(args, { ...place, ...at }, state.bindings).map((actual) => ({ ...command, args: actual })) }
+}
+
+const assignments = (state: ShellState, words: ReadonlyArray<Word>): ShellState => ({
+  ...state,
+  vars: bindingList(words, state.vars, state.place),
+  bindings: words.reduce((known, entry) => bind(entry, state.place, known), state.bindings),
+})
+
+const gitArgv = (args: ReadonlyArray<Word>, place: ExecutionPlace, bindings: Bindings): ReadonlyArray<ReadonlyArray<Word>> =>
+  args.reduce<ReadonlyArray<ReadonlyArray<Word>>>((rows, arg) =>
+    rows.flatMap((row) => alternatives(arg, place, bindings).map((text) => [...row, { ...arg, text }])), [[]])
+
+const shellPositionals = (head: string, args: ReadonlyArray<Word>, place: ExecutionPlace, bindings: Bindings): ReadonlyArray<string> => {
+  const words = positionalWords(head, args)
+  return words.map((arg) => singleValue(alternatives(arg, place, bindings)))
+}
+
+const positionalWords = (head: string, args: ReadonlyArray<Word>): ReadonlyArray<Word> => {
+  if (!SHELLS.has(head)) return args
+  const input = shellInput(args)
+  return input.operands.slice(1 + Number(input.command))
+}
+
+const singleValue = (values: Alternatives): string => {
+  if (values.length !== 1) return unknownTarget
+  return values[0] || ""
+}
+
+/** Location options belong to the invoked program, not to the surrounding shell. */
+const runnerDirectory = (head: string, args: ReadonlyArray<Word>, place: ExecutionPlace, vars: ReadonlyMap<string, string>): ExecutionPlace => {
+  const options = launcherOptions.get(head) || runtimeOptions.get(head)
+  if (!options) return place
+  let directory = place
+  let consume = false
+  for (const [index, entry] of args.entries()) {
+    if (consume) {
+      consume = false
+      continue
+    }
+    if (entry.text === "--") break
+    if (!entry.text.startsWith("-") && head === "bun" && !bunCommands.has(entry.text)) break
+    const move = runnerOption(entry, args[index + 1] || word(""), options)
+    if (move.stop) break
+    consume = move.consume
+    if (Option.isSome(move.directory)) {
+      const target = expanded(move.directory.value, place, vars)
+      directory = { ...place, ...runnerDestination(head, move.kind, directory, place, target) }
+    }
+  }
+  return directory
+}
+
+const runnerOption = (entry: Word, next: Word, table: Options) => {
+  const item = flag(entry, table)
+  const kind = table.get(item.name)
+  const consume = Boolean(kind && kind !== "flag" && Option.isNone(item.attached))
+  const stop = kind === "code" || kind === "stop" || kind === "check"
+  const directory = Option.getOrElse(item.attached, () => next)
+  return { kind, consume, stop, directory: Option.liftPredicate(directory, () => kind === "directory" || kind === "manifest") }
+}
+
+const runnerDestination = (head: string, kind: OptionKind | void, previous: Directory, place: Directory, target: string): Directory => {
+  if (kind === "manifest" && literalPath(target)) return directoryAt(place, dirname(target))
+  if (head === "make") return directoryAt(previous, target)
+  return directoryAt(place, target)
 }
 
 const syntaxCheck = (head: string, args: ReadonlyArray<Word>, code: ReadonlyArray<CodeInput>): boolean => {
@@ -463,13 +660,8 @@ const syntaxCheck = (head: string, args: ReadonlyArray<Word>, code: ReadonlyArra
   return head === "deno" && args[0]?.text === "check"
 }
 
-const expandArg = (head: string, arg: Word, place: ExecutionPlace, vars: ReadonlyMap<string, string>): Word => {
-  if (head === "git") return { ...arg, text: expanded(arg, place, vars) }
-  return arg
-}
-
 const inlineCommands = (command: Execution, home: string, depth: number): ReadonlyArray<Execution> =>
   command.code.flatMap((unit) => {
     if (unit.kind !== "inline" || unit.language !== "shell") return []
-    return executionPlan(unit.code, { cwd: command.cwd, unknownCwd: command.unknownCwd, home, env: command.env }, depth)
+    return executionPlan(unit.code, { cwd: command.cwd, unknownCwd: command.unknownCwd, home, env: command.env, positionals: command.positionals }, depth)
   })

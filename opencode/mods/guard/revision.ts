@@ -1,5 +1,5 @@
 import { Array as Arr, Option } from "effect"
-import { literalPath } from "./executable.ts"
+import { literalPath, unknownTarget } from "./executable.ts"
 import { basename, resolve } from "./path.ts"
 import { GIT_BARE_OPTIONS, GIT_VALUE_OPTIONS } from "./verdict.ts"
 
@@ -123,6 +123,7 @@ const current = (target: string): boolean => target === "" || /^(?:HEAD|@)(?:[~^
 
 /** An unadorned name could be a branch or a tag; neither proves historical intent. */
 const historical = (target: string, detach = false): boolean => !current(target) && (detach || revisionExpression(target))
+const unresolved = (target: string): boolean => target.includes(unknownTarget)
 
 const validRefName = (word: string): boolean =>
   word !== "@" && !Array.from(word).some((char) => char.charCodeAt(0) <= 32 || char.charCodeAt(0) === 127) &&
@@ -142,6 +143,7 @@ const fileSelection = (argv: Argv, target: string, paths = argv.paths): EffectOn
     if (target === "") return action("files")
     return action("neither")
   }
+  if (unresolved(target) && (argv.flags.has(pathspec) || paths.some(launcherPath))) return action("unknown")
   if (!historical(target)) return action("files")
   if (argv.flags.has(pathspec)) return action("unknown")
   if (paths.some(launcherPath)) return action("moves")
@@ -159,7 +161,7 @@ const checkout = (argv: Argv): EffectOnTree => {
   if (argv.has(restoreOnly)) return action("files")
   if (argv.paths.length > 0 || argv.flags.has(pathspec)) return fileSelection(argv, ref)
   if (argv.has(patches)) return fileSelection(argv, ref, more)
-  if (!current(ref) && explicitPath(ref)) return action("files")
+  if (!current(ref) && !unresolved(ref) && explicitPath(ref)) return action("files")
   if (more.length > 0) return fileSelection(argv, ref, more)
   return checkoutTarget(argv, false)
 }
@@ -169,14 +171,17 @@ const checkoutTarget = (argv: Argv, switching: boolean): EffectOnTree => {
   const detach = argv.has(detached)
   // Without -d or branch creation, switch accepts only a branch.
   if (switching && !detach && !argv.has(branchCreation)) return action("neither")
+  if (unresolved(ref)) return action("unknown")
   if (historical(ref, detach)) return action("moves")
   return action("neither")
 }
 
 const reset = (argv: Argv): EffectOnTree => {
   const [ref = "", ...rest] = argv.operands
-  if (argv.paths.length > 0 || argv.has(patches) || (!current(ref) && explicitPath(ref)) || rest.length > 0) return action("files")
-  if (historical(ref) && historicalResetModes.has(argv.last(resetModes))) return action("moves")
+  if (argv.paths.length > 0 || argv.has(patches) || (!current(ref) && !unresolved(ref) && explicitPath(ref)) || rest.length > 0) return action("files")
+  if (!historicalResetModes.has(argv.last(resetModes))) return action("neither")
+  if (unresolved(ref)) return action("unknown")
+  if (historical(ref)) return action("moves")
   return action("neither")
 }
 
@@ -210,7 +215,9 @@ const bisectSelection = (refsOnly: boolean): EffectOnTree => {
   return action("moves")
 }
 const resetBisect = (argv: Argv, refsOnly: boolean): EffectOnTree => {
-  if (argv.operands.length > 0 && current(argv.operands[0] || "")) return action("neither")
+  const [target = ""] = argv.operands
+  if (argv.operands.length > 0 && current(target)) return action("neither")
+  if (!refsOnly && unresolved(target)) return action("unknown")
   return bisectSelection(refsOnly)
 }
 const rebaseSpec = grammar(`${quiet} --abort --continue --skip --quit --edit-todo --show-current-patch --apply --merge -i --interactive --root --onto --keep-base --reapply-cherry-picks --no-reapply-cherry-picks --fork-point --no-fork-point --autostash --no-autostash --autosquash --no-autosquash --rebase-merges --no-rebase-merges --update-refs --no-update-refs --force-rebase --no-ff -f --signoff --no-signoff --committer-date-is-author-date --ignore-date --reset-author-date --keep-empty --no-keep-empty --allow-empty-message --reschedule-failed-exec --no-reschedule-failed-exec --verify --no-verify -S --gpg-sign --no-gpg-sign --rerere-autoupdate --no-rerere-autoupdate --stat --no-stat`, `--onto --empty --strategy -s -X --strategy-option -x --exec -C --whitespace -U --unified --inter-hunk-context`)
@@ -234,6 +241,7 @@ const checkoutToggle = described("--no-checkout --checkout")
 const addWorktree = (argv: Argv): EffectOnTree => {
   const [destination = "", target = ""] = [...argv.operands, ...argv.paths]
   if (argv.flags.has("--orphan") || argv.last(checkoutToggle) === "--no-checkout") return action("neither")
+  if (unresolved(target)) return { ...action("unknown"), destination }
   if (!historical(target, argv.has(detached))) return action("neither")
   if (destination === "") return action("unknown")
   return { ...action("moves"), destination }

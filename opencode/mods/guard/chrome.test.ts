@@ -3,7 +3,7 @@
 // scripts a line runs; which script texts start such a Chrome; and the words.
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
-import { bareLaunches, Inline, KEYCHAIN_FLAGS, keychainReason, runtimeRuns, ScriptFile, scriptLaunch, scriptLaunchesBare } from "./chrome.ts"
+import { bareLaunches, Inline, KEYCHAIN_FLAGS, keychainReason, type Remedy, runtimeRuns, ScriptFile, scriptLaunch, scriptLaunchesBare } from "./chrome.ts"
 
 const HOME = "/home/owner"
 const CWD = "/home/owner/work"
@@ -264,6 +264,45 @@ describe("old checkouts in an executable position", () => {
     expect(refused("git --git-dir=../other-project/.git switch --detach fixture-old; cd ../other-project && npm test")).toBe(false)
   })
 
+  test("literal bindings preserve historical syntax, and unresolved targets need a later launch", () => {
+    const remedies = (line: string) => bareLaunches(line, place).map((launch) => launch.remedy)
+    const targets: ReadonlyArray<{ readonly value: string; readonly expected: ReadonlyArray<Remedy> }> = [
+      { value: "deadbee", expected: ["shim"] },
+      { value: "HEAD~1", expected: ["shim"] },
+      { value: "HEAD~0", expected: [] },
+      { value: "release-track", expected: [] },
+    ]
+    const spellings = [
+      (rev: string) => `git checkout ${rev}; npm test`,
+      (rev: string) => `REV=${rev}; git checkout "$REV"; npm test`,
+      (rev: string) => `REV=${rev}; AGAIN="$REV"; git checkout "\${AGAIN}"; npm test`,
+      (rev: string) => `for rev in main ${rev}; do git checkout "$rev"; npm test; done`,
+      (rev: string) => `for rev in ${rev} main; do git checkout "$rev"; npm test; done`,
+      (rev: string) => `sh -c 'git checkout "\${1:-${rev}}"; npm test'`,
+      (rev: string) => `sh -c 'git checkout "$1"; npm test' fixture ${rev}`,
+      (rev: string) => `while read -r rev; do git checkout "$rev"; npm test; done <<< "main\n${rev}"`,
+      (rev: string) => `printf '%s\\n' main ${rev} | while read -r rev; do git checkout "$rev"; npm test; done`,
+    ]
+    const cases = targets.flatMap(({ value, expected }) => spellings.map((render) => ({ line: render(value), expected })))
+    for (const { line, expected } of cases) expect([line, remedies(line)]).toEqual([line, [...expected]])
+    for (const select of [
+      'git checkout "$REV"',
+      'git checkout "$1"',
+      'REV=$(git rev-parse HEAD); git checkout "$REV"',
+      'for rev in $(git rev-list first..last); do git checkout "$rev"; done',
+      'while read -r rev; do git checkout "$rev"; done < fixture.txt',
+      'git restore --source="$REV" -- runner.sh',
+    ]) {
+      expect([select, remedies(`${select}; npm test`)]).toEqual([select, ["unknown"]])
+      expect([select, remedies(`${select}; git status -sb`)]).toEqual([select, []])
+      expect([select, remedies(`export CHROME="${SHIM_PATH}"; ${select}; npm test`)]).toEqual([select, []])
+    }
+    expect(remedies("git checkout '$REV'; npm test")).toEqual([])
+    expect(remedies('git checkout -- "$REV"; npm test')).toEqual([])
+    expect(remedies('git merge "$REV"; npm test')).toEqual([])
+    expect(remedies('git -C ../beta checkout "$REV"; npm test')).toEqual([])
+  })
+
   test("generated sequences only guard a later launcher in the affected sibling tree", () => {
     const trees = ["alpha", "beta", "gamma"]
     const tree = (name: string) => `/nonexistent/loop-probe-trees/${name}`
@@ -283,6 +322,9 @@ describe("old checkouts in an executable position", () => {
       (name: string) => `(cd ../${name} && npm test)`,
       (name: string) => `env -C ../${name}/./src/.. npm test`,
       (name: string) => `pushd ../${name}/src; npm test; popd`,
+      (name: string) => `npm --prefix ../${name}/src/.. test`,
+      (name: string) => `make -C ../${name} test`,
+      (name: string) => `cargo test --manifest-path ../${name}/Cargo.toml`,
     ]
     const positions = trees.flatMap((first) => trees.flatMap((second) => trees.map((final) => ({ first, second, final }))))
     const spellings = selectors.flatMap((select) => launchers.map((launch) => ({ select, launch })))

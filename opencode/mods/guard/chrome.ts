@@ -28,8 +28,8 @@
 //   Reads of Git or shell words as arguments, file names, or text aren't runs.
 // The hook follows statically named child code with the same plan and a bounded loader.
 import { Array as Arr, Effect, Option, Schema } from "effect"
-import { type CodeInput, type Execution, executionPlan, type Language, MAX_CODE_DEPTH, word } from "./executable.ts"
-import { basename, resolve, within } from "./path.ts"
+import { type CodeInput, type Execution, executionPlan, type Language, literalPath, MAX_CODE_DEPTH, word } from "./executable.ts"
+import { basename, dirname, resolve, within } from "./path.ts"
 import { gitAction, type GitAction } from "./revision.ts"
 import { type Word } from "./shell-line.ts"
 import { type Place } from "./verdict.ts"
@@ -116,6 +116,7 @@ interface CommandEvent {
   readonly execution: Execution
   readonly source: Option.Option<SourceContext>
   readonly launcher: boolean
+  readonly files: ReadonlyArray<string>
 }
 interface FindingEvent {
   readonly kind: "finding"
@@ -137,7 +138,19 @@ const commandEvent = (execution: Execution, source: Option.Option<SourceContext>
     kind: "command", execution, source,
     launcher: !READERS.has(execution.head) && !execution.syntaxOnly && !expandedShell &&
       !execution.code.some((input) => input.kind === "inline" && walkable(input.language)),
+    files: launcherFiles(execution),
   })
+
+const launcherFiles = (execution: Execution): ReadonlyArray<string> => {
+  if (READERS.has(execution.head) || execution.syntaxOnly) return []
+  return execution.code.flatMap((input) => fileDirectory(input, execution))
+}
+
+const fileDirectory = (input: CodeInput, execution: Execution): ReadonlyArray<string> => {
+  if (input.kind !== "file" || !literalPath(input.source.text)) return []
+  if (execution.unknownCwd && !input.source.text.startsWith("/")) return []
+  return [dirname(resolve(execution.cwd, input.source.text))]
+}
 
 /** One ordered tree-effect state for the whole decision. Readable child events are already at their call site. */
 const decideTimeline = (line: string, events: ReadonlyArray<ExecutionEvent>, roots: TreeLookup): ReadonlyArray<BareLaunch> => {
@@ -171,12 +184,44 @@ const opaqueContinuation = ({ execution, source }: CommandEvent, action: GitActi
 }
 
 const eventHazard = (line: string, event: CommandEvent, action: GitAction, changes: ReadonlyArray<ChangedTree>, roots: TreeLookup): Option.Option<BareLaunch> => {
-  const { execution, source, launcher } = event
+  const { execution, source } = event
   if (usesShim(execution.env)) return Option.none()
   if (action.rebaseExec === true) return Option.some(attributeLaunch({ command: execution.command, script: Option.none(), remedy: "shim", rebaseExec: true }, source))
-  if (!launcher) return Option.none()
-  const match = Arr.findFirst(changes, (change) => coincides(change, execution, roots))
-  return Option.map(match, (change): BareLaunch => ({ command: line, script: Option.map(source, ({ name }) => name), remedy: changedRemedy(change, execution), oldCheckout: true }))
+  if (changes.length === 0) return Option.none()
+  const directories = launcherLocations(event, changes, roots)
+  for (const directory of directories) {
+    const match = Arr.findFirst(changes, (change) => coincides(change, directory, roots))
+    if (Option.isSome(match)) {
+      const remedy = changedRemedy(match.value, directory)
+      return Option.some({ command: line, script: Option.map(source, ({ name }) => name), remedy, oldCheckout: true })
+    }
+  }
+  return Option.none()
+}
+
+interface Location {
+  readonly cwd: string
+  readonly unknownCwd?: true
+}
+
+/** File ownership overrides the runner cwd only when a checkout boundary supplies evidence. */
+const launcherLocations = ({ execution, launcher, files }: CommandEvent, changes: ReadonlyArray<ChangedTree>, roots: TreeLookup): ReadonlyArray<Location> => {
+  const located = files.flatMap((cwd) => fileLocation(cwd, execution, launcher, changes, roots))
+  if (located.length > 0) return located
+  if (launcher && !files.some((cwd) => Option.isSome(checkoutAt(cwd, roots)))) return [execution]
+  return []
+}
+
+const fileLocation = (cwd: string, execution: Location, launcher: boolean, changes: ReadonlyArray<ChangedTree>, roots: TreeLookup): ReadonlyArray<Location> => {
+  const file = { cwd }
+  const known = checkoutAt(cwd, roots)
+  if (Option.isSome(known)) {
+    if (launcher || !within(execution.cwd, known.value) || Option.exists(checkoutAt(execution.cwd, roots), (root) => root !== known.value)) return [file]
+    return []
+  }
+  const observed = changes.some(({ tree }) => Option.exists(tree, (root) => within(cwd, root) && (launcher || !within(execution.cwd, root))))
+  if (observed) return [file]
+  return []
 }
 
 const attributeLaunch = (launch: BareLaunch, source: Option.Option<SourceContext>): BareLaunch =>
@@ -209,7 +254,7 @@ const changedRoot = (path: string, exact: boolean, roots: TreeLookup): string =>
   return Option.getOrElse(checkoutAt(path, roots), () => path)
 }
 
-const coincides = (change: ChangedTree, command: Execution, roots: TreeLookup): boolean => {
+const coincides = (change: ChangedTree, command: Location, roots: TreeLookup): boolean => {
   if (command.unknownCwd || Option.isNone(change.tree)) return true
   const tree = change.tree.value
   const launcher = checkoutAt(command.cwd, roots)
@@ -218,7 +263,7 @@ const coincides = (change: ChangedTree, command: Execution, roots: TreeLookup): 
   return within(command.cwd, tree)
 }
 
-const changedRemedy = (change: ChangedTree, command: Execution): Remedy => {
+const changedRemedy = (change: ChangedTree, command: Location): Remedy => {
   if (change.uncertain || Option.isNone(change.tree) || command.unknownCwd) return "unknown"
   return "shim"
 }
@@ -233,6 +278,7 @@ export interface RuntimeRun {
   readonly place?: Place
   readonly env?: ReadonlyMap<string, string>
   readonly unknownCwd?: true
+  readonly positionals?: ReadonlyArray<string>
 }
 
 /** Each script a line executes (as a file or inline), in order. Tests and syntax checks do not supply script entry points. */
@@ -246,7 +292,7 @@ const plannedRuns = (commands: ReadonlyArray<Execution>, home: string): Readonly
     if (input.kind === "file" && command.unknownCwd && !input.source.text.startsWith("/")) return []
     return [{
       command: command.command, ran: resolveEntry(input, command.cwd), shimmed: usesShim(command.env),
-      language: input.language, place: { cwd: command.cwd, home }, env: command.env, unknownCwd: command.unknownCwd,
+      language: input.language, place: { cwd: command.cwd, home }, env: command.env, unknownCwd: command.unknownCwd, positionals: command.positionals,
     }]
   }),
 )
@@ -494,8 +540,17 @@ const scriptEnv = (run: RuntimeRun): ReadonlyMap<string, string> => {
   return new Map()
 }
 
-const sourcePlan = (run: RuntimeRun, text: string, depth: number): ReadonlyArray<Execution> =>
-  sourceCalls(text, scriptLanguage(run, text)).flatMap((line) => executionPlan(line, { ...scriptPlace(run), unknownCwd: run.unknownCwd, env: scriptEnv(run) }, depth))
+const sourcePlan = (run: RuntimeRun, text: string, depth: number): ReadonlyArray<Execution> => {
+  const language = scriptLanguage(run, text)
+  const place = { ...scriptPlace(run), unknownCwd: run.unknownCwd, env: scriptEnv(run) }
+  const positionals = shellPositionals(run, language)
+  return sourceCalls(text, language).flatMap((line) => executionPlan(line, { ...place, positionals }, depth))
+}
+
+const shellPositionals = (run: RuntimeRun, language: Language): ReadonlyArray<string> => {
+  if (walkable(language)) return run.positionals || []
+  return []
+}
 
 const sourceFinding = (run: RuntimeRun, text: string, source: SourceContext): ReadonlyArray<FindingEvent> => {
   const named = (remedy: Remedy): FindingEvent => ({ kind: "finding", launch: { command: source.invocation, script: Option.some(source.name), remedy } })
@@ -535,8 +590,9 @@ const rootsFor = Effect.fn("Guard.treeRoots")(function* (events: ReadonlyArray<E
 })
 
 const launcherDirectory = (event: ExecutionEvent): ReadonlyArray<string> => {
-  if (event.kind === "command" && !event.execution.unknownCwd && event.launcher) return [event.execution.cwd]
-  return []
+  if (event.kind !== "command") return []
+  if (!event.execution.unknownCwd && (event.launcher || event.files.length > 0)) return [event.execution.cwd, ...event.files]
+  return event.files
 }
 
 const lexicalRoot: TreeRoot = () => Effect.succeed(Option.none())
@@ -603,8 +659,10 @@ export const keychainReason = (launch: BareLaunch): string => {
     return `\`${launch.command}\` runs a rebase command on intermediate commits, whose browser launchers may predate ${KEYCHAIN_FLAGS.join(" ")}, ${dialog}. Prefix the whole rebase with CHROME="${SHIM}".`
   if (launch.opaqueContinuation === true)
     return `\`${launch.command}\` runs ${Option.getOrElse(launch.script, () => "a program")} that selects a historical Git revision. Cannot tell what the program runs next in the affected working tree. Export CHROME before the whole command: export CHROME="${SHIM}"; ${launch.command}`
-  if (launch.remedy === "unknown")
-    return `\`${launch.command}\`: cannot tell whether the Git operation selects another revision or restores files, or whether the launcher runs in the affected working tree. Spell out a file restore with \`git restore -- <path>\`, name the working directory explicitly, or export CHROME="${SHIM}" before a run over revisions.`
+  if (launch.remedy === "unknown") {
+    const source = Option.match(launch.script, { onNone: () => "", onSome: (script) => ` runs ${script}` })
+    return `\`${launch.command}\`${source}: cannot tell whether the Git operation selects another revision or restores files, or whether the launcher runs in the affected working tree. Use a literal revision target, spell out a file restore with \`git restore -- <path>\`, name the working directory explicitly, or export CHROME="${SHIM}" before a run over revisions.`
+  }
   if (launch.oldCheckout === true) {
     const runner = Option.match(launch.script, { onNone: () => "runs", onSome: (script) => `runs ${script}, which runs` })
     return `\`${launch.command}\` ${runner} a launcher after selecting another Git revision, whose browser launchers may predate ${KEYCHAIN_FLAGS.join(" ")}, ${dialog}. Export CHROME before the whole command: export CHROME="${SHIM}"; ${launch.command}`

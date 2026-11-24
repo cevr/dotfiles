@@ -228,7 +228,7 @@ describe("the guard plugin", () => {
         }
         const { call } = yield* start({ home: HOME }, { scripts })
         expect(yield* call("shell", { command: `sh -n ${unit}/receipt.sh ${unit}/profile.sh` })).toBeUndefined()
-        expect(yield* call("shell", { command: `sh ${unit}/profile.sh` })).toContain("after selecting another Git revision")
+        expect(yield* call("shell", { command: `sh ${unit}/profile.sh` })).toContain("cannot tell whether the Git operation selects another revision")
         const selectorOnly = yield* start({ home: HOME }, { scripts: { [`${unit}/profile.sh`]: 'git switch --detach "$source"' } })
         expect(yield* selectorOnly.call("shell", { command: `sh ${unit}/profile.sh` })).toBeUndefined()
       }),
@@ -262,7 +262,7 @@ describe("the guard plugin", () => {
         expect(yield* inert.call("shell", { command: `sh ${dir}/parent.sh` })).toBeUndefined()
         const selectorOnly = yield* start({ home: HOME }, { scripts: { ...parents, [`${dir}/child.sh`]: child } })
         expect(yield* selectorOnly.call("shell", { command: `sh ${dir}/parent.sh` })).toBeUndefined()
-        expect(yield* selectorOnly.call("shell", { command: `sh ${dir}/parent.sh; fixture-build` })).toContain("after selecting another Git revision")
+        expect(yield* selectorOnly.call("shell", { command: `sh ${dir}/parent.sh; fixture-build` })).toContain("cannot tell whether the Git operation selects another revision")
         const launchInParent = yield* start({ home: HOME }, { scripts: { ...parents, [`${dir}/child.sh`]: child, [`${dir}/parent.sh`]: `${parents[`${dir}/parent.sh`]}\nfixture-build` } })
         expect(yield* launchInParent.call("shell", { command: `sh ${dir}/parent.sh` })).toContain(`runs ${dir}/parent.sh`)
       }),
@@ -305,6 +305,46 @@ describe("the guard plugin", () => {
         expect(yield* call("shell", { command: "sh ./no-checkout.sh; git bisect good; npm test" })).toBeUndefined()
         expect(yield* call("shell", { command: "git pull --no-rebase --no-ff --no-commit origin main && npm test" })).toBeUndefined()
         expect(yield* call("shell", { command: "git checkout -b review-branch @ && npm test" })).toBeUndefined()
+      }),
+    ))
+
+  test("later cwd, runner options and executed files use the same checkout relation", () =>
+    scenario(
+      Effect.gen(function* () {
+        const parent = "/nonexistent/loop-probe-runner"
+        const trees = ["alpha", "beta", "gamma"]
+        const path = (name: string) => `${parent}/${name}`
+        const where = { cwd: path("alpha"), home: HOME }
+        const root = (directory: string) => Effect.succeed(Option.fromUndefinedOr(trees.map(path).find((tree) => directory === tree || directory.startsWith(`${tree}/`))))
+        const load = (file: string) => Effect.succeed(Option.liftPredicate(`#!/bin/sh\ncd ${file.slice(0, file.lastIndexOf("/"))}; fixture-tool`, () => file.endsWith("/runner.sh")))
+        const spellings = [
+          (name: string) => `(cd ../${name}; npm test)`,
+          (name: string) => `npm --prefix=../${name} test`,
+          (name: string) => `pnpm -C ../${name} test`,
+          (name: string) => `yarn --cwd ../${name} test`,
+          (name: string) => `bun --cwd ../${name} test`,
+          (name: string) => `make -C../${name} test`,
+          (name: string) => `cargo test --manifest-path ../${name}/Cargo.toml`,
+          (name: string) => `../${name}/runner.sh`,
+          (name: string) => `sh ../${name}/runner.sh`,
+          (name: string) => `node ../${name}/runner.js`,
+        ]
+        const cases = trees.flatMap((selected) => trees.flatMap((launched) => spellings.map((launch) => ({ selected, launched, line: launch(launched) }))))
+        for (const { selected, launched, line } of cases) {
+          const change = `git -C ../${selected} checkout deadbee`
+          const before = yield* keychainLaunch(`${line}; ${change}`, where, load, root)
+          const after = yield* keychainLaunch(`${change}; ${line}`, where, load, root)
+          expect([line, selected, Option.isSome(before), Option.isSome(after)]).toEqual([line, selected, false, selected === launched])
+        }
+        const unrecognized = "npm --not-a-location ../beta test"
+        expect(Option.isNone(yield* keychainLaunch(`git -C ../beta checkout deadbee; ${unrecognized}`, where, load, root))).toBe(true)
+        expect(Option.isNone(yield* keychainLaunch("npm --prefix ../beta test; git -C ../beta checkout deadbee; npm test", where, load, root))).toBe(true)
+        expect(Option.isNone(yield* keychainLaunch("git -C ../beta checkout deadbee; sh -n ../beta/runner.sh", where, load, root))).toBe(true)
+        const inert = () => Effect.succeed(Option.some("#!/bin/sh\ntrue"))
+        const unchanged = yield* keychainLaunch("git checkout deadbee; ../beta/runner.sh", where, inert, root)
+        const changed = yield* keychainLaunch("git -C ../beta checkout deadbee; ../beta/runner.sh", where, inert, root)
+        expect(Option.isNone(unchanged)).toBe(true)
+        expect(Option.map(changed, (finding) => finding.remedy)).toEqual(Option.some("shim"))
       }),
     ))
 

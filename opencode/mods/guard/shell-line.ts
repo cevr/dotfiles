@@ -49,7 +49,7 @@ export interface ShellSegment {
   readonly boundary?: "enter" | "leave"
 }
 
-export const shellSegments = (line: string): ReadonlyArray<ShellSegment> => {
+export const shellSegments = (line: string, bindingSyntax = false): ReadonlyArray<ShellSegment> => {
   const commands: Array<ShellSegment> = []
   let words: Array<Word> = []
   let draft = newDraft()
@@ -82,8 +82,9 @@ export const shellSegments = (line: string): ReadonlyArray<ShellSegment> => {
     let at = from
     while (at < line.length && line.charAt(at) !== '"') {
       if (line.charAt(at) === "\\" && at + 1 < line.length) at += 1
-      add(line.charAt(at), false)
-      at += 1
+      const next = nextCharacter(at)
+      add(line.slice(at, next), false)
+      at = next
     }
     return at + 1
   }
@@ -119,15 +120,14 @@ export const shellSegments = (line: string): ReadonlyArray<ShellSegment> => {
       return at + 2
     }
     if (char === "#" && !draft.started) return indexOrEnd(line, "\n", at)
-    if (line.startsWith("<<", at) && !line.startsWith("<<<", at)) return readHeredoc(at)
-    if (char === "\n" && heredocs.length > 0) return skipBodies(at)
-    if (SEPARATORS.has(char)) {
-      endCommand(char === "|" && line.charAt(at + 1) !== "|")
-      if (char === "(") commands.push({ words: [], pipe: false, boundary: "enter" })
-      if (char === ")") commands.push({ words: [], pipe: false, boundary: "leave" })
-      if (char === "|" && line.charAt(at + 1) === "|") return at + 2
-      return at + 1
+    const end = nextCharacter(at)
+    if (end > at + 1) {
+      add(line.slice(at, end), true)
+      return end
     }
+    if (hasInputRedirection(at)) return inputRedirection(at)
+    if (char === "\n" && heredocs.length > 0) return skipBodies(at)
+    if (SEPARATORS.has(char)) return separator(at, char)
     if (char === " " || char === "\t") {
       endWord()
       return at + 1
@@ -135,10 +135,46 @@ export const shellSegments = (line: string): ReadonlyArray<ShellSegment> => {
     add(char, true)
     return at + 1
   }
+  const separator = (at: number, char: string): number => {
+    const or = char === "|" && line.charAt(at + 1) === "|"
+    endCommand(char === "|" && !or)
+    if (char === "(") commands.push({ words: [], pipe: false, boundary: "enter" })
+    if (char === ")") commands.push({ words: [], pipe: false, boundary: "leave" })
+    return at + 1 + Number(or)
+  }
+  const hasInputRedirection = (at: number): boolean =>
+    line.startsWith("<<", at) && (bindingSyntax || !line.startsWith("<<<", at))
+  const nextCharacter = (at: number): number => {
+    if (bindingSyntax && line.startsWith("$(", at)) return substitutionEnd(line, at + 2)
+    return at + 1
+  }
+  const inputRedirection = (at: number): number => {
+    if (!line.startsWith("<<<", at)) return readHeredoc(at)
+    endWord()
+    add("<<<", true)
+    endWord()
+    return at + 3
+  }
   let at = 0
   while (at < line.length) at = step(at)
   endCommand()
   return commands
+}
+
+/** Keep an unwalked substitution in its operand rather than treating its body as sibling commands. */
+const substitutionEnd = (line: string, start: number): number => {
+  let nesting = 1
+  let quote = ""
+  for (let at = start; at < line.length; at += 1) {
+    const char = line.charAt(at)
+    if (char === "\\") at += 1
+    else if (quote !== "") {
+      if (char === quote) quote = ""
+    } else if (char === "'" || char === '"') quote = char
+    else if (char === "(") nesting += 1
+    else if (char === ")" && --nesting === 0) return at + 1
+  }
+  return line.length
 }
 
 export const simpleCommands = (line: string): ReadonlyArray<ReadonlyArray<Word>> => shellSegments(line).flatMap(({ words }) => {
