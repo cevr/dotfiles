@@ -279,16 +279,18 @@ const settleRecordedHold = (storage: Storage, key: string, next: Option.Option<H
   })
 }
 
-const scanHolds = (storage: Storage, prefix: string, now: number) =>
+const scanHolds = (storage: Storage, prefix: string, now: number, key: Option.Option<string>) =>
   Effect.gen(function* () {
     const snapshot: Record<string, Hold> = {}
     const rawByKey = new Map<string, Schema.Json>()
     let after = Option.none<string>()
     do {
       const page = yield* boundedStore(storage.scan({
-        prefix, limit: PAGE, ...Option.match(after, { onNone: () => ({}), onSome: (cursor) => ({ after: cursor }) }),
+        ...Option.match(key, { onNone: () => ({ prefix, limit: PAGE }), onSome: (prefix) => ({ prefix, limit: 1 }) }),
+        ...Option.match(after, { onNone: () => ({}), onSome: (cursor) => ({ after: cursor }) }),
       }))
       for (const entry of page.entries) {
+        if (Option.exists(key, (exact) => entry.key !== exact)) continue
         const { hold, replacement } = storedHold(entry, now)
         if (hold.kind === "record-unreadable") {
           const original = Option.flatMap(Option.orElse(replacement, () => Option.some(entry.value)), decodeRaw)
@@ -299,22 +301,26 @@ const scanHolds = (storage: Storage, prefix: string, now: number) =>
         Object.defineProperty(snapshot, entry.key.slice(prefix.length), { value: hold, configurable: true, enumerable: true, writable: true })
       }
       after = Option.fromUndefinedOr(page.next)
-    } while (Option.isSome(after))
+    } while (Option.isNone(key) && Option.isSome(after))
     return { snapshot, rawByKey }
   })
 
-const confirmedHolds = (storage: Storage, authority: ReturnType<typeof holdAuthority>, pool: PoolId) =>
+const confirmedHolds = (storage: Storage, authority: ReturnType<typeof holdAuthority>, pool: PoolId, credentialID?: string) =>
   Effect.gen(function* () {
     if (!authority.available()) return yield* storeFailure()
     const prefix = `${pool}/hold/`
+    const exact = Option.map(Option.fromUndefinedOr(credentialID), (id) => `${prefix}${id}`)
+    const matches = (key: string) => Option.match(exact, {
+      onNone: () => key.startsWith(prefix), onSome: (candidate) => key === candidate,
+    })
     const now = yield* Clock.currentTimeMillis
     for (const [key, pending] of authority.pending) {
-      if (!key.startsWith(prefix)) continue
+      if (!matches(key)) continue
       if (pending.retryAt > now) return yield* new HoldStoreUnavailable({ retryAt: pending.retryAt })
     }
-    const { snapshot, rawByKey } = yield* scanHolds(storage, prefix, now)
+    const { snapshot, rawByKey } = yield* scanHolds(storage, prefix, now, exact)
     for (const [key, pending] of authority.pending) {
-      if (!key.startsWith(prefix)) continue
+      if (!matches(key)) continue
       let next = pending.next
       if (pending.merge) {
         const prior = Option.fromUndefinedOr(snapshot[pending.credentialID])
@@ -371,7 +377,7 @@ export const layer = (storage: Storage, steps: Steps = ownSteps(storage), author
   Layer.effect(Ledger, Effect.gen(function* () {
     yield* Effect.acquireRelease(Effect.sync(authority.enter), (leave) => Effect.sync(leave))
     return Ledger.of({
-    holds: (pool) => confirmedHolds(storage, authority, pool),
+    holds: (pool, credentialID) => confirmedHolds(storage, authority, pool, credentialID),
     withHolds: (operation) => authority.lock.withPermits(1)(operation),
     // A ledger that cannot be read starts the pool empty.
     restore: Effect.fn("Ledger.restore")(

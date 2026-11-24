@@ -59,9 +59,11 @@ export const HoldReason = Schema.Literals([
 export type HoldReason = typeof HoldReason.Type
 
 /** The pace method's answer: whether a new agent may start now, and if not, when to ask again. */
+export const NoPoolLogin = Schema.Literal("not-tracked-no-pool-login")
 const paceFields = {
   measured: Schema.Boolean,
   reason: Schema.String,
+  tracking: Schema.optionalKey(NoPoolLogin),
   /** A hold of the spend-evenly target only: the accounts still have quota. */
   soft: Schema.optionalKey(Schema.Boolean),
   /** What room the answer rests on, when measured. An older pool answers none: read it as `ok`'s. */

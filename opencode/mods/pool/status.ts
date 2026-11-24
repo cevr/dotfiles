@@ -13,6 +13,7 @@ import { Hold } from "./hold.ts"
 import { QuotaReading } from "./quota.ts"
 import { HeldSendAnswer } from "./refuse.ts"
 import { Claim, Reset } from "./resets.ts"
+import { NoPoolLogin } from "./pace.ts"
 export { Hold } from "./hold.ts"
 
 /** The pool's own RPC: each pooled provider's accounts, holds and readings. No secrets. */
@@ -97,6 +98,7 @@ export type SourceStatus = typeof SourceStatus.Type
 export const PoolEntry = Schema.Struct({
   accounts: Schema.Array(AccountStatus),
   sources: Schema.optionalKey(Schema.Array(SourceStatus)),
+  untrackedRoutes: Schema.optionalKey(Schema.Record(Schema.String, NoPoolLogin)),
 })
 export type PoolEntry = typeof PoolEntry.Type
 

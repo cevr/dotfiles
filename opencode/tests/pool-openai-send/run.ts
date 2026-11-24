@@ -16,6 +16,7 @@ const FUTURE = 9_000
 const Quote = Schema.Struct({
   ok: Schema.Boolean, measured: Schema.Boolean, eligible: Schema.optionalKey(Schema.Array(Schema.String)),
   retryAt: Schema.optionalKey(Schema.Finite),
+  tracking: Schema.optionalKey(Schema.String),
 })
 type Quote = typeof Quote.Type
 const RpcOutput = Schema.Struct({ output: Schema.optionalKey(Schema.Json), data: Schema.optionalKey(Schema.Json) })
@@ -38,6 +39,7 @@ interface HookContext {
     (name: "title", hook: (event: Title) => Effect.Effect<void>): Effect.Effect<unknown>
     (name: "experimental.model.resolve", hook: (event: Route) => Effect.Effect<void>): Effect.Effect<unknown>
     (name: "experimental.ws.handshake", hook: (event: Route) => Effect.Effect<void>): Effect.Effect<unknown>
+    (name: "http.request", hook: (event: Route) => Effect.Effect<void>): Effect.Effect<unknown>
   } }
   readonly rpc: (definition: typeof protocol) => { readonly pace: (input: Schema.JsonObject) => Effect.Effect<Schema.Json, Error> }
 }
@@ -63,8 +65,10 @@ interface Configured {
 }
 interface Sdk { readonly create: (options: Configured) => Effect.Effect<Client, Error, Scope.Scope> }
 const Sdk = Schema.declare((value): value is Sdk => Predicate.hasProperty(value, "create") && Predicate.isFunction(value.create))
-const Case = Schema.Literals(["http", "websocket", "late-websocket"])
+const Case = Schema.Literals(["http", "websocket", "late-http", "late-websocket", "api-http", "api-websocket", "cost"])
 type Case = typeof Case.Type
+const lateCase = (sample: Case) => sample.startsWith("late-")
+const apiCase = (sample: Case) => sample.startsWith("api-")
 type Sample = { readonly at: number; readonly authorization: string; readonly transport: string }
 interface Fake {
   readonly sample: Case
@@ -72,6 +76,7 @@ interface Fake {
   spent: boolean
   deadline: number
   readonly sent: Array<Sample>
+  usage: number
   upgrades: number
   fallback: number
 }
@@ -139,6 +144,7 @@ const upgrade = (state: Fake, request: HttpServerRequest.HttpServerRequest) =>
 const server = (state: Fake) => Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest
   if (request.url.endsWith("/usage")) {
+    state.usage += 1
     if (request.headers["authorization"] !== `Bearer ${ACCESS}` || request.headers["chatgpt-account-id"] !== "fixture")
       return HttpServerResponse.text("no synthetic credential", { status: 401 })
     return yield* HttpServerResponse.json({ plan_type: "pro", rate_limit: {
@@ -217,10 +223,13 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
   const directory = path.join(target.base, String(hold))
   yield* fs.makeDirectory(directory)
   const writer = path.join(target.base, "writer")
-  if (target.sample === "late-websocket") yield* fs.makeDirectory(writer)
-  const socket = target.sample !== "http"
-  const state: Fake = { sample: target.sample, hold, spent: hold && !socket, deadline: quotaEpoch() + HOUR, sent: [], upgrades: 0, fallback: 0 }
-  if (target.sample === "late-websocket") state.deadline = quotaEpoch() + 2 * FUTURE
+  const late = lateCase(target.sample)
+  const api = apiCase(target.sample)
+  if (late) yield* fs.makeDirectory(writer)
+  const socket = target.sample.endsWith("websocket")
+  const state: Fake = { sample: target.sample, hold, spent: target.sample === "http" && hold, deadline: quotaEpoch() + HOUR,
+    sent: [], upgrades: 0, fallback: 0, usage: 0 }
+  if (late) state.deadline = quotaEpoch() + 2 * FUTURE
   const expected = seconds(state.deadline) * 1_000
   yield* HttpServer.serveEffect(server(state))
   const httpd = yield* HttpServer.HttpServer
@@ -236,6 +245,13 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
     if (target.sample === "late-websocket") yield* ctx.session.hook("experimental.ws.handshake", (event) =>
       Effect.suspend(() => {
         if (event.kind !== "primary" || quotes.length < 2 || wrote) return Effect.void
+        wrote = true
+        return commit
+      }),
+    )
+    if (target.sample === "late-http") yield* ctx.session.hook("http.request", (event) =>
+      Effect.suspend(() => {
+        if (event.kind !== "primary" || quotes.length === 0 || wrote) return Effect.void
         wrote = true
         return commit
       }),
@@ -275,17 +291,17 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
       } }],
     }) },
   })
-  yield* host.credential.create({ integrationID: "openai", activate: true, value: {
+  if (!api) yield* host.credential.create({ integrationID: "openai", activate: true, value: {
     type: "oauth", methodID: "synthetic-fixture", refresh: "synthetic-refresh", access: ACCESS, expires: quotaEpoch() + HOUR,
     metadata: { accountID: "fixture" },
   } })
-  if (target.sample === "late-websocket") {
+  if (late) {
     yield* host.location.get({ location: { directory: writer } })
     commit = host.rpc.call({ rpcID: "fixture.openai-send-hold", method: "commit", input: {}, location: { directory: writer } }).pipe(Effect.asVoid, Effect.orDie)
   }
   const { id } = yield* host.session.create({ location: { directory }, model: MODEL, title: "Fixture" })
   const warm = Arr.empty<Sample>()
-  if (hold && socket) {
+  if (hold && socket && !api) {
     yield* prompt(host, id)
     const first = yield* transcript(host, state, id, directory)
     if (first.outcome !== "session.execution.succeeded" || state.sent.length !== 1)
@@ -297,8 +313,16 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
   yield* prompt(host, id)
   const last = yield* transcript(host, state, id, directory, warm.length > 0)
   const after = yield* fact(host, id, directory)
-  const committed = yield* Match.value(target.sample).pipe(
-    Match.when("late-websocket", () => writerFact(host, writer)),
+  const usageBeforeCost = state.usage
+  const cost = yield* Match.value(target.sample).pipe(
+    Match.when("cost", () => Effect.gen(function* () {
+      const reply = yield* host.rpc.call({ rpcID: "fixture.openai-send-hold", method: "cost", input: {}, location: { directory } })
+      return Option.orElse(Option.fromUndefinedOr(reply.output), () => Option.fromUndefinedOr(reply.data))
+    })),
+    Match.orElse(() => Effect.succeed(Option.none<Schema.Json>())),
+  )
+  const committed = yield* Match.value(late).pipe(
+    Match.when(true, () => writerFact(host, writer)),
     Match.orElse(() => Effect.succeed(Option.none<Schema.Json>())),
   )
   return {
@@ -306,7 +330,7 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
     ...Option.match(Arr.head(quotes), { onNone: () => ({}), onSome: (initial) => ({ initial }) }),
     ...Option.match(Arr.last(quotes), { onNone: () => ({}), onSome: (quote) => ({ quote }) }),
     after: Option.getOrNull(after), committed: Option.getOrNull(committed),
-    expected,
+    expected, cost: Option.getOrNull(cost), costUsageReads: state.usage - usageBeforeCost,
   }
 }).pipe(Effect.scoped, Effect.provide(BunHttpServer.layer({ hostname: "127.0.0.1", port: 0 })))
 

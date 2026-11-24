@@ -10,7 +10,8 @@ import { hangGuard } from "./hang-guard.ts"
 import { forkRuns } from "./scratch.ts"
 
 const Quote = Schema.Struct({ ok: Schema.Boolean, measured: Schema.Boolean,
-  eligible: Schema.optionalKey(Schema.Array(Schema.String)), retryAt: Schema.optionalKey(Schema.Finite) })
+  eligible: Schema.optionalKey(Schema.Array(Schema.String)), retryAt: Schema.optionalKey(Schema.Finite),
+  tracking: Schema.optionalKey(Schema.String) })
 const Send = Schema.Struct({ at: Schema.Finite, authorization: Schema.String, transport: Schema.String })
 const Seen = Schema.Struct({
   typed: Schema.Boolean, quote: Quote, initial: Quote, outcome: Schema.String, message: Schema.String,
@@ -18,13 +19,14 @@ const Seen = Schema.Struct({
   steps: Schema.Array(Schema.Struct({ id: Schema.String, attempt: Schema.Finite })),
   sent: Schema.Array(Send), warm: Schema.Array(Send), upgrades: Schema.Finite, fallback: Schema.Finite, expected: Schema.Finite,
   during: Schema.Json, after: Schema.Json, committed: Schema.Json,
+  cost: Schema.Json, costUsageReads: Schema.Finite,
 })
 const Samples = Schema.fromJsonString(Schema.Struct({ held: Seen, open: Schema.NullOr(Seen) }))
 const Override = Schema.fromJsonString(Schema.Struct({ compilerOptions: Schema.Struct({ paths: Schema.Record(Schema.String, Schema.Array(Schema.String)) }) }))
 const ResultJson = Schema.fromJsonString(Schema.Json)
 const toJson = Schema.encodeSync(ResultJson)
 const out = (stream: Stream.Stream<Uint8Array, unknown>) => stream.pipe(Stream.decodeText(), Stream.mkString)
-type Sample = "http" | "websocket" | "late-websocket"
+type Sample = "http" | "websocket" | "late-http" | "late-websocket" | "api-http" | "api-websocket" | "cost"
 
 const boot = (sample: Sample) => Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
@@ -51,7 +53,7 @@ const boot = (sample: Sample) => Effect.gen(function* () {
     ...extra, "pool-fixture-sdk": [path.join(fork, "packages/sdk/src/effect/index.ts")],
   } } }))
   const plugin = Option.getOrElse(control, () => {
-    if (sample === "late-websocket") return path.join(poolPlugin, "fixtures/openai-send-hold")
+    if (sample.startsWith("late-") || sample === "cost") return path.join(poolPlugin, "fixtures/openai-send-hold")
     return poolPlugin
   })
   const child = yield* spawner.spawn(ChildProcess.make("bun", ["--tsconfig-override", settings, path.join(ROOT, "tests/pool-openai-send/run.ts")], {
@@ -70,7 +72,7 @@ const boot = (sample: Sample) => Effect.gen(function* () {
 })
 
 const contained = (seen: typeof Seen.Type, retryAt: number, sample: Sample) => {
-  const wanted = Match.value(sample).pipe(Match.when("http", () => 0), Match.orElse(() => 1))
+  const wanted = Number(sample.endsWith("websocket"))
   const after = Option.getOrNull(readHeldSend(seen.after))
   const wording = `held by the pool until ${DateTime.formatIso(DateTime.makeUnsafe(retryAt))}: not an error of the task; retry at or after that time`
   if (seen.typed) {
@@ -99,15 +101,33 @@ const contained = (seen: typeof Seen.Type, retryAt: number, sample: Sample) => {
 }
 
 describe.skipIf(!forkRuns)("OpenAI final hold on native OpenCode", () => {
-  for (const sample of ["http", "websocket", "late-websocket"] as const)
+  it.live.layer(BunServices.layer)("each new send uses one native hold-store read; an already-admitted Step does not", () =>
+    Effect.gen(function* () {
+      const { held } = yield* boot("cost")
+      const wait = (n: number) => ({ holdLockWaitMs: { n } })
+      expect(held.cost).toMatchObject({
+        http: { control: wait(0), tracked: wait(1_000) },
+        websocket: { control: wait(0), tracked: wait(1_000), admittedStep: wait(1), eightSessions: wait(1_000) },
+      })
+      expect(held.costUsageReads).toBe(0)
+      yield* Console.log("send-cost native", toJson(held.cost))
+    }).pipe(Effect.scoped), hangGuard("fork-turn"))
+  for (const sample of ["http", "websocket", "late-http", "late-websocket", "api-http", "api-websocket"] as const)
     it.live.layer(BunServices.layer)(`the held Step sends nothing before retry time (${sample})`, () =>
       Effect.gen(function* () {
         const { held, open } = yield* boot(sample)
-        const retryAt = Match.value(sample).pipe(
-          Match.when("late-websocket", () => held.expected),
+        if (sample.startsWith("api-")) {
+          expect(held.quote).toMatchObject({ ok: true, measured: false, tracking: "not-tracked-no-pool-login" })
+          expect(held.outcome).toBe("session.execution.succeeded")
+          expect(held.sent).toEqual([expect.objectContaining({ authorization: "Bearer synthetic-access" })])
+          expect(held.after).toEqual({})
+          return
+        }
+        const known = !sample.startsWith("late-")
+        const retryAt = Match.value(known).pipe(
+          Match.when(false, () => held.expected),
           Match.orElse(() => Number(held.quote.retryAt)),
         )
-        const known = sample !== "late-websocket"
         expect(held.quote).toMatchObject({ ok: !known, measured: true })
         if (!known) expect(held.committed).toEqual({ held: true, until: retryAt })
         if (known && Option.isSome(Option.fromUndefinedOr(held.quote.eligible))) expect(held.quote.eligible).toEqual([])
@@ -115,7 +135,7 @@ describe.skipIf(!forkRuns)("OpenAI final hold on native OpenCode", () => {
           expect(open).toMatchObject({ quote: { ok: true, measured: true }, outcome: "session.execution.succeeded",
             sent: [expect.objectContaining({ authorization: "Bearer synthetic-access", transport: "http" })] })
           expect(held.warm).toEqual([])
-        } else {
+        } else if (sample.endsWith("websocket")) {
           expect(held.initial).toMatchObject({ ok: true, measured: true })
           expect(held.warm).toEqual([expect.objectContaining({ authorization: "Bearer synthetic-access", transport: "websocket" })])
         }

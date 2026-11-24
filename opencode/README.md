@@ -4153,11 +4153,22 @@ the `wham/usage` endpoint, then the `x-codex-primary/secondary-*` headers and
 this host or another, OpenCode or Codex CLI. OpenCode selects its active
 login; the pool does not switch it. The pool can turn down a known durable
 hold during routing without reading usage. That early answer never admits a
-send: the pool checks the active login again at the concrete HTTP request
-or each WebSocket send, including on a socket another Step already used.
-An absent active login or unreadable authority cannot grant admission. Provider
-aliases use the same hooks and check the account their configuration names.
-The token is never stored or shown by the pool.
+send: the pool checks the active OAuth login against the hold store at the
+concrete HTTP request or `response.create` frame, including on a socket
+another Step already used. Once admitted, a typed Step does not check again;
+a new hold applies to the next Step. On the older host, which does not supply
+Step IDs at that hook, each `response.create` is checked; other frames are
+not gated. The check does not fetch usage unless a sign-in or damaged-row
+recheck is due; one send reserves that appointment before reading usage.
+
+An API key or a route without a pool login sends as it did without the pool;
+`pace` and `status` identify it as `not-tracked-no-pool-login`. If an observed
+OAuth login disappears and that account has a recorded sign-in hold, the
+hold still applies until the pool sees a sign-in or another credential is
+selected. A tracked active login with unreadable hold authority is not sent.
+Provider aliases use the same hooks. Only the `anthropic` provider key takes
+the existing signed placement path; another `providers` key cannot switch
+the credential chosen by OpenCode. The token is never stored or shown by the pool.
 
 For OpenAI, a host with typed Step deferral retries the original Step at its hold's
 retry time. Older hosts stop it before sending and show when to retry.

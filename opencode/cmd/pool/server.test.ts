@@ -8,7 +8,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Cause, Clock, Effect, Exit, Fiber, Latch, Layer, Option, Queue, Schedule, Schema, Stream } from "effect"
+import { Cause, Clock, Console, Effect, Exit, Fiber, Latch, Layer, Option, Queue, Schedule, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { CACHE_LIFE_MS, WINDOW_MS } from "@dotfiles/opencode-pool/accounts"
@@ -38,6 +38,7 @@ import { waitUntil } from "../../tests/wait.ts"
 import Pool, { CACHE_TTL_HEADER, CREDENTIAL_HEADER, liveWith, make } from "./server.ts"
 import * as PeersLive from "@dotfiles/opencode-pool/ssh/peers"
 import { stamp } from "../../tests/hang-guard.ts"
+import { sendCost } from "../../tests/pool-openai-send/cost.ts"
 
 /** The live adapters of one process: each start is a process of its own, its shared storage read anew. */
 const live = () => liveWith(PeersLive.layer)
@@ -330,7 +331,7 @@ const start = (
       storage: {
         ...storage,
         scan: (input: Parameters<typeof storage.scan>[0]) => Effect.suspend(() => {
-          if (input.prefix === "anthropic/hold/") {
+          if (input.prefix.startsWith("anthropic/hold/")) {
             state.holdAccess.scans += 1
             if (state.holdAccess.unavailable) return Effect.die("hold store unavailable")
           }
@@ -809,11 +810,112 @@ describe("the options", () => {
       const plugin = yield* start(installed)
       expect(yield* plugin.request()).toBe("cred-a")
       const alias = yield* start({ ...installed, paced: { ...installed.paced, sim: "anthropic" } })
-      expect(yield* alias.pace("sim")).toEqual(yield* alias.pace("anthropic"))
+      expect(yield* alias.pace("sim")).toMatchObject({ ok: true, tracking: "not-tracked-no-pool-login" })
+      const placedAlias = yield* start({ ...installed, providers: { ...installed.providers, sim: "anthropic" } })
+      expect(yield* placedAlias.pace("sim")).toMatchObject({ ok: true, tracking: "not-tracked-no-pool-login" })
     })))
 })
 
 describe("the hooks", () => {
+  test("one hold-store read per new Step, no store read for its subsequent frames", () =>
+    scenario(Effect.gen(function* () {
+      const state = world()
+      state.active.set("anthropic", "cred-a")
+      const plugin = yield* start({ paced: { sim: "anthropic" }, sweepMinutes: 0 }, state, live())
+      const http = yield* registered(plugin.hooks, "http.request")
+      const websocket = yield* registered(plugin.hooks, "experimental.ws.send")
+      const cost = yield* sendCost((transport, { sessionID, stepID, tracked }) => {
+        const providerID = Option.getOrElse(Option.filter(Option.some("sim"), () => tracked), () => "other")
+        const event = { sessionID, kind: "primary", model: { ...model, providerID }, step: { id: stepID } }
+        if (transport === "http") return http(event)
+        return websocket({ ...event, frame: '{"type":"response.create"}' })
+      })
+      expect(cost.http.tracked.holdLockWaitMs.n).toBe(1_000)
+      expect(cost.websocket.tracked.holdLockWaitMs.n).toBe(1_000)
+      expect(cost.websocket.admittedStep.holdLockWaitMs.n).toBe(1)
+      expect(cost.websocket.eightSessions.holdLockWaitMs.n).toBe(1_000)
+      expect(state.holdAccess.usage).toBe(0)
+      yield* Console.log("send-cost simulated", Schema.encodeSync(Schema.fromJsonString(Schema.Json))(cost))
+    })))
+
+  test("a signed-out route sends without a hold, but retains a sign-in refusal for its last selected login", () =>
+    scenario(Effect.gen(function* () {
+      const state = world()
+      state.active.set("anthropic", "cred-a")
+      const options = { providers: { anthropic: "anthropic", alias: "anthropic" }, sweepMinutes: 0 }
+      const plugin = yield* start(options, state, live())
+      const send = yield* registered(plugin.hooks, "http.request")
+      const event = { sessionID: "ses_signout", kind: "primary", model: { ...model, providerID: "alias" } }
+      // No signed placement is possible for this alias; use the login the host chose.
+      state.active.set("anthropic", "cred-b")
+      expect(yield* plugin.request(event.sessionID, "alias")).toBeUndefined()
+      yield* send(event)
+      state.active.delete("anthropic")
+      yield* send(event)
+      expect(yield* plugin.heldSend(event.sessionID)).toEqual({})
+      expect(yield* plugin.pace("alias")).toMatchObject({ ok: true, tracking: "not-tracked-no-pool-login" })
+      expect(yield* plugin.status).toMatchObject({ anthropic: { untrackedRoutes: { alias: "not-tracked-no-pool-login" } } })
+      const at = yield* Clock.currentTimeMillis
+      state.storage.set("anthropic/hold/cred-b", { kind: "signin", at, until: at + MINUTE })
+      expect(Exit.isFailure(yield* Effect.exit(send(event)))).toBe(true)
+      expect(yield* plugin.heldSend(event.sessionID)).toMatchObject({ hold: { providerID: "alias", reasonCode: "account-held" } })
+      expect(yield* plugin.pace("alias")).toMatchObject({ ok: false, measured: true, retryAt: at + MINUTE })
+    })))
+
+  test("a due sign-in recheck is reserved once for eight sends across two copies", () =>
+    onTestClock(Effect.gen(function* () {
+      const state = world()
+      state.active.set("anthropic", "cred-a")
+      const options = { paced: { sim: "anthropic" }, sweepMinutes: 0 }
+      const authority = live()
+      const one = yield* start(options, state, authority)
+      const two = yield* start(options, state, authority)
+      const key = "anthropic/hold/cred-a"
+      state.storage.set(key, { kind: "signin", at: 0, until: MINUTE })
+      const before = state.holdAccess.usage
+      const send = (i: number) => Effect.gen(function* () {
+        const copy = Option.getOrElse(Option.filter(Option.some(one), () => i % 2 === 0), () => two)
+        const hook = yield* registered(copy.hooks, "experimental.ws.send")
+        const frame = { sessionID: `ses_due_${i}`, kind: "primary", model: { ...model, providerID: "sim" },
+          step: { id: `step_${i}` }, frame: '{"type":"response.create"}' }
+        yield* hook(frame)
+        return frame
+      })
+      const inputs = Array.from({ length: 8 }, (_, i) => i)
+      const first = yield* Effect.forEach(inputs, send, { concurrency: 8 })
+      expect(first.every((frame) => "refuse" in frame)).toBe(true)
+      expect(state.holdAccess.usage).toBe(before)
+      yield* TestClock.setTime(MINUTE)
+      const due = yield* Effect.forEach(inputs, send, { concurrency: 8 })
+      expect(due.every((frame) => "refuse" in frame)).toBe(true)
+      expect(state.holdAccess.usage - before).toBe(1)
+      expect(state.storage.get(key)).toMatchObject({ kind: "signin", until: MINUTE + LedgerLive.UNREADABLE_HOLD_MS })
+    })))
+
+  test("an admitted Step continues after a new hold; only the next response.create is refused", () =>
+    scenario(Effect.gen(function* () {
+      const state = world()
+      state.active.set("anthropic", "cred-a")
+      const plugin = yield* start({ paced: { sim: "anthropic" }, sweepMinutes: 0 }, state, live())
+      const send = yield* registered(plugin.hooks, "experimental.ws.send")
+      const payload = { sessionID: "ses_frames", kind: "primary", model: { ...model, providerID: "sim" } }
+      const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Struct({ type: Schema.String })))
+      const frame = (id: string, type: string, attempt = 1) => ({ ...payload, step: { id, attempt }, frame: encode({ type }) })
+      yield* send(frame("first", "response.create"))
+      const at = yield* Clock.currentTimeMillis
+      state.storage.set("anthropic/hold/cred-a", { kind: "rate-limit", at, until: at + MINUTE })
+      const continued = frame("first", "response.create", 2)
+      const control = frame("next", "response.cancel")
+      const next = frame("next", "response.create")
+      yield* send(continued)
+      yield* send(control)
+      yield* send(next)
+      expect(continued).not.toHaveProperty("refuse")
+      expect(control).not.toHaveProperty("refuse")
+      expect(next).toMatchObject({ refuse: { until: at + MINUTE } })
+      expect(yield* plugin.heldSend(payload.sessionID)).toMatchObject({ hold: { stepID: "next" } })
+    })))
+
   test("pool only the provider's OAuth logins and name the chosen one on the request", () =>
     scenario(
       Effect.gen(function* () {
@@ -1881,6 +1983,7 @@ describe("resets on the live adapters", () => {
           const state = world()
           state.integration.connections.set(OPENAI, [{ type: "credential", id: "chatgpt-1", label: "ChatGPT", method: "oauth" }])
           state.credentials.set("chatgpt-1", { type: "oauth", access: "access-1", refresh: "r", expires: now + DAY, metadata: { accountID: "acct-1" } })
+          state.active.set(OPENAI, "chatgpt-1")
           const plugin = yield* start({ sweepMinutes: 0, paced: { openai: "openai" }, usageURL: fake.usageURL }, state, live())
           yield* busy(plugin, "openai")
           expect(yield* plugin.pace("openai", "ses_root")).toMatchObject({ ok: false, measured: true })

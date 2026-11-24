@@ -17,9 +17,10 @@ export type HeldSend = typeof HeldSend.Type
 export const HeldSendAnswer = Schema.Struct({ hold: Schema.optionalKey(HeldSend) })
 export const readHeldSend = Schema.decodeUnknownOption(HeldSendAnswer)
 interface SendHook { readonly kind: string }
+const readStep = Schema.decodeUnknownOption(Schema.Struct({ id: Schema.String }))
 export const stepIDOf = (event: SendHook) => {
-  if (!("step" in event)) return Option.none<string>()
-  return Schema.decodeUnknownOption(Schema.Struct({ id: Schema.String }))(event.step).pipe(Option.map((step) => step.id))
+  if (!("step" in event)) return Option.none()
+  return readStep(event.step).pipe(Option.map((step) => step.id))
 }
 
 export const sendHoldMessage = (reason: string, retryAt: number): string => {

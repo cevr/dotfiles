@@ -18,6 +18,8 @@
  *
  * Options (all optional; an absent one takes its default, a malformed one stops the plugin):
  * - `providers`: provider id to integration id, default `{ anthropic: "anthropic" }`.
+ *   Only `anthropic` has an auth plugin that signs and confirms a placement.
+ *   Other keys track the host's OAuth login; they cannot switch its credential.
  * - `sweepMinutes`: how often to read each login's usage; 0 turns it off. Default 10.
  * - `cacheLifeMs`: how long a session's prompt cache lives on the login it last
  *   used, in ms: the provider's cache lifetime (`settings.cache.ttl`). While it
@@ -133,7 +135,7 @@ import { hostname } from "node:os"
 import { Agent, Integration, Plugin, Tool } from "@opencode/plugin/effect"
 import { Cause, Clock, Context, Deferred, Effect, Exit, Fiber, FiberMap, Layer, Option, Schedule, Schema, Stream } from "effect"
 import { heldMessage, PoolId } from "@dotfiles/opencode-pool/account-pool"
-import { type HoldReason, nextRetryAt, RequestHeld, requestHeldMessage, storeHeld } from "@dotfiles/opencode-pool/pace"
+import { type HoldReason, type Pace, RequestHeld, requestHeldMessage, storeHeld, nextRetryAt } from "@dotfiles/opencode-pool/pace"
 import { deferRoute, HeldSend, refuseSend, type SendHold, sendHoldMessage, stepIDOf } from "@dotfiles/opencode-pool/refuse"
 import { HANDOFF_HEADER, HOLD_STORE_RETRY_MS, Handoff, HandoffInput, sentPlacementOf } from "@dotfiles/opencode-pool/handoff"
 import { CACHE_LIFE_MS, ttlMs, ttlOf } from "@dotfiles/opencode-pool/accounts"
@@ -234,6 +236,7 @@ export type Options = typeof Options.Type
 const SEND_HOLD_PREFIX = "held-send/"
 const sendHoldKey = (sessionID: string) => `${SEND_HOLD_PREFIX}${sessionID}`
 const decodeSendHold = Schema.decodeUnknownOption(HeldSend)
+const frameType = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({ type: Schema.String })))
 type SendScope = { readonly sessionID: string; readonly providerID: string; readonly kind: Model.PlaceInput["kind"]; readonly stepID?: string }
 
 /** The outside systems the model runs on. */
@@ -455,6 +458,22 @@ export const make = (
         Option.filter(Option.fromUndefinedOr(options.providers[providerID]), () => Object.hasOwn(options.providers, providerID)),
         () => Option.filter(Option.fromUndefinedOr(options.paced[providerID]), () => Object.hasOwn(options.paced, providerID)),
       )
+      const lastLogin = new Map<string, string>()
+      const admitted = new Map<string, string>()
+      const noLogin = { ok: true, measured: false, tracking: "not-tracked-no-pool-login", reason: "not tracked: no pool login" } satisfies Pace
+      const loginOf = (integrationID: string) => ctx.integration.connection.active(integrationID).pipe(
+        Effect.map((connection) => {
+          const selected = Option.fromUndefinedOr(connection)
+          if (Option.isNone(selected)) return { active: false, id: Option.fromUndefinedOr(lastLogin.get(integrationID)) }
+          const value = selected.value
+          if (value.type === "credential" && value.method === "oauth") {
+            lastLogin.set(integrationID, value.id)
+            return { active: true, id: Option.some<string>(value.id) }
+          }
+          lastLogin.delete(integrationID)
+          return { active: false, id: Option.none<string>() }
+        }),
+      )
       // The plugin's context carries the host's loggers.
       const sources = storeSources(options, yield* Effect.context<never>(), storeHost)
       const chatgpt = yield* chatgptSources(ctx, options, storeHost)
@@ -469,6 +488,18 @@ export const make = (
       yield* Effect.addFinalizer(() => Effect.sync(() => { active = false }))
       const withPool = <A, E, R>(use: (pool: Model.Pool["Service"]) => Effect.Effect<A, E, R>) =>
         Deferred.await(ready).pipe(Effect.flatMap(use))
+      const routeTracking = (integration: string, input: Model.PlaceInput) => Effect.gen(function* () {
+        const login = yield* loginOf(integration)
+        if (login.active) return Option.none<Pace>()
+        if (Option.isNone(login.id)) return Option.some<Pace>(noLogin)
+        const candidate = login.id.value
+        return yield* withPool((pool) => pool.admitActive(input, candidate, "signed-out")).pipe(
+          Effect.as(Option.some<Pace>(noLogin)),
+          Effect.catchTag("RequestHeld", (hold) => Clock.currentTimeMillis.pipe(Effect.map((now) => Option.some<Pace>({
+            ok: false, measured: true, reason: requestHeldMessage(hold), reasonCode: hold.reasonCode, retryAt: nextRetryAt(now, [hold.retryAt]),
+          })))),
+        )
+      })
       const storeOp = <A>(operation: Effect.Effect<A>) =>
         operation.pipe(Effect.timeoutOption(HOLD_STORE_RETRY_MS), Effect.catchDefect(() => Effect.succeed(Option.none())))
       const activation = yield* Effect.scope
@@ -525,12 +556,17 @@ export const make = (
             }),
           )).pipe(Effect.as(refusal))
         }))
-      const forgetHeld = (scope: SendScope) => {
+      const forgetHeld = (scope: SendScope, ifPresent = false) => {
         if (scope.kind !== "primary") return Effect.void
         // Capture this row's timer under the permit. Interrupt only after
         // releasing it: the timer may already be waiting to read this row.
         return sendRecords.withPermits(1)(Effect.gen(function* () {
-          const removed = yield* storeOp(ctx.storage.remove(sendHoldKey(scope.sessionID)))
+          const key = sendHoldKey(scope.sessionID)
+          if (ifPresent) {
+            const page = yield* storeOp(ctx.storage.scan({ prefix: key, limit: 1 }))
+            if (Option.exists(page, ({ entries }) => entries.every((entry) => entry.key !== key))) return Option.none()
+          }
+          const removed = yield* storeOp(ctx.storage.remove(key))
           if (Option.isNone(removed)) return Option.none()
           return yield* FiberMap.get(expiries, scope.sessionID)
         })).pipe(Effect.flatMap(Option.match({ onNone: () => Effect.void, onSome: Fiber.interrupt })))
@@ -665,8 +701,11 @@ export const make = (
         )
       })
 
-      const gateActive = (event: { readonly kind: Model.PlaceInput["kind"]; readonly sessionID: string;
-        readonly model: { readonly providerID: string; readonly id: string } }, phase: "known-hold" | "send",
+      type SendEvent = { readonly kind: Model.PlaceInput["kind"]; readonly sessionID: string;
+        readonly model: { readonly providerID: string; readonly id: string } }
+      const stepKey = (event: SendEvent) => Option.map(stepIDOf(event), (id) => `${event.model.providerID}/${event.model.id}/${id}`)
+      const stepAdmitted = (event: SendEvent) => Option.exists(stepKey(event), (key) => admitted.get(event.sessionID) === key)
+      const gateActive = (event: SendEvent, phase: "known-hold" | "send",
         bind: (held: SendHold) => Effect.Effect<void>) =>
         Effect.gen(function* () {
           const poolID = tracked(event.model.providerID)
@@ -676,37 +715,41 @@ export const make = (
           const refuse = (reason: string, code: HoldReason, at: number) => recordHeld(scope, reason, code, at).pipe(
             Effect.flatMap((hold) => bind({ reason: hold.reason, until: hold.retryAt })),
           )
-          const connection = yield* ctx.integration.connection.active(poolID.value)
-          const login = Option.filter(Option.fromUndefinedOr(connection), (value) => value.type === "credential")
-          if (!active || Option.isNone(login)) {
-            if (phase === "known-hold") return
-            const now = yield* Clock.currentTimeMillis
-            const held = RequestHeld.make({ sessionID: input.sessionID,
-              reason: "the pool cannot identify the provider's active login", reasonCode: "logins-unavailable", retryAt: nextRetryAt(now, []),
-            })
-            return yield* refuse(requestHeldMessage(held), held.reasonCode, held.retryAt)
-          }
           // Clear a previous refusal before checking current authority. No
           // storage yield follows an allowed send.
-          if (phase === "send") yield* forgetHeld(scope)
-          return yield* withPool((pool) => pool.admitActive(input, login.value.id, phase)).pipe(
-            Effect.catchTags({
-              AccountsHeld: (held) => refuse(heldMessage(held), "account-held", held.retryAt),
-              RequestHeld: (held) => refuse(requestHeldMessage(held), held.reasonCode, held.retryAt),
-            }),
-          )
+          if (phase === "send") yield* forgetHeld(scope, true)
+          const login = yield* loginOf(poolID.value)
+          if (Option.isNone(login.id)) return
+          const id = login.id.value
+          const check = Option.getOrElse(Option.filter(Option.some(phase), () => login.active), () => "signed-out" as const)
+          return yield* withPool((pool) => pool.admitActive(input, id, check)).pipe(
+            Effect.catchTag("RequestHeld", (held) => refuse(requestHeldMessage(held), held.reasonCode, held.retryAt)))
         })
       yield* ctx.session.hook("experimental.model.resolve", (event) => Effect.suspend(() => {
         if (Option.isNone(stepIDOf(event))) return Effect.void
         canDeferPrimary = true
-        if (signed(event.model.providerID)) return Effect.void
+        if (signed(event.model.providerID) || stepAdmitted(event)) return Effect.void
         return gateActive(event, "known-hold", (hold) => deferRoute(event, hold))
       }))
+      const gateStep = (event: SendEvent) => Effect.suspend(() => {
+        if (stepAdmitted(event)) return Effect.void
+        let refused = false
+        return gateActive(event, "send", (hold) => {
+          refused = true
+          return refuseSend(event, hold)
+        }).pipe(Effect.tap(() => Effect.sync(() => {
+          const key = stepKey(event)
+          if (!refused && Option.isSome(tracked(event.model.providerID)) && Option.isSome(key)) admitted.set(event.sessionID, key.value)
+        })))
+      })
       yield* ctx.session.hook("http.request", (event) => {
         if (signed(event.model.providerID)) return Effect.void
-        return gateActive(event, "send", (hold) => refuseSend(event, hold))
+        return gateStep(event)
       })
-      yield* ctx.session.hook("experimental.ws.send", (event) => gateActive(event, "send", (hold) => refuseSend(event, hold)))
+      yield* ctx.session.hook("experimental.ws.send", (event) => Effect.suspend(() => {
+        if (!event.frame.startsWith('{"type":"response.create"') && !Option.exists(frameType(event.frame), ({ type }) => type === "response.create")) return Effect.void
+        return gateStep(event)
+      }))
 
       // What a paced provider's response showed of the account's quota belongs
       // to the login OpenCode sends it on: the integration's active one.
@@ -779,6 +822,8 @@ export const make = (
       yield* Effect.forkScoped(
         ctx.event.subscribe({ types: ["session.step.started", "session.step.ended", ...EXECUTION_ENDED] }).pipe(
           Stream.runForEach((event) => {
+            if (event.type === "session.execution.succeeded" || event.type === "session.execution.failed" || event.type === "session.execution.interrupted")
+              admitted.delete(event.data.sessionID)
             if (event.type === "session.execution.interrupted") {
               if (event.data.reason === "shutdown") return Effect.void
               return withPool((pool) => pool.release(event.data.sessionID))
@@ -870,10 +915,33 @@ export const make = (
       })
       yield* ctx.rpc
         .register(POOL_STATUS, {
-          pace: (input) => withPool((pool) => pool.pace(providerOf(input), modelOf(input), sessionOf(input), dispatchOf(input))).pipe(Effect.orDie),
+          pace: (input) => Effect.gen(function* () {
+            const provider = providerOf(input)
+            const integration = Option.filter(tracked(provider), () => !signed(provider))
+            if (Option.isSome(integration)) {
+              const tracking = yield* routeTracking(integration.value, {
+                providerID: provider, sessionID: Option.getOrElse(Option.fromUndefinedOr(sessionOf(input)), () => ""),
+                kind: "primary", model: modelOf(input) ?? "",
+              })
+              if (Option.isSome(tracking)) return tracking.value
+            }
+            return yield* withPool((pool) => pool.pace(provider, modelOf(input), sessionOf(input), dispatchOf(input)))
+          }).pipe(Effect.orDie),
           heldSend: ({ sessionID }) => heldSend(sessionID),
           handoff: (input) => handoff(decodeHandoff(input)),
-          status: () => withPool((pool) => pool.status).pipe(Effect.orDie),
+          status: () => Effect.gen(function* () {
+            const status = { ...yield* withPool((pool) => pool.status) }
+            for (const providerID of new Set([...Object.keys(options.providers), ...Object.keys(options.paced)])) {
+              const id = Option.filter(tracked(providerID), () => !signed(providerID))
+              if (Option.isNone(id)) continue
+              const entry = Option.fromUndefinedOr(status[id.value])
+              if (Option.isNone(entry)) continue
+              const tracking = yield* routeTracking(id.value, { providerID, sessionID: "", kind: "primary", model: "" })
+              if (Option.exists(tracking, (answer) => answer.tracking === noLogin.tracking))
+                status[id.value] = { ...entry.value, untrackedRoutes: { ...entry.value.untrackedRoutes, [providerID]: noLogin.tracking } }
+            }
+            return status
+          }).pipe(Effect.orDie),
           // A malformed question names no session: it has no account to name.
           session: (input) =>
             Option.match(decodeSessionQuery(input), { onNone: () => Effect.succeed({}), onSome: (query) => withPool((pool) => pool.session(query)) }),
