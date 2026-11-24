@@ -48,7 +48,7 @@ import { childrenOf, waitingForWake, worksNow, type Works } from "./works.ts"
  * above), `blocked` waits on the owner; `idle` is a stopped one whose end the
  * data does not say.
  */
-export type State = "working" | "waiting" | "blocked" | "latched" | "done" | "failed" | "cancelled" | "idle" | "checking" | "unknown"
+export type State = "working" | "waiting" | "blocked" | "latched" | "done" | "failed" | "cancelled" | "idle" | "unknown"
 
 /** The states a row stays in view for, timed. A latched row is queued work, so it counts as live. */
 export function live(state: State): boolean {
@@ -61,7 +61,6 @@ export function live(state: State): boolean {
     case "failed":
     case "cancelled":
     case "idle":
-    case "checking":
     case "unknown": return false
   }
   return state satisfies never
@@ -439,7 +438,6 @@ function ownedRow(session: Session, base: Omit<Row, "state" | "update">, options
     return text
   }
   switch (view.kind) {
-    case "checking": return { ...base, state: "checking", update: "Checking the last execution" }
     case "none":
     case "unknown": return { ...base, state: "unknown", update: qualify("Current execution not known") }
     case "recovering": return { ...base, state: "waiting", update: qualify("Recovering"), ...timed(view.at) }
@@ -478,10 +476,10 @@ export const LINGER_MS = 30_000
  * The rows worth showing at `now`: every live one (working, waiting,
  * blocked), with how long it has been in its state and since it last said
  * anything, and each stopped one for `LINGER_MS` after it stopped; a stopped
- * one whose end time the data does not say never shows. Checking is visible
- * only until the owner reader's in-flight read settles or times out. Unknown
- * has neither live nor stop evidence: it leaves the strip immediately unless
- * it is `current` (the viewed child), which always has a row.
+ * one whose end time the data does not say never shows. Unknown has neither
+ * live nor stop evidence: it leaves the strip immediately unless it is
+ * `current` (the viewed child), which always has a row. A child that ended
+ * before `now - linger` is never a row unless it is `current`.
  */
 export function visible(
   all: ReadonlyArray<Row>,
@@ -499,7 +497,6 @@ export function visible(
         },
       ]
     if (row.id === options.current) return [row]
-    if (row.state === "checking") return [row]
     if (row.state === "unknown") return []
     if (row.ended !== undefined && now - row.ended < linger) return [row]
     if (row.state === "idle" && Number.isFinite(row.heard) && now - Number(row.heard) < linger) return [row]
