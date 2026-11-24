@@ -17,7 +17,7 @@ test("one answer that differs tells the agent to revise, naming question, assump
   const letter = letterOf([{ question: port, answer: "3000" }])
   expect(letter.text).toBe(
     [
-      "Answer to your background question q1 (asked 2026-11-05T15:00:00.000Z):",
+      "Answer to your background question q1 (asked Nov 5, 2026, 10:00:00 AM EST):",
       "Q: Which port should the dev server use?",
       "You assumed: 8080",
       "A: 3000",
@@ -56,17 +56,17 @@ test("three answers are one letter: each question, assumption and answer, and on
     [
       "Answers to your background questions q1, q2 and q4:",
       "",
-      "q1 (asked 2026-11-05T15:00:00.000Z): Which port should the dev server use?",
+      "q1 (asked Nov 5, 2026, 10:00:00 AM EST): Which port should the dev server use?",
       "You assumed: 8080",
       "A: 3000",
       "This differs from your assumption.",
       "",
-      "q2 (asked 2026-11-05T15:01:00.000Z): Keep the --legacy flag?",
+      "q2 (asked Nov 5, 2026, 10:01:00 AM EST): Keep the --legacy flag?",
       "You assumed: yes",
       "A: Yes",
       "This is what you assumed.",
       "",
-      "q4 (asked 2026-11-05T15:02:00.000Z): Which test runner?",
+      "q4 (asked Nov 5, 2026, 10:02:00 AM EST): Which test runner?",
       "You assumed: bun test",
       "A: vitest",
       "This differs from your assumption.",
@@ -96,7 +96,7 @@ test("a question dismissed beside an answer is named after it, in the same messa
   ])
   expect(letter.text).toBe(
     [
-      "Answer to your background question q1 (asked 2026-11-05T15:00:00.000Z):",
+      "Answer to your background question q1 (asked Nov 5, 2026, 10:00:00 AM EST):",
       "Q: Which port should the dev server use?",
       "You assumed: 8080",
       "A: 3000",

@@ -12,6 +12,7 @@
  */
 import type { ClaimAnswer, QuotaReading, QuotaRefusal, QuotaResets, QuotaStatus, QuotaWindow, ResetCredit } from "@dotfiles/opencode-pool/quota"
 import { grantKind } from "@dotfiles/opencode-pool/quota"
+import { Option, Predicate } from "effect"
 import { isRecord } from "./json.ts"
 import type { RateLimitCategory } from "./rate-limit.ts"
 
@@ -266,8 +267,9 @@ function readResets(block: unknown, now: number): QuotaResets | undefined {
 
 /**
  * The usage endpoint's answer as a reading. It names each window with a
- * utilization in percent and an ISO reset; a window it reports as `null` is
- * left out. Windows beyond the 5-hour and 7-day ones keep their own names,
+ * utilization in percent and an ISO reset; an explicit `five_hour: null`
+ * records when the five-hour limit was absent. Other null windows are left
+ * out. Windows beyond the 5-hour and 7-day ones keep their own names,
  * and each model's own window is `<window>:<model>`. The reset grants come
  * along when the body carries them.
  */
@@ -288,7 +290,13 @@ export function readUsageBody(body: unknown, now: number): QuotaReading | undefi
   windows.push(...modelWindows(body))
   if (windows.length === 0) return undefined
   const resets = readResets(body.cedar_ember, now)
-  return { at: now, windows, ...(resets === undefined ? {} : { resets }) }
+  const absent = Option.filter(Option.some(now), () => Predicate.isNull(body.five_hour))
+  return {
+    at: now,
+    windows,
+    ...Option.match(absent, { onNone: () => ({}), onSome: (fiveHourAbsentAt) => ({ fiveHourAbsentAt }) }),
+    ...(resets === undefined ? {} : { resets }),
+  }
 }
 
 /**

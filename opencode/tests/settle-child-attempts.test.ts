@@ -121,6 +121,7 @@ interface Barrier {
   readonly next: Effect.Effect<{ readonly revision: number; readonly release: Effect.Effect<boolean> }>
   readonly initial: number
   readonly ready: Effect.Effect<void>
+  readonly answered: (revision: number) => Effect.Effect<void>
   readonly live: Display
   readonly snapshot: () => Display
   readonly shown: (now: number) => ReadonlyArray<string>
@@ -433,7 +434,7 @@ const finishBarriers = Effect.fn("LifecycleFixture.finishBarriers")(function* (
     const shownWhileSuperseded = barrier.shown(yield* Clock.currentTimeMillis)
     const activeDuringRead = barrier.active()
     yield* pending.release
-    yield* barrier.ready
+    yield* barrier.answered(pending.revision)
     const after = barrier.snapshot()
     const activeAfter = barrier.active()
     const accepted = barrier.revision()
@@ -500,6 +501,7 @@ const silentExit = Effect.fn("LifecycleFixture.silentExit")(function* (
 const cancelBehindBarrier = Effect.fn("LifecycleFixture.cancelBehindBarrier")(function* (
   instance: Embedded, events: AsyncIterator<HostEvent>, barrier: Barrier, root: string, child: string, inboxID: string,
 ) {
+  const before = barrier.snapshot()
   yield* Effect.sync(() => barrier.notify({ type: "server.connected" }))
   const old = yield* barrier.next
   yield* promised("native inbox cancellation failed", () => instance.sessions.inbox.cancel({ sessionID: child, inboxID }))
@@ -515,8 +517,8 @@ const cancelBehindBarrier = Effect.fn("LifecycleFixture.cancelBehindBarrier")(fu
   const next = yield* barrier.next
   const outstanding = barrier.snapshot()
   yield* next.release
-  yield* barrier.ready
-  return { old: old.revision, accepted: barrier.revision(), outstanding, shown: barrier.snapshot(), direct: takeAnswer(direct, "kernel") }
+  yield* barrier.answered(next.revision)
+  return { old: old.revision, accepted: barrier.revision(), before, outstanding, shown: barrier.snapshot(), direct: takeAnswer(direct, "kernel") }
 })
 
 const shellTrace = Effect.fn("LifecycleFixture.shellTrace")(function* (
@@ -742,7 +744,7 @@ const CutEvidence = Schema.Struct({
   old: Schema.Int, current: Schema.Int, accepted: Schema.Int,
 })
 const InboxCut = Schema.Struct({
-  old: Schema.Int, accepted: Schema.Int, outstanding: RowDisplay, shown: RowDisplay, direct: Schema.String,
+  old: Schema.Int, accepted: Schema.Int, before: RowDisplay, outstanding: RowDisplay, shown: RowDisplay, direct: Schema.String,
 })
 const ReadLatch = Schema.Struct({ child: Schema.String, mark: Schema.String, launch: Schema.String, rebuilt: Schema.String, listed: Schema.String })
 const report = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({
@@ -885,12 +887,13 @@ const verifyLife = Effect.fn("LifecycleFixture.verifyLife")(function* (result: E
   expect(result.silent.scheduled.map(({ order }) => order)).toEqual(["shell-first", "owner-first"])
   for (const cut of result.silent.scheduled) {
     expect(cut.live.map(({ state }) => state)).toEqual(["waiting"])
-    expect(cut.acrossFirst.map(({ state }) => state)).toEqual(["checking"])
-    expect(cut.outstanding.map(({ state }) => state)).toEqual(["unknown"])
-    expect(cut.shownWhileSuperseded).toEqual([])
+    // A refetch paints nothing in between: the answer shown stays until a whole newer one replaces it, the
+    // superseded read's answer (still newer than the one shown) and then the coalesced read's.
+    expect(cut.acrossFirst.map(({ state }) => state)).toEqual(["waiting"])
+    expect(cut.outstanding.map(({ state }) => state)).toEqual(["waiting"])
+    expect(cut.shownWhileSuperseded).toEqual(["waiting"])
     expect(cut.after).toEqual(undetermined)
-    expect(cut).toMatchObject({ activeDuringRead: false, activeAfter: false })
-    expect(cut.fallback.map(({ update }) => update)).not.toContain("Checking the last execution")
+    expect(cut).toMatchObject({ activeDuringRead: true, activeAfter: false })
     expect(previous).toHaveProperty("revision", cut.old)
     expect(current).toHaveProperty("revision", cut.accepted)
     expect(cut.accepted === cut.current && cut.current > cut.old).toBe(true)
@@ -912,7 +915,8 @@ const verifyLife = Effect.fn("LifecycleFixture.verifyLife")(function* (result: E
   expect(result.unrelated.shown).toEqual([{ state: "waiting", update: expect.stringContaining("since before reload") }])
   expect(result.related.shown.map(({ state }) => state)).toEqual(["failed"])
   for (const cut of [result.unrelated, result.related]) {
-    expect(cut.outstanding).toEqual([{ state: "unknown", update: "Current execution not known" }])
+    // The superseded read answered below the revision the notification named: the answer shown stays, nothing in between.
+    expect(cut.outstanding).toEqual(cut.before)
     expect(cut.accepted).toBeGreaterThan(cut.old)
   }
   expect(unrelated).toHaveProperty("revision", result.unrelated.accepted)

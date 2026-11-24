@@ -40,11 +40,13 @@ export const mountRows = (data: Reads, base: string, root: string, child: string
         if (matches(owner())) resume(Effect.void)
       }))
     })
-    const ready = whenOwner((state) => Boolean(state && state.kind !== "checking" && state.kind !== "unknown"))
+    const ready = whenOwner((state) => Boolean(state && state.kind !== "unknown"))
     const fallback = whenOwner((state) => Option.isNone(Option.fromUndefinedOr(state)))
+    // The answer shown stays through a refetch, so a read's own answer is awaited by its revision.
+    const answered = (revision: number) => whenOwner((state) => Boolean(state && state.kind !== "unknown" && state.revision >= revision))
     const rows = () => subagents(family(), root)
     const active = () => Option.isSome(Option.fromUndefinedOr(worksNow(family())(child)))
-    return { close, ready, rows, owner, active, fallback }
+    return { close, ready, answered, rows, owner, active, fallback }
   })
 }
 
@@ -93,7 +95,7 @@ export const openBarrier = (client: RowsClient, base: string, root: string, chil
     return {
       notify: observer.notify, hideShell: observer.hideShell, next: observer.next,
       live: snapshot(), snapshot, shown: (now: number) => visible(observer.view.rows(), now).map(({ state }) => state),
-      revision: () => Number(observer.view.owner()?.revision), ready: observer.view.ready,
+      revision: () => Number(observer.view.owner()?.revision), ready: observer.view.ready, answered: observer.view.answered,
       initial: initial.revision, listeners: observer.listeners, active: observer.view.active, fallback: observer.view.fallback,
     }
   })
