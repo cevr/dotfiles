@@ -828,7 +828,6 @@
     "mods/questions/opencode/courier.ts": {"effect/noAs":2,"effect/noGlobals":2,"effect/noNullish":3,"effect/noRuntimeTypeof":5,"effect/noTernary":1,"effect/noUnsafeDictionaryType":1,"effect/preferServiceOf":1},
     "mods/questions/opencode/family.test.ts": {"effect/noAsyncFunction":4,"effect/noEffectRunInTests":1,"effect/noKnownValueWidening":1,"effect/noTernary":1,"effect/preferTaggedConstructors":1},
     "mods/questions/opencode/family.ts": {"effect/noAs":1,"effect/noConditionalEmptyObjectSpread":3,"effect/noNullish":4,"effect/noTernary":3,"effect/preferServiceOf":1},
-    "mods/questions/opencode/form.test.ts": {"effect/noTernary":2},
     "mods/questions/opencode/form.ts": {"effect/noTernary":1},
     "mods/questions/opencode/store.test.ts": {"effect/noAsyncFunction":6,"effect/noConditionalEmptyObjectSpread":1,"effect/noEffectRunInTests":3,"effect/noGlobals":1,"effect/noNullish":4,"effect/noTernary":1},
     "mods/questions/opencode/store.ts": {"effect/noConditionalEmptyObjectSpread":1,"effect/noKnownValueWidening":1,"effect/noNullish":9,"effect/noTernary":3,"effect/preferServiceOf":1},
