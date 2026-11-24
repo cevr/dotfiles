@@ -53,6 +53,18 @@ export interface PingRequest {
 /** A ping's answer, read whole and then dropped. */
 export type PingAnswer = Answer
 
+/**
+ * Whether a ping may go out now: a ping is a request of its model on its login, so a pooled one goes out only on a
+ * login the pool's pace admits a request of that model on at this moment. Never fails: an unsure answer is a no, and
+ * a no only skips the ping (the work it keeps warm runs on as it would with a cold cache).
+ */
+export class PingAdmission extends Context.Service<
+  PingAdmission,
+  {
+    readonly admits: (ping: { readonly model: string; readonly login: Option.Option<string> }) => Effect.Effect<boolean>
+  }
+>()("dotfiles-opencode/cache/PingAdmission") {}
+
 /** Sends a ping outside the session: no hook and no event sees it. Interrupting it aborts the request. */
 export class Pinger extends Context.Service<
   Pinger,

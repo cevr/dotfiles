@@ -21,7 +21,7 @@
 // decided on its own inputs; the state is what the history says happened.
 import { Effect, Option, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
-import { PaceHold, Whose } from "./pace.ts"
+import { PaceHeld, PaceHold, Whose } from "./pace.ts"
 import { capEffort, IMPLEMENTOR, onCodex, Reason, route, unspecific } from "./role.ts"
 import { explain, Place, resumesAt, SabbathRest } from "./sabbath.ts"
 
@@ -39,8 +39,8 @@ export const streamOf = (id: ToolCallId) => `${id.sessionID}/${id.callID}`
 
 // ── StartSubagent ──
 // Starting a subagent: a new one latches over the Sabbath or when the pace
-// has no room on its model nor on its fallback, a follow-up is refused over the Sabbath or while its child is
-// still latched, and otherwise it runs as the agent the guard routes it to. A
+// has no room on its model nor on its fallback, a follow-up is refused over the Sabbath, while its child is
+// still latched, or while the pace holds its model (PaceHeld, with when it opens), and otherwise it runs as the agent the guard routes it to. A
 // worker at max runs at its model's default unless its work is mechanical.
 
 /**
@@ -82,7 +82,10 @@ export const StartSubagent = Schema.TaggedStruct("StartSubagent", {
   /** The full-agent escape: an untyped or general call runs as asked. */
   fullAgent: Schema.Boolean,
   place: Place,
-  /** The pace's answer when it holds a new agent; a follow-up is never paced. */
+  /**
+   * The pace's answer when it holds the agent on its model: a new one latches; a follow-up is refused (PaceHeld)
+   * with the time it opens, its child and prompt kept with the parent, no new agent made.
+   */
   hold: Schema.optionalKey(PaceHold),
   /** The Codex model to start on when the pace holds `model`; gathered only for a held new agent that named no model. */
   fallback: Schema.optionalKey(Fallback),
@@ -163,7 +166,7 @@ export class CodexNeverImplements extends Schema.TaggedError<CodexNeverImplement
 }) {}
 
 export declare namespace StartSubagent {
-  export type Rejections = SabbathRest | StillLatched | CodexNeverImplements
+  export type Rejections = SabbathRest | StillLatched | CodexNeverImplements | PaceHeld
 }
 
 /** A held agent asks again no sooner than this after now. */
@@ -237,6 +240,10 @@ const decideStart = (
   if (resumes !== undefined && command.child !== undefined) return Effect.fail(new SabbathRest({ resumesAt: resumes, place: command.place }))
   if (command.child !== undefined && command.childLatched !== undefined)
     return Effect.fail(new StillLatched({ child: command.child, opensAt: command.childLatched }))
+  // A follow-up the pace holds on its model sends nothing: refused with when it opens, the child kept as it is.
+  const heldFollowUp = Option.filter(Option.fromUndefinedOr(command.hold), () => Option.isSome(Option.fromUndefinedOr(command.child)))
+  if (Option.isSome(heldFollowUp))
+    return Effect.fail(new PaceHeld({ whose: heldFollowUp.value.whose, reason: heldFollowUp.value.reason, retryAt: opensOf(heldFollowUp.value, now) }))
   const { agent, reason: routed } = routeOf(command)
   const reason: Reason = command.dropped !== undefined && command.child === undefined ? "model-dropped" : routed
   // The worker's ceiling: a worker at max, asked or inherited, runs at its model's default unless its work is mechanical.
@@ -382,7 +389,7 @@ export type Stage = typeof Stage.Type
 
 export type Command = StartSubagent | OpenLatch | UseTool | FinishSubagent
 export type Event = SubagentStarted | SubagentLatched | SubagentFinished
-export type Rejection = SabbathRest | StillLatched | CodexNeverImplements
+export type Rejection = SabbathRest | StillLatched | CodexNeverImplements | PaceHeld
 
 export const ToolCall: Decider<Stage, Command, Event, Rejection> = {
   initial: Idle.make({}),

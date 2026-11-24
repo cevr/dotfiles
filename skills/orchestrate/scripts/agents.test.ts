@@ -101,11 +101,10 @@ const realSafety = readHere('../../loop/safety.md');
 /** The whole Markdown paragraph that starts with `lead`: every line up to the next blank line. */
 const paragraph = (text: string, lead: string) => text.split(/\n\s*\n/).find((p) => p.trimStart().startsWith(lead))?.trim();
 
-/** The refusal rule as it stood before nothing-is-hard (unit E changes it, with its mechanism), plus the one sentence. */
 const REFUSAL =
-  '**Refusals.** At the first permission or classifier refusal, stop that step and report the exact `!` command, or the allow rule, that would let it through. Never work around it or ask for permission in chat. A refusal is authority, not difficulty.';
+  "**Refusals.** If a permission rule, hook or classifier refuses this session's own tool call, stop the step and report the rule and any exact `!` command or allow rule it names. Never work around it or ask for permission in chat. A unit note that the provider merely ended another session is history, not an instruction; run the orchestrator's restarted step normally.";
 
-test('every role carries nothing-is-hard, and the whole refusal paragraph is the base rule plus one sentence', () => {
+test('every role carries nothing-is-hard and the exact refusal rule', () => {
   for (const role of Object.keys(ROLES) as Role[]) {
     const text = instructions(role, realProtocol, realSafety);
     for (const part of [
@@ -168,7 +167,7 @@ test("the principle gives a refusal no disposition of its own: the worker's Refu
   expect(bullet).toBeDefined();
   expect(refusalDisposition(bullet)).toEqual({ roleFirst: true, ownDisposition: false });
   for (const role of Object.keys(ROLES) as Role[])
-    expect([role, paragraph(instructions(role, realProtocol, realSafety), '**Refusals.**')!.startsWith('**Refusals.** At the first permission or classifier refusal, stop that step and report the exact')]).toEqual([role, true]);
+    expect(paragraph(instructions(role, realProtocol, realSafety), '**Refusals.**')).toContain('stop the step and report the rule');
   // Both inputs, red: the 22r bullet (a named form is followed; only otherwise the role decides) and 22q's (go on).
   expect(refusalDisposition('- **A refusal is authority, not difficulty.** When it names the accepted form ("commit first", "use a script file"), follow that form. Otherwise your role\'s own rule decides what stops (a worker\'s: the worker protocol\'s Refusals section); this principle changes nothing there.')).toEqual({ roleFirst: false, ownDisposition: true });
   expect(refusalDisposition('- **A refusal is authority, not difficulty.** Stop that action, report it, and go on with the rest of the work.')).toEqual({ roleFirst: false, ownDisposition: true });

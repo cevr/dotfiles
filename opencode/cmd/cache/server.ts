@@ -31,7 +31,9 @@
  * so the cache the next request reads stays warm on the same login. A root
  * session is never pinged. The session's next request, its execution's end
  * or its deletion stop it. Each ping is a line in `keepalive.jsonl` beside
- * the ledger: its usage and the answer's rate-limit headers.
+ * the ledger: its usage and the answer's rate-limit headers. A ping on a pool
+ * login goes out only when the pool's pace (`dispatch`) admits a request of
+ * its model on that login now; else it is skipped and the wait's pings end.
  *
  * Options (all optional; an absent one takes its default, a malformed one stops the plugin):
  * - `dir`: the ledger's (and the keepalive log's) directory; default `~/.cache/opencode-cache-ledger`.
@@ -47,6 +49,7 @@ import * as LedgerFile from "@dotfiles/opencode-cache/filestore/request-log"
 import { lifetime, segments } from "@dotfiles/opencode-cache/fingerprint"
 import { arming, isSigned, pingBody, pingHeaders } from "@dotfiles/opencode-cache/keepalive"
 import * as Model from "@dotfiles/opencode-cache/model"
+import * as PoolAdmission from "@dotfiles/opencode-cache/pool/admission"
 import { CACHE_LEDGER, StepsQuery, type Tokens } from "@dotfiles/opencode-cache/request-log"
 import type { Pinger, PingLog, RequestLog } from "@dotfiles/opencode-cache/service"
 
@@ -124,7 +127,11 @@ export const make = (externals: (options: Options) => Layer.Layer<Externals>) =>
         Effect.orDie,
       )
       const services = yield* Layer.build(
-        Layer.mergeAll(Model.layer(options.host), Model.keepaliveLayer(options.host)).pipe(Layer.provide(externals(options))),
+        Layer.mergeAll(Model.layer(options.host), Model.keepaliveLayer(options.host)).pipe(
+          Layer.provide(externals(options)),
+          // Each ping asks the pool's pace, as a request's dispatch, whether its login may take its model now.
+          Layer.provide(PoolAdmission.layer((input) => ctx.rpc(PoolAdmission.POOL).pace(input))),
+        ),
       )
       const recorder = Context.get(services, Model.Recorder)
       const keepalive = Context.get(services, Model.Keepalive)
