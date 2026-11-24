@@ -191,17 +191,16 @@ const releasedAfter = (kept: ReturnType<typeof keptScratch>, name: string, turn:
     expect(Option.map(accounts, (each) => each.map((account) => account.credentialID))).toEqual(Option.some(["cred_only"]))
   })
 
-const test = it.scopedLive.layer(Platform)
 
 describe.skipIf(!forkRuns)("the pool lets a run's login go when its session goes idle (real OpenCode, fake Anthropic)", () => {
   const kept = keptScratch(forkRuns, "pool-idle-release-")
 
   // The only login is plan-limited: the pool holds it and the turn ends on the pool's refusal.
-  test(
+  it.scopedLive.layer(Platform)(
     "a turn that ends failed lets its login go",
     () => releasedAfter(kept, "failed", (now) => ({ kind: "usage-429", claim: "five_hour", resetAt: now + 3 * HOUR }), 429),
     hangGuard("fork-turn"),
   )
 
-  test("a turn that succeeds lets its login go", () => releasedAfter(kept, "succeeded", () => ({ kind: "ok", text: "Hello." }), 200), hangGuard("fork-turn"))
+  it.scopedLive.layer(Platform)("a turn that succeeds lets its login go", () => releasedAfter(kept, "succeeded", () => ({ kind: "ok", text: "Hello." }), 200), hangGuard("fork-turn"))
 })

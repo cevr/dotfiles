@@ -149,9 +149,8 @@ const simulatedCounts = (files: ReadonlyArray<string>) =>
 
 
 describe("no assertion lost", () => {
-  const live = it.live.layer(BunServices.layer)
 
-  live("the manifest names every baseline test with its baseline expect() calls", () =>
+  it.live.layer(BunServices.layer)("the manifest names every baseline test with its baseline expect() calls", () =>
     Effect.gen(function* () {
       for (const { baseline, entries, retired } of yield* manifests)
       for (const [file, entry] of entries) {
@@ -166,7 +165,7 @@ describe("no assertion lost", () => {
     }),
   )
 
-  live("a title is a test's, a seeded body's, or an Effect test's (it.live, it.effect), with its expect() calls", () =>
+  it.live.layer(BunServices.layer)("a title is a test's, a seeded body's, or an Effect test's (it.live, it.effect), with its expect() calls", () =>
     Effect.sync(() => {
       const source = [
         'test("plain", async () => { expect(1) })',
@@ -179,13 +178,13 @@ describe("no assertion lost", () => {
     }),
   )
 
-  live("every baseline name exists today where the manifest says", () =>
+  it.live.layer(BunServices.layer)("every baseline name exists today where the manifest says", () =>
     Effect.gen(function* () {
       for (const manifest of yield* manifests) expect(yield* misplaced(manifest)).toEqual([])
     }),
   )
 
-  live("a name the TUI manifest says is simulated but its simulated file lacks is found", () =>
+  it.live.layer(BunServices.layer)("a name the TUI manifest says is simulated but its simulated file lacks is found", () =>
     Effect.gen(function* () {
       const tui = yield* decode("tests/parity/tui.json")
       const [file, entry] = tui.entries[0] ?? ["", { simulated: "", tests: [] }]
@@ -197,7 +196,7 @@ describe("no assertion lost", () => {
     }),
   )
 
-  live(
+  it.live.layer(BunServices.layer)(
     "each file's simulated and remaining real expect() calls are at least the baseline's",
     () =>
       Effect.gen(function* () {
@@ -220,7 +219,7 @@ describe("no assertion lost", () => {
     hangGuard("sim-parity"),
   )
 
-  live(
+  it.live.layer(BunServices.layer)(
     "a name leaves its real file only in the commit that adds it to its simulated file, and a retired name names what carries it",
     () =>
       Effect.gen(function* () {

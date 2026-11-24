@@ -5,7 +5,6 @@ import { Effect, Stream } from "effect"
 import { expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 
-const live = it.live.layer(BunServices.layer)
 const run = (args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
@@ -17,14 +16,14 @@ const run = (args: ReadonlyArray<string>) =>
     return { output: output.trim(), code: Number(code) }
   }).pipe(Effect.scoped)
 
-live("tracked documentation passes the script-derived host guard", () =>
+it.live.layer(BunServices.layer)("tracked documentation passes the script-derived host guard", () =>
   Effect.gen(function* () {
     const result = yield* run([])
     expect(result).toEqual({ code: 0, output: "guarded docs OK" })
   }),
 )
 
-live("the docs guard rejects new missing pins, broken handoffs and omitted peer pins", () =>
+it.live.layer(BunServices.layer)("the docs guard rejects new missing pins, broken handoffs and omitted peer pins", () =>
   Effect.gen(function* () {
     const result = yield* run(["--controls"])
     expect(result).toEqual({ code: 0, output: "guarded docs controls OK" })

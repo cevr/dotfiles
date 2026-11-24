@@ -84,9 +84,8 @@ const lines = Effect.gen(function* () {
 })
 
 describe("the host laws in real OpenCode", () => {
-  const live = it.live.layer(BunServices.layer)
   for (const name of NAMES)
-    live(
+    it.live.layer(BunServices.layer)(
       name,
       () =>
         Effect.gen(function* () {
@@ -95,7 +94,7 @@ describe("the host laws in real OpenCode", () => {
       hangGuard("long-fork-scenario"),
     )
 
-  live(
+  it.live.layer(BunServices.layer)(
     "a probe the host cannot load ends the run within a minute, naming the load failure",
     () =>
       Effect.gen(function* () {

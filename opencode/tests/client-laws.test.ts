@@ -100,9 +100,8 @@ const failuresOf = (run: Run, name: string) =>
   })
 
 describe("the client laws in real OpenCode", () => {
-  const live = it.live.layer(BunServices.layer)
   for (const law of LAWS)
-    live(
+    it.live.layer(BunServices.layer)(
       law.name,
       () =>
         Effect.gen(function* () {
