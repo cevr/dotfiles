@@ -43,10 +43,13 @@ import {
 } from "./claim-rule.ts"
 
 // This domain's import fence keeps the simulator helper out.
-const assertWitness = <A>(name: string, expected: A, observed: A, withoutCause: A) => {
+const assertWitness = <A>(name: string, expected: A, run: (cause: boolean) => A) => {
+  const observed = run(true)
+  const withoutCause = run(false)
   const label = `W: ${name}`
   expect(observed, label).toEqual(expected)
   expect(() => expect(withoutCause, label).toEqual(expected), `${label}: removing the cause must fail the same observation`).toThrow()
+  return name
 }
 
 const MINUTE = 60_000
@@ -410,51 +413,46 @@ describe("the rule on one pool, by example", () => {
     const accounts = [{ id: only.credentialID, windows: [{ name: "7d" as const, used, resetAt: NOW + wait + index * MINUTE, burn: 0.02 }] }]
     return { now: NOW, running: live.running, accounts, situation: live, options, verdict: rule(live, options) }
   }
-  const roomAt = (index: number) => pool(0.25, 2 * DAY, 30 * DAY, index, 3)
-  const spentAt = (index: number) => pool(1, 3 * DAY, 30 * DAY, index)
   const taken = ({ verdict }: Decision) => {
     if (verdict._tag === "Claim") return [verdict.step, verdict.option.creditID]
     return []
   }
   const unclaimed = (decision: Decision) => outWith(decision).filter(() => decision.verdict._tag === "NoClaim").map((each) => each.creditID)
-  const checkedRoom = (index: number) => {
-    const room = roomAt(index)
+  const checkedRoom = (room: Decision) => {
     expect([room.options.some((each) => notSoon(each, NOW)), truth(room, "7d").runsOut]).toEqual([true, false])
     expect(room.verdict._tag).toBe("NoClaim")
-    return room
   }
-  const checkedSpent = (index: number) => {
-    const spent = spentAt(index)
-    expect(taken(spent)).toEqual(["reset", "ra"])
-    return spent
-  }
-  for (const index of Arr.range(0, 20)) {
-    test(`W: forecast ${index}: a useful credit is claimed`, () => {
-      const forecast = pool(0.99, 3 * DAY, 30 * DAY, index)
-      const without = checkedRoom(index)
-      assertWitness(`forecast ${index}: takes ra by reset`, ["reset", "ra"], taken(forecast), taken(without))
-      eachClaimHolds([forecast])
-    })
-    test(`W: expiry ${index}: an expiring credit goes first`, () => {
-      const expiry = pool(1, 3 * DAY, 12 * HOUR, index)
-      const without = checkedSpent(index)
-      assertWitness(`expiry ${index}: takes ra by expiry`, ["expiring", "ra"], taken(expiry), taken(without))
-      expiringGoFirst([expiry])
-    })
-  }
-  for (const index of Arr.range(0, 100)) {
-    test(`W: room ${index}: the pool keeps its useful credit`, () => {
-      const room = checkedRoom(index)
-      const without = checkedSpent(index)
-      assertWitness(`room ${index}: NoClaim`, "NoClaim", room.verdict._tag, without.verdict._tag)
-    })
-    test(`W: exhaustion ${index}: no-reset leaves a usable credit unclaimed`, () => {
-      const noReset = pool(1, 3 * DAY, 30 * DAY, index, 6, never)
-      const without = checkedSpent(index)
-      assertWitness(`exhaustion ${index}: ra unclaimed`, ["ra"], unclaimed(noReset), unclaimed(without))
-      claimedBeforeOut([without])
-    })
-  }
+  const cases = [
+    ...Arr.range(0, 20).flatMap((index) => (["forecast", "expiry"] as const).map((kind) => ({ index, kind, name: `${kind} ${index}` }))),
+    ...Arr.range(0, 100).flatMap((index) => (["room", "exhaustion"] as const).map((kind) => ({ index, kind, name: `${kind} ${index}` }))),
+  ]
+  test("W: all forecast, expiry, room, and exhaustion decisions", () => {
+    const ran: Array<string> = []
+    for (const { index, kind, name } of cases) {
+      const inputs = (cause: boolean): Parameters<typeof pool> => {
+        if ((kind === "room" && cause) || (kind === "forecast" && !cause)) return [0.25, 2 * DAY, 30 * DAY, index, 3]
+        if (kind === "forecast" && cause) return [0.99, 3 * DAY, 30 * DAY, index]
+        if (kind === "expiry" && cause) return [1, 3 * DAY, 12 * HOUR, index]
+        if (kind === "exhaustion" && cause) return [1, 3 * DAY, 30 * DAY, index, 6, never]
+        return [1, 3 * DAY, 30 * DAY, index]
+      }
+      const expected = { forecast: ["reset", "ra"], expiry: ["expiring", "ra"], room: ["NoClaim"], exhaustion: ["ra"] }[kind]
+      ran.push(assertWitness(name, expected, (cause) => {
+        const decision = pool(...inputs(cause))
+        if ((kind === "room" && cause) || (kind === "forecast" && !cause)) checkedRoom(decision)
+        if (!cause && kind !== "forecast") expect(taken(decision)).toEqual(["reset", "ra"])
+        if (kind === "forecast" && cause) eachClaimHolds([decision])
+        if (kind === "expiry" && cause) expiringGoFirst([decision])
+        if (kind === "exhaustion") {
+          if (!cause) claimedBeforeOut([decision])
+          return unclaimed(decision)
+        }
+        if (kind === "room") return [decision.verdict._tag]
+        return taken(decision)
+      }))
+    }
+    expect(ran.toSorted()).toEqual(cases.map((each) => each.name).toSorted())
+  })
 })
 
 describe("the standing allowance's rule over generated weeks", () => {

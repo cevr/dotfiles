@@ -13,11 +13,15 @@ import { HANDOFF_LIMIT, type Rejected, type Running } from "./update.ts"
 import { RESIDENT_DELAY, watch } from "./watch.ts"
 
 // This domain's import fence keeps the simulator helper out.
-const assertWitness = <A>(name: string, expected: A, observed: A, withoutCause: A) => {
-  const label = `W: ${name}`
-  expect(observed, label).toEqual(expected)
-  expect(() => expect(withoutCause, label).toEqual(expected), `${label}: removing the cause must fail the same observation`).toThrow()
-}
+const assertEffectWitness = <A, E, R>(name: string, expected: A, run: (cause: boolean) => Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const observed = yield* run(true)
+    const withoutCause = yield* run(false)
+    const label = `W: ${name}`
+    expect(observed, label).toEqual(expected)
+    expect(() => expect(withoutCause, label).toEqual(expected), `${label}: removing the cause must fail the same observation`).toThrow()
+    return name
+  })
 
 /** 2026-11-11T17:00:00Z, a Wednesday noon in Knowlton. */
 const WEDNESDAY_NOON = 1_794_416_400_000
@@ -1432,15 +1436,21 @@ describe("plugin trees", () => {
         otherwise: [],
       },
     ]
-    for (const example of cases) {
-      test(`W: A4 ${example.name}`, () =>
-        check(Effect.all([runCase(example.example), runCase(example.control)]), ([positive, control]) => {
-          assertRuns([positive, control])
-          const without = example.observe(control.ran)
-          expect(without, "control setup reached the alternate outcome").toEqual(example.otherwise)
-          assertWitness(example.name, example.want, example.observe(positive.ran), without)
+    test("W: A4 crash, handoff, rollback, and build outcomes", () => check(Effect.gen(function* () {
+      const ran: Array<string> = []
+      for (const example of cases) {
+        ran.push(yield* assertEffectWitness(example.name, example.want, (cause) => {
+          const input = Option.getOrElse(Option.liftPredicate(example.example, () => cause), () => example.control)
+          return Effect.map(runCase(input), (result) => {
+            assertRuns([result])
+            const observation = example.observe(result.ran)
+            if (!cause) expect(observation, "control setup reached the alternate outcome").toEqual(example.otherwise)
+            return observation
+          })
         }))
-    }
+      }
+      expect(ran.toSorted()).toEqual(cases.map((each) => each.name).toSorted())
+    }), constVoid))
 
     test("A4: over generated hosts, endings, crashes and a second update, no step breaks I1 to I7, no step of the old scheme runs, a server config listing ours ends with no write and no restart, and a good build with no tree is never rolled back onto", () =>
       check(

@@ -20,7 +20,7 @@ import { Array as Arr, Effect, Option, Schema } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
 import { below, generator } from "../../sim/runtime.ts"
 import * as Seed from "../../sim/seed.ts"
-import { assertWitness } from "../../sim/witnesses.ts"
+import { assertEffectWitness } from "../../sim/witnesses.ts"
 import * as World from "../../sim/world.ts"
 
 const { seeded } = Seed.runner("cmd/guard/guard-faults.sim.test.ts")
@@ -198,23 +198,33 @@ Seed.effect(
   "W: every call in every form is judged in a root and subagent, with both faults on after a restart and with faults off",
   Effect.gen(function* () {
     const input = { seed: 1, expect }
-    const faults: ReadonlyArray<Command> = [{ type: "ps-fails", on: true }, { type: "launchers-fail", on: true }]
     const restart: Command = { type: "restart" }
-    const observed = yield* exercise(input, [...faults, restart, ...callForms, { type: "ps-fails", on: false }, { type: "launchers-fail", on: false }, ...callForms])
-    const uncalled = yield* exercise(input, [...faults, restart])
-    const unrestored = yield* exercise(input, [...faults, ...callForms])
-    assertWitness("guard reloads its copy on the restarted world", 2, observed.loaded, unrestored.loaded)
-    for (const [index, call] of callForms.entries()) {
-      for (const faulted of [true, false]) {
-        const refused = mustRefuse(call, faulted)
-        const at = Number(!faulted) * callForms.length + index
-        const want = { refused, commands: [call.call.command].filter(() => !refused), launcher: call.call.kind === "heavy" && !faulted, alias: !refused && call.form.name === "bash" }
-        assertWitness(`${call.call.kind}/${call.form.id}/${call.child}/faults=${faulted}`, want, observed.seen.at(at), uncalled.seen.at(at))
-      }
-      if (call.call.kind === "kill-other")
-        assertWitness("unreadable process table causes the actual refusal", true, observed.seen[index]?.refused, observed.seen[index + callForms.length]?.refused)
-      if (call.call.kind === "heavy")
-        assertWitness("unwritable launcher falls back to the real shell", false, observed.seen[index]?.launcher, observed.seen[index + callForms.length]?.launcher)
+    const faults = (on: boolean): ReadonlyArray<Command> => [{ type: "ps-fails", on }, { type: "launchers-fail", on }]
+    yield* assertEffectWitness("guard reloads its copy on the restarted world", 2, (cause) =>
+      Effect.map(exercise(input, [restart].filter(() => cause)), (run) => run.loaded))
+
+    const nameOf = (call: CallCommand) => `${call.call.kind}/${call.form.id}/${call.child}`
+    const matrix = callForms.flatMap((call) => [true, false].map((faulted) => ({ call, faulted, name: `${nameOf(call)}/faults=${faulted}` })))
+    const ran: Array<string> = []
+    for (const { call, faulted, name } of matrix) {
+      const refused = mustRefuse(call, faulted)
+      const want = { refused, commands: [call.call.command].filter(() => !refused), launcher: call.call.kind === "heavy" && !faulted, alias: !refused && call.form.name === "bash" }
+      ran.push(yield* assertEffectWitness(name, want, (cause) =>
+        Effect.map(exercise(input, [...faults(faulted), restart, ...[call].filter(() => cause)]), (run) => run.seen.at(0))))
     }
+    expect(ran.toSorted()).toEqual(matrix.map((each) => each.name).toSorted())
+
+    const faultCases = callForms.filter((call) => call.call.kind === "kill-other" || call.call.kind === "heavy")
+    const faultsSeen: Array<string> = []
+    for (const call of faultCases) {
+      const readsProcessTable = call.call.kind === "kill-other"
+      faultsSeen.push(yield* assertEffectWitness(nameOf(call), readsProcessTable, (cause) =>
+        Effect.map(exercise(input, [...faults(cause), restart, call]), (run) => {
+          const seen = Option.getOrThrow(Arr.head(run.seen))
+          if (readsProcessTable) return seen.refused
+          return seen.launcher
+        })))
+    }
+    expect(faultsSeen.toSorted()).toEqual(faultCases.map(nameOf).toSorted())
   }),
 )

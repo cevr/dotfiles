@@ -5,10 +5,13 @@ import { type Build, type Record, recordText } from "./record.ts"
 import { buildOfTree, makingName, makingTree, namedBy, treeOf } from "./trees.ts"
 
 // This domain's import fence keeps the simulator helper out.
-const assertWitness = <A>(name: string, expected: A, observed: A, withoutCause: A) => {
+const assertWitness = <A>(name: string, expected: A, run: (cause: boolean) => A) => {
+  const observed = run(true)
+  const withoutCause = run(false)
   const label = `W: ${name}`
   expect(observed, label).toEqual(expected)
   expect(() => expect(withoutCause, label).toEqual(expected), `${label}: removing the cause must fail the same observation`).toThrow()
+  return name
 }
 
 const SHARE = "/home/u/.local/share/opencode-prime"
@@ -234,16 +237,21 @@ describe("acceptance: a prune over share directories of both build formats, with
   const files = (each: Build) => [buildName(each.version), treeOf(buildName(each.version))]
   const prune = (record: Build) => prunable([...files(stale), ...files(live)], record, nothingRuns)
   const removedLive = (removed: ReadonlyArray<string>) => removed.filter((name) => files(live).includes(name))
-  const installedOther = () => {
-    const removed = prune(stale)
-    expect(removed, "control setup: the other build is now unreferenced").toEqual(files(live))
-    return removed
-  }
-  test("W: an unreferenced tree build and its tree go", () => {
-    assertWitness("unreferenced files are pruned", files(stale), prune(live), installedOther())
-  })
-  test("W: a recorded tree build and its tree stay", () => {
-    assertWitness("the recorded files are not pruned", [], removedLive(prune(live)), removedLive(installedOther()))
+  const cases = [
+    { name: "an unreferenced tree build and its tree go", expected: files(stale), observe: (removed: ReadonlyArray<string>) => removed },
+    { name: "a recorded tree build and its tree stay", expected: [], observe: removedLive },
+  ]
+  test("W: prune and keep use the installed build", () => {
+    const ran: Array<string> = []
+    for (const each of cases) {
+      ran.push(assertWitness(each.name, each.expected, (cause) => {
+        const record = Option.getOrElse(Option.liftPredicate(live, () => cause), () => stale)
+        const removed = prune(record)
+        if (!cause) expect(removed, "control setup: the other build is now unreferenced").toEqual(files(live))
+        return each.observe(removed)
+      }))
+    }
+    expect(ran.toSorted()).toEqual(cases.map((each) => each.name).toSorted())
   })
 
   test(`over ${RUNS} generated hosts (seed ${SEED}), it names (a) builds and trees only, (b) never a kept or running one, (c) every other, of either format; a tree exactly when its build, never while a command line names it`, () => {

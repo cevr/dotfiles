@@ -318,10 +318,13 @@ const resolvedTexts = (resolved: Resolved): ReadonlyArray<string> => {
 }
 
 // This domain's import fence keeps the simulator helper out.
-const assertWitness = <A>(name: string, expected: A, observed: A, withoutCause: A) => {
+const assertWitness = <A>(name: string, expected: A, run: (cause: boolean) => A) => {
+  const observed = run(true)
+  const withoutCause = run(false)
   const label = `W: ${name}`
   expect(observed, label).toEqual(expected)
   expect(() => expect(withoutCause, label).toEqual(expected), `${label}: removing the cause must fail the same observation`).toThrow()
+  return name
 }
 
 describe("every call an answer or a refusal names", () => {
@@ -340,25 +343,30 @@ describe("every call an answer or a refusal names", () => {
       checkTexts(deliberate)
     }
   })
-  for (const index of Arr.range(0, 199)) {
-    const rendered = (purpose: Option.Option<string>) => {
-      const units = Arr.makeBy(8, (n) => `table-${index}-unit-${n}`)
-      const unit = `needs-purpose-${index}`
-      const lane = laneOf(unit, false)
-      return [
-        ...units.map((name) => landCallOf([name])),
-        laneAnswer(unit, Option.match(purpose, { onNone: () => lane, onSome: (text) => ({ ...lane, purpose: text }) }), false),
-      ]
+  const renders = Arr.range(0, 199).map((index) => ({ index, name: `render ${index}: eight land calls and a missing-purpose hint` }))
+  test("W: every render emits eight land calls and its missing-purpose hint", () => {
+    const ran: Array<string> = []
+    for (const { index, name } of renders) {
+      const rendered = (purpose: Option.Option<string>) => {
+        const units = Arr.makeBy(8, (n) => `table-${index}-unit-${n}`)
+        const unit = `needs-purpose-${index}`
+        const lane = laneOf(unit, false)
+        return [
+          ...units.map((name) => landCallOf([name])),
+          laneAnswer(unit, Option.match(purpose, { onNone: () => lane, onSome: (text) => ({ ...lane, purpose: text }) }), false),
+        ]
+      }
+      ran.push(assertWitness(name, 9, (cause) => {
+        const purpose = Option.filter(Option.some("checks the observed commands"), () => !cause)
+        const lines = rendered(purpose)
+        checkTexts(lines)
+        const count = lines.flatMap(callsIn).length
+        if (!cause) expect(count, "control setup: the eight land calls remain").toBe(8)
+        return count
+      }))
     }
-    const count = (lines: ReadonlyArray<string>) => lines.flatMap(callsIn).length
-    test(`W: render ${index}: eight land calls and a missing-purpose hint`, () => {
-      const asked = rendered(Option.none())
-      const without = rendered(Option.some("checks the observed commands"))
-      checkTexts([...asked, ...without])
-      expect(count(without), "control setup: the eight land calls remain").toBe(8)
-      assertWitness(`render ${index}: calls`, 9, count(asked), count(without))
-    })
-  }
+    expect(ran.toSorted(), "render cases completed").toEqual(renders.map((each) => each.name).toSorted())
+  })
 })
 
 // ── The input rule ──
@@ -729,25 +737,35 @@ const STATES = ["plan", "implement", "ready", "verify", "blocked", "merged abc12
 
 describe("next", () => {
   const due: MainSince = { branch: "main", head: shaOf(1000), base: shaOf(7), lands: VERIFY_EVERY, last: Option.none() }
-  for (const index of Arr.range(0, 10)) {
-    const name = `ready-${index}`
-    const runs = [{ name, units: [{ unit: name, state: "ready" }] }]
-    const ready = () => nextOf(runs, [laneOf(name, false)], false, Option.some(due), NOW)
-    const verify = () => nextOf([], [], false, Option.some({ ...due, lands: due.lands + index }), NOW)
-    const noLane = () => nextOf(runs, [], false, Option.some(due), NOW)
-    const notDue = () => nextOf([], [], false, Option.none(), NOW)
-    const named = (next: ReturnType<typeof ready>) => decodedIn(next.line).map(({ decoded }) => Option.map(decoded, (input) => input.action))
-    for (const [expected, on, off, otherwise] of [["land", ready, noLane, [Option.some<"verify">("verify")]], ["verify", verify, notDue, []]] as const) {
-      test(`W: next ${index}: ${expected}`, () => {
-        const next = on()
-        const without = off()
-        expect(named(without), "control setup produced the alternate decision").toEqual([...otherwise])
-        assertWitness(`next ${index}: ${expected}`, [Option.some(expected)], named(next), named(without))
-        expect(decodedIn(next.line).map((call) => call.decoded)).toEqual([next.input])
-        expectCallsDecode(next.line)
-      })
+  const nextCases = Arr.range(0, 10).flatMap((index) => (["land", "verify"] as const).map((action) => ({ index, action, name: `next ${index}: ${action}` })))
+  test("W: every next case recommends its ready land or due verify", () => {
+    const ran: Array<string> = []
+    for (const { index, action, name } of nextCases) {
+      const unit = `ready-${index}`
+      const inputs = (cause: boolean) => {
+        if (action === "land") return {
+          runs: [{ name: unit, units: [{ unit, state: "ready" }] }],
+          lanes: [laneOf(unit, false)].filter(() => cause),
+          main: Option.some(due),
+        }
+        return { runs: [], lanes: [], main: Option.filter(Option.some({ ...due, lands: due.lands + index }), () => cause) }
+      }
+      ran.push(assertWitness(name, [Option.some(action)], (cause) => {
+        const { runs, lanes, main } = inputs(cause)
+        const next = nextOf(runs, lanes, false, main, NOW)
+        const decoded = decodedIn(next.line)
+        const named = decoded.map(({ decoded }) => Option.map(decoded, (input) => input.action))
+        if (cause) {
+          expect(decoded.map((call) => call.decoded)).toEqual([next.input])
+          expectCallsDecode(next.line)
+        } else {
+          expect(named, "control setup produced the alternate decision").toEqual([Option.some<"verify">("verify")].filter(() => action === "land"))
+        }
+        return named
+      }))
     }
-  }
+    expect(ran.toSorted()).toEqual(nextCases.map((each) => each.name).toSorted())
+  })
   test("B4: over generated derived tables, next names a call that decodes, and a land only for a unit ready with a lane", () => {
     for (const seed of SEEDS) {
       const random = rng(seed)

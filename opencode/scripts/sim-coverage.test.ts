@@ -4,7 +4,7 @@ import * as BunServices from "@effect/platform-bun/BunServices"
 import { Array as Arr, Effect, FileSystem, Option, Path, Predicate } from "effect"
 import { it } from "effect-bun-test"
 import { type CallExpression, type MemberExpression, parseSync, Visitor } from "oxc-parser"
-import { assertWitness, witnesses } from "../sim/witnesses.ts"
+import { assertEffectWitness, assertWitness, witnesses } from "../sim/witnesses.ts"
 
 test("required outcomes select explicit cases, in the declared order, with no seed or generated tally", () => {
   const required = ["holds", "refuses"] as const
@@ -14,11 +14,29 @@ test("required outcomes select explicit cases, in the declared order, with no se
 })
 
 test("a witness fails if its matched observation survives removal of the cause", () => {
-  expectTypeOf(assertWitness<string>).parameters.toEqualTypeOf<[string, string, string, string]>()
-  assertWitness("letter delivered", "delivered", "delivered", "not delivered")
-  expect(() => assertWitness("letter delivered", "delivered", "delivered", "delivered")).toThrow("removing the cause")
-  expect(() => assertWitness("letter delivered", "delivered", "not delivered", "not delivered")).toThrow()
+  expectTypeOf(assertWitness<string>).parameters.toEqualTypeOf<[string, string, (cause: boolean) => string]>()
+  const causes: Array<boolean> = []
+  const completed = assertWitness("letter delivered", "delivered", (cause) => {
+    causes.push(cause)
+    if (cause) return "delivered"
+    return "not delivered"
+  })
+  expect(causes).toEqual([true, false])
+  expect(completed).toBe("letter delivered")
+  expect(() => assertWitness("letter delivered", "delivered", () => "delivered")).toThrow("removing the cause")
+  expect(() => assertWitness("letter delivered", "delivered", () => "not delivered")).toThrow()
 })
+
+it.effect("an Effect witness itself runs both causes and only records a completed pair", () => Effect.gen(function* () {
+  expectTypeOf(assertEffectWitness<boolean, never, never>).parameters.toEqualTypeOf<[string, boolean, (cause: boolean) => Effect.Effect<boolean>]>()
+  const causes: Array<boolean> = []
+  const completed = yield* assertEffectWitness("switch lit the lamp", true, (cause) => Effect.sync(() => {
+    causes.push(cause)
+    return cause
+  }))
+  expect(causes).toEqual([true, false])
+  expect(completed).toBe("switch lit the lamp")
+}))
 
 // These seven failures describe known pool behavior; they are not witness controls.
 const poolFile = "mods/pool/claim-rule.test.ts"
@@ -69,7 +87,7 @@ const witnessSources = (file: string, text: string) => {
 
   const runners = ["test", "effectTest", "Seed"]
   const examples = calls.filter((call) => titleOf(call).startsWith("W: "))
-  const compares = calls.filter(({ callee }) => callee.type === "Identifier" && callee.name === "assertWitness")
+  const compares = calls.filter(({ callee }) => callee.type === "Identifier" && ["assertWitness", "assertEffectWitness"].includes(callee.name))
   const allowed: Array<string> = []
   const forbidden: Array<string> = []
   for (const member of modifiers) {

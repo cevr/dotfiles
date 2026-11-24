@@ -15,7 +15,7 @@ import { AnswerQuestions, decideAnswers, heldOf, ownersOf, QuestionAnswered, typ
 import type { Letter } from "@dotfiles/opencode-questions/reply"
 import { Changes, Courier, QuestionStore } from "@dotfiles/opencode-questions/service"
 import * as Seed from "../../sim/seed.ts"
-import { assertWitness } from "../../sim/witnesses.ts"
+import { assertEffectWitness } from "../../sim/witnesses.ts"
 
 const { seeded } = Seed.runner("cmd/questions/questions-held.sim.test.ts")
 
@@ -73,11 +73,13 @@ seeded("a question put to a session is answered only by that session or by the o
 
 Seed.effect("W: the holder answers; a different session receives NotHeld", Effect.gen(function* () {
   const sheet = { next: 2, rows: [{ id: "q1", sessionID: "ses_child", to: "ses_parent", question: "Held question?", assume: "yes", askedAt: AT }] }
-  const holder = yield* Effect.exit(decideAnswers(sheet, commandOf(["q1"], Option.some("ses_parent")), 0))
-  const other = yield* Effect.exit(decideAnswers(sheet, commandOf(["q1"], Option.some("ses_other")), 0))
-  const events = (exit: typeof holder) => Exit.match(exit, { onFailure: () => [], onSuccess: (events) => events })
-  assertWitness("a matching caller records the answer", [QuestionAnswered.make({ id: "q1", answer: "maybe", delivery: "msg_new", at: 0 })], events(holder), events(other))
-  assertWitness("a mismatching caller gets NotHeld", true, notHeld(other), notHeld(holder))
+  const play = (matches: boolean) => {
+    const caller = Option.getOrElse(Option.liftPredicate("ses_parent", () => matches), () => "ses_other")
+    return Effect.exit(decideAnswers(sheet, commandOf(["q1"], Option.some(caller)), 0))
+  }
+  yield* assertEffectWitness("a matching caller records the answer", [QuestionAnswered.make({ id: "q1", answer: "maybe", delivery: "msg_new", at: 0 })], (cause) =>
+    Effect.map(play(cause), (exit) => Exit.match(exit, { onFailure: () => [], onSuccess: (events) => events })))
+  yield* assertEffectWitness("a mismatching caller gets NotHeld", true, (cause) => Effect.map(play(!cause), notHeld))
 }))
 
 seeded("a sheet stored before `to` existed decodes, every question on it is the owner's, and only the owner answers it", ({ expect }) =>
