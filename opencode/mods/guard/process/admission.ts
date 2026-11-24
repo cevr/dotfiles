@@ -41,6 +41,10 @@ const positive = (value: number) => value > 0
 export const ref = (kind: string, value: string) =>
   `${kind}-${new CryptoHasher("sha256").update(value).digest("hex").slice(0, 32)}`
 
+/** Process number alone, parentage and command are never birth identity. */
+export const birthRef = (bootId: string, process: { readonly pid: number; readonly start: number }) =>
+  ref("birth", `${bootId}:${process.pid}:${process.start}`)
+
 const { i32, i64, ptr, u32 } = FFIType
 const libc: Readonly<Record<Platform, string>> = { darwin: "/usr/lib/libSystem.B.dylib", linux: "libc.so.6" }
 export const openKernel = (platform: Platform) => {
