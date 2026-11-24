@@ -395,7 +395,7 @@ interface ModelResolveInput {
   readonly agent: string
   readonly model: ModelRef
   readonly kind: Kind
-  readonly step: RouteStep
+  readonly step?: RouteStep
   defer?: Refusal
 }
 
@@ -927,7 +927,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     })
 
   /**
-   * Runs a request's hook (`model.request`, `http.request`, `http.response`, `experimental.ws.receive`) of the session's location's copies on
+   * Runs a routing or transport hook of the session's location's copies on
    * one event, in the order they registered: each sees what the one before left. A hook that fails fails the
    * request, as the host's `hooks.trigger` does in the model request's build and its HTTP call.
    */
@@ -1151,13 +1151,10 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
   const attempt = (session: Session, kind: Kind, extra = "", number = 1) =>
     Effect.gen(function* () {
       const scope = { sessionID: session.id, agent: requestAgent(session), model: requestModel(session) }
-      const step = routeStep(session, kind, number)
-      if (Option.isSome(step)) {
-        const route: ModelResolveInput = { ...scope, kind, step: step.value }
-        yield* runRequestHooks("experimental.model.resolve", session, route)
-        const hold = Option.fromUndefinedOr(route.defer)
-        if (Option.isSome(hold)) return { outcome: deferred(hold.value), startedAt: runtime.now() }
-      }
+      const route: ModelResolveInput = { ...scope, kind, ...stepField(session, kind, number) }
+      yield* runRequestHooks("experimental.model.resolve", session, route)
+      const hold = Option.filter(Option.fromUndefinedOr(route.defer), () => Option.isSome(Option.fromUndefinedOr(route.step)))
+      if (Option.isSome(hold)) return { outcome: deferred(hold.value), startedAt: runtime.now() }
       // A compaction's hooks see the conversation it summarizes and may add messages after it, which the request
       // carries before its own words (the summary prompt); each added message is read as a request message, and one of
       // another shape adds no text.

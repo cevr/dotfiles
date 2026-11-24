@@ -64,7 +64,7 @@ describe("every argument a world plugin passes to the host is one a law passes",
         'session.synthetic delivery="queue" at sim/fixtures/host-calls.fixture.ts:37',
         "session.prompt metadata at sim/fixtures/host-calls.fixture.ts:38",
         'session.compact reason="manual" at sim/fixtures/host-calls.fixture.ts:39',
-        'session.hook #0="experimental.ws.send" at sim/fixtures/host-calls.fixture.ts:40',
+        'session.hook #0="experimental.ws.handshake" at sim/fixtures/host-calls.fixture.ts:40',
       ])
       expect(plugins.map((call) => call.operation)).toEqual(["session.synthetic", "session.prompt", "session.compact", "session.hook", "session.get"])
     }),
