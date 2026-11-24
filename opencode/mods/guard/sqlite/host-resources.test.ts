@@ -221,7 +221,7 @@ it.scoped("two authenticated scans share a restart-stable CAS frontier and no sc
 
 const boot = { ...HOST, bootId: "boot-after-fixture" }
 
-it.scoped("two clients replay generated crash and adoption orderings without duplicating start permission", () =>
+const launchHistories = (offset: number, count: number) =>
   Effect.gen(function* () {
     const { a, b, filename } = yield* makeFixture()
     const one = person("first-launcher", "lane-a")
@@ -229,7 +229,7 @@ it.scoped("two clients replay generated crash and adoption orderings without dup
     const [first, second] = [a.ownership.forOwner(one), b.ownership.forOwner(one)]
     const [third, fourth] = [a.ownership.forOwner(two), b.ownership.forOwner(two)]
     let starts = 0
-    for (let seed = 0; seed < 64; seed++) {
+    for (let seed = offset; seed < offset + count; seed++) {
       const key = `case-${seed}`
       const initial = draft(key)
       const registered = yield* first.intent(initial, 2000)
@@ -291,15 +291,19 @@ it.scoped("two clients replay generated crash and adoption orderings without dup
         expect(yield* why(third.change({ ...e, at: eventRef(adopted) }, 2004 + step))).toBe("stale")
       }
     }
-    expect(starts).toBe(64)
+    expect(starts).toBe(count)
     const seen = yield* readHolderSnapshot(a.holder)
     const afterBoot = yield* open(filename, boot)
     expect((yield* readHolderSnapshot(afterBoot.holder)).records).toEqual([])
     expect((yield* readHolderSnapshot(afterBoot.holder)).revision).toBeGreaterThan(seen.revision)
     expect(yield* why(a.ownership.forOwner(one).intent(draft("replayed-offline"), 3000))).toBe("stale")
     expect(yield* why(afterBoot.ownership.forOwner(one).intent(draft("wrong-new-boot"), 3000))).toBe("stale")
-  }).pipe(Effect.provide(BunServices.layer)),
-)
+  }).pipe(Effect.provide(BunServices.layer))
+
+for (let shard = 0; shard < 8; shard++) {
+  it.scoped(`two clients replay crash and adoption without duplicate starts (seeds ${shard * 8}–${shard * 8 + 7})`,
+    () => launchHistories(shard * 8, 8))
+}
 
 type Journal = Effect.Success<ReturnType<typeof open>>
 interface LegacyAdapter {
