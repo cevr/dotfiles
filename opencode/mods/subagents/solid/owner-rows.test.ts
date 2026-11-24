@@ -6,8 +6,9 @@
 // read is in flight. Every list the reader publishes is checked, so a list
 // painted for a single frame counts: the strip may never draw a child of an
 // earlier run, nor drop a live one, and the count always equals the rows drawn.
-import { expect, test } from "bun:test"
-import { Deferred, Effect, Option, Queue } from "effect"
+import { expect } from "bun:test"
+import { Effect, Option, Queue } from "effect"
+import { it } from "effect-bun-test"
 import type { RowsReply } from "../../kernel/opencode/child-row.ts"
 import { Phase } from "../../kernel/child-lifecycle.ts"
 import { RowFact } from "../../kernel/child-row.ts"
@@ -53,7 +54,7 @@ const infos = new Map<string, SessionInfo>([
   ...CHILDREN.map((id, index) => [id, { id, parentID: "root", time: { created: index + 1 } }] as const),
 ])
 
-type Flight = { readonly children: ReadonlyArray<string>; readonly reply: Deferred.Deferred<RowsReply> }
+type Flight = { readonly children: ReadonlyArray<string>; readonly reply: (reply: RowsReply) => void }
 
 /** What the strip draws from one published answer: its rows' ids, and the dock's count of who works. */
 const drawn = (reads: Reads<typeof LOCATION>, rows: ReadonlyArray<OwnedRow>) => {
@@ -61,12 +62,11 @@ const drawn = (reads: Reads<typeof LOCATION>, rows: ReadonlyArray<OwnedRow>) => 
   const works = worksNow(family)
   return {
     rows: visible(subagents(family, "root"), NOW).map((row) => row.id),
-    count: family.sessions.filter((session) => session.id !== "root" && works(session.id) !== undefined).length,
+    count: family.sessions.filter((session) => session.id !== "root" && Option.isSome(Option.fromUndefinedOr(works(session.id)))).length,
   }
 }
 
-test("a reconnect and host work during a refetch never draw an old child, never drop a live one, and the count equals the rows", () =>
-  Effect.runPromise(
+it.effect("a reconnect and host work during a refetch never draw an old child, never drop a live one, and the count equals the rows", () =>
     Effect.gen(function* () {
       const flights = yield* Queue.unbounded<Flight>()
       const published = yield* Queue.unbounded<ReadonlyArray<OwnedRow>>()
@@ -89,14 +89,12 @@ test("a reconnect and host work during a refetch never draw an old child, never 
       }
       const client: RowsClient = {
         rpc: () => ({
-          read: (input) =>
-            Effect.runPromise(
-              Effect.gen(function* () {
-                const reply = yield* Deferred.make<RowsReply>()
-                yield* Queue.offer(flights, { children: input.children, reply })
-                return yield* Deferred.await(reply)
-              }),
-            ),
+          // The test answers each read in flight, in the order they were made.
+          read: (input) => {
+            const { promise, resolve } = Promise.withResolvers<RowsReply>()
+            Queue.offerUnsafe(flights, { children: input.children, reply: resolve })
+            return promise
+          },
         }),
       }
       const emit = (type: string) => Effect.sync(() => handlers.forEach((handler) => handler({ details: { type, data: {} } })))
@@ -104,12 +102,14 @@ test("a reconnect and host work during a refetch never draw an old child, never 
       const answerAndCheck = (revision: number) =>
         Effect.gen(function* () {
           const flight = yield* Queue.take(flights)
-          yield* Deferred.succeed(flight.reply, { rows: flight.children.map((child) => answer(child, revision)) })
+          yield* Effect.sync(() => flight.reply({ rows: flight.children.map((child) => answer(child, revision)) }))
           const shown = drawn(reads, yield* Queue.take(published))
           expect(shown.rows).toEqual(LIVE)
           expect(shown.count).toBe(shown.rows.length)
         })
-      const stop = followOwner({ client, location: LOCATION })(reads, CHILDREN, (rows) => Effect.runSync(Queue.offer(published, rows)))
+      const stop = followOwner({ client, location: LOCATION })(reads, CHILDREN, (rows) => {
+        Queue.offerUnsafe(published, rows)
+      })
       yield* answerAndCheck(1)
       // The service restarted: the event stream reconnects, and host work arrives while the read it starts is in flight.
       yield* emit("server.connected")
@@ -123,5 +123,4 @@ test("a reconnect and host work during a refetch never draw an old child, never 
       expect(yield* Queue.clear(published)).toEqual([])
       yield* Effect.sync(stop)
     }),
-  ),
 )

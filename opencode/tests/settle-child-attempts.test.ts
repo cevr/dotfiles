@@ -501,6 +501,7 @@ const silentExit = Effect.fn("LifecycleFixture.silentExit")(function* (
 const cancelBehindBarrier = Effect.fn("LifecycleFixture.cancelBehindBarrier")(function* (
   instance: Embedded, events: AsyncIterator<HostEvent>, barrier: Barrier, root: string, child: string, inboxID: string,
 ) {
+  const before = barrier.snapshot()
   yield* Effect.sync(() => barrier.notify({ type: "server.connected" }))
   const old = yield* barrier.next
   yield* promised("native inbox cancellation failed", () => instance.sessions.inbox.cancel({ sessionID: child, inboxID }))
@@ -516,8 +517,8 @@ const cancelBehindBarrier = Effect.fn("LifecycleFixture.cancelBehindBarrier")(fu
   const next = yield* barrier.next
   const outstanding = barrier.snapshot()
   yield* next.release
-  yield* barrier.ready
-  return { old: old.revision, accepted: barrier.revision(), outstanding, shown: barrier.snapshot(), direct: takeAnswer(direct, "kernel") }
+  yield* barrier.answered(next.revision)
+  return { old: old.revision, accepted: barrier.revision(), before, outstanding, shown: barrier.snapshot(), direct: takeAnswer(direct, "kernel") }
 })
 
 const shellTrace = Effect.fn("LifecycleFixture.shellTrace")(function* (
@@ -743,7 +744,7 @@ const CutEvidence = Schema.Struct({
   old: Schema.Int, current: Schema.Int, accepted: Schema.Int,
 })
 const InboxCut = Schema.Struct({
-  old: Schema.Int, accepted: Schema.Int, outstanding: RowDisplay, shown: RowDisplay, direct: Schema.String,
+  old: Schema.Int, accepted: Schema.Int, before: RowDisplay, outstanding: RowDisplay, shown: RowDisplay, direct: Schema.String,
 })
 const ReadLatch = Schema.Struct({ child: Schema.String, mark: Schema.String, launch: Schema.String, rebuilt: Schema.String, listed: Schema.String })
 const report = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({
@@ -914,7 +915,8 @@ const verifyLife = Effect.fn("LifecycleFixture.verifyLife")(function* (result: E
   expect(result.unrelated.shown).toEqual([{ state: "waiting", update: expect.stringContaining("since before reload") }])
   expect(result.related.shown.map(({ state }) => state)).toEqual(["failed"])
   for (const cut of [result.unrelated, result.related]) {
-    expect(cut.outstanding).toEqual([{ state: "unknown", update: "Current execution not known" }])
+    // The superseded read answered below the revision the notification named: the answer shown stays, nothing in between.
+    expect(cut.outstanding).toEqual(cut.before)
     expect(cut.accepted).toBeGreaterThan(cut.old)
   }
   expect(unrelated).toHaveProperty("revision", result.unrelated.accepted)
