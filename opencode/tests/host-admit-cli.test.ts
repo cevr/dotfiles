@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at tests/host-admit-cli.test.ts: const fifo = yield* spawner.exitCode(ChildProcess.make("/usr/bin/mkfifo", [marker, release], {
 import { argv, readableStreamToText, spawn } from "bun"
 import { Database } from "bun:sqlite"
 import * as BunServices from "@effect/platform-bun/BunServices"

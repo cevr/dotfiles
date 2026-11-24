@@ -24,11 +24,13 @@ import { Array as Arr, Data, Option } from "effect"
 import { immutable } from "../mods/orchestrate/immutable.ts"
 
 /** What this script uses from the orchestrate skill's scripts/agents.ts. */
-interface Source {
-  readonly ROLES: Readonly<Record<string, string>>
+interface Source extends Compiler {
   readonly AGENTS: string
-  readonly instructions: (role: string, protocol: string, safety: string) => string
-  readonly agentFile: (role: string, protocol: string, safety: string) => string
+}
+
+interface Compiler {
+  readonly ROLES: Readonly<Record<string, string>>
+  agentFile(role: string, protocol: string, safety: string): string
 }
 
 export const ROOT = resolve(import.meta.dir, "..")
@@ -127,11 +129,11 @@ const loadSource = async (dir: string): Promise<Source> => {
   return (await import(script)) as Source
 }
 
-/** The file this script writes, under `root`. */
-export const build = async (root = ROOT, sourceDir = DEFAULT_SOURCE): Promise<Built> => {
-  const source = await loadSource(sourceDir)
-  const protocol = readFileSync(join(sourceDir, "protocol.md"), "utf8")
-  const safety = readFileSync(join(sourceDir, "../loop/safety.md"), "utf8")
+/** The written file, from its explicit source texts and the skill's agent compiler. */
+export const renderAgents = (
+  root: string, source: Compiler,
+  { protocol, safety, skill, worker: workerText }: { protocol: string; safety: string; skill: string; worker: string },
+): Built => {
   const define = (description: string, system: string, effort?: string): Definition => ({
     description,
     mode: "subagent",
@@ -144,7 +146,7 @@ export const build = async (root = ROOT, sourceDir = DEFAULT_SOURCE): Promise<Bu
     // The description and prompt as Claude Code has them, from the same functions.
     const claude = parseAgent(source.agentFile(role, protocol, safety))
     // The Effort column found by its header, so a host column added or moved keeps it.
-    const lines = readFileSync(join(sourceDir, "SKILL.md"), "utf8").split("\n")
+    const lines = skill.split("\n")
     const cells = (line?: string) => line?.split("|").map((c) => c.trim()) ?? []
     const column = cells(lines.find((line) => line.startsWith("| Role |"))).indexOf("Effort")
     const cell = column > 0 ? cells(lines.find((line) => line.startsWith(`| ${role} |`)))[column] : undefined
@@ -152,27 +154,51 @@ export const build = async (root = ROOT, sourceDir = DEFAULT_SOURCE): Promise<Bu
     if (!effort) throw new Error(`no Claude-family effort for ${role} in SKILL.md's role table`)
     agents[role] = define(claude.fields.description!, claude.body, effort)
   }
-  const worker = parseAgent(readFileSync(join(source.AGENTS, `${WORKER}.md`), "utf8"))
+  const worker = parseAgent(workerText)
   agents[WORKER] = define(worker.fields.description!, worker.body)
   // The orchestrator is no role: it takes build's fields where the plugin defines it, and only adds its section.
-  const orchestrator = { description: ORCHESTRATOR_DESCRIPTION, section: orchestratorSection(readFileSync(join(sourceDir, "SKILL.md"), "utf8")) }
+  const orchestrator = { description: ORCHESTRATOR_DESCRIPTION, section: orchestratorSection(skill) }
   return { path: join(root, OUT), text: `${JSON.stringify({ written: WRITTEN, agents, [ORCHESTRATOR]: orchestrator }, null, 2)}\n` }
+}
+
+/** The file this script writes, under `root`. */
+export const build = async (root = ROOT, sourceDir = DEFAULT_SOURCE): Promise<Built> => {
+  const source = await loadSource(sourceDir)
+  return renderAgents(root, source, {
+    protocol: readFileSync(join(sourceDir, "protocol.md"), "utf8"),
+    safety: readFileSync(join(sourceDir, "../loop/safety.md"), "utf8"),
+    skill: readFileSync(join(sourceDir, "SKILL.md"), "utf8"),
+    worker: readFileSync(join(source.AGENTS, `${WORKER}.md`), "utf8"),
+  })
+}
+
+export const staleMessage = (built: Built, written: string | undefined) => {
+  if (written !== built.text) return `stale: ${built.path}; run bun run agents`
 }
 
 /** Whether the file on disk differs from what the source makes. */
 export const stale = (built: Built) => !existsSync(built.path) || readFileSync(built.path, "utf8") !== built.text
 
-if (import.meta.main) {
-  const argv = process.argv.slice(2)
+const written = (built: Built) => {
+  if (existsSync(built.path)) return readFileSync(built.path, "utf8")
+}
+
+export const agentArgs = (argv: ReadonlyArray<string>) => {
   const flag = (name: string) => {
     const index = argv.indexOf(name)
-    return index >= 0 ? argv[index + 1] : undefined
+    if (index >= 0) return argv[index + 1]
   }
-  const root = resolve(flag("--root") ?? ROOT)
-  const built = await build(root, resolve(flag("--source") ?? DEFAULT_SOURCE))
-  if (argv.includes("--check")) {
-    if (stale(built)) {
-      console.error(`stale: ${built.path}; run bun run agents`)
+  return { root: flag("--root"), source: flag("--source"), check: argv.includes("--check") }
+}
+
+if (import.meta.main) {
+  const args = agentArgs(process.argv.slice(2))
+  const root = resolve(args.root ?? ROOT)
+  const built = await build(root, resolve(args.source ?? DEFAULT_SOURCE))
+  if (args.check) {
+    const message = staleMessage(built, written(built))
+    if (message) {
+      console.error(message)
       process.exit(1)
     }
   } else {

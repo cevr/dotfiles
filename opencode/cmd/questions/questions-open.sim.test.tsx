@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason native TUI plugin loader reads at sim-tui/app.ts: createAppFixture({
 // Opening the questions form is idempotent and never stale, on the simulated
 // TUI (sim-tui/), each test at its first SEEDS seeds: the fork's real TUI with
 // Prime and the questions plugin, in front of the server double. The questions

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/image/codex/live.test.ts: const out = Option.getOrElse(target, () => `${spawnSync(["mktemp", "-d", "-t", "image-live"]).s
 // One real image through the ChatGPT subscription, run by hand:
 // `IMAGE_LIVE=1 bun test mods/image/codex/live.test.ts` (on a host with
 // `codex login`). It costs nothing past the plan. The paid route is never run

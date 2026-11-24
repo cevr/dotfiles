@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pool/store/store.ts: names: readdirSync, read: (path) => readFileSync(path, "utf8"),
 // The pool's login store source on the simulated world, each test at 20
 // seeds: tests/pool-store.test.ts's names and claims, moved off the disk. The
 // store is memory slots (mods/pool/memory/slots.ts, which keep the disk's laws

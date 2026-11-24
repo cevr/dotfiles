@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason nonliteral subprocess arguments at mods/orchestrate/git/claims.test.ts: spawnSync(["git", "-C", repo, ...args], { env: ENV, stdin: "ignore", stdout: "pipe", stderr: "i
 // What claims a unit's commitment, over real git in scratch repositories this test makes with git plumbing: a base,
 // and each lane its own clone (`--shared`: it sees the base's objects, the base none of its own until a land fetches
 // them), as a workspace is. Only a land event claims (commitments-tool.ts `landClaimsOf`, `claimsRecorded`: what

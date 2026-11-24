@@ -7,8 +7,8 @@
 // which the host draws as written) and, at low verbosity, the host's `+ N commands` summary
 // row, folded and unfolded. The host draws its own rows at its layout
 // `gutter`, which Prime sets to its own. It needs OPENCODE_DEV, the fork.
+import { readScratchFileSync } from "./read-path.ts"
 import { beforeAll, describe, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
@@ -36,7 +36,7 @@ const run = async (verbosity: "low" | "medium") => {
   const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
   if (code !== 0) throw new Error(`the ${verbosity} scenario exited ${code} (its frames and logs: ${out}):\n${(stdout + stderr).slice(-4000)}`)
   const names = verbosity === "low" ? [`indent-low-folded`, `indent-low`] : [`indent-medium`]
-  for (const name of names) frames[name] = readFileSync(join(out, `${name}.txt`), "utf8").split("\n")
+  for (const name of names) frames[name] = readScratchFileSync(join(out, `${name}.txt`), "utf8").split("\n")
 }
 
 /** The column a row starts in: its first non-blank cell. */

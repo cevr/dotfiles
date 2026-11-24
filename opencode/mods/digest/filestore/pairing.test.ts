@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/digest/filestore/pairing.ts: const age = yield* Effect.promise(() => stat(lockPath).then(
 // The pairing file:
 // - A code is good once, for five minutes, and kept only as its hash.
 // - The token it buys is kept only as its hash, so a forged, altered or foreign token is refused.

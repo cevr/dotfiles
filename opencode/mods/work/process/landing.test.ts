@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/work/process/landing.test.ts: expect(readFileSync(join(made.integration, "gen.txt"), "utf8")).toBe("a\nb\nc\n")
 // The process Landing over real Git repositories in a scratch directory: a
 // bare origin, a warm source, an integration clone and two Rift clones on
 // their branches. The lock file is a Bun workspace's, so installs need no

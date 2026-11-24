@@ -3,18 +3,22 @@
 // (never the token). When requested, record that it found the other worker's
 // real SQLite lock busy before the test allows the refresh response.
 import { createHash } from "node:crypto"
-import { Effect, Option } from "effect"
-import { NODE_FILES, StoreSource } from "../../mods/pool/store/store.ts"
+import { argv, write } from "bun"
+import { Effect, Option, Schema } from "effect"
+import { SlotStoreSource } from "../../mods/pool/store/store.ts"
+import { readScratchFileSync, scratchInput } from "../read-path.ts"
+import { RefreshRequest } from "./refresh-request.ts"
+import { scratchSlotFiles } from "./store.ts"
 
-const [dir, tokenURL, credentialID, busyFile] = process.argv.slice(2)
-if (!dir || !tokenURL || !credentialID || !busyFile) throw new Error("usage: refresh-worker <dir> <tokenURL> <credentialID> <busy-file>")
-const source = new StoreSource({
-  dir,
-  tokenURL,
+const { dir, tokenURL, credentialID, busyFile } = Schema.decodeUnknownSync(RefreshRequest)(readScratchFileSync(argv[2] || "", "utf8"))
+if (!/^http:\/\/127\.0\.0\.1:\d{1,5}\/v1\/oauth\/token$/.test(tokenURL)) throw new Error("expected the scratch store's loopback token endpoint")
+const marker = scratchInput(busyFile)
+const source = new SlotStoreSource({
+  dir: scratchInput(dir), tokenURL,
   files: {
-    ...NODE_FILES,
-    tryLock: (dir) => NODE_FILES.tryLock(dir).pipe(Effect.tap((lock) => {
-      if (Option.isNone(lock)) return Effect.promise(() => Bun.write(busyFile, ""))
+    ...scratchSlotFiles,
+    tryLock: (at) => scratchSlotFiles.tryLock(at).pipe(Effect.tap((lock) => {
+      if (Option.isNone(lock)) return Effect.asVoid(Effect.promise(() => write(marker, "")))
       return Effect.void
     })),
   },

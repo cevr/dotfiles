@@ -1,15 +1,16 @@
-/** @reads cmd/pool/fixtures/openai-send-hold/** tests/pool-openai-send/** */
+// @reads all
+// @reads-reason subprocess reads at tests/pool-openai-send-hold.test.ts: const child = yield* spawner.spawn(ChildProcess.make(externalInput(localTestProcess.execPath),
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Array as Arr, Config, Console, Effect, FileSystem, Match, Option, Path, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { describe, expect, it } from "effect-bun-test"
-import { poolPlugin } from "../testbeds/anthropic-auth.ts"
 import { ROOT } from "../scripts/agents.ts"
 import { formatNotificationTime } from "../decider/notification-time.ts"
 import { readHeldSend } from "../mods/pool/refuse.ts"
 import { FIRST_USAGE_RETRY_MS, FIRST_USAGE_WAIT_MS } from "../mods/pool/quota.ts"
 import { hangGuard } from "./hang-guard.ts"
-import { forkRuns } from "./scratch.ts"
+import { externalInput, matchingInput, scratchInput } from "./read-path.ts"
+import { forkRuns, localTestProcess } from "./scratch.ts"
 
 const Quote = Schema.Struct({ ok: Schema.Boolean, measured: Schema.Boolean,
   eligible: Schema.optionalKey(Schema.Array(Schema.String)), retryAt: Schema.optionalKey(Schema.Finite),
@@ -54,7 +55,7 @@ const outputFor = (sample: Sample | FreshSample) => Effect.gen(function* () {
   const override = yield* Config.option(Config.String("POOL_OPENAI_CONTROL_TSCONFIG"))
   const extra = yield* Option.match(override, {
     onNone: () => Effect.succeed({}),
-    onSome: (file) => fs.readFileString(file).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Override)), Effect.map((json) => json.compilerOptions.paths)),
+    onSome: (file) => fs.readFileString(externalInput(file)).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Override)), Effect.map((json) => json.compilerOptions.paths)),
   })
   const base = yield* fs.makeTempDirectoryScoped({ prefix: "pool-openai-send-" })
   const folder = (name: string) => {
@@ -62,17 +63,20 @@ const outputFor = (sample: Sample | FreshSample) => Effect.gen(function* () {
     return fs.makeDirectory(dir).pipe(Effect.as(dir))
   }
   const [home, config, data, state, cache, temp] = yield* Effect.forEach(["home", "config", "data", "state", "cache", "temp"], folder)
-  const settings = path.join(base, "fixture-tsconfig.json")
-  const result = path.join(base, "result.json")
+  const settings = scratchInput(path.join(base, "fixture-tsconfig.json"))
+  const result = scratchInput(path.join(base, "result.json"))
   yield* fs.writeFileString(settings, toJson({ compilerOptions: { paths: {
-    ...extra, "pool-fixture-sdk": [path.join(fork, "packages/sdk/src/effect/index.ts")],
+    ...extra, "pool-fixture-sdk": [externalInput(path.join(fork, "packages/sdk/src/effect/index.ts"))],
   } } }))
-  const plugin = Option.getOrElse(control, () => {
-    if (sample.startsWith("late-") || sample.startsWith("retry-") || sample === "signed-out-http" || sample === "cost")
-      return path.join(poolPlugin, "fixtures/openai-send-hold")
-    return poolPlugin
+  const plugin = Option.match(control, {
+    onSome: externalInput,
+    onNone: () => {
+      if (sample.startsWith("late-") || sample.startsWith("retry-") || sample === "signed-out-http" || sample === "cost")
+        return path.dirname(matchingInput("cmd/pool/fixtures/openai-send-hold/package.json"))
+      return path.dirname(matchingInput("cmd/pool/package.json"))
+    },
   })
-  const child = yield* spawner.spawn(ChildProcess.make("bun", ["--tsconfig-override", settings, path.join(ROOT, "tests/pool-openai-send/run.ts")], {
+  const child = yield* spawner.spawn(ChildProcess.make(externalInput(localTestProcess.execPath), ["--tsconfig-override", settings, matchingInput("tests/pool-openai-send/run.ts")], {
     cwd: ROOT, extendEnv: false, stdin: "ignore", forceKillAfter: "3 seconds",
     env: {
       PATH: search, ...Option.match(chrome, { onNone: () => ({}), onSome: (CHROME) => ({ CHROME }) }),
@@ -83,7 +87,7 @@ const outputFor = (sample: Sample | FreshSample) => Effect.gen(function* () {
   }))
   const [stdout, stderr, code] = yield* Effect.all([out(child.stdout), out(child.stderr), child.exitCode], { concurrency: 3 })
   expect(Number(code), `${stdout}\n${stderr}`).toBe(0)
-  return yield* fs.readFileString(result)
+  return yield* fs.readFileString(scratchInput(result))
 })
 const boot = (sample: Sample) => outputFor(sample).pipe(Effect.flatMap((raw) =>
   Schema.decodeUnknownEffect(Samples)(raw).pipe(Effect.tapError(() => Console.log(raw)))))

@@ -3,8 +3,8 @@
 // compaction request's prompt and summary tokens and how long it took, and
 // at All (Ctrl+O) the host's whole block, its rule and the summary. It needs
 // OPENCODE_DEV, a fork with the `session.message.compaction` slot.
+import { readScratchFileSync } from "./read-path.ts"
 import { beforeAll, describe, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { hintRow } from "./composer.ts"
 import { owned } from "./owned.ts"
@@ -46,7 +46,7 @@ describe.skipIf(!fork)("a compaction is one line in the Prime look, and the host
       new Response(run.stderr).text(),
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
-    for (const name of names) frames[name] = readFileSync(join(out, `${files[name]}.txt`), "utf8").split("\n")
+    for (const name of names) frames[name] = readScratchFileSync(join(out, `${files[name]}.txt`), "utf8").split("\n")
   }), hangGuard("acceptance"))
 
   test("Details: the compaction is one line, without its summary", kept.test(() => {

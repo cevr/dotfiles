@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // A step's Start line in the digest, on the simulated host (sim/world.ts): the orchestrate plugin writes it only once
 // the host runs the subagent call, with the child's session. A call refused after the plugin's own `execute.before`
 // (by a later plugin's hook, as the fork's registry refuses a tool the kernel does not offer) starts no agent, so it

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/update/filestore/builds.test.ts: expect(spawnSync(["/bin/sh", "-c", `printf changed > '${tree}/opencode/cmd/a/server.ts'`], { st
 import { describe, expect, test } from "bun:test"
 import { argv, env, spawnSync, write } from "bun"
 import { holdingIfFree } from "@dotfiles/opencode-work/process/flock"

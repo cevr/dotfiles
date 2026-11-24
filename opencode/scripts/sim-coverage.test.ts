@@ -1,11 +1,12 @@
-// @reads cmd/guard/guard-faults.sim.test.ts cmd/memory/memory-faults.sim.test.ts cmd/orchestrate/record-model.sim.test.ts cmd/questions/questions-held.sim.test.ts mods/orchestrate/tools.test.ts mods/pool/claim-rule.test.ts mods/questions/opencode/form.test.ts mods/update/builds.test.ts mods/update/model.test.ts scripts/accept-yield.test.ts sim/witnesses.ts sim/witness-cases.ts
+// @reads cmd/guard/guard-faults.sim.test.ts cmd/memory/memory-faults.sim.test.ts cmd/orchestrate/record-model.sim.test.ts cmd/questions/questions-held.sim.test.ts mods/orchestrate/tools.test.ts mods/pool/claim-rule.test.ts mods/questions/opencode/form.test.ts mods/update/builds.test.ts mods/update/model.test.ts scripts/accept-yield.test.ts
 import { expect, expectTypeOf, test } from "bun:test"
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { Array as Arr, Effect, FileSystem, Option, Path, Predicate } from "effect"
+import { Array as Arr, Effect, FileSystem, Option, Predicate } from "effect"
 import { it } from "effect-bun-test"
 import { type ArrayExpression, type CallExpression, type MemberExpression, parseSync, Visitor } from "oxc-parser"
 import { coverage } from "../sim/witness-cases.ts"
 import { assertEffectWitness, assertWitness, assertWitnessCases, witnesses } from "../sim/witnesses.ts"
+import { matchingInput } from "../tests/read-path.ts"
 
 test("required outcomes select explicit cases, in the declared order, with no seed or generated tally", () => {
   const required = ["holds", "refuses"] as const
@@ -167,25 +168,13 @@ test("the source guard rejects a witness with no comparison and attempts to skip
   })
 })
 
+const witnessFiles = "{cmd/guard/guard-faults.sim.test.ts,cmd/memory/memory-faults.sim.test.ts,cmd/orchestrate/record-model.sim.test.ts,cmd/questions/questions-held.sim.test.ts,mods/questions/opencode/form.test.ts,scripts/accept-yield.test.ts,mods/orchestrate/tools.test.ts,mods/pool/claim-rule.test.ts,mods/update/builds.test.ts,mods/update/model.test.ts}"
 const readSource = Effect.fn("WitnessSources.readSource")(function* (file: string) {
   const fs = yield* FileSystem.FileSystem
-  const path = yield* Path.Path
-  const root = yield* path.fromFileUrl(new URL("..", import.meta.url))
-  return yield* fs.readFileString(path.join(root, file))
+  return yield* fs.readFileString(matchingInput(witnessFiles, file))
 })
 
-const files = [
-  "cmd/guard/guard-faults.sim.test.ts",
-  "cmd/memory/memory-faults.sim.test.ts",
-  "cmd/orchestrate/record-model.sim.test.ts",
-  "cmd/questions/questions-held.sim.test.ts",
-  "mods/questions/opencode/form.test.ts",
-  "scripts/accept-yield.test.ts",
-  "mods/orchestrate/tools.test.ts",
-  poolFile,
-  "mods/update/builds.test.ts",
-  "mods/update/model.test.ts",
-]
+const files = witnessFiles.slice(1, -1).split(",")
 
 it.live.layer(BunServices.layer)("every named witness calls its helper in one ordinary test", () => Effect.gen(function* () {
   for (const file of files) {

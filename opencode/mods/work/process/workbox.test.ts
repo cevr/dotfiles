@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/work/process/command.ts: try: () => Bun.spawn([...argv], { cwd, env: { ...base, ...extra }, stdin: "ignore", stdout: "pi
 // The process Workbox over stand-in scripts on PATH: a `workrift` that prints
 // its arguments, where it ran and WORKRIFT_SOURCE, and fails on `check`, and
 // a `workbox-rift-storage` that prints its argument. `df` is the host's own.

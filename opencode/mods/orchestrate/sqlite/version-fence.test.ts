@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/orchestrate/sqlite/record.ts: if (yield* fs.exists(day)) return
 // One committed event precedes every folded write. The two fences are exercised separately: a stale
 // application connection must give the typed version refusal, and an unguarded SQL writer must still fail.
 import { Database } from "bun:sqlite"

@@ -47,7 +47,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { homedir, hostname } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { type Catalog, loadCatalog, loginStoreDir, newestRelease } from "../testbeds/gamut/gamut.ts"
-import { BUILTIN_AUTOMATION_OFF, BUILTIN_BTW_OFF, SERVER_OFF, SERVER_PLUGINS, serverEntry, serverEntryDir, TUI_OFF, tuiPluginsOf } from "../mods/update/trees.ts"
+import { BUILTIN_AUTOMATION_OFF, BUILTIN_BTW_OFF, SERVER_OFF, SERVER_PLUGINS, serverEntry, serverEntryDir } from "../mods/update/trees.ts"
 import type { Settings } from "../mods/update/settings.ts"
 import type { TailnetRead, TailnetWrite } from "../mods/digest/policy.ts"
 import { readyFork } from "./fork.ts"
@@ -62,6 +62,7 @@ import { treeStageCommand } from "../mods/update/process/builder.ts"
 import { treeProgram } from "../mods/update/process/handoff.ts"
 import { environment } from "../mods/update/process/run.ts"
 import { releaseBuild, runDailyBuild, versionOf } from "../mods/update/process/pin.ts"
+import { pluginPackagesFrom, tuiEntriesFrom } from "./tui-entries.ts"
 
 /** This checkout's `opencode/` directory, which daily runs from. */
 const ROOT = resolve(import.meta.dir, "..")
@@ -323,7 +324,6 @@ export const hostCli = (existing: Json) => ({
  */
 export const hostServer = (existing: Json): Json => ({ ...retired(existing), autoupdate: false })
 
-const readJson = (path: string): Json => (existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as Json) : {})
 /** A config's text, as daily writes every JSON file. */
 export const jsonText = (value: Json): string => `${JSON.stringify(value, null, 2)}\n`
 const writeJson = (path: string, value: Json) => {
@@ -332,11 +332,12 @@ const writeJson = (path: string, value: Json) => {
 }
 
 /** Writes `text` at `path` only when the file does not hold it already: a TUI and the service watch these files. */
-const writeChanged = (path: string, text: string) => {
-  if (existsSync(path) && readFileSync(path, "utf8") === text) return
+const writeChangedFrom = (path: string, text: string, read: (path: string) => Option.Option<string>) => {
+  if (Option.exists(read(path), (before) => before === text)) return
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, text, { mode: 0o600 })
 }
+const readTextIfPresent = (path: string) => Option.map(Option.liftPredicate(path, existsSync), (file) => readFileSync(file, "utf8"))
 
 /** Whether the TUI config lacks a default `hostCli` adds: only then is it written, so a file that has both is never rewritten, nor its text reformatted. */
 export const lacksCliDefault = (existing: Json): boolean => !Object.hasOwn(record(existing.theme), "name") || !Object.hasOwn(record(existing.tabs), "scope")
@@ -350,15 +351,20 @@ export const lacksCliDefault = (existing: Json): boolean => !Object.hasOwn(recor
  * added. Both configs are read before anything is written, so one that does not read stops daily with nothing
  * changed. The role models and every plugin entry are left as they are: the build's tree carries them.
  */
-export const writeSettings = (home: string) => {
+export const writeSettingsFrom = (home: string, read: (path: string) => Option.Option<string>, theme: () => string) => {
   const config = join(home, ".config/opencode")
-  const server = hostServer(readJson(join(config, "opencode.json")))
-  const cli = readJson(join(config, "cli.json"))
-  writeChanged(join(residentDir(home), "opencode.json"), jsonText(residentConfig))
-  writeChanged(join(config, "opencode.json"), jsonText(server))
+  const json = (file: string): Json => {
+    const text = read(join(config, file))
+    return Option.match(text, { onNone: () => ({}), onSome: (source) => JSON.parse(source) as Json })
+  }
+  const server = hostServer(json("opencode.json"))
+  const cli = json("cli.json")
+  writeChangedFrom(join(residentDir(home), "opencode.json"), jsonText(residentConfig), read)
+  writeChangedFrom(join(config, "opencode.json"), jsonText(server), read)
   if (lacksCliDefault(cli)) writeJson(join(config, "cli.json"), hostCli(cli))
-  writeChanged(join(config, "themes/prime.json"), readFileSync(THEME, "utf8"))
+  writeChangedFrom(join(config, "themes/prime.json"), theme(), read)
 }
+export const writeSettings = (home: string) => writeSettingsFrom(home, readTextIfPresent, () => readFileSync(THEME, "utf8"))
 
 /**
  * Moves prime-look to origin (`sync`) and, when it moved and is checked out there (`head`), installs what
@@ -489,16 +495,16 @@ export const serverEntries = (facts: HostFacts, dirOf: (name: string) => string)
 
 /** The plugin packages of the `opencode/` directory `root`, each `cmd/<name>` by its name and `package.json`, for `trees.ts` `tuiPluginsOf`. */
 export const pluginPackages = (root: string): ReadonlyArray<{ readonly name: string; readonly manifest: string }> =>
-  readdirSync(join(root, "cmd")).flatMap((name) => {
+  pluginPackagesFrom(readdirSync(join(root, "cmd")), (name) => {
     const manifest = join(root, "cmd", name, "package.json")
-    return Option.toArray(Option.liftPredicate(manifest, existsSync)).map((path) => ({ name, manifest: readFileSync(path, "utf8") }))
+    return Option.map(Option.liftPredicate(manifest, existsSync), (path) => readFileSync(path, "utf8"))
   })
 
 /**
  * The TUI's plugin entries: every plugin of the `opencode/` directory `root` with a TUI part, as `trees.ts`
  * `tuiPluginsOf` derives them, then the built-ins it turns off, each at the directory `dirOf` names.
  */
-export const tuiEntries = (root: string, dirOf: (name: string) => string): ReadonlyArray<string> => [...tuiPluginsOf(pluginPackages(root)).map(dirOf), ...TUI_OFF]
+export const tuiEntries = (root: string, dirOf: (name: string) => string): ReadonlyArray<string> => tuiEntriesFrom(pluginPackages(root), dirOf)
 
 /** Step 3 by hand: the host's settings the tree cannot carry (`writeSettings`). */
 const settingsByHand = (home: string) => writeSettings(home)

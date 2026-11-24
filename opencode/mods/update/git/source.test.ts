@@ -1,7 +1,10 @@
+// @reads all
+// @reads-reason subprocess reads at mods/update/git/source.test.ts: spawnSync(["rm", "-rf", root, home])
 import { describe, expect, test } from "bun:test"
-import { env as hostEnv, file, fileURLToPath, spawnSync, write } from "bun"
+import { env as hostEnv, file, spawnSync, write } from "bun"
 import { Effect, Exit, Option } from "effect"
 import { gitInit } from "../../../tests/git-repo.ts"
+import { matchingInput } from "../../../tests/read-path.ts"
 import { Source } from "../service.ts"
 import * as SourceLive from "./source.ts"
 import { hangGuard } from "../../../tests/hang-guard.ts"
@@ -81,12 +84,12 @@ describe("the host's commands, over the checkout as it stands", () => {
 
   /** The host's commands scripts as the repo has them, each run under `sh` from its own place. */
   const SCRIPTS = [
-    { host: "the Mac", script: fileURLToPath(new URL("../../../../local-bin.sh", import.meta.url)) },
-    { host: "the workbox", script: fileURLToPath(new URL("../../../../workbox/install-bin.sh", import.meta.url)) },
+    { host: "the Mac", script: matchingInput("../local-bin.sh") },
+    { host: "the workbox", script: matchingInput("../workbox/install-bin.sh") },
   ] as const
   const TREE_SHOW = "opencode-2.3.0-prime.aaaaaaaa.bbbbbbbb.tree.plugins/opencode/cmd/rex/show.ts"
   // This direct link test does not use the fleet's --apply dispatch.
-  const identityScript = fileURLToPath(new URL("../../../../workbox/host-identity.sh", import.meta.url))
+  const identityScript = matchingInput("../workbox/host-identity.sh")
   const identity = sh(".", ["sh", "-c", '. "$1"; workbox_host_identity', "test", identityScript]).out
 
   for (const { host, script } of SCRIPTS)

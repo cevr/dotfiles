@@ -17,7 +17,8 @@ import {
   type FakeAnthropic,
   type FakeRequestInfo,
 } from "./fake-anthropic.ts"
-import { owned } from "./owned.ts"
+import { ownedForkFixture } from "./owned.ts"
+import { importForkCredentials } from "./scratch-child.ts"
 import { keptScratch } from "./scratch.ts"
 import { hangGuard, stamp } from "./hang-guard.ts"
 
@@ -114,15 +115,11 @@ describe.skipIf(!ready)("the pool fails a refused run over to the next login (re
         expires: stamp() + 8 * HOUR,
       },
     }))
-    const imported = Bun.spawnSync([...launch.base, "auth", "import", "--standalone"], {
-      cwd: join(base, "work"),
-      env,
-      stdin: new TextEncoder().encode(JSON.stringify(logins)),
-    })
+    const imported = importForkCredentials(fork!, join(base, "work"), env, new TextEncoder().encode(JSON.stringify(logins)))
     expect(imported.exitCode).toBe(0)
-    const run = owned(
-      [...launch.base, "run", "--standalone", "--dangerously-skip-permissions", "--format", "json", "say hello"],
-      { cwd: join(base, "work"), env, stdout: "pipe", stderr: "pipe" },
+    const run = ownedForkFixture(
+      [fork!, join(base, "work"), ["run", "--standalone", "--dangerously-skip-permissions", "--format", "json", "say hello"], env],
+      { stdout: "pipe", stderr: "pipe" },
     )
     const timer = setTimeout(() => run.kill(), RUN_TIMEOUT_MS)
     const [stdout, stderr] = await Promise.all([new Response(run.stdout).text(), new Response(run.stderr).text(), run.exited])

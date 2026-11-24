@@ -2,27 +2,27 @@
 // detached behind its `prime-look` branch, or behind origin's, is reported; one at or past them, or with no such
 // branch, passes. Batch 2026-11-16cv ran every check on a worktree one merge behind the branch it claimed.
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { Effect, FileSystem } from "effect"
+import { Data, Effect, FileSystem } from "effect"
 import { describe, expect, it } from "effect-bun-test"
-import { ChildProcess, ChildProcessSpawner } from "effect/process"
-import { gitInit, withProcessEnv } from "../tests/git-repo.ts"
+import { initScratchGit, spawnScratchGitSync } from "../tests/scratch-child.ts"
+import { forkLagWith } from "./fork-lag.ts"
 import { hangGuard } from "../tests/hang-guard.ts"
-import { forkLag } from "./verify.ts"
 
 const IDENTITY = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t.invalid", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t.invalid" }
+class GitFailed extends Data.TaggedError("GitFailed")<{ readonly message: string }> {}
 
 /** Git in `repo`: its output, trimmed. */
 const git = (repo: string, ...args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-    const said = yield* spawner.string(ChildProcess.make("git", ["-C", repo, ...args], { env: IDENTITY, extendEnv: true, stdin: "ignore", forceKillAfter: "1 second" }))
-    return said.trim()
+    const said = spawnScratchGitSync(repo, args, IDENTITY)
+    if (said.exitCode !== 0) return yield* new GitFailed({ message: said.stderr.toString() })
+    return said.stdout.toString().trim()
   })
 
 /** A fork: `prime-look` two commits long, the worktree detached at the first; origin's branch where `origin` says. */
 const forkAt = (dir: string) =>
   Effect.gen(function* () {
-    yield* Effect.sync(() => gitInit(dir, ["-q", "-b", "prime-look"], withProcessEnv(IDENTITY)))
+    yield* Effect.sync(() => initScratchGit(dir, ["-q", "-b", "prime-look"], IDENTITY))
     yield* git(dir, "commit", "-q", "--allow-empty", "-m", "base")
     const base = yield* git(dir, "rev-parse", "HEAD")
     yield* git(dir, "commit", "-q", "--allow-empty", "-m", "upstream merge")
@@ -33,7 +33,7 @@ const forkAt = (dir: string) =>
 
 /** What the check says: passed, or its failure's words. */
 const said = (fork: string) =>
-  forkLag(fork).pipe(
+  forkLagWith((_, args) => git(fork, ...args)).pipe(
     Effect.map((detail) => ({ ok: true, detail })),
     Effect.catch((error) => Effect.succeed({ ok: false, detail: error.message })),
   )

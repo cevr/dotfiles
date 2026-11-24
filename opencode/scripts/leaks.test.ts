@@ -1,7 +1,10 @@
 // The leak check accept.ts runs after a run, and the spawn helper the tests use
 // so there is nothing for it to find. Real process trees of `sh` and `sleep`.
 import { describe, expect, test } from "bun:test"
-import { owned } from "../tests/owned.ts"
+import { hangGuard, watchdog } from "../tests/hang-guard.ts"
+import { observed, ownedScratchShell } from "../tests/owned.ts"
+import { spawnScratchShell } from "../tests/scratch-child.ts"
+import { scratch } from "../tests/scratch.ts"
 import { descendants, isServer, parseTable, type Proc, servers, stop, survivors, table, watch } from "./leaks.ts"
 
 const alive = (pid: number) => {
@@ -12,9 +15,6 @@ const alive = (pid: number) => {
     return false
   }
 }
-
-import { observed } from "../tests/owned.ts"
-import { hangGuard, watchdog } from "../tests/hang-guard.ts"
 
 const EVENT_WAIT_MS = 30_000
 
@@ -43,7 +43,8 @@ describe("the leak check", () => {
 
   test("a server a run started and left behind, handed to pid 1, is found and stopped; one that ended is not", async () => {
     // Keep both children, then the parent, alive until the watch has actually seen them.
-    const run = Bun.spawn(["sh", "-c", 'sh -c "sleep 120; : opencode-drive run" & sh -c "sleep 120; : opencode-drive run short" & read release'], { stdin: "pipe", stdout: "ignore", stderr: "ignore" })
+    using dir = scratch("leak-run-")
+    const run = spawnScratchShell(dir.path, 'sh -c "sleep 120; : opencode-drive run" & sh -c "sleep 120; : opencode-drive run short" & read release')
     const watching = watch(run.pid, 100)
     const seeing = () => watching.sample().filter(isServer)
     expect(await until(() => seeing().length === 2 && watching.sample().filter((proc) => proc.args === "sleep 120").length === 2), "the two process trees to be sampled").toBe(true)
@@ -68,7 +69,8 @@ describe("the leak check", () => {
 
 describe("owned", () => {
   test("stops what the child started when the child exits", async () => {
-    const child = owned(["sh", "-c", "sleep 120 & echo $!; read release"], { stdin: "pipe", stdout: "pipe", stderr: "ignore" })
+    using dir = scratch("leak-child-")
+    const child = ownedScratchShell(dir.path, "sleep 120 & echo $!; read release")
     const grandchild = Number(new TextDecoder().decode((await child.stdout.getReader().read()).value).trim())
     expect(alive(grandchild)).toBe(true)
     child.stdin.write("go\n")
@@ -77,7 +79,8 @@ describe("owned", () => {
   }, hangGuard("process-tree"))
 
   test("stops what the child started in a process group of its own, as opencode-drive starts its server", async () => {
-    const child = owned(["sh", "-c", 'perl -e "setpgrp(0, 0); sleep 120" & echo $!; read release'], { stdin: "pipe", stdout: "pipe", stderr: "ignore" })
+    using dir = scratch("leak-group-")
+    const child = ownedScratchShell(dir.path, 'perl -e "setpgrp(0, 0); sleep 120" & echo $!; read release')
     const grandchild = Number(new TextDecoder().decode((await child.stdout.getReader().read()).value).trim())
     expect(await until(() => observed(child.pid)?.some((proc) => proc.pid === grandchild && proc.pgid === grandchild) === true), "the grandchild to be sampled in its own group").toBe(true)
     child.stdin.write("go\n")
@@ -86,7 +89,8 @@ describe("owned", () => {
   }, hangGuard("process-tree"))
 
   test("a child killed alone takes its group with it", async () => {
-    const child = owned(["sh", "-c", "sleep 30 & echo $!; wait"], { stdout: "pipe", stderr: "ignore" })
+    using dir = scratch("leak-killed-")
+    const child = ownedScratchShell(dir.path, "sleep 30 & echo $!; wait")
     const reader = child.stdout.getReader()
     const grandchild = Number(new TextDecoder().decode((await reader.read()).value).trim())
     child.kill()

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason nonliteral subprocess arguments at mods/orchestrate/sqlite/record.ts: const handle = yield* spawner.spawn(ChildProcess.make("git", ["-C", checkout, ...args], { stdin
 // The acceptance check of the commitment record, model-based: seeded sequences of approvals with N parts, reports'
 // follow-ups, assignments, re-owning, orders to an owner, hand-backs with and without a root, restarts, compactions
 // (the checkpoint read), triggers turning true (a commit on the default branch, another commitment closing, a date, the

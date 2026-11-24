@@ -49,7 +49,7 @@ const WRITTEN = 'Written by skills/orchestrate/scripts/agents.ts from protocol.m
 export function instructions(role: Role, protocol: string, safety: string): string {
   const s = sections(protocol);
   const rules = safety.slice(safety.indexOf('SAFETY (mandatory')).trim();
-  const own = s[role[0].toUpperCase() + role.slice(1)];
+  const own = s[role.charAt(0).toUpperCase() + role.slice(1)];
   if (!s['Ending a step'] || !s.Rounds || !own || !rules.startsWith('SAFETY')) throw new Error(`protocol.md or safety.md lost a section ${role} needs`);
   if (!BLOCK_PATTERN.test(s['Ending a step'])) throw new Error("protocol.md's Ending a step lost its round-policy block");
   const ending = s['Ending a step'].replace(BLOCK_PATTERN, () => block(role));

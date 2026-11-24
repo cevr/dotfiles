@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason native TUI plugin loader reads at sim-tui/app.ts: createAppFixture({
 // A subagent's view in the Prime look, on the simulated TUI (sim-tui/): the
 // fork's real TUI with Prime and the escape plugin loaded by path, in front of
 // the server double. Entering a subagent from the parent's open Subagents

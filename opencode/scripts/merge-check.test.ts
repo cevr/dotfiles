@@ -1,20 +1,64 @@
+// @reads all
+// @reads-reason subprocess reads at scripts/merge-check.test.ts: const child = yield* spawner.spawn(ChildProcess.make("bun", ["scripts/gate.ts", "--merge", "HEA
 // The legs of a land's merge check (scripts/merge-check.ts, which scripts/gate.ts --merge runs as given): which
 // scripts/ tests a diff selects, and that a selected test is in the leg the merge check runs.
 //
 // Its selections run over the scripts/ folder as it is (`tree` reads every scripts/ source by path, not import), so a
 // new or changed scripts/ file can change what it asserts; it declares them, or no merge check runs it (fork-checks.test
 // and required-inputs.test landed by their merge checks and turned it red on main, b5735808):
-// @reads scripts/*.ts scripts/*.tsx
 // Which tests import or read a path is the tree's fact, derived (`found`); what a case pins by hand is a rule's decision.
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Glob } from "bun"
+import { matchingInput } from "../tests/read-path.ts"
 import { Effect, FileSystem, Option, Path, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { describe, expect, it } from "effect-bun-test"
 import { hangGuard } from "../tests/hang-guard.ts"
-import { parseNameStatus } from "./docs-guard.ts"
-import { ACCEPT_TESTS, DOCS_GUARD, GIT_REPO_GUARD, lintFiles, mergeLegs, reachedWithin, scriptTests } from "./merge-check.ts"
-import { importsOf, load, reach, readsOf } from "./reach.ts"
+import { acceptKey } from "./accept-key.ts"
+import { emptyLedger, select, tierOf, withPass } from "./accept-ledger.ts"
+import { analyzeMerge } from "./gate.ts"
+import { parseNameStatus as parseNulNameStatus } from "./git-paths.ts"
+import { ACCEPT_TESTS, affectedUnits, DOCS_GUARD, GIT_REPO_GUARD, lintFiles, mergeLegs, reachedWithin, scriptTests } from "./merge-check.ts"
+import { mergeUnitInputs, swarmInputs } from "./test-impact.ts"
+import { readMatcher } from "./read-declarations.ts"
+import { acceptReach, importsOf, inspectReads, load, reach, readState, readsOf, testReadInputs } from "./reach.ts"
+import { acceptanceTests, checkedTests, mergeScriptTests, swarmTests, workboxTestFiles } from "./test-population.ts"
+import { reachedSuites } from "./accept-plan.ts"
+
+const parseNameStatus = (out: string) => parseNulNameStatus(out.replace(/[\t\n]/g, "\0"))
+
+it.live.layer(BunServices.layer)("nonempty production plans still run the unknown set; an empty diff says none due", () =>
+  Effect.gen(function* () {
+    const workspace = yield* Effect.promise(load)
+    const analysis = analyzeMerge(workspace)
+    const tools = { ...analysis.tools, workbox: { changes: [], tests: analysis.workbox } }
+    const unknown = checkedTests(workspace).filter((file) =>
+      !acceptanceTests(workspace).includes(file) && !swarmTests(workspace).includes(file) && testReadInputs(workspace, file).unknown,
+    )
+    expect(unknown.length).toBeGreaterThan(0)
+    for (const status of ["A", "M", "D"]) {
+      const planned = mergeLegs("base", [{ status, paths: ["../round-seven-unrelated-probe.txt"] }], tools).find((leg) => leg.name === "tests")
+      expect(planned?.argv).not.toEqual(["true"])
+      for (const file of unknown) expect(planned?.argv).toContain(`./${file}`)
+    }
+    expect(mergeLegs("base", [], tools).find((leg) => leg.name === "tests")).toMatchObject({ argv: ["true"], note: "none due" })
+  }),
+)
+
+it.live.layer(BunServices.layer)("the kept verifier reader is positively selected for only its link target changing", () =>
+  Effect.gen(function* () {
+    const workspace = yield* Effect.promise(load)
+    const file = "sim/verification-link.test.ts"
+    const alias = "sim/fixtures/read-links/verification-link.txt"
+    const target = "sim/fixtures/read-links/verification-target.txt"
+    const reader = testReadInputs(workspace, file)
+    expect(reader.unknown).toBe(false)
+    expect(reader.positive(alias)).toBe(true)
+    expect(reader.positive(target)).toBe(true)
+    expect(reader.positive("../AGENTS.md")).toBe(false)
+    expect(affectedUnits([target], mergeUnitInputs(workspace))).toContain(file)
+  }),
+)
 
 /** bb435bcc's change set from opencode/ (Rift U1's land): its cmd/work/server.ts import broke runtime-imports.test, which its merge check never ran. */
 const BB435BCC = [
@@ -54,21 +98,20 @@ const BB435BCC = [
   "",
 ].join("\n")
 
-/** The scripts/ folder as the merge check reads it (its files, each source's imports), and the selections over it. */
+/** Scoped inputs from the real scripts/ tree. Unknown selection is exercised separately with a controlled reader. */
 const tree = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
-  const path = yield* Path.Path
-  const root = yield* path.fromFileUrl(new URL("..", import.meta.url))
-  const files = (yield* fs.readDirectory(path.join(root, "scripts"))).map((name) => `scripts/${name}`)
-  const sources = files.filter((file) => /\.tsx?$/.test(file))
-  const texts = new Map(yield* Effect.forEach(sources, (file) => Effect.map(fs.readFileString(path.join(root, file)), (text) => [file, text] as const)))
+  const workspace = yield* Effect.promise(load)
+  const files = [...new Glob("scripts/*.{ts,tsx}").scanSync()]
+  const sources = files
+  const texts = new Map(yield* Effect.forEach(sources, (file) => Effect.map(fs.readFileString(matchingInput("scripts/*.{ts,tsx}", file)), (text) => [file, text] as const)))
   const imports = new Map([...texts].map(([file, text]) => [file, importsOf(file, text)] as const))
   // The git-repo guard lives in tests/, outside the folder read here.
-  const exists = (file: string) => files.includes(file) || file === GIT_REPO_GUARD
+  const exists = (file: string) => files.includes(file) || file === GIT_REPO_GUARD || /^scripts\/.*\.json$/.test(file)
   const scripts = {
     files: sources.filter((file) => /\.test\.tsx?$/.test(file)),
     imports: (file: string) => imports.get(file) ?? [],
-    reads: (file: string) => readsOf(texts.get(file) ?? ""),
+    reads: (file: string) => inspectReads(workspace, file).patterns,
   }
   const tools = (workbox: string) => ({
     bun: "bun",
@@ -80,12 +123,13 @@ const tree = Effect.gen(function* () {
     workbox: { changes: parseNameStatus(workbox), tests: ["../workbox/test/workrift.test.ts", "../workbox/test/hc.test.ts"] },
   })
   // The tree's facts, from the parts the selection composes (reachedWithin, @reads), not from scriptTests itself.
-  const importers = (file: string) => scripts.files.filter((testPath) => reachedWithin(testPath, scripts, exists).has(file))
-  const readers = (file: string) => scripts.files.filter((testPath) => scripts.reads(testPath).some((glob) => new Glob(glob).match(file)))
+  const importers = (file: string) => scripts.files.filter((suite) => reachedWithin(suite, scripts, exists).has(file))
+  const readers = (file: string) => scripts.files.filter((suite) => scripts.reads(suite).some((glob) => glob === "all" || new Glob(glob).match(file)))
   /** The scripts/ tests whose imports reach, or whose @reads globs match, any of `files`. */
   const found = (...files: ReadonlyArray<string>) => [...new Set(files.flatMap((file) => [...importers(file), ...readers(file)]))].toSorted()
   return {
     exists,
+    workspace,
     importers,
     found,
     /** What a diff of `files` must select: the `pinned` tests its rules name, beside every test the tree says imports or reads one. */
@@ -100,6 +144,100 @@ const tree = Effect.gen(function* () {
   }
 })
 
+describe("the fixed-seed unit leg of land", () => {
+  it.effect("a change to a world plugin or the law table selects the host-call census", () =>
+    Effect.gen(function* () {
+      const workspace = yield* Effect.promise(load)
+      const suite = "sim/host-calls.test.ts"
+      const tools = {
+        bun: "bun",
+        oxlint: "oxlint",
+        typecheck: ["bun", "check", "-b"],
+        projects: 3,
+        exists: (file: string) => workspace.files.includes(file),
+        scripts: { files: [], imports: () => [], reads: () => [] },
+        workbox: { changes: [], tests: [] },
+        unit: mergeUnitInputs(workspace),
+      }
+      for (const file of [suite, "cmd/wake/server.ts", "sim/host-laws.ts", "cmd/image/server.ts", "cmd/skills/server.ts", "sim/tsconfig.host-calls.json"]) {
+        const leg = mergeLegs("base", parseNameStatus(`M\t${file}\n`), tools).find(({ name }) => name === "tests")
+        expect(leg?.argv).toContain(`./${suite}`)
+      }
+      for (const file of ["cmd/image/server.ts", "cmd/skills/server.ts", "sim/tsconfig.host-calls.json"])
+        expect(testReadInputs(workspace, suite).positive(file)).toBe(true)
+      const unrelated = mergeLegs("base", parseNameStatus("M\t../AGENTS.md\n"), tools).find(({ name }) => name === "tests")
+      expect(unrelated?.argv).not.toContain(`./${suite}`)
+    }),
+  )
+
+  it.effect("every runner inventory file can be selected by its own change, and unit inputs retain their positive read evidence", () =>
+    Effect.gen(function* () {
+      const workspace = yield* Effect.promise(load)
+      const inventory = checkedTests(workspace)
+      const unit = mergeUnitInputs(workspace)
+      const scripted = mergeScriptTests(workspace)
+      const workbox = workboxTestFiles(workspace)
+      const acceptance = new Set(acceptanceTests(workspace))
+      const swarm = swarmTests(workspace)
+      const known = new Set([...workspace.files, ...(workspace.siblings ?? [])])
+      const exists = (file: string) => known.has(file)
+      const scriptedSelection = scriptTests(scripted.map((file) => ({ status: "M", paths: [file] })), exists)
+      const unitSelected = affectedUnits(unit.files, unit)
+      const swarmSelected = reachedSuites(swarm, () => new Set<string>(), swarm)
+      const selected = new Set([...scriptedSelection, ...unitSelected, ...swarmSelected, ...workbox, ...acceptance])
+      expect(inventory.filter((file) => !selected.has(file))).toEqual([])
+      const memo = new Map<string, ReadonlyArray<string>>()
+      expect([...acceptance].filter((file) => !acceptReach(workspace, file, memo).has(file))).toEqual([])
+      expect(affectedUnits(["../local-bin.sh"], unit)).toContain("mods/update/git/source.test.ts")
+      expect(affectedUnits(["../workbox/install-bin.sh"], unit)).toContain("mods/update/git/source.test.ts")
+      expect(testReadInputs(workspace, "mods/update/git/source.test.ts").positive("../workbox/install-bin.sh")).toBe(true)
+      expect(affectedUnits(["../unrelated-unit-control.txt"], unit)).toContain("mods/update/git/source.test.ts")
+      expect(affectedUnits([], unit)).toEqual([])
+    }),
+  )
+
+  it.effect("the existing swarm selects a golden file and an observed outer input, not an unrelated sibling", () =>
+    Effect.gen(function* () {
+      const workspace = yield* Effect.promise(load)
+      const suite = "cmd/escape/escape-send.sim.test.tsx"
+      const files = swarmTests(workspace)
+      const inputs = swarmInputs(workspace)
+      expect(reachedSuites(files, inputs, ["sim-tui/golden/escape-send/checked.txt"])).toContain(suite)
+      expect(reachedSuites(files, inputs, ["../skills/principle-nothing-is-hard/SKILL.md"])).toContain("cmd/orchestrate/principles.sim.test.ts")
+      expect(reachedSuites(files, inputs, ["../unrelated-swarm-control.txt"])).toEqual(
+        files.filter((file) => testReadInputs(workspace, file).unknown),
+      )
+    }),
+  )
+})
+
+describe("the real host law's acceptance leg", () => {
+  it.live.layer(BunServices.layer)("a law or real harness edit makes a previous pass due without relying on the HEAD term", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const workspace = yield* Effect.promise(load)
+      const file = "tests/host-laws.test.ts"
+      const tier = tierOf(yield* fs.readFileString(matchingInput("tests/host-laws.test.ts")))
+      expect(readState(workspace, file)).toBe(workspace.head ?? "<missing workspace HEAD>")
+      const runtime = testReadInputs(workspace, file)
+      const imports = reach(workspace, [file])
+      const inputs = acceptReach(workspace, file)
+      const key = (changed: string) => acceptKey("same shared key", inputs, (path) => (path === changed && "edited") || "before")
+      const prior = withPass(emptyLedger, file, key(""), 1)
+      expect(tier).toBe("deep")
+      expect(select("owed", [{ file, tier, key: key("") }], prior, 2).run).toEqual([])
+      for (const changed of ["sim/host-laws.ts", "tests/host-laws/real.ts"]) {
+        // A conservative HEAD term does not excuse a missing positive input.
+        expect(runtime.positive(changed) || imports.has(changed)).toBe(true)
+        expect(inputs.has(changed)).toBe(true)
+        const candidate = { file, tier, key: key(changed) }
+        expect(select("owed", [candidate], prior, 2).run).toEqual([file])
+        expect(select("land", [candidate], prior, 2).settled).toContainEqual({ file, status: "owed", why: "deep", detail: "" })
+      }
+    }),
+  )
+})
+
 describe("the merge check's tests", () => {
 
   it.live.layer(BunServices.layer)("a changed script runs its own test and every scripts/ test that imports it; a changed scripts/ test runs itself", () =>
@@ -112,7 +250,8 @@ describe("the merge check's tests", () => {
       expect(tests("M\tscripts/leaks.ts\n")).toContain("scripts/accept.test.ts")
       // Pins: reach.ts has no test of its own; the tests that import it run, these three among them.
       expect(tests("M\tscripts/reach.ts\n")).toEqual(expected([], "scripts/reach.ts"))
-      for (const testPath of ["scripts/accept-ledger.test.ts", "scripts/accept.test.ts", "scripts/merge-check.test.ts"]) expect(tests("M\tscripts/reach.ts\n")).toContain(testPath)
+      for (const suite of ["scripts/fork-checks.test.ts", "scripts/accept.test.ts", "scripts/merge-check.test.ts"]) expect(tests("M\tscripts/reach.ts\n")).toContain(suite)
+      expect(tests("M\tscripts/accept-key.ts\n")).toContain("scripts/accept-ledger.test.ts")
       // Pins: a changed scripts/ test runs itself, and the git-repo guard over its text.
       expect(tests("M\tscripts/leaks.test.ts\n")).toEqual(expected(["scripts/leaks.test.ts", GIT_REPO_GUARD], "scripts/leaks.test.ts"))
       // Pins: a script no test imports selects only the tests that read it by path; its typecheck and lint still run.
@@ -153,7 +292,7 @@ describe("the merge check's tests", () => {
 
   it.live.layer(BunServices.layer)("a test that reads files by path, not import, runs when a file it declares with @reads changes (Rift U1, bb435bcc)", () =>
     Effect.gen(function* () {
-      const { ran, tests } = yield* tree
+      const { expected, ran, tests } = yield* tree
       const RUNTIME_IMPORTS = "scripts/runtime-imports.test.ts"
       // bb435bcc changed cmd/work/server.ts's imports; runtime-imports.test globs cmd/** and mods/**, imports neither, and stayed unselected.
       expect(tests("M\tcmd/work/server.ts\n")).toContain(RUNTIME_IMPORTS)
@@ -173,15 +312,24 @@ describe("the merge check's tests", () => {
       for (const file of ["effect-debt.json", ".oxlintrc.json", ".oxlintrc.effect-debt.json", "lint/package.json"])
         expect(tests(`M\t${file}\n`)).toContain("scripts/effect-debt.test.ts")
       expect(tests("M\tsim/seed.ts\n")).toContain("scripts/accept.test.ts")
-      // What no test reads selects none of them.
-      expect(tests("M\tREADME.txt\n")).toEqual([])
+      // A path-specific reader is not selected simply because another test has unknown inputs.
+      expect(tests("M\tREADME.txt\n")).toEqual(expected([], "README.txt"))
+      expect(tests("M\tREADME.txt\n")).not.toContain(RUNTIME_IMPORTS)
     }),
   )
 
-  // The full gate's unit leg was never the gap: reach.ts follows the paths runtime-imports.test's code names (scripts/daily.ts names "cmd" and "mods").
-  it.live.layer(BunServices.layer)("the full gate's cache key over runtime-imports.test covers cmd/** and mods/**: a cmd/work change makes it due", () =>
+  it.live.layer(BunServices.layer)("the full gate's explicit cache inputs cover runtime-imports.test's cmd and mod readers without covering the whole tree", () =>
     Effect.gen(function* () {
-      const workspace = yield* Effect.promise(load)
+      const { workspace } = yield* tree
+      const inputs = ["cmd/work/server.ts", "mods/work/tool.ts", "themes/prime.json"]
+        .filter(readMatcher(inspectReads(workspace, "scripts/runtime-imports.test.ts").patterns))
+      expect(inputs).toEqual(["cmd/work/server.ts", "mods/work/tool.ts"])
+    }),
+  )
+
+  it.live.layer(BunServices.layer)("the full gate's import reach still covers runtime-imports.test's named cmd and mod source", () =>
+    Effect.gen(function* () {
+      const { workspace } = yield* tree
       const reached = reach(workspace, ["scripts/runtime-imports.test.ts"])
       expect(["cmd/work/server.ts", "mods/work/tool.ts"].filter((file) => !reached.has(file))).toEqual([])
     }),
@@ -195,7 +343,9 @@ describe("the merge check's tests", () => {
       for (const out of ["A\tscripts/fork-checks.test.ts\n", "A\tscripts/required-inputs.test.ts\n", "A\tscripts/new.ts\n", "M\tscripts/receipt.ts\n"])
         expect(ran(out)).toContain("scripts/merge-check.test.ts")
       // What leaves scripts/ alone cannot change them.
-      for (const out of ["A\ttests/new.test.ts\n", "M\tdecider/tui-clock.ts\n", "M\tscripts/fork-checks.json\n"]) expect(tests(out)).not.toContain("scripts/merge-check.test.ts")
+      for (const out of ["A\ttests/new.test.ts\n", "M\tdecider/tui-clock.ts\n"]) expect(tests(out)).not.toContain("scripts/merge-check.test.ts")
+      // JSON from a static import is in the import graph, not an @reads dependency.
+      expect(tests("M\tscripts/fork-checks.json\n")).toContain("scripts/fork-checks.test.ts")
     }),
   )
 
@@ -208,18 +358,39 @@ describe("the merge check's tests", () => {
     }),
   )
 
-  it.live.layer(BunServices.layer)("an unrelated diff runs none; TypeScript source runs its readers, and a test also runs the git-repo guard", () =>
+  it.effect("an unrelated diff runs unknown-input tests, not a test with a scoped declaration", () =>
+    Effect.sync(() => {
+      const files = ["scripts/opaque.test.ts", "scripts/scoped.test.ts"]
+      const scripts = {
+        files,
+        imports: () => [],
+        reads: (file: string) => (file === "scripts/opaque.test.ts" && ["all"]) || ["fixtures/**"],
+      }
+      const exists = (file: string) => files.includes(file)
+      expect(scriptTests(parseNameStatus("M\t../some/unrelated.txt\n"), exists, scripts)).toEqual(["scripts/opaque.test.ts"])
+      expect(scriptTests(parseNameStatus("D\t../a-deleted-file\n"), exists, scripts)).toEqual(["scripts/opaque.test.ts"])
+      expect(scriptTests([], exists, scripts)).toEqual([])
+    }),
+  )
+
+  it.live.layer(BunServices.layer)("a change selects readers and unknown-input tests; an empty diff selects none", () =>
     Effect.gen(function* () {
-      const { expected, found, importers, tests } = yield* tree
-      // Pins: source no scripts/ test imports or reads selects none, and an empty diff none.
-      expect(tests("M\tREADME.txt\n")).toEqual([])
+      const { expected, found, importers, tests, workspace } = yield* tree
+      expect(tests("M\tthemes/prime.json\n")).toEqual(expected([], "themes/prime.json"))
       expect(tests("")).toEqual([])
       // The timing guard resolves imported literals: a declaration can change a runner cap without a test-file diff.
       const clock = "decider/tui-clock.ts"
       expect(tests(`M\t${clock}\n`)).toEqual(found(clock))
-      expect(tests(`M\t${clock}\n`)).toContain("scripts/wall-clock-assertions.test.ts")
+      const timing = "scripts/wall-clock-assertions.test.ts"
+      expect(testReadInputs(workspace, timing).positive(clock)).toBe(true)
+      const analysis = analyzeMerge(workspace)
+      const selected = mergeLegs("base", parseNameStatus(`M\t${clock}\n`), {
+        ...analysis.tools,
+        workbox: { changes: [], tests: analysis.workbox },
+      }).find((leg) => leg.name === "tests")
+      expect(selected?.argv).toContain(`./${timing}`)
       // Pins: its test runs the git-repo guard, beside the tests that read every test source (required-inputs.test's @reads).
-      expect(tests("M\tdecider/tui-clock.ts\nM\tdecider/tui-clock.test.ts\n")).toEqual(expected([GIT_REPO_GUARD], "decider/tui-clock.ts", "decider/tui-clock.test.ts"))
+      expect(tests("M\tthemes/prime.json\nM\tdecider/tui-clock.test.ts\n")).toEqual(expected([GIT_REPO_GUARD], "themes/prime.json", "decider/tui-clock.test.ts"))
       // Pins: mod source no scripts/ test imports runs only its readers, layout.test among them.
       expect(importers("mods/update/git/source.ts")).toEqual([])
       expect(tests("M\tmods/update/git/source.ts\n")).toEqual(found("mods/update/git/source.ts"))
@@ -245,9 +416,9 @@ describe("the merge check's tests", () => {
       expect(ran(page)).toContain(DOCS_GUARD)
       const both = "M\ttests/parity.json\nM\tscripts/link-fork.ts\n"
       expect(ran(both)).toEqual([...tests(both)])
-      for (const testPath of [...ACCEPT_TESTS, "scripts/link-fork.test.ts"]) expect(ran(both)).toContain(testPath)
-      const none = legs("M\tREADME.txt\n")
-      expect(none.map((leg) => leg.name)).toEqual(["lint", "debt", "types", "tests"])
+      for (const suite of [...ACCEPT_TESTS, "scripts/link-fork.test.ts"]) expect(ran(both)).toContain(suite)
+      const none = legs("")
+      expect(none.map((leg) => leg.name)).toEqual(["lint", "test-reads", "debt", "types", "tests"])
       expect(none.filter((leg) => leg.name === "tests").map((leg) => leg.argv)).toEqual([["true"]])
     }),
   )
@@ -279,8 +450,9 @@ describe("the merge check's tests", () => {
       ])
       const scripts = { files: ["scripts/a.test.ts"], imports: (file: string) => graph.get(file) ?? [], reads: () => [] }
       const exists = (file: string) => graph.has(file)
-      expect([...reachedWithin("scripts/a.test.ts", scripts, exists)].toSorted()).toEqual(["scripts/a.test.ts", "scripts/b.ts", "scripts/c.ts"])
+      expect([...reachedWithin("scripts/a.test.ts", scripts, exists)].toSorted()).toEqual(["scripts/a.test.ts", "scripts/b.ts", "scripts/c.ts", "scripts/fixtures/data.json"])
       expect(scriptTests(parseNameStatus("M\tscripts/c.ts\n"), exists, scripts)).toEqual(["scripts/a.test.ts"])
+      expect(scriptTests(parseNameStatus("M\tscripts/fixtures/data.json\n"), exists, scripts)).toEqual(["scripts/a.test.ts"])
       expect(scriptTests(parseNameStatus("M\tscripts/d.ts\n"), exists, scripts)).toEqual([])
       // A change outside scripts/ that a ./ path reaches selects nothing through the walk.
       expect(scriptTests(parseNameStatus("M\tscripts/fixtures/helper.ts\nM\tmods/x/y.ts\n"), exists, scripts)).toEqual([])
@@ -301,21 +473,21 @@ describe("the merge check's tests", () => {
     }),
   )
 
-  it.live.layer(BunServices.layer)("gate.ts --merge starts every step the merge check names: the link, lint, debt, types and tests (batch 2026-11-15cr T1)", () =>
+  it.live.layer(BunServices.layer)("gate.ts --merge starts the link, lint, debt, test-read guard, types and selected tests (batch 2026-11-15cr T1)", () =>
     Effect.gen(function* () {
       const path = yield* Path.Path
       const root = yield* path.fromFileUrl(new URL("..", import.meta.url))
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
       const child = yield* spawner.spawn(ChildProcess.make("bun", ["scripts/gate.ts", "--merge", "HEAD", "--dry-run"], { cwd: root, extendEnv: true, stdin: "ignore", forceKillAfter: "3 seconds" }))
       const [stdout, code] = yield* Effect.all([child.stdout.pipe(Stream.decodeText(), Stream.mkString), child.exitCode], { concurrency: 2 })
-      const steps = stdout.split("\n").flatMap((line) => Option.toArray(Option.map(Option.fromNullishOr(/^step (\w+): (.*)$/.exec(line)), (match) => [String(match[1]), String(match[2])] as const)))
+      const steps = stdout.split("\n").flatMap((line) => Option.toArray(Option.map(Option.fromNullishOr(/^step ([\w-]+): (.*)$/.exec(line)), (match) => [String(match[1]), String(match[2])] as const)))
       expect(Number(code)).toBe(0)
       // Each step prints from its own echo, so their order is not asserted.
-      expect(steps.map(([name]) => name).toSorted()).toEqual(["debt", "link", "lint", "tests", "types"])
+      expect(steps.map(([name]) => name).toSorted()).toEqual(["debt", "link", "lint", "test-reads", "tests", "types"])
       // HEAD against itself changes nothing: no file to lint, no test due.
       expect(steps.filter(([name]) => name === "tests" || name === "lint").map(([, command]) => command)).toEqual(["true", "true"])
     }).pipe(Effect.scoped),
-    hangGuard("short-fixture"),
+    hangGuard("unit-law"),
   )
 
   it.live.layer(BunServices.layer)("oxlint reads the changed TypeScript still on disk: a rename's new path, never a deletion", () =>

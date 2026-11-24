@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // Jobs on the simulated host (sim/world.ts), at 20 seeds: tests/job.test.ts's
 // name and the claims it reads off the model's requests, the transcript and
 // the replies, moved off real OpenCode (it waited a real job's 3 s, a 10 s

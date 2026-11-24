@@ -20,17 +20,19 @@
 // - One spent week, two weekly resets about to expire: one is claimed, and
 //   the reading after it (the week back to 0%) keeps the second.
 import { afterAll, describe, expect, test } from "bun:test"
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { Effect, Schema } from "effect"
 import { formatNotificationTime } from "../decider/notification-time.ts"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
+import { readScratchFileSync, scratchInput } from "./read-path.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"
 import { ROOT } from "../scripts/agents.ts"
 import { putToWork, working } from "../testbeds/busy-agents.ts"
 import { claimEffect, type FakeAccount, fakeAccount, type FakeGrant, type ReceivedRequest, startFakeAnthropic, type FakeQuota } from "./fake-anthropic.ts"
 import { spentAccount, startFakeChatGPT } from "./fake-chatgpt.ts"
-import { owned } from "./owned.ts"
+import { ownedForkFixture } from "./owned.ts"
+import { importForkCredentials } from "./scratch-child.ts"
 import { keptScratch } from "./scratch.ts"
 import { hangGuard, stamp, watchdog } from "./hang-guard.ts"
 
@@ -172,13 +174,9 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
             },
           ]),
     ]
-    const imported = Bun.spawnSync([...launch.base, "auth", "import", "--standalone"], {
-      cwd: join(base, "work"),
-      env,
-      stdin: new TextEncoder().encode(JSON.stringify(logins)),
-    })
+    const imported = importForkCredentials(fork ?? "", join(base, "work"), env, new TextEncoder().encode(JSON.stringify(logins)))
     expect(imported.exitCode).toBe(0)
-    const child = owned([...launch.base, "serve", "--service", "--port", "0"], { cwd: join(base, "work"), env, stdout: "ignore", stderr: "pipe" })
+    const child = ownedForkFixture([fork ?? "", join(base, "work"), ["serve", "--service", "--port", "0"], env], { stdout: "ignore", stderr: "pipe" })
     let stderr = ""
     void (async () => {
       for await (const chunk of child.stderr) stderr += new TextDecoder().decode(chunk)
@@ -192,7 +190,7 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
     const service = (await until(
       async () => {
         try {
-          return JSON.parse(readFileSync(serviceFile, "utf8")) as Service
+          return JSON.parse(readScratchFileSync(serviceFile, "utf8")) as Service
         } catch {
           return undefined
         }
@@ -200,7 +198,7 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
       (value) => value !== undefined && typeof value.url === "string",
       () => `the service file (${log()})`,
     ))!
-    const directory = realpathSync(join(base, "work"))
+    const directory = realpathSync(scratchInput(join(base, "work")))
     const pool = (method: string, input: unknown = {}) => rpc(service, directory, "dotfiles-opencode.pool", method, input)
     /** Do not spend the quota until the pool itself sees every Claude session running. */
     const running = Effect.promise(() => pool("report")).pipe(Effect.map((report) => readBusy(report).busy.filter((provider) => provider === "anthropic").length))

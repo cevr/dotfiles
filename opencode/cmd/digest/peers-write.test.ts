@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/digest/http/listener.ts: Effect.tryPromise(() => readFile(join(dist, folder, safe))).pipe(
 // One page over every host, the write half (unit 5, round 2): the page a host serves writes to the host that owns
 // an item directly, and that host decides it by its own policy. Through real listeners on loopback ports (the
 // tailnet's source injected at the listener's peer-address seam), with two and three hosts, sending Origin headers

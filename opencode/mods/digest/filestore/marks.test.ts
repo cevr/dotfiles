@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/digest/filestore/marks.test.ts: Effect.map(writerFile, (writer) => ["w0", "w1"].map((name) => Bun.spawn(["bun", writer, dir, na
 // The owner's marks on disk (read.jsonl, names.jsonl): created 0600 in a 0700 folder like the log, read back the
 // same after a restart, whole under two writing processes, and a file of an unknown version an error that leaves it
 // as it is.

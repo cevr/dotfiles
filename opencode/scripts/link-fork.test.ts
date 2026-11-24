@@ -1,11 +1,14 @@
+// @reads all
+// @reads-reason computed read at scripts/link-fork.test.ts: if (existsSync(join(import.meta.dir, name))) cpSync(matchingInput("scripts/{link-fork.ts,fork.t
 // `bun run link-fork` refuses an OPENCODE_DEV that is not an installed OpenCode
 // checkout on this machine, before it touches any node_modules, and never
 // leaves a link that points nowhere. The script runs from a copy in a scratch
 // workspace (its root is the folder above the script), against a scratch fork.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join, relative } from "node:path"
+import { matchingInput, readScratchDirectorySync as readdirSync, readScratchLinkSync as readlinkSync } from "../tests/read-path.ts"
 
 /** A fork path that exists on no machine, like a Mac path on the workbox. */
 const ELSEWHERE = "/nonexistent/loop-probe-x/.work/opencode/prime-look"
@@ -69,7 +72,7 @@ beforeEach(() => {
   }
   // The script and the check it shares with the gate, accept and daily.
   for (const name of ["link-fork.ts", "fork.ts"])
-    if (existsSync(join(import.meta.dir, name))) cpSync(join(import.meta.dir, name), join(workspace, "scripts", name))
+    if (existsSync(join(import.meta.dir, name))) cpSync(matchingInput("scripts/{link-fork.ts,fork.ts}", `scripts/${name}`), join(workspace, "scripts", name))
   // The check decodes the fork's package.json files with Effect, which the copies resolve from opencode/'s own install.
   symlinkSync(join(OPENCODE, "node_modules"), join(workspace, "node_modules"))
   fork = makeFork(join(scratch, "fork"))
@@ -317,7 +320,9 @@ describe("the scripts that take the fork besides link-fork", () => {
   test("accept removes link-fork's old stray before its check, then reaches link-fork, whose refusal it names, before it lists any test", () => {
     stray()
     // This checkout's anchor, a folder where a link belongs: link-fork refuses before it touches any package.
-    mkdirSync(join(scratch, "state/opencode-fork", relative(homedir(), OPENCODE), "modules"), { recursive: true })
+    const homeRelative = relative(homedir(), OPENCODE)
+    const anchor = (homeRelative.startsWith("..") && OPENCODE.replace(/^[/\\]+/, "")) || homeRelative
+    mkdirSync(join(scratch, "state/opencode-fork", anchor, "modules"), { recursive: true })
     const { code, out, err } = script("accept.ts", "--list")
     expect({ code, out, stray: strayLeft() }).toEqual({ code: 1, out: "", stray: false })
     expect(err).toContain("accept: link-fork failed:")

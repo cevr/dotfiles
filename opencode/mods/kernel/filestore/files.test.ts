@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/kernel/filestore/files.ts: const info = yield* Effect.tryPromise({ try: () => stat(path), catch: unreadable })
 // The attached files on the local filesystem: the Files laws in a scratch directory.
 import { mkdtempSync, rmSync } from "node:fs"
 import { writeFile } from "node:fs/promises"

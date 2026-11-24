@@ -17,7 +17,9 @@ import { describe, expect, test } from "bun:test"
 import { Array as Arr, Option } from "effect"
 import * as Accept from "./accept-ledger.ts"
 import { isSerial } from "./accept-plan.ts"
-import { ACCEPT_SHARED, acceptKey, acceptSharedFrom, packageOf } from "./reach.ts"
+import { ACCEPT_SHARED, acceptKey, acceptSharedFrom } from "./accept-key.ts"
+import { matchingReads } from "./read-declarations.ts"
+import { isAcceptInput, packageOf } from "./test-population.ts"
 
 const SEEDS = 200
 const COMMANDS = 40
@@ -33,6 +35,15 @@ const packageOnly = (dir: string) => [`${dir}/src.test.ts`, `${dir}/src.bench.ts
 const OUTSIDE = ["tests/helper.ts", "scenarios/one.ts", "scenarios/two.ts"]
 const LINT_ONLY = [".oxlintrc.json", ".oxlintrc.effect-debt.json", "lint/package.json", "effect-debt.json", "scripts/effect-debt.ts", "scripts/gate.ts"]
 const FILES = Array.from({ length: 10 }, (_, index) => `tests/f${index}.test.ts`)
+
+test("an unknown-input acceptance pass goes stale on a sibling change or a new Git object identity", () => {
+  const files = ["tests/opaque.test.ts", "mods/example/package.json", "../zshenv"]
+  const inputs = matchingReads("// @reads all", files)
+  expect(inputs).toEqual(files)
+  const old = acceptKey("shared", inputs, () => "old", "abc")
+  expect(acceptKey("shared", inputs, (path) => (path === "../zshenv" && "new") || "old", "abc")).not.toBe(old)
+  expect(acceptKey("shared", inputs, () => "old", "def")).not.toBe(old)
+})
 
 /** mulberry32: a seeded generator, so a failing seed replays. */
 const generator = (seed: number) => {
@@ -148,7 +159,7 @@ const dying = (model: Model): Accept.Disk => {
 const keysOf = (model: Model) => {
   const hash = (file: string) => `v${versionOf(model, file)}`
   const shared = acceptSharedFrom(hash, "fork:model", [`accept-ledger:${Accept.KEY_VERSION}`])
-  return new Map(model.files.map((file) => [file.name, acceptKey(shared, reachOf(file), hash)]))
+  return new Map(model.files.map((file) => [file.name, acceptKey(shared, [...reachOf(file)].filter(isAcceptInput), hash)]))
 }
 
 const ledgerOf = (model: Model) => Accept.readLedger(diskOf(model), PATH)

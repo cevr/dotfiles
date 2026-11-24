@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/orchestrate/node/evidence.test.ts: return { ...fs, readFile: (path: string) => Effect.andThen(Effect.when(swap(path), first(path))
 // The evidence reader (reasons.ts `evidenceLayer`) on real files, paths and git, through the host's platform services:
 // a receipt envelope read and hashed inside the checkout's evidence root once every link is resolved, refused for any
 // other shape, place or size, and a declared document found in git at HEAD. Here, beside the platform binding, because

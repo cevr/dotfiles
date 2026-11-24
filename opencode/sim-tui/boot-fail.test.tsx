@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason native TUI plugin loader reads at sim-tui/app.ts: createAppFixture({
 // A boot that fails its check (past its CPU, here a limit of 0 ms) closes the app it started: the file's next boot
 // (its first seed's) starts a fresh app, alone, and the seed drives that app. Before, the failed boot's app stayed
 // up: the next boot saw the old app's route plugin, took it for its own, and the seed navigated the old app while the

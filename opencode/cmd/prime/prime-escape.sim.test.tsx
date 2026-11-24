@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason native TUI plugin loader reads at sim-tui/app.ts: createAppFixture({
 // tests/prime-escape.test.ts's names on the simulated TUI (sim-tui/), each at
 // its first SEEDS seeds: the fork's real TUI in this process with Prime and the escape
 // plugin loaded by path, in front of the server double, on a virtual clock. One

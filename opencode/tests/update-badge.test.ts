@@ -24,19 +24,21 @@
 // `upstreamReading`); the test writes that file in the scratch HOME as daily
 // would, and the corner adds `upstream +12 · merge blocked`, or nothing at 0.
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { upstreamFile } from "../mods/prime/update.ts"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
+import { forkFixture, spawnForkFixture } from "./scratch-child.ts"
+import { matchingInput, scratchExistsSync as existsSync } from "./read-path.ts"
 import { hostCall, serve, type ServedHost } from "../testbeds/gamut/pty-host.ts"
 import { freePort, ready, type Service } from "./service.ts"
 import { keptScratch } from "./scratch.ts"
+import { externalInput } from "./read-path.ts"
 import { hangGuard, stamp, watchdog } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/update-badge.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 
-const ROOT = join(import.meta.dir, "..")
 const NOTICE = "update available · restart to update"
 /** A newer build as daily names one: the fork commit, then the dotfiles commit (mods/update/process/pin.ts `versionOf`). */
 const NEWER = "9.9.9-prime.0e0e0e0e.d0d0d0d0"
@@ -87,7 +89,7 @@ describe.skipIf(!fork)("the update notice", () => {
 
   /** The fork's CLI in the scratch HOME, run to its end; `service stop` in afterAll ends the service it leaves. */
   const opencode = async (...args: ReadonlyArray<string>) => {
-    const child = Bun.spawn([...launch.base, ...args], { cwd: work, env, stdout: "pipe", stderr: "pipe" })
+    const child = spawnForkFixture(fork ?? "", work, args, env)
     const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
     return { code, out, err }
   }
@@ -192,7 +194,7 @@ describe.skipIf(!fork)("the update notice", () => {
       writeFileSync(join(home, ".config/opencode/opencode.json"), JSON.stringify({}))
       writeFileSync(
         join(home, ".config/opencode/cli.json"),
-        JSON.stringify({ plugins: [join(ROOT, "cmd", "prime")], session: { sidebar: "hide" }, theme: { name: "prime" } }),
+        JSON.stringify({ plugins: [matchingInput("cmd/prime")], session: { sidebar: "hide" }, theme: { name: "prime" } }),
       )
       // A port of its own: the other test files' scratch services would share the channel's fixed one (tests/service.ts).
       expect(await opencode("service", "set", "port", String(freePort()))).toMatchObject({ code: 0 })
@@ -204,8 +206,8 @@ describe.skipIf(!fork)("the update notice", () => {
   /** A TUI on the pty through the proxy, `args` added; its screen's rows as one string. */
   const tui = async (name: string, password: string, ...args: ReadonlyArray<string>) => {
     const socket = join(root, `${name}.sock`)
-    const command = [...launch.base, "--server", proxyURL, ...args] as [string, ...string[]]
-    const host = serve({ socket, cwd: work, command, env: { ...env, OPENCODE_PASSWORD: password }, cols: 140, rows: 40 })
+    const { argv: command, ...options } = forkFixture(fork ?? "", work, ["--server", proxyURL, ...args], { ...env, OPENCODE_PASSWORD: password })
+    const host = serve({ socket, command, ...options, cols: 140, rows: 40 })
     hosts.push(host)
     await until(() => existsSync(socket), Boolean, () => `${name}: the terminal host`, 10_000)
     const screen = async () => (await hostCall(socket, { op: "read", scope: "screen" }).catch(() => ({ rows: [] as ReadonlyArray<string> }))).rows.join("\n")
@@ -218,7 +220,7 @@ describe.skipIf(!fork)("the update notice", () => {
       await boot()
       const service = await ready(serviceFile, () => "the service")
       const title = "Update badge session"
-      const { OpenCode } = (await import(join(fork ?? "", "packages/client/src/promise/index.ts"))) as ClientModule
+      const { OpenCode } = (await import(externalInput(join(fork ?? "", "packages/client/src/promise/index.ts")))) as ClientModule
       const session = await OpenCode.make({ baseUrl: service.url, headers: auth(service) }).session.create({ location: { directory: work }, title })
 
       // Give the first connection a visible reading. The next connection must replace it.

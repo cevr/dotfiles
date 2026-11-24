@@ -1,28 +1,31 @@
+// @reads all
+// @reads-reason computed read at scripts/accept.test.ts: const driven = scenariosOf(text).filter((scenario) => existsSync(join(ROOT, scenario)))
 // `bun run accept`'s order (scripts/accept-plan.ts, scripts/accept.ts): the
 // pool first, as wide as the host's load leaves room for, then the files marked
 // `// accept: one at a time`, one at a time; and every acceptance file that
 // asserts an upper bound on a time, rate or CPU (its own text or the scenario
 // it drives) carries that marker, where a file that only waits for events does
 // not need it. Run from opencode/, as the gate runs it.
-// @reads sim/seed.ts
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync as readCheckoutFileSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { Array as Arr, Option } from "effect"
 import { owned } from "../tests/owned.ts"
+import { matchingInput, readScratchDirectorySync as readdirSync, readScratchFileSync as readFileSync } from "../tests/read-path.ts"
+import { spawnScratchBunSync } from "../tests/scratch-child.ts"
 import { scratch } from "../tests/scratch.ts"
 import { waitUntil } from "../tests/wait.ts"
 import { FIXED_SEEDS, isSerial, isSimSuite, longSwarmDue, plan, poolWidth, reachedSuites, replayLine, requestedWidth, scenariosOf, swarmBox, swarmCut, swarmFirst, swarmRead, swarmSlot, TIMED_RUNS, timedCounts, timedFilter, timingSigns, unjudgedRead } from "./accept-plan.ts"
 import { offUntil, parseClosing, readLedger, SLOW_DEEP, tierOf } from "./accept-ledger.ts"
 import { table } from "./leaks.ts"
-import { acceptanceTests, acceptReach, codeOf, load, packageOf, reach } from "./reach.ts"
+import { acceptanceTests, acceptReach, codeOf, declaredInputs, load, packageOf, reach } from "./reach.ts"
 import { hangGuard, measured, stamp } from "../tests/hang-guard.ts"
 
 const ROOT = process.cwd()
 
 /** The acceptance files, as scripts/reach.ts lists them: tests/*.test.ts. */
 const acceptance = () => [...new Bun.Glob("tests/*.test.ts").scanSync({ cwd: ROOT })].sort()
-const read = (file: string) => readFileSync(join(ROOT, file), "utf8")
+const read = (file: string) => readCheckoutFileSync(matchingInput("{tests/*.test.ts,scenarios/*.ts,scripts/accept.test.ts}", file), "utf8")
 
 
 describe("the acceptance run's plan", () => {
@@ -220,7 +223,7 @@ describe("bun run accept", () => {
     })
     // At most what --parallel asks, and at least one.
     expect(Option.getOrElse(Option.map(heading, (each) => each.width), () => 0)).toBeWithin(1, 4)
-  })
+  }, hangGuard("installer"))
 
   test(
     "runs the pool to its end, then each marked file, in that order; a file whose tests skip records no pass",
@@ -260,22 +263,23 @@ describe("bun run accept", () => {
 const ledgerAt = (file: string) => readLedger({ read: (each) => Option.liftPredicate(each, existsSync).pipe(Option.map((found) => readFileSync(found, "utf8"))), write: () => {}, rename: () => {} }, file).ledger
 
 describe("the acceptance tiers over the real tree", () => {
-  test("each file's acceptance reach is its reach less only in-package unit tests, benches and Markdown", async () => {
+  test("acceptance keeps declared inputs even when import reach would omit them", async () => {
     const workspace = await load()
     const memo = new Map<string, ReadonlyArray<string>>()
     const wrong = acceptanceTests(workspace).flatMap((file) => {
       const all = reach(workspace, [file], memo)
+      const declared = new Set(declaredInputs(workspace, file))
       const inputs = acceptReach(workspace, file, memo)
-      const extra = [...inputs].filter((each) => !all.has(each))
-      const dropped = [...all].filter((each) => !inputs.has(each))
-      const unexpected = dropped.filter((each) => !packageOf(each) || !/(\.test\.tsx?|\.bench\.ts|\.md)$/.test(each))
-      return [...extra.map((each) => `${file}: ${each} is not in its reach`), ...unexpected.map((each) => `${file}: ${each} dropped`)]
+      const expected = new Set([...declared, ...[...all].filter((each) => !packageOf(each) || !/(\.test\.tsx?|\.bench\.ts|\.md)$/.test(each))])
+      const extra = [...inputs].filter((each) => !expected.has(each))
+      const dropped = [...expected].filter((each) => !inputs.has(each))
+      return [...extra.map((each) => `${file}: ${each} is not an input`), ...dropped.map((each) => `${file}: ${each} dropped`)]
     })
     expect(wrong).toEqual([])
-  })
+  }, hangGuard("short-fixture"))
 
   test("every path the runner reads from the environment (ACCEPT_*) is in scratch for every test that runs it: none touches the owner's ledger, lock, logs or swarm state, or swarms the real suites", () => {
-    const read = new Set(Array.from(readFileSync(join(ROOT, "scripts/accept.ts"), "utf8").matchAll(/ENV\.(ACCEPT_[A-Z_]+)/g), (match) => String(match[1])))
+    const read = new Set(Array.from(readCheckoutFileSync(join(ROOT, "scripts/accept.ts"), "utf8").matchAll(/ENV\.(ACCEPT_[A-Z_]+)/g), (match) => String(match[1])))
     // Not paths: the land budget, the long swarm's box, and the files glob each test sets to its own stand-ins. The
     // simulated suites' glob is one: unset, a run swarms the real suites.
     const paths = [...read].filter((name) => name !== "ACCEPT_BUDGET_MS" && name !== "ACCEPT_LONG_SWARM_MS" && name !== "ACCEPT_FILES").sort()
@@ -364,7 +368,7 @@ const GRANDCHILD = '  const child = Bun.spawn(["/bin/sh", "-c", "sleep 120 & wai
 
 /** The stand-in publishes its group ids before it can be stopped. The probe runs at the open/write boundary. */
 const GROUP_WRITER = [
-  'import { closeSync, fsyncSync, openSync, renameSync } from "node:fs"',
+  'import { closeSync, fsyncSync, openSync, renameSync, writeFileSync } from "node:fs"',
   "function publishGroups(target: string, groups: ReadonlyArray<number>, opened = () => {}) {",
   '  const staged = `${target}.${process.pid}.tmp`',
   '  const fd = openSync(staged, "w")',
@@ -383,7 +387,7 @@ test("a stand-in's group ids are absent or complete even while a new list is bei
   using dir = scratch("accept-groups-")
   const script = join(dir.path, "publish.ts")
   writeFileSync(script, [
-    'import { existsSync, readFileSync, writeFileSync } from "node:fs"',
+    'import { existsSync, readFileSync } from "node:fs"',
     GROUP_WRITER,
     `const target = ${JSON.stringify(join(dir.path, "groups.json"))}`,
     'const read = () => console.log(existsSync(target) ? JSON.parse(readFileSync(target, "utf8")).join(",") : "absent")',
@@ -391,9 +395,9 @@ test("a stand-in's group ids are absent or complete even while a new list is bei
     "publishGroups(target, [3, 4], read)",
     "read()",
   ].join("\n"))
-  const ran = Bun.spawnSync([process.execPath, script], { cwd: dir.path, stdout: "pipe", stderr: "pipe" })
+  const ran = spawnScratchBunSync(dir.path, script)
   expect({ code: ran.exitCode, out: linesOf(ran.stdout.toString()).filter(Boolean), err: ran.stderr.toString() }).toEqual({ code: 0, out: ["absent", "1,2", "3,4"], err: "" })
-})
+}, hangGuard("short-fixture"))
 
 /** Three stand-in acceptance files: one passes in 1 s, one fails, one sleeps 120 s beside a process group of its own with a grandchild in it. */
 const STAND_INS = {
@@ -401,10 +405,10 @@ const STAND_INS = {
   "fail.test.ts": 'import { expect, test } from "bun:test"\ntest("fails", () => {\n  expect(1).toBe(2)\n})\n',
   "sleep.test.ts": [
     'import { test } from "bun:test"',
-    'import { writeFileSync } from "node:fs"',
     'import { join } from "node:path"',
     GROUP_WRITER,
     'test("sleeps", async () => {',
+    '  const dir = import.meta.dir',
     GRANDCHILD,
     '  publishGroups(join(import.meta.dir, "groups.json"), [process.pid, child.pid])',
     "  await Bun.sleep(120_000)",
@@ -468,7 +472,7 @@ const DEEP_STAND_INS = {
   "b.test.ts": 'import { expect, test } from "bun:test"\ntest("passes", async () => {\n  await Bun.sleep(1000)\n  expect(2).toBe(2)\n})\n',
   "sleep.test.ts": [
     'import { test } from "bun:test"',
-    'import { existsSync, writeFileSync } from "node:fs"',
+    'import { existsSync } from "node:fs"',
     'import { join } from "node:path"',
     GROUP_WRITER,
     'const dir = process.env.YIELD_DIR ?? ""',
@@ -786,7 +790,7 @@ describe("the swarm's plan", () => {
     const firsts = heads.map((head) => swarmFirst(head, "land"))
     expect({
       // sim/seed.ts's own constant, read from its text: the runner's gate seeds.
-      fixed: readFileSync(join(ROOT, "sim/seed.ts"), "utf8").includes(`export const SEEDS = ${FIXED_SEEDS}\n`),
+      fixed: readCheckoutFileSync(join(ROOT, "sim/seed.ts"), "utf8").includes(`export const SEEDS = ${FIXED_SEEDS}\n`),
       past: firsts.every((first) => first > FIXED_SEEDS),
       inRange: firsts.every((first) => first + 10_000_000 < 2 ** 31 - 1),
       same: swarmFirst("abc", "land") === swarmFirst("abc", "land"),

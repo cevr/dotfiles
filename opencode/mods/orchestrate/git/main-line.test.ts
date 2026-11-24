@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason nonliteral subprocess arguments at mods/orchestrate/git/main-line.test.ts: spawnSync(["git", "-C", repo, ...args], { env: ENV, stdin: "ignore", stdout: "pipe", stderr: "i
 // The default branch read by git in scratch repositories this test makes with git plumbing and removes: the
 // MainLine laws (laws.ts) over real git, as memory/main-line.test.ts runs them over the memory line.
 import { env as processEnv, spawnSync, write } from "bun"

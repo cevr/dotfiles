@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/skills/filesystem/skill-files.ts: return realpathSync(path)
 // The plugin seam: the composition root on a stand-in host whose skill
 // registry works like OpenCode's (one skill per id, transforms applied in
 // order, a reload re-runs them and publishes `skill.updated`), over the

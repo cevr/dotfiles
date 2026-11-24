@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/orchestrate/sqlite/boundary.test.ts: const emptyFile = yield* Effect.promise(() => file(schema).bytes())
 // The record's one boundary (record.ts `bounded`), proved column by column on the SQLite file: for every TEXT column the
 // live schema has, a driver puts a token-shaped secret where that column is written from, through the commands a tool,
 // a worker's follow_up or an import sends. A one-word column refuses the whole command, naming the column and never

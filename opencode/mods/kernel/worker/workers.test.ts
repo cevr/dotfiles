@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/kernel/worker/workers.ts: yield* Stream.fromReadableStream({ evaluate: () => Bun.file(fd).stream(), onError: messageOf })
 // The worker adapter against its real worker process: the Workers laws, then
 // a cell's output and failures, the compute clock, tool calls, and a snapshot
 // restored into a fresh worker, values and all. The worker is this repo's own program,

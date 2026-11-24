@@ -1,3 +1,5 @@
+// @reads cmd/*/package.json mods/*/package.json
+// @reads-indirect cmd/** mods/**
 /**
  * The layout checks that are not imports (ARCHITECTURE.md §Layout; oxlint
  * fences the imports): every mod that has its `cmd/<mod>` package names its
@@ -7,13 +9,13 @@
  * Mods without a `cmd/` package are not on the layout yet and are listed as
  * pending.
  *
- * @reads mods/** cmd/**
  *
  * @module
  */
 import { describe, expect, test } from "bun:test"
 import { existsSync, readdirSync, statSync } from "node:fs"
 import { join, relative, sep } from "node:path"
+import { matchingInput } from "../tests/read-path.ts"
 
 const ROOT = join(import.meta.dir, "..")
 const MODS = join(ROOT, "mods")
@@ -23,10 +25,10 @@ const KIND_SUFFIX = /\.(aggregate|command|view|policy|saga|projection|external|r
 const KIND_FOLDERS = new Set(["host", "src", "test", "tests", "commands", "services", "domain", "adapters", "lib"])
 
 const sources = (dir: string): ReadonlyArray<string> =>
-  readdirSync(dir).flatMap((name) => {
+  readdirSync(matchingInput("{mods/**,cmd/**}", dir)).flatMap((name) => {
     if (name === "node_modules" || name.startsWith(".")) return []
     const path = join(dir, name)
-    if (statSync(path).isDirectory()) return sources(path)
+    if (statSync(matchingInput("{mods/**,cmd/**}", path)).isDirectory()) return sources(path)
     return /\.tsx?$/.test(name) && !name.endsWith(".d.ts") ? [path] : []
   })
 
@@ -41,8 +43,8 @@ export const kindNamed = (dir: string): ReadonlyArray<string> =>
     ]
   })
 
-const mods = readdirSync(MODS).filter((name) => existsSync(join(MODS, name, "package.json")))
-const onLayout = (mod: string) => existsSync(join(CMD, mod, "package.json"))
+const mods = readdirSync(MODS).filter((name) => existsSync(matchingInput("mods/*/package.json", join(MODS, name, "package.json"))))
+const onLayout = (mod: string) => existsSync(matchingInput("cmd/*/package.json", join(CMD, mod, "package.json")))
 
 describe("mod layout", () => {
   for (const mod of mods.filter(onLayout)) {

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at ../workbox/test/workrift-subvolume.test.ts: for (const each of hiddenFolders) if (existsSync(each)) chmodSync(each, 0o700)
 // `workrift subvolume`: the real script on stand-ins, on the Mac. A base is a btrfs subvolume here when its inode is
 // in the bench's registry (inodes follow a folder through renames and exchanges, as a subvolume's root does): `stat`
 // answers btrfs for every path under the bench, and inode 256 for a registered one; `btrfs` makes, snapshots and
@@ -11,9 +13,10 @@ import { createHash } from "node:crypto"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { hangGuard } from "../../opencode/tests/hang-guard.ts"
+import { externalInput, matchingInput } from "../../opencode/tests/read-path.ts"
 
-const repo = join(import.meta.dir, "..", "..")
-const SCRIPT = process.env.WORKRIFT_SCRIPT ?? join(repo, "workbox/bin/workrift")
+const alternate = process.env.WORKRIFT_SCRIPT
+const SCRIPT = alternate ? externalInput(alternate) : matchingInput("../workbox/bin/workrift")
 const PYTHON = Bun.which("python3") ?? "/usr/bin/python3"
 /**
  * Each test's hang guard (a named hangGuard kind, never a budget), by what the test waits for. Bun's default is 5 s,
@@ -3641,4 +3644,3 @@ describe.skipIf(!process.env.WORKRIFT_CENSUS)("census: a failure or a kill at ev
     expect(bad, bad.join("\n")).toEqual([])
   }, hangGuard("skewed-clock-search"))
 })
-

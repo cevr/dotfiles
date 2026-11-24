@@ -8,6 +8,7 @@ import * as BunServices from "@effect/platform-bun/BunServices"
 import { Config, Effect, Exit, Layer, Scope, Stream } from "effect"
 import { FetchHttpClient, HttpServer, type HttpServerRequest, type HttpServerResponse } from "effect/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { forkServiceCommand } from "../scratch-child.ts"
 
 /** The services a reconnect case runs on: Bun's file system, path, child processes, and a fetch HTTP client. */
 export const Platform = Layer.mergeAll(BunServices.layer, FetchHttpClient.layer)
@@ -55,11 +56,18 @@ const text = <E>(stream: Stream.Stream<Uint8Array, E>) => stream.pipe(Stream.dec
  * group of its own (the fork starts it detached), so the end of this run's group does not stop it;
  * `service stop` does.
  */
-export const run = (argv: ReadonlyArray<string>, cwd: string, env: { readonly [name: string]: string }) =>
+const capture = (command: ChildProcess.Command) =>
   Effect.gen(function* () {
-    const [command = "", ...args] = argv
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-    const child = yield* spawner.spawn(ChildProcess.make(command, args, { cwd, env, extendEnv: false, stdin: "ignore", forceKillAfter: "3 seconds" }))
+    const child = yield* spawner.spawn(command)
     const [code, out, err] = yield* Effect.all([child.exitCode, text(child.stdout), text(child.stderr)], { concurrency: 3 })
     return { code, out, err } satisfies Ran
   }).pipe(Effect.scoped, Effect.orDie)
+
+export const run = (argv: ReadonlyArray<string>, cwd: string, env: Readonly<Record<string, string>>) => {
+  const [command = "", ...args] = argv
+  return capture(ChildProcess.make(command, args, { cwd, env, extendEnv: false, stdin: "ignore", forceKillAfter: "3 seconds" }))
+}
+
+export const runForkService = (fork: string, cwd: string, args: ReadonlyArray<string>, env: Readonly<Record<string, string>>, version?: string) =>
+  capture(forkServiceCommand(fork, cwd, args, env, version))

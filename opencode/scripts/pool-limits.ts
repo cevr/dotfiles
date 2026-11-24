@@ -107,8 +107,16 @@ export const notes = (computed: Tally): ReadonlyArray<string> => [
   ...(computed.waiting ?? []).map((waiting) => `  ${waiting.pool} ${waiting.window}: none yet (${waitingText(waiting)})`),
 ]
 
-if (import.meta.main) {
-  const args = process.argv.slice(2)
+interface LimitIO {
+  readonly read: (file: string) => string
+  readonly defaultFile: () => string
+  readonly now: () => number
+  readonly out: (line: string) => void
+  readonly error: (line: string) => void
+}
+
+/** The CLI's argument handling, fitting, and output, with filesystem and clock supplied by its host. */
+export const runLimits = (args: ReadonlyArray<string>, io: LimitIO): number => {
   const option = (name: string) => {
     const at = args.indexOf(name)
     return at < 0 ? undefined : args[at + 1]
@@ -118,7 +126,7 @@ if (import.meta.main) {
   if (dumps.length > 0) {
     const hosts = dumps.map((spec): readonly [string, Dump] => {
       const cut = spec.indexOf("=")
-      return [spec.slice(0, cut), JSON.parse(readFileSync(spec.slice(cut + 1), "utf8")) as Dump]
+      return [spec.slice(0, cut), JSON.parse(io.read(spec.slice(cut + 1))) as Dump]
     })
     const computed = fromDumps(hosts)
     answer = {
@@ -127,33 +135,39 @@ if (import.meta.main) {
       hosts: Object.fromEntries(hosts.map(([name, dump]) => [name, { since: new Date(dump.since).toISOString(), uses: dump.uses.length, unplaced: dump.unplaced }])),
     }
   } else {
-    const path = option("--file") ?? defaultPath()
+    const path = option("--file") ?? io.defaultFile()
     const file = (() => {
       try {
-        return JSON.parse(readFileSync(path, "utf8")) as { tally?: Tally }
+        return JSON.parse(io.read(path)) as { tally?: Tally }
       } catch {
         return undefined
       }
     })()
     const state = stateOf(file)
     if (state === undefined) {
-      console.error(`no limit tally at ${path} (the pool writes it on each sweep)`)
-      process.exit(1)
+      io.error(`no limit tally at ${path} (the pool writes it on each sweep)`)
+      return 1
     }
     // Fitted again from the file's rows, so a fit this view knows reads rows a running pool of an older fit wrote.
-    const computed = tally(state, Date.now())
+    const computed = tally(state, io.now())
     const line = limitsLine(computed)
     answer = { ...(line === undefined ? {} : { line }), tally: computed }
   }
-  if (args.includes("--json")) console.log(JSON.stringify(answer))
+  if (args.includes("--json")) io.out(JSON.stringify(answer))
   else {
-    console.log(answer.line ?? "limit/Mtok: no window period with tokens yet")
-    console.log(`Last 7 days (since ${new Date(answer.tally.since).toISOString()}; peers ${JSON.stringify(answer.tally.peers)}):`)
-    for (const line of table(answer.tally.recent)) console.log(line)
-    console.log("All periods kept:")
-    for (const line of table(answer.tally.cumulative)) console.log(line)
+    io.out(answer.line ?? "limit/Mtok: no window period with tokens yet")
+    io.out(`Last 7 days (since ${new Date(answer.tally.since).toISOString()}; peers ${JSON.stringify(answer.tally.peers)}):`)
+    for (const line of table(answer.tally.recent)) io.out(line)
+    io.out("All periods kept:")
+    for (const line of table(answer.tally.cumulative)) io.out(line)
     const more = notes(answer.tally)
-    if (more.length > 0) console.log(["Weekly ratios and windows not fitted yet:", ...more].join("\n"))
-    if (answer.hosts !== undefined) console.log(`Hosts: ${JSON.stringify(answer.hosts)}`)
+    if (more.length > 0) io.out(["Weekly ratios and windows not fitted yet:", ...more].join("\n"))
+    if (answer.hosts !== undefined) io.out(`Hosts: ${JSON.stringify(answer.hosts)}`)
   }
+  return 0
+}
+
+if (import.meta.main) {
+  const code = runLimits(process.argv.slice(2), { read: (file) => readFileSync(file, "utf8"), defaultFile: defaultPath, now: Date.now, out: console.log, error: console.error })
+  if (code !== 0) process.exit(code)
 }

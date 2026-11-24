@@ -1,3 +1,4 @@
+// @reads mods/wake/process/{runner,checks}.test.ts mods/wake/process/{runner.test.ts,checks.test.ts,readiness.ts,readiness.test.ts}
 /**
  * The wake process tests' wait and lifecycle policy at the real lint CLI. `.oxlintrc.json` keeps
  * `noFixedWaitInTests`, `noNewPromise`, `noPromiseChainsInTests` and `noTestLifecycleHooks` as
@@ -13,7 +14,6 @@
  * four files carry none of the four rules' findings, and the helper is classified as test code in
  * both configs and the debt policy.
  *
- * @reads .oxlintrc.json .oxlintrc.effect-debt.json effect-debt.json lint/** mods/wake/process/*.ts
  */
 import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
@@ -21,7 +21,9 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { Array as Arr, Effect, Option, Order, Schema, type Scope } from "effect"
 import { type CallExpression, parseSync, Visitor } from "oxc-parser"
-import { DEBT_CONFIG, HARD_CONFIG, POLICY, Policy, ruleOf, spawn } from "./effect-debt.ts"
+import { matchingInput } from "../tests/read-path.ts"
+import { lintCheckoutFixture, lintFixture } from "../tests/lint-fixture.ts"
+import { type Answer, DEBT_CONFIG, HARD_CONFIG, POLICY, Policy, ruleOf } from "./effect-debt.ts"
 import { testLimitMs } from "../mods/wake/process/readiness.ts"
 import { hangGuard } from "../tests/hang-guard.ts"
 
@@ -203,9 +205,8 @@ const OxlintReport = Schema.fromJsonString(
   }),
 )
 
-/** Lints `files` in `root` with `config`: every diagnostic, with its rule id, line and severity. */
-const lint = Effect.fn("EffectProcessPolicyTest.lint")(function* (root: string, config: string, files: ReadonlyArray<string>) {
-  const linted = yield* spawn([path.join(REAL, "node_modules/.bin/oxlint"), "--threads=3", "--format=json", "-c", config, ...files], root, CLI_TIMEOUT)
+/** Every lint diagnostic, with its rule id, line and severity. */
+const diagnostics = (linted: Answer) => {
   expect({ stderr: linted.stderr }).toEqual({ stderr: "" })
   return Arr.map(Schema.decodeUnknownSync(OxlintReport)(linted.stdout).diagnostics, (each) => ({
     file: each.filename,
@@ -213,7 +214,9 @@ const lint = Effect.fn("EffectProcessPolicyTest.lint")(function* (root: string, 
     rule: ruleOf(each.code ?? ""),
     severity: each.severity,
   }))
-})
+}
+const lint = (root: string, config: string, files: ReadonlyArray<string>) =>
+  lintFixture(root, config, files, CLI_TIMEOUT).pipe(Effect.map(diagnostics))
 type Found = Effect.Success<ReturnType<typeof lint>>
 
 /** The four rules' diagnostics on one line, as sorted `rule:severity`. */
@@ -310,7 +313,7 @@ describe(`${HARD_CONFIG}: the wake process tests' wait and lifecycle rules over 
     () =>
       runScoped(
         Effect.gen(function* () {
-          const found = yield* lint(REAL, HARD_CONFIG, OWNED)
+          const found = diagnostics(yield* lintCheckoutFixture("mods/wake/process/{runner.test.ts,checks.test.ts,readiness.ts,readiness.test.ts}", OWNED, CLI_TIMEOUT))
           expect(Arr.filter(found, (each) => RULE_IDS.includes(each.rule))).toEqual([])
         }),
       ),
@@ -346,7 +349,7 @@ const declaredLimit = (text: string) => {
 
 /** Match the bounded runtime helper and its real body+release+margin, not the former numeric cap expression. */
 const testCallsOf = (file: string): ReadonlyArray<TestCall> => {
-  const text = readFileSync(path.join(REAL, file), "utf8")
+  const text = readFileSync(matchingInput("mods/wake/process/{runner,checks}.test.ts", file), "utf8")
   const requiredLimit = declaredLimit(text)
   const timings = new Map([
     ['hangGuard("wake-short")', hangGuard("wake-short")],
@@ -374,7 +377,7 @@ describe("the wake process tests end every Effect before Bun's test limit", () =
     const calls = Arr.flatMap(PROCESS_TESTS, testCallsOf)
     expect(Arr.filter(calls, (call) => call.runsEffect && !call.bounded)).toEqual([])
     expect(Arr.map(PROCESS_TESTS, (file) => Arr.filter(calls, (call) => call.file === file && call.bounded).length)).toEqual(Arr.map(PROCESS_TESTS, () => 1))
-    const runs = Arr.map(PROCESS_TESTS, (file) => (readFileSync(path.join(REAL, file), "utf8").match(/\bEffect\.run(?:Promise|Fork|Callback)\w*\(/gu) ?? []).length)
+    const runs = Arr.map(PROCESS_TESTS, (file) => (readFileSync(matchingInput("mods/wake/process/{runner,checks}.test.ts", file), "utf8").match(/\bEffect\.run(?:Promise|Fork|Callback)\w*\(/gu) ?? []).length)
     expect(runs).toEqual(Arr.map(PROCESS_TESTS, () => 1))
   })
 })

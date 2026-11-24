@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/orchestrate/filestore/run-records.ts: return existsSync(join(dir, "spec.md")) ? dirname(dir) : dir
 // A run dir's skill records as real files in a scratch run dir.
 import { afterAll, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"

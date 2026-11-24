@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason dynamically loaded module at mods/cache/tui/ledger.test.ts: mock.module("solid-js", () => import(REACTIVE.core))
 // The ledger over a Solid store, as OpenCode's TUI holds the session data: a
 // turn's rows are those of the whole session's fold; a streamed token, or a
 // part that changes no reading, reads nothing again; a step's end reads its

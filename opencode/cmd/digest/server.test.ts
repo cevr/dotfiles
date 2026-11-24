@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at cmd/digest/server.test.ts: const reaching = readdirSync(SIM)
 // The plugin's place on disk, and its reach: the file log is under the state directory in force (a scratch one in a
 // test), and no simulation can reach the host's real log. The RPC itself is checked on the world
 // (digest.sim.test.ts).

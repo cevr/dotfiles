@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason native TUI plugin loader reads at sim-tui/app.ts: createAppFixture({
 // A session's jobs in the dock and the composer panel, on the simulated TUI
 // (sim-tui/): the fork's real TUI in this process with Prime loaded by path,
 // in front of the server double, on a virtual clock. The wake server plugin is

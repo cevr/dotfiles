@@ -8,14 +8,16 @@
 // disk or on two real processes as well (tests/parity.json says which).
 import { afterAll, afterEach, describe, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { readScratchDirectorySync as readdirSync, scratchExistsSync as existsSync, scratchInput } from "./read-path.ts"
 import { join } from "node:path"
-import { Clock, Effect, Option } from "effect"
+import { Clock, Effect, Option, Schema } from "effect"
 import { it } from "effect-bun-test"
-import { decodeStoredOAuth, STORE_PREFIX, StoreCredentialError, StoreSource, storeProcess } from "../mods/pool/store/store.ts"
+import { decodeStoredOAuth, STORE_PREFIX, StoreCredentialError, SlotStoreSource as StoreSource, storeProcess } from "../mods/pool/store/store.ts"
 import { fakeAccount, startFakeAnthropic, type FakeAccount, type FakeAnthropic, type FakeTokenAnswer } from "./fake-anthropic.ts"
-import { openSlotStore, type SlotStore } from "./store/store.ts"
-import { owned } from "./owned.ts"
+import { openSlotStore, scratchSlotFiles, type SlotStore } from "./store/store.ts"
+import { ownedCheckoutBun } from "./owned.ts"
+import { RefreshRequest } from "./store/refresh-request.ts"
 import { scratch } from "./scratch.ts"
 import { hangGuard, stamp } from "./hang-guard.ts"
 import { waitUntil } from "./wait.ts"
@@ -68,9 +70,9 @@ const bench = async (
     store,
     fake,
     tokenURL,
-    source: new StoreSource({ dir, tokenURL }),
+    source: new StoreSource({ dir, tokenURL, files: scratchSlotFiles }),
     trades: () => fake.received.filter((request) => request.path === "/v1/oauth/token").length,
-    file: (label) => readFileSync(join(dir, ".slots/anthropic", label), "utf8"),
+    file: (label) => readFileSync(scratchInput(join(dir, ".slots/anthropic", label)), "utf8"),
   }
 }
 
@@ -106,7 +108,7 @@ describe("the pool's source over a login store", () => {
     expect(ours.file("alpha")).toBe(
       `{"_tag":"Oauth","type":"oauth","access":"${rotated.access}","refresh":"${rotated.refresh}","expires":${resolved.expires},"accountId":null,"metadata":{"owner":"store"},"signedInAt":1700000000000}`,
     )
-    expect(statSync(join(ours.dir, ".slots/anthropic/alpha")).mode & 0o777).toBe(0o600)
+    expect(statSync(scratchInput(join(ours.dir, ".slots/anthropic/alpha"))).mode & 0o777).toBe(0o600)
     expect(readdirSync(join(ours.dir, ".slots/anthropic"))).toEqual(["alpha"])
 
     // It decodes back, its sign-in stamp and owner kept.
@@ -135,10 +137,16 @@ describe("the pool's source over a login store", () => {
           token: () => ({ kind: "rotate", beforeAnswer: () => waitUntil("release the held token response", () => existsSync(released), 10_000) }),
         },
       ))
-      const worker = join(import.meta.dir, "store/refresh-worker.ts")
       const held = join(dir, "held")
-      const spawn = (busy: string) =>
-        owned([process.execPath, worker, dir, tokenURL, `${STORE_PREFIX}alpha`, busy], { stdout: "pipe", stderr: "pipe" })
+      const spawn = (busy: string) => {
+        const request = join(dir, `${busy}.json`)
+        writeFileSync(request, Schema.encodeSync(RefreshRequest)({ dir, tokenURL, credentialID: `${STORE_PREFIX}alpha`, busyFile: join(dir, busy) }))
+        return ownedCheckoutBun("tests/store/refresh-worker.ts", {
+          scratchArgs: [request],
+          scratch: { HOME: dir, TMPDIR: dir, XDG_CONFIG_HOME: dir, XDG_CACHE_HOME: dir, XDG_DATA_HOME: dir, XDG_STATE_HOME: dir },
+          external: {}, values: {},
+        })
+      }
       const output = (run: ReturnType<typeof spawn>) =>
         Effect.gen(function* () {
           const [stdout, stderr, code] = yield* Effect.all([
@@ -150,9 +158,9 @@ describe("the pool's source over a login store", () => {
           return stdout.trim()
         })
       const outputs = yield* Effect.gen(function* () {
-        const first = spawn(join(dir, "unexpected-first-wait"))
+        const first = spawn("unexpected-first-wait")
         yield* Effect.promise(() => waitUntil("the first worker to reach the held token endpoint", () => trades() === 1, 10_000))
-        const second = spawn(held)
+        const second = spawn("held")
         yield* Effect.promise(() => waitUntil("the second worker to see the first worker's SQLite lock held", () => existsSync(held), 10_000))
         yield* release
         return yield* Effect.all([output(first), output(second)], { concurrency: "unbounded" })
@@ -208,7 +216,7 @@ describe("the pool's source over a login store", () => {
       const { dir, fake, source, tokenURL, trades, file } = yield* Effect.promise(() => bench({ alpha: fakeAccount() }, { expires: now - 1000 }))
       const slots = join(dir, ".slots/anthropic")
       const alpha = `${STORE_PREFIX}alpha`
-      const theirs = new StoreSource({ dir, tokenURL, process: storeProcess(), lockPolls: 5 })
+      const theirs = new StoreSource({ dir, tokenURL, process: storeProcess(), lockPolls: 5, files: scratchSlotFiles })
       const { served, busy } = yield* readOnly(
         slots,
         Effect.all({

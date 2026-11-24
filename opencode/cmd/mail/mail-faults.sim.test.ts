@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // A generated property over the network's faults, on the simulated host at 20
 // seeds: two paired hosts (sim/hosts.ts), each with the mail plugin listening
 // on a memory network that keeps the real network's laws, two sessions on

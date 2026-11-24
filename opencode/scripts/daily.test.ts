@@ -1,11 +1,14 @@
+// @reads all
+// @reads-reason computed read at scripts/daily.test.ts: return files.map((path) => [read(path), statSync(path).mtimeMs])
 // `bun run daily`'s settings in the global configs (never a plugin entry), its entries, and its fork steps.
 import { describe, expect, test } from "bun:test"
 import { Array as Arr, Effect, Option, Schema } from "effect"
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, utimesSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, readFileSync as readCheckoutFileSync, realpathSync, statSync, utimesSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
 import { type Catalog, loginStoreDir } from "../testbeds/gamut/gamut.ts"
 import { gitClone, gitInit } from "../tests/git-repo.ts"
+import { externalInput, matchingInput, readScratchFileSync as readFileSync, scratchInput } from "../tests/read-path.ts"
 import { keptScratch, scratch as scratchDir } from "../tests/scratch.ts"
 import { hostLocks } from "../mods/work/process/landing.ts"
 import { SERVER_PLUGINS } from "../mods/update/trees.ts"
@@ -210,7 +213,7 @@ describe("the server config", () => {
   })
 
   test("a stage writes no global config; a by-hand run writes the settings and no plugin entry", () => {
-    const source = readFileSync(join(DOTFILES, "opencode/scripts/daily.ts"), "utf8")
+    const source = readCheckoutFileSync(matchingInput("scripts/daily.ts"), "utf8")
     const main = source.slice(source.indexOf("if (import.meta.main) {"))
     const byHand = main.slice(main.indexOf('if (from.kind !== "tree") {'), main.indexOf("// Step 2, from the build's tree"))
     const stage = main.slice(main.indexOf("// Step 2, from the build's tree"))
@@ -280,7 +283,7 @@ describe("background compaction", () => {
 
   const fork = process.env.OPENCODE_DEV
   test.skipIf(!fork)("the fork defines no background_compaction flag any more (OPENCODE_DEV)", () => {
-    const registry = readFileSync(join(fork ?? "", "packages/schema/src/config/flag.ts"), "utf8")
+    const registry = readCheckoutFileSync(externalInput(join(fork ?? "", "packages/schema/src/config/flag.ts")), "utf8")
     expect(registry).not.toMatch(/^\s+background_compaction:/m)
   })
 })
@@ -456,7 +459,7 @@ describe("the upstream merge", () => {
   const sync = (options: Omit<Parameters<typeof syncFork>[0], "env">) => syncFork({ ...options, env })
 
   const git = (dir: string, ...args: string[]) => {
-    const ran = Bun.spawnSync(["git", "-C", dir, ...args], { env, stdout: "pipe", stderr: "pipe" })
+    const ran = Bun.spawnSync(["git", "-C", scratchInput(dir), ...args], { env, stdout: "pipe", stderr: "pipe" })
     if (ran.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${ran.stderr.toString()}`)
     return ran.stdout.toString().trim()
   }

@@ -25,17 +25,22 @@ export const quietRepo = (dir: string, env: GitEnv = processEnv): void => {
   for (const [key, value] of Object.entries(QUIET_GIT)) run(["-C", dir, "config", key, value], env)
 }
 
+/** The raw repository-creating forms, shared by the regular and checked fixture runners. */
+export const initGitArgv = (flags: ReadonlyArray<string>): ReadonlyArray<string> => ["init", ...flags]
+export const cloneGitArgv = (flags: ReadonlyArray<string>, source: string, destination: string): ReadonlyArray<string> =>
+  ["clone", ...flags, source, destination]
+
 /**
  * A test's new repository: `git init <flags> <dir>`, then quieted. The one way a test makes a
  * repository (tests/git-repo.test.ts refuses a raw `"init"`), so no repository a test clones runs
  * git's upkeep while the clone copies it.
  */
 export const gitInit = (dir: string, flags: ReadonlyArray<string> = [], env: GitEnv = processEnv): void => {
-  run(["init", ...flags, dir], env)
+  run(initGitArgv([...flags, dir]), env)
   quietRepo(dir, env)
 }
 
 /** A test's clone: `git clone <flags> <source> <dir>`, quieted from the start (a clone does not take its origin's config). */
 export const gitClone = (source: string, dir: string, flags: ReadonlyArray<string> = [], env: GitEnv = processEnv): void => {
-  run(["clone", ...Object.entries(QUIET_GIT).flatMap(([key, value]) => ["-c", `${key}=${value}`]), ...flags, source, dir], env)
+  run(cloneGitArgv([...Object.entries(QUIET_GIT).flatMap(([key, value]) => ["-c", `${key}=${value}`]), ...flags], source, dir), env)
 }

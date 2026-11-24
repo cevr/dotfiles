@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // An idle root with units to move, on the simulated host (sim/world.ts) at 20
 // seeds: tests/idle-root.test.ts's server claims under its name, moved off
 // real OpenCode (scenarios/idle-root.ts waited out a planner and the owner's

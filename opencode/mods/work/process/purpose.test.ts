@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/work/process/command.ts: try: () => Bun.spawn([...argv], { cwd, env: { ...base, ...extra }, stdin: "ignore", stdout: "pi
 // A lane's mark over real Git, in a scratch repository: `markBranch` sets it on the branch checked out, `madeOnOf`
 // reads it back through a merge of main, a rebase onto main, a rebase stopped on a conflict (detached), a switch to
 // another branch; a copy of the lane carries the mark with the lane's path, and never reads it as its own.

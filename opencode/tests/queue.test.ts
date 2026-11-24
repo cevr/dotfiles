@@ -5,8 +5,8 @@
 // item done. The sidebar's Queue section is read off the frame: only the
 // queue's items, one line each; the subagents are Prime's rows beneath the
 // composer, shown with the sidebar open.
+import { readScratchFileSync, scratchExistsSync } from "./read-path.ts"
 import { describe, expect, test } from "bun:test"
-import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
@@ -61,9 +61,9 @@ describe.skipIf(!fork)("the Queue section of the sidebar", () => {
       })
       const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
       const timeout = join(out, `queue-${via}-timeout.txt`)
-      if (code !== 0) throw new Error(`queue scenario (${via}) exited ${code}:\n${(stdout + stderr).slice(-5000)}\n${existsSync(timeout) ? readFileSync(timeout, "utf8") : ""}`)
+      if (code !== 0) throw new Error(`queue scenario (${via}) exited ${code}:\n${(stdout + stderr).slice(-5000)}\n${scratchExistsSync(timeout) ? readScratchFileSync(timeout, "utf8") : ""}`)
 
-      const set = readFileSync(join(out, `queue-${via}-set.txt`), "utf8")
+      const set = readScratchFileSync(join(out, `queue-${via}-set.txt`), "utf8")
       expect(set).toContain("Queue")
       const positions = SET_ROWS.map((row) => position(set, row))
       for (const [index, at] of positions.entries()) expect({ row: String(SET_ROWS[index]), at: at >= 0 }).toEqual({ row: String(SET_ROWS[index]), at: true })
@@ -80,7 +80,7 @@ describe.skipIf(!fork)("the Queue section of the sidebar", () => {
       expect(set).toMatch(/^ [◇◈◆] planner +gpt +Fix money parsing /m)
       expect(set).toMatch(/^ [◇◈◆] worker +gpt +Forgotten worker /m)
 
-      const patched = readFileSync(join(out, `queue-${via}-patched.txt`), "utf8")
+      const patched = readScratchFileSync(join(out, `queue-${via}-patched.txt`), "utf8")
       expect(patched).toContain("✓ Close old Claude panes")
       expect(patched).not.toContain("! Close old Claude panes")
       expect(position(patched, "✓ Close old Claude panes")).toBeLessThan(position(patched, "✓ Missing-folder fix"))
@@ -88,7 +88,7 @@ describe.skipIf(!fork)("the Queue section of the sidebar", () => {
       expect(under(sidebar(patched), "● Money parsing worker")).toBe("… manna brainstorm · wC:p6")
 
       // A call from a kernel cell leaves no queue tool part: only the cell's.
-      const tools = toolNames(JSON.parse(readFileSync(join(out, `queue-${via}-transcript.json`), "utf8")))
+      const tools = toolNames(JSON.parse(readScratchFileSync(join(out, `queue-${via}-transcript.json`), "utf8")))
       if (via === "kernel") {
         expect(tools).not.toContain("queue")
         expect(tools).toContain("kernel")
