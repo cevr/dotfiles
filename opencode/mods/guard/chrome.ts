@@ -28,7 +28,7 @@
 //   Reads of Git or shell words as arguments, file names, or text aren't runs.
 // The hook follows statically named child code with the same plan and a bounded loader.
 import { Array as Arr, Effect, Option, Schema } from "effect"
-import { type CodeInput, distinctEntries, type Execution, executionPaths, executionPlan, inlineShellPaths, type Language, literalPath, MAX_CODE_DEPTH, MAX_PATH_STATES, type PathPlan, word } from "./executable.ts"
+import { type CodeInput, distinctEntries, type Execution, executionPaths, executionPlan, inlineShellPaths, type Language, literalPath, MAX_CODE_DEPTH, MAX_PATH_STATES, type PathPlan, READERS, word } from "./executable.ts"
 import { basename, dirname, resolve, within } from "./path.ts"
 import { gitAction, type GitAction } from "./revision.ts"
 import { type Word } from "./shell-line.ts"
@@ -46,13 +46,6 @@ const CHROME_PROGRAM =
 
 /** A variable that names a Chrome binary, as a launch writes it: `$CHROME`, `${CHROMIUM_BIN}`. */
 const CHROME_VARIABLE = /^\$\{?([A-Za-z_]*CHROM[A-Za-z_]*)\}?$/i
-
-/** The programs that read or show a command line without running it: a Chrome named in theirs starts nothing. */
-const READERS: ReadonlySet<string> = new Set([
-  "echo", "printf", "grep", "rg", "ag", "pgrep", "pkill", "killall", "ps", "cat", "which", "type", "command", "man", "ls", "git", "lsof",
-  "head", "tail", "less", "more", "shellcheck", "shfmt", "vi", "vim", "nvim", "nano", "emacs", "code",
-  "true", "false", "pwd", "test", "[",
-])
 
 /** A flag that opens Chrome's DevTools protocol or runs it headless. */
 const opens = (flag: string): boolean => flag.startsWith("--remote-debugging-") || flag.startsWith("--headless")
@@ -183,7 +176,7 @@ const prefer = (earlier: Option.Option<BareLaunch>, later: Option.Option<BareLau
 }
 
 const decidePaths = (line: string, plan: PathPlan<ExecutionEvent>, roots: TreeLookup): ReadonlyArray<BareLaunch> => {
-  const findings = plan.paths.flatMap((path) => decideTimeline(line, path, roots))
+  const findings = [...plan.paths, ...plan.witnesses].flatMap((path) => decideTimeline(line, path, roots))
   const clear: Array<BareLaunch> = []
   for (const launch of findings) {
     if (definite(launch) && !clear.some((known) => sameLaunch(known, launch))) clear.push(launch)
@@ -310,34 +303,45 @@ export interface RuntimeRun {
 export const runtimeRuns = (line: string, place: Place): ReadonlyArray<RuntimeRun> =>
   plannedRuns(executionPlan(line, place), place.home)
 
-const unitPlan = <A>(...entries: ReadonlyArray<A>): PathPlan<A> => ({ paths: [entries], limited: false })
+const unitPlan = <A>(...entries: ReadonlyArray<A>): PathPlan<A> => ({ paths: [entries], witnesses: [], limited: false })
 
 const sequencePlans = <A>(left: PathPlan<A>, right: PathPlan<A>): PathPlan<A> => {
   if (left.limited) return left
   const paths: Array<ReadonlyArray<A>> = []
+  const witnesses = [...left.witnesses, ...left.paths.flatMap((prefix) => right.witnesses.map((suffix) => [...prefix, ...suffix]))]
   for (const prefix of left.paths) for (const suffix of right.paths) {
-    if (paths.length === MAX_PATH_STATES) return { paths, limited: true }
+    if (paths.length === MAX_PATH_STATES) return { paths, witnesses, limited: true }
     paths.push([...prefix, ...suffix])
   }
-  return { paths, limited: right.limited }
+  return { paths, witnesses, limited: right.limited }
 }
 
 const expandPlan = <A>(plan: PathPlan<Execution>, expansions: ReadonlyMap<Execution, PathPlan<A>>): PathPlan<A> => {
   const paths: Array<ReadonlyArray<A>> = []
+  const witnesses: Array<ReadonlyArray<A>> = []
   let limited = plan.limited
   // A shell may have more completed traces than live paths. Child alternatives
   // can multiply those traces, but must not grow the analysis without bound.
   const budget = Math.max(MAX_PATH_STATES, plan.paths.length)
   for (const trace of plan.paths) {
-    const branch = trace.reduce((prefix, command) => sequencePlans(prefix, expansions.get(command) || unitPlan<A>()), unitPlan<A>())
+    const branch = expandTrace(trace, expansions)
+    witnesses.push(...branch.witnesses)
     for (const path of branch.paths) {
-      if (paths.length === budget) return { paths, limited: true }
+      if (paths.length === budget) return { paths, witnesses, limited: true }
       paths.push(path)
     }
     limited ||= branch.limited
   }
-  return { paths, limited }
+  for (const trace of plan.witnesses) {
+    const branch = expandTrace(trace, expansions)
+    witnesses.push(...branch.witnesses, ...branch.paths)
+    limited ||= branch.limited
+  }
+  return { paths, witnesses, limited }
 }
+
+const expandTrace = <A>(trace: ReadonlyArray<Execution>, expansions: ReadonlyMap<Execution, PathPlan<A>>): PathPlan<A> =>
+  trace.reduce((prefix, command) => sequencePlans(prefix, expansions.get(command) || unitPlan<A>()), unitPlan<A>())
 
 const inlinePlan = (plan: PathPlan<Execution>, home: string): PathPlan<Execution> => {
   const entries = new Map(distinctEntries(plan).map((command) => {
@@ -352,7 +356,7 @@ const inlinePlan = (plan: PathPlan<Execution>, home: string): PathPlan<Execution
 }
 
 const mapPlan = <A, B>(plan: PathPlan<A>, f: (value: A) => B): PathPlan<B> =>
-  ({ ...plan, paths: plan.paths.map((trace) => trace.map(f)) })
+  ({ ...plan, paths: plan.paths.map((trace) => trace.map(f)), witnesses: plan.witnesses.map((trace) => trace.map(f)) })
 
 const plannedRuns = (commands: ReadonlyArray<Execution>, home: string): ReadonlyArray<RuntimeRun> => commands.flatMap((command) =>
   command.code.flatMap((input) => {
@@ -638,11 +642,11 @@ const sourceContext = (run: RuntimeRun, text: string, invocation: string): Sourc
 export const scriptLaunch = (run: RuntimeRun, text: string): Option.Option<BareLaunch> => {
   const source = sourceContext(run, text, run.command)
   const commands = mapPlan(inlinePlan(sourcePlan(run, text, 0), scriptPlace(run).home), (entry) => commandEvent(entry, Option.some(source)))
-  return Arr.head(decidePaths(run.command, prependFindings(sourceFinding(run, text, source), commands), new Map()))
+  return Arr.head(decidePaths(run.command, prependEvents(sourceFinding(run, text, source), commands), new Map()))
 }
 
-const prependFindings = (findings: ReadonlyArray<FindingEvent>, plan: PathPlan<ExecutionEvent>): PathPlan<ExecutionEvent> =>
-  ({ ...plan, paths: plan.paths.map((path) => [...findings, ...path]) })
+const prependEvents = (entry: ReadonlyArray<ExecutionEvent>, plan: PathPlan<ExecutionEvent>): PathPlan<ExecutionEvent> =>
+  ({ ...plan, paths: plan.paths.map((path) => [...entry, ...path]), witnesses: plan.witnesses.map((path) => [...entry, ...path]) })
 
 export type ScriptLoader = (path: string) => Effect.Effect<Option.Option<string>>
 export type TreeRoot = (directory: string) => Effect.Effect<Option.Option<string>>
@@ -709,12 +713,12 @@ const expandCommand = Effect.fn("Guard.expandCommand")(function* (command: Execu
     expandedShell ||= walkable(frame.language)
     children = sequencePlans(children, yield* expandSource(run, text.value, load, command.sourceDepth + 1, frame))
   }
-  return { ...children, paths: children.paths.map((path) => [commandEvent(command, source, expandedShell), ...path]) }
+  return prependEvents([commandEvent(command, source, expandedShell)], children)
 })
 
 const expandSource = Effect.fn("Guard.expandSource")(function* (run: RuntimeRun, text: string, load: ScriptLoader, depth: number, source: SourceContext): Effect.fn.Return<PathPlan<ExecutionEvent>> {
   const commands = yield* expandCommands(sourcePlan(run, text, depth), scriptPlace(run).home, load, Option.some(source))
-  return prependFindings(sourceFinding(run, text, source), commands)
+  return prependEvents(sourceFinding(run, text, source), commands)
 })
 
 const readRun = (ran: Ran, load: ScriptLoader): Effect.Effect<Option.Option<string>> => {

@@ -17,6 +17,8 @@ For `guard-keychain`, history provenance follows the stream across pipeline stag
 
 At a control-flow join, the guard keeps each reaching path's bindings, directory and selected worktrees together. Paths that terminate do not feed the next command. The guard does not evaluate or correlate separate conditions, even complementary tests of the same variable; it uses the most restrictive result over the paths it sees. If there are more than 64 possible path states, it reports that it cannot tell rather than selecting an arm. Substitutions carry history from captured stdout, not from diagnostics routed only to stderr.
 
+Lines with no possible selector or launcher skip the path walk. Before walking, the guard starts with the names those commands read and follows assignments back to their inputs. Unread feature flags do not distinguish paths; where the reads are unknown (such as `eval`, indirect expansion, or sourced code), every binding is retained. Equivalent paths share one state without losing evidence from commands that already ran.
+
 ## How to get to it (user POV)
 
 - The agent's `shell` (or `bash`) call, direct.

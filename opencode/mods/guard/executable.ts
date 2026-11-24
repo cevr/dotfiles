@@ -1,8 +1,9 @@
 // The keychain reader's execution plan. Wrapper options locate the next
 // executable; runtime options say which code runs before its entry point.
-import { Array as Arr, Option } from "effect"
+import { Array as Arr, Option, Schema } from "effect"
 import { compoundList, type ShellChain, type ShellList, type ShellNode } from "./compound.ts"
 import { basename, dirname, resolve } from "./path.ts"
+import { gitAction } from "./revision.ts"
 import { backquoteEnd, COMMAND_STARTS, expandWord, SHELLS, shellInput, simpleCommands, substitutionEnd, type Word } from "./shell-line.ts"
 import { gitSubcommand } from "./verdict.ts"
 
@@ -76,6 +77,19 @@ const scriptNamePattern = /\.(?:[cm]?[jt]s|tsx|(?:ba|da|k|z)?sh|py)$/
 const assignment = /^[A-Za-z_][A-Za-z0-9_]*=/
 export const word = (text: string): Word => ({ text, bareStart: true, singleQuoted: false })
 const runtime = (head: string): string => head.replace(/^python(?:[23](?:\.\d+)?)?$/, "python")
+
+export const READERS: ReadonlySet<string> = new Set([
+  "echo", "printf", "grep", "rg", "ag", "pgrep", "pkill", "killall", "ps", "cat", "which", "type", "command", "man", "ls", "git", "lsof",
+  "head", "tail", "less", "more", "shellcheck", "shfmt", "vi", "vim", "nvim", "nano", "emacs", "code",
+  "true", "false", "pwd", "test", "[", ":", "trap",
+])
+
+const isDirectory = (head: string): boolean => head === "cd" || head === "pushd" || head === "popd"
+const selectorSubcommands = new Set(["checkout", "switch", "restore", "reset", "bisect", "rebase", "worktree"])
+const isSelector = (args: ReadonlyArray<Word>): boolean => {
+  const operation = gitSubcommand(args.map(({ text }) => text))
+  return operation.kind === "command" && (selectorSubcommands.has(operation.name) || !literalPath(operation.name))
+}
 
 interface Flag {
   readonly name: string
@@ -398,7 +412,8 @@ const substitutionReading = (text: string, at: number, opening: string, state: S
 }
 
 const substitutionValue = (text: string, start: number, end: number, state: ShellState) => {
-  const flow = walkList(compoundList(text.slice(start, end - 1)), startFlow(state), emptyStream, MAX_CODE_DEPTH)
+  const isolated = { ...state, projection: { ...state.projection, witnesses: new Map() } }
+  const flow = walkList(compoundList(text.slice(start, end - 1)), startFlow(isolated, true), emptyStream, MAX_CODE_DEPTH)
   return { end, value: producerValue(flow.limited || flow.paths.some(({ output }) => output.history)) }
 }
 
@@ -464,43 +479,329 @@ const directoryAt = (at: Directory, target: string): Directory => {
   return { cwd: resolve(at.cwd, target) }
 }
 
+interface Relevance {
+  readonly consumer: boolean
+  readonly all: boolean
+  readonly names: ReadonlySet<string>
+  readonly functions: ReadonlySet<string>
+  readonly previousDirectory: boolean
+  readonly directoryStack: boolean
+}
+
+const allReads: Relevance = { consumer: true, all: true, names: new Set(), functions: new Set(), previousDirectory: true, directoryStack: true }
+const stdinRead = "\0stdin"
+
+const readsIn = (words: ReadonlyArray<Word>): ReadonlyArray<string> => words.flatMap((entry) => {
+  if (entry.singleQuoted) return []
+  // Also sees simple reads in substitutions or parameter defaults.
+  return [...entry.text.matchAll(/\$(?:\{([A-Za-z_]\w*|\d+|[@*])(?=[}:?-])|([A-Za-z_]\w*|\d+|[@*]))/g)]
+    .map((match) => match[1] || match[2] || "")
+})
+
+const dynamicRead = (words: ReadonlyArray<Word>): boolean => words.some((entry) =>
+  !entry.singleQuoted && /\$\{(?:[!#]|\$)|\$\{[A-Za-z_]\w*\[/.test(entry.text))
+
+interface ScannedNode {
+  readonly node: ShellNode
+  readonly upstream: boolean
+}
+
+function* shellNodes(body: ShellList, upstream = false, definitions = false): IterableIterator<ScannedNode> {
+  for (const { first, links } of body) {
+    for (const pipeline of [first, ...links.map(({ pipeline }) => pipeline)]) {
+      for (const [index, node] of pipeline.entries()) yield* nestedNodes(node, upstream || index < pipeline.length - 1, definitions)
+    }
+  }
+}
+
+function* nestedNodes(node: ShellNode, upstream: boolean, definitions: boolean): IterableIterator<ScannedNode> {
+  yield { node, upstream }
+  switch (node.kind) {
+    case "group": yield* shellNodes(node.body, upstream, definitions); break
+    case "choice":
+      for (const { condition, body } of node.arms) {
+        yield* shellNodes(condition, upstream, definitions)
+        yield* shellNodes(body, upstream, definitions)
+      }
+      break
+    case "loop": yield* shellNodes(node.condition, upstream, definitions); yield* shellNodes(node.body, upstream, definitions); break
+    case "redirect": yield* nestedNodes(node.body, upstream, definitions); break
+    case "function": if (definitions) yield* nestedNodes(node.body, upstream, definitions); break
+    case "command": break
+  }
+}
+
+interface Reads {
+  readonly names: Set<string>
+  readonly edges: Map<string, Set<string>>
+  readonly depth: number
+  readonly functions: Set<string>
+  readonly captures: Map<string, ReadonlyArray<ReadonlyArray<Word>>>
+  consumer: boolean
+  all: boolean
+  previousDirectory: boolean
+  directoryStack: boolean
+}
+
+const dependency = (reads: Reads, name: string, words: ReadonlyArray<Word>, extra: ReadonlyArray<string> = []): void => {
+  const previous = reads.edges.get(name) || new Set()
+  const calls = capturedCommands(words, reads.captures).map((command) => outputOf(command[0]?.text || ""))
+  reads.edges.set(name, new Set([...previous, ...readsIn(words), ...calls, ...extra]))
+}
+
+const outputOf = (functionName: string): string => `\0output:${functionName}`
+
+const capturedCommands = (words: ReadonlyArray<Word>, cache: Reads["captures"]): ReadonlyArray<ReadonlyArray<Word>> =>
+  words.flatMap((entry) => {
+    if (entry.singleQuoted) return []
+    const known = cache.get(entry.text)
+    if (known) return known
+    const commands = Array.from(captureWords(entry.text))
+    cache.set(entry.text, commands)
+    return commands
+  })
+
+function* captureWords(text: string): IterableIterator<ReadonlyArray<Word>> {
+  const openings = /\$\(|`/g
+  for (let match = openings.exec(text); match; match = openings.exec(text)) {
+    const start = openings.lastIndex
+    let end = backquoteEnd(text, start)
+    if (match[0] === "$(") end = substitutionEnd(text, start)
+    for (const { node } of shellNodes(compoundList(text.slice(start, end - 1)))) {
+      if (node.kind !== "command") continue
+      yield node.words
+      for (const word of node.words) if (!word.singleQuoted) yield* captureWords(word.text)
+    }
+    openings.lastIndex = end
+  }
+}
+
+const shellWrites = (words: ReadonlyArray<Word>): ReadonlyArray<Word> => {
+  if (words.every(({ text }) => assignment.test(text))) return words
+  if (words[0]?.text === "export") return words.slice(1).values().filter(({ text }) => assignment.test(text)).toArray()
+  return []
+}
+
+const analyzeReads = (body: ShellList, depth: number): Relevance => {
+  const reads: Reads = {
+    names: new Set(), edges: new Map(), consumer: false, all: false, depth,
+    functions: new Set(), captures: new Map(), previousDirectory: false, directoryStack: false,
+  }
+  const definitions = functionDefinitions(body)
+  for (const node of reachableNodes(body, definitions, reads).reverse()) scanNodeReads(node, reads)
+  for (const name of reads.functions) for (const definition of definitions.get(name) || []) {
+    scanFunctionOutput(name, definition, reads)
+  }
+  if (reads.consumer) reads.names.add("CHROME")
+  closeReads(reads)
+  return reads
+}
+
+const scanNodeReads = ({ node, upstream }: ScannedNode, reads: Reads): void => {
+  if (node.kind === "command") {
+    scanReads(node.words, reads)
+    if (upstream) dependency(reads, stdinRead, node.words)
+  }
+  if (node.kind === "loop") loopReads(node.header, reads)
+  if (node.kind === "redirect") dependency(reads, stdinRead, node.input)
+}
+
+const scanFunctionOutput = (name: string, definition: ShellNode, reads: Reads): void => {
+  for (const { node } of nestedNodes(definition, false, false)) {
+    if (node.kind === "command") dependency(reads, outputOf(name), node.words, [outputOf(node.words[0]?.text || "")])
+  }
+}
+
+const closeReads = (reads: Reads): void => {
+  const pending = [...reads.names]
+  for (const name of pending) for (const prerequisite of reads.edges.get(name) || []) {
+    if (reads.names.has(prerequisite)) continue
+    reads.names.add(prerequisite)
+    pending.push(prerequisite)
+  }
+}
+
+const functionDefinitions = (body: ShellList): ReadonlyMap<string, ReadonlyArray<ShellNode>> => {
+  const definitions = new Map<string, ReadonlyArray<ShellNode>>()
+  for (const { node } of shellNodes(body, false, true)) {
+    if (node.kind === "function") definitions.set(node.name, [...definitions.get(node.name) || [], node.body])
+  }
+  return definitions
+}
+
+const reachableNodes = (body: ShellList, definitions: ReadonlyMap<string, ReadonlyArray<ShellNode>>, reads: Reads): Array<ScannedNode> => {
+  const queued = [...shellNodes(body)]
+  const seen = new Set<string>()
+  for (const { node, upstream } of queued) {
+    if (node.kind !== "command") continue
+    const calls = [node.words, ...capturedCommands(node.words, reads.captures)]
+    for (const words of calls) {
+      const name = words[0]?.text || ""
+      const matches = definitions.get(name)
+      const kind = `${upstream}:${name}`
+      if (!matches || seen.has(kind)) continue
+      seen.add(kind)
+      reads.functions.add(name)
+      for (const definition of matches) queued.push(...nestedNodes(definition, upstream, false))
+    }
+  }
+  return queued
+}
+
+const loopReads = (header: ReadonlyArray<Word>, reads: Reads): void => {
+  const [name, marker, ...values] = header
+  if (!name) return
+  if (dynamicRead(header)) reads.all = true
+  if (marker?.text === "in") dependency(reads, name.text, values)
+  else dependency(reads, name.text, [], ["@"])
+}
+
+const scanReads = (words: ReadonlyArray<Word>, reads: Reads): void => {
+  reads.all ||= dynamicRead(words)
+  const writes = shellWrites(words)
+  for (const entry of writes) {
+    const split = entry.text.indexOf("=")
+    dependency(reads, entry.text.slice(0, split), [{ ...entry, text: entry.text.slice(split + 1) }])
+  }
+  if (writes.length > 0) return
+  const read = readArgs(words)
+  if (Option.isSome(read)) {
+    for (const name of readNames(read.value)) dependency(reads, name, read.value, [stdinRead])
+    return
+  }
+  const invocation = executable(words, [], new Map())
+  const [entry, ...args] = invocation.words
+  if (words.some(({ text }) => basename(text) === "xargs")) reads.names.add(stdinRead)
+  if (entry) commandReads(entry, args, invocation, reads)
+}
+
+const commandReads = (entry: Word, args: ReadonlyArray<Word>, invocation: Invocation, reads: Reads): void => {
+  const head = basename(entry.text)
+  if (head === "export" || endedBuiltin(head)) return
+  if (!entry.singleQuoted && !literalPath(entry.text) && /[$`]/.test(entry.text)) reads.all = true
+  const selector = head === "git" && isSelector(args)
+  const code = codeInputs(head, entry.text, args, invocation.env)
+  if (reads.functions.has(head)) {
+    dependency(reads, "@", args)
+    for (const [index, arg] of args.entries()) dependency(reads, String(index + 1), [arg])
+    return
+  }
+  if (isDirectory(head)) scanDirectoryReads(head, args, reads)
+  if (selector || ordinaryConsumer(head, args, code)) reads.consumer = true
+  if (head === "source" || head === "." || head === "eval") reads.all = true
+  if (head === "find") for (const task of findTasks(args)) scanReads(task, reads)
+  for (const input of code) scanCodeReads(input, reads)
+  ambientReads(head, selector, reads.names)
+  for (const name of readsIn(relevantOperands(head, args, invocation, code, selector))) reads.names.add(name)
+}
+
+const ambientReads = (head: string, selector: boolean, names: Set<string>): void => {
+  if (head === "node" || head === "nodejs") names.add("NODE_OPTIONS")
+  if (!selector) return
+  names.add("GIT_DIR")
+  names.add("GIT_WORK_TREE")
+}
+
+const scanDirectoryReads = (head: string, args: ReadonlyArray<Word>, reads: Reads): void => {
+  if (head === "popd") reads.directoryStack = true
+  else if (args.some(({ text }) => text === "-" || !literalPath(text))) reads.previousDirectory = true
+}
+
+const ordinaryConsumer = (head: string, args: ReadonlyArray<Word>, code: ReadonlyArray<CodeInput>): boolean =>
+  !isDirectory(head) && !READERS.has(head) && !syntaxCheck(head, args, code) &&
+    !code.some((input) => input.kind === "inline" && input.language === "shell")
+
+const scanCodeReads = (input: CodeInput, reads: Reads): void => {
+  if (input.kind === "file" || input.language !== "shell") {
+    reads.consumer = true
+    reads.all = true
+    return
+  }
+  if (reads.depth >= MAX_CODE_DEPTH) return
+  const child = analyzeReads(compoundList(input.code), reads.depth + 1)
+  reads.consumer ||= child.consumer
+  reads.all ||= child.all
+  for (const name of child.names) reads.names.add(name)
+}
+
+const endedBuiltin = (head: string): boolean => head === "exit" || head === "return" || head === "break" || head === "continue"
+
+const relevantOperands = (head: string, args: ReadonlyArray<Word>, invocation: Invocation, code: ReadonlyArray<CodeInput>, selector: boolean): ReadonlyArray<Word> => {
+  const directory = Option.toArray(Option.map(invocation.directory, word))
+  if (selector || isDirectory(head) || head === "find") return [...directory, ...args]
+  const positionals = positionalInputs(code, head, args)
+  const sources = code.flatMap((input) => {
+    if (input.kind === "file") return [input.source]
+    return []
+  })
+  return [...directory, ...runnerReads(head, args), ...sources, ...positionals]
+}
+
+const positionalInputs = (code: ReadonlyArray<CodeInput>, head: string, args: ReadonlyArray<Word>): ReadonlyArray<Word> => {
+  if (code.length === 0) return []
+  return positionalWords(head, args)
+}
+
 export const MAX_PATH_STATES = 64
 
 export interface PathPlan<A> {
   readonly paths: ReadonlyArray<ReadonlyArray<A>>
+  readonly witnesses: ReadonlyArray<ReadonlyArray<A>>
   readonly limited: boolean
 }
 
 /** Each trace carries the commands which can precede its consumers, in the same path as their shell state. */
 export const executionPaths = (line: string, place: ExecutionPlace, depth = -1): PathPlan<Execution> => {
-  const { paths, limited } = walkList(compoundList(line), startFlow(initialState(place)), emptyStream, depth)
-  return { paths: paths.map(({ commands }) => commands), limited }
+  const body = compoundList(line)
+  const reads = analyzeReads(body, depth)
+  if (!reads.consumer) return { paths: [[]], witnesses: [], limited: false }
+  return projectedPlan(body, place, depth, reads, "guard")
 }
 
-export const distinctEntries = <A>(plan: PathPlan<A>): ReadonlyArray<A> => [...new Set(plan.paths.flat())]
+const projectedPlan = (body: ShellList, place: ExecutionPlace, depth: number, reads: Relevance, mode: Projection["mode"]): PathPlan<Execution> => {
+  const projection: Projection = { ...reads, mode, witnesses: new Map() }
+  const { paths, limited } = walkList(body, startFlow(initialState(place, projection)), emptyStream, depth)
+  return { paths: paths.map(({ commands }) => commands), witnesses: [...projection.witnesses.values()], limited }
+}
+
+export const distinctEntries = <A>(plan: PathPlan<A>): ReadonlyArray<A> => [...new Set([...plan.paths, ...plan.witnesses].flat())]
 
 export const inlineShellPaths = (command: Execution, home: string, code: string): PathPlan<Execution> => {
   const { cwd, unknownCwd, env, positionals, sourceDepth } = command
-  if (sourceDepth >= MAX_CODE_DEPTH) return { paths: [[]], limited: false }
+  if (sourceDepth >= MAX_CODE_DEPTH) return { paths: [[]], witnesses: [], limited: false }
   return executionPaths(code, { cwd, unknownCwd, home, env, positionals }, sourceDepth + 1)
 }
 
 /** The command inventory for readers that do not make path-sensitive decisions. */
 export const executionPlan = (line: string, place: ExecutionPlace, depth = -1): ReadonlyArray<Execution> =>
-  inventory(executionPaths(line, place, depth), place.home)
+  inventory(projectedPlan(compoundList(line), place, depth, allReads, "inventory"), place.home)
 
 const inventory = (plan: PathPlan<Execution>, home: string): ReadonlyArray<Execution> =>
   distinctEntries(plan).flatMap((command) => {
     const commands = [command]
     for (const input of command.code) {
-      if (input.kind === "inline" && input.language === "shell") commands.push(...inventory(inlineShellPaths(command, home, input.code), home))
+      if (input.kind !== "inline" || input.language !== "shell" || command.sourceDepth >= MAX_CODE_DEPTH) continue
+      const { cwd, env, unknownCwd, positionals, sourceDepth } = command
+      commands.push(...executionPlan(input.code, { cwd, home, env, unknownCwd, positionals }, sourceDepth + 1))
     }
     return commands
   })
 
-const initialState = (place: ExecutionPlace): ShellState => {
-  const env = place.env || new Map<string, string>()
-  return { place: { ...place, env }, vars: env, bindings: initialBindings(place.positionals || []), directories: [], loops: [], functions: new Map(), calls: [] }
+interface Projection extends Relevance {
+  readonly mode: "inventory" | "guard"
+  readonly witnesses: Map<string, ReadonlyArray<Execution>>
+}
+
+const relevant = (projection: Relevance, name: string): boolean => projection.all || projection.names.has(name)
+const projectNames = <A>(map: ReadonlyMap<string, A>, projection: Relevance): ReadonlyMap<string, A> => {
+  if (projection.all) return map
+  return new Map(map.entries().filter(([key]) => relevant(projection, key)))
+}
+
+const initialState = (place: ExecutionPlace, projection: Projection): ShellState => {
+  const env = projectNames(place.env || new Map<string, string>(), projection)
+  const bindings = projectNames(initialBindings(place.positionals || []), projection)
+  return { projection, place: { ...place, env }, vars: env, bindings, directories: [], loops: [], functions: new Map(), calls: [] }
 }
 
 interface Stream {
@@ -516,6 +817,7 @@ const streamWords = (stream: Stream): ReadonlyArray<Word> => {
 type Status = "next" | "yes" | "no" | "failure" | "dead" | "exit" | "return" | "break" | "continue"
 interface WalkPath extends ExecutionStep {
   readonly output: Stream
+  readonly capture: boolean
   readonly status: Status
 }
 interface Flow {
@@ -523,14 +825,112 @@ interface Flow {
   readonly limited: boolean
 }
 const onePath = (path: WalkPath): Flow => ({ paths: [path], limited: false })
-const startFlow = (state: ShellState): Flow => onePath({ ...emptyStep(state), output: emptyStream, status: "next" })
+const startFlow = (state: ShellState, capture = false): Flow => onePath({ ...emptyStep(state), output: emptyStream, status: "next", capture })
 const resume = (path: WalkPath): WalkPath => ({ ...path, status: "next" })
 const ended = ({ status }: WalkPath): boolean => status !== "next" && status !== "yes" && status !== "no" && status !== "failure"
 
 const flowFrom = (paths: ReadonlyArray<WalkPath>, limited: boolean): Flow => {
+  if (paths.length < 2) return { paths, limited }
+  const unique = new Map<string, WalkPath>()
   let count = 0
-  const kept = paths.values().filter((path) => ended(path) || ++count <= MAX_PATH_STATES).toArray()
-  return { paths: kept, limited: limited || count > MAX_PATH_STATES }
+  for (const path of paths) {
+    const key = pathKey(path)
+    const known = unique.get(key)
+    if (known) {
+      rememberWitness(known.commands, path)
+      continue
+    }
+    if (!ended(path)) count += 1
+    if (count > MAX_PATH_STATES) return { paths: [...unique.values()], limited: true }
+    unique.set(key, path)
+  }
+  return { paths: [...unique.values()], limited }
+}
+
+// Length-delimited keys preserve arbitrary shell literals, including control characters.
+const tuple = (parts: Iterable<string>): string => Array.from(parts, (part) => `${part.length}:${part}`).join("")
+const mapKey = <A>(entries: ReadonlyMap<string, A>, encode: (value: A) => string): string =>
+  tuple([...entries].map(([key, value]) => tuple([key, encode(value)])).sort())
+const identity = (value: string): string => value
+const dirKey = (place: Directory): string => tuple([place.cwd, String(Boolean(place.unknownCwd))])
+const optionText = (value: Option.Option<string>): string => Option.getOrElse(value, () => "")
+
+const execKey = (command: Execution): string => tuple([
+  command.head, command.command, dirKey(command), mapKey(command.env, identity), tuple(command.positionals),
+  tuple(command.args.map(wordKey)), encodeSyntax(command.code), String(command.syntaxOnly),
+])
+
+const actionKey = (action: ReturnType<typeof gitAction>): string => tuple([
+  action.revision, optionText(action.tree), action.bisectMode || "",
+  String(Boolean(action.explicitTree)), String(Boolean(action.newTree)),
+])
+
+interface SelectionEffect {
+  readonly key: string
+  readonly ordered: boolean
+}
+
+/** A symbolic per-tree effect, before the I/O layer resolves checkout-root aliases. */
+const selectionEffect = (command: Execution): Option.Option<SelectionEffect> => {
+  if (command.code.length > 0) return Option.some({ key: tuple(["child", execKey(command)]), ordered: true })
+  if (command.head !== "git") return Option.none()
+  const args = command.args.map(({ text }) => text)
+  const action = gitAction(command.head, args, command)
+  if (action.rebaseExec || (!action.bisectMode && action.revision !== "moves" && action.revision !== "unknown")) return Option.none()
+  const refs = gitAction(command.head, args, command, () => true)
+  const key = actionKey(action)
+  const inRefs = actionKey(refs)
+  return Option.some({ key: tuple(["tree", key, inRefs]), ordered: Boolean(action.bisectMode) || key !== inRefs })
+}
+
+const selectionKey = (commands: ReadonlyArray<Execution>): string => {
+  const record: Array<string> = []
+  const writes = new Set<string>()
+  for (const command of commands) {
+    const effect = selectionEffect(command)
+    if (Option.isNone(effect)) continue
+    if (!effect.value.ordered) {
+      writes.add(effect.value.key)
+      continue
+    }
+    // Ordinary changes commute and are idempotent. Child execution and bisect
+    // modes are barriers: later operations can read their tree effects.
+    record.push(tuple([...writes].sort()), effect.value.key)
+    writes.clear()
+  }
+  return tuple([...record, tuple([...writes].sort())])
+}
+
+const encodeSyntax = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
+const wordKey = (entry: Word): string => tuple([entry.text, String(entry.bareStart), String(entry.singleQuoted)])
+const previousKey = (state: ShellState): string => {
+  if (!state.previous || (!state.projection.all && !state.projection.previousDirectory)) return ""
+  return dirKey(state.previous)
+}
+
+const stackKey = (state: ShellState): string => {
+  if (!state.projection.all && !state.projection.directoryStack) return ""
+  return tuple(state.directories.map(dirKey))
+}
+
+const pathKey = ({ state, commands, output, capture, status }: WalkPath): string => {
+  const shell = tuple([
+    dirKey(state.place), stackKey(state), previousKey(state),
+    mapKey(state.vars, identity), mapKey(state.place.env || new Map(), identity),
+    mapKey(state.bindings, (values) => tuple([...new Set(values)].sort())),
+    mapKey(state.functions, encodeSyntax), tuple(state.calls), tuple(state.loops.map(String)),
+  ])
+  const observation = tuple([String(capture), String(output.history), tuple(output.words.map(wordKey))])
+  let effects = selectionKey(commands)
+  if (state.projection.mode === "inventory") effects = tuple(commands.map(execKey))
+  return tuple([status, shell, observation, effects])
+}
+
+const rememberWitness = (known: ReadonlyArray<Execution>, path: WalkPath): void => {
+  if (path.commands === known) return
+  const key = tuple(path.commands.map(execKey))
+  if (key === tuple(known.map(execKey))) return
+  path.state.projection.witnesses.set(key, path.commands)
 }
 
 const advance = (flow: Flow, step: (path: WalkPath) => Flow): Flow => {
@@ -582,11 +982,16 @@ const walkPipeline = (pipeline: ReadonlyArray<ShellNode>, start: WalkPath, input
   let flow = onePath({ ...start, output: input })
   for (const [index, node] of pipeline.entries()) {
     flow = advance(flow, (prior) => {
-      const run = walkNode(node, { ...prior, output: emptyStream }, prior.output, depth)
+      const run = walkNode(node, { ...prior, capture: start.capture || index < pipeline.length - 1, output: emptyStream }, prior.output, depth)
       return { ...run, paths: run.paths.map((path) => pipeResult(path, prior, keepsState(pipeline.length, index, node))) }
     })
   }
-  return { ...flow, paths: flow.paths.map((path) => ({ ...path, output: mergeStreams(start.output, path.output) })) }
+  return { ...flow, paths: flow.paths.map((path) => ({ ...path, capture: start.capture, output: capturedOutput(start, path) })) }
+}
+
+const capturedOutput = (start: WalkPath, path: WalkPath): Stream => {
+  if (!start.capture) return emptyStream
+  return mergeStreams(start.output, path.output)
 }
 
 const pipeResult = (path: WalkPath, prior: WalkPath, local: boolean): WalkPath => {
@@ -608,7 +1013,7 @@ const walkNode = (node: ShellNode, path: WalkPath, input: Stream, depth: number)
       if (node.local) return { ...run, paths: run.paths.map((next) => ({ ...resume(next), state })) }
       return run
     }
-    case "function": return onePath({ ...path, state: { ...state, functions: new Map([...state.functions, [node.name, node.body]]) } })
+    case "function": return declareFunction(node, path)
     case "redirect": {
       const run = walkNode(node.body, path, redirectedStream(node.input, state, input), depth)
       if (capturesStdout(node.input)) return run
@@ -617,6 +1022,12 @@ const walkNode = (node: ShellNode, path: WalkPath, input: Stream, depth: number)
     case "loop": return walkLoop(node, path, input, depth)
     case "choice": return walkChoice(node, path, input, depth)
   }
+}
+
+const declareFunction = (node: Extract<ShellNode, { kind: "function" }>, path: WalkPath): Flow => {
+  const { state } = path
+  if (!state.projection.all && !state.projection.functions.has(node.name)) return onePath(path)
+  return onePath({ ...path, state: { ...state, functions: new Map([...state.functions, [node.name, node.body]]) } })
 }
 
 const walkChoice = (node: Extract<ShellNode, { kind: "choice" }>, path: WalkPath, input: Stream, depth: number): Flow => {
@@ -642,6 +1053,7 @@ const armEnd = (path: WalkPath): WalkPath => {
 }
 
 interface ShellState {
+  readonly projection: Projection
   readonly place: ExecutionPlace
   readonly vars: ReadonlyMap<string, string>
   readonly bindings: Bindings
@@ -660,7 +1072,12 @@ interface ExecutionStep {
 const loopName = /^[A-Za-z_]\w*$/
 const emptyStep = (state: ShellState): ExecutionStep => ({ state, commands: [] })
 const withBinding = (state: ShellState, name: string, values: Alternatives): ExecutionStep =>
-  emptyStep({ ...state, bindings: new Map([...state.bindings, [name, values]]) })
+  emptyStep(relevantBinding(state, name, values))
+
+const relevantBinding = (state: ShellState, name: string, values: Alternatives): ShellState => {
+  if (!relevant(state.projection, name)) return state
+  return { ...state, bindings: new Map([...state.bindings, [name, values]]) }
+}
 
 const loopWords = (words: ReadonlyArray<Word>, state: ShellState): Alternatives =>
   words.flatMap((entry) => {
@@ -679,11 +1096,18 @@ const activeTarget = (value: string, loops: ReadonlyArray<number>): string =>
 
 const loopRead = (args: ReadonlyArray<Word>, piped: ReadonlyArray<Word>, state: ShellState): ExecutionStep => {
   const redirection = args.findIndex((entry) => entry.bareStart && /^[<>]/.test(entry.text))
-  const names = args.slice(0, readArgumentEnd(redirection, args.length)).values().filter((entry) => loopName.test(entry.text)).map(({ text }) => text).toArray()
+  const names = readNames(args)
   const values = readValues(args, redirection, piped, state)
   if (names.length < 2) return loopBinding(state, names[0] || "REPLY", values)
   const uncertain = producerValue(values.some((value) => value.includes(historyTarget)))
   return names.reduce(({ state: current }, name) => loopBinding(current, name, [uncertain]), emptyStep(state))
+}
+
+const readNames = (args: ReadonlyArray<Word>): ReadonlyArray<string> => {
+  const redirection = args.findIndex((entry) => entry.bareStart && /^[<>]/.test(entry.text))
+  const names = args.slice(0, readArgumentEnd(redirection, args.length)).values().filter((entry) => loopName.test(entry.text)).map(({ text }) => text).toArray()
+  if (names.length === 0) return ["REPLY"]
+  return names
 }
 
 const readValues = (args: ReadonlyArray<Word>, redirection: number, piped: ReadonlyArray<Word>, state: ShellState): Alternatives => {
@@ -771,7 +1195,14 @@ const walkCommand = (words: ReadonlyArray<Word>, path: WalkPath, input: Stream, 
   if (status !== "next" && text !== "exec") return onePath({ ...path, status })
   const run = executionStep(words, streamWords(input), state, depth)
   const output = commandOutput(words, state, run.commands)
-  return onePath({ status, state: run.state, commands: [...path.commands, ...run.commands], output })
+  const observations = run.commands.values().filter((command) => tracksCommand(command, state.projection)).toArray()
+  return onePath({ ...path, status, state: run.state, commands: [...path.commands, ...observations], output })
+}
+
+const tracksCommand = (command: Execution, projection: Projection): boolean => {
+  if (projection.mode === "inventory" || command.code.length > 0) return true
+  if (command.head === "git") return isSelector(command.args)
+  return !READERS.has(command.head) && !command.syntaxOnly
 }
 
 const commandStatus = (head: string, args: ReadonlyArray<Word>): Status => {
@@ -785,7 +1216,8 @@ const callFunction = (name: string, body: ShellNode, args: ReadonlyArray<Word>, 
   const caller = path.state
   if (caller.calls.includes(name)) return onePath(path)
   const positionals = shellPositionals("function", args, caller)
-  const frame = { ...caller, place: { ...caller.place, positionals }, bindings: withPositionals(caller.bindings, initialBindings(positionals)), calls: [...caller.calls, name] }
+  const bindings = projectNames(withPositionals(caller.bindings, initialBindings(positionals)), caller.projection)
+  const frame = { ...caller, place: { ...caller.place, positionals }, bindings, calls: [...caller.calls, name] }
   const run = walkNode(body, { ...path, state: frame }, input, depth)
   return { ...run, paths: run.paths.map((prior) => returnToCaller(prior, caller)) }
 }
@@ -870,7 +1302,7 @@ const executionStep = (words: ReadonlyArray<Word>, piped: ReadonlyArray<Word>, s
   const [entry, ...args] = invocation.words
   if (!entry) return idle
   const head = basename(entry.text)
-  if (head === "cd" || head === "pushd" || head === "popd") return { ...idle, state: changeDirectory(head, args, state) }
+  if (isDirectory(head)) return { ...idle, state: changeDirectory(head, args, state) }
   const at = Option.getOrElse(Option.map(invocation.directory, (directory) => directoryAt(place, expanded(word(directory), place, vars))), () => place)
   const runAt = runnerDirectory(head, args, { ...place, ...at }, vars)
   const code = codeInputs(head, entry.text, args, invocation.env).map((input): CodeInput => {
@@ -879,7 +1311,7 @@ const executionStep = (words: ReadonlyArray<Word>, piped: ReadonlyArray<Word>, s
   })
   const syntaxOnly = syntaxCheck(head, args, code)
   const positionals = codePositionals(code, head, args, state)
-  const command = { head, command: invocation.words.map(({ text }) => text).join(" "), cwd: runAt.cwd, unknownCwd: runAt.unknownCwd, env: invocation.env, code, sourceDepth, syntaxOnly, positionals }
+  const command = { head, command: invocation.words.map(({ text }) => text).join(" "), cwd: runAt.cwd, unknownCwd: runAt.unknownCwd, env: projectNames(invocation.env, state.projection), code, sourceDepth, syntaxOnly, positionals }
   if (head === "git") return { state, commands: gitArgv(args, { ...place, ...at }, state).map((actual) => ({ ...command, args: actual })) }
   if (head !== "find") return { state, commands: [{ ...command, args }] }
   const tasks = findTasks(args).flatMap((task) => executionStep(task, [], { ...state, place: runAt }, sourceDepth).commands)
@@ -903,11 +1335,15 @@ const findTasks = (args: ReadonlyArray<Word>): ReadonlyArray<ReadonlyArray<Word>
   return tasks
 }
 
-const assignments = (state: ShellState, words: ReadonlyArray<Word>): ShellState => ({
-  ...state,
-  vars: bindingList(words, state.vars, state.place),
-  bindings: words.reduce((bindings, entry) => bind(entry, { ...state, bindings }), state.bindings),
-})
+const assignments = (state: ShellState, words: ReadonlyArray<Word>): ShellState => {
+  const kept = words.values().filter(({ text }) => relevant(state.projection, text.slice(0, text.indexOf("=")))).toArray()
+  if (kept.length === 0) return state
+  return {
+    ...state,
+    vars: bindingList(kept, state.vars, state.place),
+    bindings: kept.reduce((bindings, entry) => bind(entry, { ...state, bindings }), state.bindings),
+  }
+}
 
 const gitArgv = (args: ReadonlyArray<Word>, place: ExecutionPlace, state: ShellState): ReadonlyArray<ReadonlyArray<Word>> =>
   args.reduce<ReadonlyArray<ReadonlyArray<Word>>>((rows, arg) => {
@@ -933,9 +1369,20 @@ const singleValue = (values: Alternatives): string => {
 
 /** Location options belong to the invoked program, not to the surrounding shell. */
 const runnerDirectory = (head: string, args: ReadonlyArray<Word>, place: ExecutionPlace, vars: ReadonlyMap<string, string>): ExecutionPlace => {
-  const options = launcherOptions.get(head) || runtimeOptions.get(head)
-  if (!options) return place
   let directory = place
+  for (const move of runnerMoves(head, args)) {
+    const target = expanded(move.directory, place, vars)
+    directory = { ...place, ...runnerDestination(head, move.kind, directory, place, target) }
+  }
+  return directory
+}
+
+const runnerReads = (head: string, args: ReadonlyArray<Word>): ReadonlyArray<Word> =>
+  Array.from(runnerMoves(head, args), ({ directory }) => directory)
+
+function* runnerMoves(head: string, args: ReadonlyArray<Word>): IterableIterator<{ readonly directory: Word; readonly kind: OptionKind | void }> {
+  const options = launcherOptions.get(head) || runtimeOptions.get(head)
+  if (!options) return
   let consume = false
   for (const [index, entry] of args.entries()) {
     if (consume) {
@@ -948,11 +1395,9 @@ const runnerDirectory = (head: string, args: ReadonlyArray<Word>, place: Executi
     if (move.stop) break
     consume = move.consume
     if (Option.isSome(move.directory)) {
-      const target = expanded(move.directory.value, place, vars)
-      directory = { ...place, ...runnerDestination(head, move.kind, directory, place, target) }
+      yield { directory: move.directory.value, kind: move.kind }
     }
   }
-  return directory
 }
 
 const runnerOption = (entry: Word, next: Word, table: Options) => {

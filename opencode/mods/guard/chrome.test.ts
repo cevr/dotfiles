@@ -4,7 +4,7 @@
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
 import { bareLaunches, Inline, KEYCHAIN_FLAGS, keychainReason, type Remedy, runtimeRuns, ScriptFile, scriptLaunch, scriptLaunchesBare } from "./chrome.ts"
-import { MAX_PATH_STATES } from "./executable.ts"
+import { executionPaths, MAX_PATH_STATES } from "./executable.ts"
 
 const HOME = "/home/owner"
 const CWD = "/home/owner/work"
@@ -175,15 +175,62 @@ describe("old checkouts in an executable position", () => {
   test("the live path bound reports uncertainty rather than picking an arm", () => {
     const branches = (count: number) => Array.from({ length: count }, (_, id) =>
       `if test -n "$CI"; then BRANCH_${id}=one; else BRANCH_${id}=two; fi;`).join(" ")
+    const script = (count: number) => {
+      const target = Array.from({ length: count }, (_, id) => `\${BRANCH_${id}}`).join("-")
+      return `${branches(count)} git checkout "${target}"; npm test`
+    }
     const atBound = Math.log2(MAX_PATH_STATES)
-    expect(bareLaunches(`${branches(atBound)} git checkout main; npm test`, place)).toEqual([])
-    const line = `${branches(atBound + 1)} git checkout main; npm test`
+    expect(bareLaunches(script(atBound), place)).toEqual([])
+    expect(executionPaths(script(atBound), place).paths).toHaveLength(MAX_PATH_STATES)
+    const line = script(atBound + 1)
     const findings = bareLaunches(line, place)
     expect(findings.map(({ remedy }) => remedy)).toEqual(["unknown"])
     expect(findings.map(keychainReason).join(" ")).toContain(`cannot tell what runs after the shell produces more than ${MAX_PATH_STATES}`)
     expect(bareLaunches(`git checkout HEAD~1; npm test; ${line}`, place).map(({ remedy }) => remedy)).toEqual(["shim"])
     const exits = 'if test -n "$CI"; then exit; fi; '.repeat(MAX_PATH_STATES + 1)
     expect(bareLaunches(`${exits} git checkout main; npm test`, place)).toEqual([])
+  })
+
+  const flags = (count: number) => Array.from({ length: count }, (_, id) =>
+    `if test -n "$ENABLE_${id}"; then export UNUSED_${id}=yes; else export UNUSED_${id}=no; fi;`).join("\n")
+
+  test("feature exports do not form paths that a guard consumer cannot distinguish", () => {
+    for (const suffix of ['git checkout "$CI_BRANCH" && npm test', "npm test", "git log -1; printf '%s' done", "sh -c 'printf done'"]) {
+      const line = `${flags(12)}\n${suffix}`
+      const plan = executionPaths(line, place)
+      expect([suffix, plan.paths.length, plan.limited, bareLaunches(line, place)]).toEqual([suffix, 1, false, []])
+    }
+    expect(executionPaths(`${flags(12)}\ngit log -1; printf '%s' done`, place).paths).toEqual([[]])
+    expect(executionPaths(`${flags(12)}\nsh -c 'printf done'`, place).paths).toEqual([[]])
+    expect(executionPaths(`${flags(12)}\nunused() { git checkout HEAD~1; npm test; }; printf done`, place).paths).toEqual([[]])
+  })
+
+  test("relevance follows assignments, input, directories, and opaque readers", () => {
+    const one = 'if test -n "$CI"; then SOURCE=HEAD~1; else SOURCE=main; fi'
+    const remedies = (line: string) => bareLaunches(line, place).map(({ remedy }) => remedy)
+    expect(remedies(`${one}; MIDDLE="$SOURCE"; DEST="$MIDDLE"; git checkout "$DEST"; npm test`)).toEqual(["shim"])
+    expect(remedies(`${one}; MIDDLE=$(printf '%s' "$SOURCE"); git checkout "$MIDDLE"; npm test`)).toEqual([])
+    const stream = 'if test -n "$CI"; then VALUE=$(git describe); else VALUE=main; fi; printf "%s" "$VALUE" | { read -r REV; git checkout "$REV"; npm test; }'
+    expect(remedies(stream)).toEqual(["unknown"])
+    const runner = `HERE="${place.cwd}"; if test -n "$CI"; then ROOT="$HERE"; else ROOT=../tools; fi; git checkout HEAD~1; env -C "$ROOT" npm test`
+    expect(remedies(runner)).toEqual(["shim"])
+    const child = `if test -n "$CI"; then export RUN_AT="${place.cwd}"; else export RUN_AT=../tools; fi; git checkout HEAD~1; sh -c 'cd "$RUN_AT"; npm test'`
+    expect(remedies(child)).toEqual(["shim"])
+    expect(remedies(`${flags(12)}\neval "$PROGRAM"; npm test`)).toEqual(["unknown"])
+    expect(remedies(`${flags(12)}\n. ./fixture.sh; npm test`)).toEqual(["unknown"])
+    expect(remedies(`${flags(12)}\nREF=\${!NAME}; git checkout "$REF"; npm test`)).toEqual(["unknown"])
+    expect(remedies(`${flags(12)}\n"$PROGRAM"; npm test`)).toEqual(["unknown"])
+  })
+
+  test("coalescing projections still observes launches executed before the join", () => {
+    const line = 'git checkout HEAD~1; if test -n "$CI"; then true; else npm test; fi; echo done'
+    expect(executionPaths(line, place).paths).toHaveLength(1)
+    expect(bareLaunches(line, place).map(({ remedy }) => remedy)).toEqual(["shim"])
+    const nested = 'git checkout HEAD~1; sh -c \'if test -n "$CI"; then true; else npm test; fi\''
+    expect(bareLaunches(nested, place).map(({ remedy }) => remedy)).toEqual(["shim"])
+    const repeated = 'if test -n "$CI"; then git checkout HEAD~1; else git switch --detach HEAD~1; git checkout HEAD~2; fi; npm test'
+    expect(executionPaths(repeated, place).paths).toHaveLength(1)
+    expect(bareLaunches(repeated, place).map(({ remedy }) => remedy)).toEqual(["shim"])
   })
 
   test("generated choices match an independent path-enumerating oracle", () => {
@@ -225,6 +272,14 @@ describe("old checkouts in an executable position", () => {
       const line = `${prior.text}; ${render(program)}; git checkout "$REF"; npm --prefix /guard/probe/tree test`
       const actual = bareLaunches(line, directory)[0]?.remedy || "allow"
       expect([line, actual]).toEqual([line, expected])
+    }
+    for (const [index, program] of first.entries()) {
+      const candidate = render(program)
+      const before = `REF=main; ${candidate}; git checkout "$REF"; npm --prefix /guard/probe/tree test`
+      const after = `REF=main; ${flags(index % 17)} ${candidate}; git checkout "$REF"; npm --prefix /guard/probe/tree test`
+      const verdict = bareLaunches(before, directory).map(({ remedy }) => remedy)
+      expect(bareLaunches(after, directory).map(({ remedy }) => remedy)).toEqual(verdict)
+      expect(executionPaths(after, directory).paths.length).toBe(executionPaths(before, directory).paths.length)
     }
   })
 
