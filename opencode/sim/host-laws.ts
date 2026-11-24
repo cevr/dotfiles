@@ -98,6 +98,9 @@ const waitFor = <E>(holds: Effect.Effect<boolean, E>, message: string) =>
     }
   })
 
+const STOP_WITNESS_DEADLINE = "10 seconds"
+const readStopReply = Schema.decodeUnknownEffect(Schema.Struct({ interrupted: Schema.Boolean }))
+
 export interface Law {
   readonly name: string
   readonly operations: ReadonlyArray<Operation>
@@ -274,17 +277,16 @@ export const LAWS: ReadonlyArray<Law> = [
     operations: ["session.stop", "session.create", "session.hook", "session.prompt", "session.context", "event.subscribe"],
     check: (ctx, probe) => Effect.gen(function* () {
       const { id: sessionID } = yield* fresh(ctx)
-      const shape = Schema.decodeUnknownEffect(Schema.Struct({ interrupted: Schema.Boolean }))
-      const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Json))
-      const idle = yield* shape(yield* ctx.session.stop({ sessionID }), { onExcessProperty: "error" })
+      const idle = yield* readStopReply(yield* ctx.session.stop({ sessionID }), { onExcessProperty: "error" })
       const entered = yield* Deferred.make<void>()
       const interrupted = yield* Deferred.make<string>()
       const cancelled = yield* Deferred.make<void>()
       const queued = SessionMessage.ID.make("msg_law_stop_queued")
-      yield* ctx.session.hook("model.request", (input) => {
-        if (input.sessionID !== sessionID || input.kind !== "primary") return Effect.void
-        return Deferred.succeed(entered, void 0).pipe(Effect.andThen(Effect.never))
-      }).pipe(Effect.flatMap((hook) => Effect.gen(function* () {
+      yield* Effect.scoped(Effect.gen(function* () {
+        yield* ctx.session.hook("model.request", (input) => {
+          if (input.sessionID !== sessionID || input.kind !== "primary") return Effect.void
+          return Deferred.succeed(entered, void 0).pipe(Effect.andThen(Effect.never))
+        })
         yield* Effect.forkScoped(ctx.event.subscribe({
           types: ["session.execution.interrupted", "session.inbox.cancelled"],
         }).pipe(Stream.runForEach((event) => {
@@ -294,20 +296,20 @@ export const LAWS: ReadonlyArray<Law> = [
           return Effect.void
         })), { startImmediately: true })
         yield* ctx.session.prompt({ sessionID, text: "law: stop running" })
-        yield* Deferred.await(entered)
-        yield* ctx.session.prompt({ sessionID, id: queued, text: "law: stop queued", delivery: "queue" })
-        const active = yield* shape(yield* ctx.session.stop({ sessionID }), { onExcessProperty: "error" })
-        const reason = yield* Deferred.await(interrupted)
-        yield* Deferred.await(cancelled)
-        const again = yield* shape(yield* ctx.session.stop({ sessionID }), { onExcessProperty: "error" })
-        yield* Effect.logInfo(`sim-law: stop capture ${encode({ input: { sessionID }, idle, active, again, reason, cancelled: queued })}`)
+        yield* Deferred.await(entered).pipe(Effect.timeout(STOP_WITNESS_DEADLINE))
+        yield* ctx.session.prompt({ sessionID, id: queued, text: "law: stop queued" })
+        const active = yield* readStopReply(yield* ctx.session.stop({ sessionID }), { onExcessProperty: "error" })
+        const reason = yield* Deferred.await(interrupted).pipe(Effect.timeout(STOP_WITNESS_DEADLINE))
+        yield* Deferred.await(cancelled).pipe(Effect.timeout(STOP_WITNESS_DEADLINE))
+        const again = yield* readStopReply(yield* ctx.session.stop({ sessionID }), { onExcessProperty: "error" })
         yield* ensure(!idle.interrupted && active.interrupted && !again.interrupted && reason === "user", "stop did not interrupt exactly the live turn as user")
-        yield* hook.dispose
-      })))
+      }))
+      const primaries = Effect.map(probe.requests, (requests) => requests.filter((request) => request.sessionID === sessionID && request.kind === "primary").length)
+      const before = yield* primaries
       yield* probe.turn(sessionID, ctx.session.prompt({ sessionID, text: "law: stop fresh" }))
+      yield* ensure((yield* primaries) === before + 1, "a new request did not run after stop")
       const texts = yield* contextText(ctx, sessionID)
       yield* ensure(count(texts, "law: stop queued") === 0, "the cancelled queued prompt was delivered")
-      yield* ensure(texts.includes("stop fresh"), "a fresh prompt did not run after stop")
     }),
   },
   {
