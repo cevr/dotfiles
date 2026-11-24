@@ -82,6 +82,8 @@ export interface JobRecord {
 
 /** How a launch went: where its log and progress file are, and what it runs under. */
 export interface Launched {
+  /** The runner owns the queued admission, not the calling agent. */
+  readonly admission?: "queued"
   readonly log: string
   readonly drip: string
   /** `systemd`: a transient user unit; `detached`: its own session and process group. */

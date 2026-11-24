@@ -292,7 +292,9 @@ export const layer = (config: Config) => {
             return new JobRefused({ message: `its files were not written in ${dir}: ${cause instanceof Error ? cause.message : String(cause)}` })
           },
         })
-        const where = { log: path.join(dir, FILES.log), drip: path.join(dir, FILES.drip) }
+        const files = { log: path.join(dir, FILES.log), drip: path.join(dir, FILES.drip) }
+        const where: Pick<Launched, "log" | "drip" | "admission"> = { ...files }
+        if (spec.heavy) Object.assign(where, { admission: "queued" })
         let warning: string | undefined
         if (config.platform === "linux") {
           const unit = unitOf(spec.id)

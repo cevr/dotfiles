@@ -257,9 +257,14 @@ export const dripLetter = (job: Job, lines: string, firedAt: number): Letter => 
 })
 
 /** What starting a job answers: its id and log first, then how it runs and what comes back. */
+const startedJob = (launched: Launched) => {
+  if (launched.admission === "queued") return "queued for host admission"
+  return "started"
+}
+
 export const jobReceipt = (job: Job, launched: Launched): string =>
   [
-    `Job ${job.id} started. Log: ${launched.log}`,
+    `Job ${job.id} ${startedJob(launched)}. Log: ${launched.log}`,
     `It runs ${commandOf(job)} in ${job.cwd} ${launched.how === "systemd" ? `as the systemd user unit ${launched.unit ?? ""}` : "in its own process group"}${
       job.heavy ? ", niced" : ""
     }, outside the OpenCode server, so it outlives a restart; it is stopped if still running after ${durationOf(job.timeoutSeconds * 1000)}.`,
