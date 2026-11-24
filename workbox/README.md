@@ -193,7 +193,7 @@ noncurrent snapshot objects after 14 days.
   when `work --json list` (or `work --json bases`) fails, is missing, or
   answers anything but a list of records each with a name, id, path, state
   and since, remove refuses, quotes what came back, and deletes nothing.
-- `workrift subvolume [--back | --drop-old] [--apply]` switches the warm source
+- `workrift subvolume [--back | --drop-old [--lose N]] [--apply]` switches the warm source
   between a plain folder and a btrfs subvolume (see "A base that is a
   subvolume" below). Without `--apply` it changes nothing: it prints its
   preflight and every step with absolute paths.
@@ -311,10 +311,17 @@ runs these steps:
    show those to this user, so it may or may not be in the base. The command
    names such processes by count and uid and never takes them for none:
    - where `sudo -n` works, it reads exactly those processes again, read
-     only (`sudo -n find /proc/<pid>/fd /proc/<pid>/cwd …`, the command line
-     said in the step log), and refuses if one is in the base;
+     only, all of them in one call (`sudo -n find /proc/<pid>/fd
+     /proc/<pid>/cwd … -lname <base>`). The step log says the command line,
+     and says it again only when the set changes. It refuses if one is in
+     the base;
    - otherwise it refuses, unless `--beside-unreadable` is given: then it runs
-     beside them, and the step log says how many and whose.
+     beside them, and the step log says how many and whose. Where sudoers
+     allows `sudo -n true` but refuses that `find`, the refusal says so, and
+     `--beside-unreadable` is the only way on without a change to sudoers.
+
+   While the switch waits for processes to leave the old tree, it looks
+   after 1 s, then 2 s, then every 4 s.
 
    Kernel threads and zombies hold no files and never count. Any other
    failure of the walk is a refusal of its own. The same three answers hold
@@ -388,7 +395,16 @@ A run without `--apply` writes nothing, not even the state folder.
 The tree the base was stays at `<name>.old` until
 `workrift subvolume --drop-old --apply`, which deletes only the tree that the
 last switch recorded there (a subvolume's id or a folder's inode). Nothing
-goes to a trash. `--back` switches to the kept tree in the same way. With no
+goes to a trash. Nothing is deleted that an earlier run did not list. When
+the kept tree holds anything the base lacks, the drop takes two runs. The
+dry run, `workrift subvolume --drop-old`, lists those items and prints the
+command that deletes the tree, `--drop-old --apply --lose N`, where N is
+their count. That command refuses when the count is different by then. Every
+refusal of a drop prints the list, and its next command is that dry run.
+When the base holds all of the kept tree, `--drop-old --apply` deletes it in
+one run. When part of the list does not read, no run deletes the tree. A
+drop that was cut short was acknowledged when it began, so the next run
+finishes it. `--back` switches to the kept tree in the same way. With no
 kept tree, `--back` copies into a new folder.
 
 `init`, `create`, `refresh` and `deps` run themselves at nice 10, and in the
