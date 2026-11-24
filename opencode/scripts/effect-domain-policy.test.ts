@@ -17,7 +17,7 @@
  */
 import { describe, expect, test } from "bun:test"
 import { Glob } from "bun"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { matchingInput } from "../tests/read-path.ts"
 import { lintFixture } from "../tests/lint-fixture.ts"
 import { tmpdir } from "node:os"
@@ -332,8 +332,20 @@ const wantAt = (file: string, rules: ReadonlyArray<Rule>, baseline: ReadonlyArra
   return baseline
 }
 
-const lintSeed = Effect.fn("EffectDomainPolicyTest.lintSeed")(function* (seed: number) {
-  const root = yield* scratch
+/**
+ * A scratch root reached through a symlink, as macOS's default TMPDIR (`/var` → `/private/var`)
+ * and `/tmp` are. The fixture must lint the same through it, whatever TMPDIR the caller gives.
+ */
+const linkedScratch = Effect.gen(function* () {
+  const real = yield* scratch
+  const holder = yield* scratch
+  const link = path.join(holder, "linked-root")
+  symlinkSync(real, link)
+  return link
+})
+
+const lintSeed = Effect.fn("EffectDomainPolicyTest.lintSeed")(function* (seed: number, rootOf: Effect.Effect<string, never, Scope.Scope> = scratch) {
+  const root = yield* rootOf
   put(root, HARD_CONFIG, rooted(hardText()))
   put(root, BASELINE, rooted(baselineText()))
   const random = generator(seed)
@@ -458,6 +470,19 @@ describe(`${HARD_CONFIG}: the production domain's syntax rules over generated pa
         Effect.gen(function* () {
           const found = yield* lintSeed(7)
           expect(found.wrong).toEqual([])
+        }),
+      ),
+    hangGuard("generated-schedule"),
+  )
+
+  test.concurrent(
+    "a fixture root reached through a symlink lints the same: the domain rules still refuse, whatever TMPDIR the caller runs under",
+    () =>
+      runScoped(
+        Effect.gen(function* () {
+          const found = yield* lintSeed(7, linkedScratch)
+          expect(found.wrong).toEqual([])
+          expect(found.refusals).toBeGreaterThan(found.domain.length * 15)
         }),
       ),
     hangGuard("generated-schedule"),

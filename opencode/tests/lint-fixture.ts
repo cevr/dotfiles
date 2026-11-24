@@ -18,14 +18,23 @@ class LintFixtureInput extends Data.TaggedError("LintFixtureInput")<{ readonly m
 
 const refuse = (message: string) => Option.getOrThrowWith(Option.none<never>(), () => new LintFixtureInput({ message }))
 
-const lint = (cwd: string, config: string, files: ReadonlyArray<string>, home: string, timeout: number) => {
+/**
+ * Oxlint resolves the files against its real working directory but matches an override's globs
+ * against the config's own directory as given. A root reached through a symlink (macOS's
+ * `/var` → `/private/var` default TMPDIR, `/tmp`) spells those two directories differently,
+ * so no override matched and the domain rules went silent. Both enter canonical.
+ */
+const lint = (given: string, configGiven: string, files: ReadonlyArray<string>, home: string, timeout: number) => {
+  const cwd = localTestPaths.realpathSync(given)
+  const config = localTestPaths.realpathSync(configGiven)
   const inputs = Schema.decodeUnknownSync(Config)(localTestPaths.readFileSync(config, "utf8"))
-  const own = matchingInput("lint/test-env.ts")
+  const canonical = (file: string) => (localTestPaths.existsSync(file) && localTestPaths.realpathSync(file)) || file
+  const own = canonical(matchingInput("lint/test-env.ts"))
   const installed = resolve(ROOT, "lint/node_modules/oxlint-plugin-effect/dist/plugin.js")
   for (const entry of inputs.jsPlugins) {
     const file = resolve(resolve(config, ".."), entry)
-    if (file === installed) installedInput(file)
-    else if (file !== own) return refuse(`unknown lint fixture plugin: ${file}`)
+    if (canonical(file) === canonical(installed)) installedInput(file)
+    else if (canonical(file) !== own) return refuse(`unknown lint fixture plugin: ${file}`)
   }
   if (files.length === 0) return refuse("lint fixture needs explicit files")
   const tool = installedInput(resolve(ROOT, "node_modules/.bin/oxlint"))
