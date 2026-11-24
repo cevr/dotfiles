@@ -14,9 +14,9 @@
 // It serves the pool what an auth plugin's quota RPC would (opencode/quota.ts's
 // QuotaRpc), since OpenCode's ChatGPT login has none. A failed or refused read
 // is no reading: the pace fails open, never holds. No token is kept or logged.
-import { Cause, Clock, Effect, PubSub, Schema, Stream } from "effect"
+import { Array as Arr, Cause, Clock, Effect, Option, PubSub, Schema, Stream } from "effect"
 import type { QuotaRpc } from "../opencode/quota.ts"
-import { accountWide, USAGE_TIMEOUT_MS, type ClaimAnswer, type QuotaReading, type QuotaWindow, type ResetCredit } from "../quota.ts"
+import { accountWide, TRACKED_WINDOWS, USAGE_TIMEOUT_MS, type ClaimAnswer, type QuotaReading, type QuotaWindow, type ResetCredit } from "../quota.ts"
 
 export const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 
@@ -108,22 +108,78 @@ const usageWindows = (limit: unknown, scope?: string): ReadonlyArray<QuotaWindow
         return read === undefined ? [] : [scope === undefined ? read : { ...read, name: `${read.name}:${scope}` }]
       })
 
+/** A window slot of a usage answer's `rate_limit` (codex-rs rate_limit_window_snapshot.rs): nullable, as the API answers an account without it. */
+const WindowSlot = Schema.NullOr(
+  Schema.Struct({
+    used_percent: Schema.Finite,
+    limit_window_seconds: Schema.Finite.check(Schema.isGreaterThan(0)),
+    reset_at: Schema.optionalKey(Schema.Unknown),
+  }),
+)
+const decodeSlot = Schema.decodeUnknownOption(WindowSlot)
+const SLOTS = ["primary_window", "secondary_window"] as const
+/** A rate limit's two window slots, each as it came: a key may be missing. */
+const decodeSlots = Schema.decodeUnknownOption(Schema.Struct({ primary_window: Schema.optionalKey(Schema.Unknown), secondary_window: Schema.optionalKey(Schema.Unknown) }))
+const decodeObject = Schema.decodeUnknownOption(Schema.Record(Schema.String, Schema.Unknown))
+
+/** The answer's key names, never a value: what a log may say of an answer that did not read. */
+export const usageKeys = (body: Option.Option<unknown>): string =>
+  Option.match(Option.flatMap(body, decodeObject), {
+    onNone: () => "not an object",
+    onSome: (object) => {
+      const top = Arr.match(Object.keys(object).toSorted(), { onEmpty: () => "none", onNonEmpty: (keys) => keys.join(", ") })
+      const limit = Option.flatMap(Option.fromUndefinedOr(object.rate_limit), decodeObject)
+      const nested = Option.match(limit, {
+        onNone: () => "",
+        onSome: (entry) => `; rate_limit keys ${Arr.match(Object.keys(entry).toSorted(), { onEmpty: () => "none", onNonEmpty: (keys) => keys.join(", ") })}`,
+      })
+      return `keys ${top}${nested}`
+    },
+  })
+
 /**
- * The usage endpoint's answer as a reading; anything else is none. A model's
+ * The tracked windows a usage answer says the account has none of. Its two
+ * slots name every window it has: when both are present and read (each a
+ * window or `null`), a tracked window (`5h`, `7d`) neither slot holds is
+ * ABSENT, as for a plan with a weekly limit alone. A slot missing or in a
+ * shape that does not read (`unrecognised`) leaves the unreported windows
+ * UNKNOWN: it could be either.
+ */
+const slotsOf = (limit: { readonly primary_window?: unknown; readonly secondary_window?: unknown }, windows: ReadonlyArray<QuotaWindow>, now: number) => {
+  const unrecognised = SLOTS.flatMap((slot) => Arr.filter([`rate_limit.${slot}`], () => Object.hasOwn(limit, slot) && Option.isNone(decodeSlot(limit[slot]))))
+  const complete = SLOTS.every((slot) => Object.hasOwn(limit, slot) && Option.isSome(decodeSlot(limit[slot])))
+  const absent = Arr.filter(
+    TRACKED_WINDOWS.filter((name) => !windows.some((window) => window.name === name)).map((name) => ({ name, at: now })),
+    () => complete,
+  )
+  return { unrecognised, absent }
+}
+
+/**
+ * The usage endpoint's answer as a reading; anything else is none. Each
+ * tracked window is REPORTED, ABSENT or UNKNOWN (`slotsOf`). A model's
  * own limit (`additional_rate_limits`, by its `limit_name`; codex-rs
  * backend-client types.rs) reads as windows scoped to it (`7d:<limit name>`),
  * which never hold the account. The reset credits' count comes along when the
- * answer carries it (`rate_limit_reset_credits.available_count`).
+ * answer carries it (`rate_limit_reset_credits.available_count`). An answer
+ * with no tracked window read either way is a failed read.
  */
 export const fromUsage = (body: unknown, now: number): QuotaReading | undefined => {
   if (!isRecord(body) || !isRecord(body.rate_limit)) return undefined
   const limit = body.rate_limit
   const windows = usageWindows(limit)
-  if (!windows.length) return undefined
+  const { unrecognised, absent } = slotsOf(Option.getOrElse(decodeSlots(limit), () => ({})), windows, now)
+  if (!windows.length && !absent.length) return undefined
   const additional = (Array.isArray(body.additional_rate_limits) ? body.additional_rate_limits : []).flatMap((extra) =>
     isRecord(extra) && typeof extra.limit_name === "string" && extra.limit_name !== "" ? usageWindows(extra.rate_limit, extra.limit_name) : [],
   )
-  const reading = readingOf([...windows, ...additional], now, limit.limit_reached === true || limit.allowed === false)
+  const read = readingOf([...windows, ...additional], now, limit.limit_reached === true || limit.allowed === false)
+  const reading: QuotaReading = {
+    ...read,
+    usage: { at: now, samples: 1 },
+    unrecognised,
+    ...Arr.match(absent, { onEmpty: () => ({}), onNonEmpty: (absent) => ({ absent }) }),
+  }
   const credits = body.rate_limit_reset_credits
   return isRecord(credits) && finite(credits.available_count)
     ? { ...reading, resets: { available: Math.max(0, credits.available_count), credits: [] } }
@@ -258,12 +314,18 @@ export const make = (options: Options) =>
         const login = yield* options.login(credentialID)
         if (login === undefined) return undefined
         const url = options.url ?? USAGE_URL
-        const usage = fromUsage(yield* get(url, login), yield* Clock.currentTimeMillis)
-        if (usage === undefined) return undefined
+        const raw = Option.fromUndefinedOr(yield* get(url, login))
+        if (Option.isNone(raw)) return undefined
+        const now = yield* Clock.currentTimeMillis
+        const usage = Option.fromUndefinedOr(fromUsage(raw.value, now))
+        if (Option.isNone(usage)) {
+          yield* Effect.logWarning(`dotfiles-opencode.pool: the ChatGPT usage answer did not read (${usageKeys(raw)}); the read counts as failed`)
+          return undefined
+        }
         const reading =
-          (usage.resets?.available ?? 0) > 0
-            ? withCredits(usage, yield* get(creditsUrl(url), login).pipe(Effect.orElseSucceed(() => undefined)))
-            : usage
+          (usage.value.resets?.available ?? 0) > 0
+            ? withCredits(usage.value, yield* get(creditsUrl(url), login).pipe(Effect.orElseSucceed(() => undefined)))
+            : usage.value
         yield* keep(credentialID, reading)
         return reading
       }).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
