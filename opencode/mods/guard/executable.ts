@@ -1,8 +1,9 @@
 // The keychain reader's execution plan. Wrapper options locate the next
 // executable; runtime options say which code runs before its entry point.
 import { Array as Arr, Option } from "effect"
+import { compoundList, type ShellList, type ShellNode } from "./compound.ts"
 import { basename, dirname, resolve } from "./path.ts"
-import { backquoteEnd, COMMAND_STARTS, expandWord, SHELLS, shellInput, shellSegments, simpleCommands, type ShellSegment, substitutionEnd, type Word } from "./shell-line.ts"
+import { backquoteEnd, COMMAND_STARTS, expandWord, SHELLS, shellInput, simpleCommands, substitutionEnd, type Word } from "./shell-line.ts"
 import { gitSubcommand } from "./verdict.ts"
 
 type OptionKind = "flag" | "value" | "directory" | "manifest" | "preload" | "code" | "module" | "stop" | "replace" | "check"
@@ -366,7 +367,8 @@ const expanded = (entry: Word, place: ExecutionPlace, vars: ReadonlyMap<string, 
 }
 
 /** Expand the finite readings of a word; never execute substitutions or infer an environment value. */
-const alternatives = (entry: Word, place: ExecutionPlace, bindings: Bindings): Alternatives => {
+const alternatives = (entry: Word, state: ShellState): Alternatives => {
+  const { place, bindings } = state
   const text = expandWord(entry, place.home, expansionCwd(place))
   if (entry.singleQuoted) return [text]
   let values: Alternatives = [""]
@@ -375,11 +377,12 @@ const alternatives = (entry: Word, place: ExecutionPlace, bindings: Bindings): A
   for (let match = expansions.exec(text); match; match = expansions.exec(text)) {
     const [use, braces, colon, fallback, bare] = match
     const prefix = text.slice(at, match.index)
-    const dynamic = substitutionReading(text, match.index, use)
+    const dynamic = substitutionReading(text, match.index, use, state)
     const choices = Option.getOrElse(Option.map(dynamic, ({ value }) => [value]), () => {
       const name = braces || bare || ""
       const otherwise = Option.fromUndefinedOr(fallback)
-      return (bindings.get(name) || defaultValues(name, otherwise)).map((choice) => defaultValue(choice, colon || "", otherwise))
+      const defaultReading = () => Option.getOrElse(Option.map(otherwise, (value) => alternatives(word(value), state)), () => [unknownTarget])
+      return variableChoices(name, bindings.get(name), colon || "", defaultReading)
     })
     values = values.flatMap((value) => choices.map((choice) => value + prefix + choice))
     at = Option.getOrElse(Option.map(dynamic, ({ end }) => end), () => expansions.lastIndex)
@@ -388,15 +391,16 @@ const alternatives = (entry: Word, place: ExecutionPlace, bindings: Bindings): A
   return values.map((value) => value + text.slice(at))
 }
 
-const substitutionReading = (text: string, at: number, opening: string): Option.Option<{ readonly end: number; readonly value: string }> => {
-  if (opening === "$(") return Option.some(substitutionValue(text, at + 2, substitutionEnd(text, at + 2)))
-  if (opening === "`") return Option.some(substitutionValue(text, at + 1, backquoteEnd(text, at + 1)))
+const substitutionReading = (text: string, at: number, opening: string, state: ShellState): Option.Option<{ readonly end: number; readonly value: string }> => {
+  if (opening === "$(") return Option.some(substitutionValue(text, at + 2, substitutionEnd(text, at + 2), state))
+  if (opening === "`") return Option.some(substitutionValue(text, at + 1, backquoteEnd(text, at + 1), state))
   return Option.none()
 }
 
-const substitutionValue = (text: string, start: number, end: number) => ({
-  end, value: producerValue(shellSegments(text.slice(start, end - 1), true).some(({ words }) => producesHistory(words))),
-})
+const substitutionValue = (text: string, start: number, end: number, state: ShellState) => {
+  const stream = walkList(compoundList(text.slice(start, end - 1)), state, emptyStream, MAX_CODE_DEPTH).output
+  return { end, value: producerValue(stream.history) }
+}
 
 const producerValue = (history: boolean): string => {
   if (history) return historyTarget
@@ -416,28 +420,19 @@ const producesHistory = (words: ReadonlyArray<Word>): boolean => {
   return false
 }
 
-const defaultValues = (name: string, fallback: Option.Option<string>): Alternatives => {
-  if (/^\d+$/.test(name) && Option.isSome(fallback)) return [literalDefault(fallback.value)]
-  return [unknownTarget]
+const variableChoices = (name: string, bound: Alternatives | void, colon: string, fallback: () => Alternatives): Alternatives => {
+  if (!bound && /^\d+$/.test(name)) return fallback()
+  if (!bound) return [unknownTarget]
+  return bound.flatMap((value) => {
+    if (colon === ":" && value === "") return fallback()
+    return [value]
+  })
 }
 
-const defaultValue = (value: string, colon: string, fallback: Option.Option<string>): string => {
-  if (colon === ":" && value === "" && Option.isSome(fallback)) return literalDefault(fallback.value)
-  return value
-}
-
-const literalDefault = (value: string): string => {
-  const opening = value.match(/^\$\(|^`/)?.[0] || ""
-  const substitution = substitutionReading(value, 0, opening)
-  if (Option.isSome(substitution)) return substitution.value.value
-  if (/[$`]/.test(value)) return unknownTarget
-  return value
-}
-
-const bind = (entry: Word, place: ExecutionPlace, bindings: Bindings): Bindings => {
+const bind = (entry: Word, state: ShellState): Bindings => {
   const split = entry.text.indexOf("=")
-  const values = alternatives({ ...entry, bareStart: true, text: entry.text.slice(split + 1) }, place, bindings)
-  return new Map([...bindings, [entry.text.slice(0, split), values]])
+  const values = alternatives({ ...entry, bareStart: true, text: entry.text.slice(split + 1) }, state)
+  return new Map([...state.bindings, [entry.text.slice(0, split), values]])
 }
 
 const initialBindings = (positionals: ReadonlyArray<string>): Bindings =>
@@ -470,60 +465,99 @@ const directoryAt = (at: Directory, target: string): Directory => {
 }
 
 /** Commands and their ordered source inputs, including inline shell commands in their actual execution position. */
-export const executionPlan = (line: string, place: ExecutionPlace, depth = -1): ReadonlyArray<Execution> => {
-  const result: Array<Execution> = []
+export const executionPlan = (line: string, place: ExecutionPlace, depth = -1): ReadonlyArray<Execution> =>
+  walkList(compoundList(line), initialState(place), emptyStream, depth).commands
+
+const initialState = (place: ExecutionPlace): ShellState => {
   const env = place.env || new Map<string, string>()
-  let state: ShellState = { place: { ...place, env }, vars: env, bindings: initialBindings(place.positionals || []), directories: [], loops: [] }
-  const scopes: Array<ShellState> = []
-  let piped: ReadonlyArray<Word> = []
-  let inPipeline = false
-  for (const [index, { words, pipe, boundary }] of withLoopInput(shellSegments(line, true)).entries()) {
-    if (boundary === "enter") {
-      scopes.push(state)
-      inPipeline = false
-      continue
-    }
-    if (boundary === "leave") {
-      state = scopes.pop() || state
-      inPipeline = false
-      piped = []
-      continue
-    }
-    const run = plannedStep(words, piped, state, depth, index)
-    if (!pipe && (!inPipeline || isLoop(words[0]) || shellBody(words)[0]?.text === "read")) state = run.state
-    inPipeline = pipe
-    piped = pipelineInput(pipe, words)
-    for (const command of run.commands) {
-      result.push(command)
-      if (depth < MAX_CODE_DEPTH) result.push(...inlineCommands(command, place.home, depth + 1))
-    }
-  }
-  return result
+  return { place: { ...place, env }, vars: env, bindings: initialBindings(place.positionals || []), directories: [], loops: [], functions: new Map(), calls: [] }
 }
 
-/** A redirection after `done` feeds the matching read condition, not its last body command. */
-const withLoopInput = (segments: ReadonlyArray<ShellSegment>): ReadonlyArray<ShellSegment> => {
-  const openings: Array<number> = []
-  const replacements = new Map<number, ShellSegment>()
-  for (const [index, segment] of segments.entries()) {
-    const [head, marker, input] = segment.words
-    if (!head?.bareStart) continue
-    if (head.text === "for" || head.text === "while" || head.text === "until") openings.push(index)
-    if (head.text !== "done") continue
-    const opening = Option.fromUndefinedOr(openings.pop())
-    if (Option.isNone(opening) || marker?.text !== "<<<" || !input) continue
-    const start = segments[opening.value]
-    if (start && isReadLoop(start.words)) replacements.set(opening.value, { ...start, words: [...start.words, marker, input] })
-  }
-  return segments.map((segment, index) => replacements.get(index) || segment)
+interface Stream {
+  readonly history: boolean
+  readonly words: ReadonlyArray<Word>
+}
+const emptyStream: Stream = { history: false, words: [] }
+const streamWords = (stream: Stream): ReadonlyArray<Word> => {
+  if (stream.history) return [word(historyTarget)]
+  return stream.words
 }
 
-const pipelineInput = (pipe: boolean, words: ReadonlyArray<Word>): ReadonlyArray<Word> => {
-  if (!pipe) return []
-  const literals = literalInput(words)
-  if (literals.length > 0) return literals
-  if (producesHistory(words)) return [word(historyTarget)]
-  return []
+interface WalkStep extends ExecutionStep {
+  readonly output: Stream
+}
+
+const walkList = (body: ShellList, start: ShellState, input: Stream, depth: number): WalkStep => {
+  let state = start
+  let output = emptyStream
+  const commands: Array<Execution> = []
+  for (const pipeline of body) {
+    const run = walkPipeline(pipeline, state, input, depth)
+    state = run.state
+    output = mergeStreams(output, run.output)
+    commands.push(...run.commands)
+  }
+  return { state, output, commands }
+}
+
+const mergeStreams = (left: Stream, right: Stream): Stream => ({
+  history: left.history || right.history,
+  words: [...left.words, ...right.words],
+})
+
+/** The mark on stdin survives every pipe stage, independent of its executable. */
+const walkPipeline = (pipeline: ReadonlyArray<ShellNode>, state: ShellState, input: Stream, depth: number): WalkStep => {
+  const commands: Array<Execution> = []
+  let stream = input
+  let next = state
+  for (const [index, node] of pipeline.entries()) {
+    const run = walkNode(node, state, stream, depth)
+    commands.push(...run.commands)
+    stream = { ...run.output, history: stream.history || run.output.history }
+    if (keepsState(pipeline.length, index, node)) next = run.state
+  }
+  return { state: next, commands, output: stream }
+}
+
+// Keep the accepted direct read handoff; a grouped stage's shell state stays local.
+const keepsState = (length: number, index: number, node: ShellNode): boolean =>
+  length === 1 || (index === length - 1 && node.kind === "command" && Option.isSome(readArgs(node.words)))
+
+const walkNode = (node: ShellNode, state: ShellState, input: Stream, depth: number): WalkStep => {
+  switch (node.kind) {
+    case "command": return walkCommand(node.words, state, input, depth)
+    case "group": {
+      const run = walkList(node.body, state, input, depth)
+      if (node.local) return { ...run, state }
+      return run
+    }
+    case "function": return { ...emptyStep({ ...state, functions: new Map([...state.functions, [node.name, node.body]]) }), output: emptyStream }
+    case "redirect": return walkNode(node.body, state, redirectedStream(node.input, state, input), depth)
+    case "loop": return walkLoop(node, state, input, depth)
+    case "choice": return walkChoice(node, state, input, depth)
+  }
+}
+
+const walkChoice = (node: Extract<ShellNode, { kind: "choice" }>, state: ShellState, input: Stream, depth: number): WalkStep => {
+  let conditionState = state
+  let output = emptyStream
+  const commands: Array<Execution> = []
+  const branches: Array<ShellState> = []
+  for (const arm of node.arms) {
+    const condition = walkList(arm.condition, conditionState, input, depth)
+    const body = walkList(arm.body, condition.state, input, depth)
+    output = mergeStreams(output, mergeStreams(condition.output, body.output))
+    commands.push(...condition.commands, ...body.commands)
+    conditionState = condition.state
+    branches.push(body.state)
+  }
+  const after = branches.at(-1) || conditionState
+  return { state: { ...after, bindings: joinBindings([conditionState, ...branches]) }, output, commands }
+}
+
+const joinBindings = (frames: ReadonlyArray<ShellState>): Bindings => {
+  const names = new Set(frames.flatMap(({ bindings }) => Array.from(bindings.keys())))
+  return new Map(Array.from(names, (name) => [name, [...new Set(frames.flatMap(({ bindings }) => bindings.get(name) || [unknownTarget]))]]))
 }
 
 interface ShellState {
@@ -531,6 +565,8 @@ interface ShellState {
   readonly vars: ReadonlyMap<string, string>
   readonly bindings: Bindings
   readonly loops: ReadonlyArray<number>
+  readonly functions: ReadonlyMap<string, ShellNode>
+  readonly calls: ReadonlyArray<string>
   readonly directories: ReadonlyArray<Directory>
   readonly previous?: Directory
 }
@@ -548,7 +584,7 @@ const withBinding = (state: ShellState, name: string, values: Alternatives): Exe
 const loopWords = (words: ReadonlyArray<Word>, state: ShellState): Alternatives =>
   words.flatMap((entry) => {
     if (entry.bareStart && /[*?[\]]/.test(entry.text)) return [unknownTarget]
-    return alternatives(entry, state.place, state.bindings)
+    return alternatives(entry, state)
   })
 
 const loopBinding = (state: ShellState, name: string, values: Alternatives): ExecutionStep => {
@@ -563,13 +599,17 @@ const activeTarget = (value: string, loops: ReadonlyArray<number>): string =>
 const loopRead = (args: ReadonlyArray<Word>, piped: ReadonlyArray<Word>, state: ShellState): ExecutionStep => {
   const redirection = args.findIndex((entry) => entry.bareStart && /^[<>]/.test(entry.text))
   const names = args.slice(0, readArgumentEnd(redirection, args.length)).values().filter((entry) => loopName.test(entry.text)).map(({ text }) => text).toArray()
-  if (names.length > 1) return names.reduce(({ state: current }, name) => loopBinding(current, name, [unknownTarget]), emptyStep(state))
-  const name = names[0] || "REPLY"
+  const values = readValues(args, redirection, piped, state)
+  if (names.length < 2) return loopBinding(state, names[0] || "REPLY", values)
+  const uncertain = producerValue(values.some((value) => value.includes(historyTarget)))
+  return names.reduce(({ state: current }, name) => loopBinding(current, name, [uncertain]), emptyStep(state))
+}
+
+const readValues = (args: ReadonlyArray<Word>, redirection: number, piped: ReadonlyArray<Word>, state: ShellState): Alternatives => {
   const source = args[redirection + 1]
-  if (args[redirection]?.text === "<<<" && source) return loopBinding(state, name, loopWords([source], state).flatMap((value) => value.split(/\r?\n/)))
-  if (redirection >= 0) return loopBinding(state, name, [unknownTarget])
-  if (piped.length > 0) return loopBinding(state, name, loopWords(piped, state).flatMap((value) => value.split(/\r?\n/)))
-  return loopBinding(state, name, [unknownTarget])
+  if (args[redirection]?.text === "<<<" && source) return loopWords([source], state).flatMap((value) => value.split(/\r?\n/))
+  if (redirection >= 0 || piped.length === 0) return [unknownTarget]
+  return loopWords(piped, state).flatMap((value) => value.split(/\r?\n/))
 }
 
 const readArgumentEnd = (redirection: number, length: number): number => {
@@ -577,47 +617,94 @@ const readArgumentEnd = (redirection: number, length: number): number => {
   return redirection
 }
 
-const readCondition = (words: ReadonlyArray<Word>): Option.Option<ReadonlyArray<Word>> => {
-  if (!words[0]?.bareStart || (words[0].text !== "while" && words[0].text !== "until")) return Option.none()
-  const command = words.slice(1).findIndex((entry) => !assignment.test(entry.text)) + 1
+const readArgs = (words: ReadonlyArray<Word>): Option.Option<ReadonlyArray<Word>> => {
+  const command = words.findIndex((entry) => !assignment.test(entry.text))
   if (words[command]?.text === "read") return Option.some(words.slice(command + 1))
   return Option.none()
 }
 
-const isReadLoop = (words: ReadonlyArray<Word>): boolean => Option.isSome(readCondition(words))
-
-const isLoop = (word: Word | void): boolean =>
-  word?.bareStart === true && (word.text === "for" || word.text === "while" || word.text === "until")
-
-const shellBody = (words: ReadonlyArray<Word>): ReadonlyArray<Word> =>
-  Arr.dropWhile(words, (entry) => entry.bareStart && COMMAND_STARTS.has(entry.text))
-
-const plannedStep = (words: ReadonlyArray<Word>, piped: ReadonlyArray<Word>, state: ShellState, depth: number, index: number): ExecutionStep => {
-  const [first, second, third, ...rest] = words
-  if (isLoop(first)) {
-    const loop = { ...state, loops: [index, ...state.loops] }
-    if (first?.text === "for" && second && loopName.test(second.text)) {
-      if (third?.text === "in") return loopBinding(loop, second.text, loopWords(rest, state))
-      return loopBinding(loop, second.text, state.place.positionals || [unknownTarget])
-    }
-    const read = readCondition(words)
-    if (Option.isSome(read)) return loopRead(read.value, piped, loop)
-    return loopCondition(words.slice(1), piped, loop, depth)
-  }
-  if (first?.bareStart && first.text === "done") return emptyStep({ ...state, loops: state.loops.slice(1) })
-  if (first?.bareStart && first.text === "fi") return emptyStep(state)
-  const body = shellBody(words)
-  if (body[0]?.text === "read") return loopRead(body.slice(1), piped, state)
-  return executionStep(body, piped, state, depth)
+const walkLoop = (node: Extract<ShellNode, { kind: "loop" }>, state: ShellState, input: Stream, depth: number): WalkStep => {
+  const scoped = { ...state, loops: [node.id, ...state.loops] }
+  const iteration = bindIteration(node.header, scoped)
+  const condition = walkList(node.condition, iteration, input, depth)
+  const body = walkList(node.body, conditionBindings(condition.state, iteration, node.id), input, depth)
+  return { state: { ...body.state, loops: state.loops }, output: mergeStreams(condition.output, body.output), commands: [...condition.commands, ...body.commands] }
 }
 
-const loopCondition = (words: ReadonlyArray<Word>, piped: ReadonlyArray<Word>, state: ShellState, depth: number): ExecutionStep => {
-  if (!words.every(({ text }) => assignment.test(text))) return executionStep(words, piped, state, depth)
-  return words.reduce(({ state: current }, entry) => {
-    const bound = assignments(current, [entry])
-    const name = entry.text.slice(0, entry.text.indexOf("="))
-    return loopBinding(bound, name, bound.bindings.get(name) || [unknownTarget])
-  }, emptyStep(state))
+const conditionBindings = (after: ShellState, before: ShellState, id: number): ShellState => {
+  const bindings = new Map(after.bindings)
+  for (const [name, values] of after.bindings) {
+    if (values !== before.bindings.get(name)) bindings.set(name, values.map((value) => value.replaceAll(unknownTarget, loopMarker(id))))
+  }
+  return { ...after, bindings }
+}
+
+const bindIteration = (header: ReadonlyArray<Word>, state: ShellState): ShellState => {
+  const [name, inWord, ...values] = header
+  if (!name || !loopName.test(name.text)) return state
+  if (inWord?.text === "in") return loopBinding(state, name.text, loopWords(values, state)).state
+  return loopBinding(state, name.text, positionalList(state.place.positionals || [])).state
+}
+
+const redirectedStream = (args: ReadonlyArray<Word>, state: ShellState, prior: Stream): Stream => {
+  const [op, value] = args
+  if (op?.text === "<<<" && value) {
+    const lines = alternatives(value, state).flatMap((entry) => entry.split(/\r?\n/))
+    return outputValues(lines)
+  }
+  if (op?.text.startsWith("<")) return emptyStream
+  return prior
+}
+
+const outputValues = (values: Alternatives): Stream => ({
+  history: values.some((value) => value.includes(historyTarget)),
+  words: values.map(word),
+})
+
+const walkCommand = (words: ReadonlyArray<Word>, state: ShellState, input: Stream, depth: number): WalkStep => {
+  const read = readArgs(words)
+  if (Option.isSome(read)) return { ...loopRead(read.value, streamWords(input), state), output: emptyStream }
+  const [head, ...args] = words
+  const body = state.functions.get(head?.text || "")
+  if (body && head) return callFunction(head.text, body, args, state, input, depth)
+  if (head?.text === "break" || head?.text === "continue" || head?.text === "return") return { ...emptyStep(state), output: emptyStream }
+  const run = executionStep(words, streamWords(input), state, depth)
+  const commands = run.commands.flatMap((command) => withInline(command, state, depth))
+  const output = commandOutput(words, state, run.commands)
+  return { ...run, commands, output }
+}
+
+const withInline = (command: Execution, state: ShellState, depth: number): ReadonlyArray<Execution> => {
+  if (depth >= MAX_CODE_DEPTH) return [command]
+  return [command, ...inlineCommands(command, state.place.home, depth + 1)]
+}
+
+const callFunction = (name: string, body: ShellNode, args: ReadonlyArray<Word>, caller: ShellState, input: Stream, depth: number): WalkStep => {
+  if (caller.calls.includes(name)) return { ...emptyStep(caller), output: emptyStream }
+  const positionals = shellPositionals("function", args, caller)
+  const frame = { ...caller, place: { ...caller.place, positionals }, bindings: withPositionals(caller.bindings, initialBindings(positionals)), calls: [...caller.calls, name] }
+  const run = walkNode(body, frame, input, depth)
+  const bindings = withPositionals(run.state.bindings, caller.bindings)
+  return { ...run, state: { ...run.state, place: { ...run.state.place, positionals: caller.place.positionals }, bindings, calls: caller.calls } }
+}
+
+const isPositional = (key: string): boolean => /^\d+$|^@$/.test(key)
+const withPositionals = (target: Bindings, source: Bindings): Bindings => {
+  const bindings = new Map(target)
+  for (const key of bindings.keys()) {
+    if (isPositional(key)) bindings.delete(key)
+  }
+  for (const [key, value] of source) {
+    if (isPositional(key)) bindings.set(key, value)
+  }
+  return bindings
+}
+
+const commandOutput = (words: ReadonlyArray<Word>, state: ShellState, commands: ReadonlyArray<Execution>): Stream => {
+  if (commands.length === 0) return emptyStream
+  const history = producesHistory(words) || words.some((entry) =>
+    alternatives(entry, state).some((value) => activeTarget(value, state.loops).includes(historyTarget)))
+  return { history, words: literalInput(words) }
 }
 
 const changeDirectory = (head: string, args: ReadonlyArray<Word>, state: ShellState): ShellState => {
@@ -663,12 +750,17 @@ const executionStep = (words: ReadonlyArray<Word>, piped: ReadonlyArray<Word>, s
     return { ...input, source: { ...input.source, text: expanded(input.source, runAt, vars) } }
   })
   const syntaxOnly = syntaxCheck(head, args, code)
-  const positionals = shellPositionals(head, args, state)
+  const positionals = codePositionals(code, head, args, state)
   const command = { head, command: invocation.words.map(({ text }) => text).join(" "), cwd: runAt.cwd, unknownCwd: runAt.unknownCwd, env: invocation.env, code, sourceDepth, syntaxOnly, positionals }
   if (head === "git") return { state, commands: gitArgv(args, { ...place, ...at }, state).map((actual) => ({ ...command, args: actual })) }
   if (head !== "find") return { state, commands: [{ ...command, args }] }
   const tasks = findTasks(args).flatMap((task) => executionStep(task, [], { ...state, place: runAt }, sourceDepth).commands)
   return { state, commands: [{ ...command, args }, ...tasks] }
+}
+
+const codePositionals = (code: ReadonlyArray<CodeInput>, head: string, args: ReadonlyArray<Word>, state: ShellState): ReadonlyArray<string> => {
+  if (code.length === 0) return []
+  return shellPositionals(head, args, state)
 }
 
 const findTasks = (args: ReadonlyArray<Word>): ReadonlyArray<ReadonlyArray<Word>> => {
@@ -686,16 +778,18 @@ const findTasks = (args: ReadonlyArray<Word>): ReadonlyArray<ReadonlyArray<Word>
 const assignments = (state: ShellState, words: ReadonlyArray<Word>): ShellState => ({
   ...state,
   vars: bindingList(words, state.vars, state.place),
-  bindings: words.reduce((known, entry) => bind(entry, state.place, known), state.bindings),
+  bindings: words.reduce((bindings, entry) => bind(entry, { ...state, bindings }), state.bindings),
 })
 
 const gitArgv = (args: ReadonlyArray<Word>, place: ExecutionPlace, state: ShellState): ReadonlyArray<ReadonlyArray<Word>> =>
-  args.reduce<ReadonlyArray<ReadonlyArray<Word>>>((rows, arg) =>
-    rows.flatMap((row) => alternatives(arg, place, state.bindings).map((text) => [...row, { ...arg, text: activeTarget(text, state.loops) }])), [[]])
+  args.reduce<ReadonlyArray<ReadonlyArray<Word>>>((rows, arg) => {
+    const values = alternatives(arg, { ...state, place }).map((text) => ({ ...arg, text: activeTarget(text, state.loops) }))
+    return rows.flatMap((row) => values.map((value) => [...row, value]))
+  }, [[]])
 
 const shellPositionals = (head: string, args: ReadonlyArray<Word>, state: ShellState): ReadonlyArray<string> => {
   const words = positionalWords(head, args)
-  return words.map((arg) => activeTarget(singleValue(alternatives(arg, state.place, state.bindings)), state.loops))
+  return words.map((arg) => activeTarget(singleValue(alternatives(arg, state)), state.loops))
 }
 
 const positionalWords = (head: string, args: ReadonlyArray<Word>): ReadonlyArray<Word> => {

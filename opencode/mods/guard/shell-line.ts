@@ -47,6 +47,8 @@ export interface ShellSegment {
   readonly words: ReadonlyArray<Word>
   readonly pipe: boolean
   readonly boundary?: "enter" | "leave"
+  readonly joined?: true
+  readonly caseEnd?: true
 }
 
 export const shellSegments = (line: string, bindingSyntax = false): ReadonlyArray<ShellSegment> => {
@@ -58,9 +60,9 @@ export const shellSegments = (line: string, bindingSyntax = false): ReadonlyArra
     if (draft.started) words.push({ text: draft.text, bareStart: draft.bareStart, singleQuoted: draft.singleQuoted })
     draft = newDraft()
   }
-  const endCommand = (pipe = false) => {
+  const endCommand = (pipe = false, joined?: true) => {
     endWord()
-    if (words.length > 0 || pipe) commands.push({ words, pipe })
+    if (words.length > 0 || pipe) commands.push({ words, pipe, joined })
     words = []
   }
   const add = (char: string, bare: boolean) => {
@@ -137,6 +139,16 @@ export const shellSegments = (line: string, bindingSyntax = false): ReadonlyArra
   }
   const separator = (at: number, char: string): number => {
     const or = char === "|" && line.charAt(at + 1) === "|"
+    if (bindingSyntax && (char === "(" || char === ")")) {
+      endCommand(false, true)
+      commands.push({ words: [], pipe: false, boundary: groupBoundary(char) })
+      return at + 1
+    }
+    if (bindingSyntax && char === ";" && /^[;&]/.test(line.charAt(at + 1))) {
+      endCommand()
+      commands.push({ words: [], pipe: false, caseEnd: true })
+      return at + 2 + Number(line.startsWith(";;&", at))
+    }
     endCommand(char === "|" && !or)
     if (char === "(") commands.push({ words: [], pipe: false, boundary: "enter" })
     if (char === ")") commands.push({ words: [], pipe: false, boundary: "leave" })
@@ -161,6 +173,11 @@ export const shellSegments = (line: string, bindingSyntax = false): ReadonlyArra
   while (at < line.length) at = step(at)
   endCommand()
   return commands
+}
+
+const groupBoundary = (char: string): "enter" | "leave" => {
+  if (char === "(") return "enter"
+  return "leave"
 }
 
 /** Keep an unwalked substitution in its operand rather than treating its body as sibling commands. */

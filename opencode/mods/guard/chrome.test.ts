@@ -133,6 +133,53 @@ describe("keychain trigger words used as data", () => {
 })
 
 describe("old checkouts in an executable position", () => {
+  test("history provenance follows the stream through arbitrary stages and nested substitutions", () => {
+    const producer = "git log -1 --format=%H HEAD~1"
+    const consumer = 'read -r REV; git checkout "$REV"; npm test'
+    const remedies = (line: string) => bareLaunches(line, place).map(({ remedy }) => remedy)
+    const stages = ["head -1", "tail -1 | sed -n '1p'", "custom-filter | sort | cut -f1", "{ cat; }", "(cat)"]
+    for (const filter of stages) {
+      expect(remedies(`${producer} | ${filter} | (${consumer})`)).toEqual(["unknown"])
+      expect(remedies(`printf '%s\\n' main | ${filter} | (${consumer})`)).toEqual([])
+    }
+    const nested = "printf '%s' \"$(printf '%s' \"$(" + producer + ")\")\""
+    const assignment = 'REV=$(' + nested + ' | unknown-filter); git checkout "$REV"; npm test'
+    expect(remedies(assignment)).toEqual(["unknown"])
+    expect(remedies(`history() { ${producer} | unknown-filter; }; REV=$(history); git checkout "$REV"; npm test`)).toEqual(["unknown"])
+    expect(remedies(`{ ${consumer}; } <<< "$(${producer})"`)).toEqual(["unknown"])
+    expect(remedies(`{ ${consumer}; } <<< main`)).toEqual([])
+    expect(remedies(`history() { ${producer}; }; git checkout "$BRANCH"; npm test`)).toEqual([])
+    expect(remedies(`${nested} | unknown-filter | (read -r REV; git checkout "$BRANCH"; npm test)`)).toEqual([])
+    expect(remedies(`${producer} | head -1 | (read -r REV; git checkout "$REV"; git status)`)).toEqual([])
+    expect(remedies(`export CHROME="${SHIM_PATH}"; ${assignment}`)).toEqual([])
+  })
+
+  test("the same stream binding works in each compound form and in pairs of nested forms", () => {
+    const wrap = [
+      (body: string) => `(${body})`,
+      (body: string) => `{ ${body}; }`,
+      (body: string) => `if true; then ${body}; fi`,
+      (body: string) => `if false; then true; elif true; then ${body}; fi`,
+      (body: string) => `if false; then true; else ${body}; fi`,
+      (body: string) => `while true; do ${body}; break; done`,
+      (body: string) => `until false; do ${body}; break; done`,
+      (body: string) => `for _ in once; do ${body}; done`,
+      (body: string) => `case yes in yes) ${body} ;; esac`,
+      (body: string, level = 0) => `{ fixture${level}() { ${body}; }; fixture${level}; }`,
+      (body: string) => `{ true && ${body}; }`,
+      (body: string) => `{ false || ${body}; }`,
+    ]
+    const body = 'read -r REV; git checkout "$REV"; npm test'
+    const forms = [body, ...wrap.map((one) => one(body)), ...wrap.flatMap((outer) => wrap.map((inner) => outer(inner(body, 1))))]
+    for (const [producer, expected] of [["git rev-list -n1 HEAD~1", "unknown"], ["printf '%s\\n' main", "allow"]] as const) {
+      for (const form of forms) {
+        const line = `${producer} | ${form}`
+        const actual = bareLaunches(line, place)[0]?.remedy || "allow"
+        expect([line, actual]).toEqual([line, expected])
+      }
+    }
+  })
+
   const lines = [
     "git -C bisect -c advice.detachedHead=false bisect run ./measure.sh",
     "git bisect start HEAD v1 && sh ./measure.sh",
