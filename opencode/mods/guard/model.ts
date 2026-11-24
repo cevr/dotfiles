@@ -23,7 +23,8 @@
 // root runs its sleep, since a sleep loses nothing.
 import { Context, Effect, Layer, Match, Option, Predicate } from "effect"
 import { type BareLaunch, bareLaunches, KeychainPrompt, keychainReason, runtimeRuns, scriptLaunch } from "./chrome.ts"
-import { DEFAULT_HEAVY, isHeavy } from "./heavy.ts"
+import { parseShell } from "./command-line.ts"
+import { DEFAULT_HEAVY, heavyCommand } from "./heavy.ts"
 import { killsByPattern, killVerdict } from "./kill.ts"
 import { admissionLauncher, launcherName, launcherScript, type Limits } from "./launcher.ts"
 import { resolve } from "./path.ts"
@@ -186,9 +187,10 @@ export const policyLayer = (config: PolicyConfig) =>
 
       const shellFor = Effect.fn("ShellPolicy.shellFor")(function* (shell: string, command: string) {
         const helper = config.admission
-        if (Predicate.isNotUndefined(helper) && (isHeavy(command, DEFAULT_HEAVY) || isHeavy(command, config.heavy)))
-          return yield* launchers.install(launcherName(shell), admissionLauncher(shell, helper, command))
-        if (!shell.startsWith("/") || !isHeavy(command, config.heavy)) return shell
+        const parsed = parseShell(command)
+        if (Predicate.isNotUndefined(helper) && heavyCommand(parsed, [...DEFAULT_HEAVY, ...config.heavy]))
+          return yield* launchers.install(launcherName(shell), admissionLauncher(shell, helper, parsed))
+        if (!shell.startsWith("/") || !heavyCommand(parsed, config.heavy)) return shell
         const scope = yield* scopes.available
         const ionice = yield* scopes.ionice
         return yield* launchers.install(launcherName(shell), launcherScript({ shell, limits: config.limits, scope, ionice })).pipe(

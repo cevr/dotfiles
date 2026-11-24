@@ -5,6 +5,7 @@ import { Console, Data, Effect, FileSystem, Path, Predicate, Schedule, Schema } 
 import { expect, it } from "effect-bun-test"
 import fixtures from "../mods/guard/fixtures/holder-v1.json"
 import { admissionLauncher } from "../mods/guard/launcher.ts"
+import { parseShell } from "../mods/guard/command-line.ts"
 import { admittedJobArgv } from "../mods/wake/process/supervise.ts"
 import { scratch } from "./scratch.ts"
 
@@ -59,7 +60,7 @@ it.scopedLive("standalone, Guard and Wake carry modeled Go, Bun, Make and Ninja 
     const helper = [exe, cli]
     const command = "GOENV=off GOMAXPROCS=2 go test -p 1 -parallel 4 './exact argument'"
     const file = path.join(folder, "guard-wrapper")
-    yield* fs.writeFileString(file, admissionLauncher("/bin/sh", helper, command), { mode: 0o700 })
+    yield* fs.writeFileString(file, admissionLauncher("/bin/sh", helper, parseShell(command)), { mode: 0o700 })
     for (const tool of ["go", "bun", "make", "ninja", "unmodeled"]) {
       yield* fs.writeFileString(path.join(folder, tool), "#!/bin/sh\nprintf 'payload ran\\n' > \"$HCL_MARKER\"\nexec /bin/sleep 2\n", { mode: 0o700 })
     }

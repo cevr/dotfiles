@@ -1,8 +1,9 @@
 import { Option, Predicate } from "effect"
 import { widthOf, type Width } from "./admission-wire.ts"
+import type { CommandEnvironment } from "./command-line.ts"
 
 export type ToolWidth = Width | "invalid"
-export type ToolEnvironment = Readonly<Partial<Record<string, string>>>
+type ToolEnvironment = CommandEnvironment
 const numeric = (n: number): Width => Option.getOrElse(widthOf(n), () => "full" as const)
 export const serial = numeric(1)
 export const readWidth = (value: string): ToolWidth => {

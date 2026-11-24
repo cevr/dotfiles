@@ -2,7 +2,8 @@ import { expect, test } from "bun:test"
 import { cpuDemand } from "./admission.ts"
 import { type Width } from "./admission-wire.ts"
 import { argvWidth, demandOnVolume, shellWidth } from "./check-demand.ts"
-import { admissionLauncher, argvPurpose } from "./launcher.ts"
+import { parseArgv, parseShell } from "./command-line.ts"
+import { admissionLauncher, admissionPurpose } from "./launcher.ts"
 import { bunTestWidth, goTestWidth, makeWidth, ninjaWidth, type ToolWidth } from "./tool-width.ts"
 
 const pool = 10_000
@@ -98,11 +99,11 @@ test("literal wrappers preserve class and argv; width follows the effective envi
   ]
   for (const [source, width] of cases) {
     expect(String(shellWidth(source))).toBe(String(width))
-    expect(admissionLauncher("/bin/sh", ["/bin/admit"], source)).toContain("'--' '/bin/sh' \"$@\"")
+    expect(admissionLauncher("/bin/sh", ["/bin/admit"], parseShell(source))).toContain("'--' '/bin/sh' \"$@\"")
   }
   expect(String(shellWidth("go test -p=2", { GOMAXPROCS: "3", GOENV: "off" }))).toBe("6")
   expect(demandOnVolume({ purpose: "vm", width: "unknown" }, "vol").keys).toEqual(["vm"])
   expect(demandOnVolume({ purpose: "inventory", width: "full" }, "vol").keys).toEqual(["trace"])
-  expect(argvPurpose(["/usr/bin/du", "-hs", "path with a space"])).toBe("inventory")
-  expect(argvPurpose(["/bin/sh", "-c", "bun scripts/accept.ts"])).toBe("land-check")
+  expect(admissionPurpose(parseArgv(["/usr/bin/du", "-hs", "path with a space"]))).toBe("inventory")
+  expect(admissionPurpose(parseArgv(["/bin/sh", "-c", "bun scripts/accept.ts"]))).toBe("land-check")
 })

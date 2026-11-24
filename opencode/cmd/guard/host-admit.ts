@@ -4,9 +4,10 @@ import { Config, Console, Effect, FileSystem, Option, Path, Predicate, Schema } 
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { AdmissionUnavailable } from "@dotfiles/opencode-guard/admission"
 import { Counter, OpaqueId, Purpose, qualifiedForm, Request, Width } from "@dotfiles/opencode-guard/admission-wire"
-import { argvModel, joinWidth, readWidth } from "@dotfiles/opencode-guard/check-demand"
+import { checkModel, joinWidth, readWidth } from "@dotfiles/opencode-guard/check-demand"
+import { parseArgv } from "@dotfiles/opencode-guard/command-line"
 import { Holder } from "@dotfiles/opencode-guard/host-resources"
-import { argvPurpose } from "@dotfiles/opencode-guard/launcher"
+import { admissionPurpose } from "@dotfiles/opencode-guard/launcher"
 import { type ForegroundInterrupt } from "@dotfiles/opencode-guard/process/terminal"
 import * as Admission from "./admission.ts"
 
@@ -141,7 +142,8 @@ const widthHint = (value: string) => {
   return Effect.succeed(width)
 }
 export const checkSpec = Effect.fn("HostAdmit.checkSpec")(function* (payload: ReadonlyArray<string>, options: ReadonlyArray<string>, enforced: boolean) {
-  const inferred = argvPurpose(payload)
+  const command = parseArgv(payload, env)
+  const inferred = admissionPurpose(command)
   let purpose = purposeOf(inferred)
   let hint = Option.none<Effect.Success<ReturnType<typeof widthHint>>>()
   const seen = new Set<string>()
@@ -158,7 +160,7 @@ export const checkSpec = Effect.fn("HostAdmit.checkSpec")(function* (payload: Re
   if (inferred !== "check" && purpose.value !== inferred) return yield* bad()
   if (enforced && Option.isSome(hint) && Predicate.isNumber(hint.value))
     return { purpose: purpose.value, width: hint.value, imposed: true, advice: "The Linux CPU controller enforces the declared width." }
-  const model = argvModel(payload, env)
+  const model = checkModel(command)
   const width = joinWidth(model.width, Option.getOrElse(hint, () => model.width))
   if (width === "invalid") return yield* new AdmissionUnavailable({ reason: "invalid-width" })
   return { purpose: purpose.value, width, imposed: false, advice: model.advice }
