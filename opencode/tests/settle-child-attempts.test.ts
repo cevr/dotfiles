@@ -8,6 +8,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { describe, expect, it } from "effect-bun-test"
 import { Answer, chatEvents } from "../sim/verify-model.ts"
 import { message, type Reads, type SessionInfo, type ShellInfo } from "../mods/subagents/opencode/view.ts"
+import { envelopesOf } from "../mods/subagents/envelope.ts"
 import { subagents, visible } from "../mods/subagents/subagent-row.ts"
 import { Diagnostic, Phase, Undetermined } from "../mods/kernel/child-lifecycle.ts"
 import { lifecycleEventTypes } from "../mods/kernel/lifecycle-event-types.ts"
@@ -86,6 +87,7 @@ interface SdkOptions {
   readonly database: { readonly path: string }
   readonly events: { readonly persist: true }
   readonly models: { readonly fetch: false }
+  readonly fs: { readonly filewatcher: false }
   readonly config: Schema.JsonObject
 }
 
@@ -177,6 +179,12 @@ const messageText = (item: typeof Wire.Type.messages[number]) => {
   if (Predicate.isString(item.content)) return item.content
   return ""
 }
+/** The host sends subagent notices as user-role messages. They can follow a fixture request in the same step. */
+const isFixtureInput = (item: typeof Wire.Type.messages[number]) => {
+  if (item.role !== "user") return false
+  return !envelopesOf(item.content, "subagent").some(({ start, end }) => start === 0 && end === item.content.length)
+}
+
 const modelFor = (gate: string) => Effect.gen(function* () {
   const state = yield* Ref.make({ requests: 0, filtered: false, retried: false, content: "", script: "not reached", tools: "" })
   const affirmExit = yield* Deferred.make<boolean>()
@@ -190,7 +198,7 @@ const modelFor = (gate: string) => Effect.gen(function* () {
     ))
     const system = body.messages.find((item) => item.role === "system")
     const title = Boolean(system && messageText(system).includes("You name conversations"))
-    const latest = body.messages.findLastIndex((item) => item.role === "user")
+    const latest = body.messages.findLastIndex(isFixtureInput)
     const prompt = Option.getOrElse(Option.map(Arr.get(body.messages, latest), messageText), () => "")
     if (!title && hasInput(prompt, envelopeInterrupt)) return yield* Effect.never
     const shellAnswered = body.messages.slice(latest + 1).some((item) => item.role === "tool")
@@ -286,6 +294,8 @@ const host = Effect.fn("LifecycleFixture.host")(function* (
   return yield* Effect.acquireRelease(
     promised("real OpenCode boot failed", () => sdk.OpenCode.create({
       database: { path: path.join(base, "fixture.sqlite") }, events: { persist: true }, models: { fetch: false },
+      // The fixture drives shell and lifecycle events, not file edits; don't attach macOS file watchers at each boot.
+      fs: { filewatcher: false },
       config: { directory: base, project: false, content: encode({
         model: "sim/sim-model", providers: { sim: provider },
         plugins,
