@@ -18,6 +18,7 @@ import { Array as Arr, DateTime, Effect, Option, Schema } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
 import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
+import { SIM_OPUS } from "./models.fixture.ts"
 
 const { seeded } = simulationRunner("cmd/orchestrate/orchestrate.sim.test.ts")
 
@@ -133,7 +134,7 @@ const boot = (seed: number, spec: Spec) =>
     const seen: Array<Seen> = []
     const calls: Array<CallLine> = []
     const asked: Array<readonly [string, string]> = []
-    const world = World.make({ seed, start: now, script: model(seen, spec.tokens), models: [SIM_MODEL], model: { providerID: "sim", id: "sim-model" } })
+    const world = World.make({ seed, start: now, script: model(seen, spec.tokens), models: [SIM_MODEL, SIM_OPUS], model: { providerID: "sim", id: "sim-model" } })
     const answers = { admit: Option.some(CODEX_LINES.admit), hold: Option.some(CODEX_LINES.hold), unpaced: Option.none<(typeof CODEX_LINES)["admit" | "hold"]>() }
     const codex = (model: string, role: string) => {
       asked.push([model, role])
@@ -182,18 +183,18 @@ seeded("codex pace: a subagent on a Codex-paced provider asks the Codex admissio
   Effect.gen(function* () {
     const held = yield* boot(seed, { now: WEDNESDAY, codex: "hold", pace: "open" })
     const heldRoot = yield* held.root(ROOT_TASK)
-    expect(held.children(heldRoot)).toEqual([])
+    expect(held.children(heldRoot).map((child) => child.agent)).toEqual(["verifier"])
     const messages = textOf(held.world, heldRoot)
     expect(messages).toContain("the Codex account's pace holds this agent. scripted Codex week is over.")
     // It opens when the admission said the week opens.
     expect(messages).toContain("It opens about 2026-11-04T16:20:00.000Z")
     // The admission is asked with the model and the role, as the script's `--model sim-model --role <role>`.
     expect(held.asked).toContainEqual(["sim-model", "worker"])
-    expect(held.asked).toContainEqual(["sim-model", "verifier"])
-    // Admitted, they run, and the pool is not asked: its fake would hold them.
+    expect(held.asked).toEqual([["sim-model", "worker"]])
+    // The worker is admitted by Codex; the verifier is still subject to the Claude pace.
     const open = yield* boot(seed, { now: WEDNESDAY, codex: "admit", pace: "held" })
     const openRoot = yield* open.root(ROOT_TASK)
-    expect(open.children(openRoot).map((child) => child.agent).toSorted()).toEqual(["verifier", "worker"])
+    expect(open.children(openRoot).map((child) => child.agent)).toEqual(["worker"])
   }),
 )
 
@@ -205,7 +206,7 @@ seeded("guard: an untyped subagent runs as the worker, `orchestrate-reviewer` as
     const byAgent = Object.fromEntries(children.map((child) => [child.agent, child]))
     // The child sessions, as the host's session API reports them.
     expect(children.map((child) => child.agent).toSorted()).toEqual(["verifier", "worker"])
-    expect(byAgent.verifier?.model._tag === "Some" && byAgent.verifier.model.value).toEqual({ id: "sim-model", providerID: "sim", variant: "medium" })
+    expect(byAgent.verifier?.model._tag === "Some" && byAgent.verifier.model.value).toEqual({ id: "claude-opus-sim", providerID: "anthropic", variant: "medium" })
     const variant = Option.flatMap(Option.fromUndefinedOr(byAgent.worker), (worker) => Option.flatMap(worker.model, (model) => Option.fromUndefinedOr(model.variant)))
     expect(variant).toEqual(Option.none())
     // Each child ran on its role's prompt.
@@ -221,7 +222,7 @@ seeded("guard: an untyped subagent runs as the worker, `orchestrate-reviewer` as
     const calls = ofKind(run.calls, "call")
     expect(calls.map((line) => ({ asked: Option.fromUndefinedOr(line.asked), agent: line.agent, reason: line.reason, model: Option.fromUndefinedOr(line.model) }))).toEqual([
       { asked: Option.none(), agent: "worker", reason: "untyped", model: Option.none() },
-      { asked: Option.some("orchestrate-reviewer"), agent: "verifier", reason: "renamed", model: Option.some("sim/sim-model#medium") },
+      { asked: Option.some("orchestrate-reviewer"), agent: "verifier", reason: "renamed", model: Option.some("anthropic/claude-opus-sim#medium") },
     ])
     const done = ofKind(run.calls, "done")
     expect(done.map((line) => ({ child: line.child, status: line.status }))).toEqual([
@@ -239,11 +240,11 @@ seeded("worker ceiling: under a root at max, the untyped worker runs at its mode
     const byAgent = Object.fromEntries(run.children(rootID).map((child) => [child.agent, child]))
     // The host names a model asked with no variant at its `default`.
     expect(byAgent.worker?.model._tag === "Some" && byAgent.worker.model.value).toEqual({ id: "sim-model", providerID: "sim", variant: "default" })
-    expect(byAgent.verifier?.model._tag === "Some" && byAgent.verifier.model.value).toEqual({ id: "sim-model", providerID: "sim", variant: "medium" })
+    expect(byAgent.verifier?.model._tag === "Some" && byAgent.verifier.model.value).toEqual({ id: "claude-opus-sim", providerID: "anthropic", variant: "medium" })
     const calls = ofKind(run.calls, "call")
     expect(calls.map((line) => ({ agent: line.agent, model: line.model, lowered: Option.fromUndefinedOr(line.lowered) }))).toEqual([
       { agent: "worker", model: "sim/sim-model", lowered: Option.some("max") },
-      { agent: "verifier", model: "sim/sim-model#medium", lowered: Option.none() },
+      { agent: "verifier", model: "anthropic/claude-opus-sim#medium", lowered: Option.none() },
     ])
     expect(textOf(run.world, rootID)).toContain(
       "orchestrate: this worker runs on sim/sim-model at the model's default effort, not max: a worker runs at max only when its description ends `(mechanical)`.",

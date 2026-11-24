@@ -4,7 +4,7 @@
 // or an answer that is not one refuses the latch, and the call is denied
 // instead. Opening comes back the other way, over `OPENER`, which the plugin
 // serves.
-import { Cause, Effect, Layer, Schema } from "effect"
+import { Cause, Effect, Layer, Option, Schema } from "effect"
 import { type LatchAsk, Latched } from "@dotfiles/opencode-wake/latch"
 import { LatchRefused, Latches, type LatchStart, StartFailed } from "../service.ts"
 
@@ -26,6 +26,7 @@ export const layer = (latch: Latch, start: Start) =>
       Effect.suspend(() =>
         latch({
           sessionID: request.parent,
+          ...Option.match(Option.fromUndefinedOr(request.child), { onNone: () => ({}), onSome: (child) => ({ child }) }),
           subagent: {
             agent: request.agent,
             description: request.description,

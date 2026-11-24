@@ -111,8 +111,8 @@ export const installedFile = (home: string, env: Record<string, string | undefin
 export const residentConfig: Json = { experimental: { location_idle_timeout: false } }
 
 /**
- * Each role's model: the newest Opus, the verifier too (the skill's Models rule). Codex is the
- * fallback the orchestrate mod moves a held start to; no role is bound to it. The planner goes
+ * Each role's default model: the newest Opus. A verifier waits on Opus;
+ * no role is bound to Codex. The planner goes
  * on the newest Fable first (`plannerModel`, the orchestrate entry's `planner`): its Opus here is
  * the second step of its chain, and what it runs on without the orchestrate mod.
  */

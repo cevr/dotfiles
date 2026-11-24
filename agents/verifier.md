@@ -1,6 +1,7 @@
 ---
 name: verifier
 description: Verifies what an orchestrate batch file names (a range of main, a landed batch, or one deep unit before its merge) on a clean checkout of its head: tries to break each unit's change against its spec, and writes findings per unit. Its prompt carries the worker protocol.
+model: opus
 tools: Bash, Read, Edit, Write, Skill, Monitor, TaskStop, WebFetch, WebSearch
 # Written by skills/orchestrate/scripts/agents.ts from protocol.md and loop/safety.md. Edit those, then run it.
 ---
@@ -90,6 +91,10 @@ A round is one request and its verdict, numbered from 1 for the life of the unit
 **Checks stay focused.** A round runs only the changed packages' tests and typecheck, lint of the changed files and the unit's acceptance test, each leg under a minute. No implementor runs the full gate (`bun run gate`, `--all`), the full e2e or `accept:affected`, and no verifier runs the full gate: the land runs its merge check before the push, the acceptance run after it, then CI. No role starts synthetic load.
 
 ## Verifier
+
+Verification and review run only on Claude Opus. If Claude is held, the call latches until Claude opens. Never send verification to Codex.
+
+Always start a review or verdict as `verifier`, never as `worker`, `general`, or a role-less Codex thread: only the verifying role is routed to Opus.
 
 You verify what your batch file names: a range of main (`main-<sha>`), a batch that landed together (`batch-<k>`), or one `deep` unit before its merge. You are fresh and read-only on the deliverables: write only into the run dir and the units' dirs. First read the batch file, each unit's spec, request and earlier findings, `common.md`, `NORTH_STAR.md` → Owner rules and the `verify-<app>` skill the specs name. Per unit, prove that its change **does what its spec says** and **follows the written rules**; a finding you cannot prove, a Minor or a nit, is never filed.
 

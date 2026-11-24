@@ -305,7 +305,7 @@ export const courierLaws = (name: string, make: Effect.Effect<CourierProbe, neve
         }),
       ))
 
-    test("mark replaces a child's mark and clears it with none; a session that does not exist is no failure", () =>
+    test("mark replaces a child's mark, clears it with none, and refuses a missing child", () =>
       scenario(
         Effect.gen(function* () {
           const probe = yield* make
@@ -318,7 +318,8 @@ export const courierLaws = (name: string, make: Effect.Effect<CourierProbe, neve
           expect((yield* probe.inspect(sessionID))?.mark).toEqual(cancelled)
           yield* run((courier) => courier.mark(sessionID, undefined))
           expect((yield* probe.inspect(sessionID))?.mark).toBeUndefined()
-          yield* run((courier) => courier.mark("ses_none", mark))
+          const missing = yield* run((courier) => courier.mark("ses_none", mark)).pipe(Effect.flip)
+          expect(missing).toMatchObject({ sessionID: "ses_none", gone: true })
         }),
       ))
   })

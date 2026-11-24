@@ -19,6 +19,7 @@ import { SessionDirectories, SessionUnreadable } from "@dotfiles/opencode-work/s
 import type { Workspace } from "@dotfiles/opencode-work/workspace"
 import * as Plugins from "../../sim/plugins.ts"
 import * as World from "../../sim/world.ts"
+import { SIM_OPUS } from "./models.fixture.ts"
 import { make as makeWork } from "../work/server.ts"
 import type { RecordLayer } from "./server.ts"
 
@@ -276,8 +277,8 @@ export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchest
     if (command === `bun ${STATUS_SCRIPT} ${RUN_DIR}`) return { exitCode: 0, stdout: tableOf(logs), ms: 50 }
     return World.PROCESSES(command)
   }
-  const made = { seed, start: Date.parse(options.now ?? PIN), script, processes }
-  const world = World.make(Option.match(Option.fromUndefinedOr(options.models), { onNone: () => made, onSome: (models) => ({ ...made, models }) }))
+  const models = Option.getOrElse(Option.fromUndefinedOr(options.models), () => [World.SIM_MODEL, SIM_OPUS])
+  const world = World.make({ seed, start: Date.parse(options.now ?? PIN), script, processes, models })
   // A session's location, as OpenCode's `session.get` reports it.
   const directories = Layer.succeed(
     SessionDirectories,

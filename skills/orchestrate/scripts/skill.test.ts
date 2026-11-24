@@ -73,13 +73,19 @@ describe('the modes', () => {
 });
 
 describe('the kept rules', () => {
+  test('both role guides forbid starting a review or verdict outside the verifying role', () => {
+    const rule = 'Always start a review or verdict as `verifier`, never as `worker`, `general`, or a role-less Codex thread: only the verifying role is routed to Opus.';
+    expect(protocol).toContain(rule);
+    expect(read(join(SKILL_DIR, 'references', 'hosts.md'))).toContain(rule);
+  });
+
   const kept: ReadonlyArray<readonly [string, RegExp]> = [
     ['a fresh verifier in a clean checkout', /fresh[^.\n]*clean checkout/i],
     ['the focused round gate, each leg under a minute', /focused[^.\n]*each leg under a minute/i],
     ['a receipt', /\breceipt\b/i],
     ['one full gate per host at a time', /one full gate per host at a time/i],
     ['a workspace per unit', /one workspace per unit/i],
-    ['Codex never implements', /Codex[^.\n]*never implements/],
+    ['verification is Claude Opus only and never Codex', /Verification and review run only on Claude Opus\. When Claude is held, latch and wait; never start a verifier on Codex\./],
     ['deploy is reserved', /reserved[^\n]*\bdeploy\b/i],
     ['publish is reserved', /reserved[^\n]*\bpublish\b/i],
     ['paid runs are reserved', /reserved[^\n]*paid runs/i],

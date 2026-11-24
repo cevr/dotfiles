@@ -7,6 +7,7 @@ import { textsOf } from "../../sim/canary.ts"
 import { simulationTest } from "../../sim/seed.ts"
 import { generator } from "../../sim/runtime.ts"
 import { KINDS, leaked } from "../../sim/tokens.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 import { scratch } from "../../tests/scratch.ts"
 import { boot, WORK } from "./orch-tools-world.ts"
 import { main, ranOf } from "./record.ts"
@@ -120,7 +121,7 @@ test("intersecting and touching pairs and triples of secret shapes are replaced 
   expect({ generated: pairs + triples + discarded, pairs, triples, discarded })
     .toEqual({ generated: 206_174, pairs: 1_518, triples: 204_656, discarded: 0 })
   expect(failed).toEqual([])
-})
+}, hangGuard("short-fixture"))
 
 const embedded = (at: number): string => {
   const mark = `AK${"IA"}${UPPER.slice(0, 16)}`

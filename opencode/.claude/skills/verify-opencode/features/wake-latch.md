@@ -5,6 +5,7 @@ A subagent start that orchestrate's pace or the Sabbath holds is not refused and
 ## Sub-features
 
 - `latch-hold`: a held start answers latched, with the hold and when it opens.
+- A held verifier follow-up keeps its existing child; if the host cannot mark that child, the request fails and no latch is left to reopen.
 - `latch-list`: `wake_list` shows `latch · the worker subagent "<description>" (sessionID: <child>) · held by the pace: <reason> · opens <time>`.
 - `latch-recheck`: decided again while still held, it latches again with the new times. A soft hold (the spend-evenly line alone) latches every role that takes no fallback, an implementor included; it opens when the pace does: the line catching up, a natural weekly reset, or a reset the pool claimed and observed giving back room.
 - `latch-open`: once admitted, it starts in the background on its child; the result wakes the parent.

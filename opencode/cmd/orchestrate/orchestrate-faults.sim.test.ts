@@ -18,6 +18,7 @@ import * as Plugins from "../../sim/plugins.ts"
 import { below, generator } from "../../sim/runtime.ts"
 import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
+import { SIM_OPUS } from "./models.fixture.ts"
 
 const { seeded } = simulationRunner("cmd/orchestrate/orchestrate-faults.sim.test.ts")
 
@@ -114,7 +115,7 @@ const isCallResult = (message: World.Message): message is Extract<World.Message,
 
 const run = (seed: number, check: (outcome: { readonly admitted: boolean; readonly role: string; readonly children: ReadonlyArray<string>; readonly output: string; readonly rested: boolean }) => void) =>
   Effect.gen(function* () {
-    const world = World.make({ seed, start: Date.parse(WEDNESDAY), script: model })
+    const world = World.make({ seed, start: Date.parse(WEDNESDAY), script: model, models: [World.SIM_MODEL, SIM_OPUS] })
     const state: RunState = { answer: "open", fault: "none" }
     yield* world.load(Plugins.orchestrate(), { directory: WORK, options: { now: WEDNESDAY } })
     yield* world.load(pace(state, () => world.now()), { directory: WORK })
