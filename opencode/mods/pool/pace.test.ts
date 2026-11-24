@@ -114,7 +114,7 @@ test("seed 10286377: a login that cannot be read until sign-in does not hide the
     // forward. If neither exists, a different model or a sign-in is necessary.
     const first = Arr.findFirst(["stale", "temporary", "unreported", "signin"] as const, (state) => facts.includes(state))
     if (Option.isNone(first)) continue
-    const reason = { stale: "usage-unread", temporary: "account-held", unreported: "model-unreported", signin: "account-held" }
+    const reason = { stale: "usage-unread", temporary: "account-held", unreported: "model-unreported", signin: "account-held" } as const satisfies Record<Blocker, HoldReason>
     expect(answer.reasonCode).toBe(reason[first.value])
     if (first.value === "unreported" || first.value === "signin") {
       expect(answer.reason).toMatch(/time alone will not clear|Sign in/)
