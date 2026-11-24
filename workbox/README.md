@@ -306,13 +306,29 @@ runs these steps:
    file system's metadata with that removal. `--beside-other-removals` lets
    the command run beside such removals, and its output says how many it saw.
 
-   It finds processes in the base by their open files and working folders
-   under /proc. A process of another user (root's, on the workbox) does not
-   show those to this user, so it may or may not be in the base. The command
-   names such processes by count and uid and never takes them for none:
+   It finds processes in the base by their open files, working folders,
+   roots and executables under /proc, one `find` under `LC_ALL=C`. Each
+   process the walk meets falls into one of three kinds, read from the errno
+   text of each message find gives for an entry of it:
+   - ended during the walk (its folder gone): it holds nothing, and the
+     preflight line counts it. An fd link gone while the process lives is a
+     file it closed, so that is nothing either;
+   - unread (an entry refused: permission). This is another user's process
+     (root's, on the workbox), or this user's own when it holds privileges
+     this user lacks (the workbox's user systemd: its fd folder lists, its
+     links do not read);
+   - read: judged by its links.
+
+   Any other message, or no /proc, is a failed walk: the command refuses and
+   says find's line. `workrift processes <folder>` runs the same walk read
+   only and prints the count of each kind (the probe before a rehearsal).
+
+   An unread process may or may not be in the base. The command names such
+   processes by count and uid and never takes them for none:
    - where `sudo -n` works, it reads exactly those processes again, read
      only, all of them in one call (`sudo -n find /proc/<pid>/fd
-     /proc/<pid>/cwd … -lname <base>`). The step log says the command line,
+     /proc/<pid>/cwd … -lname <base>`). A process whose start time changed
+     since the walk (its pid reused) is one that ended. The step log says the command line,
      and says it again only when the set changes. It refuses if one is in
      the base;
    - otherwise it refuses, unless `--beside-unreadable` is given: then it runs
