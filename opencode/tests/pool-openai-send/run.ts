@@ -49,7 +49,10 @@ interface Client {
     readonly create: (input: Schema.JsonObject) => Effect.Effect<{ readonly id: string }, Error>
     readonly prompt: (input: Schema.JsonObject) => Effect.Effect<unknown, Error>
   }
-  readonly credential: { readonly create: (input: Schema.JsonObject) => Effect.Effect<unknown, Error> }
+  readonly credential: {
+    readonly create: (input: Schema.JsonObject) => Effect.Effect<{ readonly id: string }, Error>
+    readonly remove: (input: Schema.JsonObject) => Effect.Effect<unknown, Error>
+  }
   readonly rpc: { readonly call: (input: Schema.JsonObject) => Effect.Effect<typeof RpcOutput.Type, Error> }
   readonly experimental: { readonly session: {
     readonly log: (input: Schema.JsonObject) => Stream.Stream<Schema.Json, Error>
@@ -65,10 +68,12 @@ interface Configured {
 }
 interface Sdk { readonly create: (options: Configured) => Effect.Effect<Client, Error, Scope.Scope> }
 const Sdk = Schema.declare((value): value is Sdk => Predicate.hasProperty(value, "create") && Predicate.isFunction(value.create))
-const Case = Schema.Literals(["http", "websocket", "late-http", "late-websocket", "api-http", "api-websocket", "cost"])
+const Case = Schema.Literals(["http", "websocket", "late-http", "late-websocket", "api-http", "api-websocket", "cost",
+  "retry-http", "retry-websocket", "signed-out-http"])
 type Case = typeof Case.Type
 const lateCase = (sample: Case) => sample.startsWith("late-")
 const apiCase = (sample: Case) => sample.startsWith("api-")
+const retryCase = (sample: Case) => sample.startsWith("retry-")
 type Sample = { readonly at: number; readonly authorization: string; readonly transport: string }
 interface Fake {
   readonly sample: Case
@@ -77,6 +82,7 @@ interface Fake {
   deadline: number
   readonly sent: Array<Sample>
   usage: number
+  commit: Effect.Effect<void>
   upgrades: number
   fallback: number
 }
@@ -128,6 +134,11 @@ const upgrade = (state: Fake, request: HttpServerRequest.HttpServerRequest) =>
       Effect.flatMap((messages) => Effect.forEach(messages, (message) => Effect.gen(function* () {
         if (Option.isNone(createFrame(message))) return
         const i = saw(state, request, "websocket")
+        if (retryCase(state.sample) && i === 2) {
+          yield* state.commit
+          yield* writer.write(serialize({ type: "error", code: "server_error", message: "synthetic retryable provider failure" }))
+          return
+        }
         if (state.hold && state.sample === "websocket" && i === 1) {
           state.spent = true
           state.deadline = quotaEpoch() + FUTURE
@@ -157,7 +168,11 @@ const server = (state: Fake) => Effect.gen(function* () {
     return HttpServerResponse.text("unexpected fallback", { status: 500 })
   }
   if (!request.url.endsWith("/chat/completions")) return HttpServerResponse.text("not found", { status: 404 })
-  saw(state, request, "http")
+  const i = saw(state, request, "http")
+  if (retryCase(state.sample) && i === 1) {
+    yield* state.commit
+    return HttpServerResponse.text("synthetic retryable provider failure", { status: 500 })
+  }
   return eventStream([chunk({ role: "assistant", content: "loopback answer" }, {}), chunk({}, { finish_reason: "stop" })])
 }).pipe(Effect.orDie)
 
@@ -225,11 +240,13 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
   const writer = path.join(target.base, "writer")
   const late = lateCase(target.sample)
   const api = apiCase(target.sample)
-  if (late) yield* fs.makeDirectory(writer)
+  const retry = retryCase(target.sample)
+  const signedOut = target.sample === "signed-out-http"
+  if (late || retry) yield* fs.makeDirectory(writer)
   const socket = target.sample.endsWith("websocket")
   const state: Fake = { sample: target.sample, hold, spent: target.sample === "http" && hold, deadline: quotaEpoch() + HOUR,
-    sent: [], upgrades: 0, fallback: 0, usage: 0 }
-  if (late) state.deadline = quotaEpoch() + 2 * FUTURE
+    sent: [], upgrades: 0, fallback: 0, usage: 0, commit: Effect.void }
+  if (late || retry) state.deadline = quotaEpoch() + 2 * FUTURE
   const expected = seconds(state.deadline) * 1_000
   yield* HttpServer.serveEffect(server(state))
   const httpd = yield* HttpServer.HttpServer
@@ -274,30 +291,53 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
     Match.when(true, () => ({ package: "@opencode/ai/providers/openai", transport: "websocket" })),
     Match.orElse(() => ({ package: "@opencode/ai/providers/openai-compatible", transport: "http" })),
   )
-  const host = yield* target.host.create({
+  const configured: Configured = {
     database: { path: path.join(directory, "fixture.db") }, models: { fetch: false }, events: { persist: true },
     log: { level: "warn", emit: (entry) => { warnings.push(entry.message) } },
     plugins: [{ id: "fixture.pool-openai", effect: probe }],
     config: { directory, project: false, content: serialize({
       model: `${MODEL.providerID}/${MODEL.id}`,
       providers: { openai: {
-        package: provider.package, settings: { baseURL: origin, transport: provider.transport, apiKey: ACCESS },
+        package: provider.package, settings: { baseURL: origin, transport: provider.transport,
+          apiKey: Option.getOrElse(Option.filter(Option.some("synthetic-api-key"), () => signedOut), () => ACCESS) },
         models: { [MODEL.id]: { capabilities: { tools: true, input: ["text"], output: ["text"] }, limit: { context: 128_000, output: 16_000 } } },
       } },
       enabled_providers: ["openai"],
       plugins: [{ package: target.pool, options: {
         providers: {}, paced: { openai: "openai" }, sweepMinutes: 0, resets: false,
         usageURL: `${origin}/usage`, fixtureHold: expected,
+        ...Option.match(Option.filter(Option.some("signin"), () => signedOut), { onNone: () => ({}), onSome: (fixtureKind) => ({ fixtureKind }) }),
       } }],
     }) },
-  })
-  if (!api) yield* host.credential.create({ integrationID: "openai", activate: true, value: {
+  }
+  const signIn = (host: Client) => host.credential.create({ integrationID: "openai", activate: true, value: {
     type: "oauth", methodID: "synthetic-fixture", refresh: "synthetic-refresh", access: ACCESS, expires: quotaEpoch() + HOUR,
     metadata: { accountID: "fixture" },
   } })
-  if (late) {
+  const commitIn = (host: Client, at = writer) => host.rpc.call({ rpcID: "fixture.openai-send-hold", method: "commit", input: {}, location: { directory: at } })
+  let signedOutHold = Option.none<Schema.Json>()
+  if (signedOut) signedOutHold = yield* Effect.gen(function* () {
+    const host = yield* target.host.create(configured)
+    const login = yield* signIn(host)
+    const warm = yield* host.session.create({ location: { directory }, model: MODEL, title: "Warm" })
+    yield* prompt(host, warm.id)
+    const before = yield* transcript(host, state, warm.id, directory)
+    if (before.outcome !== "session.execution.succeeded" || state.sent[0]?.authorization !== `Bearer ${ACCESS}`)
+      return yield* new FixtureFailure({ message: "OAuth warm-up did not send on the synthetic pooled login" })
+    yield* commitIn(host, directory).pipe(Effect.mapError((error) => new FixtureFailure({ message: `sign-out hold commit: ${error.message}; ${warnings.join("\n")}` })))
+    const fact = yield* writerFact(host, directory)
+    yield* host.credential.remove({ credentialID: login.id })
+    state.sent.length = 0
+    quotes.length = 0
+    steps.length = 0
+    return fact
+  }).pipe(Effect.scoped)
+  const host = yield* target.host.create(configured)
+  if (!api && !signedOut) yield* signIn(host)
+  if (late || retry) {
     yield* host.location.get({ location: { directory: writer } })
-    commit = host.rpc.call({ rpcID: "fixture.openai-send-hold", method: "commit", input: {}, location: { directory: writer } }).pipe(Effect.asVoid, Effect.orDie)
+    commit = commitIn(host).pipe(Effect.asVoid, Effect.orDie)
+    if (retry) state.commit = commit
   }
   const { id } = yield* host.session.create({ location: { directory }, model: MODEL, title: "Fixture" })
   const warm = Arr.empty<Sample>()
@@ -321,9 +361,9 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
     })),
     Match.orElse(() => Effect.succeed(Option.none<Schema.Json>())),
   )
-  const committed = yield* Match.value(late).pipe(
+  const committed = yield* Match.value(late || retry).pipe(
     Match.when(true, () => writerFact(host, writer)),
-    Match.orElse(() => Effect.succeed(Option.none<Schema.Json>())),
+    Match.orElse(() => Effect.succeed(signedOutHold)),
   )
   return {
     ...last, typed, steps, warm, sent: state.sent.slice(warm.length), upgrades: state.upgrades, fallback: state.fallback, warnings,

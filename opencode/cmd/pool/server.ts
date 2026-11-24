@@ -459,7 +459,6 @@ export const make = (
         () => Option.filter(Option.fromUndefinedOr(options.paced[providerID]), () => Object.hasOwn(options.paced, providerID)),
       )
       const lastLogin = new Map<string, string>()
-      const admitted = new Map<string, string>()
       const noLogin = { ok: true, measured: false, tracking: "not-tracked-no-pool-login", reason: "not tracked: no pool login" } satisfies Pace
       const loginOf = (integrationID: string) => ctx.integration.connection.active(integrationID).pipe(
         Effect.map((connection) => {
@@ -703,8 +702,6 @@ export const make = (
 
       type SendEvent = { readonly kind: Model.PlaceInput["kind"]; readonly sessionID: string;
         readonly model: { readonly providerID: string; readonly id: string } }
-      const stepKey = (event: SendEvent) => Option.map(stepIDOf(event), (id) => `${event.model.providerID}/${event.model.id}/${id}`)
-      const stepAdmitted = (event: SendEvent) => Option.exists(stepKey(event), (key) => admitted.get(event.sessionID) === key)
       const gateActive = (event: SendEvent, phase: "known-hold" | "send",
         bind: (held: SendHold) => Effect.Effect<void>) =>
         Effect.gen(function* () {
@@ -728,27 +725,20 @@ export const make = (
       yield* ctx.session.hook("experimental.model.resolve", (event) => Effect.suspend(() => {
         if (Option.isNone(stepIDOf(event))) return Effect.void
         canDeferPrimary = true
-        if (signed(event.model.providerID) || stepAdmitted(event)) return Effect.void
+        if (signed(event.model.providerID)) return Effect.void
         return gateActive(event, "known-hold", (hold) => deferRoute(event, hold))
       }))
-      const gateStep = (event: SendEvent) => Effect.suspend(() => {
-        if (stepAdmitted(event)) return Effect.void
-        let refused = false
-        return gateActive(event, "send", (hold) => {
-          refused = true
-          return refuseSend(event, hold)
-        }).pipe(Effect.tap(() => Effect.sync(() => {
-          const key = stepKey(event)
-          if (!refused && Option.isSome(tracked(event.model.providerID)) && Option.isSome(key)) admitted.set(event.sessionID, key.value)
-        })))
-      })
+      // A concrete check belongs to this callback's one send. The host
+      // consumes success when it forwards that request or response.create;
+      // no permit survives to another send, even on the same Step or socket.
+      const gateSend = (event: SendEvent) => gateActive(event, "send", (hold) => refuseSend(event, hold))
       yield* ctx.session.hook("http.request", (event) => {
         if (signed(event.model.providerID)) return Effect.void
-        return gateStep(event)
+        return gateSend(event)
       })
       yield* ctx.session.hook("experimental.ws.send", (event) => Effect.suspend(() => {
         if (!event.frame.startsWith('{"type":"response.create"') && !Option.exists(frameType(event.frame), ({ type }) => type === "response.create")) return Effect.void
-        return gateStep(event)
+        return gateSend(event)
       }))
 
       // What a paced provider's response showed of the account's quota belongs
@@ -822,8 +812,6 @@ export const make = (
       yield* Effect.forkScoped(
         ctx.event.subscribe({ types: ["session.step.started", "session.step.ended", ...EXECUTION_ENDED] }).pipe(
           Stream.runForEach((event) => {
-            if (event.type === "session.execution.succeeded" || event.type === "session.execution.failed" || event.type === "session.execution.interrupted")
-              admitted.delete(event.data.sessionID)
             if (event.type === "session.execution.interrupted") {
               if (event.data.reason === "shutdown") return Effect.void
               return withPool((pool) => pool.release(event.data.sessionID))

@@ -817,22 +817,22 @@ describe("the options", () => {
 })
 
 describe("the hooks", () => {
-  test("one hold-store read per new Step, no store read for its subsequent frames", () =>
+  test("one hold-store read per send attempt, no read for socket control frames", () =>
     scenario(Effect.gen(function* () {
       const state = world()
       state.active.set("anthropic", "cred-a")
       const plugin = yield* start({ paced: { sim: "anthropic" }, sweepMinutes: 0 }, state, live())
       const http = yield* registered(plugin.hooks, "http.request")
       const websocket = yield* registered(plugin.hooks, "experimental.ws.send")
-      const cost = yield* sendCost((transport, { sessionID, stepID, tracked }) => {
+      const cost = yield* sendCost((transport, { sessionID, stepID, tracked, frame }) => {
         const providerID = Option.getOrElse(Option.filter(Option.some("sim"), () => tracked), () => "other")
         const event = { sessionID, kind: "primary", model: { ...model, providerID }, step: { id: stepID } }
         if (transport === "http") return http(event)
-        return websocket({ ...event, frame: '{"type":"response.create"}' })
+        return websocket({ ...event, frame })
       })
       expect(cost.http.tracked.holdLockWaitMs.n).toBe(1_000)
       expect(cost.websocket.tracked.holdLockWaitMs.n).toBe(1_000)
-      expect(cost.websocket.admittedStep.holdLockWaitMs.n).toBe(1)
+      expect(cost.websocket.oneStream.holdLockWaitMs.n).toBe(1)
       expect(cost.websocket.eightSessions.holdLockWaitMs.n).toBe(1_000)
       expect(state.holdAccess.usage).toBe(0)
       yield* Console.log("send-cost simulated", Schema.encodeSync(Schema.fromJsonString(Schema.Json))(cost))
@@ -892,7 +892,7 @@ describe("the hooks", () => {
       expect(state.storage.get(key)).toMatchObject({ kind: "signin", until: MINUTE + LedgerLive.UNREADABLE_HOLD_MS })
     })))
 
-  test("an admitted Step continues after a new hold; only the next response.create is refused", () =>
+  test("control frames are not gated; another response.create on the same Step is refused", () =>
     scenario(Effect.gen(function* () {
       const state = world()
       state.active.set("anthropic", "cred-a")
@@ -904,13 +904,14 @@ describe("the hooks", () => {
       yield* send(frame("first", "response.create"))
       const at = yield* Clock.currentTimeMillis
       state.storage.set("anthropic/hold/cred-a", { kind: "rate-limit", at, until: at + MINUTE })
-      const continued = frame("first", "response.create", 2)
-      const control = frame("next", "response.cancel")
+      const retry = frame("first", "response.create", 2)
+      const control = frame("first", "response.cancel")
       const next = frame("next", "response.create")
-      yield* send(continued)
       yield* send(control)
+      yield* send(retry)
+      expect(yield* plugin.heldSend(payload.sessionID)).toMatchObject({ hold: { stepID: "first" } })
       yield* send(next)
-      expect(continued).not.toHaveProperty("refuse")
+      expect(retry).toMatchObject({ refuse: { until: at + MINUTE } })
       expect(control).not.toHaveProperty("refuse")
       expect(next).toMatchObject({ refuse: { until: at + MINUTE } })
       expect(yield* plugin.heldSend(payload.sessionID)).toMatchObject({ hold: { stepID: "next" } })

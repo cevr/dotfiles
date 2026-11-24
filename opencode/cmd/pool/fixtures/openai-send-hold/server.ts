@@ -5,7 +5,9 @@ import { Clock, Effect, Option, Predicate, Schema } from "effect"
 import pool from "../../server.ts"
 import { sendCost } from "../../../../tests/pool-openai-send/cost.ts"
 
-const settings = Schema.decodeUnknownEffect(Schema.Struct({ fixtureHold: Schema.Finite }))
+const settings = Schema.decodeUnknownEffect(Schema.Struct({
+  fixtureHold: Schema.Finite, fixtureKind: Schema.optionalKey(Schema.Literal("signin")),
+}))
 const writer = {
   id: "fixture.openai-send-hold",
   methods: {
@@ -18,7 +20,7 @@ const writer = {
 export default Plugin.define({
   id: pool.id,
   effect: Effect.fn("OpenAISendFixture")(function* (ctx) {
-    const { fixtureHold: until } = yield* settings(ctx.options).pipe(Effect.orDie)
+    const { fixtureHold: until, fixtureKind } = yield* settings(ctx.options).pipe(Effect.orDie)
     let fact = Option.none<{ readonly held: true; readonly until: number }>()
     type Event = { readonly sessionID: string; readonly kind: string; readonly model: { readonly providerID: string; readonly id: string };
       readonly step: { readonly id: string }; readonly frame: string }
@@ -38,19 +40,20 @@ export default Plugin.define({
         if (Option.isNone(selected) || selected.value.type !== "credential") return { held: false }
         const at = yield* Clock.currentTimeMillis
         if (at >= until) return { held: false }
-        yield* ctx.storage.set(`openai/hold/${selected.value.id}`, { kind: "rate-limit", at, until })
+        const kind = Option.getOrElse(Option.fromUndefinedOr(fixtureKind), () => "rate-limit" as const)
+        yield* ctx.storage.set(`openai/hold/${selected.value.id}`, { kind, at, until })
         const committed = { held: true as const, until }
         fact = Option.some(committed)
         return committed
       }),
       read: () => Effect.sync(() => Option.getOrElse(fact, () => ({ held: false }))),
       cost: () => {
-        return sendCost((transport, { sessionID, stepID, tracked }) => {
+        return sendCost((transport, { sessionID, stepID, tracked, frame }) => {
           const name = { http: "http.request", websocket: "experimental.ws.send" }[transport]
           const send = Option.fromUndefinedOr(sends.get(name))
           if (Option.isNone(send)) return Effect.die(new Error(`Missing ${transport} hook`))
           const providerID = Option.getOrElse(Option.filter(Option.some("openai"), () => tracked), () => "untracked")
-          return send.value({ sessionID, kind: "primary", step: { id: stepID }, frame: '{"type":"response.create"}',
+          return send.value({ sessionID, kind: "primary", step: { id: stepID }, frame,
             model: { providerID, id: "gpt-6.2-fixture" } })
         })
       },

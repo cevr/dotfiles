@@ -27,6 +27,7 @@ const ResultJson = Schema.fromJsonString(Schema.Json)
 const toJson = Schema.encodeSync(ResultJson)
 const out = (stream: Stream.Stream<Uint8Array, unknown>) => stream.pipe(Stream.decodeText(), Stream.mkString)
 type Sample = "http" | "websocket" | "late-http" | "late-websocket" | "api-http" | "api-websocket" | "cost"
+  | "retry-http" | "retry-websocket" | "signed-out-http"
 
 const boot = (sample: Sample) => Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
@@ -53,7 +54,8 @@ const boot = (sample: Sample) => Effect.gen(function* () {
     ...extra, "pool-fixture-sdk": [path.join(fork, "packages/sdk/src/effect/index.ts")],
   } } }))
   const plugin = Option.getOrElse(control, () => {
-    if (sample.startsWith("late-") || sample === "cost") return path.join(poolPlugin, "fixtures/openai-send-hold")
+    if (sample.startsWith("late-") || sample.startsWith("retry-") || sample === "signed-out-http" || sample === "cost")
+      return path.join(poolPlugin, "fixtures/openai-send-hold")
     return poolPlugin
   })
   const child = yield* spawner.spawn(ChildProcess.make("bun", ["--tsconfig-override", settings, path.join(ROOT, "tests/pool-openai-send/run.ts")], {
@@ -101,13 +103,45 @@ const contained = (seen: typeof Seen.Type, retryAt: number, sample: Sample) => {
 }
 
 describe.skipIf(!forkRuns)("OpenAI final hold on native OpenCode", () => {
-  it.live.layer(BunServices.layer)("each new send uses one native hold-store read; an already-admitted Step does not", () =>
+  for (const sample of ["retry-http", "retry-websocket"] as const)
+    it.live.layer(BunServices.layer)(`a provider error does not reuse admission on the retry (${sample})`, () =>
+      Effect.gen(function* () {
+        const { held } = yield* boot(sample)
+        const { expected, typed } = held
+        expect(held.committed).toEqual({ held: true, until: expected })
+        expect(held.sent.filter(({ at }) => at < expected)).toHaveLength(1)
+        expect(held.fallback).toBe(0)
+        if (typed) {
+          const attempts = held.steps.slice(held.warm.length)
+          const id = Option.getOrElse(Option.map(Arr.head(attempts), (step) => step.id), () => "")
+          expect(id).not.toBe("")
+          expect(attempts).toEqual([{ id, attempt: 1 }, { id, attempt: 2 }, { id, attempt: 3 }])
+          expect(held.deferred).toMatchObject({ at: expected, sends: 1 })
+          expect(Option.getOrNull(readHeldSend(held.during))).toMatchObject({ hold: { stepID: id, retryAt: expected } })
+          expect(held.sent).toHaveLength(2)
+          expect(held.sent[1]?.at).toBeGreaterThanOrEqual(expected)
+          expect(held.outcome).toBe("session.execution.succeeded")
+        } else {
+          expect(held.sent).toHaveLength(1)
+          expect(held.outcome).toBe("session.execution.failed")
+          expect(Option.getOrNull(readHeldSend(held.after))).toMatchObject({ hold: { providerID: "openai", retryAt: expected } })
+        }
+      }).pipe(Effect.scoped), hangGuard("fork-turn"))
+  it.live.layer(BunServices.layer)("after sign-out and SDK restart, no request carries the previous pool token", () =>
+    Effect.gen(function* () {
+      const { held } = yield* boot("signed-out-http")
+      expect(held.committed).toEqual({ held: true, until: held.expected })
+      expect(held.quote).toMatchObject({ ok: true, measured: false, tracking: "not-tracked-no-pool-login" })
+      expect(held.sent).toEqual([expect.objectContaining({ authorization: "Bearer synthetic-api-key", transport: "http" })])
+      expect(held.outcome).toBe("session.execution.succeeded")
+    }).pipe(Effect.scoped), hangGuard("fork-turn"))
+  it.live.layer(BunServices.layer)("each new send uses one native hold-store read; control frames do not", () =>
     Effect.gen(function* () {
       const { held } = yield* boot("cost")
       const wait = (n: number) => ({ holdLockWaitMs: { n } })
       expect(held.cost).toMatchObject({
         http: { control: wait(0), tracked: wait(1_000) },
-        websocket: { control: wait(0), tracked: wait(1_000), admittedStep: wait(1), eightSessions: wait(1_000) },
+        websocket: { control: wait(0), tracked: wait(1_000), oneStream: wait(1), eightSessions: wait(1_000) },
       })
       expect(held.costUsageReads).toBe(0)
       yield* Console.log("send-cost native", toJson(held.cost))

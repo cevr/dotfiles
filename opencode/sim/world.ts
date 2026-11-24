@@ -39,6 +39,7 @@ export {
   type Request,
   type Script,
   say,
+  socketError,
   SIM_MODEL,
   SHELL,
   SHELL_CREATE,

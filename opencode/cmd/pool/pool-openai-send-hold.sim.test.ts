@@ -103,3 +103,64 @@ seeded(`an OpenAI account hold (${String(late)} late) sends nothing via ${provid
     expect(yield* world.rpc(POOL, "heldSend", { sessionID: session })).toEqual({})
   }),
 )
+
+for (const transport of ["http", "websocket"] as const)
+for (const sendRefusal of [false, true])
+seeded(`an admitted ${transport} send does not admit its retry (typed Step: ${String(sendRefusal)})`, ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const model = { providerID: "openai", id: "gpt-6.2-fixture" }
+    const account = Provider.accounts(seed, ["sol"]).sol
+    const quota = ChatGPT.make()
+    const usage = spentAccount(account.access, "never-claim", World.START)
+    usage.credits.length = 0
+    usage.fiveHour = 0
+    quota.accounts.set("fixture", usage)
+    const sends: Array<number> = []
+    const until = World.START + 120_000
+    const receive = () => {
+      const n = sends.push(world.now())
+      if (n !== 2) return false
+      const rows = Option.fromUndefinedOr(world.storage.get(POOL))
+      if (Option.isSome(rows)) rows.value.set("openai/hold/cred_sol", { kind: "rate-limit", at: world.now(), until })
+      return true
+    }
+    const wire = Match.value(transport).pipe(
+      Match.when("websocket", () => ({ models: [{ ...model, modelID: model.id, limit: { context: 128_000 }, cost: [], settings: { transport: "websocket" as const } }] })),
+      Match.when("http", () => ({ provider: {
+        id: model.providerID, baseURL: "http://127.0.0.1:11",
+        handle: () => Effect.sync(() => Match.value(receive()).pipe(
+          Match.when(true, () => new Response("synthetic provider error", { status: 500 })),
+          Match.orElse(() => new Response("data: {\"type\":\"message_stop\"}\n\n")),
+        )),
+      } })),
+      Match.exhaustive,
+    ) satisfies Partial<World.Options>
+    const world = World.make({
+      seed, sendRefusal, model, latency: [1, 10], ...wire,
+      script: () => Match.value(receive()).pipe(
+        Match.when(true, () => World.socketError("synthetic provider error")),
+        Match.orElse(() => World.say("synthetic answer")),
+      ),
+      integrations: { openai: [{ id: "cred_sol", label: "Sol", ...account,
+        expires: World.START + 86_400_000, methodID: "chatgpt-browser", metadata: { accountID: "fixture" } }] },
+    })
+    const network = Provider.make({ seed, accounts: {}, chatgpt: quota }, world.runtime)
+    yield* world.load(Plugins.pool(new Map(), Plugins.network(network)), {
+      directory: DIRECTORY, options: { providers: {}, paced: { openai: "openai" }, sweepMinutes: 0, resets: false,
+        usageURL: ChatGPT.USAGE_URL, limitsFile: "/nonexistent/sim/limits.json" },
+    })
+    const session = yield* world.session(DIRECTORY, { title: "No auxiliary title request" })
+    yield* world.prompt(session, "warm")
+    yield* world.until(() => sends.length === 1 && world.sessions.get(session)?.running === false, 1_000)
+    yield* world.prompt(session, "provider error after admission")
+    yield* world.advance(60_000)
+    expect(sends).toHaveLength(2)
+    const held = heldSendOf(yield* world.rpc(POOL, "heldSend", { sessionID: session }))
+    expect(held.hold).toMatchObject({ sessionID: session, providerID: "openai", retryAt: until, reasonCode: "account-held" })
+    if (sendRefusal) expect(held.hold?.stepID).toEqual(expect.any(String))
+    expect(world.sessions.get(session)?.running).toBe(sendRefusal)
+    yield* world.advance(until - world.now())
+    if (!sendRefusal) yield* world.prompt(session, "retry explicitly")
+    yield* world.until(() => sends.length === 3, 1_000)
+    expect(sends[2]).toBeGreaterThanOrEqual(until)
+  }))

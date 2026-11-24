@@ -4155,17 +4155,20 @@ login; the pool does not switch it. The pool can turn down a known durable
 hold during routing without reading usage. That early answer never admits a
 send: the pool checks the active OAuth login against the hold store at the
 concrete HTTP request or `response.create` frame, including on a socket
-another Step already used. Once admitted, a typed Step does not check again;
-a new hold applies to the next Step. On the older host, which does not supply
-Step IDs at that hook, each `response.create` is checked; other frames are
-not gated. The check does not fetch usage unless a sign-in or damaged-row
+another Step already used. Each check admits only that send; a retry must
+check again even when it retains the Step ID. Other frames are not gated:
+a new hold does not cut off a running stream. Hard holds and spent windows
+apply at the wire; the spend-evenly target and sign-in scope checks do not
+re-run there. The check does not fetch usage unless a sign-in or damaged-row
 recheck is due; one send reserves that appointment before reading usage.
 
 An API key or a route without a pool login sends as it did without the pool;
 `pace` and `status` identify it as `not-tracked-no-pool-login`. If an observed
 OAuth login disappears and that account has a recorded sign-in hold, the
 hold still applies until the pool sees a sign-in or another credential is
-selected. A tracked active login with unreadable hold authority is not sent.
+selected. After restart, a signed-out route with no selected credential may
+send with configured authentication, but carries no token from the previous
+pool login. A tracked active login with unreadable hold authority is not sent.
 Provider aliases use the same hooks. Only the `anthropic` provider key takes
 the existing signed placement path; another `providers` key cannot switch
 the credential chosen by OpenCode. The token is never stored or shown by the pool.

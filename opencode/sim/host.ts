@@ -96,7 +96,8 @@ export interface Request {
  * The model: its reply to a request, or an Effect that answers it later (a provider holding its answer until the test
  * lets it go, as tests/orchestrate/sim.ts's gates hold a response). Either way the stream's latency runs first.
  */
-export type Script = (request: Request) => Reply | Effect.Effect<Reply>
+type ModelAnswer = Reply | { readonly failure: Http.Failure }
+export type Script = (request: Request) => ModelAnswer | Effect.Effect<ModelAnswer>
 
 /** An HTTP request, as the fetch API has it (this module's `Request` is a model request). */
 type WebRequest = globalThis.Request
@@ -115,6 +116,10 @@ export interface Asked {
 export const USAGE: Usage = { input: 100, read: 400, write: 500 }
 
 export const say = (text: string, usage: Usage = USAGE): Reply => ({ items: [{ type: "textDelta", text }], usage })
+/** The retryable provider error of a Responses stream (open-responses-channel.ts, provider-error.ts). */
+export const socketError = (message: string): ModelAnswer => ({ failure: {
+  tag: "ProviderInternal", status: 500, message, retryable: true, retryAfterMs: 0,
+} })
 export const call = (id: string, name: string, input: Schema.Json, usage: Usage = USAGE): Reply => ({
   items: [{ type: "toolCall", index: 0, id, name, input }],
   usage,
@@ -1195,6 +1200,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
               if (Effect.isEffect(provided)) return provided
               return Effect.succeed(provided)
             })
+            if ("failure" in reply) return Result.fail(reply.failure)
             if (socket) yield* overSocket(session, event, reply)
             return Result.succeed<Reply>(reply)
           }),
