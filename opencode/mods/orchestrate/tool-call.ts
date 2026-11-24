@@ -21,6 +21,7 @@
 // decided on its own inputs; the state is what the history says happened.
 import { Effect, Option, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
+import { LaunchStatus } from "../kernel/launch-status.ts"
 import { PaceHeld, PaceHold, Whose } from "./pace.ts"
 import { capEffort, IMPLEMENTOR, onCodex, Reason, route, unspecific } from "./role.ts"
 import { explain, Place, resumesAt, SabbathRest } from "./sabbath.ts"
@@ -346,9 +347,9 @@ const decideUse = (command: UseTool, now: number): Effect.Effect<ReadonlyArray<n
 
 // ── FinishSubagent ──
 // A subagent call returned: its child session, and whether it finished, is
-// still running in the background, latched, or failed.
+// running in the background, latched, unconfirmed, or failed.
 
-export const Status = Schema.Literals(["completed", "running", "latched", "error"])
+export const Status = Schema.Union([LaunchStatus, Schema.Literal("error")])
 export type Status = typeof Status.Type
 
 export const FinishSubagent = Schema.TaggedStruct("FinishSubagent", {

@@ -4,6 +4,7 @@
 import { Option } from "effect"
 import { unwrap } from "@dotfiles/opencode-subagents/envelope"
 import { shellAction } from "@dotfiles/opencode-subagents/shell"
+import { readLaunchStatus } from "../kernel/launch-status.ts"
 import { toolsInCode } from "./kernel.ts"
 import { questionSource } from "./question-call.ts"
 import type { Fields, ToolPart } from "./session.ts"
@@ -81,8 +82,25 @@ export function background(part: ToolPart) {
  * answered at once, as a background start does, and its reply comes later.
  */
 export function latched(part: ToolPart) {
-  const status = toolMetadata(part).status
-  return status === "latched" || /^The subagent is latched\b/.test(toolOutput(part))
+  return Option.match(readLaunchStatus(toolMetadata(part).status), {
+    onSome: (status) => status === "latched",
+    onNone: () => /^The subagent is latched\b/.test(toolOutput(part)),
+  })
+}
+
+/** Whether the legacy foreground slot can show the child's own message, not the launch receipt as a reply. */
+export function agentReplySlot(part: ToolPart): boolean {
+  if (part.state.status !== "completed" || background(part)) return false
+  const status = readLaunchStatus(toolMetadata(part).status)
+  if (Option.isNone(status)) return !latched(part)
+  switch (status.value) {
+    case "completed":
+    // Native launches keep this receipt while the child's message arrives separately.
+    case "running": return true
+    case "latched":
+    case "checking":
+    case "unknown": return false
+  }
 }
 
 /** The glyph and tone of the all level's one-call row: `✓` done, `✗` failed, a warning `✓`, `◆` while it runs or was cut. */

@@ -5,6 +5,7 @@
 import { shellAction } from "@dotfiles/opencode-subagents/shell"
 import { close, stretch } from "./burst.ts"
 import {
+  agentReplySlot,
   background,
   canonical,
   editedFiles,
@@ -544,7 +545,7 @@ export function callBody(call: Call): {
 } {
   return {
     files: editedFiles(call.part),
-    reply: call.tool === "subagent" && call.part.state.status === "completed" && !background(call.part) && !latched(call.part),
+    reply: call.tool === "subagent" && agentReplySlot(call.part),
     output: call.tool === "patch" ? "" : toolOutput(call.part),
   }
 }
