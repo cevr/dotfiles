@@ -460,7 +460,7 @@ seeded("an inbox close binds only a continuously observed admission in the same 
       expect(reopened.phase._tag).toBe("Unknown")
       const view = yield* Effect.fromOption(Option.fromUndefinedOr(rowView(response).lifecycle))
       expect(view.kind).toBe("unknown")
-      expect(activeOf(view)).toEqual(Option.none())
+      expect(activeOf(view)).toBeUndefined()
       yield* close(4)
       expect((yield* read(child)).phase._tag).toBe("Unknown")
     })

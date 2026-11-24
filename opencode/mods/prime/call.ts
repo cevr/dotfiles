@@ -4,7 +4,7 @@
 import { Option } from "effect"
 import { unwrap } from "@dotfiles/opencode-subagents/envelope"
 import { shellAction } from "@dotfiles/opencode-subagents/shell"
-import { readLaunchStatus } from "../kernel/launch-status.ts"
+import { readLaunchStatus } from "@dotfiles/opencode-kernel/launch-status"
 import { toolsInCode } from "./kernel.ts"
 import { questionSource } from "./question-call.ts"
 import type { Fields, ToolPart } from "./session.ts"

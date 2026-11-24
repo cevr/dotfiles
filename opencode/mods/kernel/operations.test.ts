@@ -1,7 +1,6 @@
 // The journal of a kernel call: what it records of each tool call a cell
 // makes, what it publishes while the call runs, and its bounds.
 import { describe, expect, test } from "bun:test"
-import { it } from "effect-bun-test"
 import { Effect, Option } from "effect"
 import { CONCURRENCY_KEY, concurrencyOf, journal, MAX_INPUT_CHARS, MAX_OPERATIONS, OPERATIONS_KEY, type Operation } from "./operations.ts"
 
@@ -16,17 +15,23 @@ const recording = () => {
 }
 
 describe("a kernel call's journal", () => {
-  test("records each call as it starts and as it ends, with its input, output head and metadata", async () => {
+  test("records each call as it starts and ends, retaining its compact metadata and any subagent launch receipt", () => Effect.runPromise(Effect.gen(function* () {
     const { record, published } = recording()
-    await Effect.runPromise(
-      record.around("shell", { command: "git status", timeout: 5, nested: { no: 1 } }, Effect.succeed({ content: [{ type: "text", text: "clean" }], metadata: { exit: 0, secret: "x" } })),
-    )
+    yield* record.around("shell", { command: "git status", timeout: 5, nested: { no: 1 } }, Effect.succeed({ content: [{ type: "text", text: "clean" }], metadata: { exit: 0, secret: "x" } }))
     expect(published).toEqual([
       [{ tool: "shell", status: "running", input: { command: "git status", timeout: 5 } }],
       [{ tool: "shell", status: "completed", input: { command: "git status", timeout: 5 }, output: "clean", metadata: { exit: 0 } }],
     ])
     expect(record.metadata()).toEqual({ [OPERATIONS_KEY]: published[1] })
-  })
+    yield* record.around("subagent", { agent: "worker" }, Effect.succeed({ content: "latched", metadata: { sessionID: "ses_l", status: "latched", latch: { id: "w1" } } }))
+    yield* record.around("subagent", { agent: "worker" }, Effect.succeed({ content: "started", metadata: { sessionID: "ses_r", status: "running" } }))
+    yield* record.around("subagent", { agent: "worker" }, Effect.succeed({ content: "checking", metadata: { sessionID: "ses_c", status: "checking" } }))
+    expect((record.metadata()[OPERATIONS_KEY] as ReadonlyArray<Operation>).slice(1).map((operation) => operation.metadata)).toEqual([
+      { sessionID: "ses_l", status: "latched" },
+      { sessionID: "ses_r", status: "running" },
+      { sessionID: "ses_c", status: "checking" },
+    ])
+  })))
 
   test("a shell command moved to the background keeps its shell's ID, which its stop notice names", async () => {
     const { record } = recording()
@@ -54,18 +59,6 @@ describe("a kernel call's journal", () => {
     expect(operation?.metadata).toEqual({ exit: 0, id: "sh_3" })
     expect(operation?.output).toBe("sh_3 · exited 0 · 0.0 s\na\n")
   })
-
-  it.live("keeps each subagent's launch receipt next to the kernel operation's own completion", () => Effect.gen(function* () {
-    const { record } = recording()
-    yield* record.around("subagent", { agent: "worker" }, Effect.succeed({ content: "latched", metadata: { sessionID: "ses_l", status: "latched", latch: { id: "w1" } } }))
-    yield* record.around("subagent", { agent: "worker" }, Effect.succeed({ content: "started", metadata: { sessionID: "ses_r", status: "running" } }))
-    yield* record.around("subagent", { agent: "worker" }, Effect.succeed({ content: "checking", metadata: { sessionID: "ses_c", status: "checking" } }))
-    expect((record.metadata()[OPERATIONS_KEY] as ReadonlyArray<Operation>).map((operation) => operation.metadata)).toEqual([
-      { sessionID: "ses_l", status: "latched" },
-      { sessionID: "ses_r", status: "running" },
-      { sessionID: "ses_c", status: "checking" },
-    ])
-  }))
 
   test("a failed call is recorded with its reason and still fails the cell's call", async () => {
     const { record } = recording()

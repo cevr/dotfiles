@@ -21,7 +21,7 @@
 // decided on its own inputs; the state is what the history says happened.
 import { Effect, Option, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
-import { LaunchStatus } from "../kernel/launch-status.ts"
+import { LaunchStatus } from "@dotfiles/opencode-kernel/launch-status"
 import { PaceHeld, PaceHold, Whose } from "./pace.ts"
 import { capEffort, IMPLEMENTOR, onCodex, Reason, route, unspecific } from "./role.ts"
 import { explain, Place, resumesAt, SabbathRest } from "./sabbath.ts"

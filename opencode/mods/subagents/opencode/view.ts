@@ -7,8 +7,6 @@
 // reactive.
 import type { Call, Family, Message, OwnedRow, Part, Session, Shell } from "../family.ts"
 import { envelopes } from "../envelope.ts"
-import { readMark } from "../../wake/latch.ts"
-import { Option } from "effect"
 
 /** A session as `context.data.session.get` returns it, narrowed to what a row reads. */
 export type SessionInfo = {
@@ -70,6 +68,25 @@ const record = (value: unknown): Fields =>
 const string = (value: unknown) => (typeof value === "string" ? value : undefined)
 const number = (value: unknown) => (typeof value === "number" ? value : undefined)
 const list = (value: unknown): ReadonlyArray<unknown> => (Array.isArray(value) ? value : [])
+const present = <A>(value: A): value is NonNullable<A> => value != null
+interface LatchTiming { recheckAt?: number; cancelledAt?: number; failed?: string }
+
+/** The native row's view of Wake's persisted latch, including legacy marks without a recheck time. */
+function latchOf(fields: Fields): Session["latch"] {
+  const hold = string(fields.hold)
+  const reason = string(fields.reason)
+  const opensAt = number(fields.opensAt)
+  const at = number(fields.at)
+  if (!present(hold) || !present(reason) || !present(opensAt) || !present(at)) return
+  const timing: LatchTiming = {}
+  const recheckAt = number(fields.recheckAt)
+  if (present(recheckAt)) timing.recheckAt = recheckAt
+  const cancelledAt = number(fields.cancelledAt)
+  if (present(cancelledAt)) timing.cancelledAt = cancelledAt
+  const failed = string(fields.failed)
+  if (present(failed)) timing.failed = failed
+  return { hold, reason, opensAt, at, ...timing }
+}
 
 const STATUSES = ["streaming", "running", "completed", "error"] as const
 
@@ -219,12 +236,16 @@ export function ownedSessionOf(id: string, told: Transcript, info: ReturnType<Re
   }
 }
 
-const identityOf = (model?: string, info?: SessionInfo) => ({
-  ...(info?.parentID ? { parentID: info.parentID } : {}),
-  ...(info?.title === undefined ? {} : { title: info.title }),
-  ...(info?.agent === undefined ? {} : { agent: info.agent }),
-  ...(model ? { model } : {}),
-})
+const identityOf = (model?: string, info?: SessionInfo) => {
+  const title = info && info.title
+  const agent = info && info.agent
+  return {
+    ...(info?.parentID ? { parentID: info.parentID } : {}),
+    ...(present(title) ? { title } : {}),
+    ...(present(agent) ? { agent } : {}),
+    ...(model ? { model } : {}),
+  }
+}
 
 /**
  * Session `id` from the host's reads, its messages and step model given as
@@ -240,7 +261,7 @@ export function sessionOf(
   const info = reads.session.get(id)
   const time = info?.time
   const model = stepped ?? info?.model?.id
-  const mark = readMark(Option.getOrUndefined(Option.map(Option.fromUndefinedOr(info), ({ metadata }) => metadata)))
+  const latch = latchOf(record(record(info && info.metadata).latch))
   const session: Session = {
     id,
     ...identityOf(model, info),
@@ -260,7 +281,7 @@ export function sessionOf(
     questions: (reads.session.form.list(id) ?? []).map((form) => form.title),
     messages,
   }
-  if (mark._tag === "Readable") return { ...session, latch: mark.mark }
+  if (present(latch)) return { ...session, latch }
   return session
 }
 
@@ -288,8 +309,8 @@ export const read = <Location>(
     root,
     sessions: familyOf(reads, root).map((id) => {
       const told = transcript(reads.session.message.list(id), convert)
-      const owner = Option.flatMap(Option.fromUndefinedOr(ownerRows), (rows) => Option.fromUndefinedOr(rows.get(id)))
-      if (Option.isSome(owner)) return ownedSessionOf(id, told, reads.session.get(id), owner.value)
+      const owner = ownerRows && ownerRows.get(id)
+      if (owner) return ownedSessionOf(id, told, reads.session.get(id), owner)
       return sessionOf(reads, id, shells.get(id) ?? [], told)
     }),
   }

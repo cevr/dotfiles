@@ -211,11 +211,12 @@
                   "!@dotfiles/decider/*",
                   "!@dotfiles/opencode-digest/event",
                   "!@dotfiles/opencode-digest/redact",
+                  "!@dotfiles/opencode-kernel/launch-status",
                   "!./*.ts",
                   "!./agents.json",
                   "!bun:test"
                 ],
-                "message": "The orchestrate domain fence: orchestrate's domain files import effect, @dotfiles/decider/*, the digest's event format (@dotfiles/opencode-digest/event) and its redaction (@dotfiles/opencode-digest/redact), orchestrate's own root files (and the generated agents.json) and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of orchestrate's folders."
+                "message": "The orchestrate domain fence: orchestrate's domain files import effect, @dotfiles/decider/*, the digest's event format and redaction, the kernel's launch-status contract, orchestrate's own root files (and the generated agents.json) and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of orchestrate's folders."
               }
             ]
           }
@@ -1073,10 +1074,11 @@
                   "*/**/effect",
                   "!@dotfiles/opencode-subagents/*",
                   "!@dotfiles/opencode-cache/line",
+                  "!@dotfiles/opencode-kernel/launch-status",
                   "!./*.ts",
                   "!bun:test"
                 ],
-                "message": "The Prime domain fence: its domain files import effect, the subagent rows' domain (@dotfiles/opencode-subagents/*), the cache mod's line measures (@dotfiles/opencode-cache/line), the mod's own root files and bun:test only; never @opencode/*, @opentui/*, solid-js, node:*, bun or one of the mod's folders. (`*/**/effect` takes back what `!effect` lets through: any path ending in `effect`, such as @opencode/plugin/effect.)"
+                "message": "The Prime domain fence: its domain files import effect, the subagent rows' domain, the cache mod's line measures, the kernel's launch-status contract, the mod's own root files and bun:test only; never @opencode/*, @opentui/*, solid-js, node:*, bun or one of the mod's folders. (`*/**/effect` takes back what `!effect` lets through: any path ending in `effect`, such as @opencode/plugin/effect.)"
               }
             ]
           }
