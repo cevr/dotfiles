@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at ../workbox/test/workrift-subvolume.test.ts: for (const each of hiddenFolders) if (existsSync(each)) chmodSync(each, 0o700)
 // `workrift subvolume`: the real script on stand-ins, on the Mac. A base is a btrfs subvolume here when its inode is
 // in the bench's registry (inodes follow a folder through renames and exchanges, as a subvolume's root does): `stat`
 // answers btrfs for every path under the bench, and inode 256 for a registered one; `btrfs` makes, snapshots and
