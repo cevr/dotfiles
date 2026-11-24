@@ -8,6 +8,7 @@ import * as Story from "@dotfiles/decider/story"
 import {
   AccountPool,
   AccountsHeld,
+  ClearHold,
   heldMessage,
   HoldCleared,
   LedgerPruned,
@@ -624,6 +625,8 @@ describe("an account is held", () => {
       // The recheck time is not an opening. A late in-flight success with
       // no new usage-endpoint sample is not proof of a fresh sign-in.
       ...read("a", reading({ at: T0 + 31 * MINUTE, status: "allowed" })),
+      Story.when(ClearHold.make({ credentialID: "a" })),
+      recorded(),
       ...placed("s6", "b", T0 + 31 * MINUTE),
       ...read("a", reading({ at: T0 + 31 * MINUTE, usage: { at: T0 + 31 * MINUTE, samples: 1 } }), HoldCleared.make({ credentialID: "a" })),
       ...placed("s7", "a", T0 + 31 * MINUTE),

@@ -140,10 +140,30 @@ type PendingHold = {
   readonly next: Option.Option<Hold>
   readonly merge: boolean
 }
-export const holdAuthority = () => ({
+const authorityKey = Symbol.for("dotfiles-opencode.pool.hold-authority.v1")
+interface HoldAuthority {
+  readonly [authorityKey]: true
+  readonly lock: Semaphore.Semaphore
+  readonly pending: Map<string, PendingHold>
+}
+export const holdAuthority = (): HoldAuthority => ({
+  [authorityKey]: true,
   lock: Semaphore.makeUnsafe(1),
   pending: new Map<string, PendingHold>(),
 })
+const isAuthority = (value: unknown): value is HoldAuthority =>
+  Predicate.hasProperty(value, authorityKey) && value[authorityKey] === true
+
+/** The native plugin loader may re-evaluate the pool graph while its old hooks finish. */
+export const processHoldAuthority = (): HoldAuthority => {
+  const existing = Option.flatMap(Option.fromUndefinedOr(Object.getOwnPropertyDescriptor(globalThis, authorityKey)),
+    (property) => Option.liftPredicate(property.value, isAuthority),
+  )
+  if (Option.isSome(existing)) return existing.value
+  const authority = holdAuthority()
+  Object.defineProperty(globalThis, authorityKey, { value: authority })
+  return authority
+}
 
 const unavailable = Clock.currentTimeMillis.pipe(Effect.map((now) => new HoldStoreUnavailable({ retryAt: now + HOLD_STORE_RETRY_MS })))
 const storeFailure = () => unavailable.pipe(Effect.flatMap(Effect.fail))

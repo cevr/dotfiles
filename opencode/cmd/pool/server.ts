@@ -135,7 +135,7 @@ import { SessionID as HostSessionID } from "@opencode/schema/session-id"
 import { Cause, Clock, Context, Deferred, Effect, Exit, Layer, Option, Schedule, Schema, Stream } from "effect"
 import { heldMessage, PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { RequestHeld, requestHeldMessage, storeHeld } from "@dotfiles/opencode-pool/pace"
-import { HANDOFF_HEADER, HOLD_STORE_RETRY_MS, Handoff, HandoffInput, sentPlacements } from "@dotfiles/opencode-pool/handoff"
+import { HANDOFF_HEADER, HOLD_STORE_RETRY_MS, Handoff, HandoffInput, sentPlacementOf } from "@dotfiles/opencode-pool/handoff"
 import { CACHE_LIFE_MS, ttlMs, ttlOf } from "@dotfiles/opencode-pool/accounts"
 import { OUTAGE_AFTER_MS } from "@dotfiles/opencode-pool/alerts"
 import * as ChatGPT from "@dotfiles/opencode-pool/chatgpt/usage"
@@ -324,11 +324,13 @@ export const LIVE_STORE_HOST: StoreHost = { source: {}, register: registerCreden
  * The outside systems as OpenCode provides them: its integrations, the auth plugins' quota RPC, the plugin's
  * storage; the fleet's peers as `peers` reaches them (over SSH in OpenCode, `PeersLive.layer`).
  */
-export const liveWith = (peers: (configured: Options["fleet"]["peers"]) => Layer.Layer<Peers>) => {
+export const liveWith = (
+  peers: (configured: Options["fleet"]["peers"]) => Layer.Layer<Peers>,
+  holds = LedgerLive.holdAuthority(),
+) => {
   // The priced steps and the tally's requests, read and decoded once for every copy of the plugin in this process,
   // and written by one writer of its own (opencode/records.ts).
   const records = Records.make()
-  const holds = LedgerLive.holdAuthority()
   return (
     ctx: Plugin.Context,
     options: Options,
@@ -378,7 +380,7 @@ export const liveWith = (peers: (configured: Options["fleet"]["peers"]) => Layer
 }
 
 /** The outside systems as OpenCode provides them, the peers over SSH. */
-export const live = liveWith(PeersLive.layer)
+export const live = liveWith(PeersLive.layer, LedgerLive.processHoldAuthority())
 
 /** The questions plugin's RPC and the host's sessions, as the pool tells the owner through them. */
 const questionsHost = (ctx: Plugin.Context): OwnerLive.Host => {
@@ -595,7 +597,7 @@ export const make = (
             sessionID: event.sessionID,
             kind: event.kind,
             status: event.response.status,
-            credentialID: sentPlacements.get(event.request)?.credentialID,
+            credentialID: Option.getOrUndefined(Option.map(sentPlacementOf(event.request), (sent) => sent.credentialID)),
           }),
         ).pipe(
             Effect.andThen(

@@ -17,7 +17,7 @@
 import type { Plugin } from "@opencode/plugin/effect"
 import { Effect, Exit, Match, Option, Predicate, Scope, Schema } from "effect"
 import { Hold } from "@dotfiles/opencode-pool/status"
-import { sentPlacements } from "@dotfiles/opencode-pool/handoff"
+import { sentPlacementOf } from "@dotfiles/opencode-pool/handoff"
 import { contextFor, isContext, type Loaded } from "./context.ts"
 import * as Forms from "./forms.ts"
 import { type Asked, type Message, makeHost, type ModelRef, type RpcFault, type Session, type Options, type Process, type Spawned, START } from "./host.ts"
@@ -125,7 +125,7 @@ export const make = (worldOptions: WorldOptions) => {
     const ledger = Option.fromNullishOr(host.storage.get("dotfiles-opencode.pool"))
     const integration = worldOptions.integrations?.anthropic?.find((id) => id.access === worldOptions.anthropic?.accounts[login]?.access)
     const credential = Option.orElse(
-      Option.fromUndefinedOr(sentPlacements.get(request)?.credentialID),
+      Option.map(sentPlacementOf(request), (sent) => sent.credentialID),
       () => Option.fromUndefinedOr(integration?.id),
     )
     return ledger.pipe(

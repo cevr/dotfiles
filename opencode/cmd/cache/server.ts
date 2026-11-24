@@ -166,10 +166,10 @@ export const make = (externals: (options: Options) => Layer.Layer<Externals>) =>
       yield* ctx.session.hook("http.response", (event) => {
         if (event.kind !== "primary") return Effect.void
         const request = event.request
-        const actual = PoolAdmission.sentPlacements.get(request)
+        const actual = PoolAdmission.sentPlacementOf(request)
         const prior = placed.get(event.sessionID)
         const pool = Option.orElse(
-          Option.map(Option.fromUndefinedOr(actual), (sent) => ({ login: sent.credentialID, ttl: sent.cacheTTL })),
+          Option.map(actual, (sent) => ({ login: sent.credentialID, ttl: sent.cacheTTL })),
           () => Option.map(Option.fromUndefinedOr(prior), (sent) => ({ login: sent.login, ttl: sent.ttl })),
         )
         const headers = [...request.headers.entries()]
@@ -197,7 +197,7 @@ export const make = (externals: (options: Options) => Layer.Layer<Externals>) =>
                       agent: Option.some(event.agent),
                       model: `${event.model.providerID}/${event.model.id}`,
                       login,
-                      ...Option.match(Option.fromUndefinedOr(actual), {
+                      ...Option.match(actual, {
                         onNone: () => ({}),
                         onSome: ({ credentialID }) => ({ managed: {
                           providerID: event.model.providerID, model: event.model.id, sessionID: event.sessionID,
@@ -216,7 +216,7 @@ export const make = (externals: (options: Options) => Layer.Layer<Externals>) =>
 
       yield* ctx.session.hook("http.response", (event) => {
         if (!conversational(event.kind)) return Effect.void
-        const actual = PoolAdmission.sentPlacements.get(event.request)
+        const actual = Option.getOrUndefined(PoolAdmission.sentPlacementOf(event.request))
         const pool = placed.get(event.sessionID)
         placed.delete(event.sessionID)
         return bodyOf(event.request).pipe(

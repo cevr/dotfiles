@@ -14,7 +14,7 @@ import { Handoff, type HandoffInput } from "@dotfiles/opencode-pool/handoff"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 import { Effect, Layer, Option, Schema } from "effect"
 import { PingAdmission } from "../service.ts"
-export { sentPlacements } from "@dotfiles/opencode-pool/handoff"
+export { sentPlacementOf } from "@dotfiles/opencode-pool/handoff"
 
 /** The pool's RPC, whose `pace` the composition root asks. */
 export const POOL = POOL_STATUS

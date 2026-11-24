@@ -4,7 +4,7 @@
 // recovered from once, and a 429 named for what it is.
 import { type Clock, Effect, Option, Result, Schema } from "effect"
 import type { RequestKind } from "@dotfiles/opencode-pool/accounts"
-import { HANDOFF_HEADER, HOLD_STORE_RETRY_MS, Handoff, HandoffHeld, type HandoffInput, sentPlacements } from "@dotfiles/opencode-pool/handoff"
+import { HANDOFF_HEADER, HOLD_STORE_RETRY_MS, Handoff, HandoffHeld, type HandoffInput, rememberSentPlacement } from "@dotfiles/opencode-pool/handoff"
 import { RequestHeld, requestHeldMessage, storeHeld } from "@dotfiles/opencode-pool/pace"
 export { POOL_STATUS as HANDOFF_PROTOCOL } from "@dotfiles/opencode-pool/status"
 import type { Endpoint } from "../endpoint.ts"
@@ -144,7 +144,7 @@ export const pooledRequest = (
       if (answer._tag === "Held") return yield* new HandoffHeld({ message: answer.message })
       if (answer._tag === "Send") {
         const cacheTTL = Option.fromNullishOr(headers.get(CACHE_TTL_HEADER))
-        sentPlacements.set(prepared.request, {
+        rememberSentPlacement(prepared.request, {
           credentialID: picked.value,
           ...Option.match(cacheTTL, { onNone: () => ({}), onSome: (ttl) => ({ cacheTTL: ttl }) }),
         })

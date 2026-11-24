@@ -469,9 +469,12 @@ export declare namespace ClearHold {
   export type Rejections = never
 }
 
-/** Nothing when the account is not held. */
+/** A quota reset proves nothing of an independently recorded sign-in requirement. */
 const clearHold = (state: AccountPoolState, command: ClearHold): Effect.Effect<ReadonlyArray<HoldCleared>> =>
-  Effect.succeed(state.holds[command.credentialID] === undefined ? [] : [HoldCleared.make({ credentialID: command.credentialID })])
+  Effect.succeed(Option.toArray(Option.fromUndefinedOr(state.holds[command.credentialID]).pipe(
+    Option.filter((hold) => hold.kind !== "signin"),
+    Option.map(() => HoldCleared.make({ credentialID: command.credentialID })),
+  )))
 
 // ── The aggregate ──
 
