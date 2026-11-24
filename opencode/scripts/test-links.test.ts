@@ -6,7 +6,9 @@ import { describe, expect, it } from "effect-bun-test"
 import { initScratchGit, spawnScratchGitSync } from "../tests/scratch-child.ts"
 import { scratchInput } from "../tests/read-path.ts"
 import { checkoutLinks, closeLinks, linkReads, predecessorLinks } from "./test-links.ts"
+import { spellingReads, trackedSpellings } from "./test-path-spellings.ts"
 import { readMapAt } from "./test-read-map.ts"
+import { testReadInputs, type Workspace } from "./reach.ts"
 
 describe("tracked input links", () => {
   it.live.layer(BunServices.layer)("file, chain, directory, re-entry, dangling, external and retargeted links preserve the correct identities", () =>
@@ -81,3 +83,46 @@ describe("tracked input links", () => {
     }).pipe(Effect.scoped),
   )
 })
+
+it.effect("tracked spelling rejects case and Unicode aliases, but cleans separators before deciding", () =>
+  Effect.sync(() => {
+    const names = ["sim/r7/target.txt", "sim/r7/café.txt"]
+    const resolve = trackedSpellings(names, () => "")
+    const dirty = spellingReads(resolve, ["sim/r7/TARGET.txt"], ["sim/r7/cafe\u0301.txt"])
+    expect(dirty.rejected.join("\n")).toContain('"sim/r7/TARGET.txt"')
+    expect(dirty.rejected.join("\n")).toContain('"sim/r7/café.txt"')
+    expect(dirty.patterns).toEqual([names[0]])
+    expect(dirty.paths).toEqual([names[1]])
+    expect(spellingReads(resolve, ["./sim//r7/local/../target.txt"], ["sim//r7/café.txt"]).rejected).toEqual([])
+    expect(spellingReads(resolve, ["sim/R7/*.txt"], ["sim/R7/"]).patterns).toEqual(["sim/r7/*.txt"])
+    const more = trackedSpellings(["sim/[output].txt", ...names], () => "sim/r7/cafe\u0301.txt")
+    expect(spellingReads(more, ["sim/[OUTPUT].txt"], [], ["sim/[OUTPUT].txt"]).literalPaths).toEqual(["sim/[output].txt"])
+    expect(spellingReads(more, [], ["sim/disk-folded.txt"]).paths).toEqual([names[1]])
+  }),
+)
+
+it.effect("both observed readers stay selected when tracked names fold to an ambiguous identity", () =>
+  Effect.sync(() => {
+    const files = ["sim/r7/target.txt", "sim/r7/Target.txt", "sim/r7/café.txt"]
+    const inconsistent = "sim/r7/case.test.ts"
+    const exact = "sim/r7/exact.test.ts"
+    const unicode = "sim/r7/unicode.test.ts"
+    const workspace: Workspace = {
+      files, spellings: trackedSpellings(files, () => ""), packages: new Map(),
+      runtimeReads: {
+        paths: { [inconsistent]: ["sim/r7/TARGET.txt"], [exact]: [files[0]!], [unicode]: ["sim/r7/cafe\u0301.txt"] },
+        untracedSubprocesses: {}, compilerProjects: {},
+      },
+    }
+    for (const test of [inconsistent, exact]) {
+      const reader = testReadInputs(workspace, test)
+      expect(reader.unknown).toBe(true)
+      expect(reader.has(files[0]!)).toBe(true)
+      expect(reader.has(files[1]!)).toBe(true)
+    }
+    const reader = testReadInputs(workspace, unicode)
+    expect(reader.unknown).toBe(false)
+    expect(reader.positive(files[2]!)).toBe(true)
+    expect(reader.positive("../AGENTS.md")).toBe(false)
+  }),
+)

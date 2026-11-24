@@ -22,7 +22,7 @@
 // An acceptance file's key (`acceptKey`, the ledger of scripts/accept-ledger.ts)
 // leaves out what no acceptance run loads: the packages' own unit tests,
 // benches and Markdown, and the lint policy and the gate (`ACCEPT_SHARED`).
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, readFileSync, realpathSync } from "node:fs"
 import { createHash } from "node:crypto"
 import path from "node:path"
 import { $ } from "bun"
@@ -31,7 +31,8 @@ import { acceptKey, acceptSharedFrom } from "./accept-key.ts"
 import { decodeGitPaths, nulFields } from "./git-paths.ts"
 import { ALL_READS, readMatcher } from "./read-declarations.ts"
 import { compilerInputs, projectReads, type CompilerInputs } from "./test-compiler-inputs.ts"
-import { checkoutLinks, closeLinks, linkAliases, linkReads, linkTarget, predecessorLinks, type LinkInputs } from "./test-links.ts"
+import { checkoutPaths, closeLinks, linkAliases, linkReads, linkTarget, predecessorLinks, type LinkInputs } from "./test-links.ts"
+import { spellingReads, trackedSpellings, type TrackedSpellings } from "./test-path-spellings.ts"
 import { emptyReadMap, loadReadMap, type RuntimeReads } from "./test-read-map.ts"
 import { projectReadChecker } from "./test-read-project.ts"
 import { isAcceptInput, packageOf } from "./test-population.ts"
@@ -56,6 +57,7 @@ export const SHARED = [
   "scripts/read-declarations.ts",
   "scripts/test-read-map.ts",
   "scripts/test-links.ts",
+  "scripts/test-path-spellings.ts",
   "scripts/test-compiler-inputs.ts",
   "scripts/test-read-project.ts",
   "scripts/test-reads.ts",
@@ -81,15 +83,31 @@ export interface Workspace {
   readonly compilerInputs?: CompilerInputs
   readonly runtimeReads?: RuntimeReads
   readonly links?: LinkInputs
+  readonly spellings?: TrackedSpellings
 }
 
 const NO_LINKS: LinkInputs = new Map()
+const NO_SPELLINGS = trackedSpellings([], () => "")
 const repoRoot = path.dirname(ROOT)
 const workspaceFiles = (workspace: Workspace) => [...workspace.files, ...(workspace.siblings ?? [])]
 export const selectionPaths = (workspace: Workspace, base: string, changed: ReadonlyArray<string>) =>
   predecessorLinks(repoRoot, base, changed).then((prior) =>
     closeLinks(workspace.links || NO_LINKS, prior, changed, workspaceFiles(workspace)),
   )
+
+const lookupSpelling = () => {
+  const physical = realpathSync.native(ROOT)
+  const memo = new Map<string, string>()
+  return (file: string) => {
+    if (path.isAbsolute(file) || file.startsWith("../../") || file.split("/").some((part) => [".git", "node_modules", "opencode.db"].includes(part))) return ""
+    const prior = memo.get(file)
+    if (memo.has(file)) return prior || ""
+    const found = Effect.runSync(Effect.option(Effect.try(() => path.relative(physical, realpathSync.native(path.join(ROOT, file))))))
+    const actual = Option.getOrElse(found, () => "")
+    memo.set(file, actual)
+    return actual
+  }
+}
 
 interface Package {
   readonly dir: string
@@ -124,11 +142,12 @@ export const load = async (): Promise<Workspace> => {
     const deps = (manifests.get(dir)?.deps ?? []).flatMap((name) => dirOfName.get(name) ?? [])
     packages.set(dir, { dir, files: list, deps })
   }
-  return Effect.runPromise(Effect.all([Effect.promise(() => loadReadMap(ROOT)), Effect.promise(() => checkoutLinks(cwd))], { concurrency: "unbounded" })).then(([runtimeReads, links]) =>
-    compilerInputs(ROOT, new Set(known), runtimeReads.compilerProjects).then((compilerInputs) =>
-      ({ files, siblings, packages, head: head.trim(), compilerInputs, runtimeReads, links }),
-    ),
-  )
+  return Effect.runPromise(Effect.all([Effect.promise(() => loadReadMap(ROOT)), Effect.promise(() => checkoutPaths(cwd))], { concurrency: "unbounded" })).then(([runtimeReads, { links, tracked }]) => {
+    const spellings = trackedSpellings([...tracked, ...tracked.flatMap((file) => linkAliases(links, file))], lookupSpelling())
+    return compilerInputs(ROOT, new Set(known), runtimeReads.compilerProjects).then((compilerInputs) =>
+      ({ files, siblings, packages, head: head.trim(), compilerInputs, runtimeReads, links, spellings }),
+    )
+  })
 }
 
 /** A path from the repository's root expressed from opencode/. */
@@ -220,22 +239,25 @@ const authorityOf = (workspace: Workspace, test: string) => {
     "TypeScript project: no complete native project inventory"
   const paths = runtimeReads.paths[test] ?? []
   const imports = externalScriptImports(workspace, test)
-  const exact = new Set([...paths.filter((file) => !file.endsWith("/")), ...imports, ...compiler.exact])
-  const directories = paths.filter((file) => file.endsWith("/"))
   const patterns = read.patterns.filter((pattern) => pattern !== ALL_READS)
-  const matches = readMatcher(patterns)
+  const spelling = spellingReads(workspace.spellings || NO_SPELLINGS, patterns, paths, read.literalPaths)
+  const directPaths = spelling.paths
+  const directories = directPaths.filter((file) => file.endsWith("/"))
+  const exact = new Set([...directPaths.filter((file) => !file.endsWith("/")), ...spelling.literalPaths, ...imports, ...compiler.exact])
+  const matches = readMatcher(spelling.patterns)
   const direct = (file: string) => exact.has(file) || matches(file) || directories.some((prefix) => file.startsWith(prefix))
   const links = workspace.links || NO_LINKS
-  const linked = linkReads(links, direct, exact, [...patterns, ...directories])
+  const linked = linkReads(links, direct, exact, [...spelling.patterns, ...directories])
   const linkReason = linked.unsafe && `tracked symlink is dangling or resolves outside checkout: ${linked.unsafe}`
-  const reason = runtimeReads.untracedSubprocesses[test] || compilerReason || linkReason
+  const spellingReason = spelling.ambiguous && "tracked read spelling is ambiguous or cannot be resolved"
+  const reason = runtimeReads.untracedSubprocesses[test] || compilerReason || linkReason || spellingReason
   const subprocessReason = Option.getOrUndefined(Option.liftPredicate(reason, Boolean))
   const unknown = read.classification === "unknown" || Boolean(subprocessReason)
   const observationsFor = (file: string) => {
     const spellings = [file, ...linkAliases(links, file)]
-    return [...paths.filter((entry) => spellings.some((name) => entry === name || (entry.endsWith("/") && name.startsWith(entry)))), ...configs.filter((config) => workspace.compilerInputs?.get(config)?.has(file))]
+    return [...directPaths.filter((entry) => spellings.some((name) => entry === name || (entry.endsWith("/") && name.startsWith(entry)))), ...configs.filter((config) => workspace.compilerInputs?.get(config)?.has(file))]
   }
-  return { unknown, subprocessReason, exact: new Set([...exact, ...linked.canonical]), imports, positive: linked.has, observationsFor, linkKey: linked.fingerprint, has: (file: string) => unknown || linked.has(file) }
+  return { unknown, subprocessReason, spellingIssues: spelling.rejected, exact: new Set([...exact, ...linked.canonical]), imports, positive: linked.has, observationsFor, linkKey: linked.fingerprint, has: (file: string) => unknown || linked.has(file) }
 }
 
 /** Runtime reads have one authority for selection, cache inputs and the coverage audit.

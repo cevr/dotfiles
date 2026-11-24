@@ -18,16 +18,13 @@ type Link = { readonly payload: string; readonly target: Option.Option<Target> }
 export type LinkInputs = ReadonlyMap<string, Link>
 
 /** Index and tree formats are both NUL-delimited; split metadata only at the first tab. */
-const indexLinks = (out: string) => nulFields(out).flatMap((entry) => {
-  if (!entry.startsWith("120000 ")) return []
-  return [nonempty(entry.slice(entry.indexOf("\t") + 1))]
-})
+const indexName = (entry: string) => nonempty(entry.slice(entry.indexOf("\t") + 1))
 
 const inside = (file: string) => file !== ".." && !file.startsWith("../") && !file.startsWith("/")
 const opencode = (path: Path.Path, file: string) => path.relative("opencode", file) || "."
 
 /** Read only tracked aliases. Inspect their resolution in the checked-out filesystem, not their spelling. */
-export const checkoutLinks = (root: string) => Effect.gen(function* () {
+const checkoutIndex = (root: string) => Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
   const physical = yield* fs.realPath(root)
@@ -45,8 +42,14 @@ export const checkoutLinks = (root: string) => Effect.gen(function* () {
     const target = yield* (payload && realTarget(file) || Effect.succeed(Option.none<Target>()))
     return [opencode(path, name), { payload, target }] as const
   })
-  return new Map(yield* Effect.forEach(new Set(indexLinks(out)), resolve))
+  const entries = nulFields(out)
+  const links = new Map(yield* Effect.forEach(new Set(entries.filter((entry) => entry.startsWith("120000 ")).values().map(indexName)), resolve))
+  const tracked = entries.map((entry) => opencode(path, indexName(entry)))
+  return { tracked, links }
 }).pipe(Effect.provide(layer), Effect.runPromise)
+
+export const checkoutPaths = checkoutIndex
+export const checkoutLinks = (root: string) => checkoutIndex(root).then(({ links }) => links)
 
 class BadTreeLink extends Data.TaggedError("BadTreeLink")<{ readonly entry: string }> {}
 

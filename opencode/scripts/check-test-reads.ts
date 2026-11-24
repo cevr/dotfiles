@@ -13,11 +13,12 @@ BunRuntime.runMain(Effect.gen(function* () {
   const problems = new Array<string>()
   for (const file of files) {
     const { patterns, issues, classification, indirect, bounded } = inspectReads(workspace, file)
+    const { subprocessReason, spellingIssues } = testReadInputs(workspace, file)
     if (argv.includes("--inventory")) {
-      const { subprocessReason } = testReadInputs(workspace, file)
       yield* Console.log(`${file}\t${patterns.join(" ")}\t${classification}\t${indirect.map(({ line, reason }) => `${line}: ${reason}`).join("; ")}\t${bounded.join(" ")}\t${subprocessReason ?? ""}`)
     }
     for (const { line, message } of issues) problems.push(`${file}:${line}: ${message}`)
+    for (const issue of spellingIssues) problems.push(`${file}: ${issue}`)
   }
   if (problems.length > 0) {
     yield* Console.error(problems.join("\n"))

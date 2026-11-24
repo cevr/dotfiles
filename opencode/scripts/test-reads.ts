@@ -650,6 +650,7 @@ const callRead = (at: Node, syntax: Syntax, evaluate: Evaluation, record: ReadSi
 
 export interface ReadCheck {
   readonly patterns: ReadonlyArray<string>
+  readonly literalPaths?: ReadonlyArray<string>
   /** Parts of the selection that are enforced at runtime rather than proved as literal paths. */
   readonly bounded: ReadonlyArray<string>
   readonly indirect: ReadonlyArray<{ readonly line: number; readonly reason: string }>
@@ -934,6 +935,7 @@ const checkScope = (pattern: string, declarations: ReturnType<typeof readDeclara
 
 const siteReport = (file: string, sites: ReadonlyArray<Site>, declarations: ReturnType<typeof readDeclarations>, hasAll: boolean) => {
   const found = new Set<string>()
+  const literalPaths = new Set<string>()
   const bounded = new Set<string>()
   const issues = new Array<ReadCheck["issues"][number]>()
   const indirect = new Array<ReadCheck["indirect"][number]>()
@@ -949,6 +951,10 @@ const siteReport = (file: string, sites: ReadonlyArray<Site>, declarations: Retu
     }
     if (!needed.value) continue
     found.add(needed.value)
+    if (!site.listing && Option.exists(site.result, (address) => !("glob" in address))) {
+      const choices = Option.exists(site.result, (address) => "choices" in address)
+      for (const part of (choices && patternParts(needed.value)) || [needed.value]) literalPaths.add(part)
+    }
     if (!Option.exists(site.result, (a) => "glob" in a && a.bounded)) continue
     for (const scope of patternParts(needed.value)) {
       bounded.add(scope)
@@ -956,7 +962,7 @@ const siteReport = (file: string, sites: ReadonlyArray<Site>, declarations: Retu
       if (fix) issues.push({ line: at, message: `${fix}${origin}` })
     }
   }
-  return { found, bounded, issues, indirect }
+  return { found, bounded, issues, indirect, literalPaths }
 }
 
 const reasonFor = (annotation: string, site: ReadCheck["indirect"][number], file: string) => {
@@ -978,7 +984,7 @@ const report = (file: string, source: string, comments: ReadonlyArray<string>, s
   const reasons = comments.flatMap(readReasons)
   const declared = declarations.map(({ pattern }) => pattern)
   const hasAll = declared.includes(ALL_READS)
-  const { found, bounded, issues, indirect } = siteReport(file, sites.filter((site) => site.result !== COMPILER_PROJECT), declarations, hasAll)
+  const { found, bounded, issues, indirect, literalPaths } = siteReport(file, sites.filter((site) => site.result !== COMPILER_PROJECT), declarations, hasAll)
   const issue = (message: string) => issues.push({ line: 1, message })
   if (hasAll && indirect.length === 0) issue("remove @reads all: no opaque read remains; declare the exact inputs instead")
   if (hasAll && indirect.length > 0 && !reasons.some((reason) => indirect.some((site) => reasonFor(reason, site, file))))
@@ -987,7 +993,7 @@ const report = (file: string, source: string, comments: ReadonlyArray<string>, s
     issue("@reads declarations must be source comments, not text in a string")
   if (declared.some(wholeTree)) issue("@reads must name the input or use @reads all for an opaque read")
   for (const message of unsupportedDeclarations(declarations, bounded)) issue(message)
-  return { patterns: [...found].toSorted(), bounded: [...bounded].toSorted(), indirect, issues, classification: readClassification(indirect.length > 0, bounded.size), opensCompiler: sites.some((site) => site.result === COMPILER_PROJECT) }
+  return { patterns: [...found].toSorted(), ...((literalPaths.size > 0 && { literalPaths: [...literalPaths].toSorted() }) || {}), bounded: [...bounded].toSorted(), indirect, issues, classification: readClassification(indirect.length > 0, bounded.size), opensCompiler: sites.some((site) => site.result === COMPILER_PROJECT) }
 }
 
 export const readInputChecker = (loadSource: Source, resolvePackage: ResolvePackage = () => "") => {
