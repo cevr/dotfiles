@@ -9,6 +9,7 @@
 // It reads the account's usage from $FAKE_LIMITS (a rate-limit snapshot as JSON), when set.
 // With $FAKE_ROLLOUTS set, a thread has a rollout (that file's line) only once a turn
 // started on it, a resume without one fails as Codex's does, and thread ids name the process.
+// A prompt equal to $FAKE_MANUAL_PROMPT finishes only after the test calls fake/complete.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs'
 
 let threads = 0
@@ -53,6 +54,7 @@ const work = (threadId: string, turnId: string) => {
 const rollouts = process.env.FAKE_ROLLOUTS
 let buffer = ''
 const hanging = new Map<string, string>()
+const manual = new Map<string, { turnId: string; text: string }>()
 const busy = new Map<string, number>()
 const deaf = new Set<string>()
 for await (const chunk of Bun.stdin.stream()) {
@@ -90,7 +92,16 @@ for await (const chunk of Bun.stdin.stream()) {
         hanging.set(params.threadId, turnId)
         if (/\bdeaf\b/.test(text)) deaf.add(turnId)
       }
+      else if (text === process.env.FAKE_MANUAL_PROMPT) manual.set(params.threadId, { turnId, text })
       else complete(params.threadId, turnId, 'completed', `done: ${text}`)
+    } else if (method === 'fake/complete') {
+      const pending = manual.get(params.threadId)
+      if (!pending) out({ id, error: { code: -32000, message: 'no pending fake turn' } })
+      else {
+        manual.delete(params.threadId)
+        out({ id, result: {} })
+        complete(params.threadId, pending.turnId, 'completed', `done: ${pending.text}`)
+      }
     } else if (method === 'turn/interrupt' && deaf.delete(params.turnId)) out({ id, error: { code: -32000, message: 'interrupt refused' } })
     else if (method === 'turn/interrupt') {
       out({ id, result: {} })

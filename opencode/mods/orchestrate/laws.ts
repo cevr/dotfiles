@@ -393,7 +393,7 @@ export const codexAdmissionLaws = (name: string, layer: (world: CodexWorld) => L
       check(
         layer(world),
         Effect.gen(function* () {
-          const reply = yield* (yield* CodexAdmission).admit("gpt-5", "verifier")
+          const reply = yield* (yield* CodexAdmission).admit("gpt-5-unlisted", "planner")
           expect(reply._tag).toBe("FailedOpen")
           expect(reply._tag === "FailedOpen" ? reply.why : "").not.toBe("")
         }),

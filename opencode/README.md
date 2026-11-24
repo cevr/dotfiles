@@ -4041,7 +4041,7 @@ Effect's `Clock`; the worker's own clock stops while its tool calls run.
 
 Every role is an OpenCode subagent; its model is the config's.
 `bun run daily` binds every role (planner, implementor, verifier, worker)
-to the newest Claude Opus, and puts the planner on the newest Fable first (below). Codex is the fallback, on the ChatGPT
+to the newest Claude Opus, and puts the planner on the newest Fable first (below). Codex is the planner's fallback, on the ChatGPT
 subscription OpenCode signs in to itself (`opencode auth login openai`),
 used only when the pace holds a new Opus start.
 
@@ -4052,12 +4052,11 @@ used only when the pace holds a new Opus start.
 | held | held | latches, and opens on whichever opens first (Opus on a tie) |
 | Sabbath | (not asked) | latches until work resumes |
 
-The fallback is Codex's newest sol, at `high` (the verifier at `medium`), or
-the newest luna at `max` when the description ends in `(light)`, `(direct)`
-or `(mechanical)` (`codexFallback` in `role.ts`; `Models.newest` picks the
-latest release of the family). A call that names a `model` runs on it as is,
-with no fallback. A follow-up never falls back: a role already on Codex stays
-there, and the next new start tries Opus first again. The parent's answer
+The planner's fallback is Codex's newest sol at `high` (`roleModels` in `role.ts`).
+Verification runs only on Claude Opus. The guard honors an explicit Opus
+model, refuses Codex with the allowed form, and never inherits Codex from a
+parent. A held verifier latches on Opus, including a follow-up to its existing
+child. The parent's answer for a planner fallback
 starts with `orchestrate: this agent runs on <model>, the Codex fallback
 (<why>).`, and the call log's `call` line carries the same `fallback`.
 No Codex bridge, MCP server or thread tools are involved.

@@ -15,7 +15,6 @@ import { Hold, Phase } from "../../mods/kernel/child-lifecycle.ts"
 import { RowFact } from "../../mods/kernel/child-row.ts"
 import type { OwnerAnswer } from "../../mods/kernel/opencode/child-row.ts"
 import { MarkRead } from "../../mods/wake/latch.ts"
-import { hangGuard } from "../../tests/hang-guard.ts"
 import { type Latch, type LatchAsk, Opened } from "@dotfiles/opencode-wake/latch"
 import type { CallLine } from "@dotfiles/opencode-orchestrate/call-line"
 import { KEEP } from "@dotfiles/opencode-orchestrate/compaction"
@@ -40,7 +39,7 @@ import { RECHECK_MS } from "@dotfiles/opencode-orchestrate/model"
 import * as OpenCodePoolPace from "@dotfiles/opencode-orchestrate/opencode/pool-pace"
 import * as OpenCodeRuns from "@dotfiles/opencode-orchestrate/opencode/runs"
 import * as OpenCodeSteer from "@dotfiles/opencode-orchestrate/opencode/steer"
-import type { Pace } from "@dotfiles/opencode-orchestrate/pace"
+import { parseModel, type Pace } from "@dotfiles/opencode-orchestrate/pace"
 import { NO_INFLIGHT, poolPace } from "@dotfiles/opencode-pool/pace"
 import type { AccountStatus } from "@dotfiles/opencode-pool/status"
 import { iso } from "@dotfiles/opencode-pool/usage-text"
@@ -48,7 +47,7 @@ import { definitions, ORCHESTRATOR, orchestrator } from "@dotfiles/opencode-orch
 import { KNOWLTON, rest } from "@dotfiles/opencode-orchestrate/sabbath"
 import { type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
 import Orchestrate, { CODEX_BUDGET, DEFAULT_LOG, Options, SKILL_DIR, SUBAGENTS, type StepHostSession, stepSessionOf, UNIT_LOG, withTaskFork } from "./server.ts"
-import { stamp } from "../../tests/hang-guard.ts"
+import { hangGuard, stamp } from "../../tests/hang-guard.ts"
 
 /** This test file's folder. */
 const HERE = import.meta.dir
@@ -68,6 +67,7 @@ type Hook = (event: Record<string, unknown>) => Effect.Effect<void, { readonly _
 /** The outside systems' state for one test. */
 interface World {
   readonly sessions?: Readonly<Record<string, SessionsTest.Session>>
+  readonly childModels?: Readonly<Record<string, NonNullable<World["model"]>>>
   readonly pool?: Readonly<Record<string, Pace>>
   /** The pool's `pace` RPC itself, in place of `pool`'s answers: one that fails, hangs or answers no pace. */
   readonly poolAsk?: OpenCodePoolPace.Ask
@@ -216,16 +216,20 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
     const keep = (ask: LatchAsk) =>
       Effect.sync(() => {
         if (world.refuse !== undefined) return { outcome: "refused", reason: world.refuse }
-        const child = `ses_latched${kept.length + 1}`
+        const child = Option.getOrElse(Option.fromUndefinedOr(ask.child), () => `ses_latched${kept.length + 1}`)
         kept.push({ ...ask, child })
         return { outcome: "latched", id: `w00000${kept.length}`, child }
       })
     const briefs: Array<OpenCodeSteer.Synthetic> = []
+    const otherModels = Option.getOrElse(Option.fromUndefinedOr(world.others), () => {
+      if (world.model?.id.startsWith("claude-opus")) return []
+      return [{ providerID: "anthropic", id: "claude-opus-fixture", family: "claude-opus", variants: [{ id: "medium" }] }]
+    })
     const externals = (start: OpenCodeLatches.Start) => Layer.mergeAll(
       OpenCodeSteer.remindLayer((input) => Effect.sync(() => void briefs.push(input))),
       CallLogTest.layer(lines),
       SessionsTest.layer(world.sessions ?? {}),
-      ModelsTest.layer(world.model, world.variants, world.others),
+      ModelsTest.layer(world.model, world.variants, otherModels, world.childModels),
       world.poolAsk === undefined
         ? PoolPaceTest.layer(world.pool ?? {}, world.started)
         : OpenCodePoolPace.layer(world.poolAsk, () => Effect.succeed({})),
@@ -407,65 +411,70 @@ describe("the guard", () => {
       }),
     ))
 
-  test("a new role start naming the role's own model, at any variant or none, runs at the role's effort; its line says model-dropped", () =>
+  test("naming a verifier's Opus is kept; implementor and worker model dropping is unchanged", () =>
     scenario(
       Effect.gen(function* () {
         const model = { providerID: "anthropic", id: "claude-opus-5-5" }
         const plugin = yield* start({ now: WEDNESDAY }, { model, variants: ["medium", "high"], sessions: { child: { parentID: "root", agent: "verifier" } } })
-        for (const named of ["anthropic/claude-opus-5-5", "anthropic/claude-opus-5-5#max", "claude-opus-5-5"])
-          expect((yield* plugin.call("subagent", "root", { agent: "verifier", model: named })).input).toEqual({ agent: "verifier", model: "anthropic/claude-opus-5-5#medium" })
+        for (const named of ["anthropic/claude-opus-5-5", "anthropic/claude-opus-5-5#high"])
+          expect((yield* plugin.call("subagent", "root", { agent: "verifier", model: named })).input).toEqual({ agent: "verifier", model: named })
         // A described role too; the worker, with no effort of its own, runs on its own model with the name dropped.
         const described = { agent: "general", model: "anthropic/claude-opus-5-5", description: "pkg-lower implementor r2" }
         expect((yield* plugin.call("subagent", "root", described)).input).toEqual({ ...described, agent: "implementor", model: "anthropic/claude-opus-5-5#medium" })
         expect((yield* plugin.call("subagent", "root", { agent: "worker", model: "anthropic/claude-opus-5-5#low" })).input).toEqual({ agent: "worker" })
-        expect(plugin.logged().map((line) => (JSON.parse(line) as { reason: string }).reason)).toEqual(Array(5).fill("model-dropped"))
-        // A different model, a non-role agent and a follow-up keep the model they name.
-        expect((yield* plugin.call("subagent", "root", { agent: "verifier", model: "anthropic/claude-sonnet" })).input).toEqual({ agent: "verifier", model: "anthropic/claude-sonnet" })
+        expect(plugin.logged().map((line) => (JSON.parse(line) as { reason: string }).reason)).toEqual(["kept", "kept", "model-dropped", "model-dropped"])
+        // Sonnet is not Opus. A non-role agent and an Opus follow-up keep the model they name.
+        expect((yield* plugin.call("subagent", "root", { agent: "verifier", model: "anthropic/claude-sonnet" })).refused?.message).toContain("Claude Opus only")
         expect((yield* plugin.call("subagent", "root", { agent: "explore", model: "anthropic/claude-opus-5-5" })).input).toEqual({ agent: "explore", model: "anthropic/claude-opus-5-5" })
         expect((yield* plugin.call("subagent", "root", { sessionID: "child", model: "anthropic/claude-opus-5-5" })).input).toEqual({
           sessionID: "child",
           model: "anthropic/claude-opus-5-5",
           agent: "verifier",
         })
-        expect(plugin.logged().slice(5).map((line) => (JSON.parse(line) as { reason: string }).reason)).toEqual(["kept", "kept", "continued"])
+        expect(plugin.logged().slice(5).map((line) => (JSON.parse(line) as { reason: string }).reason)).toEqual(["kept", "continued"])
       }),
-    ))
+    ), hangGuard("short-fixture"))
 
   test("role work asked of a general agent runs as its described role, at the role's effort, and its line says why", () =>
     scenario(
       Effect.gen(function* () {
-        const plugin = yield* start({ now: WEDNESDAY }, { model: { providerID: "anthropic", id: "claude" }, variants: ["medium"] })
+        const plugin = yield* start({ now: WEDNESDAY }, { model: { providerID: "anthropic", id: "claude-opus" }, variants: ["medium"] })
         const input = { agent: "general", description: "closure-flake verifier r1 (Opus)", prompt: "x", background: true }
-        expect((yield* plugin.call("subagent", "root", input)).input).toEqual({ ...input, agent: "verifier", model: "anthropic/claude#medium" })
+        expect((yield* plugin.call("subagent", "root", input)).input).toEqual({ ...input, agent: "verifier", model: "anthropic/claude-opus#medium" })
         expect(plugin.logged()).toEqual([
-          '{"kind":"call","sessionID":"root","callID":"call","from":"build","asked":"general","agent":"verifier","reason":"described","model":"anthropic/claude#medium","background":true,"description":"closure-flake verifier r1 (Opus)","pace":{"ok":true,"measured":false,"reason":"provider is not pooled"}}',
+          '{"kind":"call","sessionID":"root","callID":"call","from":"build","asked":"general","agent":"verifier","reason":"described","model":"anthropic/claude-opus#medium","background":true,"description":"closure-flake verifier r1 (Opus)","pace":{"ok":true,"measured":false,"reason":"provider is not pooled"}}',
         ])
       }),
     ))
 
-  test("a follow-up naming no agent keeps its child's; the pace holding its model refuses it with when it opens, its child kept", () =>
+  test("a held verifier follow-up latches on the original child and keeps its prompt", () =>
     scenario(
       Effect.gen(function* () {
-        const sessions = { child: { parentID: "root", agent: "verifier" } }
-        const model = { providerID: "anthropic", id: "claude" }
+        const sessions = { child: { parentID: "root", agent: "verifier", started: true } }
+        const model = { providerID: "anthropic", id: "claude-opus", variant: "high" }
         const open = yield* start({ now: WEDNESDAY }, { sessions, model, pool: { anthropic: { ok: true, measured: true, reason: "room" } } })
         expect((yield* open.call("subagent", "root", { sessionID: "child", prompt: "go on" })).input).toEqual({
           sessionID: "child",
           prompt: "go on",
           agent: "verifier",
+          model: "anthropic/claude-opus#high",
         })
         expect(open.logged()).toEqual([
-          '{"kind":"call","sessionID":"root","callID":"call","from":"build","agent":"verifier","reason":"continued","child":"child","pace":{"ok":true,"measured":true,"reason":"room"}}',
+          '{"kind":"call","sessionID":"root","callID":"call","from":"build","agent":"verifier","reason":"continued","model":"anthropic/claude-opus#high","child":"child","pace":{"ok":true,"measured":true,"reason":"room"}}',
         ])
         const retryAt = Date.parse(WEDNESDAY) + 600_000
         const held = yield* start({ now: WEDNESDAY }, { sessions, model, pool: { anthropic: { ok: false, measured: true, reason: "over the weekly line", retryAt } } })
-        const refused = yield* held.call("subagent", "root", { sessionID: "child", prompt: "go on" })
-        expect(refused).toMatchObject({ refused: { message: expect.stringContaining("over the weekly line") } })
-        // No new agent: nothing ran, nothing latched.
+        const call = yield* held.call("subagent", "root", { sessionID: "child", prompt: "go on" })
+        expect(call.refused).toBeUndefined()
+        expect(call.input).toMatchObject({ sessionID: "child", model: "anthropic/claude-opus#high" })
         expect(held.ran).toEqual([])
-        expect(held.kept).toEqual([])
+        const latch = held.kept[0]!
+        expect(latch).toMatchObject({ child: "child", subagent: { prompt: "go on" }, context: { continuation: true } })
+        expect(Number.isFinite(latch.opensAt) && latch.opensAt > retryAt - 600_000).toBe(true)
+        expect(yield* open.open({ ...latch, id: "w000001", kind: "latch", directory: "/work", setAt: retryAt - 600_000 })).toEqual({ outcome: "opened" })
+        expect(open.ran).toMatchObject([{ input: { sessionID: "child", model: "anthropic/claude-opus#high", prompt: expect.stringContaining("go on") } }])
       }),
-    ))
+    ), hangGuard("short-fixture"))
 
   test("a worker at max, asked or inherited, runs at its model's default, logged and told to the parent; a mechanical one runs at max", () =>
     scenario(
@@ -562,15 +571,15 @@ describe("the pace", () => {
           return { ok: false, measured: true, reason: "weekly pace" }
         }
         const plugin = yield* start({ now: WEDNESDAY }, { codex, refuse: "no wakes" })
-        const held = yield* plugin.call("subagent", "root", { agent: "verifier", model: "openai/gpt-5#high" })
+        const held = yield* plugin.call("subagent", "root", { agent: "planner", model: "openai/gpt-5#high" })
         expect(held.refused?.message).toStartWith(
           `orchestrate: the Codex account's pace holds this agent. weekly pace. It opens about ${new Date(now + 60_000).toISOString()} (`,
         )
         expect((yield* plugin.call("subagent", "root", { agent: "explore", model: "openai/gpt-5" })).refused).toBeDefined()
-        expect(asked).toEqual(["gpt-5 verifier", "gpt-5 none"])
+        expect(asked).toEqual(["gpt-5 planner", "gpt-5 none"])
         // With `codex: false` the pool answers for every provider; it has no hold here.
         const pooled = yield* start({ now: WEDNESDAY, codex: false }, { codex })
-        expect((yield* pooled.call("subagent", "root", { agent: "verifier", model: "openai/gpt-5" })).refused).toBeUndefined()
+        expect((yield* pooled.call("subagent", "root", { agent: "planner", model: "openai/gpt-5" })).refused).toBeUndefined()
         expect(asked).toHaveLength(2)
       }),
     ))
@@ -588,20 +597,20 @@ describe("the pace", () => {
           { now: WEDNESDAY, codex: { pool: true } },
           { codex, pool: { openai: { ok: false, measured: true, reason, retryAt: now + 120_000 } }, refuse: "no wakes" },
         )
-        const refused = (yield* held.call("subagent", "root", { agent: "verifier", model: "openai/gpt-5#high" })).refused
+        const refused = (yield* held.call("subagent", "root", { agent: "planner", model: "openai/gpt-5#high" })).refused
         expect(refused?.message).toStartWith(
           `orchestrate: the Codex account's pace holds this agent. ${reason}. It opens about ${new Date(now + 120_000).toISOString()} (`,
         )
         // A pool that has no measure of it (no ChatGPT login read) leaves it to the script.
         const unmeasured = yield* start({ now: WEDNESDAY, codex: { pool: true } }, { codex, pool: { openai: { ok: true, measured: false, reason: "no pooled account readings" } } })
-        expect((yield* unmeasured.call("subagent", "root", { agent: "verifier", model: "openai/gpt-5" })).refused).toBeUndefined()
+        expect((yield* unmeasured.call("subagent", "root", { agent: "planner", model: "openai/gpt-5" })).refused).toBeUndefined()
         const open = yield* start({ now: WEDNESDAY, codex: { pool: true } }, { codex, pool: { openai: { ok: true, measured: true, reason: "within" } } })
-        expect((yield* open.call("subagent", "root", { agent: "verifier", model: "openai/gpt-5" })).refused).toBeUndefined()
-        expect(asked).toEqual(["gpt-5 verifier"])
+        expect((yield* open.call("subagent", "root", { agent: "planner", model: "openai/gpt-5" })).refused).toBeUndefined()
+        expect(asked).toEqual(["gpt-5 planner"])
         // Without `codex.pool` the script alone answers: the pool's hold is not asked.
         const scripted = yield* start({ now: WEDNESDAY }, { codex, pool: { openai: { ok: false, measured: true, reason, retryAt: now + 120_000 } } })
-        expect((yield* scripted.call("subagent", "root", { agent: "verifier", model: "openai/gpt-5" })).refused).toBeUndefined()
-        expect(asked).toEqual(["gpt-5 verifier", "gpt-5 verifier"])
+        expect((yield* scripted.call("subagent", "root", { agent: "planner", model: "openai/gpt-5" })).refused).toBeUndefined()
+        expect(asked).toEqual(["gpt-5 planner", "gpt-5 planner"])
       }),
     ))
 
@@ -619,7 +628,7 @@ describe("the pace", () => {
           },
         )
         expect((yield* plugin.call("subagent", "root", { agent: "explore" })).refused).toBeUndefined()
-        expect((yield* plugin.call("subagent", "root", { agent: "verifier", model: "openai/gpt-5" })).refused).toBeUndefined()
+        expect((yield* plugin.call("subagent", "root", { agent: "planner", model: "openai/gpt-5" })).refused).toBeUndefined()
         const held = yield* plugin.call("subagent", "root", { agent: "explore", model: "sim/model" })
         expect(held.refused).toBeUndefined()
         expect(held.input).toMatchObject({ sessionID: "ses_latched1" })
@@ -674,13 +683,13 @@ describe("the call line's admission", () => {
     scenario(
       Effect.gen(function* () {
         const silent = yield* start({ now: WEDNESDAY }, {})
-        expect((yield* silent.call("subagent", "root", { agent: "verifier", model: "openai/gpt-5" })).refused).toBeUndefined()
+        expect((yield* silent.call("subagent", "root", { agent: "planner", model: "openai/gpt-5" })).refused).toBeUndefined()
         expect(admission(silent.logged())).toEqual({ codex: { failOpen: "no admission line (exit 2)" } })
         const unmeasured = yield* start(
           { now: WEDNESDAY, codex: { pool: true } },
           { pool: { openai: { ok: true, measured: false, reason: "no pooled account readings" } }, codex: () => ({ ok: true, measured: true, reason: "room for 3" }) },
         )
-        expect((yield* unmeasured.call("subagent", "root", { agent: "verifier", model: "openai/gpt-5" })).refused).toBeUndefined()
+        expect((yield* unmeasured.call("subagent", "root", { agent: "planner", model: "openai/gpt-5" })).refused).toBeUndefined()
         expect(admission(unmeasured.logged())).toEqual({
           pace: { ok: true, measured: false, reason: "no pooled account readings" },
           codex: { ok: true, measured: true, reason: "room for 3" },
@@ -957,7 +966,106 @@ describe("Opus first, Codex second", () => {
     asked.push(`${id} ${role}`)
     return { ok: true, measured: true, reason: "scripted room" }
   }
-  const NOTE = "orchestrate: this agent runs on openai/gpt-6.1-sol#medium, the Codex fallback (anthropic/claude-opus#medium held: all pool accounts are held)."
+  const NOTE = "orchestrate: this agent runs on openai/gpt-6.1-sol#high, the Codex fallback (anthropic/claude-opus#medium held: all pool accounts are held)."
+
+  const SOL_MODEL = "openai/gpt-6.1-sol#high"
+  const EXPLICIT_OPUS = "anthropic/claude-opus#high"
+  const SOL_PARENT = { providerID: "openai", id: "gpt-6.1-sol" }
+  const verifying = [
+    { start: { agent: "verifier" }, saved: "verifier" },
+    { start: { agent: "orchestrate-reviewer" }, saved: "orchestrate-reviewer" },
+    { start: { agent: "worker", description: "verifier matrix r1" }, saved: "verifier" },
+  ]
+  const requests = [
+    { input: {}, saved: SOL_MODEL, refused: false },
+    { input: { model: EXPLICIT_OPUS }, saved: EXPLICIT_OPUS, refused: false },
+    { input: { model: SOL_MODEL }, saved: SOL_MODEL, refused: true },
+  ]
+  const catalog = [...codexOffered, { ...model, family: "claude-opus", variants: [{ id: "medium" }, { id: "high" }] }]
+  const routed = Schema.decodeUnknownSync(Schema.Struct({ agent: Schema.Literal("verifier"), model: Schema.String }))
+  const expectOpus = (value?: string) => {
+    const ref = parseModel(value)
+    const offered = catalog.find((item) => item.providerID === ref?.providerID && item.id === ref.id)
+    expect(offered).toMatchObject({ providerID: "anthropic", family: "claude-opus" })
+  }
+  const cases = verifying.flatMap((role) => requests.flatMap((request) =>
+    [model, SOL_PARENT].flatMap((parent) => [{ pool: {}, waiting: false }, { pool: held, waiting: true }]
+      .map((pace) => ({ role, request, parent, ...pace }))),
+  ))
+  type VerificationCase = (typeof cases)[number]
+  type PluginFixture = Effect.Success<ReturnType<typeof start>>
+  type VerificationRoute = VerificationCase["role"]["start"] | { readonly sessionID: string }
+  const verifyCall = Effect.fnUntraced(function* (plugin: PluginFixture, entry: VerificationCase, route: VerificationRoute, child: string) {
+    const before = plugin.kept.length
+    const call = yield* plugin.call("subagent", "root", { ...route, ...entry.request.input, prompt: "check" })
+    if (entry.request.refused) {
+      expect(call.refused?.message).toContain("Claude Opus only, never Codex")
+      expect(call.refused?.message).toContain('model: "anthropic/<claude-opus-model-id>"')
+      expect(plugin.kept).toHaveLength(before)
+      return
+    }
+    expect(call.refused).toBeUndefined()
+    expectOpus(routed(call.input).model)
+    if (entry.waiting) {
+      expect(call.input).toMatchObject({ sessionID: child })
+      expect(plugin.kept).toHaveLength(before + 1)
+      const latch = plugin.kept[before]!
+      expect(latch).toMatchObject({ child, hold: "pace" })
+      expectOpus(latch.subagent.model)
+      expect(Number.isFinite(latch.opensAt) && latch.opensAt > now).toBe(true)
+      const answer = yield* plugin.runTool(call.input)
+      expect(answer.output).toMatchObject({ sessionID: child, status: "latched" })
+      return latch
+    }
+    expect(plugin.kept).toHaveLength(before)
+  })
+  const verifyReopen = Effect.fnUntraced(function* (plugin: PluginFixture, entry: VerificationCase, latch: Latch) {
+    const before = plugin.ran.length
+    const opened = Schema.decodeUnknownSync(Opened)(yield* plugin.open(latch))
+    if (entry.waiting) {
+      expect(opened.outcome).toBe("held")
+      if (opened.outcome === "held") expect(Number.isFinite(opened.opensAt) && opened.opensAt > now).toBe(true)
+      expect(plugin.ran).toHaveLength(before)
+    } else {
+      expect(opened).toEqual({ outcome: "opened" })
+      expect(plugin.ran).toHaveLength(before + 1)
+      const input = plugin.ran[before]?.input
+      expect(input).toMatchObject({ sessionID: latch.child })
+      expectOpus(routed(input).model)
+    }
+  })
+  test("verification is Opus only across start, continuation and both latch reopen paths", () =>
+    scenario(Effect.forEach(cases, (entry) =>
+      Effect.gen(function* () {
+        const asked: Array<string> = []
+        const world = {
+          model: entry.parent,
+          variants: ["medium", "high"],
+          others: catalog,
+          sessions: { kid: { parentID: "root", agent: entry.role.saved, started: true } },
+          childModels: { kid: SOL_PARENT },
+          codex: admits(asked),
+        }
+        const plugin = yield* start({ now: WEDNESDAY }, { ...world, pool: entry.pool })
+        yield* verifyCall(plugin, entry, entry.role.start, "ses_latched1")
+        const kept = yield* verifyCall(plugin, entry, { sessionID: "kid" }, "kid")
+        const saved = implementorLatch(entry.request.saved, { reason: "kept", models: { primary: entry.request.saved, fallback: SOL_MODEL } })
+        const legacy = { ...saved, subagent: { ...saved.subagent, agent: entry.role.saved } }
+        yield* verifyReopen(plugin, entry, legacy)
+        let continuation = kept
+        if (!entry.request.refused && !entry.waiting) {
+          const holding = yield* start({ now: WEDNESDAY }, { ...world, pool: held })
+          continuation = yield* verifyCall(holding, { ...entry, waiting: true }, { sessionID: "kid" }, "kid")
+        }
+        // Today's explicit Codex request is refused, but an older build could have persisted it.
+        if (!entry.request.refused) {
+          expect(continuation).toMatchObject({ child: "kid", context: { continuation: true }, subagent: { prompt: "check" } })
+        }
+        const followUp: Latch = { ...legacy, child: "kid", context: { ...legacy.context, continuation: true }, ...continuation }
+        yield* verifyReopen(plugin, entry, followUp)
+        expect(asked).toEqual([])
+      }),
+    )), hangGuard("short-fixture"))
 
   test("Claude's pace admits it: it runs on Opus at the role's effort, and Codex is never asked", () =>
     scenario(
@@ -974,36 +1082,36 @@ describe("Opus first, Codex second", () => {
       }),
     ))
 
-  test("held on Claude with room on Codex, it starts at once on the newest sol, logged and told to the parent", () =>
+  test("a held planner with room on Codex starts on newest sol at high, logged and told to the parent", () =>
     scenario(
       Effect.gen(function* () {
         const asked: Array<string> = []
         const started: Array<string> = []
         const plugin = yield* start({ now: WEDNESDAY }, { model, variants: ["medium"], others: codexOffered, codex: admits(asked), pool: held, started })
-        const call = yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier sso r1", prompt: "check it", background: true })
+        const call = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner sso r1", prompt: "plan it", background: true })
         expect(call).toEqual({
           refused: undefined,
-          input: { agent: "verifier", description: "verifier sso r1", prompt: "check it", background: true, model: "openai/gpt-6.1-sol#medium" },
+          input: { agent: "planner", description: "planner sso r1", prompt: "plan it", background: true, model: "openai/gpt-6.1-sol#high" },
         })
-        expect(asked).toEqual(["gpt-6.1-sol verifier"])
+        expect(asked).toEqual(["gpt-6.1-sol planner"])
         expect(plugin.kept).toEqual([])
         // The pool counts it on the provider it started on.
         expect(started).toEqual(["openai"])
         expect(plugin.logged()).toEqual([
-          '{"kind":"call","sessionID":"root","callID":"call","from":"build","asked":"verifier","agent":"verifier","reason":"kept","model":"openai/gpt-6.1-sol#medium","background":true,"description":"verifier sso r1","fallback":"anthropic/claude-opus#medium held: all pool accounts are held","pace":{"ok":false,"measured":true,"reason":"all pool accounts are held"},"fallbackCodex":{"ok":true,"measured":true,"reason":"scripted room"}}',
+          '{"kind":"call","sessionID":"root","callID":"call","from":"build","asked":"planner","agent":"planner","reason":"kept","model":"openai/gpt-6.1-sol#high","background":true,"description":"planner sso r1","fallback":"anthropic/claude-opus#medium held: all pool accounts are held","pace":{"ok":false,"measured":true,"reason":"all pool accounts are held"},"fallbackCodex":{"ok":true,"measured":true,"reason":"scripted room"}}',
         ])
         // The parent reads where it ran and why first, once.
         const answer = yield* plugin.runTool(call.input)
         expect(plugin.ran).toHaveLength(1)
         expect(answer.content).toBe(`${NOTE}\nworking`)
         // A kernel cell's handle reads the note and the model as data (mods/kernel/worker/subagent-handle.ts).
-        expect(answer.output).toEqual({ sessionID: "ses_ran", status: "running", output: `${NOTE}\nworking`, note: NOTE, model: "openai/gpt-6.1-sol#medium" })
+        expect(answer.output).toEqual({ sessionID: "ses_ran", status: "running", output: `${NOTE}\nworking`, note: NOTE, model: "openai/gpt-6.1-sol#high" })
         // The tool's output schema keeps them: the kernel encodes a result by it before a cell reads it.
         const output = plugin.subagent.output
         expect(output && Schema.encodeUnknownSync(output)(answer.output)).toEqual(answer.output)
         expect((yield* plugin.runTool(call.input)).content).toBe("working")
       }),
-    ))
+    ), hangGuard("short-fixture"))
 
   test("Codex never implements: a held implementor latches on Opus, mechanical or not, and Codex is never asked", () =>
     scenario(
@@ -1099,9 +1207,9 @@ describe("Opus first, Codex second", () => {
         expect(call.input).toEqual({ agent: "implementor", prompt: "x", model: "anthropic/claude-opus-5-5#medium" })
         expect(call.refused).toBeUndefined()
         expect(asked).toEqual([])
-        // A verifier on a Codex parent stays on the model it inherits: Codex plans and verifies.
+        // A verifier never inherits Codex.
         const verifier = yield* plugin.call("subagent", "root", { agent: "verifier", prompt: "x" })
-        expect(verifier.input).toEqual({ agent: "verifier", prompt: "x" })
+        expect(verifier.input).toEqual({ agent: "verifier", prompt: "x", model: "anthropic/claude-opus-5-5#medium" })
         expect(verifier.refused).toBeUndefined()
         // With no Opus offered, the start is refused: it never runs on Codex.
         const bare = yield* start({ now: WEDNESDAY }, { model: sol, variants: ["high"], others: codexOffered, codex: admits(asked) })
@@ -1115,7 +1223,7 @@ describe("Opus first, Codex second", () => {
       }),
     ))
 
-  test("the spend-evenly pace alone holds every role: an implementor latches on Opus, a verifier falls back to Codex", () =>
+  test("the spend-evenly pace holds implementors and verifiers on Opus without asking Codex", () =>
     scenario(
       Effect.gen(function* () {
         const asked: Array<string> = []
@@ -1123,9 +1231,10 @@ describe("Opus first, Codex second", () => {
         const plugin = yield* start({ now: WEDNESDAY }, { model, variants: ["medium"], others: codexOffered, codex: admits(asked), pool: paced })
         expect((yield* plugin.call("subagent", "root", { agent: "implementor", prompt: "x" })).input).toMatchObject({ agent: "implementor", model: "anthropic/claude-opus#medium", sessionID: "ses_latched1" })
         expect(plugin.kept).toHaveLength(1)
-        expect((yield* plugin.call("subagent", "root", { agent: "verifier", prompt: "x" })).input).toMatchObject({ model: "openai/gpt-6.1-sol#medium" })
+        expect((yield* plugin.call("subagent", "root", { agent: "verifier", prompt: "x" })).input).toMatchObject({ model: "anthropic/claude-opus#medium", sessionID: "ses_latched2" })
+        expect(asked).toEqual([])
       }),
-    ))
+    ), hangGuard("short-fixture"))
 
   test("a model the call names is kept: held, it latches on it, and Codex is never asked", () =>
     scenario(
@@ -1139,24 +1248,22 @@ describe("Opus first, Codex second", () => {
       }),
     ))
 
-  test("a role call naming the role's own model runs as if it named none: held, it falls back to Codex, its line says model-dropped", () =>
+  test("a verifier naming its own Opus latches on exactly that model; a planner keeps its old chain", () =>
     scenario(
       Effect.gen(function* () {
         const asked: Array<string> = []
         const plugin = yield* start({ now: WEDNESDAY }, { model, variants: ["medium"], others: codexOffered, codex: admits(asked), pool: held })
         const call = yield* plugin.call("subagent", "root", { agent: "verifier", model: "anthropic/claude-opus", description: "verifier sso r1", prompt: "x" })
-        expect(call.input).toEqual({ agent: "verifier", description: "verifier sso r1", prompt: "x", model: "openai/gpt-6.1-sol#medium" })
-        expect(asked).toEqual(["gpt-6.1-sol verifier"])
-        expect(plugin.kept).toEqual([])
-        expect(plugin.logged()).toEqual([
-          '{"kind":"call","sessionID":"root","callID":"call","from":"build","asked":"verifier","agent":"verifier","reason":"model-dropped","model":"openai/gpt-6.1-sol#medium","description":"verifier sso r1","fallback":"anthropic/claude-opus#medium held: all pool accounts are held","pace":{"ok":false,"measured":true,"reason":"all pool accounts are held"},"fallbackCodex":{"ok":true,"measured":true,"reason":"scripted room"}}',
-        ])
+        expect(call.input).toEqual({ agent: "verifier", description: "verifier sso r1", prompt: "x", model: "anthropic/claude-opus", sessionID: "ses_latched1" })
+        expect(asked).toEqual([])
+        expect(plugin.kept[0]?.context).toEqual({ reason: "kept" })
+        expect(plugin.logged()[0]).toContain('"kind":"latched"')
         // Held on both, it latches as an unnamed start does, and the latch keeps the reason.
         const both = yield* start({ now: WEDNESDAY }, { model, others: codexOffered, codex: () => ({ ok: false, measured: true, reason: "5h pace", retryAt: now + 900_000 }), pool: held })
         yield* both.call("subagent", "root", { agent: "planner", model: "claude-opus#high", prompt: "x" })
         expect(both.kept[0]!.context).toEqual({ reason: "model-dropped", models: { primary: "anthropic/claude-opus", fallback: "openai/gpt-6.1-sol#high" } })
       }),
-    ))
+    ), hangGuard("short-fixture"))
 
   test("with no Codex provider, or none offered, a held start latches on Opus as before", () =>
     scenario(

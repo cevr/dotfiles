@@ -2,7 +2,7 @@
 // model, else its parent session's, else (a session that never chose one)
 // the default, as the subagent tool picks it. A lookup that fails answers
 // undefined, and the call runs as it would have.
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Option } from "effect"
 import type { ModelRef } from "../pace.ts"
 import { Models, type Offered } from "../service.ts"
 
@@ -29,6 +29,7 @@ export const layer = (port: Port) => {
     return { directory: parent.directory, model }
   })
   return Layer.succeed(Models, {
+    current: (sessionID) => port.session(sessionID).pipe(orNone, Effect.map((session) => Option.fromUndefinedOr(session?.model))),
     base: Effect.fn("Models.base")(function* (sessionID: string, agentID: string) {
       return (yield* base(sessionID, agentID)).model
     }, orNone),

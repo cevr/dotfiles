@@ -19,7 +19,7 @@ import { ROOT } from "../scripts/agents.ts"
 import { fleetRows, type PaneFleet } from "../mods/status/pane.ts"
 import { fakeAccount, startFakeAnthropic } from "./fake-anthropic.ts"
 import { openSlotStore } from "./store/store.ts"
-import { ROOT_TASK, serve } from "./orchestrate/sim.ts"
+import { PROBE, serve } from "./orchestrate/sim.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 import { hangGuard, stamp, watchdog } from "./hang-guard.ts"
@@ -200,13 +200,17 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
           ],
         })
 
-        // Host A admits a wave: the root's task starts two subagents.
+        // Host A admits two starts on the same scripted provider. The fleet
+        // accounting test needs no verification or separate model family.
         const { OpenCode } = (await import(join(fork ?? "", "packages/client/src/promise/index.ts"))) as ClientModule
         const client = OpenCode.make({ baseUrl: a.service.url, headers: { authorization: authorization(a.service) } })
         const location = { directory: join(a.base, "work") }
         const session = await client.session.create({ location })
-        await client.session.prompt({ sessionID: session.id, text: ROOT_TASK })
-        await client.experimental.session.wait({ sessionID: session.id })
+        for (const task of ["first", "second"]) {
+          const text = `${PROBE}{"name":"subagent","input":{"agent":"worker","description":"fleet ${task}","prompt":"${task}"}}`
+          await client.session.prompt({ sessionID: session.id, text })
+          await client.experimental.session.wait({ sessionID: session.id })
+        }
         const children = await client.session.list({ parentID: session.id, directory: location.directory })
         expect(children.data).toHaveLength(2)
         // The subagents started in the work directory's instance of the plugin; the

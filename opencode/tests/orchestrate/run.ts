@@ -131,14 +131,17 @@ if (spec.codex !== undefined) {
   )
 }
 const codexOption = spec.codex === undefined ? {} : { codex: { providers: ["sim"], script: codexScript } }
+const fake = {
+  package: "@opencode/ai/providers/openai-compatible",
+  settings: { baseURL: `http://127.0.0.1:${sim.server.port}/v1`, apiKey: "sim-key" },
+}
 const content = {
   model: "sim/sim-model",
   agents: { ...spec.agents },
   providers: {
     sim: {
       name: "Sim",
-      package: "@opencode/ai/providers/openai-compatible",
-      settings: { baseURL: `http://127.0.0.1:${sim.server.port}/v1`, apiKey: "sim-key" },
+      ...fake,
       models: {
         "sim-model": {
           name: "Sim",
@@ -146,6 +149,20 @@ const content = {
           // A window as large as Opus's, so only the agents' own window decides when a session compacts.
           limit: { context: 1_000_000, output: 16_000 },
           variants: [{ id: "low" }, { id: "medium" }, { id: "high" }, { id: "max" }],
+        },
+      },
+    },
+    anthropic: {
+      name: "Scripted Opus",
+      ...fake,
+      models: {
+        "claude-opus-sim": {
+          name: "Scripted Opus",
+          family: "claude-opus",
+          releaseDate: "2099-01-01",
+          capabilities: { tools: true, input: ["text"], output: ["text"] },
+          limit: { context: 1_000_000, output: 16_000 },
+          variants: [{ id: "medium" }],
         },
       },
     },

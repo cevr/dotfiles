@@ -6,9 +6,8 @@
 // its current one: a session that read the skill before the rename still asks
 // for it. A new agent starts only when orchestrate's `budget.ts --admit` says
 // its turn in the agent queue came and its expected cost fits the pool's pace.
-// A held agent stays queued, and the reason says to start the role on Codex
-// at once (Opus first, Codex second); only when Codex holds too does the
-// session run the waiter the reason names, and call Agent again when it exits. CLAUDE_FULL_AGENT=1
+// A held agent stays queued. Verifiers wait only for Opus; other roles follow
+// the reason budget.ts names. CLAUDE_FULL_AGENT=1
 // lets a full agent through.
 
 import { homedir } from 'node:os';
@@ -40,6 +39,13 @@ const reply = (output: Record<string, unknown>) => {
 const asked = toolInput.subagent_type as string | undefined;
 const lean = FULL.has(asked) && process.env.CLAUDE_FULL_AGENT !== '1';
 const type = lean ? 'worker' : ((asked && renamed(asked)) ?? asked);
+const verifies = type?.replace(/^status:/, '') === 'verifier';
+if (verifies && toolInput.model !== undefined && toolInput.model !== 'opus') {
+  reply({
+    permissionDecision: 'deny',
+    permissionDecisionReason: 'Verification runs on Claude Opus only, never Codex. Omit model or use model: "opus".',
+  });
+}
 const run = Bun.spawnSync(
   [
     'bun',
@@ -64,12 +70,12 @@ if (run.exitCode === 1) {
   });
 }
 
-if (type !== asked) {
+if (type !== asked || verifies) {
   reply({
     permissionDecision: 'allow',
     permissionDecisionReason: lean
       ? `guard-agent: ${asked || 'untyped'} agent runs as worker (lean tools, no MCP servers).`
-      : `guard-agent: ${asked} is now ${type}.`,
-    updatedInput: { ...toolInput, subagent_type: type },
+      : verifies ? 'guard-agent: a verifier runs on Claude Opus.' : `guard-agent: ${asked} is now ${type}.`,
+    updatedInput: { ...toolInput, subagent_type: type, ...(verifies ? { model: 'opus' } : {}) },
   });
 }

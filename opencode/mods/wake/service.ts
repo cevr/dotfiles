@@ -82,8 +82,7 @@ export interface Child {
  *   same id twice makes one session. A parent that does not exist refuses
  *   with `gone`.
  * - `mark`: the session's latch mark replaced, or with none cleared; the
- *   session keeps the rest of its metadata. A session that does not exist is
- *   no failure.
+ *   session keeps the rest of its metadata. A missing session refuses with `gone`.
  */
 export class Courier extends Context.Service<
   Courier,
@@ -94,7 +93,7 @@ export class Courier extends Context.Service<
     readonly start: (start: Start) => Effect.Effect<void, DeliveryRefused>
     readonly parentOf: (sessionID: string) => Effect.Effect<string | undefined>
     readonly child: (child: Child) => Effect.Effect<void, DeliveryRefused>
-    readonly mark: (sessionID: string, mark: Mark | undefined) => Effect.Effect<void>
+    readonly mark: (sessionID: string, mark: Mark | undefined) => Effect.Effect<void, DeliveryRefused>
   }
 >()("dotfiles-opencode/wake/Courier") {}
 

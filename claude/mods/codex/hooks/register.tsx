@@ -182,13 +182,13 @@ const TOOLS = [
       'The thread runs under the host Codex config (sandbox and approvals included) unless `sandbox` is passed. ' +
       'When the Codex budget has no room (the account\'s burn with this turn past the weekly pace, or, when that cannot be measured, weekly use ahead of an even burn), the turn is latched and starts by itself later; the answer says why and when it should start. ' +
       'When it would start more than 10 minutes from now, no thread is made and the answer says to wait for Claude instead. ' +
-      'An orchestrate role runs on Opus first; start a Codex thread only when the Claude pool holds its Agent call.',
+      'An orchestrate role runs on Opus first; only a planner or implementor can use Codex when Claude holds it. Verification runs on Claude Opus only and waits if held.',
     inputSchema: {
       type: 'object',
       properties: {
         description: { type: 'string', description: 'Starts like the hand-back line: `<role> <unit> r<N>` (`implementor sheet r1`).' },
         prompt: { type: 'string', description: 'The first message: role, spec path and round, for a role thread.' },
-        role: { type: 'string', enum: ['planner', 'implementor', 'verifier', 'reviewer'], description: '`reviewer` is the verifier\'s former name and runs as the verifier.' },
+        role: { type: 'string', enum: ['planner', 'implementor'], description: 'Do not use Codex for verification or review.' },
         unit: { type: 'string', description: 'The orchestrate unit (`sheet`), for the bridge\'s log and the cost of each unit.' },
         round: { type: 'integer', description: 'The orchestrate round, 1 for r1.' },
         model: { type: 'string' },

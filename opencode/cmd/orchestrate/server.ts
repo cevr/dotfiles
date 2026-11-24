@@ -83,11 +83,9 @@
  *   the parent. A pace hold is decided again at least every two minutes,
  *   since a pace may open early. With no wakes plugin the held call is
  *   refused with the hold's reason and the time it opens.
- * - Opus first, Codex second: a new agent the pace holds on its own model
- *   (the newest Opus), that named no model (or named its own: dropped, `model-dropped`), starts at once on the newest
- *   Codex model for its role when the Codex pace has room: sol (the verifier
- *   at medium, the rest at high), or luna at max for a step whose description
- *   ends `(light)`, `(direct)` or `(mechanical)`. The call log's line says
+ * - Only a held planner can move from Opus to the newest Codex sol at high.
+ *   A verifier runs on Claude Opus only and latches if held, even when continued.
+ *   The call log's planner fallback line says
  *   `fallback: <first model> held: <reason>`, and the parent reads that line
  *   first in the subagent call's result. Held on both, it latches on whichever
  *   opens first, and each open tries the first model before the fallback.
@@ -173,7 +171,6 @@ import * as PoolPaceLive from "@dotfiles/opencode-orchestrate/opencode/pool-pace
 import * as RunsLive from "@dotfiles/opencode-orchestrate/opencode/runs"
 import * as SessionsLive from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import * as SteerLive from "@dotfiles/opencode-orchestrate/opencode/steer"
-import type { PaceHeld } from "@dotfiles/opencode-orchestrate/pace"
 import * as Tools from "@dotfiles/opencode-orchestrate/tools"
 import * as Commitments from "@dotfiles/opencode-orchestrate/commitments-tool"
 import * as MemoryRecord from "@dotfiles/opencode-orchestrate/memory/record"
@@ -190,7 +187,7 @@ import { Created, Inspected, LandAnswered, Listed, RIFT_RPC, workriftName } from
 import { samePlace } from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import { definitions, ORCHESTRATOR, orchestrator, ROLE_CACHE_TTL, ROLES, withSection } from "@dotfiles/opencode-orchestrate/role"
 import { heldUntil } from "@dotfiles/opencode-orchestrate/restart-hold"
-import { KNOWLTON, local, Place, rest, type SabbathRest } from "@dotfiles/opencode-orchestrate/sabbath"
+import { KNOWLTON, local, Place, rest } from "@dotfiles/opencode-orchestrate/sabbath"
 import {
   type CallLog,
   CommitmentRecord,
@@ -216,7 +213,7 @@ import {
   UnitLogs,
   type WorkGit,
 } from "@dotfiles/opencode-orchestrate/service"
-import type { CodexNeverImplements, Status, StillLatched } from "@dotfiles/opencode-orchestrate/tool-call"
+import type { Status } from "@dotfiles/opencode-orchestrate/tool-call"
 
 export const DEFAULT_LOG = join(TuiDirs.dirs().home, ".cache/orchestrate/opencode-agents.jsonl")
 /** The orchestrate skill's Codex admission: `admit: …` exit 0, `hold: …[; opens about <time>Z]` exit 1. */
@@ -365,6 +362,7 @@ export const stepSessionOf = (session: StepHostSession): SessionsLive.Session =>
   ...(session.parentID === undefined ? {} : { parentID: session.parentID }),
   ...(session.agent === undefined ? {} : { agent: session.agent }),
   started: session.time.busy !== undefined || session.outcome !== undefined,
+  ...Option.match(Option.fromUndefinedOr(msOf(session.time.busy)), { onNone: () => ({}), onSome: (busySince) => ({ busySince }) }),
   stopped: session.outcome === "interrupted",
   ...(session.metadata?.[MARK_KEY] === undefined ? {} : { latch: session.metadata[MARK_KEY] }),
   directory: session.location.directory,
@@ -479,7 +477,9 @@ const timeOf = (ms: number, place: Place) => `${new Date(ms).toISOString()} (${l
 const whoseOf = (whose: string | undefined) => (whose === "codex" ? "the Codex account's" : "the pool's")
 
 /** What the model reads when a call is refused. */
-const refusal = (tool: string, rejection: SabbathRest | PaceHeld | StillLatched | CodexNeverImplements, place: Place): Tool.Error => {
+const refusal = (tool: string, rejection: Model.StartRefusal, place: Place): Tool.Error => {
+  if (rejection._tag === "VerificationRequiresOpus")
+    return new Tool.Error({ message: `orchestrate: ${Model.verificationRefusal(rejection)}`, error: rejection })
   if (rejection._tag === "CodexNeverImplements")
     return new Tool.Error({
       message: `orchestrate: Codex never implements. This ${rejection.agent} would run on ${rejection.model}, and the host offers no Opus model for it. Do not name another model: start it again once an Opus model is offered.`,
@@ -1264,6 +1264,7 @@ export const withTaskFork = (forkTask: ForkTask) => <R = never>(
               Effect.flatMap(
                 (latch): Effect.Effect<Opened> =>
                   orchestrate.openLatch({
+                    setAt: latch.setAt,
                     parent: latch.sessionID,
                     from: latch.subagent.from,
                     messageID: latch.subagent.messageID,
