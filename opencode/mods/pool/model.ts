@@ -6,11 +6,11 @@
 // plugin on the host shares.
 // The aggregate is the one decision entry point, so the stories run exactly
 // what these do. The plugin calls these and nothing else.
-import { Clock, Context, Effect, Layer, Option, Ref, Scope, Semaphore, Stream, SynchronizedRef } from "effect"
+import { Array as Arr, Clock, Context, Effect, Layer, Option, Ref, Scope, Semaphore, Stream, SynchronizedRef } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import {
   AccountPool,
-  type AccountsHeld,
+  AccountsHeld,
   ClearHold,
   ListLogins,
   PlaceRequest,
@@ -25,10 +25,10 @@ import {
   type Event,
   PoolId,
 } from "./account-pool.ts"
-import { answeredOn, held, lastPlacedAt, placedOn, sessionAccount, shouldFailOver, status, type RequestKind, type Rules } from "./accounts.ts"
+import { answeredOn, held, lastPlacedAt, placedOn, sessionAccount, status, type RequestKind, type Rules } from "./accounts.ts"
 import * as Burn from "./burn.ts"
 import * as FleetModel from "./fleet.ts"
-import { poolPace, UNPOOLED, type Pace } from "./pace.ts"
+import { dispatchPace, evidenceGap, nextRetryAt, poolPace, refreshEvidence, RequestHeld, requiredScopes, UNPOOLED, UNREAD_RETRY_MS, type DispatchPolicy, type Pace } from "./pace.ts"
 import { limitsLine, weeklyRatios, type Tally, type Tokens } from "./limits.ts"
 import type { AccountStatus } from "./status.ts"
 import type { ClaimAnswer, QuotaReading, QuotaWindow } from "./quota.ts"
@@ -156,17 +156,22 @@ export class Pool extends Context.Service<
      * A model request goes out: the login it goes out on, and the lifetime its
      * cache is written for when its agent keeps its own (the provider's once
      * the session has outlived it); none when the provider is not pooled or
-     * lists no login. Every account held refuses it: `AccountsHeld`, with when the first opens.
+     * lists no login. Every account held refuses it: `AccountsHeld`, with when the first opens. A request the
+     * pace holds for its model (the one rule a start's pace answers, at this dispatch, every retry, follow-up,
+     * continued run and auxiliary request alike) goes out on none: `RequestHeld`, with why and when to ask again.
+     * Admitted, it goes out on an account eligible for its model, the run's pin and its cache's only when eligible.
      */
     readonly place: (input: {
       readonly providerID: string
       readonly sessionID: string
       readonly kind: RequestKind
+      /** The model the request asks for: a window of its own (`7d:Fable`) holds it too. */
+      readonly model?: string
       /** How long its agent keeps the request's cache when it keeps its own lifetime (ms); else the provider's. */
       readonly cacheLifeMs?: number
       /** The session whose cache the request reads when the session has none of its own: a fork's source. */
       readonly cacheOf?: string
-    }) => Effect.Effect<Placed | undefined, AccountsHeld>
+    }) => Effect.Effect<Placed | undefined, AccountsHeld | RequestHeld>
     /** A response came back. A refusal (401 or 429) holds the login it went out on. */
     readonly responded: (input: {
       readonly providerID: string
@@ -195,9 +200,10 @@ export class Pool extends Context.Service<
     readonly sweep: Effect.Effect<void>
     /**
      * Whether a new agent on the provider may start now; of `model`, when
-     * named, so a window of that model's own (`7d:Fable`) can hold it too.
+     * named, so a window of that model's own (`7d:Fable`) can hold it too. With `dispatch`, the pace of a
+     * request about to go out (`place`): the fleet's unsettled starts are not counted again.
      */
-    readonly pace: (providerID: string, model?: string, sessionID?: string) => Effect.Effect<Pace, LoginsUnavailable>
+    readonly pace: (providerID: string, model?: string, sessionID?: string, dispatch?: boolean) => Effect.Effect<Pace, LoginsUnavailable>
     /** Each pool's accounts, holds and readings, and its outside stores. */
     readonly status: Effect.Effect<PoolsStatus, LoginsUnavailable>
     /** The account a session is on, with its label, hold and reading; nothing when the pool has none to name. */
@@ -280,8 +286,11 @@ export const layer = (config: Config) =>
       // The limit tally is optional: a pool built without it tallies nothing.
       const limits = Option.getOrUndefined(yield* Effect.serviceOption(Limits))
       const scope = yield* Scope.Scope
-      // The resets are decided one command at a time in this instance; another instance's claim of the same hold is the same claim (its request id).
-      const resetsLock = yield* Semaphore.make(1)
+      // The host's leases and locks are shared by all its directory instances.
+      const leases = Option.getOrElse(yield* Effect.serviceOption(Lease.Leases), () => Lease.HOST)
+      // One request of this instance at a time is admitted and placed, so two never read the same room before either reserves it.
+      const dispatchLock = yield* Semaphore.make(1)
+      let spendSeq = 0
       // One review at a time: a review carries out claims, which take seconds.
       const reviewing = yield* Semaphore.make(1)
       // The pushes are the host's when it keeps them (every instance reads the same), else this process's.
@@ -334,7 +343,21 @@ export const layer = (config: Config) =>
           : apply(pool, id, TakeReading.make({ credentialID, reading })).pipe(
               Effect.andThen(logins.markSignIn(id, credentialID, reading.refusal?.kind === "signin")),
               Effect.andThen(limits?.observe(id, credentialID, reading) ?? Effect.void),
+              Effect.andThen(observeClaim(id, credentialID, reading)),
             )
+
+      /** Any directory can offer a reading to the pending claim on the shared host ledger. */
+      const resetProvider = (pool: string) =>
+        Option.flatMap(Option.fromUndefinedOr(config.resets), (pools) => Option.fromUndefinedOr(pools[pool]))
+      const observeClaim = (pool: PoolId, credentialID: string, reading: QuotaReading) =>
+        Option.match(resetProvider(pool), {
+          onNone: () => Effect.void,
+          onSome: (provider) => {
+            // A carried week or a week still at its maximum cannot show a refund.
+            if (!reading.windows.some((window) => window.name === "7d" && window.utilization < 1 && Option.isNone(Option.fromUndefinedOr(window.at)))) return Effect.void
+            return sendResets(ResetsModel.ObserveClaim.make({ pool, provider, credentialID, windows: reading.windows, at: reading.at })).pipe(Effect.asVoid)
+          },
+        })
 
       /** The provider's newest reading of one login, as its auth plugin holds it now. */
       const pull = (where: Pooled, credentialID: string) =>
@@ -344,27 +367,106 @@ export const layer = (config: Config) =>
         readonly providerID: string
         readonly sessionID: string
         readonly kind: RequestKind
+        readonly model?: string
         readonly cacheLifeMs?: number
         readonly cacheOf?: string
       }) {
         const where = pooled(input.providerID)
         if (where === undefined) return undefined
-        yield* refresh(where, false).pipe(Effect.ignore)
+        // The request's admission, at its dispatch: the pace a request of its model gets on the readings now (`dispatchPace`).
+        // Held, it goes out on no login; the review has heard of the held work.
+        const auxiliary = Option.filter(Option.some(input.kind), (kind) => kind !== "primary" && kind !== "compaction")
+        const policy = Option.match(auxiliary, { onNone: () => ({}), onSome: (kind) => ({ auxiliary: kind }) })
+        const asked = yield* Effect.option(pace(input.providerID, input.model, input.sessionID, true, policy, "existing-request"))
+        const now = yield* Clock.currentTimeMillis
+        if (Option.isNone(asked))
+          return yield* new RequestHeld({
+            sessionID: input.sessionID,
+            reason: "the pool's logins could not be listed",
+            reasonCode: "logins-unavailable",
+            retryAt: now + UNREAD_RETRY_MS,
+          })
+        const answer = asked.value
+        if (!answer.ok) {
+          const retryAt = nextRetryAt(now, [answer.retryAt])
+          const signIn = Option.fromUndefinedOr(answer.signIn)
+          if (Option.isSome(signIn)) return yield* new AccountsHeld({ sessionID: input.sessionID, kind: input.kind, retryAt, signIn: signIn.value })
+          return yield* new RequestHeld({ sessionID: input.sessionID, reason: answer.reason, reasonCode: answer.reasonCode, retryAt })
+        }
         const command = PlaceRequest.make({
           sessionID: input.sessionID,
           kind: input.kind,
           ...(input.cacheLifeMs === undefined ? {} : { cacheLifeMs: input.cacheLifeMs }),
           ...(input.cacheOf === undefined ? {} : { cacheOf: input.cacheOf }),
+          eligible: Option.getOrElse(Option.fromUndefinedOr(answer.eligible), () => []),
         })
         const events = yield* send(where.pool, where.id, command).pipe(
           Effect.catchTag("NoAccount", () => Effect.succeed([])),
         )
-        return events.flatMap((event): ReadonlyArray<Placed> =>
-          event._tag === "RequestPlaced"
-            ? [{ credentialID: event.credentialID, ...(event.cacheLifeMs === undefined ? {} : { cacheLifeMs: event.cacheLifeMs }) }]
-            : [],
-        )[0]
-      })
+        const placed = Arr.findFirst(
+          events.flatMap((event): ReadonlyArray<Placed> =>
+            event._tag === "RequestPlaced"
+              ? [{ credentialID: event.credentialID, ...(event.cacheLifeMs === undefined ? {} : { cacheLifeMs: event.cacheLifeMs }) }]
+              : [],
+          ),
+          () => true,
+        )
+        // On a claim's room, the request reserves its share on the account it goes out on before it goes.
+        if (Option.isNone(placed)) return yield* new RequestHeld({
+          sessionID: input.sessionID,
+          reason: "no login that passed the dispatch check is still available",
+          reasonCode: "placement-changed",
+          retryAt: now + UNREAD_RETRY_MS,
+        })
+        if (answer.admission === "backed") yield* reserve(where, placed.value.credentialID, input.sessionID)
+        return Option.getOrUndefined(placed)
+      }, (effect) => dispatchLock.withPermits(1)(effect))
+
+      /**
+       * Reserve one request's share (`fleet.startCost`) of the room the account's claim gave back (resets.ts `Spend`),
+       * then read every reservation on it back: a share that does not fit beside the others, this instance's or another's
+       * on the host, is taken back and the request held. Written first and read after, so of two instances that race, a
+       * share either sees the other's or is seen by it; a write that failed is not read back, and holds.
+       */
+      const reserve = (where: Pooled, credentialID: string, sessionID: string) =>
+        Effect.gen(function* () {
+          const now = yield* Clock.currentTimeMillis
+          const before = yield* resetsStore.read
+          const refuse = (reason: string) => new RequestHeld({ sessionID, reason, reasonCode: "reset-room", retryAt: now + UNREAD_RETRY_MS })
+          // The login's account and its pool's reset provider, and the claim whose room the request is admitted on.
+          const found = Option.all([
+            Option.fromUndefinedOr(config.resets?.[where.id]),
+            Arr.findFirst(status(yield* SynchronizedRef.get(where.pool), now, rules), (item) => item.credentialID === credentialID),
+          ]).pipe(
+            Option.flatMap(([provider, account]) =>
+              Option.fromUndefinedOr(ResetsModel.pacePlans(provider, [account], before.claims, now, before.spends)[credentialID]).pipe(
+                Option.flatMap((plan) => Option.fromUndefinedOr(plan.rebase)),
+                Option.flatMap((rebase) => Option.fromUndefinedOr(rebase.key)),
+                Option.map((claim) => ({ provider, account, claim })),
+              ),
+            ),
+          )
+          if (Option.isNone(found)) return yield* refuse("the room a claimed reset gave back on the chosen login could not be found to reserve on")
+          const { provider, account, claim } = found.value
+          spendSeq += 1
+          const spend: ResetsModel.Spend = { id: `${fleetConfig.host}:${sessionID}:${now}:${spendSeq}`, claim, credentialID, at: now, cost: fleetConfig.startCost }
+          yield* sendResets(ResetsModel.ReserveSpend.make({ spend }))
+          if (ResetsModel.reservationHolds(yield* resetsStore.read, provider, account, now, spend.id)) return
+          yield* sendResets(ResetsModel.WithdrawSpend.make({ id: spend.id }))
+          return yield* refuse("the room a claimed reset gave back on the chosen login is reserved by requests admitted meanwhile")
+        })
+
+      /**
+       * The login a session's request of `kind` went out on: as this copy placed it, else as the ledger has it now. A
+       * copy a restart closed may still place a request it was asked for before (its turn waited on a login's read) and
+       * record its mark after this copy restored the ledger; its answer comes back here, and the mark still names it.
+       */
+      const answeredHere = (where: Pooled, sessionID: string, kind: RequestKind) =>
+        Effect.gen(function* () {
+          const own = answeredOn(yield* SynchronizedRef.get(where.pool), sessionID, kind)
+          if (Option.isSome(own)) return own
+          return answeredOn(restored(yield* ledger.restore(where.id)), sessionID, kind)
+        })
 
       const responded = Effect.fn("Pool.responded")(function* (input: {
         readonly providerID: string
@@ -375,7 +477,7 @@ export const layer = (config: Config) =>
         if (input.status !== 401 && input.status !== 429) return
         const where = pooled(input.providerID)
         if (where === undefined) return
-        const answered = answeredOn(yield* SynchronizedRef.get(where.pool), input.sessionID, input.kind)
+        const answered = yield* answeredHere(where, input.sessionID, input.kind)
         if (Option.isNone(answered)) return
         const credentialID = answered.value
         // The reading says for how long; without one (or with one that holds
@@ -388,7 +490,7 @@ export const layer = (config: Config) =>
         const where = pooled(input.providerID)
         if (where === undefined) return false
         // A request placed before a restart is answered after it: the ledger's mark names its account.
-        const answered = answeredOn(yield* SynchronizedRef.get(where.pool), input.sessionID, "primary")
+        const answered = yield* answeredHere(where, input.sessionID, "primary")
         // A refused sign-in (401) on a login this copy cannot name (placed before a restart, its mark since pruned)
         // goes again, placed afresh: on a login not held, or else the pool refuses it in its own words (a sign-in to
         // make, when the first opens), never the provider's. Another refusal (429) stays the host's to retry: placed
@@ -404,7 +506,7 @@ export const layer = (config: Config) =>
         const status = Option.fromNullishOr(REFUSED_STATUS.get(input.error ?? ""))
         if (Option.isSome(status) && !held(yield* SynchronizedRef.get(where.pool), credentialID, yield* Clock.currentTimeMillis))
           yield* apply(where.pool, where.id, RefuseRequest.make({ credentialID, status: status.value }))
-        return shouldFailOver(yield* SynchronizedRef.get(where.pool), input.sessionID, yield* Clock.currentTimeMillis)
+        return held(yield* SynchronizedRef.get(where.pool), credentialID, yield* Clock.currentTimeMillis)
       })
 
       /**
@@ -534,11 +636,15 @@ export const layer = (config: Config) =>
       /** Have the Resets aggregate decide a command against the host's state, and record what it decides. */
       const sendResets = (command: ResetsModel.Command) =>
         Effect.gen(function* () {
-          const state = yield* resetsStore.read
+          const read = (command: ResetsModel.Command) => {
+            if (command._tag === "ObserveClaim") return Effect.map(resetsStore.claims, (claims) => ({ ...ResetsModel.Resets.initial, claims }))
+            return resetsStore.read
+          }
+          const state = yield* read(command)
           const events = yield* ResetsModel.Resets.decide(state, command, yield* Clock.currentTimeMillis)
           if (events.length > 0) yield* resetsStore.record(events, fold(ResetsModel.Resets, events, state))
           return events
-        }).pipe(resetsLock.withPermits(1))
+        }).pipe(leases.resetLedgerLock.withPermits(1))
 
       /**
        * The session of the newest start that asked each pool's pace, held or
@@ -594,12 +700,12 @@ export const layer = (config: Config) =>
         return views
       })
 
-      /** Each account's spend-evenly line moved by its resets (resets.ts `pacePlans`), for a pool whose resets are worked. */
+      /** Each account's spend-evenly line moved by the resets it claimed and observed (resets.ts `pacePlans`), for a pool whose resets are worked. */
       const plansOf = Effect.fn("Pool.plansOf")(function* (id: string, accounts: ReadonlyArray<AccountStatus>, now: number) {
-        const provider = config.resets?.[id]
-        if (provider === undefined) return {}
-        const tally = limits === undefined ? undefined : yield* limits.tally
-        return ResetsModel.pacePlans(provider, accounts, (yield* resetsStore.read).claims, now, tally === undefined ? {} : weeklyRatios(tally, id))
+        const provider = resetProvider(id)
+        if (Option.isNone(provider)) return {}
+        const state = yield* resetsStore.read
+        return ResetsModel.pacePlans(provider.value, accounts, state.claims, now, state.spends)
       })
 
       const windowsText = (windows: ReadonlyArray<{ readonly name: string; readonly utilization: number; readonly resetAt?: number }> | undefined) =>
@@ -608,8 +714,6 @@ export const layer = (config: Config) =>
           .map((window) => `${window.name} ${usedOf(window.utilization)}${window.resetAt === undefined ? "" : ` (resets ${new Date(window.resetAt).toISOString()})`}`)
           .join(", ")
 
-      // The host's leases and claim locks: the process's, unless a test gives each host its own.
-      const leases = Option.getOrElse(yield* Effect.serviceOption(Lease.Leases), () => Lease.HOST)
       const leaseMs = fleetConfig.leaseMs ?? Lease.LEASE_MS
       const leaseWaitMs = fleetConfig.leaseWaitMs ?? Lease.LEASE_WAIT_MS
 
@@ -746,7 +850,7 @@ export const layer = (config: Config) =>
           found._tag === "unreachable" ? settles(failed(`not sent: no agreement, ${found.peers.join(", ")} unreachable`), []) : found
         const { answer, before, lease } = sent
         // A claim that emptied the windows frees the account; the reading taken next holds it again if a window is still spent.
-        if (answer.outcome === "reset" || answer.outcome === "already-redeemed")
+        if (answer.outcome === "reset")
           yield* apply(where.pool, where.id, ClearHold.make({ credentialID: reset.credentialID }))
         const after = yield* quota.usage(where.id, reset.credentialID)
         yield* take(where, reset.credentialID, after)
@@ -826,6 +930,9 @@ export const layer = (config: Config) =>
               case "WaitNoted":
               case "ClaimSent":
               case "ClaimSettled":
+              case "ClaimObserved":
+              case "SpendReserved":
+              case "SpendWithdrawn":
                 return Effect.void
             }
           },
@@ -1024,31 +1131,68 @@ export const layer = (config: Config) =>
         } satisfies ResetsStatus
       }).pipe(Effect.withSpan("Pool.resets"))
 
-      const pace = Effect.fn("Pool.pace")(function* (providerID: string, model?: string, sessionID?: string) {
-        const answer = yield* paceOf(providerID, model)
-        const id = measuredBy(config, providerID)
+      /**
+       * A held answer of the pool `id` with, when a claim that went through still waits for a reading to show its
+       * recovery, that claim pending in its words (`pendingWords`) and its ask again by the next sweep.
+       */
+      const withPending = (paced: Pace, pool: Option.Option<PoolId>, now: number): Effect.Effect<Pace> => {
+        if (paced.ok || Option.isNone(pool) || Option.exists(Option.fromUndefinedOr(paced.signIn), (ids) => ids.length > 0)) return Effect.succeed(paced)
+        return Effect.map(resetsStore.read, (state) =>
+          Option.match(ResetsModel.pendingWords(state.claims, pool.value, now), {
+            onNone: () => paced,
+            onSome: (words) => ({
+              ...paced,
+              reason: `${paced.reason}; ${words}`,
+              retryAt: Math.min(paced.retryAt, now + UNREAD_RETRY_MS),
+            }),
+          }),
+        )
+      }
+
+      const liftPace = Effect.fn("Pool.liftPace")(function* (
+        providerID: string, model: string | undefined, dispatch: boolean | undefined, policy: DispatchPolicy, push: PushModel.Push,
+        answer: Pace, work: "new-work" | "existing-request",
+      ) {
+        const reason = `the push "${push.goal}" lifts the spend-evenly hold until ${new Date(push.endsAt).toISOString()} (${answer.reason})`
+        if (dispatch !== true && Option.isNone(Option.fromUndefinedOr(model))) return { ok: true, measured: true, reason } satisfies Pace
+        const lifted = yield* paceOf(providerID, model, true, { ...policy, liftEvenLine: true }, work)
+        if (!lifted.ok) return lifted
+        return { ...lifted, reason } satisfies Pace
+      })
+
+      const pace = Effect.fn("Pool.pace")(function* (
+        providerID: string, model?: string, sessionID?: string, dispatch?: boolean, policy: DispatchPolicy = {},
+        work: "new-work" | "existing-request" = "new-work",
+      ) {
+        const paced = yield* paceOf(providerID, model, dispatch, policy, work)
+        const id = Option.fromUndefinedOr(measuredBy(config, providerID))
+        const session = Option.fromUndefinedOr(sessionID)
+        // A title or other auxiliary request waits for ordinary room; it does not ask for another reset.
+        const resetting = Option.filter(id, (pool) => Option.isNone(Option.fromUndefinedOr(policy.auxiliary)) && Option.isSome(resetProvider(pool)))
         const now = yield* Clock.currentTimeMillis
-        if (id !== undefined && sessionID !== undefined && config.resets?.[id] !== undefined) askers.set(id, { at: now, sessionID })
+        if (Option.isSome(resetting) && Option.isSome(session)) askers.set(resetting.value, { at: now, sessionID: session.value })
+        const answer = yield* withPending(paced, id, now)
         if (answer.ok || !answer.measured) return answer
         // A push active on this host covers the start when its scope names no session, or the root of the start's.
         const active = PushModel.activeOn(yield* pushStore.read, fleetConfig.host, now)
-        const root = active.length > 0 && sessionID !== undefined ? yield* owner.root(sessionID) : undefined
-        const push = active.find((item) => PushModel.covers(item, root))
-        const used = push === undefined ? 0 : ResetsModel.pushUsed(yield* resetsStore.read, push.id).length
+        const root = yield* Option.match(Option.filter(session, () => active.length > 0), {
+          onNone: () => Effect.succeed(undefined), onSome: owner.root,
+        })
+        const push = Arr.findFirst(active, (item) => PushModel.covers(item, root))
+        const used = yield* Option.match(push, {
+          onNone: () => Effect.succeed(0),
+          onSome: (activePush) => Effect.map(resetsStore.read, (state) => ResetsModel.pushUsed(state, activePush.id).length),
+        })
         // The spend-evenly target alone does not hold a start a push covers: the accounts have quota, and the push spends
         // them to 100% and claims its resets. Once its approved resets are spent, the pace holds again from the last claim's line.
-        if (answer.soft === true && push !== undefined && (push.allowance.max === 0 || used < push.allowance.max))
-          return {
-            ok: true,
-            measured: true,
-            reason: `the push "${push.goal}" lifts the spend-evenly hold until ${new Date(push.endsAt).toISOString()} (${answer.reason})`,
-          } satisfies Pace
+        const approved = Option.filter(push, (activePush) => activePush.allowance.max === 0 || used < activePush.allowance.max)
+        if (answer.soft === true && Option.isSome(approved)) return yield* liftPace(providerID, model, dispatch, policy, approved.value, answer, work)
         // A start held by a measured pace waits: the resets are reviewed for it, without holding up the answer.
-        if (id === undefined || config.resets?.[id] === undefined) return answer
+        if (Option.isNone(resetting)) return answer
         const hard = answer.soft !== true
         yield* sendResets(
           ResetsModel.NoteWait.make({
-            pool: id,
+            pool: resetting.value,
             ...(sessionID === undefined ? {} : { sessionID }),
             ...(hard ? { hard: true } : {}),
             ...(root === undefined ? {} : { root }),
@@ -1056,18 +1200,26 @@ export const layer = (config: Config) =>
           }),
         )
         yield* Effect.forkIn(reviewResets, scope)
-        if (!hard || push === undefined) return answer
+        if (!hard || Option.isNone(push)) return answer
         // Held for lack of quota in a push's scope: the review claims one of its resets, and the start asks again soon.
-        const left = push.allowance.max - used
-        if (left <= 0) return { ...answer, reason: `${answer.reason}; the push "${push.goal}" has spent its ${push.allowance.max} approved resets` }
+        const { allowance, goal } = push.value
+        const left = allowance.max - used
+        if (left <= 0) return { ...answer, reason: `${answer.reason}; the push "${goal}" has spent its ${allowance.max} approved resets` }
         return {
           ...answer,
-          reason: `${answer.reason}; the push "${push.goal}" claims one of its ${left} approved reset${left === 1 ? "" : "s"}`,
-          retryAt: Math.min(answer.retryAt ?? Number.POSITIVE_INFINITY, now + PUSH_RETRY_MS),
+          reason: `${answer.reason}; the push "${goal}" claims one of its ${left} approved reset${left === 1 ? "" : "s"}`,
+          retryAt: Math.min(answer.retryAt, now + PUSH_RETRY_MS),
         }
       })
 
-      const paceOf = Effect.fn("Pool.paceOf")(function* (providerID: string, model?: string) {
+      /**
+       * The pace on the readings now. Both ways of quoting new work count the same fleet starts not yet in the readings.
+       * Placement of an existing request does not charge its launch again: it was charged when it was admitted.
+       */
+      const paceOf = Effect.fn("Pool.paceOf")(function* (
+        providerID: string, model?: string, dispatch?: boolean, policy: DispatchPolicy = {},
+        work: "new-work" | "existing-request" = "new-work",
+      ) {
         const paced = poolOf(measuredBy(config, providerID))
         if (paced === undefined) return UNPOOLED
         yield* refresh(paced, false)
@@ -1075,19 +1227,34 @@ export const layer = (config: Config) =>
         // A peer's newer readings of the same logins count here too, whichever instance on the host read the peer.
         yield* mergeReports(fleet)
         for (const credentialID of (yield* SynchronizedRef.get(paced.pool)).credentials) yield* pull(paced, credentialID)
+        if (dispatch === true || Option.isSome(Option.fromUndefinedOr(model))) {
+          const before = yield* Clock.currentTimeMillis
+          const listed = status(yield* SynchronizedRef.get(paced.pool), before, rules)
+          const required = requiredScopes(listed, model)
+          const unread = listed.filter((account) =>
+            Option.isNone(Option.fromUndefinedOr(account.hold)) && Option.exists(evidenceGap(account, before, required), (gap) => refreshEvidence(gap, before)),
+          )
+          const read = Effect.forEach(unread, (account) => quota.usage(paced.id, account.credentialID).pipe(
+            Effect.flatMap((reading) => take(paced, account.credentialID, reading)),
+          ), { discard: true })
+          // Quotes must leave time for the caller's RPC. Placement instead waits
+          // for the provider/store's own bounded operations: otherwise a second
+          // expired login can be called "unread" before its refresh even runs.
+          if (unread.length > 0) {
+            if (work === "existing-request") yield* read
+            else yield* read.pipe(Effect.timeoutOption("2 seconds"))
+          }
+        }
         const now = yield* Clock.currentTimeMillis
+        const accounts = status(yield* SynchronizedRef.get(paced.pool), now, rules)
+        const plans = yield* plansOf(paced.id, accounts, now)
         // Every start in the fleet on a provider this pool paces counts, whichever host admitted it.
         const starts = FleetModel.inflight(fleet, now, fleetConfig.settleMs)
-          .filter((start) => measuredBy(config, start.providerID) === paced.id)
+          .filter((start) => work === "new-work" && measuredBy(config, start.providerID) === paced.id)
           .map((start) => start.at)
-        const accounts = status(yield* SynchronizedRef.get(paced.pool), now, rules)
-        return poolPace(
-          accounts,
-          now,
-          { starts, cost: fleetConfig.startCost, settleMs: fleetConfig.settleMs },
-          model,
-          yield* plansOf(paced.id, accounts, now),
-        )
+        const inflight = { starts, cost: fleetConfig.startCost, settleMs: fleetConfig.settleMs }
+        if (dispatch === true && Option.isNone(Option.fromUndefinedOr(model))) return dispatchPace(accounts, now, plans, fleetConfig.startCost, model, { ...policy, inflight })
+        return poolPace(accounts, now, inflight, model, plans, policy)
       })
 
       const started = (providerID: string) => sendFleet(FleetModel.RecordStart.make({ providerID })).pipe(Effect.asVoid)

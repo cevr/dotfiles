@@ -30,6 +30,7 @@ import {
   type LedgerState,
 } from "./account-pool.ts"
 import { CACHE_LIFE_MS, DEFAULT_HOLD_MS, DEFAULT_RULES, PIN_IDLE_MS, WINDOW_MS, type RequestKind } from "./accounts.ts"
+import { dispatchPace } from "./pace.ts"
 import type { QuotaReading } from "./quota.ts"
 
 const MINUTE = 60_000
@@ -38,6 +39,7 @@ const T0 = 1_800_000_000_000
 
 const story = Story.make(AccountPool(DEFAULT_RULES))
 const run = (...steps: Parameters<typeof story>) => Effect.runPromise(story(...steps))
+const recorded = Story.then
 /** A pool whose caches live an hour, as Claude's do when `bun run daily` asks for it. */
 const hourStory = Story.make(AccountPool({ cacheLifeMs: HOUR }))
 
@@ -93,7 +95,7 @@ describe("a request is placed", () => {
       Story.clock(T0),
       Story.when(TakeReading.make({ credentialID: "a", reading: refusal })),
       Story.then(
-        ReadingTaken.make({ credentialID: "a", reading: refusal, hold: { kind: "rate-limit", until: T0 + 30_000, at: T0 } }),
+        ReadingTaken.make({ credentialID: "a", reading: refusal, hold: { kind: "rate-limit", until: T0 + 30_000, at: T0, refusedUntil: T0 + 30_000 } }),
       ),
       ...placed("s1", "b", T0),
     )
@@ -102,7 +104,7 @@ describe("a request is placed", () => {
   test("every account held refuses the request, a run's own too, naming when the first opens", () => {
     const held = (credentialID: string, until: number) => [
       Story.given(
-        ReadingTaken.make({ credentialID, reading: reading({ refusal: { kind: "rate-limit", until } }), hold: { kind: "rate-limit", until, at: T0 } }),
+        ReadingTaken.make({ credentialID, reading: reading({ refusal: { kind: "rate-limit", until } }), hold: { kind: "rate-limit", until, at: T0, refusedUntil: until } }),
       ),
     ]
     return run(
@@ -122,7 +124,7 @@ describe("a request is placed", () => {
     )
   })
 
-  test("every account held for a new sign-in refuses the request naming them, with no time it opens", () => {
+  test("every account held for a new sign-in refuses the request naming them and a time to recheck", () => {
     const held = (credentialID: string, kind: "signin" | "rate-limit", until: number) => [
       Story.given(ReadingTaken.make({ credentialID, reading: reading({ refusal: { kind, until } }), hold: { kind, until, at: T0 } })),
     ]
@@ -143,10 +145,10 @@ describe("a request is placed", () => {
 
   test("a held pool's message names the sign-in when every account needs one, else when the first opens", () => {
     expect(heldMessage(new AccountsHeld({ sessionID: "s1", kind: "primary", retryAt: T0, signIn: ["store:alpha", "store:beta"] }))).toBe(
-      "dotfiles-opencode.pool: every pool account needs a new sign-in (store:alpha, store:beta). Sign in to them again.",
+      "dotfiles-opencode.pool: every pool account needs a new sign-in (store:alpha, store:beta). Sign in to them again; it may go again at 2027-01-15T08:00:00.000Z if a login is signed in.",
     )
     expect(heldMessage(new AccountsHeld({ sessionID: "s1", kind: "primary", retryAt: T0, signIn: [] }))).toMatch(
-      /^dotfiles-opencode\.pool: all pool accounts are held; the first opens at \d{4}-/,
+      /^dotfiles-opencode\.pool: all pool accounts are held; it may go again at \d{4}-/,
     )
   })
 
@@ -172,7 +174,7 @@ describe("a request is placed", () => {
       ...placed("s1", "a", T0),
       Story.when(TakeReading.make({ credentialID: "a", reading: refusal })),
       Story.then(
-        ReadingTaken.make({ credentialID: "a", reading: refusal, hold: { kind: "usage-limit", until: T0 + 20 * MINUTE, at: T0 } }),
+        ReadingTaken.make({ credentialID: "a", reading: refusal, hold: { kind: "usage-limit", until: T0 + 20 * MINUTE, at: T0, refusedUntil: T0 + 20 * MINUTE } }),
       ),
       ...placed("s1", "b", T0),
       Story.clock(T0 + 21 * MINUTE),
@@ -293,7 +295,7 @@ describe("a session's cache keeps its account", () => {
       Story.given(took("s1", "a", 1, T0)),
       Story.clock(T0 + MINUTE),
       Story.when(TakeReading.make({ credentialID: "a", reading: refusal })),
-      Story.then(ReadingTaken.make({ credentialID: "a", reading: refusal, hold: { kind: "rate-limit", until: T0 + HOUR, at: T0 + MINUTE } })),
+      Story.then(ReadingTaken.make({ credentialID: "a", reading: refusal, hold: { kind: "rate-limit", until: T0 + HOUR, at: T0 + MINUTE, refusedUntil: T0 + HOUR } })),
       ...placed("s1", "b", T0 + MINUTE),
     )
   })
@@ -451,7 +453,9 @@ describe("an account is held", () => {
       accounts("a", "b"),
       Story.clock(T0),
       Story.when(TakeReading.make({ credentialID: "a", reading: refusal })),
-      Story.then(ReadingTaken.make({ credentialID: "a", reading: refusal, hold: { kind: "usage-limit", until: reset, at: T0 } })),
+      Story.then(ReadingTaken.make({ credentialID: "a", reading: refusal, hold: { kind: "usage-limit", until: reset, at: T0, refusedUntil: reset } })),
+      Story.clock(T0 + MINUTE),
+      ...read("a", reading({ at: T0 + MINUTE, status: "allowed" })),
       Story.clock(reset - 1),
       ...placed("s1", "b", reset - 1),
       Story.clock(reset),
@@ -469,6 +473,30 @@ describe("an account is held", () => {
         ReadingTaken.make({ credentialID: "a", reading: exhausted, hold: { kind: "usage-limit", until: T0 + 40 * HOUR, at: T0 } }),
       ),
       ...placed("s1", "b", T0),
+    )
+  })
+
+  test("a longer window-derived hold cannot erase a confirmed refusal", () => {
+    const reset = T0 + 2 * HOUR
+    const refused = reading({ refusal: { kind: "rate-limit", until: reset } })
+    const exhausted = reading({ at: T0 + MINUTE, windows: [{ name: "7d", utilization: 1, resetAt: T0 + 40 * HOUR }] })
+    return run(
+      accounts("a", "b"),
+      Story.clock(T0),
+      Story.when(TakeReading.make({ credentialID: "a", reading: refused })),
+      recorded(ReadingTaken.make({ credentialID: "a", reading: refused, hold: { kind: "rate-limit", until: reset, at: T0, refusedUntil: reset } })),
+      Story.clock(T0 + MINUTE),
+      Story.when(TakeReading.make({ credentialID: "a", reading: exhausted })),
+      recorded(ReadingTaken.make({
+        credentialID: "a", reading: exhausted,
+        hold: { kind: "usage-limit", until: T0 + 40 * HOUR, at: T0 + MINUTE, refusedUntil: reset },
+      })),
+      Story.clock(reset - MINUTE),
+      ...read("a", reading({ at: reset - MINUTE, status: "allowed" })),
+      ...placed("before", "b", reset - MINUTE),
+      Story.clock(reset),
+      ...read("a", reading({ at: reset, status: "allowed" }), HoldCleared.make({ credentialID: "a" })),
+      ...placed("after", "a", reset),
     )
   })
 
@@ -509,7 +537,7 @@ describe("an account is held", () => {
     )
   })
 
-  test("a response's reading keeps the model windows and resets only the usage endpoint reads, until they lapse", () => {
+  test("headers retain learned model windows and their original reading times even after a window rolls over", () => {
     const resets = { available: 2, nextExpiresAt: T0 + 50 * HOUR, credits: [{ id: "g-1", count: 2, usable: true, expiresAt: T0 + 50 * HOUR }] }
     const usage = reading({
       windows: [
@@ -520,16 +548,23 @@ describe("an account is held", () => {
       resets,
     })
     // The unified headers of a response carry the 5-hour and 7-day windows only.
-    const headers: QuotaReading = { at: T0 + 2 * HOUR, status: "allowed", windows: [{ name: "7d", utilization: 0.6, resetAt: T0 + 10 * HOUR }] }
+    const headers: QuotaReading = { at: T0 + 2 * HOUR, status: "allowed", windows: [
+      { name: "7d", utilization: 0.6, resetAt: T0 + 10 * HOUR },
+      { name: "5h", utilization: 0.1, resetAt: T0 + 4 * HOUR },
+    ] }
+    const rolled = { at: usage.at, name: "7d:Gone", utilization: 0.9, resetAt: T0 + HOUR }
     const carried: QuotaReading = {
       ...headers,
       // The carried window names when it was read too: a fresh reading around it does not make it fresh.
-      windows: [...headers.windows, { at: usage.at, name: "7d:Fable", utilization: 0.3, resetAt: T0 + 10 * HOUR }],
+      windows: [...headers.windows, { at: usage.at, name: "7d:Fable", utilization: 0.3, resetAt: T0 + 10 * HOUR }, rolled],
       // Carried resets name when they were read, the usage reading's time, so a claim no one asked for sees their age.
       resets: { at: usage.at, ...resets },
     }
-    // A reading that reads the model windows and resets itself replaces them.
+    // A reading replaces only the models and resets it actually reads.
     const fresh = reading({ at: T0 + 3 * HOUR, windows: [{ name: "7d", utilization: 0.7 }], resets: { available: 0, credits: [] } })
+    const dispatch = dispatchPace([{ credentialID: "a", live: 0, load: 0, noRoom: false, reading: carried }], headers.at, {}, 0.04, "claude-gone")
+    expect(dispatch).toMatchObject({ ok: false, reasonCode: "usage-unread", eligible: [] })
+    expect(dispatch.reason).toContain("its 7d:Gone window was read more than 30 min ago")
     return run(
       accounts("a"),
       Story.clock(T0),
@@ -540,7 +575,7 @@ describe("an account is held", () => {
       Story.clock(T0 + 3 * HOUR),
       Story.when(TakeReading.make({ credentialID: "a", reading: { ...fresh, windows: [...fresh.windows, { name: "7d:Fable", utilization: 0.4 }] } })),
       Story.then(
-        ReadingTaken.make({ credentialID: "a", reading: { ...fresh, windows: [...fresh.windows, { name: "7d:Fable", utilization: 0.4 }] } }),
+        ReadingTaken.make({ credentialID: "a", reading: { ...fresh, windows: [...fresh.windows, { name: "7d:Fable", utilization: 0.4 }, rolled] } }),
       ),
     )
   })
@@ -552,7 +587,7 @@ describe("an account is held", () => {
       accounts("a", "b"),
       Story.clock(T0),
       Story.when(TakeReading.make({ credentialID: "a", reading: long })),
-      Story.then(ReadingTaken.make({ credentialID: "a", reading: long, hold: { kind: "usage-limit", until: T0 + 5 * HOUR, at: T0 } })),
+      Story.then(ReadingTaken.make({ credentialID: "a", reading: long, hold: { kind: "usage-limit", until: T0 + 5 * HOUR, at: T0, refusedUntil: T0 + 5 * HOUR } })),
       ...read("a", short),
     )
   })
@@ -562,9 +597,9 @@ describe("an account is held", () => {
       accounts("a", "b"),
       Story.clock(T0),
       Story.when(RefuseRequest.make({ credentialID: "a", status: 429 })),
-      Story.then(RequestRefused.make({ credentialID: "a", hold: { kind: "rate-limit", until: T0 + DEFAULT_HOLD_MS, at: T0 } })),
+      Story.then(RequestRefused.make({ credentialID: "a", hold: { kind: "rate-limit", until: T0 + DEFAULT_HOLD_MS, at: T0, refusedUntil: T0 + DEFAULT_HOLD_MS } })),
       Story.when(RefuseRequest.make({ credentialID: "b", status: 401 })),
-      Story.then(RequestRefused.make({ credentialID: "b", hold: { kind: "unauthorized", until: T0 + DEFAULT_HOLD_MS, at: T0 } })),
+      Story.then(RequestRefused.make({ credentialID: "b", hold: { kind: "unauthorized", until: T0 + DEFAULT_HOLD_MS, at: T0, refusedUntil: T0 + DEFAULT_HOLD_MS } })),
       Story.when(RefuseRequest.make({ credentialID: "a", status: 429 })),
       Story.then(),
     ))
@@ -578,7 +613,7 @@ describe("an account is held", () => {
       Story.clock(T0),
       ...placed("s1", "a", T0),
       Story.when(TakeReading.make({ credentialID: "a", reading: signin })),
-      Story.then(ReadingTaken.make({ credentialID: "a", reading: signin, hold: { kind: "signin", until: T0 + 30 * MINUTE, at: T0 } })),
+      Story.then(ReadingTaken.make({ credentialID: "a", reading: signin, hold: { kind: "signin", until: T0 + 30 * MINUTE, at: T0, refusedUntil: T0 + 30 * MINUTE } })),
       ...placed("s1", "b", T0),
       ...placed("s2", "b", T0),
       ...placed("s3", "b", T0),
@@ -619,7 +654,7 @@ describe("the ledger is pruned", () => {
       ...placed("s1", "a", T0),
       ...stepped("s1", "a", 1, T0),
       Story.when(TakeReading.make({ credentialID: "a", reading: refusal })),
-      Story.then(ReadingTaken.make({ credentialID: "a", reading: refusal, hold: { kind: "rate-limit", until: T0 + 1000, at: T0 } })),
+      Story.then(ReadingTaken.make({ credentialID: "a", reading: refusal, hold: { kind: "rate-limit", until: T0 + 1000, at: T0, refusedUntil: T0 + 1000 } })),
       Story.when(PruneLedger.make({})),
       Story.then(),
       Story.clock(T0 + WINDOW_MS),

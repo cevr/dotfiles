@@ -298,16 +298,16 @@ const invariants = (seed: number, expect: Seed.Seeded["expect"], lasting: boolea
   ).toEqual([])
 }
 
-/** The pool's own refusal: every account held, and when the first opens. */
-const POOL_REFUSAL = /^dotfiles-opencode\.pool: all pool accounts are held; the first opens at (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z)$/
+/** The pool's own refusal: every account held or an admission hold with its reason, and when to recheck. */
+const POOL_REFUSAL = /^dotfiles-opencode\.pool: (?:all pool accounts are held|the request is held: [^\r\n]+); it may go again at (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z)$/
 /**
  * A login whose refresh the token endpoint refused: the store's words, from the auth plugin's request hook; or the
  * pool's own refusal once every account is held for a new sign-in, naming them.
  */
 const SIGN_IN =
-  /^(?:The store account "(?:alpha|beta)" could not refresh \(400\)\. Sign in to it again\.|dotfiles-opencode\.pool: every pool account needs a new sign-in \(store:alpha, store:beta\)\. Sign in to them again\.)$/
+  /^(?:The store account "(?:alpha|beta)" could not refresh \(400\)\. Sign in to it again\.|dotfiles-opencode\.pool: every pool account needs a new sign-in \(store:alpha, store:beta\)\. Sign in to them again; it may go again at \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z if a login is signed in\.)$/
 
-/** When a refusal says the first account opens, epoch ms; none for another message. */
+/** When the pool says to recheck, epoch ms; none for another message. */
 const opensAt = (message: string) =>
   Option.flatMap(Option.fromNullishOr(POOL_REFUSAL.exec(message)?.[1]), (iso) => Option.map(DateTime.make(iso), DateTime.toEpochMillis))
 
