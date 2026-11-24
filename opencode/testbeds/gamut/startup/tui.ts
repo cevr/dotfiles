@@ -20,21 +20,45 @@ interface StartupContext<AgentCatalog, SelectedModel> {
 
 const Startup = Schema.Struct({ marker: Schema.String, agent: Schema.String, description: Schema.String })
 
+const primary = (agents: Option.Option<ReadonlyArray<Agent>>) =>
+  Option.flatMap(agents, Arr.findFirst((agent) => agent.mode !== "subagent" && !agent.hidden))
+
 /** A config-only agent stub does not have the plugin's description. */
 export const ready = (agents: Option.Option<ReadonlyArray<Agent>>, hasModel: boolean, id: string, description: string) =>
-  hasModel && Option.exists(
-    Option.flatMap(agents, Arr.findFirst((agent) => agent.mode !== "subagent" && !agent.hidden)),
-    (first) => first.id === id && first.description === description,
-  )
+  hasModel && Option.exists(primary(agents), (first) => first.id === id && first.description === description)
+
+/** What the composer showed at one look, for the waiter's failure message. */
+const seen = (catalog: unknown, model: unknown) => {
+  const agents = Schema.decodeUnknownOption(Catalog)(catalog)
+  const first = primary(agents)
+  return {
+    agents: Option.match(agents, { onNone: () => "unreadable", onSome: (list) => list.map((agent) => agent.id).join(",") }),
+    default: Option.match(first, { onNone: () => "none", onSome: (agent) => agent.id }),
+    description: Option.match(first, { onNone: () => "none", onSome: (agent) => agent.description ?? "none" }),
+    model: Schema.is(ModelRef)(model) ? `${model.providerID}/${model.modelID}` : "none",
+  }
+}
+
+/** The file beside the marker that holds the composer's last look. */
+export const seenPath = (marker: string) => `${marker}.seen`
 
 const announce = Effect.fn("Gamut.announceComposer")(function*<AgentCatalog, SelectedModel>({
   options, data, ui,
 }: StartupContext<AgentCatalog, SelectedModel>) {
   const { marker, agent, description } = yield* Schema.decodeUnknownEffect(Startup)(options)
   const fs = yield* FileSystem.FileSystem
-  yield* Effect.sync(() =>
-    ready(Schema.decodeUnknownOption(Catalog)(data.location.agent.list()), Schema.is(ModelRef)(ui.model.current()), agent, description),
-  ).pipe(Effect.repeat({ until: (seen) => seen, schedule: Schedule.spaced("20 millis") }))
+  let last = ""
+  const look = Effect.gen(function* () {
+    const catalog = data.location.agent.list()
+    const model = ui.model.current()
+    const line = JSON.stringify(seen(catalog, model))
+    if (line !== last) {
+      last = line
+      yield* fs.writeFileString(seenPath(marker), `${line}\n`)
+    }
+    return ready(Schema.decodeUnknownOption(Catalog)(catalog), Schema.is(ModelRef)(model), agent, description)
+  })
+  yield* look.pipe(Effect.repeat({ until: (ok) => ok, schedule: Schedule.spaced("20 millis") }))
   yield* fs.writeFileString(marker, "ready\n")
 })
 
