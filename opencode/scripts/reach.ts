@@ -27,6 +27,7 @@ import { createHash } from "node:crypto"
 import path from "node:path"
 import { $ } from "bun"
 import { acceptKey, acceptSharedFrom } from "./accept-key.ts"
+import { decodeGitPaths, nulFields } from "./git-paths.ts"
 import { ALL_READS, readMatcher } from "./read-declarations.ts"
 import { projectReadChecker } from "./test-read-project.ts"
 import { isAcceptInput, packageOf } from "./test-population.ts"
@@ -80,11 +81,11 @@ interface Package {
 
 export const load = async (): Promise<Workspace> => {
   const cwd = path.dirname(ROOT)
-  const { listed, head } = await $`git ls-files -co --exclude-standard -z`.cwd(cwd).quiet().text().then((listed) =>
+  const { listed, head } = await $`git ls-files -co --exclude-standard -z`.cwd(cwd).quiet().arrayBuffer().then((listed) =>
     $`git rev-parse HEAD`.cwd(cwd).quiet().nothrow().text().then((head) => ({ listed, head })),
   )
   // A deleted file git still tracks is not an input.
-  const known = listed.split("\0").filter(Boolean).map(fromRepository).filter((file) => existsSync(path.join(ROOT, file)))
+  const known = nulFields(decodeGitPaths(listed)).map(fromRepository).filter((file) => existsSync(path.join(ROOT, file)))
   const files = known.filter((file) => !file.startsWith("../"))
   const siblings = known.filter((file) => file.startsWith("../"))
   const byDir = new Map<string, Array<string>>()

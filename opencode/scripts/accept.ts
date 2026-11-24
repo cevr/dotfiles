@@ -60,6 +60,7 @@ import * as Accept from "./accept-ledger.ts"
 import * as Yield from "./accept-yield.ts"
 import { acceptanceTests, acceptReadKey, acceptReach, acceptSharedKey, fromRepository, load, packageOf, ROOT, type Workspace } from "./reach.ts"
 import { swarmInputs } from "./test-impact.ts"
+import { decodeGitPaths, nulFields, parseNameStatus } from "./git-paths.ts"
 import { swarmTests } from "./test-population.ts"
 
 const ENV = { ...process.env }
@@ -262,13 +263,14 @@ const baseOf = () => {
 
 /** A git command's output in ROOT; empty when it fails. */
 const git = (args: ReadonlyArray<string>) => Effect.promise(() => $`git ${args}`.cwd(ROOT).quiet().nothrow().text())
+const gitPaths = (args: ReadonlyArray<string>) => Effect.promise(() => $`git ${args}`.cwd(ROOT).quiet().arrayBuffer().then(decodeGitPaths))
 
 /** The files changed since the base (committed or not, untracked too), or in the range `A..B`. */
 const changedSince = Effect.fn("Accept.changedSince")(function* () {
   const base = yield* baseOf()
-  const diff = yield* git(["-C", path.dirname(ROOT), "diff", "--name-only", base])
-  const untracked = (!base.includes("..") && (yield* git(["-C", path.dirname(ROOT), "ls-files", "--others", "--exclude-standard"]))) || ""
-  return [...new Set([...diff.split("\n"), ...untracked.split("\n")].flatMap((file) => (file && [fromRepository(file)]) || []))]
+  const diff = yield* gitPaths(["-C", path.dirname(ROOT), "diff", "--name-status", "-z", "-M", "-C", base, "--"])
+  const untracked = (!base.includes("..") && (yield* gitPaths(["-C", path.dirname(ROOT), "ls-files", "-z", "--others", "--exclude-standard"]))) || ""
+  return [...new Set([...parseNameStatus(diff).flatMap(({ paths }) => paths), ...nulFields(untracked)].map(fromRepository))]
 })
 
 /** Runs `order` `width` at a time under the window: a file starts only before its start bound and while no land run wants the lock, and is stopped at the stop bound, a signal or a yield. */

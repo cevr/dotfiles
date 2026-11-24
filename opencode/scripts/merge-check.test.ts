@@ -15,13 +15,15 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { describe, expect, it } from "effect-bun-test"
 import { acceptKey } from "./accept-key.ts"
 import { emptyLedger, select, tierOf, withPass } from "./accept-ledger.ts"
-import { parseNameStatus } from "./docs-guard.ts"
+import { parseNameStatus as parseNulNameStatus } from "./git-paths.ts"
 import { ACCEPT_TESTS, affectedUnits, DOCS_GUARD, GIT_REPO_GUARD, lintFiles, mergeLegs, reachedWithin, scriptTests } from "./merge-check.ts"
 import { mergeUnitInputs, swarmInputs } from "./test-impact.ts"
 import { readMatcher } from "./read-declarations.ts"
 import { acceptReach, importsOf, inspectReads, load, readState, readsOf } from "./reach.ts"
 import { acceptanceTests, checkedTests, mergeScriptTests, swarmTests, workboxTestFiles } from "./test-population.ts"
 import { reachedSuites } from "./accept-plan.ts"
+
+const parseNameStatus = (out: string) => parseNulNameStatus(out.replace(/[\t\n]/g, "\0"))
 
 /** bb435bcc's change set from opencode/ (Rift U1's land): its cmd/work/server.ts import broke runtime-imports.test, which its merge check never ran. */
 const BB435BCC = [

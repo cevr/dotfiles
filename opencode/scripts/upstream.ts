@@ -21,6 +21,7 @@ import { loadavg, tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { Effect } from "effect"
 import type { UpstreamReading } from "../mods/prime/update.ts"
+import { decodeGitPaths, nulFields } from "./git-paths.ts"
 
 /** The host that owns the fork, as `peersOf` names hosts (lower case, no `.local`). */
 export const FORK_OWNER = "cristians-macbook-pro"
@@ -78,6 +79,10 @@ export type GitEnv = Readonly<NodeJS.ProcessEnv>
 export const HELD_BRANCH = "daily/upstream-merge"
 
 const decoder = new TextDecoder()
+const gitOutput = (args: ReadonlyArray<string>, bytes: Uint8Array) => {
+  if (args.includes("-z")) return decodeGitPaths(bytes)
+  return decoder.decode(bytes).trim()
+}
 
 /** git run with `env` (plus no prompts and no merge editor) for every child: the process's env unless a caller hands its own. */
 const runner = (env: GitEnv = process.env) => {
@@ -87,7 +92,7 @@ const runner = (env: GitEnv = process.env) => {
       stdout: "pipe",
       stderr: "pipe",
     })
-    return { ok: ran.exitCode === 0, out: decoder.decode(ran.stdout).trim(), err: decoder.decode(ran.stderr).trim() }
+    return { ok: ran.exitCode === 0, out: gitOutput(args, ran.stdout), err: decoder.decode(ran.stderr).trim() }
   }
   const must = (dir: string, ...args: ReadonlyArray<string>) => {
     const ran = git(dir, ...args)
@@ -157,7 +162,7 @@ const pushCause = (err: string) =>
 /** The worktree that has `refs/heads/<branch>` checked out, if any. */
 const checkedOut = ({ must }: Runner, fork: string, branch: string): string | undefined => {
   let path: string | undefined
-  for (const line of must(fork, "worktree", "list", "--porcelain").split("\n")) {
+  for (const line of nulFields(must(fork, "worktree", "list", "--porcelain", "-z"))) {
     if (line.startsWith("worktree ")) path = line.slice("worktree ".length)
     if (line === `branch refs/heads/${branch}`) return path
   }
@@ -166,9 +171,7 @@ const checkedOut = ({ must }: Runner, fork: string, branch: string): string | un
 
 /** A worktree of the fork detached at `base`: the one from the last run when it is still there. */
 const prepareWorktree = ({ git, must }: Runner, fork: string, dir: string, base: string) => {
-  const registered = must(fork, "worktree", "list", "--porcelain")
-    .split("\n")
-    .some((line) => line === `worktree ${dir}`)
+  const registered = nulFields(must(fork, "worktree", "list", "--porcelain", "-z")).includes(`worktree ${dir}`)
   if (registered && existsSync(join(dir, ".git"))) {
     git(dir, "merge", "--abort")
     must(dir, "checkout", "--detach", "--force", base)
@@ -225,7 +228,7 @@ const holdMerge = (options: Options, run: Runner, start: Start, merge: string, t
 /** Aborts a merge that conflicts, puts the worktree back at the base and reports the files. */
 const reportConflict = (options: Options, run: Runner, start: Start, said: string): Outcome => {
   const { git, must } = run
-  const files = git(options.worktree, "diff", "--name-only", "--diff-filter=U").out.split("\n").filter((file) => file !== "")
+  const files = nulFields(must(options.worktree, "diff", "--name-only", "-z", "--diff-filter=U"))
   git(options.worktree, "merge", "--abort")
   must(options.worktree, "checkout", "--detach", "--force", start.base)
   options.log(`upstream: the merge conflicts in ${files.length} files; ${BRANCH} unchanged`)
@@ -503,7 +506,7 @@ export const syncFork = (options: {
   const ahead = Number(must(fork, "rev-list", "--count", `${remote}..${local}`))
   if (ahead > 0) return leave(`has ${plural(ahead, "commit")} not on origin`)
   const holder = checkedOut(run, fork, BRANCH)
-  if (holder !== undefined && git(holder, "status", "--porcelain", "--untracked-files=no").out !== "") return leave(`${holder} has uncommitted changes`)
+  if (holder !== undefined && git(holder, "status", "--porcelain", "-z", "--untracked-files=no").out !== "") return leave(`${holder} has uncommitted changes`)
   if (options.dryRun) {
     log(`fork: would fast-forward ${BRANCH} ${plural(behind, "commit")} to origin (${remote.slice(0, 10)})`)
     return { kind: "would-fast-forward", commits: behind }

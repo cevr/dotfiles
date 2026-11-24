@@ -16,7 +16,8 @@
 //   (batch 2026-11-16cy: workrift.test.ts landed red on the Mac).
 // - fixed-seed unit tests not run by the acceptance swarm: a changed test or a known or observed input.
 import { Option } from "effect"
-import { docsGuardDue, type Change } from "./docs-guard.ts"
+import { docsGuardDue } from "./docs-guard.ts"
+import type { Change } from "./git-paths.ts"
 import { readMatcher } from "./read-declarations.ts"
 
 /** A leg the merge check runs: its name, its command (from opencode/) and what its summary notes. */
@@ -152,7 +153,7 @@ export const lintFiles = (changes: ReadonlyArray<Change>, exists: (file: string)
 /** oxlint over `files`; given no file oxlint lints the whole folder, so with none changed there is nothing to lint. */
 const lintLeg = (files: ReadonlyArray<string>, tools: Tools): LegSpec => {
   if (files.length === 0) return { name: "lint", argv: ["true"], note: "0 changed files" }
-  return { name: "lint", argv: [tools.oxlint, "--quiet", ...files], note: `${files.length} changed files` }
+  return { name: "lint", argv: [tools.oxlint, "--quiet", ...files.map((file) => (file.startsWith("-") && `./${file}`) || file)], note: `${files.length} changed files` }
 }
 
 /** `bun test` over `tests`; none due is a passed leg saying so. */

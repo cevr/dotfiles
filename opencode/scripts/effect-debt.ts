@@ -26,6 +26,7 @@ import path from "node:path"
 import { Array as Arr, Console, Data, Effect, Exit, Option, Order, Result, Schema } from "effect"
 import { parseSync } from "oxc-parser"
 import { type Merged, mergeConfig, mergePolicy } from "./effect-debt-merge.ts"
+import { decodeGitPaths, nulFields, parseNameStatus } from "./git-paths.ts"
 
 /** The policy, the enforcing inventory config and the hard config, relative to the root. */
 export const POLICY = "effect-debt.json"
@@ -242,6 +243,10 @@ export const spawn = Effect.fn("EffectDebt.spawn")(function* (
   argv: ReadonlyArray<string>, cwd: string, timeoutMs: number, environment?: Readonly<Record<string, string>>,
 ) {
   const command = argv.join(" ").slice(0, 200)
+  const stdoutOf = (body: ReadableStream<Uint8Array<ArrayBuffer>>) => {
+    if (argv[0] === "git" && argv.includes("-z")) return Bun.readableStreamToArrayBuffer(body).then(decodeGitPaths)
+    return Bun.readableStreamToText(body)
+  }
   return yield* Effect.acquireUseRelease(
     Effect.try({
       try: () => Bun.spawn([...argv], { cwd, env: environment, stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true }),
@@ -250,7 +255,7 @@ export const spawn = Effect.fn("EffectDebt.spawn")(function* (
     (child) =>
       Effect.all(
         [
-          Effect.tryPromise({ try: () => Bun.readableStreamToText(child.stdout), catch: () => new DebtError({ problems: [`cannot read ${command}`] }) }),
+          Effect.tryPromise({ try: () => stdoutOf(child.stdout), catch: () => new DebtError({ problems: [`cannot read ${command}`] }) }),
           Effect.tryPromise({ try: () => Bun.readableStreamToText(child.stderr), catch: () => new DebtError({ problems: [`cannot read ${command}`] }) }),
           Effect.tryPromise({ try: () => child.exited, catch: () => new DebtError({ problems: [`${command} did not exit`] }) }),
         ],
@@ -273,14 +278,14 @@ const sourceFiles = Effect.fn("EffectDebt.sourceFiles")(function* (root: string,
   const listed = yield* spawn(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], root, timeoutMs)
   if (listed.code !== 0) return yield* fail(`git ls-files failed in ${root}: ${listed.stderr.trim()}`)
   const ignored = ignoredBy(ignorePatterns)
-  const files = Arr.filter(listed.stdout.split("\u0000"), (file) => SOURCE.test(file) && !ignored(file) && existsSync(path.join(root, file)))
+  const files = Arr.filter(nulFields(listed.stdout), (file) => SOURCE.test(file) && !ignored(file) && existsSync(path.join(root, file)))
   return Arr.sort(Arr.dedupe(files), Order.String)
 })
 
 const trackedAtHead = Effect.fn("EffectDebt.trackedAtHead")(function* (root: string, timeoutMs: number) {
   const listed = yield* spawn(["git", "ls-tree", "-r", "-z", "--name-only", "HEAD"], root, timeoutMs)
   if (listed.code !== 0) return yield* fail(`git ls-tree failed in ${root}: ${listed.stderr.trim()}`)
-  return new Set(listed.stdout.split("\u0000"))
+  return new Set(nulFields(listed.stdout))
 })
 
 const head = Effect.fn("EffectDebt.head")(function* (root: string, timeoutMs: number) {
@@ -627,8 +632,6 @@ const verdictProblems = (verdict: Verdict) => [
   ...Arr.map(verdict.breaches, describeBreach),
 ]
 
-const lines = (text: string) => Arr.filter(text.split("\n"), (line) => line.length > 0)
-
 /** The files whose budget entry differs between two policies, either side's absence included. */
 export const budgetChanges = (before: Policy["budgets"], after: Policy["budgets"]) => {
   const entry = (budgets: Policy["budgets"], file: string) => JSON.stringify(Arr.sort(Object.entries(budgets[file] ?? {}), Order.mapInput(Order.String, ([rule]: readonly [string, number]) => rule)))
@@ -641,9 +644,9 @@ export const budgetChanges = (before: Policy["budgets"], after: Policy["budgets"
  * readable policy). An unknown base fails.
  */
 const scopeSince = Effect.fn("EffectDebt.scopeSince")(function* (root: string, base: string, policy: Policy, timeoutMs: number) {
-  const diff = yield* spawn(["git", "diff", "--name-only", "--relative", base, "--"], root, timeoutMs)
+  const diff = yield* spawn(["git", "diff", "--name-status", "-z", "-M", "-C", "--relative", base, "--"], root, timeoutMs)
   if (diff.code !== 0) return yield* fail(`git diff against ${base} failed in ${root}: ${diff.stderr.trim()}`)
-  const untracked = yield* spawn(["git", "ls-files", "--others", "--exclude-standard"], root, timeoutMs)
+  const untracked = yield* spawn(["git", "ls-files", "-z", "--others", "--exclude-standard"], root, timeoutMs)
   if (untracked.code !== 0) return yield* fail(`git ls-files failed in ${root}: ${untracked.stderr.trim()}`)
   const shown = yield* spawn(["git", "show", `${base}:./${POLICY}`], root, timeoutMs)
   const before = yield* Effect.match(decode(Policy, `${POLICY} at ${base}`, "ignore")(shown.stdout), {
@@ -654,7 +657,7 @@ const scopeSince = Effect.fn("EffectDebt.scopeSince")(function* (root: string, b
     onNone: () => Object.keys(policy.budgets),
     onSome: (budgets) => budgetChanges(budgets, policy.budgets),
   })
-  return new Set([...lines(diff.stdout), ...lines(untracked.stdout), ...budgeted])
+  return new Set([...parseNameStatus(diff.stdout).flatMap(({ paths }) => paths), ...nulFields(untracked.stdout), ...budgeted])
 })
 
 const check = Effect.fn("EffectDebt.check")(function* (options: Options) {

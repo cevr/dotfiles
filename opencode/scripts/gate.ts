@@ -42,7 +42,7 @@ import path from "node:path"
 import { $ } from "bun"
 import { Option } from "effect"
 import { hostLocks, landLogs, scriptReceipt } from "../mods/work/process/landing.ts"
-import { parseNameStatus } from "./docs-guard.ts"
+import { decodeGitPaths, parseNameStatus } from "./git-paths.ts"
 import { mergeLegs } from "./merge-check.ts"
 import { mergeUnitInputs } from "./test-impact.ts"
 import { checkCommand, projects } from "./typecheck.ts"
@@ -160,8 +160,8 @@ const gate = () =>
 
 /** The whole repository's diff, expressed from opencode/ (including sibling inputs). */
 const changesSince = (base: string) =>
-  $`git -C ${path.dirname(ROOT)} diff --name-status ${base} HEAD`.quiet().text().then((out) =>
-    parseNameStatus(out).map(({ status, paths }) => ({ status, paths: paths.map(fromRepository) })))
+  $`git -C ${path.dirname(ROOT)} diff --name-status -z -M -C ${base} HEAD --`.quiet().arrayBuffer().then((out) =>
+    parseNameStatus(decodeGitPaths(out)).map(({ status, paths }) => ({ status, paths: paths.map(fromRepository) })))
 
 /** The environment the merge check's legs run in: the unit leg's, without ANTHROPIC_BASE_URL, so its tests ask no model. */
 const legEnv = () => {
