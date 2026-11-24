@@ -42,7 +42,7 @@ import * as OpenCodeSteer from "@dotfiles/opencode-orchestrate/opencode/steer"
 import { parseModel, type Pace } from "@dotfiles/opencode-orchestrate/pace"
 import { NO_INFLIGHT, poolPace } from "@dotfiles/opencode-pool/pace"
 import type { AccountStatus } from "@dotfiles/opencode-pool/status"
-import { iso } from "@dotfiles/opencode-pool/usage-text"
+import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import { definitions, ORCHESTRATOR, orchestrator } from "@dotfiles/opencode-orchestrate/role"
 import { KNOWLTON, rest } from "@dotfiles/opencode-orchestrate/sabbath"
 import { type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
@@ -1358,7 +1358,7 @@ describe("the planner's first model", () => {
   }
   const FABLE_SPENT =
     "anthropic/claude-fable#medium held: every pool account is held or has claude-fable's own weekly window (7d:Fable) at 100% used of 100%: " +
-    `a claude-fable start holds at 100% used of 100% there; the first resets ${iso(now + 2 * day)}`
+    `a claude-fable start holds at 100% used of 100% there; the first resets ${formatNotificationTime(now + 2 * day)}`
 
   test("every new planner start runs on the first model at the planner's effort, whatever its description, and its line names it", () =>
     scenario(

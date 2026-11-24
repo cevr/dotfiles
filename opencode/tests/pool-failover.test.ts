@@ -36,7 +36,7 @@ const decodeEvent = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ type: Schema.String, error: Schema.Struct({ message: Schema.String }) })),
 )
 /** The pool's own refusal: every account held, and when the first opens. */
-const POOL_REFUSAL = /^dotfiles-opencode\.pool: all pool accounts are held; it may go again at (\S+Z)$/
+const POOL_REFUSAL = /^dotfiles-opencode\.pool: all pool accounts are held; it may go again at ([A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2}:\d{2} [AP]M (?:EST|EDT))$/
 const RUN_TIMEOUT_MS = 120_000
 
 /** Agent turns on the first login meet a plan limit; titles, and everything on the second login, go through. */
@@ -211,10 +211,10 @@ describe.skipIf(!ready)("the pool fails a refused run over to the next login (re
         .filter((event) => event.type === "error")
         .map((event) => event.error.message)
       expect(ends, run.stdout.slice(-2_000)).toHaveLength(1)
-      const opens = Option.flatMap(Option.fromNullishOr(POOL_REFUSAL.exec(ends.join(""))?.[1]), DateTime.make)
+      const opens = Option.fromUndefinedOr(POOL_REFUSAL.exec(ends.join(""))?.[1]).pipe(Option.map((text) => Date.parse(text)), Option.filter(Number.isFinite))
       expect(Option.isSome(opens), ends.join("")).toBe(true)
       const encodedReset = Math.floor((now + HOUR) / 1000) * 1000
-      expect(Option.map(opens, DateTime.toEpochMillis)).toEqual(Option.some(encodedReset))
+      expect(opens).toEqual(Option.some(encodedReset))
     }),
     hangGuard("fork-turn"),
   )

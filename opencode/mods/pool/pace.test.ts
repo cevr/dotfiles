@@ -1,6 +1,6 @@
 // The pool's pace: whether a new agent may start now, from its accounts' readings.
 import { expect, test } from "bun:test"
-import { Array as Arr, DateTime, Option } from "effect"
+import { Array as Arr, Option } from "effect"
 import { dispatchPace, eligibleFor, type HoldReason, NO_INFLIGHT, poolPace, RequestHeld, requestHeldMessage } from "./pace.ts"
 import { carryOver, type QuotaReading } from "./quota.ts"
 import type { AccountStatus } from "./status.ts"
@@ -290,7 +290,7 @@ test("a title waits for ordinary room, and its hold names that catch-up time", (
   const catchUp = now + Math.ceil((0.7 - 0.545) * 7 * day / 0.99) + 1
   expect(Number(title.retryAt)).toBe(catchUp)
   expect(requestHeldMessage(new RequestHeld({ sessionID: "title-fixture", reason: title.reason, reasonCode: title.reasonCode, retryAt: title.retryAt })))
-    .toContain(`a title request does not spend the room a claimed reset gave back; it may go again at ${DateTime.formatIso(DateTime.makeUnsafe(catchUp))}`)
+    .toContain("a title request does not spend the room a claimed reset gave back; it may go again at Nov 5, 2026, 12:18:11 PM EST")
 })
 
 test("a push lifts the even line, not a model's required evidence or spent windows", () => {

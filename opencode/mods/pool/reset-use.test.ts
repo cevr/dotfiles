@@ -163,7 +163,7 @@ describe("use it or lose it", () => {
     expect(told.events[1]).toMatchObject({
       key,
       sessionID: "ses_root",
-      text: "Claimed the weekly reset on a: weekly 100% used of 100% → 0% used, next reset 2026-11-12 12:00Z (about to expire unused: it expires 2026-11-09 14:00Z, lost unused otherwise). No resets left this week.",
+      text: "Claimed the weekly reset on a: weekly 100% used of 100% → 0% used, next reset Nov 12, 2026, 7:00:00 AM EST (about to expire unused: it expires Nov 9, 2026, 9:00:00 AM EST, lost unused otherwise). No resets left this week.",
     })
     expect(told.state.resets[key]?.told).toStartWith("Claimed the weekly reset on a")
     expect(tags(run([[T0 + MINUTE, SettleClaim.make({ key, outcome: "cooldown", before: [] })]], claimed.state).events)).toEqual(["ClaimSettled"])
@@ -295,7 +295,7 @@ describe("a Fable reset", () => {
     expect(events[1]).toMatchObject({ reset: { kind: "fable", why: "forecast", key: expiringKey("claude", "a", "7d:Fable", fableWeek) } })
     const due = events[1]
     if (due?._tag !== "ClaimDue") throw new Error("not claimed")
-    expect(due.reset.buys).toContain("Fable week 100% used of 100% → 0% used, next reset 2026-11-15 12:00Z, weekly 60% used of 100% → ~10% used, next reset 2026-11-15 12:00Z (Fable's part 50% of the week (40%–60%) by the limit tally)")
+    expect(due.reset.buys).toContain("Fable week 100% used of 100% → 0% used, next reset Nov 15, 2026, 7:00:00 AM EST, weekly 60% used of 100% → ~10% used, next reset Nov 15, 2026, 7:00:00 AM EST (Fable's part 50% of the week (40%–60%) by the limit tally)")
   })
 
   /**
