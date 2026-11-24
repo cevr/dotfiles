@@ -6,7 +6,7 @@ import { HANG_GUARDS, isProductBudget } from "../tests/hang-guard.ts"
 import { WAIT_MS } from "../tests/wait.ts"
 import { calendarArgument, moduleText, type Program, type Statement, type TimingResolver, timingSources } from "./timing-syntax.ts"
 
-export { sourceFile, testFile, timingResolver } from "./timing-syntax.ts"
+export { readTimingInputs, sourceFile, testFile, timingResolver } from "./timing-syntax.ts"
 
 export interface Span {
   readonly start: number

@@ -1,11 +1,11 @@
 // Test timing: require the named runner cap and ban raw clock sources in test code.
-// @reads **/*.ts **/*.tsx **/*.mts **/*.cts **/*.js **/*.jsx **/*.mjs **/*.cjs ../workbox/test/** scripts/wall-clock-assertions.allow.json
+// @reads **/*.ts **/*.tsx **/*.mts **/*.cts **/*.js **/*.jsx **/*.mjs **/*.cjs **/*.json ../workbox/test/** ../package.json ../tsconfig*.json
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Console, Effect, FileSystem, Option, Path, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { expect, it } from "effect-bun-test"
 import { BUDGET_MS } from "../sim/seed.ts"
-import { inspectTiming, inspectTimingProject, legacyOwners, runnerBridges, sourceFile, timingModule, timingResolver } from "./test-timing.ts"
+import { inspectTiming, inspectTimingProject, legacyOwners, readTimingInputs, runnerBridges, timingModule, timingResolver } from "./test-timing.ts"
 import { measurementKey, unapprovedMeasurements } from "./timing-policy.ts"
 
 const ALLOW = "opencode/scripts/wall-clock-assertions.allow.json"
@@ -116,16 +116,6 @@ const newSites = (before: ReadonlyArray<string>, after: ReadonlyArray<string>) =
   })
 }
 
-const readSources = (root: string, files: ReadonlyArray<string>) => Effect.gen(function* () {
-  const fs = yield* FileSystem.FileSystem
-  const path = yield* Path.Path
-  const rows = yield* Effect.forEach(files, (file) => {
-    const absolute = path.join(root, file)
-    return Effect.map(Effect.when(fs.readFileString(absolute), fs.exists(absolute)), Option.map((text) => [file, text] as const))
-  })
-  return new Map(rows.flatMap(Option.toArray))
-})
-
 it.scopedLive("test timings use named runner caps, explicit measurement contracts, and no raw wall clock", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
@@ -136,9 +126,8 @@ it.scopedLive("test timings use named runner caps, explicit measurement contract
     const baseRows = old.rows
     const base = entries(baseRows)
     const declared = entries(candidate)
-    const files = (yield* git("ls-files", "-z", "--cached", "--others", "--exclude-standard")).split("\0").filter(sourceFile)
-    const texts = yield* readSources(root, files)
-    const resolve = timingResolver(path, yield* fs.realPath(root))
+    const { texts, metadata } = yield* readTimingInputs(root)
+    const resolve = timingResolver(path, yield* fs.realPath(root), metadata)
     const dynamic = new Set(candidate.filter((row) => row.group === "dynamic").map(({ file }) => file))
     const { counts, rejected, measurements } = survey(texts, resolve, dynamic)
     for (const row of candidate) {

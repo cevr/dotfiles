@@ -1,9 +1,11 @@
 // @reads test-timing.ts timing-syntax.ts ../tests/hang-guard.ts
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { expect, test } from "bun:test"
-import { Effect, FileSystem, Option, Path } from "effect"
+import { Effect, FileSystem, Match, Option, Path, Schema, Stream } from "effect"
 import { it } from "effect-bun-test"
-import { inspectTiming, inspectTimingProject, simulationBudgetModule, timingModule, timingResolver } from "./test-timing.ts"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { gitInit } from "../tests/git-repo.ts"
+import { inspectTiming, inspectTimingProject, readTimingInputs, simulationBudgetModule, timingModule, timingResolver } from "./test-timing.ts"
 import { measurementKey, unapprovedMeasurements } from "./timing-policy.ts"
 
 // The seam is a project of test-side files: reject at acquisition, even if
@@ -155,6 +157,115 @@ it.scopedLive.layer(BunServices.layer)("missing local imports fail at the edge r
   const transit = yield* projectProblems({ [file]: 'import "../mods/cache/bench";', [first]: 'export { scenario } from "./missing";' })
   for (const [path, issues] of [[file, direct], [first, transit]] as const)
     expect(issues.map((issue) => [issue.path, issue.reason])).toEqual([[path, "unresolvable local import in test-side code"]])
+}))
+
+const entry = "opencode/tests/edge.test.ts"
+const producer = "opencode/mods/producer.ts"
+const external = "opencode/node_modules/edge-external/index.ts"
+const forms = {
+  relative: (target: string) => `../${target.slice("opencode/".length)}`,
+  alias: () => "@edge/probe",
+  self: () => "edge-fixture/probe",
+}
+const locations = { tracked: producer, external, missing: "opencode/mods/missing.ts" }
+const quote = Schema.encodeSync(Schema.fromJsonString(Schema.Json))
+const runtimeCase = (specifier: string) =>
+  `import { scenario } from ${quote(specifier)}; scenario("runner oracle", () => new Promise(() => {}), 55);`
+const erasedCases = {
+  "import type": (name: string) => `import type { Count } from ${name};`,
+  "inline type import": (name: string) => `import { type Count } from ${name};`,
+  "export type": (name: string) => `export type { Count } from ${name};`,
+  "inline type export": (name: string) => `export { type Count } from ${name};`,
+}
+const edgeCases = {
+  runtime: runtimeCase,
+  ...Object.fromEntries(Object.entries(erasedCases).map(([kind, edge]) => [kind, (specifier: string) =>
+    `${edge(quote(specifier))} import { test } from "bun:test"; test("runner oracle", () => {});`])),
+}
+
+const runCommand = (cwd: string, program: string, args: ReadonlyArray<string>) => Effect.gen(function* () {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+  const child = yield* spawner.spawn(ChildProcess.make(program, args, { cwd, forceKillAfter: "3 seconds" }))
+  const output = yield* child.all.pipe(Stream.decodeText(), Stream.mkString)
+  return { code: Number(yield* child.exitCode), output }
+})
+const actualBun = (cwd: string) => runCommand(cwd, process.execPath, ["test", "./tests/edge.test.ts"])
+
+it.scopedLive.layer(BunServices.layer)("Bun's outcome distinguishes runtime local producer edges from erased and external imports", () => Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
+  for (const [form, spelling] of Object.entries(forms)) for (const [location, target] of Object.entries(locations)) {
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "timing-edge-oracle-" }).pipe(Effect.flatMap(fs.realPath))
+    const destination = `./${target.slice("opencode/".length)}`
+    // Package exports cannot point into node_modules. A legal local subpath forwards to it instead.
+    const exportTarget = Match.value(location).pipe(Match.when("external", () => "./forward.ts"), Match.orElse(() => destination))
+    const metadata = {
+      "opencode/package.json": quote({ name: "edge-fixture", exports: { "./probe": exportTarget } }),
+      "opencode/tsconfig.json": quote({ compilerOptions: { paths: { "@edge/*": [destination] } } }),
+    }
+    const reexport = 'export { test as scenario } from "bun:test"; export type Count = number;'
+    const forward = ["opencode/forward.ts", 'export { scenario } from "edge-external";'] as const
+    yield* writeProject(root, { ...metadata, [producer]: reexport, [external]: reexport, [forward[0]]: forward[1] })
+    for (const [kind, make] of Object.entries(edgeCases)) {
+      const label = `${form} / ${location} / ${kind}`
+      const source = make(spelling(target))
+      yield* writeProject(root, { [entry]: source })
+      const run = yield* actualBun(path.join(root, "opencode"))
+      const errors = [...inspectTimingProject(new Map([[producer, reexport], [entry, source], forward]), timingResolver(path, root, new Map(Object.entries(metadata))))]
+        .flatMap(([file, answer]) => answer.errors.map((issue) => ({ file, ...issue })))
+      const timedOut = run.output.includes("timed out after 55ms")
+      const missing = run.output.includes("Cannot find module")
+      if (kind !== "runtime") expect(run.code, label).toBe(0)
+      else {
+        expect(run.code, label).toBe(1)
+        expect(missing, label).toBe(location === "missing")
+        expect(timedOut, label).toBe(location !== "missing")
+      }
+      if (missing) expect(errors.map(({ file, rule }) => [file, rule]), label).toEqual([[entry, "R1"]])
+      else if (timedOut && location === "tracked") expect(errors.map(({ file, rule }) => [file, rule]), label).toEqual([[producer, "R1"]])
+      else expect(errors, label).toEqual([])
+    }
+  }
+}))
+
+it.scopedLive.layer(BunServices.layer)("Git-visible tracked and unstaged producers are followed, but an ignored producer is not", () => Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
+  const root = yield* fs.makeTempDirectoryScoped({ prefix: "timing-edge-git-" }).pipe(Effect.flatMap(fs.realPath))
+  const files = ["opencode/mods/tracked.ts", "opencode/mods/unstaged.ts", "opencode/mods/ignored.ts"]
+  const reexport = 'export { test as scenario } from "bun:test";'
+  const source = files.map((file) => `import ${quote(forms.relative(file))};`).join("\n")
+  yield* writeProject(root, { ".gitignore": "/opencode/mods/ignored.ts\n", [entry]: source,
+    ...Object.fromEntries(files.map((file) => [file, reexport])) })
+  yield* Effect.sync(() => gitInit(root, ["-q"]))
+  const staged = yield* runCommand(root, "git", ["add", "--", "opencode/mods/tracked.ts"])
+  expect(staged.code, staged.output).toBe(0)
+  const { texts, metadata } = yield* readTimingInputs(root)
+  const inspected = inspectTimingProject(texts, timingResolver(path, root, metadata))
+  expect([...inspected].flatMap(([file, result]) => result.errors.map(({ rule }) => [file, rule])).sort()).toEqual(
+    [["opencode/mods/tracked.ts", "R1"], ["opencode/mods/unstaged.ts", "R1"]],
+  )
+}))
+
+it.scopedLive.layer(BunServices.layer)("unresolved imports diagnose only the repository's declared aliases and package names", () => Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
+  const root = yield* fs.makeTempDirectoryScoped({ prefix: "timing-edge-intent-" }).pipe(Effect.flatMap(fs.realPath))
+  const metadata = {
+    "opencode/package.json": quote({ name: "edge-fixture", workspaces: ["mods/*"] }),
+    "opencode/mods/workspace/package.json": quote({ name: "@edge/workspace" }),
+    "opencode/tsconfig.json": quote({ extends: "./shared.json" }),
+    "opencode/shared.json": quote({ compilerOptions: { paths: { "@support/*": ["./mods/*"] } } }),
+  }
+  yield* writeProject(root, { ...metadata, [entry]: "" })
+  const resolver = timingResolver(path, root, new Map(Object.entries(metadata)))
+  for (const [specifier, rules] of [
+    ["@edge/workspace/absent", ["R1"]], ["@support/absent", ["R1"]], ["@unrelated/missing", []], ["@edge/workspace-extra", []],
+  ] as const) {
+    const source = `import ${quote(specifier)};`
+    const info = inspectTimingProject(new Map([[entry, source]]), resolver).get(entry)
+    expect(info?.errors.map(({ rule }) => rule), specifier).toEqual([...rules])
+  }
 }))
 
 test("other legal direct forms do not acquire a runner or a real clock as a value", () => {
