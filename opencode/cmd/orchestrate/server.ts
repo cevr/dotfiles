@@ -555,9 +555,14 @@ const recheckOf = (ctx: Plugin.Context, child: string) =>
   Effect.option(Effect.flatMap(Effect.fromOption(latchChild(child)), (sessionID) => ctx.session.get({ sessionID }))).pipe(
     Effect.map(Option.flatMap((info) => recheckFrom(readMark(info.metadata)))),
   )
+const ownerUnavailable = Schema.is(Schema.Union([
+  Schema.Struct({ type: Schema.Literal("rpc.unavailable") }),
+  // The simulation host reports unregistered RPC methods with this tag.
+  Schema.Struct({ _tag: Schema.Literal("RpcNotFoundError") }),
+]))
 const startObservation = (ctx: Plugin.Context, child: string) => ctx.rpc(CHILD_ROWS).read({ children: [child] }).pipe(
   Effect.match({
-    onFailure: (error) => ({ standalone: "type" in error && error.type === "rpc.unavailable", answer: Option.none<OwnerAnswer>() }),
+    onFailure: (error) => ({ standalone: ownerUnavailable(error), answer: Option.none<OwnerAnswer>() }),
     onSuccess: (reply) => ({
       standalone: false,
       answer: Option.flatMap(readRows(reply), ({ rows }) =>
