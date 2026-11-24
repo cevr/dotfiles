@@ -11,6 +11,7 @@ import type { CallLine } from "@dotfiles/opencode-orchestrate/call-line"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 import { Plugin } from "@opencode/plugin/effect"
 import { Array as Arr, Effect, Option, Schema } from "effect"
+import { live, make } from "../kernel/server.ts"
 import * as Plugins from "../../sim/plugins.ts"
 import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
@@ -97,6 +98,7 @@ const boot = (seed: number) =>
     yield* world.load(Plugins.orchestrate({ lines: calls }), { directory: WORK, options: { now: PIN } })
     yield* world.load(Plugins.wake(world), { directory: WORK, options: { backstop: "off" } })
     yield* world.load(pool(paces, () => world.now()), { directory: WORK })
+    yield* world.load(make(live), { directory: WORK, options: { codeOnly: false } })
     const root = yield* world.session(WORK)
     const said = (text: string) => () => world.messages(root).some((message) => message.type === "assistant" && message.text === text)
     yield* world.prompt(root, ASK)
