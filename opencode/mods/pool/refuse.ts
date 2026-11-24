@@ -14,7 +14,10 @@ export const HeldSend = Schema.Struct({
   retryAt: Schema.Finite,
 })
 export type HeldSend = typeof HeldSend.Type
-export const HeldSendAnswer = Schema.Struct({ hold: Schema.optionalKey(HeldSend) })
+export const HeldSendAnswer = Schema.Union([
+  Schema.Struct({ state: Schema.Literals(["held", "ended"]), hold: HeldSend }),
+  Schema.Struct({ state: Schema.optionalKey(Schema.Never), hold: Schema.optionalKey(Schema.Never) }),
+])
 export const readHeldSend = Schema.decodeUnknownOption(HeldSendAnswer)
 interface SendHook { readonly kind: string }
 const readStep = Schema.decodeUnknownOption(Schema.Struct({ id: Schema.String }))

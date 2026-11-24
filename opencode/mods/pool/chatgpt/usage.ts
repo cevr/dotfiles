@@ -16,7 +16,7 @@
 // is no reading: the pace fails open, never holds. No token is kept or logged.
 import { Cause, Clock, Effect, PubSub, Schema, Stream } from "effect"
 import type { QuotaRpc } from "../opencode/quota.ts"
-import { accountWide, type ClaimAnswer, type QuotaReading, type QuotaWindow, type ResetCredit } from "../quota.ts"
+import { accountWide, USAGE_TIMEOUT_MS, type ClaimAnswer, type QuotaReading, type QuotaWindow, type ResetCredit } from "../quota.ts"
 
 export const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 
@@ -60,9 +60,6 @@ export const claimOf = (status: number, body: unknown): ClaimAnswer => {
 /** A held reading younger than this answers `reading` without asking the endpoint again. */
 export const FRESH_MS = 60_000
 
-/** How long the usage endpoint has to answer. */
-const TIMEOUT_MS = 10_000
-
 /** What a read of the usage endpoint needs of one login: its access token and its ChatGPT account. */
 export interface Login {
   readonly access: string
@@ -75,13 +72,17 @@ const finite = (value: unknown): value is number => typeof value === "number" &&
 /** The pool's name for a window of `minutes`: the 5-hour and the weekly windows by their usual names. */
 export const windowName = (minutes: number) => (minutes === 300 ? "5h" : minutes === 10_080 ? "7d" : `${minutes}m`)
 
+// Codex reports a whole-second floor, not the instant the provider admits.
+// Use the next second plus the one-ms margin used for a pace catch-up.
+const resetAfter = (seconds: number) => (Math.floor(seconds) + 1) * 1_000 + 1
+
 const window = (usedPercent: number, minutes: number | undefined, resetSeconds: number | undefined): QuotaWindow | undefined =>
   minutes === undefined || minutes <= 0
     ? undefined
     : {
         name: windowName(minutes),
         utilization: Math.min(Math.max(usedPercent / 100, 0), 1),
-        ...(resetSeconds === undefined ? {} : { resetAt: resetSeconds * 1000 }),
+        ...(resetSeconds === undefined ? {} : { resetAt: resetAfter(resetSeconds) }),
       }
 
 /**
@@ -239,7 +240,7 @@ export const make = (options: Options) =>
         const response = yield* Effect.tryPromise((signal) =>
           send(url, {
             headers: headersOf(login),
-            signal: AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]),
+            signal: AbortSignal.any([signal, AbortSignal.timeout(USAGE_TIMEOUT_MS)]),
           }),
         )
         if (!response.ok) return undefined
