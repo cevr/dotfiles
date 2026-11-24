@@ -43,7 +43,7 @@ import { definitions, ORCHESTRATOR, orchestrator } from "@dotfiles/opencode-orch
 import { KNOWLTON, rest } from "@dotfiles/opencode-orchestrate/sabbath"
 import { type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
 import Orchestrate, { CODEX_BUDGET, DEFAULT_LOG, Options, SKILL_DIR, SUBAGENTS, type StepHostSession, stepSessionOf, UNIT_LOG, withTaskFork } from "./server.ts"
-import { stamp } from "../../tests/hang-guard.ts"
+import { hangGuard, stamp } from "../../tests/hang-guard.ts"
 
 /** This test file's folder. */
 const HERE = import.meta.dir
@@ -413,7 +413,7 @@ describe("the guard", () => {
         })
         expect(plugin.logged().slice(5).map((line) => (JSON.parse(line) as { reason: string }).reason)).toEqual(["kept", "continued"])
       }),
-    ))
+    ), hangGuard("short-fixture"))
 
   test("role work asked of a general agent runs as its described role, at the role's effort, and its line says why", () =>
     scenario(
@@ -454,7 +454,7 @@ describe("the guard", () => {
         expect(yield* open.open({ ...latch, id: "w000001", kind: "latch", directory: "/work", setAt: retryAt - 600_000 })).toEqual({ outcome: "opened" })
         expect(open.ran).toMatchObject([{ input: { sessionID: "child", model: "anthropic/claude-opus#high", prompt: expect.stringContaining("go on") } }])
       }),
-    ))
+    ), hangGuard("short-fixture"))
 
   test("a worker at max, asked or inherited, runs at its model's default, logged and told to the parent; a mechanical one runs at max", () =>
     scenario(
@@ -981,7 +981,7 @@ describe("Opus first, Codex second", () => {
         yield* verifyReopen(plugin, entry, followUp)
         expect(asked).toEqual([])
       }),
-    )))
+    )), hangGuard("short-fixture"))
 
   test("Claude's pace admits it: it runs on Opus at the role's effort, and Codex is never asked", () =>
     scenario(
@@ -1027,7 +1027,7 @@ describe("Opus first, Codex second", () => {
         expect(output && Schema.encodeUnknownSync(output)(answer.output)).toEqual(answer.output)
         expect((yield* plugin.runTool(call.input)).content).toBe("working")
       }),
-    ))
+    ), hangGuard("short-fixture"))
 
   test("Codex never implements: a held implementor latches on Opus, mechanical or not, and Codex is never asked", () =>
     scenario(
@@ -1150,7 +1150,7 @@ describe("Opus first, Codex second", () => {
         expect((yield* plugin.call("subagent", "root", { agent: "verifier", prompt: "x" })).input).toMatchObject({ model: "anthropic/claude-opus#medium", sessionID: "ses_latched2" })
         expect(asked).toEqual([])
       }),
-    ))
+    ), hangGuard("short-fixture"))
 
   test("a model the call names is kept: held, it latches on it, and Codex is never asked", () =>
     scenario(
@@ -1179,7 +1179,7 @@ describe("Opus first, Codex second", () => {
         yield* both.call("subagent", "root", { agent: "planner", model: "claude-opus#high", prompt: "x" })
         expect(both.kept[0]!.context).toEqual({ reason: "model-dropped", models: { primary: "anthropic/claude-opus", fallback: "openai/gpt-6.1-sol#high" } })
       }),
-    ))
+    ), hangGuard("short-fixture"))
 
   test("with no Codex provider, or none offered, a held start latches on Opus as before", () =>
     scenario(
