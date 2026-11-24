@@ -260,7 +260,7 @@ test("a title waits for ordinary room, and its hold names that catch-up time", (
   expect(title.ok).toBe(false)
   if (title.ok) return
   const catchUp = now + Math.ceil((0.7 - 0.545) * 7 * day / 0.99) + 1
-  expect(title.retryAt).toBe(catchUp)
+  expect(Number(title.retryAt)).toBe(catchUp)
   expect(requestHeldMessage(new RequestHeld({ sessionID: "title-fixture", reason: title.reason, reasonCode: title.reasonCode, retryAt: title.retryAt })))
     .toContain(`a title request does not spend the room a claimed reset gave back; it may go again at ${DateTime.formatIso(DateTime.makeUnsafe(catchUp))}`)
 })
@@ -336,7 +336,7 @@ test("agents started in the fleet count until they settle, so a wave holds the n
       "the spend-evenly line is 54.5% used of 100% now, and the start holds past it",
   )
   // It opens when the older start settles, not later: by then its spend is in the readings.
-  expect(held.retryAt).toBe(now + 7 * minute + 1)
+  expect(Number(held.retryAt)).toBe(now + 7 * minute + 1)
   // Without readings the starts cannot be weighed: the pace stays unmeasured and open.
   expect(poolPace([{ ...account(0.54), reading: { at: now, windows: [] } }], now, inflight([now, now, now]))).toMatchObject({ ok: true, measured: false })
 })

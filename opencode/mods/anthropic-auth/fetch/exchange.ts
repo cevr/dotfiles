@@ -117,9 +117,10 @@ export const pooledRequest = (
     const original = event.request
     const headers = new Headers(original.headers)
     headers.delete(HANDOFF_HEADER)
-    const unavailable = () => requestHeldMessage(new RequestHeld({
-      sessionID: event.sessionID, ...storeHeld(originalExchange.clock.currentTimeMillisUnsafe() + HOLD_STORE_RETRY_MS),
-    }))
+    const unavailable = () => {
+      const now = originalExchange.clock.currentTimeMillisUnsafe()
+      return requestHeldMessage(new RequestHeld({ sessionID: event.sessionID, ...storeHeld(now + HOLD_STORE_RETRY_MS, now) }))
+    }
     for (let attempt = 0; attempt < 16; attempt++) {
       const picked = Option.fromNullishOr(headers.get(CREDENTIAL_HEADER))
       const owner = current()

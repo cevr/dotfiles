@@ -18,6 +18,7 @@ import {
   RecordStep,
   RefuseRequest,
   ReleaseRun,
+  ReserveRecovery,
   restored,
   TakeReading,
   type AccountPoolState,
@@ -28,7 +29,7 @@ import { answeredOn, held, lastPlacedAt, placedOn, sessionAccount, status, type 
 import * as Burn from "./burn.ts"
 import * as FleetModel from "./fleet.ts"
 import { dispatchPace, evidenceGap, needsSignIn, nextRetryAt, poolPace, refreshEvidence, RequestHeld, requiredScopes, storeHeld, UNPOOLED, UNREAD_RETRY_MS, type DispatchPolicy, type Pace } from "./pace.ts"
-import { holdRecheckAt } from "./hold.ts"
+import { holdRecheckAt, type RecoveryAttempt, UNREADABLE_HOLD_MS } from "./hold.ts"
 import { limitsLine, weeklyRatios, type Tally, type Tokens } from "./limits.ts"
 import type { AccountStatus } from "./status.ts"
 import type { ClaimAnswer, QuotaReading, QuotaWindow } from "./quota.ts"
@@ -323,7 +324,7 @@ export const layer = (config: Config) =>
        */
       const send = (pool: SynchronizedRef.SynchronizedRef<AccountPoolState>, id: PoolId, command: Command) => {
         const changesHolds = Predicate.isTagged(command, "TakeReading") || Predicate.isTagged(command, "RefuseRequest") ||
-          Predicate.isTagged(command, "PruneLedger") || Predicate.isTagged(command, "ClearHold")
+          Predicate.isTagged(command, "PruneLedger") || Predicate.isTagged(command, "ClearHold") || Predicate.isTagged(command, "ReserveRecovery")
         const applyCommand = SynchronizedRef.modifyEffect(pool, (state) =>
           Effect.gen(function* () {
             let current = state
@@ -331,7 +332,10 @@ export const layer = (config: Config) =>
             if (changesHolds) {
               const known = yield* Effect.option(ledger.holds(id))
               if (Option.isSome(known)) current = { ...state, holds: known.value }
-              else shared = Option.some("unknown")
+              else {
+                if (Predicate.isTagged(command, "ReserveRecovery")) return [{ events: [], shared }, state] as const
+                shared = Option.some("unknown")
+              }
             }
             const events = yield* decider.decide(current, command, yield* Clock.currentTimeMillis)
             return [{ events, shared }, fold(decider, events, current)] as const
@@ -380,14 +384,29 @@ export const layer = (config: Config) =>
         })))
 
       /** Take a reading in, and mark the login as needing a sign-in exactly when the reading says so. */
-      const take = ({ id, pool }: Pooled, credentialID: string, reading: QuotaReading | undefined, freshUsage = false) =>
+      const take = ({ id, pool }: Pooled, credentialID: string, reading: QuotaReading | undefined, freshUsage = false, recovery?: RecoveryAttempt) =>
         reading === undefined
           ? Effect.void
-          : apply(pool, id, TakeReading.make({ credentialID, reading, freshUsage })).pipe(
+          : apply(pool, id, TakeReading.make({ credentialID, reading, freshUsage,
+              ...Option.match(Option.fromUndefinedOr(recovery), { onNone: () => ({}), onSome: (recovery) => ({ recovery }) }),
+            })).pipe(
               Effect.andThen(logins.markSignIn(id, credentialID, reading.refusal?.kind === "signin")),
               Effect.andThen(limits?.observe(id, credentialID, reading) ?? Effect.void),
               Effect.andThen(observeClaim(id, credentialID, reading)),
             )
+
+      const readUsage = (where: Pooled, credentialID: string, recovery: boolean) => {
+        if (!recovery) return quota.usage(where.id, credentialID).pipe(Effect.flatMap((reading) => take(where, credentialID, reading, true)))
+        return Effect.gen(function* () {
+          // Reserve the appointment in the shared ledger before leaving its lock for provider I/O.
+          const events = yield* apply(where.pool, where.id, ReserveRecovery.make({ credentialID }))
+          const reserved = Arr.findFirst(events, (event) => Predicate.isTagged(event, "RecoveryScheduled"))
+          if (Option.isNone(reserved)) return
+          const at = yield* Clock.currentTimeMillis
+          const usage = yield* quota.usage(where.id, credentialID).pipe(Effect.timeoutOption(UNREADABLE_HOLD_MS))
+          if (Option.isSome(usage)) yield* take(where, credentialID, usage.value, true, { at, until: holdRecheckAt(reserved.value.hold) })
+        })
+      }
 
       /** Any directory can offer a reading to the pending claim on the shared host ledger. */
       const resetProvider = (pool: string) =>
@@ -465,8 +484,9 @@ export const layer = (config: Config) =>
       const confirmed = Effect.fn("Pool.confirmed")(function* (input: PlaceInput, candidate: string) {
         const where = Option.fromUndefinedOr(pooled(input.providerID))
         if (Option.isNone(where)) return false
-        const current = yield* currentHolds(where.value).pipe(Effect.mapError(({ retryAt }) => new RequestHeld({
-          sessionID: input.sessionID, ...storeHeld(retryAt),
+        const current = yield* currentHolds(where.value).pipe(Effect.catch((failure) => Effect.gen(function* () {
+          const now = yield* Clock.currentTimeMillis
+          return yield* new RequestHeld({ sessionID: input.sessionID, ...storeHeld(failure.retryAt, now) })
         })))
         const now = yield* Clock.currentTimeMillis
         return (input.keepalive === true || placedOn(current, input.sessionID, input.kind) === candidate) && !held(current, candidate, now) &&
@@ -662,14 +682,14 @@ export const layer = (config: Config) =>
         (where) =>
           Effect.gen(function* () {
             const listed = yield* Effect.option(refresh(where, true))
-            for (const credentialID of (yield* SynchronizedRef.get(where.pool)).credentials)
-              yield* take(where, credentialID, yield* quota.usage(where.id, credentialID), true)
             // On a successful listing, the sweep's existing prune also
             // cleans up late retired rows; don't scan a second time in refresh.
             const state = yield* SynchronizedRef.get(where.pool)
             yield* apply(where.pool, where.id, PruneLedger.make(Option.match(listed, {
               onNone: () => ({}), onSome: () => ({ listed: [...state.credentials] }),
             })))
+            const { credentials, holds } = yield* SynchronizedRef.get(where.pool)
+            for (const credentialID of credentials) yield* readUsage(where, credentialID, holds[credentialID]?.kind === "record-unreadable")
           }),
         { discard: true },
       ).pipe(
@@ -1203,7 +1223,7 @@ export const layer = (config: Config) =>
             onSome: (words) => ({
               ...paced,
               reason: `${paced.reason}; ${words}`,
-              retryAt: Math.min(paced.retryAt, now + UNREAD_RETRY_MS),
+              retryAt: nextRetryAt(now, [paced.retryAt, now + UNREAD_RETRY_MS]),
             }),
           }),
         )
@@ -1268,7 +1288,7 @@ export const layer = (config: Config) =>
         return {
           ...answer,
           reason: `${answer.reason}; the push "${goal}" claims one of its ${left} approved reset${left === 1 ? "" : "s"}`,
-          retryAt: Math.min(answer.retryAt, now + PUSH_RETRY_MS),
+          retryAt: nextRetryAt(now, [answer.retryAt, now + PUSH_RETRY_MS]),
         }
       })
 
@@ -1283,23 +1303,24 @@ export const layer = (config: Config) =>
         const paced = poolOf(measuredBy(config, providerID))
         if (paced === undefined) return UNPOOLED
         const authority = yield* Effect.result(ledger.withHolds(currentHolds(paced)))
-        if (authority._tag === "Failure") return storeHeld(authority.failure.retryAt)
+        if (authority._tag === "Failure") return storeHeld(authority.failure.retryAt, yield* Clock.currentTimeMillis)
         yield* refresh(paced, false)
         const fleet = yield* fleetStore.read
         // A peer's newer readings of the same logins count here too, whichever instance on the host read the peer.
         yield* mergeReports(fleet)
         for (const credentialID of (yield* SynchronizedRef.get(paced.pool)).credentials) yield* pull(paced, credentialID)
-        if (dispatch === true || Option.isSome(Option.fromUndefinedOr(model))) {
+        const dispatches = dispatch === true || Option.isSome(Option.fromUndefinedOr(model))
+        const current = yield* SynchronizedRef.get(paced.pool)
+        if (dispatches || Object.values(current.holds).some((hold) => hold.kind === "record-unreadable")) {
           const before = yield* Clock.currentTimeMillis
-          const listed = status(yield* SynchronizedRef.get(paced.pool), before, rules)
+          const listed = status(current, before, rules)
           const required = requiredScopes(listed, model)
           const unread = listed.filter((account) => Option.match(Option.fromUndefinedOr(account.hold), {
-            onSome: (hold) => (hold.kind === "signin" || hold.kind === "record-unreadable") && holdRecheckAt(hold) <= before,
-            onNone: () => Option.exists(evidenceGap(account, before, required), (gap) => refreshEvidence(gap, before)),
+            onSome: (hold) => (hold.kind === "record-unreadable" || (dispatches && hold.kind === "signin")) && holdRecheckAt(hold) <= before,
+            onNone: () => dispatches && Option.exists(evidenceGap(account, before, required), (gap) => refreshEvidence(gap, before)),
           }))
-          const read = Effect.forEach(unread, (account) => quota.usage(paced.id, account.credentialID).pipe(
-            Effect.flatMap((reading) => take(paced, account.credentialID, reading, true)),
-          ), { discard: true, concurrency: unread.length })
+          const read = Effect.forEach(unread, (account) => readUsage(paced, account.credentialID, account.hold?.kind === "record-unreadable"),
+            { discard: true, concurrency: unread.length })
           // A quote leaves time for the caller's RPC. Dispatch has its own
           // overall deadline; it decides on all the outcomes in by that time.
           const deadline = Option.getOrElse(Option.filter(Option.some(DISPATCH_EVIDENCE_MS), () => work === "existing-request"), () => QUOTE_EVIDENCE_MS)

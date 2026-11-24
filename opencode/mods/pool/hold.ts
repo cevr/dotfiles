@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import { Option, Schema } from "effect"
 import { RefusalKind } from "./quota.ts"
 
 /** No recovered refusal is allowed to extend beyond a weekly window. */
@@ -23,6 +23,19 @@ export type Hold = typeof Hold.Type
 
 /** Pace names precisely the time at which dispatch will seek new evidence. */
 export const holdRecheckAt = (hold: Hold): number => hold.until
+
+declare const futureRetry: unique symbol
+/** Constructed only by comparing an appointment to the decision's clock. */
+export type FutureRetryAt = number & { readonly [futureRetry]: true }
+const isFutureRetry = (now: number) => (at: number): at is FutureRetryAt =>
+  Number.isFinite(at) && at > now && at <= LAST_EPOCH_MS
+export const futureRetryAt = (now: number, at: number): Option.Option<FutureRetryAt> =>
+  Option.liftPredicate(at, isFutureRetry(now))
+
+/** The next attempt after a due recheck was reserved but evidence is still missing. */
+export const pendingRecoveryAt = (now: number): number => clampHoldEnd(now + UNREADABLE_HOLD_MS, now)
+export const RecoveryAttempt = Schema.Struct({ at: HoldTime, until: HoldTime })
+export type RecoveryAttempt = typeof RecoveryAttempt.Type
 
 /** A known authentication/usage condition is rechecked with authenticated evidence, not guessed at. */
 export const recoveryDelay = (kind: RefusalKind): number => {

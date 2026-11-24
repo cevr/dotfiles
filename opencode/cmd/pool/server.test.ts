@@ -572,7 +572,7 @@ test("R9-A a future kind without a readable end permits one 429, not a second re
     expect(yield* refusalOf(plugin.request())).toContain("hold record is unreadable")
     expect(state.storage.get("anthropic/hold/cred-a")).toMatchObject({ raw })
     yield* TestClock.adjust(LedgerLive.UNREADABLE_HOLD_MS)
-    const at = yield* Clock.currentTimeMillis
+    const at = LedgerLive.UNREADABLE_HOLD_MS
     state.readings.set("cred-a", { ...quiet(at), usage: { at, samples: 1 } })
     expect(yield* plugin.request()).toBe("cred-a")
     expect(yield* plugin.handoff("cred-a")).toEqual(Handoff.cases.Send.make({}))
@@ -608,9 +608,41 @@ test("an unreadable sign-in stays held until an authenticated usage sample", () 
     yield* TestClock.adjust(30 * 24 * HOUR)
     expect(yield* refusalOf(plugin.request("ses_unauthenticated"))).toContain("hold record is unreadable")
     expect(state.storage.get(key)).toMatchObject({ raw })
-    const at = yield* Clock.currentTimeMillis
+    yield* TestClock.adjust(LedgerLive.UNREADABLE_HOLD_MS)
+    const at = 30 * 24 * HOUR + LedgerLive.UNREADABLE_HOLD_MS
     state.readings.set("cred-a", { ...quiet(at), usage: { at, samples: 1 } })
     expect(yield* plugin.request("ses_authenticated")).toBe("cred-a")
+    expect(state.storage.has(key)).toBe(false)
+  })))
+
+test("R10-6 two copies reserve just one usage read, then keep the later refusal and the raw record", () =>
+  onTestClock(Effect.gen(function* () {
+    const state = world()
+    state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
+    const raw = { kind: "overloaded", at: 0, untilMs: 2 * HOUR }
+    const key = "anthropic/hold/cred-a"
+    state.storage.set(key, raw)
+    const one = yield* start({ sweepMinutes: 0 }, state, live())
+    const two = yield* start({ sweepMinutes: 0 }, state, live())
+    const due = LedgerLive.UNREADABLE_HOLD_MS
+    const end = due + 10 * MINUTE
+    yield* TestClock.setTime(due)
+    state.readings.set("cred-a", { ...quiet(due), usage: { at: due, samples: 1 }, refusal: { kind: "rate-limit", until: end } })
+    const reads = state.holdAccess.usage
+    const replies = yield* Effect.forEach([one, two, one, two, one], (copy, index) =>
+      refusalOf(copy.request(`ses_wait_${index}`)), { concurrency: "unbounded" })
+    expect(replies.every((reply) => reply.includes("hold record is unreadable"))).toBe(true)
+    expect(state.holdAccess.usage - reads).toBe(1)
+    expect(state.storage.get(key)).toMatchObject({ kind: "record-unreadable", until: end, raw })
+    expect(yield* two.pace("anthropic")).toMatchObject({ ok: false, retryAt: end })
+    expect(Schema.is(Handoff.cases.Held)(yield* two.handoff("cred-a"))).toBe(true)
+    yield* TestClock.setTime(end - 1)
+    expect(yield* one.pace("anthropic")).toMatchObject({ ok: false, retryAt: end })
+    expect(state.holdAccess.usage - reads).toBe(1)
+    yield* TestClock.setTime(end)
+    state.readings.set("cred-a", { ...quiet(end), usage: { at: end, samples: 1 } })
+    expect(yield* two.request("ses_reopened")).toBe("cred-a")
+    expect(state.holdAccess.usage - reads).toBe(2)
     expect(state.storage.has(key)).toBe(false)
   })))
 
@@ -1487,10 +1519,9 @@ describe("on the live adapters", () => {
       { mode: 0o600 },
     )
     const state = world()
-    const at = stamp()
-    const hold = { kind: "usage-limit" as const, until: at + HOUR, at }
+    const hold = { kind: "usage-limit" as const, until: HOUR, at: 0 }
     state.storage.set(`anthropic/hold/${LEGACY_PREFIX}work`, hold)
-    return scenario(
+    return onTestClock(
       Effect.gen(function* () {
         const plugin = yield* start({ sweepMinutes: 0, sources: [{ kind: "store", dir }] }, state, live())
         // The held login is passed over.

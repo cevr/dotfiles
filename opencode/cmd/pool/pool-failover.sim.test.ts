@@ -7,7 +7,10 @@
 // login answers an agent turn with a plan-limit 429; the run must finish on
 // the second, and the provider must have seen exactly that. The seed varies
 // how long each answer streams, the order of fibers and the tokens.
-import { Config, Console, DateTime, Effect, Option } from "effect"
+import { Config, Console, DateTime, Effect, Option, Schema } from "effect"
+import { UNREADABLE_HOLD_MS } from "@dotfiles/opencode-pool/hold"
+import { Pace } from "@dotfiles/opencode-pool/pace"
+import { quotaProtocol, type QuotaReading } from "@dotfiles/opencode-pool/quota"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Provider from "../../sim/provider.ts"
 import { below, generator, line } from "../../sim/runtime.ts"
@@ -23,6 +26,59 @@ const WORK = "/scratch/work"
 const RUN_LIMIT_MS = 120_000
 const OTHER = "/scratch/other"
 const POOL_STORE = "dotfiles-opencode.pool"
+const decodePace = Schema.decodeUnknownSync(Pace)
+
+seeded("a waiter rechecks a damaged hold only at its distinct retry times over thirty minutes", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const minute = 60_000
+    const accounts = Provider.accounts(seed, ["first"])
+    const world = World.make({
+      seed, script: () => World.say(""),
+      integrations: { anthropic: Object.entries(accounts).map(([id, account]) => ({ id, label: id, ...account, expires: World.START + HOUR })) },
+    })
+    const start = world.now()
+    const first = start + UNREADABLE_HOLD_MS
+    const end = start + 30 * minute
+    const reads: Array<number> = []
+    yield* world.load({
+      id: "sim.recovery-reader",
+      effect: (ctx) => ctx.rpc.register(quotaProtocol("anthropic"), {
+        reading: () => Effect.succeed({ reading: {} }),
+        claim: () => Effect.succeed({ outcome: "failed" }),
+        usage: () => Effect.sync(() => {
+          const at = world.now()
+          reads.push(at)
+          const reading: QuotaReading = {
+            at, usage: { at, samples: 1 }, windows: [
+              { name: "5h", utilization: 0, resetAt: start + HOUR },
+              { name: "7d", utilization: 0, resetAt: start + 5 * 24 * HOUR },
+            ],
+            ...Option.match(Option.filter(Option.some(end), (until) => until > at), {
+              onNone: () => ({}), onSome: (until) => ({ refusal: { kind: "rate-limit" as const, until } }),
+            }),
+          }
+          return { reading }
+        }),
+      }).pipe(Effect.orDie, Effect.asVoid),
+    }, { directory: WORK })
+    yield* world.load({
+      id: POOL_STORE,
+      effect: (ctx) => ctx.storage.set("anthropic/hold/first", { kind: "future-kind", at: start, until: first }).pipe(Effect.orDie),
+    }, { directory: OTHER })
+    yield* world.load(Plugins.pool(), { directory: WORK, options: { sweepMinutes: 0, limitsFile: "/nonexistent/sim/limits.json" } })
+    const wakeups: Array<number> = []
+    for (let turn = 0; turn <= 2; turn++) {
+      const pace = decodePace(yield* world.rpc(POOL_STORE, "pace", { providerID: "anthropic", dispatch: true }))
+      if (pace.ok) break
+      expect(pace.retryAt).toBeGreaterThan(world.now())
+      yield* world.advance(pace.retryAt - world.now())
+      wakeups.push(world.now())
+    }
+    expect(wakeups).toEqual([first, end])
+    expect(reads).toEqual(wakeups)
+    expect(yield* world.rpc(POOL_STORE, "pace", { providerID: "anthropic", dispatch: true })).toMatchObject({ ok: true, eligible: ["first"] })
+  }),
+)
 
 /** Agent turns on the first login meet a plan limit; titles, and everything on the second login, go through. */
 const firstRefused =

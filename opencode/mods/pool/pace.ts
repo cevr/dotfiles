@@ -12,7 +12,7 @@
 // next start on any host before the readings show it.
 import { Array as Arr, DateTime, Match, Option, Schema } from "effect"
 import type { RequestKind } from "./accounts.ts"
-import { holdRecheckAt } from "./hold.ts"
+import { futureRetryAt, holdRecheckAt, pendingRecoveryAt, type FutureRetryAt } from "./hold.ts"
 import { DEFINED_MODEL_WINDOWS, limitsModel, SCOPE_REPORT_SAMPLES, scopeOf } from "./quota.ts"
 import type { AccountStatus } from "./status.ts"
 import { byCount, holdsAt, iso, signInReason, tryAgainAt, used } from "./usage-text.ts"
@@ -76,12 +76,13 @@ export const Pace = Schema.Union([
   Schema.Struct({ ...paceFields, ok: Schema.Literal(true), retryAt: Schema.optionalKey(Schema.Never) }),
   Schema.Struct({ ...paceFields, ok: Schema.Literal(false), retryAt: Schema.Finite, reasonCode: HoldReason, signIn: Schema.optionalKey(Schema.Array(Schema.String)) }),
 ])
-export type Pace = typeof Pace.Type
-type HeldPace = Extract<Pace, { readonly ok: false }>
+export type WirePace = typeof Pace.Type
+type HeldPace = Omit<Extract<WirePace, { readonly ok: false }>, "retryAt"> & { readonly retryAt: FutureRetryAt }
+export type Pace = Extract<WirePace, { readonly ok: true }> | HeldPace
 
-export const storeHeld = (retryAt: number): HeldPace => ({
+export const storeHeld = (retryAt: number, now: number): HeldPace => ({
   ok: false, measured: false, admission: "held", eligible: [], reasonCode: "store-unavailable",
-  reason: "the pool could not confirm its current holds; retry the hold store read", retryAt,
+  reason: "the pool could not confirm its current holds; retry the hold store read", retryAt: nextRetryAt(now, [retryAt]),
 })
 
 /** A sign-in is an account prerequisite, not a quota deadline; its date only schedules a recheck. */
@@ -93,10 +94,10 @@ const unreadableAt = (accounts: ReadonlyArray<AccountStatus>) => accounts.flatMa
   if (Option.isNone(damaged)) return []
   return [holdRecheckAt(damaged.value)]
 })
-const unreadablePace = (times: ReadonlyArray<number>): HeldPace => ({
+const unreadablePace = (now: number, times: ReadonlyArray<number>): HeldPace => ({
   ok: false, measured: false, admission: "held", eligible: [], reasonCode: "record-unreadable",
   reason: "a login's hold record is unreadable; the pool checks fresh authenticated usage after its recheck time",
-  retryAt: Math.min(...times),
+  retryAt: nextRetryAt(now, times),
 })
 
 const fromAccountHolds = (accounts: ReadonlyArray<AccountStatus>, now: number, required: ReadonlyArray<string> = []): Option.Option<HeldPace> => {
@@ -105,7 +106,7 @@ const fromAccountHolds = (accounts: ReadonlyArray<AccountStatus>, now: number, r
   if (signIn.length === accounts.length) return Option.some({
     ok: false, measured: false, admission: "held", eligible: [], reasonCode: "account-held", signIn,
     reason: `${signInReason(signIn)}; time alone will not clear this hold`,
-    retryAt: now + UNREAD_RETRY_MS,
+    retryAt: nextRetryAt(now, []),
   })
   const ends: Array<number> = []
   const unreadable = unreadableAt(accounts)
@@ -116,7 +117,7 @@ const fromAccountHolds = (accounts: ReadonlyArray<AccountStatus>, now: number, r
     if (Option.isSome(hold)) ends.push(hold.value.until)
   }
   if (ends.length + unreadable.length + signIn.length !== accounts.length) return Option.none()
-  if (unreadable.length > 0 && Math.min(...unreadable) <= Math.min(...ends)) return Option.some(unreadablePace(unreadable))
+  if (unreadable.length > 0 && Math.min(...unreadable) <= Math.min(...ends)) return Option.some(unreadablePace(now, unreadable))
   return Option.some({
     ok: false, measured: true, admission: "held", eligible: [], reasonCode: "account-held", signIn: [],
     reason: "all pool accounts are held", retryAt: nextRetryAt(now, ends),
@@ -382,10 +383,9 @@ export function poolPace(
 }
 
 /** The first future event worth rechecking; absent usable events, ask for a new reading. */
-export const nextRetryAt = (now: number, candidates: ReadonlyArray<number>): number => {
-  const future = candidates.filter((at) => at > now && Option.isSome(DateTime.make(at)))
-  if (future.length === 0) return now + UNREAD_RETRY_MS
-  return Math.min(...future)
+export const nextRetryAt = (now: number, candidates: ReadonlyArray<number>): FutureRetryAt => {
+  const future = candidates.filter((at) => Option.isSome(futureRetryAt(now, at)))
+  return Option.getOrThrow(Option.orElse(futureRetryAt(now, Math.min(...future)), () => futureRetryAt(now, pendingRecoveryAt(now))))
 }
 
 /** The account-wide week of an account's reading when it was read in the last STALE_AFTER_MS (a window carried over by its own time) and its reset is a valid one. */
@@ -596,7 +596,7 @@ export function dispatchPace(
   const damaged = unreadableAt(accounts)
   const waitForLoginOrRepair = [
     ...waitForLogin,
-    ...Option.toArray(Option.map(Arr.head(damaged), () => unreadablePace(damaged))),
+    ...Option.toArray(Option.map(Arr.head(damaged), () => unreadablePace(now, damaged))),
   ]
   if (fresh.length === 0 && Option.isSome(unreadHold)) return selectHold(unreadHold.value, waitForLoginOrRepair)
   const alternatives = [...Option.toArray(unreadHold), ...waitForLoginOrRepair]
@@ -628,7 +628,7 @@ export function dispatchPace(
   )
   // An unmeasured pace is no evidence of room at a dispatch: held, and asked again by the next sweep.
   if (!answer.measured) return selectHold({
-    ok: false, measured: false, admission: "held", reasonCode: "logins-unavailable", retryAt: now + UNREAD_RETRY_MS, eligible: [],
+    ok: false, measured: false, admission: "held", reasonCode: "logins-unavailable", retryAt: nextRetryAt(now, []), eligible: [],
     reason: "the pool lists no logins; add or restore a login before trying again",
   }, alternatives)
   if (answer.admission !== "backed") return { ...answer, eligible }

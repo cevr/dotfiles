@@ -693,7 +693,7 @@ export const make = (
       const decodeHandoff = Schema.decodeUnknownOption(HandoffInput)
       const handoffUnavailable = (sessionID: string) => Clock.currentTimeMillis.pipe(Effect.map((now) =>
         Handoff.cases.Held.make({ message: requestHeldMessage(new RequestHeld({
-          sessionID, ...storeHeld(now + HOLD_STORE_RETRY_MS),
+          sessionID, ...storeHeld(now + HOLD_STORE_RETRY_MS, now),
         })) }),
       ))
       const handoff = (decoded: Option.Option<HandoffInput>) => Effect.gen(function* () {

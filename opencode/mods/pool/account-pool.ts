@@ -32,7 +32,7 @@ import {
 import { accountWide, carryOver, QuotaReading } from "./quota.ts"
 import { signInReason, tryAgainAt } from "./usage-text.ts"
 import { Hold } from "./status.ts"
-import { holdRecheckAt } from "./hold.ts"
+import { clampHoldEnd, holdRecheckAt, pendingRecoveryAt, RecoveryAttempt, recoveryDelay } from "./hold.ts"
 
 /** One pool: the integration whose logins it holds (`anthropic`). Several providers may share one. */
 export const PoolId = Schema.String.pipe(Schema.brand("PoolId"))
@@ -218,6 +218,8 @@ const placeRequest = (
 
 export const TakeReading = Schema.TaggedStruct("TakeReading", {
   freshUsage: Schema.optionalKey(Schema.Boolean),
+  /** The appointment reserved before I/O, not a cached or broadcast reading. */
+  recovery: Schema.optionalKey(RecoveryAttempt),
   credentialID: Schema.String,
   reading: QuotaReading,
 })
@@ -274,7 +276,7 @@ const takeReading = (
   state: AccountPoolState,
   command: TakeReading,
   now: number,
-): Effect.Effect<ReadonlyArray<ReadingTaken | HoldCleared>> => {
+): Effect.Effect<ReadonlyArray<ReadingTaken | HoldCleared | RecoveryScheduled>> => {
   const { credentialID } = command
   const reading = carryOver(state.readings[credentialID], command.reading)
   const refusal = reading.refusal
@@ -295,9 +297,16 @@ const takeReading = (
     Option.isNone(Option.fromUndefinedOr(command.reading.refusal)) &&
     Option.exists(Option.fromUndefinedOr(command.reading.usage), (usage) => usage.at > hold.at))
   const recovered = Option.filter(current, (hold) => hold.kind === "record-unreadable")
-  const repaired = command.freshUsage === true && Option.exists(recovered, (hold) => holdRecheckAt(hold) <= now &&
+  const attempted = Option.fromUndefinedOr(command.recovery)
+  const reservation = Option.flatMap(attempted, (attempt) => Option.filter(recovered, (hold) => holdRecheckAt(hold) === attempt.until))
+  const checked = Option.match(attempted, {
+    onNone: () => Option.filter(recovered, (hold) => holdRecheckAt(hold) <= now),
+    onSome: () => reservation,
+  })
+  const repaired = command.freshUsage === true && Option.exists(checked, (hold) =>
     Option.isNone(Option.fromUndefinedOr(command.reading.refusal)) &&
-    Option.exists(Option.fromUndefinedOr(command.reading.usage), (usage) => usage.at >= holdRecheckAt(hold) && usage.at >= hold.at))
+    Option.exists(Option.fromUndefinedOr(command.reading.usage), (usage) =>
+      usage.at >= Option.getOrElse(Option.map(attempted, (attempt) => attempt.at), () => Math.max(hold.at, holdRecheckAt(hold)))))
   const prior = Option.filter(current, () => !signedIn && !repaired)
   // Cached readings cannot overwrite the raw recovery row while it is still binding.
   const waitingForRecovery = Option.exists(recovered, () => !repaired)
@@ -306,6 +315,12 @@ const takeReading = (
   })
   const lifts = Option.isNone(hold) && (signedIn || repaired ||
     (until <= now && refusalEnd(current) <= now && Option.exists(current, (hold) => hold.kind === "usage-limit" && command.reading.at > hold.at)))
+  const next = Option.flatMap(reservation, (hold) => Option.flatMap(Option.fromUndefinedOr(refused), (refusal) => {
+    const reported = Option.getOrElse(Option.fromUndefinedOr(command.reading.refusal?.until), () => now + recoveryDelay(refusal.kind))
+    const end = clampHoldEnd(reported, now)
+    if (end <= now) return Option.none()
+    return Option.some(RecoveryScheduled.make({ credentialID, hold: { ...hold, until: end } }))
+  }))
   return Effect.succeed([
     ReadingTaken.make({
       credentialID,
@@ -313,8 +328,20 @@ const takeReading = (
       ...Option.match(hold, { onNone: () => ({}), onSome: (hold) => ({ hold }) }),
     }),
     ...[HoldCleared.make({ credentialID })].filter(() => lifts),
+    ...Option.toArray(next),
   ])
 }
+
+export const ReserveRecovery = Schema.TaggedStruct("ReserveRecovery", { credentialID: Schema.String })
+export type ReserveRecovery = typeof ReserveRecovery.Type
+export const RecoveryScheduled = Schema.TaggedStruct("RecoveryScheduled", { credentialID: Schema.String, hold: Hold })
+export type RecoveryScheduled = typeof RecoveryScheduled.Type
+
+const reserveRecovery = (state: AccountPoolState, command: ReserveRecovery, now: number) =>
+  Effect.succeed(Option.toArray(Option.fromUndefinedOr(state.holds[command.credentialID]).pipe(
+    Option.filter((hold) => hold.kind === "record-unreadable" && holdRecheckAt(hold) <= now),
+    Option.map((hold) => RecoveryScheduled.make({ credentialID: command.credentialID, hold: { ...hold, until: pendingRecoveryAt(now) } })),
+  )))
 
 // ── RefuseRequest ──
 // A request on an account was refused (401 or 429) and no reading said for
@@ -495,8 +522,8 @@ const clearHold = (state: AccountPoolState, command: ClearHold): Effect.Effect<R
 
 // ── The aggregate ──
 
-export type Command = ListLogins | PlaceRequest | TakeReading | RefuseRequest | RecordStep | ReleaseRun | PruneLedger | ClearHold
-export type Event = LoginsListed | RequestPlaced | ReadingTaken | RequestRefused | StepRecorded | RunReleased | LedgerPruned | HoldCleared
+export type Command = ListLogins | PlaceRequest | TakeReading | RefuseRequest | RecordStep | ReleaseRun | PruneLedger | ClearHold | ReserveRecovery
+export type Event = LoginsListed | RequestPlaced | ReadingTaken | RequestRefused | StepRecorded | RunReleased | LedgerPruned | HoldCleared | RecoveryScheduled
 export type Rejection = NoAccount | AccountsHeld
 
 const without = <A>(record: Readonly<Record<string, A>>, keys: ReadonlyArray<string>): Record<string, A> => {
@@ -538,6 +565,8 @@ export const AccountPool = (rules: Rules): Decider<AccountPoolState, Command, Ev
         return pruneLedger(rules, state, command, now)
       case "ClearHold":
         return clearHold(state, command)
+      case "ReserveRecovery":
+        return reserveRecovery(state, command, now)
     }
   },
   evolve: (state, event) => {
@@ -560,6 +589,7 @@ export const AccountPool = (rules: Rules): Decider<AccountPoolState, Command, Ev
           ...(event.hold === undefined ? {} : { holds: { ...state.holds, [event.credentialID]: event.hold } }),
         }
       case "RequestRefused":
+      case "RecoveryScheduled":
         return { ...state, holds: { ...state.holds, [event.credentialID]: event.hold } }
       case "StepRecorded":
         return {

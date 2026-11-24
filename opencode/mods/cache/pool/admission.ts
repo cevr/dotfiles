@@ -9,7 +9,7 @@
 // claim's room (`backed`, which a request reserves on at its dispatch and a
 // ping does not), a failure, a timeout or an answer that is not a pace skips
 // the ping, which only lets the cache go cold.
-import { Pace } from "@dotfiles/opencode-pool/pace"
+import { Pace, type WirePace } from "@dotfiles/opencode-pool/pace"
 import { Handoff, type HandoffInput } from "@dotfiles/opencode-pool/handoff"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 import { Effect, Layer, Option, Schema } from "effect"
@@ -33,7 +33,7 @@ const ABSENT = new Set(["rpc.unavailable", "rpc.method_not_found"])
 const decodeFailure = Schema.decodeUnknownOption(Schema.Struct({ type: Schema.String }))
 
 /** Whether a pace answer admits a request on `login`. */
-export const admitted = (pace: Pace, login: string): boolean => {
+export const admitted = (pace: WirePace, login: string): boolean => {
   if (!pace.measured || !pace.ok || pace.admission === "backed") return false
   return Option.match(Option.fromUndefinedOr(pace.eligible), { onNone: () => true, onSome: (eligible) => eligible.includes(login) })
 }

@@ -99,6 +99,7 @@ const writesOf = (event: Event): ReadonlyArray<Write> => {
         ...(event.hold === undefined ? [] : [put(holdKey(event.credentialID), event.hold)]),
       ]
     case "RequestRefused":
+    case "RecoveryScheduled":
       return [put(holdKey(event.credentialID), event.hold)]
     case "RequestPlaced":
       return [put(cacheKey(event.sessionID), cacheMark({ credentialID: event.credentialID, at: event.at }, event))]
@@ -267,6 +268,17 @@ const retainBoth = (before: Hold, next: Hold): Hold => {
 const settleHold = (storage: Storage, key: string, next: Option.Option<Hold>) =>
   boundedStore(Option.match(next, { onNone: () => storage.remove(key), onSome: (hold) => storage.set(key, hold) }))
 
+/** A new appointment changes only the recovery metadata, never the writer's original. */
+const settleRecordedHold = (storage: Storage, key: string, next: Option.Option<Hold>) => {
+  if (!Option.exists(next, (hold) => hold.kind === "record-unreadable")) return settleHold(storage, key, next)
+  return Effect.gen(function* () {
+    const page = yield* boundedStore(storage.scan({ prefix: key, limit: 1 }))
+    const original = Option.flatMap(Option.fromUndefinedOr(page.entries.find((entry) => entry.key === key)), (entry) => decodeRaw(entry.value))
+    yield* settleHold(storage, key, Option.map(next, (hold) =>
+      Option.match(original, { onNone: () => hold, onSome: ({ raw }) => ({ ...hold, raw }) })))
+  })
+}
+
 const scanHolds = (storage: Storage, prefix: string, now: number) =>
   Effect.gen(function* () {
     const snapshot: Record<string, Hold> = {}
@@ -397,7 +409,7 @@ export const layer = (storage: Storage, steps: Steps = ownSteps(storage), author
           const { retryAt } = yield* unavailable
           authority.pending.set(key, { credentialID, next: Option.some(hold), retryAt, merge: true })
         } else {
-          yield* settleHold(storage, key, next).pipe(
+          yield* settleRecordedHold(storage, key, next).pipe(
             Effect.tap(() => Effect.sync(() => { authority.pending.delete(key) })),
             Effect.catch(({ retryAt }) => Effect.sync(() => {
               authority.pending.set(key, { credentialID, next, retryAt, merge: false })
