@@ -1,4 +1,5 @@
-/** @reads cmd/pool/fixtures/openai-send-hold/** tests/pool-openai-send/** */
+// @reads all
+// @reads-reason subprocess reads at tests/pool-openai-send-hold.test.ts: const child = yield* spawner.spawn(ChildProcess.make(externalInput(localTestProcess.execPath),
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Array as Arr, Config, Console, DateTime, Effect, FileSystem, Match, Option, Path, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"

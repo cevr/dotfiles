@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 import { Effect, Match, Option, Schema } from "effect"
 import { Pace } from "@dotfiles/opencode-pool/pace"
 import { HeldSendAnswer } from "@dotfiles/opencode-pool/refuse"
