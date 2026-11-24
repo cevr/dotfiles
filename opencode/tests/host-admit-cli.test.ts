@@ -235,7 +235,7 @@ it.scopedLive("the scripted public CLI diagnoses outside CPU without starting a 
   }).pipe(Effect.provide(BunServices.layer)),
 )
 
-it.scopedLive("real sampler smoke: Darwin supply matches independent counters, without launching a payload", () =>
+it.scopedLive("real sampler smoke: Darwin reports sane supply without launching a payload", () =>
   Effect.gen(function* () {
     if (process.platform !== "darwin") return
     using dir = scratch("hcl-measured-")
