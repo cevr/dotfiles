@@ -59,14 +59,15 @@ export const rowView = ({ child, mark, observation, at, attention }: OwnerAnswer
   return { child, lifecycle }
 }
 
-type OwnerContext = { readonly client: RowsClient; readonly location: Plugin.Context["location"] }
+/** One read of the owner's rows for up to 512 children. */
+export type ReadRows<E> = (children: ReadonlyArray<string>) => Effect.Effect<RowsReply, E>
 
 /**
  * How a family's children follow the owner's answers: read them now and again
  * on each event that may change them, and publish each whole answer. An owner
  * notification establishes the RPC's presence, not a row's phase.
  */
-export const followOwner = (context: OwnerContext): FollowRows => (reads, children, publish) => {
+export const followOwner = <E>(readOwner: ReadRows<E>): FollowRows => (reads, children, publish) => {
     const abort = new AbortController()
     const groups = Array.from({ length: Math.ceil(children.length / 512) }, (_, index) => children.slice(index * 512, (index + 1) * 512))
     let reading = false
@@ -85,9 +86,7 @@ export const followOwner = (context: OwnerContext): FollowRows => (reads, childr
         return
       }
       reading = true
-      Effect.forEach(groups, (children) => Effect.tryPromise((signal) =>
-        context.client.rpc(CHILD_ROWS).read({ children }, { location: context.location, signal }),
-      ), { concurrency: 2 }).pipe(
+      Effect.forEach(groups, (group) => readOwner(group), { concurrency: 2 }).pipe(
         Effect.timeout(OWNER_READ_DEADLINE),
         Effect.option,
         Effect.tap((result) => Effect.sync(() => {
@@ -146,10 +145,16 @@ export const followOwner = (context: OwnerContext): FollowRows => (reads, childr
 }
 
 /** The family reader over the owner's answers, one per host data. */
-export const ownerRows = (context: OwnerContext & { readonly data: object }): FamilyReader => {
+export const ownerRows = (context: {
+  readonly data: object
+  readonly client: RowsClient
+  readonly location: Plugin.Context["location"]
+}): FamilyReader => {
   const existing = readers.get(context.data)
   if (existing) return existing
-  const reader = readerWithOwner(followOwner(context))
+  const reader = readerWithOwner(followOwner((children) => Effect.tryPromise((signal) =>
+    context.client.rpc(CHILD_ROWS).read({ children }, { location: context.location, signal }),
+  )))
   readers.set(context.data, reader)
   return reader
 }

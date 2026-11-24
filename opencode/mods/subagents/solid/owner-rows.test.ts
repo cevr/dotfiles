@@ -7,7 +7,6 @@
 // painted for a single frame counts: the strip may never draw a child of an
 // earlier run, nor drop a live one, and the count always equals the rows drawn.
 import { expect } from "bun:test"
-import { setImmediate } from "node:timers/promises"
 import { Effect, Option, Queue } from "effect"
 import { it } from "effect-bun-test"
 import type { RowsReply } from "../../kernel/opencode/child-row.ts"
@@ -18,7 +17,7 @@ import type { OwnedRow } from "../family.ts"
 import { message, read, type Reads, type SessionInfo } from "../opencode/view.ts"
 import { subagents, visible } from "../subagent-row.ts"
 import { worksNow } from "../works.ts"
-import { followOwner, type RowsClient } from "./owner-rows.ts"
+import { followOwner, type ReadRows } from "./owner-rows.ts"
 
 const DAY = 86_400_000
 /** Three weeks after the old children ended. */
@@ -85,18 +84,16 @@ it.effect("a reconnect and host work during a refetch never draw an old child, n
         },
         shell: { list: () => [] },
       }
-      // Each read is answered at the next revision, on the next turn of the event loop: the events emitted with
-      // its start land while it is in flight.
+      // Each read is answered at the next revision once the scheduler runs again: the events emitted with its
+      // start land while it is in flight.
       let revision = 0
-      const client: RowsClient = {
-        rpc: () => ({
-          read: (input) => {
+      const readRows: ReadRows<never> = (children) =>
+        Effect.yieldNow.pipe(
+          Effect.map((): RowsReply => {
             revision++
-            const reply: RowsReply = { rows: input.children.map((child) => answer(child, revision)) }
-            return setImmediate(reply)
-          },
-        }),
-      }
+            return { rows: children.map((child) => answer(child, revision)) }
+          }),
+        )
       // Events emitted together, as a burst arrives: the first starts a read, the rest land while it is in flight.
       const emit = (...types: ReadonlyArray<string>) =>
         Effect.sync(() => types.forEach((type) => handlers.forEach((handler) => handler({ details: { type, data: {} } }))))
@@ -106,7 +103,7 @@ it.effect("a reconnect and host work during a refetch never draw an old child, n
         expect(shown.rows).toEqual(LIVE)
         expect(shown.count).toBe(shown.rows.length)
       })
-      const stop = followOwner({ client, location: LOCATION })(reads, CHILDREN, (rows) => {
+      const stop = followOwner(readRows)(reads, CHILDREN, (rows) => {
         Queue.offerUnsafe(published, rows)
       })
       yield* check
