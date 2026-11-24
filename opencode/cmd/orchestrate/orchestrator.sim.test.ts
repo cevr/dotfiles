@@ -7,10 +7,10 @@ import { Effect, Option } from "effect"
 import { WINDOW } from "@dotfiles/opencode-orchestrate/compaction"
 import { definitions, ORCHESTRATOR, orchestrator, ROLES } from "@dotfiles/opencode-orchestrate/role"
 import * as Plugins from "../../sim/plugins.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/orchestrate/orchestrator.sim.test.ts")
+const { seeded } = simulationRunner("cmd/orchestrate/orchestrator.sim.test.ts")
 
 const WORK = "/scratch/project"
 /** A Wednesday afternoon: no Sabbath rest holds a request. */

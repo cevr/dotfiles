@@ -6,9 +6,8 @@
 import { describe, expect, test } from "bun:test"
 import { GIT_BARE_OPTIONS, GIT_VALUE_OPTIONS } from "../mods/guard/verdict.ts"
 import { gitGlobalOptions, manualOptions } from "./git-options.ts"
+import { hangGuard } from "./hang-guard.ts"
 
-/** Running git once or a few times per option, in a scratch repository: a loaded machine gets room. */
-const PROBE_MS = 60_000
 
 describe("the guard's git global options", () => {
   test(
@@ -24,7 +23,7 @@ describe("the guard's git global options", () => {
         both: [...GIT_VALUE_OPTIONS].filter((option) => GIT_BARE_OPTIONS.has(option)),
       }).toEqual({ missing: [], valued: [...GIT_VALUE_OPTIONS].filter((option) => git.all.includes(option)).sort(), both: [] })
     },
-    PROBE_MS,
+    hangGuard("process-fixture"),
   )
 
   test("the manual's option items are read as git spells them, a value's placeholder dropped", () => {

@@ -38,6 +38,7 @@ import { unboundBuild } from "../testbeds/gamut/gamut.ts"
 import { type ChildTemp, childTemp, parentEnv, scratch } from "./scratch.ts"
 // What this test process starts is stopped once it is gone, however it went (testbeds/reaper/start.ts).
 import "../testbeds/reaper/start.ts"
+import { watchdog } from "./hang-guard.ts"
 
 /** How often a running child's descendants are sampled. */
 const SAMPLE_MS = 1000
@@ -116,8 +117,8 @@ export const owned = <
     running.delete(child.pid)
     const left = survivors(watching.stop(), table())
     if (signalGroup(child.pid, "SIGTERM")) {
-      const deadline = Date.now() + GRACE_MS
-      while (signalGroup(child.pid, 0) && Date.now() < deadline) await Bun.sleep(50)
+      const deadline = watchdog(GRACE_MS)
+      while (signalGroup(child.pid, 0) && !deadline.expired()) await Bun.sleep(50)
       signalGroup(child.pid, "SIGKILL")
     }
     await stop(left, GRACE_MS)
@@ -131,3 +132,6 @@ export const owned = <
 
 /** To await: settles once the owned child `pid`, all it started and its own TMPDIR are gone (nothing to wait for once they are). */
 export const released = (pid: number) => releases.get(pid)
+
+/** Refresh and return what an owned child has started, while the child is still running. */
+export const observed = (pid: number) => running.get(pid)?.sample()

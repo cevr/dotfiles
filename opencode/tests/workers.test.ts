@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/workers.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -16,7 +17,7 @@ const frames: Record<"started" | "finished" | "opened", ReadonlyArray<string>> =
 
 describe.skipIf(!fork)("background workers in the Prime look (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "workers-")
-  beforeAll(...kept.setup(async () => {
+  beforeAll(kept.test(async () => {
     const out = kept.dir("prime-workers-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-workers.ts"], {
       cwd: root,
@@ -34,7 +35,7 @@ describe.skipIf(!fork)("background workers in the Prime look (OPENCODE_DEV)", ()
     frames.started = lines("workers-started")
     frames.finished = lines("workers")
     frames.opened = lines("workers-opened")
-  }, 300_000))
+  }), hangGuard("acceptance"))
 
   test("three steps that each start a worker, a moment apart, read as one group with a row per worker", kept.test(() => {
     const at = frames.started.indexOf("  ● Started 3 agents")

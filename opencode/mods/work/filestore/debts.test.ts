@@ -9,6 +9,7 @@ import { Clock, Context, Deferred, Effect, Fiber, Layer, Option, Schema } from "
 import { Debts, noDebts, owe, OwedPostLand } from "../owed.ts"
 import { PostLandClaim, PostLandDebts } from "../service.ts"
 import { debtsFile, layer } from "./debts.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 const debtsAt = (file: string) => Effect.map(Layer.build(layer(file)), (services) => Context.get(services, PostLandDebts))
 
@@ -162,7 +163,7 @@ describe("the owed post-land steps' file", () => {
             }),
           ),
         ),
-      60_000,
+      hangGuard("process-fixture"),
     )
   }
 })

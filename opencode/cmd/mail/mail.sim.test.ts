@@ -20,10 +20,10 @@ import * as MemoryNet from "@dotfiles/opencode-mail/memory/net"
 import * as MemoryPairs from "@dotfiles/opencode-mail/memory/pairs"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Read from "../../sim/readings.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/mail/mail.sim.test.ts")
+const { seeded } = simulationRunner("cmd/mail/mail.sim.test.ts")
 
 const WORK = "/scratch/project"
 

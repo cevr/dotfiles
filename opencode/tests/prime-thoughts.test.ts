@@ -10,6 +10,7 @@ import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 import { timedRows, withoutTurnTime } from "./turn-time.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-thoughts.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -68,7 +69,7 @@ function slice(saved: Saved, first: string, count: number) {
 
 describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-thoughts-")
-  beforeAll(...kept.setup(async () => {
+  beforeAll(kept.test(async () => {
     const out = kept.dir("prime-thoughts-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-thoughts.ts"], {
       cwd: root,
@@ -95,7 +96,7 @@ describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE
     frames.opened = load("thoughts-opened")
     frames.closed = load("thoughts-closed")
     frames.reopenedAll = load("thoughts-reopened-all")
-  }, 300_000))
+  }), hangGuard("acceptance"))
 
   test("a streaming thought is a one-node group headed Thinking, its glyph in the accent", kept.test(() => {
     // The glyph blinks ● / ○; the frame may catch either.

@@ -1,15 +1,16 @@
 // The real profiler of this test's own process: a window that holds a busy
 // function's run names it, and a dropped window can be followed by another.
 import { describe, expect, test } from "bun:test"
-import { nanoseconds } from "bun"
 import { Effect, Schema } from "effect"
+import { watchdog } from "../../../tests/hang-guard.ts"
 import { Profiler } from "../service.ts"
 import { layer } from "./profiler.ts"
 
 function spinTheProfilerProbe(ms: number) {
-  const end = nanoseconds() + ms * 1_000_000
+  // The CPU profile is returned only by Profiler.stop; the probe cannot see a sample while it runs.
+  const deadline = watchdog(ms)
   let turns = 0
-  while (nanoseconds() < end) turns++
+  while (!deadline.expired()) turns++
   return turns
 }
 

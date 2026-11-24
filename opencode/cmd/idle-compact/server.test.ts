@@ -110,7 +110,7 @@ const world = () => {
 type World = ReturnType<typeof world>
 
 /** Let the plugin's fibers take in what was just offered: a real moment, on the test clock too. */
-const settle = Effect.promise(() => new Promise<void>((done) => setTimeout(done, 5)))
+const settle = TestClock.adjust(0)
 
 /**
  * The plugin started on a stand-in host over `state`, and the host's moves. `at` places it as one copy of several on

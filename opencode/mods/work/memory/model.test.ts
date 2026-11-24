@@ -3,6 +3,7 @@
 // fence keeps the root's files off its folders.
 import { describe, expect, test } from "bun:test"
 import { Deferred, Effect, Fiber, Layer, Predicate, Queue } from "effect"
+import { TestClock } from "effect/testing"
 import * as MemoryDebts from "./debts.ts"
 import * as MemoryLanding from "./landing.ts"
 import * as MemoryNotices from "./notices.ts"
@@ -41,12 +42,12 @@ const make = (made: Bench, sessions: Record<string, string> = { ses_1: "/code/ap
     ),
   )
 
-/** Lets the tool's background work run as far as it can. */
-const settle = Effect.sleep("20 millis")
+/** Waits for all runnable work over the memory adapters; explicitly gated fibers stay parked. */
+const settle = TestClock.adjust(0)
 
 /** `body` over one tool's life in the bench's world; the tool's background work stops with it. */
 const within = <A>(made: Bench, body: (tool: typeof Model.RiftTool.Service) => Effect.Effect<A>) =>
-  Effect.runPromise(Effect.scoped(Effect.flatMap(Model.RiftTool, body).pipe(Effect.provide(make(made)))))
+  Effect.runPromise(Effect.scoped(Effect.flatMap(Model.RiftTool, body).pipe(Effect.provide(make(made)), Effect.provide(TestClock.layer()))))
 
 /** One call's answer text, or the words of its failure (`refused: …`). */
 const answerOf = (tool: typeof Model.RiftTool.Service, input: RiftInput, sessionID = "ses_1") =>

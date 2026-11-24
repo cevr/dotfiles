@@ -13,13 +13,13 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard, measured } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/tui-cpu.test.ts: skipped. Set OPENCODE_DEV to an OpenCode checkout to run it.")
 
 const root = join(import.meta.dir, "..")
 /** The TUI's share of one core it may take while the session works: well above the ~0.1 it takes, well below the 0.3 to 0.6 it took. */
-const BUDGET = 0.25
 
 type Result = { readonly idle: ReadonlyArray<{ readonly share: number }>; readonly busy: ReadonlyArray<{ readonly share: number }> }
 let result: Result
@@ -27,7 +27,7 @@ let busy: string
 
 describe.skipIf(!fork)("the TUI's CPU while a long session and its subagents stream (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "tui-cpu-")
-  beforeAll(...kept.setup(async () => {
+  beforeAll(kept.test(async () => {
     const out = kept.dir("tui-cpu-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/tui-cpu.ts"], {
       cwd: root,
@@ -45,7 +45,7 @@ describe.skipIf(!fork)("the TUI's CPU while a long session and its subagents str
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     result = JSON.parse(readFileSync(join(out, "cpu.json"), "utf8"))
     busy = readFileSync(join(out, "busy.txt"), "utf8")
-  }, 300_000))
+  }), hangGuard("acceptance"))
 
   test("the measured window is the working session: its answer streams and three subagent rows work", kept.test(() => {
     expect(busy).toContain("main word")
@@ -53,7 +53,7 @@ describe.skipIf(!fork)("the TUI's CPU while a long session and its subagents str
     expect(result.busy).toHaveLength(1)
   }))
 
-  test(`the TUI stays under ${BUDGET} of a core while it works`, kept.test(() => {
-    expect(result.busy[0]!.share).toBeLessThan(BUDGET)
+  test("the TUI stays under 0.25 of a core while it works", kept.test(() => {
+    measured("CPU while one long session and three subagents stream", "< 0.25 fraction of a core", ({ sample }) => sample(result.busy[0]!.share))
   }))
 })

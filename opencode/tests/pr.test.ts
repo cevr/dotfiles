@@ -8,6 +8,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/pr.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -40,5 +41,5 @@ describe.skipIf(!fork)("the pr tool and its watcher", () => {
     const calls = JSON.parse(readFileSync(join(out, "gh-calls.json"), "utf8")) as ReadonlyArray<ReadonlyArray<string>>
     expect(calls.some((call) => call[0] === "api" && call[1] === "graphql")).toBe(true)
     expect(calls.filter((call) => call[0] === "api" && call[1] === "--include").every((call) => call.includes("--silent"))).toBe(true)
-  }), 150_000)
+  }), hangGuard("fork-turn"))
 })

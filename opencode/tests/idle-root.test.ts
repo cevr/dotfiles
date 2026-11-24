@@ -14,6 +14,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/idle-root.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -39,5 +40,5 @@ describe.skipIf(!fork)("an idle root with units to move", () => {
     expect(frame("drafted")).toContain("half a thought")
     // The named wait in the sidebar.
     expect(frame("nudged")).toMatch(/… Owner review of alpha/)
-  }), 200_000)
+  }), hangGuard("fork-transition"))
 })

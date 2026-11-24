@@ -26,6 +26,7 @@ import { copyFileSync, existsSync, readdirSync, readFileSync, writeFileSync } fr
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { Llm, OpenCodeDriver } from "opencode-drive"
+import { stamp, watchdog } from "../tests/hang-guard.ts"
 
 const root = process.cwd()
 const out = process.env.SCENARIO_OUT ?? "out"
@@ -194,11 +195,11 @@ export default OpenCodeDriver.use(
         )
       const save = (name: string) => capture.pipe(Effect.map((frame) => writeFileSync(`${out}/${name}.txt`, text(frame))))
       /** Polls the frame until `sign` differs from `before`; the ms it took, or -1 past 5 s. */
-      const changed = (sign: (frame: Frame) => string, before: string, start: number) =>
+      const changed = (sign: (frame: Frame) => string, before: string, start: number, deadline: ReturnType<typeof watchdog>) =>
         Effect.gen(function* () {
-          while (Date.now() - start < 5000) {
+          while (!deadline.expired()) {
             const frame = yield* capture
-            if (sign(frame) !== before) return Date.now() - start
+            if (sign(frame) !== before) return stamp() - start
             yield* Effect.sleep("5 millis")
           }
           return -1
@@ -210,10 +211,10 @@ export default OpenCodeDriver.use(
           const pid = tuiPid()[0]!
           if (profiled(name)) process.kill(pid, "SIGPROF")
           const before = cpu(pid)
-          const started = Date.now()
+          const started = stamp()
           yield* Effect.sleep(IDLE_MS)
           const after = cpu(pid)
-          const seconds = (Date.now() - started) / 1000
+          const seconds = (stamp() - started) / 1000
           const result = {
             phase: name,
             cores: Number(((after.process - before.process) / seconds).toFixed(3)),
@@ -223,7 +224,7 @@ export default OpenCodeDriver.use(
           }
           console.log("latency:", JSON.stringify(result))
           if (profiled(name)) {
-            yield* Effect.sleep(Math.max(0, started + 11_000 - Date.now()))
+            yield* Effect.sleep(Math.max(0, started + 11_000 - stamp()))
             keepProfile(pid, name)
           }
           return result
@@ -235,33 +236,37 @@ export default OpenCodeDriver.use(
           const pid = tuiPid()[0]!
           if (profiled(name)) process.kill(pid, "SIGPROF")
           const before = cpu(pid)
-          const started = Date.now()
+          const started = stamp()
           const latencies: Array<number> = []
           for (let i = 0; i < KEYS; i++) {
             const from = sign(yield* capture)
-            const start = Date.now()
+            const start = stamp()
+            const deadline = watchdog(5_000)
             yield* key(i)
-            latencies.push(yield* changed(sign, from, start))
+            latencies.push(yield* changed(sign, from, start, deadline))
           }
           // A held key: the burst at RATE a second, then the time from its last key until the frame stops changing.
           for (let i = 0; i < KEYS; i++) {
             yield* key(KEYS + i)
             yield* Effect.sleep(`${Math.round(1000 / RATE)} millis`)
           }
-          const last = Date.now()
+          const last = stamp()
+          const deadline = watchdog(10_000)
           let settled = sign(yield* capture)
-          let quiet = Date.now()
-          while (Date.now() - quiet < 300 && Date.now() - last < 10_000) {
+          let lastChange = stamp()
+          let quiet = watchdog(300)
+          while (!quiet.expired() && !deadline.expired()) {
             yield* Effect.sleep("10 millis")
             const now = sign(yield* capture)
             if (now !== settled) {
               settled = now
-              quiet = Date.now()
+              lastChange = stamp()
+              quiet = watchdog(300)
             }
           }
-          const lag = quiet - last
+          const lag = lastChange - last
           const after = cpu(pid)
-          const seconds = (Date.now() - started) / 1000
+          const seconds = (stamp() - started) / 1000
           const result = {
             phase: name,
             keys: 2 * KEYS,
@@ -279,7 +284,7 @@ export default OpenCodeDriver.use(
           yield* save(name)
           if (profiled(name)) {
             // The fork's profile runs 10 s from the signal; keep it, since the driver's data dir goes with the run.
-            yield* Effect.sleep(Math.max(0, started + 11_000 - Date.now()))
+            yield* Effect.sleep(Math.max(0, started + 11_000 - stamp()))
             keepProfile(pid, name)
           }
           return result
@@ -288,7 +293,7 @@ export default OpenCodeDriver.use(
       yield* ui.submit(BUILD)
       yield* until("built", (frame) => frame.includes(BUILT), 3_000)
       yield* ui.submit(ASK)
-      const asked = Date.now()
+      const asked = stamp()
       const open = `${QUESTIONS.length + (SUBAGENTS > 0 ? 1 : 0)} open questions`
       yield* until("asked", (frame) => frame.includes(ASKED) && (!ASKS || frame.includes(open)))
       yield* Effect.sleep("2 seconds")
@@ -297,10 +302,10 @@ export default OpenCodeDriver.use(
       for (let i = 0; i < 2 * KEYS; i++) yield* ui.press("backspace")
       const form = ASKS
         ? yield* Effect.gen(function* () {
-            const opening = Date.now()
+            const opening = stamp()
             yield* ui.submit("/answer")
             yield* until("form", (frame) => frame.includes("line 1 of the question") && frame.includes("Background questions"))
-            console.log("latency:", JSON.stringify({ phase: "open", ms: Date.now() - opening }))
+            console.log("latency:", JSON.stringify({ phase: "open", ms: stamp() - opening }))
             yield* Effect.sleep("1 second")
             const idleForm = yield* still("idle-form")
             const arrows = yield* phase("arrows", () => ui.press("down"), highlightOf)
@@ -313,7 +318,7 @@ export default OpenCodeDriver.use(
       const result = { asks: ASKS, groups: GROUPS, subagents: SUBAGENTS, keys: KEYS, rate: RATE, load: readFileSafe("/proc/loadavg"), phases: [idle, tray, ...form] }
       writeFileSync(`${out}/latency.json`, JSON.stringify(result, null, 2))
       // Let every slow stream end before the driver checks each model response settled.
-      yield* Effect.sleep(Math.max(0, asked + (WORK_SECONDS + 15) * 1000 - Date.now()))
+      yield* Effect.sleep(Math.max(0, asked + (WORK_SECONDS + 15) * 1000 - stamp()))
     }),
 )
 

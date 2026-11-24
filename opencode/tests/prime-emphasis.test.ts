@@ -14,12 +14,11 @@ import { fileURLToPath } from "node:url"
 import { Schema } from "effect"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-emphasis.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
 
-/** OpenCode's start, the streamed reply and a worker's turn: well past its usual 10 seconds. */
-const SCENARIO_MS = 180_000
 
 /** The scenario's record of each model request (scenarios/prime-emphasis.ts, SCENARIO_DUMP). */
 const Requests = Schema.fromJsonString(
@@ -75,6 +74,6 @@ describe.skipIf(!fork)("Prime teaches root sessions the chips and draws them (OP
       expect(frame).not.toContain("[[")
       expect(stream.raw).toEqual([])
     }),
-    SCENARIO_MS,
+    hangGuard("fork-session"),
   )
 })

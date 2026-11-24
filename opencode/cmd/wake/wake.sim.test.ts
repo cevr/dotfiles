@@ -11,10 +11,10 @@
 import { Effect, Schema } from "effect"
 import { wakeItem } from "../../mods/prime/wakes.ts"
 import * as Plugins from "../../sim/plugins.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/wake/wake.sim.test.ts")
+const { seeded } = simulationRunner("cmd/wake/wake.sim.test.ts")
 
 const WORK = "/scratch/project"
 const WAKES = "dotfiles-opencode.wake"

@@ -11,6 +11,7 @@ import { sourceOf } from "@dotfiles/opencode-digest/members"
 import { statusFrom } from "@dotfiles/opencode-digest/process/tailnet"
 import { scratch } from "../../tests/scratch.ts"
 import { main } from "./devices.ts"
+import { hangGuard, stamp } from "../../tests/hang-guard.ts"
 
 /** The command's file, beside this one. */
 const commandFile = Effect.flatMap(Path.Path, (path) => path.fromFileUrl(new URL("./devices.ts", import.meta.url))).pipe(Effect.provide(Path.layer), Effect.orDie)
@@ -93,7 +94,7 @@ describe("digest devices", () => {
     expect(codes).toEqual(codes.map(() => 0))
     expect(codes.length).toBe(8)
     for (const copy of stored(held.path)) expect(Match.value(copy).pipe(Match.when(Match.string, () => []), Match.orElse((store) => store.excluded.flatMap((entry) => entry.ids).toSorted()))).toEqual(Array.from({ length: 8 }, (_, at) => `nDinghy${at}`))
-  }, 30_000)
+  }, hangGuard("local-fixture"))
 })
 
 /** Both copies' bytes as they are now ("absent" for none), to tell that a refused command wrote nothing. */
@@ -139,7 +140,7 @@ describe("digest devices: the store only ever gains an ID of one of his devices"
     ])
     const read = await Effect.runPromise(statusFrom([cli]))
     const copies = await Effect.runPromise(FileDevices.readCopies(FileDevices.pathsOf(join(held.path, "state"), join(held.path, "config"))))
-    const members = membersWith("member-except-hosts", keysOf({ agentHosts: ["cristians-macbook-pro-rex"], excluded: ["lenovo-rescue"] }, copies[0], copies[1]), read, Date.now())
+    const members = membersWith("member-except-hosts", keysOf({ agentHosts: ["cristians-macbook-pro-rex"], excluded: ["lenovo-rescue"] }, copies[0], copies[1]), read, stamp())
     // 100.101.102.130 is lenovo-x, .131 rex-2 (fakeCli numbers the peers from .130).
     expect([sourceOf("100.101.102.130", members), sourceOf("100.101.102.131", members), members.write, members.why]).toEqual(["other", "other", "paired", "unkeyed:lenovo-rescue:agent-unkeyed:cristians-macbook-pro-rex:store-absent/absent"])
   })

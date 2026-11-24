@@ -8,7 +8,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { Clock, Effect, Fiber, Layer, Match, Option, Queue, Schema, Stream } from "effect"
+import { Clock, Deferred, Effect, Fiber, FiberSet, Layer, Match, Option, Queue, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { RESTART_NOTICE } from "@dotfiles/opencode-orchestrate/restart-hold"
 import { type Latch, type LatchAsk, Opened } from "@dotfiles/opencode-wake/latch"
@@ -42,8 +42,8 @@ import { iso } from "@dotfiles/opencode-pool/usage-text"
 import { definitions, ORCHESTRATOR, orchestrator } from "@dotfiles/opencode-orchestrate/role"
 import { KNOWLTON, rest } from "@dotfiles/opencode-orchestrate/sabbath"
 import { type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
-import { eventuallyPasses } from "../../tests/wait.ts"
-import Orchestrate, { CODEX_BUDGET, DEFAULT_LOG, make, Options, SKILL_DIR, SUBAGENTS, type StepHostSession, stepSessionOf, UNIT_LOG } from "./server.ts"
+import Orchestrate, { CODEX_BUDGET, DEFAULT_LOG, Options, SKILL_DIR, SUBAGENTS, type StepHostSession, stepSessionOf, UNIT_LOG, withTaskFork } from "./server.ts"
+import { stamp } from "../../tests/hang-guard.ts"
 
 /** This test file's folder. */
 const HERE = import.meta.dir
@@ -120,6 +120,12 @@ interface EditedAgent {
   request: { settings: { compactionWindow?: number; cacheTTL?: string } }
 }
 
+interface HostEvent {
+  readonly type: string
+  readonly data: object
+  readonly id?: string
+}
+
 /**
  * The plugin started on a stand-in host: its hooks, the agent transform it
  * registered, and the call log's lines.
@@ -132,7 +138,13 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
     const toolTransforms: Array<(editor: unknown) => void> = []
     const rpc: Record<string, Record<string, (input: unknown) => Effect.Effect<unknown>>> = {}
     // The host's event stream, which the test publishes into.
-    const published = yield* Queue.unbounded<Record<string, unknown>>()
+    const published = yield* Queue.unbounded<{ readonly event: HostEvent; readonly handled: Deferred.Deferred<true> }>()
+    const tasks = yield* FiberSet.make()
+    const publish = Effect.fnUntraced(function* (event: HostEvent) {
+      const handled = yield* Deferred.make<true>()
+      yield* Queue.offer(published, { event, handled })
+      yield* Deferred.await(handled)
+    })
     // Each session's messages as the host's `session.context` answers them, which the test sets.
     const contexts = new Map<string, ReadonlyArray<unknown>>()
     const register = (name: string, callback: Hook) =>
@@ -157,7 +169,12 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
       },
       location: { directory: "/work" },
       shell: { hook: register },
-      event: { subscribe: () => Stream.fromQueue(published) },
+      event: {
+        subscribe: () => Stream.fromEffect(Queue.take(published)).pipe(
+          Stream.flatMap(({ event, handled }) => Stream.concat(Stream.succeed(event), Stream.fromEffect(Deferred.succeed(handled, true)).pipe(Stream.drain))),
+          Stream.forever,
+        ),
+      },
       tool: {
         hook: register,
         transform: (callback: (editor: unknown) => void) =>
@@ -208,7 +225,8 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
     )
     const nudges: Array<OpenCodeSteer.Synthetic> = []
     const notes: Array<OpenCodeSteer.Synthetic> = []
-    yield* make((_ctx, _options, start) => externals(start)).effect(host)
+    const makeWithTasks = withTaskFork((scope) => (task) => task.pipe(Effect.forkIn(scope), Effect.tap((fiber) => FiberSet.add(tasks, fiber))))
+    yield* makeWithTasks((_ctx, _options, start) => externals(start)).effect(host)
 
     // The subagent tool, as the host's editor holds it after the plugin's transform: it records each run.
     const ran: Array<Ran> = []
@@ -267,7 +285,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
       taken = true,
     ) {
       const inboxID = `inbox_${inboxIDs.next++}`
-      yield* Queue.offer(published, {
+      yield* publish({
         type: "session.inbox.enqueued",
         data: { sessionID, inboxID, item: item.type === "user" ? { type: "user", payload: {} } : { type: "synthetic", payload: { text: "x", metadata: item.metadata } } },
       })
@@ -275,28 +293,23 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
       return inboxID
     })
     /** A turn of the session took inbox item `inboxID`. */
-    const deliver = (sessionID: string, inboxID: string) => Queue.offer(published, { type: "session.inbox.delivered", data: { sessionID, inboxID } })
+    const deliver = (sessionID: string, inboxID: string) => publish({ type: "session.inbox.delivered", data: { sessionID, inboxID } })
     /** Inbox item `inboxID` is cancelled: the owner took it back, or a queue merge replaced it. */
-    const cancel = (sessionID: string, inboxID: string) => Queue.offer(published, { type: "session.inbox.cancelled", data: { sessionID, inboxID } })
+    const cancel = (sessionID: string, inboxID: string) => publish({ type: "session.inbox.cancelled", data: { sessionID, inboxID } })
     /** An owner's TUI reporting a draft over the idle RPC. */
     const draft = (input: unknown) => {
       const handler = rpc["dotfiles-opencode.orchestrate.idle"]?.draft
       return handler === undefined ? Effect.die(new Error("no idle RPC")) : handler(input)
     }
     /** A session's compaction ended: the host's durable event, with its id. */
-    const compacted = (sessionID: string, id: string) => Queue.offer(published, { id, type: "session.compaction.ended", data: { sessionID } })
+    const compacted = (sessionID: string, id: string) => publish({ id, type: "session.compaction.ended", data: { sessionID } })
     /** One model request of the session through the `model.request` hooks: done once every hook let it go. */
     const modelRequest = Effect.fn("OrchestrateServerTest.modelRequest")(function* (sessionID: string) {
       for (const hook of hooks["model.request"] || []) yield* hook({ sessionID, agent: "build", kind: "primary", headers: {} })
     })
-    return { contexts, modelRequest, call, finish, logged, hooks, transforms, runTool, ran, open, kept, subagent, idle, enqueue, deliver, cancel, draft, nudges, notes, briefs, compacted }
+    const complete = FiberSet.awaitEmpty(tasks)
+    return { contexts, modelRequest, call, finish, logged, hooks, transforms, runTool, ran, open, kept, subagent, idle, enqueue, deliver, cancel, draft, nudges, notes, briefs, compacted, complete }
   })
-
-/** Waits for the plugin's background work, in real time, until `check` passes (tests/wait.ts); one that never does fails with its own expectation. */
-const eventually = (check: () => void) => Effect.promise(() => eventuallyPasses(check))
-
-/** Lets the plugin's background work run, for a check that nothing happened. */
-const settle = Effect.sleep("100 millis")
 
 const scenario = <A, E>(body: Effect.Effect<A, E, import("effect").Scope.Scope>) => Effect.runPromise(Effect.scoped(body))
 
@@ -679,9 +692,9 @@ describe("a latch", () => {
    */
   const timed = <A, E>(body: Effect.Effect<A, E>) =>
     Effect.gen(function* () {
-      const before = Date.now() - now
+      const before = stamp() - now
       const value = yield* body
-      return { value, ahead: { min: before, max: Date.now() - now } }
+      return { value, ahead: { min: before, max: stamp() - now } }
     })
   const onWall = (value: number, fixed: number, ahead: { readonly min: number; readonly max: number }) => {
     expect(value).toBeGreaterThanOrEqual(fixed + ahead.min)
@@ -1603,23 +1616,22 @@ describe("an idle root with units to move or to land", () => {
       Effect.gen(function* () {
         const plugin = yield* start({ now: WEDNESDAY }, world)
         yield* plugin.idle("root")
-        yield* eventually(() =>
-          expect(plugin.nudges).toEqual([{ sessionID: "root", text: LINE, description: LINE, metadata: { [MARK]: true }, delivery: "steer", resume: true }]),
-        )
+        yield* plugin.complete
+        expect(plugin.nudges).toEqual([{ sessionID: "root", text: LINE, description: LINE, metadata: { [MARK]: true }, delivery: "steer", resume: true }])
         // The nudge's own arrival is not new input; the root answers it and goes idle again.
         yield* plugin.enqueue("root", { type: "synthetic", metadata: { [MARK]: true } })
         yield* plugin.idle("root")
-        yield* settle
+        yield* plugin.complete
         expect(plugin.nudges).toHaveLength(1)
         // A worker's notice or the owner's prompt is new input: the next idle period nudges again.
         yield* plugin.enqueue("root", { type: "synthetic", metadata: { other: true } })
-        yield* settle
         yield* plugin.idle("root")
-        yield* eventually(() => expect(plugin.nudges).toHaveLength(2))
+        yield* plugin.complete
+        expect(plugin.nudges).toHaveLength(2)
         yield* plugin.enqueue("root", { type: "user" })
-        yield* settle
         yield* plugin.idle("root")
-        yield* eventually(() => expect(plugin.nudges).toHaveLength(3))
+        yield* plugin.complete
+        expect(plugin.nudges).toHaveLength(3)
       }),
     ))
 
@@ -1629,15 +1641,14 @@ describe("an idle root with units to move or to land", () => {
         const plugin = yield* start({ now: WEDNESDAY }, world)
         // The owner's prompt came during the turn: the host runs the idle hook before the execution takes it.
         const prompt = yield* plugin.enqueue("root", { type: "user" }, false)
-        yield* settle
         yield* plugin.idle("root")
-        yield* settle
+        yield* plugin.complete
         expect(plugin.nudges).toEqual([])
         // The next turn takes it and ends with nothing running: that idle nudges.
         yield* plugin.deliver("root", prompt)
-        yield* settle
         yield* plugin.idle("root")
-        yield* eventually(() => expect(plugin.nudges).toHaveLength(1))
+        yield* plugin.complete
+        expect(plugin.nudges).toHaveLength(1)
       }),
     ))
 
@@ -1647,9 +1658,9 @@ describe("an idle root with units to move or to land", () => {
         const plugin = yield* start({ now: WEDNESDAY }, world)
         const prompt = yield* plugin.enqueue("root", { type: "user" }, false)
         yield* plugin.cancel("root", prompt)
-        yield* settle
         yield* plugin.idle("root")
-        yield* eventually(() => expect(plugin.nudges).toHaveLength(1))
+        yield* plugin.complete
+        expect(plugin.nudges).toHaveLength(1)
       }),
     ))
 
@@ -1663,9 +1674,9 @@ describe("an idle root with units to move or to land", () => {
         yield* plugin.enqueue("root", { type: "user" })
         yield* plugin.cancel("root", first)
         yield* plugin.cancel("root", second)
-        yield* settle
         yield* plugin.idle("root")
-        yield* eventually(() => expect(plugin.nudges).toHaveLength(1))
+        yield* plugin.complete
+        expect(plugin.nudges).toHaveLength(1)
       }),
     ))
 
@@ -1674,16 +1685,17 @@ describe("an idle root with units to move or to land", () => {
       Effect.gen(function* () {
         const ready = (units: ReadonlyArray<{ readonly unit: string; readonly since?: string; readonly cadence?: string }>) =>
           start({ now: WEDNESDAY }, { ...world, runs: [{ name: "p5", units: [{ unit: "closure-flake", state: "merged abc1234" }, ...units.map((unit) => ({ ...unit, state: "ready" }))] }] })
-        const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString().slice(0, 16) + "Z"
+        const minutesAgo = (minutes: number) => new Date(stamp() - minutes * 60_000).toISOString().slice(0, 16) + "Z"
         const one = yield* ready([{ unit: "hotfix", since: minutesAgo(1) }])
         // An older run table's cadence is passed over: three wanted, one ready, it is still ready to land.
         const slow = yield* ready([{ unit: "lexer", since: minutesAgo(5), cadence: "3 ready or 60 min" }])
         const three = yield* ready([{ unit: "lexer" }, { unit: "parser" }, { unit: "docs" }])
         for (const plugin of [one, slow, three]) yield* plugin.idle("root")
         const LAND = 'land them with orchestrate({ action: "land" }).'
-        yield* eventually(() => expect(one.nudges.map((nudge) => nudge.text)).toEqual([`idle with units ready to land: hotfix; ${LAND}`]))
-        yield* eventually(() => expect(slow.nudges.map((nudge) => nudge.text)).toEqual([`idle with units ready to land: lexer; ${LAND}`]))
-        yield* eventually(() => expect(three.nudges.map((nudge) => nudge.text)).toEqual([`idle with units ready to land: lexer, parser, docs; ${LAND}`]))
+        for (const plugin of [one, slow, three]) yield* plugin.complete
+        expect(one.nudges.map((nudge) => nudge.text)).toEqual([`idle with units ready to land: hotfix; ${LAND}`])
+        expect(slow.nudges.map((nudge) => nudge.text)).toEqual([`idle with units ready to land: lexer; ${LAND}`])
+        expect(three.nudges.map((nudge) => nudge.text)).toEqual([`idle with units ready to land: lexer, parser, docs; ${LAND}`])
       }),
     ))
 
@@ -1697,7 +1709,7 @@ describe("an idle root with units to move or to land", () => {
         yield* stranger.idle("root")
         const friday = yield* start({ now: FRIDAY_EVENING }, world)
         yield* friday.idle("root")
-        yield* settle
+        for (const started of [plugin, stranger, friday]) yield* started.complete
         expect([plugin.nudges, stranger.nudges, friday.nudges]).toEqual([[], [], []])
       }),
     ))
@@ -1708,7 +1720,7 @@ describe("an idle root with units to move or to land", () => {
         const held = (holds: Partial<Holds>) => start({ now: WEDNESDAY }, { ...world, holds: { root: { ...NO_HOLDS, ...holds } } })
         const plugins = [yield* held({ wakes: 1 }), yield* held({ questions: 1 }), yield* held({ needsYou: ["Pick a format"] }), yield* held({ waits: ["owner review"] })]
         for (const plugin of plugins) yield* plugin.idle("root")
-        yield* settle
+        for (const plugin of plugins) yield* plugin.complete
         expect(plugins.map((plugin) => plugin.nudges.length)).toEqual([0, 0, 0, 0])
       }),
     ))
@@ -1719,23 +1731,26 @@ describe("an idle root with units to move or to land", () => {
         const plugin = yield* start({ now: WEDNESDAY }, world)
         expect(yield* plugin.draft({ sessionID: "root", client: "tui-1", drafting: true })).toEqual({ ok: true })
         yield* plugin.idle("root")
-        yield* settle
+        yield* plugin.complete
         expect(plugin.nudges).toEqual([])
         yield* plugin.draft({ sessionID: "root", client: "tui-1", drafting: false })
-        yield* Effect.sleep(RECHECK_MS / 2)
+        yield* TestClock.adjust(RECHECK_MS / 2)
         expect(plugin.nudges).toEqual([])
-        yield* eventually(() => expect(plugin.nudges.map((nudge) => nudge.text)).toEqual([LINE]))
+        yield* TestClock.adjust(RECHECK_MS / 2)
+        yield* plugin.complete
+        expect(plugin.nudges.map((nudge) => nudge.text)).toEqual([LINE])
 
         const sent = yield* start({ now: WEDNESDAY }, world)
         yield* sent.draft({ sessionID: "root", client: "tui-1", drafting: true })
         yield* sent.idle("root")
         yield* sent.draft({ sessionID: "root", client: "tui-1", drafting: false })
         yield* sent.enqueue("root", { type: "user" })
-        yield* Effect.sleep(RECHECK_MS + 200)
+        yield* TestClock.adjust(RECHECK_MS + 200)
+        yield* sent.complete
         expect(sent.nudges).toEqual([])
         // A report that is not one is refused without a word.
         expect(yield* sent.draft({ sessionID: "root" })).toEqual({ ok: false })
-      }),
+      }).pipe(Effect.provide(TestClock.layer())),
     ))
 
   test("a nudge the host refuses is not tried again in that idle period", () =>
@@ -1744,7 +1759,7 @@ describe("an idle root with units to move or to land", () => {
         const plugin = yield* start({ now: WEDNESDAY }, { ...world, refuseNudge: "session busy" })
         yield* plugin.idle("root")
         yield* plugin.idle("root")
-        yield* settle
+        yield* plugin.complete
         expect(plugin.nudges).toEqual([])
       }),
     ))
@@ -1767,7 +1782,8 @@ describe("a root whose run saw an older skill", () => {
         const state = world("0".repeat(40), ["common.md:12: Departs from Heavy checks fit the machine: benchmarks need the whole box"])
         const plugin = yield* start({ now: WEDNESDAY }, state)
         yield* plugin.idle("root")
-        yield* eventually(() => expect(plugin.notes).toHaveLength(1))
+        yield* plugin.complete
+        expect(plugin.notes).toHaveLength(1)
         const [note] = plugin.notes
         expect(note).toMatchObject({ sessionID: "root", metadata: { [DRIFT_MARK]: true }, delivery: "steer", resume: true })
         expect(note?.text).toBe(
@@ -1792,7 +1808,7 @@ describe("a root whose run saw an older skill", () => {
       Effect.gen(function* () {
         const plugin = yield* start({ now: WEDNESDAY }, world("2".repeat(40)))
         yield* plugin.idle("root")
-        yield* settle
+        yield* plugin.complete
         expect(plugin.notes).toEqual([])
       }),
     ))
@@ -1803,14 +1819,16 @@ describe("a root whose run saw an older skill", () => {
         const state = world("1".repeat(40))
         const plugin = yield* start({ now: WEDNESDAY }, state)
         yield* Effect.all([plugin.idle("root"), plugin.idle("root")], { concurrency: "unbounded" })
-        yield* eventually(() => expect(plugin.notes).toHaveLength(1))
+        yield* plugin.complete
+        expect(plugin.notes).toHaveLength(1)
         yield* plugin.idle("root")
-        yield* settle
+        yield* plugin.complete
         expect(plugin.notes).toHaveLength(1)
         expect(plugin.notes[0]?.text).toStartWith("The orchestrate skill changed since run p5 saw it (1111111..2222222, 1 commit):\n- feat(orchestrate): change 2\n")
         state.skill.history.push({ hash: "3".repeat(40), subject: "fix(orchestrate): change 3" })
         yield* plugin.idle("root")
-        yield* eventually(() => expect(plugin.notes).toHaveLength(2))
+        yield* plugin.complete
+        expect(plugin.notes).toHaveLength(2)
         expect(plugin.notes[1]?.text).toStartWith("The orchestrate skill changed since run p5 saw it (2222222..3333333, 1 commit):\n- fix(orchestrate): change 3\n")
       }),
     ))
@@ -1821,7 +1839,8 @@ describe("a root whose run saw an older skill", () => {
         const fresh = world(undefined)
         const first = yield* start({ now: WEDNESDAY }, fresh)
         yield* first.idle("root")
-        yield* eventually(() => expect(fresh.records.seen.get(DIR)).toBe("2".repeat(40)))
+        yield* first.complete
+        expect(fresh.records.seen.get(DIR)).toBe("2".repeat(40))
         const behind = world("0".repeat(40))
         const child = yield* start({ now: WEDNESDAY }, behind)
         yield* child.idle("child")
@@ -1833,7 +1852,7 @@ describe("a root whose run saw an older skill", () => {
         yield* older.idle("root")
         const friday = yield* start({ now: FRIDAY_EVENING }, behind)
         yield* friday.idle("root")
-        yield* settle
+        for (const plugin of [child, stranger, older, friday]) yield* plugin.complete
         expect([first.notes, child.notes, stranger.notes, older.notes, friday.notes]).toEqual([[], [], [], [], []])
         expect(behind.records.seen.get(DIR)).toBe("0".repeat(40))
         expect(ahead.records.seen.get(DIR)).toBe("2".repeat(40))
@@ -1846,7 +1865,7 @@ describe("a root whose run saw an older skill", () => {
         const state = world("0".repeat(40))
         const plugin = yield* start({ now: WEDNESDAY }, { ...state, refuseNudge: "session busy" })
         yield* plugin.idle("root")
-        yield* settle
+        yield* plugin.complete
         expect(state.records.seen.get(DIR)).toBe("0".repeat(40))
       }),
     ))
@@ -1962,8 +1981,7 @@ describe("a verifier's verdict and a root's compaction, with no machine", () => 
         yield* plugin.compacted("root", "evt_1")
         yield* plugin.compacted("ses_a", "evt_2")
         yield* plugin.compacted("quiet", "evt_3")
-        yield* eventually(() => expect(plugin.briefs).toHaveLength(1))
-        yield* settle
+        yield* plugin.complete
         expect(plugin.briefs).toHaveLength(1)
         const brief = plugin.briefs[0]!
         expect(brief).toMatchObject({ sessionID: "root", delivery: "steer", resume: false, metadata: { [OpenCodeSteer.BRIEF_MARK]: true } })
@@ -2020,15 +2038,16 @@ describe("a verifier's verdict and a root's compaction, with no machine", () => 
         yield* plugin.idle("ses_v")
         yield* begin(plugin, { agent: "implementor", description: "implementor alpha r1", prompt: "go", background: true }, "ses_i")
         yield* plugin.idle("ses_i")
-        yield* settle
+        yield* plugin.complete
         expect(fleet).toEqual([])
         yield* begin(plugin, verifier("batch-2"), "ses_w")
         yield* plugin.idle("ses_w")
-        yield* eventually(() => expect(fleet).toEqual([{ report: "/run/batch-2-findings.md", batch: "batch-2" }]))
+        yield* plugin.complete
+        expect(fleet).toEqual([{ report: "/run/batch-2-findings.md", batch: "batch-2" }])
         // The verifier goes idle again on the same verdict: published once.
         yield* plugin.idle("ses_w")
         yield* plugin.idle("ses_w")
-        yield* settle
+        yield* plugin.complete
         expect(fleet).toEqual([{ report: "/run/batch-2-findings.md", batch: "batch-2" }])
       }),
     ))
@@ -2051,12 +2070,14 @@ describe("a verifier's verdict and a root's compaction, with no machine", () => 
         const plugin = yield* start({ now: WEDNESDAY }, { sessions, fleet, fleetOutcome, records: { seen: new Map(), logged } })
         yield* begin(plugin, verifier("batch-1"), "ses_v")
         yield* plugin.idle("ses_v")
-        yield* eventually(() => expect(logged.some((each) => each.line.includes("fleet: batch-1 accepted; published the verified target"))).toBe(true))
+        yield* plugin.complete
+        expect(logged.some((each) => each.line.includes("fleet: batch-1 accepted; published the verified target"))).toBe(true)
         expect(plugin.briefs.filter((brief) => brief.description === FLEET_DESCRIPTION)).toEqual([])
         yield* begin(plugin, verifier("batch-2"), "ses_w")
         yield* plugin.idle("ses_w")
         const said = "fleet: batch-2 accepted, but NOT published: the batch file /run/batch-2.md lacks the fork head. Every host stays on the last published target."
-        yield* eventually(() => expect(plugin.briefs.filter((brief) => brief.description === FLEET_DESCRIPTION)).toHaveLength(1))
+        yield* plugin.complete
+        expect(plugin.briefs.filter((brief) => brief.description === FLEET_DESCRIPTION)).toHaveLength(1)
         const [told] = plugin.briefs.filter((brief) => brief.description === FLEET_DESCRIPTION)
         expect([told?.sessionID, told?.text.endsWith(said)]).toEqual(["root", true])
         const refusals = logged.filter((each) => each.line.endsWith(said))
@@ -2086,7 +2107,8 @@ describe("a verifier's verdict and a root's compaction, with no machine", () => 
         yield* plugin.idle("ses_b")
         yield* begin(plugin, verifier("batch-1"), "ses_d")
         yield* plugin.idle("ses_d")
-        yield* eventually(() => expect(logged.some((each) => each.line.includes("fleet: batch-1 accepted; published the verified target"))).toBe(true))
+        yield* plugin.complete
+        expect(logged.some((each) => each.line.includes("fleet: batch-1 accepted; published the verified target"))).toBe(true)
         expect(fleet).toEqual([{ report: "/run/batch-1-findings.md", batch: "batch-1" }])
         expect(plugin.briefs.filter((brief) => brief.description === FLEET_DESCRIPTION)).toEqual([])
         expect(logged.filter((each) => each.line.includes("batch-288"))).toEqual([])
@@ -2108,7 +2130,8 @@ describe("a verifier's verdict and a root's compaction, with no machine", () => 
         const plugin = yield* start({ now: WEDNESDAY }, { sessions, fleet })
         yield* begin(plugin, verifier("batch-2026-11-15cj"), "ses_v")
         yield* plugin.idle("ses_v")
-        yield* eventually(() => expect(fleet).toEqual([{ report: findings, batch: "batch-2026-11-15cj" }]))
+        yield* plugin.complete
+        expect(fleet).toEqual([{ report: findings, batch: "batch-2026-11-15cj" }])
       }),
     ))
 
@@ -2128,12 +2151,12 @@ describe("a verifier's verdict and a root's compaction, with no machine", () => 
             const plugin = yield* start({ now: WEDNESDAY }, { sessions, fleet, fleetCovers })
             yield* begin(plugin, verifier("batch-1"), "ses_v")
             yield* plugin.idle("ses_v")
+            yield* plugin.complete
             return fleet
           })
         const dotfiles = yield* run("/checkouts/dotfiles")
-        yield* eventually(() => expect(dotfiles).toEqual([{ report: "/run/batch-1-findings.md", batch: "batch-1" }]))
+        expect(dotfiles).toEqual([{ report: "/run/batch-1-findings.md", batch: "batch-1" }])
         const bite = yield* run("/checkouts/bite")
-        yield* settle
         expect(bite).toEqual([])
       }),
     ))

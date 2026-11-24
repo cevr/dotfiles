@@ -12,10 +12,10 @@
 // the built-in automation plugin off as daily writes it) stays in the real file.
 import { Effect } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/wake/wake-repeat.sim.test.ts")
+const { seeded } = simulationRunner("cmd/wake/wake-repeat.sim.test.ts")
 
 const WORK = "/scratch/project"
 const STATUS = "/scratch/wake-repeat-status.txt"

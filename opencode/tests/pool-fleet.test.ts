@@ -22,6 +22,7 @@ import { openSlotStore } from "./store/store.ts"
 import { ROOT_TASK, serve } from "./orchestrate/sim.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard, stamp, watchdog } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 const ready = Boolean(fork)
@@ -31,7 +32,6 @@ if (!ready) {
 
 const HOUR = 3_600_000
 const DAY = 24 * HOUR
-const TIMEOUT_MS = 150_000
 
 interface Service {
   readonly url: string
@@ -76,10 +76,10 @@ const rpc = async (host: Host, method: string, input: unknown = {}): Promise<unk
 }
 
 const until = async <A>(read: () => Promise<A>, done: (value: A) => boolean, label: () => string, ms = 60_000): Promise<A> => {
-  const deadline = Date.now() + ms
+  const deadline = watchdog(ms)
   let last = await read()
   while (!done(last)) {
-    if (Date.now() > deadline) return expect.unreachable(`${label()}: still ${JSON.stringify(last)}`)
+    if (deadline.expired()) return expect.unreachable(`${label()}: still ${JSON.stringify(last)}`)
     await Bun.sleep(250)
     last = await read()
   }
@@ -160,7 +160,7 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
     "a wave admitted on one host holds the other's pace before any reading shows it, and a down peer is named",
     kept.test(async () => {
       const sim = serve()
-      const now = Date.now()
+      const now = stamp()
       // Two accounts at half a week's use with half the week left: within the pace on their own.
       const sevenDay = { utilization: 0.5, resetAt: now + 3.5 * DAY }
       const accounts = { alpha: fakeAccount(), beta: fakeAccount() }
@@ -292,8 +292,8 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
           "the pool's weekly pace is over: its 2 accounts' weeks are at 50.0% used of 100% on average, plus 5.0% of the week counted for 2 agents started in the last 10 min; " +
             "the spend-evenly line averages 54.5% used of 100% now, and the start holds past it",
         )
-        expect(pace.retryAt).toBeGreaterThan(Date.now())
-        expect(pace.retryAt).toBeLessThanOrEqual(Date.now() + 10 * 60_000 + 1)
+        expect(pace.retryAt).toBeGreaterThan(stamp())
+        expect(pace.retryAt).toBeLessThanOrEqual(stamp() + 10 * 60_000 + 1)
 
         // A's report carried its starts and no token; nothing B shows or logs has one either.
         const report = JSON.stringify(await rpc(a, "report"))
@@ -311,6 +311,6 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
         sim.server.stop(true)
       }
     }),
-    TIMEOUT_MS,
+    hangGuard("fork-turn"),
   )
 })

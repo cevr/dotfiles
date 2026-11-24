@@ -12,6 +12,7 @@ import { join } from "node:path"
 import { Array as Arr, Config, Effect, Option, Predicate, Schema } from "effect"
 import { scratch } from "../../../tests/scratch.ts"
 import { Fact, sessionOf } from "./race.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 /** The race program, from opencode/ (where the tests run). */
 const PROGRAM = "mods/questions/opencode/race.ts"
@@ -71,5 +72,5 @@ describe("two servers answering at once over the fork's real key-value table", (
     })
     expect(wrong.slice(0, 5)).toEqual([])
     expect([letters.length, answeredLines.length, outcomes.length]).toEqual([COUNT, COUNT, 2 * COUNT])
-  }, 120_000)
+  }, hangGuard("installer"))
 })

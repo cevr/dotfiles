@@ -6,6 +6,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/recover.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -35,5 +36,5 @@ describe.skipIf(!fork)("session recover", () => {
     const settled = readFileSync(join(out, "recover-settled.txt"), "utf8")
     expect(settled.split("↳ Moved to").length - 1).toBe(2)
     expect(settled).not.toContain("Session location unavailable")
-  }), 150_000)
+  }), hangGuard("fork-turn"))
 })

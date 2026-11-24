@@ -6,7 +6,7 @@
 import { headsOf } from "@dotfiles/opencode-orchestrate/fleet"
 import { laneNote, VERIFY_EVERY } from "@dotfiles/opencode-orchestrate/tools"
 import { Array as Arr, Effect, Match, Option, Order, Result, Schema } from "effect"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import {
   boot,
   FINDINGS,
@@ -29,7 +29,7 @@ import {
   warningOf,
 } from "./orch-tools-world.ts"
 
-const { seeded } = Seed.runner("cmd/orchestrate/orch-tools-model.sim.test.ts")
+const { seeded } = simulationRunner("cmd/orchestrate/orch-tools-model.sim.test.ts")
 
 /** Words only the deleted batch machine said. */
 const MACHINE_WORDS = /refused by the\s+machine|the machine holds no unit|the machine's rule/

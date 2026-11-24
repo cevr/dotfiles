@@ -23,11 +23,11 @@ import * as MemoryTokens from "@dotfiles/opencode-mail/memory/tokens"
 import * as Hosts from "../../sim/hosts.ts"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Read from "../../sim/readings.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 import { type Outcome, pair } from "./pair.ts"
 
-const { seeded } = Seed.runner("cmd/mail/mail-peer.sim.test.ts")
+const { seeded } = simulationRunner("cmd/mail/mail-peer.sim.test.ts")
 
 const WORK = "/scratch/work"
 /** Each host's tailnet address, where its listener binds. */

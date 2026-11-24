@@ -20,7 +20,7 @@ import { Effect, FileSystem, Path, Schema, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { NAMES } from "../sim/law-names.ts"
-import { BUDGET_MS } from "../sim/seed.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 /** opencode/: the tests run from it. */
 const ROOT = process.cwd()
@@ -147,13 +147,10 @@ const simulatedCounts = (files: ReadonlyArray<string>) =>
     }),
   )
 
-/** The simulated run's wall-clock ceiling, only a guard against a hung run: the CPU budgets of 20 simulated files (10 today), for a host loaded 30 times over. */
-const SIMULATED_CEILING_MS = 20 * BUDGET_MS * 30
 
 describe("no assertion lost", () => {
-  const live = it.live.layer(BunServices.layer)
 
-  live("the manifest names every baseline test with its baseline expect() calls", () =>
+  it.live.layer(BunServices.layer)("the manifest names every baseline test with its baseline expect() calls", () =>
     Effect.gen(function* () {
       for (const { baseline, entries, retired } of yield* manifests)
       for (const [file, entry] of entries) {
@@ -166,9 +163,10 @@ describe("no assertion lost", () => {
         )
       }
     }),
+    hangGuard("local-fixture"),
   )
 
-  live("a title is a test's, a seeded body's, or an Effect test's (it.live, it.effect), with its expect() calls", () =>
+  it.live.layer(BunServices.layer)("a title is a test's, a seeded body's, or an Effect test's (it.live, it.effect), with its expect() calls", () =>
     Effect.sync(() => {
       const source = [
         'test("plain", async () => { expect(1) })',
@@ -181,13 +179,13 @@ describe("no assertion lost", () => {
     }),
   )
 
-  live("every baseline name exists today where the manifest says", () =>
+  it.live.layer(BunServices.layer)("every baseline name exists today where the manifest says", () =>
     Effect.gen(function* () {
       for (const manifest of yield* manifests) expect(yield* misplaced(manifest)).toEqual([])
     }),
   )
 
-  live("a name the TUI manifest says is simulated but its simulated file lacks is found", () =>
+  it.live.layer(BunServices.layer)("a name the TUI manifest says is simulated but its simulated file lacks is found", () =>
     Effect.gen(function* () {
       const tui = yield* decode("tests/parity/tui.json")
       const [file, entry] = tui.entries[0] ?? ["", { simulated: "", tests: [] }]
@@ -199,7 +197,7 @@ describe("no assertion lost", () => {
     }),
   )
 
-  live(
+  it.live.layer(BunServices.layer)(
     "each file's simulated and remaining real expect() calls are at least the baseline's",
     () =>
       Effect.gen(function* () {
@@ -219,10 +217,10 @@ describe("no assertion lost", () => {
           expect({ file, atLeastBaseline: carried.reduce((sum, calls) => sum + calls, 0) >= baseline }).toEqual({ file, atLeastBaseline: true })
         }
       }),
-    SIMULATED_CEILING_MS,
+    hangGuard("sim-parity"),
   )
 
-  live(
+  it.live.layer(BunServices.layer)(
     "a name leaves its real file only in the commit that adds it to its simulated file, and a retired name names what carries it",
     () =>
       Effect.gen(function* () {
@@ -248,6 +246,6 @@ describe("no assertion lost", () => {
         const carriers = new Set([...NAMES, ...simulatedNames.flat()])
         for (const item of retired) expect({ name: item.name, carriedBy: carriers.has(item.by) }).toEqual({ name: item.name, carriedBy: true })
       }),
-    60_000,
+    hangGuard("process-fixture"),
   )
 })
