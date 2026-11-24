@@ -81,6 +81,77 @@ test("a past 5-hour reset needs a new reading, even with a fresh weekly window",
   expect(dispatchPace([read(now, now + 60_000, 0)], now, {}, 0.04)).toMatchObject({ ok: true, eligible: ["a"] })
 })
 
+test("seed 10286377: a login that cannot be read until sign-in does not hide the pool's first usable remedy", () => {
+  const model = "claude-fable-5-2"
+  const scope = { name: "7d:Fable", utilization: 0.2, resetAt: now + day }
+  const fresh = { at: now, windows: [
+    { name: "7d", utilization: 0.2, resetAt: now + 3.5 * day },
+    { name: "5h", utilization: 0.1, resetAt: now + hour },
+  ] }
+  const basis = { ...account(0.2), reading: fresh }
+  const withScope = { ...fresh, windows: [...fresh.windows, scope] }
+  const signin = { kind: "signin" as const, at: now - hour, until: now - minute }
+  const states = ["signin", "unreported", "stale", "temporary"] as const
+  type Blocker = typeof states[number]
+  const blocked = (credentialID: string, state: Blocker, overlap: boolean): AccountStatus => {
+    if (state === "signin") return { ...basis, credentialID, reading: { at: now - hour, windows: [], refusal: signin } }
+    if (state === "unreported") {
+      const at = Option.getOrElse(Option.filter(Option.some(now - hour), () => overlap), () => now)
+      return { ...basis, credentialID, reading: { ...fresh, at, usage: { at, samples: 2 } } }
+    }
+    if (state === "temporary") return { ...basis, credentialID, reading: withScope, hold: { kind: "rate-limit", at: now, until: now + minute } }
+    return { ...basis, credentialID, reading: { ...withScope, at: now - hour } }
+  }
+  for (const [[left, right], overlap] of Arr.cartesian(Arr.cartesian(states, states), [false, true])) {
+    const facts = [left, right]
+    const candidates = facts.map((state, i) => blocked(String(i), state, overlap))
+    const dispatch = (accounts: ReadonlyArray<AccountStatus>, at = now, selected = model) => dispatchPace(accounts, at, {}, 0.04, selected)
+    const answer = dispatch(candidates)
+    expect(poolPace(candidates, now, { ...NO_INFLIGHT, cost: 0.04 }, model)).toEqual(answer)
+    expect(answer.ok).toBe(false)
+    if (answer.ok) continue
+    // Independent oracle: a good refresh or elapsed hold is a no-action way
+    // forward. If neither exists, a different model or a sign-in is necessary.
+    const first = Arr.findFirst(["stale", "temporary", "unreported", "signin"] as const, (state) => facts.includes(state))
+    if (Option.isNone(first)) continue
+    const reason = { stale: "usage-unread", temporary: "account-held", unreported: "model-unreported", signin: "account-held" } as const satisfies Record<Blocker, HoldReason>
+    expect(answer.reasonCode).toBe(reason[first.value])
+    if (first.value === "unreported" || first.value === "signin") {
+      expect(answer.reason).toMatch(/time alone will not clear|Sign in/)
+      const unchanged = dispatch(candidates, answer.retryAt)
+      expect(unchanged).toMatchObject({ ok: false, reasonCode: answer.reasonCode })
+    }
+    const fixed = facts.indexOf(first.value)
+    const remedied = candidates.map((item, i) => {
+      if (i !== fixed) return item
+      if (first.value === "stale") return { ...item, reading: withScope }
+      // Sign-in alone removes the refusal, not the independent lack of quota
+      // evidence: the next reason must say to read the newly usable account.
+      if (first.value === "signin") return { ...item, reading: { at: now, windows: [] } }
+      return item
+    })
+    if (first.value === "signin") {
+      expect(answer.signIn).toEqual(["0", "1"])
+      expect(dispatch(remedied)).toMatchObject({ ok: false, reasonCode: "usage-unread" })
+      const authenticated = candidates.map((item, i) => {
+        if (i === fixed) return { ...item, reading: withScope }
+        return item
+      })
+      expect(dispatch(authenticated)).toMatchObject({ ok: true, eligible: [String(fixed)] })
+    }
+    if (first.value === "unreported") {
+      const next = dispatch(remedied, now, "claude-opus-5-5")
+      if (overlap) expect(next).toMatchObject({ ok: false, reasonCode: "usage-unread" })
+      else expect(next.ok).toBe(true)
+    }
+    if (first.value === "stale") expect(dispatch(remedied)).toMatchObject({ ok: true, eligible: [String(fixed)] })
+    if (first.value === "temporary") expect(dispatch(remedied, answer.retryAt)).toMatchObject({ ok: true, eligible: expect.arrayContaining([String(fixed)]) })
+  }
+  const absent = dispatchPace([], now, {}, 0.04, model)
+  expect(absent).toMatchObject({ ok: false, reasonCode: "logins-unavailable", reason: expect.stringContaining("add or restore a login") })
+  expect(dispatchPace([basis], now, {}, 0.04, "claude-opus-5-5").ok).toBe(true)
+})
+
 test("the closed set of pace holds names what must change, and opens when it does", () => {
   const opus = "claude-opus-5-5"
   const fable = "claude-fable-5-2"
