@@ -36,6 +36,7 @@ import { Array as Arr, Cause, Clock, Config, Console, Data, Duration, Effect, Ex
 import { Command, Flag } from "effect/cli"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { testHostEnv } from "./test-host.ts"
 
 // ── Input ───────────────────────────────────────────────────────────────
 
@@ -304,7 +305,7 @@ export const serviceEnv = (paths: RunPaths, host: Readonly<Record<string, string
     TMPDIR: paths.tmp,
     OPENCODE_DB: `${paths.run}/opencode.db`,
     OPENCODE_DISABLE_MODELS_FETCH: "1",
-    OPENCODE_DISABLE_FILEWATCHER: "true",
+    ...testHostEnv(),
     RESTART_LEG_RUN: paths.run,
   }
 }

@@ -101,7 +101,6 @@ describe.skipIf(!forkRuns)("a build's plugin tree, loaded by real OpenCode", () 
           XDG_CACHE_HOME: `${home}/.cache`,
           OPENCODE_DB: `${root}/opencode.db`,
           OPENCODE_DISABLE_MODELS_FETCH: "1",
-          OPENCODE_DISABLE_FILEWATCHER: "1",
           OPENCODE_CONFIG: `${tree}/config/opencode.json`,
           OPENCODE_CLI_CONFIG_CONTENT: cli,
           ...launch.env,

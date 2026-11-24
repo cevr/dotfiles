@@ -58,6 +58,7 @@ import { fileURLToPath } from "node:url"
 import { ORCHESTRATOR, orchestrator } from "../../mods/orchestrate/role.ts"
 import { STORE_PREFIX, StoreSource } from "../../mods/pool/store/store.ts"
 import { NO_FREE_MODELS, releaseFlags } from "../../scripts/release-flags.ts"
+import { testHostEnv } from "../../scripts/test-host.ts"
 import { gitInit } from "../../tests/git-repo.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../anthropic-auth.ts"
 import { type HostConfig, type HostScreen, hostCall, isKeyName, keys } from "./pty-host.ts"
@@ -467,6 +468,7 @@ export const forkLaunch = (fork: string, bun: string): Launch => ({
     // A fork from source is channel local, where every flag defaults on: run at the owner's build's flags instead.
     OPENCODE_FLAGS: releaseFlags(""),
     ...NO_FREE_MODELS,
+    ...testHostEnv(),
   },
   fork,
 })
@@ -578,6 +580,7 @@ export const runEnv = (
     OPENCODE_CONFIG_DIR: paths.config,
     ...(offline ? { OPENCODE_DISABLE_MODELS_FETCH: "1" } : {}),
     ...launch.env,
+    ...testHostEnv(),
   }
 }
 

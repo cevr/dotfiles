@@ -101,7 +101,6 @@ describe.skipIf(!forkRuns)("the settings follow an update, from each build's tre
             XDG_CACHE_HOME: `${home}/.cache`,
             OPENCODE_DB: `${root}/opencode.db`,
             OPENCODE_DISABLE_MODELS_FETCH: "1",
-            OPENCODE_DISABLE_FILEWATCHER: "1",
             OPENCODE_CONFIG: `${root}/${tree}/config/opencode.json`,
             OPENCODE_CLI_CONFIG_CONTENT: cli,
             ...launch.env,
