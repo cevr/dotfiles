@@ -272,7 +272,10 @@ const fromReceiver = (checker: Checker, node: Node, op: string, domains: Readonl
     return Option.map(domain, ({ path }) => joined(path, op))
   })
 
-const memberName = (node: Node) => isIdentifier(node) || isStringLiteral(node) ? Option.some(node.text) : Option.none<string>()
+const memberName = (node: Node) => {
+  if (isIdentifier(node) || isStringLiteral(node)) return Option.some(node.text)
+  return Option.none<string>()
+}
 
 /** A shared signature (such as Transform) also needs its domain. Follow a local alias to its receiver. */
 const operationOf = (
@@ -312,7 +315,8 @@ const callsOf = (project: Project, domains: ReadonlyArray<Domain>, declarations:
     const found: Array<Call> = []
     for (const call of callsUnder(source)) {
       const callee = call.expression
-      const direct = isIdentifier(callee) ? Option.none<string>() : yield* operationOf(checker, callee, domains)
+      let direct = Option.none<string>()
+      if (!isIdentifier(callee)) direct = yield* operationOf(checker, callee, domains)
       // The host's own declaration (a generic's, not this call's instance), so a field is the host's and a choice its own.
       const resolved = yield* maybe("a call's signature", () => checker.getResolvedSignature(call))
       const target = yield* Effect.transposeOption(Option.map(resolved, (instance) => maybe("a signature's target", () => instance.getTarget())))
@@ -326,9 +330,8 @@ const callsOf = (project: Project, domains: ReadonlyArray<Domain>, declarations:
         Option.flatMap((paths) => Option.fromUndefinedOr(paths.values().next().value)),
         Option.orElse(() => direct),
       )
-      const matching = Option.isNone(unique) && Option.isSome(possible)
-        ? yield* operationOf(checker, callee, domains)
-        : unique
+      let matching = unique
+      if (Option.isNone(unique) && Option.isSome(possible)) matching = yield* operationOf(checker, callee, domains)
       if (Option.isNone(matching) && Option.isSome(possible)) {
         return yield* Effect.fail(new ScanFailed({ message: `cannot identify ${file}:${lineOf(source, call.getStart(source))} as one of ${[...possible.value].join(", ")}; call it through a typed host domain` }))
       }
