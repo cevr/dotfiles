@@ -1584,13 +1584,18 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
   const tokenOf = (dry: Ran) => LOSE.exec(dry.out)?.[1] ?? ""
   const loseOf = (dry: Ran) => Number(tokenOf(dry).split(":")[0])
 
-  test("N1 (probe Y): a drop refused for a process it cannot look into lists what the base lacks, and nothing it did not list goes: the printed next is the dry run, the deleting run names the list's token, a list that changed refuses", () => {
+  test("N1 (probe Y, N7-a): a drop refused for a process it cannot look into lists what the base lacks, and nothing it did not list goes: beside that process no run deletes a list (it could write after it), the deleting run names the list's token, a list that changed refuses", () => {
     const b = bench("unknown-drop-lacks")
     expect(b.wr(["subvolume", "--apply"]).code).toBe(0)
     // A ref only the kept tree holds, and root's process in that tree.
     sh(b.paths.old, b.env, "git", "update-ref", "refs/heads/rootwork", "refs/heads/feat-a")
     const kept = (ref: string) => sh(b.paths.old, b.env, "git", "for-each-ref", "--format=%(refname)", ref).trim()
-    b.processAt(93030, b.paths.old, ["rg"], [], { hidden: true })
+    const root = b.processAt(93030, b.paths.old, ["rg"], [], { hidden: true })
+    /** Root's process ends: its folder in the bench's proc goes (made readable first, as the end of the file does). */
+    const ended = (at: string) => {
+      chmodSync(join(at, "fd"), 0o700)
+      rmSync(at, { recursive: true, force: true })
+    }
     const refused = b.wr(["subvolume", "--drop-old", "--apply"])
     expect(refused.code, said(refused)).toBe(1)
     expect(refused.err).toContain("could not be looked into")
@@ -1599,7 +1604,18 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     expect(nextLine(refused)).not.toContain("--apply")
     const beside = /or (cd \/ && \S+ workrift subvolume --drop-old --beside-unreadable)$/.exec(nextLine(refused))?.[1]
     expect(beside, nextLine(refused)).toBeDefined()
-    const dry = asPrinted(b, beside!)
+    // Beside the process: the dry run lists, prints no command that deletes, and names the two ways on.
+    const besideDry = asPrinted(b, beside!)
+    expect(besideDry.code, said(besideDry)).toBe(0)
+    expect(besideDry.out).toContain("ref refs/heads/rootwork ")
+    expect(printedDrop(besideDry.out)).toBeUndefined()
+    expect(besideDry.out).toContain("no run deletes")
+    expect(besideDry.out).toContain("1 process(es) of uid 0 (pids 93030")
+    expect(besideDry.out).toContain("stop them, or run it where sudo -n reads them (read only)")
+    expect(besideDry.out).toMatch(/next: cd \/ && \S+ workrift subvolume --drop-old once they ended, or where sudo -n reads them/)
+    // Once it ended, the dry run prints the list's token.
+    ended(root)
+    const dry = b.wr(["subvolume", "--drop-old"])
     expect(dry.code, said(dry)).toBe(0)
     expect(dry.out).toContain("ref refs/heads/rootwork ")
     expect(kept("refs/heads/rootwork")).toBe("refs/heads/rootwork")
@@ -1607,12 +1623,20 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     expect(n, dry.out).toBeGreaterThan(0)
     expect(tokenOf(dry)).toMatch(/^\d+:[0-9a-f]{16}$/)
     const deleting = printedDrop(dry.out)
-    expect(deleting).toEndWith(`--drop-old --apply --lose ${tokenOf(dry)} --beside-unreadable`)
+    expect(deleting).toEndWith(`--drop-old --apply --lose ${tokenOf(dry)}`)
+    // Root's process is back: the token of that very list, with --beside-unreadable, is refused (N7-a).
+    b.processAt(93030, b.paths.old, ["rg"], [], { hidden: true })
+    const besideApply = b.wr(["subvolume", "--drop-old", "--apply", "--lose", tokenOf(dry), "--beside-unreadable"])
+    expect(besideApply.code, said(besideApply)).toBe(1)
+    expect(besideApply.err).toContain("so it is not deleted beside them")
+    expect(besideApply.err).toContain("nothing deleted")
+    expect(kept("refs/heads/rootwork")).toBe("refs/heads/rootwork")
+    ended(root)
     // Without the token: refused, nothing deleted; its next is the dry run again.
-    const bare = b.wr(["subvolume", "--drop-old", "--apply", "--beside-unreadable"])
+    const bare = b.wr(["subvolume", "--drop-old", "--apply"])
     expect(bare.code, said(bare)).toBe(1)
     expect(bare.err).toContain(`holds ${n} item(s) that ${b.base} lacks`)
-    expect(printedNext(bare.err)).toEndWith("--drop-old --beside-unreadable")
+    expect(printedNext(bare.err)).toEndWith("--drop-old")
     expect(kept("refs/heads/rootwork")).toBe("refs/heads/rootwork")
     // The list changed between the dry run and the deleting run: refused, nothing deleted.
     sh(b.paths.old, b.env, "git", "update-ref", "refs/heads/rootwork2", "refs/heads/feat-a")
@@ -1649,6 +1673,21 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     const ok = b.wr(["subvolume", "--drop-old", "--apply"])
     expect(ok.code, said(ok)).toBe(0)
     expect(existsSync(b.paths.old)).toBe(false)
+  }, BENCH_RUNS_MS)
+
+  test("N7-a: with nothing the base lacks, a drop beside a process it cannot look into runs, and says that what that process writes after the listing is not listed and goes", () => {
+    const b = bench("beside-empty")
+    expect(b.wr(["subvolume", "--apply"]).code).toBe(0)
+    b.processAt(93031, b.paths.old, ["rg"], [], { hidden: true })
+    const dry = b.wr(["subvolume", "--drop-old", "--beside-unreadable"])
+    expect(dry.code, said(dry)).toBe(0)
+    expect(dry.out).toContain(`what they write into ${b.paths.old} after this listing is not listed, and the delete takes it`)
+    expect(printedDrop(dry.out)).toEndWith("--drop-old --apply --beside-unreadable")
+    const gone = asPrinted(b, printedDrop(dry.out)!)
+    expect(gone.code, said(gone)).toBe(0)
+    expect(gone.out).toContain("after this listing is not listed, and the delete takes it")
+    expect(existsSync(b.paths.old)).toBe(false)
+    whole(b)
   }, BENCH_RUNS_MS)
 
   /**
@@ -1765,6 +1804,11 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     const aside = b.paths.old.replace(/\.old$/, ".dropping")
     expect(existsSync(aside)).toBe(true)
     expect(b.phase()).toContain("drop")
+    // A switch meanwhile refuses, naming the dry run as the way to finish the drop (N7-b), as its printed next does.
+    const turned = b.wr(["subvolume", "--back", "--apply"])
+    expect(turned.code, said(turned)).toBe(1)
+    expect(turned.err).toContain("a --drop-old was cut short: run workrift subvolume --drop-old (a dry run")
+    expect(printedNext(turned.err)).toEndWith("--drop-old")
     // Written into the tree while the drop stood cut short.
     git(aside, b, "update-ref", "refs/heads/cutwork", "refs/heads/feat-a")
     const stale = b.wr(dropArgv(dry))

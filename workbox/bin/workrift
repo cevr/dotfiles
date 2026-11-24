@@ -3036,6 +3036,7 @@ sv_unknown_pid() {
 sv_users_known() {
   local k_dir="$1" k_all k_line k_users='' k_unknown='' k_n=0 k_uids=' ' k_pid k_uid k_left k_try=0 k_out k_rc k_found k_said k_cmd k_gone
   sv_users_found=
+  sv_beside_unknown=
   sv_read k_all sv_users "$k_dir" || { sv_why="the processes in $k_dir do not read (find over $proc_root failed)"; return 1; }
   while IFS= read -r k_line; do
     case "$k_line" in
@@ -3141,6 +3142,7 @@ EOF
           k_said="no sudo -n here"
         fi
         if [ "${sv_beside_unreadable:-no}" = yes ]; then
+          sv_beside_unknown="$k_n process(es) of uid $k_uids (pids$k_unknown; $k_said)"
           if [ "$k_n $k_uids$k_unknown" != "${sv_beside_said:-}" ]; then
             sv_log "beside $k_n process(es) of uid $k_uids it could not look into (--beside-unreadable; $k_said): pids$k_unknown"
             sv_beside_said="$k_n $k_uids$k_unknown"
@@ -4664,7 +4666,7 @@ sv_switch() {
   sv_kind_of s_ko "$sv_old"
   printf 'workrift subvolume: %s is %s; %s: %s; %s: %s\n' "$sv_base" "$(sv_words "$s_kb")" "$s_c" "$(sv_words "$s_kc")" "$sv_old" "$(sv_words "$s_ko")"
   case "$sv_ph" in
-    drop) fail "a --drop-old was cut short: run workrift subvolume --drop-old --apply to finish it first" ;;
+    drop) fail "a --drop-old was cut short: run workrift subvolume --drop-old (a dry run: it lists the kept tree again and prints the command that finishes the drop) first" ;;
     copy | swap | carry | rollback)
       [ "$sv_ph_target" = "$s_t" ] || fail "a switch to $(sv_words "$sv_ph_target") was cut short ($sv_ph): run workrift subvolume$([ "$sv_ph_target" = F ] && printf ' --back') --apply to finish it first"
       printf 'a switch to %s was cut short (%s): --apply finishes it (cut before its exchange: deletes its copy and switches afresh)\n' "$(sv_words "$s_t")" "$sv_ph"
@@ -4871,6 +4873,7 @@ sv_drop_by_hand() {
 # sv_why (users, or a walk that does not read) and, for a process it cannot
 # look into, sv_next.
 sv_drop_unused() {
+  local u_flag
   sv_rc=0
   sv_users_known "$1" || sv_rc=$?
   case $sv_rc in
@@ -4881,9 +4884,24 @@ sv_drop_unused() {
       ;;
     *) return 1 ;;
   esac
-  [ -z "$sv_users_found" ] && return 0
-  sv_why="processes work in $1 ($(sv_joined "$sv_users_found"))"
-  return 1
+  if [ -n "$sv_users_found" ]; then
+    sv_why="processes work in $1 ($(sv_joined "$sv_users_found"))"
+    return 1
+  fi
+  [ -n "${sv_beside_unknown:-}" ] || return 0
+  # Beside processes it could not look into (--beside-unreadable): what they
+  # write into the tree after the listing no list shows, so a tree that holds
+  # what the base lacks ($2, its token, not 0) is never deleted beside them.
+  if [ "$2" != 0 ]; then
+    sv_why="$sv_beside_unknown could not be looked into: one may be in $1 and write into it after this listing, and no list would show it; $1 holds what $sv_base lacks, so it is not deleted beside them (--beside-unreadable deletes only a tree that holds nothing the base lacks): stop them, or run it where sudo -n reads them (read only)"
+    # The dry run without the flag: beside them no run deletes this list.
+    u_flag=${sv_beside_unreadable:-no}
+    sv_beside_unreadable=no
+    sv_next="$(sv_command drop-dry) once they ended, or where sudo -n reads them"
+    sv_beside_unreadable=$u_flag
+    return 1
+  fi
+  printf '  beside %s it could not look into (--beside-unreadable): what they write into %s after this listing is not listed, and the delete takes it\n' "$sv_beside_unknown" "$1"
 }
 
 # Puts the tree set aside at .dropping back at .old (the base $1's kind) and
@@ -4967,7 +4985,16 @@ sv_drop() {
   d_list=$sv_lacks_list
   d_given=${sv_lose:-0}
   [ "$d_token" != unknown ] && [ "$d_token" = "$d_given" ] || sv_mode=drop-dry
-  sv_drop_unused "$d_tree" || fail "$sv_why: nothing deleted"
+  if ! sv_drop_unused "$d_tree" "$d_token"; then
+    # A dry run beside processes it could not look into still lists: its
+    # refusal is its answer, said as a dry run that changed nothing.
+    [ "$d_apply" = true ] || [ -z "${sv_beside_unknown:-}" ] || [ "$d_token" = 0 ] || {
+      printf 'dry run: nothing changed; no run deletes %s beside the processes it could not look into: %s\n' "$d_tree" "$sv_why"
+      printf 'workrift subvolume: next: %s\n' "$sv_next"
+      return 0
+    }
+    fail "$sv_why: nothing deleted"
+  fi
   if [ "$d_apply" != true ]; then
     case "$d_token" in
       0)
@@ -5015,7 +5042,7 @@ sv_drop() {
   fi
   # Under the ticket, aside: who is in it, and what it holds, again.
   sv_step drop-check "walk the processes in $sv_aside and list again what $sv_base lacks of it"
-  if ! sv_drop_unused "$sv_aside"; then
+  if ! sv_drop_unused "$sv_aside" "$d_token"; then
     sv_drop_put_back "$d_kb"
     fail "$sv_why: nothing deleted; the kept tree is back at $sv_old"
   fi

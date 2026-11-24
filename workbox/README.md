@@ -417,7 +417,16 @@ base lacks of it and compares the token. Any difference renames it back,
 prints the lines that were added and removed, and deletes nothing. Only the
 tree set aside is deleted, never the path `<name>.old`. One window is left:
 a process that enters `<name>.dropping` by that path between the walk and
-the delete. Nothing of workrift's uses that path. A drop that was cut short
+the delete. Nothing of workrift's uses that path.
+
+With `--beside-unreadable`, a process the walk could not look into may
+already be inside the tree, and may write after the listing. So no run
+deletes a tree beside such processes while it holds anything the base lacks:
+the dry run lists it and prints no command that deletes, and the run refuses.
+It names the processes and the two ways on: stop them, or run it where
+`sudo -n` reads them (read only). A tree that holds nothing the base lacks
+is still deleted beside them. The output then says that what they write into
+it after the listing is not listed, and the delete takes it. A drop that was cut short
 lists the tree again where it stands, at `.old` or `.dropping`, and its
 rerun needs the token of the present list. `--back` switches to the kept
 tree in the same way. With no kept tree, `--back` copies into a new folder.
