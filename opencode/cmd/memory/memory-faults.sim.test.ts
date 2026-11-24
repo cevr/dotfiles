@@ -19,7 +19,8 @@
 // And one seed run twice gives byte-equal traces. One fixed run holds the case
 // the seeds meet rarely: a digest the file could not keep, across a restart.
 import { expect as bunExpect } from "bun:test"
-import { assertEffectWitness, witnesses } from "../../sim/witnesses.ts"
+import { MEMORY_ANSWERS } from "../../sim/witness-cases.ts"
+import { assertEffectWitness } from "../../sim/witnesses.ts"
 import { Array as Arr, Effect, Option, Schema } from "effect"
 import * as MemoryFiles from "@dotfiles/opencode-memory/memory/files"
 import { main } from "./cli.ts"
@@ -335,37 +336,34 @@ Seed.effect(
   "W: deliberate histories meet every named answer and a failed write",
   Effect.gen(function* () {
     // Keep a separate, short history for each answer: there is no other call with the same reason to mask its absence.
-    const cases = witnesses(KINDS.map(([kind]) => kind), {
-      saved: [1, { type: "advance", ms: 1 }],
-      updated: [2, save("Run the gate before every push")],
-      corrected: [3, save("Run the gate before every push")],
-      found: [4, search("unmatched")],
-      "none found": [5, search("bun")],
-      forgot: [6, forget(999)],
-      "not found": [7, { type: "advance", ms: 1 }],
-      subagent: [9, save(note, 0)],
-      "store failed": [10, { type: "advance", ms: 1 }],
-    } satisfies Readonly<Record<(typeof KINDS)[number][0], readonly [number, Command]>>)
+    type History = (cause: boolean) => ReadonlyArray<Command>
+    const answer = (index: number, replacement: Command, end = index + 1): History => (cause) =>
+      answers.slice(0, end).map((command, at) => {
+        if (!cause && at === index) return replacement
+        return command
+      })
+    const cases = {
+      saved: answer(1, { type: "advance", ms: 1 }),
+      updated: answer(2, save("Run the gate before every push")),
+      corrected: answer(3, save("Run the gate before every push")),
+      found: answer(4, search("unmatched")),
+      "none found": answer(5, search("bun")),
+      forgot: answer(6, forget(999)),
+      "not found": answer(7, { type: "advance", ms: 1 }),
+      subagent: answer(9, save(note, 0)),
+      "store failed": answer(10, { type: "advance", ms: 1 }, 12),
+      "held digest": (cause) => HELD_ACROSS_RESTART.filter((command) => cause || command.type !== "write-fails"),
+    } satisfies Record<(typeof MEMORY_ANSWERS)[number], History>
     const ran: Array<string> = []
-    for (const [kind, [index, replacement]] of cases) {
-      const end = index + 1 + Number(kind === "store failed")
-      ran.push(yield* assertEffectWitness(kind, true, (cause) => {
-        const history = answers.slice(0, end).map((command, at) => {
-          if (!cause && at === index) return replacement
-          return command
-        })
-        return Effect.map(runOf(1, history), (run) => {
+    for (const [kind, history] of Object.entries(cases)) {
+      ran.push(yield* assertEffectWitness(kind, true, (cause) =>
+        Effect.map(runOf(1, history(cause)), (run) => {
           bunExpect(run.broken).toEqual([])
+          if (kind === "held digest") return run.reached.has("faulted-session")
           return run.reached.has(kind)
-        })
-      }))
+        })))
     }
-    bunExpect(ran.toSorted()).toEqual(cases.map(([kind]) => kind).toSorted())
-    yield* assertEffectWitness("session's digest is held when the file actually failed a write", true, (cause) =>
-      Effect.map(runOf(1, HELD_ACROSS_RESTART.filter((command) => cause || command.type !== "write-fails")), (run) => {
-        bunExpect(run.broken).toEqual([])
-        return run.reached.has("faulted-session")
-      }))
+    bunExpect(ran.toSorted()).toEqual(MEMORY_ANSWERS.toSorted())
   }),
 )
 

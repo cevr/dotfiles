@@ -22,6 +22,7 @@ import { expect } from "bun:test"
 import { Array as Arr, Config, Effect, Layer, Match, Option, type Random } from "effect"
 import { below, generator } from "../../sim/runtime.ts"
 import * as Seed from "../../sim/seed.ts"
+import { RECORD_CASES } from "../../sim/witness-cases.ts"
 import { assertEffectWitness, witnesses } from "../../sim/witnesses.ts"
 import { platform as ownPlatform } from "@dotfiles/opencode-orchestrate/node/platform"
 import { hostServices } from "../../sim/host-services.ts"
@@ -552,21 +553,21 @@ seeded("no commitment disappears: every open one is held or listed, through rest
 
 Seed.effect("W: six promised commitments and a reason for each successful follow-up, deferral and decision survive a restart", Effect.gen(function* () {
   type Evidence = ReturnType<typeof coverPromises>
-  const cases = [
-    { name: "six promises", field: "promises", expected: ["w0", "w1", "w2", "w3", "w4", "w5"] },
-    { name: "follow-up", field: "followUp", expected: { state: Option.some<State>("open"), last: "promised", reason: Option.some("dependency commitment/w0") } },
-    { name: "deferral", field: "deferral", expected: { state: Option.some<State>("open"), last: "deferred", reason: Option.some("guarantee invariant/i1") } },
-    { name: "decision", field: "decision", expected: { state: Option.some<State>("decided"), last: "decided", reason: Option.some("guarantee invariant/i1") } },
-  ] satisfies ReadonlyArray<{ readonly name: OmitWitness; readonly field: keyof Evidence; readonly expected: Evidence[keyof Evidence] }>
+  const cases = {
+    "six promises": { field: "promises", expected: ["w0", "w1", "w2", "w3", "w4", "w5"] },
+    "follow-up": { field: "followUp", expected: { state: Option.some<State>("open"), last: "promised", reason: Option.some("dependency commitment/w0") } },
+    deferral: { field: "deferral", expected: { state: Option.some<State>("open"), last: "deferred", reason: Option.some("guarantee invariant/i1") } },
+    decision: { field: "decision", expected: { state: Option.some<State>("decided"), last: "decided", reason: Option.some("guarantee invariant/i1") } },
+  } satisfies { [Name in (typeof RECORD_CASES)[number]]: { readonly field: keyof Evidence; readonly expected: Evidence[keyof Evidence] } }
   const ran: Array<string> = []
-  for (const { name, field, expected } of cases) {
+  for (const [name, { field, expected }] of witnesses(RECORD_CASES, cases)) {
     ran.push(yield* assertEffectWitness(name, expected, (cause) =>
       onSubject((open) => {
         const without = Option.getOrElse(Option.liftPredicate<OmitWitness>(name, () => !cause), (): OmitWitness => "none")
         return coverPromises(open, without)[field]
       })))
   }
-  expect(ran.toSorted()).toEqual(cases.map((each) => each.name).toSorted())
+  expect(ran.toSorted()).toEqual(RECORD_CASES.toSorted())
 }))
 
 Seed.effect(

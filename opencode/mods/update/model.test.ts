@@ -1399,6 +1399,17 @@ describe("plugin trees", () => {
   const updateProperty = (seed: number) => Effect.map(Effect.forEach(generated(seed), runCase), assertRuns)
 
   describe("a running process only ever holds its own build's plugins", () => {
+    // Mirror of the coverage registry, checked by scripts/sim-coverage.test.ts.
+    const UPDATE_CASES = [
+      "both handoffs are proven",
+      "both handoffs roll back",
+      "both handoffs give up",
+      "both handoffs reject listed plugins before writes",
+      "cannot roll back to an untreed good build",
+      "make tree aborts before handoff",
+      "stage aborts before handoff",
+      "crash replaces the old service and opens a competing TUI before the explicit restart",
+    ] as const
     type Ran = Effect.Success<ReturnType<typeof runCase>>["ran"]
     const ready = reach("on trees", "healthy")
     const recovered = reach("on trees", "rolled back")
@@ -1409,24 +1420,27 @@ describe("plugin trees", () => {
     const atBuild = (step: string) => (ran: Ran) => ({
       outcome: ran.outcomes[0], boundary: ran.calls[0].includes(step), rejected: ran.calls[0].includes("reject build"), handedOff: ran.calls[0].includes("handoff"),
     })
+    const buildFails = (step: "make tree" | "stage") => ({
+      example: reach("on trees", "healthy", Option.some(step)), control: ready, observe: atBuild(step),
+      want: { outcome: "not handed off", boundary: true, rejected: true, handedOff: false },
+      otherwise: { outcome: "proven", boundary: true, rejected: false, handedOff: true },
+    })
+    type Observation = Ran["outcomes"] | ReturnType<typeof rejectConfig> | ReturnType<typeof untreed> | ReturnType<ReturnType<typeof atBuild>> | ReadonlyArray<Reopened>
+    type Case = { readonly example: ReturnType<typeof reach>; readonly control: ReturnType<typeof reach>; readonly observe: (ran: Ran) => Observation; readonly want: Observation; readonly otherwise: Observation }
     const between = ["record", "restart"] as const
-    const cases = [
-      { name: "both handoffs are proven", example: ready, control: recovered, observe: exits, want: ["proven", "proven"], otherwise: ["rolled-back", "rolled-back"] },
-      { name: "both handoffs roll back", example: recovered, control: sickTwice, observe: exits, want: ["rolled-back", "rolled-back"], otherwise: ["gave-up", "gave-up"] },
-      { name: "both handoffs give up", example: sickTwice, control: recovered, observe: exits, want: ["gave-up", "gave-up"], otherwise: ["rolled-back", "rolled-back"] },
-      { name: "both handoffs reject listed plugins before writes", example: reach("lists ours", "healthy"), control: ready, observe: rejectConfig, want: [true, true], otherwise: [false, false] },
-      {
-        name: "cannot roll back to an untreed good build", example: reach("untreed good", "rolled back"), control: recovered, observe: untreed,
+    const cases = {
+      "both handoffs are proven": { example: ready, control: recovered, observe: exits, want: ["proven", "proven"], otherwise: ["rolled-back", "rolled-back"] },
+      "both handoffs roll back": { example: recovered, control: sickTwice, observe: exits, want: ["rolled-back", "rolled-back"], otherwise: ["gave-up", "gave-up"] },
+      "both handoffs give up": { example: sickTwice, control: recovered, observe: exits, want: ["gave-up", "gave-up"], otherwise: ["rolled-back", "rolled-back"] },
+      "both handoffs reject listed plugins before writes": { example: reach("lists ours", "healthy"), control: ready, observe: rejectConfig, want: [true, true], otherwise: [false, false] },
+      "cannot roll back to an untreed good build": {
+        example: reach("untreed good", "rolled back"), control: recovered, observe: untreed,
         want: { outcome: "gave-up", calls: ["record", "restart", "reject health"] },
         otherwise: { outcome: "rolled-back", calls: ["record", "restart", "record (good)", "restart", "reject health"] },
       },
-      ...(["make tree", "stage"] as const).map((step) => ({
-        name: `${step} aborts before handoff`, example: reach("on trees", "healthy", Option.some(step)), control: ready, observe: atBuild(step),
-        want: { outcome: "not handed off", boundary: true, rejected: true, handedOff: false },
-        otherwise: { outcome: "proven", boundary: true, rejected: false, handedOff: true },
-      })),
-      {
-        name: "crash replaces the old service and opens a competing TUI before the explicit restart",
+      "make tree aborts before handoff": buildFails("make tree"),
+      "stage aborts before handoff": buildFails("stage"),
+      "crash replaces the old service and opens a competing TUI before the explicit restart": {
         example: reach("on trees", "healthy", Option.none(), Option.some("restart")), control: ready,
         observe: (ran: Ran) => ran.host.reopened,
         want: [
@@ -1435,11 +1449,11 @@ describe("plugin trees", () => {
         ],
         otherwise: [],
       },
-    ]
+    } satisfies { readonly [Key in (typeof UPDATE_CASES)[number]]: Case }
     test("W: A4 crash, handoff, rollback, and build outcomes", () => check(Effect.gen(function* () {
       const ran: Array<string> = []
-      for (const example of cases) {
-        ran.push(yield* assertEffectWitness(example.name, example.want, (cause) => {
+      for (const [name, example] of Object.entries(cases)) {
+        ran.push(yield* assertEffectWitness<Observation, UpdateFailed, never>(name, example.want, (cause) => {
           const input = Option.getOrElse(Option.liftPredicate(example.example, () => cause), () => example.control)
           return Effect.map(runCase(input), (result) => {
             assertRuns([result])
@@ -1449,7 +1463,7 @@ describe("plugin trees", () => {
           })
         }))
       }
-      expect(ran.toSorted()).toEqual(cases.map((each) => each.name).toSorted())
+      expect(ran.toSorted()).toEqual(UPDATE_CASES.toSorted())
     }), constVoid))
 
     test("A4: over generated hosts, endings, crashes and a second update, no step breaks I1 to I7, no step of the old scheme runs, a server config listing ours ends with no write and no restart, and a good build with no tree is never rolled back onto", () =>

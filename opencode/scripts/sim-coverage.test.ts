@@ -1,9 +1,10 @@
-// @reads cmd/guard/guard-faults.sim.test.ts cmd/memory/memory-faults.sim.test.ts cmd/orchestrate/record-model.sim.test.ts cmd/questions/questions-held.sim.test.ts mods/orchestrate/tools.test.ts mods/pool/claim-rule.test.ts mods/questions/opencode/form.test.ts mods/update/builds.test.ts mods/update/model.test.ts scripts/accept-yield.test.ts sim/witnesses.ts
+// @reads cmd/guard/guard-faults.sim.test.ts cmd/memory/memory-faults.sim.test.ts cmd/orchestrate/record-model.sim.test.ts cmd/questions/questions-held.sim.test.ts mods/orchestrate/tools.test.ts mods/pool/claim-rule.test.ts mods/questions/opencode/form.test.ts mods/update/builds.test.ts mods/update/model.test.ts scripts/accept-yield.test.ts sim/witnesses.ts sim/witness-cases.ts
 import { expect, expectTypeOf, test } from "bun:test"
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Array as Arr, Effect, FileSystem, Option, Path, Predicate } from "effect"
 import { it } from "effect-bun-test"
 import { type CallExpression, type MemberExpression, parseSync, Visitor } from "oxc-parser"
+import { coverage } from "../sim/witness-cases.ts"
 import { assertEffectWitness, assertWitness, witnesses } from "../sim/witnesses.ts"
 
 test("required outcomes select explicit cases, in the declared order, with no seed or generated tally", () => {
@@ -110,7 +111,7 @@ const witnessSources = (file: string, text: string) => {
     missing: Arr.map(Arr.filter(examples, (call) => !Option.exists(Arr.get(call.arguments, 1), (body) => compares.some((compare) => within(compare, body)))), titleOf),
     notOrdinary: Arr.map(Arr.filter(examples, (call) => !ordinaryTest(call)), titleOf),
     unmarked: Arr.map(Arr.filter(compares, (call) => !examples.some((example) => within(call, example))), (call) => text.slice(call.start, call.end)),
-    hasWitness: examples.length > 0,
+    names: examples.map(titleOf),
   }
 }
 
@@ -130,7 +131,7 @@ test("the source guard rejects a witness with no comparison and attempts to skip
     missing: ["W: no helper", "W: only in a comment"],
     notOrdinary: ["W: no helper", "W: aliased"],
     unmarked: ["assertWitness(a, b, c, d)"],
-    hasWitness: true,
+    names: ["W: no helper", "W: only in a comment", "W: live", "W: aliased"],
   })
 })
 
@@ -143,23 +144,55 @@ const readSource = Effect.fn("WitnessSources.readSource")(function* (file: strin
 
 const live = it.live.layer(BunServices.layer)
 
+const files = [
+  "cmd/guard/guard-faults.sim.test.ts",
+  "cmd/memory/memory-faults.sim.test.ts",
+  "cmd/orchestrate/record-model.sim.test.ts",
+  "cmd/questions/questions-held.sim.test.ts",
+  "mods/questions/opencode/form.test.ts",
+  "scripts/accept-yield.test.ts",
+  "mods/orchestrate/tools.test.ts",
+  poolFile,
+  "mods/update/builds.test.ts",
+  "mods/update/model.test.ts",
+]
+
 live("every named witness calls its helper in one ordinary test", () => Effect.gen(function* () {
-  const files = [
-    "cmd/guard/guard-faults.sim.test.ts",
-    "cmd/memory/memory-faults.sim.test.ts",
-    "cmd/orchestrate/record-model.sim.test.ts",
-    "cmd/questions/questions-held.sim.test.ts",
-    "mods/questions/opencode/form.test.ts",
-    "scripts/accept-yield.test.ts",
-    "mods/orchestrate/tools.test.ts",
-    poolFile,
-    "mods/update/builds.test.ts",
-    "mods/update/model.test.ts",
-  ]
   for (const file of files) {
-    const { allowed, ...guard } = witnessSources(file, yield* readSource(file))
-    expect(guard, file).toEqual({ parsed: [], forbidden: [], missing: [], notOrdinary: [], unmarked: [], hasWitness: true })
+    const { allowed, names, ...guard } = witnessSources(file, yield* readSource(file))
+    expect(guard, file).toEqual({ parsed: [], forbidden: [], missing: [], notOrdinary: [], unmarked: [] })
+    const required = Arr.map(Arr.filter(coverage, ([path]) => path === file), ([, title]) => title)
+    expect(names.toSorted(), `${file}: witness titles declared in coverage registry`).toEqual(required.toSorted())
     if (file === poolFile) expect(allowed.toSorted(), file).toEqual(poolFailures.toSorted())
     else expect(allowed, file).toEqual([])
+  }
+}))
+
+const fenced = ["mods/orchestrate/tools.test.ts", poolFile, "mods/update/builds.test.ts", "mods/update/model.test.ts"]
+const mirrorsOf = (file: string, text: string, names: ReadonlySet<string>) => {
+  const found: Array<readonly [string, ReadonlyArray<unknown>]> = []
+  new Visitor({
+    VariableDeclaration: ({ kind, declarations }) => {
+      if (kind !== "const") return
+      for (const { id, init } of declarations) {
+        if (id.type !== "Identifier" || !names.has(id.name) || init?.type !== "TSAsExpression" || init.expression.type !== "ArrayExpression") continue
+        if (text.slice(init.typeAnnotation.start, init.typeAnnotation.end) !== "const") continue
+        const values = init.expression.elements.map((item) => {
+          if (item?.type === "Literal") return item.value
+          return { invalid: "not a literal case key or bound" }
+        })
+        found.push([id.name, values])
+      }
+    },
+  }).visit(parseSync(file, text).program)
+  return found
+}
+
+live("fenced case declarations mirror the independent registry exactly", () => Effect.gen(function* () {
+  for (const file of fenced) {
+    const expected = coverage.flatMap(([path, , law]) => Object.entries(law).filter(() => path === file))
+    const names = new Set(expected.map(([name]) => name))
+    expect(names.size, file).toBe(expected.length)
+    expect(mirrorsOf(file, yield* readSource(file), names).toSorted(), file).toEqual(expected.toSorted())
   }
 }))

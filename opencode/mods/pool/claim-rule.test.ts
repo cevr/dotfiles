@@ -52,6 +52,12 @@ const assertWitness = <A>(name: string, expected: A, run: (cause: boolean) => A)
   return name
 }
 
+// Mirrors of the coverage registry, checked by scripts/sim-coverage.test.ts.
+const POOL_CLAIM_BOUNDS = [0, 20] as const
+const POOL_WAIT_BOUNDS = [0, 100] as const
+const POOL_CLAIMS = ["forecast", "expiry"] as const
+const POOL_WAITS = ["room", "exhaustion"] as const
+
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
 const DAY = 24 * HOUR
@@ -422,23 +428,39 @@ describe("the rule on one pool, by example", () => {
     expect([room.options.some((each) => notSoon(each, NOW)), truth(room, "7d").runsOut]).toEqual([true, false])
     expect(room.verdict._tag).toBe("NoClaim")
   }
+  type PoolCase = (typeof POOL_CLAIMS | typeof POOL_WAITS)[number]
+  type Input = Parameters<typeof pool>
+  const room = (index: number): Input => [0.25, 2 * DAY, 30 * DAY, index, 3]
+  const spent = (index: number): Input => [1, 3 * DAY, 30 * DAY, index]
+  const fixtures = {
+    forecast: (index, cause) => {
+      if (cause) return [0.99, 3 * DAY, 30 * DAY, index]
+      return room(index)
+    },
+    expiry: (index, cause) => {
+      if (cause) return [1, 3 * DAY, 12 * HOUR, index]
+      return spent(index)
+    },
+    room: (index, cause) => {
+      if (cause) return room(index)
+      return spent(index)
+    },
+    exhaustion: (index, cause) => {
+      if (cause) return [1, 3 * DAY, 30 * DAY, index, 6, never]
+      return spent(index)
+    },
+  } satisfies Record<PoolCase, (index: number, cause: boolean) => Input>
   const cases = [
-    ...Arr.range(0, 20).flatMap((index) => (["forecast", "expiry"] as const).map((kind) => ({ index, kind, name: `${kind} ${index}` }))),
-    ...Arr.range(0, 100).flatMap((index) => (["room", "exhaustion"] as const).map((kind) => ({ index, kind, name: `${kind} ${index}` }))),
+    ...Arr.range(...POOL_CLAIM_BOUNDS).flatMap((index) => POOL_CLAIMS.map((kind) => ({ index, kind }))),
+    ...Arr.range(...POOL_WAIT_BOUNDS).flatMap((index) => POOL_WAITS.map((kind) => ({ index, kind }))),
   ]
   test("W: all forecast, expiry, room, and exhaustion decisions", () => {
     const ran: Array<string> = []
-    for (const { index, kind, name } of cases) {
-      const inputs = (cause: boolean): Parameters<typeof pool> => {
-        if ((kind === "room" && cause) || (kind === "forecast" && !cause)) return [0.25, 2 * DAY, 30 * DAY, index, 3]
-        if (kind === "forecast" && cause) return [0.99, 3 * DAY, 30 * DAY, index]
-        if (kind === "expiry" && cause) return [1, 3 * DAY, 12 * HOUR, index]
-        if (kind === "exhaustion" && cause) return [1, 3 * DAY, 30 * DAY, index, 6, never]
-        return [1, 3 * DAY, 30 * DAY, index]
-      }
+    for (const { index, kind } of cases) {
       const expected = { forecast: ["reset", "ra"], expiry: ["expiring", "ra"], room: ["NoClaim"], exhaustion: ["ra"] }[kind]
-      ran.push(assertWitness(name, expected, (cause) => {
-        const decision = pool(...inputs(cause))
+      ran.push(assertWitness(`${kind} ${index}`, expected, (cause) => {
+        const input: Input = fixtures[kind](index, cause)
+        const decision = pool(...input)
         if ((kind === "room" && cause) || (kind === "forecast" && !cause)) checkedRoom(decision)
         if (!cause && kind !== "forecast") expect(taken(decision)).toEqual(["reset", "ra"])
         if (kind === "forecast" && cause) eachClaimHolds([decision])
@@ -451,7 +473,11 @@ describe("the rule on one pool, by example", () => {
         return taken(decision)
       }))
     }
-    expect(ran.toSorted()).toEqual(cases.map((each) => each.name).toSorted())
+    const required = [
+      ...Arr.range(...POOL_CLAIM_BOUNDS).flatMap((index) => POOL_CLAIMS.map((kind) => `${kind} ${index}`)),
+      ...Arr.range(...POOL_WAIT_BOUNDS).flatMap((index) => POOL_WAITS.map((kind) => `${kind} ${index}`)),
+    ]
+    expect(ran.toSorted()).toEqual(required.toSorted())
   })
 })
 

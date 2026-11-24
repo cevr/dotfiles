@@ -237,21 +237,24 @@ describe("acceptance: a prune over share directories of both build formats, with
   const files = (each: Build) => [buildName(each.version), treeOf(buildName(each.version))]
   const prune = (record: Build) => prunable([...files(stale), ...files(live)], record, nothingRuns)
   const removedLive = (removed: ReadonlyArray<string>) => removed.filter((name) => files(live).includes(name))
-  const cases = [
-    { name: "an unreferenced tree build and its tree go", expected: files(stale), observe: (removed: ReadonlyArray<string>) => removed },
-    { name: "a recorded tree build and its tree stay", expected: [], observe: removedLive },
-  ]
+  // Mirror of the coverage registry, checked by scripts/sim-coverage.test.ts.
+  const BUILD_CASES = ["an unreferenced tree build and its tree go", "a recorded tree build and its tree stay"] as const
+  type Case = { readonly expected: ReadonlyArray<string>; readonly observe: (removed: ReadonlyArray<string>) => ReadonlyArray<string> }
+  const cases = {
+    "an unreferenced tree build and its tree go": { expected: files(stale), observe: (removed) => removed },
+    "a recorded tree build and its tree stay": { expected: [], observe: removedLive },
+  } satisfies { readonly [Key in (typeof BUILD_CASES)[number]]: Case }
   test("W: prune and keep use the installed build", () => {
     const ran: Array<string> = []
-    for (const each of cases) {
-      ran.push(assertWitness(each.name, each.expected, (cause) => {
+    for (const [name, each] of Object.entries(cases)) {
+      ran.push(assertWitness(name, each.expected, (cause) => {
         const record = Option.getOrElse(Option.liftPredicate(live, () => cause), () => stale)
         const removed = prune(record)
         if (!cause) expect(removed, "control setup: the other build is now unreferenced").toEqual(files(live))
         return each.observe(removed)
       }))
     }
-    expect(ran.toSorted()).toEqual(cases.map((each) => each.name).toSorted())
+    expect(ran.toSorted(), "prune cases completed").toEqual(BUILD_CASES.toSorted())
   })
 
   test(`over ${RUNS} generated hosts (seed ${SEED}), it names (a) builds and trees only, (b) never a kept or running one, (c) every other, of either format; a tree exactly when its build, never while a command line names it`, () => {

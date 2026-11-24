@@ -5,6 +5,7 @@
 import { describe, expect } from "bun:test"
 import { Deferred, Effect, Fiber, Random } from "effect"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
+import { FORM_CASES } from "../../../sim/witness-cases.ts"
 import { assertEffectWitness } from "../../../sim/witnesses.ts"
 import type { FormInput } from "../form.ts"
 import type { Question } from "../question.ts"
@@ -211,13 +212,17 @@ describe("opening the questions form", () => {
       yield* stand.release
       return { pending, first, submitted, next: yield* Fiber.join(reopened), listed: listed() }
     })
-    yield* assertEffectWitness("pending form containing q1", [["ask_user_async:q1"]], (cause) =>
-      Effect.map(play(cause, false), (run) => run.pending))
-    yield* assertEffectWitness("no answered key on reopen", { next: "none", listed: [] }, (cause) =>
-      Effect.map(play(true, cause), ({ first, submitted, next, listed }) => {
-        if (cause) expect({ first, submitted }).toEqual({ first: "opened", submitted: ["ask_user_async:q1"] })
-        else expect({ next, listed }).toEqual({ next: "opened", listed: [["ask_user_async:q1"]] })
-        return { next, listed }
-      }))
+    const cases = {
+      "opened form": (name) => assertEffectWitness(name, [["ask_user_async:q1"]], (cause) =>
+        Effect.map(play(cause, false), (run) => run.pending)),
+      "submitted form": (name) => assertEffectWitness(name, { next: "none", listed: [] }, (cause) =>
+        Effect.map(play(true, cause), ({ first, submitted, next, listed }) => {
+          if (cause) expect({ first, submitted }).toEqual({ first: "opened", submitted: ["ask_user_async:q1"] })
+          else expect({ next, listed }).toEqual({ next: "opened", listed: [["ask_user_async:q1"]] })
+          return { next, listed }
+        })),
+    } satisfies Record<(typeof FORM_CASES)[number], (name: string) => Effect.Effect<string>>
+    const ran = yield* Effect.forEach(Object.entries(cases), ([name, run]) => run(name))
+    expect(ran.toSorted()).toEqual(FORM_CASES.toSorted())
   }), TIMEOUT_MS)
 })

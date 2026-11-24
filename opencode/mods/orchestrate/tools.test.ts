@@ -327,6 +327,11 @@ const assertWitness = <A>(name: string, expected: A, run: (cause: boolean) => A)
   return name
 }
 
+// Mirrors of the coverage registry, checked by scripts/sim-coverage.test.ts.
+const RENDER_BOUNDS = [0, 199] as const
+const NEXT_BOUNDS = [0, 10] as const
+const NEXT_ACTIONS = ["land", "verify"] as const
+
 describe("every call an answer or a refusal names", () => {
   const checkTexts = (texts: ReadonlyArray<string>) => {
     for (const text of texts) {
@@ -343,7 +348,8 @@ describe("every call an answer or a refusal names", () => {
       checkTexts(deliberate)
     }
   })
-  const renders = Arr.range(0, 199).map((index) => ({ index, name: `render ${index}: eight land calls and a missing-purpose hint` }))
+  const renderName = (index: number) => `render ${index}: eight land calls and a missing-purpose hint`
+  const renders = Arr.range(...RENDER_BOUNDS).map((index) => ({ index, name: renderName(index) }))
   test("W: every render emits eight land calls and its missing-purpose hint", () => {
     const ran: Array<string> = []
     for (const { index, name } of renders) {
@@ -365,7 +371,7 @@ describe("every call an answer or a refusal names", () => {
         return count
       }))
     }
-    expect(ran.toSorted(), "render cases completed").toEqual(renders.map((each) => each.name).toSorted())
+    expect(ran.toSorted(), "render cases completed").toEqual(Arr.range(...RENDER_BOUNDS).map(renderName).toSorted())
   })
 })
 
@@ -737,21 +743,26 @@ const STATES = ["plan", "implement", "ready", "verify", "blocked", "merged abc12
 
 describe("next", () => {
   const due: MainSince = { branch: "main", head: shaOf(1000), base: shaOf(7), lands: VERIFY_EVERY, last: Option.none() }
-  const nextCases = Arr.range(0, 10).flatMap((index) => (["land", "verify"] as const).map((action) => ({ index, action, name: `next ${index}: ${action}` })))
+  type NextAction = (typeof NEXT_ACTIONS)[number]
+  type Inputs = { readonly runs: ReadonlyArray<Run>; readonly lanes: ReadonlyArray<Lane>; readonly main: Option.Option<MainSince> }
+  const nextName = (index: number, action: string) => `next ${index}: ${action}`
+  const fixtures = {
+    land: (index, cause) => {
+      const unit = `ready-${index}`
+      return {
+        runs: [{ name: unit, units: [{ unit, state: "ready" }] }],
+        lanes: [laneOf(unit, false)].filter(() => cause),
+        main: Option.some(due),
+      }
+    },
+    verify: (index, cause) => ({ runs: [], lanes: [], main: Option.filter(Option.some({ ...due, lands: due.lands + index }), () => cause) }),
+  } satisfies Record<NextAction, (index: number, cause: boolean) => Inputs>
+  const nextCases = Arr.range(...NEXT_BOUNDS).flatMap((index) => NEXT_ACTIONS.map((action) => ({ index, action })))
   test("W: every next case recommends its ready land or due verify", () => {
     const ran: Array<string> = []
-    for (const { index, action, name } of nextCases) {
-      const unit = `ready-${index}`
-      const inputs = (cause: boolean) => {
-        if (action === "land") return {
-          runs: [{ name: unit, units: [{ unit, state: "ready" }] }],
-          lanes: [laneOf(unit, false)].filter(() => cause),
-          main: Option.some(due),
-        }
-        return { runs: [], lanes: [], main: Option.filter(Option.some({ ...due, lands: due.lands + index }), () => cause) }
-      }
-      ran.push(assertWitness(name, [Option.some(action)], (cause) => {
-        const { runs, lanes, main } = inputs(cause)
+    for (const { index, action } of nextCases) {
+      ran.push(assertWitness(nextName(index, action), [Option.some(action)], (cause) => {
+        const { runs, lanes, main } = fixtures[action](index, cause)
         const next = nextOf(runs, lanes, false, main, NOW)
         const decoded = decodedIn(next.line)
         const named = decoded.map(({ decoded }) => Option.map(decoded, (input) => input.action))
@@ -764,7 +775,8 @@ describe("next", () => {
         return named
       }))
     }
-    expect(ran.toSorted()).toEqual(nextCases.map((each) => each.name).toSorted())
+    const required = Arr.range(...NEXT_BOUNDS).flatMap((index) => NEXT_ACTIONS.map((action) => nextName(index, action)))
+    expect(ran.toSorted()).toEqual(required.toSorted())
   })
   test("B4: over generated derived tables, next names a call that decodes, and a land only for a unit ready with a lane", () => {
     for (const seed of SEEDS) {

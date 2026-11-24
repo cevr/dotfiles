@@ -20,6 +20,7 @@ import { Array as Arr, Effect, Option, Schema } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
 import { below, generator } from "../../sim/runtime.ts"
 import * as Seed from "../../sim/seed.ts"
+import { GUARD_CALLS, GUARD_FAULTS, GUARD_FORMS, GUARD_RESTART, GUARD_ROLES, GUARD_STATES } from "../../sim/witness-cases.ts"
 import { assertEffectWitness } from "../../sim/witnesses.ts"
 import * as World from "../../sim/world.ts"
 
@@ -28,6 +29,10 @@ const { seeded } = Seed.runner("cmd/guard/guard-faults.sim.test.ts")
 const WORK = "/scratch/guard/work"
 const HOME = "/Users/owner"
 const SPEC = "/scratch/guard/faults/spec.json"
+
+type EachKey<Keys extends ReadonlyArray<string>, Key extends string, Value> = {
+  readonly [Index in keyof Keys]: Value & { readonly [Name in Key]: Keys[Index] }
+}
 
 /** A shell call by what the guard must make of it. */
 const CALLS = [
@@ -39,7 +44,7 @@ const CALLS = [
   { kind: "sleep", command: "sleep 60", refused: "in a subagent" },
   { kind: "harmless", command: "echo ok", refused: "never" },
   { kind: "heavy", command: "bun test ./mods", refused: "never" },
-] as const
+] as const satisfies EachKey<typeof GUARD_CALLS, "kind", { readonly command: string; readonly refused: string }>
 
 type Call = (typeof CALLS)[number]
 
@@ -49,7 +54,7 @@ const FORMS = [
   { id: "bash", name: "bash", text: false },
   { id: "shell-text", name: "shell", text: true },
   { id: "bash-text", name: "bash", text: true },
-] as const
+] as const satisfies EachKey<typeof GUARD_FORMS, "id", { readonly name: "shell" | "bash"; readonly text: boolean }>
 
 type Form = (typeof FORMS)[number]
 
@@ -192,7 +197,7 @@ seeded(
   (run) => exercise(run, commandsOf(run.seed)),
 )
 
-const callForms = CALLS.flatMap((call) => FORMS.flatMap((form) => [false, true].map((child): CallCommand => ({ type: "call", call, form, child }))))
+const callForms = CALLS.flatMap((call) => FORMS.flatMap((form) => GUARD_ROLES.map((child): CallCommand => ({ type: "call", call, form, child }))))
 
 Seed.effect(
   "W: every call in every form is judged in a root and subagent, with both faults on after a restart and with faults off",
@@ -200,31 +205,30 @@ Seed.effect(
     const input = { seed: 1, expect }
     const restart: Command = { type: "restart" }
     const faults = (on: boolean): ReadonlyArray<Command> => [{ type: "ps-fails", on }, { type: "launchers-fail", on }]
-    yield* assertEffectWitness("guard reloads its copy on the restarted world", 2, (cause) =>
-      Effect.map(exercise(input, [restart].filter(() => cause)), (run) => run.loaded))
-
     const nameOf = (call: CallCommand) => `${call.call.kind}/${call.form.id}/${call.child}`
-    const matrix = callForms.flatMap((call) => [true, false].map((faulted) => ({ call, faulted, name: `${nameOf(call)}/faults=${faulted}` })))
+    const requiredNames = <A extends string>(calls: ReadonlyArray<A>) =>
+      calls.flatMap((call) => GUARD_FORMS.flatMap((form) => GUARD_ROLES.map((child) => `${call}/${form}/${child}`)))
+    const matrix = callForms.flatMap((call) => GUARD_STATES.map((faulted) => ({ call, faulted, name: `${nameOf(call)}/faults=${faulted}` })))
     const ran: Array<string> = []
+    ran.push(yield* assertEffectWitness(GUARD_RESTART, 2, (cause) =>
+      Effect.map(exercise(input, [restart].filter(() => cause)), (run) => run.loaded)))
     for (const { call, faulted, name } of matrix) {
       const refused = mustRefuse(call, faulted)
       const want = { refused, commands: [call.call.command].filter(() => !refused), launcher: call.call.kind === "heavy" && !faulted, alias: !refused && call.form.name === "bash" }
       ran.push(yield* assertEffectWitness(name, want, (cause) =>
         Effect.map(exercise(input, [...faults(faulted), restart, ...[call].filter(() => cause)]), (run) => run.seen.at(0))))
     }
-    expect(ran.toSorted()).toEqual(matrix.map((each) => each.name).toSorted())
-
     const faultCases = callForms.filter((call) => call.call.kind === "kill-other" || call.call.kind === "heavy")
-    const faultsSeen: Array<string> = []
     for (const call of faultCases) {
       const readsProcessTable = call.call.kind === "kill-other"
-      faultsSeen.push(yield* assertEffectWitness(nameOf(call), readsProcessTable, (cause) =>
+      ran.push(yield* assertEffectWitness(nameOf(call), readsProcessTable, (cause) =>
         Effect.map(exercise(input, [...faults(cause), restart, call]), (run) => {
           const seen = Option.getOrThrow(Arr.head(run.seen))
           if (readsProcessTable) return seen.refused
           return seen.launcher
         })))
     }
-    expect(faultsSeen.toSorted()).toEqual(faultCases.map(nameOf).toSorted())
+    const required = [GUARD_RESTART, ...requiredNames(GUARD_CALLS).flatMap((name) => GUARD_STATES.map((faulted) => `${name}/faults=${faulted}`)), ...requiredNames(GUARD_FAULTS)]
+    expect(ran.toSorted()).toEqual(required.toSorted())
   }),
 )

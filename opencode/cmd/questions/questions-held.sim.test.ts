@@ -7,6 +7,7 @@
 // and an owner's answer whose process is killed at its letter or at its close,
 // delivered exactly once after the restart.
 import * as MemoryDigest from "@dotfiles/opencode-digest/memory/log"
+import { expect } from "bun:test"
 import { Effect, Exit, Layer, Option, Random, Ref, Schema } from "effect"
 import * as MemoryCourier from "@dotfiles/opencode-questions/memory/courier"
 import * as MemoryStore from "@dotfiles/opencode-questions/memory/store"
@@ -15,6 +16,7 @@ import { AnswerQuestions, decideAnswers, heldOf, ownersOf, QuestionAnswered, typ
 import type { Letter } from "@dotfiles/opencode-questions/reply"
 import { Changes, Courier, QuestionStore } from "@dotfiles/opencode-questions/service"
 import * as Seed from "../../sim/seed.ts"
+import { HELD_CASES } from "../../sim/witness-cases.ts"
 import { assertEffectWitness } from "../../sim/witnesses.ts"
 
 const { seeded } = Seed.runner("cmd/questions/questions-held.sim.test.ts")
@@ -77,9 +79,13 @@ Seed.effect("W: the holder answers; a different session receives NotHeld", Effec
     const caller = Option.getOrElse(Option.liftPredicate("ses_parent", () => matches), () => "ses_other")
     return Effect.exit(decideAnswers(sheet, commandOf(["q1"], Option.some(caller)), 0))
   }
-  yield* assertEffectWitness("a matching caller records the answer", [QuestionAnswered.make({ id: "q1", answer: "maybe", delivery: "msg_new", at: 0 })], (cause) =>
-    Effect.map(play(cause), (exit) => Exit.match(exit, { onFailure: () => [], onSuccess: (events) => events })))
-  yield* assertEffectWitness("a mismatching caller gets NotHeld", true, (cause) => Effect.map(play(!cause), notHeld))
+  const cases = {
+    "matching caller": (name) => assertEffectWitness(name, [QuestionAnswered.make({ id: "q1", answer: "maybe", delivery: "msg_new", at: 0 })], (cause) =>
+      Effect.map(play(cause), (exit) => Exit.match(exit, { onFailure: () => [], onSuccess: (events) => events }))),
+    "mismatching caller": (name) => assertEffectWitness(name, true, (cause) => Effect.map(play(!cause), notHeld)),
+  } satisfies Record<(typeof HELD_CASES)[number], (name: string) => Effect.Effect<string>>
+  const ran = yield* Effect.forEach(Object.entries(cases), ([name, run]) => run(name))
+  expect(ran.toSorted()).toEqual(HELD_CASES.toSorted())
 }))
 
 seeded("a sheet stored before `to` existed decodes, every question on it is the owner's, and only the owner answers it", ({ expect }) =>
