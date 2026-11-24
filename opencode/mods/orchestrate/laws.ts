@@ -316,6 +316,44 @@ export const modelsLaws = (name: string, layer: (world: ModelsWorld) => Layer.La
         Effect.map(newestSol, (newest) => expect(newest).toBeUndefined()),
       ))
 
+    // Fast is asked per start (owner, 2026-11-24: "they can spawn a worker that's fast or not"): `fast` finds the mode.
+    const fastOf = (model: string) => Models.use((models) => models.fast("ses_law", model))
+    const standardOf = (model: string) => Models.use((models) => models.standardOf("ses_law", model))
+
+    test("a model's fast mode is its `-fast` mode at the same variant, and a fast mode is its own", () =>
+      check(
+        layer({ model, variants: [], others: [sol("gpt-6.2-sol", 5), fast("gpt-6.2-sol", 5)] }),
+        Effect.gen(function* () {
+          expect(yield* fastOf("openai/gpt-6.2-sol#high")).toEqual(Option.some("openai/gpt-6.2-sol-fast#high"))
+          expect(yield* fastOf("openai/gpt-6.2-sol")).toEqual(Option.some("openai/gpt-6.2-sol-fast"))
+          expect(yield* fastOf("openai/gpt-6.2-sol-fast#high")).toEqual(Option.some("openai/gpt-6.2-sol-fast#high"))
+          // Off a variant the mode does not offer, the mode runs bare.
+          expect(yield* fastOf("openai/gpt-6.2-sol#max")).toEqual(Option.some("openai/gpt-6.2-sol-fast"))
+        }),
+      ))
+
+    test("a model with no fast mode has none, nor has a model not offered; another mode is no fast one", () =>
+      check(
+        layer({ model, variants: [], others: [sol("gpt-6.2-sol", 5), sol("gpt-6.2-sol-ultrafast", 5, { modelID: "gpt-6.2-sol" }), fast("gpt-6.3-sol", 9)] }),
+        Effect.gen(function* () {
+          expect(yield* fastOf("openai/gpt-6.2-sol#high")).toEqual(Option.none())
+          expect(yield* fastOf("openai/gpt-6.2-sol-ultrafast#high")).toEqual(Option.none())
+          expect(yield* fastOf("openai/gpt-9-sol#high")).toEqual(Option.none())
+          expect(yield* fastOf("no-provider")).toEqual(Option.none())
+        }),
+      ))
+
+    test("a fast mode's standard model is the model it asks, at the same variant; any other model has none", () =>
+      check(
+        layer({ model, variants: [], others: [sol("gpt-6.2-sol", 5), fast("gpt-6.2-sol", 5), sol("gpt-6.2-sol-ultrafast", 5, { modelID: "gpt-6.2-sol" })] }),
+        Effect.gen(function* () {
+          expect(yield* standardOf("openai/gpt-6.2-sol-fast#high")).toEqual(Option.some("openai/gpt-6.2-sol#high"))
+          expect(yield* standardOf("openai/gpt-6.2-sol-fast")).toEqual(Option.some("openai/gpt-6.2-sol"))
+          expect(yield* standardOf("openai/gpt-6.2-sol#high")).toEqual(Option.none())
+          expect(yield* standardOf("openai/gpt-6.2-sol-ultrafast#high")).toEqual(Option.none())
+        }),
+      ))
+
     test("the newest at a variant it does not offer is the bare model; a family not offered is none", () =>
       check(
         layer({ model, variants: [], others: [sol("gpt-6-sol", 1)] }),

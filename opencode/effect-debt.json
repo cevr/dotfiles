@@ -896,7 +896,7 @@
     "mods/subagents/line.test.ts": {"effect/noNullish":7},
     "mods/subagents/line.ts": {"complexity":1,"effect/maxCognitiveComplexity":1,"effect/noNullish":14,"effect/noTernary":9},
     "mods/subagents/model.test.ts": {"effect/noNullish":2},
-    "mods/subagents/model.ts": {"effect/noNullish":11,"effect/noTernary":4},
+    "mods/subagents/model.ts": {"effect/noNullish":11,"effect/noTernary":2},
     "mods/subagents/opencode/view.test.ts": {"effect/noNullish":3,"effect/noUnknownParameters":1},
     "mods/subagents/opencode/view.ts": {"effect/noConditionalEmptyObjectSpread":17,"effect/noNullish":39,"effect/noReflectGet":1,"effect/noRuntimeTypeof":4,"effect/noTernary":24,"effect/noUnknownParameters":9,"effect/noUnknownReturns":1,"effect/noUnsafeDictionaryType":3},
     "mods/subagents/shell.ts": {"complexity":1,"effect/maxCognitiveComplexity":1,"effect/noAs":1,"effect/noConditionalEmptyObjectSpread":1,"effect/noKnownValueWidening":1,"effect/noNullish":17,"effect/noRuntimeTypeof":6,"effect/noTernary":10,"effect/noUnsafeDictionaryType":3},
