@@ -130,9 +130,15 @@ describe.skipIf(!forkRuns)("OpenAI final hold on native OpenCode", () => {
         expect(held.start).toBeGreaterThan(0)
         const status = yield* Schema.decodeUnknownEffect(MeasurementStatus)(held.status)
         const account = Option.getOrThrow(Arr.head(status.openai.accounts))
-        const measurement = Match.value(sample).pipe(Match.when("fresh-timeout", () => "unmeasured"), Match.orElse(() => "measured"))
+        const measurement = Match.value(sample).pipe(Match.when("fresh-timeout", () => "unmeasured" as const), Match.orElse(() => "measured" as const))
         expect(account.measurement).toBe(measurement)
-        yield* Console.log(`first usage native ${sample}: read began +${held.start - held.began} ms, handler ${held.end > 0 ? `${held.end - held.start} ms` : "stalled"}, first send ${held.sent[0] === undefined ? "none" : `+${held.sent[0].at - held.began} ms`}`)
+        const handling = Option.filter(Option.some(held.end), (at) => at > 0).pipe(
+          Option.match({ onNone: () => "stalled", onSome: (at) => `${at - held.start} ms` }),
+        )
+        const firstSend = Arr.head(held.sent).pipe(
+          Option.match({ onNone: () => "none", onSome: (send) => `+${send.at - held.began} ms` }),
+        )
+        yield* Console.log(`first usage native ${sample}: read began +${held.start - held.began} ms, handler ${handling}, first send ${firstSend}`)
         if (sample === "fresh-spent") {
           expect(held.sent).toEqual([])
           expect(held.message).toContain("held by the pool until")

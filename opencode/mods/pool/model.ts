@@ -6,7 +6,7 @@
 // plugin on the host shares.
 // The aggregate is the one decision entry point, so the stories run exactly
 // what these do. The plugin calls these and nothing else.
-import { Array as Arr, Clock, Context, Effect, Layer, Option, Predicate, Ref, Scope, Semaphore, Stream, SynchronizedRef } from "effect"
+import { Array as Arr, Clock, Context, Effect, Layer, Match, Option, Predicate, Ref, Scope, Semaphore, Stream, SynchronizedRef } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import {
   AccountPool,
@@ -1518,13 +1518,16 @@ export const layer = (config: Config) =>
           const pacedOnly = !placedPools.has(id)
           if (pacedOnly) yield* refresh(where, false).pipe(Effect.ignore)
           const snapshot = status(yield* SynchronizedRef.get(pool), yield* Clock.currentTimeMillis, rules)
-          const accounts = pacedOnly ? yield* Effect.forEach(snapshot, (account) => Effect.gen(function* () {
-            if (account.reading !== undefined) return { ...account, measurement: "measured" as const }
-            const failed = yield* ledger.firstReadingFailure(id, account.credentialID)
-            return { ...account, measurement: "unmeasured" as const, ...Option.match(failed, {
-              onNone: () => ({}), onSome: (usageReadFailure) => ({ usageReadFailure }),
-            }) }
-          })) : snapshot
+          const accounts = yield* Match.value(pacedOnly).pipe(
+            Match.when(false, () => Effect.succeed(snapshot)),
+            Match.orElse(() => Effect.forEach(snapshot, (account) => Effect.gen(function* () {
+              if (Option.isSome(Option.fromUndefinedOr(account.reading))) return { ...account, measurement: "measured" as const }
+              const failed = yield* ledger.firstReadingFailure(id, account.credentialID)
+              return { ...account, measurement: "unmeasured" as const, ...Option.match(failed, {
+                onNone: () => ({}), onSome: (usageReadFailure) => ({ usageReadFailure }),
+              }) }
+            }))),
+          )
           const sources = yield* logins.sources(id)
           answer[id] = { accounts, ...(sources.length === 0 ? {} : { sources }) }
         }

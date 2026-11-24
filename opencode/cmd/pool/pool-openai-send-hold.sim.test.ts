@@ -28,7 +28,7 @@ seeded("an unavailable usage endpoint delays only three of twenty sends, then a 
     const asked: Array<number> = []
     let offline = true
     const world = World.make({
-      seed, model, latency: [1, 10], provider: { id: "openai", baseURL: "http://127.0.0.1:11",
+      seed, model, latency: [1, 10], script: () => World.say("unused"), provider: { id: "openai", baseURL: "http://127.0.0.1:11",
         handle: () => Effect.sync(() => {
           sent.push(world.now())
           return new Response("data: {\"type\":\"message_stop\"}\n\n")
@@ -55,7 +55,7 @@ seeded("an unavailable usage endpoint delays only three of twenty sends, then a 
       const start = world.now()
       yield* world.prompt(session, `send ${i + 1}`)
       yield* world.until(() => sent.length > i && world.sessions.get(session)?.running === false, FIRST_USAGE_WAIT_MS + 100)
-      delays.push((sent[i] ?? start) - start)
+      delays.push(Option.getOrThrow(Option.fromUndefinedOr(sent[i])) - start)
     }
     expect(sent).toHaveLength(20)
     expect(delays.filter((ms) => ms > 0)).toEqual([FIRST_USAGE_WAIT_MS, FIRST_USAGE_WAIT_MS, FIRST_USAGE_WAIT_MS])
@@ -82,7 +82,7 @@ seeded("a late successful first measure holds the next send while the failed-rea
     const requests: Array<number> = []
     const sends: Array<number> = []
     const world = World.make({
-      seed, model, latency: [1, 10], provider: { id: "openai", baseURL: "http://127.0.0.1:11",
+      seed, model, latency: [1, 10], script: () => World.say("unused"), provider: { id: "openai", baseURL: "http://127.0.0.1:11",
         handle: () => Effect.sync(() => {
           sends.push(world.now())
           return new Response("data: {\"type\":\"message_stop\"}\n\n")
@@ -209,7 +209,10 @@ seeded(`no ${transport} send before a new login's first measure completes or tim
     const measurement = Match.value(offline).pipe(Match.when(true, () => "unmeasured"), Match.orElse(() => "measured"))
     const failedAt = firstAt + FIRST_USAGE_WAIT_MS
     const nextTryAt = failedAt + FIRST_USAGE_RETRY_MS
-    const failure = offline ? { usageReadFailure: { failedAt, nextTryAt } } : {}
+    const failure = Match.value(offline).pipe(
+      Match.when(true, () => ({ usageReadFailure: { failedAt, nextTryAt } })),
+      Match.orElse(() => ({})),
+    )
     expect(status).toMatchObject({ openai: { accounts: [expect.objectContaining({ measurement, ...failure })] } })
     offline = false
     yield* world.prompt(one, "a subsequent attempt, still inside the cooldown when the endpoint had stalled")

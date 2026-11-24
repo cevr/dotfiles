@@ -407,9 +407,9 @@ const firstReading = (storage: Storage, lock: Semaphore.Semaphore): Ledger["Serv
     const flights = flightsOf(lock)
     const pending = Option.fromUndefinedOr(flights.get(key))
     if (Option.isSome(pending)) {
-      const failure = pending.value.failure
-      if (failure === undefined) return yield* restore(Deferred.await(pending.value.answer))
-      if (now < failure.nextTryAt) return Option.none()
+      const failure = Option.fromUndefinedOr(pending.value.failure)
+      if (Option.isNone(failure)) return yield* restore(Deferred.await(pending.value.answer))
+      if (now < failure.value.nextTryAt) return Option.none()
     }
     const answer = yield* Deferred.make<Option.Option<QuotaReading>>()
     const flight: Measurement = { answer }

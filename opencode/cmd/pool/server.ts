@@ -530,7 +530,7 @@ export const make = (
       })
       const pruneHeldSends = Effect.gen(function* () {
         const cutoff = (yield* Clock.currentTimeMillis) - SEND_HOLD_RETENTION_MS
-        const expired = (value: unknown) => Option.exists(sendHoldOf(value), (hold) => hold.retryAt <= cutoff)
+        const expired = (hold: Option.Option<HeldSend>) => Option.exists(hold, (entry) => entry.retryAt <= cutoff)
         let after = Option.none<string>()
         do {
           const page = yield* ctx.storage.scan({
@@ -538,10 +538,10 @@ export const make = (
             ...Option.match(after, { onNone: () => ({}), onSome: (after) => ({ after }) }),
           })
           for (const { key, value } of page.entries) {
-            if (!expired(value)) continue
+            if (!expired(sendHoldOf(value))) continue
             // Admission or a new refusal may have changed the row since the scan.
             yield* sendRecords.withPermits(1)(Effect.gen(function* () {
-              if (expired(yield* ctx.storage.get(key))) yield* ctx.storage.remove(key)
+              if (expired(sendHoldOf(yield* ctx.storage.get(key)))) yield* ctx.storage.remove(key)
             }))
           }
           after = Option.fromUndefinedOr(page.next)
