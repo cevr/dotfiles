@@ -96,6 +96,7 @@ export const markOf = (latch: Latch): Mark => ({
 /** What the opener asks the wakes to latch: the parent, the call, the hold and its times, and its own context. */
 export const LatchAsk = Schema.Struct({
   sessionID: Schema.String,
+  child: Schema.optionalKey(Schema.String),
   subagent: Ask,
   hold: Hold,
   reason: Schema.String,

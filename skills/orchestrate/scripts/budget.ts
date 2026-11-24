@@ -367,9 +367,10 @@ if (args.includes('--admit')) {
   });
   console.log(`${out.ok ? 'admit' : 'hold'}: ${out.reason}`);
   if (!out.ok) {
-    console.log(
-      `Queued as ticket ${out.ticket.id}. Opus first, Codex second: start this role on Codex now by mcp__codex__start (planner, verifier and UI on sol; a light, direct or mechanical implementor on luna with effort max), and go on with other work. Only if that start comes back queued too, run \`bun ${import.meta.path} --wait ${out.ticket.id}\` and \`codex-bridge wait <thread>\` as background commands (run_in_background), and take whichever exits 0 first: this waiter's exit 0 means this agent's turn came, so interrupt the thread and call Agent again at once with the same subagent_type and description. If Codex holds the start with no thread, run this waiter alone. Set no timer and do not poll.`,
-    );
+    const wait = `bun ${import.meta.path} --wait ${out.ticket.id}`;
+    console.log(kind.endsWith(':verify')
+      ? `Queued as ticket ${out.ticket.id}. Verification runs on Claude Opus only, never Codex. Run \`${wait}\` in the background. When it exits 0, call Agent again at once with the same subagent_type and description. Set no timer and do not poll.`
+      : `Queued as ticket ${out.ticket.id}. Opus first, Codex second: start this role on Codex now by mcp__codex__start (planner and UI on sol; a light, direct or mechanical implementor on luna with effort max), and go on with other work. Only if that start comes back queued too, run \`${wait}\` and \`codex-bridge wait <thread>\` as background commands (run_in_background), and take whichever exits 0 first: this waiter's exit 0 means this agent's turn came, so interrupt the thread and call Agent again at once with the same subagent_type and description. If Codex holds the start with no thread, run this waiter alone. Set no timer and do not poll.`);
   }
   process.exit(out.ok ? 0 : 1);
 }

@@ -168,7 +168,8 @@ export const layer = (host: Host, mintMessage: Effect.Effect<string> = minted("m
           const { [MARK_KEY]: _, ...rest } = session.metadata ?? {}
           return host.update({ sessionID, metadata: mark === undefined ? rest : { ...rest, [MARK_KEY]: { ...mark } } })
         }),
-        Effect.ignore,
+        Effect.mapError(refusal(sessionID)),
+        Effect.asVoid,
       ),
   })
 

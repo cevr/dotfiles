@@ -1197,15 +1197,15 @@ export const layer = (config: Config) =>
             if (settled.outcome === "gone") return
             yield* changes.changed(settled.latch.sessionID)
             if (settled.outcome === "held") {
-              yield* courier.mark(settled.latch.child, markOf(settled.latch))
+              yield* courier.mark(settled.latch.child, markOf(settled.latch)).pipe(Effect.ignore)
               if (minuteOf(settled.latch.opensAt) !== minuteOf(settled.before.opensAt)) yield* guard(settled.latch)
               continue
             }
             if (settled.outcome === "opened") {
-              yield* courier.mark(settled.latch.child, undefined)
+              yield* courier.mark(settled.latch.child, undefined).pipe(Effect.ignore)
               return
             }
-            yield* courier.mark(settled.latch.child, { ...markOf(settled.latch), failed: settled.message })
+            yield* courier.mark(settled.latch.child, { ...markOf(settled.latch), failed: settled.message }).pipe(Effect.ignore)
             const now = yield* Clock.currentTimeMillis
             const delivery = yield* courier.newDelivery
             yield* courier.deliver(settled.latch.sessionID, delivery, latchFailedLetter(settled.latch, settled.message, now), true).pipe(
@@ -1273,7 +1273,7 @@ export const layer = (config: Config) =>
             yield* store.remove(entry.id)
             if (guarded(entry)) yield* dropJob(entry.id, false)
             if (entry.kind === "job") yield* runner.kill(entry.id).pipe(Effect.andThen(runner.unwatch(entry.id)))
-            if (entry.kind === "latch" && cancelledAt !== undefined) yield* courier.mark(entry.child, { ...markOf(entry), cancelledAt } satisfies Mark)
+            if (entry.kind === "latch" && cancelledAt !== undefined) yield* courier.mark(entry.child, { ...markOf(entry), cancelledAt } satisfies Mark).pipe(Effect.ignore)
           }
           for (const notice of notices) yield* store.removeNotice(notice.delivery)
           return [...entries.map((entry) => entry.id), ...notices.map((notice) => notice.wakeID)]
@@ -1287,9 +1287,12 @@ export const layer = (config: Config) =>
         monitor: (sessionID, ask) => set(sessionID, (place) => monitorOf(ask, place)),
         latch: (ask) =>
           Effect.gen(function* () {
-            const child = yield* courier.newSession
+            const existing = Option.fromUndefinedOr(ask.child)
+            const child = yield* Option.match(existing, { onNone: () => courier.newSession, onSome: Effect.succeed })
             const latch = yield* locked(
               Effect.gen(function* () {
+                if (Option.isSome(existing) && (yield* store.entries).some((entry) => entry.kind === "latch" && entry.child === child))
+                  return yield* new WakeRejected({ reason: `subagent ${child} is already latched` })
                 const now = yield* Clock.currentTimeMillis
                 const made: Latch = {
                   kind: "latch",
@@ -1305,29 +1308,31 @@ export const layer = (config: Config) =>
                   recheckAt: Math.max(Math.min(ask.recheckAt, ask.opensAt), now + MIN_RECHECK_MS),
                   context: ask.context,
                 }
-                yield* store.write(made)
+                const publish = Option.match(existing, {
+                  onSome: () => courier.mark(child, markOf(made)),
+                  onNone: () =>
+                    courier.child({
+                      sessionID: child,
+                      parentID: ask.sessionID,
+                      directory: config.directory,
+                      title: ask.subagent.description,
+                      agent: ask.subagent.agent,
+                      model: ask.subagent.model,
+                      mark: markOf(made),
+                    }),
+                })
+                // Keep the record first for recovery, but never leave it armed if the host refused the child.
+                yield* store.write(made).pipe(
+                  Effect.andThen(publish),
+                  Effect.onError(() => store.remove(made.id)),
+                  Effect.mapError((refused) => new WakeRejected({ reason: Option.match(existing, {
+                    onSome: () => `the existing subagent could not be marked: ${refused.message}`,
+                    onNone: () => `the latched subagent's session could not be made: ${refused.message}`,
+                  }) })),
+                )
                 return made
               }),
             )
-            // The child is made after the latch is kept: a latch whose child never came reads failed when it opens, and tells the parent.
-            const unmade = yield* courier
-              .child({
-                sessionID: child,
-                parentID: ask.sessionID,
-                directory: config.directory,
-                title: ask.subagent.description,
-                agent: ask.subagent.agent,
-                model: ask.subagent.model,
-                mark: markOf(latch),
-              })
-              .pipe(
-                Effect.as(undefined),
-                Effect.catchTag("DeliveryRefused", (refused) => Effect.succeed(refused)),
-              )
-            if (unmade !== undefined) {
-              yield* locked(store.remove(latch.id))
-              return yield* new WakeRejected({ reason: `the latched subagent's session could not be made: ${unmade.message}` })
-            }
             yield* changes.changed(ask.sessionID)
             yield* guard(latch)
             yield* arm(latch)

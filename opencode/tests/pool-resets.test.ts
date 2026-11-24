@@ -22,6 +22,7 @@
 import { afterAll, describe, expect, test } from "bun:test"
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { Effect, Schema } from "effect"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"
 import { ROOT } from "../scripts/agents.ts"
@@ -41,6 +42,7 @@ const MINUTE = 60 * SECOND
 const HOUR = 60 * MINUTE
 const DAY = 24 * HOUR
 const SESSION = "ses_resets_root"
+const readBusy = Schema.decodeUnknownSync(Schema.Struct({ busy: Schema.Array(Schema.String) }))
 
 interface Service {
   readonly url: string
@@ -51,8 +53,10 @@ const authorization = (service: Service) => `Basic ${btoa(`opencode:${service.pa
 
 
 /** One method of a plugin's RPC on the server, as the pane and report.ts ask it. */
-const rpc = async (service: Service, plugin: string, method: string, input: unknown = {}): Promise<unknown> => {
-  const response = await fetch(new URL(`/api/rpc/${plugin}/${method}`, service.url), {
+const rpc = async (service: Service, directory: string, plugin: string, method: string, input: unknown = {}): Promise<unknown> => {
+  const target = new URL(`/api/rpc/${plugin}/${method}`, service.url)
+  target.searchParams.set("location[directory]", directory)
+  const response = await fetch(target, {
     method: "POST",
     headers: { authorization: authorization(service), "content-type": "application/json" },
     body: JSON.stringify({ input }),
@@ -61,7 +65,7 @@ const rpc = async (service: Service, plugin: string, method: string, input: unkn
   return body.output
 }
 
-const until = async <A>(read: () => A | Promise<A>, done: (value: A) => boolean, label: () => string, ms = 60_000): Promise<A> => {
+const until = async <A>(read: () => A | Promise<A>, done: (value: A) => boolean, label: () => string, ms = hangGuard("process-fixture")): Promise<A> => {
   const deadline = watchdog(ms)
   let last = await read()
   while (!done(last)) {
@@ -196,11 +200,12 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
       () => `the service file (${log()})`,
     ))!
     const directory = realpathSync(join(base, "work"))
-    /** `count` agents busy in sessions of their own (busy-agents.ts), once the pool read the usage `reads` times again. */
+    const pool = (method: string, input: unknown = {}) => rpc(service, directory, "dotfiles-opencode.pool", method, input)
+    /** Do not spend the quota until the pool itself sees every Claude session running. */
+    const running = Effect.promise(() => pool("report")).pipe(Effect.map((report) => readBusy(report).busy.filter((provider) => provider === "anthropic").length))
     const work = (count: number, fake: { readonly received: ReadonlyArray<ReceivedRequest> }, reads = 0) =>
-      putToWork({ fork: String(fork), url: service.url, authorization: authorization(service), directory, received: fake.received, count, reads, log })
-    const pool = (method: string, input: unknown = {}) => rpc(service, "dotfiles-opencode.pool", method, input)
-    const questions = (method: string, input: unknown) => rpc(service, "dotfiles-opencode.questions", method, input)
+      putToWork({ fork: String(fork), url: service.url, authorization: authorization(service), directory, owner: SESSION, received: fake.received, running, count, reads, log })
+    const questions = (method: string, input: unknown) => rpc(service, directory, "dotfiles-opencode.questions", method, input)
     const open = async () => ((await questions("open", { sessionIDs: [SESSION] })) as { questions?: ReadonlyArray<OpenQuestion> } | undefined)?.questions ?? []
     await until(
       () => pool("resets").catch(() => undefined),

@@ -79,8 +79,10 @@ export const layer = (memory: MemorySessions) =>
         return Effect.void
       }),
     mark: (sessionID, mark) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
+        if (!memory.inboxes.has(sessionID)) return Effect.fail(new DeliveryRefused({ sessionID, message: `no session ${sessionID}`, gone: true }))
         const made = memory.children.get(sessionID)
         if (made !== undefined) memory.children.set(sessionID, { ...made, mark })
+        return Effect.void
       }),
   })

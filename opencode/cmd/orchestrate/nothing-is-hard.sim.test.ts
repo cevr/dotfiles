@@ -13,6 +13,7 @@ import { Array as Arr, Effect, Option } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
 import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
+import { SIM_OPUS } from "./models.fixture.ts"
 
 const { seeded } = simulationRunner("cmd/orchestrate/nothing-is-hard.sim.test.ts")
 
@@ -65,7 +66,7 @@ const boot = (seed: number) =>
         },
       })
     }
-    const world = World.make({ seed, start: Date.parse(PIN), script })
+    const world = World.make({ seed, start: Date.parse(PIN), script, models: [World.SIM_MODEL, SIM_OPUS] })
     yield* world.load(Plugins.orchestrate(), { directory: WORK, options: { now: PIN, skill: `${skills}/orchestrate` } })
     const rested = () => [...world.sessions.values()].every((session) => !session.running && session.inbox.length === 0)
     const root = yield* world.session(WORK)
@@ -116,7 +117,7 @@ const delivery = (seed: number) =>
       if (request.kind === "primary") seen.push({ sessionID: request.sessionID, system: request.system })
       return World.say("done")
     }
-    const world = World.make({ seed, start: Date.parse(PIN), script })
+    const world = World.make({ seed, start: Date.parse(PIN), script, models: [World.SIM_MODEL, SIM_OPUS] })
     yield* world.load(Plugins.orchestrate(), { directory: WORK, options: { now: PIN, skill: `${skills}/orchestrate` } })
     const root = yield* world.session(WORK)
     const children = yield* Effect.forEach(DELIVERED, (role) => Effect.map(world.session(WORK, { parentID: root, agent: role }), (id) => [role, id] as const))

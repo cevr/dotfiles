@@ -4,6 +4,7 @@
 // session it does not have.
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
+import { it } from "effect-bun-test"
 import { type Mark, MARK_KEY } from "../latch.ts"
 import { courierLaws, type Received } from "../laws.ts"
 import { Courier } from "../service.ts"
@@ -109,6 +110,14 @@ describe("a latch's child through the host", () => {
       ).pipe(Effect.provide(courier)),
     )
   })
+
+  const sessions = new Map<string, Session>([["ses_child", { directory: "/", inbox: [], prompts: [] }]])
+  const refusingMark = layer({ ...host(sessions, []), update: () => Effect.fail({ message: "metadata write failed" }) })
+  it.live.layer(refusingMark)("reports a host update failure instead of pretending an existing child was marked",
+    () => Effect.gen(function* () {
+      const refused = yield* Courier.use((service) => service.mark("ses_child", mark).pipe(Effect.flip))
+      expect(refused).toMatchObject({ sessionID: "ses_child", message: "metadata write failed", gone: false })
+    }))
 })
 
 describe("delivering through the host", () => {
