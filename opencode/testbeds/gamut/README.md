@@ -40,8 +40,9 @@ bun run gamut login anthropic            # add one Claude subscription login (on
    run's database: `auth export` piped to `auth import`, through stdin only.
    `haiku-store` copies no Claude login: the pool reads the login store in place.
 5. Starts OpenCode with `--auto` on a detached terminal host (`pty-host.ts`)
-   that later commands reach over a Unix socket. The host's config, which
-   holds the environment, is written owner-only and removed once read.
+   that later commands reach over a Unix socket. The host's config is written
+   owner-only and removed once read. `up` sends the first prompt only after
+   the TUI sees the registered orchestrator as its default and a model is ready.
 
 OpenCode runs from the fork's source at `OPENCODE_DEV` (default: the
 `prime-look` Rift), so there is nothing to build; `--installed` runs
