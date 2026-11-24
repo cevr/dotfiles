@@ -88,6 +88,10 @@ export function host(
     familyIDs: (sessionID) => data.session.family(sessionID),
     // The same registry as the shells count, so a row waits on a shell exactly while the dock counts it.
     subagents: (sessionID) => family(data, sessionID, context.location),
+    // The host syncs only the open transcript on route entry. Drawing a row
+    // also needs that child's messages; the host coalesces and retains this
+    // read, and the family observes its result through the native store.
+    syncSubagentMessages: (sessionID) => void data.session.message.sync(sessionID).catch(() => void 0),
     shells: (sessionID) =>
       data.shell.list(context.location).filter((shell) => shell.metadata.sessionID === sessionID).length,
     shellList: (sessionID) =>
