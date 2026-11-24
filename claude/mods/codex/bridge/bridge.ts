@@ -45,6 +45,17 @@ import type { Asking, Hold } from './policy.ts'
 export type Role = 'planner' | 'implementor' | 'verifier'
 /** A role by its current name: `reviewer` is the verifier's former one, which a session mid-run still passes. */
 export const currentRole = (role: string | undefined): Role | undefined => (role === 'reviewer' ? 'verifier' : (role as Role | undefined))
+
+class VerificationRequiresOpus extends Error {
+  readonly name = 'VerificationRequiresOpus'
+  constructor() {
+    super('Verification runs on Claude Opus only, never Codex. Use a Claude Opus verifier and wait if Claude is held.')
+  }
+}
+
+const requireNonVerification = (role: Role | undefined) => {
+  if (role === 'verifier') throw new VerificationRequiresOpus()
+}
 /** Why a turn ended: its work, its caller, or the infrastructure under it (`capacity`, `app-server-exit`, `drain-interrupt`). */
 export type Cause = 'completed' | 'interrupted-by-caller' | 'capacity' | 'app-server-exit' | 'drain-interrupt' | 'sabbath' | 'error'
 export type Usage = { tokens: number; input: number; cached: number; output: number; context: number; window: number }
@@ -697,6 +708,10 @@ export class Bridge {
       await this.pause(rules)
       for (const thread of this.queue(rules)) {
         if (this.draining) return
+        if (thread.role === 'verifier') {
+          this.finish(thread, 'failed', new VerificationRequiresOpus().message, 0, 'error')
+          continue
+        }
         const held = await this.hold(rules, thread)
         if (held) {
           if (held.why !== thread.held || held.opensAt !== thread.opensAt) {
@@ -737,6 +752,7 @@ export class Bridge {
     sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access'
   }): Promise<Thread | Refused> {
     input = { ...input, role: currentRole(input.role) }
+    requireNonVerification(input.role)
     const model = await this.model(input.model)
     const agent = input.role ? roleAgent(input.role) : undefined
     const effort = input.effort ?? agent?.effort
@@ -795,6 +811,7 @@ export class Bridge {
   /** The next turn on a thread: the same context and prompt cache, so a fix round is a delta. */
   async send(input: { threadId: string; prompt: string }) {
     const thread = this.thread(input.threadId)
+    requireNonVerification(thread.role)
     if (thread.status === 'running') throw new Error(`thread ${thread.id} is running turn ${thread.turnId}; interrupt it first`)
     if (thread.status === 'queued') throw new Error(`thread ${thread.id} has a latched turn (${thread.held}); it starts by itself`)
     return this.enqueue(thread, input.prompt)

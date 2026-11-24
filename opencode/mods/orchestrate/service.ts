@@ -50,7 +50,7 @@ export class Sessions extends Context.Service<
     /** The agent the session runs as. */
     readonly agentOf: (sessionID: string) => Effect.Effect<string | undefined>
     /** Whether the session has run a turn, or is running one. A session it cannot read has not. */
-    readonly startedOf: (sessionID: string) => Effect.Effect<boolean>
+    readonly startedOf: (sessionID: string, since?: number) => Effect.Effect<boolean>
     /**
      * Whether the session's last turn was stopped (interrupted) rather than ended: its last words are then no
      * hand-back, whatever an earlier turn wrote. A session it cannot read was not.
@@ -81,6 +81,8 @@ export interface Offered extends ModelRef {
 export class Models extends Context.Service<
   Models,
   {
+    /** The model already bound to a session, not the configured model of its agent. */
+    readonly current: (sessionID: string) => Effect.Effect<Option.Option<ModelRef>>
     /**
      * The model an agent started from the session runs on, in the subagent
      * tool's order: the agent's own, else the session's, else the default.
@@ -144,6 +146,8 @@ export interface LatchRequest {
   readonly from: string
   readonly messageID: string
   readonly callID: string
+  /** Existing child for a held verification follow-up; otherwise a new child is made. */
+  readonly child?: string
   readonly agent: string
   readonly description: string
   readonly prompt: string

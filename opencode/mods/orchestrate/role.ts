@@ -5,10 +5,11 @@ import { Array as Arr, Option, Schema } from "effect"
 import generated from "./agents.json"
 import { described, STEPS } from "./described.ts"
 import { immutable } from "./immutable.ts"
+import { parseModel } from "./pace.ts"
 import { policyFaults } from "./round-policy.ts"
 
 export const WORKER = "worker"
-/** The role Codex never runs (`onCodex`). */
+/** The role whose inherited Codex model is replaced with Opus. */
 export const IMPLEMENTOR = "implementor"
 export const ROLES = immutable([...STEPS, WORKER] as const)
 export type Role = (typeof ROLES)[number]
@@ -198,17 +199,31 @@ export const isCodexModel = (ref: string, providers: ReadonlyArray<string> = [])
   return CODEX_PROVIDERS.includes(provider) || providers.includes(provider) || /^gpt-/i.test(id)
 }
 
-/** The owner's rule: Codex plans and verifies, never implements. Only these agents ever run on a Codex fallback. */
-export const onCodex = (agent: string): boolean => agent === "planner" || agent === "verifier"
-
-/**
- * Where an implementor runs when the model it would run on is a Codex one (its parent's, say): the newest
- * Opus on one of these providers, at the role's effort. Codex never implements.
- */
 export const OPUS = immutable({ providers: ["anthropic"], family: "claude-opus" } as const)
 
-/**
- * The Codex model a held planner or verifier falls back to: the newest sol,
- * the verifier at medium and the planner at high. Codex never implements.
- */
-export const codexFallback = (agent: string): { readonly family: string; readonly variant: string } => ({ family: "gpt-sol", variant: agent === "verifier" ? "medium" : "high" })
+/** The already-routed role, including legacy names on persisted sessions and latches. */
+export const isVerifying = (agent: string): boolean => {
+  const bare = agent.replace(/^status:/, "")
+  return bare === "verifier" || (Object.hasOwn(RENAMED, bare) && RENAMED[bare] === "verifier")
+}
+
+const verification = immutable({ kind: "verification", primary: OPUS } as const)
+const planning = immutable({ kind: "planning", fallback: { family: "gpt-sol", variant: "high" } } as const)
+const implementation = immutable({ kind: "implementation", offCodex: OPUS } as const)
+const inherited = immutable({ kind: "inherited" } as const)
+
+/** The family's constraints after routing. Only the planning policy has a fallback. */
+export const roleModels = (agent: string) => {
+  if (isVerifying(agent)) return verification
+  if (agent === "planner") return planning
+  if (agent === IMPLEMENTOR) return implementation
+  return inherited
+}
+
+/** A verifier's explicit or persisted model must name an Anthropic Opus. */
+export const verificationModel = (model: string, providers: ReadonlyArray<string> = []) => {
+  const ref = parseModel(model)
+  if (ref?.providerID !== OPUS.providers[0] || isCodexModel(model, providers)) return false
+  const family = OPUS.family
+  return ref.id === family || ref.id.startsWith(`${family}-`) || ref.id.startsWith(`${family}.`)
+}

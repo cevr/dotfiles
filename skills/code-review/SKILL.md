@@ -75,10 +75,10 @@ Each candidate must pass the contract's finding test. Keep the evidence: file, l
 
 ## Second review
 
-As Phase 3 ends, start ONE background subagent from the other model family on the same review, so a different family's blind spots check yours.
+As Phase 3 ends, start ONE fresh background Claude Opus reviewer on the same change. The second reader brings fresh context, not a different model family. Verification and review never run on Codex. If Claude is held, let the review latch and wait.
 
-- **OpenCode** (the `subagent` tool takes `model`): you on Claude → the newest OpenAI Sol; you on GPT → the newest Claude Opus. Look the id up with the models tool, never a pinned version: the plain model of the newest release (`gpt-<n>-sol`, `claude-opus-<n>`), not a `-fast`, `-pro` or `-ultrafast` sibling. Pass `<provider>/<id>#high` when that model lists a `high` variant; otherwise its default, and the report says so. Use `agent: "worker"` and a `description` starting `second review`.
-- **Claude Code**: a Codex thread (`mcp__codex__start`, `model: "sol"`), or `okra counsel`. **Codex**: `okra counsel`, which sends to Claude. With neither, skip.
+- **OpenCode**: use `subagent` with `agent: "verifier"` and a description starting `verifier <unit> r<N>`. Omit the model so the plugin picks the newest Opus and latches if held.
+- **Claude Code**: use `Agent` on Opus and wait for Claude's capacity if held. **Codex**: request the review through a Claude host; never use `spawn_agent` for review.
 - **The prompt**: the pinned base and head shas, the scope, the mode, the spec path if any, and: "Read `~/.claude/skills/code-review/SKILL.md` and its review contract; run Phases 1–4 on exactly this base and head, outcome report; skip its Second review." It is **independent**: give it none of your findings, candidates or safety fact.
 - **No wait**: its report arrives as a message. Don't poll; end the turn or go on with other work, and run Phase 4 when it lands.
 - **Skip** on a trivial diff (docs, a rename, a few lines with no logic), or when the user asked for a quick review; the report's verdict line says `second review: skipped (<reason>)`.

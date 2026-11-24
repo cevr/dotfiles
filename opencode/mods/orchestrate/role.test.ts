@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test"
 import { Exit, Schema } from "effect"
 import generated from "./agents.json"
-import { codexFallback, definitions, Generated, ORCHESTRATOR, orchestrator, type Role, ROLES, route, unspecific, withSection } from "./role.ts"
+import { definitions, Generated, ORCHESTRATOR, orchestrator, type Role, roleModels, ROLES, route, unspecific, withSection } from "./role.ts"
 import { block } from "./round-policy.ts"
 
 describe("the orchestrator's section", () => {
@@ -102,8 +102,9 @@ describe("the guard's routing", () => {
 })
 
 describe("the Codex fallback", () => {
-  test("a planner or verifier runs on sol: the verifier at medium, the planner at high", () => {
-    expect(codexFallback("verifier")).toEqual({ family: "gpt-sol", variant: "medium" })
-    expect(codexFallback("planner")).toEqual({ family: "gpt-sol", variant: "high" })
+  test("only a planner has a fallback: sol at high; verification admits only Opus", () => {
+    expect(roleModels("verifier")).toEqual({ kind: "verification", primary: { providers: ["anthropic"], family: "claude-opus" } })
+    expect(roleModels("orchestrate-reviewer")).toEqual(roleModels("verifier"))
+    expect(roleModels("planner")).toEqual({ kind: "planning", fallback: { family: "gpt-sol", variant: "high" } })
   })
 })

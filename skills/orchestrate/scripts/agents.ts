@@ -73,14 +73,16 @@ ${own}
 export const agentFile = (role: Role, protocol: string, safety: string): string => `---
 name: ${role}
 description: ${ROLES[role]} Its prompt carries the worker protocol.
-tools: ${TOOLS}
+${role === 'verifier' ? 'model: opus\n' : ''}tools: ${TOOLS}
 # ${WRITTEN}
 ---
 ${instructions(role, protocol, safety)}`;
 
 /** The Codex custom agent file for a role. */
 export function codexFile(role: Role, protocol: string, safety: string): string {
-  const text = instructions(role, protocol, safety);
+  const text = role === 'verifier'
+    ? `Verification runs on Claude Opus only, never Codex. Do not perform the review here: tell the parent to start a Claude Opus verifier and wait if Claude is held.\n\n${instructions(role, protocol, safety)}`
+    : instructions(role, protocol, safety);
   if (text.includes("'''")) throw new Error("the instructions hold ''', which ends a TOML literal string");
   return `# ${WRITTEN}
 name = "${role}"
