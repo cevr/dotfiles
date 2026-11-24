@@ -204,7 +204,8 @@ const authorityOf = (workspace: Workspace, test: string) => {
   const read = inspectReads(workspace, test)
   const configs = runtimeReads.compilerProjects?.[test] || []
   const compiler = projectReads(configs, workspace.compilerInputs)
-  const compilerReason = read.opensCompiler && (configs.length === 0 || !compiler.ready) && "TypeScript project: no complete native project inventory"
+  const compilerReason = (read.opensCompiler || configs.length > 0) && (configs.length === 0 || !compiler.ready) &&
+    "TypeScript project: no complete native project inventory"
   const subprocessReason = runtimeReads.untracedSubprocesses[test] || Option.getOrUndefined(Option.liftPredicate(compilerReason, Boolean))
   const unknown = read.classification === "unknown" || Boolean(subprocessReason)
   const paths = runtimeReads.paths[test] ?? []

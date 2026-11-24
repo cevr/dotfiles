@@ -193,7 +193,7 @@ test("scratch roots are not repository reads", () => {
 import { tmpdir } from "node:os"
 const tmp = mkdtempSync(\`\${tmpdir()}/fixture-\`)
  readFileSync(\`\${tmp}/literal.txt\`)`
-  expect(check(source)).toEqual({ patterns: [], bounded: [], indirect: [], classification: "static", issues: [] })
+  expect(check(source)).toEqual({ patterns: [], bounded: [], indirect: [], classification: "static", issues: [], opensCompiler: false })
 })
 
 test("a computed import is checked even when static imports also name files", () => {
@@ -364,7 +364,7 @@ test("an imported pure export does not inherit reads from an unused export or a 
   ])
   const source = `import { selected, load } from "./forward.ts"\nselected(42)`
   const result = checkReadInputs("scripts/example.test.ts", source, (file) => sources.get(file) ?? "")
-  expect(result).toEqual({ patterns: [], bounded: [], indirect: [], classification: "static", issues: [] })
+  expect(result).toEqual({ patterns: [], bounded: [], indirect: [], classification: "static", issues: [], opensCompiler: false })
 })
 
 test("known lazy Effect operators do not run an unused callback; a foreign operator is not assumed lazy", () => {
