@@ -165,4 +165,4 @@ describe("the repository candidates", () => {
 })
 
 test("a refusal reads as the Claude Code hook's", () =>
-  expect(message("`git reset --hard` discards uncommitted work")).toBe("guard-destructive: `git reset --hard` discards uncommitted work."))
+  expect(message("`git reset --hard` discards uncommitted work")).toBe("Refused by guard-destructive: `git reset --hard` discards uncommitted work."))

@@ -38,7 +38,7 @@ const WORK = "/scratch/guard/work"
 const HOME = "/Users/owner"
 /** The run's spec file, in the command line of the server's process alone: the policy task kills by it. */
 const SPEC = "/scratch/guard/policy/spec.json"
-const REFUSAL = "guard-destructive: `git reset --hard` discards uncommitted work; stash it (`git stash -u`) or commit first."
+const REFUSAL = "Refused by guard-destructive: `git reset --hard` discards uncommitted work; stash it (`git stash -u`) or commit first."
 const RUN_LIMIT_MS = 300_000
 
 /** The worktree task: checkouts on a file system a workspace clones, on one it does not, with and without a warm source. */
@@ -52,7 +52,7 @@ const WORKTREE_IN_WORK = "git worktree add -b feature ../feature"
 const WORKTREE_IN_ERGO = `cd ${ERGO} && env GIT_DIR=.git git worktree add ../ergo-feature`
 const WORKTREE_IN_PLAIN = `git -C ${PLAIN} worktree add ../plain-feature`
 const WORKTREE_CLEANUP = "sh -c 'git worktree list && git worktree prune' && git worktree remove ../old"
-const WORKTREE_PREFIX = "guard-worktree: "
+const WORKTREE_PREFIX = "Refused by guard-worktree: "
 const WORK_CREATE = 'make a workspace instead with the work tool (`{ action: "create", branch }`), or `workrift create <branch>` on the workbox'
 
 /** The task whose checkouts cannot all be read: a checkout under LOCKED, and the warm sources. */
@@ -229,7 +229,7 @@ seeded("a subagent's shell call opening with sleep 60 is refused in the guard's 
     expect(childRest).toEqual([])
     expect(childSleep?.name).toBe("shell")
     expect(childSleep?.error).toBe(true)
-    expect(childSleep?.output).toContain("guard-sleep: `sleep 60` would hold this subagent's turn for 60 s doing nothing")
+    expect(childSleep?.output).toContain("Refused by guard-sleep: `sleep 60` would hold this subagent's turn for 60 s doing nothing")
     expect(childSleep?.output).toContain('wait", id, ms })')
     expect(childSleep?.output).not.toContain("child slept")
     // Only the root's sleep reached the shell.
