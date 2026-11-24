@@ -269,6 +269,7 @@ function makeMockContext() {
           Effect.tryPromise({ try: () => ctx.integration.connection.resolve(connection), catch: (error) => error }),
       },
     },
+    location: { directory: '/scratch/anthropic-auth-seam' },
     rpc: {
       register: (definition: { id: string }, handlers: Record<'reading' | 'usage' | 'claim', HostHandler>) =>
         Effect.sync(() => {
