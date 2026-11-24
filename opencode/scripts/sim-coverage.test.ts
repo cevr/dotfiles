@@ -1,8 +1,9 @@
 // @reads cmd/guard/guard-faults.sim.test.ts cmd/memory/memory-faults.sim.test.ts cmd/orchestrate/record-model.sim.test.ts cmd/questions/questions-held.sim.test.ts mods/orchestrate/tools.test.ts mods/pool/claim-rule.test.ts mods/questions/opencode/form.test.ts mods/update/builds.test.ts mods/update/model.test.ts scripts/accept-yield.test.ts sim/witnesses.ts
 import { expect, expectTypeOf, test } from "bun:test"
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { Effect, FileSystem, Path } from "effect"
+import { Array as Arr, Effect, FileSystem, Option, Path, Predicate } from "effect"
 import { it } from "effect-bun-test"
+import { type CallExpression, type MemberExpression, parseSync, Visitor } from "oxc-parser"
 import { assertWitness, witnesses } from "../sim/witnesses.ts"
 
 test("required outcomes select explicit cases, in the declared order, with no seed or generated tally", () => {
@@ -19,28 +20,103 @@ test("a witness fails if its matched observation survives removal of the cause",
   expect(() => assertWitness("letter delivered", "delivered", "not delivered", "not delivered")).toThrow()
 })
 
-// Only ban escape hatches here. The fenced files inspect expanded Bun registrations themselves.
-const registrarForms = [
-  'register(`W: ${name}`, () => observe(play()))',
-  'add("control", test.failing, without)',
+// These seven failures describe known pool behavior; they are not witness controls.
+const poolFile = "mods/pool/claim-rule.test.ts"
+const poolFailures = [
+  "pool-claim-rule seed 18926016: the aggregate flags zero room even though the expiring credit is claimed",
+  "pool-claim-rule seed 18926168: spends a 5h credit after the load drops below the half-credit threshold",
+  "pool-claim-rule seed 18926350: withholds a 5h credit at zero room after demand rises",
+  "pool-claim-rule seed 18927240: withholds a 5h credit while eleven agents have no room",
+  "pool-claim-rule seed 18927416: keeps withholding a useful 5h credit across spent periods",
+  "pool-claim-rule seed 18927526: spends a 5h credit at one agent's burn",
+  "pool-claim-rule seed 31415527: withholds a 5h credit while modeled demand would use more than half",
 ]
-const poolDefectForm = "test.failing(`pool-claim-rule seed ${name}`, law)"
-const bareForms = (source: string, allowed: ReadonlyArray<string>) =>
-  [...allowed.reduce((rest, form) => rest.replace(form, ""), source)
-    .matchAll(/\btest\s*(?:\.\s*failing\b|\[\s*["']failing["']\s*\])|["'`]W:/g)].map(([form]) => form)
 
-test("the source guard rejects a bare witness label or expected failure", () => {
+type Span = { readonly start: number; readonly end: number }
+const within = (node: Span, container: Span) => node.start >= container.start && node.end <= container.end
+const nameOf = (node: CallExpression["callee"]): string => {
+  if (node.type === "Identifier") return node.name
+  if (node.type === "MemberExpression") return nameOf(node.object)
+  if (node.type === "CallExpression") return nameOf(node.callee)
+  return ""
+}
+const methodOf = (node: MemberExpression): string => {
+  if (!node.computed && node.property.type === "Identifier") return node.property.name
+  if (node.property.type === "Literal" && Predicate.isString(node.property.value)) return node.property.value
+  return ""
+}
+const titleOf = (call: CallExpression): string => Option.getOrElse(Option.map(Arr.head(call.arguments), (arg) => {
+  if (arg.type === "Literal" && Predicate.isString(arg.value)) return arg.value
+  if (arg.type === "TemplateLiteral") return arg.quasis.map((part) => part.value.raw).join("${…}")
+  return ""
+}), () => "")
+
+const ordinaryTest = ({ callee }: CallExpression) =>
+  (callee.type === "Identifier" && ["test", "effectTest"].includes(callee.name)) ||
+  (callee.type === "MemberExpression" && callee.object.type === "Identifier" && callee.object.name === "Seed" && methodOf(callee) === "effect")
+
+// Inspect the test body, not a ledger or a count of generated registrations.
+const witnessSources = (file: string, text: string) => {
+  const parsed = parseSync(file, text)
+  const calls: Array<CallExpression> = []
+  const modifiers: Array<MemberExpression> = []
+  new Visitor({
+    CallExpression: (node) => { calls.push(node) },
+    MemberExpression: (node) => {
+      if (["failing", "skip", "todo", "only"].includes(methodOf(node))) modifiers.push(node)
+    },
+  }).visit(parsed.program)
+
+  const runners = ["test", "effectTest", "Seed"]
+  const examples = calls.filter((call) => titleOf(call).startsWith("W: "))
+  const compares = calls.filter(({ callee }) => callee.type === "Identifier" && callee.name === "assertWitness")
+  const allowed: Array<string> = []
+  const forbidden: Array<string> = []
+  for (const member of modifiers) {
+    const insideWitness = examples.some((call) => within(member, call))
+    if (!insideWitness && file === poolFile && methodOf(member) === "failing" && member.object.type === "Identifier" && member.object.name === "test") {
+      const named = Arr.map(Arr.filter(calls, (call) => call.callee === member), titleOf)
+      if (named.length === 1 && named.every((name) => poolFailures.includes(name))) {
+        allowed.push(...named)
+        continue
+      }
+    }
+    if (insideWitness || [...runners, "describe", "it"].includes(nameOf(member))) {
+      forbidden.push(text.slice(member.start, member.end))
+    }
+  }
+  return {
+    parsed: parsed.errors,
+    allowed,
+    forbidden,
+    missing: Arr.map(Arr.filter(examples, (call) => !Option.exists(Arr.get(call.arguments, 1), (body) => compares.some((compare) => within(compare, body)))), titleOf),
+    notOrdinary: Arr.map(Arr.filter(examples, (call) => !ordinaryTest(call)), titleOf),
+    unmarked: Arr.map(Arr.filter(compares, (call) => !examples.some((example) => within(call, example))), (call) => text.slice(call.start, call.end)),
+    hasWitness: examples.length > 0,
+  }
+}
+
+test("the source guard rejects a witness with no comparison and attempts to skip or narrow it", () => {
   const source = [
-    ...registrarForms,
-    'test.skip(\n  "W: unpaired", run)',
-    'expect(actual, "W: unpaired observation").toBe(want)',
-    'test . failing("bare", control)',
-    'test["failing"]("also bare", control)',
+    'test.skip("W: no helper", () => {})',
+    'test("W: only in a comment", () => { /* assertWitness(a, b, c, d) */ })',
+    'describe.only("narrow", () => test("W: live", () => { test.todo("inside"); assertWitness(a, b, c, d) }))',
+    'const bypass = test["failing"]',
+    'bypass("W: aliased", () => assertWitness(a, b, c, d))',
+    'test("unmarked", () => assertWitness(a, b, c, d))',
   ].join("\n")
-  expect(bareForms(source, registrarForms)).toEqual(['"W:', '"W:', "test . failing", 'test["failing"]'])
+  expect(witnessSources("fixture.ts", source)).toEqual({
+    parsed: [],
+    allowed: [],
+    forbidden: ["test.skip", "describe.only", "test.todo", 'test["failing"]'],
+    missing: ["W: no helper", "W: only in a comment"],
+    notOrdinary: ["W: no helper", "W: aliased"],
+    unmarked: ["assertWitness(a, b, c, d)"],
+    hasWitness: true,
+  })
 })
 
-const readSource = Effect.fn("WitnessCensus.readSource")(function* (file: string) {
+const readSource = Effect.fn("WitnessSources.readSource")(function* (file: string) {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
   const root = yield* path.fromFileUrl(new URL("..", import.meta.url))
@@ -49,19 +125,7 @@ const readSource = Effect.fn("WitnessCensus.readSource")(function* (file: string
 
 const live = it.live.layer(BunServices.layer)
 
-live("fenced files do not bypass their paired registrar", () => Effect.gen(function* () {
-  const files = [
-    ["mods/orchestrate/tools.test.ts", registrarForms],
-    ["mods/pool/claim-rule.test.ts", [...registrarForms, poolDefectForm]],
-    ["mods/update/builds.test.ts", registrarForms],
-    ["mods/update/model.test.ts", registrarForms],
-  ] as const
-  for (const [file, allowed] of files) {
-    expect(bareForms(yield* readSource(file), allowed), file).toEqual([])
-  }
-}))
-
-live("unfenced files do not assert a witness label outside the common helper", () => Effect.gen(function* () {
+live("every named witness calls its helper in one ordinary test", () => Effect.gen(function* () {
   const files = [
     "cmd/guard/guard-faults.sim.test.ts",
     "cmd/memory/memory-faults.sim.test.ts",
@@ -69,8 +133,15 @@ live("unfenced files do not assert a witness label outside the common helper", (
     "cmd/questions/questions-held.sim.test.ts",
     "mods/questions/opencode/form.test.ts",
     "scripts/accept-yield.test.ts",
+    "mods/orchestrate/tools.test.ts",
+    poolFile,
+    "mods/update/builds.test.ts",
+    "mods/update/model.test.ts",
   ]
   for (const file of files) {
-    expect(bareForms(yield* readSource(file), []), file).toEqual([])
+    const { allowed, ...guard } = witnessSources(file, yield* readSource(file))
+    expect(guard, file).toEqual({ parsed: [], forbidden: [], missing: [], notOrdinary: [], unmarked: [], hasWitness: true })
+    if (file === poolFile) expect(allowed.toSorted(), file).toEqual(poolFailures.toSorted())
+    else expect(allowed, file).toEqual([])
   }
 }))

@@ -550,7 +550,7 @@ seeded("no commitment disappears: every open one is held or listed, through rest
   onSubject((open) => runSeed(seed, expect, open)),
 )
 
-Seed.effect("six promised commitments and a reason for each successful follow-up, deferral and decision survive a restart", Effect.gen(function* () {
+Seed.effect("W: six promised commitments and a reason for each successful follow-up, deferral and decision survive a restart", Effect.gen(function* () {
   const play = (without: OmitWitness) => onSubject((open) => coverPromises(open, without))
   const witnessed = yield* play("none")
   const fewer = yield* play("six promises")

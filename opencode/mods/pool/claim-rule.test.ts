@@ -42,28 +42,12 @@ import {
   WORTH_SHARE,
 } from "./claim-rule.ts"
 
-// Local to this import-fenced suite. Record each half only after Bun registers it.
-const registered = new Map<string, Array<"witness" | "control">>()
-const witness = <A>({ name, run, observe, without }: {
-  readonly name: string
-  readonly run: () => A
-  readonly observe: (result: A) => void | Promise<void>
-  readonly without: () => A
-}) => {
-  const add = (half: "witness" | "control", register: (name: string, body: () => void | Promise<void>) => void, play: () => A) => {
-    register(`W: ${name}`, () => observe(play()))
-    const halves = registered.get(name) ?? []
-    halves.push(half)
-    registered.set(name, halves)
-  }
-  add("witness", test, run)
-  add("control", test.failing, without)
+// This domain's import fence keeps the simulator helper out.
+const assertWitness = <A>(name: string, expected: A, observed: A, withoutCause: A) => {
+  const label = `W: ${name}`
+  expect(observed, label).toEqual(expected)
+  expect(() => expect(withoutCause, label).toEqual(expected), `${label}: removing the cause must fail the same observation`).toThrow()
 }
-
-const forecastName = (index: number) => `forecast ${index}: a useful credit is claimed`
-const expiryName = (index: number) => `expiry ${index}: an expiring credit goes first`
-const roomName = (index: number) => `room ${index}: the pool keeps its useful credit`
-const exhaustionName = (index: number) => `exhaustion ${index}: no-reset leaves a usable credit unclaimed`
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -428,63 +412,47 @@ describe("the rule on one pool, by example", () => {
   }
   const roomAt = (index: number) => pool(0.25, 2 * DAY, 30 * DAY, index, 3)
   const spentAt = (index: number) => pool(1, 3 * DAY, 30 * DAY, index)
-  const takes = ({ verdict }: Decision, step: "reset" | "expiring") => expect(verdict).toMatchObject({ step, option: { creditID: "ra" } })
-  const keeps = ({ verdict }: Decision) => expect(verdict._tag).toBe("NoClaim")
-  const unclaimed = (decision: Decision) => expect(outWith(decision).filter(() => decision.verdict._tag === "NoClaim").map((each) => each.creditID)).toEqual(["ra"])
+  const taken = ({ verdict }: Decision) => {
+    if (verdict._tag === "Claim") return [verdict.step, verdict.option.creditID]
+    return []
+  }
+  const unclaimed = (decision: Decision) => outWith(decision).filter(() => decision.verdict._tag === "NoClaim").map((each) => each.creditID)
   const checkedRoom = (index: number) => {
     const room = roomAt(index)
     expect([room.options.some((each) => notSoon(each, NOW)), truth(room, "7d").runsOut]).toEqual([true, false])
-    keeps(room)
+    expect(room.verdict._tag).toBe("NoClaim")
     return room
   }
   const checkedSpent = (index: number) => {
     const spent = spentAt(index)
-    takes(spent, "reset")
+    expect(taken(spent)).toEqual(["reset", "ra"])
     return spent
   }
   for (const index of Arr.range(0, 20)) {
-    witness({
-      name: forecastName(index),
-      run: () => {
-        const forecast = pool(0.99, 3 * DAY, 30 * DAY, index)
-        checkedRoom(index)
-        eachClaimHolds([forecast])
-        return forecast
-      },
-      observe: (decision) => takes(decision, "reset"),
-      without: () => checkedRoom(index),
+    test(`W: forecast ${index}: a useful credit is claimed`, () => {
+      const forecast = pool(0.99, 3 * DAY, 30 * DAY, index)
+      const without = checkedRoom(index)
+      assertWitness(`forecast ${index}: takes ra by reset`, ["reset", "ra"], taken(forecast), taken(without))
+      eachClaimHolds([forecast])
     })
-    witness({
-      name: expiryName(index),
-      run: () => {
-        const expiry = pool(1, 3 * DAY, 12 * HOUR, index)
-        checkedSpent(index)
-        expiringGoFirst([expiry])
-        return expiry
-      },
-      observe: (decision) => takes(decision, "expiring"),
-      without: () => checkedSpent(index),
+    test(`W: expiry ${index}: an expiring credit goes first`, () => {
+      const expiry = pool(1, 3 * DAY, 12 * HOUR, index)
+      const without = checkedSpent(index)
+      assertWitness(`expiry ${index}: takes ra by expiry`, ["expiring", "ra"], taken(expiry), taken(without))
+      expiringGoFirst([expiry])
     })
   }
   for (const index of Arr.range(0, 100)) {
-    witness({
-      name: roomName(index),
-      run: () => {
-        checkedSpent(index)
-        return checkedRoom(index)
-      },
-      observe: keeps,
-      without: () => checkedSpent(index),
+    test(`W: room ${index}: the pool keeps its useful credit`, () => {
+      const room = checkedRoom(index)
+      const without = checkedSpent(index)
+      assertWitness(`room ${index}: NoClaim`, "NoClaim", room.verdict._tag, without.verdict._tag)
     })
-    witness({
-      name: exhaustionName(index),
-      run: () => {
-        const noReset = pool(1, 3 * DAY, 30 * DAY, index, 6, never)
-        claimedBeforeOut([checkedSpent(index)])
-        return noReset
-      },
-      observe: unclaimed,
-      without: () => checkedSpent(index),
+    test(`W: exhaustion ${index}: no-reset leaves a usable credit unclaimed`, () => {
+      const noReset = pool(1, 3 * DAY, 30 * DAY, index, 6, never)
+      const without = checkedSpent(index)
+      assertWitness(`exhaustion ${index}: ra unclaimed`, ["ra"], unclaimed(noReset), unclaimed(without))
+      claimedBeforeOut([without])
     })
   }
 })
@@ -492,16 +460,8 @@ describe("the rule on one pool, by example", () => {
 describe("the standing allowance's rule over generated weeks", () => {
   // Deliberate red witnesses for pool-claim-rule. Bun fails an expected failure
   // that starts passing, so the follow-up must remove the corresponding entry.
-  const knownWeeks = new Map<number, string>([
-    [18926168, "spends a 5h credit after the load drops below the half-credit threshold"],
-    [18926350, "withholds a 5h credit at zero room after demand rises"],
-    [18927240, "withholds a 5h credit while eleven agents have no room"],
-    [18927416, "keeps withholding a useful 5h credit across spent periods"],
-    [18927526, "spends a 5h credit at one agent's burn"],
-    [31415527, "withholds a 5h credit while modeled demand would use more than half"],
-  ])
+  const knownWeeks = new Set([18926168, 18926350, 18927240, 18927416, 18927526, 31415527])
   const zeroRoom = 18926016
-  const knownPoolClaimFailure = (name: string, law: () => void) => test.failing(`pool-claim-rule seed ${name}`, law)
 
   const weekHolds = (seed: number) => {
     const { accounts, decisions, periods } = simulate(seed)
@@ -517,24 +477,18 @@ describe("the standing allowance's rule over generated weeks", () => {
     for (const seed of Array.from({ length: 60 }, (_, index) => index + 1)) expect(out(simulate(seed).decisions), `seed ${seed}`).toBe(0)
   })
 
-  knownPoolClaimFailure(`${zeroRoom}: the aggregate flags zero room even though the expiring credit is claimed`, () => {
+  test.failing("pool-claim-rule seed 18926016: the aggregate flags zero room even though the expiring credit is claimed", () => {
     expect(simulate(zeroRoom).decisions.filter((decision) => outWith(decision).length > 0).length, `seed ${zeroRoom}`).toBe(0)
   })
-
-  for (const [seed, reason] of knownWeeks)
-    knownPoolClaimFailure(`${seed}: ${reason}`, () => weekHolds(seed))
+  test.failing("pool-claim-rule seed 18926168: spends a 5h credit after the load drops below the half-credit threshold", () => weekHolds(18926168))
+  test.failing("pool-claim-rule seed 18926350: withholds a 5h credit at zero room after demand rises", () => weekHolds(18926350))
+  test.failing("pool-claim-rule seed 18927240: withholds a 5h credit while eleven agents have no room", () => weekHolds(18927240))
+  test.failing("pool-claim-rule seed 18927416: keeps withholding a useful 5h credit across spent periods", () => weekHolds(18927416))
+  test.failing("pool-claim-rule seed 18927526: spends a 5h credit at one agent's burn", () => weekHolds(18927526))
+  test.failing("pool-claim-rule seed 31415527: withholds a 5h credit while modeled demand would use more than half", () => weekHolds(31415527))
 
   for (const seed of new Set([...SEEDS, zeroRoom])) {
     if (knownWeeks.has(seed)) continue
     test(`seed ${seed}: every property holds`, () => weekHolds(seed))
   }
-})
-
-test("the witness registrar paired every forecast, expiry, room, and exhaustion case", () => {
-  const expected = [
-    ...Arr.range(0, 20).flatMap((index) => [forecastName(index), expiryName(index)]),
-    ...Arr.range(0, 100).flatMap((index) => [roomName(index), exhaustionName(index)]),
-  ]
-  expect([...registered.keys()].toSorted()).toEqual(expected.toSorted())
-  for (const name of expected) expect(registered.get(name), name).toEqual(["witness", "control"])
 })

@@ -195,7 +195,7 @@ seeded(
 const callForms = CALLS.flatMap((call) => FORMS.flatMap((form) => [false, true].map((child): CallCommand => ({ type: "call", call, form, child }))))
 
 Seed.effect(
-  "every call in every form is judged in a root and subagent, with both faults on after a restart and with faults off",
+  "W: every call in every form is judged in a root and subagent, with both faults on after a restart and with faults off",
   Effect.gen(function* () {
     const input = { seed: 1, expect }
     const faults: ReadonlyArray<Command> = [{ type: "ps-fails", on: true }, { type: "launchers-fail", on: true }]

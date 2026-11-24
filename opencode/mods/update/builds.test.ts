@@ -4,22 +4,11 @@ import { baseName, buildName, buildVersion, FRESH_MS, isBuild, isFresh, PREVIOUS
 import { type Build, type Record, recordText } from "./record.ts"
 import { buildOfTree, makingName, makingTree, namedBy, treeOf } from "./trees.ts"
 
-// Local to this import-fenced suite. Record each half only after Bun registers it.
-const registered = new Map<string, Array<"witness" | "control">>()
-const witness = <A>({ name, run, observe, without }: {
-  readonly name: string
-  readonly run: () => A
-  readonly observe: (result: A) => void | Promise<void>
-  readonly without: () => A
-}) => {
-  const add = (half: "witness" | "control", register: (name: string, body: () => void | Promise<void>) => void, play: () => A) => {
-    register(`W: ${name}`, () => observe(play()))
-    const halves = registered.get(name) ?? []
-    halves.push(half)
-    registered.set(name, halves)
-  }
-  add("witness", test, run)
-  add("control", test.failing, without)
+// This domain's import fence keeps the simulator helper out.
+const assertWitness = <A>(name: string, expected: A, observed: A, withoutCause: A) => {
+  const label = `W: ${name}`
+  expect(observed, label).toEqual(expected)
+  expect(() => expect(withoutCause, label).toEqual(expected), `${label}: removing the cause must fail the same observation`).toThrow()
 }
 
 const SHARE = "/home/u/.local/share/opencode-prime"
@@ -244,19 +233,18 @@ describe("acceptance: a prune over share directories of both build formats, with
   const live = build("2.2.7-prime.33333333.44444444.tree")
   const files = (each: Build) => [buildName(each.version), treeOf(buildName(each.version))]
   const prune = (record: Build) => prunable([...files(stale), ...files(live)], record, nothingRuns)
-  const observesPrune = (removed: ReadonlyArray<string>) => expect(removed).toEqual(files(stale))
-  const observesKept = (removed: ReadonlyArray<string>) => expect(removed.filter((name) => files(live).includes(name))).toEqual([])
+  const removedLive = (removed: ReadonlyArray<string>) => removed.filter((name) => files(live).includes(name))
   const installedOther = () => {
     const removed = prune(stale)
     expect(removed, "control setup: the other build is now unreferenced").toEqual(files(live))
     return removed
   }
-  const run = () => {
-    installedOther()
-    return prune(live)
-  }
-  witness({ name: "an unreferenced tree build and its tree go", run, observe: observesPrune, without: installedOther })
-  witness({ name: "a recorded tree build and its tree stay", run, observe: observesKept, without: installedOther })
+  test("W: an unreferenced tree build and its tree go", () => {
+    assertWitness("unreferenced files are pruned", files(stale), prune(live), installedOther())
+  })
+  test("W: a recorded tree build and its tree stay", () => {
+    assertWitness("the recorded files are not pruned", [], removedLive(prune(live)), removedLive(installedOther()))
+  })
 
   test(`over ${RUNS} generated hosts (seed ${SEED}), it names (a) builds and trees only, (b) never a kept or running one, (c) every other, of either format; a tree exactly when its build, never while a command line names it`, () => {
     const next = random(SEED)
@@ -289,10 +277,4 @@ describe("acceptance: a prune over share directories of both build formats, with
       expect(prunable(listing.map((made) => made.name), record, Option.none())).toEqual([])
     }
   })
-})
-
-test("the witness registrar paired both prune cases", () => {
-  const expected = ["an unreferenced tree build and its tree go", "a recorded tree build and its tree stay"]
-  expect([...registered.keys()].toSorted()).toEqual(expected.toSorted())
-  for (const name of expected) expect(registered.get(name), name).toEqual(["witness", "control"])
 })

@@ -73,7 +73,7 @@ describe("the accept lock's protocol", () => {
     expect(found).toEqual([])
   })
 
-  test("a stopped file stays owed, the land takes the lock, and the resumed run records every verdict", () => {
+  test("W: a stopped file stays owed, the land takes the lock, and the resumed run records every verdict", () => {
     const actions: ReadonlyArray<Yield.Action> = [
       { kind: "start", who: "deep" }, { kind: "deepTakes" }, { kind: "deepStartsFile", file: "a" },
       { kind: "start", who: "l1" }, { kind: "mark", who: "l1" }, { kind: "deepStops" }, { kind: "deepYields" },
