@@ -14,7 +14,6 @@ import { describe, expect, it } from "effect-bun-test"
 import { parseSync, Visitor } from "oxc-parser"
 import { matchingInput } from "../tests/read-path.ts"
 
-const live = it.live.layer(BunServices.layer)
 
 /** The folders and files the ratchet watches, relative to the repository (the parent of opencode/, where the gate runs the suite). */
 const ROOTS = ["opencode/mods/orchestrate", "opencode/mods/status", "opencode/mods/queue/stale.ts", "skills/orchestrate/scripts"]
@@ -124,14 +123,14 @@ const read = Effect.gen(function* () {
 })
 
 describe("no run state parsed from prose", () => {
-  live("every expression in the watched sources has an entry, and every entry an expression", () =>
+  it.live.layer(BunServices.layer)("every expression in the watched sources has an entry, and every entry an expression", () =>
     Effect.gen(function* () {
       const { sources, allow } = yield* read
       expect(ratchet(sources, allow)).toEqual({ unlisted: [], stale: [] })
     }),
   )
 
-  live("each entry says why, and nothing is listed twice", () =>
+  it.live.layer(BunServices.layer)("each entry says why, and nothing is listed twice", () =>
     Effect.gen(function* () {
       const { allow: entries } = yield* read
       expect(entries.filter((entry) => entry.why.trim().length < 20)).toEqual([])
@@ -139,7 +138,7 @@ describe("no run state parsed from prose", () => {
     }),
   )
 
-  live("a new expression in record.ts, in a scratch copy, fails until listed; a listed one gone fails too", () =>
+  it.live.layer(BunServices.layer)("a new expression in record.ts, in a scratch copy, fails until listed; a listed one gone fails too", () =>
     Effect.gen(function* () {
       const { sources: all, allow } = yield* read
       const record = "opencode/mods/orchestrate/record.ts"

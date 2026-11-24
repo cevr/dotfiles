@@ -13,6 +13,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Tool } from "@opencode/plugin/effect"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Queue, Schema, Scope, Stream } from "effect"
+import { TestClock } from "effect/testing"
 import type { Json } from "@dotfiles/opencode-kernel/frame"
 import type { Reached, Rule } from "@dotfiles/opencode-kernel/tools"
 import * as FileStoreFiles from "@dotfiles/opencode-kernel/filestore/files"
@@ -333,9 +334,9 @@ describe("the kernel tool", () => {
       Effect.gen(function* () {
         const { call } = yield* start({ idleMs: 100 })
         yield* call("let waited = 1")
-        yield* Effect.sleep("400 millis")
+        yield* TestClock.adjust(100)
         expect(yield* call("waited")).toBe("[new kernel; restored waited]\n1")
-      }),
+      }).pipe(Effect.provide(TestClock.layer())),
     ))
 
   test("drops a deleted session's worker and its stored bindings", () =>

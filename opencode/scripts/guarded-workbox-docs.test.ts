@@ -6,13 +6,8 @@ import { Effect, Stream } from "effect"
 import { expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { matchingInput } from "../tests/read-path.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
-// One bounded scanner invocation, with room for scheduling delays on the loaded gate; not a speed check.
-const TEST_TIMEOUT = 30_000
-// The oracle repeats the main scanner's real Git/index work for both path spellings.
-const PARITY_TIMEOUT = 60_000
-
-const live = it.live.layer(BunServices.layer)
 const run = (script: string, args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
@@ -26,23 +21,23 @@ const run = (script: string, args: ReadonlyArray<string>) =>
 
 const scan = (args: ReadonlyArray<string>) => run(matchingInput("../linux/hetzner-workbox/test-guarded-docs.py"), args)
 
-live("tracked documentation passes the script-derived host guard", () =>
+it.live.layer(BunServices.layer)("tracked documentation passes the script-derived host guard", () =>
   Effect.gen(function* () {
     const result = yield* scan([])
     expect(result).toEqual({ code: 0, output: "guarded docs OK" })
   }),
-  TEST_TIMEOUT,
+  hangGuard("local-fixture"),
 )
 
-live("the docs guard rejects new missing pins, broken handoffs and omitted peer pins", () =>
+it.live.layer(BunServices.layer)("the docs guard rejects new missing pins, broken handoffs and omitted peer pins", () =>
   Effect.gen(function* () {
     const result = yield* scan(["--controls"])
     expect(result).toEqual({ code: 0, output: "guarded docs controls OK" })
   }),
-  TEST_TIMEOUT,
+  hangGuard("local-fixture"),
 )
 
-live("the scanner preserves main's exact verdict bytes with canonical and aliased TMPDIRs", () =>
+it.live.layer(BunServices.layer)("the scanner preserves main's exact verdict bytes with canonical and aliased TMPDIRs", () =>
   Effect.gen(function* () {
     const result = yield* run(matchingInput("../linux/hetzner-workbox/test-guarded-docs-parity.py"), [])
     expect(result).toEqual({
@@ -50,5 +45,5 @@ live("the scanner preserves main's exact verdict bytes with canonical and aliase
       output: "guarded docs byte parity OK (tracked scan and 15 control invocations across both TMPDIR spellings)",
     })
   }),
-  PARITY_TIMEOUT,
+  hangGuard("process-fixture"),
 )

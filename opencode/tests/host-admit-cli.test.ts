@@ -10,6 +10,7 @@ import fixtures from "../mods/guard/fixtures/holder-v1.json"
 import { admissionLauncher } from "../mods/guard/launcher.ts"
 import { parseShell } from "../mods/guard/command-line.ts"
 import { admittedJobArgv } from "../mods/wake/process/supervise.ts"
+import { hangGuard } from "./hang-guard.ts"
 import { scratch } from "./scratch.ts"
 
 const fixtureEntry = new URL("./fixtures/host-admit-test-entry.ts", import.meta.url)
@@ -122,7 +123,7 @@ it.scopedLive("standalone, Guard and Wake carry modeled Go, Bun, Make and Ninja 
       expect(yield* Effect.promise(() => task.exited).pipe(Effect.timeout(6500))).toBe(0)
     }
   }).pipe(Effect.provide(BunServices.layer)),
-  100_000,
+  hangGuard("process-tree"),
 )
 
 it.scopedLive("Unknown executes; a width-one peer cannot exec until it drains", () =>
@@ -183,7 +184,7 @@ it.scopedLive("Unknown executes; a width-one peer cannot exec until it drains", 
     expect(err).toContain("no verified tool width")
     expect(err).toContain("whole managed CPU pool")
   }).pipe(Effect.provide(BunServices.layer)),
-  25_000,
+  hangGuard("local-pair"),
 )
 
 const runner = (folder: string, entry = fixtureEntry) => Effect.fn("HostAdmitTest.invoke")(function* (args: ReadonlyArray<string>, input: string = "") {
@@ -257,7 +258,7 @@ it.scopedLive("real sampler smoke: Darwin reports sane supply without launching 
     expect(output).toContain("positive leg")
     yield* Console.log(output.trim())
   }).pipe(Effect.provide(BunServices.layer)),
-  20_000,
+  hangGuard("local-pair"),
 )
 
 it.scopedLive("v1 JSONL holder input works across fresh CLI processes; scanner cannot forge a terminal event", () =>
@@ -372,7 +373,7 @@ it.scopedLive("public CLI refuses an impossible predecessor before ticketing and
     expect(after.state).toBe("granted")
     expect((yield* invoke(["lease", "cancel", "--id", successor.id ?? "missing", "--json"])).code).toBe(0)
   }).pipe(Effect.provide(BunServices.layer)),
-  20_000,
+  hangGuard("local-pair"),
 )
 
 it.scopedLive("Wake's real durable entry fails closed before heavy payload exec and still runs a light job", () =>
@@ -429,4 +430,5 @@ it.scopedLive("the public CLI names both versions when its private store is newe
     expect(out).toContain(`"reason":"incompatible"`)
     expect(out).toContain("Host admission store v7; this binary supports v2. Upgrade host-admit to support store v7.")
   }).pipe(Effect.provide(BunServices.layer)),
+  hangGuard("short-fixture"),
 )

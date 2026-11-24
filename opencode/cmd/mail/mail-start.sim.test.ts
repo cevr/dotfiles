@@ -21,10 +21,10 @@ import { sign } from "@dotfiles/opencode-mail/pairing"
 import { Parcel, ROUTES } from "@dotfiles/opencode-mail/peer"
 import * as Hosts from "../../sim/hosts.ts"
 import * as Plugins from "../../sim/plugins.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/mail/mail-start.sim.test.ts")
+const { seeded } = simulationRunner("cmd/mail/mail-start.sim.test.ts")
 
 const ADDRESS = { workbox: "100.64.0.2", mac: "100.64.0.1" }
 /** The secret the pairing left on both hosts. */

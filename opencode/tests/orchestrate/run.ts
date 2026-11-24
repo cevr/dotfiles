@@ -25,6 +25,7 @@ import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { externalInput, matchingInput, readScratchFileSync as readFileSync, scratchExistsSync as existsSync, scratchInput } from "../read-path.ts"
 import { HAND_BACK, PROBE, ROOT_TASK, serve, UNITS_TASK } from "./sim.ts"
+import { watchdog } from "../hang-guard.ts"
 
 export interface Spec {
   readonly scenario: "subagents" | "compaction" | "units" | "lane"
@@ -210,7 +211,7 @@ const messages = (sessionID: string) => opencode.sessions.context({ sessionID })
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 /** Polls `ready` every 100 ms for `ms` at most; whether it held. */
 const until = async (ready: () => Promise<boolean> | boolean, ms: number) => {
-  for (const end = Date.now() + ms; Date.now() < end; await sleep(100)) if (await ready()) return true
+  for (const end = watchdog(ms); !end.expired(); await sleep(100)) if (await ready()) return true
   return false
 }
 const readLog = (): Result["log"] => {

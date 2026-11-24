@@ -28,8 +28,8 @@ import { forkRuns, keptScratch } from "./scratch.ts"
 import { externalInput, scratchInput } from "./read-path.ts"
 import { forkTuiFixture } from "./scratch-child.ts"
 import { freePort, ready, type Service } from "./service.ts"
+import { hangGuard } from "./hang-guard.ts"
 
-const TIMEOUT_MS = 240_000
 /** The TUI's build and the installed one: one fork commit, two dotfiles commits. */
 const OWN = "2.2.7-prime.f0f0f0f0.d1d1d1d1"
 const INSTALLED = "2.2.7-prime.f0f0f0f0.d2d2d2d2"
@@ -238,6 +238,6 @@ describe.skipIf(!forkRuns)("an open TUI moves onto a build that differs only in 
         expect(arrived).toContain(`from ${OWN})`)
         yield* until(screen, (text) => text.includes(READY) && text.includes(DRAFT), (last) => `the new process lost the session or the draft:\n${last}`, 30_000)
       }),
-    TIMEOUT_MS,
+    hangGuard("generated-schedule"),
   )
 })

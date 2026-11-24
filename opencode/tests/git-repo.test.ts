@@ -30,6 +30,7 @@ import { QUIET_GIT } from "./git-repo.ts"
 import { cloneScratchGit, initScratchGit, spawnScratchGitSync } from "./scratch-child.ts"
 import { matchingInput } from "./read-path.ts"
 import { scratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url))
 
@@ -363,8 +364,6 @@ const generator = (seed: number) => {
   return { pick, count: (below: number) => Math.floor(next() * below) }
 }
 
-/** Running the installed git for its options (tests/git-options.ts), then 400 cases: a loaded machine gets room. */
-const PROBE_MS = 60_000
 
 /** Options git does not know, which a reader cannot read past: a case with one before the subcommand is a site whatever follows. */
 const UNKNOWN_OPTIONS = ["--not-a-git-option", "-Z", "--not-a-git-option=init"]
@@ -534,7 +533,7 @@ describe("a test's temp git repository", () => {
         expect({ seed, code, site: rawSites("case.ts", code).length > 0 }).toEqual({ seed, code, site: makes })
       }
     },
-    PROBE_MS,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -546,7 +545,7 @@ describe("a test's temp git repository", () => {
         expect({ seed, code, site: rawSites("case.ts", code).length > 0 }).toEqual({ seed, code, site: makes })
       }
     },
-    PROBE_MS,
+    hangGuard("process-fixture"),
   )
 
   test("the files the guard reads are every test file and every file under tests/ and testbeds/", () => {

@@ -13,6 +13,7 @@ import { NO_FREE_MODELS, releaseFlags } from "../scripts/release-flags.ts"
 import { LAWS } from "../sim-tui/client-laws.ts"
 import { scratchInput } from "./read-path.ts"
 import { checkoutBunCommand } from "./scratch-child.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 /** How long the real boot and its laws may take before they are stopped. */
 const BOOT = "6 minutes"
@@ -95,14 +96,13 @@ const failuresOf = (run: Run, name: string) =>
   })
 
 describe("the client laws in real OpenCode", () => {
-  const live = it.live.layer(BunServices.layer)
   for (const law of LAWS)
-    live(
+    it.live.layer(BunServices.layer)(
       law.name,
       () =>
         Effect.gen(function* () {
           expect(failuresOf(yield* outcomes, law.name)).toEqual([])
         }),
-      400_000,
+      hangGuard("long-fork-scenario"),
     )
 })

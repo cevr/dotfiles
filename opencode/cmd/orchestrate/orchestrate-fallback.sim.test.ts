@@ -18,10 +18,10 @@ import { Plugin } from "@opencode/plugin/effect"
 import { Effect, Option, Schema } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Provider from "../../sim/provider.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/orchestrate/orchestrate-fallback.sim.test.ts")
+const { seeded } = simulationRunner("cmd/orchestrate/orchestrate-fallback.sim.test.ts")
 
 const WORK = "/scratch/project"
 /** The orchestrate plugin's fixed clock: a Wednesday afternoon, so only the pace holds. */

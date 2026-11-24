@@ -5,6 +5,7 @@ import * as BunServices from "@effect/platform-bun/BunServices"
 import { Effect, FileSystem, Schedule, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { hangGuard } from "./hang-guard.ts"
 
 import { checkoutBunCommand } from "./scratch-child.ts"
 import { scratchInput } from "./read-path.ts"
@@ -46,6 +47,6 @@ describe("gamut's detached processes and their owner", () => {
         yield* until(Effect.map(processArgs, (args) => !args.includes(dir)))
         expect(yield* fs.exists(scratchInput(socket))).toBe(false)
       }).pipe(Effect.scoped),
-    20_000,
+    hangGuard("local-pair"),
   )
 })

@@ -28,8 +28,8 @@ import { readInputText, readScratchFileSync, scratchExistsSync, scratchInput } f
 import { forkTuiFixture } from "./scratch-child.ts"
 import { forkRuns, keptScratch } from "./scratch.ts"
 import { freePort, ready, type Service } from "./service.ts"
+import { hangGuard } from "./hang-guard.ts"
 
-const TIMEOUT_MS = 180_000
 const ROLES = ["planner", "implementor", "verifier", "worker"]
 const writeSettings = (home: string) =>
   writeSettingsFrom(scratchInput(home),
@@ -228,6 +228,6 @@ describe.skipIf(!forkRuns)("the settings follow an update, from each build's tre
         expect(yield* owner).toEqual(afterPicks)
         expect(afterPicks[0]).toBe(before[0])
       }),
-    TIMEOUT_MS,
+    hangGuard("fork-session"),
   )
 })

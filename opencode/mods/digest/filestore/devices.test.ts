@@ -20,6 +20,7 @@ import { Copy, copyOfText, copyWord, keysOf, membersWith, type Store, withId } f
 import { type Members, sourceOf } from "../members.ts"
 import { decide, ROUTE_KINDS, type RouteKind } from "../policy.ts"
 import { change, readCopies, readCopy } from "./devices.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 const NOW = 1_795_204_800_000
 const HIS = 7
@@ -239,7 +240,7 @@ describe("the device store over time, on disk", () => {
     expect(wrong.slice(0, 2)).toEqual([])
     const counts = STEPS.map((step) => [step.name, runs.flatMap((each) => each.steps).filter((each) => each === step).length] as const)
     expect(counts.filter(([, count]) => count < MIN_EACH)).toEqual([])
-  }, 60_000)
+  }, hangGuard("process-fixture"))
 })
 
 // ── The files themselves ──
@@ -283,7 +284,7 @@ describe("the store's files", () => {
     await Effect.runPromise(Effect.ignore(release))
     expect(Option.map(copy, said)).toEqual(Option.some("unreadable-ENOTREG"))
     expect(keysOf(NAMED, Option.getOrElse(copy, () => Copy.Absent()), Copy.Absent()).closeAll).toEqual(Option.some("unkeyed:dinghy:agent-unkeyed:skiff:store-unreadable-ENOTREG/absent"))
-  }, 10_000)
+  }, hangGuard("in-memory"))
 
   test("a store neither copy reads is refused and left as it is; one copy readable is the start of the next write", async () => {
     using held = scratch("digest-devices-refuse-")

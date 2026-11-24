@@ -6,6 +6,7 @@ import { Data, Effect, FileSystem } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { initScratchGit, spawnScratchGitSync } from "../tests/scratch-child.ts"
 import { forkLagWith } from "./fork-lag.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 const IDENTITY = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t.invalid", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t.invalid" }
 class GitFailed extends Data.TaggedError("GitFailed")<{ readonly message: string }> {}
@@ -62,5 +63,6 @@ describe("verify:doctor's fork-branch check", () => {
       yield* git(dir, "update-ref", "-d", "refs/remotes/origin/prime-look")
       expect((yield* said(dir)).ok).toBe(true)
     }).pipe(Effect.scoped),
+    hangGuard("local-fixture"),
   )
 })

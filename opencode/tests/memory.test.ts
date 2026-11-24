@@ -17,6 +17,7 @@ import { DEPLOY, DEPLOY_FIXED, STRINGS_TASK } from "./memory/sim.ts"
 import { scratch as scratchDir } from "./scratch.ts"
 import { readScratchFileSync as readFileSync, scratchExistsSync as existsSync } from "./read-path.ts"
 import { spawnCheckoutBun } from "./scratch-child.ts"
+import { hangGuard, stamp } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/memory.test.ts: the OpenCode run skips. Set OPENCODE_DEV to the fork.")
@@ -81,9 +82,9 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(refused?.state.status).toBe("error")
       expect(JSON.stringify(refused?.state)).toContain('Invalid arguments for tool \\"memory_forget\\":\\n- id: Expected number')
 
-      const stats = await main(["stats", "--json"], { db: result.db, now: Date.now() })
+      const stats = await main(["stats", "--json"], { db: result.db, now: stamp() })
       expect(JSON.parse(stats.out).total).toBe(0)
     },
-    150_000,
+    hangGuard("fork-turn"),
   )
 })

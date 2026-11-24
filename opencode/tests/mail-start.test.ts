@@ -18,11 +18,11 @@ import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { freePort } from "./service.ts"
 import { keptScratch } from "./scratch.ts"
 import { spawnForkLauncher, stageForkLauncher } from "./fork-launcher.ts"
+import { hangGuard, stamp, watchdog } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/mail-start.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 
-const TIMEOUT_MS = 120_000
 
 const readJson = (file: string): unknown => {
   try {
@@ -33,10 +33,10 @@ const readJson = (file: string): unknown => {
 }
 
 const until = async <A>(read: () => A, done: (value: A) => boolean, label: () => string, ms = 60_000): Promise<A> => {
-  const deadline = Date.now() + ms
+  const deadline = watchdog(ms)
   let last = read()
   while (!done(last)) {
-    if (Date.now() > deadline) return expect.unreachable(`${label()}: still ${JSON.stringify(last)}`)
+    if (deadline.expired()) return expect.unreachable(`${label()}: still ${JSON.stringify(last)}`)
     await Bun.sleep(250)
     last = read()
   }
@@ -94,7 +94,7 @@ describe.skipIf(!fork)("the mail listener from the service's start", () => {
       chmodSync(link, 0o755)
       const secret = token(32)
       const pairs = join(home, ".local/state/opencode-mail/pairs.json")
-      writeFileSync(pairs, JSON.stringify({ name: "workbox", peers: { mac: { url: "http://127.0.0.1:9", secret, paired: Date.now() } }, invites: [] }), { mode: 0o600 })
+      writeFileSync(pairs, JSON.stringify({ name: "workbox", peers: { mac: { url: "http://127.0.0.1:9", secret, paired: stamp() } }, invites: [] }), { mode: 0o600 })
 
       // A port of its own: the other test files' scratch services would share the channel's fixed one (tests/service.ts).
       expect(await opencode("service", "set", "port", String(freePort()))).toMatchObject({ code: 0 })
@@ -108,11 +108,11 @@ describe.skipIf(!fork)("the mail listener from the service's start", () => {
         () => "the mail listener",
       )
       const body = JSON.stringify({ to: "ses_nobody", from: { id: "ses_mac", title: "Mac main" }, replyTo: { id: "ses_mac", title: "Mac main" }, body: "hello", wake: false })
-      const headers = sign("mac", secret, { method: "POST", path: ROUTES.receive, body }, Date.now(), token(16), keyed)
+      const headers = sign("mac", secret, { method: "POST", path: ROUTES.receive, body }, stamp(), token(16), keyed)
       const response = await fetch(new URL(ROUTES.receive, url ?? ""), { method: "POST", headers: { "content-type": "application/json", ...headers }, body })
       // Authenticated and handled: a session this server lacks is `unknown`, not a refusal.
       expect([response.status, await response.json()]).toEqual([200, { outcome: "unknown" }])
     }),
-    TIMEOUT_MS,
+    hangGuard("installer"),
   )
 })

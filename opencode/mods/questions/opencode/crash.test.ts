@@ -15,6 +15,7 @@ import { join } from "node:path"
 import { Effect, Option, Predicate, Schema } from "effect"
 import { scratch } from "../../../tests/scratch.ts"
 import { DIGEST, LETTERS, Letter, SESSION, STEPS } from "./crash.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 /** The kill program, from opencode/ (where the tests run). */
 const PROGRAM = "mods/questions/opencode/crash.ts"
@@ -57,7 +58,7 @@ describe("an answer whose server is killed at each step, then restarted", () => 
     expect(new Set(letters.map((letter) => letter.delivery)).size).toBe(Number(stored))
     expect(seen.open).toEqual(Option.some(!stored))
     expect(answered.length).toBeLessThanOrEqual(1)
-  }, 60_000)
+  }, hangGuard("process-fixture"))
 
   test.todo("O1: killed right after the store write, the digest still gets its Answered line after the restart")
 })

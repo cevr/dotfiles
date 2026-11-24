@@ -5,6 +5,7 @@ import { Effect, FileSystem, Path, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { describe, expect, it } from "effect-bun-test"
 import { matchingInput } from "./read-path.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 // Both observers exercise the public producers, including the second sink of a round receipt.
 const WRITERS = `
@@ -352,14 +353,14 @@ const sites = ["receipt", "git-mirror", "land", "stage", "install", "handoff"]
 
 describe("review-input publication", () => {
   it.live.layer(BunServices.layer)("each producer replaces its inode; a reader of the old inode still sees the complete old version",
-    () => observe(OBSERVER, "descriptor", sites.map((name) => `${name}:true:true:true`)), 60_000)
+    () => observe(OBSERVER, "descriptor", sites.map((name) => `${name}:true:true:true`)), hangGuard("process-fixture"))
   it.live.layer(BunServices.layer)("permission matrix: each sink respects policy at the creating open and after replacement",
-    () => observe(MATRIX, "mode", sites.map((name) => `${name}:12/12`)), 60_000)
+    () => observe(MATRIX, "mode", sites.map((name) => `${name}:12/12`)), hangGuard("process-fixture"))
   it.live.layer(BunServices.layer)("crash recovery: kill each fixture writer before rename; read old or absent and publish again with its stray temp still present",
-    () => observe(MATRIX, "crash", sites.map((name) => `${name}:killed-before-rename:absent+existing:recovered`)), 60_000)
+    () => observe(MATRIX, "crash", sites.map((name) => `${name}:killed-before-rename:absent+existing:recovered`)), hangGuard("process-fixture"))
   it.live.layer(BunServices.layer)("unsafe destination matrix: each public producer refuses each special file and the next call succeeds",
     () => observe(DESTINATIONS, "unsafe", [...sites.map((name) => `${name}:4/4 typed refusal+recovery`),
-      "racing hold: refused and recovered under real builds lock"]), 60_000)
+      "racing hold: refused and recovered under real builds lock"]), hangGuard("process-fixture"))
 
   it.live.layer(BunServices.layer)("each review input sink uses its atomic writer, never the general text writer", () =>
     Effect.gen(function* () {

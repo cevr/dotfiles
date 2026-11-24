@@ -6,7 +6,7 @@ import * as PrintableModule from "@dotfiles/opencode-orchestrate/printable"
 import { noEvidence } from "@dotfiles/opencode-orchestrate/reasons"
 import { CommitmentRecord } from "@dotfiles/opencode-orchestrate/service"
 import { textsOf } from "../../sim/canary.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationTest } from "../../sim/seed.ts"
 import { generator } from "../../sim/runtime.ts"
 import { KINDS, leaked } from "../../sim/tokens.ts"
 import { scratch } from "../../tests/scratch.ts"
@@ -154,7 +154,7 @@ test("a raw string cannot be turned into Printable by decoding an exported schem
   expect(cases.map((result) => result._tag)).toEqual(["Failure", "Failure", "Failure", "Success"])
 })
 
-Seed.effect("the host receives a redacted failure, not the raw defect, from either record tool", Effect.scoped(Effect.gen(function* () {
+simulationTest("the host receives a redacted failure, not the raw defect, from either record tool", Effect.scoped(Effect.gen(function* () {
   const value = embedded(12)
   const defect = Effect.die(new Error(`scratch reader defect: ${value}`))
   const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
@@ -233,7 +233,7 @@ test("opaque defects never invoke getters or render hooks", () => {
   expect(calls).toBe(0)
 })
 
-Seed.effect("registered tool refusals, status and logs redact diagnostic leaves before the host renders them", Effect.scoped(Effect.gen(function* () {
+simulationTest("registered tool refusals, status and logs redact diagnostic leaves before the host renders them", Effect.scoped(Effect.gen(function* () {
   const current = yield* Ref.make<unknown>("scratch")
   const defect = Ref.get(current).pipe(Effect.flatMap(Effect.die))
   const run = yield* boot(1, true, {}, () => Layer.merge(
@@ -262,7 +262,7 @@ Seed.effect("registered tool refusals, status and logs redact diagnostic leaves 
   expect(exercised).toBe(12 * 6 * 6 * 4)
 })))
 
-Seed.effect("CLI list, history, export and the stored bytes agree for overlapping tokens at every offset", Effect.gen(function* () {
+simulationTest("CLI list, history, export and the stored bytes agree for overlapping tokens at every offset", Effect.gen(function* () {
   using dir = scratch("record-overlap-")
   const path = `${dir.path}/record.db`
   const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Json))

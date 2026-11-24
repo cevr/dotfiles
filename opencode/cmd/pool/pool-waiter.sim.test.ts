@@ -24,13 +24,13 @@ import {
 } from "@dotfiles/opencode-pool/store/store"
 import * as Provider from "../../sim/provider.ts"
 import { below, generator, line } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
 /** Seeds found failing, replayed on every run. */
 const PAST: ReadonlyArray<number> = []
 
-const { seeded } = Seed.runner("cmd/pool/pool-waiter.sim.test.ts", { past: PAST })
+const { seeded } = simulationRunner("cmd/pool/pool-waiter.sim.test.ts", { past: PAST })
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE

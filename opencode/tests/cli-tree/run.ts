@@ -12,6 +12,7 @@ import { Array as Arr, Effect, FileSystem, Option, Path, Stream } from "effect"
 import { expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { type Command, COMMANDS, type Probe } from "../../mods/update/trees.ts"
+import { hangGuard } from "../hang-guard.ts"
 
 /** Whether `file` is `root` or under it. */
 export const within = (root: string, file: string) => file === root || file.startsWith(`${root}/`)
@@ -117,6 +118,6 @@ export const commandChecks = <E>(rootOf: Effect.Effect<string, E, FileSystem.Fil
             expect([label, /Cannot find (module|package)|SyntaxError: Export named/.test(ran.said)]).toEqual([label, false])
           }
         }).pipe(Effect.scoped),
-      120_000,
+      hangGuard("installer"),
     )
 }

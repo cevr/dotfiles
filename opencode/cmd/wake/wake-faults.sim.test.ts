@@ -18,10 +18,10 @@ import { Effect } from "effect"
 import { lateBy } from "@dotfiles/opencode-wake/message"
 import * as Plugins from "../../sim/plugins.ts"
 import { below, generator } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/wake/wake-faults.sim.test.ts")
+const { seeded } = simulationRunner("cmd/wake/wake-faults.sim.test.ts")
 
 const WORK = "/scratch/project"
 const MINUTE = 60_000

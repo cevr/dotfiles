@@ -24,6 +24,7 @@ import { Array as Arr, ConfigProvider, Context, Effect, Exit, Fiber, Layer, Opti
 import { Base64 } from "effect/encoding"
 import { effectTest } from "../../sim-tui/effect-test.ts"
 import { parse, Refused, Request, run, type Screen, viewer } from "./show.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 
 const BASE = MemorySideshow.BASE
 
@@ -55,7 +56,7 @@ describe("the arguments of rex-show feed", () => {
       }
       expect(yield* parse(["diff", "--staged"])).toEqual(Request.Diff({ args: ["--staged"] }))
     }),
-    5_000,
+    hangGuard("local-fixture"),
   )
 })
 
@@ -86,7 +87,7 @@ describe("the caller of rex-show feed", () => {
       expect((yield* Ref.get(named.spools)).get("session:a")?.shown).toEqual(Feed.make({ base: BASE, session: "own", name: "own", every: 3 }))
       expect((yield* labelled(named.rex, "showcase")).length).toBe(1)
     }).pipe(Effect.provide(systems(named.rex, named.spools, Option.some("own")))),
-    5_000,
+    hangGuard("local-fixture"),
   )
 
   const none = { rex: Ref.makeUnsafe(MemoryRex.world([{ session: "session:a", label: "shell" }])), spools: Ref.makeUnsafe<ReadonlyMap<string, Spooled>>(new Map()) }
@@ -96,7 +97,7 @@ describe("the caller of rex-show feed", () => {
       expect(refusalOf(yield* Effect.exit(run(yield* parse(["feed"]), quiet, settings)))).toEqual(Option.some(1))
       expect((yield* labelled(none.rex, "showcase")).length).toBe(0)
     }).pipe(Effect.provide(systems(none.rex, none.spools, Option.none()))),
-    5_000,
+    hangGuard("local-fixture"),
   )
 
   const kept = { rex: Ref.makeUnsafe(MemoryRex.world([{ session: "session:a", label: "shell" }])), spools: Ref.makeUnsafe<ReadonlyMap<string, Spooled>>(new Map()) }
@@ -109,7 +110,7 @@ describe("the caller of rex-show feed", () => {
       yield* run(yield* parse(["url", "http://localhost:3000"]), quiet, settings)
       expect((yield* Ref.get(kept.spools)).get("session:a")?.feed?.session).toBe("s9")
     }).pipe(Effect.provide(systems(kept.rex, kept.spools, Option.some("own")))),
-    5_000,
+    hangGuard("local-fixture"),
   )
 
   const leafy = { rex: Ref.makeUnsafe(MemoryRex.world([{ session: "session:a", label: "shell" }])), spools: Ref.makeUnsafe<ReadonlyMap<string, Spooled>>(new Map()) }
@@ -124,7 +125,7 @@ describe("the caller of rex-show feed", () => {
       expect((yield* labelled(leafy.rex, "showcase")).length).toBe(0)
       expect(refusalOf(yield* Effect.exit(run(yield* parse(["diff"]), quiet, settings)))).toEqual(Option.some(1))
     }).pipe(Effect.provide(systems(leafy.rex, leafy.spools, Option.none()))),
-    5_000,
+    hangGuard("local-fixture"),
   )
 })
 
@@ -273,7 +274,7 @@ effectTest(
     yield* Queue.offer(keys, "q")
     expect(yield* Fiber.join(running)).toBe("")
   }).pipe(Effect.provide(following)),
-  15_000,
+  hangGuard("short-fixture"),
 )
 
 const still = Ref.makeUnsafe<ReadonlyMap<string, Spooled>>(new Map())
@@ -313,5 +314,5 @@ effectTest(
       ).pipe(Layer.provideMerge(queues)),
     ),
   ),
-  10_000,
+  hangGuard("in-memory"),
 )

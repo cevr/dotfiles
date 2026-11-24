@@ -16,6 +16,7 @@ import { runTablesLaws } from "../laws.ts"
 import { type RunTable, unitsOf } from "../run-table.ts"
 import { RunTables } from "../service.ts"
 import * as RunScript from "./run-tables.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 /** `parts` joined as one path. */
 const join = (...parts: ReadonlyArray<string>) => parts.join("/")
@@ -318,7 +319,7 @@ test(
         for (let repoSeed = 1; repoSeed <= REPOS; repoSeed += 1) yield* repositoryRuns(root, repoSeed)
       }),
     ),
-  180_000,
+  hangGuard("fork-session"),
 )
 
 test("B1's red at base: a unit logged ready whose head is on the default branch is merged", () =>

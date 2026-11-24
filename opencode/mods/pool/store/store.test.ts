@@ -10,7 +10,8 @@ import { randomBytes } from "node:crypto"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
-import { Context, Effect, Logger } from "effect"
+import { Context, Effect, Logger, Option } from "effect"
+import { globalSlot } from "../../../tests/global-slot.ts"
 import {
   STORE_PREFIX,
   CLAUDE_USER_AGENT,
@@ -419,8 +420,9 @@ describe("a store's state outlives a hot reload", () => {
     mkdirSync(join(dir, ".slots/anthropic"), { recursive: true })
     // What the module before the lost-login alert kept for a store: no refusals, no failure run.
     const older = { pending: new Map(), rejected: new Map(), queue: Promise.resolve(), pausedUntil: 1234, lastTradeAt: 5678 }
-    const global = globalThis as unknown as Record<symbol, Map<string, unknown> | undefined>
-    const states = (global[Symbol.for("dotfiles-opencode.pool.login-stores")] ??= new Map())
+    const slot = globalSlot<Map<string, unknown>>(Symbol.for("dotfiles-opencode.pool.login-stores"))
+    const states = Option.getOrElse(slot.get(), () => new Map())
+    slot.set(states)
     states.set(dir, older)
     const source = new StoreSource({ dir, tokenURL: "http://token.invalid/v1/oauth/token" })
     expect(await Effect.runPromise(source.lost)).toEqual([])

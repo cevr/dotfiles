@@ -1,28 +1,22 @@
 // @reads all
 // @reads-reason computed read at mods/guard/sqlite/admission.ts: const stat = yield* fs.lstat(dir).pipe(Effect.mapError(unavailable))
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { CryptoHasher } from "bun"
-import { Database } from "bun:sqlite"
-import { Effect, FileSystem, Option, Path, Predicate, Result, Schema } from "effect"
+import { argv, CryptoHasher } from "bun"
+import { Effect, FileSystem, Option, Path, Result, Schema } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { expect, it } from "effect-bun-test"
-import { AdmissionUnavailable } from "../admission.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 import { qualifiedForm } from "../admission-wire.ts"
 import fixture from "../fixtures/holder-v1.json"
 import {
-  EMPTY_OWNER, EMPTY_USAGE, Holder, type ResourceRef, canonicalHolder, readHolderSnapshot, resourceHolders, resourceRef, storageCharges,
+  EMPTY_OWNER, Holder, type ResourceRef, canonicalHolder, readHolderSnapshot, resourceHolders, resourceRef, storageCharges,
 } from "../host-resources.ts"
-import { owner, request, supply } from "../memory/admission-acceptance.ts"
+import { owner, request } from "../memory/admission-acceptance.ts"
 import { type ProcessPin } from "../process/launchers.ts"
-import { type Authority, type Intent, OwnershipEvent, type OwnedReceipt, type OwnerSession } from "../process/ownership.ts"
+import { OwnershipEvent, type OwnedReceipt, type OwnerSession } from "../process/ownership.ts"
 import { open } from "./admission.ts"
+import { draft, folder, HOST, person, sample, sqlite, why } from "./ownership-fixture.ts"
 
-const HOST = { hostId: "host-a", bootId: "boot-a" }
-const sample = supply({ cores: 12, now: 2000 })
-const folder = Effect.fn("OwnershipFixture.folder")(function* () {
-  const fs = yield* FileSystem.FileSystem
-  return yield* fs.makeTempDirectoryScoped({ prefix: "host-resources-fixture-" }).pipe(Effect.flatMap(fs.realPath))
-})
 const makeFixture = Effect.fn("OwnershipFixture.open")(function* () {
   const path = yield* Path.Path
   const directory = yield* folder()
@@ -32,23 +26,8 @@ const makeFixture = Effect.fn("OwnershipFixture.open")(function* () {
   return { directory, filename, a, b }
 })
 
-const person = (name: string, lane: string, epoch = 1): Authority =>
-  ({ ...HOST, authorityId: name, epoch, owner: { ...EMPTY_OWNER, class: "agent", authorityId: name, laneId: lane, callId: `call-${name}` } })
-const draft = (key: string): Intent => ({
-  nonce: `nonce-${key}`, resourceId: `resource-${key}`, incarnation: `generation-${key}`, kind: "cache",
-  dependsOn: [], parentResourceId: Option.none(), placement: {
-    ...fixture.fixtures.disk.placement, objectRef: `native-${key}`,
-  },
-  coverage: "partial", protection: "eligible-class",
-  usage: { ...EMPTY_USAGE, allocatedBytes: 8192, sharedBytes: 4096, extentGroupRef: `extent-${key}` },
-})
 const eventRef = (receipt: OwnedReceipt): ResourceRef => Option.getOrThrow(resourceRef(receipt.holder))
 const expectedRef = (ref: ResourceRef, resourceId = ref.resourceId) => ({ ...ref, resourceId })
-const why = <A, E extends { readonly reason: string }, R>(effect: Effect.Effect<A, E, R>) =>
-  effect.pipe(Effect.result, Effect.map((result) => {
-    if (Result.isSuccess(result)) return "accepted"
-    return result.failure.reason
-  }))
 
 it.effect("the public fixture keeps the peer's neutral bytes and the canonical golden", () =>
   Effect.gen(function* () {
@@ -307,24 +286,13 @@ for (let shard = 0; shard < 8; shard++) {
     () => launchHistories(shard * 8, 8))
 }
 
-type Journal = Effect.Success<ReturnType<typeof open>>
-interface LegacyAdapter {
-  readonly open: (filename: string, identity: typeof HOST) => Effect.Effect<
-    Pick<Journal, "ledger" | "holder" | "native">,
-    Effect.Error<ReturnType<typeof open>>, Effect.Services<ReturnType<typeof open>>
-  >
-}
-interface LegacyWire { readonly qualifiedForm: typeof qualifiedForm }
 const legacyFiles = ["admission.ts", "admission-wire.ts", "host-resources.ts", "sqlite/admission.ts"]
-const loadModule = (url: URL) => import(url.href)
-const importFixture = <A>(url: URL) => Effect.tryPromise({
-  try: (): Promise<A> => loadModule(url),
-  catch: () => new AdmissionUnavailable({ reason: "unavailable" }),
-})
-const oldSource = Effect.fn("OwnershipFixture.v1")(function* (directory: string) {
+
+it.scopedLive("the actual old adapter is refused before and after reopen, with no write or lost v1 history", () => Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+  const directory = yield* folder()
   const project = yield* path.fromFileUrl(new URL("../../../", import.meta.url))
   const source = path.join(directory, "legacy-guard")
   yield* fs.makeDirectory(path.join(source, "sqlite"), { recursive: true })
@@ -337,66 +305,25 @@ const oldSource = Effect.fn("OwnershipFixture.v1")(function* (directory: string)
     ], { cwd: project, stdin: "ignore", forceKillAfter: "1 second" }))
     yield* fs.writeFileString(path.join(source, file), bytes)
   }
-  const root = yield* path.toFileUrl(`${source}/`)
-  const adapter = yield* importFixture<LegacyAdapter>(new URL("sqlite/admission.ts", root))
-  const wire = yield* importFixture<LegacyWire>(new URL("admission-wire.ts", root))
-  return { adapter, wire }
-})
-const sqlite = (filename: string) => Effect.acquireRelease(
-  Effect.try({ try: () => new Database(filename, { create: true, strict: true }),
-    catch: () => new AdmissionUnavailable({ reason: "unavailable" }) }),
-  (db) => Effect.sync(() => db.close()),
-)
-
-it.scoped("the actual old adapter is refused before and after reopen, with no write or lost v1 history", () =>
-  Effect.gen(function* () {
-    const directory = yield* folder()
-    const path = yield* Path.Path
-    const filename = path.join(directory, "fixture.sqlite")
-    const { adapter, wire } = yield* oldSource(directory)
-    const old = yield* adapter.open(filename, HOST)
-    const before = yield* old.ledger.transact({ op: "request", owner: owner("legacy"), request: request("legacy") }, sample)
-    const legacyRef = Option.getOrThrow(Option.fromNullishOr(before.reply.id))
-    const raw = yield* sqlite(filename)
-    const previousWrite = raw.query("INSERT OR IGNORE INTO native_peers_v1 VALUES(?, ?, ?, ?)")
-    const current = yield* open(filename, HOST)
-    const kept = yield* current.ledger.replay({ id: legacyRef, owner: owner("legacy") }, 0)
-    expect(kept.map(({ state }) => state)).toEqual(["queued", "granted"])
-    const denied = yield* Effect.result(Effect.try({
-      try: () => previousWrite.run(HOST.bootId, "raw-v1-writer", 445, 600),
-      catch: (error) => error,
-    }))
-    expect(Result.isFailure(denied) && Predicate.isError(denied.failure) && denied.failure.message)
-      .toContain("incompatible host-admit SQLite writer: private store requires v2")
-    const closed = yield* Effect.scoped(why(adapter.open(filename, HOST)))
-    expect(closed).toBe("incompatible")
-    expect(wire.qualifiedForm("incompatible")).toBe("Use host-admit --help and host status --json for a qualified request.")
-
-    const disk = yield* Schema.decodeUnknownEffect(Holder)(fixture.fixtures.disk)
-    const peer = current.ownership.forOwner(person("v2-owner", "lane-v2"))
-    for (let i = 0; i < 32; i++) {
-      const currentRecord = draft(`v2-${i}`)
-      if (i % 2 === 0) yield* peer.intent(currentRecord, 2000)
-      const after = yield* current.ledger.inspect()
-      const attempts = [
-        Effect.asVoid(old.ledger.transact({ op: "request", owner: owner(`old-${i}`), request: request(`old-${i}`) }, sample)),
-        Effect.asVoid(old.holder.putObservations("scanner-a", [{ ...disk, producerSeq: i + 1 }], 2000)),
-        old.native.remember(`legacy-${i}`, 889, 500),
-      ]
-      const attempt = Option.getOrThrow(Option.fromNullishOr(attempts[i % attempts.length]))
-      expect(yield* why(attempt)).toBe("unavailable")
-      expect(wire.qualifiedForm("unavailable")).toBe("Retry submission when host status --json can attest the managed pool and volume.")
-      expect(yield* current.ledger.inspect()).toEqual(after)
-      expect(yield* current.native.peer(`legacy-${i}`)).toBeNull()
-      if (i % 2 === 1) yield* peer.intent(currentRecord, 2000)
-    }
-    const one = yield* Effect.scoped(open(filename, HOST).pipe(Effect.flatMap(({ holder }) => readHolderSnapshot(holder))))
-    const two = yield* Effect.scoped(open(filename, HOST).pipe(Effect.flatMap(({ holder }) => readHolderSnapshot(holder))))
-    expect(one).toEqual(two)
-    expect(two.records.filter((row) => row.relation === "controller")).toHaveLength(33)
-    expect(two.records.filter((row) => row.relation === "observation")).toEqual([])
-  }).pipe(Effect.provide(BunServices.layer)),
-)
+  // The old and current writers still share one process and database, but the
+  // immutable old modules are static imports from an isolated test entry.
+  const entry = path.join(directory, "legacy-writer.test.ts")
+  const fixturePath = yield* path.fromFileUrl(new URL("./ownership-fixture.ts", import.meta.url))
+  const specifier = Schema.encodeSync(Schema.fromJsonString(Schema.String))(fixturePath)
+  yield* fs.writeFileString(entry, [
+    'import * as BunServices from "@effect/platform-bun/BunServices"',
+    'import { Effect } from "effect"',
+    'import { it } from "effect-bun-test"',
+    'import * as adapter from "./legacy-guard/sqlite/admission.ts"',
+    'import * as wire from "./legacy-guard/admission-wire.ts"',
+    `import { checkLegacyWriter } from ${specifier}`,
+    'it.scoped("cross-version writer fence", () => checkLegacyWriter(adapter, wire).pipe(Effect.provide(BunServices.layer)))',
+  ].join("\n"))
+  const [exe = "bun"] = argv
+  expect(Number(yield* spawner.exitCode(ChildProcess.make(exe, ["test", entry], {
+    cwd: directory, stdin: "ignore", stdout: "inherit", stderr: "inherit", forceKillAfter: "1 second",
+  })))).toBe(0)
+}).pipe(Effect.provide(BunServices.layer)), hangGuard("local-fixture"))
 
 it.scoped("new readers give an exact remediation for a future store version without rewriting it", () =>
   Effect.gen(function* () {

@@ -10,6 +10,7 @@ import { Effect, Exit, Option, Path } from "effect"
 import { scratch } from "../../../tests/scratch.ts"
 import { markOf, nameOf, sinceOf } from "../marks.ts"
 import { make, NAMES_FILE, READ_FILE } from "./marks.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 const T = Date.parse("2026-11-20T12:00:00Z")
 const EACH = 60
@@ -57,7 +58,7 @@ describe("the marks' file store", () => {
     expect(await Effect.runPromise(writeAtOnce(dir))).toEqual([0, 0])
     const marks = await Effect.runPromise(make(dir).read)
     expect([marks.marks.size, marks.names.size]).toEqual([2 * EACH, 2])
-  }, 30_000)
+  }, hangGuard("local-fixture"))
 
   test("a file of an unknown version is a clear error on read and on write, and is left as it is", async () => {
     using held = scratch("digest-marks-")

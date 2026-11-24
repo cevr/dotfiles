@@ -40,6 +40,7 @@ import { checkOwnedCommand, scratchInput } from "./read-path.ts"
 import { checkoutBun, checkoutTests, driveScenarioFixture, forkFixture, scratchShell } from "./scratch-child.ts"
 // What this test process starts is stopped once it is gone, however it went (testbeds/reaper/start.ts).
 import "../testbeds/reaper/start.ts"
+import { watchdog } from "./hang-guard.ts"
 
 /** How often a running child's descendants are sampled. */
 const SAMPLE_MS = 1000
@@ -59,7 +60,7 @@ const releases = new Map<number, Promise<void>>()
 /** Process-group fixture, not a shell command over the test runner's checkout. */
 export const ownedScratchShell = (cwd: string, program: string) => {
   const { script, ...options } = scratchShell(cwd, program)
-  return owned(["/bin/sh", script], { ...options, stdout: "pipe", stderr: "ignore" })
+  return owned(["/bin/sh", script], { ...options, stdin: "pipe", stdout: "pipe", stderr: "ignore" })
 }
 
 /** Exercise the owned TMPDIR lifecycle without accepting arbitrary shell text or argv. */
@@ -161,8 +162,8 @@ export const owned = <
     running.delete(child.pid)
     const left = survivors(watching.stop(), table())
     if (signalGroup(child.pid, "SIGTERM")) {
-      const deadline = Date.now() + GRACE_MS
-      while (signalGroup(child.pid, 0) && Date.now() < deadline) await Bun.sleep(50)
+      const deadline = watchdog(GRACE_MS)
+      while (signalGroup(child.pid, 0) && !deadline.expired()) await Bun.sleep(50)
       signalGroup(child.pid, "SIGKILL")
     }
     await stop(left, GRACE_MS)
@@ -176,3 +177,6 @@ export const owned = <
 
 /** To await: settles once the owned child `pid`, all it started and its own TMPDIR are gone (nothing to wait for once they are). */
 export const released = (pid: number) => releases.get(pid)
+
+/** Refresh and return what an owned child has started, while the child is still running. */
+export const observed = (pid: number) => running.get(pid)?.sample()

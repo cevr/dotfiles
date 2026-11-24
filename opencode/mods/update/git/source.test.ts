@@ -7,6 +7,8 @@ import { gitInit } from "../../../tests/git-repo.ts"
 import { matchingInput } from "../../../tests/read-path.ts"
 import { Source } from "../service.ts"
 import * as SourceLive from "./source.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
+
 
 /** Git with no config of the owner's: no signing, no hooks, a fixed identity. */
 const GIT_ENV = {
@@ -17,7 +19,6 @@ const GIT_ENV = {
   GIT_COMMITTER_NAME: "t",
   GIT_COMMITTER_EMAIL: "t@example.invalid",
 }
-const COMMANDS_MS = 60_000
 
 const sh = (cwd: string, command: ReadonlyArray<string>) => {
   const ran = spawnSync([...command], { cwd, env: GIT_ENV, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
@@ -78,7 +79,7 @@ describe("the host's commands, over the checkout as it stands", () => {
           spawnSync(["rm", "-rf", root, home])
         }),
       ),
-    COMMANDS_MS,
+    hangGuard("installer"),
   )
 
   /** The host's commands scripts as the repo has them, each run under `sh` from its own place. */
@@ -120,9 +121,7 @@ describe("the host's commands, over the checkout as it stands", () => {
           expect(rexShow(bare)).toBe("/nonexistent/loop-probe-x/show.ts")
           spawnSync(["rm", "-rf", treed, bare])
         }),
-      ),
-      COMMANDS_MS,
-    )
+      ), hangGuard("installer"))
 
   /**
    * A scratch live checkout and an installed tree, each with its own `workbox/install-bin.sh` that writes
@@ -154,7 +153,7 @@ describe("the host's commands, over the checkout as it stands", () => {
         expect(sh(places.home, ["cat", "ran"]).out).toBe("tree --apply")
         spawnSync(["rm", "-rf", places.dir])
       }),
-    ))
+    ), hangGuard("installer"))
 
   test("a commands script that refuses (a file it will not install, a ~/.zshenv of the owner's) fails the commands with what it said, which the handoff logs", () =>
     Effect.runPromise(
@@ -165,7 +164,7 @@ describe("the host's commands, over the checkout as it stands", () => {
         expect(Option.map(failure, (failed) => failed.message)).toEqual(Option.some(said))
         spawnSync(["rm", "-rf", places.dir])
       }),
-    ))
+    ), hangGuard("installer"))
 
   test("an installed tree with no workbox/ (a build from before it held one) fails the commands loudly, naming the tree, and runs the checkout's neither", () =>
     Effect.runPromise(
@@ -176,7 +175,7 @@ describe("the host's commands, over the checkout as it stands", () => {
         expect(sh(places.home, ["test", "-e", "ran"]).code).not.toBe(0)
         spawnSync(["rm", "-rf", places.dir])
       }),
-    ))
+    ), hangGuard("installer"))
 
   test("a host with no script runs nothing", () =>
     Effect.runPromise(

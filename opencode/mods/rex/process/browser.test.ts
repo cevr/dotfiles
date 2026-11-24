@@ -13,6 +13,7 @@ import { Array as Arr, Context, Effect, Exit, Fiber, Layer, Option, Schedule } f
 import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { Browser } from "../service.ts"
 import * as ProcessBrowser from "./browser.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 const FAKE = fileURLToPath(new URL("./fake-browser.sh", import.meta.url))
 
@@ -40,7 +41,7 @@ describe("which browser", () => {
         expect(ProcessBrowser.findBrowser({ ...places, chosen: Option.some("/opt/chrome") })).toEqual(Option.some("/opt/chrome"))
       }),
     ),
-    5_000,
+    hangGuard("local-fixture"),
   )
 })
 
@@ -92,7 +93,7 @@ describe("a shot", () => {
         expect(existsSync(join(profile, ".."))).toBe(false)
       }),
     ).pipe(Effect.provide(fake("ok"))),
-    10_000,
+    hangGuard("in-memory"),
   )
 
   effectTest(
@@ -104,7 +105,7 @@ describe("a shot", () => {
       expect(String(exit)).toContain(`cannot reach ${url}: ECONNREFUSED`)
       expect(yield* calls).toEqual([])
     }).pipe(Effect.provide(fake("ok"))),
-    10_000,
+    hangGuard("in-memory"),
   )
 
   effectTest(
@@ -118,7 +119,7 @@ describe("a shot", () => {
         expect(String(exit)).toContain("the browser made no shot (exit 4): headless: page crashed")
       }),
     ).pipe(Effect.provide(fake("blank"))),
-    10_000,
+    hangGuard("in-memory"),
   )
 
   effectTest(
@@ -132,7 +133,7 @@ describe("a shot", () => {
         expect(line).toEndWith(` --virtual-time-budget=5000 ${url}`)
       }),
     ).pipe(Effect.provide(fake("ok"))),
-    10_000,
+    hangGuard("in-memory"),
   )
 
   effectTest(
@@ -159,6 +160,6 @@ describe("a shot", () => {
         expect({ pids: pids.length, gone }).toEqual({ pids: 2, gone: ["", ""] })
       }),
     ).pipe(Effect.provide(fake("hang"))),
-    10_000,
+    hangGuard("in-memory"),
   )
 })

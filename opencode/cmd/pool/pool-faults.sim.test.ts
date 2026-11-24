@@ -22,7 +22,7 @@ import { encodeRefresh, decodeStoredOAuth, STORE_PREFIX, StoreSource, storeProce
 import * as Plugins from "../../sim/plugins.ts"
 import * as Provider from "../../sim/provider.ts"
 import { below, generator, line } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner, type Seeded as SeedSeeded } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
 /**
@@ -36,7 +36,7 @@ const PAST = [
   522, 582, 677, 956, 981, 994, 39066929, 744883142,
 ]
 
-const { seeded } = Seed.runner("cmd/pool/pool-faults.sim.test.ts", { past: PAST })
+const { seeded } = simulationRunner("cmd/pool/pool-faults.sim.test.ts", { past: PAST })
 
 /**
  * The revoked mode's seeds a sweep of 1 to 1000 found failing (pool-faults-bias), replayed on every run: a 401 held a
@@ -257,7 +257,7 @@ const run = (
   })
 
 /** The invariants after one command. */
-const invariants = (seed: number, expect: Seed.Seeded["expect"], lasting: boolean) => (world: World.World, script: Script, command: Command, before: number) => {
+const invariants = (seed: number, expect: SeedSeeded["expect"], lasting: boolean) => (world: World.World, script: Script, command: Command, before: number) => {
   const label = `seed ${seed}: ${line(command)}`
   if (command.type !== "advance") expect(world.now(), label).toBe(before)
   const received = world.provider().received()
@@ -314,7 +314,7 @@ const opensAt = (message: string) =>
   Option.flatMap(Option.fromNullishOr(POOL_REFUSAL.exec(message)?.[1]), (iso) => Option.map(DateTime.make(iso), DateTime.toEpochMillis))
 
 /** The property on `commands`; whether its run ended with every login's refresh token refused. */
-const property = (seed: number, expect: Seed.Seeded["expect"], commands: ReadonlyArray<Command>, lasting = false) =>
+const property = (seed: number, expect: SeedSeeded["expect"], commands: ReadonlyArray<Command>, lasting = false) =>
   Effect.gen(function* () {
     const { world, sessions } = yield* run(seed, commands, invariants(seed, expect, lasting))
     for (const session of sessions) {
@@ -354,7 +354,7 @@ seeded("every turn ends in an answer or the pool's own refusal with when it open
 // The revoked mode: the default mode reaches a pool whose every login is refused only by chance (522 of 1 to 1000
 // was its first); here each seed revokes both logins, and the property holds there too: every final turn names
 // the sign-in.
-const revoked = Seed.runner("cmd/pool/pool-faults.sim.test.ts", { past: REVOKED_PAST })
+const revoked = simulationRunner("cmd/pool/pool-faults.sim.test.ts", { past: REVOKED_PAST })
 
 revoked.seeded("with every login's refresh token revoked, every turn still ends as the property says, and the final turn asks for a sign-in", ({ seed, expect }) =>
   Effect.gen(function* () {
@@ -373,7 +373,7 @@ revoked.seeded("with every login's refresh token revoked, every turn still ends 
  * its wait, which the file no longer held, and its 401 recorded nothing (820992407; cmd/pool/pool-waiter.sim.test.ts
  * models the class).
  */
-const lasting = Seed.runner("cmd/pool/pool-faults.sim.test.ts", { past: [106497663, 820992407] })
+const lasting = simulationRunner("cmd/pool/pool-faults.sim.test.ts", { past: [106497663, 820992407] })
 
 lasting.seeded("with store writes failing for a while, every turn still ends as the property says, and no refresh token is traded twice", ({ seed, expect }) =>
   Effect.asVoid(property(seed, expect, lastingCommandsOf(seed), true)),

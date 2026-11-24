@@ -27,6 +27,7 @@ import * as FileDevices from "@dotfiles/opencode-digest/filestore/devices"
 import { locateIn, type NamedPeer, NOT_ALLOWED, type Peer, peerId, peerOriginsOf, type Sighting, type Target, UNSEEN } from "@dotfiles/opencode-digest/peers"
 import * as LivePeers from "@dotfiles/opencode-digest/process/peers"
 import { handlersOf, probeKeeping, STARTING, writeConfigOf } from "./server.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 
 /** The platform the cases run on: Bun's file system and path, and a fetch HTTP client. */
 const Platform = Layer.mergeAll(BunServices.layer, FetchHttpClient.layer)
@@ -439,12 +440,12 @@ describe("one page over every host", () => {
   it.scopedLive.layer(Platform)(
     "two hosts: each page shows its own projects and the other's, as the model says, through every step",
     () => Effect.forEach([1, 2, 3, 4, 5, 6], (seed) => simulate(seed, 2, 30), { discard: true }),
-    60_000,
+    hangGuard("process-fixture"),
   )
 
   it.scopedLive.layer(Platform)(
     "three hosts: each reads the other two directly, none relays, and one down or on another wire leaves the rest whole",
     () => Effect.forEach([11, 12, 13, 14], (seed) => simulate(seed, 3, 30), { discard: true }),
-    60_000,
+    hangGuard("process-fixture"),
   )
 })

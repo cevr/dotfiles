@@ -8,7 +8,7 @@ import { startFakeChatGPT } from "../tests/fake-chatgpt.ts"
 import * as ChatGPT from "./chatgpt.ts"
 import { CHATGPT_LAWS, type ChatGPTLaw, reading, type Wire } from "./chatgpt-laws.ts"
 import { makeRuntime } from "./runtime.ts"
-import * as Seed from "./seed.ts"
+import { simulationRunner } from "./seed.ts"
 import { START } from "./world.ts"
 
 /** One exchange with the fake over loopback: its answer, read whole. */
@@ -42,7 +42,7 @@ const onWorld = (law: ChatGPTLaw, seed: number) =>
     return yield* runtime.run(law.run(wire, reading(START)))
   })
 
-const { seeded } = Seed.runner("sim/chatgpt-laws.test.ts")
+const { seeded } = simulationRunner("sim/chatgpt-laws.test.ts")
 
 for (const law of CHATGPT_LAWS)
   seeded(law.name, ({ seed, expect }) =>

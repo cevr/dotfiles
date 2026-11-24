@@ -18,6 +18,7 @@ import { RequestJson } from "@dotfiles/opencode-image/request"
 import { JobRefused } from "@dotfiles/opencode-image/service"
 import { effectTest } from "../../sim-tui/effect-test.ts"
 import ImagePlugin, { commandOf, make, SKILL_FILE } from "./server.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 
 type Host = Parameters<(typeof ImagePlugin)["effect"]>[0]
 
@@ -69,7 +70,6 @@ const DIR = "/work/app"
 const CALL: Call = { sessionID: "ses_root", agent: "build", messageID: "msg_1", id: "call_1" }
 const SOL = { providerID: "openai", family: "gpt-sol", deprecated: false }
 const ALLOW: Answers = { deny: false, refuse: false }
-const TIMEOUT_MS = 10_000
 
 /** A scratch folder, removed when the case's scope closes. */
 const scratch = Effect.acquireRelease(
@@ -158,7 +158,7 @@ describe("the image plugin", () => {
         expect(tool.description).toContain("ChatGPT subscription")
       }),
     ),
-    TIMEOUT_MS,
+    hangGuard("in-memory"),
   )
 
   effectTest(
@@ -175,7 +175,7 @@ describe("the image plugin", () => {
         expect(skill.content).not.toContain("description:")
       }),
     ),
-    TIMEOUT_MS,
+    hangGuard("in-memory"),
   )
 
   effectTest(
@@ -202,7 +202,7 @@ describe("the image plugin", () => {
         expect(answer).toContain("do not poll")
       }),
     ),
-    TIMEOUT_MS,
+    hangGuard("in-memory"),
   )
 
   effectTest(
@@ -215,7 +215,7 @@ describe("the image plugin", () => {
         expect(answer).toContain("started via paid: gpt-image-2.5-flare, quality high, n 1. It saves to /work/app/out/logo.png.")
       }),
     ),
-    TIMEOUT_MS,
+    hangGuard("in-memory"),
   )
 
   effectTest(
@@ -233,7 +233,7 @@ describe("the image plugin", () => {
         expect(spawnSync(["ls", "-A", `${refused.outputs}/.requests`]).stdout.toString().trim()).toBe("")
       }),
     ),
-    TIMEOUT_MS,
+    hangGuard("in-memory"),
   )
 
   test("the job's command runs the runner on the request file, quoted, with the backends the options name", () => {

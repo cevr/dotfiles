@@ -17,10 +17,10 @@ import { Effect } from "effect"
 import * as MemoryRunner from "@dotfiles/opencode-wake/memory/runner"
 import { WAKES } from "@dotfiles/opencode-wake/wake"
 import * as Plugins from "../../sim/plugins.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/wake/job.sim.test.ts")
+const { seeded } = simulationRunner("cmd/wake/job.sim.test.ts")
 
 const WORK = "/scratch/project"
 const KAPPA = `echo kappa-start; printf 'compiled\\n' >> "$JOB_DRIP"; sleep 3; echo KAPPA-DONE; exit 4`

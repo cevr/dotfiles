@@ -23,11 +23,11 @@ import { formOf } from "@dotfiles/opencode-questions/form"
 import type { Question } from "@dotfiles/opencode-questions/question"
 import * as Plugins from "../../sim/plugins.ts"
 import { line, plain } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 import { answeredAfter, ANSWERED, ASK_TASK, ASKED, IDLE, IDLE_TASK, isNotice, isReport, LETTER, type Message, messagesOf, NOTICE, QUESTION, ROOT_TASK, ROOT_TOLD, ROOT_UNTOLD, SUBAGENT } from "../../tests/questions/sim.ts"
 
-const { seeded } = Seed.runner("cmd/questions/questions-locations.sim.test.ts")
+const { seeded } = simulationRunner("cmd/questions/questions-locations.sim.test.ts")
 
 const ASKING = "/scratch/asking"
 const OTHER = "/scratch/other"

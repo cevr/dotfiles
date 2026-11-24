@@ -5,9 +5,9 @@
 // seed in a hundred reaches and none of the 20 fixed seeds does
 // (scripts/accept.test.ts checks both).
 import { Effect } from "effect"
-import * as Seed from "../seed.ts"
+import { simulationRunner } from "../seed.ts"
 
-const { seeded } = Seed.runner("sim/fixtures/swarm-bug.fixture.ts")
+const { seeded } = simulationRunner("sim/fixtures/swarm-bug.fixture.ts")
 
 /** mulberry32: the seed's own sizes. */
 const sizesOf = (seed: number) => {

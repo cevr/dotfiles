@@ -21,6 +21,7 @@ import { externalInput, matchingInput, readScratchDirectorySync as readdirSync, 
 import { checkoutBlob, cloneScratchGit, initScratchGit, runScratchTool, spawnScratchGitSync, spawnScratchProgram, writeScratchScript } from "../../opencode/tests/scratch-child.ts"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
+import { hangGuard, stamp, watchdog } from "../../opencode/tests/hang-guard.ts"
 
 type Kind = "r" | "w"
 type Protocol = "flock" | "tickets"
@@ -399,7 +400,8 @@ const FLOCK = [
 /**
  * A stand-in `work`: bases from FAKE_WORK_BASES, one record a file under <base's folder>/.work/<base>/.fake-registry.
  * `new` is the clone and `rm` the delete: each logs `in` and `out` lines (`in clone NAME BASE TIME PID`) to FAKE_LOG
- * around a sleep of FAKE_HOLDS/NAME seconds; `rm` answers as a base with `trash = false` does (deleted in the rm).
+ * around a controlled hold. FAKE_HOLDS/NAME is either a delay for a generated schedule or a gate the test releases.
+ * `rm` answers as a base with `trash = false` does (deleted in the rm).
  */
 const FAKE_WORK = [
   "#!/usr/bin/perl",
@@ -415,7 +417,7 @@ const FAKE_WORK = [
   "my $home = \"$bdir/.work/$bname\"; my $reg = \"$home/.fake-registry\"; make_path($reg);",
   "sub records { my @r; opendir(my $d, $reg) or return (); for my $f (sort readdir $d) { next unless $f =~ /\\.json$/; my $t = slurp(\"$reg/$f\"); push @r, $json->decode($t) if defined $t && length $t } closedir $d; return @r }",
   "sub note { my ($what, $kind, $name) = @_; my $log = $ENV{FAKE_LOG} or return; open(my $h, '>>', $log) or die; printf $h \"%s %s %s %s %.3f %d\\n\", $what, $kind, $name, $base, time, $$; close $h }",
-  "sub hold { my $s = slurp(($ENV{FAKE_HOLDS} // '/nonexistent') . \"/$_[0]\"); $s = 0 unless defined $s; chomp $s; sleep($s) if $s > 0 }",
+  "sub hold { my $p = ($ENV{FAKE_HOLDS} // '/nonexistent') . \"/$_[0]\"; my $s = slurp($p) // 0; chomp $s; if ($s eq 'gate') { sleep(0.02) until -e \"$p.go\" } elsif ($s > 0) { sleep($s) } }",
   "if ($cmd eq 'list') { print $json->encode([records()]), \"\\n\"; exit 0 }",
   "if ($cmd eq 'doctor') { print $json->encode({ trusted => JSON::PP::true, cloners => [qw(btrfs reflink clonefile copy)] }), \"\\n\"; exit 0 }",
   "if ($cmd eq 'new') {",
@@ -510,6 +512,8 @@ const turnBench = (label: string, names: ReadonlyArray<string>) => {
     const path = join(root, name)
     cloneScratchGit(dir, origin, path, "origin")
     git(path, env, "remote", "set-head", "origin", "--auto")
+    // This bench measures clone turns, not the one-off exclusive initialization of a base.
+    writeFileSync(join(path, ".git/workrift.lock"), "")
     writeFileSync(join(path, ".git/info/exclude"), "work.toml\n", { flag: "a" })
     writeFileSync(join(path, "work.toml"), "")
     writeFileSync(basesFile, `${path}\n`, { flag: "a" })
@@ -539,6 +543,12 @@ interface Op {
   readonly at: number
   /** How long its clone or delete takes, in seconds. */
   readonly hold: number
+  /** A fixture-controlled hold instead of a scheduled duration. */
+  readonly gate?: true
+  /** Don't launch this operation until the other one has entered its gated operation. */
+  readonly afterEntered?: string
+  /** Don't launch this operation until the other operation has an actual turn ticket. */
+  readonly afterQueued?: string
   /** Its whole process group is killed (kill -9) this many ms after it starts. */
   readonly killAfter?: number
   /** Another script (the older workrift) runs it. */
@@ -560,7 +570,6 @@ interface Turn {
   readonly number: number
   readonly name: string
   readonly purpose: string
-  readonly seenAt: number
 }
 
 interface Outcome {
@@ -570,16 +579,26 @@ interface Outcome {
   readonly err: string
 }
 
+/** Hang guard for the actual shell and Git fixtures; never part of the FIFO/overlap oracle. */
+const FIXTURE_HANG_GUARD_MS = 30_000
+
+interface FixtureEvents {
+  readonly entered: (name: string) => Promise<void>
+  readonly queued: (name: string) => Promise<void>
+  readonly release: (name: string) => void
+  readonly kill: (name: string) => void
+}
+
 /**
  * Runs `ops` against the real script (each in a process group of its own, killed at the end whatever happens) while
  * a poller notes each turn ticket the moment it appears in a base's state folder, with its number and purpose.
  */
-const runOps = async (b: TurnBench, ops: ReadonlyArray<Op>, snapshots: ReadonlyArray<string> = []) => {
+const runOps = async (b: TurnBench, ops: ReadonlyArray<Op>, snapshots: ReadonlyArray<string> = [], drive: (events: FixtureEvents) => Promise<void> = async () => {}) => {
   const paths: Env = { ...b.paths, FAKE_LOG: b.log }
   const targets = new Map<string, string>()
   for (const op of ops) {
-    writeFileSync(join(b.holds, op.name), `${op.hold}\n`)
     if (op.kind === "remove") targets.set(op.name, b.premade(op.base, op.name))
+    writeFileSync(join(b.holds, op.name), `${op.gate ? "gate" : op.hold}\n`)
   }
   const turns = new Map<string, Turn>()
   let polling = true
@@ -600,18 +619,50 @@ const runOps = async (b: TurnBench, ops: ReadonlyArray<Op>, snapshots: ReadonlyA
             const record = readOr(() => readFileSync(join(dir, file), "utf8"), "").split("\n")
             if (record.length < 5 || !record[0] || !record[2] || !record[3]) continue
             const purpose = record[3] ?? ""
-            turns.set(key, { base: name, number: Number(m[1]), name: purpose.split(" ")[1] ?? "", purpose, seenAt: Date.now() / 1000 })
+            turns.set(key, { base: name, number: Number(m[1]), name: purpose.split(" ")[1] ?? "", purpose })
           }
         }
       }
       await Bun.sleep(5)
     }
   })()
-  const groups: Array<number> = []
-  const started = Date.now()
-  const outcomes = await Promise.all(
+  const groups = new Map<string, number>()
+  const kills = new Map<string, number>()
+  const kill = (name: string) => {
+    const pid = groups.get(name)
+    if (pid === undefined) throw new Error(`no test process group for ${name}`)
+    try {
+      // The request is written before the kernel could unblock the next waiter.
+      appendFileSync(b.log, `kill - ${name}\n`)
+      process.kill(-pid, "SIGKILL")
+      kills.set(name, stamp() / 1000)
+    } catch {
+      // It had ended; this is not a kill of a waiter or holder.
+    }
+  }
+  const phaseLog = () => textLines(existsSync(b.log) ? readFileSync(b.log, "utf8") : "")
+  const observe = async (what: string, ready: () => boolean) => {
+    const deadline = watchdog(FIXTURE_HANG_GUARD_MS)
+    while (!ready()) {
+      if (!polling) throw new Error(`fixture ended before ${what}`)
+      if (deadline.expired()) throw new Error(`hang guard: never saw ${what}`)
+      await Bun.sleep(20)
+    }
+  }
+  const events: FixtureEvents = {
+    entered: (name) => observe(`${name} enter the fixture`, () => phaseLog().some((line) => line.startsWith(`in clone ${name} `) || line.startsWith(`in delete ${name} `))),
+    queued: (name) => observe(`${name} in the clone turn`, () => [...turns.values()].some((turn) => turn.name === name)),
+    release: (name) => writeFileSync(join(b.holds, `${name}.go`), ""),
+    kill,
+  }
+  const started = stamp()
+  const jobs = Promise.all(
     ops.map(async (op): Promise<Outcome> => {
-      await Bun.sleep(Math.max(0, started + op.at - Date.now()))
+      if (op.afterEntered !== undefined) await events.entered(op.afterEntered)
+      if (op.afterQueued !== undefined) await events.queued(op.afterQueued)
+      const beforeStart = started + op.at - stamp()
+      if (beforeStart > 0) await Bun.sleep(beforeStart)
+      if (!polling) throw new Error(`fixture ended before ${op.name} could start`)
       const script = op.script ?? b.script
       const argv = op.kind === "create" ? ["create", op.name] : ["remove", targets.get(op.name) ?? ""]
       const errFile = join(b.dir, `${op.name}.err`)
@@ -623,26 +674,25 @@ const runOps = async (b: TurnBench, ops: ReadonlyArray<Op>, snapshots: ReadonlyA
         values: b.env,
         pathLists: { FAKE_SUBVOLUMES: snapshots.map(b.base).join(":") },
       }, Bun.file(scratchInput(errFile)))
-      groups.push(child.pid)
-      let killedAt: number | undefined
+      groups.set(op.name, child.pid)
       const timer =
         op.killAfter === undefined
           ? undefined
-          : setTimeout(() => {
-              killedAt = Date.now() / 1000
-              try {
-                process.kill(-child.pid, "SIGKILL")
-              } catch {
-                // it had ended
-              }
-            }, op.killAfter)
-      const code = await Promise.race([child.exited, Bun.sleep(45_000).then(() => null)])
-      if (timer) clearTimeout(timer)
+          : setTimeout(() => kill(op.name), op.killAfter)
+      const watchdog = setTimeout(() => {
+        try { process.kill(-child.pid, "SIGKILL") } catch { /* already exited */ }
+      }, FIXTURE_HANG_GUARD_MS)
+      const code = await child.exited.finally(() => {
+        clearTimeout(watchdog)
+        if (timer) clearTimeout(timer)
+      })
+      const killedAt = kills.get(op.name)
       return { op, code, ...(killedAt === undefined ? {} : { killedAt }), err: readFileSync(errFile, "utf8") }
     }),
-  ).finally(() => {
+  )
+  const [outcomes] = await Promise.all([jobs, drive(events)]).finally(() => {
     polling = false
-    for (const pid of groups)
+    for (const pid of groups.values())
       try {
         process.kill(-pid, "SIGKILL")
       } catch {
@@ -650,19 +700,19 @@ const runOps = async (b: TurnBench, ops: ReadonlyArray<Op>, snapshots: ReadonlyA
       }
   })
   await poll
-  const kills = new Map(outcomes.filter((o) => o.killedAt !== undefined).map((o) => [o.op.name, o.killedAt!]))
   const open = new Map<string, { kind: string; base: string; t0: number }>()
   const phases: Array<Phase> = []
-  for (const line of textLines(existsSync(b.log) ? readFileSync(b.log, "utf8") : "")) {
-    const [what = "", kind = "", name = "", base = "", t = "0"] = line.split(" ")
-    if (what === "in") open.set(name, { kind, base, t0: Number(t) })
+  for (const [index, line] of phaseLog().entries()) {
+    const [what = "", kind = "", name = "", base = ""] = line.split(" ")
+    if (what === "kill" && !kills.has(name)) continue
+    if (what === "in") open.set(name, { kind, base, t0: index })
     else {
       const o = open.get(name)
-      if (o) phases.push({ ...o, name, base: basename(o.base), t1: Number(t), open: false })
+      if (o) phases.push({ ...o, name, base: basename(o.base), t1: index, open: what === "kill" })
       open.delete(name)
     }
   }
-  for (const [name, o] of open) phases.push({ ...o, name, base: basename(o.base), t1: kills.get(name) ?? Infinity, open: true })
+  for (const [name, o] of open) phases.push({ ...o, name, base: basename(o.base), t1: Infinity, open: true })
   return { outcomes, phases, turns: [...turns.values()] }
 }
 
@@ -678,20 +728,19 @@ const overlapping = (phases: ReadonlyArray<Phase>) => {
   return found
 }
 
-/** How late a turn may start after the model says it is free: the script's own steps between the grant and the clone. */
-const SLACK = 3
-
 /**
  * The reference model: on a copy base, one server, first come first served. Every clone and delete takes a turn;
  * no two of one base overlap; they run in the order of their tickets' numbers (the order of arrival, numbered under
- * queue.lock); and each starts within SLACK of when the model frees it (its ticket seen and every earlier one ended,
- * a killed one at its kill), so a dead holder or waiter keeps nobody waiting. A snapshot base takes no turn at all.
- * Every op not killed ends 0.
+ * queue.lock). Every surviving operation enters its clone/delete and completes. A snapshot base takes no turn.
+ * A vanished holder must let the next ticket enter; the focused case below keeps the fixture from ending by itself.
  */
 const judge = (run: Awaited<ReturnType<typeof runOps>>, bases: ReadonlyArray<string>, snapshots: ReadonlyArray<string> = []) => {
   const bad: Array<string> = []
-  for (const o of run.outcomes)
-    if (o.killedAt === undefined && o.code !== 0) bad.push(`${o.op.kind} ${o.op.name} ended ${o.code}: ${textLines(o.err).slice(-3).join(" | ")}`)
+  for (const o of run.outcomes) {
+    if (o.killedAt !== undefined) continue
+    if (o.code !== 0) bad.push(`${o.op.kind} ${o.op.name} ended ${o.code}: ${textLines(o.err).slice(-3).join(" | ")}`)
+    if (!run.phases.some((p) => p.name === o.op.name && !p.open)) bad.push(`${o.op.kind} ${o.op.name} did not finish its actual operation`)
+  }
   for (const p of run.phases) if (p.open && p.t1 === Infinity) bad.push(`${p.kind} ${p.name} never ended and was not killed`)
   for (const base of bases) {
     const phases = run.phases.filter((p) => p.base === base)
@@ -705,18 +754,6 @@ const judge = (run: Awaited<ReturnType<typeof runOps>>, bases: ReadonlyArray<str
     const byStart = [...phases].sort((a, c) => a.t0 - c.t0).map((p) => p.name)
     const byTicket = tickets.map((t) => t.name).filter((name) => phases.some((p) => p.name === name))
     if (byStart.join(" ") !== byTicket.join(" ")) bad.push(`${base}: phases ran ${byStart.join(" ")}, but arrived ${byTicket.join(" ")}`)
-    let free = 0
-    for (const t of tickets) {
-      const p = phases.find((each) => each.name === t.name)
-      const killed = run.outcomes.find((o) => o.op.name === t.name)?.killedAt
-      if (p === undefined) {
-        free = Math.max(free, killed ?? free)
-        continue
-      }
-      const ready = Math.max(t.seenAt, free)
-      if (p.t0 > ready + SLACK) bad.push(`${p.kind} ${p.name} started ${(p.t0 - ready).toFixed(2)} s after its turn was free (${base})`)
-      free = Math.max(free, p.t1)
-    }
   }
   return bad
 }
@@ -753,62 +790,80 @@ describe("the clone turn: one clone or delete at a time per copy base, in arriva
       expect(killed).toBeGreaterThan(0)
       expect(both).toBeGreaterThan(2)
     },
-    240_000,
+    hangGuard("generated-schedule"),
   )
 
   test("a clone never overlaps a delete of its base, removes go one at a time, and a later create waits behind an earlier remove", async () => {
     const b = turnBench("kinds", ["A"])
     const ops: ReadonlyArray<Op> = [
-      { kind: "remove", base: "A", name: "r1", at: 0, hold: 1 },
-      { kind: "remove", base: "A", name: "r2", at: 150, hold: 0.5 },
-      { kind: "create", base: "A", name: "c1", at: 300, hold: 0.5 },
-      { kind: "create", base: "A", name: "c2", at: 450, hold: 0.5 },
+      { kind: "remove", base: "A", name: "r1", at: 0, hold: 0, gate: true },
+      { kind: "remove", base: "A", name: "r2", at: 0, hold: 0, afterEntered: "r1" },
+      { kind: "create", base: "A", name: "c1", at: 0, hold: 0, afterQueued: "r2" },
+      { kind: "create", base: "A", name: "c2", at: 0, hold: 0, afterQueued: "c1" },
     ]
-    const run = await runOps(b, ops)
+    const run = await runOps(b, ops, [], async (events) => {
+      await events.queued("c2")
+      events.release("r1")
+    })
     expect(judge(run, ["A"])).toEqual([])
     expect(run.phases.map((p) => p.name).sort()).toEqual(["c1", "c2", "r1", "r2"])
-  }, 60_000)
+  }, hangGuard("process-fixture"))
 
   test("two bases do not wait for each other: a long clone of A and a long delete of B run together", async () => {
     const b = turnBench("two", ["A", "B"])
     const run = await runOps(b, [
-      { kind: "create", base: "A", name: "ca", at: 0, hold: 1.5 },
-      { kind: "remove", base: "B", name: "rb", at: 0, hold: 1.5 },
-    ])
+      { kind: "create", base: "A", name: "ca", at: 0, hold: 0, gate: true },
+      { kind: "remove", base: "B", name: "rb", at: 0, hold: 0, gate: true },
+    ], [], async (events) => {
+      await Promise.all([events.entered("ca"), events.entered("rb")])
+      events.release("ca")
+      events.release("rb")
+    })
     expect(judge(run, ["A", "B"])).toEqual([])
     const [ca, rb] = ["ca", "rb"].map((name) => run.phases.find((p) => p.name === name)!)
     expect(ca!.t0 < rb!.t1 && rb!.t0 < ca!.t1).toBe(true)
-  }, 60_000)
+  }, hangGuard("process-fixture"))
 
-  test("a holder killed in its clone frees the turn at once: the next starts well before the dead clone would have ended", async () => {
+  test("a holder killed in its clone frees the turn: the queued delete enters without releasing the clone's gate", async () => {
     const b = turnBench("killed", ["A"])
     const run = await runOps(b, [
-      { kind: "create", base: "A", name: "c0", at: 0, hold: 6, killAfter: 1500 },
-      { kind: "remove", base: "A", name: "r1", at: 300, hold: 0.3 },
-    ])
+      { kind: "create", base: "A", name: "c0", at: 0, hold: 0, gate: true },
+      { kind: "remove", base: "A", name: "r1", at: 0, hold: 0, gate: true, afterEntered: "c0" },
+    ], [], async (events) => {
+      await events.entered("c0")
+      await events.queued("r1")
+      events.kill("c0")
+      await events.entered("r1")
+      events.release("r1")
+    })
     expect(judge(run, ["A"])).toEqual([])
     const c0 = run.phases.find((p) => p.name === "c0")!
     const r1 = run.phases.find((p) => p.name === "r1")!
     expect(c0.open).toBe(true)
     expect(r1.t0).toBeGreaterThanOrEqual(c0.t1)
-    expect(r1.t0 - c0.t1).toBeLessThan(SLACK)
-  }, 60_000)
+    expect(existsSync(join(b.holds, "c0.go"))).toBe(false)
+  }, hangGuard("process-fixture"))
 
   test("a snapshot base (a btrfs subvolume whose work clones by btrfs) takes no turn: its clones and deletes run side by side, while a copy base beside it still takes turns", async () => {
     const b = turnBench("snap", ["S", "A"])
+    const concurrent = ["s1", "s2", "s3", "sr"]
     const run = await runOps(
       b,
       [
-        ...["s1", "s2", "s3"].map((name, i): Op => ({ kind: "create", base: "S", name, at: i * 50, hold: 1.2 })),
-        { kind: "remove", base: "S", name: "sr", at: 100, hold: 1.2 },
+        ...concurrent.slice(0, 3).map((name): Op => ({ kind: "create", base: "S", name, at: 0, hold: 0, gate: true })),
+        { kind: "remove", base: "S", name: "sr", at: 0, hold: 0, gate: true },
         { kind: "create", base: "A", name: "a1", at: 0, hold: 0.6 },
         { kind: "remove", base: "A", name: "ar", at: 50, hold: 0.6 },
       ],
       ["S"],
+      async (events) => {
+        await Promise.all(concurrent.map(events.entered))
+        for (const name of concurrent) events.release(name)
+      },
     )
     expect(judge(run, ["S", "A"], ["S"])).toEqual([])
     expect(overlapping(run.phases.filter((p) => p.base === "S")).length).toBeGreaterThan(0)
-  }, 60_000)
+  }, hangGuard("process-fixture"))
 
   test("beside the script before the turn (83b97f9e) installed by rename: old creates and removes take no turn and are not starved; nothing deadlocks; the new ones still take turns among themselves", async () => {
     const b = turnBench("old", ["A"])
@@ -828,5 +883,5 @@ describe("the clone turn: one clone or delete at a time per copy base, in arriva
     expect(fresh).toHaveLength(3)
     expect(overlapping(fresh)).toEqual([])
     expect(run.turns.map((t) => t.name).sort()).toEqual(["n1", "n2", "nr"])
-  }, 60_000)
+  }, hangGuard("process-fixture"))
 })

@@ -30,6 +30,7 @@ import { freePort, ready, type Service } from "./service.ts"
 import { keptScratch } from "./scratch.ts"
 import { externalInput, matchingInput, scratchExistsSync as existsSync } from "./read-path.ts"
 import { forkFixture, spawnForkFixture } from "./scratch-child.ts"
+import { hangGuard, measured, watchdog } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/dock-reconnect.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -37,7 +38,6 @@ if (!fork) console.warn("tests/dock-reconnect.test.ts: skipped. Set OPENCODE_DEV
 const ROOT = join(import.meta.dir, "..")
 const TUI_PLUGINS = ["prime", "status", "git", "cache", "questions", "btw", "skills", "recover", "orchestrate", "escape"]
 const SERVER_PLUGINS = ["orchestrate", "status", "queue", "git", "idle-compact", "questions", "skills", "rift", "tool-names", "cache", "memory"]
-const TIMEOUT_MS = 180_000
 /** How long the dock has, once the TUI can read what runs on the new service, to drop the rows whose turns ended. */
 const SETTLE_MS = 20_000
 /** How long a TUI on a loaded host has to reconnect and make its first read. */
@@ -123,10 +123,10 @@ const sim = Bun.serve({
 })
 
 const until = async <A>(read: () => Promise<A> | A, done: (value: A) => boolean, label: (last: A) => string, ms: number): Promise<A> => {
-  const deadline = Date.now() + ms
+  const deadline = watchdog(ms)
   let last = await read()
   while (!done(last)) {
-    if (Date.now() > deadline) return expect.unreachable(label(last))
+    if (deadline.expired()) return expect.unreachable(label(last))
     await Bun.sleep(250)
     last = await read()
   }
@@ -180,7 +180,8 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
   let failActive = 0
   /** The TUI's reads of what runs turned away, and when the service first answered one: SETTLE_MS runs from then. */
   let activeTurnedAway = 0
-  let activeServedAt = 0
+  let activeServed = false
+  let firstActiveRead = () => {}
   const streams = new Set<AbortController>()
   const proxyServer = Bun.serve({
     hostname: "127.0.0.1",
@@ -201,7 +202,10 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
         activeTurnedAway++
         return Response.json({ code: "internal" }, { status: 500 })
       }
-      if (reading && activeServedAt === 0) activeServedAt = Date.now()
+      if (reading && !activeServed) {
+        activeServed = true
+        firstActiveRead()
+      }
       const target = await ready(serviceFile, () => "the service behind the proxy")
       const headers = new Headers(request.headers)
       headers.delete("host")
@@ -350,18 +354,23 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
       refuseActive = refuseActiveReads
       failActive = failActiveReads
       activeTurnedAway = 0
-      activeServedAt = 0
-      held = false
       const stale = (text: string) => CHILDREN.filter((child) => liveRow(text, child))
       // The TUI still draws the parent: an empty screen has no rows either.
       const settled = (text: string) => text.includes(title) && stale(text).length === 0 && !/◆ \d+ subagents?/.test(text)
+      let finish = () => {}
+      measured("dock settles after its first active-session read", "< 20000 ms", ({ begin, end }) => {
+        firstActiveRead = begin
+        finish = end
+      })
+      activeServed = false
+      held = false
       await until(
         screen,
-        (text) => activeServedAt > 0 && settled(text),
-        (last) => `${name}: the dock still shows ${stale(last).join(", ") || "a subagent count"} (the new service answered the TUI's read of what runs at ${activeServedAt}, 0 for never; ${activeTurnedAway} reads turned away):\n${last}`,
+        (text) => activeServed && settled(text),
+        (last) => `${name}: the dock still shows ${stale(last).join(", ") || "a subagent count"} (active read served: ${activeServed}; ${activeTurnedAway} reads turned away):\n${last}`,
         START_MS + SETTLE_MS,
       )
-      expect(Date.now() - activeServedAt, `${name}: ms from the TUI's first answered read of what runs until the dock settled`).toBeLessThan(SETTLE_MS)
+      finish()
       if (refuseActiveReads > 0 || failActiveReads > 0) expect(activeTurnedAway, `${name}: reads of what runs turned away`).toBeGreaterThan(0)
     } finally {
       held = false
@@ -371,9 +380,9 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
     }
   }
 
-  test("rows of turns that ended while the TUI was away leave the dock once it reconnects", kept.test(() => scenario("reconnect")), TIMEOUT_MS)
+  test("rows of turns that ended while the TUI was away leave the dock once it reconnects", kept.test(() => scenario("reconnect")), hangGuard("fork-session"))
 
-  test("they leave it when the new service still boots as the TUI reconnects, as the owner's did", kept.test(() => scenario("booting", { refuseActiveReads: 3 })), TIMEOUT_MS)
+  test("they leave it when the new service still boots as the TUI reconnects, as the owner's did", kept.test(() => scenario("booting", { refuseActiveReads: 3 })), hangGuard("fork-session"))
 
-  test("they leave it when the TUI's first read of what runs after the reconnect fails", kept.test(() => scenario("failed-read", { failActiveReads: 1 })), TIMEOUT_MS)
+  test("they leave it when the TUI's first read of what runs after the reconnect fails", kept.test(() => scenario("failed-read", { failActiveReads: 1 })), hangGuard("fork-session"))
 })

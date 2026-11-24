@@ -14,6 +14,7 @@ import { fakeAccount, startFakeAnthropic, type FakeAnswer, type FakeRequestInfo 
 import { openSlotStore } from "./store/store.ts"
 import { ownedForkFixture } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard, stamp } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 const ready = Boolean(fork)
@@ -36,11 +37,11 @@ describe.skipIf(!ready)("OpenCode runs on a login store's Claude accounts throug
       const accounts = { alpha: fakeAccount(), beta: fakeAccount() }
       const store = kept.dir("store-auth-")
       const logins = openSlotStore(store)
-      await logins.signIn("alpha", { ...accounts.alpha, expires: Date.now() + 8 * HOUR })
+      await logins.signIn("alpha", { ...accounts.alpha, expires: stamp() + 8 * HOUR })
       // beta's token is stale: the pool refreshes it under the store's lock before it sends.
-      await logins.signIn("beta", { ...accounts.beta, expires: Date.now() - 1000 })
+      await logins.signIn("beta", { ...accounts.beta, expires: stamp() - 1000 })
 
-      const resetAt = Date.now() + 3 * HOUR
+      const resetAt = stamp() + 3 * HOUR
       const fake = startFakeAnthropic({
         accounts,
         script: ({ account, body }: FakeRequestInfo): FakeAnswer => {
@@ -122,6 +123,6 @@ describe.skipIf(!ready)("OpenCode runs on a login store's Claude accounts throug
         await fake.stop()
       }
     }),
-    RUN_TIMEOUT_MS + 30_000,
+    hangGuard("fork-turn"),
   )
 })

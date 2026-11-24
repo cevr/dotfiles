@@ -17,6 +17,7 @@ import { effort, ORCHESTRATOR, orchestrator, ROLES } from "../mods/orchestrate/r
 import type { Result, Spec } from "./orchestrate/run.ts"
 import { ownedCheckoutBun } from "./owned.ts"
 import { scratch as scratchDir } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 const skill = existsSync(matchingInput("../skills/orchestrate/scripts/agents.ts"))
@@ -108,7 +109,6 @@ const run = async (name: string, spec: Omit<Spec, "base" | "fork" | "plugin">): 
   return JSON.parse(readScratchFileSync(result, "utf8")) as Result
 }
 
-const RUN_MS = 150_000
 
 describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
   test(
@@ -128,7 +128,7 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(implementor.length).toBeGreaterThan(0)
       for (const request of implementor) expect(request.system).not.toContain("Never block on the shell")
     },
-    RUN_MS,
+    hangGuard("fork-turn"),
   )
 
   test(
@@ -144,6 +144,6 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
           said: expect.not.stringMatching(/refused by the\s+machine|the machine's rule|"status":"error"/),
         },
       }),
-    RUN_MS,
+    hangGuard("fork-turn"),
   )
 })

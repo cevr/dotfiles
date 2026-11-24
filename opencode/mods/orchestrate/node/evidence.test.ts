@@ -8,7 +8,7 @@ import { expect } from "bun:test"
 import { spawnSync, write } from "bun"
 import { Effect, FileSystem, Layer, Match, Ref, Schema } from "effect"
 import { Digest } from "effect/crypto"
-import * as Seed from "../../../sim/seed.ts"
+import { simulationTest } from "../../../sim/seed.ts"
 import { hostServices } from "../../../sim/host-services.ts"
 import { gitInit, withProcessEnv } from "../../../tests/git-repo.ts"
 import { scratch } from "../../../tests/scratch.ts"
@@ -83,7 +83,7 @@ const reader = Effect.acquireUseRelease(
   (dir) => Effect.sync(() => dir[Symbol.dispose]()),
 )
 
-Seed.effect(
+simulationTest(
   "the reader takes a version 1 envelope inside the evidence root, hashed with its output; refuses any other shape, place, link out or size; finds a document only in git at HEAD",
   Effect.gen(function* () {
     const seen = yield* reader
@@ -188,7 +188,7 @@ const placed = (placement: Placement, target: Target) =>
     (dir) => Effect.sync(() => dir[Symbol.dispose]()),
   )
 
-Seed.effect(
+simulationTest(
   "a receipt is read only inside the configured root: a link above the checkout is fine, the root or its parent as a link is refused, a link under it only inward",
   Effect.gen(function* () {
     // A link at the root or its parent pointing inside the root is no placement: the root would hold itself.
@@ -204,7 +204,7 @@ Seed.effect(
   }).pipe(Effect.provide(evidenceLayer.pipe(Layer.provideMerge(Layer.mergeAll(hostServices, ownPlatform))))),
 )
 
-Seed.effect(
+simulationTest(
   "the root swapped for a link after the reader was made, between two reads, is refused: the reader holds no resolved root",
   Effect.acquireUseRelease(
     Effect.sync(() => scratch("evidence-swap-")),
@@ -245,7 +245,7 @@ const swappedDuringRead = Layer.effect(
   }),
 )
 
-Seed.effect(
+simulationTest(
   "a receipt's folder swapped for a link during its read is refused as moved: the reader checks again after it reads",
   Effect.acquireUseRelease(
     Effect.sync(() => scratch("evidence-read-swap-")),

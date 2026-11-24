@@ -13,14 +13,13 @@ import { fileURLToPath } from "node:url"
 import { Schema } from "effect"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/rex-state.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 
 const Heard = Schema.fromJsonString(Schema.Array(Schema.Record(Schema.String, Schema.String)))
 const HEARD = /^rex heard: (.*)$/m
-/** How long the run gets: OpenCode's start and a few seconds of turn, well past its usual 11 seconds. */
-const SCENARIO_MS = 150_000
 
 describe.skipIf(!fork)("OpenCode's state in a Rex pane's program status (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "rex-state-")
@@ -57,6 +56,6 @@ describe.skipIf(!fork)("OpenCode's state in a Rex pane's program status (OPENCOD
       // Exit clears, and nothing is written after the last clear.
       expect(states.at(-1), log).toBe("clear")
     }),
-    SCENARIO_MS,
+    hangGuard("fork-turn"),
   )
 })

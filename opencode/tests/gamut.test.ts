@@ -53,6 +53,7 @@ import {
 } from "../testbeds/gamut/gamut.ts"
 import { replyEvents, SIM_COMMAND, SIM_TITLE, simReply } from "../testbeds/gamut/sim-model.ts"
 import { type ChildEnv, scratch } from "./scratch.ts"
+import { hangGuard, stamp } from "./hang-guard.ts"
 
 const root = join(import.meta.dir, "..")
 
@@ -257,7 +258,7 @@ describe("the run's config", () => {
           type: "oauth",
           access: "fake-access",
           refresh: "fake-refresh",
-          expires: Date.now() + 3_600_000,
+          expires: stamp() + 3_600_000,
           ...(owner === undefined ? {} : { metadata: { owner } }),
         })
       writeFileSync(join(dir, ".slots/anthropic/linked"), signIn(undefined), { mode: 0o600 })
@@ -552,7 +553,7 @@ describe.skipIf(!fork)("gamut on the sim preset", () => {
     // A failed step still leaves nothing behind.
     if (scratchExistsSync(state)) gamut("down")
     rmSync(scratchInput(join(state, "..")), { recursive: true, force: true })
-  })
+  }, hangGuard("unit-law"))
 
   // The guard for the run that reached OpenCode's free hosted model (9ed8d7bc's deep run: the TUI sent the prompt on
   // opencode/big-pickle, the first model it lists, before it had the config's sim/sim-model). A sim run's OpenCode
@@ -568,7 +569,7 @@ describe.skipIf(!fork)("gamut on the sim preset", () => {
     const launch = forkLaunch(String(fork), "bun")
     const listed = runSync([...launch.base, "models", "--standalone"], runEnv(e2eEnv(state), paths, launch, true), { cwd: paths.work, timeout: 60_000 })
     expect({ code: listed.code, models: listed.out.trim().split("\n") }).toEqual({ code: 0, models: ["sim/sim-model"] })
-  }, 90_000)
+  }, hangGuard("process-tree"))
 
   test(
     "up, wait, read, send, status and down drive OpenCode with the Prime look",
@@ -617,6 +618,6 @@ describe.skipIf(!fork)("gamut on the sim preset", () => {
       expect(gamut("status").err).toContain("no gamut run is up")
       expect(scratchExistsSync(work)).toBe(false)
     },
-    240_000,
+    hangGuard("generated-schedule"),
   )
 })

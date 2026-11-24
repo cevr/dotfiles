@@ -10,7 +10,7 @@ import { Database } from "bun:sqlite"
 import { expect } from "bun:test"
 import { file, write } from "bun"
 import { Array as Arr, Effect, Layer, Match, Option, Result, Schema } from "effect"
-import * as Seed from "../../../sim/seed.ts"
+import { simulationTest } from "../../../sim/seed.ts"
 import { textsOf } from "../../../sim/canary.ts"
 import { KINDS, leaked } from "../../../sim/tokens.ts"
 import { generator } from "../../../sim/runtime.ts"
@@ -350,18 +350,18 @@ const checkColumns = (secret: string, fragments = secret, multiline = false) =>
     (dir) => Effect.sync(() => dir[Symbol.dispose]()),
   ).pipe(Effect.provide(platform))
 
-Seed.effect(
+simulationTest(
   "a secret driven into each TEXT column is refused naming the column, or kept redacted; no column of any table holds it",
   checkColumns(SECRET),
 )
 
-Seed.effect(
+simulationTest(
   "crossing tokens moved across every offset in every TEXT field leave no fragment in the DB, WAL or refusal",
   Effect.forEach(Arr.range(0, 21), (at) => checkColumns(overlapping(at)), { discard: true }),
 )
 
 for (const { kind, token } of crossingForms) {
-  Seed.effect(`form × offset × column: ${kind} leaves no six-character fragment even when glued to both edges`, Effect.gen(function* () {
+  simulationTest(`form × offset × column: ${kind} leaves no six-character fragment even when glued to both edges`, Effect.gen(function* () {
     const cases = Arr.range(0, 21)
     expect(cases.length).toBe(22)
     const tested = yield* Effect.forEach(cases, (offset) =>
@@ -372,7 +372,7 @@ for (const { kind, token } of crossingForms) {
   }))
 }
 
-Seed.effect(
+simulationTest(
   "a worker's follow_up with a secret as its id or run is refused whole, naming the column, and writes nothing",
   Effect.acquireUseRelease(
     Effect.sync(() => scratch("record-boundary-")),

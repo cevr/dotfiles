@@ -43,6 +43,7 @@ import {
   SUPPRESSION,
   tighten,
 } from "./effect-debt.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 const REAL = process.cwd()
 const CLI_TIMEOUT = 60_000
@@ -477,7 +478,7 @@ describe("effect-debt --check over a real workspace", () => {
           expect(checked.stdout).toContain("each (file, rule) at its budget")
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -487,7 +488,7 @@ describe("effect-debt --check over a real workspace", () => {
         put(root, "mods/demo/added.ts", DEBT_SOURCE)
         return []
       }, "over: mods/demo/added.ts effect/noTryCatch has 1, budget 0; fix the new findings in mods/demo/added.ts"),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -502,7 +503,7 @@ describe("effect-debt --check over a real workspace", () => {
         "over: cmd/demo/server.ts effect/noAsyncFunction",
         "lower: decider/demo.ts effect/noTryCatch has 0, budget 1",
       ),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -519,7 +520,7 @@ describe("effect-debt --check over a real workspace", () => {
         "lower: lint/demo.ts effect/noTryCatch has 0, budget 1",
         "over: lint/renamed.ts effect/noTryCatch has 1, budget 0",
       ),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -534,7 +535,7 @@ describe("effect-debt --check over a real workspace", () => {
         `over: testbeds/demo/run.ts ${SUPPRESSION} has 1, budget 0`,
         "lower: testbeds/demo/run.ts effect/noTryCatch has 0, budget 1",
       ),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -549,7 +550,7 @@ describe("effect-debt --check over a real workspace", () => {
         `${DEBT_CONFIG}'s ignorePatterns differ from the policy's`,
         `${HARD_CONFIG}'s effect.testFiles differ from the policy's`,
       ),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -564,7 +565,7 @@ describe("effect-debt --check over a real workspace", () => {
         put(root, HARD_CONFIG, ignoring(hardConfigText(), ignorePatterns))
         return []
       }, "lower: mods/demo/model.ts effect/noTryCatch has 0, budget 1"),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -593,7 +594,7 @@ describe("effect-debt --check over a real workspace", () => {
           expect({ code: malformed.code, problem: malformed.stderr.includes(`${POLICY} is not valid`) }).toEqual({ code: 1, problem: true })
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -602,7 +603,7 @@ describe("effect-debt --check over a real workspace", () => {
       put(root, "mods/demo/broken.ts", "export const broken = (\n")
       return []
     }, "mods/demo/broken.ts: ", "(a parse or config error)"),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -620,7 +621,7 @@ describe("effect-debt --check over a real workspace", () => {
         },
         `${DEBT_CONFIG} exempts effect/noTryCatch in mods/demo/added.ts; only ${EXEMPTABLE.join(", ")} can be exempted`,
       ),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -642,7 +643,7 @@ describe("effect-debt --check over a real workspace", () => {
           expect({ code: checked.code, empty: checked.stderr.includes(`no source files under ${root}`) }).toEqual({ code: 1, empty: true })
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -659,7 +660,7 @@ describe("effect-debt --check over a real workspace", () => {
         ].join("\n")
         return ["--oxlint", fakeLinter(root, body)]
       }, "elsewhere/outside.ts: a diagnostic for a file outside the source list"),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -697,7 +698,7 @@ describe("effect-debt --check over a real workspace", () => {
           expect({ code: unknown.code, said: unknown.stderr.includes("no-such-base") }).toEqual({ code: 1, said: true })
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -719,7 +720,7 @@ describe("effect-debt --check over a real workspace", () => {
           expect(Object.keys(written.budgets)).not.toContain("mods/demo/untracked.ts")
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 })
 
@@ -746,7 +747,7 @@ const FAKES = [
 
 describe("effect-debt --check fails closed when the linter fails", () => {
   for (const [name, body, expected] of FAKES)
-    test.concurrent(`when oxlint ${name}`, () => failsAfter((root) => ["--oxlint", fakeLinter(root, body), "--timeout-ms", "2000"], expected), TEST_TIMEOUT)
+    test.concurrent(`when oxlint ${name}`, () => failsAfter((root) => ["--oxlint", fakeLinter(root, body), "--timeout-ms", "2000"], expected), hangGuard("installer"))
 })
 
 /** Each hard rule: a source it must refuse and one it must accept; test-only rules are written as `*.test.ts`. */
@@ -1017,7 +1018,7 @@ describe("merge by key: two units' edits of the policy and its config merge with
           expect(merged.exemptions.slice(-2)).toEqual([exemptionOf("mods/demo/theirs.ts", "effect/noNodeBuiltinImport"), exemptionOf("mods/demo/ours.ts", "effect/noGlobals")])
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -1038,7 +1039,7 @@ describe("merge by key: two units' edits of the policy and its config merge with
           expect(text).toContain(">>>>>>> theirs")
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test("the driver refuses a file it does not own and a wrong argument count, writing nothing", () =>
@@ -1135,6 +1136,6 @@ describe(`${HARD_CONFIG}: the hard rules`, () => {
           for (const [file] of FENCES) expect(Arr.map(errorsIn(file), (each) => each.code)).toContain("eslint(no-restricted-imports)")
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 })

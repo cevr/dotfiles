@@ -19,6 +19,7 @@ import { ConfigProvider, Context, Effect, Exit, Fiber, Layer, Option, Queue, Ref
 import { Base64 } from "effect/encoding"
 import { effectTest } from "../../sim-tui/effect-test.ts"
 import { parse, Refused, Request, run, type Screen, viewer } from "./show.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 
 const PAGE = "http://localhost:4321/"
 
@@ -49,7 +50,7 @@ describe("the arguments of rex-show url", () => {
         expect({ bad, code: refusalOf(yield* Effect.exit(parse(bad))) }).toEqual({ bad, code: Option.some(2) })
       }
     }),
-    5_000,
+    hangGuard("local-fixture"),
   )
 })
 
@@ -76,7 +77,7 @@ describe("the caller of rex-show url", () => {
         ),
       ),
     ),
-    5_000,
+    hangGuard("local-fixture"),
   )
 })
 
@@ -123,5 +124,5 @@ effectTest(
     expect(yield* Queue.take(frames)).toContain(Base64.encode(second))
     yield* Fiber.interrupt(running)
   }).pipe(Effect.provide(watching)),
-  15_000,
+  hangGuard("short-fixture"),
 )

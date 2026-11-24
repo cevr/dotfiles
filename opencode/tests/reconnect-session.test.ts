@@ -7,11 +7,13 @@
 // background service opens its session.
 import { describe } from "bun:test"
 import { Effect, Option } from "effect"
-import { expect } from "effect-bun-test"
-import { errorToast, openManaged, reconnectTest, SUITE, test, TIMEOUT_MS } from "./reconnect/fixture.ts"
+import { expect, it } from "effect-bun-test"
+import { errorToast, openManaged, reconnectTest, SUITE, TIMEOUT_MS } from "./reconnect/fixture.ts"
+import { Platform } from "./reconnect/host.ts"
 import { forkRuns, keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
-test("the frame guard recognizes a transient error toast, not transcript text", () =>
+it.scopedLive.layer(Platform)("the frame guard recognizes a transient error toast, not transcript text", () =>
   Effect.sync(() => {
     const toast = ["", `${" ".repeat(60)}┃  Failed to fetch             x ┃`]
     expect(Option.getOrElse(errorToast(toast), () => "")).toContain("Failed to fetch")
@@ -21,5 +23,5 @@ test("the frame guard recognizes a transient error toast, not transcript text", 
 
 describe.skipIf(!forkRuns)(SUITE, () => {
   const kept = keptScratch(forkRuns, "rs-managed-")
-  test("a TUI opened on the background service while it is stopped or restarting opens its session", reconnectTest(kept, openManaged), TIMEOUT_MS)
+  it.scopedLive.layer(Platform)("a TUI opened on the background service while it is stopped or restarting opens its session", reconnectTest(kept, openManaged), hangGuard("fork-session"))
 })

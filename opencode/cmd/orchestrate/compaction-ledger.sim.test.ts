@@ -18,10 +18,10 @@ import { SessionID } from "@opencode/schema/session-id"
 import type { CallLine } from "@dotfiles/opencode-orchestrate/call-line"
 import { DateTime, Effect, Option, Schema } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/orchestrate/compaction-ledger.sim.test.ts")
+const { seeded } = simulationRunner("cmd/orchestrate/compaction-ledger.sim.test.ts")
 
 const WORK = "/scratch/project"
 /** A Wednesday afternoon, so the Sabbath never holds a start. */

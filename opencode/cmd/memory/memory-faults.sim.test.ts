@@ -26,10 +26,10 @@ import * as MemoryFiles from "@dotfiles/opencode-memory/memory/files"
 import { main } from "./cli.ts"
 import { liveWith, make } from "./server.ts"
 import { below, generator, line, plain } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner, simulationTest, SEEDS as SeedSEEDS } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/memory/memory-faults.sim.test.ts")
+const { seeded } = simulationRunner("cmd/memory/memory-faults.sim.test.ts")
 
 const WORK = "/scratch/work"
 const DB = "/scratch/state/memory.db"
@@ -345,7 +345,7 @@ const answer = (outcome: string, index: number, replacement: Command, end = inde
     if (!cause && at === index) return replacement
     return command
   }))
-Seed.effect("W: deliberate histories meet every named answer and a failed write", assertEffectWitnessCases(MEMORY_ANSWERS, {
+simulationTest("W: deliberate histories meet every named answer and a failed write", assertEffectWitnessCases(MEMORY_ANSWERS, {
   saved: answer("saved", 1, { type: "advance", ms: 1 }),
   updated: answer("updated", 2, save("Run the gate before every push")),
   corrected: answer("corrected", 3, save("Run the gate before every push")),
@@ -358,10 +358,10 @@ Seed.effect("W: deliberate histories meet every named answer and a failed write"
   "held digest": memoryCase("faulted-session", (cause) => HELD_ACROSS_RESTART.filter((command) => cause || command.type !== "write-fails")),
 }))
 
-Seed.effect(
+simulationTest(
   "distinct seeds keep distinct traces for the simulator's fixed replay corpus",
   Effect.gen(function* () {
-    const runs = yield* Effect.forEach(Arr.range(1, Seed.SEEDS), (seed) => runOf(seed, commandsOf(seed)))
-    bunExpect(new Set(runs.map((run) => run.trace)).size).toBe(Seed.SEEDS)
+    const runs = yield* Effect.forEach(Arr.range(1, SeedSEEDS), (seed) => runOf(seed, commandsOf(seed)))
+    bunExpect(new Set(runs.map((run) => run.trace)).size).toBe(SeedSEEDS)
   }),
 )

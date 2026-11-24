@@ -14,6 +14,7 @@ import { hintRow } from "./composer.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 import { timedRows, withoutTurnTime } from "./turn-time.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-precompute.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -35,7 +36,7 @@ const untimed = (frame: ReadonlyArray<string>) => withoutTurnTime(transcript(fra
 
 describe.skipIf(!fork)("an automatic compaction swaps in the summary written in the background, in the Prime look (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-precompute-")
-  beforeAll(...kept.setup(async () => {
+  beforeAll(kept.test(async () => {
     const out = kept.dir("prime-precompute-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-precompute.ts"], {
       cwd: root,
@@ -51,7 +52,7 @@ describe.skipIf(!fork)("an automatic compaction swaps in the summary written in 
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names) frames[name] = readScratchFileSync(join(out, `${name}.txt`), "utf8").split("\n")
     seen = JSON.parse(readFileSync(join(out, "requests.json"), "utf8")) as Requests
-  }, 300_000))
+  }), hangGuard("acceptance"))
 
   test("the summary is written once, in the background, as the first turn ends: no row shows it", kept.test(() => {
     const summaries = seen.requests.filter((request) => request.kind === "summary")

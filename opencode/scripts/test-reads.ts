@@ -435,7 +435,7 @@ const MODULE_DATA = /\.(?:json|toml|txt|md)$/
 const CHECKED_HELPERS = new Set(["tests/scratch.ts", "tests/read-path.ts", "tests/owned.ts", "tests/scratch-child.ts", "tests/lint-fixture.ts", "tests/fork-launcher.ts", "scenarios/generated-input.ts"])
 const BOUNDED_PROCESS = new Set([
   "tests/scratch-child.ts", "tests/scratch-child.ts:spawnScratchGitSync", "tests/scratch-child.ts:spawnScratchShell", "tests/owned.ts:ownedScratchShell",
-  "tests/scratch-child.ts:scratchBunJUnitSync",
+  "tests/scratch-child.ts:scratchBunJUnitSync", "tests/scratch-child.ts:spawnScratchBunSync",
   "tests/scratch-child.ts:spawnCheckoutShellSync",
   "tests/scratch-child.ts:checkoutShellFixtureCommand",
   "tests/scratch-child.ts:spawnScratchZshSync",

@@ -21,6 +21,7 @@ import { formOf } from "../../mods/questions/form.ts"
 import type { Question } from "../../mods/questions/question.ts"
 import { externalInput, matchingInput, readScratchFileSync, scratchInput } from "../read-path.ts"
 import { ASK_TASK, IDLE_TASK, LETTER, type Message, messagesOf, QUESTION, serve } from "./sim.ts"
+import { watchdog } from "../hang-guard.ts"
 
 export interface Spec {
   readonly base: string
@@ -124,9 +125,9 @@ try {
     // The letter wakes the session; wait for it to arrive, then for the turn it starts.
     /** Polls a session's messages until `ready` holds of them, or fails with `what` after 30 s. */
     const until = async (sessionID: string, ready: (messages: ReadonlyArray<Message>) => boolean, what: string) => {
-      const deadline = Date.now() + 30_000
+      const deadline = watchdog(30_000)
       while (!ready(messagesOf(await opencode.sessions.context({ sessionID })))) {
-        if (Date.now() > deadline) throw new Error(`${what} never happened in ${sessionID}`)
+        if (deadline.expired()) throw new Error(`${what} never happened in ${sessionID}`)
         await sleep(100)
       }
     }

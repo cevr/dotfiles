@@ -84,7 +84,7 @@ const titleOf = (call: CallExpression): string => Option.getOrElse(Option.map(Ar
 }), () => "")
 
 const ordinaryTest = ({ callee }: CallExpression) =>
-  (callee.type === "Identifier" && ["test", "effectTest"].includes(callee.name)) ||
+  (callee.type === "Identifier" && ["test", "effectTest", "simulationTest"].includes(callee.name)) ||
   (callee.type === "MemberExpression" && callee.object.type === "Identifier" && callee.object.name === "Seed" && methodOf(callee) === "effect")
 
 /** A callback expression or Effect expression that directly delegates data to the helper. */
@@ -115,7 +115,7 @@ const witnessSources = (file: string, text: string) => {
     },
   }).visit(parsed.program)
 
-  const runners = ["test", "effectTest", "Seed"]
+  const runners = ["test", "effectTest", "simulationTest", "Seed"]
   const examples = calls.filter((call) => titleOf(call).startsWith("W: "))
   const allowed: Array<string> = []
   const forbidden: Array<string> = []
@@ -149,7 +149,7 @@ test("the source guard rejects a witness with no comparison and attempts to skip
     'const bypass = test["failing"]',
     'bypass("W: aliased", () => assertWitness(a, b, c, d))',
     'test("W: direct", () => assertWitnessCases(KEYS, { ...fixtures }))',
-    'Seed.effect("W: effect", assertEffectWitnessCases(KEYS, { one: { expected: true, run } }))',
+    'simulationTest("W: effect", assertEffectWitnessCases(KEYS, { one: { expected: true, run } }))',
     'test("W: conditional", () => ready && assertWitnessCases(KEYS, {}))',
     'test("W: return", () => { if (skip) return; assertWitnessCases(KEYS, {}) })',
     'test("W: filtered", () => assertWitnessCases(KEYS.filter(keep), {}))',
@@ -174,11 +174,9 @@ const readSource = Effect.fn("WitnessSources.readSource")(function* (file: strin
   return yield* fs.readFileString(matchingInput(witnessFiles, file))
 })
 
-const live = it.live.layer(BunServices.layer)
-
 const files = witnessFiles.slice(1, -1).split(",")
 
-live("every named witness calls its helper in one ordinary test", () => Effect.gen(function* () {
+it.live.layer(BunServices.layer)("every named witness calls its helper in one ordinary test", () => Effect.gen(function* () {
   for (const file of files) {
     const { allowed, delegated, ...guard } = witnessSources(file, yield* readSource(file))
     expect(guard, file).toEqual({ parsed: [], forbidden: [], notOrdinary: [] })
@@ -211,7 +209,7 @@ const mirrorsOf = (file: string, text: string, names: ReadonlySet<string>) => {
   return found
 }
 
-live("fenced case declarations mirror the independent registry exactly", () => Effect.gen(function* () {
+it.live.layer(BunServices.layer)("fenced case declarations mirror the independent registry exactly", () => Effect.gen(function* () {
   for (const file of fenced) {
     const expected = coverage.flatMap(([path, , law]) => Object.entries(law).filter(() => path === file))
     const names = new Set(expected.map(([name]) => name))

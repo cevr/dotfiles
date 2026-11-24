@@ -13,6 +13,7 @@ import { Context, Effect, Exit, Layer, Option } from "effect"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { Rex } from "../service.ts"
 import * as ProcessRex from "./rex.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 const FAKE = fileURLToPath(new URL("./fake-rex.sh", import.meta.url))
 
@@ -52,7 +53,7 @@ describe("Rex over its tool", () => {
       expect(yield* rex.blocks("session:a")).toEqual([{ id: "block:1", label: "shell" }, { id: "block:2", label: "showcase" }, { id: "block:3", label: "" }])
       expect(yield* called).toEqual(["block ls -s session:a --json"])
     }).pipe(Effect.provide(fake("ok"))),
-    10_000,
+    hangGuard("in-memory"),
   )
 
   effectTest(
@@ -64,7 +65,7 @@ describe("Rex over its tool", () => {
       yield* rex.split({ session: "session:a", beside: "block:1", label: "leaf", command: ["leaf", "diff"], cwd: "/work/repo" })
       expect((yield* called)[1]).toBe("split -s session:a -b block:1 --split=right --ratio=40 --label=leaf --focus=false -c /work/repo --json -- leaf diff")
     }).pipe(Effect.provide(fake("ok"))),
-    10_000,
+    hangGuard("in-memory"),
   )
 
   effectTest(
@@ -74,7 +75,7 @@ describe("Rex over its tool", () => {
       const exit = yield* Effect.exit(rex.blocks("session:a"))
       expect(String(exit)).toContain("rex not found: not in $REX_BIN_DIR, on $PATH or in /Applications/Rex Beta.app")
     }).pipe(Effect.provide(ProcessRex.missing)),
-    10_000,
+    hangGuard("in-memory"),
   )
 
   effectTest(
@@ -84,7 +85,7 @@ describe("Rex over its tool", () => {
       yield* rex.close("session:a", "block:2")
       expect(yield* called).toEqual(["block close -s session:a block:2", "block ls -s session:a --json"])
     }).pipe(Effect.provide(fake("gone"))),
-    10_000,
+    hangGuard("in-memory"),
   )
 
   effectTest(
@@ -95,7 +96,7 @@ describe("Rex over its tool", () => {
       expect(yield* rex.running("session:a", "block:3")).toBe(false)
       expect(yield* called).toEqual(["block call -s session:a -b block:2 process", "block call -s session:a -b block:3 process"])
     }).pipe(Effect.provide(fake("ok"))),
-    10_000,
+    hangGuard("in-memory"),
   )
 
   effectTest(
@@ -104,7 +105,7 @@ describe("Rex over its tool", () => {
       const rex = yield* Rex
       expect(yield* rex.running("session:a", "block:2")).toBe(false)
     }).pipe(Effect.provide(fake("gone"))),
-    10_000,
+    hangGuard("in-memory"),
   )
 
   effectTest(
@@ -113,7 +114,7 @@ describe("Rex over its tool", () => {
       const rex = yield* Rex
       expect(String(yield* Effect.exit(rex.blocks("session:a")))).toContain("exit 3: no such session")
     }).pipe(Effect.provide(fake("fail"))),
-    10_000,
+    hangGuard("in-memory"),
   )
 
   effectTest(
@@ -124,7 +125,7 @@ describe("Rex over its tool", () => {
       expect(Exit.isFailure(exit)).toBe(true)
       expect(String(exit)).toContain("unexpected output")
     }).pipe(Effect.provide(fake("garbage"))),
-    10_000,
+    hangGuard("in-memory"),
   )
 })
 

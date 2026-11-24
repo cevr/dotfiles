@@ -19,10 +19,10 @@
 import { Effect, Option } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
 import { below, generator } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/orchestrate/idle-root-property.sim.test.ts")
+const { seeded } = simulationRunner("cmd/orchestrate/idle-root-property.sim.test.ts")
 
 const WORK = "/scratch/project"
 /** Wednesday 4 November 2026, 10:00 in Knowlton: 14 commands at most a minute apart stay clear of the Sabbath. */

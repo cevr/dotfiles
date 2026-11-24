@@ -10,10 +10,10 @@
 import { headsOf } from "@dotfiles/opencode-orchestrate/fleet"
 import { VERIFY_EVERY } from "@dotfiles/opencode-orchestrate/tools"
 import { Array as Arr, Effect, Option, Result } from "effect"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import { boot, FORK_HEAD, HAND_BACK, requestHeadFor, RUN_DIR, type Run, WORK } from "./orch-tools-world.ts"
 
-const { seeded } = Seed.runner("cmd/orchestrate/batch-files.sim.test.ts")
+const { seeded } = simulationRunner("cmd/orchestrate/batch-files.sim.test.ts")
 
 const ORCHESTRATE = "orchestrate"
 

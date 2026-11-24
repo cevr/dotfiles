@@ -46,11 +46,11 @@ const text = (stream: Stream.Stream<Uint8Array, unknown>) => stream.pipe(Stream.
 /** The real shim, staged beside only the fake browser tools in a fresh fixture. */
 const through = (
   dir: string, args: ReadonlyArray<string>, paths: Readonly<Record<string, string>>,
-  process: Pick<ChildProcess.CommandOptions, "stdin" | "additionalFds"> = {}, self = false,
+  lifecycle: Pick<ChildProcess.CommandOptions, "stdin" | "additionalFds"> = {}, self = false,
 ) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-    return yield* spawner.spawn(checkoutShellFixtureCommand(SHIM, dir, args, { paths, process, ...(self && { self: "CHROME_KEYCHAIN_TARGET" }) }))
+    return yield* spawner.spawn(checkoutShellFixtureCommand(SHIM, dir, args, { paths, lifecycle, ...(self && { self: "CHROME_KEYCHAIN_TARGET" }) }))
   })
 
 /** What the fake browser `child` recorded in `out`: its path, then its arguments; read once it says it is ready. */

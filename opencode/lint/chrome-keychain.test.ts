@@ -12,10 +12,9 @@ import { describe, expect } from "bun:test"
 import { Effect, FileSystem, Path, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { platformTest } from "../sim-tui/effect-test.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 const CODE = "dotfiles(chrome-mock-keychain)"
-/** One oxlint run over a few files. */
-const TIMEOUT_MS = 60_000
 
 /** Each planted file, by its path under the tree, and how many diagnostics it must get. */
 const FILES: ReadonlyArray<readonly [string, string, number]> = [
@@ -70,6 +69,6 @@ describe("chrome-mock-keychain", () => {
       expect(FILES.map(([file]) => [file, found.filter((each) => each === file).length])).toEqual(FILES.map(([file, , errors]) => [file, errors]))
       expect(rules["dotfiles/chrome-mock-keychain"]).toBe("error")
     }),
-    TIMEOUT_MS,
+    hangGuard("process-fixture"),
   )
 })

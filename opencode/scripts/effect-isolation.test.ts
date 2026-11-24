@@ -22,6 +22,7 @@ import path from "node:path"
 import { Array as Arr, Effect, Schema, type Scope } from "effect"
 import { HARD_CONFIG, spawn } from "./effect-debt.ts"
 import { lintFixture } from "../tests/lint-fixture.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 const REAL = process.cwd()
 const CLI_TIMEOUT = 120_000
@@ -207,7 +208,7 @@ describe(`${HARD_CONFIG}: effect/noTestGlobals over generated fixtures`, () => {
           }
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("generated-schedule"),
   )
 
   test.concurrent(
@@ -224,7 +225,7 @@ describe(`${HARD_CONFIG}: effect/noTestGlobals over generated fixtures`, () => {
           for (const file of files) expect({ file, found: errors(file, "dotfiles(no-module-env-in-tests)").length }).toEqual({ file, found: 2 })
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("generated-schedule"),
   )
 })
 
@@ -340,6 +341,6 @@ describe("the fixtures that wrote the process's env or registry, under generated
           { concurrency: 3, discard: true },
         ),
       ),
-    TEST_TIMEOUT,
+    hangGuard("generated-schedule"),
   )
 })

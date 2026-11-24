@@ -12,6 +12,7 @@ import { join } from "node:path"
 import { ALARM, CLOSED, closedDock, DETAIL, panel, PANEL, underRule, type Want } from "../scenarios/prime-composer-frames.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-composer.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -25,7 +26,7 @@ const matcher = (want: Want) => expect.stringMatching(want)
 
 describe.skipIf(!fork)("the composer panel's Wakes and Monitors tabs (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-composer-")
-  beforeAll(...kept.setup(async () => {
+  beforeAll(kept.test(async () => {
     const out = kept.dir("prime-composer-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-composer.ts"], {
       cwd: root,
@@ -36,7 +37,7 @@ describe.skipIf(!fork)("the composer panel's Wakes and Monitors tabs (OPENCODE_D
     const [code, stdout, stderr] = await Promise.all([run.exited, new Response(run.stdout).text(), new Response(run.stderr).text()])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names) frames[name] = readScratchFileSync(join(out, `composer-${name}.txt`), "utf8").split("\n")
-  }, 300_000))
+  }), hangGuard("acceptance"))
 
   test("↓ on the empty prompt opens the panel, its host tabs first, then Wakes and Monitors", kept.test(() => {
     // Prime's tab bar: the names between faint dots, with how many each lists; the alarm and the monitor are pending.

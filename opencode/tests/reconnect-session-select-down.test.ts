@@ -3,14 +3,17 @@
 // A pane at home selects a down session while the service boots, and submits.
 // The shared world and the cases' bodies: tests/reconnect/fixture.ts.
 import { describe } from "bun:test"
-import { reconnectTest, selectWhileBooting, SUITE, test, TIMEOUT_MS } from "./reconnect/fixture.ts"
+import { it } from "effect-bun-test"
+import { reconnectTest, selectWhileBooting, SUITE, TIMEOUT_MS } from "./reconnect/fixture.ts"
+import { Platform } from "./reconnect/host.ts"
 import { forkRuns, keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 describe.skipIf(!forkRuns)(SUITE, () => {
   const kept = keptScratch(forkRuns, "rs-select-down-")
-  test(
+  it.scopedLive.layer(Platform)(
     "selecting a down session from home during service boot and submitting waits without an error toast",
     reconnectTest(kept, (fixture) => selectWhileBooting(fixture, "down")),
-    TIMEOUT_MS,
+    hangGuard("fork-session"),
   )
 })

@@ -9,11 +9,11 @@ import { decodeLine, DIGEST, DigestEvent, encodeLine, VERSION } from "@dotfiles/
 import * as MemoryDigest from "@dotfiles/opencode-digest/memory/log"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Read from "../../sim/readings.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import { worldScript } from "../../sim/verify-world.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/digest/digest.sim.test.ts")
+const { seeded } = simulationRunner("cmd/digest/digest.sim.test.ts")
 
 const WORK = "/scratch/project"
 const T = Date.parse("2026-11-20T12:00:00Z")

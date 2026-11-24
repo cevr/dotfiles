@@ -13,10 +13,11 @@
 //   time moves only when a command advances it.
 // It also measures what one simulated hour costs in wall time.
 import { describe, expect } from "bun:test"
-import * as Seed from "./seed.ts"
+import { simulationTest } from "./seed.ts"
 import { Plugin } from "@opencode/plugin/effect"
 import { SessionID } from "@opencode/schema/session-id"
 import { Array as Arr, Clock, Effect, Option, Schema } from "effect"
+import { measured } from "../tests/hang-guard.ts"
 import * as Plugins from "./plugins.ts"
 import type { InboxItem, Message } from "./host.ts"
 import { below, generator, line } from "./runtime.ts"
@@ -404,7 +405,7 @@ const pooledInvariants = (seed: number) => (world: World, anthropic: Anthropic, 
 }
 
 describe("the world", () => {
-  Seed.effect(
+  simulationTest(
     "one seed replays byte for byte, holds no wall-clock value, and 50 seeds give at least 10 different runs",
     Effect.gen(function* () {
       const wall = String(yield* Clock.currentTimeMillis).slice(0, 7)
@@ -422,14 +423,14 @@ describe("the world", () => {
     }),
   )
 
-  Seed.effect(
+  simulationTest(
     "against the reference model: steers once and in order, idle sessions take their work, restarts lose nothing, time moves only when advanced",
     Effect.forEach(SEEDS, (seed) => runOf(seed, invariants({ stored: new Map(), messages: new Map(), lines: 0 })).pipe(Effect.map(oneAtATime)), {
       discard: true,
     }),
   )
 
-  Seed.effect(
+  simulationTest(
     "a pooled run replays byte for byte: pooled turns, plan limits, refresh faults, resets and restarts; 50 seeds give at least 10 different runs",
     Effect.gen(function* () {
       const traces = yield* Effect.forEach(SEEDS, (seed) =>
@@ -444,7 +445,7 @@ describe("the world", () => {
     }),
   )
 
-  Seed.effect(
+  simulationTest(
     "against the pooled model: every request on one known login, none on a login before the reset it was refused to, no refresh token traded twice, no grant claimed twice or unlisted",
     Effect.gen(function* () {
       const claims = yield* Effect.forEach(SEEDS, (seed) =>
@@ -461,7 +462,7 @@ describe("the world", () => {
     }),
   )
 
-  Seed.effect(
+  simulationTest(
     "a field the world does not read is refused, not dropped: the host would act on it",
     Effect.gen(function* () {
       const world = make({ seed: 1, script: () => say("ok") })
@@ -476,7 +477,7 @@ describe("the world", () => {
     }),
   )
 
-  Seed.effect(
+  simulationTest(
     "a queued prompt taken back is never delivered; queued prompts merged are delivered as one, the originals cancelled",
     Effect.gen(function* () {
       const world = make({ seed: 1, script: () => say("ok") })
@@ -494,7 +495,7 @@ describe("the world", () => {
     }),
   )
 
-  Seed.effect(
+  simulationTest(
     "a simulated hour costs milliseconds",
     Effect.gen(function* () {
       const world = yield* worldOf(7)
@@ -502,13 +503,14 @@ describe("the world", () => {
       yield* Effect.forEach(sessions, (session, index) =>
         world.prompt(session, "start").pipe(Effect.andThen(world.tool(session, "wake", { afterSeconds: 60 * (index + 1), everySeconds: 300, note: "tick" }))),
       )
-      const started = yield* Clock.currentTimeMillis
-      yield* world.advance(3_600_000)
-      const cost = (yield* Clock.currentTimeMillis) - started
-      yield* Effect.logInfo(`sim: one simulated hour (3 sessions, repeating alarms, idle compaction) took ${cost} ms of wall time`)
+      yield* measured("one simulated hour with three sessions, repeating alarms and compaction", "< 2000 ms", ({ begin, end }) =>
+        Effect.gen(function* () {
+          begin()
+          yield* world.advance(3_600_000)
+          end()
+        }),
+      )
       expect(world.elapsed()).toBeGreaterThanOrEqual(3_600_000)
-      expect(cost).toBeLessThan(2_000)
     }),
   )
 })
-

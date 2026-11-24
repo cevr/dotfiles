@@ -8,7 +8,7 @@ import { expect } from "bun:test"
 import { fileURLToPath, Glob, resolveSync, spawn, spawnSync, write } from "bun"
 import { Array as Arr, Context, Effect, Layer, Match, Option, Result, type Scope } from "effect"
 import { Digest } from "effect/crypto"
-import * as Seed from "../../../sim/seed.ts"
+import { simulationTest } from "../../../sim/seed.ts"
 import { hostServices } from "../../../sim/host-services.ts"
 import { platform as ownPlatform } from "../node/platform.ts"
 import { gitInit, withProcessEnv } from "../../../tests/git-repo.ts"
@@ -49,7 +49,7 @@ const STORE = fileURLToPath(import.meta.resolve("./record.ts"))
 /** The host services the writer provides its open, as the fork's plugin host would. */
 const HOST = fileURLToPath(import.meta.resolve("../../../sim/host-services.ts"))
 
-Seed.effect(
+simulationTest(
   "the file is under XDG_STATE_HOME, else ~/.local/state",
   Effect.gen(function* () {
     expect(yield* pathOf(Option.some("/state"), "github.com-cevr-dotfiles")).toBe("/state/opencode-orchestrate/github.com-cevr-dotfiles.db")
@@ -89,7 +89,7 @@ const started = (script: string, path: string, name: string) => spawn(["bun", sc
 const ended = (run: ReturnType<typeof started>) =>
   Effect.all({ code: Effect.promise(() => run.exited), errors: Effect.promise(() => new Response(run.stderr).text()) }, { concurrency: 2 })
 
-Seed.effect("two processes writing 321 interleaved commands to one file, reasons included, lose none, and the replay law holds after",
+simulationTest("two processes writing 321 interleaved commands to one file, reasons included, lose none, and the replay law holds after",
   inScratch((dir) =>
     Effect.gen(function* () {
       const path = `${dir}/repo.db`
@@ -114,7 +114,7 @@ Seed.effect("two processes writing 321 interleaved commands to one file, reasons
     }),
   ))
 
-Seed.effect("a file of a newer version than this code reads, and refuses every write with the version it needs",
+simulationTest("a file of a newer version than this code reads, and refuses every write with the version it needs",
   inScratch((dir) =>
     Effect.gen(function* () {
       const path = `${dir}/repo.db`
@@ -140,7 +140,7 @@ const columnsOf = (db: Database, table: string) =>
     .all()
     .map((each) => [each.name, each.type, each.notnull, each.dflt, each.pk, each.hidden])
 
-Seed.effect("version 2 preserves the commitment and invariant columns, reason pair and generated close kind",
+simulationTest("version 2 preserves the commitment and invariant columns, reason pair and generated close kind",
   inScratch((dir) =>
     Effect.gen(function* () {
       const made = yield* connected(`${dir}/repo.db`, { readonly: false, now: T0 })
@@ -237,7 +237,7 @@ const outcome = (db: Database, id: string, put: () => void): string => {
   return Option.getOrElse(Option.map(stored, (each) => each.kind), () => "no row")
 }
 
-Seed.effect(`the close kind over (state × reason class × referent form × unreasoned close), ${MATRIX.length} cells, by direct INSERT and UPDATE on a scratch file, agrees with the one-line oracle`,
+simulationTest(`the close kind over (state × reason class × referent form × unreasoned close), ${MATRIX.length} cells, by direct INSERT and UPDATE on a scratch file, agrees with the one-line oracle`,
   inScratch((dir) =>
     Effect.gen(function* () {
       const made = yield* connected(`${dir}/matrix.db`, { readonly: false, now: T0 })
@@ -263,7 +263,7 @@ Seed.effect(`the close kind over (state × reason class × referent form × unre
     }),
   ))
 
-Seed.effect("which close kind each writer makes: decide a guarantee, the plugin's placeholder close placed, an import historical; open and landed rows none",
+simulationTest("which close kind each writer makes: decide a guarantee, the plugin's placeholder close placed, an import historical; open and landed rows none",
   inScratch((dir) =>
     Effect.gen(function* () {
       const path = `${dir}/writers.db`
@@ -306,7 +306,7 @@ const sameCount = <E1, E2>(one: Result.Result<{ readonly events: ReadonlyArray<u
   return true
 }
 
-Seed.effect("the file and the memory record agree on every kind of command, reasons included; reopened, the file's rows are its events' fold; an import again is nothing",
+simulationTest("the file and the memory record agree on every kind of command, reasons included; reopened, the file's rows are its events' fold; an import again is nothing",
   inScratch((dir) =>
     Effect.gen(function* () {
       const path = `${dir}/agree.db`
@@ -344,7 +344,7 @@ Seed.effect("the file and the memory record agree on every kind of command, reas
     }),
   ))
 
-Seed.effect("a not-asked row (unit C's) is a legal row this code does not read: its read and every write fail whole, naming the row, never guessing",
+simulationTest("a not-asked row (unit C's) is a legal row this code does not read: its read and every write fail whole, naming the row, never guessing",
   inScratch((dir) =>
     Effect.gen(function* () {
       const path = `${dir}/c.db`
@@ -365,7 +365,7 @@ Seed.effect("a not-asked row (unit C's) is a legal row this code does not read: 
     }),
   ))
 
-Seed.effect("a read-only open reads what a writer wrote and refuses writes; a reopened store sees the same rows",
+simulationTest("a read-only open reads what a writer wrote and refuses writes; a reopened store sees the same rows",
   inScratch((dir) =>
     Effect.gen(function* () {
       const path = `${dir}/repo.db`
@@ -383,7 +383,7 @@ Seed.effect("a read-only open reads what a writer wrote and refuses writes; a re
     }),
   ))
 
-Seed.effect("the daily backup is written at a day's first open only, and the eighth day's prunes the oldest",
+simulationTest("the daily backup is written at a day's first open only, and the eighth day's prunes the oldest",
   inScratch((dir) =>
     Effect.gen(function* () {
       const path = `${dir}/repo.db`
@@ -405,7 +405,7 @@ Seed.effect("the daily backup is written at a day's first open only, and the eig
     }),
   ))
 
-Seed.effect("a repository with no origin: its workspace, a subfolder and the base share one key; another repository has its own",
+simulationTest("a repository with no origin: its workspace, a subfolder and the base share one key; another repository has its own",
   inScratch((dir) =>
     Effect.gen(function* () {
       const env = withProcessEnv({ GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t.invalid", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t.invalid" })
@@ -428,7 +428,7 @@ Seed.effect("a repository with no origin: its workspace, a subfolder and the bas
     }),
   ))
 
-Seed.effect("the boundary's column map names exactly the file's TEXT columns: a new column fails here until it is given a kind",
+simulationTest("the boundary's column map names exactly the file's TEXT columns: a new column fails here until it is given a kind",
   inScratch((dir) =>
     Effect.gen(function* () {
       const made = yield* connected(`${dir}/repo.db`, { readonly: false, now: T0 })
@@ -440,7 +440,7 @@ Seed.effect("the boundary's column map names exactly the file's TEXT columns: a 
     }),
   ))
 
-Seed.effect("a free-text field past its bound is refused whole, naming the column",
+simulationTest("a free-text field past its bound is refused whole, naming the column",
   inScratch((dir) =>
     Effect.gen(function* () {
       const opened = yield* connected(`${dir}/repo.db`, { readonly: false, now: T0 })
@@ -451,7 +451,7 @@ Seed.effect("a free-text field past its bound is refused whole, naming the colum
     }),
   ))
 
-Seed.effect(
+simulationTest(
   "the repository key's digest is SHA-256 (a known vector), so a file named before this code keeps its name",
   Effect.gen(function* () {
     const digest = yield* Digest.Digest
@@ -459,7 +459,7 @@ Seed.effect(
   }).pipe(Effect.provide(platform)),
 )
 
-Seed.effect(
+simulationTest(
   "the plugin's record (layerOrFailed on the platform) makes its folder, opens, writes and keeps the day's backup; a file it cannot open refuses every call",
   inScratch((dir) =>
     Effect.gen(function* () {

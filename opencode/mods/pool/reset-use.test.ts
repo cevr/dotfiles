@@ -263,12 +263,12 @@ describe("a Fable reset", () => {
           shareOf({ ...window("7d:Fable", 0.8, fableWeek), ofWeekly: 0.5, weeklyUsed: reported }, window("7d", weekly, fableWeek), { rate: 1, source: "tally" }),
         ).toEqual({ points: Math.min(reported, weekly), low: Math.min(reported, weekly), high: Math.min(reported, weekly), source: "reported" })
     // As measured on 2026-11-09: Fable's week 12% used took none of the weekly window, so a Fable reset gives the weekly nothing back.
-    const measured = account(
+    const observedReset = account(
       "a",
       [window("7d", 0.09, T0 + 6 * DAY), { ...window("7d:Fable", 0.12, fableWeek), ofWeekly: 0.5, weeklyUsed: 0 }],
       [grant("g", T0 + 60 * DAY, FABLE)],
     )
-    const gives = effectOf("claude", measured, grant("g", T0 + 60 * DAY, FABLE))
+    const gives = effectOf("claude", observedReset, grant("g", T0 + 60 * DAY, FABLE))
     expect(gives.find((give) => give.window === "7d")).toMatchObject({ from: 0.09, to: 0.09, share: { points: 0, source: "reported" } })
   })
 

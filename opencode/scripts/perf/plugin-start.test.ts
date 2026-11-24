@@ -7,6 +7,7 @@ import { argv, readableStreamToText, spawnSync } from "bun"
 import { Effect, Option } from "effect"
 import { it } from "effect-bun-test"
 import { bindsTree, unboundBuild } from "../../testbeds/gamut/gamut.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 import { owned, released } from "../../tests/owned.ts"
 import { scratch } from "../../tests/scratch.ts"
 import { groupCpu, procStat, psTime, serviceCommand } from "./plugin-start.ts"
@@ -32,7 +33,7 @@ describe("a harness and an installed build", () => {
     expect(bindsTree(program)).toBe(false)
     expect(sh('cmp -s "$1" "$2"', program, share.binary)).toBe(true)
     expect(command.slice(1)).toEqual(["serve", "--service"])
-  })
+  }, hangGuard("short-fixture"))
 
   test("a build with no tree beside it, and the fork from source, run as they are", () => {
     using share = installed()
@@ -41,7 +42,7 @@ describe("a harness and an installed build", () => {
     expect(serviceCommand([argv[0] ?? "bun", "/fork/packages/cli/src/index.ts"], share.root)).toEqual([argv[0] ?? "bun", "/fork/packages/cli/src/index.ts", "serve", "--service"])
     expect(unboundBuild(share.binary, share.root)).toBe(share.binary)
     expect(sh('test -e "$1"', `${share.root}/opencode-clone`)).toBe(false)
-  })
+  }, hangGuard("short-fixture"))
 
   it.live("a test's owned child runs a clone of an installed build, removed with it, never the build by its path", () =>
     Effect.gen(function* () {
@@ -52,6 +53,7 @@ describe("a harness and an installed build", () => {
       expect(ran.endsWith("/opencode-clone")).toBe(true)
       yield* Option.match(Option.fromNullishOr(released(child.pid)), { onNone: () => Effect.void, onSome: (done) => Effect.promise(() => done) })
     }),
+    hangGuard("local-fixture"),
   )
 })
 
@@ -72,5 +74,5 @@ describe("the service's CPU time", () => {
   test("the init process's group has spent some CPU, and a group with no process none", () => {
     expect(groupCpu(1)).toBeGreaterThan(0)
     expect(groupCpu(999_999_999)).toBe(0)
-  })
+  }, hangGuard("short-fixture"))
 })

@@ -4,17 +4,14 @@
 // sim-tui/effect-test.ts), so the laws run no Effect by hand.
 import { describe, expect } from "bun:test"
 import { Effect, type Layer, Option } from "effect"
+import { effectTest } from "../../sim-tui/effect-test.ts"
 import { fresh } from "./retitle.ts"
 import { Tracks } from "./service.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 
-/** Registers a test whose body is an Effect. */
-export type EffectTest = (name: string, body: Effect.Effect<void>, timeoutMs: number) => void
-
-const LIMIT = 5_000
-
-export const tracksLaws = (name: string, make: () => Layer.Layer<Tracks>, effectTest: EffectTest) =>
+export const tracksLaws = (name: string, make: () => Layer.Layer<Tracks>) =>
   describe(`${name} owes the Tracks laws`, () => {
-    const law = (title: string, body: Effect.Effect<void, never, Tracks>) => effectTest(title, Effect.provide(body, make()), LIMIT)
+    const law = (title: string, body: Effect.Effect<void, never, Tracks>) => effectTest(title, Effect.provide(body, make()), hangGuard("unit-law"))
 
     law(
       "a session never put reads as none",

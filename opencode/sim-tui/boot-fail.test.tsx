@@ -7,14 +7,16 @@
 import { expect } from "bun:test"
 import { Effect, Option } from "effect"
 import * as App from "./app.ts"
+import { effectTest } from "./effect-test.ts"
 import { router } from "./route/registry.ts"
 import { type Model, text } from "./server.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 const FILE = "sim-tui/boot-fail.test.tsx"
 const BOOT: App.BootOptions = { file: FILE, plugins: ["cmd/prime"], width: 100, height: 30 }
 const model: Model = ({ step }) => [[text("Done.")]][step] ?? []
 
-App.effectTest(
+effectTest(
   "a boot past its CPU on a settled host fails, saying so, and closes its app: no route plugin's navigate is left for the next boot",
   Effect.flip(App.bootWithin(BOOT, 0, Effect.succeed({ load: 3, cores: 12 }))).pipe(
     Effect.map((error) => {
@@ -22,10 +24,10 @@ App.effectTest(
       expect(Option.isNone(router().navigate)).toBe(true)
     }),
   ),
-  App.BOOT_TIMEOUT_MS,
+  hangGuard("installer"),
 )
 
-App.effectTest(
+effectTest(
   "after it, a seed boots a fresh app and drives it: the session it opens is the one on screen",
   App.seed(BOOT, { key: "boot-fail", seed: 1, model }, (tui) =>
     Effect.gen(function* () {
@@ -34,7 +36,7 @@ App.effectTest(
       yield* tui.until("the opened session", (shown) => shown.join("\n").includes("After the failed boot"))
     }),
   ),
-  App.BOOT_TIMEOUT_MS,
+  hangGuard("installer"),
 )
 
 App.closeTest()

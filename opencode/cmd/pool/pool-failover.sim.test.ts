@@ -13,10 +13,10 @@ import { DateTime, Effect, Option } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Provider from "../../sim/provider.ts"
 import { line } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/pool/pool-failover.sim.test.ts")
+const { seeded } = simulationRunner("cmd/pool/pool-failover.sim.test.ts")
 
 const HOUR = 3_600_000
 const WORK = "/scratch/work"

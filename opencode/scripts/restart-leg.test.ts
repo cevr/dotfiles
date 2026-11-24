@@ -7,6 +7,7 @@ import { Effect, FileSystem, Option, Path, Result, Schema, Stream } from "effect
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { checkoutBunCommand } from "../tests/scratch-child.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 import {
   answerOf,
   behaviourOf,
@@ -269,5 +270,6 @@ describe("the dry run", () => {
       expect(Number(refused.code)).toBe(2)
       expect(refused.said).toContain("REFUSED")
     })),
+    hangGuard("local-fixture"),
   )
 })

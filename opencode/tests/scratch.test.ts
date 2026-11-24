@@ -8,9 +8,8 @@ import { readScratchDirectorySync as readdirSync, scratchExistsSync } from "./re
 import { basename, join } from "node:path"
 import { ownedCheckoutTests, ownedTempFixture, released } from "./owned.ts"
 import { scratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
-/** How long the suites get together, well past their usual 20 seconds. */
-const SUITES_MS = 240_000
 
 /**
  * How long each of the suites' tests may take in the child run. Without `--timeout` Bun gives a test
@@ -102,7 +101,7 @@ describe("a scratch directory", () => {
       expectPassed(code, stderr, 21)
       expect(readdirSync(tmp.path)).toEqual(before)
     },
-    SUITES_MS,
+    hangGuard("generated-schedule"),
   )
 })
 
@@ -118,8 +117,6 @@ const runCases = async (tmp: string, filter?: string) => {
   return { code: await child.exited, output, left: readdirSync(tmp) }
 }
 
-/** How long a child run of the cases gets: they hang for 50 ms at most. */
-const CASES_MS = 60_000
 
 /** The cases that fail, by the full names Bun reports: a test, a setup, a timeout or a late setup each. */
 const FAILING_CASES = [
@@ -132,8 +129,6 @@ const FAILING_CASES = [
   "closing-after-late-setup > setup",
 ]
 
-/** How long an owned child's run and cleanup may take: nothing it started is left to stop. */
-const RELEASE_MS = 20_000
 
 describe("an owned child's TMPDIR", () => {
   test(
@@ -146,7 +141,7 @@ describe("an owned child's TMPDIR", () => {
       await released(child.pid)
       expect({ code, own: basename(temp).startsWith("child-"), made, gone: !scratchExistsSync(temp) }).toEqual({ code: 0, own: true, made: true, gone: true })
     },
-    RELEASE_MS,
+    hangGuard("local-pair"),
   )
 
   test(
@@ -158,7 +153,7 @@ describe("an owned child's TMPDIR", () => {
       const code = await child.exited
       expect({ code, temp, made: existsSync(join(chosen.path, "opencode")) }).toEqual({ code: 0, temp: chosen.path, made: true })
     },
-    RELEASE_MS,
+    hangGuard("local-pair"),
   )
 })
 
@@ -171,7 +166,7 @@ describe("an e2e suite's directory", () => {
       const failed = FAILING_CASES.filter((name) => output.includes(`(fail) ${name}`))
       expect({ code, failed, left, namedKept: /kept: |kept the failed/.test(output) }).toEqual({ code: 1, failed: FAILING_CASES, left: [], namedKept: false })
     },
-    CASES_MS,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -184,7 +179,7 @@ describe("an e2e suite's directory", () => {
       expect(check).toThrow(/tests\/scratch-cases\.ts > timing-out > hangs \| \^ this test timed out after 50ms/)
       expect(check).toThrow(/tests\/scratch-cases\.ts > \(between tests\) \| ENOENT: no such file or directory/)
     },
-    CASES_MS,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -194,7 +189,7 @@ describe("an e2e suite's directory", () => {
       const { code, output, left } = await runCases(tmp.path, "^passing first$")
       expect({ code, passed: output.match(/(\d+) pass/)?.[1], left }).toEqual({ code: 0, passed: "1", left: [] })
     },
-    CASES_MS,
+    hangGuard("process-fixture"),
   )
 
   test.skipIf(!process.env.OPENCODE_DEV)(
@@ -210,6 +205,6 @@ describe("an e2e suite's directory", () => {
       await child.exited
       expect({ collected: /skipping [1-9]\d* tests/.test(output), left: readdirSync(tmp.path) }).toEqual({ collected: true, left: [] })
     },
-    CASES_MS,
+    hangGuard("process-fixture"),
   )
 })

@@ -35,6 +35,7 @@ import { spentAccount, startFakeChatGPT } from "../../tests/fake-chatgpt.ts"
 import { waitUntil } from "../../tests/wait.ts"
 import Pool, { CACHE_TTL_HEADER, CREDENTIAL_HEADER, liveWith, make } from "./server.ts"
 import * as PeersLive from "@dotfiles/opencode-pool/ssh/peers"
+import { stamp } from "../../tests/hang-guard.ts"
 
 /** The live adapters of one process: each start is a process of its own, its shared storage read anew. */
 const live = () => liveWith(PeersLive.layer)
@@ -512,10 +513,10 @@ describe("the hooks", () => {
         const plugin = yield* start(undefined, state)
         expect(yield* plugin.request()).toBe("cred-a")
         state.readings.set("cred-a", {
-          at: Date.now(),
+          at: stamp(),
           status: "rejected",
-          windows: [{ name: "5h", utilization: 1, resetAt: Date.now() + 2 * HOUR }],
-          refusal: { kind: "usage-limit", until: Date.now() + 2 * HOUR },
+          windows: [{ name: "5h", utilization: 1, resetAt: stamp() + 2 * HOUR }],
+          refusal: { kind: "usage-limit", until: stamp() + 2 * HOUR },
         })
         yield* plugin.respond(429)
         expect(state.storage.has("anthropic/hold/cred-a")).toBe(true)
@@ -554,12 +555,12 @@ describe("the hooks", () => {
         const state = world()
         const plugin = yield* start(undefined, state)
         yield* plugin.request()
-        state.readings.set("cred-a", { at: Date.now(), windows: [], refusal: { kind: "signin", until: Date.now() + 30 * 60_000 } })
+        state.readings.set("cred-a", { at: stamp(), windows: [], refusal: { kind: "signin", until: stamp() + 30 * 60_000 } })
         expect(yield* plugin.retry()).toEqual({ retry: true, delay: 0 })
         expect(state.integration.marks).toEqual([{ pool: ANTHROPIC, credentialID: "cred-a", needed: true }])
         expect(yield* plugin.request()).toBe("cred-b")
         // A reading that no longer asks for a sign-in clears the mark, once.
-        state.readings.set("cred-a", { at: Date.now(), windows: [] })
+        state.readings.set("cred-a", { at: stamp(), windows: [] })
         yield* plugin.pace("anthropic")
         yield* plugin.pace("anthropic")
         expect(state.integration.marks).toEqual([
@@ -587,7 +588,7 @@ describe("the hooks", () => {
         yield* plugin.request("ses_0")
         yield* plugin.publish({
           credentialID: "cred-a",
-          reading: { at: Date.now(), windows: [], refusal: { kind: "rate-limit", until: Date.now() + 60_000 } },
+          reading: { at: stamp(), windows: [], refusal: { kind: "rate-limit", until: stamp() + 60_000 } },
         })
         expect(yield* plugin.request("ses_new")).toBe("cred-b")
       }),
@@ -1037,7 +1038,7 @@ describe("the RPC", () => {
       Effect.gen(function* () {
         const state = world()
         const plugin = yield* start(undefined, state)
-        const at = Date.now()
+        const at = stamp()
         for (const id of ["cred-a", "cred-b"])
           state.readings.set(id, { at, windows: [{ name: "7d", utilization: 0.8, resetAt: at + 3.5 * 86400000 }] })
         expect(yield* plugin.pace("openai")).toMatchObject({ ok: true, measured: false })
@@ -1054,7 +1055,7 @@ describe("the RPC", () => {
         const state = world()
         const plugin = yield* start(undefined, state)
         yield* plugin.request()
-        state.readings.set("cred-a", { at: Date.now(), windows: [], refusal: { kind: "rate-limit", until: Date.now() + 60_000 } })
+        state.readings.set("cred-a", { at: stamp(), windows: [], refusal: { kind: "rate-limit", until: stamp() + 60_000 } })
         yield* plugin.respond(429)
         const status = yield* plugin.status
         expect(status.anthropic?.accounts.map((account) => [account.credentialID, account.hold?.kind])).toEqual([
@@ -1078,7 +1079,7 @@ describe("the RPC", () => {
           account: { pool: "anthropic", credentialID: "cred-b", label: "Anthropic 2", on: "next" },
         })
         expect(yield* plugin.request("ses_1")).toBe("cred-b")
-        const at = Date.now()
+        const at = stamp()
         yield* plugin.publish({ credentialID: "cred-b", reading: { at, windows: [{ name: "7d", utilization: 0.41, resetAt: at + HOUR }] } })
         const placed: SessionAnswer = {
           account: {
@@ -1145,7 +1146,7 @@ describe("on the live adapters", () => {
         expect(yield* plugin.request("ses_2")).toBe("cred-b")
         // The integration's label names the login a session is on.
         expect((yield* plugin.session({ sessionID: "ses_2", providerID: "anthropic" })).account?.label).toBe("Anthropic 2")
-        state.readings.set("cred-a", { at: Date.now(), windows: [], refusal: { kind: "signin", until: Date.now() + 30 * 60_000 } })
+        state.readings.set("cred-a", { at: stamp(), windows: [], refusal: { kind: "signin", until: stamp() + 30 * 60_000 } })
         yield* plugin.respond(401)
         expect(state.storage.has("anthropic/hold/cred-a")).toBe(true)
         expect(new Set(plugin.quotaIDs)).toEqual(new Set(["credential-quota.anthropic"]))
@@ -1155,7 +1156,7 @@ describe("on the live adapters", () => {
         // A reading published over the quota RPC holds a login too.
         yield* plugin.publish({
           credentialID: "cred-b",
-          reading: { at: Date.now(), windows: [], refusal: { kind: "rate-limit", until: Date.now() + 60_000 } },
+          reading: { at: stamp(), windows: [], refusal: { kind: "rate-limit", until: stamp() + 60_000 } },
         })
         expect(state.storage.has("anthropic/hold/cred-b")).toBe(true)
         expect(Object.keys(plugin.rpc)).toEqual(["dotfiles-opencode.pool"])
@@ -1219,7 +1220,7 @@ describe("the alerts RPC", () => {
     const login = { access: "fake-access-alerts", refresh: "fake-refresh-alerts" }
     writeFileSync(
       join(dir, ".slots/anthropic/work"),
-      JSON.stringify({ _tag: "Oauth", type: "oauth", ...login, expires: Date.now() - 1000, accountId: null, metadata: { owner: "store" } }),
+      JSON.stringify({ _tag: "Oauth", type: "oauth", ...login, expires: stamp() - 1000, accountId: null, metadata: { owner: "store" } }),
       { mode: 0o600 },
     )
     // A second source over the directory shares the plugin's state for it, as every copy in the process does.
@@ -1307,7 +1308,7 @@ describe("the fleet", () => {
     scenario(
       Effect.gen(function* () {
         const state = world()
-        const now = Date.now()
+        const now = stamp()
         state.readings.set("cred-b", week(0.45, now - 1_000))
         state.peers.set("workbox", {
           host: "bite-cristian",
@@ -1352,7 +1353,7 @@ describe("the fleet", () => {
     scenario(
       Effect.gen(function* () {
         const state = world()
-        const now = Date.now()
+        const now = stamp()
         state.readings.set("cred-a", week(0.5, now))
         state.readings.set("cred-b", week(0.5, now))
         const plugin = yield* start({ sweepMinutes: 0, fleet: { host: "mac", startCost: 0.1 } }, state)
@@ -1393,7 +1394,7 @@ describe("the fleet", () => {
     scenario(
       Effect.gen(function* () {
         const state = world()
-        const now = Date.now()
+        const now = stamp()
         state.readings.set("cred-a", week(0.5, now))
         state.readings.set("cred-b", week(0.5, now))
         // Each read of a peer looks its answer up once.
@@ -1433,7 +1434,7 @@ describe("a paced provider on the live adapters", () => {
   const DAY = 86_400_000
 
   test("OpenAI's pace reads the ChatGPT account's usage, then what its responses and frames show, and its requests are never placed", () => {
-    const resetAt = Math.round((Date.now() + 3.5 * DAY) / 1000)
+    const resetAt = Math.round((stamp() + 3.5 * DAY) / 1000)
     const seen: Array<string | null> = []
     const server = Bun.serve({
       port: 0,
@@ -1457,7 +1458,7 @@ describe("a paced provider on the live adapters", () => {
           methodID: "browser",
           access: "chatgpt-access",
           refresh: "chatgpt-refresh",
-          expires: Date.now() + DAY,
+          expires: stamp() + DAY,
           metadata: { accountID: "acct-1" },
         })
         state.active.set("openai", "chatgpt-1")
@@ -1530,7 +1531,7 @@ describe("resets on the live adapters", () => {
   test("every Codex account spent, a start held and work running: the pool consumes one credit, once, on the ChatGPT backend, and only tells the owner", async () => {
     const reply = Promise.withResolvers<void>()
     const fake = startFakeChatGPT({ beforeConsumeResponse: () => reply.promise })
-    const now = Date.now()
+    const now = stamp()
     // The credit ends before the week resets: not one to keep in hand.
     fake.accounts.set("acct-1", spentAccount("access-1", "credit-1", now, 40, 2 * DAY))
     try {
@@ -1577,7 +1578,7 @@ describe("resets on the live adapters", () => {
   test("a Claude login with work running: the grant is claimed on its own, and the owner told after in the waiting subagent's root session", () =>
     scenario(
       Effect.gen(function* () {
-        const now = Date.now()
+        const now = stamp()
         const state = world()
         state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]!])
         state.readings.set("cred-a", spentClaude(now))
@@ -1602,7 +1603,7 @@ describe("resets on the live adapters", () => {
   test("a held start with nothing else running still counts: its only account spent, the grant is claimed for the forecast, and nothing asked", () =>
     scenario(
       Effect.gen(function* () {
-        const now = Date.now()
+        const now = stamp()
         const state = world()
         state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]!])
         state.readings.set("cred-a", spentClaude(now))
@@ -1618,7 +1619,7 @@ describe("resets on the live adapters", () => {
   test("a Claude reset about to expire unused is claimed with no one asked, and the owner is told after in the waiting session's root", () =>
     scenario(
       Effect.gen(function* () {
-        const now = Date.now()
+        const now = stamp()
         const state = world()
         state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]!])
         // Fable's own week spent, resetting in five days; its reset ends in two hours: lost unless claimed now.
@@ -1659,7 +1660,7 @@ describe("resets on the live adapters", () => {
   test("resets: { auto: false } claims nothing on its own, and asks nothing: the reset about to expire is left, and so is the held work's", () =>
     scenario(
       Effect.gen(function* () {
-        const now = Date.now()
+        const now = stamp()
         const state = world()
         state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]!])
         // As above: Fable's week spent, its reset ends in two hours; with auto on it is claimed at once.
@@ -1699,7 +1700,7 @@ describe("resets on the live adapters", () => {
       Effect.gen(function* () {
         const state = world()
         state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]!])
-        state.readings.set("cred-a", spentClaude(Date.now()))
+        state.readings.set("cred-a", spentClaude(stamp()))
         const plugin = yield* start({ sweepMinutes: 0, resets: false }, state, live())
         expect(yield* plugin.pace("anthropic", "ses_root")).toMatchObject({ ok: false })
         yield* settle
@@ -1715,7 +1716,7 @@ describe("the lease RPC", () => {
       Effect.gen(function* () {
         const plugin = yield* start()
         const lease = plugin.rpc["dotfiles-opencode.pool"]!.lease!
-        const now = Date.now()
+        const now = stamp()
         const grants = [`grant-rpc-${now}`]
         const ask = (host: string, id: string) => ({ _tag: "Ask", host, id, provider: "claude", grants, readAt: now, requestedAt: now, holdMs: 60_000 })
         expect(yield* lease({ _tag: "Ask", host: "mac" })).toEqual({ granted: false, reason: "not a lease message" })

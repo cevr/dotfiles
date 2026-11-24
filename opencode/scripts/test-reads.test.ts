@@ -1,5 +1,6 @@
 import { file as bunFile } from "bun"
 import { expect, test } from "bun:test"
+import { hangGuard } from "../tests/hang-guard.ts"
 import { matchingInput } from "../tests/read-path.ts"
 import { spawnScratchGitSync, spawnScratchShell } from "../tests/scratch-child.ts"
 import { scratch } from "../tests/scratch.ts"
@@ -94,7 +95,7 @@ test("scratch Git refuses a checkout operand before spawning", () => {
     .toThrow("checkout path in argv")
   expect(() => spawnScratchShell(fixture.path, `cat '${matchingInput("scripts/test-reads.ts")}'`))
     .toThrow("checkout path in generated shell script")
-})
+}, hangGuard("unit-law"))
 
 test("a resolver with finite local operands anchors every candidate", () => {
   const source = `const name = choose() ? "./static.ts" : "./alternate.ts"

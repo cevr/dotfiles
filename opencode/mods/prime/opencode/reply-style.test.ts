@@ -7,6 +7,7 @@ import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { replyStylesLaws } from "../memory/reply-style.laws.ts"
 import { ReplyStyles } from "../reply-style.ts"
 import * as OpenCodeReplyStyles from "./reply-style.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 const toJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
 const fromJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))
@@ -38,7 +39,7 @@ describe("the storage entry", () => {
         }),
       )
     }),
-    5_000,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -54,6 +55,6 @@ describe("the storage entry", () => {
       )
       expect(entries.get("reply-style:ses_a")).toBe('{"text":"S"}')
     }),
-    5_000,
+    hangGuard("local-fixture"),
   )
 })

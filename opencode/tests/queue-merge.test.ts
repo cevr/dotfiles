@@ -13,14 +13,13 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/queue-merge.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
 
 const ASK = "Rename the helper."
 const QUEUED = ["Also update the docs.", "Then run the tests.", "Then tag it."]
-/** How long one case gets: OpenCode's start and a few seconds of keys, well past its usual 20 seconds. */
-const SCENARIO_MS = 150_000
 
 /** The composer's rows: the last run of rail rows above the dock's rule. */
 const composer = (frame: string) => {
@@ -68,7 +67,7 @@ describe.skipIf(!fork)("waiting prompts act as one (OPENCODE_DEV)", () => {
       expect(shown.after).toContain(rows(QUEUED).join("\n"))
       expect(shown.after).not.toContain("◌")
     }),
-    SCENARIO_MS,
+    hangGuard("fork-turn"),
   )
 
   test(
@@ -82,7 +81,7 @@ describe.skipIf(!fork)("waiting prompts act as one (OPENCODE_DEV)", () => {
       // The turn they waited behind ran on and ended; no request carried a queued prompt.
       expect(shown.requests).toEqual([])
     }),
-    SCENARIO_MS,
+    hangGuard("fork-turn"),
   )
 
   test(
@@ -94,7 +93,7 @@ describe.skipIf(!fork)("waiting prompts act as one (OPENCODE_DEV)", () => {
       expect(shown.after).toContain("■ Interrupted")
       expect(shown.requests).toEqual([])
     }),
-    SCENARIO_MS,
+    hangGuard("fork-turn"),
   )
 
   test(
@@ -104,6 +103,6 @@ describe.skipIf(!fork)("waiting prompts act as one (OPENCODE_DEV)", () => {
       expect(composer(shown.before)).toEqual([" ┃"])
       expect(composer(shown.after)).toEqual(rows([ASK]))
     }),
-    SCENARIO_MS,
+    hangGuard("fork-turn"),
   )
 })

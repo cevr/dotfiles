@@ -6,7 +6,7 @@ import { Database } from "bun:sqlite"
 import { expect } from "bun:test"
 import { Effect, Layer, Option, Result } from "effect"
 import { hostServices } from "../../../sim/host-services.ts"
-import * as Seed from "../../../sim/seed.ts"
+import { simulationTest } from "../../../sim/seed.ts"
 import { scratch } from "../../../tests/scratch.ts"
 import { RECORD_SCRIPT } from "../laws.ts"
 import { platform } from "../node/platform.ts"
@@ -39,7 +39,7 @@ const versionedWord = (db: Database, version: number) =>
 const format = (db: Database) => db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version
 const setFormat = (db: Database, version: number) => db.run(`PRAGMA user_version = ${version}`)
 
-Seed.effect("old INSERTs cannot enter the migrated event log, regardless of when their connection opened", Effect.gen(function* () {
+simulationTest("old INSERTs cannot enter the migrated event log, regardless of when their connection opened", Effect.gen(function* () {
   using dir = scratch("record-release-fence-")
   for (const order of ["old/migrate/new", "migrate/old/new", "migrate/new/old"]) {
     const path = `${dir.path}/${order.replaceAll("/", "-")}.db`
@@ -75,7 +75,7 @@ Seed.effect("old INSERTs cannot enter the migrated event log, regardless of when
   }
 }).pipe(Effect.provide(services)))
 
-Seed.effect("every writing command reads the file version inside its transaction, across both open orders", Effect.gen(function* () {
+simulationTest("every writing command reads the file version inside its transaction, across both open orders", Effect.gen(function* () {
   using dir = scratch("record-future-fence-")
   expect<ReadonlyArray<string>>([...new Set(RECORD_SCRIPT.map(([command]) => command._tag))].sort()).toEqual(Object.keys(Command.cases).sort())
   for (const order of ["older first", "newer first"]) {

@@ -19,6 +19,7 @@ import { Page, Picture, type Spooled } from "@dotfiles/opencode-rex/spool"
 import { ConfigProvider, Effect, Exit, Fiber, Layer, Option, Queue, Ref, Schema } from "effect"
 import { effectTest } from "../../sim-tui/effect-test.ts"
 import { parse, Refused, Request, run, type Screen, viewer } from "./show.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 
 const screen: Screen = { size: Effect.succeed({ cols: 80, rows: 24 }), cell: () => Effect.succeed({ width: 12, height: 38 }), display: () => Effect.void, input: Effect.succeed(Effect.never) }
 const settings = { rex: Option.some("rex"), leaf: Option.none<string>(), spool: "/state/rex-show", self: ["/opt/bun", "/dotfiles/rex/show.ts"] }
@@ -41,7 +42,7 @@ describe("the arguments rex-show takes", () => {
         expect({ bad, code: refusalOf(yield* Effect.exit(parse(bad))) }).toEqual({ bad, code: Option.some(2) })
       }
     }),
-    5_000,
+    hangGuard("local-fixture"),
   )
 })
 
@@ -65,7 +66,7 @@ describe("a run from a caller's pane", () => {
       expect((yield* Ref.get(spools)).get("session:a")).toMatchObject({ tally: { msg: "2 of 5 done", progress: 40, state: "working" } })
       yield* closeShowcases
     }).pipe(Effect.provide(Layer.mergeAll(systems, env(inPane)))),
-    5_000,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -74,7 +75,7 @@ describe("a run from a caller's pane", () => {
       const block = yield* run(yield* parse(["tally", "x"]), screen, settings)
       expect(yield* showcases).toEqual([[block, ["/bin/rex-show", "view", "--session", "session:a", "--spool", "/state/rex-show"]]])
     }).pipe(Effect.provide(Layer.mergeAll(systems, env({ ...inPane, REX_SHOW_BIN: "/bin/rex-show" })))),
-    5_000,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -85,7 +86,7 @@ describe("a run from a caller's pane", () => {
       expect(refusalOf(exit)).toEqual(Option.some(2))
       expect(yield* Ref.get(rex)).toEqual(before)
     }).pipe(Effect.provide(Layer.mergeAll(systems, env({ REX_SESSION: "session:a" })))),
-    5_000,
+    hangGuard("local-fixture"),
   )
 })
 
@@ -129,7 +130,7 @@ effectTest(
       }),
     (dir) => Effect.sync(() => rmSync(dir, { recursive: true, force: true })),
   ).pipe(Effect.provide(Layer.mergeAll(MemorySpool.layer(viewed), MemoryBrowser.layer(Ref.makeUnsafe<MemoryBrowser.Pages>(new Map())), MemorySideshow.layer(Ref.makeUnsafe(MemorySideshow.empty)), MemorySimulators.layer(Ref.makeUnsafe(MemorySimulators.empty)), MemoryDiagrams.layer, MemoryOpener.layer(Ref.makeUnsafe<ReadonlyArray<string>>([]))))),
-  10_000,
+  hangGuard("in-memory"),
 )
 
 effectTest(
@@ -142,5 +143,5 @@ effectTest(
     )
     expect({ code, out, err: err.includes("not in a Rex pane") }).toEqual({ code: 2, out: "", err: true })
   }),
-  10_000,
+  hangGuard("in-memory"),
 )

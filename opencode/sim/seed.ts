@@ -54,6 +54,7 @@
 import { expect as bunExpect, test } from "bun:test"
 import { availableParallelism, loadavg } from "node:os"
 import { Cause, Clock, Config, Console, Data, Effect, Exit, Fiber, Option } from "effect"
+import { simulationBudget, simulationRunnerCapOf } from "./budget.ts"
 import found from "./seeds.json"
 import { wallTime } from "./wall-clock.ts"
 
@@ -65,8 +66,6 @@ export const BUDGET_MS = 5_000
  * loaded host (the gate's, at a load past the cores) stretches the wall time many times over.
  */
 export const TIMEOUT_MS = 240_000
-/** How far past the runner's timeout bun's own sits, so the runner's stops the seeds first. */
-export const TIMEOUT_GRACE_MS = 5_000
 /** The prefix of the line each test prints under `SIM_EXPECTS`. */
 export const EXPECTS = "sim-expects"
 /** The prefix of the line a swarm prints after each seed that passed. */
@@ -179,8 +178,8 @@ const outcome = <A, E>(label: string, timeoutMs: number, exit: Exit.Exit<A, E>):
   )
 
 /** A bun test whose body is an Effect: the simulated suites' Effect test integration, within `TIMEOUT_MS`. */
-export const effect = <A, E>(name: string, body: Effect.Effect<A, E>, timeoutMs = TIMEOUT_MS) =>
-  test(name, () => bounded(name, timeoutMs, Effect.asVoid(body)), timeoutMs + TIMEOUT_GRACE_MS)
+export const simulationTest = <A, E>(name: string, body: Effect.Effect<A, E>, budget = simulationBudget(TIMEOUT_MS)) =>
+  test(name, () => bounded(name, budget, Effect.asVoid(body)), simulationRunnerCapOf(budget))
 
 /** The `expect` a body gets: bun's, each call counted. */
 const counting = (count: { calls: number }): typeof bunExpect =>
@@ -221,13 +220,14 @@ export const once = <E>(
   body: (run: Seeded) => Effect.Effect<void, E>,
   budgetMs = BUDGET_MS,
   host: Effect.Effect<HostLoad> = hostLoad,
+  cpu: Effect.Effect<number> = cpuMs,
 ) =>
   Effect.gen(function* () {
     const count = { calls: 0 }
     const began = yield* Clock.currentTimeMillis
-    const cpuBegan = yield* cpuMs
+    const cpuBegan = yield* cpu
     const exit = yield* Effect.exit(body({ seed, expect: counting(count) }))
-    spent.cpu += (yield* cpuMs) - cpuBegan
+    spent.cpu += (yield* cpu) - cpuBegan
     spent.wall += (yield* Clock.currentTimeMillis) - began
     spent.seeds = (spent.seeds ?? 0) + 1
     if (Exit.isFailure(exit))
@@ -246,7 +246,7 @@ export const once = <E>(
  * `body` on every seed, within the file's budget. `past` holds the seeds past 1 to `SEEDS` that once failed the file
  * (a wider sweep found them): every run replays them too.
  */
-export const runner = (file: string, options: { readonly past?: ReadonlyArray<number>; readonly timeoutMs?: number } = {}) => {
+export const simulationRunner = (file: string, options: { readonly past?: ReadonlyArray<number>; readonly budget?: ReturnType<typeof simulationBudget> } = {}) => {
   const spent: Spent = { cpu: 0, wall: 0 }
   const runSeeds = seedsOf([...(options.past ?? []), ...(FOUND[file] ?? [])])
   const swarm = Effect.runSync(swarmOf)
@@ -254,7 +254,7 @@ export const runner = (file: string, options: { readonly past?: ReadonlyArray<nu
   const registered = { tests: 0 }
   const share = (each: Swarm) => Math.max(1, Math.floor(each.boxMs / Math.max(1, registered.tests)))
   // A swarm's test runs for its share, then past it by the runner's own timeout, as any test past its seeds would.
-  const timeoutMs = (options.timeoutMs ?? TIMEOUT_MS) + Option.match(swarm, { onNone: () => 0, onSome: (each) => each.boxMs })
+  const budget = simulationBudget((options.budget ?? TIMEOUT_MS) + Option.match(swarm, { onNone: () => 0, onSome: (each) => each.boxMs }))
 
   const seeded = <E>(name: string, body: (run: Seeded) => Effect.Effect<void, E>) => {
     registered.tests += 1
@@ -263,7 +263,7 @@ export const runner = (file: string, options: { readonly past?: ReadonlyArray<nu
       () =>
         bounded(
           `${file}: ${name}`,
-          timeoutMs,
+          budget,
           Option.match(swarm, {
             onSome: (each) => swarmed(file, spent, name, each.first, share(each), body),
             onNone: () =>
@@ -276,7 +276,7 @@ export const runner = (file: string, options: { readonly past?: ReadonlyArray<nu
               }),
           }),
         ),
-      timeoutMs + TIMEOUT_GRACE_MS,
+      simulationRunnerCapOf(budget),
     )
   }
   return { seeded }

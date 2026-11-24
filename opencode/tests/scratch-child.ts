@@ -582,6 +582,20 @@ const checkScript = (file: string) => {
   return at
 }
 
+/** A generated Bun program in fresh fixture state, not a checkout entry. */
+export const spawnScratchBunSync = (cwd: string, file: string) => {
+  const directory = scratchInput(cwd)
+  return spawnSync([localTestProcess.execPath, "--no-env-file", checkScript(file)], {
+    cwd: directory,
+    env: {
+      PATH: searchPath(), HOME: directory, TMPDIR: directory,
+      XDG_CONFIG_HOME: directory, XDG_CACHE_HOME: directory, XDG_DATA_HOME: directory, XDG_STATE_HOME: directory,
+      [marker]: "bun-script",
+    },
+    stdin: "ignore", stdout: "pipe", stderr: "pipe",
+  })
+}
+
 const toolDirectories = (tools: ProgramInputs["tools"]): ReadonlyArray<string> => {
   if (Predicate.isString(tools)) return [tools]
   return tools
@@ -662,9 +676,11 @@ export const fixtureHostIdentity = (cwd: string, source: string) => {
   return value
 }
 
-export const spawnScratchShellFile = (script: string, args: ReadonlyArray<string>, input: ProgramInputs) => {
+export const spawnScratchShellFile = <const In extends "ignore" | "pipe" = "ignore">(
+  script: string, args: ReadonlyArray<string>, input: ProgramInputs, stdin?: In,
+) => {
   const { argv, ...options } = scratchProgram("sh", script, args, input)
-  return spawn(argv, { ...options, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+  return spawn(argv, { ...options, stdin, stdout: "pipe", stderr: "pipe" })
 }
 
 /** Reviewable native tools used only on scratch fixtures. */
@@ -710,10 +726,7 @@ export const scratchPtyEnv = (cwd: string) => {
 /** A shell fixture whose test manages descendants itself. */
 export const spawnScratchShell = (cwd: string, program: string) => {
   const { script, ...options } = scratchShell(cwd, program)
-  const child = localTestProcess.spawn("/bin/sh", [script], { ...options, stdio: "ignore" })
-  const pid = Option.getOrThrowWith(Option.fromUndefinedOr(child.pid), () => new ScratchChildInput({ message: "scratch child: shell did not start" }))
-  const exited = localTestProcess.once(child, "exit")
-  return { pid, exited }
+  return spawn(["/bin/sh", script], { ...options, stdin: "pipe", stdout: "ignore", stderr: "ignore" })
 }
 
 interface ScratchShellInputs {
@@ -724,13 +737,13 @@ interface ScratchShellInputs {
 interface ShellFixtureCommand {
   readonly paths: Readonly<Record<string, string>>
   readonly self?: string
-  readonly process?: Pick<ChildProcess.CommandOptions, "stdin" | "additionalFds">
+  readonly lifecycle?: Pick<ChildProcess.CommandOptions, "stdin" | "additionalFds">
 }
 
 /** A staged self-contained shell entry whose only executable targets are scratch fixture tools. */
 export const checkoutShellFixtureCommand = (
   entry: string, cwd: string, args: ReadonlyArray<string>,
-  { paths, self, process }: ShellFixtureCommand,
+  { paths, self, lifecycle }: ShellFixtureCommand,
 ) => {
   const directory = scratchInput(cwd)
   const source = localTestPaths.readFileSync(matchingInput(entry), "utf8")
@@ -747,7 +760,7 @@ export const checkoutShellFixtureCommand = (
   if (self) put(self, script)
   return ChildProcess.make("/bin/sh", [script, ...args], {
     cwd: directory, env: { ...env, ...Object.fromEntries(values) }, extendEnv: false,
-    forceKillAfter: "2 seconds", stdin: process?.stdin ?? "pipe", additionalFds: process?.additionalFds ?? {},
+    forceKillAfter: "2 seconds", stdin: lifecycle?.stdin ?? "pipe", additionalFds: lifecycle?.additionalFds ?? {},
   })
 }
 

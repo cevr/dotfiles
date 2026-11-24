@@ -10,10 +10,10 @@ import { workriftFolderOf } from "@dotfiles/opencode-orchestrate/tools"
 import * as MemoryRifts from "@dotfiles/opencode-work/memory/rifts"
 import { workspaceName } from "@dotfiles/opencode-work/rift"
 import { Array as Arr, Effect, Option } from "effect"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import { boot, HAND_BACK, RUN_DIR, type Run, requestHeadFor, WORK } from "./orch-tools-world.ts"
 
-const { seeded } = Seed.runner("cmd/orchestrate/lanes.sim.test.ts")
+const { seeded } = simulationRunner("cmd/orchestrate/lanes.sim.test.ts")
 
 const ORCHESTRATE = "orchestrate"
 const READY = "/nonexistent/loop-probe-x/request.md"

@@ -10,9 +10,10 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { Effect, type Scope } from "effect"
 import { backstopLaws } from "../laws.ts"
-import { bounded, type TestBounds, testLimitMs } from "../process/readiness.ts"
+import { bounded, type TestBounds } from "../process/readiness.ts"
 import { Backstop } from "../service.ts"
 import { type Config, crontabTitles, type Exec, exec, layer, plistTitles, relinked, stableScript } from "./backstop.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 /** A scratch directory of the test's own, with an empty LaunchAgents directory, removed when its scope closes. */
 const scratch = Effect.acquireRelease(
@@ -29,7 +30,7 @@ const BOUNDS: TestBounds = { body: "30 seconds", release: "1 second" }
 
 /** The one Bun test of this file that runs an Effect: in a scratch directory of its own, bounded below its Bun limit, so its scope closes first. */
 const scratchTest = <A, E>(name: string, body: (dir: string) => Effect.Effect<A, E, Scope.Scope>) =>
-  test(name, () => Effect.runPromise(bounded(name, Effect.flatMap(scratch, body), BOUNDS)), testLimitMs(BOUNDS))
+  test(name, () => Effect.runPromise(bounded(name, Effect.flatMap(scratch, body), BOUNDS)), hangGuard("wake-short"))
 
 /** A scheduler that does what Bun.cron does, in `agents` (macOS) or in `crontab` (Linux). */
 const scheduler = (platform: "darwin" | "linux", agents: string, crontab: { text: string }, calls: Array<ReadonlyArray<string>>): Exec => (argv) =>

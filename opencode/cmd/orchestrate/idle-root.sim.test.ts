@@ -15,10 +15,10 @@
 import { QUEUE, Snapshot } from "@dotfiles/opencode-queue/queue"
 import { Effect, Option, Schema } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/orchestrate/idle-root.sim.test.ts")
+const { seeded } = simulationRunner("cmd/orchestrate/idle-root.sim.test.ts")
 
 const WORK = "/scratch/project"
 /** A Wednesday afternoon, so the Sabbath never holds a start. */

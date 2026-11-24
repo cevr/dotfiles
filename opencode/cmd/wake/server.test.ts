@@ -22,6 +22,7 @@ import { Armed, Board, Cancelled, Due, Killed, Pending, WAKES } from "@dotfiles/
 import { waitUntil } from "../../tests/wait.ts"
 import { AUTOMATION_IDS } from "@dotfiles/opencode-wake/automations"
 import WakePlugin, { make } from "./server.ts"
+import { stamp } from "../../tests/hang-guard.ts"
 
 type Host = Parameters<(typeof WakePlugin)["effect"]>[0]
 type Handler = (input: unknown) => Effect.Effect<unknown>
@@ -362,7 +363,7 @@ describe("the plugin's events and start", () => {
     scenario(
       Effect.gen(function* () {
         const doubles = { store: MemoryStore.empty(), sessions: MemoryCourier.empty("ses_root"), jobs: MemoryBackstop.empty(), checks: MemoryChecks.empty(), opener: MemoryOpener.empty(), runner: MemoryRunner.empty() }
-        const now = Date.now()
+        const now = stamp()
         doubles.store.entries.set(alarm.id, { ...alarm, sessionID: "ses_root", directory: DIR, setAt: now - 3 * 3600_000, dueAt: now - 2 * 3600_000 })
         const plugin = yield* start(doubles)
         expect(plugin.inbox()[0]?.letter.text).toContain("It fired 2h late: no OpenCode server was running at")
@@ -376,7 +377,7 @@ describe("the plugin's events and start", () => {
       Effect.gen(function* () {
         const plugin = yield* start()
         plugin.doubles.opener.answer = () => ({ outcome: "opened" })
-        const now = Date.now()
+        const now = stamp()
         const ask = { sessionID: "ses_root", subagent: latch.subagent, hold: "pace", reason: latch.reason, opensAt: now + 200, recheckAt: now + 200, context: {} }
         const answer = yield* plugin.latched(ask)
         if (answer.outcome !== "latched") return yield* Effect.die(new Error(answer.reason))
@@ -414,7 +415,7 @@ describe("the job tool", () => {
 
         const job = plugin.doubles.runner.jobs.get(id)
         if (job !== undefined) job.log = "2 pass\n1 fail\n"
-        MemoryRunner.ended(plugin.doubles.runner, id, 1, Date.now())
+        MemoryRunner.ended(plugin.doubles.runner, id, 1, stamp())
         expect(yield* plugin.due(id)).toEqual({ outcome: "fired" })
         const [letter] = plugin.inbox()
         expect(letter?.resume).toBe(true)
@@ -432,7 +433,7 @@ describe("the job tool", () => {
         const plugin = yield* start()
         const idOf = (receipt: string) => /^Job (j[0-9a-z]{6})/.exec(receipt)?.[1] ?? ""
         const waited = idOf(yield* plugin.call("job", { command: "make", note: "n" }))
-        MemoryRunner.ended(plugin.doubles.runner, waited, 0, Date.now())
+        MemoryRunner.ended(plugin.doubles.runner, waited, 0, stamp())
         expect(yield* plugin.call("job", { action: "check", id: waited })).toContain(`Job ${waited} `)
         expect(yield* plugin.call("job", { action: "wait", id: waited, ms: 1000 })).toContain(`Job ${waited} `)
         const killed = idOf(yield* plugin.call("job", { command: "sleep 99", note: "n" }))

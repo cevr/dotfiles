@@ -10,10 +10,10 @@ import { LOST } from "@dotfiles/opencode-orchestrate/lost-now"
 import * as MemoryRifts from "@dotfiles/opencode-work/memory/rifts"
 import { Effect, Fiber, Option } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import { boot, HAND_BACK, RUN_DIR, requestHeadFor, WORK } from "./orch-tools-world.ts"
 
-const { seeded } = Seed.runner("cmd/orchestrate/lost.sim.test.ts")
+const { seeded } = simulationRunner("cmd/orchestrate/lost.sim.test.ts")
 
 const ORCHESTRATE = "orchestrate"
 const READY = "/nonexistent/loop-probe-x/request.md"

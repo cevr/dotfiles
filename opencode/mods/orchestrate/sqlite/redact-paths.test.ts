@@ -6,7 +6,7 @@
 import { Database } from "bun:sqlite"
 import { expect } from "bun:test"
 import { Effect, Layer, Option, Schema } from "effect"
-import * as Seed from "../../../sim/seed.ts"
+import { simulationTest } from "../../../sim/seed.ts"
 import { scratch } from "../../../tests/scratch.ts"
 import * as Tool from "../commitments-tool.ts"
 import { printable } from "../printable.ts"
@@ -104,7 +104,7 @@ const paths = (store: CommitmentRecord["Service"]) =>
     return said
   })
 
-Seed.effect(
+simulationTest(
   "a token in any field any path sets is in no answer, no refusal, no TEXT column and not the section",
   Effect.acquireUseRelease(
     Effect.sync(() => scratch("record-redact-")),

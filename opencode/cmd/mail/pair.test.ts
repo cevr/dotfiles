@@ -20,6 +20,7 @@ import { HEADERS, sign } from "@dotfiles/opencode-mail/pairing"
 import { ROUTES, type Parcel } from "@dotfiles/opencode-mail/peer"
 import { type Net, PairStore, Peers, type Tokens } from "@dotfiles/opencode-mail/service"
 import { pair } from "./pair.ts"
+import { stamp } from "../../tests/hang-guard.ts"
 
 const root = mkdtempSync(join(tmpdir(), "mail-pair-"))
 const scope = Effect.runSync(Scope.make())
@@ -109,9 +110,9 @@ describe("pairing two hosts", async () => {
     const post = (headers: Record<string, string>) =>
       fetch(new URL(ROUTES.list, workbox.url), { method: "POST", headers: { ...headers, "content-type": "application/json" }, body })
     const secret = JSON.parse(readFileSync(mac.file, "utf8")).peers.workbox.secret as string
-    const signed = sign("mac", secret, { method: "POST", path: ROUTES.list, body }, Date.now(), token(16), keyed)
+    const signed = sign("mac", secret, { method: "POST", path: ROUTES.list, body }, stamp(), token(16), keyed)
 
-    const stranger = await post(sign("laptop", "guess", { method: "POST", path: ROUTES.list, body }, Date.now(), token(16), keyed))
+    const stranger = await post(sign("laptop", "guess", { method: "POST", path: ROUTES.list, body }, stamp(), token(16), keyed))
     expect([stranger.status, await stranger.json()]).toEqual([401, { reason: '"laptop" is not paired with this host' }])
     const forged = await post({ ...signed, [HEADERS.signature]: "AAAA" })
     expect([forged.status, await forged.json()]).toEqual([401, { reason: "the signature is not mac's" }])

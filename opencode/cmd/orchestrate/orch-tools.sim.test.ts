@@ -14,7 +14,7 @@ import { RIFT_DESCRIPTION } from "@dotfiles/opencode-work/rift"
 import { Array as Arr, Effect, Option } from "effect"
 import { nearest } from "../../mods/tool-names/near-miss.ts"
 import * as Plugins from "../../sim/plugins.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 import {
   boot,
@@ -32,7 +32,7 @@ import {
   warningOf,
 } from "./orch-tools-world.ts"
 
-const { seeded } = Seed.runner("cmd/orchestrate/orch-tools.sim.test.ts")
+const { seeded } = simulationRunner("cmd/orchestrate/orch-tools.sim.test.ts")
 
 /** What a subagent's land is answered (tools.ts `parentRefusal`): merge and push are the root's. */
 const PARENT_LAND = "orchestrate: land is the root's: a subagent never lanes, lands or verifies."

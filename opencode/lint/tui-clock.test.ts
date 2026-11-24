@@ -12,10 +12,9 @@ import { describe, expect } from "bun:test"
 import { Effect, FileSystem, Path, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { platformTest } from "../sim-tui/effect-test.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 const CODE = "dotfiles(tui-clock-only)"
-/** One oxlint run over a few files. */
-const TIMEOUT_MS = 60_000
 
 /** Each planted file, by its path under the tree, and how many diagnostics it must get. */
 const FILES: ReadonlyArray<readonly [string, string, number]> = [
@@ -85,6 +84,6 @@ describe("tui-clock-only", () => {
       }
       expect(FILES.map(([file]) => [file, found.get(file) ?? 0])).toEqual(FILES.map(([file, , errors]) => [file, errors]))
     }),
-    TIMEOUT_MS,
+    hangGuard("process-fixture"),
   )
 })

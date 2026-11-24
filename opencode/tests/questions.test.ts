@@ -9,6 +9,7 @@ import { describe, expect, test } from "bun:test"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const RECEIPT = [
   "Asked in the background; nobody has answered yet:",
@@ -166,5 +167,5 @@ describe.skipIf(!fork)("background questions", () => {
       )
       if (via === "kernel") expect(tools).not.toContain("ask_user_async")
       else expect(tools.filter((name) => name === "ask_user_async")).toHaveLength(3)
-    }), 150_000)
+    }), hangGuard("fork-turn"))
 })

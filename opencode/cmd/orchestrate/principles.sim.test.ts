@@ -6,10 +6,10 @@
 import { file, fileURLToPath, Glob } from "bun"
 import { Array as Arr, Effect, Option, Order } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/orchestrate/principles.sim.test.ts")
+const { seeded } = simulationRunner("cmd/orchestrate/principles.sim.test.ts")
 
 const WORK = "/scratch/project"
 /** A Wednesday afternoon: no Sabbath rest refuses the calls. */

@@ -11,6 +11,7 @@ import { describe, expect, test } from "bun:test"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 /** The frame's lines, trimmed, without the form's left border or its scrollbar's column. */
 const lines = (frame: string): ReadonlyArray<string> =>
@@ -55,5 +56,5 @@ describe.skipIf(!fork)("a question taller than a phone's pane", () => {
 
       // ↓ and Enter picked the second option, and the model read it.
       expect(lines(read("done"))).toContain("Root read Drop it")
-    }), 300_000)
+    }), hangGuard("acceptance"))
 })

@@ -7,6 +7,7 @@ import { join } from "node:path"
 import { readScratchFileSync as readFileSync, scratchExistsSync } from "../tests/read-path.ts"
 import { cloneScratchGit, initScratchGit, scratchBunJUnitSync, spawnScratchGitSync } from "../tests/scratch-child.ts"
 import { acceptance, awaitCalm, CALM_WAIT_MS, failedFiles, type Host, type TestRun, upstreamReadingFrom } from "./upstream.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 /** A host whose load follows `loads`, one reading per check, on a clock that sleeping advances. */
 const fakeHost = (loads: ReadonlyArray<number>) => {
@@ -106,7 +107,7 @@ describe("the failed files", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
-  })
+  }, hangGuard("short-fixture"))
 })
 
 describe("the upstream reading", () => {
@@ -145,7 +146,7 @@ describe("the upstream reading", () => {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
-  })
+  }, hangGuard("local-fixture"))
 
   test("the merge is blocked while its report is there", () => {
     const { root, fork, report } = repos(2)
@@ -155,7 +156,7 @@ describe("the upstream reading", () => {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
-  })
+  }, hangGuard("local-fixture"))
 
   test("a host that fetched nothing fetches upstream first, so its count is current", () => {
     const { root, fork, report } = repos(4, true)
@@ -165,7 +166,7 @@ describe("the upstream reading", () => {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
-  })
+  }, hangGuard("local-fixture"))
 
   test("a fork with no upstream/dev has no reading", () => {
     const { root, fork, report } = repos(1)
@@ -175,5 +176,5 @@ describe("the upstream reading", () => {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
-  })
+  }, hangGuard("local-fixture"))
 })

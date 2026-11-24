@@ -17,6 +17,7 @@ import { NOTE, type Seen } from "./compaction-prefix/sim.ts"
 import { ownedCheckoutBun } from "./owned.ts"
 import { readScratchFileSync as readFileSync, scratchExistsSync as existsSync } from "./read-path.ts"
 import { scratch as scratchDir } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/compaction-prefix.test.ts: the OpenCode run skips. Set OPENCODE_DEV to the fork.")
@@ -102,6 +103,6 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(systemOf(before).indexOf("<reply_style>")).toBeLessThan(systemOf(before).indexOf(NOTE))
       expect(firstDifference(before!, summary!)).toBeUndefined()
     },
-    120_000,
+    hangGuard("installer"),
   )
 })

@@ -24,10 +24,10 @@ import {
   storeProcess,
 } from "@dotfiles/opencode-pool/store/store"
 import * as Provider from "../../sim/provider.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/pool/pool-store.sim.test.ts")
+const { seeded } = simulationRunner("cmd/pool/pool-store.sim.test.ts")
 
 const HOUR = 3_600_000
 const STORE = "/scratch/store"
@@ -100,11 +100,11 @@ const bench = (
     // The world's clock and logger, as the plugin's context carries the host's.
     const context = yield* world.runtime.run(Effect.context<never>())
     /** A source over the store at `dir`, in `process` (this test's, or another process's). */
-    const sourceIn = (process: StoreProcess, dir = STORE) =>
-      new StoreSource({ dir, tokenURL: TOKEN_URL, fetch: (url, init) => provider.fetch(url, init), files: slots.files, process, context })
+    const sourceIn = (storeHost: StoreProcess, dir = STORE) =>
+      new StoreSource({ dir, tokenURL: TOKEN_URL, fetch: (url, init) => provider.fetch(url, init), files: slots.files, process: storeHost, context })
     /** The same, polling the store's lock `lockPolls` times only. */
-    const pollingIn = (process: StoreProcess, lockPolls: number) =>
-      new StoreSource({ dir: STORE, tokenURL: TOKEN_URL, fetch: (url, init) => provider.fetch(url, init), files: slots.files, process, context, lockPolls })
+    const pollingIn = (storeHost: StoreProcess, lockPolls: number) =>
+      new StoreSource({ dir: STORE, tokenURL: TOKEN_URL, fetch: (url, init) => provider.fetch(url, init), files: slots.files, process: storeHost, context, lockPolls })
     const ours = storeProcess()
     return {
       world,
@@ -285,9 +285,9 @@ seeded("two processes refreshing the same stale slot at once make one refresh ca
     const bench_ = yield* bench(seed, ["alpha"], { expires: World.START - 1000, token: () => ({ kind: "rotate", delayMs: 1500 }) })
     const { sourceIn, provider, trades, world } = bench_
     // Each process its own source and its own state of the store; the files and the lock are the host's.
-    const ask = (process: StoreProcess) =>
+    const ask = (storeHost: StoreProcess) =>
       Effect.sync(() => world.runtime.now()).pipe(
-        Effect.flatMap((began) => sourceIn(process).resolveEffect(`${STORE_PREFIX}alpha`).pipe(Effect.map((served) => ({ served: served.access, began })))),
+        Effect.flatMap((began) => sourceIn(storeHost).resolveEffect(`${STORE_PREFIX}alpha`).pipe(Effect.map((served) => ({ served: served.access, began })))),
       )
     const outputs = yield* ended(bench_, [bench_.start(ask(storeProcess())), bench_.start(ask(storeProcess()))])
     const served = provider.tokens("alpha").access

@@ -10,6 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import { availableParallelism, tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, test } from "bun:test"
+import { measured } from "../../../tests/hang-guard.ts"
 import { Deferred, Effect, Fiber, Layer, Match, Option, Predicate, Schema, type Scope } from "effect"
 import { gitClone, gitInit } from "../../../tests/git-repo.ts"
 import * as MemoryDebts from "../memory/debts.ts"
@@ -135,9 +136,14 @@ describe("a land by receipts, on real Git", () => {
         yield* made.receipt(made.x)
         yield* made.receipt(made.y)
         const [x, y] = [made.head(made.x), made.head(made.y)]
-        const started = performance.now()
-        const answer = yield* made.land(["feat-x", "feat-y"])
-        const seconds = (performance.now() - started) / 1000
+        const answer = yield* measured("land two receipted Rifts including Git", "< 60000 ms", ({ begin, end }) =>
+          Effect.gen(function* () {
+            begin()
+            const landed = yield* made.land(["feat-x", "feat-y"])
+            end()
+            return landed
+          }),
+        )
         expect(answer.split("\n")[0]).toMatch(/^Landed 2 workspace\(s\) as one push: \w+ Merge feat\/y to main \(merged feat\/x, feat\/y; by their receipts, no full gate\)\.$/)
         expect(made.marked()).toEqual([`merge-check ${made.integrate}`])
         expect(mainSubjects(made.origin).sort()).toEqual(["Merge feat/y", "change x.txt", "change y.txt", "init"])
@@ -149,8 +155,6 @@ describe("a land by receipts, on real Git", () => {
         ])
         expect(Option.map(record.merge, (receipt) => [receipt.kind, receipt.head, receipt.checks.map((check) => check.code)])).toEqual(Option.some(["merge", pushed, [0]]))
         expect(readdirSync(join(made.logs, "receipts")).sort()).toEqual([`${pushed}.land.json`, `${pushed}.merge.json`, `${x}.round.json`, `${y}.round.json`].sort())
-        // The whole land of two receipted Rifts, Git included, on this host: the Done line's bound.
-        expect(seconds).toBeLessThan(60)
       }),
     )
   })

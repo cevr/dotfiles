@@ -41,14 +41,14 @@ describe("daily's part of the update", () => {
 
   test("daily by hand builds nothing only for the build the record installs, proven, with its tree standing", () => {
     const build = (version: string): Build => ({ version, command: [`/s/opencode-${version}`], dotfiles: "d".repeat(40), fork: "f".repeat(40) })
-    const [it, other] = [build("2.3.0-prime.aaaaaaaa.bbbbbbbb.tree"), build("2.3.0-prime.aaaaaaaa.cccccccc.tree")]
-    const record = (installed: typeof it, good: typeof it): Option.Option<Record> => Option.some({ ...installed, good })
-    expect(alreadyInstalled(record(it, it), it.version, true)).toBe(true)
+    const [installedBuild, other] = [build("2.3.0-prime.aaaaaaaa.bbbbbbbb.tree"), build("2.3.0-prime.aaaaaaaa.cccccccc.tree")]
+    const record = (installed: typeof installedBuild, good: typeof installedBuild): Option.Option<Record> => Option.some({ ...installed, good })
+    expect(alreadyInstalled(record(installedBuild, installedBuild), installedBuild.version, true)).toBe(true)
     // Its tree gone, unproven, another build installed, or no record: it builds (and its stage never removes a tree that stood).
-    expect(alreadyInstalled(record(it, it), it.version, false)).toBe(false)
-    expect(alreadyInstalled(record(it, other), it.version, true)).toBe(false)
-    expect(alreadyInstalled(record(other, it), it.version, true)).toBe(false)
-    expect(alreadyInstalled(Option.none(), it.version, true)).toBe(false)
+    expect(alreadyInstalled(record(installedBuild, installedBuild), installedBuild.version, false)).toBe(false)
+    expect(alreadyInstalled(record(installedBuild, other), installedBuild.version, true)).toBe(false)
+    expect(alreadyInstalled(record(other, installedBuild), installedBuild.version, true)).toBe(false)
+    expect(alreadyInstalled(Option.none(), installedBuild.version, true)).toBe(false)
   })
 })
 

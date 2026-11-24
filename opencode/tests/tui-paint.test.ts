@@ -13,21 +13,15 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard, measured } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/tui-paint.test.ts: skipped. Set OPENCODE_DEV to an OpenCode checkout to run it.")
 
-/** Frames a second an idle orchestrator's TUI may paint. */
-const BUDGET = 2
-/** Frames a second a TUI with nothing running may paint: none but a straggler of its start. */
-const QUIET = 0.5
-/** How long the scenario gets: two 10-second windows and OpenCode's start, well past its usual 40 seconds. */
-const SCENARIO_MS = 200_000
-
 describe.skipIf(!fork)("an idle orchestrator's TUI (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "tui-paint-")
   test(
-    `paints next to nothing with nothing running, and at most ${BUDGET} frames a second with its workers running`,
+    "paints next to nothing with nothing running, and at most 2 frames a second with its workers running",
     kept.test(async () => {
       const out = kept.dir("tui-paint-")
       const run = owned(["bunx", "opencode-drive", "run", "scenarios/tui-paint.ts"], {
@@ -48,13 +42,13 @@ describe.skipIf(!fork)("an idle orchestrator's TUI (OPENCODE_DEV)", () => {
       // The measured window is the idle orchestrator: three worker rows run and the dock counts the alarm.
       expect(shown.split("\n").filter((line) => /[◆◇] general .*Fix module \d/.test(line))).toHaveLength(3)
       expect(shown).toContain("1 wake")
-      expect(result.orchestrator.seconds).toBeGreaterThan(9)
+      measured("idle orchestrator paint sample has a full window", "> 9000 ms", ({ sample }) => sample(result.orchestrator.seconds * 1000))
       // With nothing running it paints next to nothing (on a loaded host a late frame of its start may land in the window);
       // with its workers running, at most BUDGET frames a second, and nothing holds the loop live.
-      expect(result.quiet.loops).toBeLessThan(QUIET)
-      expect(result.orchestrator.loops).toBeLessThanOrEqual(BUDGET)
+      measured("idle TUI frame rate with nothing running", "< 0.5 fps", ({ sample }) => sample(result.quiet.loops))
+      measured("idle orchestrator frame rate with three workers", "<= 2 fps", ({ sample }) => sample(result.orchestrator.loops))
       expect(result.orchestrator.live).toBe(0)
     }),
-    SCENARIO_MS,
+    hangGuard("fork-transition"),
   )
 })

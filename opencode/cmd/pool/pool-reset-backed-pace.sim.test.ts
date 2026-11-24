@@ -13,10 +13,10 @@ import { Array as Arr, Effect, Exit, Option, Schema, Scope } from "effect"
 import { claimEffect, type FakeClaimResult, type FakeGrant, type FakeQuota } from "../../tests/fake-anthropic.ts"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Provider from "../../sim/provider.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/pool/pool-reset-backed-pace.sim.test.ts")
+const { seeded } = simulationRunner("cmd/pool/pool-reset-backed-pace.sim.test.ts")
 const HOUR = 3_600_000
 const DAY = 24 * HOUR
 const WORK = "/scratch/reset-backed-pace"

@@ -12,6 +12,7 @@ import { bootHost, readProcess } from "../mods/guard/process/admission.ts"
 import { actorLiveness, armDescriptor, descriptorHolders, descriptorLiveness, pinOf, processIdentity, spawnOwned, watchOwnGroup, type ProcessPin } from "../mods/guard/process/launchers.ts"
 import { inheritedController, inheritedProcess } from "../mods/guard/process/ownership.ts"
 import { open } from "../mods/guard/sqlite/admission.ts"
+import { hangGuard } from "./hang-guard.ts"
 import { scratch } from "./scratch.ts"
 
 const HOST = { hostId: "host-fixture", bootId: "boot-fixture" }
@@ -200,12 +201,12 @@ if (import.meta.main && argv[2] === "--fixture-watchdog") {
       const parent = Number(yield* readProcess(["/bin/ps", "-p", String(pid), "-o", "ppid="]))
       expect(parent).toBeGreaterThan(0)
       expect(parent).not.toBe(originalParent)
-      const process = Option.getOrThrow(yield* processIdentity(host, pid))
+      const identity = Option.getOrThrow(yield* processIdentity(host, pid))
       const pin: ProcessPin = {
-        bootId: HOST.bootId, ref: "fixture-scope", pid: child.pid, start: process.start, group: child.pid, cgroup: Option.none(), descriptor,
+        bootId: HOST.bootId, ref: "fixture-scope", pid: child.pid, start: identity.start, group: child.pid, cgroup: Option.none(), descriptor,
       }
       expect((yield* journal.bind({ id, owner: account, generation: 1 }, pin, sample)).reply.state).toBe("running")
-      const evidence = Option.getOrThrow(yield* inheritedProcess(host, pin, process))
+      const evidence = Option.getOrThrow(yield* inheritedProcess(host, pin, identity))
       const reopened = Effect.scoped(open(file, HOST).pipe(Effect.flatMap(({ holder }) => readHolderSnapshot(holder))))
       const firstView = yield* reopened
       const secondView = yield* reopened
@@ -217,6 +218,7 @@ if (import.meta.main && argv[2] === "--fixture-watchdog") {
       expect(yield* release()).toBe(0)
       expect(yield* Effect.scoped(descriptorLiveness(host, descriptor))).toBe("gone")
     }).pipe(Effect.provide(BunServices.layer)),
+    hangGuard("local-fixture"),
   )
 
   it.scopedLive("a detached exec keeps the inherited lease after the launcher releases its own copy", () =>

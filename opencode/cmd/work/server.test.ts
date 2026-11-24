@@ -20,6 +20,7 @@ import { RiftFailed, Rifts } from "@dotfiles/opencode-work/service"
 import { RIFT_ALIAS_DESCRIPTION, RIFT_ALIAS_REMOVAL, WORK_DESCRIPTION } from "@dotfiles/opencode-work/tool"
 import { effectTest } from "../../sim-tui/effect-test.ts"
 import Work, { live, make, WORKTREE_TOOLS } from "./server.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 
 type Host = Parameters<(typeof Work)["effect"]>[0]
 
@@ -43,7 +44,6 @@ interface Registered {
 
 const SOURCE = "/code/app"
 const SESSION = "ses_1"
-const TIMEOUT_MS = 30_000
 
 /** A world: the warm source and the given workspaces, a landing on `configs`, debts. */
 const worldOf = (rifts: ReadonlyArray<ReturnType<typeof MemoryRifts.clean>> = [], configs: Parameters<typeof MemoryLanding.world>[0] = {}) => ({
@@ -209,7 +209,7 @@ describe("the work plugin", () => {
         expect(rift.description).toEndWith(WORK_DESCRIPTION)
       }),
     ),
-    TIMEOUT_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -236,7 +236,7 @@ describe("the work plugin", () => {
         expect([...kinds].sort()).toEqual([...KINDS].sort())
       }),
     ),
-    TIMEOUT_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -252,7 +252,7 @@ describe("the work plugin", () => {
         expect(yield* call({ action: "land", workspaces: ["feat-x"] })).toStartWith("Landed 1 workspace(s) as one push")
       }),
     ),
-    TIMEOUT_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -271,7 +271,7 @@ describe("the work plugin", () => {
         expect(yield* call({ action: "create" })).toStartWith("error: create needs a branch")
       }),
     ),
-    TIMEOUT_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -292,7 +292,7 @@ describe("the work plugin", () => {
         expect(yield* call({ action: "create", branch: "feat/y" })).toStartWith("error: work new failed: NameTaken")
       }),
     ),
-    TIMEOUT_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -312,7 +312,7 @@ describe("the work plugin", () => {
         )
       }),
     ),
-    TIMEOUT_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -340,7 +340,7 @@ describe("the work plugin", () => {
         expect(yield* call({ action: "prune" })).toBe("error: prune runs the workbox's workrift, which this machine does not have. Here this tool offers create, list, remove and land.")
       }),
     ),
-    TIMEOUT_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -376,7 +376,7 @@ describe("the work plugin", () => {
         yield* Scope.close(second, Exit.void)
       }).pipe(Effect.provide(TestClock.layer())),
     ),
-    TIMEOUT_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -398,7 +398,7 @@ describe("the work plugin", () => {
         }).toEqual({ loads: ["loaded"], wakes: 0, owed: 1 })
       }).pipe(Effect.provide(TestClock.layer())),
     ),
-    TIMEOUT_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -417,6 +417,6 @@ describe("the work plugin", () => {
         expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain(`dotfiles-opencode.work: the work binary ${missing} does not start`)
       }),
     ),
-    TIMEOUT_MS,
+    hangGuard("local-fixture"),
   )
 })

@@ -80,8 +80,6 @@ export interface Kept {
   readonly dir: (prefix: string) => string
   /** A test's body, run once the suite's directory exists. */
   readonly test: (body: Body) => () => Promise<void>
-  /** A `beforeAll` body and its timeout, spread into the hook: `beforeAll(...kept.setup(body, ms))`. */
-  readonly setup: (body: Body, timeoutMs: number) => readonly [() => Promise<void>, number]
   /** Ends the suite: removes its directory. */
   readonly done: () => void
 }
@@ -128,7 +126,6 @@ export const keptScratch = (runs: boolean, prefix: string, closesItself = false)
       return mkdtempSync(`${path}/${inner}`)
     },
     test: (body) => () => run(body),
-    setup: (body, timeoutMs) => [() => run(body), timeoutMs],
     done,
   }
 }

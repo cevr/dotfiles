@@ -4,6 +4,7 @@ import { argv, readableStreamToText, spawn } from "bun"
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Effect, FileSystem, Path, Predicate } from "effect"
 import { expect, it } from "effect-bun-test"
+import { hangGuard } from "./hang-guard.ts"
 import { scratch } from "./scratch.ts"
 
 const cli = Effect.fn("TerminalHarness.cli")(function* () {
@@ -49,7 +50,7 @@ it.scopedLive("standalone checks preserve their payload under pipes and under an
     expect(nested.output).toContain("payload-marker")
     expect(nested.output).toContain("caller-back=0")
   }).pipe(Effect.provide(BunServices.layer)),
-  36_000,
+  hangGuard("local-fixture"),
 )
 
 it.scopedLive("the foreground shell gets its tty back on stop and on Ctrl-C, and the resumed payload reads stdin", () =>
@@ -64,5 +65,5 @@ it.scopedLive("the foreground shell gets its tty back on stop and on Ctrl-C, and
     expect({ status, error }).toEqual({ status: 0, error: "" })
     expect(output).toContain("Ctrl-C exit and drain verified")
   }).pipe(Effect.provide(BunServices.layer)),
-  28_000,
+  hangGuard("local-pair"),
 )

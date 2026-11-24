@@ -13,7 +13,7 @@ import { CommitmentRecord, Evidence } from "@dotfiles/opencode-orchestrate/servi
 import * as Sqlite from "@dotfiles/opencode-orchestrate/sqlite/record"
 import { platform } from "@dotfiles/opencode-orchestrate/node/platform"
 import { hostServices } from "../../sim/host-services.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationTest } from "../../sim/seed.ts"
 import { gitInit, withProcessEnv } from "../../tests/git-repo.ts"
 import { scratch } from "../../tests/scratch.ts"
 import { boot, type Input, WORK } from "./orch-tools-world.ts"
@@ -25,7 +25,7 @@ const DAY = 86_400_000
 const CHECKOUT = "a".repeat(40)
 const pathAt = (at: number) => `tmp/orchestrate/r${at}.json`
 const envelope = (exit: number) => json({ receipt: 1, command: "synthetic check", exit, output: { value: "a result" }, run: "one", checkout: CHECKOUT })
-const measured = (at: number) => ({ id: `receipt-${at}`, key: `key-r${at}`, title: "Read a result", reason_class: "measured", referent: { kind: "receipt", path: pathAt(at) } })
+const receiptClaim = (at: number) => ({ id: `receipt-${at}`, key: `key-r${at}`, title: "Read a result", reason_class: "measured", referent: { kind: "receipt", path: pathAt(at) } })
 const dependency = (id: string, target: string) => ({ id, key: `key-${id}`, title: "Wait on work", reason_class: "dependency", referent: { kind: "commitment", id: target } })
 const receiptSeen = (path: string): ReceiptSeen => ({ path, receiptSha: "b".repeat(64), outputSha: "c".repeat(64), run: "one", checkout: CHECKOUT, exit: 1 })
 const cli = (dir: string, db: string) => (action: string, fields: Input) =>
@@ -49,7 +49,7 @@ const writes = (from: string): ReadonlyArray<readonly [string, Input]> => [
   ["follow_up", dependency("finding", "base")],
 ]
 
-Seed.effect("every CLI and registered commitments write refuses a future file without changing its history", Effect.scoped(Effect.gen(function* () {
+simulationTest("every CLI and registered commitments write refuses a future file without changing its history", Effect.scoped(Effect.gen(function* () {
   using dir = scratch("record-version-ingress-")
   const path = `${dir.path}/record.db`
   const from = `${dir.path}/register.db`
@@ -96,7 +96,7 @@ Seed.effect("every CLI and registered commitments write refuses a future file wi
 })).pipe(Effect.provide(Layer.merge(hostServices, platform))))
 
 /** Named command: bun test cmd/orchestrate/record-replay.test.ts -t '20 exact replays' */
-Seed.effect("20 exact replays ignore receipt lifecycle through the CLI and registered tool", Effect.scoped(Effect.gen(function* () {
+simulationTest("20 exact replays ignore receipt lifecycle through the CLI and registered tool", Effect.scoped(Effect.gen(function* () {
   using dir = scratch("record-evidence-replay-")
   gitInit(dir.path, ["-q", "-b", "main"], withProcessEnv({ GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }))
   const db = `${dir.path}/record.db`
@@ -116,7 +116,7 @@ Seed.effect("20 exact replays ignore receipt lifecycle through the CLI and regis
   const child = yield* run.world.session(WORK, { parentID: root })
   let cases = 0
   for (const at of Arr.range(0, 9)) {
-    const input = measured(at)
+    const input = receiptClaim(at)
     const path = pathAt(at)
     const full = `${dir.path}/${path}`
     yield* Effect.promise(() => write(full, envelope(1)))
@@ -148,7 +148,7 @@ Seed.effect("20 exact replays ignore receipt lifecycle through the CLI and regis
   expect(cases).toBe(20)
 })).pipe(Effect.provide(hostServices)))
 
-Seed.effect("the CLI and registered tool replay after the original commitment dependency closes or reopens", Effect.scoped(Effect.gen(function* () {
+simulationTest("the CLI and registered tool replay after the original commitment dependency closes or reopens", Effect.scoped(Effect.gen(function* () {
   using dir = scratch("record-dependency-replay-")
   const path = `${dir.path}/record.db`
   const opened = yield* Sqlite.connected(path, { readonly: false, now: NOW })
@@ -180,11 +180,11 @@ Seed.effect("the CLI and registered tool replay after the original commitment de
 })).pipe(Effect.provide(Layer.merge(hostServices, platform))))
 
 /** Named command: bun test cmd/orchestrate/record-replay.test.ts -t 'backup and restore' */
-Seed.effect("backup and restore retains keyed replay without the measured receipt", Effect.gen(function* () {
+simulationTest("backup and restore retains keyed replay without the measured receipt", Effect.gen(function* () {
   using dir = scratch("record-restore-retry-")
   const db = `${dir.path}/record.db`
   const restored = `${dir.path}/restored.db`
-  const input = measured(1)
+  const input = receiptClaim(1)
   gitInit(dir.path, ["-q", "-b", "main"], withProcessEnv({ GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }))
   yield* Effect.promise(() => write(`${dir.path}/${pathAt(1)}`, envelope(1)))
   expect((yield* cli(dir.path, db)("follow_up", input)).code).toBe(0)

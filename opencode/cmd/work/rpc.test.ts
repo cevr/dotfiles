@@ -19,6 +19,7 @@ import { Created, Inspected, LandAnswered, Listed, RIFT_RPC } from "@dotfiles/op
 import { RiftFailed, Rifts } from "@dotfiles/opencode-work/service"
 import { effectTest } from "../../sim-tui/effect-test.ts"
 import Work, { make } from "./server.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 
 type Host = Parameters<(typeof Work)["effect"]>[0]
 
@@ -37,7 +38,6 @@ type Handlers = ReadonlyMap<string, (input: Ask) => Effect.Effect<object>>
 
 const SOURCE = "/code/app"
 const SESSION = "ses_1"
-const TIMEOUT_MS = 30_000
 
 /** A world as each test starts it: the warm source, one workspace already there, a repository that gates and checks. */
 const worldOf = () => ({
@@ -209,7 +209,7 @@ describe("the rift RPC of the work plugin", () => {
         expect([...(methods.get(RIFT_RPC.id) ?? [])].sort()).toEqual(["create", "describe", "inspect", "land", "list"])
       }),
     ),
-    TIMEOUT_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -230,7 +230,7 @@ describe("the rift RPC of the work plugin", () => {
         expect(nowhere).toMatchObject({ outcome: "failed" })
       }),
     ),
-    TIMEOUT_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -251,7 +251,7 @@ describe("the rift RPC of the work plugin", () => {
         expect(inspected).toMatchObject({ outcome: "answered", rift: { madeOn: "feat/billing" } })
       }),
     ),
-    TIMEOUT_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -272,7 +272,7 @@ describe("the rift RPC of the work plugin", () => {
         }
       }),
     ),
-    TIMEOUT_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -296,7 +296,7 @@ describe("the rift RPC of the work plugin", () => {
         expect(bare).toMatchObject({ outcome: "answered", rift: { path: "/code/.work/app/feat-z", branch: "feat/z", head: "abc1234", state: "clean" } })
       }),
     ),
-    TIMEOUT_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -322,7 +322,7 @@ describe("the rift RPC of the work plugin", () => {
         expect(verify).toMatchObject({ outcome: "answered", rift: { path: "/code/.work/app/verify-batch-1-2", head: "f00dfeed" } })
       }),
     ),
-    TIMEOUT_MS,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -339,6 +339,6 @@ describe("the rift RPC of the work plugin", () => {
         expect(malformed).toEqual({ outcome: "failed", message: expect.stringContaining("not a work land") })
       }),
     ),
-    TIMEOUT_MS,
+    hangGuard("local-fixture"),
   )
 })

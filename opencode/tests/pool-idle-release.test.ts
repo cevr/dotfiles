@@ -19,9 +19,9 @@ import { forkRuns, keptScratch } from "./scratch.ts"
 import { externalInput, scratchInput } from "./read-path.ts"
 import { forkProcessCommand } from "./scratch-child.ts"
 import { ready } from "./service.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const HOUR = 3_600_000
-const TIMEOUT_MS = 150_000
 /** How long the pool has, after the session went idle, to let the pin go. */
 const RELEASE_MS = 10_000
 const LOOK_MS = 250
@@ -183,17 +183,16 @@ const releasedAfter = (kept: ReturnType<typeof keptScratch>, name: string, turn:
     expect(Option.map(accounts, (each) => each.map((account) => account.credentialID))).toEqual(Option.some(["cred_only"]))
   })
 
-const test = it.scopedLive.layer(Platform)
 
 describe.skipIf(!forkRuns)("the pool lets a run's login go when its session goes idle (real OpenCode, fake Anthropic)", () => {
   const kept = keptScratch(forkRuns, "pool-idle-release-")
 
   // The only login is plan-limited: the pool holds it and the turn ends on the pool's refusal.
-  test(
+  it.scopedLive.layer(Platform)(
     "a turn that ends failed lets its login go",
     () => releasedAfter(kept, "failed", (now) => ({ kind: "usage-429", claim: "five_hour", resetAt: now + 3 * HOUR }), 429),
-    TIMEOUT_MS,
+    hangGuard("fork-turn"),
   )
 
-  test("a turn that succeeds lets its login go", () => releasedAfter(kept, "succeeded", () => ({ kind: "ok", text: "Hello." }), 200), TIMEOUT_MS)
+  it.scopedLive.layer(Platform)("a turn that succeeds lets its login go", () => releasedAfter(kept, "succeeded", () => ({ kind: "ok", text: "Hello." }), 200), hangGuard("fork-turn"))
 })

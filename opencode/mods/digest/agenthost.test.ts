@@ -17,6 +17,7 @@ import { Option } from "effect"
 import { canonicalOf, type PeerStatus, StatusRead, type TailscaleStatus } from "./bind.ts"
 import { type Exclusion, type Members, membersOf, sourceOf } from "./members.ts"
 import { decide, type Facts, type Policy, ROUTE_KINDS, TAILNET_WRITES } from "./policy.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 
 const NOW = 1_795_204_800_000
 const HIS = 7
@@ -120,7 +121,7 @@ describe("an agent host or an exclusion only restricts, over generated tailnets"
       )
       expect(wrong.slice(0, 3)).toEqual([])
     },
-    30_000,
+    hangGuard("local-fixture"),
   )
 
   test("only his: a source is own or agent only if its address is one of his devices' (not excluded) and no other device lists it", () => {

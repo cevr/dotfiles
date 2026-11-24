@@ -6,9 +6,10 @@
 // with fakes for the install, `bun run check` and the acceptance links, and the real feature step (the CLI) over
 // a fake fork whose origin and upstream are local bare repositories: nothing is pushed anywhere else.
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { Array as Arr, Clock, Config, Console, Context, Duration, Effect, FileSystem, Layer, Option, Path, Ref, Result, Stream } from "effect"
+import { Array as Arr, Clock, Config, Console, Context, Duration, Effect, FileSystem, Layer, Option, Path, Ref, Result, type Scope, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { TestClock } from "effect/testing"
 import { gitClone, gitInit, withProcessEnv } from "../tests/git-repo.ts"
 import { scratchInput } from "../tests/read-path.ts"
 import {
@@ -51,6 +52,7 @@ import {
 import { forkNamed, NO_FORK } from "./fork.ts"
 import { ROOT } from "./reach.ts"
 import { featureStep, mergeChecks, mergeUpstream, type StepRun, unlocked } from "./upstream.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 const list = (): List => Result.getOrThrow(declaredList)
 
@@ -130,11 +132,12 @@ describe("the fork a run checks", () => {
       expect(Number(out.code)).toBe(2)
       expect(out.said).toContain(`fork-checks: COULD NOT RUN: ${NO_FORK}`)
     }),
+    hangGuard("short-fixture"),
   )
 })
 
 /** A case in a report the tests build. */
-const caseOf = (file: string, test: string, status: Status = "passed"): Case => ({ file, test, status })
+const caseOf = (file: string, caseName: string, status: Status = "passed"): Case => ({ file, test: caseName, status })
 
 /** What bun writes inside a testcase for each status (failed for `true`, passed for `false`). */
 const INSIDE: Readonly<Record<Status, string>> = {
@@ -150,7 +153,7 @@ const statusOf = (given: boolean | Status): Status => {
 }
 
 /** A JUnit report as bun writes it: a file's suite, a describe block in it, and its tests. */
-const junit = (file: string, tests: ReadonlyArray<readonly [describe: string, name: string, status: boolean | Status]>) =>
+const junit = (file: string, tests: ReadonlyArray<readonly [suite: string, name: string, status: boolean | Status]>) =>
   [
     `<testsuites><testsuite name="${file}" file="${file}">`,
     ...tests.map(([block, name, status]) => {
@@ -236,7 +239,7 @@ describe("judging a run", () => {
 describe("skipped and todo cases", () => {
   const plan: Plan = { package: "packages/x", command: ["bun", "test"], files: ["test/a.test.ts"], expected: [], skips: [] }
   const declared: Skip = { package: "packages/x", file: "test/a.test.ts", test: "needs a tty", reason: "no terminal in CI" }
-  const red = (test: string, why: string) => ({ package: "packages/x", file: "test/a.test.ts", test, why })
+  const red = (caseName: string, why: string) => ({ package: "packages/x", file: "test/a.test.ts", test: caseName, why })
 
   it.effect("bun's own report: skip, todo, skipIf, if(false) and describe.skip are not executed; test.failing is", () =>
     Effect.sync(() => {
@@ -423,9 +426,8 @@ const checkWith = (input: Input, over: Fakes) =>
   })
 
 describe("a run of the checks", () => {
-  const test = it.scoped.layer(Layer.merge(fakeLayer, BunServices.layer))
 
-  test("green: one run of the package, width 4, its files in list order", () =>
+  it.scoped.layer(Layer.merge(fakeLayer, BunServices.layer))("green: one run of the package, width 4, its files in list order", () =>
     Effect.gen(function* () {
       const { dir, input } = yield* fakeFork(["test/a.test.ts", "test/b.test.ts"])
       const { verdict, runs } = yield* checkWith(input, {})
@@ -434,7 +436,7 @@ describe("a run of the checks", () => {
     }),
   )
 
-  test("a file red twice is red; a file green on its rerun is a named flake", () =>
+  it.scoped.layer(Layer.merge(fakeLayer, BunServices.layer))("a file red twice is red; a file green on its rerun is a named flake", () =>
     Effect.gen(function* () {
       const { input } = yield* fakeFork(["test/a.test.ts", "test/b.test.ts"])
       const twice = yield* checkWith(input, { answers: [(run) => report(run, ["test/b.test.ts"])] })
@@ -445,7 +447,7 @@ describe("a run of the checks", () => {
     }),
   )
 
-  test("a missing file is red before anything runs", () =>
+  it.scoped.layer(Layer.merge(fakeLayer, BunServices.layer))("a missing file is red before anything runs", () =>
     Effect.gen(function* () {
       const { input } = yield* fakeFork(["test/a.test.ts"])
       const lost: List = { ...input.list, features: [{ id: "x", feature: "x", package: "packages/x", files: ["test/a.test.ts", "test/gone.test.ts"], proved: "here" }] }
@@ -455,35 +457,41 @@ describe("a run of the checks", () => {
     }),
   )
 
-  // The waits on the real clock with the poll and the wait cut to milliseconds; LIMITS holds the 15 s and 30 min.
-  const waiting = it.scopedLive.layer(Layer.merge(fakeLayer, BunServices.layer))
+  // Advance each poll on the test clock; a descheduled fiber cannot spend the wait in one sample.
   const SHORT: Limits = { ...LIMITS, everyMs: 5, waitMs: 60 }
+  const checkWaiting = (input: Input, over: Fakes) =>
+    Effect.gen(function* () {
+      const clock = yield* Clock.Clock
+      return yield* checkWith({ ...input, limits: SHORT }, over).pipe(
+        Effect.provideService(Clock.Clock, { ...clock, sleep: TestClock.adjust }),
+      )
+    })
 
-  test("the limits: load 24, a 15 s poll and a 30 min wait, a 40 min bound, a 6 GiB floor, width 4", () =>
+  it.scoped.layer(Layer.merge(fakeLayer, BunServices.layer))("the limits: load 24, a 15 s poll and a 30 min wait, a 40 min bound, a 6 GiB floor, width 4", () =>
     Effect.sync(() => expect(LIMITS).toEqual({ maxLoad: 24, waitMs: 30 * 60_000, everyMs: 15_000, timeBoundMs: 40 * 60_000, diskFloor: 6 * 2 ** 30, threads: 4 })),
   )
 
-  waiting("could not run: the load stays over 24 for the wait, and nothing runs", () =>
+  it.scoped.layer(Layer.merge(fakeLayer, BunServices.layer))("could not run: the load stays over 24 for the wait, and nothing runs", () =>
     Effect.gen(function* () {
       const { input } = yield* fakeFork(["test/a.test.ts"])
-      const { verdict, runs, reads } = yield* checkWith({ ...input, limits: SHORT }, { loads: [30] })
+      const { verdict, runs, reads } = yield* checkWaiting(input, { loads: [30] })
       expect(verdict).toMatchObject({ kind: "could-not-run", reason: "the calm-host wait (0.001 min, every wait together) was spent before packages/x ran: the 1-minute load stayed over 24" })
       expect(runs).toEqual([])
-      expect(reads).toBeGreaterThan(2)
+      expect(reads).toBe(1 + SHORT.waitMs / SHORT.everyMs)
     }),
   )
 
-  waiting("waits while the load is over 24, then runs", () =>
+  it.scoped.layer(Layer.merge(fakeLayer, BunServices.layer))("waits while the load is over 24, then runs", () =>
     Effect.gen(function* () {
       const { input } = yield* fakeFork(["test/a.test.ts"])
-      const { verdict, runs, reads } = yield* checkWith({ ...input, limits: SHORT }, { loads: [30, 25, 12] })
+      const { verdict, runs, reads } = yield* checkWaiting(input, { loads: [30, 25, 12] })
       expect(verdict).toEqual({ kind: "green", notes: [] })
       expect(runs.length).toBe(1)
       expect(reads).toBe(3)
     }),
   )
 
-  test("could not run: under 6 GiB free where the floor applies (the Mac), and not elsewhere", () =>
+  it.scoped.layer(Layer.merge(fakeLayer, BunServices.layer))("could not run: under 6 GiB free where the floor applies (the Mac), and not elsewhere", () =>
     Effect.gen(function* () {
       const { input } = yield* fakeFork(["test/a.test.ts"])
       expect((yield* checkWith(input, { freeBytes: 5 * 2 ** 30 })).verdict).toMatchObject({ kind: "could-not-run", reason: expect.stringContaining("5.0 GiB free") })
@@ -491,16 +499,16 @@ describe("a run of the checks", () => {
     }),
   )
 
-  waiting("could not run: another run holds the lock past the wait", () =>
+  it.scoped.layer(Layer.merge(fakeLayer, BunServices.layer))("could not run: another run holds the lock past the wait", () =>
     Effect.gen(function* () {
       const { input } = yield* fakeFork(["test/a.test.ts"])
-      const { verdict, runs } = yield* checkWith({ ...input, limits: SHORT }, { free: false })
+      const { verdict, runs } = yield* checkWaiting(input, { free: false })
       expect(verdict).toMatchObject({ kind: "could-not-run", reason: expect.stringContaining("held the host's lock") })
       expect(runs).toEqual([])
     }),
   )
 
-  test("could not run: the run passes the time bound, or writes no report", () =>
+  it.scoped.layer(Layer.merge(fakeLayer, BunServices.layer))("could not run: the run passes the time bound, or writes no report", () =>
     Effect.gen(function* () {
       const { input } = yield* fakeFork(["test/a.test.ts"])
       const timedOut = yield* checkWith(input, { answers: [() => ({ kind: "timed-out", log: "still going" })] })
@@ -511,7 +519,7 @@ describe("a run of the checks", () => {
     }),
   )
 
-  test("red: the runner exits 0 and writes no report, so no listed file is proven to have run", () =>
+  it.scoped.layer(Layer.merge(fakeLayer, BunServices.layer))("red: the runner exits 0 and writes no report, so no listed file is proven to have run", () =>
     Effect.gen(function* () {
       const { input } = yield* fakeFork(["test/a.test.ts"])
       const none = yield* checkWith(input, { answers: [() => ({ kind: "exited", code: 0, log: "", junit: Option.none() })] })
@@ -519,7 +527,7 @@ describe("a run of the checks", () => {
     }),
   )
 
-  test("a skip declared for a host without a command holds only where none of those commands is on PATH", () =>
+  it.scoped.layer(Layer.merge(fakeLayer, BunServices.layer))("a skip declared for a host without a command holds only where none of those commands is on PATH", () =>
     Effect.gen(function* () {
       const { input } = yield* fakeFork(["test/a.test.ts"])
       const list: List = { ...input.list, skips: [{ package: "packages/x", file: "test/a.test.ts", test: "pwsh case", host: { missing: ["pwsh", "powershell"] }, reason: "no PowerShell" }] }
@@ -572,7 +580,7 @@ const outcomeOf = (cell: Cell): Verdict["kind"] => {
 const unexplainedExit = (cell: Cell) => cell.report === "present" && cell.exit !== 0 && !(cell.exit === 1 && cell.expectation === "observed")
 
 const CELL_FILE = "test/green.test.ts"
-type Row = readonly [describe: string, name: string, status: boolean | Status]
+type Row = readonly [suite: string, name: string, status: boolean | Status]
 const FLAGGED: Readonly<Record<Cell["skip"], ReadonlyArray<Row>>> = { none: [], declared: [["", "flagged", "skipped"]], undeclared: [["", "flagged", "skipped"]], stale: [["", "flagged", "passed"]] }
 const EXPECTED: Readonly<Record<Cell["expectation"], ReadonlyArray<Row>>> = { none: [], observed: [["", "expected", "failed"]], passing: [["", "expected", "passed"]] }
 /** The cell's report as bun writes it (`present`), none, or cut short before its closing tags. */
@@ -589,9 +597,8 @@ const cellDeclarations = (cell: Cell, bash: string) => ({
 })
 
 describe("what may explain a nonzero exit, every composition through checkFork", () => {
-  const test = it.scoped.layer(Layer.merge(fakeLayer, BunServices.layer))
 
-  test("the table: green only where the exit is 0 or fully explained and every skip is declared and real", () =>
+  it.scoped.layer(Layer.merge(fakeLayer, BunServices.layer))("the table: green only where the exit is 0 or fully explained and every skip is declared and real", () =>
     Effect.gen(function* () {
       const { input } = yield* fakeFork([CELL_FILE])
       const outcomes = yield* Effect.forEach(CELLS, (cell) =>
@@ -621,7 +628,7 @@ describe("what may explain a nonzero exit, every composition through checkFork",
     }),
   )
 
-  test("a skip note and an exit explanation are apart: a declared skip beside exit 7 is red, an expected failure explains only exit 1", () =>
+  it.scoped.layer(Layer.merge(fakeLayer, BunServices.layer))("a skip note and an exit explanation are apart: a declared skip beside exit 7 is red, an expected failure explains only exit 1", () =>
     Effect.sync(() => {
       const plan: Plan = { package: "packages/x", command: ["bun", "runner.ts"], files: [CELL_FILE], expected: [], skips: [] }
       const declared = cellDeclarations({ exit: 7, skip: "declared", expectation: "observed", report: "present" }, "5.2.37")
@@ -743,9 +750,8 @@ const rerunFork = (cell: RerunCell) =>
   })
 
 describe("a rerun: each file's facts from its last run, merged per file", () => {
-  const test = it.scoped.layer(Layer.merge(fakeLayer, BunServices.layer))
 
-  test("every combination: the skips, the expected failures, the flakes and the outcome, each named once", () =>
+  it.scoped.layer(Layer.merge(fakeLayer, BunServices.layer))("every combination: the skips, the expected failures, the flakes and the outcome, each named once", () =>
     Effect.gen(function* () {
       const outcomes = yield* Effect.forEach(RERUN_CELLS, (cell) =>
         Effect.gen(function* () {
@@ -773,7 +779,7 @@ describe("a rerun: each file's facts from its last run, merged per file", () => 
     }),
   )
 
-  test("the verifier's probe: a declared skip in a file passed once, a flake beside it, both named", () =>
+  it.scoped.layer(Layer.merge(fakeLayer, BunServices.layer))("the verifier's probe: a declared skip in a file passed once, a flake beside it, both named", () =>
     Effect.gen(function* () {
       const cell: RerunCell = { a: "declared skip", b: "fails once", rerun: "A observed once", place: "same package" }
       const input = yield* rerunFork(cell)
@@ -788,7 +794,7 @@ describe("a rerun: each file's facts from its last run, merged per file", () => 
     }),
   )
 
-  test("a file whose facts differ on its rerun: the report holds the rerun's only, and says the file was rerun", () =>
+  it.scoped.layer(Layer.merge(fakeLayer, BunServices.layer))("a file whose facts differ on its rerun: the report holds the rerun's only, and says the file was rerun", () =>
     Effect.gen(function* () {
       const input = yield* rerunFork({ a: "declared skip", b: "passes", rerun: "A rerun", place: "same package" })
       const list: List = { ...input.list, features: [{ id: "a", feature: "a", package: "packages/x", files: [FILE_A], proved: "here" }] }
@@ -988,9 +994,8 @@ const budgetNamed = (verdict: Verdict): string => {
 }
 
 describe("three budgets apart: the lock wait, the calm-host waits and the package runs", () => {
-  const test = it.scoped.layer(Layer.merge(timelineLayer, BunServices.layer))
 
-  test("every combination: only the runs are charged to the run budget, and a spent budget names itself", () =>
+  it.scoped.layer(Layer.merge(timelineLayer, BunServices.layer))("every combination: only the runs are charged to the run budget, and a spent budget names itself", () =>
     Effect.gen(function* () {
       const timeline = yield* Timeline
       const input = yield* twoPackages
@@ -1012,7 +1017,7 @@ describe("three budgets apart: the lock wait, the calm-host waits and the packag
     }),
   )
 
-  test("a rerun is charged to the run budget: a red file rerun, then a package past what is left", () =>
+  it.scoped.layer(Layer.merge(timelineLayer, BunServices.layer))("a rerun is charged to the run budget: a red file rerun, then a package past what is left", () =>
     Effect.gen(function* () {
       const timeline = yield* Timeline
       const input = yield* twoPackages
@@ -1024,7 +1029,7 @@ describe("three budgets apart: the lock wait, the calm-host waits and the packag
     }),
   )
 
-  test("the verifier's probes: the lock, then the load, free after two 75 ms waits, with a 60 ms run budget, are green and run once", () =>
+  it.scoped.layer(Layer.merge(timelineLayer, BunServices.layer))("the verifier's probes: the lock, then the load, free after two 75 ms waits, with a 60 ms run budget, are green and run once", () =>
     Effect.gen(function* () {
       const timeline = yield* Timeline
       const input = yield* twoPackages
@@ -1041,8 +1046,8 @@ describe("three budgets apart: the lock wait, the calm-host waits and the packag
 
 describe("a feature's since: required only in a checkout that contains the commit", () => {
   // Each case makes and reads a real git fork: 30 s each, for a loaded host.
-  const scoped = it.scoped.layer(Layer.merge(fakeLayer, BunServices.layer))
-  const test = (name: string, self: Parameters<typeof scoped>[1]) => scoped(name, self, 30_000)
+  const registerSince = <E>(name: string, self: () => Effect.Effect<void, E, Layer.Success<typeof fakeLayer> | BunServices.BunServices | Scope.Scope | TestClock.TestClock>) =>
+    it.scoped.layer(Layer.merge(fakeLayer, BunServices.layer))(name, self, hangGuard("local-fixture"))
 
   /** A git fork: packages/x's test at its first commit, packages/y's new test at its second; the list's y feature since the second. */
   const sinceFork = Effect.gen(function* () {
@@ -1065,7 +1070,7 @@ describe("a feature's since: required only in a checkout that contains the commi
     return { dir, before, since, input: { list: listed, fork: dir, limits: LIMITS, lock: `${dir}/lock` } satisfies Input }
   })
 
-  test("a checkout without the commit: the feature is skipped and reported, never silently", () =>
+  registerSince("a checkout without the commit: the feature is skipped and reported, never silently", () =>
     Effect.gen(function* () {
       const f = yield* sinceFork
       yield* git(f.dir, "checkout", "--quiet", "--detach", f.before)
@@ -1078,7 +1083,7 @@ describe("a feature's since: required only in a checkout that contains the commi
     }),
   )
 
-  test("a checkout with the commit and the file: the file is required and runs", () =>
+  registerSince("a checkout with the commit and the file: the file is required and runs", () =>
     Effect.gen(function* () {
       const f = yield* sinceFork
       const { verdict, runs } = yield* checkWith(f.input, {})
@@ -1090,7 +1095,7 @@ describe("a feature's since: required only in a checkout that contains the commi
     }),
   )
 
-  test("a checkout with the commit but not the file (a merge lost it) is red", () =>
+  registerSince("a checkout with the commit but not the file (a merge lost it) is red", () =>
     Effect.gen(function* () {
       const f = yield* sinceFork
       yield* git(f.dir, "rm", "--quiet", "packages/y/test/new.test.ts")
@@ -1101,7 +1106,7 @@ describe("a feature's since: required only in a checkout that contains the commi
     }),
   )
 
-  test("a commit the checkout does not have at all is skipped, saying so", () =>
+  registerSince("a commit the checkout does not have at all is skipped, saying so", () =>
     Effect.gen(function* () {
       const f = yield* sinceFork
       const unknown = "0123456789abcdef0123456789abcdef01234567"
@@ -1267,10 +1272,9 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
   const DECLARED: ReadonlyArray<Skip> = [{ package: "packages/x", file: "test/green.test.ts", test: "the fork feature", reason: "the probe needs a real terminal" }]
 
   // Each case is a real merge and a CLI run: about a second on a quiet host, several under load, so 30 s each.
-  const live = it.live.layer(BunServices.layer)
-  const test = <A, E>(name: string, self: () => Effect.Effect<A, E, BunServices.BunServices>, timeout = 30_000) => live(name, self, timeout)
+  const registerLive = <A, E>(name: string, self: () => Effect.Effect<A, E, BunServices.BunServices>) => it.live.layer(BunServices.layer)(name, self, hangGuard("local-fixture"))
 
-  test("green checks: the merge goes to origin (control)", () =>
+  registerLive("green checks: the merge goes to origin (control)", () =>
     Effect.gen(function* () {
       const f = yield* fixture(["bun", "test"], ["test/green.test.ts"])
       expect(yield* f.merge).toMatchObject({ kind: "merged" })
@@ -1278,7 +1282,7 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
     }).pipe(Effect.scoped),
   )
 
-  test(
+  registerLive(
     "a red test holds the push, and the report names the test and the upstream range",
     () =>
       Effect.gen(function* () {
@@ -1293,10 +1297,9 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
         expect(text).toContain("packages/x/test/red.test.ts > the fork feature [x]")
         expect(text).toMatch(/Upstream commits it brings: `git log [0-9a-f]{10}\.\.[0-9a-f]{10}` \(1 commit\)/)
       }).pipe(Effect.scoped),
-    30_000,
   )
 
-  test("a listed file the merge lacks holds the push", () =>
+  registerLive("a listed file the merge lacks holds the push", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const f = yield* fixture(["bun", "test"], ["test/green.test.ts", "test/gone.test.ts"])
@@ -1306,7 +1309,7 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
     }).pipe(Effect.scoped),
   )
 
-  test("a run that could not finish holds the push", () =>
+  registerLive("a run that could not finish holds the push", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const path = yield* Path.Path
@@ -1320,7 +1323,7 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
   )
 
   // Skips, through bun's own JUnit reporter: the merge brings an upstream commit that changes the listed test.
-  test("a listed file the merge turns skipped-only holds the push and writes the report: it ran no test", () =>
+  registerLive("a listed file the merge turns skipped-only holds the push and writes the report: it ran no test", () =>
     Effect.gen(function* () {
       const f = yield* fixture(["bun", "test"], ["test/green.test.ts"], { incoming: [["packages/x/test/green.test.ts", SKIPPED_ONLY]] })
       const text = yield* held(f)
@@ -1329,14 +1332,14 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
     }).pipe(Effect.scoped),
   )
 
-  test("an undeclared skip beside a running test holds the push", () =>
+  registerLive("an undeclared skip beside a running test holds the push", () =>
     Effect.gen(function* () {
       const f = yield* fixture(["bun", "test"], ["test/green.test.ts"], { incoming: [["packages/x/test/green.test.ts", PARTIAL]] })
       expect(yield* held(f)).toContain("packages/x/test/green.test.ts > the fork feature [x]: skipped, and fork-checks.json declares no skip for it")
     }).pipe(Effect.scoped),
   )
 
-  test("a declared skip goes to origin, named in the summary", () =>
+  registerLive("a declared skip goes to origin, named in the summary", () =>
     Effect.gen(function* () {
       const f = yield* fixture(["bun", "test"], ["test/green.test.ts"], { incoming: [["packages/x/test/green.test.ts", PARTIAL]], skips: DECLARED })
       expect(yield* f.merge).toMatchObject({ kind: "merged" })
@@ -1348,14 +1351,14 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
     }).pipe(Effect.scoped),
   )
 
-  test("a declared skip that ran (a stale declaration) holds the push", () =>
+  registerLive("a declared skip that ran (a stale declaration) holds the push", () =>
     Effect.gen(function* () {
       const f = yield* fixture(["bun", "test"], ["test/green.test.ts"], { incoming: [["packages/x/test/green.test.ts", BOTH_RUN]], skips: DECLARED })
       expect(yield* held(f)).toContain("packages/x/test/green.test.ts > the fork feature [x]: declared skipped but it ran: remove the skip")
     }).pipe(Effect.scoped),
   )
 
-  test("a runner that exits 0 and writes no JUnit report holds the push", () =>
+  registerLive("a runner that exits 0 and writes no JUnit report holds the push", () =>
     Effect.gen(function* () {
       const f = yield* fixture(["true"], ["test/green.test.ts"])
       expect(yield* held(f)).toContain("packages/x/test/green.test.ts [x]: the runner exited 0 and wrote no report: the file is not proven to have run")
@@ -1377,7 +1380,7 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
   ].join("\n")
   const VERIFIER_PASSING = ['import { test, expect } from "bun:test";', "", 'test("feature executes", () => expect(1).toBe(1));', 'test.skip("intentionally skipped");', ""].join("\n")
 
-  test("a declared skip beside a package command that exits 7 (batch 23b's fixture, verbatim) holds the push and reports the command, its exit and its tail", () =>
+  registerLive("a declared skip beside a package command that exits 7 (batch 23b's fixture, verbatim) holds the push and reports the command, its exit and its tail", () =>
     Effect.gen(function* () {
       const skips: ReadonlyArray<Skip> = [{ package: "packages/x", file: "test/green.test.ts", test: "intentionally skipped", reason: "fixture: deliberate skip" }]
       const incoming: ReadonlyArray<readonly [string, string]> = [
@@ -1391,7 +1394,6 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
       expect(text).toContain("fixture: post-test report check failed")
       expect(text).toMatch(/fork-checks: RED over upstream [0-9a-f]{10}\.\.[0-9a-f]{10}, 1 tests: packages\/x\/\(the run\) \[x\]/)
     }).pipe(Effect.scoped),
-    30_000,
   )
 
   /** A package command that copies its cell's report (if the merge holds one) to bun's report file and exits its cell's code. */
@@ -1453,7 +1455,7 @@ describe("the daily's merge check step (mergeChecks) with the real feature step"
           expect(each.report).toContain(`RED packages/x/(the run) [x]: bun runner.ts ${each.cell.exit} exited ${each.cell.exit}, and no failed test in its report accounts for it`)
         for (const each of outcomes.filter((one) => outcomeOf(one.cell) !== "green")) expect(each.report).toContain(`fixture: post-test step exited ${each.cell.exit}`)
       }),
-    300_000,
+    hangGuard("acceptance"),
   )
 })
 
@@ -1478,9 +1480,8 @@ describe("a run stopped before it finishes could not run, with a partial report"
     return { dir, argv }
   })
 
-  const test = it.live.layer(BunServices.layer)
 
-  test("a SIGTERM mid-run (the caller's own bound) prints what was running and for how long, and exits 2", () =>
+  it.live.layer(BunServices.layer)("a SIGTERM mid-run (the caller's own bound) prints what was running and for how long, and exits 2", () =>
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
       const { argv } = yield* sleeper
@@ -1505,10 +1506,10 @@ describe("a run stopped before it finishes could not run, with a partial report"
       expect(text).toMatch(/fork-checks: COULD NOT RUN: stopped by a signal \(the caller's own bound, or a kill\) before it finished, after \d+\.\d s; progress: packages\/x \[x\]: running for \d+\.\d s$/m)
       expect(text).toMatch(/^budgets: lock wait \d+\.\d s of 30 min; calm-host wait \d+\.\d s of 30 min; package runs \d+\.\d s of 40 min$/m)
     }).pipe(Effect.scoped),
-    30_000,
+    hangGuard("local-fixture"),
   )
 
-  test("the run's own time bound: could not run, the package's progress named", () =>
+  it.live.layer(BunServices.layer)("the run's own time bound: could not run, the package's progress named", () =>
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
       const { argv } = yield* sleeper
@@ -1519,6 +1520,6 @@ describe("a run stopped before it finishes could not run, with a partial report"
       expect(text).toContain("fork-checks: COULD NOT RUN: packages/x ran past the package runs' budget (0.025 min), its process group ended")
       expect(text).toMatch(/^budgets: lock wait \d+\.\d s of 30 min; calm-host wait \d+\.\d s of 30 min; package runs \d+\.\d s of 0\.025 min$/m)
     }).pipe(Effect.scoped),
-    30_000,
+    hangGuard("local-fixture"),
   )
 })

@@ -46,9 +46,8 @@ const exists = (file: string) =>
 const backticked = (text: string): ReadonlyArray<string> => Arr.map(Array.from(text.matchAll(/`([^`\n]+)`/g)), (match) => Option.getOrElse(Option.fromNullishOr(match[1]), () => ""))
 
 describe("the verify-opencode skill names only what the tree has", () => {
-  const live = it.live.layer(BunServices.layer)
 
-  live("every path it backticks exists", () =>
+  it.live.layer(BunServices.layer)("every path it backticks exists", () =>
     Effect.gen(function* () {
       const named = Arr.dedupe((yield* docs).flatMap(({ text }) => backticked(text).flatMap((word) => word.split(/[\s,]+/))))
       const paths = named.map((word) => word.replace(/[:.,)]+$/, "")).filter((word) => PATH.test(word) && !OUTPUT.test(word))
@@ -57,7 +56,7 @@ describe("the verify-opencode skill names only what the tree has", () => {
     }),
   )
 
-  live("every bun run it names is a package script", () =>
+  it.live.layer(BunServices.layer)("every bun run it names is a package script", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const path = yield* Path.Path
@@ -68,7 +67,7 @@ describe("the verify-opencode skill names only what the tree has", () => {
     }),
   )
 
-  live("every feature file keeps the entry contract, with its suites, checks and code on disk", () =>
+  it.live.layer(BunServices.layer)("every feature file keeps the entry contract, with its suites, checks and code on disk", () =>
     Effect.gen(function* () {
       const features = (yield* docs).filter(({ file }) => file.startsWith(`${FEATURES_DIR}/`) && !file.endsWith("/README.md"))
       expect(features.length).toBeGreaterThanOrEqual(5)
@@ -84,7 +83,7 @@ describe("the verify-opencode skill names only what the tree has", () => {
     }),
   )
 
-  live("every world suite under a feature's own code is in its drive", () =>
+  it.live.layer(BunServices.layer)("every world suite under a feature's own code is in its drive", () =>
     Effect.gen(function* () {
       const features = (yield* docs)
         .filter(({ file }) => file.startsWith(`${FEATURES_DIR}/`) && !file.endsWith("/README.md"))
@@ -96,7 +95,7 @@ describe("the verify-opencode skill names only what the tree has", () => {
     }),
   )
 
-  live("every source file batch 2026-11-15cc's, 2026-11-16cv's, 2026-11-16cx's and 2026-11-16cy's drives found in no feature's Code is now in one, or set aside by the index's No drive", () =>
+  it.live.layer(BunServices.layer)("every source file batch 2026-11-15cc's, 2026-11-16cv's, 2026-11-16cx's and 2026-11-16cy's drives found in no feature's Code is now in one, or set aside by the index's No drive", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const features = (yield* docs)
@@ -142,7 +141,7 @@ describe("the verify-opencode skill names only what the tree has", () => {
     }),
   )
 
-  live("every source file batch 2026-11-15cl's drive found in no feature's Code is now in one, or set aside by the index's No drive", () =>
+  it.live.layer(BunServices.layer)("every source file batch 2026-11-15cl's drive found in no feature's Code is now in one, or set aside by the index's No drive", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const features = (yield* docs)
@@ -163,7 +162,7 @@ describe("the verify-opencode skill names only what the tree has", () => {
     }),
   )
 
-  live("the spawn helper and the scratch folders every real check runs through make the features that spawn through them due (batch 2026-11-15cm)", () =>
+  it.live.layer(BunServices.layer)("the spawn helper and the scratch folders every real check runs through make the features that spawn through them due (batch 2026-11-15cm)", () =>
     Effect.gen(function* () {
       const features = (yield* docs)
         .filter(({ file }) => file.startsWith(`${FEATURES_DIR}/`) && !file.endsWith("/README.md"))
@@ -173,11 +172,11 @@ describe("the verify-opencode skill names only what the tree has", () => {
       expect(due("tests/owned.ts")).toEqual(["cache", "escape", "guard", "kernel", "mail", "orchestrate", "pool", "prime-panel", "queue", "wake-latch"])
       expect(due("tests/scratch.ts")).toEqual(due("tests/owned.ts"))
       const real = Option.getOrElse(Option.map(Arr.findFirst(features, (feature) => feature.id === "prime-panel"), (feature) => feature.real), (): ReadonlyArray<string> => [])
-      expect(["tests/herdr.test.ts", "tests/tui-cpu.test.ts", "tests/tui-paint.test.ts"].filter((test) => !real.includes(test))).toEqual([])
+      expect(["tests/herdr.test.ts", "tests/tui-cpu.test.ts", "tests/tui-paint.test.ts"].filter((testPath) => !real.includes(testPath))).toEqual([])
     }),
   )
 
-  live("a change to the escape plugin or the herdr reporter makes the feature that runs their checks due (batch 2026-11-15co)", () =>
+  it.live.layer(BunServices.layer)("a change to the escape plugin or the herdr reporter makes the feature that runs their checks due (batch 2026-11-15co)", () =>
     Effect.gen(function* () {
       const features = (yield* docs)
         .filter(({ file }) => file.startsWith(`${FEATURES_DIR}/`) && !file.endsWith("/README.md"))
@@ -187,13 +186,13 @@ describe("the verify-opencode skill names only what the tree has", () => {
       // cmd/escape changed with none of the escape checks run: no feature's Code covered it (fu-small, co B1).
       for (const path of ["cmd/escape/setup.ts", "cmd/escape/server.ts", "mods/escape/escape.ts", "scenarios/queue-merge.ts"]) expect(due(path)).toContain("escape")
       const escapeChecks = ["tests/escape-send.test.ts", "tests/escape-states.test.ts", "tests/escape-subagent.test.ts", "tests/prime-escape.test.ts", "tests/queue-merge.test.ts"]
-      expect(escapeChecks.filter((test) => !real("escape").includes(test))).toEqual([])
+      expect(escapeChecks.filter((testPath) => !real("escape").includes(testPath))).toEqual([])
       for (const path of ["cmd/herdr/tui.tsx", "mods/herdr/report.ts"]) expect(due(path)).toEqual(["prime-panel"])
       expect(real("prime-panel")).toContain("tests/herdr.test.ts")
     }),
   )
 
-  live("the index lists exactly the feature files, and AGENTS.md points verifiers at the skill", () =>
+  it.live.layer(BunServices.layer)("the index lists exactly the feature files, and AGENTS.md points verifiers at the skill", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const path = yield* Path.Path

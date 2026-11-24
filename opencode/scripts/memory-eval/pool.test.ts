@@ -2,7 +2,7 @@
 // fake live pool: no live call. It sends as the auth plugin does, places as the
 // pool does (away from the owner's live sessions and holds), fails over on a
 // 429 and stops when the pace or every account says so.
-import { describe, expect, test } from "bun:test"
+import { describe, expect, setSystemTime, test } from "bun:test"
 import { costOf, create, Ledger, MODEL, poolTransport, useModel, useSleep, useTransport } from "./api.ts"
 import { type Live, Pool, PoolLimit, type Source, weeklyDrift } from "./pool.ts"
 import type { AccountStatus } from "../../mods/pool/status.ts"
@@ -165,9 +165,9 @@ describe("the pool transport", () => {
     useSleep(async (ms) => {
       waited.push(ms)
       now += ms
+      setSystemTime(now)
     })
-    const realNow = Date.now
-    Date.now = () => now
+    setSystemTime(now)
     try {
       const ledger = new Ledger(1)
       const response = await create(ledger, { system: [{ type: "text", text: "You are a coding agent." }], tools: body.tools, messages: [{ role: "user", content: "hi" }], session: "s1" })
@@ -176,7 +176,7 @@ describe("the pool transport", () => {
       expect(waited).toHaveLength(1)
       expect(waited[0]).toBeLessThanOrEqual(5_250)
     } finally {
-      Date.now = realNow
+      setSystemTime()
     }
   })
 })

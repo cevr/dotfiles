@@ -23,7 +23,8 @@ import { type CallAnswer, Changes, Runner, WakeStore } from "../service.ts"
 import * as ProcessRunner from "./runner.ts"
 import { argvOf, claim, type Disk, FILES, hostOf, NODE_DISK, processStart, ranOf, removeDurable, scopeAvailable, UNSEALED_ROOT, writeAtomic, writeDurable, writeExit } from "./supervise.ts"
 import type { Ran } from "../cron/backstop.ts"
-import { bounded, notYet, type Observation, type Policy, ready, type TestBounds, testLimitMs, waitFor } from "./readiness.ts"
+import { bounded, notYet, type Observation, type Policy, ready, type TestBounds, waitFor } from "./readiness.ts"
+import { hangGuard, stamp } from "../../../tests/hang-guard.ts"
 
 /** How long a job gets to reach the state a test waits for, probed every 50 ms. */
 const PATIENT: Policy = { within: "10 seconds", every: "50 millis" }
@@ -121,7 +122,7 @@ const fixtureHeard = (removed: Removal) => Effect.acquireRelease(
       note: "n",
       heavy: false,
       timeoutSeconds: 60,
-      setAt: Date.now(),
+      setAt: stamp(),
       ...more,
     })
     const runnerOf = (config: Partial<ProcessRunner.Config> = {}) => runnerIn(scratch, script, config)
@@ -151,7 +152,7 @@ test("a held call's server identity distinguishes this process from another inca
 })
 
 /** The one Bun test of this file that runs an Effect: bounded below its Bun limit, so its scope closes and its release runs first. */
-const limitedTest = <A, E>(name: string, body: Effect.Effect<A, E, Scope.Scope>) => test(name, () => Effect.runPromise(bounded(name, body, BOUNDS)), testLimitMs(BOUNDS))
+const limitedTest = <A, E>(name: string, body: Effect.Effect<A, E, Scope.Scope>) => test(name, () => Effect.runPromise(bounded(name, body, BOUNDS)), hangGuard("wake-process"))
 
 /** A limited test whose body gets a fixture of its own, released when the test ends. */
 const fixtureTest = <A, E>(name: string, body: (fixture: Fixture) => Effect.Effect<A, E, Scope.Scope>) => limitedTest(name, Effect.flatMap(fixture, body))

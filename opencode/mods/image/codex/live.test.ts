@@ -14,6 +14,7 @@ import { Images, layer as model } from "../model.ts"
 import { fail } from "../outcome.ts"
 import { dimensionsOf } from "../size.ts"
 import { ORIGIN, layer as subscription } from "./subscription.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 const live = process.env.IMAGE_LIVE === "1"
 const target = Option.fromNullishOr(process.env.IMAGE_LIVE_OUT)
@@ -53,5 +54,5 @@ test.skipIf(!live)(
         yield* Effect.log(`live image: ${out} ${size.width}x${size.height} ${Option.getOrElse(outcome.note, () => "exact size")}`)
       })),
     ),
-  320_000,
+  hangGuard("acceptance-plus-teardown"),
 )

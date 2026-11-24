@@ -43,6 +43,7 @@ import { WAKES } from "../mods/wake/wake.ts"
 import { withProcessEnv } from "./git-repo.ts"
 import { matchingInput } from "./read-path.ts"
 import { checkoutBunCommand } from "./scratch-child.ts"
+import { hangGuard, measured } from "./hang-guard.ts"
 
 const PROCESS = withProcessEnv({})
 const PASSWORD = "job-events-fixture"
@@ -218,7 +219,7 @@ describe("durable job events on the real host", () => {
         expect(yield* at.fs.readFileString(at.path.join(jobDir, FILES.exit))).toBe(written)
         expect((yield* Ref.get(calls)).length).toBe(1)
       }).pipe(Effect.scoped),
-    60_000,
+    hangGuard("process-fixture"),
   )
 
   it.live.layer(BunServices.layer)(
@@ -239,7 +240,7 @@ describe("durable job events on the real host", () => {
         const exit = yield* until(readExit(at, id))
         expect(letter.letter.metadata["event"]).toMatchObject({ job: id, generation: 1, disposition: "failed", exitCode: 3, log: `job-log:${id}/1` })
         yield* Console.log(`job-events: backstop off, exit written to the letter seen: ${seenAt - exit.endedAt} ms`)
-        expect(seenAt - exit.endedAt).toBeLessThan(RECOVER_MS)
+        measured("backstop-off exit letter arrives before one recovery sweep", "< 60000 ms", ({ sample }) => sample(seenAt - exit.endedAt))
         // The runner's call, late: nothing more.
         expect((yield* watched.wakes.due(id)).outcome).toBe("gone")
         expect(lettersOf(id)).toHaveLength(1)
@@ -261,7 +262,7 @@ describe("durable job events on the real host", () => {
         expect((yield* refusing.wakes.due(unwatched)).outcome).toBe("fired")
         expect(lettersOf(unwatched)).toHaveLength(1)
       }).pipe(Effect.scoped),
-    60_000,
+    hangGuard("process-fixture"),
   )
 
   it.live.layer(Layer.mergeAll(BunServices.layer, Keep))(
@@ -294,7 +295,7 @@ describe("durable job events on the real host", () => {
         // Their entries gone (the late calls found none), nothing can fire again: one letter each.
         expect(ids.map(({ id }) => lettersOf(id).length)).toEqual([1, 1])
       }).pipe(Effect.scoped),
-    60_000,
+    hangGuard("process-fixture"),
   )
 
   it.live.layer(BunServices.layer)(
@@ -320,6 +321,6 @@ describe("durable job events on the real host", () => {
         expect((yield* runner.read(id))?.run.state).toBe("running")
         yield* stranger.kill({ killSignal: "SIGKILL" })
       }).pipe(Effect.scoped),
-    30_000,
+    hangGuard("local-fixture"),
   )
 })

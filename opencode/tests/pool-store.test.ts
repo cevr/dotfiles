@@ -9,7 +9,7 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
-import { readScratchDirectorySync as readdirSync, scratchInput } from "./read-path.ts"
+import { readScratchDirectorySync as readdirSync, scratchExistsSync as existsSync, scratchInput } from "./read-path.ts"
 import { join } from "node:path"
 import { Clock, Effect, Option, Schema } from "effect"
 import { it } from "effect-bun-test"
@@ -19,6 +19,8 @@ import { openSlotStore, scratchSlotFiles, type SlotStore } from "./store/store.t
 import { ownedCheckoutBun } from "./owned.ts"
 import { RefreshRequest } from "./store/refresh-request.ts"
 import { scratch } from "./scratch.ts"
+import { hangGuard, stamp } from "./hang-guard.ts"
+import { waitUntil } from "./wait.ts"
 
 const HOUR = 3_600_000
 const root = scratch("pool-store-").path
@@ -56,7 +58,7 @@ const bench = async (
   const dir = mkdtempSync(join(root, "store-"))
   const store = openSlotStore(dir)
   for (const [label, account] of Object.entries(accounts)) {
-    await store.signIn(label, { ...account, expires: options.expires ?? Date.now() + 8 * HOUR }, {
+    await store.signIn(label, { ...account, expires: options.expires ?? stamp() + 8 * HOUR }, {
       signedInAt: options.signedInAt ?? 1_700_000_000_000,
     })
   }
@@ -95,7 +97,7 @@ const readOnly = <A, E>(slots: string, use: Effect.Effect<A, E>): Effect.Effect<
 describe("the pool's source over a login store", () => {
   test("a stale token is refreshed once and written back in the store's exact shape, mode 0600", async () => {
     const account = fakeAccount()
-    const ours = await bench({ alpha: account }, { expires: Date.now() - 1000 })
+    const ours = await bench({ alpha: account }, { expires: stamp() - 1000 })
     const resolved = await ours.source.resolve(`${STORE_PREFIX}alpha`)
     const rotated = ours.fake.tokens("alpha")
     expect(ours.trades()).toBe(1)
@@ -124,33 +126,49 @@ describe("the pool's source over a login store", () => {
     expect(ours.trades()).toBe(1)
   })
 
-  test("two processes refreshing the same stale slot at once make one refresh call", async () => {
-    const { dir, fake, tokenURL, trades } = await bench(
-      { alpha: fakeAccount() },
-      { expires: Date.now() - 1000, token: () => ({ kind: "rotate", delayMs: 1500 }) },
-    )
-    const request = join(dir, "request.json")
-    writeFileSync(request, Schema.encodeSync(RefreshRequest)({ dir, tokenURL, credentialID: `${STORE_PREFIX}alpha` }))
-    const spawn = () => ownedCheckoutBun("tests/store/refresh-worker.ts", {
-      scratchArgs: [request],
-      scratch: { HOME: dir, TMPDIR: dir, XDG_CONFIG_HOME: dir, XDG_CACHE_HOME: dir, XDG_DATA_HOME: dir, XDG_STATE_HOME: dir },
-      external: {}, values: {},
-    })
-    const runs = [spawn(), spawn()]
-    const outputs = await Promise.all(
-      runs.map(async (run) => {
-        const [stdout, stderr] = await Promise.all([new Response(run.stdout).text(), new Response(run.stderr).text()])
-        expect(await run.exited, stderr).toBe(0)
-        const [served, began] = stdout.trim().split(" ")
-        return { served, began: Number(began) }
-      }),
-    )
-    const served = fingerprint(fake.tokens("alpha").access)
-    expect(outputs.map((output) => output.served)).toEqual([served, served])
-    expect(trades()).toBe(1)
-    // Both asked while the other's refresh (1.5 s at the endpoint) could be in flight: a real race.
-    expect(Math.abs(outputs[0]!.began - outputs[1]!.began)).toBeLessThan(1000)
-  }, 30_000)
+  it.live("two processes refreshing the same stale slot at once make one refresh call", () =>
+    Effect.gen(function* () {
+      const released = join(mkdtempSync(join(root, "held-refresh-")), "released")
+      const release = Effect.sync(() => writeFileSync(released, ""))
+      const { dir, fake, tokenURL, trades } = yield* Effect.promise(() => bench(
+        { alpha: fakeAccount() },
+        {
+          expires: stamp() - 1000,
+          token: () => ({ kind: "rotate", beforeAnswer: () => waitUntil("release the held token response", () => existsSync(released), 10_000) }),
+        },
+      ))
+      const held = join(dir, "held")
+      const spawn = (busy: string) => {
+        const request = join(dir, `${busy}.json`)
+        writeFileSync(request, Schema.encodeSync(RefreshRequest)({ dir, tokenURL, credentialID: `${STORE_PREFIX}alpha`, busyFile: join(dir, busy) }))
+        return ownedCheckoutBun("tests/store/refresh-worker.ts", {
+          scratchArgs: [request],
+          scratch: { HOME: dir, TMPDIR: dir, XDG_CONFIG_HOME: dir, XDG_CACHE_HOME: dir, XDG_DATA_HOME: dir, XDG_STATE_HOME: dir },
+          external: {}, values: {},
+        })
+      }
+      const output = (run: ReturnType<typeof spawn>) =>
+        Effect.gen(function* () {
+          const [stdout, stderr, code] = yield* Effect.all([
+            Effect.promise(() => new Response(run.stdout).text()),
+            Effect.promise(() => new Response(run.stderr).text()),
+            Effect.promise(() => run.exited),
+          ], { concurrency: "unbounded" })
+          expect(code, stderr).toBe(0)
+          return stdout.trim()
+        })
+      const outputs = yield* Effect.gen(function* () {
+        const first = spawn("unexpected-first-wait")
+        yield* Effect.promise(() => waitUntil("the first worker to reach the held token endpoint", () => trades() === 1, 10_000))
+        const second = spawn("held")
+        yield* Effect.promise(() => waitUntil("the second worker to see the first worker's SQLite lock held", () => existsSync(held), 10_000))
+        yield* release
+        return yield* Effect.all([output(first), output(second)], { concurrency: "unbounded" })
+      }).pipe(Effect.ensuring(release))
+      const served = fingerprint(fake.tokens("alpha").access)
+      expect(outputs).toEqual([served, served])
+      expect(trades()).toBe(1)
+    }), hangGuard("local-fixture"))
   it.live("a refresh whose write failed is held, and written later only over the login it replaced", () =>
     Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis
