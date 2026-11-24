@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // A usage reading is a set of windows, each REPORTED, ABSENT or UNKNOWN
 // (mods/pool/quota.ts `WindowReading`), through the whole plugin stack: the
 // usage endpoint's answer in each layout, the pace, the request it admits or
