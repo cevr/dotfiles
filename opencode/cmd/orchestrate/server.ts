@@ -476,8 +476,14 @@ const msOf = (time: unknown): number | undefined => {
 const synthetic = (ctx: Plugin.Context) => (input: SteerLive.Synthetic) =>
   ctx.session.synthetic({ ...input, sessionID: input.sessionID as SessionID, metadata: { ...input.metadata } } satisfies SyntheticInput)
 
-/** A dated, zoned time as the model reads it at the configured place. */
-const timeOf = (ms: number, place: Place) => formatNotificationTime(ms, place.timeZone)
+/** The ISO 8601 instant a readable time names: rounded up to the second, as `formatNotificationTime` rounds. */
+const isoOf = (ms: number) => new Date(Math.ceil(ms / 1000) * 1000).toISOString().replace(".000Z", "Z")
+
+/**
+ * A dated, zoned time as the model reads it at the configured place, then its ISO instant in brackets, so a model
+ * that compares or computes with it reads the exact time (review of 0d76ebba: the Eastern wording dropped it).
+ */
+const timeOf = (ms: number, place: Place) => `${formatNotificationTime(ms, place.timeZone)} [${isoOf(ms)}]`
 
 const whoseOf = (whose: string | undefined) => (whose === "codex" ? "the Codex account's" : "the pool's")
 
