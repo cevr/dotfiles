@@ -5,7 +5,7 @@ import { Console, Effect, FileSystem, Option, Path, Schema, Stream } from "effec
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { expect, it } from "effect-bun-test"
 import { BUDGET_MS } from "../sim/seed.ts"
-import { inspectTiming, inspectTimingProject, legacyOwners, relativeTimingTarget, runnerBridges, sourceFile, timingModule } from "./test-timing.ts"
+import { inspectTiming, inspectTimingProject, legacyOwners, runnerBridges, sourceFile, timingModule, timingResolver } from "./test-timing.ts"
 import { measurementKey, unapprovedMeasurements } from "./timing-policy.ts"
 
 const ALLOW = "opencode/scripts/wall-clock-assertions.allow.json"
@@ -61,7 +61,7 @@ const increment = (counts: Map<string, number>, group: Counted["group"], file: s
   counts.set(name, (counts.get(name) ?? 0) + n)
 }
 
-const survey = (texts: ReadonlyMap<string, string>, resolve: (file: string, specifier: string) => string, dynamic: ReadonlySet<string>) => {
+const survey = (texts: ReadonlyMap<string, string>, resolve: ReturnType<typeof timingResolver>, dynamic: ReadonlySet<string>) => {
   const counts = new Map<string, number>()
   const rejected = new Array<string>()
   const measurements = new Array<{ readonly file: string; readonly target: string; readonly budget: string }>()
@@ -116,8 +116,6 @@ const newSites = (before: ReadonlyArray<string>, after: ReadonlyArray<string>) =
   })
 }
 
-const resolvePackage = Option.liftThrowable((specifier: string, directory: string) => Bun.resolveSync(specifier, directory))
-
 const readSources = (root: string, files: ReadonlyArray<string>) => Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
@@ -140,12 +138,7 @@ it.scopedLive("test timings use named runner caps, explicit measurement contract
     const declared = entries(candidate)
     const files = (yield* git("ls-files", "-z", "--cached", "--others", "--exclude-standard")).split("\0").filter(sourceFile)
     const texts = yield* readSources(root, files)
-    const resolve = (file: string, specifier: string) => {
-      if (specifier.startsWith(".")) return relativeTimingTarget(file, specifier, (target) => target === timingModule || texts.has(target))
-      if (specifier.startsWith("node:") || specifier === "bun" || specifier === "bun:test") return specifier
-      const local = Option.map(resolvePackage(specifier, path.dirname(path.join(root, file))), (target) => path.relative(root, target))
-      return Option.getOrElse(Option.filter(local, (target) => texts.has(target)), () => specifier)
-    }
+    const resolve = timingResolver(path, yield* fs.realPath(root))
     const dynamic = new Set(candidate.filter((row) => row.group === "dynamic").map(({ file }) => file))
     const { counts, rejected, measurements } = survey(texts, resolve, dynamic)
     for (const row of candidate) {
@@ -173,7 +166,7 @@ it.scopedLive("test timings use named runner caps, explicit measurement contract
     for (const { file } of candidate.filter((row) => row.group === "legacy")) {
       const before = yield* old.source(file)
       const after = Option.getOrElse(Option.fromUndefinedOr(texts.get(file)), () => "")
-      const sites = (text: string) => legacySites(file, text, (specifier) => resolve(file, specifier), dynamic.has(file))
+      const sites = (text: string) => legacySites(file, text, (specifier) => Option.getOrElse(resolve(file, specifier), () => specifier), dynamic.has(file))
       expect(newSites(sites(before), sites(after)), `${file} contains new legacy timing sites`).toEqual([])
     }
   }).pipe(Effect.provide(BunServices.layer)),

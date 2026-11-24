@@ -1,10 +1,10 @@
-import { Option, Schema } from "effect"
-import { type CallExpression, type Expression, type ParamPattern, parseSync, Visitor } from "oxc-parser"
+import { Option, type Path, Schema } from "effect"
+import { type BindingIdentifier, type CallExpression, type Expression, type ParamPattern, parseSync, Visitor } from "oxc-parser"
 
 export type Program = ReturnType<typeof parseSync>["program"]
 export type Statement = Program["body"][number]
 type Argument = CallExpression["arguments"][number]
-type Resolve = (file: string, specifier: string) => string
+export type TimingResolver = (file: string, specifier: string) => Option.Option<string>
 
 const runtimeExpression = (node: Expression): Expression => {
   switch (node.type) {
@@ -37,39 +37,58 @@ export const testFile = (file: string) =>
   /^(?:opencode\/(?:tests|scenarios|testbeds|sim|sim-tui)\/|workbox\/test\/)/.test(file) ||
   /\/(?:fake-[^/]+|(?:[^/]+[.-])?laws|fixture|test-(?:support|helper|util)s?)\.[cm]?[jt]sx?$/.test(file)
 
-const extensions = [".tsx", ".ts", ".jsx", ".js", ".mts", ".mjs", ".cts", ".cjs"]
-export const relativeTimingTarget = (file: string, specifier: string, exists: (file: string) => boolean) => {
-  const path = new URL(specifier, `file:///${file}`).pathname.slice(1)
-  const candidates = [path, path.replace(/\.[cm]?jsx?$/, ".ts"), path.replace(/\.jsx$/, ".tsx"),
-    ...extensions.map((extension) => path + extension), ...extensions.map((extension) => `${path}/index${extension}`)]
-  return Option.getOrElse(Option.fromUndefinedOr(candidates.find(exists)), () => path)
+const resolveBun = Option.liftThrowable((specifier: string, directory: string) => Bun.resolveSync(specifier, directory))
+const localSpecifier = (specifier: string) => /^(?:\.{1,2}(?:\/|$)|\/|file:)/.test(specifier)
+
+/** Bun decides whether and where a name resolves; preserve external package identities. */
+export const timingResolver = (path: Path.Path, root: string): TimingResolver => {
+  const cache = new Map<string, Option.Option<string>>()
+  return (file, specifier) => {
+    const directory = path.dirname(path.join(root, file))
+    const key = `${directory}\0${specifier}`
+    return Option.getOrElse(Option.fromUndefinedOr(cache.get(key)), () => {
+      const found = Option.map(resolveBun(specifier, directory), (target) => {
+        if (!path.isAbsolute(target) || target.includes("/node_modules/")) return specifier
+        // An import query distinguishes Bun module instances, not source files.
+        const query = target.indexOf("?")
+        if (query === -1) return path.relative(root, target)
+        return path.relative(root, target.slice(0, query))
+      })
+      cache.set(key, found)
+      return found
+    })
+  }
 }
 
 const staticSources = (program: Program) => program.body.flatMap((node) => {
-  if (node.type === "ImportDeclaration" && node.importKind !== "type") return [node.source.value]
-  if ((node.type === "ExportNamedDeclaration" || node.type === "ExportAllDeclaration") && node.source && node.exportKind !== "type")
-    return [node.source.value]
+  if (node.type === "ImportDeclaration") return [node.source]
+  if ((node.type === "ExportNamedDeclaration" || node.type === "ExportAllDeclaration") && node.source)
+    return [node.source]
   return []
 })
 
 /** Use runner-discovered test roots and explicitly designated test-support roots.
  * Follow every local static edge, including export-from, with no filename test
  * on descendants. Other reached files receive only the producer rules. */
-export const timingSources = (texts: ReadonlyMap<string, string>, resolve: Resolve) => {
+export const timingSources = (texts: ReadonlyMap<string, string>, resolve: TimingResolver) => {
   const queue = [...texts.keys()].filter((file) => /^(?:opencode\/|workbox\/test\/)/.test(file) && testFile(file))
   const visited = new Set(queue)
-  const files = new Map<string, { readonly source: string; readonly program: Program; readonly producerOnly: boolean }>()
+  const files = new Map<string, { readonly program: Program; readonly producerOnly: boolean; readonly missing: ReadonlyArray<Span> }>()
   for (const file of queue) {
     const read = Option.fromUndefinedOr(texts.get(file))
     if (Option.isNone(read)) continue
     const source = read.value
     const program = parseSync(file, source).program
-    files.set(file, { source, program, producerOnly: !testFile(file) })
+    const missing: Array<Span> = []
+    files.set(file, { program, producerOnly: !testFile(file), missing })
     for (const specifier of staticSources(program)) {
-      const target = resolve(file, specifier)
-      if (!texts.has(target) || visited.has(target)) continue
-      visited.add(target)
-      queue.push(target)
+      const target = resolve(file, specifier.value)
+      if (!localSpecifier(specifier.value)) continue
+      if (Option.isNone(target)) missing.push(specifier)
+      else if (texts.has(target.value) && !visited.has(target.value)) {
+        visited.add(target.value)
+        queue.push(target.value)
+      }
     }
   }
   return files
@@ -78,6 +97,19 @@ export const timingSources = (texts: ReadonlyMap<string, string>, resolve: Resol
 const arrayElements = (node: Expression): boolean => {
   const value = runtimeExpression(node)
   return value.type === "ArrayExpression" && value.elements.some((item) => item?.type !== "SpreadElement")
+}
+
+const readonlyTuple = (node: Expression): boolean => {
+  if (node.type === "ParenthesizedExpression") return readonlyTuple(node.expression)
+  if (node.type !== "TSAsExpression") return false
+  const type = node.typeAnnotation
+  return type.type === "TSTypeReference" && type.typeName.type === "Identifier" && type.typeName.name === "const" &&
+    node.expression.type === "ArrayExpression" && arrayElements(node.expression)
+}
+
+const keepsReadonly = (binding: BindingIdentifier) => {
+  const annotation = binding.typeAnnotation?.typeAnnotation
+  return !annotation || annotation.type === "TSTypeOperator" && annotation.operator === "readonly" && annotation.typeAnnotation.type === "TSTupleType"
 }
 
 type Span = { readonly start: number; readonly end: number }
@@ -99,9 +131,9 @@ const boundNames = (pattern: ParamPattern): ReadonlyArray<string> => {
 interface Scope { readonly span: Span; readonly functionLevel: boolean }
 interface Declared { readonly declaring: Span; readonly scope: Span; readonly nonempty: boolean }
 
-/** This is evidence about nonemptiness, not evaluation: imported/computed
- * values and ambiguous bindings never prove that Date has an argument. */
-export const dateArguments = (program: Program) => {
+/** A spread is evidence only if the array is inline or a readonly local tuple.
+ * A plain const array can lose elements even though the binding cannot change. */
+export const calendarArgument = (program: Program) => {
   const bindings = new Map<string, Array<Declared>>()
   const scopes: Array<Scope> = [{ span: program, functionLevel: true }]
   const scoped = (functionOnly = false) => Option.getOrElse(
@@ -141,7 +173,7 @@ export const dateArguments = (program: Program) => {
     VariableDeclaration(node) {
       const scope = scoped(node.kind === "var")
       for (const { id, init } of node.declarations) {
-        const nonempty = node.kind === "const" && id.type === "Identifier" && Boolean(init && arrayElements(init))
+        const nonempty = node.kind === "const" && id.type === "Identifier" && keepsReadonly(id) && Boolean(init && readonlyTuple(init))
         note(id, node, scope, nonempty)
       }
     },

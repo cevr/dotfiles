@@ -4,9 +4,9 @@ import { Option, Schema } from "effect"
 import { type CallExpression, type Expression, parseSync, Visitor } from "oxc-parser"
 import { HANG_GUARDS, isProductBudget } from "../tests/hang-guard.ts"
 import { WAIT_MS } from "../tests/wait.ts"
-import { dateArguments, moduleText, type Program, type Statement, timingSources } from "./timing-syntax.ts"
+import { calendarArgument, moduleText, type Program, type Statement, type TimingResolver, timingSources } from "./timing-syntax.ts"
 
-export { relativeTimingTarget, sourceFile, testFile } from "./timing-syntax.ts"
+export { sourceFile, testFile, timingResolver } from "./timing-syntax.ts"
 
 export interface Span {
   readonly start: number
@@ -483,7 +483,7 @@ const inspectFull = (file: string, program: Program, resolve: (specifier: string
     for (const parameter of node.params) inspectBridgeBinding(file, names, parameter)
   }
   const key = (node: Span, computed: boolean) => { if (!computed) names.mark(node) }
-  const hasArgument = dateArguments(program)
+  const isCalendarArgument = calendarArgument(program)
   inspectDeclarations(file, names, program, resolve)
   new Visitor({
     CallExpression(node) {
@@ -503,7 +503,7 @@ const inspectFull = (file: string, program: Program, resolve: (specifier: string
         names.mark(node.callee)
         names.reject("R2", node.callee, "dynamic code generation cannot introduce a guarded acquisition")
       }
-      if (node.callee.name === "Date" && node.arguments.some(hasArgument)) names.mark(node.callee)
+      if (node.callee.name === "Date" && node.arguments.length > 0 && node.arguments.every(isCalendarArgument)) names.mark(node.callee)
     },
     TSTypeReference(node) { types.push(node.typeName) },
     TSTypeQuery(node) { types.push(node.exprName) },
@@ -574,14 +574,19 @@ const inspectProducer = (file: string, program: Program, resolve: (specifier: st
   return { errors: names.errors, uses: [] }
 }
 
-export const inspectTimingProject = (texts: ReadonlyMap<string, string>, resolve: (file: string, specifier: string) => string,
+export const inspectTimingProject = (texts: ReadonlyMap<string, string>, resolve: TimingResolver,
   dynamic: ReadonlySet<string> = new Set()) => {
   const results = new Map<string, Inspection>()
-  for (const [file, { program, producerOnly }] of timingSources(texts, resolve)) {
+  for (const [file, { program, producerOnly, missing }] of timingSources(texts, resolve)) {
     if (file === timingModule) continue
-    const from = (specifier: string) => resolve(file, specifier)
-    if (producerOnly) results.set(file, inspectProducer(file, program, from))
-    else results.set(file, inspectFull(file, program, from, dynamic.has(file)))
+    const from = (specifier: string) => Option.getOrElse(resolve(file, specifier), () => specifier)
+    const inspect = () => {
+      if (producerOnly) return inspectProducer(file, program, from)
+      return inspectFull(file, program, from, dynamic.has(file))
+    }
+    const verdict = inspect()
+    const errors = [...verdict.errors, ...missing.map((at): Site => ({ rule: "R1", at, reason: "unresolvable local import in test-side code" }))]
+    results.set(file, { ...verdict, errors })
   }
   return results
 }

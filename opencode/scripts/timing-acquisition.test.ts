@@ -1,6 +1,9 @@
-// @reads test-timing.ts ../tests/hang-guard.ts
+// @reads test-timing.ts timing-syntax.ts ../tests/hang-guard.ts
+import * as BunServices from "@effect/platform-bun/BunServices"
 import { expect, test } from "bun:test"
-import { inspectTimingProject, relativeTimingTarget, simulationBudgetModule, timingModule } from "./test-timing.ts"
+import { Effect, FileSystem, Option, Path } from "effect"
+import { it } from "effect-bun-test"
+import { inspectTiming, inspectTimingProject, simulationBudgetModule, timingModule, timingResolver } from "./test-timing.ts"
 import { measurementKey, unapprovedMeasurements } from "./timing-policy.ts"
 
 // The seam is a project of test-side files: reject at acquisition, even if
@@ -65,38 +68,94 @@ const grammar: ReadonlyArray<readonly [string, (s: Subject, use: (ref: string) =
   ["argument", (s, use) => ({ [file]: s.acquire + `const x = wrap(${s.name});` + use("x") })],
 ]
 
-const problems = (project: Project) => {
-  const files = new Map(Object.entries(project))
-  const result = inspectTimingProject(files, (from, specifier) => {
-    if (!specifier.startsWith(".")) return specifier
-    return relativeTimingTarget(from, specifier, (target) => files.has(target) || target === timingModule || target === simulationBudgetModule)
-  })
-  return [...result].flatMap(([path, verdict]) => verdict.errors.map((issue) => ({ path, ...issue })))
-}
+const writeProject = (root: string, project: Project) => Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
+  for (const [file, source] of Object.entries(project)) {
+    const absolute = path.join(root, file)
+    yield* fs.makeDirectory(path.dirname(absolute), { recursive: true })
+    yield* fs.writeFileString(absolute, source)
+  }
+})
 
-test("closed timing acquisitions decide every generated project at its introduction", () => {
+const projectProblems = (project: Project) => Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
+  const root = yield* fs.makeTempDirectoryScoped({ prefix: "timing-project-" }).pipe(Effect.flatMap(fs.realPath))
+  yield* writeProject(root, { [timingModule]: "", [simulationBudgetModule]: "", ...project })
+  const result = inspectTimingProject(new Map(Object.entries(project)), timingResolver(path, root))
+  return [...result].flatMap(([path, verdict]) => verdict.errors.map((issue) => ({ path, ...issue })))
+})
+
+const resolveSnippet = (specifier: string) => {
+  if (specifier === "../tests/hang-guard.ts") return timingModule
+  if (specifier === "./budget.ts") return simulationBudgetModule
+  return specifier
+}
+const problems = (project: Project) => Object.entries(project).flatMap(([path, source]) =>
+  inspectTiming(path, source, resolveSnippet).errors)
+
+it.scopedLive.layer(BunServices.layer)("closed timing acquisitions decide every generated project at its introduction", () => Effect.gen(function* () {
   for (const subject of subjects) {
     for (const [form, syntax] of grammar) {
       for (const [use, conforms] of [[subject.good, true], [subject.bad, false]] as const) {
-        const issues = problems(syntax(subject, use))
+        const issues = yield* projectProblems(syntax(subject, use))
         const message = `${subject.rule} ${form}, harmless use ${conforms}`
         if ((form === "direct" || form === "side-effect then direct") && conforms) expect(issues, message).toEqual([])
         else expect(issues.some(({ path, rule }) => rule === subject.rule && (!form.endsWith("re-export") || path === first)), message).toBe(true)
       }
     }
   }
-})
+}))
 
-test("only producers in the static import closure are judged, and they keep product clocks", () => {
+it.scopedLive.layer(BunServices.layer)("only producers in the static import closure are judged, and they keep product clocks", () => Effect.gen(function* () {
   const unrelated = { [first]: 'export { test as scenario } from "bun:test";', [file]: 'import "./plain.ts";', "opencode/scripts/plain.ts": "export const x = 0;" }
-  expect(problems(unrelated)).toEqual([])
+  expect(yield* projectProblems(unrelated)).toEqual([])
   const reached = { [file]: 'import "../mods/cache/bench";', [first]: 'import { performance } from "node:perf_hooks"; export const clock = () => performance.now();' }
-  expect(problems(reached)).toEqual([])
+  expect(yield* projectProblems(reached)).toEqual([])
   const wrapper = { ...reached, [first]: 'import { measured as time } from "../../tests/hang-guard.ts"; export const scenario = () => time("x", "< 1 ms", fn);' }
-  expect(problems(wrapper).map(({ path, rule }) => [path, rule])).toEqual([[first, "R3"]])
+  expect((yield* projectProblems(wrapper)).map(({ path, rule }) => [path, rule])).toEqual([[first, "R3"]])
   const clockExport = { ...reached, [first]: 'import { performance as clock } from "node:perf_hooks"; export { clock };' }
-  expect(problems(clockExport).map(({ path, rule }) => [path, rule])).toEqual([[first, "R2"]])
-})
+  expect((yield* projectProblems(clockExport)).map(({ path, rule }) => [path, rule])).toEqual([[first, "R2"]])
+  const queried = { ...clockExport, [file]: 'import "../mods/cache/bench.js?instance=1";' }
+  expect((yield* projectProblems(queried)).map(({ path, rule }) => [path, rule])).toEqual([[first, "R2"]])
+}))
+
+it.scopedLive.layer(BunServices.layer)("each extension mapping Bun discovers reaches the producer through two hops", () => Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
+  const root = yield* fs.makeTempDirectoryScoped({ prefix: "timing-bun-mappings-" }).pipe(Effect.flatMap(fs.realPath))
+  const extensions = ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"]
+  const probe = Option.liftThrowable((specifier: string) => Bun.resolveSync(specifier, root))
+  const verified = new Set<string>()
+  for (const target of extensions) {
+    const basename = `bench-${target}`
+    yield* fs.writeFileString(path.join(root, `${basename}.${target}`), "")
+    for (const requested of ["", ...extensions]) {
+      if (requested === target) continue
+      const suffix = requested && `.${requested}`
+      const spec = `./${basename}${suffix}`
+      if (!Option.contains(probe(spec), path.join(root, `${basename}.${target}`))) continue
+      const producer = `opencode/mods/cache/bench.${target}`
+      const issues = yield* projectProblems({
+        [file]: 'import { scenario } from "../mods/cache/bridge.mts"; scenario("over cap", () => {}, 55);',
+        "opencode/mods/cache/bridge.mts": `export { scenario } from "./bench${suffix}";`,
+        [producer]: 'export { test as scenario } from "bun:test";',
+      })
+      const mapping = `${requested} → ${target}`
+      expect(issues.map(({ path, rule }) => [path, rule]), mapping).toEqual([[producer, "R1"]])
+      verified.add(mapping)
+    }
+  }
+  expect(verified.has("mjs → mts")).toBe(true)
+}))
+
+it.scopedLive.layer(BunServices.layer)("missing local imports fail at the edge rather than vanishing from the closure", () => Effect.gen(function* () {
+  const direct = yield* projectProblems({ [file]: 'import "./missing.mjs"; import external from "external-package";' })
+  const transit = yield* projectProblems({ [file]: 'import "../mods/cache/bench";', [first]: 'export { scenario } from "./missing";' })
+  for (const [path, issues] of [[file, direct], [first, transit]] as const)
+    expect(issues.map((issue) => [issue.path, issue.reason])).toEqual([[path, "unresolvable local import in test-side code"]])
+}))
 
 test("other legal direct forms do not acquire a runner or a real clock as a value", () => {
   const source = [
@@ -143,10 +202,10 @@ test("module acquisition depends on the exported binding, not its spelling", () 
 test("a spread into Date must provably contribute a calendar argument", () => {
   for (const code of [
     'const civil = [2020, 0, 1] as const; new Date(...civil)',
-    'const civil: [number, number, number] = [2020, 0, 1]; new Date(...civil)',
+    'const civil: readonly [number, number, number] = [2020, 0, 1] as const; new Date(...civil)',
     'new Date(...[2020, 0, 1])',
-    'const civil = [2020, 0, 1]; { const civil = []; } new Date(...civil)',
-    'const civil = []; { const civil = [2020, 0, 1]; new Date(...civil); }',
+    'const civil = [2020, 0, 1] as const; { const civil = []; } new Date(...civil)',
+    'const civil = []; { const civil = [2020, 0, 1] as const; new Date(...civil); }',
   ]) expect(problems({ [file]: code }), code).toEqual([])
   for (const code of [
     'new Date(...[])',
@@ -154,8 +213,13 @@ test("a spread into Date must provably contribute a calendar argument", () => {
     'const civil = parts(); new Date(...civil)',
     'const civil = [...parts()]; new Date(...civil)',
     'const civil = []; new Date(...civil)',
-    'const civil = [2020, 0, 1]; function date({ civil }) { new Date(...civil); }',
-    'const civil = [2020, 0, 1]; function date() { if (fixed) { var civil = []; } new Date(...civil); }',
+    'const civil: [number, number, number] = [2020, 0, 1]; new Date(...civil)',
+    'const civil: [number, number, number] = [2020, 0, 1] as const; civil.pop(); new Date(...civil)',
+    'const values = [2000]; values.pop(); new Date(...values)',
+    'const civil = [2020, 0, 1]; new Date(...civil)',
+    'const civil = [0, 1]; new Date(2020, ...civil)',
+    'const civil = [2020, 0, 1] as const; function date({ civil }) { new Date(...civil); }',
+    'const civil = [2020, 0, 1] as const; function date() { if (fixed) { var civil = []; } new Date(...civil); }',
   ]) expect(problems({ [file]: code }).map(({ rule }) => rule), code).toEqual(["R2"])
 })
 
