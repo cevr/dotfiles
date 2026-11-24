@@ -145,4 +145,9 @@ if [ -e "$current_tree/opencode/cmd/rex/show.ts" ]; then
   mv -f "$local_bin_dir/rex-show.$$" "$local_bin_dir/rex-show"
 fi
 
+if [ -e "$current_tree/opencode/cmd/guard/host-admit.ts" ]; then
+  ln -sf "$current_tree/opencode/cmd/guard/host-admit.ts" "$local_bin_dir/host-admit.$$"
+  mv -f "$local_bin_dir/host-admit.$$" "$local_bin_dir/host-admit"
+fi
+
 [ -z "$owned" ] || exit 1
