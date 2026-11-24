@@ -15,6 +15,7 @@
 // to answer from, and whom to ask when they do not settle it). A question put
 // to a session that closes unanswered is a one-line notice to it
 // (`withdrawnOf`), which does not wake it.
+import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import { Array as Arr, Option, Predicate } from "effect"
 import { type Choice, MAX_OPEN, matches, type Question, type Reason, refOf, type Row } from "./question.ts"
 
@@ -70,7 +71,7 @@ export const LINE_ANSWER_OF_MANY = 20
 export const listed = (items: ReadonlyArray<string>): string =>
   items.length <= 1 ? (items[0] ?? "") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`
 
-const asked = (question: Question) => new Date(question.askedAt).toISOString()
+const asked = (question: Question) => formatNotificationTime(question.askedAt)
 
 const textOfOne = ({ question, answer }: Answered, same: boolean) =>
   [

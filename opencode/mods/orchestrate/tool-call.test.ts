@@ -31,7 +31,7 @@ import {
 const FRIDAY_EVENING = "2026-10-30T23:00:00Z"
 /** Wednesday 4 November 2026, 10:00 in Knowlton. */
 const WEDNESDAY = "2026-11-04T15:00:00Z"
-const SABBATH = /^It is the Sabbath; agent work resumes at Sat 18:\d\d \(30 min after sunset, Knowlton, QC\)\.$/
+const SABBATH = /^It is the Sabbath; agent work resumes at Oct 31, 2026, 6:\d{2}:\d{2} PM EDT \(30 min after sunset, Knowlton, QC\)\.$/
 
 const story = Story.make(ToolCall)
 const run = (...steps: Parameters<typeof story>) => Effect.runPromise(story(...steps))

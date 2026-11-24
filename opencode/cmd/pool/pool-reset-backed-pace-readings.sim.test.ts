@@ -6,6 +6,37 @@ import { simulationRunner } from "../../sim/seed.ts"
 
 const { seeded } = simulationRunner("cmd/pool/pool-reset-backed-pace-readings.sim.test.ts")
 
+seeded("a weekly-only account spends its observed reset recovery on an Opus request", ({ expect }) =>
+  Effect.gen(function* () {
+    const made = fixture({ a: quota(1, 0.68) }, refunds, Option.some("a"))
+    made.fiveHourRemoved = true
+    const { world, session, pace, primary, claims } = yield* fleet(made)
+    const id = yield* session("weekly_only")
+    yield* pace(id)
+    yield* world.advance(20_000)
+    expect(claims()).toEqual(["reset"])
+    expect(yield* pace(id)).toMatchObject({ ok: true, measured: true, admission: "backed", eligible: ["a"] })
+    yield* world.prompt(id, "use the weekly quota the reset gave back")
+    yield* world.until(() => primary().length > 0, HOUR)
+    expect(primary().map((request) => [request.account, request.model])).toEqual([["a", "claude-opus-5-5"]])
+  }),
+)
+
+seeded("weekly-only Fable requests continue through response headers that omit the removed limit", ({ expect }) =>
+  Effect.gen(function* () {
+    const made = fixture({ a: quota(0.2, 0.1) }, refunds)
+    made.fiveHourRemoved = true
+    const { world, session, primary } = yield* fleet(made, { model: "claude-fable-5-2", sweepMinutes: 0 })
+    const id = yield* session("weekly_only_fable")
+    yield* world.prompt(id, "start on a weekly-only account")
+    yield* world.until(() => primary().length === 1, HOUR)
+    yield* world.advance(200)
+    yield* world.prompt(id, "continue after headers that carry no five-hour window")
+    yield* world.until(() => primary().length === 2, HOUR)
+    expect(primary().map((request) => [request.account, request.model])).toEqual([["a", "claude-fable-5-2"], ["a", "claude-fable-5-2"]])
+  }),
+)
+
 // ── A claim the provider's reporting has not caught up with ──
 // The claim went through (`reset`) and the reading right after it is fresh but
 // unchanged. The claim stays pending, within its bounded observation interval,

@@ -82,12 +82,14 @@ export interface Fixture {
   used: boolean
   /** The usage endpoint answers 429 (a read that fails). */
   unavailable: boolean
+  /** The usage endpoint explicitly reports removal of the account's five-hour limit. */
+  fiveHourRemoved: boolean
   /** What a claim does to the readings, and the outcome the provider answers. */
   readonly onClaim: (account: string) => FakeClaimResult
 }
 
 export const fixture = (reading: Record<string, FakeQuota>, onClaim: (fixture: Fixture, account: string) => FakeClaimResult, credit: Option.Option<string> = Option.none()): Fixture => {
-  const made: Fixture = { reading, credit, used: false, unavailable: false, onClaim: (account) => onClaim(made, account) }
+  const made: Fixture = { reading, credit, used: false, unavailable: false, fiveHourRemoved: false, onClaim: (account) => onClaim(made, account) }
   return made
 }
 
@@ -130,7 +132,19 @@ export const fleet = (made: Fixture, options: { readonly beside?: World.World; r
     const fetch: typeof provider.fetch = (url, init) => {
       const target = new URL(String(url))
       if (made.unavailable && target.pathname === "/api/oauth/usage") target.pathname = "/nonexistent/loop-probe-x"
-      return provider.fetch(target, init)
+      return provider.fetch(target, init).then((response) => {
+        if (!made.fiveHourRemoved || !response.ok) return response
+        if (target.pathname === "/api/oauth/usage") return response.json().then((body) => Response.json({
+          ...body,
+          five_hour: Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Null))("null"),
+          limits: body.limits?.filter((limit: { group: string }) => limit.group !== "session"),
+          weekly_scoped_shares: body.weekly_scoped_shares?.map((share: { limit_index: number }) => ({ ...share, limit_index: share.limit_index - 1 })),
+        }))
+        const headers = new Headers(response.headers)
+        headers.delete("anthropic-ratelimit-unified-5h-utilization")
+        headers.delete("anthropic-ratelimit-unified-5h-reset")
+        return new Response(response.body, { status: response.status, headers })
+      })
     }
     const sessionDirectory = Option.getOrElse(Option.filter(Option.some(OTHER), () => options.anotherDirectory === true), () => WORK)
     yield* world.load(Plugins.anthropicAuth({ ...provider, fetch }), { directory: sessionDirectory })

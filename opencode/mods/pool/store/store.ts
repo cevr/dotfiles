@@ -73,6 +73,7 @@ import { open, rename, rm } from "node:fs/promises"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { basename, dirname, join, resolve } from "node:path"
 import { Clock, Context, Effect, Logger, Option, Schema } from "effect"
+import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 
 /** The token endpoint Claude Code and the Anthropic auth plugin refresh at, and Claude Code's public client id. */
 export const CLAUDE_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
@@ -977,7 +978,7 @@ export class StoreSource {
         return Effect.fail(
           failure(
             "unavailable",
-            `The store account "${label}" could not refresh: the token endpoint asked to wait until ${new Date(paused).toISOString()}`,
+            `The store account "${label}" could not refresh: the token endpoint asked to wait until ${formatNotificationTime(paused)}`,
             paused,
           ),
         )

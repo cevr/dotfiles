@@ -162,6 +162,8 @@ export const QuotaReading = Schema.Struct({
   at: Schema.Number,
   /** The latest successful usage endpoint sample and the number of distinct confirmed samples (capped at two). */
   usage: Schema.optionalKey(UsageEvidence),
+  /** When the usage endpoint explicitly reported no five-hour limit. Partial headers cannot establish or renew this evidence. */
+  fiveHourAbsentAt: Schema.optionalKey(Schema.Finite),
   status: Schema.optionalKey(QuotaStatus),
   windows: Schema.Array(QuotaWindow),
   refusal: Schema.optionalKey(QuotaRefusal),
@@ -215,6 +217,10 @@ const usageEvidence = (previous: Option.Option<typeof UsageEvidence.Type>, incom
 export const carryOver = (held: QuotaReading | undefined, next: QuotaReading): QuotaReading => {
   if (held === undefined) return next
   const named = new Set(next.windows.map((window) => window.name))
+  const fiveHourAbsentAt = Option.fromUndefinedOr(next.fiveHourAbsentAt).pipe(
+    Option.orElse(() => Option.fromUndefinedOr(held.fiveHourAbsentAt)),
+    Option.filter(() => !named.has("5h")),
+  )
   // Carried windows and resets keep the time they were read: a claim no one asked for needs each fresh (resets.ts `freshView`).
   const kept = held.windows
     .filter((window) => !accountWide(window) && !named.has(window.name))
@@ -224,10 +230,11 @@ export const carryOver = (held: QuotaReading | undefined, next: QuotaReading): Q
     Option.map((resets) => ({ ...resets, at: Option.getOrElse(Option.fromUndefinedOr(resets.at), () => held.at) })),
   )
   const usage = usageEvidence(Option.fromUndefinedOr(held.usage), Option.fromUndefinedOr(next.usage))
-  if (kept.length === 0 && Option.isNone(resets) && Option.isNone(usage)) return next
+  if (kept.length === 0 && Option.isNone(resets) && Option.isNone(usage) && Option.isNone(fiveHourAbsentAt)) return next
   return {
     ...next,
     windows: [...next.windows, ...kept],
+    ...Option.match(fiveHourAbsentAt, { onNone: () => ({}), onSome: (fiveHourAbsentAt) => ({ fiveHourAbsentAt }) }),
     ...Option.match(resets, { onNone: () => ({}), onSome: (resets) => ({ resets }) }),
     ...Option.match(usage, { onNone: () => ({}), onSome: (usage) => ({ usage }) }),
   }
@@ -240,6 +247,11 @@ const finite = (value: unknown): value is number => typeof value === "number" &&
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null
 
 const asUsage = Schema.decodeUnknownOption(UsageEvidence)
+const asFinite = Schema.decodeUnknownOption(Schema.Finite)
+
+/** A removed limit's evidence cannot postdate its reading or contradict a reported limit. */
+const validFiveHourAbsence = (value: Option.Option<number>, at: number, windows: ReadonlyArray<QuotaWindow>) =>
+  Option.filter(value, (absent) => absent <= at && !windows.some((window) => window.name === "5h"))
 
 /** Resets from another plugin, checked field by field; a malformed credit is left out. */
 const asResets = (value: unknown): QuotaResets | undefined => {
@@ -295,8 +307,10 @@ export function asReading(value: unknown): QuotaReading | undefined {
   const status = value.status
   const resets = asResets(value.resets)
   const usage = asUsage(value.usage)
+  const absent = validFiveHourAbsence(asFinite(value.fiveHourAbsentAt), value.at, windows)
   return {
     at: value.at,
+    ...Option.match(absent, { onNone: () => ({}), onSome: (fiveHourAbsentAt) => ({ fiveHourAbsentAt }) }),
     ...Option.match(usage, { onNone: () => ({}), onSome: (usage) => ({ usage }) }),
     ...(isStatus(status) ? { status } : {}),
     windows,

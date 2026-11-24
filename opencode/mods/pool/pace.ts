@@ -11,11 +11,12 @@
 // share of one account's week until it has, so a wave on one host holds the
 // next start on any host before the readings show it.
 import { Array as Arr, DateTime, Match, Option, Schema } from "effect"
+import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import type { RequestKind } from "./accounts.ts"
 import { futureRetryAt, holdRecheckAt, pendingRecoveryAt, type FutureRetryAt } from "./hold.ts"
 import { DEFINED_MODEL_WINDOWS, limitsModel, SCOPE_REPORT_SAMPLES, scopeOf } from "./quota.ts"
 import type { AccountStatus } from "./status.ts"
-import { byCount, holdsAt, iso, signInReason, tryAgainAt, used } from "./usage-text.ts"
+import { byCount, holdsAt, signInReason, tryAgainAt, used } from "./usage-text.ts"
 
 /** A share to a tenth of a percent: `0.567` → `56.7%`. */
 const tenth = (share: number) => `${(100 * share).toFixed(1)}%`
@@ -300,7 +301,7 @@ function budgetPace(
       ok: false,
       measured: true,
       reason: scoped
-        ? `every pool account is held or has ${model}'s own weekly window (${names.join(", ")}) at ${used(1)}: a ${model} start ${holdsAt(1)} there; the first resets ${iso(retryAt)}`
+        ? `every pool account is held or has ${model}'s own weekly window (${names.join(", ")}) at ${used(1)}: a ${model} start ${holdsAt(1)} there; the first resets ${formatNotificationTime(retryAt)}`
         : "all pool accounts are held",
       retryAt,
       reasonCode: Match.value(scoped).pipe(Match.when(true, () => "model-limit" as const), Match.orElse(() => "account-held" as const)),
@@ -318,7 +319,7 @@ function budgetPace(
     return {
       ok: false,
       measured: true,
-      reason: `every pool account is at a hold line: its 5-hour window at ${used(SHORT_5H)} or more, or its week at ${used(TARGET)} or more; the first resets ${iso(retryAt)}`,
+      reason: `every pool account is at a hold line: its 5-hour window at ${used(SHORT_5H)} or more, or its week at ${used(TARGET)} or more; the first resets ${formatNotificationTime(retryAt)}`,
       retryAt,
       reasonCode: "quota-limit",
       admission: "held",
@@ -444,6 +445,8 @@ export const evidenceGap = (
   const gapOf = (name: string): Option.Option<Gap> =>
     Option.match(windowOf(account, name), {
       onNone: () => {
+        if (name === "5h" && Option.exists(Option.fromUndefinedOr(known.value.fiveHourAbsentAt), (at) =>
+          at <= now && now - at <= STALE_AFTER_MS)) return Option.none()
         const model = Option.fromUndefinedOr(scopeOf(name))
         const usage = Option.fromUndefinedOr(known.value.usage)
         const refreshAt = Option.getOrElse(Option.map(usage, (sample) => sample.at + UNREAD_RETRY_MS), () => now)
@@ -464,7 +467,7 @@ export const evidenceGap = (
         const at = Option.filter(reset, (time) => Option.isSome(DateTime.make(time)))
         const rolled = !Option.exists(at, (time) => time > Math.max(now, seen))
         if (!rolled && Option.exists(at, (time) => time <= now + duration + RESET_SLACK_MS)) return Option.none()
-        const named = Option.getOrElse(Option.map(at, iso), () => "unread")
+        const named = Option.getOrElse(Option.map(at, formatNotificationTime), () => "unread")
         return Option.some(Unread.make({ why: `its ${name} window's reset (${named}) is not within the next ${span}`, stale: rolled }))
       },
     })
@@ -566,7 +569,7 @@ export function dispatchPace(
   if (Option.isSome(refusal)) return refusal.value
   const { fresh, gaps, heldUnread } = splitEvidence(accounts, now, required)
   const scoped = Arr.match(required, { onEmpty: () => "", onNonEmpty: (names) => `, and ${names.join(", ")} read as freshly` })
-  const needs = `its weekly and 5-hour windows read in the last ${Math.round(STALE_AFTER_MS / 60_000)} min with valid resets${scoped}`
+  const needs = `its weekly and any applicable 5-hour windows read in the last ${Math.round(STALE_AFTER_MS / 60_000)} min with valid resets${scoped}`
   const lacking = [...new Set(gaps.map(gapText))].join("; ")
   const unavailable = gaps.length > 0 && gaps.every((gap) => gap._tag === "Unreported")
   const evidenceTime = gaps.map((gap) => Match.value(gap).pipe(Match.tagsExhaustive({
