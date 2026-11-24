@@ -1,5 +1,5 @@
 // @reads all
-// @reads-reason computed read at ../workbox/test/workrift.test.ts: expect(existsSync(calls)).toBe(false)
+// @reads-reason subprocess reads at ../workbox/test/workrift.test.ts: const child = Bun.spawn(
 // workbox/bin/workrift, run for real in a scratch HOME with a bare origin, a
 // no-op `flock` (macOS has none) and WORKRIFT_ROOT inside the scratch folder.
 // It runs over the `work` binary WORK_BIN names (a backend file, when there is

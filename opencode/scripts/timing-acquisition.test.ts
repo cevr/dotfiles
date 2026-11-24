@@ -1,4 +1,5 @@
-// @reads test-timing.ts timing-syntax.ts ../tests/hang-guard.ts
+// @reads all
+// @reads-reason computed module resolver reads at scripts/timing-acquisition.test.ts: const probe = Option.liftThrowable((specifier: string) => Bun.resolveSync(specifier, root))
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { expect, test } from "bun:test"
 import { Effect, FileSystem, Option, Path, Schema, Stream } from "effect"

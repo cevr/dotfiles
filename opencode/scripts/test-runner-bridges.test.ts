@@ -1,4 +1,3 @@
-// @reads sim/seed.ts sim/budget.ts sim-tui/effect-test.ts sim-tui/bridge-hang.fixture.ts mods/work/laws.ts tests/rifts-law-hang.fixture.ts tests/hang-guard.ts tests/global-slot.ts
 import { expect, test } from "bun:test"
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Effect, FileSystem, Option, Stream } from "effect"

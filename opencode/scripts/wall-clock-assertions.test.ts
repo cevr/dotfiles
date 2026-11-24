@@ -1,5 +1,6 @@
+// @reads all
+// @reads-reason computed read at scripts/wall-clock-assertions.test.ts: const candidate = yield* Effect.when(fs.readFileString(absolute).pipe(Effect.flatMap(decodeProc
 // Test timing: require the named runner cap and ban raw clock sources in test code.
-// @reads **/*.ts **/*.tsx **/*.mts **/*.cts **/*.js **/*.jsx **/*.mjs **/*.cjs **/*.json ../workbox/test/** ../package.json ../tsconfig*.json
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Console, Effect, FileSystem, Option, Path, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
