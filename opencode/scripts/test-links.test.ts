@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at scripts/test-links.ts: const physical = yield* fs.realPath(root)
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Effect, FileSystem, Option, Path, Result } from "effect"
 import { describe, expect, it } from "effect-bun-test"
