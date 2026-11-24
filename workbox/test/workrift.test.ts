@@ -2342,8 +2342,7 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       // A hold whose command we can find: it records its pid, then waits for the test's gate (its own process group,
       // so the kill of the hold below leaves it running).
       // The two killed here run with their stdout ignored: a pipe the hold's command inherits would never end.
-      const killable = (argv: ReadonlyArray<string>, name: string) =>
-        Bun.spawn([...argv], { cwd: w.app, env: w.env, stdout: "ignore", stderr: Bun.file(join(w.dir, name)), detached: true })
+      const killable = (argv: ReadonlyArray<string>, name: string) => spawnOwned(argv, { cwd: w.app, env: w.env, stderr: Bun.file(join(w.dir, name)) })
       const command = killable([SCRIPT, "hold", "--", "sh", "-c", `echo $$ >'${pidFile}'; until [ -e '${release}' ]; do sleep 0.05; done`], "holder.err")
       const killed: Array<ReturnType<typeof killable>> = [command]
       const groups: Array<Grouped> = []
@@ -2372,13 +2371,7 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
         } finally {
           writeFileSync(release, "")
           for (const each of groups) if (alive(each.pid)) each.kill()
-          for (const each of killed) {
-            try {
-              process.kill(-each.pid, "SIGKILL")
-            } catch {
-              // the group has ended
-            }
-          }
+          await endOwned(killed.map((each) => each.pid))
         }
       }
       const commandPid = await after()
@@ -2771,6 +2764,57 @@ const until = async (what: string, ok: () => boolean, ms = 60_000) => {
   }
 }
 
+/**
+ * The process groups this file's tests started and that may still have members. A group's id is never another
+ * process's while one of its members lives, so a group is signalled only while ps lists a member of it, and leaves
+ * the set once ps lists none.
+ */
+const ownedGroups = new Set<number>()
+
+/** The pids ps lists in the process group pgid (none once it has ended). */
+const groupMembers = (pgid: number): ReadonlyArray<number> =>
+  lines(Bun.spawnSync(["ps", "-A", "-o", "pid=,pgid="]).stdout.toString())
+    .map((line) => line.trim().split(/\s+/).map(Number))
+    .filter(([, group]) => group === pgid)
+    .map(([pid]) => pid!)
+
+/** Sends SIGKILL to the group pgid while it has members; else drops it from the set. */
+const endGroup = (pgid: number) => {
+  if (groupMembers(pgid).length === 0) {
+    ownedGroups.delete(pgid)
+    return
+  }
+  try {
+    process.kill(-pgid, "SIGKILL")
+  } catch {
+    // ended meanwhile
+  }
+}
+
+// An interrupted or failed run ends what its tests left (a finally does not run when the runner is killed).
+process.on("exit", () => {
+  for (const pgid of ownedGroups) endGroup(pgid)
+})
+for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]] as const)
+  process.once(signal, () => {
+    for (const pgid of ownedGroups) endGroup(pgid)
+    process.exit(code)
+  })
+
+/** Starts argv as the leader of a process group of its own, owned by this file. */
+const spawnOwned = (argv: ReadonlyArray<string>, options: { readonly cwd?: string; readonly env?: Env; readonly stderr?: "ignore" | ReturnType<typeof Bun.file> } = {}) => {
+  const child = Bun.spawn([...argv], { ...options, stdout: "ignore", stderr: options.stderr ?? "ignore", detached: true })
+  ownedGroups.add(child.pid)
+  return child
+}
+
+/** Ends the process groups pgids and waits until ps lists no member of any (at most 10 s, then it throws). */
+const endOwned = async (pgids: ReadonlyArray<number>) => {
+  for (const pgid of pgids) endGroup(pgid)
+  await until("the test's process groups ended", () => pgids.every((pgid) => groupMembers(pgid).length === 0), 10_000)
+  for (const pgid of pgids) ownedGroups.delete(pgid)
+}
+
 /** The script before the ticket queue (a5821de8): an exclusive flock on .git/workrift.lock and holder files in .git. */
 let oldScript = ""
 const OLD_WORKRIFT = () => {
@@ -2963,7 +3007,9 @@ describeWork("workrift beside the older workrift, and its line's owners whatever
     const dead = exited.pid
     const release = join(w.dir, "release")
     const gated = ["sh", "-c", `until [ -e '${release}' ]; do sleep 0.05; done`]
-    const keeper = Bun.spawn(gated, { stdout: "ignore", stderr: "ignore" })
+    // Each in a process group the test owns: the flock shim runs its command through a child, which a kill of the
+    // shim alone would leave polling for a release file that afterAll deletes.
+    const keeper = spawnOwned(gated)
     for (const [n, pid, identity] of [
       [1, dead, "Sat Nov 21 21:24:11 2026"],
       // The keeper runs, but its start is not the recorded one: its pid was another process's.
@@ -2973,7 +3019,7 @@ describeWork("workrift beside the older workrift, and its line's owners whatever
       writeFileSync(file, `${pid}\n${identity}\n${Math.floor(Date.now() / 1000)}\ncreate feat/gone${n}\n`)
     }
     // Lock both, held by a background flock of the bench's shim for as long as the keeper sleeps.
-    const holders = [1, 2].map((n) => Bun.spawn([join(w.bin, "flock"), join(queue, `${n}.w`), ...gated], { stdout: "ignore", stderr: "ignore" }))
+    const holders = [1, 2].map((n) => spawnOwned([join(w.bin, "flock"), join(queue, `${n}.w`), ...gated]))
     const locked = () => [1, 2].every((n) => Bun.spawnSync([join(w.bin, "flock"), "-n", join(queue, `${n}.w`), "true"]).exitCode === 1)
     try {
       await until("both locked", locked, 120_000)
@@ -2985,7 +3031,7 @@ describeWork("workrift beside the older workrift, and its line's owners whatever
       expect(holders.map((each) => each.exitCode)).toEqual([null, null])
     } finally {
       writeFileSync(release, "")
-      for (const each of [...holders, keeper]) each.kill("SIGKILL")
+      await endOwned([...holders, keeper].map((each) => each.pid))
     }
   }, 300_000)
 
@@ -3006,7 +3052,7 @@ describeWork("workrift beside the older workrift, and its line's owners whatever
     const file = join(queue, "1.w")
     writeFileSync(file, `${pid}\nboot b00t-1d tick 777\n${Math.floor(Date.now() / 1000)}\nhold the line\n`)
     const release = join(w.dir, "release")
-    const lockHolder = Bun.spawn([join(w.bin, "flock"), file, "sh", "-c", `until [ -e '${release}' ]; do sleep 0.05; done`], { stdout: "ignore", stderr: "ignore" })
+    const lockHolder = spawnOwned([join(w.bin, "flock"), file, "sh", "-c", `until [ -e '${release}' ]; do sleep 0.05; done`])
     const locked = () => Bun.spawnSync([join(w.bin, "flock"), "-n", file, "true"]).exitCode === 1
     await until("locked", locked, 120_000)
     const env = { ...w.env, WORKRIFT_STAT_PROC: proc }
@@ -3025,7 +3071,7 @@ describeWork("workrift beside the older workrift, and its line's owners whatever
       expect(ivs().map((each) => each.id)).toEqual(["waiter"])
     } finally {
       writeFileSync(release, "")
-      lockHolder.kill("SIGKILL")
+      await endOwned([lockHolder.pid])
     }
   }, 300_000)
 
@@ -3115,19 +3161,14 @@ interface Grouped extends Started {
 const startGroup = (cwd: string, env: Env, argv: ReadonlyArray<string>, errFile: string): Grouped => {
   writeFileSync(errFile, "")
   const child = Bun.spawn([...argv], { cwd, env, stdout: "pipe", stderr: Bun.file(errFile), detached: true })
+  ownedGroups.add(child.pid)
   const err = () => readFileSync(errFile, "utf8")
   const done = (async () => {
     const out = await new Response(child.stdout).text()
     const code = await child.exited
     return { code, out, err: err() }
   })()
-  const kill = () => {
-    try {
-      process.kill(-child.pid, "SIGKILL")
-    } catch {
-      // already gone
-    }
-  }
+  const kill = () => endGroup(child.pid)
   return { pid: child.pid, err, done, kill }
 }
 
@@ -3335,13 +3376,14 @@ describeWork("workrift deps knows its holder by identity, not by a stale holder 
     const { w, stale, matches } = recording("stale-holder")
     stale()
     // The unrelated old-style holder: an flock on the old lock for 4 s (an old create mid-copy).
-    const locker = Bun.spawn([join(w.bin, "flock"), "-x", join(w.app, ".git/workrift.lock"), "sleep", "4"], { cwd: w.app, env: w.env, stdout: "ignore", stderr: "ignore" })
+    const locker = spawnOwned([join(w.bin, "flock"), "-x", join(w.app, ".git/workrift.lock"), "sleep", "4"], { cwd: w.app, env: w.env })
     await until("the old lock held", () => Bun.spawnSync([join(w.bin, "flock"), "-n", join(w.app, ".git/workrift.lock"), "true"]).exitCode === 1)
     // deps' parent names itself in a holder file, as a killed old create left one with this pid.
     const script = `mkdir -p .git/workrift-lock-holders; echo "1 create old/dead" >.git/workrift-lock-holders/$$; workrift deps`
     const deps = startGroup(w.app, w.env, ["sh", "-c", script], join(w.dir, "deps.err"))
     const ran = await within(deps, 60_000)
     await locker.exited
+    await endOwned([locker.pid, deps.pid])
     expect(ran?.code, deps.err()).toBe(0)
     expect(deps.err()).not.toContain("this hook runs under")
     expect(deps.err()).toContain("waiting for")
@@ -3363,7 +3405,7 @@ describeWork("workrift deps knows its holder by identity, not by a stale holder 
     const results: Array<Record<string, unknown>> = []
     for (const [i, c] of cases.entries()) {
       const { w, stale, matches } = recording(`prop-${i}`)
-      const keeper = Bun.spawn(["sleep", "60"], { stdout: "ignore", stderr: "ignore" })
+      const keeper = spawnOwned(["sleep", "60"])
       const dead = Bun.spawnSync(["true"]).pid
       // The stale files the wrapper writes: `$$` is the wrapper, an ancestor of deps in every tree below.
       const plant = c.stales
@@ -3379,7 +3421,7 @@ describeWork("workrift deps knows its holder by identity, not by a stale holder 
         .join("; ")
       const deps = c.nested ? `sh -c 'sh -c "workrift deps"'` : "workrift deps"
       let run: string
-      let locker: { exited: Promise<number> } | undefined
+      let locker: { readonly pid: number; readonly exited: Promise<number> } | undefined
       if (c.holder === "ancestor old" || c.holder === "ancestor new") {
         w.push("main", { "bun.lock": `main-2 ${i}\n` })
         sh(w.app, w.env, "git", "fetch", "-q", "origin")
@@ -3390,14 +3432,14 @@ describeWork("workrift deps knows its holder by identity, not by a stale holder 
         stale()
         if (c.holder === "unrelated old") {
           // An old create mid-copy: its flock on the old lock, its own true holder file.
-          const l = Bun.spawn([join(w.bin, "flock"), "-x", join(w.app, ".git/workrift.lock"), "sleep", "3"], { cwd: w.app, env: w.env, stdout: "ignore", stderr: "ignore" })
+          const l = spawnOwned([join(w.bin, "flock"), "-x", join(w.app, ".git/workrift.lock"), "sleep", "3"], { cwd: w.app, env: w.env })
           mkdirSync(holders(w.app), { recursive: true })
           writeFileSync(join(holders(w.app), String(l.pid)), `${now()} create old/copying\n`)
           locker = l
           await until("the old lock held", () => Bun.spawnSync([join(w.bin, "flock"), "-n", join(w.app, ".git/workrift.lock"), "true"]).exitCode === 1)
         }
         if (c.holder === "unrelated new") {
-          const h = Bun.spawn([SCRIPT, "hold", "--", "sleep", "3"], { cwd: w.app, env: w.env, stdout: "ignore", stderr: "ignore" })
+          const h = spawnOwned([SCRIPT, "hold", "--", "sleep", "3"], { cwd: w.app, env: w.env })
           locker = h
           await until("the hold in", () => readdirSync(join(stateOf(w.app), "base")).some((name) => name.endsWith(".in")))
         }
@@ -3406,7 +3448,7 @@ describeWork("workrift deps knows its holder by identity, not by a stale holder 
       const wrapper = startGroup(w.app, w.env, ["sh", "-c", `mkdir -p '${holders(w.app)}'; ${plant}${plant ? "; " : ""}${run}`], join(w.dir, `case-${i}.err`))
       const ran = await within(wrapper, 60_000)
       await locker?.exited
-      keeper.kill("SIGKILL")
+      await endOwned([keeper.pid, wrapper.pid, ...(locker ? [locker.pid] : [])])
       const err = wrapper.err()
       results.push({
         case: c,
@@ -3424,4 +3466,28 @@ describeWork("workrift deps knows its holder by identity, not by a stale holder 
     expect(cases.some((c) => c.holder === "ancestor old" && c.stales.length > 0)).toBe(true)
     expect(cases.some((c) => c.holder.startsWith("unrelated") && c.stales.some((s) => s.startsWith("ancestor")))).toBe(true)
   }, 600_000)
+})
+
+describe("the end of the file", () => {
+  test("no process a test of this file started survives it: every owned group is empty, and the run has no child left", () => {
+    const left = [...ownedGroups].flatMap((pgid) => groupMembers(pgid).map((pid) => `${pid} (group ${pgid})`))
+    expect(left).toEqual([])
+    const table = lines(Bun.spawnSync(["ps", "-A", "-o", "pid=,ppid=,command="]).stdout.toString()).map((line) => {
+      const [pid, ppid, ...command] = line.trim().split(/\s+/)
+      return { pid: Number(pid), ppid: Number(ppid), command: command.join(" ") }
+    })
+    // The run's descendants, but the ps that listed them.
+    const descendants: Array<string> = []
+    const parents = new Set([process.pid])
+    for (let grew = true; grew; ) {
+      grew = false
+      for (const each of table)
+        if (parents.has(each.ppid) && !parents.has(each.pid)) {
+          parents.add(each.pid)
+          grew = true
+          if (!each.command.startsWith("ps -A -o ")) descendants.push(`${each.pid} ${each.command}`)
+        }
+    }
+    expect(descendants).toEqual([])
+  })
 })
