@@ -370,17 +370,26 @@ describe("the acceptance tiers over the real tree", () => {
  */
 const GRANDCHILD = '  const child = Bun.spawn(["/bin/sh", "-c", "sleep 120 & wait"], { detached: true, stdout: "ignore" })'
 
+/** Readers may poll as soon as groups.json exists; publish only complete JSON. */
+const GROUPS = [
+  '  const groups = join(dir, "groups.json")',
+  '  const pending = `${groups}.${process.pid}.tmp`',
+  '  writeFileSync(pending, JSON.stringify([process.pid, child.pid]))',
+  '  renameSync(pending, groups)',
+]
+
 /** Three stand-in acceptance files: one passes in 1 s, one fails, one sleeps 120 s beside a process group of its own with a grandchild in it. */
 const STAND_INS = {
   "pass.test.ts": 'import { expect, test } from "bun:test"\ntest("passes", async () => {\n  await Bun.sleep(1000)\n  expect(1).toBe(1)\n})\n',
   "fail.test.ts": 'import { expect, test } from "bun:test"\ntest("fails", () => {\n  expect(1).toBe(2)\n})\n',
   "sleep.test.ts": [
     'import { test } from "bun:test"',
-    'import { writeFileSync } from "node:fs"',
+    'import { renameSync, writeFileSync } from "node:fs"',
     'import { join } from "node:path"',
     'test("sleeps", async () => {',
+    '  const dir = import.meta.dir',
     GRANDCHILD,
-    '  writeFileSync(join(import.meta.dir, "groups.json"), JSON.stringify([process.pid, child.pid]))',
+    ...GROUPS,
     "  await Bun.sleep(120_000)",
     "})",
     "",
@@ -434,14 +443,14 @@ const DEEP_STAND_INS = {
   "b.test.ts": 'import { expect, test } from "bun:test"\ntest("passes", async () => {\n  await Bun.sleep(1000)\n  expect(2).toBe(2)\n})\n',
   "sleep.test.ts": [
     'import { test } from "bun:test"',
-    'import { existsSync, writeFileSync } from "node:fs"',
+    'import { existsSync, renameSync, writeFileSync } from "node:fs"',
     'import { join } from "node:path"',
     'const dir = process.env.YIELD_DIR ?? ""',
     'test("sleeps", async () => {',
     '  const first = !existsSync(join(dir, "slept"))',
     '  writeFileSync(join(dir, "slept"), "")',
     GRANDCHILD,
-    '  writeFileSync(join(dir, "groups.json"), JSON.stringify([process.pid, child.pid]))',
+    ...GROUPS,
     "  await Bun.sleep((first && 60_000) || 1000)",
     "  process.kill(-child.pid, \"SIGKILL\")",
     "})",
