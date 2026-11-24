@@ -100,4 +100,20 @@ describe("reading df and mount", () => {
     expect(ProcessCheckouts.filesystemOf(mac, "/Volumes/My Disk")).toEqual(Option.some("msdos"))
     expect(ProcessCheckouts.filesystemOf(`${linux}\n/dev/vdb on / type xfs (rw)`, "/")).toEqual(Option.some("xfs"))
   })
+
+  test("a base that is a btrfs subvolume and a workspace that is a snapshot of it: df names each as its own mount point (source -), mount lists neither, and both read as btrfs (the workbox, 2026-11-22, Rehearsal A's R9 fixtures)", () => {
+    const header = "Filesystem     1024-blocks      Used Available Capacity Mounted on"
+    const base = "/workspaces/.scratch/bite-snapshots/sub"
+    const snapshot = "/workspaces/.scratch/bite-snapshots/.work/sub/rb-03"
+    const mount = [
+      "/dev/vda on / type ext4 (rw,relatime,stripe=4)",
+      "/var/lib/bite-workspaces.btrfs on /workspaces type btrfs (rw,noatime,compress=zstd:3,discard=async,noacl,space_cache=v2,user_subvol_rm_allowed,subvolid=2785,subvol=/@workspaces)",
+      "/var/lib/bite-workspaces.btrfs on /tmp type btrfs (rw,noatime,compress=zstd:3,discard=async,noacl,space_cache=v2,user_subvol_rm_allowed,subvolid=2781,subvol=/@tmp)",
+    ].join("\n")
+    for (const point of [base, snapshot]) {
+      const df = `${header}\n-                796917760 629635672 140265736      82% ${point}\n`
+      expect(ProcessCheckouts.mountPointOf(df)).toEqual(Option.some(point))
+      expect(ProcessCheckouts.filesystemOf(mount, point)).toEqual(Option.some("btrfs"))
+    }
+  })
 })

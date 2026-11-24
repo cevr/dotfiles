@@ -193,6 +193,10 @@ noncurrent snapshot objects after 14 days.
   when `work --json list` (or `work --json bases`) fails, is missing, or
   answers anything but a list of records each with a name, id, path, state
   and since, remove refuses, quotes what came back, and deletes nothing.
+- `workrift subvolume [--back | --drop-old [--lose N:DIGEST]] [--apply]` switches the warm source
+  between a plain folder and a btrfs subvolume (see "A base that is a
+  subvolume" below). Without `--apply` it changes nothing: it prints its
+  preflight and every step with absolute paths.
 - `workrift prune [--dry-run]` lists the workspaces idle for two days; once
   work's gc is cleared (`work_gc_safe` in the script) it removes them with
   `work gc -idle -archive`, which keeps each one's work in its base.
@@ -271,6 +275,162 @@ and for what (`clone <name>` or `delete <name>`); a holder that dies frees its
 turn. The fetch, install and warm of a create, and a remove's checks, run
 beside each other as before. A base that is a Btrfs subvolume (its workspaces
 are snapshots) takes no turn.
+
+### A base that is a subvolume
+
+When a base is the root of a btrfs subvolume, `work new` makes each workspace
+as one writable snapshot and `work rm` deletes it with one
+`btrfs subvolume delete` (Ergo's btrfs cloner). When the base is a plain
+folder, work copies it file by file. `workrift init` and
+`workbox-rift-storage --apply` make new bases as subvolumes on btrfs.
+`workrift check` warns about a base on btrfs that is a plain folder.
+A create deletes from its new workspace, and names, any Git lock or
+temporary pack that the copy carried from the base, where a Git process
+outside the line held it at that instant. It never touches the base.
+
+`workrift subvolume --apply` converts a live base and leaves every workspace
+as it is: work removes each record by the cloner that made it. The command
+runs these steps:
+
+1. It refuses to start in any of these cases:
+   - a removal of the base runs;
+   - an older workrift (one that takes no place in the base's line) runs;
+   - a process outside the line works in the base;
+   - a Git lock file is present;
+   - quotas are on;
+   - the mount lacks `user_subvol_rm_allowed`;
+   - free space or metadata slack is below the gates
+     (`WORKRIFT_SUBVOLUME_MIN_*`).
+
+   A removal of another base also refuses it, because the copy shares the
+   file system's metadata with that removal. `--beside-other-removals` lets
+   the command run beside such removals, and its output says how many it saw.
+
+   It finds processes in the base by their open files and working folders
+   under /proc. A process of another user (root's, on the workbox) does not
+   show those to this user, so it may or may not be in the base. The command
+   names such processes by count and uid and never takes them for none:
+   - where `sudo -n` works, it reads exactly those processes again, read
+     only, all of them in one call (`sudo -n find /proc/<pid>/fd
+     /proc/<pid>/cwd … -lname <base>`). The step log says the command line,
+     and says it again only when the set changes. It refuses if one is in
+     the base;
+   - otherwise it refuses, unless `--beside-unreadable` is given: then it runs
+     beside them, and the step log says how many and whose. Where sudoers
+     allows `sudo -n true` but refuses that `find`, the refusal says so, and
+     `--beside-unreadable` is the only way on without a change to sudoers.
+
+   While the switch waits for processes to leave the old tree, it looks
+   after 1 s, then 2 s, then every 4 s.
+
+   Kernel threads and zombies hold no files and never count. Any other
+   failure of the walk is a refusal of its own. The same three answers hold
+   after the exchange (an unknown process leaves the switch unfinished) and
+   for `--drop-old`.
+2. It takes the base's exclusive lock and its clone turn in line. Creates
+   wait behind it and none fails. It waits at most
+   `WORKRIFT_SUBVOLUME_TURN_WAIT` seconds (default 1800) and otherwise exits
+   1 with nothing changed.
+3. It reflink-copies the base into `<parent>/.subvolume-move/<name>.new`
+   and refreshes the index of the copy. It then checks the copy against the
+   base:
+   - HEAD, refs, status (untracked files too), lock files and Git's own
+     files (config, info, hooks) are equal;
+   - the object store's listing is the same at the copy's start, at its end
+     and in the copy;
+   - every ref tip and its tree are present;
+   - no Git lock or temporary pack is in the copy.
+
+   Git processes outside workrift's line (a plain `git fetch` and the auto gc
+   it starts) can change the base while the copy walks it. If any check fails,
+   the command copies `.git` again, at most twice, and otherwise rolls back.
+   The `cp` runs as a child whose pid the state file records: when only the
+   command's shell is killed, the `cp` runs on, and the next `--apply` waits
+   for it to end (at most `WORKRIFT_SUBVOLUME_WAIT` seconds, else it names
+   the pid and changes nothing) before it deletes that copy.
+4. It swaps the copy and the base in one `renameat2(RENAME_EXCHANGE)` and
+   parks the old tree at `<name>.old`, recorded by its identity.
+5. It waits for processes to leave the old tree, carries in the refs the old
+   tree gained (each with its objects, by a fetch from the old tree), runs
+   `work refresh`, and makes and removes a smoke snapshot workspace.
+
+The exchange is the commit point. A failure before it rolls back: the base
+never moved, and the command deletes only its copy, which was never the
+base. From the exchange on, the new tree has been the live base, and anything
+may have been written into it, so nothing rolls it back. A failure after the
+exchange exits 1 with "not rolled back": the new tree stays the base, the
+tree it was stays at `<name>.old` under its record, and a process that stays
+in the old tree past the wait leaves the switch unfinished (the next `--apply`
+carries what it wrote once it left), as does a carry that could not read a
+tree's refs or move one of them (a Git that failed: it says what it could not
+do, and a read that fails never counts as a tree with no refs). Every stop
+says three things: what failed (the command, its status and the step), the
+state both trees are in (`workrift subvolume: state: …`: the base, the copy,
+the kept tree and the recorded phase), and the exact command that goes on
+(`workrift subvolume: next: …`: the rerun, `--back` or `--drop-old`). Every
+read the switch decides on returns its status: a command that failed is never
+read as an empty answer (no process, no lock, no refs), and one that cannot be
+told is a refusal. If the command is cut (kill -9 too), the
+next `--apply` deletes the copy of a switch cut before its exchange and starts
+again, or finishes one cut after it, working from its state file in the
+base's `.workrift/subvolume/`. Every output says what it deleted, from what it
+did.
+
+After each switch, and before `--drop-old` deletes it, the output lists what
+the base lacks of the tree kept at `<name>.old`: refs (with their objects),
+HEAD, Git's own files, reflog entries, and the index and worktree as
+`git status` sees them. Files Git ignores are not compared. The
+checked-out branch is never moved by the carry. When a ref changed on both
+sides, the command keeps the other value under `refs/subvolume-move/` and
+says so; a ref written into one tree after the carry is carried into the
+other on the next switch only where that tree has none, and never deleted.
+The carry reads each tree's refs strictly. Git skips a ref it cannot resolve
+and still exits 0: a broken ref with a warning, a symbolic ref to nothing with
+no message. So any message from Git fails the read, and so does a ref name in
+the tree's own store (the files under `.git/refs` and `packed-refs`) that the
+listing lacks. The carry then names that ref and moves nothing.
+
+A run without `--apply` writes nothing, not even the state folder.
+
+The tree the base was stays at `<name>.old` until
+`workrift subvolume --drop-old --apply`, which deletes only the tree that the
+last switch recorded there (a subvolume's id or a folder's inode). Nothing
+goes to a trash. Nothing is deleted that an earlier run did not list, by
+content. When the kept tree holds anything the base lacks, the drop takes two
+runs. The dry run, `workrift subvolume --drop-old`, lists those items and
+prints the command that deletes the tree, `--drop-old --apply --lose
+N:DIGEST`. N is their count, and DIGEST is the start of the sha256 of the
+listed lines. Each line names content: a ref with its commit, a Git file with
+its checksum, each reflog entry, and each worktree or index line with the
+object id of the file it holds. So a ref moved to another commit, a ref
+swapped for another, or a file edited again gives another token, even with
+as many items. The command refuses when the token is not that of the list by
+then. Every refusal of a drop prints the list, and its next command is that
+dry run. When the base holds all of the kept tree, `--drop-old --apply`
+deletes it in one run. When part of the list does not read, no run of
+workrift deletes the tree: the dry run prints the command that deletes it by
+hand.
+
+The deleting run takes the base's move ticket, renames `<name>.old` to
+`<name>.dropping`, walks the processes in it again, lists again what the
+base lacks of it and compares the token. Any difference renames it back,
+prints the lines that were added and removed, and deletes nothing. Only the
+tree set aside is deleted, never the path `<name>.old`. One window is left:
+a process that enters `<name>.dropping` by that path between the walk and
+the delete. Nothing of workrift's uses that path.
+
+With `--beside-unreadable`, a process the walk could not look into may
+already be inside the tree, and may write after the listing. So no run
+deletes a tree beside such processes while it holds anything the base lacks:
+the dry run lists it and prints no command that deletes, and the run refuses.
+It names the processes and the two ways on: stop them, or run it where
+`sudo -n` reads them (read only). A tree that holds nothing the base lacks
+is still deleted beside them. The output then says that what they write into
+it after the listing is not listed, and the delete takes it. A drop that was cut short
+lists the tree again where it stands, at `.old` or `.dropping`, and its
+rerun needs the token of the present list. `--back` switches to the kept
+tree in the same way. With no kept tree, `--back` copies into a new folder.
+
 `init`, `create`, `refresh` and `deps` run themselves at nice 10, and in the
 idle I/O class (`ionice -c3`) where `ionice` is, so their clones, fetches,
 checkouts and installs yield to the OpenCode service.

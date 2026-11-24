@@ -6,11 +6,13 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { hangGuard } from "../../opencode/tests/hang-guard.ts"
 
 const SCRIPT = join(import.meta.dir, "..", "bin", "workbox-rift-storage")
 const identity = Bun.spawnSync(["sh", "-c", '. "$1"; workbox_host_identity', "test", join(import.meta.dir, "..", "host-identity.sh")]).stdout.toString().trim()
 const scratchRoot = realpathSync(mkdtempSync(join(tmpdir(), "rift-storage-test-")))
-afterAll(() => rmSync(scratchRoot, { recursive: true, force: true }))
+// Hang guard: the file's last hook deletes the benches of the run (small folders and empty image files).
+afterAll(() => rmSync(scratchRoot, { recursive: true, force: true }), hangGuard("local-fixture"))
 let count = 0
 
 const UUID = "170ee675-18a3-48e1-931d-f0a84a51df83"
@@ -92,6 +94,45 @@ describe("workbox-rift-storage --fstab", () => {
       `${IMAGE} /workspaces btrfs loop,subvol=@workspaces 0 0\n${IMAGE} /home/exedev btrfs loop,subvol=@home,x-systemd.requires-mounts-for=/workspaces 0 0\n`,
     )
   })
+
+  // Hang guard: two runs of the provisioning script against stand-ins (each under a second at rest, a few at load).
+  test("--apply on a mounted file system makes the Bite base a btrfs subvolume, not a folder, and leaves one that exists", () => {
+    const dir = join(scratchRoot, `apply-${count++}`)
+    const [bin, mount, etc, sys] = ["bin", "mount", "etc", "sys"].map((each) => join(dir, each)) as [string, string, string, string]
+    for (const each of [bin, mount, etc, sys]) mkdirSync(each, { recursive: true })
+    const image = join(dir, "image.btrfs")
+    writeFileSync(image, "")
+    const fstab = join(etc, "fstab")
+    writeFileSync(fstab, `${image} ${mount} btrfs loop,noatime,compress=zstd:3,space_cache=v2,discard=async,user_subvol_rm_allowed 0 0\n`)
+    const calls = join(dir, "btrfs-calls")
+    exe(join(bin, "uname"), "#!/bin/sh\necho Linux\n")
+    exe(join(bin, "sudo"), '#!/bin/sh\nexec "$@"\n')
+    exe(join(bin, "chown"), "#!/bin/sh\nexit 0\n")
+    exe(join(bin, "mkfs.btrfs"), "#!/bin/sh\nexit 1\n")
+    exe(join(bin, "btrfs"), `#!/bin/sh\necho "$*" >>'${calls}'\n[ "$1 $2" = "subvolume create" ] && mkdir "$3"\n`)
+    exe(
+      join(bin, "findmnt"),
+      [
+        "#!/bin/sh",
+        'case "$*" in',
+        "  *'-o FSTYPE'*) echo btrfs ;;",
+        "  *'-o OPTIONS'*) echo rw,compress=zstd:3,user_subvol_rm_allowed ;;",
+        "  *'-o SOURCE'*) echo '/dev/loop0[/@workspaces]' ;;",
+        "  *--mountpoint*) echo mounted ;;",
+        "esac",
+        "",
+      ].join("\n"),
+    )
+    const env = { PATH: `${bin}:/usr/bin:/bin`, HOME: dir, USER: process.env.USER ?? "user", WORKBOX_RIFT_FSTAB: fstab, WORKBOX_SYSFS_BTRFS: sys, WORKBOX_RIFT_MOUNT: mount, WORKBOX_RIFT_IMAGE: image, WORKBOX_EXPECT_MACHINE_ID: identity }
+    const apply = () => Bun.spawnSync(["sh", SCRIPT, "--apply"], { cwd: dir, env, stdout: "pipe", stderr: "pipe" })
+    const ran = apply()
+    expect(ran.exitCode, ran.stderr.toString()).toBe(0)
+    expect(readFileSync(calls, "utf8")).toBe(`subvolume create ${mount}/bite\n`)
+    expect(existsSync(join(mount, "bite"))).toBe(true)
+    const again = apply()
+    expect(again.exitCode, again.stderr.toString()).toBe(0)
+    expect(readFileSync(calls, "utf8")).toBe(`subvolume create ${mount}/bite\n`)
+  }, hangGuard("local-fixture"))
 
   test("a box whose /workspaces is a subvolume of its own btrfs by UUID (the Hetzner box) changes nothing", () => {
     const native = `UUID=${UUID} /workspaces btrfs subvol=@workspaces,noatime 0 0\nUUID=${UUID} /home/exedev btrfs subvol=@home 0 0\n`
