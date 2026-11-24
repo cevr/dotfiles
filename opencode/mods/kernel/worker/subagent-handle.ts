@@ -205,6 +205,7 @@ export const runSubagent = (input: Json, call: CallTool): Promise<SubagentHandle
           case "running":
           case "completed": return Option.none()
         }
+        return status satisfies never
       }),
     )
     return makeSubagentHandle(

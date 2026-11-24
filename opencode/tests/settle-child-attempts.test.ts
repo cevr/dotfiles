@@ -124,6 +124,7 @@ interface Barrier {
   readonly ready: Effect.Effect<void>
   readonly live: Display
   readonly snapshot: () => Display
+  readonly shown: (now: number) => ReadonlyArray<string>
   readonly revision: () => number
 }
 const fixtureModule = Schema.declare((value): value is SolidFixture =>
@@ -422,6 +423,7 @@ const finishBarriers = Effect.fn("LifecycleFixture.finishBarriers")(function* (
     yield* stale.release
     const pending = yield* barrier.next
     const outstanding = barrier.snapshot()
+    const shownWhileSuperseded = barrier.shown(yield* Clock.currentTimeMillis)
     const activeDuringRead = barrier.active()
     yield* pending.release
     yield* barrier.ready
@@ -433,7 +435,7 @@ const finishBarriers = Effect.fn("LifecycleFixture.finishBarriers")(function* (
     yield* barrier.fallback
     yield* stalled.release
     return {
-      order, live: barrier.live, acrossFirst, outstanding, after,
+      order, live: barrier.live, acrossFirst, outstanding, shownWhileSuperseded, after,
       activeDuringRead, activeAfter, fallback: barrier.snapshot(),
       old: stale.revision, current: pending.revision, accepted,
     }
@@ -726,7 +728,8 @@ const Remount = Schema.Struct({
   afterClose: Schema.Int, afterSecondClose: Schema.Int,
 })
 const CutEvidence = Schema.Struct({
-  order: Schema.String, live: RowDisplay, acrossFirst: RowDisplay, outstanding: RowDisplay, after: RowDisplay, fallback: RowDisplay,
+  order: Schema.String, live: RowDisplay, acrossFirst: RowDisplay, outstanding: RowDisplay,
+  shownWhileSuperseded: Schema.Array(Schema.String), after: RowDisplay, fallback: RowDisplay,
   activeDuringRead: Schema.Boolean, activeAfter: Schema.Boolean,
   old: Schema.Int, current: Schema.Int, accepted: Schema.Int,
 })
@@ -873,7 +876,10 @@ const verifyLife = Effect.fn("LifecycleFixture.verifyLife")(function* (result: E
   expect(current).toEqual(silent)
   expect(result.silent.scheduled.map(({ order }) => order)).toEqual(["shell-first", "owner-first"])
   for (const cut of result.silent.scheduled) {
-    for (const rows of [cut.live, cut.acrossFirst, cut.outstanding]) expect(rows.map(({ state }) => state)).toEqual(["waiting"])
+    expect(cut.live.map(({ state }) => state)).toEqual(["waiting"])
+    expect(cut.acrossFirst.map(({ state }) => state)).toEqual(["checking"])
+    expect(cut.outstanding.map(({ state }) => state)).toEqual(["unknown"])
+    expect(cut.shownWhileSuperseded).toEqual([])
     expect(cut.after).toEqual(undetermined)
     expect(cut).toMatchObject({ activeDuringRead: false, activeAfter: false })
     expect(cut.fallback.map(({ update }) => update)).not.toContain("Checking the last execution")
@@ -898,7 +904,7 @@ const verifyLife = Effect.fn("LifecycleFixture.verifyLife")(function* (result: E
   expect(result.unrelated.shown).toEqual([{ state: "waiting", update: expect.stringContaining("since before reload") }])
   expect(result.related.shown.map(({ state }) => state)).toEqual(["failed"])
   for (const cut of [result.unrelated, result.related]) {
-    expect(cut.outstanding).toEqual([{ state: "waiting", update: "Checking the last execution" }])
+    expect(cut.outstanding).toEqual([{ state: "unknown", update: "Current execution not known" }])
     expect(cut.accepted).toBeGreaterThan(cut.old)
   }
   expect(unrelated).toHaveProperty("revision", result.unrelated.accepted)

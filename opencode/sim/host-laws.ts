@@ -16,10 +16,12 @@
 import { Integration, type Plugin, Tool } from "@opencode/plugin/effect"
 import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
+import { Permission } from "@opencode/schema/permission"
 import { Provider } from "@opencode/schema/provider"
 import { AbsolutePath } from "@opencode/schema/schema"
 import { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
+import { Skill } from "@opencode/schema/skill"
 import { Array as Arr, Cause, Data, DateTime, Deferred, Effect, Exit, Option, Ref, Schema, type Scope, Stream } from "effect"
 import { envelopesOf } from "../mods/subagents/envelope.ts"
 import { isAutomationTool } from "../mods/wake/automations.ts"
@@ -271,6 +273,18 @@ const terminalTool = (status: "completed" | "error"): Law["check"] => (ctx, prob
     yield* ensure(seen === `${kind} ${ran[0]} ${status}`, `the terminal event and its tool part were ${seen || "(none)"}`)
   })
 
+const fixtureSkill = Skill.ID.make("sim-law-catalog-entry")
+const fixtureAgent = Agent.ID.make("sim-law-permission")
+const readPermissionDenial = Schema.decodeUnknownEffect(Schema.TaggedStruct("Permission.BlockedError", {
+  rules: Permission.Ruleset,
+  permission: Schema.String,
+  resources: Schema.Array(Schema.String),
+}))
+const readSkillAnswer = Schema.decodeUnknownEffect(Schema.Struct({
+  location: Schema.Struct({ directory: AbsolutePath }),
+  data: Schema.Array(Skill.Info),
+}))
+
 export const LAWS: ReadonlyArray<Law> = [
   {
     name: LAW.stop,
@@ -310,6 +324,63 @@ export const LAWS: ReadonlyArray<Law> = [
       yield* ensure((yield* primaries) === before + 1, "a new request did not run after stop")
       const texts = yield* contextText(ctx, sessionID)
       yield* ensure(count(texts, "law: stop queued") === 0, "the cancelled queued prompt was delivered")
+    }),
+  },
+  {
+    name: LAW.permission,
+    operations: ["permission.assert"],
+    check: (ctx) => Effect.gen(function* () {
+      const action = "law-action"
+      yield* ctx.agent.transform((editor) => editor.update(fixtureAgent, (entry) => {
+        entry.permissions = [
+          { action, resource: "proof", effect: "allow" },
+          { action, resource: "denied", effect: "deny" },
+        ]
+      }))
+      const { id: sessionID } = yield* ctx.session.create({ title: "Assert permission", agent: fixtureAgent })
+      const input = {
+        sessionID, agent: fixtureAgent, action, save: ["*"], metadata: { route: "fixture" },
+        source: { type: "tool" as const, messageID: "msg_law", id: "law-call" },
+      }
+      const allowed = yield* ctx.permission.assert({ ...input, resources: ["proof"] })
+      yield* ensure(Schema.is(Schema.Void)(allowed), "allow did not return void")
+      const denied = yield* Effect.flip(ctx.permission.assert({ ...input, resources: ["denied"] }))
+      const detail = yield* readPermissionDenial(denied.error)
+      yield* ensure(
+        denied._tag === "Tool.Error" && denied.message === `Permission denied: ${action}` &&
+        detail.permission === action && detail.resources.join(",") === "denied" &&
+        detail.rules.map(({ effect, resource }) => `${effect}:${resource}`).join(",") === "allow:proof,deny:denied",
+        "deny did not return the requested resource and its action's rules",
+      )
+    }),
+  },
+  {
+    name: LAW.skills,
+    operations: ["skill.list", "skill.transform", "skill.reload"],
+    check: (ctx) => Effect.gen(function* () {
+      const listed = ctx.skill.list().pipe(Effect.flatMap(readSkillAnswer))
+      const find = (data: ReadonlyArray<Skill.Info>) => Arr.findFirst(data, ({ id }) => id === fixtureSkill)
+      const current = listed.pipe(Effect.map(({ data }) => Option.map(find(data), ({ content }) => content)))
+      const before = yield* listed
+      yield* ensure(before.location.directory === ctx.location.directory && Option.isNone(find(before.data)), "list did not begin at the caller's location without the fixture")
+      let content = "first"
+      let edits = 0
+      const registration = yield* ctx.skill.transform((editor) => {
+        edits += 1
+        editor.list()
+        editor.add(Skill.Info.make({
+          id: fixtureSkill, name: Skill.Name.make("sim-law-catalog-entry"), description: "Fixture skill",
+          path: AbsolutePath.make(`${ctx.location.directory}/sim-law-catalog-entry/SKILL.md`), content,
+        }))
+      })
+      yield* ensure(Option.contains(yield* current, "first") && edits === 1, "the registered transform did not apply once")
+      content = "second"
+      yield* ensure(Option.contains(yield* current, "first") && edits === 1, "the catalog read executed an already-cached transform")
+      const reloaded = yield* ctx.skill.reload()
+      yield* ensure(Schema.is(Schema.Void)(reloaded), "reload did not return void")
+      yield* ensure(Option.contains(yield* current, "second") && edits === 2, "the read after reload did not apply the transform again")
+      yield* registration.dispose
+      yield* ensure(Option.isNone(yield* current), "disposing the transform left the skill registered")
     }),
   },
   {

@@ -83,7 +83,16 @@ export function background(part: ToolPart) {
  */
 export function latched(part: ToolPart) {
   return Option.match(readLaunchStatus(toolMetadata(part).status), {
-    onSome: (status) => status === "latched",
+    onSome: (status) => {
+      switch (status) {
+        case "latched": return true
+        case "completed":
+        case "running":
+        case "checking":
+        case "unknown": return false
+      }
+      return status satisfies never
+    },
     onNone: () => /^The subagent is latched\b/.test(toolOutput(part)),
   })
 }
@@ -101,6 +110,7 @@ export function agentReplySlot(part: ToolPart): boolean {
     case "checking":
     case "unknown": return false
   }
+  return status.value satisfies never
 }
 
 /** The glyph and tone of the all level's one-call row: `✓` done, `✗` failed, a warning `✓`, `◆` while it runs or was cut. */

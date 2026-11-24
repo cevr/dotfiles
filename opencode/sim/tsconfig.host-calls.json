@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "../cmd/**/*.ts",
+    "../cmd/**/*.tsx",
+    "../mods/**/*.ts",
+    "../mods/**/*.tsx",
+    "host-laws.ts",
+    "fixtures/host-operations.fixture.ts"
+  ],
+  "exclude": [
+    "**/node_modules",
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    // Built separately with browser JSX and served as static files, never loaded by the plugin host.
+    "../mods/digest/page"
+  ]
+}
