@@ -135,7 +135,7 @@ describe.skipIf(!forkRuns)("an open TUI moves onto a build that differs only in 
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
-        const { fork, path } = yield* ENV
+        const { fork } = yield* ENV
         // A short folder name: the terminal host's socket lives in it, and a socket path has at most 104 bytes on macOS.
         const root = kept.dir("m")
         const home = `${root}/home`
@@ -144,7 +144,6 @@ describe.skipIf(!forkRuns)("an open TUI moves onto a build that differs only in 
         const work = yield* fs.realPath(scratchInput(`${root}/work`))
         const launch = forkLaunch(fork, process.execPath)
         const env = {
-          PATH: path,
           HOME: home,
           TERM: "xterm-256color",
           HERDR_ENV: "1",
