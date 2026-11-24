@@ -11,6 +11,7 @@
 // so a law reads the same words on both hosts. It runs on the root's Effect
 // and Bun's platform layer; it imports nothing of the fork's at compile time.
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
+import { testHostOptions } from "../../scripts/test-host.ts"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import { Array as Arr, Clock, Config, Data, Effect, FileSystem, Match, Option, Path, Predicate, Schedule, Schema } from "effect"
 import { HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
@@ -366,7 +367,7 @@ const run = Effect.gen(function* () {
   const opencode = yield* Effect.acquireRelease(
     Effect.tryPromise({
       try: () =>
-        sdk.OpenCode.create({
+        sdk.OpenCode.create(testHostOptions({
           events: { persist: true },
           // The bundled model catalog only, as tests/compaction-prefix/run.ts says why.
           models: { fetch: false },
@@ -379,7 +380,7 @@ const run = Effect.gen(function* () {
             },
           },
           config: { directory: config, project: false, content: toJson(content) },
-        }),
+        })),
       catch: (cause) => new RealRunFailed({ message: "OpenCode did not start", cause }),
     }),
     (embedded) => Effect.promise(() => embedded.close()),

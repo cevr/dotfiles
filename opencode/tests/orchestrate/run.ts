@@ -22,6 +22,7 @@
  * @module
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { testHostOptions } from "../../scripts/test-host.ts"
 import { join } from "node:path"
 import { HAND_BACK, PROBE, ROOT_TASK, serve, UNITS_TASK } from "./sim.ts"
 import { watchdog } from "../hang-guard.ts"
@@ -210,12 +211,12 @@ interface Sdk {
 const { OpenCode } = (await import(join(spec.fork, "packages/sdk/src/index.ts"))) as Sdk
 /** One OpenCode. */
 const open = () =>
-  OpenCode.create({
+  OpenCode.create(testHostOptions({
     events: { persist: true },
     // The bundled model catalog only, as tests/compaction-prefix/run.ts says why.
     models: { fetch: false },
     config: { directory: config, project: false, content: JSON.stringify(content) },
-  })
+  }))
 const opencode = await open()
 
 const location = { directory: work }

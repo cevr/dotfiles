@@ -20,6 +20,7 @@
 // root's Effect and Bun's platform layer; it imports nothing of the fork's at
 // compile time.
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
+import { testHostOptions } from "../../scripts/test-host.ts"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import { Config, Data, Effect, FileSystem, Option, Path, Predicate, Schedule, Schema } from "effect"
 import { HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
@@ -153,13 +154,13 @@ const run = Effect.gen(function* () {
   const opencode = yield* Effect.acquireRelease(
     Effect.tryPromise({
       try: () =>
-        sdk.OpenCode.create({
+        sdk.OpenCode.create(testHostOptions({
           events: { persist: true },
           // The bundled model catalog only, as tests/compaction-prefix/run.ts says why.
           models: { fetch: false },
           log: { level: "info", emit: (entry) => void (entry.message.startsWith("auto-title") && log.push(entry.message)) },
           config: { directory: config, project: false, content: toJson(content) },
-        }),
+        })),
       catch: (cause) => new RunFailed({ message: "OpenCode did not start", cause }),
     }),
     (embedded) => Effect.promise(() => embedded.close()),

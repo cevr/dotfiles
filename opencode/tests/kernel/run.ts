@@ -12,6 +12,7 @@
  * @module
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { testHostOptions } from "../../scripts/test-host.ts"
 import { join } from "node:path"
 import { Effect, Path, Schedule, Schema } from "effect"
 import { HELLO, PIXEL_FILE, PIXEL_PNG, QUEUED_PROMPT, REPORT_TASK, SELF, serve, type Seen, STALL_TASK, STOP_TASK, isReport } from "./sim.ts"
@@ -109,12 +110,12 @@ if (import.meta.main) {
   }
 
   const { OpenCode } = (await importNativeModule(sdkFile(spec.fork))) as Sdk
-  const opencode = await OpenCode.create({
+  const opencode = await OpenCode.create(testHostOptions({
     events: { persist: true },
     // The bundled model catalog only, as tests/compaction-prefix/run.ts says why.
     models: { fetch: false },
     config: { directory: config, project: false, content: JSON.stringify(content) },
-  })
+  }))
 
   try {
     const session = await opencode.sessions.create({ location: { directory: work } })

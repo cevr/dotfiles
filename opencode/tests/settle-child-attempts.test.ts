@@ -7,6 +7,7 @@ import { HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { describe, expect, it } from "effect-bun-test"
 import { Answer, chatEvents } from "../sim/verify-model.ts"
+import { testHostOptions } from "../scripts/test-host.ts"
 import { message, type Reads, type SessionInfo, type ShellInfo } from "../mods/subagents/opencode/view.ts"
 import { envelopesOf } from "../mods/subagents/envelope.ts"
 import { subagents, visible } from "../mods/subagents/subagent-row.ts"
@@ -87,7 +88,7 @@ interface SdkOptions {
   readonly database: { readonly path: string }
   readonly events: { readonly persist: true }
   readonly models: { readonly fetch: false }
-  readonly fs: { readonly filewatcher: false }
+  readonly fs: { readonly filewatcher: boolean }
   readonly config: Schema.JsonObject
 }
 
@@ -292,15 +293,13 @@ const host = Effect.fn("LifecycleFixture.host")(function* (
     models: { "sim-model": { name: "Sim", capabilities: { tools: true, input: ["text"], output: ["text"] }, limit: { context: 128_000, output: 16_000 } } },
   }
   return yield* Effect.acquireRelease(
-    promised("real OpenCode boot failed", () => sdk.OpenCode.create({
+    promised("real OpenCode boot failed", () => sdk.OpenCode.create(testHostOptions({
       database: { path: path.join(base, "fixture.sqlite") }, events: { persist: true }, models: { fetch: false },
-      // The fixture drives shell and lifecycle events, not file edits; don't attach macOS file watchers at each boot.
-      fs: { filewatcher: false },
       config: { directory: base, project: false, content: encode({
         model: "sim/sim-model", providers: { sim: provider },
         plugins,
       }) },
-    })),
+    }))),
     (instance) => Effect.promise(() => instance.close()),
   )
 })

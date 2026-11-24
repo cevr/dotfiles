@@ -14,6 +14,7 @@
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { testHostOptions } from "../../scripts/test-host.ts"
 import { AGAIN_TASK, RECALL_TASK, SAVE_TASK, serve } from "./sim.ts"
 
 export interface Spec {
@@ -75,13 +76,13 @@ interface Sdk {
 const { OpenCode } = (await import(join(spec.fork, "packages/sdk/src/index.ts"))) as Sdk
 
 try {
-  const opencode = await OpenCode.create({
+  const opencode = await OpenCode.create(testHostOptions({
     events: { persist: true },
     // The bundled model catalog only, as tests/compaction-prefix/run.ts says why.
     models: { fetch: false },
     database: { path: join(spec.base, "opencode.db") },
     config: { directory: config, project: false, content: JSON.stringify(content) },
-  })
+  }))
   try {
     const messages: Record<string, unknown> = {}
     for (const task of spec.tasks ?? [SAVE_TASK, RECALL_TASK, AGAIN_TASK]) {

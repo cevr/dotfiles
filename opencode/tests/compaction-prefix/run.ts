@@ -20,6 +20,7 @@
  * @module
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { testHostOptions } from "../../scripts/test-host.ts"
 import { join } from "node:path"
 import { main } from "../../cmd/memory/cli.ts"
 import { AUTO_TASK, BACKGROUND_TASK, IDLE_TASK, MARGIN_SECONDS, NOTE, type Seen, serve, TTL_SECONDS } from "./sim.ts"
@@ -104,7 +105,7 @@ const TASKS: Readonly<Record<Mode, string>> = { auto: AUTO_TASK, idle: IDLE_TASK
 const WAIT_MS = 20_000
 
 try {
-  const opencode = await OpenCode.create({
+  const opencode = await OpenCode.create(testHostOptions({
     events: { persist: true },
     database: { path: join(spec.base, "opencode.db") },
     // The bundled catalog only. The embedded host reads no OPENCODE_DISABLE_MODELS_FETCH (the CLI's server does), and
@@ -113,7 +114,7 @@ try {
     // compaction's request and not the turn's before it (deep run, dotfiles 1eb86342).
     models: { fetch: false },
     config: { directory: config, project: false, content: JSON.stringify(content) },
-  })
+  }))
   try {
     const session = await opencode.sessions.create({ location: { directory: work } })
     await opencode.sessions.prompt({ sessionID: session.id, text: TASKS[spec.mode] })

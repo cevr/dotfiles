@@ -33,6 +33,7 @@
  * @module
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { testHostOptions } from "../../scripts/test-host.ts"
 import { join } from "node:path"
 import { BACKGROUND_TASK, EARLY_MS, LATE_MS, MARGIN_SECONDS, PRECOMPUTE_TASK, serve, TASK, TTL_SECONDS, WAKE_MS, type Seen } from "./sim.ts"
 import { stamp, watchdog } from "../hang-guard.ts"
@@ -117,7 +118,7 @@ const started: Array<Started> = []
 interface Hooks {
   readonly session: { readonly hook: (name: "model.request", callback: (event: { readonly kind: Started["kind"] }) => void) => Promise<unknown> }
 }
-const opencode = await OpenCode.create({
+const opencode = await OpenCode.create(testHostOptions({
   // The host activates its SDK plugins ahead of the config's (its boot order), so this hook runs before the plugin's.
   plugins: [{ id: "request-clock", setup: (context: Hooks) => context.session.hook("model.request", (event) => void started.push({ kind: event.kind, at: stamp() })) }],
   events: { persist: true },
@@ -138,7 +139,7 @@ const opencode = await OpenCode.create({
     },
   },
   config: { directory: config, project: false, content: JSON.stringify(content) },
-})
+}))
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)))
 const compacted = (messages: unknown) =>

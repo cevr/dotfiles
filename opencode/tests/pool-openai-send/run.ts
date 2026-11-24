@@ -1,5 +1,6 @@
 // Child process: real SDK and pool, scratch database and synthetic OAuth.
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
+import { testHostOptions } from "../../scripts/test-host.ts"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import { Array as Arr, Config, Data, Effect, FileSystem, Match, Option, Path, Predicate, Result, Schema, Scope, Stream } from "effect"
 import { HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
@@ -317,7 +318,7 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
   const commitIn = (host: Client, at = writer) => host.rpc.call({ rpcID: "fixture.openai-send-hold", method: "commit", input: {}, location: { directory: at } })
   let signedOutHold = Option.none<Schema.Json>()
   if (signedOut) signedOutHold = yield* Effect.gen(function* () {
-    const host = yield* target.host.create(configured)
+    const host = yield* target.host.create(testHostOptions(configured))
     const login = yield* signIn(host)
     const warm = yield* host.session.create({ location: { directory }, model: MODEL, title: "Warm" })
     yield* prompt(host, warm.id)
@@ -332,7 +333,7 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
     steps.length = 0
     return fact
   }).pipe(Effect.scoped)
-  const host = yield* target.host.create(configured)
+  const host = yield* target.host.create(testHostOptions(configured))
   if (!api && !signedOut) yield* signIn(host)
   if (late || retry) {
     yield* host.location.get({ location: { directory: writer } })

@@ -10,6 +10,7 @@
  * @module
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { testHostOptions } from "../../scripts/test-host.ts"
 import { join } from "node:path"
 import { Schema } from "effect"
 import { makeRepo } from "./repo.ts"
@@ -97,12 +98,12 @@ interface Sdk {
   readonly OpenCode: { readonly create: (options: Record<string, unknown>) => Promise<Embedded> }
 }
 const { OpenCode } = (await import(join(spec.fork, "packages/sdk/src/index.ts"))) as Sdk
-const opencode = await OpenCode.create({
+const opencode = await OpenCode.create(testHostOptions({
   events: { persist: true },
   // The bundled model catalog only, as tests/compaction-prefix/run.ts says why.
   models: { fetch: false },
   config: { directory: config, project: false, content: JSON.stringify(content) },
-})
+}))
 
 try {
   const session = await opencode.sessions.create({ location: { directory: work } })

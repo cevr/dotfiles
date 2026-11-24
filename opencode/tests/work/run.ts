@@ -7,6 +7,7 @@
 // gate and an accept check. It writes what the session's tool calls said, the model's requests and what is on
 // disk after the run to `<base>/result.json`. It imports nothing of the fork's at compile time.
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
+import { testHostOptions } from "../../scripts/test-host.ts"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import { Config, Data, Effect, FileSystem, Option, Path, Predicate, Schedule, Schema, Stream } from "effect"
 import { HttpServer } from "effect/http"
@@ -162,7 +163,7 @@ const run = Effect.gen(function* () {
   const opencode = yield* Effect.acquireRelease(
     Effect.tryPromise({
       // The bundled model catalog only, as tests/compaction-prefix/run.ts says why.
-      try: () => sdk.OpenCode.create({ events: { persist: true }, models: { fetch: false }, config: { directory: config, project: false, content: toJson(content) } }),
+      try: () => sdk.OpenCode.create(testHostOptions({ events: { persist: true }, models: { fetch: false }, config: { directory: config, project: false, content: toJson(content) } })),
       catch: (cause) => new RunFailed({ message: "OpenCode did not start", cause }),
     }),
     (embedded) => Effect.promise(() => embedded.close()),
