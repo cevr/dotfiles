@@ -4,7 +4,8 @@
 // calls are refused, the words of a refusal, and the options.
 // tests/guard.test.ts runs it in OpenCode, with direct and kernel-cell calls.
 import { describe, expect, test } from "bun:test"
-import { Effect, Exit, Layer, type Scope } from "effect"
+import { Effect, Exit, Layer, Option, type Scope } from "effect"
+import { keychainLaunch } from "@dotfiles/opencode-guard/chrome"
 import { MAX_CODE_DEPTH } from "@dotfiles/opencode-guard/executable"
 import * as MemoryCheckouts from "@dotfiles/opencode-guard/memory/checkouts"
 import * as MemoryLaunchers from "@dotfiles/opencode-guard/memory/launchers"
@@ -96,6 +97,10 @@ const start = (options: Record<string, unknown> = { home: HOME }, world: World =
   })
 
 const scenario = <A, E>(body: Effect.Effect<A, E, Scope.Scope>) => Effect.runPromise(Effect.scoped(body))
+const rangesFrom = (from: number, to: number): ReadonlyArray<{ readonly from: number; readonly to: number }> => {
+  if (to <= from) return []
+  return [{ from, to }]
+}
 
 describe("the guard plugin", () => {
   test("refuses a shell call that loses work for good, in the Claude Code hook's words, under either tool name", () =>
@@ -223,7 +228,9 @@ describe("the guard plugin", () => {
         }
         const { call } = yield* start({ home: HOME }, { scripts })
         expect(yield* call("shell", { command: `sh -n ${unit}/receipt.sh ${unit}/profile.sh` })).toBeUndefined()
-        expect(yield* call("shell", { command: `sh ${unit}/profile.sh` })).toContain("a bisect or a run over other commits")
+        expect(yield* call("shell", { command: `sh ${unit}/profile.sh` })).toContain("after selecting another Git revision")
+        const selectorOnly = yield* start({ home: HOME }, { scripts: { [`${unit}/profile.sh`]: 'git switch --detach "$source"' } })
+        expect(yield* selectorOnly.call("shell", { command: `sh ${unit}/profile.sh` })).toBeUndefined()
       }),
     ))
 
@@ -239,7 +246,9 @@ describe("the guard plugin", () => {
         }
         const child = 'git switch --detach "$commit"'
         const files = Object.fromEntries(Array.from({ length: MAX_CODE_DEPTH + 2 }, (_, index) => [`${dir}/depth-${index}.sh`, `sh ${dir}/depth-${index + 1}.sh`]))
-        const { call } = yield* start({ home: HOME }, { scripts: { ...parents, ...files, [`${dir}/depth-${MAX_CODE_DEPTH + 1}.sh`]: child, [`${dir}/child.sh`]: child, [`${dir}/$TARGET`]: child, [`${dir}/vendor-launcher`]: `#!/bin/sh\n${child}` } })
+        const childWithRun = `${child}\nfixture-build`
+        const withRun = { ...parents, ...files, [`${dir}/depth-${MAX_CODE_DEPTH + 1}.sh`]: childWithRun, [`${dir}/child.sh`]: childWithRun, [`${dir}/$TARGET`]: childWithRun, [`${dir}/vendor-launcher`]: `#!/bin/sh\n${childWithRun}` }
+        const { call } = yield* start({ home: HOME }, { scripts: withRun })
         expect(yield* call("shell", { command: `sh ${dir}/parent.sh` })).toContain(`runs ${dir}/child.sh`)
         expect(yield* call("shell", { command: `sh ${dir}/vendor.sh` })).toContain(`runs ${dir}/vendor-launcher`)
         expect(yield* call("shell", { command: `sh ${dir}/dynamic.sh` })).toBeUndefined()
@@ -251,6 +260,11 @@ describe("the guard plugin", () => {
         expect(yield* missing.call("shell", { command: `sh ${dir}/parent.sh` })).toBeUndefined()
         const inert = yield* start({ home: HOME }, { scripts: { ...parents, [`${dir}/child.sh`]: "git log --oneline" } })
         expect(yield* inert.call("shell", { command: `sh ${dir}/parent.sh` })).toBeUndefined()
+        const selectorOnly = yield* start({ home: HOME }, { scripts: { ...parents, [`${dir}/child.sh`]: child } })
+        expect(yield* selectorOnly.call("shell", { command: `sh ${dir}/parent.sh` })).toBeUndefined()
+        expect(yield* selectorOnly.call("shell", { command: `sh ${dir}/parent.sh; fixture-build` })).toContain("after selecting another Git revision")
+        const launchInParent = yield* start({ home: HOME }, { scripts: { ...parents, [`${dir}/child.sh`]: child, [`${dir}/parent.sh`]: `${parents[`${dir}/parent.sh`]}\nfixture-build` } })
+        expect(yield* launchInParent.call("shell", { command: `sh ${dir}/parent.sh` })).toContain(`runs ${dir}/parent.sh`)
       }),
     ))
 
@@ -265,7 +279,87 @@ describe("the guard plugin", () => {
         expect(yield* call("shell", { command: "git -C ../tools switch --detach fixture-old; npm test" })).toContain("after selecting another Git revision")
         expect(yield* call("shell", { command: `git -C ${sibling} switch --detach fixture-old; npm test` })).toBeUndefined()
         expect(yield* call("shell", { command: `git -C ${tree} switch --detach fixture-old; cd ${nested} && npm test` })).toBeUndefined()
-        expect(yield* call("shell", { command: `git clone --branch fixture-old ${sibling} ../new; cd ../new/subdir; npm test` })).toContain("after selecting another Git revision")
+        expect(yield* call("shell", { command: `git clone --branch fixture-old ${sibling} ../new; cd ../new/subdir; npm test` })).toBeUndefined()
+      }),
+    ))
+
+  test("parent and readable driver share revision history in both directions, not cwd", () =>
+    scenario(
+      Effect.gen(function* () {
+        const top = "/nonexistent/loop-probe-shared"
+        const alpha = `${top}/alpha`
+        const beta = `${top}/beta`
+        const gamma = `${top}/gamma`
+        const scripts = {
+          [`${alpha}/check.sh`]: "#!/bin/sh\ncd ../beta && npm test",
+          [`${alpha}/check-local.sh`]: "#!/bin/sh\ncd ../gamma && npm test",
+          [`${alpha}/change.sh`]: "#!/bin/sh\ncd ../beta && git switch --detach fixture-old",
+          [`${alpha}/no-checkout.sh`]: "git bisect start --no-checkout HEAD fixture-old",
+        }
+        const { call } = yield* start({ home: HOME }, { sessions: { ses_1: alpha }, repos: { repos: [alpha, beta, gamma] }, scripts })
+        const select = "git -C ../beta switch --detach fixture-old"
+        expect(yield* call("shell", { command: `${select}; sh ./check.sh` })).toContain("after selecting another Git revision")
+        expect(yield* call("shell", { command: `${select}; sh ./check-local.sh` })).toBeUndefined()
+        expect(yield* call("shell", { command: "sh ./change.sh; cd ../beta && npm test" })).toContain("after selecting another Git revision")
+        expect(yield* call("shell", { command: "sh ./change.sh; npm test" })).toBeUndefined()
+        expect(yield* call("shell", { command: "sh ./no-checkout.sh; git bisect good; npm test" })).toBeUndefined()
+        expect(yield* call("shell", { command: "git pull --no-rebase --no-ff --no-commit origin main && npm test" })).toBeUndefined()
+        expect(yield* call("shell", { command: "git checkout -b review-branch @ && npm test" })).toBeUndefined()
+      }),
+    ))
+
+  test("walks shell commands and requires positive selection evidence in unwalkable programs", () =>
+    scenario(
+      Effect.gen(function* () {
+        const dir = "/nonexistent/loop-probe-walkable"
+        const select = "git switch --detach fixture-old"
+        const scripts = {
+          [`${dir}/select.sh`]: `#!/bin/sh\n${select}`,
+          [`${dir}/select.js`]: `require('node:child_process').execSync('${select}')`,
+          [`${dir}/ordinary.js`]: "console.log('ordinary')",
+          [`${dir}/opaque.sh`]: "#!/bin/sh\nnode ./select.js",
+          [`${dir}/ordinary.sh`]: "#!/bin/sh\nnode ./ordinary.js",
+          [`${dir}/inert.sh`]: "#!/bin/sh\nls; echo fixture; git status; true",
+        }
+        const { call } = yield* start({ home: HOME }, { sessions: { ses_1: dir }, scripts })
+        expect(yield* call("shell", { command: select })).toBeUndefined()
+        expect(yield* call("shell", { command: `sh -c '${select}'` })).toBeUndefined()
+        expect(yield* call("shell", { command: "sh ./select.sh" })).toBeUndefined()
+        expect(yield* call("shell", { command: `${select}; sh ./inert.sh; sh -n ./ordinary.sh` })).toBeUndefined()
+        expect(yield* call("shell", { command: `${select}; fixture-tool` })).toContain("after selecting another Git revision")
+        expect(yield* call("shell", { command: "node ./select.js" })).toContain("Cannot tell what the program runs next in the affected working tree")
+        expect(yield* call("shell", { command: "sh ./opaque.sh" })).toContain(`runs ${dir}/select.js that selects a historical Git revision`)
+        expect(yield* call("shell", { command: "node ./ordinary.js; sh ./ordinary.sh" })).toBeUndefined()
+        expect(yield* call("shell", { command: `${select}; sh ./ordinary.sh` })).toContain("after selecting another Git revision")
+      }),
+    ))
+
+  test("moving any contiguous block into a readable child preserves the verdict", () =>
+    scenario(
+      Effect.gen(function* () {
+        const trees = ["alpha", "beta", "gamma"]
+        const tree = (name: string) => `/nonexistent/loop-probe-inline/${name}`
+        const where = { cwd: tree("alpha"), home: HOME }
+        const path = `${where.cwd}/driver.sh`
+        const orderings = [[0, 1, 2, 3], [2, 0, 3, 1], [1, 3, 2, 0]]
+        const ranges = [0, 1, 2, 3].flatMap((from) => [1, 2, 3, 4].flatMap((to) => rangesFrom(from, to)))
+        const cases = trees.flatMap((selected) => trees.flatMap((tested) => orderings.map((order) => ({ selected, tested, order }))))
+        for (const { selected, tested, order } of cases) {
+          const commands = [`(cd ../${selected}; git switch --detach fixture-old)`, "git status -sb", `(cd ../${tested}; npm test)`, "printf '%s\\n' fixture"]
+          const ordered = order.map((index) => commands[index])
+          const mustRefuse = selected === tested && order.indexOf(0) < order.indexOf(2)
+          for (const { from, to } of ranges) {
+            const block = ordered.slice(from, to).join("; ")
+            const render = (call: string) => [...ordered.slice(0, from), call, ...ordered.slice(to)].join("; ")
+            const load = (name: string) => Effect.succeed(Option.liftPredicate(`#!/bin/sh\n${block}`, () => name === path))
+            const inline = Option.isSome(yield* keychainLaunch(render(`(${block})`), where, load))
+            expect([ordered, from, to, inline]).toEqual([ordered, from, to, mustRefuse])
+            for (const invocation of [`sh ${path}`, `bash ${path}`, path]) {
+              const moved = Option.isSome(yield* keychainLaunch(render(invocation), where, load))
+              expect([ordered, invocation, from, to, moved]).toEqual([ordered, invocation, from, to, inline])
+            }
+          }
+        }
       }),
     ))
 
@@ -301,7 +395,8 @@ describe("the guard plugin", () => {
             }
           }
         }
-        const paths = yield* start({ home: HOME }, { scripts: { [source("walk.sh")]: "git switch --detach fixture-old", [source("fixture.py")]: "import subprocess\nsubprocess.run(['git', 'switch', '--detach', 'fixture-old'])" } })
+        const selected = "git switch --detach fixture-old"
+        const paths = yield* start({ home: HOME }, { scripts: { [source("walk.sh")]: `${selected}\nfixture-tool`, [source("only.sh")]: selected, [source("fixture.py")]: "import subprocess\nsubprocess.run(['git', 'switch', '--detach', 'fixture-old'])" } })
         expect(yield* paths.call("shell", { command: `printf '%s\\n' '${source("walk.sh")}' | xargs sh` })).toContain(source("walk.sh"))
         expect(yield* paths.call("shell", { command: `printf '%s\\n' '${source("walk.sh")}' | xargs -I '{}' sh '{}'` })).toContain(source("walk.sh"))
         expect(yield* paths.call("shell", { command: `cat /nonexistent/loop-probe-input | xargs -I '{}' sh ${source("walk.sh")} '{}'` })).toContain(source("walk.sh"))
@@ -309,7 +404,9 @@ describe("the guard plugin", () => {
         expect(yield* paths.call("shell", { command: `cd ${dir} && python3 -m fixture` })).toContain(source("fixture.py"))
         expect(yield* paths.call("shell", { command: `python -c "import os; os.system('git switch --detach fixture-old')"` })).toContain("its inline script")
         expect(yield* paths.call("shell", { command: `python -c "print('git switch --detach fixture-old')"` })).toBeUndefined()
-        expect(yield* paths.call("shell", { command: `sh -c 'git switch --detach fixture-old'` })).toContain("guard-keychain:")
+        expect(yield* paths.call("shell", { command: `printf '%s\\n' '${source("only.sh")}' | xargs sh` })).toBeUndefined()
+        expect(yield* paths.call("shell", { command: `sh -c '${selected}'` })).toBeUndefined()
+        expect(yield* paths.call("shell", { command: `sh -c '${selected}; fixture-tool'` })).toContain("guard-keychain:")
         const nodeCheck = yield* start({ home: HOME }, { scripts: { ...quiet, [source("first.cjs")]: revision, [source("app.js")]: revision } })
         expect(yield* nodeCheck.call("shell", { command: `node --check ${source("app.js")}` })).toBeUndefined()
         expect(yield* nodeCheck.call("shell", { command: `node --check --require ${source("first.cjs")} ${source("app.js")}` })).toContain(source("first.cjs"))

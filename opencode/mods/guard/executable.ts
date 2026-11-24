@@ -327,7 +327,8 @@ export interface Execution {
   readonly unknownCwd?: true
   readonly env: ReadonlyMap<string, string>
   readonly code: ReadonlyArray<CodeInput>
-  readonly inlineShell?: true
+  readonly sourceDepth: number
+  readonly syntaxOnly: boolean
 }
 
 export const MAX_CODE_DEPTH = 6
@@ -361,7 +362,7 @@ const directoryAt = (at: Directory, target: string): Directory => {
 }
 
 /** Commands and their ordered source inputs, including inline shell commands in their actual execution position. */
-export const executionPlan = (line: string, place: ExecutionPlace, depth = 0): ReadonlyArray<Execution> => {
+export const executionPlan = (line: string, place: ExecutionPlace, depth = -1): ReadonlyArray<Execution> => {
   const result: Array<Execution> = []
   const env = place.env || new Map<string, string>()
   let state: ShellState = { place: { ...place, env }, vars: env, directories: [] }
@@ -380,7 +381,7 @@ export const executionPlan = (line: string, place: ExecutionPlace, depth = 0): R
       piped = []
       continue
     }
-    const run = executionStep(words, piped, state)
+    const run = executionStep(words, piped, state, depth)
     if (!pipe && !inPipeline) state = run.state
     inPipeline = pipe
     piped = pipelineInput(pipe, words)
@@ -429,7 +430,7 @@ const moveDirectory = (place: ExecutionPlace, previous: Directory | void, target
   return previous || { cwd: place.cwd, unknownCwd: true }
 }
 
-const executionStep = (words: ReadonlyArray<Word>, piped: ReadonlyArray<Word>, state: ShellState): ExecutionStep => {
+const executionStep = (words: ReadonlyArray<Word>, piped: ReadonlyArray<Word>, state: ShellState, sourceDepth: number): ExecutionStep => {
   const { place, vars } = state
   const env = place.env || new Map<string, string>()
   const idle: ExecutionStep = { state, commands: [] }
@@ -451,7 +452,15 @@ const executionStep = (words: ReadonlyArray<Word>, piped: ReadonlyArray<Word>, s
     return { ...input, source: { ...input.source, text: expanded(input.source, { ...place, ...at }, vars) } }
   })
   const actual = args.map((arg) => expandArg(head, arg, { ...place, ...at }, vars))
-  return { state, commands: [{ head, args: actual, command: invocation.words.map(({ text }) => text).join(" "), cwd: at.cwd, unknownCwd: at.unknownCwd, env: invocation.env, code }] }
+  const syntaxOnly = syntaxCheck(head, args, code)
+  return { state, commands: [{ head, args: actual, command: invocation.words.map(({ text }) => text).join(" "), cwd: at.cwd, unknownCwd: at.unknownCwd, env: invocation.env, code, sourceDepth, syntaxOnly }] }
+}
+
+const syntaxCheck = (head: string, args: ReadonlyArray<Word>, code: ReadonlyArray<CodeInput>): boolean => {
+  if (SHELLS.has(head)) return shellInput(args).noexec
+  if (code.length > 0) return false
+  if (head === "node" || head === "nodejs") return args.some(({ text }) => text === "--check" || text === "-c")
+  return head === "deno" && args[0]?.text === "check"
 }
 
 const expandArg = (head: string, arg: Word, place: ExecutionPlace, vars: ReadonlyMap<string, string>): Word => {
@@ -462,5 +471,5 @@ const expandArg = (head: string, arg: Word, place: ExecutionPlace, vars: Readonl
 const inlineCommands = (command: Execution, home: string, depth: number): ReadonlyArray<Execution> =>
   command.code.flatMap((unit) => {
     if (unit.kind !== "inline" || unit.language !== "shell") return []
-    return executionPlan(unit.code, { cwd: command.cwd, unknownCwd: command.unknownCwd, home, env: command.env }, depth).map((entry): Execution => ({ ...entry, inlineShell: true }))
+    return executionPlan(unit.code, { cwd: command.cwd, unknownCwd: command.unknownCwd, home, env: command.env }, depth)
   })

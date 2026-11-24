@@ -71,6 +71,8 @@ export interface BareLaunch {
   readonly script: Option.Option<string>
   readonly remedy: Remedy
   readonly oldCheckout?: true
+  readonly rebaseExec?: true
+  readonly opaqueContinuation?: true
 }
 
 /** Whether a launch's flags open DevTools or headless without both keychain flags. */
@@ -102,24 +104,6 @@ export const ScriptFile = Schema.TaggedStruct("ScriptFile", { path: Schema.Strin
 export const Ran = Schema.Union([Inline, ScriptFile])
 export type Ran = typeof Ran.Type
 
-const LAUNCHERS: ReadonlySet<string> = new Set(["make", "bunx", "npx", "playwright", "open"])
-const PACKAGE_RUNNERS: ReadonlySet<string> = new Set(["bun", "npm", "pnpm", "yarn"])
-const PACKAGE_RUNS: ReadonlySet<string> = new Set(["run", "start", "test", "exec", "dlx"])
-
-/** A putative browser launcher after a Git selection: an actual script, shell command, or runner, not a reader. */
-const runsLauncher = (command: Execution): boolean => {
-  const { head, args } = command
-  if (READERS.has(head)) return false
-  if (LAUNCHERS.has(head) || isChromePath(head) || command.code.some(launcherInput)) return true
-  if (PACKAGE_RUNNERS.has(head) && Option.exists(Arr.head(args), (word) => PACKAGE_RUNS.has(word.text))) return true
-  return (head === "go" || head === "cargo") && Option.exists(Arr.head(args), (word) => word.text === "run")
-}
-
-const launcherInput = (input: CodeInput): boolean => {
-  if (input.kind === "inline") return input.language !== "shell"
-  return true
-}
-
 type TreeLookup = ReadonlyMap<string, Option.Option<string>>
 interface ChangedTree {
   readonly tree: Option.Option<string>
@@ -127,18 +111,76 @@ interface ChangedTree {
   readonly uncertain: boolean
 }
 
-const revisionTrees = (commands: ReadonlyArray<Execution>, script: boolean, roots: TreeLookup): Option.Option<Remedy> => {
+interface CommandEvent {
+  readonly kind: "command"
+  readonly execution: Execution
+  readonly source: Option.Option<SourceContext>
+  readonly launcher: boolean
+}
+interface FindingEvent {
+  readonly kind: "finding"
+  readonly launch: BareLaunch
+}
+type ExecutionEvent = CommandEvent | FindingEvent
+
+interface SourceContext {
+  readonly invocation: string
+  readonly name: string
+  readonly language: Language
+}
+
+/** Shell has a command plan. Other languages supply positive literal evidence, not a full plan. */
+const walkable = (language: Language): boolean => language === "shell"
+
+const commandEvent = (execution: Execution, source: Option.Option<SourceContext>, expandedShell = false): CommandEvent =>
+  ({
+    kind: "command", execution, source,
+    launcher: !READERS.has(execution.head) && !execution.syntaxOnly && !expandedShell &&
+      !execution.code.some((input) => input.kind === "inline" && walkable(input.language)),
+  })
+
+/** One ordered tree-effect state for the whole decision. Readable child events are already at their call site. */
+const decideTimeline = (line: string, events: ReadonlyArray<ExecutionEvent>, roots: TreeLookup): ReadonlyArray<BareLaunch> => {
   const changes = new Map<string, ChangedTree>()
   const refsOnly = new Set<string>()
-  const hasLauncher = commands.some(runsLauncher)
-  for (const command of commands) {
+  const direct: Array<BareLaunch> = []
+  let relation = Option.none<BareLaunch>()
+  let continuation = Option.none<BareLaunch>()
+  for (const event of events) {
+    if (event.kind === "finding") {
+      direct.push(event.launch)
+      continue
+    }
+    const command = event.execution
+    direct.push(...directLaunch(command).map((launch) => attributeLaunch(launch, event.source)))
     const action = actionAt(command, (tree) => refsOnly.has(treeName(tree, roots)))
-    const hazard = commandHazard(command, action, Array.from(changes.values()), roots, (script || command.inlineShell === true) && !hasLauncher)
-    if (Option.isSome(hazard)) return hazard
+    if (Option.isNone(relation)) relation = eventHazard(line, event, action, Array.from(changes.values()), roots)
+    if (Option.isNone(continuation)) continuation = opaqueContinuation(event, action)
     rememberAction(action, roots, changes, refsOnly)
   }
-  return Option.none()
+  if (direct.length > 0) return direct
+  return Option.toArray(Option.orElse(relation, () => continuation))
 }
+
+const opaqueContinuation = ({ execution, source }: CommandEvent, action: GitAction): Option.Option<BareLaunch> => {
+  if (action.revision !== "moves" || usesShim(execution.env)) return Option.none()
+  return source.pipe(
+    Option.filter(({ language }) => !walkable(language)),
+    Option.map(({ invocation, name }): BareLaunch => ({ command: invocation, script: Option.some(name), remedy: "unknown", opaqueContinuation: true })),
+  )
+}
+
+const eventHazard = (line: string, event: CommandEvent, action: GitAction, changes: ReadonlyArray<ChangedTree>, roots: TreeLookup): Option.Option<BareLaunch> => {
+  const { execution, source, launcher } = event
+  if (usesShim(execution.env)) return Option.none()
+  if (action.rebaseExec === true) return Option.some(attributeLaunch({ command: execution.command, script: Option.none(), remedy: "shim", rebaseExec: true }, source))
+  if (!launcher) return Option.none()
+  const match = Arr.findFirst(changes, (change) => coincides(change, execution, roots))
+  return Option.map(match, (change): BareLaunch => ({ command: line, script: Option.map(source, ({ name }) => name), remedy: changedRemedy(change, execution), oldCheckout: true }))
+}
+
+const attributeLaunch = (launch: BareLaunch, source: Option.Option<SourceContext>): BareLaunch =>
+  Option.getOrElse(Option.map(source, ({ invocation, name }) => ({ ...launch, command: invocation, script: Option.some(name) })), () => launch)
 
 const actionAt = (command: Execution, refsOnly?: (tree: Option.Option<string>) => boolean): GitAction =>
   gitAction(command.head, command.args.map((entry) => entry.text), command, refsOnly)
@@ -151,6 +193,8 @@ const rememberAction = (action: GitAction, roots: TreeLookup, changes: Map<strin
   const tree = treeName(action.tree, roots)
   if (tree !== "" && action.bisectMode === "refs") refsOnly.add(tree)
   else if (tree !== "" && action.bisectMode) refsOnly.delete(tree)
+  // Its exec runs during rebase; it doesn't make later commands run at an intermediate commit.
+  if (action.rebaseExec) return
   if (action.revision !== "moves" && action.revision !== "unknown") return
   const exact = action.newTree === true || action.explicitTree === true
   const target = action.tree.pipe(Option.map((path) => changedRoot(path, exact, roots)))
@@ -172,16 +216,6 @@ const coincides = (change: ChangedTree, command: Execution, roots: TreeLookup): 
   if (change.exact) return within(command.cwd, tree) && !Option.exists(launcher, (root) => root !== tree && within(root, tree))
   if (Option.isSome(launcher)) return launcher.value === tree
   return within(command.cwd, tree)
-}
-
-/** A known selection in one checkout is not evidence about a different checkout. */
-const commandHazard = (command: Execution, action: GitAction, changes: ReadonlyArray<ChangedTree>, roots: TreeLookup, implicitDriver: boolean): Option.Option<Remedy> => {
-  if (usesShim(command.env)) return Option.none()
-  if (action.bisectRun || (implicitDriver && action.scriptSelection)) return Option.some("shim")
-  if (action.revision === "unknown" && implicitDriver) return Option.some("unknown")
-  if (!runsLauncher(command)) return Option.none()
-  const match = Arr.findFirst(changes, (change) => coincides(change, command, roots))
-  return Option.map(match, (change) => changedRemedy(change, command))
 }
 
 const changedRemedy = (change: ChangedTree, command: Execution): Remedy => {
@@ -224,13 +258,8 @@ const resolveEntry = (input: CodeInput, cwd: string): Ran => {
 
 /** Each command of `line` that starts Chrome for DevTools or headless without both keychain flags, or runs a bisect without the shim. */
 export const bareLaunches = (line: string, place: Place): ReadonlyArray<BareLaunch> => {
-  return launchPlan(line, executionPlan(line, place))
-}
-
-const launchPlan = (line: string, commands: ReadonlyArray<Execution>, roots: TreeLookup = new Map()): ReadonlyArray<BareLaunch> => {
-  const launches = commands.flatMap((entry) => directLaunch(entry))
-  if (launches.length > 0) return launches
-  return Option.toArray(Option.map(revisionTrees(commands, false, roots), (remedy): BareLaunch => ({ command: line, script: Option.none(), remedy, oldCheckout: true })))
+  const events = executionPlan(line, place).map((entry) => commandEvent(entry, Option.none()))
+  return decideTimeline(line, events, new Map())
 }
 
 const directLaunch = ({ head, args, command, env }: Execution): ReadonlyArray<BareLaunch> => {
@@ -401,10 +430,11 @@ const literalWord = (expression: string): string => {
 const namedBisect = (ran: Ran): boolean => ran._tag === "ScriptFile" && /bisect/i.test(basename(ran.path))
 
 const quote = (text: string): string => `'${text.replaceAll("'", "'\\''")}'`
+const processArgument = (expression: string): string => literalWord(expression) || "$__GUARD_DYNAMIC"
 const literalLine = (call: { readonly program: string; readonly list: string }): string => {
   const program = literalWord(call.program)
   if (program === "" || /\$\{/.test(program)) return ""
-  return [program, ...topLevel(call.list).map(literalWord)].map(quote).join(" ")
+  return [program, ...topLevel(call.list).map(processArgument)].map(quote).join(" ")
 }
 
 const codeInCall = (text: string, name: string, open: number, script: Script): string => {
@@ -425,7 +455,7 @@ const pythonCall = (text: string, name: string, open: number, script: Script): s
 /** Process invocations in a source file feed the same shell plan as the outer call. */
 const sourceCalls = (text: string, language: Language): ReadonlyArray<string> => {
   if (language === "auto") return []
-  if (language === "shell") return [text]
+  if (walkable(language)) return [text]
   const script: Script = { arrays: arraysOf(text), chromes: new Set() }
   const calls = callsOf(language)
   return Array.from(text.matchAll(calls)).flatMap((match) => {
@@ -467,53 +497,88 @@ const scriptEnv = (run: RuntimeRun): ReadonlyMap<string, string> => {
 const sourcePlan = (run: RuntimeRun, text: string, depth: number): ReadonlyArray<Execution> =>
   sourceCalls(text, scriptLanguage(run, text)).flatMap((line) => executionPlan(line, { ...scriptPlace(run), unknownCwd: run.unknownCwd, env: scriptEnv(run) }, depth))
 
-const scriptEvidence = (run: RuntimeRun, text: string, commands: ReadonlyArray<Execution>, roots: TreeLookup = new Map()): Option.Option<BareLaunch> => {
-  const named = (remedy: Remedy): BareLaunch => ({ command: run.command, script: Option.some(scriptName(run.ran)), remedy })
-  const language = scriptLanguage(run, text)
-  if (language === "js" && scriptLaunchesBare(text)) return Option.some(named("flags"))
-  if (commands.some((command) => directLaunch(command).some((launch) => launch.remedy === "flags"))) return Option.some(named("flags"))
-  if (language !== "auto" && !run.shimmed && namedBisect(run.ran)) return Option.some(named("shim"))
-  return Option.map(revisionTrees(commands, true, roots), named)
+const sourceFinding = (run: RuntimeRun, text: string, source: SourceContext): ReadonlyArray<FindingEvent> => {
+  const named = (remedy: Remedy): FindingEvent => ({ kind: "finding", launch: { command: source.invocation, script: Option.some(source.name), remedy } })
+  if (source.language === "js" && scriptLaunchesBare(text)) return [named("flags")]
+  if (source.language !== "auto" && !run.shimmed && namedBisect(run.ran)) return [named("shim")]
+  return []
 }
 
+const sourceContext = (run: RuntimeRun, text: string, invocation: string): SourceContext =>
+  ({ invocation, name: scriptName(run.ran), language: scriptLanguage(run, text) })
+
 /** A local decision does not assume the contents of a child it was not given. */
-export const scriptLaunch = (run: RuntimeRun, text: string): Option.Option<BareLaunch> => scriptEvidence(run, text, sourcePlan(run, text, 0))
+export const scriptLaunch = (run: RuntimeRun, text: string): Option.Option<BareLaunch> => {
+  const source = sourceContext(run, text, run.command)
+  const commands = sourcePlan(run, text, 0).map((entry) => commandEvent(entry, Option.some(source)))
+  return Arr.head(decideTimeline(run.command, [...sourceFinding(run, text, source), ...commands], new Map()))
+}
 
 export type ScriptLoader = (path: string) => Effect.Effect<Option.Option<string>>
 export type TreeRoot = (directory: string) => Effect.Effect<Option.Option<string>>
 
 /** Consult the existing repository boundary only for plans that actually pair Git work with a launcher. */
-const rootsFor = Effect.fn("Guard.treeRoots")(function* (commands: ReadonlyArray<Execution>, root: TreeRoot) {
+const rootsFor = Effect.fn("Guard.treeRoots")(function* (events: ReadonlyArray<ExecutionEvent>, root: TreeRoot) {
+  const commands = events.flatMap((entry) => {
+    if (entry.kind === "command") return [entry.execution]
+    return []
+  })
   const actions = commands.values().filter(({ head }) => head === "git").map((entry) => actionAt(entry)).toArray()
   if (!actions.some((entry) => entry.revision === "moves" || entry.revision === "unknown")) return new Map<string, Option.Option<string>>()
   const paths = new Set([
     ...actions.flatMap((entry) => Option.toArray(entry.tree)),
-    ...commands.values().filter((entry) => !entry.unknownCwd && runsLauncher(entry)).map((entry) => entry.cwd),
+    ...events.flatMap(launcherDirectory),
   ])
   const roots = new Map<string, Option.Option<string>>()
   for (const directory of paths) roots.set(directory, yield* root(directory))
   return roots
 })
 
+const launcherDirectory = (event: ExecutionEvent): ReadonlyArray<string> => {
+  if (event.kind === "command" && !event.execution.unknownCwd && event.launcher) return [event.execution.cwd]
+  return []
+}
+
 const lexicalRoot: TreeRoot = () => Effect.succeed(Option.none())
 
 /** Follow an executed source's named children; absent, dynamic, or deeper than six contributes no evidence. */
 export const scriptLaunchWith = Effect.fn("Guard.scriptLaunchWith")(function* (run: RuntimeRun, text: string, load: ScriptLoader, depth = 0, root: TreeRoot = lexicalRoot) {
-  const plan = sourcePlan(run, text, depth)
-  const local = scriptEvidence(run, text, plan, yield* rootsFor(plan, root))
-  if (Option.isSome(local) || depth >= MAX_CODE_DEPTH) return local
-  const inner = yield* inspectRuns(plannedRuns(plan, scriptPlace(run).home), load, depth + 1, root)
-  return Option.map(inner, (launch) => ({ ...launch, command: run.command }))
+  const events = yield* expandSource(run, text, load, depth, sourceContext(run, text, run.command))
+  return Arr.head(decideTimeline(run.command, events, yield* rootsFor(events, root)))
 })
 
-const inspectRuns = Effect.fn("Guard.inspectRuns")(function* (runs: ReadonlyArray<RuntimeRun>, load: ScriptLoader, depth: number, root: TreeRoot): Effect.fn.Return<Option.Option<BareLaunch>> {
-  for (const run of runs) {
+/** Expand source events in command order; cwd and environment are scoped to each invoking frame. */
+const expandCommands = Effect.fn("Guard.expandCommands")(function* (
+  plan: ReadonlyArray<Execution>,
+  home: string,
+  load: ScriptLoader,
+  source: Option.Option<SourceContext>,
+): Effect.fn.Return<ReadonlyArray<ExecutionEvent>> {
+  const events: Array<ExecutionEvent> = []
+  for (const command of plan) {
+    events.push(...(yield* expandCommand(command, home, load, source)))
+  }
+  return events
+})
+
+const expandCommand = Effect.fn("Guard.expandCommand")(function* (command: Execution, home: string, load: ScriptLoader, source: Option.Option<SourceContext>): Effect.fn.Return<ReadonlyArray<ExecutionEvent>> {
+  if (command.sourceDepth >= MAX_CODE_DEPTH) return [commandEvent(command, source)]
+  const children: Array<ExecutionEvent> = []
+  let expandedShell = false
+  for (const run of plannedRuns([command], home)) {
     const text = yield* readRun(run.ran, load)
     if (Option.isNone(text)) continue
-    const launch = yield* scriptLaunchWith(run, text.value, load, depth, root)
-    if (Option.isSome(launch)) return launch
+    const invocation = Option.getOrElse(Option.map(source, (frame) => frame.invocation), () => run.command)
+    const frame = sourceContext(run, text.value, invocation)
+    expandedShell ||= walkable(frame.language)
+    children.push(...(yield* expandSource(run, text.value, load, command.sourceDepth + 1, frame)))
   }
-  return Option.none()
+  return [commandEvent(command, source, expandedShell), ...children]
+})
+
+const expandSource = Effect.fn("Guard.expandSource")(function* (run: RuntimeRun, text: string, load: ScriptLoader, depth: number, source: SourceContext): Effect.fn.Return<ReadonlyArray<ExecutionEvent>> {
+  const commands = yield* expandCommands(sourcePlan(run, text, depth), scriptPlace(run).home, load, Option.some(source))
+  return [...sourceFinding(run, text, source), ...commands]
 })
 
 const readRun = (ran: Ran, load: ScriptLoader): Effect.Effect<Option.Option<string>> => {
@@ -523,10 +588,8 @@ const readRun = (ran: Ran, load: ScriptLoader): Effect.Effect<Option.Option<stri
 }
 
 export const keychainLaunch = Effect.fn("Guard.keychainLaunch")(function* (line: string, place: Place, load: ScriptLoader, root: TreeRoot = lexicalRoot) {
-  const plan = executionPlan(line, place)
-  const local = Arr.head(launchPlan(line, plan, yield* rootsFor(plan, root)))
-  if (Option.isSome(local)) return local
-  return yield* inspectRuns(plannedRuns(plan, place.home), load, 0, root)
+  const events = yield* expandCommands(executionPlan(line, place), place.home, load, Option.none())
+  return Arr.head(decideTimeline(line, events, yield* rootsFor(events, root)))
 })
 
 /** What a launch does, in the refusal's words. */
@@ -536,10 +599,16 @@ const starts = (launch: BareLaunch): string =>
 /** Why the rule refuses `launch`, and the way through. */
 export const keychainReason = (launch: BareLaunch): string => {
   const dialog = "and macOS puts a keychain dialog on the owner's screen at each launch of a Chrome without them"
+  if (launch.rebaseExec === true)
+    return `\`${launch.command}\` runs a rebase command on intermediate commits, whose browser launchers may predate ${KEYCHAIN_FLAGS.join(" ")}, ${dialog}. Prefix the whole rebase with CHROME="${SHIM}".`
+  if (launch.opaqueContinuation === true)
+    return `\`${launch.command}\` runs ${Option.getOrElse(launch.script, () => "a program")} that selects a historical Git revision. Cannot tell what the program runs next in the affected working tree. Export CHROME before the whole command: export CHROME="${SHIM}"; ${launch.command}`
   if (launch.remedy === "unknown")
     return `\`${launch.command}\`: cannot tell whether the Git operation selects another revision or restores files, or whether the launcher runs in the affected working tree. Spell out a file restore with \`git restore -- <path>\`, name the working directory explicitly, or export CHROME="${SHIM}" before a run over revisions.`
-  if (launch.oldCheckout === true)
-    return `\`${launch.command}\` runs a launcher after selecting another Git revision, whose browser launchers may predate ${KEYCHAIN_FLAGS.join(" ")}, ${dialog}. Export CHROME before the whole command: export CHROME="${SHIM}"; ${launch.command}`
+  if (launch.oldCheckout === true) {
+    const runner = Option.match(launch.script, { onNone: () => "runs", onSome: (script) => `runs ${script}, which runs` })
+    return `\`${launch.command}\` ${runner} a launcher after selecting another Git revision, whose browser launchers may predate ${KEYCHAIN_FLAGS.join(" ")}, ${dialog}. Export CHROME before the whole command: export CHROME="${SHIM}"; ${launch.command}`
+  }
   if (launch.remedy === "shim")
     return (
       `\`${launch.command}\` ${Option.match(launch.script, { onNone: () => "runs a bisect", onSome: (script) => `runs ${script}, a bisect or a run over other commits` })}, ` +

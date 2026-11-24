@@ -8,8 +8,7 @@ export interface GitAction {
   readonly revision: Revision
   readonly tree: Option.Option<string>
   readonly bisectRun: boolean
-  /** An executed old-revision driver may select a commit whose launcher is indirect. */
-  readonly scriptSelection: boolean
+  readonly rebaseExec?: true
   readonly bisectMode?: "refs" | "checkout" | "ended"
   readonly newTree?: true
   readonly explicitTree?: true
@@ -17,11 +16,11 @@ export interface GitAction {
 interface EffectOnTree {
   readonly revision: Revision
   readonly bisectRun: boolean
-  readonly scriptSelection: boolean
+  readonly rebaseExec?: true
   readonly bisectMode?: GitAction["bisectMode"]
   readonly destination?: string
 }
-const action = (revision: Revision, scriptSelection = false, bisectRun = false): EffectOnTree => ({ revision, scriptSelection, bisectRun })
+const action = (revision: Revision, bisectRun = false): EffectOnTree => ({ revision, bisectRun })
 const described = (description: string) => new Set(description.split(/\s+/))
 
 interface Grammar {
@@ -36,29 +35,37 @@ interface Argv {
   readonly flags: ReadonlySet<string>
   readonly has: (keys: ReadonlySet<string>) => boolean
   readonly last: (keys: ReadonlySet<string>) => string
+  readonly values: ReadonlyMap<string, string>
 }
 
 const optionKey = (word: string): string => word.split("=", 1)[0] || ""
 
 /** The `=` spellings of options whose values are optional, never consuming the next word. */
-const OPTIONAL = described("--track --recurse-submodules --gpg-sign -S --rebase --log --porcelain --color --relative --untracked-files --reset-when-found --term-new --term-bad --term-old --term-good --rebase-merges --strategy --guess-remote")
+const OPTIONAL = described("--track --recurse-submodules --gpg-sign -S --reset-when-found --term-new --term-bad --term-old --term-good --rebase-merges")
 
 const optionParts = (token: string, spec: Grammar): ReadonlyArray<string> => {
   const key = optionKey(token)
   if (key !== token && spec.flags.has(key) && !OPTIONAL.has(key)) return []
   if (spec.flags.has(key) || spec.values.has(key) || !/^-[^-].+/.test(token)) return [key]
-  const short = token.slice(0, 2)
-  if (spec.values.has(short) || OPTIONAL.has(short)) return [short]
-  return token.slice(1).split("").map((flag) => `-${flag}`)
+  const parts: Array<string> = []
+  for (const flag of token.slice(1)) {
+    const short = `-${flag}`
+    parts.push(short)
+    if (spec.values.has(short) || OPTIONAL.has(short)) break
+  }
+  return parts
 }
 
-const optionValueCount = (parts: ReadonlyArray<string>, token: string, spec: Grammar): number =>
-  Number(parts.some((key) => spec.values.has(key) && key === token))
+const attachedValue = (token: string, parts: ReadonlyArray<string>, key: string): string => {
+  if (token.startsWith("--")) return token.slice(key.length).replace(/^=/, "")
+  return token.slice(parts.length + 1)
+}
 
 /** Parse a subcommand's own options and operands, never interpreting a path after `--` as an option. */
 const argvOf = (args: ReadonlyArray<string>, spec: Grammar): Option.Option<Argv> => {
   const flags = new Set<string>()
   const ordered: Array<string> = []
+  const values = new Map<string, string>()
   const operands: Array<string> = []
   let paths: ReadonlyArray<string> = []
   for (let index = 0; index < args.length; index += 1) {
@@ -73,14 +80,18 @@ const argvOf = (args: ReadonlyArray<string>, spec: Grammar): Option.Option<Argv>
     }
     const parts = optionParts(token, spec)
     if (parts.length === 0 || !parts.every((key) => spec.flags.has(key) || spec.values.has(key))) return Option.none()
-    const count = optionValueCount(parts, token, spec)
-    if (index + count >= args.length) return Option.none()
+    const valueKey = parts.find((key) => spec.values.has(key)) || ""
+    if (valueKey !== "") {
+      const attached = attachedValue(token, parts, valueKey)
+      index += Number(attached === "")
+      if (index >= args.length) return Option.none()
+      values.set(valueKey, attached || args[index] || "")
+    }
     for (const part of parts) flags.add(part)
     ordered.push(...parts)
-    index += count
   }
   return Option.some({
-    operands, paths, flags, has: (keys) => Array.from(flags).some((flag) => keys.has(flag)),
+    operands, paths, flags, values, has: (keys) => Array.from(flags).some((flag) => keys.has(flag)),
     last: (keys) => ordered.findLast((flag) => keys.has(flag)) || "",
   })
 }
@@ -93,15 +104,25 @@ const checkoutFlags = `${quiet} -f --force -m --merge --guess --no-guess --progr
 const checkoutSpec = grammar(`${checkoutFlags} -p --patch --ours --theirs --overlay --no-overlay --ignore-skip-worktree-bits --pathspec-file-nul --detach -l`, `-b -B --orphan ${conflicts} ${pathspec}`)
 const switchSpec = grammar(`${checkoutFlags} -d --detach --discard-changes`, `-c -C --create --force-create --orphan ${conflicts}`)
 const restoreSpec = grammar(`-q --quiet -p --patch -S --staged -W --worktree --ignore-unmerged --ignore-skip-worktree-bits --recurse-submodules --no-recurse-submodules --overlay --no-overlay --ours --theirs -m --merge --progress --no-progress --pathspec-file-nul`, `-s --source ${conflicts} ${pathspec} -U --unified --inter-hunk-context`)
+const historicalResetModes = described("--hard --merge --keep")
 const resetModes = described("--soft --mixed --hard --merge --keep")
 const resetSpec = grammar(`-q --quiet -p --patch --soft --mixed --hard --merge --keep --recurse-submodules --no-recurse-submodules --pathspec-file-nul --refresh --no-refresh -N --intent-to-add`, `${pathspec} -U --unified --inter-hunk-context`)
 const branchCreation = described("-b -B -c -C --create --force-create --orphan")
-const restoreOnly = described(`-p --patch --ours --theirs ${pathspec}`)
+const restoreOnly = described("--ours --theirs")
 const detached = described("-d --detach")
 const patches = described(`-p --patch ${pathspec}`)
+const sources = described("--source -s")
+const index = described("--staged -S")
+const worktreeFiles = described("--worktree -W")
 
-const revisionExpression = (word: string): boolean =>
-  /^(?:HEAD|-|[a-f0-9]{7,64})$/i.test(word) || /^[\w./-]+(?:[~^]|@\{)/.test(word)
+const revisionExpression = (target: string): boolean =>
+  /^[a-f0-9]{7,40}$/i.test(target) || /(?:[~^]|@\{|^:\/|\.\.)/.test(target)
+
+/** The names for the commit already checked out, including any sequence of zero parent steps. */
+const current = (target: string): boolean => target === "" || /^(?:HEAD|@)(?:[~^]0)*$/.test(target)
+
+/** An unadorned name could be a branch or a tag; neither proves historical intent. */
+const historical = (target: string, detach = false): boolean => !current(target) && (detach || revisionExpression(target))
 
 const validRefName = (word: string): boolean =>
   word !== "@" && !Array.from(word).some((char) => char.charCodeAt(0) <= 32 || char.charCodeAt(0) === 127) &&
@@ -110,48 +131,58 @@ const validRefName = (word: string): boolean =>
 const explicitPath = (word: string): boolean =>
   /^(?:\.{1,2}\/|\/)/.test(word) || (!validRefName(word) && !revisionExpression(word) && !word.includes(":"))
 
-const checkout = (name: string, args: ReadonlyArray<string>): EffectOnTree => {
-  const spec = checkoutGrammar(name)
-  const argv = argvOf(args, spec)
-  if (Option.isNone(argv)) return action("unknown")
-  if (argv.value.has(help)) return action("neither")
-  // Preserve the separate pathspec exclusion: tree-qualified paths do not change HEAD.
-  const before = Arr.takeWhile(args, (word) => word !== "--")
-  if (name === "checkout" && before.length < args.length - 1) return action("files")
-  return checkoutTarget(name, argv.value)
+/** An explicit historical pathspec is relevant only if it can supply runnable source or a runner's configuration. */
+const launcherPath = (path: string): boolean =>
+  /[?*[$]|\/$/.test(path) || /\.(?:[cm]?[jt]sx?|(?:ba|da|k|z)?sh|py|pl|rb|go|rs|ps1|bat|cmd)$/.test(path) ||
+  /^(?:[Mm]akefile|GNUmakefile|[Dd]ockerfile|package\.json|pyproject\.toml|Cargo\.toml|go\.mod)$/.test(basename(path)) ||
+  /^(?:\.\/)?(?:bin|tools|scripts)(?:\/|$)/.test(path) || !basename(path).includes(".")
+
+const fileSelection = (argv: Argv, target: string, paths = argv.paths): EffectOnTree => {
+  if (current(target)) {
+    if (target === "") return action("files")
+    return action("neither")
+  }
+  if (!historical(target)) return action("files")
+  if (argv.flags.has(pathspec)) return action("unknown")
+  if (paths.some(launcherPath)) return action("moves")
+  return action("files")
 }
 
-const checkoutGrammar = (name: string): Grammar => {
-  if (name === "switch") return switchSpec
-  return checkoutSpec
+const restore = (argv: Argv): EffectOnTree => {
+  const source = argv.last(sources)
+  if (argv.has(index) && !argv.has(worktreeFiles)) return action("files")
+  return fileSelection(argv, argv.values.get(source) || "", [...argv.operands, ...argv.paths])
 }
 
-const checkoutTarget = (name: string, argv: Argv): EffectOnTree => {
+const checkout = (argv: Argv): EffectOnTree => {
   const [ref = "", ...more] = argv.operands
-  if (name === "checkout" && argv.has(restoreOnly)) return action("files")
-  if (argv.flags.has("--orphan")) return action("moves", true)
-  if (ref === "HEAD") return action("neither")
-  if (argv.has(detached) && argv.operands.length > 0) return action("moves", true)
-  if (ref === "") return action("neither")
-  if (argv.has(branchCreation)) return action("moves", true)
-  if (name === "switch") return action("moves")
-  if (explicitPath(ref) || more.length > 0) return action("files")
-  if (revisionExpression(ref)) return action("moves", true)
-  return action("unknown")
+  if (argv.has(restoreOnly)) return action("files")
+  if (argv.paths.length > 0 || argv.flags.has(pathspec)) return fileSelection(argv, ref)
+  if (argv.has(patches)) return fileSelection(argv, ref, more)
+  if (!current(ref) && explicitPath(ref)) return action("files")
+  if (more.length > 0) return fileSelection(argv, ref, more)
+  return checkoutTarget(argv, false)
+}
+
+const checkoutTarget = (argv: Argv, switching: boolean): EffectOnTree => {
+  const [ref = ""] = argv.operands
+  const detach = argv.has(detached)
+  // Without -d or branch creation, switch accepts only a branch.
+  if (switching && !detach && !argv.has(branchCreation)) return action("neither")
+  if (historical(ref, detach)) return action("moves")
+  return action("neither")
 }
 
 const reset = (argv: Argv): EffectOnTree => {
   const [ref = "", ...rest] = argv.operands
-  if (argv.paths.length > 0 || argv.has(patches) || explicitPath(ref) || rest.length > 0) return action("files")
-  if (ref === "" || ref === "HEAD") return action("neither")
-  if (argv.has(resetModes) || revisionExpression(ref)) return action("moves", true)
-  return action("unknown")
+  if (argv.paths.length > 0 || argv.has(patches) || (!current(ref) && explicitPath(ref)) || rest.length > 0) return action("files")
+  if (historical(ref) && historicalResetModes.has(argv.last(resetModes))) return action("moves")
+  return action("neither")
 }
 
 const bisectStart = grammar("--no-checkout --first-parent --reset-when-found --term-new --term-bad --term-old --term-good")
 const bisectMark = grammar("")
-const bisectReadOnly = described("log visualize view terms")
-const bisectMarks = described("good bad new old skip next")
+const bisectMarks = described("good bad new old skip")
 const bisectReset = grammar("")
 const bisectAction = (args: ReadonlyArray<string>, refsOnly: boolean): EffectOnTree => {
   const [verb = "", ...rest] = args
@@ -159,92 +190,53 @@ const bisectAction = (args: ReadonlyArray<string>, refsOnly: boolean): EffectOnT
   if (verb === "start") return parse(rest, bisectStart, startBisect)
   if (verb === "reset") return parse(rest, bisectReset, (argv) => ({ ...resetBisect(argv, refsOnly), bisectMode: "ended" }))
   if (bisectMarks.has(verb)) return parse(rest, bisectMark, () => bisectSelection(refsOnly))
-  if (verb === "replay") return parse(rest, grammar(""), () => bisectSelection(refsOnly))
-  if (bisectReadOnly.has(verb) || help.has(verb) || verb === "") return action("neither")
-  return action("unknown")
+  return action("neither")
 }
 
 const bisectRun = (args: ReadonlyArray<string>, refsOnly: boolean): EffectOnTree => {
   const [program = "", after = ""] = args
   if (help.has(program) || program === "") return action("neither")
-  if (optionKey(program) === "--reset-when-found") return action(bisectSelection(refsOnly).revision, false, after !== "")
+  if (optionKey(program) === "--reset-when-found") return action(bisectSelection(refsOnly).revision, after !== "")
   if (program.startsWith("-") && program !== "--") return action("unknown")
-  return action(bisectSelection(refsOnly).revision, false, true)
+  return action(bisectSelection(refsOnly).revision, true)
 }
 
 const startBisect = (argv: Argv): EffectOnTree => {
   if (argv.flags.has("--no-checkout")) return { ...action("neither"), bisectMode: "refs" }
-  return { ...action("moves", true), bisectMode: "checkout" }
+  return { ...action("moves"), bisectMode: "checkout" }
 }
 const bisectSelection = (refsOnly: boolean): EffectOnTree => {
   if (refsOnly) return action("neither")
-  return action("moves", true)
+  return action("moves")
 }
 const resetBisect = (argv: Argv, refsOnly: boolean): EffectOnTree => {
-  if (argv.operands[0] === "HEAD") return action("neither")
+  if (argv.operands.length > 0 && current(argv.operands[0] || "")) return action("neither")
   return bisectSelection(refsOnly)
 }
-
-const mergeFlags = `${quiet} -n --stat --no-stat --summary --no-summary --compact-summary --no-compact-summary --log --no-log --squash --no-squash --commit --no-commit --edit --no-edit -e --ff --no-ff --ff-only --verify-signatures --no-verify-signatures --signoff --no-signoff --allow-unrelated-histories --no-allow-unrelated-histories --autostash --no-autostash --overwrite-ignore --no-overwrite-ignore --rerere-autoupdate --no-rerere-autoupdate -S --gpg-sign --no-gpg-sign --progress --no-progress --verify --no-verify`
-const mergeValues = "-s --strategy -X --strategy-option -m --message -F --file --cleanup --into-name"
-const mergeSpec = grammar(`${mergeFlags} --abort --continue --quit`, mergeValues)
-const pullSpec = grammar(`${mergeFlags} -r --rebase --no-rebase --all -a --append --atomic --dry-run -f --force --keep -k --multiple --prune -p --prune-tags -t --tags -n --no-tags --no-recurse-submodules --recurse-submodules --no-write-fetch-head --write-fetch-head --set-upstream --update-shallow --unshallow --show-forced-updates --no-show-forced-updates --allow-unrelated-histories --negotiate-only --ipv4 --ipv6 -4 -6 --porcelain --auto-maintenance --no-auto-maintenance --auto-gc --no-auto-gc`, `${mergeValues} --depth --deepen --shallow-since --shallow-exclude -j --jobs --refmap --server-option -o --negotiation-tip --upload-pack`)
 const rebaseSpec = grammar(`${quiet} --abort --continue --skip --quit --edit-todo --show-current-patch --apply --merge -i --interactive --root --onto --keep-base --reapply-cherry-picks --no-reapply-cherry-picks --fork-point --no-fork-point --autostash --no-autostash --autosquash --no-autosquash --rebase-merges --no-rebase-merges --update-refs --no-update-refs --force-rebase --no-ff -f --signoff --no-signoff --committer-date-is-author-date --ignore-date --reset-author-date --keep-empty --no-keep-empty --allow-empty-message --reschedule-failed-exec --no-reschedule-failed-exec --verify --no-verify -S --gpg-sign --no-gpg-sign --rerere-autoupdate --no-rerere-autoupdate --stat --no-stat`, `--onto --empty --strategy -s -X --strategy-option -x --exec -C --whitespace -U --unified --inter-hunk-context`)
-const noMerge = described("--quit")
-const noPull = described("--dry-run --negotiate-only")
-const noRebase = described("--quit --edit-todo --show-current-patch")
-const squash = described("--squash --no-squash")
-const commit = described("--commit --no-commit")
-const fastForward = described("--ff --no-ff --ff-only")
-const integration = (argv: Argv, none: ReadonlySet<string>): EffectOnTree => {
-  if (argv.has(none)) return action("neither")
-  if (argv.last(squash) === "--squash") return action("files")
-  return action("moves", true)
-}
-
-const merge = (argv: Argv): EffectOnTree => {
-  if (argv.last(commit) === "--no-commit" && argv.last(fastForward) === "--no-ff") return action("files")
-  return integration(argv, noMerge)
-}
-
-const stashPush = grammar(`-q --quiet -p --patch -S --staged -k --keep-index --no-keep-index -u --include-untracked -a --all --pathspec-file-nul`, `-m --message ${pathspec}`)
-const stashApply = grammar("-q --quiet --index --no-index", "--label-ours --label-theirs --label-base")
-const stashList = grammar("-q --quiet --stat --no-stat -p --patch -u --include-untracked --only-untracked --name-only --name-status --oneline --all --decorate --no-decorate --graph", "-n --max-count --format --pretty")
-const stash = (args: ReadonlyArray<string>): EffectOnTree => {
-  const [verb = "push", ...rest] = args
-  if (verb === "branch") return parse(rest, grammar(""), () => action("moves", true))
-  if (verb === "apply" || verb === "pop") return parse(rest, stashApply, () => action("files"))
-  if (verb === "push" || verb === "save") return parse(rest, stashPush, () => action("files"))
-  if (verb === "list" || verb === "show") return parse(rest, stashList, () => action("neither"))
-  if (["clear", "drop", "create", "store", "export", "import"].includes(verb)) return parse(rest, grammar("-q --quiet --print", "-m --message --to-ref"), () => action("neither"))
-  if (verb.startsWith("-")) return parse(args, stashPush, () => action("files"))
-  return action("unknown")
+const execOptions = described("-x --exec")
+const rebase = (args: ReadonlyArray<string>): EffectOnTree => {
+  if (!Arr.takeWhile(args, (word) => word !== "--").some((word) => optionParts(word, rebaseSpec).some((key) => execOptions.has(key)))) return action("neither")
+  return parse(args, rebaseSpec, (argv) => {
+    if (!argv.has(execOptions)) return action("neither")
+    return { ...action("moves"), rebaseExec: true }
+  })
 }
 
 const worktreeAdd = grammar("-d --detach --checkout --no-checkout --orphan --guess-remote --no-guess-remote --track --no-track -f --force --lock -q --quiet --relative-paths --no-relative-paths", "-b -B --reason")
 const worktree = (args: ReadonlyArray<string>): EffectOnTree => {
   const [verb = "", ...rest] = args
-  if (verb === "add") return parse(rest, worktreeAdd, (argv) => createCheckout(argv, argv.operands[0] || argv.paths[0] || ""))
-  if (["list", "lock", "move", "prune", "remove", "repair", "unlock"].includes(verb)) {
-    return parse(rest, grammar("-v --verbose -f --force -n --dry-run --porcelain -z --relative-paths --no-relative-paths", "--expire --reason"), () => action("neither"))
-  }
-  return action("unknown")
-}
-const cloneSpec = grammar(`${quiet} --progress -n --no-checkout --bare --mirror -l --local --no-local -s --shared --no-hardlinks --dissociate --recurse-submodules --recursive --no-recurse-submodules --shallow-submodules --no-shallow-submodules --remote-submodules --no-remote-submodules --single-branch --no-single-branch --tags --no-tags --reject-shallow --no-reject-shallow --sparse --also-filter-submodules --filter-submodules --no-filter-submodules --ipv4 --ipv6 -4 -6`, `--template --reference --reference-if-able -o --origin -b --branch --revision -u --upload-pack --depth --shallow-since --shallow-exclude --separate-git-dir -c --config --server-option -j --jobs --filter --bundle-uri --ref-format`)
-const noCheckout = described("--bare --mirror --orphan")
-const checkoutToggle = described("-n --no-checkout --checkout")
-const createCheckout = (argv: Argv, destination: string): EffectOnTree => {
-  if (argv.has(noCheckout)) return action("neither")
-  const checkout = argv.last(checkoutToggle)
-  if (checkout === "-n" || checkout === "--no-checkout") return action("neither")
-  if (destination === "") return action("unknown")
-  return { ...action("moves", true), destination }
+  if (verb !== "add") return action("neither")
+  return parse(rest, worktreeAdd, addWorktree)
 }
 
-const clone = (argv: Argv): EffectOnTree => {
-  const [source = "", destination = ""] = [...argv.operands, ...argv.paths]
-  const derived = basename(source.replace(/\/+$/, "")).split(":").at(-1) || ""
-  return createCheckout(argv, destination || derived.replace(/\.(?:git|bundle)$/, ""))
+const checkoutToggle = described("--no-checkout --checkout")
+const addWorktree = (argv: Argv): EffectOnTree => {
+  const [destination = "", target = ""] = [...argv.operands, ...argv.paths]
+  if (argv.flags.has("--orphan") || argv.last(checkoutToggle) === "--no-checkout") return action("neither")
+  if (!historical(target, argv.has(detached))) return action("neither")
+  if (destination === "") return action("unknown")
+  return { ...action("moves"), destination }
 }
 
 const parse = (args: ReadonlyArray<string>, grammar: Grammar, select: (argv: Argv) => EffectOnTree): EffectOnTree =>
@@ -259,17 +251,13 @@ const parse = (args: ReadonlyArray<string>, grammar: Grammar, select: (argv: Arg
 /** Each known command owns its grammar; unrecognized options on it cannot be inferred. */
 const subcommand = (name: string, args: ReadonlyArray<string>, refsOnly: boolean): EffectOnTree => {
   switch (name) {
-    case "checkout":
-    case "switch": return checkout(name, args)
-    case "restore": return parse(args, restoreSpec, () => action("files"))
+    case "checkout": return parse(args, checkoutSpec, checkout)
+    case "switch": return parse(args, switchSpec, (argv) => checkoutTarget(argv, true))
+    case "restore": return parse(args, restoreSpec, restore)
     case "reset": return parse(args, resetSpec, reset)
     case "bisect": return bisectAction(args, refsOnly)
-    case "merge": return parse(args, mergeSpec, merge)
-    case "pull": return parse(args, pullSpec, (argv) => integration(argv, noPull))
-    case "rebase": return parse(args, rebaseSpec, (argv) => integration(argv, noRebase))
-    case "stash": return stash(args)
+    case "rebase": return rebase(args)
     case "worktree": return worktree(args)
-    case "clone": return parse(args, cloneSpec, clone)
     default: return action("neither")
   }
 }
@@ -308,14 +296,14 @@ const classify = (args: ReadonlyArray<string>, at: GitPlace, refsOnly: (tree: Op
   if (!token.startsWith("-")) return finishAction(subcommand(token, rest, refsOnly(tree)), tree, at)
   if (globalEnd.has(token)) return { ...action("neither"), tree }
   const key = optionKey(token)
-  if (key === "-C" && token !== key) return { ...action("unknown"), tree: Option.none() }
+  if (key === "-C" && token !== key) return { ...action("neither"), tree }
   if (GIT_VALUE_OPTIONS.has(key)) {
     const value = globalValue(token, key, rest)
-    if (Option.isNone(value)) return { ...action("unknown"), tree: Option.none() }
+    if (Option.isNone(value)) return { ...action("neither"), tree }
     return classify(rest.slice(Number(token === key)), placeOption(at, key, value), refsOnly)
   }
   if (GIT_BARE_OPTIONS.has(key)) return classify(rest, placeOption(at, key, Option.none()), refsOnly)
-  return { ...action("unknown"), tree: Option.none() }
+  return { ...action("neither"), tree }
 }
 const globalValue = (token: string, key: string, tail: ReadonlyArray<string>): Option.Option<string> => {
   if (token !== key) return Option.some(token.slice(key.length + 1))
@@ -334,7 +322,7 @@ export interface GitLocation {
   readonly env?: ReadonlyMap<string, string>
 }
 
-/** Git's checked-out commit effect and its target worktree, independent of shell cwd changes. */
+/** Historical checkout content selected by this invocation and the worktree it targets. */
 export const gitAction = (head: string, args: ReadonlyArray<string>, where: GitLocation = { cwd: "/" }, refsOnly: (tree: Option.Option<string>) => boolean = () => false): GitAction => {
   if (head !== "git") return { ...action("neither"), tree: Option.none() }
   return classify(args, {

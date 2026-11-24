@@ -169,7 +169,7 @@ describe("old checkouts in an executable position", () => {
     expect(bareLaunches("git checkout fixture-old -- fixture.md && npm test", place)).toEqual([])
     expect(bareLaunches("git restore --source fixture-old -- fixture.md && npm test", place)).toEqual([])
     expect(bareLaunches("git checkout HEAD~1 && npm test", place).map((launch) => launch.remedy)).toEqual(["shim"])
-    const unknown = bareLaunches("git checkout fixture-old && npm test", place).map(keychainReason).join()
+    const unknown = bareLaunches("git checkout --future-option fixture-old && npm test", place).map(keychainReason).join()
     expect(unknown).toContain("cannot tell whether the Git operation selects another revision or restores files")
     expect(unknown).not.toContain("after selecting another Git revision")
   })
@@ -179,10 +179,11 @@ describe("old checkouts in an executable position", () => {
       "checkout --ours -- fixture.md", "checkout --pathspec-from-file=./paths", "checkout 'notes with spaces'",
       "restore --source=HEAD~1 fixture.md", "reset HEAD~1 -- fixture.md", "reset --patch HEAD~1",
       "log -- rebase --detach", "worktree list", "rebase --show-current-patch",
+      "reset --soft HEAD~1", "rebase fixture-old", "stash branch fixture-old",
     ]
     const moves = [
-      "switch --detach fixture-old", "checkout -b experiment HEAD~1", "checkout HEAD~1", "reset --soft HEAD~1",
-      "rebase fixture-old", "stash branch fixture-old",
+      "switch --detach fixture-old", "checkout -b experiment HEAD~1", "checkout HEAD~1", "reset --keep HEAD~1",
+      "rebase --exec 'npm test' fixture-old",
     ]
     for (const args of files) expect([args, refused(`git ${args} && npm test`)]).toEqual([args, false])
     for (const args of moves) expect([args, refused(`git ${args} && npm test`)]).toEqual([args, true])
@@ -204,19 +205,52 @@ describe("old checkouts in an executable position", () => {
     expect(bareLaunches(`${start} --not-a-documented-option HEAD fixture-old && npm test`, place).map(keychainReason).join()).toContain("cannot tell")
   })
 
-  test("Git options distinguish branch naming, file restoration and checkout creation", () => {
+  test("only historical selectors parse options; integration and recording do not", () => {
     const unchanged = [
       "checkout -b fresh", "checkout -B fresh", "switch -c fresh", "switch -C fresh",
-      "restore --source=HEAD~2 -- file", "pull --dry-run", "pull --negotiate-only", "merge --squash fixture-old", "merge --no-ff --no-commit fixture-old",
+      "restore --source=HEAD~2 -- file.txt", "pull --dry-run", "pull --negotiate-only", "merge --squash fixture-old", "merge --no-ff --no-commit fixture-old",
       "rebase --show-current-patch", "stash pop", "stash -u", "worktree list --porcelain",
+      "pull --no-rebase --no-ff --no-commit origin main", "pull --ff-only", "merge --ff-only fixture-old", "merge --no-commit fixture-old",
+      "merge --squash --no-squash fixture-old", "rebase --onto target upstream", "reset --soft fixture-old", "reset --mixed fixture-old",
     ]
-    const moved = ["switch -c fresh HEAD~1", "pull --ff-only", "merge --ff-only fixture-old", "merge --no-commit fixture-old", "merge --squash --no-squash fixture-old", "rebase --onto target upstream"]
+    const moved = [
+      "switch -c fresh HEAD~1", "reset --keep HEAD~1", "reset --merge HEAD~1", "rebase -x 'npm test' fixture-old",
+      "checkout HEAD~1 -- scripts/launch", "checkout HEAD~1 -- runner.sh", "restore --source=HEAD~2 -- package.json",
+    ]
     for (const command of unchanged) expect([command, refused(`git ${command}; npm test`)]).toEqual([command, false])
     for (const command of moved) expect([command, refused(`git ${command}; npm test`)]).toEqual([command, true])
-    for (const command of ["checkout", "switch", "restore", "reset", "bisect start", "bisect reset", "rebase", "pull", "merge", "stash push", "worktree add", "clone"]) {
+    for (const command of ["checkout", "switch", "restore", "reset", "bisect start", "bisect reset", "rebase -x 'npm test'", "worktree add"]) {
       const line = `git ${command} --not-a-documented-option; npm test`
       expect([command, bareLaunches(line, place).map((launch) => launch.remedy)]).toEqual([command, ["unknown"]])
     }
+    for (const command of ["rebase", "pull", "merge", "stash push", "worktree list", "clone", "submodule update"]) {
+      expect([command, refused(`git ${command} --not-a-documented-option; npm test`)]).toEqual([command, false])
+    }
+  })
+
+  test("all current-commit spellings leave the runtime's checkout alone", () => {
+    for (const rev of ["HEAD", "@", "HEAD~0", "HEAD^0", "@~0", "@^0", "@~0^0"]) {
+      for (const form of ["checkout -b review-branch", "switch -c review-branch", "checkout --detach", "reset --keep", "bisect reset"]) {
+        expect([form, rev, refused(`git ${form} ${rev}; npm test`)]).toEqual([form, rev, false])
+      }
+      expect(refused(`git restore --source=${rev} -- scripts/launch.sh; npm test`)).toBe(false)
+    }
+  })
+
+  test("plain branch and tag names supply no historical evidence without detach", () => {
+    const plainNames = ["main", "fixture-main", "fixture-old", "fixture.md", "v1.2.3"]
+    for (const name of plainNames) {
+      for (const verb of ["checkout", "switch"]) {
+        expect(refused(`git ${verb} ${name}; npm test`)).toBe(false)
+        expect(refused(`git ${verb} --detach ${name}; npm test`)).toBe(true)
+      }
+    }
+    expect(refused("git reset --hard probe-old; npm test")).toBe(false)
+    expect(refused("git reset --hard deadbee; npm test")).toBe(true)
+    expect(refused("git restore --source fixture-old -- tools/run.sh; npm test")).toBe(false)
+    expect(refused("git restore --source ':/old subject' -- tools/run.sh; npm test")).toBe(true)
+    expect(refused("git worktree add ../old fixture-old; cd ../old && npm test")).toBe(false)
+    expect(refused("git worktree add --detach ../old fixture-old; cd ../old && npm test")).toBe(true)
   })
 
   test("a subshell's checkout persists but its directory does not", () => {
@@ -224,7 +258,7 @@ describe("old checkouts in an executable position", () => {
     expect(refused("(cd ../work && git checkout --detach fixture-old && git log -1); npm test")).toBe(true)
     expect(refused("(cd ../other-project && git checkout --detach fixture-old && git log -1); cd ../other-project && npm test")).toBe(true)
     expect(refused("git clone --branch fixture-old /nonexistent/source ../copy; npm test")).toBe(false)
-    expect(refused("git clone --branch fixture-old /nonexistent/source ../copy; cd ../copy && npm test")).toBe(true)
+    expect(refused("git clone --branch fixture-old /nonexistent/source ../copy; cd ../copy && npm test")).toBe(false)
     expect(refused("git clone --no-checkout /nonexistent/source ../copy; cd ../copy && npm test")).toBe(false)
     expect(refused("git --git-dir=../other-project/.git switch --detach fixture-old; npm test")).toBe(true)
     expect(refused("git --git-dir=../other-project/.git switch --detach fixture-old; cd ../other-project && npm test")).toBe(false)
