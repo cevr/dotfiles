@@ -3592,14 +3592,86 @@ sv_lines() {
   [ -z "$1" ] || printf '%s\n' "$1"
 }
 
+# The names of every ref the store of the tree $1 holds, read from the store
+# itself: the files under .git/refs (but lock files) and the names in
+# packed-refs. A ref Git cannot resolve is among them. Fails when a read fails,
+# or when the refs are not kept in files (reftable: no such listing).
+sv_ref_store() {
+  local s_dir="$1/.git" s_loose s_packed='' s_format
+  if s_format=$(base_git "$1" config --get extensions.refStorage); then
+    [ "$s_format" = files ] || return 1
+  elif [ $? -ne 1 ]; then
+    return 1
+  fi
+  s_loose=$(find "$s_dir/refs" -type f ! -name '*.lock' -print) || return 1
+  if [ -e "$s_dir/packed-refs" ]; then
+    s_packed=$(awk '/^[#^]/ { next } NF >= 2 { print $2 }' "$s_dir/packed-refs") || return 1
+  fi
+  {
+    sv_lines "$s_loose" | awk -v p="$s_dir/" 'index($0, p) == 1 { print substr($0, length(p) + 1) }'
+    sv_lines "$s_packed"
+  } | LC_ALL=C sort -u
+}
+
 # The base's refs, `oid ref` a line, sorted; fails when Git cannot list them.
 # Never a pipe from Git: a pipeline's status is its last command's, so a Git
 # that failed (a fork refused on a loaded host) read as a tree with no refs,
 # and a carry from it deleted every ref it had carried before (census, r3).
+#
+# Strict: Git skips a ref it cannot resolve and still exits 0 (a broken ref
+# with a warning, a symbolic ref to nothing with no word), and a carry would
+# take the skipped ref for one deleted there. So anything Git says on stderr is
+# a failure, and so is a ref the store holds that the list lacks: the store's
+# own names (sv_ref_store) are the proof the list is whole, which no word of
+# Git's is. A ref made or packed between the two reads is read again (3 tries);
+# one that stays missing is named on stderr, and the read fails.
 sv_refs() {
-  local r_list
-  r_list=$(base_git "$1" for-each-ref --format='%(objectname) %(refname)') || return 1
-  sv_lines "$r_list" | LC_ALL=C sort
+  local r_out r_line r_list r_err r_rc r_store r_skipped r_try=1
+  while :; do
+    r_store=$(sv_ref_store "$1") || {
+      printf 'workrift subvolume: the ref store of %s does not read (find or awk failed, or refs not in files)\n' "$1" >&2
+      return 1
+    }
+    # Git's stderr to the capture as it comes, the list after it, marked.
+    r_out=$({
+      r_rc=0
+      r_list=$(base_git "$1" for-each-ref --format='%(objectname) %(refname)' 2>&3) || r_rc=$?
+      printf 'rc %s\n' "$r_rc"
+      while IFS= read -r r_line; do
+        [ -z "$r_line" ] || printf 'L %s\n' "$r_line"
+      done <<EOF
+$r_list
+EOF
+    } 3>&1) || return 1
+    r_list=
+    r_err=
+    r_rc=
+    while IFS= read -r r_line; do
+      case "$r_line" in
+        'L '*) r_list="$r_list${r_line#L }
+" ;;
+        'rc '*) r_rc=${r_line#rc } ;;
+        '') ;;
+        *) r_err="$r_err$r_line
+" ;;
+      esac
+    done <<EOF
+$r_out
+EOF
+    if [ "$r_rc" != 0 ] || [ -n "$r_err" ]; then
+      [ -z "$r_err" ] || printf 'workrift subvolume: git for-each-ref in %s said: %s\n' "$1" "$(sv_joined "$r_err")" >&2
+      return 1
+    fi
+    r_skipped=$(printf '%s--\n%s\n' "$r_list" "$r_store" | awk '$0 == "--" { s = 1; next } !s { g[$2] = 1; next } $0 != "" && !($0 in g)') || return 1
+    [ -n "$r_skipped" ] || break
+    if [ "$r_try" -ge 3 ]; then
+      printf 'workrift subvolume: refs in the store of %s that git for-each-ref skips (broken, or a symbolic ref to nothing; repair or delete them): %s\n' "$1" "$(sv_joined "$r_skipped")" >&2
+      return 1
+    fi
+    r_try=$((r_try + 1))
+  done
+  sv_lines "${r_list%
+}" | LC_ALL=C sort
 }
 
 # What a copy must reproduce: HEAD, refs, status (untracked files too), lock
