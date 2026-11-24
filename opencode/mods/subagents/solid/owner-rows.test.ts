@@ -54,8 +54,6 @@ const infos = new Map<string, SessionInfo>([
   ...CHILDREN.map((id, index) => [id, { id, parentID: "root", time: { created: index + 1 } }] as const),
 ])
 
-type Flight = { readonly children: ReadonlyArray<string>; readonly reply: (reply: RowsReply) => void }
-
 /** What the strip draws from one published answer: its rows' ids, and the dock's count of who works. */
 const drawn = (reads: Reads<typeof LOCATION>, rows: ReadonlyArray<OwnedRow>) => {
   const family = read(reads, "root", LOCATION, message, new Map(rows.map((row) => [row.child, row])))
@@ -68,7 +66,6 @@ const drawn = (reads: Reads<typeof LOCATION>, rows: ReadonlyArray<OwnedRow>) => 
 
 it.effect("a reconnect and host work during a refetch never draw an old child, never drop a live one, and the count equals the rows", () =>
     Effect.gen(function* () {
-      const flights = yield* Queue.unbounded<Flight>()
       const published = yield* Queue.unbounded<ReadonlyArray<OwnedRow>>()
       const handlers = new Set<(event: { readonly details: object }) => void>()
       const reads: Reads<typeof LOCATION> = {
@@ -87,38 +84,40 @@ it.effect("a reconnect and host work during a refetch never draw an old child, n
         },
         shell: { list: () => [] },
       }
+      // Each read is answered at the next revision; its answer arrives after the events emitted with its start.
+      let revision = 0
       const client: RowsClient = {
         rpc: () => ({
-          // The test answers each read in flight, in the order they were made.
           read: (input) => {
-            const { promise, resolve } = Promise.withResolvers<RowsReply>()
-            Queue.offerUnsafe(flights, { children: input.children, reply: resolve })
-            return promise
+            revision++
+            const reply: RowsReply = { rows: input.children.map((child) => answer(child, revision)) }
+            return Promise.resolve(reply)
           },
         }),
       }
-      const emit = (type: string) => Effect.sync(() => handlers.forEach((handler) => handler({ details: { type, data: {} } })))
-      /** Answers the oldest read in flight at `revision`, and checks the list the strip draws next. */
-      const answerAndCheck = (revision: number) =>
-        Effect.gen(function* () {
-          const flight = yield* Queue.take(flights)
-          yield* Effect.sync(() => flight.reply({ rows: flight.children.map((child) => answer(child, revision)) }))
-          const shown = drawn(reads, yield* Queue.take(published))
-          expect(shown.rows).toEqual(LIVE)
-          expect(shown.count).toBe(shown.rows.length)
-        })
+      // Events emitted together, as a burst arrives: the first starts a read, the rest land while it is in flight.
+      const emit = (...types: ReadonlyArray<string>) =>
+        Effect.sync(() => types.forEach((type) => handlers.forEach((handler) => handler({ details: { type, data: {} } }))))
+      /** Checks the next list the strip draws. */
+      const check = Effect.gen(function* () {
+        const shown = drawn(reads, yield* Queue.take(published))
+        expect(shown.rows).toEqual(LIVE)
+        expect(shown.count).toBe(shown.rows.length)
+      })
       const stop = followOwner({ client, location: LOCATION })(reads, CHILDREN, (rows) => {
         Queue.offerUnsafe(published, rows)
       })
-      yield* answerAndCheck(1)
-      // The service restarted: the event stream reconnects, and host work arrives while the read it starts is in flight.
-      yield* emit("server.connected")
-      yield* emit("shell.created")
-      yield* answerAndCheck(2)
-      // The coalesced read, with one more event's.
-      yield* emit("experimental.job.updated")
-      yield* answerAndCheck(3)
-      yield* answerAndCheck(4)
+      yield* check
+      // The service restarted: the event stream reconnects, and host work arrives while the read it starts is in
+      // flight: that read's answer (superseded), then the coalesced read's.
+      yield* emit("server.connected", "shell.created")
+      yield* check
+      yield* check
+      // More host work in a burst.
+      yield* emit("experimental.job.updated", "shell.exited")
+      yield* check
+      yield* check
+      expect(revision).toBe(5)
       // Nothing else was painted.
       expect(yield* Queue.clear(published)).toEqual([])
       yield* Effect.sync(stop)
