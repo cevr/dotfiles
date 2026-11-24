@@ -307,17 +307,28 @@ runs these steps:
    the command run beside such removals, and its output says how many it saw.
 
    It finds processes in the base by their open files, working folders,
-   roots and executables under /proc, one `find` under `LC_ALL=C`. Each
-   process the walk meets falls into one of three kinds, read from the errno
-   text of each message find gives for an entry of it:
-   - ended during the walk (its folder gone): it holds nothing, and the
-     preflight line counts it. An fd link gone while the process lives is a
-     file it closed, so that is nothing either;
+   roots and executables under /proc, each thread's working folder and root
+   (a thread that unshared its file system info has its own), and each
+   memory map (a file mapped and its fd closed): one `find` under `LC_ALL=C`,
+   with `grep` over the maps batched through it. Each process the walk meets
+   falls into one of three kinds, read from the errno text of each message
+   find or grep gives for an entry of it:
+   - ended during the walk: its /proc folder is gone, the one meaning of
+     ended. It holds nothing, and the preflight line counts it. An fd link
+     gone while the process lives is a file it closed, and a thread gone
+     with its task folder ended, so those are nothing either;
    - unread (an entry refused: permission). This is another user's process
      (root's, on the workbox), or this user's own when it holds privileges
      this user lacks (the workbox's user systemd: its fd folder lists, its
-     links do not read);
-   - read: judged by its links.
+     links do not read), or one whose stat does not read while its folder
+     is there. Each stat is read whole: a command name may hold newlines and
+     `) `;
+   - read: judged by its links and maps.
+
+   A /proc mounted with `hidepid=invisible` (or 2, 4, `ptraceable`) does not
+   list other users' processes at all: the whole walk is then unread, so it
+   refuses, or runs beside them with `--beside-unreadable` (and the drop
+   rule for that flag applies).
 
    Any other message, or no /proc, is a failed walk: the command refuses and
    says find's line. `workrift processes <folder>` runs the same walk read
@@ -327,8 +338,10 @@ runs these steps:
    processes by count and uid and never takes them for none:
    - where `sudo -n` works, it reads exactly those processes again, read
      only, all of them in one call (`sudo -n find /proc/<pid>/fd
-     /proc/<pid>/cwd … -lname <base>`). A process whose start time changed
-     since the walk (its pid reused) is one that ended. The step log says the command line,
+     /proc/<pid>/cwd … -lname <base>`, with their roots, executables, maps
+     and threads). A process whose start time changed since the walk (its
+     pid reused) is a new process that lives: it is judged as itself, and
+     named as such when it is in the base. The step log says the command line,
      and says it again only when the set changes. It refuses if one is in
      the base;
    - otherwise it refuses, unless `--beside-unreadable` is given: then it runs
