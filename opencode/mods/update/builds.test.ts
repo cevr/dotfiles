@@ -4,6 +4,24 @@ import { baseName, buildName, buildVersion, FRESH_MS, isBuild, isFresh, PREVIOUS
 import { type Build, type Record, recordText } from "./record.ts"
 import { buildOfTree, makingName, makingTree, namedBy, treeOf } from "./trees.ts"
 
+// This domain's import fence keeps the simulator helper out.
+const assertWitnessCases = <const Key extends string>(
+  required: ReadonlyArray<Key>,
+  table: { readonly [Name in NoInfer<Key>]: { readonly expected: ReadonlyArray<string>; readonly run: (cause: boolean) => ReadonlyArray<string> } },
+) => {
+  expect(Object.keys(table).toSorted(), "witness table keys").toEqual(required.toSorted())
+  const completed = required.map((key) => {
+    const { expected, run } = table[key]
+    const observed = run(true)
+    const withoutCause = run(false)
+    const label = `W: ${key}`
+    expect(observed, label).toEqual(expected)
+    expect(() => expect(withoutCause, label).toEqual(expected), `${label}: removing the cause must fail the same observation`).toThrow()
+    return key
+  })
+  expect(completed, "witness cases completed").toEqual([...required])
+}
+
 const SHARE = "/home/u/.local/share/opencode-prime"
 /** Eight builds, oldest first: v0 … v7. */
 const V = Array.from({ length: 8 }, (_, at) => `2.2.7-prime.0000000${at}`)
@@ -222,9 +240,26 @@ describe("acceptance: a prune over share directories of both build formats, with
   const SEED = 20261119
   const RUNS = 400
 
+  const stale = build("2.2.7-prime.11111111.22222222.tree")
+  const live = build("2.2.7-prime.33333333.44444444.tree")
+  const files = (each: Build) => [buildName(each.version), treeOf(buildName(each.version))]
+  const prune = (record: Build) => prunable([...files(stale), ...files(live)], record, nothingRuns)
+  const removedLive = (removed: ReadonlyArray<string>) => removed.filter((name) => files(live).includes(name))
+  // Mirror of the coverage registry, checked by scripts/sim-coverage.test.ts.
+  const BUILD_CASES = ["an unreferenced tree build and its tree go", "a recorded tree build and its tree stay"] as const
+  const runPrune = (cause: boolean) => {
+    const record = Option.getOrElse(Option.liftPredicate(live, () => cause), () => stale)
+    const removed = prune(record)
+    if (!cause) expect(removed, "control setup: the other build is now unreferenced").toEqual(files(live))
+    return removed
+  }
+  test("W: prune and keep use the installed build", () => assertWitnessCases(BUILD_CASES, {
+    "an unreferenced tree build and its tree go": { expected: files(stale), run: runPrune },
+    "a recorded tree build and its tree stay": { expected: [], run: (cause) => removedLive(runPrune(cause)) },
+  }))
+
   test(`over ${RUNS} generated hosts (seed ${SEED}), it names (a) builds and trees only, (b) never a kept or running one, (c) every other, of either format; a tree exactly when its build, never while a command line names it`, () => {
     const next = random(SEED)
-    const reached = { treeGone: new Array<string>(), treeKept: new Array<string>() }
     for (let run = 0; run < RUNS; run++) {
       const { listing, record, running, through } = host(next)
       const pruned = new Set(prunable(listing.map((made) => made.name), record, Option.some(running)))
@@ -252,12 +287,6 @@ describe("acceptance: a prune over share directories of both build formats, with
       }
       // With what runs unread, nothing goes.
       expect(prunable(listing.map((made) => made.name), record, Option.none())).toEqual([])
-      for (const made of listing.filter((each) => each.kind === "build" && each.name.endsWith(".tree"))) {
-        if (pruned.has(made.name)) reached.treeGone.push(made.name)
-        else reached.treeKept.push(made.name)
-      }
     }
-    // The generator reaches tree builds that go and tree builds that stay.
-    expect([reached.treeGone.length > 0, reached.treeKept.length > 0]).toEqual([true, true])
   })
 })
