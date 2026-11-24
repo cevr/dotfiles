@@ -4,6 +4,7 @@ import * as BunServices from "@effect/platform-bun/BunServices"
 import { Effect, FileSystem, Option, Path, Schema, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcessSpawner } from "effect/process"
+import { Generated } from "../mods/orchestrate/role.ts"
 import { scratchInput } from "../tests/read-path.ts"
 import { checkoutAgents } from "../tests/agent-fixture.ts"
 import { checkoutBunCommand } from "../tests/scratch-child.ts"
@@ -11,8 +12,8 @@ import { NO_BLOCK, orchestratorSection } from "./agents.ts"
 
 const live = it.live.layer(BunServices.layer)
 
-/** The written file's orchestrator entry. */
-const Written = Schema.fromJsonString(Schema.Struct({ orchestrator: Schema.Struct({ description: Schema.String, section: Schema.String }) }))
+/** Decode fresh output with the same schema the plugin uses for its shipped agents. */
+const Written = Schema.fromJsonString(Generated)
 const checkArgs = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)))
 
 /** SKILL.md and its no-block rule line. */
@@ -62,7 +63,7 @@ const copySkill = (dir: string) =>
   })
 
 describe("the orchestrator entry", () => {
-  live("its section ends with SKILL.md's no-block rule, word for word", () =>
+  live("fresh prompts pass the runtime decoder and the default carries SKILL.md's no-block rule", () =>
     Effect.gen(function* () {
       const { rule } = yield* skill
       const built = checkoutAgents()
