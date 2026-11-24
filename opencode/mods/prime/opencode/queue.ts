@@ -4,6 +4,8 @@
 // already read kept as it was), with the live state of the root's subagents
 // from the TUI's data for the items linked to one. A reading that decodes
 // says a queue plugin serves this OpenCode (`served`).
+import type { PaneWorkerView } from "@dotfiles/opencode-pane-agent/worker"
+import type { Live } from "@dotfiles/opencode-queue/board"
 import { liveStates } from "@dotfiles/opencode-queue/opencode/subagents"
 import { QUEUE, Snapshot } from "@dotfiles/opencode-queue/queue"
 import type { FamilyReader } from "@dotfiles/opencode-subagents/solid/reader"
@@ -11,6 +13,7 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { Option, Schema } from "effect"
 import { createMemo, createSignal, type Accessor } from "solid-js"
 import type { QueueReading } from "../tui/host.ts"
+import { readPaneAgents } from "./pane-agent.ts"
 import { readSession } from "./reading.ts"
 
 const decode = Schema.decodeUnknownOption(Snapshot)
@@ -53,11 +56,40 @@ export function queues(context: Plugin.Context, family: FamilyReader) {
         .then(decode, () => Option.none<Snapshot>())
         .then(Option.flatMap((answer) => keep(id, answer))),
     )
+    const paneWorkers = readPaneAgents(context, root)
     return createMemo(() =>
       Option.flatMap(snapshot(), (shown) =>
-        Option.map(root(), (id) => ({ root: id, items: shown.items, live: liveStates(context.data, id, context.location, family) })),
+        Option.map(root(), (id) => ({
+          root: id,
+          items: shown.items,
+          live: mergePaneLive(liveStates(context.data, id, context.location, family), paneWorkers()),
+        })),
       ),
     )
   }
   return { read, served }
+}
+
+const paneWorkerLive = (worker: PaneWorkerView): Live => {
+  if (worker.state === "starting" || worker.state === "working") return { state: "running" }
+  if (worker.state === "needs_input") return { state: "blocked" }
+  if (worker.state === "done") {
+    return Option.match(Option.fromUndefinedOr(worker.endedAt), {
+      onNone: () => ({ state: "done" as const }),
+      onSome: (since) => ({ state: "done" as const, since }),
+    })
+  }
+  return Option.match(Option.fromUndefinedOr(worker.endedAt), {
+    onNone: () => ({ state: "failed" as const }),
+    onSome: (since) => ({ state: "failed" as const, since }),
+  })
+}
+
+const mergePaneLive = (base: ReadonlyMap<string, Live>, workers: ReadonlyArray<PaneWorkerView>): ReadonlyMap<string, Live> => {
+  if (workers.length === 0) return base
+  const merged = new Map(base)
+  for (const worker of workers) {
+    merged.set(worker.id, paneWorkerLive(worker))
+  }
+  return merged
 }

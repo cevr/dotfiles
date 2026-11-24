@@ -801,7 +801,7 @@
     "mods/prime/tui/composer.tsx": {"effect/noNullish":1,"effect/noTernary":6},
     "mods/prime/tui/host.ts": {"effect/noNullish":12},
     "mods/prime/tui/link.ts": {"effect/noNullish":2},
-    "mods/prime/tui/live.tsx": {"effect/noConditionalEmptyObjectSpread":1,"effect/noGlobals":1,"effect/noNullish":1,"effect/noTernary":5},
+    "mods/prime/tui/live.tsx": {"effect/noConditionalEmptyObjectSpread":1,"effect/noGlobals":1,"effect/noTernary":4},
     "mods/prime/tui/notice.tsx": {"effect/noNullish":4,"effect/noTernary":5},
     "mods/prime/tui/tools.tsx": {"effect/noNullish":7,"effect/noTernary":19},
     "mods/prime/tui/transcript.tsx": {"effect/noGlobals":1,"effect/noNullish":2,"effect/noTernary":4},

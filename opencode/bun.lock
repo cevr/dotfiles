@@ -151,6 +151,14 @@
         "@dotfiles/opencode-work": "workspace:*",
       },
     },
+    "cmd/pane-agent": {
+      "name": "@dotfiles/opencode-cmd-pane-agent",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/decider": "workspace:*",
+        "@dotfiles/opencode-pane-agent": "workspace:*",
+      },
+    },
     "cmd/pool": {
       "name": "@dotfiles/opencode-cmd-pool",
       "version": "0.0.0",
@@ -382,6 +390,14 @@
         "@dotfiles/opencode-wake": "workspace:*",
       },
     },
+    "mods/pane-agent": {
+      "name": "@dotfiles/opencode-pane-agent",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/decider": "workspace:*",
+        "rex-sdk": "github:dmmulroy/rex-sdk#55f8b98c28f2a8b525b24bc1a42bdf69511e4e0e",
+      },
+    },
     "mods/pool": {
       "name": "@dotfiles/opencode-pool",
       "version": "0.0.0",
@@ -397,6 +413,7 @@
         "@dotfiles/opencode-cache": "workspace:*",
         "@dotfiles/opencode-kernel": "workspace:*",
         "@dotfiles/opencode-model-next": "workspace:*",
+        "@dotfiles/opencode-pane-agent": "workspace:*",
         "@dotfiles/opencode-queue": "workspace:*",
         "@dotfiles/opencode-subagents": "workspace:*",
         "@dotfiles/opencode-wake": "workspace:*",
@@ -518,6 +535,9 @@
       "version": "0.0.0",
     },
   },
+  "patchedDependencies": {
+    "rex-sdk@github:dmmulroy/rex-sdk#55f8b98": "patches/rex-sdk@github%3Admmulroy%2Frex-sdk#55f8b98.patch",
+  },
   "overrides": {
     "@effect/platform-node": "4.1.0",
     "@effect/platform-node-shared": "4.1.0",
@@ -568,6 +588,8 @@
 
     "@dotfiles/opencode-cmd-orchestrate": ["@dotfiles/opencode-cmd-orchestrate@workspace:cmd/orchestrate"],
 
+    "@dotfiles/opencode-cmd-pane-agent": ["@dotfiles/opencode-cmd-pane-agent@workspace:cmd/pane-agent"],
+
     "@dotfiles/opencode-cmd-pool": ["@dotfiles/opencode-cmd-pool@workspace:cmd/pool"],
 
     "@dotfiles/opencode-cmd-prime": ["@dotfiles/opencode-cmd-prime@workspace:cmd/prime"],
@@ -617,6 +639,8 @@
     "@dotfiles/opencode-model-next": ["@dotfiles/opencode-model-next@workspace:mods/model-next"],
 
     "@dotfiles/opencode-orchestrate": ["@dotfiles/opencode-orchestrate@workspace:mods/orchestrate"],
+
+    "@dotfiles/opencode-pane-agent": ["@dotfiles/opencode-pane-agent@workspace:mods/pane-agent"],
 
     "@dotfiles/opencode-pool": ["@dotfiles/opencode-pool@workspace:mods/pool"],
 
@@ -875,6 +899,8 @@
     "playwright-core": ["playwright-core@1.64.1", "", { "bin": { "playwright-core": "cli.js" } }, "sha512-BC4s8y6SEVA6Q1rSxZTto8hI1KUI3xXlHGZgvGqP4IqPdI/a6FX9H29IDNz7vKo9l21b6LfYosScPL6M3xxyDQ=="],
 
     "redis": ["redis@6.3.1", "", { "dependencies": { "@redis/bloom": "6.3.1", "@redis/client": "6.3.1", "@redis/json": "6.3.1", "@redis/search": "6.3.1", "@redis/time-series": "6.3.1" } }, "sha512-mV96ZKxQ4CGn3SyEGaY0Lb9YA443mdVey3c+mdr0NAUaBxiOZGoYCWX8PoM55kictSOmxlJRtZJxIsmZm3jL+w=="],
+
+    "rex-sdk": ["rex-sdk@github:dmmulroy/rex-sdk#55f8b98", { "dependencies": { "effect": "4.1.0", "ws": "^8.22.0" }, "peerDependencies": { "@earendil-works/pi-coding-agent": "*", "typebox": "*" }, "optionalPeers": ["@earendil-works/pi-coding-agent", "typebox"], "hasInstallScript": true }, "dmmulroy-rex-sdk-55f8b98", "sha512-VyoX0Kg1JWdVwBcVKed73K6dYZ8a1wYTWg6fQez24Anuwp0u0fg7aoNkzca/7hhd7G6pcLWECb8P1ugEWKVH5Q=="],
 
     "tslib": ["tslib@2.9.1", "", {}, "sha512-a4Ux9VKuIMHsOS7ENbEq6hK2ZGYIT27Rtl0E4eD9KqwxhKiQeMZE/9xb3IdYwWaSOyIBQLExhQgXDTYoiCxnWA=="],
 

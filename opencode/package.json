@@ -53,5 +53,8 @@
     "@streamparser/json": "0.0.26",
     "effect": "4.1.0",
     "oxc-parser": "0.157.0"
+  },
+  "patchedDependencies": {
+    "rex-sdk@github:dmmulroy/rex-sdk#55f8b98": "patches/rex-sdk@github%3Admmulroy%2Frex-sdk#55f8b98.patch"
   }
 }

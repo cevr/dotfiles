@@ -13,6 +13,7 @@
     "@dotfiles/opencode-cache": "workspace:*",
     "@dotfiles/opencode-kernel": "workspace:*",
     "@dotfiles/opencode-model-next": "workspace:*",
+    "@dotfiles/opencode-pane-agent": "workspace:*",
     "@dotfiles/opencode-queue": "workspace:*",
     "@dotfiles/opencode-subagents": "workspace:*",
     "@dotfiles/opencode-wake": "workspace:*"

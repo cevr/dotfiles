@@ -53,7 +53,18 @@
     "effect/preferPredicateIsTagged": "error",
     "effect/requireForceKillAfter": "error",
     "effect/requireNamedEffectFn": "error",
-    "effect/requireSuppressionReason": "error"
+    "effect/requireSuppressionReason": "error",
+    "no-restricted-imports": [
+      "error",
+      {
+        "paths": [
+          {
+            "name": "rex-sdk",
+            "message": "Only mods/pane-agent/rex/ may import rex-sdk."
+          }
+        ]
+      }
+    ]
   },
   "overrides": [
     {
@@ -346,6 +357,71 @@
             ]
           }
         ]
+      }
+    },
+    {
+      "files": [
+        "mods/pane-agent/*.ts"
+      ],
+      "excludeFiles": ["mods/pane-agent/laws.ts", "mods/pane-agent/model.test.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "*/**/effect",
+                  "!@dotfiles/decider/*",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
+                "message": "The pane-agent domain fence: its domain files import effect, @dotfiles/decider/*, its own root files and bun:test only; never rex-sdk, @opencode/*, node:*, bun, or one of its folders (rex/, filestore/, filesystem/, opencode/, memory/)."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "mods/pane-agent/laws.ts",
+        "mods/pane-agent/model.test.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "*/**/effect",
+                  "!@dotfiles/decider/*",
+                  "!./*.ts",
+                  "!./memory/doubles.ts",
+                  "!bun:test",
+                  "!../../tests/hang-guard.ts",
+                  "!../../sim-tui/effect-test.ts"
+                ],
+                "message": "The pane-agent domain test fence: laws and model tests keep the domain fence plus test harness and memory doubles only; never rex-sdk or live implementations."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "mods/pane-agent/rex/**"
+      ],
+      "rules": {
+        "no-restricted-imports": "off"
       }
     },
     {

@@ -6,6 +6,7 @@
 // chrome.ts's; this file draws them.
 import * as TuiClock from "@dotfiles/decider/tui-clock"
 import { pendingIn } from "@dotfiles/opencode-model-next/pending"
+import { isLive as isPaneWorkerLive } from "@dotfiles/opencode-pane-agent/worker"
 import { board } from "@dotfiles/opencode-queue/board"
 import { tally } from "@dotfiles/opencode-queue/plan"
 import { keptMemo } from "@dotfiles/opencode-subagents/solid/kept"
@@ -306,9 +307,10 @@ export function Dock(props: { host: Host; sessionID?: string }) {
   const model = createMemo(() => trayModelQueued(trayModel(props.host.model()), queuedNext()))
   // A subagent waiting on a shell or subagent of its own that still runs is idle to the host but counts, as its row does.
   const busy = useWorking(props.host, () => Option.fromNullishOr(props.sessionID))
+  const paneWorkers = props.host.paneAgents(() => Option.fromNullishOr(props.sessionID))
   // The count is the family's, in a session and in each of its subagents alike, as the rows under it are: the dock
   // keeps its height as the view moves between them, so the composer above it stays put.
-  const subagents = createMemo(() => busy().length)
+  const subagents = createMemo(() => busy().length + paneWorkers().filter((worker) => isPaneWorkerLive(worker.state)).length)
   // The ones ←/→ reach from here: in a session all of them, in a subagent the others.
   const others = createMemo(() => othersWorking(busy(), props.sessionID ?? "", () => true))
   const shells = createMemo(() => (props.sessionID ? props.host.shells(props.sessionID) : 0))

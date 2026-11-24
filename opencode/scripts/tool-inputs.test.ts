@@ -15,6 +15,7 @@ import { SessionsInput } from "../mods/mail/directory.ts"
 import { MessageInput } from "../mods/mail/letter.ts"
 import { ForgetInput, SaveInput, SearchInput } from "../mods/memory/notebook.ts"
 import { ToolInput } from "../mods/model-next/tool.ts"
+import { PaneAgentInput } from "../mods/pane-agent/tool.ts"
 import { AskInput } from "../mods/questions/ask.ts"
 import { PushToolInput } from "../mods/pool/push.ts"
 import { QueueInput } from "../mods/queue/queue.ts"
@@ -41,6 +42,7 @@ const INPUTS: Record<string, unknown> = {
   JobInput,
   ImageInput,
   ToolInput,
+  PaneAgentInput,
 }
 
 const cmd = join(import.meta.dir, "..", "cmd")
