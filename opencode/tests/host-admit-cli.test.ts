@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at tests/host-admit-cli.test.ts: try: () => spawn([...program], {
 import { argv, readableStreamToText, spawn } from "bun"
 import { Database } from "bun:sqlite"
 import * as BunServices from "@effect/platform-bun/BunServices"

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at tests/host-check-leases.test.ts: try: () => spawn(["/bin/sh", "-c", "printf 'ready\\n'; IFS= read -r done"], {
 import { argv, readableStreamToText, spawn, stdin } from "bun"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import * as BunServices from "@effect/platform-bun/BunServices"
