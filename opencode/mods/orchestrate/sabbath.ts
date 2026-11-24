@@ -3,6 +3,7 @@
 // agent works yet. A copy of the Claude Code sabbath mod's pure part
 // (dotfiles claude/mods/sabbath/hooks/sabbath.ts), so both hosts keep the
 // same hours. Over the rest a call is refused with SabbathRest.
+import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import { Schema } from "effect"
 
 /** Where the Sabbath is kept: its coordinates for sunset, its time zone for the days. */
@@ -105,9 +106,9 @@ export const resumesAt = (t: number, place: Place = KNOWLTON): number | undefine
   return s.on ? s.end : undefined
 }
 
-/** Why agent work waits until `end`. The Claude Code mod's words. */
+/** Why agent work waits until `end`. The configured place's dated, zoned time. */
 export const explain = (end: number, place: Place = KNOWLTON): string =>
-  `It is the Sabbath; agent work resumes at ${local(end, place)} (30 min after sunset, ${place.name}).`
+  `It is the Sabbath; agent work resumes at ${formatNotificationTime(end, place.timeZone)} (30 min after sunset, ${place.name}).`
 
 /** Why agent work waits at `t`, or undefined when it may run. */
 export const why = (t: number, place: Place = KNOWLTON): string | undefined => {
