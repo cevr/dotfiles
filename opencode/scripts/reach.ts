@@ -166,18 +166,22 @@ export const inspectReads = (workspace: Workspace, file: string) => {
   return analyze(file)
 }
 
-const observed: Readonly<Record<string, ReadonlyArray<string>>> = observations
+const runtimeReads: {
+  readonly paths: Readonly<Record<string, ReadonlyArray<string>>>
+  readonly untracedSubprocesses: Readonly<Record<string, string>>
+} = observations
 const authorities = new WeakMap<Workspace, Map<string, ReturnType<typeof authorityOf>>>()
 
 const authorityOf = (workspace: Workspace, test: string) => {
   const read = inspectReads(workspace, test)
-  const unknown = read.classification === "unknown"
-  const paths = observed[test] ?? []
+  const subprocessReason = runtimeReads.untracedSubprocesses[test]
+  const unknown = read.classification === "unknown" || subprocessReason !== undefined
+  const paths = runtimeReads.paths[test] ?? []
   const exact = new Set(paths.filter((file) => !file.endsWith("/")))
   const directories = paths.filter((file) => file.endsWith("/"))
   const patterns = readMatcher(read.patterns.filter((pattern) => pattern !== ALL_READS))
   const positive = (file: string) => exact.has(file) || patterns(file) || directories.some((prefix) => file.startsWith(prefix))
-  return { unknown, exact, positive, has: (file: string) => unknown || positive(file) }
+  return { unknown, subprocessReason, exact, positive, has: (file: string) => unknown || positive(file) }
 }
 
 /** Runtime reads have one authority for selection, cache inputs and the coverage audit.

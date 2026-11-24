@@ -2,7 +2,7 @@ import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { argv } from "bun"
 import { Console, Data, Effect } from "effect"
-import { checkedTests, inspectReads, load } from "./reach.ts"
+import { checkedTests, inspectReads, load, testReadInputs } from "./reach.ts"
 
 class UntrackedTestReads extends Data.TaggedError("UntrackedTestReads")<{ readonly message: string }> {}
 
@@ -13,7 +13,10 @@ BunRuntime.runMain(Effect.gen(function* () {
   const problems = new Array<string>()
   for (const file of files) {
     const { patterns, issues, classification, indirect, bounded } = inspectReads(workspace, file)
-    if (argv.includes("--inventory")) yield* Console.log(`${file}\t${patterns.join(" ")}\t${classification}\t${indirect.map(({ line, reason }) => `${line}: ${reason}`).join("; ")}\t${bounded.join(" ")}`)
+    if (argv.includes("--inventory")) {
+      const { subprocessReason } = testReadInputs(workspace, file)
+      yield* Console.log(`${file}\t${patterns.join(" ")}\t${classification}\t${indirect.map(({ line, reason }) => `${line}: ${reason}`).join("; ")}\t${bounded.join(" ")}\t${subprocessReason ?? ""}`)
+    }
     for (const { line, message } of issues) problems.push(`${file}:${line}: ${message}`)
   }
   if (problems.length > 0) {
