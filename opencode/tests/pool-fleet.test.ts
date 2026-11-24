@@ -207,7 +207,7 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
         const location = { directory: join(a.base, "work") }
         const session = await client.session.create({ location })
         for (const task of ["first", "second"]) {
-          const text = `${PROBE}${JSON.stringify({ name: "subagent", input: { agent: "worker", description: `fleet ${task}`, prompt: task } })}`
+          const text = `${PROBE}{"name":"subagent","input":{"agent":"worker","description":"fleet ${task}","prompt":"${task}"}}`
           await client.session.prompt({ sessionID: session.id, text })
           await client.experimental.session.wait({ sessionID: session.id })
         }
