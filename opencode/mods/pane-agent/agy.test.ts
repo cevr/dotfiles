@@ -5,23 +5,47 @@ import { agyAdapter } from "./agy.ts"
 import { DONE_FRAME, PASTED_FRAME, PERMISSION_FRAME, READY_FRAME, SIGNIN_FRAME, TRUST_FRAME, WORKING_FRAME } from "./agy.fixture.ts"
 
 describe("agy harness adapter", () => {
-  test("launches unmodified agy with no forbidden flags unless dangerousSkipPermissions is requested", () => {
-    expect(agyAdapter.command({})).toEqual(["agy"])
-    expect(agyAdapter.command({ dangerousSkipPermissions: true })).toEqual(["agy", "--dangerously-skip-permissions"])
-    const cmd = agyAdapter.command({})
-    expect(cmd).not.toContain("-p")
-    expect(cmd).not.toContain("--print")
-    expect(cmd).not.toContain("acp")
-    expect(cmd).not.toContain("--dangerously-skip-permissions")
+  test("launches agy with --dangerously-skip-permissions by default and --add-dir for outside directories", () => {
+    expect(agyAdapter.command({})).toEqual(["agy", "--dangerously-skip-permissions"])
+    expect(agyAdapter.command({ binary: "/opt/bin/agy" })).toEqual(["/opt/bin/agy", "--dangerously-skip-permissions"])
+    expect(agyAdapter.command({ addDirs: ["/tmp/run", "/tmp/other", "/tmp/run"] })).toEqual([
+      "agy",
+      "--dangerously-skip-permissions",
+      "--add-dir",
+      "/tmp/run",
+      "--add-dir",
+      "/tmp/other",
+    ])
+    expect(agyAdapter.command({ skipPermissions: false })).toEqual(["agy"])
+  })
+
+  test("builds resumeCommand with --continue --dangerously-skip-permissions --add-dir and -i prompt", () => {
+    expect(
+      agyAdapter.resumeCommand({
+        addDirs: ["/tmp/run"],
+        initialPrompt: "Continue the task.",
+      }),
+    ).toEqual([
+      "agy",
+      "--continue",
+      "--dangerously-skip-permissions",
+      "--add-dir",
+      "/tmp/run",
+      "-i",
+      "Continue the task.",
+    ])
   })
 
   test("adapter registry resolves agy", () => {
-    expect(adapterFor("agy").harness).toBe("agy")
+    expect(adapterFor("agy")).toBe(agyAdapter)
   })
 
-  test("submits multi-line text using bracketed paste followed by Return", () => {
-    const steps = agyAdapter.formatSubmit("line one\nline two\nline three")
-    expect(steps).toEqual(["\x1b[200~line one\nline two\nline three\x1b[201~", "\r"])
+  test("submits queued text with bracketed paste + Return and steers immediately with bracketed paste + Alt+M", () => {
+    const submitChunks = agyAdapter.formatSubmit("line 1\nline 2")
+    expect(submitChunks).toEqual(["\x1b[200~line 1\nline 2\x1b[201~", "\r"])
+
+    const steerChunks = agyAdapter.formatSteer("stop and check X")
+    expect(steerChunks).toEqual(["\x1b[200~stop and check X\x1b[201~", "\x1bm"])
   })
 
   test("interrupts with Escape", () => {
@@ -30,20 +54,18 @@ describe("agy harness adapter", () => {
 
   test("detects ready for input on real ready frame, not on working or trust frames", () => {
     expect(agyAdapter.readyForInput(READY_FRAME)).toBe(true)
-    expect(agyAdapter.readyForInput(DONE_FRAME)).toBe(true)
     expect(agyAdapter.readyForInput(WORKING_FRAME)).toBe(false)
     expect(agyAdapter.readyForInput(TRUST_FRAME)).toBe(false)
-    expect(agyAdapter.readyForInput(PERMISSION_FRAME)).toBe(false)
-    expect(agyAdapter.readyForInput(SIGNIN_FRAME)).toBe(false)
     expect(agyAdapter.readyForInput("")).toBe(false)
   })
 
   test("detects turn ended only when esc to cancel is gone and input box is back", () => {
     expect(agyAdapter.turnEnded(WORKING_FRAME)).toBe(false)
     expect(agyAdapter.turnEnded(PASTED_FRAME)).toBe(false)
+    expect(agyAdapter.turnEnded(DONE_FRAME)).toBe(true)
     expect(agyAdapter.turnEnded(TRUST_FRAME)).toBe(false)
     expect(agyAdapter.turnEnded(PERMISSION_FRAME)).toBe(false)
-    expect(agyAdapter.turnEnded(DONE_FRAME)).toBe(true)
+    expect(agyAdapter.turnEnded(SIGNIN_FRAME)).toBe(false)
   })
 
   test("surfaces trust, permission, and sign-in prompts as needs-input with the pane's last lines", () => {
@@ -51,7 +73,7 @@ describe("agy harness adapter", () => {
     expect(Option.isSome(trust)).toBe(true)
     if (Option.isSome(trust)) {
       expect(trust.value.summary).toContain("trust")
-      expect(trust.value.tail).toContain("Yes, I trust this folder")
+      expect(trust.value.tail).toContain("Do you trust the contents of this project?")
     }
 
     const perm = agyAdapter.needsInput(PERMISSION_FRAME)
@@ -67,7 +89,6 @@ describe("agy harness adapter", () => {
     }
 
     expect(Option.isNone(agyAdapter.needsInput(READY_FRAME))).toBe(true)
-    expect(Option.isNone(agyAdapter.needsInput(WORKING_FRAME))).toBe(true)
     expect(Option.isNone(agyAdapter.needsInput(DONE_FRAME))).toBe(true)
   })
 

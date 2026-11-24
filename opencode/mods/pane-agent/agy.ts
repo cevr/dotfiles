@@ -1,5 +1,5 @@
 import { Array as Arr, Option } from "effect"
-import type { HarnessAdapter, NeedsInput, StartOptions } from "./adapter.ts"
+import type { HarnessAdapter, NeedsInput, ResumeOptions, StartOptions } from "./adapter.ts"
 
 const RULE_LINE = /^─{20,}$/
 const ESC_TO_CANCEL = /\besc to cancel\b/i
@@ -106,18 +106,49 @@ const readAnswer = (screen: string): string => {
   })
 }
 
+const addDirFlags = (addDirs?: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const dirs = Option.fromUndefinedOr(addDirs)
+  if (Option.isNone(dirs)) return []
+  const seen = new Set<string>()
+  const out: Array<string> = []
+  for (const raw of dirs.value) {
+    const trimmed = raw.trim()
+    if (trimmed.length === 0 || seen.has(trimmed)) continue
+    seen.add(trimmed)
+    out.push("--add-dir", trimmed)
+  }
+  return out
+}
+
 const commandFor = (options: StartOptions): ReadonlyArray<string> => {
   const bin = Option.getOrElse(Option.fromUndefinedOr(options.binary), () => "agy")
-  if (options.dangerousSkipPermissions === true) return [bin, "--dangerously-skip-permissions"]
-  return [bin]
+  const args: Array<string> = [bin]
+  if (options.skipPermissions !== false) {
+    args.push("--dangerously-skip-permissions")
+  }
+  args.push(...addDirFlags(options.addDirs))
+  return args
+}
+
+const resumeCommandFor = (options: ResumeOptions): ReadonlyArray<string> => {
+  const bin = Option.getOrElse(Option.fromUndefinedOr(options.binary), () => "agy")
+  const args: Array<string> = [bin, "--continue"]
+  if (options.skipPermissions !== false) {
+    args.push("--dangerously-skip-permissions")
+  }
+  args.push(...addDirFlags(options.addDirs))
+  args.push("-i", options.initialPrompt)
+  return args
 }
 
 /** Antigravity CLI (`agy`) interactive pane adapter. */
 export const agyAdapter: HarnessAdapter = {
   harness: "agy",
   command: commandFor,
+  resumeCommand: resumeCommandFor,
   readyForInput: isReadyForInput,
   formatSubmit: (text) => [`\x1b[200~${text}\x1b[201~`, "\r"],
+  formatSteer: (text) => [`\x1b[200~${text}\x1b[201~`, "\x1bm"],
   turnEnded: isTurnEnded,
   needsInput: detectNeedsInput,
   interruptSequence: "\x1b",

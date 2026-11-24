@@ -53,13 +53,15 @@ const makeHarness = (
 
 describe("PaneAgentModel", () => {
   effectTest(
-    "start splits right beside the anchor, pastes brief naming only the orchestrator, and wakes on result file",
+    "start splits right with --dangerously-skip-permissions and --add-dir for outside folders, pastes brief naming only the orchestrator, and wakes on result file",
     Effect.gen(function* () {
       const h = yield* makeHarness({ defaultScreens: [READY_FRAME, WORKING_FRAME, WORKING_FRAME] })
       yield* h.model.bindPane("ses_parent", { session: "session:root", block: "block:anchor" })
       const started = yield* h.model.start({
         parentSessionID: "ses_parent",
         directory: "/nonexistent/repo",
+        cwd: "/nonexistent/lane",
+        addDirs: ["/nonexistent/shared"],
         harness: "agy",
         description: "implementor pane-agent r1",
         prompt: "Implement unit pane-agent.",
@@ -69,11 +71,21 @@ describe("PaneAgentModel", () => {
       expect(started.state).toBe("working")
       expect(started.harness).toBe("agy")
       expect(started.ownedBlock).toBe(true)
+      expect(started.cwd).toBe("/nonexistent/lane")
+      expect(started.addDirs).toEqual(["/nonexistent/shared", "/nonexistent/run"])
 
       const rexState = yield* Ref.get(h.rex.state)
       expect(rexState.splits).toHaveLength(1)
       expect(rexState.splits[0]?.anchorBlockId).toBe("block:anchor")
-      expect(rexState.splits[0]?.command).toEqual(["agy"])
+      expect(rexState.splits[0]?.cwd).toBe("/nonexistent/lane")
+      expect(rexState.splits[0]?.command).toEqual([
+        "agy",
+        "--dangerously-skip-permissions",
+        "--add-dir",
+        "/nonexistent/shared",
+        "--add-dir",
+        "/nonexistent/run",
+      ])
       const written = rexState.panes[0]?.writes.join("") ?? ""
       expect(written).toContain("the orchestrator")
       expect(written.toLowerCase()).not.toContain("opencode")
@@ -179,7 +191,7 @@ describe("PaneAgentModel", () => {
   )
 
   effectTest(
-    "follow_up types into the same pane and stop interrupts with Esc without closing unowned panes",
+    "follow_up queues with Enter, steer sends immediately with Alt+M, and stop interrupts without closing unowned panes",
     Effect.gen(function* () {
       const h = yield* makeHarness({
         panes: [
@@ -187,9 +199,9 @@ describe("PaneAgentModel", () => {
             sessionId: "session:existing",
             blockId: "block:user-named",
             label: "existing",
-            command: ["agy"],
+            command: ["agy", "--dangerously-skip-permissions"],
             cwd: "/nonexistent/repo",
-            screens: [READY_FRAME, WORKING_FRAME, DONE_FRAME, DONE_FRAME],
+            screens: [READY_FRAME, WORKING_FRAME, WORKING_FRAME],
             screenIndex: 0,
             writes: [],
             alive: true,
@@ -208,17 +220,31 @@ describe("PaneAgentModel", () => {
         blockId: "block:user-named",
       })
       expect(started.ownedBlock).toBe(false)
-      expect(started.blockId).toBe("block:user-named")
 
+      // Queued follow-up uses Enter (\r)
       yield* h.rex.setScreens("block:user-named", [WORKING_FRAME, WORKING_FRAME])
-      const next = yield* h.model.followUp({
+      const queued = yield* h.model.followUp({
         parentSessionID: "ses_parent",
         id: started.id,
-        prompt: "Second turn.",
+        prompt: "Queued second turn.",
         resultFile: "/nonexistent/run/t2.md",
       })
-      expect(next.turn).toBe(2)
-      expect(next.blockId).toBe("block:user-named")
+      expect(queued.turn).toBe(2)
+      expect(queued.update).toContain("queued")
+      const afterQueue = yield* Ref.get(h.rex.state)
+      expect(afterQueue.panes[0]?.writes[afterQueue.panes[0].writes.length - 1]).toBe("\r")
+
+      // Steer sends immediately with Alt+M (\x1bm)
+      const steered = yield* h.model.followUp({
+        parentSessionID: "ses_parent",
+        id: started.id,
+        prompt: "Immediate steer.",
+        steer: true,
+      })
+      expect(steered.turn).toBe(3)
+      expect(steered.update).toContain("steered")
+      const afterSteer = yield* Ref.get(h.rex.state)
+      expect(afterSteer.panes[0]?.writes[afterSteer.panes[0].writes.length - 1]).toBe("\x1bm")
 
       const stopped = yield* h.model.stop({ parentSessionID: "ses_parent", id: started.id, close: true })
       expect(stopped.state).toBe("stopped")
@@ -226,6 +252,64 @@ describe("PaneAgentModel", () => {
       const pane = rexState.panes[0]
       expect(pane?.writes[pane.writes.length - 1]).toBe("\x1b")
       expect(pane?.closed).toBe(false)
+    }).pipe(Effect.scoped),
+    hangGuard("local-fixture"),
+  )
+
+  effectTest(
+    "vanished pane surfaces as pane_gone (never silently stays working) and restart resumes with agy --continue -i in same cwd",
+    Effect.gen(function* () {
+      const h = yield* makeHarness({ defaultScreens: [READY_FRAME, WORKING_FRAME, WORKING_FRAME] })
+      yield* h.model.bindPane("ses_parent", { session: "session:root", block: "block:anchor" })
+      const started = yield* h.model.start({
+        parentSessionID: "ses_parent",
+        directory: "/nonexistent/repo",
+        cwd: "/nonexistent/lane-a",
+        addDirs: ["/nonexistent/meta"],
+        harness: "agy",
+        description: "implementor vanished-tab r1",
+        prompt: "Build the module.",
+        resultFile: "/nonexistent/run/out.md",
+      })
+      expect(started.state).toBe("working")
+
+      // Tab/pane vanishes externally
+      yield* h.rex.setAlive(started.blockId, false)
+
+      const goneStatus = yield* h.model.status("ses_parent", started.id)
+      expect(goneStatus.state).toBe("pane_gone")
+      expect(goneStatus.update).toContain("pane gone")
+
+      const wakes = yield* Ref.get(h.notifier.wakes)
+      expect(wakes).toHaveLength(1)
+      expect(wakes[0]?.letter.text).toContain('state="pane_gone"')
+      expect(wakes[0]?.letter.text).toContain('"restart"')
+
+      // Restart opens a new right-split pane in same cwd using --continue --dangerously-skip-permissions --add-dir ... -i "<brief>"
+      const restarted = yield* h.model.restart({
+        parentSessionID: "ses_parent",
+        id: started.id,
+        prompt: "Pick up from where the pane closed.",
+      })
+      expect(restarted.state).toBe("working")
+      expect(restarted.blockId).not.toBe(started.blockId)
+      expect(restarted.turn).toBe(2)
+
+      const rexState = yield* Ref.get(h.rex.state)
+      expect(rexState.splits).toHaveLength(2)
+      const secondSplit = rexState.splits[1]
+      expect(secondSplit?.cwd).toBe("/nonexistent/lane-a")
+      expect(secondSplit?.command[0]).toBe("agy")
+      expect(secondSplit?.command[1]).toBe("--continue")
+      expect(secondSplit?.command[2]).toBe("--dangerously-skip-permissions")
+      expect(secondSplit?.command).toContain("--add-dir")
+      expect(secondSplit?.command).toContain("/nonexistent/meta")
+      expect(secondSplit?.command).toContain("/nonexistent/run")
+      expect(secondSplit?.command).toContain("-i")
+      const promptArg = secondSplit?.command[secondSplit.command.length - 1] ?? ""
+      expect(promptArg).toContain("the orchestrator")
+      expect(promptArg).toContain("Pick up from where the pane closed.")
+      expect(promptArg).toContain("/nonexistent/run/out.md")
     }).pipe(Effect.scoped),
     hangGuard("local-fixture"),
   )
@@ -251,12 +335,13 @@ describe("PaneAgentModel", () => {
   )
 
   effectTest(
-    "server restart reattach wakes once when result file already exists and NEVER retypes",
+    "server restart reattach wakes once when result file already exists and NEVER retypes, and marks missing panes pane_gone",
     Effect.gen(function* () {
       const existing: PaneWorker = {
         id: "pa_restart1",
         parentSessionID: "ses_parent",
         directory: "/nonexistent/repo",
+        cwd: "/nonexistent/repo",
         harness: "agy",
         role: "implementor",
         unit: "pane-agent r1",
@@ -271,6 +356,12 @@ describe("PaneAgentModel", () => {
         startedAt: 1000,
         updatedAt: 1000,
       }
+      const vanished: PaneWorker = {
+        ...existing,
+        id: "pa_vanished1",
+        blockId: "block:missing1",
+        resultFile: "/nonexistent/run/missing.md",
+      }
       const h = yield* makeHarness(
         {
           panes: [
@@ -278,7 +369,7 @@ describe("PaneAgentModel", () => {
               sessionId: "session:root",
               blockId: "block:live1",
               label: "agy:pane-agent",
-              command: ["agy"],
+              command: ["agy", "--dangerously-skip-permissions"],
               cwd: "/nonexistent/repo",
               screens: [WORKING_FRAME],
               screenIndex: 0,
@@ -288,18 +379,20 @@ describe("PaneAgentModel", () => {
             },
           ],
         },
-        { workers: [existing], anchors: {} },
+        { workers: [existing, vanished], anchors: {} },
         new Map([["/nonexistent/run/restart.md", { content: "finished while server restarted", mtimeMs: 2000 }]]),
       )
 
       const attached = yield* h.model.reattach("/nonexistent/repo")
-      expect(attached).toHaveLength(1)
-      expect(attached[0]?.state).toBe("done")
+      expect(attached).toHaveLength(2)
+      expect(attached.find((w) => w.id === "pa_restart1")?.state).toBe("done")
+      expect(attached.find((w) => w.id === "pa_vanished1")?.state).toBe("pane_gone")
 
       yield* h.model.reattach("/nonexistent/repo")
       const wakes = yield* Ref.get(h.notifier.wakes)
-      expect(wakes).toHaveLength(1)
+      expect(wakes).toHaveLength(2)
       expect(wakes[0]?.letter.text).toContain("finished while server restarted")
+      expect(wakes[1]?.letter.text).toContain('state="pane_gone"')
       const rexState = yield* Ref.get(h.rex.state)
       expect(rexState.panes[0]?.writes).toEqual([])
     }).pipe(Effect.scoped),

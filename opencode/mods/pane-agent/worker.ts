@@ -2,7 +2,7 @@ import { Match, Option, Schema } from "effect"
 import { Harness } from "./adapter.ts"
 
 /** Worker lifecycle states persisted across server restarts. */
-export const WORKER_STATES = ["starting", "working", "needs_input", "done", "failed", "stopped"] as const
+export const WORKER_STATES = ["starting", "working", "needs_input", "pane_gone", "done", "failed", "stopped"] as const
 export const WorkerState = Schema.Literals(WORKER_STATES)
 export type WorkerState = typeof WorkerState.Type
 
@@ -13,11 +13,13 @@ export const PaneAnchor = Schema.Struct({
 })
 export type PaneAnchor = typeof PaneAnchor.Type
 
-/** Persisted record for a pane worker, sufficient to re-attach after server restart. */
+/** Persisted record for a pane worker, sufficient to re-attach or restart after pane loss. */
 export const PaneWorker = Schema.Struct({
   id: Schema.String,
   parentSessionID: Schema.String,
   directory: Schema.String,
+  cwd: Schema.optionalKey(Schema.String),
+  addDirs: Schema.optionalKey(Schema.Array(Schema.String)),
   harness: Harness,
   role: Schema.String,
   unit: Schema.String,
@@ -122,6 +124,7 @@ const rowStateOf = (state: WorkerState): ProjectedRow["state"] =>
     Match.when("starting", () => "working" as const),
     Match.when("working", () => "working" as const),
     Match.when("needs_input", () => "blocked" as const),
+    Match.when("pane_gone", () => "blocked" as const),
     Match.when("done", () => "done" as const),
     Match.when("failed", () => "failed" as const),
     Match.when("stopped", () => "cancelled" as const),

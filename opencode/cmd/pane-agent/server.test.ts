@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pane-agent/filestore/store.ts: fs.exists(file)
 import { describe, expect } from "bun:test"
 import type { Plugin, Tool } from "@opencode/plugin/effect"
 import { Array as Arr, Duration, Effect, Exit, Layer, Option } from "effect"
@@ -127,6 +129,29 @@ describe("cmd/pane-agent server plugin", () => {
       const listed = yield* env.rpc().rows({ sessionID: "ses_root" })
       expect(listed.workers).toHaveLength(1)
       expect(listed.workers[0]).toMatchObject({ harness: "agy", role: "implementor", unit: "pane-agent r1" })
+
+      const idMatch = /^id:\s+(\S+)/m.exec(text)
+      const workerId = idMatch?.[1] ?? ""
+      expect(workerId.length).toBeGreaterThan(0)
+
+      // Steer action routes to Alt+M immediate steer
+      const steered = yield* tool!.execute(
+        { action: "steer", id: workerId, prompt: "Switch focus now." },
+        { sessionID: "ses_root" },
+      )
+      expect(firstText(steered.content)).toContain("steered in Rex pane")
+
+      // Vanished pane -> status reports pane_gone -> restart resumes with --continue
+      const blockMatch = /^blockId:\s+(\S+)/m.exec(text)
+      yield* env.rex.setAlive(blockMatch?.[1] ?? "", false)
+      const gone = yield* tool!.execute({ action: "status", id: workerId }, { sessionID: "ses_root" })
+      expect(firstText(gone.content)).toContain("state: pane_gone")
+
+      const restarted = yield* tool!.execute(
+        { action: "restart", id: workerId, prompt: "Resume work." },
+        { sessionID: "ses_root" },
+      )
+      expect(firstText(restarted.content)).toContain("restarted in Rex pane (--continue)")
     }).pipe(Effect.scoped),
     hangGuard("local-fixture"),
   )

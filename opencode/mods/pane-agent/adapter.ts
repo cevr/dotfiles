@@ -1,43 +1,61 @@
-import { Option, Schema } from "effect"
-import { agyAdapter } from "./agy.ts"
+import { type Option, Schema } from "effect"
 
 /** Supported external interactive CLI harnesses. */
 export const HARNESSES = ["agy"] as const
 export const Harness = Schema.Literals(HARNESSES)
 export type Harness = typeof Harness.Type
 
-/** Per-start command options passed to a harness adapter. */
-export interface StartOptions {
-  readonly binary?: string
-  readonly dangerousSkipPermissions?: boolean
-}
-
-/** A prompt or confirmation waiting for the owner inside the pane. */
+/** Detected prompt waiting for human interaction in the pane. */
 export interface NeedsInput {
   readonly summary: string
   readonly tail: string
 }
 
+/** Options for constructing the CLI start command. */
+export interface StartOptions {
+  readonly binary?: string
+  readonly addDirs?: ReadonlyArray<string>
+  readonly skipPermissions?: boolean
+}
+
+/** Options for resuming a stopped harness session in a fresh pane. */
+export interface ResumeOptions {
+  readonly binary?: string
+  readonly addDirs?: ReadonlyArray<string>
+  readonly skipPermissions?: boolean
+  readonly initialPrompt: string
+}
+
 /**
- * Contract for driving an unmodified interactive CLI in a Rex pane.
- * Adding another harness (Claude Code, Codex) implements this interface
- * without changing callers.
+ * Seam for driving an unmodified interactive CLI harness in a Rex pane.
+ * New harnesses (e.g. Claude Code, Codex) implement this contract without changing callers.
  */
 export interface HarnessAdapter {
   readonly harness: Harness
+  /** Exact argv to launch the unmodified interactive CLI. */
   readonly command: (options: StartOptions) => ReadonlyArray<string>
+  /** Exact argv to resume a stopped conversation in the same folder with an initial prompt. */
+  readonly resumeCommand: (options: ResumeOptions) => ReadonlyArray<string>
+  /** True once the CLI is at its interactive prompt ready to accept pasted input. */
   readonly readyForInput: (screen: string) => boolean
+  /** Multi-line safe chunks to write to queue/submit a task (bracketed paste, then Enter). */
   readonly formatSubmit: (text: string) => ReadonlyArray<string>
+  /** Multi-line safe chunks to steer/interrupt an active turn immediately (bracketed paste, then Alt+M). */
+  readonly formatSteer: (text: string) => ReadonlyArray<string>
+  /** True when the CLI shows its idle signature (active-turn footer gone, input box back). */
   readonly turnEnded: (screen: string) => boolean
+  /** Some when the pane is waiting on a human (trust, sign-in, permission, question). */
   readonly needsInput: (screen: string) => Option.Option<NeedsInput>
+  /** Escape sequence sent to interrupt an active turn. */
   readonly interruptSequence: string
+  /** Extracts the last answer text from a completed screen capture. */
   readonly readLastAnswer: (screen: string) => string
 }
 
-/** Look up the adapter for a harness. */
-export const adapterFor = (harness: Harness): HarnessAdapter => {
-  switch (harness) {
-    case "agy":
-      return agyAdapter
-  }
+import { agyAdapter } from "./agy.ts"
+
+const ADAPTERS: Readonly<Record<Harness, HarnessAdapter>> = {
+  agy: agyAdapter,
 }
+
+export const adapterFor = (harness: Harness): HarnessAdapter => ADAPTERS[harness]

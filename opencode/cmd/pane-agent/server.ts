@@ -32,6 +32,7 @@ const formatWorker = (worker: PaneWorker): string => {
     `update: ${worker.update}`,
     `rexSession: ${worker.rexSessionId}`,
     `blockId: ${worker.blockId}`,
+    `cwd: ${Option.getOrElse(Option.fromUndefinedOr(worker.cwd), () => worker.directory)}`,
     `resultFile: ${worker.resultFile}`,
     `turn: ${worker.turn}`,
   ]
@@ -91,9 +92,13 @@ const startFields = (
     onNone: () => base,
     onSome: (cwd) => ({ ...base, cwd }),
   })
-  const withSession = Option.match(Option.fromUndefinedOr(input.rexSession), {
+  const withAddDirs = Option.match(Option.fromUndefinedOr(input.addDirs), {
     onNone: () => withCwd,
-    onSome: (rexSession) => ({ ...withCwd, rexSession }),
+    onSome: (addDirs) => ({ ...withCwd, addDirs }),
+  })
+  const withSession = Option.match(Option.fromUndefinedOr(input.rexSession), {
+    onNone: () => withAddDirs,
+    onSome: (rexSession) => ({ ...withAddDirs, rexSession }),
   })
   const withBlock = Option.match(Option.fromUndefinedOr(input.rexBlock), {
     onNone: () => withSession,
@@ -103,11 +108,58 @@ const startFields = (
     onNone: () => withBlock,
     onSome: (blockId) => ({ ...withBlock, blockId }),
   })
-  if (input.dangerousSkipPermissions === true) {
-    return Effect.succeed({ ...withTarget, dangerousSkipPermissions: true })
-  }
-  return Effect.succeed(withTarget)
+  return Effect.succeed(
+    Option.match(Option.fromUndefinedOr(input.skipPermissions), {
+      onNone: () => withTarget,
+      onSome: (skipPermissions) => ({ ...withTarget, skipPermissions }),
+    }),
+  )
 }
+
+const restartFields = (
+  input: PaneAgentInput,
+  sessionID: string,
+  id: string,
+): Model.RestartInput => {
+  const base: Model.RestartInput = { parentSessionID: sessionID, id }
+  const withPrompt = Option.match(Option.fromUndefinedOr(input.prompt), {
+    onNone: () => base,
+    onSome: (prompt) => ({ ...base, prompt }),
+  })
+  const withFile = Option.match(Option.fromUndefinedOr(input.resultFile), {
+    onNone: () => withPrompt,
+    onSome: (resultFile) => ({ ...withPrompt, resultFile }),
+  })
+  const withSession = Option.match(Option.fromUndefinedOr(input.rexSession), {
+    onNone: () => withFile,
+    onSome: (rexSession) => ({ ...withFile, rexSession }),
+  })
+  return Option.match(Option.fromUndefinedOr(input.rexBlock), {
+    onNone: () => withSession,
+    onSome: (rexBlock) => ({ ...withSession, rexBlock }),
+  })
+}
+
+const followUpAction = Effect.fn("PaneAgent.followUpAction")(function* (
+  model: Effect.Success<typeof Model.PaneAgentModel>,
+  input: PaneAgentInput,
+  sessionID: string,
+  id: string,
+  forceSteer: boolean,
+) {
+  const prompt = Option.fromUndefinedOr(input.prompt)
+  if (Option.isNone(prompt)) {
+    return yield* Effect.fail(new Tool.Error({ message: `pane_agent({ action: "${input.action}" }) requires prompt.` }))
+  }
+  const steer = forceSteer || input.steer === true
+  const base: Model.FollowUpInput = { parentSessionID: sessionID, id, prompt: prompt.value, steer }
+  const followInput: Model.FollowUpInput = Option.match(Option.fromUndefinedOr(input.resultFile), {
+    onNone: () => base,
+    onSome: (resultFile) => ({ ...base, resultFile }),
+  })
+  const worker = yield* model.followUp(followInput).pipe(Effect.mapError(formatModelError))
+  return textResult(formatWorker(worker))
+})
 
 const runToolAction = Effect.fn("PaneAgent.runToolAction")(function* (
   model: Effect.Success<typeof Model.PaneAgentModel>,
@@ -135,6 +187,10 @@ const runToolAction = Effect.fn("PaneAgent.runToolAction")(function* (
     const worker = yield* model.status(sessionID, id.value).pipe(Effect.mapError(formatModelError))
     return textResult(formatWorker(worker))
   }
+  if (input.action === "restart") {
+    const worker = yield* model.restart(restartFields(input, sessionID, id.value)).pipe(Effect.mapError(formatModelError))
+    return textResult(formatWorker(worker))
+  }
   if (input.action === "stop") {
     const stopInput: Model.StopInput = {
       parentSessionID: sessionID,
@@ -147,16 +203,7 @@ const runToolAction = Effect.fn("PaneAgent.runToolAction")(function* (
     const worker = yield* model.stop(stopInput).pipe(Effect.mapError(formatModelError))
     return textResult(formatWorker(worker))
   }
-  const prompt = Option.fromUndefinedOr(input.prompt)
-  if (Option.isNone(prompt)) {
-    return yield* Effect.fail(new Tool.Error({ message: 'pane_agent({ action: "follow_up" }) requires prompt.' }))
-  }
-  const followInput: Model.FollowUpInput = Option.match(Option.fromUndefinedOr(input.resultFile), {
-    onNone: () => ({ parentSessionID: sessionID, id: id.value, prompt: prompt.value }),
-    onSome: (resultFile) => ({ parentSessionID: sessionID, id: id.value, prompt: prompt.value, resultFile }),
-  })
-  const worker = yield* model.followUp(followInput).pipe(Effect.mapError(formatModelError))
-  return textResult(formatWorker(worker))
+  return yield* followUpAction(model, input, sessionID, id.value, input.action === "steer")
 })
 
 export const live = (

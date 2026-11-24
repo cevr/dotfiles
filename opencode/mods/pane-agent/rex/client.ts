@@ -69,7 +69,7 @@ const isTimeout = Predicate.isTagged("RexRequestTimeout")
 
 const isGone = Predicate.or(
   Predicate.or(Predicate.isTagged("RexBlockClosed"), Predicate.isTagged("RexNotFound")),
-  Predicate.isTagged("RexInvalidTarget"),
+  Predicate.or(Predicate.isTagged("RexSessionNotFound"), Predicate.isTagged("RexTerminalExited")),
 )
 
 const sdkTarget = (rex: IRexSdk, target: PaneTarget) => ({

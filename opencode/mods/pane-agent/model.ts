@@ -1,6 +1,6 @@
 import { Array as Arr, Clock, Context, Duration, Effect, FiberMap, Layer, Option, Random, Ref, Scope } from "effect"
-import { adapterFor, type Harness, type HarnessAdapter } from "./adapter.ts"
-import { taskBrief } from "./prompt.ts"
+import { adapterFor, type Harness, type HarnessAdapter, type ResumeOptions, type StartOptions } from "./adapter.ts"
+import { resumeBrief, taskBrief } from "./prompt.ts"
 import {
   Notifier,
   type PaneTarget,
@@ -38,10 +38,11 @@ export interface StartInput {
   readonly prompt: string
   readonly resultFile: string
   readonly cwd?: string
+  readonly addDirs?: ReadonlyArray<string>
   readonly rexSession?: string
   readonly rexBlock?: string
   readonly blockId?: string
-  readonly dangerousSkipPermissions?: boolean
+  readonly skipPermissions?: boolean
 }
 
 export interface FollowUpInput {
@@ -49,6 +50,16 @@ export interface FollowUpInput {
   readonly id: string
   readonly prompt: string
   readonly resultFile?: string
+  readonly steer?: boolean
+}
+
+export interface RestartInput {
+  readonly parentSessionID: string
+  readonly id: string
+  readonly prompt?: string
+  readonly resultFile?: string
+  readonly rexSession?: string
+  readonly rexBlock?: string
 }
 
 export interface StopInput {
@@ -64,6 +75,7 @@ export class PaneAgentModel extends Context.Service<
   {
     readonly start: (input: StartInput) => Effect.Effect<PaneWorker, ModelError>
     readonly followUp: (input: FollowUpInput) => Effect.Effect<PaneWorker, ModelError>
+    readonly restart: (input: RestartInput) => Effect.Effect<PaneWorker, ModelError>
     readonly stop: (input: StopInput) => Effect.Effect<PaneWorker, ModelError>
     readonly status: (parentSessionID: string, id: string) => Effect.Effect<PaneWorker, ModelError>
     readonly list: (parentSessionID: string) => Effect.Effect<ReadonlyArray<PaneWorker>, StoreFailed>
@@ -93,6 +105,41 @@ const targetOf = (worker: Pick<PaneWorker, "rexSessionId" | "blockId">): PaneTar
   sessionId: worker.rexSessionId,
   blockId: worker.blockId,
 })
+
+const stripTrailingSlash = (value: string): string => value.replace(/\/+$/, "")
+
+const parentDirOf = (file: string): Option.Option<string> => {
+  const index = file.lastIndexOf("/")
+  if (index <= 0) return Option.none()
+  return Option.some(stripTrailingSlash(file.slice(0, index)))
+}
+
+const isWithin = (dir: string, root: string): boolean =>
+  dir === root || dir.startsWith(`${root}/`)
+
+/** Computes deduplicated --add-dir entries outside cwd, including the result file's parent directory. */
+export const computeAddDirs = (
+  cwd: string,
+  resultFile: string,
+  explicit?: ReadonlyArray<string>,
+): ReadonlyArray<string> => {
+  const normCwd = stripTrailingSlash(cwd)
+  const seen = new Set<string>()
+  const out: Array<string> = []
+  const add = (candidate: string) => {
+    const clean = stripTrailingSlash(candidate.trim())
+    if (clean.length === 0 || isWithin(clean, normCwd) || seen.has(clean)) return
+    seen.add(clean)
+    out.push(clean)
+  }
+  const given = Option.fromUndefinedOr(explicit)
+  if (Option.isSome(given)) {
+    for (const dir of given.value) add(dir)
+  }
+  const resultParent = parentDirOf(resultFile)
+  if (Option.isSome(resultParent)) add(resultParent.value)
+  return out
+}
 
 const shortLines = (text: string, maxLines = 12): string =>
   text
@@ -157,6 +204,30 @@ const needsInputLetter = (worker: PaneWorker, summary: string, tail: string) => 
   },
 })
 
+const paneGoneLetter = (worker: PaneWorker, reason: string, tail: string) => {
+  const lines = [
+    `<pane-agent-result id="${worker.id}" harness="${worker.harness}" block="${worker.blockId}" state="pane_gone" turn="${worker.turn}">`,
+    `${reason} Call pane_agent({ action: "restart", id: "${worker.id}" }) to resume this worker with --continue in ${Option.getOrElse(Option.fromUndefinedOr(worker.cwd), () => worker.directory)}.`,
+  ]
+  if (tail.length > 0) {
+    lines.push("", "Last lines from the pane:", tail)
+  }
+  lines.push("</pane-agent-result>")
+  return {
+    id: `msg_pa_${worker.id}_t${worker.turn}_pane_gone`,
+    description: `${worker.role} ${worker.harness} · ${worker.unit} · pane gone`,
+    text: lines.join("\n"),
+    metadata: {
+      source: "pane-agent",
+      workerId: worker.id,
+      harness: worker.harness,
+      blockId: worker.blockId,
+      state: "pane_gone",
+      turn: worker.turn,
+    },
+  }
+}
+
 const failedLetter = (worker: PaneWorker, reason: string, tail: string) => {
   const lines = [
     `<pane-agent-result id="${worker.id}" harness="${worker.harness}" block="${worker.blockId}" state="failed" turn="${worker.turn}">`,
@@ -183,41 +254,58 @@ const failedLetter = (worker: PaneWorker, reason: string, tail: string) => {
 
 const buildStartOptions = (
   harness: Harness,
+  addDirs: ReadonlyArray<string>,
   overrides?: Readonly<Partial<Record<Harness, string>>>,
-  dangerousSkipPermissions?: boolean,
-) => {
+  skipPermissions?: boolean,
+): StartOptions => {
   const binary = Option.flatMap(Option.fromUndefinedOr(overrides), (map) => Option.fromUndefinedOr(map[harness]))
-  const withBin = Option.match(binary, {
-    onNone: () => ({}),
-    onSome: (value) => ({ binary: value }),
+  const base: StartOptions = Option.match(binary, {
+    onNone: (): StartOptions => ({ addDirs }),
+    onSome: (value): StartOptions => ({ binary: value, addDirs }),
   })
-  if (dangerousSkipPermissions === true) {
-    return { ...withBin, dangerousSkipPermissions: true }
-  }
-  return withBin
+  return Option.match(Option.fromUndefinedOr(skipPermissions), {
+    onNone: () => base,
+    onSome: (flag): StartOptions => ({ ...base, skipPermissions: flag }),
+  })
+}
+
+const buildResumeOptions = (
+  harness: Harness,
+  initialPrompt: string,
+  addDirs: ReadonlyArray<string>,
+  overrides?: Readonly<Partial<Record<Harness, string>>>,
+): ResumeOptions => {
+  const binary = Option.flatMap(Option.fromUndefinedOr(overrides), (map) => Option.fromUndefinedOr(map[harness]))
+  return Option.match(binary, {
+    onNone: (): ResumeOptions => ({ initialPrompt, addDirs }),
+    onSome: (value): ResumeOptions => ({ binary: value, initialPrompt, addDirs }),
+  })
+}
+
+interface AnchorHints {
+  readonly rexSession?: string
+  readonly rexBlock?: string
 }
 
 const resolveAnchor = (
-  input: StartInput,
+  hints: AnchorHints,
   saved: Option.Option<PaneAnchor>,
 ): Option.Option<PaneAnchor> => {
   const explicit = Option.all({
-    session: Option.filter(Option.fromUndefinedOr(input.rexSession), (s) => s.length > 0),
-    block: Option.filter(Option.fromUndefinedOr(input.rexBlock), (b) => b.length > 0),
+    session: Option.filter(Option.fromUndefinedOr(hints.rexSession), (s) => s.length > 0),
+    block: Option.filter(Option.fromUndefinedOr(hints.rexBlock), (b) => b.length > 0),
   })
   if (Option.isSome(explicit)) return explicit
   return saved
 }
 
-const submitToPane = (
+const writeChunks = (
   rex: RexClientApi,
-  adapter: HarnessAdapter,
   target: PaneTarget,
-  text: string,
+  chunks: ReadonlyArray<string>,
   pasteQuiet: Duration.Duration,
 ) =>
   Effect.gen(function* () {
-    const chunks = adapter.formatSubmit(text)
     for (let index = 0; index < chunks.length; index++) {
       const chunk = Arr.get(chunks, index)
       if (Option.isNone(chunk)) continue
@@ -250,6 +338,32 @@ const settleResult = (
     yield* notifier.changed(worker.parentSessionID)
     if (worker.notifiedTurn < worker.turn) {
       yield* notifier.wake(worker.parentSessionID, doneLetter(next, answer, fromFile))
+    }
+    return next
+  })
+
+const settlePaneGone = (
+  store: WorkerStoreApi,
+  notifier: NotifierApi,
+  worker: PaneWorker,
+  reason: string,
+  tail: string,
+  now: number,
+) =>
+  Effect.gen(function* () {
+    const next: PaneWorker = {
+      ...worker,
+      state: "pane_gone",
+      update: "pane gone (use restart to resume with --continue)",
+      updatedAt: now,
+      endedAt: now,
+      notifiedTurn: worker.turn,
+      lastLines: tail,
+    }
+    yield* store.upsertWorker(next)
+    yield* notifier.changed(worker.parentSessionID)
+    if (worker.notifiedTurn < worker.turn) {
+      yield* notifier.wake(worker.parentSessionID, paneGoneLetter(next, reason, tail))
     }
     return next
   })
@@ -394,7 +508,7 @@ const makeModel = (config: ModelConfig = {}) =>
       if (Option.isSome(state.pendingBrief)) {
         if (!adapter.readyForInput(screen)) return { kind: "continue" as const, state, wait: true }
         const startedAt = yield* Clock.currentTimeMillis
-        yield* submitToPane(rex, adapter, target, state.pendingBrief.value, pasteQuiet).pipe(Effect.ignore)
+        yield* writeChunks(rex, target, adapter.formatSubmit(state.pendingBrief.value), pasteQuiet).pipe(Effect.ignore)
         const working: PaneWorker = {
           ...state.worker,
           state: "working",
@@ -444,7 +558,7 @@ const makeModel = (config: ModelConfig = {}) =>
         const screenOpt = yield* rex.read(target).pipe(Effect.option)
         if (Option.isNone(screenOpt)) {
           const now = yield* Clock.currentTimeMillis
-          yield* settleFailure(store, notifier, state.worker, "Rex pane is no longer reachable", "", now)
+          yield* settlePaneGone(store, notifier, state.worker, "Rex pane disappeared or is no longer reachable.", "", now)
           return
         }
         const step = yield* handleScreen(adapter, target, state, screenOpt.value)
@@ -462,7 +576,7 @@ const makeModel = (config: ModelConfig = {}) =>
             yield* settleResult(store, notifier, state.worker, finalFile.value, true, now)
             return
           }
-          yield* settleFailure(store, notifier, state.worker, "Pane process exited before finishing turn", shortLines(screenOpt.value), now)
+          yield* settlePaneGone(store, notifier, state.worker, "Rex pane closed or process exited before finishing turn.", shortLines(screenOpt.value), now)
           return
         }
         yield* rex.waitForQuiet(target, { quietFor, timeout: pollTimeout }).pipe(Effect.ignore)
@@ -483,6 +597,7 @@ const makeModel = (config: ModelConfig = {}) =>
       adapter: HarnessAdapter,
       unit: string,
       resolvedCwd: string,
+      resolvedAddDirs: ReadonlyArray<string>,
       savedAnchor: Option.Option<PaneAnchor>,
     ) {
       const explicitBlock = Option.filter(Option.fromUndefinedOr(input.blockId), (b) => b.length > 0)
@@ -504,7 +619,9 @@ const makeModel = (config: ModelConfig = {}) =>
           reason: "No Rex pane anchor is known for this session; open OpenCode inside Rex or pass rexSession and rexBlock.",
         })
       }
-      const command = adapter.command(buildStartOptions(input.harness, config.binaryOverrides, input.dangerousSkipPermissions))
+      const command = adapter.command(
+        buildStartOptions(input.harness, resolvedAddDirs, config.binaryOverrides, input.skipPermissions),
+      )
       const blockId = yield* rex.splitRight({
         sessionId: anchor.value.session,
         anchorBlockId: anchor.value.block,
@@ -520,16 +637,19 @@ const makeModel = (config: ModelConfig = {}) =>
       const snapshot = yield* store.read()
       const savedAnchor = Option.fromUndefinedOr(snapshot.anchors[input.parentSessionID])
       const resolvedCwd = Option.getOrElse(Option.fromUndefinedOr(input.cwd), () => input.directory)
+      const resolvedAddDirs = computeAddDirs(resolvedCwd, input.resultFile, input.addDirs)
       const { role, unit } = parseDescription(input.description)
       const now = yield* Clock.currentTimeMillis
       const id = yield* makeWorkerId()
-      const opened = yield* openOrSelectPane(input, adapter, unit, resolvedCwd, savedAnchor)
+      const opened = yield* openOrSelectPane(input, adapter, unit, resolvedCwd, resolvedAddDirs, savedAnchor)
 
       const target: PaneTarget = { sessionId: opened.rexSessionId, blockId: opened.blockId }
       const starting: PaneWorker = {
         id,
         parentSessionID: input.parentSessionID,
         directory: input.directory,
+        cwd: resolvedCwd,
+        addDirs: resolvedAddDirs,
         harness: input.harness,
         role,
         unit,
@@ -555,14 +675,14 @@ const makeModel = (config: ModelConfig = {}) =>
         return blocked
       }
       if (readiness.kind === "exited") {
-        return yield* settleFailure(store, notifier, starting, `${input.harness} exited before becoming ready for input`, readiness.tail, yield* Clock.currentTimeMillis)
+        return yield* settlePaneGone(store, notifier, starting, `${input.harness} exited before becoming ready for input.`, readiness.tail, yield* Clock.currentTimeMillis)
       }
       if (readiness.kind === "timeout") {
         return yield* settleFailure(store, notifier, starting, `${input.harness} did not become ready for input`, readiness.tail, yield* Clock.currentTimeMillis)
       }
 
       const turnStartedAt = yield* Clock.currentTimeMillis
-      yield* submitToPane(rex, adapter, target, brief, pasteQuiet)
+      yield* writeChunks(rex, target, adapter.formatSubmit(brief), pasteQuiet)
       const working: PaneWorker = {
         ...starting,
         state: "working",
@@ -596,8 +716,16 @@ const makeModel = (config: ModelConfig = {}) =>
       const target = targetOf(existing)
       const isAlive = yield* rex.alive(target)
       if (!isAlive) {
+        yield* settlePaneGone(
+          store,
+          notifier,
+          existing,
+          `Pane ${existing.blockId} for worker ${existing.id} is gone.`,
+          "",
+          yield* Clock.currentTimeMillis,
+        )
         return yield* new WorkerRejected({
-          reason: `Pane ${existing.blockId} for worker ${existing.id} is no longer running; start a new pane worker instead.`,
+          reason: `Pane ${existing.blockId} for worker ${existing.id} is gone; call pane_agent({ action: "restart", id: "${existing.id}" }) to resume it with --continue.`,
         })
       }
       yield* FiberMap.remove(watchers, existing.id)
@@ -605,12 +733,19 @@ const makeModel = (config: ModelConfig = {}) =>
       const nextResultFile = Option.getOrElse(Option.fromUndefinedOr(input.resultFile), () => existing.resultFile)
       const brief = taskBrief({ prompt: input.prompt, resultFile: nextResultFile, followUp: true })
       const now = yield* Clock.currentTimeMillis
-      yield* submitToPane(rex, adapter, target, brief, pasteQuiet)
+      const isSteer = input.steer === true
+      let chunks = adapter.formatSubmit(brief)
+      let nextUpdate = "queued follow-up in Rex pane"
+      if (isSteer) {
+        chunks = adapter.formatSteer(brief)
+        nextUpdate = "steered in Rex pane"
+      }
+      yield* writeChunks(rex, target, chunks, pasteQuiet)
       const next: PaneWorker = {
         ...existing,
         resultFile: nextResultFile,
         state: "working",
-        update: "running follow-up in Rex pane",
+        update: nextUpdate,
         turn: existing.turn + 1,
         startedAt: now,
         updatedAt: now,
@@ -619,6 +754,69 @@ const makeModel = (config: ModelConfig = {}) =>
       yield* notifier.changed(existing.parentSessionID)
       yield* launchWatcher(next)
       return next
+    })
+
+    const restart = Effect.fn("PaneAgent.restart")(function* (input: RestartInput) {
+      const existing = yield* findOwnedWorker(input.parentSessionID, input.id)
+      const stillAlive = yield* rex.alive(targetOf(existing)).pipe(Effect.orElseSucceed(() => false))
+      if (stillAlive) {
+        return yield* new WorkerRejected({
+          reason: `Pane ${existing.blockId} for worker ${existing.id} is still running; use follow_up or steer instead of restart.`,
+        })
+      }
+      const snapshot = yield* store.read()
+      const savedAnchor = Option.fromUndefinedOr(snapshot.anchors[input.parentSessionID])
+      const anchor = resolveAnchor(input, savedAnchor)
+      if (Option.isNone(anchor)) {
+        return yield* new WorkerRejected({
+          reason: "No Rex pane anchor is known for this session; open OpenCode inside Rex or pass rexSession and rexBlock.",
+        })
+      }
+      yield* FiberMap.remove(watchers, existing.id)
+      const adapter = adapterFor(existing.harness)
+      const workerCwd = Option.getOrElse(Option.fromUndefinedOr(existing.cwd), () => existing.directory)
+      const nextResultFile = Option.getOrElse(Option.fromUndefinedOr(input.resultFile), () => existing.resultFile)
+      const nextAddDirs = computeAddDirs(workerCwd, nextResultFile, existing.addDirs)
+      const briefInput = Option.match(Option.fromUndefinedOr(input.prompt), {
+        onNone: () => ({ resultFile: nextResultFile }),
+        onSome: (prompt) => ({ prompt, resultFile: nextResultFile }),
+      })
+      const brief = resumeBrief(briefInput)
+      const command = adapter.resumeCommand(
+        buildResumeOptions(existing.harness, brief, nextAddDirs, config.binaryOverrides),
+      )
+      const now = yield* Clock.currentTimeMillis
+      const newBlockId = yield* rex.splitRight({
+        sessionId: anchor.value.session,
+        anchorBlockId: anchor.value.block,
+        label: `${existing.harness}:${existing.unit}`.slice(0, 48),
+        command,
+        cwd: workerCwd,
+      })
+      const restarted: PaneWorker = {
+        id: existing.id,
+        parentSessionID: existing.parentSessionID,
+        directory: existing.directory,
+        cwd: workerCwd,
+        addDirs: nextAddDirs,
+        harness: existing.harness,
+        role: existing.role,
+        unit: existing.unit,
+        rexSessionId: anchor.value.session,
+        blockId: newBlockId,
+        ownedBlock: true,
+        resultFile: nextResultFile,
+        state: "working",
+        update: "restarted in Rex pane (--continue)",
+        turn: existing.turn + 1,
+        notifiedTurn: existing.turn,
+        startedAt: now,
+        updatedAt: now,
+      }
+      yield* store.upsertWorker(restarted)
+      yield* notifier.changed(existing.parentSessionID)
+      yield* launchWatcher(restarted)
+      return restarted
     })
 
     const stop = Effect.fn("PaneAgent.stop")(function* (input: StopInput) {
@@ -649,7 +847,36 @@ const makeModel = (config: ModelConfig = {}) =>
 
     const status = Effect.fn("PaneAgent.status")(function* (parentSessionID: string, id: string) {
       const existing = yield* findOwnedWorker(parentSessionID, id)
-      const tailOpt = yield* rex.readTail(targetOf(existing), TAIL_BYTES).pipe(Effect.option)
+      const target = targetOf(existing)
+      const expectsPane = existing.state !== "stopped" && existing.state !== "pane_gone" && existing.state !== "failed"
+      if (expectsPane) {
+        const stillAlive = yield* rex.alive(target).pipe(Effect.orElseSucceed(() => false))
+        if (!stillAlive) {
+          yield* FiberMap.remove(watchers, existing.id)
+          const now = yield* Clock.currentTimeMillis
+          if (isLive(existing.state)) {
+            return yield* settlePaneGone(
+              store,
+              notifier,
+              existing,
+              "Rex pane disappeared while worker was active.",
+              "",
+              now,
+            )
+          }
+          const gone: PaneWorker = {
+            ...existing,
+            state: "pane_gone",
+            update: "Rex pane disappeared (call restart to resume with --continue)",
+            updatedAt: now,
+            endedAt: now,
+          }
+          yield* store.upsertWorker(gone)
+          yield* notifier.changed(existing.parentSessionID)
+          return gone
+        }
+      }
+      const tailOpt = yield* rex.readTail(target, TAIL_BYTES).pipe(Effect.option)
       if (Option.isNone(tailOpt)) return existing
       const lines = shortLines(tailOpt.value)
       return { ...existing, lastLines: lines }
@@ -689,8 +916,8 @@ const makeModel = (config: ModelConfig = {}) =>
           resultsOut.push(worker)
         } else {
           const now = yield* Clock.currentTimeMillis
-          const failed = yield* settleFailure(store, notifier, worker, "Rex pane is no longer running after restart", "", now)
-          resultsOut.push(failed)
+          const gone = yield* settlePaneGone(store, notifier, worker, "Rex pane is no longer running after restart.", "", now)
+          resultsOut.push(gone)
         }
       }
       return resultsOut
@@ -699,6 +926,7 @@ const makeModel = (config: ModelConfig = {}) =>
     return PaneAgentModel.of({
       start,
       followUp,
+      restart,
       stop,
       status,
       list,

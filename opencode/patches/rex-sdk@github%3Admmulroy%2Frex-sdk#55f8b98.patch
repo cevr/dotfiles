@@ -16,16 +16,19 @@ index ffaefb26173bb385373f23d269709d2c10241e8d..0786e7774c0854473f19b56a677e3cca
    "scripts": {
 diff --git a/src/index.d.ts b/src/index.d.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..5bebcd6cdf10ad3def40ad2336fb54a10a1db3b5
+index 0000000000000000000000000000000000000000..37468879c95bb777fa6304eb7fcd56de7e30956a
 --- /dev/null
 +++ b/src/index.d.ts
-@@ -0,0 +1,112 @@
-+import type { Context, Duration, Effect, Layer, Option } from "effect";
+@@ -0,0 +1,162 @@
++import type { Brand, Context, Duration, Effect, Layer, Option } from "effect";
 +
 +export declare const REX_API_REVISION = 18;
 +
-+export type SessionId = string & { readonly __brand: "SessionId" };
-+export type BlockId = string & { readonly __brand: "BlockId" };
++export type SessionId = string & Brand.Brand<"SessionId">;
++export type WindowId = string & Brand.Brand<"WindowId">;
++export type BlockId = string & Brand.Brand<"BlockId">;
++export type SplitId = string & Brand.Brand<"SplitId">;
++export type AnchorId = BlockId | SplitId;
 +
 +export interface RexConfigOptions {
 +  readonly server?: string | undefined;
@@ -41,19 +44,23 @@ index 0000000000000000000000000000000000000000..5bebcd6cdf10ad3def40ad2336fb54a1
 +  readonly connectTimeout?: Duration.Input | undefined;
 +}
 +
-+export interface RexLayoutNode {
-+  readonly _tag: "Terminal" | "Block" | "Split";
++export interface RexTerminalLayoutOptions {
++  readonly shell?: string;
++  readonly command?: ReadonlyArray<string>;
++  readonly cwd?: string;
++  readonly label?: string | undefined;
 +}
 +
-+export interface RexTerminalLayoutOptions {
-+  readonly command?: ReadonlyArray<string> | undefined;
-+  readonly cwd?: string | undefined;
++export interface RexTerminalLayoutNode {
++  readonly _tag: "Terminal";
 +  readonly label?: string | undefined;
-+  readonly shell?: string | undefined;
++  readonly options?: Omit<RexTerminalLayoutOptions, "label"> | undefined;
 +}
++
++export type RexLayoutNode = RexTerminalLayoutNode;
 +
 +export declare const rexLayout: {
-+  readonly terminal: (options?: RexTerminalLayoutOptions) => RexLayoutNode;
++  readonly terminal: (options?: RexTerminalLayoutOptions) => RexTerminalLayoutNode;
 +};
 +
 +export interface RexTaggedError {
@@ -66,69 +73,112 @@ index 0000000000000000000000000000000000000000..5bebcd6cdf10ad3def40ad2336fb54a1
 +  readonly blockId: BlockId;
 +}
 +
++export interface SessionListResult {
++  readonly sessions: ReadonlyArray<{
++    readonly sessionId: SessionId;
++    readonly label: string;
++  }>;
++}
++
++export interface SessionCreateResult {
++  readonly sessionId: SessionId;
++  readonly initialWindows: ReadonlyArray<{
++    readonly windowId: WindowId;
++    readonly blockIds: ReadonlyArray<BlockId>;
++    readonly revision: number;
++  }>;
++}
++
++export interface SessionNewSplitResult {
++  readonly anchorId: AnchorId;
++  readonly blockIds: ReadonlyArray<BlockId>;
++  readonly splitIds: ReadonlyArray<SplitId>;
++  readonly revision: number;
++}
++
++export interface BlockCloseResult {
++  readonly blockId: BlockId;
++  readonly revision: number;
++}
++
++export interface TerminalWriteResult {
++  readonly bytesWritten: number;
++}
++
++export interface RexTerminalText {
++  readonly lines: ReadonlyArray<string>;
++  readonly lineOffsets: ReadonlyArray<number>;
++  readonly truncated: boolean;
++}
++
++export interface RexOutputMatch {
++  readonly line: string;
++  readonly text: string;
++  readonly groups: ReadonlyArray<string | undefined>;
++}
++
++export interface TerminalProcessResult {
++  readonly lastExit: Option.Option<{
++    readonly exitCode: number;
++    readonly error: Option.Option<string>;
++  }>;
++}
++
 +export interface IRexSdk {
 +  readonly ids: {
-+    readonly session: (id: string) => SessionId;
-+    readonly block: (id: string) => BlockId;
++    readonly session: (value: string) => SessionId;
++    readonly block: (value: string) => BlockId;
 +  };
 +  readonly sessions: {
-+    readonly list: () => Effect.Effect<ReadonlyArray<{ readonly id: SessionId }>, RexTaggedError>;
-+    readonly create: (args: {
-+      readonly label?: string | undefined;
++    readonly list: () => Effect.Effect<SessionListResult, RexTaggedError>;
++    readonly create: (input?: {
++      readonly label?: string;
 +      readonly initialWindows?: ReadonlyArray<{
-+        readonly windowLabel?: string | undefined;
-+        readonly layout?: RexLayoutNode | undefined;
-+      }> | undefined;
-+    }) => Effect.Effect<
-+      {
-+        readonly sessionId: SessionId;
-+        readonly initialWindows: ReadonlyArray<{ readonly blockIds: ReadonlyArray<BlockId> }>;
-+      },
-+      RexTaggedError
-+    >;
-+    readonly destroy: (args: { readonly sessionId: SessionId }) => Effect.Effect<void, RexTaggedError>;
++        readonly windowLabel?: string;
++        readonly layout?: RexLayoutNode;
++      }>;
++    }) => Effect.Effect<SessionCreateResult, RexTaggedError>;
++    readonly destroy: (input: { readonly sessionId: SessionId }) => Effect.Effect<Readonly<Record<string, never>>, RexTaggedError>;
 +  };
 +  readonly blocks: {
-+    readonly splitBeside: (args: {
++    readonly splitBeside: (input: {
 +      readonly sessionId: SessionId;
-+      readonly anchorId: BlockId;
-+      readonly placement: "left" | "right" | "above" | "below";
-+      readonly ratio?: number | undefined;
-+      readonly focus?: boolean | undefined;
-+      readonly layout: RexLayoutNode;
-+    }) => Effect.Effect<{ readonly blockIds: ReadonlyArray<BlockId> }, RexTaggedError>;
-+    readonly close: (target: RexBlockTarget) => Effect.Effect<unknown, RexTaggedError>;
++      readonly anchorId?: AnchorId;
++      readonly placement: "right" | "left" | "above" | "below";
++      readonly ratio?: number;
++      readonly layout?: RexLayoutNode;
++      readonly focus?: boolean;
++    }) => Effect.Effect<SessionNewSplitResult, RexTaggedError>;
++    readonly close: (input: RexBlockTarget) => Effect.Effect<BlockCloseResult, RexTaggedError>;
 +  };
 +  readonly terminals: {
 +    readonly write: (
 +      target: RexBlockTarget,
 +      args: { readonly data: string },
-+    ) => Effect.Effect<unknown, RexTaggedError>;
++    ) => Effect.Effect<TerminalWriteResult, RexTaggedError>;
 +    readonly read: (
 +      target: RexBlockTarget,
-+      options?: { readonly trim?: boolean | undefined },
++      args?: { readonly trim?: boolean },
 +    ) => Effect.Effect<string, RexTaggedError>;
 +    readonly readTail: (
 +      target: RexBlockTarget,
 +      options?: { readonly maxBytes?: number | undefined },
-+    ) => Effect.Effect<{ readonly lines: ReadonlyArray<string> }, RexTaggedError>;
++    ) => Effect.Effect<RexTerminalText, RexTaggedError>;
 +    readonly waitForQuiet: (
 +      target: RexBlockTarget,
-+      options: { readonly quietFor: Duration.Duration; readonly timeout: Duration.Duration },
++      options: { readonly quietFor: Duration.Input; readonly timeout?: Duration.Input | undefined },
 +    ) => Effect.Effect<void, RexTaggedError>;
 +    readonly waitForOutput: (
 +      target: RexBlockTarget,
 +      pattern: RegExp,
-+      options: { readonly timeout: Duration.Duration },
-+    ) => Effect.Effect<unknown, RexTaggedError>;
-+    readonly process: (
-+      target: RexBlockTarget,
-+    ) => Effect.Effect<{ readonly lastExit: Option.Option<unknown> }, RexTaggedError>;
++      options?: { readonly timeout?: Duration.Input | undefined },
++    ) => Effect.Effect<RexOutputMatch, RexTaggedError>;
++    readonly process: (target: RexBlockTarget) => Effect.Effect<TerminalProcessResult, RexTaggedError>;
 +  };
 +}
 +
 +export declare class RexSdk extends Context.Service<RexSdk, IRexSdk>()("rex-sdk/RexSdk") {}
 +
 +export declare const rexSdkLayerFromOptions: (
-+  options?: RexConfigOptions,
++  options: RexConfigOptions,
 +) => Layer.Layer<RexSdk, RexTaggedError>;

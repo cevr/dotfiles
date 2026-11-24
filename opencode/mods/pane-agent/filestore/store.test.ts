@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pane-agent/filestore/store.ts: fs.exists(file) and fs.readFileString(file) over caller-provided store path
 import { describe } from "bun:test"
 import { Effect, FileSystem, Layer } from "effect"
 import * as BunServices from "@effect/platform-bun/BunServices"
