@@ -63,7 +63,7 @@ export const spellingReads = (
   const anchored = scopes.flatMap(({ anchor, suffix }) => (anchor && [{ fact: resolve(anchor), suffix }]) || [])
   const facts = [...names, ...literalNames, ...anchored].map(({ fact }) => fact)
   const rejected = facts.flatMap(({ file, candidates, rejected }) =>
-    (rejected && [`read spelling ${quoted(file)} is not the tracked name${(candidates.length > 0 && `; use ${candidates.map(quoted).join(" or ")}`) || ""}`]) || [],
+    (rejected && [`read spelling ${quoted(file)} is not the tracked name${(candidates.length > 0 && `; use ${candidates.map((name) => quoted(name)).join(" or ")}`) || ""}`]) || [],
   )
   const map = ({ fact, suffix }: { fact: ReturnType<TrackedSpellings>; suffix: string }) => {
     if (fact.ambiguous && fact.candidates.length === 0) return []

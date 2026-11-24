@@ -86,18 +86,20 @@ describe("tracked input links", () => {
 
 it.effect("tracked spelling rejects case and Unicode aliases, but cleans separators before deciding", () =>
   Effect.sync(() => {
-    const names = ["sim/r7/target.txt", "sim/r7/café.txt"]
+    const target = "sim/r7/target.txt"
+    const unicode = "sim/r7/café.txt"
+    const names = [target, unicode]
     const resolve = trackedSpellings(names, () => "")
     const dirty = spellingReads(resolve, ["sim/r7/TARGET.txt"], ["sim/r7/cafe\u0301.txt"])
     expect(dirty.rejected.join("\n")).toContain('"sim/r7/TARGET.txt"')
     expect(dirty.rejected.join("\n")).toContain('"sim/r7/café.txt"')
-    expect(dirty.patterns).toEqual([names[0]])
-    expect(dirty.paths).toEqual([names[1]])
+    expect(dirty.patterns).toEqual([target])
+    expect(dirty.paths).toEqual([unicode])
     expect(spellingReads(resolve, ["./sim//r7/local/../target.txt"], ["sim//r7/café.txt"]).rejected).toEqual([])
     expect(spellingReads(resolve, ["sim/R7/*.txt"], ["sim/R7/"]).patterns).toEqual(["sim/r7/*.txt"])
     const more = trackedSpellings(["sim/[output].txt", ...names], () => "sim/r7/cafe\u0301.txt")
     expect(spellingReads(more, ["sim/[OUTPUT].txt"], [], ["sim/[OUTPUT].txt"]).literalPaths).toEqual(["sim/[output].txt"])
-    expect(spellingReads(more, [], ["sim/disk-folded.txt"]).paths).toEqual([names[1]])
+    expect(spellingReads(more, [], ["sim/disk-folded.txt"]).paths).toEqual([unicode])
   }),
 )
 
