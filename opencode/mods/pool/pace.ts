@@ -444,6 +444,8 @@ export const evidenceGap = (
   const gapOf = (name: string): Option.Option<Gap> =>
     Option.match(windowOf(account, name), {
       onNone: () => {
+        if (name === "5h" && Option.exists(Option.fromUndefinedOr(known.value.fiveHourAbsentAt), (at) =>
+          at <= now && now - at <= STALE_AFTER_MS)) return Option.none()
         const model = Option.fromUndefinedOr(scopeOf(name))
         const usage = Option.fromUndefinedOr(known.value.usage)
         const refreshAt = Option.getOrElse(Option.map(usage, (sample) => sample.at + UNREAD_RETRY_MS), () => now)
@@ -566,7 +568,7 @@ export function dispatchPace(
   if (Option.isSome(refusal)) return refusal.value
   const { fresh, gaps, heldUnread } = splitEvidence(accounts, now, required)
   const scoped = Arr.match(required, { onEmpty: () => "", onNonEmpty: (names) => `, and ${names.join(", ")} read as freshly` })
-  const needs = `its weekly and 5-hour windows read in the last ${Math.round(STALE_AFTER_MS / 60_000)} min with valid resets${scoped}`
+  const needs = `its weekly and any applicable 5-hour windows read in the last ${Math.round(STALE_AFTER_MS / 60_000)} min with valid resets${scoped}`
   const lacking = [...new Set(gaps.map(gapText))].join("; ")
   const unavailable = gaps.length > 0 && gaps.every((gap) => gap._tag === "Unreported")
   const evidenceTime = gaps.map((gap) => Match.value(gap).pipe(Match.tagsExhaustive({
