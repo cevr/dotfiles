@@ -6,12 +6,13 @@ import pool from "../../server.ts"
 import { sendCost } from "../../../../tests/pool-openai-send/cost.ts"
 
 const settings = Schema.decodeUnknownEffect(Schema.Struct({
-  fixtureHold: Schema.Finite, fixtureKind: Schema.optionalKey(Schema.Literal("signin")),
+  fixtureKind: Schema.optionalKey(Schema.Literal("signin")),
 }))
+const commitInput = Schema.Struct({ lastsMs: Schema.Finite.check(Schema.isGreaterThan(0)) })
 const writer = {
   id: "fixture.openai-send-hold",
   methods: {
-    commit: { input: { type: "object" }, output: { type: "object" } },
+    commit: { input: Schema.toStandardSchemaV1(commitInput), output: { type: "object" } },
     read: { input: { type: "object" }, output: { type: "object" } },
     cost: { input: { type: "object" }, output: { type: "object" } },
   }, events: {},
@@ -20,7 +21,7 @@ const writer = {
 export default Plugin.define({
   id: pool.id,
   effect: Effect.fn("OpenAISendFixture")(function* (ctx) {
-    const { fixtureHold: until, fixtureKind } = yield* settings(ctx.options).pipe(Effect.orDie)
+    const { fixtureKind } = yield* settings(ctx.options).pipe(Effect.orDie)
     let fact = Option.none<{ readonly held: true; readonly until: number }>()
     type Event = { readonly sessionID: string; readonly kind: string; readonly model: { readonly providerID: string; readonly id: string };
       readonly step: { readonly id: string }; readonly frame: string }
@@ -35,11 +36,11 @@ export default Plugin.define({
       return ctx.session.hook(name, callback, options)
     }
     yield* ctx.rpc.register(writer, {
-      commit: () => Effect.gen(function* () {
+      commit: ({ lastsMs }) => Effect.gen(function* () {
         const selected = Option.fromUndefinedOr(yield* ctx.integration.connection.active("openai"))
         if (Option.isNone(selected) || selected.value.type !== "credential") return { held: false }
         const at = yield* Clock.currentTimeMillis
-        if (at >= until) return { held: false }
+        const until = Math.ceil((at + lastsMs) / 1_000) * 1_000
         const kind = Option.getOrElse(Option.fromUndefinedOr(fixtureKind), () => "rate-limit" as const)
         yield* ctx.storage.set(`openai/hold/${selected.value.id}`, { kind, at, until })
         const committed = { held: true as const, until }

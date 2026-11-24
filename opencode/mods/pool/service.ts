@@ -2,12 +2,12 @@
 // its quota, the ledger the next process reads, the other hosts of the fleet,
 // and where this host keeps what it knows of the fleet. laws.ts states what
 // every implementation owes.
-import { Context, type Effect, Schema, type Stream } from "effect"
+import { Context, type Effect, type Option, Schema, type Stream } from "effect"
 import type { Event, LedgerState, PoolId } from "./account-pool.ts"
 import type { StoreRefreshes } from "./alerts.ts"
 import type { Event as FleetEvent, FleetState } from "./fleet.ts"
 import type { LimitsReport, Tally, Use } from "./limits.ts"
-import type { ClaimAnswer, QuotaReading } from "./quota.ts"
+import type { ClaimAnswer, QuotaReading, UsageReadFailure } from "./quota.ts"
 import type { LeaseAnswer, LeaseMessage } from "./lease.ts"
 import type { Event as PushEvent, HostLoad, PushAnswer, PushRequest, PushState } from "./push.ts"
 import type { Event as ResetsEvent, ResetsState } from "./resets.ts"
@@ -32,6 +32,9 @@ export class Ledger extends Context.Service<
     readonly holds: (pool: PoolId, credentialID?: string) => Effect.Effect<Holds, HoldStoreUnavailable>
     /** Serialize this host's hold publication and observation across activations. */
     readonly withHolds: <A, E, R>(operation: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
+    /** Reuse a kept reading, or share one measurement (including publication) across the host's location copies. */
+    readonly firstReading: (pool: PoolId, credentialID: string, measure: Effect.Effect<Option.Option<QuotaReading>>) => Effect.Effect<Option.Option<QuotaReading>>
+    readonly firstReadingFailure: (pool: PoolId, credentialID: string) => Effect.Effect<Option.Option<UsageReadFailure>>
     /** Write what `events` change in the ledger. */
     readonly record: (pool: PoolId, events: ReadonlyArray<Event>, shared?: "unknown") => Effect.Effect<void>
   }

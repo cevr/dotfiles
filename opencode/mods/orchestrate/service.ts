@@ -71,6 +71,8 @@ export class Sessions extends Context.Service<
 
 /** A model the host offers: the variants it runs at, its family (such as `gpt-sol`), release (epoch ms) and status. */
 export interface Offered extends ModelRef {
+  /** The model the provider is asked with: another model's id when the catalog made this one a mode of it (`gpt-6.2-sol-fast` asks `gpt-6.2-sol`). */
+  readonly modelID?: string
   readonly variants: ReadonlyArray<{ readonly id: string }>
   readonly family?: string
   readonly time?: { readonly released: number }
@@ -94,7 +96,8 @@ export class Models extends Context.Service<
      * The newest model of `family` (such as `gpt-sol`) on one of `providers`
      * the session's host offers, as `provider/id#variant`, or `provider/id`
      * when it does not offer `variant`. Newest is the latest release; a
-     * deprecated model is never one.
+     * deprecated model is never one, nor a mode of another (a fast,
+     * ultrafast or pro variant: owner, 2026-11-24).
      */
     readonly newest: (sessionID: string, providers: ReadonlyArray<string>, family: string, variant: string) => Effect.Effect<string | undefined>
     /**
