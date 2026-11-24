@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason native TUI plugin loader reads at sim-tui/app.ts: createAppFixture({
 // A TUI window's session tabs are its own (owner, 2026-11-13, q61), on the
 // simulated TUI (sim-tui/): the fork's real TUI with Prime loaded by path, its
 // tabs on with the `window` scope `bun run daily` writes into cli.json. Another

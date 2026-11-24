@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/guard/filesystem/script-files.test.ts: spawnSync(["chmod", "000", `${dir}/locked.ts`])
 // ScriptFiles over a scratch directory this test makes and removes: a script,
 // a missing path, a directory, a file it may not read and one larger than the
 // rule reads.

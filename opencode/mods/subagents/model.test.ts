@@ -29,6 +29,15 @@ describe("modelName", () => {
     expect(modelLabel(modelName("gpt-6.1-sol"), true)).toBe("sol")
   })
 
+  test("a fast mode reads as its model, fast, in the short label too, so a row shows a worker started fast", () => {
+    expect(modelLabel(modelName("openai/gpt-6.1-sol-fast#high"))).toBe("sol 6.1 fast")
+    expect(modelLabel(modelName("openai/gpt-6.1-sol-fast"), true)).toBe("sol fast")
+    expect(modelLabel(modelName("anthropic/claude-opus-5-5-fast"))).toBe("opus 5.5 fast")
+    // Another mode is no fast one, and a model named just `fast` is that model.
+    expect(modelLabel(modelName("openai/gpt-6.1-sol-ultrafast"))).toBe("sol 6.1")
+    expect(modelLabel(modelName("fast"))).toBe("fast")
+  })
+
   test("no id, no name", () => {
     expect(modelName(undefined)).toBeUndefined()
     expect(modelName("")).toBeUndefined()

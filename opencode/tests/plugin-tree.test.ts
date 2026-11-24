@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess helper reads at tests/plugin-tree.test.ts: run(argv, cwd, env).pipe(Effect.tap((ran) => Effect.sync(() => expect({ argv, code: ran.code, e
 // accept: deep (16.3 s alone on a quiet host: 1-minute load 7–13 on 12 cores; it installs a tree and starts a service and a TUI from source with every plugin)
 // A build's plugin tree, loaded by real OpenCode: every plugin its overlay configures runs, from the tree alone.
 //
@@ -67,7 +69,8 @@ describe.skipIf(!forkRuns)("a build's plugin tree, loaded by real OpenCode", () 
         const checkout = (yield* ok(["git", "rev-parse", "--show-toplevel"], ".")).out.trim()
         const tree = `${root}/share/${treeOf(buildName(VERSION))}`
         yield* fs.makeDirectory(tree)
-        yield* ok(["git", "-C", checkout, "archive", "--format=tar", `--output=${root}/opencode.tar`, "HEAD", "opencode"], root)
+        const archived = yield* run(["git", "-C", checkout, "archive", "--format=tar", `--output=${root}/opencode.tar`, "HEAD", "opencode"], root, base)
+        expect({ code: archived.code, err: archived.err.slice(-1500) }).toMatchObject({ code: 0 })
         yield* ok(["tar", "-xf", `${root}/opencode.tar`, "-C", tree], root)
         yield* ok([process.execPath, "install", "--frozen-lockfile"], `${tree}/opencode`)
         yield* ok([process.execPath, `${tree}/opencode/scripts/daily.ts`, "--tree", tree, "--at", tree, "--checkout", `${root}/live`, "--host", HOST], `${tree}/opencode`, { ...base, OPENCODE_DEV: fork })

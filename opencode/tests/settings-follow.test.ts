@@ -20,15 +20,21 @@ import { Data, Effect, FileSystem, Option, Schedule, Schema } from "effect"
 import { expect, it } from "effect-bun-test"
 import { Base64 } from "effect/encoding"
 import { HttpClient, HttpClientRequest } from "effect/http"
-import { jsonText, treeSettings, writeSettings } from "../scripts/daily.ts"
+import { jsonText, treeSettings, writeSettingsFrom } from "../scripts/daily.ts"
 import { type Catalog, forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { hostCall, serve } from "../testbeds/gamut/pty-host.ts"
-import { ENV, Platform, run } from "./reconnect/host.ts"
+import { ENV, Platform, runForkService } from "./reconnect/host.ts"
+import { readInputText, readScratchFileSync, scratchExistsSync, scratchInput } from "./read-path.ts"
+import { forkTuiFixture } from "./scratch-child.ts"
 import { forkRuns, keptScratch } from "./scratch.ts"
 import { freePort, ready, type Service } from "./service.ts"
 import { hangGuard } from "./hang-guard.ts"
 
 const ROLES = ["planner", "implementor", "verifier", "worker"]
+const writeSettings = (home: string) =>
+  writeSettingsFrom(scratchInput(home),
+    (file) => Option.map(Option.liftPredicate(file, (at) => scratchExistsSync(at)), (at) => readScratchFileSync(at, "utf8")),
+    () => readInputText("themes/prime.json"))
 
 class NotYet extends Data.TaggedError("NotYet")<{ readonly message: string }> {}
 
@@ -66,7 +72,7 @@ describe.skipIf(!forkRuns)("the settings follow an update, from each build's tre
         const fs = yield* FileSystem.FileSystem
         const { fork, path } = yield* ENV
         // A short folder name: the terminal host's socket lives in it, and a socket path has at most 104 bytes on macOS.
-        const root = yield* fs.realPath(kept.dir("s"))
+        const root = yield* fs.realPath(scratchInput(kept.dir("s")))
         const home = `${root}/home`
         const config = `${home}/.config/opencode`
         const state = `${home}/.local/state`
@@ -76,7 +82,7 @@ describe.skipIf(!forkRuns)("the settings follow an update, from each build's tre
         // The owner's server config, and what a from-scratch by-hand daily writes beside it: no tree carries these.
         yield* fs.writeFileString(`${config}/opencode.json`, jsonText(OWNER))
         writeSettings(home)
-        const owner = Effect.all([fs.readFileString(`${config}/opencode.json`), fs.readFileString(`${config}/cli.json`)])
+        const owner = Effect.all([fs.readFileString(scratchInput(`${config}/opencode.json`)), fs.readFileString(scratchInput(`${config}/cli.json`))])
         const before = yield* owner
         expect(before).toEqual([jsonText(OWNER), jsonText({ theme: { name: "prime" }, tabs: { scope: "window" } })])
 
@@ -90,7 +96,7 @@ describe.skipIf(!forkRuns)("the settings follow an update, from each build's tre
 
         const launch = forkLaunch(fork, process.execPath)
         const envOn = (tree: string) =>
-          Effect.map(fs.readFileString(`${root}/${tree}/config/cli.json`), (cli) => ({
+          Effect.map(fs.readFileString(scratchInput(`${root}/${tree}/config/cli.json`)), (cli) => ({
             PATH: path,
             HOME: home,
             TERM: "xterm-256color",
@@ -106,8 +112,8 @@ describe.skipIf(!forkRuns)("the settings follow an update, from each build's tre
             ...launch.env,
           }))
         const serviceFile = `${state}/opencode/service-local.json`
-        const registered = fs.exists(serviceFile).pipe(Effect.orElseSucceed(() => false))
-        const opencode = (env: { readonly [name: string]: string }, ...args: ReadonlyArray<string>) => run([...launch.base, ...args], work, env)
+        const registered = fs.exists(scratchInput(serviceFile)).pipe(Effect.orElseSucceed(() => false))
+        const opencode = (env: { readonly [name: string]: string }, ...args: ReadonlyArray<string>) => runForkService(fork, work, args, env)
         const port = String(freePort())
 
         /** A service on `tree`, stopped when the scope ends; the agents it lists. */
@@ -151,12 +157,12 @@ describe.skipIf(!forkRuns)("the settings follow an update, from each build's tre
         expect(Option.map(byId(b.agents, "build"), (build) => build.description)).toEqual(Option.some("the owner's build"))
 
         // A new TUI on tree B: its settings dialog shows the Prime theme and the window tab scope, as by-hand daily set them.
-        const socket = `${root}/tui.sock`
+        const socket = scratchInput(`${root}/tui.sock`)
         yield* Effect.acquireRelease(
-          Effect.sync(() => serve({ socket, cwd: work, command: [...launch.base], env: { ...b.env, OPENCODE_PASSWORD: b.service.password }, cols: 160, rows: 80 })),
+          Effect.sync(() => serve({ socket, ...forkTuiFixture(fork, work, { ...b.env, OPENCODE_PASSWORD: b.service.password }), cols: 160, rows: 80 })),
           (served) => Effect.promise(() => served.stop()),
         )
-        yield* fs.exists(socket).pipe(Effect.filterOrFail(Boolean), Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }), Effect.orDie)
+        yield* fs.exists(scratchInput(socket)).pipe(Effect.filterOrFail(Boolean), Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }), Effect.orDie)
         const rows = Effect.promise(() => hostCall(socket, { op: "read", scope: "screen" })).pipe(Effect.map((read) => read.rows.map((row) => row.trim())))
         const until = (done: (seen: ReadonlyArray<string>) => boolean, what: string) =>
           rows.pipe(
@@ -192,7 +198,7 @@ describe.skipIf(!forkRuns)("the settings follow an update, from each build's tre
         // The owner's cli.json, once it holds `theme` and `scope`: the TUI writes a pick there.
         const Picked = Schema.fromJsonString(Schema.Struct({ theme: Schema.Struct({ name: Schema.String }), tabs: Schema.Struct({ scope: Schema.String }) }))
         const saved = (theme: string, scope: string) =>
-          fs.readFileString(`${config}/cli.json`).pipe(
+          fs.readFileString(scratchInput(`${config}/cli.json`)).pipe(
             Effect.flatMap(Schema.decodeUnknownEffect(Picked)),
             Effect.filterOrFail((cli) => cli.theme.name === theme && cli.tabs.scope === scope, (cli) => new NotYet({ message: `cli.json never held the theme ${theme} and the scope ${scope}: ${jsonText(cli)}` })),
             Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),

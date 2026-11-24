@@ -6,9 +6,9 @@
 // `/api/info` answers 503 `service_starting` with `retry-after`, and
 // `/api/info` answers 503 too (500 once the boot failed). A test that calls
 // the service on the file alone races the boot.
-import { readFileSync } from "node:fs"
 // The background service a test starts is stopped once the test process is gone, however it went (testbeds/reaper/start.ts).
 import "../testbeds/reaper/start.ts"
+import { readScratchFileSync } from "./read-path.ts"
 import { watchdog } from "./hang-guard.ts"
 
 export interface Service {
@@ -18,7 +18,7 @@ export interface Service {
 
 const readService = (file: string): Service | undefined => {
   try {
-    const value = JSON.parse(readFileSync(file, "utf8")) as Partial<Service>
+    const value = JSON.parse(readScratchFileSync(file, "utf8")) as Partial<Service>
     return typeof value.url === "string" && typeof value.password === "string" ? { url: value.url, password: value.password } : undefined
   } catch {
     return undefined

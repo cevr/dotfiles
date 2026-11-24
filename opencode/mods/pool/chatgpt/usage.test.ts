@@ -22,7 +22,7 @@ const observedUsage = {
 
 describe("ChatGPT usage readings", () => {
   test("the usage endpoint's windows read as the pool's 5h and 7d windows", () => {
-    expect(fromUsage(observedUsage, now)).toEqual({ at: now, status: "allowed", windows: [{ name: "7d", utilization: 0.16, resetAt: weekReset * 1000 }] })
+    expect(fromUsage(observedUsage, now)).toEqual({ at: now, status: "allowed", windows: [{ name: "7d", utilization: 0.16, resetAt: weekReset * 1000 + 1001 }] })
     const both = {
       rate_limit: {
         allowed: false,
@@ -35,10 +35,10 @@ describe("ChatGPT usage readings", () => {
       at: now,
       status: "rejected",
       windows: [
-        { name: "5h", utilization: 1, resetAt: 1_800_000_000_000 },
-        { name: "7d", utilization: 0.4, resetAt: 1_800_100_000_000 },
+        { name: "5h", utilization: 1, resetAt: 1_800_000_001_001 },
+        { name: "7d", utilization: 0.4, resetAt: 1_800_100_001_001 },
       ],
-      refusal: { kind: "usage-limit", until: 1_800_000_000_000 },
+      refusal: { kind: "usage-limit", until: 1_800_000_001_001 },
     })
     expect(fromUsage({ detail: "Unauthorized" }, now)).toBeUndefined()
     expect(fromUsage({ rate_limit: { primary_window: null } }, now)).toBeUndefined()
@@ -88,8 +88,8 @@ describe("ChatGPT usage readings", () => {
       at: now,
       status: "allowed",
       windows: [
-        { name: "7d", utilization: 0.16, resetAt: weekReset * 1000 },
-        { name: "7d:GPT-6-Astra", utilization: 1, resetAt: weekReset * 1000 },
+        { name: "7d", utilization: 0.16, resetAt: weekReset * 1000 + 1001 },
+        { name: "7d:GPT-6-Astra", utilization: 1, resetAt: weekReset * 1000 + 1001 },
       ],
     })
   })
@@ -100,7 +100,7 @@ describe("ChatGPT usage readings", () => {
       "x-codex-primary-window-minutes": "10080",
       "x-codex-primary-reset-at": String(weekReset),
     })
-    const expected: QuotaReading = { at: now, status: "allowed", windows: [{ name: "7d", utilization: 0.16, resetAt: weekReset * 1000 }] }
+    const expected: QuotaReading = { at: now, status: "allowed", windows: [{ name: "7d", utilization: 0.16, resetAt: weekReset * 1000 + 1001 }] }
     expect(fromHeaders((name) => headers.get(name), now)).toEqual(expected)
     expect(fromHeaders(() => null, now)).toBeUndefined()
     const frame = JSON.stringify({ type: "codex.rate_limits", rate_limits: { primary: { used_percent: 16, window_minutes: 10_080, reset_at: weekReset } } })
@@ -132,7 +132,7 @@ describe("the ChatGPT quota source", () => {
             const first = yield* source.rpc.published.pipe(Stream.take(1), Stream.runCollect, Effect.forkScoped)
             yield* Effect.yieldNow
             const answer = yield* source.rpc.reading({ credentialID: "chatgpt" })
-            expect(answer.reading?.windows).toEqual([{ name: "7d", utilization: 0.16, resetAt: weekReset * 1000 }])
+            expect(answer.reading?.windows).toEqual([{ name: "7d", utilization: 0.16, resetAt: weekReset * 1000 + 1001 }])
             // A second ask within the minute answers the held reading: one read of the endpoint.
             yield* source.rpc.reading({ credentialID: "chatgpt" })
             expect(seen).toEqual([{ authorization: "Bearer good", account: "acct-1" }])

@@ -11,10 +11,11 @@
  *
  * @module
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
 import { testHostOptions } from "../../scripts/test-host.ts"
 import { join } from "node:path"
-import { Effect, Path, Schedule, Schema } from "effect"
+import { Effect, Schedule, Schema } from "effect"
+import { externalInput, matchingInput, readScratchFileSync, scratchInput } from "../read-path.ts"
 import { HELLO, PIXEL_FILE, PIXEL_PNG, QUEUED_PROMPT, REPORT_TASK, SELF, serve, type Seen, STALL_TASK, STOP_TASK, isReport } from "./sim.ts"
 
 export interface Spec {
@@ -60,22 +61,19 @@ interface Sdk {
 }
 // These modules resolve in their own projects; decode their exports at the import boundary.
 const importNativeModule = (file: string): Promise<object> => import(file)
-const sdkFile = (fork: string) => join(fork, "packages/sdk/src/index.ts")
+const sdkFile = (fork: string) => externalInput(join(fork, "packages/sdk/src/index.ts"))
 const loadNativeModule = <A>(file: string, contract: Schema.Codec<A>) =>
   Effect.tryPromise(() => importNativeModule(file)).pipe(Effect.flatMap(Schema.decodeUnknownEffect(contract)))
 export const loadKernelSdk = <A>(fork: string, contract: Schema.Codec<A>) =>
   loadNativeModule(sdkFile(fork), contract)
 export const loadKernelRowFixture = <A>(contract: Schema.Codec<A>) =>
-  Effect.gen(function* () {
-    const path = yield* Path.Path
-    const file = yield* path.fromFileUrl(new URL("../../mods/subagents/solid/native-row.fixture.ts", import.meta.url))
-    return yield* loadNativeModule(file, contract)
-  })
+  loadNativeModule(matchingInput("mods/subagents/solid/native-row.fixture.ts"), contract)
 
 if (import.meta.main) {
-  const spec = JSON.parse(readFileSync(process.argv[2]!, "utf8")) as Spec
-  const work = join(spec.base, "work")
-  const config = join(spec.base, "config")
+  const spec = JSON.parse(readScratchFileSync(process.argv[2]!, "utf8")) as Spec
+  const base = scratchInput(spec.base)
+  const work = join(base, "work")
+  const config = join(base, "config")
   mkdirSync(work, { recursive: true })
   mkdirSync(config, { recursive: true })
   const file = join(work, "hello.txt")
@@ -101,11 +99,11 @@ if (import.meta.main) {
     },
     plugins: [
       {
-        package: spec.plugin,
+        package: matchingInput("cmd/kernel", spec.plugin),
         options: { denyExecute: spec.denyExecute, timeoutMs: 20_000, ...(spec.codeOnly === undefined ? {} : { codeOnly: spec.codeOnly }) },
       },
-      ...(spec.orchestrate ? [{ package: spec.orchestrate.plugin, options: { now: spec.orchestrate.now, log: join(spec.base, "agents.jsonl") } }] : []),
-      ...(spec.memory ? [{ package: spec.memory.plugin, options: { path: join(spec.base, "memory.db") } }] : []),
+      ...(spec.orchestrate ? [{ package: matchingInput("cmd/orchestrate", spec.orchestrate.plugin), options: { now: spec.orchestrate.now, log: join(base, "agents.jsonl") } }] : []),
+      ...(spec.memory ? [{ package: matchingInput("cmd/memory", spec.memory.plugin), options: { path: join(base, "memory.db") } }] : []),
     ],
   }
 
@@ -150,7 +148,7 @@ if (import.meta.main) {
     })
     const inbox = await Effect.runPromise(ran)
     const result: Result = { messages: await opencode.sessions.context({ sessionID: session.id }), seen: sim.seen, inbox, waited: sim.waited() }
-    writeFileSync(join(spec.base, "result.json"), JSON.stringify(result, null, 2))
+    writeFileSync(join(base, "result.json"), JSON.stringify(result, null, 2))
   } finally {
     await opencode.close()
     sim.server.stop(true)

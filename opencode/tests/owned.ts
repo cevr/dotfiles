@@ -38,7 +38,9 @@ import { outsidePanes } from "../scripts/pane-env.ts"
 import { NO_FREE_MODELS, releaseFlags } from "../scripts/release-flags.ts"
 import { testHostEnv } from "../scripts/test-host.ts"
 import { unboundBuild } from "../testbeds/gamut/gamut.ts"
-import { type ChildTemp, childTemp, parentEnv, scratch } from "./scratch.ts"
+import { type ChildTemp, childTemp, parentEnv, scratch, scratchRoot } from "./scratch.ts"
+import { checkOwnedCommand, scratchInput } from "./read-path.ts"
+import { checkoutBun, checkoutTests, driveScenarioFixture, forkFixture, scratchShell } from "./scratch-child.ts"
 // What this test process starts is stopped once it is gone, however it went (testbeds/reaper/start.ts).
 import "../testbeds/reaper/start.ts"
 import { watchdog } from "./hang-guard.ts"
@@ -57,6 +59,48 @@ const temps = new Map<number, ChildTemp>()
 
 /** The children `owned` started, each to the end of its cleanup. */
 const releases = new Map<number, Promise<void>>()
+
+/** Process-group fixture, not a shell command over the test runner's checkout. */
+export const ownedScratchShell = (cwd: string, program: string) => {
+  const { script, ...options } = scratchShell(cwd, program)
+  return owned(["/bin/sh", script], { ...options, stdin: "pipe", stdout: "pipe", stderr: "ignore" })
+}
+
+/** Exercise the owned TMPDIR lifecycle without accepting arbitrary shell text or argv. */
+export const ownedTempFixture = (temporary?: string) => {
+  const temp = temporary && scratchInput(temporary)
+  const env = { PATH: "/usr/bin:/bin", HOME: temp || scratchRoot(), TMPDIR: temp, TEST_READS_SCRATCH_CHILD: "sh" }
+  return owned(["/bin/sh", "-c", 'mkdir -p "$TMPDIR/opencode-drive/run-x" "$TMPDIR/opencode" && printf %s "$TMPDIR"'], {
+    cwd: temp || scratchRoot(),
+    env,
+    stdin: "ignore", stdout: "pipe", stderr: "ignore",
+  })
+}
+
+/** Reaper-owned Bun entry with the same checked paths and environment as a plain fixture child. */
+export const ownedCheckoutBun = (...args: Parameters<typeof checkoutBun>) => {
+  const { argv, ...options } = checkoutBun(...args)
+  return owned(argv, { ...options, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+}
+
+/** Reaper-owned launch of the explicit nested Bun test entries. */
+export const ownedCheckoutTests = (...args: Parameters<typeof checkoutTests>) => {
+  const { argv, ...options } = checkoutTests(...args)
+  return owned(argv, { ...options, stdin: "ignore", stdout: "ignore", stderr: "pipe" })
+}
+
+/** A reaper-owned Drive process loading one checked scenario from this checkout. */
+export const ownedDriveScenario = (...args: Parameters<typeof driveScenarioFixture>) => {
+  const { argv, ...options } = driveScenarioFixture(...args)
+  return owned(argv, { ...options, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+}
+
+export const ownedForkFixture = <const Out extends "pipe" | "ignore", const Err extends "pipe" | "ignore">(
+  input: Parameters<typeof forkFixture>, stdio: { readonly stdout: Out; readonly stderr: Err },
+) => {
+  const { argv, ...options } = forkFixture(...input)
+  return owned(argv, { ...options, ...stdio, stdin: "ignore" })
+}
 
 const terminate = (procs: ReadonlyArray<Proc>) => {
   for (const proc of procs)
@@ -100,6 +144,7 @@ export const owned = <
   command: ReadonlyArray<string>,
   options?: Bun.SpawnOptions.SpawnOptions<In, Out, Err>,
 ): Bun.Subprocess<In, Out, Err> => {
+  checkOwnedCommand(command, options?.cwd)
   const childOwn = childTemp(options?.env)
   // An installed build by its own path binds its plugin tree over the test's config: the child runs a clone of it, in a folder
   // removed with the child's TMPDIR (and made empty for any other program).

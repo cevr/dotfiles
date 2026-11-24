@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at cmd/queue/server.test.ts: yield* Effect.suspend(() => (existsSync(fileOf(dir, "ses_root")) ? Effect.fail("present") : Eff
 // The plugin seam: the composition root on a stand-in host, over the memory
 // store and the file store. It checks what OpenCode sees: the queue tool's
 // answers and refusals, the RPC's answer after a call, a subagent's queue kept

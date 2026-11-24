@@ -22,10 +22,23 @@
 // An acceptance file's key (`acceptKey`, the ledger of scripts/accept-ledger.ts)
 // leaves out what no acceptance run loads: the packages' own unit tests,
 // benches and Markdown, and the lint policy and the gate (`ACCEPT_SHARED`).
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, readFileSync, realpathSync } from "node:fs"
 import { createHash } from "node:crypto"
 import path from "node:path"
 import { $ } from "bun"
+import { Effect, Option } from "effect"
+import { acceptKey, acceptSharedFrom } from "./accept-key.ts"
+import { decodeGitPaths, nulFields } from "./git-paths.ts"
+import { ALL_READS, readMatcher } from "./read-declarations.ts"
+import { compilerInputs, projectReads, type CompilerInputs } from "./test-compiler-inputs.ts"
+import { checkoutPaths, closeLinks, linkAliases, linkReads, linkTarget, predecessorLinks, type LinkInputs } from "./test-links.ts"
+import { spellingReads, trackedSpellings, type TrackedSpellings } from "./test-path-spellings.ts"
+import { emptyReadMap, loadReadMap, type RuntimeReads } from "./test-read-map.ts"
+import { projectReadChecker } from "./test-read-project.ts"
+import { isAcceptInput, packageOf } from "./test-population.ts"
+export { matchingReads, readsOf } from "./read-declarations.ts"
+export { ACCEPT_SHARED, acceptKey, acceptSharedFrom } from "./accept-key.ts"
+export { acceptanceTests, checkedTests, isAcceptInput, mergeScriptTests, packageOf, unitTests, workboxTestFiles } from "./test-population.ts"
 
 export const ROOT = path.resolve(import.meta.dir, "..")
 
@@ -41,6 +54,16 @@ export const SHARED = [
   "effect-debt.json",
   "scripts/effect-debt.ts",
   "scripts/reach.ts",
+  "scripts/read-declarations.ts",
+  "scripts/test-read-map.ts",
+  "scripts/test-links.ts",
+  "scripts/test-path-spellings.ts",
+  "scripts/test-compiler-inputs.ts",
+  "scripts/test-read-project.ts",
+  "scripts/test-reads.ts",
+  "scripts/test-reads-ast.ts",
+  "scripts/test-reads-modules.ts",
+  "scripts/test-population.ts",
   "scripts/gate.ts",
   "scripts/link-fork.ts",
 ]
@@ -51,8 +74,39 @@ const TEST = /\.test\.tsx?$/
 export interface Workspace {
   /** Every file git tracks or would track, relative to ROOT. */
   readonly files: ReadonlyArray<string>
+  /** Sibling inputs relative to opencode/, used only by explicit @reads. */
+  readonly siblings?: ReadonlyArray<string>
+  /** Git-object inputs can change even if all working files have the same contents. */
+  readonly head?: string
   /** Package directory (`mods/prime`) of each package. */
   readonly packages: ReadonlyMap<string, Package>
+  readonly compilerInputs?: CompilerInputs
+  readonly runtimeReads?: RuntimeReads
+  readonly links?: LinkInputs
+  readonly spellings?: TrackedSpellings
+}
+
+const NO_LINKS: LinkInputs = new Map()
+const NO_SPELLINGS = trackedSpellings([], () => "")
+const repoRoot = path.dirname(ROOT)
+const workspaceFiles = (workspace: Workspace) => [...workspace.files, ...(workspace.siblings ?? [])]
+export const selectionPaths = (workspace: Workspace, base: string, changed: ReadonlyArray<string>) =>
+  predecessorLinks(repoRoot, base, changed).then((prior) =>
+    closeLinks(workspace.links || NO_LINKS, prior, changed, workspaceFiles(workspace)),
+  )
+
+const lookupSpelling = () => {
+  const physical = realpathSync.native(ROOT)
+  const memo = new Map<string, string>()
+  return (file: string) => {
+    if (path.isAbsolute(file) || file.startsWith("../../") || file.split("/").some((part) => [".git", "node_modules", "opencode.db"].includes(part))) return ""
+    const prior = memo.get(file)
+    if (memo.has(file)) return prior || ""
+    const found = Effect.runSync(Effect.option(Effect.try(() => path.relative(physical, realpathSync.native(path.join(ROOT, file))))))
+    const actual = Option.getOrElse(found, () => "")
+    memo.set(file, actual)
+    return actual
+  }
 }
 
 interface Package {
@@ -61,20 +115,15 @@ interface Package {
   readonly deps: ReadonlyArray<string>
 }
 
-const groups = ["mods", "cmd"] as const
-
-/** The package directory a file belongs to, if any. */
-export const packageOf = (file: string): string | undefined => {
-  const [first, second] = file.split("/")
-  if (first === "decider") return "decider"
-  if ((first === "mods" || first === "cmd") && second !== undefined && file.split("/").length > 2) return `${first}/${second}`
-  return undefined
-}
-
 export const load = async (): Promise<Workspace> => {
-  const listed = await $`git ls-files -co --exclude-standard -z`.cwd(ROOT).quiet().text()
+  const cwd = path.dirname(ROOT)
+  const { listed, head } = await $`git ls-files -co --exclude-standard -z`.cwd(cwd).quiet().arrayBuffer().then((listed) =>
+    $`git rev-parse HEAD`.cwd(cwd).quiet().nothrow().text().then((head) => ({ listed, head })),
+  )
   // A deleted file git still tracks is not an input.
-  const files = listed.split("\0").filter((file) => file !== "" && existsSync(path.join(ROOT, file)))
+  const known = nulFields(decodeGitPaths(listed)).map(fromRepository).filter((file) => existsSync(path.join(ROOT, file)))
+  const files = known.filter((file) => !file.startsWith("../"))
+  const siblings = known.filter((file) => file.startsWith("../"))
   const byDir = new Map<string, Array<string>>()
   for (const file of files) {
     const dir = packageOf(file)
@@ -93,10 +142,18 @@ export const load = async (): Promise<Workspace> => {
     const deps = (manifests.get(dir)?.deps ?? []).flatMap((name) => dirOfName.get(name) ?? [])
     packages.set(dir, { dir, files: list, deps })
   }
-  return { files, packages }
+  return Effect.runPromise(Effect.all([Effect.promise(() => loadReadMap(ROOT)), Effect.promise(() => checkoutPaths(cwd))], { concurrency: "unbounded" })).then(([runtimeReads, { links, tracked }]) => {
+    const spellings = trackedSpellings([...tracked, ...tracked.flatMap((file) => linkAliases(links, file))], lookupSpelling())
+    return compilerInputs(ROOT, new Set(known), runtimeReads.compilerProjects).then((compilerInputs) =>
+      ({ files, siblings, packages, head: head.trim(), compilerInputs, runtimeReads, links, spellings }),
+    )
+  })
 }
 
-const read = (file: string) => {
+/** A path from the repository's root expressed from opencode/. */
+export const fromRepository = (file: string): string => path.posix.relative("opencode", file)
+
+export const sourceText = (file: string) => {
   try {
     return readFileSync(path.join(ROOT, file), "utf8")
   } catch {
@@ -130,20 +187,113 @@ export const codeOf = (file: string, source: string): string => scan(file, sourc
 /** The import specifiers a source holds (`import`, `export … from`, `import()`), through Bun's transpiler. */
 export const importsOf = (file: string, source: string): ReadonlyArray<string> => scan(file, source).imports
 
-const READS = /^\s*(?:\/\/|\*)\s*@reads\s+(.+?)\s*$/gm
+const analyzers = new WeakMap<Workspace, ReturnType<typeof readAnalyzer>>()
+const readAnalyzer = (workspace: Workspace) => {
+  const links = workspace.links || NO_LINKS
+  const files = workspaceFiles(workspace).filter((file) => !Option.exists(Option.fromUndefinedOr(links.get(file)), ({ target }) => Option.isNone(target)))
+  const check = projectReadChecker(ROOT, [...files, ...files.flatMap((file) => linkAliases(links, file))], (file) => sourceText(linkTarget(links, file)))
+  const result = new Map<string, ReturnType<typeof check>>()
+  return (file: string) => {
+    const existing = result.get(file)
+    if (existing) return existing
+    const read = check(file, sourceText(file))
+    result.set(file, read)
+    return read
+  }
+}
 
-/**
- * The globs, from opencode/, of the files a source declares it reads by path rather than import: its `@reads <glob> …`
- * comment lines. A test that globs, lists or reads files by their path text (scripts/runtime-imports.test.ts walks
- * every cmd/** and mods/** source) declares them, so the gate's cache key (`reach`) and the merge check's selection
- * (scripts/merge-check.ts) see a change to one as a change to the test's input; no import edge does.
+export const inspectReads = (workspace: Workspace, file: string) => {
+  const analyze = analyzers.get(workspace) ?? readAnalyzer(workspace)
+  analyzers.set(workspace, analyze)
+  return analyze(file)
+}
+
+const authorities = new WeakMap<Workspace, Map<string, ReturnType<typeof authorityOf>>>()
+const workspacePaths = new WeakMap<Workspace, ReadonlySet<string>>()
+
+const pathsOf = (workspace: Workspace) => {
+  const existing = workspacePaths.get(workspace)
+  if (existing) return existing
+  const paths = new Set(workspace.files)
+  workspacePaths.set(workspace, paths)
+  return paths
+}
+
+/** Top-level script tests deliberately walk imports only inside scripts/; direct outer modules are still inputs. */
+const externalScriptImports = (workspace: Workspace, test: string): ReadonlyArray<string> => {
+  if (!/^scripts\/[^/]+\.test\.tsx?$/.test(test)) return []
+  const known = pathsOf(workspace)
+  return importsOf(test, sourceText(test)).filter((specifier) => specifier.startsWith("../")).map((specifier) => {
+    const resolved = resolveLocal(known, test, specifier, workspace.links)
+    if (resolved) return resolved
+    return path.posix.join(path.posix.dirname(test), specifier)
+  })
+}
+
+const authorityOf = (workspace: Workspace, test: string) => {
+  const read = inspectReads(workspace, test)
+  const runtimeReads = workspace.runtimeReads || emptyReadMap
+  const configs = runtimeReads.compilerProjects[test] || []
+  const compiler = projectReads(configs, workspace.compilerInputs)
+  const compilerReason = (read.opensCompiler || configs.length > 0) && (configs.length === 0 || !compiler.ready) &&
+    "TypeScript project: no complete native project inventory"
+  const paths = runtimeReads.paths[test] ?? []
+  const imports = externalScriptImports(workspace, test)
+  const patterns = read.patterns.filter((pattern) => pattern !== ALL_READS)
+  const spelling = spellingReads(workspace.spellings || NO_SPELLINGS, patterns, paths, read.literalPaths)
+  const directPaths = spelling.paths
+  const directories = directPaths.filter((file) => file.endsWith("/"))
+  const exact = new Set([...directPaths.filter((file) => !file.endsWith("/")), ...spelling.literalPaths, ...imports, ...compiler.exact])
+  const matches = readMatcher(spelling.patterns)
+  const direct = (file: string) => exact.has(file) || matches(file) || directories.some((prefix) => file.startsWith(prefix))
+  const links = workspace.links || NO_LINKS
+  const linked = linkReads(links, direct, exact, [...spelling.patterns, ...directories])
+  const linkReason = linked.unsafe && `tracked symlink is dangling or resolves outside checkout: ${linked.unsafe}`
+  const spellingReason = spelling.ambiguous && "tracked read spelling is ambiguous or cannot be resolved"
+  const reason = runtimeReads.untracedSubprocesses[test] || compilerReason || linkReason || spellingReason
+  const subprocessReason = Option.getOrUndefined(Option.liftPredicate(reason, Boolean))
+  const unknown = read.classification === "unknown" || Boolean(subprocessReason)
+  const observationsFor = (file: string) => {
+    const spellings = [file, ...linkAliases(links, file)]
+    return [...directPaths.filter((entry) => spellings.some((name) => entry === name || (entry.endsWith("/") && name.startsWith(entry)))), ...configs.filter((config) => workspace.compilerInputs?.get(config)?.has(file))]
+  }
+  return { unknown, subprocessReason, spellingIssues: spelling.rejected, exact: new Set([...exact, ...linked.canonical]), imports, positive: linked.has, observationsFor, linkKey: linked.fingerprint, has: (file: string) => unknown || linked.has(file) }
+}
+
+/** Runtime reads have one authority for selection, cache inputs and the coverage audit.
+ * Unknown scope always selects, but is not evidence that any one observed path has a positive witness.
  */
-export const readsOf = (source: string): ReadonlyArray<string> => [...source.matchAll(READS)].flatMap((match) => String(match[1]).split(/\s+/))
+export const testReadInputs = (workspace: Workspace, test: string) => {
+  const cached = authorities.get(workspace) ?? new Map<string, ReturnType<typeof authorityOf>>()
+  authorities.set(workspace, cached)
+  const prior = cached.get(test)
+  if (prior) return prior
+  const authority = authorityOf(workspace, test)
+  cached.set(test, authority)
+  return authority
+}
+
+/** Runtime inputs, even if they are docs or a suite: proved static, explicitly bounded, or conservative. */
+export const declaredInputs = (workspace: Workspace, file: string): ReadonlyArray<string> => {
+  const inputs = testReadInputs(workspace, file)
+  return [...new Set([...inputs.exact, ...[...workspace.files, ...(workspace.siblings ?? [])].filter(inputs.has)])]
+}
+
+/** Only unknown-input tests also follow Git's object identity (relevant to archives and history). */
+export const readState = (workspace: Workspace, file: string): string =>
+  (testReadInputs(workspace, file).unknown && workspace.head) || ""
+
+export const readKeyState = (workspace: Workspace, file: string) =>
+  [readState(workspace, file), testReadInputs(workspace, file).linkKey].filter(Boolean).join("\n")
 
 /** The workspace file a specifier from `from` names, if any. */
-const resolveLocal = (known: ReadonlySet<string>, from: string, specifier: string): string | undefined => {
+const resolveLocal = (known: ReadonlySet<string>, from: string, specifier: string, links: LinkInputs = NO_LINKS): string | undefined => {
   const base = path.posix.normalize(path.posix.join(path.posix.dirname(from), specifier))
-  for (const candidate of [base, `${base}.ts`, `${base}.tsx`, `${base}/index.ts`, `${base}/index.tsx`]) if (known.has(candidate)) return candidate
+  for (const candidate of [base, `${base}.ts`, `${base}.tsx`, `${base}/index.ts`, `${base}/index.tsx`]) {
+    if (known.has(candidate)) return candidate
+    const target = linkTarget(links, candidate)
+    if (known.has(target)) return target
+  }
   return undefined
 }
 
@@ -152,8 +302,9 @@ const NAMED_FILE = /["'`/]([\w.-]+(?:\/[\w.-]+)*\.(?:tsx?|json))["'`]/g
 const NAMED_GROUP = /["'`](cmd|mods)["'`]/g
 
 /** Every workspace file `seeds` can reach. */
-export const reach = (workspace: Workspace, seeds: ReadonlyArray<string>, memo = new Map<string, ReadonlyArray<string>>()): ReadonlySet<string> => {
-  const known = new Set(workspace.files)
+export const reach = (
+  workspace: Workspace, seeds: ReadonlyArray<string>, memo = new Map<string, ReadonlyArray<string>>(), known: ReadonlySet<string> = new Set(workspace.files),
+): ReadonlySet<string> => {
   const seen = new Set<string>()
   const expanded = new Set<string>()
   const queue: Array<string> = []
@@ -192,11 +343,11 @@ export const reach = (workspace: Workspace, seeds: ReadonlyArray<string>, memo =
 
 /** A file's edges: workspace files, or package directories. */
 const edgesOf = (workspace: Workspace, known: ReadonlySet<string>, file: string): ReadonlyArray<string> => {
-  const { imports, code } = scan(file, read(file))
+  const { imports, code } = scan(file, sourceText(file))
   const edges: Array<string> = []
   for (const specifier of imports) {
     if (specifier.startsWith(".")) {
-      const local = resolveLocal(known, file, specifier)
+      const local = resolveLocal(known, file, specifier, workspace.links)
       if (local !== undefined) edges.push(local)
     } else if (specifier.startsWith("@dotfiles/")) {
       const name = specifier.split("/").slice(0, 2).join("/")
@@ -221,18 +372,11 @@ const names = new Map<string, string>()
 const packageName = (dir: string) => {
   let name = names.get(dir)
   if (name === undefined) {
-    name = (JSON.parse(read(`${dir}/package.json`) || "{}") as { name?: string }).name ?? dir
+    name = (JSON.parse(sourceText(`${dir}/package.json`) || "{}") as { name?: string }).name ?? dir
     names.set(dir, name)
   }
   return name
 }
-
-/** The test files outside tests/ and the gamut fixture: the gate's unit tests. */
-export const unitTests = (workspace: Workspace) =>
-  workspace.files.filter((file) => TEST.test(file) && !file.startsWith("tests/") && !file.startsWith("testbeds/gamut/fixture/"))
-
-/** tests/*.test.ts: the acceptance tests, most of which run real OpenCode. */
-export const acceptanceTests = (workspace: Workspace) => workspace.files.filter((file) => /^tests\/[^/]+\.test\.tsx?$/.test(file))
 
 const contentHashes = new Map<string, string>()
 const hashOf = (file: string) => {
@@ -273,57 +417,15 @@ export const sharedKey = (extra: ReadonlyArray<string> = []) =>
     return hash.digest("hex")
   })
 
-/**
- * What every acceptance key shares (scripts/accept.ts, scripts/accept-ledger.ts): the inputs a
- * real-OpenCode run loads whatever the file, and the runner itself. Unlike SHARED it leaves out
- * what only the lint and the gate read (`.oxlintrc.json`, `.oxlintrc.effect-debt.json`,
- * `lint/package.json`, `effect-debt.json`, `scripts/effect-debt.ts`, `scripts/gate.ts`): a change to
- * those reruns no acceptance file.
- */
-export const ACCEPT_SHARED = [
-  "package.json",
-  "bun.lock",
-  "bunfig.toml",
-  "tsconfig.json",
-  "scripts/reach.ts",
-  "scripts/link-fork.ts",
-  "scripts/accept.ts",
-  "scripts/accept-plan.ts",
-  "scripts/accept-ledger.ts",
-  "scripts/leaks.ts",
-  "scripts/fork.ts",
-]
-
-/** What no acceptance run loads although a package holds it: its own unit tests, benches and Markdown. */
-const PACKAGE_ONLY = /(\.test\.tsx?|\.bench\.ts|\.md)$/
-
-/** Whether a reached file is an input of an acceptance run: anything but a package's unit test, bench or Markdown. */
-export const isAcceptInput = (file: string) => !packageOf(file) || !PACKAGE_ONLY.test(file)
-
 /** What an acceptance file reaches as an input: the file itself and its reach (`reach`), less what `isAcceptInput` leaves out. */
 export const acceptReach = (workspace: Workspace, file: string, memo = new Map<string, ReadonlyArray<string>>()): ReadonlySet<string> =>
-  new Set([file, ...[...reach(workspace, [file], memo)].filter(isAcceptInput)])
-
-/** The acceptance shared key from a hash of each file and the fork's line (pure: the model test hands both in). */
-export const acceptSharedFrom = (hashFile: (file: string) => string, fork: string, extra: ReadonlyArray<string>) => {
-  const hash = createHash("sha256")
-  for (const file of ACCEPT_SHARED) hash.update(`${file}:${hashFile(file)}\n`)
-  hash.update(`bun:${Bun.version}:${Bun.revision}\n`)
-  hash.update(`${fork}\n`)
-  for (const each of extra) hash.update(`${each}\n`)
-  return hash.digest("hex")
-}
+  new Set([file, ...[...reach(workspace, [file], memo)].filter(isAcceptInput), ...declaredInputs(workspace, file)])
 
 /** The acceptance shared key of this checkout, Bun and the fork in OPENCODE_DEV; `extra` adds the ledger's version and the run's flags. */
 export const acceptSharedKey = (extra: ReadonlyArray<string>) => forkLine().then((fork) => acceptSharedFrom(hashOf, fork, extra))
 
-/** An acceptance file's key: the shared key and the contents of the inputs it reaches (`isAcceptInput` applied again, so a caller's set cannot widen it). */
-export const acceptKey = (shared: string, reached: Iterable<string>, hashFile: (file: string) => string = hashOf) => {
-  const hash = createHash("sha256")
-  hash.update(shared)
-  for (const file of [...reached].filter(isAcceptInput).sort()) hash.update(`${file}:${hashFile(file)}\n`)
-  return hash.digest("hex")
-}
+export const acceptReadKey = (workspace: Workspace, test: string, shared: string, reached: Iterable<string>) =>
+  acceptKey(shared, reached, hashOf, readKeyState(workspace, test))
 
 /** A key over `files`' contents and the shared key. */
 export const keyOf = (shared: string, files: Iterable<string>) => {

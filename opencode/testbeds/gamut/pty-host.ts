@@ -550,6 +550,18 @@ export const hostCall = async <Op extends HostRequest["op"]>(
 
 // ── Entry ──
 
+/** Run the CLI host until a stop, signal, or the owner's death. */
+export const runOwnedHost = (config: HostConfig) => {
+  rmSync(config.socket, { force: true })
+  const host = serve(config)
+  const shutdown = () => void host.stop()
+  process.on("SIGTERM", shutdown)
+  process.on("SIGINT", shutdown)
+  // A run with an owner (`GAMUT_OWNER`) ends with it, its program too.
+  whenOwnerGone(shutdown)
+  return host.stopped.finally(() => rmSync(config.socket, { force: true }))
+}
+
 if (import.meta.main) {
   const file = Bun.argv[2]
   if (file === undefined) {
@@ -558,17 +570,5 @@ if (import.meta.main) {
   }
   const config = (await Bun.file(file).json()) as HostConfig
   rmSync(file, { force: true })
-  rmSync(config.socket, { force: true })
-  const host = serve(config)
-  const shutdown = () => void host.stop()
-  process.on("SIGTERM", shutdown)
-  process.on("SIGINT", shutdown)
-  // A run with an owner (`GAMUT_OWNER`) ends with it, its program too.
-  whenOwnerGone(shutdown)
-  try {
-    await host.stopped
-  } finally {
-    rmSync(config.socket, { force: true })
-  }
-  process.exit(0)
+  void runOwnedHost(config).then(() => process.exit(0))
 }

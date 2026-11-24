@@ -11,7 +11,7 @@
 // read too. Needs OPENCODE_DEV, a fork with the `session.composer.panel.*`
 // slots and a Terminals row's terminal in its input (panel-terminal-state).
 import { describe, expect, test } from "bun:test"
-import { existsSync, readFileSync } from "node:fs"
+import { readScratchFileSync as readFileSync, scratchExistsSync } from "./read-path.ts"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { BAR, FOOTERS, panelOf as panel, ROWS, SUBAGENTS, type Tab } from "../scenarios/prime-panel-rows.ts"
@@ -47,7 +47,7 @@ const scenario = async (dir: string) => {
   const errors = await new Response(run.stderr).text()
   const code = await run.exited
   const last = join(dir, "panel-80-monitors.txt")
-  expect({ code, ran: existsSync(last) }, `${output}${errors}`.slice(-4000)).toEqual({ code: 0, ran: true })
+  expect({ code, ran: scratchExistsSync(last) }, `${output}${errors}`.slice(-4000)).toEqual({ code: 0, ran: true })
   const read = (name: string) => panel(readFileSync(join(dir, `panel-${name}.txt`), "utf8"))
   return {
     wide: Object.fromEntries(NAMES.map((name) => [name, read(`160-${name}`)])),

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // The `orchestrate` tool on the simulated host (orch-tools-world.ts): the real orchestrate, rift and status plugins
 // on their memory layers, at 20 seeds. The plugin keeps no state of a run: every answer is read from the units' logs
 // (the status script's tables) and the Rift list at the call.
@@ -115,7 +117,7 @@ seeded("A4: the harm rules still refuse: a subagent's land, an implementor on Co
     const sabbath = yield* boot(seed, true, { now: FRIDAY_EVENING })
     const resting = yield* sabbath.world.session(WORK)
     const held = yield* sabbath.probe(resting, "subagent", { agent: "implementor", description: "implementor a r1", prompt: "Build it.", background: true })
-    expect([held.error, held.text]).toEqual([true, expect.stringMatching(/It is the Sabbath; agent work resumes at Sat/)])
+    expect([held.error, held.text]).toEqual([true, expect.stringMatching(/It is the Sabbath; agent work resumes at Oct 31, 2026, 6:\d{2}:\d{2} PM EDT/)])
   }),
 )
 

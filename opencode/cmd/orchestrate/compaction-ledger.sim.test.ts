@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // A compacted root's note on the simulated host (sim/world.ts) at 20 seeds:
 // the orchestrate, status, queue and wakes plugins are their composition
 // roots on the world (sim/plugins.ts); the status script runs in the world's

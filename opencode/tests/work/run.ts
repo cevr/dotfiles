@@ -1,19 +1,21 @@
 // One work run in real OpenCode (the fork, embedded through its SDK, as tests/auto-title/run.ts runs it), on the
 // scripted model (tests/work/sim.ts) on a loopback port, with cmd/work and cmd/tool-names loaded from config as the
 // owner would load them, on the real `work` binary. tests/work.test.ts starts it in a child process whose HOME and XDG dirs are a
-// scratch dir, so work's registry is the run's own, with `WORK_E2E_BASE`, `WORK_E2E_FORK`, `WORK_E2E_PLUGIN`,
-// `WORK_E2E_TOOL_NAMES`, `WORK_E2E_BIN`, `WORK_E2E_BARE` (list cmd/work with no options, finding work on PATH), `WORK_E2E_TASK` and, for a
-// land, `WORK_E2E_WAKE`. The work dir is a base: a git repository with one commit pushed to a bare origin, `work.toml` in its `.git/info/exclude`, registered with `work init`, with a
+// scratch dir, so work's registry is the run's own. The request names both plugins and the binary;
+// bare mode lists cmd/work with no options, finding work on PATH. The work dir is a base:
+// a git repository with one commit pushed to a bare origin, `work.toml` in its `.git/info/exclude`, registered with `work init`, with a
 // gate and an accept check. It writes what the session's tool calls said, the model's requests and what is on
 // disk after the run to `<base>/result.json`. It imports nothing of the fork's at compile time.
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
 import { testHostOptions } from "../../scripts/test-host.ts"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
-import { Config, Data, Effect, FileSystem, Option, Path, Predicate, Schedule, Schema, Stream } from "effect"
+import { argv } from "bun"
+import { Data, Effect, FileSystem, Option, Path, Predicate, Schedule, Schema } from "effect"
 import { HttpServer } from "effect/http"
-import { ChildProcess, ChildProcessSpawner } from "effect/process"
-import { gitInit } from "../git-repo.ts"
+import { externalInput, matchingInput, readScratchFileSync, scratchInput } from "../read-path.ts"
+import { initScratchGit, scratchWorkInit, spawnScratchGitSync } from "../scratch-child.ts"
 import { type Call, model, Result, type Seen } from "./sim.ts"
+import { Request } from "./request.ts"
 
 class RunFailed extends Data.TaggedError("RunFailed")<{ readonly message: string; readonly cause?: unknown }> {}
 class NotYet extends Data.TaggedError("NotYet")<{}> {}
@@ -55,20 +57,15 @@ const callOf = (part: typeof ToolPart.Type): Call => ({
   ].join("\n"),
 })
 
-const text = <E>(stream: Stream.Stream<Uint8Array, E>) => stream.pipe(Stream.decodeText(), Stream.mkString)
-
-/** Runs `argv` in `cwd` with this process's environment and `env`; its output, or a RunFailed naming what it said. */
-const sh = (cwd: string, argv: ReadonlyArray<string>, env: { readonly [name: string]: string } = {}) =>
+const git = (cwd: string, ...args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
-    const [command = "", ...args] = argv
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-    const child = yield* spawner.spawn(ChildProcess.make(command, args, { cwd, env, extendEnv: true, stdin: "ignore", forceKillAfter: "3 seconds" }))
-    const [code, out, err] = yield* Effect.all([child.exitCode, text(child.stdout), text(child.stderr)], { concurrency: 3 })
-    if (Number(code) !== 0) return yield* new RunFailed({ message: `${argv.join(" ")} failed (exit ${code}): ${err}${out}` })
-    return out
-  }).pipe(Effect.scoped)
-
-const git = (cwd: string, ...args: ReadonlyArray<string>) => sh(cwd, ["git", "-c", "user.name=work", "-c", "user.email=work@example.com", "-c", "commit.gpgsign=false", ...args])
+    const ran = yield* Effect.sync(() => spawnScratchGitSync(cwd, args, {
+      GIT_AUTHOR_NAME: "work", GIT_AUTHOR_EMAIL: "work@example.com",
+      GIT_COMMITTER_NAME: "work", GIT_COMMITTER_EMAIL: "work@example.com",
+    }))
+    if (ran.exitCode !== 0) return yield* new RunFailed({ message: `git ${args.join(" ")} failed (exit ${ran.exitCode}): ${ran.stderr}${ran.stdout}` })
+    return ran.stdout.toString()
+  })
 
 /** As much of the fork's SDK as the run uses; the fork is found at run time, so it is typed here. */
 interface Embedded {
@@ -88,7 +85,7 @@ interface CreateOptions {
 interface Sdk {
   readonly OpenCode: { readonly create: (options: CreateOptions) => Promise<Embedded> }
 }
-const loadSdk = (file: string): Promise<Partial<Sdk>> => import(file)
+const loadSdk = (file: string): Promise<Partial<Sdk>> => import(externalInput(file))
 const isSdk = (value: Partial<Sdk>): value is Sdk => Predicate.isFunction(value.OpenCode?.create)
 
 /**
@@ -103,31 +100,30 @@ const entryOf = (plugin: string, bin: string, bare: boolean) => {
 const run = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
-  const base = yield* Config.String("WORK_E2E_BASE")
-  const fork = yield* Config.String("WORK_E2E_FORK")
-  const plugin = yield* Config.String("WORK_E2E_PLUGIN")
-  const toolNames = yield* Config.String("WORK_E2E_TOOL_NAMES")
-  const bin = yield* Config.String("WORK_E2E_BIN")
-  const bare = yield* Config.Boolean("WORK_E2E_BARE").pipe(Config.withDefault(false))
-  const task = yield* Config.String("WORK_E2E_TASK")
-  const wake = yield* Config.option(Config.String("WORK_E2E_WAKE"))
+  const spec = yield* Schema.decodeUnknownEffect(Request)(readScratchFileSync(argv[2] || "", "utf8"))
+  const base = scratchInput(spec.base)
+  const bin = externalInput(spec.bin)
   const config = path.join(base, "config")
   yield* fs.makeDirectory(config, { recursive: true })
   yield* fs.makeDirectory(path.join(base, "code/work"), { recursive: true })
 
   // The base: one commit pushed to a bare origin, work.toml kept out of Git's view, registered with work.
-  const work = yield* fs.realPath(path.join(base, "code/work"))
+  const work = yield* fs.realPath(scratchInput(path.join(base, "code/work")))
   const origin = path.join(base, "origin.git")
-  // Made through gitInit, as every test repository is: no background gc or maintenance.
-  yield* Effect.try({ try: () => gitInit(origin, ["-q", "--bare", "-b", "main"]), catch: (cause) => new RunFailed({ message: "git init of the origin failed", cause }) })
-  yield* Effect.try({ try: () => gitInit(work, ["-q", "-b", "main"]), catch: (cause) => new RunFailed({ message: "git init of the base failed", cause }) })
+  yield* fs.makeDirectory(origin)
+  // No background gc or maintenance.
+  yield* Effect.try({ try: () => initScratchGit(origin, ["-q", "--bare", "-b", "main"]), catch: (cause) => new RunFailed({ message: "git init of the origin failed", cause }) })
+  yield* Effect.try({ try: () => initScratchGit(work, ["-q", "-b", "main"]), catch: (cause) => new RunFailed({ message: "git init of the base failed", cause }) })
   yield* fs.writeFileString(path.join(work, "README.md"), "work\n")
   yield* git(work, "add", "README.md")
   yield* git(work, "commit", "-q", "-m", "first")
   yield* git(work, "remote", "add", "origin", origin)
   yield* git(work, "push", "-q", "-u", "origin", "main")
   yield* fs.writeFileString(path.join(work, ".git/info/exclude"), "work.toml\n")
-  yield* sh(work, [bin, "--json", "init"], { WORK_BASE: work })
+  const initialized = scratchWorkInit(bin, work, path.join(base, "home"), base)
+  if (initialized.exitCode !== 0) return yield* new RunFailed({
+    message: `work --json init failed (exit ${initialized.exitCode}): ${initialized.stderr}${initialized.stdout}`,
+  })
   // The repository's checks for a land: a gate and a slower accept that reports the batch's base and fails, since
   // only a failed accept check wakes the session (a green one says nothing).
   yield* git(work, "config", "user.name", "work")
@@ -152,11 +148,11 @@ const run = Effect.gen(function* () {
         models: { "sim-model": { name: "Sim", capabilities: { tools: true, input: ["text"], output: ["text"] }, limit: { context: 128_000, output: 16_000 } } },
       },
     },
-    plugins: [entryOf(plugin, bin, bare), toolNames],
+    plugins: [entryOf(matchingInput("cmd/work"), bin, spec.bare), matchingInput("cmd/tool-names")],
   }
 
   const sdk: Partial<Sdk> = yield* Effect.tryPromise({
-    try: () => loadSdk(path.join(fork, "packages/sdk/src/index.ts")),
+    try: () => loadSdk(path.join(spec.fork, "packages/sdk/src/index.ts")),
     catch: (cause) => new RunFailed({ message: "the fork's SDK did not load", cause }),
   })
   if (!isSdk(sdk)) return yield* new RunFailed({ message: "the fork's SDK has no OpenCode.create" })
@@ -172,10 +168,10 @@ const run = Effect.gen(function* () {
   const session = yield* call("the session was not made", () => opencode.sessions.create({ location: { directory: work } }))
   const context = call("the session did not read", () => opencode.sessions.context({ sessionID: session.id }))
   const idle = call("the turn did not end", () => opencode.experimental.session.wait({ sessionID: session.id }))
-  yield* call("the prompt was refused", () => opencode.sessions.prompt({ sessionID: session.id, text: task }))
+  yield* call("the prompt was refused", () => opencode.sessions.prompt({ sessionID: session.id, text: spec.task }))
   yield* idle
   // A land's accept check runs after the turn ends, then wakes the session: the run waits for it, up to a minute.
-  yield* Option.match(wake, {
+  yield* Option.match(Option.fromUndefinedOr(spec.wake), {
     onNone: () => Effect.void,
     onSome: (said) =>
       context.pipe(
@@ -186,7 +182,7 @@ const run = Effect.gen(function* () {
       ),
   })
   const messages = yield* context
-  const originMain = yield* sh(origin, ["git", "log", "-1", "--format=%s", "main"])
+  const originMain = yield* git(origin, "log", "-1", "--format=%s", "main")
   const result: Result = {
     calls: callsOf(messages),
     transcript: toJson(messages),
@@ -195,8 +191,8 @@ const run = Effect.gen(function* () {
     workspace,
     integration,
     originMain: originMain.trim(),
-    workspaceThere: yield* fs.exists(workspace),
-    integrationThere: yield* fs.exists(integration),
+    workspaceThere: yield* fs.exists(scratchInput(workspace)),
+    integrationThere: yield* fs.exists(scratchInput(integration)),
   }
   yield* fs.writeFileString(path.join(base, "result.json"), Schema.encodeSync(Schema.fromJsonString(Result))(result))
 })

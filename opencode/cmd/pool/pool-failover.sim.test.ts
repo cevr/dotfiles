@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // The pool's failover on the simulated host, each test at 20 seeds:
 // tests/pool-failover.test.ts's names and claims, moved off real OpenCode. Two
 // Anthropic logins OpenCode holds, the Anthropic auth plugin and the pool, as
@@ -7,7 +9,7 @@
 // login answers an agent turn with a plan-limit 429; the run must finish on
 // the second, and the provider must have seen exactly that. The seed varies
 // how long each answer streams, the order of fibers and the tokens.
-import { Config, Console, DateTime, Effect, Option, Schema } from "effect"
+import { Config, Console, Effect, Option, Schema } from "effect"
 import { UNREADABLE_HOLD_MS } from "@dotfiles/opencode-pool/hold"
 import { Pace } from "@dotfiles/opencode-pool/pace"
 import { quotaProtocol, type QuotaReading } from "@dotfiles/opencode-pool/quota"
@@ -172,7 +174,7 @@ const bothSpent = ({ account, body }: Provider.RequestInfo): Provider.Answer => 
 }
 
 /** The pool's own refusal: every account held, and when the first opens. */
-const POOL_REFUSAL = /^dotfiles-opencode\.pool: all pool accounts are held; it may go again at (\S+Z)$/
+const POOL_REFUSAL = /^dotfiles-opencode\.pool: all pool accounts are held; it may go again at ([A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2}:\d{2} [AP]M (?:EST|EDT))$/
 
 seeded(
   "with both logins spent, the run ends on the pool's own refusal and when the first opens, never sent on a spent login again",
@@ -191,9 +193,9 @@ seeded(
         return [message.message]
       })
       expect(ends).toHaveLength(1)
-      const opens = Option.flatMap(Option.fromNullishOr(POOL_REFUSAL.exec(ends.join(""))?.[1]), DateTime.make)
+      const opens = Option.fromUndefinedOr(POOL_REFUSAL.exec(ends.join(""))?.[1]).pipe(Option.map((text) => Date.parse(text)), Option.filter(Number.isFinite))
       expect(Option.isSome(opens), ends.join("")).toBe(true)
-      expect(Math.abs(Option.getOrElse(Option.map(opens, DateTime.toEpochMillis), () => 0) - (World.START + HOUR))).toBeLessThan(5_000)
+      expect(Math.abs(Option.getOrElse(opens, () => 0) - (World.START + HOUR)), ends.join("")).toBeLessThan(5_000)
     }),
 )
 

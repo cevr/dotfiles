@@ -1,14 +1,20 @@
 // The Sabbath hours at the owner's place, and the half hour after them.
 import { describe, expect, test } from "bun:test"
-import { KNOWLTON, resumesAt, why } from "./sabbath.ts"
+import { explain, KNOWLTON, resumesAt, why } from "./sabbath.ts"
 
 /** Friday 30 October 2026, 19:00 in Knowlton (EDT): after sunset, in the Sabbath. */
 const FRIDAY_EVENING = "2026-10-30T23:00:00Z"
 /** Wednesday 4 November 2026, 10:00 in Knowlton. */
 const WEDNESDAY = "2026-11-04T15:00:00Z"
-const SABBATH = /^It is the Sabbath; agent work resumes at Sat 18:\d\d \(30 min after sunset, Knowlton, QC\)\.$/
+const SABBATH = /^It is the Sabbath; agent work resumes at Oct 31, 2026, 6:\d{2}:\d{2} PM EDT \(30 min after sunset, Knowlton, QC\)\.$/
 
 describe("the Sabbath", () => {
+  test("the resumption notice names the date, AM/PM and the configured place's time zone", () => {
+    expect(explain(Date.parse("2026-11-25T19:00:00Z"), { ...KNOWLTON, name: "Denver", timeZone: "America/Denver" })).toBe(
+      "It is the Sabbath; agent work resumes at Nov 25, 2026, 12:00:00 PM MST (30 min after sunset, Denver).",
+    )
+  })
+
   test("Friday evening is in it, and the message says when work resumes; Wednesday is not", () => {
     expect(why(Date.parse(FRIDAY_EVENING), KNOWLTON)).toMatch(SABBATH)
     expect(why(Date.parse(WEDNESDAY), KNOWLTON)).toBeUndefined()

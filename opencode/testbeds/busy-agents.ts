@@ -34,7 +34,7 @@ interface ClientModule {
   }
 }
 
-const clientOf = (fork: string): Promise<ClientModule> => import(`${fork}/packages/client/src/promise/index.ts`)
+const clientOf = (fork: string): Promise<ClientModule> => import(externalInput(`${fork}/packages/client/src/promise/index.ts`))
 
 /** Wait on the reported count, not on elapsed time. The named cap only diagnoses a hung fixture. */
 const awaitCount = (count: Effect.Effect<number>, least: number, label: () => string) =>
@@ -92,3 +92,4 @@ export const putToWork = (work: Work): Promise<void> => {
     }),
   )
 }
+import { externalInput } from "../tests/read-path.ts"

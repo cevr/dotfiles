@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason native TUI plugin loader reads at sim-tui/app.ts: createAppFixture({
 // The low-verbosity activity row while a turn runs, on the simulated TUI
 // (sim-tui/) with Prime loaded by path, each at its first SEEDS seeds: the
 // model thinks, then runs a command that the test holds. While it runs, the

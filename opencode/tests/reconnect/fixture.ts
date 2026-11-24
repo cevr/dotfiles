@@ -43,12 +43,12 @@ import { expect } from "effect-bun-test"
 import { Base64 } from "effect/encoding"
 import { FetchHttpClient, Headers, HttpBody, HttpClient, HttpClientRequest, HttpMethod, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { ChildProcessSpawner } from "effect/process"
-import { ROOT } from "../../scripts/reach.ts"
 import { forkLaunch } from "../../testbeds/gamut/gamut.ts"
 import { hostCall, serve } from "../../testbeds/gamut/pty-host.ts"
+import { externalInput, matchingInput, scratchInput } from "../read-path.ts"
 import type { Kept } from "../scratch.ts"
 import { freePort, ready, type Service } from "../service.ts"
-import { ENV, listen, Platform, run, type Listener, type Ran } from "./host.ts"
+import { ENV, listen, Platform, runForkService, type Listener, type Ran } from "./host.ts"
 
 /** The services a case runs on (host.ts `Platform`). */
 type Host = Layer.Success<typeof Platform>
@@ -60,8 +60,8 @@ export const TIMEOUT_MS = 180_000
 /** What a case that runs out of time keeps of TIMEOUT_MS to stop its world (the service, the hosts). */
 const CLOSE_MS = 15_000
 
-const TUI_PLUGINS = ["prime", "status", "git", "cache", "questions", "btw", "skills", "recover", "orchestrate", "escape"]
-const SERVER_PLUGINS = ["orchestrate", "guard", "kernel", "status", "queue", "git", "idle-compact", "questions", "skills", "rift", "tool-names", "cache", "memory"]
+const TUI_PLUGINS = ["cmd/prime", "cmd/status", "cmd/git", "cmd/cache", "cmd/questions", "cmd/btw", "cmd/skills", "cmd/recover", "cmd/orchestrate", "cmd/escape"]
+const SERVER_PLUGINS = ["cmd/orchestrate", "cmd/guard", "cmd/kernel", "cmd/status", "cmd/queue", "cmd/git", "cmd/idle-compact", "cmd/questions", "cmd/skills", "cmd/rift", "cmd/tool-names", "cmd/cache", "cmd/memory"]
 /** How long the TUI has, after the restarted service can serve, to show its session again. */
 const BACK_WITHIN_MS = 20_000
 /** How long the booting case refuses the session after the restarted service can serve. */
@@ -377,7 +377,7 @@ const hosted = (socket: string, cwd: string, command: ReadonlyArray<string>, env
     )
     const fs = yield* FileSystem.FileSystem
     yield* until(
-      fs.exists(socket).pipe(Effect.orElseSucceed(() => false)),
+      fs.exists(scratchInput(socket)).pipe(Effect.orElseSucceed(() => false)),
       Boolean,
       () => `${socket}: the terminal host`,
       10_000,
@@ -454,15 +454,15 @@ const configure = (home: string, simPort: number) =>
           },
         },
         // The owner's server plugins that need no login, network listener or OS job.
-        plugins: SERVER_PLUGINS.map((name) => [ROOT, "cmd", name].join("/")),
+        plugins: SERVER_PLUGINS.map((entry) => matchingInput("cmd/*", entry)),
       }),
     )
     // The owner's TUI plugins, as daily writes them (herdr left out: it reports to a herdr socket).
-    yield* fs.writeFileString(`${home}/.config/opencode/cli.json`, toJson({ plugins: [...TUI_PLUGINS.map((name) => [ROOT, "cmd", name].join("/")), "-opencode.btw"], session: { sidebar: "hide" }, theme: { name: "prime" } }))
+    yield* fs.writeFileString(`${home}/.config/opencode/cli.json`, toJson({ plugins: [...TUI_PLUGINS.map((entry) => matchingInput("cmd/*", entry)), "-opencode.btw"], session: { sidebar: "hide" }, theme: { name: "prime" } }))
   }).pipe(Effect.orDie)
 
 /** The fork's promise client module, found at run time. */
-const importClient = (fork: string) => Effect.promise((): Promise<ClientModule> => import(`${fork}/packages/client/src/promise/index.ts`))
+const importClient = (fork: string) => Effect.promise((): Promise<ClientModule> => import(externalInput(`${fork}/packages/client/src/promise/index.ts`)))
 
 /** Builds a file's world in `root`; its scope stops the service, the hosts, the model and the proxy. */
 const fixture = (root: string) =>
@@ -471,11 +471,11 @@ const fixture = (root: string) =>
     const { fork, binary, path } = yield* ENV
     const home = `${root}/home`
     yield* fs.makeDirectory(`${root}/work`)
-    const work = yield* fs.realPath(`${root}/work`)
+    const work = yield* fs.realPath(scratchInput(`${root}/work`))
     const launch = forkLaunch(fork, process.execPath)
     const scratchBinary = `${root}/opencode-old`
     const old = Option.liftPredicate(binary, (each) => each !== "")
-    if (Option.isSome(old)) yield* fs.copyFile(old.value, scratchBinary)
+    if (Option.isSome(old)) yield* fs.copyFile(externalInput(old.value), scratchBinary)
     const tui = Option.match(old, { onNone: () => launch.base, onSome: () => [scratchBinary] })
     const env = {
       PATH: path,
@@ -496,12 +496,12 @@ const fixture = (root: string) =>
     // The fork's CLI in the scratch HOME, run to its end, on this case's child processes.
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const opencode = (...args: ReadonlyArray<string>) =>
-      timed(`opencode ${args.join(" ")}`, run([...launch.base, ...args], work, env).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)))
+      timed(`opencode ${args.join(" ")}`, runForkService(fork, work, args, env).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)))
     const sim = yield* simModel
     yield* configure(home, sim.server.port)
     // A port of its own: the other test files' scratch services would share the channel's fixed one (tests/service.ts).
     expect(yield* opencode("service", "set", "port", String(freePort()))).toMatchObject({ code: 0 })
-    const registered = fs.exists(serviceFile).pipe(Effect.orElseSucceed(() => false))
+    const registered = fs.exists(scratchInput(serviceFile)).pipe(Effect.orElseSucceed(() => false))
     const started = yield* Effect.acquireRelease(opencode("service", "start"), () => Effect.asVoid(Effect.when(opencode("service", "stop"), registered)))
     expect(started).toMatchObject({ code: 0 })
     const service = yield* serviceIn(serviceFile, `the service (${started.err.slice(-500)})`)

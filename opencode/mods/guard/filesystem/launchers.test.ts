@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/launchers.test.ts: expect(readFileSync(path, "utf8")).toBe(script)
 // Launchers in a scratch directory: a written launcher runs its shell at the
 // lower priority with the command's arguments, its path is stable for one
 // script and new for another, and a directory it cannot write is

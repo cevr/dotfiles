@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/rex/process/simulators.ts: return yield* png(new Uint8Array(yield* Effect.tryPromise({ try: () => readFile(file), catch: (
 // `rex-show feed` (and `open`, `sideshow`): the arguments it takes; the
 // caller (the named session or the caller's own, one showcase, refused when
 // there is none; any call keeps the caller's own as the showcase's feed; md

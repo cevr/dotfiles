@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/orchestrate/filestore/call-log.test.ts: expect(readFileSync(file, "utf8")).toBe(
 // The call log as a JSONL file in a scratch directory: the laws, the file's
 // exact bytes (the status pane reads them), and a line it cannot write.
 import { expect, test } from "bun:test"

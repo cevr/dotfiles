@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/update/filestore/launcher.test.ts: const run = spawnSync([link, "run", "hello"], { env: { ...env, HOME: "/home/x", ANTHROPIC_BASE_
 import { describe, expect, test } from "bun:test"
 import { env, spawnSync } from "bun"
 import { scratch as scratchDir } from "../../../tests/scratch.ts"

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/wake/process/supervise.ts: create: (file, mode) => openSync(file, "w", mode),
 // accept: one at a time (it bounds the backstop-off exit-to-letter time under the sweep's RECOVER_MS).
 // A job's end as a durable event on the real host: the process runner
 // (mods/wake/process/runner.ts) launches the real runner (cmd/wake/job.ts,
@@ -39,6 +41,8 @@ import { FILES, processStart, writeAtomic } from "../mods/wake/process/supervise
 import { Changes, Runner } from "../mods/wake/service.ts"
 import { WAKES } from "../mods/wake/wake.ts"
 import { withProcessEnv } from "./git-repo.ts"
+import { matchingInput } from "./read-path.ts"
+import { checkoutBunCommand } from "./scratch-child.ts"
 import { hangGuard, measured } from "./hang-guard.ts"
 
 const PROCESS = withProcessEnv({})
@@ -66,10 +70,14 @@ const scratch = Effect.gen(function* () {
   const path = yield* Path.Path
   const base = yield* fs.makeTempDirectoryScoped({ prefix: "job-events-" })
   const dirs = { home: path.join(base, "home"), state: path.join(base, "state"), work: path.join(base, "work"), root: path.join(base, "jobs") }
-  for (const dir of [dirs.home, dirs.work, dirs.root, path.join(dirs.state, "opencode")]) yield* fs.makeDirectory(dir, { recursive: true })
-  const script = yield* path.fromFileUrl(new URL("../cmd/wake/job.ts", import.meta.url))
+  const config = path.join(base, "config")
+  const data = path.join(base, "data")
+  const cache = path.join(base, "cache")
+  for (const dir of [dirs.home, dirs.work, dirs.root, config, data, cache, path.join(dirs.state, "opencode")])
+    yield* fs.makeDirectory(dir, { recursive: true })
+  const script = matchingInput("cmd/wake/job.ts")
   const env = { HOME: dirs.home, XDG_STATE_HOME: dirs.state, PATH: PROCESS["PATH"] || "/usr/bin:/bin" }
-  return { ...dirs, base, script, env, marker: path.join(base, "marker"), fs, path }
+  return { ...dirs, base, config, data, cache, script, env, marker: path.join(base, "marker"), fs, path }
 })
 
 type Scratch = Effect.Success<typeof scratch>
@@ -199,7 +207,13 @@ describe("durable job events on the real host", () => {
         yield* at.fs.remove(at.marker)
         const written = yield* at.fs.readFileString(at.path.join(jobDir, FILES.exit))
         const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-        const second = yield* spawner.spawn(ChildProcess.make("bun", [at.script, jobDir], { env: at.env, stdin: "ignore", stdout: "ignore", stderr: "ignore", forceKillAfter: "3 seconds" }))
+        const second = yield* spawner.spawn(checkoutBunCommand("cmd/wake/job.ts", {
+          scratch: {
+            HOME: at.home, TMPDIR: at.base, XDG_CONFIG_HOME: at.config, XDG_DATA_HOME: at.data,
+            XDG_STATE_HOME: at.state, XDG_CACHE_HOME: at.cache,
+          },
+          external: {}, values: {}, scratchArgs: [jobDir],
+        }, { stdout: "ignore", stderr: "ignore", forceKillAfter: "3 seconds" }))
         expect(Number(yield* second.exitCode)).toBe(0)
         expect(yield* at.fs.exists(at.marker)).toBe(false)
         expect(yield* at.fs.readFileString(at.path.join(jobDir, FILES.exit))).toBe(written)

@@ -15,23 +15,23 @@ export const fileOf = (env: Readonly<Record<string, string | undefined>>): strin
 
 const decode = Schema.decodeUnknownOption(Schema.fromJsonString(Pairs))
 
-const read = (file: string): Pairs => {
+const read = (readText: () => string): Pairs => {
   try {
-    return Option.getOrElse(decode(readFileSync(file, "utf8")), () => EMPTY)
+    return Option.getOrElse(decode(readText()), () => EMPTY)
   } catch {
     return EMPTY
   }
 }
 
-export const layer = (file: string) =>
+export const layerReading = (file: string, readText: () => string) =>
   Layer.succeed(
     PairStore,
     PairStore.of({
-      read: Effect.sync(() => read(file)),
+      read: Effect.sync(() => read(readText)),
       update: (change) =>
         Effect.try({
           try: () => {
-            const [result, next] = change(read(file))
+            const [result, next] = change(read(readText))
             mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
             const staged = `${file}.${process.pid}.tmp`
             writeFileSync(staged, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 })
@@ -43,3 +43,5 @@ export const layer = (file: string) =>
         }),
     }),
   )
+
+export const layer = (file: string) => layerReading(file, () => readFileSync(file, "utf8"))

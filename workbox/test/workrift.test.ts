@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at ../workbox/test/workrift.test.ts: const child = Bun.spawn(
 // workbox/bin/workrift, run for real in a scratch HOME with a bare origin, a
 // no-op `flock` (macOS has none) and WORKRIFT_ROOT inside the scratch folder.
 // It runs over the `work` binary WORK_BIN names (a backend file, when there is
@@ -7,7 +9,8 @@
 // install once, gh stack metadata, the removal rule, a prune that spares kept
 // bases. Nothing here touches the real host: every path is under the scratch.
 import { afterAll, describe, expect, test } from "bun:test"
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync as readCheckoutFileSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
+import { matchingInput, readScratchDirectorySync as readdirSync, readScratchFileSync as readFileSync, readScratchLinkSync as readlinkSync, scratchInput } from "../../opencode/tests/read-path.ts"
 import { rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, dirname, join } from "node:path"
@@ -15,7 +18,7 @@ import { hangGuard } from "../../opencode/tests/hang-guard.ts"
 
 const repo = join(import.meta.dir, "..", "..")
 // WORKRIFT_SCRIPT runs the suite against another script (an older one, for a test's red run).
-const SCRIPT = process.env.WORKRIFT_SCRIPT ?? join(repo, "workbox/bin/workrift")
+const SCRIPT = process.env.WORKRIFT_SCRIPT ?? matchingInput("../workbox/bin/workrift")
 const WORK_BIN = process.env.WORK_BIN ?? Bun.which("work") ?? undefined
 
 const scratchRoot = realpathSync(mkdtempSync(join(tmpdir(), "workrift-test-")))
@@ -230,7 +233,7 @@ describe("workrift's backend file", () => {
       expect({ root: filesUnder(b.root), home: filesUnder(b.home), dir: filesUnder(b.dir) }).toEqual(before)
     }
     expect(existsSync(calls)).toBe(false)
-  })
+  }, hangGuard("process-fixture"))
 })
 
 /** A bench whose backend file says `work`, with WORK the binary, and `app` a base `work init` made. */
@@ -270,7 +273,7 @@ describeWork("workrift with the work backend", () => {
 
   test("WORK_BIN is a work binary that answers", () => {
     expect(JSON.parse(sh(scratchRoot, { ...process.env, XDG_DATA_HOME: join(scratchRoot, "data") } as Env, work, "--json", "bases"))).toEqual([])
-  })
+  }, hangGuard("process-fixture"))
 
   test("with no backend file it runs on work, as with one saying work (before the Rift backend went, no file meant Rift)", () => {
     const w = workBench("absent", work)
@@ -596,7 +599,7 @@ describeWork("workrift with the work backend", () => {
       expect({ code: again.code, err: again.err }).toEqual({ code: 0, err: "" })
       expect(sh(bite, w.env, "git", "status", "--porcelain")).toBe("")
       // bootstrap carries no copy of its own and no .rift test: it asks workrift.
-      const bootstrap = readFileSync(join(repo, "workbox/bootstrap.sh"), "utf8")
+      const bootstrap = readCheckoutFileSync(join(repo, "workbox/bootstrap.sh"), "utf8")
       expect(bootstrap).not.toContain("workrift.warm")
       expect(bootstrap).not.toContain(".rift")
       expect(bootstrap).toContain(`"$local_bin_dir/workrift" settings`)
@@ -1743,7 +1746,7 @@ describeWork("workrift with the work backend", () => {
     const path = w.create(w.app, "feat/check")
     expect(sh(join(path), w.env, SCRIPT, "check").trim()).toBe(`Warm source checks passed: ${w.app}`)
     expect(sh(lib, w.env, SCRIPT, "check").trim()).toBe(`Warm source checks passed: ${lib}`)
-  })
+  }, hangGuard("process-fixture"))
 })
 
 /**
@@ -2596,7 +2599,7 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
     expect(ran.err).toContain(`warning: the build output of ${w.app} is 12 moves behind its tree`)
     writeFileSync(join(stateOf(w.app), "staleness"), `1 ${Math.floor(Date.now() / 1000) - 90_000}\n`)
     expect(w.wr(w.app, "check").err).toContain("run workrift refresh at a quiet time")
-  })
+  }, hangGuard("process-fixture"))
 })
 
 /**
@@ -2857,7 +2860,7 @@ interface Started {
 /** Starts argv with its stderr in a file one can read while it runs. */
 const start = (cwd: string, env: Env, argv: ReadonlyArray<string>, errFile: string): Started => {
   writeFileSync(errFile, "")
-  const child = Bun.spawn([...argv], { cwd, env, stdout: "pipe", stderr: Bun.file(errFile) })
+  const child = Bun.spawn([...argv], { cwd, env, stdout: "pipe", stderr: Bun.file(scratchInput(errFile)) })
   const err = () => readFileSync(errFile, "utf8")
   const done = (async () => {
     const out = await new Response(child.stdout).text()
@@ -2957,7 +2960,8 @@ let oldScript = ""
 const OLD_WORKRIFT = () => {
   if (!oldScript) {
     oldScript = join(scratchRoot, "workrift-a5821de8")
-    writeFileSync(oldScript, sh(repo, process.env as Env, "git", "show", "a5821de8:workbox/bin/workrift"))
+    const source = matchingInput("../workbox/bin/workrift")
+    writeFileSync(oldScript, sh(repo, process.env as Env, "git", "show", `a5821de8:${source.slice(repo.length + 1)}`))
     chmodSync(oldScript, 0o755)
   }
   return oldScript
@@ -3359,7 +3363,7 @@ interface Grouped extends Started {
 /** Starts argv in a process group of its own, so a test that finds it hung can end everything it started. */
 const startGroup = (cwd: string, env: Env, argv: ReadonlyArray<string>, errFile: string): Grouped => {
   writeFileSync(errFile, "")
-  const child = Bun.spawn([...argv], { cwd, env, stdout: "pipe", stderr: Bun.file(errFile), detached: true })
+  const child = Bun.spawn([...argv], { cwd, env, stdout: "pipe", stderr: Bun.file(scratchInput(errFile)), detached: true })
   ownedGroups.add(child.pid)
   const err = () => readFileSync(errFile, "utf8")
   const done = (async () => {

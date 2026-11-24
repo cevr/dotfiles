@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason nonliteral subprocess arguments at cmd/status/server.test.ts: Effect.promise(() => Bun.spawn(["git", ...args], { cwd, stdout: "ignore", stderr: "ignore" }).e
 // The plugin seam: the composition root on a stand-in host. On memory layers it
 // checks the status RPC's answer and its errors; on the live adapters it
 // checks how they read a real call log file and real runs in a git

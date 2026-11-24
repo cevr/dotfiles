@@ -1,4 +1,5 @@
 import { DateTime, Effect, Option, Schema } from "effect"
+import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import { HoldReason } from "./pace.ts"
 
 export interface SendHold {
@@ -14,7 +15,10 @@ export const HeldSend = Schema.Struct({
   retryAt: Schema.Finite,
 })
 export type HeldSend = typeof HeldSend.Type
-export const HeldSendAnswer = Schema.Struct({ hold: Schema.optionalKey(HeldSend) })
+export const HeldSendAnswer = Schema.Union([
+  Schema.Struct({ state: Schema.Literals(["held", "ended"]), hold: HeldSend }),
+  Schema.Struct({ state: Schema.optionalKey(Schema.Never), hold: Schema.optionalKey(Schema.Never) }),
+])
 export const readHeldSend = Schema.decodeUnknownOption(HeldSendAnswer)
 interface SendHook { readonly kind: string }
 const readStep = Schema.decodeUnknownOption(Schema.Struct({ id: Schema.String }))
@@ -24,7 +28,7 @@ export const stepIDOf = (event: SendHook) => {
 }
 
 export const sendHoldMessage = (reason: string, retryAt: number): string => {
-  const until = Option.match(DateTime.make(retryAt), { onNone: () => `${retryAt}`, onSome: DateTime.formatIso })
+  const until = Option.match(DateTime.make(retryAt), { onNone: () => `${retryAt}`, onSome: () => formatNotificationTime(retryAt) })
   return `held by the pool until ${until}: not an error of the task; retry at or after that time. ${reason}`
 }
 

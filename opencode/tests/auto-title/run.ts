@@ -24,6 +24,7 @@ import { testHostOptions } from "../../scripts/test-host.ts"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import { Config, Data, Effect, FileSystem, Option, Path, Predicate, Schedule, Schema } from "effect"
 import { HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
+import { externalInput } from "../read-path.ts"
 import { Result, titleOf, WORDS } from "./names.ts"
 
 /** How long a title may take to land after the step that asks for it. */
@@ -114,7 +115,7 @@ interface CreateOptions {
 interface Sdk {
   readonly OpenCode: { readonly create: (options: CreateOptions) => Promise<Embedded> }
 }
-const loadSdk = (file: string): Promise<Partial<Sdk>> => import(file)
+const loadSdk = (file: string): Promise<Partial<Sdk>> => import(externalInput(file))
 const isSdk = (value: Partial<Sdk>): value is Sdk => Predicate.isFunction(value.OpenCode?.create)
 
 const run = Effect.gen(function* () {

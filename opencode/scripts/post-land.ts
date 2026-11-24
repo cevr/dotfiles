@@ -24,7 +24,7 @@ import { decodeDeepReport, type DeepReport } from "./accept-ledger.ts"
 import { upstreamFile } from "../mods/prime/update.ts"
 import { exclusively, exclusivelySync } from "../mods/work/process/flock.ts"
 import { landLogs, scriptReceipt } from "../mods/work/process/landing.ts"
-import { readyFork } from "./fork.ts"
+import { type Fork, readyFork } from "./fork.ts"
 import { type ForkWork, droppable, forkWork, forkWorkText, ghLookup, readAgents } from "./fork-work.ts"
 import { BRANCH, forkChecks, mergeUpstream, type Outcome, ownsFork, syncFork, UPSTREAM_BRANCH, UPSTREAM_REMOTE, upstreamReading, withUpstreamLock } from "./upstream.ts"
 
@@ -217,11 +217,13 @@ const step = Effect.fn("PostLand.step")(function* (steps: Steps, load: Load) {
 })
 
 /** The fork post-land works on: `OPENCODE_DEV`, checked (`readyFork`); unset, it throws `NO_FORK`, with no guessed default. */
-export const landFork = (env: NodeJS.ProcessEnv): string => {
-  const checked = readyFork(env.OPENCODE_DEV)
+export const landForkBy = (env: NodeJS.ProcessEnv, check: (dev: NodeJS.ProcessEnv[string]) => Fork): string => {
+  const checked = check(env.OPENCODE_DEV)
   if ("problem" in checked) throw new Error(checked.problem)
   return checked.fork
 }
+
+export const landFork = (env: NodeJS.ProcessEnv): string => landForkBy(env, readyFork)
 
 if (import.meta.main) {
   const home = homedir()

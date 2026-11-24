@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason native TUI plugin loader reads at sim-tui/app.ts: createAppFixture({
 // A short session at rest, on the simulated TUI (sim-tui/) with Prime loaded and the double paging session.messages
 // as the real server does: every non-empty page carries a `next` cursor, the last one too. The whole session fits on
 // its first page and on the screen, so nothing is left to read; once that read settles, the transcript's top is the

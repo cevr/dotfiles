@@ -1,3 +1,4 @@
+// @reads **/*.test.{ts,tsx} testbeds/**/*.{ts,tsx} tests/**/*.{ts,tsx}
 // tests/git-repo.ts: a test's temp git repository runs no background gc or maintenance, so a clone
 // of it under load never races a lock file git's upkeep removes (batch ar: scripts/upstream.test.ts
 // "the upstream reading" failed copying `.git/objects/maintenance.lock`). Every test makes its
@@ -7,8 +8,7 @@
 // and it reads git's argv with the guard's own reader (mods/guard/verdict.ts), global options and all.
 import { describe, expect, test } from "bun:test"
 import { Array as Arr, Option, Order, Predicate } from "effect"
-import { execFileSync } from "node:child_process"
-import { readFileSync } from "node:fs"
+import { mkdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
@@ -26,7 +26,9 @@ import {
 } from "oxc-parser"
 import { gitSubcommand } from "../mods/guard/verdict.ts"
 import { type GitGlobalOptions, gitGlobalOptions } from "./git-options.ts"
-import { gitClone, gitInit, QUIET_GIT } from "./git-repo.ts"
+import { QUIET_GIT } from "./git-repo.ts"
+import { cloneScratchGit, initScratchGit, spawnScratchGitSync } from "./scratch-child.ts"
+import { matchingInput } from "./read-path.ts"
 import { scratch } from "./scratch.ts"
 import { hangGuard } from "./hang-guard.ts"
 
@@ -34,7 +36,7 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url))
 
 /** What `git config --get` reads for each quiet key in the repository at `dir`. */
 const settings = (dir: string) =>
-  Object.fromEntries(Object.keys(QUIET_GIT).map((key) => [key, execFileSync("git", ["-C", dir, "config", "--get", key], { encoding: "utf8" }).trim()]))
+  Object.fromEntries(Object.keys(QUIET_GIT).map((key) => [key, spawnScratchGitSync(dir, ["config", "--get", key]).stdout.toString().trim()]))
 
 const QUIET = { "gc.auto": "0", "maintenance.auto": "false" }
 
@@ -282,8 +284,11 @@ const rawSites = (file: string, text: string): ReadonlyArray<string> => {
 }
 
 /** Every test file, and every file under tests/ and testbeds/ (fixtures, helpers and the harnesses the tests and agents run). */
-const testFiles = () =>
-  [...new Set(["**/*.test.ts", "tests/**/*.ts", "testbeds/**/*.ts"].flatMap((glob) => [...new Bun.Glob(glob).scanSync({ cwd: ROOT })]))].filter((file) => !file.includes("node_modules/")).sort()
+const testFiles = () => [...new Set([
+  ...new Bun.Glob("**/*.test.{ts,tsx}").scanSync({ cwd: ROOT }),
+  ...new Bun.Glob("tests/**/*.{ts,tsx}").scanSync({ cwd: ROOT }),
+  ...new Bun.Glob("testbeds/**/*.{ts,tsx}").scanSync({ cwd: ROOT }),
+])].filter((file) => !file.includes("node_modules/")).sort()
 
 /** Test code with each shape the guard must judge: its wrappers first, then one call a line. */
 const SAMPLE = [
@@ -508,9 +513,10 @@ describe("a test's temp git repository", () => {
     const work = join(dir.path, "work")
     const bare = join(dir.path, "bare.git")
     const clone = join(dir.path, "clone")
-    gitInit(work, ["-q", "-b", "main"])
-    gitInit(bare, ["-q", "--bare"])
-    gitClone(bare, clone, ["-q"])
+    for (const folder of [work, bare]) mkdirSync(folder)
+    initScratchGit(work, ["-q", "-b", "main"])
+    initScratchGit(bare, ["-q", "--bare"])
+    cloneScratchGit(dir.path, bare, clone, "origin")
     expect({ work: settings(work), bare: settings(bare), clone: settings(clone) }).toEqual({ work: QUIET, bare: QUIET, clone: QUIET })
   })
 
@@ -544,15 +550,15 @@ describe("a test's temp git repository", () => {
 
   test("the files the guard reads are every test file and every file under tests/ and testbeds/", () => {
     const files = new Set(testFiles())
-    const under = (dir: string) => [...new Bun.Glob(`${dir}/**/*.ts`).scanSync({ cwd: ROOT })].filter((file) => !file.includes("node_modules/"))
     expect(files).toContain("testbeds/gamut/gamut.ts")
-    expect([...under("tests"), ...under("testbeds"), "tests/git-repo.test.ts"].filter((file) => !files.has(file))).toEqual([])
+    const tree = [...new Bun.Glob("tests/**/*.{ts,tsx}").scanSync({ cwd: ROOT }), ...new Bun.Glob("testbeds/**/*.{ts,tsx}").scanSync({ cwd: ROOT })]
+    expect([...tree.filter((file) => !file.includes("node_modules/")), "tests/git-repo.test.ts"].filter((file) => !files.has(file))).toEqual([])
   })
 
   test("no test or testbed file makes a repository with a raw git init or clone: each goes through gitInit or gitClone", () => {
     const raw = testFiles()
       .filter((file) => !HELPERS.includes(file))
-      .flatMap((file) => rawSites(file, readFileSync(join(ROOT, file), "utf8")).map((site) => `${file}:${site}`))
+      .flatMap((file) => rawSites(file, readFileSync(matchingInput("{**/*.test.{ts,tsx},tests/**/*.{ts,tsx},testbeds/**/*.{ts,tsx}}", file), "utf8")).map((site) => `${file}:${site}`))
     expect(raw).toEqual([])
   })
 })

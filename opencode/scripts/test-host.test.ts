@@ -1,4 +1,5 @@
-// @reads tests/** sim/** sim-tui/** scripts/** scenarios/** testbeds/** cmd/**
+// @reads all
+// @reads-reason computed read at scripts/test-host.test.ts: fs.readFileString(path.join(ROOT, file))
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { expect, test } from "bun:test"
 import { Effect, FileSystem, Path, Predicate } from "effect"

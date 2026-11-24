@@ -2,16 +2,21 @@
 // no push. And the lock it shares with daily's step 0 (scripts/upstream.ts `withUpstreamLock`), raced by
 // real processes (scripts/upstream-lock-child.ts).
 import { afterAll, describe, expect, test } from "bun:test"
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { appendFileSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs"
+import { readScratchFileSync as readFileSync, scratchExistsSync as existsSync, scratchInput } from "../tests/read-path.ts"
+import { spawnCheckoutBun } from "../tests/scratch-child.ts"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ForkWork } from "./fork-work.ts"
 import { Effect, Option } from "effect"
 import { it } from "effect-bun-test"
 import type { DeepReport } from "./accept-ledger.ts"
-import { landFork, landReport, type Load, loadOf, postLand, reportOf, type Steps } from "./post-land.ts"
-import { NO_FORK } from "./fork.ts"
-import { FORK_OWNER, type Outcome, withUpstreamLock } from "./upstream.ts"
+import { landForkBy, landReport, type Load, loadOf, postLand, reportOf, type Steps } from "./post-land.ts"
+import { checkForkAddress, NO_FORK, resolveNamedFork } from "./fork.ts"
+import { FORK_OWNER, type Outcome, upstreamLockFile, withOpenedUpstreamLock } from "./upstream.ts"
+
+const landFork = (env: Record<string, string>) =>
+  landForkBy(env, (dev) => resolveNamedFork(dev, (named) => checkForkAddress(named, () => false)))
 import { hangGuard, stamp, watchdog } from "../tests/hang-guard.ts"
 
 const NONE: ForkWork = { candidates: [], closed: [], unread: 0, droppable: [] }
@@ -307,7 +312,19 @@ describe("the post-land step", () => {
 describe("the upstream lock", () => {
   const scratch = mkdtempSync(join(tmpdir(), "upstream-lock-"))
   afterAll(() => rmSync(scratch, { recursive: true, force: true }))
-  const CHILD = join(import.meta.dir, "upstream-lock-child.ts")
+  const withUpstreamLock = <A>(state: string, run: () => Promise<A>) =>
+    withOpenedUpstreamLock(() => openSync(scratchInput(upstreamLockFile(state)), "a+"), run)
+
+  const start = (state: string, role: string, racers: number, crash = false) => {
+    const request = join(state, `${role}.json`)
+    writeFileSync(request, JSON.stringify({ state, role, racers, crash }))
+    return spawnCheckoutBun("scripts/upstream-lock-child.ts", {
+      scratchArgs: [request],
+      scratch: { HOME: state, TMPDIR: state, XDG_CONFIG_HOME: state, XDG_DATA_HOME: state, XDG_STATE_HOME: state, XDG_CACHE_HOME: state },
+      external: {},
+      values: {},
+    }, true)
+  }
 
   interface Event {
     readonly role: string
@@ -315,15 +332,8 @@ describe("the upstream lock", () => {
   }
 
   /** Starts `roles` as real racing processes on `state` (each in its own process group), opens the barrier, and answers their events. */
-  const race = async (state: string, roles: ReadonlyArray<string>, extra: Record<string, string> = {}) => {
-    const children = roles.map((role) =>
-      Bun.spawn([process.execPath, CHILD], {
-        detached: true,
-        env: { ...process.env, LOCK_STATE: state, LOCK_ROLE: role, LOCK_RACERS: String(roles.length), ...extra },
-        stdout: "pipe",
-        stderr: "pipe",
-      }),
-    )
+  const race = async (state: string, roles: ReadonlyArray<string>, crash = false) => {
+    const children = roles.map((role) => start(state, role, roles.length, crash))
     try {
       writeFileSync(join(state, "go"), "")
       const codes = await Promise.all(children.map((child) => child.exited))
@@ -387,7 +397,7 @@ describe("the upstream lock", () => {
 
   test("a holder cut while it holds the lock (it exits without releasing) leaves no lock behind: the next merge runs", async () => {
     const state = fresh("crash")
-    const cut = await race(state, ["cut"], { LOCK_CRASH: "1" })
+    const cut = await race(state, ["cut"], true)
     expect(cut.codes).toEqual([3])
     expect(cut.events.map((event) => event.phase)).toEqual(["start"])
     expect(await withUpstreamLock(state, async () => "merged")).toBe("merged")
@@ -396,12 +406,7 @@ describe("the upstream lock", () => {
   test("while a real process holds it, this one runs nothing", async () => {
     const state = fresh("held")
     // The child holds until one other racer (this process) has said it tried.
-    const child = Bun.spawn([process.execPath, CHILD], {
-      detached: true,
-      env: { ...process.env, LOCK_STATE: state, LOCK_ROLE: "holder", LOCK_RACERS: "2" },
-      stdout: "pipe",
-      stderr: "pipe",
-    })
+    const child = start(state, "holder", 2)
     try {
       writeFileSync(join(state, "go"), "")
       const deadline = watchdog(10_000)

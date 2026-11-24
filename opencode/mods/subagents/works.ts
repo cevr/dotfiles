@@ -26,7 +26,6 @@ export function activeOf(state: Lifecycle): Activity {
     case "latched": return "latched"
     case "continuing":
     case "recovering": return "waiting"
-    case "checking":
     case "unknown":
     case "undetermined":
     case "none":

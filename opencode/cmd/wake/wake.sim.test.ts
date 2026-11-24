@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // Wakes on the simulated host (sim/world.ts), each test at 20 seeds:
 // tests/wake.test.ts's names and the claims it reads off the model's requests,
 // the transcripts, the tray and the plugin's starts, moved off real OpenCode
@@ -156,7 +158,7 @@ seeded(
       // The letter: what fired, when it was set and due, the note verbatim; on time, so it does not say late.
       const woken = root().find((request) => request.text.includes("Note: ALPHA"))
       expect(woken?.text).toMatch(
-        /⏰ Wake w[0-9a-z]+ fired: the alarm you set at \d{4}-\d\d-\d\dT[\d:.]+Z, due \d{4}-\d\d-\d\dT[\d:.]+Z\.\nNote: ALPHA: check that the build finished/,
+        /⏰ Wake w[0-9a-z]+ fired: the alarm you set at [A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2}:\d{2} [AP]M (?:EST|EDT), due [A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2}:\d{2} [AP]M (?:EST|EDT)\.\nNote: ALPHA: check that the build finished/,
       )
       expect(woken?.text).not.toContain("no OpenCode server was running")
 
@@ -238,7 +240,7 @@ seeded("an alarm due while no server ran fires when one starts, and says it went
     const late = root().find((request) => request.text.includes("Note: ZETA"))
     expect(late?.at ?? 0).toBeGreaterThanOrEqual(started)
     expect(late?.text).toMatch(
-      /It fired \d+m late: no OpenCode server was running at \d{4}-\d\d-\d\dT[\d:.]+Z, so it went when one started\.\nNote: ZETA: look again after the outage/,
+      /It fired \d+m late: no OpenCode server was running at [A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2}:\d{2} [AP]M (?:EST|EDT), so it went when one started\.\nNote: ZETA: look again after the outage/,
     )
     expect(world.asked().some((request) => request.at > stopped && request.at < started)).toBe(false)
     expect(replies()).toContain("Woke late on zeta.")

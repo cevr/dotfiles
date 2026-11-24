@@ -1,9 +1,5 @@
 import { Array as Arr, Option } from "effect"
-import { execFileSync, spawnSync } from "node:child_process"
-import { existsSync, readFileSync } from "node:fs"
-import { join } from "node:path"
-import { gunzipSync } from "node:zlib"
-import { gitInit } from "./git-repo.ts"
+import { initScratchGit, installedGitManual, scratchGitVersion } from "./scratch-child.ts"
 import { scratch } from "./scratch.ts"
 
 /**
@@ -21,14 +17,6 @@ export interface GitGlobalOptions {
   readonly valued: ReadonlyArray<string>
   /** Those that take no value and after which git goes on to run the command (`--exec-path`, `--help` end the run). */
   readonly passing: ReadonlyArray<string>
-}
-
-/** The manual's text: git.1, or git.1.gz as Debian ships it; empty when neither is installed. */
-const manual = (): string => {
-  const page = join(execFileSync("git", ["--man-path"], { encoding: "utf8" }).trim(), "man1", "git.1")
-  const plain = Arr.filter([page], existsSync).map((path) => readFileSync(path, "utf8"))
-  const zipped = Arr.filter([`${page}.gz`], existsSync).map((path) => new TextDecoder().decode(gunzipSync(readFileSync(path))))
-  return [...plain, ...zipped].join("")
 }
 
 /**
@@ -53,16 +41,6 @@ export const manualOptions = (text: string): ReadonlyArray<string> => {
 /** Values tried for an option that may take one; each is one a valued global option accepts in a repository. */
 const VALUES = [".", "core.probe=1", "core.probe=HOME", "HEAD"]
 
-/** Whether the installed git ran its `version` command for `git <args>` in `cwd`, with no pager, prompt or global config. */
-const ranVersion = (cwd: string, args: ReadonlyArray<string>) =>
-  spawnSync("git", [...args], {
-    cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    timeout: 10_000,
-    env: { ...process.env, GIT_PAGER: "cat", PAGER: "cat", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" },
-  }).stdout.startsWith("git version ")
-
 /**
  * Options not run with `version` after them: help opens a manual, and `-v`/`--version` print the
  * version themselves. None takes a value.
@@ -71,11 +49,11 @@ const NOT_PROBED = new Set(["-h", "--help", "-v", "--version"])
 
 /** The installed git's global options, and which take a value, probed in a scratch repository. */
 export const gitGlobalOptions = (): GitGlobalOptions => {
-  const all = manualOptions(manual())
   using dir = scratch("git-options-")
-  gitInit(dir.path, ["-q"])
+  const all = manualOptions(installedGitManual(dir.path))
+  initScratchGit(dir.path, ["-q"])
   const probed = all.filter((option) => !NOT_PROBED.has(option))
-  const passing = probed.filter((option) => ranVersion(dir.path, [option, "version"]))
-  const valued = probed.filter((option) => !passing.includes(option) && VALUES.some((value) => ranVersion(dir.path, [option, value, "version"])))
+  const passing = probed.filter((option) => scratchGitVersion(dir.path, option))
+  const valued = probed.filter((option) => !passing.includes(option) && VALUES.some((value) => scratchGitVersion(dir.path, option, value)))
   return { all, valued, passing }
 }

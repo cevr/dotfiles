@@ -11,7 +11,7 @@
 // B's pace must hold a new agent for A's wave, before any reading shows it,
 // name the unreachable peer, and carry no token across.
 import { afterAll, describe, expect, test } from "bun:test"
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"
@@ -20,7 +20,8 @@ import { fleetRows, type PaneFleet } from "../mods/status/pane.ts"
 import { fakeAccount, startFakeAnthropic } from "./fake-anthropic.ts"
 import { openSlotStore } from "./store/store.ts"
 import { PROBE, serve } from "./orchestrate/sim.ts"
-import { owned } from "./owned.ts"
+import { ownedForkFixture } from "./owned.ts"
+import { externalInput, readScratchFileSync } from "./read-path.ts"
 import { keptScratch } from "./scratch.ts"
 import { hangGuard, stamp, watchdog } from "./hang-guard.ts"
 
@@ -102,9 +103,7 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
     for (const dir of ["work", "home", "home/.config", "home/.config/opencode", "home/.local", "home/.local/state"]) mkdirSync(join(base, dir))
     writeFileSync(join(home, ".config/opencode/opencode.json"), JSON.stringify(config))
     const launch = forkLaunch(fork ?? "", process.execPath)
-    const child = owned([...launch.base, "serve", "--service", "--port", "0"], {
-      cwd: join(base, "work"),
-      env: {
+    const child = ownedForkFixture([fork ?? "", join(base, "work"), ["serve", "--service", "--port", "0"], {
         PATH: process.env.PATH ?? "",
         HOME: home,
         XDG_CONFIG_HOME: join(home, ".config"),
@@ -115,10 +114,7 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
         OPENCODE_DISABLE_MODELS_FETCH: "1",
         ...launch.env,
         ...extra,
-      },
-      stdout: "ignore",
-      stderr: "pipe",
-    })
+    }], { stdout: "ignore", stderr: "pipe" })
     let stderr = ""
     void (async () => {
       for await (const chunk of child.stderr) stderr += new TextDecoder().decode(chunk)
@@ -128,7 +124,7 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
     const service = await until(
       async () => {
         try {
-          return JSON.parse(readFileSync(serviceFile, "utf8")) as Service
+          return JSON.parse(readScratchFileSync(serviceFile, "utf8")) as Service
         } catch {
           return undefined
         }
@@ -202,7 +198,7 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
 
         // Host A admits two starts on the same scripted provider. The fleet
         // accounting test needs no verification or separate model family.
-        const { OpenCode } = (await import(join(fork ?? "", "packages/client/src/promise/index.ts"))) as ClientModule
+        const { OpenCode } = (await import(externalInput(join(fork ?? "", "packages/client/src/promise/index.ts")))) as ClientModule
         const client = OpenCode.make({ baseUrl: a.service.url, headers: { authorization: authorization(a.service) } })
         const location = { directory: join(a.base, "work") }
         const session = await client.session.create({ location })

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/orchestrate/filestore/step-log.ts: const text = Effect.tryPromise(() => readFile(file, "utf8")).pipe(Effect.orElseSucceed(() => ""
 // The step log over a real JSONL file in a scratch directory: the laws, with
 // each world written as the call log writes its lines, and the lines it
 // passes over.

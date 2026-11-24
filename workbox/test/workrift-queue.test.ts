@@ -16,7 +16,9 @@
 // warms too, under the exclusive lock). The schedule of 2026-11-22 00:00Z on the workbox (11 creates waiting, master
 // moving every ten minutes, 96-239 s clones, a 628 s warm) shows the wait each gives.
 import { afterAll, describe, expect, test } from "bun:test"
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync as readSelectedFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { externalInput, matchingInput, readScratchDirectorySync as readdirSync, readScratchFileSync as readFileSync, scratchExistsSync as existsSync, scratchInput } from "../../opencode/tests/read-path.ts"
+import { checkoutBlob, cloneScratchGit, initScratchGit, runScratchTool, spawnScratchGitSync, spawnScratchProgram, writeScratchScript } from "../../opencode/tests/scratch-child.ts"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
 import { hangGuard, stamp, watchdog } from "../../opencode/tests/hang-guard.ts"
@@ -352,9 +354,9 @@ describe("the base's lock as a ticket queue (a model on a manual clock)", () => 
 // reference model: one first-come-first-served server per copy base, whose arrivals are the turn tickets as they
 // appear in the base's state folder.
 
-const turnRepo = join(import.meta.dir, "..", "..")
 // WORKRIFT_SCRIPT runs this against another script (main's, for the red run; a mutant).
-const TURN_SCRIPT = process.env.WORKRIFT_SCRIPT ?? join(turnRepo, "workbox/bin/workrift")
+const alternate = process.env.WORKRIFT_SCRIPT
+const TURN_SCRIPT = readSelectedFileSync(alternate ? externalInput(alternate) : matchingInput("../workbox/bin/workrift"), "utf8")
 const turnScratch = realpathSync(mkdtempSync(join(tmpdir(), "workrift-turn-")))
 // Hang guard: the file's last hook deletes every bench of the run (a few dozen Git trees and workspaces).
 afterAll(() => rmSync(turnScratch, { recursive: true, force: true }), hangGuard("process-tree"))
@@ -375,9 +377,9 @@ const readOr = <A>(read: () => A, otherwise: A): A => {
     return otherwise
   }
 }
-const sh = (cwd: string, env: Env, ...argv: ReadonlyArray<string>) => {
-  const ran = Bun.spawnSync([...argv], { cwd, env, stdout: "pipe", stderr: "pipe" })
-  if (ran.exitCode !== 0) throw new Error(`${argv.join(" ")} failed (${ran.exitCode}): ${ran.stderr.toString()}`)
+const git = (cwd: string, env: Env, ...args: ReadonlyArray<string>) => {
+  const ran = spawnScratchGitSync(cwd, args, env)
+  if (ran.exitCode !== 0) throw new Error(`${args.join(" ")} failed (${ran.exitCode}): ${ran.stderr.toString()}`)
   return ran.stdout.toString()
 }
 
@@ -466,28 +468,25 @@ const turnBench = (label: string, names: ReadonlyArray<string>) => {
   const dir = join(turnScratch, `${label}-${turnBenches++}`)
   const [home, bin, root, holds, proc] = ["home", "bin", "root", "holds", "proc"].map((each) => join(dir, each)) as [string, string, string, string, string]
   for (const each of [home, bin, root, holds, proc]) mkdirSync(each, { recursive: true })
+  const script = writeScratchScript(join(dir, "workrift"), TURN_SCRIPT)
+  chmodSync(script, 0o755)
   exe(join(bin, "flock"), FLOCK)
   exe(join(bin, "work"), FAKE_WORK)
   exe(join(bin, "stat"), FAKE_STAT)
   const basesFile = join(dir, "bases")
-  const inherited = Object.fromEntries(
-    Object.entries(process.env).filter(
-      (entry): entry is [string, string] => entry[1] !== undefined && !/^(WORKRIFT_|RIFT_|WORK_|WORK$|XDG_|GIT_|FAKE_)/.test(entry[0]),
-    ),
-  )
-  const env: Env = {
-    ...inherited,
+  const paths: Env = {
     HOME: home,
-    PATH: `${bin}:${process.env.PATH ?? ""}`,
     XDG_CONFIG_HOME: join(home, ".config"),
     XDG_DATA_HOME: join(home, ".local/share"),
     XDG_CACHE_HOME: join(home, ".cache"),
     WORKRIFT_ROOT: root,
     WORKRIFT_PROC: proc,
-    WORKRIFT_PURGE: "1",
     WORK: join(bin, "work"),
     FAKE_WORK_BASES: basesFile,
     FAKE_HOLDS: holds,
+  }
+  const env: Env = {
+    WORKRIFT_PURGE: "1",
     GIT_AUTHOR_NAME: "Workrift Test",
     GIT_AUTHOR_EMAIL: "workrift@example.invalid",
     GIT_COMMITTER_NAME: "Workrift Test",
@@ -500,19 +499,20 @@ const turnBench = (label: string, names: ReadonlyArray<string>) => {
     GIT_CONFIG_VALUE_1: "false",
   }
   const origin = join(dir, "origin.git")
-  sh(dir, env, "git", "init", "-q", "--bare", "-b", "main", origin)
+  mkdirSync(origin)
+  initScratchGit(origin, ["-q", "--bare", "-b", "main"], env)
   const seed = join(dir, "seed")
-  sh(dir, env, "git", "clone", "-q", origin, seed)
-  sh(seed, env, "git", "switch", "-q", "-c", "main")
+  cloneScratchGit(dir, origin, seed, "origin")
+  git(seed, env, "checkout", "-q", "-b", "main")
   writeFileSync(join(seed, "README.md"), "app\n")
-  sh(seed, env, "git", "add", "README.md")
-  sh(seed, env, "git", "commit", "-q", "-m", "init")
-  sh(seed, env, "git", "push", "-q", "-u", "origin", "main")
+  git(seed, env, "add", "README.md")
+  git(seed, env, "commit", "-q", "-m", "init")
+  git(seed, env, "push", "-q", "-u", "origin", "main")
   const bases = new Map<string, string>()
   for (const name of names) {
     const path = join(root, name)
-    sh(dir, env, "git", "clone", "-q", origin, path)
-    sh(path, env, "git", "remote", "set-head", "origin", "--auto")
+    cloneScratchGit(dir, origin, path, "origin")
+    git(path, env, "remote", "set-head", "origin", "--auto")
     // This bench measures clone turns, not the one-off exclusive initialization of a base.
     writeFileSync(join(path, ".git/workrift.lock"), "")
     writeFileSync(join(path, ".git/info/exclude"), "work.toml\n", { flag: "a" })
@@ -522,11 +522,16 @@ const turnBench = (label: string, names: ReadonlyArray<string>) => {
   }
   const base = (name: string) => bases.get(name) ?? ""
   /** A workspace made by the stand-in directly (no workrift, no log), for a remove to take. */
-  const premade = (baseName: string, name: string) =>
-    (JSON.parse(sh(base(baseName), { ...env, WORK_BASE: base(baseName) }, join(bin, "work"), "--json", "new", "-branch", name, "-from", "HEAD", name)) as { path: string }).path
+  const premade = (baseName: string, name: string) => {
+    const cwd = base(baseName)
+    const arg = ["--json", "new", "-branch", name, "-from", "HEAD", name]
+    const ran = runScratchTool(join(bin, "work"), arg, { cwd, tools: bin, paths: { ...paths, WORK_BASE: cwd }, values: env })
+    if (ran.exitCode !== 0) throw new Error(`${arg.join(" ")} failed: ${ran.stderr.toString()}`)
+    return (JSON.parse(ran.stdout.toString()) as { path: string }).path
+  }
   /** The base's workrift state folder, where its queues are. */
   const state = (baseName: string) => join(root, ".work", baseName, ".workrift")
-  return { dir, env, root, holds, log: join(dir, "phases.log"), base, premade, state, names }
+  return { dir, env, paths, bin, script, root, holds, log: join(dir, "phases.log"), base, premade, state, names }
 }
 type TurnBench = ReturnType<typeof turnBench>
 
@@ -590,7 +595,7 @@ interface FixtureEvents {
  * a poller notes each turn ticket the moment it appears in a base's state folder, with its number and purpose.
  */
 const runOps = async (b: TurnBench, ops: ReadonlyArray<Op>, snapshots: ReadonlyArray<string> = [], drive: (events: FixtureEvents) => Promise<void> = async () => {}) => {
-  const env: Env = { ...b.env, FAKE_LOG: b.log, FAKE_SUBVOLUMES: snapshots.map(b.base).join(":") }
+  const paths: Env = { ...b.paths, FAKE_LOG: b.log }
   const targets = new Map<string, string>()
   for (const op of ops) {
     if (op.kind === "remove") targets.set(op.name, b.premade(op.base, op.name))
@@ -610,9 +615,10 @@ const runOps = async (b: TurnBench, ops: ReadonlyArray<Op>, snapshots: ReadonlyA
             const m = /^(\d+)\.[rw]$/.exec(file)
             const key = `${name}/${queue}/${file}`
             if (!m || turns.has(key)) continue
-            // A ticket may end between the listing and the read.
-            const record = textLines(readOr(() => readFileSync(join(dir, file), "utf8"), ""))
-            if (record.length < 4) continue
+            // A ticket may end between the listing and the read. Keep its
+            // possibly empty process identity in field 2; the purpose is field 4.
+            const record = readOr(() => readFileSync(join(dir, file), "utf8"), "").split("\n")
+            if (record.length < 5 || !record[0] || !record[2] || !record[3]) continue
             const purpose = record[3] ?? ""
             turns.set(key, { base: name, number: Number(m[1]), name: purpose.split(" ")[1] ?? "", purpose })
           }
@@ -626,14 +632,16 @@ const runOps = async (b: TurnBench, ops: ReadonlyArray<Op>, snapshots: ReadonlyA
   const kill = (name: string) => {
     const pid = groups.get(name)
     if (pid === undefined) throw new Error(`no test process group for ${name}`)
+    // The request is written before the kernel could unblock the next waiter.
+    appendFileSync(scratchInput(b.log), `kill - ${name}\n`)
     try {
-      // The request is written before the kernel could unblock the next waiter.
-      appendFileSync(b.log, `kill - ${name}\n`)
       process.kill(-pid, "SIGKILL")
-      kills.set(name, stamp() / 1000)
-    } catch {
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error
       // It had ended; this is not a kill of a waiter or holder.
+      return
     }
+    kills.set(name, stamp() / 1000)
   }
   const phaseLog = () => textLines(existsSync(b.log) ? readFileSync(b.log, "utf8") : "")
   const observe = async (what: string, ready: () => boolean) => {
@@ -658,16 +666,17 @@ const runOps = async (b: TurnBench, ops: ReadonlyArray<Op>, snapshots: ReadonlyA
       const beforeStart = started + op.at - stamp()
       if (beforeStart > 0) await Bun.sleep(beforeStart)
       if (!polling) throw new Error(`fixture ended before ${op.name} could start`)
-      const script = op.script ?? TURN_SCRIPT
-      const argv = op.kind === "create" ? [script, "create", op.name] : [script, "remove", targets.get(op.name) ?? ""]
+      const script = op.script ?? b.script
+      const argv = op.kind === "create" ? ["create", op.name] : ["remove", targets.get(op.name) ?? ""]
       const errFile = join(b.dir, `${op.name}.err`)
-      const child = Bun.spawn(argv, {
+      writeFileSync(errFile, "")
+      const child = spawnScratchProgram(script, argv, {
         cwd: op.kind === "create" ? b.base(op.base) : b.root,
-        env: op.kind === "create" ? { ...env, WORKRIFT_SOURCE: b.base(op.base) } : env,
-        stdout: "ignore",
-        stderr: Bun.file(errFile),
-        detached: true,
-      })
+        tools: b.bin,
+        paths: op.kind === "create" ? { ...paths, WORKRIFT_SOURCE: b.base(op.base) } : paths,
+        values: b.env,
+        pathLists: { FAKE_SUBVOLUMES: snapshots.map(b.base).join(":") },
+      }, Bun.file(scratchInput(errFile)))
       groups.set(op.name, child.pid)
       const timer =
         op.killAfter === undefined
@@ -862,7 +871,7 @@ describe("the clone turn: one clone or delete at a time per copy base, in arriva
   test("beside the script before the turn (83b97f9e) installed by rename: old creates and removes take no turn and are not starved; nothing deadlocks; the new ones still take turns among themselves", async () => {
     const b = turnBench("old", ["A"])
     const old = join(b.dir, "workrift-83b97f9e")
-    writeFileSync(old, sh(turnRepo, b.env, "git", "show", "83b97f9e:workbox/bin/workrift"))
+    writeScratchScript(old, checkoutBlob("83b97f9e899943d303362b56d8aac10648af0303", "../workbox/bin/workrift"))
     chmodSync(old, 0o755)
     const run = await runOps(b, [
       { kind: "create", base: "A", name: "n1", at: 0, hold: 0.8 },

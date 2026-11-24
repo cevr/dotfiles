@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/orchestrate/filestore/run-files.test.ts: const root = spawnSync(["realpath", held.path], { stdout: "pipe" }).stdout.toString().trim()
 // The runs' files on disk, in a scratch directory this test makes and removes: the RunFiles laws (laws.ts) over the
 // disk, as memory/run-files.test.ts runs them over memory. A file's time is set with touch, as a writer leaves it.
 import { file, spawnSync, write } from "bun"

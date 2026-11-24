@@ -3,11 +3,11 @@
 // (with fake pids), its judgement of a stop, and its dry run, which prints every command the Linux run takes. The
 // Linux run itself (user systemd, the installed build) is the workbox's.
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { Effect, Option, Result, Stream } from "effect"
+import { Effect, FileSystem, Option, Path, Result, Schema, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { checkoutBunCommand } from "../tests/scratch-child.ts"
 import { hangGuard } from "../tests/hang-guard.ts"
-import { ROOT } from "./reach.ts"
 import {
   answerOf,
   behaviourOf,
@@ -49,6 +49,7 @@ const FLAGS: Flags = {
 }
 const input = (flags: Partial<Flags> = {}) => inputOf({ ...FLAGS, ...flags }, "/home/exedev", "run1")
 const RUN = "/dev/shm/restart-leg-run1"
+const restartArgs = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)))
 
 describe("flags", () => {
   it.effect("default to every case, upstream's no-wake, the installed tree, and a run dir right under the root", () =>
@@ -238,12 +239,22 @@ describe("the dry run", () => {
   )
 
   it.live.layer(BunServices.layer)("the CLI's --dry-run prints the plan and exits 0; a refused port exits 2; a run without systemd here is refused", () =>
-    Effect.gen(function* () {
+    Effect.scoped(Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+      const fs = yield* FileSystem.FileSystem
+      const path = yield* Path.Path
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "restart-leg-cli-" })
+      const request = path.join(dir, "args.json")
       const cli = (...args: ReadonlyArray<string>) =>
         Effect.scoped(
           Effect.gen(function* () {
-            const handle = yield* spawner.spawn(ChildProcess.make("bun", [`${ROOT}/scripts/restart-leg.ts`, ...args], { stdin: "ignore", forceKillAfter: "1 second" }))
+            yield* fs.writeFileString(request, restartArgs(args))
+            const handle = yield* spawner.spawn(checkoutBunCommand("scripts/fixtures/restart-leg-cli.ts", {
+              scratchArgs: [request],
+              scratch: { HOME: dir, TMPDIR: dir, XDG_CONFIG_HOME: dir, XDG_DATA_HOME: dir, XDG_STATE_HOME: dir, XDG_CACHE_HOME: dir },
+              external: {},
+              values: {},
+            }))
             return yield* Effect.all({ said: handle.all.pipe(Stream.decodeText(), Stream.mkString), code: handle.exitCode }, { concurrency: 2 })
           }),
         )
@@ -259,7 +270,7 @@ describe("the dry run", () => {
       const refused = yield* cli("--root", "/nonexistent/loop-probe-x")
       expect(Number(refused.code)).toBe(2)
       expect(refused.said).toContain("REFUSED")
-    }),
+    })),
     hangGuard("local-fixture"),
   )
 })

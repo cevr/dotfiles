@@ -33,6 +33,7 @@ import {
   type LawCall,
   PROBE_OPTIONS,
 } from "../../sim/law-names.ts"
+import { externalInput, matchingInput, scratchInput } from "../read-path.ts"
 
 /** How long the probe has to run every law on the real host. */
 const LIMIT = 300_000
@@ -281,7 +282,7 @@ interface Sdk {
   readonly OpenCode: { readonly create: (options: CreateOptions) => Promise<Embedded> }
 }
 /** The fork's SDK module, loaded from the fork found at run time. */
-const loadSdk = (file: string): Promise<Partial<Sdk>> => import(file)
+const loadSdk = (file: string): Promise<Partial<Sdk>> => import(externalInput(file))
 const isSdk = (value: Partial<Sdk>): value is Sdk => Predicate.isFunction(value.OpenCode?.create)
 
 /** The probe's outcome line in a log message, if it holds one. */
@@ -300,7 +301,9 @@ const run = Effect.gen(function* () {
   const path = yield* Path.Path
   const base = yield* Config.String("SIM_REAL_BASE")
   const fork = yield* Config.String("SIM_REAL_FORK")
-  const probe = yield* Config.String("SIM_REAL_PROBE")
+  const probePath = yield* Config.String("SIM_REAL_PROBE")
+  const checkoutProbe = matchingInput("sim")
+  const probe = (probePath === checkoutProbe && matchingInput("{sim,sim/**}", probePath)) || scratchInput(probePath)
   const law = path.join(base, LAW_FOLDER)
   const config = path.join(base, "config")
   yield* fs.makeDirectory(law, { recursive: true })

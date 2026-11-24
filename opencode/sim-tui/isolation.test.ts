@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at sim-tui/isolation.test.ts: const names = yield* fs.readDirectory(dir)
 // Isolation of the seeds that share one app: a seed run alone (`SIM_SEED=<n>`,
 // its file booting a fresh app for it) gives the same trace as that seed in
 // the file's full run, after every seed before it, for three seeds of each

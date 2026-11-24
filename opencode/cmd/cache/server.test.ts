@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/cache/filestore/request-log.ts: try: () => readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => (error.code === "ENOE
 // The plugin seam: the cache mod's server plugin on a stand-in host whose
 // request hook and events the test drives, the ledger in memory, on the test
 // clock. Each primary or compaction request a session sends becomes one ledger

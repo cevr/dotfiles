@@ -1,4 +1,5 @@
-/** @reads cmd/kernel/fixtures/settle-child-pace/** cmd/kernel/fixtures/lifecycle-envelopes/** cmd/kernel/server.ts cmd/orchestrate/server.ts cmd/wake/server.ts mods/subagents/solid/native-row.fixture.ts */
+// @reads all
+// @reads-reason nonliteral subprocess argv at tests/settle-child-attempts.test.ts: const code = yield* spawner.exitCode(ChildProcess.make(file, args, { forceKillAfter: "3 seconds
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import * as BunServices from "@effect/platform-bun/BunServices"
@@ -17,7 +18,8 @@ import { envelopeFields, lifecycleEnvelope, routedDelete } from "../cmd/kernel/l
 import { readMark, type MarkRead } from "../mods/wake/latch.ts"
 import { beforeRunnerCap, bridgeBudget, hangGuard } from "./hang-guard.ts"
 import { loadKernelRowFixture, loadKernelSdk } from "./kernel/run.ts"
-import { owned, released } from "./owned.ts"
+import { ownedCheckoutBun, released } from "./owned.ts"
+import { matchingInput, scratchInput } from "./read-path.ts"
 import { forkRuns, parentEnv, scratch } from "./scratch.ts"
 
 interface HostEvent {
@@ -122,6 +124,7 @@ interface Barrier {
   readonly next: Effect.Effect<{ readonly revision: number; readonly release: Effect.Effect<boolean> }>
   readonly initial: number
   readonly ready: Effect.Effect<void>
+  readonly answered: (revision: number) => Effect.Effect<void>
   readonly live: Display
   readonly snapshot: () => Display
   readonly shown: (now: number) => ReadonlyArray<string>
@@ -276,11 +279,11 @@ const observeUntil = Effect.fn("LifecycleFixture.observeUntil")(function* (event
   }
 })
 
-const pluginConfig = (cmd: string, base: string, join: Path.Path["join"], opensAt: number): ReadonlyArray<Schema.JsonObject> => [
-  { package: join(cmd, "kernel", "fixtures", "lifecycle-envelopes"), options: { direct: ["subagents", "shell", "fixture_shell_suppress"] } },
-  { package: join(cmd, "wake"), options: { backstop: "off" } },
-  { package: join(cmd, "orchestrate"), options: { codex: false, log: join(base, "calls.jsonl") } },
-  { package: join(cmd, "kernel", "fixtures", "settle-child-pace"), options: { opensAt } },
+const pluginConfig = (base: string, join: Path.Path["join"], opensAt: number): ReadonlyArray<Schema.JsonObject> => [
+  { package: matchingInput("cmd/kernel/fixtures/lifecycle-envelopes"), options: { direct: ["subagents", "shell", "fixture_shell_suppress"] } },
+  { package: matchingInput("cmd/wake"), options: { backstop: "off" } },
+  { package: matchingInput("cmd/orchestrate"), options: { codex: false, log: join(base, "calls.jsonl") } },
+  { package: matchingInput("cmd/kernel/fixtures/settle-child-pace"), options: { opensAt } },
 ]
 
 const host = Effect.fn("LifecycleFixture.host")(function* (
@@ -432,7 +435,7 @@ const finishBarriers = Effect.fn("LifecycleFixture.finishBarriers")(function* (
     const shownWhileSuperseded = barrier.shown(yield* Clock.currentTimeMillis)
     const activeDuringRead = barrier.active()
     yield* pending.release
-    yield* barrier.ready
+    yield* barrier.answered(pending.revision)
     const after = barrier.snapshot()
     const activeAfter = barrier.active()
     const accepted = barrier.revision()
@@ -499,6 +502,7 @@ const silentExit = Effect.fn("LifecycleFixture.silentExit")(function* (
 const cancelBehindBarrier = Effect.fn("LifecycleFixture.cancelBehindBarrier")(function* (
   instance: Embedded, events: AsyncIterator<HostEvent>, barrier: Barrier, root: string, child: string, inboxID: string,
 ) {
+  const before = barrier.snapshot()
   yield* Effect.sync(() => barrier.notify({ type: "server.connected" }))
   const old = yield* barrier.next
   yield* promised("native inbox cancellation failed", () => instance.sessions.inbox.cancel({ sessionID: child, inboxID }))
@@ -514,8 +518,8 @@ const cancelBehindBarrier = Effect.fn("LifecycleFixture.cancelBehindBarrier")(fu
   const next = yield* barrier.next
   const outstanding = barrier.snapshot()
   yield* next.release
-  yield* barrier.ready
-  return { old: old.revision, accepted: barrier.revision(), outstanding, shown: barrier.snapshot(), direct: takeAnswer(direct, "kernel") }
+  yield* barrier.answered(next.revision)
+  return { old: old.revision, accepted: barrier.revision(), before, outstanding, shown: barrier.snapshot(), direct: takeAnswer(direct, "kernel") }
 })
 
 const shellTrace = Effect.fn("LifecycleFixture.shellTrace")(function* (
@@ -668,16 +672,15 @@ const driveEnvelopeKinds = Effect.fn("LifecycleFixture.driveEnvelopeKinds")(func
 })
 
 const fixture = Effect.gen(function* () {
-  const base = yield* Config.schema(Schema.String, "LIFECYCLE_FIXTURE_HOME")
+  const base = scratchInput(yield* Config.schema(Schema.String, "LIFECYCLE_FIXTURE_HOME"))
   const fork = yield* Config.schema(Schema.String, "LIFECYCLE_FIXTURE_FORK")
-  const cmd = yield* Config.schema(Schema.String, "LIFECYCLE_FIXTURE_PLUGIN")
   const path = yield* Path.Path
   const gate = path.join(base, "release")
   yield* command("mkfifo", [gate])
   const model = yield* modelFor(gate)
   const now = yield* Clock.currentTimeMillis
   const opensAt = now + 3_600_000
-  const plugins = pluginConfig(cmd, base, path.join, opensAt)
+  const plugins = pluginConfig(base, path.join, opensAt)
   const acquire = host(model.baseURL, base, fork, plugins)
   const first = yield* Effect.scoped(Effect.flatMap(acquire, (opened) => Effect.gen(function* () {
     const observed = yield* firstPeriod(opened, base, gate, model.read)
@@ -692,7 +695,7 @@ const fixture = Effect.gen(function* () {
   // Commit a later busy period while the production observer is absent. A
   // same-outcome snapshot after reopen must not authenticate the saved end.
   // Keep the agents supplied by Orchestrate; only Kernel's observer is absent.
-  const unobserved = host(model.baseURL, base, fork, plugins.filter(({ package: name }) => name !== path.join(cmd, "kernel", "fixtures", "lifecycle-envelopes")))
+  const unobserved = host(model.baseURL, base, fork, plugins.filter(({ package: name }) => name !== matchingInput("cmd/kernel/fixtures/lifecycle-envelopes")))
   yield* Effect.scoped(Effect.flatMap(unobserved, (opened) => Effect.gen(function* () {
     const events = yield* eventStream(opened)
     yield* ask(opened, first.child, "Finish one new fixture period during the observation gap.")
@@ -741,7 +744,7 @@ const CutEvidence = Schema.Struct({
   old: Schema.Int, current: Schema.Int, accepted: Schema.Int,
 })
 const InboxCut = Schema.Struct({
-  old: Schema.Int, accepted: Schema.Int, outstanding: RowDisplay, shown: RowDisplay, direct: Schema.String,
+  old: Schema.Int, accepted: Schema.Int, before: RowDisplay, outstanding: RowDisplay, shown: RowDisplay, direct: Schema.String,
 })
 const ReadLatch = Schema.Struct({ child: Schema.String, mark: Schema.String, launch: Schema.String, rebuilt: Schema.String, listed: Schema.String })
 const report = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({
@@ -884,12 +887,13 @@ const verifyLife = Effect.fn("LifecycleFixture.verifyLife")(function* (result: E
   expect(result.silent.scheduled.map(({ order }) => order)).toEqual(["shell-first", "owner-first"])
   for (const cut of result.silent.scheduled) {
     expect(cut.live.map(({ state }) => state)).toEqual(["waiting"])
-    expect(cut.acrossFirst.map(({ state }) => state)).toEqual(["checking"])
-    expect(cut.outstanding.map(({ state }) => state)).toEqual(["unknown"])
-    expect(cut.shownWhileSuperseded).toEqual([])
+    // A refetch paints nothing in between: the answer shown stays until a whole newer one replaces it, the
+    // superseded read's answer (still newer than the one shown) and then the coalesced read's.
+    expect(cut.acrossFirst.map(({ state }) => state)).toEqual(["waiting"])
+    expect(cut.outstanding.map(({ state }) => state)).toEqual(["waiting"])
+    expect(cut.shownWhileSuperseded).toEqual(["waiting"])
     expect(cut.after).toEqual(undetermined)
-    expect(cut).toMatchObject({ activeDuringRead: false, activeAfter: false })
-    expect(cut.fallback.map(({ update }) => update)).not.toContain("Checking the last execution")
+    expect(cut).toMatchObject({ activeDuringRead: true, activeAfter: false })
     expect(previous).toHaveProperty("revision", cut.old)
     expect(current).toHaveProperty("revision", cut.accepted)
     expect(cut.accepted === cut.current && cut.current > cut.old).toBe(true)
@@ -911,7 +915,8 @@ const verifyLife = Effect.fn("LifecycleFixture.verifyLife")(function* (result: E
   expect(result.unrelated.shown).toEqual([{ state: "waiting", update: expect.stringContaining("since before reload") }])
   expect(result.related.shown.map(({ state }) => state)).toEqual(["failed"])
   for (const cut of [result.unrelated, result.related]) {
-    expect(cut.outstanding).toEqual([{ state: "unknown", update: "Current execution not known" }])
+    // The superseded read answered below the revision the notification named: the answer shown stays, nothing in between.
+    expect(cut.outstanding).toEqual(cut.before)
     expect(cut.accepted).toBeGreaterThan(cut.old)
   }
   expect(unrelated).toHaveProperty("revision", result.unrelated.accepted)
@@ -926,14 +931,14 @@ const runNative = Effect.gen(function* () {
   const fork = yield* Config.schema(Schema.String, "OPENCODE_DEV")
   const home = yield* Effect.acquireRelease(Effect.sync(() => scratch("settle-child-attempts-")), (dir) => Effect.sync(() => dir[Symbol.dispose]()))
   const child = yield* Effect.acquireRelease(
-    Effect.sync(() => owned(["bun", "--conditions=browser", path.resolve("tests/settle-child-attempts.test.ts")], {
-      cwd: home.path,
-      env: {
-        PATH: parentEnv.PATH, HOME: home.path, XDG_CONFIG_HOME: path.join(home.path, "config"), XDG_DATA_HOME: path.join(home.path, "data"),
+    Effect.sync(() => ownedCheckoutBun("tests/settle-child-attempts.test.ts", {
+      condition: "browser", startIn: home.path,
+      scratch: {
+        HOME: home.path, TMPDIR: home.path, XDG_CONFIG_HOME: path.join(home.path, "config"), XDG_DATA_HOME: path.join(home.path, "data"),
         XDG_STATE_HOME: path.join(home.path, "state"), XDG_CACHE_HOME: path.join(home.path, "cache"),
-        LIFECYCLE_FIXTURE_HOME: home.path, LIFECYCLE_FIXTURE_FORK: path.resolve(fork), LIFECYCLE_FIXTURE_PLUGIN: path.resolve("cmd"),
+        LIFECYCLE_FIXTURE_HOME: home.path,
       },
-      stdout: "pipe", stderr: "pipe",
+      external: { LIFECYCLE_FIXTURE_FORK: path.resolve(fork) }, values: {},
     })),
     (child) => Effect.suspend(() => {
       child.kill()

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason native TUI plugin loader reads at sim-tui/app.ts: createAppFixture({
 // The composer panel opened inside a subagent's view, in the Prime look, on the
 // simulated TUI (sim-tui/): the fork's real TUI with Prime and the escape plugin
 // loaded by path, in front of the server double. Two workers run; the second

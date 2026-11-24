@@ -1,11 +1,13 @@
 // workbox/systemd/system/workbox-btrfs-reclaim, which workbox-btrfs-reclaim.service runs at boot, on a scratch
 // /sys/fs/btrfs with a findmnt shim. Nothing here touches the real host.
 import { afterAll, describe, expect, test } from "bun:test"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { readScratchFileSync as readFileSync, scratchExistsSync } from "../../opencode/tests/read-path.ts"
+import { spawnCheckoutShellSync } from "../../opencode/tests/scratch-child.ts"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-const SCRIPT = join(import.meta.dir, "..", "systemd", "system", "workbox-btrfs-reclaim")
+const SCRIPT = "../workbox/systemd/system/workbox-btrfs-reclaim"
 const scratchRoot = realpathSync(mkdtempSync(join(tmpdir(), "btrfs-reclaim-test-")))
 afterAll(() => rmSync(scratchRoot, { recursive: true, force: true }))
 let count = 0
@@ -27,12 +29,8 @@ const bench = (source: string, knobs = true) => {
   }
   writeFileSync(join(bin, "findmnt"), `#!/bin/sh\n[ -n '${source}' ] && echo '${source}'\nexit 0\n`)
   chmodSync(join(bin, "findmnt"), 0o755)
-  const ran = Bun.spawnSync(["sh", SCRIPT, "/workspaces"], {
-    env: { PATH: `${bin}:/usr/bin:/bin`, WORKBOX_SYSFS_BTRFS: sys },
-    stdout: "pipe",
-    stderr: "pipe",
-  })
-  const read = (uuid: string) => (existsSync(knob(uuid)) ? readFileSync(knob(uuid), "utf8") : undefined)
+  const ran = spawnCheckoutShellSync(dir, SCRIPT, [join(dir, "workspaces")], { tools: bin, paths: { WORKBOX_SYSFS_BTRFS: sys } })
+  const read = (uuid: string) => (scratchExistsSync(knob(uuid)) ? readFileSync(knob(uuid), "utf8") : undefined)
   return { code: ran.exitCode, out: ran.stdout.toString(), err: ran.stderr.toString(), read }
 }
 

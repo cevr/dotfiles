@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at cmd/pool/server.test.ts: const written = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({ line: Schema.Nul
 // The plugin seam: the composition root on a stand-in host. On test layers it
 // checks what OpenCode sees: the credential header, the retry decision, the
 // ledger's keys, the sign-in marks and the pool's RPC answers. On the live
@@ -102,7 +104,7 @@ interface World {
   readonly integration: LoginsTest.Integration
   /** The plugin's storage, by key. */
   readonly storage: Map<string, Schema.Json>
-  readonly holdAccess: { scans: number; usage: number; unavailable: boolean }
+  readonly holdAccess: { scans: number; usage: number; unavailable: boolean; beforeRead: Effect.Effect<void> }
   /** Each agent's own prompt-cache lifetime (`request.settings.cacheTTL`), by agent id; an agent absent here is unknown to the host. */
   readonly agents: Map<string, string | undefined>
   /** Each fork's source, by fork id; a session absent here is no fork. */
@@ -123,7 +125,7 @@ const world = (): World => ({
   readings: new Map(),
   integration: { connections: new Map([[ANTHROPIC, CONNECTIONS]]), marks: [] },
   storage: new Map(),
-  holdAccess: { scans: 0, usage: 0, unavailable: false },
+  holdAccess: { scans: 0, usage: 0, unavailable: false, beforeRead: Effect.void },
   agents: new Map([["build", undefined]]),
   forks: new Map(),
   peers: new Map(),
@@ -330,10 +332,12 @@ const start = (
       ),
       storage: {
         ...storage,
+        get: (key: string) => Effect.sync(() => state.storage.get(key)),
         scan: (input: Parameters<typeof storage.scan>[0]) => Effect.suspend(() => {
           if (input.prefix.startsWith("anthropic/hold/")) {
             state.holdAccess.scans += 1
             if (state.holdAccess.unavailable) return Effect.die("hold store unavailable")
+            return state.holdAccess.beforeRead.pipe(Effect.andThen(storage.scan(input)))
           }
           return storage.scan(input)
         }),
@@ -506,7 +510,7 @@ test("the final handoff reads the hold store once, adds no usage read, and keeps
     expect(state.holdAccess.usage - usage).toBe(0)
     state.holdAccess.unavailable = true
     expect(yield* plugin.handoff("cred-a")).toMatchObject({
-      message: "dotfiles-opencode.pool: the request is held: the pool could not confirm its current holds; retry the hold store read; it may go again at 1970-01-01T00:00:01.000Z",
+      message: "dotfiles-opencode.pool: the request is held: the pool could not confirm its current holds; retry the hold store read; it may go again at Dec 31, 1969, 7:00:01 PM EST",
     })
     state.holdAccess.unavailable = false
     expect(yield* plugin.handoff("cred-a")).toEqual(Handoff.cases.Send.make({}))
@@ -647,8 +651,8 @@ test("R10-6 two copies reserve just one usage read, then keep the later refusal 
     expect(yield* one.pace("anthropic")).toMatchObject({ ok: false, retryAt: end })
     expect(state.holdAccess.usage - reads).toBe(1)
     yield* TestClock.setTime(end)
-    expect(state.storage.has("held-send/ses_1")).toBe(false)
-    expect(yield* one.heldSend("ses_1")).toEqual({})
+    expect(state.storage.has("held-send/ses_1")).toBe(true)
+    expect(yield* one.heldSend("ses_1")).toMatchObject({ state: "ended", hold: { retryAt: end } })
     state.readings.set("cred-a", { ...quiet(end), usage: { at: end, samples: 1 } })
     expect(yield* two.request("ses_reopened")).toBe("cred-a")
     expect(state.holdAccess.usage - reads).toBe(2)
@@ -915,6 +919,34 @@ describe("the hooks", () => {
       expect(control).not.toHaveProperty("refuse")
       expect(next).toMatchObject({ refuse: { until: at + MINUTE } })
       expect(yield* plugin.heldSend(payload.sessionID)).toMatchObject({ hold: { stepID: "next" } })
+    })))
+
+  test("a paused retry leaves the previous refusal readable until its send is admitted", () =>
+    onTestClock(Effect.gen(function* () {
+      const state = world()
+      state.active.set("anthropic", "cred-a")
+      const plugin = yield* start({ paced: { sim: "anthropic" }, sweepMinutes: 0 }, state, live())
+      const send = yield* registered(plugin.hooks, "http.request")
+      const sessionID = "ses_paused"
+      const key = "anthropic/hold/cred-a"
+      const eventFor = (id: string) => ({ sessionID, kind: "primary", model: { ...model, providerID: "sim" }, step: { id } })
+      const event = eventFor("first")
+      state.storage.set(key, { kind: "rate-limit", at: 0, until: MINUTE })
+      yield* send(event)
+      expect(event).toHaveProperty("refuse")
+      yield* TestClock.setTime(MINUTE)
+      state.storage.delete(key)
+      const reading = yield* Latch.make()
+      const resume = yield* Latch.make()
+      state.holdAccess.beforeRead = reading.open.pipe(Effect.andThen(resume.await))
+      const retry = eventFor("next")
+      const sending = yield* Effect.forkChild(send(retry))
+      yield* reading.await
+      expect(yield* plugin.heldSend(sessionID)).toMatchObject({ state: "ended", hold: { stepID: "first", retryAt: MINUTE } })
+      yield* resume.open
+      yield* Fiber.join(sending)
+      expect(retry).not.toHaveProperty("refuse")
+      expect(yield* plugin.heldSend(sessionID)).toEqual({})
     })))
 
   test("pool only the provider's OAuth logins and name the chosen one on the request", () =>
@@ -1551,7 +1583,7 @@ describe("the RPC", () => {
         state.integration.connections.delete(ANTHROPIC)
         const plugin = yield* start(undefined, state)
         const dispatch = yield* Effect.flip(Effect.sandbox(plugin.request()))
-        expect(Cause.pretty(dispatch)).toMatch(/the pool's logins could not be listed; it may go again at \S+Z/)
+        expect(Cause.pretty(dispatch)).toMatch(/the pool's logins could not be listed; it may go again at [A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2}:\d{2} [AP]M (?:EST|EDT)/)
         expect((yield* Effect.exit(plugin.pace("anthropic")))._tag).toBe("Failure")
         expect((yield* plugin.status).anthropic?.accounts).toEqual([])
       }),

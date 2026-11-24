@@ -1,7 +1,10 @@
+// @reads all
+// @reads-reason subprocess reads at tests/review-input-publication.test.ts: const child = yield* processes.spawn(ChildProcess.make("bun", [program, fixture, root, phase],
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Effect, FileSystem, Path, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { describe, expect, it } from "effect-bun-test"
+import { matchingInput } from "./read-path.ts"
 import { hangGuard } from "./hang-guard.ts"
 
 // Both observers exercise the public producers, including the second sink of a round receipt.
@@ -362,9 +365,9 @@ describe("review-input publication", () => {
   it.live.layer(BunServices.layer)("each review input sink uses its atomic writer, never the general text writer", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
-      const path = yield* Path.Path
-      const root = yield* path.fromFileUrl(new URL("../", import.meta.url))
-      const read = (file: string) => fs.readFileString(path.join(root, file))
+      const read = (file: string) => fs.readFileString(matchingInput(
+        "{mods/work/process/landing.ts,mods/update/filestore/{files,stage,records}.ts,mods/update/process/mark.ts}", file,
+      ))
       const landing = yield* read("mods/work/process/landing.ts")
       const update = yield* read("mods/update/filestore/files.ts")
       const stage = yield* read("mods/update/filestore/stage.ts")

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // The orchestrator agent on the simulated host (sim/world.ts): the real orchestrate plugin (sim/plugins.ts) defines
 // it from build, makes it the default a new session opens with, and puts its section after build's prompt in its own
 // requests only. The config's `default_agent` (the world's `defaultAgent`, applied after every plugin as the fork's

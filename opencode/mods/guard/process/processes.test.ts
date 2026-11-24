@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/guard/process/processes.ts: const child = Bun.spawn([ps, "-A", "-ww", "-o", `pid=,${name}=`], { stdin: "ignore", stdout: "p
 // The real `ps`: a `sleep` this test starts is listed with its whole command
 // line, and a `ps` that fails is ProcessesUnreadable.
 import { afterAll, expect, test } from "bun:test"

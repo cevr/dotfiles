@@ -46,14 +46,13 @@ describe("worksNow", () => {
   test("the dock counts positive owner evidence, not an unconfirmed or historical execution", () => {
     const observation = { revision: 2, at: 1, diagnostic: false, waitingOn: "Wake", sinceReload: false } as const
     const works = worksNow(family(
-      session("checking", { lifecycle: { ...observation, kind: "checking" } }),
       session("unknown", { lifecycle: { ...observation, kind: "unknown" } }),
       session("undetermined", { lifecycle: { ...observation, kind: "undetermined" } }),
       session("historical", { lifecycle: { ...observation, kind: "continuing", sinceReload: true } }),
       session("admitted", { lifecycle: { ...observation, kind: "continuing" } }),
       session("running", { lifecycle: { ...observation, kind: "running" } }),
     ))
-    expect(["checking", "unknown", "undetermined", "historical"].flatMap((id) => works(id) || [])).toEqual([])
+    expect(["unknown", "undetermined", "historical"].flatMap((id) => works(id) || [])).toEqual([])
     expect(["admitted", "running"].map(works)).toEqual(["waiting", "running"])
   })
 

@@ -8,7 +8,7 @@
 // the section (cmd/prime/prime-rules.sim.test.ts) and the frame
 // (cmd/prime/prime-emphasis.sim.test.tsx). It needs OPENCODE_DEV, the fork.
 import { describe, expect, test } from "bun:test"
-import { existsSync, readFileSync } from "node:fs"
+import { readScratchFileSync as readFileSync, scratchExistsSync } from "./read-path.ts"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { Schema } from "effect"
@@ -39,7 +39,7 @@ const scenario = async (dir: string) => {
   const errors = await new Response(run.stderr).text()
   const code = await run.exited
   const dump = join(dir, "requests.json")
-  expect({ code, ran: existsSync(dump) }, `${output}${errors}`.slice(-4000)).toEqual({ code: 0, ran: true })
+  expect({ code, ran: scratchExistsSync(dump) }, `${output}${errors}`.slice(-4000)).toEqual({ code: 0, ran: true })
   return {
     requests: Schema.decodeUnknownSync(Requests)(readFileSync(dump, "utf8")),
     frame: readFileSync(join(dir, "emphasis.txt"), "utf8"),

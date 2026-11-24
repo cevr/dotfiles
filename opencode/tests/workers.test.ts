@@ -2,8 +2,8 @@
 // and asserts on its frames: three background workers started in three steps
 // read as one group, and their completion notices, landing together, as one group.
 // It needs OPENCODE_DEV, the fork with the plugin hook points.
+import { readScratchFileSync } from "./read-path.ts"
 import { beforeAll, describe, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
@@ -31,7 +31,7 @@ describe.skipIf(!fork)("background workers in the Prime look (OPENCODE_DEV)", ()
       new Response(run.stderr).text(),
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
-    const lines = (name: string) => readFileSync(join(out, `${name}.txt`), "utf8").split("\n")
+    const lines = (name: string) => readScratchFileSync(join(out, `${name}.txt`), "utf8").split("\n")
     frames.started = lines("workers-started")
     frames.finished = lines("workers")
     frames.opened = lines("workers-opened")

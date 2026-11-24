@@ -1,9 +1,20 @@
 import { afterAll } from "bun:test"
+import { spawn, spawnSync } from "node:child_process"
 import { randomBytes } from "node:crypto"
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
+import { once } from "node:events"
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { resolve } from "node:path"
-import { env as processEnv } from "node:process"
+import { isAbsolute, join, relative, resolve } from "node:path"
+import { cwd as processCwd, env as processEnv, execPath } from "node:process"
+
+// Keep the package tests that use the scratch lifecycle independent of the root
+// test's input policy and its Effect instance.
+const isSymbolicLink = (file: string) => lstatSync(file, { throwIfNoEntry: false })?.isSymbolicLink() === true
+export const localTestPaths = { existsSync, isAbsolute, isSymbolicLink, join, relative, resolve, readFileSync, readdirSync, readlinkSync, realpathSync, processCwd, writeFileSync }
+export const localTestProcess = { execPath, once, spawn, spawnSync }
+
+/** The canonical parent of scratch fixtures; callers check a path without creating a fixture. */
+export const scratchRoot = () => realpathSync(tmpdir())
 
 /**
  * A test's own directory under the system temp directory. Hold it with `using dir = scratch("name-")`:

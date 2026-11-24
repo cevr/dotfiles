@@ -2,7 +2,7 @@
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
 import { testHostOptions } from "../../scripts/test-host.ts"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
-import { Array as Arr, Config, Data, Effect, FileSystem, Match, Option, Path, Predicate, Result, Schema, Scope, Stream } from "effect"
+import { Array as Arr, Config, Data, Effect, FileSystem, Latch, Match, Option, Path, Predicate, Result, Schema, Scope, Stream } from "effect"
 import { HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { Socket } from "effect/socket"
 import { OpenCode as sdk } from "pool-fixture-sdk"
@@ -21,6 +21,7 @@ const Quote = Schema.Struct({
 })
 type Quote = typeof Quote.Type
 const RpcOutput = Schema.Struct({ output: Schema.optionalKey(Schema.Json), data: Schema.optionalKey(Schema.Json) })
+const decodeCommit = Schema.decodeUnknownEffect(Schema.Struct({ held: Schema.Literal(true), until: Schema.Finite }))
 const LogEvent = Schema.Struct({ type: Schema.String, data: Schema.optionalKey(Schema.Struct({
   at: Schema.optionalKey(Schema.Finite),
   error: Schema.optionalKey(Schema.Struct({ type: Schema.String, message: Schema.String })),
@@ -70,22 +71,25 @@ interface Configured {
 interface Sdk { readonly create: (options: Configured) => Effect.Effect<Client, Error, Scope.Scope> }
 const Sdk = Schema.declare((value): value is Sdk => Predicate.hasProperty(value, "create") && Predicate.isFunction(value.create))
 const Case = Schema.Literals(["http", "websocket", "late-http", "late-websocket", "api-http", "api-websocket", "cost",
-  "retry-http", "retry-websocket", "signed-out-http"])
+  "retry-http", "retry-websocket", "signed-out-http", "fresh-spent", "fresh-free", "fresh-timeout"])
 type Case = typeof Case.Type
 const lateCase = (sample: Case) => sample.startsWith("late-")
 const apiCase = (sample: Case) => sample.startsWith("api-")
 const retryCase = (sample: Case) => sample.startsWith("retry-")
+const freshCase = (sample: Case) => sample.startsWith("fresh-")
 type Sample = { readonly at: number; readonly authorization: string; readonly transport: string }
 interface Fake {
   readonly sample: Case
   readonly hold: boolean
   spent: boolean
   deadline: number
+  providerReadyAt: number
   readonly sent: Array<Sample>
   usage: number
   commit: Effect.Effect<void>
   upgrades: number
   fallback: number
+  readonly measurement: { readonly started: Latch.Latch; readonly release: Latch.Latch; start: number; end: number }
 }
 
 const eventStream = (events: ReadonlyArray<Schema.Json>) => HttpServerResponse.text(
@@ -112,7 +116,7 @@ const socketFrames = (i: number): ReadonlyArray<Schema.Json> => {
   ]
 }
 const createFrame = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({ type: Schema.Literal("response.create") })))
-const seconds = (ms: number) => Math.round(ms / 1_000)
+const seconds = (ms: number) => Math.floor(ms / 1_000)
 const shortWindow = (fake: Fake, minutes: number) => ({
   used_percent: Match.value(fake.spent).pipe(Match.when(true, () => 100), Match.orElse(() => 0)),
   window_minutes: minutes,
@@ -143,7 +147,12 @@ const upgrade = (state: Fake, request: HttpServerRequest.HttpServerRequest) =>
         if (state.hold && state.sample === "websocket" && i === 1) {
           state.spent = true
           state.deadline = quotaEpoch() + FUTURE
+          state.providerReadyAt = state.deadline
           yield* writer.write(serialize({ type: "codex.rate_limits", rate_limits: { primary: shortWindow(state, 300), secondary: week() } }))
+        }
+        if (i > 1 && quotaEpoch() < state.providerReadyAt) {
+          yield* writer.write(serialize({ type: "error", code: "rate_limit_exceeded", message: "synthetic provider reset is not ready" }))
+          return
         }
         yield* Effect.forEach(socketFrames(i), (frame) => writer.write(serialize(frame)), { discard: true })
       }), { discard: true })),
@@ -159,6 +168,13 @@ const server = (state: Fake) => Effect.gen(function* () {
     state.usage += 1
     if (request.headers["authorization"] !== `Bearer ${ACCESS}` || request.headers["chatgpt-account-id"] !== "fixture")
       return HttpServerResponse.text("no synthetic credential", { status: 401 })
+    if (freshCase(state.sample)) {
+      state.measurement.start = quotaEpoch()
+      yield* state.measurement.started.open
+      yield* state.measurement.release.await
+      if (state.sample === "fresh-timeout") return HttpServerResponse.text("synthetic outage", { status: 503 })
+      state.measurement.end = quotaEpoch()
+    }
     return yield* HttpServerResponse.json({ plan_type: "pro", rate_limit: {
       limit_reached: state.spent, allowed: !state.spent, primary_window: shortWindow(state, 300), secondary_window: week(),
     } })
@@ -174,6 +190,7 @@ const server = (state: Fake) => Effect.gen(function* () {
     yield* state.commit
     return HttpServerResponse.text("synthetic retryable provider failure", { status: 500 })
   }
+  if (quotaEpoch() < state.providerReadyAt) return HttpServerResponse.text("synthetic provider reset is not ready", { status: 429 })
   return eventStream([chunk({ role: "assistant", content: "loopback answer" }, {}), chunk({}, { finish_reason: "stop" })])
 }).pipe(Effect.orDie)
 
@@ -187,10 +204,12 @@ const sessionLog = (host: Client, id: string) => host.experimental.session.log({
 const prompt = (host: Client, id: string) => host.session.prompt({ sessionID: id, text: "original synthetic prompt" })
 const fact = (host: Client, id: string, directory: string) =>
   host.rpc.call({ rpcID: POOL, method: "heldSend", input: { sessionID: id }, location: { directory } }).pipe(
-    Effect.map((result) => Option.orElse(Option.fromUndefinedOr(result.output), () => Option.fromUndefinedOr(result.data))),
-    Effect.orElseSucceed(() => Option.none()),
+    Effect.flatMap((result) => Option.match(
+      Option.orElse(Option.fromUndefinedOr(result.output), () => Option.fromUndefinedOr(result.data)),
+      { onNone: () => Effect.fail(new FixtureFailure({ message: "heldSend RPC returned no answer" })), onSome: (answer) => Effect.succeed(Option.some(answer)) },
+    )),
   )
-const transcript = (host: Client, state: Fake, id: string, directory: string, replayAfterWarm = false) => Effect.gen(function* () {
+const transcript = (host: Client, state: Fake, id: string, directory: string, retry: { readonly reached: Latch.Latch; readonly observed: Latch.Latch }, replayAfterWarm = false) => Effect.gen(function* () {
   let during = Option.none<Schema.Json>()
   let deferred = Option.none<{ readonly at: number; readonly sends: number; readonly upgrades: number; readonly reason: string }>()
   const warm = state.sent.length
@@ -205,10 +224,14 @@ const transcript = (host: Client, state: Fake, id: string, directory: string, re
       if (event.type !== "session.retry.scheduled" || event.data?.error?.type !== "route.deferred" || Option.isNone(at)) return
       if (Option.isNone(deferred)) {
         deferred = Option.some({ at: at.value, sends: state.sent.length - warm, upgrades: state.upgrades, reason: event.data.error.message })
+        // Exercise a late consumer deliberately, with the retry parked at
+        // routing until the read. This is not a claim about observer latency.
+        if (state.sample === "late-http") yield* retry.reached.await
         during = yield* fact(host, id, directory)
       }
       state.spent = false
       state.deadline = at.value + HOUR
+      yield* retry.observed.open
     })),
     Stream.filter(closeOf),
     Stream.runHead,
@@ -226,6 +249,27 @@ const writerFact = (host: Client, directory: string) =>
   host.rpc.call({ rpcID: "fixture.openai-send-hold", method: "read", input: {}, location: { directory } }).pipe(
     Effect.map((reply) => Option.fromUndefinedOr(reply.output)),
   )
+
+const firstMeasure = (host: Client, state: Fake, id: string, directory: string) => Effect.gen(function* () {
+  const began = quotaEpoch()
+  yield* prompt(host, id)
+  yield* state.measurement.started.await.pipe(Effect.timeout(hangGuard("local-fixture")))
+  const before = state.sent.length
+  if (state.sample !== "fresh-timeout") yield* state.measurement.release.open
+  const observed = yield* sessionLog(host, id).pipe(
+    Stream.filter((event) => closeOf(event) || (event.type === "session.retry.scheduled" && event.data?.error?.type === "route.deferred")),
+    Stream.runHead, Effect.timeout(hangGuard("local-fixture")),
+    Effect.ensuring(state.measurement.release.open),
+  )
+  const status = yield* host.rpc.call({ rpcID: POOL, method: "status", input: {}, location: { directory } })
+  return {
+    before, usage: state.usage, began, start: state.measurement.start, end: state.measurement.end, sent: state.sent,
+    outcome: Option.getOrElse(Option.map(observed, ({ type }) => type), () => "missing"),
+    message: Option.getOrElse(Option.flatMap(observed, ({ data }) => Option.fromUndefinedOr(data?.error?.message)), () => ""),
+    status: Option.getOrNull(Option.orElse(Option.fromUndefinedOr(status.output), () => Option.fromUndefinedOr(status.data))),
+    heldSend: Option.getOrNull(yield* fact(host, id, directory)),
+  }
+})
 
 interface Target {
   readonly base: string
@@ -245,10 +289,11 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
   const signedOut = target.sample === "signed-out-http"
   if (late || retry) yield* fs.makeDirectory(writer)
   const socket = target.sample.endsWith("websocket")
-  const state: Fake = { sample: target.sample, hold, spent: target.sample === "http" && hold, deadline: quotaEpoch() + HOUR,
-    sent: [], upgrades: 0, fallback: 0, usage: 0, commit: Effect.void }
-  if (late || retry) state.deadline = quotaEpoch() + 2 * FUTURE
-  const expected = seconds(state.deadline) * 1_000
+  const measurement = { started: yield* Latch.make(), release: yield* Latch.make(), start: 0, end: 0 }
+  const state: Fake = { sample: target.sample, hold, spent: (target.sample === "http" && hold) || target.sample === "fresh-spent",
+    deadline: quotaEpoch() + HOUR, providerReadyAt: 0, sent: [], upgrades: 0, fallback: 0, usage: 0, commit: Effect.void, measurement }
+  if (target.sample === "fresh-spent") state.providerReadyAt = state.deadline
+  let expected = seconds(state.deadline) * 1_000
   yield* HttpServer.serveEffect(server(state))
   const httpd = yield* HttpServer.HttpServer
   const origin = HttpServer.formatAddress(httpd.address)
@@ -258,6 +303,7 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
   let typed = false
   let commit: Effect.Effect<void> = Effect.void
   let wrote = false
+  const retryRead = { reached: yield* Latch.make(), observed: yield* Latch.make() }
   const probe = (ctx: HookContext) => Effect.gen(function* () {
     yield* ctx.session.hook("title", (event) => Effect.sync(() => { event.result = "Fixture" }))
     if (target.sample === "late-websocket") yield* ctx.session.hook("experimental.ws.handshake", (event) =>
@@ -279,10 +325,18 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
         if (event.kind !== "primary") return
         const step = routeStep(event.step)
         if (Option.isSome(step)) steps.push(step.value)
+        const retryAfterHold = Match.value(retry).pipe(Match.when(true, () => 3), Match.orElse(() => 2))
+        if (hold && !api && Option.exists(step, ({ attempt }) => attempt >= retryAfterHold)) {
+          yield* retryRead.reached.open
+          yield* retryRead.observed.await
+        }
         const limit = Match.value(hold && socket).pipe(Match.when(true, () => 2), Match.orElse(() => 1))
-        if (quotes.length >= limit) return
+        if (freshCase(target.sample) || quotes.length >= limit) return
         typed = Option.isSome(step)
-        if (state.spent && !socket) state.deadline = quotaEpoch() + FUTURE
+        if (state.spent && !socket) {
+          state.deadline = quotaEpoch() + FUTURE
+          state.providerReadyAt = state.deadline
+        }
         const input = { providerID: MODEL.providerID, model: MODEL.id, sessionID: event.sessionID, dispatch: true }
         const quote = yield* ctx.rpc(protocol).pace(input).pipe(Effect.flatMap(toQuote))
         quotes.push(quote)
@@ -306,7 +360,7 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
       enabled_providers: ["openai"],
       plugins: [{ package: target.pool, options: {
         providers: {}, paced: { openai: "openai" }, sweepMinutes: 0, resets: false,
-        usageURL: `${origin}/usage`, fixtureHold: expected,
+        usageURL: `${origin}/usage`,
         ...Option.match(Option.filter(Option.some("signin"), () => signedOut), { onNone: () => ({}), onSome: (fixtureKind) => ({ fixtureKind }) }),
       } }],
     }) },
@@ -315,14 +369,26 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
     type: "oauth", methodID: "synthetic-fixture", refresh: "synthetic-refresh", access: ACCESS, expires: quotaEpoch() + HOUR,
     metadata: { accountID: "fixture" },
   } })
-  const commitIn = (host: Client, at = writer) => host.rpc.call({ rpcID: "fixture.openai-send-hold", method: "commit", input: {}, location: { directory: at } })
+  // The open quote uses the healthy fake usage window. Start the separate
+  // hold's clock at the write it is supposed to simulate, not at SDK boot.
+  const lastsMs = Match.value(target.sample).pipe(
+    Match.when("signed-out-http", () => HOUR),
+    Match.when(Match.is("retry-http", "retry-websocket"), () => 2 * FUTURE),
+    Match.orElse(() => FUTURE),
+  )
+  const commitIn = (host: Client, at = writer) => host.rpc.call({
+    rpcID: "fixture.openai-send-hold", method: "commit", input: { lastsMs }, location: { directory: at },
+  }).pipe(
+    Effect.flatMap(({ output, data }) => decodeCommit(Option.getOrNull(Option.orElse(Option.fromUndefinedOr(output), () => Option.fromUndefinedOr(data))))),
+    Effect.tap(({ until }) => Effect.sync(() => { expected = until })),
+  )
   let signedOutHold = Option.none<Schema.Json>()
   if (signedOut) signedOutHold = yield* Effect.gen(function* () {
     const host = yield* target.host.create(testHostOptions(configured))
     const login = yield* signIn(host)
     const warm = yield* host.session.create({ location: { directory }, model: MODEL, title: "Warm" })
     yield* prompt(host, warm.id)
-    const before = yield* transcript(host, state, warm.id, directory)
+    const before = yield* transcript(host, state, warm.id, directory, retryRead)
     if (before.outcome !== "session.execution.succeeded" || state.sent[0]?.authorization !== `Bearer ${ACCESS}`)
       return yield* new FixtureFailure({ message: "OAuth warm-up did not send on the synthetic pooled login" })
     yield* commitIn(host, directory).pipe(Effect.mapError((error) => new FixtureFailure({ message: `sign-out hold commit: ${error.message}; ${warnings.join("\n")}` })))
@@ -341,10 +407,11 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
     if (retry) state.commit = commit
   }
   const { id } = yield* host.session.create({ location: { directory }, model: MODEL, title: "Fixture" })
+  if (freshCase(target.sample)) return yield* firstMeasure(host, state, id, directory)
   const warm = Arr.empty<Sample>()
   if (hold && socket && !api) {
     yield* prompt(host, id)
-    const first = yield* transcript(host, state, id, directory)
+    const first = yield* transcript(host, state, id, directory, retryRead)
     if (first.outcome !== "session.execution.succeeded" || state.sent.length !== 1)
       return yield* new FixtureFailure({ message: `warm control failed: ${serialize({ ...first, sent: state.sent, warnings })}` })
     warm.push(...state.sent)
@@ -352,7 +419,7 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
   // The durable log replays the first execution, so the second observation
   // skips exactly its first terminal event, never a sleep or timing guess.
   yield* prompt(host, id)
-  const last = yield* transcript(host, state, id, directory, warm.length > 0)
+  const last = yield* transcript(host, state, id, directory, retryRead, warm.length > 0)
   const after = yield* fact(host, id, directory)
   const usageBeforeCost = state.usage
   const cost = yield* Match.value(target.sample).pipe(

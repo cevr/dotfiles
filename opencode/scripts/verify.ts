@@ -23,8 +23,10 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { cliConfig, DEFAULT_FORK, forkLaunch, pluginPaths, runEnv, runPaths, SIM_PROVIDER, simProvider } from "../testbeds/gamut/gamut.ts"
 import { type Feature, FEATURES_DIR, INDEX, noDrive, parseFeature, swarmFrom, touched, underOpencode, unreachableOf } from "./verify-map.ts"
 import { chatResponse } from "../sim/verify-model.ts"
+import { forkLagWith } from "./fork-lag.ts"
 import { NO_FREE_MODELS, releaseFlags } from "./release-flags.ts"
 import { testHostEnv } from "./test-host.ts"
+import { decodeGitPathChunks, parseNameStatus } from "./git-paths.ts"
 
 /** opencode/: every path the helpers name is from here. */
 const OPENCODE = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "")
@@ -388,36 +390,15 @@ const loadCheck = Effect.sync((): Check => {
   return { name: "load", ok: true, detail: `1-min load ${one.toFixed(1)} on ${cores} cores: ${claim}` }
 })
 
-/** The branch the fork's worktree is to be at: the prime-look Rift's. */
-const FORK_BRANCH = "prime-look"
-
 /**
  * The fork's worktree against its branch, the local one and origin's: a worktree behind either (a detached
  * checkout one merge back) runs every check on an older fork than the branch head the checks claim. A branch
  * that is not there is not compared.
  */
-export const forkLag = Effect.fn("verify.forkLag")(function* (fork: string) {
-  const refs = [
-    { ref: FORK_BRANCH, full: `refs/heads/${FORK_BRANCH}` },
-    { ref: `origin/${FORK_BRANCH}`, full: `refs/remotes/origin/${FORK_BRANCH}` },
-  ]
-  const counted = yield* Effect.forEach(
-    refs,
-    ({ ref, full }) =>
-      output("fork", "git", ["-C", fork, "rev-list", "--count", `HEAD..${full}`]).pipe(
-        Effect.map((behind) => ({ ref, behind: Number(behind) })),
-        Effect.option,
-      ),
-    { concurrency: 2 },
-  )
-  const lagging = Arr.getSomes(counted).filter((each) => each.behind > 0)
-  const head = (yield* headOf(fork)).slice(0, 10)
-  return yield* must(
-    lagging.length === 0,
-    `${head}, at or past ${FORK_BRANCH}`,
-    `the fork's worktree ${head} is ${lagging.map((each) => `${each.behind} commit(s) behind ${each.ref}`).join(" and ")}: check out ${FORK_BRANCH} at its head, so the checks run on it`,
-  )
-})
+export const forkLag = Effect.fn("verify.forkLag")((fork: string) =>
+  forkLagWith((step, args) => output(step, "git", ["-C", fork, ...args])).pipe(
+    Effect.catchTag("ForkBehind", (error) => Effect.fail(failed("doctor")(error))),
+  ))
 
 /** The world's checks: the fork is there and linked, so a world suite loads the plugins. */
 const worldChecks = Effect.fn("verify.worldChecks")(function* () {
@@ -535,7 +516,15 @@ const readNoDrive = Effect.fn("verify.readNoDrive")(function* () {
 const changedSince = (base: Option.Option<string>) =>
   Option.match(base, {
     onNone: () => Effect.succeed<ReadonlyArray<string>>([]),
-    onSome: (commit) => output("changed", "git", ["-C", OPENCODE, "diff", "--name-only", `${commit}...HEAD`]).pipe(Effect.map((text) => Arr.getSomes(text.split("\n").map(underOpencode)))),
+    onSome: (commit) => Effect.scoped(Effect.gen(function* () {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+      const command = ChildProcess.make("git", ["-C", OPENCODE, "diff", "--name-status", "-z", "-M", "-C", `${commit}...HEAD`, "--"], { cwd: OPENCODE, stdin: "ignore", stderr: "ignore", forceKillAfter: PROBE })
+      const child = yield* spawner.spawn(command).pipe(Effect.mapError(failed("changed")))
+      const chunks = yield* Stream.runCollect(child.stdout).pipe(Effect.mapError(failed("changed")))
+      const code = yield* child.exitCode.pipe(Effect.mapError(failed("changed")))
+      if (code !== 0) return yield* new VerifyFailed({ step: "changed", message: `git diff exited ${code}` })
+      return Arr.getSomes(parseNameStatus(decodeGitPathChunks(chunks)).flatMap(({ paths }) => paths).map(underOpencode))
+    })),
   })
 
 /** The features a drive takes: named, touched by the `changed` paths, or every one. */

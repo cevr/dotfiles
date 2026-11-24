@@ -1,3 +1,4 @@
+// @reads cmd/*
 // accept: one at a time (it bounds how soon the dock settles after the TUI's first read).
 // A subagent row leaves "running" once a service restart ends its turn.
 //
@@ -23,12 +24,14 @@
 import { afterAll, describe, expect } from "bun:test"
 import { Effect } from "effect"
 import { it } from "effect-bun-test"
-import { existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { hostCall, serve, type ServedHost } from "../testbeds/gamut/pty-host.ts"
 import { freePort, ready, type Service } from "./service.ts"
 import { keptScratch } from "./scratch.ts"
+import { externalInput, matchingInput, scratchExistsSync as existsSync } from "./read-path.ts"
+import { forkFixture, spawnForkFixture } from "./scratch-child.ts"
 import { hangGuard, measured, watchdog } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
@@ -160,7 +163,7 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
 
   /** The fork's CLI in the scratch HOME, run to its end; `service stop` in afterAll ends the service it leaves. */
   const opencode = async (...args: ReadonlyArray<string>) => {
-    const child = Bun.spawn([...launch.base, ...args], { cwd: work, env, stdout: "pipe", stderr: "pipe" })
+    const child = spawnForkFixture(fork ?? "", work, args, env)
     const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
     return { code, out, err }
   }
@@ -289,20 +292,20 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
             },
           },
           // The owner's server plugins that need no login, network listener or OS job.
-          plugins: SERVER_PLUGINS.map((name) => join(ROOT, "cmd", name)),
+          plugins: SERVER_PLUGINS.map((name) => matchingInput("cmd/*", join(ROOT, "cmd", name))),
         }),
       )
       // The owner's TUI plugins, as daily writes them (herdr left out: it reports to a herdr socket).
       writeFileSync(
         join(home, ".config/opencode/cli.json"),
-        JSON.stringify({ plugins: [...TUI_PLUGINS.map((name) => join(ROOT, "cmd", name)), "-opencode.btw"], session: { sidebar: "hide" }, theme: { name: "prime" } }),
+        JSON.stringify({ plugins: [...TUI_PLUGINS.map((name) => matchingInput("cmd/*", join(ROOT, "cmd", name))), "-opencode.btw"], session: { sidebar: "hide" }, theme: { name: "prime" } }),
       )
       // A port of its own: the other test files' scratch services would share the channel's fixed one (tests/service.ts).
       expect(await opencode("service", "set", "port", String(freePort()))).toMatchObject({ code: 0 })
       const started = await opencode("service", "start")
       expect(started).toMatchObject({ code: 0 })
       await ready(serviceFile, () => `the service (${started.err.slice(-500)})`)
-      return ((await import(join(fork ?? "", "packages/client/src/promise/index.ts"))) as ClientModule).OpenCode
+      return ((await import(externalInput(join(fork ?? "", "packages/client/src/promise/index.ts")))) as ClientModule).OpenCode
     })())
 
   const parentOf = (name: string) => Effect.gen(function* () {
@@ -318,8 +321,8 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
 
   const openTui = (name: string, service: Service, sessionID: string) => {
     const socket = join(root, `${name}.sock`)
-    const command = [...launch.base, "--server", proxyURL, "-s", sessionID] as [string, ...string[]]
-    const host = serve({ socket, cwd: home, command, env: { ...env, OPENCODE_PASSWORD: service.password }, cols: 160, rows: 45 })
+    const { argv: command, ...options } = forkFixture(fork ?? "", home, ["--server", proxyURL, "-s", sessionID], { ...env, OPENCODE_PASSWORD: service.password })
+    const host = serve({ socket, command, ...options, cols: 160, rows: 45 })
     hosts.push(host)
     const screen = async () => (await hostCall(socket, { op: "read", scope: "screen" }).catch(() => ({ rows: [] as ReadonlyArray<string> }))).rows.join("\n")
     return { host, screen, connected: () => until(() => existsSync(socket), Boolean, () => `${name}: the terminal host`, 10_000) }

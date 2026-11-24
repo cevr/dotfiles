@@ -81,7 +81,7 @@ export type Execution =
 
 /** One owner-produced display phase. Its clocks and authority belong to its revision. */
 export type Lifecycle = {
-  readonly kind: "checking" | "none" | "unknown" | "recovering" | "running" | "blocked" | "latched" | "continuing" | "undetermined" | "failed" | "done" | "cancelled"
+  readonly kind: "none" | "unknown" | "recovering" | "running" | "blocked" | "latched" | "continuing" | "undetermined" | "failed" | "done" | "cancelled"
   readonly revision: number
   readonly sinceReload: boolean
   readonly at: number

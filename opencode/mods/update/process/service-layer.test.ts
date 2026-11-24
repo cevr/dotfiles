@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/update/process/service-layer.test.ts: const dir = spawnSync(["mktemp", "-d", "-t", "update-service"]).stdout.toString().trim()
 import { describe, expect, test } from "bun:test"
 import { serve, spawnSync, write } from "bun"
 import { Cause, Effect, Exit, Layer, Option, Schema } from "effect"
