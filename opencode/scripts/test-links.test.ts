@@ -51,7 +51,7 @@ describe("tracked input links", () => {
         const reader = linkReads(before, (file) => file === unresolved, new Set([unresolved]), [unresolved])
         expect(reader.unsafe).toBe(unresolved)
         expect(reader.has("next.txt")).toBe(false)
-        expect(Option.isNone(before.get(unresolved)?.target ?? Option.some(false))).toBe(true)
+        expect(before.get(unresolved)?.target._tag).toBe("None")
       }
       yield* fs.remove(path.join(repo, "opencode/file.txt"))
       yield* symlink("next.txt", "file.txt")
