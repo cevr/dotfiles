@@ -222,12 +222,27 @@ describe("acceptance: a prune over share directories of both build formats, with
   const SEED = 20261119
   const RUNS = 400
 
-  test("an unreferenced tree build and its tree go; a recorded tree build and its tree stay", () => {
-    const stale = buildName("2.2.7-prime.11111111.22222222.tree")
-    const live = build("2.2.7-prime.33333333.44444444.tree")
-    const listing = [stale, treeOf(stale), buildName(live.version), treeOf(buildName(live.version))]
-    expect(prunable(listing, live, nothingRuns)).toEqual([stale, treeOf(stale)])
+  const stale = build("2.2.7-prime.11111111.22222222.tree")
+  const live = build("2.2.7-prime.33333333.44444444.tree")
+  const files = (each: Build) => [buildName(each.version), treeOf(buildName(each.version))]
+  const prune = (record: Build) => prunable([...files(stale), ...files(live)], record, nothingRuns)
+  const observesPrune = (removed: ReadonlyArray<string>) => expect(removed).toEqual(files(stale))
+  const observesKept = (removed: ReadonlyArray<string>) => expect(removed.filter((name) => files(live).includes(name))).toEqual([])
+  const installedOther = () => {
+    const removed = prune(stale)
+    expect(removed, "control setup: the other build is now unreferenced").toEqual(files(live))
+    return removed
+  }
+  test("W: an unreferenced tree build and its tree go", () => {
+    installedOther()
+    observesPrune(prune(live))
   })
+  test.failing("W: an unreferenced tree build and its tree go", () => observesPrune(installedOther()))
+  test("W: a recorded tree build and its tree stay", () => {
+    installedOther()
+    observesKept(prune(live))
+  })
+  test.failing("W: a recorded tree build and its tree stay", () => observesKept(installedOther()))
 
   test(`over ${RUNS} generated hosts (seed ${SEED}), it names (a) builds and trees only, (b) never a kept or running one, (c) every other, of either format; a tree exactly when its build, never while a command line names it`, () => {
     const next = random(SEED)

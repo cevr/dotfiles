@@ -396,30 +396,59 @@ describe("the rule on one pool, by example", () => {
     expect(verdict).toMatchObject({ step: "expiring", option: { creditID: "soon" } })
   })
 
-  test("forecast, expiry, room to wait, and no-reset exhaustion are exercised by deliberate pool states", () => {
-    const pool = (used: number, wait: number, expiry: number, index: number, running = 6): Decision => {
+  const pool = (used: number, wait: number, expiry: number, index: number, running = 6, rule = decideClaim): Decision => {
       const only = load("a", used, wait + index * MINUTE, 0.02)
       const options = [option(only, "ra", { expiresAt: Option.some(NOW + expiry) })]
       const live = situation([only], running)
       const accounts = [{ id: only.credentialID, windows: [{ name: "7d" as const, used, resetAt: NOW + wait + index * MINUTE, burn: 0.02 }] }]
-      return { now: NOW, running: live.running, accounts, situation: live, options, verdict: decideClaim(live, options) }
-    }
-    for (const index of Arr.range(0, 20)) {
+      return { now: NOW, running: live.running, accounts, situation: live, options, verdict: rule(live, options) }
+  }
+  const roomAt = (index: number) => pool(0.25, 2 * DAY, 30 * DAY, index, 3)
+  const spentAt = (index: number) => pool(1, 3 * DAY, 30 * DAY, index)
+  const takes = ({ verdict }: Decision, step: "reset" | "expiring") => expect(verdict).toMatchObject({ step, option: { creditID: "ra" } })
+  const keeps = ({ verdict }: Decision) => expect(verdict._tag).toBe("NoClaim")
+  const unclaimed = (decision: Decision) => expect(outWith(decision).filter(() => decision.verdict._tag === "NoClaim").map((each) => each.creditID)).toEqual(["ra"])
+  const checkedRoom = (index: number) => {
+    const room = roomAt(index)
+    expect([room.options.some((each) => notSoon(each, NOW)), truth(room, "7d").runsOut]).toEqual([true, false])
+    keeps(room)
+    return room
+  }
+  const checkedSpent = (index: number) => {
+    const spent = spentAt(index)
+    takes(spent, "reset")
+    return spent
+  }
+  for (const index of Arr.range(0, 20)) {
+    test(`W: forecast ${index}: a useful credit is claimed`, () => {
       const forecast = pool(0.99, 3 * DAY, 30 * DAY, index)
-      expect(forecast.verdict).toMatchObject({ step: "reset", option: { creditID: "ra" } })
+      checkedRoom(index)
+      takes(forecast, "reset")
       eachClaimHolds([forecast])
+    })
+    test.failing(`W: forecast ${index}: a useful credit is claimed`, () => takes(checkedRoom(index), "reset"))
+    test(`W: expiry ${index}: an expiring credit goes first`, () => {
       const expiry = pool(1, 3 * DAY, 12 * HOUR, index)
-      expect(expiry.verdict).toMatchObject({ step: "expiring", option: { creditID: "ra" } })
+      checkedSpent(index)
+      takes(expiry, "expiring")
       expiringGoFirst([expiry])
-    }
-    for (const index of Arr.range(0, 100)) {
-      const room = pool(0.25, 2 * DAY, 30 * DAY, index, 3)
-      expect([room.options.some((each) => notSoon(each, NOW)), truth(room, "7d").runsOut, room.verdict._tag]).toEqual([true, false, "NoClaim"])
-      const spent = pool(1, 3 * DAY, 30 * DAY, index)
-      expect(outWith({ ...spent, verdict: never(spent.situation, spent.options) }).map((each) => each.creditID)).toEqual(["ra"])
+    })
+    test.failing(`W: expiry ${index}: an expiring credit goes first`, () => takes(checkedSpent(index), "expiring"))
+  }
+  for (const index of Arr.range(0, 100)) {
+    test(`W: room ${index}: the pool keeps its useful credit`, () => {
+      checkedSpent(index)
+      keeps(checkedRoom(index))
+    })
+    test.failing(`W: room ${index}: the pool keeps its useful credit`, () => keeps(checkedSpent(index)))
+    test(`W: exhaustion ${index}: no-reset leaves a usable credit unclaimed`, () => {
+      const noReset = pool(1, 3 * DAY, 30 * DAY, index, 6, never)
+      const spent = checkedSpent(index)
+      unclaimed(noReset)
       claimedBeforeOut([spent])
-    }
-  })
+    })
+    test.failing(`W: exhaustion ${index}: no-reset leaves a usable credit unclaimed`, () => unclaimed(checkedSpent(index)))
+  }
 })
 
 describe("the standing allowance's rule over generated weeks", () => {
@@ -431,6 +460,7 @@ describe("the standing allowance's rule over generated weeks", () => {
     [18927240, "withholds a 5h credit while eleven agents have no room"],
     [18927416, "keeps withholding a useful 5h credit across spent periods"],
     [18927526, "spends a 5h credit at one agent's burn"],
+    [31415527, "withholds a 5h credit while modeled demand would use more than half"],
   ])
   const zeroRoom = 18926016
 

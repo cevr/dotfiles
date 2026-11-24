@@ -20,6 +20,7 @@ import { Array as Arr, Effect, Option, Schema } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
 import { below, generator } from "../../sim/runtime.ts"
 import * as Seed from "../../sim/seed.ts"
+import { assertWitness } from "../../sim/witnesses.ts"
 import * as World from "../../sim/world.ts"
 
 const { seeded } = Seed.runner("cmd/guard/guard-faults.sim.test.ts")
@@ -163,6 +164,7 @@ const exercise = ({ seed, expect: check }: Seed.Seeded, commands: ReadonlyArray<
       yield* world.load(Plugins.guard(machine), { directory: WORK, options: { home: HOME } })
       const root = yield* world.session(WORK)
       const child = yield* world.session(WORK, { parentID: root })
+      const seen: Array<{ refused: boolean; commands: ReadonlyArray<string>; launcher: boolean; alias: boolean }> = []
       for (const command of commands) {
         if (command.type === "ps-fails") machine.psFails = command.on
         if (command.type === "launchers-fail") machine.launchersFail = command.on
@@ -177,9 +179,12 @@ const exercise = ({ seed, expect: check }: Seed.Seeded, commands: ReadonlyArray<
           Option.getOrElse(Option.liftPredicate(child, () => command.child), () => root),
           sent(command),
         )
-        judge(check, command, { psFails: machine.psFails, launchersFail: machine.launchersFail }, answer, world.spawned().slice(before))
+        const spawned = world.spawned().slice(before)
+        judge(check, command, { psFails: machine.psFails, launchersFail: machine.launchersFail }, answer, spawned)
+        seen.push({ refused: answer.error && GUARD_WORDS.test(answer.output), commands: spawned.map((each) => each.command), launcher: spawned.some((each) => each.shell.startsWith("/launchers/")), alias: answer.output.includes(World.aliasNote("bash", "shell")) })
       }
       check(world.stale()).toEqual([])
+      return { seen, loaded: world.logs().filter((line) => line.message === "loading plugin").length }
     })
 
 seeded(
@@ -191,8 +196,25 @@ const callForms = CALLS.flatMap((call) => FORMS.flatMap((form) => [false, true].
 
 Seed.effect(
   "every call in every form is judged in a root and subagent, with both faults on after a restart and with faults off",
-  exercise({ seed: 1, expect }, [
-    { type: "ps-fails", on: true }, { type: "launchers-fail", on: true }, { type: "restart" }, ...callForms,
-    { type: "ps-fails", on: false }, { type: "launchers-fail", on: false }, ...callForms,
-  ]),
+  Effect.gen(function* () {
+    const input = { seed: 1, expect }
+    const faults: ReadonlyArray<Command> = [{ type: "ps-fails", on: true }, { type: "launchers-fail", on: true }]
+    const restart: Command = { type: "restart" }
+    const observed = yield* exercise(input, [...faults, restart, ...callForms, { type: "ps-fails", on: false }, { type: "launchers-fail", on: false }, ...callForms])
+    const uncalled = yield* exercise(input, [...faults, restart])
+    const unrestored = yield* exercise(input, [...faults, ...callForms])
+    assertWitness("guard reloads its copy on the restarted world", 2, observed.loaded, unrestored.loaded)
+    for (const [index, call] of callForms.entries()) {
+      for (const faulted of [true, false]) {
+        const refused = mustRefuse(call, faulted)
+        const at = Number(!faulted) * callForms.length + index
+        const want = { refused, commands: [call.call.command].filter(() => !refused), launcher: call.call.kind === "heavy" && !faulted, alias: !refused && call.form.name === "bash" }
+        assertWitness(`${call.call.kind}/${call.form.id}/${call.child}/faults=${faulted}`, want, observed.seen.at(at), uncalled.seen.at(at))
+      }
+      if (call.call.kind === "kill-other")
+        assertWitness("unreadable process table causes the actual refusal", true, observed.seen[index]?.refused, observed.seen[index + callForms.length]?.refused)
+      if (call.call.kind === "heavy")
+        assertWitness("unwritable launcher falls back to the real shell", false, observed.seen[index]?.launcher, observed.seen[index + callForms.length]?.launcher)
+    }
+  }),
 )

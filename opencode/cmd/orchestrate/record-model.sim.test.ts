@@ -22,7 +22,7 @@ import { expect } from "bun:test"
 import { Array as Arr, Config, Effect, Layer, Match, Option, type Random } from "effect"
 import { below, generator } from "../../sim/runtime.ts"
 import * as Seed from "../../sim/seed.ts"
-import { witnesses } from "../../sim/witnesses.ts"
+import { assertWitness, witnesses } from "../../sim/witnesses.ts"
 import { platform as ownPlatform } from "@dotfiles/opencode-orchestrate/node/platform"
 import { hostServices } from "../../sim/host-services.ts"
 import * as SqliteRecord from "@dotfiles/opencode-orchestrate/sqlite/record"
@@ -404,15 +404,17 @@ const runSeed = (seed: number, expect: Seed.Seeded["expect"], open: (world: Worl
 }
 
 /** A deliberate walk, through the same model and invariants as the seeded walk. */
-const coverPromises = (open: (world: World) => Opened) => {
+type OmitWitness = "six promises" | "follow-up" | "deferral" | "decision" | "none"
+const coverPromises = (open: (world: World) => Opened, without: OmitWitness) => {
   const run = startRun(1, expect, open)
   const parts = Arr.makeBy(6, (index) => ({ id: `w${index}`, text: `witness ${index}` }))
-  const add = { source: "plan:p1", fromOwner: true, parts, by: "root-1" }
+  const promised = parts.filter((_, index) => without !== "six promises" || index < 5)
+  const add = { source: "plan:p1", fromOwner: true, parts: promised, by: "root-1" }
   const subject = subjectOf(run)
   const added = subject.add(add)
   same(run, added, run.reference.add(add), "six explicit promises")
   expect("ok" in added).toBe(true)
-  run.books.promised.push(...parts.map((part) => part.id))
+  run.books.promised.push(...promised.map((part) => part.id))
   compared(run)
   const reason = { class: "guarantee", ref: "invariant/i1" } as const
   const followUp = { id: "w-follow", key: "w-follow", by: "worker-1", reason: { class: "dependency", ref: "commitment/w0" } } as const
@@ -423,6 +425,7 @@ const coverPromises = (open: (world: World) => Opened) => {
     deferral: [(one: Subject) => one.defer(defer), () => {}],
     decision: [(one: Subject) => one.decide(decide), () => run.books.decided.add(decide.id)],
   })) {
+    if (kind === without) continue
     const answer = call(subject)
     same<string | true>(run, answer, call(run.reference), kind)
     expect({ kind, took: "ok" in answer }).toEqual({ kind, took: true })
@@ -432,7 +435,16 @@ const coverPromises = (open: (world: World) => Opened) => {
   }
   restart(run)
   compared(run)
+  const live = subjectOf(run)
+  const seen = (id: string) => ({ state: live.state(id), last: live.history(id).at(-1)?.type, reason: live.reason(id) })
+  const evidence = {
+    promises: parts.filter((part) => live.history(part.id)[0]?.type === "promised").map((part) => part.id),
+    followUp: seen(followUp.id),
+    deferral: seen(defer.id),
+    decision: seen(decide.id),
+  }
   run.opened.close()
+  return evidence
 }
 
 // ── The reasons' cross product: caller × operation × state × reason class × pointer kind × existence ──
@@ -538,7 +550,18 @@ seeded("no commitment disappears: every open one is held or listed, through rest
   onSubject((open) => runSeed(seed, expect, open)),
 )
 
-Seed.effect("six promised commitments and a reason for each successful follow-up, deferral and decision survive a restart", onSubject(coverPromises))
+Seed.effect("six promised commitments and a reason for each successful follow-up, deferral and decision survive a restart", Effect.gen(function* () {
+  const play = (without: OmitWitness) => onSubject((open) => coverPromises(open, without))
+  const witnessed = yield* play("none")
+  const fewer = yield* play("six promises")
+  const noFollowUp = yield* play("follow-up")
+  const noDeferral = yield* play("deferral")
+  const noDecision = yield* play("decision")
+  assertWitness("six explicit promise events survive the reopen", ["w0", "w1", "w2", "w3", "w4", "w5"], witnessed.promises, fewer.promises)
+  assertWitness("follow-up row and its reason survive the reopen", { state: Option.some<State>("open"), last: "promised", reason: Option.some("dependency commitment/w0") }, witnessed.followUp, noFollowUp.followUp)
+  assertWitness("deferral stays open with its reason and event", { state: Option.some<State>("open"), last: "deferred", reason: Option.some("guarantee invariant/i1") }, witnessed.deferral, noDeferral.deferral)
+  assertWitness("decision is closed with its reason and event", { state: Option.some<State>("decided"), last: "decided", reason: Option.some("guarantee invariant/i1") }, witnessed.decision, noDecision.decision)
+}))
 
 Seed.effect(
   "every caller × operation × state × reason class × pointer kind × existence answers as the reference, through a reopen and a restart",

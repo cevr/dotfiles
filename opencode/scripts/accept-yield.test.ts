@@ -6,6 +6,7 @@
 // owed, exactly one. A failure names the seed and the command.
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
+import { assertWitness } from "../sim/witnesses.ts"
 import * as Yield from "./accept-yield.ts"
 
 const SEEDS = 200
@@ -82,13 +83,40 @@ describe("the accept lock's protocol", () => {
       { kind: "deepStartsFile", file: "c" }, { kind: "deepFileEnds", green: true },
       { kind: "dies", who: "l2" }, { kind: "deepEnds" },
     ]
-    let state = Yield.initial()
-    for (const action of actions) {
-      const next = Option.getOrThrow(Yield.step(state, action, FILES))
-      expect(problems(state, action, next), describeAction(action)).toEqual([])
-      state = next
+    const playActions = (script: ReadonlyArray<Yield.Action>) => {
+      let state = Yield.initial()
+      const transitions: Array<Yield.State> = []
+      for (const action of script) {
+        const next = Option.getOrThrow(Yield.step(state, action, FILES))
+        expect(problems(state, action, next), describeAction(action)).toEqual([])
+        transitions.push(next)
+        state = next
+      }
+      return { state, transitions }
     }
-    expect([Yield.over(state), [...state.report]]).toEqual([true, [["a", "failed"], ["b", "passed"], ["c", "passed"]]])
+    const played = playActions(actions)
+    const withoutStop = playActions(actions.slice(0, 5))
+    const withoutLand = playActions(actions.slice(0, 7))
+    const withoutResume = playActions(actions.slice(0, 9))
+    const withoutDeath = playActions(actions.filter((action) => action.kind !== "dies"))
+    const stopped = (run: typeof played) => (run.transitions.at(5) ?? run.state).report.get("a")
+    assertWitness("interrupted file stays owed", "owed", stopped(played), stopped(withoutStop))
+    const phase = (at: number, who: Yield.Who) => played.transitions[at].phase.get(who)
+    const holds = (at: number) => played.transitions[at].holder
+    assertWitness("deep run starts waiting", "waiting", phase(0, "deep"), Yield.initial().phase.get("deep"))
+    assertWitness("deep run takes the lock", Option.some<Yield.Who>("deep"), holds(1), holds(0))
+    assertWitness("file starts with the lock held", Option.some("a"), played.transitions[2].running, played.transitions[1].running)
+    assertWitness("waiting land leaves a mark", true, played.transitions[4].wanted.has("l1"), played.transitions[3].wanted.has("l1"))
+    assertWitness("deep run yields the lock", Option.none(), holds(6), holds(5))
+    const landTook = (run: typeof played) => (run.transitions.at(7) ?? run.state).holder
+    assertWitness("land holds the lock", Option.some<Yield.Who>("l1"), landTook(played), landTook(withoutLand))
+    assertWitness("land ends and releases the lock", "done", phase(8, "l1"), phase(7, "l1"))
+    assertWitness("deep run retakes the lock after land", Option.some<Yield.Who>("deep"), holds(9), holds(8))
+    const end = (run: typeof played) => ({ over: Yield.over(run.state), report: [...run.state.report] })
+    const want = { over: true, report: [["a", "failed"], ["b", "passed"], ["c", "passed"]] }
+    assertWitness("resumed run records the failed and passed files", want, end(played), end(withoutResume))
+    assertWitness("play finishes only once the other run has died", want, end(played), end(withoutDeath))
+    assertWitness("deep run ends after settling all files", "done", played.state.phase.get("deep"), phase(15, "deep"))
   })
 
   test("the rules the runner follows: who marks, whose wait is on the clock, when the deep run may take or start", () => {

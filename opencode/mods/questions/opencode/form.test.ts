@@ -5,6 +5,7 @@
 import { describe, expect } from "bun:test"
 import { Deferred, Effect, Fiber, Random } from "effect"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
+import { assertWitness } from "../../../sim/witnesses.ts"
 import type { FormInput } from "../form.ts"
 import type { Question } from "../question.ts"
 import { FormRefused, type FormHost, opener, type PendingForm, QuestionsUnread } from "./form.ts"
@@ -33,7 +34,10 @@ const host = (options: Options) =>
     const gate = { now: yield* Deferred.make<void>() }
     const view: FormHost = {
       pending: () => listed,
-      read: (sessionID) => Effect.suspend(() => (options.unreadable === true ? Effect.fail(new QuestionsUnread({ sessionID })) : Effect.succeed(state.open))),
+      read: (sessionID) => Effect.suspend(() => {
+        if (options.unreadable === true) return Effect.fail(new QuestionsUnread({ sessionID }))
+        return Effect.succeed(state.open)
+      }),
       create: (sessionID, input) =>
         Effect.gen(function* () {
           if (options.hold === true) yield* Deferred.await(gate.now)
@@ -47,7 +51,10 @@ const host = (options: Options) =>
           cancelled.push(formID)
           listed.splice(0, listed.length, ...listed.filter((form) => form.id !== formID))
         }),
-      asker: (sessionID) => (sessionID === "ses_child" ? "implementor auth r1" : sessionID),
+      asker: (sessionID) => {
+        if (sessionID === "ses_child") return "implementor auth r1"
+        return sessionID
+      },
     }
     /** Lets every held create through, and holds the next ones. */
     const release = Effect.gen(function* () {
@@ -178,9 +185,39 @@ describe("opening the questions form", () => {
     Effect.gen(function* () {
       const runs = yield* Effect.forEach(Array.from({ length: 200 }, (_, seed) => seed), run)
       expect(runs.filter((each) => each.most > 1 || each.shownAgain.length > 0)).toEqual([])
-      // Not vacuous: forms were shown.
-      expect(runs.some((each) => each.most === 1)).toBe(true)
     }),
     TIMEOUT_MS,
   )
+
+  effectTest("a released open lists the pending form; answered keys do not return on reopen", Effect.gen(function* () {
+    const play = (click: boolean, submit: boolean) => Effect.gen(function* () {
+      const stand = yield* host({ open: [asked("ses_root", "q1", 1)], hold: true })
+      const forms = opener(stand.view)
+      const open = () => {
+        if (click) return forms.open("ses_root")
+        return Effect.succeed("no click")
+      }
+      const opening = yield* Effect.forkChild(open())
+      yield* Effect.yieldNow
+      yield* stand.release
+      const first = yield* Fiber.join(opening)
+      const listed = () => stand.view.pending("ses_root").map((form) => form.fields.map((field) => field.key))
+      const pending = listed()
+      const submitted: Array<string> = []
+      if (submit) submitted.push(...(yield* stand.submit))
+      else for (const form of stand.view.pending("ses_root")) yield* stand.view.cancel("ses_root", form.id)
+      const reopened = yield* Effect.forkChild(open())
+      yield* Effect.yieldNow
+      yield* stand.release
+      return { pending, first, submitted, next: yield* Fiber.join(reopened), listed: listed() }
+    })
+    const answered = yield* play(true, true)
+    const unopened = yield* play(false, false)
+    const unanswered = yield* play(true, false)
+    expect({ next: unanswered.next, listed: unanswered.listed }).toEqual({ next: "opened", listed: [["ask_user_async:q1"]] })
+    assertWitness("pending form containing q1", [["ask_user_async:q1"]], answered.pending, unopened.pending)
+    expect({ first: answered.first, submitted: answered.submitted }).toEqual({ first: "opened", submitted: ["ask_user_async:q1"] })
+    assertWitness("no answered key on reopen", { next: "none", listed: [] },
+      { next: answered.next, listed: answered.listed }, { next: unanswered.next, listed: unanswered.listed })
+  }), TIMEOUT_MS)
 })

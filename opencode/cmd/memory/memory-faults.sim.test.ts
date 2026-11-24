@@ -19,6 +19,7 @@
 // And one seed run twice gives byte-equal traces. One fixed run holds the case
 // the seeds meet rarely: a digest the file could not keep, across a restart.
 import { expect as bunExpect } from "bun:test"
+import { assertWitness, witnesses } from "../../sim/witnesses.ts"
 import { Array as Arr, Effect, Option, Schema } from "effect"
 import * as MemoryFiles from "@dotfiles/opencode-memory/memory/files"
 import { main } from "./cli.ts"
@@ -338,6 +339,32 @@ Seed.effect(
     bunExpect(ran.broken).toEqual([])
     bunExpect(faulted.broken).toEqual([])
     bunExpect([...new Set([...ran.reached, ...faulted.reached])].toSorted()).toEqual([...KINDS.map(([kind]) => kind), "faulted-session"].toSorted())
+    // Keep a separate, short history for each answer: there is no other call with the same reason to mask its absence.
+    for (const [kind, [index, replacement]] of witnesses(KINDS.map(([kind]) => kind), {
+      saved: [1, { type: "advance", ms: 1 }],
+      updated: [2, save("Run the gate before every push")],
+      corrected: [3, save("Run the gate before every push")],
+      found: [4, search("unmatched")],
+      "none found": [5, search("bun")],
+      forgot: [6, forget(999)],
+      "not found": [7, { type: "advance", ms: 1 }],
+      subagent: [9, save(note, 0)],
+      "store failed": [10, { type: "advance", ms: 1 }],
+    } satisfies Readonly<Record<(typeof KINDS)[number][0], readonly [number, Command]>>)) {
+      const end = index + 1 + Number(kind === "store failed")
+      const history = answers.slice(0, end)
+      const observed = yield* runOf(1, history)
+      const control = yield* runOf(1, history.map((command, at) => {
+        if (at === index) return replacement
+        return command
+      }))
+      bunExpect(observed.broken).toEqual([])
+      bunExpect(control.broken).toEqual([])
+      assertWitness(`memory ${kind} answer`, true, observed.reached.has(kind), control.reached.has(kind))
+    }
+    const persisted = yield* runOf(1, HELD_ACROSS_RESTART.filter((command) => command.type !== "write-fails"))
+    bunExpect(persisted.broken).toEqual([])
+    assertWitness("session's digest is held when the file actually failed a write", true, faulted.reached.has("faulted-session"), persisted.reached.has("faulted-session"))
   }),
 )
 
