@@ -1,7 +1,7 @@
 // @reads test-timing.ts timing-syntax.ts ../tests/hang-guard.ts
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { expect, test } from "bun:test"
-import { Effect, FileSystem, Match, Option, Path, Schema, Stream } from "effect"
+import { Effect, FileSystem, Option, Path, Schema, Stream } from "effect"
 import { it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { gitInit } from "../tests/git-repo.ts"
@@ -155,33 +155,26 @@ it.scopedLive.layer(BunServices.layer)("each extension mapping Bun discovers rea
 it.scopedLive.layer(BunServices.layer)("missing local imports fail at the edge rather than vanishing from the closure", () => Effect.gen(function* () {
   const direct = yield* projectProblems({ [file]: 'import "./missing.mjs"; import external from "external-package";' })
   const transit = yield* projectProblems({ [file]: 'import "../mods/cache/bench";', [first]: 'export { scenario } from "./missing";' })
-  for (const [path, issues] of [[file, direct], [first, transit]] as const)
-    expect(issues.map((issue) => [issue.path, issue.reason])).toEqual([[path, "unresolvable local import in test-side code"]])
+  expect(direct.map((issue) => [issue.path, issue.reason])).toEqual([[file, "unresolvable local import in test-side code"]])
+  expect(transit.map((issue) => [issue.path, issue.reason])).toEqual(
+    [[first, `unresolvable local import in test-side code; reached via "../mods/cache/bench" from ${file}:1`]],
+  )
 }))
 
 const entry = "opencode/tests/edge.test.ts"
-const producer = "opencode/mods/producer.ts"
-const external = "opencode/node_modules/edge-external/index.ts"
-const forms = {
-  relative: (target: string) => `../${target.slice("opencode/".length)}`,
-  alias: () => "@edge/probe",
-  self: () => "edge-fixture/probe",
-}
-const locations = { tracked: producer, external, missing: "opencode/mods/missing.ts" }
 const quote = Schema.encodeSync(Schema.fromJsonString(Schema.Json))
-const runtimeCase = (specifier: string) =>
-  `import { scenario } from ${quote(specifier)}; scenario("runner oracle", () => new Promise(() => {}), 55);`
-const erasedCases = {
-  "import type": (name: string) => `import type { Count } from ${name};`,
-  "inline type import": (name: string) => `import { type Count } from ${name};`,
-  "export type": (name: string) => `export type { Count } from ${name};`,
-  "inline type export": (name: string) => `export { type Count } from ${name};`,
-}
-const edgeCases = {
-  runtime: runtimeCase,
-  ...Object.fromEntries(Object.entries(erasedCases).map(([kind, edge]) => [kind, (specifier: string) =>
-    `${edge(quote(specifier))} import { test } from "bun:test"; test("runner oracle", () => {});`])),
-}
+const edgeCases = [
+  (name: string) => `import ${name};`,
+  (name: string) => `export { count } from ${name};`,
+  (name: string) => `void require(${name});`,
+  (name: string) => `import data = require(${name}); void data.count;`,
+  (name: string) => `await import(${name});`,
+  (name: string) => `import { count } from ${name};`,
+  (name: string) => `import type { Count } from ${name};`,
+  (name: string) => `import { type Count } from ${name};`,
+  (name: string) => `export type { Count } from ${name};`,
+  (name: string) => `export { type Count } from ${name};`,
+]
 
 const runCommand = (cwd: string, program: string, args: ReadonlyArray<string>) => Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
@@ -189,43 +182,73 @@ const runCommand = (cwd: string, program: string, args: ReadonlyArray<string>) =
   const output = yield* child.all.pipe(Stream.decodeText(), Stream.mkString)
   return { code: Number(yield* child.exitCode), output }
 })
-const actualBun = (cwd: string) => runCommand(cwd, process.execPath, ["test", "./tests/edge.test.ts"])
+const actualBun = (cwd: string, ...options: ReadonlyArray<string>) => runCommand(cwd, process.execPath, ["test", ...options, "./tests/edge.test.ts"])
 
-it.scopedLive.layer(BunServices.layer)("Bun's outcome distinguishes runtime local producer edges from erased and external imports", () => Effect.gen(function* () {
+const markerProject = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
-  for (const [form, spelling] of Object.entries(forms)) for (const [location, target] of Object.entries(locations)) {
-    const root = yield* fs.makeTempDirectoryScoped({ prefix: "timing-edge-oracle-" }).pipe(Effect.flatMap(fs.realPath))
-    const destination = `./${target.slice("opencode/".length)}`
-    // Package exports cannot point into node_modules. A legal local subpath forwards to it instead.
-    const exportTarget = Match.value(location).pipe(Match.when("external", () => "./forward.ts"), Match.orElse(() => destination))
-    const metadata = {
-      "opencode/package.json": quote({ name: "edge-fixture", exports: { "./probe": exportTarget } }),
-      "opencode/tsconfig.json": quote({ compilerOptions: { paths: { "@edge/*": [destination] } } }),
-    }
-    const reexport = 'export { test as scenario } from "bun:test"; export type Count = number;'
-    const forward = ["opencode/forward.ts", 'export { scenario } from "edge-external";'] as const
-    yield* writeProject(root, { ...metadata, [producer]: reexport, [external]: reexport, [forward[0]]: forward[1] })
-    for (const [kind, make] of Object.entries(edgeCases)) {
-      const label = `${form} / ${location} / ${kind}`
-      const source = make(spelling(target))
-      yield* writeProject(root, { [entry]: source })
-      const run = yield* actualBun(path.join(root, "opencode"))
-      const errors = [...inspectTimingProject(new Map([[producer, reexport], [entry, source], forward]), timingResolver(path, root, new Map(Object.entries(metadata))))]
-        .flatMap(([file, answer]) => answer.errors.map((issue) => ({ file, ...issue })))
-      const timedOut = run.output.includes("timed out after 55ms")
-      const missing = run.output.includes("Cannot find module")
-      if (kind !== "runtime") expect(run.code, label).toBe(0)
-      else {
-        expect(run.code, label).toBe(1)
-        expect(missing, label).toBe(location === "missing")
-        expect(timedOut, label).toBe(location !== "missing")
-      }
-      if (missing) expect(errors.map(({ file, rule }) => [file, rule]), label).toEqual([[entry, "R1"]])
-      else if (timedOut && location === "tracked") expect(errors.map(({ file, rule }) => [file, rule]), label).toEqual([[producer, "R1"]])
-      else expect(errors, label).toEqual([])
-    }
+  const root = yield* fs.makeTempDirectoryScoped({ prefix: "timing-edge-oracle-" }).pipe(Effect.flatMap(fs.realPath))
+  const files = ["plain", "esm", "cjs", "bun", "node", "fallback", "ignored"].map((name) => `opencode/mods/${name}.ts`)
+  const dependency = "opencode/node_modules/edge-external/index.ts"
+  const marker = (file: string) => `console.log(${quote(`TIMING_LOADED ${file}`)}); export const count = 1; export type Count = number;`
+  const exports = {
+    "./mode": { import: "./mods/esm.ts", require: "./mods/cjs.ts", default: "./mods/fallback.ts" },
+    "./host": { node: "./mods/node.ts", bun: "./mods/bun.ts", default: "./mods/fallback.ts" },
+    "./bun-first": { bun: "./mods/bun.ts", node: "./mods/node.ts" },
+    "./fallback": { default: "./mods/fallback.ts" },
+    "./wild/*": { import: "./mods/*.ts", require: "./mods/cjs.ts" },
   }
+  yield* writeProject(root, {
+    ".gitignore": "/opencode/mods/ignored.ts\n/opencode/node_modules/\n",
+    "opencode/package.json": quote({ name: "edge-fixture", exports, imports: { "#mode": exports["./mode"] } }),
+    "opencode/tsconfig.json": quote({ compilerOptions: { paths: { "@edge/*": ["./mods/*"] } } }),
+    "opencode/node_modules/edge-external/package.json": quote({ exports: "./index.ts" }),
+    ...Object.fromEntries([...files, dependency].map((file) => [file, marker(file)])),
+  })
+  yield* Effect.sync(() => gitInit(root, ["-q"]))
+  const { texts, metadata } = yield* readTimingInputs(root)
+  const resolve = timingResolver(path, root, metadata)
+  return { root, cwd: path.join(root, "opencode"), files, texts, resolve }
+})
+
+const markerCases = [
+  ["../mods/plain.js", "opencode/mods/plain.ts", []],
+  ["@edge/plain", "opencode/mods/plain.ts", []],
+  ["edge-fixture/mode", "opencode/mods/cjs.ts", []],
+  ["edge-fixture/bun-first", "opencode/mods/bun.ts", []],
+  ["edge-fixture/host", "opencode/mods/node.ts", ["--conditions", "node"]],
+  ["edge-fixture/fallback", "opencode/mods/fallback.ts", []],
+  ["edge-fixture/wild/plain", "opencode/mods/plain.ts", []],
+  ["#mode", "opencode/mods/cjs.ts", []],
+  ["edge-external", "opencode/node_modules/edge-external/index.ts", []],
+  ["../mods/ignored.ts", "opencode/mods/ignored.ts", []],
+] as const
+for (const [specifier, witness, options] of markerCases) {
+  it.scopedLive.layer(BunServices.layer)(`covers Git-visible loads of ${specifier} [${options.join(" ")}]`, () => Effect.gen(function* () {
+    const { root, cwd, texts, resolve } = yield* markerProject
+    const observed = new Set<string>()
+    for (const make of edgeCases) {
+      const edge = make(quote(specifier))
+      const source = `import { test } from "bun:test"; test("runner oracle", () => {}); ${edge}`
+      yield* writeProject(root, { [entry]: source })
+      const run = yield* actualBun(cwd, ...options)
+      expect(run.code, `${edge}\n${run.output}`).toBe(0)
+      const closure = inspectTimingProject(new Map([...texts, [entry, source]]), resolve)
+      for (const [, loaded] of run.output.matchAll(/^TIMING_LOADED (.+)$/gm)) {
+        if (!loaded) continue
+        observed.add(loaded)
+        if (texts.has(loaded)) expect(closure.has(loaded), `${edge} loaded ${loaded}`).toBe(true)
+      }
+    }
+    expect(observed.has(witness), `Bun must actually load ${witness} in at least one form`).toBe(true)
+  }))
+}
+
+it.scopedLive.layer(BunServices.layer)("a side-effect import includes local targets from untaken conditions", () => Effect.gen(function* () {
+  const { files, texts, resolve } = yield* markerProject
+  const imports = 'import "edge-fixture/mode"; import "edge-fixture/host"; import "edge-fixture/wild/plain";'
+  const closure = inspectTimingProject(new Map([...texts, [entry, imports]]), resolve)
+  for (const file of files.slice(0, -1)) expect(closure.has(file), file).toBe(true)
 }))
 
 it.scopedLive.layer(BunServices.layer)("Git-visible tracked and unstaged producers are followed, but an ignored producer is not", () => Effect.gen(function* () {
@@ -234,7 +257,7 @@ it.scopedLive.layer(BunServices.layer)("Git-visible tracked and unstaged produce
   const root = yield* fs.makeTempDirectoryScoped({ prefix: "timing-edge-git-" }).pipe(Effect.flatMap(fs.realPath))
   const files = ["opencode/mods/tracked.ts", "opencode/mods/unstaged.ts", "opencode/mods/ignored.ts"]
   const reexport = 'export { test as scenario } from "bun:test";'
-  const source = files.map((file) => `import ${quote(forms.relative(file))};`).join("\n")
+  const source = files.map((file) => `import ${quote(`../mods/${path.basename(file)}`)};`).join("\n")
   yield* writeProject(root, { ".gitignore": "/opencode/mods/ignored.ts\n", [entry]: source,
     ...Object.fromEntries(files.map((file) => [file, reexport])) })
   yield* Effect.sync(() => gitInit(root, ["-q"]))

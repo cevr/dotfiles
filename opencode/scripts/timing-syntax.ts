@@ -11,7 +11,13 @@ export interface TimingResolver {
   readonly edge: (file: string, specifier: string) => Option.Option<Resolution>
   readonly intendsLocal: (file: string, specifier: string) => boolean
 }
-interface Resolution { readonly module: string; readonly repoFile: Option.Option<string> }
+interface Resolution { readonly module: string; readonly repoFiles: ReadonlyArray<string> }
+
+export const isRequire = (node: Expression) => {
+  if (node.type === "Identifier") return node.name === "require"
+  return node.type === "MemberExpression" && !node.computed && !node.optional && node.object.type !== "Super" &&
+    node.property.type === "Identifier" && node.property.name === "require"
+}
 
 const runtimeExpression = (node: Expression): Expression => {
   switch (node.type) {
@@ -45,6 +51,7 @@ export const testFile = (file: string) =>
   /\/(?:fake-[^/]+|(?:[^/]+[.-])?laws|fixture|test-(?:support|helper|util)s?)\.[cm]?[jt]sx?$/.test(file)
 
 const resolveBun = Option.liftThrowable((specifier: string, directory: string) => Bun.resolveSync(specifier, directory))
+const resolveRequire = Option.liftThrowable((specifier: string, directory: string) => require.resolve(specifier, { paths: [directory] }))
 const Config = Schema.Struct({
   compilerOptions: Schema.optionalKey(Schema.Struct({ paths: Schema.optionalKey(Schema.Record(Schema.String, Schema.Array(Schema.String))) })),
   extends: Schema.optionalKey(Schema.Union([Schema.String, Schema.Array(Schema.String)])),
@@ -52,6 +59,8 @@ const Config = Schema.Struct({
 const Manifest = Schema.Struct({
   name: Schema.optionalKey(Schema.String),
   workspaces: Schema.optionalKey(Schema.Union([Schema.Array(Schema.String), Schema.Struct({ packages: Schema.Array(Schema.String) })])),
+  exports: Schema.optionalKey(Schema.Json),
+  imports: Schema.optionalKey(Schema.Json),
 })
 const decodeConfig = Option.liftThrowable((text: string) => Schema.decodeUnknownSync(Config)(Bun.JSONC.parse(text)))
 const decodeManifest = Option.liftThrowable((text: string) => Schema.decodeUnknownSync(Manifest)(Bun.JSONC.parse(text)))
@@ -76,17 +85,21 @@ export const readTimingInputs = (root: string) => Effect.gen(function* () {
   return { texts, metadata }
 })
 
-const nearest = <A>(path: Path.Path, inputs: ReadonlyMap<string, A>, directory: string): Option.Option<A> => {
+const nearest = <A>(path: Path.Path, inputs: ReadonlyMap<string, A>, directory: string): Option.Option<readonly [string, A]> => {
   for (let at = directory; ; at = path.dirname(at)) {
     const found = Option.fromUndefinedOr(inputs.get(at))
-    if (Option.isSome(found) || at === ".") return found
+    if (Option.isSome(found)) return Option.some([at, found.value])
+    if (at === ".") return Option.none()
   }
 }
 
-const patternMatches = (pattern: string, name: string) => {
+const wildcardMatch = (pattern: string, name: string) => {
   const wildcard = pattern.indexOf("*")
-  if (wildcard < 0) return pattern === name
-  return name.length >= pattern.length - 1 && name.startsWith(pattern.slice(0, wildcard)) && name.endsWith(pattern.slice(wildcard + 1))
+  if (wildcard < 0) return Option.filter(Option.some(""), () => pattern === name)
+  const prefix = pattern.slice(0, wildcard)
+  const suffix = pattern.slice(wildcard + 1)
+  if (name.length < prefix.length + suffix.length || !name.startsWith(prefix) || !name.endsWith(suffix)) return Option.none()
+  return Option.some(name.slice(prefix.length, name.length - suffix.length))
 }
 
 const importConfigs = (path: Path.Path, metadata: ReadonlyMap<string, string>) => {
@@ -143,18 +156,60 @@ const workspaceNames = (path: Path.Path, manifests: ReadonlyMap<string, typeof M
   return [...workspaces]
 }
 
-/** Missing edges need a local-intent diagnosis. These inputs never decide whether a successful edge is followed. */
-const resolutionIntent = (path: Path.Path, root: string, metadata: ReadonlyMap<string, string>) => {
-  const { configs, manifests } = importConfigs(path, metadata)
-  const aliases = aliasPatterns(path, root, configs)
-  const workspaces = workspaceNames(path, manifests)
-  const packageMatches = (name: string, specifier: string) => specifier === name || specifier.startsWith(`${name}/`)
+const packageName = (specifier: string) => specifier.match(/^(?:@[^/]+\/)?[^/]+/)?.[0] ?? ""
+const jsonObject = Schema.is(Schema.Record(Schema.String, Schema.Json))
+const jsonArray = Schema.is(Schema.Array(Schema.Json))
+const runtimeConditions = new Set(["import", "require", "default", "bun", "node"])
+const conditionLeaves = (value: Schema.Json): ReadonlyArray<string> => {
+  if (Schema.is(Schema.String)(value)) return [value]
+  if (jsonArray(value)) return value.flatMap(conditionLeaves)
+  if (!jsonObject(value)) return []
+  return Object.entries(value).flatMap(([key, nested]) => {
+    if (runtimeConditions.has(key)) return conditionLeaves(nested)
+    return []
+  })
+}
+const matchingLeaves = (tree: Schema.Json, subpath: string, prefix: string) => {
+  if (!jsonObject(tree) || !Object.keys(tree).some((key) => key.startsWith(prefix))) {
+    if (subpath === ".") return conditionLeaves(tree)
+    return []
+  }
+  return Object.entries(tree).flatMap(([pattern, node]) => Option.toArray(wildcardMatch(pattern, subpath))
+    .flatMap((match) => conditionLeaves(node).map((target) => target.replaceAll("*", match))))
+}
+const declaredLeaves = (subpath: string, prefix: string, tree?: Schema.Json) =>
+  Option.toArray(Option.fromUndefinedOr(tree)).flatMap((value) => matchingLeaves(value, subpath, prefix))
+type Manifests = ReadonlyMap<string, typeof Manifest.Type>
+
+/** Native lookup keeps ordinary/alias resolution. Enumerate conditional package
+ * branches as well: neither native lookup selects a fallback hidden by a winner. */
+const branchTargets = (path: Path.Path, manifests: Manifests) => {
+  const packages = new Map<string, Array<readonly [string, typeof Manifest.Type]>>()
+  for (const [directory, manifest] of manifests) if (manifest.name) {
+    const entries = packages.get(manifest.name) ?? []
+    entries.push([directory, manifest])
+    packages.set(manifest.name, entries)
+  }
+  return (directory: string, specifier: string) => {
+    const bare = specifier.split("?")[0] ?? specifier
+    if (bare.startsWith("#")) return Option.toArray(nearest(path, manifests, directory))
+      .flatMap(([base, { imports }]) => declaredLeaves(bare, "#", imports).map((target) => [base, target] as const))
+    const name = packageName(bare)
+    const subpath = `.${bare.slice(name.length)}`
+    return (packages.get(name) ?? []).flatMap(([base, { exports }]) =>
+      declaredLeaves(subpath, ".", exports).map((target) => [base, target] as const))
+  }
+}
+
+/** Only failed lookups consult local intent. */
+const resolutionIntent = (path: Path.Path, aliases: ReadonlyMap<string, ReadonlyArray<string>>, manifests: Manifests) => {
+  const workspaces = new Set(workspaceNames(path, manifests))
   return (file: string, specifier: string) => {
-    if (/^(?:\.{1,2}(?:\/|$)|\/|file:)/.test(specifier)) return true
+    if (/^(?:\.{1,2}(?:\/|$)|\/|file:|#)/.test(specifier)) return true
     const directory = path.dirname(file)
-    if (Option.exists(nearest(path, aliases, directory), (keys) => keys.some((key) => patternMatches(key, specifier)))) return true
-    if (Option.exists(nearest(path, manifests, directory), ({ name }) => Boolean(name && packageMatches(name, specifier)))) return true
-    return workspaces.some((name) => packageMatches(name, specifier))
+    if (Option.exists(nearest(path, aliases, directory), ([, keys]) => keys.some((key) => Option.isSome(wildcardMatch(key, specifier))))) return true
+    const name = packageName(specifier)
+    return workspaces.has(name) || Option.exists(nearest(path, manifests, directory), ([, manifest]) => manifest.name === name)
   }
 }
 
@@ -168,74 +223,99 @@ const repositoryPath = (path: Path.Path, root: string, target: string) => {
 
 /** Bun decides whether and where a name resolves; preserve external package identities. */
 export const timingResolver = (path: Path.Path, root: string, metadata: ReadonlyMap<string, string> = new Map()): TimingResolver => {
+  const { configs, manifests } = importConfigs(path, metadata)
+  const branches = branchTargets(path, manifests)
+  const targets = (directory: string, specifier: string, seen = new Set<string>()): ReadonlyArray<string> => {
+    const key = `${directory}\0${specifier}`
+    if (seen.has(key)) return []
+    seen.add(key)
+    const from = path.join(root, directory)
+    return [
+      ...Option.toArray(resolveBun(specifier, from)),
+      ...Option.toArray(resolveRequire(specifier, from)),
+      ...branches(directory, specifier).flatMap(([base, target]) => targets(base, target, seen)),
+    ]
+  }
   const cache = new Map<string, Option.Option<Resolution>>()
   const edge = (file: string, specifier: string) => {
-    const directory = path.dirname(path.join(root, file))
+    const directory = path.dirname(file)
     const key = `${directory}\0${specifier}`
     return Option.getOrElse(Option.fromUndefinedOr(cache.get(key)), () => {
-      const found = Option.map(resolveBun(specifier, directory), (target) => {
-        const repoFile = repositoryPath(path, root, target)
-        return { module: Option.getOrElse(repoFile, () => specifier), repoFile }
+      const resolved = targets(directory, specifier)
+      const found = Option.map(Option.fromUndefinedOr(resolved[0]), (primary) => {
+        const repoFiles = [...new Set(resolved.flatMap((target) => Option.toArray(repositoryPath(path, root, target))))]
+        return { module: Option.getOrElse(repositoryPath(path, root, primary), () => specifier), repoFiles }
       })
       cache.set(key, found)
       return found
     })
   }
   const resolve = (file: string, specifier: string) => Option.map(edge(file, specifier), ({ module }) => module)
-  return Object.assign(resolve, { edge, intendsLocal: resolutionIntent(path, root, metadata) })
+  return Object.assign(resolve, { edge, intendsLocal: resolutionIntent(path, aliasPatterns(path, root, configs), manifests) })
 }
 
-const scanners = {
-  js: new Bun.Transpiler({ loader: "js" }),
-  jsx: new Bun.Transpiler({ loader: "jsx" }),
-  ts: new Bun.Transpiler({ loader: "ts" }),
-  tsx: new Bun.Transpiler({ loader: "tsx" }),
-}
-const runtimeImports = (file: string, text: string) => {
-  if (/\.d\.[cm]?ts$/.test(file)) return []
-  // The runner accepts executable files; the standalone scan API expects only the module body.
-  const body = text.replace(/^#![^\r\n]*/, "")
-  if (file.endsWith(".tsx")) return scanners.tsx.scanImports(body)
-  if (file.endsWith(".jsx")) return scanners.jsx.scanImports(body)
-  if (/[cm]?ts$/.test(file)) return scanners.ts.scanImports(body)
-  return scanners.js.scanImports(body)
-}
-
-const runtimeEdges = (file: string, source: string, resolve: TimingResolver) => {
-  const targets: Array<string> = []
-  const missing: Array<Span> = []
-  for (const { path: specifier, kind } of runtimeImports(file, source)) {
-    if (kind !== "import-statement" && kind !== "require-call" && kind !== "dynamic-import") continue
-    const edge = resolve.edge(file, specifier)
-    if (Option.isSome(edge)) targets.push(...Option.toArray(edge.value.repoFile))
-    else if (resolve.intendsLocal(file, specifier)) {
-      // Bun's scanner returns module names, not source positions.
-      const start = Math.max(0, source.indexOf(specifier))
-      missing.push({ start, end: start + specifier.length })
-    }
+interface Edge { readonly specifier: string; readonly at: Span }
+const literalEdges = (program: Program) => {
+  const edges: Array<Edge> = []
+  const add = (at?: Argument) => {
+    if (!at) return
+    for (const specifier of Option.toArray(moduleText(at))) edges.push({ specifier, at })
   }
-  return { targets, missing }
+  new Visitor({
+    ImportDeclaration(node) {
+      if (node.importKind === "type") return
+      if (node.specifiers.length && node.specifiers.every((spec) => spec.type === "ImportSpecifier" && spec.importKind === "type")) return
+      add(node.source)
+    },
+    ExportNamedDeclaration(node) {
+      if (!node.source || node.exportKind === "type") return
+      if (node.specifiers.length && node.specifiers.every((spec) => spec.exportKind === "type")) return
+      add(node.source)
+    },
+    ExportAllDeclaration(node) { if (node.exportKind !== "type") add(node.source) },
+    TSImportEqualsDeclaration(node) {
+      if (node.importKind !== "type" && node.moduleReference.type === "TSExternalModuleReference") add(node.moduleReference.expression)
+    },
+    CallExpression(node) { if (isRequire(node.callee)) add(node.arguments[0]) },
+    ImportExpression(node) { add(node.source) },
+  }).visit(program)
+  return edges
+}
+
+const sourceEdges = (file: string, program: Program) => {
+  if (/\.d\.[cm]?ts$/.test(file)) return []
+  return literalEdges(program)
 }
 
 /** Use runner-discovered test roots and explicitly designated test-support roots.
- * Bun scans the runtime edges and resolves their targets. Follow candidates
- * inside this repository that Git would see (tracked plus non-ignored untracked),
- * outside node_modules. Other reached files receive only the producer rules. */
+ * Follow every literal acquisition except syntactically type-only edges. Judge
+ * all Git-visible repo targets (tracked and non-ignored untracked, outside
+ * node_modules) under all conditions, even if Bun erases the edge or selects
+ * another branch. Reached product files receive just the producer rules. */
 export const timingSources = (texts: ReadonlyMap<string, string>, resolve: TimingResolver) => {
   const queue = [...texts.keys()].filter((file) => /^(?:opencode\/|workbox\/test\/)/.test(file) && testFile(file))
   const visited = new Set(queue)
-  const files = new Map<string, { readonly program: Program; readonly producerOnly: boolean; readonly missing: ReadonlyArray<Span> }>()
+  const via = new Map<string, string>()
+  const files = new Map<string, { readonly program: Program; readonly producerOnly: boolean; readonly missing: ReadonlyArray<Span>; readonly via: Option.Option<string> }>()
   for (const file of queue) {
     const read = Option.fromUndefinedOr(texts.get(file))
     if (Option.isNone(read)) continue
     const source = read.value
     const program = parseSync(file, source).program
-    const { targets, missing } = runtimeEdges(file, source, resolve)
-    files.set(file, { program, producerOnly: !testFile(file), missing })
-    for (const target of targets) {
-      if (!texts.has(target) || visited.has(target)) continue
-      visited.add(target)
-      queue.push(target)
+    const missing: Array<Span> = []
+    files.set(file, { program, producerOnly: !testFile(file), missing, via: Option.fromUndefinedOr(via.get(file)) })
+    for (const { specifier, at } of sourceEdges(file, program)) {
+      const edge = resolve.edge(file, specifier)
+      if (Option.isNone(edge)) {
+        if (resolve.intendsLocal(file, specifier)) missing.push(at)
+        continue
+      }
+      for (const target of edge.value.repoFiles) {
+        if (!texts.has(target) || visited.has(target)) continue
+        via.set(target, `"${specifier}" from ${file}:${source.slice(0, at.start).split("\n").length}`)
+        visited.add(target)
+        queue.push(target)
+      }
     }
   }
   return files

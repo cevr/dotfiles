@@ -1,10 +1,10 @@
 import { Option, Schema } from "effect"
 // This stops accidental test-time dependence, not concealment via names assembled at runtime, eval, or new Function (the latter two are forbidden anyway).
-// Judge by static import closure. Reached product files get producer rules only: no acquisition of a runner/timing helper or re-export of a guarded binding; product clock reads and ordinary loads stay legal.
+// Judge by the conservative literal import closure. Reached product files get producer rules only: no acquisition of a runner/timing helper or re-export of a guarded binding; product clock reads and ordinary loads stay legal.
 import { type CallExpression, type Expression, parseSync, Visitor } from "oxc-parser"
 import { HANG_GUARDS, isProductBudget } from "../tests/hang-guard.ts"
 import { WAIT_MS } from "../tests/wait.ts"
-import { calendarArgument, moduleText, type Program, type Statement, type TimingResolver, timingSources } from "./timing-syntax.ts"
+import { calendarArgument, isRequire, moduleText, type Program, type Statement, type TimingResolver, timingSources } from "./timing-syntax.ts"
 
 export { readTimingInputs, sourceFile, testFile, timingResolver } from "./timing-syntax.ts"
 
@@ -440,11 +440,6 @@ const dynamicSource = (names: ClosedNames, resolve: (specifier: string) => strin
   if (Option.isSome(rule)) names.reject(rule.value, site, "guarded modules require a static import declaration")
 }
 
-const isRequire = (node: Expression) => {
-  if (node.type === "Identifier") return node.name === "require"
-  return Option.exists(dot(node), ({ name }) => name === "require")
-}
-
 const inspectBridgeBinding = (file: string, names: ClosedNames, pattern: Span & { readonly type: string; readonly name?: string }, value?: Argument) => {
   if (!bridgeBudgetModules.has(file) || pattern.type !== "Identifier" || pattern.name !== "budget") return
   const constructor = bridgeConstructor(file)
@@ -577,7 +572,7 @@ const inspectProducer = (file: string, program: Program, resolve: (specifier: st
 export const inspectTimingProject = (texts: ReadonlyMap<string, string>, resolve: TimingResolver,
   dynamic: ReadonlySet<string> = new Set()) => {
   const results = new Map<string, Inspection>()
-  for (const [file, { program, producerOnly, missing }] of timingSources(texts, resolve)) {
+  for (const [file, { program, producerOnly, missing, via }] of timingSources(texts, resolve)) {
     if (file === timingModule) continue
     const from = (specifier: string) => Option.getOrElse(resolve(file, specifier), () => specifier)
     const inspect = () => {
@@ -585,7 +580,11 @@ export const inspectTimingProject = (texts: ReadonlyMap<string, string>, resolve
       return inspectFull(file, program, from, dynamic.has(file))
     }
     const verdict = inspect()
-    const errors = [...verdict.errors, ...missing.map((at): Site => ({ rule: "R1", at, reason: "unresolvable local import in test-side code" }))]
+    const reached = Option.getOrElse(Option.map(via, (edge) => `; reached via ${edge}`), () => "")
+    const errors = [
+      ...verdict.errors.map((site) => ({ ...site, reason: site.reason + reached })),
+      ...missing.map((at): Site => ({ rule: "R1", at, reason: "unresolvable local import in test-side code" + reached })),
+    ]
     results.set(file, { ...verdict, errors })
   }
   return results
