@@ -227,7 +227,7 @@ describe("bun run accept", () => {
     })
     // At most what --parallel asks, and at least one.
     expect(Option.getOrElse(Option.map(heading, (each) => each.width), () => 0)).toBeWithin(1, 4)
-  })
+  }, RUN_MS)
 
   test(
     "runs the pool to its end, then each marked file, in that order; a file whose tests skip records no pass",
