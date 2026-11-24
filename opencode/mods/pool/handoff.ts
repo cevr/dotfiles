@@ -31,8 +31,8 @@ export type HandoffInput = typeof HandoffInput.Type
 export const Handoff = Schema.TaggedUnion({
   Send: {},
   Prepare: { credentialID: Schema.String, cacheTTL: Schema.optionalKey(Schema.String) },
-  Held: { message: Schema.String, retryAt: Schema.optionalKey(Schema.Finite) },
+  Held: { message: Schema.String },
 })
 export type Handoff = typeof Handoff.Type
 
-export class HandoffHeld extends Schema.TaggedError<HandoffHeld>()("HandoffHeld", { message: Schema.String, retryAt: Schema.Finite }) {}
+export class HandoffHeld extends Schema.TaggedError<HandoffHeld>()("HandoffHeld", { message: Schema.String }) {}

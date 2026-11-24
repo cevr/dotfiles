@@ -623,16 +623,10 @@ export const make = (
       // The old host has no concrete unsent-Step result. New hosts expose
       // the Step during routing and again at the final send hook.
       let canDeferPrimary = false
-      const failProposal = (event: SendScope & { readonly headers: Record<string, string> }, reason: string, code: HoldReason, at: number) => {
-        if (canDeferPrimary && event.kind === "primary") {
-          // The auth hook asks for a fresh placement when there is no
-          // proposal. Only that hook can defer an unsent concrete request.
-          return Effect.sync(() => { event.headers[HANDOFF_HEADER] = "1" })
-        }
-        return recordHeld(event, reason, code, at).pipe(
-          Effect.flatMap((hold) => Effect.die(new Error(sendHoldMessage(hold.reason, hold.retryAt)))),
+      const failProposal = (scope: SendScope, reason: string, code: HoldReason, at: number) =>
+        recordHeld(scope, reason, code, at).pipe(
+          Effect.flatMap((hold) => Effect.die(new Error(hold.reason))),
         )
-      }
       yield* ctx.session.hook("model.request", (event) => {
         if (!Object.hasOwn(options.providers, event.model.providerID)) {
           if (canDeferPrimary && event.kind === "primary") return Effect.void
@@ -833,17 +827,18 @@ export const make = (
       // cannot be read fails the call, and its caller goes on without it. An
       // RPC that cannot be registered stops the plugin.
       const decodeHandoff = Schema.decodeUnknownOption(HandoffInput)
-      const handoffUnavailable = (sessionID: string) => Clock.currentTimeMillis.pipe(Effect.map((now) => {
-        const held = RequestHeld.make({ sessionID, ...storeHeld(now + HOLD_STORE_RETRY_MS, now) })
-        return Handoff.cases.Held.make({ message: requestHeldMessage(held), retryAt: held.retryAt })
-      }))
+      const handoffUnavailable = (sessionID: string) => Clock.currentTimeMillis.pipe(Effect.map((now) =>
+        Handoff.cases.Held.make({ message: requestHeldMessage(RequestHeld.make({
+          sessionID, ...storeHeld(now + HOLD_STORE_RETRY_MS, now),
+        })) }),
+      ))
       const handoff = (decoded: Option.Option<HandoffInput>) => Effect.gen(function* () {
         if (Option.isNone(decoded)) return yield* handoffUnavailable("")
         const { candidate, agent, stepID, ...request } = decoded.value
         const scope = { ...request, ...Option.match(Option.fromUndefinedOr(stepID), { onNone: () => ({}), onSome: (stepID) => ({ stepID }) }) }
         const refused = (reason: string, reasonCode: HoldReason, retryAt: number) =>
           recordHeld(scope, reason, reasonCode, retryAt).pipe(
-            Effect.map((hold) => Handoff.cases.Held.make({ message: hold.reason, retryAt: hold.retryAt })),
+            Effect.as(Handoff.cases.Held.make({ message: reason })),
           )
         const decision = yield* withPool((pool) => Effect.gen(function* () {
           if (!active) return yield* handoffUnavailable(request.sessionID)

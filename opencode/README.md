@@ -4158,7 +4158,7 @@ or each WebSocket send, including on a socket another Step already used.
 An absent active login, unreadable authority, or unbound provider cannot grant
 admission. The token is never stored or shown by the pool.
 
-A host with typed Step deferral retries the original Step at its hold's
+For OpenAI, a host with typed Step deferral retries the original Step at its hold's
 retry time. Older hosts stop it before sending and show when to retry.
 On the older WebSocket host alone, a hold first committed after the
 `model.request` check and before `experimental.ws.send` can be wrapped as a

@@ -439,11 +439,12 @@ export const layer = (config: Config) =>
             sessionID: input.sessionID,
             reason: "the pool's logins could not be listed",
             reasonCode: "logins-unavailable",
-            retryAt: nextRetryAt(now, []),
+            retryAt: now + UNREAD_RETRY_MS,
           })
         const answer = asked.value
         if (!answer.ok) {
-          const retryAt = nextRetryAt(now, [answer.retryAt])
+          const retryAt = Option.getOrElse(Option.filter(Option.some(answer.retryAt), () => answer.reasonCode === "record-unreadable"),
+            () => nextRetryAt(now, [answer.retryAt]))
           const signIn = Option.fromUndefinedOr(answer.signIn)
           if (Option.isSome(signIn)) return yield* new AccountsHeld({ sessionID: input.sessionID, kind: input.kind, retryAt, signIn: signIn.value })
           return yield* new RequestHeld({ sessionID: input.sessionID, reason: answer.reason, reasonCode: answer.reasonCode, retryAt })
@@ -479,7 +480,7 @@ export const layer = (config: Config) =>
           sessionID: input.sessionID,
           reason: "no login that passed the dispatch check is still available",
           reasonCode: "placement-changed",
-          retryAt: nextRetryAt(now, []),
+          retryAt: now + UNREAD_RETRY_MS,
         })
         if (answer.admission === "backed") yield* reserve(where, placed.value.credentialID, input.sessionID)
         return Option.getOrUndefined(placed)
