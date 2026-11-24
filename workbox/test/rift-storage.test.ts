@@ -10,7 +10,9 @@ import { join } from "node:path"
 const SCRIPT = join(import.meta.dir, "..", "bin", "workbox-rift-storage")
 const identity = Bun.spawnSync(["sh", "-c", '. "$1"; workbox_host_identity', "test", join(import.meta.dir, "..", "host-identity.sh")]).stdout.toString().trim()
 const scratchRoot = realpathSync(mkdtempSync(join(tmpdir(), "rift-storage-test-")))
-afterAll(() => rmSync(scratchRoot, { recursive: true, force: true }))
+/** The file's last hook deletes the benches of the run (small folders and empty image files). */
+const SCRATCH_RM_MS = 30_000
+afterAll(() => rmSync(scratchRoot, { recursive: true, force: true }), SCRATCH_RM_MS)
 let count = 0
 
 const UUID = "170ee675-18a3-48e1-931d-f0a84a51df83"
