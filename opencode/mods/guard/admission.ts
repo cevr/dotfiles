@@ -61,7 +61,10 @@ interface Outcome {
   readonly changes: ReadonlyArray<Lease>
 }
 
-export class AdmissionUnavailable extends Schema.TaggedError<AdmissionUnavailable>()("AdmissionUnavailable", { reason: Reason }) {}
+export class AdmissionUnavailable extends Schema.TaggedError<AdmissionUnavailable>()("AdmissionUnavailable", {
+  reason: Reason,
+  storeVersion: Schema.optionalKey(Schema.Struct({ found: Counter, supported: Counter })),
+}) {}
 
 /** Persistence serializes each operation, including use of the sampled clock,
  * against all processes sharing the physical host; callers cannot write rows. */
@@ -351,6 +354,9 @@ const approveClaim = (tx: Transaction, row: Lease, observation: Observation) => 
 
 const claim = (tx: Transaction, row: Lease, input: Extract<Input, { op: "claim" }>, observation: Observation): Option.Option<Reason> => {
   if (row.generation !== input.generation || row.state !== "granted") return Option.some("stale")
+  // A binding names a single native incarnation for this boot, even after
+  // release. Its appearance on a second offer cannot authorize a second exec.
+  if (tx.rows().some(({ binding }) => Option.contains(binding, input.binding))) return Option.some("stale")
   const decision = approveClaim(tx, row, observation)
   if (Result.isFailure(decision)) {
     tx.update(row, { state: "queued", reason: decision.failure, admittedDemand: Option.none(),

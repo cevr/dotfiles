@@ -11,8 +11,9 @@
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { Schema } from "effect"
 import { makeRepo } from "./repo.ts"
-import { serve, type Seen } from "./sim.ts"
+import { POLICY_TASK, serve, type Seen } from "./sim.ts"
 
 export interface Spec {
   readonly base: string
@@ -40,6 +41,26 @@ const config = join(spec.base, "config")
 mkdirSync(work, { recursive: true })
 mkdirSync(config, { recursive: true })
 const head = makeRepo(work)
+const json = Schema.encodeSync(Schema.fromJsonString(Schema.Json))
+
+// Use the same test-only sampler port as the host-admit CLI acceptance.
+// The embedded server, Guard hook, real launcher and child stay unchanged.
+const guardForPolicy = () => {
+  const fixture = join(spec.base, "guard-with-supply")
+  const fixtureEntry = join(spec.guard, "../..", "tests", "fixtures", "host-admit-test-entry.ts")
+  mkdirSync(fixture)
+  writeFileSync(join(spec.base, "home", "host-admit-supply.json"), json({ outside: 0 }))
+  writeFileSync(join(fixture, "package.json"), json({ type: "module", exports: { "./server": "./server.ts" } }))
+  writeFileSync(join(fixture, "server.ts"), [
+    `import { live, make } from ${json(join(spec.guard, "server.ts"))}`,
+    `export default make(live, () => ${json([process.execPath, fixtureEntry])})`,
+  ].join("\n"))
+  return fixture
+}
+const guardForTask = () => {
+  if (spec.task === POLICY_TASK) return guardForPolicy()
+  return spec.guard
+}
 
 // The spec file's path is in this process's command line and no other's: the policy task kills by it.
 const sim = serve(process.argv[2]!)
@@ -59,7 +80,7 @@ const content = {
       },
     },
   },
-  plugins: [{ package: spec.kernel, options: { codeOnly: spec.codeOnly, timeoutMs: 20_000 } }, spec.guard],
+  plugins: [{ package: spec.kernel, options: { codeOnly: spec.codeOnly, timeoutMs: 20_000 } }, guardForTask()],
 }
 
 /** As much of the fork's SDK as the run uses; the fork is found at run time, so it is typed here. */
