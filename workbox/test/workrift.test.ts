@@ -1087,6 +1087,31 @@ describeWork("workrift with the work backend", () => {
     120_000,
   )
 
+  test("a jq that fails on work's list of workspaces is no empty list: nothing is deleted, the trash is named (no workspace kept is told from it otherwise)", () => {
+    const p = purgeBench("purge-jq")
+    const shim = failingShim(p.w.dir, "jq", 5)
+    // m2-pactive: the list's jq failing read as no active workspace, so a trash holding one would have passed.
+    const ran = run(p.w.app, { ...p.env, PATH: `${shim}:${p.env.PATH}`, FAKE_JQ_FAIL: '.[] | select(.state._tag == "Active") | .path' }, [SCRIPT, "remove", p.two])
+    expect(ran.code).toBe(1)
+    expect(ran.err).toContain("work's list of workspaces does not read (jq failed)")
+    expect(ran.err).toContain("nothing deleted, the trash stays")
+    expect(ran.out).not.toContain("deleted:")
+    expect(p.gcCalls()).toEqual([])
+  }, 60_000)
+
+  test("with work's trash = false, a jq -e that fails (neither listed nor not) on the list after the rm is no proof: workrift refuses to say deleted", () => {
+    const p = purgeBench("notrash-jq", "no-trash")
+    const aside = join(p.w.dir, "aside")
+    mkdirSync(aside)
+    writeFileSync(p.fakeRm, aside)
+    const shim = failingShim(p.w.dir, "jq", 5)
+    // m3-jqe: any status but 0 (listed) read as not listed, so a jq that failed said deleted.
+    const ran = run(p.w.app, { ...p.env, PATH: `${shim}:${p.env.PATH}`, FAKE_JQ_FAIL: "any(.[]; .id == $id)" }, [SCRIPT, "remove", p.two])
+    expect(ran.code).toBe(1)
+    expect(ran.err).toContain("does not read (jq status 5)")
+    expect(ran.out).not.toContain("deleted:")
+  }, 60_000)
+
   /**
    * A folder a cut `workrift create` left (the server restarted mid-create, 2026-11-19): under app's storage, no .git
    * and no record, a few files, a `.env` link to a file outside the scratch root and a link to a folder inside it.
@@ -2815,6 +2840,32 @@ const endOwned = async (pgids: ReadonlyArray<number>) => {
   for (const pgid of pgids) ownedGroups.delete(pgid)
 }
 
+/**
+ * A folder with a stand-in for `name` that fails (status `code`, a word on stderr) when one of its arguments is
+ * exactly FAKE_<NAME>_FAIL, or matches the glob FAKE_<NAME>_FAIL_GLOB; any other call runs the real one. Put first on
+ * PATH for the one run that should meet the failure.
+ */
+const failingShim = (dir: string, name: string, code: number) => {
+  const real = Bun.which(name)
+  if (!real) throw new Error(`no ${name} on PATH`)
+  const at = join(dir, `fail-${name}`)
+  mkdirSync(at, { recursive: true })
+  const key = `FAKE_${name.toUpperCase()}_FAIL`
+  exe(
+    join(at, name),
+    [
+      "#!/bin/sh",
+      "for a do",
+      `  if [ -n "\${${key}:-}" ] && [ "$a" = "$${key}" ]; then printf '%s: failed (injected)\\n' '${name}' >&2; exit ${code}; fi`,
+      `  case "$a" in \${${key}_GLOB:-/nonexistent/fail-shim-none}) printf '%s: failed (injected)\\n' '${name}' >&2; exit ${code} ;; esac`,
+      "done",
+      `exec '${real}' "$@"`,
+      "",
+    ].join("\n"),
+  )
+  return at
+}
+
 /** The script before the ticket queue (a5821de8): an exclusive flock on .git/workrift.lock and holder files in .git. */
 let oldScript = ""
 const OLD_WORKRIFT = () => {
@@ -3074,6 +3125,68 @@ describeWork("workrift beside the older workrift, and its line's owners whatever
       await endOwned([lockHolder.pid])
     }
   }, 300_000)
+
+  test.each([
+    // m1-boot: a boot id that does not read made the identity `boot  tick N`, another one: the holder taken for gone.
+    ["the boot id", (proc: string) => rmSync(join(proc, "sys/kernel/random/boot_id"))],
+    // m5-idempty-gone: an identity that does not read was taken for gone, though kill -0 finds the pid.
+    ["the holder's stat", (proc: string, pid: number) => rmSync(join(proc, String(pid), "stat"))],
+  ] as const)("on Linux, %s that stops reading while the holder lives leaves its identity unknown: the waiter keeps waiting until the lock is free, never takes it for gone", async (_what, unread) => {
+    const { w, log, ivs } = bench("unread")
+    const queue = join(stateOf(w.app), "base")
+    mkdirSync(queue, { recursive: true })
+    const proc = join(w.dir, "statproc")
+    mkdirSync(join(proc, "self"), { recursive: true })
+    mkdirSync(join(proc, "sys/kernel/random"), { recursive: true })
+    writeFileSync(join(proc, "self/stat"), "1 (sh) S 0\n")
+    writeFileSync(join(proc, "sys/kernel/random/boot_id"), "b00t-1d\n")
+    const stat = (pid: number | string, tick: number) => `${pid} (a) ${["S", ...Array.from({ length: 18 }, (_, i) => String(i + 4)), String(tick), ...Array.from({ length: 30 }, () => "0")].join(" ")}\n`
+    const file = join(queue, "1.w")
+    writeFileSync(file, "")
+    const release = join(w.dir, "release")
+    // The holder is a live process (the flock it runs): kill -0 finds it.
+    const lockHolder = spawnOwned([join(w.bin, "flock"), file, "sh", "-c", `until [ -e '${release}' ]; do sleep 0.05; done`])
+    const pid = lockHolder.pid
+    mkdirSync(join(proc, String(pid)), { recursive: true })
+    writeFileSync(join(proc, String(pid), "stat"), stat(pid, 777))
+    writeFileSync(file, `${pid}\nboot b00t-1d tick 777\n${Math.floor(Date.now() / 1000)}\nhold the line\n`)
+    const locked = () => Bun.spawnSync([join(w.bin, "flock"), "-n", file, "true"]).exitCode === 1
+    const env = { ...w.env, WORKRIFT_STAT_PROC: proc }
+    const own = `mkdir -p '${proc}'/$$ && printf '%s\\n' "$$ (w) ${stat(0, 999).split(") ").slice(1).join(") ").replace(/\n$/, "")}" >'${proc}'/$$/stat && exec "$@"`
+    try {
+      await until("locked", locked, 120_000)
+      const waiter = start(w.app, env, ["/bin/sh", "-c", own, "sh", SCRIPT, "hold", "--", "probe", log, "waiter", "w", "0.1"], join(w.dir, "waiter.err"))
+      let ended = false
+      void waiter.done.then(() => (ended = true))
+      await until("the waiter names the live holder", () => waiter.err().includes(`behind 1; the first pid ${pid} (hold the line)`), 120_000)
+      unread(proc, pid)
+      // Long enough for a waiter that took it for gone to go in (ticket_wait looks again every 5 s at most).
+      await Bun.sleep(7000)
+      expect(ended, waiter.err()).toBe(false)
+      expect(ivs()).toEqual([])
+      writeFileSync(release, "")
+      const ran = await waiter.done
+      expect(ran.code, ran.err).toBe(0)
+      expect(ivs().map((each) => each.id)).toEqual(["waiter"])
+    } finally {
+      writeFileSync(release, "")
+      await endOwned([pid])
+    }
+  }, 300_000)
+
+  test("a ticket whose rm fails as the holder leaves stays, said: the command still succeeds, and the line takes the ticket for ended (its lock is free)", () => {
+    const { w } = bench("leave")
+    const queue = join(stateOf(w.app), "base")
+    const shim = failingShim(w.dir, "rm", 1)
+    // m4-leave: queue_leave's plain rm stopped the script under set -e after the work was done.
+    const ran = run(w.app, { ...w.env, PATH: `${shim}:${w.env.PATH}`, FAKE_RM_FAIL_GLOB: `${queue}/*.w` }, [SCRIPT, "hold", "--", "true"])
+    expect(ran.code, ran.err).toBe(0)
+    expect(ran.err).toMatch(/workrift: the ticket .*\.w stays \(rm failed\); its lock is free, so the line takes it for ended/)
+    expect(readdirSync(queue).filter((name) => name.endsWith(".w"))).not.toEqual([])
+    const next = run(w.app, w.env, [SCRIPT, "hold", "--", "true"])
+    expect(next.code, next.err).toBe(0)
+    expect(next.err).not.toContain("waiting for")
+  }, 60_000)
 
   test("the queue's own files tampered with while a writer holds: a counter deleted or garbled, a holder's record emptied; no second holder goes in", async () => {
     const { w, log, ivs } = bench("tamper")
