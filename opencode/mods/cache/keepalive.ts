@@ -44,6 +44,7 @@ export interface Snapshot {
   readonly agent: Option.Option<string>
   readonly model: string
   readonly login: Option.Option<string>
+  readonly managed?: import("@dotfiles/opencode-pool/handoff").HandoffInput
   /** When the request (or the last ping) went out. */
   readonly at: number
 }

@@ -20,8 +20,9 @@
 import { Option, Schema } from "effect"
 import type { AccountPoolState } from "./account-pool.ts"
 import { rankPlacement, type PlacementSlot } from "./placement.ts"
-import type { AccountStatus, SessionAccount } from "./status.ts"
+import type { AccountStatus, Hold, SessionAccount } from "./status.ts"
 import { accountWide, type QuotaReading } from "./quota.ts"
+export { DEFAULT_HOLD_MS } from "./hold.ts"
 
 const MINUTE = 60_000
 
@@ -34,8 +35,6 @@ export const WINDOW_MS = 7 * 24 * 60 * MINUTE
 export const CACHE_LIFE_MS = 5 * MINUTE
 /** A pin with no request for this long belongs to a run that stopped without going idle. */
 export const PIN_IDLE_MS = 30 * MINUTE
-/** A refusal without a time, or a refused response without a reading, holds the account this long. */
-export const DEFAULT_HOLD_MS = 5 * MINUTE
 /** The share of an account's 5-hour window a pool spends before the account has no room. */
 export const FIVE_HOUR_SHARE = 0.9
 /** The share of any other window a pool spends before the account has no room. */
@@ -169,8 +168,12 @@ const shareOf = (window: string) => (window === "5h" ? FIVE_HOUR_SHARE : OTHER_W
 
 export const held = (state: AccountPoolState, credentialID: string, now: number): boolean => {
   const hold = state.holds[credentialID]
-  return hold !== undefined && hold.until > now
+  return hold !== undefined && liveHold(hold, now)
 }
+
+/** A sign-in's date is an appointment to check again, not an expiry. */
+export const liveHold = (hold: Hold, now: number): boolean =>
+  hold.kind === "signin" || hold.kind === "record-unreadable" || hold.until > now
 
 /** The newest reading, with each window that has since reset read as empty. */
 const freshReading = (state: AccountPoolState, credentialID: string, now: number): QuotaReading | undefined => {
@@ -297,7 +300,7 @@ export const sessionAccount = (
   return {
     credentialID,
     on: placed === undefined ? "next" : "placed",
-    ...(hold !== undefined && hold.until > now ? { hold } : {}),
+    ...(hold !== undefined && liveHold(hold, now) ? { hold } : {}),
     ...(reading === undefined ? {} : { reading }),
   }
 }
@@ -310,7 +313,7 @@ export const status = (state: AccountPoolState, now: number, rules: Rules): Read
     const reading = state.readings[credentialID]
     return {
       credentialID,
-      ...(hold !== undefined && hold.until > now ? { hold } : {}),
+      ...(hold !== undefined && liveHold(hold, now) ? { hold } : {}),
       ...(reading === undefined ? {} : { reading }),
       load: state.steps
         .filter((step) => step.credentialID === credentialID && now - step.at < WINDOW_MS)

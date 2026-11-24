@@ -9,16 +9,19 @@
 // claim's room (`backed`, which a request reserves on at its dispatch and a
 // ping does not), a failure, a timeout or an answer that is not a pace skips
 // the ping, which only lets the cache go cold.
-import { Pace } from "@dotfiles/opencode-pool/pace"
+import { Pace, type WirePace } from "@dotfiles/opencode-pool/pace"
+import { Handoff, type HandoffInput } from "@dotfiles/opencode-pool/handoff"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 import { Effect, Layer, Option, Schema } from "effect"
 import { PingAdmission } from "../service.ts"
+export { sentPlacementOf } from "@dotfiles/opencode-pool/handoff"
 
 /** The pool's RPC, whose `pace` the composition root asks. */
 export const POOL = POOL_STATUS
 
 /** The pool's `pace` method, as the plugin's RPC client calls it. */
 export type Ask = (input: { readonly providerID: string; readonly model: string; readonly dispatch: true }) => Effect.Effect<unknown, unknown>
+type Confirm = (input: HandoffInput) => Effect.Effect<unknown, unknown>
 
 /** How long the pool has to answer, well inside the ping's interval. */
 const TIMEOUT = "8 seconds"
@@ -30,7 +33,7 @@ const ABSENT = new Set(["rpc.unavailable", "rpc.method_not_found"])
 const decodeFailure = Schema.decodeUnknownOption(Schema.Struct({ type: Schema.String }))
 
 /** Whether a pace answer admits a request on `login`. */
-export const admitted = (pace: Pace, login: string): boolean => {
+export const admitted = (pace: WirePace, login: string): boolean => {
   if (!pace.measured || !pace.ok || pace.admission === "backed") return false
   return Option.match(Option.fromUndefinedOr(pace.eligible), { onNone: () => true, onSome: (eligible) => eligible.includes(login) })
 }
@@ -47,12 +50,24 @@ const asked = (ask: Ask, model: string, login: string) => {
   )
 }
 
-export const layer = (ask: Ask) =>
+const handoff = Schema.decodeUnknownOption(Handoff)
+
+export const layer = (ask: Ask, confirm: Confirm) =>
   Layer.succeed(
     PingAdmission,
     PingAdmission.of({
       admits: (ping) =>
         Option.match(ping.login, { onNone: () => Effect.succeed(true), onSome: (login) => asked(ask, ping.model, login) }).pipe(
+          Effect.flatMap((ok) => {
+            if (!ok) return Effect.succeed(false)
+            return Option.match(ping.managed, {
+              onNone: () => Effect.succeed(true),
+              onSome: (prepared) => confirm(prepared).pipe(
+                Effect.timeoutOption(TIMEOUT),
+                Effect.map((reply) => Option.exists(Option.flatMap(reply, handoff), (answer) => answer._tag === "Send")),
+              ),
+            })
+          }),
           Effect.catchCause(() => Effect.succeed(false)),
           Effect.withSpan("PingAdmission.admits"),
         ),

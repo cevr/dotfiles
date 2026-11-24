@@ -3,11 +3,16 @@
 // names OpenCode knows, the quota it carries recorded, a version rejection
 // recovered from once, and a 429 named for what it is.
 import { type Clock, Effect, Option, Result, Schema } from "effect"
+import type { RequestKind } from "@dotfiles/opencode-pool/accounts"
+import { HANDOFF_HEADER, HOLD_STORE_RETRY_MS, Handoff, HandoffHeld, type HandoffInput, rememberSentPlacement } from "@dotfiles/opencode-pool/handoff"
+import { RequestHeld, requestHeldMessage, storeHeld } from "@dotfiles/opencode-pool/pace"
+export { POOL_STATUS as HANDOFF_PROTOCOL } from "@dotfiles/opencode-pool/status"
 import type { Endpoint } from "../endpoint.ts"
 import type { Auth } from "../model.ts"
 import { readUnifiedQuota, retryAfterSeconds } from "../quota.ts"
 import { describeConnection, type RateLimitCategory } from "../rate-limit.ts"
 import { type CacheTTL, rewriteRequestBody } from "../request-body.ts"
+import { CREDENTIAL_HEADER, CACHE_TTL_HEADER } from "./request.ts"
 import { CLAUDE_CODE_SESSION_HEADER, claudeCodeSessionID } from "../session-header.ts"
 import { headersAfterBodyTransform, contentLength } from "../content-headers.ts"
 import { ToolNameAliasTable, type ToolNameRejected } from "../tool-alias.ts"
@@ -93,6 +98,69 @@ const recoveryKey = (sessionID: string, agent: string, providerID: string, model
 
 const credentialIDOf = (connection: { readonly type: string; readonly id?: string }): string | undefined =>
   connection.type === "credential" ? connection.id : undefined
+
+const decodeHandoff = Schema.decodeUnknownOption(Handoff)
+
+export interface RequestPreparation {
+  readonly exchange: Exchange
+  readonly confirm: (input: HandoffInput) => Effect.Effect<unknown, unknown>
+}
+
+/** The final admission decision follows signing, including any wait to trade a token. */
+export const pooledRequest = (
+  originalExchange: Exchange,
+  event: RequestEvent & { readonly kind: RequestKind; readonly agent: string },
+  current: () => Option.Option<RequestPreparation>,
+) => {
+  if (!event.request.headers.has(HANDOFF_HEADER)) return onRequest(originalExchange)(event)
+  return Effect.gen(function* () {
+    const original = event.request
+    const headers = new Headers(original.headers)
+    headers.delete(HANDOFF_HEADER)
+    const unavailable = () => {
+      const now = originalExchange.clock.currentTimeMillisUnsafe()
+      return requestHeldMessage(new RequestHeld({ sessionID: event.sessionID, ...storeHeld(now + HOLD_STORE_RETRY_MS, now) }))
+    }
+    for (let attempt = 0; attempt < 16; attempt++) {
+      const picked = Option.fromNullishOr(headers.get(CREDENTIAL_HEADER))
+      const owner = current()
+      if (Option.isNone(picked) || Option.isNone(owner)) return yield* new HandoffHeld({ message: unavailable() })
+      const { exchange, confirm } = owner.value
+      const prepared = { ...event, request: new Request(original.clone(), { headers }) }
+      yield* onRequest(exchange)(prepared)
+      if (!Option.contains(current(), owner.value)) {
+        exchange.leases.discard(prepared.request)
+        continue
+      }
+      const result = yield* confirm({
+        providerID: event.model.providerID, sessionID: event.sessionID, model: event.model.id,
+        kind: event.kind, agent: event.agent, candidate: picked.value,
+      }).pipe(Effect.map(decodeHandoff), Effect.orElseSucceed(() => Option.none()), Effect.timeoutOption("25 seconds"), Effect.map(Option.flatten))
+      if (!Option.contains(current(), owner.value)) {
+        exchange.leases.discard(prepared.request)
+        continue
+      }
+      if (Option.isNone(result)) return yield* new HandoffHeld({ message: unavailable() })
+      const answer = result.value
+      if (answer._tag === "Held") return yield* new HandoffHeld({ message: answer.message })
+      if (answer._tag === "Send") {
+        const cacheTTL = Option.fromNullishOr(headers.get(CACHE_TTL_HEADER))
+        rememberSentPlacement(prepared.request, {
+          credentialID: picked.value,
+          ...Option.match(cacheTTL, { onNone: () => ({}), onSome: (ttl) => ({ cacheTTL: ttl }) }),
+        })
+        event.request = prepared.request
+        return
+      }
+      exchange.leases.discard(prepared.request)
+      headers.set(CREDENTIAL_HEADER, answer.credentialID)
+      const ttl = Option.fromUndefinedOr(answer.cacheTTL)
+      if (Option.isSome(ttl)) headers.set(CACHE_TTL_HEADER, ttl.value)
+      else headers.delete(CACHE_TTL_HEADER)
+    }
+    return yield* new HandoffHeld({ message: unavailable() })
+  })
+}
 
 /**
  * `http.request`: send a request for the `anthropic` provider on its login,

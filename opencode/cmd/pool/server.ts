@@ -133,7 +133,8 @@ import { hostname } from "node:os"
 import { Agent, Integration, Plugin, Tool } from "@opencode/plugin/effect"
 import { Cause, Clock, Context, Deferred, Effect, Exit, Layer, Option, Schedule, Schema, Stream } from "effect"
 import { heldMessage, PoolId } from "@dotfiles/opencode-pool/account-pool"
-import { requestHeldMessage } from "@dotfiles/opencode-pool/pace"
+import { RequestHeld, requestHeldMessage, storeHeld } from "@dotfiles/opencode-pool/pace"
+import { HANDOFF_HEADER, HOLD_STORE_RETRY_MS, Handoff, HandoffInput, sentPlacementOf } from "@dotfiles/opencode-pool/handoff"
 import { CACHE_LIFE_MS, ttlMs, ttlOf } from "@dotfiles/opencode-pool/accounts"
 import { OUTAGE_AFTER_MS } from "@dotfiles/opencode-pool/alerts"
 import * as ChatGPT from "@dotfiles/opencode-pool/chatgpt/usage"
@@ -164,6 +165,7 @@ import { STATUS } from "@dotfiles/opencode-status/status"
 export { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
+const HostSessionID = Schema.String.check(Schema.isStartingWith("ses")).pipe(Schema.brand("SessionID"))
 
 /** The request header that names the login a request goes out on. Its auth plugin strips it. */
 export const CREDENTIAL_HEADER = "x-opencode-credential-id"
@@ -322,7 +324,10 @@ export const LIVE_STORE_HOST: StoreHost = { source: {}, register: registerCreden
  * The outside systems as OpenCode provides them: its integrations, the auth plugins' quota RPC, the plugin's
  * storage; the fleet's peers as `peers` reaches them (over SSH in OpenCode, `PeersLive.layer`).
  */
-export const liveWith = (peers: (configured: Options["fleet"]["peers"]) => Layer.Layer<Peers>) => {
+export const liveWith = (
+  peers: (configured: Options["fleet"]["peers"]) => Layer.Layer<Peers>,
+  holds = LedgerLive.holdAuthority(),
+) => {
   // The priced steps and the tally's requests, read and decoded once for every copy of the plugin in this process,
   // and written by one writer of its own (opencode/records.ts).
   const records = Records.make()
@@ -359,7 +364,7 @@ export const liveWith = (peers: (configured: Options["fleet"]["peers"]) => Layer
           published: client.events.subscribe("reading"),
         }
       }),
-      LedgerLive.layer(storage, stores.steps),
+      LedgerLive.layer(storage, stores.steps, holds),
       peers(options.fleet.peers),
       // The plugin's storage is the host's: every instance of the plugin reads the same fleet.
       FleetStoreLive.layer(ctx.storage),
@@ -375,7 +380,7 @@ export const liveWith = (peers: (configured: Options["fleet"]["peers"]) => Layer
 }
 
 /** The outside systems as OpenCode provides them, the peers over SSH. */
-export const live = liveWith(PeersLive.layer)
+export const live = liveWith(PeersLive.layer, LedgerLive.processHoldAuthority())
 
 /** The questions plugin's RPC and the host's sessions, as the pool tells the owner through them. */
 const questionsHost = (ctx: Plugin.Context): OwnerLive.Host => {
@@ -446,6 +451,8 @@ export const make = (
       // RPCs are in place at once and each waits for the model, a request's placement too. A model that cannot be
       // built fails every one of them.
       const ready = yield* Deferred.make<Model.Pool["Service"]>()
+      let active = true
+      yield* Effect.addFinalizer(() => Effect.sync(() => { active = false }))
       const withPool = <A, E, R>(use: (pool: Model.Pool["Service"]) => Effect.Effect<A, E, R>) =>
         Deferred.await(ready).pipe(Effect.flatMap(use))
       yield* Effect.forkScoped(
@@ -551,6 +558,7 @@ export const make = (
                 Effect.map((placed) => {
                   if (placed === undefined) return
                   event.headers[CREDENTIAL_HEADER] = placed.credentialID
+                  event.headers[HANDOFF_HEADER] = "1"
                   if (placed.cacheLifeMs !== undefined && placed.cacheLifeMs !== cacheLifeMs)
                     event.headers[CACHE_TTL_HEADER] = ttlOf(placed.cacheLifeMs)
                 }),
@@ -589,6 +597,7 @@ export const make = (
             sessionID: event.sessionID,
             kind: event.kind,
             status: event.response.status,
+            credentialID: Option.getOrUndefined(Option.map(sentPlacementOf(event.request), (sent) => sent.credentialID)),
           }),
         ).pipe(
             Effect.andThen(
@@ -681,9 +690,46 @@ export const make = (
       // The pool's own RPC has no error to answer with: a pool whose logins
       // cannot be read fails the call, and its caller goes on without it. An
       // RPC that cannot be registered stops the plugin.
+      const decodeHandoff = Schema.decodeUnknownOption(HandoffInput)
+      const handoffUnavailable = (sessionID: string) => Clock.currentTimeMillis.pipe(Effect.map((now) =>
+        Handoff.cases.Held.make({ message: requestHeldMessage(new RequestHeld({
+          sessionID, ...storeHeld(now + HOLD_STORE_RETRY_MS, now),
+        })) }),
+      ))
+      const handoff = (decoded: Option.Option<HandoffInput>) => Effect.gen(function* () {
+        if (Option.isNone(decoded)) return yield* handoffUnavailable("")
+        const { candidate, agent, ...request } = decoded.value
+        const decision = yield* withPool((pool) => Effect.gen(function* () {
+          if (!active) return yield* handoffUnavailable(request.sessionID)
+          if (yield* pool.confirmed(request, candidate)) {
+            if (active) return Handoff.cases.Send.make({})
+            return yield* handoffUnavailable(request.sessionID)
+          }
+          if (request.keepalive === true) return Handoff.cases.Held.make({ message: "the keepalive's prepared login is held or no longer registered" })
+          const cacheLife = Option.fromUndefinedOr(yield* agentCacheLife(agent))
+          const source = Option.fromUndefinedOr(yield* cacheOf(HostSessionID.make(request.sessionID)))
+          const placed = yield* pool.place({
+            ...request,
+            ...Option.match(cacheLife, { onNone: () => ({}), onSome: (cacheLifeMs) => ({ cacheLifeMs }) }),
+            ...Option.match(source, { onNone: () => ({}), onSome: (cacheOf) => ({ cacheOf }) }),
+          })
+          const placement = Option.fromUndefinedOr(placed)
+          if (Option.isNone(placement)) return yield* handoffUnavailable(request.sessionID)
+          const ttl = Option.filter(Option.fromUndefinedOr(placement.value.cacheLifeMs), (life) => !Option.contains(cacheLife, life))
+          return Handoff.cases.Prepare.make({
+            credentialID: placement.value.credentialID,
+            ...Option.match(ttl, { onNone: () => ({}), onSome: (life) => ({ cacheTTL: ttlOf(life) }) }),
+          })
+        })).pipe(Effect.catchTags({
+          AccountsHeld: (held) => Effect.succeed(Handoff.cases.Held.make({ message: heldMessage(held) })),
+          RequestHeld: (held) => Effect.succeed(Handoff.cases.Held.make({ message: requestHeldMessage(held) })),
+        }))
+        return decision
+      })
       yield* ctx.rpc
         .register(POOL_STATUS, {
           pace: (input) => withPool((pool) => pool.pace(providerOf(input), modelOf(input), sessionOf(input), dispatchOf(input))).pipe(Effect.orDie),
+          handoff: (input) => handoff(decodeHandoff(input)),
           status: () => withPool((pool) => pool.status).pipe(Effect.orDie),
           // A malformed question names no session: it has no account to name.
           session: (input) =>

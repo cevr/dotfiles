@@ -256,7 +256,8 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
   const register = <A>(definition: { readonly id: string }, handlers: { readonly [method: string]: Handler } & A) =>
     Effect.acquireRelease(
       Effect.sync(() => {
-        host.rpcs.set(definition.id, handlers)
+        const entry = { directory: loaded.directory, methods: handlers }
+        host.rpcs.set(definition.id, [...(host.rpcs.get(definition.id) ?? []), entry])
         host.record("rpc-registered", { id: definition.id, instance })
         /** An event of the RPC: every client subscribed to its name gets its data, as JSON across the wire. */
         const emit = <D>(name: string, data: D) =>
@@ -264,12 +265,14 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
             host.record("rpc-event", { id: definition.id, name })
             for (const subscriber of host.rpcEvents.get(definition.id) ?? []) if (subscriber.name === name) yield* Queue.offer(subscriber.queue, plain(data))
           })
-        return { dispose: Effect.void, events: { emit } }
+        const dispose = Effect.sync(() => {
+          const remaining = (host.rpcs.get(definition.id) ?? []).filter((current) => current !== entry)
+          if (remaining.length > 0) host.rpcs.set(definition.id, remaining)
+          else host.rpcs.delete(definition.id)
+        })
+        return { dispose, events: { emit } }
       }),
-      () =>
-        Effect.sync(() => {
-          if (host.rpcs.get(definition.id) === handlers) host.rpcs.delete(definition.id)
-        }),
+      ({ dispose }) => dispose,
     )
 
   /** A client's subscription to one of an RPC's events: its data as they are emitted, for the subscription's life. */
@@ -297,7 +300,7 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
         get: (_target, method) => {
           if (Predicate.isSymbol(method) || PROBES.has(method)) return void 0
           if (method === "events") return rpcEvents(definition.id)
-          return <I>(input: I) => host.callRpc(definition.id, method, plain(input))
+          return <I>(input: I) => host.callRpc(definition.id, method, plain(input), loaded.directory)
         },
       },
     )
