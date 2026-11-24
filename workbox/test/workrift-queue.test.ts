@@ -16,7 +16,7 @@
 // warms too, under the exclusive lock). The schedule of 2026-11-22 00:00Z on the workbox (11 creates waiting, master
 // moving every ten minutes, 96-239 s clones, a 628 s warm) shows the wait each gives.
 import { afterAll, describe, expect, test } from "bun:test"
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync as readSelectedFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync as readSelectedFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { externalInput, matchingInput, readScratchDirectorySync as readdirSync, readScratchFileSync as readFileSync, scratchExistsSync as existsSync, scratchInput } from "../../opencode/tests/read-path.ts"
 import { checkoutBlob, cloneScratchGit, initScratchGit, runScratchTool, spawnScratchGitSync, spawnScratchProgram, writeScratchScript } from "../../opencode/tests/scratch-child.ts"
 import { tmpdir } from "node:os"
@@ -631,14 +631,16 @@ const runOps = async (b: TurnBench, ops: ReadonlyArray<Op>, snapshots: ReadonlyA
   const kill = (name: string) => {
     const pid = groups.get(name)
     if (pid === undefined) throw new Error(`no test process group for ${name}`)
+    // The request is written before the kernel could unblock the next waiter.
+    appendFileSync(scratchInput(b.log), `kill - ${name}\n`)
     try {
-      // The request is written before the kernel could unblock the next waiter.
-      appendFileSync(b.log, `kill - ${name}\n`)
       process.kill(-pid, "SIGKILL")
-      kills.set(name, stamp() / 1000)
-    } catch {
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error
       // It had ended; this is not a kill of a waiter or holder.
+      return
     }
+    kills.set(name, stamp() / 1000)
   }
   const phaseLog = () => textLines(existsSync(b.log) ? readFileSync(b.log, "utf8") : "")
   const observe = async (what: string, ready: () => boolean) => {
