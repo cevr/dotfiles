@@ -166,7 +166,7 @@ const recordOf = (memory: MemoryRunner, job: MemoryJob): JobRecord => ({
   ...Option.match(slotOf(memory, job.spec.id), { onNone: () => ({}), onSome: (delivery) => ({ delivery }) }),
 })
 
-export const layer = (memory: MemoryRunner) =>
+export const layer = (memory: MemoryRunner, admit: (spec: JobSpec) => Effect.Effect<void, JobRefused> = () => Effect.void) =>
   Layer.effect(
     Runner,
     Effect.gen(function* () {
@@ -177,11 +177,11 @@ export const layer = (memory: MemoryRunner) =>
           for (const [id, announced] of mine) if (memory.watched.get(id) === announced) memory.watched.delete(id)
         }),
       )
-      return Runner.of(serviceOf(memory, mine))
+      return Runner.of(serviceOf(memory, mine, admit))
     }),
   )
 
-const serviceOf = (memory: MemoryRunner, mine: Map<string, () => void>): Runner["Service"] => ({
+const serviceOf = (memory: MemoryRunner, mine: Map<string, () => void>, admit: (spec: JobSpec) => Effect.Effect<void, JobRefused>): Runner["Service"] => ({
     watch: (id, announced) =>
       Effect.sync(() => {
         if (!memory.watches) return false
@@ -225,12 +225,13 @@ const serviceOf = (memory: MemoryRunner, mine: Map<string, () => void>): Runner[
           ),
         ),
       ),
-    launch: (spec) =>
+    launch: (spec) => admit(spec).pipe(Effect.andThen(
       Effect.suspend(() => {
         if (memory.refusing !== undefined) return Effect.fail(new JobRefused({ message: memory.refusing }))
         memory.jobs.set(spec.id, { spec, run: { state: "starting" }, log: "", drip: "" })
         return Effect.succeed({ log: LOG(spec.id), drip: DRIP(spec.id), how: memory.how, ...(memory.how === "systemd" ? { unit: unitOf(spec.id) } : {}) })
-      }),
+      })),
+    ),
     read: (id) =>
       Effect.sync(() => {
         memory.reads += 1
