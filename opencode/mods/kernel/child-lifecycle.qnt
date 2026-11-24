@@ -14,7 +14,9 @@ module childLifecycle {
     seq: int, stepError: bool, pendingShell: bool, pendingWake: bool, trace: str,
     exitObserved: bool, cut: RestartCut,
     activation: int, execution: int, executionSeen: int, oldExecutionSeen: int, shellSeen: int, exitSeen: int,
-    pending: Set[int], inputSeen: int -> int, inputExecution: int -> int, stopSeen: int, foreignPreserved: bool
+    pending: Set[int], ordinary: Set[int], inputSeen: int -> int, inputExecution: int -> int,
+    admission: int -> int, actualAdmission: int -> int, unseenThrough: int,
+    incarnation: int, stopSeen: int, foreignPreserved: bool, instanceSound: bool
   }
   var s: State
 
@@ -25,8 +27,9 @@ module childLifecycle {
     seq: 0, stepError: false, pendingShell: false, pendingWake: false, trace: "",
     exitObserved: false, cut: NoCut,
     activation: 1, execution: 0, executionSeen: 0, oldExecutionSeen: 0, shellSeen: 0, exitSeen: 0,
-    pending: Set(), inputSeen: Map(1 -> 0, 2 -> 0, 3 -> 0), inputExecution: Map(1 -> 0, 2 -> 0),
-    stopSeen: 0, foreignPreserved: true
+    pending: Set(), ordinary: Set(), inputSeen: Map(1 -> 0, 2 -> 0, 3 -> 0), inputExecution: Map(1 -> 0, 2 -> 0),
+    admission: Map(1 -> 0, 2 -> 0), actualAdmission: Map(1 -> 0, 2 -> 0), unseenThrough: 0, incarnation: 1,
+    stopSeen: 0, foreignPreserved: true, instanceSound: true
   }
   pure val noReply = { rev: 0, seq: 0, phase: Held, end: NoEnd, basis: Current, terminalFact: false, used: Set(), activation: 1 }
   pure val noObserver = { last: noReply, inflight: noReply, requested: false, checking: true, floor: 0 }
@@ -83,10 +86,11 @@ module childLifecycle {
   }
   action wakeEnqueuedFor(id: int): bool = all {
     or { s.phase == ResultUndetermined, s.phase == WakePending }, s.end == Failed, s.delivered == 0,
-    not(s.pending.contains(id)), s.inputSeen.get(id) == 0,
+    not(s.pending.union(s.ordinary).contains(id)),
     s' = { ...s, pendingWake: true, phase: WakePending, trace: "enqueued", exitObserved: false,
       pending: s.pending.union(Set(id)), inputSeen: s.inputSeen.set(id, s.activation), seq: s.seq + 1,
-      inputExecution: s.inputExecution.set(id, s.execution) }
+      inputExecution: s.inputExecution.set(id, s.execution),
+      admission: s.admission.set(id, s.seq + 1), actualAdmission: s.actualAdmission.set(id, s.seq + 1) }
   }
   action wakeEnqueued = { nondet id = oneOf(Set(1, 2)); wakeEnqueuedFor(id) }
   action wakeCancelled = all {
@@ -94,10 +98,52 @@ module childLifecycle {
     nondet id = oneOf(s.pending)
     val rest = s.pending.exclude(Set(id))
     val done = rest == Set()
-    val closesEpoch = done and s.phase == WakePending and s.inputExecution.get(id) == s.execution
-    s' = { ...s, pending: rest, pendingWake: not(done), phase: if (closesEpoch) Settled else s.phase,
+    val attributable = s.admission.get(id) > s.unseenThrough
+    val closesEpoch = done and s.phase == WakePending and attributable and s.inputExecution.get(id) == s.execution
+    s' = { ...s, pending: rest, pendingWake: not(done),
+      phase: if (closesEpoch) Settled else if (done and s.phase == WakePending) Unknown else s.phase,
       trace: "cancelled", inputSeen: s.inputSeen.set(id, s.activation), seq: s.seq + 1,
+      instanceSound: s.instanceSound and (not(attributable) or s.admission.get(id) == s.actualAdmission.get(id)),
       executionSeen: if (closesEpoch) s.activation else s.executionSeen }
+  }
+  action reuseForNotice = {
+    nondet id = oneOf(Set(1, 2))
+    all {
+      s.admission.get(id) > 0, not(s.pending.union(s.ordinary).contains(id)),
+      s' = { ...s, seq: s.seq + 1, ordinary: s.ordinary.union(Set(id)), inputExecution: s.inputExecution.set(id, 0),
+        admission: s.admission.set(id, s.seq + 1), actualAdmission: s.actualAdmission.set(id, s.seq + 1) },
+    }
+  }
+  action closeNotice = all {
+    nondet id = oneOf(s.ordinary)
+    val changed = { ...s, seq: s.seq + 1, ordinary: s.ordinary.exclude(Set(id)) }
+    s' = { ...changed, foreignPreserved: basisAt(changed) == basisAt(s) }
+  }
+  // Two indistinguishable gaps: only the producer knows whether the missing
+  // positions were harmless or closed and re-admitted the visible ID.
+  action missPositions = all {
+    s.phase == WakePending,
+    nondet id = oneOf(s.pending)
+    nondet reuse = oneOf(Set(false, true))
+    nondet width = oneOf(Set(1, 2))
+    val seq = s.seq + width
+    all {
+      not(reuse) or width == 2,
+      s' = { ...s, seq: seq, unseenThrough: seq,
+        actualAdmission: if (reuse) s.actualAdmission.set(id, seq) else s.actualAdmission },
+    }
+  }
+  action seePosition = all {
+    s.phase == WakePending,
+    s' = { ...s, seq: s.seq + 1 }
+  }
+  // The owner sees creation or detects the changed creation marker. Either
+  // resets the facts and aggregate positions, not the transport's floor.
+  action recreate = all {
+    s.incarnation == 1, s.phase == WakePending,
+    nondet observed = oneOf(Set(false, true))
+    s' = { ...empty, activation: s.activation, incarnation: 2,
+      trace: if (observed) "created" else "changed-marker" }
   }
   action cancelForeign = {
     val changed = { ...s, seq: s.seq + 1, inputSeen: s.inputSeen.set(3, s.activation) }
@@ -190,6 +236,7 @@ module childLifecycle {
   action producers = any {
     readCatalog, readPace, admit, notice, stopAuthorization, shutdown, resume,
     shellPending, diagnostic, failedSegment, shellExited, wakeEnqueued, wakeCancelled, cancelForeign, observeOlderExecution,
+    reuseForNotice, closeNotice, missPositions, seePosition, recreate,
     wakeResumed, wakeDelivered, stopTimesOut,
     settle, handBack, deliver, nextGeneration, staleObservation, readLatest, observerRestart
   }
@@ -292,6 +339,21 @@ module childLifecycle {
       inputExecution: empty.inputExecution.set(1, 1).set(2, 1) },
     t' = noTransport,
   }
+  action initReuseCut = all {
+    s' = { ...empty, phase: WakePending, end: Failed, activation: 2, execution: 1, seq: 8, executionSeen: 1,
+      pending: Set(1), pendingWake: true, admission: empty.admission.set(1, 4),
+      actualAdmission: empty.actualAdmission.set(1, 8), unseenThrough: 8,
+      inputSeen: empty.inputSeen.set(1, 1), inputExecution: empty.inputExecution.set(1, 1) },
+    t' = noTransport,
+  }
+  action ignoresAdmissionGeneration = any {
+    step,
+    all {
+      t' = t, s.phase == WakePending, s.admission.get(1) != s.actualAdmission.get(1),
+      s' = { ...s, phase: Settled, pending: Set(), pendingWake: false,
+        executionSeen: s.activation, instanceSound: false },
+    },
+  }
   action step = any {
     all { producers, t' = t },
     refreshOwner, kernelReload, observers
@@ -340,6 +402,7 @@ module childLifecycle {
     t.owner.basis == (if (t.owner.used.forall((seen) => seen == t.owner.activation)) Current else AsOf),
     t.reloadPreserved,
     s.foreignPreserved,
+    s.instanceSound,
     s.pendingWake == (s.pending != Set()),
     not(s.closedRound) or (s.phase == Settled and s.end == Ok and s.handBack and not(s.refused)),
     s.delivered <= 1,

@@ -71,14 +71,16 @@ const Segment = Schema.Struct({
 const Noted = Schema.Struct({ point: Point, diagnostic: Diagnostic })
 const Seen = { seenIn: Schema.optionalKey(Schema.Int) }
 const StoredPoint = Schema.Struct({ ...Point.fields, ...Seen })
-const Confirmation = Schema.Struct({ input: Schema.String, seq: Schema.Int, ...Seen })
+const Confirmation = Schema.Struct({ input: Schema.String, generation: Schema.optionalKey(Schema.Int), seq: Schema.Int, ...Seen })
 const StoredSegment = Schema.Struct({ ...Segment.fields, ...Seen, confirmation: Schema.optionalKey(Confirmation) })
 const StoredExit = Schema.TaggedStruct("ShellResultUndetermined", { shellID: Schema.String, exit: Undetermined.fields.exit, ...Seen })
 const Disposition = Schema.optionalKey(Schema.Literals(["cancelled", "delivered"]))
 const Inbox = Schema.Struct({
   seq: Schema.Int, pending: Schema.Boolean, shellID: Schema.optionalKey(Schema.String),
-  terminalSeq: Schema.optionalKey(Schema.Int), disposition: Disposition, ...Seen,
+  generation: Schema.optionalKey(Schema.Int), terminalSeq: Schema.optionalKey(Schema.Int),
+  disposition: Disposition, ...Seen,
 })
+const Prefix = Schema.Struct({ first: Schema.Int, last: Schema.Int })
 type Stamp = { readonly seenIn?: number }
 
 /** The bounded, redacted projection in the existing plugin store. No request, report or shell content. */
@@ -87,6 +89,7 @@ export const Projection = Schema.Struct({
   child: Schema.String,
   parent: Schema.String,
   rev: Schema.Int,
+  created: Schema.optionalKey(Schema.Finite),
   start: Schema.optionalKey(StoredPoint),
   segment: Schema.optionalKey(StoredSegment),
   /** An observed shell exit is evidence of uncertainty, not of pending work. */
@@ -95,20 +98,32 @@ export const Projection = Schema.Struct({
   shellOwners: Schema.optionalKey(Schema.Record(Schema.String, Schema.Finite)),
   work: Schema.optionalKey(Schema.Record(Schema.String, Schema.Struct({
     kind: Schema.Literals(["Shell", "Child"]), running: Schema.Boolean, at: Schema.Finite,
-    native: Schema.Boolean, backgrounded: Schema.Boolean, ...Seen,
+    native: Schema.Boolean, backgrounded: Schema.Boolean,
+    startEvent: Schema.optionalKey(Schema.String), ambiguous: Schema.optionalKey(Schema.Boolean), ...Seen,
   }))),
   stopAfter: Schema.optionalKey(Schema.Int),
   stopSeenIn: Schema.optionalKey(Schema.Int),
   attention: Schema.optionalKey(Schema.Record(Schema.String, Schema.Struct({
-    kind: Schema.Literals(["permission", "question"]), at: Schema.Finite, open: Schema.Boolean, ...Seen,
+    kind: Schema.Literals(["permission", "question"]), at: Schema.Finite, open: Schema.Boolean,
+    openedBy: Schema.optionalKey(Schema.String), ...Seen,
   }))),
   inbox: Schema.optionalKey(Schema.Record(Schema.String, Inbox)),
+  prefix: Schema.optionalKey(Prefix),
+  uncertainInput: Schema.optionalKey(Schema.Struct({ seq: Schema.Int, ...Seen })),
   noted: Schema.optionalKey(Schema.Struct({ ...Noted.fields, ...Seen })),
   sampled: Schema.optionalKey(Schema.String),
 })
 export type Projection = typeof Projection.Type
 
 export const initial = (child: string, parent: string): Projection => ({ version: 1, child, parent, rev: 0 })
+
+/** An incarnation reset discards facts, but never lowers the reader's revision floor. */
+export const forIncarnation = (state: Projection, parent: string, created: Option.Option<number>, reset = false): Projection => {
+  const changed = Option.exists(Option.fromUndefinedOr(state.created), (old) => Option.exists(created, (marker) => marker !== old))
+  let next = state
+  if (reset || state.parent !== parent || changed) next = { ...initial(state.child, parent), rev: state.rev }
+  return Option.match(created, { onNone: () => next, onSome: (created) => ({ ...next, created }) })
+}
 
 const Owner = { child: Schema.String, parent: Schema.String }
 export const Fact = Schema.TaggedUnion({
@@ -119,11 +134,13 @@ export const Fact = Schema.TaggedUnion({
   ShellRemoved: { ...Owner, id: Schema.String },
   Work: { ...Owner, id: Schema.String, work: Schema.Struct({
     kind: Schema.Literals(["Shell", "Child"]), running: Schema.Boolean, at: Schema.Finite,
-    native: Schema.Boolean, backgrounded: Schema.Boolean,
+    native: Schema.Boolean, backgrounded: Schema.Boolean, startEvent: Schema.optionalKey(Schema.String),
   }) },
   StopRequested: { ...Owner, seq: Schema.Int },
-  Attention: { ...Owner, id: Schema.String, kind: Schema.Literals(["permission", "question"]), at: Schema.Finite, open: Schema.Boolean },
+  Attention: { ...Owner, id: Schema.String, kind: Schema.Literals(["permission", "question"]), at: Schema.Finite, open: Schema.Boolean,
+    event: Schema.optionalKey(Schema.String) },
   Inbox: { ...Owner, id: Schema.String, seq: Schema.Int, shellID: Schema.optionalKey(Schema.String), disposition: Disposition },
+  Position: { ...Owner, seq: Schema.Int },
 })
 export type Fact = typeof Fact.Type
 
@@ -147,7 +164,7 @@ const withExecution = (state: Projection, fact: typeof Fact.cases.Execution.Type
       next.attention = Object.fromEntries(Object.entries(state.attention).filter(([, item]) => item.at > point.at))
     }
     if (state.inbox && terminal) {
-      next.inbox = Object.fromEntries(Object.entries(state.inbox).filter(([, item]) => item.seq > point.seq))
+      next.inbox = Object.fromEntries(Object.entries(state.inbox).filter(([, item]) => item.pending || item.seq > point.seq))
     }
   }
   return next
@@ -199,6 +216,26 @@ const withShell = (state: Projection, id: string, at: number): Projection => {
   return { ...state, rev: state.rev + 1, shellOwners: { ...state.shellOwners, [id]: at } }
 }
 
+type Work = typeof Fact.cases.Work.Type.work
+type StoredWork = NonNullable<Projection["work"]>[string]
+const updateChildWork = (previous: StoredWork, work: Work, stamp: Stamp): Option.Option<StoredWork> => {
+  if (!work.running) {
+    if (work.at !== previous.at || previous.ambiguous || !previous.running || previous.seenIn !== stamp.seenIn) return Option.none()
+    return Option.some({ ...previous, running: false })
+  }
+  if (work.at < previous.at) return Option.none()
+  if (work.at > previous.at) return Option.some(work)
+  if (work.startEvent === previous.startEvent) return Option.filter(Option.some(previous), ({ running }) => running)
+  if (!previous.running) return Option.some(work)
+  if (previous.ambiguous) return Option.none()
+  return Option.some({ ...previous, ambiguous: true })
+}
+
+const sameWork = (previous: StoredWork, work: Work, stamp: Stamp) =>
+  previous.at === work.at && previous.running === work.running &&
+  previous.native === work.native && previous.backgrounded === work.backgrounded &&
+  previous.startEvent === work.startEvent && previous.seenIn === stamp.seenIn
+
 const withWork = (state: Projection, fact: typeof Fact.cases.Work.Type, stamp: Stamp): Projection => {
   const previous = state.work?.[fact.id]
   let work = fact.work
@@ -206,14 +243,34 @@ const withWork = (state: Projection, fact: typeof Fact.cases.Work.Type, stamp: S
   if (previous?.native && !work.native) {
     if (previous.backgrounded || !work.backgrounded || !previous.running) return state
     work = { ...previous, backgrounded: true }
+  } else if (work.kind === "Child" && previous) {
+    const next = updateChildWork(previous, work, stamp)
+    if (Option.isNone(next)) return state
+    if (next.value.ambiguous) return { ...state, rev: state.rev + 1, work: { ...state.work, [fact.id]: next.value } }
+    work = next.value
   } else if (previous && (previous.at > work.at || (previous.at === work.at && !previous.running))) return state
-  if (previous && previous.at === work.at && previous.running === work.running
-    && previous.native === work.native && previous.backgrounded === work.backgrounded && previous.seenIn === stamp.seenIn) return state
+  if (previous && sameWork(previous, work, stamp)) return state
   const next = { ...state, rev: state.rev + 1, work: { ...state.work, [fact.id]: { ...work, ...stamp } } }
   if (work.kind === "Shell" && work.backgrounded && work.running) {
     next.shellOwners = { ...state.shellOwners, [fact.id]: work.at }
   }
   return next
+}
+
+const withAttention = (state: Projection, fact: typeof Fact.cases.Attention.Type, stamp: Stamp): Projection => {
+  const { id, kind, at, open, event } = fact
+  const prior = state.attention?.[id]
+  if (prior && prior.at > at) return state
+  if (!open) {
+    // An ID-only ephemeral reply cannot certify an opening from a previous
+    // subscription. Unlike the durable inbox, it carries no sequence.
+    if (!prior?.open || prior.kind !== kind || prior.seenIn !== stamp.seenIn) return state
+    return { ...state, rev: state.rev + 1, attention: { ...state.attention, [id]: { ...prior, at, open } } }
+  }
+  if (prior?.openedBy === event && prior?.open) return state
+  if (state.segment?.terminal && state.segment.point.at >= at) return state
+  const openedBy = Option.match(Option.fromUndefinedOr(event), { onNone: () => ({}), onSome: (openedBy) => ({ openedBy }) })
+  return { ...state, rev: state.rev + 1, attention: { ...state.attention, [id]: { kind, at, open, ...openedBy, ...stamp } } }
 }
 
 const linkTerminal = (state: Projection, shellID: string, seq: number) => {
@@ -223,52 +280,109 @@ const linkTerminal = (state: Projection, shellID: string, seq: number) => {
   return { terminalSeq: segment.point.seq }
 }
 
-const inboxEntry = (previous: Option.Option<typeof Inbox.Type>, fact: typeof Fact.cases.Inbox.Type, stamp: Stamp) => {
-  const disposition = Option.map(Option.fromUndefinedOr(fact.disposition), (disposition) => ({ disposition }))
-  const entry = { seq: fact.seq, pending: Boolean(fact.shellID), ...Option.getOrElse(disposition, () => ({})), ...stamp }
-  if (Option.isNone(previous)) return entry
-  const prev = previous.value
-  if (prev.seq > fact.seq) return prev
-  return { ...prev, ...entry }
-}
-
 const confirmDisposition = (next: Projection, input: string, disposition: typeof Inbox.Type): Projection => {
   const segment = next.segment
   if (!segment || disposition.pending || disposition.disposition !== "cancelled" || disposition.terminalSeq !== segment.point.seq) return next
+  const generation = Option.fromUndefinedOr(disposition.generation)
+  if (Option.isNone(generation)) return next
   const prior = segment.confirmation
   const stamp = Option.map(Option.fromUndefinedOr(disposition.seenIn), (seenIn) => ({ seenIn }))
   if (prior && prior.seenIn === disposition.seenIn && prior.seq > disposition.seq) return next
-  const confirmation = { input, seq: disposition.seq, ...Option.getOrElse(stamp, () => ({})) }
+  const confirmation = { input, generation: generation.value, seq: disposition.seq, ...Option.getOrElse(stamp, () => ({})) }
   return { ...next, segment: { ...segment, confirmation } }
 }
 
-const withInbox = (state: Projection, fact: typeof Fact.cases.Inbox.Type, stamp: Stamp): Projection => {
-  const prev = state.inbox?.[fact.id]
-  const segment = state.segment
-  if (!prev && segment?.terminal && fact.seq < segment.point.seq) return state
-  // A close can be observed first. A late admission contributes correlation,
-  // but cannot resurrect that input. Repeats and conflicting IDs do nothing.
-  if (prev?.shellID && fact.shellID && prev.shellID !== fact.shellID) return state
-  const shellID = prev?.shellID ?? fact.shellID
-  if (prev && prev.seq > fact.seq && prev.shellID === shellID) return state
-  if (prev && prev.seq === fact.seq && (prev.pending !== Boolean(fact.shellID) || prev.seenIn === stamp.seenIn)) return state
-  const entry = inboxEntry(Option.fromUndefinedOr(prev), fact, stamp)
-  const next = { ...state, rev: state.rev + 1, inbox: { ...state.inbox, [fact.id]: entry } }
-  if (shellID) {
-    const link = Option.match(Option.fromUndefinedOr(fact.shellID), { onNone: () => ({}), onSome: () => linkTerminal(state, shellID, fact.seq) })
-    const disposition = { ...entry, shellID, ...link }
-    next.inbox[fact.id] = disposition
-    if (state.exits) next.exits = state.exits.filter((exit) => exit.shellID !== shellID)
-    return confirmDisposition(next, fact.id, disposition)
+const writeInbox = (state: Projection, id: string, entry: typeof Inbox.Type): Projection =>
+  ({ ...state, rev: state.rev + 1, inbox: { ...state.inbox, [id]: entry } })
+
+const isPriorWake = (state: Projection, item: typeof Inbox.Type) =>
+  Boolean(item.pending && item.shellID && item.seq > pointSeq(state.segment?.terminal && state.segment.point))
+
+const withAdmission = (state: Projection, fact: typeof Fact.cases.Inbox.Type, stamp: Stamp, prior?: typeof Inbox.Type) => {
+  const { id, seq, shellID } = fact
+  if (prior?.generation === seq || (prior && seq === prior.seq) || observedPosition(state, seq)) return state
+  const entry = { seq, generation: seq, pending: true, ...stamp }
+  if (prior && seq < prior.seq) {
+    if (prior.generation || !prior.disposition || !shellID || !coversClose(Option.fromUndefinedOr(state.prefix), seq + 1, prior.seq)) return state
+    return bindAdmission(state, id, shellID, { ...entry, ...prior, generation: seq, pending: false })
   }
+  const next = Option.match(Option.fromUndefinedOr(shellID), {
+    onNone: () => writeInbox(state, id, entry), onSome: (shellID) => bindAdmission(state, id, shellID, entry),
+  })
+  if (prior && isPriorWake(state, prior)) return withUncertainty(next, seq, stamp)
   return next
+}
+
+const bindAdmission = (state: Projection, id: string, shellID: string, entry: typeof Inbox.Type) => {
+  // A late admission can explain an earlier unmatched close when the
+  // intervening suffix is known. It cannot re-observe the past terminal.
+  const generation = Option.fromUndefinedOr(entry.generation)
+  const linked = Option.map(generation, (seq) => linkTerminal(state, shellID, seq))
+  const next = writeInbox(state, id, { ...entry, shellID, ...Option.getOrElse(linked, () => ({})) })
+  if (state.exits) return { ...next, exits: state.exits.filter((exit) => exit.shellID !== shellID) }
+  return next
+}
+
+const coversClose = (prefix: Option.Option<typeof Prefix.Type>, generation: number, close: number) =>
+  Option.exists(prefix, ({ first, last }) => first <= generation && last >= close - 1)
+
+const observedPosition = (state: Projection, seq: number) =>
+  coversClose(Option.fromUndefinedOr(state.prefix), seq, seq + 1)
+
+export const needsPositions = (state: Projection) =>
+  Boolean(state.exits?.length || entries(state.inbox).some(([, item]) => item.pending))
+
+const withUncertainty = (state: Projection, seq: number, stamp: Stamp) => {
+  if (state.uncertainInput && state.uncertainInput.seq >= seq) return state
+  return { ...state, uncertainInput: { seq, ...stamp } }
+}
+
+const withClose = (state: Projection, fact: typeof Fact.cases.Inbox.Type, stamp: Stamp, prior?: typeof Inbox.Type) => {
+  const { id, seq, disposition } = fact
+  if ((prior && seq <= prior.seq) || observedPosition(state, seq)) return state
+  const closed = { seq, pending: false, ...stamp, ...Option.match(Option.fromUndefinedOr(disposition), {
+    onNone: () => ({}), onSome: (disposition) => ({ disposition }),
+  }) }
+  if (!prior?.pending) return writeInbox(state, id, closed)
+  const generation = Option.fromUndefinedOr(prior.generation)
+  if (!Option.exists(generation, (at) => coversClose(Option.fromUndefinedOr(state.prefix), at, seq))) {
+    const next = writeInbox(state, id, closed)
+    if (isPriorWake(state, prior)) return withUncertainty(next, seq, stamp)
+    return next
+  }
+  const consumed = { ...prior, ...closed }
+  return confirmDisposition(writeInbox(state, id, consumed), id, consumed)
+}
+
+const withInbox = (state: Projection, fact: typeof Fact.cases.Inbox.Type, stamp: Stamp) => {
+  const prior = state.inbox?.[fact.id]
+  if (fact.disposition) return withClose(state, fact, stamp, prior)
+  return withAdmission(state, fact, stamp, prior)
+}
+
+const positionOf = (fact: Fact) => Match.value(fact).pipe(Match.tags({
+  Inbox: ({ seq }) => Option.some(seq),
+  Position: ({ seq }) => Option.some(seq),
+  Execution: ({ segment }) => Option.some(segment.point.seq),
+  Diagnostic: ({ note }) => Option.some(note.point.seq),
+}), Match.orElse(() => Option.none<number>()))
+
+const extendPrefix = (state: Projection, reduced: Projection, seq: number) => {
+  const previous = state.prefix
+  if (previous && seq + 1 === previous.first) {
+    return { ...reduced, rev: state.rev + 1, prefix: { first: seq, last: previous.last } }
+  }
+  if (previous && previous.last >= seq) return reduced
+  let first = seq
+  if (previous && previous.last + 1 === seq) first = previous.first
+  return { ...reduced, rev: state.rev + 1, prefix: { first, last: seq } }
 }
 
 /** Fold only authenticated host facts for this child and parent, ordered by aggregate sequence. */
 export const evolve = (state: Projection, fact: Fact & Stamp): Projection => {
   if (fact.child !== state.child || fact.parent !== state.parent) return state
   const stamp: Stamp = Option.match(Option.fromUndefinedOr(fact.seenIn), { onNone: () => ({}), onSome: (seenIn) => ({ seenIn }) })
-  return Match.value(fact).pipe(Match.tagsExhaustive({
+  const reduced = Match.value(fact).pipe(Match.tagsExhaustive({
     Execution: (execution) => withExecution(state, execution, stamp),
     Exit: ({ reason }) => withExit(state, reason, stamp),
     ShellObserved: ({ id, startedAt }) => withShell(state, id, startedAt),
@@ -282,19 +396,15 @@ export const evolve = (state: Projection, fact: Fact & Stamp): Projection => {
       if (Option.isSome(seen)) return { ...next, stopSeenIn: seen.value }
       return next
     },
-    Attention: ({ id, kind, at, open }) => {
-      const record = state.attention?.[id]
-      if (record && (record.at > at || (record.at === at && (record.open === open || !record.open)))) return state
-      const ended = state.segment?.terminal && state.segment.point.at >= at
-      if (ended && open) return state
-      return { ...state, rev: state.rev + 1, attention: { ...state.attention, [id]: { kind, at, open, ...stamp } } }
-    },
+    Attention: (attention) => withAttention(state, attention, stamp),
     Inbox: (input) => withInbox(state, input, stamp),
+    Position: () => state,
     Diagnostic: ({ note }) => {
       if (note.point.seq <= pointSeq(state.noted?.point)) return state
       return { ...state, rev: state.rev + 1, noted: { ...note, ...stamp } }
     },
   }))
+  return Option.getOrElse(Option.map(positionOf(fact), (seq) => extendPrefix(state, reduced, seq)), () => reduced)
 }
 
 export interface Snapshot {
@@ -312,10 +422,21 @@ export interface Snapshot {
 type Evidence = {
   readonly subject: "execution" | "work" | "input" | "exit" | "attention" | "stop" | "wake-mark" | "session"
   readonly id: string
+  readonly instance?: number | string
   readonly seenIn: Option.Option<number>
 }
 const evidence = (subject: Evidence["subject"], id: string, stamp: Stamp): Evidence =>
   ({ subject, id, seenIn: Option.fromUndefinedOr(stamp.seenIn) })
+const inputEvidence = (id: string, input: typeof Inbox.Type): Evidence =>
+  Option.match(Option.fromUndefinedOr(input.generation), {
+    onNone: () => evidence("input", id, input),
+    onSome: (instance) => ({ ...evidence("input", id, input), instance }),
+  })
+const attentionEvidence = (id: string, item: NonNullable<Projection["attention"]>[string]): Evidence =>
+  Option.match(Option.fromUndefinedOr(item.openedBy), {
+    onNone: () => evidence("attention", id, item),
+    onSome: (instance) => ({ ...evidence("attention", id, item), instance }),
+  })
 export interface WorkEvidence {
   readonly kind: NonNullable<Snapshot["background"]>
   readonly facts: ReadonlyArray<Evidence>
@@ -323,9 +444,14 @@ export interface WorkEvidence {
 const entries = <A>(items?: Readonly<Record<string, A>>) => Object.entries(Option.getOrElse(Option.fromUndefinedOr(items), () => ({})))
 export const workEvidence = (state: Projection): Option.Option<WorkEvidence> => {
   const work = entries(state.work).find(([, item]) => item.running)
-  if (work) return Option.some({ kind: work[1].kind, facts: [evidence("work", work[0], work[1])] })
-  const pending = entries(state.inbox).find(([, item]) => item.pending)
-  if (pending) return Option.some({ kind: "Wake", facts: [evidence("input", pending[0], pending[1])] })
+  if (work) {
+    const [id, item] = work
+    let stamp: Stamp = item
+    if (item.ambiguous) stamp = {}
+    return Option.some({ kind: item.kind, facts: [{ ...evidence("work", id, stamp), instance: item.startEvent ?? item.at }] })
+  }
+  const pending = entries(state.inbox).find(([, item]) => isPriorWake(state, item))
+  if (pending) return Option.some({ kind: "Wake", facts: [inputEvidence(pending[0], pending[1])] })
   return Option.none()
 }
 export const workOf = (state: Projection): Snapshot["background"] => Option.getOrUndefined(Option.map(workEvidence(state), ({ kind }) => kind))
@@ -366,7 +492,7 @@ export const decide = (state: Projection, snapshot: Snapshot, activation: number
   const result = phaseOf(state, snapshot, !superseded && Boolean(state.segment), Option.filter(background, () => !superseded), { seenIn: activation })
   const attention = entries(state.attention).find(([, item]) => item.open)
   if (result.phase._tag !== "Running" || !attention) return result
-  return { ...result, facts: [...result.facts, evidence("attention", attention[0], attention[1])] }
+  return { ...result, facts: [...result.facts, attentionEvidence(attention[0], attention[1])] }
 }
 
 export const present = (state: Projection, snapshot: Snapshot, activation: number, background = workEvidence(state)): Observation => {
@@ -417,7 +543,7 @@ const phaseOf = (state: Projection, snapshot: Snapshot, applicable: boolean, bac
     subject: "stop", id: state.child, seenIn: Option.fromUndefinedOr(state.stopSeenIn),
   })
   const exit = Option.filter(Option.fromUndefinedOr(state.exits?.[0]), () => !snapshotIsNewer(state, snapshot))
-  if (applicable && state.segment) return orderedPhase(state.segment, background, exit)
+  if (applicable && state.segment) return orderedPhase(state.segment, background, exit, uncertainInput(state, state.segment.point.seq))
   if (snapshot.running) return session(Phase.cases.Running.make({}), "session")
   if (Option.isSome(background) && snapshot.outcome !== "interrupted") return continuing(background.value)
   if (snapshot.latch) return session(snapshot.latch, "wake-mark")
@@ -431,10 +557,15 @@ const phaseOf = (state: Projection, snapshot: Snapshot, applicable: boolean, bac
   return claim(Phase.cases.Unknown.make({}))
 }
 
+const uncertainInput = (state: Projection, after: number) =>
+  Option.map(Option.filter(Option.fromUndefinedOr(state.uncertainInput), ({ seq }) => seq > after),
+    (input) => evidence("input", "unattributed", input))
+
 const terminalEvidence = (segment: typeof StoredSegment.Type) => {
   const original = evidence("execution", segment.point.id, segment)
   if (!segment.confirmation) return [original]
-  const confirmation = evidence("input", segment.confirmation.input, segment.confirmation)
+  if (Option.isNone(Option.fromUndefinedOr(segment.confirmation.generation))) return [original]
+  const confirmation = { ...evidence("input", segment.confirmation.input, segment.confirmation), instance: segment.confirmation.generation }
   const wasSeen = Option.getOrElse(original.seenIn, () => 0)
   if (!Option.exists(confirmation.seenIn, (seenIn) => seenIn > wasSeen)) return [original]
   // A correlated close reconfirms the exact failed segment whose continuation
@@ -445,6 +576,7 @@ const terminalEvidence = (segment: typeof StoredSegment.Type) => {
 
 const orderedPhase = (
   segment: typeof StoredSegment.Type, background: Option.Option<WorkEvidence>, exit: Option.Option<typeof StoredExit.Type>,
+  uncertain: Option.Option<Evidence>,
 ) => {
   const { terminal, point } = segment
   const execution = evidence("execution", point.id, segment)
@@ -458,5 +590,6 @@ const orderedPhase = (
     const exited = atExit(exit.value)
     return claim(exited.phase, execution, ...exited.facts)
   }
+  if (Option.isSome(uncertain) && terminal.outcome === "failed") return claim(Phase.cases.Unknown.make({}), execution, uncertain.value)
   return claim(Phase.cases.Settled.make({ outcome: terminal.outcome, cause: terminal.cause, terminal: point }), ...terminalEvidence(segment))
 }

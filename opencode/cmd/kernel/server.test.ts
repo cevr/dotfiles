@@ -94,8 +94,8 @@ const start = (options: Record<string, unknown> = {}, world: World = {}, stored:
             return { dispose: Effect.void }
           }),
       },
-      event: { subscribe: (input: { types: ReadonlyArray<string> }) => {
-        if (input.types.length === 1) return Stream.fromQueue(deletions)
+      event: { subscribe: (input?: { types?: ReadonlyArray<string> }) => {
+        if (input?.types?.length === 1) return Stream.fromQueue(deletions)
         return Stream.never
       } },
       // The plugin's own storage, where the frozen descriptions live.

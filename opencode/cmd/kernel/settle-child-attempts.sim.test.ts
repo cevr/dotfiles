@@ -1,6 +1,6 @@
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Plugin, Tool } from "@opencode/plugin/effect"
-import { Config, Effect, FileSystem, Option, Queue, Schema, Stream } from "effect"
+import { Config, DateTime, Effect, FileSystem, Option, Queue, Schema, Stream } from "effect"
 import { make, live } from "./server.ts"
 import * as Seed from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
@@ -218,6 +218,7 @@ seeded("the direct tool distinguishes live work, diagnostics and ordered settlem
     yield* shell("shell.created", { info: { id: reorderedShell, status: "running", metadata: { sessionID: reordered, background: true }, time: { started: world.now() } } })
     yield* emit(type.fail, 3, { error: { type: "provider.content-filter" } }, WORK, reordered)
     yield* shell("shell.exited", { id: reorderedShell })
+    yield* emit("session.metadata.updated", 5, {}, WORK, reordered)
     yield* emit("session.inbox.delivered", 6, { inboxID: "msg_orderable" }, WORK, reordered)
     expect((yield* readChild(reordered)).output).toContain("undetermined")
     const late = { inboxID: "msg_orderable", item: { type: "synthetic", payload: { metadata: { source: "shell", shellID: reorderedShell } } } }
@@ -313,7 +314,7 @@ seeded("both public observers preserve the owner phase across every source cut i
     const shell = (child: string, id: string) => put(child, "shell.created", {
       info: { id, status: "running", metadata: { sessionID: child, background: true }, time: { started: world.now() } },
     })
-    const afterCut = [1, 11, 12, 13, 21, 31, 32, 33, 41, 51, 61, 71, 81, 91]
+    const afterCut = [1, 11, 12, 13, 21, 31, 32, 33, 41, 51, 61, 65, 67, 71, 81, 91]
     const trace = (child: string, reverse: boolean) => [
       put(child, type.start, {}, 10), shell(child, hostID), shell(child, otherShell),
       put(child, type.step, terminal, 20),
@@ -323,6 +324,11 @@ seeded("both public observers preserve the owner phase across every source cut i
       put(child, "session.inbox.enqueued", admitted, 40),
       put(child, "session.inbox.enqueued", other, 50),
       put(child, "session.inbox.cancelled", reversed(reverse, otherID, inboxID), 60),
+      put(child, "session.inbox.enqueued", {
+        ...reversed(reverse, otherID, inboxID),
+        item: { type: "synthetic", payload: { metadata: { source: "fixture" } } },
+      }, 64),
+      put(child, "session.inbox.cancelled", reversed(reverse, otherID, inboxID), 66),
       put(child, type.start, {}, 70),
       put(child, "session.inbox.delivered", reversed(reverse, inboxID, otherID), 80),
       put(child, type.end, {}, 90),
@@ -373,6 +379,120 @@ const reversed = (reverse: boolean, first: string, second: string) => {
   if (reverse) return { inboxID: second }
   return { inboxID: first }
 }
+
+type Recreation = "created" | "deleted" | "marker" | "same-marker"
+type InboxTrace = "exact" | "reuse" | "hole" | "gap" | "hidden-reuse"
+
+seeded("an inbox close binds only a continuously observed admission in the same session instance", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const world = World.make({ seed, script: () => World.say("Fixture") })
+    const events = yield* Queue.unbounded<FixtureEvent>()
+    const markers = new Map<string, number>()
+    const lifecycle = make(live, () => Stream.fromQueue(events))
+    yield* world.load(Plugin.define({
+      id: lifecycle.id,
+      effect: (ctx) => lifecycle.effect({
+        ...ctx,
+        session: { ...ctx.session, get: (input) => ctx.session.get(input).pipe(Effect.map((info) => ({
+          ...info, time: { ...info.time, created: DateTime.makeUnsafe(markers.get(input.sessionID) ?? 100) },
+        }))) },
+      }),
+    }), { directory: WORK, options: { codeOnly: false } })
+    const parent = yield* world.session(WORK)
+    const read = (child: string) => world.rpc(CHILD_ROWS, "read", { children: [child] }).pipe(
+      Effect.flatMap((raw) => Effect.fromOption(Option.flatMap(readRows(raw), ({ rows }) => Option.fromUndefinedOr(rows[0])))),
+      Effect.map(({ observation }) => observation),
+    )
+    const seedInstance = Effect.fn("LifecycleSim.seedInstance")(function* () {
+      const child = yield* world.session(WORK, { parentID: parent })
+      const frame = (type: string, seq: number, data: FixtureEvent["data"] = {}): FixtureEvent => ({
+        type, id: `event_${type}_${seq}`, created: world.now(), location: { directory: WORK },
+        data: { sessionID: child, ...data }, ...durability(child, seq),
+      })
+      const deliver = (frame: FixtureEvent) => Queue.offer(events, frame).pipe(Effect.andThen(world.advance(0)))
+      const emit = (type: string, seq: number, data: FixtureEvent["data"] = {}) => deliver(frame(type, seq, data))
+      const inboxID = "msg_reuse"
+      const shellID = `sh_${child}`
+      const close = (seq: number) => emit("session.inbox.cancelled", seq, { inboxID })
+      const ordinary = (seq: number) => frame("session.inbox.enqueued", seq, {
+        inboxID, item: { type: "synthetic", payload: { metadata: { source: "fixture" } } },
+      })
+      yield* emit(type.start, 1)
+      yield* emit("shell.created", 0, { info: { id: shellID, status: "running", metadata: { sessionID: child, background: true }, time: { started: world.now() } } })
+      yield* emit(type.fail, 2, { error: { type: "provider.content-filter" } })
+      yield* emit("shell.exited", 0, { id: shellID })
+      yield* emit("session.inbox.enqueued", 3, { inboxID, item: { type: "synthetic", payload: { metadata: { source: "shell", shellID } } } })
+      return { child, frame, deliver, emit, close, ordinary, inboxID }
+    })
+    const recreate = Effect.fn("LifecycleSim.recreate")(function* (mode: Recreation) {
+      const { child, emit, close } = yield* seedInstance()
+      const before = yield* read(child)
+      yield* world.down
+      yield* world.remove(child)
+      yield* world.session(WORK, { id: child, parentID: parent })
+      if (mode === "marker") markers.set(child, 101)
+      yield* world.up
+      if (mode === "created") yield* emit("session.created", 0)
+      if (mode === "deleted") yield* emit("session.deleted", 0)
+      const reopened = yield* read(child)
+      expect(reopened.revision >= before.revision).toBe(true)
+      if (mode === "same-marker") {
+        // The owner retains the qualified wake; it cannot tell.
+        expect(reopened.phase).toEqual(before.phase)
+        expect(reopened.basis).toBe("as-of-last-observation")
+        return
+      }
+      expect(reopened.phase._tag).toBe("Unknown")
+      yield* close(4)
+      expect((yield* read(child)).phase._tag).toBe("Unknown")
+    })
+    const gaps = Effect.fn("LifecycleSim.gaps")(function* (instance: Effect.Success<ReturnType<typeof seedInstance>>, mode: InboxTrace, cut: number) {
+      const { frame, deliver, ordinary, inboxID } = instance
+      const hidden = new Array<FixtureEvent>()
+      for (let seq = 4; seq < 10; seq++) {
+        const position = frame("session.updated", seq)
+        if (mode === "hidden-reuse" && seq === cut) hidden.push(frame("session.inbox.cancelled", seq, { inboxID }))
+        else if (mode === "hidden-reuse" && seq === cut + 1) hidden.push(ordinary(seq))
+        else if ((mode === "hole" || mode === "gap") && seq === cut) hidden.push(position)
+        else if (mode === "gap" && seq === cut + 1) hidden.push(position)
+        else yield* deliver(position)
+      }
+      if (mode === "hidden-reuse") expect(hidden.map(({ type }) => type)).toEqual(["session.inbox.cancelled", "session.inbox.enqueued"])
+    })
+    const instance = Effect.fn("LifecycleSim.instance")(function* (mode: InboxTrace, cut: number) {
+      const current = yield* seedInstance()
+      const { child, close, deliver, ordinary } = current
+      if (mode === "reuse") yield* close(4)
+      yield* world.restart
+      if (mode === "reuse") {
+        yield* deliver(ordinary(5))
+        yield* close(6)
+      } else {
+        yield* gaps(current, mode, cut)
+        yield* close(10)
+      }
+      const after = yield* read(child)
+      const direct = yield* world.tool(parent, "subagents", { action: "get", sessionID: child })
+      if (mode === "exact") {
+        expect(after.phase._tag).toBe("Settled")
+        expect(after.basis).toBe("current")
+        expect(direct.output).toContain("settled: failed")
+      } else {
+        expect(after.basis).toBe("as-of-last-observation")
+        expect(direct.output).not.toContain("settled:")
+        if (mode === "reuse") expect(after.phase._tag).toBe("Settled")
+        else expect(after.phase._tag).toBe("Unknown")
+      }
+    })
+    for (const mode of ["created", "deleted", "marker", "same-marker"] as const) yield* recreate(mode)
+    for (const mode of ["exact", "reuse"] as const) yield* instance(mode, 0)
+    for (let cut = 4; cut < 10; cut++) yield* instance("hole", cut)
+    for (let cut = 4; cut < 9; cut++) {
+      yield* instance("gap", cut)
+      yield* instance("hidden-reuse", cut)
+    }
+  }),
+)
 
 const durability = (child: string, seq: number) => {
   if (seq > 0) return { durable: { aggregateID: child, seq, version: 1 } }

@@ -35,6 +35,7 @@ A parent can distinguish a kept latch, a running child, a child with live backgr
 4. **Remount the row.** Dispose the Solid family reader after an observed suppressed exit, then read it again through Kernel's owner projection. Both mounts show the same undetermined row beyond the failure linger; an earlier-exit failure still expires. An admitted wake remains distinct from either.
 5. **Cut the owner reply.** Hold a real row RPC answer while the shell exits and a direct read sees the next revision. Deliver shell removal and owner invalidation in both orders, release the old answer, then release the new one. The row stays nonterminal throughout. Restart Kernel between a controlled inbox admission and execution start to check the retained wake and its basis.
 6. **Cancel a different input after reload.** Withhold a row answer for an observed shell-result admission. Cancel another inbox ID first: the answer may advance its revision, but it must still qualify the wake as historical. Cancel the matching input next: only that input can confirm the failed execution whose continuation it resolves.
+7. **Reuse an inbox ID.** Cancel the shell result, reload, then enqueue and cancel a different notice under the same ID. It must not show a fresh failure. If a sequence gap could hide replacement of an admission, its next close leaves the result unknown rather than certifying the old failure.
 
 ## Gotchas
 

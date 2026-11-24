@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { Diagnostic, Fact, Phase, Projection, Terminal, Undetermined, decide, evolve, initial, observe, present, rowFactOf, type Snapshot } from "./child-lifecycle.ts"
-import { Schema } from "effect"
+import { Option, Schema } from "effect"
 import { RowFact } from "./child-row.ts"
 
 // Replay host facts at the projection seam. Order comes from the witness
@@ -25,7 +25,7 @@ const exit = (at = 101) => Fact.cases.Exit.make({
   child, parent, reason: Undetermined.make({ shellID: "sh_fixture", exit: { at, id: "evt_exit" } }),
 })
 const admission = (seq = 4) => Fact.cases.Inbox.make({ child, parent, id: "input", seq, shellID: "sh_fixture" })
-const closed = (seq = 5) => Fact.cases.Inbox.make({ child, parent, id: "input", seq })
+const closed = (seq = 5) => Fact.cases.Inbox.make({ child, parent, id: "input", seq, disposition: "delivered" })
 const store = Schema.fromJsonString(Projection)
 const readStore = Schema.decodeUnknownSync(store)
 const writeStore = Schema.encodeSync(store)
@@ -56,14 +56,14 @@ test("delivery first closes only its inbox ID; late orderable admission correlat
   expect(rowFactOf(closedFirst, snap())._tag).toBe("ShellResultUndetermined")
   const matched = evolve(reloaded(closedFirst), admission())
   expect(rowFactOf(matched, snap())).toEqual(RowFact.cases.Failed.make({ at: 100 }))
-  expect(matched.inbox?.input).toEqual({ seq: 5, pending: false, shellID: "sh_fixture", terminalSeq: 3 })
+  expect(matched.inbox?.input).toEqual({ seq: 5, generation: 4, pending: false, shellID: "sh_fixture", terminalSeq: 3, disposition: "delivered" })
   expect(evolve(matched, admission())).toBe(matched)
-  expect(evolve(matched, closed(2))).toBe(matched)
+  expect(evolve(matched, closed(2)).inbox).toEqual(matched.inbox)
 })
 
 test("a stale delivery cannot close a newer admission; an older exit cannot revive a later failure", () => {
   const before = [start(1), end(3, "failed"), exit(), admission()].reduce(evolve, initial(child, parent))
-  expect(evolve(reloaded(before), closed(2))).toEqual(before)
+  expect(evolve(reloaded(before), closed(2)).inbox).toEqual(before.inbox)
   const finished = evolve(before, end(6, "succeeded"))
   expect(evolve(finished, exit(99))).toBe(finished)
   expect(evolve(finished, end(3, "failed"))).toBe(finished)
@@ -151,7 +151,7 @@ test("the phase returns its own input and execution witnesses, not the child's n
   const matched = inLifetime(unrelated, 2, cancel("input", 6))
   const original = Phase.cases.Settled.make({ outcome: "failed", cause: "PolicyDenied", terminal: point(3) })
   expect(present(matched, snap(), 2)).toMatchObject({ phase: original, basis: "current" })
-  expect(matched.segment?.confirmation).toEqual({ input: "input", seq: 6, seenIn: 2 })
+  expect(matched.segment?.confirmation).toEqual({ input: "input", generation: 4, seq: 6, seenIn: 2 })
   expect(present(matched, snap(), 3)).toMatchObject({ phase: original, basis: "as-of-last-observation" })
   const later = inLifetime(matched, 2, start(7), end(9, "succeeded"))
   const late = inLifetime(reloaded(later), 3, end(3, "failed"), cancel("input", 10))
@@ -170,4 +170,28 @@ test("a legacy aggregate stamp is discarded without discarding its facts or revi
     revision: failed.rev, phase: Phase.cases.Settled.make({ outcome: "failed", cause: "PolicyDenied", terminal: point(3) }),
     basis: "as-of-last-observation",
   })
+})
+
+test("previous records keep historical wakes but cannot use their legacy inbox links to refresh a terminal", () => {
+  const first = inLifetime(initial(child, parent), 1, start(1), end(3, "failed"), exit(), admission())
+  const legacy = reloaded({ ...first, inbox: { input: { seq: 4, shellID: "sh_fixture", pending: true, terminalSeq: 3, seenIn: 1 } } })
+  const cancelled = inLifetime(legacy, 2, cancel("input", 5))
+  expect(present(legacy, snap(), 2).basis).toBe("as-of-last-observation")
+  expect(present(cancelled, snap(), 2)).toMatchObject({ phase: Phase.cases.Unknown.make({}), basis: "as-of-last-observation" })
+  expect(cancelled.segment?.confirmation).toBeUndefined()
+})
+
+test("a late result or an ambiguous same-clock result cannot close another job instance", () => {
+  const job = (at: number, running: boolean, startEvent?: string) => Fact.cases.Work.make({
+    child, parent, id: "job_reused", work: {
+      kind: "Child", at, running, native: false, backgrounded: true,
+      ...Option.match(Option.fromUndefinedOr(startEvent), { onNone: () => ({}), onSome: (startEvent) => ({ startEvent }) }),
+    },
+  })
+  const phase = Phase.cases.Continuing.make({ on: "Child" })
+  const older = inLifetime(initial(child, parent), 1, job(100, true, "first"), job(101, true, "second"), job(100, false))
+  expect(present(older, snap(), 1)).toMatchObject({ phase, basis: "current" })
+  const tied = inLifetime(older, 1, job(101, true, "third"), job(101, false))
+  expect(present(tied, snap(), 1)).toMatchObject({ phase, basis: "as-of-last-observation" })
+  expect(inLifetime(tied, 1, job(102, true, "fourth"), job(102, false)).work?.job_reused?.running).toBe(false)
 })

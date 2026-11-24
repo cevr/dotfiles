@@ -1,6 +1,6 @@
 import type { Plugin } from "@opencode/plugin/effect"
-import { Array as Arr, DateTime, Effect, Match, Option, Predicate, Ref, Schema, Semaphore, Stream, type Types } from "effect"
-import { Diagnostic, Fact, Hold, Phase, Terminal, Undetermined, decide, evolve, executionActive, initial, present, Projection, workEvidence, type Cause, type Snapshot, type WorkEvidence } from "../child-lifecycle.ts"
+import { Array as Arr, DateTime, Effect, Match, Option, Predicate, Ref, Result, Schema, Semaphore, Stream, type Types } from "effect"
+import { Diagnostic, Fact, Hold, Phase, Terminal, Undetermined, decide, evolve, executionActive, forIncarnation, initial, needsPositions, present, Projection, workEvidence, type Cause, type Snapshot, type WorkEvidence } from "../child-lifecycle.ts"
 import { RowFact } from "../child-row.ts"
 import { Observation } from "../child-lifecycle.ts"
 import { readMark, MarkRead } from "../../wake/latch.ts"
@@ -12,12 +12,15 @@ type Location = Pick<Info["location"], "directory" | "workspaceID">
 const TYPES = [
   "session.execution.started", "session.execution.succeeded", "session.execution.failed", "session.execution.interrupted",
   "session.step.failed", "session.retry.scheduled", "session.deleted",
+  "session.created", "session.revert.committed",
   "shell.created", "shell.exited", "shell.deleted", "experimental.job.updated",
   "session.inbox.enqueued", "session.inbox.delivered", "session.inbox.cancelled",
   "permission.asked", "permission.replied", "form.created", "form.replied", "form.cancelled",
 ] as const
 
-const eventsOf = (ctx: Plugin.Context) => ctx.event.subscribe({ types: TYPES })
+// The close does not carry its admission generation. Keep every visible
+// session aggregate position, including events that have no lifecycle effect.
+const eventsOf = (ctx: Plugin.Context) => ctx.event.subscribe()
 export { eventsOf }
 export type Subscribe = (ctx: Plugin.Context) => Stream.Stream<unknown, unknown>
 
@@ -43,8 +46,8 @@ const InboxRef = { ...Session, inboxID: Schema.String }
 const InboxEvent = Schema.Union([
   Schema.Struct({ ...Durable, type: Schema.Literal("session.inbox.enqueued"), data: Schema.Struct({
     ...InboxRef, item: Schema.Struct({
-      type: Schema.Literal("synthetic"),
-      payload: Schema.Struct({ metadata: Schema.Struct({ source: Schema.Literal("shell"), shellID: Schema.String }) }),
+      type: Schema.String,
+      payload: Schema.Unknown,
     }),
   }) }),
   Schema.Struct({ ...Durable, type: Schema.Literals(["session.inbox.delivered", "session.inbox.cancelled"]), data: Schema.Struct(InboxRef) }),
@@ -61,7 +64,7 @@ const Event = Schema.Union([
   ExecutionEvent,
   InboxEvent,
   AttentionEvent,
-  Schema.Struct({ ...Position, type: Schema.Literal("session.deleted"), data: Schema.Struct(Session) }),
+  Schema.Struct({ ...Position, type: Schema.Literals(["session.created", "session.deleted"]), data: Schema.Struct(Session) }),
   Schema.Struct({ ...Position, type: Schema.Literals(["shell.exited", "shell.deleted"]), data: Schema.Struct({ id: Schema.String }) }),
   Schema.Struct({ ...Position, type: Schema.Literal("shell.created"), data: Schema.Struct({ info: Schema.Struct({
     id: Schema.String,
@@ -77,6 +80,16 @@ const Event = Schema.Union([
 ])
 type Event = typeof Event.Type
 export const decodeEvent = Schema.decodeUnknownResult(Event)
+const Known = new Set<string>(TYPES)
+const PublicPosition = Schema.Struct({
+  ...Position, type: Schema.String,
+  durable: Schema.Struct({ aggregateID: Schema.String, seq: Schema.Int, version: Schema.Int }),
+  data: Schema.Struct(Session),
+})
+const readPosition = Schema.decodeUnknownOption(PublicPosition)
+const shellPayload = Schema.decodeUnknownOption(Schema.Struct({
+  metadata: Schema.Struct({ source: Schema.Literal("shell"), shellID: Schema.String }),
+}))
 const isInboxEvent = (event: Event): event is InboxEvent =>
   event.type === "session.inbox.enqueued" || event.type === "session.inbox.delivered" || event.type === "session.inbox.cancelled"
 
@@ -93,6 +106,7 @@ const toAttention = (event: AttentionEvent) => {
 const SessionID = Schema.String.check(Schema.isStartingWith("ses")).pipe(Schema.brand("SessionID"))
 const sessionID = Schema.decodeUnknownOption(SessionID)
 const readProjection = Schema.decodeUnknownOption(Projection)
+const markerOf = ({ time }: Info) => Option.map(Option.fromUndefinedOr(time.created), DateTime.toEpochMillis)
 const prefix = "child-lifecycle:"
 const sampleKey = Schema.encodeSync(Schema.fromJsonString(Schema.Struct({
   view: Observation.mapFields(({ version, child, started, phase, diagnostic, basis }) => ({ version, child, started, phase, diagnostic, basis })),
@@ -155,7 +169,10 @@ export const inboxFact = (event: InboxEvent, parent: string): Fact =>
     ...inboxShell(event),
   })
 const inboxShell = (event: InboxEvent) => {
-  if (event.type === "session.inbox.enqueued") return { shellID: event.data.item.payload.metadata.shellID }
+  if (event.type === "session.inbox.enqueued") {
+    if (event.data.item.type !== "synthetic") return {}
+    return Option.getOrElse(Option.map(shellPayload(event.data.item.payload), ({ metadata }) => ({ shellID: metadata.shellID })), () => ({}))
+  }
   if (event.type === "session.inbox.cancelled") return { disposition: "cancelled" as const }
   return { disposition: "delivered" as const }
 }
@@ -243,9 +260,10 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
   const activation = 1 + Option.getOrElse(readEpoch(lastEpoch), () => 0)
   yield* ctx.storage.set(epoch, activation)
 
-  const load = (child: string, parent: string) =>
-    ctx.storage.get(keyOf(child)).pipe(
-      Effect.map((value) => Option.getOrElse(Option.filter(readProjection(value), (seen) => seen.child === child && seen.parent === parent), () => initial(child, parent))),
+  const stored = (child: string) => ctx.storage.get(keyOf(child)).pipe(Effect.map(readProjection))
+  const load = (child: string, parent: string, info: Info) =>
+    stored(child).pipe(
+      Effect.map((value) => forIncarnation(Option.getOrElse(value, () => initial(child, parent)), parent, markerOf(info))),
     )
   const save = (current: Projection, next: Projection) =>
     Option.match(Option.filter(Option.some(current.rev), (rev) => rev > 0), {
@@ -292,9 +310,10 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
     if (candidate.child === child || !(executionActive(candidate) || Option.isSome(work))) return Option.none<WorkEvidence>()
     if (!(yield* ownedBy(candidate.parent, child))) return Option.none<WorkEvidence>()
     const info = yield* infoOf(candidate.child).pipe(Effect.option)
-    if (Option.isNone(info)) return Option.none<WorkEvidence>()
+    if (Option.isNone(info) || !info.value.parentID) return Option.none<WorkEvidence>()
+    const current = forIncarnation(candidate, info.value.parentID, markerOf(info.value))
     const snapshot = snapshotOf(info.value, readMark(info.value.metadata))
-    const choice = decide(candidate, snapshot, activation, work)
+    const choice = decide(current, snapshot, activation)
     if (!isLive(choice.phase)) return Option.none<WorkEvidence>()
     return Option.some<WorkEvidence>({ kind: "Child", facts: choice.facts })
   })
@@ -343,10 +362,16 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
     yield* record(child, parent, Fact.cases.ShellRemoved.make({ child, parent, id }))
   })
 
-  const forget = Effect.fn("ChildLifecycle.forget")(function* (child: string) {
-    const prior = readProjection(yield* ctx.storage.get(keyOf(child)))
-    yield* ctx.storage.remove(keyOf(child))
-    if (Option.isSome(prior)) yield* invalidate(prior.value.parent)
+  const reset = Effect.fn("ChildLifecycle.reset")(function* (child: string, created: Option.Option<Info>) {
+    const prior = yield* stored(child)
+    if (Option.isNone(prior)) return
+    const parent = Option.getOrElse(Option.flatMap(created, (info) => Option.fromUndefinedOr(info.parentID)), () => prior.value.parent)
+    const next = forIncarnation(prior.value, parent, Option.flatMap(created, markerOf), true)
+    const rev = next.rev + 1
+    if (!(yield* save(prior.value, { ...next, rev }))) return
+    const publish = yield* Ref.get(announce)
+    yield* publish(child, rev)
+    yield* invalidate(prior.value.parent)
   })
 
   const absorb = Effect.fn("ChildLifecycle.absorb")(function* (event: typeof ExecutionEvent.Type) {
@@ -355,7 +380,17 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
     const found = yield* infoOf(child).pipe(Effect.option)
     if (Option.isNone(found) || !found.value.parentID) return
     const parent = found.value.parentID
-    yield* record(child, parent, executionFact(event, parent))
+    yield* record(child, parent, executionFact(event, parent), found.value)
+  })
+
+  const position = Effect.fn("ChildLifecycle.position")(function* ({ type, data, durable, location }: typeof PublicPosition.Type) {
+    if (!type.startsWith("session.") || Known.has(type) || data.sessionID !== durable.aggregateID) return
+    if (location && !sameLocation(location, ctx.location)) return
+    const prior = yield* stored(data.sessionID)
+    if (Option.isNone(prior) || !needsPositions(prior.value)) return
+    const { child, parent } = prior.value
+    const next = evolve(prior.value, Fact.cases.Position.make({ child, parent, seq: durable.seq }))
+    if (next !== prior.value) yield* save(prior.value, next)
   })
 
   const updateInbox = Effect.fn("ChildLifecycle.updateInbox")(function* (event: InboxEvent) {
@@ -365,15 +400,28 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
     const found = yield* infoOf(child).pipe(Effect.option)
     if (Option.isNone(found) || !found.value.parentID) return
     const parent = found.value.parentID
-    yield* record(child, parent, inboxFact(event, parent))
+    yield* record(child, parent, inboxFact(event, parent), found.value)
   })
   const attention = Effect.fn("ChildLifecycle.attention")(function* (event: AttentionEvent) {
     const request = toAttention(event)
     const found = yield* infoOf(request.child).pipe(Effect.option)
     if (Option.isNone(found) || !found.value.parentID) return
     const parent = found.value.parentID
-    yield* record(request.child, parent, Fact.cases.Attention.make({ ...request, parent }))
+    yield* record(request.child, parent, Fact.cases.Attention.make({ ...request, event: event.id, parent }), found.value)
   })
+
+  const job = (event: Extract<Event, { readonly type: "experimental.job.updated" }>) => {
+    const item = event.data.info
+    const running = item.status === "running"
+    const at = item.time.started
+    if (item.kind === "shell") {
+      if (!item.shellID) return Effect.void
+      return registerWork(item.sessionID, item.shellID, { kind: "Shell", running, at, native: false, backgrounded: true })
+    }
+    const work = { kind: "Child" as const, running, at, native: false, backgrounded: false }
+    if (running) return registerWork(item.sessionID, item.id, { ...work, startEvent: event.id })
+    return registerWork(item.sessionID, item.id, work)
+  }
 
   const fold = Effect.fn("ChildLifecycle.fold")(function* (event: Event) {
     if (event.location && !sameLocation(event.location, ctx.location)) return
@@ -397,22 +445,22 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
         return yield* shellExit(event.data.id, event.id, event.created)
       case "shell.deleted":
         return yield* deleteShell(event.data.id)
-      case "experimental.job.updated": {
-        const item = event.data.info
-        if (item.kind === "shell") {
-          if (!item.shellID) return
-          return yield* registerWork(item.sessionID, item.shellID, { kind: "Shell", running: item.status === "running", at: item.time.started, native: false, backgrounded: true })
-        }
-        return yield* registerWork(item.sessionID, item.id, { kind: "Child", running: item.status === "running", at: item.time.started, native: false, backgrounded: false })
-      }
-      case "session.deleted": {
-        if (event.location) return yield* forget(event.data.sessionID)
+      case "experimental.job.updated":
+        return yield* job(event)
+      case "session.deleted":
+        if (event.location) return yield* reset(event.data.sessionID, Option.none())
+        return
+      case "session.created": {
+        const found = yield* infoOf(event.data.sessionID).pipe(Effect.option)
+        if (Option.isSome(found)) return yield* reset(event.data.sessionID, found)
       }
     }
   })
 
-  const record = Effect.fn("ChildLifecycle.record")(function* (child: string, parent: string, fact: Fact) {
-    const state = yield* load(child, parent)
+  const record = Effect.fn("ChildLifecycle.record")(function* (child: string, parent: string, fact: Fact, info?: Info) {
+    const found = yield* Option.match(Option.fromUndefinedOr(info), { onSome: Effect.succeed, onNone: () => infoOf(child) }).pipe(Effect.option)
+    if (Option.isNone(found)) return
+    const state = yield* load(child, parent, found.value)
     const next = evolve(state, { ...fact, seenIn: activation })
     if (next === state) return
     const written = yield* save(state, next)
@@ -443,7 +491,7 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
   const readOwner = Effect.fn("ChildLifecycle.readOwner")(function* (child: string) {
     const info = yield* infoOf(child)
     if (!info.parentID) return { info, answer: Option.none() }
-    const state = yield* load(child, info.parentID)
+    const state = yield* load(child, info.parentID, info)
     let background = workEvidence(state)
     if (Option.isNone(background) && !executionActive(state)) background = yield* childWork(child)
     const mark = readMark(info.metadata)
@@ -478,8 +526,9 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
     child, ...Option.match(Option.fromUndefinedOr(revision), { onNone: () => ({}), onSome: (revision) => ({ revision }) }),
   }).pipe(Effect.ignore))
   const stream = subscribe(ctx).pipe(
-    Stream.filterMap(decodeEvent),
-    Stream.runForEach((event) => lock.withPermits(1)(fold(event))),
+    Stream.runForEach((raw) => lock.withPermits(1)(Result.match(decodeEvent(raw), {
+      onSuccess: fold, onFailure: () => Option.match(readPosition(raw), { onNone: () => Effect.void, onSome: position }),
+    }))),
     Effect.catchCause(() => Effect.logWarning("subagents: lifecycle subscriber stopped; retaining the last observed host facts")),
   )
   yield* Effect.forkScoped(stream, { startImmediately: true })
