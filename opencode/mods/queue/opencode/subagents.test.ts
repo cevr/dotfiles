@@ -59,7 +59,6 @@ describe("fromFamily", () => {
   test("a linked child without positive evidence does not move the item to Waiting or Done", () => {
     const observed = { revision: 2, sinceReload: false, at: 1, waitingOn: "Wake", diagnostic: false } as const
     const live = fromFamily({ root: "root", sessions: [
-      session("checking", { lifecycle: { ...observed, kind: "checking" } }),
       session("unknown", { lifecycle: { ...observed, kind: "unknown" } }),
       session("admitted", { lifecycle: { ...observed, kind: "continuing" } }),
     ] })

@@ -52,7 +52,6 @@ export const SYMBOLS: Readonly<Record<State, string>> = {
   blocked: "◆",
   latched: "◇",
   idle: "◇",
-  checking: "◇",
   unknown: "◇",
   cancelled: "◇",
   done: "◆",
@@ -76,7 +75,6 @@ const TONE_BY_STATE = {
   failed: "error",
   cancelled: "warning",
   idle: "muted",
-  checking: "muted",
   unknown: "muted",
 } satisfies Readonly<Record<State, StateTone>>
 

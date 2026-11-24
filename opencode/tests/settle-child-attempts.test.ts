@@ -885,12 +885,13 @@ const verifyLife = Effect.fn("LifecycleFixture.verifyLife")(function* (result: E
   expect(result.silent.scheduled.map(({ order }) => order)).toEqual(["shell-first", "owner-first"])
   for (const cut of result.silent.scheduled) {
     expect(cut.live.map(({ state }) => state)).toEqual(["waiting"])
-    expect(cut.acrossFirst.map(({ state }) => state)).toEqual(["checking"])
-    expect(cut.outstanding.map(({ state }) => state)).toEqual(["unknown"])
-    expect(cut.shownWhileSuperseded).toEqual([])
+    // A refetch paints nothing in between: the answer shown stays until a whole newer one replaces it, the
+    // superseded read's answer (still newer than the one shown) and then the coalesced read's.
+    expect(cut.acrossFirst.map(({ state }) => state)).toEqual(["waiting"])
+    expect(cut.outstanding.map(({ state }) => state)).toEqual(["waiting"])
+    expect(cut.shownWhileSuperseded).toEqual(["waiting"])
     expect(cut.after).toEqual(undetermined)
-    expect(cut).toMatchObject({ activeDuringRead: false, activeAfter: false })
-    expect(cut.fallback.map(({ update }) => update)).not.toContain("Checking the last execution")
+    expect(cut).toMatchObject({ activeDuringRead: true, activeAfter: false })
     expect(previous).toHaveProperty("revision", cut.old)
     expect(current).toHaveProperty("revision", cut.accepted)
     expect(cut.accepted === cut.current && cut.current > cut.old).toBe(true)

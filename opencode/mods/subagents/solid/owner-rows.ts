@@ -25,8 +25,8 @@ export type RowsClient = {
   }
 }
 
-const unanswered = (child: string, revision: number, kind: "checking" | "unknown"): OwnedRow => ({
-  child, lifecycle: { kind, revision, at: 0, sinceReload: false, waitingOn: "", diagnostic: false },
+const unanswered = (child: string, revision: number): OwnedRow => ({
+  child, lifecycle: { kind: "unknown", revision, at: 0, sinceReload: false, waitingOn: "", diagnostic: false },
 })
 
 /** A slow owner gets one bounded read before we return to the native snapshot. */
@@ -72,19 +72,13 @@ export const ownerRows = (context: {
     const groups = Array.from({ length: Math.ceil(children.length / 512) }, (_, index) => children.slice(index * 512, (index + 1) * 512))
     let reading = false
     let dirty = false
-    let established = false
-    let checking = false
-    let generation = 0
     const revisions = new Map<string, number>()
     const revisionOf = (child: string) => Option.getOrElse(Option.fromUndefinedOr(revisions.get(child)), () => 0)
-    const invalidate = () => {
-      generation++
-      if (established && !checking) {
-        checking = true
-        publish(children.map((child) => unanswered(child, revisionOf(child), "checking")))
-      }
-      refresh()
-    }
+    // The answer shown, by child. A refetch replaces it only with a whole new
+    // one: nothing is painted while it is in flight, so a reconnect or a burst
+    // of host work never draws every child of a long root (most finished weeks
+    // ago) in between, nor drops a live one.
+    const shown = new Map<string, OwnedRow>()
     const refresh = () => {
       if (abort.signal.aborted) return
       if (reading) {
@@ -92,7 +86,6 @@ export const ownerRows = (context: {
         return
       }
       reading = true
-      const requested = generation
       Effect.forEach(groups, (children) => Effect.tryPromise((signal) =>
         context.client.rpc(CHILD_ROWS).read({ children }, { location: context.location, signal }),
       ), { concurrency: 2 }).pipe(
@@ -100,29 +93,26 @@ export const ownerRows = (context: {
         Effect.option,
         Effect.tap((result) => Effect.sync(() => {
             if (abort.signal.aborted) return
-            const wasChecking = checking
-            checking = false
             if (Option.isNone(result)) {
-              established = false
+              shown.clear()
               publish([])
               return
             }
-            established = true
-            // This read's window ended. A coalesced read can establish a
-            // fresh phase, but a superseded answer is not today's evidence.
-            if (generation !== requested) {
-              if (wasChecking) publish(children.map((child) => unanswered(child, revisionOf(child), "unknown")))
-              return
-            }
+            // An answer read while newer events arrived is still newer than the
+            // one shown; the coalesced read that follows (`dirty`) replaces it in
+            // turn. A child it answers below the revision a notification named
+            // keeps the answer shown, else reads unknown.
             const received = new Map(result.value.flatMap((reply) =>
               Option.toArray(readRows(reply)).flatMap(({ rows }) => rows.map((row) => [row.child, row] as const))))
             const views = children.map((child) => {
               const row = received.get(child)
               const floor = revisionOf(child)
-              if (!row || row.observation.child !== child || row.observation.revision < floor) return unanswered(child, floor, "unknown")
+              if (!row || row.observation.child !== child) return unanswered(child, floor)
+              if (row.observation.revision < floor) return shown.get(child) ?? unanswered(child, floor)
               revisions.set(child, row.observation.revision)
               return rowView(row)
             })
+            views.forEach((view) => shown.set(view.child, view))
             publish(views)
         })),
         Effect.ensuring(Effect.sync(() => {
@@ -143,14 +133,13 @@ export const ownerRows = (context: {
           if (provided.value < revisionOf(child)) return
           revisions.set(child, provided.value)
         }
-        established = true
-        invalidate()
+        refresh()
         return
       }
       if (Option.exists(metadataChanged(details), ({ data }) => children.includes(data.sessionID))
-          || Option.isSome(connected(details)) || Option.isSome(hostWork(details))) invalidate()
+          || Option.isSome(connected(details)) || Option.isSome(hostWork(details))) refresh()
     })
-    invalidate()
+    refresh()
     return () => {
       abort.abort()
       unlisten?.()

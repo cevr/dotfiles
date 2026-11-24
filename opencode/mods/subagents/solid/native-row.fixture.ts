@@ -40,7 +40,7 @@ export const mountRows = (data: Reads, base: string, root: string, child: string
         if (matches(owner())) resume(Effect.void)
       }))
     })
-    const ready = whenOwner((state) => Boolean(state && state.kind !== "checking" && state.kind !== "unknown"))
+    const ready = whenOwner((state) => Boolean(state && state.kind !== "unknown"))
     const fallback = whenOwner((state) => Option.isNone(Option.fromUndefinedOr(state)))
     const rows = () => subagents(family(), root)
     const active = () => Option.isSome(Option.fromUndefinedOr(worksNow(family())(child)))
