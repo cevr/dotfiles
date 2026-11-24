@@ -120,7 +120,7 @@ describe("workbox-rift-storage --fstab", () => {
         "",
       ].join("\n"),
     )
-    const env = { PATH: `${bin}:/usr/bin:/bin`, HOME: dir, USER: process.env.USER ?? "user", WORKBOX_RIFT_FSTAB: fstab, WORKBOX_SYSFS_BTRFS: sys, WORKBOX_RIFT_MOUNT: mount, WORKBOX_RIFT_IMAGE: image }
+    const env = { PATH: `${bin}:/usr/bin:/bin`, HOME: dir, USER: process.env.USER ?? "user", WORKBOX_RIFT_FSTAB: fstab, WORKBOX_SYSFS_BTRFS: sys, WORKBOX_RIFT_MOUNT: mount, WORKBOX_RIFT_IMAGE: image, WORKBOX_EXPECT_MACHINE_ID: identity }
     const apply = () => Bun.spawnSync(["sh", SCRIPT, "--apply"], { cwd: dir, env, stdout: "pipe", stderr: "pipe" })
     const ran = apply()
     expect(ran.exitCode, ran.stderr.toString()).toBe(0)
