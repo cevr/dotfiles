@@ -3,6 +3,7 @@
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Effect, FileSystem, Option, Path, Result } from "effect"
 import { describe, expect, it } from "effect-bun-test"
+import { hangGuard } from "../tests/hang-guard.ts"
 import { initScratchGit, spawnScratchGitSync } from "../tests/scratch-child.ts"
 import { scratchInput } from "../tests/read-path.ts"
 import { checkoutLinks, closeLinks, linkReads, predecessorLinks } from "./test-links.ts"
@@ -64,6 +65,7 @@ describe("tracked input links", () => {
       expect(retarget).toContain("next.txt")
       expect(retarget).toContain("chain.txt")
     }).pipe(Effect.scoped),
+    hangGuard("unit-law"),
   )
 
   it.live.layer(BunServices.layer)("a malformed read map names the file for syntax errors and missing fields", () =>
