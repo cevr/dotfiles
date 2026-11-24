@@ -21,6 +21,13 @@ const orNone = Effect.catchCause(() => Effect.succeed(undefined))
 /** Newest first: the latest release, then the greater id; a model with no release date is oldest. */
 const newer = (a: Offered, b: Offered) => (b.time?.released ?? 0) - (a.time?.released ?? 0) || b.id.localeCompare(a.id)
 
+/**
+ * A model the catalog offers in its own right, not a mode of another: the catalog makes each mode
+ * (`fast`, `ultrafast`, `pro`) a model of its own id that asks the base model's `modelID`, with the same
+ * family and release. No fallback runs on one (owner, 2026-11-24: "not on SolFast anymore").
+ */
+const standard = (item: Offered) => item.modelID === undefined || item.modelID === item.id
+
 export const layer = (port: Port) => {
   const base = Effect.fnUntraced(function* (sessionID: string, agentID: string) {
     const parent = yield* port.session(sessionID)
@@ -45,7 +52,7 @@ export const layer = (port: Port) => {
       const { directory } = yield* port.session(sessionID)
       const offered = yield* port.offered(directory)
       const found = offered
-        .filter((item) => providers.includes(item.providerID) && item.family === family && item.status !== "deprecated")
+        .filter((item) => providers.includes(item.providerID) && item.family === family && item.status !== "deprecated" && standard(item))
         .toSorted(newer)[0]
       if (found === undefined) return undefined
       const at = found.variants.some((item) => item.id === variant) ? `#${variant}` : ""

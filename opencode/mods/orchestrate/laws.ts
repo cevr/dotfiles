@@ -291,6 +291,20 @@ export const modelsLaws = (name: string, layer: (world: ModelsWorld) => Layer.La
         }),
       ))
 
+    // The catalog makes `<id>-fast` a model of its own that asks `<id>`, of the same family and release.
+    const fast = (base: string, released: number) => sol(`${base}-fast`, released, { modelID: base })
+
+    const newestSol = (others: ReadonlyArray<Offered>) =>
+      check(layer({ model, variants: [], others }), Effect.gen(function* () {
+        return yield* (yield* Models).newest("ses_law", ["openai"], "gpt-sol", "high")
+      }))
+
+    test("the newest of a family is never a fast mode, of the same release or newer; only fast ones offered is none", async () => {
+      expect(await newestSol([sol("gpt-6.2-sol", 5), fast("gpt-6.2-sol", 5)])).toBe("openai/gpt-6.2-sol#high")
+      expect(await newestSol([sol("gpt-6.2-sol", 5), fast("gpt-6.2-sol", 5), fast("gpt-6.3-sol", 9)])).toBe("openai/gpt-6.2-sol#high")
+      expect(await newestSol([fast("gpt-6.2-sol", 5)])).toBeUndefined()
+    })
+
     test("the newest at a variant it does not offer is the bare model; a family not offered is none", () =>
       check(
         layer({ model, variants: [], others: [sol("gpt-6-sol", 1)] }),
