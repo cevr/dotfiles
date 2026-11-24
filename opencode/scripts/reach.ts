@@ -173,22 +173,29 @@ const runtimeReads: {
 const authorities = new WeakMap<Workspace, Map<string, ReturnType<typeof authorityOf>>>()
 const workspacePaths = new WeakMap<Workspace, ReadonlySet<string>>()
 
+const pathsOf = (workspace: Workspace) => {
+  const existing = workspacePaths.get(workspace)
+  if (existing) return existing
+  const paths = new Set(workspace.files)
+  workspacePaths.set(workspace, paths)
+  return paths
+}
+
 /** Top-level script tests deliberately walk imports only inside scripts/; direct outer modules are still inputs. */
 const externalScriptImports = (workspace: Workspace, test: string): ReadonlyArray<string> => {
   if (!/^scripts\/[^/]+\.test\.tsx?$/.test(test)) return []
-  const known = workspacePaths.get(workspace) ?? new Set(workspace.files)
-  workspacePaths.set(workspace, known)
-  return importsOf(test, sourceText(test)).flatMap((specifier) =>
-    specifier.startsWith("../")
-      ? [resolveLocal(known, test, specifier) ?? path.posix.join(path.posix.dirname(test), specifier)]
-      : [],
-  )
+  const known = pathsOf(workspace)
+  return importsOf(test, sourceText(test)).filter((specifier) => specifier.startsWith("../")).map((specifier) => {
+    const resolved = resolveLocal(known, test, specifier)
+    if (resolved) return resolved
+    return path.posix.join(path.posix.dirname(test), specifier)
+  })
 }
 
 const authorityOf = (workspace: Workspace, test: string) => {
   const read = inspectReads(workspace, test)
   const subprocessReason = runtimeReads.untracedSubprocesses[test]
-  const unknown = read.classification === "unknown" || subprocessReason !== undefined
+  const unknown = read.classification === "unknown" || Object.hasOwn(runtimeReads.untracedSubprocesses, test)
   const paths = runtimeReads.paths[test] ?? []
   const imports = externalScriptImports(workspace, test)
   const exact = new Set([...paths.filter((file) => !file.endsWith("/")), ...imports])
