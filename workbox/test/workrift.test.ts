@@ -17,7 +17,9 @@ const SCRIPT = process.env.WORKRIFT_SCRIPT ?? join(repo, "workbox/bin/workrift")
 const WORK_BIN = process.env.WORK_BIN ?? Bun.which("work") ?? undefined
 
 const scratchRoot = realpathSync(mkdtempSync(join(tmpdir(), "workrift-test-")))
-afterAll(() => rmSync(scratchRoot, { recursive: true, force: true }))
+/** The file's last hook deletes every bench of the run (some hundred Git trees and workspaces): 6.2 s at load in receipt-6. */
+const SCRATCH_RM_MS = 120_000
+afterAll(() => rmSync(scratchRoot, { recursive: true, force: true }), SCRATCH_RM_MS)
 let scratchCount = 0
 
 type Env = Record<string, string>
@@ -2220,6 +2222,9 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
           const create = startGroup(w.app, w.env, [SCRIPT, "create", "feat/behind"], join(w.dir, "create.err"))
           groups.push(create)
           await until("the create in line behind the refresh", () => readdirSync(queue).filter((name) => /\.[rw]$/.test(name)).length >= 2, 120_000)
+          // The refresh ends once the gate opens: the create's line must be said before, while the refresh holds.
+          const createErr = join(w.dir, "create.err")
+          await until("the create says whom it waits for", () => existsSync(createErr) && readFileSync(createErr, "utf8").includes("waiting for the lock of"), 120_000)
           writeFileSync(gate, "")
           const [refreshed, created] = [await within(refresh, 120_000), await within(create, 120_000)]
           expect(refreshed?.code, refreshed?.err).toBe(0)
@@ -2236,6 +2241,53 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
     },
     // Hang guard: two event waits and two ends of 2 minutes each.
     540_000,
+  )
+
+  test(
+    "a ticket removed while a waiting create reads it (its holder left) has no words: no read of a missing record, the line is read again (receipt-6)",
+    () => {
+      const w = workBench("ticket-gone", work)
+      const queue = join(stateOf(w.app), "base")
+      mkdirSync(queue, { recursive: true })
+      // A holder's ticket, held (the flock below answers so). The holder leaves as the create sorts the line it
+      // found the second time (the words of whom it waits for): after its test of the lock, before its read of the
+      // record.
+      // Its owner is this test run, by the identity workrift reads on macOS (lstart under LC_ALL=C and TZ=UTC0).
+      const start = sh(w.app, { ...w.env, LC_ALL: "C", TZ: "UTC0" }, "ps", "-o", "lstart=", "-p", String(process.pid)).trim()
+      writeFileSync(join(queue, "1.w"), `${process.pid}\n${start}\n${Math.floor(Date.now() / 1000)}\nrefresh\n`)
+      exe(
+        join(w.bin, "flock"),
+        [
+          "#!/bin/sh",
+          `echo "$*" >>'${queue}.calls'`,
+          `case "$*" in "-n -x ${queue}/1.w true") exit 1 ;; esac`,
+          "exit 0",
+          "",
+        ].join("\n"),
+      )
+      const realSort = Bun.which("sort") ?? "/usr/bin/sort"
+      exe(
+        join(w.bin, "sort"),
+        [
+          "#!/bin/sh",
+          `if [ "$1" = -n ] && [ -e '${queue}/1.w' ]; then`,
+          `  if [ -e '${queue}.sorted' ]; then rm -f '${queue}/1.w'; else : >'${queue}.sorted'; fi`,
+          "fi",
+          `exec '${realSort}' "$@"`,
+          "",
+        ].join("\n"),
+      )
+      const ran = w.wr(w.app, "create", "feat/gone")
+      // The race was met: the create found the holder in line twice, and it went between.
+      const calls = readFileSync(`${queue}.calls`, "utf8")
+      expect(calls.split(`-n -x ${queue}/1.w true`).length - 1, calls).toBeGreaterThanOrEqual(2)
+      expect(existsSync(join(queue, "1.w"))).toBe(false)
+      expect(ran.code, ran.err).toBe(0)
+      expect(ran.err).not.toContain("No such file")
+      expect(ran.err).not.toMatch(/pid \d* \(\)/)
+    },
+    // Hang guard: one create on a bench.
+    60_000,
   )
 
   test(

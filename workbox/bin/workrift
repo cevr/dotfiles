@@ -957,29 +957,44 @@ ticket_ahead() {
 }
 
 # Words for the tickets ahead of $1 ($2: its kind): how many, and the oldest.
+# A first ticket that ends while it is read (its holder left, or took its
+# next ticket) has no words: the line is read again, at most five times.
 ticket_ahead_words() {
-  w_ahead=$(ticket_ahead "$1" "$2")
-  w_count=$(printf '%s' "$w_ahead" | grep -c . || true)
-  w_first=$(printf '%s\n' "$w_ahead" | head -n 1)
-  if [ -z "$w_first" ]; then
-    printf ' nothing ahead'
-    return 0
-  fi
-  printf ' behind %s; the first %s' "$w_count" "$(ticket_words "$w_first")"
+  w_try=0
+  while [ "$w_try" -lt 5 ]; do
+    w_try=$((w_try + 1))
+    w_ahead=$(ticket_ahead "$1" "$2")
+    w_count=$(printf '%s' "$w_ahead" | grep -c . || true)
+    w_first=$(printf '%s\n' "$w_ahead" | head -n 1)
+    if [ -z "$w_first" ]; then
+      printf ' nothing ahead'
+      return 0
+    fi
+    if w_words=$(ticket_words "$w_first"); then
+      printf ' behind %s; the first %s' "$w_count" "$w_words"
+      return 0
+    fi
+  done
+  printf ' behind %s; the first ended as it was read' "$w_count"
 }
 
 # One ticket in words: `pid P (what), holding since T` or `waiting since T`.
 # A ticket whose owner is stopped (SIGSTOP, a Ctrl-Z of a waiting create)
 # holds everyone behind it until it runs again; no waiter skips it (it would go
 # in beside a later writer once it runs), so the line names it for a person.
+# The record is read once, whole: a ticket removed meanwhile (its holder
+# left) fails (status 1), never words from part of a record.
 ticket_words() {
+  t_who=
+  tw_since=
+  tw_purpose=
+  { IFS= read -r t_who && IFS= read -r _ && IFS= read -r tw_since && IFS= read -r tw_purpose; } 2>/dev/null <"$1" || return 1
   if [ -e "$1.in" ]; then t_state=holding; else t_state=waiting; fi
-  t_who=$(sed -n 1p "$1")
   t_stopped=
   case "$(LC_ALL=C ps -o stat= -p "$t_who" 2>/dev/null)" in
     *T*) t_stopped="; it is stopped: kill -CONT $t_who to go on, or end it" ;;
   esac
-  printf 'pid %s (%s), %s since %s%s' "$t_who" "$(sed -n 4p "$1")" "$t_state" "$(clock_time "$(sed -n 3p "$1")")" "$t_stopped"
+  printf 'pid %s (%s), %s since %s%s' "$t_who" "$tw_purpose" "$t_state" "$(clock_time "$tw_since")" "$t_stopped"
 }
 
 # What holds or waits in a base's queue $2 (base or advance), in words.
@@ -988,7 +1003,9 @@ queue_words() {
   qw_found=
   for qw_each in "$state_value/$2"/*.[rw]; do
     ticket_live "$qw_each" || continue
-    printf ' %s' "$(ticket_words "$qw_each")"
+    # One removed since (its holder left) is no longer in the queue.
+    qw_words=$(ticket_words "$qw_each") || continue
+    printf ' %s' "$qw_words"
     qw_found=true
   done
   [ -n "$qw_found" ] || printf ' none'
