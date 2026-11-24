@@ -159,6 +159,8 @@ const rmFindings = (command: string, args: ReadonlyArray<Word>, runsIn: string, 
 export interface PlacedCommand {
   /** The program's name, its path dropped (`/bin/rm` is `rm`); empty for a line of assignments alone. */
   readonly head: string
+  /** The executable as written, which can be the path of a script. */
+  readonly executable: string
   readonly args: ReadonlyArray<Word>
   /** The command as the refusal names it: its running words, prefixes dropped. */
   readonly command: string
@@ -177,14 +179,15 @@ export const placedCommands = (line: string, startsIn: string, home: string, dep
   let runsIn = startsIn
   for (const words of simpleCommands(line)) {
     const running = runningWords(words)
-    const head = running[0]?.text.split("/").pop() ?? ""
+    const executable = running[0]?.text ?? ""
+    const head = basename(executable)
     const args = running.slice(1)
     if (head === "cd") {
       const target = args[0]
       runsIn = target === undefined ? resolve("/", home) : resolve(runsIn, expandWord(target, home, runsIn))
       continue
     }
-    placed.push({ head, args, command: running.map((word) => word.text).join(" "), runsIn })
+    placed.push({ head, executable, args, command: running.map((word) => word.text).join(" "), runsIn })
     if (depth < MAX_DEPTH) {
       const script = SHELLS.has(head) ? shellScript(args) : head === "eval" ? args.map((word) => word.text).join(" ") : undefined
       if (script !== undefined) placed.push(...placedCommands(script, runsIn, home, depth + 1))

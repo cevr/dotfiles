@@ -19,3 +19,9 @@ export const within = (inner: string, outer: string): boolean =>
 
 /** The last part of a resolved path. */
 export const basename = (path: string): string => path.slice(path.lastIndexOf("/") + 1)
+
+export const dirname = (path: string): string => {
+  const slash = path.lastIndexOf("/")
+  if (slash < 0) return "."
+  return path.slice(0, slash) || "/"
+}
