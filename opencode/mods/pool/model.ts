@@ -372,7 +372,7 @@ export const layer = (config: Config) =>
         logins.list(id, force).pipe(Effect.flatMap((credentials) => Effect.gen(function* () {
           const previous = yield* SynchronizedRef.get(pool)
           yield* apply(pool, id, ListLogins.make({ credentials }))
-          if (!inventoried.has(id) || force || previous.credentials.length !== credentials.length || previous.credentials.some((known) => !credentials.includes(known))) {
+          if (!inventoried.has(id) || previous.credentials.length !== credentials.length || previous.credentials.some((known) => !credentials.includes(known))) {
             yield* apply(pool, id, PruneLedger.make({ listed: credentials }))
             inventoried.add(id)
           }
@@ -659,10 +659,15 @@ export const layer = (config: Config) =>
         every,
         (where) =>
           Effect.gen(function* () {
-            yield* refresh(where, true).pipe(Effect.ignore)
+            const listed = yield* Effect.option(refresh(where, true))
             for (const credentialID of (yield* SynchronizedRef.get(where.pool)).credentials)
               yield* take(where, credentialID, yield* quota.usage(where.id, credentialID), true)
-            yield* apply(where.pool, where.id, PruneLedger.make({}))
+            // On a successful listing, the sweep's existing prune also
+            // cleans up late retired rows; don't scan a second time in refresh.
+            const state = yield* SynchronizedRef.get(where.pool)
+            yield* apply(where.pool, where.id, PruneLedger.make(Option.match(listed, {
+              onNone: () => ({}), onSome: () => ({ listed: [...state.credentials] }),
+            })))
           }),
         { discard: true },
       ).pipe(

@@ -1079,6 +1079,21 @@ describe("the ledger", () => {
 })
 
 describe("the sweep", () => {
+  test("a steady sweep prunes the ledger and retires absent logins in the same hold scan", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const state = world()
+        yield* start({ sweepMinutes: 1 }, state, live())
+        yield* TestClock.adjust("1 second")
+        const before = { ...state.holdAccess }
+        state.storage.set("anthropic/hold/retired", { kind: "signin", at: 0, until: HOUR })
+        yield* TestClock.adjust("1 minute")
+        expect(state.holdAccess.usage - before.usage).toBe(2)
+        expect(state.holdAccess.scans - before.scans).toBe(3) // two readings and one prune
+        expect(state.storage.has("anthropic/hold/retired")).toBe(false)
+      }),
+    ))
+
   test("reads every login's usage a moment after start, then every few minutes", () =>
     onTestClock(
       Effect.gen(function* () {
