@@ -24,9 +24,30 @@ const newer = (a: Offered, b: Offered) => (b.time?.released ?? 0) - (a.time?.rel
 /**
  * A model the catalog offers in its own right, not a mode of another: the catalog makes each mode
  * (`fast`, `ultrafast`, `pro`) a model of its own id that asks the base model's `modelID`, with the same
- * family and release. No fallback runs on one (owner, 2026-11-24: "not on SolFast anymore").
+ * family and release. No fallback runs on one (owner, 2026-11-24: "not on SolFast anymore"); only a start
+ * that asks fast runs on a fast mode (`fast`).
  */
 const standard = (item: Offered) => Option.getOrElse(Option.fromUndefinedOr(item.modelID), () => item.id) === item.id
+
+/** The model an offered item asks the provider with: its own id, or the model it is a mode of. */
+const baseOf = (item: Offered) => Option.getOrElse(Option.fromUndefinedOr(item.modelID), () => item.id)
+
+/** The catalog's name of the fast mode. */
+const FAST = "fast"
+
+/** Whether `item` is the fast mode of the model it asks (the catalog's `<id>-fast`, models-dev.ts). */
+const isFast = (item: Offered) => !standard(item) && item.id === `${baseOf(item)}-${FAST}`
+
+/** `provider/id[#variant]`, split; none without a provider. */
+const partsOf = (model: string) => {
+  const [ref = "", variant] = model.split("#")
+  const slash = ref.indexOf("/")
+  return Option.map(Option.liftPredicate(slash, (at) => at > 0), (at) => ({ providerID: ref.slice(0, at), id: ref.slice(at + 1), variant: Option.fromUndefinedOr(variant) }))
+}
+
+/** `provider/id`, at `variant` when `item` offers it. */
+const named = (item: Offered, variant: Option.Option<string>) =>
+  `${item.providerID}/${item.id}${Option.getOrElse(Option.map(Option.filter(variant, (wanted) => item.variants.some((each) => each.id === wanted)), (wanted) => `#${wanted}`), () => "")}`
 
 export const layer = (port: Port) => {
   const base = Effect.fnUntraced(function* (sessionID: string, agentID: string) {
@@ -35,6 +56,17 @@ export const layer = (port: Port) => {
     const model = own ?? parent.model ?? (yield* port.defaultModel(parent.directory))
     return { directory: parent.directory, model }
   })
+  /** What `read` makes of `model` as the host offers it, with the whole offer and the variant it named; none when not offered or unread. */
+  const offeredAs = (sessionID: string, model: string, read: (item: Offered, offered: ReadonlyArray<Offered>, variant: Option.Option<string>) => Option.Option<string>) =>
+    Option.match(partsOf(model), {
+      onNone: () => Effect.succeed(Option.none<string>()),
+      onSome: (parts) =>
+        Effect.gen(function* () {
+          const { directory } = yield* port.session(sessionID)
+          const offered = yield* port.offered(directory)
+          return Option.flatMap(Option.fromUndefinedOr(offered.find((item) => item.providerID === parts.providerID && item.id === parts.id)), (item) => read(item, offered, parts.variant))
+        }).pipe(Effect.orElseSucceed(() => Option.none<string>())),
+    })
   return Layer.succeed(Models, {
     current: (sessionID) => port.session(sessionID).pipe(orNone, Effect.map((session) => Option.fromUndefinedOr(session?.model))),
     base: Effect.fn("Models.base")(function* (sessionID: string, agentID: string) {
@@ -68,5 +100,15 @@ export const layer = (port: Port) => {
       if (found === undefined) return undefined
       return variant !== undefined && found.variants.some((item) => item.id === variant) ? `${model}#${variant}` : model
     }, orNone),
+    fast: (sessionID, model) => offeredAs(sessionID, model, (item, offered, variant) => {
+      if (isFast(item)) return Option.some(named(item, variant))
+      const mode = offered.find((each) => each.providerID === item.providerID && each.id === `${item.id}-${FAST}` && baseOf(each) === item.id && each.status !== "deprecated")
+      return Option.map(Option.fromUndefinedOr(mode), (found) => named(found, variant))
+    }),
+    standardOf: (sessionID, model) => offeredAs(sessionID, model, (item, offered, variant) =>
+      Option.flatMap(Option.liftPredicate(item, isFast), (mode) =>
+        Option.map(Option.fromUndefinedOr(offered.find((each) => each.providerID === mode.providerID && each.id === baseOf(mode))), (found) => named(found, variant)),
+      ),
+    ),
   })
 }
