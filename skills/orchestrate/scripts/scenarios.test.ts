@@ -80,7 +80,7 @@ export const TABLE: ReadonlyArray<Row> = [
     input: 'a permission refusal names no accepted form; one item is refused and another is runnable (22q principle B1)',
     expect: { planner: 'stop the step and report the allow rule', implementor: 'stop the step and report the allow rule', verifier: 'stop the step and report the allow rule', principle: 'none of its own: the role rule decides' },
     rules: [
-      { docs: [...ROLES], clause: '**Refusals.**', is: `${CALL_REFUSAL} ${PROVIDER_HISTORY}` },
+      { docs: [...ROLES], clause: '**Refusals.**', is: `${CALL_REFUSAL} ${PROVIDER_HISTORY} A refusal is authority, not difficulty.` },
       { docs: ['principle'], clause: PRINCIPLE_REFUSAL, has: /Whether or not it names an accepted form[^.]*your role's own rule decides/ },
       { docs: ['principle'], clause: PRINCIPLE_REFUSAL, has: "the worker protocol's Refusals section" },
       { docs: ['principle'], clause: PRINCIPLE_REFUSAL, lacks: /go on|continue|rest of the work|carry on|keep working/i },
