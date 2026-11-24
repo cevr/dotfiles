@@ -7,8 +7,9 @@ import { Database } from "bun:sqlite"
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
-import { ORCHESTRATOR } from "../mods/orchestrate/role.ts"
+import { ORCHESTRATOR, orchestrator } from "../mods/orchestrate/role.ts"
 import { poolPlugin } from "../testbeds/anthropic-auth.ts"
+import { ready as composerReady } from "../testbeds/gamut/startup/tui.ts"
 import {
   type Catalog,
   checkKeyNames,
@@ -498,6 +499,19 @@ describe("the scripted model", () => {
 })
 
 // ── One run of the commands against a real OpenCode ──
+
+test("the first prompt waits for the runtime default and does not accept a config-only agent", () => {
+  const build = { id: "build", mode: "primary" }
+  const configured = { id: ORCHESTRATOR, mode: "primary" }
+  const registered = { ...configured, description: orchestrator.description }
+  const isReady = (agents: Parameters<typeof composerReady>[0], hasModel: boolean) =>
+    composerReady(agents, hasModel, ORCHESTRATOR, orchestrator.description)
+  expect(isReady(undefined, true)).toBe(false)
+  expect(isReady([build, registered], true)).toBe(false)
+  expect(isReady([configured, build], true)).toBe(false)
+  expect(isReady([registered, build], false)).toBe(false)
+  expect(isReady([registered, build], true)).toBe(true)
+})
 
 /**
  * The environment of the e2e run's gamut commands: its own state file, and this test process as the run's owner, so a
