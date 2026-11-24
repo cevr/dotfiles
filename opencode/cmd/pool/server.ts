@@ -131,7 +131,6 @@
  */
 import { hostname } from "node:os"
 import { Agent, Integration, Plugin, Tool } from "@opencode/plugin/effect"
-import { SessionID as HostSessionID } from "@opencode/schema/session-id"
 import { Cause, Clock, Context, Deferred, Effect, Exit, Layer, Option, Schedule, Schema, Stream } from "effect"
 import { heldMessage, PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { RequestHeld, requestHeldMessage, storeHeld } from "@dotfiles/opencode-pool/pace"
@@ -166,6 +165,7 @@ import { STATUS } from "@dotfiles/opencode-status/status"
 export { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
+const HostSessionID = Schema.String.check(Schema.isStartingWith("ses")).pipe(Schema.brand("SessionID"))
 
 /** The request header that names the login a request goes out on. Its auth plugin strips it. */
 export const CREDENTIAL_HEADER = "x-opencode-credential-id"
