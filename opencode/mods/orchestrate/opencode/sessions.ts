@@ -13,7 +13,7 @@ export interface Session {
   readonly agent?: string
   /** It has run a turn, or runs one: the host's `time.busy` or `outcome` is set. */
   readonly started?: boolean
-  readonly busySince?: Option.Option<number>
+  readonly busySince?: number
   /** Its last turn was stopped: the host's `outcome` is `interrupted`. */
   readonly stopped?: boolean
   /** The wakes' latch mark, as the session's metadata carries it. */
@@ -70,7 +70,7 @@ export const layer = (get: Get, messages: Messages, inDirectory: InDirectory = (
       const session = yield* get(sessionID)
       return Option.match(Option.fromUndefinedOr(since), {
         onNone: () => session.started === true,
-        onSome: (since) => Option.exists(Option.flatten(Option.fromUndefinedOr(session.busySince)), (busy) => busy >= since),
+        onSome: (since) => Option.exists(Option.fromUndefinedOr(session.busySince), (busy) => busy > since),
       })
     }, Effect.catchCause(() => Effect.succeed(false))),
     stoppedOf: Effect.fn("Sessions.stoppedOf")(function* (sessionID: string) {

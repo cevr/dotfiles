@@ -358,7 +358,7 @@ export const stepSessionOf = (session: StepHostSession): SessionsLive.Session =>
   ...(session.parentID === undefined ? {} : { parentID: session.parentID }),
   ...(session.agent === undefined ? {} : { agent: session.agent }),
   started: session.time.busy !== undefined || session.outcome !== undefined,
-  busySince: Option.fromUndefinedOr(msOf(session.time.busy)),
+  ...Option.match(Option.fromUndefinedOr(msOf(session.time.busy)), { onNone: () => ({}), onSome: (busySince) => ({ busySince }) }),
   stopped: session.outcome === "interrupted",
   ...(session.metadata?.[MARK_KEY] === undefined ? {} : { latch: session.metadata[MARK_KEY] }),
   directory: session.location.directory,

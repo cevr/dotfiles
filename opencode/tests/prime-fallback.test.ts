@@ -1,7 +1,7 @@
 // accept: deep (25.4 s alone on a quiet host: 1-minute load 6.7–7.4 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // Runs scenarios/prime-fallback.ts with the Prime look, the orchestrate and
 // wakes plugins, a stand-in pool and a stand-in Codex provider against an
-// OpenCode checkout: a planner (Codex plans and verifies, never implements) the pool holds on its first model starts at
+// OpenCode checkout: a planner the pool holds on its first model starts at
 // once on the newest Codex sol, which the admission script admits, instead
 // of latching, and the parent hears its answer; its row shows sol. The pace,
 // the admission, the call log, the worker's model and what the parent reads

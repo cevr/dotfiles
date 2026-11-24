@@ -1,7 +1,7 @@
 // Opus first, Codex second, in real OpenCode with the Prime look: the
 // orchestrate and wakes plugins, a stand-in pool whose pace holds every new
 // agent on the first model's provider, and a second provider standing in for
-// Codex, with two sol models. The parent starts a planner (Codex plans and verifies, never implements);
+// Codex, with two sol models. The parent starts a planner, the only role with this fallback;
 // the pool holds its model, the Codex admission script admits the newest
 // sol, so the worker starts at once on it instead of latching; the call's
 // result, led by the line saying where it ran and why, and then its answer
