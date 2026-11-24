@@ -1,3 +1,5 @@
+// @reads cmd mods
+// @reads-indirect cmd/** mods/**
 /**
  * The root AGENTS.md carries the owner's rules, never a plugin's behaviour (owner, 2026-11-24: "Don't put plug-in
  * behavior in agents.md … Plug-in behavior should be kind of self-contained"). Every session reads that file, Claude
@@ -11,13 +13,15 @@
  * (mods/pool/limits.ts `PRICE`, `familyOf`), and a model id is a Claude or GPT id as the catalog spells one.
  *
  * It finds its sources by walking, not import, so it declares them for the gate's selection (scripts/reach.ts `readsOf`):
- * @reads ../AGENTS.md cmd/** mods/**
  */
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Array as Arr, Effect, FileSystem, Option, Path, Predicate } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { type Argument, type Expression, type ImportDeclarationSpecifier, type ObjectProperty, type ObjectPropertyKind, parseSync, type StaticMemberExpression, type StringLiteral, Visitor } from "oxc-parser"
 import { familyOf, PRICE } from "../mods/pool/limits.ts"
+import { checkoutRoot, matchingInput, resolveRuntimeInput } from "../tests/read-path.ts"
+
+const SOURCES = "{cmd,cmd/**,mods,mods/**}"
 
 /**
  * The tools the file may name, each with why. The one exception (owner, 2026-11-24: "I don't mind the work tool
@@ -38,10 +42,11 @@ const sourcesUnder = (dir: string): Effect.Effect<ReadonlyArray<string>, unknown
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
-    const names = (yield* fs.readDirectory(dir)).filter((name) => name !== "node_modules")
+    const full = matchingInput(SOURCES, dir)
+    const names = (yield* fs.readDirectory(full)).filter((name) => name !== "node_modules")
     const each = yield* Effect.forEach(names, (name) =>
       Effect.gen(function* () {
-        const child = path.join(dir, name)
+        const child = matchingInput(SOURCES, path.join(full, name))
         if ((yield* fs.stat(child)).type === "Directory") return yield* sourcesUnder(child)
         return Arr.filter([child], () => isSource(name))
       }),
@@ -150,22 +155,21 @@ const registrationsOf = (file: string, text: string) => {
 const registeredTools = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
-  const opencode = path.resolve(".")
-  const files = (yield* Effect.forEach(["cmd", "mods"], (dir) => sourcesUnder(path.join(opencode, dir)))).flat()
+  const files = (yield* Effect.forEach(["cmd", "mods"], (dir) => sourcesUnder(dir))).flat()
   const found = yield* Effect.forEach(files, (file) =>
     Effect.gen(function* () {
-      const text = yield* fs.readFileString(file)
+      const text = yield* fs.readFileString(matchingInput(SOURCES, file))
       if (!text.includes(".transform(")) return []
       const { refs, imports, constants } = registrationsOf(file, text)
-      const where = path.relative(opencode, file)
+      const where = path.relative(checkoutRoot, file)
       /** The string an imported binding names (`X`, `X.key`, or a namespace's `NS.member`), read from its module's source. */
       const exportOf = (local: string, member: Option.Option<string>) =>
         Option.match(Option.fromUndefinedOr(imports.get(local)), {
           onNone: () => Effect.succeed(Option.none<string>()),
           onSome: (imported) =>
             Effect.gen(function* () {
-              const from = Bun.resolveSync(imported.from, path.dirname(file))
-              const module = constantsOf(from, yield* fs.readFileString(from))
+              const from = resolveRuntimeInput(SOURCES, imported.from, path.dirname(file))
+              const module = constantsOf(from, yield* fs.readFileString(matchingInput(SOURCES, from)))
               return Option.fromUndefinedOr(module.get([...Option.toArray(imported.exported), ...Option.toArray(member)].join(".")))
             }),
         })
