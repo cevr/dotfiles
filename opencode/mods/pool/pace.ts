@@ -52,7 +52,7 @@ export type Admission = typeof Admission.Type
 
 /** Total remedy order, from getting a trustworthy pool/candidate to spending its room. */
 export const HoldReason = Schema.Literals([
-  "logins-unavailable", "usage-unread", "model-unreported", "account-held", "model-limit", "quota-limit",
+  "store-unavailable", "logins-unavailable", "usage-unread", "model-unreported", "account-held", "model-limit", "quota-limit",
   "even-line", "reset-room", "auxiliary", "placement-changed",
 ])
 export type HoldReason = typeof HoldReason.Type
@@ -77,6 +77,11 @@ export const Pace = Schema.Union([
 ])
 export type Pace = typeof Pace.Type
 type HeldPace = Extract<Pace, { readonly ok: false }>
+
+export const storeHeld = (retryAt: number): HeldPace => ({
+  ok: false, measured: false, admission: "held", eligible: [], reasonCode: "store-unavailable",
+  reason: "the pool could not confirm its current holds; retry the hold store read", retryAt,
+})
 
 /** A sign-in is an account prerequisite, not a quota deadline; its date only schedules a recheck. */
 export const needsSignIn = (account: AccountStatus): boolean =>

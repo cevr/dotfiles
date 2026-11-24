@@ -24,6 +24,18 @@ export const POOL_STATUS = {
       },
       output: { type: "object" },
     },
+    handoff: {
+      input: {
+        type: "object",
+        properties: {
+          providerID: { type: "string" }, sessionID: { type: "string" }, model: { type: "string" },
+          kind: { type: "string" }, agent: { type: "string" }, candidate: { type: "string" },
+          keepalive: { type: "boolean" },
+        },
+        required: ["providerID", "sessionID", "model", "kind", "agent", "candidate"],
+      },
+      output: { type: "object" },
+    },
     status: { input: { type: "object" }, output: { type: "object" } },
     session: {
       input: {

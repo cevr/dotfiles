@@ -165,7 +165,7 @@ test("the closed set of pace holds names what must change, and opens when it doe
     "model-unreported": "Use another model or login; time alone will not clear this hold",
     "reset-room": "room from a claimed reset",
     "auxiliary": "does not spend the room a claimed reset gave back",
-  } satisfies Record<Exclude<HoldReason, "logins-unavailable" | "placement-changed">, string>
+  } satisfies Record<Exclude<HoldReason, "logins-unavailable" | "placement-changed" | "store-unavailable">, string>
   const observed = new Set<string>()
   for (const [offset, span] of Arr.cartesian([0, minute, 5 * minute], [15 * minute, hour, 2 * hour])) {
     const at = now + offset

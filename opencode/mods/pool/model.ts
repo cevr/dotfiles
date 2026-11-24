@@ -6,7 +6,7 @@
 // plugin on the host shares.
 // The aggregate is the one decision entry point, so the stories run exactly
 // what these do. The plugin calls these and nothing else.
-import { Array as Arr, Clock, Context, Effect, Layer, Option, Ref, Scope, Semaphore, Stream, SynchronizedRef } from "effect"
+import { Array as Arr, Clock, Context, Effect, Layer, Option, Predicate, Ref, Scope, Semaphore, Stream, SynchronizedRef } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import {
   AccountPool,
@@ -22,13 +22,12 @@ import {
   TakeReading,
   type AccountPoolState,
   type Command,
-  type Event,
   PoolId,
 } from "./account-pool.ts"
 import { answeredOn, held, lastPlacedAt, placedOn, sessionAccount, status, type RequestKind, type Rules } from "./accounts.ts"
 import * as Burn from "./burn.ts"
 import * as FleetModel from "./fleet.ts"
-import { dispatchPace, evidenceGap, nextRetryAt, poolPace, refreshEvidence, RequestHeld, requiredScopes, UNPOOLED, UNREAD_RETRY_MS, type DispatchPolicy, type Pace } from "./pace.ts"
+import { dispatchPace, evidenceGap, needsSignIn, nextRetryAt, poolPace, refreshEvidence, RequestHeld, requiredScopes, storeHeld, UNPOOLED, UNREAD_RETRY_MS, type DispatchPolicy, type Pace } from "./pace.ts"
 import { limitsLine, weeklyRatios, type Tally, type Tokens } from "./limits.ts"
 import type { AccountStatus } from "./status.ts"
 import type { ClaimAnswer, QuotaReading, QuotaWindow } from "./quota.ts"
@@ -149,6 +148,17 @@ export const poolsOf = (config: Config): ReadonlyArray<PoolId> => [
   ...new Set([...Object.values(config.providers), ...Object.values(config.paced ?? {})]),
 ]
 
+export interface PlaceInput {
+  readonly providerID: string
+  readonly sessionID: string
+  readonly kind: RequestKind
+  readonly model?: string
+  readonly cacheLifeMs?: number
+  readonly cacheOf?: string
+  /** An already signed ping cannot move to a different login. */
+  readonly keepalive?: boolean
+}
+
 export class Pool extends Context.Service<
   Pool,
   {
@@ -172,12 +182,15 @@ export class Pool extends Context.Service<
       /** The session whose cache the request reads when the session has none of its own: a fork's source. */
       readonly cacheOf?: string
     }) => Effect.Effect<Placed | undefined, AccountsHeld | RequestHeld>
+    /** Confirm a prepared login from this activation against the current hold store. */
+    readonly confirmed: (input: PlaceInput, candidate: string) => Effect.Effect<boolean, RequestHeld>
     /** A response came back. A refusal (401 or 429) holds the login it went out on. */
     readonly responded: (input: {
       readonly providerID: string
       readonly sessionID: string
       readonly kind: RequestKind
       readonly status: number
+      readonly credentialID?: string
     }) => Effect.Effect<void>
     /**
      * A primary request failed: whether it should go again at once, on another login. `error` is the failure's type
@@ -307,13 +320,31 @@ export const layer = (config: Config) =>
        * what it records in, and write that to the ledger. Commands on one pool
        * are decided one at a time.
        */
-      const send = (pool: SynchronizedRef.SynchronizedRef<AccountPoolState>, id: PoolId, command: Command) =>
-        SynchronizedRef.modifyEffect(pool, (state) =>
-          Clock.currentTimeMillis.pipe(
-            Effect.flatMap((now) => decider.decide(state, command, now)),
-            Effect.map((events): readonly [ReadonlyArray<Event>, AccountPoolState] => [events, fold(decider, events, state)]),
-          ),
-        ).pipe(Effect.tap((events) => (events.length === 0 ? Effect.void : ledger.record(id, events))))
+      const send = (pool: SynchronizedRef.SynchronizedRef<AccountPoolState>, id: PoolId, command: Command) => {
+        const changesHolds = Predicate.isTagged(command, "TakeReading") || Predicate.isTagged(command, "RefuseRequest") ||
+          Predicate.isTagged(command, "PruneLedger") || Predicate.isTagged(command, "ClearHold")
+        const applyCommand = SynchronizedRef.modifyEffect(pool, (state) =>
+          Effect.gen(function* () {
+            let current = state
+            let shared = Option.none<"unknown">()
+            if (changesHolds) {
+              const known = yield* Effect.option(ledger.holds(id))
+              if (Option.isSome(known)) current = { ...state, holds: known.value }
+              else shared = Option.some("unknown")
+            }
+            const events = yield* decider.decide(current, command, yield* Clock.currentTimeMillis)
+            return [{ events, shared }, fold(decider, events, current)] as const
+          }),
+        ).pipe(
+          Effect.tap(({ events, shared }) => Option.match(shared, {
+            onNone: () => events.length === 0 ? Effect.void : ledger.record(id, events),
+            onSome: (unread) => ledger.record(id, events, unread),
+          })),
+          Effect.map(({ events }) => events),
+        )
+        if (changesHolds) return ledger.withHolds(applyCommand)
+        return applyCommand
+      }
 
       /** `send`, for a command that declares no rejection: only PlaceRequest can be refused. */
       const apply = (pool: SynchronizedRef.SynchronizedRef<AccountPoolState>, id: PoolId, command: Exclude<Command, PlaceRequest>) =>
@@ -366,14 +397,7 @@ export const layer = (config: Config) =>
       const pull = (where: Pooled, credentialID: string) =>
         quota.reading(where.id, credentialID).pipe(Effect.flatMap((reading) => take(where, credentialID, reading)))
 
-      const place = Effect.fn("Pool.place")(function* (input: {
-        readonly providerID: string
-        readonly sessionID: string
-        readonly kind: RequestKind
-        readonly model?: string
-        readonly cacheLifeMs?: number
-        readonly cacheOf?: string
-      }) {
+      const place = Effect.fn("Pool.place")(function* (input: PlaceInput) {
         const where = pooled(input.providerID)
         if (where === undefined) return undefined
         // The request's admission, at its dispatch: the pace a request of its model gets on the readings now (`dispatchPace`).
@@ -424,6 +448,20 @@ export const layer = (config: Config) =>
         if (answer.admission === "backed") yield* reserve(where, placed.value.credentialID, input.sessionID)
         return Option.getOrUndefined(placed)
       }, (effect) => dispatchLock.withPermits(1)(effect))
+
+      const currentHolds = ({ id, pool }: Pooled) =>
+        ledger.holds(id).pipe(Effect.flatMap((holds) => SynchronizedRef.updateAndGet(pool, (state) => ({ ...state, holds }))))
+
+      const confirmed = Effect.fn("Pool.confirmed")(function* (input: PlaceInput, candidate: string) {
+        const where = Option.fromUndefinedOr(pooled(input.providerID))
+        if (Option.isNone(where)) return false
+        const current = yield* currentHolds(where.value).pipe(Effect.mapError(({ retryAt }) => new RequestHeld({
+          sessionID: input.sessionID, ...storeHeld(retryAt),
+        })))
+        const now = yield* Clock.currentTimeMillis
+        return (input.keepalive === true || placedOn(current, input.sessionID, input.kind) === candidate) && !held(current, candidate, now) &&
+          status(current, now, rules).some((account) => account.credentialID === candidate && !needsSignIn(account))
+      }, ledger.withHolds)
 
       /**
        * Reserve one request's share (`fleet.startCost`) of the room the account's claim gave back (resets.ts `Spend`),
@@ -476,11 +514,15 @@ export const layer = (config: Config) =>
         readonly sessionID: string
         readonly kind: RequestKind
         readonly status: number
+        readonly credentialID?: string
       }) {
         if (input.status !== 401 && input.status !== 429) return
         const where = pooled(input.providerID)
         if (where === undefined) return
-        const answered = yield* answeredHere(where, input.sessionID, input.kind)
+        const answered = yield* Option.match(Option.fromUndefinedOr(input.credentialID), {
+          onNone: () => answeredHere(where, input.sessionID, input.kind),
+          onSome: (id) => Effect.succeed(Option.some(id)),
+        })
         if (Option.isNone(answered)) return
         const credentialID = answered.value
         // The reading says for how long; without one (or with one that holds
@@ -1225,6 +1267,8 @@ export const layer = (config: Config) =>
       ) {
         const paced = poolOf(measuredBy(config, providerID))
         if (paced === undefined) return UNPOOLED
+        const authority = yield* Effect.result(ledger.withHolds(currentHolds(paced)))
+        if (authority._tag === "Failure") return storeHeld(authority.failure.retryAt)
         yield* refresh(paced, false)
         const fleet = yield* fleetStore.read
         // A peer's newer readings of the same logins count here too, whichever instance on the host read the peer.
@@ -1234,12 +1278,13 @@ export const layer = (config: Config) =>
           const before = yield* Clock.currentTimeMillis
           const listed = status(yield* SynchronizedRef.get(paced.pool), before, rules)
           const required = requiredScopes(listed, model)
-          const unread = listed.filter((account) =>
-            Option.isNone(Option.fromUndefinedOr(account.hold)) && Option.exists(evidenceGap(account, before, required), (gap) => refreshEvidence(gap, before)),
-          )
+          const unread = listed.filter((account) => Option.match(Option.fromUndefinedOr(account.hold), {
+            onSome: (hold) => hold.kind === "signin" && hold.until <= before,
+            onNone: () => Option.exists(evidenceGap(account, before, required), (gap) => refreshEvidence(gap, before)),
+          }))
           const read = Effect.forEach(unread, (account) => quota.usage(paced.id, account.credentialID).pipe(
             Effect.flatMap((reading) => take(paced, account.credentialID, reading)),
-          ), { discard: true, concurrency: "unbounded" })
+          ), { discard: true, concurrency: unread.length })
           // A quote leaves time for the caller's RPC. Dispatch has its own
           // overall deadline; it decides on all the outcomes in by that time.
           const deadline = Option.getOrElse(Option.filter(Option.some(DISPATCH_EVIDENCE_MS), () => work === "existing-request"), () => QUOTE_EVIDENCE_MS)
@@ -1365,6 +1410,7 @@ export const layer = (config: Config) =>
 
       return {
         place,
+        confirmed,
         responded,
         retry,
         release,

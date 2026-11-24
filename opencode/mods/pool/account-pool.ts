@@ -14,6 +14,7 @@ import type { Decider } from "@dotfiles/decider/decider"
 import {
   DEFAULT_HOLD_MS,
   held,
+  liveHold,
   Mark,
   markKept,
   PIN_IDLE_MS,
@@ -253,7 +254,7 @@ const readingHold = (
   const grows = until > Math.max(previous, now)
   if (!grows && refusedUntil <= Math.max(before, now)) return Option.none()
   const kind = Option.getOrElse(
-    Option.map(Option.filter(current, () => !grows), (hold) => hold.kind).pipe(Option.orElse(() => Option.map(refused, (hold) => hold.kind))),
+    Option.map(Option.filter(current, (hold) => hold.kind === "signin" || !grows), (hold) => hold.kind).pipe(Option.orElse(() => Option.map(refused, (hold) => hold.kind))),
     (): Hold["kind"] => "usage-limit",
   )
   return Option.some(Hold.make({
@@ -283,8 +284,15 @@ const takeReading = (
     .reduce<number | undefined>((latest, window) => Math.max(latest ?? 0, window.resetAt ?? 0), undefined)
   const until = Math.max(refused?.until ?? 0, exhausted ?? 0)
   const current = Option.fromUndefinedOr(state.holds[credentialID])
-  const hold = readingHold(current, Option.fromUndefinedOr(refused), until, now)
-  const lifts = until <= now && refusalEnd(current) <= now && Option.exists(current, (hold) => hold.kind === "usage-limit" && command.reading.at > hold.at)
+  // A late successful title is not a sign-in. Only a new usage-endpoint
+  // sample, obtained after the auth adapter resolved the login, can lift it.
+  const signedIn = Option.exists(current, (hold) => hold.kind === "signin" &&
+    Option.isNone(Option.fromUndefinedOr(command.reading.refusal)) &&
+    Option.exists(Option.fromUndefinedOr(command.reading.usage), (usage) => usage.at > hold.at))
+  const prior = Option.filter(current, () => !signedIn)
+  const hold = readingHold(prior, Option.fromUndefinedOr(refused), until, now)
+  const lifts = Option.isNone(hold) && (signedIn ||
+    (until <= now && refusalEnd(current) <= now && Option.exists(current, (hold) => hold.kind === "usage-limit" && command.reading.at > hold.at)))
   return Effect.succeed([
     ReadingTaken.make({
       credentialID,
@@ -321,7 +329,7 @@ const refuseRequest = (
   command: RefuseRequest,
   now: number,
 ): Effect.Effect<ReadonlyArray<RequestRefused>> => {
-  const current = Option.filter(Option.fromUndefinedOr(state.holds[command.credentialID]), (hold) => hold.until > now)
+  const current = Option.filter(Option.fromUndefinedOr(state.holds[command.credentialID]), (hold) => liveHold(hold, now))
   if (Option.isSome(current)) {
     const hold = current.value
     if (command.status !== 429 || hold.kind !== "usage-limit" || refusalEnd(current) > now) return Effect.succeed([])
@@ -440,7 +448,7 @@ const pruneLedger = (
   now: number,
 ): Effect.Effect<ReadonlyArray<LedgerPruned>> => {
   const steps = state.steps.filter((step) => now - step.at >= WINDOW_MS)
-  const holds = Object.entries(state.holds).flatMap(([credentialID, hold]) => (hold.until > now ? [] : [credentialID]))
+  const holds = Object.entries(state.holds).flatMap(([credentialID, hold]) => (liveHold(hold, now) ? [] : [credentialID]))
   const runs = Object.entries(state.runs).flatMap(([sessionID, mark]) => (now - mark.at >= PIN_IDLE_MS ? [sessionID] : []))
   const caches = Object.entries(state.recent).flatMap(([sessionID, mark]) => (markKept(rules, mark, now) ? [] : [{ sessionID, at: mark.at }]))
   if (steps.length + holds.length + runs.length + caches.length === 0) return Effect.succeed([])

@@ -36,7 +36,7 @@ import { Agent, Credential, Integration, Plugin } from "@opencode/plugin/effect"
 import { Clock, Context, Effect, Layer, Option, Schema } from "effect"
 import { makeEndpoint } from "@dotfiles/opencode-anthropic-auth/endpoint"
 import { makeAliasLeases, makeConnections, makeOwnership, type Ownership } from "@dotfiles/opencode-anthropic-auth/fetch/ownership"
-import { onRequest, onResponse } from "@dotfiles/opencode-anthropic-auth/fetch/exchange"
+import { HANDOFF_PROTOCOL, onResponse, pooledRequest, type RequestPreparation } from "@dotfiles/opencode-anthropic-auth/fetch/exchange"
 import * as TokenLive from "@dotfiles/opencode-anthropic-auth/fetch/token"
 import * as UsageLive from "@dotfiles/opencode-anthropic-auth/fetch/usage"
 import * as Model from "@dotfiles/opencode-anthropic-auth/model"
@@ -78,6 +78,7 @@ export interface Env {
  */
 export interface Shared {
   readonly ownership: Ownership
+  readonly preparations: Map<string, RequestPreparation>
   readonly refreshes: Refreshes<OAuthCredential, RefreshFailed>
   /**
    * The lowest Claude Code version reported: the installed release the process started with, raised by a
@@ -89,6 +90,7 @@ export interface Shared {
 /** `installed`: `CLAUDE_CODE_INSTALLED_VERSION` as the process started with it; malformed or not newer, the bundled version stands. */
 export const makeShared = (installed: Option.Option<string> = Option.none()): Shared => ({
   ownership: makeOwnership(),
+  preparations: new Map(),
   refreshes: makeRefreshes(),
   versionFloor: Model.makeVersionFloor(installedClaudeCodeVersion(installed)),
 })
@@ -224,13 +226,21 @@ export const make = (options: Options) =>
           ),
         active: () => active,
       }
+      const { directory, workspaceID } = ctx.location
+      const location = `${workspaceID}:${directory}`
+      const preparations = options.shared.preparations
+      const preparation: RequestPreparation = { exchange, confirm: (input) => ctx.rpc(HANDOFF_PROTOCOL).handoff(input) }
+      preparations.set(location, preparation)
       // A request the plugin cannot send fails, as the host's fetch would.
-      yield* ctx.session.hook("http.request", (event) => onRequest(exchange)(event).pipe(Effect.orDie))
+      yield* ctx.session.hook("http.request", (event) => pooledRequest(
+        exchange, event, () => Option.fromUndefinedOr(preparations.get(location)),
+      ).pipe(Effect.orDie))
       yield* ctx.session.hook("http.response", (event) => onResponse(exchange)(event).pipe(Effect.orDie))
 
       yield* Effect.addFinalizer(() =>
         Effect.suspend(() => {
           active = false
+          if (preparations.get(location) === preparation) preparations.delete(location)
           emit.current = undefined
           leases.retireAll()
           connections.clear()

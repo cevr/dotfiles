@@ -9,11 +9,12 @@
 // process may have kept a step per key, `<pool>/step/<at, 15 digits>/<sessionID>`:
 // those are read too, and folded into chunks. A ledger from before caches were
 // kept has no cache key and restores none.
-import { Effect, Layer, Option, Schema } from "effect"
+import { Clock, Effect, Layer, Option, Predicate, Schema, Semaphore } from "effect"
 import { cacheMark, type Event, type LedgerState, type PoolId } from "../account-pool.ts"
 import { Mark, Step, WINDOW_MS } from "../accounts.ts"
+import { HOLD_STORE_RETRY_MS } from "../handoff.ts"
 import { QuotaReading } from "../quota.ts"
-import { Ledger } from "../service.ts"
+import { HoldStoreUnavailable, Ledger } from "../service.ts"
 import { Hold } from "../status.ts"
 import * as Chunks from "./chunks.ts"
 
@@ -132,6 +133,73 @@ const decodeHold = Schema.decodeUnknownOption(Hold)
 const decodeReading = Schema.decodeUnknownOption(QuotaReading)
 const decodeMark = Schema.decodeUnknownOption(Mark)
 
+/** A failed hold write fences a send until the store has accepted it. */
+type PendingHold = {
+  readonly credentialID: string
+  readonly retryAt: number
+  readonly next: Option.Option<Hold>
+  readonly merge: boolean
+}
+export const holdAuthority = () => ({
+  lock: Semaphore.makeUnsafe(1),
+  pending: new Map<string, PendingHold>(),
+})
+
+const unavailable = Clock.currentTimeMillis.pipe(Effect.map((now) => new HoldStoreUnavailable({ retryAt: now + HOLD_STORE_RETRY_MS })))
+const storeFailure = () => unavailable.pipe(Effect.flatMap(Effect.fail))
+const boundedStore = <A, E>(operation: Effect.Effect<A, E>) =>
+  operation.pipe(Effect.timeout(HOLD_STORE_RETRY_MS), Effect.catchCause(storeFailure))
+
+/** Two refusals observed while the store was unread: never lift either. */
+const retainBoth = (before: Hold, next: Hold): Hold => {
+  let kind = next.kind
+  if (before.kind === "signin" || (next.kind !== "signin" && before.until > next.until)) kind = before.kind
+  const refusedUntil = Math.max(
+    Option.getOrElse(Option.fromUndefinedOr(before.refusedUntil), () => 0),
+    Option.getOrElse(Option.fromUndefinedOr(next.refusedUntil), () => 0),
+  )
+  return {
+    kind, at: Math.max(before.at, next.at), until: Math.max(before.until, next.until),
+    ...Option.match(Option.filter(Option.some(refusedUntil), (end) => end > 0), { onNone: () => ({}), onSome: (end) => ({ refusedUntil: end }) }),
+  }
+}
+
+const settleHold = (storage: Storage, key: string, next: Option.Option<Hold>) =>
+  boundedStore(Option.match(next, { onNone: () => storage.remove(key), onSome: (hold) => storage.set(key, hold) }))
+
+const confirmedHolds = (storage: Storage, authority: ReturnType<typeof holdAuthority>, pool: PoolId) =>
+  Effect.gen(function* () {
+    const prefix = `${pool}/hold/`
+    const now = yield* Clock.currentTimeMillis
+    for (const [key, pending] of authority.pending) {
+      if (!key.startsWith(prefix)) continue
+      if (pending.retryAt > now) return yield* new HoldStoreUnavailable({ retryAt: pending.retryAt })
+    }
+    const page = yield* boundedStore(storage.scan({ prefix, limit: PAGE }))
+    if (Option.isSome(Option.fromUndefinedOr(page.next))) return yield* storeFailure()
+    const snapshot: Record<string, Hold> = {}
+    for (const entry of page.entries) {
+      const decoded = decodeHold(entry.value)
+      if (Option.isNone(decoded)) return yield* storeFailure()
+      snapshot[entry.key.slice(prefix.length)] = decoded.value
+    }
+    for (const [key, pending] of authority.pending) {
+      if (!key.startsWith(prefix)) continue
+      let next = pending.next
+      if (pending.merge) {
+        const prior = Option.fromUndefinedOr(snapshot[pending.credentialID])
+        next = Option.map(next, (hold) => Option.match(prior, { onNone: () => hold, onSome: (before) => retainBoth(before, hold) }))
+      }
+      yield* settleHold(storage, key, next)
+      Option.match(next, {
+        onNone: () => { delete snapshot[pending.credentialID] },
+        onSome: (hold) => { snapshot[pending.credentialID] = hold },
+      })
+      authority.pending.delete(key)
+    }
+    return snapshot
+  })
+
 /** The ledger the entries hold, with `steps`; an entry that does not decode is left out. */
 const ledgerOf = (entries: ReadonlyArray<{ readonly key: string; readonly value: unknown }>, steps: ReadonlyArray<Step>): LedgerState => {
   const holds: Record<string, Hold> = {}
@@ -166,8 +234,10 @@ const ownSteps = (storage: Storage): Steps => {
 }
 
 /** The holds, readings and caches are small and read by each copy; the steps come from `steps`, one store per process. */
-export const layer = (storage: Storage, steps: Steps = ownSteps(storage)) =>
+export const layer = (storage: Storage, steps: Steps = ownSteps(storage), authority = holdAuthority()) =>
   Layer.succeed(Ledger, {
+    holds: (pool) => confirmedHolds(storage, authority, pool),
+    withHolds: (operation) => authority.lock.withPermits(1)(operation),
     // A ledger that cannot be read starts the pool empty.
     restore: Effect.fn("Ledger.restore")(
       function* (pool: PoolId) {
@@ -185,10 +255,35 @@ export const layer = (storage: Storage, steps: Steps = ownSteps(storage)) =>
       },
       Effect.catchCause(() => Effect.succeed(ledgerOf([], []))),
     ),
-    // A write that fails is lost: the ledger only speeds the next process up.
-    record: Effect.fn("Ledger.record")(function* (pool: PoolId, events: ReadonlyArray<Event>) {
+    // Holds are published before best-effort history. Until a failed write can
+    // be retried, any decision for this pool fails closed.
+    record: Effect.fn("Ledger.record")(function* (pool: PoolId, events: ReadonlyArray<Event>, shared?: "unknown") {
+      const writes = events.flatMap(writesOf)
+      const isHold = (write: Write) => write.key.startsWith("hold/")
+      for (const write of writes.filter(isHold)) {
+        const key = `${pool}/${write.key}`
+        const credentialID = write.key.slice("hold/".length)
+        const next = Option.flatMap(Option.liftPredicate(write, (entry) => Predicate.isTagged(entry, "Put")), (put) => decodeHold(put.value))
+        if (shared === "unknown") {
+          // The authoritative read failed. An old copy's expiration or
+          // removal cannot clear a refusal it has not seen. Publish new
+          // refusals once storage answers, keeping any stronger hold there.
+          if (Option.isNone(next)) continue
+          const previous = Option.flatMap(Option.fromUndefinedOr(authority.pending.get(key)), (pending) => pending.next)
+          const hold = Option.match(previous, { onNone: () => next.value, onSome: (before) => retainBoth(before, next.value) })
+          const { retryAt } = yield* unavailable
+          authority.pending.set(key, { credentialID, next: Option.some(hold), retryAt, merge: true })
+        } else {
+          yield* settleHold(storage, key, next).pipe(
+            Effect.tap(() => Effect.sync(() => { authority.pending.delete(key) })),
+            Effect.catch(({ retryAt }) => Effect.sync(() => {
+              authority.pending.set(key, { credentialID, next, retryAt, merge: false })
+            })),
+          )
+        }
+      }
       for (const event of events) yield* stepsWrite(steps(pool), event)
-      for (const write of events.flatMap(writesOf)) {
+      for (const write of writes.filter((entry) => !isHold(entry))) {
         const key = `${pool}/${write.key}`
         if (write._tag === "Put") yield* storage.set(key, write.value).pipe(Effect.ignoreCause)
         else if (write._tag === "Remove") yield* storage.remove(key).pipe(Effect.ignoreCause)

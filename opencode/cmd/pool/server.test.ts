@@ -28,6 +28,7 @@ import type { QuotaReading } from "@dotfiles/opencode-pool/quota"
 import { type PublishedReading, Quota } from "@dotfiles/opencode-pool/service"
 import { StoreSource } from "@dotfiles/opencode-pool/store/store"
 import { type Alerts, type FleetStatus, POOL_STATUS, type PoolsStatus, type Report, type ResetsStatus, type SessionAnswer, type SessionLogins } from "@dotfiles/opencode-pool/status"
+import { Handoff } from "@dotfiles/opencode-pool/handoff"
 import { MIGRATED } from "@dotfiles/opencode-pool/opencode/migrate"
 import { spentAccount, startFakeChatGPT } from "../../tests/fake-chatgpt.ts"
 import { waitUntil } from "../../tests/wait.ts"
@@ -96,6 +97,7 @@ interface World {
   readonly integration: LoginsTest.Integration
   /** The plugin's storage, by key. */
   readonly storage: Map<string, Schema.Json>
+  readonly holdAccess: { scans: number; usage: number; unavailable: boolean }
   /** Each agent's own prompt-cache lifetime (`request.settings.cacheTTL`), by agent id; an agent absent here is unknown to the host. */
   readonly agents: Map<string, string | undefined>
   /** Each fork's source, by fork id; a session absent here is no fork. */
@@ -116,6 +118,7 @@ const world = (): World => ({
   readings: new Map(),
   integration: { connections: new Map([[ANTHROPIC, CONNECTIONS]]), marks: [] },
   storage: new Map(),
+  holdAccess: { scans: 0, usage: 0, unavailable: false },
   agents: new Map([["build", undefined]]),
   forks: new Map(),
   peers: new Map(),
@@ -196,7 +199,10 @@ const start = (
       Effect.sync(() => ({ reading: state.readings.get(credentialID) ?? null }))
     // A usage read of a login the test gave no reading: a fresh, quiet week (`quiet`).
     const usage = ({ credentialID }: { readonly credentialID: string }) =>
-      Effect.map(Clock.currentTimeMillis, (now) => ({ reading: state.readings.get(credentialID) ?? quiet(now) }))
+      Effect.map(Clock.currentTimeMillis, (now) => {
+        state.holdAccess.usage += 1
+        return { reading: state.readings.get(credentialID) ?? quiet(now) }
+      })
     // The auth plugin's claim: recorded, never sent anywhere; a reset empties the account's 5-hour window.
     const claims: Array<{ readonly credentialID: string; readonly creditID: string; readonly requestID: string }> = []
     const claimOf = (input: { readonly credentialID: string; readonly creditID: string; readonly requestID: string }) =>
@@ -240,6 +246,7 @@ const start = (
       events: { subscribe: () => Stream.fromQueue(state.owner.beats) },
     }
     const hostOptions = { limitsFile: scratchLimits(root), ...options }
+    const storage = LedgerTest.storage(state.storage)
     const host = {
       options: hostOptions,
       session: {
@@ -316,7 +323,16 @@ const start = (
             }),
         },
       ),
-      storage: LedgerTest.storage(state.storage),
+      storage: {
+        ...storage,
+        scan: (input: Parameters<typeof storage.scan>[0]) => Effect.suspend(() => {
+          if (input.prefix === "anthropic/hold/") {
+            state.holdAccess.scans += 1
+            if (state.holdAccess.unavailable) return Effect.die("hold store unavailable")
+          }
+          return storage.scan(input)
+        }),
+      },
     } as unknown as Host
     yield* make(externals === "test" ? testLayers(state, published, root) : externals).effect(host)
     // The model builds from the ledger after the plugin is active: a start is complete once the pool answers.
@@ -349,6 +365,9 @@ const start = (
     /** The session's execution succeeded: it goes idle. */
     const idle = (sessionID: string) => emit({ type: "session.execution.succeeded", data: { sessionID } })
     const method = (name: string) => Effect.flatMap(registered(rpc, "dotfiles-opencode.pool"), (handlers) => registered(handlers, name))
+    const handoff = Effect.fn("PoolServerTest.handoff")(function* (candidate: string, sessionID = "ses_1") {
+      return yield* (yield* method("handoff"))({ candidate, sessionID, providerID: "anthropic", kind: "primary", model: model.id, agent: "build" })
+    })
     const pace = Effect.fn("PoolServerTest.pace")(function* (providerID: string, sessionID?: string) {
       return (yield* (yield* method("pace"))({ providerID, ...(sessionID === undefined ? {} : { sessionID }) })) as Pace
     })
@@ -402,6 +421,7 @@ const start = (
       limitsFile: String(hostOptions.limitsFile),
       send,
       request,
+      handoff,
       respond,
       retry,
       idle,
@@ -449,6 +469,42 @@ const onTestClock = <A, E>(body: Scoped<A, E>) =>
       return yield* body
     }).pipe(Effect.provide(TestClock.layer())),
   )
+
+test("the final handoff re-places a pending login that another copy has since held, with and without a reload", () =>
+  onTestClock(Effect.gen(function* () {
+    for (const reload of [false, true]) {
+      const state = world()
+      const options = { sweepMinutes: 0 }
+      const first = yield* start(options, state)
+      const writer = yield* start(options, state)
+      expect(yield* first.request()).toBe("cred-a")
+      expect(yield* writer.request("ses_writer")).toBe("cred-a")
+      expect(yield* first.handoff("cred-a")).toEqual(Handoff.cases.Send.make({}))
+      yield* writer.respond(429, "ses_writer")
+      const current = yield* Option.match(Option.filter(Option.some(options), () => reload), {
+        onNone: () => Effect.succeed(first), onSome: (config) => start(config, state),
+      })
+      expect(yield* current.handoff("cred-a")).toEqual(Handoff.cases.Prepare.make({ credentialID: "cred-b" }))
+      expect(yield* current.handoff("cred-b")).toEqual(Handoff.cases.Send.make({}))
+    }
+  })))
+
+test("the final handoff reads the hold store once, adds no usage read, and keeps its own storage retry", () =>
+  onTestClock(Effect.gen(function* () {
+    const state = world()
+    const plugin = yield* start({ sweepMinutes: 0 }, state, live())
+    expect(yield* plugin.request()).toBe("cred-a")
+    const { scans, usage } = state.holdAccess
+    expect(yield* plugin.handoff("cred-a")).toEqual(Handoff.cases.Send.make({}))
+    expect(state.holdAccess.scans - scans).toBe(1)
+    expect(state.holdAccess.usage - usage).toBe(0)
+    state.holdAccess.unavailable = true
+    expect(yield* plugin.handoff("cred-a")).toMatchObject({
+      message: "dotfiles-opencode.pool: the request is held: the pool could not confirm its current holds; retry the hold store read; it may go again at 1970-01-01T00:00:01.000Z",
+    })
+    state.holdAccess.unavailable = false
+    expect(yield* plugin.handoff("cred-a")).toEqual(Handoff.cases.Send.make({}))
+  })))
 
 describe("the options", () => {
   test("take their defaults when absent or undefined", () =>
