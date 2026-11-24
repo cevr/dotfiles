@@ -5,6 +5,7 @@ import * as BunServices from "@effect/platform-bun/BunServices"
 import { Effect, Stream } from "effect"
 import { expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { matchingInput } from "../tests/read-path.ts"
 
 // One bounded scanner invocation, with room for scheduling delays on the loaded gate; not a speed check.
 const TEST_TIMEOUT = 30_000
@@ -15,7 +16,7 @@ const live = it.live.layer(BunServices.layer)
 const run = (script: string, args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-    const child = yield* spawner.spawn(ChildProcess.make("python3", [`../linux/hetzner-workbox/${script}`, ...args], {
+    const child = yield* spawner.spawn(ChildProcess.make("python3", [script, ...args], {
       stdin: "ignore",
       forceKillAfter: "3 seconds",
     }))
@@ -23,7 +24,7 @@ const run = (script: string, args: ReadonlyArray<string>) =>
     return { output: output.trim(), code: Number(code) }
   }).pipe(Effect.scoped)
 
-const scan = (args: ReadonlyArray<string>) => run("test-guarded-docs.py", args)
+const scan = (args: ReadonlyArray<string>) => run(matchingInput("../linux/hetzner-workbox/test-guarded-docs.py"), args)
 
 live("tracked documentation passes the script-derived host guard", () =>
   Effect.gen(function* () {
@@ -43,7 +44,7 @@ live("the docs guard rejects new missing pins, broken handoffs and omitted peer 
 
 live("the scanner preserves main's exact verdict bytes with canonical and aliased TMPDIRs", () =>
   Effect.gen(function* () {
-    const result = yield* run("test-guarded-docs-parity.py", [])
+    const result = yield* run(matchingInput("../linux/hetzner-workbox/test-guarded-docs-parity.py"), [])
     expect(result).toEqual({
       code: 0,
       output: "guarded docs byte parity OK (tracked scan and 15 control invocations across both TMPDIR spellings)",
