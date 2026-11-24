@@ -307,17 +307,22 @@ runs these steps:
    the command run beside such removals, and its output says how many it saw.
 
    It finds processes in the base by their open files, working folders,
-   roots and executables under /proc, each thread's working folder and root
-   (a thread that unshared its file system info has its own), and each
+   roots and executables under /proc, each thread's open files, working
+   folder and root (a thread that unshared its file table or its file system
+   info has its own), and each
    memory map (a file mapped and its fd closed): one `find` under `LC_ALL=C`,
    with `grep` over the maps batched through it. Each process the walk meets
    falls into one of three kinds, read from the errno text of each message
    find or grep gives for an entry of it:
    - ended during the walk: its /proc folder is gone, the one meaning of
      ended. It holds nothing, and the preflight line counts it. An fd link
-     gone while the process lives is a file it closed, and a thread gone
-     with its task folder ended, so those are nothing either;
-   - unread (an entry refused: permission). This is another user's process
+     gone while the process lives (its own or a thread's) is a file it
+     closed, an executable link that does not read means it has no memory
+     (a kernel thread, or one ending), and a thread gone with its task folder
+     ended, so those are nothing either;
+   - unread (an entry refused: `Permission denied`, or `Operation not
+     permitted`, which a /proc mounted `hidepid=1` answers for every entry
+     of another user's process). This is another user's process
      (root's, on the workbox), or this user's own when it holds privileges
      this user lacks (the workbox's user systemd: its fd folder lists, its
      links do not read), or one whose stat does not read while its folder
@@ -328,7 +333,10 @@ runs these steps:
    A /proc mounted with `hidepid=invisible` (or 2, 4, `ptraceable`) does not
    list other users' processes at all: the whole walk is then unread, so it
    refuses, or runs beside them with `--beside-unreadable` (and the drop
-   rule for that flag applies).
+   rule for that flag applies). A /proc mounted `hidepid=1` lists them but
+   refuses each one's entries, so each is unread one by one and the rules
+   below apply (with sudo it reads every entry of each again, since this
+   user cannot even test which they have).
 
    Any other message, or no /proc, is a failed walk: the command refuses and
    says find's line. `workrift processes <folder>` runs the same walk read
