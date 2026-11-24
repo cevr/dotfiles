@@ -75,7 +75,7 @@ Each candidate must pass the contract's finding test. Keep the evidence: file, l
 
 ## Second review
 
-As Phase 3 ends, start ONE independent background Claude Opus reviewer on the same change. Verification and review never run on Codex. If Claude is held, let the review latch and wait.
+As Phase 3 ends, start ONE fresh background Claude Opus reviewer on the same change. The second reader brings fresh context, not a different model family. Verification and review never run on Codex. If Claude is held, let the review latch and wait.
 
 - **OpenCode**: use `subagent` with `agent: "verifier"` and a description starting `verifier <unit> r<N>`. Omit the model so the plugin picks the newest Opus and latches if held.
 - **Claude Code**: use `Agent` on Opus and wait for Claude's capacity if held. **Codex**: request the review through a Claude host; never use `spawn_agent` for review.
