@@ -5,6 +5,9 @@ import { Effect, Stream } from "effect"
 import { expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 
+// One bounded scanner invocation, with room for scheduling delays on the loaded gate; not a speed check.
+const TEST_TIMEOUT = 30_000
+
 const live = it.live.layer(BunServices.layer)
 const run = (args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
@@ -22,6 +25,7 @@ live("tracked documentation passes the script-derived host guard", () =>
     const result = yield* run([])
     expect(result).toEqual({ code: 0, output: "guarded docs OK" })
   }),
+  TEST_TIMEOUT,
 )
 
 live("the docs guard rejects new missing pins, broken handoffs and omitted peer pins", () =>
@@ -29,4 +33,5 @@ live("the docs guard rejects new missing pins, broken handoffs and omitted peer 
     const result = yield* run(["--controls"])
     expect(result).toEqual({ code: 0, output: "guarded docs controls OK" })
   }),
+  TEST_TIMEOUT,
 )

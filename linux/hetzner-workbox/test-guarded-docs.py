@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from itertools import product
 from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
-from typing import Callable, Literal
+from typing import Callable, Literal, NamedTuple
 
 ROOT = Path(__file__).resolve().parents[2]
 DOC_SUFFIXES = {".md", ".mdx", ".rst", ".org", ".adoc", ".markdown"}
@@ -500,12 +500,13 @@ COMMANDS = {
 
 @dataclass(frozen=True)
 class Grammar:
+    root: Path
     guards: dict
     roles: dict
     tracked: set[Path]
 
     def is_tracked_script(self, path):
-        file = ROOT / path
+        file = self.root / path
         return path in self.tracked and file.is_file() and file.resolve() == file
 
     def strict_script_path(self, word):
@@ -671,7 +672,7 @@ def check_names(statements, roles):
                 )
 
 
-def outside_path(value, home_relative, link=False):
+def outside_path(value, home_relative, link, root):
     """Bind a destination without trusting the reader's working directory."""
     spelling = value[2:].lstrip("/") if home_relative else value
     if ".." in spelling.split("/"):
@@ -684,7 +685,7 @@ def outside_path(value, home_relative, link=False):
         # its referent. An existing directory operand (including a directory
         # symlink) is where ln creates the new link, so resolve it as well.
         resolved = path.parent.resolve() / path.name if link and not path.is_dir() else path.resolve()
-        roots = {ROOT, Path.home().joinpath(*CHECKOUT_PARTS), Path("/root/dotfiles")}
+        roots = {root, Path.home().joinpath(*CHECKOUT_PARTS), Path("/root/dotfiles")}
         roots |= {root.resolve() for root in roots}
     except (OSError, RuntimeError) as error:
         raise ValueError(f"cannot resolve write path {value!r} outside the checkout: {error}") from error
@@ -696,21 +697,21 @@ def outside_path(value, home_relative, link=False):
     return resolved
 
 
-def literal_write_path(raw, value, link):
+def literal_write_path(raw, value, link, root):
     if value.startswith("~") and not raw.startswith("~/"):
         raise ValueError("write operands must leave the literal home prefix ~/ unquoted")
-    return outside_path(value, raw.startswith("~/"), link)
+    return outside_path(value, raw.startswith("~/"), link, root)
 
 
-def write_paths(word, policy, definitions, roles):
+def write_paths(word, policy, definitions, grammar):
     link = policy == "link"
     if not word.refs:
-        return [literal_write_path(word.raw, word.value, link)]
+        return [literal_write_path(word.raw, word.value, link, grammar.root)]
     if len(word.refs) == 1:
         name, ref = word.refs[0]
         if name == "HOME" and word.value.startswith(ref + "/"):
-            return [outside_path("~" + word.value[len(ref):], True, link)]
-        if word.value == ref and roles.get(name) == "data":
+            return [outside_path("~" + word.value[len(ref):], True, link, grammar.root)]
+        if word.value == ref and grammar.roles.get(name) == "data":
             fix = f"say where {name} points: assign it a literal or a placeholder path outside the checkout in this document"
             values = definitions.get(name, ())
             if not values or any(value.refs for value in values):
@@ -722,14 +723,14 @@ def write_paths(word, policy, definitions, roles):
                 if name == "RESTORE_DIR" and text == RESTORE_PATH:
                     continue
                 try:
-                    paths.append(literal_write_path(raw, text, link))
+                    paths.append(literal_write_path(raw, text, link, grammar.root))
                 except ValueError as error:
                     raise ValueError(f"{error}; {fix}") from error
             return paths
     raise ValueError("write operands need a literal outside path, a quoted $HOME path, or an assigned data-role path")
 
 
-def write_problems(fences, roles):
+def write_problems(fences, grammar):
     """Check all definitions in the document and writes in fence order."""
     definitions = {}
     for statements in fences:
@@ -747,7 +748,7 @@ def write_problems(fences, roles):
                         if word.value != CHECKOUT_PREFIX.rstrip("/") or not word.raw.startswith("~/"):
                             raise ValueError("the git clone production writes only to the documented checkout path")
                         continue
-                    targets = write_paths(word, rule.policy, definitions, roles)
+                    targets = write_paths(word, rule.policy, definitions, grammar)
                     if any(path.is_relative_to(link) for path in targets for link in linked):
                         raise ValueError(f"{CHECKOUT_WRITE}; a preceding link can redirect this write")
                     if rule.policy == "link":
@@ -767,11 +768,11 @@ class Document:
         return f"{self.path}:{line}: [{self.mode}] {message}"
 
 
-def document(path, whole_fixture=False):
-    location = path if path.is_absolute() else ROOT / path
-    if not location.is_relative_to(ROOT):
+def document(path, root, whole_fixture):
+    location = path if path.is_absolute() else root / path
+    if not location.is_relative_to(root):
         return Document(path, "strict", whole_fixture, Path())
-    relative = location.relative_to(ROOT)
+    relative = location.relative_to(root)
     strict = strict_path(relative)
     return Document(path, "strict" if strict else "tripwire", strict, relative.parent)
 
@@ -815,35 +816,33 @@ def violations(doc, content, grammar):
             yield doc.diagnostic(line, f"{problem}; {REMEDY}{outside}")
         programs.append(statements)
     if strict:
-        for line, problem in write_problems(programs, grammar.roles):
+        for line, problem in write_problems(programs, grammar):
             yield doc.diagnostic(line, f"{problem}; {LANGUAGE}")
 
 
-def entries(paths):
+def entries(root, paths):
     for path in paths:
         if path.suffix != ".sh" and not (
             str(path).startswith(("workbox/bin/", "linux/hetzner-workbox/")) and not path.suffix
         ):
             continue
-        source = (ROOT / path).read_text()
+        source = (root / path).read_text()
         if source.startswith("#!") and (entry := contract(path, source)):
             yield path.name, entry
 
 
 def strict_path(path):
-    if path.is_absolute() and path.is_relative_to(ROOT):
-        path = path.relative_to(ROOT)
     return path == Path("README.md") or path.is_relative_to("workbox") or path.is_relative_to("linux/hetzner-workbox")
 
 
-def controls(roles):
-    """Exercise the public scanner on whole scratch Markdown files, never execute the examples."""
+def controls(scanner):
+    """Exercise the same scan as the CLI on whole scratch files, never execute the examples."""
     # A tripwire on the positive table, never the implementation's acceptance rule.
     interpreter_env = re.compile(
         r"(BASH_ENV|ENV|PATH|IFS|PS4|PROMPT_COMMAND|SHELLOPTS|BASHOPTS|CDPATH|GLOBIGNORE|"
         r"LD_.*|DYLD_.*|PYTHON.*|NODE_OPTIONS|BUN_.*|GIT_.*)"
     )
-    hooks = [name for name in roles if interpreter_env.fullmatch(name)]
+    hooks = [name for name in scanner.grammar.roles if interpreter_env.fullmatch(name)]
     if hooks:
         raise AssertionError(f"assignable-name table includes interpreter environment selectors: {hooks}")
     # Independent inventory of productions with caller-selected filesystem
@@ -1129,11 +1128,10 @@ sudo env WORKBOX_EXPECT_MACHINE_ID="${{RECOVERY_PIN}}" ./backup.sh list'''),
                 fence = [f"> {line}" for line in fence]
             file.write_text("\n".join(["## Host identity", WARNING, "", *fence, ""]))
             files[expected].append(str(file.resolve()))
-        scanner = [sys.executable, str(Path(__file__).resolve())]
-        good = subprocess.run([*scanner, *files[True]], capture_output=True, text=True)
+        good = scanner.scan(files[True], Path.cwd())
         if good.returncode != 0 or good.stdout.strip() != "guarded docs OK" or good.stderr:
             raise AssertionError(f"valid examples failed: {good}")
-        bad = subprocess.run([*scanner, *files[False]], capture_output=True, text=True)
+        bad = scanner.scan(files[False], Path.cwd())
         if bad.returncode != 1:
             raise AssertionError(f"invalid examples were not rejected: {bad}")
         diagnostics = {}
@@ -1159,7 +1157,7 @@ sudo env WORKBOX_EXPECT_MACHINE_ID="${{RECOVERY_PIN}}" ./backup.sh list'''),
         ):
             fixture = Path(scratch) / f"{case}-document.md"
             fixture.write_text(f"{prose}\n\n~~~sh\ntrue\n~~~\n")
-            verdict = subprocess.run([*scanner, "--document-fixture", str(fixture)], capture_output=True, text=True)
+            verdict = scanner.scan(["--document-fixture", str(fixture)], Path.cwd())
             if case == "exact":
                 if verdict.returncode != 0 or verdict.stdout.strip() != "guarded docs OK":
                     raise AssertionError(f"exact trust statement was rejected: {verdict}")
@@ -1267,57 +1265,79 @@ def census_control(scratch):
         if not any(line.startswith(f"workbox/{name}.md:") and CHECKOUT_WRITE in line
                    for line in census.stderr.splitlines()):
             raise AssertionError(f"{name} was not refused with the checkout-write correction: {census}")
+    # The default census above still runs at the CLI in a fresh checkout. All
+    # explicit-path cases below share that checkout's now-fixed index and grammar.
+    explicit_scan = read_scanner(scratch)
     for case in ("missing", "changed", "duplicate", "fenced"):
-        boundary = subprocess.run([*run, f"workbox/{case}-boundary.md"], cwd=scratch, capture_output=True, text=True)
+        boundary = explicit_scan.scan([f"workbox/{case}-boundary.md"], scratch)
         if boundary.returncode != 1 or f"include this trust boundary verbatim once as a prose line: {TRUST_BOUNDARY}" not in boundary.stderr:
             raise AssertionError(f"{case} trust boundary was not rejected: {boundary}")
     for name, code in (("unrelated", 0), ("relative-ok", 0), ("pin", 1), ("mentioned", 1)):
-        explicit = subprocess.run([*run, f"skills/elsewhere/{name}.md"], cwd=scratch, capture_output=True, text=True)
+        explicit = explicit_scan.scan([f"skills/elsewhere/{name}.md"], scratch)
         if explicit.returncode != code or (code and ("[tripwire]" not in explicit.stderr or OUTSIDE not in explicit.stderr)):
             raise AssertionError(f"naming {name} changed its outside-checkout-scope policy: {explicit}")
-    override = subprocess.run(
-        [*run, "--document-fixture", "skills/elsewhere/unrelated.md"], cwd=scratch, capture_output=True, text=True,
-    )
+    override = explicit_scan.scan(["--document-fixture", "skills/elsewhere/unrelated.md"], scratch)
     if override.returncode != 2 or "requires explicit paths outside the checkout" not in override.stderr:
         raise AssertionError(f"fixture flag changed a repository document's scope: {override}")
 
 
-def main():
-    raw = subprocess.check_output(["git", "ls-files", "--stage", "-z"], cwd=ROOT,
+class ScanResult(NamedTuple):
+    returncode: int
+    stdout: str = ""
+    stderr: str = ""
+
+
+@dataclass(frozen=True)
+class Scanner:
+    paths: list[Path]
+    grammar: Grammar
+
+    def scan(self, args, cwd):
+        root = self.grammar.root
+        whole_fixture = args[:1] == ["--document-fixture"]
+        if whole_fixture:
+            args = args[1:]
+        if args:
+            docs = [Path(os.path.abspath(cwd / path)) for path in args]
+        else:
+            docs = [path for path in self.paths
+                    if path.suffix in DOC_SUFFIXES or (strict_path(path) and path.suffix == ".txt")]
+        if whole_fixture and (not args or any(path.is_relative_to(root) for path in docs)):
+            return ScanResult(2, stderr="--document-fixture requires explicit paths outside the checkout\n")
+        failures = [
+            problem for path in docs
+            for problem in violations(document(path, root, whole_fixture), (root / path).read_text(), self.grammar)
+        ]
+        if failures:
+            return ScanResult(1, stderr="\n".join(failures) + "\n")
+        return ScanResult(0, stdout="guarded docs OK\n")
+
+
+def read_scanner(root):
+    raw = subprocess.check_output(["git", "ls-files", "--stage", "-z"], cwd=root,
                                   env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"})
     index = [(metadata.split(), Path(os.fsdecode(file))) for part in raw.split(b"\0") if part
              for metadata, file in [part.split(b"\t", 1)]]
     paths = sorted({path for _, path in index})
     tracked = {path for (mode, _, stage), path in index if mode in {b"100644", b"100755"} and stage == b"0"}
-    commands = dict(entries(sorted(tracked)))
+    commands = dict(entries(root, sorted(tracked)))
     if not commands:
         raise ValueError("no guarded scripts found")
     roles = {**DATA_NAMES, **{pin: "pin" for pins, _ in commands.values() for pin in pins}}
-    if sys.argv[1:] == ["--controls"]:
-        controls(roles)
+    return Scanner(paths, Grammar(root, commands, roles, tracked))
+
+
+def main():
+    scanner = read_scanner(ROOT)
+    args = sys.argv[1:]
+    if args == ["--controls"]:
+        controls(scanner)
         print("guarded docs controls OK")
         return 0
-    args = sys.argv[1:]
-    whole_fixture = args[:1] == ["--document-fixture"]
-    if whole_fixture:
-        args = args[1:]
-    if args:
-        docs = [Path(os.path.abspath(path)) for path in args]
-    else:
-        docs = [path for path in paths if path.suffix in DOC_SUFFIXES or (strict_path(path) and path.suffix == ".txt")]
-    if whole_fixture and (not args or any(path.is_relative_to(ROOT) for path in docs)):
-        print("--document-fixture requires explicit paths outside the checkout", file=sys.stderr)
-        return 2
-    grammar = Grammar(commands, roles, tracked)
-    failures = [
-        problem for path in docs
-        for problem in violations(document(path, whole_fixture), (ROOT / path).read_text(), grammar)
-    ]
-    if failures:
-        print("\n".join(failures), file=sys.stderr)
-        return 1
-    print("guarded docs OK")
-    return 0
+    result = scanner.scan(args, Path.cwd())
+    sys.stdout.write(result.stdout)
+    sys.stderr.write(result.stderr)
+    return result.returncode
 
 
 if __name__ == "__main__":
