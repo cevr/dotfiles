@@ -395,3 +395,22 @@ it.scopedLive("Wake's real durable entry fails closed before heavy payload exec 
     expect(light.exit).toContain(`"exitCode":0`)
   }).pipe(Effect.provide(BunServices.layer)),
 )
+
+it.scopedLive("the public CLI names both versions when its private store is newer", () =>
+  Effect.gen(function* () {
+    using dir = scratch("host-admit-future-format-")
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const journal = path.join(dir.path, "state", "host-admit")
+    yield* fs.makeDirectory(journal, { recursive: true, mode: 0o700 })
+    const file = path.join(journal, "admission-v1.sqlite")
+    yield* Effect.sync(() => {
+      using db = new Database(file)
+      db.exec("PRAGMA user_version=7")
+    })
+    const { code, out } = yield* runner(dir.path, realEntry)(["holder", "list", "--json"])
+    expect(code).toBe(2)
+    expect(out).toContain(`"reason":"incompatible"`)
+    expect(out).toContain("Host admission store v7; this binary supports v2. Upgrade host-admit to support store v7.")
+  }).pipe(Effect.provide(BunServices.layer)),
+)
