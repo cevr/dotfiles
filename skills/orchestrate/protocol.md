@@ -51,6 +51,8 @@ You are the sole writer, in the spec's workspace on the unit's branch (its one b
 
 ## Verifier
 
+Verification and review run only on Claude Opus. If Claude is held, the call latches until Claude opens. Never send verification to Codex.
+
 You verify what your batch file names: a range of main (`main-<sha>`), a batch that landed together (`batch-<k>`), or one `deep` unit before its merge. You are fresh and read-only on the deliverables: write only into the run dir and the units' dirs. First read the batch file, each unit's spec, request and earlier findings, `common.md`, `NORTH_STAR.md` → Owner rules and the `verify-<app>` skill the specs name. Per unit, prove that its change **does what its spec says** and **follows the written rules**; a finding you cannot prove, a Minor or a nit, is never filed.
 
 1. **Check**, one heavy check at a time, in the clean checkout of the head the orchestrator made (else make one as `AGENTS.md` says). Read the acceptance log the batch file names, or run its command once; a `deep` unit's live matrix too. Check its `Heads:` line first, as How your step ends says. Per unit: its acceptance check exactly as written and its packages' focused tests; apply each new test's mutation, show it red, restore it. Evidence: `<unit dir>/round-N-receipts/`.

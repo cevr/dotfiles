@@ -79,7 +79,7 @@ describe('the kept rules', () => {
     ['a receipt', /\breceipt\b/i],
     ['one full gate per host at a time', /one full gate per host at a time/i],
     ['a workspace per unit', /one workspace per unit/i],
-    ['Codex never implements', /Codex[^.\n]*never implements/],
+    ['verification is Claude Opus only and never Codex', /Verification and review run only on Claude Opus\. When Claude is held, latch and wait; never start a verifier on Codex\./],
     ['deploy is reserved', /reserved[^\n]*\bdeploy\b/i],
     ['publish is reserved', /reserved[^\n]*\bpublish\b/i],
     ['paid runs are reserved', /reserved[^\n]*paid runs/i],

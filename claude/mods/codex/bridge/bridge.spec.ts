@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, setSystemTime, test } from 'bun:test'
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -85,12 +85,12 @@ test('every committed Codex role agent parses with its instructions and effort',
   const committed = join(import.meta.dir, '../../../../codex/agents')
   for (const role of ['planner', 'implementor', 'verifier'] as const) {
     const agent = roleAgent(role, committed)
-    expect(agent.instructions).toStartWith(`You are the ${role} of one orchestrate unit.`)
+    expect(agent.instructions).toStartWith(role === 'verifier' ? 'Verification runs on Claude Opus only, never Codex.' : `You are the ${role} of one orchestrate unit.`)
     expect(agent.effort).toBeString()
   }
 })
 
-test('a thread an older bridge saved as a reviewer or a verifier reads back as the verifier', async () => {
+test('legacy verifier and reviewer threads remain visible but cannot take a follow-up', async () => {
   const now = Date.now()
   const thread = (id: string, role: string) => ({ id, owner: 's1', description: `${role} sheet r1`, role, cwd: dir, model: 'gpt', status: 'idle', turns: 0, updatedAt: now })
   writeFileSync(state, JSON.stringify({ seq: 1, events: [], threads: { t1: thread('t1', 'reviewer'), t2: thread('t2', 'verifier') } }))
@@ -98,14 +98,21 @@ test('a thread an older bridge saved as a reviewer or a verifier reads back as t
   const listed = await call('GET', '/threads?owner=s1')
   expect(JSON.stringify(listed.body)).not.toContain('"reviewer"')
   expect(JSON.stringify(listed.body).match(/"role":"verifier"/g)).toHaveLength(2)
+  for (const threadId of ['t1', 't2']) {
+    const refused = await call('POST', '/send', { threadId, prompt: 'continue' })
+    expect(refused.body).toMatchObject({ error: expect.stringContaining('Claude Opus only') })
+  }
+  expect(existsSync(log)).toBe(false)
 })
 
 describe('a thread', () => {
-  test("a session that still passes the verifier's former name starts a verifier", async () => {
+  test("explicit verification and its legacy role name are refused before an app-server thread is made", async () => {
     const { call } = open()
-    const started = await call('POST', '/start', { owner: 's1', description: 'verifier sheet r1', prompt: 'check it', cwd: dir, role: 'reviewer' })
-    expect(started.body).toMatchObject({ id: 't1', role: 'verifier', effort: 'medium' })
-    expect(requests().find(r => r.method === 'thread/start')!.params.developerInstructions).toStartWith('You are the verifier of one orchestrate unit.')
+    for (const role of ['verifier', 'reviewer']) {
+      const refused = await call('POST', '/start', { owner: 's1', description: 'verifier sheet r1', prompt: 'check it', cwd: dir, role })
+      expect(refused.body).toMatchObject({ error: expect.stringContaining('Verification runs on Claude Opus only, never Codex.') })
+    }
+    expect(existsSync(log)).toBe(false)
   })
 
   test('starts as a role agent on the newest family model, and its finished turn waits for its owner until acked', async () => {
