@@ -7,6 +7,7 @@ import type { Letter } from "./letter.ts"
 import { layer, Mail } from "./model.ts"
 import type { Arrival, Parcel } from "./peer.ts"
 import { DeliveryRefused, Peers, PeerUnreachable, Sessions, SessionsUnreadable } from "./service.ts"
+import { stamp } from "../../tests/hang-guard.ts"
 
 const NOW = 1_000_000
 
@@ -198,8 +199,8 @@ describe("listing the sessions", () => {
 })
 
 const REMOTE: ReadonlyArray<SessionCard> = [
-  card("ses_r1", { title: "Workbox PR", directory: "/home/me/bite", running: false, updated: Date.now() - 30_000 }),
-  card("ses_r2", { title: "Workbox worker", parentID: "ses_r1", running: true, updated: Date.now() }),
+  card("ses_r1", { title: "Workbox PR", directory: "/home/me/bite", running: false, updated: stamp() - 30_000 }),
+  card("ses_r2", { title: "Workbox worker", parentID: "ses_r1", running: true, updated: stamp() }),
 ]
 
 describe("a paired host", () => {

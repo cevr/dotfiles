@@ -10,11 +10,11 @@ import * as MemoryLanding from "@dotfiles/opencode-work/memory/landing"
 import * as MemoryRifts from "@dotfiles/opencode-work/memory/rifts"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Read from "../../sim/readings.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import { worldScript } from "../../sim/verify-world.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/work/work.sim.test.ts")
+const { seeded } = simulationRunner("cmd/work/work.sim.test.ts")
 
 const SOURCE = "/code/app"
 

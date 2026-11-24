@@ -9,7 +9,7 @@ import { expect } from "bun:test"
 import { Effect, Layer, Option } from "effect"
 import { gitClone, gitInit } from "../../../tests/git-repo.ts"
 import { scratch } from "../../../tests/scratch.ts"
-import * as Seed from "../../../sim/seed.ts"
+import { simulationTest } from "../../../sim/seed.ts"
 import { answerOf, claimsRecorded, factsOf, landClaimsOf, passed } from "../commitments-tool.ts"
 import * as MemoryRecord from "../memory/record.ts"
 import { printable } from "../printable.ts"
@@ -130,7 +130,7 @@ const headOf = (snapshot: Snapshot, unit: string) => Option.flatMap(Option.fromU
 const at = (lane: Lane) => ({ path: lane.path, head: lane.head() })
 
 const inRepository = <A, E>(name: string, body: (repo: Repository, record: ReturnType<typeof recordOf>) => Effect.Effect<A, E, CommitmentRecord | Evidence>) =>
-  Seed.effect(
+  simulationTest(
     name,
     Effect.acquireUseRelease(
       Effect.sync(() => scratch("record-claims-")),

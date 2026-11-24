@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url"
 import { Feed, Spooled } from "@dotfiles/opencode-rex/spool"
 import { Array as Arr, Duration, Effect, Option, Queue, Schema } from "effect"
 import { effectTest } from "../../sim-tui/effect-test.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 
 const encodeSpooled = Schema.encodeSync(Schema.fromJsonString(Spooled))
 
@@ -167,6 +168,6 @@ describe("the feed in a terminal", () => {
         expect(yield* Effect.promise(() => child.exited)).toBe(0)
       }),
     ),
-    30_000,
+    hangGuard("local-fixture"),
   )
 })

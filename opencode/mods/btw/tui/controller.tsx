@@ -9,6 +9,7 @@
 // cmd/btw/setup.ts makes one per plugin.
 import { Effect } from "effect"
 import { createSignal } from "solid-js"
+import * as TuiClock from "@dotfiles/decider/tui-clock"
 import type { Btw } from "../model.ts"
 import type { HostFailed, Reading } from "../service.ts"
 import { explain, type OpenFork, type Rejection, type SideQuestionState } from "../side-question.ts"
@@ -89,15 +90,15 @@ export const controller = (host: Host): Controller => {
 
   // Sessions a pane watches, with how many panes watch each, and their settling timers.
   const watched = new Map<string, number>()
-  const timers = new Map<string, ReturnType<typeof setTimeout>>()
+  const timers = new Map<string, () => void>()
   const soon = (sessionID: string) => {
     if (timers.has(sessionID)) return
     timers.set(
       sessionID,
-      setTimeout(() => {
+      TuiClock.once(SETTLE_MS, () => {
         timers.delete(sessionID)
         void refresh(sessionID)
-      }, SETTLE_MS),
+      }),
     )
   }
   const stop = host.listen((about) => {
@@ -139,7 +140,7 @@ export const controller = (host: Host): Controller => {
         const left = (watched.get(sessionID) ?? 1) - 1
         if (left > 0) return void watched.set(sessionID, left)
         watched.delete(sessionID)
-        clearTimeout(timers.get(sessionID))
+        timers.get(sessionID)?.()
         timers.delete(sessionID)
       }
     },
@@ -159,7 +160,7 @@ export const controller = (host: Host): Controller => {
     bringBack: async (sessionID) => (await settle(host.btw.bringBack(sessionID))) !== undefined,
     dispose: () => {
       stop()
-      for (const timer of timers.values()) clearTimeout(timer)
+      for (const timer of timers.values()) timer()
       timers.clear()
     },
   }

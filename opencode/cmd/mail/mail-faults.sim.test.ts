@@ -24,7 +24,7 @@ import * as Hosts from "../../sim/hosts.ts"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Read from "../../sim/readings.ts"
 import { below, generator } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner, type Seeded as SeedSeeded } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
 /**
@@ -37,7 +37,7 @@ import * as World from "../../sim/world.ts"
  */
 const PAST = [46, 61, 84, 101, 113, 6, 79, 91, 100, 160, 212, 385]
 
-const { seeded } = Seed.runner("cmd/mail/mail-faults.sim.test.ts", { past: PAST })
+const { seeded } = simulationRunner("cmd/mail/mail-faults.sim.test.ts", { past: PAST })
 
 const WORK = "/scratch/work"
 const HOSTS = ["mac", "workbox"] as const
@@ -164,7 +164,7 @@ const delivered = (run: Run, tag: string) =>
     .some((message) => message.type === "tool" && message.callID === `call_${tag}` && !message.error && message.output.startsWith("Delivered"))
 
 /** The invariants, with every session at rest. */
-const check = (run: Run, expect: Seed.Seeded["expect"]) => {
+const check = (run: Run, expect: SeedSeeded["expect"]) => {
   for (const letter of run.sent) {
     const held = holding(run, letter.tag)
     const at = run.sessions.findIndex((session) => session.id === letter.to)
@@ -237,7 +237,7 @@ const apply = (run: Run, index: number, command: Command): Effect.Effect<unknown
 }
 
 /** One run of `commands` on `seed`, checked after each: both hosts' traces. */
-const run = (seed: number, commands: ReadonlyArray<Command>, expect: Seed.Seeded["expect"]) =>
+const run = (seed: number, commands: ReadonlyArray<Command>, expect: SeedSeeded["expect"]) =>
   Effect.gen(function* () {
     const state = yield* boot(seed)
     const rest = () => state.sessions.every((session) => Read.idle(worldOf(state, session.host), session.id))

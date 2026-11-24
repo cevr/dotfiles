@@ -6,11 +6,11 @@ import { effectTest } from "../../sim-tui/effect-test.ts"
 import { layer as modelLayer, ModelNext } from "./model.ts"
 import { layer, store } from "./memory/sessions.ts"
 import { Cancelled, KEY, Queued } from "./pending.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 
 const OLD = { providerID: "sim", id: "old" }
 const NEW = { providerID: "other", id: "new" }
 const LATCH = { id: "latch_1", opensAt: 5 }
-const CASE_MS = 5_000
 const cachedAt = (startedAt: number) => ({ last: Option.some({ startedAt, cached: true, ttl: Option.some(300_000), unresolved: Option.none() }), compacted: false })
 
 /** A session on OLD with a latch mark, both models in the catalog, and the handlers over it. */
@@ -39,7 +39,7 @@ const metadataOf = (held: ReturnType<typeof store>) => Option.map(Option.fromUnd
       expect(metadataOf(held)).toEqual(Option.some({ latch: LATCH }))
       expect(held.switched).toEqual([{ sessionID: "ses_a", model: NEW }])
     }).pipe(Effect.provide(handlers)),
-    CASE_MS,
+    hangGuard("local-fixture"),
   )
 }
 
@@ -58,7 +58,7 @@ const metadataOf = (held: ReturnType<typeof store>) => Option.map(Option.fromUnd
       expect(held.switched).toEqual([{ sessionID: "ses_a", model: NEW }])
       expect(metadataOf(held)).toEqual(Option.some({ latch: LATCH }))
     }).pipe(Effect.provide(handlers)),
-    CASE_MS,
+    hangGuard("local-fixture"),
   )
 }
 
@@ -74,7 +74,7 @@ const metadataOf = (held: ReturnType<typeof store>) => Option.map(Option.fromUnd
       expect(held.switched).toEqual([])
       expect(metadataOf(held)).toMatchObject(Option.some({ [KEY]: { model: NEW } }))
     }).pipe(Effect.provide(handlers)),
-    CASE_MS,
+    hangGuard("local-fixture"),
   )
 }
 
@@ -90,6 +90,6 @@ const metadataOf = (held: ReturnType<typeof store>) => Option.map(Option.fromUnd
       yield* next.selected("ses_a", { providerID: "sim", id: "third" })
       expect(metadataOf(held)).toEqual(Option.some({ latch: LATCH }))
     }).pipe(Effect.provide(handlers)),
-    CASE_MS,
+    hangGuard("local-fixture"),
   )
 }

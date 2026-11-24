@@ -13,10 +13,10 @@ import { Plugin } from "@opencode/plugin/effect"
 import { Array as Arr, Effect, Option, Schema } from "effect"
 import { live, make } from "../kernel/server.ts"
 import * as Plugins from "../../sim/plugins.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/orchestrate/orchestrate-latch.sim.test.ts")
+const { seeded } = simulationRunner("cmd/orchestrate/orchestrate-latch.sim.test.ts")
 
 const WORK = "/scratch/project"
 /** How long the stand-in pool holds, from the first agent it is asked about. */

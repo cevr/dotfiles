@@ -18,6 +18,7 @@ import * as NoticeFile from "./notice.ts"
 import * as RecordFile from "./records.ts"
 import * as RejectionFile from "./rejections.ts"
 import { makeAndStage, stageBuild, type Stage, treesLayer } from "./stage.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 const VERSION = "2.2.7-prime.abcdef12.d0f11e5a"
 
@@ -368,5 +369,5 @@ describe("daily by hand on a from-scratch host", () => {
           }),
         (dir) => Effect.sync(() => void spawnSync(["/bin/sh", "-c", 'chmod -R u+w "$1" && rm -rf "$1"', "sh", dir])),
       ),
-    ), 60_000)
+    ), hangGuard("process-fixture"))
 })

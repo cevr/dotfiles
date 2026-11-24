@@ -19,12 +19,12 @@ import { expect } from "bun:test"
 import { Array as Arr, Effect, Option, Schema } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
 import { below, generator } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner, simulationTest, type Seeded } from "../../sim/seed.ts"
 import { GUARD_CALLS, GUARD_FORMS, GUARD_KEYS, GUARD_RESTART, GUARD_ROLES, GUARD_STATES } from "../../sim/witness-cases.ts"
 import { assertEffectWitnessCases } from "../../sim/witnesses.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/guard/guard-faults.sim.test.ts")
+const { seeded } = simulationRunner("cmd/guard/guard-faults.sim.test.ts")
 
 const WORK = "/scratch/guard/work"
 const HOME = "/Users/owner"
@@ -132,7 +132,7 @@ const judge = (
   check({ ...what, aliasNoted: answer.output.includes(World.aliasNote("bash", "shell")) }).toEqual({ ...what, aliasNoted: command.form.name === "bash" })
 }
 
-const exercise = ({ seed, expect: check }: Seed.Seeded, commands: ReadonlyArray<Command>) =>
+const exercise = ({ seed, expect: check }: Seeded, commands: ReadonlyArray<Command>) =>
     Effect.gen(function* () {
       const machine = Plugins.guardMachine({
         processes: [
@@ -223,7 +223,7 @@ const faultFixtures = Object.fromEntries(faultCases.map((call) => {
   }]
 }))
 
-Seed.effect(
+simulationTest(
   "W: every call in every form is judged in a root and subagent, with both faults on after a restart and with faults off",
   assertEffectWitnessCases(GUARD_KEYS, {
     [GUARD_RESTART]: {

@@ -3,6 +3,7 @@
 // host loads its plugins as modules of their own, so the plugin's copy of this
 // file is not the harness's: the two meet on one process-wide key.
 import { Option } from "effect"
+import { globalSlot } from "../../tests/global-slot.ts"
 
 /** The window's session tabs, as the plugin API has them: the roots open in this TUI, and a close. */
 export interface Tabs {
@@ -17,9 +18,10 @@ export interface Router {
 }
 
 const KEY = Symbol.for("dotfiles.sim-tui.router")
-const registry: { [key: symbol]: Router } = globalThis
+const slot = globalSlot<Router>(KEY)
+const empty = () => ({ navigate: Option.none(), tabs: Option.none() })
 // The first copy of this file in the process puts the empty router in.
-registry[KEY] ??= { navigate: Option.none(), tabs: Option.none() }
+if (Option.isNone(slot.get())) slot.set(empty())
 
 /** The process's router. */
-export const router = (): Router => registry[KEY] ?? { navigate: Option.none(), tabs: Option.none() }
+export const router = (): Router => Option.getOrElse(slot.get(), empty)

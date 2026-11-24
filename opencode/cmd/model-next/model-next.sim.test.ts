@@ -12,7 +12,7 @@ import { Array as Arr, Effect, Option, Schema } from "effect"
 import { Cancelled, KEY, MODEL_NEXT, type ModelRef, Queued, Refused } from "@dotfiles/opencode-model-next/pending"
 import { envelopes } from "../../mods/subagents/envelope.ts"
 import * as Plugins from "../../sim/plugins.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
 /** Whether a request carries a subagent's idle report: a synthetic message that opens with its envelope (envelope.ts, either form). */
@@ -22,7 +22,7 @@ const reportsSubagent = (text: string) =>
     .slice(1)
     .some((after) => Option.exists(Arr.head(envelopes(after)), (found) => found.start === 0 && found.kind === "subagent"))
 
-const { seeded } = Seed.runner("cmd/model-next/model-next.sim.test.ts")
+const { seeded } = simulationRunner("cmd/model-next/model-next.sim.test.ts")
 
 const WORK = "/scratch/work"
 const OLD = { providerID: "sim", id: "old" } as const

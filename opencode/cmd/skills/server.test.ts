@@ -9,9 +9,10 @@ import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { Effect, Queue, Schedule, Schema, type Scope, Stream } from "effect"
+import { Effect, Queue, Schema, type Scope, Stream } from "effect"
 import { Answer, SKILLS } from "@dotfiles/opencode-skills/catalog"
 import SkillsPlugin, { live, make } from "./server.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 
 type Host = Parameters<(typeof SkillsPlugin)["effect"]>[0]
 type Handler = (input: unknown) => Effect.Effect<unknown>
@@ -35,6 +36,7 @@ interface Prompt {
 }
 
 const scenario = <A, E>(body: Effect.Effect<A, E, Scope.Scope>) => Effect.runPromise(Effect.scoped(body))
+const EVENT_WAIT_MS = 15_000
 
 const skillFile = (description: string, body: string) => `---\ndescription: ${description}\n---\n${body}\n`
 
@@ -67,6 +69,7 @@ const start = (at: Effect.Success<typeof layout>, before: ReadonlyArray<Info>, a
     let registry = new Map<string, Info>()
     let reloads = 0
     const events = yield* Queue.unbounded<{ readonly type: "skill.updated"; readonly data: object }>()
+    const handled = yield* Queue.unbounded<true>()
     const reload = Effect.sync(() => {
       const next = new Map<string, Info>()
       for (const transform of transforms) transform({ list: () => [...next.values()], add: (skill) => void next.set(skill.id, { ...skill }) })
@@ -94,7 +97,12 @@ const start = (at: Effect.Success<typeof layout>, before: ReadonlyArray<Info>, a
             return { dispose: Effect.void }
           }),
       },
-      event: { subscribe: () => Stream.fromQueue(events) },
+      event: {
+        subscribe: () => Stream.fromEffect(Queue.take(events)).pipe(
+          Stream.concat(Stream.fromEffect(Queue.offer(handled, true)).pipe(Stream.drain)),
+          Stream.forever,
+        ),
+      },
       rpc: {
         register: (definition: { readonly id: string }, handlers: Record<string, Handler>) =>
           Effect.sync(() => {
@@ -115,6 +123,7 @@ const start = (at: Effect.Success<typeof layout>, before: ReadonlyArray<Info>, a
       registry: () => registry,
       reload,
       reloads: () => reloads,
+      handled: (event: string) => Queue.take(handled).pipe(Effect.timeoutOrElse({ duration: EVENT_WAIT_MS, orElse: () => Effect.die(`skill.updated was not handled: ${event}`) })),
       send: (text: string, skills?: Prompt["prompt"]["skills"]) =>
         Effect.gen(function* () {
           const event: Prompt = { sessionID: "ses_1", messageID: "msg_1", prompt: skills ? { text, skills } : { text }, delivery: "steer" }
@@ -131,16 +140,16 @@ describe("the skills plugin", () => {
       Effect.gen(function* () {
         const at = yield* layout
         const local = at.write(join(at.project, ".claude/skills/review/SKILL.md"), skillFile("Project review", "LOCAL BODY"))
-        const global = at.write(join(at.config, "skills/review/SKILL.md"), skillFile("User review", "GLOBAL BODY"))
+        const globalSkill = at.write(join(at.config, "skills/review/SKILL.md"), skillFile("User review", "GLOBAL BODY"))
         const only = at.write(join(at.home, ".claude/skills/deploy/SKILL.md"), skillFile("User deploy", "DEPLOY BODY"))
         const plugin = yield* start(at, [
           { id: "deploy", name: "deploy", description: "User deploy", path: only, content: "DEPLOY BODY\n" },
-          { id: "review", name: "review", description: "User review", path: global, content: "GLOBAL BODY\n" },
+          { id: "review", name: "review", description: "User review", path: globalSkill, content: "GLOBAL BODY\n" },
         ])
         const registry = plugin.registry()
         expect(registry.get("review")).toMatchObject({ path: local, content: "LOCAL BODY\n", description: "Project review" })
         expect(registry.get("review:local")).toMatchObject({ path: local, content: "LOCAL BODY\n", name: "review" })
-        expect(registry.get("review:global")).toMatchObject({ path: global, content: "GLOBAL BODY\n", name: "review" })
+        expect(registry.get("review:global")).toMatchObject({ path: globalSkill, content: "GLOBAL BODY\n", name: "review" })
         expect(registry.get("deploy")).toMatchObject({ path: only })
         expect((yield* plugin.catalog).entries).toEqual([
           { token: "deploy", id: "deploy", description: "User deploy", tier: "global", shadowed: false },
@@ -155,9 +164,9 @@ describe("the skills plugin", () => {
       Effect.gen(function* () {
         const at = yield* layout
         const local = at.write(join(at.project, ".claude/skills/review/SKILL.md"), skillFile("Project review", "LOCAL BODY"))
-        const global = at.write(join(at.config, "skills/review/SKILL.md"), skillFile("User review", "GLOBAL BODY"))
-        const plugin = yield* start(at, [], [{ id: "review", name: "review", description: "User review", path: global, content: "GLOBAL BODY\n" }])
-        expect(plugin.registry().get("review")).toMatchObject({ path: global })
+        const globalSkill = at.write(join(at.config, "skills/review/SKILL.md"), skillFile("User review", "GLOBAL BODY"))
+        const plugin = yield* start(at, [], [{ id: "review", name: "review", description: "User review", path: globalSkill, content: "GLOBAL BODY\n" }])
+        expect(plugin.registry().get("review")).toMatchObject({ path: globalSkill })
         expect(plugin.registry().get("review:local")).toMatchObject({ path: local })
         expect((yield* plugin.catalog).entries.map((entry) => [entry.token, entry.id, entry.tier])).toEqual([
           ["review", "review:local", "local"],
@@ -193,7 +202,7 @@ describe("the skills plugin", () => {
         at.write(join(at.project, ".claude/skills/review/SKILL.md"), skillFile("Project review", "LOCAL BODY"))
         const plugin = yield* start(at, [])
         // The start's reload published skill.updated; the scan had not changed, so no reload followed.
-        yield* Effect.sleep("100 millis")
+        yield* plugin.handled("the initial reload")
         expect(plugin.reloads()).toBe(1)
         expect(plugin.registry().has("review:global")).toBe(false)
 
@@ -201,12 +210,10 @@ describe("the skills plugin", () => {
         at.write(join(at.config, "skills/review/SKILL.md"), skillFile("User review", "GLOBAL BODY"))
         yield* plugin.reload
         // The plugin scans, sees the change and reloads once; that reload's event finds nothing new.
-        yield* Effect.sync(() => (plugin.registry().has("review:global") ? Effect.void : Effect.fail("pending"))).pipe(
-          Effect.flatten,
-          Effect.retry({ schedule: Schedule.spaced("20 millis"), times: 100 }),
-        )
-        yield* Effect.sleep("100 millis")
+        yield* plugin.handled("the host's reload after the file appeared")
+        yield* plugin.handled("the reload that installed the changed registry")
+        expect(plugin.registry().has("review:global")).toBe(true)
         expect(plugin.reloads()).toBe(3)
       }),
-    ))
+    ), hangGuard("process-fixture"))
 })

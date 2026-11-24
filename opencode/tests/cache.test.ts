@@ -15,6 +15,7 @@ import { existsSync, readFileSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { scratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/cache.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -94,7 +95,7 @@ describe.skipIf(!fork)("the cache mod in a real TUI", () => {
     } finally {
       rmSync(out, { recursive: true, force: true })
     }
-  }, 150_000)
+  }, hangGuard("fork-turn"))
 
   test("an agent's own 2s cache lifetime expires the prefix its model would keep an hour", async () => {
     const out = scratch("cache-role-scenario-").path
@@ -126,7 +127,7 @@ describe.skipIf(!fork)("the cache mod in a real TUI", () => {
     } finally {
       rmSync(out, { recursive: true, force: true })
     }
-  }, 150_000)
+  }, hangGuard("fork-turn"))
 
   test("a compaction's miss sits under the compaction, not under the turn after it", async () => {
     const out = scratch("cache-compaction-scenario-").path
@@ -159,5 +160,5 @@ describe.skipIf(!fork)("the cache mod in a real TUI", () => {
     } finally {
       rmSync(out, { recursive: true, force: true })
     }
-  }, 150_000)
+  }, hangGuard("fork-turn"))
 })

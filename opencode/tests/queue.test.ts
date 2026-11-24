@@ -10,6 +10,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 /** The rows the sidebar shows after the set, in its order: grouped, the linked item running, no row for the unnamed worker. */
 const SET_ROWS = [
@@ -92,5 +93,5 @@ describe.skipIf(!fork)("the Queue section of the sidebar", () => {
         expect(tools).not.toContain("queue")
         expect(tools).toContain("kernel")
       } else expect(tools.filter((name) => name === "queue")).toHaveLength(2)
-    }), 150_000)
+    }), hangGuard("fork-turn"))
 })

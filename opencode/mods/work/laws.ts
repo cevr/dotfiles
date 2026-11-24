@@ -1,7 +1,8 @@
 // What every implementation of the rift tool's contracts owes, as shared test
 // suites. Each implementation's test beside it runs the suite over its Layer.
 import { describe, expect, test } from "bun:test"
-import { Effect, type Layer, type Scope } from "effect"
+import { Effect, Function, type Layer, type Scope } from "effect"
+import { beforeRunnerCap, bridgeBudget, hangGuard, type RunnerGuard, runnerCapOf } from "../../tests/hang-guard.ts"
 import { findRift } from "./find.ts"
 import { AmbiguousRift, NoSuchRift } from "./rift.ts"
 import { RiftFailed, Rifts, SessionDirectories, SessionUnreadable } from "./service.ts"
@@ -33,6 +34,7 @@ export interface RiftBench {
 export const check = <B extends { readonly layer: Layer.Layer<Rifts> }, A, E>(
   bench: () => Effect.Effect<B, never, Scope.Scope>,
   body: (bench: B) => Effect.Effect<A, E, Rifts>,
+  limit: <A, E>(body: Effect.Effect<A, E>) => Effect.Effect<A, E> = Function.identity,
 ) =>
   Effect.runPromise(
     Effect.scoped(
@@ -40,7 +42,7 @@ export const check = <B extends { readonly layer: Layer.Layer<Rifts> }, A, E>(
         const made = yield* bench()
         return yield* body(made).pipe(Effect.provide(made.layer))
       }),
-    ),
+    ).pipe(limit),
   )
 
 /** What the saved-work case needs of a process bench: Git in any folder, the source's origin, and a scratch folder. */
@@ -97,12 +99,15 @@ export const savedWorkCase = (made: GitBench) =>
   })
 
 /** `bench` makes a fresh implementation over a fresh warm source. */
-export const riftsLaws = (name: string, bench: () => Effect.Effect<RiftBench, never, Scope.Scope>, timeout = 5_000) =>
+export const riftsLaws = (name: string, bench: () => Effect.Effect<RiftBench, never, Scope.Scope>, timeout: RunnerGuard = hangGuard("unit-law")) =>
   describe(`${name} keeps the Rifts laws`, () => {
-    test(
+    const budget = bridgeBudget(timeout)
+    const law = (title: string, body: (within: typeof check) => Promise<void>) =>
+      test(title, () => body((bench, exercise) => check(bench, exercise, beforeRunnerCap(title, budget))), runnerCapOf(budget))
+    law(
       "a created Rift is listed under its source, on its branch and clean; the source, a directory in it and the Rift all have that source",
-      () =>
-        check(bench, (made) =>
+      (within) =>
+        within(bench, (made) =>
           Effect.gen(function* () {
             const rifts = yield* Rifts
             const path = yield* rifts.create({ source: made.source, from: made.inside, name: "feat-x", branch: "feat/x" })
@@ -117,13 +122,12 @@ export const riftsLaws = (name: string, bench: () => Effect.Effect<RiftBench, ne
             expect(yield* rifts.source(path)).toBe(made.source)
           }),
         ),
-      timeout,
     )
 
-    test(
+    law(
       "a commit found only in a Rift is unpushed, an edit is uncommitted, and a removed Rift is listed no more",
-      () =>
-        check(bench, (made) =>
+      (within) =>
+        within(bench, (made) =>
           Effect.gen(function* () {
             const rifts = yield* Rifts
             const path = yield* rifts.create({ source: made.source, from: made.inside, name: "work", branch: "work" })
@@ -136,13 +140,12 @@ export const riftsLaws = (name: string, bench: () => Effect.Effect<RiftBench, ne
             expect(yield* rifts.list(made.source)).toEqual([])
           }),
         ),
-      timeout,
     )
 
-    test(
+    law(
       "a stash a Rift inherited from its warm source is not its own; one stashed in the Rift is",
-      () =>
-        check(bench, (made) =>
+      (within) =>
+        within(bench, (made) =>
           Effect.gen(function* () {
             const rifts = yield* Rifts
             yield* made.stash(made.source)
@@ -152,13 +155,12 @@ export const riftsLaws = (name: string, bench: () => Effect.Effect<RiftBench, ne
             expect((yield* rifts.inspect(path)).stashes).toBe(1)
           }),
         ),
-      timeout,
     )
 
-    test(
+    law(
       "land's findRift finds a Rift by path, by name or by branch (exact, else with / as -), and refuses a name two Rifts answer to, naming both",
-      () =>
-        check(bench, (made) =>
+      (within) =>
+        within(bench, (made) =>
           Effect.gen(function* () {
             const rifts = yield* Rifts
             // Named after their branches, as workrift names them; then each moves to a branch of its run.
@@ -183,13 +185,12 @@ export const riftsLaws = (name: string, bench: () => Effect.Effect<RiftBench, ne
             expect(ambiguous._tag === "AmbiguousRift" && ambiguous.matches).toEqual([`${lexer} (branch run/lexer)`, `${parser} (branch run/lexer)`])
           }),
         ),
-      timeout,
     )
 
-    test(
+    law(
       "a Rift created at a commit is detached there; at a commit the repository lacks it fails RiftFailed and leaves no Rift",
-      () =>
-        check(bench, (made) =>
+      (within) =>
+        within(bench, (made) =>
           Effect.gen(function* () {
             const rifts = yield* Rifts
             const head = yield* made.head
@@ -204,13 +205,12 @@ export const riftsLaws = (name: string, bench: () => Effect.Effect<RiftBench, ne
             expect(yield* rifts.list(made.source)).toEqual([path])
           }),
         ),
-      timeout,
     )
 
-    test(
+    law(
       "a Rift's purpose is its branch's description: none at first, set by describe and read by inspect, kept with the branch it was set on; a detached Rift fails RiftFailed",
-      () =>
-        check(bench, (made) =>
+      (within) =>
+        within(bench, (made) =>
           Effect.gen(function* () {
             const rifts = yield* Rifts
             const path = yield* rifts.create({ source: made.source, from: made.inside, name: "billing", branch: "feat/billing" })
@@ -226,13 +226,12 @@ export const riftsLaws = (name: string, bench: () => Effect.Effect<RiftBench, ne
             expect(yield* Effect.flip(rifts.describe(detached, "x"))).toBeInstanceOf(RiftFailed)
           }),
         ),
-      timeout,
     )
 
-    test(
+    law(
       "a Rift's mark names the branch it was made on: none at first, set by mark and read by inspect as madeOn, kept on another branch; a detached Rift fails RiftFailed",
-      () =>
-        check(bench, (made) =>
+      (within) =>
+        within(bench, (made) =>
           Effect.gen(function* () {
             const rifts = yield* Rifts
             const path = yield* rifts.create({ source: made.source, from: made.inside, name: "billing", branch: "feat/billing" })
@@ -247,13 +246,12 @@ export const riftsLaws = (name: string, bench: () => Effect.Effect<RiftBench, ne
             expect(yield* Effect.flip(rifts.mark(detached))).toBeInstanceOf(RiftFailed)
           }),
         ),
-      timeout,
     )
 
-    test(
+    law(
       "a second Rift of one name, and a directory that is no Rift, fail RiftFailed",
-      () =>
-        check(bench, (made) =>
+      (within) =>
+        within(bench, (made) =>
           Effect.gen(function* () {
             const rifts = yield* Rifts
             yield* rifts.create({ source: made.source, from: made.inside, name: "twice", branch: "twice" })
@@ -263,7 +261,6 @@ export const riftsLaws = (name: string, bench: () => Effect.Effect<RiftBench, ne
             expect(yield* Effect.flip(rifts.source(made.plain))).toBeInstanceOf(RiftFailed)
           }),
         ),
-      timeout,
     )
   })
 

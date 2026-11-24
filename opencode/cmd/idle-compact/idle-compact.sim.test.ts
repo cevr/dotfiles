@@ -9,7 +9,7 @@
 import { Effect } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
 import { line } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 import {
   ANSWER,
@@ -28,7 +28,7 @@ import {
   WAKE_MS,
 } from "../../tests/idle-compact/sim.ts"
 
-const { seeded } = Seed.runner("cmd/idle-compact/idle-compact.sim.test.ts")
+const { seeded } = simulationRunner("cmd/idle-compact/idle-compact.sim.test.ts")
 
 /** A reply's usage for a prompt of `prompt` tokens: as the real sim reports, 400 read from the cache and 500 written. */
 const usage = (prompt: number): World.Usage => ({ input: prompt - 900, read: 400, write: 500 })

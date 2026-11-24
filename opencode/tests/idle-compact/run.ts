@@ -35,6 +35,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { BACKGROUND_TASK, EARLY_MS, LATE_MS, MARGIN_SECONDS, PRECOMPUTE_TASK, serve, TASK, TTL_SECONDS, WAKE_MS, type Seen } from "./sim.ts"
+import { stamp, watchdog } from "../hang-guard.ts"
 
 export interface Spec {
   readonly base: string
@@ -118,7 +119,7 @@ interface Hooks {
 }
 const opencode = await OpenCode.create({
   // The host activates its SDK plugins ahead of the config's (its boot order), so this hook runs before the plugin's.
-  plugins: [{ id: "request-clock", setup: (context: Hooks) => context.session.hook("model.request", (event) => void started.push({ kind: event.kind, at: Date.now() })) }],
+  plugins: [{ id: "request-clock", setup: (context: Hooks) => context.session.hook("model.request", (event) => void started.push({ kind: event.kind, at: stamp() })) }],
   events: { persist: true },
   // The bundled model catalog only, as tests/compaction-prefix/run.ts says why.
   models: { fetch: false },
@@ -161,8 +162,8 @@ try {
   }
   await opencode.sessions.prompt({ sessionID: session.id, text: spec.background ? BACKGROUND_TASK : spec.precompute ? PRECOMPUTE_TASK : TASK })
   await opencode.experimental.session.wait({ sessionID: session.id })
-  const turn = sim.seen.findLast((item) => item.kind === "turn")?.at ?? Date.now()
-  await sleep(turn + EARLY_MS - Date.now())
+  const turn = sim.seen.findLast((item) => item.kind === "turn")?.at ?? stamp()
+  await sleep(turn + EARLY_MS - stamp())
   const early = await opencode.sessions.context({ sessionID: session.id })
   let late = early
   // The background run waits on past the compaction for the shell's notice to wake the session.
@@ -171,7 +172,8 @@ try {
     return compaction !== undefined && sim.seen.some((item) => item.kind === "turn" && item.at > compaction.at)
   }
   const done = () => (spec.background ? compacted(late) && woke() : compacted(late))
-  while (Date.now() < turn + (spec.background ? WAKE_MS : LATE_MS) && !done()) {
+  const deadline = watchdog(Math.max(0, turn + (spec.background ? WAKE_MS : LATE_MS) - stamp()))
+  while (!deadline.expired() && !done()) {
     await sleep(500)
     late = await opencode.sessions.context({ sessionID: session.id })
   }

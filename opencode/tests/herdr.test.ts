@@ -13,6 +13,7 @@ import { Schema } from "effect"
 import type { Received } from "../mods/herdr/laws.ts"
 import { owned } from "./owned.ts"
 import { scratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/herdr.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -76,5 +77,5 @@ describe.skipIf(!fork)("the herdr reporter in a real TUI", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
-  }, 150_000)
+  }, hangGuard("fork-turn"))
 })

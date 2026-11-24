@@ -15,6 +15,7 @@ import { join, resolve } from "node:path"
 import type { Result, Spec } from "./questions/run.ts"
 import { ANSWERED, IDLE, LETTER, messagesOf } from "./questions/sim.ts"
 import { scratch as scratchDir } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/questions-locations.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -65,5 +66,5 @@ describe.skipIf(!fork)("questions with two directories open on one server", () =
     expect(messagesOf(result.other).some((message) => message.metadata?.source === "questions")).toBe(false)
     expect(JSON.stringify(result.other)).toContain(IDLE)
     expect(result.warnings.filter((warning) => warning.message.startsWith("questions:"))).toEqual([])
-  }, 150_000)
+  }, hangGuard("fork-turn"))
 })

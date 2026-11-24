@@ -10,6 +10,7 @@ import { Array as Arr, Effect, FileSystem, Option, Path, Schedule, Stream } from
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { type Proc, signal, stop, survivors, table } from "../scripts/leaks.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 /** The pid a `<label> <pid>` line of the runner names; 0 when none does. */
 const pidOf = (lines: ReadonlyArray<string>, label: string) =>
@@ -91,7 +92,7 @@ describe("the reaper of a test process", () => {
         // The respawner was never told to stop: it started nothing on its way out.
         expect(spawned.map((row) => row.args)).toEqual([])
       }).pipe(Effect.scoped),
-    40_000,
+    hangGuard("readiness-fixture"),
   )
 
   it.live.layer(BunServices.layer)(
@@ -109,6 +110,6 @@ describe("the reaper of a test process", () => {
         yield* Effect.promise(() => stop(left))
         expect(left.map((row) => row.args)).toEqual([])
       }).pipe(Effect.scoped),
-    40_000,
+    hangGuard("readiness-fixture"),
   )
 })

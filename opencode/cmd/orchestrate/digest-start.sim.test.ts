@@ -8,10 +8,10 @@ import { Effect, Option, Ref } from "effect"
 import { decodeLine } from "@dotfiles/opencode-digest/event"
 import * as MemoryDigest from "@dotfiles/opencode-digest/memory/log"
 import * as Plugins from "../../sim/plugins.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/orchestrate/digest-start.sim.test.ts")
+const { seeded } = simulationRunner("cmd/orchestrate/digest-start.sim.test.ts")
 
 const WORK = "/scratch/project"
 const STEP = { agent: "implementor", description: "implementor demo r1", prompt: "Build demo.", background: true }

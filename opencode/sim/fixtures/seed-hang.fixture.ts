@@ -5,10 +5,11 @@
 // nothing of it and no failure lands between the tests.
 import { expect } from "bun:test"
 import { Console, Effect } from "effect"
-import * as Seed from "../seed.ts"
+import { simulationRunner, simulationTest } from "../seed.ts"
+import { simulationBudget } from "../budget.ts"
 
 const ran: Array<string> = []
-const { seeded } = Seed.runner("sim/fixtures/seed-hang.fixture.ts", { timeoutMs: 300 })
+const { seeded } = simulationRunner("sim/fixtures/seed-hang.fixture.ts", { budget: simulationBudget(300) })
 
 seeded("a seed that outlasts bun's timeout", ({ seed }) =>
   Effect.gen(function* () {
@@ -19,7 +20,7 @@ seeded("a seed that outlasts bun's timeout", ({ seed }) =>
   }),
 )
 
-Seed.effect(
+simulationTest(
   "the next test sees none of the first test's seeds run",
   Effect.gen(function* () {
     const before = ran.length

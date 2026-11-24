@@ -8,6 +8,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/mail.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -33,5 +34,5 @@ describe.skipIf(!fork)("session mail", () => {
     expect(row).toBeLessThan(exchange.indexOf("A got the pong"))
     expect(exchange.indexOf("A sent the ping")).toBeGreaterThanOrEqual(0)
     expect(exchange).not.toContain("It is not the user speaking")
-  }), 150_000)
+  }), hangGuard("fork-turn"))
 })

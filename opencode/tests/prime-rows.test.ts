@@ -13,6 +13,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-rows.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -67,7 +68,7 @@ function lead(frame: Styled | undefined, unit: string): string {
 
 describe.skipIf(!fork)("the live subagent rows in the Prime look (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-rows-")
-  beforeAll(...kept.setup(async () => {
+  beforeAll(kept.test(async () => {
     const out = kept.dir("prime-rows-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-rows.ts"], {
       cwd: root,
@@ -83,7 +84,7 @@ describe.skipIf(!fork)("the live subagent rows in the Prime look (OPENCODE_DEV)"
     if (code !== 0) throw new Error(`the scenario exited ${code} (its frames and logs: ${out}):\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names) frames[name] = readFileSync(join(out, `rows-${name}.txt`), "utf8").split("\n")
     for (const name of ["thinking", "shell", "done"] as const) styled[name] = JSON.parse(readFileSync(join(out, `rows-${name}.json`), "utf8"))
-  }, 300_000))
+  }), hangGuard("acceptance"))
 
   test("each working worker has a row: its turning diamond, its role from orchestrate, its model, its unit, its first thought and its time working; no state word", kept.test(() => {
     const shown = rows(frames.thinking)

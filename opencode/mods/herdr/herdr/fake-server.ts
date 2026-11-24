@@ -32,7 +32,7 @@ const parse = (line: string): { readonly id: string; readonly method: string; re
 }
 
 /** Listens at `path` until `stop`; the reason when it cannot. */
-export const listen = (path: string): FakeServer | { readonly failed: string } => {
+export const listen = (path: string, onRequest: () => void = () => {}): FakeServer | { readonly failed: string } => {
   const received: Array<Received> = []
   let current: Answer = { kind: "accept" }
   const buffers = new WeakMap<object, string>()
@@ -49,6 +49,7 @@ export const listen = (path: string): FakeServer | { readonly failed: string } =
             const request = parse(line)
             if (request === undefined) continue
             received.push({ method: request.method, params: request.params })
+            onRequest()
             const answer = current
             if (answer.kind === "accept") socket.write(`${JSON.stringify({ id: request.id, result: { type: "ok" } })}\n`)
             if (answer.kind === "refuse") socket.write(`${JSON.stringify({ id: request.id, error: { code: answer.code, message: answer.message } })}\n`)
