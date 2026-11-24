@@ -7,7 +7,7 @@
 // beneath the composer, not this section's. A failed or undecodable answer
 // changes nothing; no rows draw nothing.
 // cmd/queue/tui.tsx registers it on `sidebar.content`.
-import { familyReader } from "@dotfiles/opencode-subagents/solid/reader"
+import { ownerRows } from "@dotfiles/opencode-subagents/solid/owner-rows"
 import type { Plugin } from "@opencode/plugin/tui"
 import { Array as Arr, Effect, Option, Schema } from "effect"
 import { createMemo, createSignal, For, onCleanup, Show } from "solid-js"
@@ -29,7 +29,7 @@ export function QueueSection(props: { ctx: Plugin.Context; sessionID: string }) 
   const ctx = props.ctx
   const root = createMemo(() => ctx.data.session.root(props.sessionID))
   // A token streamed into the family re-reads only its own message.
-  const family = familyReader()
+  const family = ownerRows(ctx)
   const [queue, setQueue] = createSignal<{ readonly root: string; readonly snapshot: Snapshot }>()
   const [now, setNow] = createSignal(Date.now())
   const abort = new AbortController()

@@ -26,7 +26,9 @@ import { type Plugin, Tool } from "@opencode/plugin/effect"
 import type { SessionMessage } from "@opencode/schema/session-message"
 import type { SessionID as HostSessionID } from "@opencode/schema/session-id"
 import { DateTime, Effect, Match, Option, Schema } from "effect"
+import type { Observation, Phase } from "../child-lifecycle.ts"
 import { Listed, make, type Host, type Session, type Subagents, type View } from "../subagents.ts"
+import type { ChildLifecycle } from "./child-lifecycle.ts"
 
 export const name = "subagents"
 
@@ -35,7 +37,7 @@ const SessionID = Schema.String.check(Schema.isStartingWith("ses")).pipe(Schema.
 const sessionIDOf = (sessionID: string): HostSessionID => SessionID.make(sessionID)
 
 /** Why there is no wait, as the tool says it: a finished subagent's report arrives on its own. */
-export const NO_WAIT = "A finished subagent's report arrives as your next message, so don't wait on it: go on with other work or end your turn."
+export const NO_WAIT = "A finished subagent's report arrives as your next message. Keep working or end your turn; don't wait."
 
 export const Input = Schema.Struct({
   action: Schema.Literals(["list", "get", "stop"]).annotate({
@@ -49,11 +51,11 @@ export interface Input extends Schema.Schema.Type<typeof Input> {}
 export const Output = Listed
 
 export const description = [
-  "List, read and stop this session's own subagents (the sessions the subagent tool started, and theirs).",
-  '{ action: "list" } lists them with their state: running, done, stopped or failed. { action: "get", sessionID } gives one\'s state and last message.',
-  '{ action: "stop", sessionID } stops it, and its own subagents first: it ends its turn, its background shells and its queued prompts; you hear once that it was cancelled, never that it finished. A second stop changes nothing.',
+  "List, read and stop this session's descendants.",
+  '{ action: "list" } lists them. { action: "get", sessionID } reads one\'s observation and last message. A notice is not settlement.',
+  '{ action: "stop", sessionID } stops its descendants first, then its turn, shells and queued prompts. Cancel a latch with wake_cancel.',
   NO_WAIT,
-  "Only this session's own subagents are reachable; any other session is refused. To give a subagent more work, call subagent with its sessionID.",
+  "To give a subagent more work, call subagent with its sessionID.",
 ].join("\n")
 
 const isAssistant = (message: SessionMessage.Info): message is SessionMessage.Assistant => message.type === "assistant"
@@ -76,42 +78,86 @@ type Info = Effect.Success<ReturnType<Plugin.Context["session"]["get"]>>
 const millis = (time: Info["time"]["busy"]) => Option.map(Option.fromNullishOr(time), DateTime.toEpochMillis)
 
 /** A host session as the subagents tool reads it: its title is its description. */
-export const sessionOf = (info: Info): Session => ({
-  id: info.id,
-  parentID: Option.fromNullishOr(info.parentID),
-  agent: Option.getOrElse(Option.fromNullishOr(info.agent), () => "subagent"),
-  description: Option.getOrElse(Option.fromNullishOr(info.title), () => "Subagent"),
-  outcome: Option.fromNullishOr(info.outcome),
-  busy: millis(info.time.busy),
-  idle: millis(info.time.idle),
-})
+export const sessionOf = (info: Info, observation?: Observation): Session => {
+  const base = {
+    id: info.id,
+    parentID: Option.fromNullishOr(info.parentID),
+    agent: Option.getOrElse(Option.fromNullishOr(info.agent), () => "subagent"),
+    description: Option.getOrElse(Option.fromNullishOr(info.title), () => "Subagent"),
+    outcome: Option.fromNullishOr(info.outcome),
+    busy: millis(info.time.busy),
+    idle: millis(info.time.idle),
+  }
+  if (observation) return { ...base, observation }
+  return base
+}
 
 /** The host's sessions, through the plugin context. A session it cannot read is none; a list it cannot read is empty. */
-export const hostOf = (ctx: Plugin.Context): Host => ({
+export const hostOf = (ctx: Plugin.Context, lifecycle: ChildLifecycle): Host => ({
+  parent: (sessionID) => lifecycle.parent(sessionID),
   get: (sessionID) =>
-    ctx.session.get({ sessionID: sessionIDOf(sessionID) }).pipe(
-      Effect.map((info) => Option.some(sessionOf(info))),
-      Effect.catchCause(() => Effect.succeed(Option.none<Session>())),
-    ),
+    Effect.map(lifecycle.read(sessionID), Option.map(({ info, observation }) => sessionOf(info, Option.getOrUndefined(observation)))),
   children: (sessionID) =>
     ctx.session.list({ parentID: sessionIDOf(sessionID), order: "desc", limit: 100 }).pipe(
-      Effect.map((page) => page.data.map(sessionOf)),
-      Effect.catchCause(() => Effect.succeed<ReadonlyArray<Session>>([])),
+      Effect.flatMap((page) => Effect.forEach(page.data, (child) => lifecycle.read(child.id))),
+      Effect.map((children) => children.flatMap((child) => Option.toArray(Option.map(
+        Option.filter(child, ({ info }) => info.parentID === sessionID),
+        ({ info, observation }) => sessionOf(info, Option.getOrUndefined(observation)),
+      )))),
+      Effect.orElseSucceed((): ReadonlyArray<Session> => []),
     ),
   stop: (sessionID) =>
     ctx.session.stop({ sessionID: sessionIDOf(sessionID) }).pipe(
-      Effect.map((result) => result.interrupted),
-      Effect.catchCause((cause) => Effect.as(Effect.logWarning("subagents: a stop of a session failed", { sessionID, cause }), false)),
+      Effect.map((result) => Option.some(result.interrupted)),
+      Effect.orElseSucceed(() => Option.none<boolean>()),
     ),
   lastWords: (sessionID) =>
     ctx.session.context({ sessionID: sessionIDOf(sessionID) }).pipe(
       Effect.map(wordsOf),
-      Effect.catchCause(() => Effect.succeed("")),
+      Effect.orElseSucceed(() => ""),
     ),
+  stopUncertain: lifecycle.stopUncertain,
 })
 
+const phaseOf = Match.type<Phase>().pipe(Match.tagsExhaustive({
+  Latched: (phase) => {
+    const recheck = Option.flatMap(Option.fromUndefinedOr(phase.recheckAt), DateTime.make)
+    const time = Option.match(recheck, { onNone: () => "", onSome: (at) => `; recheck ${DateTime.formatIso(at)}` })
+    return `latched (${phase.hold._tag.toLowerCase()}${time})`
+  },
+  Continuing: ({ on }) => {
+    if (on === "Wake") return "continuing (awaiting host wake)"
+    return `continuing (${on.toLowerCase()} still running)`
+  },
+  Recovering: () => "recovering",
+  Unknown: ({ reason }) => {
+    if (reason) return "undetermined (background command ended after a failed step; the host does not say whether a result is still to be delivered)"
+    return "unknown (no current settlement)"
+  },
+  Running: () => "running",
+  Settled: ({ outcome, cause }) => {
+    if (cause === "Unknown") return `settled: ${outcome}`
+    return `settled: ${outcome} (${cause})`
+  },
+}))
+
+const diagnosticOf = Match.type<NonNullable<Observation["diagnostic"]>>().pipe(Match.tagsExhaustive({
+  StepError: ({ cause }) => `step ended in error (${cause})`,
+  RetryScheduled: ({ cause, attempt }) => `host scheduled retry ${attempt} (${cause})`,
+}))
+export const observedPhase = (view: Observation) => {
+  if (view.basis !== "as-of-last-observation") return phaseOf(view.phase)
+  if (view.phase._tag === "Settled") return "unknown (no current settlement; since before reload)"
+  return `${phaseOf(view.phase)} (as of last observation)`
+}
+
 /** One subagent as the model reads it: its sessionID, state, agent and description, what the call did. */
-const lineOf = (view: View) => [`${view.sessionID} ${view.state} (${view.agent}: ${view.description})`, view.note].filter((part) => part !== "").join(": ")
+const lineOf = (view: View) => {
+  const observation = Option.fromUndefinedOr(view.observation)
+  const step = Option.getOrElse(Option.map(Option.flatMap(observation, (value) => Option.fromUndefinedOr(value.diagnostic)), diagnosticOf), () => "")
+  const phase = Option.getOrElse(Option.map(observation, observedPhase), () => view.state)
+  return [`${view.sessionID} ${phase} (${view.agent}: ${view.description})`, step, view.note].filter((part) => part !== "").join(": ")
+}
 
 /** An answer as the model reads it: a line per subagent, and the last message of one the call named. */
 export const textOf = (answer: Listed): string => {
@@ -137,8 +183,8 @@ export const run = (subagents: Subagents, caller: string, input: Input): Effect.
 }
 
 /** The tool, over the plugin context's sessions. */
-export const tool = (ctx: Plugin.Context): Tool.Info<typeof Input, typeof Output> => {
-  const subagents = make(hostOf(ctx))
+export const tool = (ctx: Plugin.Context, lifecycle: ChildLifecycle): Tool.Info<typeof Input, typeof Output> => {
+  const subagents = make(hostOf(ctx, lifecycle))
   return {
     name,
     description,

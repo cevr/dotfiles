@@ -67,3 +67,4 @@ Name user paths, tool calls, keys, commands and observable words. Keep source se
 - [Rex panes](rex.md): `rex-show` in a showcase pane beside the caller's, the pane a subagent's shell names.
 - [Service restart and background shells](service-restart.md): a background shell across `service restart`, a signal stop and a systemd scope stop, with the Linux leg on the installed build.
 - [Model at the next compaction](model-next.md): `/model-next`, the picker's `at next compaction`, the tray line, the apply at a compaction or an expired cache's wake.
+- [Child lifecycle](settle-child-attempts.md): held and continuing children, typed diagnostics, settlement, and rebuilt kernel handles.
