@@ -164,9 +164,9 @@ export interface InheritedProcess {
   readonly binding: string
 }
 export interface ProcessBirth { readonly pid: number; readonly start: number }
-export const verifyInheritance = Effect.fn("Ownership.verifyInheritance")(function* <E>(
+export const verifyInheritance = Effect.fn("Ownership.verifyInheritance")(function* <E, R>(
   bootId: string, pin: ProcessPin, candidate: ProcessBirth,
-  holders: (pid: number) => Effect.Effect<ReadonlyArray<ProcessBirth>, E>,
+  holders: (pid: number) => Effect.Effect<ReadonlyArray<ProcessBirth>, E, R>,
 ) {
   if (pin.bootId !== bootId) return Option.none()
   const matches = yield* holders(candidate.pid)

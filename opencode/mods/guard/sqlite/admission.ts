@@ -483,7 +483,7 @@ const changeUse = (rows: OwnershipRows, row: Holder, who: Authority, event: UseE
     if (Option.contains(active, true) && Option.isSome(prior)) return unchanged(prior.value)
     if (Option.isSome(active) || row.state !== "live") return Result.fail("stale")
     rows.borrow(row.holderId, key, id)
-    if (Option.exists(prior, ({ state }) => state === "live")) return keep(prior.value)
+    if (Option.isSome(prior) && prior.value.state === "live") return keep(prior.value)
     return keep({ ...row, holderId: key, owner: borrowerOwner(who), relation: "borrower", usage: EMPTY_USAGE,
       state: "live", proof: EMPTY_PROOF })
   }
@@ -549,7 +549,7 @@ const ownerService = (db: Database, identity: Identity, readClock?: BootClock): 
         if (Option.isNone(control)) return Result.fail("wrong-owner")
         if (event._tag === "bind" && event.confinementRef && usedBinding(event.confinementRef)) return Result.fail("stale")
         const next = changeControl(row.value, control.value, who, event, at, rows.borrowed(row.value.holderId))
-        if (Result.isFailure(next)) return next
+        if (Result.isFailure(next)) return Result.fail(next.failure)
         if (precedesBorrower(rows, row.value, event)) return Result.fail("stale")
         rows.update(row.value.holderId, next.success.control)
         return keep(next.success.row, next.success.disposition)
