@@ -1,7 +1,7 @@
 // @reads cmd/guard/guard-faults.sim.test.ts cmd/memory/memory-faults.sim.test.ts cmd/orchestrate/record-model.sim.test.ts cmd/questions/questions-held.sim.test.ts mods/orchestrate/tools.test.ts mods/pool/claim-rule.test.ts mods/questions/opencode/form.test.ts mods/update/builds.test.ts mods/update/model.test.ts scripts/accept-yield.test.ts sim/witnesses.ts
 import { expect, expectTypeOf, test } from "bun:test"
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { Effect, FileSystem, Path } from "effect"
+import { Array as Arr, Effect, FileSystem, Option, Path } from "effect"
 import { it } from "effect-bun-test"
 import { assertWitness, witnesses } from "../sim/witnesses.ts"
 
@@ -23,7 +23,9 @@ test("a witness fails if its matched observation survives removal of the cause",
 const registrations = (source: string) => {
   const examples: Array<string> = []
   const controls: Array<string> = []
-  for (const [, failing, , name] of source.matchAll(/\btest(\.failing)?\(\s*(["`])(W: [^"`]+)\2/g)) {
+  for (const match of source.matchAll(/\btest(\.failing)?\(\s*(["`])(W: [^"`]+)\2/g)) {
+    const [, failing] = match
+    const name = Option.getOrThrow(Arr.get(match, 3))
     if (failing) controls.push(name)
     else examples.push(name)
   }

@@ -5,7 +5,7 @@
 // pass and is reported owed, and once every run has ended or died each file is passed, failed or
 // owed, exactly one. A failure names the seed and the command.
 import { describe, expect, test } from "bun:test"
-import { Option } from "effect"
+import { Array as Arr, Option } from "effect"
 import { assertWitness } from "../sim/witnesses.ts"
 import * as Yield from "./accept-yield.ts"
 
@@ -101,12 +101,13 @@ describe("the accept lock's protocol", () => {
     const withoutDeath = playActions(actions.filter((action) => action.kind !== "dies"))
     const stopped = (run: typeof played) => (run.transitions.at(5) ?? run.state).report.get("a")
     assertWitness("interrupted file stays owed", "owed", stopped(played), stopped(withoutStop))
-    const phase = (at: number, who: Yield.Who) => played.transitions[at].phase.get(who)
-    const holds = (at: number) => played.transitions[at].holder
+    const after = (at: number) => Option.getOrThrow(Arr.get(played.transitions, at))
+    const phase = (at: number, who: Yield.Who) => after(at).phase.get(who)
+    const holds = (at: number) => after(at).holder
     assertWitness("deep run starts waiting", "waiting", phase(0, "deep"), Yield.initial().phase.get("deep"))
     assertWitness("deep run takes the lock", Option.some<Yield.Who>("deep"), holds(1), holds(0))
-    assertWitness("file starts with the lock held", Option.some("a"), played.transitions[2].running, played.transitions[1].running)
-    assertWitness("waiting land leaves a mark", true, played.transitions[4].wanted.has("l1"), played.transitions[3].wanted.has("l1"))
+    assertWitness("file starts with the lock held", Option.some("a"), after(2).running, after(1).running)
+    assertWitness("waiting land leaves a mark", true, after(4).wanted.has("l1"), after(3).wanted.has("l1"))
     assertWitness("deep run yields the lock", Option.none(), holds(6), holds(5))
     const landTook = (run: typeof played) => (run.transitions.at(7) ?? run.state).holder
     assertWitness("land holds the lock", Option.some<Yield.Who>("l1"), landTook(played), landTook(withoutLand))
