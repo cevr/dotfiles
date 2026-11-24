@@ -196,7 +196,7 @@ export const keepaliveLayer = (host: string) =>
         waiting.sent = sent + 1
         // A ping is a request of its model on its login: one the pool's pace would not place there now is not sent,
         // and the wait's pings end; the tool call it waits on runs on, its next request placed afresh.
-        if (!(yield* admission.admits({ model: snapshot.model, login: snapshot.login }))) {
+        if (!(yield* admission.admits({ model: snapshot.model, login: snapshot.login, managed: Option.fromUndefinedOr(snapshot.managed) }))) {
           yield* Effect.logInfo(`cache keepalive: ping ${sent + 1} skipped, the pool's pace holds ${snapshot.model} on its login now`)
           waiting.sent = MAX_PINGS
           return false

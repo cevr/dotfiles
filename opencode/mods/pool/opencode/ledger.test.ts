@@ -2,7 +2,10 @@
 // entry per page, so every restore walks the pages; and over a storage that
 // fails, which the ledger reads as empty and writes past.
 import { expect, test } from "bun:test"
-import { Effect, type Schema } from "effect"
+import { Context, Effect, Exit, Layer, Option, Scope, type Schema } from "effect"
+import { TestClock } from "effect/testing"
+import { effectTest } from "../../../sim-tui/effect-test.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 import { PoolId, RequestRefused } from "../account-pool.ts"
 import { ledgerLaws } from "../laws.ts"
 import { Ledger } from "../service.ts"
@@ -40,3 +43,34 @@ test("a storage that fails restores an empty ledger, and a write to it is lost w
       ),
     ),
   ))
+
+const virtual = TestClock.layer()
+effectTest("a newer process slot cannot read for a send until the older slot drains, including its pending write",
+  Effect.scoped(Effect.gen(function* () {
+    const version = OpenCodeLedger.HOLD_AUTHORITY_VERSION
+    const old = OpenCodeLedger.processHoldAuthority(version)
+    const next = OpenCodeLedger.processHoldAuthority(version + 1)
+    const records = pagedByOne(new Map())
+    const failed = { once: true }
+    const storage = {
+      ...records,
+      set: (key: string, value: Schema.Json) => Effect.suspend(() => {
+        if (!failed.once) return records.set(key, value)
+        failed.once = false
+        return Effect.fail("temporary write fault")
+      }),
+    }
+    const prior = yield* Scope.make()
+    const services = yield* Layer.buildWithScope(OpenCodeLedger.layer(storage, void 0, old), prior)
+    const oldLedger = Context.get(services, Ledger)
+    const newLayer = OpenCodeLedger.layer(storage, void 0, next)
+    const newLedger = Context.get(yield* Layer.build(newLayer), Ledger)
+    const pool = PoolId.make("slot-version-test")
+    yield* oldLedger.record(pool, [RequestRefused.make({ credentialID: "a", hold: { kind: "rate-limit", at: 0, until: 90_000 } })])
+    yield* TestClock.adjust(2_000)
+    const read = newLedger.withHolds(newLedger.holds(pool))
+    const closed = yield* Effect.option(read)
+    expect(Option.isNone(closed)).toBe(true)
+    yield* Scope.close(prior, Exit.void)
+    expect(yield* read).toEqual({ a: { kind: "rate-limit", at: 0, until: 90_000 } })
+  }).pipe(Effect.provide(virtual))), hangGuard("unit-law"))

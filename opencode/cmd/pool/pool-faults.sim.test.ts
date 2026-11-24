@@ -373,7 +373,7 @@ revoked.seeded("with every login's refresh token revoked, every turn still ends 
  * its wait, which the file no longer held, and its 401 recorded nothing (820992407; cmd/pool/pool-waiter.sim.test.ts
  * models the class).
  */
-const lasting = simulationRunner("cmd/pool/pool-faults.sim.test.ts", { past: [106497663, 820992407] })
+const lasting = simulationRunner("cmd/pool/pool-faults.sim.test.ts", { past: [106497663, 820992407, 10285280, 10286953] })
 
 lasting.seeded("with store writes failing for a while, every turn still ends as the property says, and no refresh token is traded twice", ({ seed, expect }) =>
   Effect.asVoid(property(seed, expect, lastingCommandsOf(seed), true)),

@@ -117,7 +117,7 @@ const start = (
 
     /**
      * A request goes out on the session, as OpenCode sends it: `model.request`, where the pool names its login and
-     * lifetime in headers, then `http.request`, which the auth plugin reaches first and strips them from, unless
+     * lifetime in headers, then `http.response`; auth has stripped the headers unless
      * `kept` (this plugin's hook first, or no auth plugin).
      */
     const send = Effect.fn("CacheServerTest.send")(function* (
@@ -139,7 +139,8 @@ const start = (
       for (const callback of hooks["model.request"] ?? []) yield* callback({ ...scope, headers: { ...pool } })
       const headers = new Headers({ "content-type": "application/json", ...(options.kept === true ? pool : {}), ...options.headers })
       const request = new Request("https://api.anthropic.com/v1/messages", { method: "POST", headers, body: JSON.stringify(json) })
-      for (const callback of hooks["http.request"] ?? []) yield* callback({ ...scope, request })
+      for (const callback of Option.getOrElse(Option.fromUndefinedOr(hooks["http.response"]), () => []))
+        yield* callback({ ...scope, request, response: new Response("") })
     })
     const emit = (type: string, data: Record<string, unknown>) => PubSub.publish(events, { type, data }).pipe(Effect.andThen(settle))
     const usage = (read: number, write: number) => ({ input: 100, cache: { read, write } })

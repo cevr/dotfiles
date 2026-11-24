@@ -7,6 +7,7 @@ import { costOf, create, Ledger, MODEL, poolTransport, useModel, useSleep, useTr
 import { type Live, Pool, PoolLimit, type Source, weeklyDrift } from "./pool.ts"
 import type { AccountStatus } from "../../mods/pool/status.ts"
 import type { Pace } from "../../mods/pool/pace.ts"
+import { nextRetryAt } from "../../mods/pool/pace.ts"
 
 const NOW = Date.UTC(2026, 10, 9, 12)
 const HOUR = 3_600_000
@@ -116,7 +117,7 @@ describe("the pool transport", () => {
   })
 
   test("pace: the live pool's no, then the eval accounts' own readings, stop the run", async () => {
-    const wait: Pace = { ok: false, measured: true, reason: "the pool's weekly pace is over", reasonCode: "even-line", retryAt: NOW + HOUR }
+    const wait: Pace = { ok: false, measured: true, reason: "the pool's weekly pace is over", reasonCode: "even-line", retryAt: nextRetryAt(NOW, [NOW + HOUR]) }
     const told = new Pool({ source: source(["store:a"]), live: live([account("store:a")], wait), now: () => NOW })
     expect(await told.pace()).toMatchObject({ ok: false, reason: "live pool: the pool's weekly pace is over" })
 

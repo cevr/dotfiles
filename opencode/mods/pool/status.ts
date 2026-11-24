@@ -9,8 +9,10 @@
 // for byte; the schemas below are the shapes its methods answer with. No
 // answer carries a secret.
 import { Schema } from "effect"
-import { QuotaReading, RefusalKind } from "./quota.ts"
+import { Hold } from "./hold.ts"
+import { QuotaReading } from "./quota.ts"
 import { Claim, Reset } from "./resets.ts"
+export { Hold } from "./hold.ts"
 
 /** The pool's own RPC: each pooled provider's accounts, holds and readings. No secrets. */
 export const POOL_STATUS = {
@@ -21,6 +23,18 @@ export const POOL_STATUS = {
         type: "object",
         properties: { providerID: { type: "string" }, model: { type: "string" }, sessionID: { type: "string" }, dispatch: { type: "boolean" } },
         required: ["providerID"],
+      },
+      output: { type: "object" },
+    },
+    handoff: {
+      input: {
+        type: "object",
+        properties: {
+          providerID: { type: "string" }, sessionID: { type: "string" }, model: { type: "string" },
+          kind: { type: "string" }, agent: { type: "string" }, candidate: { type: "string" },
+          keepalive: { type: "boolean" },
+        },
+        required: ["providerID", "sessionID", "model", "kind", "agent", "candidate"],
       },
       output: { type: "object" },
     },
@@ -51,16 +65,6 @@ export const POOL_STATUS = {
   },
   events: {},
 } as const
-
-/** An account refused until `until`, set at `at` (epoch ms). */
-export const Hold = Schema.Struct({
-  kind: RefusalKind,
-  until: Schema.Number,
-  at: Schema.Number,
-  /** An explicit provider refusal remains binding until this time, even if a later response shows room. */
-  refusedUntil: Schema.optionalKey(Schema.Finite),
-})
-export type Hold = typeof Hold.Type
 
 /** One account as the status method reports it. */
 export const AccountStatus = Schema.Struct({

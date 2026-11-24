@@ -488,6 +488,8 @@ export interface Options {
   readonly model?: { readonly providerID: string; readonly id: string }
   /** The world's provider for `model`'s provider: its requests go over HTTP to it, through the HTTP hooks (sim/http.ts). */
   readonly provider?: { readonly id: string; readonly baseURL: string; readonly handle: (request: WebRequest) => Effect.Effect<Response, SimError> }
+  /** Observe a request that passed the final hook; the callback at handler entry checks the simulated handoff. */
+  readonly admitHttp?: (request: WebRequest) => Option.Option<() => Effect.Effect<void, SimError>>
   /** The logins OpenCode holds, by integration: each connection with its credential, the first one active. */
   readonly integrations?: { readonly [integrationID: string]: ReadonlyArray<Login> }
   /**
@@ -734,7 +736,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
   const removed = new Map<number, Set<string>>()
   /** Each copy's tool updates, in the order its transform made them. */
   const updates = new Map<number, Array<{ readonly id: string; readonly change: (tool: Types.Mutable<Tool.Info>) => void }>>()
-  const rpcs = new Map<string, { readonly [method: string]: Handler }>()
+  const rpcs = new Map<string, ReadonlyArray<{ readonly directory: string; readonly methods: Readonly<Record<string, Handler>> }>>()
   /** The faults set on RPC methods, by `<id>.<method>`. */
   const rpcFaults = new Map<string, RpcFault>()
   const subscribers = new Set<Subscriber>()
@@ -1045,11 +1047,16 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       })
       const before: HttpRequestInput = { ...scope, kind: event.kind, request: sent }
       yield* runRequestHooks("http.request", session, before)
+      const entry = options.admitHttp?.(before.request) ?? Option.none()
       // The answer arrives at once: a refusal is whole then; an answer streams for the seed's latency before it is read.
       // A data: URL is answered in the process, as the host's fetch reads one, never by the provider.
-      const answered = yield* Effect.exit(
-        Option.match(Http.dataOf(before.request.url), { onNone: () => provider.handle(before.request), onSome: Effect.succeed }),
-      )
+      const answered = yield* Effect.exit(Option.match(Http.dataOf(before.request.url), {
+        onNone: () => Option.match(entry, {
+          onNone: () => provider.handle(before.request),
+          onSome: (observe) => observe().pipe(Effect.andThen(provider.handle(before.request))),
+        }),
+        onSome: Effect.succeed,
+      }))
       if (Exit.isFailure(answered)) return Result.fail(Http.unreachable(String(answered.cause)))
       const after: HttpResponseInput = { ...scope, kind: event.kind, request: before.request, response: answered.value }
       yield* runRequestHooks("http.response", session, after)
@@ -1894,10 +1901,11 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
    * the fork's RPC turns a handler's defect into a failure; a fault the world set on the method (`rpcFaults`) makes
    * its handler die or never answer.
    */
-  const callRpc = (id: string, method: string, input: Schema.Json) =>
+  const callRpc = (id: string, method: string, input: Schema.Json, directory?: string) =>
     Effect.suspend(() => {
       record("rpc-call", { id, method })
-      const handler = rpcs.get(id)?.[method]
+      const entries = rpcs.get(id)
+      const handler = (entries?.findLast((entry) => entry.directory === directory) ?? entries?.at(-1))?.methods[method]
       if (handler === void 0) return Effect.fail(new RpcNotFound({ message: `no RPC ${id}.${method}` }))
       const fault = Option.fromUndefinedOr(rpcFaults.get(`${id}.${method}`))
       const answered = Option.match(fault, {
