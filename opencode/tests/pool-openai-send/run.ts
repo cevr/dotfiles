@@ -1,7 +1,7 @@
 // Child process: real SDK and pool, scratch database and synthetic OAuth.
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
-import { Array as Arr, Config, Data, Effect, FileSystem, Match, Option, Path, Predicate, Result, Schema, Scope, Stream } from "effect"
+import { Array as Arr, Config, Data, Effect, FileSystem, Latch, Match, Option, Path, Predicate, Result, Schema, Scope, Stream } from "effect"
 import { HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { Socket } from "effect/socket"
 import { OpenCode as sdk } from "pool-fixture-sdk"
@@ -186,10 +186,12 @@ const sessionLog = (host: Client, id: string) => host.experimental.session.log({
 const prompt = (host: Client, id: string) => host.session.prompt({ sessionID: id, text: "original synthetic prompt" })
 const fact = (host: Client, id: string, directory: string) =>
   host.rpc.call({ rpcID: POOL, method: "heldSend", input: { sessionID: id }, location: { directory } }).pipe(
-    Effect.map((result) => Option.orElse(Option.fromUndefinedOr(result.output), () => Option.fromUndefinedOr(result.data))),
-    Effect.orElseSucceed(() => Option.none()),
+    Effect.flatMap((result) => Option.match(
+      Option.orElse(Option.fromUndefinedOr(result.output), () => Option.fromUndefinedOr(result.data)),
+      { onNone: () => Effect.fail(new FixtureFailure({ message: "heldSend RPC returned no answer" })), onSome: (answer) => Effect.succeed(Option.some(answer)) },
+    )),
   )
-const transcript = (host: Client, state: Fake, id: string, directory: string, replayAfterWarm = false) => Effect.gen(function* () {
+const transcript = (host: Client, state: Fake, id: string, directory: string, retry: { readonly reached: Latch.Latch; readonly observed: Latch.Latch }, replayAfterWarm = false) => Effect.gen(function* () {
   let during = Option.none<Schema.Json>()
   let deferred = Option.none<{ readonly at: number; readonly sends: number; readonly upgrades: number; readonly reason: string }>()
   const warm = state.sent.length
@@ -204,10 +206,14 @@ const transcript = (host: Client, state: Fake, id: string, directory: string, re
       if (event.type !== "session.retry.scheduled" || event.data?.error?.type !== "route.deferred" || Option.isNone(at)) return
       if (Option.isNone(deferred)) {
         deferred = Option.some({ at: at.value, sends: state.sent.length - warm, upgrades: state.upgrades, reason: event.data.error.message })
+        // Exercise a late consumer deliberately, with the retry parked at
+        // routing until the read. This is not a claim about observer latency.
+        if (state.sample === "late-http") yield* retry.reached.await
         during = yield* fact(host, id, directory)
       }
       state.spent = false
       state.deadline = at.value + HOUR
+      yield* retry.observed.open
     })),
     Stream.filter(closeOf),
     Stream.runHead,
@@ -257,6 +263,7 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
   let typed = false
   let commit: Effect.Effect<void> = Effect.void
   let wrote = false
+  const retryRead = { reached: yield* Latch.make(), observed: yield* Latch.make() }
   const probe = (ctx: HookContext) => Effect.gen(function* () {
     yield* ctx.session.hook("title", (event) => Effect.sync(() => { event.result = "Fixture" }))
     if (target.sample === "late-websocket") yield* ctx.session.hook("experimental.ws.handshake", (event) =>
@@ -278,6 +285,11 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
         if (event.kind !== "primary") return
         const step = routeStep(event.step)
         if (Option.isSome(step)) steps.push(step.value)
+        const retryAfterHold = Match.value(retry).pipe(Match.when(true, () => 3), Match.orElse(() => 2))
+        if (hold && !api && Option.exists(step, ({ attempt }) => attempt >= retryAfterHold)) {
+          yield* retryRead.reached.open
+          yield* retryRead.observed.await
+        }
         const limit = Match.value(hold && socket).pipe(Match.when(true, () => 2), Match.orElse(() => 1))
         if (quotes.length >= limit) return
         typed = Option.isSome(step)
@@ -321,7 +333,7 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
     const login = yield* signIn(host)
     const warm = yield* host.session.create({ location: { directory }, model: MODEL, title: "Warm" })
     yield* prompt(host, warm.id)
-    const before = yield* transcript(host, state, warm.id, directory)
+    const before = yield* transcript(host, state, warm.id, directory, retryRead)
     if (before.outcome !== "session.execution.succeeded" || state.sent[0]?.authorization !== `Bearer ${ACCESS}`)
       return yield* new FixtureFailure({ message: "OAuth warm-up did not send on the synthetic pooled login" })
     yield* commitIn(host, directory).pipe(Effect.mapError((error) => new FixtureFailure({ message: `sign-out hold commit: ${error.message}; ${warnings.join("\n")}` })))
@@ -343,7 +355,7 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
   const warm = Arr.empty<Sample>()
   if (hold && socket && !api) {
     yield* prompt(host, id)
-    const first = yield* transcript(host, state, id, directory)
+    const first = yield* transcript(host, state, id, directory, retryRead)
     if (first.outcome !== "session.execution.succeeded" || state.sent.length !== 1)
       return yield* new FixtureFailure({ message: `warm control failed: ${serialize({ ...first, sent: state.sent, warnings })}` })
     warm.push(...state.sent)
@@ -351,7 +363,7 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
   // The durable log replays the first execution, so the second observation
   // skips exactly its first terminal event, never a sleep or timing guess.
   yield* prompt(host, id)
-  const last = yield* transcript(host, state, id, directory, warm.length > 0)
+  const last = yield* transcript(host, state, id, directory, retryRead, warm.length > 0)
   const after = yield* fact(host, id, directory)
   const usageBeforeCost = state.usage
   const cost = yield* Match.value(target.sample).pipe(

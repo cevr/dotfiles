@@ -25,6 +25,9 @@ const Samples = Schema.fromJsonString(Schema.Struct({ held: Seen, open: Schema.N
 const Override = Schema.fromJsonString(Schema.Struct({ compilerOptions: Schema.Struct({ paths: Schema.Record(Schema.String, Schema.Array(Schema.String)) }) }))
 const ResultJson = Schema.fromJsonString(Schema.Json)
 const toJson = Schema.encodeSync(ResultJson)
+const scheduledAt = (seen: typeof Seen.Type) => Option.getOrElse(
+  Option.map(Option.fromNullishOr(seen.deferred), ({ at }) => at), () => 0,
+)
 const out = (stream: Stream.Stream<Uint8Array, unknown>) => stream.pipe(Stream.decodeText(), Stream.mkString)
 type Sample = "http" | "websocket" | "late-http" | "late-websocket" | "api-http" | "api-websocket" | "cost"
   | "retry-http" | "retry-websocket" | "signed-out-http"
@@ -79,12 +82,16 @@ const contained = (seen: typeof Seen.Type, retryAt: number, sample: Sample) => {
   const wording = `held by the pool until ${DateTime.formatIso(DateTime.makeUnsafe(retryAt))}: not an error of the task; retry at or after that time`
   if (seen.typed) {
     expect(seen.sent.filter(({ at }) => at < retryAt)).toHaveLength(0)
-    expect(seen.deferred).toEqual({ at: retryAt, sends: 0, upgrades: wanted, reason: expect.stringContaining(wording) })
+    // The host can round a short remaining wait up to its minimum retry
+    // interval. The durable pool fact, not the host's schedule, owns retryAt.
+    expect(scheduledAt(seen)).toBeGreaterThanOrEqual(retryAt)
+    expect(seen.deferred).toEqual({ at: expect.any(Number), sends: 0, upgrades: wanted, reason: expect.stringContaining(wording) })
     const attempts = seen.steps.slice(wanted)
     const id = Option.getOrElse(Option.map(Arr.head(attempts), (step) => step.id), () => "")
     expect(id).not.toBe("")
     expect(attempts).toEqual([{ id, attempt: 1 }, { id, attempt: 2 }])
     expect(Option.getOrNull(readHeldSend(seen.during))).toMatchObject({ hold: { providerID: "openai", reasonCode: "account-held", retryAt, stepID: id } })
+    if (sample === "late-http") expect(Option.getOrNull(readHeldSend(seen.during))).toMatchObject({ state: "ended" })
     expect(after).toEqual({})
     expect(seen.outcome).toBe("session.execution.succeeded")
     expect(seen.sent).toHaveLength(1)
@@ -116,7 +123,8 @@ describe.skipIf(!forkRuns)("OpenAI final hold on native OpenCode", () => {
           const id = Option.getOrElse(Option.map(Arr.head(attempts), (step) => step.id), () => "")
           expect(id).not.toBe("")
           expect(attempts).toEqual([{ id, attempt: 1 }, { id, attempt: 2 }, { id, attempt: 3 }])
-          expect(held.deferred).toMatchObject({ at: expected, sends: 1 })
+          expect(scheduledAt(held)).toBeGreaterThanOrEqual(expected)
+          expect(held.deferred).toMatchObject({ sends: 1 })
           expect(Option.getOrNull(readHeldSend(held.during))).toMatchObject({ hold: { stepID: id, retryAt: expected } })
           expect(held.sent).toHaveLength(2)
           expect(held.sent[1]?.at).toBeGreaterThanOrEqual(expected)

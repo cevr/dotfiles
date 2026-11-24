@@ -14,6 +14,54 @@ const DIRECTORY = "/scratch/openai"
 const POOL = "dotfiles-opencode.pool"
 const heldSendOf = Schema.decodeUnknownSync(HeldSendAnswer)
 
+seeded("the send hold is held or ended until admission, even across a restart", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const model = { providerID: "openai", id: "gpt-6.2-fixture" }
+    const account = Provider.accounts(seed, ["sol"]).sol
+    const quota = ChatGPT.make()
+    const usage = spentAccount(account.access, "never-claim", World.START)
+    usage.credits.length = 0
+    const retryAt = World.START + 5_000 + 1_000 * (seed % 17)
+    usage.fiveHourResetAt = retryAt
+    quota.accounts.set("fixture", usage)
+    const sends: Array<number> = []
+    // The old host leaves retry to its caller, so crossing the deadline
+    // does not itself produce a new admission.
+    const world = World.make({
+      seed, sendRefusal: false, model, latency: [1, 10], script: () => World.say("synthetic answer"),
+      provider: { id: model.providerID, baseURL: "http://127.0.0.1:11", handle: () => Effect.sync(() => {
+        sends.push(world.now())
+        return new Response("data: {\"type\":\"message_stop\"}\n\n")
+      }) },
+      integrations: { openai: [{ id: "cred_sol", label: "Sol", ...account,
+        expires: World.START + 86_400_000, methodID: "chatgpt-browser", metadata: { accountID: "fixture" } }] },
+    })
+    const network = Provider.make({ seed, accounts: {}, chatgpt: quota }, world.runtime)
+    yield* world.load(Plugins.pool(new Map(), Plugins.network(network)), {
+      directory: DIRECTORY, options: { providers: {}, paced: { openai: "openai" }, sweepMinutes: 0, resets: false,
+        usageURL: ChatGPT.USAGE_URL, limitsFile: "/nonexistent/sim/limits.json" },
+    })
+    const sessionID = yield* world.session(DIRECTORY, { title: "No auxiliary title request" })
+    const read = () => world.rpc(POOL, "heldSend", { sessionID })
+    expect(decode(yield* world.rpc(POOL, "pace", { providerID: model.providerID, model: model.id, dispatch: true }))).toMatchObject({ ok: false, retryAt })
+    yield* world.prompt(sessionID, "held original")
+    yield* world.advance(retryAt - world.now() - 1)
+    expect(sends).toEqual([])
+    const hold = { sessionID, providerID: "openai", retryAt, reasonCode: "account-held" }
+    expect(yield* read()).toMatchObject({ hold })
+    yield* world.advance(1 + seed % 103)
+    expect(sends).toEqual([])
+    expect(yield* read()).toEqual({ state: "ended", hold })
+    yield* world.restart
+    expect(yield* read()).toEqual({ state: "ended", hold })
+    usage.fiveHour = 0
+    usage.fiveHourResetAt = retryAt + 3_600_000
+    yield* world.prompt(sessionID, "retry explicitly")
+    yield* world.until(() => sends.length === 1, 1_000)
+    expect(sends[0]).toBeGreaterThanOrEqual(retryAt)
+    expect(yield* read()).toEqual({})
+  }))
+
 for (const transport of ["http", "websocket"] as const)
 for (const sendRefusal of [false, true])
 for (const late of [false, true])
