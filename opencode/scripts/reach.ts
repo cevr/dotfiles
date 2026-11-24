@@ -202,7 +202,8 @@ const authorityOf = (workspace: Workspace, test: string) => {
   const directories = paths.filter((file) => file.endsWith("/"))
   const patterns = readMatcher(read.patterns.filter((pattern) => pattern !== ALL_READS))
   const positive = (file: string) => exact.has(file) || patterns(file) || directories.some((prefix) => file.startsWith(prefix))
-  return { unknown, subprocessReason, exact, imports, positive, has: (file: string) => unknown || positive(file) }
+  const observationsFor = (file: string) => paths.filter((entry) => entry === file || (entry.endsWith("/") && file.startsWith(entry)))
+  return { unknown, subprocessReason, exact, imports, positive, observationsFor, has: (file: string) => unknown || positive(file) }
 }
 
 /** Runtime reads have one authority for selection, cache inputs and the coverage audit.
