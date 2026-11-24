@@ -26,7 +26,7 @@ const newer = (a: Offered, b: Offered) => (b.time?.released ?? 0) - (a.time?.rel
  * (`fast`, `ultrafast`, `pro`) a model of its own id that asks the base model's `modelID`, with the same
  * family and release. No fallback runs on one (owner, 2026-11-24: "not on SolFast anymore").
  */
-const standard = (item: Offered) => item.modelID === undefined || item.modelID === item.id
+const standard = (item: Offered) => Option.getOrElse(Option.fromUndefinedOr(item.modelID), () => item.id) === item.id
 
 export const layer = (port: Port) => {
   const base = Effect.fnUntraced(function* (sessionID: string, agentID: string) {
