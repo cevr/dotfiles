@@ -263,9 +263,9 @@ export const layer = (config: Config) =>
        * was refused. Every command is decided on its own inputs against the
        * aggregate's initial state (see tool-call.ts).
        */
-      const decide = (command: Command, now: number, tool: string, asked?: Asked, first?: FirstRecord, fast: Option.Option<boolean> = Option.none()) =>
+      const decide = (command: Command, now: number, tool: string, asked?: Asked, first?: FirstRecord, fast: Option.Option<boolean> = Option.none(), unasked: Option.Option<string> = Option.none()) =>
         ToolCall.decide(ToolCall.initial, command, now).pipe(
-          Effect.flatMap((events) => Effect.forEach(events, (event) => saidFast(command.call.sessionID, event, fast))),
+          Effect.flatMap((events) => Effect.forEach(events, (event) => saidFast(command.call.sessionID, event, fast, unasked))),
           // A latch is logged once the wakes keep it, with its child; or as the call's refusal when they cannot.
           Effect.tap((events) =>
             Effect.forEach(events, (event) =>
@@ -291,28 +291,45 @@ export const layer = (config: Config) =>
       })
 
       /**
-       * The model a start runs on as it asked: asked fast, the fast mode of `model` (`model` itself when it has none);
-       * asked not fast, `model`'s standard when it is a fast mode; asked nothing, `model`. Nothing else ever resolves to
-       * a fast mode (Models.newest skips every mode).
+       * The model a start runs on, as THIS start asked: a start is fast only because it asked (owner, 2026-11-24). Every
+       * start, new, followed up or opened from a latch, goes through it, so no other path decides a mode. A new start's
+       * model, wherever it came from (named, the parent's, the default, an agent's config, a latch's), is first reduced
+       * to its standard model (the catalog's `modelID`); then, asked fast, it runs on that model's fast mode (none
+       * offered: standard). A follow-up keeps its child's model unless it asks: fast, or not fast.
        */
-      const fastened = Effect.fnUntraced(function* (sessionID: string, model: Option.Option<string>, fast: Option.Option<boolean>) {
-        if (Option.isNone(model) || Option.isNone(fast)) return model
-        if (fast.value) return Option.orElse(yield* models.fast(sessionID, model.value), () => model)
-        return Option.orElse(yield* models.standardOf(sessionID, model.value), () => model)
+      const asAsked = Effect.fnUntraced(function* (sessionID: string, model: Option.Option<string>, fast: Option.Option<boolean>, fresh: boolean) {
+        if (Option.isNone(model) || (!fresh && Option.isNone(fast))) return model
+        const standard = Option.getOrElse(yield* models.standardOf(sessionID, model.value), () => model.value)
+        if (!Option.contains(fast, true)) return Option.some(standard)
+        return Option.some(Option.getOrElse(yield* models.fast(sessionID, standard), () => standard))
       })
 
-      /** A held start's fallback as it asked fast (`fastened`), its pace's hold unchanged. */
-      const fastFallback = (sessionID: string, fallback: Option.Option<Fallback>, fast: Option.Option<boolean>) =>
+      /** A held start's fallback as it asked (`asAsked`), its pace's hold unchanged. */
+      const fastFallback = (sessionID: string, fallback: Option.Option<Fallback>, fast: Option.Option<boolean>, fresh: boolean) =>
         Option.match(fallback, {
           onNone: () => Effect.succeed(fallback),
           onSome: (each) =>
-            Effect.map(fastened(sessionID, Option.some(each.model), fast), (moved) => Option.some<Fallback>({ ...each, model: Option.getOrElse(moved, () => each.model) })),
+            Effect.map(asAsked(sessionID, Option.some(each.model), fast, fresh), (moved) => Option.some<Fallback>({ ...each, model: Option.getOrElse(moved, () => each.model) })),
         }).pipe(Effect.map(Option.getOrUndefined))
 
-      /** A start or latch that asked fast says what came of it on its line and in its answer (call-line.ts `fastLine`). */
-      const saidFast = (sessionID: string, event: Event, fast: Option.Option<boolean>): Effect.Effect<Event> =>
+      /**
+       * What a start that did not ask fast says of a fast mode it would have run on: a new one that dropped it (the
+       * parent's, the default's, a config's: none of them is this start's ask), a follow-up whose child runs on one.
+       */
+      const unaskedFast = Effect.fnUntraced(function* (sessionID: string, wouldRun: Option.Option<string>, fast: Option.Option<boolean>, fresh: boolean) {
+        if (Option.isSome(fast) || Option.isNone(wouldRun) || Option.isNone(yield* models.standardOf(sessionID, wouldRun.value))) return Option.none<string>()
+        if (fresh) return Option.some(CallLine.fastNotAsked(wouldRun.value))
+        return Option.some(CallLine.FAST_AS_STARTED)
+      })
+
+      /**
+       * A start or latch says on its line and in its answer what came of fast: asked, whether it runs on a fast mode
+       * (call-line.ts `fastLine`); not asked, `unasked` (`unaskedFast`), when there is something to say.
+       */
+      const saidFast = (sessionID: string, event: Event, fast: Option.Option<boolean>, unasked: Option.Option<string>): Effect.Effect<Event> =>
         Effect.gen(function* () {
-          if (!Option.contains(fast, true) || (event._tag !== "SubagentStarted" && event._tag !== "SubagentLatched")) return event
+          if (event._tag !== "SubagentStarted" && event._tag !== "SubagentLatched") return event
+          if (!Option.contains(fast, true)) return Option.match(unasked, { onNone: () => event, onSome: (said) => ({ ...event, fast: said }) })
           const on = Option.fromUndefinedOr(event.model)
           const onFast = yield* Option.match(on, { onNone: () => Effect.succeed(false), onSome: (model) => Effect.map(models.standardOf(sessionID, model), Option.isSome) })
           return { ...event, fast: CallLine.fastLine(onFast, on) }
@@ -594,22 +611,24 @@ export const layer = (config: Config) =>
         const fallback = offered?.fallback
         // What each pace asked said, for the line.
         const asked: Asked = { ...paced?.asked, ...Option.match(followed, { onNone: () => ({}), onSome: (each) => each.asked }), ...offered?.asked }
-        // A start that says fast runs on the fast mode of the model it would run on (its fallback's too), or back on the
-        // standard one when it says not fast; its pace and latch were decided on the standard model, as any start's.
-        // One that names no model takes the one it would run on: a new worker's inherited one, a new start's, or a
-        // follow-up's child's.
+        // The model it runs on, as this start asked (`asAsked`): its pace and latch were decided on the model it
+        // resolved, as any start's. One that names no model takes the one it would run on: a new start's (a new
+        // worker's inherited one, so the host never falls back to a fast parent's), or a follow-up's child's.
         const unnamed = Option.orElse(Option.fromUndefinedOr(inherited), () => Option.fromUndefinedOr(primary))
-        const wouldRun = yield* Option.match(Option.orElse(Option.fromUndefinedOr(model), () => Option.flatMap(fastAsk.fast, () => unnamed)), {
+        const wouldRun = yield* Option.match(Option.orElse(Option.fromUndefinedOr(model), () => Option.filter(unnamed, () => fresh)), {
           onSome: (each) => Effect.succeed(Option.some(each)),
           onNone: () =>
-            Option.match(Option.filter(Option.fromUndefinedOr(child), () => Option.isSome(fastAsk.fast)), {
+            Option.match(Option.fromUndefinedOr(child), {
               onNone: () => Effect.succeed(Option.none<string>()),
               onSome: (each) => Effect.map(models.current(each), Option.map(formatRef)),
             }),
         })
-        const runs = Option.getOrUndefined(yield* fastened(call.sessionID, wouldRun, fastAsk.fast))
-        const runsFirst = Option.getOrUndefined(yield* fastened(call.sessionID, Option.fromUndefinedOr(primary), fastAsk.fast))
-        const runsFallback = yield* fastFallback(call.sessionID, Option.fromUndefinedOr(fallback), fastAsk.fast)
+        const resolved = yield* asAsked(call.sessionID, wouldRun, fastAsk.fast, fresh)
+        // A start keeps the model it named or its route chose; it names one it did not only where this start's ask moved it.
+        const runs = Option.getOrUndefined(Option.orElse(Option.filter(resolved, (each) => Option.isSome(Option.fromUndefinedOr(model)) || Option.isSome(fastAsk.fast) || !Option.contains(wouldRun, each)), () => Option.fromUndefinedOr(model)))
+        const unasked = yield* unaskedFast(call.sessionID, wouldRun, fastAsk.fast, fresh)
+        const runsFirst = Option.getOrUndefined(yield* asAsked(call.sessionID, Option.fromUndefinedOr(primary), fastAsk.fast, fresh))
+        const runsFallback = yield* fastFallback(call.sessionID, Option.fromUndefinedOr(fallback), fastAsk.fast, fresh)
         const command = StartSubagent.make({
           ...base,
           ...(childAgent ? { childAgent } : {}),
@@ -621,7 +640,7 @@ export const layer = (config: Config) =>
           ...Option.match(off.refused, { onNone: () => ({}), onSome: (codex) => ({ codex }) }),
         })
         const first = onFirst?.first
-        const events = yield* decide(command, now, SUBAGENT, asked, first, fastAsk.fast)
+        const events = yield* decide(command, now, SUBAGENT, asked, first, fastAsk.fast, unasked)
         const latched = events.find((event) => event._tag === "SubagentLatched")
         if (latched !== undefined) {
           // The host checks ownership before prompting an existing child; check it here too before marking a latch.
@@ -726,10 +745,12 @@ export const layer = (config: Config) =>
           (kept === undefined || paced?.hold === undefined ? undefined : { model: kept.fallback, ...(fallbackHold === undefined ? {} : { hold: fallbackHold }) })
         const reason = Schema.decodeUnknownOption(Reason)(latch.context.reason)
         const first = tried?.first ?? Option.getOrUndefined(Schema.decodeUnknownOption(LatchFirst)(latch.context.first))
-        // A latch that asked fast opens on the fast mode of the model that admits it, as its start would have run.
+        // A latch opens on the model that admits it as its start asked (`asAsked`): fast only when that start asked fast.
         const fast = Option.liftPredicate(latch.context.fast, Predicate.isBoolean)
-        const opensOn = Option.getOrUndefined(yield* fastened(latch.parent, Option.fromUndefinedOr(primary), fast))
-        const opensFallback = yield* fastFallback(latch.parent, Option.fromUndefinedOr(fallback), fast)
+        const fresh = latch.context.continuation !== true
+        const opensOn = Option.getOrUndefined(yield* asAsked(latch.parent, Option.fromUndefinedOr(primary), fast, fresh))
+        const opensFallback = yield* fastFallback(latch.parent, Option.fromUndefinedOr(fallback), fast, fresh)
+        const unasked = yield* unaskedFast(latch.parent, Option.fromUndefinedOr(primary), fast, fresh)
         const events = yield* ToolCall.decide(
           ToolCall.initial,
           OpenLatch.make({
@@ -748,7 +769,7 @@ export const layer = (config: Config) =>
           now,
         ).pipe(
           Effect.orDie, // The model has already been checked; the open latches again or starts.
-          Effect.flatMap((decided) => Effect.forEach(decided, (event) => saidFast(latch.parent, event, fast))),
+          Effect.flatMap((decided) => Effect.forEach(decided, (event) => saidFast(latch.parent, event, fast, unasked))),
         )
         const latched = events.find((event) => event._tag === "SubagentLatched")
         if (latched !== undefined) {

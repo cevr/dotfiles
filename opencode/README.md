@@ -1109,9 +1109,16 @@ catalog, same variant), its Codex fallback's when held. Naming a fast mode
 as the model is the same ask, through the same path. With no fast mode
 offered it runs standard. Either way its `call` (or `latched`) line carries
 `fast` (`fast, as asked`, or that the model has none), and the parent's
-answer starts `orchestrate: this agent runs on <model>: <that>.`. A start
-that does not ask never runs on a fast mode; a follow-up keeps the mode its
-child started on unless it says `fast: false`; a latch opens on its fast ask. A row
+answer starts `orchestrate: this agent runs on <model>: <that>.`. A start is
+fast only because it asked: every start's model goes through one function
+(`asAsked` in model.ts), which first reduces a new start's model to its
+standard one wherever it came from (named, a fast parent's, the default, an
+agent's config, a latch's), then applies this start's ask. A new start that
+asks nothing under a fast parent runs standard, names that model to the host
+(which would otherwise inherit the parent's), and its line says the fast mode
+was not asked for. A follow-up keeps the mode its child started on unless it
+says `fast: false`, and its line says `fast, as it started`; a latch opens
+on its own start's ask. A row
 draws a fast mode as its model with `fast` (`sol 6.1 fast`).
 
 The units' logs (`unit-log.ts`): a planner's or implementor's start moves

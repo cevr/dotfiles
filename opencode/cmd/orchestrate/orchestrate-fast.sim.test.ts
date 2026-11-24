@@ -11,7 +11,7 @@
 // the first model with its fast mode, a model with none, and two sols with
 // their fast modes. The model answers by the scripts' rules below.
 import type { CallLine } from "@dotfiles/opencode-orchestrate/call-line"
-import { FAST_AS_ASKED } from "@dotfiles/opencode-orchestrate/call-line"
+import { FAST_AS_ASKED, FAST_AS_STARTED } from "@dotfiles/opencode-orchestrate/call-line"
 import { paceOfReply, parseAdmission } from "@dotfiles/opencode-orchestrate/pace"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 import { Plugin } from "@opencode/plugin/effect"
@@ -32,6 +32,8 @@ const AGAIN = "Worker brief Q2: check the PDF export too."
 const ANSWER = "The export check passed."
 const ANSWERED_AGAIN = "The PDF export check passed."
 const HEARD = "Root heard: the export check passed."
+const GRAND = "Nested brief G: check the export's header row."
+const GRAND_ANSWER = "The header row check passed."
 
 /** A catalog model, as opencode-drive's simulation provider offers one. */
 const offered = (providerID: string, id: string, fields: Partial<World.CatalogModel> = {}): World.CatalogModel => ({
@@ -52,7 +54,8 @@ const PLAIN = offered("simulation", "plain-model")
 const OTHER = offered("simulation", "other-model")
 const sol = (id: string, releaseDate: string) => offered("codex", id, { variants: [{ id: "high" }], family: "gpt-sol", time: { released: Date.parse(releaseDate) } })
 const SOL = sol("gpt-6.1-sol", "2026-09-29")
-const CATALOG = [FIRST, fastMode(FIRST), OTHER, fastMode(OTHER), PLAIN, sol("gpt-6-sol", "2026-06-01"), SOL, fastMode(SOL)]
+const OPUS = offered("anthropic", "claude-opus-5-5", { family: "claude-opus", time: { released: Date.parse("2026-10-01") } })
+const CATALOG = [FIRST, fastMode(FIRST), OPUS, fastMode(OPUS), OTHER, fastMode(OTHER), PLAIN, sol("gpt-6-sol", "2026-06-01"), SOL, fastMode(SOL)]
 
 /** One request as a test reads it back: the agent's, its model, its text. */
 interface Seen {
@@ -65,6 +68,8 @@ interface Seen {
 interface Asks {
   readonly start: SubagentCall
   readonly followUp?: SubagentCall
+  /** What the started child starts in turn (nesting depth 2), before it answers. */
+  readonly nested?: SubagentCall
 }
 
 /** A subagent call's input as these tests make one. */
@@ -76,6 +81,21 @@ interface SubagentCall {
   readonly fast?: boolean
 }
 
+/** A child's answer on its request text `s`, its latest brief deciding; one with a nested start makes it, waits for its answer, then answers. */
+const childAnswer = (s: string, asks: Asks) => {
+  if (!s.includes(BRIEF) && s.includes(GRAND)) return World.say(GRAND_ANSWER)
+  if (s.includes(AGAIN)) return World.say(ANSWERED_AGAIN)
+  if (!s.includes(BRIEF)) return World.say("?")
+  return Option.match(Option.fromUndefinedOr(asks.nested), {
+    onNone: () => World.say(ANSWER),
+    onSome: (nested) => {
+      if (!s.includes("call_nested")) return World.call("call_nested", "subagent", { ...nested })
+      if (!s.includes(GRAND_ANSWER)) return World.say("waiting")
+      return World.say(ANSWER)
+    },
+  })
+}
+
 /** The root's and the workers' answers, on the world's request text; `child` names the started child for a follow-up. */
 const script =
   (seen: Array<Seen>, asks: Asks, child: () => string): World.Script =>
@@ -83,10 +103,8 @@ const script =
     seen.push({ agent: request.agent, model: request.model, text: request.text })
     const s = request.text
     if (request.kind === "title") return World.say("export check")
-    // A worker's request carries its briefs, never the parent's prompt; its latest brief decides.
-    if (!s.includes(ASK) && s.includes(AGAIN)) return World.say(ANSWERED_AGAIN)
-    if (!s.includes(ASK) && s.includes(BRIEF)) return World.say(ANSWER)
-    if (!s.includes(ASK)) return World.say("?")
+    // A worker's request carries its briefs, never the parent's prompt.
+    if (!s.includes(ASK)) return childAnswer(s, asks)
     const followUp = Option.fromUndefinedOr(asks.followUp)
     if (s.includes(ANSWERED_AGAIN) || (Option.isNone(followUp) && s.includes(ANSWER))) return World.say(HEARD)
     if (Option.isSome(followUp) && s.includes(ANSWER) && !s.includes("call_again"))
@@ -120,7 +138,7 @@ const pool = (pace: Pace, now: () => number) =>
   })
 
 /** The run on one world: the root's ask, its start (and follow-up), until the root heard the answer. */
-const boot = (seed: number, asks: Asks, pace: Pace = "room") =>
+const boot = (seed: number, asks: Asks, pace: Pace = "room", rootModel: World.CatalogModel = FIRST) =>
   Effect.gen(function* () {
     const seen: Array<Seen> = []
     const calls: Array<CallLine> = []
@@ -133,7 +151,8 @@ const boot = (seed: number, asks: Asks, pace: Pace = "room") =>
         return ""
       }),
       models: CATALOG,
-      model: { providerID: FIRST.providerID, id: FIRST.id },
+      model: { providerID: rootModel.providerID, id: rootModel.id },
+      subagentDepth: 2,
     })
     // The Codex admission stand-in admits every fallback.
     const codex = () => Option.fromUndefinedOr(paceOfReply(parseAdmission(0, "admit: scripted room\n")))
@@ -146,7 +165,8 @@ const boot = (seed: number, asks: Asks, pace: Pace = "room") =>
     yield* world.until(() => world.messages(root).some((message) => message.type === "assistant" && message.text === HEARD), 120_000)
     const parent = seen.flatMap((request) => Arr.filter([request.text], (text) => text.includes(ASK))).at(-1)
     const worker = (brief: string) => seen.flatMap((request) => Arr.filter([request.model], () => !request.text.includes(ASK) && request.text.includes(brief)))
-    return { calls, worker, parent: Option.getOrElse(Option.fromUndefinedOr(parent), () => "") }
+    const grand = seen.flatMap((request) => Arr.filter([request.model], () => request.text.includes(GRAND) && !request.text.includes(BRIEF)))
+    return { calls, worker, grand, parent: Option.getOrElse(Option.fromUndefinedOr(parent), () => "") }
   })
 
 const WORKER = { agent: "worker", description: "Check the export", prompt: BRIEF }
@@ -213,6 +233,8 @@ seeded("a follow-up keeps the fast mode its child started on, and goes standard 
   Effect.gen(function* () {
     const kept = yield* boot(seed, { start: { ...WORKER, fast: true }, followUp: { ...WORKER, prompt: AGAIN } })
     for (const model of kept.worker(AGAIN)) expect(model.id).toBe("gpt-sim-model-fast")
+    // Its line says it runs fast, as it started, not only its row.
+    expect(started(kept.calls)[1]).toMatchObject({ reason: "continued", fast: FAST_AS_STARTED })
     const back = yield* boot(seed, { start: { ...WORKER, fast: true }, followUp: { ...WORKER, prompt: AGAIN, fast: false } })
     expect(back.worker(AGAIN).at(-1)).toMatchObject({ id: "gpt-sim-model" })
     expect(started(back.calls)[1]).toMatchObject({ model: "simulation/gpt-sim-model" })
@@ -227,5 +249,53 @@ seeded("a fast start the pace holds latches as any start does, and opens on the 
     expect(latched).toMatchObject({ hold: "pace", fast: FAST_AS_ASKED, model: "simulation/gpt-sim-model-fast" })
     expect(started(calls).at(-1)).toMatchObject({ model: "simulation/gpt-sim-model-fast", fast: FAST_AS_ASKED })
     expect(worker(BRIEF)).toContainEqual(expect.objectContaining({ id: "gpt-sim-model-fast" }))
+  }),
+)
+
+/** Each agent a start can ask for, by name or by none (`general` runs as the worker); a reviewer is a verifier. */
+const UNASKED: ReadonlyArray<{ readonly start: SubagentCall; readonly runs: string }> = [
+  { start: { agent: "planner", description: "Plan the export", prompt: BRIEF }, runs: "gpt-sim-model" },
+  { start: { agent: "implementor", description: "Fix the export", prompt: BRIEF }, runs: "claude-opus-5-5" },
+  { start: WORKER, runs: "gpt-sim-model" },
+  { start: { ...WORKER, agent: "general" }, runs: "gpt-sim-model" },
+  { start: { agent: "verifier", description: "Review the export", prompt: BRIEF }, runs: "claude-opus-5-5" },
+]
+
+seeded("under a parent on a fast mode (the default model here), a start that asks nothing runs standard, whatever its agent", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    for (const each of UNASKED) {
+      const { calls, worker } = yield* boot(seed, { start: each.start }, "room", fastMode(FIRST))
+      expect(worker(BRIEF).length).toBeGreaterThan(0)
+      for (const model of worker(BRIEF)) expect({ agent: each.start.agent, id: model.id }).toEqual({ agent: each.start.agent, id: each.runs })
+      // The configured fast mode it did not use is said, never a fast ask.
+      const line = started(calls)[0]
+      expect(line).not.toMatchObject({ fast: FAST_AS_ASKED })
+      if (each.runs === "gpt-sim-model") expect(line).toMatchObject({ fast: expect.stringMatching(/^standard: simulation\/gpt-sim-model-fast(#\w+)? is a fast mode, and this start did not ask fast$/) })
+    }
+  }),
+)
+
+seeded("under a parent on a fast mode, a start that asks fast runs fast", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const { calls, worker } = yield* boot(seed, { start: { ...WORKER, fast: true } }, "room", fastMode(FIRST))
+    for (const model of worker(BRIEF)) expect(model.id).toBe("gpt-sim-model-fast")
+    expect(started(calls)[0]).toMatchObject({ fast: FAST_AS_ASKED })
+  }),
+)
+
+seeded("at depth 2, a child of a worker started fast runs standard unless it asks fast itself", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const nested = { agent: "worker", description: "Check the header", prompt: GRAND }
+    for (const agent of ["worker", "planner"]) {
+      const quiet = yield* boot(seed, { start: { ...WORKER, fast: true }, nested: { ...nested, agent } })
+      for (const model of quiet.worker(BRIEF)) expect(model.id).toBe("gpt-sim-model-fast")
+      expect(quiet.grand.length).toBeGreaterThan(0)
+      for (const model of quiet.grand) expect({ agent, id: model.id }).toEqual({ agent, id: "gpt-sim-model" })
+      expect(started(quiet.calls)[1]).toMatchObject({ fast: expect.stringContaining("did not ask fast") })
+    }
+    const asked = yield* boot(seed, { start: { ...WORKER, fast: true }, nested: { ...nested, fast: true } })
+    expect(asked.grand.length).toBeGreaterThan(0)
+    for (const model of asked.grand) expect(model.id).toBe("gpt-sim-model-fast")
+    expect(started(asked.calls)[1]).toMatchObject({ fast: FAST_AS_ASKED })
   }),
 )

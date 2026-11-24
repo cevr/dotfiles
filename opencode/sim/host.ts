@@ -517,6 +517,8 @@ export interface Options {
   readonly models?: ReadonlyArray<CatalogModel>
   /** The model sessions run on; default `sim/sim-model`, answered by `script`. */
   readonly model?: { readonly providerID: string; readonly id: string }
+  /** How deep subagents nest, as the fork's `experimental.subagent_depth`; default 1 (a subagent starts none). */
+  readonly subagentDepth?: number
   /** The world's provider for `model`'s provider: its requests go over HTTP to it, through the HTTP hooks (sim/http.ts). */
   readonly provider?: { readonly id: string; readonly baseURL: string; readonly handle: (request: WebRequest) => Effect.Effect<Response, SimError> }
   /** Observe a request that passed the final hook; the callback at handler entry checks the simulated handoff. */
@@ -1421,6 +1423,13 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
    * `sessionID`, a follow-up to the caller's child. The child is prompted and runs in the background; the call
    * answers at once, and each time the child goes idle its parent gets a `<background-result kind="subagent">` notice that wakes it.
    */
+  /** How many parents a session has: a root's depth is 0. */
+  const depthOf = (session: Session): number =>
+    Option.match(session.parentID, {
+      onNone: () => 0,
+      onSome: (id) => 1 + Option.match(Option.fromUndefinedOr(sessions.get(id)), { onNone: () => 0, onSome: depthOf }),
+    })
+
   const subagentTool: Tool.Info<typeof SubagentInput> = {
     name: "subagent",
     description: "Spawns an agent in a child session to work on the specified task.",
@@ -1428,8 +1437,9 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     execute: (input, context) =>
       Effect.gen(function* () {
         const parent = yield* sessionOr(context.sessionID).pipe(Effect.mapError(() => toolError(`Parent session not found: ${context.sessionID}`)))
-        if (Option.isSome(parent.parentID))
-          return yield* toolError('Subagent depth limit reached (1). Increase "experimental.subagent_depth" to allow nested subagents.')
+        const limit = Option.getOrElse(Option.fromUndefinedOr(options.subagentDepth), () => 1)
+        if (depthOf(parent) >= limit)
+          return yield* toolError(`Subagent depth limit reached (${limit}). Increase "experimental.subagent_depth" to allow nested subagents.`)
         const agent = agentsOf(parent.directory).get(input.agent)
         if (agent === void 0) return yield* toolError(`Unknown agent: ${input.agent}`)
         if (agent.mode === "primary") return yield* toolError(`Agent ${input.agent} cannot run as a subagent`)

@@ -74,7 +74,13 @@ export const fastLine = (onFast: boolean, model: Option.Option<string>): string 
   return `fast asked, but ${Option.getOrElse(model, () => "its model")} has no fast mode: it runs standard`
 }
 
-/** A line's `fast` field, when its start asked fast. */
+/** What a follow-up that did not ask says when its child runs on a fast mode: it keeps the mode it started on. */
+export const FAST_AS_STARTED = "fast, as it started"
+
+/** What a new start that did not ask fast says when the model it would run on (a parent's, a default, a config's) is a fast mode. */
+export const fastNotAsked = (model: string): string => `standard: ${model} is a fast mode, and this start did not ask fast`
+
+/** A line's `fast` field, when its start said something of fast. */
 const fastOf = (fast: SubagentStarted["fast"]) => Option.match(Option.fromUndefinedOr(fast), { onNone: () => ({}), onSome: (said) => ({ fast: said }) })
 
 /** One line of the call log. `asked` is what the model passed; `agent` is what runs. */

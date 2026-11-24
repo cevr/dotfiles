@@ -665,7 +665,7 @@ const fastNote = (model: Option.Option<string>, fast: string) => `orchestrate: t
  */
 const FastField = Schema.optionalKey(Schema.Boolean).annotate({
   description:
-    "Only when the owner asked for fast for this work: true runs it on the fast mode of the model it would run on, same effort (none offered: standard, and the answer says so). A follow-up keeps its mode unless this says otherwise.",
+    "Only when the owner asked for fast for this work: true runs it on the fast mode of the model it would run on. A follow-up keeps its mode unless set.",
 })
 
 /** A tool's input that is a struct schema (the host's subagent input is one), which fields can be added to. */
