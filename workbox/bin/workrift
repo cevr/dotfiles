@@ -3385,12 +3385,11 @@ sv_git_locks() {
     printf '(git rev-parse --absolute-git-dir failed in %s: its locks are unknown)\n' "$1"
     return 0
   fi
-  if ! g_list=$(find "$g_dir" -maxdepth 1 \( -name gc.pid -o -name '*.lock' \) ! -name workrift.lock 2>/dev/null); then
+  # The list the verify refuses in the copy (git_carried_locks), no shorter:
+  # a lock the preflight passed (a maintenance's objects/maintenance.lock)
+  # would be copied three times and the switch rolled back.
+  if ! g_list=$(git_carried_locks "$g_dir"); then
     printf '(find failed in %s: its locks are unknown)\n' "$g_dir"
-  fi
-  sv_lines "$g_list"
-  if ! g_list=$(find "$g_dir/refs" -name '*.lock' 2>/dev/null); then
-    printf '(find failed in %s/refs: its locks are unknown)\n' "$g_dir"
   fi
   sv_lines "$g_list"
 }
@@ -3857,15 +3856,40 @@ sv_tips_missing() {
 # base unchanged since then and the copy's store equal to it; every ref tip
 # and tree in the copy; no Git lock or temporary pack in it. Every read is
 # checked: one that failed is "not the base" (copy again, then roll back).
+#
+# On a failure sv_copy_why says which check failed and, for two lists that
+# differ, the lines that differ (`base:` and `copy:`, or `now:` and `then:`).
 sv_copy_true() {
   local t_store t_a t_b
-  t_store=$(cat "$sv_state/store") &&
-    t_a=$(sv_digest "$sv_base") && t_b=$(sv_digest "$1") && [ "$t_a" = "$t_b" ] &&
-    t_a=$(sv_refs "$sv_base") && t_b=$(cat "$sv_state/refs") && [ "$t_a" = "$t_b" ] &&
-    t_a=$(sv_store "$sv_base") && [ "$t_a" = "$t_store" ] &&
-    t_b=$(sv_store "$1") && [ "$t_b" = "$t_store" ] &&
-    t_a=$(sv_tips_missing "$1") && [ -z "$t_a" ] &&
-    t_b=$(git_carried_locks "$1/.git") && [ -z "$t_b" ]
+  sv_copy_why=
+  t_store=$(cat "$sv_state/store") || { sv_copy_why="the store listing taken before the copy does not read"; return 1; }
+  t_a=$(sv_digest "$sv_base") || { sv_copy_why="a read of $sv_base failed (HEAD, refs, status, lock files or Git's files)"; return 1; }
+  t_b=$(sv_digest "$1") || { sv_copy_why="a read of the copy failed (HEAD, refs, status, lock files or Git's files)"; return 1; }
+  [ "$t_a" = "$t_b" ] || { sv_copy_why="HEAD, refs, status, lock files or Git's files differ:$(sv_differ base copy "$t_a" "$t_b")"; return 1; }
+  t_a=$(sv_refs "$sv_base") || { sv_copy_why="the refs of $sv_base do not read"; return 1; }
+  t_b=$(cat "$sv_state/refs") || { sv_copy_why="the refs taken before the copy do not read"; return 1; }
+  [ "$t_a" = "$t_b" ] || { sv_copy_why="the base's refs changed since the copy began:$(sv_differ now before "$t_a" "$t_b")"; return 1; }
+  t_a=$(sv_store "$sv_base") || { sv_copy_why="the object store of $sv_base does not list"; return 1; }
+  [ "$t_a" = "$t_store" ] || { sv_copy_why="the base's object store changed since the copy began:$(sv_differ now before "$t_a" "$t_store")"; return 1; }
+  t_b=$(sv_store "$1") || { sv_copy_why="the object store of the copy does not list"; return 1; }
+  [ "$t_b" = "$t_store" ] || { sv_copy_why="the copy's object store is not the base's:$(sv_differ copy base "$t_b" "$t_store")"; return 1; }
+  t_a=$(sv_tips_missing "$1") || { sv_copy_why="the ref tips of the copy do not read"; return 1; }
+  [ -z "$t_a" ] || { sv_copy_why="the copy lacks ref tips or trees: $(sv_joined "$t_a")"; return 1; }
+  t_b=$(git_carried_locks "$1/.git") || { sv_copy_why="the Git locks of the copy do not list"; return 1; }
+  [ -z "$t_b" ] || { sv_copy_why="the copy holds Git locks: $(sv_joined "$t_b")"; return 1; }
+}
+
+# The lines of $3 that $4 lacks (as `; $1: <line>`) and of $4 that $3 lacks
+# (`; $2: <line>`), at most five each: what two lists that differ differ by.
+sv_differ() {
+  { printf '=A\n'; sv_lines "$3"; printf '=B\n'; sv_lines "$4"; } | awk -v a="$1" -v b="$2" '
+    $0 == "=A" { s = 1; next } $0 == "=B" { s = 2; next }
+    s == 1 { x[$0] = 1; next }
+    s == 2 { y[$0] = 1 }
+    END {
+      for (l in x) if (!(l in y) && n++ < 5) printf "; %s: %s", a, l
+      for (l in y) if (!(l in x) && m++ < 5) printf "; %s: %s", b, l
+    }' || printf ' (awk failed comparing them)'
 }
 
 # Carries into the tree $2 each ref the tree $1 changed since the refs file
@@ -4170,10 +4194,10 @@ sv_copy_in() {
     fi
     i_try=$((i_try + 1))
     if [ "$i_try" -ge 3 ]; then
-      sv_why="$i_path differs from $sv_base after 3 copies of its .git (the base keeps changing, or a read of it fails)"
+      sv_why="$i_path differs from $sv_base after 3 copies of its .git (the base keeps changing, or a read of it fails): $sv_copy_why"
       return 1
     fi
-    sv_step copy-git "the base changed during the copy: copy its .git again"
+    sv_step copy-git "the copy is not the base ($sv_copy_why): copy its .git again"
     sv_read i_kind sv_kind "$i_path" || { sv_why="stat of $i_path failed"; return 1; }
     [ "$i_kind" = "$i_t" ] || { sv_why="$i_path is no longer the copy"; return 1; }
     if [ "$i_t" = S ]; then

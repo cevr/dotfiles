@@ -331,6 +331,10 @@ const bench = (label: string) => {
     GIT_CONFIG_VALUE_1: "false",
   }
   writeFileSync(env.FAKE_SUBVOLS!, "")
+  // No Git maintenance anywhere in the bench, by the global config too: a push over the local transport runs
+  // receive-pack without the GIT_CONFIG_* environment, and its detached maintenance held origin's
+  // objects/maintenance.lock while the base was cloned from it (the copy's verify then refused that lock).
+  writeFileSync(join(home, ".gitconfig"), "[gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n")
   const origin = join(dir, "origin.git")
   sh(dir, env, "git", "init", "-q", "--bare", "-b", "main", origin)
   const seed = join(dir, "seed")
@@ -1082,6 +1086,19 @@ describe("a live .git under the copy (Git processes outside the line: create-fet
     const writes = textLines(readFileSync(gitLog, "utf8")).filter((line) => / (fetch|update-ref|update-index|repack|gc|commit)( |$)/.test(line))
     expect(writes.length).toBeGreaterThan(0)
     expect(writes.filter((line) => !(line.includes("gc.auto=0") && line.includes("maintenance.auto=false"))).filter((line) => !line.includes(" checkout "))).toEqual([])
+  }, BENCH_RUNS_MS)
+
+  test("the preflight refuses each Git lock the verify refuses in the copy (objects/maintenance.lock, a temporary pack), before any copy", () => {
+    const b = bench("preflight-locks")
+    for (const each of [".git/objects/maintenance.lock", ".git/objects/pack/tmp_pack_z"]) {
+      writeFileSync(join(b.base, each), "")
+      const ran = b.wr(["subvolume", "--apply"])
+      expect(ran.code, said(ran)).toBe(1)
+      expect(said(ran)).toContain(`Git lock or gc files in the base: ${join(b.base, each)}`)
+      expect(b.btrfsCalls().filter((call) => call.startsWith("subvolume create"))).toEqual([])
+      expect(b.layout()).toEqual({ base: "F", new: "-", back: "-", old: "-" })
+      rmSync(join(b.base, each))
+    }
   }, BENCH_RUNS_MS)
 
   test("G5: a create whose copy carried a Git lock or gc file from the base deletes it in the new workspace only, naming it; an index.lock fails the create with the retry as the fix", () => {
@@ -2975,8 +2992,6 @@ const VERDICTS: Record<string, string> = {
   "sv_old_workrifts:tr: if ! o_args=$(tr '\\0' '\\n' <\"$o_c\" 2>/dev/null); then": "closed: a process still there whose command line does not read is an older workrift (refused)",
   "sv_old_workrifts:awk: if ! o_what=$(printf '%s\\n' \"$o_args\" | awk '": "closed: as before it",
   "sv_git_locks:git: if ! g_dir=$(base_git \"$1\" rev-parse --absolute-git-dir 2>/dev/null); then": "closed: prints `unknown`: the lock check says NO",
-  "sv_git_locks:find: if ! g_list=$(find \"$g_dir\" -maxdepth 1 \\( -name gc.pid -o -name '*.lock' \\) ! -name workrift.lock 2>/dev/null); then": "closed: as before it",
-  "sv_git_locks:find: if ! g_list=$(find \"$g_dir/refs\" -name '*.lock' 2>/dev/null); then": "closed: as before it",
   "sv_fs_dir:findmnt: f_uuid=$(findmnt -n -o UUID --target \"$sv_base\" 2>/dev/null) || f_uuid=": "closed: no UUID is no state folder: the metadata check says the sizes do not read (NO)",
   "sv_preflight:findmnt: if ! sv_read p_opts findmnt -n -o OPTIONS --target \"$sv_base\"; then": "closed: sv_read's status: options that do not read are a NO",
   "sv_preflight:cat: { sv_read p_total cat \"$p_fs/allocation/metadata/total_bytes\" && sv_read p_used cat \"$p_fs/allocation/metadata/bytes_used\"; } 2>/dev/null || true": "closed: sv_read's status: sizes that do not read stay empty, a NO (r4: they were 0, a slack read wrong)",
@@ -3000,8 +3015,8 @@ const VERDICTS: Record<string, string> = {
   "sv_tips_missing:grep: if t_missing=$(sv_lines \"$t_check\" | grep ' missing$'); then": "closed: grep's status read: 1 none missing, any other the failure printed (the copy is not true)",
   "sv_tips_missing:cat: if t_err=$(cat \"$sv_state/tips.err\" 2>/dev/null); then": "closed: errors that do not read are said: the copy is not true",
   "sv_tips_missing:rm: rm -f \"$sv_state/tips.err\" || true": "cleanup: tips.err is written again before it is read",
-  "sv_copy_true:cat: t_store=$(cat \"$sv_state/store\") &&": "returned: the && chain: a read that fails is a copy not true (copy again, then roll back)",
-  "sv_copy_true:cat: t_a=$(sv_refs \"$sv_base\") && t_b=$(cat \"$sv_state/refs\") && [ \"$t_a\" = \"$t_b\" ] &&": "returned: as before it",
+  "sv_copy_true:cat: t_store=$(cat \"$sv_state/store\") || { sv_copy_why=\"the store listing taken before the copy does not read\"; return 1; }": "returned: a read that fails is a copy not true, said in sv_copy_why (copy again, then roll back)",
+  "sv_copy_true:cat: t_b=$(cat \"$sv_state/refs\") || { sv_copy_why=\"the refs taken before the copy do not read\"; return 1; }": "returned: as before it",
   "sv_carry:rm: rm -f \"$c_tmp.from\" \"$c_tmp.to\"": "cleanup: the scratch files of a ref read that failed; the carry returns 1 (nothing carried) and nothing reads them after",
   "sv_carry:git: if c_head=$(base_git \"$c_to\" symbolic-ref -q HEAD); then :; elif [ $? -eq 1 ]; then c_head=; else": "branch: symbolic-ref's status read: 0 HEAD names a branch, 1 detached, any other sv_why and return 1",
   "sv_carry:git: if c_head_from=$(base_git \"$c_from\" symbolic-ref -q HEAD); then :; elif [ $? -eq 1 ]; then c_head_from=; else": "branch: as before it",
@@ -3021,6 +3036,7 @@ const VERDICTS: Record<string, string> = {
   "sv_rm_folder:rm: old) nice -n 19 rm -rf -x -- \"$sv_old\" ;;": "returned: as before it",
   "sv_rm_folder:rm: dropping) nice -n 19 rm -rf --one-file-system -- \"$sv_aside\" ;;": "returned: as before it",
   "sv_rm_folder:rm: dropping) nice -n 19 rm -rf -x -- \"$sv_aside\" ;;": "returned: as before it",
+  "sv_differ:awk: { printf '=A\\n'; sv_lines \"$3\"; printf '=B\\n'; sv_lines \"$4\"; } | awk -v a=\"$1\" -v b=\"$2\" '": "message: the lines two lists differ by, in a verify that already failed; an awk that fails says so (the copy is copied again either way)",
   "sv_status:readlink: s_lines=\"$s_lines$s_line	link $(readlink \"$1/$s_path\")": "returned: the assignment takes its status and sv_status fails: sv_lacks says the worktree as unknown, and no drop deletes",
   "sv_status:awk: printf '=I\\n%s\\n=L\\n%s' \"$s_ids\" \"$s_lines\" | awk -F '\\t' '": "returned: the function's status (the pipe's last member): sv_lacks says the worktree as unknown, and no drop deletes",
   "sv_drop_put_back:python3: sv_renameat rename \"$sv_aside\" \"$sv_old\" ||": "message: the kept tree stays aside at .dropping, said; --drop-old reads it there, and nothing is deleted this run",
