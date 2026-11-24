@@ -27,10 +27,11 @@
 // against its cores, which a push never raises.
 import { Effect, Match, Option, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
+import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import { toolInput } from "@dotfiles/decider/tool-input"
 import { ResetKind } from "./quota.ts"
 import { KIND_LABEL, type PoolView, type PushGrant, pushOptions, rankPush, spanOf, sparesOf } from "./resets.ts"
-import { byCount, iso, percent, perHour, used as usedOf } from "./usage-text.ts"
+import { byCount, percent, perHour, used as usedOf } from "./usage-text.ts"
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -480,7 +481,7 @@ export const forecastText = (forecast: Forecast): string | undefined => {
   const kinds = [...new Set(wasted.map((item) => KIND_LABEL[item.kind]))].join(", ")
   return (
     `Pool ${forecast.pool}: at this rate (it uses ${perHour(forecast.burn, "a week")}), ${wasted.length} of its ${forecast.inHand} resets (${kinds}; each gives back ≈${percent(each)} of a week) ` +
-    `expire unused by ${iso(last)}${first === last ? "" : `, the first ${iso(first)}`}.`
+    `expire unused by ${formatNotificationTime(last)}${first === last ? "" : `, the first ${formatNotificationTime(first)}`}.`
   )
 }
 
@@ -498,7 +499,7 @@ const ifSome = <A>(value: Option.Option<A>, text: (value: A) => string) => Optio
 /** One pool's line of the plan: its weeks' and 5-hour windows' use, when the first resets by itself, and the use per hour. */
 const poolLine = (pool: PlannedPool): string => {
   const count = pool.accounts
-  const resetting = (at: Option.Option<number>, how: string) => ifSome(at, (at) => `, ${byCount(count, "", "the first ")}resetting${how} ${iso(at)}`)
+  const resetting = (at: Option.Option<number>, how: string) => ifSome(at, (at) => `, ${byCount(count, "", "the first ")}resetting${how} ${formatNotificationTime(at)}`)
   const full = ifSome(
     Option.liftPredicate(pool.weeklyBurn, (burn) => burn > 0),
     (burn) => `, reaching ${usedOf(1)} in ~${spanOf((pool.weeklyRoom / burn) * HOUR)} at this rate`,
@@ -547,8 +548,8 @@ export const planText = (plan: Plan): string => {
       ? "not reached at the current burn before its window resets by itself (a push spends faster)"
       : reset.at === undefined
         ? "claimed when a start is held for lack of quota (no burn measured)"
-        : `likely claimed ~${iso(reset.at)} at the current burn`
-    const expires = reset.expiresAt === undefined ? "" : `, expires ${iso(reset.expiresAt)}${reset.expiresFirst ? " (before its week resets: spent first)" : ""}`
+        : `likely claimed ~${formatNotificationTime(reset.at)} at the current burn`
+    const expires = reset.expiresAt === undefined ? "" : `, expires ${formatNotificationTime(reset.expiresAt)}${reset.expiresFirst ? " (before its week resets: spent first)" : ""}`
     lines.push(`${index + 1}. ${KIND_LABEL[reset.kind]} on ${reset.label} (${reset.pool}): ${adds}${expires}; ${when}.`)
   })
   if (plan.need !== undefined) lines.push(needLine(plan, plan.need))
@@ -563,7 +564,7 @@ export const planText = (plan: Plan): string => {
 /** A push as the owner reads it: goal, scope, end and the resets approved and spent. */
 export const pushText = (push: Push, used: number, now: number): string => {
   const scope = [`host ${push.scope.host}`, ...(push.scope.sessionID === undefined ? [] : [`session ${push.scope.sessionID}`]), ...(push.scope.run === undefined ? [] : [`run ${push.scope.run}`])].join(", ")
-  const end = push.untilDone ? `until the work is done (at most ${iso(push.endsAt)})` : `until ${iso(push.endsAt)}`
+  const end = push.untilDone ? `until the work is done (at most ${formatNotificationTime(push.endsAt)})` : `until ${formatNotificationTime(push.endsAt)}`
   const kinds = push.allowance.kinds === undefined ? "" : ` (${push.allowance.kinds.map((kind) => KIND_LABEL[kind]).join(", ")})`
   const accounts = push.allowance.accounts === undefined ? "" : ` on ${push.allowance.accounts.join(", ")}`
   const resets = `${push.allowance.asNeeded ? "as needed, up to" : "up to"} ${push.allowance.max} reset${push.allowance.max === 1 ? "" : "s"}${kinds}${accounts}, ${used} spent`

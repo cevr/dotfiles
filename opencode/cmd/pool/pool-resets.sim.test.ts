@@ -307,7 +307,7 @@ seeded(
       expect(notice.question).toStartWith("Claimed the Fable reset on Claude c: ")
       expect(notice.question).toContain("(about to expire unused: ")
       // Fable's part of the week, as the usage endpoint reports it (`used_percent_of_weekly`: its use times its allowance share).
-      expect(notice.question).toMatch(/weekly 60% used of 100% → ~10% used, next reset \S+ \S+ \(Fable's part 50% of the week as the usage endpoint reports it\)/)
+      expect(notice.question).toMatch(/weekly 60% used of 100% → ~10% used, next reset [A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2}:\d{2} [AP]M (?:EST|EDT) \(Fable's part 50% of the week as the usage endpoint reports it\)/)
       expect(claims().map(({ account, grant }) => [account, grant])).toEqual([["c", "fable-c"]])
       const settled = yield* resetsOf(yield* pool("resets"))
       const fable = settled.claims.find((claim) => claim.label === "Claude c")

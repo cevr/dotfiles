@@ -125,6 +125,7 @@
  * provider's pace, here and on the owner's other hosts, until its spend shows
  * in a reading.
  */
+import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { dirname, join } from "node:path"
 import { Agent, Plugin, Tool } from "@opencode/plugin/effect"
@@ -471,8 +472,8 @@ const msOf = (time: unknown): number | undefined => {
 const synthetic = (ctx: Plugin.Context) => (input: SteerLive.Synthetic) =>
   ctx.session.synthetic({ ...input, sessionID: input.sessionID as SessionID, metadata: { ...input.metadata } } satisfies SyntheticInput)
 
-/** A time as the model reads it: ISO 8601, and the owner's local time. */
-const timeOf = (ms: number, place: Place) => `${new Date(ms).toISOString()} (${local(ms, place)} ${place.timeZone})`
+/** A dated, zoned time as the model reads it at the configured place. */
+const timeOf = (ms: number, place: Place) => formatNotificationTime(ms, place.timeZone)
 
 const whoseOf = (whose: string | undefined) => (whose === "codex" ? "the Codex account's" : "the pool's")
 
@@ -531,7 +532,7 @@ const latchedResult = (latched: Model.LatchedStart, place: Place, timing: HeldTi
   const output = [
     `The subagent is latched (sessionID: ${latched.child}, latch ${latched.id}). ${words}`,
     `It starts by itself in the background when the latch opens, about ${timeOf(opensAt, place)}${Option.getOrElse(
-      Option.map(Option.filter(recheck, (at) => at < opensAt), (at) => `, or sooner: it is decided again at ${new Date(at).toISOString()}`),
+      Option.map(Option.filter(recheck, (at) => at < opensAt), (at) => `, or sooner: it is decided again at ${timeOf(at, place)}`),
       () => "",
     )}. You will be woken with its result, as for a background subagent.`,
     "Go on with other work, or end your turn. Do not start it again, poll or wait for it. wake_list shows the latch; wake_cancel cancels it.",

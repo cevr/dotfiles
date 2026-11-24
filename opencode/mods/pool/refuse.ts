@@ -1,4 +1,5 @@
 import { DateTime, Effect, Option, Schema } from "effect"
+import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import { HoldReason } from "./pace.ts"
 
 export interface SendHold {
@@ -27,7 +28,7 @@ export const stepIDOf = (event: SendHook) => {
 }
 
 export const sendHoldMessage = (reason: string, retryAt: number): string => {
-  const until = Option.match(DateTime.make(retryAt), { onNone: () => `${retryAt}`, onSome: DateTime.formatIso })
+  const until = Option.match(DateTime.make(retryAt), { onNone: () => `${retryAt}`, onSome: () => formatNotificationTime(retryAt) })
   return `held by the pool until ${until}: not an error of the task; retry at or after that time. ${reason}`
 }
 

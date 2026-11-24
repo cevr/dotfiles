@@ -26,17 +26,26 @@ describe("an alarm's letter", () => {
     const letter = alarmLetter(alarm, alarm.dueAt, alarm.dueAt + 200)
     expect(letter.text).toBe(
       [
-        "⏰ Wake w000001 fired: the alarm you set at 2023-11-14T22:13:20.000Z, due 2023-11-14T22:14:20.000Z.",
+        "⏰ Wake w000001 fired: the alarm you set at Nov 14, 2023, 5:13:20 PM EST, due Nov 14, 2023, 5:14:20 PM EST.",
         "Note: Check CI run 42: green means merge.",
       ].join("\n"),
     )
     expect(letter.description).toBe("wake w000001 · Check CI run 42: green means merge.")
-    expect(letter.metadata).toMatchObject({ source: "wake", id: "w000001", kind: "alarm", mode: "wake", lateMs: 200 })
+    expect(letter.metadata).toMatchObject({
+      source: "wake",
+      id: "w000001",
+      kind: "alarm",
+      mode: "wake",
+      setAt: 1_700_000_000_000,
+      tick: 1_700_000_060_000,
+      firedAt: 1_700_000_060_200,
+      lateMs: 200,
+    })
   })
 
   test("late: says how late, and that no server was running at its time", () => {
     const letter = alarmLetter(alarm, alarm.dueAt, alarm.dueAt + 2 * 3600_000 + 5 * 60_000)
-    expect(letter.text).toContain("It fired 2h 5m late: no OpenCode server was running at 2023-11-14T22:14:20.000Z, so it went when one started.")
+    expect(letter.text).toContain("It fired 2h 5m late: no OpenCode server was running at Nov 14, 2023, 5:14:20 PM EST, so it went when one started.")
     expect(letter.description).toBe("wake w000001 · 2h 5m late · Check CI run 42: green means merge.")
   })
 
@@ -44,7 +53,7 @@ describe("an alarm's letter", () => {
     expect(alarmLetter({ ...alarm, mode: "notify" }, alarm.dueAt, alarm.dueAt).text).toContain("it started no turn")
     expect(alarmLetter({ ...alarm, mode: "notify" }, alarm.dueAt, alarm.dueAt).description).toStartWith("notice w000001")
     const repeat = alarmLetter({ ...alarm, everySeconds: 300 }, alarm.dueAt, alarm.dueAt, alarm.dueAt + 300_000)
-    expect(repeat.text).toContain('It repeats every 5m; the next is due 2023-11-14T22:19:20.000Z. Cancel it with wake_cancel({ id: "w000001" })')
+    expect(repeat.text).toContain('It repeats every 5m; the next is due Nov 14, 2023, 5:19:20 PM EST. Cancel it with wake_cancel({ id: "w000001" })')
   })
 
   test("a fresh session's prompt leads with what it was asked, then where it came from", () => {
@@ -80,7 +89,7 @@ describe("a monitor's letter", () => {
     const letter = monitorLetter({ ...monitor, mode: "wake", repeat: "change", fired: 2, command: long }, "matched", 9, { ...check, stdout: "21396 APPROVED" }, monitor.setAt + 90_000)
     expect(letter.text.split("\n")).toEqual([
       `⏰ Monitor w000003 changed (fire 3): \`${excerpt(long, 80)}\`.`,
-      'It keeps checking every 30s until 2023-11-14T22:43:20.000Z; wake_cancel({ id: "w000003" }) stops it.',
+      'It keeps checking every 30s until Nov 14, 2023, 5:43:20 PM EST; wake_cancel({ id: "w000003" }) stops it.',
       "Note: The deploy is live: tell the user.",
       "Output (exit 0):",
       "21396 APPROVED",
@@ -93,7 +102,7 @@ describe("a monitor's letter", () => {
 
   test("a repeat's end at its deadline says how many fires it made", () => {
     const letter = monitorLetter({ ...monitor, repeat: "match", fired: 1 }, "timed-out", 60, check, monitor.deadline)
-    expect(letter.text.split("\n")[0]).toBe("⏰ Monitor w000003 ended: its deadline 2023-11-14T22:43:20.000Z passed after 1 fire; `curl -fsS localhost:3000/health`.")
+    expect(letter.text.split("\n")[0]).toBe("⏰ Monitor w000003 ended: its deadline Nov 14, 2023, 5:43:20 PM EST passed after 1 fire; `curl -fsS localhost:3000/health`.")
     expect(letter.description).toBe("monitor w000003 ended · The deploy is live: tell the user.")
   })
 })
@@ -104,7 +113,7 @@ describe("receipts and the listing", () => {
   test("a wake tells the agent to end its turn; notify and fresh sessions say how to cancel", () => {
     expect(alarmReceipt(alarm, now)).toBe(
       [
-        "Alarm w000001 set: it wakes this session at 2023-11-14T22:14:20.000Z (in 1m).",
+        "Alarm w000001 set: it wakes this session at Nov 14, 2023, 5:14:20 PM EST (in 1m).",
         "End your turn now unless there is other work: the alarm starts a new turn with your note.",
       ].join("\n"),
     )
@@ -114,15 +123,15 @@ describe("receipts and the listing", () => {
   })
 
   test("a monitor names its command, pattern and deadline", () => {
-    expect(monitorReceipt(monitor, now)).toContain("runs `curl -fsS localhost:3000/health` in /work/app every 30s until its stdout matches /ok/, and gives up at 2023-11-14T22:43:20.000Z (in 30m)")
+    expect(monitorReceipt(monitor, now)).toContain("runs `curl -fsS localhost:3000/health` in /work/app every 30s until its stdout matches /ok/, and gives up at Nov 14, 2023, 5:43:20 PM EST (in 30m)")
   })
 
   test("a repeating monitor says how it goes on and until when; the listing says it repeats", () => {
     expect(monitorReceipt({ ...monitor, repeat: "change" }, now).split("\n")[0]).toBe(
-      "Monitor w000003 set: it runs `curl -fsS localhost:3000/health` in /work/app every 30s and fires each time its matching output changes (a match: stdout matches /ok/; the first match is the baseline), until 2023-11-14T22:43:20.000Z (in 30m).",
+      "Monitor w000003 set: it runs `curl -fsS localhost:3000/health` in /work/app every 30s and fires each time its matching output changes (a match: stdout matches /ok/; the first match is the baseline), until Nov 14, 2023, 5:43:20 PM EST (in 30m).",
     )
     expect(monitorReceipt({ ...monitor, repeat: "match", until: undefined }, now)).toContain("fires on each new match (a match: exit 0)")
-    expect(listing([{ ...monitor, repeat: "match", fired: 2 }], [], now)).toContain("· until /ok/ · repeats: fires on each new match, 2 so far · ends 2023-11-14T22:43:20.000Z (in 30m) ·")
+    expect(listing([{ ...monitor, repeat: "match", fired: 2 }], [], now)).toContain("· until /ok/ · repeats: fires on each new match, 2 so far · ends Nov 14, 2023, 5:43:20 PM EST (in 30m) ·")
   })
 
   test("cancel and list", () => {
@@ -130,14 +139,14 @@ describe("receipts and the listing", () => {
     expect(cancelReceipt(["w000001", "w000003"])).toBe("Cancelled w000001, w000003.")
     const text = listing([monitor, alarm], [notice], now)
     expect(text.split("\n")).toEqual([
-      "Now: 2023-11-14T22:13:20.000Z.",
+      "Now: Nov 14, 2023, 5:13:20 PM EST.",
       "Pending (2):",
-      "- w000001: alarm · wake · due 2023-11-14T22:14:20.000Z (in 1m) · note: Check CI run 42: green means merge.",
-      "- w000003: monitor · notify · `curl -fsS localhost:3000/health` every 30s · until /ok/ · gives up 2023-11-14T22:43:20.000Z (in 30m) · note: The deploy is live: tell the user.",
+      "- w000001: alarm · wake · due Nov 14, 2023, 5:14:20 PM EST (in 1m) · note: Check CI run 42: green means merge.",
+      "- w000003: monitor · notify · `curl -fsS localhost:3000/health` every 30s · until /ok/ · gives up Nov 14, 2023, 5:43:20 PM EST (in 30m) · note: The deploy is live: tell the user.",
       "Unread notices (1), delivered to your next turn:",
       "- w000003: monitor w000003 matched · The deploy",
     ])
-    expect(listing([], [], now)).toBe("Now: 2023-11-14T22:13:20.000Z.\nNo alarms, monitors or latches pending.")
+    expect(listing([], [], now)).toBe("Now: Nov 14, 2023, 5:13:20 PM EST.\nNo alarms, monitors or latches pending.")
   })
 })
 

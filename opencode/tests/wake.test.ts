@@ -72,7 +72,7 @@ describe.skipIf(!fork)("wakes", () => {
     expect(trayOf(read("alpha.txt"))).toBeUndefined()
     // The letter: what fired, when it was set and due, the note verbatim; on time, so it does not say late.
     const woken = root.find((request) => request.text.includes("Note: ALPHA"))
-    expect(woken?.text).toMatch(/⏰ Wake w[0-9a-z]+ fired: the alarm you set at \d{4}-\d\d-\d\dT[\d:.]+Z, due \d{4}-\d\d-\d\dT[\d:.]+Z\.\nNote: ALPHA: check that the build finished/)
+    expect(woken?.text).toMatch(/⏰ Wake w[0-9a-z]+ fired: the alarm you set at [A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2}:\d{2} [AP]M (?:EST|EDT), due [A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2}:\d{2} [AP]M (?:EST|EDT)\.\nNote: ALPHA: check that the build finished/)
     expect(woken?.text).not.toContain("no OpenCode server was running")
 
     // The notice: drawn at its time and counted in the tray, but it starts no turn; the next turn reads it.
@@ -126,7 +126,7 @@ describe.skipIf(!fork)("wakes", () => {
     const late = requests.map((request) => ({ ...request, text: unescaped(request.request) })).find((request) => request.text.includes("Note: ZETA"))
     // The fire came after the start, and its letter says how late and why.
     expect(late?.at ?? 0).toBeGreaterThan(started)
-    expect(late?.text).toMatch(/It fired \d+m late: no OpenCode server was running at \d{4}-\d\d-\d\dT[\d:.]+Z, so it went when one started\.\nNote: ZETA: look again after the outage/)
+    expect(late?.text).toMatch(/It fired \d+m late: no OpenCode server was running at [A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2}:\d{2} [AP]M (?:EST|EDT), so it went when one started\.\nNote: ZETA: look again after the outage/)
     expect(requests.some((request) => request.at > stopped && request.at < started)).toBe(false)
 
     const frame = lines(read("late.txt"))
