@@ -1,10 +1,11 @@
 /** @reads cmd/pool/fixtures/openai-send-hold/** tests/pool-openai-send/** */
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { Array as Arr, Config, Console, DateTime, Effect, FileSystem, Match, Option, Path, Schema, Stream } from "effect"
+import { Array as Arr, Config, Console, Effect, FileSystem, Match, Option, Path, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { describe, expect, it } from "effect-bun-test"
 import { poolPlugin } from "../testbeds/anthropic-auth.ts"
 import { ROOT } from "../scripts/agents.ts"
+import { formatNotificationTime } from "../decider/notification-time.ts"
 import { readHeldSend } from "../mods/pool/refuse.ts"
 import { FIRST_USAGE_RETRY_MS, FIRST_USAGE_WAIT_MS } from "../mods/pool/quota.ts"
 import { hangGuard } from "./hang-guard.ts"
@@ -90,7 +91,8 @@ const boot = (sample: Sample) => outputFor(sample).pipe(Effect.flatMap((raw) =>
 const contained = (seen: typeof Seen.Type, retryAt: number, sample: Sample) => {
   const wanted = Number(sample.endsWith("websocket"))
   const after = Option.getOrNull(readHeldSend(seen.after))
-  const wording = `held by the pool until ${DateTime.formatIso(DateTime.makeUnsafe(retryAt))}: not an error of the task; retry at or after that time`
+  // The pool writes its times as the owner reads them (decider/notification-time.ts), rounded up to the second.
+  const wording = `held by the pool until ${formatNotificationTime(retryAt)}: not an error of the task; retry at or after that time`
   if (seen.typed) {
     expect(seen.sent.filter(({ at }) => at < retryAt)).toHaveLength(0)
     // The host can round a short remaining wait up to its minimum retry
@@ -116,7 +118,11 @@ const contained = (seen: typeof Seen.Type, retryAt: number, sample: Sample) => {
   expect(seen.outcome).toBe("session.execution.failed")
   expect(seen.upgrades).toBe(wanted)
   if (sample === "late-websocket") expect(seen.message).toContain("Failed to read openai/openai-responses stream")
-  else expect(seen.message).toContain(wording)
+  else {
+    expect(seen.message).toContain(wording)
+    // The hold's own reason names the same instant.
+    expect(seen.message).toEndWith(`; it may go again at ${formatNotificationTime(retryAt)}`)
+  }
   expect(after).toMatchObject({ hold: { providerID: "openai", reasonCode: "account-held", retryAt } })
 }
 

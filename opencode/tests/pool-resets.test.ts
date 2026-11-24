@@ -23,6 +23,7 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { Effect, Schema } from "effect"
+import { formatNotificationTime } from "../decider/notification-time.ts"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"
 import { ROOT } from "../scripts/agents.ts"
@@ -384,9 +385,12 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
         () => `the notice of c's claim (${seen.slice(0, 3000)})`,
       )).find((row) => row.header === "Pool reset claimed")!
       expect(notice.question).toStartWith("Claimed the Fable reset on Claude c: ")
-      expect(notice.question).toContain("(about to expire unused: ")
+      // Times as the owner reads them (decider/notification-time.ts), from the instants the fake reports.
+      expect(notice.question).toContain(`(about to expire unused: it expires ${formatNotificationTime(now + 2 * HOUR)}, lost unused otherwise)`)
       // Fable's part of the week, as the fake's usage endpoint reports it (`used_percent_of_weekly`: its use times its allowance share).
-      expect(notice.question).toMatch(/weekly 60% used of 100% → ~10% used, next reset \S+ \S+ \(Fable's part 50% of the week as the usage endpoint reports it\)/)
+      expect(notice.question).toContain(
+        `weekly 60% used of 100% → ~10% used, next reset ${formatNotificationTime(now + 1.5 * DAY)} (Fable's part 50% of the week as the usage endpoint reports it)`,
+      )
       expect(anthropic.claims.map(({ account, grant }) => [account, grant])).toEqual([["c", "fable-c"]])
       const settled = (await pool("resets")) as Resets
       const fable = settled.claims.find((claim) => claim.label === "Claude c")
