@@ -41,6 +41,10 @@ describe("pane worker row projection", () => {
     expect(gone.ended).toBe(3500)
     expect(isLive("pane_gone")).toBe(false)
 
+    const unreachable = rowOf(sampleView({ state: "rex_unreachable", update: "Rex unreachable after 5 attempts" }))
+    expect(unreachable.state).toBe("blocked")
+    expect(isLive("rex_unreachable")).toBe(true)
+
     const stopped = rowOf(sampleView({ state: "stopped", update: "stopped", endedAt: 4000 }))
     expect(stopped.state).toBe("cancelled")
     expect(stopped.ended).toBe(4000)

@@ -25,9 +25,10 @@ const waitFor = (check: Effect.Effect<boolean>, maxSteps = 200) =>
   })
 
 const FAST_CONFIG: Model.ModelConfig = {
-  quietFor: Duration.millis(10),
-  pollTimeout: Duration.millis(20),
-  pasteQuiet: Duration.millis(5),
+  quietFor: Duration.millis(5),
+  pollTimeout: Duration.millis(15),
+  pasteQuiet: Duration.zero,
+  retryDelay: Duration.zero,
   maxStartupChecks: 5,
 }
 
@@ -94,6 +95,7 @@ describe("PaneAgentModel", () => {
       expect(written).toContain("\r")
 
       yield* h.results.put("/nonexistent/run/result.md", "Head: abc123\npane-agent r1: ready", started.startedAt + 50)
+      yield* h.rex.setScreens(started.blockId, [DONE_FRAME, DONE_FRAME, DONE_FRAME])
       const settled = yield* waitFor(
         Ref.get(h.notifier.wakes).pipe(Effect.map((wakes) => wakes.length > 0)),
       )
@@ -221,7 +223,7 @@ describe("PaneAgentModel", () => {
       })
       expect(started.ownedBlock).toBe(false)
 
-      // Queued follow-up uses Enter (\r)
+      // Queued follow-up while turn 1 runs waits for turn 1 to settle, then submits turn 2 with Enter (\r)
       yield* h.rex.setScreens("block:user-named", [WORKING_FRAME, WORKING_FRAME])
       const queued = yield* h.model.followUp({
         parentSessionID: "ses_parent",
@@ -229,8 +231,19 @@ describe("PaneAgentModel", () => {
         prompt: "Queued second turn.",
         resultFile: "/nonexistent/run/t2.md",
       })
-      expect(queued.turn).toBe(2)
-      expect(queued.update).toContain("queued")
+      expect(queued.turn).toBe(1)
+      expect(queued.pendingTurns).toHaveLength(1)
+      expect(queued.pendingTurns?.[0]?.turn).toBe(2)
+
+      // Turn 1 completes -> turn 2 is typed automatically with Enter (\r)
+      yield* h.results.put("/nonexistent/run/t1.md", "turn-1-done", started.startedAt + 10)
+      yield* h.rex.setScreens("block:user-named", [DONE_FRAME, DONE_FRAME, READY_FRAME, WORKING_FRAME, WORKING_FRAME])
+      const t2Started = yield* waitFor(
+        Ref.get(h.rex.state).pipe(
+          Effect.map((s) => (s.panes[0]?.writes.length ?? 0) >= 4),
+        ),
+      )
+      expect(t2Started).toBe(true)
       const afterQueue = yield* Ref.get(h.rex.state)
       expect(afterQueue.panes[0]?.writes[afterQueue.panes[0].writes.length - 1]).toBe("\r")
 
@@ -371,7 +384,7 @@ describe("PaneAgentModel", () => {
               label: "agy:pane-agent",
               command: ["agy", "--dangerously-skip-permissions"],
               cwd: "/nonexistent/repo",
-              screens: [WORKING_FRAME],
+              screens: [DONE_FRAME, DONE_FRAME],
               screenIndex: 0,
               writes: [],
               alive: true,

@@ -2,7 +2,16 @@ import { Match, Option, Schema } from "effect"
 import { Harness } from "./adapter.ts"
 
 /** Worker lifecycle states persisted across server restarts. */
-export const WORKER_STATES = ["starting", "working", "needs_input", "pane_gone", "done", "failed", "stopped"] as const
+export const WORKER_STATES = [
+  "starting",
+  "working",
+  "needs_input",
+  "rex_unreachable",
+  "pane_gone",
+  "done",
+  "failed",
+  "stopped",
+] as const
 export const WorkerState = Schema.Literals(WORKER_STATES)
 export type WorkerState = typeof WorkerState.Type
 
@@ -13,6 +22,28 @@ export const PaneAnchor = Schema.Struct({
 })
 export type PaneAnchor = typeof PaneAnchor.Type
 
+/** Queued turn waiting for the pane to be ready and idle before being typed. */
+export const QueuedTurn = Schema.Struct({
+  turn: Schema.Int,
+  brief: Schema.String,
+  resultFile: Schema.String,
+  mode: Schema.Literals(["submit", "steer"]),
+  queuedAt: Schema.Number,
+})
+export type QueuedTurn = typeof QueuedTurn.Type
+
+/** Durable wake outbox record persisted before sending so crashes/failures retry with the same id. */
+export const PendingWake = Schema.Struct({
+  deliveryId: Schema.String,
+  turn: Schema.Int,
+  kind: Schema.Literals(["done", "needs_input", "pane_gone", "rex_unreachable", "failed"]),
+  key: Schema.String,
+  description: Schema.String,
+  text: Schema.String,
+  metadata: Schema.Record(Schema.String, Schema.Union([Schema.String, Schema.Number, Schema.Boolean])),
+})
+export type PendingWake = typeof PendingWake.Type
+
 /** Persisted record for a pane worker, sufficient to re-attach or restart after pane loss. */
 export const PaneWorker = Schema.Struct({
   id: Schema.String,
@@ -20,6 +51,7 @@ export const PaneWorker = Schema.Struct({
   directory: Schema.String,
   cwd: Schema.optionalKey(Schema.String),
   addDirs: Schema.optionalKey(Schema.Array(Schema.String)),
+  skipPermissions: Schema.optionalKey(Schema.Boolean),
   harness: Harness,
   role: Schema.String,
   unit: Schema.String,
@@ -31,6 +63,10 @@ export const PaneWorker = Schema.Struct({
   update: Schema.String,
   turn: Schema.Int,
   notifiedTurn: Schema.Int,
+  activeTurnTyped: Schema.optionalKey(Schema.Boolean),
+  pendingTurns: Schema.optionalKey(Schema.Array(QueuedTurn)),
+  pendingWake: Schema.optionalKey(PendingWake),
+  deliveredWakes: Schema.optionalKey(Schema.Array(Schema.String)),
   startedAt: Schema.Number,
   updatedAt: Schema.Number,
   endedAt: Schema.optionalKey(Schema.Number),
@@ -39,14 +75,17 @@ export const PaneWorker = Schema.Struct({
 })
 export type PaneWorker = typeof PaneWorker.Type
 
+export const STORE_VERSION = 2
+
 /** Snapshot persisted in the store. */
 export const StoreSnapshot = Schema.Struct({
+  version: Schema.optionalKey(Schema.Int),
   workers: Schema.Array(PaneWorker),
   anchors: Schema.Record(Schema.String, PaneAnchor),
 })
 export type StoreSnapshot = typeof StoreSnapshot.Type
 
-export const EMPTY_SNAPSHOT: StoreSnapshot = { workers: [], anchors: {} }
+export const EMPTY_SNAPSHOT: StoreSnapshot = { version: STORE_VERSION, workers: [], anchors: {} }
 
 /** Public view returned over the PANE_AGENT RPC for Prime rows and Queue live state. */
 export const PaneWorkerView = Schema.Struct({
@@ -93,7 +132,7 @@ export const viewOf = (worker: PaneWorker): PaneWorkerView => {
 }
 
 export const isLive = (state: WorkerState): boolean =>
-  state === "starting" || state === "working" || state === "needs_input"
+  state === "starting" || state === "working" || state === "needs_input" || state === "rex_unreachable"
 
 /** Subagent-row shape projected from a pane worker (matches `@dotfiles/opencode-subagents/subagent-row`). */
 export interface ProjectedRow {
@@ -124,6 +163,7 @@ const rowStateOf = (state: WorkerState): ProjectedRow["state"] =>
     Match.when("starting", () => "working" as const),
     Match.when("working", () => "working" as const),
     Match.when("needs_input", () => "blocked" as const),
+    Match.when("rex_unreachable", () => "blocked" as const),
     Match.when("pane_gone", () => "blocked" as const),
     Match.when("done", () => "done" as const),
     Match.when("failed", () => "failed" as const),

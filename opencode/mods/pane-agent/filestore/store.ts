@@ -1,6 +1,6 @@
-import { Effect, FileSystem, Layer, Path, Ref, Schema, Semaphore } from "effect"
+import { Effect, FileSystem, Layer, Path, Random, Ref, Schema, Semaphore } from "effect"
 import { StoreFailed, WorkerStore } from "../service.ts"
-import { EMPTY_SNAPSHOT, type PaneAnchor, type PaneWorker, StoreSnapshot } from "../worker.ts"
+import { EMPTY_SNAPSHOT, type PaneAnchor, type PaneWorker, STORE_VERSION, StoreSnapshot } from "../worker.ts"
 
 const decodeSnapshot = Schema.decodeUnknownEffect(Schema.fromJsonString(StoreSnapshot))
 const encodeSnapshot = Schema.encodeEffect(Schema.fromJsonString(StoreSnapshot))
@@ -17,6 +17,7 @@ export const layer = (file: string) =>
       const path = yield* Path.Path
       const lock = yield* Semaphore.make(1)
       const seq = yield* Ref.make(0)
+      const instanceToken = (yield* Random.nextIntBetween(0x100000, 0xffffff)).toString(36)
 
       const readRaw = Effect.fn("FileWorkerStore.readRaw")(function* () {
         const exists = yield* fs.exists(file).pipe(Effect.mapError((cause) => storeFailure("exists", cause)))
@@ -26,11 +27,12 @@ export const layer = (file: string) =>
       })
 
       const writeRaw = Effect.fn("FileWorkerStore.writeRaw")(function* (snapshot: StoreSnapshot) {
-        const encoded = yield* encodeSnapshot(snapshot).pipe(Effect.mapError((cause) => storeFailure("encode", cause)))
+        const versioned: StoreSnapshot = { ...snapshot, version: STORE_VERSION }
+        const encoded = yield* encodeSnapshot(versioned).pipe(Effect.mapError((cause) => storeFailure("encode", cause)))
         const dir = path.dirname(file)
         yield* fs.makeDirectory(dir, { recursive: true }).pipe(Effect.mapError((cause) => storeFailure("mkdir", cause)))
         const nextSeq = yield* Ref.updateAndGet(seq, (n) => n + 1)
-        const temp = `${file}.tmp-${nextSeq}`
+        const temp = `${file}.tmp-${instanceToken}-${nextSeq}`
         yield* fs.writeFileString(temp, `${encoded}\n`).pipe(Effect.mapError((cause) => storeFailure("write", cause)))
         yield* fs.rename(temp, file).pipe(Effect.mapError((cause) => storeFailure("rename", cause)))
       })
@@ -48,7 +50,7 @@ export const layer = (file: string) =>
           Effect.gen(function* () {
             const current = yield* readRaw()
             const others = current.workers.filter((item) => item.id !== worker.id)
-            const next: StoreSnapshot = { ...current, workers: [...others, worker] }
+            const next: StoreSnapshot = { version: STORE_VERSION, anchors: current.anchors, workers: [...others, worker] }
             yield* writeRaw(next)
             return next
           }),
@@ -60,7 +62,8 @@ export const layer = (file: string) =>
           Effect.gen(function* () {
             const current = yield* readRaw()
             const next: StoreSnapshot = {
-              ...current,
+              version: STORE_VERSION,
+              workers: current.workers,
               anchors: { ...current.anchors, [sessionID]: anchor },
             }
             yield* writeRaw(next)

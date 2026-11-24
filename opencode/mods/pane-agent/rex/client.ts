@@ -10,11 +10,13 @@ import {
 import {
   formatUnsupportedRevision,
   type OutputMatchOptions,
+  type PaneLiveness,
   type PaneTarget,
   type QuietOptions,
   RexCallFailed,
   RexClient,
   type RexError,
+  RexPaneGone,
   RexUnavailable,
   RexUnsupportedRevision,
   type SplitRightInput,
@@ -42,6 +44,13 @@ const errorText = (error: Cause.Cause<unknown>): string => {
   return String(squashed)
 }
 
+const isTimeout = Predicate.isTagged("RexRequestTimeout")
+
+const isGone = Predicate.or(
+  Predicate.or(Predicate.isTagged("RexBlockClosed"), Predicate.isTagged("RexNotFound")),
+  Predicate.or(Predicate.isTagged("RexSessionNotFound"), Predicate.isTagged("RexTerminalExited")),
+)
+
 const mapSquashed = (operation: string, error: Cause.Cause<unknown>): RexError => {
   const squashed = Cause.squash(error)
   const rev = decodeUnsupported(squashed)
@@ -54,6 +63,9 @@ const mapSquashed = (operation: string, error: Cause.Cause<unknown>): RexError =
       message: formatUnsupportedRevision(required, server),
     })
   }
+  if (isGone(squashed)) {
+    return new RexPaneGone({ operation, message: errorText(error) })
+  }
   if (
     Predicate.isTagged(squashed, "RexConnectionError") ||
     Predicate.isTagged(squashed, "RexConfigurationError") ||
@@ -64,13 +76,6 @@ const mapSquashed = (operation: string, error: Cause.Cause<unknown>): RexError =
   }
   return new RexCallFailed({ operation, message: errorText(error) })
 }
-
-const isTimeout = Predicate.isTagged("RexRequestTimeout")
-
-const isGone = Predicate.or(
-  Predicate.or(Predicate.isTagged("RexBlockClosed"), Predicate.isTagged("RexNotFound")),
-  Predicate.or(Predicate.isTagged("RexSessionNotFound"), Predicate.isTagged("RexTerminalExited")),
-)
 
 const sdkTarget = (rex: IRexSdk, target: PaneTarget) => ({
   sessionId: rex.ids.session(target.sessionId),
@@ -206,13 +211,22 @@ export const layer = (options: RexConfigOptions = {}) =>
         )
       })
 
-      const alive = Effect.fn("RexSdkClient.alive")(function* (target: PaneTarget) {
-        return yield* withSdk("terminals.process", (rex) =>
+      const alive = Effect.fn("RexSdkClient.alive")(function* (
+        target: PaneTarget,
+      ): Effect.fn.Return<PaneLiveness, RexUnsupportedRevision> {
+        const result = yield* withSdk("terminals.process", (rex) =>
           rex.terminals.process(sdkTarget(rex, target)).pipe(
-            Effect.map((state) => Option.isNone(state.lastExit)),
-            Effect.catchIf(isGone, () => Effect.succeed(false)),
+            Effect.map((state): PaneLiveness => {
+              if (Option.isNone(state.lastExit)) return "alive"
+              return "gone"
+            }),
           ),
+        ).pipe(
+          Effect.catchTag("RexPaneGone", () => Effect.succeed<PaneLiveness>("gone")),
+          Effect.catchTag("RexUnavailable", () => Effect.succeed<PaneLiveness>("unknown")),
+          Effect.catchTag("RexCallFailed", () => Effect.succeed<PaneLiveness>("unknown")),
         )
+        return result
       })
 
       const close = Effect.fn("RexSdkClient.close")(function* (target: PaneTarget) {

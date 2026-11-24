@@ -1,16 +1,42 @@
-import { Array as Arr, Clock, Context, Duration, Effect, FiberMap, Layer, Option, Random, Ref, Scope } from "effect"
+import {
+  Array as Arr,
+  Clock,
+  Context,
+  Duration,
+  Effect,
+  Exit,
+  FiberMap,
+  Layer,
+  Option,
+  Random,
+  Ref,
+  Scope,
+} from "effect"
 import { adapterFor, type Harness, type HarnessAdapter, type ResumeOptions, type StartOptions } from "./adapter.ts"
+import {
+  activeTurnTypedOf,
+  DEFAULT_MACHINE_CONFIG,
+  initialMachineState,
+  type MachineAction,
+  type MachineConfig,
+  MachineEvent,
+  type MachineState,
+  maxTurnOf,
+  pendingTurnsOf,
+  transition,
+  wakeLetterOf,
+} from "./machine.ts"
 import { resumeBrief, taskBrief } from "./prompt.ts"
 import {
   Notifier,
   type PaneTarget,
   ResultFiles,
+  type ResultReadFailed,
   RexClient,
   type RexError,
   type StoreFailed,
   WorkerRejected,
   WorkerStore,
-  type ResultReadFailed,
 } from "./service.ts"
 import {
   isLive,
@@ -26,7 +52,10 @@ export interface ModelConfig {
   readonly pollTimeout?: Duration.Input
   readonly startupTimeout?: Duration.Input
   readonly pasteQuiet?: Duration.Input
+  readonly retryDelay?: Duration.Input
   readonly maxStartupChecks?: number
+  readonly maxTransientErrors?: number
+  readonly confirmGoneCount?: number
   readonly binaryOverrides?: Readonly<Partial<Record<Harness, string>>>
 }
 
@@ -90,16 +119,20 @@ const DEFAULT_POLL_TIMEOUT = Duration.seconds(5)
 const DEFAULT_PASTE_QUIET = Duration.millis(200)
 const DEFAULT_STARTUP_CHECKS = 30
 const TAIL_BYTES = 16_384
+const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
 type RexClientApi = Effect.Success<typeof RexClient>
-type WorkerStoreApi = Effect.Success<typeof WorkerStore>
-type NotifierApi = Effect.Success<typeof Notifier>
 
 const resolveDuration = (fallback: Duration.Duration, given?: Duration.Input): Duration.Duration =>
   Option.match(Option.fromUndefinedOr(given), {
     onNone: () => fallback,
     onSome: (input) => Duration.fromInputUnsafe(input),
   })
+
+const pauseFor = (delay: Duration.Duration): Effect.Effect<void> => {
+  if (Duration.isZero(delay)) return Effect.yieldNow
+  return Effect.sleep(delay)
+}
 
 const targetOf = (worker: Pick<PaneWorker, "rexSessionId" | "blockId">): PaneTarget => ({
   sessionId: worker.rexSessionId,
@@ -114,8 +147,7 @@ const parentDirOf = (file: string): Option.Option<string> => {
   return Option.some(stripTrailingSlash(file.slice(0, index)))
 }
 
-const isWithin = (dir: string, root: string): boolean =>
-  dir === root || dir.startsWith(`${root}/`)
+const isWithin = (dir: string, root: string): boolean => dir === root || dir.startsWith(`${root}/`)
 
 /** Computes deduplicated --add-dir entries outside cwd, including the result file's parent directory. */
 export const computeAddDirs = (
@@ -154,118 +186,37 @@ const makeWorkerId = Effect.fn("PaneAgent.makeWorkerId")(function* () {
   return `pa_${n.toString(36)}`
 })
 
-const sourceLabel = (fromFile: boolean): string => {
-  if (fromFile) return "result-file"
-  return "pane"
-}
-
-const updateLabel = (fromFile: boolean): string => {
-  if (fromFile) return "wrote result file"
-  return "turn finished"
-}
-
-const doneLetter = (worker: PaneWorker, answer: string, fromFile: boolean) => ({
-  id: `msg_pa_${worker.id}_t${worker.turn}_done`,
-  description: `${worker.role} ${worker.harness} · ${worker.unit} · done`,
-  text: [
-    `<pane-agent-result id="${worker.id}" harness="${worker.harness}" block="${worker.blockId}" state="done" turn="${worker.turn}" source="${sourceLabel(fromFile)}">`,
-    `Result file: ${worker.resultFile}`,
-    "",
-    answer,
-    "</pane-agent-result>",
-  ].join("\n"),
-  metadata: {
-    source: "pane-agent",
-    workerId: worker.id,
-    harness: worker.harness,
-    blockId: worker.blockId,
-    state: "done",
-    turn: worker.turn,
-  },
+/** Mints an OpenCode-compatible ascending `msg_` delivery id using Effect Clock and Random. */
+const makeDeliveryIdMinter = Effect.gen(function* () {
+  const seq = yield* Ref.make(0)
+  return Effect.fn("PaneAgent.mintDeliveryId")(function* () {
+    const now = yield* Clock.currentTimeMillis
+    const counter = yield* Ref.updateAndGet(seq, (n) => (n + 1) % 0xfff)
+    const value = BigInt(now) * 0x1000n + BigInt(counter + 1)
+    let hex = ""
+    for (let index = 0; index < 6; index++) {
+      const byte = Number((value >> BigInt(40 - 8 * index)) & 0xffn)
+      hex += byte.toString(16).padStart(2, "0")
+    }
+    let suffix = ""
+    for (let index = 0; index < 14; index++) {
+      const idx = yield* Random.nextIntBetween(0, BASE62.length - 1)
+      suffix += BASE62.charAt(idx)
+    }
+    return `msg_${hex}${suffix}`
+  })
 })
-
-const needsInputLetter = (worker: PaneWorker, summary: string, tail: string) => ({
-  id: `msg_pa_${worker.id}_t${worker.turn}_needs_input`,
-  description: `${worker.role} ${worker.harness} · ${worker.unit} · needs input`,
-  text: [
-    `<pane-agent-result id="${worker.id}" harness="${worker.harness}" block="${worker.blockId}" state="needs_input" turn="${worker.turn}">`,
-    `Pane worker needs human input (${summary}).`,
-    "Last lines from the pane:",
-    tail,
-    "</pane-agent-result>",
-  ].join("\n"),
-  metadata: {
-    source: "pane-agent",
-    workerId: worker.id,
-    harness: worker.harness,
-    blockId: worker.blockId,
-    state: "needs_input",
-    turn: worker.turn,
-  },
-})
-
-const paneGoneLetter = (worker: PaneWorker, reason: string, tail: string) => {
-  const lines = [
-    `<pane-agent-result id="${worker.id}" harness="${worker.harness}" block="${worker.blockId}" state="pane_gone" turn="${worker.turn}">`,
-    `${reason} Call pane_agent({ action: "restart", id: "${worker.id}" }) to resume this worker with --continue in ${Option.getOrElse(Option.fromUndefinedOr(worker.cwd), () => worker.directory)}.`,
-  ]
-  if (tail.length > 0) {
-    lines.push("", "Last lines from the pane:", tail)
-  }
-  lines.push("</pane-agent-result>")
-  return {
-    id: `msg_pa_${worker.id}_t${worker.turn}_pane_gone`,
-    description: `${worker.role} ${worker.harness} · ${worker.unit} · pane gone`,
-    text: lines.join("\n"),
-    metadata: {
-      source: "pane-agent",
-      workerId: worker.id,
-      harness: worker.harness,
-      blockId: worker.blockId,
-      state: "pane_gone",
-      turn: worker.turn,
-    },
-  }
-}
-
-const failedLetter = (worker: PaneWorker, reason: string, tail: string) => {
-  const lines = [
-    `<pane-agent-result id="${worker.id}" harness="${worker.harness}" block="${worker.blockId}" state="failed" turn="${worker.turn}">`,
-    reason,
-  ]
-  if (tail.length > 0) {
-    lines.push("", "Last lines from the pane:", tail)
-  }
-  lines.push("</pane-agent-result>")
-  return {
-    id: `msg_pa_${worker.id}_t${worker.turn}_failed`,
-    description: `${worker.role} ${worker.harness} · ${worker.unit} · failed`,
-    text: lines.join("\n"),
-    metadata: {
-      source: "pane-agent",
-      workerId: worker.id,
-      harness: worker.harness,
-      blockId: worker.blockId,
-      state: "failed",
-      turn: worker.turn,
-    },
-  }
-}
 
 const buildStartOptions = (
   harness: Harness,
   addDirs: ReadonlyArray<string>,
+  skipPermissions: boolean,
   overrides?: Readonly<Partial<Record<Harness, string>>>,
-  skipPermissions?: boolean,
 ): StartOptions => {
   const binary = Option.flatMap(Option.fromUndefinedOr(overrides), (map) => Option.fromUndefinedOr(map[harness]))
-  const base: StartOptions = Option.match(binary, {
-    onNone: (): StartOptions => ({ addDirs }),
-    onSome: (value): StartOptions => ({ binary: value, addDirs }),
-  })
-  return Option.match(Option.fromUndefinedOr(skipPermissions), {
-    onNone: () => base,
-    onSome: (flag): StartOptions => ({ ...base, skipPermissions: flag }),
+  return Option.match(binary, {
+    onNone: (): StartOptions => ({ addDirs, skipPermissions }),
+    onSome: (value): StartOptions => ({ binary: value, addDirs, skipPermissions }),
   })
 }
 
@@ -273,12 +224,13 @@ const buildResumeOptions = (
   harness: Harness,
   initialPrompt: string,
   addDirs: ReadonlyArray<string>,
+  skipPermissions: boolean,
   overrides?: Readonly<Partial<Record<Harness, string>>>,
 ): ResumeOptions => {
   const binary = Option.flatMap(Option.fromUndefinedOr(overrides), (map) => Option.fromUndefinedOr(map[harness]))
   return Option.match(binary, {
-    onNone: (): ResumeOptions => ({ initialPrompt, addDirs }),
-    onSome: (value): ResumeOptions => ({ binary: value, initialPrompt, addDirs }),
+    onNone: (): ResumeOptions => ({ initialPrompt, addDirs, skipPermissions }),
+    onSome: (value): ResumeOptions => ({ binary: value, initialPrompt, addDirs, skipPermissions }),
   })
 }
 
@@ -287,10 +239,7 @@ interface AnchorHints {
   readonly rexBlock?: string
 }
 
-const resolveAnchor = (
-  hints: AnchorHints,
-  saved: Option.Option<PaneAnchor>,
-): Option.Option<PaneAnchor> => {
+const resolveAnchor = (hints: AnchorHints, saved: Option.Option<PaneAnchor>): Option.Option<PaneAnchor> => {
   const explicit = Option.all({
     session: Option.filter(Option.fromUndefinedOr(hints.rexSession), (s) => s.length > 0),
     block: Option.filter(Option.fromUndefinedOr(hints.rexBlock), (b) => b.length > 0),
@@ -316,83 +265,13 @@ const writeChunks = (
     }
   })
 
-const settleResult = (
-  store: WorkerStoreApi,
-  notifier: NotifierApi,
-  worker: PaneWorker,
-  answer: string,
-  fromFile: boolean,
-  now: number,
-) =>
-  Effect.gen(function* () {
-    const next: PaneWorker = {
-      ...worker,
-      state: "done",
-      update: updateLabel(fromFile),
-      updatedAt: now,
-      endedAt: now,
-      notifiedTurn: worker.turn,
-      lastAnswer: answer,
-    }
-    yield* store.upsertWorker(next)
-    yield* notifier.changed(worker.parentSessionID)
-    if (worker.notifiedTurn < worker.turn) {
-      yield* notifier.wake(worker.parentSessionID, doneLetter(next, answer, fromFile))
-    }
-    return next
-  })
+const needsWatch = (worker: PaneWorker): boolean =>
+  isLive(worker.state) ||
+  pendingTurnsOf(worker).length > 0 ||
+  Option.isSome(Option.fromUndefinedOr(worker.pendingWake))
 
-const settlePaneGone = (
-  store: WorkerStoreApi,
-  notifier: NotifierApi,
-  worker: PaneWorker,
-  reason: string,
-  tail: string,
-  now: number,
-) =>
-  Effect.gen(function* () {
-    const next: PaneWorker = {
-      ...worker,
-      state: "pane_gone",
-      update: "pane gone (use restart to resume with --continue)",
-      updatedAt: now,
-      endedAt: now,
-      notifiedTurn: worker.turn,
-      lastLines: tail,
-    }
-    yield* store.upsertWorker(next)
-    yield* notifier.changed(worker.parentSessionID)
-    if (worker.notifiedTurn < worker.turn) {
-      yield* notifier.wake(worker.parentSessionID, paneGoneLetter(next, reason, tail))
-    }
-    return next
-  })
-
-const settleFailure = (
-  store: WorkerStoreApi,
-  notifier: NotifierApi,
-  worker: PaneWorker,
-  reason: string,
-  tail: string,
-  now: number,
-) =>
-  Effect.gen(function* () {
-    const next: PaneWorker = {
-      ...worker,
-      state: "failed",
-      update: reason,
-      updatedAt: now,
-      endedAt: now,
-      notifiedTurn: worker.turn,
-      lastLines: tail,
-    }
-    yield* store.upsertWorker(next)
-    yield* notifier.changed(worker.parentSessionID)
-    if (worker.notifiedTurn < worker.turn) {
-      yield* notifier.wake(worker.parentSessionID, failedLetter(next, reason, tail))
-    }
-    return next
-  })
+const hasAction = (actions: ReadonlyArray<MachineAction>, tag: MachineAction["_tag"]): boolean =>
+  actions.some((action) => action._tag === tag)
 
 const makeModel = (config: ModelConfig = {}) =>
   Effect.gen(function* () {
@@ -402,195 +281,308 @@ const makeModel = (config: ModelConfig = {}) =>
     const notifier = yield* Notifier
     const scope = yield* Scope.Scope
     const watchers = yield* FiberMap.make<string>()
-    const needsNotified = yield* Ref.make<ReadonlySet<string>>(new Set())
+    const mintDeliveryId = yield* makeDeliveryIdMinter
 
     const quietFor = resolveDuration(DEFAULT_QUIET, config.quietFor)
     const pollTimeout = resolveDuration(DEFAULT_POLL_TIMEOUT, config.pollTimeout)
     const pasteQuiet = resolveDuration(DEFAULT_PASTE_QUIET, config.pasteQuiet)
-    const maxStartupChecks = Option.getOrElse(Option.fromUndefinedOr(config.maxStartupChecks), () => DEFAULT_STARTUP_CHECKS)
-
-    const markNeedsInput = Effect.fn("PaneAgent.markNeedsInput")(function* (
-      worker: PaneWorker,
-      summary: string,
-      tail: string,
-    ) {
-      const now = yield* Clock.currentTimeMillis
-      const key = `${worker.id}:${worker.turn}:${summary}`
-      const seen = yield* Ref.get(needsNotified)
-      const next: PaneWorker = {
-        ...worker,
-        state: "needs_input",
-        update: summary,
-        updatedAt: now,
-        lastLines: tail,
-      }
-      yield* store.upsertWorker(next)
-      yield* notifier.changed(worker.parentSessionID)
-      if (!seen.has(key)) {
-        yield* Ref.update(needsNotified, (prev) => new Set([...prev, key]))
-        yield* notifier.wake(worker.parentSessionID, needsInputLetter(next, summary, tail))
-      }
-      return next
-    })
-
-    const waitReady = Effect.fn("PaneAgent.waitReady")(function* (
-      adapter: HarnessAdapter,
-      target: PaneTarget,
-    ) {
-      for (let attempt = 0; attempt < maxStartupChecks; attempt++) {
-        const screen = yield* rex.read(target)
-        const needs = adapter.needsInput(screen)
-        if (Option.isSome(needs)) {
-          return { kind: "needs_input" as const, needs: needs.value }
-        }
-        if (adapter.readyForInput(screen)) {
-          return { kind: "ready" as const }
-        }
-        const running = yield* rex.alive(target)
-        if (!running) {
-          return { kind: "exited" as const, tail: shortLines(screen) }
-        }
-        yield* rex.waitForQuiet(target, { quietFor: pasteQuiet, timeout: pollTimeout })
-      }
-      const finalScreen = yield* rex.read(target)
-      return { kind: "timeout" as const, tail: shortLines(finalScreen) }
-    })
+    const retryDelay = resolveDuration(pasteQuiet, config.retryDelay)
+    const maxStartupChecks = Option.getOrElse(
+      Option.fromUndefinedOr(config.maxStartupChecks),
+      () => DEFAULT_STARTUP_CHECKS,
+    )
+    const machineConfig: MachineConfig = {
+      maxTransientErrors: Option.getOrElse(
+        Option.fromUndefinedOr(config.maxTransientErrors),
+        () => DEFAULT_MACHINE_CONFIG.maxTransientErrors,
+      ),
+      confirmGoneCount: Option.getOrElse(
+        Option.fromUndefinedOr(config.confirmGoneCount),
+        () => DEFAULT_MACHINE_CONFIG.confirmGoneCount,
+      ),
+    }
 
     const readResultOrNone = (worker: PaneWorker) =>
       results.readComplete(worker.resultFile, worker.startedAt).pipe(
         Effect.orElseSucceed(() => Option.none<string>()),
       )
 
-    const confirmIdleAndSettle = Effect.fn("PaneAgent.confirmIdleAndSettle")(function* (
-      adapter: HarnessAdapter,
-      target: PaneTarget,
-      current: PaneWorker,
-    ) {
-      yield* rex.waitForQuiet(target, { quietFor, timeout: pollTimeout }).pipe(Effect.ignore)
-      const fileAfter = yield* readResultOrNone(current)
-      if (Option.isSome(fileAfter)) {
-        const now = yield* Clock.currentTimeMillis
-        yield* settleResult(store, notifier, current, fileAfter.value, true, now)
-        return { kind: "done" as const }
-      }
-      const screenAfter = yield* rex.read(target).pipe(Effect.option)
-      if (Option.isNone(screenAfter)) return { kind: "continue" as const, worker: current }
-      const needsAfter = adapter.needsInput(screenAfter.value)
-      if (Option.isSome(needsAfter)) {
-        const blocked = yield* markNeedsInput(current, needsAfter.value.summary, needsAfter.value.tail)
-        return { kind: "continue" as const, worker: blocked }
-      }
-      if (adapter.turnEnded(screenAfter.value)) {
-        const now = yield* Clock.currentTimeMillis
-        yield* settleResult(store, notifier, current, adapter.readLastAnswer(screenAfter.value), false, now)
-        return { kind: "done" as const }
-      }
-      return { kind: "continue" as const, worker: current }
+    const persistWorker = Effect.fn("PaneAgent.persistWorker")(function* (worker: PaneWorker) {
+      yield* store.upsertWorker(worker)
+      yield* notifier.changed(worker.parentSessionID)
     })
 
-    interface WatchLoopState {
-      readonly worker: PaneWorker
-      readonly pendingBrief: Option.Option<string>
-      readonly sawWorking: boolean
-    }
+    const flushPendingWake = Effect.fn("PaneAgent.flushPendingWake")(function* (state: MachineState) {
+      const pending = Option.fromUndefinedOr(state.worker.pendingWake)
+      if (Option.isNone(pending)) return { state, delivered: true }
+      const sendExit = yield* Effect.exit(
+        notifier.wake(state.worker.parentSessionID, wakeLetterOf(pending.value)),
+      )
+      const now = yield* Clock.currentTimeMillis
+      if (Exit.isSuccess(sendExit)) {
+        const res = transition(
+          state,
+          MachineEvent.WakeDelivered({ now }),
+          adapterFor(state.worker.harness),
+          machineConfig,
+        )
+        yield* persistWorker(res.state.worker)
+        return { state: res.state, delivered: true }
+      }
+      return { state, delivered: false }
+    })
 
-    const handleScreen = Effect.fn("PaneAgent.handleScreen")(function* (
+    const applyActions = Effect.fn("PaneAgent.applyActions")(function* (
+      state: MachineState,
+      actions: ReadonlyArray<MachineAction>,
+    ) {
+      let current = state
+      const target = targetOf(current.worker)
+      for (const action of actions) {
+        if (action._tag === "WritePane") {
+          yield* writeChunks(rex, target, action.chunks, pasteQuiet)
+        } else if (action._tag === "Persist") {
+          yield* persistWorker(current.worker)
+        } else if (action._tag === "FlushWake") {
+          const flushed = yield* flushPendingWake(current)
+          current = flushed.state
+        } else if (action._tag === "InterruptPane") {
+          const adapter = adapterFor(current.worker.harness)
+          yield* rex.write(target, adapter.interruptSequence).pipe(Effect.ignore)
+          if (action.close) {
+            yield* rex.close(target).pipe(Effect.ignore)
+          }
+        }
+      }
+      return current
+    })
+
+    const confirmDoubleGone = Effect.fn("PaneAgent.confirmDoubleGone")(function* (target: PaneTarget) {
+      const first = yield* rex.alive(target)
+      if (first !== "gone") return first
+      yield* pauseFor(retryDelay)
+      return yield* rex.alive(target)
+    })
+
+    const stepIdleConfirm = Effect.fn("PaneAgent.stepIdleConfirm")(function* (
       adapter: HarnessAdapter,
-      target: PaneTarget,
-      state: WatchLoopState,
+      state: MachineState,
+    ) {
+      const target = targetOf(state.worker)
+      const waitRes = yield* Effect.result(rex.waitForQuiet(target, { quietFor, timeout: pollTimeout }))
+      if (waitRes._tag === "Failure") {
+        return { kind: "rex_err" as const, error: waitRes.failure, operation: "terminals.waitForQuiet", state }
+      }
+      const screenRes = yield* Effect.result(rex.read(target))
+      if (screenRes._tag === "Failure") {
+        return { kind: "rex_err" as const, error: screenRes.failure, operation: "terminals.read", state }
+      }
+      const fileAnswer = yield* readResultOrNone(state.worker)
+      const now = yield* Clock.currentTimeMillis
+      const deliveryId = yield* mintDeliveryId()
+      const res = transition(
+        state,
+        MachineEvent.IdleConfirmed({ screen: screenRes.success, resultFileAnswer: fileAnswer, now, deliveryId }),
+        adapter,
+        machineConfig,
+      )
+      const next = yield* applyActions(res.state, res.actions)
+      return { kind: "stepped" as const, state: next, actions: res.actions }
+    })
+
+    const handleRexFailure = Effect.fn("PaneAgent.handleRexFailure")(function* (
+      adapter: HarnessAdapter,
+      state: MachineState,
+      operation: string,
+      error: RexError,
+      tail: string,
+    ) {
+      if (error._tag === "RexUnsupportedRevision") {
+        return { state, stop: true, sleep: false }
+      }
+      const now = yield* Clock.currentTimeMillis
+      const deliveryId = yield* mintDeliveryId()
+      if (error._tag === "RexPaneGone") {
+        const fileAnswer = yield* readResultOrNone(state.worker)
+        const res = transition(
+          state,
+          MachineEvent.ProbeGone({ tail, resultFileAnswer: fileAnswer, now, deliveryId }),
+          adapter,
+          machineConfig,
+        )
+        const next = yield* applyActions(res.state, res.actions)
+        return { state: next, stop: hasAction(res.actions, "StopWatching"), sleep: true }
+      }
+      const res = transition(
+        state,
+        MachineEvent.TransientError({ operation, message: error.message, now, deliveryId }),
+        adapter,
+        machineConfig,
+      )
+      const next = yield* applyActions(res.state, res.actions)
+      return { state: next, stop: hasAction(res.actions, "StopWatching"), sleep: true }
+    })
+
+    const loadWorkerFromStore = Effect.fn("PaneAgent.loadWorkerFromStore")(function* (id: string) {
+      const snap = yield* store.read()
+      return Arr.findFirst(snap.workers, (worker) => worker.id === id)
+    })
+
+    const stepScreenObservation = Effect.fn("PaneAgent.stepScreenObservation")(function* (
+      adapter: HarnessAdapter,
+      state: MachineState,
       screen: string,
     ) {
-      const needs = adapter.needsInput(screen)
-      if (Option.isSome(needs)) {
-        const blocked = yield* markNeedsInput(state.worker, needs.value.summary, needs.value.tail)
-        return { kind: "continue" as const, state: { ...state, worker: blocked }, wait: true }
+      const now = yield* Clock.currentTimeMillis
+      const deliveryId = yield* mintDeliveryId()
+      const res = transition(state, MachineEvent.ObserveScreen({ screen, now, deliveryId }), adapter, machineConfig)
+      const applyExit = yield* Effect.exit(applyActions(res.state, res.actions))
+      if (Exit.isFailure(applyExit)) {
+        return { kind: "apply_failed" as const, state }
       }
-      if (Option.isSome(state.pendingBrief)) {
-        if (!adapter.readyForInput(screen)) return { kind: "continue" as const, state, wait: true }
-        const startedAt = yield* Clock.currentTimeMillis
-        yield* writeChunks(rex, target, adapter.formatSubmit(state.pendingBrief.value), pasteQuiet).pipe(Effect.ignore)
-        const working: PaneWorker = {
-          ...state.worker,
-          state: "working",
-          update: "running in Rex pane",
-          startedAt,
-          updatedAt: startedAt,
-        }
-        yield* store.upsertWorker(working)
-        yield* notifier.changed(working.parentSessionID)
-        return { kind: "continue" as const, state: { worker: working, pendingBrief: Option.none(), sawWorking: false }, wait: true }
-      }
-      if (!adapter.turnEnded(screen)) {
-        let nextWorker = state.worker
-        if (nextWorker.state === "needs_input") {
-          const now = yield* Clock.currentTimeMillis
-          nextWorker = { ...nextWorker, state: "working", update: "running in Rex pane", updatedAt: now, lastLines: shortLines(screen) }
-          yield* store.upsertWorker(nextWorker)
-          yield* notifier.changed(nextWorker.parentSessionID)
-        }
-        return { kind: "continue" as const, state: { ...state, worker: nextWorker, sawWorking: true }, wait: false }
-      }
-      if (state.sawWorking || state.worker.state === "working") {
-        const verdict = yield* confirmIdleAndSettle(adapter, target, state.worker)
-        if (verdict.kind === "done") return { kind: "done" as const }
-        return { kind: "continue" as const, state: { ...state, worker: verdict.worker }, wait: false }
-      }
-      return { kind: "continue" as const, state, wait: false }
+      return { kind: "ok" as const, state: applyExit.value, actions: res.actions }
     })
 
-    const watchTurn = Effect.fn("PaneAgent.watchTurn")(function* (
-      initial: PaneWorker,
-      initialPendingBrief: Option.Option<string>,
+    const probeAfterQuiet = Effect.fn("PaneAgent.probeAfterQuiet")(function* (
+      adapter: HarnessAdapter,
+      state: MachineState,
+      lastScreen: string,
     ) {
+      const target = targetOf(state.worker)
+      const livenessExit = yield* Effect.exit(rex.alive(target))
+      if (Exit.isFailure(livenessExit)) return { state, stop: true }
+      const liveness = livenessExit.value
+      if (liveness === "gone") {
+        const fileAnswer = yield* readResultOrNone(state.worker)
+        const now = yield* Clock.currentTimeMillis
+        const deliveryId = yield* mintDeliveryId()
+        const res = transition(
+          state,
+          MachineEvent.ProbeGone({ tail: shortLines(lastScreen), resultFileAnswer: fileAnswer, now, deliveryId }),
+          adapter,
+          machineConfig,
+        )
+        const next = yield* applyActions(res.state, res.actions)
+        if (hasAction(res.actions, "StopWatching")) return { state: next, stop: true }
+        yield* pauseFor(retryDelay)
+        return { state: next, stop: false }
+      }
+      if (liveness === "unknown") {
+        const now = yield* Clock.currentTimeMillis
+        const deliveryId = yield* mintDeliveryId()
+        const res = transition(
+          state,
+          MachineEvent.TransientError({
+            operation: "terminals.process",
+            message: "Rex temporarily unreachable",
+            now,
+            deliveryId,
+          }),
+          adapter,
+          machineConfig,
+        )
+        const next = yield* applyActions(res.state, res.actions)
+        yield* pauseFor(retryDelay)
+        return { state: next, stop: false }
+      }
+      yield* rex.waitForQuiet(target, { quietFor, timeout: pollTimeout }).pipe(Effect.ignore)
+      return { state, stop: false }
+    })
+
+    const stepWatchIdle = Effect.fn("PaneAgent.stepWatchIdle")(function* (
+      adapter: HarnessAdapter,
+      state: MachineState,
+    ) {
+      const target = targetOf(state.worker)
+      const confirmed = yield* stepIdleConfirm(adapter, state)
+      if (confirmed.kind === "rex_err") {
+        const handled = yield* handleRexFailure(adapter, state, confirmed.operation, confirmed.error, "")
+        if (handled.sleep && !handled.stop) yield* pauseFor(retryDelay)
+        return { state: handled.state, stop: handled.stop }
+      }
+      const next = confirmed.state
+      if (hasAction(confirmed.actions, "StopWatching") && !needsWatch(next.worker)) {
+        return { state: next, stop: true }
+      }
+      if (hasAction(confirmed.actions, "WaitQuiet")) {
+        yield* rex.waitForQuiet(target, { quietFor: pasteQuiet, timeout: pollTimeout }).pipe(Effect.ignore)
+      }
+      return { state: next, stop: false }
+    })
+
+    const stepWatchScreen = Effect.fn("PaneAgent.stepWatchScreen")(function* (
+      adapter: HarnessAdapter,
+      state: MachineState,
+    ) {
+      const target = targetOf(state.worker)
+      const screenResult = yield* Effect.result(rex.read(target))
+      if (screenResult._tag === "Failure") {
+        const handled = yield* handleRexFailure(adapter, state, "terminals.read", screenResult.failure, "")
+        if (handled.sleep && !handled.stop) yield* pauseFor(retryDelay)
+        return { state: handled.state, stop: handled.stop }
+      }
+      const observed = yield* stepScreenObservation(adapter, state, screenResult.success)
+      if (observed.kind === "apply_failed") {
+        yield* pauseFor(retryDelay)
+        return { state, stop: false }
+      }
+      const next = observed.state
+      if (hasAction(observed.actions, "ConfirmIdle") || hasAction(observed.actions, "WritePane")) {
+        return { state: next, stop: false }
+      }
+      if (hasAction(observed.actions, "StopWatching") && !needsWatch(next.worker)) {
+        return { state: next, stop: true }
+      }
+      return yield* probeAfterQuiet(adapter, next, screenResult.success)
+    })
+
+    const watchTurn = Effect.fn("PaneAgent.watchTurn")(function* (initial: PaneWorker, initialSawWorking = false) {
       const adapter = adapterFor(initial.harness)
-      const target = targetOf(initial)
-      let state: WatchLoopState = { worker: initial, pendingBrief: initialPendingBrief, sawWorking: false }
+      let state = initialMachineState(initial, initialSawWorking)
 
       while (true) {
-        if (Option.isNone(state.pendingBrief)) {
-          const fileAnswer = yield* readResultOrNone(state.worker)
-          if (Option.isSome(fileAnswer)) {
-            const now = yield* Clock.currentTimeMillis
-            yield* settleResult(store, notifier, state.worker, fileAnswer.value, true, now)
-            return
+        const freshOpt = yield* loadWorkerFromStore(state.worker.id).pipe(
+          Effect.orElseSucceed(() => Option.none<PaneWorker>()),
+        )
+        if (Option.isSome(freshOpt)) {
+          state = { ...state, worker: freshOpt.value }
+        }
+        if (Option.isSome(Option.fromUndefinedOr(state.worker.pendingWake))) {
+          const flushed = yield* flushPendingWake(state)
+          state = flushed.state
+          if (!flushed.delivered) {
+            yield* pauseFor(retryDelay)
+            continue
           }
         }
-        const screenOpt = yield* rex.read(target).pipe(Effect.option)
-        if (Option.isNone(screenOpt)) {
-          const now = yield* Clock.currentTimeMillis
-          yield* settlePaneGone(store, notifier, state.worker, "Rex pane disappeared or is no longer reachable.", "", now)
-          return
+        if (!needsWatch(state.worker)) return
+
+        let outcome: { readonly state: MachineState; readonly stop: boolean }
+        if (state.idlePendingConfirm) {
+          outcome = yield* stepWatchIdle(adapter, state)
+        } else {
+          outcome = yield* stepWatchScreen(adapter, state)
         }
-        const step = yield* handleScreen(adapter, target, state, screenOpt.value)
-        if (step.kind === "done") return
-        state = step.state
-        if (step.wait) {
-          yield* rex.waitForQuiet(target, { quietFor, timeout: pollTimeout }).pipe(Effect.ignore)
-          continue
-        }
-        const stillAlive = yield* rex.alive(target).pipe(Effect.orElseSucceed(() => false))
-        if (!stillAlive) {
-          const finalFile = yield* readResultOrNone(state.worker)
-          const now = yield* Clock.currentTimeMillis
-          if (Option.isSome(finalFile)) {
-            yield* settleResult(store, notifier, state.worker, finalFile.value, true, now)
-            return
-          }
-          yield* settlePaneGone(store, notifier, state.worker, "Rex pane closed or process exited before finishing turn.", shortLines(screenOpt.value), now)
-          return
-        }
-        yield* rex.waitForQuiet(target, { quietFor, timeout: pollTimeout }).pipe(Effect.ignore)
+        state = outcome.state
+        if (outcome.stop) return
       }
     })
 
-    const launchWatcher = (worker: PaneWorker, pendingBrief: Option.Option<string> = Option.none()) =>
+    const launchWatcher = (worker: PaneWorker, initialSawWorking = false) =>
       FiberMap.run(
         watchers,
         worker.id,
-        watchTurn(worker, pendingBrief).pipe(
+        watchTurn(worker, initialSawWorking).pipe(
           Effect.catchCause((cause) => Effect.logDebug("pane-agent watcher ended with failure", cause)),
         ),
       ).pipe(Effect.provideService(Scope.Scope, scope))
+
+    const ensureWatcher = Effect.fn("PaneAgent.ensureWatcher")(function* (worker: PaneWorker) {
+      const alreadyRunning = yield* FiberMap.has(watchers, worker.id)
+      if (!alreadyRunning) {
+        yield* launchWatcher(worker)
+      }
+    })
 
     const openOrSelectPane = Effect.fn("PaneAgent.openOrSelectPane")(function* (
       input: StartInput,
@@ -598,6 +590,7 @@ const makeModel = (config: ModelConfig = {}) =>
       unit: string,
       resolvedCwd: string,
       resolvedAddDirs: ReadonlyArray<string>,
+      skipPermissions: boolean,
       savedAnchor: Option.Option<PaneAnchor>,
     ) {
       const explicitBlock = Option.filter(Option.fromUndefinedOr(input.blockId), (b) => b.length > 0)
@@ -620,7 +613,7 @@ const makeModel = (config: ModelConfig = {}) =>
         })
       }
       const command = adapter.command(
-        buildStartOptions(input.harness, resolvedAddDirs, config.binaryOverrides, input.skipPermissions),
+        buildStartOptions(input.harness, resolvedAddDirs, skipPermissions, config.binaryOverrides),
       )
       const blockId = yield* rex.splitRight({
         sessionId: anchor.value.session,
@@ -638,18 +631,28 @@ const makeModel = (config: ModelConfig = {}) =>
       const savedAnchor = Option.fromUndefinedOr(snapshot.anchors[input.parentSessionID])
       const resolvedCwd = Option.getOrElse(Option.fromUndefinedOr(input.cwd), () => input.directory)
       const resolvedAddDirs = computeAddDirs(resolvedCwd, input.resultFile, input.addDirs)
+      const skipPermissions = input.skipPermissions !== false
       const { role, unit } = parseDescription(input.description)
       const now = yield* Clock.currentTimeMillis
       const id = yield* makeWorkerId()
-      const opened = yield* openOrSelectPane(input, adapter, unit, resolvedCwd, resolvedAddDirs, savedAnchor)
+      const opened = yield* openOrSelectPane(
+        input,
+        adapter,
+        unit,
+        resolvedCwd,
+        resolvedAddDirs,
+        skipPermissions,
+        savedAnchor,
+      )
 
-      const target: PaneTarget = { sessionId: opened.rexSessionId, blockId: opened.blockId }
+      const brief = taskBrief({ prompt: input.prompt, resultFile: input.resultFile })
       const starting: PaneWorker = {
         id,
         parentSessionID: input.parentSessionID,
         directory: input.directory,
         cwd: resolvedCwd,
         addDirs: resolvedAddDirs,
+        skipPermissions,
         harness: input.harness,
         role,
         unit,
@@ -661,39 +664,49 @@ const makeModel = (config: ModelConfig = {}) =>
         update: `starting ${input.harness} in Rex pane`,
         turn: 1,
         notifiedTurn: 0,
+        activeTurnTyped: false,
+        pendingTurns: [{ turn: 1, brief, resultFile: input.resultFile, mode: "submit", queuedAt: now }],
+        deliveredWakes: [],
         startedAt: now,
         updatedAt: now,
       }
-      yield* store.upsertWorker(starting)
-      yield* notifier.changed(input.parentSessionID)
+      yield* persistWorker(starting)
 
-      const brief = taskBrief({ prompt: input.prompt, resultFile: input.resultFile })
-      const readiness = yield* waitReady(adapter, target)
-      if (readiness.kind === "needs_input") {
-        const blocked = yield* markNeedsInput(starting, readiness.needs.summary, readiness.needs.tail)
-        yield* launchWatcher(blocked, Option.some(brief))
-        return blocked
-      }
-      if (readiness.kind === "exited") {
-        return yield* settlePaneGone(store, notifier, starting, `${input.harness} exited before becoming ready for input.`, readiness.tail, yield* Clock.currentTimeMillis)
-      }
-      if (readiness.kind === "timeout") {
-        return yield* settleFailure(store, notifier, starting, `${input.harness} did not become ready for input`, readiness.tail, yield* Clock.currentTimeMillis)
+      let state = initialMachineState(starting)
+      const target = targetOf(starting)
+
+      for (let attempt = 0; attempt < maxStartupChecks; attempt++) {
+        const screenResult = yield* Effect.result(rex.read(target))
+        if (screenResult._tag === "Failure") {
+          if (screenResult.failure._tag === "RexUnsupportedRevision") {
+            return yield* Effect.fail(screenResult.failure)
+          }
+          const handled = yield* handleRexFailure(adapter, state, "terminals.read", screenResult.failure, "")
+          state = handled.state
+          if (handled.stop) return state.worker
+          yield* pauseFor(retryDelay)
+          continue
+        }
+
+        const stepNow = yield* Clock.currentTimeMillis
+        const deliveryId = yield* mintDeliveryId()
+        const res = transition(
+          state,
+          MachineEvent.ObserveScreen({ screen: screenResult.success, now: stepNow, deliveryId }),
+          adapter,
+          machineConfig,
+        )
+        state = yield* applyActions(res.state, res.actions)
+
+        if (state.worker.state === "needs_input" || state.worker.state === "working") {
+          yield* launchWatcher(state.worker)
+          return state.worker
+        }
+        yield* rex.waitForQuiet(target, { quietFor: pasteQuiet, timeout: pollTimeout }).pipe(Effect.ignore)
       }
 
-      const turnStartedAt = yield* Clock.currentTimeMillis
-      yield* writeChunks(rex, target, adapter.formatSubmit(brief), pasteQuiet)
-      const working: PaneWorker = {
-        ...starting,
-        state: "working",
-        update: "running in Rex pane",
-        startedAt: turnStartedAt,
-        updatedAt: turnStartedAt,
-      }
-      yield* store.upsertWorker(working)
-      yield* notifier.changed(input.parentSessionID)
-      yield* launchWatcher(working)
-      return working
+      yield* launchWatcher(state.worker)
+      return state.worker
     })
 
     const findOwnedWorker = Effect.fn("PaneAgent.findOwnedWorker")(function* (
@@ -711,59 +724,104 @@ const makeModel = (config: ModelConfig = {}) =>
       return found.value
     })
 
+    const markConfirmedGone = Effect.fn("PaneAgent.markConfirmedGone")(function* (worker: PaneWorker) {
+      const adapter = adapterFor(worker.harness)
+      const fileAnswer = yield* readResultOrNone(worker)
+      let state = initialMachineState(worker)
+      for (let count = 0; count < machineConfig.confirmGoneCount; count++) {
+        const now = yield* Clock.currentTimeMillis
+        const deliveryId = yield* mintDeliveryId()
+        const res = transition(
+          state,
+          MachineEvent.ProbeGone({ tail: "", resultFileAnswer: fileAnswer, now, deliveryId }),
+          adapter,
+          machineConfig,
+        )
+        state = yield* applyActions(res.state, res.actions)
+      }
+      return state.worker
+    })
+
     const followUp = Effect.fn("PaneAgent.followUp")(function* (input: FollowUpInput) {
       const existing = yield* findOwnedWorker(input.parentSessionID, input.id)
       const target = targetOf(existing)
-      const isAlive = yield* rex.alive(target)
-      if (!isAlive) {
-        yield* settlePaneGone(
-          store,
-          notifier,
-          existing,
-          `Pane ${existing.blockId} for worker ${existing.id} is gone.`,
-          "",
-          yield* Clock.currentTimeMillis,
-        )
+      const liveness = yield* confirmDoubleGone(target)
+      if (liveness === "gone") {
+        yield* FiberMap.remove(watchers, existing.id)
+        yield* markConfirmedGone(existing)
         return yield* new WorkerRejected({
           reason: `Pane ${existing.blockId} for worker ${existing.id} is gone; call pane_agent({ action: "restart", id: "${existing.id}" }) to resume it with --continue.`,
         })
       }
-      yield* FiberMap.remove(watchers, existing.id)
+
       const adapter = adapterFor(existing.harness)
-      const nextResultFile = Option.getOrElse(Option.fromUndefinedOr(input.resultFile), () => existing.resultFile)
-      const brief = taskBrief({ prompt: input.prompt, resultFile: nextResultFile, followUp: true })
       const now = yield* Clock.currentTimeMillis
-      const isSteer = input.steer === true
-      let chunks = adapter.formatSubmit(brief)
-      let nextUpdate = "queued follow-up in Rex pane"
-      if (isSteer) {
-        chunks = adapter.formatSteer(brief)
-        nextUpdate = "steered in Rex pane"
+      const requestedFile = Option.fromUndefinedOr(input.resultFile)
+
+      if (input.steer === true) {
+        const screenOpt = yield* rex.read(target).pipe(Effect.option)
+        const res = transition(
+          initialMachineState(existing),
+          MachineEvent.RequestSteer({ prompt: input.prompt, resultFile: requestedFile, screen: screenOpt, now }),
+          adapter,
+          machineConfig,
+        )
+        if (hasAction(res.actions, "WritePane")) {
+          yield* FiberMap.remove(watchers, existing.id)
+          const next = yield* applyActions(res.state, res.actions)
+          yield* launchWatcher(next.worker)
+          return next.worker
+        }
+        const next = yield* applyActions(res.state, res.actions)
+        yield* ensureWatcher(next.worker)
+        return next.worker
       }
-      yield* writeChunks(rex, target, chunks, pasteQuiet)
-      const next: PaneWorker = {
-        ...existing,
-        resultFile: nextResultFile,
-        state: "working",
-        update: nextUpdate,
-        turn: existing.turn + 1,
-        startedAt: now,
-        updatedAt: now,
+
+      // Queued follow-up: append turn in order without killing an active turn or writing into a prompt.
+      const queuedRes = transition(
+        initialMachineState(existing),
+        MachineEvent.QueueFollowUp({ prompt: input.prompt, resultFile: requestedFile, now }),
+        adapter,
+        machineConfig,
+      )
+      let state = yield* applyActions(queuedRes.state, queuedRes.actions)
+
+      // When worker is idle (done) and no turn is active, run one ObserveScreen step through the single write gate.
+      if (existing.state === "done" && !activeTurnTypedOf(existing)) {
+        const screenResult = yield* Effect.result(rex.read(target))
+        if (screenResult._tag === "Success") {
+          const stepNow = yield* Clock.currentTimeMillis
+          const deliveryId = yield* mintDeliveryId()
+          const obs = transition(
+            state,
+            MachineEvent.ObserveScreen({ screen: screenResult.success, now: stepNow, deliveryId }),
+            adapter,
+            machineConfig,
+          )
+          state = yield* applyActions(obs.state, obs.actions)
+        }
+        yield* launchWatcher(state.worker)
+        return state.worker
       }
-      yield* store.upsertWorker(next)
-      yield* notifier.changed(existing.parentSessionID)
-      yield* launchWatcher(next)
-      return next
+
+      yield* ensureWatcher(state.worker)
+      return state.worker
     })
 
     const restart = Effect.fn("PaneAgent.restart")(function* (input: RestartInput) {
       const existing = yield* findOwnedWorker(input.parentSessionID, input.id)
-      const stillAlive = yield* rex.alive(targetOf(existing)).pipe(Effect.orElseSucceed(() => false))
-      if (stillAlive) {
+      const liveness = yield* rex.alive(targetOf(existing))
+      const canRestart =
+        existing.state === "pane_gone" ||
+        existing.state === "stopped" ||
+        existing.state === "failed" ||
+        liveness === "gone"
+      if (!canRestart) {
         return yield* new WorkerRejected({
-          reason: `Pane ${existing.blockId} for worker ${existing.id} is still running; use follow_up or steer instead of restart.`,
+          reason: `Pane ${existing.blockId} for worker ${existing.id} is still alive; use follow_up or steer instead of restart.`,
         })
       }
+
       const snapshot = yield* store.read()
       const savedAnchor = Option.fromUndefinedOr(snapshot.anchors[input.parentSessionID])
       const anchor = resolveAnchor(input, savedAnchor)
@@ -772,18 +830,28 @@ const makeModel = (config: ModelConfig = {}) =>
           reason: "No Rex pane anchor is known for this session; open OpenCode inside Rex or pass rexSession and rexBlock.",
         })
       }
+
       yield* FiberMap.remove(watchers, existing.id)
+      if (existing.ownedBlock) {
+        yield* rex.close(targetOf(existing)).pipe(Effect.ignore)
+      }
+
       const adapter = adapterFor(existing.harness)
       const workerCwd = Option.getOrElse(Option.fromUndefinedOr(existing.cwd), () => existing.directory)
-      const nextResultFile = Option.getOrElse(Option.fromUndefinedOr(input.resultFile), () => existing.resultFile)
+      const nextTurn = maxTurnOf(existing) + 1
+      const nextResultFile = Option.getOrElse(
+        Option.filter(Option.fromUndefinedOr(input.resultFile), (f) => f.trim().length > 0),
+        () => existing.resultFile,
+      )
       const nextAddDirs = computeAddDirs(workerCwd, nextResultFile, existing.addDirs)
+      const skipPermissions = existing.skipPermissions !== false
       const briefInput = Option.match(Option.fromUndefinedOr(input.prompt), {
         onNone: () => ({ resultFile: nextResultFile }),
         onSome: (prompt) => ({ prompt, resultFile: nextResultFile }),
       })
       const brief = resumeBrief(briefInput)
       const command = adapter.resumeCommand(
-        buildResumeOptions(existing.harness, brief, nextAddDirs, config.binaryOverrides),
+        buildResumeOptions(existing.harness, brief, nextAddDirs, skipPermissions, config.binaryOverrides),
       )
       const now = yield* Clock.currentTimeMillis
       const newBlockId = yield* rex.splitRight({
@@ -793,28 +861,26 @@ const makeModel = (config: ModelConfig = {}) =>
         command,
         cwd: workerCwd,
       })
+      const { pendingWake: _pw, endedAt: _ea, ...keep } = existing
       const restarted: PaneWorker = {
-        id: existing.id,
-        parentSessionID: existing.parentSessionID,
-        directory: existing.directory,
+        ...keep,
         cwd: workerCwd,
         addDirs: nextAddDirs,
-        harness: existing.harness,
-        role: existing.role,
-        unit: existing.unit,
+        skipPermissions,
         rexSessionId: anchor.value.session,
         blockId: newBlockId,
         ownedBlock: true,
         resultFile: nextResultFile,
         state: "working",
         update: "restarted in Rex pane (--continue)",
-        turn: existing.turn + 1,
-        notifiedTurn: existing.turn,
+        turn: nextTurn,
+        notifiedTurn: nextTurn - 1,
+        activeTurnTyped: true,
+        pendingTurns: [],
         startedAt: now,
         updatedAt: now,
       }
-      yield* store.upsertWorker(restarted)
-      yield* notifier.changed(existing.parentSessionID)
+      yield* persistWorker(restarted)
       yield* launchWatcher(restarted)
       return restarted
     })
@@ -822,64 +888,32 @@ const makeModel = (config: ModelConfig = {}) =>
     const stop = Effect.fn("PaneAgent.stop")(function* (input: StopInput) {
       const existing = yield* findOwnedWorker(input.parentSessionID, input.id)
       yield* FiberMap.remove(watchers, existing.id)
-      const target = targetOf(existing)
-      const adapter = adapterFor(existing.harness)
-      const isAlive = yield* rex.alive(target).pipe(Effect.orElseSucceed(() => false))
-      if (isAlive) {
-        yield* rex.write(target, adapter.interruptSequence).pipe(Effect.ignore)
-        if (input.close === true && existing.ownedBlock) {
-          yield* rex.close(target).pipe(Effect.ignore)
-        }
-      }
       const now = yield* Clock.currentTimeMillis
-      const stopped: PaneWorker = {
-        ...existing,
-        state: "stopped",
-        update: "stopped",
-        updatedAt: now,
-        endedAt: now,
-        notifiedTurn: existing.turn,
-      }
-      yield* store.upsertWorker(stopped)
-      yield* notifier.changed(existing.parentSessionID)
-      return stopped
+      const res = transition(
+        initialMachineState(existing),
+        MachineEvent.Stop({ close: input.close === true, now }),
+        adapterFor(existing.harness),
+        machineConfig,
+      )
+      const next = yield* applyActions(res.state, res.actions)
+      return next.worker
     })
 
     const status = Effect.fn("PaneAgent.status")(function* (parentSessionID: string, id: string) {
       const existing = yield* findOwnedWorker(parentSessionID, id)
       const target = targetOf(existing)
-      const expectsPane = existing.state !== "stopped" && existing.state !== "pane_gone" && existing.state !== "failed"
+      const expectsPane =
+        existing.state !== "stopped" && existing.state !== "pane_gone" && existing.state !== "failed"
       if (expectsPane) {
-        const stillAlive = yield* rex.alive(target).pipe(Effect.orElseSucceed(() => false))
-        if (!stillAlive) {
+        const liveness = yield* confirmDoubleGone(target)
+        if (liveness === "gone") {
           yield* FiberMap.remove(watchers, existing.id)
-          const now = yield* Clock.currentTimeMillis
-          if (isLive(existing.state)) {
-            return yield* settlePaneGone(
-              store,
-              notifier,
-              existing,
-              "Rex pane disappeared while worker was active.",
-              "",
-              now,
-            )
-          }
-          const gone: PaneWorker = {
-            ...existing,
-            state: "pane_gone",
-            update: "Rex pane disappeared (call restart to resume with --continue)",
-            updatedAt: now,
-            endedAt: now,
-          }
-          yield* store.upsertWorker(gone)
-          yield* notifier.changed(existing.parentSessionID)
-          return gone
+          return yield* markConfirmedGone(existing)
         }
       }
       const tailOpt = yield* rex.readTail(target, TAIL_BYTES).pipe(Effect.option)
       if (Option.isNone(tailOpt)) return existing
-      const lines = shortLines(tailOpt.value)
-      return { ...existing, lastLines: lines }
+      return { ...existing, lastLines: shortLines(tailOpt.value) }
     })
 
     const list = Effect.fn("PaneAgent.list")(function* (parentSessionID: string) {
@@ -896,29 +930,56 @@ const makeModel = (config: ModelConfig = {}) =>
       yield* store.saveAnchor(sessionID, anchor)
     })
 
+    const reattachOne = Effect.fn("PaneAgent.reattachOne")(function* (worker: PaneWorker) {
+      let state = initialMachineState(worker)
+      // Step 1 (R1): flush any persisted pending wake with its original deliveryId before anything else.
+      if (Option.isSome(Option.fromUndefinedOr(state.worker.pendingWake))) {
+        const flushed = yield* flushPendingWake(state)
+        state = flushed.state
+        if (!flushed.delivered) {
+          yield* launchWatcher(state.worker, activeTurnTypedOf(state.worker))
+          return state.worker
+        }
+      }
+      if (!isLive(state.worker.state) && pendingTurnsOf(state.worker).length === 0) {
+        return state.worker
+      }
+
+      const target = targetOf(state.worker)
+      const liveness = yield* confirmDoubleGone(target)
+      if (liveness === "unknown") {
+        // B3: transient Rex outage during reattach NEVER marks a live worker pane_gone.
+        yield* launchWatcher(state.worker, activeTurnTypedOf(state.worker))
+        return state.worker
+      }
+      if (liveness === "gone") {
+        return yield* markConfirmedGone(state.worker)
+      }
+
+      const adapter = adapterFor(state.worker.harness)
+      const screenOpt = yield* rex.read(target).pipe(Effect.option)
+      if (Option.isSome(screenOpt) && activeTurnTypedOf(state.worker) && adapter.turnEnded(screenOpt.value)) {
+        const confirmed = yield* stepIdleConfirm(adapter, { ...state, sawWorking: true, idlePendingConfirm: true })
+        if (confirmed.kind === "stepped") {
+          state = confirmed.state
+          if (needsWatch(state.worker)) {
+            yield* launchWatcher(state.worker, false)
+          }
+          return state.worker
+        }
+      }
+
+      yield* launchWatcher(state.worker, activeTurnTypedOf(state.worker))
+      return state.worker
+    })
+
     const reattach = Effect.fn("PaneAgent.reattach")(function* (directory: string) {
       const snapshot = yield* store.read()
-      const liveWorkers = snapshot.workers.filter((worker) => worker.directory === directory && isLive(worker.state))
+      const candidates = snapshot.workers.filter((worker) => worker.directory === directory && needsWatch(worker))
       const resultsOut: Array<PaneWorker> = []
-      for (const worker of liveWorkers) {
-        const fileAnswer = yield* results.readComplete(worker.resultFile, worker.startedAt).pipe(
-          Effect.orElseSucceed(() => Option.none<string>()),
-        )
-        if (Option.isSome(fileAnswer)) {
-          const now = yield* Clock.currentTimeMillis
-          const done = yield* settleResult(store, notifier, worker, fileAnswer.value, true, now)
-          resultsOut.push(done)
-          continue
-        }
-        const isAlive = yield* rex.alive(targetOf(worker)).pipe(Effect.orElseSucceed(() => false))
-        if (isAlive) {
-          yield* launchWatcher(worker)
-          resultsOut.push(worker)
-        } else {
-          const now = yield* Clock.currentTimeMillis
-          const gone = yield* settlePaneGone(store, notifier, worker, "Rex pane is no longer running after restart.", "", now)
-          resultsOut.push(gone)
-        }
+      for (const worker of candidates) {
+        const next = yield* reattachOne(worker)
+        resultsOut.push(next)
       }
       return resultsOut
     })

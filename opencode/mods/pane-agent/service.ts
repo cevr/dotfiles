@@ -20,12 +20,20 @@ export class RexUnavailable extends Schema.TaggedError<RexUnavailable>()("RexUna
   message: Schema.String,
 }) {}
 
+export class RexPaneGone extends Schema.TaggedError<RexPaneGone>()("RexPaneGone", {
+  operation: Schema.String,
+  message: Schema.String,
+}) {}
+
 export class RexCallFailed extends Schema.TaggedError<RexCallFailed>()("RexCallFailed", {
   operation: Schema.String,
   message: Schema.String,
 }) {}
 
-export type RexError = RexUnsupportedRevision | RexUnavailable | RexCallFailed
+export type RexError = RexUnsupportedRevision | RexUnavailable | RexPaneGone | RexCallFailed
+
+/** Three-way pane liveness answer: transient failures return "unknown", never "gone". */
+export type PaneLiveness = "alive" | "gone" | "unknown"
 
 export class StoreFailed extends Schema.TaggedError<StoreFailed>()("StoreFailed", {
   operation: Schema.String,
@@ -34,6 +42,12 @@ export class StoreFailed extends Schema.TaggedError<StoreFailed>()("StoreFailed"
 
 export class ResultReadFailed extends Schema.TaggedError<ResultReadFailed>()("ResultReadFailed", {
   path: Schema.String,
+  message: Schema.String,
+}) {}
+
+export class WakeFailed extends Schema.TaggedError<WakeFailed>()("WakeFailed", {
+  sessionID: Schema.String,
+  deliveryId: Schema.String,
   message: Schema.String,
 }) {}
 
@@ -74,7 +88,7 @@ export class RexClient extends Context.Service<
     readonly readTail: (target: PaneTarget, maxBytes?: number) => Effect.Effect<string, RexError>
     readonly waitForQuiet: (target: PaneTarget, options: QuietOptions) => Effect.Effect<void, RexError>
     readonly waitForOutput: (target: PaneTarget, options: OutputMatchOptions) => Effect.Effect<boolean, RexError>
-    readonly alive: (target: PaneTarget) => Effect.Effect<boolean, RexError>
+    readonly alive: (target: PaneTarget) => Effect.Effect<PaneLiveness, RexUnsupportedRevision>
     readonly close: (target: PaneTarget) => Effect.Effect<void, RexError>
   }
 >()("dotfiles-opencode/pane-agent/RexClient") {}
@@ -111,7 +125,7 @@ export interface WakeLetter {
 export class Notifier extends Context.Service<
   Notifier,
   {
-    readonly wake: (sessionID: string, letter: WakeLetter) => Effect.Effect<void>
+    readonly wake: (sessionID: string, letter: WakeLetter) => Effect.Effect<void, WakeFailed>
     readonly changed: (sessionID: string) => Effect.Effect<void>
     readonly sessionDirectory: (sessionID: string) => Effect.Effect<Option.Option<string>>
   }

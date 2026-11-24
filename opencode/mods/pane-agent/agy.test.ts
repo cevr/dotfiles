@@ -40,11 +40,11 @@ describe("agy harness adapter", () => {
     expect(adapterFor("agy")).toBe(agyAdapter)
   })
 
-  test("submits queued text with bracketed paste + Return and steers immediately with bracketed paste + Alt+M", () => {
-    const submitChunks = agyAdapter.formatSubmit("line 1\nline 2")
-    expect(submitChunks).toEqual(["\x1b[200~line 1\nline 2\x1b[201~", "\r"])
+  test("submits queued text with bracketed paste + Return, steers with Alt+M, and strips ESC from pasted text", () => {
+    const submitChunks = agyAdapter.formatSubmit("line 1\x1b[201~\nline 2\x1b")
+    expect(submitChunks).toEqual(["\x1b[200~line 1[201~\nline 2\x1b[201~", "\r"])
 
-    const steerChunks = agyAdapter.formatSteer("stop and check X")
+    const steerChunks = agyAdapter.formatSteer("stop \x1band check X")
     expect(steerChunks).toEqual(["\x1b[200~stop and check X\x1b[201~", "\x1bm"])
   })
 
@@ -90,6 +90,14 @@ describe("agy harness adapter", () => {
 
     expect(Option.isNone(agyAdapter.needsInput(READY_FRAME))).toBe(true)
     expect(Option.isNone(agyAdapter.needsInput(DONE_FRAME))).toBe(true)
+
+    // Scrollback text mentioning (y/n) or Approve/Deny above an active input box must NOT trigger needs_input
+    const doneWithPromptTextInAnswer = DONE_FRAME.replace(
+      "  pong",
+      "  The CLI displays (y/n) and Approve\n  Deny in its docs.",
+    )
+    expect(Option.isNone(agyAdapter.needsInput(doneWithPromptTextInAnswer))).toBe(true)
+    expect(agyAdapter.turnEnded(doneWithPromptTextInAnswer)).toBe(true)
   })
 
   test("reads the last answer from a completed frame", () => {

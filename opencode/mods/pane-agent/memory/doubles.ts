@@ -2,12 +2,16 @@ import { Array as Arr, Effect, Layer, Option, Ref } from "effect"
 import {
   Notifier,
   type OutputMatchOptions,
+  type PaneLiveness,
   type PaneTarget,
   type QuietOptions,
   ResultFiles,
   RexClient,
   type RexError,
+  RexPaneGone,
+  type RexUnsupportedRevision,
   type SplitRightInput,
+  WakeFailed,
   type WakeLetter,
   WorkerStore,
 } from "../service.ts"
@@ -91,6 +95,17 @@ export const makeMemoryRex = (initial: MemoryRexState = emptyRexState) =>
       }
     })
 
+    const requireLivePane = (operation: string, target: PaneTarget) =>
+      Effect.gen(function* () {
+        yield* checkFail
+        const current = yield* Ref.get(state)
+        const pane = findPane(current.panes, target)
+        if (Option.isNone(pane) || !pane.value.alive || pane.value.closed) {
+          return yield* Effect.fail(new RexPaneGone({ operation, message: `Pane ${target.blockId} is closed or exited.` }))
+        }
+        return pane.value
+      })
+
     const layer = Layer.succeed(
       RexClient,
       RexClient.of({
@@ -122,7 +137,7 @@ export const makeMemoryRex = (initial: MemoryRexState = emptyRexState) =>
           })
         }),
         write: Effect.fn("MemoryRex.write")(function* (target: PaneTarget, data: string) {
-          yield* checkFail
+          yield* requireLivePane("terminals.write", target)
           yield* Ref.update(state, (current) => ({
             ...current,
             panes: updatePane(current.panes, target, (pane) => ({
@@ -132,31 +147,17 @@ export const makeMemoryRex = (initial: MemoryRexState = emptyRexState) =>
           }))
         }),
         read: Effect.fn("MemoryRex.read")(function* (target: PaneTarget) {
-          yield* checkFail
-          const current = yield* Ref.get(state)
-          const pane = findPane(current.panes, target)
-          return Option.match(pane, {
-            onNone: () => "",
-            onSome: (found) => {
-              const clamped = Math.min(found.screenIndex, Math.max(0, found.screens.length - 1))
-              return Option.getOrElse(Option.fromUndefinedOr(found.screens[clamped]), () => "")
-            },
-          })
+          const found = yield* requireLivePane("terminals.read", target)
+          const clamped = Math.min(found.screenIndex, Math.max(0, found.screens.length - 1))
+          return Option.getOrElse(Option.fromUndefinedOr(found.screens[clamped]), () => "")
         }),
         readTail: Effect.fn("MemoryRex.readTail")(function* (target: PaneTarget) {
-          yield* checkFail
-          const current = yield* Ref.get(state)
-          const pane = findPane(current.panes, target)
-          return Option.match(pane, {
-            onNone: () => "",
-            onSome: (found) => {
-              const clamped = Math.min(found.screenIndex, Math.max(0, found.screens.length - 1))
-              return Option.getOrElse(Option.fromUndefinedOr(found.screens[clamped]), () => "")
-            },
-          })
+          const found = yield* requireLivePane("terminals.readTail", target)
+          const clamped = Math.min(found.screenIndex, Math.max(0, found.screens.length - 1))
+          return Option.getOrElse(Option.fromUndefinedOr(found.screens[clamped]), () => "")
         }),
         waitForQuiet: Effect.fn("MemoryRex.waitForQuiet")(function* (target: PaneTarget, _opts: QuietOptions) {
-          yield* checkFail
+          yield* requireLivePane("terminals.waitForQuiet", target)
           yield* Ref.update(state, (current) => ({
             ...current,
             panes: updatePane(current.panes, target, (pane) => ({
@@ -167,15 +168,22 @@ export const makeMemoryRex = (initial: MemoryRexState = emptyRexState) =>
           yield* Effect.yieldNow
         }),
         waitForOutput: Effect.fn("MemoryRex.waitForOutput")(function* (target: PaneTarget, opts: OutputMatchOptions) {
-          yield* checkFail
-          const current = yield* Ref.get(state)
-          const pane = findPane(current.panes, target)
-          return Option.exists(pane, (found) => found.screens.some((screen) => opts.pattern.test(screen)))
+          const found = yield* requireLivePane("terminals.waitForOutput", target)
+          return found.screens.some((screen) => opts.pattern.test(screen))
         }),
-        alive: Effect.fn("MemoryRex.alive")(function* (target: PaneTarget) {
-          yield* checkFail
+        alive: Effect.fn("MemoryRex.alive")(function* (
+          target: PaneTarget,
+        ): Effect.fn.Return<PaneLiveness, RexUnsupportedRevision> {
           const current = yield* Ref.get(state)
-          return Option.exists(findPane(current.panes, target), (pane) => pane.alive && !pane.closed)
+          if (Option.isSome(current.failWith)) {
+            const err = current.failWith.value
+            if (err._tag === "RexUnsupportedRevision") return yield* Effect.fail(err)
+            if (err._tag === "RexPaneGone") return "gone"
+            return "unknown"
+          }
+          const found = findPane(current.panes, target)
+          if (Option.exists(found, (pane) => pane.alive && !pane.closed)) return "alive"
+          return "gone"
         }),
         close: Effect.fn("MemoryRex.close")(function* (target: PaneTarget) {
           yield* checkFail
@@ -243,14 +251,32 @@ export interface RecordedWake {
 export const makeMemoryNotifier = () =>
   Effect.gen(function* () {
     const wakes = yield* Ref.make<ReadonlyArray<RecordedWake>>([])
+    const attempts = yield* Ref.make<ReadonlyArray<RecordedWake>>([])
     const changes = yield* Ref.make<ReadonlyArray<string>>([])
+    const failCount = yield* Ref.make(0)
+
     const layer = Layer.succeed(
       Notifier,
       Notifier.of({
-        wake: (sessionID, letter) => Ref.update(wakes, (prev) => [...prev, { sessionID, letter }]),
+        wake: Effect.fn("MemoryNotifier.wake")(function* (sessionID: string, letter: WakeLetter) {
+          yield* Ref.update(attempts, (prev) => [...prev, { sessionID, letter }])
+          const remaining = yield* Ref.getAndUpdate(failCount, (n) => Math.max(0, n - 1))
+          if (remaining > 0) {
+            return yield* Effect.fail(
+              new WakeFailed({ sessionID, deliveryId: letter.id, message: "simulated delivery refusal" }),
+            )
+          }
+          // Receiver is idempotent by letter.id (mirrors OpenCode session admission.reconcile).
+          yield* Ref.update(wakes, (prev) => {
+            if (prev.some((item) => item.letter.id === letter.id)) return prev
+            return [...prev, { sessionID, letter }]
+          })
+        }),
         changed: (sessionID) => Ref.update(changes, (prev) => [...prev, sessionID]),
         sessionDirectory: () => Effect.succeed(Option.some("/tmp/repo")),
       }),
     )
-    return { wakes, changes, layer }
+
+    const failNextWakes = (count: number) => Ref.set(failCount, count)
+    return { wakes, attempts, changes, failNextWakes, layer }
   })

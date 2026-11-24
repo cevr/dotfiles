@@ -363,7 +363,7 @@
       "files": [
         "mods/pane-agent/*.ts"
       ],
-      "excludeFiles": ["mods/pane-agent/laws.ts", "mods/pane-agent/model.test.ts"],
+      "excludeFiles": ["mods/pane-agent/laws.ts", "mods/pane-agent/model.test.ts", "mods/pane-agent/regressions.test.ts"],
       "rules": {
         "no-restricted-imports": [
           "error",
@@ -389,7 +389,8 @@
     {
       "files": [
         "mods/pane-agent/laws.ts",
-        "mods/pane-agent/model.test.ts"
+        "mods/pane-agent/model.test.ts",
+        "mods/pane-agent/regressions.test.ts"
       ],
       "rules": {
         "no-restricted-imports": [

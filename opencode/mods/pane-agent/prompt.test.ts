@@ -10,7 +10,8 @@ describe("task brief typed into a pane", () => {
     expect(brief).toContain("the orchestrator")
     expect(brief.toLowerCase()).not.toContain("opencode")
     expect(brief).toContain("Implement unit pane-agent in the lane.\nRun tests.")
-    expect(brief).toContain("/tmp/run/pane-agent-request.md")
+    expect(brief).toContain("/tmp/run/pane-agent-request.md.tmp")
+    expect(brief).toContain("rename it to /tmp/run/pane-agent-request.md")
   })
 
   test("supports follow-up and resume briefs without injecting a system prompt or mentioning OpenCode", () => {

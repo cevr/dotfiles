@@ -6,6 +6,7 @@ const ESC_TO_CANCEL = /\besc to cancel\b/i
 const SHORTCUTS_FOOTER = /\?\s+for shortcuts\b/i
 const GENERATING = /Generating\.{3}|Thinking\.{3}/i
 const PROMPT_LINE = /^>\s*(.*)$/
+const ESC_CODE = "\x1b"
 
 const NEEDS_INPUT_PATTERNS: ReadonlyArray<{ readonly pattern: RegExp; readonly summary: string }> = [
   { pattern: /Do you trust the contents of this project\?/i, summary: "Workspace trust confirmation required" },
@@ -17,7 +18,7 @@ const NEEDS_INPUT_PATTERNS: ReadonlyArray<{ readonly pattern: RegExp; readonly s
   { pattern: /\[y\/N\]|\(y\/n\)|Press y to/i, summary: "Confirmation prompt waiting for answer" },
 ]
 
-const TAIL_LINES = 12
+const TAIL_LINES = 14
 
 const nonEmptyLines = (screen: string): ReadonlyArray<string> =>
   screen.split("\n").map((line) => line.trimEnd())
@@ -56,8 +57,26 @@ const hasInputBox = (lines: ReadonlyArray<string>): boolean =>
     },
   })
 
+/**
+ * Inspect only the active bottom region so scrollback text mentioning `(y/n)` or `Approve`/`Deny`
+ * above an active input box does not falsely trigger `needs_input`.
+ */
+const activePromptRegion = (screen: string): string => {
+  const lines = nonEmptyLines(screen)
+  const rules = lastTwoRules(lines)
+  if (Option.isSome(rules) && hasInputBox(lines)) {
+    const [, bottom] = rules.value
+    const footer = lines.slice(bottom + 1).join("\n")
+    if (SHORTCUTS_FOOTER.test(footer) || ESC_TO_CANCEL.test(footer)) {
+      return footer
+    }
+  }
+  return lastLines(screen, TAIL_LINES)
+}
+
 const detectNeedsInput = (screen: string): Option.Option<NeedsInput> => {
-  const matched = Arr.findFirst(NEEDS_INPUT_PATTERNS, ({ pattern }) => pattern.test(screen))
+  const region = activePromptRegion(screen)
+  const matched = Arr.findFirst(NEEDS_INPUT_PATTERNS, ({ pattern }) => pattern.test(region))
   return Option.map(matched, ({ summary }) => ({ summary, tail: lastLines(screen, TAIL_LINES) }))
 }
 
@@ -120,6 +139,8 @@ const addDirFlags = (addDirs?: ReadonlyArray<string>): ReadonlyArray<string> => 
   return out
 }
 
+const sanitizePaste = (text: string): string => text.split(ESC_CODE).join("")
+
 const commandFor = (options: StartOptions): ReadonlyArray<string> => {
   const bin = Option.getOrElse(Option.fromUndefinedOr(options.binary), () => "agy")
   const args: Array<string> = [bin]
@@ -147,8 +168,8 @@ export const agyAdapter: HarnessAdapter = {
   command: commandFor,
   resumeCommand: resumeCommandFor,
   readyForInput: isReadyForInput,
-  formatSubmit: (text) => [`\x1b[200~${text}\x1b[201~`, "\r"],
-  formatSteer: (text) => [`\x1b[200~${text}\x1b[201~`, "\x1bm"],
+  formatSubmit: (text) => [`\x1b[200~${sanitizePaste(text)}\x1b[201~`, "\r"],
+  formatSteer: (text) => [`\x1b[200~${sanitizePaste(text)}\x1b[201~`, "\x1bm"],
   turnEnded: isTurnEnded,
   needsInput: detectNeedsInput,
   interruptSequence: "\x1b",

@@ -54,6 +54,7 @@ const formatModelError = (error: Model.ModelError): Tool.Error =>
   Match.value(error).pipe(
     Match.tag("RexUnsupportedRevision", (err) => new Tool.Error({ message: err.message, error: err })),
     Match.tag("RexUnavailable", (err) => new Tool.Error({ message: `Rex is unavailable: ${err.message}`, error: err })),
+    Match.tag("RexPaneGone", (err) => new Tool.Error({ message: `Rex pane is gone (${err.operation}): ${err.message}`, error: err })),
     Match.tag("RexCallFailed", (err) => new Tool.Error({ message: `Rex ${err.operation} failed: ${err.message}`, error: err })),
     Match.tag("WorkerRejected", (err) => new Tool.Error({ message: err.reason, error: err })),
     Match.tag("StoreFailed", (err) => new Tool.Error({ message: `Pane worker store ${err.operation} failed: ${err.message}`, error: err })),

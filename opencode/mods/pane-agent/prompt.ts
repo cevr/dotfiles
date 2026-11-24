@@ -18,7 +18,7 @@ const headingFor = (followUp?: boolean): string => {
 
 /**
  * Formats the plain task brief typed into a harness pane.
- * Names the sender only as "the orchestrator" and requests the answer in resultFile.
+ * Names the sender only as "the orchestrator" and specifies an atomic write-then-rename result hand-back.
  */
 export const taskBrief = (input: BriefInput): string => {
   const heading = headingFor(input.followUp)
@@ -27,7 +27,7 @@ export const taskBrief = (input: BriefInput): string => {
     "",
     input.prompt.trim(),
     "",
-    `When finished, write your final answer to ${input.resultFile}.`,
+    `When finished, write your final answer to ${input.resultFile}.tmp, then rename it to ${input.resultFile}.`,
   ].join("\n")
 }
 

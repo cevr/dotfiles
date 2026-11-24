@@ -36,13 +36,16 @@ let turn = 0
 const runTurn = (text, mode) => {
   turn += 1
   drawWorking()
-  const match = text.match(/write your final answer to ([^\\s]+?)\\.?\\s*$/m)
-  const targetFile = match ? match[1] : ""
+  const renameMatch = text.match(/rename it to ([^\\s]+?)\\.?\\s*$/m)
+  const directMatch = text.match(/write your final answer to ([^\\s]+?)\\.?\\s*$/m)
+  const targetFile = renameMatch ? renameMatch[1] : directMatch ? directMatch[1] : ""
   const lines = text.split("\\n").length
-  setTimeout(() => {
+  setTimeout(async () => {
     const reply = "turn=" + turn + " mode=" + mode + " resumed=" + isResumed + " lines=" + lines
     if (targetFile) {
-      Bun.write(targetFile, reply + "\\n")
+      await Bun.write(targetFile + ".tmp", reply + "\\n")
+      const { renameSync } = await import("node:fs")
+      renameSync(targetFile + ".tmp", targetFile)
     }
     drawReady(reply)
   }, 150)
@@ -261,6 +264,7 @@ describe("live Rex pane-agent lifecycle (simulated CLI in temporary Rex session)
               state: "working",
               turn: 4,
               notifiedTurn: 3,
+              activeTurnTyped: true,
               resultFile: result4,
               startedAt: stamp - 500,
               updatedAt: stamp - 500,
