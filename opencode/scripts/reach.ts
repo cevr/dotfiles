@@ -29,6 +29,7 @@ import { $ } from "bun"
 import { acceptKey, acceptSharedFrom } from "./accept-key.ts"
 import { decodeGitPaths, nulFields } from "./git-paths.ts"
 import { ALL_READS, readMatcher } from "./read-declarations.ts"
+import observations from "./test-impact-observations.json" with { type: "json" }
 import { projectReadChecker } from "./test-read-project.ts"
 import { isAcceptInput, packageOf } from "./test-population.ts"
 export { matchingReads, readsOf } from "./read-declarations.ts"
@@ -165,19 +166,42 @@ export const inspectReads = (workspace: Workspace, file: string) => {
   return analyze(file)
 }
 
-export const selectorReads = (workspace: Workspace, file: string): ReadonlyArray<string> => {
-  const read = inspectReads(workspace, file)
-  if (read.classification === "unknown") return [ALL_READS]
-  return read.patterns
+const observed: Readonly<Record<string, ReadonlyArray<string>>> = observations
+const authorities = new WeakMap<Workspace, Map<string, ReturnType<typeof authorityOf>>>()
+
+const authorityOf = (workspace: Workspace, test: string) => {
+  const read = inspectReads(workspace, test)
+  const unknown = read.classification === "unknown"
+  const paths = observed[test] ?? []
+  const exact = new Set(paths.filter((file) => !file.endsWith("/")))
+  const directories = paths.filter((file) => file.endsWith("/"))
+  const patterns = readMatcher(read.patterns.filter((pattern) => pattern !== ALL_READS))
+  const positive = (file: string) => exact.has(file) || patterns(file) || directories.some((prefix) => file.startsWith(prefix))
+  return { unknown, exact, positive, has: (file: string) => unknown || positive(file) }
+}
+
+/** Runtime reads have one authority for selection, cache inputs and the coverage audit.
+ * Unknown scope always selects, but is not evidence that any one observed path has a positive witness.
+ */
+export const testReadInputs = (workspace: Workspace, test: string) => {
+  const cached = authorities.get(workspace) ?? new Map<string, ReturnType<typeof authorityOf>>()
+  authorities.set(workspace, cached)
+  const prior = cached.get(test)
+  if (prior) return prior
+  const authority = authorityOf(workspace, test)
+  cached.set(test, authority)
+  return authority
 }
 
 /** Runtime inputs, even if they are docs or a suite: proved static, explicitly bounded, or conservative. */
-export const declaredInputs = (workspace: Workspace, file: string): ReadonlyArray<string> =>
-  [...workspace.files, ...(workspace.siblings ?? [])].filter(readMatcher(selectorReads(workspace, file)))
+export const declaredInputs = (workspace: Workspace, file: string): ReadonlyArray<string> => {
+  const inputs = testReadInputs(workspace, file)
+  return [...new Set([...inputs.exact, ...[...workspace.files, ...(workspace.siblings ?? [])].filter(inputs.has)])]
+}
 
 /** Only unknown-input tests also follow Git's object identity (relevant to archives and history). */
 export const readState = (workspace: Workspace, file: string): string =>
-  (selectorReads(workspace, file).includes(ALL_READS) && workspace.head) || ""
+  (testReadInputs(workspace, file).unknown && workspace.head) || ""
 
 /** The workspace file a specifier from `from` names, if any. */
 const resolveLocal = (known: ReadonlySet<string>, from: string, specifier: string): string | undefined => {

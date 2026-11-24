@@ -58,7 +58,7 @@ import * as Swarm from "./accept-plan.ts"
 import { heading, isSerial, plan, poolWidth, requestedWidth, scenariosOf } from "./accept-plan.ts"
 import * as Accept from "./accept-ledger.ts"
 import * as Yield from "./accept-yield.ts"
-import { acceptanceTests, acceptReadKey, acceptReach, acceptSharedKey, fromRepository, load, packageOf, ROOT, type Workspace } from "./reach.ts"
+import { acceptanceTests, acceptReadKey, acceptReach, acceptSharedKey, fromRepository, load, packageOf, ROOT, testReadInputs, type Workspace } from "./reach.ts"
 import { swarmInputs } from "./test-impact.ts"
 import { decodeGitPaths, nulFields, parseNameStatus } from "./git-paths.ts"
 import { swarmTests } from "./test-population.ts"
@@ -114,11 +114,17 @@ const disk: Accept.Disk = {
   rename: renameSync,
 }
 
-/** What the whole run shares once its files are chosen. */
-interface Run {
+interface LandInputs {
   readonly files: ReadonlyArray<string>
   readonly text: (file: string) => string
   readonly reached: ReadonlyMap<string, ReadonlySet<string>>
+  readonly workspace: Workspace
+  readonly suites: ReadonlyArray<string>
+  readonly swarmReach: ReturnType<typeof swarmInputs>
+}
+
+/** What the whole run shares once its files are chosen. */
+interface Run extends LandInputs {
   readonly keys: ReadonlyMap<string, string>
   readonly tiers: ReadonlyMap<string, Accept.Tier>
   readonly candidates: ReadonlyArray<Accept.Candidate>
@@ -135,9 +141,6 @@ interface Run {
   /** The checkout's head, and where this head's logs go. */
   readonly head: string
   readonly logs: string
-  /** The workspace, and its simulated suites (`*.sim.test.ts`, or ACCEPT_SIM_FILES). */
-  readonly workspace: Workspace
-  readonly suites: ReadonlyArray<string>
   /** What the swarms of this run found failing: one failed outcome per suite with a failing seed. */
   readonly swarmed: Array<Accept.Outcome>
 }
@@ -171,15 +174,29 @@ const suitesOf = (workspace: Workspace) =>
     onSome: (glob) => globbed(glob).map((file) => Option.getOrElse(Option.liftPredicate(path.relative(ROOT, file), (each) => !each.startsWith("..")), () => file)),
   })
 
+/** The path facts shared by the live and listed land plans of one snapshot. */
+export const analyzeLand = (workspace: Workspace): LandInputs => {
+  const files = filesOf(acceptanceTests(workspace))
+  const texts = new Map<string, string>()
+  const text = (file: string) => {
+    const cached = texts.get(file)
+    if (cached) return cached
+    const content = readFileSync(path.resolve(ROOT, file), "utf8")
+    texts.set(file, content)
+    return content
+  }
+  const memo = new Map<string, ReadonlyArray<string>>()
+  const reached = new Map(files.map((file) => [file, acceptReach(workspace, file, memo)]))
+  return { files, text, reached, workspace, suites: suitesOf(workspace), swarmReach: swarmInputs(workspace) }
+}
+
 const prepare = Effect.fn("Accept.prepare")(function* (signalled: Deferred.Deferred<boolean>) {
   const workspace = yield* Effect.promise(load)
-  const files = filesOf(acceptanceTests(workspace))
-  const text = (file: string) => readFileSync(path.resolve(ROOT, file), "utf8")
+  const inputs = analyzeLand(workspace)
+  const { files, text, reached } = inputs
   const read = Accept.readLedger(disk, LEDGER)
   if (Option.isSome(read.problem)) yield* Console.error(`accept: ${read.problem.value}`)
   const shared = yield* Effect.promise(() => acceptSharedKey([`accept-ledger:${Accept.KEY_VERSION}`, "bun test --timeout 300000"]))
-  const memo = new Map<string, ReadonlyArray<string>>()
-  const reached = new Map(files.map((file) => [file, acceptReach(workspace, file, memo)]))
   const keys = new Map(files.map((file) => [file, acceptReadKey(workspace, file, shared, reached.get(file) ?? [file])]))
   const tiers = new Map(files.map((file) => [file, Accept.tierOf(text(file))]))
   const candidates = files.map((file) => ({ file, tier: tiers.get(file) ?? "land", key: keys.get(file) ?? "", ...Option.match(Accept.offUntil(text(file), ENV), { onNone: () => ({}), onSome: (off) => ({ off }) }) }))
@@ -188,8 +205,7 @@ const prepare = Effect.fn("Accept.prepare")(function* (signalled: Deferred.Defer
   const head = (yield* git(["rev-parse", "HEAD"])).trim()
   const logs = path.join(LOGS, head.slice(0, 12) || "no-head")
   const wanted = yield* Deferred.make<boolean>()
-  const suites = suitesOf(workspace)
-  const run: Run = { files, text, reached, keys, tiers, candidates, named, selection, ledger: read.ledger, timed: [], loads: [load1()], signalled, wanted, head, logs, workspace, suites, swarmed: [] }
+  const run: Run = { ...inputs, keys, tiers, candidates, named, selection, ledger: read.ledger, timed: [], loads: [load1()], signalled, wanted, head, logs, swarmed: [] }
   return run
 })
 
@@ -197,16 +213,30 @@ const prepare = Effect.fn("Accept.prepare")(function* (signalled: Deferred.Defer
 const selectFrom = (candidates: ReadonlyArray<Accept.Candidate>, ledger: Accept.Ledger, named: ReadonlyArray<string>, text: (file: string) => string) =>
   Accept.holdTiming(Accept.select(mode, candidates, ledger, wallNow(), named), (file) => isSerial(text(file)), mode !== "owed" || settledHost)
 
+/** The affected argv command's plan, passed to live land and printed by `--list`. */
+export const affectedCommand = Effect.fn("Accept.affectedCommand")(function* (args: ReadonlyArray<string>, run: LandInputs) {
+  const changed = yield* changedSince(args)
+  const affected = run.files.filter((file) => {
+    const inputs = testReadInputs(run.workspace, file)
+    const reached = run.reached.get(file) ?? new Set<string>()
+    if (changed.some((path) => inputs.has(path) || reached.has(path))) return true
+    const text = run.text(file)
+    const driven = scenariosOf(text).filter((scenario) => existsSync(path.join(ROOT, scenario))).map(run.text)
+    return Accept.isNear([text, ...driven], reached, changed, (each) => Option.fromUndefinedOr(packageOf(each)))
+  })
+  const suites = Option.match(Option.fromUndefinedOr(ENV.ACCEPT_SIM_FILES), {
+    // A stand-in suite is outside the workspace: every one named is reached.
+    onSome: () => run.suites,
+    onNone: () => Swarm.reachedSuites(run.suites, run.swarmReach, changed),
+  })
+  return { changed, affected, suites }
+})
+
 /** A land run: the due land files, near the change first, under the window. */
 const land = Effect.fn("Accept.land")(function* (run: Run) {
-  const changed = yield* changedSince()
-  const near = new Set(
-    run.selection.run.filter((file) => {
-      const text = run.text(file)
-      const driven = scenariosOf(text).filter((scenario) => existsSync(path.join(ROOT, scenario))).map(run.text)
-      return Accept.isNear([text, ...driven], run.reached.get(file) ?? new Set(), changed, (each) => Option.fromUndefinedOr(packageOf(each)))
-    }),
-  )
+  const { changed, affected, suites } = yield* affectedCommand(own, run)
+  const affectedSet = new Set(affected)
+  const near = new Set(run.selection.run.filter((file) => affectedSet.has(file)))
   const estimate = (file: string) => Accept.estimate(run.ledger, file)
   const order = Accept.landOrder(run.selection.run, near, estimate)
   const width = Accept.landWidth(cores, run.loads[0] ?? 0, requested())
@@ -214,15 +244,13 @@ const land = Effect.fn("Accept.land")(function* (run: Run) {
     `accept: land: ${order.length} due land files (${near.size} near the ${changed.length} files changed), ${width} at a time (${cores} cores, 1-minute load ${(run.loads[0] ?? 0).toFixed(1)}); no start after ${seconds(window.startBy)}, stop at ${seconds(window.stopAt)}`,
   )
   // First the swarm: the simulated suites the change reaches, fresh seeds from the head, for a third of the budget.
-  const suites = Option.match(Option.fromUndefinedOr(ENV.ACCEPT_SIM_FILES), {
-    // A stand-in suite is outside the workspace: every one named is reached.
-    onSome: () => run.suites,
-    onNone: () => Swarm.reachedSuites(run.suites, swarmInputs(run.workspace), changed),
-  })
   const box = Swarm.swarmBox(window.end)
   if (listOnly) {
     yield* say(`accept: swarm (land): would run ${suites.length} simulated suites the change reaches for ${seconds(box)}, from seed ${Swarm.swarmFirst(run.head, "land")}`)
     yield* say(...suites.map((suite) => `  swarm: ${suite}`))
+    // All affected readers before tier, ledger and budget decisions. This is
+    // the exact set the live path uses to prioritize runs, including deep debt.
+    yield* say(...affected.map((file) => `  affected: ${file}`))
   } else yield* swarm(run, "land", suites, box, width)
   if (!listOnly) return yield* pool(run, order, width)
   const played = Accept.simulate(order, estimate, width, window, elapsed())
@@ -252,9 +280,9 @@ const requested = () => {
 }
 
 /** The base a land run orders by: the argument after --land/--affected, else where HEAD left origin/main. */
-const baseOf = () => {
-  const flag = own.findIndex((arg) => arg === "--land" || arg === "--affected")
-  const given = Option.liftPredicate(own[flag + 1] ?? "--", (arg) => !arg.startsWith("--") && !arg.endsWith(".test.ts"))
+const baseOf = (args: ReadonlyArray<string>) => {
+  const flag = args.findIndex((arg) => arg === "--land" || arg === "--affected")
+  const given = Option.liftPredicate(args[flag + 1] ?? "--", (arg) => !arg.startsWith("--") && !arg.endsWith(".test.ts"))
   return Option.match(given, {
     onSome: Effect.succeed,
     onNone: () => Effect.map(git(["merge-base", "HEAD", "origin/main"]), (base) => base.trim() || "HEAD"),
@@ -266,8 +294,8 @@ const git = (args: ReadonlyArray<string>) => Effect.promise(() => $`git ${args}`
 const gitPaths = (args: ReadonlyArray<string>) => Effect.promise(() => $`git ${args}`.cwd(ROOT).quiet().arrayBuffer().then(decodeGitPaths))
 
 /** The files changed since the base (committed or not, untracked too), or in the range `A..B`. */
-const changedSince = Effect.fn("Accept.changedSince")(function* () {
-  const base = yield* baseOf()
+const changedSince = Effect.fn("Accept.changedSince")(function* (args: ReadonlyArray<string>) {
+  const base = yield* baseOf(args)
   const diff = yield* gitPaths(["-C", path.dirname(ROOT), "diff", "--name-status", "-z", "-M", "-C", base, "--"])
   const untracked = (!base.includes("..") && (yield* gitPaths(["-C", path.dirname(ROOT), "ls-files", "-z", "--others", "--exclude-standard"]))) || ""
   return [...new Set([...parseNameStatus(diff).flatMap(({ paths }) => paths), ...nulFields(untracked)].map(fromRepository))]
@@ -799,5 +827,4 @@ const main = Effect.fn("Accept.main")(function* () {
 /** Ends the run before it starts, naming why. */
 const refuse = (problem: string) => Effect.as(Console.error(`accept: ${problem}`), 1)
 
-const code = await Effect.runPromise(main())
-process.exit(code)
+if (import.meta.main) process.exit(await Effect.runPromise(main()))

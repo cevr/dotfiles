@@ -14,7 +14,8 @@
 //   reach finds it (batch 2026-11-16cv: scripts/verify-fork.test.ts landed a raw `git init`).
 // - every workbox/test/ test when anything under workbox/ changes, and its explicit @reads outside workbox/
 //   (batch 2026-11-16cy: workrift.test.ts landed red on the Mac).
-// - fixed-seed unit tests not run by the acceptance swarm: a changed test or a known or observed input.
+// - fixed-seed unit tests not run by the acceptance swarm: a changed test, its known or observed inputs,
+//   or any change while its input scope is unknown.
 import { Option } from "effect"
 import { docsGuardDue } from "./docs-guard.ts"
 import type { Change } from "./git-paths.ts"
@@ -36,16 +37,14 @@ export interface Tools {
   readonly exists: (file: string) => boolean
   readonly scripts: ScriptsTests
   readonly workbox: Workbox
-  readonly workboxReads?: (file: string) => ReadonlyArray<string>
+  readonly workboxReads?: (file: string) => (path: string) => boolean
   readonly unit?: UnitTests
 }
 
-/** Positive fixed-seed inputs: reachable sources, checked patterns, and exact observed paths. */
+/** The fixed-seed population and the authority that matches each test's inputs. */
 export interface UnitTests {
   readonly files: ReadonlyArray<string>
-  readonly inputs: (test: string) => ReadonlySet<string>
-  readonly reads: (test: string) => ReadonlyArray<string>
-  readonly observed?: (test: string) => ReadonlyArray<string>
+  readonly inputs: (test: string) => Pick<ReadonlySet<string>, "has">
 }
 
 /** The repository's workbox/ folder, outside opencode/: its changes since the base and its tests, from opencode/ (`../workbox/test/…`). */
@@ -84,6 +83,7 @@ export interface ScriptsTests {
   readonly files: ReadonlyArray<string>
   readonly imports: (file: string) => ReadonlyArray<string>
   readonly reads: (file: string) => ReadonlyArray<string>
+  readonly runtime?: (file: string) => (path: string) => boolean
 }
 
 /** The scripts/ file a relative specifier in the scripts/ file `from` names, if it exists. */
@@ -125,7 +125,7 @@ const NO_SCRIPTS: ScriptsTests = { files: [], imports: () => [], reads: () => []
 /** The scripts/ tests the changes can break, each once, sorted; only those on disk. */
 export const scriptTests = (changes: ReadonlyArray<Change>, exists: (file: string) => boolean, scripts: ScriptsTests = NO_SCRIPTS): ReadonlyArray<string> => {
   const paths = named(changes)
-  const reached = scripts.files.map((test) => ({ test, files: reachedWithin(test, scripts, exists), reads: readMatcher(scripts.reads(test)) }))
+  const reached = scripts.files.map((test) => ({ test, files: reachedWithin(test, scripts, exists), reads: scripts.runtime?.(test) ?? readMatcher(scripts.reads(test)) }))
   const due = new Set(paths.flatMap((path) => testsOf(path, reached)))
   if (paths.some(acceptTouched)) for (const test of ACCEPT_TESTS) due.add(test)
   if (docsGuardDue(changes.filter((change) => change.paths.some((path) => !path.startsWith("../"))))) due.add(DOCS_GUARD)
@@ -133,16 +133,14 @@ export const scriptTests = (changes: ReadonlyArray<Change>, exists: (file: strin
   return [...due].filter(exists).toSorted()
 }
 
-/** These unit tests had no land leg. Their known inputs select them; opaque sites stay opaque. */
+/** A changed test or an affected runtime/import input selects the fixed-seed test. */
 export const affectedUnits = (paths: ReadonlyArray<string>, unit: UnitTests) => {
   if (paths.length === 0) return []
   const changed = new Set(paths)
   return unit.files.filter((test) => {
-    if (changed.has(test) || unit.observed?.(test).some((file) => changed.has(file))) return true
-    const reachable = unit.inputs(test)
-    if (paths.some((file) => reachable.has(file))) return true
-    const reads = readMatcher(unit.reads(test).filter((scope) => scope !== "all"))
-    return paths.some(reads)
+    if (changed.has(test)) return true
+    const inputs = unit.inputs(test)
+    return paths.some((file) => inputs.has(file))
   })
 }
 
@@ -168,7 +166,8 @@ export const mergeLegs = (base: string, changes: ReadonlyArray<Change>, tools: T
   const paths = named(changes)
   const workbox = new Set(workboxTests(tools.workbox))
   for (const file of tools.workbox.tests) {
-    if (paths.some(readMatcher(tools.workboxReads?.(file) ?? []))) workbox.add(file)
+    const reads = tools.workboxReads?.(file)
+    if (reads && paths.some(reads)) workbox.add(file)
   }
   const unit = Option.match(Option.fromUndefinedOr(tools.unit), { onNone: () => [], onSome: (tests) => affectedUnits(paths, tests) })
   const tests = [...new Set([...scriptTests(changes, tools.exists, tools.scripts), ...[...workbox].toSorted(), ...unit])]

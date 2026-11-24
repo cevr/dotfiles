@@ -40,13 +40,13 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { $ } from "bun"
-import { Option } from "effect"
+import { Effect, Option } from "effect"
 import { hostLocks, landLogs, scriptReceipt } from "../mods/work/process/landing.ts"
 import { decodeGitPaths, parseNameStatus } from "./git-paths.ts"
-import { mergeLegs } from "./merge-check.ts"
+import { mergeLegs, type Tools } from "./merge-check.ts"
 import { mergeUnitInputs } from "./test-impact.ts"
 import { checkCommand, projects } from "./typecheck.ts"
-import { declaredInputs, fromRepository, importsOf, keyOf, load, mergeScriptTests, reach, readState, ROOT, selectorReads, sharedKey, unitTests, workboxTestFiles } from "./reach.ts"
+import { declaredInputs, fromRepository, importsOf, keyOf, load, mergeScriptTests, reach, readState, ROOT, sharedKey, testReadInputs, unitTests, workboxTestFiles, type Workspace } from "./reach.ts"
 
 const ENV = process.env
 const ARGV = process.argv.slice(2)
@@ -128,23 +128,24 @@ const unit = async (): Promise<Leg> => {
 }
 
 /** Prints the failed legs' output and the summary line; answers the exit code. */
-const summary = (name: string, started: number, legs: ReadonlyArray<Leg>): number => {
+const stdout = console.log
+const summary = (name: string, started: number, legs: ReadonlyArray<Leg>, say = stdout): number => {
   for (const leg of legs.filter((each) => !each.ok)) process.stderr.write(`\n── ${leg.name} failed ──\n${leg.output.trimEnd()}\n`)
   const line = legs.map((leg) => `${leg.ok ? "✓" : "✗"} ${leg.name} ${leg.time}${leg.note ? ` (${leg.note})` : ""}`).join("  ·  ")
   const ok = legs.every((leg) => leg.ok)
-  console.log(`${line}\n${name} ${ok ? "green" : "red"} in ${elapsed(started)}`)
+  say(`${line}\n${name} ${ok ? "green" : "red"} in ${elapsed(started)}`)
   return ok ? 0 : 1
 }
 
 /** The link, then `legs` at once, as `name`; answers its exit code. `runner` starts the link (a dry run's prints it). */
-const linked = async (name: string, legs: () => ReadonlyArray<Promise<Leg>>, runner: typeof run = run): Promise<number> => {
+const linked = async (name: string, legs: () => ReadonlyArray<Promise<Leg>>, runner: typeof run = run, say = stdout): Promise<number> => {
   const started = performance.now()
   const link = await runner("link", [process.execPath, "scripts/link-fork.ts"])
   if (!link.ok) {
     process.stderr.write(link.output)
     return 1
   }
-  return summary(name, started, await Promise.all(legs()))
+  return summary(name, started, await Promise.all(legs()), say)
 }
 
 /** The gate in its turn: the link, then the legs at once; answers its exit code. */
@@ -175,40 +176,65 @@ const legEnv = () => {
  * since `base` (every project's typecheck, oxlint and the Effect debt ratchet over the changed files, and the
  * tests a change can break), at once.
  */
-const mergeCheck = (base: string, runner: typeof run) =>
-  planned(base).then((legs) => linked("merge check", () => legs.map((leg) => runner(leg.name, leg.argv, legEnv(), leg.note)), runner))
+const mergeCheck = (base: string, runner: typeof run, analyzed: Option.Option<MergeAnalysis>, say: typeof stdout) =>
+  planned(base, analyzed).then((legs) => linked("merge check", () => legs.map((leg) => runner(leg.name, leg.argv, legEnv(), leg.note)), runner, say))
 
 /**
  * `--dry-run`'s runner: it runs nothing, prints the leg (`step <name>: <command>`) and answers it passed. The merge
  * check runs the same path with it, link and every leg, so scripts/merge-check.test.ts reads the steps it starts.
  */
-const printed: typeof run = (name, argv, _env, note) =>
-  $`echo ${`step ${name}: ${argv.join(" ")}`}`.then(() => ({ name, ok: true, output: "", time: "0.00s", note: Option.getOrElse(Option.fromUndefinedOr(note), () => "") }))
+const printed = (say: typeof stdout): typeof run => (name, argv, _env, note) => Effect.runPromise(Effect.sync(() => {
+  say(`step ${name}: ${argv.join(" ")}`)
+  return { name, ok: true, output: "", time: "0.00s", note: Option.getOrElse(Option.fromUndefinedOr(note), () => "") }
+}))
 
-/** The merge check's legs over the changes since `base` (scripts/merge-check.ts), with each scripts/ file's imports. */
-const planned = (base: string) =>
-  changesSince(base).then((changes) =>
-    load().then((workspace) =>
-      mergeLegs(base, changes, {
-        workbox: {
-          changes: changes.filter((change) => change.paths.some((file) => file.startsWith("../workbox/"))),
-          tests: workboxTestFiles(workspace),
+interface MergeAnalysis {
+  readonly tools: Omit<Tools, "workbox">
+  readonly workbox: ReadonlyArray<string>
+}
+
+/** The fixed inputs of one workspace snapshot. The caller must not reuse it after the checkout changes. */
+export const analyzeMerge = (workspace: Workspace): MergeAnalysis => {
+  const imports = new Map<string, ReadonlyArray<string>>()
+  return {
+    workbox: workboxTestFiles(workspace),
+    tools: {
+      workboxReads: (file) => testReadInputs(workspace, file).has,
+      unit: mergeUnitInputs(workspace),
+      bun: process.execPath,
+      oxlint: path.join(ROOT, "node_modules/.bin/oxlint"),
+      typecheck: checkCommand(),
+      projects: projects().length + 1,
+      exists: (file) => existsSync(path.join(ROOT, file)),
+      scripts: {
+        files: mergeScriptTests(workspace),
+        imports: (file) => {
+          const cached = imports.get(file)
+          if (cached) return cached
+          const found = importsOf(file, readFileSync(path.join(ROOT, file), "utf8"))
+          imports.set(file, found)
+          return found
         },
-        workboxReads: (file) => selectorReads(workspace, file),
-        unit: mergeUnitInputs(workspace),
-        bun: process.execPath,
-        oxlint: path.join(ROOT, "node_modules/.bin/oxlint"),
-        typecheck: checkCommand(),
-        projects: projects().length + 1,
-        exists: (file) => existsSync(path.join(ROOT, file)),
-        scripts: {
-          files: mergeScriptTests(workspace),
-          imports: (file) => importsOf(file, readFileSync(path.join(ROOT, file), "utf8")),
-          reads: (file) => selectorReads(workspace, file),
-        },
-      }),
-    ),
-  )
+        reads: () => [],
+        runtime: (file) => testReadInputs(workspace, file).has,
+      },
+    },
+  }
+}
+
+/** The real Git diff is parsed anew even when its target tree's analysis can be reused. */
+const planned = (base: string, analyzed: Option.Option<MergeAnalysis>) =>
+  changesSince(base).then((changes) => {
+    const legs = (analysis: MergeAnalysis) => mergeLegs(base, changes, {
+      ...analysis.tools,
+      workbox: {
+        changes: changes.filter((change) => change.paths.some((file) => file.startsWith("../workbox/"))),
+        tests: analysis.workbox,
+      },
+    })
+    if (Option.isSome(analyzed)) return legs(analyzed.value)
+    return load().then(analyzeMerge).then(legs)
+  })
 
 /** The full gate: by hand, its `round` receipt written from where the repository stood; under a land (RIFT_LAND_CHECK set), the land writes its own. */
 const fullGate = () =>
@@ -217,16 +243,13 @@ const fullGate = () =>
     onNone: () => scriptReceipt(landLogs(ENV), path.resolve(ROOT, ".."), "round", "bun run gate", gate, (code) => code),
   })
 
-/** `--merge <base>`: the merge check, or with `--dry-run` its legs printed. */
-const mergeRun = (base: string) => {
-  if (ARGV.includes("--dry-run")) return mergeCheck(base, printed)
-  return mergeCheck(base, run)
+/** The argv command used by the executable and by read-only counterfactual plans. */
+export const gateCommand = (args: ReadonlyArray<string>, analyzed?: MergeAnalysis, say = stdout) => {
+  const merging = Option.filter(Option.some(args.indexOf("--merge")), (at) => at >= 0)
+  return Option.match(merging, {
+    onSome: (at) => mergeCheck(args[at + 1] ?? "HEAD", (args.includes("--dry-run") && printed(say)) || run, Option.fromUndefinedOr(analyzed), say),
+    onNone: () => hostLocks(ENV).gate(ROOT)(fullGate),
+  })
 }
 
-const merging = Option.filter(Option.some(ARGV.indexOf("--merge")), (at) => at >= 0)
-process.exit(
-  await Option.match(merging, {
-    onSome: (at) => mergeRun(ARGV[at + 1] ?? "HEAD"),
-    onNone: () => hostLocks(ENV).gate(ROOT)(fullGate),
-  }),
-)
+if (import.meta.main) process.exit(await gateCommand(ARGV))

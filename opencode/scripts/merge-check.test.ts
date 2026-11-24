@@ -19,7 +19,7 @@ import { parseNameStatus as parseNulNameStatus } from "./git-paths.ts"
 import { ACCEPT_TESTS, affectedUnits, DOCS_GUARD, GIT_REPO_GUARD, lintFiles, mergeLegs, reachedWithin, scriptTests } from "./merge-check.ts"
 import { mergeUnitInputs, swarmInputs } from "./test-impact.ts"
 import { readMatcher } from "./read-declarations.ts"
-import { acceptReach, importsOf, inspectReads, load, readState, readsOf } from "./reach.ts"
+import { acceptReach, importsOf, inspectReads, load, reach, readState, readsOf, testReadInputs } from "./reach.ts"
 import { acceptanceTests, checkedTests, mergeScriptTests, swarmTests, workboxTestFiles } from "./test-population.ts"
 import { reachedSuites } from "./accept-plan.ts"
 
@@ -152,8 +152,10 @@ describe("the fixed-seed unit leg of land", () => {
       const memo = new Map<string, ReadonlyArray<string>>()
       expect([...acceptance].filter((file) => !acceptReach(workspace, file, memo).has(file))).toEqual([])
       expect(affectedUnits(["../local-bin.sh"], unit)).toContain("mods/update/git/source.test.ts")
-      const outside = "../example.txt"
-      expect(affectedUnits([outside], { files: ["unit.test.ts"], inputs: () => new Set(), reads: () => [], observed: () => [outside] })).toEqual(["unit.test.ts"])
+      expect(affectedUnits(["../workbox/install-bin.sh"], unit)).toContain("mods/update/git/source.test.ts")
+      expect(testReadInputs(workspace, "mods/update/git/source.test.ts").positive("../workbox/install-bin.sh")).toBe(true)
+      expect(affectedUnits(["../unrelated-unit-control.txt"], unit)).toContain("mods/update/git/source.test.ts")
+      expect(affectedUnits([], unit)).toEqual([])
     }),
   )
 
@@ -165,7 +167,9 @@ describe("the fixed-seed unit leg of land", () => {
       const inputs = swarmInputs(workspace)
       expect(reachedSuites(files, inputs, ["sim-tui/golden/escape-send/checked.txt"])).toContain(suite)
       expect(reachedSuites(files, inputs, ["../skills/principle-nothing-is-hard/SKILL.md"])).toContain("cmd/orchestrate/principles.sim.test.ts")
-      expect(reachedSuites(files, inputs, ["../unrelated-swarm-control.txt"])).toEqual([])
+      expect(reachedSuites(files, inputs, ["../unrelated-swarm-control.txt"])).toEqual(
+        files.filter((file) => testReadInputs(workspace, file).unknown),
+      )
     }),
   )
 })
@@ -280,6 +284,14 @@ describe("the merge check's tests", () => {
       const inputs = ["cmd/work/server.ts", "mods/work/tool.ts", "themes/prime.json"]
         .filter(readMatcher(inspectReads(workspace, "scripts/runtime-imports.test.ts").patterns))
       expect(inputs).toEqual(["cmd/work/server.ts", "mods/work/tool.ts"])
+    }),
+  )
+
+  live("the full gate's import reach still covers runtime-imports.test's named cmd and mod source", () =>
+    Effect.gen(function* () {
+      const { workspace } = yield* tree
+      const reached = reach(workspace, ["scripts/runtime-imports.test.ts"])
+      expect(["cmd/work/server.ts", "mods/work/tool.ts"].filter((file) => !reached.has(file))).toEqual([])
     }),
   )
 
