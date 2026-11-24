@@ -133,7 +133,7 @@
  */
 import { hostname } from "node:os"
 import { Agent, Integration, Plugin, Tool } from "@opencode/plugin/effect"
-import { Cause, Clock, Context, Deferred, Effect, Exit, Fiber, FiberMap, Layer, Option, Schedule, Schema, Stream } from "effect"
+import { Cause, Clock, Context, Deferred, Effect, Exit, Layer, Option, Schedule, Schema, Stream } from "effect"
 import { heldMessage, PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { type HoldReason, type Pace, RequestHeld, requestHeldMessage, storeHeld, nextRetryAt } from "@dotfiles/opencode-pool/pace"
 import { deferRoute, HeldSend, refuseSend, type SendHold, sendHoldMessage, stepIDOf } from "@dotfiles/opencode-pool/refuse"
@@ -234,8 +234,10 @@ export const Options = Schema.Struct({
 export type Options = typeof Options.Type
 
 const SEND_HOLD_PREFIX = "held-send/"
+const SEND_HOLD_RETENTION_MS = 24 * 60 * 60 * 1000
 const sendHoldKey = (sessionID: string) => `${SEND_HOLD_PREFIX}${sessionID}`
-const decodeSendHold = Schema.decodeUnknownOption(HeldSend)
+const decodeSendHold = Schema.decodeUnknownEffect(HeldSend)
+const sendHoldOf = Schema.decodeUnknownOption(HeldSend)
 const frameType = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({ type: Schema.String })))
 type SendScope = { readonly sessionID: string; readonly providerID: string; readonly kind: Model.PlaceInput["kind"]; readonly stepID?: string }
 
@@ -499,46 +501,17 @@ export const make = (
           })))),
         )
       })
-      const storeOp = <A>(operation: Effect.Effect<A>) =>
-        operation.pipe(Effect.timeoutOption(HOLD_STORE_RETRY_MS), Effect.catchDefect(() => Effect.succeed(Option.none())))
-      const activation = yield* Effect.scope
-      const expiries = yield* FiberMap.make<string>()
-      const heldSend = (sessionID: string) => sendRecords.withPermits(1)(Effect.gen(function* () {
-        const key = sendHoldKey(sessionID)
-        const page = yield* storeOp(ctx.storage.scan({ prefix: key, limit: 1 }))
-        const found = Option.flatMap(page, (page) => Option.flatMap(
-          Option.fromUndefinedOr(page.entries.find((row) => row.key === key)), (row) => decodeSendHold(row.value)))
+      // The deadline changes what the record says, not whether it exists.
+      // Reading from storage and the current clock also works after a restart,
+      // without a timer, an activation scan, or a missed expiry to recover.
+      const heldSend = (sessionID: string) => Effect.gen(function* () {
+        const raw = Option.fromUndefinedOr(yield* ctx.storage.get(sendHoldKey(sessionID)))
+        if (Option.isNone(raw)) return {}
+        const hold = yield* decodeSendHold(raw.value).pipe(Effect.orDie)
         const now = yield* Clock.currentTimeMillis
-        if (Option.isNone(found)) return {}
-        if (found.value.retryAt > now) return { hold: found.value }
-        yield* storeOp(ctx.storage.remove(key))
-        return {}
-      }))
-      // A hook already running at reload still gives its old refusal.
-      // Forking into a closed activation cancels the timer, not that hook.
-      const expire = (hold: HeldSend, now: number, recovered = false) =>
-        heldSend(hold.sessionID).pipe(
-          Effect.delay(Math.max(0, hold.retryAt - now)),
-          Effect.forkIn(activation),
-          Effect.flatMap((fiber) => FiberMap.set(expiries, hold.sessionID, fiber, { onlyIfMissing: recovered })),
-        )
-      // Re-arm persisted deadlines after a restart. Each timer re-reads the
-      // exact key, so expiry of one refusal cannot delete a later replacement.
-      yield* Effect.forkScoped(Effect.gen(function* () {
-        let after = Option.none<string>()
-        do {
-          const page = yield* storeOp(ctx.storage.scan({ prefix: SEND_HOLD_PREFIX, limit: 128,
-            ...Option.match(after, { onNone: () => ({}), onSome: (after) => ({ after }) }),
-          }))
-          if (Option.isNone(page)) return
-          const now = yield* Clock.currentTimeMillis
-          for (const entry of page.value.entries) {
-            const hold = decodeSendHold(entry.value)
-            if (Option.isSome(hold)) yield* expire(hold.value, now, true)
-          }
-          after = Option.fromUndefinedOr(page.value.next)
-        } while (Option.isSome(after))
-      }))
+        if (now >= hold.retryAt) return { state: "ended" as const, hold }
+        return { state: "held" as const, hold }
+      })
       const recordHeld = (scope: SendScope, reason: string, reasonCode: HoldReason, retry: number) =>
         Clock.currentTimeMillis.pipe(Effect.flatMap((now) => {
           const retryAt = nextRetryAt(now, [retry])
@@ -548,28 +521,32 @@ export const make = (
           })
           const refusal = { ...hold, reason }
           if (scope.kind !== "primary") return Effect.succeed(refusal)
-          return sendRecords.withPermits(1)(storeOp(ctx.storage.set(sendHoldKey(scope.sessionID), hold)).pipe(
-            Effect.tap((written) => {
-              if (Option.isNone(written)) return Effect.void
-              return expire(hold, now).pipe(Effect.asVoid)
-            }),
-          )).pipe(Effect.as(refusal))
+          // No successful/typed refusal is published before this commit.
+          return sendRecords.withPermits(1)(ctx.storage.set(sendHoldKey(scope.sessionID), hold)).pipe(Effect.as(refusal))
         }))
-      const forgetHeld = (scope: SendScope, ifPresent = false) => {
-        if (scope.kind !== "primary") return Effect.void
-        // Capture this row's timer under the permit. Interrupt only after
-        // releasing it: the timer may already be waiting to read this row.
-        return sendRecords.withPermits(1)(Effect.gen(function* () {
-          const key = sendHoldKey(scope.sessionID)
-          if (ifPresent) {
-            const page = yield* storeOp(ctx.storage.scan({ prefix: key, limit: 1 }))
-            if (Option.exists(page, ({ entries }) => entries.every((entry) => entry.key !== key))) return Option.none()
+      const removeHeld = (sessionID: string) => Effect.gen(function* () {
+        const key = sendHoldKey(sessionID)
+        if (Option.isSome(Option.fromUndefinedOr(yield* ctx.storage.get(key)))) yield* ctx.storage.remove(key)
+      })
+      const pruneHeldSends = Effect.gen(function* () {
+        const cutoff = (yield* Clock.currentTimeMillis) - SEND_HOLD_RETENTION_MS
+        const expired = (hold: Option.Option<HeldSend>) => Option.exists(hold, (entry) => entry.retryAt <= cutoff)
+        let after = Option.none<string>()
+        do {
+          const page = yield* ctx.storage.scan({
+            prefix: SEND_HOLD_PREFIX,
+            ...Option.match(after, { onNone: () => ({}), onSome: (after) => ({ after }) }),
+          })
+          for (const { key, value } of page.entries) {
+            if (!expired(sendHoldOf(value))) continue
+            // Admission or a new refusal may have changed the row since the scan.
+            yield* sendRecords.withPermits(1)(Effect.gen(function* () {
+              if (expired(sendHoldOf(yield* ctx.storage.get(key)))) yield* ctx.storage.remove(key)
+            }))
           }
-          const removed = yield* storeOp(ctx.storage.remove(key))
-          if (Option.isNone(removed)) return Option.none()
-          return yield* FiberMap.get(expiries, scope.sessionID)
-        })).pipe(Effect.flatMap(Option.match({ onNone: () => Effect.void, onSome: Fiber.interrupt })))
-      }
+          after = Option.fromUndefinedOr(page.next)
+        } while (Option.isSome(after))
+      }).pipe(Effect.withSpan("Pool.pruneHeldSends"))
       yield* Effect.forkScoped(
         Effect.gen(function* () {
           const services = yield* Layer.build(
@@ -599,7 +576,11 @@ export const make = (
 
           if (options.sweepMinutes > 0)
             yield* Effect.forkScoped(
-              pool.sweep.pipe(Effect.repeat(Schedule.spaced(`${options.sweepMinutes} minutes`)), Effect.delay(FIRST_SWEEP)),
+              pool.sweep.pipe(
+                Effect.andThen(pruneHeldSends.pipe(Effect.catchDefect((cause) => Effect.logWarning("pool held-send cleanup failed", cause)))),
+                Effect.repeat(Schedule.spaced(`${options.sweepMinutes} minutes`)),
+                Effect.delay(FIRST_SWEEP),
+              ),
             )
 
           if (options.fleet.peers.length > 0)
@@ -705,21 +686,20 @@ export const make = (
       const gateActive = (event: SendEvent, phase: "known-hold" | "send",
         bind: (held: SendHold) => Effect.Effect<void>) =>
         Effect.gen(function* () {
+          const admitted = Option.match(Option.filter(Option.some(event.sessionID), () => phase === "send" && event.kind === "primary"),
+            { onNone: () => Effect.void, onSome: removeHeld })
           const poolID = tracked(event.model.providerID)
-          if (Option.isNone(poolID)) return
+          if (Option.isNone(poolID)) return yield* sendRecords.withPermits(1)(admitted)
           const input = { providerID: event.model.providerID, sessionID: event.sessionID, kind: event.kind, model: event.model.id }
           const scope = { ...input, ...Option.match(stepIDOf(event), { onNone: () => ({}), onSome: (stepID) => ({ stepID }) }) }
           const refuse = (reason: string, code: HoldReason, at: number) => recordHeld(scope, reason, code, at).pipe(
             Effect.flatMap((hold) => bind({ reason: hold.reason, until: hold.retryAt })),
           )
-          // Clear a previous refusal before checking current authority. No
-          // storage yield follows an allowed send.
-          if (phase === "send") yield* forgetHeld(scope, true)
           const login = yield* loginOf(poolID.value)
-          if (Option.isNone(login.id)) return
+          if (Option.isNone(login.id)) return yield* sendRecords.withPermits(1)(admitted)
           const id = login.id.value
           const check = Option.getOrElse(Option.filter(Option.some(phase), () => login.active), () => "signed-out" as const)
-          return yield* withPool((pool) => pool.admitActive(input, id, check)).pipe(
+          return yield* withPool((pool) => pool.admitActive(input, id, check, admitted)).pipe(
             Effect.catchTag("RequestHeld", (held) => refuse(requestHeldMessage(held), held.reasonCode, held.retryAt)))
         })
       yield* ctx.session.hook("experimental.model.resolve", (event) => Effect.suspend(() => {
@@ -810,8 +790,9 @@ export const make = (
       // The host has no idle event: an execution that succeeded, failed or was interrupted is the session going
       // idle, as the host's own Idle message reads it. A shutdown is not: the resumed execution goes on with the run.
       yield* Effect.forkScoped(
-        ctx.event.subscribe({ types: ["session.step.started", "session.step.ended", ...EXECUTION_ENDED] }).pipe(
+        ctx.event.subscribe({ types: ["session.deleted", "session.step.started", "session.step.ended", ...EXECUTION_ENDED] }).pipe(
           Stream.runForEach((event) => {
+            if (event.type === "session.deleted") return sendRecords.withPermits(1)(removeHeld(event.data.sessionID)).pipe(Effect.ignoreCause)
             if (event.type === "session.execution.interrupted") {
               if (event.data.reason === "shutdown") return Effect.void
               return withPool((pool) => pool.release(event.data.sessionID))
@@ -875,8 +856,11 @@ export const make = (
           )
         const decision = yield* withPool((pool) => Effect.gen(function* () {
           if (!active) return yield* handoffUnavailable(request.sessionID)
-          if (request.keepalive !== true) yield* forgetHeld(scope)
-          if (yield* pool.confirmed(request, candidate)) {
+          const admitted = Effect.suspend(() => {
+            if (!active || request.keepalive === true || scope.kind !== "primary") return Effect.void
+            return removeHeld(scope.sessionID)
+          })
+          if (yield* pool.confirmed(request, candidate, admitted)) {
             if (active) return Handoff.cases.Send.make({})
             return yield* handoffUnavailable(request.sessionID)
           }

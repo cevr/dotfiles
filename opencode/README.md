@@ -4179,8 +4179,18 @@ On the older WebSocket host alone, a hold first committed after the
 `model.request` check and before `experimental.ws.send` can be wrapped as a
 generic stream failure by the host. Those are the boundaries of that case,
 not a fixed elapsed-time bound; even then no held frame is written.
-`heldSend({ sessionID })` reports the pool's typed refusal and exact
-`retryAt` while it is live. A caller never needs to parse the error message.
+`heldSend({ sessionID })` reports the last refusal and its `retryAt` as `held`
+before that time and `ended` at or after it. It is kept across restarts until
+the next admitted primary send, session deletion, or the scheduled pool scan
+after it has been ended for 24 hours. A caller never needs to parse an error
+message.
+
+A tracked OpenAI login without a usage reading waits up to 3 seconds for a
+shared first read. On failure or timeout the send goes out unmeasured; `status`
+includes `usageReadFailure.failedAt` and `nextTryAt`, 60 seconds later. Sends
+in that interval do not wait. An outstanding read can still publish its
+result within its 10-second bound. A measured login and an untracked route
+do not add a usage read on the send path.
 
 A new subagent on a Codex provider
 takes that pace when the orchestrate mod's `codex.pool` is set (daily sets

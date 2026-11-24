@@ -6,6 +6,7 @@ import { describe, expect, it } from "effect-bun-test"
 import { poolPlugin } from "../testbeds/anthropic-auth.ts"
 import { ROOT } from "../scripts/agents.ts"
 import { readHeldSend } from "../mods/pool/refuse.ts"
+import { FIRST_USAGE_RETRY_MS, FIRST_USAGE_WAIT_MS } from "../mods/pool/quota.ts"
 import { hangGuard } from "./hang-guard.ts"
 import { forkRuns } from "./scratch.ts"
 
@@ -22,14 +23,26 @@ const Seen = Schema.Struct({
   cost: Schema.Json, costUsageReads: Schema.Finite,
 })
 const Samples = Schema.fromJsonString(Schema.Struct({ held: Seen, open: Schema.NullOr(Seen) }))
+const Fresh = Schema.fromJsonString(Schema.Struct({ held: Schema.Struct({
+  before: Schema.Finite, usage: Schema.Finite, began: Schema.Finite, start: Schema.Finite, end: Schema.Finite, sent: Schema.Array(Send),
+  outcome: Schema.String, message: Schema.String, status: Schema.Json, heldSend: Schema.Json,
+}) }))
+const MeasurementStatus = Schema.Struct({ openai: Schema.Struct({ accounts: Schema.Array(Schema.Struct({
+  measurement: Schema.Literals(["measured", "unmeasured"]),
+  usageReadFailure: Schema.optionalKey(Schema.Struct({ failedAt: Schema.Finite, nextTryAt: Schema.Finite })),
+})) }) })
 const Override = Schema.fromJsonString(Schema.Struct({ compilerOptions: Schema.Struct({ paths: Schema.Record(Schema.String, Schema.Array(Schema.String)) }) }))
 const ResultJson = Schema.fromJsonString(Schema.Json)
 const toJson = Schema.encodeSync(ResultJson)
+const scheduledAt = (seen: typeof Seen.Type) => Option.getOrElse(
+  Option.map(Option.fromNullishOr(seen.deferred), ({ at }) => at), () => 0,
+)
 const out = (stream: Stream.Stream<Uint8Array, unknown>) => stream.pipe(Stream.decodeText(), Stream.mkString)
 type Sample = "http" | "websocket" | "late-http" | "late-websocket" | "api-http" | "api-websocket" | "cost"
   | "retry-http" | "retry-websocket" | "signed-out-http"
+type FreshSample = "fresh-spent" | "fresh-free" | "fresh-timeout"
 
-const boot = (sample: Sample) => Effect.gen(function* () {
+const outputFor = (sample: Sample | FreshSample) => Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
@@ -69,9 +82,10 @@ const boot = (sample: Sample) => Effect.gen(function* () {
   }))
   const [stdout, stderr, code] = yield* Effect.all([out(child.stdout), out(child.stderr), child.exitCode], { concurrency: 3 })
   expect(Number(code), `${stdout}\n${stderr}`).toBe(0)
-  const raw = yield* fs.readFileString(result)
-  return yield* Schema.decodeUnknownEffect(Samples)(raw).pipe(Effect.tapError(() => Console.log(raw)))
+  return yield* fs.readFileString(result)
 })
+const boot = (sample: Sample) => outputFor(sample).pipe(Effect.flatMap((raw) =>
+  Schema.decodeUnknownEffect(Samples)(raw).pipe(Effect.tapError(() => Console.log(raw)))))
 
 const contained = (seen: typeof Seen.Type, retryAt: number, sample: Sample) => {
   const wanted = Number(sample.endsWith("websocket"))
@@ -79,12 +93,16 @@ const contained = (seen: typeof Seen.Type, retryAt: number, sample: Sample) => {
   const wording = `held by the pool until ${DateTime.formatIso(DateTime.makeUnsafe(retryAt))}: not an error of the task; retry at or after that time`
   if (seen.typed) {
     expect(seen.sent.filter(({ at }) => at < retryAt)).toHaveLength(0)
-    expect(seen.deferred).toEqual({ at: retryAt, sends: 0, upgrades: wanted, reason: expect.stringContaining(wording) })
+    // The host can round a short remaining wait up to its minimum retry
+    // interval. The durable pool fact, not the host's schedule, owns retryAt.
+    expect(scheduledAt(seen)).toBeGreaterThanOrEqual(retryAt)
+    expect(seen.deferred).toEqual({ at: expect.any(Number), sends: 0, upgrades: wanted, reason: expect.stringContaining(wording) })
     const attempts = seen.steps.slice(wanted)
     const id = Option.getOrElse(Option.map(Arr.head(attempts), (step) => step.id), () => "")
     expect(id).not.toBe("")
     expect(attempts).toEqual([{ id, attempt: 1 }, { id, attempt: 2 }])
     expect(Option.getOrNull(readHeldSend(seen.during))).toMatchObject({ hold: { providerID: "openai", reasonCode: "account-held", retryAt, stepID: id } })
+    if (sample === "late-http") expect(Option.getOrNull(readHeldSend(seen.during))).toMatchObject({ state: "ended" })
     expect(after).toEqual({})
     expect(seen.outcome).toBe("session.execution.succeeded")
     expect(seen.sent).toHaveLength(1)
@@ -103,6 +121,42 @@ const contained = (seen: typeof Seen.Type, retryAt: number, sample: Sample) => {
 }
 
 describe.skipIf(!forkRuns)("OpenAI final hold on native OpenCode", () => {
+  for (const sample of ["fresh-spent", "fresh-free", "fresh-timeout"] as const)
+    it.live.layer(BunServices.layer)(`the first send uses one usage read, measured or bounded (${sample})`, () =>
+      Effect.gen(function* () {
+        const { held } = yield* outputFor(sample).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Fresh)))
+        expect(held.usage).toBe(1)
+        expect(held.before).toBe(0)
+        expect(held.start).toBeGreaterThan(0)
+        const status = yield* Schema.decodeUnknownEffect(MeasurementStatus)(held.status)
+        const account = Option.getOrThrow(Arr.head(status.openai.accounts))
+        const measurement = Match.value(sample).pipe(Match.when("fresh-timeout", () => "unmeasured" as const), Match.orElse(() => "measured" as const))
+        expect(account.measurement).toBe(measurement)
+        const handling = Option.filter(Option.some(held.end), (at) => at > 0).pipe(
+          Option.match({ onNone: () => "stalled", onSome: (at) => `${at - held.start} ms` }),
+        )
+        const firstSend = Arr.head(held.sent).pipe(
+          Option.match({ onNone: () => "none", onSome: (send) => `+${send.at - held.began} ms` }),
+        )
+        yield* Console.log(`first usage native ${sample}: read began +${held.start - held.began} ms, handler ${handling}, first send ${firstSend}`)
+        if (sample === "fresh-spent") {
+          expect(held.sent).toEqual([])
+          expect(held.message).toContain("held by the pool until")
+          expect(Option.getOrNull(readHeldSend(held.heldSend))).toMatchObject({ state: "held", hold: { reasonCode: "account-held" } })
+          return
+        }
+        expect(held.outcome).toBe("session.execution.succeeded")
+        expect(held.sent).toHaveLength(1)
+        const finished = Match.value(sample).pipe(Match.when("fresh-timeout", () => held.began + FIRST_USAGE_WAIT_MS), Match.orElse(() => held.end))
+        const sent = Option.getOrThrow(Option.fromUndefinedOr(held.sent[0]))
+        expect(sent.at).toBeGreaterThanOrEqual(finished)
+        if (sample === "fresh-timeout") {
+          const failure = Option.getOrThrow(Option.fromUndefinedOr(account.usageReadFailure))
+          expect(failure.nextTryAt - failure.failedAt).toBe(FIRST_USAGE_RETRY_MS)
+          expect(sent.at).toBeGreaterThanOrEqual(failure.failedAt)
+        }
+        expect(held.heldSend).toEqual({})
+      }).pipe(Effect.scoped), hangGuard("fork-turn"))
   for (const sample of ["retry-http", "retry-websocket"] as const)
     it.live.layer(BunServices.layer)(`a provider error does not reuse admission on the retry (${sample})`, () =>
       Effect.gen(function* () {
@@ -116,7 +170,8 @@ describe.skipIf(!forkRuns)("OpenAI final hold on native OpenCode", () => {
           const id = Option.getOrElse(Option.map(Arr.head(attempts), (step) => step.id), () => "")
           expect(id).not.toBe("")
           expect(attempts).toEqual([{ id, attempt: 1 }, { id, attempt: 2 }, { id, attempt: 3 }])
-          expect(held.deferred).toMatchObject({ at: expected, sends: 1 })
+          expect(scheduledAt(held)).toBeGreaterThanOrEqual(expected)
+          expect(held.deferred).toMatchObject({ sends: 1 })
           expect(Option.getOrNull(readHeldSend(held.during))).toMatchObject({ hold: { stepID: id, retryAt: expected } })
           expect(held.sent).toHaveLength(2)
           expect(held.sent[1]?.at).toBeGreaterThanOrEqual(expected)

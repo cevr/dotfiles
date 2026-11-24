@@ -9,12 +9,12 @@
 // process may have kept a step per key, `<pool>/step/<at, 15 digits>/<sessionID>`:
 // those are read too, and folded into chunks. A ledger from before caches were
 // kept has no cache key and restores none.
-import { Clock, Effect, Layer, Option, Predicate, Result, Schema, Semaphore } from "effect"
+import { Clock, Deferred, Effect, Exit, Fiber, Layer, Option, Predicate, Result, Schema, Semaphore } from "effect"
 import { cacheMark, type Event, type LedgerState, type PoolId } from "../account-pool.ts"
 import { Mark, Step, WINDOW_MS } from "../accounts.ts"
 import { HOLD_STORE_RETRY_MS } from "../handoff.ts"
 import { clampHoldEnd, Hold, HoldTime, recoveryDelay, UNREADABLE_HOLD_MS } from "../hold.ts"
-import { QuotaReading, RefusalKind } from "../quota.ts"
+import { FIRST_USAGE_RETRY_MS, FIRST_USAGE_WAIT_MS, QuotaReading, RefusalKind, type UsageReadFailure } from "../quota.ts"
 import { HoldStoreUnavailable, Ledger } from "../service.ts"
 import * as Chunks from "./chunks.ts"
 export { UNREADABLE_HOLD_MS } from "../hold.ts"
@@ -372,6 +372,78 @@ const ownSteps = (storage: Storage): Steps => {
     })
 }
 
+type Measurement = {
+  readonly answer: Deferred.Deferred<Option.Option<QuotaReading>>
+  failure?: UsageReadFailure
+}
+const readingFlightsKey = Symbol.for("dotfiles-opencode.pool.first-reading-flights")
+// A location may reload the plugin modules while the process's authority
+// remains live; the other copy must see the same flight and failure.
+const flightCoordinator = () => ({
+  [readingFlightsKey]: true as const,
+  flights: new WeakMap<Semaphore.Semaphore, Map<string, Measurement>>(),
+})
+const isFlightCoordinator = (value: unknown): value is ReturnType<typeof flightCoordinator> =>
+  Predicate.hasProperty(value, readingFlightsKey) && value[readingFlightsKey] === true
+const readingFlights = Option.getOrElse(
+  Option.flatMap(Option.fromUndefinedOr(Object.getOwnPropertyDescriptor(globalThis, readingFlightsKey)),
+    (property) => Option.liftPredicate(property.value, isFlightCoordinator)),
+  () => {
+    const shared = flightCoordinator()
+    Object.defineProperty(globalThis, readingFlightsKey, { value: shared })
+    return shared
+  },
+).flights
+const flightsOf = (lock: Semaphore.Semaphore) => Option.getOrElse(Option.fromUndefinedOr(readingFlights.get(lock)), () => {
+  const flights = new Map<string, Measurement>()
+  readingFlights.set(lock, flights)
+  return flights
+})
+
+const firstReading = (storage: Storage, lock: Semaphore.Semaphore): Ledger["Service"]["firstReading"] => (pool, credentialID, measure) =>
+  Effect.uninterruptibleMask((restore) => Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis
+    const key = `${pool}/${readingKey(credentialID)}`
+    const flights = flightsOf(lock)
+    const pending = Option.fromUndefinedOr(flights.get(key))
+    if (Option.isSome(pending)) {
+      const failure = Option.fromUndefinedOr(pending.value.failure)
+      if (Option.isNone(failure)) return yield* restore(Deferred.await(pending.value.answer))
+      if (now < failure.value.nextTryAt) return Option.none()
+    }
+    const answer = yield* Deferred.make<Option.Option<QuotaReading>>()
+    const flight: Measurement = { answer }
+    flights.set(key, flight)
+    const load = Effect.gen(function* () {
+      const page = yield* Effect.option(boundedStore(storage.scan({ prefix: key, limit: 1 })))
+      const saved = Option.flatMap(page, (rows) => Option.flatMap(
+        Option.fromUndefinedOr(rows.entries.find((row) => row.key === key)), (row) => decodeReading(row.value)))
+      if (Option.isSome(saved)) return saved
+      return yield* measure
+    })
+    // The coordinator survives the hook. Its one waiter deadline does not
+    // interrupt the read: success may still become authoritative in time for
+    // a later send, which need not wait out the cooldown to use it.
+    yield* Effect.forkDetach(restore(Effect.gen(function* () {
+      const worker = yield* Effect.forkChild(load)
+      const completed = yield* Fiber.await(worker).pipe(Effect.timeoutOption(FIRST_USAGE_WAIT_MS))
+      const reading = Option.flatMap(completed, Exit.match({ onSuccess: (value) => value, onFailure: () => Option.none<QuotaReading>() }))
+      if (Option.isSome(reading)) {
+        flights.delete(key)
+        yield* Deferred.succeed(answer, reading)
+        return
+      }
+      const failedAt = yield* Clock.currentTimeMillis
+      flight.failure = { failedAt, nextTryAt: failedAt + FIRST_USAGE_RETRY_MS }
+      yield* Deferred.succeed(answer, Option.none())
+      if (Option.isNone(completed)) {
+        const late = yield* Fiber.await(worker)
+        if (late._tag === "Success" && Option.isSome(late.value) && flights.get(key) === flight) flights.delete(key)
+      }
+    })))
+    return yield* restore(Deferred.await(answer))
+  }))
+
 /** The holds, readings and caches are small and read by each copy; the steps come from `steps`, one store per process. */
 export const layer = (storage: Storage, steps: Steps = ownSteps(storage), authority = holdAuthority()) =>
   Layer.effect(Ledger, Effect.gen(function* () {
@@ -379,6 +451,9 @@ export const layer = (storage: Storage, steps: Steps = ownSteps(storage), author
     return Ledger.of({
     holds: (pool, credentialID) => confirmedHolds(storage, authority, pool, credentialID),
     withHolds: (operation) => authority.lock.withPermits(1)(operation),
+    firstReading: firstReading(storage, authority.lock),
+    firstReadingFailure: (pool, credentialID) => Effect.sync(() =>
+      Option.fromUndefinedOr(flightsOf(authority.lock).get(`${pool}/${readingKey(credentialID)}`)?.failure)),
     // A ledger that cannot be read starts the pool empty.
     restore: Effect.fn("Ledger.restore")(
       function* (pool: PoolId) {
