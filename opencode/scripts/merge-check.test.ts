@@ -181,13 +181,17 @@ describe("the real host law's acceptance leg", () => {
       const workspace = yield* Effect.promise(load)
       const file = "tests/host-laws.test.ts"
       const tier = tierOf(yield* fs.readFileString(matchingInput("tests/host-laws.test.ts")))
-      expect(readState(workspace, file)).toBe("")
+      expect(readState(workspace, file)).toBe(workspace.head)
+      const runtime = testReadInputs(workspace, file)
+      const imports = reach(workspace, [file])
       const inputs = acceptReach(workspace, file)
       const key = (changed: string) => acceptKey("same shared key", inputs, (path) => (path === changed && "edited") || "before")
       const prior = withPass(emptyLedger, file, key(""), 1)
       expect(tier).toBe("deep")
       expect(select("owed", [{ file, tier, key: key("") }], prior, 2).run).toEqual([])
       for (const changed of ["sim/host-laws.ts", "tests/host-laws/real.ts"]) {
+        // A conservative HEAD term does not excuse a missing positive input.
+        expect(runtime.positive(changed) || imports.has(changed)).toBe(true)
         expect(inputs.has(changed)).toBe(true)
         const candidate = { file, tier, key: key(changed) }
         expect(select("owed", [candidate], prior, 2).run).toEqual([file])
