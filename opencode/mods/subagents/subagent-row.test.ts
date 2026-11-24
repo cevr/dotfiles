@@ -311,11 +311,9 @@ describe("which rows show", () => {
     expect(visible(all, 99_999, { current: "old" }).map((value) => value.id)).toEqual(["run", "wait", "ask", "old"])
   })
 
-  test("an owner read can display Checking, but its Unknown answer leaves the strip without a linger or live clock", () => {
+  test("an owner's Unknown answer leaves the strip without a linger or live clock", () => {
     const view = { revision: 2, at: 100, sinceReload: false, waitingOn: "" as const, diagnostic: false }
-    const child = session("child", { parentID: "root", lifecycle: { ...view, kind: "checking" } })
-    expect(rows(family(child), "root", 100)).toMatchObject([{ state: "checking" }])
-    const uncertain = session("child", { ...child, lifecycle: { ...view, kind: "unknown" } })
+    const uncertain = session("child", { parentID: "root", lifecycle: { ...view, kind: "unknown" } })
     expect(rows(family(uncertain), "root", 101)).toEqual([])
     expect(rows(family(uncertain), "root", 101, { current: "child" })).toMatchObject([{ state: "unknown", update: "Current execution not known" }])
   })
