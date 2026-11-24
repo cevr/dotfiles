@@ -14,6 +14,29 @@ import { dirname, join } from "node:path"
 const repo = join(import.meta.dir, "..", "..")
 const SCRIPT = process.env.WORKRIFT_SCRIPT ?? join(repo, "workbox/bin/workrift")
 const PYTHON = Bun.which("python3") ?? "/usr/bin/python3"
+/**
+ * Each test's cap, by what the test waits for. Bun's default is 5 s, and one `workrift subvolume --apply` on a bench
+ * took 5.2 s at load 24 (receipt-5). The cap is the third argument of the test, as in workrift.test.ts.
+ * - BENCH_RUNS_MS: up to six workrift runs on one bench, and waits of a few seconds the test sets itself (each run
+ *   1 s at rest, 6 s at load: 36 s, with room).
+ * - BENCH_SERIES_MS: a series of runs on one bench or a few (each preflight gate, a failure at each command, the
+ *   cuts of one history): up to twenty runs.
+ * - TABLE_MS: the call-site table, read from the script's text, with one `dash -c 'command -V'` a word (about 60).
+ * - The properties, each its own sweep, sized by its count of cases (pool of four): a kill at every step
+ *   (KILL_EVERY_STEP_MS), at every step of every switch after the first (KILL_EVERY_SWITCH_MS, times SEQ_REPEAT),
+ *   every dry mode in every state (DRY_EVERY_STATE_MS), every history (HISTORIES_MS), and a census scenario run by
+ *   hand (CENSUS_MS: a failure and a kill at every external call, about 3 h for all of them).
+ */
+const BENCH_RUNS_MS = 60_000
+const BENCH_SERIES_MS = 180_000
+const TABLE_MS = 30_000
+const KILL_EVERY_STEP_MS = 400_000
+const KILL_EVERY_SWITCH_MS = 900_000
+const DRY_EVERY_STATE_MS = 600_000
+const HISTORIES_MS = 1_800_000
+const CENSUS_MS = 7_200_000
+/** The file's last hook: it deletes every bench of the run (a few hundred Git trees). */
+const SCRATCH_RM_MS = 120_000
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "workrift-subvolume-")))
 // WORKRIFT_TEST_KEEP=1 keeps every bench (its state, journal and trees) for a failure to be read after.
 /** The fd folders a test made unreadable (a process of another user): readable again before the scratch goes. */
@@ -22,7 +45,7 @@ afterAll(() => {
   for (const each of hiddenFolders) if (existsSync(each)) chmodSync(each, 0o700)
   if (process.env.WORKRIFT_TEST_KEEP) console.log(`benches kept in ${scratch}`)
   else rmSync(scratch, { recursive: true, force: true })
-})
+}, SCRATCH_RM_MS)
 let benches = 0
 
 type Env = Record<string, string>
@@ -500,7 +523,7 @@ describe("workrift subvolume: dry run and refusals", () => {
     }
     expect(b.btrfsCalls()).toEqual([])
     expect({ root: filesUnder(b.root), dir: filesUnder(b.dir).filter((f) => !f.startsWith("work-calls")) }).toEqual(before)
-  }, 120_000)
+  }, BENCH_SERIES_MS)
 
   test("a command that fails stops the switch with the three facts: what failed and its status at which step, the state of both trees, the next command", () => {
     const b = bench("silent")
@@ -513,7 +536,7 @@ describe("workrift subvolume: dry run and refusals", () => {
     expect(ran.err).toContain(`workrift subvolume: next: cd / && WORKRIFT_SOURCE=${b.base} workrift subvolume --apply`)
     expect(b.layout()).toEqual({ base: "F", new: "-", back: "-", old: "-" })
     whole(b)
-  })
+  }, BENCH_RUNS_MS)
 
   test("a path that is not a work base is refused; a base already a subvolume is a no-op that says so", () => {
     const b = bench("notbase")
@@ -537,7 +560,7 @@ describe("workrift subvolume: dry run and refusals", () => {
       expect(ran.out).toContain(`${b.base} is already a btrfs subvolume: nothing to do`)
     }
     expect(b.btrfsCalls()).toEqual([])
-  }, 120_000)
+  }, BENCH_SERIES_MS)
 
   test("each preflight gate refuses with its reason and changes nothing: mount option, quotas, metadata slack, free space, a removal, a process in the base, an older workrift, a Git lock", () => {
     const b = bench("gates")
@@ -624,7 +647,7 @@ describe("workrift subvolume: dry run and refusals", () => {
     b.processAt(91006, b.dir, ["/bin/sh", SCRIPT, "create", "feat/y"], [SCRIPT])
     const ok = b.wr(["subvolume"])
     expect(ok.code, said(ok)).toBe(0)
-  }, 120_000)
+  }, BENCH_SERIES_MS)
 
   test("a removal of this base always refuses, --beside-other-removals or not; one of another base refuses unless --beside-other-removals, which runs beside it and says how many it saw", () => {
     const b = bench("removals")
@@ -668,7 +691,7 @@ describe("workrift subvolume: dry run and refusals", () => {
     expect(ran.code, said(ran)).toBe(0)
     expect(ran.out).toContain("it ran beside 1 removal(s) of another base, the most its checks saw (--beside-other-removals)")
     converted(b)
-  }, 60_000)
+  }, BENCH_RUNS_MS)
 })
 
 describe("workrift subvolume --apply", () => {
@@ -695,7 +718,7 @@ describe("workrift subvolume --apply", () => {
     const again = b.wr(["subvolume", "--apply"])
     expect(again.code).toBe(0)
     expect(again.out).toContain("already a btrfs subvolume: nothing to do; the tree it was is kept at")
-  }, 60_000)
+  }, BENCH_RUNS_MS)
 
   test("in line with creates and removes: it waits for a clone under way, creates and removes that come during the hold wait for it and end as snapshots, and its turn line names it", async () => {
     const b = bench("line")
@@ -747,7 +770,7 @@ describe("workrift subvolume --apply", () => {
           // ended
         }
     }
-  }, 60_000)
+  }, BENCH_RUNS_MS)
 
   test("its wait for the turn is bounded: past it, it gives its place back and changes nothing", async () => {
     const b = bench("turn")
@@ -769,7 +792,7 @@ describe("workrift subvolume --apply", () => {
         // ended
       }
     }
-  }, 30_000)
+  }, BENCH_RUNS_MS)
 
   test("writers (move.qnt): a ref pushed into the base before the swap, one written into the old tree after it, one written on both sides, all reach the new base; the checked-out branch is never moved", () => {
     const b = bench("writers")
@@ -794,7 +817,7 @@ describe("workrift subvolume --apply", () => {
     expect(refs).toContain(`${b.head} refs/heads/main`)
     expect(refs).toContain(`${feat} refs/subvolume-move/heads/main`)
     expect(ran.err).toContain("kept as refs/subvolume-move/heads/main")
-  }, 30_000)
+  }, BENCH_RUNS_MS)
 
   test("the carry waits for a process still in the old tree; one that stays past the wait leaves the switch done but unfinished (never rolled back after the exchange), and a rerun once it left finishes it", async () => {
     const b = bench("stay")
@@ -833,7 +856,7 @@ describe("workrift subvolume --apply", () => {
     const ran3 = c.wr(["subvolume", "--apply"])
     expect(ran3.code, said(ran3)).toBe(0)
     converted(c)
-  }, 60_000)
+  }, BENCH_RUNS_MS)
 
   // Found by the census (r3): `sv_refs` piped Git into sort, so a Git that failed read as a tree with no refs, and
   // the carry from it deleted every ref of the new base but its HEAD branch. Each read of the carry, failed once.
@@ -864,7 +887,7 @@ describe("workrift subvolume --apply", () => {
         if (!c.says.startsWith("rolled back")) expect(b.refs(b.base), c.what).toContain("refs/heads/late")
       }),
     )
-  }, 120_000)
+  }, BENCH_SERIES_MS)
 
   // Every bound of a switch that ends in a refusal (the copy's three tries and the hold's limit are on the copy path:
   // the tests above), each past its end in the history of the r2 failure: a forward, a --back cut at carry-wait,
@@ -972,7 +995,7 @@ describe("workrift subvolume --apply", () => {
           // ended
         }
     }
-  }, 120_000)
+  }, BENCH_SERIES_MS)
 })
 
 describe("a live .git under the copy (Git processes outside the line: create-fetch G1-G5)", () => {
@@ -995,7 +1018,7 @@ describe("a live .git under the copy (Git processes outside the line: create-fet
     expect(b.refs(b.base)).toContain("refs/heads/torn")
     connected(b)
     converted(b)
-  }, 30_000)
+  }, BENCH_RUNS_MS)
 
   test("G2: a copy with a ref tip its store lacks is never switched to: after three copies of the .git it rolls back, the base untouched", () => {
     const b = bench("tip-missing")
@@ -1006,7 +1029,7 @@ describe("a live .git under the copy (Git processes outside the line: create-fet
     expect(ran.err).toContain("rolled back")
     expect(b.layout()).toEqual({ base: "F", new: "-", back: "-", old: "-" })
     expect(b.steps().filter((s) => s === "copy-git")).toHaveLength(2)
-  }, 30_000)
+  }, BENCH_RUNS_MS)
 
   test("G1: a repack that lands while the copy walks the base (no ref moves) is seen by the store's listing and the .git copied again", () => {
     const b = bench("repack")
@@ -1015,7 +1038,7 @@ describe("a live .git under the copy (Git processes outside the line: create-fet
     expect(b.steps()).toContain("copy-git")
     connected(b)
     converted(b)
-  }, 30_000)
+  }, BENCH_RUNS_MS)
 
   test("G3: a Git lock or temporary pack the copy carried (gone from the base since) sends the .git to be copied again; none is left in the new base", () => {
     for (const carried of [".git/refs/heads/main.lock", ".git/packed-refs.lock", ".git/objects/pack/tmp_pack_q1"]) {
@@ -1026,7 +1049,7 @@ describe("a live .git under the copy (Git processes outside the line: create-fet
       expect(existsSync(join(b.base, carried)), carried).toBe(false)
       converted(b)
     }
-  }, 60_000)
+  }, BENCH_RUNS_MS)
 
   test("G4: a ref moved in the old tree after the exchange to a commit only the old tree has arrives with its objects; every write of the command's git calls runs with auto-maintenance off", () => {
     const b = bench("only-old")
@@ -1042,7 +1065,7 @@ describe("a live .git under the copy (Git processes outside the line: create-fet
     const writes = textLines(readFileSync(gitLog, "utf8")).filter((line) => / (fetch|update-ref|update-index|repack|gc|commit)( |$)/.test(line))
     expect(writes.length).toBeGreaterThan(0)
     expect(writes.filter((line) => !(line.includes("gc.auto=0") && line.includes("maintenance.auto=false"))).filter((line) => !line.includes(" checkout "))).toEqual([])
-  }, 30_000)
+  }, BENCH_RUNS_MS)
 
   test("G5: a create whose copy carried a Git lock or gc file from the base deletes it in the new workspace only, naming it; an index.lock fails the create with the retry as the fix", () => {
     const b = bench("create-locks")
@@ -1062,7 +1085,7 @@ describe("a live .git under the copy (Git processes outside the line: create-fet
     expect(failed.code, said(failed)).toBe(1)
     expect(failed.err).toContain("a Git process held it in the base the instant the workspace was copied; run the create again")
     expect(existsSync(join(b.base, ".git/index.lock"))).toBe(true)
-  }, 60_000)
+  }, BENCH_RUNS_MS)
 })
 
 /** Faults before the exchange: each rolls back to the folder base, whole, deleting only its copy (never the base). */
@@ -1095,7 +1118,7 @@ describe("workrift subvolume: failure and kill at every step", () => {
       expect(again.code, said(again)).toBe(0)
       converted(b)
     }
-  }, 180_000)
+  }, BENCH_SERIES_MS)
 
   test("a failure after the exchange (the smoke workspace is no snapshot) never rolls back: the new tree stays the base, the old one kept under its record, what the base lacks said, exit 1; --back returns", () => {
     const b = bench("fault-after")
@@ -1113,7 +1136,7 @@ describe("workrift subvolume: failure and kill at every step", () => {
     expect(back.code, said(back)).toBe(0)
     expect(b.layout()).toEqual({ base: "F", new: "-", back: "-", old: "S" })
     whole(b)
-  }, 60_000)
+  }, BENCH_RUNS_MS)
 
   /**
    * The property: for every step the command names (its state log of a clean run, and of a run that rolls back), a
@@ -1191,7 +1214,7 @@ describe("workrift subvolume: failure and kill at every step", () => {
       }),
     )
     expect(kills).toBeGreaterThanOrEqual(forward.length + rollback.length)
-  }, 400_000)
+  }, KILL_EVERY_STEP_MS)
 })
 
 /** Every step name of the command (sv_step), for a hook at each. */
@@ -1277,7 +1300,7 @@ describe("workrift subvolume --back and --drop-old", () => {
     await sequence(b, undefined)
     const r = b.records()
     expect(r.filter((x) => x.name === "scratch-subvolume-smoke")).toEqual([])
-  }, 120_000)
+  }, BENCH_SERIES_MS)
 
   test("property: a kill -9 at every step of every switch and drop after the first (the first is the property above), then the same command again, ends where the sequence would", async () => {
     const probe = bench("seq-steps")
@@ -1304,7 +1327,7 @@ describe("workrift subvolume --back and --drop-old", () => {
     const repeat = Number(process.env.SEQ_REPEAT ?? 1)
     await pool(Array.from({ length: repeat }, () => chosen).flat().map((die, n) => () => sequence(bench(`seq-${die.at}-${die.step}-${n}`), die)))
     expect(cuts.length).toBeGreaterThan(25)
-  }, 900_000 * Number(process.env.SEQ_REPEAT ?? 1))
+  }, KILL_EVERY_SWITCH_MS * Number(process.env.SEQ_REPEAT ?? 1))
 
   test("--drop-old deletes only the tree the last switch kept, by its identity; a dry run says its path and kind; anything else at that path is refused", () => {
     const b = bench("drop")
@@ -1343,7 +1366,7 @@ describe("workrift subvolume --back and --drop-old", () => {
     const none = b.wr(["subvolume", "--drop-old", "--apply"])
     expect(none.code).toBe(0)
     expect(none.out).toContain("nothing to drop")
-  }, 60_000)
+  }, BENCH_RUNS_MS)
 })
 
 describe("a process the walk cannot look into (another user's: root's, on the workbox)", () => {
@@ -1369,7 +1392,7 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     expect(b.btrfsCalls()).toEqual([])
     // Asked once per run, never given: no read went past the refusal.
     expect(sudoCalls(b)).toEqual(["-n true", "-n true"])
-  })
+  }, BENCH_RUNS_MS)
 
   test("with sudo: the walk reads exactly the unknown process again, read only; one in the base is named and refused", () => {
     const b = bench("unknown-sudo-holder")
@@ -1383,7 +1406,7 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     // Refused at the preflight, before the hold: the command line is said on stderr (the step log is the switch's, written under the hold).
     expect(ran.err).toContain(`workrift subvolume:   sudo -n find ${at}/fd ${at}/cwd -ignore_readdir_race -maxdepth 1`)
     expect(b.layout()).toEqual({ base: "F", new: "-", back: "-", old: "-" })
-  })
+  }, BENCH_RUNS_MS)
 
   test("with sudo: an unknown process outside the base is read and ruled out; the switch runs", () => {
     const b = bench("unknown-sudo-none")
@@ -1393,7 +1416,7 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     expect(b.layout()).toEqual({ base: "S", new: "-", back: "-", old: "F" })
     expect(stepLog(b)).toContain("the walk could not look into 1 process(es) of uid 0")
     expect(stepLog(b)).toContain(`sudo -n find ${at}/fd ${at}/cwd`)
-  })
+  }, BENCH_RUNS_MS)
 
   test("--beside-unreadable with no sudo: the switch runs beside them, and the step log says which", () => {
     const b = bench("unknown-beside")
@@ -1403,7 +1426,7 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     expect(ran.code, said(ran)).toBe(0)
     expect(b.layout()).toEqual({ base: "S", new: "-", back: "-", old: "F" })
     expect(stepLog(b)).toMatch(/beside 2 process\(es\) of uid (0 70|70 0) it could not look into \(--beside-unreadable; no sudo -n here\): pids 9300[56] 9300[56]/)
-  })
+  }, BENCH_RUNS_MS)
 
   test("a kernel thread or a zombie this user cannot look into holds no file: never unknown", () => {
     const b = bench("unknown-kthread")
@@ -1412,7 +1435,7 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     const ran = b.wr(["subvolume", "--apply"])
     expect(ran.code, said(ran)).toBe(0)
     expect(sudoCalls(b)).toEqual([])
-  })
+  }, BENCH_RUNS_MS)
 
   test("a walk that fails for another reason (a process folder that does not list) stays a failure: refused", () => {
     const b = bench("unknown-walk-fails")
@@ -1425,7 +1448,7 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     expect(said(ran)).toContain(`the processes in ${b.base} do not read (find over ${b.proc} failed): a process in it cannot be ruled out`)
     expect(sudoCalls(b)).toEqual([])
     expect(b.layout()).toEqual({ base: "F", new: "-", back: "-", old: "-" })
-  })
+  }, BENCH_RUNS_MS)
 
   test("after the exchange, one that appears and cannot be looked into leaves the switch unfinished, never done; the printed next with the flag finishes it", () => {
     const b = bench("unknown-after")
@@ -1453,7 +1476,7 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     const again = b.wr(["subvolume", "--apply", "--beside-unreadable"])
     expect(again.code, said(again)).toBe(0)
     expect(b.phase()).toMatch(/^switched /)
-  })
+  }, BENCH_RUNS_MS)
 
   test("another user's removal, whose working folder and environment (its base) do not read: unknown, refused naming it; with the flag the switch runs beside it", () => {
     const b = bench("unknown-removal")
@@ -1467,7 +1490,7 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     const beside = b.wr(["subvolume", "--apply", "--beside-unreadable"])
     expect(beside.code, said(beside)).toBe(0)
     expect(stepLog(b)).toContain("beside another user's processes it cannot read (--beside-unreadable): 93011 0 (work rm")
-  })
+  }, BENCH_RUNS_MS)
 
   test("another user's command line that does not read is unknown; this user's own that does not read stays a refusal as this base's removal", () => {
     const b = bench("unknown-cmdline")
@@ -1483,7 +1506,7 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     expect(own.code, said(own)).toBe(1)
     expect(said(own)).toContain("93013 (its command line does not read)")
     expect(said(own)).toContain(`a removal of ${b.base} runs`)
-  })
+  }, BENCH_RUNS_MS)
 
   test("another user's workrift, whose open files (its script) do not read: whether it takes a place in line is unknown, refused naming it", () => {
     const b = bench("unknown-workrift")
@@ -1492,7 +1515,7 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     expect(ran.code, said(ran)).toBe(1)
     expect(said(ran)).toContain("93014 0 (workrift create: its open files, which tell whether it takes a place in line)")
     expect(said(ran)).not.toContain("an older script")
-  })
+  }, BENCH_RUNS_MS)
 
   test("--drop-old beside a process it cannot look into: refused with no sudo, nothing deleted", () => {
     const b = bench("unknown-drop")
@@ -1508,7 +1531,7 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     expect(read.code, said(read)).toBe(1)
     expect(read.err).toContain("93010 rg (uid 0, read with sudo)")
     expect(existsSync(b.paths.old)).toBe(true)
-  })
+  }, BENCH_RUNS_MS)
 })
 
 describe("a ref Git skips (U1): the ref listing is strict", () => {
@@ -1537,7 +1560,7 @@ describe("a ref Git skips (U1): the ref listing is strict", () => {
       expect(again.code, said(again)).toBe(0)
       expect(sh(b.base, b.env, "git", "rev-parse", "refs/heads/x").trim()).toBe(oid)
       expect(b.phase()).toMatch(/^switched /)
-    })
+    }, BENCH_RUNS_MS)
 })
 
 describe("init and check on btrfs", () => {
@@ -1558,7 +1581,7 @@ describe("init and check on btrfs", () => {
     const sub = b.wr(["check"])
     expect(sub.code, said(sub)).toBe(0)
     expect(sub.err).not.toContain("not a subvolume")
-  }, 30_000)
+  }, BENCH_RUNS_MS)
 })
 
 // ---- round 2: the exchange is the commit point (M1), dry runs write nothing, the cp of a run cut short.
@@ -1594,7 +1617,7 @@ describe("VB probes", () => {
     // Round 2: the claim is from what happened, and the ref is in the base at its path.
     expect(`${ran.out}${ran.err}`).not.toContain("nothing deleted that it held")
     expect(found[0]).toEqual({ path: b.base, ref: oid, object: true })
-  }, 30_000)
+  }, BENCH_RUNS_MS)
 
   test("VB1b the same with the carry-wait timeout as the trigger (a process lingers in the old tree)", () => {
     const b = bench("vb1b")
@@ -1611,7 +1634,7 @@ describe("VB probes", () => {
     expect(found.some((w) => w.ref === oid && w.object), JSON.stringify(found)).toBe(true)
     expect(`${ran.out}${ran.err}`).not.toContain("nothing deleted that it held")
     expect(found[0]).toEqual({ path: b.base, ref: oid, object: true })
-  }, 30_000)
+  }, BENCH_RUNS_MS)
 })
 
 /** Every entry under `dir` with its kind, size, inode and time: equal before and after when nothing was written. */
@@ -1677,7 +1700,7 @@ describe("workrift subvolume: a dry run writes nothing", () => {
       }),
     )
     expect(cases.length).toBe(42)
-  }, 600_000)
+  }, DRY_EVERY_STATE_MS)
 
   test("a base directly under / is refused before anything is read or made: its move folder would be /.subvolume-move", () => {
     const b = bench("root-base")
@@ -1687,7 +1710,7 @@ describe("workrift subvolume: a dry run writes nothing", () => {
     expect(existsSync("/.subvolume-move")).toBe(false)
     expect(existsSync("/.work/Users")).toBe(false)
     expect(b.btrfsCalls()).toEqual([])
-  })
+  }, BENCH_RUNS_MS)
 })
 
 describe("workrift subvolume: the cp of a run cut short", () => {
@@ -1714,7 +1737,7 @@ describe("workrift subvolume: the cp of a run cut short", () => {
     await Bun.sleep(500)
     expect(readdirSync(b.move).sort()).toEqual(["app.old"])
     expect(existsSync(copier)).toBe(false)
-  }, 60_000)
+  }, BENCH_RUNS_MS)
 
   test("a cp of a run cut short that outlives the wait is named, and nothing is touched", async () => {
     const b = bench("orphan-wait")
@@ -1740,7 +1763,7 @@ describe("workrift subvolume: the cp of a run cut short", () => {
     const last = await b.wrAsync(["subvolume", "--apply"])
     expect(last.code, said(last)).toBe(0)
     converted(b)
-  }, 60_000)
+  }, BENCH_RUNS_MS)
 })
 
 // ---- the model: histories of switches, faults, kills and writers, against four invariants.
@@ -1993,7 +2016,7 @@ describe("workrift subvolume: the model (histories of switches, faults, kills an
     const only = process.env.MODEL_ONLY?.split(",").map(Number)
     await pool(histories.flatMap((moves, h) => (only && !only.includes(h) ? [] : [() => live(moves, h)])))
     expect(histories.length).toBeGreaterThan(50)
-  }, 1_800_000)
+  }, HISTORIES_MS)
 })
 
 /** The bench's stand-ins, first on its PATH (`work` is WORK). */
@@ -2808,7 +2831,7 @@ describe("workrift subvolume: the call sites of the census", () => {
     const planted = (word: string) => callSites(src.replace("\nsv_refs() {\n", `\nsv_refs() {\n  ${word} -q || return 1\n`))
     expect(planted("hostname").map((site) => site.command)).toContain("hostname")
     expect(planted("nosuchcommand-r5").unknown).toEqual([expect.stringMatching(/^nosuchcommand-r5 \(sv_refs, line \d+\)$/)])
-  })
+  }, TABLE_MS)
 
   test("every call site has its verdict: what a failure there becomes, and every verdict names a site", () => {
     const sites = callSites(readFileSync(SCRIPT, "utf8"))
@@ -2819,7 +2842,7 @@ describe("workrift subvolume: the call sites of the census", () => {
     const named = new Set(rows.map((r) => r.key))
     expect(Object.keys(VERDICTS).filter((k) => !named.has(k)), "verdicts that name no site").toEqual([])
     expect(rows.every((r) => /^(stops|returned|closed|branch|message|cleanup|unreachable): /.test(r.verdict!))).toBe(true)
-  })
+  }, TABLE_MS)
 
   test("the table names every call a forward, a --back and a --drop-old make, and each such call maps to one site", async () => {
     const sites = callSites(readFileSync(SCRIPT, "utf8"))
@@ -2837,7 +2860,7 @@ describe("workrift subvolume: the call sites of the census", () => {
     const outside = calls.filter((_c, i) => mapped[i] === undefined).map((c) => `${c.id} ${c.command} ${c.args.slice(0, 80)}`)
     expect(outside, "calls no site of the table names").toEqual([])
     expect(calls.length).toBeGreaterThan(100)
-  }, 120_000)
+  }, BENCH_SERIES_MS)
 })
 
 /**
@@ -3097,6 +3120,6 @@ describe.skipIf(!process.env.WORKRIFT_CENSUS)("census: a failure or a kill at ev
       }),
     )
     expect(bad, bad.join("\n")).toEqual([])
-  }, 7_200_000)
+  }, CENSUS_MS)
 })
 

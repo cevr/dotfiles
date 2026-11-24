@@ -3581,6 +3581,9 @@ describeWork("workrift deps knows its holder by identity, not by a stale holder 
   }, 600_000)
 })
 
+/** The last test's cap: one ps a group owned, then one of the whole table (each well under a second, a few at load). */
+const PS_READS_MS = 30_000
+
 describe("the end of the file", () => {
   test("no process a test of this file started survives it: every owned group is empty, and the run has no child left", () => {
     const left = [...ownedGroups].flatMap((pgid) => groupMembers(pgid).map((pid) => `${pid} (group ${pgid})`))
@@ -3602,5 +3605,5 @@ describe("the end of the file", () => {
         }
     }
     expect(descendants).toEqual([])
-  })
+  }, PS_READS_MS)
 })

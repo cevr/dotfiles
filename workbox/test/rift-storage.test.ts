@@ -93,6 +93,8 @@ describe("workbox-rift-storage --fstab", () => {
     )
   })
 
+  /** Two runs of the provisioning script against stand-ins (each under a second at rest, a few at load). */
+  const TWO_RUNS_MS = 30_000
   test("--apply on a mounted file system makes the Bite base a btrfs subvolume, not a folder, and leaves one that exists", () => {
     const dir = join(scratchRoot, `apply-${count++}`)
     const [bin, mount, etc, sys] = ["bin", "mount", "etc", "sys"].map((each) => join(dir, each)) as [string, string, string, string]
@@ -129,7 +131,7 @@ describe("workbox-rift-storage --fstab", () => {
     const again = apply()
     expect(again.exitCode, again.stderr.toString()).toBe(0)
     expect(readFileSync(calls, "utf8")).toBe(`subvolume create ${mount}/bite\n`)
-  })
+  }, TWO_RUNS_MS)
 
   test("a box whose /workspaces is a subvolume of its own btrfs by UUID (the Hetzner box) changes nothing", () => {
     const native = `UUID=${UUID} /workspaces btrfs subvol=@workspaces,noatime 0 0\nUUID=${UUID} /home/exedev btrfs subvol=@home 0 0\n`
