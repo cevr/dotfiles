@@ -4,6 +4,7 @@ import { Option, Schema } from "effect"
 import { type CallExpression, type Expression, parseSync, Visitor } from "oxc-parser"
 import { HANG_GUARDS, isProductBudget } from "../tests/hang-guard.ts"
 import { WAIT_MS } from "../tests/wait.ts"
+import { processGraph } from "./timing-process.ts"
 import { calendarArgument, isRequire, moduleText, type Program, type Statement, type TimingResolver, timingSources } from "./timing-syntax.ts"
 
 export { readTimingInputs, sourceFile, testFile, timingResolver } from "./timing-syntax.ts"
@@ -14,7 +15,7 @@ export interface Span {
 }
 
 export type Rule = "R1" | "R2" | "R3"
-export type AllowKind = "probe" | "clock" | "measured" | "dynamic"
+export type AllowKind = "probe" | "clock" | "measured" | "dynamic" | "process"
 export interface Site {
   readonly rule: Rule
   readonly at: Span
@@ -468,7 +469,30 @@ const inspectDeclarations = (file: string, names: ClosedNames, program: Program,
     declareExport(names, decl, Option.match(Option.fromNullishOr(decl.source), { onNone: () => "", onSome: ({ value }) => resolve(value) }))
 }
 
-const inspectFull = (file: string, program: Program, resolve: (specifier: string) => string, dynamic: boolean): Inspection => {
+const processSlots = (file: string, calls: ReadonlyArray<CallExpression>, names: Imports,
+  launches: ReturnType<typeof processGraph>): ReadonlyArray<Use> => {
+  const uses: Array<Use> = []
+  const covers: Array<Span> = []
+  for (const call of calls) {
+    const reg = runner(call, names.runners)
+    if (Option.isNone(reg) || reg.value.form === "setDefaultTimeout" || reg.value.form === "simulationRunner") continue
+    const { form, index } = reg.value
+    const body = call.arguments[index - 1]
+    if (!body) continue
+    const approved = Option.isSome(runnerSlot(call, names.runners)) && Option.isNone(capProblem(call, names, file))
+    if (approved) {
+      if (form === "describe") covers.push(body)
+      continue
+    }
+    if (form === "describe") continue
+    if (covers.some((scope) => partOf(call, scope))) continue
+    if (launches(file, body)) uses.push({ kind: "process", at: call.arguments[0] ?? call })
+  }
+  return uses
+}
+
+const inspectFull = (file: string, program: Program, resolve: (specifier: string) => string, dynamic: boolean,
+  launches?: ReturnType<typeof processGraph>): Inspection => {
   const names = closedNames(file)
   const calls: Array<CallExpression> = []
   const types: Array<Span> = []
@@ -512,6 +536,7 @@ const inspectFull = (file: string, program: Program, resolve: (specifier: string
     ArrowFunctionExpression: params, FunctionDeclaration: params, FunctionExpression: params,
     Identifier(node) { readReference(names, node, types, effectFunction) },
   }).visit(program)
+  if (launches) names.uses.push(...processSlots(file, calls, names, launches))
   return { errors: [...names.errors, ...namedWaits(program, calls, names)], uses: names.uses }
 }
 
@@ -572,12 +597,14 @@ const inspectProducer = (file: string, program: Program, resolve: (specifier: st
 export const inspectTimingProject = (texts: ReadonlyMap<string, string>, resolve: TimingResolver,
   dynamic: ReadonlySet<string> = new Set()) => {
   const results = new Map<string, Inspection>()
-  for (const [file, { program, producerOnly, missing, via }] of timingSources(texts, resolve)) {
+  const sources = timingSources(texts, resolve)
+  const launches = processGraph(sources, resolve)
+  for (const [file, { program, producerOnly, missing, via }] of sources) {
     if (file === timingModule) continue
     const from = (specifier: string) => Option.getOrElse(resolve(file, specifier), () => specifier)
     const inspect = () => {
       if (producerOnly) return inspectProducer(file, program, from)
-      return inspectFull(file, program, from, dynamic.has(file))
+      return inspectFull(file, program, from, dynamic.has(file), launches)
     }
     const verdict = inspect()
     const reached = Option.getOrElse(Option.map(via, (edge) => `; reached via ${edge}`), () => "")

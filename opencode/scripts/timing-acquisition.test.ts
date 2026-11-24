@@ -5,6 +5,7 @@ import { Effect, FileSystem, Option, Path, Schema, Stream } from "effect"
 import { it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { gitInit } from "../tests/git-repo.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 import { inspectTiming, inspectTimingProject, readTimingInputs, simulationBudgetModule, timingModule, timingResolver } from "./test-timing.ts"
 import { measurementKey, unapprovedMeasurements } from "./timing-policy.ts"
 
@@ -241,7 +242,7 @@ for (const [specifier, witness, options] of markerCases) {
       }
     }
     expect(observed.has(witness), `Bun must actually load ${witness} in at least one form`).toBe(true)
-  }))
+  }), hangGuard("local-fixture"))
 }
 
 it.scopedLive.layer(BunServices.layer)("a side-effect import includes local targets from untaken conditions", () => Effect.gen(function* () {
@@ -249,7 +250,7 @@ it.scopedLive.layer(BunServices.layer)("a side-effect import includes local targ
   const imports = 'import "edge-fixture/mode"; import "edge-fixture/host"; import "edge-fixture/wild/plain";'
   const closure = inspectTimingProject(new Map([...texts, [entry, imports]]), resolve)
   for (const file of files.slice(0, -1)) expect(closure.has(file), file).toBe(true)
-}))
+}), hangGuard("short-fixture"))
 
 it.scopedLive.layer(BunServices.layer)("Git-visible tracked and unstaged producers are followed, but an ignored producer is not", () => Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
@@ -268,7 +269,7 @@ it.scopedLive.layer(BunServices.layer)("Git-visible tracked and unstaged produce
   expect([...inspected].flatMap(([file, result]) => result.errors.map(({ rule }) => [file, rule])).sort()).toEqual(
     [["opencode/mods/tracked.ts", "R1"], ["opencode/mods/unstaged.ts", "R1"]],
   )
-}))
+}), hangGuard("short-fixture"))
 
 it.scopedLive.layer(BunServices.layer)("unresolved imports diagnose only the repository's declared aliases and package names", () => Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
@@ -289,6 +290,39 @@ it.scopedLive.layer(BunServices.layer)("unresolved imports diagnose only the rep
     const info = inspectTimingProject(new Map([[entry, source]]), resolver).get(entry)
     expect(info?.errors.map(({ rule }) => rule), specifier).toEqual([...rules])
   }
+}))
+
+it.scopedLive.layer(BunServices.layer)("uncapped process registrations are found by their bindings, through helper exports", () => Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
+  const root = yield* fs.makeTempDirectoryScoped({ prefix: "timing-process-" }).pipe(Effect.flatMap(fs.realPath))
+  const bridge = "opencode/mods/process-bridge.ts"
+  const wrapper = "opencode/mods/process-wrapper.ts"
+  const sources = {
+    [timingModule]: "",
+    [bridge]: 'export { run as wrapped } from "./process-wrapper.ts";',
+    [wrapper]: 'import * as child from "node:child_process"; export const run = () => child.execFileSync("true");',
+    [entry]: `${runner}
+      import { hangGuard } from "./hang-guard.ts";
+      import { ChildProcessSpawner } from "effect/process";
+      import { spawn as launch } from "bun";
+      import { wrapped } from "../mods/process-bridge.ts";
+      function withHelper() { return wrapped(); }
+      test("through helper", withHelper);
+      test("Bun host", () => Bun.spawn(["true"]));
+      test("Bun import", () => launch(["true"]));
+      test("Effect service", function* () { const service = yield* ChildProcessSpawner.ChildProcessSpawner; service.string(cmd); });
+      test("named cap", withHelper, hangGuard("short-fixture"));
+      test("ordinary methods", () => ({ exec() {}, spawn() {} }).spawn());
+      test("shadow", () => { const launch = () => 0; launch(); });
+      test("declaration only", () => { function unused() { return launch(["true"]); } });
+    `,
+  }
+  yield* writeProject(root, sources)
+  const uses = inspectTimingProject(new Map(Object.entries(sources)), timingResolver(path, root)).get(entry)?.uses ?? []
+  expect(uses.filter(({ kind }) => kind === "process").map(({ at }) => sources[entry].slice(at.start, at.end))).toEqual(
+    ['"through helper"', '"Bun host"', '"Bun import"', '"Effect service"'],
+  )
 }))
 
 test("other legal direct forms do not acquire a runner or a real clock as a value", () => {

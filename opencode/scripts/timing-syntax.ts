@@ -341,7 +341,7 @@ const keepsReadonly = (binding: BindingIdentifier) => {
 
 type Span = { readonly start: number; readonly end: number }
 const contains = (span: Span, node: Span) => span.start <= node.start && node.end <= span.end
-const boundNames = (pattern: ParamPattern): ReadonlyArray<string> => {
+export const boundNames = (pattern: ParamPattern): ReadonlyArray<string> => {
   switch (pattern.type) {
     case "Identifier": return [pattern.name]
     case "AssignmentPattern": return boundNames(pattern.left)

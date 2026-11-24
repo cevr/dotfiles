@@ -5,10 +5,12 @@ import { Console, Effect, FileSystem, Option, Path, Schema, Stream } from "effec
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { expect, it } from "effect-bun-test"
 import { BUDGET_MS } from "../sim/seed.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 import { inspectTiming, inspectTimingProject, legacyOwners, readTimingInputs, runnerBridges, timingModule, timingResolver } from "./test-timing.ts"
 import { measurementKey, unapprovedMeasurements } from "./timing-policy.ts"
 
 const ALLOW = "opencode/scripts/wall-clock-assertions.allow.json"
+const PROCESS_ALLOW = "opencode/scripts/wall-clock-process.allow.json"
 // Migration-only: once the landing base has the positive policy, it is the
 // sole ceiling. Before that first landing, use the reviewed policy blob.
 const BOOTSTRAP = "5c3a188dad511e31a749261db27b2aca77569428"
@@ -38,6 +40,7 @@ const Infrastructure = Schema.Struct({ ...ownerFields, group: Schema.Literal("in
 const Row = Schema.Union([Counted, Measured, Infrastructure])
 type Row = typeof Row.Type
 const decode = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(Row)))
+const decodeProcesses = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Record(Schema.String, Schema.Array(Schema.NonEmptyString))))
 
 const git = (...argv: ReadonlyArray<string>) => Effect.gen(function* () {
   const path = yield* Path.Path
@@ -61,14 +64,23 @@ const increment = (counts: Map<string, number>, group: Counted["group"], file: s
   counts.set(name, (counts.get(name) ?? 0) + n)
 }
 
+const processKey = (text: string) => new Bun.CryptoHasher("sha256").update(text.trim()).digest("hex").slice(0, 16)
+const processRows = (rows: Readonly<Record<string, ReadonlyArray<string>>>) =>
+  Object.entries(rows).flatMap(([file, sites]) => sites.map((site) => `${file} ${site}`))
+
 const survey = (texts: ReadonlyMap<string, string>, resolve: ReturnType<typeof timingResolver>, dynamic: ReadonlySet<string>) => {
   const counts = new Map<string, number>()
   const rejected = new Array<string>()
   const measurements = new Array<{ readonly file: string; readonly target: string; readonly budget: string }>()
+  const processes = new Array<{ readonly file: string; readonly site: string; readonly title: string }>()
   for (const [file, result] of inspectTimingProject(texts, resolve, dynamic)) {
     const text = Option.getOrElse(Option.fromUndefinedOr(texts.get(file)), () => "")
     for (const usage of result.uses) {
       if (usage.kind === "measured") measurements.push({ file, target: usage.target, budget: usage.budget })
+      else if (usage.kind === "process") {
+        const title = text.slice(usage.at.start, usage.at.end)
+        processes.push({ file, title, site: processKey(title) })
+      }
       else increment(counts, usage.kind, file)
     }
     if (runnerBridges.has(file)) increment(counts, "bridge", file)
@@ -79,7 +91,7 @@ const survey = (texts: ReadonlyMap<string, string>, resolve: ReturnType<typeof t
       rejected.push(`${file}:${line}: ${rule}: ${reason}; found ${spelling}`)
     }
   }
-  return { counts, rejected, measurements }
+  return { counts, rejected, measurements, processes }
 }
 
 const ceiling = Effect.gen(function* () {
@@ -87,10 +99,10 @@ const ceiling = Effect.gen(function* () {
   const tracked = (yield* git("ls-tree", "--name-only", base, "--", ALLOW)).trim() === ALLOW
   if (tracked) {
     const rows = yield* git("show", `${base}:${ALLOW}`).pipe(Effect.flatMap(decode))
-    return { rows, source: (file: string) => git("show", `${base}:${file}`) }
+    return { base, rows, source: (file: string) => git("show", `${base}:${file}`) }
   }
   const rows = yield* git("cat-file", "blob", BOOTSTRAP).pipe(Effect.flatMap(decode))
-  return { rows, source: (file: string) => {
+  return { base, rows, source: (file: string) => {
     expect(file, "only Workrift has legacy debt before the first landing").toBe("workbox/test/workrift.test.ts")
     return git("cat-file", "blob", BOOTSTRAP_WORKRIFT)
   } }
@@ -116,6 +128,25 @@ const newSites = (before: ReadonlyArray<string>, after: ReadonlyArray<string>) =
   })
 }
 
+// Before first landing the reviewed census blob binds; after landing the base
+// may only shrink. A stand-alone scratch fixture can omit the process policy.
+const PROCESS_BOOTSTRAP = "bd125f728ff59ab2c2cfb24e3d60ba278dd59bcd"
+const checkProcesses = (root: string, base: string, observed: ReturnType<typeof survey>["processes"]) => Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
+  const absolute = path.join(root, PROCESS_ALLOW)
+  const candidate = yield* Effect.when(fs.readFileString(absolute).pipe(Effect.flatMap(decodeProcesses)), fs.exists(absolute))
+  const declared = Option.getOrElse(Option.map(candidate, processRows), () => [])
+  const observedKeys = observed.map(({ file, site }) => `${file} ${site}`)
+  const introduced = newSites(declared, observedKeys)
+  expect(observed.filter(({ file, site }) => introduced.includes(`${file} ${site}`)), 'real-process tests require a named hangGuard("kind")').toEqual([])
+  expect(newSites(observedKeys, declared), "remove stale real-process baseline sites").toEqual([])
+  if (declared.length === 0) return
+  const pinned = (yield* git("ls-tree", "--name-only", base, "--", PROCESS_ALLOW)).trim()
+  const old = yield* git("show", pinned === PROCESS_ALLOW && `${base}:${PROCESS_ALLOW}` || PROCESS_BOOTSTRAP).pipe(Effect.flatMap(decodeProcesses))
+  expect(newSites(processRows(old), declared), "real-process baseline may only shrink from the landing base").toEqual([])
+})
+
 it.scopedLive("test timings use named runner caps, explicit measurement contracts, and no raw wall clock", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
@@ -129,7 +160,7 @@ it.scopedLive("test timings use named runner caps, explicit measurement contract
     const { texts, metadata } = yield* readTimingInputs(root)
     const resolve = timingResolver(path, yield* fs.realPath(root), metadata)
     const dynamic = new Set(candidate.filter((row) => row.group === "dynamic").map(({ file }) => file))
-    const { counts, rejected, measurements } = survey(texts, resolve, dynamic)
+    const { counts, rejected, measurements, processes } = survey(texts, resolve, dynamic)
     for (const row of candidate) {
       if (row.group === "legacy") {
         const owner = Option.fromNullishOr(legacyOwners.get(row.file))
@@ -150,6 +181,7 @@ it.scopedLive("test timings use named runner caps, explicit measurement contract
     expect(unapprovedMeasurements(baseRows.filter(isMeasured), approved), "measurement target, unit, and budget may not grow from the landing base").toEqual([])
     expect(measurements.map(measurementKey).sort(), "measurement policy must match the source exactly").toEqual(keys.sort())
     expect(rejected, "use hangGuard, a virtual clock, or an approved named timing helper").toEqual([])
+    yield* checkProcesses(root, old.base, processes)
     expect([...counts].filter(([name, count]) => count > (declared.get(name) ?? 0)), "new or changed timing uses require approved counts").toEqual([])
     expect([...declared].filter(([name, count]) => count > (counts.get(name) ?? 0)), "remove stale timing policy rows or counts").toEqual([])
     for (const { file } of candidate.filter((row) => row.group === "legacy")) {
@@ -159,6 +191,7 @@ it.scopedLive("test timings use named runner caps, explicit measurement contract
       expect(newSites(sites(before), sites(after)), `${file} contains new legacy timing sites`).toEqual([])
     }
   }).pipe(Effect.provide(BunServices.layer)),
+  hangGuard("local-fixture"),
 )
 
 const inspect = (source: string) =>
