@@ -9,7 +9,6 @@
 // in this repository outside sim/ and its tests.
 // The wider compiler project reads all shipped server plugin adapters, even
 // ones the world does not load, and requires every operation to have a law.
-// @reads cmd/**/*.ts cmd/**/*.tsx mods/**/*.ts mods/**/*.tsx sim/tsconfig.host-calls.json
 import { describe, expect } from "bun:test"
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem"
 import { Effect, FileSystem } from "effect"
