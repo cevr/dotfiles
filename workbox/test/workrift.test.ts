@@ -11,6 +11,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, dirname, join } from "node:path"
+import { hangGuard } from "../../opencode/tests/hang-guard.ts"
 
 const repo = join(import.meta.dir, "..", "..")
 // WORKRIFT_SCRIPT runs the suite against another script (an older one, for a test's red run).
@@ -18,6 +19,8 @@ const SCRIPT = process.env.WORKRIFT_SCRIPT ?? join(repo, "workbox/bin/workrift")
 const WORK_BIN = process.env.WORK_BIN ?? Bun.which("work") ?? undefined
 
 const scratchRoot = realpathSync(mkdtempSync(join(tmpdir(), "workrift-test-")))
+/** A planted ticket's since (2026-11-18): workrift reads it only to name the time in words. */
+const TICKET_SINCE = 1_795_000_000
 // Hang guard, not a cleanup performance requirement. This tree holds every workspace the suite created.
 const CLEANUP_HANG_GUARD_MS = 120_000
 afterAll(() => rm(scratchRoot, { recursive: true, force: true }), CLEANUP_HANG_GUARD_MS)
@@ -1130,7 +1133,7 @@ describeWork("workrift with the work backend", () => {
     expect(ran.err).toContain("nothing deleted, the trash stays")
     expect(ran.out).not.toContain("deleted:")
     expect(p.gcCalls()).toEqual([])
-  }, 60_000)
+  }, hangGuard("process-fixture"))
 
   test("with work's trash = false, a jq -e that fails (neither listed nor not) on the list after the rm is no proof: workrift refuses to say deleted", () => {
     const p = purgeBench("notrash-jq", "no-trash")
@@ -1143,7 +1146,7 @@ describeWork("workrift with the work backend", () => {
     expect(ran.code).toBe(1)
     expect(ran.err).toContain("does not read (jq status 5)")
     expect(ran.out).not.toContain("deleted:")
-  }, 60_000)
+  }, hangGuard("process-fixture"))
 
   /**
    * A folder a cut `workrift create` left (the server restarted mid-create, 2026-11-19): under app's storage, no .git
@@ -1959,7 +1962,7 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       expect(read(installs)).not.toContain(afterPath)
     },
     // Hang guard for reaching the two gates, then completing the creates.
-    420_000,
+    hangGuard("deep-scenario"),
   )
 
   test(
@@ -2103,7 +2106,7 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       expect(readdirSync(join(stateOf(w.app), "base"))).toEqual([])
     },
     // Hang guard: three event waits and two ends of 2 minutes each.
-    600_000,
+    hangGuard("deep-scenario"),
   )
 
   test(
@@ -2193,7 +2196,7 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
         ["workrift-installed-locks", "workrift-warm.log", "workrift-warmed-tree", "workrift.lock"].filter((name) => existsSync(join(w.app, ".git", name))),
       )
     },
-    600_000,
+    hangGuard("deep-scenario"),
   )
 
   test(
@@ -2271,7 +2274,7 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       expect(readdirSync(queue)).toEqual([])
     },
     // Hang guard: two event waits and two ends of 2 minutes each.
-    540_000,
+    hangGuard("deep-scenario"),
   )
 
   test(
@@ -2285,7 +2288,7 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       // record.
       // Its owner is this test run, by the identity workrift reads on macOS (lstart under LC_ALL=C and TZ=UTC0).
       const start = sh(w.app, { ...w.env, LC_ALL: "C", TZ: "UTC0" }, "ps", "-o", "lstart=", "-p", String(process.pid)).trim()
-      writeFileSync(join(queue, "1.w"), `${process.pid}\n${start}\n${Math.floor(Date.now() / 1000)}\nrefresh\n`)
+      writeFileSync(join(queue, "1.w"), `${process.pid}\n${start}\n${TICKET_SINCE}\nrefresh\n`)
       exe(
         join(w.bin, "flock"),
         [
@@ -2318,7 +2321,7 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       expect(ran.err).not.toMatch(/pid \d* \(\)/)
     },
     // Hang guard: one create on a bench.
-    60_000,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -2346,9 +2349,9 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       try {
         for (const label of labels) {
           spawned.push(Bun.spawn([SCRIPT, "refresh"], { cwd: w.app, env: { ...w.env, LABEL: label }, stdout: "ignore", stderr: "ignore", detached: true }))
-          const deadline = Date.now() + 60_000
           let fresh: string | undefined
-          while (!(fresh = tickets().find((name) => !seen.has(name))) && Date.now() < deadline) await Bun.sleep(20)
+          // At most 3000 looks 20 ms apart: 60 s or more, counted, not read off a clock.
+          for (let look = 0; look < 3000 && !(fresh = tickets().find((name) => !seen.has(name))); look++) await Bun.sleep(20)
           expect(fresh, `${label} took no ticket within 60 s`).toBeDefined()
           seen.add(fresh!)
         }
@@ -2368,7 +2371,7 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       expect(lines(readFileSync(order, "utf8"))).toEqual(labels)
     },
     // Above the 13 ticket waits of 60 s: a slow line fails on its own message, and the finally always runs.
-    900_000,
+    hangGuard("isolated-seed-pair"),
   )
 
   test(
@@ -2435,7 +2438,7 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       for (let i = 1; i < a.length; i++) expect({ to: a[i]!.to, afterPrevious: a[i]!.start >= a[i - 1]!.end }).toEqual({ to: a[i]!.to, afterPrevious: true })
     },
     // Hang guard: five event waits and ten ends of 2 minutes each, at most.
-    1_800_000,
+    hangGuard("sim-parity"),
   )
 
   test(
@@ -2488,7 +2491,7 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       await until("the hold's command ends once its gate opens", () => !alive(commandPid), 120_000)
     },
     // Hang guard: two event waits, the create's end and the command's end, of 2 minutes each.
-    540_000,
+    hangGuard("deep-scenario"),
   )
 
   test(
@@ -3050,7 +3053,7 @@ describeWork("workrift beside the older workrift, and its line's owners whatever
       expect(overlaps(all2, oldBesideNew)).toEqual([])
     },
     // Hang guard: twenty-two placements of 2 minutes each at most, then the runs.
-    3_600_000,
+    hangGuard("skewed-clock-search"),
   )
 
   test("on Linux a reader lets an older workrift's blocked exclusive flock go first (it reads /proc/locks), then goes in", async () => {
@@ -3082,7 +3085,7 @@ describeWork("workrift beside the older workrift, and its line's owners whatever
     // The file is the old script's: read, never written, never removed.
     expect(readFileSync(legacy, "utf8")).toBe("")
     expect(lstatSync(legacy).ino).toBe(ino)
-  }, 300_000)
+  }, hangGuard("acceptance"))
 
   // TZ and locale pairs: zones east and west and half-hour, locales whose dates read in other words and orders.
   const ENVS: ReadonlyArray<Record<string, string>> = [
@@ -3130,7 +3133,7 @@ describeWork("workrift beside the older workrift, and its line's owners whatever
       }
       expect({ pair: [ENVS[a], ENVS[b]], overlaps: overlaps(ivs()) }).toEqual({ pair: [ENVS[a], ENVS[b]], overlaps: [] })
     }
-  }, 1_800_000)
+  }, hangGuard("sim-parity"))
 
   test("a ticket whose owner is gone is skipped, its lock held all the same (a child kept the descriptor): a dead pid, and a pid reused by another process", async () => {
     const { w } = bench("gone")
@@ -3167,7 +3170,7 @@ describeWork("workrift beside the older workrift, and its line's owners whatever
       writeFileSync(release, "")
       await endOwned([...holders, keeper].map((each) => each.pid))
     }
-  }, 300_000)
+  }, hangGuard("acceptance"))
 
   test("on Linux the identity is /proc/<pid>/stat's start in ticks (after a command name with spaces and parentheses) and the boot's id: the same tick is live, another is gone", async () => {
     const { w, log, ivs } = bench("stat")
@@ -3184,7 +3187,7 @@ describeWork("workrift beside the older workrift, and its line's owners whatever
     const stat = (tick: number) => `${pid} (a) b (c)) ${["S", ...Array.from({ length: 18 }, (_, i) => String(i + 4)), String(tick), ...Array.from({ length: 30 }, () => "0")].join(" ")}\n`
     writeFileSync(join(proc, String(pid), "stat"), stat(777))
     const file = join(queue, "1.w")
-    writeFileSync(file, `${pid}\nboot b00t-1d tick 777\n${Math.floor(Date.now() / 1000)}\nhold the line\n`)
+    writeFileSync(file, `${pid}\nboot b00t-1d tick 777\n${TICKET_SINCE}\nhold the line\n`)
     const release = join(w.dir, "release")
     const lockHolder = spawnOwned([join(w.bin, "flock"), file, "sh", "-c", `until [ -e '${release}' ]; do sleep 0.05; done`])
     const locked = () => Bun.spawnSync([join(w.bin, "flock"), "-n", file, "true"]).exitCode === 1
@@ -3207,7 +3210,7 @@ describeWork("workrift beside the older workrift, and its line's owners whatever
       writeFileSync(release, "")
       await endOwned([lockHolder.pid])
     }
-  }, 300_000)
+  }, hangGuard("acceptance"))
 
   test.each([
     // m1-boot: a boot id that does not read made the identity `boot  tick N`, another one: the holder taken for gone.
@@ -3232,7 +3235,7 @@ describeWork("workrift beside the older workrift, and its line's owners whatever
     const pid = lockHolder.pid
     mkdirSync(join(proc, String(pid)), { recursive: true })
     writeFileSync(join(proc, String(pid), "stat"), stat(pid, 777))
-    writeFileSync(file, `${pid}\nboot b00t-1d tick 777\n${Math.floor(Date.now() / 1000)}\nhold the line\n`)
+    writeFileSync(file, `${pid}\nboot b00t-1d tick 777\n${TICKET_SINCE}\nhold the line\n`)
     const locked = () => Bun.spawnSync([join(w.bin, "flock"), "-n", file, "true"]).exitCode === 1
     const env = { ...w.env, WORKRIFT_STAT_PROC: proc }
     const own = `mkdir -p '${proc}'/$$ && printf '%s\\n' "$$ (w) ${stat(0, 999).split(") ").slice(1).join(") ").replace(/\n$/, "")}" >'${proc}'/$$/stat && exec "$@"`
@@ -3255,7 +3258,7 @@ describeWork("workrift beside the older workrift, and its line's owners whatever
       writeFileSync(release, "")
       await endOwned([pid])
     }
-  }, 300_000)
+  }, hangGuard("acceptance"))
 
   test("a ticket whose rm fails as the holder leaves stays, said: the command still succeeds, and the line takes the ticket for ended (its lock is free)", () => {
     const { w } = bench("leave")
@@ -3269,7 +3272,7 @@ describeWork("workrift beside the older workrift, and its line's owners whatever
     const next = run(w.app, w.env, [SCRIPT, "hold", "--", "true"])
     expect(next.code, next.err).toBe(0)
     expect(next.err).not.toContain("waiting for")
-  }, 60_000)
+  }, hangGuard("process-fixture"))
 
   test("the queue's own files tampered with while a writer holds: a counter deleted or garbled, a holder's record emptied; no second holder goes in", async () => {
     const { w, log, ivs } = bench("tamper")
@@ -3665,7 +3668,6 @@ describeWork("workrift deps knows its holder by identity, not by a stale holder 
 })
 
 /** The last test's cap: one ps a group owned, then one of the whole table (each well under a second, a few at load). */
-const PS_READS_MS = 30_000
 
 describe("the end of the file", () => {
   test("no process a test of this file started survives it: every owned group is empty, and the run has no child left", () => {
@@ -3688,5 +3690,5 @@ describe("the end of the file", () => {
         }
     }
     expect(descendants).toEqual([])
-  }, PS_READS_MS)
+  }, hangGuard("local-fixture"))
 })

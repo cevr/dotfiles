@@ -356,9 +356,8 @@ const turnRepo = join(import.meta.dir, "..", "..")
 // WORKRIFT_SCRIPT runs this against another script (main's, for the red run; a mutant).
 const TURN_SCRIPT = process.env.WORKRIFT_SCRIPT ?? join(turnRepo, "workbox/bin/workrift")
 const turnScratch = realpathSync(mkdtempSync(join(tmpdir(), "workrift-turn-")))
-/** The file's last hook deletes every bench of the run (a few dozen Git trees and workspaces). */
-const SCRATCH_RM_MS = 120_000
-afterAll(() => rmSync(turnScratch, { recursive: true, force: true }), SCRATCH_RM_MS)
+// Hang guard: the file's last hook deletes every bench of the run (a few dozen Git trees and workspaces).
+afterAll(() => rmSync(turnScratch, { recursive: true, force: true }), hangGuard("process-tree"))
 let turnBenches = 0
 
 type Env = Record<string, string>

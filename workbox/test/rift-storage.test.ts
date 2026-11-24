@@ -6,13 +6,13 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { hangGuard } from "../../opencode/tests/hang-guard.ts"
 
 const SCRIPT = join(import.meta.dir, "..", "bin", "workbox-rift-storage")
 const identity = Bun.spawnSync(["sh", "-c", '. "$1"; workbox_host_identity', "test", join(import.meta.dir, "..", "host-identity.sh")]).stdout.toString().trim()
 const scratchRoot = realpathSync(mkdtempSync(join(tmpdir(), "rift-storage-test-")))
-/** The file's last hook deletes the benches of the run (small folders and empty image files). */
-const SCRATCH_RM_MS = 30_000
-afterAll(() => rmSync(scratchRoot, { recursive: true, force: true }), SCRATCH_RM_MS)
+// Hang guard: the file's last hook deletes the benches of the run (small folders and empty image files).
+afterAll(() => rmSync(scratchRoot, { recursive: true, force: true }), hangGuard("local-fixture"))
 let count = 0
 
 const UUID = "170ee675-18a3-48e1-931d-f0a84a51df83"
@@ -95,8 +95,7 @@ describe("workbox-rift-storage --fstab", () => {
     )
   })
 
-  /** Two runs of the provisioning script against stand-ins (each under a second at rest, a few at load). */
-  const TWO_RUNS_MS = 30_000
+  // Hang guard: two runs of the provisioning script against stand-ins (each under a second at rest, a few at load).
   test("--apply on a mounted file system makes the Bite base a btrfs subvolume, not a folder, and leaves one that exists", () => {
     const dir = join(scratchRoot, `apply-${count++}`)
     const [bin, mount, etc, sys] = ["bin", "mount", "etc", "sys"].map((each) => join(dir, each)) as [string, string, string, string]
@@ -133,7 +132,7 @@ describe("workbox-rift-storage --fstab", () => {
     const again = apply()
     expect(again.exitCode, again.stderr.toString()).toBe(0)
     expect(readFileSync(calls, "utf8")).toBe(`subvolume create ${mount}/bite\n`)
-  }, TWO_RUNS_MS)
+  }, hangGuard("local-fixture"))
 
   test("a box whose /workspaces is a subvolume of its own btrfs by UUID (the Hetzner box) changes nothing", () => {
     const native = `UUID=${UUID} /workspaces btrfs subvol=@workspaces,noatime 0 0\nUUID=${UUID} /home/exedev btrfs subvol=@home 0 0\n`
