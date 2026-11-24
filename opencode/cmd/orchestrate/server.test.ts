@@ -35,7 +35,7 @@ import { RECHECK_MS } from "@dotfiles/opencode-orchestrate/model"
 import * as OpenCodePoolPace from "@dotfiles/opencode-orchestrate/opencode/pool-pace"
 import * as OpenCodeRuns from "@dotfiles/opencode-orchestrate/opencode/runs"
 import * as OpenCodeSteer from "@dotfiles/opencode-orchestrate/opencode/steer"
-import type { Pace } from "@dotfiles/opencode-orchestrate/pace"
+import { parseModel, type Pace } from "@dotfiles/opencode-orchestrate/pace"
 import { NO_INFLIGHT, poolPace } from "@dotfiles/opencode-pool/pace"
 import type { AccountStatus } from "@dotfiles/opencode-pool/status"
 import { iso } from "@dotfiles/opencode-pool/usage-text"
@@ -871,7 +871,6 @@ describe("Opus first, Codex second", () => {
   }
   const NOTE = "orchestrate: this agent runs on openai/gpt-6.1-sol#high, the Codex fallback (anthropic/claude-opus#medium held: all pool accounts are held)."
 
-  const OPUS_MODEL = "anthropic/claude-opus#medium"
   const SOL_MODEL = "openai/gpt-6.1-sol#high"
   const EXPLICIT_OPUS = "anthropic/claude-opus#high"
   const SOL_PARENT = { providerID: "openai", id: "gpt-6.1-sol" }
@@ -881,10 +880,17 @@ describe("Opus first, Codex second", () => {
     { start: { agent: "worker", description: "verifier matrix r1" }, saved: "verifier" },
   ]
   const requests = [
-    { input: {}, saved: SOL_MODEL, admitted: OPUS_MODEL, refused: false },
-    { input: { model: EXPLICIT_OPUS }, saved: EXPLICIT_OPUS, admitted: EXPLICIT_OPUS, refused: false },
-    { input: { model: SOL_MODEL }, saved: SOL_MODEL, admitted: OPUS_MODEL, refused: true },
+    { input: {}, saved: SOL_MODEL, refused: false },
+    { input: { model: EXPLICIT_OPUS }, saved: EXPLICIT_OPUS, refused: false },
+    { input: { model: SOL_MODEL }, saved: SOL_MODEL, refused: true },
   ]
+  const catalog = [...codexOffered, { ...model, family: "claude-opus", variants: [{ id: "medium" }, { id: "high" }] }]
+  const routed = Schema.decodeUnknownSync(Schema.Struct({ agent: Schema.Literal("verifier"), model: Schema.String }))
+  const expectOpus = (value?: string) => {
+    const ref = parseModel(value)
+    const offered = catalog.find((item) => item.providerID === ref?.providerID && item.id === ref.id)
+    expect(offered).toMatchObject({ providerID: "anthropic", family: "claude-opus" })
+  }
   const cases = verifying.flatMap((role) => requests.flatMap((request) =>
     [model, SOL_PARENT].flatMap((parent) => [{ pool: {}, waiting: false }, { pool: held, waiting: true }]
       .map((pace) => ({ role, request, parent, ...pace }))),
@@ -893,47 +899,73 @@ describe("Opus first, Codex second", () => {
   type PluginFixture = Effect.Success<ReturnType<typeof start>>
   type VerificationRoute = VerificationCase["role"]["start"] | { readonly sessionID: string }
   const verifyCall = Effect.fnUntraced(function* (plugin: PluginFixture, entry: VerificationCase, route: VerificationRoute, child: string) {
+    const before = plugin.kept.length
     const call = yield* plugin.call("subagent", "root", { ...route, ...entry.request.input, prompt: "check" })
     if (entry.request.refused) {
       expect(call.refused?.message).toContain("Claude Opus only, never Codex")
       expect(call.refused?.message).toContain('model: "anthropic/<claude-opus-model-id>"')
+      expect(plugin.kept).toHaveLength(before)
       return
     }
     expect(call.refused).toBeUndefined()
-    expect(call.input).toMatchObject({ agent: "verifier", model: entry.request.admitted })
+    expectOpus(routed(call.input).model)
     if (entry.waiting) {
       expect(call.input).toMatchObject({ sessionID: child })
-      const opens = Option.getOrElse(Option.fromUndefinedOr(plugin.kept.at(-1)?.opensAt), () => 0)
-      expect(Number.isFinite(opens) && opens > now).toBe(true)
+      expect(plugin.kept).toHaveLength(before + 1)
+      const latch = plugin.kept[before]!
+      expect(latch).toMatchObject({ child, hold: "pace" })
+      expectOpus(latch.subagent.model)
+      expect(Number.isFinite(latch.opensAt) && latch.opensAt > now).toBe(true)
+      const answer = yield* plugin.runTool(call.input)
+      expect(answer.output).toMatchObject({ sessionID: child, status: "latched" })
+      return latch
     }
+    expect(plugin.kept).toHaveLength(before)
   })
-  const verifyReopen = Effect.fnUntraced(function* (plugin: PluginFixture, entry: VerificationCase) {
-    const latch = implementorLatch(entry.request.saved, { reason: "kept", models: { primary: entry.request.saved, fallback: SOL_MODEL } })
-    const opened = yield* plugin.open({ ...latch, subagent: { ...latch.subagent, agent: entry.role.saved } })
+  const verifyReopen = Effect.fnUntraced(function* (plugin: PluginFixture, entry: VerificationCase, latch: Latch) {
+    const before = plugin.ran.length
+    const opened = Schema.decodeUnknownSync(Opened)(yield* plugin.open(latch))
     if (entry.waiting) {
-      expect(opened).toMatchObject({ outcome: "held", opensAt: expect.any(Number) })
-      expect(plugin.ran).toEqual([])
+      expect(opened.outcome).toBe("held")
+      if (opened.outcome === "held") expect(Number.isFinite(opened.opensAt) && opened.opensAt > now).toBe(true)
+      expect(plugin.ran).toHaveLength(before)
     } else {
       expect(opened).toEqual({ outcome: "opened" })
-      expect(plugin.ran.at(-1)?.input).toMatchObject({ agent: "verifier", model: entry.request.admitted })
+      expect(plugin.ran).toHaveLength(before + 1)
+      const input = plugin.ran[before]?.input
+      expect(input).toMatchObject({ sessionID: latch.child })
+      expectOpus(routed(input).model)
     }
   })
-  test("verification is Opus only across start, continuation and latch open", () =>
+  test("verification is Opus only across start, continuation and both latch reopen paths", () =>
     scenario(Effect.forEach(cases, (entry) =>
       Effect.gen(function* () {
         const asked: Array<string> = []
-        const plugin = yield* start({ now: WEDNESDAY }, {
+        const world = {
           model: entry.parent,
           variants: ["medium", "high"],
-          others: [...codexOffered, { ...model, family: "claude-opus", variants: [{ id: "medium" }, { id: "high" }] }],
+          others: catalog,
           sessions: { kid: { parentID: "root", agent: entry.role.saved, started: true } },
           childModels: { kid: SOL_PARENT },
           codex: admits(asked),
-          pool: entry.pool,
-        })
+        }
+        const plugin = yield* start({ now: WEDNESDAY }, { ...world, pool: entry.pool })
         yield* verifyCall(plugin, entry, entry.role.start, "ses_latched1")
-        yield* verifyCall(plugin, entry, { sessionID: "kid" }, "kid")
-        yield* verifyReopen(plugin, entry)
+        const kept = yield* verifyCall(plugin, entry, { sessionID: "kid" }, "kid")
+        const saved = implementorLatch(entry.request.saved, { reason: "kept", models: { primary: entry.request.saved, fallback: SOL_MODEL } })
+        const legacy = { ...saved, subagent: { ...saved.subagent, agent: entry.role.saved } }
+        yield* verifyReopen(plugin, entry, legacy)
+        let continuation = kept
+        if (!entry.request.refused && !entry.waiting) {
+          const holding = yield* start({ now: WEDNESDAY }, { ...world, pool: held })
+          continuation = yield* verifyCall(holding, { ...entry, waiting: true }, { sessionID: "kid" }, "kid")
+        }
+        // Today's explicit Codex request is refused, but an older build could have persisted it.
+        if (!entry.request.refused) {
+          expect(continuation).toMatchObject({ child: "kid", context: { continuation: true }, subagent: { prompt: "check" } })
+        }
+        const followUp: Latch = { ...legacy, child: "kid", context: { ...legacy.context, continuation: true }, ...continuation }
+        yield* verifyReopen(plugin, entry, followUp)
         expect(asked).toEqual([])
       }),
     )))
