@@ -4336,7 +4336,7 @@ sv_wait_users() {
 # then the base's exclusive lock and its clone turn, in line with creates
 # and removes, at most sv_turn_seconds. Fails, holding nothing, past that.
 sv_hold() {
-  lock_purpose="subvolume: switch $sv_base (holds the base about 2-20 min; creates wait behind it)"
+  lock_purpose="subvolume: switch $sv_base (holds the base about 2-20 min; creates wait behind it; each check for processes in it walks every thread's open files, 5-30 s on a busy host)"
   sv_state_make
   queue_enter "$sv_base" move w 6 try ||
     fail "another workrift subvolume runs for $sv_base:$(queue_words "$sv_base" move); nothing changed"
@@ -5330,7 +5330,7 @@ sv_drop() {
       ;;
   esac
   sv_next=
-  lock_purpose="subvolume: drop $sv_old"
+  lock_purpose="subvolume: drop $sv_old (its check for processes in it walks every thread's open files, 5-30 s on a busy host)"
   sv_state_make
   queue_enter "$sv_base" move w 6 try ||
     fail "another workrift subvolume runs for $sv_base:$(queue_words "$sv_base" move); nothing changed"

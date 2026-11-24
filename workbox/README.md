@@ -360,6 +360,18 @@ runs these steps:
    While the switch waits for processes to leave the old tree, it looks
    after 1 s, then 2 s, then every 4 s.
 
+   A walk's time grows with the count of thread fd links, since every
+   thread's open files are read, even where threads share one table. On
+   bite-workbox, with 1,846 threads holding 459,108 thread fd links, one walk
+   took 5.3-11 s. The switch walks once under its hold after the exchange,
+   then again only while a process stays in the old tree. The lock's purpose,
+   which a waiting create shows, says so. No deadline cuts a walk short:
+   - The wait's 60 s is checked only after a walk has named processes, and
+     then the switch refuses.
+   - The hold's 1200 s limit on the copy and its checks refuses when it
+     passes.
+   - A walk that ends finding nothing really found nothing.
+
    Kernel threads and zombies hold no files and never count. Any other
    failure of the walk is a refusal of its own. The same three answers hold
    after the exchange (an unknown process leaves the switch unfinished) and
