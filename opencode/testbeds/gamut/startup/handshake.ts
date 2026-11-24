@@ -14,7 +14,12 @@ const pty = <A>(read: () => Promise<A>) =>
     },
   })
 
-const poll = Effect.fn("Gamut.composerReady")(function* (marker: string, readScreen: () => Promise<HostScreen>, last: { rows: ReadonlyArray<string> }) {
+/** The screen at the waiter's last look, for its failure message. */
+interface LastScreen {
+  rows: ReadonlyArray<string>
+}
+
+const poll = Effect.fn("Gamut.composerReady")(function* (marker: string, readScreen: () => Promise<HostScreen>, last: LastScreen) {
   const fs = yield* FileSystem.FileSystem
   if (yield* fs.exists(marker)) return true
   const screen = yield* pty(readScreen)
@@ -36,7 +41,7 @@ const lastLook = Effect.fn("Gamut.composerLastLook")(function* (marker: string) 
 
 /** The pty socket can answer before the TUI has the plugin's default agent or its model. */
 export const waitForComposer = (marker: string, agent: string, readScreen: () => Promise<HostScreen>): Promise<void> => {
-  const last: { rows: ReadonlyArray<string> } = { rows: [] }
+  const last: LastScreen = { rows: [] }
   return Effect.runPromise(
     poll(marker, readScreen, last).pipe(
       Effect.repeat({ until: (ready) => ready, schedule: Schedule.spaced("50 millis") }),
