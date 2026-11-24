@@ -22,11 +22,12 @@
 // sleep rule fails open: a session the host cannot place as a subagent or a
 // root runs its sleep, since a sleep loses nothing.
 import { Context, Effect, Layer, Option, Predicate } from "effect"
-import { keychainLaunch, KeychainPrompt, keychainReason, type TreeRoot } from "./chrome.ts"
+import { keychainBlock, keychainLaunch, KeychainPrompt, type TreeRoot } from "./chrome.ts"
 import { parseShell } from "./command-line.ts"
 import { DEFAULT_HEAVY, heavyCommand } from "./heavy.ts"
 import { killsByPattern, killVerdict } from "./kill.ts"
 import { admissionLauncher, launcherName, launcherScript, type Limits } from "./launcher.ts"
+import { type CannotTell, CommandForm } from "./message.ts"
 import { resolve } from "./path.ts"
 import { expandWord } from "./shell-line.ts"
 import { type Checkout, type CheckoutUnknown, Checkouts, type LauncherUnavailable, Launchers, Processes, type RepoRootUnknown, RepoRoots, Reservations, Scopes, ScriptFiles, SessionDirectories, Subagents, type WarmSource } from "./service.ts"
@@ -54,8 +55,8 @@ export interface ShellCall {
 export class Guard extends Context.Service<
   Guard,
   {
-    /** Succeeds when the call may run; fails `Destructive`, `FullCopy`, `KeychainPrompt` or `Idle` with the words the model reads when it may not. */
-    readonly judge: (call: ShellCall) => Effect.Effect<void, Destructive | FullCopy | KeychainPrompt | Idle>
+    /** A blocked call is a refusal, an accepted alternate form, or a check that could not finish. */
+    readonly judge: (call: ShellCall) => Effect.Effect<void, Destructive | FullCopy | KeychainPrompt | Idle | CommandForm | CannotTell>
   }
 >()("dotfiles-opencode/guard/Guard") {}
 
@@ -77,7 +78,7 @@ export const layer = (config: Config) =>
         return checkouts.warmSources
       }
 
-      const judge = Effect.fn("Guard.judge")(function* (call: ShellCall) {
+      const check = Effect.fn("Guard.check")(function* (call: ShellCall) {
         const refuse = (reason: string) => Effect.fail(new Destructive({ command: call.command, reason }))
         const directory = yield* sessions
           .directoryOf(call.sessionID)
@@ -142,7 +143,7 @@ export const layer = (config: Config) =>
         if (kill._tag === "Deny") return yield* refuse(kill.reason)
         // A Chrome the line starts is read from the line; a script's text only for a line that runs one.
         const launch = yield* keychainLaunch(call.command, place, scripts.text, checkoutRoot(roots.isRoot))
-        if (Option.isSome(launch)) return yield* new KeychainPrompt({ command: call.command, reason: keychainReason(launch.value) })
+        if (Option.isSome(launch)) return yield* keychainBlock(call.command, launch.value)
 
         const sleep = call.background === true ? undefined : sleepsTooLong(call.command)
         if (sleep === undefined) return
@@ -150,9 +151,26 @@ export const layer = (config: Config) =>
         if (inSubagent) return yield* new Idle({ command: call.command, seconds: sleep.seconds, reason: idleReason(sleep) })
       })
 
+      const judge = (call: ShellCall) => check(call).pipe(
+        Effect.catchTag("KeychainPrompt", (blocked) => Effect.gen(function* () {
+          const candidate = blocked.candidate
+          if (!candidate) return yield* blocked
+          yield* check({ ...call, command: candidate.form }).pipe(
+            Effect.catchTag("KeychainPrompt", (retry) => {
+              if (!retry.candidate) return Effect.fail(retry)
+              return Effect.fail(keychainUnresolved(blocked))
+            }),
+          )
+          return yield* new CommandForm(candidate)
+        })),
+      )
+
       return Guard.of({ judge })
     }),
   )
+
+const keychainUnresolved = ({ command, reason }: KeychainPrompt): KeychainPrompt =>
+  new KeychainPrompt({ command, reason: `${reason}. The shim does not reach every affected launcher` })
 
 /** What runs heavy commands, and under which limits; from the plugin's options. */
 export interface PolicyConfig {

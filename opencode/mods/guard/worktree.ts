@@ -16,6 +16,7 @@
 // from outside, asked of the `Checkouts` contract (service.ts) only for a line
 // that adds a worktree.
 import { Array as Arr, Option, Schema } from "effect"
+import { renderRefusal } from "./message.ts"
 import { resolve } from "./path.ts"
 import type { Checkout, WarmSource } from "./service.ts"
 import { expandWord, type Word } from "./shell-line.ts"
@@ -145,4 +146,4 @@ export class FullCopy extends Schema.TaggedError<FullCopy>()("FullCopy", {
 }) {}
 
 /** What the model reads of the refusal. */
-export const worktreeMessage = (reason: string): string => `guard-worktree: ${reason}.`
+export const worktreeMessage = (reason: string): string => renderRefusal("guard-worktree", reason)
