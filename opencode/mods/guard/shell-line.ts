@@ -49,6 +49,7 @@ export interface ShellSegment {
   readonly boundary?: "enter" | "leave"
   readonly joined?: true
   readonly caseEnd?: true
+  readonly logical?: "&&" | "||"
 }
 
 export const shellSegments = (line: string, bindingSyntax = false): ReadonlyArray<ShellSegment> => {
@@ -139,6 +140,16 @@ export const shellSegments = (line: string, bindingSyntax = false): ReadonlyArra
   }
   const separator = (at: number, char: string): number => {
     const or = char === "|" && line.charAt(at + 1) === "|"
+    if (bindingSyntax && char === "&" && line.charAt(at - 1) === ">") {
+      add(char, true)
+      return at + 1
+    }
+    const and = char === "&" && line.charAt(at + 1) === "&"
+    if (bindingSyntax && (and || or)) {
+      endCommand(false, true)
+      commands.push({ words: [], pipe: false, logical: logicalOperator(and) })
+      return at + 2
+    }
     if (bindingSyntax && (char === "(" || char === ")")) {
       endCommand(false, true)
       commands.push({ words: [], pipe: false, boundary: groupBoundary(char) })
@@ -173,6 +184,11 @@ export const shellSegments = (line: string, bindingSyntax = false): ReadonlyArra
   while (at < line.length) at = step(at)
   endCommand()
   return commands
+}
+
+const logicalOperator = (and: boolean): "&&" | "||" => {
+  if (and) return "&&"
+  return "||"
 }
 
 const groupBoundary = (char: string): "enter" | "leave" => {

@@ -2,21 +2,26 @@
 // executable wrappers: they own lists and those lists inherit the compound's input.
 import { shellSegments, type Word } from "./shell-line.ts"
 
-export type ShellList = ReadonlyArray<ReadonlyArray<ShellNode>>
+export type ShellList = ReadonlyArray<ShellChain>
+export interface ShellChain {
+  readonly first: Pipeline
+  readonly links: ReadonlyArray<{ readonly on: "&&" | "||"; readonly pipeline: Pipeline }>
+}
+type Pipeline = ReadonlyArray<ShellNode>
 export type ShellNode =
   | { readonly kind: "command"; readonly words: ReadonlyArray<Word> }
   | { readonly kind: "group"; readonly body: ShellList; readonly local: boolean }
   | { readonly kind: "function"; readonly name: string; readonly body: ShellNode }
   | { readonly kind: "redirect"; readonly body: ShellNode; readonly input: ReadonlyArray<Word> }
   | { readonly kind: "loop"; readonly id: number; readonly header: ReadonlyArray<Word>; readonly condition: ShellList; readonly body: ShellList }
-  | { readonly kind: "choice"; readonly arms: ReadonlyArray<ShellArm> }
+  | { readonly kind: "choice"; readonly arms: ReadonlyArray<ShellArm>; readonly exhaustive: boolean }
 
 export interface ShellArm {
   readonly condition: ShellList
   readonly body: ShellList
 }
 
-type Punctuation = "(" | ")" | "|" | ";" | ";;" | "eof"
+type Punctuation = "(" | ")" | "|" | ";" | ";;" | "&&" | "||" | "eof"
 type Token = { readonly kind: "word"; readonly word: Word } | { readonly kind: Punctuation }
 const punctuation = (kind: Punctuation): Token => ({ kind })
 const tokensFor = (line: string): ReadonlyArray<Token> => {
@@ -24,6 +29,7 @@ const tokensFor = (line: string): ReadonlyArray<Token> => {
   for (const segment of shellSegments(line, true)) {
     for (const word of segment.words) tokens.push({ kind: "word", word })
     if (segment.pipe) tokens.push(punctuation("|"))
+    else if (segment.logical) tokens.push(punctuation(segment.logical))
     else if (segment.caseEnd) tokens.push(punctuation(";;"))
     else if (segment.boundary === "enter") tokens.push(punctuation("("))
     else if (segment.boundary === "leave") tokens.push(punctuation(")"))
@@ -65,18 +71,31 @@ export const compoundList = (line: string): ShellList => {
     return result
   }
   const list = (...stops: ReadonlyArray<string>): ShellList => {
-    const result: Array<ReadonlyArray<ShellNode>> = []
+    const result: Array<ShellChain> = []
     breaks()
     while (!is("eof") && !stops.includes(textOf(peek()))) {
-      const stages = [node()]
-      while (skip("|")) {
-        breaks()
-        stages.push(node())
-      }
-      result.push(stages)
+      result.push(chain())
       breaks()
     }
     return result
+  }
+  const pipeline = (): Pipeline => {
+    const stages = [node()]
+    while (skip("|")) {
+      breaks()
+      stages.push(node())
+    }
+    return stages
+  }
+  const chain = (): ShellChain => {
+    const first = pipeline()
+    const links: Array<ShellChain["links"][number]> = []
+    for (let on = peek().kind; on === "&&" || on === "||"; on = peek().kind) {
+      take()
+      breaks()
+      links.push({ on, pipeline: pipeline() })
+    }
+    return { first, links }
   }
   const group = (end: string, local: boolean): ShellNode => {
     const body = list(end)
@@ -102,26 +121,30 @@ export const compoundList = (line: string): ShellList => {
       skip("then")
       arms.push({ condition, body: list("elif", "else", "fi") })
     } while (skip("elif"))
-    if (skip("else")) arms.push({ condition: [], body: list("fi") })
+    const exhaustive = skip("else")
+    if (exhaustive) arms.push({ condition: [], body: list("fi") })
     skip("fi")
-    return redirect({ kind: "choice", arms })
+    return redirect({ kind: "choice", arms, exhaustive })
   }
   const pattern = (): ShellNode => {
     const arms: Array<ShellArm> = []
+    let exhaustive = false
     while (!is("eof") && !skip("in")) take()
     breaks()
     while (!is("eof") && !is("esac")) {
       skip("(")
-      while (!is("eof") && !is("esac") && !skip(")")) take()
+      while (!is("eof") && !is("esac") && !skip(")")) {
+        if (textOf(take()) === "*") exhaustive = true
+      }
       arms.push({ condition: [], body: list(";;", "esac") })
       skip(";;")
       breaks()
     }
     skip("esac")
-    return redirect({ kind: "choice", arms })
+    return redirect({ kind: "choice", arms, exhaustive })
   }
   const redirect = (body: ShellNode): ShellNode => {
-    if (!/^</.test(textOf(peek()))) return body
+    if (!/^(?:<|[12]?>)/.test(textOf(peek()))) return body
     return { kind: "redirect", body, input: words() }
   }
   const functionNode = (name: string): ShellNode => {

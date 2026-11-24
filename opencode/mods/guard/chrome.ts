@@ -28,7 +28,7 @@
 //   Reads of Git or shell words as arguments, file names, or text aren't runs.
 // The hook follows statically named child code with the same plan and a bounded loader.
 import { Array as Arr, Effect, Option, Schema } from "effect"
-import { type CodeInput, type Execution, executionPlan, type Language, literalPath, MAX_CODE_DEPTH, word } from "./executable.ts"
+import { type CodeInput, distinctEntries, type Execution, executionPaths, executionPlan, inlineShellPaths, type Language, literalPath, MAX_CODE_DEPTH, MAX_PATH_STATES, type PathPlan, word } from "./executable.ts"
 import { basename, dirname, resolve, within } from "./path.ts"
 import { gitAction, type GitAction } from "./revision.ts"
 import { type Word } from "./shell-line.ts"
@@ -73,6 +73,7 @@ export interface BareLaunch {
   readonly oldCheckout?: true
   readonly rebaseExec?: true
   readonly opaqueContinuation?: true
+  readonly pathLimit?: true
 }
 
 /** Whether a launch's flags open DevTools or headless without both keychain flags. */
@@ -152,7 +153,7 @@ const fileDirectory = (input: CodeInput, execution: Execution): ReadonlyArray<st
   return [dirname(resolve(execution.cwd, input.source.text))]
 }
 
-/** One ordered tree-effect state for the whole decision. Readable child events are already at their call site. */
+/** One ordered tree-effect state per reaching trace. Readable child events are already at their call site. */
 const decideTimeline = (line: string, events: ReadonlyArray<ExecutionEvent>, roots: TreeLookup): ReadonlyArray<BareLaunch> => {
   const changes = new Map<string, ChangedTree>()
   const refsOnly = new Set<string>()
@@ -167,13 +168,35 @@ const decideTimeline = (line: string, events: ReadonlyArray<ExecutionEvent>, roo
     const command = event.execution
     direct.push(...directLaunch(command).map((launch) => attributeLaunch(launch, event.source)))
     const action = actionAt(command, (tree) => refsOnly.has(treeName(tree, roots)))
-    if (Option.isNone(relation)) relation = eventHazard(line, event, action, Array.from(changes.values()), roots)
+    if (!Option.exists(relation, definite)) relation = prefer(relation, eventHazard(line, event, action, Array.from(changes.values()), roots))
     if (Option.isNone(continuation)) continuation = opaqueContinuation(event, action)
     rememberAction(action, roots, changes, refsOnly)
   }
   if (direct.length > 0) return direct
-  return Option.toArray(Option.orElse(relation, () => continuation))
+  return Option.toArray(prefer(relation, continuation))
 }
+
+const definite = (launch: BareLaunch): boolean => launch.remedy !== "unknown"
+const prefer = (earlier: Option.Option<BareLaunch>, later: Option.Option<BareLaunch>): Option.Option<BareLaunch> => {
+  if (Option.isNone(earlier) || (!Option.exists(earlier, definite) && Option.exists(later, definite))) return later
+  return earlier
+}
+
+const decidePaths = (line: string, plan: PathPlan<ExecutionEvent>, roots: TreeLookup): ReadonlyArray<BareLaunch> => {
+  const findings = plan.paths.flatMap((path) => decideTimeline(line, path, roots))
+  const clear: Array<BareLaunch> = []
+  for (const launch of findings) {
+    if (definite(launch) && !clear.some((known) => sameLaunch(known, launch))) clear.push(launch)
+  }
+  if (clear.length > 0) return clear
+  if (plan.limited) return [{ command: line, script: Option.none(), remedy: "unknown", pathLimit: true }]
+  return findings.slice(0, 1)
+}
+
+const sameLaunch = (left: BareLaunch, right: BareLaunch): boolean =>
+  left.command === right.command && left.remedy === right.remedy &&
+  Option.getOrElse(left.script, () => "") === Option.getOrElse(right.script, () => "") &&
+  left.oldCheckout === right.oldCheckout && left.rebaseExec === right.rebaseExec
 
 const opaqueContinuation = ({ execution, source }: CommandEvent, action: GitAction): Option.Option<BareLaunch> => {
   if (action.revision !== "moves" || usesShim(execution.env)) return Option.none()
@@ -189,14 +212,16 @@ const eventHazard = (line: string, event: CommandEvent, action: GitAction, chang
   if (action.rebaseExec === true) return Option.some(attributeLaunch({ command: execution.command, script: Option.none(), remedy: "shim", rebaseExec: true }, source))
   if (changes.length === 0) return Option.none()
   const directories = launcherLocations(event, changes, roots)
+  let hazard = Option.none<BareLaunch>()
   for (const directory of directories) {
-    const match = Arr.findFirst(changes, (change) => coincides(change, directory, roots))
-    if (Option.isSome(match)) {
-      const remedy = changedRemedy(match.value, directory)
-      return Option.some({ command: line, script: Option.map(source, ({ name }) => name), remedy, oldCheckout: true })
+    for (const change of changes) {
+      if (!coincides(change, directory, roots)) continue
+      const remedy = changedRemedy(change, directory)
+      hazard = Option.some({ command: line, script: Option.map(source, ({ name }) => name), remedy, oldCheckout: true })
+      if (remedy !== "unknown") return hazard
     }
   }
-  return Option.none()
+  return hazard
 }
 
 interface Location {
@@ -282,7 +307,52 @@ export interface RuntimeRun {
 }
 
 /** Each script a line executes (as a file or inline), in order. Tests and syntax checks do not supply script entry points. */
-export const runtimeRuns = (line: string, place: Place): ReadonlyArray<RuntimeRun> => plannedRuns(executionPlan(line, place), place.home)
+export const runtimeRuns = (line: string, place: Place): ReadonlyArray<RuntimeRun> =>
+  plannedRuns(executionPlan(line, place), place.home)
+
+const unitPlan = <A>(...entries: ReadonlyArray<A>): PathPlan<A> => ({ paths: [entries], limited: false })
+
+const sequencePlans = <A>(left: PathPlan<A>, right: PathPlan<A>): PathPlan<A> => {
+  if (left.limited) return left
+  const paths: Array<ReadonlyArray<A>> = []
+  for (const prefix of left.paths) for (const suffix of right.paths) {
+    if (paths.length === MAX_PATH_STATES) return { paths, limited: true }
+    paths.push([...prefix, ...suffix])
+  }
+  return { paths, limited: right.limited }
+}
+
+const expandPlan = <A>(plan: PathPlan<Execution>, expansions: ReadonlyMap<Execution, PathPlan<A>>): PathPlan<A> => {
+  const paths: Array<ReadonlyArray<A>> = []
+  let limited = plan.limited
+  // A shell may have more completed traces than live paths. Child alternatives
+  // can multiply those traces, but must not grow the analysis without bound.
+  const budget = Math.max(MAX_PATH_STATES, plan.paths.length)
+  for (const trace of plan.paths) {
+    const branch = trace.reduce((prefix, command) => sequencePlans(prefix, expansions.get(command) || unitPlan<A>()), unitPlan<A>())
+    for (const path of branch.paths) {
+      if (paths.length === budget) return { paths, limited: true }
+      paths.push(path)
+    }
+    limited ||= branch.limited
+  }
+  return { paths, limited }
+}
+
+const inlinePlan = (plan: PathPlan<Execution>, home: string): PathPlan<Execution> => {
+  const entries = new Map(distinctEntries(plan).map((command) => {
+    let expanded = unitPlan(command)
+    for (const input of command.code) {
+      if (input.kind !== "inline" || input.language !== "shell") continue
+      expanded = sequencePlans(expanded, inlinePlan(inlineShellPaths(command, home, input.code), home))
+    }
+    return [command, expanded]
+  }))
+  return expandPlan(plan, entries)
+}
+
+const mapPlan = <A, B>(plan: PathPlan<A>, f: (value: A) => B): PathPlan<B> =>
+  ({ ...plan, paths: plan.paths.map((trace) => trace.map(f)) })
 
 const plannedRuns = (commands: ReadonlyArray<Execution>, home: string): ReadonlyArray<RuntimeRun> => commands.flatMap((command) =>
   command.code.flatMap((input) => {
@@ -304,8 +374,8 @@ const resolveEntry = (input: CodeInput, cwd: string): Ran => {
 
 /** Each command of `line` that starts Chrome for DevTools or headless without both keychain flags, or runs a bisect without the shim. */
 export const bareLaunches = (line: string, place: Place): ReadonlyArray<BareLaunch> => {
-  const events = executionPlan(line, place).map((entry) => commandEvent(entry, Option.none()))
-  return decideTimeline(line, events, new Map())
+  const events = mapPlan(inlinePlan(executionPaths(line, place), place.home), (entry) => commandEvent(entry, Option.none()))
+  return decidePaths(line, events, new Map())
 }
 
 const directLaunch = ({ head, args, command, env }: Execution): ReadonlyArray<BareLaunch> => {
@@ -501,7 +571,6 @@ const pythonCall = (text: string, name: string, open: number, script: Script): s
 /** Process invocations in a source file feed the same shell plan as the outer call. */
 const sourceCalls = (text: string, language: Language): ReadonlyArray<string> => {
   if (language === "auto") return []
-  if (walkable(language)) return [text]
   const script: Script = { arrays: arraysOf(text), chromes: new Set() }
   const calls = callsOf(language)
   return Array.from(text.matchAll(calls)).flatMap((match) => {
@@ -540,11 +609,14 @@ const scriptEnv = (run: RuntimeRun): ReadonlyMap<string, string> => {
   return new Map()
 }
 
-const sourcePlan = (run: RuntimeRun, text: string, depth: number): ReadonlyArray<Execution> => {
+const sourcePlan = (run: RuntimeRun, text: string, depth: number): PathPlan<Execution> => {
   const language = scriptLanguage(run, text)
   const place = { ...scriptPlace(run), unknownCwd: run.unknownCwd, env: scriptEnv(run) }
   const positionals = shellPositionals(run, language)
-  return sourceCalls(text, language).flatMap((line) => executionPlan(line, { ...place, positionals }, depth))
+  if (walkable(language)) return executionPaths(text, { ...place, positionals }, depth)
+  return sourceCalls(text, language).reduce(
+    (prefix, line) => sequencePlans(prefix, executionPaths(line, { ...place, positionals }, depth)), unitPlan<Execution>(),
+  )
 }
 
 const shellPositionals = (run: RuntimeRun, language: Language): ReadonlyArray<string> => {
@@ -565,9 +637,12 @@ const sourceContext = (run: RuntimeRun, text: string, invocation: string): Sourc
 /** A local decision does not assume the contents of a child it was not given. */
 export const scriptLaunch = (run: RuntimeRun, text: string): Option.Option<BareLaunch> => {
   const source = sourceContext(run, text, run.command)
-  const commands = sourcePlan(run, text, 0).map((entry) => commandEvent(entry, Option.some(source)))
-  return Arr.head(decideTimeline(run.command, [...sourceFinding(run, text, source), ...commands], new Map()))
+  const commands = mapPlan(inlinePlan(sourcePlan(run, text, 0), scriptPlace(run).home), (entry) => commandEvent(entry, Option.some(source)))
+  return Arr.head(decidePaths(run.command, prependFindings(sourceFinding(run, text, source), commands), new Map()))
 }
+
+const prependFindings = (findings: ReadonlyArray<FindingEvent>, plan: PathPlan<ExecutionEvent>): PathPlan<ExecutionEvent> =>
+  ({ ...plan, paths: plan.paths.map((path) => [...findings, ...path]) })
 
 export type ScriptLoader = (path: string) => Effect.Effect<Option.Option<string>>
 export type TreeRoot = (directory: string) => Effect.Effect<Option.Option<string>>
@@ -600,41 +675,46 @@ const lexicalRoot: TreeRoot = () => Effect.succeed(Option.none())
 /** Follow an executed source's named children; absent, dynamic, or deeper than six contributes no evidence. */
 export const scriptLaunchWith = Effect.fn("Guard.scriptLaunchWith")(function* (run: RuntimeRun, text: string, load: ScriptLoader, depth = 0, root: TreeRoot = lexicalRoot) {
   const events = yield* expandSource(run, text, load, depth, sourceContext(run, text, run.command))
-  return Arr.head(decideTimeline(run.command, events, yield* rootsFor(events, root)))
+  return Arr.head(decidePaths(run.command, events, yield* rootsFor(distinctEntries(events), root)))
 })
 
 /** Expand source events in command order; cwd and environment are scoped to each invoking frame. */
 const expandCommands = Effect.fn("Guard.expandCommands")(function* (
-  plan: ReadonlyArray<Execution>,
+  plan: PathPlan<Execution>,
   home: string,
   load: ScriptLoader,
   source: Option.Option<SourceContext>,
-): Effect.fn.Return<ReadonlyArray<ExecutionEvent>> {
-  const events: Array<ExecutionEvent> = []
-  for (const command of plan) {
-    events.push(...(yield* expandCommand(command, home, load, source)))
+): Effect.fn.Return<PathPlan<ExecutionEvent>> {
+  const expansions = new Map<Execution, PathPlan<ExecutionEvent>>()
+  for (const command of distinctEntries(plan)) {
+    expansions.set(command, yield* expandCommand(command, home, load, source))
   }
-  return events
+  return expandPlan(plan, expansions)
 })
 
-const expandCommand = Effect.fn("Guard.expandCommand")(function* (command: Execution, home: string, load: ScriptLoader, source: Option.Option<SourceContext>): Effect.fn.Return<ReadonlyArray<ExecutionEvent>> {
-  if (command.sourceDepth >= MAX_CODE_DEPTH) return [commandEvent(command, source)]
-  const children: Array<ExecutionEvent> = []
+const expandCommand = Effect.fn("Guard.expandCommand")(function* (command: Execution, home: string, load: ScriptLoader, source: Option.Option<SourceContext>): Effect.fn.Return<PathPlan<ExecutionEvent>> {
+  let children = unitPlan<ExecutionEvent>()
+  if (command.sourceDepth >= MAX_CODE_DEPTH) return unitPlan(commandEvent(command, source))
   let expandedShell = false
+  for (const input of command.code) {
+    if (input.kind !== "inline" || input.language !== "shell") continue
+    const inline = yield* expandCommands(inlineShellPaths(command, home, input.code), home, load, source)
+    children = sequencePlans(children, inline)
+  }
   for (const run of plannedRuns([command], home)) {
     const text = yield* readRun(run.ran, load)
     if (Option.isNone(text)) continue
     const invocation = Option.getOrElse(Option.map(source, (frame) => frame.invocation), () => run.command)
     const frame = sourceContext(run, text.value, invocation)
     expandedShell ||= walkable(frame.language)
-    children.push(...(yield* expandSource(run, text.value, load, command.sourceDepth + 1, frame)))
+    children = sequencePlans(children, yield* expandSource(run, text.value, load, command.sourceDepth + 1, frame))
   }
-  return [commandEvent(command, source, expandedShell), ...children]
+  return { ...children, paths: children.paths.map((path) => [commandEvent(command, source, expandedShell), ...path]) }
 })
 
-const expandSource = Effect.fn("Guard.expandSource")(function* (run: RuntimeRun, text: string, load: ScriptLoader, depth: number, source: SourceContext): Effect.fn.Return<ReadonlyArray<ExecutionEvent>> {
+const expandSource = Effect.fn("Guard.expandSource")(function* (run: RuntimeRun, text: string, load: ScriptLoader, depth: number, source: SourceContext): Effect.fn.Return<PathPlan<ExecutionEvent>> {
   const commands = yield* expandCommands(sourcePlan(run, text, depth), scriptPlace(run).home, load, Option.some(source))
-  return [...sourceFinding(run, text, source), ...commands]
+  return prependFindings(sourceFinding(run, text, source), commands)
 })
 
 const readRun = (ran: Ran, load: ScriptLoader): Effect.Effect<Option.Option<string>> => {
@@ -644,8 +724,8 @@ const readRun = (ran: Ran, load: ScriptLoader): Effect.Effect<Option.Option<stri
 }
 
 export const keychainLaunch = Effect.fn("Guard.keychainLaunch")(function* (line: string, place: Place, load: ScriptLoader, root: TreeRoot = lexicalRoot) {
-  const events = yield* expandCommands(executionPlan(line, place), place.home, load, Option.none())
-  return Arr.head(decideTimeline(line, events, yield* rootsFor(events, root)))
+  const events = yield* expandCommands(executionPaths(line, place), place.home, load, Option.none())
+  return Arr.head(decidePaths(line, events, yield* rootsFor(distinctEntries(events), root)))
 })
 
 /** What a launch does, in the refusal's words. */
@@ -655,6 +735,8 @@ const starts = (launch: BareLaunch): string =>
 /** Why the rule refuses `launch`, and the way through. */
 export const keychainReason = (launch: BareLaunch): string => {
   const dialog = "and macOS puts a keychain dialog on the owner's screen at each launch of a Chrome without them"
+  if (launch.pathLimit === true)
+    return `\`${launch.command}\`: cannot tell what runs after the shell produces more than ${MAX_PATH_STATES} possible path states. Split the compound command so the guard can check each path.`
   if (launch.rebaseExec === true)
     return `\`${launch.command}\` runs a rebase command on intermediate commits, whose browser launchers may predate ${KEYCHAIN_FLAGS.join(" ")}, ${dialog}. Prefix the whole rebase with CHROME="${SHIM}".`
   if (launch.opaqueContinuation === true)

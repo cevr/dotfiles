@@ -348,6 +348,23 @@ describe("the guard plugin", () => {
       }),
     ))
 
+  test("a loaded child keeps selections on its own paths at the caller's continuation", () =>
+    scenario(
+      Effect.gen(function* () {
+        const alpha = "/nonexistent/join-probe/alpha"
+        const beta = "/nonexistent/join-probe/beta"
+        const where = { cwd: alpha, home: HOME }
+        const root = (cwd: string) => Effect.succeed(Option.liftPredicate(cwd, (path) => path === alpha || path === beta))
+        const child = 'if test -n "$CI"; then cd ../beta; fi; git checkout HEAD~1'
+        const load = (name: string) => Effect.succeed(Option.liftPredicate(child, () => name === `${alpha}/select.sh`))
+        const picked = yield* keychainLaunch("sh ./select.sh; npm test", where, load, root)
+        expect(Option.map(picked, ({ remedy }) => remedy)).toEqual(Option.some("shim"))
+        const cross = 'if test -n "$CI"; then cd ../beta; git checkout HEAD~1; else npm test; fi'
+        const safe = yield* keychainLaunch("sh ./select.sh; npm test", where, () => Effect.succeed(Option.some(cross)), root)
+        expect(safe).toEqual(Option.none())
+      }),
+    ))
+
   test("walks shell commands and requires positive selection evidence in unwalkable programs", () =>
     scenario(
       Effect.gen(function* () {

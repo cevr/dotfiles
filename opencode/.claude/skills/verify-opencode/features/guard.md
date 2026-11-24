@@ -15,6 +15,8 @@ A shell call that would lose work for good never runs: a recursive `rm` of the r
 
 For `guard-keychain`, history provenance follows the stream across pipeline stages and nested substitutions, without classifying the filters in between. The same shell walk resolves `read`, loop variables and assignments in compound commands, including groups and called functions. The provenance is evidence only when the resulting value reaches a Git selector operand.
 
+At a control-flow join, the guard keeps each reaching path's bindings, directory and selected worktrees together. Paths that terminate do not feed the next command. The guard does not evaluate or correlate separate conditions, even complementary tests of the same variable; it uses the most restrictive result over the paths it sees. If there are more than 64 possible path states, it reports that it cannot tell rather than selecting an arm. Substitutions carry history from captured stdout, not from diagnostics routed only to stderr.
+
 ## How to get to it (user POV)
 
 - The agent's `shell` (or `bash`) call, direct.

@@ -1,7 +1,7 @@
 // The keychain reader's execution plan. Wrapper options locate the next
 // executable; runtime options say which code runs before its entry point.
 import { Array as Arr, Option } from "effect"
-import { compoundList, type ShellList, type ShellNode } from "./compound.ts"
+import { compoundList, type ShellChain, type ShellList, type ShellNode } from "./compound.ts"
 import { basename, dirname, resolve } from "./path.ts"
 import { backquoteEnd, COMMAND_STARTS, expandWord, SHELLS, shellInput, simpleCommands, substitutionEnd, type Word } from "./shell-line.ts"
 import { gitSubcommand } from "./verdict.ts"
@@ -398,8 +398,8 @@ const substitutionReading = (text: string, at: number, opening: string, state: S
 }
 
 const substitutionValue = (text: string, start: number, end: number, state: ShellState) => {
-  const stream = walkList(compoundList(text.slice(start, end - 1)), state, emptyStream, MAX_CODE_DEPTH).output
-  return { end, value: producerValue(stream.history) }
+  const flow = walkList(compoundList(text.slice(start, end - 1)), startFlow(state), emptyStream, MAX_CODE_DEPTH)
+  return { end, value: producerValue(flow.limited || flow.paths.some(({ output }) => output.history)) }
 }
 
 const producerValue = (history: boolean): string => {
@@ -464,9 +464,39 @@ const directoryAt = (at: Directory, target: string): Directory => {
   return { cwd: resolve(at.cwd, target) }
 }
 
-/** Commands and their ordered source inputs, including inline shell commands in their actual execution position. */
+export const MAX_PATH_STATES = 64
+
+export interface PathPlan<A> {
+  readonly paths: ReadonlyArray<ReadonlyArray<A>>
+  readonly limited: boolean
+}
+
+/** Each trace carries the commands which can precede its consumers, in the same path as their shell state. */
+export const executionPaths = (line: string, place: ExecutionPlace, depth = -1): PathPlan<Execution> => {
+  const { paths, limited } = walkList(compoundList(line), startFlow(initialState(place)), emptyStream, depth)
+  return { paths: paths.map(({ commands }) => commands), limited }
+}
+
+export const distinctEntries = <A>(plan: PathPlan<A>): ReadonlyArray<A> => [...new Set(plan.paths.flat())]
+
+export const inlineShellPaths = (command: Execution, home: string, code: string): PathPlan<Execution> => {
+  const { cwd, unknownCwd, env, positionals, sourceDepth } = command
+  if (sourceDepth >= MAX_CODE_DEPTH) return { paths: [[]], limited: false }
+  return executionPaths(code, { cwd, unknownCwd, home, env, positionals }, sourceDepth + 1)
+}
+
+/** The command inventory for readers that do not make path-sensitive decisions. */
 export const executionPlan = (line: string, place: ExecutionPlace, depth = -1): ReadonlyArray<Execution> =>
-  walkList(compoundList(line), initialState(place), emptyStream, depth).commands
+  inventory(executionPaths(line, place, depth), place.home)
+
+const inventory = (plan: PathPlan<Execution>, home: string): ReadonlyArray<Execution> =>
+  distinctEntries(plan).flatMap((command) => {
+    const commands = [command]
+    for (const input of command.code) {
+      if (input.kind === "inline" && input.language === "shell") commands.push(...inventory(inlineShellPaths(command, home, input.code), home))
+    }
+    return commands
+  })
 
 const initialState = (place: ExecutionPlace): ShellState => {
   const env = place.env || new Map<string, string>()
@@ -483,21 +513,63 @@ const streamWords = (stream: Stream): ReadonlyArray<Word> => {
   return stream.words
 }
 
-interface WalkStep extends ExecutionStep {
+type Status = "next" | "yes" | "no" | "failure" | "dead" | "exit" | "return" | "break" | "continue"
+interface WalkPath extends ExecutionStep {
   readonly output: Stream
+  readonly status: Status
+}
+interface Flow {
+  readonly paths: ReadonlyArray<WalkPath>
+  readonly limited: boolean
+}
+const onePath = (path: WalkPath): Flow => ({ paths: [path], limited: false })
+const startFlow = (state: ShellState): Flow => onePath({ ...emptyStep(state), output: emptyStream, status: "next" })
+const resume = (path: WalkPath): WalkPath => ({ ...path, status: "next" })
+const ended = ({ status }: WalkPath): boolean => status !== "next" && status !== "yes" && status !== "no" && status !== "failure"
+
+const flowFrom = (paths: ReadonlyArray<WalkPath>, limited: boolean): Flow => {
+  let count = 0
+  const kept = paths.values().filter((path) => ended(path) || ++count <= MAX_PATH_STATES).toArray()
+  return { paths: kept, limited: limited || count > MAX_PATH_STATES }
 }
 
-const walkList = (body: ShellList, start: ShellState, input: Stream, depth: number): WalkStep => {
-  let state = start
-  let output = emptyStream
-  const commands: Array<Execution> = []
-  for (const pipeline of body) {
-    const run = walkPipeline(pipeline, state, input, depth)
-    state = run.state
-    output = mergeStreams(output, run.output)
-    commands.push(...run.commands)
+const advance = (flow: Flow, step: (path: WalkPath) => Flow): Flow => {
+  if (flow.limited) return flow
+  const paths: Array<WalkPath> = []
+  let limited = false
+  for (const path of flow.paths) {
+    const run = step(path)
+    paths.push(...run.paths)
+    limited ||= run.limited
   }
-  return { state, output, commands }
+  return flowFrom(paths, limited)
+}
+
+const walkList = (body: ShellList, start: Flow, input: Stream, depth: number): Flow =>
+  body.reduce((flow, chain) => advance(flow, (path) => walkChain(chain, path, input, depth)), start)
+
+const walkChain = ({ first, links }: ShellChain, path: WalkPath, input: Stream, depth: number): Flow => {
+  if (ended(path)) return onePath(path)
+  let flow = walkPipeline(first, resume(path), input, depth)
+  for (const { on, pipeline } of links) {
+    flow = advance(flow, (prior) => {
+      if (ended(prior)) return onePath(prior)
+      if (prior.status === "next") return splitLink(prior, on, pipeline, input, depth)
+      if ((on === "&&") === (prior.status === "yes")) return walkPipeline(pipeline, resume(prior), input, depth)
+      return onePath(prior)
+    })
+  }
+  return advance(flow, (prior) => {
+    if (prior.status === "yes" || prior.status === "no") return onePath(resume(prior))
+    return onePath(prior)
+  })
+}
+
+const splitLink = (path: WalkPath, on: "&&" | "||", pipeline: ReadonlyArray<ShellNode>, input: Stream, depth: number): Flow => {
+  const run = walkPipeline(pipeline, path, input, depth)
+  let skipped: Status = "yes"
+  if (on === "&&") skipped = "no"
+  return flowFrom([{ ...path, status: skipped }, ...run.paths], run.limited)
 }
 
 const mergeStreams = (left: Stream, right: Stream): Stream => ({
@@ -505,59 +577,68 @@ const mergeStreams = (left: Stream, right: Stream): Stream => ({
   words: [...left.words, ...right.words],
 })
 
-/** The mark on stdin survives every pipe stage, independent of its executable. */
-const walkPipeline = (pipeline: ReadonlyArray<ShellNode>, state: ShellState, input: Stream, depth: number): WalkStep => {
-  const commands: Array<Execution> = []
-  let stream = input
-  let next = state
+/** Pipe stages share data and the execution trace, not their local shell bindings. */
+const walkPipeline = (pipeline: ReadonlyArray<ShellNode>, start: WalkPath, input: Stream, depth: number): Flow => {
+  let flow = onePath({ ...start, output: input })
   for (const [index, node] of pipeline.entries()) {
-    const run = walkNode(node, state, stream, depth)
-    commands.push(...run.commands)
-    stream = { ...run.output, history: stream.history || run.output.history }
-    if (keepsState(pipeline.length, index, node)) next = run.state
+    flow = advance(flow, (prior) => {
+      const run = walkNode(node, { ...prior, output: emptyStream }, prior.output, depth)
+      return { ...run, paths: run.paths.map((path) => pipeResult(path, prior, keepsState(pipeline.length, index, node))) }
+    })
   }
-  return { state: next, commands, output: stream }
+  return { ...flow, paths: flow.paths.map((path) => ({ ...path, output: mergeStreams(start.output, path.output) })) }
+}
+
+const pipeResult = (path: WalkPath, prior: WalkPath, local: boolean): WalkPath => {
+  const output = { ...path.output, history: prior.output.history || path.output.history }
+  if (local) return { ...path, output }
+  return { ...resume(path), state: prior.state, output }
 }
 
 // Keep the accepted direct read handoff; a grouped stage's shell state stays local.
 const keepsState = (length: number, index: number, node: ShellNode): boolean =>
   length === 1 || (index === length - 1 && node.kind === "command" && Option.isSome(readArgs(node.words)))
 
-const walkNode = (node: ShellNode, state: ShellState, input: Stream, depth: number): WalkStep => {
+const walkNode = (node: ShellNode, path: WalkPath, input: Stream, depth: number): Flow => {
+  const { state } = path
   switch (node.kind) {
-    case "command": return walkCommand(node.words, state, input, depth)
+    case "command": return walkCommand(node.words, path, input, depth)
     case "group": {
-      const run = walkList(node.body, state, input, depth)
-      if (node.local) return { ...run, state }
+      const run = walkList(node.body, onePath(path), input, depth)
+      if (node.local) return { ...run, paths: run.paths.map((next) => ({ ...resume(next), state })) }
       return run
     }
-    case "function": return { ...emptyStep({ ...state, functions: new Map([...state.functions, [node.name, node.body]]) }), output: emptyStream }
-    case "redirect": return walkNode(node.body, state, redirectedStream(node.input, state, input), depth)
-    case "loop": return walkLoop(node, state, input, depth)
-    case "choice": return walkChoice(node, state, input, depth)
+    case "function": return onePath({ ...path, state: { ...state, functions: new Map([...state.functions, [node.name, node.body]]) } })
+    case "redirect": {
+      const run = walkNode(node.body, path, redirectedStream(node.input, state, input), depth)
+      if (capturesStdout(node.input)) return run
+      return { ...run, paths: run.paths.map((next) => ({ ...next, output: path.output })) }
+    }
+    case "loop": return walkLoop(node, path, input, depth)
+    case "choice": return walkChoice(node, path, input, depth)
   }
 }
 
-const walkChoice = (node: Extract<ShellNode, { kind: "choice" }>, state: ShellState, input: Stream, depth: number): WalkStep => {
-  let conditionState = state
-  let output = emptyStream
-  const commands: Array<Execution> = []
-  const branches: Array<ShellState> = []
+const walkChoice = (node: Extract<ShellNode, { kind: "choice" }>, path: WalkPath, input: Stream, depth: number): Flow => {
+  let pending = onePath(path)
+  const paths: Array<WalkPath> = []
+  let limited = false
   for (const arm of node.arms) {
-    const condition = walkList(arm.condition, conditionState, input, depth)
-    const body = walkList(arm.body, condition.state, input, depth)
-    output = mergeStreams(output, mergeStreams(condition.output, body.output))
-    commands.push(...condition.commands, ...body.commands)
-    conditionState = condition.state
-    branches.push(body.state)
+    const condition = walkList(arm.condition, pending, input, depth)
+    const live = condition.paths.values().filter((prior) => !ended(prior)).map(resume).toArray()
+    const body = walkList(arm.body, { ...condition, paths: live }, input, depth)
+    paths.push(...condition.paths.values().filter(ended), ...body.paths.map(armEnd))
+    limited ||= body.limited
+    if (limited) break
+    pending = { ...condition, paths: live }
   }
-  const after = branches.at(-1) || conditionState
-  return { state: { ...after, bindings: joinBindings([conditionState, ...branches]) }, output, commands }
+  if (!node.exhaustive && !limited) paths.push(...pending.paths)
+  return flowFrom(paths, limited)
 }
 
-const joinBindings = (frames: ReadonlyArray<ShellState>): Bindings => {
-  const names = new Set(frames.flatMap(({ bindings }) => Array.from(bindings.keys())))
-  return new Map(Array.from(names, (name) => [name, [...new Set(frames.flatMap(({ bindings }) => bindings.get(name) || [unknownTarget]))]]))
+const armEnd = (path: WalkPath): WalkPath => {
+  if (path.status === "failure") return { ...path, status: "dead" }
+  return path
 }
 
 interface ShellState {
@@ -623,12 +704,29 @@ const readArgs = (words: ReadonlyArray<Word>): Option.Option<ReadonlyArray<Word>
   return Option.none()
 }
 
-const walkLoop = (node: Extract<ShellNode, { kind: "loop" }>, state: ShellState, input: Stream, depth: number): WalkStep => {
+const walkLoop = (node: Extract<ShellNode, { kind: "loop" }>, path: WalkPath, input: Stream, depth: number): Flow => {
+  const { state } = path
   const scoped = { ...state, loops: [node.id, ...state.loops] }
   const iteration = bindIteration(node.header, scoped)
-  const condition = walkList(node.condition, iteration, input, depth)
-  const body = walkList(node.body, conditionBindings(condition.state, iteration, node.id), input, depth)
-  return { state: { ...body.state, loops: state.loops }, output: mergeStreams(condition.output, body.output), commands: [...condition.commands, ...body.commands] }
+  const condition = walkList(node.condition, onePath({ ...path, state: iteration }), input, depth)
+  const body = advance(condition, (prior) => {
+    if (ended(prior)) return onePath(prior)
+    const next = { ...resume(prior), state: conditionBindings(prior.state, iteration, node.id) }
+    return walkList(node.body, onePath(next), input, depth)
+  })
+  const zero = loopSkip(node.header, path, condition.paths)
+  return flowFrom([...zero, ...body.paths.map((prior) => loopEnd(prior, state.loops))], body.limited)
+}
+
+const loopSkip = (header: ReadonlyArray<Word>, entry: WalkPath, condition: ReadonlyArray<WalkPath>): ReadonlyArray<WalkPath> => {
+  if (header.length > 0) return [entry]
+  return condition.values().filter((prior) => !ended(prior)).map((prior) => loopEnd(resume(prior), entry.state.loops)).toArray()
+}
+
+const loopEnd = (path: WalkPath, loops: ReadonlyArray<number>): WalkPath => {
+  const scoped = { ...path, state: { ...path.state, loops } }
+  if (path.status === "break" || path.status === "continue") return resume(scoped)
+  return armEnd(scoped)
 }
 
 const conditionBindings = (after: ShellState, before: ShellState, id: number): ShellState => {
@@ -661,31 +759,43 @@ const outputValues = (values: Alternatives): Stream => ({
   words: values.map(word),
 })
 
-const walkCommand = (words: ReadonlyArray<Word>, state: ShellState, input: Stream, depth: number): WalkStep => {
+const walkCommand = (words: ReadonlyArray<Word>, path: WalkPath, input: Stream, depth: number): Flow => {
+  const { state } = path
   const read = readArgs(words)
-  if (Option.isSome(read)) return { ...loopRead(read.value, streamWords(input), state), output: emptyStream }
+  if (Option.isSome(read)) return onePath({ ...path, state: loopRead(read.value, streamWords(input), state).state })
   const [head, ...args] = words
   const body = state.functions.get(head?.text || "")
-  if (body && head) return callFunction(head.text, body, args, state, input, depth)
-  if (head?.text === "break" || head?.text === "continue" || head?.text === "return") return { ...emptyStep(state), output: emptyStream }
+  if (body && head) return callFunction(head.text, body, args, path, input, depth)
+  const text = words.find((entry) => !assignment.test(entry.text))?.text || ""
+  const status = commandStatus(text, args)
+  if (status !== "next" && text !== "exec") return onePath({ ...path, status })
   const run = executionStep(words, streamWords(input), state, depth)
-  const commands = run.commands.flatMap((command) => withInline(command, state, depth))
   const output = commandOutput(words, state, run.commands)
-  return { ...run, commands, output }
+  return onePath({ status, state: run.state, commands: [...path.commands, ...run.commands], output })
 }
 
-const withInline = (command: Execution, state: ShellState, depth: number): ReadonlyArray<Execution> => {
-  if (depth >= MAX_CODE_DEPTH) return [command]
-  return [command, ...inlineCommands(command, state.place.home, depth + 1)]
+const commandStatus = (head: string, args: ReadonlyArray<Word>): Status => {
+  if (head === "exit" || head === "return" || head === "break" || head === "continue") return head
+  if (head === "exec" && args.some(({ text }) => !/^(?:[<>]|\d+[<>])/.test(text))) return "exit"
+  if (head === "false") return "failure"
+  return "next"
 }
 
-const callFunction = (name: string, body: ShellNode, args: ReadonlyArray<Word>, caller: ShellState, input: Stream, depth: number): WalkStep => {
-  if (caller.calls.includes(name)) return { ...emptyStep(caller), output: emptyStream }
+const callFunction = (name: string, body: ShellNode, args: ReadonlyArray<Word>, path: WalkPath, input: Stream, depth: number): Flow => {
+  const caller = path.state
+  if (caller.calls.includes(name)) return onePath(path)
   const positionals = shellPositionals("function", args, caller)
   const frame = { ...caller, place: { ...caller.place, positionals }, bindings: withPositionals(caller.bindings, initialBindings(positionals)), calls: [...caller.calls, name] }
-  const run = walkNode(body, frame, input, depth)
-  const bindings = withPositionals(run.state.bindings, caller.bindings)
-  return { ...run, state: { ...run.state, place: { ...run.state.place, positionals: caller.place.positionals }, bindings, calls: caller.calls } }
+  const run = walkNode(body, { ...path, state: frame }, input, depth)
+  return { ...run, paths: run.paths.map((prior) => returnToCaller(prior, caller)) }
+}
+
+const returnToCaller = (path: WalkPath, caller: ShellState): WalkPath => {
+  const { state } = path
+  const bindings = withPositionals(state.bindings, caller.bindings)
+  const next = { ...path, state: { ...state, place: { ...state.place, positionals: caller.place.positionals }, bindings, calls: caller.calls } }
+  if (path.status === "return") return resume(next)
+  return next
 }
 
 const isPositional = (key: string): boolean => /^\d+$|^@$/.test(key)
@@ -701,10 +811,28 @@ const withPositionals = (target: Bindings, source: Bindings): Bindings => {
 }
 
 const commandOutput = (words: ReadonlyArray<Word>, state: ShellState, commands: ReadonlyArray<Execution>): Stream => {
-  if (commands.length === 0) return emptyStream
+  if (commands.length === 0 || !capturesStdout(words)) return emptyStream
   const history = producesHistory(words) || words.some((entry) =>
     alternatives(entry, state).some((value) => activeTarget(value, state.loops).includes(historyTarget)))
   return { history, words: literalInput(words) }
+}
+
+// Track descriptor aliases in redirection order: 2>&1 >&2 still captures stdout,
+// whereas >&2 2>&1 leaves both descriptors pointing at the original stderr.
+const capturesStdout = (words: ReadonlyArray<Word>): boolean => {
+  let stdout = true
+  let stderr = false
+  for (const [index, entry] of words.entries()) {
+    if (!entry.bareStart) continue
+    const redirect = /^(?<fd>[12]?)>>?(?<target>.*)$/.exec(entry.text)?.groups
+    if (!redirect) continue
+    let target = redirect.target || words[index + 1]?.text
+    if (target === "&") target += words[index + 1]?.text || ""
+    const captured: boolean = (target === "&1" && stdout) || (target === "&2" && stderr)
+    if (redirect.fd === "2") stderr = captured
+    else stdout = captured
+  }
+  return stdout
 }
 
 const changeDirectory = (head: string, args: ReadonlyArray<Word>, state: ShellState): ShellState => {
@@ -848,9 +976,3 @@ const syntaxCheck = (head: string, args: ReadonlyArray<Word>, code: ReadonlyArra
   if (head === "node" || head === "nodejs") return args.some(({ text }) => text === "--check" || text === "-c")
   return head === "deno" && args[0]?.text === "check"
 }
-
-const inlineCommands = (command: Execution, home: string, depth: number): ReadonlyArray<Execution> =>
-  command.code.flatMap((unit) => {
-    if (unit.kind !== "inline" || unit.language !== "shell") return []
-    return executionPlan(unit.code, { cwd: command.cwd, unknownCwd: command.unknownCwd, home, env: command.env, positionals: command.positionals }, depth)
-  })

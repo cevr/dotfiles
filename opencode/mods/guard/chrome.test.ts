@@ -4,6 +4,7 @@
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
 import { bareLaunches, Inline, KEYCHAIN_FLAGS, keychainReason, type Remedy, runtimeRuns, ScriptFile, scriptLaunch, scriptLaunchesBare } from "./chrome.ts"
+import { MAX_PATH_STATES } from "./executable.ts"
 
 const HOME = "/home/owner"
 const CWD = "/home/owner/work"
@@ -133,6 +134,100 @@ describe("keychain trigger words used as data", () => {
 })
 
 describe("old checkouts in an executable position", () => {
+  test("joins carry bindings, working directories and selections on the same reaching path", () => {
+    const directory = { ...place, cwd: "/guard/probe/tree" }
+    const decision = (line: string) => bareLaunches(line, directory).map(({ remedy }) => remedy)
+    const run = 'git checkout "$REF"; npm --prefix /guard/probe/tree test'
+    const telemetry = "REF=$(git describe)"
+    for (const stop of ["exit 0", "return", "exec printf done", "false"]) {
+      expect(decision(`${telemetry}; if test -n "$CI"; then REF=main; else ${stop}; fi; ${run}`)).toEqual([])
+      expect(decision(`${telemetry}; if test -n "$CI"; then ${stop}; else :; fi; ${run}`)).toEqual(["unknown"])
+    }
+    expect(decision(`REF=HEAD~1; if test -n "$CI"; then cd ../tools; fi; ${run}`)).toEqual(["shim"])
+    expect(decision(`REF=HEAD~1; if test -n "$CI"; then cd ../tools; else cd ../other; fi; ${run}`)).toEqual([])
+    expect(decision(`if test -n "$CI"; then REF=HEAD~1; cd ../tools; else REF=main; fi; ${run}`)).toEqual([])
+    expect(decision('if test -n "$CI"; then git checkout HEAD~1; exit; fi; npm test')).toEqual([])
+    expect(decision('if test -n "$CI"; then git checkout HEAD~1; npm test; exit; fi; :')).toEqual(["shim"])
+    expect(decision(`${telemetry}; case "$CI" in yes) REF=main ;; *) exit ;; esac; ${run}`)).toEqual([])
+    expect(decision(`${telemetry}; case "$CI" in yes) REF=main ;; esac; ${run}`)).toEqual(["unknown"])
+    expect(decision(`REF=HEAD~1; test -n "$CI" && cd ../tools; ${run}`)).toEqual(["shim"])
+    expect(decision(`REF=HEAD~1; test -n "$CI" || cd ../tools; ${run}`)).toEqual(["shim"])
+    expect(decision(`REF=HEAD~1; while test -n "$CI"; do cd ../tools; break; done; ${run}`)).toEqual(["shim"])
+    expect(decision(`if test -n "$CI"; then cd ../tools; fi; sh -c 'git checkout HEAD~1'; npm --prefix /guard/probe/tree test`)).toEqual(["shim"])
+    expect(decision(`sh -c 'if test -n "$CI"; then git checkout HEAD~1; fi'; npm test`)).toEqual(["shim"])
+    expect(decision(`if test -n "$CI"; then ${telemetry}; else REF=HEAD~1; fi; ${run}`)[0]).toBe("shim")
+  })
+
+  test("stdout, not stderr, is the value of a command substitution", () => {
+    const line = (redirect: string) => `REF=$(git log -1 ${redirect}; git branch --show-current); git checkout "$REF"; npm test`
+    for (const redirect of [">&2", "1>&2", ">& 2", ">&2 2>&1", ">log.txt"])
+      expect([redirect, bareLaunches(line(redirect), place).map(({ remedy }) => remedy)]).toEqual([redirect, []])
+    expect(bareLaunches(line("2>&1 1>&2"), place).map(({ remedy }) => remedy)).toEqual(["unknown"])
+    expect(bareLaunches(line("2>/dev/null"), place).map(({ remedy }) => remedy)).toEqual(["unknown"])
+    expect(bareLaunches('REF=$({ git log -1; } >&2; git branch --show-current); git checkout "$REF"; npm test', place)).toEqual([])
+  })
+
+  test("independent conditions are not correlated at separate joins", () => {
+    const line = 'if test "$IS_RELEASE" = true; then REF=$(git describe --tags); echo "$REF"; else REF="$CI_BRANCH"; fi; if test "$IS_RELEASE" = false; then git checkout "$REF" && npm test; fi'
+    expect(bareLaunches(line, place).map(({ remedy }) => remedy)).toEqual(["unknown"])
+  })
+
+  test("the live path bound reports uncertainty rather than picking an arm", () => {
+    const branches = (count: number) => Array.from({ length: count }, (_, id) =>
+      `if test -n "$CI"; then BRANCH_${id}=one; else BRANCH_${id}=two; fi;`).join(" ")
+    const atBound = Math.log2(MAX_PATH_STATES)
+    expect(bareLaunches(`${branches(atBound)} git checkout main; npm test`, place)).toEqual([])
+    const line = `${branches(atBound + 1)} git checkout main; npm test`
+    const findings = bareLaunches(line, place)
+    expect(findings.map(({ remedy }) => remedy)).toEqual(["unknown"])
+    expect(findings.map(keychainReason).join(" ")).toContain(`cannot tell what runs after the shell produces more than ${MAX_PATH_STATES}`)
+    expect(bareLaunches(`git checkout HEAD~1; npm test; ${line}`, place).map(({ remedy }) => remedy)).toEqual(["shim"])
+    const exits = 'if test -n "$CI"; then exit; fi; '.repeat(MAX_PATH_STATES + 1)
+    expect(bareLaunches(`${exits} git checkout main; npm test`, place)).toEqual([])
+  })
+
+  test("generated choices match an independent path-enumerating oracle", () => {
+    const directory = { ...place, cwd: "/guard/probe/tree" }
+    const choices = [
+      { text: "REF=$(git describe)", binding: "unknown", move: false, exits: false },
+      { text: "REF=main", binding: "allow", move: false, exits: false },
+      { text: "REF=$(git log -1); REF=main", binding: "allow", move: false, exits: false },
+      { text: "REF=HEAD~1", binding: "shim", move: false, exits: false },
+      { text: "cd ../tools", binding: "keep", move: true, exits: false },
+      { text: "exit 0", binding: "keep", move: false, exits: true },
+      { text: ":", binding: "keep", move: false, exits: false },
+    ] as const
+    type Action = typeof choices[number]
+    type Program = Action | { readonly yes: Program; readonly no: Program; readonly syntax: "if" | "case" }
+    type Oracle = { readonly remedy: Remedy | "allow"; readonly elsewhere: boolean }
+    const enumerate = (program: Program, prior: Oracle): ReadonlyArray<Oracle> => {
+      if ("yes" in program) return [...enumerate(program.yes, prior), ...enumerate(program.no, prior)]
+      if (program.exits) return []
+      const binding = Option.getOrElse(Option.liftPredicate(program.binding, (value) => value !== "keep"), () => prior.remedy)
+      return [{ remedy: binding, elsewhere: prior.elsewhere || program.move }]
+    }
+    const render = (program: Program): string => {
+      if ("text" in program) return program.text
+      const yes = render(program.yes)
+      const no = render(program.no)
+      if (program.syntax === "case") return `case "$BRANCH" in yes) ${yes} ;; *) ${no} ;; esac`
+      return `if test -n "$BRANCH"; then ${yes}; else ${no}; fi`
+    }
+    const first = choices.flatMap((yes) => choices.map((no): Program => ({ yes, no, syntax: "if" })))
+    const programs = first.flatMap((yes) => choices.map((no): Program => ({ yes, no, syntax: "case" })))
+    for (const program of [...first, ...programs]) for (const prior of choices) {
+      if (prior.binding === "keep") continue
+      const states = enumerate(program, { remedy: prior.binding, elsewhere: false })
+      const candidates = states.values().filter(({ elsewhere }) => !elsewhere).map(({ remedy }) => remedy).toArray()
+      let expected: Remedy | "allow" = "allow"
+      if (candidates.includes("unknown")) expected = "unknown"
+      if (candidates.includes("shim")) expected = "shim"
+      const line = `${prior.text}; ${render(program)}; git checkout "$REF"; npm --prefix /guard/probe/tree test`
+      const actual = bareLaunches(line, directory)[0]?.remedy || "allow"
+      expect([line, actual]).toEqual([line, expected])
+    }
+  })
+
   test("history provenance follows the stream through arbitrary stages and nested substitutions", () => {
     const producer = "git log -1 --format=%H HEAD~1"
     const consumer = 'read -r REV; git checkout "$REV"; npm test'
