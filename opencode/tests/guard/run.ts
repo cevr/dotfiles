@@ -11,8 +11,9 @@
  */
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { Schema } from "effect"
 import { makeRepo } from "./repo.ts"
-import { serve, type Seen } from "./sim.ts"
+import { POLICY_TASK, serve, type Seen } from "./sim.ts"
 import { externalInput, matchingInput, readScratchFileSync, scratchInput } from "../read-path.ts"
 
 export interface Spec {
@@ -37,11 +38,32 @@ export interface Result {
 
 const spec = JSON.parse(readScratchFileSync(process.argv[2]!, "utf8")) as Spec
 const base = scratchInput(spec.base)
+const guard = matchingInput("cmd/guard", spec.guard)
 const work = join(base, "work")
 const config = join(base, "config")
 mkdirSync(work, { recursive: true })
 mkdirSync(config, { recursive: true })
 const head = makeRepo(work)
+const json = Schema.encodeSync(Schema.fromJsonString(Schema.Json))
+
+// Use the same test-only sampler port as the host-admit CLI acceptance.
+// The embedded server, Guard hook, real launcher and child stay unchanged.
+const guardForPolicy = () => {
+  const fixture = join(base, "guard-with-supply")
+  const fixtureEntry = matchingInput("tests/fixtures/host-admit-test-entry.ts")
+  mkdirSync(fixture)
+  writeFileSync(join(base, "home", "host-admit-supply.json"), json({ outside: 0 }))
+  writeFileSync(join(fixture, "package.json"), json({ type: "module", exports: { "./server": "./server.ts" } }))
+  writeFileSync(join(fixture, "server.ts"), [
+    `import { live, make } from ${json(matchingInput("cmd/guard/server.ts", join(guard, "server.ts")))}`,
+    `export default make(live, () => ${json([process.execPath, fixtureEntry])})`,
+  ].join("\n"))
+  return fixture
+}
+const guardForTask = () => {
+  if (spec.task === POLICY_TASK) return guardForPolicy()
+  return guard
+}
 
 // The spec file's path is in this process's command line and no other's: the policy task kills by it.
 const sim = serve(process.argv[2]!)
@@ -63,7 +85,7 @@ const content = {
   },
   plugins: [
     { package: matchingInput("cmd/kernel", spec.kernel), options: { codeOnly: spec.codeOnly, timeoutMs: 20_000 } },
-    matchingInput("cmd/guard", spec.guard),
+    guardForTask(),
   ],
 }
 

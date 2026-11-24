@@ -4,6 +4,7 @@ import { argv, readableStreamToText, spawn } from "bun"
 import { Database } from "bun:sqlite"
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Console, Data, Effect, FileSystem, Path, Predicate, Schedule, Schema } from "effect"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { expect, it } from "effect-bun-test"
 import fixtures from "../mods/guard/fixtures/holder-v1.json"
 import { admissionLauncher } from "../mods/guard/launcher.ts"
@@ -54,6 +55,7 @@ it.scopedLive("standalone, Guard and Wake carry modeled Go, Bun, Make and Ninja 
     using dir = scratch("hcl-demand-")
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const folder = yield* fs.realPath(dir.path)
     yield* seed(folder)
     const host = yield* decode(Status)((yield* runner(folder)(["host", "status", "--json"])).out)
@@ -64,7 +66,7 @@ it.scopedLive("standalone, Guard and Wake carry modeled Go, Bun, Make and Ninja 
     const file = path.join(folder, "guard-wrapper")
     yield* fs.writeFileString(file, admissionLauncher("/bin/sh", helper, parseShell(command)), { mode: 0o700 })
     for (const tool of ["go", "bun", "make", "ninja", "unmodeled"]) {
-      yield* fs.writeFileString(path.join(folder, tool), "#!/bin/sh\nprintf 'payload ran\\n' > \"$HCL_MARKER\"\nexec /bin/sleep 2\n", { mode: 0o700 })
+      yield* fs.writeFileString(path.join(folder, tool), "#!/bin/sh\nprintf 'payload ran\\n' > \"$HCL_MARKER\"\nIFS= read -r done < \"$HCL_RELEASE\"\n", { mode: 0o700 })
     }
     const job = path.join(folder, "wake-job")
     yield* fs.makeDirectory(job, { mode: 0o700 })
@@ -84,8 +86,13 @@ it.scopedLive("standalone, Guard and Wake carry modeled Go, Bun, Make and Ninja 
     for (const [i, { argv: program, env, width }] of programs.entries()) {
       const state = path.join(folder, `state-${i}`)
       const marker = path.join(folder, `payload-ran-${i}`)
+      const release = path.join(folder, `payload-release-${i}`)
       const filename = path.join(state, "host-admit", "admission-v1.sqlite")
-      const environment = { HOME: folder, XDG_STATE_HOME: state, PATH: `${folder}:/usr/bin:/bin`, HCL_MARKER: marker, ...env }
+      const environment = { HOME: folder, XDG_STATE_HOME: state, PATH: `${folder}:/usr/bin:/bin`, HCL_MARKER: marker, HCL_RELEASE: release, ...env }
+      const fifo = yield* spawner.exitCode(ChildProcess.make("/usr/bin/mkfifo", [marker, release], {
+        stdin: "ignore", forceKillAfter: "1 second",
+      }))
+      if (Number(fifo) !== 0) return yield* new CliFixtureUnavailable({ operation: "spawn" })
       if (program.includes("wake")) yield* fs.writeFileString(path.join(job, "env.json"), json(environment), { mode: 0o600 })
       const task = yield* Effect.acquireRelease(Effect.try({
         try: () => spawn([...program], {
@@ -94,10 +101,10 @@ it.scopedLive("standalone, Guard and Wake carry modeled Go, Bun, Make and Ninja 
         }),
         catch: () => new CliFixtureUnavailable({ operation: "spawn" }),
       }), (child) => Effect.sync(() => { if (Predicate.isNull(child.exitCode) && Predicate.isNull(child.signalCode)) child.kill("SIGTERM") }))
-      yield* fs.exists(marker).pipe(
-        Effect.repeat({ schedule: Schedule.spaced(50), until: (exists) => exists }),
-        Effect.timeoutOrElse({ duration: 16_000, orElse: () => rowsAt(filename).pipe(
-          Effect.flatMap((rows) => Effect.die(`wrapper leg ${i} did not claim: ${json(rows)}`))) }),
+      const exit = Effect.promise(() => task.exited)
+      yield* Effect.raceFirst(
+        spawner.string(ChildProcess.make("/bin/cat", [marker], { stdin: "ignore", forceKillAfter: "1 second" })),
+        exit.pipe(Effect.flatMap((code) => Effect.die(`wrapper leg ${i} exited ${code} before its bound payload signalled readiness`))),
       )
       const rows = yield* rowsAt(filename)
       const [row] = Object.values(rows)
@@ -105,6 +112,13 @@ it.scopedLive("standalone, Guard and Wake carry modeled Go, Bun, Make and Ninja 
       expect(row?.state).toBe("running")
       const ceiling = host.maximumCpuMilli
       expect(row?.admittedDemand?.cpuMilli).toBe(Math.min(ceiling, Number(width) * 1000 || ceiling))
+      const released = yield* Effect.raceFirst(
+        spawner.exitCode(ChildProcess.make("/bin/sh", ["-c", "printf 'release\\n' > \"$1\"", "fixture", release], {
+          stdin: "ignore", forceKillAfter: "1 second",
+        })),
+        exit,
+      )
+      if (Number(released) !== 0) return yield* new CliFixtureUnavailable({ operation: "read" })
       expect(yield* Effect.promise(() => task.exited).pipe(Effect.timeout(6500))).toBe(0)
     }
   }).pipe(Effect.provide(BunServices.layer)),
@@ -223,7 +237,7 @@ it.scopedLive("the scripted public CLI diagnoses outside CPU without starting a 
   }).pipe(Effect.provide(BunServices.layer)),
 )
 
-it.scopedLive("real Darwin sampler matches independent counters and its observed supply branch", () =>
+it.scopedLive("real sampler smoke: Darwin reports sane supply without launching a payload", () =>
   Effect.gen(function* () {
     if (process.platform !== "darwin") return
     using dir = scratch("hcl-measured-")
@@ -395,5 +409,24 @@ it.scopedLive("Wake's real durable entry fails closed before heavy payload exec 
     const light = yield* run("j000003", "printf 'light-payload-ran\\n'", false)
     expect(light.log).toBe("light-payload-ran\n")
     expect(light.exit).toContain(`"exitCode":0`)
+  }).pipe(Effect.provide(BunServices.layer)),
+)
+
+it.scopedLive("the public CLI names both versions when its private store is newer", () =>
+  Effect.gen(function* () {
+    using dir = scratch("host-admit-future-format-")
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const journal = path.join(dir.path, "state", "host-admit")
+    yield* fs.makeDirectory(journal, { recursive: true, mode: 0o700 })
+    const file = path.join(journal, "admission-v1.sqlite")
+    yield* Effect.sync(() => {
+      using db = new Database(file)
+      db.exec("PRAGMA user_version=7")
+    })
+    const { code, out } = yield* runner(dir.path, realEntry)(["holder", "list", "--json"])
+    expect(code).toBe(2)
+    expect(out).toContain(`"reason":"incompatible"`)
+    expect(out).toContain("Host admission store v7; this binary supports v2. Upgrade host-admit to support store v7.")
   }).pipe(Effect.provide(BunServices.layer)),
 )
