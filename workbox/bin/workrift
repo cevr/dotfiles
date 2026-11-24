@@ -3081,6 +3081,18 @@ sv_log_flush() {
   sv_log_held=
 }
 
+# Whether the process $1 is another user's (its uid printed): a read of its
+# working folder, environment or open files is then refused this user, and
+# what it would tell is unknown. Its status is readable by anyone; one that
+# does not read, or this user's own process, is no other user's.
+sv_foreign() {
+  local f_uid
+  f_uid=$(sv_uid_of "$1")
+  case "$f_uid" in '' | *[!0-9]*) return 1 ;; esac
+  [ "$f_uid" != "$sv_my_uid" ] || return 1
+  printf '%s' "$f_uid"
+}
+
 # Removals running or in line, `this|other pid what` a line: a workrift remove
 # or prune, a work rm or gc, an rm under the base's workspaces, a delete in the
 # clone turn's line. `this` is a removal of this base (an argument, its
@@ -3091,14 +3103,24 @@ sv_log_flush() {
 # A read that fails for a process still there (its command line, working
 # folder or environment) makes it `this … (does not read)`: a removal it cannot
 # rule out is refused, never taken for none. A process gone meanwhile is none.
+# Another user's process, whose reads are refused this user, is `unknown pid
+# uid (what)`: the third answer, never none and never this base's.
 sv_removals() {
-  local r_home r_c r_pid r_t r_what r_cwd r_args r_env r_rec
+  local r_home r_c r_pid r_t r_what r_cwd r_args r_env r_rec r_uid
   r_home=$(base_home "$sv_base") || return 1
   for r_c in "$proc_root"/[0-9]*/cmdline; do
-    [ -r "$r_c" ] || continue
     r_pid=${r_c%/cmdline}
     r_pid=${r_pid##*/}
     [ "$r_pid" != "$$" ] || continue
+    if [ ! -r "$r_c" ]; then
+      [ -e "$r_c" ] || continue
+      if r_uid=$(sv_foreign "$r_pid"); then
+        printf 'unknown %s %s (its command line)\n' "$r_pid" "$r_uid"
+      else
+        printf 'this %s (its command line does not read)\n' "$r_pid"
+      fi
+      continue
+    fi
     if ! r_args=$(tr '\0' '\n' <"$r_c" 2>/dev/null); then
       [ ! -e "$proc_root/$r_pid" ] || printf 'this %s (its command line does not read)\n' "$r_pid"
       continue
@@ -3126,7 +3148,14 @@ sv_removals() {
       other\ *)
         if ! r_cwd=$(readlink "$proc_root/$r_pid/cwd" 2>/dev/null); then
           r_cwd='?'
-          [ ! -e "$proc_root/$r_pid" ] || r_what="this ${r_what#other } (its working folder does not read)"
+          if [ ! -e "$proc_root/$r_pid" ]; then
+            :
+          elif r_uid=$(sv_foreign "$r_pid"); then
+            printf 'unknown %s %s (%s: its working folder and environment, which tell its base)\n' "$r_pid" "$r_uid" "${r_what#other }"
+            continue
+          else
+            r_what="this ${r_what#other } (its working folder does not read)"
+          fi
         fi
         case "$r_cwd" in
           "$sv_base" | "$sv_base"/* | "$r_home" | "$r_home"/*) r_what="this ${r_what#other }" ;;
@@ -3134,7 +3163,14 @@ sv_removals() {
         case "$r_what" in
           other\ *)
             if ! r_env=$(tr '\0' '\n' <"$proc_root/$r_pid/environ" 2>/dev/null); then
-              [ ! -e "$proc_root/$r_pid" ] || r_what="this ${r_what#other } (its environment does not read)"
+              if [ ! -e "$proc_root/$r_pid" ]; then
+                :
+              elif r_uid=$(sv_foreign "$r_pid"); then
+                printf 'unknown %s %s (%s: its environment, which tells its base)\n' "$r_pid" "$r_uid" "${r_what#other }"
+                continue
+              else
+                r_what="this ${r_what#other } (its environment does not read)"
+              fi
             else
               case "
 $r_env
@@ -3194,13 +3230,21 @@ sv_runs_tickets() {
 # A process still there whose command line does not read is named (`does not
 # read`): one it cannot rule out is refused, never taken for none.
 sv_old_workrifts() {
-  local o_c o_pid o_owners o_what o_args
+  local o_c o_pid o_owners o_what o_args o_uid
   o_owners=$(sv_line_pids) || return 1
   for o_c in "$proc_root"/[0-9]*/cmdline; do
-    [ -r "$o_c" ] || continue
     o_pid=${o_c%/cmdline}
     o_pid=${o_pid##*/}
     [ "$o_pid" != "$$" ] || continue
+    if [ ! -r "$o_c" ]; then
+      [ -e "$o_c" ] || continue
+      if o_uid=$(sv_foreign "$o_pid"); then
+        printf 'unknown %s %s (its command line)\n' "$o_pid" "$o_uid"
+      else
+        printf '%s ? (its command line does not read)\n' "$o_pid"
+      fi
+      continue
+    fi
     if ! o_args=$(tr '\0' '\n' <"$o_c" 2>/dev/null); then
       [ ! -e "$proc_root/$o_pid" ] || printf '%s ? (its command line does not read)\n' "$o_pid"
       continue
@@ -3214,6 +3258,12 @@ sv_old_workrifts() {
     fi
     [ -n "$o_what" ] || continue
     ! sv_in_line "$o_pid" "$o_owners" || continue
+    # Another user's: its open files, which tell whether its script takes
+    # tickets, are refused this user.
+    if [ -d "$identity_proc/$o_pid/fd" ] && [ ! -r "$identity_proc/$o_pid/fd" ] && o_uid=$(sv_foreign "$o_pid"); then
+      printf 'unknown %s %s (workrift %s: its open files, which tell whether it takes a place in line)\n' "$o_pid" "$o_uid" "$o_what"
+      continue
+    fi
     ! sv_runs_tickets "$o_pid" || continue
     printf '%s workrift %s (an older script: it takes no place in line)\n' "$o_pid" "$o_what"
   done
@@ -3364,7 +3414,7 @@ EOF
 # is read through sv_read: a walk that failed is a NO of its own, never an
 # empty list that reads as "nobody there".
 sv_preflight_live() {
-  local p_list p_this='' p_other='' p_n=0 p_line
+  local p_list p_this='' p_other='' p_n=0 p_line p_unknown='' p_old=''
   if ! sv_read p_list sv_removals; then
     sv_check no "the removals running do not read (the workspaces' folder of $sv_base does not read): a removal of it cannot be ruled out"
   else
@@ -3375,6 +3425,8 @@ sv_preflight_live() {
         other\ *) p_other="$p_other${p_line#other }
 "
           p_n=$((p_n + 1)) ;;
+        unknown\ *) p_unknown="$p_unknown${p_line#unknown }
+" ;;
       esac
     done <<EOF
 $p_list
@@ -3395,10 +3447,36 @@ EOF
   fi
   if ! sv_read p_list sv_old_workrifts; then
     sv_check no "the workrift processes do not read (the pids of the line do not read): an older workrift cannot be ruled out"
-  elif [ -z "$p_list" ]; then
-    sv_check ok 'no older workrift (one that takes no place in line) runs'
   else
-    sv_check no "an older workrift runs, which would not wait for the switch; let it end: $(sv_joined "$p_list")"
+    while IFS= read -r p_line; do
+      case "$p_line" in
+        '') ;;
+        unknown\ *) p_unknown="$p_unknown${p_line#unknown }
+" ;;
+        *) p_old="$p_old$p_line
+" ;;
+      esac
+    done <<EOF
+$p_list
+EOF
+    if [ -z "$p_old" ]; then
+      sv_check ok 'no older workrift (one that takes no place in line) runs'
+    else
+      sv_check no "an older workrift runs, which would not wait for the switch; let it end: $(sv_joined "$p_old")"
+    fi
+  fi
+  # Another user's removal or workrift whose base, or whose place in line,
+  # this user cannot read: the third answer. sudo -n reads only fd and
+  # working folders (find, readlink), not an environment or a script, so it
+  # cannot settle these: refused unless --beside-unreadable.
+  if [ -n "$p_unknown" ]; then
+    if [ "${sv_beside_unreadable:-no}" = yes ]; then
+      sv_check ok "beside another user's processes it cannot read (--beside-unreadable): $(sv_joined "$p_unknown")"
+      sv_log "beside another user's processes it cannot read (--beside-unreadable): $(sv_joined "$p_unknown")"
+    else
+      sv_check no "another user's processes may be a removal of this base or an older workrift, and their reads are refused this user (pid uid (what)): $(sv_joined "$p_unknown"); let them end, or pass --beside-unreadable to run beside them"
+      sv_next="$(sv_beside_unreadable_command "$sv_mode") (beside them), or $(sv_command "$sv_mode") once they ended"
+    fi
   fi
   sv_rc=0
   sv_users_known "$sv_base" || sv_rc=$?
@@ -3412,7 +3490,8 @@ EOF
       ;;
     2)
       sv_check no "$sv_why"
-      sv_next=$sv_unknown_next
+      # An unknown removal or workrift above has no sudo way on: its next stays.
+      [ -n "$p_unknown" ] || sv_next=$sv_unknown_next
       ;;
     *) sv_check no "$sv_why: a process in it cannot be ruled out" ;;
   esac
@@ -4537,6 +4616,7 @@ subvolume_command() {
   sv_beside=no
   sv_beside_unreadable=no
   sv_deleted=
+  sv_my_uid=$(id -u) || sv_stop "id -u (this user's uid; nothing changed)"
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --back) a_mode=back ;;
