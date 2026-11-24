@@ -639,7 +639,7 @@ const expandSource = Effect.fn("Guard.expandSource")(function* (run: RuntimeRun,
 
 const readRun = (ran: Ran, load: ScriptLoader): Effect.Effect<Option.Option<string>> => {
   if (ran._tag === "Inline") return Effect.succeed(Option.some(ran.code))
-  if (/[$`*?]/.test(ran.path)) return Effect.succeed(Option.none())
+  if (!literalPath(ran.path)) return Effect.succeed(Option.none())
   return load(ran.path)
 }
 

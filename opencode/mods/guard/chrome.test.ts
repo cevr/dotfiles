@@ -264,7 +264,7 @@ describe("old checkouts in an executable position", () => {
     expect(refused("git --git-dir=../other-project/.git switch --detach fixture-old; cd ../other-project && npm test")).toBe(false)
   })
 
-  test("literal bindings preserve historical syntax, and unresolved targets need a later launch", () => {
+  test("literal bindings preserve historical syntax", () => {
     const remedies = (line: string) => bareLaunches(line, place).map((launch) => launch.remedy)
     const targets: ReadonlyArray<{ readonly value: string; readonly expected: ReadonlyArray<Remedy> }> = [
       { value: "deadbee", expected: ["shim"] },
@@ -285,22 +285,72 @@ describe("old checkouts in an executable position", () => {
     ]
     const cases = targets.flatMap(({ value, expected }) => spellings.map((render) => ({ line: render(value), expected })))
     for (const { line, expected } of cases) expect([line, remedies(line)]).toEqual([line, [...expected]])
+  })
+
+  test("only unresolved operands fed by history or iteration require the shim before a launch", () => {
+    const remedies = (line: string) => bareLaunches(line, place).map((launch) => launch.remedy)
     for (const select of [
-      'git checkout "$REV"',
-      'git checkout "$1"',
-      'REV=$(git rev-parse HEAD); git checkout "$REV"',
+      'git checkout --detach "$REV"',
+      'git checkout "$(git rev-parse HEAD~1)"',
+      'REF=$(git -C . rev-list first..last); ALIAS="$REF"; git checkout "$ALIAS"',
+      'git log --format=%H -1 | read -r REF; git checkout "$REF"',
+      'git checkout "$REF~1"',
+      'git restore --source="$(git describe)" -- runner.sh',
+      'git checkout "$(git tag --list)"',
+      'git checkout "$(git merge-base left right)"',
+      'git checkout "$(git reflog --format=%H -1)"',
+      'git checkout "$(git bisect log)"',
       'for rev in $(git rev-list first..last); do git checkout "$rev"; done',
+      'for CI_BRANCH in $(git rev-list first..last); do git checkout "$CI_BRANCH"; done',
+      'for rev in $INPUT; do COPY="$rev"; git checkout "$COPY"; done',
       'while read -r rev; do git checkout "$rev"; done < fixture.txt',
-      'git restore --source="$REV" -- runner.sh',
+      'while read -r rev message; do git checkout "$rev"; done < fixture.txt',
+      'while read -r; do git checkout "$REPLY"; done < fixture.txt',
+      'while REV=$(cat fixture.txt); do git checkout "$REV"; done',
+      'until read -r rev; do git checkout "$rev"; done < fixture.txt',
+      'git rev-list first..last | xargs -n1 sh -c \'git checkout "$1"\' probe',
+      'cat inputs.txt | xargs -I % git checkout %',
+      'find fixture -type f -exec git checkout {} \\;',
     ]) {
       expect([select, remedies(`${select}; npm test`)]).toEqual([select, ["unknown"]])
       expect([select, remedies(`${select}; git status -sb`)]).toEqual([select, []])
       expect([select, remedies(`export CHROME="${SHIM_PATH}"; ${select}; npm test`)]).toEqual([select, []])
     }
-    expect(remedies("git checkout '$REV'; npm test")).toEqual([])
-    expect(remedies('git checkout -- "$REV"; npm test')).toEqual([])
-    expect(remedies('git merge "$REV"; npm test')).toEqual([])
-    expect(remedies('git -C ../beta checkout "$REV"; npm test')).toEqual([])
+    for (const select of [
+      'git checkout "$1"',
+      'git checkout "$CI_BRANCH"',
+      'git checkout "refs/heads/$BRANCH"',
+      'git checkout "origin/$CI_COMMIT_BRANCH"',
+      'git checkout "$(cat choice.txt)"',
+      'git checkout "$(git rev-parse HEAD)"',
+      'git checkout "$(echo git rev-list)"',
+      'git checkout "$(git tag fixture)"',
+      'git checkout -- "$REV"',
+      "git checkout '$REV'",
+      'for item in $INPUT; do git checkout "$BRANCH"; done',
+      'for ref in $INPUT; do git status -sb; done; git checkout "$ref"',
+      'NAME=$(git rev-list first..last); NAME="$BRANCH"; git checkout "$NAME"',
+      'git merge "$REV"',
+      'git -C ../beta checkout --detach "$REV"',
+      'git restore --source="$REV" -- runner.sh',
+    ]) expect([select, remedies(`${select}; npm test`)]).toEqual([select, []])
+  })
+
+  test("a one-off computed hash without history evidence is a stated limit", () => {
+    const target = '"$(printf %s deadbee)"'
+    expect(refused(`git checkout ${target}; npm test`)).toBe(false)
+    expect(bareLaunches(`git checkout --detach ${target}; npm test`, place).map(({ remedy }) => remedy)).toEqual(["unknown"])
+  })
+
+  test("branch creation uses the start point, not the branch name", () => {
+    for (const creation of ["checkout -b", "checkout -B", "switch -c"]) {
+      const command = `git ${creation} "$NEW_BRANCH"`
+      for (const start of ["", "main", '"$START"']) expect(refused(`${command} ${start}; npm test`)).toBe(false)
+      expect(refused(`${command} HEAD~2; npm test`)).toBe(true)
+      expect(refused(`START=deadbee; ${command} "$START"; npm test`)).toBe(true)
+      expect(refused(`for START in $INPUT; do ${command} "$START"; npm test; done`)).toBe(true)
+    }
+    expect(refused('for ref in $INPUT; do git switch "$ref"; npm test; done')).toBe(false)
   })
 
   test("generated sequences only guard a later launcher in the affected sibling tree", () => {

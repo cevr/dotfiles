@@ -145,7 +145,9 @@ export const shellSegments = (line: string, bindingSyntax = false): ReadonlyArra
   const hasInputRedirection = (at: number): boolean =>
     line.startsWith("<<", at) && (bindingSyntax || !line.startsWith("<<<", at))
   const nextCharacter = (at: number): number => {
-    if (bindingSyntax && line.startsWith("$(", at)) return substitutionEnd(line, at + 2)
+    if (!bindingSyntax) return at + 1
+    if (line.startsWith("$(", at)) return substitutionEnd(line, at + 2)
+    if (line.charAt(at) === "`") return backquoteEnd(line, at + 1)
     return at + 1
   }
   const inputRedirection = (at: number): number => {
@@ -162,7 +164,7 @@ export const shellSegments = (line: string, bindingSyntax = false): ReadonlyArra
 }
 
 /** Keep an unwalked substitution in its operand rather than treating its body as sibling commands. */
-const substitutionEnd = (line: string, start: number): number => {
+export const substitutionEnd = (line: string, start: number): number => {
   let nesting = 1
   let quote = ""
   for (let at = start; at < line.length; at += 1) {
@@ -173,6 +175,14 @@ const substitutionEnd = (line: string, start: number): number => {
     } else if (char === "'" || char === '"') quote = char
     else if (char === "(") nesting += 1
     else if (char === ")" && --nesting === 0) return at + 1
+  }
+  return line.length
+}
+
+export const backquoteEnd = (line: string, start: number): number => {
+  for (let at = start; at < line.length; at += 1) {
+    if (line.charAt(at) === "\\") at += 1
+    else if (line.charAt(at) === "`") return at + 1
   }
   return line.length
 }

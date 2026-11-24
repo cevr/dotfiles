@@ -1,5 +1,5 @@
 import { Array as Arr, Option } from "effect"
-import { literalPath, unknownTarget } from "./executable.ts"
+import { historyTarget, literalPath, unknownTarget } from "./executable.ts"
 import { basename, resolve } from "./path.ts"
 import { GIT_BARE_OPTIONS, GIT_VALUE_OPTIONS } from "./verdict.ts"
 
@@ -123,7 +123,9 @@ const current = (target: string): boolean => target === "" || /^(?:HEAD|@)(?:[~^
 
 /** An unadorned name could be a branch or a tag; neither proves historical intent. */
 const historical = (target: string, detach = false): boolean => !current(target) && (detach || revisionExpression(target))
-const unresolved = (target: string): boolean => target.includes(unknownTarget)
+const unresolved = (target: string): boolean => target.includes(unknownTarget) || target.includes(historyTarget)
+const unresolvedHistory = (target: string, detach = false): boolean => unresolved(target) &&
+  (detach || target.includes(historyTarget) || revisionExpression(target))
 
 const validRefName = (word: string): boolean =>
   word !== "@" && !Array.from(word).some((char) => char.charCodeAt(0) <= 32 || char.charCodeAt(0) === 127) &&
@@ -143,7 +145,10 @@ const fileSelection = (argv: Argv, target: string, paths = argv.paths): EffectOn
     if (target === "") return action("files")
     return action("neither")
   }
-  if (unresolved(target) && (argv.flags.has(pathspec) || paths.some(launcherPath))) return action("unknown")
+  if (unresolved(target)) {
+    if (unresolvedHistory(target) && (argv.flags.has(pathspec) || paths.some(launcherPath))) return action("unknown")
+    return action("files")
+  }
   if (!historical(target)) return action("files")
   if (argv.flags.has(pathspec)) return action("unknown")
   if (paths.some(launcherPath)) return action("moves")
@@ -171,7 +176,7 @@ const checkoutTarget = (argv: Argv, switching: boolean): EffectOnTree => {
   const detach = argv.has(detached)
   // Without -d or branch creation, switch accepts only a branch.
   if (switching && !detach && !argv.has(branchCreation)) return action("neither")
-  if (unresolved(ref)) return action("unknown")
+  if (unresolved(ref)) return action(unresolvedRevision(ref, detach))
   if (historical(ref, detach)) return action("moves")
   return action("neither")
 }
@@ -180,9 +185,14 @@ const reset = (argv: Argv): EffectOnTree => {
   const [ref = "", ...rest] = argv.operands
   if (argv.paths.length > 0 || argv.has(patches) || (!current(ref) && !unresolved(ref) && explicitPath(ref)) || rest.length > 0) return action("files")
   if (!historicalResetModes.has(argv.last(resetModes))) return action("neither")
-  if (unresolved(ref)) return action("unknown")
+  if (unresolved(ref)) return action(unresolvedRevision(ref))
   if (historical(ref)) return action("moves")
   return action("neither")
+}
+
+const unresolvedRevision = (target: string, detach = false): Revision => {
+  if (unresolvedHistory(target, detach)) return "unknown"
+  return "neither"
 }
 
 const bisectStart = grammar("--no-checkout --first-parent --reset-when-found --term-new --term-bad --term-old --term-good")
@@ -241,7 +251,7 @@ const checkoutToggle = described("--no-checkout --checkout")
 const addWorktree = (argv: Argv): EffectOnTree => {
   const [destination = "", target = ""] = [...argv.operands, ...argv.paths]
   if (argv.flags.has("--orphan") || argv.last(checkoutToggle) === "--no-checkout") return action("neither")
-  if (unresolved(target)) return { ...action("unknown"), destination }
+  if (unresolved(target)) return { ...action(unresolvedRevision(target, argv.has(detached))), destination }
   if (!historical(target, argv.has(detached))) return action("neither")
   if (destination === "") return action("unknown")
   return { ...action("moves"), destination }
