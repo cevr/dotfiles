@@ -91,7 +91,6 @@ const serve = Effect.gen(function* () {
   )
   const launch = forkLaunch(fork ?? "", process.execPath)
   const env = {
-    PATH: process.env.PATH ?? "",
     HOME: home,
     XDG_CONFIG_HOME: join(home, ".config"),
     XDG_DATA_HOME: join(home, ".local/share"),

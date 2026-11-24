@@ -135,7 +135,6 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
     )
     const launch = forkLaunch(fork ?? "", process.execPath)
     const env: Record<string, string> = {
-      PATH: process.env.PATH ?? "",
       HOME: home,
       XDG_CONFIG_HOME: join(home, ".config"),
       XDG_DATA_HOME: join(home, ".local/share"),

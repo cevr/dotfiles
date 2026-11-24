@@ -87,7 +87,6 @@ describe.skipIf(!ready)("a store account whose refresh is rate-limited does not 
           }),
         )
         const env: Record<string, string> = {
-          PATH: process.env.PATH ?? "",
           HOME: join(base, "home"),
           XDG_CONFIG_HOME: join(base, "home/.config"),
           XDG_DATA_HOME: join(base, "home/.local/share"),

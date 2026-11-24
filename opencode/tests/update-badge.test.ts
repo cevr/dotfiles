@@ -72,7 +72,6 @@ describe.skipIf(!fork)("the update notice", () => {
   const work = join(root, "work")
   const launch = forkLaunch(fork ?? "", process.execPath)
   const env: Record<string, string> = {
-    PATH: process.env.PATH ?? "",
     HOME: home,
     TERM: "xterm-256color",
     HERDR_ENV: "1",
