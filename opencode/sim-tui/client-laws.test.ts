@@ -9,9 +9,8 @@ import { Effect, Option, Schema } from "effect"
 import { effectTest } from "./effect-test.ts"
 import { type Answer, type Call, KINDS, LAWS, type LawServer, LawServerError, ROUTES, type Sent } from "./client-laws.ts"
 import * as Server from "./server.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
-/** A law on the double takes a few milliseconds. */
-const TIMEOUT_MS = 5_000
 const BRIEF = "Worker brief."
 /** The command the shell law runs: real OpenCode runs it. */
 const SHELL = "printf 'ok\\n'"
@@ -84,13 +83,13 @@ describe("the client laws on the double", () => {
       Effect.gen(function* () {
         expect(yield* law.run(double())).toEqual([])
       }),
-      TIMEOUT_MS,
+      hangGuard("local-fixture"),
     )
 })
 
 describe("every route and event kind of the double is named by a law", () => {
-  effectTest("each served route", Effect.sync(() => expect(Server.SERVED.filter((route) => !ROUTES.has(route))).toEqual([])), TIMEOUT_MS)
-  effectTest("each event kind", Effect.sync(() => expect(Server.EVENTS.filter((kind) => !KINDS.has(kind))).toEqual([])), TIMEOUT_MS)
+  effectTest("each served route", Effect.sync(() => expect(Server.SERVED.filter((route) => !ROUTES.has(route))).toEqual([])), hangGuard("local-fixture"))
+  effectTest("each event kind", Effect.sync(() => expect(Server.EVENTS.filter((kind) => !KINDS.has(kind))).toEqual([])), hangGuard("local-fixture"))
   effectTest(
     "a law names only what the double has",
     Effect.sync(() => {
@@ -99,6 +98,6 @@ describe("every route and event kind of the double is named by a law", () => {
       expect([...ROUTES].filter((route) => !served.has(route))).toEqual([])
       expect([...KINDS].filter((kind) => !kinds.has(kind))).toEqual([])
     }),
-    TIMEOUT_MS,
+    hangGuard("local-fixture"),
   )
 })

@@ -12,6 +12,7 @@ import { Config, Effect, Fiber, FileSystem, Option, Path, Schema, Stream } from 
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { Result, titleOf } from "./auto-title/names.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 /** opencode/: the tests run from it. */
 const ROOT = process.cwd()
@@ -81,6 +82,6 @@ describe("auto-title in real OpenCode", () => {
         expect(result.log).toContain("auto-title: the owner asked for a generated title: unpinned")
         expect(result.log.filter((line) => line === "auto-title: generating the title again")).toHaveLength(2)
       }),
-    150_000,
+    hangGuard("fork-turn"),
   )
 })

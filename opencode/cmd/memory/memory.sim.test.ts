@@ -15,10 +15,10 @@ import { AGAIN_TASK, DEPLOY, DEPLOY_FIXED, DONE, LATE, RECALL_TASK, REPEAT, type
 import { main } from "./cli.ts"
 import { liveWith, make } from "./server.ts"
 import { plain } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/memory/memory.sim.test.ts")
+const { seeded } = simulationRunner("cmd/memory/memory.sim.test.ts")
 
 /**
  * The scripted model of tests/memory/sim.ts on the world: a request's task is its first prompt; each next tool call

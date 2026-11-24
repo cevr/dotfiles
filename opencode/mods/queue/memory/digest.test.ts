@@ -10,6 +10,7 @@ import type { ItemInput } from "../item.ts"
 import { layer as queues, QueueModel } from "../model.ts"
 import { QueueHost } from "../service.ts"
 import * as MemoryStore from "./store.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 const T0 = Date.parse("2026-11-18T12:00:00Z")
 
@@ -33,7 +34,7 @@ const run = <A, E>(name: string, digest: Layer.Layer<DigestLog>, body: Effect.Ef
       Effect.provide(queues.pipe(Layer.provide(Layer.mergeAll(MemoryStore.layer(MemoryStore.empty()), host, digest)))),
       Effect.provide(TestClock.layer()),
     ),
-    10_000,
+    hangGuard("in-memory"),
   )
 
 const write = (upsert: ReadonlyArray<ItemInput>, remove: ReadonlyArray<string> = []) => QueueModel.use((queue) => queue.change("ses_root", { upsert, remove }))

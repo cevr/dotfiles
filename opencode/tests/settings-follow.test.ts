@@ -26,8 +26,8 @@ import { hostCall, serve } from "../testbeds/gamut/pty-host.ts"
 import { ENV, Platform, run } from "./reconnect/host.ts"
 import { forkRuns, keptScratch } from "./scratch.ts"
 import { freePort, ready, type Service } from "./service.ts"
+import { hangGuard } from "./hang-guard.ts"
 
-const TIMEOUT_MS = 180_000
 const ROLES = ["planner", "implementor", "verifier", "worker"]
 
 class NotYet extends Data.TaggedError("NotYet")<{ readonly message: string }> {}
@@ -222,6 +222,6 @@ describe.skipIf(!forkRuns)("the settings follow an update, from each build's tre
         expect(yield* owner).toEqual(afterPicks)
         expect(afterPicks[0]).toBe(before[0])
       }),
-    TIMEOUT_MS,
+    hangGuard("fork-session"),
   )
 })

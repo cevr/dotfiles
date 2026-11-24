@@ -23,6 +23,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { main } from "../../cmd/memory/cli.ts"
 import { AUTO_TASK, BACKGROUND_TASK, IDLE_TASK, MARGIN_SECONDS, NOTE, type Seen, serve, TTL_SECONDS } from "./sim.ts"
+import { stamp, watchdog } from "../hang-guard.ts"
 
 export type Mode = "auto" | "idle" | "background"
 
@@ -47,7 +48,7 @@ const config = join(spec.base, "config")
 mkdirSync(work, { recursive: true })
 mkdirSync(config, { recursive: true })
 const db = join(spec.base, "memory.db")
-const added = await main(["add", NOTE, "--scope", "global"], { db, now: Date.now() })
+const added = await main(["add", NOTE, "--scope", "global"], { db, now: stamp() })
 if (added.code !== 0) throw new Error(`the note was not added: ${added.out}`)
 
 const sim = serve()
@@ -117,15 +118,14 @@ try {
     const session = await opencode.sessions.create({ location: { directory: work } })
     await opencode.sessions.prompt({ sessionID: session.id, text: TASKS[spec.mode] })
     await opencode.experimental.session.wait({ sessionID: session.id })
-    const until = Date.now() + WAIT_MS
+    const until = watchdog(WAIT_MS)
     let compacted = compactedIn(await opencode.sessions.context({ sessionID: session.id }))
     const done = () => (spec.mode === "background" ? sim.seen.some((item) => item.kind === "compaction") : compacted)
-    while (!done() && Date.now() < until) {
+    while (!done() && !until.expired()) {
       await sleep(250)
       compacted = compactedIn(await opencode.sessions.context({ sessionID: session.id }))
     }
-    // The background summary's request is in; give it time to finish before the host closes.
-    if (spec.mode === "background") await sleep(1_000)
+    // For the background leg only the request prefix is under test; `seen` records it before responding.
     const result: Result = { seen: sim.seen, compacted }
     writeFileSync(join(spec.base, "result.json"), JSON.stringify(result, null, 2))
   } finally {

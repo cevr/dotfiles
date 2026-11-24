@@ -1,3 +1,4 @@
+import { stamp } from "../hang-guard.ts"
 /**
  * The scripted model for the idle-compaction test: an OpenAI-compatible chat
  * endpoint on a loopback port. Every answer reports a prompt partly read from
@@ -154,7 +155,7 @@ export const serve = () => {
       if (request.method !== "POST" || !url.pathname.endsWith("/chat/completions")) return new Response("not found", { status: 404 })
       const body = (await request.json()) as ChatRequest
       const kind = kindOf(body)
-      seen.push({ kind, at: Date.now() })
+      seen.push({ kind, at: stamp() })
       served += 1
       return new Response(events(replyOf(kind, body), body.model ?? "sim", `sim${served}`), {
         headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },

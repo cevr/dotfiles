@@ -18,6 +18,7 @@ import type { Result, Spec, Started } from "./idle-compact/run.ts"
 import { BACKGROUND_SECONDS, MARGIN_SECONDS, SUMMARY, TTL_SECONDS } from "./idle-compact/sim.ts"
 import { owned } from "./owned.ts"
 import { scratch as scratchDir } from "./scratch.ts"
+import { hangGuard, measured } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/idle-compact.test.ts: the OpenCode run skips. Set OPENCODE_DEV to the fork.")
@@ -80,8 +81,9 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       const summaries = result.seen.filter((item) => item.kind === "compaction")
       expect(summaries).toHaveLength(1)
       const due = dueAfter(result.started.find((item) => item.kind === "primary"))
-      expect(summaries[0]?.at).toBeGreaterThanOrEqual(due)
-      expect(summaries[0]?.at).toBeLessThan(due + 5_000)
+      const requested = summaries[0]?.at ?? Number.NaN
+      measured("real idle compaction does not begin before cache due time", ">= 0 ms", ({ sample }) => sample(requested - due))
+      measured("real idle compaction requests its summary by the due-time grace", "< 5000 ms", ({ sample }) => sample(requested - due))
       expect(compactions(result.late)).toHaveLength(1)
       // Three copies ran, and the idle window got one decision: one line scheduling it, one compacting it (the
       // compaction's own end is decided after, as not compacting).
@@ -92,7 +94,7 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
         ["idle-compact: compacting the idle session before its cache expires", "timer"],
       ])
     },
-    120_000,
+    hangGuard("installer"),
   )
 
   test(
@@ -103,7 +105,7 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       const summaries = result.seen.filter((item) => item.kind === "compaction")
       expect(summaries).toHaveLength(1)
       const due = dueAfter(result.started.filter((item) => item.kind === "primary").at(-1))
-      expect(summaries[0]?.at).toBeLessThan(due - 5_000)
+      measured("the held summary predates cache due time", "> 5000 ms", ({ sample }) => sample(due - (summaries[0]?.at ?? Number.NaN)))
       expect(compactions(result.early)).toEqual([])
       // Then the plugin compacted on time, and the compaction took the held summary: no second request.
       const session = result.log.find((line) => line.message === "idle-compact: compaction scheduled")?.sessionID
@@ -114,7 +116,7 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(result.started.filter((item) => item.kind === "compaction")).toHaveLength(1)
       expect(result.seen.filter((item) => item.kind === "turn")).toHaveLength(2)
     },
-    120_000,
+    hangGuard("installer"),
   )
 
   test(
@@ -128,8 +130,9 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(turns.filter((item) => item.at < (compaction?.at ?? 0))).toHaveLength(2)
       const compacting = result.started.find((item) => item.kind === "compaction")
       const due = dueAfter(result.started.filter((item) => item.kind === "primary" && item.at < (compacting?.at ?? 0)).at(-1))
-      expect(compaction?.at).toBeGreaterThanOrEqual(due)
-      expect(compaction?.at).toBeLessThan(due + 5_000)
+      const startedAt = compaction?.at ?? Number.NaN
+      measured("background shell does not move idle compaction before its due time", ">= 0 ms", ({ sample }) => sample(startedAt - due))
+      measured("idle compaction with a live background shell starts by the due-time grace", "< 5000 ms", ({ sample }) => sample(startedAt - due))
       // The shell was still running then: its notice woke the session afterwards, onto the summary.
       const wake = turns.find((item) => item.at > (compaction?.at ?? 0))
       expect(wake).toBeDefined()
@@ -139,6 +142,6 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(summary?.status).toBe("completed")
       expect(JSON.stringify(result.late)).toContain(`sleep ${BACKGROUND_SECONDS}`)
     },
-    120_000,
+    hangGuard("installer"),
   )
 })

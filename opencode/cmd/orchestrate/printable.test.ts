@@ -11,7 +11,7 @@ import { RecordRefused } from "@dotfiles/opencode-orchestrate/record"
 import { EvidenceRefused, RecordFailed } from "@dotfiles/opencode-orchestrate/service"
 import { hostServices } from "../../sim/host-services.ts"
 import { generator } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationTest } from "../../sim/seed.ts"
 import { KINDS, LEAK_MIN, leaked, OFFSETS, type Placed, placements } from "../../sim/tokens.ts"
 import { ranOf } from "./record.ts"
 
@@ -93,7 +93,7 @@ const MODULES = [
 ]
 /** A check of the modules' texts, run as a test. */
 const onTexts = (name: string, check: (textOf: (file: string) => string) => void) =>
-  Seed.effect(
+  simulationTest(
     name,
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem

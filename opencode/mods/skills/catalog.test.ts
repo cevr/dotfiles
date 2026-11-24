@@ -5,7 +5,7 @@ import type { Found } from "./tier.ts"
 const found = (id: string, tier: Found["tier"], path: string): Found => ({ id, name: id, path, content: "", tier })
 
 const local = found("review", "local", "/p/.claude/skills/review/SKILL.md")
-const global = found("review", "global", "/h/.claude/skills/review/SKILL.md")
+const globalSkill = found("review", "global", "/h/.claude/skills/review/SKILL.md")
 const deploy = found("deploy", "global", "/h/.claude/skills/deploy/SKILL.md")
 
 /**
@@ -14,13 +14,13 @@ const deploy = found("deploy", "global", "/h/.claude/skills/deploy/SKILL.md")
  */
 const entries = catalog(
   [
-    { id: "review:global", path: global.path, description: "global review" },
+    { id: "review:global", path: globalSkill.path, description: "global review" },
     { id: "plugin", path: "/plugin/SKILL.md" },
-    { id: "review", path: global.path, description: "global review" },
+    { id: "review", path: globalSkill.path, description: "global review" },
     { id: "review:local", path: local.path, description: "local review" },
     { id: "deploy", path: deploy.path },
   ],
-  [local, global, deploy],
+  [local, globalSkill, deploy],
 )
 
 describe("the catalog", () => {

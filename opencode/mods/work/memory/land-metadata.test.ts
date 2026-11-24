@@ -3,7 +3,7 @@
 // parsing the text); a land that did not push names neither, and its other fields stay as they were.
 import { expect } from "bun:test"
 import { Effect, Layer, Option } from "effect"
-import * as Seed from "../../../sim/seed.ts"
+import { simulationTest } from "../../../sim/seed.ts"
 import * as Model from "../model.ts"
 import * as MemoryDebts from "./debts.ts"
 import * as MemoryLanding from "./landing.ts"
@@ -42,7 +42,7 @@ const landed = (push: boolean) => {
   )
 }
 
-Seed.effect("a pushed land's metadata names the pushed commit and each workspace's merged head, beside the fields it had",
+simulationTest("a pushed land's metadata names the pushed commit and each workspace's merged head, beside the fields it had",
   Effect.gen(function* () {
     const metadata = yield* landed(true)
     expect(metadata).toEqual({
@@ -59,7 +59,7 @@ Seed.effect("a pushed land's metadata names the pushed commit and each workspace
   }),
 )
 
-Seed.effect("a land that did not push names no pushed commit and no landed workspace",
+simulationTest("a land that did not push names no pushed commit and no landed workspace",
   Effect.gen(function* () {
     const metadata = yield* landed(false)
     expect([metadata.action, metadata.path, Option.isNone(Option.fromUndefinedOr(metadata.pushed)), Option.isNone(Option.fromUndefinedOr(metadata.landed))]).toEqual(["land", INTEGRATE, true, true])

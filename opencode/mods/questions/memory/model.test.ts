@@ -3,6 +3,7 @@
 import * as MemoryDigest from "@dotfiles/opencode-digest/memory/log"
 import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
+import { TestClock } from "effect/testing"
 import * as MemoryCourier from "./courier.ts"
 import * as MemoryStore from "./store.ts"
 import * as Model from "../model.ts"
@@ -200,11 +201,14 @@ describe("QuestionsModel", () => {
 
   test("open lists several sessions' questions oldest first, and skips a sheet it cannot read", async () => {
     const { run, sheets } = rig(MemoryStore.empty(), MemoryCourier.empty("ses_a", "ses_b"))
-    await run((model) => model.ask("ses_b", { questions: [{ question: "First?", assume: "no" }] }))
-    await Bun.sleep(2)
-    await run((model) => model.ask("ses_a", { questions: [{ question: "Second?", assume: "no" }] }))
     sheets.broken.set("ses_c", "garbled")
-    expect((await run((model) => model.open(["ses_a", "ses_b", "ses_c"]))).map((question) => question.question)).toEqual(["First?", "Second?"])
+    const opened = await run((model) => Effect.gen(function* () {
+      yield* model.ask("ses_b", { questions: [{ question: "First?", assume: "no" }] })
+      yield* TestClock.adjust(2)
+      yield* model.ask("ses_a", { questions: [{ question: "Second?", assume: "no" }] })
+      return yield* model.open(["ses_a", "ses_b", "ses_c"])
+    }).pipe(Effect.provide(TestClock.layer())))
+    expect(opened.map((question) => question.question)).toEqual(["First?", "Second?"])
   })
 
   test("dismiss drops the question and tells the agent nothing", async () => {

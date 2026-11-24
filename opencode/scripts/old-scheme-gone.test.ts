@@ -105,21 +105,20 @@ const hits = (files: ReadonlyArray<string>, docs: boolean) =>
 const OLDER_SETTINGS = `{"host":"h","checkout":"/c","mode":"reset","fork":"/f","bun":"/b","launcher":"/l","resident":"/r","record":"/i","config":["/o","/cli.json"],"notice":"/n","state":"/s"}`
 
 describe("the old scheme is gone", () => {
-  const live = it.live.layer(BunServices.layer)
 
-  live("no run-time source of the update, daily or the host's command scripts names it", () =>
+  it.live.layer(BunServices.layer)("no run-time source of the update, daily or the host's command scripts names it", () =>
     Effect.gen(function* () {
       expect(yield* hits(yield* RUNTIME, false)).toEqual([])
     }),
   )
 
-  live("no doc of the update describes it", () =>
+  it.live.layer(BunServices.layer)("no doc of the update describes it", () =>
     Effect.gen(function* () {
       expect(yield* hits(DOCS, true)).toEqual([])
     }),
   )
 
-  live("its files are deleted", () =>
+  it.live.layer(BunServices.layer)("its files are deleted", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const path = yield* Path.Path
@@ -129,7 +128,7 @@ describe("the old scheme is gone", () => {
     }),
   )
 
-  live("the update's settings carry no mode, and a settings text an older build wrote (with one) still reads", () =>
+  it.live.layer(BunServices.layer)("the update's settings carry no mode, and a settings text an older build wrote (with one) still reads", () =>
     Effect.gen(function* () {
       const path = yield* Path.Path
       const at = yield* root

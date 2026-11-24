@@ -9,12 +9,13 @@ import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test"
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { hangGuard } from "../../opencode/tests/hang-guard.ts"
 
 const workboxDir = join(import.meta.dir, "..")
 const repo = join(workboxDir, "..")
 const underTest = process.env.SYSTEM_TOOLS_UNDER_TEST ?? join(workboxDir, "system-tools.sh")
 // Each case runs the script a few times, and each run starts tar, gpg and perl: seconds on a loaded host.
-setDefaultTimeout(60_000)
+setDefaultTimeout(hangGuard("process-fixture"))
 const scratch = mkdtempSync(join(tmpdir(), "system-tools-test-"))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
@@ -490,5 +491,5 @@ describe("pins.conf is the one place the pins are typed", () => {
     expect(found.stderr.toString()).toBe("")
     expect(found.stdout.toString()).toBe("")
     expect(found.exitCode).toBe(1)
-  }, 60_000)
+  }, hangGuard("process-fixture"))
 })

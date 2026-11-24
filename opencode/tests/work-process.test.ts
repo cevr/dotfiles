@@ -7,7 +7,7 @@
 // The binary is WORK_BIN, else `work` on PATH. It is required: with neither, every case fails `no work binary
 // given`, never skips. The cases that need no binary stay beside the code (mods/work/process/work.test.ts).
 import { describe, expect, test } from "bun:test"
-import { Context, Duration, Effect, Exit, Fiber, Layer, Option, Schedule, Schema } from "effect"
+import { Clock, Context, Duration, Effect, Exit, Fiber, Layer, Option, Schedule, Schema } from "effect"
 import { gitClone, gitInit, withProcessEnv } from "./git-repo.ts"
 import { scratch } from "./scratch.ts"
 import { check, riftsLaws, savedWorkCase } from "../mods/work/laws.ts"
@@ -17,11 +17,11 @@ import { removal, type Workspace } from "../mods/work/workspace.ts"
 import { commands, lines } from "../mods/work/process/command.ts"
 import * as ProcessLanding from "../mods/work/process/landing.ts"
 import * as ProcessWork from "../mods/work/process/work.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const PROCESS = withProcessEnv({})
 /** The `work` binary the cases run: WORK_BIN, else `work` on PATH; "" when there is neither. */
 const WORK_BIN = PROCESS["WORK_BIN"] || Bun.which("work") || ""
-const TIMEOUT = 60_000
 
 /** What the tests read of `work --json list` and `work --json new`. */
 const RECORDS = Schema.fromJsonString(Schema.Array(Schema.Struct({ name: Schema.String, state: Schema.Struct({ _tag: Schema.String }) })))
@@ -535,14 +535,14 @@ const cleanStartProperty = (seed: number, cases: number) =>
     }),
   )
 
-riftsLaws("process Rifts on work", plain, TIMEOUT)
+riftsLaws("process Rifts on work", plain, hangGuard("process-fixture"))
 
 describe("process Rifts on work", () => {
   for (const seed of [7, 1_000_003])
     test(
       `model (seed ${seed}): random creates (on the base and on a workspace), commits, edits, stashes and removals agree with the memory provider after every step`,
       () => model(seed, 12),
-      TIMEOUT,
+      hangGuard("process-fixture"),
     )
 
   test(
@@ -571,7 +571,7 @@ describe("process Rifts on work", () => {
           expect(nowhere.message).toContain("work init")
         }),
       ),
-    TIMEOUT,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -619,14 +619,14 @@ describe("process Rifts on work", () => {
           expect(yield* rifts.list(made.base)).not.toContain(`${made.root}/code/.work/app/nowhere`)
         }),
       ),
-    TIMEOUT,
+    hangGuard("process-fixture"),
   )
 
   for (const seed of [11, 4_242])
     test(
       `clean start (seed ${seed}): over a base dirtied every way, a fresh lane is at HEAD in its files and index with the base's untracked files kept and the base untouched; then no change of the lane's own is hidden from inspect or a removal, and the land reads f957c17e's rule`,
       () => cleanStartProperty(seed, 40),
-      240_000,
+      hangGuard("generated-schedule"),
     )
 
   test(
@@ -655,7 +655,7 @@ describe("process Rifts on work", () => {
           expect(yield* rifts.inspect(lane)).toMatchObject({ uncommitted: ["?? notes/"], unpushed: [] })
         }),
       ),
-    TIMEOUT,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -696,7 +696,7 @@ describe("process Rifts on work", () => {
           }
         }),
       ),
-    TIMEOUT,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -725,7 +725,7 @@ describe("process Rifts on work", () => {
           }
         }),
       ),
-    TIMEOUT,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -746,7 +746,7 @@ describe("process Rifts on work", () => {
           expect((yield* rifts.inspect(parent)).uncommitted).toEqual(before)
         }),
       ),
-    TIMEOUT,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -767,7 +767,7 @@ describe("process Rifts on work", () => {
           expect(yield* out(made, taken, "cat", "README.md")).toBe("work in a folder no create made")
         }),
       ),
-    TIMEOUT,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -819,13 +819,13 @@ describe("process Rifts on work", () => {
           expect(yield* out(made, `${made.root}/code/.work/app/.work-trash/${trashed[0] ?? ""}`, "git", "log", "-1", "--format=%s")).toBe("after the inspect")
         }),
       ),
-    TIMEOUT,
+    hangGuard("process-fixture"),
   )
 
   test(
     "inspect: a commit a land put on origin's main from elsewhere, or a clean merge of pushed parents, is not unpushed; a commit behind such a merge is",
     () => check(plain, (made) => savedWorkCase({ source: made.base, origin: made.origin, scratch: made.root, git: (cwd, ...args) => made.sh(cwd, "git", ...args) })),
-    TIMEOUT,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -850,7 +850,7 @@ describe("process Rifts on work", () => {
           expect(yield* out(made, made.origin, "git", "rev-parse", "main")).toBe(yield* out(made, integration, "git", "rev-parse", "HEAD"))
         }),
       ),
-    TIMEOUT,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -863,7 +863,7 @@ describe("process Rifts on work", () => {
           expect((yield* rifts.inspect(path)).uncommitted).toEqual([])
         }),
       ),
-    TIMEOUT,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -876,7 +876,7 @@ describe("process Rifts on work", () => {
           expect((yield* rifts.inspect(path)).uncommitted).toEqual([])
         }),
       ),
-    TIMEOUT,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -900,7 +900,7 @@ describe("process Rifts on work", () => {
           expect((yield* out(made, path, "git", "log", "--format=%s")).split("\n")).toEqual(["commit 4", "commit 3", "commit 2", "commit 1", "init"])
         }),
       ),
-    TIMEOUT,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -917,7 +917,7 @@ describe("process Rifts on work", () => {
           expect(yield* rifts.list(made.base)).toEqual([path])
         }),
       ),
-    TIMEOUT,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -941,7 +941,7 @@ describe("process Rifts on work", () => {
           expect(yield* rifts.list(made.base)).toEqual([path])
         }),
       ),
-    TIMEOUT,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -966,7 +966,7 @@ describe("process Rifts on work", () => {
           expect((yield* rifts.inspect(path)).uncommitted).toEqual(before)
         }),
       ),
-    TIMEOUT,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -983,8 +983,20 @@ describe("process Rifts on work", () => {
           yield* made.sh(made.root, "touch", `${made.env.HOME}/clone.go`)
           yield* made.sh(made.root, "test", "-e", `${made.env.HOME}/clone.done`).pipe(Effect.sandbox, Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 400 }))
           const request = { source: made.base, from: made.base, name: "dead", branch: "dead" }
-          const [took, said] = yield* Effect.timed(failureWords(rifts.create(request)))
-          expect(Duration.toMillis(took)).toBeLessThan(20_000)
+          const clock = yield* Clock.Clock
+          const noPoll: Clock.Clock = {
+            currentTimeMillis: clock.currentTimeMillis,
+            currentTimeMillisUnsafe: () => clock.currentTimeMillisUnsafe(),
+            currentTimeNanos: clock.currentTimeNanos,
+            currentTimeNanosUnsafe: () => clock.currentTimeNanosUnsafe(),
+            monotonicTimeNanos: clock.monotonicTimeNanos,
+            monotonicTimeNanosUnsafe: () => clock.monotonicTimeNanosUnsafe(),
+            sleep: (duration) => {
+              if (Duration.toMillis(duration) === 1_000) return Effect.die("an orphaned creation must not enter the workspace-making poll")
+              return clock.sleep(duration)
+            },
+          }
+          const said = yield* failureWords(rifts.create(request).pipe(Effect.provideService(Clock.Clock, noPoll)))
           expect(said).toContain("was left being made by a `work new` that is gone")
           expect(said).toContain("`work rm dead`")
           const records = yield* made.work("list").pipe(Effect.flatMap(Schema.decodeUnknownEffect(RECORDS)), Effect.orDie)
@@ -993,7 +1005,7 @@ describe("process Rifts on work", () => {
           expect(nameOf(yield* rifts.create(request))).toBe("dead")
         }),
       ),
-    TIMEOUT,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -1018,7 +1030,7 @@ describe("process Rifts on work", () => {
           expect(records.map((record) => [record.name, record.state._tag])).toEqual([["race", "Active"]])
         }),
       ),
-    TIMEOUT,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -1037,7 +1049,7 @@ describe("process Rifts on work", () => {
           expect(yield* Fiber.join(making)).toBe("made")
         }),
       ),
-    TIMEOUT,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -1056,7 +1068,7 @@ describe("process Rifts on work", () => {
           expect(nameOf(yield* rifts.create(request))).toBe("slow")
         }),
       ),
-    TIMEOUT,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -1080,6 +1092,6 @@ describe("process Rifts on work", () => {
           ])
         }),
       ),
-    TIMEOUT,
+    hangGuard("process-fixture"),
   )
 })

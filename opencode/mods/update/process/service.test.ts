@@ -40,12 +40,12 @@ describe("what the restarted service says, as the handoff reads it", () => {
   })
 
   test("over the global config and the tree's, as the fork folds them: the last config's model per agent and default, every planner", () => {
-    const global = `{"model":"groq/fast","agents":{"worker":{"model":"openai/sol-6","steps":4},"build":{"model":"xai/grok"}}}`
+    const globalConfig = `{"model":"groq/fast","agents":{"worker":{"model":"openai/sol-6","steps":4},"build":{"model":"xai/grok"}}}`
     const tree = `{"model":"anthropic/claude-opus-5-5","agents":{"worker":{"model":"anthropic/claude-opus-5-5"},"planner":{"model":"fable/claude-fable-5-2"}}}`
     // The owner's hand-set worker model and default lose to the tree's; his other agent's model stands.
-    expect(providersOf([global, tree]).toSorted()).toEqual(["anthropic", "fable", "xai"])
+    expect(providersOf([globalConfig, tree]).toSorted()).toEqual(["anthropic", "fable", "xai"])
     // In the other order the global would win: the order is the fork's load order, never a union.
-    expect(providersOf([tree, global]).toSorted()).toEqual(["fable", "groq", "openai", "xai"])
+    expect(providersOf([tree, globalConfig]).toSorted()).toEqual(["fable", "groq", "openai", "xai"])
   })
 
   test("the logins: providers whose pool lists an account, and integrations with a connection", () => {
@@ -75,15 +75,15 @@ describe("the configs the health check reads, on a tree build", () => {
   const reading = (providers: ReadonlyArray<string>, logins: ReadonlyArray<string>) => ({ configured: [], listed: [], accounts: Option.some(1), providers, logins, placement: Option.none() })
 
   test("a role model the owner set by hand and the tree overrides fails no build, though its provider has no login", () => {
-    const global = `{"agents":{"worker":{"model":"openai/sol-6","steps":4}}}`
+    const globalConfig = `{"agents":{"worker":{"model":"openai/sol-6","steps":4}}}`
     const tree = `{"agents":{"worker":{"model":"anthropic/claude-opus-5-5"}}}`
-    expect(healthOf(reading(configuredBy([global, tree]).providers, ["anthropic"]), ["anthropic", "openai"])).toEqual(Health.Healthy())
+    expect(healthOf(reading(configuredBy([globalConfig, tree]).providers, ["anthropic"]), ["anthropic", "openai"])).toEqual(Health.Healthy())
   })
 
   test("the tree's own role model with no login fails the build that had one before, and is reported when there was none", () => {
-    const global = `{"agents":{"worker":{"model":"anthropic/claude-opus-5-5"}}}`
+    const globalConfig = `{"agents":{"worker":{"model":"anthropic/claude-opus-5-5"}}}`
     const tree = `{"agents":{"worker":{"model":"fable/claude-fable-5-2"}}}`
-    const providers = configuredBy([global, tree]).providers
+    const providers = configuredBy([globalConfig, tree]).providers
     expect(Health.$is("Sick")(healthOf(reading(providers, ["anthropic"]), ["anthropic", "fable"]))).toBe(true)
     expect(healthOf(reading(providers, ["anthropic"]), ["anthropic"])).toEqual(Health.Unsigned({ providers: ["fable"] }))
   })

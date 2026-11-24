@@ -7,6 +7,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 /** The frame's lines, without the composer's rails and padding. */
 const lines = (frame: string): ReadonlyArray<string> => frame.split("\n").map((line) => line.replaceAll("┃", "").replace(/\s+/g, " ").trim())
@@ -70,5 +71,5 @@ describe.skipIf(!hooked)("$ skills", () => {
     expect(count(two, "<skill_content")).toBe(count(one, "<skill_content") + 1)
     expect(count(three, "<skill_content")).toBe(count(two, "<skill_content"))
     expect(requests.some((request) => request.includes("DEPLOY-BODY"))).toBe(false)
-  }), 240_000)
+  }), hangGuard("generated-schedule"))
 })

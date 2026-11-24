@@ -16,6 +16,7 @@ import { expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { withProcessEnv } from "./git-repo.ts"
 import { ALIAS, BRANCH, COMMIT_SUBJECT, DONE, FLOW, LAND, LAND_SUBJECT, Result, watchedIn } from "./work/sim.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 /** opencode/: the tests run from it. */
 const ROOT = process.cwd()
@@ -25,7 +26,6 @@ const FORK = PROCESS["OPENCODE_DEV"] ?? ""
 const runnable = WORK_BIN !== "" && FORK !== ""
 /** How long one real run may take before it is stopped. */
 const LIMIT = "2 minutes"
-const RUN_MS = 150_000
 
 const text = (stream: Stream.Stream<Uint8Array, unknown>) => stream.pipe(Stream.decodeText(), Stream.mkString)
 
@@ -111,7 +111,7 @@ if (runnable)
           expect(misspelled?.said).toContain('There is no \\"shll\\" tool; did you mean \\"shell\\"? Call \\"shell\\" with the same input.')
           expect(result.transcript).toContain(DONE)
         }),
-      RUN_MS,
+      hangGuard("fork-turn"),
     )
 
     it.live.layer(BunServices.layer)(
@@ -133,7 +133,7 @@ if (runnable)
           expect(result.transcript).toMatch(/lane land: the accept check for feat\/x FAILED \(exit 1\) in \d+s\. The batch is already pushed: fix forward\./)
           expect(result.transcript).toContain(DONE)
         }),
-      RUN_MS,
+      hangGuard("fork-turn"),
     )
 
     it.live.layer(BunServices.layer)(
@@ -147,7 +147,7 @@ if (runnable)
           expect(list?.said).toBe(`The base ${result.source} has no workspaces.`)
           expect(result.transcript).toContain(DONE)
         }),
-      RUN_MS,
+      hangGuard("fork-turn"),
     )
   })
 else test.skip("the work tool in real OpenCode needs a work binary (WORK_BIN, or work on PATH) and OPENCODE_DEV, the fork", () => {})

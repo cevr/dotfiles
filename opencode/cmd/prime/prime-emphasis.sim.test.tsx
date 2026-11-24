@@ -124,12 +124,12 @@ seeded("each chip draws in its tone: a soft one its tone on a tinted ground, a s
     const run = yield* scenario(seed)
     const look = (text: string) => Option.map(spanOf(run.frame, text), (span) => ({ fg: span.fg, bg: span.bg, bold: (span.attributes & 1) === 1 }))
     const done = look(" ✓ Done 104/104 ")
-    const measured = look(" ● Measured ")
+    const measurementChip = look(" ● Measured ")
     const failed = look(" ✗ Failed: 3 tests ")
     const irreversible = look(" ! Irreversible ")
-    for (const chip of [done, measured, failed, irreversible]) expect(Option.isSome(chip)).toBe(true)
+    for (const chip of [done, measurementChip, failed, irreversible]) expect(Option.isSome(chip)).toBe(true)
     // Done and Measured share the success tone: the same colours.
-    expect(done).toEqual(measured)
+    expect(done).toEqual(measurementChip)
     expect(Option.map(failed, (span) => span.bold)).toEqual(Option.some(false))
     // A solid chip is drawn on its tone, which a soft chip of the same tone writes in.
     expect(Option.map(irreversible, (span) => span.bold)).toEqual(Option.some(true))

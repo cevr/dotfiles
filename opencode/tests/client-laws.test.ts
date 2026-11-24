@@ -11,6 +11,7 @@ import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { NO_FREE_MODELS, releaseFlags } from "../scripts/release-flags.ts"
 import { LAWS } from "../sim-tui/client-laws.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 /** opencode/: the tests run from it. */
 const ROOT = process.cwd()
@@ -99,14 +100,13 @@ const failuresOf = (run: Run, name: string) =>
   })
 
 describe("the client laws in real OpenCode", () => {
-  const live = it.live.layer(BunServices.layer)
   for (const law of LAWS)
-    live(
+    it.live.layer(BunServices.layer)(
       law.name,
       () =>
         Effect.gen(function* () {
           expect(failuresOf(yield* outcomes, law.name)).toEqual([])
         }),
-      400_000,
+      hangGuard("long-fork-scenario"),
     )
 })

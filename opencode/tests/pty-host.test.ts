@@ -7,6 +7,7 @@ import { existsSync, readFileSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { HostError, hostCall, rowsSince, serve, type HostScreen, type ServedHost } from "../testbeds/gamut/pty-host.ts"
 import { scratch as scratchDir } from "./scratch.ts"
+import { hangGuard, watchdog } from "./hang-guard.ts"
 
 describe("rows since the last read", () => {
   test("an unchanged screen adds nothing", () => {
@@ -44,8 +45,8 @@ afterEach(async () => {
 
 /** Poll `check` every 20 ms until it returns a value, failing loudly after `ms`. */
 const until = async <A>(what: string, check: () => Promise<A | undefined> | A | undefined, ms = 5000): Promise<A> => {
-  const deadline = Date.now() + ms
-  while (Date.now() < deadline) {
+  const deadline = watchdog(ms)
+  while (!deadline.expired()) {
     const value = await check()
     if (value !== undefined) return value
     await Bun.sleep(20)
@@ -234,6 +235,6 @@ describe("terminal host", () => {
       expect(await hostCall(socket, { op: "down" })).toEqual({ killed: true })
       await host.stopped
     },
-    30_000,
+    hangGuard("local-fixture"),
   )
 })

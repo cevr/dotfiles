@@ -10,14 +10,14 @@ import { OPERATIONS } from "./context.ts"
 import { ClientAsk, type Law, LAWS, probeOf } from "./host-laws.ts"
 import * as Provider from "./provider.ts"
 import { plain } from "./runtime.ts"
-import * as Seed from "./seed.ts"
+import { simulationRunner, simulationTest } from "./seed.ts"
 import { answer, BROKEN, callFor, callOf, CLIENT, DONE, KEPT, LAW_FOLDER, LAW_LIMIT_MS, LAW_LOGIN, LAW_SOCKET, LAW_SOL, NAMES, outcome, PROBE_OPTIONS } from "./law-names.ts"
 import Probe, { runLaws } from "./server.ts"
 import * as World from "./world.ts"
 
-const { seeded } = Seed.runner("sim/host-laws.test.ts")
+const { seeded } = simulationRunner("sim/host-laws.test.ts")
 
-Seed.effect("session.context has only fork messages; each terminal tool event sees its already committed tool part", Effect.gen(function* () {
+simulationTest("session.context has only fork messages; each terminal tool event sees its already committed tool part", Effect.gen(function* () {
   const evidence: Array<string> = []
   const decode = Schema.decodeUnknownEffect(Schema.toType(Schema.Array(SessionMessage.Info)))
   const probe = Plugin.define({
@@ -197,12 +197,12 @@ describe("the host laws on the world", () => {
       }),
     )
 
-  Seed.effect(
+  simulationTest(
     "the real run names the same laws, in the same order",
     Effect.sync(() => expect(LAWS.map((law) => law.name)).toEqual([...NAMES])),
   )
 
-  Seed.effect(
+  simulationTest(
     "every operation the world's context offers is named by a law, and the context offers nothing else",
     Effect.gen(function* () {
       const named = new Set(LAWS.flatMap((law) => law.operations))
@@ -218,7 +218,7 @@ describe("the host laws on the world", () => {
     }),
   )
 
-  Seed.effect(
+  simulationTest(
     "a law that never ends breaks on its time limit, naming it, and the laws after it still run",
     Effect.gen(function* () {
       const world = World.make({ seed: 1, script: () => World.say("") })

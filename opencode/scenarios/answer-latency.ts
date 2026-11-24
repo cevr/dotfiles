@@ -27,6 +27,7 @@ import { appendFileSync, copyFileSync, existsSync, readdirSync, readFileSync, wr
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { Llm, OpenCodeDriver } from "opencode-drive"
+import { stamp, watchdog } from "../tests/hang-guard.ts"
 
 const root = process.cwd()
 const out = process.env.SCENARIO_OUT ?? "out"
@@ -82,7 +83,7 @@ const tuiPid = () => {
 
 /** LAT_TRACE=<file>: a line `<ms> <pid> <name>` per mark, beside whatever an instrumented checkout writes there. */
 const mark = (name: string) => {
-  if (env.LAT_TRACE) appendFileSync(env.LAT_TRACE, `${Date.now()} ${process.pid} ${name}\n`)
+  if (env.LAT_TRACE) appendFileSync(env.LAT_TRACE, `${stamp()} ${process.pid} ${name}\n`)
 }
 
 const median = (values: ReadonlyArray<number>) => {
@@ -113,7 +114,7 @@ export default OpenCodeDriver.use(
       const seen = new Map<string, number>()
       yield* llm.serve((req) => {
         // The request's arrival, before the driver reads its (on a large session, many MB of) body.
-        const arrived = Date.now()
+        const arrived = stamp()
         const s = JSON.stringify(req)
         if (s.includes("You name conversations")) return say("answers")
         for (let round = ROUNDS - 1; round >= 0; round--) {
@@ -164,14 +165,15 @@ export default OpenCodeDriver.use(
       /** Presses return on the form and times the three marks; -1 for one not reached in 10 s. */
       const submit = (name: string, key: string, open: (frame: string) => boolean, shown: (frame: string) => boolean) =>
         Effect.gen(function* () {
-          const start = Date.now()
+          const start = stamp()
+          const deadline = watchdog(10_000)
           mark(`driver.key ${name}`)
           yield* ui.press("return")
           let closed = -1
           let drawn = -1
-          while (Date.now() - start < 10_000 && (closed < 0 || drawn < 0 || !seen.has(key))) {
+          while (!deadline.expired() && (closed < 0 || drawn < 0 || !seen.has(key))) {
             const frame = text(yield* capture)
-            const at = Date.now() - start
+            const at = stamp() - start
             if (closed < 0 && !open(frame)) {
               closed = at
               mark(`driver.closed ${name}`)
@@ -190,9 +192,9 @@ export default OpenCodeDriver.use(
 
       if (SESSION === undefined) {
         yield* ui.submit(BUILD)
-        const building = Date.now()
+        const building = stamp()
         yield* until("built", (frame) => frame.includes(BUILT), 6_000)
-        console.log("answer:", JSON.stringify({ built: GROUPS, ms: Date.now() - building }))
+        console.log("answer:", JSON.stringify({ built: GROUPS, ms: stamp() - building }))
       } else {
         // The session's transcript loads: its composer shows.
         yield* until("loaded", (frame) => /gpt-sim-model|Simulated Model/.test(frame), 600)
@@ -210,7 +212,7 @@ export default OpenCodeDriver.use(
         yield* Effect.sleep("1 second")
         if (env.LAT_PROFILE !== undefined && round === Number(env.LAT_PROFILE)) {
           process.kill(tuiPid()[0]!, "SIGPROF")
-          profiled = Date.now()
+          profiled = stamp()
         }
         rounds.push(
           yield* submit(
@@ -257,7 +259,7 @@ export default OpenCodeDriver.use(
       writeFileSync(`${out}/answer-latency.json`, JSON.stringify(result, null, 2))
       if (profiled !== undefined) {
         // The fork writes the profile 10 s after the signal.
-        yield* Effect.sleep(Math.max(0, profiled + 11_000 - Date.now()))
+        yield* Effect.sleep(Math.max(0, profiled + 11_000 - stamp()))
         keepProfile(tuiPid()[0]!)
       }
     }),
