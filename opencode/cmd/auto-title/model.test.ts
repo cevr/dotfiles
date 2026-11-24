@@ -25,7 +25,7 @@ const memoryTracks = (entries: Map<string, Track> = new Map()) =>
     }),
   )
 
-tracksLaws("the test's tracks", () => memoryTracks(), effectTest)
+tracksLaws("the test's tracks", () => memoryTracks())
 
 const MINUTE = 60_000
 const POLICY: Policy = { afterMs: 30 * MINUTE, afterTurns: 6 }

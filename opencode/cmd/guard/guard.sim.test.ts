@@ -14,7 +14,7 @@
 // refused in which words, what reaches the shell, and with which program.
 import { Array as Arr, Effect, Option, Schema } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 import {
   CHILD_SLEEP,
@@ -32,7 +32,7 @@ import {
   SLEEP_TASK,
 } from "../../tests/guard/sim.ts"
 
-const { seeded } = Seed.runner("cmd/guard/guard.sim.test.ts")
+const { seeded } = simulationRunner("cmd/guard/guard.sim.test.ts")
 
 const WORK = "/scratch/guard/work"
 const HOME = "/Users/owner"

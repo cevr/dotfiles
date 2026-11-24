@@ -24,10 +24,10 @@ import * as MemoryFiles from "@dotfiles/opencode-memory/memory/files"
 import { main } from "./cli.ts"
 import { liveWith, make } from "./server.ts"
 import { below, generator, line, plain } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner, simulationTest, SEEDS as SeedSEEDS } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/memory/memory-faults.sim.test.ts")
+const { seeded } = simulationRunner("cmd/memory/memory-faults.sim.test.ts")
 
 const WORK = "/scratch/work"
 const DB = "/scratch/state/memory.db"
@@ -310,17 +310,17 @@ seeded("a digest the file could not keep is the session's on every request, afte
   }),
 )
 
-Seed.effect(
+simulationTest(
   "the gate's 20 seeds meet every kind of answer, a write failing during a session's request, and distinct runs",
   Effect.gen(function* () {
     const reached = new Set<string>()
     const traces = new Set<string>()
-    for (const seed of Array.from({ length: Seed.SEEDS }, (_, index) => index + 1)) {
+    for (const seed of Array.from({ length: SeedSEEDS }, (_, index) => index + 1)) {
       const ran = yield* runOf(seed, commandsOf(seed))
       for (const kind of ran.reached) reached.add(kind)
       traces.add(ran.trace)
     }
     bunExpect([...reached].toSorted()).toEqual([...KINDS.map(([kind]) => kind), "faulted-session"].toSorted())
-    bunExpect(traces.size).toBe(Seed.SEEDS)
+    bunExpect(traces.size).toBe(SeedSEEDS)
   }),
 )

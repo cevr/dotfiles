@@ -6,7 +6,8 @@
 import { describe, expect } from "bun:test"
 import { Deferred, Effect, Exit, Fiber } from "effect"
 import * as App from "./app.ts"
-import * as Seed from "../sim/seed.ts"
+import { simulationTest } from "../sim/seed.ts"
+import { simulationBudget } from "../sim/budget.ts"
 import { wallTime } from "../sim/wall-clock.ts"
 
 /** A loader that loads after `ms` of wall time (a child's sleep), forked; `loaded` turns true then. */
@@ -18,7 +19,7 @@ const slowLoader = (ms: number) =>
   })
 
 describe("a wait on real I/O", () => {
-  Seed.effect(
+  simulationTest(
     "a loader that takes 2 s of wall time loads: the wait is in time, not in passes",
     Effect.gen(function* () {
       const { loader, fiber } = yield* slowLoader(2_000)
@@ -27,10 +28,10 @@ describe("a wait on real I/O", () => {
       expect(Exit.isSuccess(exit)).toBe(true)
       expect(loader.loaded).toBe(true)
     }),
-    Seed.simulationBudget(30_000),
+    simulationBudget(30_000),
   )
 
-  Seed.effect(
+  simulationTest(
     "a loader that never loads fails at the deadline, naming what never loaded and how long it waited",
     Effect.gen(function* () {
       const armed = yield* Deferred.make<number>()
@@ -50,14 +51,14 @@ describe("a wait on real I/O", () => {
       expect(Exit.isFailure(exit)).toBe(true)
       expect(String(Exit.isFailure(exit) && exit.cause)).toMatch(/the route plugin \(sim-tui\/route\) never loaded within 1500 ms of wall time \(\d+ passes\)/)
     }),
-    Seed.simulationBudget(30_000),
+    simulationBudget(30_000),
   )
 
-  Seed.effect(
+  simulationTest(
     "a wait whose loads are done runs no pass",
     Effect.gen(function* () {
       expect(yield* App.within([{ what: "nothing", done: () => true }], Effect.die("no pass runs"), 1_000)).toBe(0)
     }),
-    Seed.simulationBudget(30_000),
+    simulationBudget(30_000),
   )
 })

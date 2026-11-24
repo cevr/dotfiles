@@ -6,10 +6,10 @@ import { Effect, Option } from "effect"
 import { KEY } from "@dotfiles/opencode-model-next/pending"
 import { NAME } from "@dotfiles/opencode-model-next/tool"
 import * as Plugins from "../../sim/plugins.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/model-next/model-next-tool.sim.test.ts")
+const { seeded } = simulationRunner("cmd/model-next/model-next-tool.sim.test.ts")
 
 const WORK = "/scratch/work"
 const OLD = { providerID: "sim", id: "old" } as const

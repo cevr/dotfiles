@@ -4,6 +4,7 @@
 import { expect } from "bun:test"
 import { Effect, Option } from "effect"
 import * as App from "./app.ts"
+import { effectTest } from "./effect-test.ts"
 import { router } from "./route/registry.ts"
 import { type Model, text } from "./server.ts"
 import { hangGuard } from "../tests/hang-guard.ts"
@@ -12,7 +13,7 @@ const FILE = "sim-tui/boot-loaded.test.tsx"
 const BOOT: App.BootOptions = { file: FILE, plugins: ["cmd/prime"], width: 100, height: 30 }
 const model: Model = ({ step }) => [[text("Done.")]][step] ?? []
 
-App.effectTest(
+effectTest(
   "a boot past its CPU on a loaded host passes, reported, not judged",
   App.bootWithin(BOOT, 0, Effect.succeed({ load: 48, cores: 12 })).pipe(
     Effect.map((app) => {
@@ -23,7 +24,7 @@ App.effectTest(
   hangGuard("installer"),
 )
 
-App.effectTest(
+effectTest(
   "a seed drives the app that boot started",
   App.seed(BOOT, { key: "boot-loaded", seed: 1, model }, (tui) =>
     Effect.gen(function* () {

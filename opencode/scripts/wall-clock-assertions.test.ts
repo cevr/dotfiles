@@ -4,20 +4,38 @@ import * as BunServices from "@effect/platform-bun/BunServices"
 import { Console, Effect, FileSystem, Option, Path, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { expect, it } from "effect-bun-test"
+import { BUDGET_MS } from "../sim/seed.ts"
 import { inspectTiming, legacyOwners, runnerBridges, sourceFile, testFile, timingModule } from "./test-timing.ts"
+import { measurementKey, unapprovedMeasurements } from "./timing-policy.ts"
 
 const ALLOW = "opencode/scripts/wall-clock-assertions.allow.json"
 // Migration-only: once the landing base has the positive policy, it is the
 // sole ceiling. Before that first landing, use the reviewed policy blob.
-const BOOTSTRAP = "9011bc73871c7f48445d16da68e6925391571902"
+const BOOTSTRAP = "e888819713928b5a3e2cc77f1aa881c7886b7839"
 
-const Group = Schema.Literals(["probe", "clock", "measured", "bridge", "legacy"])
-const Row = Schema.Struct({
-  group: Group,
+const BOOTSTRAP_WORKRIFT = "fdc3afd6a5a8630594e4da72871b69b74524ad85"
+const infrastructure = {
+  file: "opencode/sim/seed.ts",
+  target: "per-file simulation CPU verdict",
+  budget: "<= 5000 cpu-ms on a settled host; exceeded on a loaded host is reported unjudged",
+  assertingTests: [
+    "a file whose seeds spend more CPU than the budget on a settled host fails, naming its CPU and wall time",
+    "past the budget on a loaded host, a file passes, reported and not judged again for its other seeds",
+  ],
+}
+const ownerFields = {
   file: Schema.NonEmptyString,
-  count: Schema.Int.check(Schema.isGreaterThan(0)),
   why: Schema.NonEmptyString,
+}
+const Counted = Schema.Struct({
+  ...ownerFields,
+  group: Schema.Literals(["probe", "clock", "bridge", "legacy"]),
+  count: Schema.Int.check(Schema.isGreaterThan(0)),
 })
+const Measured = Schema.Struct({ ...ownerFields, group: Schema.Literal("measured"), target: Schema.NonEmptyString, budget: Schema.NonEmptyString })
+const Infrastructure = Schema.Struct({ ...ownerFields, group: Schema.Literal("infrastructure"), target: Schema.NonEmptyString,
+  budget: Schema.NonEmptyString, assertingTests: Schema.Array(Schema.NonEmptyString) })
+const Row = Schema.Union([Counted, Measured, Infrastructure])
 type Row = typeof Row.Type
 const decode = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(Row)))
 
@@ -31,9 +49,14 @@ const git = (...argv: ReadonlyArray<string>) => Effect.gen(function* () {
   return out
 })
 
-const key = (group: Row["group"], file: string) => `${group}: ${file}`
-const entries = (list: ReadonlyArray<Row>) => new Map(list.map(({ group, file, count }) => [key(group, file), count]))
-const increment = (counts: Map<string, number>, group: Row["group"], file: string, n = 1) => {
+type Counted = typeof Counted.Type
+const isMeasured = (row: Row): row is typeof Measured.Type => row.group === "measured"
+const key = (group: Counted["group"], file: string) => `${group}: ${file}`
+const entries = (list: ReadonlyArray<Row>) => new Map(list.flatMap((row) => {
+  if ("count" in row) return [[key(row.group, row.file), row.count] as const]
+  return []
+}))
+const increment = (counts: Map<string, number>, group: Counted["group"], file: string, n = 1) => {
   const name = key(group, file)
   counts.set(name, (counts.get(name) ?? 0) + n)
 }
@@ -41,9 +64,13 @@ const increment = (counts: Map<string, number>, group: Row["group"], file: strin
 const survey = (texts: ReadonlyMap<string, string>, resolve: (file: string, specifier: string) => string) => {
   const counts = new Map<string, number>()
   const rejected = new Array<string>()
+  const measurements = new Array<{ readonly file: string; readonly target: string; readonly budget: string }>()
   for (const [file, text] of texts) {
     const result = inspectTiming(file, text, (specifier) => resolve(file, specifier))
-    for (const usage of result.uses) increment(counts, usage.kind, file)
+    for (const usage of result.uses) {
+      if (usage.kind === "measured") measurements.push({ file, target: usage.target, budget: usage.budget })
+      else increment(counts, usage.kind, file)
+    }
     if (runnerBridges.has(file)) increment(counts, "bridge", file)
     if (legacyOwners.has(file) && result.errors.length > 0) increment(counts, "legacy", file, result.errors.length)
     else for (const { rule, at, reason } of result.errors) {
@@ -52,15 +79,42 @@ const survey = (texts: ReadonlyMap<string, string>, resolve: (file: string, spec
       rejected.push(`${file}:${line}: ${rule}: ${reason}; found ${spelling}`)
     }
   }
-  return { counts, rejected }
+  return { counts, rejected, measurements }
 }
 
 const ceiling = Effect.gen(function* () {
   const base = (yield* git("merge-base", "HEAD", "origin/main")).trim()
   const tracked = (yield* git("ls-tree", "--name-only", base, "--", ALLOW)).trim() === ALLOW
-  if (tracked) return yield* git("show", `${base}:${ALLOW}`).pipe(Effect.flatMap(decode))
-  return yield* git("cat-file", "blob", BOOTSTRAP).pipe(Effect.flatMap(decode))
+  if (tracked) {
+    const rows = yield* git("show", `${base}:${ALLOW}`).pipe(Effect.flatMap(decode))
+    return { rows, source: (file: string) => git("show", `${base}:${file}`) }
+  }
+  const rows = yield* git("cat-file", "blob", BOOTSTRAP).pipe(Effect.flatMap(decode))
+  return { rows, source: (file: string) => {
+    expect(file, "only Workrift has legacy debt before the first landing").toBe("workbox/test/workrift.test.ts")
+    return git("cat-file", "blob", BOOTSTRAP_WORKRIFT)
+  } }
 })
+
+// On a stricter rule, recompute from the old blob, not the new file. A site
+// in a new hunk is new code. The pinned Workrift blob includes its authorized R2 witness.
+const legacySites = (file: string, text: string, resolve: (specifier: string) => string) => {
+  const lines = text.split("\n")
+  return inspectTiming(file, text, resolve).errors.map(({ rule, at }) => {
+    const line = text.slice(0, at.start).split("\n").length - 1
+    return `${rule}: ${text.slice(at.start, at.end)} in ${Option.getOrElse(Option.fromUndefinedOr(lines[line]), () => "").trim()}`
+  })
+}
+
+const newSites = (before: ReadonlyArray<string>, after: ReadonlyArray<string>) => {
+  const pool = [...before]
+  return after.filter((item) => {
+    const index = pool.indexOf(item)
+    if (index < 0) return true
+    pool.splice(index, 1)
+    return false
+  })
+}
 
 it.scopedLive("test timings use named runner caps, explicit measurement contracts, and no raw wall clock", () =>
   Effect.gen(function* () {
@@ -68,7 +122,9 @@ it.scopedLive("test timings use named runner caps, explicit measurement contract
     const path = yield* Path.Path
     const root = yield* path.fromFileUrl(new URL("../../", import.meta.url))
     const candidate = yield* fs.readFileString(path.join(root, ALLOW)).pipe(Effect.flatMap(decode))
-    const base = entries(yield* ceiling)
+    const old = yield* ceiling
+    const baseRows = old.rows
+    const base = entries(baseRows)
     const declared = entries(candidate)
     const files = (yield* git("ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "opencode", "workbox/test")).split("\0").filter(sourceFile).filter(testFile)
     const texts = new Map(yield* Effect.forEach(files, (file) => Effect.map(fs.readFileString(path.join(root, file)), (text) => [file, text] as const)))
@@ -77,7 +133,7 @@ it.scopedLive("test timings use named runner caps, explicit measurement contract
       const normalized = path.normalize(path.join(path.dirname(file), specifier))
       return [normalized, `${normalized}.ts`, normalized.replace(/\.[cm]?js$/, ".ts")].find((candidate) => candidate === timingModule || texts.has(candidate)) ?? normalized
     }
-    const { counts, rejected } = survey(texts, resolve)
+    const { counts, rejected, measurements } = survey(texts, resolve)
     for (const row of candidate) {
       if (row.group === "legacy") {
         const owner = Option.fromNullishOr(legacyOwners.get(row.file))
@@ -86,11 +142,26 @@ it.scopedLive("test timings use named runner caps, explicit measurement contract
       }
       if (row.group === "bridge") expect(runnerBridges.has(row.file), `not a known runner bridge: ${row.file}`).toBe(true)
     }
-    expect(declared.size, "duplicate allow-list key").toBe(candidate.length)
+    const approved = candidate.filter(isMeasured)
+    const keys = approved.map(measurementKey)
+    expect(declared.size + new Set(keys).size + 1, "duplicate allow-list key").toBe(candidate.length)
+    expect(candidate.filter((row) => row.group === "infrastructure").map(({ file, target, budget, assertingTests }) =>
+      ({ file, target, budget, assertingTests }))).toEqual([infrastructure])
+    expect(BUDGET_MS, infrastructure.target).toBe(5_000)
+    const seedTests = texts.get("opencode/sim/seed.test.ts")
+    for (const name of infrastructure.assertingTests) expect(seedTests, `missing simulation CPU assertion: ${name}`).toContain(name)
     expect([...declared].filter(([name, count]) => count > (base.get(name) ?? 0)), "timing policy may only shrink from the landing base").toEqual([])
+    expect(unapprovedMeasurements(baseRows.filter(isMeasured), approved), "measurement target, unit, and budget may not grow from the landing base").toEqual([])
+    expect(measurements.map(measurementKey).sort(), "measurement policy must match the source exactly").toEqual(keys.sort())
     expect(rejected, "use hangGuard, a virtual clock, or an approved named timing helper").toEqual([])
     expect([...counts].filter(([name, count]) => count > (declared.get(name) ?? 0)), "new or changed timing uses require approved counts").toEqual([])
     expect([...declared].filter(([name, count]) => count > (counts.get(name) ?? 0)), "remove stale timing policy rows or counts").toEqual([])
+    for (const { file } of candidate.filter((row) => row.group === "legacy")) {
+      const before = yield* old.source(file)
+      const after = Option.getOrElse(Option.fromUndefinedOr(texts.get(file)), () => "")
+      const sites = (text: string) => legacySites(file, text, (specifier) => resolve(file, specifier))
+      expect(newSites(sites(before), sites(after)), `${file} contains new legacy timing sites`).toEqual([])
+    }
   }).pipe(Effect.provide(BunServices.layer)),
 )
 
@@ -115,13 +186,16 @@ it.effect("R1 rejects the timeout slot, not a list of known bad expressions", ()
     'const matrix = test.each([1]); matrix("curried alias", () => {}, 55)',
     'test("tuple spread", ...fixture())',
   ]
-  for (const source of controls) expect(inspect(source).errors.map((error) => error.rule), source).toEqual(["R1"])
+  for (const source of controls) {
+    const direct = 'import { test, it, describe, beforeEach, setDefaultTimeout } from "bun:test";\n'
+    expect(inspect(direct + source).errors.map((error) => error.rule), source).toEqual(["R1"])
+  }
   const allowed = [
-    'import { test as check } from "bun:test"',
-    'import { hangGuard as cap } from "./hang-guard.ts"',
-    'check("default", () => {})',
-    'check.skipIf(false)("long fixture", () => {}, cap("local-fixture"))',
-    'afterAll(() => {}, cap("installer"))',
+    'import { test, afterAll } from "bun:test"',
+    'import { hangGuard } from "./hang-guard.ts"',
+    'test("default", () => {})',
+    'test.skipIf(false)("long fixture", () => {}, hangGuard("local-fixture"))',
+    'afterAll(() => {}, hangGuard("installer"))',
   ].join("\n")
   expect(inspect(allowed)).toEqual({ errors: [], uses: [] })
 }))
@@ -152,6 +226,7 @@ it.effect("R3 accepts only a named target and a literal budget with comparator a
 
 it.effect("R1 reports a named wait before its effective runner timeout can mask it", () => Effect.sync(() => {
   const src = [
+    'import { test, describe } from "bun:test"',
     'import { hangGuard } from "./hang-guard.ts"',
     'describe("suite", () => { test("a", () => waitUntil("the source", () => false, 29500)) }, hangGuard("local-fixture"))',
     'test("b", () => waitUntil("the owner", () => false, 5000))',

@@ -1,4 +1,6 @@
 import { Option, Schema } from "effect"
+// This stops accidental test-time dependence, not concealment via names assembled at runtime, eval, or new Function (the latter two are forbidden anyway).
+// Judge the repository at introduction: scan tests and test-side helpers (test roots and the file forms in testFile), not their consumers alone.
 import { type CallExpression, type Expression, parseSync, Visitor } from "oxc-parser"
 import { HANG_GUARDS, isProductBudget } from "../tests/hang-guard.ts"
 import { WAIT_MS } from "../tests/wait.ts"
@@ -16,10 +18,9 @@ export interface Site {
   readonly at: Span
   readonly reason: string
 }
-export interface Use {
-  readonly kind: AllowKind
-  readonly at: Span
-}
+export type Use =
+  | { readonly kind: Exclude<AllowKind, "measured">; readonly at: Span }
+  | { readonly kind: "measured"; readonly at: Span; readonly target: string; readonly budget: string }
 export interface Inspection {
   readonly errors: ReadonlyArray<Site>
   readonly uses: ReadonlyArray<Use>
@@ -32,6 +33,7 @@ export const testFile = (file: string) =>
   /\/(?:fake-[^/]+|(?:[^/]+\.)?laws|fixture|test-(?:support|helper|util)s?)\.[cm]?[jt]sx?$/.test(file)
 
 export const timingModule = "opencode/tests/hang-guard.ts"
+const symbolModule = "opencode/tests/global-slot.ts"
 export const runnerBridges = new Map([
   ["opencode/sim/seed.ts", "computed simulation deadline and its runner grace"],
   ["opencode/sim-tui/effect-test.ts", "fork-Effect test registration with a named earlier diagnostic"],
@@ -42,12 +44,38 @@ export const legacyOwners = new Map([
   ["workbox/test/workrift-subvolume.test.ts", "workrift-subvolume"],
   ["opencode/mods/orchestrate/tool-call.test.ts", "pool-reset-backed-pace"],
 ])
-const adapterModule = /^(?:bun:test|effect-bun-test|(?:.*\/)?(?:effect-test|laws)(?:\.ts)?)$/
-const wrappers = new Set(["each", "if", "skipIf", "todoIf", "layer"])
 const runnerArguments = new Map([
-  ["test", 2], ["it", 2], ["describe", 2], ["effectTest", 2], ["platformTest", 2], ["scopedTest", 2], ["riftsLaws", 2],
-  ["sim.effect", 2], ["sim.runner", 1],
+  ["test", 2], ["it", 2], ["describe", 2], ["effectTest", 2], ["platformTest", 2], ["riftsLaws", 2],
+  ["simulationTest", 2], ["simulationRunner", 1],
   ["beforeAll", 1], ["afterAll", 1], ["beforeEach", 1], ["afterEach", 1], ["setDefaultTimeout", 0],
+])
+const bunTest = new Set(["test", "it", "describe", "beforeAll", "afterAll", "beforeEach", "afterEach", "setDefaultTimeout"])
+const runnerModules = new Map([
+  ["bun:test", bunTest],
+  ["effect-bun-test", new Set(["test", "it", "describe"])],
+  ["opencode/sim/seed.ts", new Set(["simulationTest", "simulationRunner"])],
+  ["opencode/sim-tui/effect-test.ts", new Set(["effectTest", "platformTest"])],
+  ["opencode/mods/work/laws.ts", new Set(["riftsLaws"])],
+])
+// Bun's Test and Describe types; effect-bun-test's `it` export.
+const testModifiers = new Set(["only", "skip", "todo", "failing", "concurrent", "serial"])
+const suiteModifiers = new Set(["only", "skip", "todo", "concurrent", "serial"])
+const testFactories = new Set(["each", "if", "skipIf", "todoIf", "failingIf", "concurrentIf", "serialIf"])
+const suiteFactories = new Set(["each", "if", "skipIf", "todoIf"])
+const effectModes = new Set(["effect", "live", "scoped", "scopedLive"])
+const processModule = /^(?:node:)?process$/
+const perfModule = /^(?:node:)?perf_hooks$/
+export const simulationBudgetModule = "opencode/sim/budget.ts"
+const bridgeBudgetModules = new Map([["opencode/sim/seed.ts", simulationBudgetModule],
+  ["opencode/sim-tui/effect-test.ts", timingModule], ["opencode/mods/work/laws.ts", timingModule]])
+const simulator = "opencode/sim/seed.ts"
+const bridgeConstructor = (file: string) => {
+  if (file === simulator) return "simulationBudget"
+  return "bridgeBudget"
+}
+const timingNames = new Map<string, Rule>([
+  ["hangGuard", "R1"], ["probeTimeout", "R1"], ["measured", "R3"],
+  ["stamp", "R2"], ["elapsedForReport", "R2"], ["watchdog", "R2"],
 ])
 
 const spell = (node: { readonly type: string }): Option.Option<string> => {
@@ -55,102 +83,54 @@ const spell = (node: { readonly type: string }): Option.Option<string> => {
   if ("name" in node && Schema.is(Schema.String)(node.name)) return Option.some(node.name)
   return Option.none()
 }
-const memberParts = (node: Expression): ReadonlyArray<string> => {
-  if (node.type === "Identifier") return [node.name]
-  if (node.type !== "MemberExpression" || node.object.type === "Super") return []
-  if (node.computed && node.property.type !== "Literal") return []
-  if (!node.computed && node.property.type !== "Identifier") return []
-  const head = memberParts(node.object)
-  if (head.length === 0) return []
-  return Option.match(spell(node.property), { onNone: () => [], onSome: (name) => [...head, name] })
-}
-const withoutGlobal = (path: ReadonlyArray<string>): ReadonlyArray<string> => {
-  if (path[0] === "globalThis" || path[0] === "global") return path.slice(1)
-  return path
-}
-
-const processModule = /^(?:node:)?process$/
-const clockBinding = (specifier: string, spec: Extract<Program["body"][number], { type: "ImportDeclaration" }>["specifiers"][number]): Option.Option<ReadonlyArray<string>> => {
-  if (processModule.test(specifier)) {
-    if (spec.type !== "ImportSpecifier") return Option.some(["process"])
-    return Option.map(spell(spec.imported), (name) => ["process", name])
-  }
-  if (/^(?:node:)?perf_hooks$/.test(specifier) && spec.type === "ImportSpecifier" && Option.contains(spell(spec.imported), "performance"))
-    return Option.some(["performance"])
-  return Option.none()
-}
-type ImportDeclaration = Extract<Program["body"][number], { type: "ImportDeclaration" }>
-const runnerBinding = (specifier: string, resolved: string, spec: ImportDeclaration["specifiers"][number]): Option.Option<ReadonlyArray<string>> => {
-  const simulator = resolved === "opencode/sim/seed.ts"
-  if (!simulator && resolved !== "opencode/sim-tui/app.ts" && !adapterModule.test(specifier)) return Option.none()
-  const head = new Array<string>()
-  if (simulator) head.push("sim")
-  if (spec.type === "ImportNamespaceSpecifier") return Option.some(head)
-  if (spec.type === "ImportSpecifier") return Option.map(spell(spec.imported), (name) => [...head, name])
+const word = (node: { readonly type: string }) => Option.getOrElse(spell(node), () => "")
+const dot = (node: Expression) => {
+  if (node.type === "MemberExpression" && !node.computed && !node.optional && node.object.type !== "Super" && node.property.type === "Identifier")
+    return Option.some({ object: node.object, name: node.property.name })
   return Option.none()
 }
 
-const bindRunnerAliases = (program: Program, runners: Map<string, ReadonlyArray<string>>) =>
-  new Visitor({
-    VariableDeclarator(node) {
-      if (node.id.type !== "Identifier" || !node.init) return
-      const value = node.init
-      if (value.type === "CallExpression") {
-        const path = boundPath(value.callee, runners)
-        if (wrappers.has(path.at(-1) ?? "") && runnerArguments.has(path[0] ?? "")) runners.set(node.id.name, path.slice(0, -1))
-        return
-      }
-      const path = boundPath(value, runners)
-      if (runnerArguments.has(path[0] ?? "")) runners.set(node.id.name, path)
-    },
-  }).visit(program)
+type Mode = "test" | "suite" | "fixed" | "effect-root" | "effect" | "layered"
+interface Runner { readonly root: Span & { readonly name: string }; readonly mode: Mode }
+const baseMode = (name: string, module: string): Mode => {
+  if (module === "effect-bun-test" && name === "it") return "effect-root"
+  if (name === "describe") return "suite"
+  if (name === "test" || name === "it") return "test"
+  return "fixed"
+}
+const dotModifiers = new Map<Mode, readonly [ReadonlySet<string>, Mode]>([
+  ["test", [testModifiers, "test"]], ["suite", [suiteModifiers, "suite"]],
+  ["effect-root", [effectModes, "effect"]], ["effect", [new Set(["serial"]), "layered"]],
+])
+const curryModifiers = new Map<Mode, readonly [ReadonlySet<string>, Mode]>([
+  ["test", [testFactories, "test"]], ["suite", [suiteFactories, "suite"]],
+  ["effect", [new Set(["layer"]), "layered"]],
+])
+const modify = (runner: Runner, name: string, table: typeof dotModifiers) => Option.flatMap(
+  Option.fromUndefinedOr(table.get(runner.mode)),
+  ([members, mode]) => {
+    if (members.has(name)) return Option.some({ ...runner, mode })
+    return Option.none()
+  },
+)
 
-const bindings = (program: Program, resolve: (specifier: string) => string) => {
-  const runners = new Map<string, ReadonlyArray<string>>([["Bun", []]])
-  const helpers = new Map<string, string>()
-  const clocks = new Map<string, ReadonlyArray<string>>()
-  for (const node of program.body) {
-    if (node.type !== "ImportDeclaration") continue
-    const specifier = node.source.value
-    const resolved = resolve(specifier)
-    for (const spec of node.specifiers) {
-      const local = spec.local.name
-      const runner = runnerBinding(specifier, resolved, spec)
-      if (Option.isSome(runner)) runners.set(local, runner.value)
-      if (resolved === timingModule && spec.type === "ImportSpecifier") {
-        const name = spell(spec.imported)
-        if (Option.isSome(name)) helpers.set(local, name.value)
-      }
-      const clock = clockBinding(specifier, spec)
-      if (Option.isSome(clock)) clocks.set(local, clock.value)
-    }
-  }
-  bindRunnerAliases(program, runners)
-  return { runners, helpers, clocks }
+const registration = (node: Expression, imports: ReadonlyMap<string, string>): Option.Option<Runner> => {
+  if (node.type === "Identifier") return Option.map(Option.fromUndefinedOr(imports.get(node.name)), (module) => ({ root: node, mode: baseMode(node.name, module) }))
+  if (node.type === "CallExpression" && !node.optional)
+    return Option.flatMap(dot(node.callee), ({ object, name }) => Option.flatMap(registration(object, imports), (base) => modify(base, name, curryModifiers)))
+  return Option.flatMap(dot(node), ({ object, name }) => Option.flatMap(registration(object, imports), (base) => modify(base, name, dotModifiers)))
 }
 
-const boundPath = (node: Expression, aliases: ReadonlyMap<string, ReadonlyArray<string>>) => {
-  const [head = "", ...tail] = withoutGlobal(memberParts(node))
-  return [...(aliases.get(head) ?? [head]), ...tail]
-}
-
-const runner = (node: CallExpression, aliases: ReadonlyMap<string, ReadonlyArray<string>>) => {
-  const curried = node.callee.type === "CallExpression"
-  let callee = node.callee
-  if (callee.type === "CallExpression") callee = callee.callee
-  const path = boundPath(callee, aliases)
-  const [root = "", ...modifiers] = path
-  const last = modifiers.at(-1) ?? ""
-  if (wrappers.has(last) && !curried) return Option.none()
-  let form = root
-  if (last === "setDefaultTimeout") form = last
-  if (root === "sim") form = `sim.${modifiers[0] ?? ""}`
-  return Option.map(Option.fromNullishOr(runnerArguments.get(form)), (index) => ({ index, form }))
+const runner = (node: CallExpression, imports: ReadonlyMap<string, string>) => {
+  const reg = registration(node.callee, imports)
+  if (node.optional || Option.isNone(reg) || reg.value.mode === "effect-root") return Option.none()
+  const { root } = reg.value
+  return Option.map(Option.fromNullishOr(runnerArguments.get(root.name)), (index) => ({ index, form: root.name, root }))
 }
 
 /** The only registration slot where a runner deadline can appear. No reading into options or evaluating runtime expressions. */
-export const runnerSlot = (node: CallExpression, aliases: ReadonlyMap<string, ReadonlyArray<string>>): Option.Option<CallExpression["arguments"][number]> =>
-  Option.flatMap(runner(node, aliases), ({ index, form }) => {
+const runnerSlot = (node: CallExpression, imports: ReadonlyMap<string, string>): Option.Option<CallExpression["arguments"][number]> =>
+  Option.flatMap(runner(node, imports), ({ index, form }) => {
     const direct = node.arguments[index]
     if (form === "describe") {
       const second = node.arguments[1]
@@ -161,9 +141,9 @@ export const runnerSlot = (node: CallExpression, aliases: ReadonlyMap<string, Re
     return Option.fromNullishOr(earlierSpread ?? direct)
   })
 
-const wallMembers = new Set(["Date.now", "performance.now", "process.hrtime", "Bun.nanoseconds", "process.uptime"])
-const helperName = (node: CallExpression, helpers: ReadonlyMap<string, string>): string => {
-  if (node.callee.type === "Identifier") return helpers.get(node.callee.name) ?? ""
+const clockName = (name: string) => name === "hrtime" || name === "uptime" || name === "performance" || name === "nanoseconds"
+const helperName = (node: CallExpression, helpers: ReadonlySet<string>): string => {
+  if (!node.optional && node.callee.type === "Identifier" && helpers.has(node.callee.name)) return node.callee.name
   return ""
 }
 const literalText = (node?: CallExpression["arguments"][number]): Option.Option<string> => {
@@ -178,60 +158,40 @@ const probe = (node: CallExpression) => {
 const guards = new Map<string, number>(Object.entries(HANG_GUARDS))
 const hang = (node: CallExpression) =>
   node.arguments.length === 1 && Option.exists(literalText(node.arguments[0]), (kind) => guards.has(kind))
-const forwarded = (node: CallExpression) =>
-  node.callee.type === "Identifier" && node.callee.name === "runnerCapOf" &&
-  node.arguments.length === 1 && node.arguments[0]?.type === "Identifier" && node.arguments[0].name === "budget"
+const forwarderName = (file: string) => {
+  if (file === simulator) return "simulationRunnerCapOf"
+  return "runnerCapOf"
+}
+const forwarded = (node: CallExpression, helpers: ReadonlySet<string>, file: string) =>
+  helperName(node, helpers) === forwarderName(file) && node.arguments.length === 1 &&
+  node.arguments[0]?.type === "Identifier" && node.arguments[0].name === "budget"
 
-const capProblem = (node: CallExpression, names: ReturnType<typeof bindings>, bridge: boolean): Option.Option<Site> => {
+type Imports = { readonly runners: ReadonlyMap<string, string>; readonly helpers: ReadonlySet<string> }
+const capProblem = (node: CallExpression, names: Imports, file: string): Option.Option<Site> => {
   const slot = runnerSlot(node, names.runners)
   if (Option.isNone(slot)) return Option.none()
   const cap = slot.value
   const form = Option.map(runner(node, names.runners), ({ form }) => form)
-  if (Option.contains(form, "sim.effect") && simulationBudget(cap, names.runners)) return Option.none()
-  if (Option.contains(form, "sim.runner") && cap.type === "ObjectExpression" && cap.properties.every((prop) => {
-    if (prop.type !== "Property") return false
+  if (Option.contains(form, "simulationTest") && simulationBudget(cap, names.helpers)) return Option.none()
+  if (Option.contains(form, "simulationRunner") && cap.type === "ObjectExpression" && cap.properties.every((prop) => {
+    if (prop.type !== "Property" || prop.computed) return false
     const key = spell(prop.key)
     if (Option.contains(key, "past")) return true
-    return Option.contains(key, "budget") && simulationBudget(prop.value, names.runners)
+    return Option.contains(key, "budget") && simulationBudget(prop.value, names.helpers)
   })) return Option.none()
   if (cap.type === "CallExpression") {
     const form = helperName(cap, names.helpers)
-    if (form === "hangGuard" && hang(cap) || form === "probeTimeout" && probe(cap) || bridge && forwarded(cap)) return Option.none()
+    if (form === "hangGuard" && hang(cap) || form === "probeTimeout" && probe(cap) ||
+      bridgeBudgetModules.has(file) && forwarded(cap, names.helpers, file)) return Option.none()
   }
-  if (bridge && node.callee.type === "Identifier" && node.callee.name === "effectTest" && cap.type === "Identifier" && cap.name === "timeout")
+  if (file === "opencode/sim-tui/effect-test.ts" && Option.contains(form, "effectTest") && cap.type === "Identifier" && cap.name === "timeout")
     return Option.none()
   return Option.some({ rule: "R1", at: cap, reason: 'omit the runner cap or import hangGuard("kind") from tests/hang-guard.ts; intentional probes use probeTimeout(50, "reason")' })
 }
 
-const simulationBudget = (arg: Argument, aliases: ReadonlyMap<string, ReadonlyArray<string>>) =>
-  arg.type === "CallExpression" && boundPath(arg.callee, aliases).join(".") === "sim.simulationBudget" &&
+const simulationBudget = (arg: Argument, helpers: ReadonlySet<string>) =>
+  arg.type === "CallExpression" && helperName(arg, helpers) === "simulationBudget" &&
   arg.arguments.length === 1 && Option.exists(numeric(arg.arguments[0]), (ms) => Number.isInteger(ms) && ms > 0)
-
-const bridgeConstructors = new Map([
-  ["opencode/sim/seed.ts", "simulationBudget"],
-  ["opencode/sim-tui/effect-test.ts", "tuiTestBudget"],
-  ["opencode/mods/work/laws.ts", "riftsLawBudget"],
-])
-
-const bridgeBudgetProblem = (file: string, program: Program): ReadonlyArray<Site> => {
-  const required = bridgeConstructors.get(file)
-  if (!required) return []
-  const errors: Array<Site> = []
-  const verify = (id: { readonly type: string; readonly name?: string }, value: Argument, node: Span) => {
-    if (id.type !== "Identifier" || id.name !== "budget") return
-    if (value.type !== "CallExpression" || value.callee.type !== "Identifier" || value.callee.name !== required)
-      errors.push({ rule: "R1", at: node, reason: `runner bridge must construct its branded deadline with ${required}` })
-  }
-  new Visitor({
-    VariableDeclarator(node) {
-      if (node.id.type === "Identifier" && node.init) verify(node.id, node.init, node)
-    },
-    AssignmentPattern(node) {
-      if (node.left.type === "Identifier") verify(node.left, node.right, node)
-    },
-  }).visit(program)
-  return errors
-}
 
 const partOf = (inner: Span, outer: Span) => outer.start <= inner.start && inner.end <= outer.end
 type Argument = CallExpression["arguments"][number]
@@ -289,7 +249,7 @@ const waitBindings = (program: Program) => {
   return waits
 }
 
-const runnerBudget = (names: ReturnType<typeof bindings>, calls: ReadonlyArray<CallExpression>) => {
+const runnerBudget = (names: Imports, calls: ReadonlyArray<CallExpression>) => {
   const registrations = calls.flatMap((node) => Option.toArray(Option.map(runner(node, names.runners), ({ form }) => ({ node, form })))).toReversed()
   return (call: CallExpression): Option.Option<number> => {
     const enclosing = registrations.filter(({ node, form }) => partOf(call, node) && form !== "setDefaultTimeout")
@@ -305,7 +265,7 @@ const runnerBudget = (names: ReturnType<typeof bindings>, calls: ReadonlyArray<C
   }
 }
 
-const namedWaits = (program: Program, calls: ReadonlyArray<CallExpression>, names: ReturnType<typeof bindings>): ReadonlyArray<Site> => {
+const namedWaits = (program: Program, calls: ReadonlyArray<CallExpression>, names: Imports): ReadonlyArray<Site> => {
   const waits = waitBindings(program)
   const waiting = calls.filter((node) => node.callee.type === "Identifier" && waits.has(node.callee.name))
   if (waiting.length === 0) return []
@@ -322,65 +282,227 @@ const namedWaits = (program: Program, calls: ReadonlyArray<CallExpression>, name
   return warnings
 }
 
+const budgetModules = new Map([
+  ["simulationBudget", simulationBudgetModule], ["simulationRunnerCapOf", simulationBudgetModule],
+  ["bridgeBudget", timingModule], ["runnerCapOf", timingModule],
+])
+type Statement = Program["body"][number]
+type ImportStatement = Extract<Statement, { type: "ImportDeclaration" }>
+type ExportStatement = Extract<Statement, { type: "ExportNamedDeclaration" | "ExportAllDeclaration" }>
+const hostRoots = ["process", "Bun", "globalThis", "global"]
+const globalRoots = new Set(["globalThis", "global"])
+const rawNames = new Set(["Date", "performance", "eval", "Function"])
+const hostModule = (mod: string) => processModule.test(mod) || mod === "bun"
+const clockModule = (mod: string) => hostModule(mod) || perfModule.test(mod)
+const moduleRule = (mod: string): Option.Option<Rule> => {
+  if (runnerModules.has(mod) || mod === simulationBudgetModule) return Option.some("R1")
+  if (mod === timingModule) return Option.some("R3")
+  if (perfModule.test(mod)) return Option.some("R2")
+  return Option.none()
+}
+
+const closedNames = (file: string) => {
+  const runners = new Map<string, string>()
+  const helpers = new Set<string>()
+  const clocks = new Set(hostRoots)
+  const approved = new Set<number>()
+  const errors: Array<Site> = []
+  const uses: Array<Use> = []
+  const mark = (site: Span) => { approved.add(site.start) }
+  const reject = (rule: Rule, at: Span, reason: string) => { errors.push({ rule, at, reason }) }
+  const clock = (at: Span, name: string) => reject("R2", at, `${name} can acquire real time; use a virtual clock or an approved named clock helper`)
+  const rule = (name: string): Option.Option<Rule> => {
+    if (runnerArguments.has(name) || budgetModules.has(name)) return Option.some("R1")
+    if (name === "measured") return Option.some("R3")
+    return Option.filter(Option.fromUndefinedOr(timingNames.get(name)), () => helpers.has(name))
+  }
+  const declarations = runnerModules.get(file)
+  if (declarations) for (const name of declarations) runners.set(name, file)
+  return { runners, helpers, clocks, approved, errors, uses, mark, reject, clock, rule, declarations }
+}
+type ClosedNames = ReturnType<typeof closedNames>
+
+const allowedImport = (file: string, mod: string, name: string) => {
+  if (runnerModules.get(mod)?.has(name) || mod === timingModule && timingNames.has(name)) return true
+  if (bridgeBudgetModules.has(file) && name === forwarderName(file)) return bridgeBudgetModules.get(file) === mod
+  return budgetModules.get(name) === mod
+}
+
+const guardedSourceName = (names: ClosedNames, mod: string, name: string, local: string) =>
+  Option.orElse(Option.filter(Option.fromUndefinedOr(timingNames.get(name)), () => mod === timingModule),
+    () => Option.orElse(names.rule(name), () => names.rule(local)))
+
+type NamedImport = Extract<ImportStatement["specifiers"][number], { type: "ImportSpecifier" }>
+const declareName = (file: string, names: ClosedNames, spec: NamedImport, mod: string, typeOnly: boolean) => {
+  names.mark(spec.imported)
+  const name = word(spec.imported)
+  if (clockModule(mod) && clockName(name)) names.clock(spec, name)
+  if (hostModule(mod) && name === "default") names.clocks.add(spec.local.name)
+  const rule = guardedSourceName(names, mod, name, spec.local.name)
+  if (Option.isNone(rule)) return
+  if (typeOnly || spec.importKind === "type" || spec.local.name !== name || !allowedImport(file, mod, name))
+    names.reject(rule.value, spec, "use the guarded name in a direct value import from its canonical module without a rename")
+  else if (runnerArguments.has(name)) names.runners.set(name, mod)
+  else names.helpers.add(name)
+}
+
+const declareImport = (file: string, names: ClosedNames, decl: ImportStatement, mod: string) => {
+  for (const spec of decl.specifiers) {
+    names.mark(spec.local)
+    if (spec.type === "ImportSpecifier") {
+      declareName(file, names, spec, mod, decl.importKind === "type")
+      continue
+    }
+    const rule = moduleRule(mod)
+    if (Option.isSome(rule)) names.reject(rule.value, spec, "use a direct named import from the canonical module, never a namespace or default")
+    if (hostModule(mod)) names.clocks.add(spec.local.name)
+  }
+}
+
+const declareExport = (names: ClosedNames, decl: ExportStatement, mod: string) => {
+  const from = moduleRule(mod)
+  if (decl.type === "ExportAllDeclaration") {
+    if (Option.isSome(from)) names.reject(from.value, decl, "do not re-export a guarded module")
+    else if (hostModule(mod)) names.clock(decl, mod)
+    return
+  }
+  for (const spec of decl.specifiers) {
+    names.mark(spec.local)
+    names.mark(spec.exported)
+    const name = word(spec.local)
+    const rule = Option.orElse(guardedSourceName(names, mod, name, word(spec.exported)), () => from)
+    if (Option.isSome(rule)) names.reject(rule.value, spec, "do not re-export a guarded binding")
+    else if (clockModule(mod) && clockName(name) || hostModule(mod) && name === "default" ||
+      names.clocks.has(name) || rawNames.has(name)) names.clock(spec, name)
+  }
+}
+
+const permittedDateCall = (node: CallExpression) => Option.filter(dot(node.callee), ({ object, name }) =>
+  !node.optional && object.type === "Identifier" && object.name === "Date" && (name === "parse" || name === "UTC"))
+
+const recordTimingCall = (names: ClosedNames, node: CallExpression) => {
+  const helper = helperName(node, names.helpers)
+  if (!helper) return
+  names.mark(node.callee)
+  if (helper === "probeTimeout") {
+    if (probe(node)) names.uses.push({ kind: "probe", at: node })
+    else names.reject("R1", node, 'intentional probes must use probeTimeout(50, "reason") with literal arguments')
+  }
+  if (helper === "stamp" || helper === "elapsedForReport" || helper === "watchdog") names.uses.push({ kind: "clock", at: node })
+  if (helper !== "measured") return
+  const target = literalText(node.arguments[0])
+  const budget = literalText(node.arguments[1])
+  if (node.arguments.length === 3 && node.arguments[2]?.type !== "SpreadElement" &&
+    Option.isSome(target) && Option.isSome(budget) && isProductBudget(budget.value))
+    names.uses.push({ kind: "measured", at: node, target: target.value, budget: budget.value })
+  else names.reject("R3", node, 'use measured("product target", "budget with unit", fn)')
+}
+
+const readHostMember = (names: ClosedNames, node: Extract<Expression, { type: "MemberExpression" }>) => {
+  if (!node.computed) names.mark(node.property)
+  if (node.object.type !== "Identifier" || !names.clocks.has(node.object.name)) return
+  names.mark(node.object)
+  const member = word(node.property)
+  const guarded = names.rule(member)
+  if (Option.isSome(guarded)) names.reject(guarded.value, node, "use a direct named import and call, not a property on the host")
+  else if (node.computed || clockName(member) || globalRoots.has(node.object.name) && (rawNames.has(member) || names.clocks.has(member)))
+    names.clock(node, node.object.name)
+}
+
+const readReference = (names: ClosedNames, node: Span & { readonly name: string }, types: ReadonlyArray<Span>, effectFunction: boolean) => {
+  if (names.approved.has(node.start) || types.some((type) => partOf(node, type))) return
+  const { name } = node
+  const rule = names.rule(name)
+  if (Option.contains(rule, "R2")) names.uses.push({ kind: "clock", at: node })
+  else if (Option.isSome(rule)) names.reject(rule.value, node, "guarded names may only be introduced by a canonical named import and used at their call")
+  else if (names.clocks.has(name) || rawNames.has(name) && !(effectFunction && name === "Function")) names.clock(node, name)
+}
+
+const dynamicSource = (names: ClosedNames, resolve: (specifier: string) => string, site: Span, argument?: Argument) => {
+  if (argument?.type !== "Literal" || !Schema.is(Schema.String)(argument.value)) return
+  const mod = resolve(argument.value)
+  const rule = moduleRule(mod)
+  if (Option.isSome(rule)) names.reject(rule.value, site, "guarded modules require static direct named imports")
+  else if (hostModule(mod)) names.clock(site, mod)
+}
+
+const isRequire = (node: Expression) => {
+  if (node.type === "Identifier") return node.name === "require"
+  return Option.exists(dot(node), ({ name }) => name === "require")
+}
+
+const inspectBridgeBinding = (file: string, names: ClosedNames, pattern: Span & { readonly type: string; readonly name?: string }, value?: Argument) => {
+  if (!bridgeBudgetModules.has(file) || pattern.type !== "Identifier" || pattern.name !== "budget") return
+  const constructor = bridgeConstructor(file)
+  if (value?.type !== "CallExpression" || helperName(value, names.helpers) !== constructor)
+    names.reject("R1", pattern, `runner bridge must construct its branded deadline with imported ${constructor}`)
+}
+
+type Declarator = Extract<Statement, { type: "VariableDeclaration" }>["declarations"][number]
+const inspectDeclarator = (file: string, names: ClosedNames, { id, init }: Declarator) => {
+  inspectBridgeBinding(file, names, id, Option.getOrUndefined(Option.fromNullishOr(init)))
+  if (id.type === "Identifier" && names.declarations?.has(id.name)) names.mark(id)
+  if (id.type === "Identifier" && file === simulationBudgetModule && budgetModules.get(id.name) === file) names.mark(id)
+  if (file === symbolModule && init?.type === "Identifier" && init.name === "globalThis") names.mark(init)
+  markHostDestructuring(names, id, init)
+}
+
+const markHostDestructuring = (names: ClosedNames, id: Declarator["id"], init: Declarator["init"]) => {
+  if (id.type !== "ObjectPattern" || init?.type !== "Identifier" || !names.clocks.has(init.name) || globalRoots.has(init.name)) return
+  if (id.properties.every((field) => field.type === "Property" && !field.computed && !clockName(word(field.key)))) names.mark(init)
+}
+
+const inspectDeclarations = (file: string, names: ClosedNames, program: Program, resolve: (specifier: string) => string) => {
+  // Import order does not affect the acquisition policy.
+  for (const decl of program.body) if (decl.type === "ImportDeclaration") declareImport(file, names, decl, resolve(decl.source.value))
+  for (const decl of program.body) if (decl.type === "ExportNamedDeclaration" || decl.type === "ExportAllDeclaration")
+    declareExport(names, decl, Option.match(Option.fromNullishOr(decl.source), { onNone: () => "", onSome: ({ value }) => resolve(value) }))
+}
+
 export const inspectTiming = (file: string, source: string, resolve: (specifier: string) => string): Inspection => {
   if (file === timingModule) return { errors: [], uses: [] }
   const program = parseSync(file, source).program
-  const names = bindings(program, resolve)
-  const errors: Array<Site> = [...bridgeBudgetProblem(file, program)]
-  const uses: Array<Use> = []
+  const names = closedNames(file)
   const calls: Array<CallExpression> = []
-  const approvedCalls = new Set<number>()
-  const timingImports = program.body.filter((node) => node.type === "ImportDeclaration" && resolve(node.source.value) === timingModule)
-  const clock = (at: Span, name: string) => errors.push({ rule: "R2", at, reason: `${name} reads real time; use a virtual clock or an approved named clock helper` })
+  const types: Array<Span> = []
+  const effectFunction = program.body.some((decl) => decl.type === "ImportDeclaration" && decl.source.value === "effect" &&
+    decl.specifiers.some((spec) => spec.type === "ImportSpecifier" && word(spec.imported) === "Function" && spec.local.name === "Function"))
+  const params = (node: { readonly params: ReadonlyArray<Span & { readonly type: string }> }) => {
+    for (const parameter of node.params) inspectBridgeBinding(file, names, parameter)
+  }
+  const key = (node: Span, computed: boolean) => { if (!computed) names.mark(node) }
+  inspectDeclarations(file, names, program, resolve)
   new Visitor({
     CallExpression(node) {
       calls.push(node)
-      const helper = helperName(node, names.helpers)
-      if (helper !== "") approvedCalls.add(node.callee.start)
-      if (helper === "probeTimeout") {
-        if (probe(node)) uses.push({ kind: "probe", at: node })
-        else errors.push({ rule: "R1", at: node, reason: 'intentional probes must use probeTimeout(50, "reason") with literal arguments' })
-      }
-      if (helper === "stamp" || helper === "elapsedForReport" || helper === "watchdog") uses.push({ kind: "clock", at: node })
-      if (helper === "measured") {
-        if (node.arguments.length === 3 && Option.isSome(literalText(node.arguments[0])) && Option.exists(literalText(node.arguments[1]), isProductBudget))
-          uses.push({ kind: "measured", at: node })
-        else errors.push({ rule: "R3", at: node, reason: 'use measured("product target", "budget with unit", fn)' })
-      }
-      const found = capProblem(node, names, runnerBridges.has(file))
-      if (Option.isSome(found)) errors.push(found.value)
+      if (isRequire(node.callee)) dynamicSource(names, resolve, node, node.arguments[0])
+      for (const { object } of Option.toArray(permittedDateCall(node))) names.mark(object)
+      for (const { root } of Option.toArray(runner(node, names.runners))) names.mark(root)
+      recordTimingCall(names, node)
+      names.errors.push(...Option.toArray(capProblem(node, names, file)))
     },
-    Identifier(node) {
-      const name = names.helpers.get(node.name)
-      if (!name || approvedCalls.has(node.start) || timingImports.some((decl) => partOf(node, decl))) return
-      if (name === "stamp" || name === "elapsedForReport" || name === "watchdog") uses.push({ kind: "clock", at: node })
-      if (name === "measured") errors.push({ rule: "R3", at: node, reason: "call imported measured directly with its literal arguments" })
-      if (name === "probeTimeout") errors.push({ rule: "R1", at: node, reason: "call imported probeTimeout directly with its literal arguments" })
-    },
-    MemberExpression(node) {
-      const path = boundPath(node, names.clocks).join(".")
-      if (wallMembers.has(path)) clock(node, path)
-    },
+    ImportExpression(node) { dynamicSource(names, resolve, node, node.source) },
+    TSExternalModuleReference(node) { dynamicSource(names, resolve, node, node.expression) },
+    MemberExpression(node) { readHostMember(names, node) },
     NewExpression(node) {
-      if (node.arguments.length === 0 && boundPath(node.callee, names.clocks).join(".") === "Date") clock(node, "new Date()")
-    },
-    ImportDeclaration(node) {
-      if (!processModule.test(node.source.value)) return
-      for (const specifier of node.specifiers) {
-        if (specifier.type !== "ImportSpecifier") continue
-        const name = spell(specifier.imported)
-        if (Option.isSome(name) && wallMembers.has(`process.${name.value}`)) clock(specifier, `process.${name.value}`)
+      if (node.callee.type !== "Identifier") return
+      if (node.callee.name === "Function") {
+        names.mark(node.callee)
+        names.reject("R2", node.callee, "dynamic code generation cannot introduce a guarded acquisition")
       }
+      if (node.callee.name === "Date" && node.arguments.some((arg) => arg.type !== "SpreadElement")) names.mark(node.callee)
     },
-    VariableDeclarator(node) {
-      if (node.id.type !== "ObjectPattern" || !node.init) return
-      const root = boundPath(node.init, names.clocks).join(".")
-      for (const field of node.id.properties) {
-        if (field.type !== "Property") continue
-        const key = spell(field.key)
-        if (Option.isSome(key) && wallMembers.has(`${root}.${key.value}`)) clock(field, `${root}.${key.value}`)
-      }
-    },
+    TSTypeReference(node) { types.push(node.typeName) },
+    TSTypeQuery(node) { types.push(node.exprName) },
+    TSPropertySignature(node) { key(node.key, node.computed) },
+    Property(node) { if (!node.shorthand) key(node.key, node.computed) },
+    MethodDefinition(node) { key(node.key, node.computed) },
+    PropertyDefinition(node) { key(node.key, node.computed) },
+    VariableDeclarator(node) { inspectDeclarator(file, names, node) },
+    AssignmentPattern(node) { inspectBridgeBinding(file, names, node.left, node.right) },
+    AssignmentExpression(node) { inspectBridgeBinding(file, names, node.left) },
+    ArrowFunctionExpression: params, FunctionDeclaration: params, FunctionExpression: params,
+    Identifier(node) { readReference(names, node, types, effectFunction) },
   }).visit(program)
-  return { errors: [...errors, ...namedWaits(program, calls, names)], uses }
+  return { errors: [...names.errors, ...namedWaits(program, calls, names)], uses: names.uses }
 }

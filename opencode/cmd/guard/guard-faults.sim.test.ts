@@ -19,10 +19,10 @@ import { expect } from "bun:test"
 import { Array as Arr, Effect, Option, Schema } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
 import { below, generator } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner, simulationTest, SEEDS as SeedSEEDS } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/guard/guard-faults.sim.test.ts")
+const { seeded } = simulationRunner("cmd/guard/guard-faults.sim.test.ts")
 
 const WORK = "/scratch/guard/work"
 const HOME = "/Users/owner"
@@ -185,10 +185,10 @@ seeded(
     }),
 )
 
-Seed.effect(
+simulationTest(
   "the gate's 20 seeds reach every call in every form, in a root and a subagent, both faults on, and a restart",
   Effect.sync(() => {
-    const all = Array.from({ length: Seed.SEEDS }, (_, index) => commandsOf(index + 1)).flat()
+    const all = Array.from({ length: SeedSEEDS }, (_, index) => commandsOf(index + 1)).flat()
     const calls = new Set(all.filter((command): command is CallCommand => command.type === "call").map((command) => `${command.call.kind} ${command.form.id} ${command.child}`))
     expect(calls.size).toBe(CALLS.length * FORMS.length * 2)
     expect(all.some((command) => command.type === "ps-fails" && command.on)).toBe(true)

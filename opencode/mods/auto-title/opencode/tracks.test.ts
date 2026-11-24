@@ -16,7 +16,7 @@ const storage = (entries: Map<string, Schema.Json>): Storage => ({
   remove: (key) => Effect.sync(() => void entries.delete(key)),
 })
 
-tracksLaws("the plugin storage's tracks", () => layer(storage(new Map())), effectTest)
+tracksLaws("the plugin storage's tracks", () => layer(storage(new Map())))
 
 effectTest(
   "an entry that no longer decodes reads as none",

@@ -8,6 +8,7 @@
 import { expect } from "bun:test"
 import { Effect, Schema } from "effect"
 import * as App from "./app.ts"
+import { effectTest } from "./effect-test.ts"
 import { MODEL_REF, type Model, reasoning, stall, subagent, text } from "./server.ts"
 import { hangGuard } from "../tests/hang-guard.ts"
 
@@ -85,7 +86,7 @@ const play = (seed: number, run: number) =>
 
 App.bootTest(BOOT)
 
-App.effectTest(
+effectTest(
   "a seed's sequence run twice gives one trace; the seeds give at least 5; no trace holds the wall clock",
   Effect.gen(function* () {
     const traces = new Set<string>()
@@ -113,7 +114,7 @@ const draws = (text: ReadonlyArray<string>, word: string) => text.some((line) =>
 // server's heartbeat keeps a quiet one open. A seed quiet past 45 s of virtual time keeps its stream (`settle`
 // fails on a drop or a reopen) and its body: every frame drawn over the quiet stretch, and after the next turn,
 // still draws the turn drawn before it.
-App.effectTest(
+effectTest(
   "a stream quiet past the client's 45 s idle watchdog stays open and its body stays drawn: the harness sends the server's heartbeat",
   App.seed(BOOT, { key: "quiet", seed: 1, model }, (tui) =>
     Effect.gen(function* () {
@@ -150,7 +151,7 @@ const asked = (run: number) =>
 /** A line's text and colours, to tell a lit item from an unlit one. */
 const styled = (frame: App.Frame, line: number) => frame.lines[line]?.spans ?? []
 
-App.effectTest(
+effectTest(
   "a pointer the seed before left over an item lights nothing in the next seed",
   Effect.gen(function* () {
     const alone = yield* asked(0)

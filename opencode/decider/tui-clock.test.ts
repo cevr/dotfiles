@@ -4,6 +4,7 @@
 // that loaded its own copy of this module reads the same clock.
 import { describe, expect, test } from "bun:test"
 import { Array as Arr, Option } from "effect"
+import { globalSlot } from "../tests/global-slot.ts"
 import * as TuiClock from "./tui-clock.ts"
 
 interface Timer {
@@ -83,7 +84,6 @@ describe("the TUI clock", () => {
   test("the clock is process-wide: the registry under its global symbol is what every copy reads", () => {
     const { clock } = manual(42)
     using _held = installed(clock)
-    const registry: { [key: symbol]: TuiClock.Clock } = globalThis
-    expect(registry[Symbol.for("dotfiles.tui-clock")]).toBe(clock)
+    expect(globalSlot<TuiClock.Clock>(Symbol.for("dotfiles.tui-clock")).get()).toEqual(Option.some(clock))
   })
 })

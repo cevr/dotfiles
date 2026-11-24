@@ -5,10 +5,11 @@
 // The timeout is wall time: every seed runs and the test passes.
 import { expect, jest, test } from "bun:test"
 import { Console, Effect } from "effect"
-import * as Seed from "../seed.ts"
+import { simulationRunner, SEEDS as SeedSEEDS, simulationTest } from "../seed.ts"
+import { simulationBudget } from "../budget.ts"
 
 const ran: Array<number> = []
-const { seeded } = Seed.runner("sim/fixtures/seed-fake-timers.fixture.ts", { budget: Seed.simulationBudget(1_000) })
+const { seeded } = simulationRunner("sim/fixtures/seed-fake-timers.fixture.ts", { budget: simulationBudget(1_000) })
 
 test("the fake timers are taken", () => {
   jest.useFakeTimers()
@@ -26,7 +27,7 @@ seeded("seeds that move the virtual clock past the timeout", ({ seed }) =>
 
 test("the fake timers are given back", () => {
   jest.useRealTimers()
-  expect(ran).toHaveLength(Seed.SEEDS)
+  expect(ran).toHaveLength(SeedSEEDS)
 })
 
-Seed.effect("says how many seeds ran", Effect.suspend(() => Console.log(`seed-fake-timers: ${ran.length} seeds ran`)))
+simulationTest("says how many seeds ran", Effect.suspend(() => Console.log(`seed-fake-timers: ${ran.length} seeds ran`)))

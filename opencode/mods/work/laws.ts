@@ -98,12 +98,10 @@ export const savedWorkCase = (made: GitBench) =>
     expect(yield* subjects(hidden)).toEqual(["only here behind a merge"])
   })
 
-export const riftsLawBudget = (cap: RunnerGuard) => bridgeBudget(cap)
-
 /** `bench` makes a fresh implementation over a fresh warm source. */
 export const riftsLaws = (name: string, bench: () => Effect.Effect<RiftBench, never, Scope.Scope>, timeout: RunnerGuard = hangGuard("unit-law")) =>
   describe(`${name} keeps the Rifts laws`, () => {
-    const budget = riftsLawBudget(timeout)
+    const budget = bridgeBudget(timeout)
     const law = (title: string, body: (within: typeof check) => Promise<void>) =>
       test(title, () => body((bench, exercise) => check(bench, exercise, beforeRunnerCap(title, budget))), runnerCapOf(budget))
     law(

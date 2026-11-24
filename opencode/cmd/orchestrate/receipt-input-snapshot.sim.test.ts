@@ -19,10 +19,10 @@ import { Array as Arr, ByteSize, Context, Data, Deferred, Effect, Equal, Exit, t
 import { Digest } from "effect/crypto"
 import { ChildProcessSpawner } from "effect/process"
 import { TestClock } from "effect/testing"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner, type Seeded as SeedSeeded, simulationTest } from "../../sim/seed.ts"
 import { formats, layer } from "./batch-inputs.ts"
 
-const { seeded } = Seed.runner("cmd/orchestrate/receipt-input-snapshot.sim.test.ts")
+const { seeded } = simulationRunner("cmd/orchestrate/receipt-input-snapshot.sim.test.ts")
 
 // The oracle's own full object name: 40 lower-case hex digits (SHA-1) or 64 (SHA-256), branded as a snapshot's names are.
 const FullName = Schema.String.check(Schema.isPattern(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/)).pipe(Schema.brand("ObjectName"))
@@ -486,7 +486,7 @@ const leaves = (key: string, head: string, kind: string, notOne: string, meaning
   })
 
 /** One script, frozen and checked against the oracle: which kind of outcome it reached. */
-const checkScript = (label: number | string, steps: ReadonlyArray<Step>, expect: Seed.Seeded["expect"]) =>
+const checkScript = (label: number | string, steps: ReadonlyArray<Step>, expect: SeedSeeded["expect"]) =>
   Effect.gen(function* () {
     const { outcome, served } = yield* run(
       steps.map((each) => each.files),
@@ -662,7 +662,7 @@ seeded("two reads of one source that differ in anything observable (absent or pr
   }),
 )
 
-Seed.effect("the host's files: only allowlisted regular files are read; a link, a folder, an oversized file, a bad name or an unreadable file is refused or unreadable, never absent or followed",
+simulationTest("the host's files: only allowlisted regular files are read; a link, a folder, an oversized file, a bad name or an unreadable file is refused or unreadable, never absent or followed",
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
@@ -767,7 +767,7 @@ const provenDigest = (snapshot: InputSnapshot) =>
 /** A freeze of `request` over the host files at `places`. */
 const freezeAt = (places: ReceiptPlaces, request: InputRequest) => freeze(request).pipe(Effect.provide(layer(places)))
 
-Seed.effect("evidence is the file's exact bytes: a byte-order mark is kept and refused, CRLF and padding are kept as written, a stray tail is refused, bytes that are not UTF-8 are refused; every accepted file's digest is an independent hash of the file",
+simulationTest("evidence is the file's exact bytes: a byte-order mark is kept and refused, CRLF and padding are kept as written, a stray tail is refused, bytes that are not UTF-8 are refused; every accepted file's digest is an independent hash of the file",
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
@@ -811,7 +811,7 @@ Seed.effect("evidence is the file's exact bytes: a byte-order mark is kept and r
   }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
 )
 
-Seed.effect("host scope: a source stamps the host it reads on; Work's receipts and the updater's record name no producing host, so bytes copied into another host's folder read as that host's, with the same digest",
+simulationTest("host scope: a source stamps the host it reads on; Work's receipts and the updater's record name no producing host, so bytes copied into another host's folder read as that host's, with the same digest",
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path

@@ -140,16 +140,16 @@ describe("the skills plugin", () => {
       Effect.gen(function* () {
         const at = yield* layout
         const local = at.write(join(at.project, ".claude/skills/review/SKILL.md"), skillFile("Project review", "LOCAL BODY"))
-        const global = at.write(join(at.config, "skills/review/SKILL.md"), skillFile("User review", "GLOBAL BODY"))
+        const globalSkill = at.write(join(at.config, "skills/review/SKILL.md"), skillFile("User review", "GLOBAL BODY"))
         const only = at.write(join(at.home, ".claude/skills/deploy/SKILL.md"), skillFile("User deploy", "DEPLOY BODY"))
         const plugin = yield* start(at, [
           { id: "deploy", name: "deploy", description: "User deploy", path: only, content: "DEPLOY BODY\n" },
-          { id: "review", name: "review", description: "User review", path: global, content: "GLOBAL BODY\n" },
+          { id: "review", name: "review", description: "User review", path: globalSkill, content: "GLOBAL BODY\n" },
         ])
         const registry = plugin.registry()
         expect(registry.get("review")).toMatchObject({ path: local, content: "LOCAL BODY\n", description: "Project review" })
         expect(registry.get("review:local")).toMatchObject({ path: local, content: "LOCAL BODY\n", name: "review" })
-        expect(registry.get("review:global")).toMatchObject({ path: global, content: "GLOBAL BODY\n", name: "review" })
+        expect(registry.get("review:global")).toMatchObject({ path: globalSkill, content: "GLOBAL BODY\n", name: "review" })
         expect(registry.get("deploy")).toMatchObject({ path: only })
         expect((yield* plugin.catalog).entries).toEqual([
           { token: "deploy", id: "deploy", description: "User deploy", tier: "global", shadowed: false },
@@ -164,9 +164,9 @@ describe("the skills plugin", () => {
       Effect.gen(function* () {
         const at = yield* layout
         const local = at.write(join(at.project, ".claude/skills/review/SKILL.md"), skillFile("Project review", "LOCAL BODY"))
-        const global = at.write(join(at.config, "skills/review/SKILL.md"), skillFile("User review", "GLOBAL BODY"))
-        const plugin = yield* start(at, [], [{ id: "review", name: "review", description: "User review", path: global, content: "GLOBAL BODY\n" }])
-        expect(plugin.registry().get("review")).toMatchObject({ path: global })
+        const globalSkill = at.write(join(at.config, "skills/review/SKILL.md"), skillFile("User review", "GLOBAL BODY"))
+        const plugin = yield* start(at, [], [{ id: "review", name: "review", description: "User review", path: globalSkill, content: "GLOBAL BODY\n" }])
+        expect(plugin.registry().get("review")).toMatchObject({ path: globalSkill })
         expect(plugin.registry().get("review:local")).toMatchObject({ path: local })
         expect((yield* plugin.catalog).entries.map((entry) => [entry.token, entry.id, entry.tier])).toEqual([
           ["review", "review:local", "local"],

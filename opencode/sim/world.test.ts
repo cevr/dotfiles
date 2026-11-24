@@ -11,7 +11,7 @@
 //   time moves only when a command advances it.
 // It also measures what one simulated hour costs in wall time.
 import { describe, expect } from "bun:test"
-import * as Seed from "./seed.ts"
+import { simulationTest } from "./seed.ts"
 import { Plugin } from "@opencode/plugin/effect"
 import { SessionID } from "@opencode/schema/session-id"
 import { Array as Arr, Clock, Effect, Option, Schema } from "effect"
@@ -403,7 +403,7 @@ const pooledInvariants = (seed: number) => (world: World, anthropic: Anthropic, 
 }
 
 describe("the world", () => {
-  Seed.effect(
+  simulationTest(
     "one seed replays byte for byte, holds no wall-clock value, and 50 seeds give at least 10 different runs",
     Effect.gen(function* () {
       const wall = String(yield* Clock.currentTimeMillis).slice(0, 7)
@@ -421,14 +421,14 @@ describe("the world", () => {
     }),
   )
 
-  Seed.effect(
+  simulationTest(
     "against the reference model: steers once and in order, idle sessions take their work, restarts lose nothing, time moves only when advanced",
     Effect.forEach(SEEDS, (seed) => runOf(seed, invariants({ stored: new Map(), messages: new Map(), lines: 0 })).pipe(Effect.map(oneAtATime)), {
       discard: true,
     }),
   )
 
-  Seed.effect(
+  simulationTest(
     "a pooled run replays byte for byte: pooled turns, plan limits, refresh faults, resets and restarts; 50 seeds give at least 10 different runs",
     Effect.gen(function* () {
       const traces = yield* Effect.forEach(SEEDS, (seed) =>
@@ -443,7 +443,7 @@ describe("the world", () => {
     }),
   )
 
-  Seed.effect(
+  simulationTest(
     "against the pooled model: every request on one known login, none on a login before the reset it was refused to, no refresh token traded twice, no grant claimed twice or unlisted",
     Effect.gen(function* () {
       const claims = yield* Effect.forEach(SEEDS, (seed) =>
@@ -460,7 +460,7 @@ describe("the world", () => {
     }),
   )
 
-  Seed.effect(
+  simulationTest(
     "a field the world does not read is refused, not dropped: the host would act on it",
     Effect.gen(function* () {
       const world = make({ seed: 1, script: () => say("ok") })
@@ -475,7 +475,7 @@ describe("the world", () => {
     }),
   )
 
-  Seed.effect(
+  simulationTest(
     "a queued prompt taken back is never delivered; queued prompts merged are delivered as one, the originals cancelled",
     Effect.gen(function* () {
       const world = make({ seed: 1, script: () => say("ok") })
@@ -493,7 +493,7 @@ describe("the world", () => {
     }),
   )
 
-  Seed.effect(
+  simulationTest(
     "a simulated hour costs milliseconds",
     Effect.gen(function* () {
       const world = yield* worldOf(7)

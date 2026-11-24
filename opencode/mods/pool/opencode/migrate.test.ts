@@ -83,19 +83,19 @@ const today = (): Map<string, Schema.Json> =>
 const readIds = (entries: Map<string, Schema.Json>) => {
   const store = storage(entries)
   return Effect.gen(function* () {
-    const ledger = yield* Ledger.use((it) => it.restore(PoolId.make("anthropic")))
-    const resets = yield* ResetsStore.use((it) => it.read)
-    const fleet = yield* FleetStore.use((it) => it.read)
-    const pushes = yield* PushStore.use((it) => it.read)
+    const ledger = yield* Ledger.use((entry) => entry.restore(PoolId.make("anthropic")))
+    const resets = yield* ResetsStore.use((entry) => entry.read)
+    const fleet = yield* FleetStore.use((entry) => entry.read)
+    const pushes = yield* PushStore.use((entry) => entry.read)
     return {
       holds: Object.keys(ledger.holds),
       readings: Object.keys(ledger.readings),
       steps: ledger.steps.map((step) => step.credentialID),
       caches: Object.values(ledger.recent).map((mark) => mark.credentialID),
-      resets: Object.values(resets.resets).map((it) => [it.key, it.credentialID]),
-      claims: resets.claims.map((it) => [it.key, it.credentialID]),
-      peerReadings: Object.values(fleet.peers).flatMap((peer) => peer.report?.readings.map((it) => it.credentialID) ?? []),
-      peerLimitRows: Object.values(fleet.peers).flatMap((peer) => peer.report?.limits?.rows.map((it) => it.key) ?? []),
+      resets: Object.values(resets.resets).map((entry) => [entry.key, entry.credentialID]),
+      claims: resets.claims.map((entry) => [entry.key, entry.credentialID]),
+      peerReadings: Object.values(fleet.peers).flatMap((peer) => peer.report?.readings.map((entry) => entry.credentialID) ?? []),
+      peerLimitRows: Object.values(fleet.peers).flatMap((peer) => peer.report?.limits?.rows.map((entry) => entry.key) ?? []),
       pushAccounts: Object.values(pushes.pushes).flatMap((push) => push.allowance.accounts ?? []),
     }
   }).pipe(Effect.provide(Layer.mergeAll(LedgerLive.layer(store), ResetsLive.layer(store), FleetLive.layer(store), PushesLive.layer(store))))

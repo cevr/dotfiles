@@ -21,7 +21,7 @@
 import { expect } from "bun:test"
 import { Array as Arr, Config, Effect, Layer, Match, Option, type Random } from "effect"
 import { below, generator } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner, type Seeded as SeedSeeded, SeedFailed as SeedSeedFailed, simulationTest } from "../../sim/seed.ts"
 import { platform as ownPlatform } from "@dotfiles/opencode-orchestrate/node/platform"
 import { hostServices } from "../../sim/host-services.ts"
 import * as SqliteRecord from "@dotfiles/opencode-orchestrate/sqlite/record"
@@ -30,7 +30,7 @@ import { type Answer, type Happened, makeModel, okOf, type Reason, type State, t
 import { type Opened, SUBJECTS } from "./record-subject.ts"
 
 const FILE = "cmd/orchestrate/record-model.sim.test.ts"
-const { seeded } = Seed.runner(FILE)
+const { seeded } = simulationRunner(FILE)
 
 const STEPS = 120
 const OWNERS: Arr.NonEmptyReadonlyArray<string> = ["L1", "L2", "L3", "root"]
@@ -62,7 +62,7 @@ interface Books {
 interface Run {
   readonly world: World
   readonly random: Random.Random
-  readonly expect: Seed.Seeded["expect"]
+  readonly expect: SeedSeeded["expect"]
   readonly opened: Opened
   readonly held: { subject: Subject }
   readonly reference: Subject
@@ -384,7 +384,7 @@ const compared = (run: Run) => {
   }
 }
 
-const runSeed = (seed: number, expect: Seed.Seeded["expect"], open: (world: World) => Opened) => {
+const runSeed = (seed: number, expect: SeedSeeded["expect"], open: (world: World) => Opened) => {
   const world = freshWorld()
   const opened = open(world)
   const books: Books = { promised: [], claimed: new Map(), decided: new Set(), epoch: new Map(), woken: new Set(), commits: [], handBacks: [], receipts: [], keys: [], counts: { roots: 1, minted: 0, step: 0, reasoned: 0 } }
@@ -491,7 +491,7 @@ const onSubject = <A>(body: (open: (world: World) => Opened) => A) =>
   Effect.gen(function* () {
     const name = yield* subjectName
     const make = yield* Effect.fromOption(Option.fromUndefinedOr(SUBJECTS.get(name))).pipe(
-      Effect.mapError(() => new Seed.SeedFailed({ message: `SUBJECT=${name}: not a subject; record-subject.ts names them` })),
+      Effect.mapError(() => new SeedSeedFailed({ message: `SUBJECT=${name}: not a subject; record-subject.ts names them` })),
     )
     return yield* Effect.acquireUseRelease(
       Effect.tap(Effect.sync(() => scratch("record-model-")), (dir) => Effect.scoped(SqliteRecord.open(`${dir.path}/record.db`, { readonly: false, now: 1_000_000 })).pipe(Effect.orDie)),
@@ -506,7 +506,7 @@ seeded("no commitment disappears: every open one is held or listed, through rest
   onSubject((open) => runSeed(seed, expect, open)),
 )
 
-Seed.effect(
+simulationTest(
   "every caller × operation × state × reason class × pointer kind × existence answers as the reference, through a reopen and a restart",
   onSubject((open) => {
     const world = freshWorld()

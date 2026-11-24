@@ -24,10 +24,10 @@ import { make as makeDigest } from "./server.ts"
 import { scratch } from "../../tests/scratch.ts"
 import * as Plugins from "../../sim/plugins.ts"
 import { plain } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/digest/answers.sim.test.ts")
+const { seeded } = simulationRunner("cmd/digest/answers.sim.test.ts")
 
 const ASKING = "/scratch/asking"
 const SERVING = "/scratch/serving"

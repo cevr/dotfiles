@@ -43,7 +43,7 @@ const simulate = (creates: ReadonlyArray<CreateSpec>, timing: Timing, window = 6
 
 const measuredTiming: Timing = { ff: 30, install: 16, warm: 628 }
 /** 22:00:57Z = 0: the holder (scratch-vfy-21699-r2), lab-replay, offprice, vitrine, whole-publish, in the order they got the lock. */
-const measured: ReadonlyArray<CreateSpec> = [
+const observedSchedule: ReadonlyArray<CreateSpec> = [
   { arrive: 0, fetch: 6, clone: 153 },
   { arrive: 29, fetch: 3, clone: 168 },
   { arrive: 35, fetch: 2, clone: 96 },
@@ -53,7 +53,7 @@ const measured: ReadonlyArray<CreateSpec> = [
 
 describe("the base's one exclusive lock under five creates and an advance (a model on a manual clock)", () => {
   test("the measured schedule comes back: every create queued behind the advance's warm and the clones before it", () => {
-    const run = simulate(measured, measuredTiming)
+    const run = simulate(observedSchedule, measuredTiming)
     // Measured, in s after 22:00:57Z, when each got the lock: 22:01:03, 22:14:55, 22:17:43, 22:19:19, 22:23:18
     // (the work registry's `since` of the one before, and each log's 'locked' line).
     const measuredLocked = [6, 838, 1006, 1102, 1341]

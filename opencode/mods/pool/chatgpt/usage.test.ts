@@ -10,7 +10,7 @@ const now = Date.parse("2026-11-05T14:21:00Z")
 const weekReset = Date.parse("2026-11-11T07:36:00Z") / 1000
 
 /** The usage endpoint's answer as measured on both hosts at 14:21Z: 16% of the week, no 5-hour window. */
-const measured = {
+const observedUsage = {
   plan_type: "pro",
   rate_limit: {
     allowed: true,
@@ -22,7 +22,7 @@ const measured = {
 
 describe("ChatGPT usage readings", () => {
   test("the usage endpoint's windows read as the pool's 5h and 7d windows", () => {
-    expect(fromUsage(measured, now)).toEqual({ at: now, status: "allowed", windows: [{ name: "7d", utilization: 0.16, resetAt: weekReset * 1000 }] })
+    expect(fromUsage(observedUsage, now)).toEqual({ at: now, status: "allowed", windows: [{ name: "7d", utilization: 0.16, resetAt: weekReset * 1000 }] })
     const both = {
       rate_limit: {
         allowed: false,
@@ -46,7 +46,7 @@ describe("ChatGPT usage readings", () => {
 
   test("reset credits: the usage endpoint's count, and the credit list with what a claim needs", () => {
     // As measured on 2026-11-09: two credits, neither applicable while the account is not limited.
-    const withCount = { ...measured, rate_limit_reset_credits: { available_count: 2, applicable_available_count: 0 } }
+    const withCount = { ...observedUsage, rate_limit_reset_credits: { available_count: 2, applicable_available_count: 0 } }
     const reading = fromUsage(withCount, now)
     expect(reading?.resets).toEqual({ available: 2, credits: [] })
     const listed = {
@@ -69,12 +69,12 @@ describe("ChatGPT usage readings", () => {
     })
     // A malformed list leaves the count as the usage endpoint read it.
     expect(withCredits(reading as QuotaReading, { detail: "nope" })).toEqual(reading as QuotaReading)
-    expect(fromUsage(measured, now)?.resets).toBeUndefined()
+    expect(fromUsage(observedUsage, now)?.resets).toBeUndefined()
   })
 
   test("a model's own rate limit reads as a window scoped to it, never as the account's", () => {
     const additional = {
-      ...measured,
+      ...observedUsage,
       additional_rate_limits: [
         {
           limit_name: "GPT-6-Astra",
@@ -117,7 +117,7 @@ describe("the ChatGPT quota source", () => {
       port: 0,
       fetch: (request) => {
         seen.push({ authorization: request.headers.get("authorization"), account: request.headers.get("chatgpt-account-id") })
-        return request.headers.get("authorization") === "Bearer good" ? Response.json(measured) : new Response("no", { status: 401 })
+        return request.headers.get("authorization") === "Bearer good" ? Response.json(observedUsage) : new Response("no", { status: 401 })
       },
     })
     try {
@@ -157,7 +157,7 @@ describe("the ChatGPT quota source", () => {
       fetch: (request) => {
         const path = new URL(request.url).pathname
         paths.push(path)
-        if (path.endsWith("/wham/usage")) return Response.json({ ...measured, rate_limit_reset_credits: { available_count: count } })
+        if (path.endsWith("/wham/usage")) return Response.json({ ...observedUsage, rate_limit_reset_credits: { available_count: count } })
         if (path.endsWith("/wham/rate-limit-reset-credits"))
           return Response.json({ available_count: 1, credits: [{ id: "credit-a", status: "available", expires_at: "2026-11-30T20:04:23Z" }] })
         return new Response("no", { status: 404 })

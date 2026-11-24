@@ -11,10 +11,10 @@ import { block, delivered, policyFaults, project } from "@dotfiles/opencode-orch
 import { fileURLToPath } from "bun"
 import { Array as Arr, Effect, Option } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/orchestrate/nothing-is-hard.sim.test.ts")
+const { seeded } = simulationRunner("cmd/orchestrate/nothing-is-hard.sim.test.ts")
 
 const WORK = "/scratch/nothing-is-hard"
 /** A Wednesday afternoon: no Sabbath rest refuses the calls. */

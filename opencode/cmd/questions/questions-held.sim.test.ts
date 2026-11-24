@@ -14,9 +14,9 @@ import * as Model from "@dotfiles/opencode-questions/model"
 import { AnswerQuestions, decideAnswers, heldOf, ownersOf, type Row, Sheet } from "@dotfiles/opencode-questions/question"
 import type { Letter } from "@dotfiles/opencode-questions/reply"
 import { Changes, Courier, QuestionStore } from "@dotfiles/opencode-questions/service"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 
-const { seeded } = Seed.runner("cmd/questions/questions-held.sim.test.ts")
+const { seeded } = simulationRunner("cmd/questions/questions-held.sim.test.ts")
 
 const AT = Date.parse("2026-11-19T10:00:00Z")
 const SESSIONS = ["ses_parent", "ses_other"]

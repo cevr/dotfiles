@@ -118,6 +118,7 @@
       "files": [
         "decider/*.ts"
       ],
+      "excludeFiles": ["decider/tui-clock.test.ts"],
       "rules": {
         "no-restricted-imports": [
           "error",
@@ -1220,6 +1221,22 @@
       }
     },
     {
+      "files": ["decider/tui-clock.test.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!effect", "!effect/*", "*/**/effect", "!bun:test", "!./*.ts", "!../tests/global-slot.ts"],
+                "message": "Only the test may read the shared symbol registry; the decider keeps its own dependency fence."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "files": ["mods/auto-title/laws.ts"],
       "rules": {
         "no-restricted-imports": [
@@ -1227,7 +1244,7 @@
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "*/**/effect", "!./*.ts", "!bun:test", "!../../tests/hang-guard.ts"],
+                "group": ["*", "!effect", "!effect/*", "*/**/effect", "!./*.ts", "!bun:test", "!../../tests/hang-guard.ts", "!../../sim-tui/effect-test.ts"],
                 "message": "Shared timing is a test-only dependency; all other Auto Title law imports keep the production fence."
               }
             ]

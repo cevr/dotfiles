@@ -1,5 +1,5 @@
 import { expect } from "bun:test"
-import { Brand, Clock, Effect } from "effect"
+import { Brand, Clock, Effect, Option } from "effect"
 import { osLoad } from "../mods/pool/opencode/workload.ts"
 
 /** Emergency runner caps, never a synchronization mechanism or product budget. */
@@ -85,6 +85,11 @@ type Unit = "ms" | "cpu-ms" | "fraction of a core" | "fps"
 export type ProductBudget = `${"<" | "<=" | ">" | ">="} ${number} ${Unit}`
 const budgetPattern = /^(<=|>=|<|>) ([0-9]+(?:\.[0-9]+)?) (ms|cpu-ms|fraction of a core|fps)$/
 export const isProductBudget = (value: string): value is ProductBudget => budgetPattern.test(value)
+export const productBudgetParts = (value: string) => {
+  const [, operator = "", amount = "", unit = ""] = Option.getOrElse(Option.fromNullishOr(budgetPattern.exec(value)), () => [])
+  if (operator && amount && unit) return Option.some({ operator, limit: Number(amount), unit })
+  return Option.none()
+}
 
 interface Measurement {
   /** Capture the exact product event that opens the measured interval. */
@@ -105,8 +110,7 @@ interface Measurement {
  * supply a sample; measurements of in-process elapsed time use begin/end instead.
  */
 export const measured = <A>(target: string, budget: ProductBudget, fn: (measurement: Measurement) => A): A => {
-  const [, operator = "", max = "", unit = ""] = budgetPattern.exec(budget) ?? []
-  const threshold = Number(max)
+  const { operator, limit: threshold, unit } = Option.getOrElse(productBudgetParts(budget), () => ({ operator: "", limit: NaN, unit: "" }))
   const check = (value: number, detail = "") => {
     const passes = Number.isFinite(value) && (
       operator === "<" && value < threshold ||

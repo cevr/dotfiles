@@ -19,11 +19,11 @@ import { Plugin } from "@opencode/plugin/effect"
 import { SessionID } from "@opencode/schema/session-id"
 import { guidance } from "@dotfiles/opencode-prime/emphasis"
 import { Effect, Option, Schema } from "effect"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 import { live, make } from "./server.ts"
 
-const { seeded } = Seed.runner("cmd/prime/prime-rules.sim.test.ts")
+const { seeded } = simulationRunner("cmd/prime/prime-rules.sim.test.ts")
 
 const WORK = "/scratch/project"
 const ID = "dotfiles-opencode.prime"

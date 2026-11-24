@@ -12,10 +12,10 @@ import * as ChatGPT from "../../sim/chatgpt.ts"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Provider from "../../sim/provider.ts"
 import { line } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/pool/pool-resets.sim.test.ts")
+const { seeded } = simulationRunner("cmd/pool/pool-resets.sim.test.ts")
 
 const SECOND = 1000
 const MINUTE = 60 * SECOND
