@@ -19,6 +19,8 @@
 // And one seed run twice gives byte-equal traces. One fixed run holds the case
 // the seeds meet rarely: a digest the file could not keep, across a restart.
 import { expect as bunExpect } from "bun:test"
+import { MEMORY_ANSWERS } from "../../sim/witness-cases.ts"
+import { assertEffectWitnessCases } from "../../sim/witnesses.ts"
 import { Array as Arr, Effect, Option, Schema } from "effect"
 import * as MemoryFiles from "@dotfiles/opencode-memory/memory/files"
 import { main } from "./cli.ts"
@@ -124,7 +126,7 @@ const REFUSALS = [
 ]
 const ANSWERS = [/^Saved #\d+ \((global|project)\)\.$/, /^Updated #\d+ /, /^Corrected #\d+ /, /^No note matches "/, /^\d+ notes? for "/, /^Forgot #\d+: "/]
 
-/** The kinds of answer a run can meet, by the answer's start: the sweep below holds that the gate's seeds meet each. */
+/** The kinds of answer a run can meet, by the answer's start. */
 const KINDS = [
   ["saved", "Saved #"],
   ["updated", "Updated #"],
@@ -310,17 +312,56 @@ seeded("a digest the file could not keep is the session's on every request, afte
   }),
 )
 
+const save = (text: string, session = 0): Command => ({ type: "call", session, call: { tool: "memory_save", input: { text } } })
+const search = (query: string): Command => ({ type: "call", session: 0, call: { tool: "memory_search", input: { query } } })
+const forget = (id: number): Command => ({ type: "call", session: 0, call: { tool: "memory_forget", input: { id } } })
+const root: Command = { type: "session", child: false }
+const note = "The user prefers bun over npm"
+const answers: ReadonlyArray<Command> = [
+  root,
+  save(note),
+  save(note),
+  { type: "call", session: 0, call: { tool: "memory_save", input: { id: 1, text: "The user uses bun for testing" } } },
+  search("bun"),
+  search("unmatched"),
+  forget(1),
+  forget(1),
+  { type: "session", child: true },
+  save(note, 1),
+  { type: "write-fails", count: 1 },
+  save(note),
+]
+
+// Keep a short history per answer so another call of the same kind cannot mask its absence.
+const memoryCase = (outcome: string, history: (cause: boolean) => ReadonlyArray<Command>) => ({
+  expected: true,
+  run: (cause: boolean) => Effect.map(runOf(1, history(cause)), (run) => {
+    bunExpect(run.broken).toEqual([])
+    return run.reached.has(outcome)
+  }),
+})
+const answer = (outcome: string, index: number, replacement: Command, end = index + 1) =>
+  memoryCase(outcome, (cause) => answers.slice(0, end).map((command, at) => {
+    if (!cause && at === index) return replacement
+    return command
+  }))
+simulationTest("W: deliberate histories meet every named answer and a failed write", assertEffectWitnessCases(MEMORY_ANSWERS, {
+  saved: answer("saved", 1, { type: "advance", ms: 1 }),
+  updated: answer("updated", 2, save("Run the gate before every push")),
+  corrected: answer("corrected", 3, save("Run the gate before every push")),
+  found: answer("found", 4, search("unmatched")),
+  "none found": answer("none found", 5, search("bun")),
+  forgot: answer("forgot", 6, forget(999)),
+  "not found": answer("not found", 7, { type: "advance", ms: 1 }),
+  subagent: answer("subagent", 9, save(note, 0)),
+  "store failed": answer("store failed", 10, { type: "advance", ms: 1 }, 12),
+  "held digest": memoryCase("faulted-session", (cause) => HELD_ACROSS_RESTART.filter((command) => cause || command.type !== "write-fails")),
+}))
+
 simulationTest(
-  "the gate's 20 seeds meet every kind of answer, a write failing during a session's request, and distinct runs",
+  "distinct seeds keep distinct traces for the simulator's fixed replay corpus",
   Effect.gen(function* () {
-    const reached = new Set<string>()
-    const traces = new Set<string>()
-    for (const seed of Array.from({ length: SeedSEEDS }, (_, index) => index + 1)) {
-      const ran = yield* runOf(seed, commandsOf(seed))
-      for (const kind of ran.reached) reached.add(kind)
-      traces.add(ran.trace)
-    }
-    bunExpect([...reached].toSorted()).toEqual([...KINDS.map(([kind]) => kind), "faulted-session"].toSorted())
-    bunExpect(traces.size).toBe(SeedSEEDS)
+    const runs = yield* Effect.forEach(Arr.range(1, SeedSEEDS), (seed) => runOf(seed, commandsOf(seed)))
+    bunExpect(new Set(runs.map((run) => run.trace)).size).toBe(SeedSEEDS)
   }),
 )

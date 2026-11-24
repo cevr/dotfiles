@@ -975,6 +975,14 @@ describe("plugin trees", () => {
     reloads: number
   }
 
+  interface Reopened {
+    readonly previous: string
+    readonly service: string
+    readonly tui: string
+    readonly installed: string
+    readonly between: readonly [string, string]
+  }
+
   interface Host {
     /** The live checkout's commit. */
     head: string
@@ -995,11 +1003,12 @@ describe("plugin trees", () => {
     /** The step that fails, if any: the tree's make or the stage. */
     fails: Option.Option<"make tree" | "stage">
     /** Before which of an update's calls (by its index) the service crashes, its unit starts it again and a TUI opens, if any. */
-    crashAt: Option.Option<number>
+    crashAt: Option.Option<number | "restart">
     /** The call before which the update's own process is killed, if any: nothing after it runs, no failure handler either. */
     killAt: Option.Option<string>
     /** What the starts the model tries before every call found wrong (I5). */
     readonly starts: Array<string>
+    readonly reopened: Array<Reopened>
   }
 
   /**
@@ -1038,15 +1047,29 @@ describe("plugin trees", () => {
     // Killed: the run's process dies here, a defect no failure handler of the update catches.
     if (Option.contains(host.killAt, name)) Effect.runSync(Effect.die(`killed before ${name}`))
     tryStarts(host, name)
-    if (Option.contains(host.crashAt, host.calls.length))
-      host.procs = [...host.procs.filter((proc) => proc.name !== "service"), started(host, "service", unitBuild(host)), started(host, `tui-opened-${host.calls.length}`, launched(host))]
+    if (Option.exists(host.crashAt, (at) => at === host.calls.length || at === name)) {
+      const before = host.procs.find((proc) => proc.name === "service")
+      const competing = `tui-opened-${host.calls.length}`
+      const service = started(host, "service", unitBuild(host))
+      const tui = started(host, competing, launched(host))
+      host.procs = [...host.procs.filter((proc) => proc.name !== "service"), service, tui]
+      // Inspect the processes at the boundary: the explicit restart can otherwise overwrite this service.
+      const live = host.procs.find((proc) => proc.name === "service")
+      const opened = host.procs.find((proc) => proc === tui)
+      if (before && live && live !== before && opened)
+        host.reopened.push({ previous: before.version, service: live.version, tui: opened.version, installed: launched(host), between: [Option.getOrElse(Arr.last(host.calls), () => "before first call"), name] })
+      host.starts.push(...brokenBindings(host))
+    }
     host.calls.push(name)
   }
 
+  const brokenBindings = (host: Host): ReadonlyArray<string> =>
+    // I1: exactly its build's plugins: none, both lists or another commit's all break it.
+    host.procs.filter((proc) => proc.loaded !== dotfilesOf(proc.version)).map((proc) => `I1: ${proc.name} runs ${proc.version} with plugins of ${proc.loaded.slice(0, 8)}`)
+
   /** What the invariant finds wrong on the host, as lines; none when it holds. */
   const broken = (host: Host): ReadonlyArray<string> => [
-    // I1: exactly its build's plugins: none, both lists or another commit's all break it.
-    ...host.procs.filter((proc) => proc.loaded !== dotfilesOf(proc.version)).map((proc) => `I1: ${proc.name} runs ${proc.version} with plugins of ${proc.loaded.slice(0, 8)}`),
+    ...brokenBindings(host),
     ...host.procs.filter((proc) => proc.reloads > 0).map((proc) => `I2: ${proc.name} reloaded its plugins ${proc.reloads} times while running`),
     ...host.lost.map((what) => `I4: the prune deleted ${what}`),
     ...host.starts,
@@ -1245,6 +1268,7 @@ describe("plugin trees", () => {
       crashAt: Option.none(),
       killAt: Option.none(),
       starts: [],
+      reopened: [],
     }
     host.procs = [started(host, "service", running.version), ...Array.from({ length: tuis }, (_, index) => started(host, `tui-${index}`, running.version))]
     return host
@@ -1297,9 +1321,26 @@ describe("plugin trees", () => {
 
   /** Runs `scenarios` (each on its own host), then `assert` on what they answer, through the file's one runner (`run`). */
   const check = <A>(scenarios: Effect.Effect<A, UpdateFailed>, assert: (ran: A) => void) => run(world(), Effect.map(scenarios, assert))
+  // This domain's import fence keeps the simulator helper out.
+  const assertEffectWitnessCases = <const Key extends string>(
+    required: ReadonlyArray<Key>,
+    table: { readonly [Name in NoInfer<Key>]: { readonly expected: object; readonly run: (cause: boolean) => Effect.Effect<object, UpdateFailed> } },
+  ) => check(Effect.gen(function* () {
+    expect(Object.keys(table).toSorted(), "witness table keys").toEqual(required.toSorted())
+    const completed = yield* Effect.forEach(required, (key) => Effect.gen(function* () {
+      const { expected, run } = table[key]
+      const observed = yield* run(true)
+      const withoutCause = yield* run(false)
+      const label = `W: ${key}`
+      expect(observed, label).toEqual(expected)
+      expect(() => expect(withoutCause, label).toEqual(expected), `${label}: removing the cause must fail the same observation`).toThrow()
+      return key
+    }))
+    expect(completed, "witness cases completed").toEqual([...required])
+  }), constVoid)
 
   /** One generated host and its update, and a second update on top of it; what the invariant found, and each update's calls. */
-  const scenario = (start: Start, tuis: number, endings: readonly [Ending, Ending], stay: ReadonlyArray<string>, crashAt: Option.Option<number> = Option.none(), fails: Option.Option<"make tree" | "stage"> = Option.none()) => {
+  const scenario = (start: Start, tuis: number, endings: readonly [Ending, Ending], stay: ReadonlyArray<string>, crashAt: Option.Option<number | "restart"> = Option.none(), fails: Option.Option<"make tree" | "stage"> = Option.none()) => {
     const host = hostOf(start, tuis)
     host.crashAt = crashAt
     host.fails = fails
@@ -1313,8 +1354,7 @@ describe("plugin trees", () => {
         host.fails = Option.none()
         host.target = targetOf(NEWER, "batch-8")
         const second = yield* update(host, endings[1], found, stay, "second update")
-        const crashed = [firstCalls, host.calls].some((calls) => Option.exists(host.crashAt, (at) => calls.indexOf("record") >= 0 && calls.indexOf("record") < at && at <= calls.indexOf("restart")))
-        return { outcomes: [first, second], found, calls: [firstCalls, [...host.calls]], host, crashed }
+        return { outcomes: [first, second], found, calls: [firstCalls, [...host.calls]], host }
       }),
     )
   }
@@ -1343,33 +1383,96 @@ describe("plugin trees", () => {
   /** The handoff's part of an update's calls: what follows `handoff`. */
   const afterHandoff = (calls: ReadonlyArray<string>) => calls.slice(calls.indexOf("handoff") + 1)
 
+  const reach = (start: Start, ending: Ending, fails: Option.Option<"make tree" | "stage"> = Option.none(), crashAt: Option.Option<number | "restart"> = Option.none()) =>
+    ({ start, tuis: 1, ending, second: ending, stay: ["tui-0"], fails, crashAt })
+  const runCase = (each: ReturnType<typeof reach>) =>
+    Effect.map(scenario(each.start, each.tuis, [each.ending, each.second], each.stay, each.crashAt, each.fails), (ran) => ({ each, ran }))
+
+  const assertRuns = (runs: ReadonlyArray<Effect.Success<ReturnType<typeof runCase>>>) => {
+    const failures = runs.flatMap(({ each, ran }) =>
+      ran.found.slice(0, 1).map((first) => `${each.start}, ${each.tuis} TUIs, ${each.ending} then ${each.second} (${ran.outcomes.join(", ")}): ${first} [${ran.calls.map((calls) => calls.join(", ")).join(" | ")}]`),
+    )
+    expect(failures.slice(0, 5)).toEqual([])
+    // No effect but an update's own, in any scenario: no checkout move, no config write, no reinstall.
+    expect([...new Set(runs.flatMap(({ ran }) => ran.calls.flat()).filter((call) => !EFFECTS.includes(call)))]).toEqual([])
+    // R2: a host whose server config lists ours refuses every handed-off update before any write or restart.
+    const listing = runs.filter(({ ran }) => ran.host.globalOurs).flatMap(({ ran }) => ran.calls.filter((calls) => calls.includes("handoff")).map(afterHandoff))
+    expect(listing.filter((calls) => calls.join(", ") !== "reject config")).toEqual([])
+    // R3: a sick first restart over a good build with no tree gives up on the new build: no rollback.
+    const untreed = runs.filter(({ each }) => each.start === "untreed good" && each.ending !== "healthy").filter(({ ran }) => ran.calls[0].includes("handoff"))
+    expect(untreed.filter(({ ran }) => `${ran.outcomes[0]}: ${afterHandoff(ran.calls[0]).join(", ")}` !== "gave-up: record, restart, reject health")).toEqual([])
+  }
+  const updateProperty = (seed: number) => Effect.map(Effect.forEach(generated(seed), runCase), assertRuns)
+
   describe("a running process only ever holds its own build's plugins", () => {
+    // Mirror of the coverage registry, checked by scripts/sim-coverage.test.ts.
+    const UPDATE_CASES = [
+      "both handoffs are proven",
+      "both handoffs roll back",
+      "both handoffs give up",
+      "both handoffs reject listed plugins before writes",
+      "cannot roll back to an untreed good build",
+      "make tree aborts before handoff",
+      "stage aborts before handoff",
+      "crash replaces the old service and opens a competing TUI before the explicit restart",
+    ] as const
+    type Ran = Effect.Success<ReturnType<typeof runCase>>["ran"]
+    const ready = reach("on trees", "healthy")
+    const recovered = reach("on trees", "rolled back")
+    const sickTwice = reach("on trees", "gave up")
+    const exits = (ran: Ran) => ran.outcomes
+    const rejectConfig = (ran: Ran) => ran.calls.map((calls) => calls.includes("handoff") && afterHandoff(calls).join(", ") === "reject config")
+    const untreed = (ran: Ran) => ({ outcome: ran.outcomes[0], calls: afterHandoff(ran.calls[0]) })
+    const atBuild = (step: string) => (ran: Ran) => ({
+      outcome: ran.outcomes[0], boundary: ran.calls[0].includes(step), rejected: ran.calls[0].includes("reject build"), handedOff: ran.calls[0].includes("handoff"),
+    })
+    const buildFails = (step: "make tree" | "stage") => ({
+      example: reach("on trees", "healthy", Option.some(step)), control: ready, observe: atBuild(step),
+      want: { outcome: "not handed off", boundary: true, rejected: true, handedOff: false },
+      otherwise: { outcome: "proven", boundary: true, rejected: false, handedOff: true },
+    })
+    type Observation = Ran["outcomes"] | ReturnType<typeof rejectConfig> | ReturnType<typeof untreed> | ReturnType<ReturnType<typeof atBuild>> | ReadonlyArray<Reopened>
+    type Case = { readonly example: ReturnType<typeof reach>; readonly control: ReturnType<typeof reach>; readonly observe: (ran: Ran) => Observation; readonly want: Observation; readonly otherwise: Observation }
+    const witnessCase = (example: Case) => ({
+      expected: example.want,
+      run: (cause: boolean) => {
+        const input = Option.getOrElse(Option.liftPredicate(example.example, () => cause), () => example.control)
+        return Effect.map(runCase(input), (result) => {
+          assertRuns([result])
+          const observation = example.observe(result.ran)
+          if (!cause) expect(observation, "control setup reached the alternate outcome").toEqual(example.otherwise)
+          return observation
+        })
+      },
+    })
+    const between = ["record", "restart"] as const
+    test("W: A4 crash, handoff, rollback, and build outcomes", () => assertEffectWitnessCases(UPDATE_CASES, {
+      "both handoffs are proven": witnessCase({ example: ready, control: recovered, observe: exits, want: ["proven", "proven"], otherwise: ["rolled-back", "rolled-back"] }),
+      "both handoffs roll back": witnessCase({ example: recovered, control: sickTwice, observe: exits, want: ["rolled-back", "rolled-back"], otherwise: ["gave-up", "gave-up"] }),
+      "both handoffs give up": witnessCase({ example: sickTwice, control: recovered, observe: exits, want: ["gave-up", "gave-up"], otherwise: ["rolled-back", "rolled-back"] }),
+      "both handoffs reject listed plugins before writes": witnessCase({ example: reach("lists ours", "healthy"), control: ready, observe: rejectConfig, want: [true, true], otherwise: [false, false] }),
+      "cannot roll back to an untreed good build": witnessCase({
+        example: reach("untreed good", "rolled back"), control: recovered, observe: untreed,
+        want: { outcome: "gave-up", calls: ["record", "restart", "reject health"] },
+        otherwise: { outcome: "rolled-back", calls: ["record", "restart", "record (good)", "restart", "reject health"] },
+      }),
+      "make tree aborts before handoff": witnessCase(buildFails("make tree")),
+      "stage aborts before handoff": witnessCase(buildFails("stage")),
+      "crash replaces the old service and opens a competing TUI before the explicit restart": witnessCase({
+        example: reach("on trees", "healthy", Option.none(), Option.some("restart")), control: ready,
+        observe: (ran: Ran) => ran.host.reopened,
+        want: [
+          { previous: GOOD_T.version, service: GOOD_T.version, installed: NEW.version, tui: NEW.version, between },
+          { previous: NEW.version, service: NEW.version, installed: NEWER.version, tui: NEWER.version, between },
+        ],
+        otherwise: [],
+      }),
+    }))
+
     test("A4: over generated hosts, endings, crashes and a second update, no step breaks I1 to I7, no step of the old scheme runs, a server config listing ours ends with no write and no restart, and a good build with no tree is never rolled back onto", () =>
       check(
-        // `SIM_SEED` replays one run.
-        Effect.flatMap(Effect.orDie(Config.Int("SIM_SEED").pipe(Config.withDefault(20261119))), (seed) =>
-          Effect.forEach(generated(seed), (each) => scenario(each.start, each.tuis, [each.ending, each.second], each.stay, each.crashAt, each.fails).pipe(Effect.map((ran) => ({ each, ran })))),
-        ),
-        (runs) => {
-          const failures = runs.flatMap(({ each, ran }) =>
-            ran.found.slice(0, 1).map((first) => `${each.start}, ${each.tuis} TUIs, ${each.ending} then ${each.second} (${ran.outcomes.join(", ")}): ${first} [${ran.calls.map((calls) => calls.join(", ")).join(" | ")}]`),
-          )
-          expect(failures.slice(0, 5)).toEqual([])
-          // No effect but an update's own, in any scenario: no checkout move, no config write, no reinstall.
-          expect([...new Set(runs.flatMap(({ ran }) => ran.calls.flat()).filter((call) => !EFFECTS.includes(call)))]).toEqual([])
-          // R2: a host whose server config lists ours refuses every handed-off update before any write or restart.
-          const listing = runs.filter(({ ran }) => ran.host.globalOurs).flatMap(({ ran }) => ran.calls.filter((calls) => calls.includes("handoff")).map(afterHandoff))
-          expect([listing.length > 0, [...new Set(listing.map((calls) => calls.join(", ")))]]).toEqual([true, ["reject config"]])
-          // R3: a sick first restart over a good build with no tree gives up on the new build: no rollback.
-          const untreed = runs.filter(({ each }) => each.start === "untreed good" && each.ending !== "healthy").filter(({ ran }) => ran.calls[0].includes("handoff"))
-          expect([untreed.length > 0, [...new Set(untreed.map(({ ran }) => `${ran.outcomes[0]}: ${afterHandoff(ran.calls[0]).join(", ")}`))]]).toEqual([true, ["gave-up: record, restart, reject health"]])
-          // The generator reaches every way an update ends, on both updates.
-          const seen = runs.map(({ ran }) => ran.outcomes)
-          for (const outcome of ["proven", "rolled-back", "gave-up"]) expect([seen.some((each) => each[0] === outcome), seen.some((each) => each[1] === outcome)]).toEqual([true, true])
-          // ... and every failed build, and a crash between the record that installs the build and the restart.
-          expect(["make tree", "stage"].map((step) => runs.some(({ each }) => Option.contains(each.fails, step)))).toEqual([true, true])
-          expect(runs.some(({ ran }) => ran.crashed)).toBe(true)
-        },
+        Effect.flatMap(Effect.orDie(Config.Int("SIM_SEED").pipe(Config.withDefault(20261119))), updateProperty),
+        constVoid,
       ))
 
     test("a rollback ends on the good build by a record write, the invariant whole", () =>
