@@ -12,6 +12,11 @@
 #     capabilities are no subset of the walker's): readlink of its fd/N, cwd, root and exe answers EACCES.
 # (b) Processes that end during the walk: 50 walks beside a loop of short-lived children, none refused.
 # (c) A walk that truly fails (no process folder at all) still refuses, with find's line.
+# (d) A process tied to the folder only by a mapped file: mmap through libc (python3's ctypes: its mmap module
+#     would keep a dup of the fd), the fd closed, its working folder /.
+# (e) A thread with its own working folder in the folder: unshare(CLONE_FS) in that thread, then chdir (its
+#     process's working folder stays /). /proc/<pid>/cwd is the main thread's; /proc/<pid>/task/<tid>/cwd its own.
+# (f) A proc mounted with hidepid=invisible (a mount of its own, beside /proc): other users' processes are not listed.
 set -u
 W=${1:?usage: proc-walk-linux.sh <workrift>}
 fails=0
@@ -26,6 +31,7 @@ nosudo() { PATH="$S/bin:$PATH" "$@"; }
 pids=
 end() {
   for p in $pids; do sudo -n kill "$p" 2>/dev/null; done
+  ! mountpoint -q "$S/proc" 2>/dev/null || sudo -n umount "$S/proc"
   rm -rf "$S"
 }
 trap end EXIT
@@ -108,6 +114,95 @@ if [ "$refused" = 0 ]; then
   pass "(b) 50 walks beside processes ending: none refused ($ended ended during a walk, counted)"
 else
   fail "(b) $refused of 50 walks refused"
+fi
+
+# (d) The mapped file.
+dd if=/dev/zero of="$S/in/blob" bs=4096 count=1 2>/dev/null
+(cd "$S/out" && exec python3 -c '
+import ctypes, os, sys, time
+libc = ctypes.CDLL(None, use_errno=True)
+libc.mmap.restype = ctypes.c_void_p
+libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_long]
+fd = os.open(sys.argv[1], os.O_RDONLY)
+at = libc.mmap(None, 4096, 1, 1, fd, 0)
+if at in (None, ctypes.c_void_p(-1).value):
+    raise SystemExit("mmap failed")
+os.close(fd)
+os.chdir("/")
+open(sys.argv[2], "w").close()
+time.sleep(300)
+' "$S/in/blob" "$S/mapped.ready" </dev/null >/dev/null 2>&1) &
+mapped=$!
+pids="$pids $mapped"
+i=0
+while [ ! -e "$S/mapped.ready" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
+nfd=$(for f in /proc/"$mapped"/fd/*; do readlink "$f"; done | grep -c "^$S/in")
+if [ "$nfd" = 0 ] && [ "$(readlink "/proc/$mapped/cwd")" = / ] && grep -q " $S/in/blob" "/proc/$mapped/maps"; then
+  pass "(d) the process $mapped maps $S/in/blob with no fd on it and its working folder /"
+else
+  fail "(d) not reproduced: fd $nfd, cwd $(readlink "/proc/$mapped/cwd"), maps $(grep -c "$S/in" "/proc/$mapped/maps" 2>&1)"
+fi
+out=$(sh "$W" processes "$S/in" 2>&1)
+rc=$?
+case "$rc:$out" in
+  3:*"
+$mapped python3"*) pass "(d) a mapped file in the folder: the process is named ($rc)" ;;
+  *) fail "(d) a mapped file: exit $rc: $out" ;;
+esac
+kill "$mapped"
+wait "$mapped" 2>/dev/null
+
+# (e) The thread.
+(cd / && exec python3 -c '
+import ctypes, os, sys, threading, time
+libc = ctypes.CDLL(None, use_errno=True)
+def own():
+    if libc.unshare(0x00000200) != 0:
+        raise SystemExit("unshare(CLONE_FS) failed")
+    os.chdir(sys.argv[1])
+    open(sys.argv[2], "w").close()
+    time.sleep(300)
+threading.Thread(target=own, daemon=True).start()
+time.sleep(300)
+' "$S/in" "$S/thread.ready" </dev/null >/dev/null 2>&1) &
+threaded=$!
+pids="$pids $threaded"
+i=0
+while [ ! -e "$S/thread.ready" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
+tcwd=$(for t in /proc/"$threaded"/task/*; do readlink "$t/cwd"; done | grep -c "^$S/in$")
+if [ "$(readlink "/proc/$threaded/cwd")" = / ] && [ "$tcwd" = 1 ]; then
+  pass "(e) the process $threaded works in / and one of its threads in $S/in"
+else
+  fail "(e) not reproduced: cwd $(readlink "/proc/$threaded/cwd"), threads in the folder $tcwd"
+fi
+out=$(sh "$W" processes "$S/in" 2>&1)
+rc=$?
+case "$rc:$out" in
+  3:*"
+$threaded python3"*) pass "(e) a thread in the folder: the process is named ($rc)" ;;
+  *) fail "(e) a thread in the folder: exit $rc: $out" ;;
+esac
+kill "$threaded"
+wait "$threaded" 2>/dev/null
+
+# (f) hidepid.
+mkdir "$S/proc"
+if sudo -n mount -t proc -o hidepid=invisible proc "$S/proc"; then
+  out=$(WORKRIFT_PROC="$S/proc" sh "$W" processes "$S/out" 2>&1)
+  rc=$?
+  case "$rc:$out" in
+    2:*"$S/proc is mounted with hidepid=invisible: it does not list other users' processes at all"*) pass "(f) hidepid=invisible: the walk is unread as a whole, refused ($rc)" ;;
+    *) fail "(f) hidepid=invisible: exit $rc: $out" ;;
+  esac
+  out=$(WORKRIFT_PROC="$S/proc" sh "$W" processes "$S/out" --beside-unreadable 2>&1)
+  rc=$?
+  case "$rc:$out" in
+    0:*"beside the processes $S/proc hides (hidepid=invisible)"*) pass "(f) hidepid=invisible, --beside-unreadable: beside them, said ($rc)" ;;
+    *) fail "(f) hidepid=invisible, --beside-unreadable: exit $rc: $out" ;;
+  esac
+  sudo -n umount "$S/proc"
+else
+  fail "(f) the proc mount with hidepid=invisible did not mount"
 fi
 
 # (c) No process folder: the walk failed, said with find's line.

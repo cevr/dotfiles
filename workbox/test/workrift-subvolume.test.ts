@@ -1411,6 +1411,9 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
   const stepLog = (b: Bench) => (existsSync(join(b.state, "subvolume/log")) ? readFileSync(join(b.state, "subvolume/log"), "utf8") : "")
   const sudoCalls = (b: Bench) => (existsSync(b.env.FAKE_SUDO_LOG!) ? textLines(readFileSync(b.env.FAKE_SUDO_LOG!, "utf8")) : [])
   const nextLine = (ran: Ran) => ran.err.split("\n").find((line) => line.startsWith("workrift subvolume: next: ")) ?? ""
+  /** The privileged read as sudo is given it: the entries, its threads' working folders and roots, its maps. */
+  const sudoRead = (base: string, entries: string) =>
+    `-n find ${entries} -ignore_readdir_race -maxdepth 2 ( -path */task/*/* ! -name cwd ! -name root -prune ) -o ( -name maps -exec sh -c p=$1; shift; grep -F -l -e "$p" -- "$@"; [ $? -le 1 ] sv-maps  ${base}/ {} + ) -o ( ( -lname ${base} -o -lname ${base}/* ) -print )`
 
   test("with no sudo and no flag: refused, naming the count, the uid and both ways on; nothing changed", () => {
     const b = bench("unknown-refused")
@@ -1439,9 +1442,9 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     expect(ran.code, said(ran)).toBe(1)
     expect(said(ran)).toContain("93002 rg (uid 0, read with sudo)")
     expect(said(ran)).not.toContain("93003")
-    expect(sudoCalls(b)).toEqual(["-n true", `-n find ${at}/fd ${at}/cwd -ignore_readdir_race -maxdepth 1 ( -lname ${b.base} -o -lname ${b.base}/* ) -print`])
+    expect(sudoCalls(b)).toEqual(["-n true", sudoRead(b.base, `${at}/fd ${at}/cwd`)])
     // Refused at the preflight, before the hold: the command line is said on stderr (the step log is the switch's, written under the hold).
-    expect(ran.err).toContain(`workrift subvolume:   sudo -n find ${at}/fd ${at}/cwd -ignore_readdir_race -maxdepth 1`)
+    expect(ran.err).toContain(`workrift subvolume:   sudo -n find ${at}/fd ${at}/cwd -ignore_readdir_race -maxdepth 2`)
     expect(b.layout()).toEqual({ base: "F", new: "-", back: "-", old: "-" })
   }, hangGuard("process-fixture"))
 
@@ -1474,16 +1477,19 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     expect(sudoCalls(b)).toEqual([])
   }, hangGuard("process-fixture"))
 
-  test("a process folder that does not list (its stat unread while it lives) is a failed walk, said: refused", () => {
+  test("N3: a process folder that does not list (its stat unread while it lives) is unread, never ended: refused, or beside it with the flag", () => {
     const b = bench("unknown-walk-fails")
     const at = b.processAt(93008, b.dir, ["sh"])
     chmodSync(at, 0)
     hiddenFolders.push(at)
-    const ran = b.wr(["subvolume", "--apply", "--beside-unreadable"], { FAKE_SUDO: "ok" })
+    const ran = b.wr(["subvolume", "--check"])
+    const beside = b.wr(["subvolume", "--check", "--beside-unreadable"])
     chmodSync(at, 0o700)
     expect(ran.code, said(ran)).toBe(1)
-    expect(said(ran)).toContain(`the processes in ${b.base} do not read (find over ${b.proc} failed; it said: the stat or status of process 93008 does not read while it lives): a process in it cannot be ruled out`)
-    expect(sudoCalls(b)).toEqual([])
+    expect(said(ran)).toContain("1 process(es) of uid ? could not be looked into")
+    expect(said(ran)).not.toContain("ended during the walk")
+    expect(beside.code, said(beside)).toBe(0)
+    expect(said(beside)).toContain("beside 1 process(es) of uid ? it could not look into")
     expect(b.layout()).toEqual({ base: "F", new: "-", back: "-", old: "-" })
   }, hangGuard("process-fixture"))
 
@@ -1839,7 +1845,7 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     expect(nextLine(ran)).toEndWith("workrift subvolume --apply --beside-unreadable")
     expect(nextLine(ran)).not.toContain("where sudo -n works")
     // Asked once each: sudo is not asked again once it refused.
-    expect(sudoCalls(b)).toEqual(["-n true", `-n find ${at}/fd ${at}/cwd -ignore_readdir_race -maxdepth 1 ( -lname ${b.base} -o -lname ${b.base}/* ) -print`])
+    expect(sudoCalls(b)).toEqual(["-n true", sudoRead(b.base, `${at}/fd ${at}/cwd`)])
     expect(b.layout()).toEqual({ base: "F", new: "-", back: "-", old: "-" })
     const beside = b.wr(["subvolume", "--apply", "--beside-unreadable"], { FAKE_SUDO: "true-only" })
     expect(beside.code, said(beside)).toBe(0)
@@ -1921,7 +1927,7 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     expect(read.code, said(read)).toBe(1)
     expect(said(read)).toContain(`93070 systemd (uid ${own}, read with sudo)`)
     expect(said(read)).toContain(`the walk could not look into 1 process(es) of uid ${own}`)
-    expect(sudoCalls(b)).toEqual(["-n true", `-n find ${at}/fd ${at}/cwd -ignore_readdir_race -maxdepth 1 ( -lname ${b.base} -o -lname ${b.base}/* ) -print`])
+    expect(sudoCalls(b)).toEqual(["-n true", sudoRead(b.base, `${at}/fd ${at}/cwd`)])
     const refused = b.wr(["subvolume", "--check"])
     expect(refused.code, said(refused)).toBe(1)
     expect(said(refused)).toContain(`1 process(es) of uid ${own} could not be looked into`)
@@ -1950,17 +1956,66 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     expect(b.layout()).toEqual({ base: "F", new: "-", back: "-", old: "-" })
   }, hangGuard("process-fixture"))
 
-  test("a pid reused between the walk and the privileged read is another process (its start time changed): the one walked ended, none is in the base", () => {
+  test("N2: a pid reused between the walk and the privileged read is a new process that lives: judged as itself, named in the base, never taken for ended", () => {
     const b = bench("pid-reused")
     b.processAt(93074, join(b.base, "src"), ["rg"], [], { hidden: true })
     const ran = b.wr(["subvolume", "--check"], { FAKE_SUDO: "ok", FAKE_SUDO_REUSE: "93074" })
-    expect(ran.code, said(ran)).toBe(0)
-    expect(said(ran)).not.toContain("93074 rg")
-    expect(said(ran)).toContain("(1 process(es) ended during the walk)")
-    // The same, the pid not reused: it is in the base.
-    const kept = b.wr(["subvolume", "--check"], { FAKE_SUDO: "ok" })
-    expect(kept.code, said(kept)).toBe(1)
-    expect(said(kept)).toContain("93074 rg (uid 0, read with sudo)")
+    expect(ran.code, said(ran)).toBe(1)
+    expect(said(ran)).toContain("93074 rg (uid 0, read with sudo; its pid was reused since the walk: a new process)")
+    expect(said(ran)).not.toContain("ended during the walk")
+  }, hangGuard("process-fixture"))
+
+  test("N1: the stat is read whole: a command name with a newline and a \") \" that fakes a zombie's state on its first line is no zombie", () => {
+    const b = bench("stat-name")
+    const fake = "evil) Z 1 1 1 0 -1 4194560 0\nrest"
+    const at = b.processAt(93081, join(b.base, "src"), [fake], [], { hidden: true })
+    // The bench's stat is one line; the kernel's keeps the name as it is: rewrite it with the newline.
+    const stat = readFileSync(join(at, "stat"), "utf8")
+    expect(stat.split("\n")[0]).toBe("93081 (evil) Z 1 1 1 0 -1 4194560 0")
+    const ran = b.wr(["subvolume", "--check"], { FAKE_SUDO: "ok" })
+    expect(ran.code, said(ran)).toBe(1)
+    expect(said(ran)).toContain("93081 ")
+    expect(said(ran)).toContain("read with sudo")
+  }, hangGuard("process-fixture"))
+
+  test("N4: a process tied to the base only by a mapped file (its fd closed, its working folder elsewhere) is in it: named", () => {
+    const b = bench("mapped")
+    const at = b.processAt(93082, b.dir, ["bun"])
+    writeFileSync(join(at, "maps"), `55d0c0000000-55d0c0001000 r--p 00000000 00:2a 77 /usr/bin/bun\n7f2a00000000-7f2a00100000 r--s 00000000 00:2a 1234                       ${b.base}/node_modules/.cache/blob.bin (deleted)\n`)
+    const ran = b.wr(["subvolume", "--check"])
+    expect(ran.code, said(ran)).toBe(1)
+    expect(said(ran)).toContain(`processes outside workrift's line work in ${b.base}`)
+    expect(said(ran)).toContain("93082 bun")
+    // A map of another folder is none.
+    writeFileSync(join(at, "maps"), "55d0c0000000-55d0c0001000 r--p 00000000 00:2a 77 /usr/bin/bun\n")
+    const none = b.wr(["subvolume", "--check"])
+    expect(none.code, said(none)).toBe(0)
+  }, hangGuard("process-fixture"))
+
+  test("N5: a thread with its own working folder in the base (its process's elsewhere) is in it: named", () => {
+    const b = bench("thread-cwd")
+    const at = b.processAt(93083, b.dir, ["node"])
+    mkdirSync(join(at, "task", "93084"), { recursive: true })
+    symlinkSync(b.dir, join(at, "task", "93084", "root"))
+    symlinkSync(join(b.base, "src"), join(at, "task", "93084", "cwd"))
+    const ran = b.wr(["subvolume", "--check"])
+    expect(ran.code, said(ran)).toBe(1)
+    expect(said(ran)).toContain("93083 node")
+  }, hangGuard("process-fixture"))
+
+  test("N5: /proc mounted with hidepid=invisible lists no other user's process: unread for the whole walk, refused, or beside them with the flag, said", () => {
+    const b = bench("hidepid")
+    mkdirSync(join(b.proc, "self"), { recursive: true })
+    writeFileSync(join(b.proc, "self", "mountinfo"), `22 1 0:5 / / rw,relatime shared:1 - btrfs /dev/loop0 rw\n25 22 0:23 / ${b.proc} rw,nosuid,nodev,noexec,relatime shared:12 - proc proc rw,hidepid=invisible\n`)
+    const ran = b.wr(["subvolume", "--check"], { FAKE_SUDO: "ok" })
+    expect(ran.code, said(ran)).toBe(1)
+    expect(said(ran)).toContain(`${b.proc} is mounted with hidepid=invisible: it does not list other users' processes at all`)
+    const beside = b.wr(["subvolume", "--check", "--beside-unreadable"], { FAKE_SUDO: "ok" })
+    expect(beside.code, said(beside)).toBe(0)
+    expect(said(beside)).toContain(`beside the processes it cannot see (--beside-unreadable): ${b.proc} is mounted with hidepid=invisible`)
+    // hidepid=1 lists them (each refused, unread one by one): no whole-walk refusal.
+    writeFileSync(join(b.proc, "self", "mountinfo"), `25 22 0:23 / ${b.proc} rw,relatime shared:12 - proc proc rw,hidepid=1\n`)
+    expect(b.wr(["subvolume", "--check"]).code).toBe(0)
   }, hangGuard("process-fixture"))
 })
 
@@ -3106,10 +3161,10 @@ const VERDICTS: Record<string, string> = {
   "tickets_at_exit:rm: [ -z \"$t_mine\" ] || rm -f \"$t_mine\" \"$t_mine.in\"": "cleanup: in the exit trap, the script ends either way; a ticket it cannot remove is dead (its lock goes with the process) and swept",
   "sv_preflight:df: sv_read p_df df -Pk \"$sv_base\" 2>/dev/null || p_df=": "closed: sv_read's status: a df that does not read is a NO",
   "(top):python3: if python3 -c 'import ctypes' >/dev/null 2>&1; then": "closed: no python3 with ctypes is a NO: nothing can make the exchange",
-  "sv_walk:find: w_found=$(LC_ALL=C find \"$proc_root\" -ignore_readdir_race -mindepth 1 -maxdepth 3 \\": "closed: its status is the capture's rc line, and each message is classified per process by its C-locale errno text: permission names the process unread, gone ends it (or, for an fd while it lives, a file closed), anything else fails the walk with its line (sv_users returns 1); non-zero with no message fails it too; never none",
+  "sv_walk:find: w_found=$(LC_ALL=C find \"$proc_root\" -ignore_readdir_race -mindepth 1 -maxdepth 4 \\": "closed: its status is the capture's rc line, and each message (find's, or grep's on a map it reads through -exec) is classified per process by its C-locale errno text: permission names the process unread, gone ends it only when its folder is gone (an fd gone is a file closed, a thread gone with its task folder is nothing), anything else fails the walk with its line (sv_users returns 1); non-zero with no message fails it too; never none",
   "sv_users_known:sudo: if sudo -n true 2>/dev/null; then sv_sudo=yes; else sv_sudo=no; fi": "branch: no sudo -n (or a sudo that fails) is the side that refuses: unknown processes stay unknown, refused unless --beside-unreadable, never taken for none; asked once a run",
-  "sv_walk:sudo: w_found=$(LC_ALL=C sudo -n find \"$@\" -ignore_readdir_race -maxdepth 1 \\( -lname \"$w_dir\" -o -lname \"$w_dir/*\" \\) -print 2>&3) || w_rc=$?": "closed: one read of every unknown process; a line that is not find's is sudo's refusal (said, with --beside-unreadable the only way on); a process gone or whose start time changed ended; an entry other than an fd gone while it lives is read again (three tries); any other message fails the walk; never taken for none",
-  "sv_users_known:cat: k_users=\"$k_users$k_pid $(cat \"$proc_root/$k_pid/comm\" 2>/dev/null || printf '?') (uid $(sv_uid_of \"$k_pid\"), read with sudo)": "message: the command name of a process the privileged read found in the tree (`?` when it does not read); it is counted either way",
+  "sv_walk:sudo: w_found=$(LC_ALL=C sudo -n find \"$@\" -ignore_readdir_race -maxdepth 2 \\": "closed: one read of every unknown process (its links, its threads' working folders and roots, its map); a line that is neither find's nor grep's is sudo's refusal (said, with --beside-unreadable the only way on); a process whose folder is gone ended; one whose pid was reused is judged as itself; an entry other than an fd or an ended thread gone while it lives is read again (three tries); any other message fails the walk; never taken for none",
+  "sv_users_known:cat: k_users=\"$k_users$k_pid $(cat \"$proc_root/$k_pid/comm\" 2>/dev/null || printf '?') (uid $(sv_uid_of \"$k_pid\"), read with sudo$k_a)": "message: the command name of a process the privileged read found in the tree (`?` when it does not read); it is counted either way",
   "sv_log:date: l_at=$(date -u +%FT%TZ) || l_at='(no clock)'": "message: the time of a step-log line, `(no clock)` when date fails; the log decides nothing",
   "sv_ref_store:git: if s_format=$(base_git \"$1\" config --get extensions.refStorage); then": "closed: status 1 (unset) is the files storage; any other failure, or a storage other than files, fails the store's read: sv_refs fails, nothing carried or the copy is not true",
   "sv_refs:git: r_list=$(base_git \"$1\" for-each-ref --format='%(objectname) %(refname)' 2>&3) || r_rc=$?": "closed: its status and its stderr, from the capture: a non-zero status or any word on stderr fails sv_refs, never a short list",

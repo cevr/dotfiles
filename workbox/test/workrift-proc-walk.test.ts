@@ -26,7 +26,7 @@ test.skipIf(vm === "")("on a Linux VM: unread processes of this user's own uid, 
   run(["limactl", "shell", vm, "rm", "-rf", dir])
   const lines = ran.out.split("\n").filter((line) => /^(PASS|FAIL) /.test(line))
   expect(lines.filter((line) => line.startsWith("FAIL")), ran.out + ran.err).toEqual([])
-  // (a) reproduced and judged four ways, (b), (c).
-  expect(lines.length, ran.out).toBe(7)
+  // (a) reproduced and judged four ways, (b), (d) and (e) reproduced and named, (f) two ways, (c).
+  expect(lines.length, ran.out).toBe(13)
   expect(ran.code).toBe(0)
 }, hangGuard("process-fixture"))

@@ -2922,8 +2922,11 @@ $i_pid
 
 # One walk over the process folders by find, read only, its answer classified
 # per process, never by find's status alone. As this user ($1 = user) it walks
-# every process's fd links, working folder, root and executable; with
-# privilege ($1 = sudo) exactly the entries given after the folder $2. find
+# every process's fd links, working folder, root and executable, each of its
+# threads' working folder and root (a thread that unshared its file system
+# info has its own), and its memory map (a file mapped and its fd closed: grep
+# for the folder in the path column, batched by find); with privilege ($1 =
+# sudo) the same of exactly the entries given after the folder $2. find
 # runs with LC_ALL=C, so each of its messages ends in the C library's
 # strerror text for the errno of that entry: the class is read from that
 # fixed text (EACCES, ENOENT), the one per-entry result find gives. A
@@ -2931,21 +2934,31 @@ $i_pid
 # (thousands a walk, beside every create the switch waits for).
 # Lines out: `rc <status>`; `L <path>` a link into the folder; `U <pid>` an
 # entry of that process refused (permission: it is unread); `E <pid> <rest>`
-# an entry gone (<rest>: what follows the pid, /fd/7, /cwd, or nothing for
-# the process's own folder); `F <line>` any other message of find (the walk
-# failed); `S <line>` a line that is not find's (sudo's own refusal).
+# an entry gone (<rest>: what follows the pid, /fd/7, /cwd, /task/<tid>/cwd,
+# or nothing for the process's own folder); `F <line>` any other message of
+# find or grep (the walk failed); `S <line>` a line that is neither's (sudo's
+# own refusal). A map that names the folder prints `L <pid folder>/maps`.
 sv_walk() {
   local w_as="$1" w_dir="$2" w_out w_line w_rest w_msg w_path w_pid
+  # The maps given: the names of those whose path column holds the folder;
+  # status 0 found or not, 2 with grep's message when a map does not read.
+  # shellcheck disable=SC2016 # expanded by the sh that find starts
+  local w_grep='p=$1; shift; grep -F -l -e "$p" -- "$@"; [ $? -le 1 ]'
   shift 2
   w_out=$({
     w_rc=0
     if [ "$w_as" = user ]; then
-      w_found=$(LC_ALL=C find "$proc_root" -ignore_readdir_race -mindepth 1 -maxdepth 3 \
+      w_found=$(LC_ALL=C find "$proc_root" -ignore_readdir_race -mindepth 1 -maxdepth 4 \
         \( ! -path "$proc_root/[0-9]*" -prune \) -o \
-        \( -path "$proc_root/[0-9]*/*" ! -path "$proc_root/[0-9]*/fd" ! -path "$proc_root/[0-9]*/fd/*" ! -path "$proc_root/[0-9]*/cwd" ! -path "$proc_root/[0-9]*/root" ! -path "$proc_root/[0-9]*/exe" -prune \) -o \
+        \( -path "$proc_root/[0-9]*/task/[0-9]*/*" ! -name cwd ! -name root -prune \) -o \
+        \( -path "$proc_root/[0-9]*/maps" -exec sh -c "$w_grep" sv-maps " $w_dir/" {} + \) -o \
+        \( -path "$proc_root/[0-9]*/*" ! -path "$proc_root/[0-9]*/fd" ! -path "$proc_root/[0-9]*/fd/*" ! -path "$proc_root/[0-9]*/cwd" ! -path "$proc_root/[0-9]*/root" ! -path "$proc_root/[0-9]*/exe" ! -path "$proc_root/[0-9]*/task" ! -path "$proc_root/[0-9]*/task/[0-9]*" -prune \) -o \
         \( \( -lname "$w_dir" -o -lname "$w_dir/*" \) -print \) 2>&3) || w_rc=$?
     else
-      w_found=$(LC_ALL=C sudo -n find "$@" -ignore_readdir_race -maxdepth 1 \( -lname "$w_dir" -o -lname "$w_dir/*" \) -print 2>&3) || w_rc=$?
+      w_found=$(LC_ALL=C sudo -n find "$@" -ignore_readdir_race -maxdepth 2 \
+        \( -path "*/task/*/*" ! -name cwd ! -name root -prune \) -o \
+        \( -name maps -exec sh -c "$w_grep" sv-maps " $w_dir/" {} + \) -o \
+        \( \( -lname "$w_dir" -o -lname "$w_dir/*" \) -print \) 2>&3) || w_rc=$?
     fi
     printf 'rc %s\n' "$w_rc"
     printf '%s\n' "$w_found" | while IFS= read -r w_line; do [ -z "$w_line" ] || printf 'L %s\n' "$w_line"; done
@@ -2954,9 +2967,9 @@ sv_walk() {
     case "$w_line" in
       '') ;;
       'rc '* | 'L '*) printf '%s\n' "$w_line" ;;
-      'find: '*)
-        # GNU find quotes the path ('...'); BSD find does not.
-        w_rest=${w_line#find: }
+      'find: '* | 'grep: '*)
+        # GNU find quotes the path ('...'); BSD find and grep do not.
+        w_rest=${w_line#*: }
         w_msg=${w_rest##*: }
         w_path=${w_rest%: *}
         w_path=${w_path#"'"}
@@ -2986,13 +2999,24 @@ $w_out
 EOF
 }
 
+# The fields of the process $1's stat after its command name (the state
+# first), from the whole file: the name may hold newlines and ") ", so they
+# start after the last ") " of the file, never of its first line. Status 1
+# when it does not read.
+sv_stat_after_name() {
+  local t_line t_all=''
+  { while IFS= read -r t_line || [ -n "$t_line" ]; do t_all="$t_all$t_line
+"; done <"$proc_root/$1/stat"; } 2>/dev/null || return 1
+  case "$t_all" in *') '*) ;; *) return 1 ;; esac
+  printf '%s' "${t_all##*) }"
+}
+
 # The start time of the process $1 (field 22 of its stat, clock ticks since
 # boot), empty when it does not read: a pid reused between two reads is
 # another process, with another start.
 sv_start_of() {
   local s_stat
-  { IFS= read -r s_stat <"$proc_root/$1/stat"; } 2>/dev/null || return 0
-  s_stat=${s_stat##*) }
+  s_stat=$(sv_stat_after_name "$1") || return 0
   set -f
   # shellcheck disable=SC2086 # split into its fields on purpose
   set -- $s_stat
@@ -3006,9 +3030,10 @@ sv_start_of() {
 # names the base by its path.
 #
 # Each process the walk met is one of three, decided per process:
-# - ended during the walk (its folder gone): it holds nothing, counted in
-#   `ended <n>`; so is a file it closed between the listing and its read (an
-#   fd link gone while the process lives);
+# - ended during the walk: its folder gone, the one meaning of ended. It holds
+#   nothing, counted in `ended <n>`; so is a file it closed between the
+#   listing and its read (an fd link gone while the process lives), and a
+#   thread that ended (its task folder gone);
 # - unread: an entry of it refused this user (another user's process, or this
 #   user's own with privileges this one lacks: a process with capabilities
 #   reads as its owner's but its links do not), or a link other than an fd
@@ -3018,7 +3043,7 @@ sv_start_of() {
 # Status 1 with `failed <line>` when the walk itself failed (find did not run,
 # or said anything else): never "nobody works there".
 sv_users() {
-  local u_dir="$1" u_owners u_walk u_line u_links='' u_rc='' u_pid u_rest u_seen=' ' u_ifs u_unread=' ' u_gone=' ' u_said='' u_fail='' u_n=0
+  local u_dir="$1" u_owners u_walk u_line u_links='' u_rc='' u_pid u_rest u_seen=' ' u_ifs u_unread=' ' u_gone=' ' u_said='' u_fail='' u_n=0 u_tid
   u_owners=$(sv_line_pids) || { printf 'failed %s\n' "the pids of workrift's line do not read"; return 1; }
   u_walk=$(sv_walk user "$u_dir") || { printf 'failed %s\n' "find over $proc_root did not run"; return 1; }
   while IFS= read -r u_line; do
@@ -3042,6 +3067,12 @@ sv_users() {
         else
           case "$u_rest" in
             /fd/*) ;;
+            /task/*/*)
+              # A thread that ended: only if its folder is gone.
+              u_tid=${u_rest#/task/}
+              u_tid=${u_tid%%/*}
+              [ ! -e "$proc_root/$u_pid/task/$u_tid" ] || case "$u_unread" in *" $u_pid "*) ;; *) u_unread="$u_unread$u_pid " ;; esac
+              ;;
             *) case "$u_unread" in *" $u_pid "*) ;; *) u_unread="$u_unread$u_pid " ;; esac ;;
           esac
         fi
@@ -3085,7 +3116,7 @@ EOF
   IFS=$u_ifs
   for u_pid in $u_unread; do
     case "$u_seen" in *" $u_pid "*) continue ;; esac
-    sv_unknown_pid "$u_pid" "$u_owners" || { printf 'failed %s\n' "the stat or status of process $u_pid does not read while it lives"; return 1; }
+    sv_unknown_pid "$u_pid" "$u_owners"
   done
   for u_pid in $u_gone; do u_n=$((u_n + 1)); done
   printf 'ended %s\n' "$u_n"
@@ -3093,19 +3124,20 @@ EOF
 
 # Prints `unknown <pid> <uid> <start>` for the process $1 the walk could not
 # look into, unless it holds no file (gone, a kernel thread, a zombie) or is
-# in the line $2. Its stat and status are readable by anyone: one that does
-# not read while the process is still there fails.
+# in the line $2. Its stat and status are readable by anyone; one that does
+# not read (or reads malformed) while its folder is there is unread all the
+# same, its uid `?` and its start empty: never ended, never a kernel thread.
 sv_unknown_pid() {
   local k_pid="$1" k_owners="$2" k_stat k_state k_flags k_key k_value k_uid='?' k_start
   [ -e "$proc_root/$k_pid" ] || return 0
-  if ! { IFS= read -r k_stat <"$proc_root/$k_pid/stat"; } 2>/dev/null; then
+  if ! k_stat=$(sv_stat_after_name "$k_pid"); then
     [ -e "$proc_root/$k_pid" ] || return 0
-    return 1
+    printf 'unknown %s ? \n' "$k_pid"
+    return 0
   fi
-  # The fields after the command name (which may hold spaces and parentheses):
-  # the state, then the flags as the seventh, the start time as the twentieth
-  # (field 22 of the stat); PF_KTHREAD is 0x00200000.
-  k_stat=${k_stat##*) }
+  # The fields after the command name (which may hold spaces, parentheses and
+  # newlines): the state, then the flags as the seventh, the start time as the
+  # twentieth (field 22 of the stat); PF_KTHREAD is 0x00200000.
   set -f
   # shellcheck disable=SC2086 # split into its fields on purpose
   set -- $k_stat
@@ -3113,21 +3145,49 @@ sv_unknown_pid() {
   k_state=${1:-}
   k_flags=${7:-}
   k_start=${20:-}
-  case "$k_flags" in '' | *[!0-9]*) return 1 ;; esac
+  case "$k_flags" in
+    '' | *[!0-9]*)
+      printf 'unknown %s ? \n' "$k_pid"
+      return 0
+      ;;
+  esac
   [ "$k_state" != Z ] || return 0
   [ $((k_flags & 0x200000)) -eq 0 ] || return 0
   ! sv_in_line "$k_pid" "$k_owners" || return 0
   if { while read -r k_key k_value _; do [ "$k_key" != Uid: ] || k_uid=$k_value; done <"$proc_root/$k_pid/status"; } 2>/dev/null; then :; else
     [ -e "$proc_root/$k_pid" ] || return 0
-    return 1
+    k_uid='?'
   fi
   printf 'unknown %s %s %s\n' "$k_pid" "$k_uid" "$k_start"
 }
 
-# Whether the process $1 is still the one first read: its folder there and its
-# start time $2 (a pid reused meanwhile is another process: the first ended).
-sv_same_process() {
-  [ -e "$proc_root/$1" ] && [ "$(sv_start_of "$1")" = "$2" ]
+# The hidepid option of the proc mount at $proc_root when it keeps other
+# users' processes out of the listing (hidepid=2 or 4, invisible, ptraceable),
+# e.g. `hidepid=invisible`; nothing when it lists them all (hidepid=1 lists
+# them and refuses their entries: each is unread), or when there is no mount
+# table to read (the walk then says what it met).
+sv_proc_hides() {
+  local m_line m_rest m_point m_super m_opt m_ifs
+  [ -r "$proc_root/self/mountinfo" ] || return 0
+  while IFS= read -r m_line; do
+    # Its fields: id, parent, major:minor, root, mount point, options,
+    # optional fields up to ` - `, then the type, the source and the
+    # filesystem's own options.
+    m_rest=${m_line#* * * * }
+    m_point=${m_rest%% *}
+    [ "$m_point" = "$proc_root" ] || continue
+    m_super=${m_line##* - }
+    case "$m_super" in 'proc '*) ;; *) continue ;; esac
+    m_super=${m_super##* }
+    m_ifs=$IFS
+    IFS=,
+    set -f
+    for m_opt in $m_super; do
+      case "$m_opt" in hidepid=2 | hidepid=4 | hidepid=invisible | hidepid=ptraceable) printf '%s\n' "$m_opt" ;; esac
+    done
+    set +f
+    IFS=$m_ifs
+  done <"$proc_root/self/mountinfo"
 }
 
 # The processes in the folder $1, every one known, into sv_users_found (`pid
@@ -3137,8 +3197,11 @@ sv_same_process() {
 # again with privilege where sudo -n works: one read-only find of exactly
 # their fd links, working folders, roots and executables, all of them in one
 # call, its command line in the step log (said again only when the set
-# changes: a wait looks many times); one whose start time changed since the
-# walk (its pid reused) ended. Where sudo -n does not work, or allows `true`
+# changes: a wait looks many times); one gone meanwhile ended, and one whose
+# start time changed since the walk (its pid reused) is a new process, judged
+# as itself. Where /proc hides other users' processes from the listing
+# (hidepid), they are unread for the whole walk: refused, or beside them with
+# --beside-unreadable. Where sudo -n does not work, or allows `true`
 # but refuses that find, the switch goes on beside them only with
 # --beside-unreadable (said in the step log); else status 2, sv_why naming
 # them and the ways on. Status 1 with sv_why when a walk fails.
@@ -3149,6 +3212,7 @@ sv_users_known() {
   sv_users_ended=0
   sv_users_unread=0
   sv_users_reread=0
+  sv_users_hidden=
   sv_read k_all sv_users "$k_dir" || k_rc=$?
   k_fail=
   while IFS= read -r k_line; do
@@ -3190,12 +3254,8 @@ EOF
       k_left=
       set --
       for k_pid in $k_unknown; do
-        k_start=
-        for k_ps in $k_starts; do
-          case "$k_ps" in "$k_pid":*) k_start=${k_ps#*:} ;; esac
-        done
-        if ! sv_same_process "$k_pid" "$k_start"; then
-          # Ended, or its pid reused since the walk: none holds anything.
+        if [ ! -e "$proc_root/$k_pid" ]; then
+          # Ended: its folder gone, it holds nothing.
           case "$k_ended" in
             *" $k_pid "*) ;;
             *)
@@ -3209,11 +3269,13 @@ EOF
         for k_a in root exe; do
           [ ! -L "$proc_root/$k_pid/$k_a" ] || set -- "$@" "$proc_root/$k_pid/$k_a"
         done
+        [ ! -f "$proc_root/$k_pid/maps" ] || set -- "$@" "$proc_root/$k_pid/maps"
+        [ ! -d "$proc_root/$k_pid/task" ] || set -- "$@" "$proc_root/$k_pid/task"
         k_left="$k_left $k_pid"
       done
       # Every one gone meanwhile: none holds anything.
       [ -n "$k_left" ] || break
-      k_cmd="sudo -n find $* -ignore_readdir_race -maxdepth 1 ( -lname $k_dir -o -lname $k_dir/* ) -print"
+      k_cmd="sudo -n find $* -ignore_readdir_race -maxdepth 2 ( -path */task/*/* ! -name cwd ! -name root -prune ) -o ( -name maps -exec sh -c <grep -F -l of each map> sv-maps ' $k_dir/' {} + ) -o ( ( -lname $k_dir -o -lname $k_dir/* ) -print )"
       if [ "$k_cmd" != "${sv_sudo_said:-}" ]; then
         sv_log "the walk could not look into $k_n process(es) of uid $k_uids; read again with privilege, read only, in one call:"
         sv_log "  $k_cmd"
@@ -3239,7 +3301,14 @@ EOF
             # Gone: ended (the next try reads without it); an fd gone while
             # it lives was closed; any other entry gone is read again.
             if [ -e "$proc_root/$k_pid" ]; then
-              case "$k_rest" in /fd/*) ;; *) k_again=yes ;; esac
+              case "$k_rest" in
+                /fd/*) ;;
+                /task/*/*)
+                  k_a=${k_rest#/task/}
+                  [ ! -e "$proc_root/$k_pid/task/${k_a%%/*}" ] || k_again=yes
+                  ;;
+                *) k_again=yes ;;
+              esac
             else
               k_again=yes
             fi
@@ -3279,13 +3348,11 @@ EOF
         for k_ps in $k_starts; do
           case "$k_ps" in "$k_pid":*) k_start=${k_ps#*:} ;; esac
         done
-        # A pid reused since the walk: what it holds is another process's,
-        # started after the walk; the one walked ended.
-        if ! sv_same_process "$k_pid" "$k_start"; then
-          sv_users_ended=$((sv_users_ended + 1))
-          continue
-        fi
-        k_users="$k_users$k_pid $(cat "$proc_root/$k_pid/comm" 2>/dev/null || printf '?') (uid $(sv_uid_of "$k_pid"), read with sudo)
+        # A pid reused since the walk is a new process that lives, and what
+        # the read found is its own: it is in the folder, said as such.
+        k_a=
+        [ -z "$k_start" ] || [ "$(sv_start_of "$k_pid")" = "$k_start" ] || k_a='; its pid was reused since the walk: a new process'
+        k_users="$k_users$k_pid $(cat "$proc_root/$k_pid/comm" 2>/dev/null || printf '?') (uid $(sv_uid_of "$k_pid"), read with sudo$k_a)
 "
       done <<EOF
 $k_found
@@ -3318,6 +3385,23 @@ EOF
         fi
         ;;
     esac
+  fi
+  sv_users_hidden=$(sv_proc_hides)
+  sv_users_hidden=${sv_users_hidden%%
+*}
+  if [ -n "$sv_users_hidden" ]; then
+    k_said="$proc_root is mounted with $sv_users_hidden: it does not list other users' processes at all, so the walk cannot see them"
+    if [ "${sv_beside_unreadable:-no}" = yes ]; then
+      sv_beside_unknown="${sv_beside_unknown:+$sv_beside_unknown; }the processes $proc_root hides ($sv_users_hidden)"
+      if [ "hidden $sv_users_hidden" != "${sv_hidden_said:-}" ]; then
+        sv_log "beside the processes it cannot see (--beside-unreadable): $k_said"
+        sv_hidden_said="hidden $sv_users_hidden"
+      fi
+    else
+      sv_why="$k_said; one in $k_dir cannot be ruled out: pass --beside-unreadable to run beside them"
+      sv_unknown_next=$(sv_beside_unreadable_command "$sv_mode")
+      return 2
+    fi
   fi
   sv_users_found=${k_users%
 }
@@ -3358,7 +3442,7 @@ processes_command() {
   sv_base=$p_dir
   cd / || fail "cd /"
   sv_users_known "$p_dir" || p_rc=$?
-  printf 'workrift processes: %s: ended during the walk %s, unread %s, read again with sudo -n %s\n' "$p_dir" "$sv_users_ended" "$sv_users_unread" "$sv_users_reread"
+  printf 'workrift processes: %s: ended during the walk %s, unread %s, read again with sudo -n %s%s\n' "$p_dir" "$sv_users_ended" "$sv_users_unread" "$sv_users_reread" "${sv_users_hidden:+; $proc_root hides the processes of other users ($sv_users_hidden)}"
   case "$p_rc" in
     0)
       [ -z "${sv_beside_unknown:-}" ] || printf 'workrift processes: beside %s\n' "$sv_beside_unknown"
