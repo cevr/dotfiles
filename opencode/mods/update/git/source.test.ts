@@ -1,9 +1,10 @@
 // @reads all
 // @reads-reason subprocess reads at mods/update/git/source.test.ts: spawnSync(["rm", "-rf", root, home])
 import { describe, expect, test } from "bun:test"
-import { env as hostEnv, file, fileURLToPath, spawnSync, write } from "bun"
+import { env as hostEnv, file, spawnSync, write } from "bun"
 import { Effect, Exit, Option } from "effect"
 import { gitInit } from "../../../tests/git-repo.ts"
+import { matchingInput } from "../../../tests/read-path.ts"
 import { Source } from "../service.ts"
 import * as SourceLive from "./source.ts"
 
@@ -16,6 +17,7 @@ const GIT_ENV = {
   GIT_COMMITTER_NAME: "t",
   GIT_COMMITTER_EMAIL: "t@example.invalid",
 }
+const COMMANDS_MS = 60_000
 
 const sh = (cwd: string, command: ReadonlyArray<string>) => {
   const ran = spawnSync([...command], { cwd, env: GIT_ENV, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
@@ -76,17 +78,17 @@ describe("the host's commands, over the checkout as it stands", () => {
           spawnSync(["rm", "-rf", root, home])
         }),
       ),
-    60_000,
+    COMMANDS_MS,
   )
 
   /** The host's commands scripts as the repo has them, each run under `sh` from its own place. */
   const SCRIPTS = [
-    { host: "the Mac", script: fileURLToPath(new URL("../../../../local-bin.sh", import.meta.url)) },
-    { host: "the workbox", script: fileURLToPath(new URL("../../../../workbox/install-bin.sh", import.meta.url)) },
+    { host: "the Mac", script: matchingInput("../local-bin.sh") },
+    { host: "the workbox", script: matchingInput("../workbox/install-bin.sh") },
   ] as const
   const TREE_SHOW = "opencode-2.3.0-prime.aaaaaaaa.bbbbbbbb.tree.plugins/opencode/cmd/rex/show.ts"
   // This direct link test does not use the fleet's --apply dispatch.
-  const identityScript = fileURLToPath(new URL("../../../../workbox/host-identity.sh", import.meta.url))
+  const identityScript = matchingInput("../workbox/host-identity.sh")
   const identity = sh(".", ["sh", "-c", '. "$1"; workbox_host_identity', "test", identityScript]).out
 
   for (const { host, script } of SCRIPTS)
@@ -118,7 +120,9 @@ describe("the host's commands, over the checkout as it stands", () => {
           expect(rexShow(bare)).toBe("/nonexistent/loop-probe-x/show.ts")
           spawnSync(["rm", "-rf", treed, bare])
         }),
-      ))
+      ),
+      COMMANDS_MS,
+    )
 
   /**
    * A scratch live checkout and an installed tree, each with its own `workbox/install-bin.sh` that writes
