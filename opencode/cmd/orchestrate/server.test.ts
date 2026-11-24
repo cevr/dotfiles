@@ -42,7 +42,7 @@ import * as OpenCodeSteer from "@dotfiles/opencode-orchestrate/opencode/steer"
 import { parseModel, type Pace } from "@dotfiles/opencode-orchestrate/pace"
 import { NO_INFLIGHT, poolPace } from "@dotfiles/opencode-pool/pace"
 import type { AccountStatus } from "@dotfiles/opencode-pool/status"
-import { iso } from "@dotfiles/opencode-pool/usage-text"
+import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import { definitions, ORCHESTRATOR, orchestrator } from "@dotfiles/opencode-orchestrate/role"
 import { KNOWLTON, rest } from "@dotfiles/opencode-orchestrate/sabbath"
 import { type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
@@ -59,7 +59,7 @@ const LOG_SCRIPT = join(HERE, "../../../skills/orchestrate/scripts/log.ts")
 const FRIDAY_EVENING = "2026-10-30T23:00:00Z"
 /** Wednesday 4 November 2026, 10:00 in Knowlton. */
 const WEDNESDAY = "2026-11-04T15:00:00Z"
-const SABBATH = /^It is the Sabbath; agent work resumes at Sat 18:\d\d \(30 min after sunset, Knowlton, QC\)\.$/
+const SABBATH = /^It is the Sabbath; agent work resumes at Oct 31, 2026, 6:\d{2}:\d{2} PM EDT \(30 min after sunset, Knowlton, QC\)\.$/
 
 type Host = Parameters<(typeof Orchestrate)["effect"]>[0]
 type Hook = (event: Record<string, unknown>) => Effect.Effect<void, { readonly _tag: string; readonly message: string }>
@@ -554,7 +554,7 @@ describe("the pace", () => {
         )
         const held = yield* plugin.call("subagent", "root", { agent: "explore" })
         expect(held.refused?.message).toBe(
-          `orchestrate: the pool's pace holds this agent. all pool accounts are held. It opens about ${new Date(now + 300_000).toISOString()} (Wed 10:05 America/Toronto); no latch could be kept for it, so start it again after then. Do not poll.`,
+          `orchestrate: the pool's pace holds this agent. all pool accounts are held. It opens about Nov 4, 2026, 10:05:01 AM EST; no latch could be kept for it, so start it again after then. Do not poll.`,
         )
         expect(plugin.logged()).toEqual([
           '{"kind":"denied","sessionID":"root","callID":"call","tool":"subagent","why":"all pool accounts are held"}',
@@ -573,7 +573,7 @@ describe("the pace", () => {
         const plugin = yield* start({ now: WEDNESDAY }, { codex, refuse: "no wakes" })
         const held = yield* plugin.call("subagent", "root", { agent: "planner", model: "openai/gpt-5#high" })
         expect(held.refused?.message).toStartWith(
-          `orchestrate: the Codex account's pace holds this agent. weekly pace. It opens about ${new Date(now + 60_000).toISOString()} (`,
+          `orchestrate: the Codex account's pace holds this agent. weekly pace. It opens about Nov 4, 2026, 10:01:00 AM EST;`,
         )
         expect((yield* plugin.call("subagent", "root", { agent: "explore", model: "openai/gpt-5" })).refused).toBeDefined()
         expect(asked).toEqual(["gpt-5 planner", "gpt-5 none"])
@@ -599,7 +599,7 @@ describe("the pace", () => {
         )
         const refused = (yield* held.call("subagent", "root", { agent: "planner", model: "openai/gpt-5#high" })).refused
         expect(refused?.message).toStartWith(
-          `orchestrate: the Codex account's pace holds this agent. ${reason}. It opens about ${new Date(now + 120_000).toISOString()} (`,
+          `orchestrate: the Codex account's pace holds this agent. ${reason}. It opens about Nov 4, 2026, 10:02:00 AM EST;`,
         )
         // A pool that has no measure of it (no ChatGPT login read) leaves it to the script.
         const unmeasured = yield* start({ now: WEDNESDAY, codex: { pool: true } }, { codex, pool: { openai: { ok: true, measured: false, reason: "no pooled account readings" } } })
@@ -769,7 +769,7 @@ describe("a latch", () => {
         expect(answer.content).toBe(
           [
             "The subagent is latched (sessionID: ses_latched1, latch w000001). the pool's pace holds this agent: all pool accounts are held.",
-            `It starts by itself in the background when the latch opens, about ${new Date(now + 600_000).toISOString()} (${(answer.output as { latch: { local: string } }).latch.local} ${KNOWLTON.timeZone}), or sooner: it is decided again at ${new Date(now + 120_000).toISOString()}. You will be woken with its result, as for a background subagent.`,
+            "It starts by itself in the background when the latch opens, about Nov 4, 2026, 10:10:00 AM EST, or sooner: it is decided again at Nov 4, 2026, 10:02:00 AM EST. You will be woken with its result, as for a background subagent.",
             "Go on with other work, or end your turn. Do not start it again, poll or wait for it. wake_list shows the latch; wake_cancel cancels it.",
           ].join("\n"),
         )
@@ -944,7 +944,7 @@ describe("a latch", () => {
         const plugin = yield* start({ now: WEDNESDAY }, { sessions: { kid: { parentID: "root", agent: "worker", latch: mark } } })
         const followUp = yield* plugin.call("subagent", "root", { sessionID: "kid", prompt: "more" })
         expect(followUp.refused?.message).toBe(
-          `orchestrate: subagent kid is latched and has not started; it starts by itself at ${new Date(now + 60_000).toISOString()} (Wed 10:01 ${KNOWLTON.timeZone}), and its result wakes you. Send it nothing until then, or cancel its latch with wake_cancel and start a new one.`,
+          `orchestrate: subagent kid is latched and has not started; it starts by itself at Nov 4, 2026, 10:01:00 AM EST, and its result wakes you. Send it nothing until then, or cancel its latch with wake_cancel and start a new one.`,
         )
         // A cancelled latch's child takes follow-ups again.
         const cancelled = yield* start({ now: WEDNESDAY }, { sessions: { kid: { parentID: "root", agent: "worker", latch: { ...mark, cancelledAt: now } } } })
@@ -1358,7 +1358,7 @@ describe("the planner's first model", () => {
   }
   const FABLE_SPENT =
     "anthropic/claude-fable#medium held: every pool account is held or has claude-fable's own weekly window (7d:Fable) at 100% used of 100%: " +
-    `a claude-fable start holds at 100% used of 100% there; the first resets ${iso(now + 2 * day)}`
+    `a claude-fable start holds at 100% used of 100% there; the first resets ${formatNotificationTime(now + 2 * day)}`
 
   test("every new planner start runs on the first model at the planner's effort, whatever its description, and its line names it", () =>
     scenario(

@@ -326,7 +326,7 @@ describe("a repeating monitor", () => {
         expect(texts(w).map((text) => text.split("\n")[0])).toEqual([
           `⏰ Monitor ${placed.entry.id} changed (fire 1): \`q\`.`,
           `⏰ Monitor ${placed.entry.id} changed (fire 2): \`q\`.`,
-          `⏰ Monitor ${placed.entry.id} ended: its deadline 1970-01-01T00:00:25.000Z passed after 2 fires; \`q\`.`,
+          `⏰ Monitor ${placed.entry.id} ended: its deadline Dec 31, 1969, 7:00:25 PM EST passed after 2 fires; \`q\`.`,
         ])
         expect(w.store.entries.size).toBe(0)
         expect(w.jobs.jobs.size).toBe(0)
@@ -476,7 +476,7 @@ describe("across a reload or a stop", () => {
         yield* settle
         expect(texts(w)).toHaveLength(1)
         expect(texts(w)[0]).toContain(`⏰ Wake ${placed.entry.id} fired`)
-        expect(texts(w)[0]).toContain("It fired 2h late: no OpenCode server was running at 1970-01-01T00:01:00.000Z, so it went when one started.")
+        expect(texts(w)[0]).toContain("It fired 2h late: no OpenCode server was running at Dec 31, 1969, 7:01:00 PM EST, so it went when one started.")
         expect(texts(w)[0]).toContain("Note: Check the deploy.")
       }),
     ))

@@ -146,10 +146,10 @@ describe("a request is placed", () => {
 
   test("a held pool's message names the sign-in when every account needs one, else when the first opens", () => {
     expect(heldMessage(new AccountsHeld({ sessionID: "s1", kind: "primary", retryAt: T0, signIn: ["store:alpha", "store:beta"] }))).toBe(
-      "dotfiles-opencode.pool: every pool account needs a new sign-in (store:alpha, store:beta). Sign in to them again; it may go again at 2027-01-15T08:00:00.000Z if a login is signed in.",
+      "dotfiles-opencode.pool: every pool account needs a new sign-in (store:alpha, store:beta). Sign in to them again; it may go again at Jan 15, 2027, 3:00:00 AM EST if a login is signed in.",
     )
-    expect(heldMessage(new AccountsHeld({ sessionID: "s1", kind: "primary", retryAt: T0, signIn: [] }))).toMatch(
-      /^dotfiles-opencode\.pool: all pool accounts are held; it may go again at \d{4}-/,
+    expect(heldMessage(new AccountsHeld({ sessionID: "s1", kind: "primary", retryAt: T0, signIn: [] }))).toBe(
+      "dotfiles-opencode.pool: all pool accounts are held; it may go again at Jan 15, 2027, 3:00:00 AM EST",
     )
   })
 

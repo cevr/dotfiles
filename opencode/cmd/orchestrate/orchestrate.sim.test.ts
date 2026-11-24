@@ -14,7 +14,7 @@ import { KEEP } from "@dotfiles/opencode-orchestrate/compaction"
 import { paceOfReply, parseAdmission } from "@dotfiles/opencode-orchestrate/pace"
 import { definitions } from "@dotfiles/opencode-orchestrate/role"
 import { Plugin } from "@opencode/plugin/effect"
-import { Array as Arr, DateTime, Effect, Option, Schema } from "effect"
+import { Array as Arr, Effect, Option, Schema } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
 import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
@@ -27,7 +27,7 @@ const WORK = "/scratch/work"
 const FRIDAY_EVENING = "2026-10-30T23:00:00Z"
 /** Wednesday 4 November 2026, 10:00 in Knowlton. */
 const WEDNESDAY = "2026-11-04T15:00:00Z"
-const SABBATH = /^It is the Sabbath; agent work resumes at Sat 18:\d\d \(30 min after sunset, Knowlton, QC\)\.$/
+const SABBATH = /^It is the Sabbath; agent work resumes at Oct 31, 2026, 6:\d{2}:\d{2} PM EDT \(30 min after sunset, Knowlton, QC\)\.$/
 
 const ROOT_TASK = "orchestrate"
 const UNTYPED_TASK = "task-untyped"
@@ -171,7 +171,7 @@ seeded("pace: with no wakes to keep a latch, an over-limit pool refuses new agen
     const messages = textOf(held.world, heldRoot)
     expect(messages).toContain("pace holds this agent")
     // The fake pool says it opens a minute on; the latch itself is the wakes'.
-    expect(messages).toContain(`It opens about ${DateTime.formatIso(DateTime.makeUnsafe(Date.parse(WEDNESDAY) + 60_000))}`)
+    expect(messages).toContain("It opens about Nov 4, 2026, 10:01:00 AM EST")
     expect(messages).toContain("no latch could be kept for it")
     const open = yield* boot(seed, { now: WEDNESDAY, pace: "open", codex: "unpaced" })
     const openRoot = yield* open.root(ROOT_TASK)
@@ -187,7 +187,7 @@ seeded("codex pace: a subagent on a Codex-paced provider asks the Codex admissio
     const messages = textOf(held.world, heldRoot)
     expect(messages).toContain("the Codex account's pace holds this agent. scripted Codex week is over.")
     // It opens when the admission said the week opens.
-    expect(messages).toContain("It opens about 2026-11-04T16:20:00.000Z")
+    expect(messages).toContain("It opens about Nov 4, 2026, 11:20:00 AM EST")
     // The admission is asked with the model and the role, as the script's `--model sim-model --role <role>`.
     expect(held.asked).toContainEqual(["sim-model", "worker"])
     expect(held.asked).toEqual([["sim-model", "worker"]])
@@ -304,6 +304,6 @@ seeded("Sabbath: on Friday evening the subagent calls are refused with when work
     // The model was told, in the tool result.
     const results = run.seen.filter((request) => request.task === ROOT_TASK && request.kind === "primary").map((request) => request.last)
     expect(results.slice(1).every((text) => text.includes("No agent starts now."))).toBe(true)
-    expect(results.slice(1).every((text) => /It is the Sabbath; agent work resumes at Sat 18:\d\d/.test(text))).toBe(true)
+    expect(results.slice(1).every((text) => /It is the Sabbath; agent work resumes at Oct 31, 2026, 6:\d{2}:\d{2} PM EDT/.test(text))).toBe(true)
   }),
 )

@@ -238,7 +238,7 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       })
       const [cell] = toolParts(result.messages)
       const text = (cell!.state.content ?? []).map((part) => part.text ?? "").join("")
-      expect(text).toMatch(/^refused: It is the Sabbath; agent work resumes at Sat 18:\d\d/)
+      expect(text).toMatch(/^refused: It is the Sabbath; agent work resumes at Oct 31, 2026, 6:\d{2}:\d{2} PM EDT/)
       expect(text).toContain("No agent starts now.")
       // The guard logged the refused call under the kernel call's id.
       const log = readFileSync(join(result.base, "agents.jsonl"), "utf8")

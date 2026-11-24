@@ -261,7 +261,7 @@ describe("the plan and the forecast", () => {
     const credits = [grant("g1", T0 + 10 * DAY, WEEKLY), grant("g2", T0 + 10 * DAY, WEEKLY), grant("g3", T0 + 10 * DAY, WEEKLY)]
     const low = forecastOf(pool([account("a", [window("7d", 0.1, T0 + 5 * DAY)], credits)]), T0)
     expect(low.wasted).toHaveLength(3)
-    expect(forecastText(low)).toContain("3 of its 3 resets (weekly reset; each gives back ≈99% of a week) expire unused by 2026-11-21 12:00Z")
+    expect(forecastText(low)).toContain("3 of its 3 resets (weekly reset; each gives back ≈99% of a week) expire unused by Nov 21, 2026, 7:00:00 AM EST")
     // 90% used one day into the week: 3.75%/h, ~9 weeks' use by the expiry against ~2.1 weeks of room.
     const high = forecastOf(pool([account("a", [window("7d", 0.9, T0 + 6 * DAY)], credits)]), T0)
     expect(high.wasted).toEqual([])

@@ -4,6 +4,16 @@ import { describe, expect, test } from "bun:test"
 import { accountWide, asReading, limitsModel, scopeOf } from "./quota.ts"
 
 describe("asReading", () => {
+  test("preserves explicit five-hour absence over RPC, dropping malformed or contradictory evidence", () => {
+    const read = { at: 10, windows: [{ name: "7d", utilization: 0.2, resetAt: 100 }] }
+    expect(asReading({ ...read, fiveHourAbsentAt: 9 })).toEqual({ ...read, fiveHourAbsentAt: 9 })
+    for (const absent of ["9", Number.NaN, 11]) {
+      expect(asReading({ ...read, fiveHourAbsentAt: absent })).toEqual(read)
+    }
+    const limited = { at: 10, windows: [{ name: "5h", utilization: 1, resetAt: 100 }] }
+    expect(asReading({ ...limited, fiveHourAbsentAt: 9 })).toEqual(limited)
+  })
+
   test("keeps the resets an auth plugin read, leaving out a malformed credit", () => {
     const reading = asReading({
       at: 1,

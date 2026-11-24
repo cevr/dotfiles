@@ -3,6 +3,15 @@
 Our orchestration harness and Prime look on OpenCode 2.x. The fork's public
 plugin hooks supply the UI; orchestration policy lives in this repository.
 
+Notification times include the calendar date, seconds, AM/PM, and the time zone
+(for example, `Nov 25, 2026, 2:00:00 PM EST`). Pool notices, wakes, and
+background question letters use the owner's Eastern time on both the Mac and
+the workbox, switching between EST and EDT with daylight saving time. Sabbath
+and latch notices use their configured place's time zone. The shared
+`decider/notification-time.ts` formatter changes prose only; timestamp fields
+in RPC responses, metadata, and storage keep their original numeric or ISO
+formats.
+
 ## Your daily `opencode`
 
 ```sh
@@ -1506,6 +1515,14 @@ matters. With no agent running and no start held there is no forecast. The
 readings decide which windows exist: the 5-hour one is optional (on
 2026-11-15 four of the seven Claude logins read none), and the forecast
 stands on the weekly window and Fable's own week alone.
+
+Admission also accepts an account whose usage endpoint explicitly returns
+`five_hour: null` (verified accounts during Anthropic's quota transition).
+That absence is recorded with its own reading time (`fiveHourAbsentAt`) and
+must be refreshed within 30 minutes. Partial response headers preserve its
+original time; an omitted or malformed field proves no removal, and a
+five-hour limit reported again applies immediately. The weekly pace and the
+model's own limits still apply.
 
 Capacity is taken in this order:
 

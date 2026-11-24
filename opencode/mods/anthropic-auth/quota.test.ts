@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { Schema } from 'effect'
 import {
   quotaProtocol,
   readUnifiedQuota,
@@ -120,6 +121,18 @@ describe('retryAfterUntil', () => {
 })
 
 describe('readUsageBody', () => {
+  test('only an explicit null five-hour limit records its removal', () => {
+    const weekly = { seven_day: { utilization: 20, resets_at: '2027-01-20T00:00:00Z' } }
+    const absent = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Null))('null')
+    expect(readUsageBody({ ...weekly, five_hour: absent }, NOW)).toMatchObject({ fiveHourAbsentAt: NOW })
+    for (const body of [weekly, { ...weekly, five_hour: {} }, { ...weekly, five_hour: { utilization: 'unread' } }]) {
+      expect(readUsageBody(body, NOW)).not.toHaveProperty('fiveHourAbsentAt')
+    }
+    expect(readUsageBody({ ...weekly, five_hour: { utilization: 90, resets_at: '2027-01-15T10:00:00Z' } }, NOW)).toMatchObject({
+      windows: expect.arrayContaining([{ name: '5h', utilization: 0.9, resetAt: Date.parse('2027-01-15T10:00:00Z') }]),
+    })
+  })
+
   test('turns percents into fractions and keeps other windows by name', () => {
     const reading = readUsageBody(
       {

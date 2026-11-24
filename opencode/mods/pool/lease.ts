@@ -44,6 +44,7 @@
 // return the new table. `make` keeps one table per host behind the `Leases`
 // service; `HOST` is the process's, shared by every plugin instance in it.
 import { Clock, Context, Effect, Schema, Semaphore } from "effect"
+import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import { ResetProvider, SETTLE_MS } from "./resets.ts"
 
 export { SETTLE_MS }
@@ -137,14 +138,12 @@ const prune = (table: LeaseTable, now: number): LeaseTable => ({
   seen: table.seen.filter((item) => now - item.at < SEEN_MS),
 })
 
-const stamp = (at: number) => new Date(at).toISOString()
-
 /** Why the provider is not free at `now` (this host's clock) for a lease asked by `asker`, by what was lent and seen; none when it is. */
 const taken = (table: LeaseTable, provider: ResetProvider, asker: string, now: number): string | undefined => {
   const lent = table.lent.find((item) => item.host !== asker && item.provider === provider)
-  if (lent !== undefined) return `${lent.host} holds the ${provider} lease until ${stamp(lent.expiresAt)}`
+  if (lent !== undefined) return `${lent.host} holds the ${provider} lease until ${formatNotificationTime(lent.expiresAt)}`
   const seen = table.seen.find((item) => item.provider === provider && now < item.at + SETTLE_MS)
-  if (seen !== undefined) return `a claim told of at ${stamp(seen.at)} may not show yet in a reading`
+  if (seen !== undefined) return `a claim told of at ${formatNotificationTime(seen.at)} may not show yet in a reading`
   return undefined
 }
 
@@ -152,7 +151,7 @@ const taken = (table: LeaseTable, provider: ResetProvider, asker: string, now: n
 export const answer = (table: LeaseTable, self: string, ask: LeaseAsk, now: number): readonly [LeaseAnswer, LeaseTable] => {
   const current = prune(table, now)
   const refuse = (reason: string) => [{ granted: false, reason }, current] as const
-  if (current.quietUntil !== undefined && now < current.quietUntil) return refuse(`${self} started lately and lends nothing until ${stamp(current.quietUntil)}`)
+  if (current.quietUntil !== undefined && now < current.quietUntil) return refuse(`${self} started lately and lends nothing until ${formatNotificationTime(current.quietUntil)}`)
   const why = taken(current, ask.provider, ask.host, now)
   if (why !== undefined) return refuse(why)
   const mine = current.own.find((item) => item.stage !== "yielded" && item.provider === ask.provider)
