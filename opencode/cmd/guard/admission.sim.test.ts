@@ -6,10 +6,10 @@ import { systemdArgv } from "@dotfiles/opencode-guard/process/launchers"
 import { linuxPressure } from "@dotfiles/opencode-guard/process/admission"
 import { issue, watchdogPlan, type Actuation, type SignalIntent } from "@dotfiles/opencode-guard/process/actuation"
 import { attachGrant, attestLinux, linuxDrain, runAfterClaim, stopLinux, type LinuxManager } from "@dotfiles/opencode-guard/process/linux-controller"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import { checkSpec } from "./host-admit.ts"
 
-const { seeded } = Seed.runner("cmd/guard/admission.sim.test.ts")
+const { seeded } = simulationRunner("cmd/guard/admission.sim.test.ts")
 const persisted = Schema.fromJsonString(Admission)
 const encode = Schema.encodeSync(persisted)
 const decode = Schema.decodeUnknownSync(persisted)
