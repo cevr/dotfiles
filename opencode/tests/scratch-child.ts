@@ -1,9 +1,8 @@
 import { gunzipSync, spawn, spawnSync } from "bun"
 import { Data, Option, Predicate } from "effect"
 import { ChildProcess } from "effect/process"
-import { ROOT } from "../scripts/reach.ts"
 import { cloneGitArgv, initGitArgv, QUIET_GIT, type GitEnv } from "./git-repo.ts"
-import { externalInput, matchingInput, scratchInput } from "./read-path.ts"
+import { checkoutRoot as ROOT, externalInput, matchingInput, scratchInput } from "./read-path.ts"
 import { localTestPaths, localTestProcess, scratchRoot } from "./scratch.ts"
 
 const { resolve } = localTestPaths

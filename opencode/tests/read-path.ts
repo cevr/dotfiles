@@ -1,10 +1,11 @@
 import { Glob, resolveSync } from "bun"
 import { Data, Option, Predicate } from "effect"
 import { ALL_READS, readMatcher } from "../scripts/read-declarations.ts"
-import { ROOT as workspace } from "../scripts/reach.ts"
 import { localTestPaths, scratchRoot } from "./scratch.ts"
 
 const { existsSync, isAbsolute, join, relative, resolve, readFileSync, readdirSync, readlinkSync, realpathSync, processCwd } = localTestPaths
+export const checkoutRoot = resolve(import.meta.dir, "..")
+const workspace = checkoutRoot
 
 class InvalidTestInput extends Data.TaggedError("InvalidTestInput")<{ readonly message: string }> {}
 
