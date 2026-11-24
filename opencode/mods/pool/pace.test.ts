@@ -10,6 +10,34 @@ const minute = 60_000
 const hour = 60 * minute
 const account = (used: number, reset = now + 3.5 * day): AccountStatus => ({ credentialID: "a", live: 1, load: 0, noRoom: false, reading: { at: now, windows: [{ name: "7d", utilization: used, resetAt: reset }, { name: "5h", utilization: 0.1, resetAt: now + 3600000 }] } })
 
+test("weekly-only admission needs fresh explicit absence, retains it through headers, and obeys a returning five-hour limit", () => {
+  const weekly = { name: "7d", utilization: 0.2, resetAt: now + 3.5 * day }
+  const absent: QuotaReading = { at: now, windows: [weekly], fiveHourAbsentAt: now }
+  const dispatch = (reading: QuotaReading, at = now, model = "claude-opus-5-5") =>
+    dispatchPace([{ ...account(0.2), reading }], at, {}, 0.04, model)
+  expect(dispatch(absent)).toMatchObject({ ok: true, admission: "ordinary", eligible: ["a"] })
+  // Partial headers preserve the proof's original age; they never renew it.
+  const headers = (at: number): QuotaReading => ({ at, windows: [weekly], status: "allowed" })
+  expect(dispatch(carryOver(absent, headers(now + minute)), now + minute).ok).toBe(true)
+  expect(dispatch(carryOver(absent, headers(now + 31 * minute)), now + 31 * minute)).toMatchObject({ ok: false, reasonCode: "usage-unread" })
+  expect(dispatch(headers(now))).toMatchObject({ ok: false, reasonCode: "usage-unread" })
+  expect(dispatch({ ...absent, fiveHourAbsentAt: now + minute })).toMatchObject({ ok: false, reasonCode: "usage-unread" })
+  // A returned limit applies immediately; partial headers cannot restore the retired exemption.
+  const limited: QuotaReading = { at: now + minute, windows: [weekly, { name: "5h", utilization: 0.95, resetAt: now + hour }] }
+  const returned = carryOver(absent, limited)
+  expect(returned).not.toHaveProperty("fiveHourAbsentAt")
+  expect(dispatch(returned, now + minute)).toMatchObject({ ok: false, reasonCode: "quota-limit" })
+  expect(dispatch(carryOver(returned, headers(now + 2 * minute)), now + 2 * minute)).toMatchObject({ ok: false, reasonCode: "usage-unread" })
+  // Another explicit removal retires the former limit, without inventing a zero-use window.
+  const removedAgain = carryOver(returned, { ...absent, at: now + 2 * minute, fiveHourAbsentAt: now + 2 * minute })
+  expect(removedAgain.windows).toEqual([weekly])
+  expect(dispatch(removedAgain, now + 2 * minute).ok).toBe(true)
+  expect(dispatch({ ...absent, windows: [{ ...weekly, utilization: 1 }] })).toMatchObject({ ok: false, reasonCode: "quota-limit" })
+  expect(dispatch({ ...absent, windows: [{ ...weekly, utilization: 0.7 }] })).toMatchObject({ ok: false, reasonCode: "even-line" })
+  expect(dispatch(absent, now, "claude-fable-5-2")).toMatchObject({ ok: false, reasonCode: "usage-unread" })
+  expect(dispatch({ ...absent, windows: [weekly, { name: "7d:Fable", utilization: 0.1, resetAt: now + day }] }, now, "claude-fable-5-2").ok).toBe(true)
+})
+
 test("a dispatch needs the model's defined and learned windows through generated reading histories", () => {
   const scopes = [
     { model: "claude-fable-5-2", window: "7d:Fable", defined: true },

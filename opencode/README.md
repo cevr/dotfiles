@@ -1507,6 +1507,14 @@ readings decide which windows exist: the 5-hour one is optional (on
 2026-11-15 four of the seven Claude logins read none), and the forecast
 stands on the weekly window and Fable's own week alone.
 
+Admission also accepts an account whose usage endpoint explicitly returns
+`five_hour: null` (verified accounts during Anthropic's quota transition).
+That absence is recorded with its own reading time (`fiveHourAbsentAt`) and
+must be refreshed within 30 minutes. Partial response headers preserve its
+original time; an omitted or malformed field proves no removal, and a
+five-hour limit reported again applies immediately. The weekly pace and the
+model's own limits still apply.
+
 Capacity is taken in this order:
 
 1. A reset about to expire unused, soonest expiry first. One that expires
