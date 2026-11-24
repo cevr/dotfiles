@@ -385,13 +385,14 @@ const bench = (label: string) => {
     // Fields 3 on: the state, the parent (1), then the flags as the seventh (PF_KTHREAD 0x00200000).
     const flags = opts.kthread ? 0x00208040 : 0x00400100
     writeFileSync(join(at, "stat"), `${pid} (${comm}) ${opts.zombie ? "Z" : "S"} 1 ${pid} ${pid} 0 -1 ${flags} ${Array.from({ length: 43 }, () => "0").join(" ")}\n`)
-    const uid = opts.uid ?? (opts.hidden ? 0 : 501)
+    const uid = opts.uid ?? (opts.hidden ? 0 : (process.getuid?.() ?? 501))
     writeFileSync(join(at, "status"), `Name:\t${comm}\nState:\tS (sleeping)\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\n`)
     // A process of the owner's own: its environment reads (empty here).
     writeFileSync(join(at, "environ"), "")
     fds.forEach((file, i) => symlinkSync(file, join(at, "fd", String(10 + i))))
     if (opts.hidden) {
       chmodSync(join(at, "fd"), 0)
+      chmodSync(join(at, "environ"), 0)
       hiddenFolders.push(join(at, "fd"))
     }
     return at
@@ -1413,6 +1414,45 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     const again = b.wr(["subvolume", "--apply", "--beside-unreadable"])
     expect(again.code, said(again)).toBe(0)
     expect(b.phase()).toMatch(/^switched /)
+  })
+
+  test("another user's removal, whose working folder and environment (its base) do not read: unknown, refused naming it; with the flag the switch runs beside it", () => {
+    const b = bench("unknown-removal")
+    b.processAt(93011, b.dir, ["work", "--json", "rm", "-abandon", "lane"], [], { hidden: true })
+    const ran = b.wr(["subvolume", "--apply"])
+    expect(ran.code, said(ran)).toBe(1)
+    expect(said(ran)).toContain("93011 0 (work rm: its working folder and environment, which tell its base)")
+    expect(said(ran)).toContain("may be a removal of this base or an older workrift")
+    expect(said(ran)).not.toContain("a removal of " + b.base + " runs")
+    expect(nextLine(ran)).toContain("--apply --beside-unreadable (beside them)")
+    const beside = b.wr(["subvolume", "--apply", "--beside-unreadable"])
+    expect(beside.code, said(beside)).toBe(0)
+    expect(stepLog(b)).toContain("beside another user's processes it cannot read (--beside-unreadable): 93011 0 (work rm")
+  })
+
+  test("another user's command line that does not read is unknown; this user's own that does not read stays a refusal as this base's removal", () => {
+    const b = bench("unknown-cmdline")
+    const at = b.processAt(93012, b.dir, ["sh"], [], { uid: 0 })
+    chmodSync(join(at, "cmdline"), 0)
+    const theirs = b.wr(["subvolume"])
+    expect(theirs.code, said(theirs)).toBe(1)
+    expect(said(theirs)).toContain("93012 0 (its command line)")
+    rmSync(at, { recursive: true })
+    const mine = b.processAt(93013, b.dir, ["sh"])
+    chmodSync(join(mine, "cmdline"), 0)
+    const own = b.wr(["subvolume"])
+    expect(own.code, said(own)).toBe(1)
+    expect(said(own)).toContain("93013 (its command line does not read)")
+    expect(said(own)).toContain(`a removal of ${b.base} runs`)
+  })
+
+  test("another user's workrift, whose open files (its script) do not read: whether it takes a place in line is unknown, refused naming it", () => {
+    const b = bench("unknown-workrift")
+    b.processAt(93014, b.dir, ["/bin/sh", SCRIPT, "create", "feat/z"], [SCRIPT], { hidden: true })
+    const ran = b.wr(["subvolume"])
+    expect(ran.code, said(ran)).toBe(1)
+    expect(said(ran)).toContain("93014 0 (workrift create: its open files, which tell whether it takes a place in line)")
+    expect(said(ran)).not.toContain("an older script")
   })
 
   test("--drop-old beside a process it cannot look into: refused with no sudo, nothing deleted", () => {
