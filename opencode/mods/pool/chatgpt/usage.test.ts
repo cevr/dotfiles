@@ -4,6 +4,7 @@
 import { describe, expect, test } from "bun:test"
 import { Array as Arr, Effect, Fiber, Match, Option, Schema, Stream } from "effect"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 import { AccountPool, HoldCleared, ReadingTaken, TakeReading } from "../account-pool.ts"
 import { DEFAULT_RULES } from "../accounts.ts"
 import { dispatchPace } from "../pace.ts"
@@ -90,7 +91,7 @@ describe("ChatGPT usage readings", () => {
     expect(combined.usage).toEqual({ at: now + 120_000, samples: 2 })
     const pace = dispatchPace([{ credentialID: "codex", live: 0, load: 0, noRoom: false, reading: combined }], now + 120_000, {}, 0.04, "claude-fable-5-2")
     expect(pace).toMatchObject({ ok: false, reasonCode: "model-unreported" })
-  }))
+  }), hangGuard("unit-law"))
 
   test("every combination of the two slots maps each tracked window to its three states", () => {
     const layouts = [
