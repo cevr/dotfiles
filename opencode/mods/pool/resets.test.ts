@@ -367,7 +367,7 @@ describe("Claude", () => {
     expect(told).toMatchObject({ key, sessionID: "ses_root" })
     if (told?._tag !== "OwnerTold") throw new Error("not told")
     expect(told.text).toStartWith("Claimed the full reset on 4: 5h 100% used of 100% → 0% used (the pool runs out before its reset: 1 start held, 3 agents running on 1 host, 5h 100% used, forecast 100% now, reset in 2 h).")
-    expect(told.text).toEndWith("1 reset left this week; next expires 2027-03-09 00:00Z.")
+    expect(told.text).toEndWith("1 reset left this week; next expires Mar 8, 2027, 7:00:00 PM EST.")
   })
   test("a stored reset is not claimed for an account whose weekly window is absent", () => {
     const weekless: AccountStatus = {

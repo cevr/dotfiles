@@ -3,6 +3,15 @@
 Our orchestration harness and Prime look on OpenCode 2.x. The fork's public
 plugin hooks supply the UI; orchestration policy lives in this repository.
 
+Notification times include the calendar date, seconds, AM/PM, and the time zone
+(for example, `Nov 25, 2026, 2:00:00 PM EST`). Pool notices, wakes, and
+background question letters use the owner's Eastern time on both the Mac and
+the workbox, switching between EST and EDT with daylight saving time. Sabbath
+and latch notices use their configured place's time zone. The shared
+`decider/notification-time.ts` formatter changes prose only; timestamp fields
+in RPC responses, metadata, and storage keep their original numeric or ISO
+formats.
+
 ## Your daily `opencode`
 
 ```sh
@@ -1042,7 +1051,8 @@ The model (the domain files at `mods/orchestrate/`):
 
 - Facts: `SubagentStarted` (the agent, why it was routed there, its
   model, `fallback`, why it runs on Codex, when it does, and `lowered`, the
-  variant a worker asked for and does not run at),
+  variant a worker asked for and does not run at, and `fast`, what came of
+  a start's fast ask),
   `SubagentLatched` (a held start kept to start later: what holds it, why,
   when it opens, when it is decided again, and the fallback's hold) and
   `SubagentFinished` (the child session and how it ended).
@@ -1099,6 +1109,26 @@ the role's own (the model it would run on, at any variant or none, with or
 without its provider) runs as if it named none, reason `model-dropped`: at
 the role's effort, with the Codex fallback and the latch. Any other model a
 call names runs as named, with no fallback.
+
+Fast is asked per start, only when the owner asked for fast for that work:
+the subagent tool's optional `fast: true` (the plugin adds the field to the
+host's input and takes it out before the host's tool runs). The start then
+runs on the fast mode of the model it would run on (`<id>-fast` in the
+catalog, same variant), its Codex fallback's when held. Naming a fast mode
+as the model is the same ask, through the same path. With no fast mode
+offered it runs standard. Either way its `call` (or `latched`) line carries
+`fast` (`fast, as asked`, or that the model has none), and the parent's
+answer starts `orchestrate: this agent runs on <model>: <that>.`. A start is
+fast only because it asked: every start's model goes through one function
+(`asAsked` in model.ts), which first reduces a new start's model to its
+standard one wherever it came from (named, a fast parent's, the default, an
+agent's config, a latch's), then applies this start's ask. A new start that
+asks nothing under a fast parent runs standard, names that model to the host
+(which would otherwise inherit the parent's), and its line says the fast mode
+was not asked for. A follow-up keeps the mode its child started on unless it
+says `fast: false`, and its line says `fast, as it started`; a latch opens
+on its own start's ask. A row
+draws a fast mode as its model with `fast` (`sol 6.1 fast`).
 
 The units' logs (`unit-log.ts`): a planner's or implementor's start moves
 its unit, by the call's `<role> <unit> r<N>` description, to `plan` or

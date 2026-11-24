@@ -14,7 +14,11 @@
  *   runs as the role. A new role subagent runs at the role's reasoning effort,
  *   as a variant of the model it would run on, when that model has one. A
  *   worker asked or inheriting `#max` runs at its model's default effort
- *   unless its description ends `(mechanical)`, and its answer says so. Each
+ *   unless its description ends `(mechanical)`, and its answer says so. A
+ *   start with `fast: true` (a field this plugin adds to the subagent tool,
+ *   for when the owner asked fast), or naming a fast mode, runs on the fast
+ *   mode of the model it would run on, when there is one; its answer says
+ *   which. Each
  *   call is a line in a JSONL log a status pane can read.
  * - Compaction: each role and each primary agent compacts at one fixed
  *   window, `WINDOW` in compaction.ts (400k tokens). The window is the
@@ -125,10 +129,11 @@
  * provider's pace, here and on the owner's other hosts, until its spend shows
  * in a reading.
  */
+import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { dirname, join } from "node:path"
 import { Agent, Plugin, Tool } from "@opencode/plugin/effect"
-import { Array as Arr, Cause, Clock, Context, Effect, type Fiber, FileSystem, Layer, Match, Option, Path, Predicate, Schema, SchemaGetter, type Scope, Stream } from "effect"
+import { Array as Arr, Cause, Clock, Context, DateTime, Effect, type Fiber, FileSystem, Layer, Match, Option, Path, Predicate, Schema, SchemaGetter, type Scope, Stream } from "effect"
 import type { ChildProcessSpawner } from "effect/process"
 import { DIGEST, DigestLog } from "@dotfiles/opencode-digest/event"
 import * as Relay from "@dotfiles/opencode-digest/relay"
@@ -471,8 +476,14 @@ const msOf = (time: unknown): number | undefined => {
 const synthetic = (ctx: Plugin.Context) => (input: SteerLive.Synthetic) =>
   ctx.session.synthetic({ ...input, sessionID: input.sessionID as SessionID, metadata: { ...input.metadata } } satisfies SyntheticInput)
 
-/** A time as the model reads it: ISO 8601, and the owner's local time. */
-const timeOf = (ms: number, place: Place) => `${new Date(ms).toISOString()} (${local(ms, place)} ${place.timeZone})`
+/** The ISO 8601 instant a readable time names: rounded up to the second, as `formatNotificationTime` rounds. */
+const isoOf = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(Math.ceil(ms / 1000) * 1000)).replace(".000Z", "Z")
+
+/**
+ * A dated, zoned time as the model reads it at the configured place, then its ISO instant in brackets, so a model
+ * that compares or computes with it reads the exact time (review of 0d76ebba: the Eastern wording dropped it).
+ */
+const timeOf = (ms: number, place: Place) => `${formatNotificationTime(ms, place.timeZone)} [${isoOf(ms)}]`
 
 const whoseOf = (whose: string | undefined) => (whose === "codex" ? "the Codex account's" : "the pool's")
 
@@ -531,7 +542,7 @@ const latchedResult = (latched: Model.LatchedStart, place: Place, timing: HeldTi
   const output = [
     `The subagent is latched (sessionID: ${latched.child}, latch ${latched.id}). ${words}`,
     `It starts by itself in the background when the latch opens, about ${timeOf(opensAt, place)}${Option.getOrElse(
-      Option.map(Option.filter(recheck, (at) => at < opensAt), (at) => `, or sooner: it is decided again at ${new Date(at).toISOString()}`),
+      Option.map(Option.filter(recheck, (at) => at < opensAt), (at) => `, or sooner: it is decided again at ${timeOf(at, place)}`),
       () => "",
     )}. You will be woken with its result, as for a background subagent.`,
     "Go on with other work, or end your turn. Do not start it again, poll or wait for it. wake_list shows the latch; wake_cancel cancels it.",
@@ -651,6 +662,28 @@ const fallbackNote = (started: { readonly model?: string; readonly fallback?: st
 /** What the parent reads first in a lowered worker's answer: the effort it runs at, and why. */
 const effortNote = (started: { readonly model?: string; readonly lowered?: string }) =>
   `orchestrate: this worker runs on ${started.model ?? "its model"} at the model's default effort, not ${started.lowered}: a worker runs at ${started.lowered} only when its description ends \`(mechanical)\`. Bulk model work (a critique of many images, a sweep) is a script, not a worker at ${started.lowered}.`
+
+/** What the parent reads first in the answer of a start that asked fast: the model it runs on, and whether it is fast. */
+const fastNote = (model: Option.Option<string>, fast: string) => `orchestrate: this agent runs on ${Option.getOrElse(model, () => "its model")}: ${fast}.`
+
+/**
+ * The subagent tool's `fast` field. Fast is the owner's call, per start (owner, 2026-11-24: "if the owner says
+ * something like, hey, do this in fast mode"); the plugin cannot hear the owner, so the field's own description says it.
+ */
+const FastField = Schema.optionalKey(Schema.Boolean).annotate({
+  description:
+    "Only when the owner asked for fast for this work: true runs it on the fast mode of the model it would run on. A follow-up keeps its mode unless set.",
+})
+
+/** A tool's input that is a struct schema (the host's subagent input is one), which fields can be added to. */
+const isStruct = (input: Tool.Info["input"]): input is Schema.Struct<{ readonly [field: string]: Schema.Codec<unknown, unknown> }> =>
+  Schema.isSchema(input) && "mapFields" in input && "fields" in input
+
+/** The subagent tool's input with `fast`, when the host's input is a struct; any other input is kept as it is. */
+const withFast = (input: Tool.Info["input"]): Tool.Info["input"] => {
+  if (isStruct(input)) return input.mapFields((fields) => ({ ...fields, fast: FastField }))
+  return input
+}
 
 /** A started fallback's note, by the call it answers: a kernel cell's calls share one id, so the description is part of the key. */
 const noteKey = (sessionID: string, callID: string, input: unknown) =>
@@ -1233,6 +1266,7 @@ export const withTaskFork = (forkTask: ForkTask) => <R = never>(
           )
           subagent = execute
           tool.output = SubagentOutput
+          tool.input = withFast(tool.input)
           tool.execute = (input, context) => {
             const child = isObject(input) && typeof input.sessionID === "string" ? input.sessionID : undefined
             const answer = child === undefined ? undefined : latched.get(child)
@@ -1603,6 +1637,8 @@ export const withTaskFork = (forkTask: ForkTask) => <R = never>(
             const routed = outcome.value._tag === "LatchedStart" ? outcome.value.latched : outcome.value
             // Run the call as the guard routed it, on the role's model when one was chosen.
             const input: Record<string, unknown> = { ...event.input, agent: routed.agent }
+            // Fast is decided here (the model it runs on says it): the host's own tool never sees the field.
+            delete input.fast
             if (routed.model !== undefined) input.model = routed.model
             // A named model was dropped (the role's own, or a Codex model an implementor named): with no variant chosen,
             // the role runs on its own model, a follow-up on its child's.
@@ -1613,6 +1649,7 @@ export const withTaskFork = (forkTask: ForkTask) => <R = never>(
               const said = [
                 ...(outcome.value.fallback === undefined ? [] : [fallbackNote(outcome.value)]),
                 ...(outcome.value.lowered === undefined ? [] : [effortNote(outcome.value)]),
+                ...Option.match(Option.fromUndefinedOr(outcome.value.fast), { onNone: () => [], onSome: (fast) => [fastNote(Option.fromUndefinedOr(routed.model), fast)] }),
               ]
               tellings.set(key, tellingOf({ note: said.join("\n"), model: outcome.value.model }))
             }

@@ -1,6 +1,6 @@
 # Hosts: starting, moving and waiting on a role
 
-Read this before the first wave, and when a role is held or falls back to Codex. The role table and the effort policy are in [`SKILL.md`](../SKILL.md#roles-and-models); the model rules themselves are `AGENTS.md`'s. OpenCode is the main host; Claude Code and Codex follow.
+Read this before the first wave, and when a role is held or falls back to Codex. The role table and the effort policy are in [`SKILL.md`](../SKILL.md#roles-and-models); the model rules themselves are its Models bullet, with each host's fallback below. OpenCode is the main host; Claude Code and Codex follow.
 
 Always start a review or verdict as `verifier`, never as `worker`, `general`, or a role-less Codex thread: only the verifying role is routed to Opus.
 

@@ -65,16 +65,16 @@ const table: ReadonlyArray<readonly [string, string]> = [
       "claude-fable-5-2",
     ).reason,
     "every pool account is held or has claude-fable-5-2's own weekly window (7d:Fable) at 100% used of 100%: " +
-      "a claude-fable-5-2 start holds at 100% used of 100% there; the first resets 2026-11-17 12:00Z",
+      "a claude-fable-5-2 start holds at 100% used of 100% there; the first resets Nov 17, 2026, 7:00:00 AM EST",
   ],
   [
     poolPace([account([{ name: "5h", utilization: 0.95, resetAt: now + HOUR }, { name: "7d", utilization: 0.3, resetAt: now + 3.5 * DAY }])], now).reason,
-    "every pool account is at a hold line: its 5-hour window at 90% used of 100% or more; the first resets 2026-11-15 13:00Z",
+    "every pool account is at a hold line: its 5-hour window at 90% used of 100% or more; the first resets Nov 15, 2026, 8:00:00 AM EST",
   ],
   [
     // A weekly-only account at its limit is told of its week alone, never of a 5-hour window it does not have.
     poolPace([{ ...account([{ name: "7d", utilization: 1, resetAt: now + 3.5 * DAY }]), reading: { at: now, windows: [{ name: "7d", utilization: 1, resetAt: now + 3.5 * DAY }], absent: [{ name: "5h", at: now }] } }], now).reason,
-    "every pool account is at a hold line: its week at 99% used of 100% or more; the first resets 2026-11-19 00:00Z",
+    "every pool account is at a hold line: its week at 99% used of 100% or more; the first resets Nov 18, 2026, 7:00:00 PM EST",
   ],
   [
     poolPace([account([{ name: "5h", utilization: 0.1, resetAt: now + HOUR }, { name: "7d", utilization: 0.7, resetAt: now + 3.5 * DAY }])], now).reason,
@@ -83,19 +83,19 @@ const table: ReadonlyArray<readonly [string, string]> = [
   [fiveHourReset, "5h 100% used of 100% → 0% used"],
   [
     fableReset,
-    "Fable week 100% used of 100% → 0% used, next reset 2026-11-17 12:00Z, " +
-      "weekly 60% used of 100% → ~10% used, next reset 2026-11-19 00:00Z (Fable's part 50% of the week (40%–60%) by the limit tally)",
+    "Fable week 100% used of 100% → 0% used, next reset Nov 17, 2026, 7:00:00 AM EST, " +
+      "weekly 60% used of 100% → ~10% used, next reset Nov 18, 2026, 7:00:00 PM EST (Fable's part 50% of the week (40%–60%) by the limit tally)",
   ],
   [
     toldText({
       kind: "weekly",
       label: "a",
-      buys: "weekly 88% used of 100% → 0% used, next reset 2026-11-18 12:00Z",
+      buys: "weekly 88% used of 100% → 0% used, next reset Nov 18, 2026, 7:00:00 AM EST",
       reason: ClaimVerdict.$match(chosen, { Claim: ({ step, reason }) => `${STEP_TEXT[step]}: ${reason}`, NoClaim: () => "" }),
       left: 1,
       nextExpires: now + 30 * DAY,
     }),
-    "Claimed the weekly reset on a: weekly 88% used of 100% → 0% used, next reset 2026-11-18 12:00Z (the pool runs out before its reset: 7 agents running on 2 hosts, weekly 88% used, forecast 100% in 50 min, reset in 3.0 days). 1 reset left this week; next expires 2026-12-15 12:00Z.",
+    "Claimed the weekly reset on a: weekly 88% used of 100% → 0% used, next reset Nov 18, 2026, 7:00:00 AM EST (the pool runs out before its reset: 7 agents running on 2 hosts, weekly 88% used, forecast 100% in 50 min, reset in 3.0 days). 1 reset left this week; next expires Dec 15, 2026, 7:00:00 AM EST.",
   ],
   [toldText({ kind: "weekly", label: "a", buys: fiveHourReset, left: 0 }), "Claimed the weekly reset on a: 5h 100% used of 100% → 0% used. No resets left this week."],
   [
@@ -104,7 +104,7 @@ const table: ReadonlyArray<readonly [string, string]> = [
   ],
   [
     forecastText({ pool: "anthropic", burn: 0.0085, inHand: 2, wasted: [{ pool: "anthropic", label: "a", kind: "weekly", spare: 0.99, expiresAt: now + 6 * DAY }] }) ?? "",
-    "Pool anthropic: at this rate (it uses 0.85% of a week per hour), 1 of its 2 resets (weekly reset; each gives back ≈99% of a week) expire unused by 2026-11-21 12:00Z.",
+    "Pool anthropic: at this rate (it uses 0.85% of a week per hour), 1 of its 2 resets (weekly reset; each gives back ≈99% of a week) expire unused by Nov 21, 2026, 7:00:00 AM EST.",
   ],
   [
     planText({
@@ -132,10 +132,10 @@ const table: ReadonlyArray<readonly [string, string]> = [
       forecasts: [],
     }),
     [
-      "Pool anthropic: 2 accounts, their weeks at 70% used of 100% on average, the first resetting by itself 2026-11-19 00:00Z; " +
+      "Pool anthropic: 2 accounts, their weeks at 70% used of 100% on average, the first resetting by itself Nov 18, 2026, 7:00:00 PM EST; " +
         "together they use 1.67% of a week per hour, reaching 100% used of 100% in ~1.5 days at this rate. " +
-        "5-hour windows at 50% used of 100% on average, the first resetting 2026-11-15 14:00Z; they use 20.0% of a 5-hour window per hour.",
-      "1. weekly reset on a (anthropic): gives back 70% of a week, expires 2026-12-15 12:00Z; likely claimed ~2026-11-17 00:00Z at the current burn.",
+        "5-hour windows at 50% used of 100% on average, the first resetting Nov 15, 2026, 9:00:00 AM EST; they use 20.0% of a 5-hour window per hour.",
+      "1. weekly reset on a (anthropic): gives back 70% of a week, expires Dec 15, 2026, 7:00:00 AM EST; likely claimed ~Nov 16, 2026, 7:00:00 PM EST at the current burn.",
       "Queued work: 3 units ≈ 40% of one account's week: it would take the pool's weeks from 70% used of 100% on average to 90% used of 100%, or to 55% used of 100% with the approved resets.",
     ].join("\n"),
   ],

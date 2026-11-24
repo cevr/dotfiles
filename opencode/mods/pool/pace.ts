@@ -11,11 +11,12 @@
 // share of one account's week until it has, so a wave on one host holds the
 // next start on any host before the readings show it.
 import { Array as Arr, DateTime, Match, Option, Order, Schema } from "effect"
+import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import type { RequestKind } from "./accounts.ts"
 import { futureRetryAt, holdRecheckAt, pendingRecoveryAt, type FutureRetryAt } from "./hold.ts"
 import { accountWindow, DEFINED_MODEL_WINDOWS, limitsModel, type QuotaWindow, Reported, SCOPE_REPORT_SAMPLES, scopeOf, tracked, TRACKED_WINDOWS, windowReading, type WindowReading } from "./quota.ts"
 import type { AccountStatus } from "./status.ts"
-import { byCount, holdsAt, iso, signInReason, tryAgainAt, used } from "./usage-text.ts"
+import { byCount, holdsAt, signInReason, tryAgainAt, used } from "./usage-text.ts"
 
 /** A share to a tenth of a percent: `0.567` → `56.7%`. */
 const tenth = (share: number) => `${(100 * share).toFixed(1)}%`
@@ -362,7 +363,7 @@ function budgetPace(
       ok: false,
       measured: true,
       reason: scoped
-        ? `every pool account is held or has ${model}'s own weekly window (${names.join(", ")}) at ${used(1)}: a ${model} start ${holdsAt(1)} there; the first resets ${iso(retryAt)}`
+        ? `every pool account is held or has ${model}'s own weekly window (${names.join(", ")}) at ${used(1)}: a ${model} start ${holdsAt(1)} there; the first resets ${formatNotificationTime(retryAt)}`
         : "all pool accounts are held",
       retryAt,
       reasonCode: Match.value(scoped).pipe(Match.when(true, () => "model-limit" as const), Match.orElse(() => "account-held" as const)),
@@ -380,7 +381,7 @@ function budgetPace(
     return {
       ok: false,
       measured: true,
-      reason: `every pool account is at a hold line: ${holdLinesText(available, now)}; the first resets ${iso(retryAt)}`,
+      reason: `every pool account is at a hold line: ${holdLinesText(available, now)}; the first resets ${formatNotificationTime(retryAt)}`,
       retryAt,
       reasonCode: "quota-limit",
       admission: "held",
@@ -549,7 +550,7 @@ export const evidenceGap = (
         const at = Option.filter(reset, (time) => Option.isSome(DateTime.make(time)))
         const rolled = !Option.exists(at, (time) => time > Math.max(now, seen))
         if (!rolled && Option.exists(at, (time) => time <= now + duration + RESET_SLACK_MS)) return Option.none()
-        const named = Option.getOrElse(Option.map(at, iso), () => "none given")
+        const named = Option.getOrElse(Option.map(at, formatNotificationTime), () => "none given")
         return Option.some(Unread.make({ why: `its ${name} window's reset (${named}) is not within the next ${span}`, stale: rolled }))
       },
     }))

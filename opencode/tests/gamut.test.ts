@@ -323,6 +323,8 @@ describe("the run's environment", () => {
     expect(env.OPENCODE_FLAGS).toBe("-full_codemode")
     // OpenCode's free hosted models stay hidden, live preset or sim.
     expect(env.OPENCODE_DISABLE_FREE_MODELS).toBe("1")
+    // Its startup does not wait on the host's file-event daemon: no watch on any plugin module.
+    expect(env.OPENCODE_DISABLE_FILEWATCHER).toBe("1")
     expect(runEnv(caller, paths, launch, false).OPENCODE_DISABLE_MODELS_FETCH).toBeUndefined()
   })
 

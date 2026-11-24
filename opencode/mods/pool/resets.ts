@@ -54,13 +54,14 @@
 // them now and records what is due. The model (model.ts) carries it out.
 import { Array as Arr, Effect, Match, Option, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
+import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import { periodBurn } from "./burn.ts"
 import { type AccountLoad, type ClaimOption, type ClaimSituation, type ClaimStep, decideClaim, EXPIRING_MS, MIN_RESTORE, STEP_TEXT, plural } from "./claim-rule.ts"
 import { windowMs } from "./limits.ts"
 import { type PacePlan, roomLeft, SHORT_5H, TARGET } from "./pace.ts"
 import { accountWide, accountWindow, ClaimOutcome, grantKind, limitsModel, QuotaWindow, type ResetCredit, ResetKind, scopeOf } from "./quota.ts"
 import type { AccountStatus } from "./status.ts"
-import { iso, percent, used } from "./usage-text.ts"
+import { percent, used } from "./usage-text.ts"
 
 export { ClaimOutcome } from "./quota.ts"
 export { EXPIRING_MS, LAST_CALL_MS, MIN_RESTORE, NATURAL_MS, NOT_WORTH_MS, WORTH_SHARE } from "./claim-rule.ts"
@@ -414,9 +415,9 @@ const shareText = (share: Share) =>
     ? "Fable's part unread, none counted"
     : `Fable's part ${percent(share.points)} of the week${share.low === share.high ? "" : ` (${percent(share.low)}–${percent(share.high)})`} ${SOURCES[share.source]}`
 
-/** A week-long window's own reset, which a claim does not move: `, next reset 2026-11-18 12:00Z`; none for the 5-hour window, which starts again. */
+/** A week-long window's own reset, which a claim does not move: `, next reset Nov 18, 2026, 7:00:00 AM EST`; none for the 5-hour window, which starts again. */
 const resetsText = (give: Giveback) =>
-  Option.match(Option.filter(Option.fromUndefinedOr(give.resetAt), () => give.window !== "5h"), { onNone: () => "", onSome: (at) => `, next reset ${iso(at)}` })
+  Option.match(Option.filter(Option.fromUndefinedOr(give.resetAt), () => give.window !== "5h"), { onNone: () => "", onSome: (at) => `, next reset ${formatNotificationTime(at)}` })
 
 /**
  * What a reset gives back, as the owner reads it, each window's use before
@@ -713,7 +714,7 @@ export const claimOut = (state: ResetsState, provider: ResetProvider, now: numbe
       reset.sentAt !== undefined &&
       now < reset.sentAt + SETTLE_MS,
   )
-  return out?.sentAt === undefined ? undefined : `a claim sent on ${out.label} at ${new Date(out.sentAt).toISOString()} may not show yet in a reading`
+  return out?.sentAt === undefined ? undefined : `a claim sent on ${out.label} at ${formatNotificationTime(out.sentAt)} may not show yet in a reading`
 }
 
 // ── Review ──
@@ -1223,7 +1224,7 @@ export const pendingWords = (claims: ReadonlyArray<Claim>, pool: string, now: nu
       onEmpty: () => Option.none(),
       onNonEmpty: (waiting) =>
         Option.some(
-          `claim pending: ${waiting.map((claim) => `a reset claimed at ${iso(claim.at)} went through, and no reading has shown its recovery yet (it counts until ${iso(claim.at + OBSERVE_MS)})`).join("; ")}`,
+          `claim pending: ${waiting.map((claim) => `a reset claimed at ${formatNotificationTime(claim.at)} went through, and no reading has shown its recovery yet (it counts until ${formatNotificationTime(claim.at + OBSERVE_MS)})`).join("; ")}`,
         ),
     },
   )
@@ -1516,7 +1517,7 @@ const leftText = (reset: Pick<Reset, "left" | "nextExpires">) =>
         Match.when(0, () => " No resets left this week."),
         Match.orElse(
           () =>
-            ` ${left} ${plural(left, "reset")} left this week; ${Option.match(Option.fromUndefinedOr(reset.nextExpires), { onNone: () => "none expires", onSome: (at) => `next expires ${iso(at)}` })}.`,
+            ` ${left} ${plural(left, "reset")} left this week; ${Option.match(Option.fromUndefinedOr(reset.nextExpires), { onNone: () => "none expires", onSome: (at) => `next expires ${formatNotificationTime(at)}` })}.`,
         ),
       ),
   })

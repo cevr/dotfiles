@@ -14,7 +14,7 @@
 // store asks for), never the provider's refusal or its raw error body. Then,
 // every limit past and no fault left, one more turn in each session is
 // answered, or names the sign-in when every login's refresh token was refused.
-import { Array as Arr, DateTime, Effect, Option } from "effect"
+import { Array as Arr, Effect, Option } from "effect"
 import * as MemorySlots from "@dotfiles/opencode-pool/memory/slots"
 import { encodeRefresh, decodeStoredOAuth, STORE_PREFIX, StoreSource, storeProcess } from "@dotfiles/opencode-pool/store/store"
 import * as Plugins from "../../sim/plugins.ts"
@@ -299,17 +299,16 @@ const invariants = (seed: number, expect: SeedSeeded["expect"], lasting: boolean
 }
 
 /** The pool's own refusal: every account held or an admission hold with its reason, and when to recheck. */
-const POOL_REFUSAL = /^dotfiles-opencode\.pool: (?:all pool accounts are held|the request is held: [^\r\n]+); it may go again at (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z)$/
+const POOL_REFUSAL = /^dotfiles-opencode\.pool: (?:all pool accounts are held|the request is held: [^\r\n]+); it may go again at ([A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2}:\d{2} [AP]M (?:EST|EDT))$/
 /**
  * A login whose refresh the token endpoint refused: the store's words, from the auth plugin's request hook; or the
  * pool's own refusal once every account is held for a new sign-in, naming them.
  */
 const SIGN_IN =
-  /^(?:The store account "(?:alpha|beta)" could not refresh \(400\)\. Sign in to it again\.|dotfiles-opencode\.pool: every pool account needs a new sign-in \(store:alpha, store:beta\)\. Sign in to them again; it may go again at \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z if a login is signed in\.)$/
+  /^(?:The store account "(?:alpha|beta)" could not refresh \(400\)\. Sign in to it again\.|dotfiles-opencode\.pool: every pool account needs a new sign-in \(store:alpha, store:beta\)\. Sign in to them again; it may go again at [A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2}:\d{2} [AP]M (?:EST|EDT) if a login is signed in\.)$/
 
-/** When the pool says to recheck, epoch ms; none for another message. */
-const opensAt = (message: string) =>
-  Option.flatMap(Option.fromNullishOr(POOL_REFUSAL.exec(message)?.[1]), (iso) => Option.map(DateTime.make(iso), DateTime.toEpochMillis))
+/** When the pool says to recheck, in epoch milliseconds. */
+const opensAt = (message: string) => Option.fromUndefinedOr(POOL_REFUSAL.exec(message)?.[1]).pipe(Option.map((text) => Date.parse(text)), Option.filter(Number.isFinite))
 
 /** The property on `commands`; whether its run ended with every login's refresh token refused. */
 const property = (seed: number, expect: SeedSeeded["expect"], commands: ReadonlyArray<Command>, lasting = false) =>

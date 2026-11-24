@@ -8,6 +8,7 @@
 // what these do. The plugin calls these and nothing else.
 import { Array as Arr, Clock, Context, Effect, Layer, Match, Option, Predicate, Ref, Scope, Semaphore, Stream, SynchronizedRef } from "effect"
 import { fold } from "@dotfiles/decider/decider"
+import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import {
   AccountPool,
   AccountsHeld,
@@ -1324,7 +1325,7 @@ export const layer = (config: Config) =>
         providerID: string, model: string | undefined, dispatch: boolean | undefined, policy: DispatchPolicy, push: PushModel.Push,
         answer: Pace, work: "new-work" | "existing-request",
       ) {
-        const reason = `the push "${push.goal}" lifts the spend-evenly hold until ${new Date(push.endsAt).toISOString()} (${answer.reason})`
+        const reason = `the push "${push.goal}" lifts the spend-evenly hold until ${formatNotificationTime(push.endsAt)} (${answer.reason})`
         if (dispatch !== true && Option.isNone(Option.fromUndefinedOr(model))) return { ok: true, measured: true, reason } satisfies Pace
         const lifted = yield* paceOf(providerID, model, true, { ...policy, liftEvenLine: true }, work)
         if (!lifted.ok) return lifted

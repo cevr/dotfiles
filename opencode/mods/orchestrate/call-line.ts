@@ -4,6 +4,7 @@
 // A new subagent's line says what admitted or held it: each pace asked, by
 // its answer or by why it failed open, so a start a measured pace admitted
 // reads apart from one a broken RPC let through. A follow-up asks no pace.
+import { Option } from "effect"
 import type { PaceReply } from "./pace.ts"
 import type { Reason } from "./role.ts"
 import type { Hold, Status, SubagentFinished, SubagentLatched, SubagentStarted, ToolCallId } from "./tool-call.ts"
@@ -64,6 +65,24 @@ interface Admissions {
 
 const firstOf = (first: FirstRecord | undefined) => (first === undefined ? {} : { first })
 
+/** What a start that asked fast says when it runs on a fast mode: the owner's word, carried out. */
+export const FAST_AS_ASKED = "fast, as asked"
+
+/** What a start that asked fast says: `fast, as asked` on a fast mode, else that the model it runs on has none. */
+export const fastLine = (onFast: boolean, model: Option.Option<string>): string => {
+  if (onFast) return FAST_AS_ASKED
+  return `fast asked, but ${Option.getOrElse(model, () => "its model")} has no fast mode: it runs standard`
+}
+
+/** What a follow-up that did not ask says when its child runs on a fast mode: it keeps the mode it started on. */
+export const FAST_AS_STARTED = "fast, as it started"
+
+/** What a new start that did not ask fast says when the model it would run on (a parent's, a default, a config's) is a fast mode. */
+export const fastNotAsked = (model: string): string => `standard: ${model} is a fast mode, and this start did not ask fast`
+
+/** A line's `fast` field, when its start said something of fast. */
+const fastOf = (fast: SubagentStarted["fast"]) => Option.match(Option.fromUndefinedOr(fast), { onNone: () => ({}), onSome: (said) => ({ fast: said }) })
+
 /** One line of the call log. `asked` is what the model passed; `agent` is what runs. */
 export type CallLine =
   | ({
@@ -83,6 +102,8 @@ export type CallLine =
       readonly fallback?: string
       /** A worker asked for this variant (`max`) and runs at its model's default. */
       readonly lowered?: string
+      /** It asked fast: `fast, as asked`, or why it runs standard. */
+      readonly fast?: string
     } & Admissions)
   | {
       readonly kind: "done"
@@ -108,6 +129,8 @@ export type CallLine =
       readonly fallback?: string
       /** A worker asked for this variant (`max`) and latched at its model's default. */
       readonly lowered?: string
+      /** It asked fast: `fast, as asked`, or why it runs standard. */
+      readonly fast?: string
     } & Admissions & {
       readonly hold: Hold
       readonly why: string
@@ -139,6 +162,7 @@ export const started = (event: SubagentStarted, at: string, asked?: Asked, first
   ...(event.description === undefined ? {} : { description: event.description }),
   ...(event.fallback === undefined ? {} : { fallback: event.fallback }),
   ...(event.lowered === undefined ? {} : { lowered: event.lowered }),
+  ...fastOf(event.fast),
   ...admissions(asked),
   ...firstOf(first),
 })
@@ -158,6 +182,7 @@ export const latched = (event: SubagentLatched, at: string, asked?: Asked, first
   ...(event.description === undefined ? {} : { description: event.description }),
   ...(event.fallback === undefined ? {} : { fallback: event.fallback }),
   ...(event.lowered === undefined ? {} : { lowered: event.lowered }),
+  ...fastOf(event.fast),
   ...admissions(asked),
   ...firstOf(first),
   hold: event.hold,
