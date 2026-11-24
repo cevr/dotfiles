@@ -124,6 +124,7 @@ const NO_SCRIPTS: ScriptsTests = { files: [], imports: () => [], reads: () => []
 
 /** The scripts/ tests the changes can break, each once, sorted; only those on disk. */
 export const scriptTests = (changes: ReadonlyArray<Change>, exists: (file: string) => boolean, scripts: ScriptsTests = NO_SCRIPTS): ReadonlyArray<string> => {
+  if (changes.length === 0) return []
   const paths = named(changes)
   const reached = scripts.files.map((test) => ({ test, files: reachedWithin(test, scripts, exists), reads: scripts.runtime?.(test) ?? readMatcher(scripts.reads(test)) }))
   const due = new Set(paths.flatMap((path) => testsOf(path, reached)))
@@ -166,6 +167,7 @@ export const mergeLegs = (base: string, changes: ReadonlyArray<Change>, tools: T
   const paths = named(changes)
   const workbox = new Set(workboxTests(tools.workbox))
   for (const file of tools.workbox.tests) {
+    if (paths.length === 0) break
     const reads = tools.workboxReads?.(file)
     if (reads && paths.some(reads)) workbox.add(file)
   }
