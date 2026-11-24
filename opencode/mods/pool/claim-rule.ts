@@ -31,7 +31,7 @@
 // one within NOT_WORTH_MS. The 5-hour window is optional: readings may not
 // carry one, and the forecast stands on the week-long windows alone.
 import { Array as Arr, Data, Match, Option, Order } from "effect"
-import { iso } from "./usage-text.ts"
+import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -272,7 +272,7 @@ export const AVERAGED_TEXT = ", burn the window's average (none measured yet, as
 export const workText = (situation: ClaimSituation, option: ClaimOption): string =>
   `${situation.running} ${plural(situation.running, "agent")} running, ${situation.held} ${plural(situation.held, "start")} held, ~${pct(projected(situation, option))} of the ${option.window} window would be used before its reset in ${span(option.resetAt - situation.now)}`
 
-const expiryText = (option: ClaimOption) => Option.match(option.expiresAt, { onNone: () => "never", onSome: iso })
+const expiryText = (option: ClaimOption) => Option.match(option.expiresAt, { onNone: () => "never", onSome: formatNotificationTime })
 
 /** Whether it expires before the window it gives back resets by itself. */
 const expiresFirst = (option: ClaimOption) => Option.match(option.expiresAt, { onNone: () => false, onSome: (at) => at < option.resetAt })

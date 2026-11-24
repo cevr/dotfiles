@@ -508,7 +508,7 @@ test("the final handoff reads the hold store once, adds no usage read, and keeps
     expect(state.holdAccess.usage - usage).toBe(0)
     state.holdAccess.unavailable = true
     expect(yield* plugin.handoff("cred-a")).toMatchObject({
-      message: "dotfiles-opencode.pool: the request is held: the pool could not confirm its current holds; retry the hold store read; it may go again at 1970-01-01T00:00:01.000Z",
+      message: "dotfiles-opencode.pool: the request is held: the pool could not confirm its current holds; retry the hold store read; it may go again at Dec 31, 1969, 7:00:01 PM EST",
     })
     state.holdAccess.unavailable = false
     expect(yield* plugin.handoff("cred-a")).toEqual(Handoff.cases.Send.make({}))
@@ -1581,7 +1581,7 @@ describe("the RPC", () => {
         state.integration.connections.delete(ANTHROPIC)
         const plugin = yield* start(undefined, state)
         const dispatch = yield* Effect.flip(Effect.sandbox(plugin.request()))
-        expect(Cause.pretty(dispatch)).toMatch(/the pool's logins could not be listed; it may go again at \S+Z/)
+        expect(Cause.pretty(dispatch)).toMatch(/the pool's logins could not be listed; it may go again at [A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2}:\d{2} [AP]M (?:EST|EDT)/)
         expect((yield* Effect.exit(plugin.pace("anthropic")))._tag).toBe("Failure")
         expect((yield* plugin.status).anthropic?.accounts).toEqual([])
       }),
