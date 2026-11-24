@@ -3,7 +3,11 @@
 // the quota RPC it serves answers a fresh held reading without asking again.
 import { describe, expect, test } from "bun:test"
 import { Array as Arr, Effect, Fiber, Match, Option, Schema, Stream } from "effect"
-import { type QuotaReading, windowReading } from "../quota.ts"
+import { effectTest } from "../../../sim-tui/effect-test.ts"
+import { AccountPool, HoldCleared, ReadingTaken, TakeReading } from "../account-pool.ts"
+import { DEFAULT_RULES } from "../accounts.ts"
+import { dispatchPace } from "../pace.ts"
+import { carryOver, type QuotaReading, windowReading } from "../quota.ts"
 import { fromFrame, fromHeaders, fromUsage, make, usageKeys, withCredits } from "./usage.ts"
 
 const now = Date.parse("2026-11-05T14:21:00Z")
@@ -66,9 +70,27 @@ describe("ChatGPT usage readings", () => {
     const omitted = fromUsage({ rate_limit: { primary_window: observedUsage.rate_limit.primary_window } }, now)
     expect(omitted).toMatchObject({ unrecognised: [] })
     expect(omitted).not.toHaveProperty("absent")
+    // A slot with an unknown duration alongside an unreadable slot reads no tracked window: failed read.
+    expect(fromUsage({ rate_limit: { primary_window: { used_percent: 16, limit_window_seconds: 3_600 }, secondary_window: { used: "bad" } } }, now)).toBeUndefined()
     // Key names for failed reads carry no values and no tokens.
     expect(usageKeys(Option.some({ rate_limit: { primary_window: "secret-val" }, extra: "tok" }))).toBe("keys extra, rate_limit; rate_limit keys primary_window")
   })
+
+  effectTest("ChatGPT usage readings carry usage evidence: lifting sign-in, repairing unreadable holds, and tracking model-unreported samples", Effect.gen(function* () {
+    const decider = AccountPool(DEFAULT_RULES)
+    const first = Option.getOrThrow(Option.fromUndefinedOr(fromUsage(observedUsage, now + 60_000)))
+    const signInHeld = { ...decider.initial, credentials: ["codex"], holds: { codex: { kind: "signin" as const, at: now, until: now + 60_000 } } }
+    const lifted = yield* decider.decide(signInHeld, TakeReading.make({ credentialID: "codex", reading: first }), now + 60_000)
+    expect(lifted).toEqual([ReadingTaken.make({ credentialID: "codex", reading: first }), HoldCleared.make({ credentialID: "codex" })])
+    const damaged = { ...decider.initial, credentials: ["codex"], holds: { codex: { kind: "record-unreadable" as const, at: now, until: now + 60_000 } } }
+    const repaired = yield* decider.decide(damaged, TakeReading.make({ credentialID: "codex", reading: first, freshUsage: true }), now + 60_000)
+    expect(repaired).toEqual([ReadingTaken.make({ credentialID: "codex", reading: first }), HoldCleared.make({ credentialID: "codex" })])
+    const second = Option.getOrThrow(Option.fromUndefinedOr(fromUsage(observedUsage, now + 120_000)))
+    const combined = carryOver(first, second)
+    expect(combined.usage).toEqual({ at: now + 120_000, samples: 2 })
+    const pace = dispatchPace([{ credentialID: "codex", live: 0, load: 0, noRoom: false, reading: combined }], now + 120_000, {}, 0.04, "claude-fable-5-2")
+    expect(pace).toMatchObject({ ok: false, reasonCode: "model-unreported" })
+  }))
 
   test("every combination of the two slots maps each tracked window to its three states", () => {
     const layouts = [

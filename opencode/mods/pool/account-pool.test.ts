@@ -533,6 +533,37 @@ describe("an account is held", () => {
     )
   })
 
+  test("removing a spent 5h window never shrinks a live confirmed 429 refusal", () => {
+    const shortReset = T0 + 5 * HOUR
+    const weekReset = T0 + 2 * HOUR
+    const refused = reading({
+      at: T0,
+      status: "rejected",
+      windows: [
+        { name: "5h", utilization: 1, resetAt: shortReset },
+        { name: "7d", utilization: 1, resetAt: weekReset },
+      ],
+      refusal: { kind: "usage-limit", until: shortReset },
+    })
+    const removed = reading({
+      at: T0 + MINUTE,
+      windows: [{ name: "7d", utilization: 1, resetAt: weekReset }],
+      absent: [{ name: "5h", at: T0 + MINUTE }],
+    })
+    return run(
+      accounts("a", "b"),
+      Story.clock(T0),
+      Story.when(TakeReading.make({ credentialID: "a", reading: refused })),
+      recorded(ReadingTaken.make({ credentialID: "a", reading: refused, hold: { kind: "usage-limit", until: shortReset, at: T0, refusedUntil: shortReset } })),
+      Story.clock(T0 + MINUTE),
+      Story.when(TakeReading.make({ credentialID: "a", reading: removed })),
+      recorded(ReadingTaken.make({ credentialID: "a", reading: removed })),
+      // Past the weekly reset, the confirmed 429 refusal still holds a until shortReset.
+      Story.clock(T0 + 3 * HOUR),
+      ...placed("s1", "b", T0 + 3 * HOUR),
+    )
+  })
+
   test("and freed by a reading taken after its hold with room and no refusal: a claim emptied the window, even after a late reading held it again", () => {
     const exhausted = reading({ windows: [{ name: "5h", utilization: 1, resetAt: T0 + 2 * HOUR }] })
     const room = reading({ at: T0 + MINUTE, windows: [{ name: "5h", utilization: 0, resetAt: T0 + 5 * HOUR }] })
