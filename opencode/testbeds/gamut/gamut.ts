@@ -579,7 +579,7 @@ export const runEnv = (
     // No file watches. The fork from source opens one per plugin module (hot reload, which a compiled build skips), and
     // on macOS each blocks its thread while Bun rebuilds its one FSEventStream (oven-sh/bun#43870): ~300 ms each with
     // a busy fseventsd, ~170 of them, so the TUI's plugins missed the composer wait. A run is a fixed copy; `restart` reloads.
-    OPENCODE_FILEWATCHER_DISABLE: "1",
+    OPENCODE_DISABLE_FILEWATCHER: "1",
     ...(offline ? { OPENCODE_DISABLE_MODELS_FETCH: "1" } : {}),
     ...launch.env,
   }
