@@ -141,6 +141,8 @@ export interface Host {
   familyIDs(sessionID: string): ReadonlyArray<string>
   /** The session's family as the subagent rows read it. */
   subagents(sessionID: string): Family
+  /** Read the host's persisted transcript for a child in the dock's visible window. */
+  syncSubagentMessages(sessionID: string): void
   /** How many of the session's shell commands are running. */
   shells(sessionID: string): number
   /** The session's shell commands, from the same registry as the count. */

@@ -48,10 +48,24 @@ import { childrenOf, waitingForWake, worksNow, type Works } from "./works.ts"
  * above), `blocked` waits on the owner; `idle` is a stopped one whose end the
  * data does not say.
  */
-export type State = "working" | "waiting" | "blocked" | "latched" | "done" | "failed" | "cancelled" | "idle"
+export type State = "working" | "waiting" | "blocked" | "latched" | "done" | "failed" | "cancelled" | "idle" | "checking" | "unknown"
 
 /** The states a row stays in view for, timed. A latched row is queued work, so it counts as live. */
-export const live = (state: State) => state === "working" || state === "waiting" || state === "blocked" || state === "latched"
+export function live(state: State): boolean {
+  switch (state) {
+    case "working":
+    case "waiting":
+    case "blocked":
+    case "latched": return true
+    case "done":
+    case "failed":
+    case "cancelled":
+    case "idle":
+    case "checking":
+    case "unknown": return false
+  }
+  return state satisfies never
+}
 
 /** The colour family a role draws in: the orchestrate roles each have one, other agents share one. */
 export type Tone = "planner" | "implementor" | "verifier" | "worker" | "general" | "other"
@@ -401,7 +415,6 @@ function rowsOf(family: Family, rootSessionID: string, options: ReadOptions): Re
         ...timed(since),
       }
     }
-    if (session.execution?.kind === "checking") return { ...base, state: "waiting", update: "Checking the last execution" }
     if (session.execution?.kind === "undetermined") {
       return {
         ...base, state: "waiting",
@@ -426,9 +439,9 @@ function ownedRow(session: Session, base: Omit<Row, "state" | "update">, options
     return text
   }
   switch (view.kind) {
-    case "checking": return { ...base, state: "waiting", update: "Checking the last execution" }
+    case "checking": return { ...base, state: "checking", update: "Checking the last execution" }
     case "none":
-    case "unknown": return { ...base, state: "waiting", update: qualify("Current execution not known") }
+    case "unknown": return { ...base, state: "unknown", update: qualify("Current execution not known") }
     case "recovering": return { ...base, state: "waiting", update: qualify("Recovering"), ...timed(view.at) }
     case "running": return { ...base, state: "working", update: qualify(runningUpdate(session.messages)), ...timed(view.at) }
     case "blocked": return { ...base, state: "blocked", update: qualify(`waiting for ${view.waitingOn}`), ...timed(view.at) }
@@ -451,10 +464,11 @@ function ownedRow(session: Session, base: Omit<Row, "state" | "update">, options
     case "done":
     case "failed":
     case "cancelled":
-      if (view.sinceReload) return { ...base, state: "waiting", update: "Checking the last execution (since before reload)" }
+      if (view.sinceReload) return { ...base, state: "unknown", update: qualify("Current execution not known") }
       if (view.kind === "done") return { ...base, state: "done", update: plural(stepCount(session.messages), "step"), ended: view.at }
       return { ...base, state: view.kind, update: "", ended: view.at }
   }
+  return view.kind satisfies never
 }
 
 /** How long a stopped subagent's row stays after it stopped. */
@@ -464,8 +478,10 @@ export const LINGER_MS = 30_000
  * The rows worth showing at `now`: every live one (working, waiting,
  * blocked), with how long it has been in its state and since it last said
  * anything, and each stopped one for `LINGER_MS` after it stopped; a stopped
- * one whose end time the data does not say never shows. `current` (the
- * session the TUI shows, when it is a subagent) always shows.
+ * one whose end time the data does not say never shows. Checking is visible
+ * only until the owner reader's in-flight read settles or times out. Unknown
+ * has neither live nor stop evidence: it leaves the strip immediately unless
+ * it is `current` (the viewed child), which always has a row.
  */
 export function visible(
   all: ReadonlyArray<Row>,
@@ -483,6 +499,8 @@ export function visible(
         },
       ]
     if (row.id === options.current) return [row]
+    if (row.state === "checking") return [row]
+    if (row.state === "unknown") return []
     if (row.ended !== undefined && now - row.ended < linger) return [row]
     if (row.state === "idle" && Number.isFinite(row.heard) && now - Number(row.heard) < linger) return [row]
     return []

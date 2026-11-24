@@ -40,7 +40,7 @@ export const mountRows = (data: Reads, base: string, root: string, child: string
         if (matches(owner())) resume(Effect.void)
       }))
     })
-    const ready = whenOwner((state) => Boolean(state && state.kind !== "checking"))
+    const ready = whenOwner((state) => Boolean(state && state.kind !== "checking" && state.kind !== "unknown"))
     const fallback = whenOwner((state) => Option.isNone(Option.fromUndefinedOr(state)))
     const rows = () => subagents(family(), root)
     const active = () => Option.isSome(Option.fromUndefinedOr(worksNow(family())(child)))
@@ -92,7 +92,8 @@ export const openBarrier = (client: RowsClient, base: string, root: string, chil
     const snapshot = () => observer.view.rows().map(({ state, update }) => ({ state, update }))
     return {
       notify: observer.notify, hideShell: observer.hideShell, next: observer.next,
-      live: snapshot(), snapshot, revision: () => Number(observer.view.owner()?.revision), ready: observer.view.ready,
+      live: snapshot(), snapshot, shown: (now: number) => visible(observer.view.rows(), now).map(({ state }) => state),
+      revision: () => Number(observer.view.owner()?.revision), ready: observer.view.ready,
       initial: initial.revision, listeners: observer.listeners, active: observer.view.active, fallback: observer.view.fallback,
     }
   })

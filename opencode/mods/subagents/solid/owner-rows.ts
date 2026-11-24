@@ -73,12 +73,16 @@ export const ownerRows = (context: {
     let reading = false
     let dirty = false
     let established = false
+    let checking = false
     let generation = 0
     const revisions = new Map<string, number>()
     const revisionOf = (child: string) => Option.getOrElse(Option.fromUndefinedOr(revisions.get(child)), () => 0)
     const invalidate = () => {
       generation++
-      if (established) publish(children.map((child) => unanswered(child, revisionOf(child), "checking")))
+      if (established && !checking) {
+        checking = true
+        publish(children.map((child) => unanswered(child, revisionOf(child), "checking")))
+      }
       refresh()
     }
     const refresh = () => {
@@ -96,13 +100,20 @@ export const ownerRows = (context: {
         Effect.option,
         Effect.tap((result) => Effect.sync(() => {
             if (abort.signal.aborted) return
+            const wasChecking = checking
+            checking = false
             if (Option.isNone(result)) {
               established = false
               publish([])
               return
             }
             established = true
-            if (generation !== requested) return
+            // This read's window ended. A coalesced read can establish a
+            // fresh phase, but a superseded answer is not today's evidence.
+            if (generation !== requested) {
+              if (wasChecking) publish(children.map((child) => unanswered(child, revisionOf(child), "unknown")))
+              return
+            }
             const received = new Map(result.value.flatMap((reply) =>
               Option.toArray(readRows(reply)).flatMap(({ rows }) => rows.map((row) => [row.child, row] as const))))
             const views = children.map((child) => {
