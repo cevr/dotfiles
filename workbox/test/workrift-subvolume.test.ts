@@ -265,8 +265,7 @@ const bench = (label: string) => {
   mkdirSync(join(sys, UUID, "allocation/metadata"), { recursive: true })
   writeFileSync(join(sys, UUID, "allocation/metadata/total_bytes"), `${57 * 2 ** 30}\n`)
   writeFileSync(join(sys, UUID, "allocation/metadata/bytes_used"), `${43 * 2 ** 30}\n`)
-  for (const [name, body] of [["flock", FLOCK], ["stat", STAT], ["btrfs", BTRFS], ["work", WORK], ["cp", CP], ["python3", PY], ["git", GIT], ["findmnt", FINDMNT], ["df", DF], ["sudo", SUDO]] as const)
-    exe(join(bin, name), body)
+  for (const [name, body] of Object.entries(STAND_INS)) exe(join(bin, name), body)
   const inherited = Object.fromEntries(
     Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined && !/^(WORKRIFT_|RIFT_|WORK_|WORK$|XDG_|GIT_|FAKE_)/.test(entry[0])),
   )
@@ -1340,9 +1339,9 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     expect(ran.code, said(ran)).toBe(1)
     expect(said(ran)).toContain("93002 rg (uid 0, read with sudo)")
     expect(said(ran)).not.toContain("93003")
-    expect(sudoCalls(b)).toEqual(["-n true", `-n find ${at}/fd ${at}/cwd -maxdepth 1 ( -lname ${b.base} -o -lname ${b.base}/* ) -print`])
+    expect(sudoCalls(b)).toEqual(["-n true", `-n find ${at}/fd ${at}/cwd -ignore_readdir_race -maxdepth 1 ( -lname ${b.base} -o -lname ${b.base}/* ) -print`])
     // Refused at the preflight, before the hold: the command line is said on stderr (the step log is the switch's, written under the hold).
-    expect(ran.err).toContain(`workrift subvolume:   sudo -n find ${at}/fd ${at}/cwd -maxdepth 1`)
+    expect(ran.err).toContain(`workrift subvolume:   sudo -n find ${at}/fd ${at}/cwd -ignore_readdir_race -maxdepth 1`)
     expect(b.layout()).toEqual({ base: "F", new: "-", back: "-", old: "-" })
   })
 
@@ -1957,8 +1956,25 @@ describe("workrift subvolume: the model (histories of switches, faults, kills an
   }, 1_800_000)
 })
 
-/** The external commands workrift runs, each put behind a shim by the census (`work` through WORK). */
-const CENSUS_COMMANDS = ["git", "jq", "date", "sed", "tr", "grep", "cat", "awk", "rm", "find", "work", "stat", "head", "mkdir", "dirname", "wc", "sleep", "cut", "cp", "basename", "readlink", "mv", "lsof", "python3", "ps", "mktemp", "ls", "ln", "id", "getconf", "df", "uname", "sort", "cksum", "btrfs", "flock", "findmnt", "touch", "xargs", "comm", "tail", "sh"]
+/** The bench's stand-ins, first on its PATH (`work` is WORK). */
+const STAND_INS: Record<string, string> = { flock: FLOCK, stat: STAT, btrfs: BTRFS, work: WORK, cp: CP, python3: PY, git: GIT, findmnt: FINDMNT, df: DF, sudo: SUDO }
+
+/** The shell the script runs under on the workbox, which says what a word is to it. */
+const DASH = Bun.which("dash") ?? "/bin/sh"
+const wordKinds = new Map<string, "shell" | "external" | "unknown">()
+/**
+ * What a command word is: the shell's own (a builtin or keyword of dash, the workbox's /bin/sh), an external command (a
+ * stand-in of the bench, or one dash finds on PATH), or unknown: a name nothing runs, which the table test refuses.
+ * No list of known names: a new command the script calls is a site as soon as it is written.
+ */
+const commandKind = (word: string) => {
+  const known = wordKinds.get(word)
+  if (known) return known
+  const said = Bun.spawnSync([DASH, "-c", 'command -V "$1"', "sh", word], { stdout: "pipe", stderr: "pipe" }).stdout.toString()
+  const kind = word in STAND_INS || / is \//.test(said) ? "external" : / is (a )?(special )?shell (builtin|keyword)/.test(said) ? "shell" : "unknown"
+  wordKinds.set(word, kind)
+  return kind
+}
 /** Functions that only run one external command: a failure inside one is its caller's call site. */
 const WRAPPERS: Record<string, string> = { base_git: "git", work_in: "work", sv_renameat: "python3" }
 /** Functions that run the command their arguments name (sv_read VAR CMD…): the command is the call site. */
@@ -2085,7 +2101,9 @@ const globOf = (words: Array<string | null>) => {
  * The sites of the scanned commands: those of the functions workrift subvolume reaches, and of the top level that runs
  * for it (before the dispatch on the command, and its `subvolume)` arm), with set -e's verdict on each.
  */
-const keptSites = (raws: ReadonlyArray<Raw>, fns: ReadonlyArray<{ readonly name: string; readonly start: number; readonly end: number }>, names: ReadonlySet<string>, topRuns: (line: number) => boolean): ReadonlyArray<Site> => {
+/** The sites, and the words in a command's place that nothing runs (neither the shell nor a command found). */
+type Sites = ReadonlyArray<Site> & { readonly unknown: ReadonlyArray<string> }
+const keptSites = (raws: ReadonlyArray<Raw>, fns: ReadonlyArray<{ readonly name: string; readonly start: number; readonly end: number }>, names: ReadonlySet<string>, topRuns: (line: number) => boolean): Sites => {
   const byName = new Map(fns.map((f) => [f.name, f]))
   const reach = new Set<string>(["(top)"])
   const walk = (name: string) => {
@@ -2104,10 +2122,12 @@ const keptSites = (raws: ReadonlyArray<Raw>, fns: ReadonlyArray<{ readonly name:
     for (const r of raws) if (r.fn === name && names.has(r.word)) walkOff(r.word)
   }
   for (const r of raws) if (reach.has(r.fn) && names.has(r.word) && (r.cond || r.neg || r.or !== undefined || r.and)) walkOff(r.word)
-  const external = (w: string) => CENSUS_COMMANDS.includes(w) || w in WRAPPERS
-  const kept = raws.filter((r) => reach.has(r.fn) && !(r.fn in WRAPPERS) && external(r.word))
+  const reached = raws.filter((r) => reach.has(r.fn) && !(r.fn in WRAPPERS))
+  const command = (w: string) => !names.has(w) && !RUNNERS.includes(w) && !(w in WRAPPERS)
+  const unknown = [...new Set(reached.filter((r) => command(r.word) && commandKind(r.word) === "unknown").map((r) => `${r.word} (${r.fn}, line ${r.line})`))]
+  const kept = reached.filter((r) => r.word in WRAPPERS || (command(r.word) && commandKind(r.word) === "external"))
   const seen = new Map<string, number>()
-  return kept.map((r) => {
+  const sites = kept.map((r) => {
     const command = WRAPPERS[r.word] ?? r.word
     const key = `${r.line}:${command}`
     const ordinal = (seen.get(key) ?? 0) + 1
@@ -2140,6 +2160,7 @@ const keptSites = (raws: ReadonlyArray<Raw>, fns: ReadonlyArray<{ readonly name:
       text: r.text,
     } satisfies Site
   })
+  return Object.assign(sites, { unknown })
 }
 
 /** The offset just past the bracket that closes the one at `from` (`$((…))`, `${…}`), on the same line. */
@@ -2180,16 +2201,17 @@ const scriptFunctions = (lines: ReadonlyArray<string>) => {
  * the top level, by a scanner over the script's text: quotes, `$(…)`, heredocs, comments and redirections are tracked,
  * and each simple command's first word is a command. The census addresses calls by these sites, never by a count.
  */
-const callSites = (src: string): ReadonlyArray<Site> => {
+const callSites = (src: string): Sites => {
   const lines = src.split("\n")
   const fns = scriptFunctions(lines)
   const fnAt = (n: number) => fns.find((f) => f.start <= n && n <= f.end)?.name ?? "(top)"
-  const names = new Set(fns.map((f) => f.name))
+  const names = new Set([...fns.map((f) => f.name), ...lines.flatMap((l) => l.match(/^\s+([a-z_][a-z0-9_]*)\(\) \{/)?.slice(1) ?? [])])
   const raws: Array<Raw> = []
   type Ctx = { kind: "top" | "subst" | "dq" | "sq"; depth: number; assigned: boolean }
   const stack: Array<Ctx> = [{ kind: "top", depth: 0, assigned: false }]
-  interface Seg { cmd: Raw | undefined; group: ReadonlyArray<Raw>; expect: boolean; pipeFrom: boolean; afterAndOr: boolean; neg: boolean; col: number | undefined; read: boolean }
-  const fresh = (): Seg => ({ cmd: undefined, group: [], expect: true, pipeFrom: false, afterAndOr: false, neg: false, col: undefined, read: false })
+  /** local: the words after `local` are names (or assignments), never commands. */
+  interface Seg { cmd: Raw | undefined; group: ReadonlyArray<Raw>; expect: boolean; pipeFrom: boolean; afterAndOr: boolean; neg: boolean; col: number | undefined; read: boolean; local: boolean }
+  const fresh = (): Seg => ({ cmd: undefined, group: [], expect: true, pipeFrom: false, afterAndOr: false, neg: false, col: undefined, read: false, local: false })
   // `{ …; }`: where each group began in raws; a group followed by || or && takes it for every command in it.
   const groups: Array<number> = []
   const listed = (s: Seg, how: (r: Raw) => void) => {
@@ -2397,6 +2419,22 @@ const callSites = (src: string): ReadonlyArray<Site> => {
           j += w.length
           continue
         }
+        // A case arm's pattern (`swap | carry)`, `other\\ *)`), outside a $(…): the arm's command follows it.
+        const pattern = ctx.kind === "subst" ? null : raw.slice(j).match(/^(?:(?:[^\s;|&()<>'"`$\\]|\\.)+\s*\|\s*)*(?:[^\s;|&()<>'"`$\\]|\\.)+\s*\)/)
+        if (pattern) {
+          j += pattern[0].length
+          continue
+        }
+        if (s.local && /^[A-Za-z_][A-Za-z0-9_]*$/.test(w)) {
+          j += w.length
+          continue
+        }
+        // A word with a glob or a colon in a command's place is a case pattern (`r:*)`, `?*.old)`), no command.
+        if (/[*?[\]:]/.test(w)) {
+          j += w.length
+          continue
+        }
+        if (w === "local") s.local = true
         if (w === "local" || w === "!" || ["then", "do", "else", "fi", "done", "esac", "{", "}", "in", "time", "command"].includes(w)) {
           if (w === "!") s.neg = true
           if (w === "then" || w === "do") cond = Math.max(0, cond - 1)
@@ -2476,161 +2514,170 @@ const autoVerdict = (site: Site): string | undefined => {
  * file; nothing reads it after), unreachable (a path the census host cannot take: Linux's /proc, lsof, a test hook).
  */
 const VERDICTS: Record<string, string> = {
-  "(top):uname#1": "closed: uname that fails reads as not Linux: purge_trash=false, the trash is kept, never purged",
-  "normalized_origin:git#1": "closed: no origin (pipe member) reads as an origin no source has: resolve_source finds none and fails; never reached with WORKRIFT_SOURCE set",
-  "normalized_origin:sed#1": "closed: as its git: an empty origin, no source found, a refusal",
-  "process_identity:cat#1": "closed: /proc/<pid>/stat that does not read is no identity (empty): process_is asks kill -0, alive is unknown, never gone",
-  "process_identity:awk#1": "closed: no start tick is no identity (empty): unknown while kill -0 finds the pid, never gone",
-  "process_identity:cat#2": "closed: no boot id is no identity (empty), never one that differs (r4: it was `boot  tick N`, a mismatch, a holder taken for gone)",
-  "process_identity:ps#1": "closed: ps that fails prints nothing: no identity, unknown while kill -0 finds the pid, never gone",
-  "process_identity:sed#1": "closed: as its ps: empty, no identity, never gone",
-  "ticket_live:flock#1": "closed: flock -n that fails (held or an error) is a held ticket: it is live unless its owner is known gone",
-  "process_parent:cat#1": "closed: no parent: sv_in_line's walk ends, the process counts as outside workrift's line (a user of the base: wait or refusal)",
-  "process_parent:awk#1": "closed: as its cat: no parent, the process is outside the line",
-  "process_parent:ps#1": "closed: as on Linux: no parent, outside the line",
-  "process_parent:tr#1": "closed: as its ps",
-  "queue_sweep:rm#1": "cleanup: a dead ticket left in place; every reader checks liveness (ticket_live), so it is skipped as dead",
-  "queue_sweep:rm#2": "cleanup: a stray .in left; a .in without its ticket is never read",
-  "ticket_ahead:sort#1": "returned: `&& [ -n ] || return 1`: a sort that fails is the line unreadable; both queue_enter callers fail on it",
-  "ticket_ahead_words:grep#1": "message: the count in the waiting line's words",
-  "ticket_ahead_words:head#1": "message: the first ticket's words; empty says nothing ahead in the message only",
-  "ticket_words:sed#1": "message: the pid in the waiting line's words",
-  "ticket_words:ps#1": "message: whether the holder is stopped, in words",
-  "ticket_words:sed#2": "message: the purpose in words",
-  "ticket_words:sed#3": "message: the since in words",
-  "queue_enter:date#2": "closed: a clock that does not read is the polite patience spent: it takes its place in line now (a writer waits its turn there)",
-  "queue_enter:date#3": "closed: as before it",
-  "queue_enter:cat#1": "closed: a counter that does not read is 0; the next number is past every ticket present, so no ticket is numbered below a live one",
-  "queue_enter:sleep#1": "message: the talker that repeats the waiting line ends; the wait goes on",
-  "queue_enter:date#5": "closed: a clock that does not read is the bound passed: the line is read again, and a ticket still ahead gives the place back (subvolume: a refusal)",
-  "legacy_path:git#1": "returned: `&& [ -n ] || return 1`; legacy_take fails when a .git is there (r4), queue_enter's check then makes a reader a writer (more exclusive)",
-  "legacy_take:flock#1": "branch: try mode, the lock held or an error: returns 1, no place taken",
-  "legacy_take:flock#2": "branch: the try failed: the blocking flock follows, and its failure fails",
-  "legacy_yield:ls#1": "unreachable: Linux only (/proc/locks); an inode that does not read yields to nothing: fairness to an older waiting writer, not exclusion (the flock after it is)",
-  "legacy_yield:awk#1": "unreachable: as its ls",
-  "legacy_yield:awk#2": "unreachable: Linux only; awk that fails ends the yield, as above",
-  "legacy_yield:sleep#1": "unreachable: Linux only; a sleep that fails looks again at once",
-  "ticket_wait:date#1": "closed: returns: the caller reads the line again (ticket_ahead), and a ticket still ahead gives the place back",
-  "ticket_wait:date#2": "closed: as before it",
-  "ticket_wait:flock#1": "branch: flock -w that fails (held, timed out, an error) waits on; the owner and the bound are checked each round",
-  "ticket_wait:date#3": "closed: [ '' -lt N ] fails, the wait returns: the caller reads the line again",
-  "queue_leave:rm#1": "cleanup: said; the given-back ticket stays with its lock closed: dead to every reader, swept (r4: in a plain call it was a set -e stop after a finished switch)",
-  "base_snapshots:stat#1": "closed: not a snapshot base: it takes the clone turn (slower, never worse)",
-  "base_snapshots:stat#2": "closed: as before it",
-  "base_snapshots:work#1": "closed: doctor that fails is no btrfs cloner: the clone turn is taken",
-  "base_snapshots:jq#1": "closed: as its work",
-  "clock_time:date#1": "branch: GNU date's -d failing tries BSD date's -r (message only)",
-  "clock_time:date#2": "message: a time of day in words",
-  "phase:date#1": "message: the seconds in a phase line",
-  "work_bases:head#1": "message: the answer quoted in a fail",
-  "work_bases:jq#2": "closed: after the list was checked by jq -e, a jq that fails lists fewer bases: the base is not listed, a refusal",
-  "work_workspaces:work#1": "branch: work list that fails: no workspaces when the base is gone, else a fail",
-  "work_workspaces:jq#1": "returned: the function's status (last of its pipe)",
-  "work_resolve_source:cut#1": "closed: not found among the workspaces: the source is then found by origin, and the switch acts only on a listed work base (never reached with WORKRIFT_SOURCE)",
-  "work_resolve_source:grep#1": "closed: as its cut",
-  "work_resolve_source:grep#2": "closed: a count that does not read matches no case arm: no source, a refusal",
-  "work_resolve_source:tr#1": "message: the sources named in a fail",
-  "work_list_checked:head#1": "message: the answer quoted in a fail",
-  "work_purge:jq#2": "message: the trash folders named in a fail",
-  "work_purge:tr#1": "message: as before it",
-  "work_purge:jq#4": "closed: an id that does not read is none of those asked for: p_left fails",
-  "work_purge:grep#1": "closed: grep that fails is not among those asked for: p_left fails",
-  "work_purge:work#1": "closed: work gc that fails leaves the trash, named, and the purge fails",
-  "work_purge:jq#5": "closed: an answer that does not read differs from the name: the trash is said and the purge fails",
-  "work_purge:jq#6": "closed: as before it",
-  "work_purge:jq#7": "closed: jq -e's status read: 0 listed, 1 gone, any other unproven and the purge fails (r4: any failure read as gone)",
-  "work_purge:jq#8": "message: the record quoted",
-  "sv_kind:stat#1": "closed: prints `?` and fails: sv_kind_of stops with the three facts; no `?` is taken for a kind",
-  "sv_kind:stat#2": "closed: as before it",
-  "sv_identity:btrfs#1": "returned: `&& [ -n ] || return 1`: every caller stops or refuses (no identity is recorded or compared as `?`)",
-  "sv_identity:stat#1": "returned: as before it",
-  "sv_step:mkdir#1": "message: the step log is a record for a person; its write failing is said, and the switch goes on (the phase record, which decides, is sv_phase_write, checked)",
-  "sv_step:date#1": "message: the log line's time",
-  "sv_step:sh#1": "unreachable: the test hook (WORKRIFT_SUBVOLUME_HOOK), set by tests only",
-  "sv_users:cat#1": "message: the command name of a process found in the tree (`?` when it does not read); the process is counted either way",
-  "sv_removals:tr#1": "closed: a process still there whose command line does not read is a removal of this base (refused)",
-  "sv_removals:awk#1": "closed: as before it",
-  "sv_removals:readlink#1": "closed: a process still there whose working folder does not read is a removal of this base (refused)",
-  "sv_removals:tr#2": "closed: a removal whose environment does not read counts as one of this base (refused)",
-  "sv_removals:sed#1": "closed: a clone ticket that does not read is a removal of this base (refused)",
-  "sv_runs_tickets:sed#1": "closed: a script that does not read is not one that takes tickets: the process counts as an older workrift (refused)",
-  "sv_runs_tickets:grep#1": "closed: as before it",
-  "sv_runs_tickets:lsof#1": "closed: no open files read: not one that takes tickets, an older workrift (refused)",
-  "sv_runs_tickets:sed#2": "closed: as its lsof",
-  "sv_runs_tickets:sed#3": "closed: as on Linux",
-  "sv_runs_tickets:grep#2": "closed: as on Linux",
-  "sv_runs_tickets:grep#3": "closed: as on Linux",
-  "sv_old_workrifts:tr#1": "closed: a process still there whose command line does not read is an older workrift (refused)",
-  "sv_old_workrifts:awk#1": "closed: as before it",
-  "sv_git_locks:git#1": "closed: prints `unknown`: the lock check says NO",
-  "sv_git_locks:find#1": "closed: as before it",
-  "sv_git_locks:find#2": "closed: as before it",
-  "sv_fs_dir:findmnt#2": "closed: no UUID is no state folder: the metadata check says the sizes do not read (NO)",
-  "sv_preflight:findmnt#1": "closed: sv_read's status: options that do not read are a NO",
-  "sv_preflight:cat#1": "closed: sv_read's status: sizes that do not read stay empty, a NO (r4: they were 0, a slack read wrong)",
-  "sv_preflight:cat#2": "closed: as the first: the group's `|| true` leaves the sizes empty, a NO",
-  "tickets_at_exit:rm#1": "cleanup: in the exit trap, the script ends either way; a ticket it cannot remove is dead (its lock goes with the process) and swept",
-  "sv_preflight:df#1": "closed: sv_read's status: a df that does not read is a NO",
-  "(top):python3#1": "closed: no python3 with ctypes is a NO: nothing can make the exchange",
-  "sv_refs:sort#1": "returned: the function's status (last of its pipe); its callers check it",
-  "sv_digest:git#1": "branch: no symbolic HEAD tries rev-parse HEAD, and that failing fails",
-  "sv_store:sort#1": "returned: the function's status (last of its pipe)",
-  "sv_tips_missing:git#1": "closed: prints the failure: a non-empty answer, the copy is not true",
-  "sv_tips_missing:awk#1": "closed: as before it",
-  "sv_tips_missing:git#2": "closed: as before it",
-  "sv_tips_missing:grep#1": "closed: grep's status read: 1 none missing, any other the failure printed (the copy is not true)",
-  "sv_tips_missing:cat#1": "closed: errors that do not read are said: the copy is not true",
-  "sv_tips_missing:rm#1": "cleanup: tips.err is written again before it is read",
-  "sv_copy_true:cat#1": "returned: the && chain: a read that fails is a copy not true (copy again, then roll back)",
-  "sv_copy_true:cat#2": "returned: as before it",
-  "sv_carry:rm#1": "cleanup: the files are written again (>) right after",
-  "sv_carry:git#1": "branch: symbolic-ref's status read: 0 HEAD names a branch, 1 detached, any other sv_why and return 1",
-  "sv_carry:git#2": "branch: as before it",
-  "sv_carry:awk#1": "returned: `if ! awk … || ! sort`: sv_why, return 1 (nothing carried, the switch said unfinished)",
-  "sv_carry:sort#1": "returned: as its awk",
-  "sv_carry:rm#2": "cleanup: the scratch files of a carry that failed",
-  "sv_carry:git#3": "closed: a fetch that fails is checked by the rev-parse after it: an object missing is not carried (sv_missed, said)",
-  "sv_carry:git#4": "branch: rev-parse -q --verify's status read: 1 missing (not carried), any other c_failed, rerun",
-  "sv_carry:git#5": "branch: update-ref that fails keeps the ref under refs/subvolume-move/, said",
-  "sv_carry:git#6": "closed: that failing too is counted and said (not carried)",
-  "sv_carry:rm#3": "cleanup: the scratch files after the carry",
-  "sv_wait_users:sleep#1": "closed: a sleep that fails looks again; the clock bounds the wait (checked)",
-  "sv_rm_folder:rm#1": "closed: no GNU rm --version takes BSD's -x, which GNU rm refuses: a wrong guess deletes nothing and fails",
-  "sv_rm_folder:rm#2": "returned: the function's status; callers fail on it",
-  "sv_rm_folder:rm#3": "returned: as before it",
-  "sv_rm_folder:rm#4": "returned: as before it",
-  "sv_rm_folder:rm#5": "returned: as before it",
-  "sv_cp:cp#1": "returned: in the background; its status is read by wait in sv_cp, and a copy that failed fails",
-  "sv_cp:rm#1": "cleanup: the copier record; a stale one is read with the copier's identity, which no longer matches",
-  "sv_wait_copier:sleep#1": "closed: a sleep that fails looks again; the clock bounds the wait",
-  "sv_copy_in:git#1": "closed: an index not refreshed differs in status: sv_copy_true says the copy is not true",
-  "sv_smoke_rm:sleep#1": "closed: a sleep that fails looks again; the wait is bounded",
-  "sv_prove:work#2": "returned: sv_why, the smoke workspace unproven: the switch said unproved with the --back command",
-  "sv_lacks:awk#1": "closed: `if l_out=$(…)`: else the lack is said as unknown (the report)",
-  "sv_lacks:awk#2": "closed: as before it",
-  "sv_lacks:awk#3": "closed: as before it",
-  "sv_lacks:awk#4": "closed: as before it",
-  "sv_head:git#1": "branch: symbolic-ref's status read: 1 tries rev-parse, any other return 1",
-  "sv_git_files:find#1": "returned: the function's status (the subshell's last command)",
-  "sv_reflogs:find#1": "returned: as before it",
-  "sv_finish:work#1": "message: work refresh that fails is said with the command to run (cd <base> && work refresh); the proof after it decides",
-  "sv_baseline:sort#1": "returned: the function's status (last of its pipe)",
-  "sv_baseline_write:mv#1": "returned: the && return 0 is skipped: sv_why, return 1",
-  "sv_baseline_write:rm#1": "cleanup: the scratch record of a write that failed",
-  "sv_refs_write:mv#1": "returned: as sv_baseline_write's",
-  "sv_refs_write:rm#1": "cleanup: as sv_baseline_write's",
-  "sv_said:date#1": "message: the hold's seconds, `?` when the clock does not read",
-  "sv_drop:date#2": "message: the drop's seconds",
+  "(top):uname: *) [ \"$(uname -s)\" = Linux ] && purge_trash=true || purge_trash=false ;;": "closed: uname that fails reads as not Linux: purge_trash=false, the trash is kept, never purged",
+  "normalized_origin:git: git -C \"$1\" remote get-url origin 2>/dev/null |": "closed: no origin (pipe member) reads as an origin no source has: resolve_source finds none and fails; never reached with WORKRIFT_SOURCE set",
+  "normalized_origin:sed: sed -E 's#^[a-z+]+://##; s#^[^@/]+@##; s#:#/#; s#\\.git$##; s#/+$##'": "closed: as its git: an empty origin, no source found, a refusal",
+  "process_identity:cat: i_stat=$(cat \"$identity_proc/$1/stat\" 2>/dev/null) || return 0": "closed: /proc/<pid>/stat that does not read is no identity (empty): process_is asks kill -0, alive is unknown, never gone",
+  "process_identity:awk: i_tick=$(printf '%s\\n' \"${i_stat##*) }\" | awk '{ print $20 }') || return 0": "closed: no start tick is no identity (empty): unknown while kill -0 finds the pid, never gone",
+  "process_identity:cat: i_boot=$(cat \"$identity_proc/sys/kernel/random/boot_id\" 2>/dev/null) || return 0": "closed: no boot id is no identity (empty), never one that differs (r4: it was `boot  tick N`, a mismatch, a holder taken for gone)",
+  "process_identity:ps: LC_ALL=C TZ=UTC0 ps -o lstart= -p \"$1\" 2>/dev/null | sed 's/^ *//; s/ *$//' || true": "closed: ps that fails prints nothing: no identity, unknown while kill -0 finds the pid, never gone",
+  "process_identity:sed: LC_ALL=C TZ=UTC0 ps -o lstart= -p \"$1\" 2>/dev/null | sed 's/^ *//; s/ *$//' || true": "closed: as its ps: empty, no identity, never gone",
+  "ticket_live:flock: if flock -n -x \"$1\" true 3>&- 6>&- 7>&- 8>&- 9>&-; then": "closed: flock -n that fails (held or an error) is a held ticket: it is live unless its owner is known gone",
+  "process_parent:cat: p_stat=$(cat \"$identity_proc/$1/stat\" 2>/dev/null) || return 0": "closed: no parent: sv_in_line's walk ends, the process counts as outside workrift's line (a user of the base: wait or refusal)",
+  "process_parent:awk: printf '%s\\n' \"${p_stat##*) }\" | awk '{ print $2 }'": "closed: as its cat: no parent, the process is outside the line",
+  "process_parent:ps: ps -o ppid= -p \"$1\" 2>/dev/null | tr -d ' ' || true": "closed: as on Linux: no parent, outside the line",
+  "process_parent:tr: ps -o ppid= -p \"$1\" 2>/dev/null | tr -d ' ' || true": "closed: as its ps",
+  "queue_sweep:rm: ticket_live \"$q_old\" || rm -f \"$q_old\" \"$q_old.in\"": "cleanup: a dead ticket left in place; every reader checks liveness (ticket_live), so it is skipped as dead",
+  "queue_sweep:rm: rm -f \"$q_old\"": "cleanup: a stray .in left; a .in without its ticket is never read",
+  "ticket_ahead:sort: a_sorted=$(printf '%s' \"$a_list\" | LC_ALL=C sort -n) && [ -n \"$a_sorted\" ] || return 1": "returned: `&& [ -n ] || return 1`: a sort that fails is the line unreadable; both queue_enter callers fail on it",
+  "ticket_ahead_words:grep: w_count=$(printf '%s' \"$w_ahead\" | grep -c . || true)": "message: the count in the waiting line's words",
+  "ticket_ahead_words:head: w_first=$(printf '%s\\n' \"$w_ahead\" | head -n 1)": "message: the first ticket's words; empty says nothing ahead in the message only",
+  "ticket_words:sed: t_who=$(sed -n 1p \"$1\")": "message: the pid in the waiting line's words",
+  "ticket_words:ps: case \"$(LC_ALL=C ps -o stat= -p \"$t_who\" 2>/dev/null)\" in": "message: whether the holder is stopped, in words",
+  "ticket_words:sed: printf 'pid %s (%s), %s since %s%s' \"$t_who\" \"$(sed -n 4p \"$1\")\" \"$t_state\" \"$(clock_time \"$(sed -n 3p \"$1\")\")\" \"$t_stopped\"": "message: the purpose in words",
+  "ticket_words:sed: printf 'pid %s (%s), %s since %s%s' \"$t_who\" \"$(sed -n 4p \"$1\")\" \"$t_state\" \"$(clock_time \"$(sed -n 3p \"$1\")\")\" \"$t_stopped\" #2": "message: the since in words",
+  "queue_enter:date: q_now=$(date +%s) || q_now=$((q_since + advance_every))": "closed: a clock that does not read is the polite patience spent: it takes its place in line now (a writer waits its turn there)",
+  "queue_enter:date: q_now=$(date +%s) || q_now=$((q_since + advance_every)) #2": "closed: as before it",
+  "queue_enter:cat: q_n=$(cat \"${q_dir%/*}/next\" 2>/dev/null || true)": "closed: a counter that does not read is 0; the next number is past every ticket present, so no ticket is numbered below a live one",
+  "queue_enter:sleep: while sleep 60 >/dev/null 2>&1; do": "message: the talker that repeats the waiting line ends; the wait goes on",
+  "queue_enter:date: q_now=$(date +%s) || q_now=$q_until": "closed: a clock that does not read is the bound passed: the line is read again, and a ticket still ahead gives the place back (subvolume: a refusal)",
+  "legacy_path:git: l_git=$(git -C \"$1\" rev-parse --absolute-git-dir 2>/dev/null) && [ -n \"$l_git\" ] || return 1": "returned: `&& [ -n ] || return 1`; legacy_take fails when a .git is there (r4), queue_enter's check then makes a reader a writer (more exclusive)",
+  "legacy_take:flock: flock -n -x 7 3>&- 6>&- 8>&- 9>&- || {": "branch: try mode, the lock held or an error: returns 1, no place taken",
+  "legacy_take:flock: if ! flock -n \"$l_mode\" 7 3>&- 6>&- 8>&- 9>&-; then": "branch: the try failed: the blocking flock follows, and its failure fails",
+  "legacy_yield:ls: y_ino=$(ls -di \"$2\" | awk '{ print $1 }')": "unreachable: Linux only (/proc/locks); an inode that does not read yields to nothing: fairness to an older waiting writer, not exclusion (the flock after it is)",
+  "legacy_yield:awk: y_ino=$(ls -di \"$2\" | awk '{ print $1 }')": "unreachable: as its ls",
+  "legacy_yield:awk: while awk -v ino=\"$y_ino\" '": "unreachable: Linux only; awk that fails ends the yield, as above",
+  "legacy_yield:sleep: sleep 1": "unreachable: Linux only; a sleep that fails looks again at once",
+  "ticket_wait:date: w_now=$(date +%s) || return 0": "closed: returns: the caller reads the line again (ticket_ahead), and a ticket still ahead gives the place back",
+  "ticket_wait:date: w_now=$(date +%s) || return 0 #2": "closed: as before it",
+  "ticket_wait:flock: ! flock -w \"$w_step\" -s \"$1\" true 3>&- 6>&- 7>&- 8>&- 9>&- || return 0": "branch: flock -w that fails (held, timed out, an error) waits on; the owner and the bound are checked each round",
+  "ticket_wait:date: [ -z \"$w_until\" ] || [ \"$(date +%s)\" -lt \"$w_until\" ] || return 0": "closed: [ '' -lt N ] fails, the wait returns: the caller reads the line again",
+  "queue_leave:rm: rm -f \"$2\" \"$2.in\" ||": "cleanup: said; the given-back ticket stays with its lock closed: dead to every reader, swept (r4: in a plain call it was a set -e stop after a finished switch)",
+  "base_snapshots:stat: [ \"$(stat -f -c %T \"$1\" 2>/dev/null)\" = btrfs ] && [ \"$(stat -c %i \"$1\" 2>/dev/null)\" = 256 ] || return 1": "closed: not a snapshot base: it takes the clone turn (slower, never worse)",
+  "base_snapshots:stat: [ \"$(stat -f -c %T \"$1\" 2>/dev/null)\" = btrfs ] && [ \"$(stat -c %i \"$1\" 2>/dev/null)\" = 256 ] || return 1 #2": "closed: as before it",
+  "base_snapshots:work: work_in \"$1\" --json doctor 2>/dev/null 3>&- 6>&- 7>&- 8>&- 9>&- |": "closed: doctor that fails is no btrfs cloner: the clone turn is taken",
+  "base_snapshots:jq: jq -e '(.cloners // [])[0] == \"btrfs\"' >/dev/null 2>&1": "closed: as its work",
+  "clock_time:date: date -u -d \"@$1\" +%H:%M:%SZ 2>/dev/null || date -u -r \"$1\" +%H:%M:%SZ": "branch: GNU date's -d failing tries BSD date's -r (message only)",
+  "clock_time:date: date -u -d \"@$1\" +%H:%M:%SZ 2>/dev/null || date -u -r \"$1\" +%H:%M:%SZ #2": "message: a time of day in words",
+  "phase:date: printf 'workrift: %s: %s (%ss)\\n' \"$phase_label\" \"$1\" \"$(($(date +%s) - create_started))\" >&2": "message: the seconds in a phase line",
+  "work_bases:head: fail \"work --json bases answered no list of paths: $(printf '%s' \"${w_json:-no output}\" | head -c 200)\"": "message: the answer quoted in a fail",
+  "work_bases:jq: printf '%s' \"$w_json\" | jq -r '.[]' | while IFS= read -r w_listed; do": "closed: after the list was checked by jq -e, a jq that fails lists fewer bases: the base is not listed, a refusal",
+  "work_workspaces:work: if ! w_json=$(work_in \"$1\" --json list); then": "branch: work list that fails: no workspaces when the base is gone, else a fail",
+  "work_workspaces:jq: jq -r '.[] | select(.state._tag == \"Active\") | [.name, .id, .path, .parent, (.since | tostring)] | @tsv'": "returned: the function's status (last of its pipe)",
+  "work_resolve_source:cut: if printf '%s\\n' \"$w_rows\" | cut -f3 | grep -qxF \"$w_top\"; then": "closed: not found among the workspaces: the source is then found by origin, and the switch acts only on a listed work base (never reached with WORKRIFT_SOURCE)",
+  "work_resolve_source:grep: if printf '%s\\n' \"$w_rows\" | cut -f3 | grep -qxF \"$w_top\"; then": "closed: as its cut",
+  "work_resolve_source:grep: case \"$(printf '%s' \"$w_matches\" | grep -c .)\" in": "closed: a count that does not read matches no case arm: no source, a refusal",
+  "work_resolve_source:tr: *) fail \"several warm sources for $w_origin; set WORKRIFT_SOURCE: $(printf '%s' \"$w_matches\" | tr '\\n' ' ')\" ;;": "message: the sources named in a fail",
+  "work_list_checked:head: fail \"work --json list in $1 answered no list of records (each with a name, id, path, state and since): $(printf '%s' \"${l_json:-no output}\" | head -c 200)\"": "message: the answer quoted in a fail",
+  "work_purge:jq: p_trashes=$(printf '%s' \"$p_answer\" | jq -r '.[].trash')": "message: the trash folders named in a fail",
+  "work_purge:tr: p_left() { fail \"$1; nothing deleted, the trash stays: $(printf '%s' \"$p_trashes\" | tr '\\n' ' ')\"; }": "message: as before it",
+  "work_purge:jq: p_was=$(printf '%s' \"$p_list\" | jq -r --arg id \"$p_id\" '[.[] | select(.id == $id and .state._tag == \"Active\") | .path] | if length == 1 then .[0] else \"\" end')": "closed: an id that does not read is none of those asked for: p_left fails",
+  "work_purge:grep: if [ -z \"$p_was\" ] || ! printf '%s\\n' \"$p_doomed\" | grep -qxF \"$p_was\"; then": "closed: grep that fails is not among those asked for: p_left fails",
+  "work_purge:work: if ! p_gc=$(work_in \"$p_base\" --json gc -id \"$p_id\"); then": "closed: work gc that fails leaves the trash, named, and the purge fails",
+  "work_purge:jq: elif [ \"$(printf '%s' \"$p_gc\" | jq -c '.purged' 2>/dev/null)\" != \"$(jq -cn --arg n \"$p_name\" '[$n]')\" ]; then": "closed: an answer that does not read differs from the name: the trash is said and the purge fails",
+  "work_purge:jq: elif [ \"$(printf '%s' \"$p_gc\" | jq -c '.purged' 2>/dev/null)\" != \"$(jq -cn --arg n \"$p_name\" '[$n]')\" ]; then #2": "closed: as before it",
+  "work_purge:jq: printf '%s' \"$p_after\" | jq -e --arg id \"$p_id\" 'any(.[]; .id == $id)' >/dev/null || p_rc=$?": "closed: jq -e's status read: 0 listed, 1 gone, any other unproven and the purge fails (r4: any failure read as gone)",
+  "work_purge:jq: printf 'workrift: work rm answered that nothing went to the trash, but work --json list still lists id %s (%s)\\n' \"$p_id\" \"$(printf '%s' \"$p_after\" | jq -c --ar": "message: the record quoted",
+  "sv_kind:stat: if ! k_fs=$(stat -f -c %T \"$1\" 2>/dev/null); then": "closed: prints `?` and fails: sv_kind_of stops with the three facts; no `?` is taken for a kind",
+  "sv_kind:stat: elif ! k_ino=$(stat -c %i \"$1\" 2>/dev/null); then": "closed: as before it",
+  "sv_identity:btrfs: S) i_id=$(btrfs inspect-internal rootid \"$1\" 2>/dev/null) && [ -n \"$i_id\" ] || return 1": "returned: `&& [ -n ] || return 1`: every caller stops or refuses (no identity is recorded or compared as `?`)",
+  "sv_identity:stat: F) i_id=$(stat -c %i \"$1\" 2>/dev/null) && [ -n \"$i_id\" ] || return 1": "returned: as before it",
+  "sv_step:mkdir: { mkdir -p \"$sv_state\" && printf '%s %s: %s\\n' \"$(date -u +%FT%TZ)\" \"$1\" \"$2\" >>\"$sv_state/log\"; } 2>/dev/null ||": "message: the step log is a record for a person; its write failing is said, and the switch goes on (the phase record, which decides, is sv_phase_write, checked)",
+  "sv_step:date: { mkdir -p \"$sv_state\" && printf '%s %s: %s\\n' \"$(date -u +%FT%TZ)\" \"$1\" \"$2\" >>\"$sv_state/log\"; } 2>/dev/null ||": "message: the log line's time",
+  "sv_step:sh: *\" $1 \"*) sh -c \"$WORKRIFT_SUBVOLUME_HOOK\" sv-hook \"$1\" </dev/null >&2 3>&- 6>&- 7>&- 8>&- 9>&- || true ;;": "unreachable: the test hook (WORKRIFT_SUBVOLUME_HOOK), set by tests only",
+  "sv_users:cat: printf 'use %s %s\\n' \"$u_pid\" \"$(cat \"$proc_root/$u_pid/comm\" 2>/dev/null || printf '?')\"": "message: the command name of a process found in the tree (`?` when it does not read); the process is counted either way",
+  "sv_removals:tr: if ! r_args=$(tr '\\0' '\\n' <\"$r_c\" 2>/dev/null); then": "closed: a process still there whose command line does not read is a removal of this base (refused)",
+  "sv_removals:awk: if ! r_what=$(printf '%s\\n' \"$r_args\" | awk -v home=\"$r_home\" -v base=\"$sv_base\" '": "closed: as before it",
+  "sv_removals:readlink: if ! r_cwd=$(readlink \"$proc_root/$r_pid/cwd\" 2>/dev/null); then": "closed: a process still there whose working folder does not read is a removal of this base (refused)",
+  "sv_removals:tr: if ! r_env=$(tr '\\0' '\\n' <\"$proc_root/$r_pid/environ\" 2>/dev/null); then": "closed: a removal whose environment does not read counts as one of this base (refused)",
+  "sv_removals:sed: if ! r_rec=$(sed -n '1p;4p' \"$r_t\"); then": "closed: a clone ticket that does not read is a removal of this base (refused)",
+  "sv_runs_tickets:sed: [ \"$(sed -n 3p \"$t_fd\" 2>/dev/null)\" = '# Branch workspaces on top of Rift.' ] || continue": "closed: a script that does not read is not one that takes tickets: the process counts as an older workrift (refused)",
+  "sv_runs_tickets:grep: ! grep -q '^queue_enter() {' \"$t_fd\" 2>/dev/null || return 0": "closed: as before it",
+  "sv_runs_tickets:lsof: t_paths=$(lsof -a -p \"$1\" -Fn 2>/dev/null | sed -n 's/^n//p')": "closed: no open files read: not one that takes tickets, an older workrift (refused)",
+  "sv_runs_tickets:sed: t_paths=$(lsof -a -p \"$1\" -Fn 2>/dev/null | sed -n 's/^n//p')": "closed: as its lsof",
+  "sv_runs_tickets:sed: [ -f \"$t_path\" ] && [ \"$(sed -n 3p \"$t_path\" 2>/dev/null)\" = '# Branch workspaces on top of Rift.' ] &&": "closed: as on Linux",
+  "sv_runs_tickets:grep: grep -q '^queue_enter() {' \"$t_path\" 2>/dev/null && printf 'yes\\n'": "closed: as on Linux",
+  "sv_runs_tickets:grep: done | grep -q yes": "closed: as on Linux",
+  "sv_old_workrifts:tr: if ! o_args=$(tr '\\0' '\\n' <\"$o_c\" 2>/dev/null); then": "closed: a process still there whose command line does not read is an older workrift (refused)",
+  "sv_old_workrifts:awk: if ! o_what=$(printf '%s\\n' \"$o_args\" | awk '": "closed: as before it",
+  "sv_git_locks:git: if ! g_dir=$(base_git \"$1\" rev-parse --absolute-git-dir 2>/dev/null); then": "closed: prints `unknown`: the lock check says NO",
+  "sv_git_locks:find: if ! g_list=$(find \"$g_dir\" -maxdepth 1 \\( -name gc.pid -o -name '*.lock' \\) ! -name workrift.lock 2>/dev/null); then": "closed: as before it",
+  "sv_git_locks:find: if ! g_list=$(find \"$g_dir/refs\" -name '*.lock' 2>/dev/null); then": "closed: as before it",
+  "sv_fs_dir:findmnt: f_uuid=$(findmnt -n -o UUID --target \"$sv_base\" 2>/dev/null) || f_uuid=": "closed: no UUID is no state folder: the metadata check says the sizes do not read (NO)",
+  "sv_preflight:findmnt: if ! sv_read p_opts findmnt -n -o OPTIONS --target \"$sv_base\"; then": "closed: sv_read's status: options that do not read are a NO",
+  "sv_preflight:cat: { sv_read p_total cat \"$p_fs/allocation/metadata/total_bytes\" && sv_read p_used cat \"$p_fs/allocation/metadata/bytes_used\"; } 2>/dev/null || true": "closed: sv_read's status: sizes that do not read stay empty, a NO (r4: they were 0, a slack read wrong)",
+  "sv_preflight:cat: { sv_read p_total cat \"$p_fs/allocation/metadata/total_bytes\" && sv_read p_used cat \"$p_fs/allocation/metadata/bytes_used\"; } 2>/dev/null || true #2": "closed: as the first: the group's `|| true` leaves the sizes empty, a NO",
+  "tickets_at_exit:rm: [ -z \"$t_mine\" ] || rm -f \"$t_mine\" \"$t_mine.in\"": "cleanup: in the exit trap, the script ends either way; a ticket it cannot remove is dead (its lock goes with the process) and swept",
+  "sv_preflight:df: sv_read p_df df -Pk \"$sv_base\" 2>/dev/null || p_df=": "closed: sv_read's status: a df that does not read is a NO",
+  "(top):python3: if python3 -c 'import ctypes' >/dev/null 2>&1; then": "closed: no python3 with ctypes is a NO: nothing can make the exchange",
+  "sv_users:find: u_found=$(LC_ALL=C find \"$proc_root\" -ignore_readdir_race -mindepth 1 -maxdepth 3 \\": "closed: its status is the capture's rc line: non-zero with no refusal of one process's fd or working folder fails the walk (sv_users returns 1); each such refusal names that process unknown, never none",
+  "sv_users_known:sudo: if sudo -n true 2>/dev/null; then": "branch: no sudo -n (or a sudo that fails) is the side that refuses: unknown processes stay unknown, refused unless --beside-unreadable, never taken for none",
+  "sv_users_known:sudo: if ! k_found=$(sudo -n find \"$proc_root/$k_pid/fd\" \"$proc_root/$k_pid/cwd\" -ignore_readdir_race -maxdepth 1 \\( -lname \"$1\" -o -lname \"$1/*\" \\) -print 2>/dev/nul": "closed: a privileged read that fails for a process still there fails the walk (sv_why: the read of process <pid> failed); one gone meanwhile holds nothing",
+  "sv_users_known:cat: [ -z \"$k_found\" ] || k_users=\"$k_users$k_pid $(cat \"$proc_root/$k_pid/comm\" 2>/dev/null || printf '?') (uid $(sv_uid_of \"$k_pid\"), read with sudo)": "message: the command name of a process the privileged read found in the tree (`?` when it does not read); it is counted either way",
+  "sv_log:date: l_at=$(date -u +%FT%TZ) || l_at='(no clock)'": "message: the time of a step-log line, `(no clock)` when date fails; the log decides nothing",
+  "sv_ref_store:git: if s_format=$(base_git \"$1\" config --get extensions.refStorage); then": "closed: status 1 (unset) is the files storage; any other failure, or a storage other than files, fails the store's read: sv_refs fails, nothing carried or the copy is not true",
+  "sv_refs:git: r_list=$(base_git \"$1\" for-each-ref --format='%(objectname) %(refname)' 2>&3) || r_rc=$?": "closed: its status and its stderr, from the capture: a non-zero status or any word on stderr fails sv_refs, never a short list",
+  "sv_refs:sort: }\" | LC_ALL=C sort": "returned: the function's status (last of its pipe); its callers check it",
+  "sv_digest:git: base_git \"$1\" symbolic-ref -q HEAD || base_git \"$1\" rev-parse HEAD || return 1": "branch: no symbolic HEAD tries rev-parse HEAD, and that failing fails",
+  "sv_store:sort: sv_lines \"$s_list\" | LC_ALL=C sort": "returned: the function's status (last of its pipe)",
+  "sv_tips_missing:git: if ! t_refs=$(base_git \"$1\" for-each-ref --format='%(objectname) %(refname)' 2>\"$sv_state/tips.err\"); then": "closed: prints the failure: a non-empty answer, the copy is not true",
+  "sv_tips_missing:awk: elif ! t_names=$(sv_lines \"$t_refs\" | awk '{ print $1; if ($2 ~ /^refs\\/(heads|remotes)\\//) print $1 \"^{tree}\" }'); then": "closed: as before it",
+  "sv_tips_missing:git: elif ! t_check=$(sv_lines \"$t_names\" | base_git \"$1\" cat-file --batch-check 2>/dev/null); then": "closed: as before it",
+  "sv_tips_missing:grep: if t_missing=$(sv_lines \"$t_check\" | grep ' missing$'); then": "closed: grep's status read: 1 none missing, any other the failure printed (the copy is not true)",
+  "sv_tips_missing:cat: if t_err=$(cat \"$sv_state/tips.err\" 2>/dev/null); then": "closed: errors that do not read are said: the copy is not true",
+  "sv_tips_missing:rm: rm -f \"$sv_state/tips.err\" || true": "cleanup: tips.err is written again before it is read",
+  "sv_copy_true:cat: t_store=$(cat \"$sv_state/store\") &&": "returned: the && chain: a read that fails is a copy not true (copy again, then roll back)",
+  "sv_copy_true:cat: t_a=$(sv_refs \"$sv_base\") && t_b=$(cat \"$sv_state/refs\") && [ \"$t_a\" = \"$t_b\" ] &&": "returned: as before it",
+  "sv_carry:rm: rm -f \"$c_tmp.from\" \"$c_tmp.to\"": "cleanup: the scratch files of a ref read that failed; the carry returns 1 (nothing carried) and nothing reads them after",
+  "sv_carry:git: if c_head=$(base_git \"$c_to\" symbolic-ref -q HEAD); then :; elif [ $? -eq 1 ]; then c_head=; else": "branch: symbolic-ref's status read: 0 HEAD names a branch, 1 detached, any other sv_why and return 1",
+  "sv_carry:git: if c_head_from=$(base_git \"$c_from\" symbolic-ref -q HEAD); then :; elif [ $? -eq 1 ]; then c_head_from=; else": "branch: as before it",
+  "sv_carry:awk: if ! awk 'FILENAME == ARGV[1] { s[$2] = $1; all[$2] = 1; next }": "returned: `if ! awk … || ! sort`: sv_why, return 1 (nothing carried, the switch said unfinished)",
+  "sv_carry:sort: ! LC_ALL=C sort \"$c_tmp.changed\" >\"$c_tmp.diff\"; then": "returned: as its awk",
+  "sv_carry:rm: rm -f \"$c_tmp.from\" \"$c_tmp.to\" \"$c_tmp.changed\" \"$c_tmp.diff\"": "cleanup: the scratch files of a carry that failed",
+  "sv_carry:git: base_git \"$c_to\" fetch -q --no-tags --no-write-fetch-head \"$c_from\" \"$c_ref\" </dev/null >&2 || true": "closed: a fetch that fails is checked by the rev-parse after it: an object missing is not carried (sv_missed, said)",
+  "sv_carry:git: base_git \"$c_to\" rev-parse -q --verify \"$c_now^{object}\" >/dev/null 2>&1 || c_rc=$?": "branch: rev-parse -q --verify's status read: 1 missing (not carried), any other c_failed, rerun",
+  "sv_carry:git: if base_git \"$c_to\" update-ref \"$@\" </dev/null; then": "branch: update-ref that fails keeps the ref under refs/subvolume-move/, said",
+  "sv_carry:git: if base_git \"$c_to\" update-ref \"refs/subvolume-move/${c_ref#refs/}\" \"$c_now\" </dev/null; then": "closed: that failing too is counted and said (not carried)",
+  "sv_carry:rm: rm -f \"$c_tmp.from\" \"$c_tmp.to\" \"$c_tmp.changed\" \"$c_tmp.diff\" #2": "cleanup: the scratch files after the carry",
+  "sv_wait_users:sleep: sleep 1 || true": "closed: a sleep that fails looks again; the clock bounds the wait (checked)",
+  "sv_rm_folder:rm: if rm --version >/dev/null 2>&1; then": "closed: no GNU rm --version takes BSD's -x, which GNU rm refuses: a wrong guess deletes nothing and fails",
+  "sv_rm_folder:rm: back) nice -n 19 rm -rf --one-file-system -- \"$sv_back\" ;;": "returned: the function's status; callers fail on it",
+  "sv_rm_folder:rm: old) nice -n 19 rm -rf --one-file-system -- \"$sv_old\" ;;": "returned: as before it",
+  "sv_rm_folder:rm: back) nice -n 19 rm -rf -x -- \"$sv_back\" ;;": "returned: as before it",
+  "sv_rm_folder:rm: old) nice -n 19 rm -rf -x -- \"$sv_old\" ;;": "returned: as before it",
+  "sv_cp:cp: cp -a --reflink=always \"$1\" \"$2\" 3>&- 6>&- 7>&- 8>&- 9>&- &": "returned: in the background; its status is read by wait in sv_cp, and a copy that failed fails",
+  "sv_cp:rm: rm -f \"$sv_state/copier\" || true": "cleanup: the copier record; a stale one is read with the copier's identity, which no longer matches",
+  "sv_wait_copier:sleep: sleep 1 || true": "closed: a sleep that fails looks again; the clock bounds the wait",
+  "sv_copy_in:git: base_git \"$i_path\" update-index -q --refresh >/dev/null 2>&1 || true": "closed: an index not refreshed differs in status: sv_copy_true says the copy is not true",
+  "sv_smoke_rm:sleep: sleep 1 || true": "closed: a sleep that fails looks again; the wait is bounded",
+  "sv_prove:work: if ! v_list=$(work_in \"$sv_base\" --json list 2>/dev/null) || ! sv_smoke_record \"$v_list\"; then": "returned: sv_why, the smoke workspace unproven: the switch said unproved with the --back command",
+  "sv_lacks:awk: if l_out=$({ printf '=K\\n'; sv_lines \"$l_x\"; printf '=B\\n'; sv_lines \"$l_y\"; } | awk '": "closed: `if l_out=$(…)`: else the lack is said as unknown (the report)",
+  "sv_lacks:awk: if l_out=$({ printf '=K\\n'; sv_lines \"$l_x\"; printf '=B\\n'; sv_lines \"$l_y\"; } | awk ' #2": "closed: as before it",
+  "sv_lacks:awk: if l_out=$({ printf '=K\\n'; sv_lines \"$l_x\"; printf '=B\\n'; sv_lines \"$l_y\"; } | awk ' #3": "closed: as before it",
+  "sv_lacks:awk: if l_out=$({ printf '=K\\n'; sv_lines \"$l_x\"; printf '=B\\n'; sv_lines \"$l_y\"; } | awk ' #4": "closed: as before it",
+  "sv_head:git: if h_v=$(base_git \"$2\" symbolic-ref -q HEAD 2>/dev/null); then": "branch: symbolic-ref's status read: 1 tries rev-parse, any other return 1",
+  "sv_git_files:find: find . -type f ! -path './objects/*' ! -path './refs/*' ! -path './logs/*' ! -name packed-refs \\": "returned: the function's status (the subshell's last command)",
+  "sv_reflogs:find: find . -type f -exec awk '{ f = FILENAME; sub(/^\\.\\//, \"\", f); print f \"\\t\" $0 }' {} + 2>/dev/null": "returned: as before it",
+  "sv_finish:work: work_in \"$sv_base\" refresh >/dev/null 3>&- 6>&- 7>&- 8>&- 9>&- || sv_refreshed=false": "message: work refresh that fails is said with the command to run (cd <base> && work refresh); the proof after it decides",
+  "sv_baseline:sort: sv_lines \"$b_all\" | LC_ALL=C sort -k2": "returned: the function's status (last of its pipe)",
+  "sv_baseline_write:mv: mv -f \"$sv_state/refs-at-switch.$$\" \"$sv_state/refs-at-switch\" && return 0": "returned: the && return 0 is skipped: sv_why, return 1",
+  "sv_baseline_write:rm: rm -f \"$sv_state/refs-at-switch.$$\"": "cleanup: the scratch record of a write that failed",
+  "sv_refs_write:mv: mv -f \"$sv_state/refs.$$\" \"$sv_state/refs\" && return 0": "returned: as sv_baseline_write's",
+  "sv_refs_write:rm: rm -f \"$sv_state/refs.$$\"": "cleanup: as sv_baseline_write's",
+  "sv_said:date: if r_now=$(date +%s); then r_now=\"$((r_now - sv_held_at)) s\"; else r_now='? s (the clock does not read)'; fi": "message: the hold's seconds, `?` when the clock does not read",
+  "sv_drop:date: d_now=$(date +%s) || d_now=$create_started": "message: the drop's seconds",
 }
 
 /** The key of each site in VERDICTS: `<function>:<command>#<k>`, the k-th call of that command in that function. */
 const verdictKeys = (sites: ReadonlyArray<Site>) => {
   const seen = new Map<string, number>()
   return sites.map((s) => {
-    const k = `${s.fn}:${s.command}`
+    // By the call's own text: a call inserted before another moves no verdict; one whose line changes loses its
+    // verdict, and the table test names it.
+    const k = `${s.fn}:${s.command}: ${s.text}`
     const n = (seen.get(k) ?? 0) + 1
     seen.set(k, n)
-    return `${k}#${n}`
+    return n === 1 ? k : `${k} #${n}`
   })
 }
 
@@ -2675,10 +2722,10 @@ const instrumented = (dir: string, sites: ReadonlyArray<Site>) => {
 }
 
 /** The shims of the census in <bench>/shim: each logs its call with its site and, at the target, fails it or kills workrift. */
-const censusShims = (b: Bench) => {
+const censusShims = (b: Bench, sites: ReadonlyArray<Site>) => {
   const dir = join(b.dir, "shim")
   mkdirSync(dir, { recursive: true })
-  for (const name of CENSUS_COMMANDS) {
+  for (const name of new Set(sites.map((site) => site.command))) {
     const real = Bun.which(name, { PATH: `${b.bin}:${process.env.PATH ?? ""}` })
     if (!real) continue
     const code = name === "git" ? 128 : name === "grep" ? 2 : 1
@@ -2714,6 +2761,15 @@ const censusShims = (b: Bench) => {
 const hasFacts = (err: string) => /^workrift: /m.test(err) && /^workrift subvolume: state: /m.test(err) && /^workrift subvolume: next: /m.test(err)
 
 describe("workrift subvolume: the call sites of the census", () => {
+  test("every word in a command's place that the switch reaches is the shell's own or a command found: a name nothing runs fails the table", () => {
+    const src = readFileSync(SCRIPT, "utf8")
+    expect(callSites(src).unknown).toEqual([])
+    // A call planted in a reached function: a command no list names is a site; a name nothing runs is refused.
+    const planted = (word: string) => callSites(src.replace("\nsv_refs() {\n", `\nsv_refs() {\n  ${word} -q || return 1\n`))
+    expect(planted("hostname").map((site) => site.command)).toContain("hostname")
+    expect(planted("nosuchcommand-r5").unknown).toEqual([expect.stringMatching(/^nosuchcommand-r5 \(sv_refs, line \d+\)$/)])
+  })
+
   test("every call site has its verdict: what a failure there becomes, and every verdict names a site", () => {
     const sites = callSites(readFileSync(SCRIPT, "utf8"))
     const keys = verdictKeys(sites)
@@ -2730,7 +2786,7 @@ describe("workrift subvolume: the call sites of the census", () => {
     expect(new Set(sites.map((s) => s.id)).size).toBe(sites.length)
     const b = bench("sites")
     const script = instrumented(b.dir, sites)
-    const shims = censusShims(b)
+    const shims = censusShims(b, sites)
     const log = join(b.dir, "census.calls")
     for (const argv of [["subvolume", "--apply"], ["subvolume", "--back", "--apply"], ["subvolume", "--drop-old", "--apply"]]) {
       const ran = Bun.spawnSync([script, ...argv], { cwd: b.dir, env: b.envFor({ PATH: `${shims}:${b.env.PATH}`, WORK: join(shims, "work"), CENSUS_LOG: log }), stdout: "pipe", stderr: "pipe" })
@@ -2831,7 +2887,7 @@ describe.skipIf(!process.env.WORKRIFT_CENSUS)("census: a failure or a kill at ev
     /** One command: plain, or instrumented with the site `at` failed or killed (none: only logged). */
     const run = async (b: Bench, argv: ReadonlyArray<string>, census?: { readonly log: string; readonly at?: { readonly site: Site; readonly call: Call } }, extra: Env = {}) => {
       const pidfile = join(b.dir, "census.pid")
-      const shims = census ? censusShims(b) : ""
+      const shims = census ? censusShims(b, sites) : ""
       const script = census ? instrumented(b.dir, sites) : SCRIPT
       const runEnv = b.envFor({
         ...planEnv,
