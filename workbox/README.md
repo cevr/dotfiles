@@ -377,6 +377,11 @@ checked-out branch is never moved by the carry. When a ref changed on both
 sides, the command keeps the other value under `refs/subvolume-move/` and
 says so; a ref written into one tree after the carry is carried into the
 other on the next switch only where that tree has none, and never deleted.
+The carry reads each tree's refs strictly. Git skips a ref it cannot resolve
+and still exits 0: a broken ref with a warning, a symbolic ref to nothing with
+no message. So any message from Git fails the read, and so does a ref name in
+the tree's own store (the files under `.git/refs` and `packed-refs`) that the
+listing lacks. The carry then names that ref and moves nothing.
 
 A run without `--apply` writes nothing, not even the state folder.
 
