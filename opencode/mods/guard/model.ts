@@ -21,15 +21,15 @@
 // pattern while it cannot list the processes, refuses the call with why. The
 // sleep rule fails open: a session the host cannot place as a subagent or a
 // root runs its sleep, since a sleep loses nothing.
-import { Context, Effect, Layer, Match, Option, Predicate } from "effect"
-import { type BareLaunch, bareLaunches, KeychainPrompt, keychainReason, runtimeRuns, scriptLaunch } from "./chrome.ts"
+import { Context, Effect, Layer, Option, Predicate } from "effect"
+import { keychainLaunch, KeychainPrompt, keychainReason, type TreeRoot } from "./chrome.ts"
 import { parseShell } from "./command-line.ts"
 import { DEFAULT_HEAVY, heavyCommand } from "./heavy.ts"
 import { killsByPattern, killVerdict } from "./kill.ts"
 import { admissionLauncher, launcherName, launcherScript, type Limits } from "./launcher.ts"
 import { resolve } from "./path.ts"
 import { expandWord } from "./shell-line.ts"
-import { type Checkout, type CheckoutUnknown, Checkouts, type LauncherUnavailable, Launchers, Processes, RepoRoots, Reservations, Scopes, ScriptFiles, SessionDirectories, Subagents, type WarmSource } from "./service.ts"
+import { type Checkout, type CheckoutUnknown, Checkouts, type LauncherUnavailable, Launchers, Processes, type RepoRootUnknown, RepoRoots, Reservations, Scopes, ScriptFiles, SessionDirectories, Subagents, type WarmSource } from "./service.ts"
 import { Idle, idleReason, sleepsTooLong } from "./sleep.ts"
 import { Destructive, repoCandidates, verdict } from "./verdict.ts"
 import { workGcReason, workGcs } from "./work-gc.ts"
@@ -141,13 +141,8 @@ export const layer = (config: Config) =>
         const kill = killVerdict(call.command, running, config.server)
         if (kill._tag === "Deny") return yield* refuse(kill.reason)
         // A Chrome the line starts is read from the line; a script's text only for a line that runs one.
-        const keychain = (launch: BareLaunch) => new KeychainPrompt({ command: call.command, reason: keychainReason(launch) })
-        for (const launch of bareLaunches(call.command, place)) return yield* keychain(launch)
-        for (const run of runtimeRuns(call.command, place)) {
-          const text = yield* Match.valueTags(run.ran, { Inline: ({ code }) => Effect.succeed(Option.some(code)), ScriptFile: ({ path }) => scripts.text(path) })
-          const launch = Option.flatMap(text, (code) => scriptLaunch(run, code))
-          if (Option.isSome(launch)) return yield* keychain(launch.value)
-        }
+        const launch = yield* keychainLaunch(call.command, place, scripts.text, checkoutRoot(roots.isRoot))
+        if (Option.isSome(launch)) return yield* new KeychainPrompt({ command: call.command, reason: keychainReason(launch.value) })
 
         const sleep = call.background === true ? undefined : sleepsTooLong(call.command)
         if (sleep === undefined) return
@@ -166,6 +161,19 @@ export interface PolicyConfig {
   readonly limits: Limits
   readonly admission?: ReadonlyArray<string>
 }
+
+/** Nearest real checkout, including a nested worktree, without running Git or checking anything out. */
+const checkoutRoot = (isRoot: (directory: string) => Effect.Effect<boolean, RepoRootUnknown>): TreeRoot =>
+  Effect.fn("Guard.checkoutRoot")(function* (directory) {
+    let at = directory
+    while (true) {
+      const known = yield* isRoot(at).pipe(Effect.option)
+      if (Option.isNone(known)) return Option.none()
+      if (known.value) return Option.some(at)
+      if (at === "/") return Option.none()
+      at = resolve(at, "..")
+    }
+  })
 
 export class ShellPolicy extends Context.Service<
   ShellPolicy,
