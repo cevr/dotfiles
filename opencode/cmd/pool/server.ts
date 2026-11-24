@@ -131,7 +131,7 @@
  */
 import { hostname } from "node:os"
 import { Agent, Integration, Plugin, Tool } from "@opencode/plugin/effect"
-import { Cause, Clock, Context, Deferred, Effect, Exit, FiberMap, Layer, Option, Schedule, Schema, Stream } from "effect"
+import { Cause, Clock, Context, Deferred, Effect, Exit, Fiber, FiberMap, Layer, Option, Schedule, Schema, Stream } from "effect"
 import { heldMessage, PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { type HoldReason, nextRetryAt, RequestHeld, requestHeldMessage, storeHeld } from "@dotfiles/opencode-pool/pace"
 import { deferRoute, HeldSend, refuseSend, type SendHold, sendHoldMessage, stepIDOf } from "@dotfiles/opencode-pool/refuse"
@@ -445,6 +445,7 @@ export const make = (
     chatgpt: ReadonlyMap<PoolId, ChatGPT.Source>,
   ) => Layer.Layer<Externals>,
   storeHost: StoreHost = LIVE_STORE_HOST,
+  sendRecords = LedgerLive.holdAuthority().lock,
 ) =>
   Plugin.define({
     id: "dotfiles-opencode.pool",
@@ -476,7 +477,7 @@ export const make = (
         Deferred.await(ready).pipe(Effect.flatMap(use))
       const storeOp = <A>(operation: Effect.Effect<A>) =>
         operation.pipe(Effect.timeoutOption(HOLD_STORE_RETRY_MS), Effect.catchDefect(() => Effect.succeed(Option.none())))
-      const sendRecords = LedgerLive.processHoldAuthority().lock
+      const activation = yield* Effect.scope
       const expiries = yield* FiberMap.make<string>()
       const heldSend = (sessionID: string) => sendRecords.withPermits(1)(Effect.gen(function* () {
         const key = sendHoldKey(sessionID)
@@ -489,8 +490,14 @@ export const make = (
         yield* storeOp(ctx.storage.remove(key))
         return {}
       }))
-      const expire = (hold: HeldSend, now: number, recovered = false) => FiberMap.run(expiries, hold.sessionID,
-        heldSend(hold.sessionID).pipe(Effect.delay(Math.max(0, hold.retryAt - now))), { onlyIfMissing: recovered })
+      // A hook already running at reload still gives its old refusal.
+      // Forking into a closed activation cancels the timer, not that hook.
+      const expire = (hold: HeldSend, now: number, recovered = false) =>
+        heldSend(hold.sessionID).pipe(
+          Effect.delay(Math.max(0, hold.retryAt - now)),
+          Effect.forkIn(activation),
+          Effect.flatMap((fiber) => FiberMap.set(expiries, hold.sessionID, fiber, { onlyIfMissing: recovered })),
+        )
       // Re-arm persisted deadlines after a restart. Each timer re-reads the
       // exact key, so expiry of one refusal cannot delete a later replacement.
       yield* Effect.forkScoped(Effect.gen(function* () {
@@ -526,12 +533,13 @@ export const make = (
         }))
       const forgetHeld = (scope: SendScope) => {
         if (scope.kind !== "primary") return Effect.void
-        return sendRecords.withPermits(1)(storeOp(ctx.storage.remove(sendHoldKey(scope.sessionID))).pipe(
-          Effect.tap((removed) => {
-            if (Option.isNone(removed)) return Effect.void
-            return FiberMap.remove(expiries, scope.sessionID)
-          }),
-        )).pipe(Effect.asVoid)
+        // Capture this row's timer under the permit. Interrupt only after
+        // releasing it: the timer may already be waiting to read this row.
+        return sendRecords.withPermits(1)(Effect.gen(function* () {
+          const removed = yield* storeOp(ctx.storage.remove(sendHoldKey(scope.sessionID)))
+          if (Option.isNone(removed)) return Option.none()
+          return yield* FiberMap.get(expiries, scope.sessionID)
+        })).pipe(Effect.flatMap(Option.match({ onNone: () => Effect.void, onSome: Fiber.interrupt })))
       }
       yield* Effect.forkScoped(
         Effect.gen(function* () {
@@ -929,4 +937,4 @@ const sessionOf = (input: unknown) =>
     ? input.sessionID
     : undefined
 
-export default make(live)
+export default make(live, LIVE_STORE_HOST, LedgerLive.processHoldAuthority().lock)
