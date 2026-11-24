@@ -65,7 +65,7 @@ describe("the catalog", () => {
     const docs = docsOf("subagent", "Start a subagent.")
     expect(docs).toContain("Start a subagent.\n\nIn a cell, `tools.subagent({ agent,")
     expect(docs).toContain("`.stop()`")
-    expect(docs).toContain("rebuild it with `tools.subagent.handle(h.sessionID)`")
+    expect(docs).toContain("`await tools.subagent.handle(sessionID)` rebuilds a handle after restart")
   })
 
   test("reads unions, arrays, constants and nullable types; deep objects stay `object`", () => {
