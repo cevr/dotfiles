@@ -358,7 +358,8 @@ describe("the base's lock as a ticket queue (a model on a manual clock)", () => 
 const alternate = process.env.WORKRIFT_SCRIPT
 const TURN_SCRIPT = readSelectedFileSync(alternate ? externalInput(alternate) : matchingInput("../workbox/bin/workrift"), "utf8")
 const turnScratch = realpathSync(mkdtempSync(join(tmpdir(), "workrift-turn-")))
-afterAll(() => rmSync(turnScratch, { recursive: true, force: true }))
+// Hang guard: the file's last hook deletes every bench of the run (a few dozen Git trees and workspaces).
+afterAll(() => rmSync(turnScratch, { recursive: true, force: true }), hangGuard("process-tree"))
 let turnBenches = 0
 
 type Env = Record<string, string>
