@@ -193,7 +193,7 @@ noncurrent snapshot objects after 14 days.
   when `work --json list` (or `work --json bases`) fails, is missing, or
   answers anything but a list of records each with a name, id, path, state
   and since, remove refuses, quotes what came back, and deletes nothing.
-- `workrift subvolume [--back | --drop-old [--lose N]] [--apply]` switches the warm source
+- `workrift subvolume [--back | --drop-old [--lose N:DIGEST]] [--apply]` switches the warm source
   between a plain folder and a btrfs subvolume (see "A base that is a
   subvolume" below). Without `--apply` it changes nothing: it prints its
   preflight and every step with absolute paths.
@@ -395,17 +395,32 @@ A run without `--apply` writes nothing, not even the state folder.
 The tree the base was stays at `<name>.old` until
 `workrift subvolume --drop-old --apply`, which deletes only the tree that the
 last switch recorded there (a subvolume's id or a folder's inode). Nothing
-goes to a trash. Nothing is deleted that an earlier run did not list. When
-the kept tree holds anything the base lacks, the drop takes two runs. The
-dry run, `workrift subvolume --drop-old`, lists those items and prints the
-command that deletes the tree, `--drop-old --apply --lose N`, where N is
-their count. That command refuses when the count is different by then. Every
-refusal of a drop prints the list, and its next command is that dry run.
-When the base holds all of the kept tree, `--drop-old --apply` deletes it in
-one run. When part of the list does not read, no run deletes the tree. A
-drop that was cut short was acknowledged when it began, so the next run
-finishes it. `--back` switches to the kept tree in the same way. With no
-kept tree, `--back` copies into a new folder.
+goes to a trash. Nothing is deleted that an earlier run did not list, by
+content. When the kept tree holds anything the base lacks, the drop takes two
+runs. The dry run, `workrift subvolume --drop-old`, lists those items and
+prints the command that deletes the tree, `--drop-old --apply --lose
+N:DIGEST`. N is their count, and DIGEST is the start of the sha256 of the
+listed lines. Each line names content: a ref with its commit, a Git file with
+its checksum, each reflog entry, and each worktree or index line with the
+object id of the file it holds. So a ref moved to another commit, a ref
+swapped for another, or a file edited again gives another token, even with
+as many items. The command refuses when the token is not that of the list by
+then. Every refusal of a drop prints the list, and its next command is that
+dry run. When the base holds all of the kept tree, `--drop-old --apply`
+deletes it in one run. When part of the list does not read, no run of
+workrift deletes the tree: the dry run prints the command that deletes it by
+hand.
+
+The deleting run takes the base's move ticket, renames `<name>.old` to
+`<name>.dropping`, walks the processes in it again, lists again what the
+base lacks of it and compares the token. Any difference renames it back,
+prints the lines that were added and removed, and deletes nothing. Only the
+tree set aside is deleted, never the path `<name>.old`. One window is left:
+a process that enters `<name>.dropping` by that path between the walk and
+the delete. Nothing of workrift's uses that path. A drop that was cut short
+lists the tree again where it stands, at `.old` or `.dropping`, and its
+rerun needs the token of the present list. `--back` switches to the kept
+tree in the same way. With no kept tree, `--back` copies into a new folder.
 
 `init`, `create`, `refresh` and `deps` run themselves at nice 10, and in the
 idle I/O class (`ionice -c3`) where `ionice` is, so their clones, fetches,

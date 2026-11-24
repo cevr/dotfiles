@@ -430,11 +430,14 @@ const bench = (label: string) => {
 type Bench = ReturnType<typeof bench>
 
 /** The command that deletes the kept tree, as a dry run of --drop-old printed it. */
-const printedDrop = (out: string) => out.match(/cd \/ && WORKRIFT_SOURCE=\S+ workrift subvolume --drop-old --apply(?: --[a-z-]+(?: \d+)?)*/)?.[0]
+const printedDrop = (out: string) => out.match(/cd \/ && WORKRIFT_SOURCE=\S+ workrift subvolume --drop-old --apply(?: --[a-z-]+(?: \d+(?::[0-9a-f]+)?)?)*/)?.[0]
 
-/** The drop its dry run printed: with --lose N when the kept tree holds N items the base lacks, else one step. */
+/** The token of the list a dry run of the drop printed (--lose N:DIGEST; N:\d+ from an older script). */
+const LOSE = /--drop-old --apply --lose (\d+(?::[0-9a-f]{16})?)/
+
+/** The drop its dry run printed: with --lose N:DIGEST when the kept tree holds N items the base lacks, else one step. */
 const dropArgv = (dry: Ran): ReadonlyArray<string> => {
-  const lose = /--drop-old --apply --lose (\d+)/.exec(dry.out)?.[1]
+  const lose = LOSE.exec(dry.out)?.[1]
   return ["subvolume", "--drop-old", "--apply", ...(lose === undefined ? [] : ["--lose", lose])]
 }
 
@@ -1232,7 +1235,7 @@ describe("workrift subvolume: failure and kill at every step", () => {
 })
 
 /** Every step name of the command (sv_step), for a hook at each. */
-const SEQ_STEPS = ["carry", "carry-in", "carry-wait", "copy", "copy-git", "copy-make", "drop", "drop-copy", "dropped", "prove", "refresh", "rollback", "rolled-back", "smoke", "smoke-rm", "swap", "swapped", "switched", "verify", "work-refresh"]
+const SEQ_STEPS = ["aside", "carry", "carry-in", "carry-wait", "copy", "copy-git", "copy-make", "drop", "drop-check", "drop-copy", "dropped", "prove", "refresh", "rollback", "rolled-back", "smoke", "smoke-rm", "swap", "swapped", "switched", "verify", "work-refresh"]
 
 describe("workrift subvolume --back and --drop-old", () => {
   /** forward, back (exchange), forward (exchange), drop the folder, back (copy into a folder), drop the subvolume. */
@@ -1332,7 +1335,7 @@ describe("workrift subvolume --back and --drop-old", () => {
       perCommand.push(probe.steps())
     }
     expect(perCommand[1]).toEqual(expect.arrayContaining(["carry-in", "swap", "carry", "switched"]))
-    expect(perCommand[3]).toEqual(["drop", "dropped"])
+    expect(perCommand[3]).toEqual(["aside", "drop-check", "drop", "dropped"])
     const cuts = perCommand.flatMap((steps, at) => (at === 0 ? [] : steps.map((step) => ({ at, step }))))
     // SEQ_ONLY=<at>:<step>,... runs only those cuts (a loop that hunts one).
     const only = process.env.SEQ_ONLY?.split(",")
@@ -1349,7 +1352,10 @@ describe("workrift subvolume --back and --drop-old", () => {
     const dry = b.wr(["subvolume", "--drop-old"])
     expect(dry.code, said(dry)).toBe(0)
     expect(dry.out).toContain(`drop ${b.paths.old}, a plain folder (folder ${lstatSync(b.paths.old).ino})`)
-    expect(dry.out).toContain(`rm -rf --one-file-system -- ${b.paths.old}`)
+    // It deletes the tree set aside, never the path a process may still name (N1').
+    const aside = b.paths.old.replace(/\.old$/, ".dropping")
+    expect(dry.out).toContain(`rename ${b.paths.old} ${aside}`)
+    expect(dry.out).toContain(`rm -rf --one-file-system -- ${aside}`)
     expect(dry.out).toContain("dry run: nothing changed")
     expect(existsSync(b.paths.old)).toBe(true)
     // Someone put another folder there: not the tree recorded.
@@ -1557,10 +1563,11 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     const ran = Bun.spawnSync(["/bin/sh", "-c", command], { cwd: b.dir, env, stdout: "pipe", stderr: "pipe" })
     return { code: ran.exitCode, signal: ran.signalCode ?? null, out: ran.stdout.toString(), err: ran.stderr.toString() }
   }
-  /** The count a dry run of the drop printed (--lose N). */
-  const loseOf = (dry: Ran) => Number(/--drop-old --apply --lose (\d+)/.exec(dry.out)?.[1])
+  /** The token a dry run of the drop printed (--lose N:DIGEST), and its count. */
+  const tokenOf = (dry: Ran) => LOSE.exec(dry.out)?.[1] ?? ""
+  const loseOf = (dry: Ran) => Number(tokenOf(dry).split(":")[0])
 
-  test("N1 (probe Y): a drop refused for a process it cannot look into lists what the base lacks, and nothing it did not list goes: the printed next is the dry run, the deleting run names the count, a count that changed refuses", () => {
+  test("N1 (probe Y): a drop refused for a process it cannot look into lists what the base lacks, and nothing it did not list goes: the printed next is the dry run, the deleting run names the list's token, a list that changed refuses", () => {
     const b = bench("unknown-drop-lacks")
     expect(b.wr(["subvolume", "--apply"]).code).toBe(0)
     // A ref only the kept tree holds, and root's process in that tree.
@@ -1581,19 +1588,20 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     expect(kept("refs/heads/rootwork")).toBe("refs/heads/rootwork")
     const n = loseOf(dry)
     expect(n, dry.out).toBeGreaterThan(0)
+    expect(tokenOf(dry)).toMatch(/^\d+:[0-9a-f]{16}$/)
     const deleting = printedDrop(dry.out)
-    expect(deleting).toEndWith(`--drop-old --apply --lose ${n} --beside-unreadable`)
-    // Without the count: refused, nothing deleted; its next is the dry run again.
+    expect(deleting).toEndWith(`--drop-old --apply --lose ${tokenOf(dry)} --beside-unreadable`)
+    // Without the token: refused, nothing deleted; its next is the dry run again.
     const bare = b.wr(["subvolume", "--drop-old", "--apply", "--beside-unreadable"])
     expect(bare.code, said(bare)).toBe(1)
     expect(bare.err).toContain(`holds ${n} item(s) that ${b.base} lacks`)
     expect(printedNext(bare.err)).toEndWith("--drop-old --beside-unreadable")
     expect(kept("refs/heads/rootwork")).toBe("refs/heads/rootwork")
-    // The count changed between the dry run and the deleting run: refused, nothing deleted.
+    // The list changed between the dry run and the deleting run: refused, nothing deleted.
     sh(b.paths.old, b.env, "git", "update-ref", "refs/heads/rootwork2", "refs/heads/feat-a")
     const stale = asPrinted(b, deleting!)
     expect(stale.code, said(stale)).toBe(1)
-    expect(stale.err).toContain(`--lose ${n} names ${n} item(s), but ${b.base} now lacks`)
+    expect(stale.err).toContain(`--lose ${tokenOf(dry)} is not the token of what ${b.base} lacks of ${b.paths.old} now`)
     expect(kept("refs/heads/rootwork")).toBe("refs/heads/rootwork")
     expect(kept("refs/heads/rootwork2")).toBe("refs/heads/rootwork2")
     // Its printed next lists both and prints the count that deletes.
@@ -1608,13 +1616,15 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     whole(b)
   }, BENCH_RUNS_MS)
 
-  test("N1: with nothing the base lacks the drop stays one step; a --lose that names another count refuses; --lose is the drop's alone", () => {
+  test("N1: with nothing the base lacks the drop stays one step; a --lose that names a list refuses; --lose is the drop's alone, and takes a token", () => {
     const b = bench("drop-one-step")
     expect(b.wr(["subvolume", "--apply"]).code).toBe(0)
-    expect(b.wr(["subvolume", "--back", "--apply", "--lose", "1"]).code).toBe(2)
-    const wrong = b.wr(["subvolume", "--drop-old", "--apply", "--lose", "3"])
+    expect(b.wr(["subvolume", "--back", "--apply", "--lose", "1:0123456789abcdef"]).code).toBe(2)
+    for (const bad of ["3", "0", "1:0123", "1:0123456789abcdeg", "x:0123456789abcdef", "1:2:0123456789abcd"])
+      expect(b.wr(["subvolume", "--drop-old", "--apply", "--lose", bad]).code, bad).toBe(2)
+    const wrong = b.wr(["subvolume", "--drop-old", "--apply", "--lose", "3:0123456789abcdef"])
     expect(wrong.code, said(wrong)).toBe(1)
-    expect(wrong.err).toContain(`--lose 3 names 3 item(s), but ${b.base} now holds all that ${b.paths.old} holds`)
+    expect(wrong.err).toContain(`--lose 3:0123456789abcdef names a list, but ${b.base} now holds all that ${b.paths.old} holds`)
     expect(existsSync(b.paths.old)).toBe(true)
     const dry = b.wr(["subvolume", "--drop-old"])
     expect(dry.code, said(dry)).toBe(0)
@@ -1622,6 +1632,140 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     const ok = b.wr(["subvolume", "--drop-old", "--apply"])
     expect(ok.code, said(ok)).toBe(0)
     expect(existsSync(b.paths.old)).toBe(false)
+  }, BENCH_RUNS_MS)
+
+  /**
+   * N1' (probe Z6 and its kin): a dry run lists what the kept tree holds that the base lacks; then `change` alters
+   * that content keeping the count. The printed deleting run refuses, deleting nothing; the dry run, run again, lists
+   * the change, and its printed run deletes.
+   */
+  const changedAfterDry = (name: string, make: (old: string, b: Bench) => void, change: (old: string, b: Bench) => void, seen: string) => {
+    const b = bench(name)
+    expect(b.wr(["subvolume", "--apply"]).code).toBe(0)
+    make(b.paths.old, b)
+    const dry = b.wr(["subvolume", "--drop-old"])
+    expect(dry.code, said(dry)).toBe(0)
+    const n = loseOf(dry)
+    expect(n, dry.out).toBeGreaterThan(0)
+    change(b.paths.old, b)
+    const stale = asPrinted(b, printedDrop(dry.out)!)
+    expect(stale.code, said(stale)).toBe(1)
+    expect(stale.err).toContain("nothing deleted")
+    expect(existsSync(b.paths.old)).toBe(true)
+    expect(printedNext(stale.err)).toEndWith("--drop-old")
+    const again = asPrinted(b, printedNext(stale.err)!)
+    expect(again.code, said(again)).toBe(0)
+    expect(again.out).toContain(seen)
+    expect(loseOf(again), again.out).toBe(n)
+    expect(tokenOf(again)).not.toBe(tokenOf(dry))
+    const gone = asPrinted(b, printedDrop(again.out)!)
+    expect(gone.code, said(gone)).toBe(0)
+    expect(existsSync(b.paths.old)).toBe(false)
+    whole(b)
+  }
+  const git = (dir: string, b: Bench, ...argv: ReadonlyArray<string>) => sh(dir, b.env, "git", ...argv).trim()
+
+  test("N1' (probe Z6): a ref the kept tree alone holds moves to a child commit after the dry run, keeping the count: the printed drop refuses, nothing deleted", () => {
+    let child = ""
+    changedAfterDry(
+      "z6-child",
+      (old, b) => git(old, b, "update-ref", "refs/heads/rootwork", "refs/heads/feat-a"),
+      (old, b) => {
+        child = git(old, b, "commit-tree", "-p", "refs/heads/rootwork", "-m", "later", "refs/heads/rootwork^{tree}")
+        // Written as a fetch or a tool that keeps no reflog would: the list keeps its count, only its content moves.
+        writeFileSync(join(old, ".git/refs/heads/rootwork"), `${child}\n`)
+      },
+      "ref refs/heads/rootwork ",
+    )
+    expect(child).toMatch(/^[0-9a-f]{40}$/)
+  }, BENCH_RUNS_MS)
+
+  test("N1': a ref the kept tree alone holds is swapped for another after the dry run (as many refs): refused, nothing deleted", () => {
+    changedAfterDry(
+      "z6-swap",
+      (old, b) => git(old, b, "update-ref", "refs/heads/rootwork", "refs/heads/feat-a"),
+      (old, b) => {
+        git(old, b, "update-ref", "refs/heads/otherwork", "refs/heads/feat-a")
+        git(old, b, "update-ref", "-d", "refs/heads/rootwork")
+      },
+      "ref refs/heads/otherwork ",
+    )
+  }, BENCH_RUNS_MS)
+
+  test("N1': a Git file the base lacks is changed again after the dry run: refused, nothing deleted", () => {
+    changedAfterDry(
+      "z6-gitfile",
+      (old) => writeFileSync(join(old, ".git/info/notes-only-here"), "one\n"),
+      (old) => writeFileSync(join(old, ".git/info/notes-only-here"), "two\n"),
+      "Git file .git/info/notes-only-here is missing",
+    )
+  }, BENCH_RUNS_MS)
+
+  test("N1': a worktree file the base lacks is edited again after the dry run (the same status line): refused, nothing deleted", () => {
+    changedAfterDry(
+      "z6-worktree",
+      (old) => writeFileSync(join(old, "draft.txt"), "one\n"),
+      (old) => writeFileSync(join(old, "draft.txt"), "two\n"),
+      "worktree or index: ? draft.txt (holds ",
+    )
+  }, BENCH_RUNS_MS)
+
+  test("N1': a change that lands after the deleting run's check, before its ticket, is caught under the drop's freeze: the tree is put back, what changed is said, nothing deleted", () => {
+    const b = bench("z6-freeze")
+    expect(b.wr(["subvolume", "--apply"]).code).toBe(0)
+    git(b.paths.old, b, "update-ref", "refs/heads/rootwork", "refs/heads/feat-a")
+    const dry = b.wr(["subvolume", "--drop-old"])
+    expect(dry.code, said(dry)).toBe(0)
+    // The writer lands as the drop sets the tree aside (its step aside runs before the rename).
+    const late = b.wr(dropArgv(dry), {
+      WORKRIFT_SUBVOLUME_HOOK_AT: "aside",
+      WORKRIFT_SUBVOLUME_HOOK: `git -C '${b.paths.old}' update-ref refs/heads/latework refs/heads/feat-a`,
+    })
+    expect(late.code, said(late)).toBe(1)
+    expect(late.err).toContain("changed while the drop took its ticket")
+    expect(late.err).toContain("  + ref refs/heads/latework ")
+    expect(late.err).toContain("the kept tree is back at")
+    expect(existsSync(b.paths.old)).toBe(true)
+    expect(existsSync(b.paths.old.replace(/\.old$/, ".dropping"))).toBe(false)
+    expect(git(b.paths.old, b, "for-each-ref", "--format=%(refname)", "refs/heads/latework")).toBe("refs/heads/latework")
+    expect(b.phase()).not.toContain("drop")
+    expect(printedNext(late.err)).toEndWith("--drop-old")
+    const again = b.wr(["subvolume", "--drop-old"])
+    const gone = b.wr(dropArgv(again))
+    expect(gone.code, said(gone)).toBe(0)
+    expect(existsSync(b.paths.old)).toBe(false)
+    whole(b)
+  }, BENCH_RUNS_MS)
+
+  test("N1': a drop cut short after it set the tree aside lists again on its rerun: the old token, once the tree changed, refuses; nothing finishes on it", () => {
+    const b = bench("z6-cut")
+    expect(b.wr(["subvolume", "--apply"]).code).toBe(0)
+    git(b.paths.old, b, "update-ref", "refs/heads/rootwork", "refs/heads/feat-a")
+    const dry = b.wr(["subvolume", "--drop-old"])
+    expect(dry.code, said(dry)).toBe(0)
+    const cut = b.wr(dropArgv(dry), { WORKRIFT_SUBVOLUME_DIE_AT: "drop" })
+    expect(cut.signal, said(cut)).toBe("SIGKILL")
+    const aside = b.paths.old.replace(/\.old$/, ".dropping")
+    expect(existsSync(aside)).toBe(true)
+    expect(b.phase()).toContain("drop")
+    // Written into the tree while the drop stood cut short.
+    git(aside, b, "update-ref", "refs/heads/cutwork", "refs/heads/feat-a")
+    const stale = b.wr(dropArgv(dry))
+    expect(stale.code, said(stale)).toBe(1)
+    expect(stale.out).toContain("ref refs/heads/cutwork ")
+    expect(stale.err).toContain("nothing deleted")
+    expect(git(aside, b, "for-each-ref", "--format=%(refname)", "refs/heads/cutwork")).toBe("refs/heads/cutwork")
+    expect(printedNext(stale.err)).toEndWith("--drop-old")
+    // The dry run lists the tree where it stands, and its token deletes it.
+    const again = b.wr(["subvolume", "--drop-old"])
+    expect(again.code, said(again)).toBe(0)
+    expect(again.out).toContain("ref refs/heads/cutwork ")
+    expect(tokenOf(again)).not.toBe(tokenOf(dry))
+    const gone = b.wr(dropArgv(again))
+    expect(gone.code, said(gone)).toBe(0)
+    expect(existsSync(aside)).toBe(false)
+    expect(existsSync(b.paths.old)).toBe(false)
+    whole(b)
   }, BENCH_RUNS_MS)
 
   test("N4: a sudo that allows true and refuses the find is said as that, and --beside-unreadable is the only way on", () => {
@@ -2116,11 +2260,11 @@ describe("workrift subvolume: the model (histories of switches, faults, kills an
         // What an earlier run listed: the only writes a drop may take with the tree (N1).
         const saidEarlier = new Set(writes.filter((w) => w.said))
         for (const w of writes) if (saysLacks(text, w)) w.said = true
-        // No tree that was live is deleted, but by --drop-old (with --lose N when it held what the base lacks).
+        // No tree that was live is deleted, but by --drop-old (with --lose N:DIGEST when it held what the base lacks).
         const now = trees()
         for (const ino of everLive) {
           if (now.has(ino)) continue
-          const by = argv.join(" ").replace(/ --lose \d+$/, "")
+          const by = argv.join(" ").replace(/ --lose \d+:[0-9a-f]{16}$/, "")
           expect({ where, deleted: ino, by, ended: ran.code === 0 || ran.signal === "SIGKILL" }, `${where}\n${said(ran)}`).toEqual({ where, deleted: ino, by: "subvolume --drop-old --apply", ended: true })
           everLive.delete(ino)
           for (const w of writes) if (!w.dropped && saidEarlier.has(w) && w.klass !== "work") w.dropped = true
@@ -2765,10 +2909,7 @@ const VERDICTS: Record<string, string> = {
   "ticket_ahead:sort: a_sorted=$(printf '%s' \"$a_list\" | LC_ALL=C sort -n) && [ -n \"$a_sorted\" ] || return 1": "returned: `&& [ -n ] || return 1`: a sort that fails is the line unreadable; both queue_enter callers fail on it",
   "ticket_ahead_words:grep: w_count=$(printf '%s' \"$w_ahead\" | grep -c . || true)": "message: the count in the waiting line's words",
   "ticket_ahead_words:head: w_first=$(printf '%s\\n' \"$w_ahead\" | head -n 1)": "message: the first ticket's words; empty says nothing ahead in the message only",
-  "ticket_words:sed: t_who=$(sed -n 1p \"$1\")": "message: the pid in the waiting line's words",
   "ticket_words:ps: case \"$(LC_ALL=C ps -o stat= -p \"$t_who\" 2>/dev/null)\" in": "message: whether the holder is stopped, in words",
-  "ticket_words:sed: printf 'pid %s (%s), %s since %s%s' \"$t_who\" \"$(sed -n 4p \"$1\")\" \"$t_state\" \"$(clock_time \"$(sed -n 3p \"$1\")\")\" \"$t_stopped\"": "message: the purpose in words",
-  "ticket_words:sed: printf 'pid %s (%s), %s since %s%s' \"$t_who\" \"$(sed -n 4p \"$1\")\" \"$t_state\" \"$(clock_time \"$(sed -n 3p \"$1\")\")\" \"$t_stopped\" #2": "message: the since in words",
   "queue_enter:date: q_now=$(date +%s) || q_now=$((q_since + advance_every))": "closed: a clock that does not read is the polite patience spent: it takes its place in line now (a writer waits its turn there)",
   "queue_enter:date: q_now=$(date +%s) || q_now=$((q_since + advance_every)) #2": "closed: as before it",
   "queue_enter:cat: q_n=$(cat \"${q_dir%/*}/next\" 2>/dev/null || true)": "closed: a counter that does not read is 0; the next number is past every ticket present, so no ticket is numbered below a live one",
@@ -2878,6 +3019,12 @@ const VERDICTS: Record<string, string> = {
   "sv_rm_folder:rm: old) nice -n 19 rm -rf --one-file-system -- \"$sv_old\" ;;": "returned: as before it",
   "sv_rm_folder:rm: back) nice -n 19 rm -rf -x -- \"$sv_back\" ;;": "returned: as before it",
   "sv_rm_folder:rm: old) nice -n 19 rm -rf -x -- \"$sv_old\" ;;": "returned: as before it",
+  "sv_rm_folder:rm: dropping) nice -n 19 rm -rf --one-file-system -- \"$sv_aside\" ;;": "returned: as before it",
+  "sv_rm_folder:rm: dropping) nice -n 19 rm -rf -x -- \"$sv_aside\" ;;": "returned: as before it",
+  "sv_status:readlink: s_lines=\"$s_lines$s_line	link $(readlink \"$1/$s_path\")": "returned: the assignment takes its status and sv_status fails: sv_lacks says the worktree as unknown, and no drop deletes",
+  "sv_status:awk: printf '=I\\n%s\\n=L\\n%s' \"$s_ids\" \"$s_lines\" | awk -F '\\t' '": "returned: the function's status (the pipe's last member): sv_lacks says the worktree as unknown, and no drop deletes",
+  "sv_drop_put_back:python3: sv_renameat rename \"$sv_aside\" \"$sv_old\" ||": "message: the kept tree stays aside at .dropping, said; --drop-old reads it there, and nothing is deleted this run",
+  "sv_drop:python3: sv_renameat rename \"$sv_old\" \"$sv_aside\" || {": "closed: the phase back to switched, then a refusal: nothing deleted",
   "sv_cp:cp: cp -a --reflink=always \"$1\" \"$2\" 3>&- 6>&- 7>&- 8>&- 9>&- &": "returned: in the background; its status is read by wait in sv_cp, and a copy that failed fails",
   "sv_cp:rm: rm -f \"$sv_state/copier\" || true": "cleanup: the copier record; a stale one is read with the copier's identity, which no longer matches",
   "sv_wait_copier:sleep: sleep 1 || true": "closed: a sleep that fails looks again; the clock bounds the wait",

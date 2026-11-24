@@ -81,13 +81,14 @@ usage: workrift <command>
   check                       check the warm source, and warn when its build output is old
   settings                    give the warm source its host settings from workrift's
                               table (warm step, .env link); init does it too
-  subvolume [--back | --drop-old [--lose N]] [--check] [--apply]
+  subvolume [--back | --drop-old [--lose N:DIGEST]] [--check] [--apply]
             [--beside-other-removals] [--beside-unreadable]
                               make the warm source a btrfs subvolume (each workspace a
                               snapshot); --back makes it the plain folder it was;
                               --drop-old deletes the tree kept from the last switch;
-                              when it holds what the base lacks, only with --lose N,
-                              N the count its dry run listed;
+                              when it holds what the base lacks, only with --lose
+                              N:DIGEST, the token its dry run printed for that list
+                              (another list, even of as many items, refuses);
                               a dry run (preflight and exact steps) unless --apply;
                               a removal of another base refuses it unless
                               --beside-other-removals (one of this base always does);
@@ -2744,6 +2745,7 @@ sv_paths() {
   sv_new=$sv_dir/$sv_name.new
   sv_back=$sv_dir/$sv_name.back
   sv_old=$sv_dir/$sv_name.old
+  sv_aside=$sv_dir/$sv_name.dropping
   p_home=$(base_home "$1") ||
     fail "the workspaces' folder of $1 does not read (work.toml's [work] storage; awk, sed, dirname or basename failed): nothing changed"
   if [ -d "$p_home/.workrift" ]; then
@@ -2752,16 +2754,16 @@ sv_paths() {
     state_value=$p_home/.workrift
   fi
   sv_state=$state_value/subvolume
-  readonly sv_base sv_parent sv_name sv_dir sv_new sv_back sv_old sv_state
-  sv_is "$sv_new" new && sv_is "$sv_back" back && sv_is "$sv_old" old ||
+  readonly sv_base sv_parent sv_name sv_dir sv_new sv_back sv_old sv_aside sv_state
+  sv_is "$sv_new" new && sv_is "$sv_back" back && sv_is "$sv_old" old && sv_is "$sv_aside" dropping ||
     fail "$sv_base: its move folder would be $sv_dir, not a folder beside it under a parent of its own (a base directly under / is refused); nothing changed"
 }
 
-# Whether $1 is exactly this base's move path $2 (new, back or old), in a
-# .subvolume-move folder beside the base under a parent that is not /.
+# Whether $1 is exactly this base's move path $2 (new, back, old or dropping),
+# in a .subvolume-move folder beside the base under a parent that is not /.
 sv_is() {
   [ "$1" = "$sv_dir/$sv_name.$2" ] && [ "$sv_dir" = "$sv_parent/.subvolume-move" ] &&
-    case "$1" in /?*/.subvolume-move/?*.new | /?*/.subvolume-move/?*.back | /?*/.subvolume-move/?*.old) true ;; *) false ;; esac
+    case "$1" in /?*/.subvolume-move/?*.new | /?*/.subvolume-move/?*.back | /?*/.subvolume-move/?*.old | /?*/.subvolume-move/?*.dropping) true ;; *) false ;; esac
 }
 
 # The state folder, made under the hold (the dry run makes nothing): the one
@@ -3656,6 +3658,8 @@ sv_facts() {
     f_kc=$(sv_kind "$f_copy") || f_kc='?'
     [ "$f_kc" = - ] || f_where="$f_where; $f_copy is $(sv_words "$f_kc") (a copy, never the base)"
   done
+  f_kc=$(sv_kind "$sv_aside") || f_kc='?'
+  [ "$f_kc" = - ] || f_where="$f_where; $sv_aside is $(sv_words "$f_kc") (the kept tree a --drop-old set aside to delete)"
   case "$f_ph:$f_kb" in
     copy:"$f_tg" | swap:"$f_tg" | carry:"$f_tg" | rollback:"$f_tg")
       f_where="$f_where; a switch to $(sv_words "$f_tg") exchanged and is not finished" ;;
@@ -3676,7 +3680,7 @@ sv_facts() {
     case "$f_ph" in
       copy | swap | carry | rollback)
         f_next="$(sv_command "$f_tg") (it finishes the switch to $(sv_words "$f_tg"); stopped before its exchange, it deletes its copy and switches again)" ;;
-      drop) f_next="$(sv_command drop) (it finishes the drop)" ;;
+      drop) f_next="$(sv_command drop-dry) (it lists again what the kept tree holds that the base lacks; the command it prints finishes the drop)" ;;
       unreadable) f_next="look at $sv_state/phase (it names the switch under way), then $(sv_command "${sv_mode:-S}")" ;;
       *) f_next="$(sv_command "${sv_mode:-S}") once the cause above is gone (nothing of a switch is under way)" ;;
     esac
@@ -4080,11 +4084,13 @@ sv_rm_folder() {
     case "$1" in
       back) nice -n 19 rm -rf --one-file-system -- "$sv_back" ;;
       old) nice -n 19 rm -rf --one-file-system -- "$sv_old" ;;
+      dropping) nice -n 19 rm -rf --one-file-system -- "$sv_aside" ;;
     esac
   else
     case "$1" in
       back) nice -n 19 rm -rf -x -- "$sv_back" ;;
       old) nice -n 19 rm -rf -x -- "$sv_old" ;;
+      dropping) nice -n 19 rm -rf -x -- "$sv_aside" ;;
     esac
   fi
 }
@@ -4347,7 +4353,7 @@ sv_lacks() {
       { f = $0; sub(/^[^ ]+ [^ ]+ \.\//, "", f) }
       s == 1 { k[f] = $1 " " $2; next }
       s == 2 { b[f] = $1 " " $2 }
-      END { for (f in k) if (b[f] != k[f]) print "  Git file .git/" f ((f in b) ? " differs" : " is missing") }'); then
+      END { for (f in k) { w = (f in b) ? " differs" : " is missing"; if (w == " is missing" || b[f] != k[f]) print "  Git file .git/" f w " (cksum " k[f] ")" } }'); then
       sv_lines "$l_out" | LC_ALL=C sort || return 1
     else
       printf '  Git files: unknown (awk failed comparing them); run it again\n'
@@ -4361,8 +4367,7 @@ sv_lacks() {
       s == 1 { k[$0] = 1; next }
       s == 2 { b[$0] = 1 }
       END {
-        for (l in k) if (!(l in b)) { f = l; sub(/\t.*/, "", f); n[f]++ }
-        for (f in n) print "  reflog .git/logs/" f ": " n[f] " entries"
+        for (l in k) if (!(l in b)) { f = l; e = l; sub(/\t.*/, "", f); sub(/^[^\t]*\t/, "", e); gsub(/\t/, " ", e); print "  reflog .git/logs/" f ": " e }
       }'); then
       sv_lines "$l_out" | LC_ALL=C sort || return 1
     else
@@ -4382,7 +4387,7 @@ sv_lacks() {
       printf '  worktree or index: unknown (awk failed comparing them); run it again\n'
     fi
   else
-    printf '  worktree or index: unknown (git status failed in %s or %s); run it again\n' "$l_k" "$l_b"
+    printf '  worktree or index: unknown (git status or hash-object failed in %s or %s, or a path Git quotes); run it again\n' "$l_k" "$l_b"
   fi
 }
 
@@ -4421,32 +4426,78 @@ sv_reflogs() {
   )
 }
 
-# The index and worktree of the tree $1 as Git sees them (no branch lines).
+# The index and worktree of the tree $1 as Git sees them (no branch lines),
+# each line with what its worktree file holds: the object id of its content
+# (git hash-object, one call for all), `link <target>` for a symbolic link,
+# `-` for none. A file edited again keeps its status line but not this.
 # Fails when Git fails (the header lines are dropped by the shell: no grep
-# whose failure would read as a clean tree).
+# whose failure would read as a clean tree), and when a file's content does
+# not read (a path Git quotes is no path to hash: fails, never "same").
 sv_status() {
-  local s_out s_line
-  s_out=$(base_git "$1" --no-optional-locks status --porcelain=v2 --untracked-files=all 2>/dev/null) || return 1
+  local s_out s_line s_path s_n s_lines='' s_paths='' s_ids=''
+  s_out=$(base_git "$1" -c core.quotePath=false --no-optional-locks status --porcelain=v2 --untracked-files=all 2>/dev/null) || return 1
   while IFS= read -r s_line; do
-    case "$s_line" in '' | '#'*) ;; *) printf '%s\n' "$s_line" ;; esac
+    case "$s_line" in
+      '' | '#'*) continue ;;
+      '1 '*) s_n=8 ;;
+      '2 '*) s_n=9 ;;
+      'u '*) s_n=10 ;;
+      '? '* | '! '*) s_n=1 ;;
+      *) return 1 ;;
+    esac
+    s_path=$s_line
+    while [ "$s_n" -gt 0 ]; do
+      s_path=${s_path#* }
+      s_n=$((s_n - 1))
+    done
+    # A rename's line names the new path, a tab, then the old.
+    s_path=${s_path%%"	"*}
+    case "$s_path" in '"'*) return 1 ;; esac
+    if [ -L "$1/$s_path" ]; then
+      s_lines="$s_lines$s_line	link $(readlink "$1/$s_path")
+" || return 1
+    elif [ -f "$1/$s_path" ]; then
+      s_lines="$s_lines$s_line	=
+"
+      s_paths="$s_paths$s_path
+"
+    else
+      s_lines="$s_lines$s_line	-
+"
+    fi
   done <<EOF
 $s_out
 EOF
+  if [ -n "$s_paths" ]; then
+    s_ids=$(printf '%s' "$s_paths" | base_git "$1" hash-object --no-filters --stdin-paths 2>/dev/null) || return 1
+  fi
+  printf '=I\n%s\n=L\n%s' "$s_ids" "$s_lines" | awk -F '\t' '
+    $0 == "=I" { s = 1; next } $0 == "=L" { s = 2; next }
+    s == 1 && $0 != "" { id[++n] = $0; next }
+    s == 2 && $0 != "" { t = $NF; l = $0; sub(/\t[^\t]*$/, "", l); if (t == "=") { if (++m > n) exit 1; t = id[m] } print l " (holds " t ")" }
+    END { if (m != n) exit 1 }'
 }
 
-# Says what the base lacks of the tree kept at .old, from sv_lacks, and keeps
-# its count in sv_lacks_n: the lines said, 0 when it holds all, `unknown` when
-# a part of it does not read (a line says so) or the comparison failed.
+# Says what the base lacks of the tree $1 (default the one kept at .old), from
+# sv_lacks, and keeps the list in sv_lacks_list, its count in sv_lacks_n (0
+# when it holds all, `unknown` when a part of it does not read: a line says
+# so, or the comparison failed) and, for a list, sv_lacks_token: the count and
+# a digest of the lines as said (`N:<16 hex of their sha256>`), which a drop
+# that deletes them must name: a list that changed since, even with as many
+# lines, has another.
 sv_lacks_said() {
-  local s_lacks s_line
+  local s_tree="${1:-$sv_old}" s_lacks s_line s_sum
   sv_lacks_n=0
-  [ -d "$sv_old" ] || return 0
-  if ! s_lacks=$(sv_lacks "$sv_old" "$sv_base"); then
+  sv_lacks_list=
+  sv_lacks_token=
+  [ -d "$s_tree" ] || return 0
+  if ! s_lacks=$(sv_lacks "$s_tree" "$sv_base"); then
     sv_lacks_n=unknown
-    printf '  what %s lacks of %s is unknown (a sort failed comparing them); run workrift subvolume (a dry run) to see it\n' "$sv_base" "$sv_old"
+    printf '  what %s lacks of %s is unknown (a sort failed comparing them); run workrift subvolume (a dry run) to see it\n' "$sv_base" "$s_tree"
   elif [ -z "$s_lacks" ]; then
-    printf '  %s holds all that %s holds (refs and their objects, HEAD, Git'\''s files, reflogs, the index and the worktree as Git sees them; files Git ignores are not compared)\n' "$sv_base" "$sv_old"
+    printf '  %s holds all that %s holds (refs and their objects, HEAD, Git'\''s files, reflogs, the index and the worktree as Git sees them; files Git ignores are not compared)\n' "$sv_base" "$s_tree"
   else
+    sv_lacks_list=$s_lacks
     while IFS= read -r s_line; do
       case "$sv_lacks_n:$s_line" in
         unknown:*) ;;
@@ -4456,8 +4507,43 @@ sv_lacks_said() {
     done <<EOF
 $s_lacks
 EOF
-    printf '  %s lacks, of what %s holds (kept there until --drop-old):\n%s\n' "$sv_base" "$sv_old" "$s_lacks"
+    printf '  %s lacks, of what %s holds (kept there until --drop-old):\n%s\n' "$sv_base" "$s_tree" "$s_lacks"
+    if [ "$sv_lacks_n" != unknown ]; then
+      if s_sum=$(sv_sha256 "$s_lacks"); then
+        sv_lacks_token="$sv_lacks_n:$s_sum"
+      else
+        sv_lacks_n=unknown
+        printf '  the digest of this list does not read (sha256sum or shasum failed): no run deletes %s until it does\n' "$s_tree"
+      fi
+    fi
   fi
+}
+
+# The first 16 hex digits of the sha256 of the text $1 (a newline after it):
+# sha256sum (GNU), else shasum -a 256 (macOS). Fails when neither runs.
+sv_sha256() {
+  local h_out
+  if command -v sha256sum >/dev/null 2>&1; then
+    h_out=$(printf '%s\n' "$1" | sha256sum) || return 1
+  else
+    h_out=$(printf '%s\n' "$1" | shasum -a 256) || return 1
+  fi
+  h_out=${h_out%% *}
+  case "$h_out" in '' | *[!0-9a-f]*) return 1 ;; esac
+  printf '%.16s' "$h_out"
+}
+
+# What changed from the list $1 to the list $2: `+ line` for each line $2 has
+# and $1 lacks, `- line` for each the other way.
+sv_lacks_diff() {
+  { printf '=A\n'; sv_lines "$1"; printf '=B\n'; sv_lines "$2"; } | awk '
+    $0 == "=A" { s = 1; next } $0 == "=B" { s = 2; next }
+    s == 1 { a[$0] = 1; next }
+    s == 2 { b[$0] = 1 }
+    END {
+      for (l in b) if (!(l in a)) { t = l; sub(/^ +/, "", t); print "  + " t }
+      for (l in a) if (!(l in b)) { t = l; sub(/^ +/, "", t); print "  - " t }
+    }'
 }
 
 # The way to drop the kept tree, after sv_lacks_said: one step when the base
@@ -4539,7 +4625,7 @@ sv_plan() {
   else
     printf '  7 prove    %s is a plain folder\n' "$sv_base"
   fi
-  printf '  8 release  the tree that was the base stays at %s until --drop-old deletes it (two runs when it holds what the base lacks: a dry run lists that, then --apply --lose <its count>)\n' "$sv_old"
+  printf '  8 release  the tree that was the base stays at %s until --drop-old deletes it (two runs when it holds what the base lacks: a dry run lists that, then --apply --lose <the token it prints for that list>)\n' "$sv_old"
   printf 'a failure before the exchange rolls back (it deletes the copy, never the base); from the exchange on, the new tree is the base and stays it: a failure after it is said, with what the base lacks of the tree kept at %s; a cut run is finished by the next --apply\n' "$sv_old"
 }
 
@@ -4739,16 +4825,83 @@ sv_said() {
   printf '  drop:  %s\n' "$(sv_drop_way)"
 }
 
+# The token of the list sv_lacks_said found: 0 for none, `unknown`, else
+# N:DIGEST.
+sv_lacks_ack() {
+  case "$sv_lacks_n" in
+    0 | unknown) printf '%s' "$sv_lacks_n" ;;
+    *) printf '%s' "$sv_lacks_token" ;;
+  esac
+}
+
+# The command that deletes the tree $1 (of kind $2) by hand.
+sv_drop_by_hand() {
+  if [ "$2" = S ]; then
+    printf 'btrfs subvolume delete %s' "$1"
+  else
+    printf 'nice -n 19 rm -rf --one-file-system -- %s' "$1"
+  fi
+}
+
+# Whether processes work in the tree $1: status 0 and none, else 1 with
+# sv_why (users, or a walk that does not read) and, for a process it cannot
+# look into, sv_next.
+sv_drop_unused() {
+  sv_rc=0
+  sv_users_known "$1" || sv_rc=$?
+  case $sv_rc in
+    0) ;;
+    2)
+      sv_next=$sv_unknown_next
+      return 1
+      ;;
+    *) return 1 ;;
+  esac
+  [ -z "$sv_users_found" ] && return 0
+  sv_why="processes work in $1 ($(sv_joined "$sv_users_found"))"
+  return 1
+}
+
+# Puts the tree set aside at .dropping back at .old (the base $1's kind) and
+# ends the drop: phase switched, the ticket given back. A rename that fails
+# leaves it aside, said; the dry run finds it there.
+sv_drop_put_back() {
+  sv_renameat rename "$sv_aside" "$sv_old" ||
+    printf 'workrift subvolume: rename %s %s failed: the kept tree stays at %s, which --drop-old reads as the kept tree\n' "$sv_aside" "$sv_old" "$sv_aside" >&2
+  sv_phase_write switched - "$1"
+  queue_leave 6 "$move_ticket"
+  move_ticket=
+}
+
 # --drop-old: deletes the kept tree, by its exact path, only when it is the
-# tree the last switch parked there (its identity recorded then).
+# tree the last switch parked there (its identity recorded then), and only
+# what was acknowledged: the dry run lists what the tree holds that the base
+# lacks and prints a token for that list (its count and a digest of its lines,
+# each line naming content: a ref's commit, a Git file's checksum, a reflog
+# entry, a worktree file's object), and the run that deletes names it. Under
+# the drop's own ticket the tree is renamed aside (.dropping: no process
+# reaches it by the path it knew), the processes in it are walked again, the
+# list is taken again and its token compared; any difference puts the tree
+# back, says what changed and deletes nothing. What bounds the window left:
+# a process that enters .dropping by that path between the walk and the
+# delete (nothing of workrift's does). A drop cut short (phase drop) lists
+# again: its rerun needs a token for the present list, never an old one.
 sv_drop() {
-  local d_apply="$1" d_kb d_ko d_path d_want d_have d_base_id d_users d_now
+  local d_apply="$1" d_kb d_ko d_ka d_tree d_path d_want d_have d_base_id d_now d_token d_given d_list
   sv_phase_read
   case "$sv_ph" in
     copy | swap | carry | rollback) fail "a switch is under way or was cut short ($sv_ph): run it again to finish it first" ;;
   esac
   sv_kind_of d_kb "$sv_base"
   sv_kind_of d_ko "$sv_old"
+  sv_kind_of d_ka "$sv_aside"
+  [ "$d_ko" = - ] || [ "$d_ka" = - ] ||
+    fail "both $sv_old and $sv_aside hold a tree: nothing deleted; look at both (the record $sv_state/kept names the one the last switch kept)"
+  d_tree=$sv_old
+  if [ "$d_ka" != - ]; then
+    d_tree=$sv_aside
+    d_ko=$d_ka
+  fi
   if [ "$d_ko" = - ]; then
     printf 'workrift subvolume: nothing is kept at %s: nothing to drop\n' "$sv_old"
     # Only a run that applies forgets a record (a cut drop finished): a dry
@@ -4763,83 +4916,64 @@ sv_drop() {
   d_want=
   { read -r d_path && read -r d_want; } <"$sv_state/kept" 2>/dev/null || true
   [ "$d_path" = "$sv_old" ] && [ -n "$d_want" ] ||
-    fail "no switch recorded the tree at $sv_old ($sv_state/kept): nothing deleted; look at it"
-  case "$d_want" in *'?'*) fail "the record $sv_state/kept names no identity ($d_want): nothing deleted; look at $sv_old" ;; esac
-  d_have=$(sv_identity "$sv_old") || sv_stop "the identity of $sv_old (btrfs inspect-internal rootid or stat; nothing deleted)"
+    fail "no switch recorded the tree at $sv_old ($sv_state/kept): nothing deleted; look at $d_tree"
+  case "$d_want" in *'?'*) fail "the record $sv_state/kept names no identity ($d_want): nothing deleted; look at $d_tree" ;; esac
+  d_have=$(sv_identity "$d_tree") || sv_stop "the identity of $d_tree (btrfs inspect-internal rootid or stat; nothing deleted)"
   [ "$d_have" = "$d_want" ] ||
-    fail "$sv_old is $d_have, not the $d_want the last switch kept there: nothing deleted"
+    fail "$d_tree is $d_have, not the $d_want the last switch kept at $sv_old: nothing deleted"
   { [ "$d_kb" = S ] && [ "$d_ko" = F ]; } || { [ "$d_kb" = F ] && [ "$d_ko" = S ]; } ||
-    fail "$sv_base is $(sv_words "$d_kb") and $sv_old $(sv_words "$d_ko"): not a base beside the other tree; nothing deleted"
+    fail "$sv_base is $(sv_words "$d_kb") and $d_tree $(sv_words "$d_ko"): not a base beside the other tree; nothing deleted"
   sv_whole "$sv_base" || fail "$sv_base is not a whole work base: nothing deleted"
   d_base_id=$(sv_identity "$sv_base") || sv_stop "the identity of $sv_base (btrfs inspect-internal rootid or stat; nothing deleted)"
-  [ "$d_base_id" != "$d_have" ] || fail "$sv_old is the base itself: nothing deleted"
-  printf 'workrift subvolume: drop %s, %s (%s); %s stays %s\n' "$sv_old" "$(sv_words "$d_ko")" "$d_have" "$sv_base" "$(sv_words "$d_kb")"
+  [ "$d_base_id" != "$d_have" ] || fail "$d_tree is the base itself: nothing deleted"
+  printf 'workrift subvolume: drop %s, %s (%s); %s stays %s\n' "$d_tree" "$(sv_words "$d_ko")" "$d_have" "$sv_base" "$(sv_words "$d_kb")"
+  [ "$d_tree" = "$sv_old" ] || printf '  (a --drop-old cut short set it aside at %s)\n' "$d_tree"
+  [ "$d_tree" != "$sv_old" ] ||
+    printf '  rename %s %s   (no process reaches it by the path it had; listed again there)\n' "$sv_old" "$sv_aside"
   if [ "$d_ko" = S ]; then
-    printf '  btrfs subvolume delete %s   (one call; the kernel frees its blocks after)\n' "$sv_old"
+    printf '  btrfs subvolume delete %s   (one call; the kernel frees its blocks after)\n' "$sv_aside"
   else
-    printf '  nice -n 19 rm -rf --one-file-system -- %s   (a walk of every file)\n' "$sv_old"
+    printf '  nice -n 19 rm -rf --one-file-system -- %s   (a walk of every file)\n' "$sv_aside"
   fi
   # What the base would lose with it, said first: every way this run ends
-  # has listed it. Nothing is deleted that an earlier run did not list: when
-  # the tree holds anything the base lacks, the deleting run names its count
-  # (--lose N, refused when the count differs now), and the command any
-  # refusal here prints is the dry run that lists it again. A drop cut short
-  # (phase drop) was acknowledged when it began: its rerun finishes it.
-  sv_lacks_said
-  if [ "$sv_ph" != drop ] && [ "$sv_lacks_n" != 0 ]; then
-    if [ "$sv_lacks_n" = unknown ] || [ "${sv_lose:-}" != "$sv_lacks_n" ]; then
-      sv_mode=drop-dry
-    fi
-  elif [ -n "${sv_lose:-}" ] && [ "$sv_lose" != "$sv_lacks_n" ]; then
-    sv_mode=drop-dry
-  fi
-  sv_rc=0
-  sv_users_known "$sv_old" || sv_rc=$?
-  case $sv_rc in
-    0) d_users=$sv_users_found ;;
-    2)
-      sv_next=$sv_unknown_next
-      fail "$sv_why: nothing deleted"
-      ;;
-    *) fail "$sv_why: nothing deleted" ;;
-  esac
-  [ -z "$d_users" ] || fail "processes work in $sv_old ($(sv_joined "$d_users")): nothing deleted"
+  # has listed it, and the token of this list is what a run that deletes
+  # must name (none for an empty list).
+  sv_lacks_said "$d_tree"
+  d_token=$(sv_lacks_ack)
+  d_list=$sv_lacks_list
+  d_given=${sv_lose:-0}
+  [ "$d_token" != unknown ] && [ "$d_token" = "$d_given" ] || sv_mode=drop-dry
+  sv_drop_unused "$d_tree" || fail "$sv_why: nothing deleted"
   if [ "$d_apply" != true ]; then
-    case "$sv_lacks_n" in
+    case "$d_token" in
       0)
         sv_lose=
         printf 'dry run: nothing changed; %s deletes it\n' "$(sv_command drop)"
         ;;
-      unknown) printf 'dry run: nothing changed; what %s lacks of %s does not all read (said above), so no run deletes it: run this again once it reads\n' "$sv_base" "$sv_old" ;;
+      unknown)
+        printf 'dry run: nothing changed; what %s lacks of %s does not all read (said above), so no run of workrift deletes it: run this again once it reads, or delete it by hand: %s\n' "$sv_base" "$d_tree" "$(sv_drop_by_hand "$d_tree" "$d_ko")"
+        ;;
       *)
-        sv_lose=$sv_lacks_n
-        printf 'dry run: nothing changed; deleting it loses the %s item(s) listed above, which %s lacks: %s\n' "$sv_lacks_n" "$sv_base" "$(sv_command drop)"
+        sv_lose=$d_token
+        printf 'dry run: nothing changed; deleting it loses the %s item(s) listed above, which %s lacks; this list, and no other, is deleted by: %s\n' "$sv_lacks_n" "$sv_base" "$(sv_command drop)"
         ;;
     esac
     return 0
   fi
-  if [ "$sv_ph" != drop ]; then
-    case "$sv_lacks_n" in
-      unknown)
-        sv_next=$(sv_command drop-dry)
-        fail "what $sv_base lacks of $sv_old does not all read (said above): nothing deleted; run the dry run again once it reads"
-        ;;
-      0)
-        if [ -n "${sv_lose:-}" ] && [ "$sv_lose" != 0 ]; then
-          sv_next=$(sv_command drop-dry)
-          fail "--lose $sv_lose names $sv_lose item(s), but $sv_base now holds all that $sv_old holds: nothing deleted; run the dry run again and the command it prints"
-        fi
-        ;;
-      *)
-        sv_next=$(sv_command drop-dry)
-        [ -n "${sv_lose:-}" ] ||
-          fail "$sv_old holds $sv_lacks_n item(s) that $sv_base lacks (listed above), and deleting it loses them: nothing deleted; the dry run lists them and prints the command that deletes it, naming their count (--lose $sv_lacks_n)"
-        [ "$sv_lose" = "$sv_lacks_n" ] ||
-          fail "--lose $sv_lose names $sv_lose item(s), but $sv_base now lacks $sv_lacks_n of what $sv_old holds (listed above): nothing deleted; run the dry run again and the command it prints"
-        sv_next=
-        ;;
-    esac
-  fi
+  sv_next=$(sv_command drop-dry)
+  case "$d_token" in
+    unknown)
+      fail "what $sv_base lacks of $d_tree does not all read (said above): nothing deleted; run the dry run again once it reads, or delete it by hand: $(sv_drop_by_hand "$d_tree" "$d_ko")"
+      ;;
+    "$d_given") ;;
+    0) fail "--lose $sv_lose names a list, but $sv_base now holds all that $d_tree holds: nothing deleted; run the dry run again and the command it prints" ;;
+    *)
+      [ -n "${sv_lose:-}" ] ||
+        fail "$d_tree holds $sv_lacks_n item(s) that $sv_base lacks (listed above), and deleting it loses them: nothing deleted; the dry run lists them and prints the command that deletes them, naming that list's token (--lose N:DIGEST)"
+      fail "--lose $sv_lose is not the token of what $sv_base lacks of $d_tree now (listed above, $sv_lacks_n item(s)): the list changed since the dry run that printed it; nothing deleted"
+      ;;
+  esac
+  sv_next=
   lock_purpose="subvolume: drop $sv_old"
   sv_state_make
   queue_enter "$sv_base" move w 6 try ||
@@ -4848,14 +4982,48 @@ sv_drop() {
   phase_label="subvolume $sv_base"
   create_started=$(date +%s) || sv_stop "date (the clock before the drop; nothing deleted)"
   sv_phase_write drop - "$d_kb"
-  sv_step drop "delete $sv_old ($d_have)"
-  if [ "$d_ko" = S ]; then
-    btrfs subvolume delete "$sv_old" >/dev/null || fail "btrfs subvolume delete $sv_old failed"
-  else
-    sv_rm_folder old || fail "rm -rf $sv_old failed; run --drop-old --apply again"
+  if [ "$d_tree" = "$sv_old" ]; then
+    sv_step aside "rename $sv_old to $sv_aside"
+    sv_renameat rename "$sv_old" "$sv_aside" || {
+      sv_phase_write switched - "$d_kb"
+      fail "rename $sv_old $sv_aside failed: nothing deleted"
+    }
   fi
-  [ ! -e "$sv_old" ] || fail "$sv_old is not all deleted; run --drop-old --apply again"
-  rm -f "$sv_state/kept" "$sv_state/refs-at-switch" || sv_stop "rm of the records $sv_state/kept and refs-at-switch ($sv_old is deleted)"
+  # Under the ticket, aside: who is in it, and what it holds, again.
+  sv_step drop-check "walk the processes in $sv_aside and list again what $sv_base lacks of it"
+  if ! sv_drop_unused "$sv_aside"; then
+    sv_drop_put_back "$d_kb"
+    fail "$sv_why: nothing deleted; the kept tree is back at $sv_old"
+  fi
+  d_have=$(sv_identity "$sv_aside") || {
+    sv_drop_put_back "$d_kb"
+    sv_stop "the identity of $sv_aside (btrfs inspect-internal rootid or stat; nothing deleted, the kept tree is back at $sv_old)"
+  }
+  if [ "$d_have" != "$d_want" ]; then
+    sv_drop_put_back "$d_kb"
+    fail "$sv_aside is $d_have, not the $d_want the last switch kept: nothing deleted"
+  fi
+  sv_lacks_said "$sv_aside" >/dev/null
+  d_token=$(sv_lacks_ack)
+  if [ "$d_token" = unknown ] || [ "$d_token" != "$d_given" ]; then
+    sv_drop_put_back "$d_kb"
+    printf 'workrift subvolume: what %s lacks of the kept tree changed while the drop took its ticket:\n' "$sv_base" >&2
+    if [ "$d_token" = unknown ]; then
+      printf '  it does not all read now\n' >&2
+    else
+      sv_lacks_diff "$d_list" "$sv_lacks_list" >&2
+    fi
+    sv_next=$(sv_command drop-dry)
+    fail "the list --lose acknowledged is not the one the tree holds now: nothing deleted; the kept tree is back at $sv_old"
+  fi
+  sv_step drop "delete $sv_aside ($d_have)"
+  if [ "$d_ko" = S ]; then
+    btrfs subvolume delete "$sv_aside" >/dev/null || fail "btrfs subvolume delete $sv_aside failed"
+  else
+    sv_rm_folder dropping || fail "rm -rf $sv_aside failed"
+  fi
+  [ ! -e "$sv_aside" ] || fail "$sv_aside is not all deleted"
+  rm -f "$sv_state/kept" "$sv_state/refs-at-switch" || sv_stop "rm of the records $sv_state/kept and refs-at-switch ($sv_aside is deleted)"
   sv_phase_write switched - "$d_kb"
   d_now=$(date +%s) || d_now=$create_started
   sv_step dropped "$sv_old deleted in $((d_now - create_started)) s"
@@ -4864,7 +5032,7 @@ sv_drop() {
   printf 'workrift subvolume: deleted %s in %s s\n' "$sv_old" "$((d_now - create_started))"
 }
 
-# `workrift subvolume [--back | --drop-old [--lose N]] [--check] [--apply] [--beside-other-removals] [--beside-unreadable]`.
+# `workrift subvolume [--back | --drop-old [--lose N:DIGEST]] [--check] [--apply] [--beside-other-removals] [--beside-unreadable]`.
 subvolume_command() {
   local a_mode=forward a_apply=false a_source a_bases
   sv_beside=no
@@ -4886,7 +5054,12 @@ subvolume_command() {
       --lose)
         [ "$#" -ge 2 ] || { usage >&2; exit 2; }
         shift
-        case "$1" in '' | *[!0-9]*) usage >&2; exit 2 ;; esac
+        # A dry run's token: the count, a colon, 16 hex digits.
+        case "$1" in
+          [1-9]*:????????????????) ;;
+          *) usage >&2; exit 2 ;;
+        esac
+        case "${1%%:*}:${1#*:}" in *[!0-9]*:* | *:*[!0-9a-f]*) usage >&2; exit 2 ;; esac
         sv_lose=$1
         ;;
       *) usage >&2; exit 2 ;;
