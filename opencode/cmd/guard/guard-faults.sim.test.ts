@@ -105,7 +105,7 @@ const mustRefuse = (command: CallCommand, psFails: boolean) => {
 type ToolMessage = Extract<World.Message, { readonly type: "tool" }>
 
 /** The words a refusal of the guard opens with. */
-const GUARD_WORDS = /^Error: guard-(destructive|sleep): /
+const GUARD_WORDS = /^Error: Refused by guard-(destructive|sleep): /
 
 /** What one call came to, held against what the guard must do with it under the faults on at the time. */
 const judge = (
