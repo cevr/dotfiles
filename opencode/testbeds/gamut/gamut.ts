@@ -55,13 +55,14 @@ import {
 import { homedir, tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { ORCHESTRATOR } from "../../mods/orchestrate/role.ts"
+import { ORCHESTRATOR, orchestrator } from "../../mods/orchestrate/role.ts"
 import { STORE_PREFIX, StoreSource } from "../../mods/pool/store/store.ts"
 import { NO_FREE_MODELS, releaseFlags } from "../../scripts/release-flags.ts"
 import { gitInit } from "../../tests/git-repo.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../anthropic-auth.ts"
 import { type HostConfig, type HostScreen, hostCall, isKeyName, keys } from "./pty-host.ts"
 import { stamp, watchdog } from "../../tests/hang-guard.ts"
+import { submit, waitForComposer } from "./startup/handshake.ts"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CHECKOUT = resolve(HERE, "../..")
@@ -948,9 +949,11 @@ const prepareAndLaunch = async (
     ...(usesPool(preset) ? serverPlugins(preset, anthropicAuthPlugin, loginStore) : [poolPlugin]),
   ]
   writeProjectConfig(paths.work, preset, simPort, plugins)
-  // Every TUI plugin is a cmd/ composition root, Prime first. cmd/btw's /btw replaces the fork's built-in one, which
-  // "-opencode.btw" turns off.
-  await Bun.write(join(paths.config, "cli.json"), `${JSON.stringify(cliConfig([...pluginPaths(CMD), "-opencode.btw"]), null, 2)}\n`)
+  // Load the cmd/ TUI plugins, Prime first, and the testbed's readiness probe. cmd/btw replaces the fork's /btw.
+  const marker = join(root, "composer-ready")
+  const cli = cliConfig([...pluginPaths(CMD), "-opencode.btw"])
+  const startup = { package: join(HERE, "startup"), options: { marker, agent: ORCHESTRATOR, description: orchestrator.description } }
+  await Bun.write(join(paths.config, "cli.json"), `${JSON.stringify({ ...cli, plugins: [...cli.plugins, startup] }, null, 2)}\n`)
   cpSync(THEME, join(paths.work, ".opencode/themes/prime.json"))
   const agentsPath = join(paths.work, "AGENTS.md")
   await Bun.write(agentsPath, rewriteRoster(await Bun.file(agentsPath).text(), preset))
@@ -979,11 +982,10 @@ const prepareAndLaunch = async (
   importCredentials(loginsToCopy(named, preset), launch, env, paths.work)
 
   const prompt = args.prompt === undefined ? DEFAULT_PROMPT : await resolvePrompt(args.prompt)
-  const sendMark = stamp()
   const hostPid = await startHost(root, {
     socket: paths.socket,
     cwd: paths.work,
-    command: [...launch.base, "--standalone", "--auto", "--prompt", prompt],
+    command: [...launch.base, "--standalone", "--auto"],
     env,
     ...HOST_SIZE,
   })
@@ -995,11 +997,17 @@ const prepareAndLaunch = async (
     ...(started.simPid === undefined ? {} : { simPid: started.simPid }),
     base: launch.base,
     preset: args.preset,
-    sendMark,
-    awaitsTurn: true,
+    sendMark: 0,
+    awaitsTurn: sendAwaitsTurn(prompt),
   }
   try {
-    await writeState(state)
+    // Don't let the cold TUI auto-submit on the built-in agent before the real default arrives.
+    await waitForComposer(marker, ORCHESTRATOR, () =>
+      callHost(state, (socket) => hostCall(socket, { op: "read", scope: "screen" }), 1000),
+    )
+    const sendMark = stamp()
+    await callHost(state, (socket) => submit(socket, prompt))
+    await writeState({ ...state, sendMark })
   } catch (error) {
     // Without the state file no `down` can find the host, so stop it here.
     if (await isHost(hostPid, root)) process.kill(hostPid, "SIGKILL")
@@ -1266,10 +1274,7 @@ const send = async (text: string) => {
   const state = await readState()
   // Mark before typing: the message is stored after this time.
   await writeState({ ...state, sendMark: stamp(), awaitsTurn: sendAwaitsTurn(text) })
-  await callHost(state, async (socket) => {
-    await hostCall(socket, { op: "type", text })
-    await hostCall(socket, { op: "keys", names: ["enter"] })
-  })
+  await callHost(state, (socket) => submit(socket, text))
 }
 
 const pressKeys = async (names: ReadonlyArray<string>) => {
