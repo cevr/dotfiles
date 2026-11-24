@@ -18,14 +18,22 @@ const pairingArgs = (args: ReadonlyArray<string>) => {
     /^[\w-]+$/.test(args[2] || "")
 }
 
-BunRuntime.runMain(Effect.gen(function* () {
+const fixture = Effect.gen(function* () {
   const args = yield* Schema.decodeUnknownEffect(Args)(readScratchFileSync(argv[2] || "", "utf8"))
   if (!pairingArgs(args)) return yield* new PairFixtureFailed()
+  return args
+})
+
+const services = Layer.unwrap(Effect.sync(() => {
   const file = scratchInput(fileOf(env))
   const store = layerReading(file, () => readScratchFileSync(file, "utf8"))
-  const services = Layer.mergeAll(store, liveNet, tokens)
-  const outcome = yield* pair(args, matchingInput("cmd/mail/pair.ts")).pipe(Effect.provide(services))
+  return Layer.mergeAll(store, liveNet, tokens)
+}))
+
+BunRuntime.runMain(Effect.gen(function* () {
+  const args = yield* fixture
+  const outcome = yield* pair(args, matchingInput("cmd/mail/pair.ts"))
   if (outcome.ok) return yield* Console.log(outcome.out)
   yield* Console.error(outcome.error)
   return yield* new PairFixtureFailed()
-}), { disableErrorReporting: true })
+}).pipe(Effect.provide(services)), { disableErrorReporting: true })

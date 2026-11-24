@@ -115,21 +115,23 @@ export const checkoutTests = (input: CheckoutTestInputs, ...entries: ReadonlyArr
   const { temp, state, timeout, filter, fork } = input
   if (entries.length === 0 || new Set(entries).size !== entries.length || entries.some((entry) => !isEntryName(entry)))
     return reject("nested test launch needs distinct checkout entries")
-  if (timeout !== undefined && (!Number.isSafeInteger(timeout) || timeout <= 0 || timeout > 300_000))
+  if (!Predicate.isUndefined(timeout) && (!Number.isSafeInteger(timeout) || timeout <= 0 || timeout > 300_000))
     return reject("invalid nested test timeout")
-  if (filter !== undefined && !/^[\w ^$.-]+$/.test(filter)) return reject("unsupported nested test filter")
+  if (!Predicate.isUndefined(filter) && !/^[\w ^$.-]+$/.test(filter)) return reject("unsupported nested test filter")
   if (input.checkout && !exactArgs(Object.keys(input.checkout), "OPENCODE_RECONNECT_TUI_BINARY"))
     return reject("unsupported nested test checkout environment")
-  const env: Record<string, string> = {
+  const external = new Map<string, string>()
+  if (fork) external.set("OPENCODE_DEV", fork)
+  const env = {
     ...checkoutBun(entries[0]!, {
       scratch: {
         HOME: state, TMPDIR: temp, XDG_CONFIG_HOME: resolve(state, "config"), XDG_CACHE_HOME: resolve(state, "cache"),
         XDG_STATE_HOME: resolve(state, "state"), XDG_DATA_HOME: resolve(state, "data"),
       },
-      external: fork ? { OPENCODE_DEV: fork } : {},
+      external: Object.fromEntries(external),
       checkout: input.checkout, values: {},
     }).env,
-    ...(fork ? {} : { OPENCODE_DEV: "" }),
+    OPENCODE_DEV: (fork && externalInput(fork)) || "",
     // Keep Bun's own cache out of the caller's TMPDIR leak detector.
     BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
   }
@@ -137,9 +139,11 @@ export const checkoutTests = (input: CheckoutTestInputs, ...entries: ReadonlyArr
   if (localTestPaths.existsSync(data) && localTestPaths.readdirSync(data).length !== 0)
     return reject("nested test XDG data must be empty")
   const files = entries.map((entry) => `./${localTestPaths.relative(ROOT, matchingInput(entry))}`)
+  const argv = [localTestProcess.execPath, "--no-env-file", "test"]
+  if (timeout) argv.push("--timeout", String(timeout))
+  if (filter) argv.push("-t", filter)
   return {
-    argv: [localTestProcess.execPath, "--no-env-file", "test", ...(timeout ? ["--timeout", String(timeout)] : []),
-      ...(filter ? ["-t", filter] : []), ...files],
+    argv: [...argv, ...files],
     cwd: ROOT, env,
   }
 }
@@ -351,16 +355,22 @@ const cloneArgs = (args: ReadonlyArray<string>) =>
   args.length === 5 && args[0] === "--quiet" && args[1] === "--origin" &&
   /^\w[\w-]*$/.test(args[2] ?? "") && args.slice(3).every(localTestPaths.isAbsolute)
 
+const configArgs = (args: ReadonlyArray<string>) =>
+  [
+    "gc.auto 0", "maintenance.auto false", "user.name work", "user.email work@example.com",
+    'rift.gate echo " 2 pass"', 'rift.accept sleep 1 && echo " 1 fail since $RIFT_LAND_BASE" && exit 1',
+  ].includes(args.join(" ")) ||
+  (args.length === 2 && args[0] === "--get" && Object.hasOwn(QUIET_GIT, args[1] ?? ""))
+
+const remoteArgs = (args: ReadonlyArray<string>) =>
+  (args.length === 2 && ["get-url", "remove"].includes(args[0] ?? "") && /^\w[\w-]*$/.test(args[1] ?? "")) ||
+  (args.length === 3 && args[0] === "add" && args[1] === "origin" && localTestPaths.isAbsolute(args[2] || "")) ||
+  exactArgs(args, "set-head", "origin", "--auto")
+
 const gitCommandAllowed = (command: string, args: ReadonlyArray<string>) => {
   switch (command) {
-    case "config": return [
-      "gc.auto 0", "maintenance.auto false", "user.name work", "user.email work@example.com",
-      'rift.gate echo " 2 pass"', 'rift.accept sleep 1 && echo " 1 fail since $RIFT_LAND_BASE" && exit 1',
-    ].includes(args.join(" ")) ||
-      (args.length === 2 && args[0] === "--get" && Object.hasOwn(QUIET_GIT, args[1] ?? ""))
-    case "remote": return (args.length === 2 && ["get-url", "remove"].includes(args[0] ?? "") && /^\w[\w-]*$/.test(args[1] ?? "")) ||
-      (args.length === 3 && args[0] === "add" && args[1] === "origin" && localTestPaths.isAbsolute(args[2] || "")) ||
-      exactArgs(args, "set-head", "origin", "--auto")
+    case "config": return configArgs(args)
+    case "remote": return remoteArgs(args)
     case "clone": return cloneArgs(args)
     case "fetch": return args.length === 3 && args[0] === "--quiet" && args.slice(1).every((operand) => /^\w[\w./-]*$/.test(operand))
     case "push": return args.length === 4 && args[0] === "-q" && args[1] === "-u" && args[2] === "origin" && /^\w[\w./-]*$/.test(args[3] ?? "")

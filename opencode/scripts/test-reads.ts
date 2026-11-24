@@ -486,7 +486,8 @@ const CHECKOUT_BUN = new Set([
 const CHECKOUT_TESTS = new Set(["tests/scratch-child.ts:checkoutTests", "tests/owned.ts:ownedCheckoutTests"])
 const checkoutTestEntries = (args: ReadonlyArray<Node>, evaluate: Evaluation) => {
   const entries = args.slice(1).map((arg) => Option.getOrElse(literalPath(evaluate(arg)), () => ""))
-  return entries.length && entries.every((file) => /^(?:[\w-]+\/)+[\w.-]+\.[cm]?[jt]sx?$/.test(file)) ? entries : []
+  if (entries.every((file) => /^(?:[\w-]+\/)+[\w.-]+\.[cm]?[jt]sx?$/.test(file))) return entries
+  return []
 }
 const workspacePackage = (specifier: string) => specifier.startsWith("@dotfiles/")
 
@@ -601,10 +602,7 @@ const processRead = (at: Node, called: string, args: ReadonlyArray<Node>, evalua
   }
 }
 
-const callRead = (at: Node, syntax: Syntax, evaluate: Evaluation, record: ReadSite) => {
-  const callee = child(at, "callee")
-  const called = syntax.symbol(callee)
-  const args = argsOf(at)
+const directRead = (at: Node, called: string, callee: MaybeNode, args: ReadonlyArray<Node>, syntax: Syntax, evaluate: Evaluation, record: ReadSite) => {
   if (called === "Bun:mmap" || called === "bun:mmap") return record(at, evaluate(args[0]))
   if (called === "@opencode-tui/test/fixture/app.ts:createAppFixture")
     return record(at, opaque("native TUI plugin loader reads"))
@@ -619,6 +617,13 @@ const callRead = (at: Node, syntax: Syntax, evaluate: Evaluation, record: ReadSi
     const recursive = ["cp", "cpSync"].includes(method) && field(opts(args[2], "recursive"), "value") === true
     return record(at, evaluate(args[0]), CWD, DIRECTORY.has(method) || method === "copy" || recursive)
   }
+}
+
+const callRead = (at: Node, syntax: Syntax, evaluate: Evaluation, record: ReadSite) => {
+  const callee = child(at, "callee")
+  const called = syntax.symbol(callee)
+  const args = argsOf(at)
+  directRead(at, called, callee, args, syntax, evaluate, record)
   if (CHECKOUT_TESTS.has(called)) {
     const entries = checkoutTestEntries(args, evaluate)
     if (!entries.length) return record(at, opaque("nonliteral nested checkout test"))

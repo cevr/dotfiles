@@ -65,9 +65,10 @@ export const ownedScratchShell = (cwd: string, program: string) => {
 /** Exercise the owned TMPDIR lifecycle without accepting arbitrary shell text or argv. */
 export const ownedTempFixture = (temporary?: string) => {
   const temp = temporary && scratchInput(temporary)
+  const env = { PATH: "/usr/bin:/bin", HOME: temp || scratchRoot(), TMPDIR: temp, TEST_READS_SCRATCH_CHILD: "sh" }
   return owned(["/bin/sh", "-c", 'mkdir -p "$TMPDIR/opencode-drive/run-x" "$TMPDIR/opencode" && printf %s "$TMPDIR"'], {
     cwd: temp || scratchRoot(),
-    env: { PATH: "/usr/bin:/bin", HOME: temp || scratchRoot(), ...(temp ? { TMPDIR: temp } : {}), TEST_READS_SCRATCH_CHILD: "sh" },
+    env,
     stdin: "ignore", stdout: "pipe", stderr: "ignore",
   })
 }
