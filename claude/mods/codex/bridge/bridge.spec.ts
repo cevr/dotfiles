@@ -66,6 +66,7 @@ afterEach(() => {
   rmSync(state, { force: true })
   rmSync(log, { force: true })
   rmSync(join(dir, 'bridge.log'), { force: true })
+  delete process.env.FAKE_MANUAL_PROMPT
   setSystemTime()
 })
 // Moves the bridge's clock on, as a resume's wait passes.
@@ -105,6 +106,16 @@ test('legacy verifier and reviewer threads remain visible but cannot take a foll
   expect(existsSync(log)).toBe(false)
 })
 
+test('a queued verifier left by the old bridge does not reopen on Codex', async () => {
+  const now = Date.now()
+  const saved = { id: 't1', owner: 's1', description: 'verifier sheet r1', role: 'reviewer', cwd: dir, model: 'gpt-6.1-sol', status: 'queued', queued: 'check it', queuedAt: now, turns: 1, updatedAt: now }
+  writeFileSync(state, JSON.stringify({ seq: 1, events: [], threads: { t1: saved } }))
+  const { bridge, call } = open()
+  await bridge.pump()
+  expect((await call('GET', '/events?owner=s1')).body).toMatchObject([{ threadId: 't1', status: 'failed', error: expect.stringContaining('Claude Opus only') }])
+  expect(existsSync(log)).toBe(false)
+})
+
 describe('a thread', () => {
   test("explicit verification and its legacy role name are refused before an app-server thread is made", async () => {
     const { call } = open()
@@ -116,7 +127,8 @@ describe('a thread', () => {
   })
 
   test('starts as a role agent on the newest family model, and its finished turn waits for its owner until acked', async () => {
-    const { call } = open()
+    process.env.FAKE_MANUAL_PROMPT = 'build it'
+    const { bridge, call } = open()
     const started = await call('POST', '/start', {
       owner: 's1',
       description: 'implementor sheet r1',
@@ -131,6 +143,7 @@ describe('a thread', () => {
     expect(start.params.developerInstructions).toStartWith('You are the implementor of one orchestrate unit.')
     expect(start.params.config).toEqual({ model_reasoning_effort: 'max' })
 
+    await bridge.server.call('fake/complete', { threadId: 't1' })
     await settle()
     const events = (await call('GET', '/events?owner=s1')).body
     expect(events).toHaveLength(1)
@@ -155,12 +168,14 @@ describe('a thread', () => {
     await settle()
     first.bridge.server.stop()
 
+    process.env.FAKE_MANUAL_PROMPT = 'fix round 2'
     const second = open()
     const sent = await second.call('POST', '/send', { threadId: 't1', prompt: 'fix round 2' })
     expect(sent.body).toMatchObject({ id: 't1', status: 'running', turns: 2 })
+    await second.bridge.server.call('fake/complete', { threadId: 't1' })
     await settle()
     const methods = requests().map(r => r.method)
-    expect(methods.slice(methods.lastIndexOf('initialize'))).toEqual(['initialize', 'account/rateLimits/read', 'thread/resume', 'turn/start'])
+    expect(methods.slice(methods.lastIndexOf('initialize'))).toEqual(['initialize', 'account/rateLimits/read', 'thread/resume', 'turn/start', 'fake/complete'])
     const events = (await second.call('GET', '/events?owner=s1')).body
     expect(events.map((e: any) => e.final)).toEqual(['done: build it', 'done: fix round 2'])
   })
@@ -604,9 +619,11 @@ describe('the budget', () => {
     const file = join(dir, 'admit-luna.sh')
     writeFileSync(file, `echo "$@" >> ${join(dir, 'admit.log')}\ncase "$*" in *luna*) echo 'hold: no room for luna'; exit 1;; esac\necho 'admit: fits'\n`)
     process.env.CODEX_BRIDGE_ADMIT = `sh ${file}`
+    process.env.FAKE_MANUAL_PROMPT = 'build it'
     const { bridge, call } = open()
     expect((await call('POST', '/start', { owner: 's1', description: 'verifier sheet r1', prompt: 'check it', cwd: dir, model: 'luna' })).body).toMatchObject({ id: 't1', status: 'queued' })
     expect((await call('POST', '/start', { owner: 's1', description: 'implementor queue r1', prompt: 'build it', cwd: dir })).body).toMatchObject({ id: 't2', status: 'running' })
+    await bridge.server.call('fake/complete', { threadId: 't2' })
 
     later(PATIENCE_MIN)
     const behind = await call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'build it', cwd: dir })
