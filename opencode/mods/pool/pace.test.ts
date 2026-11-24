@@ -130,7 +130,15 @@ test("seed 10286377: a login that cannot be read until sign-in does not hide the
       if (first.value === "signin") return { ...item, reading: { at: now, windows: [] } }
       return item
     })
-    if (first.value === "signin") expect(dispatch(remedied)).toMatchObject({ ok: false, reasonCode: "usage-unread" })
+    if (first.value === "signin") {
+      expect(answer.signIn).toEqual(["0", "1"])
+      expect(dispatch(remedied)).toMatchObject({ ok: false, reasonCode: "usage-unread" })
+      const authenticated = candidates.map((item, i) => {
+        if (i === fixed) return { ...item, reading: withScope }
+        return item
+      })
+      expect(dispatch(authenticated)).toMatchObject({ ok: true, eligible: [String(fixed)] })
+    }
     if (first.value === "unreported") {
       const next = dispatch(remedied, now, "claude-opus-5-5")
       if (overlap) expect(next).toMatchObject({ ok: false, reasonCode: "usage-unread" })

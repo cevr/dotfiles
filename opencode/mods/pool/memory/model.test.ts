@@ -4,9 +4,9 @@
 // session; the pool asks nothing, and withdraws any older question still
 // open. Nothing here reaches a provider: the claim is the memory quota's.
 import { describe, expect, test } from "bun:test"
-import { Context, Effect, Layer, Option, Schema } from "effect"
+import { Context, Effect, Layer, Option, Result, Schema } from "effect"
 import { TestClock } from "effect/testing"
-import { PoolId } from "../account-pool.ts"
+import { AccountsHeld, PoolId } from "../account-pool.ts"
 import { CACHE_LIFE_MS } from "../accounts.ts"
 import * as FleetTest from "./fleet.ts"
 import * as LedgerTest from "./ledger.ts"
@@ -194,6 +194,53 @@ describe("Claude resets", () => {
   /** The account's 5-hour window spent, two 5-hour grants in hand. */
   const held = (claude: ReturnType<typeof world>, now: number, weekIn = 3 * DAY) =>
     claude.readings.get(ANTHROPIC)!.set("claude-a", reading(now, { weekIn, credits: [{ ...credit("grant-1", now, 120 * DAY), count: 2, clears: ["five_hour"] }] }))
+
+  test("a late title's room and an already-redeemed claim do not reopen a refused login", () =>
+    scoped(
+      Effect.gen(function* () {
+        const now = Date.parse("2026-11-23T00:00:00Z")
+        const refusedUntil = now + HOUR
+        yield* TestClock.setTime(now)
+        const fixture = world(config, logins)
+        const samples = Option.getOrThrow(Option.fromNullishOr(fixture.readings.get(ANTHROPIC)))
+        const room = reading(now, { fiveHour: 0.2, sevenDay: 0.2 })
+        samples.set("claude-a", room)
+        const pool = yield* fixture.pool
+        const primary = { providerID: "anthropic", model: "claude-haiku-4-5", sessionID: "ses_owner", kind: "primary" } as const
+        const title = { ...primary, kind: "title" } as const
+        expect((yield* pool.place(primary))?.credentialID).toBe("claude-a")
+        expect((yield* pool.place(title))?.credentialID).toBe("claude-a")
+
+        samples.set("claude-a", { ...room, refusal: { kind: "usage-limit", until: refusedUntil } })
+        yield* pool.responded({ ...primary, status: 429 })
+        yield* TestClock.adjust(1)
+        samples.set("claude-a", { ...room, at: now + 1, status: "allowed" })
+        yield* pool.responded({ ...title, status: 200 })
+        expect(yield* pool.pace(primary.providerID, primary.model)).toMatchObject({
+          ok: false, reasonCode: "account-held", retryAt: refusedUntil,
+        })
+
+        // An expiring grant does not require a spent window, so the pool
+        // actually sends the claim even though the late title showed room.
+        const expires = { ...credit("expiring", now, 30 * 60_000), clears: ["five_hour"], requiresLimit: false }
+        samples.set("claude-a", reading(now + 1, { fiveHour: 0.2, sevenDay: 0.2, credits: [expires] }))
+        fixture.state.answer = () => {
+          samples.set("claude-a", reading(now + 1, { fiveHour: 0.2, sevenDay: 0.2 }))
+          return { outcome: "already-redeemed" }
+        }
+        yield* pool.sweep
+        expect(fixture.claims.map((claim) => [claim.credentialID, claim.creditID])).toEqual([["claude-a", "expiring"]])
+        expect((yield* pool.resets).claims.map((claim) => claim.outcome)).toEqual(["already-redeemed"])
+        const retry = yield* Effect.result(pool.place(primary))
+        expect(retry).toEqual(Result.fail(new AccountsHeld({
+          sessionID: primary.sessionID, kind: primary.kind, retryAt: refusedUntil, signIn: [],
+        })))
+
+        yield* TestClock.setTime(refusedUntil)
+        samples.set("claude-a", reading(refusedUntil, { fiveHour: 0.2, sevenDay: 0.2 }))
+        expect((yield* pool.place(primary))?.credentialID).toBe("claude-a")
+      }).pipe(Effect.provide(TestClock.layer())),
+    ))
 
   test("a held start with work running: a grant is claimed on its own, once, recorded with whether the week moved, and the owner told in the waiting session; nothing asked", () =>
     scoped(
