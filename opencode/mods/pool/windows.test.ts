@@ -64,16 +64,20 @@ test("every combination of the three states, both windows, with and without a us
     const label = `5h ${describe(short)}, 7d ${describe(week)}, usage read: ${usage}`
     expect([label, futureRetry(answer), futureRetry(advisory)]).toEqual([label, true, true])
     const anyReported = short._tag === "Reported" || week._tag === "Reported"
+    const anyUnknown = short._tag === "Unknown" || week._tag === "Unknown"
     const spent = reported(short, (use) => use >= 0.9) || reported(week, (use) => use >= 0.99)
     // An UNKNOWN window waits for one usage read only; ABSENT never waits.
-    const waits = !usage && (short._tag === "Unknown" || week._tag === "Unknown")
-    const expected = Match.value({ waits, spent, past: reported(week, (use) => use === 0.7) }).pipe(
+    const waits = !usage && anyUnknown
+    const unmeasured = usage && !anyReported && anyUnknown
+    const expected = Match.value({ waits, spent, past: reported(week, (use) => use === 0.7), unmeasured }).pipe(
       Match.when({ waits: true }, () => ({ ok: false, reasonCode: "usage-unread" })),
       Match.when({ spent: true }, () => ({ ok: false, reasonCode: "quota-limit" })),
       Match.when({ past: true }, () => ({ ok: false, reasonCode: "even-line" })),
-      Match.orElse(() => ({ ok: true, eligible: ["a"] })),
+      Match.when({ unmeasured: true }, () => ({ ok: true, measured: false, eligible: ["a"] })),
+      Match.orElse(() => ({ ok: true, measured: true, admission: "ordinary", eligible: ["a"] })),
     )
     expect([label, answer]).toMatchObject([label, expected])
+    if (unmeasured) expect([label, Option.isNone(Option.fromUndefinedOr(answer.admission))]).toEqual([label, true])
     // No hold without a reported window: a hold of a limit names a REPORTED window, and an unread wait is one read long.
     Match.value(answer).pipe(
       Match.when({ ok: false, reasonCode: "usage-unread" }, (held) => expect([label, held.retryAt <= now + UNREAD_RETRY_MS]).toEqual([label, true])),
@@ -139,4 +143,63 @@ test("an older host's reading, without the absences, reads UNKNOWN, never ABSENT
   expect(windowReading(older, "5h")._tag).toBe("Unknown")
   expect(windowReading(carryOver(ultra, older), "5h")).toEqual(Absent.make({ at: now }))
   expect(Option.isSome(Option.fromUndefinedOr(carryOver(ultra, older).absent))).toBe(true)
+})
+
+test("B2: no REPORTED tracked window with an UNKNOWN one answers unmeasured, never measured or unlimited, and names the unread field", () => {
+  const fresh = { at: now, samples: 1 as const }
+  const q4 = accountOf("a", { at: now, usage: fresh, windows: [], absent: [{ name: "5h", at: now }], unrecognised: [] })
+  const q4b = accountOf("a", { at: now, usage: fresh, windows: [], absent: [{ name: "5h", at: now }], unrecognised: ["seven_day"] })
+  const q5 = accountOf("a", { at: now, usage: fresh, windows: [{ name: "seven_day_opus", utilization: 0.3, resetAt: now + day }], unrecognised: [] })
+  for (const [account, field] of [[q4, "7d"], [q4b, "seven_day"], [q5, "5h, 7d"]] as const) {
+    for (const answer of [dispatchPace([account], now, {}, 0.04, OPUS), poolPace([account], now)]) {
+      expect(answer).toMatchObject({ ok: true, measured: false, eligible: ["a"] })
+      expect(answer.admission).toBeUndefined()
+      expect(answer.reason).toContain("weekly pace unmeasured")
+      expect(answer.reason).toContain(field)
+      expect(answer.reason).not.toContain("limited by nothing")
+      expect(answer.reason).not.toContain("5-hour window binds alone")
+    }
+  }
+  const q6 = accountOf("a", { at: now, usage: fresh, windows: [{ name: "5h", utilization: 0.1, resetAt: RESETS["5h"] }], unrecognised: ["seven_day"] })
+  const shortOnly = dispatchPace([q6], now, {}, 0.04, OPUS)
+  expect(shortOnly).toMatchObject({ ok: true, measured: true, admission: "ordinary", eligible: ["a"] })
+  expect(shortOnly.reason).toContain("5-hour window binds alone")
+  expect(shortOnly.reason).toContain("seven_day")
+  expect(shortOnly.reason).not.toContain("limited by nothing")
+})
+
+test("B1: a carried tracked window older than 30 min under a fresh usage read leaving it UNKNOWN does not block on staleness, yet still binds if spent", () => {
+  const then = now - 40 * minute
+  const held = (shortUse: number, weekUse: number): QuotaReading => ({
+    at: then,
+    usage: { at: then, samples: 1 },
+    windows: [
+      { name: "5h", utilization: shortUse, resetAt: now + 2 * hour },
+      { name: "7d", utilization: weekUse, resetAt: now + 3 * day },
+    ],
+  })
+  const cases: ReadonlyArray<QuotaReading> = [
+    { at: now, usage: { at: now, samples: 1 }, windows: [{ name: "5h", utilization: 0.1, resetAt: now + 2 * hour }], unrecognised: ["seven_day"] },
+    { at: now, usage: { at: now, samples: 1 }, windows: [{ name: "5h", utilization: 0.1, resetAt: now + 2 * hour }], unrecognised: [] },
+    { at: now, usage: { at: now, samples: 1 }, windows: [{ name: "7d", utilization: 0.2, resetAt: now + 3 * day }], unrecognised: [] },
+  ]
+  for (const next of cases) {
+    const carried = carryOver(held(0.1, 0.2), next)
+    expect(dispatchPace([accountOf("a", carried)], now, {}, 0.04, OPUS)).toMatchObject({ ok: true, eligible: ["a"] })
+    const refreshed: QuotaReading = {
+      ...next,
+      at: now + day,
+      usage: { at: now + day, samples: 1 },
+      windows: next.windows.map((window) => ({
+        ...window,
+        resetAt: Match.value(window.name).pipe(Match.when("5h", () => now + day + 2 * hour), Match.orElse(() => now + 3 * day)),
+      })),
+    }
+    const later = carryOver(carried, refreshed)
+    expect(dispatchPace([accountOf("a", later)], now + day, {}, 0.04, OPUS).ok).toBe(true)
+  }
+  const spentWeek = carryOver(held(0.1, 1), cases[0])
+  expect(dispatchPace([accountOf("a", spentWeek)], now, {}, 0.04, OPUS)).toMatchObject({ ok: false, reasonCode: "quota-limit", retryAt: now + 3 * day })
+  const spentShort = carryOver(held(1, 0.2), cases[2])
+  expect(dispatchPace([accountOf("a", spentShort)], now, {}, 0.04, OPUS)).toMatchObject({ ok: false, reasonCode: "quota-limit", retryAt: now + 2 * hour })
 })

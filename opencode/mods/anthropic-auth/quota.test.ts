@@ -136,8 +136,9 @@ describe('readUsageBody', () => {
       expect(reading).not.toHaveProperty('absent')
       expect(reading).toMatchObject({ unrecognised: ['five_hour'] })
     }
-    // Nothing tracked read either way and no window at all: a failed read, its keys loggable without a value.
+    // Nothing tracked read either way (even with an untracked extra window): a failed read, its keys loggable without a value.
     expect(readUsageBody({ five_hour: 'gone', session: { used: 3 } }, NOW)).toBeUndefined()
+    expect(readUsageBody({ seven_day_opus: { utilization: 20, resets_at: '2027-01-20T00:00:00Z' } }, NOW)).toBeUndefined()
     expect(usageKeys(Option.some({ five_hour: 'gone', session: { used: 3 } }))).toBe('keys five_hour, session')
     expect(readUsageBody({ ...weekly, five_hour: { utilization: 90, resets_at: '2027-01-15T10:00:00Z' } }, NOW)).toMatchObject({
       windows: expect.arrayContaining([{ name: '5h', utilization: 0.9, resetAt: Date.parse('2027-01-15T10:00:00Z') }]),

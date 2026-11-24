@@ -16,7 +16,7 @@
 // is no reading: the pace fails open, never holds. No token is kept or logged.
 import { Array as Arr, Cause, Clock, Effect, Option, PubSub, Schema, Stream } from "effect"
 import type { QuotaRpc } from "../opencode/quota.ts"
-import { accountWide, TRACKED_WINDOWS, USAGE_TIMEOUT_MS, type ClaimAnswer, type QuotaReading, type QuotaWindow, type ResetCredit } from "../quota.ts"
+import { accountWide, tracked, TRACKED_WINDOWS, USAGE_TIMEOUT_MS, type ClaimAnswer, type QuotaReading, type QuotaWindow, type ResetCredit } from "../quota.ts"
 
 export const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 
@@ -169,7 +169,7 @@ export const fromUsage = (body: unknown, now: number): QuotaReading | undefined 
   const limit = body.rate_limit
   const windows = usageWindows(limit)
   const { unrecognised, absent } = slotsOf(Option.getOrElse(decodeSlots(limit), () => ({})), windows, now)
-  if (!windows.length && !absent.length) return undefined
+  if (!windows.some((item) => tracked(item.name)) && !absent.length) return undefined
   const additional = (Array.isArray(body.additional_rate_limits) ? body.additional_rate_limits : []).flatMap((extra) =>
     isRecord(extra) && typeof extra.limit_name === "string" && extra.limit_name !== "" ? usageWindows(extra.rate_limit, extra.limit_name) : [],
   )

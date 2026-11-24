@@ -335,7 +335,7 @@ export function readUsageBody(body: unknown, now: number): QuotaReading | undefi
   }
   windows.push(...modelWindows(body))
   const absent = read.flatMap(({ name, state }) => Match.value(state).pipe(Match.tag("Absent", ({ at }) => [{ name, at }]), Match.orElse(() => [])))
-  if (windows.length === 0 && absent.length === 0) return undefined
+  if (!read.some(({ state }) => state._tag !== "Unknown")) return undefined
   const resets = readResets(body.cedar_ember, now)
   return {
     at: now,

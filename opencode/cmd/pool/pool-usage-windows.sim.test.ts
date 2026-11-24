@@ -18,6 +18,7 @@ const NO_WEEK: UsageLayout = { five_hour: "window", seven_day: "absent", extra: 
 const NONE: UsageLayout = { five_hour: "absent", seven_day: "absent", extra: false }
 const CHANGED: UsageLayout = { five_hour: "unrecognised", seven_day: "window", extra: true }
 const FULL: UsageLayout = { five_hour: "window", seven_day: "window", extra: false }
+const MINUTE = 60_000
 
 /** The anthropic pool's accounts as the status method answers, as far as these checks read them. */
 const statusOf = Schema.decodeUnknownSync(Schema.Struct({
@@ -164,3 +165,32 @@ seeded("an OpenAI account whose usage answer has no five-hour window reads it AB
     expect(answer).toMatchObject({ ok: true, measured: true })
   }),
 )
+
+const STALE_AFTER_CHANGE: ReadonlyArray<readonly [string, UsageLayout]> = [
+  ["unchanged control", FULL],
+  ["seven_day unrecognised", { five_hour: "window", seven_day: "unrecognised", extra: false }],
+  ["seven_day missing", { five_hour: "window", seven_day: "missing", extra: false }],
+  ["five_hour missing", { five_hour: "missing", seven_day: "window", extra: false }],
+  ["five_hour unrecognised", { five_hour: "unrecognised", seven_day: "window", extra: false }],
+]
+
+for (const [label, changed] of STALE_AFTER_CHANGE) {
+  seeded(`a previously reported window turning UNKNOWN (${label}) does not hold after 40 min idle`, ({ expect }) =>
+    Effect.gen(function* () {
+      const made = fixture({ a: quota(0.2, 0.1) }, refunds)
+      made.layouts.a = FULL
+      const { world, session, pace, primary } = yield* fleet(made, { sweepMinutes: 10 })
+      const id = yield* session("stale_unknown")
+      expect(yield* pace(id)).toMatchObject({ ok: true })
+      yield* world.prompt(id, "first request on reported windows")
+      yield* world.until(() => primary().length > 0, HOUR)
+      const first = primary().length
+      made.layouts.a = changed
+      yield* world.advance(40 * MINUTE)
+      expect(yield* pace(id)).toMatchObject({ ok: true })
+      yield* world.prompt(id, "second request after 40 min idle under changed layout")
+      const sent = yield* world.until(() => primary().length > first, 2 * HOUR).pipe(Effect.as(true), Effect.orElseSucceed(() => false))
+      expect(sent).toBe(true)
+    }),
+  )
+}
