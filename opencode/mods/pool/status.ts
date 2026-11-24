@@ -77,6 +77,7 @@ export const AccountStatus = Schema.Struct({
   credentialID: Schema.String,
   hold: Schema.optionalKey(Hold),
   reading: Schema.optionalKey(QuotaReading),
+  measurement: Schema.optionalKey(Schema.Literals(["measured", "unmeasured"])),
   /** USD recorded on it in the window. */
   load: Schema.Number,
   /** Sessions whose run or cache is on it now. */

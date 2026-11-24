@@ -61,7 +61,7 @@ export const claimOf = (status: number, body: unknown): ClaimAnswer => {
 export const FRESH_MS = 60_000
 
 /** How long the usage endpoint has to answer. */
-const TIMEOUT_MS = 10_000
+export const USAGE_TIMEOUT_MS = 10_000
 
 /** What a read of the usage endpoint needs of one login: its access token and its ChatGPT account. */
 export interface Login {
@@ -239,7 +239,7 @@ export const make = (options: Options) =>
         const response = yield* Effect.tryPromise((signal) =>
           send(url, {
             headers: headersOf(login),
-            signal: AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]),
+            signal: AbortSignal.any([signal, AbortSignal.timeout(USAGE_TIMEOUT_MS)]),
           }),
         )
         if (!response.ok) return undefined

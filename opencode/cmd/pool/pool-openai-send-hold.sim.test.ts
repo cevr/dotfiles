@@ -14,6 +14,82 @@ const DIRECTORY = "/scratch/openai"
 const POOL = "dotfiles-opencode.pool"
 const heldSendOf = Schema.decodeUnknownSync(HeldSendAnswer)
 
+for (const transport of ["http", "websocket"] as const)
+for (const quotaResult of ["free", "spent", "timeout"] as const)
+seeded(`no ${transport} send before a new login's first measure completes or times out (${quotaResult})`, ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const model = { providerID: "openai", id: "gpt-6.2-fixture" }
+    const account = Provider.accounts(seed, ["sol"]).sol
+    const quota = ChatGPT.make()
+    const usage = spentAccount(account.access, "never-claim", World.START)
+    usage.credits.length = 0
+    usage.fiveHourResetAt = World.START + 60_000
+    if (quotaResult !== "spent") usage.fiveHour = 0
+    quota.accounts.set("fixture", usage)
+    const delay = 100 + seed % 700
+    const sends: Array<number> = []
+    const requests: Array<number> = []
+    let offline = quotaResult === "timeout"
+    const receive = () => sends.push(world.now())
+    const wire = Match.value(transport).pipe(
+      Match.when("websocket", () => ({ models: [{ ...model, modelID: model.id, limit: { context: 128_000 }, cost: [], settings: { transport: "websocket" as const } }] })),
+      Match.when("http", () => ({ provider: { id: model.providerID, baseURL: "http://127.0.0.1:11",
+        handle: () => Effect.sync(() => { receive(); return new Response("data: {\"type\":\"message_stop\"}\n\n") }) },
+      })),
+      Match.exhaustive,
+    ) satisfies Partial<World.Options>
+    const world = World.make({ seed, model, ...wire, latency: [1, 10], script: () => { receive(); return World.say("synthetic answer") },
+      integrations: { openai: [{ id: "cred_sol", label: "Sol", ...account,
+        expires: World.START + 86_400_000, methodID: "chatgpt-browser", metadata: { accountID: "fixture" } }] },
+    })
+    const measured = { ...quota, handle: (request: Request) => Effect.suspend(() => {
+      if (request.url !== ChatGPT.USAGE_URL) return quota.handle(request)
+      requests.push(world.now())
+      return Match.value(offline).pipe(
+        Match.when(true, () => Effect.delay(Effect.succeed(new Response("stalled", { status: 503 })), 30_000)),
+        Match.orElse(() => Effect.delay(quota.handle(request), delay)),
+      )
+    }) }
+    const network = Provider.make({ seed, accounts: {}, chatgpt: measured }, world.runtime)
+    const plugin = Plugins.pool(new Map(), Plugins.network(network))
+    const second = `${DIRECTORY}-second`
+    for (const directory of [DIRECTORY, second]) yield* world.load(plugin, {
+      directory, options: { providers: {}, paced: { openai: "openai" }, sweepMinutes: 0, resets: false,
+        usageURL: ChatGPT.USAGE_URL, limitsFile: "/nonexistent/sim/limits.json" },
+    })
+    const one = yield* world.session(DIRECTORY, { title: "No auxiliary title request" })
+    const two = yield* world.session(second, { title: "No auxiliary title request" })
+    yield* world.prompt(one, "first sign-in send")
+    yield* world.prompt(two, "another send for the same login")
+    yield* world.advance(delay - 1)
+    expect(sends).toEqual([])
+    expect(requests).toHaveLength(1)
+    const firstAt = Option.getOrThrow(Option.fromUndefinedOr(requests[0]))
+    if (quotaResult === "timeout") {
+      yield* world.advance(firstAt + 9_999 - world.now())
+      expect(sends).toEqual([])
+    }
+    yield* world.advance(2_000)
+    if (quotaResult === "spent") {
+      expect(sends).toEqual([])
+      expect(yield* world.rpc(POOL, "heldSend", { sessionID: one })).toMatchObject({ state: "held", hold: { reasonCode: "account-held" } })
+      expect(yield* world.rpc(POOL, "heldSend", { sessionID: two })).toMatchObject({ state: "held", hold: { reasonCode: "account-held" } })
+    } else {
+      const safeAt = Match.value(quotaResult).pipe(Match.when("timeout", () => firstAt + 10_000), Match.orElse(() => firstAt + delay))
+      expect(sends).toHaveLength(2)
+      expect(sends.every((at) => at >= safeAt)).toBe(true)
+    }
+    expect(requests).toHaveLength(1)
+    if (quotaResult === "spent") return
+    const status = yield* world.rpc(POOL, "status", {})
+    const measurement = Match.value(offline).pipe(Match.when(true, () => "unmeasured"), Match.orElse(() => "measured"))
+    expect(status).toMatchObject({ openai: { accounts: [expect.objectContaining({ measurement })] } })
+    offline = false
+    yield* world.prompt(one, "a subsequent attempt")
+    yield* world.until(() => sends.length === 3, 2_000)
+    expect(requests).toHaveLength(1 + Number(quotaResult === "timeout"))
+  }))
+
 seeded("the send hold is held or ended until admission, even across a restart", ({ seed, expect }) =>
   Effect.gen(function* () {
     const model = { providerID: "openai", id: "gpt-6.2-fixture" }

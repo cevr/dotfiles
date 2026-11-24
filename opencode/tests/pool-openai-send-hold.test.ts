@@ -6,6 +6,7 @@ import { describe, expect, it } from "effect-bun-test"
 import { poolPlugin } from "../testbeds/anthropic-auth.ts"
 import { ROOT } from "../scripts/agents.ts"
 import { readHeldSend } from "../mods/pool/refuse.ts"
+import { USAGE_TIMEOUT_MS } from "../mods/pool/chatgpt/usage.ts"
 import { hangGuard } from "./hang-guard.ts"
 import { forkRuns } from "./scratch.ts"
 
@@ -22,6 +23,10 @@ const Seen = Schema.Struct({
   cost: Schema.Json, costUsageReads: Schema.Finite,
 })
 const Samples = Schema.fromJsonString(Schema.Struct({ held: Seen, open: Schema.NullOr(Seen) }))
+const Fresh = Schema.fromJsonString(Schema.Struct({ held: Schema.Struct({
+  before: Schema.Finite, usage: Schema.Finite, began: Schema.Finite, start: Schema.Finite, end: Schema.Finite, sent: Schema.Array(Send),
+  outcome: Schema.String, message: Schema.String, status: Schema.Json, heldSend: Schema.Json,
+}) }))
 const Override = Schema.fromJsonString(Schema.Struct({ compilerOptions: Schema.Struct({ paths: Schema.Record(Schema.String, Schema.Array(Schema.String)) }) }))
 const ResultJson = Schema.fromJsonString(Schema.Json)
 const toJson = Schema.encodeSync(ResultJson)
@@ -31,8 +36,9 @@ const scheduledAt = (seen: typeof Seen.Type) => Option.getOrElse(
 const out = (stream: Stream.Stream<Uint8Array, unknown>) => stream.pipe(Stream.decodeText(), Stream.mkString)
 type Sample = "http" | "websocket" | "late-http" | "late-websocket" | "api-http" | "api-websocket" | "cost"
   | "retry-http" | "retry-websocket" | "signed-out-http"
+type FreshSample = "fresh-spent" | "fresh-free" | "fresh-timeout"
 
-const boot = (sample: Sample) => Effect.gen(function* () {
+const outputFor = (sample: Sample | FreshSample) => Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
@@ -72,9 +78,10 @@ const boot = (sample: Sample) => Effect.gen(function* () {
   }))
   const [stdout, stderr, code] = yield* Effect.all([out(child.stdout), out(child.stderr), child.exitCode], { concurrency: 3 })
   expect(Number(code), `${stdout}\n${stderr}`).toBe(0)
-  const raw = yield* fs.readFileString(result)
-  return yield* Schema.decodeUnknownEffect(Samples)(raw).pipe(Effect.tapError(() => Console.log(raw)))
+  return yield* fs.readFileString(result)
 })
+const boot = (sample: Sample) => outputFor(sample).pipe(Effect.flatMap((raw) =>
+  Schema.decodeUnknownEffect(Samples)(raw).pipe(Effect.tapError(() => Console.log(raw)))))
 
 const contained = (seen: typeof Seen.Type, retryAt: number, sample: Sample) => {
   const wanted = Number(sample.endsWith("websocket"))
@@ -110,6 +117,28 @@ const contained = (seen: typeof Seen.Type, retryAt: number, sample: Sample) => {
 }
 
 describe.skipIf(!forkRuns)("OpenAI final hold on native OpenCode", () => {
+  for (const sample of ["fresh-spent", "fresh-free", "fresh-timeout"] as const)
+    it.live.layer(BunServices.layer)(`the first send uses one usage read, measured or bounded (${sample})`, () =>
+      Effect.gen(function* () {
+        const { held } = yield* outputFor(sample).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Fresh)))
+        expect(held.usage).toBe(1)
+        expect(held.before).toBe(0)
+        expect(held.start).toBeGreaterThan(0)
+        const measurement = Match.value(sample).pipe(Match.when("fresh-timeout", () => "unmeasured"), Match.orElse(() => "measured"))
+        expect(held.status).toMatchObject({ openai: { accounts: [expect.objectContaining({ measurement })] } })
+        if (sample === "fresh-spent") {
+          expect(held.sent).toEqual([])
+          expect(held.message).toContain("held by the pool until")
+          expect(Option.getOrNull(readHeldSend(held.heldSend))).toMatchObject({ state: "held", hold: { reasonCode: "account-held" } })
+          return
+        }
+        expect(held.outcome).toBe("session.execution.succeeded")
+        expect(held.sent).toHaveLength(1)
+        const finished = Match.value(sample).pipe(Match.when("fresh-timeout", () => held.began + USAGE_TIMEOUT_MS), Match.orElse(() => held.end))
+        const sent = Option.getOrThrow(Option.fromUndefinedOr(held.sent[0]))
+        expect(sent.at).toBeGreaterThanOrEqual(finished)
+        expect(held.heldSend).toEqual({})
+      }).pipe(Effect.scoped), hangGuard("fork-turn"))
   for (const sample of ["retry-http", "retry-websocket"] as const)
     it.live.layer(BunServices.layer)(`a provider error does not reuse admission on the retry (${sample})`, () =>
       Effect.gen(function* () {

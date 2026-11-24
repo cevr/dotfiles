@@ -9,7 +9,7 @@
 // process may have kept a step per key, `<pool>/step/<at, 15 digits>/<sessionID>`:
 // those are read too, and folded into chunks. A ledger from before caches were
 // kept has no cache key and restores none.
-import { Clock, Effect, Layer, Option, Predicate, Result, Schema, Semaphore } from "effect"
+import { Clock, Deferred, Effect, Layer, Option, Predicate, Result, Schema, Semaphore } from "effect"
 import { cacheMark, type Event, type LedgerState, type PoolId } from "../account-pool.ts"
 import { Mark, Step, WINDOW_MS } from "../accounts.ts"
 import { HOLD_STORE_RETRY_MS } from "../handoff.ts"
@@ -373,12 +373,42 @@ const ownSteps = (storage: Storage): Steps => {
 }
 
 /** The holds, readings and caches are small and read by each copy; the steps come from `steps`, one store per process. */
+type Measurement = Deferred.Deferred<Option.Option<QuotaReading>>
+const readingFlights = new WeakMap<Semaphore.Semaphore, Map<string, Measurement>>()
+const flightsOf = (lock: Semaphore.Semaphore) => Option.getOrElse(Option.fromUndefinedOr(readingFlights.get(lock)), () => {
+  const flights = new Map<string, Measurement>()
+  readingFlights.set(lock, flights)
+  return flights
+})
+
+const firstReading = (storage: Storage, lock: Semaphore.Semaphore): Ledger["Service"]["firstReading"] => (pool, credentialID, measure) =>
+  Effect.uninterruptibleMask((restore) => Effect.gen(function* () {
+    const key = `${pool}/${readingKey(credentialID)}`
+    const flights = flightsOf(lock)
+    const pending = Option.fromUndefinedOr(flights.get(key))
+    if (Option.isSome(pending)) return yield* restore(Deferred.await(pending.value))
+    const answer = yield* Deferred.make<Option.Option<QuotaReading>>()
+    flights.set(key, answer)
+    const load = Effect.gen(function* () {
+      const page = yield* Effect.option(boundedStore(storage.scan({ prefix: key, limit: 1 })))
+      const saved = Option.flatMap(page, (rows) => Option.flatMap(
+        Option.fromUndefinedOr(rows.entries.find((row) => row.key === key)), (row) => decodeReading(row.value)))
+      if (Option.isSome(saved)) return saved
+      return yield* measure
+    })
+    // One caller's cancellation must not release other sends early.
+    yield* Effect.forkDetach(restore(load).pipe(Effect.exit, Effect.flatMap((result) =>
+      Deferred.done(answer, result)), Effect.ensuring(Effect.sync(() => { flights.delete(key) }))))
+    return yield* restore(Deferred.await(answer))
+  }))
+
 export const layer = (storage: Storage, steps: Steps = ownSteps(storage), authority = holdAuthority()) =>
   Layer.effect(Ledger, Effect.gen(function* () {
     yield* Effect.acquireRelease(Effect.sync(authority.enter), (leave) => Effect.sync(leave))
     return Ledger.of({
     holds: (pool, credentialID) => confirmedHolds(storage, authority, pool, credentialID),
     withHolds: (operation) => authority.lock.withPermits(1)(operation),
+    firstReading: firstReading(storage, authority.lock),
     // A ledger that cannot be read starts the pool empty.
     restore: Effect.fn("Ledger.restore")(
       function* (pool: PoolId) {

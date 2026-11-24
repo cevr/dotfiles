@@ -27,6 +27,7 @@ import {
 } from "./account-pool.ts"
 import { answeredOn, held, lastPlacedAt, placedOn, sessionAccount, status, type RequestKind, type Rules } from "./accounts.ts"
 import * as Burn from "./burn.ts"
+import { USAGE_TIMEOUT_MS } from "./chatgpt/usage.ts"
 import * as FleetModel from "./fleet.ts"
 import { dispatchPace, evidenceGap, needsSignIn, nextRetryAt, poolPace, refreshEvidence, RequestHeld, requiredScopes, storeHeld, UNPOOLED, UNREAD_RETRY_MS, type DispatchPolicy, type Pace } from "./pace.ts"
 import { type Hold, holdRecheckAt, type RecoveryAttempt, UNREADABLE_HOLD_MS } from "./hold.ts"
@@ -411,6 +412,23 @@ export const layer = (config: Config) =>
         })
       }
 
+      const placedPools = new Set(Object.values(config.providers))
+      const measureFirst = (where: Pooled, credentialID: string) => Effect.gen(function* () {
+        const current = yield* SynchronizedRef.get(where.pool)
+        if (Object.hasOwn(current.readings, credentialID)) return
+        const measure = Effect.gen(function* () {
+          const sampled = yield* quota.usage(where.id, credentialID).pipe(Effect.timeoutOption(USAGE_TIMEOUT_MS))
+          const fresh = Option.flatMap(sampled, Option.fromUndefinedOr)
+          if (Option.isSome(fresh)) yield* take(where, credentialID, fresh.value, true)
+          return fresh
+        })
+        const reading = yield* ledger.firstReading(where.id, credentialID, measure)
+        if (Option.isSome(reading)) yield* SynchronizedRef.update(where.pool, (state) => {
+          if (Object.hasOwn(state.readings, credentialID)) return state
+          return { ...state, readings: { ...state.readings, [credentialID]: reading.value } }
+        })
+      })
+
       /** Any directory can offer a reading to the pending claim on the shared host ledger. */
       const resetProvider = (pool: string) =>
         Option.flatMap(Option.fromUndefinedOr(config.resets), (pools) => Option.fromUndefinedOr(pools[pool]))
@@ -527,6 +545,7 @@ export const layer = (config: Config) =>
         const binding = Option.fromUndefinedOr(poolOf(measuredBy(config, input.providerID)))
         if (Option.isNone(binding)) return yield* ledger.withHolds(onAdmission)
         const where = binding.value
+        if (phase === "send" && !placedPools.has(where.id)) yield* measureFirst(where, candidate)
         const exact = ledger.holds(where.id, candidate).pipe(
           Effect.flatMap((holds) => SynchronizedRef.get(where.pool).pipe(Effect.map((state) => ({ ...state, holds })))),
         )
@@ -1495,8 +1514,17 @@ export const layer = (config: Config) =>
 
       const poolsStatus = Effect.gen(function* () {
         const answer: Record<string, PoolsStatus[string]> = {}
-        for (const { id, pool } of every) {
-          const accounts = status(yield* SynchronizedRef.get(pool), yield* Clock.currentTimeMillis, rules)
+        for (const where of every) {
+          const { id, pool } = where
+          const pacedOnly = !placedPools.has(id)
+          if (pacedOnly) yield* refresh(where, false).pipe(Effect.ignore)
+          const snapshot = status(yield* SynchronizedRef.get(pool), yield* Clock.currentTimeMillis, rules)
+          const accounts = Option.match(Option.filter(Option.some(snapshot), () => pacedOnly), {
+            onNone: () => snapshot,
+            onSome: (items) => items.map((account) => ({ ...account, measurement: Option.match(Option.fromUndefinedOr(account.reading), {
+              onNone: () => "unmeasured" as const, onSome: () => "measured" as const,
+            }) })),
+          })
           const sources = yield* logins.sources(id)
           answer[id] = { accounts, ...(sources.length === 0 ? {} : { sources }) }
         }

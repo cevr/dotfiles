@@ -70,11 +70,12 @@ interface Configured {
 interface Sdk { readonly create: (options: Configured) => Effect.Effect<Client, Error, Scope.Scope> }
 const Sdk = Schema.declare((value): value is Sdk => Predicate.hasProperty(value, "create") && Predicate.isFunction(value.create))
 const Case = Schema.Literals(["http", "websocket", "late-http", "late-websocket", "api-http", "api-websocket", "cost",
-  "retry-http", "retry-websocket", "signed-out-http"])
+  "retry-http", "retry-websocket", "signed-out-http", "fresh-spent", "fresh-free", "fresh-timeout"])
 type Case = typeof Case.Type
 const lateCase = (sample: Case) => sample.startsWith("late-")
 const apiCase = (sample: Case) => sample.startsWith("api-")
 const retryCase = (sample: Case) => sample.startsWith("retry-")
+const freshCase = (sample: Case) => sample.startsWith("fresh-")
 type Sample = { readonly at: number; readonly authorization: string; readonly transport: string }
 interface Fake {
   readonly sample: Case
@@ -86,6 +87,7 @@ interface Fake {
   commit: Effect.Effect<void>
   upgrades: number
   fallback: number
+  readonly measurement: { readonly started: Latch.Latch; readonly release: Latch.Latch; start: number; end: number }
 }
 
 const eventStream = (events: ReadonlyArray<Schema.Json>) => HttpServerResponse.text(
@@ -159,6 +161,13 @@ const server = (state: Fake) => Effect.gen(function* () {
     state.usage += 1
     if (request.headers["authorization"] !== `Bearer ${ACCESS}` || request.headers["chatgpt-account-id"] !== "fixture")
       return HttpServerResponse.text("no synthetic credential", { status: 401 })
+    if (freshCase(state.sample)) {
+      state.measurement.start = quotaEpoch()
+      yield* state.measurement.started.open
+      yield* state.measurement.release.await
+      if (state.sample === "fresh-timeout") return HttpServerResponse.text("synthetic outage", { status: 503 })
+      state.measurement.end = quotaEpoch()
+    }
     return yield* HttpServerResponse.json({ plan_type: "pro", rate_limit: {
       limit_reached: state.spent, allowed: !state.spent, primary_window: shortWindow(state, 300), secondary_window: week(),
     } })
@@ -233,6 +242,27 @@ const writerFact = (host: Client, directory: string) =>
     Effect.map((reply) => Option.fromUndefinedOr(reply.output)),
   )
 
+const firstMeasure = (host: Client, state: Fake, id: string, directory: string) => Effect.gen(function* () {
+  const began = quotaEpoch()
+  yield* prompt(host, id)
+  yield* state.measurement.started.await.pipe(Effect.timeout(hangGuard("local-fixture")))
+  const before = state.sent.length
+  if (state.sample !== "fresh-timeout") yield* state.measurement.release.open
+  const observed = yield* sessionLog(host, id).pipe(
+    Stream.filter((event) => closeOf(event) || (event.type === "session.retry.scheduled" && event.data?.error?.type === "route.deferred")),
+    Stream.runHead, Effect.timeout(hangGuard("local-fixture")),
+    Effect.ensuring(state.measurement.release.open),
+  )
+  const status = yield* host.rpc.call({ rpcID: POOL, method: "status", input: {}, location: { directory } })
+  return {
+    before, usage: state.usage, began, start: state.measurement.start, end: state.measurement.end, sent: state.sent,
+    outcome: Option.getOrElse(Option.map(observed, ({ type }) => type), () => "missing"),
+    message: Option.getOrElse(Option.flatMap(observed, ({ data }) => Option.fromUndefinedOr(data?.error?.message)), () => ""),
+    status: Option.getOrNull(Option.orElse(Option.fromUndefinedOr(status.output), () => Option.fromUndefinedOr(status.data))),
+    heldSend: Option.getOrNull(yield* fact(host, id, directory)),
+  }
+})
+
 interface Target {
   readonly base: string
   readonly pool: string
@@ -251,8 +281,9 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
   const signedOut = target.sample === "signed-out-http"
   if (late || retry) yield* fs.makeDirectory(writer)
   const socket = target.sample.endsWith("websocket")
-  const state: Fake = { sample: target.sample, hold, spent: target.sample === "http" && hold, deadline: quotaEpoch() + HOUR,
-    sent: [], upgrades: 0, fallback: 0, usage: 0, commit: Effect.void }
+  const measurement = { started: yield* Latch.make(), release: yield* Latch.make(), start: 0, end: 0 }
+  const state: Fake = { sample: target.sample, hold, spent: (target.sample === "http" && hold) || target.sample === "fresh-spent",
+    deadline: quotaEpoch() + HOUR, sent: [], upgrades: 0, fallback: 0, usage: 0, commit: Effect.void, measurement }
   let expected = seconds(state.deadline) * 1_000
   yield* HttpServer.serveEffect(server(state))
   const httpd = yield* HttpServer.HttpServer
@@ -291,7 +322,7 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
           yield* retryRead.observed.await
         }
         const limit = Match.value(hold && socket).pipe(Match.when(true, () => 2), Match.orElse(() => 1))
-        if (quotes.length >= limit) return
+        if (freshCase(target.sample) || quotes.length >= limit) return
         typed = Option.isSome(step)
         if (state.spent && !socket) state.deadline = quotaEpoch() + FUTURE
         const input = { providerID: MODEL.providerID, model: MODEL.id, sessionID: event.sessionID, dispatch: true }
@@ -364,6 +395,7 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
     if (retry) state.commit = commit
   }
   const { id } = yield* host.session.create({ location: { directory }, model: MODEL, title: "Fixture" })
+  if (freshCase(target.sample)) return yield* firstMeasure(host, state, id, directory)
   const warm = Arr.empty<Sample>()
   if (hold && socket && !api) {
     yield* prompt(host, id)
