@@ -8,7 +8,7 @@ import { fakeAccount, startFakeAnthropic } from "../tests/fake-anthropic.ts"
 import { PROVIDER_LAWS, type ProviderLaw, reading, type Wire } from "./provider-laws.ts"
 import * as Provider from "./provider.ts"
 import { makeRuntime, record } from "./runtime.ts"
-import * as Seed from "./seed.ts"
+import { simulationRunner } from "./seed.ts"
 import { START } from "./world.ts"
 
 /** Every token a wire's accounts have held, as `<name.kind.generation>`: a rotated token keeps its own name. */
@@ -67,7 +67,7 @@ const onWorld = (law: ProviderLaw, seed: number) =>
     return yield* runtime.run(law.run(wire, reading(START, registry(wire, law.accounts)), START))
   })
 
-const { seeded } = Seed.runner("sim/provider-laws.test.ts")
+const { seeded } = simulationRunner("sim/provider-laws.test.ts")
 
 for (const law of PROVIDER_LAWS)
   seeded(law.name, ({ seed, expect }) =>

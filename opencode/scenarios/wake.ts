@@ -26,6 +26,7 @@ import { Effect, Schedule, Stream } from "effect"
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { Llm, OpenCodeDriver } from "opencode-drive"
 import * as SimClock from "./sim-clock.ts"
+import { stamp } from "../tests/hang-guard.ts"
 
 const root = process.cwd()
 const out = process.env.SCENARIO_OUT ?? "out"
@@ -119,7 +120,7 @@ export default OpenCodeDriver.use(
       yield* llm.serve((request) => {
         const s = JSON.stringify(request)
         const title = s.includes("You name conversations")
-        requests.push({ session: title ? "title" : "root", at: Date.now(), request: s })
+        requests.push({ session: title ? "title" : "root", at: stamp(), request: s })
         return title ? say("Wake fixture") : reply(s)
       })
 
@@ -171,7 +172,7 @@ export default OpenCodeDriver.use(
       yield* keep("after-notice")
 
       // A monitor wakes the session once its command prints READY.
-      READY_AT.value = Math.floor(Date.now() / 1000) + 4
+      READY_AT.value = Math.floor(stamp() / 1000) + 4
       yield* ui.submit("step-monitor")
       yield* until((frame) => frame.includes("Gamma monitor set.") && tray(frame).includes("1 monitor"))
       yield* keep("monitor-pending", true)

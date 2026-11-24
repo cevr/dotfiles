@@ -14,6 +14,7 @@ import { join } from "node:path"
 import { envelopesInJson } from "../sim/envelopes.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-waiting.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -47,7 +48,7 @@ function panel(frame: ReadonlyArray<string>) {
 
 describe.skipIf(!fork)("a waiting subagent's wait ends with no notice (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-waiting-")
-  beforeAll(...kept.setup(async () => {
+  beforeAll(kept.test(async () => {
     const out = kept.dir("prime-waiting-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-waiting.ts"], {
       cwd: root,
@@ -59,7 +60,7 @@ describe.skipIf(!fork)("a waiting subagent's wait ends with no notice (OPENCODE_
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names) frames[name] = readFileSync(join(out, `${name}.txt`), "utf8").split("\n")
     requests = JSON.parse(readFileSync(join(out, "prime-waiting-requests.json"), "utf8"))
-  }, 300_000))
+  }), hangGuard("acceptance"))
 
   test("while its shells run, its row waits and the dock counts it", kept.test(() => {
     expect(dock(frames["waiting-rows"])).toEqual({

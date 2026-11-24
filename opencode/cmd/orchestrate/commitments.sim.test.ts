@@ -3,11 +3,11 @@
 // reopens the same file. Every answer is read from the record at the call; the plugin keeps nothing of a run.
 import { Effect } from "effect"
 import { FOLLOW_UP, PARENT_REFUSAL } from "@dotfiles/opencode-orchestrate/commitments-tool"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import { scratch } from "../../tests/scratch.ts"
 import { boot, ORCHESTRATE, type Run, WORK } from "./orch-tools-world.ts"
 
-const { seeded } = Seed.runner("cmd/orchestrate/commitments.sim.test.ts")
+const { seeded } = simulationRunner("cmd/orchestrate/commitments.sim.test.ts")
 
 const COMMITMENTS = "commitments"
 

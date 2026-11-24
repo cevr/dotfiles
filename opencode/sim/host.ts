@@ -1663,14 +1663,14 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     const anchor = context.findLastIndex((message) => message.type === "assistant")
     const last = context[anchor]
     if (last?.type !== "assistant") return false
-    const measured = last.tokens.input + last.tokens.cache.read + last.tokens.cache.write
+    const observedTokens = last.tokens.input + last.tokens.cache.read + last.tokens.cache.write
     const estimated = context.slice(anchor + 1).reduce((sum, message) => sum + Math.ceil(renderOf(message).length / 4), 0)
     const used = modelOf(session)
     const limit = models.find((entry) => entry.providerID === used.providerID && entry.id === used.id)?.limit
     let window = Math.min(limit?.input ?? Number.POSITIVE_INFINITY, limit?.context ?? Number.POSITIVE_INFINITY)
     const own = agentFor(session).request.settings["compactionWindow"]
     if (Predicate.isNumber(own) && Number.isInteger(own) && own > 0 && own < window) window = own
-    return Number.isFinite(window) && measured + estimated > ceilingOf(window)
+    return Number.isFinite(window) && observedTokens + estimated > ceilingOf(window)
   }
 
   /** Background compaction: a summary written ahead for a session idle near its window's ceiling. */

@@ -2,7 +2,7 @@
 // instant, same-instant timers and ready fibers take an order the seed picks,
 // and a run that waits on time says so instead of hanging.
 import { describe, expect } from "bun:test"
-import * as Seed from "./seed.ts"
+import { simulationTest } from "./seed.ts"
 import { Duration, Effect, Exit, Fiber, Stream } from "effect"
 import { makeRuntime } from "./runtime.ts"
 
@@ -32,7 +32,7 @@ const fibersOn = (seed: number) =>
   })
 
 describe("the runtime", () => {
-  Seed.effect(
+  simulationTest(
     "a sleep ends only when the clock is advanced past it, and at its own instant",
     Effect.gen(function* () {
       const runtime = runtimeOf(1)
@@ -51,7 +51,7 @@ describe("the runtime", () => {
     }),
   )
 
-  Seed.effect(
+  simulationTest(
     "timers due at one instant fire in an order the seed picks, the same for the same seed",
     Effect.gen(function* () {
       const orders = yield* Effect.forEach(
@@ -63,7 +63,7 @@ describe("the runtime", () => {
     }),
   )
 
-  Seed.effect(
+  simulationTest(
     "fibers interleave in an order the seed picks",
     Effect.gen(function* () {
       const orders = yield* Effect.forEach(
@@ -75,7 +75,7 @@ describe("the runtime", () => {
     }),
   )
 
-  Seed.effect(
+  simulationTest(
     "a run that needs time fails at once, naming why, and a fiber that never ends stays unended",
     Effect.gen(function* () {
       const runtime = runtimeOf(1)

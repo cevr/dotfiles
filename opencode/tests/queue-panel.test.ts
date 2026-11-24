@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url"
 import { PICKED, REPLY, TYPED } from "../scenarios/queue-panel.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 /** The Queue tab's lines, in order. */
 const PLAN = [
@@ -92,5 +93,5 @@ describe.skipIf(!fork)("the Queue tab", () => {
     const answered = panel(frame("answered"))
     expect(answered).toContain("! Close old Claude panes · needs you · answered: Keep the two newest")
     expect(answered).toContain("○ Merge workers, run daily · next · answered: Run it tonight")
-  }), 150_000)
+  }), hangGuard("fork-turn"))
 })

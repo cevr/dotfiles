@@ -12,6 +12,7 @@ import type { DeepReport } from "./accept-ledger.ts"
 import { landFork, landReport, type Load, loadOf, postLand, reportOf, type Steps } from "./post-land.ts"
 import { NO_FORK } from "./fork.ts"
 import { FORK_OWNER, type Outcome, withUpstreamLock } from "./upstream.ts"
+import { hangGuard, stamp, watchdog } from "../tests/hang-guard.ts"
 
 const NONE: ForkWork = { candidates: [], closed: [], unread: 0, droppable: [] }
 const REPORT = "/state/upstream-conflict.md"
@@ -371,7 +372,7 @@ describe("the upstream lock", () => {
       expect(events.filter((event) => event.phase === "tried")).toHaveLength(1)
       expect(overlap(events)).toBe(1)
     }
-  }, 60_000)
+  }, hangGuard("process-fixture"))
 
   test("four racers, each round: never two merges at once, exactly one merges", async () => {
     for (let round = 0; round < 3; round++) {
@@ -382,7 +383,7 @@ describe("the upstream lock", () => {
       expect(events.filter((event) => event.phase === "tried")).toHaveLength(3)
       expect(overlap(events)).toBe(1)
     }
-  }, 60_000)
+  }, hangGuard("process-fixture"))
 
   test("a holder cut while it holds the lock (it exits without releasing) leaves no lock behind: the next merge runs", async () => {
     const state = fresh("crash")
@@ -390,7 +391,7 @@ describe("the upstream lock", () => {
     expect(cut.codes).toEqual([3])
     expect(cut.events.map((event) => event.phase)).toEqual(["start"])
     expect(await withUpstreamLock(state, async () => "merged")).toBe("merged")
-  }, 60_000)
+  }, hangGuard("process-fixture"))
 
   test("while a real process holds it, this one runs nothing", async () => {
     const state = fresh("held")
@@ -403,8 +404,8 @@ describe("the upstream lock", () => {
     })
     try {
       writeFileSync(join(state, "go"), "")
-      const deadline = Date.now() + 10_000
-      while (!(existsSync(join(state, "events")) && readFileSync(join(state, "events"), "utf8").includes('"start"')) && Date.now() < deadline) await Bun.sleep(5)
+      const deadline = watchdog(10_000)
+      while (!(existsSync(join(state, "events")) && readFileSync(join(state, "events"), "utf8").includes('"start"')) && !deadline.expired()) await Bun.sleep(5)
       let ran = false
       expect(
         await withUpstreamLock(state, async () => {
@@ -412,10 +413,10 @@ describe("the upstream lock", () => {
         }),
       ).toBeUndefined()
       expect(ran).toBe(false)
-      appendFileSync(join(state, "events"), `${JSON.stringify({ role: "test", phase: "tried", at: Date.now() })}\n`)
+      appendFileSync(join(state, "events"), `${JSON.stringify({ role: "test", phase: "tried", at: stamp() })}\n`)
       expect(await child.exited).toBe(0)
     } finally {
       if (child.exitCode === null) process.kill(-child.pid, "SIGKILL")
     }
-  }, 60_000)
+  }, hangGuard("process-fixture"))
 })

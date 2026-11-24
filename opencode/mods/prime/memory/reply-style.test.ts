@@ -9,13 +9,15 @@ import { guidance } from "../emphasis.ts"
 import { type ReplyStyles, sectionOf, type Sighting } from "../reply-style.ts"
 import * as MemoryReplyStyles from "./reply-style.ts"
 import { replyStylesLaws } from "./reply-style.laws.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
+
 
 replyStylesLaws("the in-memory store", () => MemoryReplyStyles.layer)
 
 const ROOT: Sighting = { child: false, answered: false }
 
 describe("sectionOf", () => {
-  const run = (title: string, body: Effect.Effect<void, string, ReplyStyles>) => effectTest(title, body.pipe(Effect.provide(MemoryReplyStyles.layer)), 5_000)
+  const run = (title: string, body: Effect.Effect<void, string, ReplyStyles>) => effectTest(title, body.pipe(Effect.provide(MemoryReplyStyles.layer)), hangGuard("local-fixture"))
 
   run(
     "the first request keeps the section; later ones send the kept bytes without reading the session again, even after the words change",

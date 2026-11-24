@@ -6,6 +6,7 @@
 // computation, so this file takes the reactive build OpenCode loads.
 import { expect, mock, test } from "bun:test"
 import type { Plugin } from "@opencode/plugin/tui"
+import { manualTuiClock } from "../../../tests/manual-tui-clock.ts"
 import { judge, turnRows } from "../ledger.ts"
 import { catalog, timeline } from "../opencode/view.ts"
 
@@ -166,7 +167,8 @@ test("an idle compaction's miss shows under the compaction, not under the turn t
   ledger.dispose()
 })
 
-test("a session no row or sidebar reads is let go: its step ends ask nothing", async () => {
+test("a session no row or sidebar reads is let go: its step ends ask nothing", () => {
+  using clock = manualTuiClock()
   const { calls, handlers, ctx } = world(3)
   const ledger = createLedger(ctx, { releaseMs: 1 })
   const stop = createRoot((stop) => {
@@ -179,10 +181,10 @@ test("a session no row or sidebar reads is let go: its step ends ask nothing", a
   stepEnded()
   expect(calls.rpc).toBe(asked + 2)
   stop()
-  await Bun.sleep(10)
+  clock.advance(10)
   const after = calls.rpc
   stepEnded()
-  await Bun.sleep(10)
+  clock.advance(10)
   expect(calls.rpc).toBe(after)
   ledger.dispose()
 })

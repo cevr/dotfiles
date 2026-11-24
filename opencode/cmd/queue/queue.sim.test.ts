@@ -12,11 +12,11 @@ import { Effect, Schema } from "effect"
 import { QUEUE, Snapshot } from "@dotfiles/opencode-queue/queue"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Read from "../../sim/readings.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 import { worldScript } from "../../sim/verify-world.ts"
 
-const { seeded } = Seed.runner("cmd/queue/queue.sim.test.ts")
+const { seeded } = simulationRunner("cmd/queue/queue.sim.test.ts")
 
 const WORK = "/scratch/project"
 const decode = Schema.decodeUnknownSync(Snapshot)

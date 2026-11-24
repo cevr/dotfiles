@@ -12,7 +12,7 @@ import { printable } from "@dotfiles/opencode-orchestrate/printable"
 import { platform as ownPlatform } from "@dotfiles/opencode-orchestrate/node/platform"
 import { hostServices } from "../../sim/host-services.ts"
 import * as SqliteRecord from "@dotfiles/opencode-orchestrate/sqlite/record"
-import * as Seed from "../../sim/seed.ts"
+import { simulationTest } from "../../sim/seed.ts"
 import { gitInit, withProcessEnv } from "../../tests/git-repo.ts"
 import { scratch } from "../../tests/scratch.ts"
 import { CANARY, COMMITMENT_CALLS, canariedFields, type Fields, FOLLOW_UP_CALLS, placedCalls, textsOf } from "../../sim/canary.ts"
@@ -77,7 +77,7 @@ const retryInput = (id: string, title: string) => ({
   reason_class: "dependency", referent: { kind: "commitment", id: "blocker" },
 })
 
-Seed.effect("a reopened store retries identical original payloads and refuses every changed follow-up field", Effect.gen(function* () {
+simulationTest("a reopened store retries identical original payloads and refuses every changed follow-up field", Effect.gen(function* () {
   using dir = scratch("record-retry-identity-")
   const db = `${dir.path}/record.db`
   const receiptPath = "tmp/orchestrate/retry.json"
@@ -86,7 +86,7 @@ Seed.effect("a reopened store retries identical original payloads and refuses ev
   }))
   yield* Effect.promise(() => receipt(1))
   gitInit(dir.path, ["-q", "-b", "main"], gitEnv)
-  const measured = { reason_class: "measured", referent: { kind: "receipt", path: receiptPath } }
+  const measuredReceipt = { reason_class: "measured", referent: { kind: "receipt", path: receiptPath } }
   const run = (action: string, fields: Schema.Json, actor = "scratch-worker") =>
     main([action, "--file", db, "--actor", actor, "--json", fieldsJson(fields)], dir.path)
   const parts = [{ id: "blocker", title: "pending" }, { id: "another", title: "another pending" }]
@@ -103,7 +103,7 @@ Seed.effect("a reopened store retries identical original payloads and refuses ev
       { run: "two" },
       { rank: "B" },
       { suggest_owner: "lane-two" },
-      measured,
+      measuredReceipt,
       { referent: { kind: "commitment", id: "another" } },
       { id: `changed-${at}` },
       { key: "other-key" },
@@ -121,7 +121,7 @@ Seed.effect("a reopened store retries identical original payloads and refuses ev
     const history = yield* run("history", { id: base.id })
     expect(history.out.split("\n").filter((line) => line.includes("promised")).length).toBe(1)
   }
-  const checked = { ...retryInput("measurement", "check results"), ...measured }
+  const checked = { ...retryInput("measurement", "check results"), ...measuredReceipt }
   expect((yield* run("follow_up", checked)).out).toContain("filed measurement")
   // The observation changed, not what the caller filed.
   yield* Effect.promise(() => receipt(0))
@@ -133,7 +133,7 @@ Seed.effect("a reopened store retries identical original payloads and refuses ev
   expect(bytes.join("").includes("betafix")).toBe(false)
 }))
 
-Seed.effect("two source keys with the same display remain distinct and stores have different authenticators", Effect.gen(function* () {
+simulationTest("two source keys with the same display remain distinct and stores have different authenticators", Effect.gen(function* () {
   using dir = scratch("record-source-identity-")
   const run = (db: string, action: string, fields: Schema.Json) =>
     main([action, "--file", db, "--actor", "scratch-worker", "--json", fieldsJson(fields)], dir.path)
@@ -164,7 +164,7 @@ Seed.effect("two source keys with the same display remain distinct and stores ha
   expect(first?.payload).not.toBe(second?.payload)
 }))
 
-Seed.effect("a version-one follow-up survives migration but cannot be claimed as a verified retry", Effect.gen(function* () {
+simulationTest("a version-one follow-up survives migration but cannot be claimed as a verified retry", Effect.gen(function* () {
   using dir = scratch("record-legacy-identity-")
   const path = `${dir.path}/record.db`
   {
@@ -228,7 +228,7 @@ const EVENTS: ReadonlyArray<Event> = [
 const cli = (dir: string, ...args: ReadonlyArray<string>) => main([...args, "--file", `${dir}/record.db`], dir)
 const imported = (dir: string) => cli(dir, "import", "--json", fieldsJson({ from: `${dir}/register.db`, map: "ergo-register" }))
 
-Seed.effect(
+simulationTest(
   "import --map ergo-register maps each row, counts in equal counts out by state, and a second import changes nothing",
   Effect.acquireUseRelease(
     Effect.sync(() => scratch("record-cli-")),
@@ -266,7 +266,7 @@ Seed.effect(
   ),
 )
 
-Seed.effect(
+simulationTest(
   "a row that does not map is refused by its id and column, and nothing is imported",
   Effect.acquireUseRelease(
     Effect.sync(() => scratch("record-cli-")),
@@ -282,7 +282,7 @@ Seed.effect(
 
 const gitEnv = withProcessEnv({ GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t.invalid", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t.invalid" })
 
-Seed.effect(
+simulationTest(
   "the CLI takes reasons as the tools do: an invariant from a committed document, a guarantee closes, a receipt orders, no reason refused",
   Effect.acquireUseRelease(
     Effect.sync(() => scratch("record-cli-")),
@@ -335,7 +335,7 @@ Seed.effect(
 // No output repeats what the caller wrote: a token-shaped canary as each key, value, id, path and referent of every
 // action's `--json` (tests/canary.ts), as the actor, the file, the checkout, the action and an unknown flag, is in no
 // stdout, no stderr, no exported event and no byte of the record's file.
-Seed.effect(
+simulationTest(
   "a token-shaped canary in any argument, key or value of a CLI call is in no output, exported event or record byte",
   Effect.acquireUseRelease(
     Effect.sync(() => scratch("record-cli-canary-")),
@@ -393,7 +393,7 @@ Seed.effect(
 // the file and the checkout, carries a secret of every kind the redactor knows at any place in its value
 // (sim/tokens.ts), one placement each. No stdout, stderr, exported event or record byte holds a fragment of LEAK_MIN
 // characters of its secret.
-Seed.effect(
+simulationTest(
   "a secret of any kind at any place in any argument, key or value leaves no fragment in an output, an export or the record",
   Effect.acquireUseRelease(
     Effect.sync(() => scratch("record-cli-placed-")),
@@ -433,7 +433,7 @@ Seed.effect(
   ),
 )
 
-Seed.effect(
+simulationTest(
   "list reads a file it may not write; a write to it is refused, and a bad call is refused as the tool refuses it",
   Effect.acquireUseRelease(
     Effect.sync(() => scratch("record-cli-")),
@@ -453,7 +453,7 @@ Seed.effect(
   ),
 )
 
-Seed.effect(
+simulationTest(
   "an import with a token in one row's owner is refused whole in one transaction, naming the row and column, the token in no output and no row",
   Effect.acquireUseRelease(
     Effect.sync(() => scratch("record-cli-")),
@@ -483,7 +483,7 @@ const ERGO_LIKE: ReadonlyArray<Row> = Arr.makeBy(295, (at) => {
   return { id, state: "ready", owner: `u${at % 40}`, trigger: ["manual", `w${at}`] }
 })
 
-Seed.effect(
+simulationTest(
   "the section of a 295-row import stays under 40 lines",
   Effect.acquireUseRelease(
     Effect.sync(() => scratch("record-cli-")),

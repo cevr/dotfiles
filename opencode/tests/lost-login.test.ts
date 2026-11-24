@@ -10,6 +10,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/lost-login.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -62,5 +63,5 @@ describe.skipIf(!fork)("a lost store login in the TUI", () => {
     expect(cleared).not.toContain("sign in again into")
     // No token reaches the screen.
     for (const text of [toast, frame, cleared]) expect(text).not.toMatch(/fake-(access|refresh)-/)
-  }), 150_000)
+  }), hangGuard("fork-turn"))
 })

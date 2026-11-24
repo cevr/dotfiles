@@ -25,6 +25,8 @@
 //   passes and the boot said the route plugin never loaded.
 // - The boot's CPU time is judged only on a settled host (sim/seed.ts
 //   `cpuVerdict`); past its limit on a loaded one it is reported, not judged.
+// Warm the root Effect test adapter before the fork TUI locks its plugin runtime to its own Effect copy.
+import "effect-bun-test"
 import "@opentui/solid/preload"
 import "@opencode-tui/test/preload.ts"
 import { jest } from "bun:test"
@@ -38,9 +40,11 @@ import { Identifier } from "@opencode/schema/identifier"
 import { MockTreeSitterClient } from "@opentui/core/testing"
 import { effectTest } from "./effect-test.ts"
 import * as Server from "./server.ts"
-import * as Seed from "../sim/seed.ts"
+import { simulationRunner, type Seeded as SeedSeeded, SEEDS as SeedSEEDS, type HostLoad as SeedHostLoad, cpuVerdict as SeedCpuVerdict, unjudgedLine as SeedUnjudgedLine, hostLoad as seedHostLoad } from "../sim/seed.ts"
 import { wallTime } from "../sim/wall-clock.ts"
 import { router } from "./route/registry.ts"
+import { globalSlot } from "../tests/global-slot.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 /** Where every seed's virtual clock starts: 2026-11-04 15:00 UTC, a Wednesday afternoon. */
 export const EPOCH = 1_793_804_400_000
@@ -70,10 +74,10 @@ const CLOSE_DEADLINE_MS = (CLOSE_TIMEOUT_MS * 2) / 3
  * fixed ones (a swarm's, or one `sim/seeds.json` replays) always runs.
  */
 export const runner = (file: string, count: number) => {
-  const { seeded } = Seed.runner(file)
+  const { seeded } = simulationRunner(file)
   return {
-    seeded: <E>(name: string, body: (run: Seed.Seeded) => Effect.Effect<void, E>) =>
-      seeded(name, (run) => Effect.when(Effect.suspend(() => body(run)), Effect.sync(() => run.seed <= count || run.seed > Seed.SEEDS)).pipe(Effect.asVoid)),
+    seeded: <E>(name: string, body: (run: SeedSeeded) => Effect.Effect<void, E>) =>
+      seeded(name, (run) => Effect.when(Effect.suspend(() => body(run)), Effect.sync(() => run.seed <= count || run.seed > SeedSEEDS)).pipe(Effect.asVoid)),
   }
 }
 /**
@@ -240,12 +244,12 @@ export interface Waited {
  * naming the first not done, the wall time it waited and its passes. For a wait on real I/O: a count of passes
  * alone gave up however long each real turn took, and a loaded host's import of a plugin outlasted 10 000 of them.
  */
-export const within = <E, R>(awaited: ReadonlyArray<Waited>, step: Effect.Effect<void, E, R>, deadlineMs: number) =>
+export const within = <E, R>(awaited: ReadonlyArray<Waited>, step: Effect.Effect<void, E, R>, deadlineMs: number, deadline = wallTime) =>
   Effect.gen(function* () {
     const box = { over: false }
     const passes = { run: 0 }
     const all = () => awaited.every((each) => each.done())
-    const timer = yield* Effect.forkChild(Effect.andThen(wallTime(deadlineMs), Effect.sync(() => (box.over = true))))
+    const timer = yield* Effect.forkChild(Effect.andThen(deadline(deadlineMs), Effect.sync(() => (box.over = true))))
     const run = Effect.gen(function* () {
       for (; !all() && !box.over; passes.run++) yield* step
     })
@@ -396,21 +400,16 @@ const fill = <T extends Parameters<Crypto["getRandomValues"]>[0]>(array: T): T =
  * Puts `next` in `owner[key]` and returns what puts the one before back: how the harness swaps the
  * two process globals the fork's TUI reads with no seam of its own (`fetch`, `crypto.getRandomValues`).
  */
-const replace = <O, K extends keyof O>(owner: O, key: K, next: O[K]) => {
-  const before = owner[key]
-  owner[key] = next
+const swap = <A>(get: () => A, set: (value: A) => void, make: (before: A) => A) => {
+  const before = get()
+  set(make(before))
   return () => {
-    owner[key] = before
+    set(before)
   }
 }
-/** As `replace`, with `next` made from the one before it. */
-const wrap = <O, K extends keyof O>(owner: O, key: K, make: (before: O[K]) => O[K]) => {
-  const before = owner[key]
-  owner[key] = make(before)
-  return () => {
-    owner[key] = before
-  }
-}
+
+const replace = <O, K extends keyof O>(owner: O, key: K, next: O[K]) =>
+  swap(() => owner[key], (value) => { owner[key] = value }, () => next)
 
 /** Past every seed and every lobby a process runs: where a timer the harness never lets fire is set. */
 const NEVER_MS = 2 ** 31 - 1
@@ -440,9 +439,9 @@ const capped = (fake: typeof setTimeout): typeof setTimeout =>
  *   on the worker's speed: OpenTUI's own mock takes its place, every highlight answering empty.
  */
 const hold = (clock: TuiClock.Clock, host: string) => {
-  const singletons: { [key: symbol]: Bag } = globalThis
-  const bag = singletons[SINGLETONS] ?? {}
-  singletons[SINGLETONS] = bag
+  const singletons = globalSlot<Bag>(SINGLETONS)
+  const bag = Option.getOrElse(singletons.get(), (): Bag => ({}))
+  singletons.set(bag)
   if (!(bag["tree-sitter-client"] instanceof MockTreeSitterClient)) {
     const mock = new MockTreeSitterClient({ autoResolveTimeout: 0 })
     mock.setMockResult({ highlights: [] })
@@ -454,10 +453,10 @@ const hold = (clock: TuiClock.Clock, host: string) => {
   const unbeat = TuiClock.system.every(HEARTBEAT_MS, () => {
     for (const controller of harness.streams.live) controller.enqueue(new TextEncoder().encode(HEARTBEAT))
   })
-  const untimed = wrap(globalThis, "setTimeout", capped)
+  const untimed = swap(() => globalThis.setTimeout, (value) => { globalThis.setTimeout = value }, capped)
   const unclock = TuiClock.install(clock)
   const undirs = TuiDirs.install(ConfigProvider.fromEnv({ env: hostEnv(host) }))
-  const unfetch = replace(globalThis, "fetch", Object.assign(routed, { preconnect: () => {} }))
+  const unfetch = swap(() => globalThis.fetch, (value) => { globalThis.fetch = value }, () => Object.assign(routed, { preconnect: () => {} }))
   const unrandom = replace(crypto, "getRandomValues", fill)
   harness.release = () => {
     unrandom()
@@ -585,15 +584,11 @@ const navigateTo = (sessionID: string) =>
     onSome: (navigate) => Effect.sync(() => navigate(sessionID)),
   })
 
-const start = Effect.fn("SimTui.start")(function* (options: BootOptions, limitMs: number, hostLoad: Effect.Effect<Seed.HostLoad>) {
+const start = Effect.fn("SimTui.start")(function* (options: BootOptions, limitMs: number, hostLoad: Effect.Effect<SeedHostLoad>) {
   const before = yield* hostLoad
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
   const root = yield* path.fromFileUrl(new URL("..", import.meta.url))
-  // The TUI's plugin runtime refuses, for the rest of the process, any module of an Effect that is not
-  // the host's (the root's own, which effect-bun-test runs on): a test file after this one in the
-  // process would fail to load it. It is loaded first, while it still can be.
-  yield* Effect.promise(() => import("effect-bun-test"))
   // The wall time when the fake clock takes over, given back once the boot is done (the seed runner reads it).
   const wall = yield* Clock.currentTimeMillis
   const began = yield* realNow
@@ -685,13 +680,13 @@ const start = Effect.fn("SimTui.start")(function* (options: BootOptions, limitMs
     const used = cpuNow() - cpu
     const after = yield* hostLoad
     // The highest of the two reads: the 1-minute load lags the host's, either way.
-    const read: Seed.HostLoad = { load: Math.max(before.load, after.load), cores: after.cores }
+    const read: SeedHostLoad = { load: Math.max(before.load, after.load), cores: after.cores }
     yield* Console.log(
       `sim-tui boot ${options.file}: cpu ${Math.round(used)} ms of its ${limitMs}, ${passes} passes to load, wall ${Math.round(took)} ms (reported, not judged; load ${before.load.toFixed(1)} at the start, ${after.load.toFixed(1)} at the end, ${after.cores} cores)`,
     )
     jest.setSystemTime(wall + took)
-    const verdict = Seed.cpuVerdict(used, limitMs, read.load, read.cores)
-    if (verdict === "unjudged") yield* Console.log(Seed.unjudgedLine(options.file, `boot: ${Math.round(used)} ms of CPU time, past the ${limitMs} ms a boot has`, read))
+    const verdict = SeedCpuVerdict(used, limitMs, read.load, read.cores)
+    if (verdict === "unjudged") yield* Console.log(SeedUnjudgedLine(options.file, `boot: ${Math.round(used)} ms of CPU time, past the ${limitMs} ms a boot has`, read))
     if (verdict === "over")
       return yield* fail(
         `${options.file}: the boot took ${Math.round(used)} ms of CPU time (${Math.round(took)} ms of wall time), past the ${limitMs} ms of CPU a boot has, on a settled host (load ${read.load.toFixed(1)}, ${read.cores} cores)`,
@@ -705,7 +700,7 @@ const start = Effect.fn("SimTui.start")(function* (options: BootOptions, limitMs
 export const shutdown = Effect.gen(function* () {
   if (Option.isSome(harness.booted)) {
     const app = harness.booted.value
-    const { load } = yield* Seed.hostLoad
+    const { load } = yield* seedHostLoad
     const { wall, cpu, seeds } = app.spent
     yield* Console.log(`sim-tui seeds ${app.options.file}: ${seeds} seed runs, cpu ${Math.round(cpu)} ms (sim/seed.ts judges a file's seeds on it), wall ${Math.round(wall)} ms (reported, not judged; load ${load.toFixed(1)})`)
     yield* close(app)
@@ -722,7 +717,7 @@ export const boot = (options: BootOptions) => bootWithin(options, BOOT_LIMIT_MS)
  * host's: for the harness's own tests of a boot past its check (sim-tui/boot-fail.test.tsx, boot-loaded.test.tsx),
  * never a file's way to more time.
  */
-export const bootWithin = (options: BootOptions, limitMs: number, host: Effect.Effect<Seed.HostLoad> = Seed.hostLoad) =>
+export const bootWithin = (options: BootOptions, limitMs: number, host: Effect.Effect<SeedHostLoad> = seedHostLoad) =>
   Effect.gen(function* () {
     const found = harness.booted.pipe(Option.filter((app) => app.options.file === options.file))
     if (Option.isSome(found)) return found.value
@@ -730,11 +725,10 @@ export const bootWithin = (options: BootOptions, limitMs: number, host: Effect.E
     return yield* start(options, Math.min(limitMs, BOOT_LIMIT_MS), host)
   }).pipe(Effect.provide(NodeServices.layer))
 
-export { effectTest } from "./effect-test.ts"
 /** A TUI file's first test: it boots the file's app, with the time a first boot takes on a loaded host. */
-export const bootTest = (options: BootOptions) => effectTest(BOOT_TEST, boot(options), BOOT_TIMEOUT_MS)
+export const bootTest = (options: BootOptions) => effectTest(BOOT_TEST, boot(options), hangGuard("installer"))
 /** A TUI file's last test: it closes the app and reports the seeds. */
-export const closeTest = () => effectTest(CLOSE_TEST, shutdown, CLOSE_TIMEOUT_MS)
+export const closeTest = () => effectTest(CLOSE_TEST, shutdown, hangGuard("local-fixture"))
 
 export interface Key {
   readonly name: string

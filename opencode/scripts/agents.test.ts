@@ -6,9 +6,9 @@ import { Effect, FileSystem, Option, Path, Schema, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { Generated } from "../mods/orchestrate/role.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 import { build, DEFAULT_SOURCE, NO_BLOCK, orchestratorSection, ROOT } from "./agents.ts"
 
-const live = it.live.layer(BunServices.layer)
 
 /** Decode fresh output with the same schema the plugin uses for its shipped agents. */
 const Written = Schema.fromJsonString(Generated)
@@ -55,7 +55,7 @@ const copySkill = (dir: string) =>
   })
 
 describe("the orchestrator entry", () => {
-  live("fresh prompts pass the runtime decoder and the default carries SKILL.md's no-block rule", () =>
+  it.live.layer(BunServices.layer)("fresh prompts pass the runtime decoder and the default carries SKILL.md's no-block rule", () =>
     Effect.gen(function* () {
       const { rule } = yield* skill
       const built = yield* Effect.promise(() => build())
@@ -66,7 +66,7 @@ describe("the orchestrator entry", () => {
     }),
   )
 
-  live("--check is green on the written file, and fails once the skill's rule line is edited without regenerating", () =>
+  it.live.layer(BunServices.layer)("--check is green on the written file, and fails once the skill's rule line is edited without regenerating", () =>
     Effect.scoped(Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const path = yield* Path.Path
@@ -81,9 +81,10 @@ describe("the orchestrator entry", () => {
       expect(edited.code).toBe(1)
       expect(edited.stderr).toContain("stale:")
     })),
+    hangGuard("local-fixture"),
   )
 
-  live("a skill that lost the rule fails the build, naming it", () =>
+  it.live.layer(BunServices.layer)("a skill that lost the rule fails the build, naming it", () =>
     Effect.gen(function* () {
       const { text, rule } = yield* skill
       expect(() => orchestratorSection(text.replace(rule, ""))).toThrow(NO_BLOCK)

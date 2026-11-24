@@ -1,3 +1,4 @@
+import { stamp } from "./hang-guard.ts"
 /**
  * A fake Anthropic API on a loopback port, for the pool's deterministic
  * tests: `POST /v1/messages` (streamed or not), `GET /api/oauth/usage` (with
@@ -60,7 +61,7 @@ export type FakeAnswer =
 /** What the token endpoint answers a refresh with. */
 export type FakeTokenAnswer =
   /** Rotate both tokens, after `delayMs` when given. */
-  | { readonly kind: "rotate"; readonly delayMs?: number }
+  | { readonly kind: "rotate"; readonly delayMs?: number; readonly beforeAnswer?: () => Promise<void> }
   /** A 503, as a token endpoint that is down. */
   | { readonly kind: "unavailable" }
   /** A 400 `invalid_grant`, as for a refresh token that was spent or revoked. */
@@ -292,7 +293,7 @@ const replyBody = (answer: Extract<FakeAnswer, { kind: "ok" }>, model: string, s
 
 /** Serve the fake on a free loopback port. */
 export const startFakeAnthropic = (options: FakeAnthropicOptions): FakeAnthropic => {
-  const now = options.now ?? Date.now
+  const now = options.now ?? stamp
   const defaultQuota = (): FakeQuota => ({
     fiveHour: { utilization: 0.1, resetAt: now() + 3 * HOUR },
     sevenDay: { utilization: 0.2, resetAt: now() + 72 * HOUR },
@@ -530,7 +531,14 @@ export const startFakeAnthropic = (options: FakeAnthropicOptions): FakeAnthropic
         status: 429,
         headers: answer.retryAfterSeconds === undefined ? {} : { "retry-after": String(answer.retryAfterSeconds) },
       })
-    if (answer?.kind === "rotate" && answer.delayMs !== undefined) await Bun.sleep(answer.delayMs)
+    if (answer?.kind === "rotate") {
+      let waitForAnswer = answer.beforeAnswer
+      if (answer.delayMs !== undefined) {
+        const delay = answer.delayMs
+        waitForAnswer = () => Bun.sleep(delay)
+      }
+      if (waitForAnswer) await waitForAnswer()
+    }
     const rotated = fakeAccount()
     current.set(entry[0], rotated)
     return Response.json({

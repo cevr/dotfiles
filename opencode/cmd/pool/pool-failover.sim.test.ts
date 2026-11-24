@@ -11,11 +11,11 @@ import { Config, Console, DateTime, Effect, Option } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Provider from "../../sim/provider.ts"
 import { below, generator, line } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/pool/pool-failover.sim.test.ts")
-const isolated = Seed.runner("cmd/pool/pool-failover.sim.test.ts", { past: [10285280, 10286953] })
+const { seeded } = simulationRunner("cmd/pool/pool-failover.sim.test.ts")
+const isolated = simulationRunner("cmd/pool/pool-failover.sim.test.ts", { past: [10285280, 10286953] })
 
 const HOUR = 3_600_000
 const WORK = "/scratch/work"

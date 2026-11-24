@@ -14,7 +14,7 @@ import * as NodeChildProcessSpawner from "@effect/platform-node/NodeChildProcess
 import { Effect, FileSystem, Layer, Option, Path, PlatformError, Schema } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { gitInit } from "../tests/git-repo.ts"
-import * as Seed from "./seed.ts"
+import { simulationTest } from "./seed.ts"
 
 /** opencode/: the tests run from it. */
 const ROOT = process.cwd()
@@ -71,7 +71,7 @@ describe("no wall time in a simulated file", () => {
     expect(wallTime("yield* Clock.currentTimeMillis\nyield* Effect.sleep(5)")).toEqual([])
   })
 
-  Seed.effect(
+  simulationTest(
     "no simulated test file names one",
     Effect.gen(function* () {
       const files = (yield* Effect.forEach(["cmd", "mods", "sim", "tests"], (dir) => sources(dir, (file) => file.endsWith(".sim.test.ts")))).flat()
@@ -80,7 +80,7 @@ describe("no wall time in a simulated file", () => {
     }).pipe(Effect.provide(Platform)),
   )
 
-  Seed.effect(
+  simulationTest(
     "the world's own files name none",
     scan(WORLD.map((file) => `sim/${file}`)).pipe(
       Effect.map((lines) => expect(lines).toEqual([])),
@@ -195,12 +195,12 @@ test("the plugin cannot import or expose the simulated driver's raw transcript",
 })
 
 // @reads **/package.json **/*.ts **/*.tsx **/*.mts **/*.cts **/*.js **/*.jsx **/*.mjs **/*.cjs
-Seed.effect("tracked production sources cannot see the simulated driver's raw transcript",
+simulationTest("tracked production sources cannot see the simulated driver's raw transcript",
   leaksIn(ROOT).pipe(Effect.map((leaks) => expect(leaks).toEqual([])), Effect.provide(Platform)),
 )
 
 // @reads cmd/** mods/** sim/context.ts
-Seed.effect("the git-listed guard catches an arbitrary production helper, but allows a fixture reached only from tests",
+simulationTest("the git-listed guard catches an arbitrary production helper, but allows a fixture reached only from tests",
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
@@ -233,7 +233,7 @@ Seed.effect("the git-listed guard catches an arbitrary production helper, but al
 )
 
 // @reads cmd/wake/backstop.ts tests/git-repo.ts
-Seed.effect("the git-listed guard follows a production import through a tracked helper outside cmd and mods",
+simulationTest("the git-listed guard follows a production import through a tracked helper outside cmd and mods",
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path

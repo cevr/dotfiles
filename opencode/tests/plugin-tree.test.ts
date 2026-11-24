@@ -21,8 +21,8 @@ import { hostCall, serve } from "../testbeds/gamut/pty-host.ts"
 import { ENV, Platform, run } from "./reconnect/host.ts"
 import { forkRuns, keptScratch } from "./scratch.ts"
 import { freePort, ready, type Service } from "./service.ts"
+import { hangGuard } from "./hang-guard.ts"
 
-const TIMEOUT_MS = 240_000
 const VERSION = "2.2.7-prime.f0f0f0f0.d0d0d0d0"
 /** A host outside the fleet: the overlay gives it no peers and no Tailscale listener. */
 const HOST = "plugin-tree-test"
@@ -157,6 +157,6 @@ describe.skipIf(!forkRuns)("a build's plugin tree, loaded by real OpenCode", () 
         expect(section.length).toBe(tui.length)
         expect(section.filter((row) => !/^(┃\s+)?dotfiles-opencode\.\S+\s+local$/.test(row))).toEqual([])
       }),
-    TIMEOUT_MS,
+    hangGuard("generated-schedule"),
   )
 })

@@ -16,12 +16,12 @@ import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { owned } from "./owned.ts"
 import { ready, type Service } from "./service.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard, watchdog } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/mail-peer.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 
 const ROOT = join(import.meta.dir, "..")
-const TIMEOUT_MS = 150_000
 
 interface Host {
   readonly name: string
@@ -101,10 +101,10 @@ const sim = Bun.serve({
 })
 
 const until = async <A>(read: () => Promise<A> | A, done: (value: A) => boolean, label: () => string, ms = 60_000): Promise<A> => {
-  const deadline = Date.now() + ms
+  const deadline = watchdog(ms)
   let last = await read()
   while (!done(last)) {
-    if (Date.now() > deadline) return expect.unreachable(`${label()}: still ${JSON.stringify(last)}`)
+    if (deadline.expired()) return expect.unreachable(`${label()}: still ${JSON.stringify(last)}`)
     await Bun.sleep(250)
     last = await read()
   }
@@ -238,6 +238,6 @@ describe.skipIf(!fork)("session mail between two paired OpenCode servers (real p
       expect(secret.length).toBeGreaterThan(20)
       for (const hidden of [secret, mac.service.password, workbox.service.password]) expect(seen.join("\n")).not.toContain(hidden)
     }),
-    TIMEOUT_MS,
+    hangGuard("fork-turn"),
   )
 })

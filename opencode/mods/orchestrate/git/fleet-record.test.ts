@@ -5,6 +5,7 @@ import { Effect, Option } from "effect"
 import { gitClone, gitInit } from "../../../tests/git-repo.ts"
 import { FleetOutcome, fleetLineOf } from "../fleet.ts"
 import { recordOnce, repositoryOf, sameOrigin } from "./fleet.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 /** Git with no config of the owner's: no signing, no hooks, a fixed identity. */
 const GIT_ENV = {
@@ -70,7 +71,7 @@ describe("the fleet's record over real git", () => {
           expect(sh(`${root}/dotfiles`, ["git", "rev-parse", "HEAD"])).toBe(d1)
         }),
       ),
-    60_000,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -89,7 +90,7 @@ describe("the fleet's record over real git", () => {
           ])
         }),
       ),
-    60_000,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -111,7 +112,7 @@ describe("the fleet's record over real git", () => {
           expect(recorded(root)).toEqual(Option.some({ dotfiles: d2, fork: f2, batch: "batch-2" }))
         }),
       ),
-    60_000,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -129,7 +130,7 @@ describe("the fleet's record over real git", () => {
           expect(yield* record(root, "batch-z", both(d3, f3))).toEqual(FleetOutcome.Recorded({ target: { dotfiles: d3, fork: f3, batch: "batch-z" } }))
         }),
       ),
-    60_000,
+    hangGuard("process-fixture"),
   )
 })
 
@@ -200,7 +201,7 @@ describe("the tag object a record pushes", () => {
           expect(recorded(root)).toEqual(Option.some({ dotfiles: d3, fork: f1, batch: "batch-y" }))
         }),
       ),
-    60_000,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -228,7 +229,7 @@ describe("the tag object a record pushes", () => {
           expect(recorded(root)).toEqual(Option.some({ dotfiles: d2, fork: f1, batch: "batch-n" }))
         }),
       ),
-    60_000,
+    hangGuard("process-fixture"),
   )
 })
 
@@ -252,7 +253,7 @@ describe("which checkouts the fleet covers", () => {
           expect(yield* Effect.all([covered(`${root}/verify-batch-1`), covered(`${root}/maitred`), covered(`${root}/plain`), covered(`${root}/missing`)])).toEqual([Option.some(true), Option.some(false), Option.none(), Option.none()])
         }),
       ),
-    60_000,
+    hangGuard("process-fixture"),
   )
 })
 
@@ -268,7 +269,7 @@ describe("two hosts recording at once (the lease)", () => {
           expect(recorded(root)).toEqual(Option.some({ dotfiles: d3, fork: f1, batch: "batch-n" }))
         }),
       ),
-    60_000,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -281,7 +282,7 @@ describe("two hosts recording at once (the lease)", () => {
           expect(recorded(root)).toEqual(Option.some({ dotfiles: d3, fork: f1, batch: "batch-n" }))
         }),
       ),
-    60_000,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -300,6 +301,6 @@ describe("two hosts recording at once (the lease)", () => {
           expect(recorded(root)).toEqual(Option.some({ dotfiles: d2, fork: f1, batch: "batch-q" }))
         }),
       ),
-    60_000,
+    hangGuard("process-fixture"),
   )
 })

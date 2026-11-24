@@ -5,6 +5,7 @@ import { expect, test } from "bun:test"
 import { Context, Effect, Exit, Layer, Option, Scope, type Schema } from "effect"
 import { TestClock } from "effect/testing"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 import { PoolId, RequestRefused } from "../account-pool.ts"
 import { ledgerLaws } from "../laws.ts"
 import { Ledger } from "../service.ts"
@@ -72,4 +73,4 @@ effectTest("a newer process slot cannot read for a send until the older slot dra
     expect(Option.isNone(closed)).toBe(true)
     yield* Scope.close(prior, Exit.void)
     expect(yield* read).toEqual({ a: { kind: "rate-limit", at: 0, until: 90_000 } })
-  }).pipe(Effect.provide(virtual))), 5_000)
+  }).pipe(Effect.provide(virtual))), hangGuard("unit-law"))

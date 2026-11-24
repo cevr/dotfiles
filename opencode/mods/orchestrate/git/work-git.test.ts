@@ -12,6 +12,7 @@ import { scratch } from "../../../tests/scratch.ts"
 import { OnMain } from "../lost.ts"
 import { WorkGit } from "../service.ts"
 import * as Live from "./work-git.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 const ENV = {
   GIT_AUTHOR_NAME: "Lost Test",
@@ -112,7 +113,7 @@ effectTest(
       expect(tagOf(yield* git.heads(base, "main", [own(alphaHead, alpha)]), alphaHead)).toEqual(Option.some("Landed"))
     }),
   ).pipe(Effect.provide(Live.layer)),
-  60_000,
+  hangGuard("process-fixture"),
 )
 
 effectTest(
@@ -136,7 +137,7 @@ effectTest(
       expect([...held]).toEqual([busy])
     }),
   ).pipe(Effect.provide(Layer.fresh(Live.layer))),
-  30_000,
+  hangGuard("local-fixture"),
 )
 
 describe("Ergo's `work --json list -status`, read when the installed `work` gives it", () => {

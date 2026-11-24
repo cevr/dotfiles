@@ -17,6 +17,7 @@
 import { Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
 import { defineScript, Llm, type Ui } from "opencode-drive"
+import { stamp } from "../tests/hang-guard.ts"
 
 const root = process.cwd()
 const out = process.env.SCENARIO_OUT ?? "out"
@@ -42,7 +43,7 @@ export default defineScript({
       yield* llm.title(() => Effect.succeed("Downtime fixture"))
       yield* llm.serve((request) => {
         const s = JSON.stringify(request)
-        requests.push({ at: Date.now(), request: s })
+        requests.push({ at: stamp(), request: s })
         if (s.includes("Note: ZETA")) return say(s.includes("no OpenCode server was running") ? "Woke late on zeta." : "Woke on zeta, not late.")
         if (s.includes("call_wake_zeta")) return say("Zeta alarm set.")
         return Stream.make(Llm.toolCall({ index: 0, id: "call_wake_zeta", name: "wake", input: { afterSeconds: 5, note: "ZETA: look again after the outage" } }), Llm.finish("tool-calls"))
@@ -79,12 +80,12 @@ export default defineScript({
       yield* keep(tui.ui, "pending")
       yield* tui.close()
       yield* server.kill()
-      writeFileSync(`${out}/wake-downtime-stopped.txt`, String(Date.now()))
+      writeFileSync(`${out}/wake-downtime-stopped.txt`, String(stamp()))
 
       yield* Effect.sleep(DOWN)
 
       const opencode = yield* server.launch()
-      writeFileSync(`${out}/wake-downtime-started.txt`, String(Date.now()))
+      writeFileSync(`${out}/wake-downtime-started.txt`, String(stamp()))
       const after = yield* tuis.launch("after")
       // The new TUI opens on the home screen: open the one session there is
       // (listed under its title, or under the default name if titling lost the race).

@@ -12,6 +12,7 @@ import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 import { timedRows, withoutTurnTime } from "./turn-time.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-runs.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -49,7 +50,7 @@ const row = (line: string) =>
 
 describe.skipIf(!fork)("a message between two calls starts a new group in the Prime look (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-runs-")
-  beforeAll(...kept.setup(async () => {
+  beforeAll(kept.test(async () => {
     const out = kept.dir("prime-runs-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-runs.ts"], {
       cwd: root,
@@ -64,7 +65,7 @@ describe.skipIf(!fork)("a message between two calls starts a new group in the Pr
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names) frames[name] = readFileSync(join(out, `${files[name]}.txt`), "utf8").split("\n")
-  }, 300_000))
+  }), hangGuard("acceptance"))
 
   test("while it runs, the long command after the text is its own row, the newest in the transcript", kept.test(() => {
     const shown = transcript(frames.running)

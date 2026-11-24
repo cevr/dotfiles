@@ -10,6 +10,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 interface Message {
   readonly role: string
@@ -101,5 +102,5 @@ describe.skipIf(!fork)("/btw", () => {
     expect(textOf(notices[0] ?? { role: "user" })).toContain("Question:\nWhich command?\n\nAnswer:\nThe sleep in the shell call.")
     expect(back.map(textOf)).toContain("The check passed.")
     for (const message of back) expect(textOf(message)).not.toBe(note)
-  }), 150_000)
+  }), hangGuard("fork-turn"))
 })

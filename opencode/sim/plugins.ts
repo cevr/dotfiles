@@ -71,11 +71,11 @@ const checksOf = (world: World) =>
     Checks.of({
       run: (command, _cwd, timeoutMs) =>
         Effect.gen(function* () {
-          const process = world.processes(command, world.now())
-          yield* Effect.sleep(Math.min(process.ms, timeoutMs))
-          world.record("check", { command, exitCode: process.exitCode, stdout: process.stdout })
-          if (process.ms > timeoutMs) return { exitCode: 124, stdout: "", stderr: "", timedOut: true }
-          return { exitCode: process.exitCode, stdout: process.stdout, stderr: "", timedOut: false }
+          const runResult = world.processes(command, world.now())
+          yield* Effect.sleep(Math.min(runResult.ms, timeoutMs))
+          world.record("check", { command, exitCode: runResult.exitCode, stdout: runResult.stdout })
+          if (runResult.ms > timeoutMs) return { exitCode: 124, stdout: "", stderr: "", timedOut: true }
+          return { exitCode: runResult.exitCode, stdout: runResult.stdout, stderr: "", timedOut: false }
         }),
     }),
   )
@@ -237,9 +237,9 @@ export const orchestrate = (doubles: OrchestrateDoubles = {}, record?: RecordLay
 /** A command in the world's shell, from a plugin's fiber: what it prints, after the time it runs. */
 const shellOf = (world: World, command: string) =>
   Effect.suspend(() => {
-    const process = world.processes(command, world.now())
-    world.record("process", { command, exitCode: process.exitCode })
-    return Effect.sleep(process.ms).pipe(Effect.as(process))
+    const runResult = world.processes(command, world.now())
+    world.record("process", { command, exitCode: runResult.exitCode })
+    return Effect.sleep(runResult.ms).pipe(Effect.as(runResult))
   })
 
 /** How long the status script may run for one run, as the process adapter's timeout (`process/run-tables.ts`). */

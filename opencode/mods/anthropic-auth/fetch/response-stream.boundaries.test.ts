@@ -1,5 +1,6 @@
 import { describe, expect, spyOn, test } from 'bun:test'
 import { Result } from 'effect'
+import { waitUntil } from '../../../tests/wait.ts'
 import {
   MAX_JSON_DEPTH,
   MAX_JSON_NUMBER_BYTES,
@@ -15,6 +16,9 @@ import {
   ToolNameAliasTable,
 } from '../tool-alias.ts'
 import { createStrippedStream, MAX_SSE_EVENT_BYTES, MAX_SSE_LINE_BYTES } from './response-stream.ts'
+import { hangGuard } from "../../../tests/hang-guard.ts"
+
+const CANCELLATION_WAIT_MS = 15_000
 
 // Aliasing answers a Result now; a rejection throws here, as it did.
 const unwrap = <A, E>(result: Result.Result<A, E>): A => {
@@ -916,9 +920,9 @@ describe('createStrippedStream - cancellation', () => {
     const reader = bodyOf(response).getReader()
     await reader.read()
     await reader.cancel()
-    await new Promise((resolve) => setTimeout(resolve, 0))
+    await waitUntil('the source stream to observe cancellation', () => cancelled, CANCELLATION_WAIT_MS)
     expect(cancelled).toBe(true)
-  })
+  }, hangGuard("local-fixture"))
 
   test('buffers a chunk without a newline until flush', async () => {
     const output = await readText(
@@ -1205,7 +1209,7 @@ describe('bounded structured JSON responses', () => {
     const reader = bodyOf(jsonResponse(source)).getReader()
     await reader.read()
     await reader.cancel()
-    await new Promise((resolve) => setTimeout(resolve, 0))
+    await waitUntil('the source JSON stream to observe cancellation', () => cancelled, CANCELLATION_WAIT_MS)
     expect(cancelled).toBe(true)
 
     const failure = new Error('upstream JSON failed')
@@ -1215,7 +1219,7 @@ describe('bounded structured JSON responses', () => {
       },
     })
     await expect(readText(jsonResponse(failed))).rejects.toBe(failure)
-  })
+  }, hangGuard("local-fixture"))
 
   test('decodes multiple deferred message tool names when root type is last', async () => {
     const payload = `{"content":[{"name":"${READ_ALIAS}","type":"tool_use"},{"name":"${WRITE_ALIAS}","type":"tool_use"}],"type":"message"}`

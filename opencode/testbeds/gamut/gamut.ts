@@ -61,6 +61,7 @@ import { NO_FREE_MODELS, releaseFlags } from "../../scripts/release-flags.ts"
 import { gitInit } from "../../tests/git-repo.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../anthropic-auth.ts"
 import { type HostConfig, type HostScreen, hostCall, isKeyName, keys } from "./pty-host.ts"
+import { stamp, watchdog } from "../../tests/hang-guard.ts"
 import { submit, waitForComposer } from "./startup/handshake.ts"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -775,8 +776,8 @@ const startDetached = async (
   const child = Bun.spawn([process.execPath, ...argv], { stdio: ["ignore", fd, fd], detached: true })
   closeSync(fd)
   child.unref()
-  const deadline = Date.now() + 10_000
-  while (Date.now() < deadline) {
+  const deadline = watchdog(10_000)
+  while (!deadline.expired()) {
     if (child.exitCode !== null) {
       throw new Error(`the ${what} exited ${child.exitCode}: ${failureText("", await Bun.file(log).text())}`)
     }
@@ -902,7 +903,7 @@ const up = async (args: UpArgs) => {
   const loginStore = named.claudeLogins === "store" ? loginStoreDir() : undefined
   if (loginStore !== undefined) storeAccounts(loginStore)
 
-  const root = join(tmpdir(), `opencode-gamut-${Date.now()}`)
+  const root = join(tmpdir(), `opencode-gamut-${stamp()}`)
   // Until the state file names `root`, `down` cannot find it: a failed `up`
   // stops what it started and removes it here instead.
   const started: { simPid?: number } = {}
@@ -1004,7 +1005,7 @@ const prepareAndLaunch = async (
     await waitForComposer(marker, ORCHESTRATOR, () =>
       callHost(state, (socket) => hostCall(socket, { op: "read", scope: "screen" }), 1000),
     )
-    const sendMark = Date.now()
+    const sendMark = stamp()
     await callHost(state, (socket) => submit(socket, prompt))
     await writeState({ ...state, sendMark })
   } catch (error) {
@@ -1272,7 +1273,7 @@ const send = async (text: string) => {
   if (text.trim() === "") throw new Error("send needs the text to type")
   const state = await readState()
   // Mark before typing: the message is stored after this time.
-  await writeState({ ...state, sendMark: Date.now(), awaitsTurn: sendAwaitsTurn(text) })
+  await writeState({ ...state, sendMark: stamp(), awaitsTurn: sendAwaitsTurn(text) })
   await callHost(state, (socket) => submit(socket, text))
 }
 
@@ -1345,15 +1346,15 @@ export const isSettled = (progress: WaitProgress): boolean =>
 const wait = async (timeoutSeconds: number) => {
   const state = await readState()
   const paths = runPaths(state.root)
-  const deadline = Date.now() + timeoutSeconds * 1000
+  const deadline = watchdog(timeoutSeconds * 1000)
   let progress = WAIT_START
   let record = NO_RECORD
-  while (Date.now() < deadline) {
+  while (!deadline.expired()) {
     // A host that stops answering ends the wait with the budget, not after it.
     const screen = await callHost(
       state,
       (socket) => hostCall(socket, { op: "read", scope: "screen" }),
-      Math.max(deadline - Date.now(), 1000),
+      Math.max(deadline.remaining(), 1000),
     )
     if (screen.exited !== undefined) throw new Error(`opencode exited ${screen.exited}; read --full shows its last screen`)
     record = readRunDb(paths.db, NO_RECORD, (db) => runRecord(db, state.sendMark))
@@ -1392,7 +1393,7 @@ const restart = async () => {
     "--auto",
     ...(session === undefined ? [] : ["--session", session]),
   ]
-  await writeState({ ...state, sendMark: Date.now(), awaitsTurn: false })
+  await writeState({ ...state, sendMark: stamp(), awaitsTurn: false })
   await callHost(state, (socket) => hostCall(socket, { op: "restart", command }), 30_000)
   console.log(session === undefined ? "relaunched: no session to resume" : `relaunched: resumed ${session}`)
 }
@@ -1410,8 +1411,8 @@ const down = async () => {
     25_000,
   )
   if (stopped !== TIMED_OUT && stopped?.killed === true) console.log("opencode did not quit on ctrl+c within 15s; killed it")
-  const deadline = Date.now() + 2000
-  while ((await isHost(state.hostPid, state.root)) && Date.now() < deadline) await Bun.sleep(100)
+  const deadline = watchdog(2000)
+  while ((await isHost(state.hostPid, state.root)) && !deadline.expired()) await Bun.sleep(100)
   if (await isHost(state.hostPid, state.root)) process.kill(state.hostPid, "SIGKILL")
   if (state.simPid !== undefined && (await isSim(state.simPid, state.root))) process.kill(state.simPid, "SIGTERM")
   rmSync(state.root, { recursive: true, force: true })

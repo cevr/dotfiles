@@ -25,6 +25,7 @@
 // shown, it reads nothing and asks for nothing.
 import type { Plugin } from "@opencode/plugin/tui"
 import { Option, Schema } from "effect"
+import * as TuiClock from "@dotfiles/decider/tui-clock"
 import { $TRACK, createComputed, createMemo, createRoot, createSignal, getOwner, onCleanup, type Accessor, type Setter } from "solid-js"
 import { unwrap } from "solid-js/store"
 import { POOL_STATUS, SessionLogins } from "@dotfiles/opencode-pool/status"
@@ -59,7 +60,7 @@ interface Session {
   readonly setWaits: Setter<ReadonlyArray<Span>>
   readonly dispose: () => void
   users: number
-  release: ReturnType<typeof setTimeout> | undefined
+  release: (() => void) | undefined
 }
 
 /** Equal plain data: a message's reading again after a change it does not show. */
@@ -80,13 +81,13 @@ export function createLedger(ctx: Plugin.Context, options: { readonly releaseMs?
   const waits = new Map<string, ReadonlyArray<Span>>()
   const asked = new Map<string, { readonly sessionID: string; readonly at: number }>()
   const sessions = new Map<string, Session>()
-  const timers = new Set<ReturnType<typeof setTimeout>>()
+  const timers = new Set<() => void>()
   const abort = new AbortController()
   const later = (ms: number, run: () => void) => {
-    const timer = setTimeout(() => {
+    const timer = TuiClock.once(ms, () => {
       timers.delete(timer)
       run()
-    }, ms)
+    })
     timers.add(timer)
     return timer
   }
@@ -238,7 +239,7 @@ export function createLedger(ctx: Plugin.Context, options: { readonly releaseMs?
       askSteps(sessionID, created)
     }
     if (session.release !== undefined) {
-      clearTimeout(session.release)
+      session.release()
       timers.delete(session.release)
       session.release = undefined
     }
@@ -290,7 +291,7 @@ export function createLedger(ctx: Plugin.Context, options: { readonly releaseMs?
     },
     dispose() {
       abort.abort()
-      for (const timer of timers) clearTimeout(timer)
+      for (const timer of timers) timer()
       timers.clear()
       for (const session of sessions.values()) session.dispose()
       sessions.clear()

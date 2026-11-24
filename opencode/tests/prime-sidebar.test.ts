@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-sidebar.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -30,7 +31,7 @@ const sidebar = (frame: ReadonlyArray<string>) => frame.map((line) => line.slice
 
 describe.skipIf(!fork)("the subagent rows beside the sidebar in the Prime look (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-sidebar-")
-  beforeAll(...kept.setup(async () => {
+  beforeAll(kept.test(async () => {
     const out = kept.dir("prime-sidebar-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-sidebar.ts"], {
       cwd: root,
@@ -45,7 +46,7 @@ describe.skipIf(!fork)("the subagent rows beside the sidebar in the Prime look (
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code} (its frames and logs: ${out}):\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names) frames[name] = readFileSync(join(out, `sidebar-${name}.txt`), "utf8").split("\n")
-  }, 300_000))
+  }), hangGuard("acceptance"))
 
   test("wide, the sidebar holds the session and the dock counts the worker", kept.test(() => {
     for (const frame of [frames.wide, frames["wide-again"]]) {

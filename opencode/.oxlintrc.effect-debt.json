@@ -582,7 +582,6 @@
     },
     {
       "files": [
-        "cmd/stall/server.test.ts",
         "tests/plugin-start.test.ts"
       ],
       "rules": {

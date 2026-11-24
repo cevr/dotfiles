@@ -11,6 +11,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 interface Request {
   readonly session?: "root" | "title"
@@ -62,5 +63,5 @@ describe.skipIf(!fork)("jobs", () => {
     const sessions: ReadonlyArray<Session> = JSON.parse(read("transcripts.json"))
     const letters = sessions.flatMap((session) => session.messages.filter((message) => message.type === "synthetic" && message.metadata?.kind === "job" && message.metadata.progress !== true))
     expect(letters.map((message) => message.metadata?.exitCode)).toEqual([4])
-  }), 240_000)
+  }), hangGuard("generated-schedule"))
 })

@@ -10,9 +10,8 @@ import { Effect, Option, Schedule } from "effect"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { SYMBOLS } from "@dotfiles/opencode-subagents/line"
 import { attach, FILTER, findMarkdown, type Look } from "./emphasis.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
-/** Each test boots a renderer and waits on tree-sitter's worker, in wall time. */
-const TIMEOUT_MS = 20_000
 /** Looks a frame may take to show what it waits for, one each `POLL`. */
 const PASSES = 400
 const POLL = "20 millis"
@@ -111,7 +110,7 @@ describe("attach on the pinned opentui", () => {
       expect(style(spanOf(setup, " ✓ Done "))).toEqual(Option.some({ fg: channels(SUCCESS), bg: channels(GROUND), bold: false }))
       expect(Option.isSome(findMarkdown(setup.renderer.root))).toBe(true)
     }).pipe(Effect.scoped),
-    TIMEOUT_MS,
+    hangGuard("local-pair"),
   )
 
   effectTest(
@@ -128,7 +127,7 @@ describe("attach on the pinned opentui", () => {
       const frame = yield* until(setup, (shown) => shown.includes("@Title"))
       expect(frame).toContain("@Title then  ✓ Done")
     }).pipe(Effect.scoped),
-    TIMEOUT_MS,
+    hangGuard("local-pair"),
   )
 
   effectTest(
@@ -152,7 +151,7 @@ describe("attach on the pinned opentui", () => {
       expect(Option.map(spanOf(setup, SYMBOLS.blocked), (span) => channels(span.fg))).toEqual(Option.some(channels(WARNING)))
       expect(made.content).toBe(REPLY)
     }).pipe(Effect.scoped),
-    TIMEOUT_MS,
+    hangGuard("local-pair"),
   )
 
   effectTest(
@@ -180,7 +179,7 @@ describe("attach on the pinned opentui", () => {
       expect(raw).toEqual([])
       expect(frame).toContain(`${SYMBOLS.working} Running (mine): the  ✓ Done  watch`)
     }).pipe(Effect.scoped),
-    TIMEOUT_MS,
+    hangGuard("local-pair"),
   )
 
   effectTest(
@@ -192,6 +191,6 @@ describe("attach on the pinned opentui", () => {
       const frame = yield* until(setup, (shown) => shown.includes("Done"))
       expect(frame.split("\n")[0]?.trimEnd()).toBe("**Next:** the [[Done]] run")
     }).pipe(Effect.scoped),
-    TIMEOUT_MS,
+    hangGuard("local-pair"),
   )
 })

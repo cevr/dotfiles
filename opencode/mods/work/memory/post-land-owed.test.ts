@@ -28,6 +28,7 @@ import * as Model from "../model.ts"
 import { Landing, PostLandClaim, PostLandDebts, type RiftFailed } from "../service.ts"
 import { CHECK_EVERY, MAX_WAIT, RESUMED, SETTLE, receiptCommand } from "../owed.ts"
 import { Standing } from "../receipt.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 const SOURCE = "/code/app"
 const POST_LAND = "/code/.work/app/post-land"
@@ -322,7 +323,7 @@ describe("an owed post-land step", () => {
       }),
     ),
     // 200 sequences, each over INSTANCES tools: a few seconds, past bun's 5-second default under a busy host.
-    60_000,
+    hangGuard("process-fixture"),
   )
 
   test("a step owed under load runs once the load has stayed calm for the settle window, read every minute, and survives a restart", () =>

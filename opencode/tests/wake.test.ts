@@ -10,6 +10,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 /** The frame's lines, without the sidebar's column. */
 const lines = (frame: string): ReadonlyArray<string> => frame.split("\n").map((line) => line.slice(0, 108).trim())
@@ -117,7 +118,7 @@ describe.skipIf(!fork)("wakes", () => {
 
     // One message per fire, each a wake or a notice as set.
     expect(fired.map((message) => `${message.metadata?.kind}/${message.metadata?.mode}`)).toEqual(["alarm/wake", "alarm/notify", "monitor/wake", "alarm/wake"])
-  }), 240_000)
+  }), hangGuard("generated-schedule"))
 
   test("an alarm due while no server ran fires when one starts, and says it went late", kept.test(async () => {
     const fork = process.env.OPENCODE_DEV ?? ""
@@ -147,5 +148,5 @@ describe.skipIf(!fork)("wakes", () => {
     const fired = wakes(sessions)
     expect(fired).toHaveLength(1)
     expect(fired[0]?.metadata?.lateMs ?? 0).toBeGreaterThanOrEqual(60_000)
-  }), 300_000)
+  }), hangGuard("acceptance"))
 })

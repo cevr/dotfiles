@@ -7,6 +7,7 @@ import { settingsFor } from "./install.ts"
 import { Array as Arr, Effect, Exit, Match, Option } from "effect"
 import { buildName, buildVersion } from "../builds.ts"
 import { dailyBuild, FLOOR_STEP, type ForkBuild, PLATFORM_FLOOR, requireFloor, stageFork, suffixOf, versionOf } from "./pin.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 /** Git with no config of the owner's: no signing, no hooks, a fixed identity. */
 const GIT_ENV = {
@@ -137,7 +138,7 @@ describe("the updater's builder names a tree build", () => {
           spawnSync(["rm", "-rf", root])
         }),
       ),
-    60_000,
+    hangGuard("process-fixture"),
   )
 })
 
@@ -160,7 +161,7 @@ describe("the stage builds exactly the target's fork commit", () => {
           spawnSync(["rm", "-rf", root])
         }),
       ),
-    60_000,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -178,7 +179,7 @@ describe("the stage builds exactly the target's fork commit", () => {
           spawnSync(["rm", "-rf", root])
         }),
       ),
-    60_000,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -202,7 +203,7 @@ describe("the stage builds exactly the target's fork commit", () => {
           spawnSync(["rm", "-rf", root])
         }),
       ),
-    60_000,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -218,7 +219,7 @@ describe("the stage builds exactly the target's fork commit", () => {
           spawnSync(["rm", "-rf", root])
         }),
       ),
-    60_000,
+    hangGuard("process-fixture"),
   )
 })
 
@@ -242,7 +243,7 @@ describe("daily's build", () => {
           spawnSync(["rm", "-rf", root])
         }),
       ),
-    60_000,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -257,7 +258,7 @@ describe("daily's build", () => {
           spawnSync(["rm", "-rf", root])
         }),
       ),
-    60_000,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -275,7 +276,7 @@ describe("daily's build", () => {
           spawnSync(["rm", "-rf", root])
         }),
       ),
-    60_000,
+    hangGuard("process-fixture"),
   )
 })
 
@@ -382,7 +383,7 @@ describe("the stage builds only a fork that has the platform floor in its histor
           spawnSync(["rm", "-rf", h.root])
         }),
       ),
-    60_000,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -436,7 +437,7 @@ describe("the stage builds only a fork that has the platform floor in its histor
           spawnSync(["rm", "-rf", h.root])
         }),
       ),
-    60_000,
+    hangGuard("process-fixture"),
   )
 
   test(
@@ -480,7 +481,7 @@ describe("the stage builds only a fork that has the platform floor in its histor
           spawnSync(["rm", "-rf", h.root])
         }),
       ),
-    60_000,
+    hangGuard("process-fixture"),
   )
 })
 
@@ -612,7 +613,7 @@ describe("stage, handoff, retry and rollback histories keep every build slot a c
           spawnSync(["rm", "-rf", h.root])
         }),
       ),
-    60_000,
+    hangGuard("process-fixture"),
   )
 })
 

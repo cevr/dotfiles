@@ -49,7 +49,8 @@ function plugin() {
   }
 }
 
-const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+// The fake read's decode callback is already queued; let it enqueue the response continuation first.
+const settle = () => new Promise<void>((resume) => queueMicrotask(resume))
 
 function follow(questions: ReturnType<typeof plugin>, initial: ReadonlyArray<string>) {
   const [members, setMembers] = createSignal(initial)
