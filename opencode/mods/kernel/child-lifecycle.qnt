@@ -137,8 +137,12 @@ module childLifecycle {
     s.phase == WakePending,
     s' = { ...s, seq: s.seq + 1 }
   }
-  // The owner sees creation or detects the changed creation marker. Either
-  // resets the facts and aggregate positions, not the transport's floor.
+  // "Observed" means accepted from the pin's location-scoped stream with
+  // the matching aggregate. The native conformance test discharges that
+  // boundary assumption: deletion is durable v2 and requires no envelope
+  // location. A foreign explicit location or wrong aggregate is not a cut.
+  // Accepted create/delete or a changed marker resets facts and positions,
+  // not the transport's floor.
   action recreate = all {
     s.incarnation == 1, s.phase == WakePending,
     nondet observed = oneOf(Set(false, true))

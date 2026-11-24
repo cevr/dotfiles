@@ -1,4 +1,4 @@
-/** @reads cmd/kernel/fixtures/settle-child-pace/** cmd/kernel/server.ts cmd/orchestrate/server.ts cmd/wake/server.ts mods/subagents/solid/native-row.fixture.ts */
+/** @reads cmd/kernel/fixtures/settle-child-pace/** cmd/kernel/fixtures/lifecycle-envelopes/** cmd/kernel/server.ts cmd/orchestrate/server.ts cmd/wake/server.ts mods/subagents/solid/native-row.fixture.ts */
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import * as BunServices from "@effect/platform-bun/BunServices"
@@ -10,6 +10,8 @@ import { Answer, chatEvents } from "../sim/verify-model.ts"
 import { message, type Reads, type SessionInfo, type ShellInfo } from "../mods/subagents/opencode/view.ts"
 import { subagents, visible } from "../mods/subagents/subagent-row.ts"
 import { Diagnostic, Phase, Undetermined } from "../mods/kernel/child-lifecycle.ts"
+import { lifecycleEventTypes } from "../mods/kernel/lifecycle-event-types.ts"
+import { placement, routedDelete } from "../cmd/kernel/lifecycle-envelope.fixture.ts"
 import { readMark, type MarkRead } from "../mods/wake/latch.ts"
 import { owned, released } from "./owned.ts"
 import { forkRuns, parentEnv, scratch } from "./scratch.ts"
@@ -37,7 +39,21 @@ interface HostEvent {
 interface Embedded {
   readonly rpc: unknown
   readonly sessions: {
-    readonly create: (input: { location: { directory: string }; title?: string }) => Promise<{ id: string }>
+    readonly create: (input: {
+      location?: { directory: string }; title?: string; parentID?: string
+      permissions?: ReadonlyArray<{ action: string; resource: string; effect: "ask" }>
+    }) => Promise<{ id: string }>
+    readonly remove: (input: { sessionID: string }) => Promise<void>
+    readonly interrupt: (input: { sessionID: string }) => Promise<void>
+    readonly revert: {
+      readonly stage: (input: { sessionID: string; messageID: string; files: false }) => Promise<object>
+      readonly commit: (input: { sessionID: string }) => Promise<void>
+    }
+    readonly form: {
+      readonly create: (input: { sessionID: string; title: string; fields: readonly [{ key: string; type: "string" }] }) => Promise<{ id: string }>
+      readonly reply: (input: { sessionID: string; formID: string; answer: Schema.JsonObject }) => Promise<void>
+      readonly cancel: (input: { sessionID: string; formID: string }) => Promise<void>
+    }
     readonly prompt: (input: { sessionID: string; text: string }) => PromiseLike<object>
     readonly list: (input: { parentID: string }) => Promise<{ data: ReadonlyArray<SessionInfo> }>
     readonly get: (input: { sessionID: string }) => Promise<SessionInfo>
@@ -55,6 +71,11 @@ interface Embedded {
   readonly events: { readonly subscribe: (options?: { readonly signal: AbortSignal }) => AsyncIterable<HostEvent> }
   readonly shell: {
     readonly create: (input: { command: string; location: { directory: string }; metadata: Schema.JsonObject }) => Promise<{ data: ShellInfo }>
+    readonly remove: (input: { id: string; location: { directory: string } }) => Promise<void>
+  }
+  readonly permission: {
+    readonly create: (input: { sessionID: string; action: string; resources: ReadonlyArray<string> }) => Promise<{ id: string; effect: string }>
+    readonly reply: (input: { sessionID: string; requestID: string; decision: "once" }) => Promise<void>
   }
   readonly close: () => Promise<void>
 }
@@ -113,6 +134,7 @@ const denied = "SCRIPTED_CHILD_DENIAL"
 const earlierExit = "SCRIPTED_EARLIER_EXIT"
 const retryChild = "SCRIPTED_CHILD_RETRY"
 const silentChild = "SCRIPTED_SILENT_CHILD"
+const envelopeInterrupt = "SCRIPTED_ENVELOPE_INTERRUPT"
 const hasInput = (text: string, marker: string) => text.split("\n").includes(marker)
 
 const ContextTools = Schema.Array(Schema.Struct({ type: Schema.String, content: Schema.optionalKey(Schema.Array(Schema.Unknown)) }))
@@ -169,6 +191,7 @@ const modelFor = (gate: string) => Effect.gen(function* () {
     const title = Boolean(system && messageText(system).includes("You name conversations"))
     const latest = body.messages.findLastIndex((item) => item.role === "user")
     const prompt = Option.getOrElse(Option.map(Arr.get(body.messages, latest), messageText), () => "")
+    if (!title && hasInput(prompt, envelopeInterrupt)) return yield* Effect.never
     const shellAnswered = body.messages.slice(latest + 1).some((item) => item.role === "tool")
     const answer = fixtureAnswer(prompt, title, shellAnswered, gate)
     const retry = !title && hasInput(prompt, retryChild)
@@ -246,7 +269,7 @@ const observeUntil = Effect.fn("LifecycleFixture.observeUntil")(function* (event
 const loadSdk = (file: string) => import(file)
 
 const pluginConfig = (cmd: string, base: string, join: Path.Path["join"], opensAt: number): ReadonlyArray<Schema.JsonObject> => [
-  { package: join(cmd, "kernel"), options: { direct: ["subagents", "shell", "fixture_shell_suppress"] } },
+  { package: join(cmd, "kernel", "fixtures", "lifecycle-envelopes"), options: { direct: ["subagents", "shell", "fixture_shell_suppress"] } },
   { package: join(cmd, "wake"), options: { backstop: "off" } },
   { package: join(cmd, "orchestrate"), options: { codex: false, log: join(base, "calls.jsonl") } },
   { package: join(cmd, "kernel", "fixtures", "settle-child-pace"), options: { opensAt } },
@@ -591,6 +614,43 @@ const realRows = Effect.fn("LifecycleFixture.realRows")(function* (
   }
 })
 
+const UserPoint = Schema.decodeUnknownOption(Schema.Struct({ type: Schema.Literal("user"), id: Schema.String }))
+const driveAttention = Effect.fn("LifecycleFixture.driveAttention")(function* (host: Embedded, sessionID: string) {
+  const create = () => promised("native form creation failed", () => host.sessions.form.create({
+    sessionID, title: "Scratch form", fields: [{ key: "name", type: "string" }],
+  }))
+  const answered = yield* create()
+  yield* promised("native form reply failed", () => host.sessions.form.reply({ sessionID, formID: answered.id, answer: { name: "fixture" } }))
+  const cancelled = yield* create()
+  yield* promised("native form cancel failed", () => host.sessions.form.cancel({ sessionID, formID: cancelled.id }))
+  const permission = yield* promised("native permission ask failed", () => host.permission.create({
+    sessionID, action: "fixture", resources: ["fixture"],
+  }))
+  if (permission.effect !== "ask") return yield* fault(`fixture permission was ${permission.effect}`)
+  yield* promised("native permission reply failed", () => host.permission.reply({ sessionID, requestID: permission.id, decision: "once" }))
+})
+const driveEnvelopeKinds = Effect.fn("LifecycleFixture.driveEnvelopeKinds")(function* (host: Embedded, base: string, gate: string) {
+  const events = yield* eventStream(host)
+  const parent = yield* promised("fixture envelope parent creation failed", () => host.sessions.create({ location: { directory: base } }))
+  const { id: sessionID } = yield* promised("fixture envelope child creation failed", () => host.sessions.create({
+    parentID: parent.id, permissions: [{ action: "fixture", resource: "*", effect: "ask" }],
+  }))
+  yield* driveAttention(host, sessionID)
+  const shell = yield* nativeShell(host, base, gate, sessionID)
+  yield* promised("native shell remove failed", () => host.shell.remove({ id: shell.id, location: { directory: base } }))
+  const transcript = yield* ask(host, sessionID, "Fixture revert boundary")
+  const user = yield* Effect.fromOption(Arr.findFirst(transcript, (part) => UserPoint(part))).pipe(Effect.mapError(() => fault("no native revert boundary")))
+  yield* promised("native revert stage failed", () => host.sessions.revert.stage({ sessionID, messageID: user.id, files: false }))
+  yield* promised("native revert commit failed", () => host.sessions.revert.commit({ sessionID }))
+  const interrupt = yield* promised("interrupt child creation failed", () => host.sessions.create({ parentID: parent.id }))
+  yield* promised("native interrupt prompt failed", () => host.sessions.prompt({ sessionID: interrupt.id, text: envelopeInterrupt }))
+  yield* nextEvent(events, "interruptible execution start", childEvent("session.execution.started", interrupt.id))
+  yield* promised("native execution interrupt failed", () => host.sessions.interrupt({ sessionID: interrupt.id }))
+  yield* nextEvent(events, "native execution interruption", childEvent("session.execution.interrupted", interrupt.id))
+  yield* promised("native session delete failed", () => host.sessions.remove({ sessionID }))
+  yield* nextEvent(events, "native session deletion", childEvent("session.deleted", sessionID))
+})
+
 const fixture = Effect.gen(function* () {
   const base = yield* Config.schema(Schema.String, "LIFECYCLE_FIXTURE_HOME")
   const fork = yield* Config.schema(Schema.String, "LIFECYCLE_FIXTURE_FORK")
@@ -610,12 +670,13 @@ const fixture = Effect.gen(function* () {
     const earlier = yield* earlierFailure(opened, base, gate, model.affirmExit)
     const retry = yield* observedRetry(opened, base, model.finishRetry)
     const silent = yield* silentExit(opened, base, model.failSilent)
+    yield* driveEnvelopeKinds(opened, base, gate)
     return { ...observed, latch, clamp, earlier, retry, silent, opensAt }
   })))
   // Commit a later busy period while the production observer is absent. A
   // same-outcome snapshot after reopen must not authenticate the saved end.
   // Keep the agents supplied by Orchestrate; only Kernel's observer is absent.
-  const unobserved = host(model.baseURL, base, fork, plugins.filter(({ package: name }) => name !== path.join(cmd, "kernel")))
+  const unobserved = host(model.baseURL, base, fork, plugins.filter(({ package: name }) => name !== path.join(cmd, "kernel", "fixtures", "lifecycle-envelopes")))
   yield* Effect.scoped(Effect.flatMap(unobserved, (opened) => Effect.gen(function* () {
     const events = yield* eventStream(opened)
     yield* ask(opened, first.child, "Finish one new fixture period during the observation gap.")
@@ -687,6 +748,42 @@ const report = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({
   opensAt: Schema.Number, retained: Schema.String, retainedDirect: Schema.String,
   retainedRows: Schema.Array(Schema.String), unrelated: InboxCut, related: InboxCut, cancelled: Schema.String,
 })))
+const rawCapture = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.JsonObject))
+const captureHeader = Schema.decodeUnknownEffect(Schema.Struct({
+  type: Schema.String, created: Schema.Finite, data: Schema.JsonObject,
+  durable: Schema.optionalKey(Schema.Struct({ aggregateID: Schema.String, seq: Schema.Int, version: Schema.Int })),
+}))
+type RoutingKeys = Pick<ReturnType<typeof placement>, "location" | "durable">
+const routingFields = (frame: Schema.JsonObject | RoutingKeys) => ({
+  location: Reflect.has(frame, "location"), durable: Reflect.has(frame, "durable"),
+})
+const envelopeFrames = (stdout: string) => {
+  const prefix = "lifecycle-envelope "
+  expect(stdout).not.toContain("lifecycle-rejected")
+  return stdout.split("\n").filter((line) => line.startsWith(prefix)).map((line) => rawCapture(line.slice(prefix.length)))
+}
+const verifyEnvelope = Effect.fn("LifecycleFixture.verifyEnvelope")(function* (frames: ReadonlyArray<Schema.JsonObject>, kind: typeof lifecycleEventTypes[number]) {
+  const captured = yield* Effect.fromOption(Option.fromUndefinedOr(frames.find((frame) => frame.type === kind))).pipe(
+    Effect.mapError(() => fault(`no location-scoped native conformance sample: ${kind}`)),
+  )
+  const event = yield* captureHeader(captured)
+  const point = Option.fromUndefinedOr(event.durable)
+  expect(event.type, kind).toBe(kind)
+  if (event.type === "session.deleted") {
+    const id = yield* Schema.decodeUnknownEffect(Schema.String)(event.data.sessionID)
+    const durable = yield* Effect.fromOption(point)
+    const built = routedDelete(id, durable.aggregateID, event.created)
+    expect(routingFields(captured), kind).toEqual(routingFields(built))
+    expect(durable.aggregateID, kind).toBe(id)
+    expect(built.durable?.version, kind).toBe(durable.version)
+  } else {
+    const { aggregateID, seq } = Option.getOrElse(point, () => ({ aggregateID: "", seq: 0 }))
+    const built = placement(kind, aggregateID, seq, { directory: "/scratch/location-probe" })
+    expect(routingFields(captured), kind).toEqual(routingFields(built))
+    expect(built.durable, kind).toEqual(event.durable)
+  }
+  yield* Console.log(`lifecycle-envelope ${encode(captured)}`)
+})
 const successOf = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({
   version: Schema.Literal(1), child: Schema.String, revision: Schema.Int,
   started: Schema.optionalKey(Sequenced),
@@ -791,40 +888,54 @@ const verifyLife = Effect.fn("LifecycleFixture.verifyLife")(function* (result: E
   yield* Console.log(`native admission reload ${encode({ before: gap, after: retained, unrelated: result.unrelated, related: result.related, cancelled })}`)
 })
 
+const runNative = Effect.gen(function* () {
+  const path = yield* Path.Path
+  const fork = yield* Config.schema(Schema.String, "OPENCODE_DEV")
+  const home = yield* Effect.acquireRelease(Effect.sync(() => scratch("settle-child-attempts-")), (dir) => Effect.sync(() => dir[Symbol.dispose]()))
+  const child = yield* Effect.acquireRelease(
+    Effect.sync(() => owned(["bun", "--conditions=browser", path.resolve("tests/settle-child-attempts.test.ts")], {
+      cwd: home.path,
+      env: {
+        PATH: parentEnv.PATH, HOME: home.path, XDG_CONFIG_HOME: path.join(home.path, "config"), XDG_DATA_HOME: path.join(home.path, "data"),
+        XDG_STATE_HOME: path.join(home.path, "state"), XDG_CACHE_HOME: path.join(home.path, "cache"),
+        LIFECYCLE_FIXTURE_HOME: home.path, LIFECYCLE_FIXTURE_FORK: path.resolve(fork), LIFECYCLE_FIXTURE_PLUGIN: path.resolve("cmd"),
+      },
+      stdout: "pipe", stderr: "pipe",
+    })),
+    (child) => Effect.suspend(() => {
+      child.kill()
+      const release = released(child.pid)
+      if (release) return Effect.promise(() => release)
+      return Effect.void
+    }),
+  )
+  const text = (src: ReadableStream<Uint8Array>) => Stream.fromReadableStream({ evaluate: () => src, onError: () => fault("fixture log read failed") })
+    .pipe(Stream.decodeText(), Stream.mkString)
+  const [stdout, stderr, code] = yield* Effect.all(
+    [text(child.stdout), text(child.stderr), Effect.promise(() => child.exited)],
+    { concurrency: 3 },
+  ).pipe(Effect.timeout("45 seconds"))
+  expect({ code, stderr, stdout }).toMatchObject({ code: 0 })
+  return { frames: envelopeFrames(stdout), result: yield* report(stdout.trim().split("\n").at(-1)) }
+})
+
 if (import.meta.main && parentEnv.LIFECYCLE_FIXTURE_HOME) {
   BunRuntime.runMain(Effect.scoped(fixture).pipe(Effect.provide(Layer.mergeAll(BunServices.layer, BunHttpServer.layer({ hostname: "127.0.0.1", port: 0 })))))
 } else {
   describe.skipIf(!forkRuns)("on the pinned fork with a local model", () => {
-    it.scopedLive.layer(BunServices.layer)("a child with an ended step keeps its identity through shell wake and host restart", () =>
+    // Test cases share completed captures, never a live SDK, DB, or scope.
+    const first = Ref.makeUnsafe(true)
+    const complete = Deferred.makeUnsafe<Effect.Success<typeof runNative>, Effect.Error<typeof runNative>>()
+    const native = Ref.getAndSet(first, false).pipe(Effect.flatMap((ownsCapture) => {
+      if (!ownsCapture) return Deferred.await(complete)
+      return runNative.pipe(Effect.scoped, Effect.provide(BunServices.layer), Effect.onExit((exit) => Deferred.done(complete, exit)))
+    }))
+    for (const kind of lifecycleEventTypes) {
+      it.live(`native envelope through Kernel: ${kind}`, () => native.pipe(Effect.flatMap(({ frames }) => verifyEnvelope(frames, kind))), 55_000)
+    }
+    it.live("a child with an ended step keeps its identity through shell wake and host restart", () =>
       Effect.gen(function* () {
-        const path = yield* Path.Path
-        const fork = yield* Config.schema(Schema.String, "OPENCODE_DEV")
-        const home = yield* Effect.acquireRelease(Effect.sync(() => scratch("settle-child-attempts-")), (dir) => Effect.sync(() => dir[Symbol.dispose]()))
-        const child = yield* Effect.acquireRelease(
-          Effect.sync(() => owned(["bun", "--conditions=browser", path.resolve("tests/settle-child-attempts.test.ts")], {
-            cwd: home.path,
-            env: {
-              PATH: parentEnv.PATH, HOME: home.path, XDG_CONFIG_HOME: path.join(home.path, "config"), XDG_DATA_HOME: path.join(home.path, "data"),
-              XDG_STATE_HOME: path.join(home.path, "state"), XDG_CACHE_HOME: path.join(home.path, "cache"),
-              LIFECYCLE_FIXTURE_HOME: home.path, LIFECYCLE_FIXTURE_FORK: path.resolve(fork), LIFECYCLE_FIXTURE_PLUGIN: path.resolve("cmd"),
-            },
-            stdout: "pipe", stderr: "pipe",
-          })),
-          (child) => Effect.suspend(() => {
-            child.kill()
-            const release = released(child.pid)
-            if (release) return Effect.promise(() => release)
-            return Effect.void
-          }),
-        )
-        const text = (src: ReadableStream<Uint8Array>) => Stream.fromReadableStream({ evaluate: () => src, onError: () => fault("fixture log read failed") })
-          .pipe(Stream.decodeText(), Stream.mkString)
-        const [stdout, stderr, code] = yield* Effect.all(
-          [text(child.stdout), text(child.stderr), Effect.promise(() => child.exited)],
-          { concurrency: 3 },
-        ).pipe(Effect.timeout("45 seconds"))
-        expect({ code, stderr, stdout }).toMatchObject({ code: 0 })
-        const result = yield* report(stdout.trim().split("\n").at(-1))
+        const { result } = yield* native
         yield* Console.log(`fixture wire: system content ${result.content}; notices ${result.notices.join(", ")}; sequence points ${result.order.join(", ")}; first row ${result.row}`)
         yield* Console.log(`native shell trace ${encode(result.trace)}`)
         for (const kind of ["shell.exited", "session.inbox.enqueued", "session.inbox.delivered", "session.execution.started", "session.execution.succeeded"]) {

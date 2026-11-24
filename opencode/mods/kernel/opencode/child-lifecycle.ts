@@ -5,18 +5,10 @@ import { RowFact } from "../child-row.ts"
 import { Observation } from "../child-lifecycle.ts"
 import { readMark, MarkRead } from "../../wake/latch.ts"
 import { CHILD_ROWS } from "./child-row.ts"
+import { lifecycleEventTypes } from "../lifecycle-event-types.ts"
 
 type Info = Effect.Success<ReturnType<Plugin.Context["session"]["get"]>>
 type Location = Pick<Info["location"], "directory" | "workspaceID">
-
-const TYPES = [
-  "session.execution.started", "session.execution.succeeded", "session.execution.failed", "session.execution.interrupted",
-  "session.step.failed", "session.retry.scheduled", "session.deleted",
-  "session.created", "session.revert.committed",
-  "shell.created", "shell.exited", "shell.deleted", "experimental.job.updated",
-  "session.inbox.enqueued", "session.inbox.delivered", "session.inbox.cancelled",
-  "permission.asked", "permission.replied", "form.created", "form.replied", "form.cancelled",
-] as const
 
 // The close does not carry its admission generation. Keep every visible
 // session aggregate position, including events that have no lifecycle effect.
@@ -31,7 +23,8 @@ const Position = {
   // the SDK's JSON stream omits it.
   location: Schema.optional(Schema.Struct({ directory: Schema.String, workspaceID: Schema.optional(Schema.String) })),
 }
-const Durable = { ...Position, durable: Schema.Struct({ aggregateID: Schema.String, seq: Schema.Int, version: Schema.Literal(1) }) }
+const Coordinates = { aggregateID: Schema.String, seq: Schema.Int }
+const Durable = { ...Position, durable: Schema.Struct({ ...Coordinates, version: Schema.Literal(1) }) }
 const Session = { sessionID: Schema.String }
 const ErrorType = Schema.Struct({ type: Schema.String })
 const ExecutionEvent = Schema.Union([
@@ -64,7 +57,12 @@ const Event = Schema.Union([
   ExecutionEvent,
   InboxEvent,
   AttentionEvent,
-  Schema.Struct({ ...Position, type: Schema.Literals(["session.created", "session.deleted"]), data: Schema.Struct(Session) }),
+  Schema.Struct({ ...Durable, type: Schema.Literal("session.created"), data: Schema.Struct(Session) }),
+  Schema.Struct({
+    ...Position, type: Schema.Literal("session.deleted"), data: Schema.Struct(Session),
+    durable: Schema.Struct({ ...Coordinates, version: Schema.Literal(2) }),
+  }),
+  Schema.Struct({ ...Durable, type: Schema.Literal("session.revert.committed"), data: Schema.Struct(Session) }),
   Schema.Struct({ ...Position, type: Schema.Literals(["shell.exited", "shell.deleted"]), data: Schema.Struct({ id: Schema.String }) }),
   Schema.Struct({ ...Position, type: Schema.Literal("shell.created"), data: Schema.Struct({ info: Schema.Struct({
     id: Schema.String,
@@ -80,7 +78,7 @@ const Event = Schema.Union([
 ])
 type Event = typeof Event.Type
 export const decodeEvent = Schema.decodeUnknownResult(Event)
-const Known = new Set<string>(TYPES)
+const Known = new Set<string>(lifecycleEventTypes)
 const PublicPosition = Schema.Struct({
   ...Position, type: Schema.String,
   durable: Schema.Struct({ aggregateID: Schema.String, seq: Schema.Int, version: Schema.Int }),
@@ -92,6 +90,8 @@ const shellPayload = Schema.decodeUnknownOption(Schema.Struct({
 }))
 const isInboxEvent = (event: Event): event is InboxEvent =>
   event.type === "session.inbox.enqueued" || event.type === "session.inbox.delivered" || event.type === "session.inbox.cancelled"
+const isBoundary = (event: Event): event is Extract<Event, { readonly type: "session.created" | "session.deleted" | "session.revert.committed" }> =>
+  event.type === "session.created" || event.type === "session.deleted" || event.type === "session.revert.committed"
 
 const toAttention = (event: AttentionEvent) => {
   const at = event.created
@@ -178,7 +178,7 @@ const inboxShell = (event: InboxEvent) => {
 }
 
 export const durableFact = (event: Event, parent: string): Option.Option<Fact> => {
-  if (!("durable" in event) || event.durable.aggregateID !== event.data.sessionID) return Option.none()
+  if (!("durable" in event) || event.durable.aggregateID !== event.data.sessionID || isBoundary(event)) return Option.none()
   if (isInboxEvent(event)) return Option.some(inboxFact(event, parent))
   return Option.some(executionFact(event, parent))
 }
@@ -374,6 +374,17 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
     yield* invalidate(prior.value.parent)
   })
 
+  const boundary = Effect.fn("ChildLifecycle.boundary")(function* (event: Extract<Event, { readonly type: "session.created" | "session.deleted" | "session.revert.committed" }>) {
+    const { sessionID: child } = event.data
+    if (event.durable.aggregateID !== child) return
+    if (event.type === "session.deleted") return yield* reset(child, Option.none())
+    // Revert may silently delete persisted admissions. Do not let it serve
+    // as evidence of continuity across any such admission.
+    if (event.type === "session.revert.committed") return
+    const found = yield* infoOf(child).pipe(Effect.option)
+    if (Option.isSome(found)) return yield* reset(child, found)
+  })
+
   const absorb = Effect.fn("ChildLifecycle.absorb")(function* (event: typeof ExecutionEvent.Type) {
     const child = event.data.sessionID
     if (event.durable.aggregateID !== child) return
@@ -425,6 +436,7 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
 
   const fold = Effect.fn("ChildLifecycle.fold")(function* (event: Event) {
     if (event.location && !sameLocation(event.location, ctx.location)) return
+    if (isBoundary(event)) return yield* boundary(event)
     if (isInboxEvent(event)) return yield* updateInbox(event)
     if ("durable" in event) return yield* absorb(event)
     switch (event.type) {
@@ -447,13 +459,6 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
         return yield* deleteShell(event.data.id)
       case "experimental.job.updated":
         return yield* job(event)
-      case "session.deleted":
-        if (event.location) return yield* reset(event.data.sessionID, Option.none())
-        return
-      case "session.created": {
-        const found = yield* infoOf(event.data.sessionID).pipe(Effect.option)
-        if (Option.isSome(found)) return yield* reset(event.data.sessionID, found)
-      }
     }
   })
 
