@@ -33,6 +33,7 @@ export interface Failure {
   readonly retryable: boolean
   /** The wait the provider asked for, ms; 0 for none. */
   readonly retryAfterMs: number
+  readonly heldUntil?: number
 }
 
 /** The usage limit's words on a 429, as the fork's QUOTA_TEXT reads them. */

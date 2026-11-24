@@ -857,23 +857,38 @@ export const LAWS: ReadonlyArray<Law> = [
   {
     name: LAW.socket,
     operations: ["session.create", "session.prompt", "session.hook"],
-    // The pool reads a ChatGPT login's quota from the frames of a socket turn.
+    // The pool can refuse a known hold during routing, and must check again
+    // once the host has the concrete frame, including on a reused socket.
     check: (ctx, probe) =>
       Effect.gen(function* () {
         const frames = yield* Ref.make<ReadonlyArray<string>>([])
         const model = { providerID: Provider.ID.make(LAW_SOCKET.providerID), id: Model.ID.make(LAW_SOCKET.id) }
         const session = yield* ctx.session.create({ title: "law socket", model })
-        yield* ctx.session.hook("experimental.ws.receive", (event) =>
-          Ref.update(frames, (all) => [
-            ...all,
-            ...Arr.filter([`${event.kind} ${event.model.providerID}/${event.model.id} ${frameType(event.frame)}`], () => event.sessionID === session.id),
-          ]),
+        const see = (sessionID: string, fact: string) => Effect.when(
+          Ref.update(frames, (all) => [...all, fact]),
+          Effect.succeed(sessionID === session.id),
+        ).pipe(Effect.asVoid)
+        yield* ctx.session.hook("experimental.model.resolve", (event) =>
+          see(event.sessionID, `resolve ${event.kind} ${event.model.providerID}/${event.model.id}`),
         )
-        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: socket" }))
-        const seen = yield* Ref.get(frames)
-        const on = `primary ${LAW_SOCKET.providerID}/${LAW_SOCKET.id}`
-        yield* ensure(seen.at(0) === `${on} response.created` && seen.at(-1) === `${on} response.completed`, `the frames were ${seen.join(",")}`)
-        yield* ensure(seen.includes(`${on} response.output_text.delta`), `no text frame among ${seen.join(",")}`)
+        yield* ctx.session.hook("model.request", (event) =>
+          see(event.sessionID, `request ${event.kind} ${event.model.providerID}/${event.model.id}`),
+        )
+        yield* ctx.session.hook("experimental.ws.send", (event) =>
+          see(event.sessionID, `send ${event.kind} ${event.model.providerID}/${event.model.id} ${frameType(event.frame)}`),
+        )
+        yield* ctx.session.hook("experimental.ws.receive", (event) =>
+          see(event.sessionID, `receive ${event.kind} ${event.model.providerID}/${event.model.id} ${frameType(event.frame)}`),
+        )
+        for (const text of ["law: socket warm", "law: socket next"]) {
+          yield* Ref.set(frames, [])
+          yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text }))
+          const seen = (yield* Ref.get(frames)).filter((fact) => fact.includes(" primary "))
+          const on = `primary ${LAW_SOCKET.providerID}/${LAW_SOCKET.id}`
+          const before = [`resolve ${on}`, `request ${on}`, `send ${on} response.create`, `receive ${on} response.created`]
+          yield* ensure(seen.slice(0, 4).join(",") === before.join(",") && seen.at(-1) === `receive ${on} response.completed`, `the socket hooks were ${seen.join(",")}`)
+          yield* ensure(seen.includes(`receive ${on} response.output_text.delta`), `no text frame among ${seen.join(",")}`)
+        }
       }),
   },
   {

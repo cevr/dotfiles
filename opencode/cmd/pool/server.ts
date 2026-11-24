@@ -18,6 +18,8 @@
  *
  * Options (all optional; an absent one takes its default, a malformed one stops the plugin):
  * - `providers`: provider id to integration id, default `{ anthropic: "anthropic" }`.
+ *   Only `anthropic` has an auth plugin that signs and confirms a placement.
+ *   Other keys track the host's OAuth login; they cannot switch its credential.
  * - `sweepMinutes`: how often to read each login's usage; 0 turns it off. Default 10.
  * - `cacheLifeMs`: how long a session's prompt cache lives on the login it last
  *   used, in ms: the provider's cache lifetime (`settings.cache.ttl`). While it
@@ -40,7 +42,7 @@
  *   (a 429, a 5xx, no answer) before the `alerts` method names it as an
  *   outage. Default 10.
  *
- * - `paced`: providers the pool measures without placing their requests, provider
+ * - `paced`: providers whose active login the pool admits at the final send hook, provider
  *   id to integration id, default none. `{ openai: "openai" }` paces OpenAI's
  *   agents on the ChatGPT account's Codex quota, as the provider measures it
  *   across every place the account is used (`@dotfiles/opencode-pool/chatgpt/usage`):
@@ -131,9 +133,10 @@
  */
 import { hostname } from "node:os"
 import { Agent, Integration, Plugin, Tool } from "@opencode/plugin/effect"
-import { Cause, Clock, Context, Deferred, Effect, Exit, Layer, Option, Schedule, Schema, Stream } from "effect"
+import { Cause, Clock, Context, Deferred, Effect, Exit, Fiber, FiberMap, Layer, Option, Schedule, Schema, Stream } from "effect"
 import { heldMessage, PoolId } from "@dotfiles/opencode-pool/account-pool"
-import { RequestHeld, requestHeldMessage, storeHeld } from "@dotfiles/opencode-pool/pace"
+import { type HoldReason, type Pace, RequestHeld, requestHeldMessage, storeHeld, nextRetryAt } from "@dotfiles/opencode-pool/pace"
+import { deferRoute, HeldSend, refuseSend, type SendHold, sendHoldMessage, stepIDOf } from "@dotfiles/opencode-pool/refuse"
 import { HANDOFF_HEADER, HOLD_STORE_RETRY_MS, Handoff, HandoffInput, sentPlacementOf } from "@dotfiles/opencode-pool/handoff"
 import { CACHE_LIFE_MS, ttlMs, ttlOf } from "@dotfiles/opencode-pool/accounts"
 import { OUTAGE_AFTER_MS } from "@dotfiles/opencode-pool/alerts"
@@ -229,6 +232,12 @@ export const Options = Schema.Struct({
   unitCost: Schema.optional(Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 }))),
 })
 export type Options = typeof Options.Type
+
+const SEND_HOLD_PREFIX = "held-send/"
+const sendHoldKey = (sessionID: string) => `${SEND_HOLD_PREFIX}${sessionID}`
+const decodeSendHold = Schema.decodeUnknownOption(HeldSend)
+const frameType = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({ type: Schema.String })))
+type SendScope = { readonly sessionID: string; readonly providerID: string; readonly kind: Model.PlaceInput["kind"]; readonly stepID?: string }
 
 /** The outside systems the model runs on. */
 export type Externals = Logins | Quota | Ledger | Peers | FleetStore | ResetsStore | Owner
@@ -432,6 +441,7 @@ export const make = (
     chatgpt: ReadonlyMap<PoolId, ChatGPT.Source>,
   ) => Layer.Layer<Externals>,
   storeHost: StoreHost = LIVE_STORE_HOST,
+  sendRecords = LedgerLive.holdAuthority().lock,
 ) =>
   Plugin.define({
     id: "dotfiles-opencode.pool",
@@ -440,6 +450,28 @@ export const make = (
       const options = yield* Schema.decodeUnknownEffect(Options)(ctx.options).pipe(
         Effect.mapError((error) => new Error(`dotfiles-opencode.pool: invalid options: ${error.message}`)),
         Effect.orDie,
+      )
+      // The established Anthropic signing path supplies its own final decision.
+      // Every other tracked route (including aliases) uses the host hooks.
+      const signed = (providerID: string) => providerID === "anthropic" && Object.hasOwn(options.providers, providerID)
+      const tracked = (providerID: string) => Option.orElse(
+        Option.filter(Option.fromUndefinedOr(options.providers[providerID]), () => Object.hasOwn(options.providers, providerID)),
+        () => Option.filter(Option.fromUndefinedOr(options.paced[providerID]), () => Object.hasOwn(options.paced, providerID)),
+      )
+      const lastLogin = new Map<string, string>()
+      const noLogin = { ok: true, measured: false, tracking: "not-tracked-no-pool-login", reason: "not tracked: no pool login" } satisfies Pace
+      const loginOf = (integrationID: string) => ctx.integration.connection.active(integrationID).pipe(
+        Effect.map((connection) => {
+          const selected = Option.fromUndefinedOr(connection)
+          if (Option.isNone(selected)) return { active: false, id: Option.fromUndefinedOr(lastLogin.get(integrationID)) }
+          const value = selected.value
+          if (value.type === "credential" && value.method === "oauth") {
+            lastLogin.set(integrationID, value.id)
+            return { active: true, id: Option.some<string>(value.id) }
+          }
+          lastLogin.delete(integrationID)
+          return { active: false, id: Option.none<string>() }
+        }),
       )
       // The plugin's context carries the host's loggers.
       const sources = storeSources(options, yield* Effect.context<never>(), storeHost)
@@ -455,6 +487,89 @@ export const make = (
       yield* Effect.addFinalizer(() => Effect.sync(() => { active = false }))
       const withPool = <A, E, R>(use: (pool: Model.Pool["Service"]) => Effect.Effect<A, E, R>) =>
         Deferred.await(ready).pipe(Effect.flatMap(use))
+      const routeTracking = (integration: string, input: Model.PlaceInput) => Effect.gen(function* () {
+        const login = yield* loginOf(integration)
+        if (login.active) return Option.none<Pace>()
+        if (Option.isNone(login.id)) return Option.some<Pace>(noLogin)
+        const candidate = login.id.value
+        return yield* withPool((pool) => pool.admitActive(input, candidate, "signed-out")).pipe(
+          Effect.as(Option.some<Pace>(noLogin)),
+          Effect.catchTag("RequestHeld", (hold) => Clock.currentTimeMillis.pipe(Effect.map((now) => Option.some<Pace>({
+            ok: false, measured: true, reason: requestHeldMessage(hold), reasonCode: hold.reasonCode, retryAt: nextRetryAt(now, [hold.retryAt]),
+          })))),
+        )
+      })
+      const storeOp = <A>(operation: Effect.Effect<A>) =>
+        operation.pipe(Effect.timeoutOption(HOLD_STORE_RETRY_MS), Effect.catchDefect(() => Effect.succeed(Option.none())))
+      const activation = yield* Effect.scope
+      const expiries = yield* FiberMap.make<string>()
+      const heldSend = (sessionID: string) => sendRecords.withPermits(1)(Effect.gen(function* () {
+        const key = sendHoldKey(sessionID)
+        const page = yield* storeOp(ctx.storage.scan({ prefix: key, limit: 1 }))
+        const found = Option.flatMap(page, (page) => Option.flatMap(
+          Option.fromUndefinedOr(page.entries.find((row) => row.key === key)), (row) => decodeSendHold(row.value)))
+        const now = yield* Clock.currentTimeMillis
+        if (Option.isNone(found)) return {}
+        if (found.value.retryAt > now) return { hold: found.value }
+        yield* storeOp(ctx.storage.remove(key))
+        return {}
+      }))
+      // A hook already running at reload still gives its old refusal.
+      // Forking into a closed activation cancels the timer, not that hook.
+      const expire = (hold: HeldSend, now: number, recovered = false) =>
+        heldSend(hold.sessionID).pipe(
+          Effect.delay(Math.max(0, hold.retryAt - now)),
+          Effect.forkIn(activation),
+          Effect.flatMap((fiber) => FiberMap.set(expiries, hold.sessionID, fiber, { onlyIfMissing: recovered })),
+        )
+      // Re-arm persisted deadlines after a restart. Each timer re-reads the
+      // exact key, so expiry of one refusal cannot delete a later replacement.
+      yield* Effect.forkScoped(Effect.gen(function* () {
+        let after = Option.none<string>()
+        do {
+          const page = yield* storeOp(ctx.storage.scan({ prefix: SEND_HOLD_PREFIX, limit: 128,
+            ...Option.match(after, { onNone: () => ({}), onSome: (after) => ({ after }) }),
+          }))
+          if (Option.isNone(page)) return
+          const now = yield* Clock.currentTimeMillis
+          for (const entry of page.value.entries) {
+            const hold = decodeSendHold(entry.value)
+            if (Option.isSome(hold)) yield* expire(hold.value, now, true)
+          }
+          after = Option.fromUndefinedOr(page.value.next)
+        } while (Option.isSome(after))
+      }))
+      const recordHeld = (scope: SendScope, reason: string, reasonCode: HoldReason, retry: number) =>
+        Clock.currentTimeMillis.pipe(Effect.flatMap((now) => {
+          const retryAt = nextRetryAt(now, [retry])
+          const hold = HeldSend.make({
+            sessionID: scope.sessionID, providerID: scope.providerID, reasonCode, retryAt,
+            ...Option.match(Option.fromUndefinedOr(scope.stepID), { onNone: () => ({}), onSome: (stepID) => ({ stepID }) }),
+          })
+          const refusal = { ...hold, reason }
+          if (scope.kind !== "primary") return Effect.succeed(refusal)
+          return sendRecords.withPermits(1)(storeOp(ctx.storage.set(sendHoldKey(scope.sessionID), hold)).pipe(
+            Effect.tap((written) => {
+              if (Option.isNone(written)) return Effect.void
+              return expire(hold, now).pipe(Effect.asVoid)
+            }),
+          )).pipe(Effect.as(refusal))
+        }))
+      const forgetHeld = (scope: SendScope, ifPresent = false) => {
+        if (scope.kind !== "primary") return Effect.void
+        // Capture this row's timer under the permit. Interrupt only after
+        // releasing it: the timer may already be waiting to read this row.
+        return sendRecords.withPermits(1)(Effect.gen(function* () {
+          const key = sendHoldKey(scope.sessionID)
+          if (ifPresent) {
+            const page = yield* storeOp(ctx.storage.scan({ prefix: key, limit: 1 }))
+            if (Option.exists(page, ({ entries }) => entries.every((entry) => entry.key !== key))) return Option.none()
+          }
+          const removed = yield* storeOp(ctx.storage.remove(key))
+          if (Option.isNone(removed)) return Option.none()
+          return yield* FiberMap.get(expiries, scope.sessionID)
+        })).pipe(Effect.flatMap(Option.match({ onNone: () => Effect.void, onSome: Fiber.interrupt })))
+      }
       yield* Effect.forkScoped(
         Effect.gen(function* () {
           const services = yield* Layer.build(
@@ -542,8 +657,19 @@ export const make = (
           Effect.orElseSucceed(() => undefined),
         )
 
-      yield* ctx.session.hook("model.request", (event) =>
-        Effect.all([agentCacheLife(event.agent), cacheOf(event.sessionID)]).pipe(
+      // The old host has no concrete unsent-Step result. New hosts expose
+      // the Step during routing and again at the final send hook.
+      let canDeferPrimary = false
+      const failProposal = (scope: SendScope, reason: string, code: HoldReason, at: number) =>
+        recordHeld(scope, reason, code, at).pipe(
+          Effect.flatMap((hold) => Effect.die(new Error(hold.reason))),
+        )
+      yield* ctx.session.hook("model.request", (event) => {
+        if (!signed(event.model.providerID)) {
+          if (canDeferPrimary && event.kind === "primary") return Effect.void
+          return gateActive(event, "known-hold", (hold) => Effect.die(new Error(sendHoldMessage(hold.reason, hold.until))))
+        }
+        return Effect.all([agentCacheLife(event.agent), cacheOf(event.sessionID)]).pipe(
           Effect.flatMap(([cacheLifeMs, source]) =>
             withPool((pool) =>
               pool.place({
@@ -564,13 +690,56 @@ export const make = (
                 }),
                 // Every account held: the request goes out on none. The host ends the turn on the pool's own words
                 // and when the first account opens; a hook declares no failure, so the refusal is its defect.
-                Effect.catchTag("AccountsHeld", (held) => Effect.die(new Error(heldMessage(held)))),
+                Effect.catchTag("AccountsHeld", (held) =>
+                  failProposal({ ...event, providerID: event.model.providerID }, heldMessage(held), "account-held", held.retryAt)),
                 // Held by the pace at its dispatch: nothing goes out and no credential is set; the turn ends on why and when.
-                Effect.catchTag("RequestHeld", (held) => Effect.die(new Error(requestHeldMessage(held)))),
+                Effect.catchTag("RequestHeld", (held) =>
+                  failProposal({ ...event, providerID: event.model.providerID }, requestHeldMessage(held), held.reasonCode, held.retryAt)),
               ),
           ),
-        ),
-      )
+        )
+      })
+
+      type SendEvent = { readonly kind: Model.PlaceInput["kind"]; readonly sessionID: string;
+        readonly model: { readonly providerID: string; readonly id: string } }
+      const gateActive = (event: SendEvent, phase: "known-hold" | "send",
+        bind: (held: SendHold) => Effect.Effect<void>) =>
+        Effect.gen(function* () {
+          const poolID = tracked(event.model.providerID)
+          if (Option.isNone(poolID)) return
+          const input = { providerID: event.model.providerID, sessionID: event.sessionID, kind: event.kind, model: event.model.id }
+          const scope = { ...input, ...Option.match(stepIDOf(event), { onNone: () => ({}), onSome: (stepID) => ({ stepID }) }) }
+          const refuse = (reason: string, code: HoldReason, at: number) => recordHeld(scope, reason, code, at).pipe(
+            Effect.flatMap((hold) => bind({ reason: hold.reason, until: hold.retryAt })),
+          )
+          // Clear a previous refusal before checking current authority. No
+          // storage yield follows an allowed send.
+          if (phase === "send") yield* forgetHeld(scope, true)
+          const login = yield* loginOf(poolID.value)
+          if (Option.isNone(login.id)) return
+          const id = login.id.value
+          const check = Option.getOrElse(Option.filter(Option.some(phase), () => login.active), () => "signed-out" as const)
+          return yield* withPool((pool) => pool.admitActive(input, id, check)).pipe(
+            Effect.catchTag("RequestHeld", (held) => refuse(requestHeldMessage(held), held.reasonCode, held.retryAt)))
+        })
+      yield* ctx.session.hook("experimental.model.resolve", (event) => Effect.suspend(() => {
+        if (Option.isNone(stepIDOf(event))) return Effect.void
+        canDeferPrimary = true
+        if (signed(event.model.providerID)) return Effect.void
+        return gateActive(event, "known-hold", (hold) => deferRoute(event, hold))
+      }))
+      // A concrete check belongs to this callback's one send. The host
+      // consumes success when it forwards that request or response.create;
+      // no permit survives to another send, even on the same Step or socket.
+      const gateSend = (event: SendEvent) => gateActive(event, "send", (hold) => refuseSend(event, hold))
+      yield* ctx.session.hook("http.request", (event) => {
+        if (signed(event.model.providerID)) return Effect.void
+        return gateSend(event)
+      })
+      yield* ctx.session.hook("experimental.ws.send", (event) => Effect.suspend(() => {
+        if (!event.frame.startsWith('{"type":"response.create"') && !Option.exists(frameType(event.frame), ({ type }) => type === "response.create")) return Effect.void
+        return gateSend(event)
+      }))
 
       // What a paced provider's response showed of the account's quota belongs
       // to the login OpenCode sends it on: the integration's active one.
@@ -692,15 +861,21 @@ export const make = (
       // RPC that cannot be registered stops the plugin.
       const decodeHandoff = Schema.decodeUnknownOption(HandoffInput)
       const handoffUnavailable = (sessionID: string) => Clock.currentTimeMillis.pipe(Effect.map((now) =>
-        Handoff.cases.Held.make({ message: requestHeldMessage(new RequestHeld({
+        Handoff.cases.Held.make({ message: requestHeldMessage(RequestHeld.make({
           sessionID, ...storeHeld(now + HOLD_STORE_RETRY_MS, now),
         })) }),
       ))
       const handoff = (decoded: Option.Option<HandoffInput>) => Effect.gen(function* () {
         if (Option.isNone(decoded)) return yield* handoffUnavailable("")
-        const { candidate, agent, ...request } = decoded.value
+        const { candidate, agent, stepID, ...request } = decoded.value
+        const scope = { ...request, ...Option.match(Option.fromUndefinedOr(stepID), { onNone: () => ({}), onSome: (stepID) => ({ stepID }) }) }
+        const refused = (reason: string, reasonCode: HoldReason, retryAt: number) =>
+          recordHeld(scope, reason, reasonCode, retryAt).pipe(
+            Effect.as(Handoff.cases.Held.make({ message: reason })),
+          )
         const decision = yield* withPool((pool) => Effect.gen(function* () {
           if (!active) return yield* handoffUnavailable(request.sessionID)
+          if (request.keepalive !== true) yield* forgetHeld(scope)
           if (yield* pool.confirmed(request, candidate)) {
             if (active) return Handoff.cases.Send.make({})
             return yield* handoffUnavailable(request.sessionID)
@@ -721,16 +896,40 @@ export const make = (
             ...Option.match(ttl, { onNone: () => ({}), onSome: (life) => ({ cacheTTL: ttlOf(life) }) }),
           })
         })).pipe(Effect.catchTags({
-          AccountsHeld: (held) => Effect.succeed(Handoff.cases.Held.make({ message: heldMessage(held) })),
-          RequestHeld: (held) => Effect.succeed(Handoff.cases.Held.make({ message: requestHeldMessage(held) })),
+          AccountsHeld: (held) => refused(heldMessage(held), "account-held", held.retryAt),
+          RequestHeld: (held) => refused(requestHeldMessage(held), held.reasonCode, held.retryAt),
         }))
         return decision
       })
       yield* ctx.rpc
         .register(POOL_STATUS, {
-          pace: (input) => withPool((pool) => pool.pace(providerOf(input), modelOf(input), sessionOf(input), dispatchOf(input))).pipe(Effect.orDie),
+          pace: (input) => Effect.gen(function* () {
+            const provider = providerOf(input)
+            const integration = Option.filter(tracked(provider), () => !signed(provider))
+            if (Option.isSome(integration)) {
+              const tracking = yield* routeTracking(integration.value, {
+                providerID: provider, sessionID: Option.getOrElse(Option.fromUndefinedOr(sessionOf(input)), () => ""),
+                kind: "primary", model: modelOf(input) ?? "",
+              })
+              if (Option.isSome(tracking)) return tracking.value
+            }
+            return yield* withPool((pool) => pool.pace(provider, modelOf(input), sessionOf(input), dispatchOf(input)))
+          }).pipe(Effect.orDie),
+          heldSend: ({ sessionID }) => heldSend(sessionID),
           handoff: (input) => handoff(decodeHandoff(input)),
-          status: () => withPool((pool) => pool.status).pipe(Effect.orDie),
+          status: () => Effect.gen(function* () {
+            const status = { ...yield* withPool((pool) => pool.status) }
+            for (const providerID of new Set([...Object.keys(options.providers), ...Object.keys(options.paced)])) {
+              const id = Option.filter(tracked(providerID), () => !signed(providerID))
+              if (Option.isNone(id)) continue
+              const entry = Option.fromUndefinedOr(status[id.value])
+              if (Option.isNone(entry)) continue
+              const tracking = yield* routeTracking(id.value, { providerID, sessionID: "", kind: "primary", model: "" })
+              if (Option.exists(tracking, (answer) => answer.tracking === noLogin.tracking))
+                status[id.value] = { ...entry.value, untrackedRoutes: { ...entry.value.untrackedRoutes, [providerID]: noLogin.tracking } }
+            }
+            return status
+          }).pipe(Effect.orDie),
           // A malformed question names no session: it has no account to name.
           session: (input) =>
             Option.match(decodeSessionQuery(input), { onNone: () => Effect.succeed({}), onSome: (query) => withPool((pool) => pool.session(query)) }),
@@ -786,4 +985,4 @@ const sessionOf = (input: unknown) =>
     ? input.sessionID
     : undefined
 
-export default make(live)
+export default make(live, LIVE_STORE_HOST, LedgerLive.processHoldAuthority().lock)

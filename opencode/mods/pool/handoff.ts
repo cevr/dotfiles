@@ -24,6 +24,7 @@ export const HandoffInput = Schema.Struct({
   providerID: Schema.String, sessionID: Schema.String, model: Schema.String,
   kind: RequestKind, agent: Schema.String, candidate: Schema.String,
   keepalive: Schema.optionalKey(Schema.Boolean),
+  stepID: Schema.optionalKey(Schema.String),
 })
 export type HandoffInput = typeof HandoffInput.Type
 

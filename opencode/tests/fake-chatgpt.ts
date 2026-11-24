@@ -47,8 +47,11 @@ export interface FakeChatGPT {
   readonly stop: () => Promise<void>
 }
 
+/** Epoch of synthetic provider facts, not a test-runner deadline or stopwatch. */
+export const quotaEpoch = () => stamp()
+
 /** An account whose 5-hour window is spent, its week `weekly` percent used, with one credit expiring in `creditIn`. */
-export const spentAccount = (access: string, creditID: string, now = stamp(), weekly = 40, creditIn = 20 * DAY): FakeChatGPTAccount => ({
+export const spentAccount = (access: string, creditID: string, now = quotaEpoch(), weekly = 40, creditIn = 20 * DAY): FakeChatGPTAccount => ({
   access,
   fiveHour: 100,
   weekly,

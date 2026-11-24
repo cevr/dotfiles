@@ -332,14 +332,17 @@ const takeReading = (
   ])
 }
 
-export const ReserveRecovery = Schema.TaggedStruct("ReserveRecovery", { credentialID: Schema.String })
+export const ReserveRecovery = Schema.TaggedStruct("ReserveRecovery", {
+  credentialID: Schema.String,
+  signIn: Schema.optionalKey(Schema.Literal(true)),
+})
 export type ReserveRecovery = typeof ReserveRecovery.Type
 export const RecoveryScheduled = Schema.TaggedStruct("RecoveryScheduled", { credentialID: Schema.String, hold: Hold })
 export type RecoveryScheduled = typeof RecoveryScheduled.Type
 
 const reserveRecovery = (state: AccountPoolState, command: ReserveRecovery, now: number) =>
   Effect.succeed(Option.toArray(Option.fromUndefinedOr(state.holds[command.credentialID]).pipe(
-    Option.filter((hold) => hold.kind === "record-unreadable" && holdRecheckAt(hold) <= now),
+    Option.filter((hold) => (hold.kind === "record-unreadable" || (command.signIn === true && hold.kind === "signin")) && holdRecheckAt(hold) <= now),
     Option.map((hold) => RecoveryScheduled.make({ credentialID: command.credentialID, hold: { ...hold, until: pendingRecoveryAt(now) } })),
   )))
 

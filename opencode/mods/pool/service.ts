@@ -29,7 +29,7 @@ export class Ledger extends Context.Service<
   {
     readonly restore: (pool: PoolId) => Effect.Effect<LedgerState>
     /** Only the current hold records, never the historical ledger or an empty fallback on failure. */
-    readonly holds: (pool: PoolId) => Effect.Effect<Holds, HoldStoreUnavailable>
+    readonly holds: (pool: PoolId, credentialID?: string) => Effect.Effect<Holds, HoldStoreUnavailable>
     /** Serialize this host's hold publication and observation across activations. */
     readonly withHolds: <A, E, R>(operation: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
     /** Write what `events` change in the ledger. */

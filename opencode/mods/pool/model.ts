@@ -29,7 +29,7 @@ import { answeredOn, held, lastPlacedAt, placedOn, sessionAccount, status, type 
 import * as Burn from "./burn.ts"
 import * as FleetModel from "./fleet.ts"
 import { dispatchPace, evidenceGap, needsSignIn, nextRetryAt, poolPace, refreshEvidence, RequestHeld, requiredScopes, storeHeld, UNPOOLED, UNREAD_RETRY_MS, type DispatchPolicy, type Pace } from "./pace.ts"
-import { holdRecheckAt, type RecoveryAttempt, UNREADABLE_HOLD_MS } from "./hold.ts"
+import { type Hold, holdRecheckAt, type RecoveryAttempt, UNREADABLE_HOLD_MS } from "./hold.ts"
 import { limitsLine, weeklyRatios, type Tally, type Tokens } from "./limits.ts"
 import type { AccountStatus } from "./status.ts"
 import type { ClaimAnswer, QuotaReading, QuotaWindow } from "./quota.ts"
@@ -186,6 +186,8 @@ export class Pool extends Context.Service<
     }) => Effect.Effect<Placed | undefined, AccountsHeld | RequestHeld>
     /** Confirm a prepared login from this activation against the current hold store. */
     readonly confirmed: (input: PlaceInput, candidate: string) => Effect.Effect<boolean, RequestHeld>
+    /** Admit the actual login of a provider whose credential the host selects. */
+    readonly admitActive: (input: PlaceInput, candidate: string, phase: "known-hold" | "send" | "signed-out") => Effect.Effect<void, RequestHeld>
     /** A response came back. A refusal (401 or 429) holds the login it went out on. */
     readonly responded: (input: {
       readonly providerID: string
@@ -395,11 +397,12 @@ export const layer = (config: Config) =>
               Effect.andThen(observeClaim(id, credentialID, reading)),
             )
 
-      const readUsage = (where: Pooled, credentialID: string, recovery: boolean) => {
+      const readUsage = (where: Pooled, credentialID: string, recovery: boolean, signIn = Option.none<true>()) => {
         if (!recovery) return quota.usage(where.id, credentialID).pipe(Effect.flatMap((reading) => take(where, credentialID, reading, true)))
         return Effect.gen(function* () {
           // Reserve the appointment in the shared ledger before leaving its lock for provider I/O.
-          const events = yield* apply(where.pool, where.id, ReserveRecovery.make({ credentialID }))
+          const input = Option.match(signIn, { onNone: () => ({ credentialID }), onSome: (signIn) => ({ credentialID, signIn }) })
+          const events = yield* apply(where.pool, where.id, ReserveRecovery.make(input))
           const reserved = Arr.findFirst(events, (event) => Predicate.isTagged(event, "RecoveryScheduled"))
           if (Option.isNone(reserved)) return
           const at = yield* Clock.currentTimeMillis
@@ -425,9 +428,7 @@ export const layer = (config: Config) =>
       const pull = (where: Pooled, credentialID: string) =>
         quota.reading(where.id, credentialID).pipe(Effect.flatMap((reading) => take(where, credentialID, reading)))
 
-      const place = Effect.fn("Pool.place")(function* (input: PlaceInput) {
-        const where = pooled(input.providerID)
-        if (where === undefined) return undefined
+      const admission = Effect.fn("Pool.admission")(function* (input: PlaceInput) {
         // The request's admission, at its dispatch: the pace a request of its model gets on the readings now (`dispatchPace`).
         // Held, it goes out on no login; the review has heard of the held work.
         const auxiliary = Option.filter(Option.some(input.kind), (kind) => kind !== "primary" && kind !== "compaction")
@@ -449,6 +450,14 @@ export const layer = (config: Config) =>
           if (Option.isSome(signIn)) return yield* new AccountsHeld({ sessionID: input.sessionID, kind: input.kind, retryAt, signIn: signIn.value })
           return yield* new RequestHeld({ sessionID: input.sessionID, reason: answer.reason, reasonCode: answer.reasonCode, retryAt })
         }
+        return answer
+      })
+
+      const place = Effect.fn("Pool.place")(function* (input: PlaceInput) {
+        const where = pooled(input.providerID)
+        if (where === undefined) return undefined
+        const answer = yield* admission(input)
+        const now = yield* Clock.currentTimeMillis
         const command = PlaceRequest.make({
           sessionID: input.sessionID,
           kind: input.kind,
@@ -481,17 +490,73 @@ export const layer = (config: Config) =>
       const currentHolds = ({ id, pool }: Pooled) =>
         ledger.holds(id).pipe(Effect.flatMap((holds) => SynchronizedRef.updateAndGet(pool, (state) => ({ ...state, holds }))))
 
+      const checkSend = <A>(input: PlaceInput, view: ReturnType<typeof currentHolds>, decide: (state: AccountPoolState, now: number) => A) =>
+        ledger.withHolds(Effect.gen(function* () {
+          const current = yield* view.pipe(Effect.catch((failure) => Effect.gen(function* () {
+            const now = yield* Clock.currentTimeMillis
+            return yield* new RequestHeld({ sessionID: input.sessionID, ...storeHeld(failure.retryAt, now) })
+          })))
+          return decide(current, yield* Clock.currentTimeMillis)
+        }).pipe(Effect.withSpan("Pool.checkSend.read"))).pipe(Effect.withSpan("Pool.checkSend"))
+
       const confirmed = Effect.fn("Pool.confirmed")(function* (input: PlaceInput, candidate: string) {
         const where = Option.fromUndefinedOr(pooled(input.providerID))
         if (Option.isNone(where)) return false
-        const current = yield* currentHolds(where.value).pipe(Effect.catch((failure) => Effect.gen(function* () {
-          const now = yield* Clock.currentTimeMillis
-          return yield* new RequestHeld({ sessionID: input.sessionID, ...storeHeld(failure.retryAt, now) })
-        })))
-        const now = yield* Clock.currentTimeMillis
-        return (input.keepalive === true || placedOn(current, input.sessionID, input.kind) === candidate) && !held(current, candidate, now) &&
-          status(current, now, rules).some((account) => account.credentialID === candidate && !needsSignIn(account))
-      }, ledger.withHolds)
+        return yield* checkSend(input, currentHolds(where.value), (current, now) =>
+          (input.keepalive === true || placedOn(current, input.sessionID, input.kind) === candidate) &&
+          !held(current, candidate, now) &&
+          status(current, now, rules).some((account) => account.credentialID === candidate && !needsSignIn(account)))
+      })
+
+      const rejectActive = (input: PlaceInput, hold: Option.Option<Hold>, now: number, ends: ReadonlyArray<number>) =>
+        RequestHeld.make({
+          sessionID: input.sessionID,
+          reason: Option.match(hold, { onNone: () => "the active login has a spent window", onSome: ({ kind }) => `the active login is held (${kind})` }),
+          reasonCode: Option.getOrElse(Option.map(Option.filter(hold, ({ kind }) => kind === "record-unreadable"), () => "record-unreadable" as const), () => "account-held"),
+          retryAt: nextRetryAt(now, ends),
+        })
+
+      // The wire gate uses durable holds and recorded readings, not a new
+      // launch/placement quote. Provider I/O is only for a due appointment,
+      // outside the shared hold lock; an allowed send ends on a store read.
+      const admitActive = Effect.fn("Pool.admitActive")(function* (input: PlaceInput, candidate: string, phase: "known-hold" | "send" | "signed-out") {
+        const binding = Option.fromUndefinedOr(poolOf(measuredBy(config, input.providerID)))
+        if (Option.isNone(binding)) return
+        const where = binding.value
+        const exact = ledger.holds(where.id, candidate).pipe(
+          Effect.flatMap((holds) => SynchronizedRef.get(where.pool).pipe(Effect.map((state) => ({ ...state, holds })))),
+        )
+        const check = () => checkSend(input, exact, (current, now) => {
+          const hold = Option.filter(Option.fromUndefinedOr(current.holds[candidate]), () => held(current, candidate, now))
+          const reading = Option.filter(Option.fromUndefinedOr(current.readings[candidate]), () => phase === "send")
+          const spent = Option.match(reading, { onNone: () => [], onSome: ({ windows }) => windows.flatMap((window) => {
+            if (window.utilization < 1 || (window.name !== "5h" && window.name !== "7d" && window.name !== `7d:${input.model}`)) return []
+            return Option.toArray(Option.filter(Option.fromUndefinedOr(window.resetAt), (at) => at > now))
+          }) })
+          return { now, hold, spent }
+        })
+        const view = yield* Effect.result(check())
+        if (view._tag === "Failure") {
+          if (phase === "send") return yield* view.failure
+          return
+        }
+        let checked = view.success
+        // Ordinary refusals expire. Sign-in and damaged rows instead make
+        // appointments; reserve them durably before provider I/O.
+        const due = Option.filter(checked.hold, (hold) => phase === "send" && hold.until <= checked.now)
+        if (Option.isSome(due)) {
+          yield* readUsage(where, candidate, true, Option.filter(Option.some(true as const), () => due.value.kind === "signin"))
+          checked = yield* check()
+        }
+        const hold = Option.filter(checked.hold, (hold) => {
+          if (phase === "signed-out") return hold.kind === "signin"
+          return phase === "send" || hold.until > checked.now
+        })
+        if (Option.isSome(hold) || checked.spent.length > 0) {
+          const ends = [...Option.toArray(Option.map(hold, holdRecheckAt)), ...checked.spent]
+          return yield* rejectActive(input, hold, checked.now, ends)
+        }
+      })
 
       /**
        * Reserve one request's share (`fleet.startCost`) of the room the account's claim gave back (resets.ts `Spend`),
@@ -1447,6 +1512,7 @@ export const layer = (config: Config) =>
       return {
         place,
         confirmed,
+        admitActive,
         responded,
         retry,
         release,

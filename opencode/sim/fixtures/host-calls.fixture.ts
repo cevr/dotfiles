@@ -29,7 +29,7 @@ interface Compacts {
 }
 
 /** A hook name no law registers, held in a constant. */
-const HOOK = "experimental.ws.send"
+const HOOK = "experimental.ws.handshake"
 
 /** The planted plugin's calls. */
 export const planted = (ctx: Plugin.Context, view: Compacts, letter: Letter, note: Note) =>

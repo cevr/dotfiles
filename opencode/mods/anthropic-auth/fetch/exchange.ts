@@ -6,6 +6,7 @@ import { type Clock, Effect, Option, Result, Schema } from "effect"
 import type { RequestKind } from "@dotfiles/opencode-pool/accounts"
 import { HANDOFF_HEADER, HOLD_STORE_RETRY_MS, Handoff, HandoffHeld, type HandoffInput, rememberSentPlacement } from "@dotfiles/opencode-pool/handoff"
 import { RequestHeld, requestHeldMessage, storeHeld } from "@dotfiles/opencode-pool/pace"
+import { stepIDOf } from "@dotfiles/opencode-pool/refuse"
 export { POOL_STATUS as HANDOFF_PROTOCOL } from "@dotfiles/opencode-pool/status"
 import type { Endpoint } from "../endpoint.ts"
 import type { Auth } from "../model.ts"
@@ -100,7 +101,6 @@ const credentialIDOf = (connection: { readonly type: string; readonly id?: strin
   connection.type === "credential" ? connection.id : undefined
 
 const decodeHandoff = Schema.decodeUnknownOption(Handoff)
-
 export interface RequestPreparation {
   readonly exchange: Exchange
   readonly confirm: (input: HandoffInput) => Effect.Effect<unknown, unknown>
@@ -135,6 +135,7 @@ export const pooledRequest = (
       const result = yield* confirm({
         providerID: event.model.providerID, sessionID: event.sessionID, model: event.model.id,
         kind: event.kind, agent: event.agent, candidate: picked.value,
+        ...Option.match(stepIDOf(event), { onNone: () => ({}), onSome: (stepID) => ({ stepID }) }),
       }).pipe(Effect.map(decodeHandoff), Effect.orElseSucceed(() => Option.none()), Effect.timeoutOption("25 seconds"), Effect.map(Option.flatten))
       if (!Option.contains(current(), owner.value)) {
         exchange.leases.discard(prepared.request)

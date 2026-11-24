@@ -109,7 +109,7 @@ export const LAW = {
   agent:
     "an agent a transform adds publishes agent.updated and is in the catalog; a session created with it and a model answers both, and its requests run on them",
   socket:
-    "a turn on a model whose provider streams over a WebSocket runs experimental.ws.receive on each frame the provider sends, from response.created to response.completed, with the turn's model and kind",
+    "each WebSocket turn on a session resolves its model before model.request, then runs experimental.ws.send on response.create and experimental.ws.receive on each reply frame, with the turn's model and kind",
   catalog: "the catalog lists the configured model, its provider and the build agent, and refuses ones it does not have",
   http: "http.request runs after model.request for each request, carrying the headers model.request set; the request it leaves is the one sent, and http.response sees that request",
   retry:
