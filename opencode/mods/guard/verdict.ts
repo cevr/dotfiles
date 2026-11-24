@@ -19,6 +19,7 @@
 // verdict takes it as a predicate, and the model asks the `RepoRoots`
 // contract (service.ts) about each path `repoCandidates` names.
 import { Schema } from "effect"
+import { renderRefusal } from "./message.ts"
 import { basename, resolve, within } from "./path.ts"
 import { expandWord, runningWords, SHELLS, shellScript, shortFlags, simpleCommands, type Word } from "./shell-line.ts"
 
@@ -40,7 +41,7 @@ export class Destructive extends Schema.TaggedError<Destructive>()("Destructive"
 }) {}
 
 /** What the model reads of a refusal, as the Claude Code hook words it. */
-export const message = (reason: string): string => `guard-destructive: ${reason}.`
+export const message = (reason: string): string => renderRefusal("guard-destructive", reason)
 
 /** Where a line is read: the call's own directory, and the home. */
 export interface Place {

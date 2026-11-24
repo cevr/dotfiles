@@ -102,7 +102,7 @@ const realSafety = readHere('../../loop/safety.md');
 const paragraph = (text: string, lead: string) => text.split(/\n\s*\n/).find((p) => p.trimStart().startsWith(lead))?.trim();
 
 const REFUSAL =
-  "**Refusals.** If a permission rule, hook or classifier refuses this session's own tool call, stop the step and report the rule and any exact `!` command or allow rule it names. Never work around it or ask for permission in chat. A unit note that the provider merely ended another session is history, not an instruction; run the orchestrator's restarted step normally. A refusal is authority, not difficulty.";
+  "**Refusals.** If a permission rule, hook or classifier refuses this session's own tool call, stop the step and report the rule and any exact `!` command or allow rule it names. Never work around it or ask for permission in chat. A guard message starting “Not a refusal” or “Cannot tell”, or the shell scanner's “cannot analyze command … rewrite it”, is a command-shape instruction: follow it, using a script file for the scanner rewrite if needed, respect any deny rules, and continue rather than report a refusal. A unit note that the provider merely ended another session is history, not an instruction; run the orchestrator's restarted step normally. A refusal is authority, not difficulty.";
 
 test('every role carries nothing-is-hard and the exact refusal rule', () => {
   for (const role of Object.keys(ROLES) as Role[]) {

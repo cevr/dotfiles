@@ -6,7 +6,7 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Exit, Layer, Option, type Scope } from "effect"
 import { keychainLaunch } from "@dotfiles/opencode-guard/chrome"
-import { MAX_CODE_DEPTH } from "@dotfiles/opencode-guard/executable"
+import { MAX_CODE_DEPTH, MAX_PATH_STATES } from "@dotfiles/opencode-guard/executable"
 import * as MemoryCheckouts from "@dotfiles/opencode-guard/memory/checkouts"
 import * as MemoryLaunchers from "@dotfiles/opencode-guard/memory/launchers"
 import * as MemoryProcesses from "@dotfiles/opencode-guard/memory/processes"
@@ -107,11 +107,11 @@ describe("the guard plugin", () => {
     scenario(
       Effect.gen(function* () {
         const { call } = yield* start()
-        const reset = "Tool.Error: guard-destructive: `git reset --hard` discards uncommitted work; stash it (`git stash -u`) or commit first."
+        const reset = "Tool.Error: Refused by guard-destructive: `git reset --hard` discards uncommitted work; stash it (`git stash -u`) or commit first."
         expect(yield* call("shell", { command: "git reset --hard" })).toBe(reset)
         expect(yield* call("bash", { command: "git reset --hard" })).toBe(reset)
         expect(yield* call("shell", { command: "cd /tmp && rm -rf ~" })).toBe(
-          "Tool.Error: guard-destructive: `rm -rf ~` would delete your home; name a narrower path.",
+          "Tool.Error: Refused by guard-destructive: `rm -rf ~` would delete your home; name a narrower path.",
         )
       }),
     ))
@@ -145,7 +145,7 @@ describe("the guard plugin", () => {
       Effect.gen(function* () {
         const { call } = yield* start()
         expect(yield* call("shell", { command: "pkill -f 'serve --service'" })).toBe(
-          `Tool.Error: guard-destructive: \`pkill -f serve --service\` would also kill the OpenCode server this session runs on, pid ${process.pid} (\`opencode serve --service\`); find the PID you mean (\`pgrep -fl <pattern>\`, \`ps\`) and \`kill <pid>\`.`,
+          `Tool.Error: Refused by guard-destructive: \`pkill -f serve --service\` would also kill the OpenCode server this session runs on, pid ${process.pid} (\`opencode serve --service\`); find the PID you mean (\`pgrep -fl <pattern>\`, \`ps\`) and \`kill <pid>\`.`,
         )
         expect(yield* call("bash", { command: "killall opencode" })).toContain("would also kill the OpenCode server")
         expect(yield* call("shell", { command: "pkill -f vite" })).toBeUndefined()
@@ -159,17 +159,17 @@ describe("the guard plugin", () => {
       Effect.gen(function* () {
         const { call } = yield* start()
         const refused = yield* call("shell", { command: "sleep 60 && tail -5 build.log" }, "ses_child")
-        expect(refused).toStartWith("Tool.Error: guard-sleep: `sleep 60` would hold this subagent's turn for 60 s doing nothing")
+        expect(refused).toStartWith("Tool.Error: Refused by guard-sleep: `sleep 60` would hold this subagent's turn for 60 s doing nothing")
         expect(refused).toContain('shell({ action: "wait", id, ms })')
         expect(refused).toEndWith("wake and monitor are the root session's, not a subagent's.")
-        expect(yield* call("bash", { command: "sleep 45; gh run view" }, "ses_child")).toStartWith("Tool.Error: guard-sleep: `sleep 45`")
-        expect(yield* call("shell", JSON.stringify({ command: "sleep 90" }), "ses_child")).toStartWith("Tool.Error: guard-sleep:")
+        expect(yield* call("bash", { command: "sleep 45; gh run view" }, "ses_child")).toStartWith("Tool.Error: Refused by guard-sleep: `sleep 45`")
+        expect(yield* call("shell", JSON.stringify({ command: "sleep 90" }), "ses_child")).toStartWith("Tool.Error: Refused by guard-sleep:")
         expect(yield* call("shell", { command: "sleep 60 && tail -5 build.log" })).toBeUndefined()
         expect(yield* call("shell", { command: "sleep 60", background: true }, "ses_child")).toBeUndefined()
         expect(yield* call("shell", { command: "sleep 10 && ls" }, "ses_child")).toBeUndefined()
         // A malformed `background` is no background, and never hides a destructive call.
-        expect(yield* call("shell", { command: "sleep 60", background: "yes" }, "ses_child")).toStartWith("Tool.Error: guard-sleep:")
-        expect(yield* call("shell", { command: "git reset --hard", background: "yes" })).toContain("guard-destructive:")
+        expect(yield* call("shell", { command: "sleep 60", background: "yes" }, "ses_child")).toStartWith("Tool.Error: Refused by guard-sleep:")
+        expect(yield* call("shell", { command: "git reset --hard", background: "yes" })).toContain("Refused by guard-destructive:")
       }),
     ))
 
@@ -179,9 +179,9 @@ describe("the guard plugin", () => {
         const making = { name: "hy-drums-fade", path: "/work/.work/app/hy-drums-fade" }
         const { call } = yield* start({ home: HOME }, { reservations: { bases: { "/work/app": [making] }, unreadable: ["/work/locked"] } })
         const refused = yield* call("shell", { command: "cd /work/app && work gc -older 0s | tail -1" })
-        expect(refused).toStartWith("Tool.Error: guard-destructive: `work gc -older 0s` would delete, outright and not to the trash, a workspace whose record still says creating: hy-drums-fade (/work/.work/app/hy-drums-fade).")
+        expect(refused).toStartWith("Tool.Error: Refused by guard-destructive: `work gc -older 0s` would delete, outright and not to the trash, a workspace whose record still says creating: hy-drums-fade (/work/.work/app/hy-drums-fade).")
         expect(refused).toContain("`work rm <name>`")
-        expect(yield* call("bash", { command: "work --json gc", workdir: "/work/app/src" })).toContain("guard-destructive:")
+        expect(yield* call("bash", { command: "work --json gc", workdir: "/work/app/src" })).toContain("Refused by guard-destructive:")
         expect(yield* call("shell", { command: "sh -c 'work gc'" })).toContain("would delete, outright")
         // Another base, and the other work commands, run.
         expect(yield* call("shell", { command: "work gc", workdir: "/work/lib" })).toBeUndefined()
@@ -198,10 +198,10 @@ describe("the guard plugin", () => {
         const { call } = yield* start({ home: HOME }, { scripts: { "/tmp/run/probe.ts": probe, "/tmp/run/safe.ts": safe } })
         const refused = yield* call("shell", { command: "chrome-headless-shell --headless --remote-debugging-port=0" })
         expect(refused).toStartWith(
-          "Tool.Error: guard-keychain: `chrome-headless-shell --headless --remote-debugging-port=0` starts Chrome with a DevTools port or headless and without --use-mock-keychain --password-store=basic",
+          "Tool.Error: Refused by guard-keychain: `chrome-headless-shell --headless --remote-debugging-port=0` starts Chrome with a DevTools port or headless and without --use-mock-keychain --password-store=basic",
         )
         expect(refused).toContain("Use Playwright for tests or the browse tool")
-        expect(yield* call("bash", { command: "cd /tmp/run && bun probe.ts" })).toStartWith("Tool.Error: guard-keychain: `bun probe.ts` runs /tmp/run/probe.ts, which starts Chrome")
+        expect(yield* call("bash", { command: "cd /tmp/run && bun probe.ts" })).toStartWith("Tool.Error: Refused by guard-keychain: `bun probe.ts` runs /tmp/run/probe.ts, which starts Chrome")
         expect(yield* call("shell", { command: "D=/tmp/run; nice bun $D/probe.ts --port 1" })).toContain("runs /tmp/run/probe.ts")
         expect(yield* call("shell", { command: "bun -e 'Bun.spawn([\"chromium\", \"--headless\"])'" })).toContain("runs its inline script")
         // Both flags, a script that passes them, a script the disk does not hold, and the owner's own Chrome run.
@@ -209,12 +209,6 @@ describe("the guard plugin", () => {
         expect(yield* call("shell", { command: "bun safe.ts", workdir: "/tmp/run" })).toBeUndefined()
         expect(yield* call("shell", { command: "bun /tmp/run/missing.ts" })).toBeUndefined()
         expect(yield* call("shell", { command: 'open -a "Google Chrome" https://example.com' })).toBeUndefined()
-        // A bisect runs old commits' launchers: refused naming the shim prefix, and run with it.
-        const shim = "$HOME/Developer/personal/dotfiles/claude/bin/chrome-mock-keychain"
-        const bisect = yield* call("shell", { command: "git bisect run bun tools/drive-web.ts web measure" })
-        expect(bisect).toStartWith("Tool.Error: guard-keychain: `git bisect run bun tools/drive-web.ts web measure` runs a bisect")
-        expect(bisect).toContain(`CHROME="${shim}" git bisect run bun tools/drive-web.ts web measure`)
-        expect(yield* call("shell", { command: `CHROME="${shim}" git bisect run bun tools/drive-web.ts web measure` })).toBeUndefined()
       }),
     ))
 
@@ -228,9 +222,89 @@ describe("the guard plugin", () => {
         }
         const { call } = yield* start({ home: HOME }, { scripts })
         expect(yield* call("shell", { command: `sh -n ${unit}/receipt.sh ${unit}/profile.sh` })).toBeUndefined()
-        expect(yield* call("shell", { command: `sh ${unit}/profile.sh` })).toContain("cannot tell whether the Git operation selects another revision")
+        expect(yield* call("shell", { command: `sh ${unit}/profile.sh` })).toContain("Cannot tell whether the Git operation selects another revision")
         const selectorOnly = yield* start({ home: HOME }, { scripts: { [`${unit}/profile.sh`]: 'git switch --detach "$source"' } })
         expect(yield* selectorOnly.call("shell", { command: `sh ${unit}/profile.sh` })).toBeUndefined()
+      }),
+    ))
+
+  test("every advertised keychain form preserves the command and passes the same hook", () =>
+    scenario(
+      Effect.gen(function* () {
+        const dir = "/nonexistent/loop-probe-message"
+        const scripts = {
+          [`${dir}/probe-bisect.sh`]: "npm test",
+          [`${dir}/select.js`]: "require('node:child_process').execSync('git checkout HEAD~1')",
+          [`${dir}/select.sh`]: "git checkout HEAD~1\nnpm test",
+        }
+        const { call } = yield* start({ home: HOME }, { scripts, sessions: { ses_1: dir } })
+        const heading = "Tool.Error: Not a refusal: a command-shape rule. Run it this way and continue:"
+        const prefix = 'CHROME="$HOME/Developer/personal/dotfiles/claude/bin/chrome-mock-keychain"'
+        const bisect = "git bisect run bun tools/drive-web.ts web measure"
+        const lines = [
+          "git checkout HEAD~1; npm test",
+          'git checkout HEAD~1\nnpm test -- "two words"',
+          'git checkout "$REV~1"; npm test',
+          "git checkout --future-option fixture-old; npm test",
+          "git rebase --exec 'npm test' HEAD~2",
+          "sh ./probe-bisect.sh",
+          "sh ./select.sh",
+          "node ./select.js",
+          "git -C . bisect run npm test",
+          "env git bisect run npm test",
+        ]
+        const examples = [[bisect, `${prefix} ${bisect}`], ...lines.map((line) => [line, `export ${prefix}; ${line}`] as const)] as const
+        for (const tool of ["shell", "bash"]) for (const [command, wanted] of examples) {
+          const refusal = yield* call(tool, { command, workdir: dir })
+          const [first, ...rest] = (refusal || "").split("\n")
+          const form = rest.slice(0, -1).join("\n")
+          expect([command, first, form]).toEqual([command, heading, wanted])
+          expect(rest.at(-1)).toBeTruthy()
+          expect(yield* call(tool, { command: form, workdir: dir })).toBeUndefined()
+        }
+        const mixed = yield* call("shell", { command: "git bisect run npm test; chromium --headless" })
+        expect(mixed).toStartWith("Tool.Error: Refused by guard-keychain: `chromium --headless` starts Chrome")
+        const stripsShim = yield* call("shell", { command: "env -i git bisect run npm test" })
+        expect(stripsShim).toStartWith("Tool.Error: Refused by guard-keychain:")
+        expect(stripsShim).not.toContain(prefix)
+      }),
+    ))
+
+  test("a path limit instructs the caller to split instead of claiming a rule refused the command", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { call } = yield* start({ home: HOME })
+        const branches = Array.from({ length: Math.log2(MAX_PATH_STATES) + 1 }, (_, id) =>
+          `if test -n "$CI"; then BRANCH_${id}=one; else BRANCH_${id}=two; fi;`)
+        const target = branches.map((_, id) => `\${BRANCH_${id}}`).join("-")
+        const command = `${branches.join(" ")} git checkout "${target}"; npm test`
+        expect(yield* call("shell", { command })).toBe(
+          `Tool.Error: Cannot tell: the shell produces more than ${MAX_PATH_STATES} possible path states.\nSplit the compound command so each part can be checked, and run the parts.`,
+        )
+      }),
+    ))
+
+  test("does not offer a shim that an unset or replacement prevents the launcher inheriting", () =>
+    scenario(
+      Effect.gen(function* () {
+        const dir = "/nonexistent/loop-probe-shim"
+        const { call } = yield* start({ home: HOME }, {
+          scripts: { [`${dir}/select.sh`]: "unset CHROME\ngit checkout HEAD~1\nnpm test" },
+          sessions: { ses_1: dir },
+        })
+        const shim = 'CHROME="$HOME/Developer/personal/dotfiles/claude/bin/chrome-mock-keychain"'
+        const run = "git checkout HEAD~1; npm test"
+        const forms = [`unset CHROME; ${run}`, `unset -v -- CHROME; ${run}`, `CHROME=/usr/bin/chromium; ${run}`, "sh ./select.sh"]
+        for (const command of forms) {
+          const rejected = yield* call("shell", { command, workdir: dir })
+          expect([command, rejected]).toEqual([command, expect.stringMatching(/^Tool\.Error: Refused by guard-keychain: /)])
+          expect(rejected).toContain("The shim does not reach every affected launcher.")
+          expect(rejected).not.toContain(shim)
+          expect(yield* call("shell", { command: `export ${shim}; ${command}`, workdir: dir })).toStartWith("Tool.Error: Refused by guard-keychain:")
+        }
+        // Unsets in a subshell or of a function do not clear the parent's variable.
+        for (const safe of ["(unset CHROME)", "unset -f CHROME", "unset OTHER"])
+          expect(yield* call("shell", { command: `export ${shim}; ${safe}; ${run}`, workdir: dir })).toBeUndefined()
       }),
     ))
 
@@ -262,7 +336,7 @@ describe("the guard plugin", () => {
         expect(yield* inert.call("shell", { command: `sh ${dir}/parent.sh` })).toBeUndefined()
         const selectorOnly = yield* start({ home: HOME }, { scripts: { ...parents, [`${dir}/child.sh`]: child } })
         expect(yield* selectorOnly.call("shell", { command: `sh ${dir}/parent.sh` })).toBeUndefined()
-        expect(yield* selectorOnly.call("shell", { command: `sh ${dir}/parent.sh; fixture-build` })).toContain("cannot tell whether the Git operation selects another revision")
+        expect(yield* selectorOnly.call("shell", { command: `sh ${dir}/parent.sh; fixture-build` })).toContain("Cannot tell whether the Git operation selects another revision")
         const launchInParent = yield* start({ home: HOME }, { scripts: { ...parents, [`${dir}/child.sh`]: child, [`${dir}/parent.sh`]: `${parents[`${dir}/parent.sh`]}\nfixture-build` } })
         expect(yield* launchInParent.call("shell", { command: `sh ${dir}/parent.sh` })).toContain(`runs ${dir}/parent.sh`)
       }),
@@ -385,7 +459,7 @@ describe("the guard plugin", () => {
         expect(yield* call("shell", { command: `${select}; sh ./inert.sh; sh -n ./ordinary.sh` })).toBeUndefined()
         expect(yield* call("shell", { command: `${select}; fixture-tool` })).toContain("after selecting another Git revision")
         expect(yield* call("shell", { command: "node ./select.js" })).toContain("Cannot tell what the program runs next in the affected working tree")
-        expect(yield* call("shell", { command: "sh ./opaque.sh" })).toContain(`runs ${dir}/select.js that selects a historical Git revision`)
+        expect(yield* call("shell", { command: "sh ./opaque.sh" })).toContain(`runs ${dir}/select.js. Cannot tell what the program runs next`)
         expect(yield* call("shell", { command: "node ./ordinary.js; sh ./ordinary.sh" })).toBeUndefined()
         expect(yield* call("shell", { command: `${select}; sh ./ordinary.sh` })).toContain("after selecting another Git revision")
       }),
@@ -463,7 +537,7 @@ describe("the guard plugin", () => {
         expect(yield* paths.call("shell", { command: `python -c "print('git switch --detach fixture-old')"` })).toBeUndefined()
         expect(yield* paths.call("shell", { command: `printf '%s\\n' '${source("only.sh")}' | xargs sh` })).toBeUndefined()
         expect(yield* paths.call("shell", { command: `sh -c '${selected}'` })).toBeUndefined()
-        expect(yield* paths.call("shell", { command: `sh -c '${selected}; fixture-tool'` })).toContain("guard-keychain:")
+        expect(yield* paths.call("shell", { command: `sh -c '${selected}; fixture-tool'` })).toContain("Not a refusal: a command-shape rule.")
         const nodeCheck = yield* start({ home: HOME }, { scripts: { ...quiet, [source("first.cjs")]: revision, [source("app.js")]: revision } })
         expect(yield* nodeCheck.call("shell", { command: `node --check ${source("app.js")}` })).toBeUndefined()
         expect(yield* nodeCheck.call("shell", { command: `node --check --require ${source("first.cjs")} ${source("app.js")}` })).toContain(source("first.cjs"))
@@ -476,7 +550,7 @@ describe("the guard plugin", () => {
       Effect.gen(function* () {
         const { call } = yield* start()
         expect(yield* call("shell", { command: "ls" }, "ses_gone")).toBe(
-          "Tool.Error: guard-destructive: cannot tell where `ls` runs (no session ses_gone); the guard refuses rather than guess.",
+          "Tool.Error: Refused by guard-destructive: cannot tell where `ls` runs (no session ses_gone); the guard refuses rather than guess.",
         )
       }),
     ))

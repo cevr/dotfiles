@@ -90,7 +90,7 @@ const said = (part: ToolPart | undefined): string =>
 /** The niceness a shell call printed: the last line of its output, after the shell tool's status line. */
 const niceness = (part: ToolPart | undefined): number => Number(said(part).trim().split("\n").at(-1))
 
-const REFUSAL = "guard-destructive: `git reset --hard` discards uncommitted work; stash it (`git stash -u`) or commit first."
+const REFUSAL = "Refused by guard-destructive: `git reset --hard` discards uncommitted work; stash it (`git stash -u`) or commit first."
 
 /** The work repository is as the run left it before the prompt, and the harmless command ran in it. */
 const untouched = (result: Result & { work: string }) => {
@@ -128,7 +128,7 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(children).toHaveLength(1)
       const childSleep = toolParts(children[0]).find((part) => part.state.input.command === CHILD_SLEEP)
       expect(childSleep?.state.status).toBe("error")
-      expect(said(childSleep)).toContain("guard-sleep: `sleep 60` would hold this subagent's turn for 60 s doing nothing")
+      expect(said(childSleep)).toContain("Refused by guard-sleep: `sleep 60` would hold this subagent's turn for 60 s doing nothing")
     },
     hangGuard("fork-turn"),
   )
