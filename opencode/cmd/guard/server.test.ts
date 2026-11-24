@@ -6,7 +6,7 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Exit, Layer, Option, type Scope } from "effect"
 import { keychainLaunch } from "@dotfiles/opencode-guard/chrome"
-import { MAX_CODE_DEPTH } from "@dotfiles/opencode-guard/executable"
+import { MAX_CODE_DEPTH, MAX_PATH_STATES } from "@dotfiles/opencode-guard/executable"
 import * as MemoryCheckouts from "@dotfiles/opencode-guard/memory/checkouts"
 import * as MemoryLaunchers from "@dotfiles/opencode-guard/memory/launchers"
 import * as MemoryProcesses from "@dotfiles/opencode-guard/memory/processes"
@@ -267,6 +267,44 @@ describe("the guard plugin", () => {
         const stripsShim = yield* call("shell", { command: "env -i git bisect run npm test" })
         expect(stripsShim).toStartWith("Tool.Error: Refused by guard-keychain:")
         expect(stripsShim).not.toContain(prefix)
+      }),
+    ))
+
+  test("a path limit instructs the caller to split instead of claiming a rule refused the command", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { call } = yield* start({ home: HOME })
+        const branches = Array.from({ length: Math.log2(MAX_PATH_STATES) + 1 }, (_, id) =>
+          `if test -n "$CI"; then BRANCH_${id}=one; else BRANCH_${id}=two; fi;`)
+        const target = branches.map((_, id) => `\${BRANCH_${id}}`).join("-")
+        const command = `${branches.join(" ")} git checkout "${target}"; npm test`
+        expect(yield* call("shell", { command })).toBe(
+          `Tool.Error: Cannot tell: the shell produces more than ${MAX_PATH_STATES} possible path states.\nSplit the compound command so each part can be checked, and run the parts.`,
+        )
+      }),
+    ))
+
+  test("does not offer a shim that an unset or replacement prevents the launcher inheriting", () =>
+    scenario(
+      Effect.gen(function* () {
+        const dir = "/nonexistent/loop-probe-shim"
+        const { call } = yield* start({ home: HOME }, {
+          scripts: { [`${dir}/select.sh`]: "unset CHROME\ngit checkout HEAD~1\nnpm test" },
+          sessions: { ses_1: dir },
+        })
+        const shim = 'CHROME="$HOME/Developer/personal/dotfiles/claude/bin/chrome-mock-keychain"'
+        const run = "git checkout HEAD~1; npm test"
+        const forms = [`unset CHROME; ${run}`, `unset -v -- CHROME; ${run}`, `CHROME=/usr/bin/chromium; ${run}`, "sh ./select.sh"]
+        for (const command of forms) {
+          const rejected = yield* call("shell", { command, workdir: dir })
+          expect([command, rejected]).toEqual([command, expect.stringMatching(/^Tool\.Error: Refused by guard-keychain: /)])
+          expect(rejected).toContain("The shim does not reach every affected launcher.")
+          expect(rejected).not.toContain(shim)
+          expect(yield* call("shell", { command: `export ${shim}; ${command}`, workdir: dir })).toStartWith("Tool.Error: Refused by guard-keychain:")
+        }
+        // Unsets in a subshell or of a function do not clear the parent's variable.
+        for (const safe of ["(unset CHROME)", "unset -f CHROME", "unset OTHER"])
+          expect(yield* call("shell", { command: `export ${shim}; ${safe}; ${run}`, workdir: dir })).toBeUndefined()
       }),
     ))
 

@@ -201,7 +201,7 @@ describe("old checkouts in an executable position", () => {
     const line = script(atBound + 1)
     const findings = bareLaunches(line, place)
     expect(findings.map(({ remedy }) => remedy)).toEqual(["unknown"])
-    expect(findings.map(keychainReason).join(" ")).toContain(`cannot tell what runs after the shell produces more than ${MAX_PATH_STATES}`)
+    expect(findings.map(({ pathLimit }) => pathLimit)).toEqual([true])
     expect(bareLaunches(`git checkout HEAD~1; npm test; ${line}`, place).map(({ remedy }) => remedy)).toEqual(["shim"])
     const exits = 'if test -n "$CI"; then exit; fi; '.repeat(MAX_PATH_STATES + 1)
     expect(bareLaunches(`${exits} git checkout main; npm test`, place)).toEqual([])
@@ -367,7 +367,8 @@ describe("old checkouts in an executable position", () => {
     const line = `${prefix} git switch --detach v1 && ./measure.sh`
     const launches = bareLaunches(line, place)
     expect(launches.map((launch) => launch.remedy)).toEqual(["shim"])
-    expect(launches.map(keychainReason).join()).toContain(`export ${prefix};`)
+    expect(launches.map(keychainReason).join()).toContain("after selecting another Git revision")
+    expect(launches.map(keychainReason).join()).not.toContain("Export CHROME")
   })
 
   test("a checkout with no run or a pathspec is not an old-commit run", () => {
@@ -747,9 +748,9 @@ describe("the refusal", () => {
     expect(keychainReason({ command: "bun /tmp/p.ts", script: Option.some("/tmp/p.ts"), remedy: "flags" })).toStartWith("`bun /tmp/p.ts` runs /tmp/p.ts, which starts Chrome")
   })
 
-  test("for a bisect, names the shim prefix, the command written with it", () => {
+  test("for a bisect, explains the old launchers without offering an unchecked command", () => {
     const reason = keychainReason({ command: "git bisect run ./m.sh", script: Option.none(), remedy: "shim" })
     expect(reason).toStartWith("`git bisect run ./m.sh` runs a bisect, whose browser launchers may predate --use-mock-keychain --password-store=basic")
-    expect(reason).toEndWith(`CHROME="${SHIM_PATH}" git bisect run ./m.sh`)
+    expect(reason).not.toContain("CHROME=")
   })
 })

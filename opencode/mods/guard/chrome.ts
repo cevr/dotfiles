@@ -33,7 +33,7 @@
 import { Array as Arr, Effect, Option, Schema } from "effect"
 import { type CodeInput, distinctEntries, type Execution, executionPaths, executionPlan, inlineShellPaths, type Language, literalPath, MAX_CODE_DEPTH, MAX_PATH_STATES, type PathPlan, READERS, word } from "./executable.ts"
 import { basename, dirname, resolve, within } from "./path.ts"
-import { renderRefusal } from "./message.ts"
+import { CannotTell, renderRefusal } from "./message.ts"
 import { gitAction, type GitAction } from "./revision.ts"
 import { type Word } from "./shell-line.ts"
 import { type Place } from "./verdict.ts"
@@ -740,28 +740,25 @@ export const keychainLaunch = Effect.fn("Guard.keychainLaunch")(function* (line:
 const starts = (launch: BareLaunch): string =>
   Option.match(launch.script, { onNone: () => "starts", onSome: (script) => `runs ${script}, which starts` })
 
-/** Why the rule refuses `launch`, and the way through. */
+/** Why the line was not accepted; only the model may offer a checked form. */
 export const keychainReason = (launch: BareLaunch): string => {
   const dialog = "and macOS puts a keychain dialog on the owner's screen at each launch of a Chrome without them"
-  if (launch.pathLimit === true)
-    return `\`${launch.command}\`: cannot tell what runs after the shell produces more than ${MAX_PATH_STATES} possible path states. Split the compound command so the guard can check each path.`
   if (launch.rebaseExec === true)
-    return `\`${launch.command}\` runs a rebase command on intermediate commits, whose browser launchers may predate ${KEYCHAIN_FLAGS.join(" ")}, ${dialog}. Prefix the whole rebase with CHROME="${SHIM}".`
+    return `\`${launch.command}\` runs a rebase command on intermediate commits, whose browser launchers may predate ${KEYCHAIN_FLAGS.join(" ")}, ${dialog}`
   if (launch.opaqueContinuation === true)
-    return `\`${launch.command}\` runs ${Option.getOrElse(launch.script, () => "a program")} that selects a historical Git revision. Cannot tell what the program runs next in the affected working tree. Export CHROME before the whole command: export CHROME="${SHIM}"; ${launch.command}`
+    return `\`${launch.command}\` runs ${Option.getOrElse(launch.script, () => "a program")} that selects a historical Git revision. Cannot tell what the program runs next in the affected working tree`
   if (launch.remedy === "unknown") {
     const source = Option.match(launch.script, { onNone: () => "", onSome: (script) => ` runs ${script}` })
-    return `\`${launch.command}\`${source}: cannot tell whether the Git operation selects another revision or restores files, or whether the launcher runs in the affected working tree. Use a literal revision target, spell out a file restore with \`git restore -- <path>\`, name the working directory explicitly, or export CHROME="${SHIM}" before a run over revisions.`
+    return `\`${launch.command}\`${source}: cannot tell whether the Git operation selects another revision or restores files, or whether the launcher runs in the affected working tree`
   }
   if (launch.oldCheckout === true) {
     const runner = Option.match(launch.script, { onNone: () => "runs", onSome: (script) => `runs ${script}, which runs` })
-    return `\`${launch.command}\` ${runner} a launcher after selecting another Git revision, whose browser launchers may predate ${KEYCHAIN_FLAGS.join(" ")}, ${dialog}. Export CHROME before the whole command: export CHROME="${SHIM}"; ${launch.command}`
+    return `\`${launch.command}\` ${runner} a launcher after selecting another Git revision, whose browser launchers may predate ${KEYCHAIN_FLAGS.join(" ")}, ${dialog}`
   }
   if (launch.remedy === "shim")
     return (
       `\`${launch.command}\` ${Option.match(launch.script, { onNone: () => "runs a bisect", onSome: (script) => `runs ${script}, a bisect or a run over other commits` })}, ` +
-      `whose browser launchers may predate ${KEYCHAIN_FLAGS.join(" ")}, ${dialog}. ` +
-      `Prefix it with CHROME="${SHIM}" (a launcher that reads CHROME, as Exact's and manna's do, then starts Chrome with both flags): CHROME="${SHIM}" ${launch.command}`
+      `whose browser launchers may predate ${KEYCHAIN_FLAGS.join(" ")}, ${dialog}`
     )
   return (
     `\`${launch.command}\` ${starts(launch)} Chrome with a DevTools port or headless and without ${KEYCHAIN_FLAGS.join(" ")}: ` +
@@ -784,9 +781,13 @@ const shimForm = (command: string): string => {
   return `export ${assignment}; ${command}`
 }
 
-export const keychainBlock = (command: string, launch: BareLaunch): KeychainPrompt => {
+export const keychainBlock = (command: string, launch: BareLaunch): KeychainPrompt | CannotTell => {
+  if (launch.pathLimit) return new CannotTell({
+    reason: `the shell produces more than ${MAX_PATH_STATES} possible path states.`,
+    instruction: "Split the compound command so each part can be checked, and run the parts.",
+  })
   const reason = keychainReason(launch)
-  if (launch.remedy === "flags" || launch.pathLimit) return new KeychainPrompt({ command, reason })
+  if (launch.remedy === "flags") return new KeychainPrompt({ command, reason })
   return new KeychainPrompt({ command, reason, candidate: { form: shimForm(command), reason: formReason(launch) } })
 }
 

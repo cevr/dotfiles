@@ -27,7 +27,7 @@ import { parseShell } from "./command-line.ts"
 import { DEFAULT_HEAVY, heavyCommand } from "./heavy.ts"
 import { killsByPattern, killVerdict } from "./kill.ts"
 import { admissionLauncher, launcherName, launcherScript, type Limits } from "./launcher.ts"
-import { CommandForm } from "./message.ts"
+import { type CannotTell, CommandForm } from "./message.ts"
 import { resolve } from "./path.ts"
 import { expandWord } from "./shell-line.ts"
 import { type Checkout, type CheckoutUnknown, Checkouts, type LauncherUnavailable, Launchers, Processes, type RepoRootUnknown, RepoRoots, Reservations, Scopes, ScriptFiles, SessionDirectories, Subagents, type WarmSource } from "./service.ts"
@@ -55,8 +55,8 @@ export interface ShellCall {
 export class Guard extends Context.Service<
   Guard,
   {
-    /** A blocked call is either a refusal or a reshape with a form this guard already checked. */
-    readonly judge: (call: ShellCall) => Effect.Effect<void, Destructive | FullCopy | KeychainPrompt | Idle | CommandForm>
+    /** A blocked call is a refusal, an accepted alternate form, or a check that could not finish. */
+    readonly judge: (call: ShellCall) => Effect.Effect<void, Destructive | FullCopy | KeychainPrompt | Idle | CommandForm | CannotTell>
   }
 >()("dotfiles-opencode/guard/Guard") {}
 
@@ -158,7 +158,7 @@ export const layer = (config: Config) =>
           yield* check({ ...call, command: candidate.form }).pipe(
             Effect.catchTag("KeychainPrompt", (retry) => {
               if (!retry.candidate) return Effect.fail(retry)
-              return Effect.fail(keychainUnresolved(call.command, retry.candidate.reason))
+              return Effect.fail(keychainUnresolved(blocked))
             }),
           )
           return yield* new CommandForm(candidate)
@@ -169,8 +169,8 @@ export const layer = (config: Config) =>
     }),
   )
 
-const keychainUnresolved = (command: string, reason: string): KeychainPrompt =>
-  new KeychainPrompt({ command, reason: `${reason} The shim does not reach every affected launcher` })
+const keychainUnresolved = ({ command, reason }: KeychainPrompt): KeychainPrompt =>
+  new KeychainPrompt({ command, reason: `${reason}. The shim does not reach every affected launcher` })
 
 /** What runs heavy commands, and under which limits; from the plugin's options. */
 export interface PolicyConfig {

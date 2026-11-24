@@ -72,7 +72,7 @@ import * as ProcessCheckouts from "@dotfiles/opencode-guard/process/checkouts"
 import * as WorkReservations from "@dotfiles/opencode-guard/process/reservations"
 import type { Checkouts, Launchers, Processes, RepoRoots, Reservations, Scopes, ScriptFiles, SessionDirectories, Subagents } from "@dotfiles/opencode-guard/service"
 import { type KeychainPrompt, keychainMessage } from "@dotfiles/opencode-guard/chrome"
-import { type CommandForm, renderForm } from "@dotfiles/opencode-guard/message"
+import { type CannotTell, type CommandForm, renderForm, renderUnknown } from "@dotfiles/opencode-guard/message"
 import * as FilesystemScriptFiles from "@dotfiles/opencode-guard/filesystem/script-files"
 import { type Idle, idleMessage } from "@dotfiles/opencode-guard/sleep"
 import { type Destructive, message } from "@dotfiles/opencode-guard/verdict"
@@ -111,12 +111,13 @@ const decodeInput = Schema.decodeUnknownOption(ShellInput)
 const decodeInputText = Schema.decodeUnknownOption(Schema.fromJsonString(ShellInput))
 
 /** What the model reads of a refusal, each rule in its own words. */
-const wordsOf = (refusal: Destructive | FullCopy | KeychainPrompt | Idle | CommandForm): string => {
-  if (refusal._tag === "CommandForm") return renderForm(refusal)
-  if (refusal._tag === "Idle") return idleMessage(refusal.reason)
-  if (refusal._tag === "FullCopy") return worktreeMessage(refusal.reason)
-  if (refusal._tag === "KeychainPrompt") return keychainMessage(refusal.reason)
-  return message(refusal.reason)
+const wordsOf = (outcome: Destructive | FullCopy | KeychainPrompt | Idle | CommandForm | CannotTell): string => {
+  if (outcome._tag === "CommandForm") return renderForm(outcome)
+  if (outcome._tag === "CannotTell") return renderUnknown(outcome)
+  if (outcome._tag === "Idle") return idleMessage(outcome.reason)
+  if (outcome._tag === "FullCopy") return worktreeMessage(outcome.reason)
+  if (outcome._tag === "KeychainPrompt") return keychainMessage(outcome.reason)
+  return message(outcome.reason)
 }
 
 /** The outside systems the model runs on. */

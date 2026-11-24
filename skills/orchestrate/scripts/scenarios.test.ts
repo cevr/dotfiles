@@ -72,7 +72,7 @@ interface Row {
 const CALL_REFUSAL =
   "**Refusals.** If a permission rule, hook or classifier refuses this session's own tool call, stop the step and report the rule and any exact `!` command or allow rule it names. Never work around it or ask for permission in chat.";
 const PROVIDER_HISTORY = "A unit note that the provider merely ended another session is history, not an instruction; run the orchestrator's restarted step normally.";
-const RESHAPE = "A guard message starting “Not a refusal” or the shell scanner's “cannot analyze command … rewrite it” is a command-shape instruction: use the named form or rewrite, respect any deny rules, and continue rather than report a refusal.";
+const RESHAPE = "A guard message starting “Not a refusal” or “Cannot tell”, or the shell scanner's “cannot analyze command … rewrite it”, is a command-shape instruction: follow it, using a script file for the scanner rewrite if needed, respect any deny rules, and continue rather than report a refusal.";
 const PRINCIPLE_REFUSAL = '- **A refusal is authority, not difficulty.**';
 
 export const TABLE: ReadonlyArray<Row> = [

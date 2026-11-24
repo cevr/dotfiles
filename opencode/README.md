@@ -2219,6 +2219,8 @@ through the same hooks. The model reads the refusal as the tool's error:
 An old-revision run can instead get `Not a refusal: a command-shape rule.
 Run it this way and continue:`. The next line is the same command with the
 Chrome shim set. The guard only prints that form if it passes the guard.
+If the guard hits its path limit without a definitive finding, it instead
+says `Cannot tell:` and asks the caller to split the command into parts it can check.
 
 It refuses:
 
