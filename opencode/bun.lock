@@ -377,6 +377,7 @@
       "dependencies": {
         "@dotfiles/decider": "workspace:*",
         "@dotfiles/opencode-digest": "workspace:*",
+        "@dotfiles/opencode-kernel": "workspace:*",
         "@dotfiles/opencode-update": "workspace:*",
         "@dotfiles/opencode-wake": "workspace:*",
       },
@@ -394,6 +395,7 @@
       "dependencies": {
         "@dotfiles/decider": "workspace:*",
         "@dotfiles/opencode-cache": "workspace:*",
+        "@dotfiles/opencode-kernel": "workspace:*",
         "@dotfiles/opencode-model-next": "workspace:*",
         "@dotfiles/opencode-queue": "workspace:*",
         "@dotfiles/opencode-subagents": "workspace:*",

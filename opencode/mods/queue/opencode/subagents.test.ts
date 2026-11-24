@@ -36,8 +36,8 @@ describe("fromFamily", () => {
           running: true,
           messages: [{ type: "assistant", parts: [{ type: "call", tool: "bash", status: "running", input: { command: "sleep 60" }, metadata: {} }] }],
         }),
-        session("old", { agent: "verifier", title: "Old", time: { created: 3 } }),
-        session("gone", { agent: "worker", title: "Gone", time: { created: 4 } }),
+        session("old", { agent: "verifier", title: "Old", outcome: "succeeded", time: { created: 3, idle: 5 } }),
+        session("gone", { agent: "worker", title: "Gone", outcome: "interrupted", time: { created: 4, idle: 6 } }),
         session("bad", { agent: "worker", title: "Bad", outcome: "failed", time: { created: 5, idle: 7 } }),
         session("unknown", { title: "Unknown", time: { created: 6 } }),
         session("queued", { agent: "worker", title: "Queued", time: { created: 7 }, latch: { hold: "pace", reason: "held", opensAt: now + 60_000, at: now } }),
@@ -54,5 +54,15 @@ describe("fromFamily", () => {
       // A latched subagent is queued work: it waits.
       ["queued", { state: "waiting" }],
     ])
+  })
+
+  test("a linked child without positive evidence does not move the item to Waiting or Done", () => {
+    const observed = { revision: 2, sinceReload: false, at: 1, waitingOn: "Wake", diagnostic: false } as const
+    const live = fromFamily({ root: "root", sessions: [
+      session("checking", { lifecycle: { ...observed, kind: "checking" } }),
+      session("unknown", { lifecycle: { ...observed, kind: "unknown" } }),
+      session("admitted", { lifecycle: { ...observed, kind: "continuing" } }),
+    ] })
+    expect([...live]).toEqual([["admitted", { state: "waiting" }]])
   })
 })

@@ -68,6 +68,25 @@ const record = (value: unknown): Fields =>
 const string = (value: unknown) => (typeof value === "string" ? value : undefined)
 const number = (value: unknown) => (typeof value === "number" ? value : undefined)
 const list = (value: unknown): ReadonlyArray<unknown> => (Array.isArray(value) ? value : [])
+const present = <A>(value: A): value is NonNullable<A> => value != null
+interface LatchTiming { recheckAt?: number; cancelledAt?: number; failed?: string }
+
+/** The native row's view of Wake's persisted latch, including legacy marks without a recheck time. */
+function latchOf(fields: Fields): Session["latch"] {
+  const hold = string(fields.hold)
+  const reason = string(fields.reason)
+  const opensAt = number(fields.opensAt)
+  const at = number(fields.at)
+  if (!present(hold) || !present(reason) || !present(opensAt) || !present(at)) return
+  const timing: LatchTiming = {}
+  const recheckAt = number(fields.recheckAt)
+  if (present(recheckAt)) timing.recheckAt = recheckAt
+  const cancelledAt = number(fields.cancelledAt)
+  if (present(cancelledAt)) timing.cancelledAt = cancelledAt
+  const failed = string(fields.failed)
+  if (present(failed)) timing.failed = failed
+  return { hold, reason, opensAt, at, ...timing }
+}
 
 const STATUSES = ["streaming", "running", "completed", "error"] as const
 
@@ -203,34 +222,30 @@ export const transcript = (items: ReadonlyArray<unknown>, convert: Convert): Tra
   return { messages: items.flatMap((item) => convert(item) ?? []), ...(model ? { model } : {}) }
 }
 
-const OWNED_CHECKING = { kind: "checking", revision: 0, sinceReload: false, at: 0, waitingOn: "", diagnostic: false } as const
-const ownedFields = (owner?: OwnedRow): Pick<Session, "execution" | "latch" | "lifecycle"> => {
-  if (owner) {
-    const { child: _child, ...phase } = owner
-    return phase
-  }
-  return { lifecycle: OWNED_CHECKING }
-}
-
 /** Presentation inputs only; this function cannot read client lifecycle state. */
-export function ownedSessionOf(id: string, told: Transcript, info?: SessionInfo, owner?: OwnedRow): Session {
+export function ownedSessionOf(id: string, told: Transcript, info: ReturnType<Reads["session"]["get"]>, owner: OwnedRow): Session {
   const model = told.model ?? info?.model?.id
+  const { child: _child, ...phase } = owner
   return {
     id,
     ...identityOf(model, info),
     time: { created: info?.time?.created || 0 },
     running: false, shells: [], permissions: [], questions: [],
     messages: told.messages,
-    ...ownedFields(owner),
+    ...phase,
   }
 }
 
-const identityOf = (model?: string, info?: SessionInfo) => ({
-  ...(info?.parentID ? { parentID: info.parentID } : {}),
-  ...(info?.title === undefined ? {} : { title: info.title }),
-  ...(info?.agent === undefined ? {} : { agent: info.agent }),
-  ...(model ? { model } : {}),
-})
+const identityOf = (model?: string, info?: SessionInfo) => {
+  const title = info && info.title
+  const agent = info && info.agent
+  return {
+    ...(info?.parentID ? { parentID: info.parentID } : {}),
+    ...(present(title) ? { title } : {}),
+    ...(present(agent) ? { agent } : {}),
+    ...(model ? { model } : {}),
+  }
+}
 
 /**
  * Session `id` from the host's reads, its messages and step model given as
@@ -242,12 +257,12 @@ export function sessionOf(
   id: string,
   shells: ReadonlyArray<Shell>,
   { messages, model: stepped }: Transcript,
-  owner?: OwnedRow,
 ): Session {
   const info = reads.session.get(id)
   const time = info?.time
   const model = stepped ?? info?.model?.id
-  return {
+  const latch = latchOf(record(record(info && info.metadata).latch))
+  const session: Session = {
     id,
     ...identityOf(model, info),
     ...(info?.outcome ? { outcome: info.outcome } : {}),
@@ -259,7 +274,6 @@ export function sessionOf(
     },
     running: reads.session.status(id) === "running",
     wakePending: shellWakePending(reads, id),
-    ...legacyFields(owner),
     shells,
     permissions: (reads.session.permission.list(id) ?? []).map((request) =>
       [request.action, request.resources[0]].filter(Boolean).join(" "),
@@ -267,10 +281,8 @@ export function sessionOf(
     questions: (reads.session.form.list(id) ?? []).map((form) => form.title),
     messages,
   }
-}
-const legacyFields = (owner?: OwnedRow) => {
-  if (owner) return ownedFields(owner)
-  return {}
+  if (present(latch)) return { ...session, latch }
+  return session
 }
 
 /** The sessions of `root`'s family, the root first when the host's family list leaves it out. */
@@ -295,8 +307,11 @@ export const read = <Location>(
   const shells = shellsBySession(reads.shell.list(location))
   return {
     root,
-    sessions: familyOf(reads, root).map((id) =>
-      sessionOf(reads, id, shells.get(id) ?? [], transcript(reads.session.message.list(id), convert), ownerRows?.get(id)),
-    ),
+    sessions: familyOf(reads, root).map((id) => {
+      const told = transcript(reads.session.message.list(id), convert)
+      const owner = ownerRows && ownerRows.get(id)
+      if (owner) return ownedSessionOf(id, told, reads.session.get(id), owner)
+      return sessionOf(reads, id, shells.get(id) ?? [], told)
+    }),
   }
 }
