@@ -186,6 +186,8 @@ export class Pool extends Context.Service<
     }) => Effect.Effect<Placed | undefined, AccountsHeld | RequestHeld>
     /** Confirm a prepared login from this activation against the current hold store. */
     readonly confirmed: (input: PlaceInput, candidate: string) => Effect.Effect<boolean, RequestHeld>
+    /** Admit the actual login of a provider whose credential the host selects. */
+    readonly admitActive: (input: PlaceInput, candidate: string, phase: "known-hold" | "send") => Effect.Effect<void, RequestHeld | AccountsHeld>
     /** A response came back. A refusal (401 or 429) holds the login it went out on. */
     readonly responded: (input: {
       readonly providerID: string
@@ -425,30 +427,35 @@ export const layer = (config: Config) =>
       const pull = (where: Pooled, credentialID: string) =>
         quota.reading(where.id, credentialID).pipe(Effect.flatMap((reading) => take(where, credentialID, reading)))
 
-      const place = Effect.fn("Pool.place")(function* (input: PlaceInput) {
-        const where = pooled(input.providerID)
-        if (where === undefined) return undefined
+      const admission = Effect.fn("Pool.admission")(function* (input: PlaceInput, candidate?: string) {
         // The request's admission, at its dispatch: the pace a request of its model gets on the readings now (`dispatchPace`).
         // Held, it goes out on no login; the review has heard of the held work.
         const auxiliary = Option.filter(Option.some(input.kind), (kind) => kind !== "primary" && kind !== "compaction")
         const policy = Option.match(auxiliary, { onNone: () => ({}), onSome: (kind) => ({ auxiliary: kind }) })
-        const asked = yield* Effect.option(pace(input.providerID, input.model, input.sessionID, true, policy, "existing-request"))
+        const asked = yield* Effect.option(pace(input.providerID, input.model, input.sessionID, true, policy, "existing-request", candidate))
         const now = yield* Clock.currentTimeMillis
         if (Option.isNone(asked))
           return yield* new RequestHeld({
             sessionID: input.sessionID,
             reason: "the pool's logins could not be listed",
             reasonCode: "logins-unavailable",
-            retryAt: now + UNREAD_RETRY_MS,
+            retryAt: nextRetryAt(now, []),
           })
         const answer = asked.value
         if (!answer.ok) {
-          const retryAt = Option.getOrElse(Option.filter(Option.some(answer.retryAt), () => answer.reasonCode === "record-unreadable"),
-            () => nextRetryAt(now, [answer.retryAt]))
+          const retryAt = nextRetryAt(now, [answer.retryAt])
           const signIn = Option.fromUndefinedOr(answer.signIn)
           if (Option.isSome(signIn)) return yield* new AccountsHeld({ sessionID: input.sessionID, kind: input.kind, retryAt, signIn: signIn.value })
           return yield* new RequestHeld({ sessionID: input.sessionID, reason: answer.reason, reasonCode: answer.reasonCode, retryAt })
         }
+        return answer
+      })
+
+      const place = Effect.fn("Pool.place")(function* (input: PlaceInput) {
+        const where = pooled(input.providerID)
+        if (where === undefined) return undefined
+        const answer = yield* admission(input)
+        const now = yield* Clock.currentTimeMillis
         const command = PlaceRequest.make({
           sessionID: input.sessionID,
           kind: input.kind,
@@ -472,7 +479,7 @@ export const layer = (config: Config) =>
           sessionID: input.sessionID,
           reason: "no login that passed the dispatch check is still available",
           reasonCode: "placement-changed",
-          retryAt: now + UNREAD_RETRY_MS,
+          retryAt: nextRetryAt(now, []),
         })
         if (answer.admission === "backed") yield* reserve(where, placed.value.credentialID, input.sessionID)
         return Option.getOrUndefined(placed)
@@ -481,17 +488,64 @@ export const layer = (config: Config) =>
       const currentHolds = ({ id, pool }: Pooled) =>
         ledger.holds(id).pipe(Effect.flatMap((holds) => SynchronizedRef.updateAndGet(pool, (state) => ({ ...state, holds }))))
 
-      const confirmed = Effect.fn("Pool.confirmed")(function* (input: PlaceInput, candidate: string) {
-        const where = Option.fromUndefinedOr(pooled(input.providerID))
-        if (Option.isNone(where)) return false
-        const current = yield* currentHolds(where.value).pipe(Effect.catch((failure) => Effect.gen(function* () {
+      const checkSend = Effect.fn("Pool.checkSend")(function* (where: Pooled, input: PlaceInput, candidate: string, placed: boolean) {
+        const current = yield* currentHolds(where).pipe(Effect.catch((failure) => Effect.gen(function* () {
           const now = yield* Clock.currentTimeMillis
           return yield* new RequestHeld({ sessionID: input.sessionID, ...storeHeld(failure.retryAt, now) })
         })))
         const now = yield* Clock.currentTimeMillis
-        return (input.keepalive === true || placedOn(current, input.sessionID, input.kind) === candidate) && !held(current, candidate, now) &&
-          status(current, now, rules).some((account) => account.credentialID === candidate && !needsSignIn(account))
+        const accounts = status(current, now, rules).filter((account) => account.credentialID === candidate)
+        return { current, now, accounts, allowed:
+          (!placed || input.keepalive === true || placedOn(current, input.sessionID, input.kind) === candidate) &&
+          !held(current, candidate, now) && accounts.some((account) => !needsSignIn(account)),
+        }
       }, ledger.withHolds)
+
+      const confirmed = Effect.fn("Pool.confirmed")(function* (input: PlaceInput, candidate: string) {
+        const where = Option.fromUndefinedOr(pooled(input.providerID))
+        if (Option.isNone(where)) return false
+        return (yield* checkSend(where.value, input, candidate, true)).allowed
+      })
+
+      const admitActive = Effect.fn("Pool.admitActive")(function* (input: PlaceInput, candidate: string, phase: "known-hold" | "send") {
+        const binding = Option.fromUndefinedOr(poolOf(measuredBy(config, input.providerID)))
+        if (Option.isNone(binding)) return
+        const where = binding.value
+        const check = () => checkSend(where, input, candidate, false)
+        const reject = ({ current, now }: Effect.Success<ReturnType<typeof check>>) => {
+          const hold = Option.filter(Option.fromUndefinedOr(current.holds[candidate]), () => held(current, candidate, now))
+          return RequestHeld.make({
+            sessionID: input.sessionID,
+            reason: Option.match(hold, { onNone: () => "the active login no longer passed the dispatch check", onSome: ({ kind }) => `the active login is held (${kind})` }),
+            reasonCode: Option.match(hold, { onNone: () => "placement-changed",
+              onSome: ({ kind }) => {
+                if (kind === "record-unreadable") return kind
+                return "account-held"
+              } }),
+            retryAt: nextRetryAt(now, Option.toArray(Option.map(hold, holdRecheckAt))),
+          })
+        }
+        if (phase === "known-hold") {
+          const view = yield* Effect.option(check())
+          if (Option.isNone(view)) return
+          const checked = view.value
+          // No fresh evidence, quota read or reservation. Passing this
+          // early check is not permission to send.
+          const hold = Option.fromUndefinedOr(checked.current.holds[candidate])
+          // At a recovery appointment only the real dispatch may recheck
+          // evidence; an early hold would indefinitely skip that recheck.
+          if (Option.exists(hold, (known) => holdRecheckAt(known) > checked.now)) return yield* reject(checked)
+          return
+        }
+        const answer = yield* admission(input, candidate)
+        const eligible = Option.exists(Option.fromUndefinedOr(answer.eligible), (ids) => ids.includes(candidate))
+        if (eligible && answer.admission === "backed") yield* reserve(where, candidate, input.sessionID)
+        // The evidence read can yield to a refusal committed by another copy.
+        // Only this final, synchronized read can authorize the concrete send.
+        const checked = yield* check()
+        if (checked.allowed && eligible) return
+        return yield* reject(checked)
+      }, (effect) => dispatchLock.withPermits(1)(effect))
 
       /**
        * Reserve one request's share (`fleet.startCost`) of the room the account's claim gave back (resets.ts `Spend`),
@@ -1231,20 +1285,20 @@ export const layer = (config: Config) =>
 
       const liftPace = Effect.fn("Pool.liftPace")(function* (
         providerID: string, model: string | undefined, dispatch: boolean | undefined, policy: DispatchPolicy, push: PushModel.Push,
-        answer: Pace, work: "new-work" | "existing-request",
+        answer: Pace, work: "new-work" | "existing-request", candidate?: string,
       ) {
         const reason = `the push "${push.goal}" lifts the spend-evenly hold until ${new Date(push.endsAt).toISOString()} (${answer.reason})`
         if (dispatch !== true && Option.isNone(Option.fromUndefinedOr(model))) return { ok: true, measured: true, reason } satisfies Pace
-        const lifted = yield* paceOf(providerID, model, true, { ...policy, liftEvenLine: true }, work)
+        const lifted = yield* paceOf(providerID, model, true, { ...policy, liftEvenLine: true }, work, candidate)
         if (!lifted.ok) return lifted
         return { ...lifted, reason } satisfies Pace
       })
 
       const pace = Effect.fn("Pool.pace")(function* (
         providerID: string, model?: string, sessionID?: string, dispatch?: boolean, policy: DispatchPolicy = {},
-        work: "new-work" | "existing-request" = "new-work",
+        work: "new-work" | "existing-request" = "new-work", candidate?: string,
       ) {
-        const paced = yield* paceOf(providerID, model, dispatch, policy, work)
+        const paced = yield* paceOf(providerID, model, dispatch, policy, work, candidate)
         const id = Option.fromUndefinedOr(measuredBy(config, providerID))
         const session = Option.fromUndefinedOr(sessionID)
         // A title or other auxiliary request waits for ordinary room; it does not ask for another reset.
@@ -1266,7 +1320,7 @@ export const layer = (config: Config) =>
         // The spend-evenly target alone does not hold a start a push covers: the accounts have quota, and the push spends
         // them to 100% and claims its resets. Once its approved resets are spent, the pace holds again from the last claim's line.
         const approved = Option.filter(push, (activePush) => activePush.allowance.max === 0 || used < activePush.allowance.max)
-        if (answer.soft === true && Option.isSome(approved)) return yield* liftPace(providerID, model, dispatch, policy, approved.value, answer, work)
+        if (answer.soft === true && Option.isSome(approved)) return yield* liftPace(providerID, model, dispatch, policy, approved.value, answer, work, candidate)
         // A start held by a measured pace waits: the resets are reviewed for it, without holding up the answer.
         if (Option.isNone(resetting)) return answer
         const hard = answer.soft !== true
@@ -1298,7 +1352,7 @@ export const layer = (config: Config) =>
        */
       const paceOf = Effect.fn("Pool.paceOf")(function* (
         providerID: string, model?: string, dispatch?: boolean, policy: DispatchPolicy = {},
-        work: "new-work" | "existing-request" = "new-work",
+        work: "new-work" | "existing-request" = "new-work", candidate?: string,
       ) {
         const paced = poolOf(measuredBy(config, providerID))
         if (paced === undefined) return UNPOOLED
@@ -1308,12 +1362,13 @@ export const layer = (config: Config) =>
         const fleet = yield* fleetStore.read
         // A peer's newer readings of the same logins count here too, whichever instance on the host read the peer.
         yield* mergeReports(fleet)
-        for (const credentialID of (yield* SynchronizedRef.get(paced.pool)).credentials) yield* pull(paced, credentialID)
+        const eligible = (id: string) => Option.match(Option.fromUndefinedOr(candidate), { onNone: () => true, onSome: (chosen) => id === chosen })
+        for (const credentialID of (yield* SynchronizedRef.get(paced.pool)).credentials.filter(eligible)) yield* pull(paced, credentialID)
         const dispatches = dispatch === true || Option.isSome(Option.fromUndefinedOr(model))
         const current = yield* SynchronizedRef.get(paced.pool)
         if (dispatches || Object.values(current.holds).some((hold) => hold.kind === "record-unreadable")) {
           const before = yield* Clock.currentTimeMillis
-          const listed = status(current, before, rules)
+          const listed = status(current, before, rules).filter((account) => eligible(account.credentialID))
           const required = requiredScopes(listed, model)
           const unread = listed.filter((account) => Option.match(Option.fromUndefinedOr(account.hold), {
             onSome: (hold) => (hold.kind === "record-unreadable" || (dispatches && hold.kind === "signin")) && holdRecheckAt(hold) <= before,
@@ -1327,7 +1382,7 @@ export const layer = (config: Config) =>
           if (unread.length > 0) yield* read.pipe(Effect.timeoutOption(deadline))
         }
         const now = yield* Clock.currentTimeMillis
-        const accounts = status(yield* SynchronizedRef.get(paced.pool), now, rules)
+        const accounts = status(yield* SynchronizedRef.get(paced.pool), now, rules).filter((account) => eligible(account.credentialID))
         const plans = yield* plansOf(paced.id, accounts, now)
         // Every start in the fleet on a provider this pool paces counts, whichever host admitted it.
         const starts = FleetModel.inflight(fleet, now, fleetConfig.settleMs)
@@ -1447,6 +1502,7 @@ export const layer = (config: Config) =>
       return {
         place,
         confirmed,
+        admitActive,
         responded,
         retry,
         release,

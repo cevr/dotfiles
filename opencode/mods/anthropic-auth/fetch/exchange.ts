@@ -6,6 +6,7 @@ import { type Clock, Effect, Option, Result, Schema } from "effect"
 import type { RequestKind } from "@dotfiles/opencode-pool/accounts"
 import { HANDOFF_HEADER, HOLD_STORE_RETRY_MS, Handoff, HandoffHeld, type HandoffInput, rememberSentPlacement } from "@dotfiles/opencode-pool/handoff"
 import { RequestHeld, requestHeldMessage, storeHeld } from "@dotfiles/opencode-pool/pace"
+import { refuseSend, stepIDOf } from "@dotfiles/opencode-pool/refuse"
 export { POOL_STATUS as HANDOFF_PROTOCOL } from "@dotfiles/opencode-pool/status"
 import type { Endpoint } from "../endpoint.ts"
 import type { Auth } from "../model.ts"
@@ -100,6 +101,14 @@ const credentialIDOf = (connection: { readonly type: string; readonly id?: strin
   connection.type === "credential" ? connection.id : undefined
 
 const decodeHandoff = Schema.decodeUnknownOption(Handoff)
+const prepareHandoff = (exchange: Exchange, event: RequestEvent, headers: Headers, picked: Option.Option<string>) =>
+  Option.match(picked, {
+    onNone: () => Effect.succeed({ ...event, request: event.request }),
+    onSome: () => {
+      const prepared = { ...event, request: new Request(event.request.clone(), { headers }) }
+      return onRequest(exchange)(prepared).pipe(Effect.as(prepared))
+    },
+  })
 
 export interface RequestPreparation {
   readonly exchange: Exchange
@@ -119,31 +128,39 @@ export const pooledRequest = (
     headers.delete(HANDOFF_HEADER)
     const unavailable = () => {
       const now = originalExchange.clock.currentTimeMillisUnsafe()
-      return requestHeldMessage(new RequestHeld({ sessionID: event.sessionID, ...storeHeld(now + HOLD_STORE_RETRY_MS, now) }))
+      const held = RequestHeld.make({ sessionID: event.sessionID, ...storeHeld(now + HOLD_STORE_RETRY_MS, now) })
+      return HandoffHeld.make({ message: requestHeldMessage(held), retryAt: held.retryAt })
     }
     for (let attempt = 0; attempt < 16; attempt++) {
       const picked = Option.fromNullishOr(headers.get(CREDENTIAL_HEADER))
       const owner = current()
-      if (Option.isNone(picked) || Option.isNone(owner)) return yield* new HandoffHeld({ message: unavailable() })
+      if (Option.isNone(owner)) return yield* unavailable()
       const { exchange, confirm } = owner.value
-      const prepared = { ...event, request: new Request(original.clone(), { headers }) }
-      yield* onRequest(exchange)(prepared)
+      const prepared = yield* prepareHandoff(exchange, event, headers, picked)
       if (!Option.contains(current(), owner.value)) {
         exchange.leases.discard(prepared.request)
         continue
       }
       const result = yield* confirm({
         providerID: event.model.providerID, sessionID: event.sessionID, model: event.model.id,
-        kind: event.kind, agent: event.agent, candidate: picked.value,
+        kind: event.kind, agent: event.agent, candidate: Option.getOrElse(picked, () => ""),
+        ...Option.match(stepIDOf(event), { onNone: () => ({}), onSome: (stepID) => ({ stepID }) }),
       }).pipe(Effect.map(decodeHandoff), Effect.orElseSucceed(() => Option.none()), Effect.timeoutOption("25 seconds"), Effect.map(Option.flatten))
       if (!Option.contains(current(), owner.value)) {
         exchange.leases.discard(prepared.request)
         continue
       }
-      if (Option.isNone(result)) return yield* new HandoffHeld({ message: unavailable() })
+      if (Option.isNone(result)) {
+        exchange.leases.discard(prepared.request)
+        return yield* unavailable()
+      }
       const answer = result.value
-      if (answer._tag === "Held") return yield* new HandoffHeld({ message: answer.message })
+      if (answer._tag === "Held") {
+        exchange.leases.discard(prepared.request)
+        return yield* HandoffHeld.make({ message: answer.message, retryAt: answer.retryAt ?? unavailable().retryAt })
+      }
       if (answer._tag === "Send") {
+        if (Option.isNone(picked)) return yield* unavailable()
         const cacheTTL = Option.fromNullishOr(headers.get(CACHE_TTL_HEADER))
         rememberSentPlacement(prepared.request, {
           credentialID: picked.value,
@@ -158,8 +175,8 @@ export const pooledRequest = (
       if (Option.isSome(ttl)) headers.set(CACHE_TTL_HEADER, ttl.value)
       else headers.delete(CACHE_TTL_HEADER)
     }
-    return yield* new HandoffHeld({ message: unavailable() })
-  })
+    return yield* unavailable()
+  }).pipe(Effect.catchTag("HandoffHeld", (held) => refuseSend(event, { reason: held.message, until: held.retryAt })))
 }
 
 /**

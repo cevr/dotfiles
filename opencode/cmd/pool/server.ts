@@ -40,7 +40,7 @@
  *   (a 429, a 5xx, no answer) before the `alerts` method names it as an
  *   outage. Default 10.
  *
- * - `paced`: providers the pool measures without placing their requests, provider
+ * - `paced`: providers whose active login the pool admits at the final send hook, provider
  *   id to integration id, default none. `{ openai: "openai" }` paces OpenAI's
  *   agents on the ChatGPT account's Codex quota, as the provider measures it
  *   across every place the account is used (`@dotfiles/opencode-pool/chatgpt/usage`):
@@ -131,9 +131,10 @@
  */
 import { hostname } from "node:os"
 import { Agent, Integration, Plugin, Tool } from "@opencode/plugin/effect"
-import { Cause, Clock, Context, Deferred, Effect, Exit, Layer, Option, Schedule, Schema, Stream } from "effect"
+import { Cause, Clock, Context, Deferred, Effect, Exit, FiberMap, Layer, Option, Schedule, Schema, Stream } from "effect"
 import { heldMessage, PoolId } from "@dotfiles/opencode-pool/account-pool"
-import { RequestHeld, requestHeldMessage, storeHeld } from "@dotfiles/opencode-pool/pace"
+import { type HoldReason, nextRetryAt, RequestHeld, requestHeldMessage, storeHeld } from "@dotfiles/opencode-pool/pace"
+import { deferRoute, HeldSend, refuseSend, type SendHold, sendHoldMessage, stepIDOf } from "@dotfiles/opencode-pool/refuse"
 import { HANDOFF_HEADER, HOLD_STORE_RETRY_MS, Handoff, HandoffInput, sentPlacementOf } from "@dotfiles/opencode-pool/handoff"
 import { CACHE_LIFE_MS, ttlMs, ttlOf } from "@dotfiles/opencode-pool/accounts"
 import { OUTAGE_AFTER_MS } from "@dotfiles/opencode-pool/alerts"
@@ -229,6 +230,18 @@ export const Options = Schema.Struct({
   unitCost: Schema.optional(Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 }))),
 })
 export type Options = typeof Options.Type
+
+// A configured provider must have a binding on every transport it can use.
+// Anthropic's HTTP binding runs after signing in its auth plugin, via handoff.
+// OpenAI's HTTP and WebSocket bindings run here, on the host-selected login.
+const SEND_BINDINGS: ReadonlyMap<string, "signed-http" | "active-http-and-socket"> = new Map([
+  ["anthropic", "signed-http"],
+  ["openai", "active-http-and-socket"],
+])
+const SEND_HOLD_PREFIX = "held-send/"
+const sendHoldKey = (sessionID: string) => `${SEND_HOLD_PREFIX}${sessionID}`
+const decodeSendHold = Schema.decodeUnknownOption(HeldSend)
+type SendScope = { readonly sessionID: string; readonly providerID: string; readonly kind: Model.PlaceInput["kind"]; readonly stepID?: string }
 
 /** The outside systems the model runs on. */
 export type Externals = Logins | Quota | Ledger | Peers | FleetStore | ResetsStore | Owner
@@ -441,6 +454,12 @@ export const make = (
         Effect.mapError((error) => new Error(`dotfiles-opencode.pool: invalid options: ${error.message}`)),
         Effect.orDie,
       )
+      for (const provider of Object.keys(options.providers))
+        if (SEND_BINDINGS.get(provider) !== "signed-http")
+          return yield* Effect.die(new Error(`dotfiles-opencode.pool: ${provider} has no signed placement send binding; check providers`))
+      for (const provider of Object.keys(options.paced))
+        if (!Object.hasOwn(options.providers, provider) && SEND_BINDINGS.get(provider) !== "active-http-and-socket")
+          return yield* Effect.die(new Error(`dotfiles-opencode.pool: ${provider} has no active-login send binding; check paced`))
       // The plugin's context carries the host's loggers.
       const sources = storeSources(options, yield* Effect.context<never>(), storeHost)
       const chatgpt = yield* chatgptSources(ctx, options, storeHost)
@@ -455,6 +474,65 @@ export const make = (
       yield* Effect.addFinalizer(() => Effect.sync(() => { active = false }))
       const withPool = <A, E, R>(use: (pool: Model.Pool["Service"]) => Effect.Effect<A, E, R>) =>
         Deferred.await(ready).pipe(Effect.flatMap(use))
+      const storeOp = <A>(operation: Effect.Effect<A>) =>
+        operation.pipe(Effect.timeoutOption(HOLD_STORE_RETRY_MS), Effect.catchDefect(() => Effect.succeed(Option.none())))
+      const sendRecords = LedgerLive.processHoldAuthority().lock
+      const expiries = yield* FiberMap.make<string>()
+      const heldSend = (sessionID: string) => sendRecords.withPermits(1)(Effect.gen(function* () {
+        const key = sendHoldKey(sessionID)
+        const page = yield* storeOp(ctx.storage.scan({ prefix: key, limit: 1 }))
+        const found = Option.flatMap(page, (page) => Option.flatMap(
+          Option.fromUndefinedOr(page.entries.find((row) => row.key === key)), (row) => decodeSendHold(row.value)))
+        const now = yield* Clock.currentTimeMillis
+        if (Option.isNone(found)) return {}
+        if (found.value.retryAt > now) return { hold: found.value }
+        yield* storeOp(ctx.storage.remove(key))
+        return {}
+      }))
+      const expire = (hold: HeldSend, now: number, recovered = false) => FiberMap.run(expiries, hold.sessionID,
+        heldSend(hold.sessionID).pipe(Effect.delay(Math.max(0, hold.retryAt - now))), { onlyIfMissing: recovered })
+      // Re-arm persisted deadlines after a restart. Each timer re-reads the
+      // exact key, so expiry of one refusal cannot delete a later replacement.
+      yield* Effect.forkScoped(Effect.gen(function* () {
+        let after = Option.none<string>()
+        do {
+          const page = yield* storeOp(ctx.storage.scan({ prefix: SEND_HOLD_PREFIX, limit: 128,
+            ...Option.match(after, { onNone: () => ({}), onSome: (after) => ({ after }) }),
+          }))
+          if (Option.isNone(page)) return
+          const now = yield* Clock.currentTimeMillis
+          for (const entry of page.value.entries) {
+            const hold = decodeSendHold(entry.value)
+            if (Option.isSome(hold)) yield* expire(hold.value, now, true)
+          }
+          after = Option.fromUndefinedOr(page.value.next)
+        } while (Option.isSome(after))
+      }))
+      const recordHeld = (scope: SendScope, reason: string, reasonCode: HoldReason, retry: number) =>
+        Clock.currentTimeMillis.pipe(Effect.flatMap((now) => {
+          const retryAt = nextRetryAt(now, [retry])
+          const hold = HeldSend.make({
+            sessionID: scope.sessionID, providerID: scope.providerID, reasonCode, retryAt,
+            ...Option.match(Option.fromUndefinedOr(scope.stepID), { onNone: () => ({}), onSome: (stepID) => ({ stepID }) }),
+          })
+          const refusal = { ...hold, reason }
+          if (scope.kind !== "primary") return Effect.succeed(refusal)
+          return sendRecords.withPermits(1)(storeOp(ctx.storage.set(sendHoldKey(scope.sessionID), hold)).pipe(
+            Effect.tap((written) => {
+              if (Option.isNone(written)) return Effect.void
+              return expire(hold, now).pipe(Effect.asVoid)
+            }),
+          )).pipe(Effect.as(refusal))
+        }))
+      const forgetHeld = (scope: SendScope) => {
+        if (scope.kind !== "primary") return Effect.void
+        return sendRecords.withPermits(1)(storeOp(ctx.storage.remove(sendHoldKey(scope.sessionID))).pipe(
+          Effect.tap((removed) => {
+            if (Option.isNone(removed)) return Effect.void
+            return FiberMap.remove(expiries, scope.sessionID)
+          }),
+        )).pipe(Effect.asVoid)
+      }
       yield* Effect.forkScoped(
         Effect.gen(function* () {
           const services = yield* Layer.build(
@@ -542,8 +620,25 @@ export const make = (
           Effect.orElseSucceed(() => undefined),
         )
 
-      yield* ctx.session.hook("model.request", (event) =>
-        Effect.all([agentCacheLife(event.agent), cacheOf(event.sessionID)]).pipe(
+      // The old host has no concrete unsent-Step result. New hosts expose
+      // the Step during routing and again at the final send hook.
+      let canDeferPrimary = false
+      const failProposal = (event: SendScope & { readonly headers: Record<string, string> }, reason: string, code: HoldReason, at: number) => {
+        if (canDeferPrimary && event.kind === "primary") {
+          // The auth hook asks for a fresh placement when there is no
+          // proposal. Only that hook can defer an unsent concrete request.
+          return Effect.sync(() => { event.headers[HANDOFF_HEADER] = "1" })
+        }
+        return recordHeld(event, reason, code, at).pipe(
+          Effect.flatMap((hold) => Effect.die(new Error(sendHoldMessage(hold.reason, hold.retryAt)))),
+        )
+      }
+      yield* ctx.session.hook("model.request", (event) => {
+        if (!Object.hasOwn(options.providers, event.model.providerID)) {
+          if (canDeferPrimary && event.kind === "primary") return Effect.void
+          return gateActive(event, "known-hold", (hold) => Effect.die(new Error(sendHoldMessage(hold.reason, hold.until))))
+        }
+        return Effect.all([agentCacheLife(event.agent), cacheOf(event.sessionID)]).pipe(
           Effect.flatMap(([cacheLifeMs, source]) =>
             withPool((pool) =>
               pool.place({
@@ -564,13 +659,60 @@ export const make = (
                 }),
                 // Every account held: the request goes out on none. The host ends the turn on the pool's own words
                 // and when the first account opens; a hook declares no failure, so the refusal is its defect.
-                Effect.catchTag("AccountsHeld", (held) => Effect.die(new Error(heldMessage(held)))),
+                Effect.catchTag("AccountsHeld", (held) =>
+                  failProposal({ ...event, providerID: event.model.providerID }, heldMessage(held), "account-held", held.retryAt)),
                 // Held by the pace at its dispatch: nothing goes out and no credential is set; the turn ends on why and when.
-                Effect.catchTag("RequestHeld", (held) => Effect.die(new Error(requestHeldMessage(held)))),
+                Effect.catchTag("RequestHeld", (held) =>
+                  failProposal({ ...event, providerID: event.model.providerID }, requestHeldMessage(held), held.reasonCode, held.retryAt)),
               ),
           ),
-        ),
+        )
+      })
+
+      const activePool = (providerID: string) => Option.filter(
+        Option.fromUndefinedOr(options.paced[providerID]),
+        () => SEND_BINDINGS.get(providerID) === "active-http-and-socket" && Object.hasOwn(options.paced, providerID),
       )
+      const gateActive = (event: { readonly kind: Model.PlaceInput["kind"]; readonly sessionID: string;
+        readonly model: { readonly providerID: string; readonly id: string } }, phase: "known-hold" | "send",
+        bind: (held: SendHold) => Effect.Effect<void>) =>
+        Effect.gen(function* () {
+          const poolID = activePool(event.model.providerID)
+          if (Option.isNone(poolID)) return
+          const input = { providerID: event.model.providerID, sessionID: event.sessionID, kind: event.kind, model: event.model.id }
+          const scope = { ...input, ...Option.match(stepIDOf(event), { onNone: () => ({}), onSome: (stepID) => ({ stepID }) }) }
+          const refuse = (reason: string, code: HoldReason, at: number) => recordHeld(scope, reason, code, at).pipe(
+            Effect.flatMap((hold) => bind({ reason: hold.reason, until: hold.retryAt })),
+          )
+          const connection = yield* ctx.integration.connection.active(poolID.value)
+          const login = Option.filter(Option.fromUndefinedOr(connection), (value) => value.type === "credential")
+          if (!active || Option.isNone(login)) {
+            if (phase === "known-hold") return
+            const now = yield* Clock.currentTimeMillis
+            const held = RequestHeld.make({ sessionID: input.sessionID,
+              reason: "the pool cannot identify the provider's active login", reasonCode: "logins-unavailable", retryAt: nextRetryAt(now, []),
+            })
+            return yield* refuse(requestHeldMessage(held), held.reasonCode, held.retryAt)
+          }
+          // Clear a previous refusal before checking current authority. No
+          // storage yield follows an allowed send.
+          if (phase === "send") yield* forgetHeld(scope)
+          return yield* withPool((pool) => pool.admitActive(input, login.value.id, phase)).pipe(
+            Effect.catchTags({
+              AccountsHeld: (held) => refuse(heldMessage(held), "account-held", held.retryAt),
+              RequestHeld: (held) => refuse(requestHeldMessage(held), held.reasonCode, held.retryAt),
+            }),
+          )
+        })
+      yield* ctx.session.hook("experimental.model.resolve", (event) => Effect.suspend(() => {
+        if (Option.isNone(stepIDOf(event))) return Effect.void
+        canDeferPrimary = true
+        return gateActive(event, "known-hold", (hold) => deferRoute(event, hold))
+      }))
+      if (Object.keys(options.paced).length > 0) {
+        yield* ctx.session.hook("http.request", (event) => gateActive(event, "send", (hold) => refuseSend(event, hold)))
+        yield* ctx.session.hook("experimental.ws.send", (event) => gateActive(event, "send", (hold) => refuseSend(event, hold)))
+      }
 
       // What a paced provider's response showed of the account's quota belongs
       // to the login OpenCode sends it on: the integration's active one.
@@ -691,16 +833,21 @@ export const make = (
       // cannot be read fails the call, and its caller goes on without it. An
       // RPC that cannot be registered stops the plugin.
       const decodeHandoff = Schema.decodeUnknownOption(HandoffInput)
-      const handoffUnavailable = (sessionID: string) => Clock.currentTimeMillis.pipe(Effect.map((now) =>
-        Handoff.cases.Held.make({ message: requestHeldMessage(new RequestHeld({
-          sessionID, ...storeHeld(now + HOLD_STORE_RETRY_MS, now),
-        })) }),
-      ))
+      const handoffUnavailable = (sessionID: string) => Clock.currentTimeMillis.pipe(Effect.map((now) => {
+        const held = RequestHeld.make({ sessionID, ...storeHeld(now + HOLD_STORE_RETRY_MS, now) })
+        return Handoff.cases.Held.make({ message: requestHeldMessage(held), retryAt: held.retryAt })
+      }))
       const handoff = (decoded: Option.Option<HandoffInput>) => Effect.gen(function* () {
         if (Option.isNone(decoded)) return yield* handoffUnavailable("")
-        const { candidate, agent, ...request } = decoded.value
+        const { candidate, agent, stepID, ...request } = decoded.value
+        const scope = { ...request, ...Option.match(Option.fromUndefinedOr(stepID), { onNone: () => ({}), onSome: (stepID) => ({ stepID }) }) }
+        const refused = (reason: string, reasonCode: HoldReason, retryAt: number) =>
+          recordHeld(scope, reason, reasonCode, retryAt).pipe(
+            Effect.map((hold) => Handoff.cases.Held.make({ message: hold.reason, retryAt: hold.retryAt })),
+          )
         const decision = yield* withPool((pool) => Effect.gen(function* () {
           if (!active) return yield* handoffUnavailable(request.sessionID)
+          if (request.keepalive !== true) yield* forgetHeld(scope)
           if (yield* pool.confirmed(request, candidate)) {
             if (active) return Handoff.cases.Send.make({})
             return yield* handoffUnavailable(request.sessionID)
@@ -721,14 +868,15 @@ export const make = (
             ...Option.match(ttl, { onNone: () => ({}), onSome: (life) => ({ cacheTTL: ttlOf(life) }) }),
           })
         })).pipe(Effect.catchTags({
-          AccountsHeld: (held) => Effect.succeed(Handoff.cases.Held.make({ message: heldMessage(held) })),
-          RequestHeld: (held) => Effect.succeed(Handoff.cases.Held.make({ message: requestHeldMessage(held) })),
+          AccountsHeld: (held) => refused(heldMessage(held), "account-held", held.retryAt),
+          RequestHeld: (held) => refused(requestHeldMessage(held), held.reasonCode, held.retryAt),
         }))
         return decision
       })
       yield* ctx.rpc
         .register(POOL_STATUS, {
           pace: (input) => withPool((pool) => pool.pace(providerOf(input), modelOf(input), sessionOf(input), dispatchOf(input))).pipe(Effect.orDie),
+          heldSend: ({ sessionID }) => heldSend(sessionID),
           handoff: (input) => handoff(decodeHandoff(input)),
           status: () => withPool((pool) => pool.status).pipe(Effect.orDie),
           // A malformed question names no session: it has no account to name.

@@ -24,14 +24,15 @@ export const HandoffInput = Schema.Struct({
   providerID: Schema.String, sessionID: Schema.String, model: Schema.String,
   kind: RequestKind, agent: Schema.String, candidate: Schema.String,
   keepalive: Schema.optionalKey(Schema.Boolean),
+  stepID: Schema.optionalKey(Schema.String),
 })
 export type HandoffInput = typeof HandoffInput.Type
 
 export const Handoff = Schema.TaggedUnion({
   Send: {},
   Prepare: { credentialID: Schema.String, cacheTTL: Schema.optionalKey(Schema.String) },
-  Held: { message: Schema.String },
+  Held: { message: Schema.String, retryAt: Schema.optionalKey(Schema.Finite) },
 })
 export type Handoff = typeof Handoff.Type
 
-export class HandoffHeld extends Schema.TaggedError<HandoffHeld>()("HandoffHeld", { message: Schema.String }) {}
+export class HandoffHeld extends Schema.TaggedError<HandoffHeld>()("HandoffHeld", { message: Schema.String, retryAt: Schema.Finite }) {}

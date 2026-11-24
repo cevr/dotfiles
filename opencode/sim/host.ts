@@ -382,7 +382,30 @@ export interface HttpRequestInput {
   readonly agent: string
   readonly model: { readonly providerID: string; readonly id: string }
   readonly kind: Kind
+  readonly step?: RouteStep
+  refuse?: Refusal
   request: WebRequest
+}
+
+interface Refusal { readonly reason: string; readonly until: number }
+interface RouteStep { readonly id: string; readonly attempt: number }
+interface ModelResolveInput {
+  readonly sessionID: string
+  readonly agent: string
+  readonly model: ModelRef
+  readonly kind: Kind
+  readonly step: RouteStep
+  defer?: Refusal
+}
+
+interface SocketSendInput {
+  readonly sessionID: string
+  readonly agent: string
+  readonly model: ModelRef
+  readonly kind: Kind
+  readonly step?: RouteStep
+  frame: string
+  refuse?: Refusal
 }
 
 export interface HttpResponseInput {
@@ -436,6 +459,8 @@ export type HookInput =
   | HttpResponseInput
   | RetryInput
   | SocketReceiveInput
+  | SocketSendInput
+  | ModelResolveInput
   | ToolBefore
   | ToolAfter
   | ShellBefore
@@ -490,6 +515,8 @@ export interface Options {
   readonly provider?: { readonly id: string; readonly baseURL: string; readonly handle: (request: WebRequest) => Effect.Effect<Response, SimError> }
   /** Observe a request that passed the final hook; the callback at handler entry checks the simulated handoff. */
   readonly admitHttp?: (request: WebRequest) => Option.Option<() => Effect.Effect<void, SimError>>
+  /** Model the host's typed unsent Step deferral. Absent on the installed host. */
+  readonly sendRefusal?: boolean
   /** The logins OpenCode holds, by integration: each connection with its credential, the first one active. */
   readonly integrations?: { readonly [integrationID: string]: ReadonlyArray<Login> }
   /**
@@ -903,9 +930,9 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
    * request, as the host's `hooks.trigger` does in the model request's build and its HTTP call.
    */
   const runRequestHooks = (
-    name: "model.request" | "http.request" | "http.response" | "experimental.ws.receive" | System.RequestHook,
+    name: "model.request" | "http.request" | "http.response" | "experimental.model.resolve" | "experimental.ws.send" | "experimental.ws.receive" | System.RequestHook,
     session: Session,
-    event: ModelRequestInput | HttpRequestInput | HttpResponseInput | SocketReceiveInput | System.SystemInput,
+    event: ModelRequestInput | ModelResolveInput | HttpRequestInput | HttpResponseInput | SocketReceiveInput | SocketSendInput | System.SystemInput,
     detail: JsonObject = {},
   ) =>
     Effect.gen(function* () {
@@ -1027,6 +1054,16 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     }
   }
 
+  /** Keep the same primary Step across the unsent retries of one turn. */
+  const routeStep = (session: Session, kind: Kind, attempt: number) => Option.filter(
+    Option.some({ id: `${session.id}:${session.messages.length}`, attempt }),
+    () => options.sendRefusal === true && kind === "primary",
+  )
+  const stepField = (session: Session, kind: Kind, attempt: number) =>
+    Option.match(routeStep(session, kind, attempt), { onNone: () => ({}), onSome: (step) => ({ step }) })
+  const deferred = (refusal: Refusal): Result.Result<never, Http.Failure> =>
+    Result.fail({ tag: "Unknown", message: refusal.reason, status: 0, retryable: false, retryAfterMs: 0, heldUntil: refusal.until })
+
   /** A request over HTTP to the world's provider, through the HTTP hooks of the session's location's copies: the reply, or the failure. */
   const overHttp = (
     session: Session,
@@ -1035,6 +1072,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     tools: ReadonlyArray<string>,
     extra: string,
     system: ReadonlyArray<string>,
+    attempt: number,
   ) =>
     Effect.gen(function* () {
       const scope = { sessionID: session.id, agent: requestAgent(session), model: requestModel(session) }
@@ -1045,8 +1083,10 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
         headers: { ...event.headers, "content-type": "application/json", "anthropic-version": "2023-06-01" },
         body: Http.bodyOf({ model: scope.model.id, system, messages, tools }),
       })
-      const before: HttpRequestInput = { ...scope, kind: event.kind, request: sent }
+      const before: HttpRequestInput = { ...scope, kind: event.kind, ...stepField(session, event.kind, attempt), request: sent }
       yield* runRequestHooks("http.request", session, before)
+      const refusal = Option.fromUndefinedOr(before.refuse)
+      if (Option.isSome(refusal)) return deferred(refusal.value)
       const entry = options.admitHttp?.(before.request) ?? Option.none()
       // The answer arrives at once: a refusal is whole then; an answer streams for the seed's latency before it is read.
       // A data: URL is answered in the process, as the host's fetch reads one, never by the provider.
@@ -1106,9 +1146,16 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
    * One model request: its kind's request hook on its system parts (sim/system.ts), `model.request`, the request in the
    * trace, the stream's time, the reply (the script's, or the provider's over HTTP), or its failure.
    */
-  const attempt = (session: Session, kind: Kind, extra = "") =>
+  const attempt = (session: Session, kind: Kind, extra = "", number = 1) =>
     Effect.gen(function* () {
       const scope = { sessionID: session.id, agent: requestAgent(session), model: requestModel(session) }
+      const step = routeStep(session, kind, number)
+      if (Option.isSome(step)) {
+        const route: ModelResolveInput = { ...scope, kind, step: step.value }
+        yield* runRequestHooks("experimental.model.resolve", session, route)
+        const hold = Option.fromUndefinedOr(route.defer)
+        if (Option.isSome(hold)) return { outcome: deferred(hold.value), startedAt: runtime.now() }
+      }
       // A compaction's hooks see the conversation it summarizes and may add messages after it, which the request
       // carries before its own words (the summary prompt); each added message is read as a request message, and one of
       // another shape adds no text.
@@ -1133,19 +1180,26 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       const outcome = yield* Option.match(
         Option.filter(Option.fromNullishOr(options.provider), (provider) => provider.id === event.model.providerID),
         {
-          onNone: () =>
-            streaming.pipe(
-              Effect.andThen(
-                Effect.suspend(() => {
-                  const answer = options.script(asking)
-                  if (Effect.isEffect(answer)) return answer
-                  return Effect.succeed(answer)
-                }),
-              ),
-              Effect.tap((reply) => Effect.when(overSocket(session, event, reply), Effect.succeed(kind === "primary" && socketed(event.model)))),
-              Effect.map((reply): Result.Result<Reply, Http.Failure> => Result.succeed(reply)),
-            ),
-          onSome: (provider) => overHttp(session, provider, event, tools, words, system),
+          onNone: () => Effect.gen(function* () {
+            const socket = kind === "primary" && socketed(event.model)
+            if (socket) {
+              const frame = line({ type: "response.create", input: conversation })
+              const sending: SocketSendInput = { ...scope, kind, ...stepField(session, kind, number), frame }
+              yield* runRequestHooks("experimental.ws.send", session, sending)
+              const refusal = Option.fromUndefinedOr(sending.refuse)
+              if (Option.isSome(refusal)) return deferred(refusal.value)
+              if (sending.frame !== frame) return yield* Effect.die(new Error("sim: replacement WebSocket sends are not modelled"))
+            }
+            yield* streaming
+            const provided = options.script(asking)
+            const reply = yield* Effect.suspend(() => {
+              if (Effect.isEffect(provided)) return provided
+              return Effect.succeed(provided)
+            })
+            if (socket) yield* overSocket(session, event, reply)
+            return Result.succeed<Reply>(reply)
+          }),
+          onSome: (provider) => overHttp(session, provider, event, tools, words, system, number),
         },
       )
       Result.match(outcome, {
@@ -1176,9 +1230,16 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
   const primary = (session: Session) =>
     Effect.gen(function* () {
       for (let retries = 0; ; retries += 1) {
-        const { outcome, startedAt } = yield* attempt(session, "primary")
+        const { outcome, startedAt } = yield* attempt(session, "primary", "", retries + 1)
         if (Result.isSuccess(outcome)) return Result.succeed({ reply: outcome.success, startedAt })
         const failure = outcome.failure
+        const recheck = Option.fromUndefinedOr(failure.heldUntil)
+        if (Option.isSome(recheck)) {
+          const at = Math.max(runtime.now() + 1_000, recheck.value)
+          yield* publish({ type: "session.retry.scheduled", data: { sessionID: session.id, attempt: retries + 2, at } })
+          yield* Effect.sleep(at - runtime.now())
+          continue
+        }
         const gap = Http.gapOf(runtime, retries, failure)
         if (Option.isNone(gap)) return Result.fail(failure)
         const event: RetryInput = {

@@ -29,6 +29,7 @@ import { type PublishedReading, Quota } from "@dotfiles/opencode-pool/service"
 import { StoreSource } from "@dotfiles/opencode-pool/store/store"
 import { type Alerts, type FleetStatus, POOL_STATUS, type PoolsStatus, type Report, type ResetsStatus, type SessionAnswer, type SessionLogins } from "@dotfiles/opencode-pool/status"
 import { Handoff } from "@dotfiles/opencode-pool/handoff"
+import { HeldSendAnswer } from "@dotfiles/opencode-pool/refuse"
 import { DEFAULT_HOLD_MS, MAX_REFUSAL } from "@dotfiles/opencode-pool/hold"
 import { below, generator } from "../../sim/runtime.ts"
 import { MIGRATED } from "@dotfiles/opencode-pool/opencode/migrate"
@@ -425,6 +426,7 @@ const start = (
       send,
       request,
       handoff,
+      heldSend: (sessionID: string) => Effect.flatMap(method("heldSend"), (read) => read({ sessionID })),
       respond,
       retry,
       idle,
@@ -635,11 +637,17 @@ test("R10-6 two copies reserve just one usage read, then keep the later refusal 
     expect(state.holdAccess.usage - reads).toBe(1)
     expect(state.storage.get(key)).toMatchObject({ kind: "record-unreadable", until: end, raw })
     expect(yield* two.pace("anthropic")).toMatchObject({ ok: false, retryAt: end })
-    expect(Schema.is(Handoff.cases.Held)(yield* two.handoff("cred-a"))).toBe(true)
+    const handoff = yield* two.handoff("cred-a")
+    expect(Schema.is(Handoff.cases.Held)(handoff)).toBe(true)
+    // The consumer gets no handoff/error string at all, only the typed fact.
+    const fact = Schema.decodeUnknownSync(HeldSendAnswer)(yield* one.heldSend("ses_1"))
+    expect(fact.hold).toMatchObject({ providerID: "anthropic", reasonCode: "record-unreadable", retryAt: end })
     yield* TestClock.setTime(end - 1)
     expect(yield* one.pace("anthropic")).toMatchObject({ ok: false, retryAt: end })
     expect(state.holdAccess.usage - reads).toBe(1)
     yield* TestClock.setTime(end)
+    expect(state.storage.has("held-send/ses_1")).toBe(false)
+    expect(yield* one.heldSend("ses_1")).toEqual({})
     state.readings.set("cred-a", { ...quiet(end), usage: { at: end, samples: 1 } })
     expect(yield* two.request("ses_reopened")).toBe("cred-a")
     expect(state.holdAccess.usage - reads).toBe(2)
@@ -794,6 +802,16 @@ describe("the options", () => {
       expect(message).toContain(`at ${path}`)
     }
   })
+
+  test("rejects each tracked provider without its transport binding at activation", () =>
+    scenario(Effect.gen(function* () {
+      const configs = [
+        { options: { providers: { unknown: "anthropic" } }, message: "unknown has no signed placement send binding" },
+        { options: { providers: {}, paced: { unknown: "openai" } }, message: "unknown has no active-login send binding" },
+      ]
+      for (const { options, message } of configs)
+        expect(String(yield* Effect.exit(start(options)))).toContain(message)
+    })))
 })
 
 describe("the hooks", () => {
@@ -1206,7 +1224,7 @@ describe("the ledger", () => {
         const root = yield* scratchRoot
         const published = yield* Queue.unbounded<PublishedReading>()
         const plugin = yield* start({ sweepMinutes: 0 }, state, () => Layer.merge(testLayers(state, published, root)(), slow), false)
-        expect(Object.keys(plugin.hooks).sort()).toEqual(["http.response", "model.request", "retry"])
+        expect(Object.keys(plugin.hooks).sort()).toEqual(["experimental.model.resolve", "http.response", "model.request", "retry"])
         yield* waitFor("the ledger read", () => scans > 0)
         const request = yield* Effect.forkChild(plugin.request("s1"))
         yield* settle

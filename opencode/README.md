@@ -4150,8 +4150,24 @@ ChatGPT account's own usage, the same numbers Codex CLI's `/status` shows:
 the `wham/usage` endpoint, then the `x-codex-primary/secondary-*` headers and
 `codex.rate_limits` frames on each response
 (`mods/pool/chatgpt/usage.ts`). The account counts every place it is spent,
-this host or another, OpenCode or Codex CLI. Its requests are never placed,
-and its token is never stored or shown. A new subagent on a Codex provider
+this host or another, OpenCode or Codex CLI. OpenCode selects its active
+login; the pool does not switch it. The pool can turn down a known durable
+hold during routing without reading usage. That early answer never admits a
+send: the pool checks the active login again at the concrete HTTP request
+or each WebSocket send, including on a socket another Step already used.
+An absent active login, unreadable authority, or unbound provider cannot grant
+admission. The token is never stored or shown by the pool.
+
+A host with typed Step deferral retries the original Step at its hold's
+retry time. Older hosts stop it before sending and show when to retry.
+On the older WebSocket host alone, a hold first committed after the
+`model.request` check and before `experimental.ws.send` can be wrapped as a
+generic stream failure by the host. Those are the boundaries of that case,
+not a fixed elapsed-time bound; even then no held frame is written.
+`heldSend({ sessionID })` reports the pool's typed refusal and exact
+`retryAt` while it is live. A caller never needs to parse the error message.
+
+A new subagent on a Codex provider
 takes that pace when the orchestrate mod's `codex.pool` is set (daily sets
 `codex: { pool: true }`). When the pool has no reading (`measured: false`),
 or without `codex.pool`, it asks the orchestrate skill's

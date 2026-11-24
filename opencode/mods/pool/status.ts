@@ -5,12 +5,13 @@
 // reads `logins`, the login each of a session's steps went out on. Orchestrate
 // tells it each new agent it `started`; the pool on another host of ours reads
 // `report`, this host's recent starts and readings, and the status pane draws
-// `fleet`, the peers it reads. The definition is the wire contract, kept byte
-// for byte; the schemas below are the shapes its methods answer with. No
-// answer carries a secret.
+// `fleet`, the peers it reads. The definition is the wire contract; the
+// schemas below describe the answers of the older methods. No answer carries
+// a secret.
 import { Schema } from "effect"
 import { Hold } from "./hold.ts"
 import { QuotaReading } from "./quota.ts"
+import { HeldSendAnswer } from "./refuse.ts"
 import { Claim, Reset } from "./resets.ts"
 export { Hold } from "./hold.ts"
 
@@ -26,13 +27,17 @@ export const POOL_STATUS = {
       },
       output: { type: "object" },
     },
+    heldSend: {
+      input: Schema.toStandardSchemaV1(Schema.Struct({ sessionID: Schema.String })),
+      output: Schema.toStandardSchemaV1(HeldSendAnswer),
+    },
     handoff: {
       input: {
         type: "object",
         properties: {
           providerID: { type: "string" }, sessionID: { type: "string" }, model: { type: "string" },
           kind: { type: "string" }, agent: { type: "string" }, candidate: { type: "string" },
-          keepalive: { type: "boolean" },
+          keepalive: { type: "boolean" }, stepID: { type: "string" },
         },
         required: ["providerID", "sessionID", "model", "kind", "agent", "candidate"],
       },
