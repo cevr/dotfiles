@@ -116,8 +116,8 @@ it.effect("both observed readers stay selected when tracked names fold to an amb
         untracedSubprocesses: {}, compilerProjects: {},
       },
     }
-    for (const test of [inconsistent, exact]) {
-      const reader = testReadInputs(workspace, test)
+    for (const runner of [inconsistent, exact]) {
+      const reader = testReadInputs(workspace, runner)
       expect(reader.unknown).toBe(true)
       expect(reader.has(files[0]!)).toBe(true)
       expect(reader.has(files[1]!)).toBe(true)
