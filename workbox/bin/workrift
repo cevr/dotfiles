@@ -81,11 +81,13 @@ usage: workrift <command>
   check                       check the warm source, and warn when its build output is old
   settings                    give the warm source its host settings from workrift's
                               table (warm step, .env link); init does it too
-  subvolume [--back | --drop-old] [--check] [--apply] [--beside-other-removals]
-            [--beside-unreadable]
+  subvolume [--back | --drop-old [--lose N]] [--check] [--apply]
+            [--beside-other-removals] [--beside-unreadable]
                               make the warm source a btrfs subvolume (each workspace a
                               snapshot); --back makes it the plain folder it was;
                               --drop-old deletes the tree kept from the last switch;
+                              when it holds what the base lacks, only with --lose N,
+                              N the count its dry run listed;
                               a dry run (preflight and exact steps) unless --apply;
                               a removal of another base refuses it unless
                               --beside-other-removals (one of this base always does);
@@ -2689,6 +2691,9 @@ sv_max_used_pct=${WORKRIFT_SUBVOLUME_MAX_USED_PCT:-90}
 # How long the carry waits for processes to leave the old tree, how long the
 # hold may take to copy and verify, how long the command waits for its turn.
 sv_wait_seconds=${WORKRIFT_SUBVOLUME_WAIT:-60}
+# The wait looks again after 1 s, then 2, then every 4 s at most: each look
+# walks every process, and one privileged read covers those it cannot see.
+sv_wait_step_max=4
 sv_limit_seconds=${WORKRIFT_SUBVOLUME_LIMIT:-1200}
 sv_turn_seconds=${WORKRIFT_SUBVOLUME_TURN_WAIT:-1800}
 sv_sysfs=${WORKRIFT_SYSFS_BTRFS:-/sys/fs/btrfs}
@@ -3002,15 +3007,17 @@ sv_unknown_pid() {
 
 # The processes in the folder $1, every one known, into sv_users_found (`pid
 # command` a line). Unknown ones (sv_users) are read again with privilege
-# where sudo -n works: a read-only find of exactly their fd and working
-# folders, its command line in the step log. Where it does not, the switch
-# goes on beside them only with --beside-unreadable (said in the step log);
-# else status 2, sv_why naming them and the two ways on. Status 1 with sv_why
-# when a walk fails.
+# where sudo -n works: one read-only find of exactly their fd and working
+# folders, all of them in one call, its command line in the step log (said
+# again only when the set changes: a wait looks many times). Where sudo -n
+# does not work, or allows `true` but refuses that find, the switch goes on
+# beside them only with --beside-unreadable (said in the step log); else
+# status 2, sv_why naming them and the ways on. Status 1 with sv_why when a
+# walk fails.
 sv_users_known() {
-  local k_all k_line k_users='' k_unknown='' k_n=0 k_uids=' ' k_pid k_uid k_found
+  local k_dir="$1" k_all k_line k_users='' k_unknown='' k_n=0 k_uids=' ' k_pid k_uid k_left k_try=0 k_out k_rc k_found k_said k_cmd k_gone
   sv_users_found=
-  sv_read k_all sv_users "$1" || { sv_why="the processes in $1 do not read (find over $proc_root failed)"; return 1; }
+  sv_read k_all sv_users "$k_dir" || { sv_why="the processes in $k_dir do not read (find over $proc_root failed)"; return 1; }
   while IFS= read -r k_line; do
     case "$k_line" in
       'use '*) k_users="$k_users${k_line#use }
@@ -3030,25 +3037,106 @@ EOF
   k_uids=${k_uids# }
   k_uids=${k_uids% }
   if [ "$k_n" -gt 0 ]; then
-    if sudo -n true 2>/dev/null; then
-      sv_log "the walk could not look into $k_n process(es) of uid $k_uids; read again with privilege, read only:"
-      for k_pid in $k_unknown; do
-        sv_log "  sudo -n find $proc_root/$k_pid/fd $proc_root/$k_pid/cwd -ignore_readdir_race -maxdepth 1 ( -lname $1 -o -lname $1/* ) -print"
-        if ! k_found=$(sudo -n find "$proc_root/$k_pid/fd" "$proc_root/$k_pid/cwd" -ignore_readdir_race -maxdepth 1 \( -lname "$1" -o -lname "$1/*" \) -print 2>/dev/null); then
-          # One gone meanwhile holds nothing.
-          [ ! -e "$proc_root/$k_pid" ] || { sv_why="the privileged read of process $k_pid failed (sudo -n find over $proc_root/$k_pid)"; return 1; }
-          continue
-        fi
-        [ -z "$k_found" ] || k_users="$k_users$k_pid $(cat "$proc_root/$k_pid/comm" 2>/dev/null || printf '?') (uid $(sv_uid_of "$k_pid"), read with sudo)
-"
-      done
-    elif [ "${sv_beside_unreadable:-no}" = yes ]; then
-      sv_log "beside $k_n process(es) of uid $k_uids it could not look into (--beside-unreadable; no sudo -n here): pids$k_unknown"
-    else
-      sv_why="$k_n process(es) of uid $k_uids could not be looked into (their open files and working folders are another user's), so one in $1 cannot be ruled out: run it where sudo -n works (it reads them, read only), or pass --beside-unreadable to run beside them"
-      sv_unknown_next="$(sv_command "$sv_mode") where sudo -n works, or $(sv_beside_unreadable_command "$sv_mode")"
-      return 2
+    # Asked once a run: a wait asks again only for the read.
+    if [ -z "${sv_sudo:-}" ]; then
+      if sudo -n true 2>/dev/null; then sv_sudo=yes; else sv_sudo=no; fi
     fi
+    while [ "$sv_sudo" = yes ]; do
+      k_try=$((k_try + 1))
+      k_left=
+      set --
+      for k_pid in $k_unknown; do
+        [ -e "$proc_root/$k_pid" ] || continue
+        set -- "$@" "$proc_root/$k_pid/fd" "$proc_root/$k_pid/cwd"
+        k_left="$k_left $k_pid"
+      done
+      # Every one gone meanwhile: none holds anything.
+      [ -n "$k_left" ] || break
+      k_cmd="sudo -n find $* -ignore_readdir_race -maxdepth 1 ( -lname $k_dir -o -lname $k_dir/* ) -print"
+      if [ "$k_cmd" != "${sv_sudo_said:-}" ]; then
+        sv_log "the walk could not look into $k_n process(es) of uid $k_uids; read again with privilege, read only, in one call:"
+        sv_log "  $k_cmd"
+        sv_sudo_said=$k_cmd
+      fi
+      # find's and sudo's messages go to the capture as they come; the paths
+      # found follow once it ended, each marked (as in sv_users).
+      k_out=$({
+        k_rc=0
+        k_found=$(LC_ALL=C sudo -n find "$@" -ignore_readdir_race -maxdepth 1 \( -lname "$k_dir" -o -lname "$k_dir/*" \) -print 2>&3) || k_rc=$?
+        printf 'rc %s\n' "$k_rc"
+        printf '%s\n' "$k_found" | while IFS= read -r k_line; do [ -z "$k_line" ] || printf 'L %s\n' "$k_line"; done
+      } 3>&1) || { sv_why="the privileged read of pids$k_left did not run ($k_cmd)"; return 1; }
+      k_rc=
+      k_found=
+      k_said=
+      while IFS= read -r k_line; do
+        case "$k_line" in
+          'L '*) k_found="$k_found${k_line#L }
+" ;;
+          'rc '*) k_rc=${k_line#rc } ;;
+          'find: '*) [ -n "$k_said" ] || k_said=$k_line ;;
+          '') ;;
+          # A line that is not find's is sudo's own: it refused the command.
+          *) sv_sudo=refused; sv_sudo_refusal=$k_line ;;
+        esac
+      done <<EOF
+$k_out
+EOF
+      [ "$sv_sudo" = yes ] || break
+      case "$k_rc" in
+        0)
+          k_gone=' '
+          while IFS= read -r k_line; do
+            [ -n "$k_line" ] || continue
+            k_pid=${k_line#"$proc_root"/}
+            k_pid=${k_pid%%/*}
+            case "$k_gone" in *" $k_pid "*) continue ;; esac
+            k_gone="$k_gone$k_pid "
+            k_users="$k_users$k_pid $(cat "$proc_root/$k_pid/comm" 2>/dev/null || printf '?') (uid $(sv_uid_of "$k_pid"), read with sudo)
+"
+          done <<EOF
+$k_found
+EOF
+          break
+          ;;
+        '' | *[!0-9]*)
+          sv_why="the privileged read of pids$k_left gave no status ($k_cmd)"
+          return 1
+          ;;
+      esac
+      # A failure with only find's messages: a process that ended meanwhile
+      # (its folders gone) is read again without it; else the read failed.
+      k_gone=
+      for k_pid in $k_left; do [ -e "$proc_root/$k_pid" ] || k_gone=yes; done
+      if [ -z "$k_gone" ] || [ "$k_try" -ge 3 ]; then
+        sv_why="the privileged read of pids$k_left failed (status $k_rc: ${k_said:-no message}; $k_cmd)"
+        return 1
+      fi
+    done
+    case "${sv_sudo:-no}" in
+      yes) ;;
+      *)
+        if [ "$sv_sudo" = refused ]; then
+          k_said="sudo -n true is allowed here, but sudo refused the read of their fd and working folders (sudo -n find) (it said: $sv_sudo_refusal); without a change to sudoers, --beside-unreadable is the only way on"
+        else
+          k_said="no sudo -n here"
+        fi
+        if [ "${sv_beside_unreadable:-no}" = yes ]; then
+          if [ "$k_n $k_uids$k_unknown" != "${sv_beside_said:-}" ]; then
+            sv_log "beside $k_n process(es) of uid $k_uids it could not look into (--beside-unreadable; $k_said): pids$k_unknown"
+            sv_beside_said="$k_n $k_uids$k_unknown"
+          fi
+        elif [ "$sv_sudo" = refused ]; then
+          sv_why="$k_n process(es) of uid $k_uids could not be looked into (their open files and working folders are another user's), so one in $k_dir cannot be ruled out; $k_said: pass --beside-unreadable to run beside them"
+          sv_unknown_next=$(sv_beside_unreadable_command "$sv_mode")
+          return 2
+        else
+          sv_why="$k_n process(es) of uid $k_uids could not be looked into (their open files and working folders are another user's), so one in $k_dir cannot be ruled out: run it where sudo -n works (it reads them, read only), or pass --beside-unreadable to run beside them"
+          sv_unknown_next="$(sv_command "$sv_mode") where sudo -n works, or $(sv_beside_unreadable_command "$sv_mode")"
+          return 2
+        fi
+        ;;
+    esac
   fi
   sv_users_found=${k_users%
 }
@@ -3510,7 +3598,9 @@ sv_command() {
     S) printf 'cd / && WORKRIFT_SOURCE=%s workrift subvolume --apply' "$sv_base" ;;
     F) printf 'cd / && WORKRIFT_SOURCE=%s workrift subvolume --back --apply' "$sv_base" ;;
     drop) printf 'cd / && WORKRIFT_SOURCE=%s workrift subvolume --drop-old --apply' "$sv_base" ;;
+    drop-dry) printf 'cd / && WORKRIFT_SOURCE=%s workrift subvolume --drop-old' "$sv_base" ;;
   esac
+  [ "$1" != drop ] || [ -z "${sv_lose:-}" ] || printf ' --lose %s' "$sv_lose"
   [ "${sv_beside_unreadable:-no}" = no ] || printf ' --beside-unreadable'
 }
 
@@ -3865,7 +3955,7 @@ sv_carry() {
 # Waits until no process outside the line is in $1, at most sv_wait_seconds;
 # fails with sv_why, also when the processes or the clock do not read.
 sv_wait_users() {
-  local w_until w_users w_now
+  local w_until w_users w_now w_step=1
   w_now=$(date +%s) || { sv_why="the clock does not read (date failed) before the wait for $1"; return 1; }
   w_until=$((w_now + sv_wait_seconds))
   while :; do
@@ -3885,7 +3975,8 @@ sv_wait_users() {
       sv_why="processes still work in $1 after ${sv_wait_seconds} s: $(sv_joined "$w_users")"
       return 1
     fi
-    sleep 1 || true
+    sleep "$w_step" || true
+    [ "$w_step" -ge "$sv_wait_step_max" ] || w_step=$((w_step * 2))
   done
 }
 
@@ -4326,16 +4417,40 @@ $s_out
 EOF
 }
 
-# Says what the base lacks of the tree kept at .old, from sv_lacks.
+# Says what the base lacks of the tree kept at .old, from sv_lacks, and keeps
+# its count in sv_lacks_n: the lines said, 0 when it holds all, `unknown` when
+# a part of it does not read (a line says so) or the comparison failed.
 sv_lacks_said() {
-  local s_lacks
+  local s_lacks s_line
+  sv_lacks_n=0
   [ -d "$sv_old" ] || return 0
   if ! s_lacks=$(sv_lacks "$sv_old" "$sv_base"); then
+    sv_lacks_n=unknown
     printf '  what %s lacks of %s is unknown (a sort failed comparing them); run workrift subvolume (a dry run) to see it\n' "$sv_base" "$sv_old"
   elif [ -z "$s_lacks" ]; then
     printf '  %s holds all that %s holds (refs and their objects, HEAD, Git'\''s files, reflogs, the index and the worktree as Git sees them; files Git ignores are not compared)\n' "$sv_base" "$sv_old"
   else
+    while IFS= read -r s_line; do
+      case "$sv_lacks_n:$s_line" in
+        unknown:*) ;;
+        *': unknown ('*) sv_lacks_n=unknown ;;
+        *) sv_lacks_n=$((sv_lacks_n + 1)) ;;
+      esac
+    done <<EOF
+$s_lacks
+EOF
     printf '  %s lacks, of what %s holds (kept there until --drop-old):\n%s\n' "$sv_base" "$sv_old" "$s_lacks"
+  fi
+}
+
+# The way to drop the kept tree, after sv_lacks_said: one step when the base
+# holds all of it; else a dry run first, which lists what goes and prints the
+# command that deletes it.
+sv_drop_way() {
+  if [ "${sv_lacks_n:-unknown}" = 0 ]; then
+    printf 'workrift subvolume --drop-old --apply   (deletes %s)' "$sv_old"
+  else
+    printf 'workrift subvolume --drop-old   (a dry run: %s holds what %s lacks; it lists that and prints the command that deletes it)' "$sv_old" "$sv_base"
   fi
 }
 
@@ -4407,7 +4522,7 @@ sv_plan() {
   else
     printf '  7 prove    %s is a plain folder\n' "$sv_base"
   fi
-  printf '  8 release  the tree that was the base stays at %s until: workrift subvolume --drop-old --apply\n' "$sv_old"
+  printf '  8 release  the tree that was the base stays at %s until --drop-old deletes it (two runs when it holds what the base lacks: a dry run lists that, then --apply --lose <its count>)\n' "$sv_old"
   printf 'a failure before the exchange rolls back (it deletes the copy, never the base); from the exchange on, the new tree is the base and stays it: a failure after it is said, with what the base lacks of the tree kept at %s; a cut run is finished by the next --apply\n' "$sv_old"
 }
 
@@ -4445,10 +4560,13 @@ sv_switch() {
   if [ "$s_kb" = "$s_t" ]; then
     [ "$s_held" = false ] || sv_release
     printf '%s is already %s: nothing to do' "$sv_base" "$(sv_words "$s_t")"
-    [ "$s_ko" = - ] || printf '; the tree it was is kept at %s (workrift subvolume --drop-old --apply deletes it)' "$sv_old"
+    [ "$s_ko" = - ] || printf '; the tree it was is kept at %s' "$sv_old"
     printf '\n'
     # Said every time: a run cut after its carry never said it.
-    [ "$s_ko" = - ] || sv_lacks_said
+    if [ "$s_ko" != - ]; then
+      sv_lacks_said
+      printf '  drop:  %s\n' "$(sv_drop_way)"
+    fi
     return 0
   fi
   [ "$s_kb" = "$s_o" ] && sv_whole "$sv_base" || fail "$sv_base is $(sv_words "$s_kb"), not a whole work base on btrfs"
@@ -4460,7 +4578,7 @@ sv_switch() {
   elif [ "$s_ko" = - ]; then
     s_source=copy
   else
-    fail "$sv_old is $(sv_words "$s_ko"), not a whole $(sv_words "$s_t") to switch to: drop it first (workrift subvolume --drop-old --apply)"
+    fail "$sv_old is $(sv_words "$s_ko"), not a whole $(sv_words "$s_t") to switch to: drop it first (workrift subvolume --drop-old, a dry run, lists what it holds that the base lacks and prints the command that deletes it)"
   fi
   sv_preflight "$s_source"
   sv_plan "$s_t" "$s_source"
@@ -4601,7 +4719,7 @@ sv_said() {
   else
     printf '  forward again: workrift subvolume --apply; its checkout may be behind: workrift refresh\n'
   fi
-  printf '  drop:  workrift subvolume --drop-old --apply   (deletes %s)\n' "$sv_old"
+  printf '  drop:  %s\n' "$(sv_drop_way)"
 }
 
 # --drop-old: deletes the kept tree, by its exact path, only when it is the
@@ -4644,6 +4762,20 @@ sv_drop() {
   else
     printf '  nice -n 19 rm -rf --one-file-system -- %s   (a walk of every file)\n' "$sv_old"
   fi
+  # What the base would lose with it, said first: every way this run ends
+  # has listed it. Nothing is deleted that an earlier run did not list: when
+  # the tree holds anything the base lacks, the deleting run names its count
+  # (--lose N, refused when the count differs now), and the command any
+  # refusal here prints is the dry run that lists it again. A drop cut short
+  # (phase drop) was acknowledged when it began: its rerun finishes it.
+  sv_lacks_said
+  if [ "$sv_ph" != drop ] && [ "$sv_lacks_n" != 0 ]; then
+    if [ "$sv_lacks_n" = unknown ] || [ "${sv_lose:-}" != "$sv_lacks_n" ]; then
+      sv_mode=drop-dry
+    fi
+  elif [ -n "${sv_lose:-}" ] && [ "$sv_lose" != "$sv_lacks_n" ]; then
+    sv_mode=drop-dry
+  fi
   sv_rc=0
   sv_users_known "$sv_old" || sv_rc=$?
   case $sv_rc in
@@ -4655,11 +4787,41 @@ sv_drop() {
     *) fail "$sv_why: nothing deleted" ;;
   esac
   [ -z "$d_users" ] || fail "processes work in $sv_old ($(sv_joined "$d_users")): nothing deleted"
-  # What the base would lose with it, said before it goes.
-  sv_lacks_said
   if [ "$d_apply" != true ]; then
-    printf 'dry run: nothing changed; --apply deletes it\n'
+    case "$sv_lacks_n" in
+      0)
+        sv_lose=
+        printf 'dry run: nothing changed; %s deletes it\n' "$(sv_command drop)"
+        ;;
+      unknown) printf 'dry run: nothing changed; what %s lacks of %s does not all read (said above), so no run deletes it: run this again once it reads\n' "$sv_base" "$sv_old" ;;
+      *)
+        sv_lose=$sv_lacks_n
+        printf 'dry run: nothing changed; deleting it loses the %s item(s) listed above, which %s lacks: %s\n' "$sv_lacks_n" "$sv_base" "$(sv_command drop)"
+        ;;
+    esac
     return 0
+  fi
+  if [ "$sv_ph" != drop ]; then
+    case "$sv_lacks_n" in
+      unknown)
+        sv_next=$(sv_command drop-dry)
+        fail "what $sv_base lacks of $sv_old does not all read (said above): nothing deleted; run the dry run again once it reads"
+        ;;
+      0)
+        if [ -n "${sv_lose:-}" ] && [ "$sv_lose" != 0 ]; then
+          sv_next=$(sv_command drop-dry)
+          fail "--lose $sv_lose names $sv_lose item(s), but $sv_base now holds all that $sv_old holds: nothing deleted; run the dry run again and the command it prints"
+        fi
+        ;;
+      *)
+        sv_next=$(sv_command drop-dry)
+        [ -n "${sv_lose:-}" ] ||
+          fail "$sv_old holds $sv_lacks_n item(s) that $sv_base lacks (listed above), and deleting it loses them: nothing deleted; the dry run lists them and prints the command that deletes it, naming their count (--lose $sv_lacks_n)"
+        [ "$sv_lose" = "$sv_lacks_n" ] ||
+          fail "--lose $sv_lose names $sv_lose item(s), but $sv_base now lacks $sv_lacks_n of what $sv_old holds (listed above): nothing deleted; run the dry run again and the command it prints"
+        sv_next=
+        ;;
+    esac
   fi
   lock_purpose="subvolume: drop $sv_old"
   sv_state_make
@@ -4685,11 +4847,15 @@ sv_drop() {
   printf 'workrift subvolume: deleted %s in %s s\n' "$sv_old" "$((d_now - create_started))"
 }
 
-# `workrift subvolume [--back | --drop-old] [--check] [--apply] [--beside-other-removals] [--beside-unreadable]`.
+# `workrift subvolume [--back | --drop-old [--lose N]] [--check] [--apply] [--beside-other-removals] [--beside-unreadable]`.
 subvolume_command() {
   local a_mode=forward a_apply=false a_source a_bases
   sv_beside=no
   sv_beside_unreadable=no
+  sv_lose=
+  sv_sudo=
+  sv_sudo_said=
+  sv_beside_said=
   sv_deleted=
   sv_my_uid=$(id -u) || sv_stop "id -u (this user's uid; nothing changed)"
   while [ "$#" -gt 0 ]; do
@@ -4700,10 +4866,17 @@ subvolume_command() {
       --apply) a_apply=true ;;
       --beside-other-removals) sv_beside=0 ;;
       --beside-unreadable) sv_beside_unreadable=yes ;;
+      --lose)
+        [ "$#" -ge 2 ] || { usage >&2; exit 2; }
+        shift
+        case "$1" in '' | *[!0-9]*) usage >&2; exit 2 ;; esac
+        sv_lose=$1
+        ;;
       *) usage >&2; exit 2 ;;
     esac
     shift
   done
+  [ -z "$sv_lose" ] || [ "$a_mode" = drop ] || { usage >&2; exit 2; }
   case "$a_mode" in forward) sv_mode=S ;; back) sv_mode=F ;; drop) sv_mode=drop ;; esac
   sv_at=start
   a_source=$(resolve_source) || sv_stop "the base's path (resolve_source; nothing changed)"

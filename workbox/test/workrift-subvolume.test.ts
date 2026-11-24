@@ -256,11 +256,16 @@ const UUID = "170ee675-18a3-48e1-931d-f0a84a51df83"
 /**
  * sudo: `-n true` answers FAKE_SUDO=ok; `-n <command>` runs it with each hidden process's fd folder and working
  * folder shown for the time it runs (the read a privilege allows), else refuses as sudo does with no password.
- * Every call is logged in FAKE_SUDO_LOG.
+ * FAKE_SUDO=true-only: a sudoers rule that allows `true` and no find (sudo's own refusal, as it words it). Every call
+ * is logged in FAKE_SUDO_LOG.
  */
 const SUDO = [
   "#!/bin/sh",
   'printf \'%s\\n\' "$*" >>"${FAKE_SUDO_LOG:-/dev/null}"',
+  'if [ "${FAKE_SUDO:-}" = true-only ]; then',
+  '  [ "$*" = "-n true" ] && exit 0',
+  '  shift; echo "Sorry, user bench is not allowed to execute \'/usr/bin/$*\' as root on bench." >&2; exit 1',
+  "fi",
   '[ "${FAKE_SUDO:-}" = ok ] || { echo "sudo: a password is required" >&2; exit 1; }',
   '[ "$1" = -n ] && shift',
   'shown=',
@@ -424,6 +429,15 @@ const bench = (label: string) => {
 }
 type Bench = ReturnType<typeof bench>
 
+/** The command that deletes the kept tree, as a dry run of --drop-old printed it. */
+const printedDrop = (out: string) => out.match(/cd \/ && WORKRIFT_SOURCE=\S+ workrift subvolume --drop-old --apply(?: --[a-z-]+(?: \d+)?)*/)?.[0]
+
+/** The drop its dry run printed: with --lose N when the kept tree holds N items the base lacks, else one step. */
+const dropArgv = (dry: Ran): ReadonlyArray<string> => {
+  const lose = /--drop-old --apply --lose (\d+)/.exec(dry.out)?.[1]
+  return ["subvolume", "--drop-old", "--apply", ...(lose === undefined ? [] : ["--lose", lose])]
+}
+
 /** Every file and folder under `dir`, relative to it, sorted. */
 const filesUnder = (dir: string): ReadonlyArray<string> => readdirSync(dir, { recursive: true, encoding: "utf8" }).map(String).sort()
 
@@ -469,7 +483,7 @@ const enrich = (b: Bench) => {
 /** The command of the last `next:` line, as printed (`cd / && WORKRIFT_SOURCE=… workrift subvolume --flags`). */
 const printedNext = (err: string) => {
   const line = textLines(err).filter((l) => l.startsWith("workrift subvolume: next: ")).at(-1)
-  return line?.slice("workrift subvolume: next: ".length).match(/^cd \/ && WORKRIFT_SOURCE=\S+ workrift subvolume(?: --[a-z-]+)*/)?.[0]
+  return line?.slice("workrift subvolume: next: ".length).match(/^cd \/ && WORKRIFT_SOURCE=\S+ workrift subvolume(?: --[a-z-]+(?: \d+)?)*/)?.[0]
 }
 
 /** After a forward switch: the base a subvolume, the old folder kept, no copy left, the switch recorded. */
@@ -1532,6 +1546,152 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     expect(read.err).toContain("93010 rg (uid 0, read with sudo)")
     expect(existsSync(b.paths.old)).toBe(true)
   }, BENCH_RUNS_MS)
+
+  /** A printed next, run as printed: `workrift` on PATH is the script, WORKRIFT_SOURCE only what the line sets. */
+  const asPrinted = (b: Bench, command: string): Ran => {
+    const wbin = join(b.dir, "wbin")
+    mkdirSync(wbin, { recursive: true })
+    if (!existsSync(join(wbin, "workrift"))) symlinkSync(SCRIPT, join(wbin, "workrift"))
+    const env: Env = { ...b.env, PATH: `${wbin}:${b.env.PATH}` }
+    delete (env as Record<string, string | undefined>).WORKRIFT_SOURCE
+    const ran = Bun.spawnSync(["/bin/sh", "-c", command], { cwd: b.dir, env, stdout: "pipe", stderr: "pipe" })
+    return { code: ran.exitCode, signal: ran.signalCode ?? null, out: ran.stdout.toString(), err: ran.stderr.toString() }
+  }
+  /** The count a dry run of the drop printed (--lose N). */
+  const loseOf = (dry: Ran) => Number(/--drop-old --apply --lose (\d+)/.exec(dry.out)?.[1])
+
+  test("N1 (probe Y): a drop refused for a process it cannot look into lists what the base lacks, and nothing it did not list goes: the printed next is the dry run, the deleting run names the count, a count that changed refuses", () => {
+    const b = bench("unknown-drop-lacks")
+    expect(b.wr(["subvolume", "--apply"]).code).toBe(0)
+    // A ref only the kept tree holds, and root's process in that tree.
+    sh(b.paths.old, b.env, "git", "update-ref", "refs/heads/rootwork", "refs/heads/feat-a")
+    const kept = (ref: string) => sh(b.paths.old, b.env, "git", "for-each-ref", "--format=%(refname)", ref).trim()
+    b.processAt(93030, b.paths.old, ["rg"], [], { hidden: true })
+    const refused = b.wr(["subvolume", "--drop-old", "--apply"])
+    expect(refused.code, said(refused)).toBe(1)
+    expect(refused.err).toContain("could not be looked into")
+    expect(refused.out).toContain("ref refs/heads/rootwork ")
+    // Both ways on are dry runs: neither deletes what this run listed.
+    expect(nextLine(refused)).not.toContain("--apply")
+    const beside = /or (cd \/ && \S+ workrift subvolume --drop-old --beside-unreadable)$/.exec(nextLine(refused))?.[1]
+    expect(beside, nextLine(refused)).toBeDefined()
+    const dry = asPrinted(b, beside!)
+    expect(dry.code, said(dry)).toBe(0)
+    expect(dry.out).toContain("ref refs/heads/rootwork ")
+    expect(kept("refs/heads/rootwork")).toBe("refs/heads/rootwork")
+    const n = loseOf(dry)
+    expect(n, dry.out).toBeGreaterThan(0)
+    const deleting = printedDrop(dry.out)
+    expect(deleting).toEndWith(`--drop-old --apply --lose ${n} --beside-unreadable`)
+    // Without the count: refused, nothing deleted; its next is the dry run again.
+    const bare = b.wr(["subvolume", "--drop-old", "--apply", "--beside-unreadable"])
+    expect(bare.code, said(bare)).toBe(1)
+    expect(bare.err).toContain(`holds ${n} item(s) that ${b.base} lacks`)
+    expect(printedNext(bare.err)).toEndWith("--drop-old --beside-unreadable")
+    expect(kept("refs/heads/rootwork")).toBe("refs/heads/rootwork")
+    // The count changed between the dry run and the deleting run: refused, nothing deleted.
+    sh(b.paths.old, b.env, "git", "update-ref", "refs/heads/rootwork2", "refs/heads/feat-a")
+    const stale = asPrinted(b, deleting!)
+    expect(stale.code, said(stale)).toBe(1)
+    expect(stale.err).toContain(`--lose ${n} names ${n} item(s), but ${b.base} now lacks`)
+    expect(kept("refs/heads/rootwork")).toBe("refs/heads/rootwork")
+    expect(kept("refs/heads/rootwork2")).toBe("refs/heads/rootwork2")
+    // Its printed next lists both and prints the count that deletes.
+    const again = asPrinted(b, printedNext(stale.err)!)
+    expect(again.code, said(again)).toBe(0)
+    expect(again.out).toContain("ref refs/heads/rootwork2 ")
+    const m = loseOf(again)
+    expect(m).toBeGreaterThan(n)
+    const gone = asPrinted(b, printedDrop(again.out)!)
+    expect(gone.code, said(gone)).toBe(0)
+    expect(existsSync(b.paths.old)).toBe(false)
+    whole(b)
+  }, BENCH_RUNS_MS)
+
+  test("N1: with nothing the base lacks the drop stays one step; a --lose that names another count refuses; --lose is the drop's alone", () => {
+    const b = bench("drop-one-step")
+    expect(b.wr(["subvolume", "--apply"]).code).toBe(0)
+    expect(b.wr(["subvolume", "--back", "--apply", "--lose", "1"]).code).toBe(2)
+    const wrong = b.wr(["subvolume", "--drop-old", "--apply", "--lose", "3"])
+    expect(wrong.code, said(wrong)).toBe(1)
+    expect(wrong.err).toContain(`--lose 3 names 3 item(s), but ${b.base} now holds all that ${b.paths.old} holds`)
+    expect(existsSync(b.paths.old)).toBe(true)
+    const dry = b.wr(["subvolume", "--drop-old"])
+    expect(dry.code, said(dry)).toBe(0)
+    expect(printedDrop(dry.out)).toEndWith("workrift subvolume --drop-old --apply")
+    const ok = b.wr(["subvolume", "--drop-old", "--apply"])
+    expect(ok.code, said(ok)).toBe(0)
+    expect(existsSync(b.paths.old)).toBe(false)
+  }, BENCH_RUNS_MS)
+
+  test("N4: a sudo that allows true and refuses the find is said as that, and --beside-unreadable is the only way on", () => {
+    const b = bench("unknown-sudo-half")
+    const at = b.processAt(93040, b.dir, ["cron"], [], { hidden: true })
+    const ran = b.wr(["subvolume", "--apply"], { FAKE_SUDO: "true-only" })
+    expect(ran.code, said(ran)).toBe(1)
+    expect(said(ran)).toContain("sudo -n true is allowed here, but sudo refused the read of their fd and working folders (sudo -n find) (it said: Sorry, user bench is not allowed")
+    expect(said(ran)).toContain("without a change to sudoers, --beside-unreadable is the only way on")
+    expect(nextLine(ran)).toEndWith("workrift subvolume --apply --beside-unreadable")
+    expect(nextLine(ran)).not.toContain("where sudo -n works")
+    // Asked once each: sudo is not asked again once it refused.
+    expect(sudoCalls(b)).toEqual(["-n true", `-n find ${at}/fd ${at}/cwd -ignore_readdir_race -maxdepth 1 ( -lname ${b.base} -o -lname ${b.base}/* ) -print`])
+    expect(b.layout()).toEqual({ base: "F", new: "-", back: "-", old: "-" })
+    const beside = b.wr(["subvolume", "--apply", "--beside-unreadable"], { FAKE_SUDO: "true-only" })
+    expect(beside.code, said(beside)).toBe(0)
+    expect(b.layout()).toEqual({ base: "S", new: "-", back: "-", old: "F" })
+    expect(stepLog(b)).toContain("(--beside-unreadable; sudo -n true is allowed here, but sudo refused")
+  }, BENCH_RUNS_MS)
+
+  test("N2: a wait reads every unknown process in one privileged call a look, looks less often as it goes on, and logs that call once", async () => {
+    const b = bench("unknown-wait")
+    const hidden = [93050, 93051, 93052].map((pid) => b.processAt(pid, b.dir, ["cron"], [], { hidden: true }))
+    const stayer = join(b.proc, "91150")
+    const run = Bun.spawn([SCRIPT, "subvolume", "--apply"], {
+      cwd: b.dir,
+      env: b.envFor({ FAKE_SUDO: "ok", WORKRIFT_SUBVOLUME_WAIT: "30", FAKE_AFTER_EXCHANGE: `mkdir -p '${stayer}' && ln -s '${b.paths.old}' '${stayer}/cwd'` }),
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    for (let i = 0; i < 400 && !existsSync(stayer); i++) await Bun.sleep(25)
+    // It stays six seconds: a look a second would be six or seven.
+    await Bun.sleep(6000)
+    rmSync(stayer, { recursive: true })
+    const [code, , err] = await Promise.all([run.exited, new Response(run.stdout).text(), new Response(run.stderr).text()])
+    expect(code, err).toBe(0)
+    const finds = sudoCalls(b).filter((c) => c.startsWith("-n find "))
+    for (const call of finds) for (const at of hidden) expect(call).toContain(`${at}/fd ${at}/cwd`)
+    const waits = finds.filter((c) => c.includes(`-lname ${b.paths.old} `))
+    // Looks at 0, 1, 3 and 7 s, then every 4 s.
+    expect(waits.length, finds.join("\n")).toBeGreaterThanOrEqual(2)
+    expect(waits.length, finds.join("\n")).toBeLessThanOrEqual(5)
+    expect(sudoCalls(b).filter((c) => c === "-n true")).toHaveLength(1)
+    const logged = stepLog(b)
+      .split("\n")
+      .filter((l) => l.includes("  sudo -n find ") && l.includes(`-lname ${b.paths.old} `))
+    expect(logged, stepLog(b)).toHaveLength(1)
+  }, BENCH_RUNS_MS)
+
+  test("N3: the walk's find runs under LC_ALL=C; a message in another form (curly quotes, as GNU find words it in a UTF-8 locale) is a failed walk, never none", () => {
+    const b = bench("unknown-locale")
+    const real = Bun.which("find") ?? "/usr/bin/find"
+    const seen = join(b.dir, "find-locale")
+    exe(
+      join(b.bin, "find"),
+      [
+        "#!/bin/sh",
+        `case "$*" in "${b.proc} "*) printf '%s\\n' "\${LC_ALL:-unset}" >>'${seen}'; '${real}' "$@"; printf 'find: \\342\\200\\230%s/93060/fd\\342\\200\\231: Permission denied\\n' '${b.proc}' >&2; exit 1 ;; esac`,
+        `exec '${real}' "$@"`,
+        "",
+      ].join("\n"),
+    )
+    b.processAt(93060, b.dir, ["cron"], [], { hidden: true })
+    const ran = b.wr(["subvolume", "--apply", "--beside-unreadable"], { FAKE_SUDO: "ok" })
+    expect(ran.code, said(ran)).toBe(1)
+    expect(said(ran)).toContain(`the processes in ${b.base} do not read (find over ${b.proc} failed)`)
+    expect(b.layout()).toEqual({ base: "F", new: "-", back: "-", old: "-" })
+    expect(new Set(textLines(readFileSync(seen, "utf8")))).toEqual(new Set(["C"]))
+    expect(sudoCalls(b)).toEqual([])
+  }, BENCH_RUNS_MS)
 })
 
 describe("a ref Git skips (U1): the ref listing is strict", () => {
@@ -1953,14 +2113,17 @@ describe("workrift subvolume: the model (histories of switches, faults, kills an
         expect(["F", "S"], where).toContain(b.kind(b.base))
         whole(b)
         everLive.add(at(b.base)!)
+        // What an earlier run listed: the only writes a drop may take with the tree (N1).
+        const saidEarlier = new Set(writes.filter((w) => w.said))
         for (const w of writes) if (saysLacks(text, w)) w.said = true
-        // No tree that was live is deleted, but by --drop-old, which says first what the base lacks of it.
+        // No tree that was live is deleted, but by --drop-old (with --lose N when it held what the base lacks).
         const now = trees()
         for (const ino of everLive) {
           if (now.has(ino)) continue
-          expect({ where, deleted: ino, by: argv.join(" "), ended: ran.code === 0 || ran.signal === "SIGKILL" }, `${where}\n${said(ran)}`).toEqual({ where, deleted: ino, by: "subvolume --drop-old --apply", ended: true })
+          const by = argv.join(" ").replace(/ --lose \d+$/, "")
+          expect({ where, deleted: ino, by, ended: ran.code === 0 || ran.signal === "SIGKILL" }, `${where}\n${said(ran)}`).toEqual({ where, deleted: ino, by: "subvolume --drop-old --apply", ended: true })
           everLive.delete(ino)
-          for (const w of writes) if (!w.dropped && w.said && w.klass !== "work") w.dropped = true
+          for (const w of writes) if (!w.dropped && saidEarlier.has(w) && w.klass !== "work") w.dropped = true
         }
         // Nothing written is lost: in the base, or in the tree kept at .old under its record and said.
         for (const w of writes) {
@@ -2008,8 +2171,15 @@ describe("workrift subvolume: the model (histories of switches, faults, kills an
         const env = { ...MODEL_FAULTS[move.fault], ...(move.kill ? { WORKRIFT_SUBVOLUME_DIE_AT: move.kill } : {}) }
         let ran = await run(argv, env, `${i}:${move.cmd}${move.fault === "none" ? "" : `!${move.fault}`}${move.kill ? `@${move.kill}` : ""}[${move.writers.map((w) => `${w.klass}@${w.step}`).join(",")}]`)
         rmSync(join(b.dir, "model-plan"), { force: true })
-        // A second run, without the fault, ends the command: the switch done, or the drop.
-        if (ran.code !== 0) ran = await run(argv, {}, `${i}:again`)
+        // A second run, without the fault, ends the command: the switch done, or the drop. A drop the kept tree's
+        // contents refused goes as its printed next says: the dry run, then the command that dry run printed.
+        for (let tries = 0; ran.code !== 0 && tries < (move.cmd === "drop" ? 2 : 1); tries++) {
+          if (move.cmd === "drop" && printedNext(ran.err)?.endsWith("--drop-old")) {
+            const dry = await run(["subvolume", "--drop-old"], {}, `${i}:dry-drop`)
+            expect(dry.code, `${story.join(" > ")}: ${said(dry)}`).toBe(0)
+            ran = await run(dropArgv(dry), {}, `${i}:drop-lose`)
+          } else ran = await run(argv, {}, `${i}:again`)
+        }
         expect(ran.code, `${story.join(" > ")}: ${said(ran)}`).toBe(0)
       }
     }
@@ -2674,9 +2844,9 @@ const VERDICTS: Record<string, string> = {
   "sv_preflight:df: sv_read p_df df -Pk \"$sv_base\" 2>/dev/null || p_df=": "closed: sv_read's status: a df that does not read is a NO",
   "(top):python3: if python3 -c 'import ctypes' >/dev/null 2>&1; then": "closed: no python3 with ctypes is a NO: nothing can make the exchange",
   "sv_users:find: u_found=$(LC_ALL=C find \"$proc_root\" -ignore_readdir_race -mindepth 1 -maxdepth 3 \\": "closed: its status is the capture's rc line: non-zero with no refusal of one process's fd or working folder fails the walk (sv_users returns 1); each such refusal names that process unknown, never none",
-  "sv_users_known:sudo: if sudo -n true 2>/dev/null; then": "branch: no sudo -n (or a sudo that fails) is the side that refuses: unknown processes stay unknown, refused unless --beside-unreadable, never taken for none",
-  "sv_users_known:sudo: if ! k_found=$(sudo -n find \"$proc_root/$k_pid/fd\" \"$proc_root/$k_pid/cwd\" -ignore_readdir_race -maxdepth 1 \\( -lname \"$1\" -o -lname \"$1/*\" \\) -print 2>/dev/nul": "closed: a privileged read that fails for a process still there fails the walk (sv_why: the read of process <pid> failed); one gone meanwhile holds nothing",
-  "sv_users_known:cat: [ -z \"$k_found\" ] || k_users=\"$k_users$k_pid $(cat \"$proc_root/$k_pid/comm\" 2>/dev/null || printf '?') (uid $(sv_uid_of \"$k_pid\"), read with sudo)": "message: the command name of a process the privileged read found in the tree (`?` when it does not read); it is counted either way",
+  "sv_users_known:sudo: if sudo -n true 2>/dev/null; then sv_sudo=yes; else sv_sudo=no; fi": "branch: no sudo -n (or a sudo that fails) is the side that refuses: unknown processes stay unknown, refused unless --beside-unreadable, never taken for none; asked once a run",
+  "sv_users_known:sudo: k_found=$(LC_ALL=C sudo -n find \"$@\" -ignore_readdir_race -maxdepth 1 \\( -lname \"$k_dir\" -o -lname \"$k_dir/*\" \\) -print 2>&3) || k_rc=$?": "closed: one read of every unknown process; a line that is not find's is sudo's refusal (said, with --beside-unreadable the only way on); a failure with only find's lines is read again without the processes gone meanwhile (three tries), else fails the walk; never taken for none",
+  "sv_users_known:cat: k_users=\"$k_users$k_pid $(cat \"$proc_root/$k_pid/comm\" 2>/dev/null || printf '?') (uid $(sv_uid_of \"$k_pid\"), read with sudo)": "message: the command name of a process the privileged read found in the tree (`?` when it does not read); it is counted either way",
   "sv_log:date: l_at=$(date -u +%FT%TZ) || l_at='(no clock)'": "message: the time of a step-log line, `(no clock)` when date fails; the log decides nothing",
   "sv_ref_store:git: if s_format=$(base_git \"$1\" config --get extensions.refStorage); then": "closed: status 1 (unset) is the files storage; any other failure, or a storage other than files, fails the store's read: sv_refs fails, nothing carried or the copy is not true",
   "sv_refs:git: r_list=$(base_git \"$1\" for-each-ref --format='%(objectname) %(refname)' 2>&3) || r_rc=$?": "closed: its status and its stderr, from the capture: a non-zero status or any word on stderr fails sv_refs, never a short list",
@@ -2702,7 +2872,7 @@ const VERDICTS: Record<string, string> = {
   "sv_carry:git: if base_git \"$c_to\" update-ref \"$@\" </dev/null; then": "branch: update-ref that fails keeps the ref under refs/subvolume-move/, said",
   "sv_carry:git: if base_git \"$c_to\" update-ref \"refs/subvolume-move/${c_ref#refs/}\" \"$c_now\" </dev/null; then": "closed: that failing too is counted and said (not carried)",
   "sv_carry:rm: rm -f \"$c_tmp.from\" \"$c_tmp.to\" \"$c_tmp.changed\" \"$c_tmp.diff\" #2": "cleanup: the scratch files after the carry",
-  "sv_wait_users:sleep: sleep 1 || true": "closed: a sleep that fails looks again; the clock bounds the wait (checked)",
+  "sv_wait_users:sleep: sleep \"$w_step\" || true": "closed: a sleep that fails looks again; the clock bounds the wait (checked)",
   "sv_rm_folder:rm: if rm --version >/dev/null 2>&1; then": "closed: no GNU rm --version takes BSD's -x, which GNU rm refuses: a wrong guess deletes nothing and fails",
   "sv_rm_folder:rm: back) nice -n 19 rm -rf --one-file-system -- \"$sv_back\" ;;": "returned: the function's status; callers fail on it",
   "sv_rm_folder:rm: old) nice -n 19 rm -rf --one-file-system -- \"$sv_old\" ;;": "returned: as before it",
@@ -3061,7 +3231,15 @@ describe.skipIf(!process.env.WORKRIFT_CENSUS)("census: a failure or a kill at ev
         const last = runs.at(-1)![1]
         const next = last.code !== 0 && !last.signal ? printedNext(last.err) : undefined
         if (last.code !== 0 && !last.signal) check("the printed next is a command", () => expect(next, last.err).toBeDefined())
-        const again = next ? await runPrinted(b, next) : await run(b, plan.argv)
+        let again = next ? await runPrinted(b, next) : await run(b, plan.argv)
+        // A drop refused for what the kept tree holds printed its dry run; that dry run prints the command that
+        // deletes (with --lose N), which a person runs next.
+        if (next && / --drop-old(?: --beside-unreadable)?$/.test(next) && again.code === 0) {
+          runs.push([`the dry run, as printed: ${next.replace(/^.* workrift /, "workrift ")}`, again])
+          const deleting = printedDrop(again.out)
+          check("the dry run prints the command that deletes", () => expect(deleting, again.out).toBeDefined())
+          if (deleting) again = await runPrinted(b, deleting)
+        }
         runs.push([next ? `again, as printed: ${next.replace(/^.* workrift /, "workrift ")}` : "again", again])
         result.again = { end: end(again), said: lastSaid(again), ...(next ? { printed: next.replace(/^.* workrift /, "workrift ") } : {}) }
         if (plan.settle === "refused") {
