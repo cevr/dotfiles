@@ -173,7 +173,7 @@ seeded("pace: with no wakes to keep a latch, an over-limit pool refuses new agen
     const messages = textOf(held.world, heldRoot)
     expect(messages).toContain("pace holds this agent")
     // The fake pool says it opens a minute on; the latch itself is the wakes'.
-    expect(messages).toContain("It opens about Nov 4, 2026, 10:01:00 AM EST")
+    expect(messages).toContain("It opens about Nov 4, 2026, 10:01:00 AM EST [2026-11-04T15:01:00Z]")
     expect(messages).toContain("no latch could be kept for it")
     const open = yield* boot(seed, { now: WEDNESDAY, pace: "open", codex: "unpaced" })
     const openRoot = yield* open.root(ROOT_TASK)
@@ -189,7 +189,7 @@ seeded("codex pace: a subagent on a Codex-paced provider asks the Codex admissio
     const messages = textOf(held.world, heldRoot)
     expect(messages).toContain("the Codex account's pace holds this agent. scripted Codex week is over.")
     // It opens when the admission said the week opens.
-    expect(messages).toContain("It opens about Nov 4, 2026, 11:20:00 AM EST")
+    expect(messages).toContain("It opens about Nov 4, 2026, 11:20:00 AM EST [2026-11-04T16:20:00Z]")
     // The admission is asked with the model and the role, as the script's `--model sim-model --role <role>`.
     expect(held.asked).toContainEqual(["sim-model", "worker"])
     expect(held.asked).toEqual([["sim-model", "worker"]])

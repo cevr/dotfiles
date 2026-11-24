@@ -9,9 +9,13 @@
 //   gpt-5-mini                       → gpt 5
 //   deepseek/deepseek-v3.2           → deepseek 3.2
 //   gemini-2.5-pro                   → gemini 2.5
+//   openai/gpt-6.1-sol-fast          → sol 6.1 fast  (the catalog's fast mode: a start asked fast)
 
-/** A model's short name, and its version when the id says one. */
-export type ModelName = { readonly name: string; readonly version?: string }
+/** A model's short name, its version when the id says one, and whether it is the catalog's fast mode of a model. */
+export type ModelName = { readonly name: string; readonly version?: string; readonly fast?: true }
+
+/** The catalog's fast mode of a model ends its id (`<id>-fast`, the fork's models-dev.ts). */
+const FAST = "fast"
 
 /** Tokens that only say how hard or how fresh, never which model. */
 const NOISE = new Set(["latest", "preview", "exp", "experimental", "low", "medium", "high", "xhigh", "max", "minimal", "none", "thinking"])
@@ -44,6 +48,13 @@ export function modelName(id: string | undefined): ModelName | undefined {
   const bare = (id ?? "").split("/").at(-1)?.split(/[:@#]/)[0]?.trim().toLowerCase() ?? ""
   const tokens = bare.split(/[-_\s]+/).filter((token) => token && !NOISE.has(token) && !date(token))
   if (tokens.length === 0) return undefined
+  // A fast mode is the model it is a mode of, said fast, so a row tells a worker started fast from the others.
+  if (tokens.length > 1 && tokens.at(-1) === FAST) return { ...nameOf(tokens.slice(0, -1)), fast: true }
+  return nameOf(tokens)
+}
+
+/** The short name of a model id's tokens (as `modelName` splits it, at least one). */
+function nameOf(tokens: ReadonlyArray<string>): ModelName {
   const named = (name: string, from: ReadonlyArray<string>): ModelName => {
     const found = version(from)
     return found === undefined ? { name } : { name, version: found }
@@ -64,6 +75,11 @@ export function modelName(id: string | undefined): ModelName | undefined {
   return named(head, tokens.slice(1))
 }
 
-/** The short name as a row draws it: with its version, or with `short` the name alone. */
-export const modelLabel = (model: ModelName | undefined, short = false): string =>
-  model === undefined ? "" : short || model.version === undefined ? model.name : `${model.name} ${model.version}`
+/** The short name as a row draws it: with its version, or with `short` the name alone; a fast mode ends `fast` either way. */
+export const modelLabel = (model: ModelName | undefined, short = false): string => {
+  if (model === undefined) return ""
+  const shown = [model.name]
+  if (!short && model.version !== undefined) shown.push(model.version)
+  if (model.fast === true) shown.push(FAST)
+  return shown.join(" ")
+}
