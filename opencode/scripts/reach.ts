@@ -26,9 +26,11 @@ import { existsSync, readFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import path from "node:path"
 import { $ } from "bun"
+import { Option } from "effect"
 import { acceptKey, acceptSharedFrom } from "./accept-key.ts"
 import { decodeGitPaths, nulFields } from "./git-paths.ts"
 import { ALL_READS, readMatcher } from "./read-declarations.ts"
+import { compilerInputs, projectReads, type CompilerInputs } from "./test-compiler-inputs.ts"
 import observations from "./test-impact-observations.json" with { type: "json" }
 import { projectReadChecker } from "./test-read-project.ts"
 import { isAcceptInput, packageOf } from "./test-population.ts"
@@ -51,6 +53,7 @@ export const SHARED = [
   "scripts/effect-debt.ts",
   "scripts/reach.ts",
   "scripts/read-declarations.ts",
+  "scripts/test-compiler-inputs.ts",
   "scripts/test-read-project.ts",
   "scripts/test-reads.ts",
   "scripts/test-reads-ast.ts",
@@ -72,6 +75,7 @@ export interface Workspace {
   readonly head?: string
   /** Package directory (`mods/prime`) of each package. */
   readonly packages: ReadonlyMap<string, Package>
+  readonly compilerInputs?: CompilerInputs
 }
 
 interface Package {
@@ -107,7 +111,9 @@ export const load = async (): Promise<Workspace> => {
     const deps = (manifests.get(dir)?.deps ?? []).flatMap((name) => dirOfName.get(name) ?? [])
     packages.set(dir, { dir, files: list, deps })
   }
-  return { files, siblings, packages, head: head.trim() }
+  return compilerInputs(ROOT, new Set(known), runtimeReads.compilerProjects).then((compilerInputs) =>
+    ({ files, siblings, packages, head: head.trim(), compilerInputs }),
+  )
 }
 
 /** A path from the repository's root expressed from opencode/. */
@@ -166,10 +172,12 @@ export const inspectReads = (workspace: Workspace, file: string) => {
   return analyze(file)
 }
 
-const runtimeReads: {
+interface RuntimeReads {
   readonly paths: Readonly<Record<string, ReadonlyArray<string>>>
   readonly untracedSubprocesses: Readonly<Record<string, string>>
-} = observations
+  readonly compilerProjects?: Readonly<Record<string, ReadonlyArray<string>>>
+}
+const runtimeReads: RuntimeReads = observations
 const authorities = new WeakMap<Workspace, Map<string, ReturnType<typeof authorityOf>>>()
 const workspacePaths = new WeakMap<Workspace, ReadonlySet<string>>()
 
@@ -194,15 +202,18 @@ const externalScriptImports = (workspace: Workspace, test: string): ReadonlyArra
 
 const authorityOf = (workspace: Workspace, test: string) => {
   const read = inspectReads(workspace, test)
-  const subprocessReason = runtimeReads.untracedSubprocesses[test]
-  const unknown = read.classification === "unknown" || Object.hasOwn(runtimeReads.untracedSubprocesses, test)
+  const configs = runtimeReads.compilerProjects?.[test] || []
+  const compiler = projectReads(configs, workspace.compilerInputs)
+  const compilerReason = read.opensCompiler && (configs.length === 0 || !compiler.ready) && "TypeScript project: no complete native project inventory"
+  const subprocessReason = runtimeReads.untracedSubprocesses[test] || Option.getOrUndefined(Option.liftPredicate(compilerReason, Boolean))
+  const unknown = read.classification === "unknown" || Boolean(subprocessReason)
   const paths = runtimeReads.paths[test] ?? []
   const imports = externalScriptImports(workspace, test)
-  const exact = new Set([...paths.filter((file) => !file.endsWith("/")), ...imports])
+  const exact = new Set([...paths.filter((file) => !file.endsWith("/")), ...imports, ...compiler.exact])
   const directories = paths.filter((file) => file.endsWith("/"))
   const patterns = readMatcher(read.patterns.filter((pattern) => pattern !== ALL_READS))
   const positive = (file: string) => exact.has(file) || patterns(file) || directories.some((prefix) => file.startsWith(prefix))
-  const observationsFor = (file: string) => paths.filter((entry) => entry === file || (entry.endsWith("/") && file.startsWith(entry)))
+  const observationsFor = (file: string) => [...paths.filter((entry) => entry === file || (entry.endsWith("/") && file.startsWith(entry))), ...configs.filter((config) => workspace.compilerInputs?.get(config)?.has(file))]
   return { unknown, subprocessReason, exact, imports, positive, observationsFor, has: (file: string) => unknown || positive(file) }
 }
 

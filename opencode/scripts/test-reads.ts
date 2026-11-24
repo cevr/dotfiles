@@ -655,12 +655,23 @@ export interface ReadCheck {
   readonly indirect: ReadonlyArray<{ readonly line: number; readonly reason: string }>
   readonly classification: "static" | "declared" | "unknown"
   readonly issues: ReadonlyArray<{ readonly line: number; readonly message: string }>
+  readonly opensCompiler: boolean
 }
 
 const parserFailure = (messages: ReadonlyArray<string>): ReadCheck =>
-  ({ patterns: [], bounded: [], indirect: [], classification: "unknown", issues: messages.map((message) => ({ line: 1, message })) })
+  ({ patterns: [], bounded: [], indirect: [], classification: "unknown", issues: messages.map((message) => ({ line: 1, message })), opensCompiler: false })
+
+const COMPILER_PROJECT = opaque("native TypeScript project")
+const NATIVE_COMPILER = new Set(["typescript/unstable/async:API", "typescript/unstable/sync:API"])
+const PROGRAM_COMPILER = new Set(["typescript:createProgram", "typescript:createIncrementalProgram", "typescript:parseJsonConfigFileContent"])
+const opensCompiler = (at: Node, syntax: Syntax) => {
+  const called = syntax.symbol(child(at, "callee"))
+  return (at.type === "NewExpression" && NATIVE_COMPILER.has(called)) ||
+    (at.type === "CallExpression" && PROGRAM_COMPILER.has(called))
+}
 
 const checkSite = (at: Node, syntax: Syntax, valueOf: Evaluation, record: ReadSite) => {
+  if (opensCompiler(at, syntax)) return record(at, COMPILER_PROJECT)
   if (at.type === "TaggedTemplateExpression") return shellRead(at, syntax, record)
   if (at.type === "CallExpression") return callRead(at, syntax, valueOf, record)
   if (at.type === "NewExpression" && syntax.symbol(child(at, "callee")) === "Function") return record(at, opaque("evaluated program reads"))
@@ -967,7 +978,7 @@ const report = (file: string, source: string, comments: ReadonlyArray<string>, s
   const reasons = comments.flatMap(readReasons)
   const declared = declarations.map(({ pattern }) => pattern)
   const hasAll = declared.includes(ALL_READS)
-  const { found, bounded, issues, indirect } = siteReport(file, sites, declarations, hasAll)
+  const { found, bounded, issues, indirect } = siteReport(file, sites.filter((site) => site.result !== COMPILER_PROJECT), declarations, hasAll)
   const issue = (message: string) => issues.push({ line: 1, message })
   if (hasAll && indirect.length === 0) issue("remove @reads all: no opaque read remains; declare the exact inputs instead")
   if (hasAll && indirect.length > 0 && !reasons.some((reason) => indirect.some((site) => reasonFor(reason, site, file))))
@@ -976,7 +987,7 @@ const report = (file: string, source: string, comments: ReadonlyArray<string>, s
     issue("@reads declarations must be source comments, not text in a string")
   if (declared.some(wholeTree)) issue("@reads must name the input or use @reads all for an opaque read")
   for (const message of unsupportedDeclarations(declarations, bounded)) issue(message)
-  return { patterns: [...found].toSorted(), bounded: [...bounded].toSorted(), indirect, issues, classification: readClassification(indirect.length > 0, bounded.size) }
+  return { patterns: [...found].toSorted(), bounded: [...bounded].toSorted(), indirect, issues, classification: readClassification(indirect.length > 0, bounded.size), opensCompiler: sites.some((site) => site.result === COMPILER_PROJECT) }
 }
 
 export const readInputChecker = (loadSource: Source, resolvePackage: ResolvePackage = () => "") => {

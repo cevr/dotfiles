@@ -126,10 +126,12 @@ describe("the fixed-seed unit leg of land", () => {
         workbox: { changes: [], tests: [] },
         unit: mergeUnitInputs(workspace),
       }
-      for (const file of [suite, "cmd/wake/server.ts", "sim/host-laws.ts"]) {
+      for (const file of [suite, "cmd/wake/server.ts", "sim/host-laws.ts", "cmd/image/server.ts", "cmd/skills/server.ts", "sim/tsconfig.host-calls.json"]) {
         const leg = mergeLegs("base", parseNameStatus(`M\t${file}\n`), tools).find(({ name }) => name === "tests")
         expect(leg?.argv).toContain(`./${suite}`)
       }
+      for (const file of ["cmd/image/server.ts", "cmd/skills/server.ts", "sim/tsconfig.host-calls.json"])
+        expect(testReadInputs(workspace, suite).positive(file)).toBe(true)
       const unrelated = mergeLegs("base", parseNameStatus("M\t../AGENTS.md\n"), tools).find(({ name }) => name === "tests")
       expect(unrelated?.argv).not.toContain(`./${suite}`)
     }),

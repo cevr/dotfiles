@@ -13,6 +13,18 @@ const check = (text: string) => checkReadInputs("scripts/example.test.ts", text,
 
 const unknown = "cannot prove the read stays in scope; use a literal path or matchingInput with a declared scope; otherwise declare @reads all and name the opaque site in @reads-reason"
 
+test("native compiler acquisitions cross runtime helper imports, but an unused helper does not open a project", () => {
+  const runner = "scripts/example.test.ts"
+  const source = (file: string) => file === "scripts/project.ts" && `
+import { API as Compiler } from "typescript/unstable/async"
+export const open = () => new Compiler()
+export const noProject = () => 0
+` || ""
+  expect(checkReadInputs(runner, `import { open } from "./project.ts"; open()`, source).opensCompiler).toBe(true)
+  expect(checkReadInputs(runner, `import { noProject } from "./project.ts"; noProject()`, source).opensCompiler).toBe(false)
+  expect(checkReadInputs(runner, `import { createProgram } from "typescript"; createProgram([])`).opensCompiler).toBe(true)
+})
+
 test("a narrow declaration cannot bless an escaping path", () => {
   const source = `// @reads-indirect scripts/fixtures/**
 import { join } from "node:path"
