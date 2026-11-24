@@ -3,8 +3,7 @@
 // (never the token). When requested, record that it found the other worker's
 // real SQLite lock busy before the test allows the refresh response.
 import { createHash } from "node:crypto"
-import { writeFileSync } from "node:fs"
-import { argv } from "bun"
+import { argv, write } from "bun"
 import { Effect, Option, Schema } from "effect"
 import { SlotStoreSource } from "../../mods/pool/store/store.ts"
 import { readScratchFileSync, scratchInput } from "../read-path.ts"
@@ -19,7 +18,7 @@ const source = new SlotStoreSource({
   files: {
     ...scratchSlotFiles,
     tryLock: (at) => scratchSlotFiles.tryLock(at).pipe(Effect.tap((lock) => {
-      if (Option.isNone(lock)) return Effect.sync(() => writeFileSync(marker, ""))
+      if (Option.isNone(lock)) return Effect.asVoid(Effect.promise(() => write(marker, "")))
       return Effect.void
     })),
   },

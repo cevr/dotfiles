@@ -2,13 +2,13 @@
 import { expect, test } from "bun:test"
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Effect, FileSystem, Option, Stream } from "effect"
-import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { ChildProcessSpawner } from "effect/process"
 import { it } from "effect-bun-test"
 import { TIMEOUT_MS as SeedTIMEOUT_MS } from "../sim/seed.ts"
 import { simulationBudget, simulationRunnerCapOf, TIMEOUT_GRACE_MS } from "../sim/budget.ts"
 import { globalSlot } from "../tests/global-slot.ts"
 import { bridgeBudget, hangGuard, measured, runnerCapOf } from "../tests/hang-guard.ts"
-import { checkoutTests } from "../tests/scratch-child.ts"
+import { checkoutTestsCommand } from "../tests/scratch-child.ts"
 
 test("the simulation diagnostic owns its deadline before Bun, even with a swarm box", () => {
   for (const ms of [300, SeedTIMEOUT_MS, SeedTIMEOUT_MS + 57_000]) {
@@ -30,10 +30,9 @@ test("the Rifts-law bridge lets its scoped diagnostic fire before Bun", () => {
   expect(Number(runnerCapOf(budget))).toBe(60_000)
 })
 
-const hungBridge = Effect.fn("Timing.hungBridge")(function* (fixture: ReturnType<typeof checkoutTests>, label: string) {
+const hungBridge = Effect.fn("Timing.hungBridge")(function* (fixture: ReturnType<typeof checkoutTestsCommand>, label: string) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-  const [bun = "", ...args] = fixture.argv
-  const child = yield* spawner.spawn(ChildProcess.make(bun, args, { cwd: fixture.cwd, env: fixture.env, extendEnv: false, stdout: "ignore", forceKillAfter: "1 second" }))
+  const child = yield* spawner.spawn(fixture)
   const errors = yield* child.stderr.pipe(Stream.decodeText(), Stream.mkString)
   expect(Number(yield* child.exitCode), errors).toBe(1)
   expect(errors).toContain(`${label}: its fixture did not complete before the 4000 ms diagnostic deadline`)
@@ -46,8 +45,8 @@ it.scopedLive.layer(BunServices.layer)("hung TUI and Rifts bodies report their b
     const tui = yield* fs.makeTempDirectoryScoped({ prefix: "tui-bridge-" })
     const rifts = yield* fs.makeTempDirectoryScoped({ prefix: "rifts-bridge-" })
     yield* Effect.all([
-      hungBridge(checkoutTests({ temp: tui, state: tui, filter: "TUI bridge diagnostic witness" }, "sim-tui/bridge-hang.fixture.ts"), "TUI bridge diagnostic witness"),
-      hungBridge(checkoutTests({ temp: rifts, state: rifts, filter: "a created Rift is listed under its source" }, "tests/rifts-law-hang.fixture.ts"), "a created Rift is listed under its source, on its branch and clean; the source, a directory in it and the Rift all have that source"),
+      hungBridge(checkoutTestsCommand({ temp: tui, state: tui, filter: "TUI bridge diagnostic witness" }, "sim-tui/bridge-hang.fixture.ts"), "TUI bridge diagnostic witness"),
+      hungBridge(checkoutTestsCommand({ temp: rifts, state: rifts, filter: "a created Rift is listed under its source" }, "tests/rifts-law-hang.fixture.ts"), "a created Rift is listed under its source, on its branch and clean; the source, a directory in it and the Rift all have that source"),
     ], { concurrency: 2, discard: true })
   }),
   hangGuard("short-fixture"),

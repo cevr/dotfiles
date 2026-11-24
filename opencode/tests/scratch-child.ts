@@ -148,6 +148,12 @@ export const checkoutTests = (input: CheckoutTestInputs, ...entries: ReadonlyArr
   }
 }
 
+/** The same explicit, checked nested test entries with an Effect-owned lifecycle. */
+export const checkoutTestsCommand = (input: CheckoutTestInputs, ...entries: ReadonlyArray<string>) => {
+  const { argv: [bun = "", ...args], cwd, env } = checkoutTests(input, ...entries)
+  return ChildProcess.make(bun, args, { cwd, env, extendEnv: false, stdout: "ignore", forceKillAfter: "1 second" })
+}
+
 /** The reaper fixture inspects one process, not the checkout it may be running in. */
 export const reaperEnvironment = (pid: number) => {
   if (!Number.isSafeInteger(pid) || pid < 1) return reject("invalid reaper process ID")

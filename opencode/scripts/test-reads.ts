@@ -447,7 +447,7 @@ const BOUNDED_PROCESS = new Set([
   "tests/scratch-child.ts:runScratchTool",
   "tests/scratch-child.ts:spawnScratchShellFileSync",
   "tests/scratch-child.ts:fixtureHostIdentity",
-  "tests/scratch-child.ts:checkoutTests", "tests/owned.ts:ownedCheckoutTests",
+  "tests/scratch-child.ts:checkoutTests", "tests/scratch-child.ts:checkoutTestsCommand", "tests/owned.ts:ownedCheckoutTests",
   "tests/owned.ts:ownedTempFixture",
   "tests/scratch-child.ts:spawnScratchShellFile",
   "tests/scratch-child.ts:installedGitManual",
@@ -483,7 +483,7 @@ const CHECKOUT_BUN = new Set([
   "tests/scratch-child.ts:spawnCheckoutBun", "tests/owned.ts:ownedCheckoutBun",
   "tests/scratch-child.ts:spawnCheckoutBunSync",
 ])
-const CHECKOUT_TESTS = new Set(["tests/scratch-child.ts:checkoutTests", "tests/owned.ts:ownedCheckoutTests"])
+const CHECKOUT_TESTS = new Set(["tests/scratch-child.ts:checkoutTests", "tests/scratch-child.ts:checkoutTestsCommand", "tests/owned.ts:ownedCheckoutTests"])
 const checkoutTestEntries = (args: ReadonlyArray<Node>, evaluate: Evaluation) => {
   const entries = args.slice(1).map((arg) => Option.getOrElse(literalPath(evaluate(arg)), () => ""))
   if (entries.every((file) => /^(?:[\w-]+\/)+[\w.-]+\.[cm]?[jt]sx?$/.test(file))) return entries
