@@ -1,0 +1,6 @@
+{
+  "name": "dotfiles-gamut-startup",
+  "private": true,
+  "type": "module",
+  "exports": { "./tui": "./tui.ts" }
+}
